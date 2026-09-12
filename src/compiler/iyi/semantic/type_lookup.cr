@@ -153,11 +153,49 @@ class Iyi::Type
       # `pub import`s. Only on authoritative lookups: a speculative one
       # (`@raise` off — overload matching trying restrictions) must
       # keep its answer, not acquire a new way to fail.
-      if @raise && type.is_a?(Type)
+      #
+      # A bare type parameter is exempt, because it is the file's own word.
+      # `Hash(K, V)` writes `K`; which type `K` stands for is the program's
+      # instantiation, not a name this file reached for. Checking it would make
+      # a file answerable for every element type any other file happens to put
+      # in a collection - std/enumerable stopped compiling beside std/json,
+      # std/yaml and std/http exactly that way.
+      if @raise && type.is_a?(Type) && !iyi_own_type_parameter?(node)
         @root.program.iyi_check_import_reach(node, type)
       end
 
       type
+    end
+
+    # iyi: is *node* a bare name the enclosing generic declared as one of its
+    # own type parameters? Walks the namespace chain, because a method on
+    # `Hash(K, V)` is looked up with the instantiation as the root while the
+    # names it may write belong to the generic above it.
+    private def iyi_own_type_parameter?(node : Path) : Bool
+      return false if node.global? || node.names.size != 1
+
+      name = node.names.first
+      owner : Type? = @root
+      while owner
+        case owner
+        when GenericInstanceType
+          return true if owner.type_vars.has_key?(name)
+        when GenericType
+          return true if owner.type_vars.includes?(name)
+        end
+
+        next_owner : Type? =
+          if owner.is_a?(GenericInstanceType)
+            owner.generic_type.as(Type)
+          elsif owner.is_a?(NamedType) && (up = owner.namespace) != owner
+            up.as(Type)
+          else
+            nil
+          end
+        owner = next_owner
+      end
+
+      false
     end
 
     def lookup(node : Union)
