@@ -52,6 +52,13 @@ jobs:
       - name: Build
         run: make crystal
 
+      # v5 because it is current, and not because it silences the annotation
+      # every run carries: "Node.js 20 is deprecated ... forced to run on
+      # Node.js 24". That line names GitHub's own actions at their newest
+      # tags — upload-artifact@v5, download-artifact@v5, cache@v4,
+      # setup-go@v5 — so it is upstream's manifest and not this file's
+      # version pins. Measured by bumping all twenty-one uses and reading
+      # the next run: the warning came back naming v5.
       - uses: actions/upload-artifact@v5
         with:
           name: crystal
@@ -280,6 +287,15 @@ jobs:
       # nothing. Eight broken methods of a copied prelude prove each check.
       - name: An enum is its name, its order and its members
         run: bash bench/enum_exercise.sh
+
+      # And the same question asked of the other value the prelude writes
+      # itself: a tuple. `==` and `hash` were never written, so `Object`'s
+      # answered — identity, on a value — and `{1, 2} == {1, 2}` was false,
+      # which made a tuple key unfindable, a `Set` of them a list, and
+      # `includes?`/`index`/`uniq` over `zip`'s own result answer no. Seven
+      # broken methods of a copied prelude prove each check.
+      - name: A tuple is its members
+        run: bash bench/tuple_exercise.sh
 
       # Three gates that existed, passed on the machine that wrote them, and
       # were named in this file by nothing: `format_exercise` (seven proofs

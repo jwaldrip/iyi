@@ -63,7 +63,7 @@ own reference accepts.
 | warm full build, `hello` / 6,900-line pair | 0.07 s / 0.24 s, against `go build`'s 0.08 s / 0.09 s |
 | front end, `hello.iyi` | **0.036 s** against the 0.050 s target: MET |
 | starting the compiler and doing nothing | 0.018 s of that |
-| iyi's own prelude | 13,850 lines, of which 3,635 are the library held to the 3,734 ceiling; the rest is the collector, the scheduler and the float printer, which 0.1.0's prelude got from libgc, pthreads and libc |
+| iyi's own prelude | 13,878 lines, of which 3,663 are the library held to the 3,734 ceiling; the rest is the collector, the scheduler and the float printer, which 0.1.0's prelude got from libgc, pthreads and libc |
 | compiler | 84,068 lines, none of it written in iyi |
 | artifact format | `.iyimod` v19, checksum per section |
 | samples | 9, of which 5 rebuild from artifacts with their modules' source deleted |
@@ -88,7 +88,7 @@ shape.
 > is a library and the rules are the language, so a program can keep one and
 > change the other: `--crystal` builds against Crystal's standard library, and
 > there `require` reaches the ecosystem while every rule stays where it was.
-> "No standard library worth the name" is still true of iyi's own 13,850 lines
+> "No standard library worth the name" is still true of iyi's own 13,878 lines
 > and no longer true of what a program can have. Part V item 12a is the
 > measurement, nine shards wide.
 
@@ -270,8 +270,8 @@ of binary. It is not made the default on that trade, and the middle needs the
 initialisers to run *later* rather than not at all, which is the `dlsym` table
 above, and a larger piece of work than the number it wins.
 
-**3. A deliberately tiny prelude, written in iyi. Done: 13,850 lines,
-primitives included, of which the library is 3,635.** Not a standard library:
+**3. A deliberately tiny prelude, written in iyi. Done: 13,878 lines,
+primitives included, of which the library is 3,663.** Not a standard library:
 integers, booleans, a string, one sequence, one dictionary, one range, `puts`,
 and an `enum`'s surface — the member's name, an order, the members, and the
 bits of a `@[Flags]` one. **Its scope is set by what the
@@ -299,7 +299,7 @@ collector (GC_DESIGN.md, the block between two marks in `prelude.iyi`),
 the scheduler and the kernel thread (III.4, `concurrency.iyi` and
 `thread.iyi`), the shortest-round-trip float text (`float.iyi`) - and they
 are most of its lines. So the figure held to the ceiling is the library:
-**3,635 lines** of the 13,850, measured by `bench/doc_numbers.py` as
+**3,663 lines** of the 13,878, measured by `bench/doc_numbers.py` as
 everything under `src/iyi/` except those three. The whole-prelude figure is
 stated beside it because a reader sees the whole file, and a "tiny prelude"
 claim that hid 9,000 lines of runtime would be a claim about the wrong number.
@@ -317,6 +317,20 @@ padding is for — lining a column up — held for ASCII and nothing else. Each
 was the prelude disagreeing with itself rather than with a standard, which
 is why the sentence is here: the two units are a choice, and a method
 belongs to one of them.
+
+**And a value type owes two methods, not one.** `==` and `hash` are a pair:
+a `Hash` finds a key by its slot and then compares, so a type that answers
+one and not the other is a key that cannot be found however equal it is.
+The prelude wrote both for `String` and for `Enum` and neither for `Tuple`,
+which `Object`'s defaults then answered — identity on a value type, and one
+slot for every tuple — so `{1, 2} == {1, 2}` was false, `table[{1, 2}]?`
+missed the entry `table[{1, 2}] =` had just made, and `includes?`, `index`,
+`uniq` and a `case` arm over `zip`'s own result were all wrong with it.
+`Object#hash`'s comment says its default is "correct and useless", and that
+is true only while `==` is the default too: the moment a type defines
+equality, the type-id hash stops being slow and starts being wrong.
+`bench/tuple_exercise.sh` holds the pair for tuples the way
+`bench/enum_exercise.sh` holds it for enums.
 
 **The ceiling was breached, and moving two files closed it.** The library
 was under 3,734 until `io.iyi`, `socket.iyi` and `format.iyi` were written,
@@ -871,7 +885,7 @@ Checking it moved two things and left the shape alone.
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
 | Compiler | 24,984 lines, **written in Crystal** | 109,598 lines, Crystal, forked |
-| Library | 8,161 lines (3,551 of it core) | 13,850-line own prelude + 5,997 in std |
+| Library | 8,161 lines (3,551 of it core) | 13,878-line own prelude + 5,997 in std |
 | Specs | 21,146 lines | 10,040 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
@@ -8924,7 +8938,7 @@ Named honestly, so nobody mistakes this draft for complete.
     shards exist and none of them is written to iyi's rules, so "run them
     directly" is not a compatibility problem, it is the four rules: `require`
     against R-1, inference against R-2, monkey patching against R-3, and
-    Crystal's 8,161-line standard library against iyi's own 13,850-line prelude.
+    Crystal's 8,161-line standard library against iyi's own 13,878-line prelude.
 
     What is measurable is narrower and better than that framing suggests, and
     it was measured on **Kemal 1.12.0**, which compiles under this compiler

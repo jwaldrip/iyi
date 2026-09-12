@@ -4,6 +4,21 @@
 
 ### Fixed
 
+- **A tuple is its members, which is what `==` had never said.** The prelude
+  wrote `Tuple#size`, `#[]`, `#to_s` and `#inspect` and never `==` or
+  `hash`, so `Object`'s answered — identity, on a value type — and
+  `{1, 2} == {1, 2}` was **false**. Everything that asks a value whether it
+  is equal was wrong with it: a tuple key was never found in a `Hash`
+  (`table[{1, 2}]?` after `table[{1, 2}] = "x"` answered nil), a `Set` of
+  them was a list, `includes?`, `index` and `uniq` over `zip`'s *own*
+  result answered no, and a `case` over a tuple matched nothing, because a
+  `when` is `===` and `===` is `==`. Both written now, element-wise, and
+  hashing follows equality because a key is found by its slot first and
+  compared second. Found by probing the prelude's collections for the same
+  self-disagreement the string surface had, and `bench/tuple_exercise.sh`
+  is the gate: the surface plain and optimised, the sample whose `zip`
+  reaches it, and seven broken methods of a copied prelude to prove each
+  check can fail.
 - **Padding is measured in characters, because `size` is.** `ljust` and
   `rjust` counted bytes: `"héllo".ljust(7, '.')` answered a string whose own
   `size` was 6, so the one thing padding is asked for — lining a column up —
@@ -5264,7 +5279,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 13,850-line library and nothing else. Every other
+  written against iyi's own 13,878-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 
