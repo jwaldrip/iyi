@@ -22,6 +22,29 @@ pub struct HTML
   # >  -> &gt;
   # "  -> &quot;
   # ' -> &#39;
+  def self.escape(string : String, io) : Nil
+    raw = string.to_unsafe
+    len = string.bytesize
+    i = 0
+    while i < len
+      case b = raw[i]
+      when 38_u8 # &
+        io << "&amp;"
+      when 60_u8 # <
+        io << "&lt;"
+      when 62_u8 # >
+        io << "&gt;"
+      when 34_u8 # "
+        io << "&quot;"
+      when 39_u8 # '
+        io << "&#39;"
+      else
+        io << b.unsafe_chr
+      end
+      i = i + 1
+    end
+  end
+
   def self.escape(string : String) : String
     # Fast path: check if any character needs escaping
     raw = string.to_unsafe
