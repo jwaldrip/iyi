@@ -1261,11 +1261,16 @@ pub class Socket
       __sys3(SYS_FCNTL, fd.to_i64, cmd.to_i64, arg.to_i64).to_i32
     end
   {% else %}
+    # A platform with neither the libc calls nor the syscalls. These answer
+    # the failure every caller already handles, but their signatures have to
+    # be the ones the callers actually use: a stub that takes a narrower
+    # integer than `encode_address` hands it does not degrade, it stops the
+    # program compiling for the platform it exists to support.
     def self.__sys_socket(domain : Int32, type : Int32, protocol : Int32) : Int32
       raise "Socket is not supported on this platform"
     end
 
-    def self.__sys_bind(fd : Int32, addr : Pointer(UInt8), addrlen : Int32) : Int32
+    def self.__sys_bind(fd : Int32, addr : Pointer(UInt8), addrlen : Int64) : Int32
       -1
     end
 
@@ -1273,11 +1278,11 @@ pub class Socket
       -1
     end
 
-    def self.__sys_accept(fd : Int32, addr : Pointer(UInt8), addrlen : Pointer(Int32)) : Int32
+    def self.__sys_accept(fd : Int32, addr : Pointer(UInt8), addrlen : Pointer(UInt32)) : Int32
       -1
     end
 
-    def self.__sys_connect(fd : Int32, addr : Pointer(UInt8), addrlen : Int32) : Int32
+    def self.__sys_connect(fd : Int32, addr : Pointer(UInt8), addrlen : Int64) : Int32
       -1
     end
 
@@ -1289,23 +1294,23 @@ pub class Socket
       -1_i64
     end
 
-    def self.__sys_sendto(fd : Int32, buf : Pointer(UInt8), len : UInt64, flags : Int32, addr : Pointer(UInt8), addrlen : Int32) : Int64
+    def self.__sys_sendto(fd : Int32, buf : Pointer(UInt8), len : UInt64, flags : Int32, addr : Pointer(UInt8), addrlen : Int64) : Int64
       -1_i64
     end
 
-    def self.__sys_recvfrom(fd : Int32, buf : Pointer(UInt8), len : UInt64, flags : Int32, addr : Pointer(UInt8), addrlen : Pointer(Int32)) : Int64
+    def self.__sys_recvfrom(fd : Int32, buf : Pointer(UInt8), len : UInt64, flags : Int32, addr : Pointer(UInt8), addrlen : Pointer(UInt32)) : Int64
       -1_i64
     end
 
-    def self.__sys_getsockname(fd : Int32, addr : Pointer(UInt8), addrlen : Pointer(Int32)) : Int32
+    def self.__sys_getsockname(fd : Int32, addr : Pointer(UInt8), addrlen : Pointer(UInt32)) : Int32
       -1
     end
 
-    def self.__sys_getpeername(fd : Int32, addr : Pointer(UInt8), addrlen : Pointer(Int32)) : Int32
+    def self.__sys_getpeername(fd : Int32, addr : Pointer(UInt8), addrlen : Pointer(UInt32)) : Int32
       -1
     end
 
-    def self.__sys_setsockopt(fd : Int32, level : Int32, optname : Int32, optval : Void*, optlen : Int32) : Int32
+    def self.__sys_setsockopt(fd : Int32, level : Int32, optname : Int32, optval : Void*, optlen : Int64) : Int32
       -1
     end
 

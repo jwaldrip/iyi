@@ -134,7 +134,7 @@ prove_fails "relational be matcher broken" no_be_rel "Spec run failed: matchers"
 
 # 3. Containment matcher broken
 prove_fails "containment matcher broken" no_contain "Spec run failed: matchers" "spec.iyi" \
-  's/actual_value\.includes\?(@expected)/false/'
+  's/actual_value[.]includes[?](@expected)/false/'
 
 # 4. Focus filtering broken
 prove_fails "focus filtering broken" no_focus "Expected 1 focused example" "spec.iyi" \
@@ -142,7 +142,7 @@ prove_fails "focus filtering broken" no_focus "Expected 1 focused example" "spec
 
 # 5. Tag filtering broken
 prove_fails "tag filtering broken" no_tags "Expected 1 tagged example" "spec.iyi" \
-  's/tag_filter = @tags\.empty\? ? nil : @tags/tag_filter = nil/'
+  's/tag_filter = @tags[.]empty[?] ? nil : @tags/tag_filter = nil/'
 
 # 6. Randomization seed parsing broken
 prove_fails "randomization seed broken" no_rand_seed "Expected seed 12345" "spec.iyi" \
