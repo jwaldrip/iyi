@@ -17,24 +17,6 @@
 
 module std/option_parser
 
-pub class InvalidOption < Exception
-  getter flag : String
-  getter message : String
-
-  def initialize(@flag : String)
-    @message = "Invalid option: #{@flag}"
-  end
-end
-
-pub class MissingOption < Exception
-  getter flag : String
-  getter message : String
-
-  def initialize(@flag : String)
-    @message = "Missing option: #{@flag}"
-  end
-end
-
 pub enum FlagValue
   None     = 0
   Optional = 1
@@ -62,18 +44,45 @@ pub struct Handler
 end
 
 pub class OptionParser
+  pub class Exception < ::Exception
+  end
+
+  pub class InvalidOption < Exception
+    getter flag : String
+    getter message : String
+
+    def initialize(@flag : String)
+      @message = "Invalid option: #{@flag}"
+    end
+  end
+
+  pub class MissingOption < Exception
+    getter flag : String
+    getter message : String
+
+    def initialize(@flag : String)
+      @message = "Missing option: #{@flag}"
+    end
+  end
+
   property banner : String?
   property summary_width : Int32
   property summary_indent : String
+  property gnu_optional_args : Bool
+
+  def gnu_optional_args? : Bool
+    @gnu_optional_args
+  end
 
   @flags : Array(String)
   @handlers : Hash(String, Handler)
   @unknown_args : Proc(Array(String), Array(String), Nil)?
   @missing_option : Proc(String, Nil)?
   @invalid_option : Proc(String, Nil)?
+  @before_each : Proc(String, Nil)?
   @stop : Bool
 
-  def initialize
+  def initialize(*, @gnu_optional_args : Bool = false)
     @banner = nil
     @summary_width = 32
     @summary_indent = "    "
@@ -81,19 +90,31 @@ pub class OptionParser
     @handlers = Hash(String, Handler).new
     @missing_option = ->(flag : String) { raise MissingOption.new(flag).message }
     @invalid_option = ->(flag : String) { raise InvalidOption.new(flag).message }
+    @before_each = nil
     @stop = false
   end
 
-  def self.parse(args : Array(String), &block : OptionParser -> Nil) : Array(String)
-    parser = OptionParser.new
+  def self.new(*, gnu_optional_args : Bool = false, &block : OptionParser -> Nil) : OptionParser
+    parser = OptionParser.new(gnu_optional_args: gnu_optional_args)
+    block.call(parser)
+    parser
+  end
+
+  def self.parse(args : Array(String) = ARGV, *, gnu_optional_args : Bool = false, &block : OptionParser -> Nil) : OptionParser
+    parser = OptionParser.new(gnu_optional_args: gnu_optional_args)
     block.call(parser)
     parser.parse(args)
+    parser
   end
 
   def on(flag : String, description : String, &block : String -> Nil) : Nil
     append_flag(flag, description)
     name, value_type = parse_flag_definition(flag)
     @handlers[name] = Handler.new(value_type, block)
+  end
+
+  def before_each(&block : String -> Nil) : Nil
+    @before_each = block
   end
 
   def on(short_flag : String, long_flag : String, description : String, &block : String -> Nil) : Nil
@@ -276,6 +297,17 @@ pub class OptionParser
     end
 
     remaining
+  end
+
+  def to_s(io) : Nil
+    if b = @banner
+      io << b
+      io << '\n'
+    end
+    @flags.each_with_index do |flag_desc, idx|
+      io << flag_desc
+      io << '\n' unless idx == @flags.size - 1
+    end
   end
 
   def to_s : String
