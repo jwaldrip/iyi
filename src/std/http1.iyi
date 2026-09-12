@@ -35,14 +35,16 @@ import std/compress
 import std/dns
 import std/socket
 import std/tls
+import std/base64
 
 using std/traits::{Cmp}
 using std/slice::{Slice, Bytes}
 using std/uri::{URI, Params}
-using std/http::{Headers, Status, Request, Response, HttpError, Cookies, Cookie}
+using std/http::{Headers, Status, Request, Response, HttpError, Cookies, Cookie, ServerResponse, ServerContext, Handler}
 using std/compress::{Gzip, Zlib, Inflate}
 using std/tls::{CertificateStore, Certificate}
-using std/socket::{IyiSocket}
+using std/socket::{IyiSocket, Socket, TCPSocket, TCPServer, UNIXSocket, UNIXServer, IPAddress, UNIXAddress, Address, Type}
+using std/base64::{Base64}
 pub alias TlsClient = Std::Tls::Client
 
 pub alias Headers = Std::Http::Headers
@@ -52,7 +54,9 @@ pub alias Response = Std::Http::Response
 pub alias HttpError = Std::Http::HttpError
 pub alias Cookie = Std::Http::Cookie
 pub alias Cookies = Std::Http::Cookies
-
+pub alias ServerResponse = Std::Http::ServerResponse
+pub alias ServerContext = Std::Http::ServerContext
+pub alias Handler = Std::Http::Handler
 # Protocol limits matching RFC 9112 and std/http
 pub MAX_REQUEST_LINE_SIZE =     8192
 pub MAX_HEADER_COUNT      =      100
@@ -214,6 +218,49 @@ pub class TcpTransport < Transport
 
   def local_address : String
     @socket.local_address
+  end
+end
+
+# Plain UNIX domain socket transport wrapping UNIXSocket
+pub class UnixTransport < Transport
+  @socket : UNIXSocket
+  getter socket : UNIXSocket
+  @path : String
+  getter path : String
+
+  def initialize(@path : String)
+    @socket = UNIXSocket.new(@path)
+  end
+
+  def initialize(@socket : UNIXSocket, @path : String = "")
+  end
+
+  def write(contents : String) : Int32
+    @socket.write(contents)
+  end
+
+  def write(buffer : Pointer(UInt8), count : Int32) : Int32
+    @socket.write(buffer, count)
+  end
+
+  def read(max_bytes : Int32 = 4096) : String
+    @socket.read(max_bytes)
+  end
+
+  def close : Nil
+    @socket.close
+  end
+
+  def closed? : Bool
+    @socket.closed?
+  end
+
+  def local_port : Int32
+    0
+  end
+
+  def local_address : String
+    @path
   end
 end
 
@@ -1002,10 +1049,24 @@ pub class Client
   property timeout_ms : Int32
   property verify_peer : Bool
   property transport : Transport?
+  property before_request_handler : Proc(Request, Nil)?
 
   @active_transport : Transport?
   @active_reader : BufferedTransportReader?
   @active_origin : String?
+
+  def before_request(&block : Request -> Nil) : Nil
+    @before_request_handler = block
+  end
+
+  def basic_auth(username : String, password : String) : Nil
+    token = Base64.encode(username + ":" + password)
+    @default_headers["Authorization"] = "Basic " + token
+  end
+
+  def self.unix(path : String) : Client
+    Client.new(transport: UnixTransport.new(path))
+  end
 
   def initialize(@max_redirects : Int32 = 10,
                  @timeout_ms : Int32 = 10000,
@@ -1062,6 +1123,10 @@ pub class Client
     trans : Transport? = nil
     reader : BufferedTransportReader? = nil
     owns_transport = false
+
+    if hook = @before_request_handler
+      hook.call(req)
+    end
 
     if user_trans = @transport
       trans = user_trans
@@ -1259,7 +1324,11 @@ pub class Server
   property host : String
   property port : Int32
   property handler : Proc(Request, Response)?
+  property context_handler : Proc(ServerContext, Nil)?
+  property handlers : Array(Handler)?
   @socket : IyiSocket?
+  @unix_server : UNIXServer?
+  @addresses : Array(Address)
   @stopped : Bool
   @active_transports : Array(Transport)
   {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
@@ -1269,7 +1338,11 @@ pub class Server
 
   def initialize(@host : String = "127.0.0.1", @port : Int32 = 0, &handler : Request -> Response)
     @handler = handler
+    @context_handler = nil
+    @handlers = nil
     @socket = nil
+    @unix_server = nil
+    @addresses = [] of Address
     @stopped = false
     @active_transports = [] of Transport
     {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
@@ -1280,9 +1353,46 @@ pub class Server
 
   def initialize(@host : String = "127.0.0.1", @port : Int32 = 0)
     @handler = nil
+    @context_handler = nil
+    @handlers = nil
     @socket = nil
+    @unix_server = nil
+    @addresses = [] of Address
     @stopped = false
     @active_transports = [] of Transport
+    {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
+      @conn_chan = nil
+      @group = nil
+    {% end %}
+  end
+
+  def initialize(@handlers : Array(Handler))
+    @handler = nil
+    @context_handler = nil
+    @socket = nil
+    @unix_server = nil
+    @addresses = [] of Address
+    @stopped = false
+    @active_transports = [] of Transport
+    @host = "127.0.0.1"
+    @port = 0
+    {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
+      @conn_chan = nil
+      @group = nil
+    {% end %}
+  end
+
+  def initialize(handler : Handler)
+    @handler = nil
+    @context_handler = nil
+    @handlers = [handler] of Handler
+    @socket = nil
+    @unix_server = nil
+    @addresses = [] of Address
+    @stopped = false
+    @active_transports = [] of Transport
+    @host = "127.0.0.1"
+    @port = 0
     {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
       @conn_chan = nil
       @group = nil
@@ -1293,10 +1403,71 @@ pub class Server
     @stopped
   end
 
-  def listen : Server
+  def closed? : Bool
+    @stopped
+  end
+
+  def listening? : Bool
+    !@stopped && (@socket != nil || @unix_server != nil)
+  end
+
+  def bind_tcp(host : String, port : Int32, reuse_port : Bool = false) : IPAddress
+    @host = host
+    @port = port
     sock = IyiSocket.listen(@host, @port)
     @socket = sock
-    @port = sock.local_port if @port == 0
+    @port = sock.local_port
+    addr = IPAddress.new(@host, @port)
+    @addresses << addr
+    addr
+  end
+
+  def bind_tcp(port : Int32, reuse_port : Bool = false) : IPAddress
+    bind_tcp("0.0.0.0", port, reuse_port)
+  end
+
+  def bind_tcp(address : IPAddress, reuse_port : Bool = false) : IPAddress
+    bind_tcp(address.address, address.port, reuse_port)
+  end
+
+  def bind_unused_port(host : String = "127.0.0.1", reuse_port : Bool = false) : IPAddress
+    bind_tcp(host, 0, reuse_port)
+  end
+
+  def bind_unix(path : String) : UNIXAddress
+    usrv = UNIXServer.new(path)
+    @unix_server = usrv
+    addr = UNIXAddress.new(path)
+    @addresses << addr
+    addr
+  end
+
+  def bind_unix(address : UNIXAddress) : UNIXAddress
+    bind_unix(address.path)
+  end
+
+  def bind(uri_str : String) : Address
+    addr = Address.parse(uri_str)
+    case addr
+    in IPAddress
+      bind_tcp(addr.address, addr.port)
+    in UNIXAddress
+      bind_unix(addr.path)
+    end
+  end
+
+  def addresses : Array(Address)
+    @addresses
+  end
+
+  def each_address(&block : Address -> Nil) : Nil
+    @addresses.each(&block)
+  end
+
+  def listen : Server
+    if @socket.nil? && @unix_server.nil?
+      bind_tcp(@host, @port)
+    end
     self
   end
 
@@ -1341,7 +1512,22 @@ pub class Server
       in Request
         req = req_res
 
-        resp = if h = @handler
+        resp = if ch = @context_handler
+                 ctx = ServerContext.new(req)
+                 ch.call(ctx)
+                 ctx.response.to_response
+               elsif handlers = @handlers
+                 ctx = ServerContext.new(req)
+                 if !handlers.empty?
+                   i = 0
+                   while i < handlers.size - 1
+                     handlers[i].next = handlers[i + 1]
+                     i = i + 1
+                   end
+                   handlers[0].call(ctx)
+                 end
+                 ctx.response.to_response
+               elsif h = @handler
                  h.call(req)
                else
                  Response.new(404, body: "Not Found")
@@ -1372,6 +1558,27 @@ pub class Server
 
     transport.close unless transport.closed?
     untrack_transport(transport)
+  end
+
+  def accept_one : Bool
+    return false if @stopped
+    if usrv = @unix_server
+      client_sock = usrv.accept?
+      if client_sock
+        trans = UnixTransport.new(client_sock, usrv.path || "")
+        track_transport(trans)
+        handle_connection(trans)
+        return true
+      end
+    end
+    if sock = @socket
+      client_sock = sock.accept
+      trans = TcpTransport.new(client_sock)
+      track_transport(trans)
+      handle_connection(trans)
+      return true
+    end
+    false
   end
 
   # Handles one connection synchronously for deterministic testing
@@ -1449,6 +1656,10 @@ pub class Server
     @stopped = true
     if sock = @socket
       sock.close unless sock.closed?
+    end
+    if usrv = @unix_server
+      usrv.close unless usrv.closed?
+      @unix_server = nil
     end
     @active_transports.each do |trans|
       trans.close unless trans.closed?

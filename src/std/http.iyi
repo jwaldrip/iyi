@@ -175,6 +175,92 @@ pub struct Status
     @code == 500
   end
 
+  def continue? : Bool
+    @code == 100
+  end
+
+  def switching_protocols? : Bool
+    @code == 101
+  end
+
+  def created? : Bool
+    @code == 201
+  end
+
+  def accepted? : Bool
+    @code == 202
+  end
+
+  def moved_permanently? : Bool
+    @code == 301
+  end
+
+  def found? : Bool
+    @code == 302
+  end
+
+  def see_other? : Bool
+    @code == 303
+  end
+
+  def temporary_redirect? : Bool
+    @code == 307
+  end
+
+  def permanent_redirect? : Bool
+    @code == 308
+  end
+
+  def unauthorized? : Bool
+    @code == 401
+  end
+
+  def forbidden? : Bool
+    @code == 403
+  end
+
+  def method_not_allowed? : Bool
+    @code == 405
+  end
+
+  def conflict? : Bool
+    @code == 409
+  end
+
+  def gone? : Bool
+    @code == 410
+  end
+
+  def payload_too_large? : Bool
+    @code == 413
+  end
+
+  def unprocessable_entity? : Bool
+    @code == 422
+  end
+
+  def too_many_requests? : Bool
+    @code == 429
+  end
+
+  def not_implemented? : Bool
+    @code == 501
+  end
+
+  def bad_gateway? : Bool
+    @code == 502
+  end
+
+  def service_unavailable? : Bool
+    @code == 503
+  end
+
+  def gateway_timeout? : Bool
+    @code == 504
+  end
+
+  OK_CODE = 200
+
   Continue                    = Status.new(100)
   SwitchingProtocols          = Status.new(101)
   OK                          = Status.new(200)
@@ -757,6 +843,14 @@ pub class Cookies
 
   def empty? : Bool
     @cookies.empty?
+  end
+
+  def [](index : Int32) : Cookie
+    @cookies[index]
+  end
+
+  def each(&block : Cookie ->) : Nil
+    @cookies.each(&block)
   end
 
   def [](name : String) : Cookie
@@ -1677,5 +1771,316 @@ def self.parse_body(raw : String, start_pos : Int32, headers : Headers,
     end
     body = raw[start_pos, raw.bytesize - start_pos]
     return {body, nil.as(Headers?)}
+  end
+end
+
+# ---------------------------------------------------------------------------
+# ServerResponse: Streamable response buffer used by HTTP::Server handlers
+# ---------------------------------------------------------------------------
+
+pub class ServerResponse
+  property status : Status
+  property status_message : String
+  property headers : Headers
+  property cookies : Cookies
+  property content_type : String?
+  property content_length : Int64?
+  getter closed : Bool
+  getter output : String
+
+  def initialize
+    @status = Status::OK
+    @status_message = "OK"
+    @headers = Headers.new
+    @cookies = Cookies.new
+    @content_type = nil
+    @content_length = nil
+    @closed = false
+    @output = ""
+  end
+
+  def closed? : Bool
+    @closed
+  end
+
+  def status_code : Int32
+    @status.code
+  end
+
+  def status_code=(code : Int32) : Nil
+    @status = Status.new(code)
+    @status_message = @status.description
+  end
+
+  def print(str : String) : Nil
+    @output = @output + str
+  end
+
+  def puts(str : String) : Nil
+    @output = @output + str + "\n"
+  end
+
+  def write(bytes : Bytes) : Nil
+    str = String.new(bytes.size) { |dst| dst.copy_from(bytes.to_unsafe, bytes.size) }
+    @output = @output + str
+  end
+
+  def flush : Nil
+  end
+
+  def close : Nil
+    @closed = true
+  end
+
+  def respond_with_status(status : Status, message : String? = nil) : Nil
+    @status = status
+    @status_message = status.description
+    if msg = message
+      @output = msg
+    end
+  end
+
+  def redirect(location : String, status : Status = Status::Found) : Nil
+    @status = status
+    @status_message = status.description
+    @headers["Location"] = location
+  end
+
+  def to_response : Response
+    if ct = @content_type
+      @headers["Content-Type"] = ct unless @headers.has_key?("Content-Type")
+    end
+    resp = Response.new(@status, @headers, @output, @status_message)
+    i = 0
+    while i < @cookies.size
+      c = @cookies[i]
+      resp.cookies << c
+      i = i + 1
+    end
+    resp
+  end
+end
+
+# ---------------------------------------------------------------------------
+# ServerContext: Request and response container for HTTP::Server
+# ---------------------------------------------------------------------------
+
+pub class ServerContext
+  getter request : Request
+  getter response : ServerResponse
+
+  def initialize(@request : Request, @response : ServerResponse = ServerResponse.new)
+  end
+end
+
+# ---------------------------------------------------------------------------
+# Handler: Middleware protocol for HTTP::Server
+# ---------------------------------------------------------------------------
+
+pub abstract class Handler
+  property next : Handler?
+
+  def initialize
+    @next = nil
+  end
+
+  abstract def call(context : ServerContext) : Nil
+
+  def call_next(context : ServerContext) : Nil
+    if n = @next
+      n.call(context)
+    end
+  end
+end
+
+# ---------------------------------------------------------------------------
+# FormData: Multi-part form data builder and parser
+# ---------------------------------------------------------------------------
+
+module FormData
+  struct Part
+    getter name : String
+    getter body : String
+    getter filename : String?
+    getter headers : Headers
+
+    def initialize(@name : String, @body : String, @filename : String? = nil, @headers : Headers = Headers.new)
+    end
+  end
+
+  class Builder
+    getter boundary : String
+    @parts : Array(String)
+
+    def initialize(@boundary : String = "----iyiFormBoundary7MA4YWxkTrZu0gW")
+      @parts = [] of String
+    end
+
+    def field(name : String, value : String, headers : Headers? = nil) : Nil
+      @parts << "--" + @boundary + "\r\n"
+      @parts << "Content-Disposition: form-data; name=\"" + name + "\"\r\n"
+      if h = headers
+        h.each do |k, v|
+          @parts << k + ": " + v + "\r\n"
+        end
+      end
+      @parts << "\r\n" + value + "\r\n"
+    end
+
+    def file(name : String, filename : String, content : String, content_type : String = "application/octet-stream") : Nil
+      @parts << "--" + @boundary + "\r\n"
+      @parts << "Content-Disposition: form-data; name=\"" + name + "\"; filename=\"" + filename + "\"\r\n"
+      @parts << "Content-Type: " + content_type + "\r\n\r\n"
+      @parts << content + "\r\n"
+    end
+
+    def build : String
+      @parts.join("") + "--" + @boundary + "--\r\n"
+    end
+  end
+
+  class Parser
+    getter boundary : String
+    @body : String
+    @parts : Array(Part)
+    @index : Int32
+
+    def initialize(@body : String, @boundary : String)
+      @parts = [] of Part
+      @index = 0
+      parse_parts
+    end
+
+    def self.parse(request : Request) : Parser
+      ct = request.headers["Content-Type"]? || ""
+      b_idx = ct.index("boundary=")
+      boundary = b_idx ? ct[b_idx + 9, ct.bytesize - b_idx - 9].strip.strip('"') : "----iyiFormBoundary"
+      Parser.new(request.body, boundary)
+    end
+
+    def next : Part?
+      if @index < @parts.size
+        part = @parts[@index]
+        @index = @index + 1
+        part
+      else
+        nil
+      end
+    end
+
+    def has_next? : Bool
+      @index < @parts.size
+    end
+
+    private def parse_parts : Nil
+      delimiter = "--" + @boundary
+      sections = @body.split(delimiter)
+      i = 1
+      while i < sections.size
+        sec = sections[i]
+        break if sec.starts_with?("--")
+        sec = sec.lstrip("\r\n")
+        header_end = sec.index("\r\n\r\n")
+        if header_end
+          hdr_text = sec[0, header_end]
+          body_text = sec[header_end + 4, sec.bytesize - header_end - 4].rstrip("\r\n")
+          name = ""
+          filename = nil.as(String?)
+          headers = Headers.new
+          lines = hdr_text.split("\r\n")
+          lines.each do |line|
+            colon = line.index(':')
+            if colon
+              k = line[0, colon].strip
+              v = line[colon + 1, line.bytesize - colon - 1].strip
+              headers[k] = v
+              if k.downcase == "content-disposition"
+                n_idx = v.index("name=\"")
+                if n_idx
+                  n_rest = v[n_idx + 6, v.bytesize - n_idx - 6]
+                  n_quote = n_rest.index('"')
+                  name = n_quote ? n_rest[0, n_quote] : n_rest
+                end
+                f_idx = v.index("filename=\"")
+                if f_idx
+                  f_rest = v[f_idx + 10, v.bytesize - f_idx - 10]
+                  f_quote = f_rest.index('"')
+                  filename = f_quote ? f_rest[0, f_quote] : f_rest
+                end
+              end
+            end
+          end
+          @parts << Part.new(name, body_text, filename, headers) unless name.empty?
+        end
+        i = i + 1
+      end
+    end
+  end
+
+  def self.build(boundary : String? = nil, &block : Builder ->) : String
+    b = boundary ? Builder.new(boundary) : Builder.new
+    yield b
+    b.build
+  end
+
+  def self.parse(body : String, boundary : String) : Parser
+    Parser.new(body, boundary)
+  end
+
+  def self.parse(request : Request) : Parser
+    Parser.parse(request)
+  end
+end
+
+# --- Class Utilities on Module ---
+
+pub def self.quote_string(string : String) : String
+  "\"" + string.gsub("\\", "\\\\").gsub("\"", "\\\"") + "\""
+end
+
+pub def self.dequote_string(string : String) : String
+  if string.starts_with?('"') && string.ends_with?('"') && string.bytesize >= 2
+    string[1, string.bytesize - 2].gsub("\\\"", "\"").gsub("\\\\", "\\")
+  else
+    string
+  end
+end
+
+pub def self.expect_continue?(headers : Headers) : Bool
+  headers.includes_word?("Expect", "100-continue")
+end
+
+pub def self.serialize_headers_and_string_body(headers : Headers, body : String) : String
+  headers.serialize + "\r\n" + body
+end
+
+# ---------------------------------------------------------------------------
+# HTTP Module Namespace
+# ---------------------------------------------------------------------------
+
+module HTTP
+  alias Status = Std::Http::Status
+  alias Headers = Std::Http::Headers
+  alias Cookie = Std::Http::Cookie
+  alias Cookies = Std::Http::Cookies
+  alias SameSite = Std::Http::SameSite
+  alias Request = Std::Http::Request
+  alias Response = Std::Http::Response
+  alias HttpError = Std::Http::HttpError
+  alias Handler = Std::Http::Handler
+  alias ServerResponse = Std::Http::ServerResponse
+  alias ServerContext = Std::Http::ServerContext
+  alias FormData = Std::Http::FormData
+
+  def self.quote_string(string : String) : String
+    Std::Http.quote_string(string)
+  end
+
+  def self.dequote_string(string : String) : String
+    Std::Http.dequote_string(string)
+  end
+
+  def self.expect_continue?(headers : Headers) : Bool
+    Std::Http.expect_continue?(headers)
   end
 end
