@@ -410,7 +410,7 @@ tar -xzf iyi-0.12.0-linux-x86_64.tar.gz -C ~/.local
 ```
 
 The tarball is relocatable and carries every library a program can ask for:
-iyi's own 525 KB prelude, the 1,619 KB of `src/std` that `import std/...`
+iyi's own 525 KB prelude, the 1,622 KB of `src/std` that `import std/...`
 resolves to, and Crystal's standard library for `--crystal`. 0.11.0 shipped
 the first and the third — `import std/enumerable` answered "can't find module"
 out of the thing people downloaded, and every gate passed it because they all
@@ -1068,7 +1068,7 @@ marked PROPOSED are the parts that will move under you.
 | [`samples/iyi`](samples/iyi) | thirty-three programs: twenty-five documenting a part of it, seven being a first hour, and `calc`, a language |
 | [`samples/crystal/kemal`](samples/crystal/kemal) | a kemal application, from `shard.yml`: built from source and across four `.iyimod` boundaries |
 | [`src/iyi`](src/iyi) | iyi's own library, 13,609 lines. `--crystal` swaps it for Crystal's |
-| [`src/std`](src/std) | the standard library, 58,520 lines of iyi across ninety-seven modules: collections, text, time, JSON, YAML, XML, TLS 1.3, HTTP/1.1, WebSocket, HTTP/2, QUIC and HTTP/3 among them. Opt-in with `import std/...`, outside the prelude's ceiling |
+| [`src/std`](src/std) | the standard library, 58,675 lines of iyi across ninety-seven modules: collections, text, time, JSON, YAML, XML, TLS 1.3, HTTP/1.1, WebSocket, HTTP/2, QUIC and HTTP/3 among them. Opt-in with `import std/...`, outside the prelude's ceiling |
 | [`src/compiler/iyi/iyimod.cr`](src/compiler/iyi/iyimod.cr) | the artifact format |
 | [`bench/incremental.py`](bench/incremental.py) | the edit loop, against Go, generated in both languages |
 | [`bench/build_speed.py`](bench/build_speed.py) | the full builds, and the gate that fails until the target holds |

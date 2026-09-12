@@ -15,9 +15,9 @@ module ::Math
   LOG2  = 0.693147180559945309417
   LOG10 =  2.30258509299404568402
 
-  private P1 = 1.57079632673412561417
-  private P2 = 6.07710050630396597660e-11
-  private P3 = 6.12323399573676588613e-17
+  private P1          =     1.57079632673412561417
+  private P2          = 6.07710050630396597660e-11
+  private P3          = 6.12323399573676588613e-17
   private INV_HALF_PI = 0.636619772367581343075535
 
   private def sin_taylor(r : Float64) : Float64
@@ -147,8 +147,8 @@ module ::Math
   end
 
   private INV_LN2 = 1.442695040888963407359924681
-  private LN2_HI  = 0.6931471803691238
-  private LN2_LO  = 1.9082149292705877e-10
+  private LN2_HI  =            0.6931471803691238
+  private LN2_LO  =        1.9082149292705877e-10
 
   def exp(value : Float64) : Float64
     return 0.0 / 0.0 if value != value
