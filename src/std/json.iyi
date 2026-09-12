@@ -38,6 +38,10 @@ pub class ParseException < Error
   end
 end
 
+def raise(error : Std::Json::Error) : NoReturn
+  raise error.message
+end
+
 struct ::Enum
   def ==(other : self) : Bool
     value == other.value
@@ -1186,6 +1190,46 @@ pub class PullParser
     BeginObject
     EndObject
     EOF
+
+    def null? : ::Bool
+      self == Kind::Null
+    end
+
+    def bool? : ::Bool
+      self == Kind::Bool
+    end
+
+    def int? : ::Bool
+      self == Kind::Int
+    end
+
+    def float? : ::Bool
+      self == Kind::Float
+    end
+
+    def string? : ::Bool
+      self == Kind::String
+    end
+
+    def begin_array? : ::Bool
+      self == Kind::BeginArray
+    end
+
+    def end_array? : ::Bool
+      self == Kind::EndArray
+    end
+
+    def begin_object? : ::Bool
+      self == Kind::BeginObject
+    end
+
+    def end_object? : ::Bool
+      self == Kind::EndObject
+    end
+
+    def eof? : ::Bool
+      self == Kind::EOF
+    end
   end
   @lexer : Lexer
   getter kind : Kind
@@ -1402,6 +1446,92 @@ pub class PullParser
         skip
       end
       read_end_object
+    else
+      read_next
+    end
+  end
+
+  def location_i64 : Tuple(Int32, Int32)
+    {line_number, column_number}
+  end
+
+  def read_null? : Bool
+    if @kind == Kind::Null
+      read_next
+      true
+    else
+      false
+    end
+  end
+
+  def on_key(key : String, & : -> Nil) : Nil
+    read_begin_object
+    found = false
+    while !kind.end_object?
+      current_key = read_object_key
+      if current_key == key
+        found = true
+        yield
+      else
+        skip
+      end
+    end
+    read_end_object
+    unless found
+      parse_error("Missing JSON key: #{key}")
+    end
+  end
+
+  def read_raw : String
+    case @kind
+    when Kind::Null
+      read_next
+      "null"
+    when Kind::Bool
+      val = @bool_value ? "true" : "false"
+      read_next
+      val
+    when Kind::Int, Kind::Float
+      val = @raw_value.empty? ? (@kind == Kind::Int ? @int_value.to_s : @float_value.to_s) : @raw_value
+      read_next
+      val
+    when Kind::String
+      val = @string_value
+      read_next
+      val
+    else
+      read_next
+      ""
+    end
+  end
+
+  def read_raw(builder : Builder) : Nil
+    case @kind
+    when Kind::Null
+      read_next
+      builder.null
+    when Kind::Bool
+      builder.bool(read_bool)
+    when Kind::Int
+      builder.number(read_int)
+    when Kind::Float
+      builder.number(read_float)
+    when Kind::String
+      builder.string(read_string)
+    when Kind::BeginArray
+      builder.array do
+        read_array do
+          read_raw(builder)
+        end
+      end
+    when Kind::BeginObject
+      builder.object do
+        read_object do |k|
+          builder.field(k) do
+            read_raw(builder)
+          end
+        end
+      end
     else
       read_next
     end
@@ -1747,6 +1877,591 @@ pub struct JSON
     yield builder
     builder.to_s
   end
+
+  def self.to_json(ary : Array(T)) : String forall T
+    build do |b|
+      b.array do
+        ary.each { |item| write_value(item, b) }
+      end
+    end
+  end
+
+  def self.to_json(h : Hash(K, V)) : String forall K, V
+    build do |b|
+      b.object do
+        h.each do |k, v|
+          b.field(k.to_s) { write_value(v, b) }
+        end
+      end
+    end
+  end
+
+  def self.to_json(obj) : String
+    build do |b|
+      write_value(obj, b)
+    end
+  end
+
+  def self.from_json(str : String, type : T.class) forall T
+    pull = PullParser.new(str)
+    read_value(pull, type)
+  end
+
+  def self.write_value(val : Nil, b : Builder) : Nil
+    b.null
+  end
+
+  def self.write_value(val : Bool, b : Builder) : Nil
+    b.bool(val)
+  end
+
+  def self.write_value(val : Int32 | Int64 | Int16 | Int8 | UInt32 | UInt64 | UInt16 | UInt8, b : Builder) : Nil
+    b.number(val)
+  end
+
+  def self.write_value(val : Float32 | Float64, b : Builder) : Nil
+    b.number(val)
+  end
+
+  def self.write_value(val : String, b : Builder) : Nil
+    b.string(val)
+  end
+
+  def self.write_value(val : Symbol, b : Builder) : Nil
+    b.string(val.to_s)
+  end
+
+  def self.write_value(val : Any, b : Builder) : Nil
+    val.to_json(b)
+  end
+
+  def self.write_value(val : Array(T), b : Builder) : Nil forall T
+    b.array do
+      val.each { |e| write_value(e, b) }
+    end
+  end
+
+  def self.write_value(val : Hash(K, V), b : Builder) : Nil forall K, V
+    b.object do
+      val.each do |k, v|
+        b.field(k.to_s) { write_value(v, b) }
+      end
+    end
+  end
+
+  def self.write_value(val, b : Builder) : Nil
+    if val.nil?
+      b.null
+    elsif val.is_a?(String)
+      b.string(val)
+    elsif val.is_a?(Int)
+      b.number(val)
+    elsif val.is_a?(Float)
+      b.number(val)
+    elsif val.is_a?(Bool)
+      b.bool(val)
+    else
+      val.to_json(b)
+    end
+  end
+
+  def self.read_value(pull : PullParser, type : Nil.class) : Nil
+    pull.read_null
+  end
+
+  def self.read_value(pull : PullParser, type : Bool.class) : Bool
+    pull.read_bool
+  end
+
+  def self.read_value(pull : PullParser, type : Int32.class) : Int32
+    pull.read_int.to_i32
+  end
+
+  def self.read_value(pull : PullParser, type : Int64.class) : Int64
+    pull.read_int
+  end
+
+  def self.read_value(pull : PullParser, type : Int16.class) : Int16
+    pull.read_int.to_i16
+  end
+
+  def self.read_value(pull : PullParser, type : Int8.class) : Int8
+    pull.read_int.to_i8
+  end
+
+  def self.read_value(pull : PullParser, type : UInt32.class) : UInt32
+    pull.read_int.to_u32
+  end
+
+  def self.read_value(pull : PullParser, type : UInt64.class) : UInt64
+    pull.read_int.to_u64
+  end
+
+  def self.read_value(pull : PullParser, type : UInt16.class) : UInt16
+    pull.read_int.to_u16
+  end
+
+  def self.read_value(pull : PullParser, type : UInt8.class) : UInt8
+    pull.read_int.to_u8
+  end
+
+  def self.read_value(pull : PullParser, type : Float64.class) : Float64
+    pull.read_float
+  end
+
+  def self.read_value(pull : PullParser, type : Float32.class) : Float32
+    pull.read_float.to_f32
+  end
+
+  def self.read_value(pull : PullParser, type : String.class) : String
+    pull.read_string
+  end
+
+  def self.read_value(pull : PullParser, type : Symbol.class) : Symbol
+    Symbol.new(pull.read_string)
+  end
+
+  def self.read_value(pull : PullParser, type : Any.class) : Any
+    Any.new(pull)
+  end
+
+  def self.read_value(pull : PullParser, type : Array(T).class) : Array(T) forall T
+    ary = [] of T
+    pull.read_begin_array
+    while !pull.kind.end_array?
+      ary << read_value(pull, T)
+    end
+    pull.read_end_array
+    ary
+  end
+
+  def self.read_value(pull : PullParser, type : Hash(K, V).class) : Hash(K, V) forall K, V
+    h = Hash(K, V).new
+    pull.read_begin_object
+    while !pull.kind.end_object?
+      k = pull.read_object_key
+      v = read_value(pull, V)
+      {% if K == String %}
+        h[k] = v
+      {% elsif K == Symbol %}
+        h[Symbol.new(k)] = v
+      {% else %}
+        h[k.to_s] = v
+      {% end %}
+    end
+    pull.read_end_object
+    h
+  end
+
+  def self.read_value(pull : PullParser, type : T.class) forall T
+    T.new(pull)
+  end
+end
+
+pub class SerializableError < Error
+  getter line_number : Int32
+  getter column_number : Int32
+  getter klass : String
+  getter attribute : String?
+
+  def initialize(message : String, @klass : String, @attribute : String?, @line_number : Int32, @column_number : Int32)
+    msg = String.build do |io|
+      io << message
+      io << " for " << klass
+      if attr = attribute
+        io << "#" << attr
+      end
+      io << " at line " << line_number << ", column " << column_number
+    end
+    super(msg)
+  end
+end
+
+pub annotation Field
+end
+
+module Serializable
+  annotation Options
+  end
+
+  module Strict
+    protected def on_unknown_json_attribute(pull : ::JSON::PullParser, key : String, line_number : Int32, column_number : Int32)
+      raise ::JSON::SerializableError.new("Unknown JSON attribute: #{key}", self.class.to_s, key, line_number, column_number).message
+    end
+  end
+
+  module Unmapped
+    @[::JSON::Field(ignore: true)]
+    @json_unmapped : Hash(String, ::JSON::Any)?
+
+    def json_unmapped : Hash(String, ::JSON::Any)
+      @json_unmapped ||= Hash(String, ::JSON::Any).new
+    end
+
+    protected def on_unknown_json_attribute(pull : ::JSON::PullParser, key : String, line_number : Int32, column_number : Int32)
+      json_unmapped[key] = ::JSON::Any.new(pull)
+    end
+
+    protected def on_to_json(json : ::JSON::Builder)
+      if unmapped = @json_unmapped
+        unmapped.each do |key, value|
+          json.field(key) { value.to_json(json) }
+        end
+      end
+    end
+  end
+
+  macro use_json_discriminator(field, mapping)
+    def self.from_json(input : String) : self
+      pull = ::JSON::PullParser.new(input)
+      new(pull)
+    end
+
+    def self.new(pull : ::JSON::PullParser) : self
+      location = pull.location_i64
+      discriminator_value = ""
+      json = ::JSON.build do |b|
+        b.start_object
+        pull.read_object do |key|
+          if key == {{field.id.stringify}}
+            case pull.kind
+            when ::JSON::PullParser::Kind::String
+              discriminator_value = pull.string_value
+            when ::JSON::PullParser::Kind::Int
+              discriminator_value = pull.int_value.to_s
+            when ::JSON::PullParser::Kind::Bool
+              discriminator_value = pull.bool_value ? "true" : "false"
+            else
+              raise ::JSON::SerializableError.new("JSON discriminator field '{{field.id}}' has invalid type", to_s, nil, location[0], location[1]).message
+            end
+            b.field(key, discriminator_value)
+            pull.read_next
+          else
+            b.field(key) { pull.read_raw(b) }
+          end
+        end
+        b.end_object
+      end
+
+      case discriminator_value
+      {% for key, type in mapping %}
+        when {{key.id.stringify}}
+          {{type}}.from_json(json)
+      {% end %}
+      else
+        raise ::JSON::SerializableError.new("Unknown discriminator value #{discriminator_value.inspect} for {{field.id}}", to_s, nil, location[0], location[1]).message
+      end
+    end
+  end
+
+  macro included
+    def self.from_json(input : String) : self
+      pull = ::JSON::PullParser.new(input)
+      new(pull)
+    end
+
+    def self.from_json(input : String, root : String) : self
+      pull = ::JSON::PullParser.new(input)
+      pull.on_key(root) do
+        new(pull)
+      end
+    end
+
+    def self.new(pull : ::JSON::PullParser) : self
+      new_from_json_pull_parser(pull)
+    end
+
+    private def self.new_from_json_pull_parser(pull : ::JSON::PullParser) : self
+      {% if @type.struct? %}
+        instance = uninitialized self
+      {% else %}
+        instance = allocate
+      {% end %}
+      instance.initialize(__pull_for_json_serializable: pull)
+      instance
+    end
+
+    macro inherited
+      def self.new(pull : ::JSON::PullParser) : self
+        new_from_json_pull_parser(pull)
+      end
+    end
+
+    def initialize(*, __pull_for_json_serializable pull : ::JSON::PullParser)
+      {% verbatim do %}
+        {% begin %}
+          {% properties = {} of Nil => Nil %}
+          {% for ivar in @type.instance_vars %}
+            {% ann = ivar.annotation(::JSON::Field) || ivar.annotation(JSON::Field) || ivar.annotation(Field) %}
+            {% unless ann && (ann[:ignore] || ann[:ignore_deserialize]) %}
+              {% non_nil_type = ivar.type %}
+              {% if ivar.type.nilable? %}
+                {% for t in ivar.type.union_types %}
+                  {% unless t == Nil %}
+                    {% non_nil_type = t %}
+                  {% end %}
+                {% end %}
+              {% end %}
+              {%
+                properties[ivar.id] = {
+                  key:          ((ann && ann[:key]) || ivar).id.stringify,
+                  has_default:  (ann && ann[:default] != nil) || ivar.has_default_value?,
+                  default:      (ann && ann[:default]) || ivar.default_value,
+                  nilable:      ivar.type.nilable?,
+                  non_nil_type: non_nil_type,
+                  root:         ann && ann[:root],
+                  converter:    ann && ann[:converter],
+                  presence:     ann && ann[:presence],
+                }
+              %}
+            {% end %}
+          {% end %}
+
+          {% for name, value in properties %}
+            %var{name} = uninitialized typeof(@{{name}})
+            %found{name} = false
+          {% end %}
+
+          %line = pull.line_number
+          %col = pull.column_number
+          begin
+            pull.read_begin_object
+          rescue exc : ::JSON::ParseException
+            raise ::JSON::SerializableError.new(exc.message, self.class.to_s, nil, %line, %col).message
+          end
+
+          while !pull.kind.end_object?
+            %key_line = pull.line_number
+            %key_col = pull.column_number
+            key = pull.read_object_key
+            case key
+            {% for name, value in properties %}
+              when {{value[:key]}}
+                begin
+                  {% if value[:has_default] || value[:nilable] || value[:root] %}
+                    if pull.read_null?
+                      {% if value[:nilable] %}
+                        %var{name} = nil
+                        %found{name} = true
+                      {% end %}
+                      next
+                    end
+                  {% end %}
+
+                  %var{name} =
+                    {% if value[:root] %}
+                      pull.on_key({{value[:root]}}) do
+                        {% if value[:converter] %}
+                          {{value[:converter]}}.from_json(pull)
+                        {% else %}
+                          ::JSON.read_value(pull, {{value[:non_nil_type]}})
+                        {% end %}
+                      end
+                    {% elsif value[:converter] %}
+                      {{value[:converter]}}.from_json(pull)
+                    {% else %}
+                      ::JSON.read_value(pull, {{value[:non_nil_type]}})
+                    {% end %}
+                  %found{name} = true
+                rescue exc : ::JSON::ParseException
+                  raise ::JSON::SerializableError.new(exc.message, self.class.to_s, {{value[:key]}}, %key_line, %key_col).message
+                end
+            {% end %}
+            else
+              on_unknown_json_attribute(pull, key, %key_line, %key_col)
+            end
+          end
+          pull.read_end_object
+
+          {% for ivar in @type.instance_vars %}
+            {% ann = ivar.annotation(::JSON::Field) || ivar.annotation(JSON::Field) || ivar.annotation(Field) %}
+            {% if ann && (ann[:ignore] || ann[:ignore_deserialize]) %}
+              {% if ann && ann[:default] != nil %}
+                @{{ivar.name.id}} = {{ann[:default]}}
+              {% elsif ivar.has_default_value? %}
+                @{{ivar.name.id}} = {{ivar.default_value}}
+              {% elsif ivar.type.nilable? %}
+                @{{ivar.name.id}} = nil
+              {% end %}
+            {% end %}
+          {% end %}
+
+          {% for name, value in properties %}
+            if %found{name}
+              @{{name}} = %var{name}
+            else
+              {% if value[:has_default] %}
+                @{{name}} = {{value[:default]}}
+              {% elsif value[:nilable] %}
+                @{{name}} = nil
+              {% else %}
+                raise ::JSON::SerializableError.new("Missing JSON attribute: " + {{value[:key]}}, self.class.to_s, {{value[:key]}}, %line, %col).message
+              {% end %}
+            end
+
+            {% if value[:presence] %}
+              @{{name}}_present = %found{name}
+            {% end %}
+          {% end %}
+        {% end %}
+      {% end %}
+      after_initialize
+    end
+
+    def to_json(json : ::JSON::Builder) : Nil
+      {% verbatim do %}
+        {% begin %}
+          {% options = @type.annotation(::JSON::Serializable::Options) || @type.annotation(JSON::Serializable::Options) || @type.annotation(Options) %}
+          {% emit_nulls = options && options[:emit_nulls] %}
+
+          {% properties = {} of Nil => Nil %}
+          {% for ivar in @type.instance_vars %}
+            {% ann = ivar.annotation(::JSON::Field) || ivar.annotation(JSON::Field) || ivar.annotation(Field) %}
+            {% unless ann && (ann[:ignore] || ann[:ignore_serialize] == true) %}
+              {%
+                properties[ivar.id] = {
+                  key:              ((ann && ann[:key]) || ivar).id.stringify,
+                  root:             ann && ann[:root],
+                  converter:        ann && ann[:converter],
+                  emit_null:        (ann && (ann[:emit_null] != nil) ? ann[:emit_null] : emit_nulls),
+                  ignore_serialize: ann && ann[:ignore_serialize],
+                }
+              %}
+            {% end %}
+          {% end %}
+
+          json.object do
+            {% for name, value in properties %}
+              _{{name}} = @{{name}}
+
+              {% if value[:ignore_serialize] %}
+                unless {{ value[:ignore_serialize] }}
+              {% end %}
+
+                {% unless value[:emit_null] %}
+                  unless _{{name}}.nil?
+                {% end %}
+
+                  {% if value[:root] %}
+                    json.field({{value[:key]}}) do
+                      json.object do
+                        json.field({{value[:root]}}) do
+                          {% if value[:converter] %}
+                            if val = _{{name}}
+                              {{value[:converter]}}.to_json(val, json)
+                            else
+                              json.null
+                            end
+                          {% else %}
+                            ::JSON.write_value(_{{name}}, json)
+                          {% end %}
+                        end
+                      end
+                    end
+                  {% else %}
+                    json.field({{value[:key]}}) do
+                      {% if value[:converter] %}
+                        if val = _{{name}}
+                          {{value[:converter]}}.to_json(val, json)
+                        else
+                          json.null
+                        end
+                      {% else %}
+                        ::JSON.write_value(_{{name}}, json)
+                      {% end %}
+                    end
+                  {% end %}
+
+                {% unless value[:emit_null] %}
+                  end
+                {% end %}
+
+              {% if value[:ignore_serialize] %}
+                end
+              {% end %}
+            {% end %}
+            on_to_json(json)
+          end
+        {% end %}
+      {% end %}
+    end
+
+    def to_json : String
+      ::JSON.build do |b|
+        to_json(b)
+      end
+    end
+
+    def to_pretty_json(indent : String = "  ") : String
+      ::JSON.build(indent: indent) do |b|
+        to_json(b)
+      end
+    end
+
+    def to_pretty_json(indent : Int32) : String
+      ::JSON.build(indent: indent) do |b|
+        to_json(b)
+      end
+    end
+
+    def to_json(io : IO) : Nil
+      io << to_json
+    end
+
+    def to_pretty_json(io : IO, indent : String = "  ") : Nil
+      io << to_pretty_json(indent)
+    end
+
+    protected def after_initialize
+    end
+
+    protected def on_unknown_json_attribute(pull : ::JSON::PullParser, key : String, line_number : Int32, column_number : Int32)
+      pull.skip
+    end
+
+    protected def on_to_json(json : ::JSON::Builder)
+    end
+  end
+end
+
+module ArrayConverter(T)
+  def self.from_json(pull : ::JSON::PullParser) : Array(T)
+    ary = [] of T
+    pull.read_begin_array
+    while !pull.kind.end_array?
+      ary << T.new(pull)
+    end
+    pull.read_end_array
+    ary
+  end
+
+  def self.to_json(values : Array(T), json : ::JSON::Builder) : Nil
+    json.array do
+      values.each { |v| v.to_json(json) }
+    end
+  end
+end
+
+module HashValueConverter(K, V)
+  def self.from_json(pull : ::JSON::PullParser) : Hash(K, V)
+    h = Hash(K, V).new
+    pull.read_begin_object
+    while !pull.kind.end_object?
+      k = pull.read_object_key
+      v = V.new(pull)
+      h[k] = v
+    end
+    pull.read_end_object
+    h
+  end
+
+  def self.to_json(values : Hash(K, V), json : ::JSON::Builder) : Nil
+    json.object do
+      values.each do |k, v|
+        json.field(k.to_s) { v.to_json(json) }
+      end
+    end
+  end
 end
 
 alias ::JSON = Std::Json::JSON
@@ -1756,3 +2471,8 @@ alias ::JSON::Builder = Std::Json::Builder
 alias ::JSON::Error = Std::Json::Error
 alias ::JSON::ParseException = Std::Json::ParseException
 alias ::JSON::Parser = Std::Json::Parser
+alias ::JSON::Serializable = Std::Json::Serializable
+alias ::JSON::SerializableError = Std::Json::SerializableError
+alias ::JSON::Field = Std::Json::Field
+alias ::JSON::ArrayConverter = Std::Json::ArrayConverter
+alias ::JSON::HashValueConverter = Std::Json::HashValueConverter

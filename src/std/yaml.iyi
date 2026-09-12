@@ -1788,6 +1788,334 @@ class Emitter
   end
 end
 
+pub struct YAML
+  def self.nodes_to_yaml(doc : Std::Yaml::Nodes::Document) : String
+    root = doc.nodes.first?
+    return "" unless root
+    emit_node(root, 0)
+  end
+
+  private def self.emit_node(node : Std::Yaml::Nodes::Node, indent : Int32) : String
+    case node
+    when Std::Yaml::Nodes::Scalar
+      scalar_text(node.value) + "\n"
+    when Std::Yaml::Nodes::Sequence
+      if node.nodes.empty?
+        "[]\n"
+      else
+        res = ""
+        sp = " " * indent
+        node.nodes.each do |child|
+          case child
+          when Std::Yaml::Nodes::Scalar
+            res = res + "#{sp}- #{scalar_text(child.value)}\n"
+          when Std::Yaml::Nodes::Alias
+            res = res + "#{sp}- *#{child.value}\n"
+          else
+            res = res + "#{sp}-\n" + emit_node(child, indent + 2)
+          end
+        end
+        res
+      end
+    when Std::Yaml::Nodes::Mapping
+      if node.nodes.empty?
+        "{}\n"
+      else
+        res = ""
+        sp = " " * indent
+        i = 0
+        while i < node.nodes.size
+          k_node = node.nodes[i]
+          v_node = node.nodes[i + 1]
+          k_str = k_node.is_a?(Std::Yaml::Nodes::Scalar) ? scalar_text(k_node.value) : "\"?\""
+          case v_node
+          when Std::Yaml::Nodes::Scalar
+            res = res + "#{sp}#{k_str}: #{scalar_text(v_node.value)}\n"
+          when Std::Yaml::Nodes::Alias
+            res = res + "#{sp}#{k_str}: *#{v_node.value}\n"
+          else
+            res = res + "#{sp}#{k_str}:\n" + emit_node(v_node, indent + 2)
+          end
+          i += 2
+        end
+        res
+      end
+    when Std::Yaml::Nodes::Alias
+      "*" + node.value + "\n"
+    else
+      "null\n"
+    end
+  end
+
+  private def self.scalar_text(s : String) : String
+    r = resolve_plain_scalar(s)
+    if r.nil?
+      "null"
+    elsif r.is_a?(Bool)
+      r ? "true" : "false"
+    elsif r.is_a?(Int64)
+      r.to_s
+    elsif r.is_a?(Float64)
+      r.to_s
+    else
+      quote_scalar(s)
+    end
+  end
+
+  private def self.quote_scalar(s : String) : String
+    if s.empty? || needs_quote?(s)
+      res = "\""
+      idx = 0
+      while idx < s.size
+        c = s[idx]
+        case c
+        when '\n'
+          res = res + "\\n"
+        when '\r'
+          res = res + "\\r"
+        when '\t'
+          res = res + "\\t"
+        when '"'
+          res = res + "\\\""
+        when '\\'
+          res = res + "\\\\"
+        when '\0'
+          res = res + "\\0"
+        else
+          res = res + s[idx, 1]
+        end
+        idx += 1
+      end
+      res + "\""
+    else
+      s
+    end
+  end
+
+  private def self.needs_quote?(s : String) : Bool
+    return true if s.empty?
+
+    case s
+    when "~", "null", "Null", "NULL", "true", "True", "TRUE", "false", "False", "FALSE"
+      return true
+    when ".inf", ".Inf", ".INF", "+.inf", "+.Inf", "+.INF", "-.inf", "-.Inf", "-.INF", ".nan", ".NaN", ".NAN"
+      return true
+    end
+
+    if is_hex_int?(s) || is_oct_int?(s) || is_dec_int?(s) || is_valid_float?(s)
+      return true
+    end
+
+    return true if s.starts_with?(" ") || s.ends_with?(" ")
+
+    c0 = s[0]
+    if c0 == '-' || c0 == '?' || c0 == ':' || c0 == ',' || c0 == '[' || c0 == ']' ||
+       c0 == '{' || c0 == '}' || c0 == '#' || c0 == '&' || c0 == '*' || c0 == '!' ||
+       c0 == '|' || c0 == '>' || c0 == '\'' || c0 == '"' || c0 == '%' || c0 == '@' || c0 == '`'
+      return true
+    end
+
+    return true if s.includes?(": ") || s.ends_with?(":") || s.includes?(" #")
+    return true if s.includes?("\n") || s.includes?("\r") || s.includes?("\t") || s.includes?("\"")
+
+    false
+  end
+
+  def self.to_yaml(ary : Array(T)) : String forall T
+    builder = Std::Yaml::Nodes::Builder.new
+    builder.sequence do
+      ary.each { |item| write_value(item, builder) }
+    end
+    nodes_to_yaml(builder.document)
+  end
+
+  def self.to_yaml(h : Hash(K, V)) : String forall K, V
+    builder = Std::Yaml::Nodes::Builder.new
+    builder.mapping do
+      h.each do |k, v|
+        builder.scalar(k.to_s)
+        write_value(v, builder)
+      end
+    end
+    nodes_to_yaml(builder.document)
+  end
+
+  def self.write_value(val : Nil, yaml : Std::Yaml::Nodes::Builder) : Nil
+    yaml.scalar("null")
+  end
+
+  def self.write_value(val : Bool, yaml : Std::Yaml::Nodes::Builder) : Nil
+    yaml.scalar(val ? "true" : "false")
+  end
+
+  def self.write_value(val : Int32 | Int64 | Int16 | Int8 | UInt32 | UInt64 | UInt16 | UInt8, yaml : Std::Yaml::Nodes::Builder) : Nil
+    yaml.scalar(val.to_s)
+  end
+
+  def self.write_value(val : Float32 | Float64, yaml : Std::Yaml::Nodes::Builder) : Nil
+    yaml.scalar(val.to_s)
+  end
+
+  def self.write_value(val : String, yaml : Std::Yaml::Nodes::Builder) : Nil
+    yaml.scalar(val)
+  end
+
+  def self.write_value(val : Symbol, yaml : Std::Yaml::Nodes::Builder) : Nil
+    yaml.scalar(val.to_s)
+  end
+
+  def self.write_value(val : Any, yaml : Std::Yaml::Nodes::Builder) : Nil
+    case r = val.raw
+    when Nil
+      yaml.scalar("null")
+    when Bool
+      yaml.scalar(r ? "true" : "false")
+    when Int64, Float64, String
+      yaml.scalar(r.to_s)
+    when Array(Any)
+      yaml.sequence do
+        r.each { |item| write_value(item, yaml) }
+      end
+    when Hash(Any, Any)
+      yaml.mapping do
+        r.each do |k, v|
+          write_value(k, yaml)
+          write_value(v, yaml)
+        end
+      end
+    else
+      yaml.scalar("null")
+    end
+  end
+
+  def self.write_value(val : Array(T), yaml : Std::Yaml::Nodes::Builder) : Nil forall T
+    yaml.sequence do
+      val.each { |e| write_value(e, yaml) }
+    end
+  end
+
+  def self.write_value(val : Hash(K, V), yaml : Std::Yaml::Nodes::Builder) : Nil forall K, V
+    yaml.mapping do
+      val.each do |k, v|
+        yaml.scalar(k.to_s)
+        write_value(v, yaml)
+      end
+    end
+  end
+
+  def self.write_value(val, yaml : Std::Yaml::Nodes::Builder) : Nil
+    if val.nil?
+      yaml.scalar("null")
+    elsif val.is_a?(String)
+      yaml.scalar(val)
+    elsif val.is_a?(Int32) || val.is_a?(Int64)
+      yaml.scalar(val.to_s)
+    elsif val.is_a?(Float64)
+      yaml.scalar(val.to_s)
+    elsif val.is_a?(Bool)
+      yaml.scalar(val ? "true" : "false")
+    else
+      val.to_yaml(yaml)
+    end
+  end
+
+  def self.read_value(ctx : Std::Yaml::ParseContext, node : Std::Yaml::Nodes::Node, type : Nil.class) : Nil
+    nil
+  end
+
+  def self.read_value(ctx : Std::Yaml::ParseContext, node : Std::Yaml::Nodes::Node, type : Bool.class) : Bool
+    unless node.is_a?(Std::Yaml::Nodes::Scalar)
+      node.raise "Expected scalar for Bool"
+    end
+    val = Std::Yaml::Schema::Core.parse_scalar(node)
+    if val.is_a?(Bool)
+      val
+    else
+      node.raise "Expected Bool, got #{node.value.inspect}"
+    end
+  end
+
+  def self.read_value(ctx : Std::Yaml::ParseContext, node : Std::Yaml::Nodes::Node, type : Int32.class) : Int32
+    unless node.is_a?(Std::Yaml::Nodes::Scalar)
+      node.raise "Expected scalar for Int32"
+    end
+    val = Std::Yaml::Schema::Core.parse_scalar(node)
+    if val.is_a?(Int64)
+      val.to_i32
+    else
+      node.raise "Expected Int32, got #{node.value.inspect}"
+    end
+  end
+
+  def self.read_value(ctx : Std::Yaml::ParseContext, node : Std::Yaml::Nodes::Node, type : Int64.class) : Int64
+    unless node.is_a?(Std::Yaml::Nodes::Scalar)
+      node.raise "Expected scalar for Int64"
+    end
+    val = Std::Yaml::Schema::Core.parse_scalar(node)
+    if val.is_a?(Int64)
+      val
+    else
+      node.raise "Expected Int64, got #{node.value.inspect}"
+    end
+  end
+
+  def self.read_value(ctx : Std::Yaml::ParseContext, node : Std::Yaml::Nodes::Node, type : Float64.class) : Float64
+    unless node.is_a?(Std::Yaml::Nodes::Scalar)
+      node.raise "Expected scalar for Float64"
+    end
+    val = Std::Yaml::Schema::Core.parse_scalar(node)
+    if val.is_a?(Float64)
+      val
+    elsif val.is_a?(Int64)
+      val.to_f64
+    else
+      node.raise "Expected Float64, got #{node.value.inspect}"
+    end
+  end
+
+  def self.read_value(ctx : Std::Yaml::ParseContext, node : Std::Yaml::Nodes::Node, type : String.class) : String
+    unless node.is_a?(Std::Yaml::Nodes::Scalar)
+      node.raise "Expected scalar for String"
+    end
+    node.value
+  end
+
+  def self.read_value(ctx : Std::Yaml::ParseContext, node : Std::Yaml::Nodes::Node, type : Any.class) : Any
+    Any.new(node.is_a?(Std::Yaml::Nodes::Scalar) ? Std::Yaml::Schema::Core.parse_scalar(node) : nil)
+  end
+
+  def self.read_value(ctx : Std::Yaml::ParseContext, node : Std::Yaml::Nodes::Node, type : Array(T).class) : Array(T) forall T
+    unless node.is_a?(Std::Yaml::Nodes::Sequence)
+      node.raise "Expected sequence for Array"
+    end
+    res = [] of T
+    node.nodes.each do |child|
+      res << read_value(ctx, child, T)
+    end
+    res
+  end
+
+  def self.read_value(ctx : Std::Yaml::ParseContext, node : Std::Yaml::Nodes::Node, type : Hash(String, V).class) : Hash(String, V) forall V
+    unless node.is_a?(Std::Yaml::Nodes::Mapping)
+      node.raise "Expected mapping for Hash"
+    end
+    res = Hash(String, V).new
+    Std::Yaml::Schema::Core.each(node) do |k_node, v_node|
+      unless k_node.is_a?(Std::Yaml::Nodes::Scalar)
+        k_node.raise "Expected scalar key for Hash"
+      end
+      k = k_node.value
+      v = read_value(ctx, v_node, V)
+      res[k] = v
+    end
+    res
+  end
+
+  def self.read_value(ctx : Std::Yaml::ParseContext, node : Std::Yaml::Nodes::Node, type : T.class) : T forall T
+    T.new(ctx, node)
+  end
+end
+
 pub def parse(input : String, max_aliases : Int32 = 1000, max_depth : Int32 = 128) : Any
   YAML.parse(input, max_aliases: max_aliases, max_depth: max_depth)
 end
@@ -1799,3 +2127,715 @@ end
 pub def dump(any : Any) : String
   YAML.dump(any)
 end
+
+pub enum ScalarStyle
+  ANY
+  PLAIN
+  SINGLE_QUOTED
+  DOUBLE_QUOTED
+  LITERAL
+  FOLDED
+end
+
+pub enum SequenceStyle
+  ANY
+  BLOCK
+  FLOW
+end
+
+pub enum MappingStyle
+  ANY
+  BLOCK
+  FLOW
+end
+
+pub enum EventKind
+  NONE
+  STREAM_START
+  STREAM_END
+  DOCUMENT_START
+  DOCUMENT_END
+  ALIAS
+  SCALAR
+  SEQUENCE_START
+  SEQUENCE_END
+  MAPPING_START
+  MAPPING_END
+end
+
+pub annotation Field
+end
+
+module Nodes
+  abstract class Node
+    property tag : String?
+    property anchor : String?
+    property start_line : Int32
+    property start_column : Int32
+
+    def initialize
+      @start_line = 0
+      @start_column = 0
+    end
+
+    def location : Tuple(Int32, Int32)
+      {start_line, start_column}
+    end
+
+    def raise(message : String) : NoReturn
+      ::raise "YAML error: #{message} at line #{start_line}, column #{start_column}"
+    end
+
+    abstract def kind : String
+  end
+
+  class Document < Node
+    @nodes : Array(Node)
+
+    def initialize
+      @nodes = [] of Node
+      @start_line = 0
+      @start_column = 0
+    end
+
+    def nodes : Array(Node)
+      @nodes
+    end
+
+    def <<(node : Node) : Nil
+      @nodes << node
+    end
+
+    def kind : String
+      "document"
+    end
+  end
+
+  class Scalar < Node
+    property style : ScalarStyle
+    property value : String
+
+    def initialize(@value : String)
+      @style = ScalarStyle::ANY
+      @start_line = 0
+      @start_column = 0
+    end
+
+    def kind : String
+      "scalar"
+    end
+  end
+
+  class Sequence < Node
+    @nodes : Array(Node)
+    property style : SequenceStyle
+
+    def initialize
+      @nodes = [] of Node
+      @style = SequenceStyle::ANY
+      @start_line = 0
+      @start_column = 0
+    end
+
+    def nodes : Array(Node)
+      @nodes
+    end
+
+    def <<(node : Node) : Nil
+      @nodes << node
+    end
+
+    def kind : String
+      "sequence"
+    end
+  end
+
+  class Mapping < Node
+    @nodes : Array(Node)
+    property style : MappingStyle
+
+    def initialize
+      @nodes = [] of Node
+      @style = MappingStyle::ANY
+      @start_line = 0
+      @start_column = 0
+    end
+
+    def nodes : Array(Node)
+      @nodes
+    end
+
+    def <<(node : Node) : Nil
+      @nodes << node
+    end
+
+    def kind : String
+      "mapping"
+    end
+  end
+
+  class Alias < Node
+    property value : String
+
+    def initialize(@value : String)
+      @start_line = 0
+      @start_column = 0
+    end
+
+    def kind : String
+      "alias"
+    end
+  end
+
+  class Builder
+    getter document : Document
+    @stack : Array(Node)
+
+    def initialize
+      @document = Document.new
+      @stack = [] of Node
+    end
+
+    def mapping(reference = nil, style : MappingStyle = MappingStyle::ANY, &)
+      map = Mapping.new
+      map.style = style
+      add_node(map)
+      @stack << map
+      yield
+      @stack.pop
+    end
+
+    def sequence(reference = nil, style : SequenceStyle = SequenceStyle::ANY, &)
+      seq = Sequence.new
+      seq.style = style
+      add_node(seq)
+      @stack << seq
+      yield
+      @stack.pop
+    end
+
+    def scalar(value, style : ScalarStyle = ScalarStyle::ANY, anchor : String? = nil, tag : String? = nil)
+      sc = Scalar.new(value.to_s)
+      sc.style = style
+      sc.anchor = anchor
+      sc.tag = tag
+      add_node(sc)
+    end
+
+    def add_node(node : Node) : Nil
+      if @stack.empty?
+        @document << node
+      else
+        top = @stack.last
+        if top.is_a?(Mapping)
+          top << node
+        elsif top.is_a?(Sequence)
+          top << node
+        end
+      end
+    end
+  end
+
+  def self.parse(input : String) : Document
+    any = YAML.parse(input)
+    doc = Document.new
+    doc << node_from_any(any)
+    doc
+  end
+
+  def self.parse_all(input : String) : Array(Document)
+    docs = YAML.parse_all(input)
+    docs.map do |any|
+      doc = Document.new
+      doc << node_from_any(any)
+      doc
+    end
+  end
+
+  def self.node_from_any(any : Any) : Node
+    case r = any.raw
+    when Nil
+      Scalar.new("null")
+    when Bool
+      Scalar.new(r ? "true" : "false")
+    when Int64, Float64, String
+      Scalar.new(r.to_s)
+    when Array(Any)
+      seq = Sequence.new
+      r.each { |item| seq << node_from_any(item) }
+      seq
+    when Hash(Any, Any)
+      map = Mapping.new
+      r.each do |k, v|
+        map << node_from_any(k)
+        map << node_from_any(v)
+      end
+      map
+    else
+      Scalar.new("")
+    end
+  end
+
+  def self.any_from_node(node : Node) : Any
+    case node
+    when Scalar
+      Any.new(YAML.resolve_plain_scalar(node.value))
+    when Sequence
+      ary = [] of Any
+      node.nodes.each { |c| ary << any_from_node(c) }
+      Any.new(ary)
+    when Mapping
+      h = Hash(Any, Any).new
+      i = 0
+      while i < node.nodes.size
+        k = any_from_node(node.nodes[i])
+        v = any_from_node(node.nodes[i + 1])
+        h[k] = v
+        i += 2
+      end
+      Any.new(h)
+    when Alias
+      Any.new(node.value)
+    else
+      Any.new(nil)
+    end
+  end
+end
+
+module Schema
+  module Core
+    def self.each(node : Nodes::Mapping, &)
+      i = 0
+      while i < node.nodes.size
+        k = node.nodes[i]
+        v = node.nodes[i + 1]
+        yield k, v
+        i += 2
+      end
+    end
+
+    def self.parse_null?(node : Nodes::Node) : Bool
+      if node.is_a?(Nodes::Scalar)
+        v = node.value
+        v.empty? || v == "~" || v == "null" || v == "Null" || v == "NULL"
+      else
+        false
+      end
+    end
+
+    def self.parse_scalar(node : Nodes::Scalar) : Any::Type
+      YAML.resolve_plain_scalar(node.value)
+    end
+
+    def self.parse_int(node : Nodes::Scalar, type : Class) : Int64
+      val = YAML.resolve_plain_scalar(node.value)
+      if val.is_a?(Int64)
+        val
+      else
+        node.raise "Expected integer, not #{node.value.inspect}"
+      end
+    end
+
+    def self.reserved_string?(s : String) : Bool
+      case s
+      when "true", "True", "TRUE", "false", "False", "FALSE",
+           "null", "Null", "NULL", "~",
+           ".nan", ".NaN", ".NAN", ".inf", ".Inf", ".INF",
+           "-.inf", "-.Inf", "-.INF", "+.inf", "+.Inf", "+.INF"
+        true
+      else
+        false
+      end
+    end
+  end
+
+  module FailSafe
+    def self.parse(input : String) : Nodes::Document
+      Nodes.parse(input)
+    end
+
+    def self.parse_all(input : String) : Array(Nodes::Document)
+      Nodes.parse_all(input)
+    end
+  end
+end
+
+pub class ParseContext
+  @anchors : Hash(String, Nodes::Node)
+
+  def initialize
+    @anchors = Hash(String, Nodes::Node).new
+  end
+
+  def read_alias(node : Nodes::Node, &)
+    if node.is_a?(Nodes::Alias)
+      if target = @anchors[node.value]?
+        yield target
+      else
+        node.raise "Unknown anchor: #{node.value}"
+      end
+    end
+  end
+
+  def record_anchor(node : Nodes::Node, value = nil)
+    if anchor = node.anchor
+      @anchors[anchor] = node
+    end
+  end
+end
+
+module Serializable
+  pub annotation Options
+  end
+
+  module Strict
+    protected def on_unknown_yaml_attribute(ctx : ::YAML::ParseContext, node : ::YAML::Nodes::Node, key : String)
+      node.raise "Unknown YAML attribute: #{key}"
+    end
+  end
+
+  module Unmapped
+    @[::YAML::Field(ignore: true)]
+    @yaml_unmapped : Hash(String, Any)?
+
+    def yaml_unmapped : Hash(String, Any)
+      @yaml_unmapped ||= Hash(String, Any).new
+    end
+
+    protected def on_unknown_yaml_attribute(ctx : ::YAML::ParseContext, node : ::YAML::Nodes::Node, key : String)
+      yaml_unmapped[key] = Any.new(node.is_a?(::YAML::Nodes::Scalar) ? ::YAML::Schema::Core.parse_scalar(node) : nil)
+    end
+
+    protected def on_to_yaml(yaml : ::YAML::Nodes::Builder)
+      if unmapped = @yaml_unmapped
+        unmapped.each do |key, value|
+          yaml.scalar(key)
+          ::YAML.write_value(value, yaml)
+        end
+      end
+    end
+  end
+
+  macro use_yaml_discriminator(field, mapping)
+    def self.from_yaml(input : String) : self
+      doc = ::YAML::Nodes.parse(input)
+      node = doc.nodes.first? || ::YAML::Nodes::Scalar.new("")
+      ctx = ::YAML::ParseContext.new
+      new(ctx, node)
+    end
+
+    def self.new(ctx : ::YAML::ParseContext, node : ::YAML::Nodes::Node) : self
+      unless node.is_a?(::YAML::Nodes::Mapping)
+        node.raise "Expected YAML mapping for discriminator"
+      end
+      discriminator_value = ""
+      ::YAML::Schema::Core.each(node) do |k_node, v_node|
+        if k_node.is_a?(::YAML::Nodes::Scalar) && k_node.value == {{field.id.stringify}}
+          discriminator_value = v_node.is_a?(::YAML::Nodes::Scalar) ? v_node.value : ""
+          break
+        end
+      end
+
+      case discriminator_value
+      {% for key, type in mapping %}
+        when {{key.id.stringify}}
+          {{type}}.new(ctx, node)
+      {% end %}
+      else
+        node.raise "Unknown discriminator value #{discriminator_value.inspect} for {{field.id}}"
+      end
+    end
+  end
+
+  macro included
+    def self.from_yaml(input : String) : self
+      doc = ::YAML::Nodes.parse(input)
+      node = doc.nodes.first? || ::YAML::Nodes::Scalar.new("")
+      ctx = ::YAML::ParseContext.new
+      new(ctx, node)
+    end
+
+    def self.new(ctx : ::YAML::ParseContext, node : ::YAML::Nodes::Node) : self
+      new_from_yaml_node(ctx, node)
+    end
+
+    private def self.new_from_yaml_node(ctx : ::YAML::ParseContext, node : ::YAML::Nodes::Node) : self
+      {% if @type.struct? %}
+        instance = uninitialized self
+      {% else %}
+        instance = allocate
+      {% end %}
+      instance.initialize(__context_for_yaml_serializable: ctx, __node_for_yaml_serializable: node)
+      instance
+    end
+
+    macro inherited
+      def self.new(ctx : ::YAML::ParseContext, node : ::YAML::Nodes::Node) : self
+        new_from_yaml_node(ctx, node)
+      end
+    end
+
+    def initialize(*, __context_for_yaml_serializable ctx : ::YAML::ParseContext, __node_for_yaml_serializable node : ::YAML::Nodes::Node)
+      {% verbatim do %}
+        {% begin %}
+          {% properties = {} of Nil => Nil %}
+          {% for ivar in @type.instance_vars %}
+            {% ann = ivar.annotation(::YAML::Field) || ivar.annotation(YAML::Field) || ivar.annotation(Field) %}
+            {% unless ann && (ann[:ignore] || ann[:ignore_deserialize]) %}
+              {% non_nil_type = ivar.type %}
+              {% if ivar.type.nilable? %}
+                {% for t in ivar.type.union_types %}
+                  {% unless t == Nil %}
+                    {% non_nil_type = t %}
+                  {% end %}
+                {% end %}
+              {% end %}
+              {%
+                properties[ivar.id] = {
+                  key:          ((ann && ann[:key]) || ivar).id.stringify,
+                  has_default:  (ann && ann[:default] != nil) || ivar.has_default_value?,
+                  default:      (ann && ann[:default]) || ivar.default_value,
+                  nilable:      ivar.type.nilable?,
+                  non_nil_type: non_nil_type,
+                  converter:    ann && ann[:converter],
+                  presence:     ann && ann[:presence],
+                }
+              %}
+            {% end %}
+          {% end %}
+
+          {% for name, value in properties %}
+            %var{name} = uninitialized typeof(@{{name}})
+            %found{name} = false
+          {% end %}
+
+          case node
+          when ::YAML::Nodes::Mapping
+            ::YAML::Schema::Core.each(node) do |k_node, v_node|
+              unless k_node.is_a?(::YAML::Nodes::Scalar)
+                k_node.raise "Expected scalar as key for mapping"
+              end
+              key = k_node.value
+              case key
+              {% for name, value in properties %}
+                when {{value[:key]}}
+                  if ::YAML::Schema::Core.parse_null?(v_node)
+                    {% if value[:nilable] %}
+                      %var{name} = nil
+                      %found{name} = true
+                    {% end %}
+                    next
+                  end
+                  %var{name} =
+                    {% if value[:converter] %}
+                      {{value[:converter]}}.from_yaml(ctx, v_node)
+                    {% else %}
+                      ::YAML.read_value(ctx, v_node, {{value[:non_nil_type]}})
+                    {% end %}
+                  %found{name} = true
+              {% end %}
+              else
+                on_unknown_yaml_attribute(ctx, v_node, key)
+              end
+            end
+          else
+            node.raise "Expected YAML mapping, not #{node.kind}"
+          end
+
+          {% for ivar in @type.instance_vars %}
+            {% ann = ivar.annotation(::YAML::Field) || ivar.annotation(YAML::Field) || ivar.annotation(Field) %}
+            {% if ann && (ann[:ignore] || ann[:ignore_deserialize]) %}
+              {% if ann && ann[:default] != nil %}
+                @{{ivar.name.id}} = {{ann[:default]}}
+              {% elsif ivar.has_default_value? %}
+                @{{ivar.name.id}} = {{ivar.default_value}}
+              {% elsif ivar.type.nilable? %}
+                @{{ivar.name.id}} = nil
+              {% end %}
+            {% end %}
+          {% end %}
+
+          {% for name, value in properties %}
+            if %found{name}
+              @{{name}} = %var{name}
+            else
+              {% if value[:has_default] %}
+                @{{name}} = {{value[:default]}}
+              {% elsif value[:nilable] %}
+                @{{name}} = nil
+              {% else %}
+                node.raise "Missing YAML attribute: " + {{value[:key]}}
+              {% end %}
+            end
+
+            {% if value[:presence] %}
+              @{{name}}_present = %found{name}
+            {% end %}
+          {% end %}
+        {% end %}
+      {% end %}
+      after_initialize
+    end
+
+    def to_yaml(yaml : ::YAML::Nodes::Builder) : Nil
+      {% verbatim do %}
+        {% begin %}
+          {% options = @type.annotation(::YAML::Serializable::Options) || @type.annotation(YAML::Serializable::Options) || @type.annotation(Options) %}
+          {% emit_nulls = options && options[:emit_nulls] %}
+
+          {% properties = {} of Nil => Nil %}
+          {% for ivar in @type.instance_vars %}
+            {% ann = ivar.annotation(::YAML::Field) || ivar.annotation(YAML::Field) || ivar.annotation(Field) %}
+            {% unless ann && (ann[:ignore] || ann[:ignore_serialize] == true) %}
+              {%
+                properties[ivar.id] = {
+                  key:              ((ann && ann[:key]) || ivar).id.stringify,
+                  converter:        ann && ann[:converter],
+                  emit_null:        (ann && (ann[:emit_null] != nil) ? ann[:emit_null] : emit_nulls),
+                  ignore_serialize: ann && ann[:ignore_serialize],
+                }
+              %}
+            {% end %}
+          {% end %}
+
+          yaml.mapping do
+            {% for name, value in properties %}
+              _{{name}} = @{{name}}
+
+              {% if value[:ignore_serialize] %}
+                unless {{ value[:ignore_serialize] }}
+              {% end %}
+
+                {% unless value[:emit_null] %}
+                  unless _{{name}}.nil?
+                {% end %}
+
+                  yaml.scalar({{value[:key]}})
+                  {% if value[:converter] %}
+                    if val = _{{name}}
+                      {{value[:converter]}}.to_yaml(val, yaml)
+                    else
+                      yaml.scalar("null")
+                    end
+                  {% else %}
+                    if _{{name}}.nil?
+                      yaml.scalar("null")
+                    else
+                      ::YAML.write_value(_{{name}}, yaml)
+                    end
+                  {% end %}
+
+                {% unless value[:emit_null] %}
+                  end
+                {% end %}
+
+              {% if value[:ignore_serialize] %}
+                end
+              {% end %}
+            {% end %}
+            on_to_yaml(yaml)
+          end
+        {% end %}
+      {% end %}
+    end
+
+    def to_yaml : String
+      builder = ::YAML::Nodes::Builder.new
+      to_yaml(builder)
+      ::YAML.nodes_to_yaml(builder.document)
+    end
+
+    def to_yaml(io : IO) : Nil
+      io << to_yaml
+    end
+
+    protected def after_initialize
+    end
+
+    protected def on_unknown_yaml_attribute(ctx : ::YAML::ParseContext, node : ::YAML::Nodes::Node, key : String)
+    end
+
+    protected def on_to_yaml(yaml : ::YAML::Nodes::Builder)
+    end
+  end
+end
+
+module ArrayConverter(T)
+  def self.from_yaml(ctx : ::YAML::ParseContext, node : ::YAML::Nodes::Node) : Array(T)
+    unless node.is_a?(::YAML::Nodes::Sequence)
+      node.raise "Expected YAML sequence"
+    end
+    ary = [] of T
+    node.nodes.each do |child|
+      ary << T.new(ctx, child)
+    end
+    ary
+  end
+
+  def self.to_yaml(values : Array(T), yaml : ::YAML::Nodes::Builder) : Nil
+    yaml.sequence do
+      values.each { |v| v.to_yaml(yaml) }
+    end
+  end
+end
+
+def Object.from_yaml(string_or_io : String)
+  doc = ::YAML::Nodes.parse(string_or_io)
+  node = doc.nodes.first? || ::YAML::Nodes::Scalar.new("")
+  ctx = ::YAML::ParseContext.new
+  new(ctx, node)
+end
+
+def Array.new(ctx : Std::Yaml::ParseContext, node : Std::Yaml::Nodes::Node)
+  unless node.is_a?(Std::Yaml::Nodes::Sequence)
+    node.raise "Expected YAML sequence for Array"
+  end
+  ary = new
+  node.nodes.each do |child|
+    ary << T.new(ctx, child)
+  end
+  ary
+end
+
+def Array.from_yaml(input : String)
+  doc = Std::Yaml::Nodes.parse(input)
+  node = doc.nodes.first? || Std::Yaml::Nodes::Scalar.new("")
+  ctx = Std::Yaml::ParseContext.new
+  new(ctx, node)
+end
+
+def Hash.new(ctx : Std::Yaml::ParseContext, node : Std::Yaml::Nodes::Node)
+  unless node.is_a?(Std::Yaml::Nodes::Mapping)
+    node.raise "Expected YAML mapping for Hash"
+  end
+  h = new
+  Std::Yaml::Schema::Core.each(node) do |k_node, v_node|
+    unless k_node.is_a?(Std::Yaml::Nodes::Scalar)
+      k_node.raise "Expected scalar key for Hash"
+    end
+    k = k_node.value
+    v = V.new(ctx, v_node)
+    h[k] = v
+  end
+  h
+end
+
+def Hash.from_yaml(input : String)
+  doc = Std::Yaml::Nodes.parse(input)
+  node = doc.nodes.first? || Std::Yaml::Nodes::Scalar.new("")
+  ctx = Std::Yaml::ParseContext.new
+  new(ctx, node)
+end
+
+alias ::YAML = Std::Yaml::YAML
+alias ::YAML::Any = Std::Yaml::Any
+alias ::YAML::Nodes = Std::Yaml::Nodes
+alias ::YAML::Schema = Std::Yaml::Schema
+alias ::YAML::ParseContext = Std::Yaml::ParseContext
+alias ::YAML::ScalarStyle = Std::Yaml::ScalarStyle
+alias ::YAML::SequenceStyle = Std::Yaml::SequenceStyle
+alias ::YAML::MappingStyle = Std::Yaml::MappingStyle
+alias ::YAML::EventKind = Std::Yaml::EventKind
+alias ::YAML::Field = Std::Yaml::Field
+alias ::YAML::Serializable = Std::Yaml::Serializable
+alias ::YAML::ArrayConverter = Std::Yaml::ArrayConverter
