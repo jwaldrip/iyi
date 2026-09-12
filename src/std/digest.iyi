@@ -8,6 +8,12 @@
 module std/digest
 
 import std/slice
+import std/int
+import std/base64
+import std/io
+using std/io::{IO, Memory}
+import std/file
+using std/file::{File}
 using std/slice::{Slice}
 pub alias Bytes = Std::Slice::Bytes
 
@@ -79,7 +85,174 @@ module DigestUtils
   end
 end
 
-pub class MD5
+pub class FinalizedError < Exception
+  getter message : String
+
+  def initialize(@message : String = "Digest already finalized")
+  end
+end
+
+module ClassMethods
+  def digest(data : Bytes) : Bytes
+    d = new
+    d.update(data)
+    d.final
+  end
+
+  def digest(data : String) : Bytes
+    digest(Bytes.new(data.to_unsafe, data.bytesize))
+  end
+
+  def hexdigest(data : Bytes) : String
+    d = new
+    d.update(data)
+    d.hexdigest
+  end
+
+  def hexdigest(data : String) : String
+    hexdigest(Bytes.new(data.to_unsafe, data.bytesize))
+  end
+
+  def base64digest(data : Bytes) : String
+    d = new
+    d.update(data)
+    d.base64digest
+  end
+
+  def base64digest(data : String) : String
+    base64digest(Bytes.new(data.to_unsafe, data.bytesize))
+  end
+end
+
+pub abstract class Digest
+  @finished : Bool = false
+
+  abstract def digest_size : Int32
+  abstract def block_size : Int32
+  abstract def reset : self
+  abstract def update_impl(data : Bytes) : Nil
+  abstract def final_impl(dst : Bytes) : Nil
+
+  def reset_impl : Nil
+    reset
+  end
+
+  def update(data : Bytes) : self
+    check_finished
+    update_impl(data)
+    self
+  end
+
+  def update(data : String) : self
+    update(Bytes.new(data.to_unsafe, data.bytesize))
+  end
+
+  def <<(data : Bytes) : self
+    update(data)
+  end
+
+  def <<(data : String) : self
+    update(data)
+  end
+
+  def update(io) : self
+    check_finished
+    buf = Bytes.new(4096)
+    while true
+      n = if io.is_a?(Std::Io::Memory)
+            m = io.as(Std::Io::Memory)
+            i = 0
+            while i < buf.size
+              b = m.read_byte
+              break if b.nil?
+              buf[i] = b
+              i = i + 1
+            end
+            i
+          elsif io.is_a?(IyiIO)
+            io.as(IyiIO).read_fully(buf.to_unsafe, buf.size)
+          else
+            0
+          end
+      break if n <= 0
+      update_impl(buf[0, n])
+    end
+    self
+  end
+
+  def file(file_name : String) : self
+    check_finished
+    f = File.open(file_name, "rb")
+    update(f)
+    f.close
+    self
+  end
+
+  def final : Bytes
+    dst = Bytes.new(digest_size)
+    final(dst)
+    dst
+  end
+
+  def final(dst : Bytes) : Bytes
+    check_finished
+    if dst.size != digest_size
+      raise "Incorrect dst size: #{dst.size}, expected: #{digest_size}"
+    end
+    @finished = true
+    final_impl(dst)
+    dst
+  end
+
+  def hexfinal : String
+    final.hexstring
+  end
+
+  def hexfinal(dst : Bytes) : Nil
+    dsize = digest_size
+    if dst.size != dsize * 2
+      raise "Incorrect dst size: #{dst.size}, expected: #{dsize * 2}"
+    end
+    tmp = Bytes.new(dsize)
+    final(tmp)
+    hex_chars = "0123456789abcdef".to_unsafe
+    i = 0
+    while i < dsize
+      b = tmp[i].to_i32
+      dst[2 * i] = hex_chars[(b >> 4) & 0x0f]
+      dst[2 * i + 1] = hex_chars[b & 0x0f]
+      i = i + 1
+    end
+  end
+
+  def hexfinal(io) : Nil
+    hf = hexfinal
+    if io.is_a?(IyiIO)
+      io.as(IyiIO).write(hf)
+    elsif io.is_a?(Std::Io::Memory)
+      io.as(Std::Io::Memory).write(hf.to_unsafe, hf.bytesize)
+    end
+  end
+
+  def hexdigest : String
+    final.hexstring
+  end
+
+  def base64digest : String
+    Std::Base64::Base64.strict_encode(final)
+  end
+
+  def finished? : Bool
+    @finished
+  end
+
+  protected def check_finished : Nil
+    raise "Digest already finalized" if @finished
+  end
+end
+
+pub class MD5 < Digest
+  extend ClassMethods
   @a : UInt64 = 0x67452301_u64
   @b : UInt64 = 0xefcdab89_u64
   @c : UInt64 = 0x98badcfe_u64
@@ -94,6 +267,26 @@ pub class MD5
     reset
   end
 
+  def initialize(other : MD5)
+    @buffer = Pointer(UInt8).malloc(64_u64)
+    @a = other.@a
+    @b = other.@b
+    @c = other.@c
+    @d = other.@d
+    @buffer_len = other.@buffer_len
+    @total_bytes = other.@total_bytes
+    @finished = other.@finished
+    i = 0
+    while i < @buffer_len
+      @buffer[i] = other.@buffer[i]
+      i = i + 1
+    end
+  end
+
+  def dup : MD5
+    MD5.new(self)
+  end
+
   def reset : self
     @a = 0x67452301_u64
     @b = 0xefcdab89_u64
@@ -103,6 +296,54 @@ pub class MD5
     @total_bytes = 0_u64
     @finished = false
     self
+  end
+
+  def update_impl(data : Bytes) : Nil
+    offset = 0
+    len = data.size
+    @total_bytes = @total_bytes &+ len.to_u64
+    if @buffer_len > 0
+      needed = 64 - @buffer_len
+      to_copy = len < needed ? len : needed
+      i = 0
+      while i < to_copy
+        @buffer[@buffer_len + i] = data[offset + i]
+        i = i + 1
+      end
+      @buffer_len = @buffer_len + to_copy
+      offset = offset + to_copy
+      len = len - to_copy
+      if @buffer_len == 64
+        process_block(@buffer)
+        @buffer_len = 0
+      end
+    end
+    while len >= 64
+      process_block(data.to_unsafe + offset.to_i64)
+      offset = offset + 64
+      len = len - 64
+    end
+    if len > 0
+      i = 0
+      while i < len
+        @buffer[i] = data[offset + i]
+        i = i + 1
+      end
+      @buffer_len = len
+    end
+  end
+
+  def final_impl(dst : Bytes) : Nil
+    b = final
+    dst.to_unsafe.copy_from(b.to_unsafe, 16)
+  end
+
+  def self.base64digest(data : Bytes) : String
+    Std::Base64::Base64.strict_encode(digest(data))
+  end
+
+  def self.base64digest(data : String) : String
+    base64digest(Bytes.new(data.to_unsafe, data.bytesize))
   end
 
   def update(data : Bytes) : self
@@ -373,7 +614,8 @@ pub class MD5
   end
 end
 
-pub class SHA1
+pub class SHA1 < Digest
+  extend ClassMethods
   @h0 : UInt64 = 0x67452301_u64
   @h1 : UInt64 = 0xefcdab89_u64
   @h2 : UInt64 = 0x98badcfe_u64
@@ -391,6 +633,28 @@ pub class SHA1
     reset
   end
 
+  def initialize(other : SHA1)
+    @buffer = Pointer(UInt8).malloc(64_u64)
+    @w = Pointer(UInt64).malloc(80_u64)
+    @h0 = other.@h0
+    @h1 = other.@h1
+    @h2 = other.@h2
+    @h3 = other.@h3
+    @h4 = other.@h4
+    @buffer_len = other.@buffer_len
+    @total_bytes = other.@total_bytes
+    @finished = other.@finished
+    i = 0
+    while i < @buffer_len
+      @buffer[i] = other.@buffer[i]
+      i = i + 1
+    end
+  end
+
+  def dup : SHA1
+    SHA1.new(self)
+  end
+
   def reset : self
     @h0 = 0x67452301_u64
     @h1 = 0xefcdab89_u64
@@ -401,6 +665,54 @@ pub class SHA1
     @total_bytes = 0_u64
     @finished = false
     self
+  end
+
+  def update_impl(data : Bytes) : Nil
+    offset = 0
+    len = data.size
+    @total_bytes = @total_bytes &+ len.to_u64
+    if @buffer_len > 0
+      needed = 64 - @buffer_len
+      to_copy = len < needed ? len : needed
+      i = 0
+      while i < to_copy
+        @buffer[@buffer_len + i] = data[offset + i]
+        i = i + 1
+      end
+      @buffer_len = @buffer_len + to_copy
+      offset = offset + to_copy
+      len = len - to_copy
+      if @buffer_len == 64
+        process_block(@buffer)
+        @buffer_len = 0
+      end
+    end
+    while len >= 64
+      process_block(data.to_unsafe + offset.to_i64)
+      offset = offset + 64
+      len = len - 64
+    end
+    if len > 0
+      i = 0
+      while i < len
+        @buffer[i] = data[offset + i]
+        i = i + 1
+      end
+      @buffer_len = len
+    end
+  end
+
+  def final_impl(dst : Bytes) : Nil
+    b = final
+    dst.to_unsafe.copy_from(b.to_unsafe, 20)
+  end
+
+  def self.base64digest(data : Bytes) : String
+    Std::Base64::Base64.strict_encode(digest(data))
+  end
+
+  def self.base64digest(data : String) : String
+    base64digest(Bytes.new(data.to_unsafe, data.bytesize))
   end
 
   def update(data : Bytes) : self
@@ -556,7 +868,8 @@ pub class SHA1
   end
 end
 
-pub class SHA256
+pub class SHA256 < Digest
+  extend ClassMethods
   @h0 : UInt64 = 0x6a09e667_u64
   @h1 : UInt64 = 0xbb67ae85_u64
   @h2 : UInt64 = 0x3c6ef372_u64
@@ -577,6 +890,25 @@ pub class SHA256
     reset
   end
 
+  def initialize(other : SHA256)
+    @buffer = Pointer(UInt8).malloc(64_u64)
+    @w = Pointer(UInt64).malloc(64_u64)
+    @h0 = other.@h0; @h1 = other.@h1; @h2 = other.@h2; @h3 = other.@h3
+    @h4 = other.@h4; @h5 = other.@h5; @h6 = other.@h6; @h7 = other.@h7
+    @buffer_len = other.@buffer_len
+    @total_bytes = other.@total_bytes
+    @finished = other.@finished
+    i = 0
+    while i < @buffer_len
+      @buffer[i] = other.@buffer[i]
+      i = i + 1
+    end
+  end
+
+  def dup : SHA256
+    SHA256.new(self)
+  end
+
   def reset : self
     @h0 = 0x6a09e667_u64
     @h1 = 0xbb67ae85_u64
@@ -590,6 +922,54 @@ pub class SHA256
     @total_bytes = 0_u64
     @finished = false
     self
+  end
+
+  def update_impl(data : Bytes) : Nil
+    offset = 0
+    len = data.size
+    @total_bytes = @total_bytes &+ len.to_u64
+    if @buffer_len > 0
+      needed = 64 - @buffer_len
+      to_copy = len < needed ? len : needed
+      i = 0
+      while i < to_copy
+        @buffer[@buffer_len + i] = data[offset + i]
+        i = i + 1
+      end
+      @buffer_len = @buffer_len + to_copy
+      offset = offset + to_copy
+      len = len - to_copy
+      if @buffer_len == 64
+        process_block(@buffer)
+        @buffer_len = 0
+      end
+    end
+    while len >= 64
+      process_block(data.to_unsafe + offset.to_i64)
+      offset = offset + 64
+      len = len - 64
+    end
+    if len > 0
+      i = 0
+      while i < len
+        @buffer[i] = data[offset + i]
+        i = i + 1
+      end
+      @buffer_len = len
+    end
+  end
+
+  def final_impl(dst : Bytes) : Nil
+    b = final
+    dst.to_unsafe.copy_from(b.to_unsafe, 32)
+  end
+
+  def self.base64digest(data : Bytes) : String
+    Std::Base64::Base64.strict_encode(digest(data))
+  end
+
+  def self.base64digest(data : String) : String
+    base64digest(Bytes.new(data.to_unsafe, data.bytesize))
   end
 
   def update(data : Bytes) : self
@@ -1182,7 +1562,8 @@ pub class SHA256
   end
 end
 
-pub class SHA512
+pub class SHA512 < Digest
+  extend ClassMethods
   @h0 : UInt64 = 0x6a09e667f3bcc908_u64
   @h1 : UInt64 = 0xbb67ae8584caa73b_u64
   @h2 : UInt64 = 0x3c6ef372fe94f82b_u64
@@ -1203,6 +1584,25 @@ pub class SHA512
     reset
   end
 
+  def initialize(other : SHA512)
+    @buffer = Pointer(UInt8).malloc(128_u64)
+    @w = Pointer(UInt64).malloc(80_u64)
+    @h0 = other.@h0; @h1 = other.@h1; @h2 = other.@h2; @h3 = other.@h3
+    @h4 = other.@h4; @h5 = other.@h5; @h6 = other.@h6; @h7 = other.@h7
+    @buffer_len = other.@buffer_len
+    @total_bytes = other.@total_bytes
+    @finished = other.@finished
+    i = 0
+    while i < @buffer_len
+      @buffer[i] = other.@buffer[i]
+      i = i + 1
+    end
+  end
+
+  def dup : SHA512
+    SHA512.new(self)
+  end
+
   def reset : self
     @h0 = 0x6a09e667f3bcc908_u64
     @h1 = 0xbb67ae8584caa73b_u64
@@ -1216,6 +1616,54 @@ pub class SHA512
     @total_bytes = 0_u64
     @finished = false
     self
+  end
+
+  def update_impl(data : Bytes) : Nil
+    offset = 0
+    len = data.size
+    @total_bytes = @total_bytes &+ len.to_u64
+    if @buffer_len > 0
+      needed = 128 - @buffer_len
+      to_copy = len < needed ? len : needed
+      i = 0
+      while i < to_copy
+        @buffer[@buffer_len + i] = data[offset + i]
+        i = i + 1
+      end
+      @buffer_len = @buffer_len + to_copy
+      offset = offset + to_copy
+      len = len - to_copy
+      if @buffer_len == 128
+        process_block(@buffer)
+        @buffer_len = 0
+      end
+    end
+    while len >= 128
+      process_block(data.to_unsafe + offset.to_i64)
+      offset = offset + 128
+      len = len - 128
+    end
+    if len > 0
+      i = 0
+      while i < len
+        @buffer[i] = data[offset + i]
+        i = i + 1
+      end
+      @buffer_len = len
+    end
+  end
+
+  def final_impl(dst : Bytes) : Nil
+    b = final
+    dst.to_unsafe.copy_from(b.to_unsafe, 64)
+  end
+
+  def self.base64digest(data : Bytes) : String
+    Std::Base64::Base64.strict_encode(digest(data))
+  end
+
+  def self.base64digest(data : String) : String
+    base64digest(Bytes.new(data.to_unsafe, data.bytesize))
   end
 
   def update(data : Bytes) : self
@@ -1922,6 +2370,8 @@ pub class SHA512
 end
 
 pub class SHA384 < SHA512
+  extend ClassMethods
+
   def reset : self
     @h0 = 0xcbbb9d5dc1059ed8_u64
     @h1 = 0x629a292a367cd507_u64
@@ -1952,6 +2402,27 @@ pub class SHA384 < SHA512
     DigestUtils.put_u64_be(ptr, 32, @h4)
     DigestUtils.put_u64_be(ptr, 40, @h5)
     out
+  end
+
+  def initialize(other : SHA384)
+    super(other.as(SHA512))
+  end
+
+  def dup : SHA384
+    SHA384.new(self)
+  end
+
+  def final_impl(dst : Bytes) : Nil
+    b = final
+    dst.to_unsafe.copy_from(b.to_unsafe, 48)
+  end
+
+  def self.base64digest(data : Bytes) : String
+    Std::Base64::Base64.strict_encode(digest(data))
+  end
+
+  def self.base64digest(data : String) : String
+    base64digest(Bytes.new(data.to_unsafe, data.bytesize))
   end
 
   def self.digest_size : Int32
@@ -2010,3 +2481,388 @@ end
 pub def sha512(data : String) : Bytes
   SHA512.digest(data)
 end
+
+# -----------------------------------------------------------------------------
+# SHA-224 (FIPS 180-4)
+# -----------------------------------------------------------------------------
+
+pub class SHA224 < SHA256
+  extend ClassMethods
+
+  def initialize
+    super
+    reset
+  end
+
+  def initialize(other : SHA224)
+    super(other.as(SHA256))
+  end
+
+  def dup : SHA224
+    SHA224.new(self)
+  end
+
+  def reset : self
+    @h0 = 0xc1059ed8_u64
+    @h1 = 0x367cd507_u64
+    @h2 = 0x3070dd17_u64
+    @h3 = 0xf70e5939_u64
+    @h4 = 0xffc00b31_u64
+    @h5 = 0x68581511_u64
+    @h6 = 0x64f98fa7_u64
+    @h7 = 0xbefa4fa4_u64
+    @buffer_len = 0
+    @total_bytes = 0_u64
+    @finished = false
+    self
+  end
+
+  def digest_size : Int32
+    28
+  end
+
+  def self.digest_size : Int32
+    28
+  end
+
+  def final_impl(dst : Bytes) : Nil
+    b = final
+    dst.to_unsafe.copy_from(b.to_unsafe, 28)
+  end
+
+  private def out_digest : Bytes
+    out = Bytes.new(28)
+    ptr = out.to_unsafe
+    DigestUtils.put_u32_be(ptr, 0, @h0)
+    DigestUtils.put_u32_be(ptr, 4, @h1)
+    DigestUtils.put_u32_be(ptr, 8, @h2)
+    DigestUtils.put_u32_be(ptr, 12, @h3)
+    DigestUtils.put_u32_be(ptr, 16, @h4)
+    DigestUtils.put_u32_be(ptr, 20, @h5)
+    DigestUtils.put_u32_be(ptr, 24, @h6)
+    out
+  end
+
+  def self.base64digest(data : Bytes) : String
+    Std::Base64::Base64.strict_encode(digest(data))
+  end
+
+  def self.base64digest(data : String) : String
+    base64digest(Bytes.new(data.to_unsafe, data.bytesize))
+  end
+end
+
+# -----------------------------------------------------------------------------
+# Adler-32 (RFC 1950)
+# -----------------------------------------------------------------------------
+
+pub class Adler32 < Digest
+  extend ClassMethods
+
+  BASE = 65521_u64
+  @s1 : UInt64 = 1_u64
+  @s2 : UInt64 = 0_u64
+
+  def initialize(initial_adler : UInt32 = 1_u32)
+    @s1 = (initial_adler.to_u64 & 0xFFFF_u64)
+    @s2 = ((initial_adler.to_u64.unsafe_shr(16_u64)) & 0xFFFF_u64)
+    @finished = false
+  end
+
+  def initialize(other : Adler32)
+    @s1 = other.@s1
+    @s2 = other.@s2
+    @finished = other.@finished
+  end
+
+  def dup : Adler32
+    Adler32.new(self)
+  end
+
+  def digest_size : Int32
+    4
+  end
+
+  def block_size : Int32
+    1
+  end
+
+  def reset : self
+    @s1 = 1_u64
+    @s2 = 0_u64
+    @finished = false
+    self
+  end
+
+  def update_impl(data : Bytes) : Nil
+    ptr = data.to_unsafe
+    len = data.size
+    i = 0
+    while len > 0
+      chunk = len > 5552 ? 5552 : len
+      j = 0
+      while j < chunk
+        @s1 = @s1 + ptr[i].to_u64
+        @s2 = @s2 + @s1
+        i = i + 1
+        j = j + 1
+      end
+      @s1 = @s1 % BASE
+      @s2 = @s2 % BASE
+      len = len - chunk
+    end
+  end
+
+  def final_impl(dst : Bytes) : Nil
+    val = value
+    dst[0] = ((val.to_u64.unsafe_shr(24_u64)) & 0xFF_u64).to_u8
+    dst[1] = ((val.to_u64.unsafe_shr(16_u64)) & 0xFF_u64).to_u8
+    dst[2] = ((val.to_u64.unsafe_shr(8_u64)) & 0xFF_u64).to_u8
+    dst[3] = (val.to_u64 & 0xFF_u64).to_u8
+  end
+
+  def value : UInt32
+    (((@s2.unsafe_shl(16_u64)) | @s1) & 0xFFFFFFFF_u64).to_u32
+  end
+
+  def to_u32 : UInt32
+    value
+  end
+
+  def self.initial : UInt32
+    1_u32
+  end
+
+  def self.checksum(data : Bytes) : UInt32
+    update(data, initial)
+  end
+
+  def self.checksum(data : String) : UInt32
+    checksum(Bytes.new(data.to_unsafe, data.bytesize))
+  end
+
+  def self.update(data : Bytes, adler32 : UInt32 = initial) : UInt32
+    d = Adler32.new(adler32)
+    d.update_impl(data)
+    d.value
+  end
+
+  def self.update(data : String, adler32 : UInt32 = initial) : UInt32
+    update(Bytes.new(data.to_unsafe, data.bytesize), adler32)
+  end
+
+  def self.combine(adler1 : UInt32, adler2 : UInt32, len : Int32) : UInt32
+    len2 = len < 0 ? 0_i64 : len.to_i64
+    rem = (len2 % 65521_i64).to_u64
+    a1 = adler1.to_u64
+    a2 = adler2.to_u64
+    s1_1 = a1 & 0xffff_u64
+    s2_1 = (a1.unsafe_shr(16_u64)) & 0xffff_u64
+    s1_2 = a2 & 0xffff_u64
+    s2_2 = (a2.unsafe_shr(16_u64)) & 0xffff_u64
+
+    s1 = (s1_1 + s1_2 + 65521_u64 - 1_u64) % 65521_u64
+    s2 = (s2_2 + rem * (s1_1 + 65521_u64 - 1_u64) + s2_1) % 65521_u64
+
+    (((s2.unsafe_shl(16_u64)) | s1) & 0xFFFFFFFF_u64).to_u32
+  end
+end
+
+# -----------------------------------------------------------------------------
+# CRC-32 (ISO 3309)
+# -----------------------------------------------------------------------------
+
+pub class CRC32 < Digest
+  extend ClassMethods
+
+  @@table : Array(UInt64)?
+
+  @crc : UInt64 = 0_u64
+
+  def self.table : Array(UInt64)
+    if tbl = @@table
+      return tbl
+    end
+    t = Array(UInt64).new(256) { 0_u64 }
+    poly = 0xEDB88320_u64
+    i = 0
+    while i < 256
+      c = i.to_u64
+      j = 0
+      while j < 8
+        if (c & 1_u64) != 0_u64
+          c = (c.unsafe_shr(1_u64)) ^ poly
+        else
+          c = c.unsafe_shr(1_u64)
+        end
+        j = j + 1
+      end
+      t[i] = c
+      i = i + 1
+    end
+    @@table = t
+    t
+  end
+
+  def initialize(initial_crc : UInt32 = 0_u32)
+    @crc = initial_crc.to_u64
+    @finished = false
+  end
+
+  def initialize(other : CRC32)
+    @crc = other.@crc
+    @finished = other.@finished
+  end
+
+  def dup : CRC32
+    CRC32.new(self)
+  end
+
+  def digest_size : Int32
+    4
+  end
+
+  def block_size : Int32
+    1
+  end
+
+  def reset : self
+    @crc = 0_u64
+    @finished = false
+    self
+  end
+
+  def update_impl(data : Bytes) : Nil
+    tbl = CRC32.table
+    c = (@crc ^ 0xFFFFFFFF_u64) & 0xFFFFFFFF_u64
+    ptr = data.to_unsafe
+    i = 0
+    size = data.size
+    while i < size
+      byte_val = ptr[i].to_u64
+      idx = (c ^ byte_val) & 0xFF_u64
+      c = (c.unsafe_shr(8_u64)) ^ tbl[idx.to_i32]
+      i = i + 1
+    end
+    @crc = (c ^ 0xFFFFFFFF_u64) & 0xFFFFFFFF_u64
+  end
+
+  def final_impl(dst : Bytes) : Nil
+    val = value
+    dst[0] = ((val.to_u64.unsafe_shr(24_u64)) & 0xFF_u64).to_u8
+    dst[1] = ((val.to_u64.unsafe_shr(16_u64)) & 0xFF_u64).to_u8
+    dst[2] = ((val.to_u64.unsafe_shr(8_u64)) & 0xFF_u64).to_u8
+    dst[3] = (val.to_u64 & 0xFF_u64).to_u8
+  end
+
+  def value : UInt32
+    (@crc & 0xFFFFFFFF_u64).to_u32
+  end
+
+  def to_u32 : UInt32
+    value
+  end
+
+  def self.initial : UInt32
+    0_u32
+  end
+
+  def self.checksum(data : Bytes) : UInt32
+    update(data, initial)
+  end
+
+  def self.checksum(data : String) : UInt32
+    checksum(Bytes.new(data.to_unsafe, data.bytesize))
+  end
+
+  def self.update(data : Bytes, crc32 : UInt32 = initial) : UInt32
+    d = CRC32.new(crc32)
+    d.update_impl(data)
+    d.value
+  end
+
+  def self.update(data : String, crc32 : UInt32 = initial) : UInt32
+    update(Bytes.new(data.to_unsafe, data.bytesize), crc32)
+  end
+
+  private def self.gf2_matrix_times(mat : Pointer(UInt64), vec : UInt64) : UInt64
+    sum = 0_u64
+    v = vec
+    i = 0
+    while v > 0_u64
+      if (v & 1_u64) != 0_u64
+        sum = sum ^ mat[i]
+      end
+      v = v.unsafe_shr(1_u64)
+      i = i + 1
+    end
+    sum
+  end
+
+  private def self.gf2_matrix_square(square : Pointer(UInt64), mat : Pointer(UInt64)) : Nil
+    n = 0
+    while n < 32
+      square[n] = gf2_matrix_times(mat, mat[n])
+      n = n + 1
+    end
+  end
+
+  def self.combine(crc1 : UInt32, crc2 : UInt32, len : Int32) : UInt32
+    return crc1 if len <= 0
+
+    odd = Pointer(UInt64).malloc(32_u64)
+    even = Pointer(UInt64).malloc(32_u64)
+
+    odd[0] = 0xEDB88320_u64
+    row = 1_u64
+    n = 1
+    while n < 32
+      odd[n] = row
+      row = row.unsafe_shl(1_u64)
+      n = n + 1
+    end
+
+    gf2_matrix_square(even, odd)
+    gf2_matrix_square(odd, even)
+
+    c1 = crc1.to_u64
+    len2 = len.to_i64
+    while len2 > 0_i64
+      gf2_matrix_square(even, odd)
+      if (len2 & 1_i64) != 0_i64
+        c1 = gf2_matrix_times(even, c1)
+      end
+      len2 = len2 >> 1
+      break if len2 == 0_i64
+
+      gf2_matrix_square(odd, even)
+      if (len2 & 1_i64) != 0_i64
+        c1 = gf2_matrix_times(odd, c1)
+      end
+      len2 = len2 >> 1
+    end
+
+    c1 = c1 ^ crc2.to_u64
+    (c1 & 0xFFFFFFFF_u64).to_u32
+  end
+end
+
+pub def sha224(data : Bytes) : Bytes
+  SHA224.digest(data)
+end
+
+pub def sha224(data : String) : Bytes
+  SHA224.digest(data)
+end
+
+alias ::Digest = Std::Digest::Digest
+alias ::Digest::FinalizedError = Std::Digest::FinalizedError
+alias ::Digest::ClassMethods = Std::Digest::ClassMethods
+alias ::Digest::MD5 = Std::Digest::MD5
+alias ::Digest::SHA1 = Std::Digest::SHA1
+alias ::Digest::SHA224 = Std::Digest::SHA224
+alias ::Digest::SHA256 = Std::Digest::SHA256
+alias ::Digest::SHA384 = Std::Digest::SHA384
+alias ::Digest::SHA512 = Std::Digest::SHA512
+alias ::Digest::Adler32 = Std::Digest::Adler32
+alias ::Digest::CRC32 = Std::Digest::CRC32
