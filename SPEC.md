@@ -854,7 +854,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 109,425 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 109,435 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 13,609-line own prelude + 6,067 in std |
 | Specs | 21,146 lines | 9,758 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3422,6 +3422,21 @@ at the module's own types. What that leaves open is a library method *copied*
 into an artifact's unit (IV.1g's internal-linkage copies): it holds the
 producer's set, and only a caller that travels would replace it. Nothing
 measured has reached it.
+
+And one defect the wide closure walked into on the way, which is about a
+`fun` rather than about a set: **a `fun` that answers one of the shard's own
+enums crosses as that enum.** It crossed as the enum's *base type*, which is
+right for a parameter — what a C function takes is the integer, and Crystal
+converts without being asked — and wrong for a return, because the shard's
+own code reads what it declared. `sqlite3` writes `case
+LibSQLite3.column_type(self, col) when Type::TEXT`; compiled on the far side
+over an `Int32` it matched no member, took the `else` and raised `another row
+available` on the first query. Named globally now (`::SQLite3::Type`): a
+shard's `lib` is declared at the top level, where its name is what the
+producer's symbols are made of, and a name looked up in there reaches
+neither the module's scope nor its namespace. `bench/bind_roundtrip.sh`
+carries the shape — a module's body casing on a `fun`'s enum — and with the
+base type back its two arms disagree.
 
 Two further shapes came with it, both the same kind of thing as the twelve
 above. A private helper kept out of the declarations because its *default

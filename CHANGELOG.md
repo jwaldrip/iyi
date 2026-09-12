@@ -48,11 +48,22 @@
   library is what a consumer compiles for itself, so the symbol a shard's
   object code calls is the consumer's own, with the consumer's includers.
   Unbounded it also turned `sqlite3`'s `ResultSet#read` into text, which
-  found a latent defect in the *other* direction and is now written down
-  where it lives (`Iyi.fun_type`): a `fun` returning an enum crosses as the
-  enum's base type, and a body compiled on the far side then cases on an
-  integer and takes the `else` — `another row available`, on the first
-  query. Bounded to the module's own call graph, nothing reaches it.
+  found the defect below.
+- **A `fun` that answers one of the shard's own enums crosses as that
+  enum.** It crossed as the enum's *base type*, which is the right answer
+  for a parameter — what a C function takes is the integer, and Crystal
+  converts without being asked — and the wrong one for a return: the
+  shard's own code reads what it declared. `sqlite3` writes `case
+  LibSQLite3.column_type(self, col) when Type::TEXT`, so a body compiled on
+  the far side cased over an `Int32`, matched no member, took the `else` and
+  raised: `another row available`, on the first query a consumer ran. Named
+  globally — `::SQLite3::Type` — because a shard's `lib` is declared at the
+  top level, where its name is what the producer's symbols are made of, and
+  a name looked up in there reaches neither the module's scope (`Type` is
+  `undefined constant`) nor its namespace (`SQLite3::Type` was too).
+  `bench/bind_roundtrip.sh` carries the shape now: a module's body cases on
+  a `fun`'s enum, and with the base type back the two arms answer `many`
+  where they answer `one` and `two`.
 - **Five declarations a travelling body needs, which never crossed.** Each
   was invisible while the body that names it was machine code in the
   artifact. A declaration's members are written *inside* it now, so a
