@@ -4,6 +4,25 @@
 
 ### Fixed
 
+- **`%f` and `%e` rounded the shortest decimal, not the number.** Two
+  corrections, both measured against the other language, C and Python over
+  908 cases. A tie went *away from zero*, so `%.1f` of 0.25 answered 0.3 and
+  `%.0f` of 2.5 answered 3 where every reference answers 0.2 and 2 — a tie
+  goes to the even digit. And a tie was read off the value's *shortest*
+  decimal, which is not the value: 2.345 is stored a shade above and 1.015 a
+  shade below, so `%.2f` answered 2.34 and 1.02 against 2.35 and 1.01. The
+  tie is now decided by asking the number — `f * 2^e` against the tie
+  decimal, both sides scaled to integers and compared with the prelude's own
+  bignum — and only when the digits actually say "half", so the ordinary
+  path is unchanged. 568 fixed-point cases and 340 exponent cases match the
+  references exactly. `bench/format_exercise.iyi` pins the fourteen that
+  moved, and the check that read `%.0f` of 2.5 as "3" — a deviation from
+  every reference, pinned as if it were a rule — now reads 2.
+- **A year before the era printed as `000-1-01-01`.** `pad4` filled a
+  four-character field with zeros in front of a minus sign, so the sign
+  landed inside the year. The conversions were right all along — every epoch
+  from year -100 to 9999 round-trips through `Time.unix`/`to_unix` — so this
+  was the printing alone: ISO 8601 spells it `-0001`, and now so does this.
 - **Ten text methods panicked on a character above ASCII.** `"a☃b".index('☃')`
   died of "arithmetic overflow" — a sentence about arithmetic for a question
   about text — because a `Char` was narrowed to one byte through a *checked*

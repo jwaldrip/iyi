@@ -116,7 +116,17 @@ prove_fails "zero pad broken" no_zero "format: zero pad" \
 
 # 4. Float precision rounding dropped (always rounds down)
 prove_fails "precision rounding broken" no_prec "format: precision" \
-  's/carry = round_digit >= 5 ? 1 : 0/carry = 0/'
+  's/^    if round_digit > 5$/    if false/'
+
+# 4b. The tie decided away from zero again, which is what every reference
+#     formatter disagrees with and what this file pinned before.
+prove_fails "a tie rounds away from zero" no_even "format: precision float tie to even" \
+  's/^        carry = tie > 0 || (tie == 0 \&\& keep_digit % 2 == 1) ? 1 : 0$/        carry = 1/'
+
+# 4c. The tie decided by the digits rather than by the value, so a value a
+#     shade above or below its shortest decimal is rounded the wrong way.
+prove_fails "the digits decide the tie" no_exact "format: precision float small carry" \
+  's/^        tie = exact_above_tie?(f, e, raw_digits, count, k, precision)$/        tie = 0/'
 
 # 5. Base conversion broken (binary emits decimal)
 prove_fails "base conversion broken" no_base "format: base" \

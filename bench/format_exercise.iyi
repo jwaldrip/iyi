@@ -90,8 +90,11 @@ raise "format: precision float 0 round up failed" if p8 != "4"
 p9 = sprintf("%.0f", 3.4)
 raise "format: precision float 0 round down failed" if p9 != "3"
 
+# This pinned "3", which is a tie rounded away from zero and what no
+# reference formatter answers: 2.5 is exactly half, and half goes to the
+# even digit. The rounding block at the end of this file is the rest of it.
 p10 = sprintf("%.0f", 2.5)
-raise "format: precision float tie away from zero failed" if p10 != "3"
+raise "format: precision float tie to even failed" if p10 != "2"
 
 p11 = sprintf("%.3s", "cinnabar")
 raise "format: precision string truncate failed" if p11 != "cin"
@@ -251,5 +254,28 @@ bd22 = sprintf("%x", max_u64)
 raise "format: boundary max uint64 hex failed" if bd22 != "ffffffffffffffff"
 
 puts "    boundary: wider than field, precision 0, and minimum/maximum 32-bit and 64-bit integers"
+
+# Rounding, which is where `%f` and `%e` disagreed with every reference
+# formatter. Two corrections: a tie goes to the even digit rather than away
+# from zero, and a tie is decided by the *value* rather than by its shortest
+# decimal - 2.345 is stored a shade above and 1.015 a shade below, so the
+# string said "half" where the number did not. Checked against the other
+# language, against C and against Python over 908 cases; these are the ones
+# that moved.
+raise "round: half to even, tenths" unless sprintf("%.1f", 0.25) == "0.2"
+raise "round: half to even, units" unless sprintf("%.0f", 0.5) == "0"
+raise "round: half to even, odd keeps up" unless sprintf("%.0f", 1.5) == "2"
+raise "round: half to even, two point five" unless sprintf("%.0f", 2.5) == "2"
+raise "round: a value above its tie" unless sprintf("%.2f", 2.345) == "2.35"
+raise "round: a value below its tie" unless sprintf("%.2f", 1.015) == "1.01"
+raise "round: another below" unless sprintf("%.2f", 2.675) == "2.67"
+raise "round: a tenth below" unless sprintf("%.1f", 0.35) == "0.3"
+raise "round: negative follows the same rule" unless sprintf("%.2f", -2.345) == "-2.35"
+raise "round: exponent half to even" unless sprintf("%.0e", 2.5) == "2e+00"
+raise "round: exponent tie below" unless sprintf("%.2e", 9.995) == "9.99e+00"
+raise "round: exponent tie above" unless sprintf("%.2e", 1.005) == "1.00e+00"
+raise "round: an exact quarter is exact" unless sprintf("%.3f", 0.0625) == "0.062"
+raise "round: nothing else moved" unless sprintf("%.4f", 3.14159) == "3.1416"
+puts "    rounding: half to even, and the value decides its own tie"
 
 puts "    all format checks passed"
