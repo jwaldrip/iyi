@@ -1,0 +1,102 @@
+# An `enum`, used the way a program uses one — SPEC.md IV.2.
+#
+#   ./bin/iyi run samples/iyi/enums.iyi
+#
+# The compiler gives an enum two methods: `value`, the integer the member was
+# numbered with, and `new`, which wraps one. Everything below is the prelude's
+# (`src/iyi/enum.iyi`), and until this sample asked for it none of it was
+# there: `Level::Warn == Level::Warn` was false, `"#{Level::Warn}"` printed
+# `Samples::Enums::Level`, and a `case` over the members matched nothing —
+# because a `when` that names a member lowers to `Level::Warn === level`, and
+# `===` is `==`.
+#
+# Two enums, because the compiler writes different code for each: a plain one
+# whose `case` the exhaustiveness checker holds to every member, and a
+# `@[Flags]` one, where it synthesizes `None`, `All` and question methods that
+# ask `includes?`.
+
+module samples/enums
+
+# A level is an order as well as a name, which is why the threshold below
+# works: `Warn >= Info` is the whole reason a program writes one.
+enum Level : Int32
+  Debug = 0
+  Info  = 1
+  Warn  = 2
+  Error = 3
+end
+
+# A set of bits, one per member, which is what `@[Flags]` numbers them as.
+@[Flags]
+enum Mode
+  Read
+  Write
+  Append
+end
+
+# 1. A member prints as its name, in interpolation and out of `to_s`.
+level = Level::Warn
+puts "level: #{level}"
+puts "spelled: " + Level::Error.to_s
+
+# 2. Equality, and the `case` that is built on it — a `when` naming a member
+# lowers to `===`, which is `==`.
+puts "same: #{level == Level::Warn}"
+puts "other: #{level == Level::Debug}"
+
+# `in` rather than `when`, which is the form the exhaustiveness checker holds
+# to every member: the day a member is added this sample stops compiling
+# rather than falling through, and the answer is a `String` rather than a
+# `String | Nil` because there is nothing left for an `else` to catch.
+verdict = case level
+          in Level::Debug then "quiet"
+          in Level::Info  then "ordinary"
+          in Level::Warn  then "loud"
+          in Level::Error then "loudest"
+          end
+puts "verdict: #{verdict}"
+
+# 3. The question methods the compiler writes, which call the prelude's `==`.
+puts "warn? #{level.warn?}"
+puts "error? #{level.error?}"
+
+# 4. An order, so a level can be a threshold.
+puts "at least info: #{level >= Level::Info}"
+puts "below error: #{level < Level::Error}"
+
+# 5. The members, as a list — a menu, a validation table, a loop over all of
+# them. `names` is the same list said in text.
+Level.values.each do |candidate|
+  print candidate.to_s
+  print " "
+end
+puts ""
+puts "names: #{Level.names.size}"
+
+# 6. A name read back, which is what a program does with an argument or a
+# configuration line. Unknown text answers `nil` rather than a panic, and the
+# lenient form takes the spelling a person types.
+puts "parsed: #{Level.parse?("Error").to_s}"
+puts "lenient: #{Level.parse?("warn").to_s}"
+puts "unknown: #{Level.parse?("shout").inspect}"
+
+# 7. The value, for a wire format or a C call, and the way back.
+puts "value: #{Level::Error.value}"
+puts "from 1: #{Level.from_value?(1).to_s}"
+puts "from 9: #{Level.from_value?(9).inspect}"
+
+# 8. A flags enum: the two set operators, membership, and a `to_s` that says
+# which bits are in it.
+mode = Mode::Read | Mode::Write
+puts "mode: #{mode}"
+puts "read: #{mode.includes?(Mode::Read)}"
+puts "append: #{mode.append?}"
+puts "none: #{Mode::None.to_s}"
+puts "masked: #{(mode & Mode::Write).to_s}"
+
+# 9. As a `Hash` key, which needs `hash` as well as `==`.
+counts = {} of Level => Int32
+counts[Level::Warn] = 2
+counts[Level::Error] = 1
+puts "warns: #{counts[Level::Warn]}"
+puts "errors: #{counts[Level::Error]}"

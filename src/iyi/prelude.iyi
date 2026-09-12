@@ -24,6 +24,10 @@ require "./number"
 require "./float"
 require "./string"
 require "./array"
+# `Enum` after `array` and `string`, which are what its `values`, `names` and
+# `to_s` answer with. The type itself is predefined — every `enum` a program
+# writes inherits it — so this file is the surface rather than the type.
+require "./enum"
 require "./range"
 require "./hash"
 require "./set"

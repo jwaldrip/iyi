@@ -537,6 +537,78 @@ describe Iyi::IyiMod do
     end
   end
 
+  # An exported `enum`, which travels as its members and the numbers they were
+  # given. Three things were in the way, each invisible until one was exported:
+  # the question methods the compiler writes carried no return type, so R-2
+  # refused the module ("`debug?` is exported and does not say what it
+  # returns"); the writer asked the enum for its instance variables (`BUG:
+  # Level::Level doesn't implement instance_vars`); and its members read as
+  # code inside a type body, so the artifact could not be imported at all.
+  #
+  # The surface is not carried and must not be: `value`, `new` and a question
+  # method per member are the consumer's compiler's to write from this
+  # declaration, and `==`, `to_s` and the rest are the prelude's `Enum`.
+  it "builds and runs a program from a module's exported enum" do
+    with_tempdir("iyimod_enum") do
+      Dir.mkdir_p "app"
+      File.write "app/levels.iyi", <<-IYI
+        module app/levels
+
+        pub enum Level : Int32
+          Debug = 0
+          Warn  = 2
+        end
+
+        @[Flags]
+        pub enum Mode
+          Read
+          Write
+        end
+
+        pub def loudest : Level
+          Level::Warn
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/levels
+        using app/levels::{Level, Mode, loudest}
+
+        puts "\#{loudest} \#{loudest == Level::Warn} \#{loudest.warn?} \#{Level.values.size} \#{(Mode::Read | Mode::Write)}"
+        IYI
+
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "Warn true true 2 Read | Write"
+
+      # The declaration carries the members and their numbers, and not the
+      # `None` and `All` a `@[Flags]` enum is given wherever it is declared —
+      # carried, they arrive as a redefinition of the consumer's own.
+      artifact = Iyi::IyiMod.read(File.join("mods", "app", "levels.iyimod"))
+      level = artifact.exports.types.find { |declaration| declaration.name == "Level" }
+      level.should_not be_nil
+      level.not_nil!.kind.should eq "enum"
+      level.not_nil!.value.should eq "Int32"
+      level.not_nil!.members.should eq [{"Debug", "0"}, {"Warn", "2"}]
+      mode = artifact.exports.types.find { |declaration| declaration.name == "Mode" }
+      mode.not_nil!.annotations.should eq ["@[Flags]"]
+      mode.not_nil!.members.map(&.[0]).should eq ["Read", "Write"]
+
+      File.delete "app/levels.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "Warn true true 2 Read | Write"
+    end
+  end
+
   # A generic the consumer instantiates, which is the one type an artifact
   # carries no object code for.
   #

@@ -1,0 +1,145 @@
+# The prelude's `Enum` surface, exercised — SPEC.md IV.2.
+#
+#   bash bench/enum_exercise.sh
+#
+# Every method `src/iyi/enum.iyi` defines, and the three things the *compiler*
+# writes that depend on it: a `case` over members (which lowers to `===`, and
+# `===` is `==`), the per-member question methods, and a `@[Flags]` enum's
+# `None`/`All` plus its question methods, which ask `includes?`.
+#
+# Panics on the first failed check, naming it. Prints "all enum checks passed"
+# when every one of them held.
+
+module bench/enum_exercise
+
+enum Level : Int32
+  Debug = 0
+  Info  = 1
+  Warn  = 2
+  Error = 3
+end
+
+# Values the author chose, so `from_value?` and `to_s` have a gap to fall in.
+enum Port : Int32
+  Http  =  80
+  Https = 443
+end
+
+@[Flags]
+enum Mode
+  Read
+  Write
+  Append
+end
+
+def assert_true(cond : Bool, msg : String) : Nil
+  raise "assert failed: #{msg}" unless cond
+end
+
+def assert_str(a : String, b : String, msg : String) : Nil
+  raise "assert failed: #{msg} ('#{a}' != '#{b}')" unless a == b
+end
+
+def assert_int(a : Int32, b : Int32, msg : String) : Nil
+  raise "assert failed: #{msg} (#{a} != #{b})" unless a == b
+end
+
+puts "== equality, and the `case` built on it"
+assert_true(Level::Warn == Level::Warn, "enum: == same member")
+assert_true(!(Level::Warn == Level::Info), "enum: == other member")
+assert_true(Level::Warn != Level::Info, "enum: !=")
+assert_true(Level::Warn === Level::Warn, "enum: === same member")
+picked = case Level::Warn
+         when Level::Debug then "quiet"
+         when Level::Info  then "ordinary"
+         when Level::Warn  then "loud"
+         when Level::Error then "loudest"
+         end
+assert_str(picked.to_s, "loud", "enum: case picks the member")
+# And `in`, which is the form the exhaustiveness checker holds to every
+# member — so its answer is a `String` rather than a `String | Nil`.
+exhaustive = case Level::Info
+             in Level::Debug then "quiet"
+             in Level::Info  then "ordinary"
+             in Level::Warn  then "loud"
+             in Level::Error then "loudest"
+             end
+assert_str(exhaustive, "ordinary", "enum: exhaustive case picks the member")
+counted = 0
+Level.values.each do |member|
+  counted = counted + 1 if member == Level::Info
+end
+assert_int(counted, 1, "enum: == over a list of members")
+
+puts "== the question methods the compiler writes"
+assert_true(Level::Warn.warn?, "enum: member? true")
+assert_true(!Level::Warn.error?, "enum: member? false")
+
+puts "== an order"
+assert_true(Level::Warn > Level::Info, "enum: >")
+assert_true(Level::Warn >= Level::Warn, "enum: >= equal")
+assert_true(Level::Info < Level::Error, "enum: <")
+assert_true(Level::Info <= Level::Info, "enum: <= equal")
+assert_true(!(Level::Error < Level::Debug), "enum: < false")
+
+puts "== the member's name, and the value's digits without one"
+assert_str(Level::Debug.to_s, "Debug", "enum: to_s first member")
+assert_str(Level::Error.to_s, "Error", "enum: to_s last member")
+assert_str(Port::Https.to_s, "Https", "enum: to_s numbered member")
+assert_str(Port.new(8080).to_s, "8080", "enum: to_s without a member")
+assert_str(Level::Warn.inspect, "Warn", "enum: inspect")
+assert_str("#{Level::Info}", "Info", "enum: interpolation")
+
+puts "== the value, and the way back"
+assert_int(Level::Error.value, 3, "enum: value")
+assert_int(Port::Http.value, 80, "enum: value as numbered")
+assert_str(Level.from_value?(1).to_s, "Info", "enum: from_value? member")
+assert_true(Level.from_value?(9).nil?, "enum: from_value? no member")
+assert_true(Port.from_value?(80) == Port::Http, "enum: from_value? numbered")
+
+puts "== the members, as a list and as text"
+assert_int(Level.values.size, 4, "enum: values size")
+assert_true(Level.values[0] == Level::Debug, "enum: values order")
+assert_true(Level.values[3] == Level::Error, "enum: values last")
+assert_int(Level.names.size, 4, "enum: names size")
+assert_str(Level.names[2], "Warn", "enum: names order")
+
+puts "== a name read back"
+assert_true(Level.parse?("Error") == Level::Error, "enum: parse? exact")
+assert_true(Level.parse?("warn") == Level::Warn, "enum: parse? lenient")
+assert_true(Level.parse?("WARN") == Level::Warn, "enum: parse? upper")
+assert_true(Level.parse?("shout").nil?, "enum: parse? unknown")
+
+puts "== a key in a Hash"
+counts = {} of Level => Int32
+counts[Level::Warn] = 2
+counts[Level::Error] = 1
+assert_int(counts[Level::Warn], 2, "enum: hash key")
+assert_int(counts[Level::Error], 1, "enum: hash key second")
+assert_int(counts.size, 2, "enum: two keys, two entries")
+# Two members have to hash *apart*, which is the whole of what `hash` buys: a
+# `Hash` is correct either way — it compares the keys it finds — and a type
+# that hashes to one number puts every member in one slot (`src/iyi/object.iyi`
+# says so about the default).
+assert_true(Level::Warn.hash != Level::Error.hash, "enum: members hash apart")
+assert_int(Level::Warn.hash, 2, "enum: hash is the value")
+
+puts "== a flags enum, which the compiler numbers as bits"
+assert_int(Mode::Read.value, 1, "flags: first bit")
+assert_int(Mode::Write.value, 2, "flags: second bit")
+assert_int(Mode::Append.value, 4, "flags: third bit")
+assert_int(Mode::None.value, 0, "flags: None")
+both = Mode::Read | Mode::Write
+assert_int(both.value, 3, "flags: |")
+assert_true(both.includes?(Mode::Read), "flags: includes? held")
+assert_true(!both.includes?(Mode::Append), "flags: includes? absent")
+assert_true(both.read?, "flags: member? asks includes?")
+assert_true(!both.append?, "flags: member? absent")
+assert_true((both & Mode::Write) == Mode::Write, "flags: &")
+assert_str(both.to_s, "Read | Write", "flags: to_s joins the bits")
+assert_str(Mode::None.to_s, "None", "flags: to_s of nothing")
+assert_str(Mode::Read.to_s, "Read", "flags: to_s of one bit")
+assert_int(Mode.values.size, 3, "flags: values skips None and All")
+assert_true(Mode::None.none?, "flags: none?")
+
+puts "all enum checks passed"
