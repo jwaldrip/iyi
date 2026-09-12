@@ -550,231 +550,231 @@ pub struct MIME
     res = from_filename?(filename)
     res ? res : yield(filename)
   end
-end
 
-pub struct Multipart
-  pub class Error < MIME::Error
-    getter message : String
+  pub struct Multipart
+    pub class Error < MIME::Error
+      getter message : String
 
-    def initialize(@message : String)
-    end
-  end
-
-  def self.generate_boundary : String
-    "---------------------------dQu6bXHYb4m5zrRC3xPTGwV"
-  end
-
-  def self.parse_boundary(content_type : String) : String?
-    if type = MediaType.parse?(content_type)
-      if type.type == "multipart"
-        return type["boundary"]?
+      def initialize(@message : String)
       end
     end
-    nil
-  end
 
-  def self.build(io : T, boundary : String = Multipart.generate_boundary, &block : Builder(T) -> Nil) : Nil forall T
-    builder = Builder(T).new(io, boundary)
-    block.call(builder)
-    builder.finish
-  end
+    def self.generate_boundary : String
+      "---------------------------dQu6bXHYb4m5zrRC3xPTGwV"
+    end
 
-  def self.build(boundary : String = Multipart.generate_boundary, &block : Builder(StringAccumulator) -> Nil) : String
-    io = StringAccumulator.new
-    builder = Builder(StringAccumulator).new(io, boundary)
-    block.call(builder)
-    builder.finish
-    io.to_s
-  end
-
-  def self.parse(io : T, boundary : String, &block : (Headers, StringAccumulator) -> Nil) : Nil forall T
-    parser = Parser(T).new(io, boundary)
-    while parser.has_next?
-      parser.next do |headers, body_io|
-        yield headers, body_io
+    def self.parse_boundary(content_type : String) : String?
+      if type = MediaType.parse?(content_type)
+        if type.type == "multipart"
+          return type["boundary"]?
+        end
       end
-    end
-  end
-
-  class StringAccumulator
-    @parts : Array(String)
-
-    def initialize
-      @parts = [] of String
+      nil
     end
 
-    def <<(str) : self
-      @parts << str.to_s
-      self
+    def self.build(io : T, boundary : String = Multipart.generate_boundary, &block : Builder(T) -> Nil) : Nil forall T
+      builder = Builder(T).new(io, boundary)
+      block.call(builder)
+      builder.finish
     end
 
-    def write(bytes : Bytes) : Int32
-      len = bytes.size
-      @parts << String.new(len) { |ptr| ptr.copy_from(bytes.to_unsafe, len); len }
-      len
-    end
-
-    def to_s : String
-      @parts.join("")
-    end
-  end
-
-  pub class Builder(T)
-    getter boundary : String
-    @io : T
-
-    def initialize(@io : T, @boundary : String = Multipart.generate_boundary)
-      @state = 0 # 0: start, 1: preamble, 2: body, 3: epilogue, 4: finished
-    end
-
-    def content_type(subtype : String = "mixed") : String
-      "multipart/#{subtype}; boundary=\"#{@boundary}\""
-    end
-
-    def preamble(string : String) : Nil
-      preamble { |io| io << string }
-    end
-
-    def preamble(data : Bytes) : Nil
-      preamble { |io| io.write(data) }
-    end
-
-    def preamble(io) : Nil
-      preamble { |out_io| out_io << io.to_s }
-    end
-
-    def preamble(&block) : Nil
-      raise Error.new("Cannot generate preamble: body already started").message if @state > 1
-      yield @io
-      @state = 1
-    end
-
-    def body_part(headers : Headers, string : String) : Nil
-      body_part(headers) { |io| io << string }
-    end
-
-    def body_part(headers : Headers, data : Bytes) : Nil
-      body_part(headers) { |io| io.write(data) }
-    end
-
-    def body_part(headers : Headers, body_io) : Nil
-      body_part(headers) { |io| io << body_io.to_s }
-    end
-
-    def body_part(headers : Headers, &block) : Nil
-      raise Error.new("Cannot generate body part: already finished").message if @state >= 4
-      raise Error.new("Cannot generate body part: after epilogue").message if @state == 3
-
-      @io << "\r\n" unless @state == 0
-      @io << "--" << @boundary
-      headers.each do |name, val|
-        @io << "\r\n" << name << ": " << val
-      end
-      @io << "\r\n\r\n"
-      yield @io
-      @state = 2
-    end
-
-    def body_part(headers : Headers) : Nil
-      body_part(headers) { }
-    end
-
-    def epilogue(string : String) : Nil
-      epilogue { |io| io << string }
-    end
-
-    def epilogue(data : Bytes) : Nil
-      epilogue { |io| io.write(data) }
-    end
-
-    def epilogue(io) : Nil
-      epilogue { |out_io| out_io << io.to_s }
-    end
-
-    def epilogue(&block) : Nil
-      raise Error.new("Cannot generate epilogue: already finished").message if @state >= 4
-      finish_parts unless @state == 3
-      yield @io
-      @state = 3
-    end
-
-    def finish : Nil
-      return if @state >= 4
-      finish_parts unless @state == 3
-      @state = 4
-    end
-
-    private def finish_parts : Nil
-      @io << "\r\n--" << @boundary << "--\r\n"
-    end
-  end
-
-  pub class Parser(T)
-    @io : T
-    @dash_boundary : String
-    @close_boundary : String
-    @parts : Array(Tuple(Headers, String))
-    @raw_content : String
-    @idx : Int32
-
-    def initialize(@io : T, @boundary : String)
-      @dash_boundary = "--#{@boundary}"
-      @close_boundary = "--#{@boundary}--"
-      @parts = [] of Tuple(Headers, String)
-      @raw_content = @io.to_s
-      @idx = 0
-      parse_all_parts
-    end
-
-    def has_next? : Bool
-      @idx < @parts.size
-    end
-
-    def next(&block : (Headers, StringAccumulator) -> Nil) : Nil
-      raise Error.new("Multipart parser already finished parsing").message if @idx >= @parts.size
-      headers, body = @parts[@idx]
-      @idx += 1
+    def self.build(boundary : String = Multipart.generate_boundary, &block : Builder(StringAccumulator) -> Nil) : String
       io = StringAccumulator.new
-      io << body
-      yield headers, io
+      builder = Builder(StringAccumulator).new(io, boundary)
+      block.call(builder)
+      builder.finish
+      io.to_s
     end
 
-    private def parse_all_parts : Nil
-      content = @raw_content
-      return if content.empty?
-
-      chunks = content.split(@dash_boundary)
-      return if chunks.size < 2
-
-      chunk_idx = 1
-      while chunk_idx < chunks.size
-        chunk = chunks[chunk_idx]
-        if chunk.starts_with?("--")
-          break
+    def self.parse(io : T, boundary : String, &block : (Headers, StringAccumulator) -> Nil) : Nil forall T
+      parser = Parser(T).new(io, boundary)
+      while parser.has_next?
+        parser.next do |headers, body_io|
+          yield headers, body_io
         end
+      end
+    end
 
-        c = chunk.starts_with?("\r\n") ? chunk[2, chunk.bytesize - 2] : chunk
-        if c.ends_with?("\r\n")
-          c = c[0, c.bytesize - 2]
+    class StringAccumulator
+      @parts : Array(String)
+
+      def initialize
+        @parts = [] of String
+      end
+
+      def <<(str) : self
+        @parts << str.to_s
+        self
+      end
+
+      def write(bytes : Bytes) : Int32
+        len = bytes.size
+        @parts << String.new(len) { |ptr| ptr.copy_from(bytes.to_unsafe, len); len }
+        len
+      end
+
+      def to_s : String
+        @parts.join("")
+      end
+    end
+
+    pub class Builder(T)
+      getter boundary : String
+      @io : T
+
+      def initialize(@io : T, @boundary : String = Multipart.generate_boundary)
+        @state = 0 # 0: start, 1: preamble, 2: body, 3: epilogue, 4: finished
+      end
+
+      def content_type(subtype : String = "mixed") : String
+        "multipart/#{subtype}; boundary=\"#{@boundary}\""
+      end
+
+      def preamble(string : String) : Nil
+        preamble { |io| io << string }
+      end
+
+      def preamble(data : Bytes) : Nil
+        preamble { |io| io.write(data) }
+      end
+
+      def preamble(io) : Nil
+        preamble { |out_io| out_io << io.to_s }
+      end
+
+      def preamble(&block) : Nil
+        raise Error.new("Cannot generate preamble: body already started").message if @state > 1
+        yield @io
+        @state = 1
+      end
+
+      def body_part(headers : Headers, string : String) : Nil
+        body_part(headers) { |io| io << string }
+      end
+
+      def body_part(headers : Headers, data : Bytes) : Nil
+        body_part(headers) { |io| io.write(data) }
+      end
+
+      def body_part(headers : Headers, body_io) : Nil
+        body_part(headers) { |io| io << body_io.to_s }
+      end
+
+      def body_part(headers : Headers, &block) : Nil
+        raise Error.new("Cannot generate body part: already finished").message if @state >= 4
+        raise Error.new("Cannot generate body part: after epilogue").message if @state == 3
+
+        @io << "\r\n" unless @state == 0
+        @io << "--" << @boundary
+        headers.each do |name, val|
+          @io << "\r\n" << name << ": " << val
         end
+        @io << "\r\n\r\n"
+        yield @io
+        @state = 2
+      end
 
-        sep_idx = c.index("\r\n\r\n")
-        if sep_idx
-          header_text = c[0, sep_idx]
-          body_text = c[sep_idx + 4, c.bytesize - sep_idx - 4]
-          headers = Headers.new
-          header_text.lines.each do |line|
-            colon = line.index(":")
-            if colon
-              k = line[0, colon].strip
-              v = line[colon + 1, line.bytesize - colon - 1].strip
-              headers.add(k, v)
-            end
+      def body_part(headers : Headers) : Nil
+        body_part(headers) { }
+      end
+
+      def epilogue(string : String) : Nil
+        epilogue { |io| io << string }
+      end
+
+      def epilogue(data : Bytes) : Nil
+        epilogue { |io| io.write(data) }
+      end
+
+      def epilogue(io) : Nil
+        epilogue { |out_io| out_io << io.to_s }
+      end
+
+      def epilogue(&block) : Nil
+        raise Error.new("Cannot generate epilogue: already finished").message if @state >= 4
+        finish_parts unless @state == 3
+        yield @io
+        @state = 3
+      end
+
+      def finish : Nil
+        return if @state >= 4
+        finish_parts unless @state == 3
+        @state = 4
+      end
+
+      private def finish_parts : Nil
+        @io << "\r\n--" << @boundary << "--\r\n"
+      end
+    end
+
+    pub class Parser(T)
+      @io : T
+      @dash_boundary : String
+      @close_boundary : String
+      @parts : Array(Tuple(Headers, String))
+      @raw_content : String
+      @idx : Int32
+
+      def initialize(@io : T, @boundary : String)
+        @dash_boundary = "--#{@boundary}"
+        @close_boundary = "--#{@boundary}--"
+        @parts = [] of Tuple(Headers, String)
+        @raw_content = @io.to_s
+        @idx = 0
+        parse_all_parts
+      end
+
+      def has_next? : Bool
+        @idx < @parts.size
+      end
+
+      def next(&block : (Headers, StringAccumulator) -> Nil) : Nil
+        raise Error.new("Multipart parser already finished parsing").message if @idx >= @parts.size
+        headers, body = @parts[@idx]
+        @idx += 1
+        io = StringAccumulator.new
+        io << body
+        yield headers, io
+      end
+
+      private def parse_all_parts : Nil
+        content = @raw_content
+        return if content.empty?
+
+        chunks = content.split(@dash_boundary)
+        return if chunks.size < 2
+
+        chunk_idx = 1
+        while chunk_idx < chunks.size
+          chunk = chunks[chunk_idx]
+          if chunk.starts_with?("--")
+            break
           end
-          @parts << {headers, body_text}
-        end
 
-        chunk_idx += 1
+          c = chunk.starts_with?("\r\n") ? chunk[2, chunk.bytesize - 2] : chunk
+          if c.ends_with?("\r\n")
+            c = c[0, c.bytesize - 2]
+          end
+
+          sep_idx = c.index("\r\n\r\n")
+          if sep_idx
+            header_text = c[0, sep_idx]
+            body_text = c[sep_idx + 4, c.bytesize - sep_idx - 4]
+            headers = Headers.new
+            header_text.lines.each do |line|
+              colon = line.index(":")
+              if colon
+                k = line[0, colon].strip
+                v = line[colon + 1, line.bytesize - colon - 1].strip
+                headers.add(k, v)
+              end
+            end
+            @parts << {headers, body_text}
+          end
+
+          chunk_idx += 1
+        end
       end
     end
   end
