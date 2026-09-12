@@ -124,10 +124,15 @@ pub trait Iterator
   end
 
   def each_slice(n : Int32) : SliceIterator(self, Elem)
+    # Refused at the door, the way `Indexable` and `Enumerable` refuse it:
+    # an adaptor built with a window of zero yielded nothing from one tower
+    # and shifted an empty array in this one.
+    raise "slice size must be positive" if n <= 0
     SliceIterator(self, Elem).new(self, n)
   end
 
   def each_cons(n : Int32) : ConsIterator(self, Elem)
+    raise "cons size must be positive" if n <= 0
     ConsIterator(self, Elem).new(self, n)
   end
 

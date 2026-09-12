@@ -104,7 +104,7 @@ prove_fails() {
 
 # 1. Width padding removed
 prove_fails "width padding broken" no_width "format: width" \
-  's/pad = " " \* (width - res\.bytesize)/pad = ""/'
+  's/pad = " " \* (width - res\.size)/pad = ""/'
 
 # 2. Alignment reversed
 prove_fails "alignment ignored" no_align "format: alignment" \

@@ -300,4 +300,14 @@ if Program.args.size > 0
   end
 end
 
+# `Indexable#hash` mixed with the checked `*` and `+`, so a collection long
+# enough for `31 * h` to leave `Int32` panicked with "arithmetic overflow" -
+# six two-digit numbers were enough, while the five-element cases here passed.
+# A hash is a number modulo the word, so the arithmetic wraps.
+raise "hash: six elements" unless [10, 20, 30, 40, 50, 60].hash != 0
+raise "hash: twenty elements" unless [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20].hash != 0
+raise "hash: equal collections agree" unless [1, 2, 3].hash == [1, 2, 3].hash
+raise "hash: order counts" unless [1, 2, 3].hash != [3, 2, 1].hash
+puts "  hash: a long collection mixes without leaving the type"
+
 puts "all indexable checks passed"

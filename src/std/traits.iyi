@@ -63,8 +63,13 @@ pub trait Hashable
 end
 
 impl Cmp for Int32
+  # Compared, not subtracted: a difference is only a comparison while it
+  # fits, and `2000000000.cmp(-2000000000)` left `Int32` and panicked with
+  # "arithmetic overflow" - so every `Enumerable` method that reads `cmp`
+  # (`sorted`, `min`, `max`, `includes?`, `clamp`) refused two numbers that
+  # `<` answers for.
   def cmp(other : self) : Int32
-    self - other
+    self < other ? -1 : (self == other ? 0 : 1)
   end
 end
 
@@ -93,8 +98,10 @@ impl Hashable for Int32
 end
 
 impl Cmp for String
+  # `<=>` is not a method the prelude's `String` has, so this was a call
+  # nobody could make; `<` and `==` are what it does have.
   def cmp(other : self) : Int32
-    self <=> other
+    self < other ? -1 : (self == other ? 0 : 1)
   end
 end
 

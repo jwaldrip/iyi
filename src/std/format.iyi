@@ -530,13 +530,25 @@ module ::IyiFormat
     end
   end
 
+  # Width and precision in characters, because `size` is and because
+  # `%-10s` is a column: counted in bytes, a multi-byte string came out
+  # short by one space per extra byte, and a precision cut a character in
+  # half. The prelude's `ljust`/`rjust` decided the same thing.
   def self.format_string_arg(str : String, minus : Bool, width : Int32, precision : Int32) : String
     res = str
-    if precision >= 0 && res.bytesize > precision
-      res = res[0, precision]
+    if precision >= 0 && res.size > precision
+      kept = ""
+      taken = 0
+      res.each_char do |c|
+        if taken < precision
+          kept = kept + c.to_s
+          taken = taken + 1
+        end
+      end
+      res = kept
     end
-    if res.bytesize < width
-      pad = " " * (width - res.bytesize)
+    if res.size < width
+      pad = " " * (width - res.size)
       minus ? res + pad : pad + res
     else
       res

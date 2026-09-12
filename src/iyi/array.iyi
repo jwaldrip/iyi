@@ -154,8 +154,16 @@ class Array(T)
     result
   end
 
+  # `a.concat(a)` is a doubling, not a loop: `each` walked *other*'s growing
+  # size while `<<` grew it, so `[1, 2].concat(itself)` grew the buffer until
+  # the capacity arithmetic overflowed. The length is read once.
   def concat(other : Array(T)) : Array(T)
-    other.each { |value| self << value }
+    index = 0
+    taking = other.size
+    while index < taking
+      self << other[index]
+      index = index + 1
+    end
     self
   end
 

@@ -309,6 +309,16 @@ jobs:
       - name: Numbers print, read back, and refuse what does not fit
         run: bash bench/number_exercise.sh
 
+      # And the three collections a program gets, at their edges: a key
+      # written twice, a table grown past its first capacity, a key deleted
+      # with the rest still findable, keys that all land in one slot, an
+      # array appended to itself. The last one is why this gate exists -
+      # `a.concat(a)` walked the other array's growing size and grew the
+      # buffer until the capacity arithmetic overflowed. Eight panics with
+      # names and eight broken methods of a copied prelude.
+      - name: Arrays, hashes and sets at their edges
+        run: bash bench/collections_exercise.sh
+
       # Three gates that existed, passed on the machine that wrote them, and
       # were named in this file by nothing: `format_exercise` (seven proofs
       # over patched copies of `std/format`), `io_exercise` (`IyiIO` flush,

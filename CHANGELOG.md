@@ -4,6 +4,49 @@
 
 ### Fixed
 
+- **Ten text methods panicked on a character above ASCII.** `"a☃b".index('☃')`
+  died of "arithmetic overflow" — a sentence about arithmetic for a question
+  about text — because a `Char` was narrowed to one byte through a *checked*
+  convert. In the prelude that was `index`, `split`, `starts_with?`, `chomp`
+  and `lchop`; in `src/std/text.iyi` it was `lstrip`, `rstrip`,
+  `ends_with?`, `split`, `index`, `rindex`, `delete`, `squeeze` and `count`
+  as well. Each compares the character's own bytes now, which is what
+  `Char#to_s` writes and what the string holds. Two more answered wrongly
+  rather than panicking: `center` padded by bytes, so `"héllo".center(9)`
+  came back eight characters wide, and `tr` used a 256-entry byte table, so
+  `"a☃".tr("☃", "x")` answered `"axxx"` — one `x` per byte of the character
+  it was asked to replace once. Both count characters now, and `%s`'s width
+  and precision in `src/std/format.iyi` do too, which is the same decision
+  the prelude's `ljust`/`rjust` made.
+- **An array appended to itself grew until the arithmetic stopped it.**
+  `concat` walked *other*'s size with `each` while `<<` grew it, so
+  `[1, 2].concat(itself)` never reached the end: it grew the buffer until
+  the capacity arithmetic overflowed. The length is read once now, so it is
+  a doubling. `bench/collections_exercise.sh` is the gate it arrived with —
+  `Array`, `Hash` and `Set` at their edges, eight panics with names and
+  eight broken methods of a copied prelude.
+- **Two checked-arithmetic panics in the trait floor.** `Indexable#hash`
+  mixed with `31 * h + …` on the *checked* operators, so a collection long
+  enough to leave `Int32` panicked instead of hashing — six two-digit
+  numbers were enough, while the five-element cases in the gates passed. A
+  hash is a number modulo the word, so it wraps now. And `impl Cmp for
+  Int32` defined `cmp` as `self - other`, so `2000000000.cmp(-2000000000)`
+  overflowed and every `Enumerable` method that reads `cmp` — `sorted`,
+  `min`, `max`, `includes?`, `clamp` — refused a pair that `<` answers for.
+  It compares now. `impl Cmp for String` called a `<=>` the prelude's
+  `String` does not have, which nobody could ever have called.
+- **A port and an address are checked before they are packed.**
+  `IyiSocket.listen(70000, 1)` packed the port into sixteen bits without
+  asking and bound **4464**; `-1` bound 65535. And the address parser
+  accumulated digits unbounded, so `"999999999999.1.1.1"` left `Int32` and
+  panicked about arithmetic rather than naming the address it could not
+  resolve. Both refuse by name now, driven from `bench/socket_exercise.sh`.
+- **One window, three answers.** `each_slice(0)` and `each_cons(0)` raised
+  a named panic in `Indexable`, yielded nothing in `Enumerable`, and shifted
+  an empty array inside the `Iterator` adaptor — the same call on three
+  trait towers. All three refuse by name now. And `Slice#to_s` printed its
+  elements with `to_s` where `Array#to_s` inspects them, so the same data
+  read back two ways (`Slice[a, b]` beside `["a", "b"]`).
 - **The float surface was probed and found right, so it is pinned.** The
   same question asked of `Float64` — which methods disagree with each other
   at the edges — came back with nothing: `NaN` is not itself and cannot be
@@ -5335,7 +5378,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 13,925-line library and nothing else. Every other
+  written against iyi's own 13,948-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 

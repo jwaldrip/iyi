@@ -215,6 +215,10 @@ pub class IyiSocket
         curr = 0
         has_digit = false
       elsif ch >= '0' && ch <= '9'
+        # Bounded while it accumulates: `"999999999999.1.1.1"` left `Int32`
+        # on the checked `*` and died of "arithmetic overflow" instead of
+        # saying which address it could not resolve.
+        raise "cannot resolve address: #{host}" if curr > 255
         curr = curr * 10 + (ch.ord - 48)
         has_digit = true
       else
@@ -232,6 +236,11 @@ pub class IyiSocket
   end
 
   def self.make_sockaddr_in(ip : IPv4Address, port : Int32) : Pointer(UInt8)
+    # A port is sixteen bits, and this packed it without asking: `listen`
+    # with 70000 bound 4464 (70000 - 65536) and `-1` bound 65535, so a
+    # program that computed a port wrong was given a different one and told
+    # nothing. Both callers - `connect` and `listen` - come through here.
+    raise "port #{port} is not a port: 0 to 65535" if port < 0 || port > 65535
     buffer = Pointer(UInt8).malloc(16_u64)
     index = 0
     while index < 16

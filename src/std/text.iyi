@@ -154,13 +154,17 @@ class ::String
     byte_slice(i, bytesize - i)
   end
 
+  # A `Char` above ASCII is more than one byte, and this family narrowed it
+  # to one with a checked convert: `"a☃b".index('☃', 0)` panicked with
+  # "arithmetic overflow", and so did nine of its siblings. Each asks the
+  # character's own bytes now, which is what the string holds.
   def lstrip(char : Char) : String
-    wanted = char.ord.to_u8
-    i = 0
-    while i < bytesize && to_unsafe[i] == wanted
-      i = i + 1
+    text = char.to_s
+    at = 0
+    while at + text.bytesize <= bytesize && byte_run?(at, text)
+      at = at + text.bytesize
     end
-    byte_slice(i, bytesize - i)
+    byte_slice(at, bytesize - at)
   end
 
   def lstrip(chars : String) : String
@@ -193,12 +197,22 @@ class ::String
   end
 
   def rstrip(char : Char) : String
-    wanted = char.ord.to_u8
+    text = char.to_s
     last = bytesize
-    while last > 0 && to_unsafe[last - 1] == wanted
-      last = last - 1
+    while last >= text.bytesize && byte_run?(last - text.bytesize, text)
+      last = last - text.bytesize
     end
     byte_slice(0, last)
+  end
+
+  # *text*'s bytes at *at*, which is the one question the family shares.
+  private def byte_run?(at : Int32, text : String) : Bool
+    return false if at < 0 || at + text.bytesize > bytesize
+    matched = 0
+    while matched < text.bytesize && to_unsafe[at + matched] == text.to_unsafe[matched]
+      matched = matched + 1
+    end
+    matched == text.bytesize
   end
 
   def rstrip(chars : String) : String
@@ -253,7 +267,7 @@ class ::String
   end
 
   def ends_with?(char : Char) : Bool
-    bytesize > 0 && to_unsafe[bytesize - 1] == char.ord.to_u8
+    ends_with?(char.to_s)
   end
 
   def split(separator : String, limit : Int32 = 0) : Array(String)
@@ -283,23 +297,7 @@ class ::String
   end
 
   def split(separator : Char, limit : Int32) : Array(String)
-    return [self] if limit == 1
-    pieces = [] of String
-    wanted = separator.ord.to_u8
-    start = 0
-    index = 0
-    while index < bytesize
-      if to_unsafe[index] == wanted
-        pieces << byte_slice(start, index - start)
-        start = index + 1
-        if limit > 1 && pieces.size == limit - 1
-          break
-        end
-      end
-      index = index + 1
-    end
-    pieces << byte_slice(start, bytesize - start)
-    pieces
+    split(separator.to_s, limit)
   end
 
   def split : Array(String)
@@ -344,17 +342,7 @@ class ::String
   end
 
   def index(char : Char, offset : Int32) : Int32?
-    offset = bytesize + offset if offset < 0
-    return nil if offset < 0 || offset >= bytesize
-
-    wanted = char.ord.to_u8
-    ptr = to_unsafe
-    i = offset
-    while i < bytesize
-      return i if ptr[i] == wanted
-      i = i + 1
-    end
-    nil
+    index(char.to_s, offset)
   end
 
   def index(search : String, offset : Int32 = 0) : Int32?
@@ -381,22 +369,11 @@ class ::String
   end
 
   def rindex(char : Char, offset : Int32) : Int32?
-    offset = bytesize + offset if offset < 0
-    return nil if offset < 0
-    offset = bytesize - 1 if offset >= bytesize
-    wanted = char.ord.to_u8
-    ptr = to_unsafe
-
-    i = offset
-    while i >= 0
-      return i if ptr[i] == wanted
-      i = i - 1
-    end
-    nil
+    rindex(char.to_s, offset)
   end
 
   def rindex(char : Char) : Int32?
-    rindex(char, bytesize - 1)
+    rindex(char.to_s)
   end
 
   def rindex(search : String, offset : Int32) : Int32?
@@ -528,98 +505,48 @@ class ::String
     end
   end
 
+  # Mapped per character. The 256-entry byte table this used could not hold
+  # a character above ASCII: `"a☃".tr("☃", "x")` answered `"axxx"`, one `x`
+  # per byte of the character it was asked to replace once.
   def tr(from : String, to : String) : String
     return delete(from) if to.empty?
     return self if from.empty?
 
-    table = Pointer(Int32).malloc(256_u64)
-    i = 0
-    while i < 256
-      table[i] = -1
-      i = i + 1
-    end
+    sources = [] of String
+    from.each_char { |c| sources << c.to_s }
+    targets = [] of String
+    to.each_char { |c| targets << c.to_s }
 
-    f_len = from.bytesize
-    t_len = to.bytesize
-    i = 0
-    while i < f_len
-      f_byte = from.to_unsafe[i].to_i
-      t_byte = (i < t_len ? to.to_unsafe[i] : to.to_unsafe[t_len - 1]).to_i
-      table[f_byte] = t_byte
-      i = i + 1
-    end
-
-    String.new(bytesize) do |buffer|
-      i = 0
-      while i < bytesize
-        src = to_unsafe[i].to_i
-        mapped = table[src]
-        buffer[i] = mapped >= 0 ? mapped.to_u8 : src.to_u8
-        i = i + 1
+    result = ""
+    each_char do |c|
+      text = c.to_s
+      at = sources.index(text)
+      if at == nil
+        result = result + text
+      else
+        found = at || 0
+        # A `to` shorter than `from` repeats its last character, which is the
+        # rule the other library follows.
+        result = result + (found < targets.size ? targets[found] : targets[targets.size - 1])
       end
     end
+    result
   end
 
   def delete(char : Char) : String
-    wanted = char.ord.to_u8
-    matches = 0
-    i = 0
-    while i < bytesize
-      matches = matches + 1 if to_unsafe[i] == wanted
-      i = i + 1
-    end
-    return self if matches == 0
-
-    new_size = bytesize - matches
-    String.new(new_size) do |buffer|
-      i = 0
-      at = 0
-      while i < bytesize
-        b = to_unsafe[i]
-        if b != wanted
-          buffer[at] = b
-          at = at + 1
-        end
-        i = i + 1
-      end
-    end
+    delete(char.to_s)
   end
 
+  # Characters, not bytes: a 256-entry byte mask cannot hold a character
+  # above ASCII, and deleting one byte of one leaves the rest behind.
   def delete(chars : String) : String
     return self if chars.empty?
-    mask = Pointer(Bool).malloc(256_u64)
-    i = 0
-    while i < 256
-      mask[i] = false
-      i = i + 1
+    result = ""
+    each_char do |c|
+      text = c.to_s
+      result = result + text unless chars.includes?(text)
     end
-    i = 0
-    while i < chars.bytesize
-      mask[chars.to_unsafe[i].to_i] = true
-      i = i + 1
-    end
-
-    matches = 0
-    i = 0
-    while i < bytesize
-      matches = matches + 1 if mask[to_unsafe[i].to_i]
-      i = i + 1
-    end
-    return self if matches == 0
-
-    new_size = bytesize - matches
-    String.new(new_size) do |buffer|
-      i = 0
-      at = 0
-      while i < bytesize
-        b = to_unsafe[i]
-        unless mask[b.to_i]
-          buffer[at] = b
-          at = at + 1
-        end
-        i = i + 1
-      end
-    end
+    result
   end
 
   def squeeze : String
@@ -648,78 +575,28 @@ class ::String
   end
 
   def squeeze(char : Char) : String
-    return self if bytesize <= 1
-    wanted = char.ord.to_u8
-    dup_count = 0
-    i = 1
-    while i < bytesize
-      dup_count = dup_count + 1 if to_unsafe[i] == wanted && to_unsafe[i - 1] == wanted
-      i = i + 1
-    end
-    return self if dup_count == 0
-
-    String.new(bytesize - dup_count) do |buffer|
-      buffer[0] = to_unsafe[0]
-      at = 1
-      i = 1
-      while i < bytesize
-        b = to_unsafe[i]
-        if !(b == wanted && to_unsafe[i - 1] == wanted)
-          buffer[at] = b
-          at = at + 1
-        end
-        i = i + 1
-      end
-    end
+    squeeze(char.to_s)
   end
 
+  # A run of the same character becomes one of it. Compared per character,
+  # so a multi-byte one is a run rather than three bytes that never match.
   def squeeze(chars : String) : String
-    return self if bytesize <= 1 || chars.empty?
-    mask = Pointer(Bool).malloc(256_u64)
-    i = 0
-    while i < 256
-      mask[i] = false
-      i = i + 1
-    end
-    i = 0
-    while i < chars.bytesize
-      mask[chars.to_unsafe[i].to_i] = true
-      i = i + 1
-    end
-
-    dup_count = 0
-    i = 1
-    while i < bytesize
-      b = to_unsafe[i]
-      dup_count = dup_count + 1 if mask[b.to_i] && b == to_unsafe[i - 1]
-      i = i + 1
-    end
-    return self if dup_count == 0
-
-    String.new(bytesize - dup_count) do |buffer|
-      buffer[0] = to_unsafe[0]
-      at = 1
-      i = 1
-      while i < bytesize
-        b = to_unsafe[i]
-        if !(mask[b.to_i] && b == to_unsafe[i - 1])
-          buffer[at] = b
-          at = at + 1
-        end
-        i = i + 1
+    return self if chars.empty?
+    result = ""
+    previous = ""
+    each_char do |c|
+      text = c.to_s
+      if text == previous && chars.includes?(text)
+        next
       end
+      result = result + text
+      previous = text
     end
+    result
   end
 
   def count(char : Char) : Int32
-    wanted = char.ord.to_u8
-    c = 0
-    i = 0
-    while i < bytesize
-      c = c + 1 if to_unsafe[i] == wanted
-      i = i + 1
-    end
-    c
+    count(char.to_s)
   end
 
   def count(search : String) : Int32
@@ -734,49 +611,40 @@ class ::String
     c
   end
 
+  # The width is in characters, because `size` is and because a centred
+  # column is a visual claim: padded by bytes, `"héllo".center(9, '.')` came
+  # back seven characters wide on one side and eight long in all. The pad
+  # travels as its own bytes, so a multi-byte one is a character rather than
+  # its first byte three times.
   def center(width : Int32, pad : Char = ' ') : String
-    return self if width <= bytesize
-    extra = width - bytesize
-    left = extra // 2
-    right = extra - left
-    pad_byte = pad.ord.to_u8
-
-    String.new(width) do |buffer|
-      i = 0
-      while i < left
-        buffer[i] = pad_byte
-        i = i + 1
-      end
-      (buffer + left).copy_from(to_unsafe, bytesize)
-      i = left + bytesize
-      while i < width
-        buffer[i] = pad_byte
-        i = i + 1
-      end
-    end
+    center(width, pad.to_s)
   end
 
   def center(width : Int32, pad : String) : String
-    return self if width <= bytesize
     raise "empty padding" if pad.empty?
-    extra = width - bytesize
+    count = size
+    return self if width <= count
+    extra = width - count
     left = extra // 2
-    right = extra - left
-    p_len = pad.bytesize
+    cycled(pad, left) + self + cycled(pad, extra - left)
+  end
 
-    String.new(width) do |buffer|
-      i = 0
-      while i < left
-        buffer[i] = pad.to_unsafe[i % p_len]
-        i = i + 1
-      end
-      (buffer + left).copy_from(to_unsafe, bytesize)
-      i = 0
-      while i < right
-        buffer[left + bytesize + i] = pad.to_unsafe[i % p_len]
-        i = i + 1
+  # *count* characters of *pad*, repeating: `"hello".center(12, "-=")` is
+  # `"-=-hello-=-="`, which is the pad cycled rather than whole copies of it.
+  # Characters, so a multi-byte pad is one unit of width.
+  private def cycled(pad : String, count : Int32) : String
+    return "" if count <= 0
+    result = ""
+    taken = 0
+    while taken < count
+      pad.each_char do |c|
+        if taken < count
+          result = result + c.to_s
+          taken = taken + 1
+        end
       end
     end
+    result
   end
 
   def chars : Array(Char)
