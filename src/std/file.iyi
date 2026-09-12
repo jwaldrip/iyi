@@ -71,8 +71,7 @@ using std/path::{Path}
       st_nlink : UInt64
       st_mode : Int32
       st_uid : Int32
-      st_gid : Int32
-      st_pad0 : Int32
+      st_gid : Int32; st_pad0 : Int32
       st_rdev : UInt64
       st_size : Int64
       st_blksize : Int64
@@ -80,6 +79,7 @@ using std/path::{Path}
       st_atime : Timespec
       st_mtime : Timespec
       st_ctime : Timespec
+      _glibc_reserved0 : Int64; _glibc_reserved1 : Int64; _glibc_reserved2 : Int64
     end
 
     fun stat(path : UInt8*, buf : Stat*) : Int32
