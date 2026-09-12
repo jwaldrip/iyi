@@ -311,11 +311,24 @@ class String
     true
   end
 
+  # The symmetric form of `starts_with?(char)`, which has been here since the
+  # prelude had either. Six modules in `src/std` ask a string whether it ends
+  # in one character, and R-3 will not let any of them answer it themselves:
+  # `ends_with?` is a name this type already has, so a second definition would
+  # be the one every program got.
+  def ends_with?(char : Char) : Bool
+    bytesize > 0 && to_unsafe[bytesize - 1] == char.ord.to_u8
+  end
+
   # Where a character first is, or nil: the question a parser asks before
-  # it cuts.
-  def index(char : Char) : Int32?
+  # it cuts. The offset is where to start looking, which is how a parser walks
+  # a string it is cutting repeatedly; a negative one counts from the end.
+  def index(char : Char, offset : Int32 = 0) : Int32?
+    offset = bytesize + offset if offset < 0
+    return nil if offset < 0
+
     wanted = char.ord.to_u8
-    index = 0
+    index = offset
     while index < bytesize
       return index if to_unsafe[index] == wanted
       index = index + 1
