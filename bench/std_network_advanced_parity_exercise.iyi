@@ -5,7 +5,7 @@
 #   3. HTTP/2 (RFC 9113)
 #   4. HTTP/3 (RFC 9114)
 #   5. QUIC (RFC 9000, RFC 9001, RFC 9002)
-#   6. WebSocket (RFC 6455 & Crystal Parity)
+#   6. WebSocket (RFC 6455, full public surface)
 #   7. WebTransport (draft-ietf-webtrans-http3)
 #   8. Capsule & HTTP Datagrams (RFC 9297)
 #   9. Real TCP Loopback: WebSocket Handshake & Echo
@@ -167,7 +167,6 @@ def test_hpack : Nil
   eos_bytes = hex_to_bytes("ffffffff")
   dec_eos = Huffman.decode(eos_bytes)
   assert_true(dec_eos.is_a?(HpackError), "huffman rejects EOS symbol")
-
 
   # Static Table entries
   st1 = StaticTable.get(1)
@@ -398,10 +397,10 @@ def test_quic : Nil
 end
 
 # =============================================================================
-# Section 6: WebSocket (RFC 6455 & Crystal Parity)
+# Section 6: WebSocket (RFC 6455, full public surface)
 # =============================================================================
 def test_websocket : Nil
-  puts "== Section 6: WebSocket (RFC 6455 & Crystal Parity)"
+  puts "== Section 6: WebSocket (RFC 6455, full public surface)"
 
   # RFC 4648 Base64 vectors
   assert_eq(Base64.encode(hex_to_bytes("66")), "Zg==", "base64 'f'")
@@ -412,7 +411,7 @@ def test_websocket : Nil
   accept = Handshake.compute_accept("dGhlIHNhbXBsZSBub25jZQ==")
   assert_eq(accept, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", "RFC 6455 1.3 Sec-WebSocket-Accept")
 
-  # Crystal CloseCode enum parity
+  # The whole CloseCode enum, every name it is meant to answer to
   assert_eq_i32(CloseCode::NormalClosure.to_i32, 1000, "CloseCode NormalClosure")
   assert_eq_i32(CloseCode::GoingAway.to_i32, 1001, "CloseCode GoingAway")
   assert_eq_i32(CloseCode::ProtocolError.to_i32, 1002, "CloseCode ProtocolError")
@@ -453,7 +452,6 @@ def test_websocket : Nil
   s_unmasked = Session.new(t_unmasked, is_server: true)
   unmasked_res = s_unmasked.receive
   assert_true(unmasked_res.is_a?(WebSocketError), "unmasked client frame was not rejected")
-
 end
 
 # =============================================================================

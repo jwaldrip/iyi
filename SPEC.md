@@ -341,7 +341,7 @@ question — "too few arguments for format string" — where it used to borrow
 a raise from an index.
 
 **The standard library is deliberately outside that count, and this is the
-answer this section left open.** `src/std/` is **62,488 lines across 100
+answer this section left open.** `src/std/` is **67,998 lines across 102
 modules**. It is opt-in via `import std/...`, it lives outside `src/iyi/` where
 `bench/doc_numbers.py` measures the ceiling, and a program that imports none of
 it pays for none of it. So the prelude rule keeps its meaning, "a method enters
@@ -359,7 +359,7 @@ writing 2,031 lines of regex engine rather than binding PCRE:
 | libyaml | `yaml.iyi` | the Norway problem, merge keys, an alias bomb bounded |
 | libxml2 | `xml.iyi` | an XXE attempt refused, billion laughs bounded |
 | zlib | `compress.iyi` | round trips against the real `gzip` in both directions |
-| GMP | `big.iyi` | 5,000 random algebraic identities, and `100!` |
+| GMP | `big.iyi` | 5,000 random algebraic identities, and `102!` |
 | PCRE | `regex.iyi` | a Thompson NFA, so `(a+)+b` is linear rather than 2^n |
 | OpenSSL digests | `digest.iyi`, `crypto.iyi` | NIST CAVP and RFC 2202, 4231, 5869, 8439 vectors |
 
@@ -384,7 +384,7 @@ implementation that round-trips happily while disagreeing with the world:
 | `tls.iyi` | RFC 8448's worked traces, byte for byte | a live authenticated TLS 1.3 connection to `example.com`, cipher `0x1301` |
 | `http1.iyi` | RFC 9112, and nineteen smuggling framings refused | a client and concurrent server, live HTTP and authenticated HTTPS |
 | `websocket.iyi` | RFC 6455 section 1.3's handshake vector | UTF-8 across fragments and stateless `permessage-deflate` negotiation |
-| `http2.iyi` | RFC 9113, sixteen h2spec shapes | three concurrent streams, and 100 KB through a 65,535-byte window |
+| `http2.iyi` | RFC 9113, sixteen h2spec shapes | three concurrent streams, and 102 KB through a 65,535-byte window |
 | `quic.iyi`, `http3.iyi` | RFC 9001 appendix A, byte for byte | TLS 1.3, 1-RTT, ACK/PTO, H3/QPACK and WebTransport over UDP loopback |
 | `http_client.iyi` | live ALPN against two independent origins | one client selected `h2` at `nghttp2.org` and `http/1.1` at `www.gnu.org` |
 
@@ -938,8 +938,8 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 109,461 lines, Crystal, forked |
-| Library | 8,161 lines (3,551 of it core) | 13,609-line own prelude + 62,488 in std |
+| Compiler | 24,984 lines, **written in Crystal** | 109,534 lines, Crystal, forked |
+| Library | 8,161 lines (3,551 of it core) | 13,609-line own prelude + 67,998 in std |
 | Specs | 21,146 lines | 9,758 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
@@ -1730,7 +1730,7 @@ of them called in both:
 |---|---|---|---|
 | 0 | 0.143 s | 0.143 s | 1.00 |
 | 500 | 0.155 s | 0.154 s | 1.00 |
-| 1000 | 0.169 s | 0.168 s | 1.00 |
+| 1020 | 0.169 s | 0.168 s | 1.00 |
 | 2000 | 0.187 s | 0.183 s | 1.02 |
 | 4000 | 0.224 s | 0.215 s | 1.05 |
 
@@ -1745,7 +1745,7 @@ a branch per item. The shape a real derive macro has:
 | N | via macro | hand-written | ratio | per method |
 |---|---|---|---|---|
 | 250 | 0.155 s | 0.152 s | 1.02 | ~14 µs |
-| 1000 | 0.171 s | 0.166 s | 1.03 | ~6 µs |
+| 1020 | 0.171 s | 0.166 s | 1.03 | ~6 µs |
 | 4000 | 0.253 s | 0.218 s | 1.16 | ~9 µs |
 
 Real, and worth the context: the same table's slope says a *method* costs about
@@ -2566,7 +2566,7 @@ or any field's type fails.
 | …only because a collection is mutable | 3 (23.1%) | 2 (0.4%) |
 | …only because of a generated setter | 0 | 42 (8.7%) |
 | **pass `Share`** | **10 (76.9%)** | **186 (38.5%)** |
-| pass given a shareable immutable collection | 13 (**100%**) | 188 (38.9%) |
+| pass given a shareable immutable collection | 13 (**102%**) | 188 (38.9%) |
 | hold class variables (III.4.5) | 0 | 3 (0.6%) |
 
 **The class this section told itself to fear is empty.** "Immutable in practice
@@ -2582,7 +2582,7 @@ solely because of a generated setter, so "move the field into the constructor"
 is not a fix anyone would be applying constantly either.
 
 **What the count actually found is that the two corpora disagree, and why.**
-Clean-sheet iyi code is 77% shareable as written and **100% shareable given one
+Clean-sheet iyi code is 77% shareable as written and **102% shareable given one
 missing piece**: every failure in it is a type holding an `Array`. The compiler
 is 38.5% shareable and stays there, because its failures are not collections but
 its own mutable object graph: `MainVisitor` with 35 mutated fields, `Compiler`
@@ -9879,7 +9879,7 @@ For traceability, since several rules here rest on numbers rather than taste.
 
 | Claim | Evidence |
 |---|---|
-| Separate compilation is the main prize | 1000 typed functions cost +0.08 s; ~95% of non-LLVM work is fixed prelude tax |
+| Separate compilation is the main prize | 1020 typed functions cost +0.08 s; ~95% of non-LLVM work is fixed prelude tax |
 | A cached prelude is worth 3.4×, not 20× | fork probe: 1.58 s → 0.47 s front end; 0.09 s if the prelude did not exist (IV.1a) |
 | The artifact is not the whole job | with the prelude pre-analysed, class-var initializers and `main` are 90% of what is left, because they still walk the prelude (IV.1a) |
 | Prelude-aware passes are worth another 10× | a front end that never walks the prelude runs `hello.iyi` in 0.049 s vs 1.58 s, and emits an object with an identical symbol table (IV.1a) |
@@ -9894,7 +9894,7 @@ For traceability, since several rules here rest on numbers rather than taste.
 | Macro expansion is not a compile-time cost | a template macro runs at 1.00–1.05× hand-written code; a computing macro adds ~9 µs per method against the ~18 µs the method costs anyway (II.10) |
 | `method_missing` is safe to cut | one occurrence in stdlib, zero in Kemal |
 | Traits can carry the stdlib | `Enumerable` ported and running: all 71 of its method names on one `each`, implemented for two element types, every method called (`src/std/enumerable.iyi`) |
-| `Share` prices a style rather than failing | clean-sheet iyi code is 77% shareable as written and 100% given an immutable collection; the compiler, built as a mutable workspace, is 38.5% and stays there (III.4.7) |
+| `Share` prices a style rather than failing | clean-sheet iyi code is 77% shareable as written and 102% given an immutable collection; the compiler, built as a mutable workspace, is 38.5% and stays there (III.4.7) |
 | Module-level mutable state is already rare | 3 of 483 compiler types hold a class variable, so III.4.5 costs almost nothing |
 | Coherence costs nothing at build time | the import DAG plus the orphan rule make duplicate impls unrepresentable (IV.4) |
 | The gap to Go is the warm build, and it is 11× | `hello`: cold 2.20 s vs Go's 1.98 s, warm 1.96 s vs Go's 0.18 s. Crystal's cache holds codegen only, so the 1.32 s front end is paid on every build (`bench/build_speed.py`) |
@@ -9929,7 +9929,7 @@ For traceability, since several rules here rest on numbers rather than taste.
 | 6 | `@[Monomorphize]` on stdlib trait defaults (II.6) | yes: mark `each`/`map`/`select`/`reduce`, stencil the rest. Accepts that the library author owns a per-method performance decision |
 | 7 | ~~`!` inside a `defer` (III.1.4, V.8)~~ | **Decided: no**: a `defer` runs while the function is already returning, so propagating from one needs error-during-error semantics |
 | 8 | Structured concurrency only, no bare spawn (III.4.1) | yes. It is `defer` applied to a task set, so it costs no new mechanism, and it makes Go's commonest bug unrepresentable. The price is that a task cannot outlive its scope, which is a taste call |
-| 9 | ~~`Share` marker vs Erlang-style no sharing (III.4.4)~~ | **Decided: `Share`, on the count**: III.4.7 found the feared class empty and clean-sheet iyi code 77% shareable as written, 100% given a shareable immutable collection. That collection is now a stdlib obligation, not a nicety |
+| 9 | ~~`Share` marker vs Erlang-style no sharing (III.4.4)~~ | **Decided: `Share`, on the count**: III.4.7 found the feared class empty and clean-sheet iyi code 77% shareable as written, 102% given a shareable immutable collection. That collection is now a stdlib obligation, not a nicety |
 | 10 | ~~**Is iyi ever meant to be self-hosted?**~~ | **Decided: no.** iyi's compiler is and remains a Crystal program. The language's claim is what it compiles, not what compiles it. See B.2 |
 | 11 | ~~**Keep Crystal's interpreter?**~~ | **Decided: no, and removed.** It was compiled out already, it cannot run an iyi program past the module header, and no commit of this fork had touched it in 153. An interpreter is a second implementation of the semantics, and the semantics are still moving. See V.11. **Reopened by III.11 and decided yes as #25: built on the macro interpreter, no C interop** |
 | 12 | ~~**Is a Crystal binding checked or trusted? (III.6)**~~ | **Decided: checked, and nobody writes it.** The return type every binding carries is the instantiated answer, held against the written restriction where there is one (III.6 rule 1's count: URI 40 agree, 0 disagree, 27 unchecked); a person writes no signature at a boundary, `iyi bind` writes the artifact from the shard's own declarations. "Trusted for the first version" was the order of work, and the first version was measured out of it |

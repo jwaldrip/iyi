@@ -118,21 +118,28 @@ prove_fails() {
     "$(grep -m1 "$phrase" "$WORK/$dir/out" | sed 's/^iyi: panic: //')"
 }
 
-# 1. CSV delimiter recognition broken
+# The CSV library was rewritten as a lexer, so these four patches name the
+# lexer's branches. Each one makes the parser answer a wrong value rather than
+# refuse the input, because a library that raises proves only that it noticed,
+# and what these checks are for is the case where nobody notices. The patterns
+# avoid quote characters, which cannot appear inside a single-quoted script,
+# and `\r` escapes, which GNU and BSD sed read differently.
+
+# 1. A separator inside a quoted cell stops being part of the cell
 prove_fails "csv quoted field recognition broken" no_csv_comma "csv: comma field 0" "csv.iyi" \
-  's/b == @quote/b == 0_u8/'
+  's/parts << ch[.]ord[.]to_u8$/parts << ch.ord.to_u8 unless ch == @separator/'
 
-# 2. CSV embedded newline in quotes broken
+# 2. A newline inside a quoted cell stops being part of the cell
 prove_fails "csv newline in quotes broken" no_csv_nl "csv: newline" "csv.iyi" \
-  's/bytes << ch/if ch == 10_u8; end_of_row.value = true; break; else; bytes << ch; end/'
+  's/parts << ch[.]ord[.]to_u8$/parts << ch.ord.to_u8 unless ch.ord == 10 || ch.ord == 13/'
 
-# 3. CSV escaped quotes unescaping broken
+# 3. A doubled quote unescapes to the wrong character
 prove_fails "csv escaped quote broken" no_csv_esc "csv: escaped quote" "csv.iyi" \
-  's/bytes << @quote/bytes << 0_u8/'
+  's/parts << quote_byte$/parts << 88_u8/'
 
-# 4. CSV CRLF line endings broken (leaving unconsumed LF after CR)
+# 4. The line feed after a carriage return is no longer consumed with it
 prove_fails "csv crlf line endings broken" no_csv_crlf "csv: crlf" "csv.iyi" \
-  's/if @reader.peek_byte == 10_u8/if false/'
+  's/if current_char == ..n./if false/'
 # 5. Log severity level threshold filtering broken
 prove_fails "log level threshold broken" no_log_thresh "log: filtered" "log.iyi" \
   's/return if severity < level/# return if severity < level/'

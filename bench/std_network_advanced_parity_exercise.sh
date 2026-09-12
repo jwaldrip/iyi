@@ -11,7 +11,7 @@
 #   3. HTTP/2 (RFC 9113)
 #   4. HTTP/3 (RFC 9114)
 #   5. QUIC (RFC 9000, 9001, 9002)
-#   6. WebSocket (RFC 6455 & Crystal Parity)
+#   6. WebSocket (RFC 6455, full public surface)
 #   7. WebTransport (draft-ietf-webtrans-http3)
 #   8. Capsule & HTTP Datagrams (RFC 9297)
 #   9. Real TCP Loopback: WebSocket Handshake & Echo
@@ -66,7 +66,7 @@ for phrase in \
   "== Section 3: HTTP/2 (RFC 9113)" \
   "== Section 4: HTTP/3 (RFC 9114)" \
   "== Section 5: QUIC (RFC 9000, 9001, 9002)" \
-  "== Section 6: WebSocket (RFC 6455 & Crystal Parity)" \
+  "== Section 6: WebSocket (RFC 6455, full public surface)" \
   "== Section 7: WebTransport (draft-ietf-webtrans-http3)" \
   "== Section 8: Capsule & HTTP Datagrams (RFC 9297)" \
   "== Section 9: Real TCP Loopback: WebSocket Handshake & Echo" \
