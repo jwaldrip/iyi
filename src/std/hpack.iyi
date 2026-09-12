@@ -270,6 +270,10 @@ pub class DynamicTable
     @size = @size + entry_size
   end
 
+  def add(field : HeaderField) : Nil
+    add(field.name, field.value, field.never_indexed)
+  end
+
   private def evict_to_fit : Nil
     while @size > @max_size && !@entries.empty?
       removed = @entries.pop
