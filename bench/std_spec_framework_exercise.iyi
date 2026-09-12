@@ -119,8 +119,8 @@ describe "All matchers" do
   end
 
   it "checks containment" do
-    "crystal and iyi".should contain("iyi")
-    "crystal and iyi".should_not contain("python")
+    "source and iyi".should contain("iyi")
+    "source and iyi".should_not contain("python")
     [10, 20, 30].should contain(20)
     [10, 20, 30].should_not contain(99)
   end
