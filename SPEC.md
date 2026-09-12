@@ -856,9 +856,9 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 109,569 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 109,598 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 13,836-line own prelude + 5,997 in std |
-| Specs | 21,146 lines | 9,966 for iyi |
+| Specs | 21,146 lines | 10,040 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
 | Own status line | *"pre-alpha: we are still designing the language"* | design largely settled, 0.2.0 released, a language written in it |
@@ -3636,6 +3636,20 @@ flags set and answered `nil` for `Level.parse?("WARN")`, with one import line
 as the whole diagnosis. Refused in the same sentence now, and told apart the
 same way: a def written beside `prelude.iyi` may replace one, a def written
 anywhere else may not.
+
+**And a macro is the same act, one layer wider.** The question was asked of
+`def` and not of `macro`, and a `macro` is where it costs more: `getter` is a
+*declaration* macro, so a file that reopens `::Object` and writes its own
+decides what every field declaration in the program means — the ones in files
+that never heard of it, and the ones the prelude wrote. `class ::Object;
+macro getter(*names)` in a program made `getter value` answer 99 for every
+type in it, silently. It travels too (IV.1 carries `macro_bodies`), so a
+consumer can inherit one from a module whose source it never reads. Asked at
+the same place now, because `add_macro` answers what `add_def` answers: which
+definition this one took the place of. A macro under a name the prelude does
+not have is an addition, and a macro on a type the module declared is its
+own — a program's `class Holder; macro getter` is untouched, because
+`Holder`'s is not `Object`'s.
 
 What that settles about `src/std/`: nine of its twelve modules are
 library-agnostic and build under `--crystal`; `std/text` and `std/format` are

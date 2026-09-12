@@ -669,7 +669,7 @@ describe "Semantic: iyi import" do
           end
           IYI
       }) do
-        expect_raises(Iyi::TypeException, /String#shout is the library's, and this replaces it/) do
+        expect_raises(Iyi::TypeException, /String#shout is the library's method, and this replaces it/) do
           semantic_iyi_crystal("main.iyi")
         end
       end
@@ -728,7 +728,7 @@ describe "Semantic: iyi import" do
           end
           IYI
       }) do |dir|
-        expect_raises(Iyi::TypeException, /Shouter#shout is the prelude's, and this replaces it/) do
+        expect_raises(Iyi::TypeException, /Shouter#shout is the prelude's method, and this replaces it/) do
           semantic_iyi("main.iyi", prelude_dir: File.join(dir, "prelude"))
         end
       end
@@ -783,6 +783,80 @@ describe "Semantic: iyi import" do
 
           require "./prelude/shout.iyi"
           require "./prelude/louder.iyi"
+          IYI
+      }) do |dir|
+        semantic_iyi("main.iyi", prelude_dir: File.join(dir, "prelude"))
+      end
+    end
+
+    # A macro is the same act and a wider one: `getter` is a declaration
+    # macro, so a module that reopens `::Object` and writes its own decides
+    # what every field declaration in the program means, including the ones
+    # in files that never heard of it. It travels in an artifact too, so a
+    # consumer can inherit it from a module whose source it never reads.
+    it "refuses a module that replaces a macro of the prelude" do
+      with_iyi_modules({
+        "prelude/macros.iyi" => <<-IYI,
+          class ::Object
+            macro reader(name)
+              def {{name.id}} : Int32
+                1
+              end
+            end
+          end
+          IYI
+        "main.iyi" => <<-IYI,
+          module app/main
+
+          require "./prelude/macros.iyi"
+
+          class ::Object
+            macro reader(name)
+              def {{name.id}} : Int32
+                2
+              end
+            end
+          end
+          IYI
+      }) do |dir|
+        expect_raises(Iyi::TypeException, /Object\.reader is the prelude's macro, and this replaces it/) do
+          semantic_iyi("main.iyi", prelude_dir: File.join(dir, "prelude"))
+        end
+      end
+    end
+
+    # A macro under a name the prelude does not have is an addition, and a
+    # macro on a type the module declared is its own however it is spelled.
+    it "lets a module add a macro to a type of the prelude" do
+      with_iyi_modules({
+        "prelude/macros.iyi" => <<-IYI,
+          class ::Object
+            macro reader(name)
+              def {{name.id}} : Int32
+                1
+              end
+            end
+          end
+          IYI
+        "main.iyi" => <<-IYI,
+          module app/main
+
+          require "./prelude/macros.iyi"
+
+          class ::Object
+            macro writer(name)
+              def {{name.id}}= (value : Int32) : Nil
+              end
+            end
+          end
+
+          class Holder
+            macro reader(name)
+              def {{name.id}} : Int32
+                3
+              end
+            end
+          end
           IYI
       }) do |dir|
         semantic_iyi("main.iyi", prelude_dir: File.join(dir, "prelude"))

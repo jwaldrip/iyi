@@ -24,6 +24,20 @@
   `std/text` keeps what the prelude does not have. `Array#join` with no
   separator and a `byte_slice` helper were the prelude's twice over and are
   its once.
+- **And a macro is the same act, one layer wider.** R-3 was asked of `def`
+  and not of `macro`, which is where it costs more: `getter` is a
+  *declaration* macro, so `class ::Object; macro getter(*names)` in one file
+  decided what every field declaration in the program meant — including the
+  ones in files that never heard of it — and `getter value` answered 99 with
+  nothing said at either definition. Macros travel in an artifact too, so a
+  consumer could inherit one from a module whose source it never reads.
+  Asked at the same place now: `add_macro` answers which macro this one took
+  the place of, the way `add_def` always has. An addition is still an
+  addition, and a macro on a type the module declared is its own — a
+  program's `class Holder; macro getter` is untouched, because `Holder`'s is
+  not `Object`'s. A class method was already covered and a constant is
+  refused by name (`already initialized constant`); those were checked
+  rather than assumed.
 - **An artifact whose module path now reaches another file says so.** A
   path is a file's path (R-1) and it resolves from the entry's directory
   before `IYI_PATH`, so a program with its own `std/text.iyi` has that file
