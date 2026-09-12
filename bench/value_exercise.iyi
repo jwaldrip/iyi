@@ -1,15 +1,16 @@
-# The prelude's `Tuple` surface, exercised - SPEC.md II.6, IV.2.
+# The prelude's value types, exercised - SPEC.md II.6, IV.2.
 #
-#     bash bench/tuple_exercise.sh
+#     bash bench/value_exercise.sh
 #
-# A tuple is a value, and every method here is about that one fact: two
-# tuples with the same members are the same tuple, and everything that asks
-# a value whether it is equal - a `Hash` key, a `Set` member, `includes?`,
-# `index`, `uniq`, a `case` arm - has to get the same answer.
+# A tuple and a range are values, and every check here is about that one
+# fact: two written the same way are the same value, and everything that
+# asks a value whether it is equal - a `Hash` key, a `Set` member,
+# `includes?`, `index`, `uniq`, a `case` arm - has to get one answer.
 #
-# `==` and `hash` were the two the prelude never wrote, so `Object`'s
-# answered: identity, on a value type. `{1, 2} == {1, 2}` was false, and
-# `zip`'s own result could not be searched for a pair it contained.
+# `==` and `hash` were the two the prelude never wrote for either, so
+# `Object`'s answered: identity, on a value type. `{1, 2} == {1, 2}` and
+# `(1..3) == (1..3)` were both false, and `zip`'s own result could not be
+# searched for a pair it contained.
 #
 # Exits non-zero at the first check that does not hold, so the driver can
 # break one method at a time and read which check noticed.
@@ -107,4 +108,29 @@ assert_str({1, "two"}.to_s, "{1, \"two\"}", "tuple: to_s inspects its members")
 assert_str({1, 2}.inspect, "{1, 2}", "tuple: inspect")
 assert_str([{1, 2}].to_s, "[{1, 2}]", "tuple: inside an array")
 
-puts "all tuple checks passed"
+# ---- 6. The other value type, which had the same defect
+assert_true((1..3) == (1..3), "range: == same bounds")
+assert_true(((1..3) == (1..4)) == false, "range: == different end")
+assert_true(((1..3) == (2..3)) == false, "range: == different begin")
+assert_true(((1..3) == (1...3)) == false, "range: inclusive is not exclusive")
+assert_true(((1..3) != (1...3)), "range: != follows ==")
+assert_int((1..3).hash, (1..3).hash, "range: equal ranges hash the same")
+assert_true((1..3).hash != (1...3).hash, "range: the flag changes the hash")
+assert_true((1..3).hash != (1..4).hash, "range: a bound changes the hash")
+
+spans = {} of Range(Int32, Int32) => String
+spans[1..3] = "low"
+spans[5..9] = "high"
+assert_str(spans[1..3]? || "missing", "low", "range: hash key found")
+assert_int(spans.size, 2, "range: two keys, two entries")
+assert_true(spans[1...3]? == nil, "range: the exclusive twin is another key")
+assert_true([(1..3), (5..9)].includes?(1..3), "range: array includes?")
+assert_int([(1..3), (5..9)].index(5..9) || -1, 1, "range: array index")
+
+# A range still counts what it counted, which is what the samples call.
+counted = 0
+(1..4).each { |value| counted = counted + 1 }
+assert_int(counted, 4, "range: each still counts")
+assert_int((1...4).size, 3, "range: exclusive size")
+
+puts "all value checks passed"

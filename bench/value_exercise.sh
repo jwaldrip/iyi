@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
-# The prelude's `Tuple` surface: a value's equality, its hash, and every
-# collection that asks one of those two questions.
+# The prelude's value types - a tuple and a range: their equality, their
+# hash, and every collection that asks one of those two questions.
 #
-#     bash bench/tuple_exercise.sh
+#     bash bench/value_exercise.sh
 #
-# `bench/tuple_exercise.iyi` is the program. It runs plain and optimised, and
+# `bench/value_exercise.iyi` is the program. It runs plain and optimised, and
 # then each check is proved capable of failing by patching a *copy of the
 # prelude* - `src/iyi/object.iyi` with one method broken - and building
 # against it through `IYI_PATH`. A check that cannot fail is not a check.
 #
 # What is being protected is the agreement, not the two methods. `==` and
-# `hash` were the ones the prelude never wrote, so `Object`'s answered -
-# identity, on a value type - and `{1, 2} == {1, 2}` was false. Everything
+# `hash` were the ones the prelude never wrote for either type, so `Object`'s
+# answered - identity, on a value type - and `{1, 2} == {1, 2}` and
+# `(1..3) == (1..3)` were both false. Everything
 # that asks a value whether it is equal was wrong with it: a tuple key was
 # never found in a `Hash`, a `Set` of them was a list, `includes?`, `index`
 # and `uniq` over `zip`'s own result answered no, and a `case` over a tuple
@@ -31,7 +32,7 @@ status=0
 run_case() { # run_case <label> <name> [build flags...]
   local label="$1" name="$2"
   shift 2
-  if ! "$IYI" build "$@" -o "$WORK/$name" "$REPO/bench/tuple_exercise.iyi" \
+  if ! "$IYI" build "$@" -o "$WORK/$name" "$REPO/bench/value_exercise.iyi" \
        > "$WORK/$name.build" 2>&1; then
     echo "  $label: the exercise did not build"
     sed -n '1,12p' "$WORK/$name.build"
@@ -44,7 +45,7 @@ run_case() { # run_case <label> <name> [build flags...]
     status=1
     return
   fi
-  if ! grep -q "all tuple checks passed" "$WORK/$name.out"; then
+  if ! grep -q "all value checks passed" "$WORK/$name.out"; then
     echo "  $label: the exercise ended without passing"
     tail -3 "$WORK/$name.out"
     status=1
@@ -95,7 +96,7 @@ prove_fails() { # prove_fails <label> <dir> <phrase> <sed script>
   fi
 
   if ! IYI_PATH="$WORK/$dir:$REPO/src" "$IYI" build \
-       -o "$WORK/$dir/program" "$REPO/bench/tuple_exercise.iyi" \
+       -o "$WORK/$dir/program" "$REPO/bench/value_exercise.iyi" \
        > "$WORK/$dir/build" 2>&1; then
     if grep -q "$phrase" "$WORK/$dir/build"; then
       printf '  %s: refused at compile time\n' "$label"
@@ -107,6 +108,42 @@ prove_fails() { # prove_fails <label> <dir> <phrase> <sed script>
     return
   fi
 
+  "$WORK/$dir/program" > "$WORK/$dir/out" 2>&1
+  local code=$?
+  if [ "$code" -eq 0 ]; then
+    echo "  $label: the exercise still passed, so it does not test this"
+    status=1
+    return
+  fi
+  if ! grep -q "$phrase" "$WORK/$dir/out"; then
+    echo "  $label: failed, but not at the expected check (wanted '$phrase')"
+    tail -2 "$WORK/$dir/out"
+    status=1
+    return
+  fi
+  printf '  %s: exits %s at "%s"\n' "$label" "$code" \
+    "$(grep -m1 -o "$phrase.*" "$WORK/$dir/out" | sed 's/^assert failed: //')"
+}
+
+# The same, for the file the other value type lives in.
+prove_fails_range() { # prove_fails_range <label> <dir> <phrase> <sed script>
+  local label="$1" dir="$2" phrase="$3" script="$4"
+  mkdir -p "$WORK/$dir/iyi"
+  cp -R "$REPO/src/iyi/." "$WORK/$dir/iyi/"
+  sed -e "$script" "$REPO/src/iyi/range.iyi" > "$WORK/$dir/iyi/range.iyi"
+  if cmp -s "$REPO/src/iyi/range.iyi" "$WORK/$dir/iyi/range.iyi"; then
+    echo "  $label: the patch changed nothing, so this proves nothing"
+    status=1
+    return
+  fi
+  if ! IYI_PATH="$WORK/$dir:$REPO/src" "$IYI" build \
+       -o "$WORK/$dir/program" "$REPO/bench/value_exercise.iyi" \
+       > "$WORK/$dir/build" 2>&1; then
+    echo "  $label: the patched prelude did not build"
+    sed -n '1,10p' "$WORK/$dir/build"
+    status=1
+    return
+  fi
   "$WORK/$dir/program" > "$WORK/$dir/out" 2>&1
   local code=$?
   if [ "$code" -eq 0 ]; then
@@ -155,11 +192,24 @@ prove_fails "index by value" bad_index "tuple: index by value" \
 prove_fails "to_s without members" bad_to_s "tuple: to_s" \
   's/^      result = result + self\[{{i}}\].inspect$/      result = result + "?"/'
 
+# 8. And the range's own pair, in the file it lives in.
+prove_fails_range "range == ignores its bounds" range_eq "range: == different end" \
+  's/^    @begin == other.begin \&\& @end == other.end \&\& @exclusive == other.exclusive?$/    true/'
+
+# 9. The flag dropped, so `1..3` and `1...3` become the same range.
+prove_fails_range "range == ignores exclusive" range_flag "range: inclusive is not exclusive" \
+  's/ \&\& @exclusive == other.exclusive?$//'
+
+# 10. And its hash, which is what puts an equal range in the same slot.
+prove_fails_range "range hash collapsed" range_hash "range: the flag changes the hash" \
+  's/^    @exclusive ? (value &\* 31) &+ 1 : value &\* 31$/    0/'
+
 echo
 if [ "$status" -eq 0 ]; then
-  echo "Tuple: a value's equality and its hash agree, and the Hash, the Set,"
-  echo "includes?, index, uniq, zip and case that ask them all get one answer."
+  echo "Values: a tuple's and a range's equality and hash agree, and the Hash,"
+  echo "the Set, includes?, index, uniq, zip and case that ask them all get one"
+  echo "answer."
 else
-  echo "the tuple surface does not hold"
+  echo "the value surface does not hold"
 fi
 exit "$status"

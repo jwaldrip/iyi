@@ -288,14 +288,15 @@ jobs:
       - name: An enum is its name, its order and its members
         run: bash bench/enum_exercise.sh
 
-      # And the same question asked of the other value the prelude writes
-      # itself: a tuple. `==` and `hash` were never written, so `Object`'s
-      # answered — identity, on a value — and `{1, 2} == {1, 2}` was false,
-      # which made a tuple key unfindable, a `Set` of them a list, and
-      # `includes?`/`index`/`uniq` over `zip`'s own result answer no. Seven
+      # And the same question asked of the two values the prelude writes
+      # itself: a tuple and a range. Neither had `==` or `hash`, so
+      # `Object`'s answered — identity, on a value — and `{1, 2} == {1, 2}`
+      # and `(1..3) == (1..3)` were both false, which made either one
+      # unfindable as a key, a `Set` of them a list, and
+      # `includes?`/`index`/`uniq` over `zip`'s own result answer no. Ten
       # broken methods of a copied prelude prove each check.
-      - name: A tuple is its members
-        run: bash bench/tuple_exercise.sh
+      - name: A tuple and a range are their members
+        run: bash bench/value_exercise.sh
 
       # Three gates that existed, passed on the machine that wrote them, and
       # were named in this file by nothing: `format_exercise` (seven proofs

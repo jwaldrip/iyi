@@ -4,21 +4,33 @@
 
 ### Fixed
 
-- **A tuple is its members, which is what `==` had never said.** The prelude
-  wrote `Tuple#size`, `#[]`, `#to_s` and `#inspect` and never `==` or
-  `hash`, so `Object`'s answered — identity, on a value type — and
-  `{1, 2} == {1, 2}` was **false**. Everything that asks a value whether it
-  is equal was wrong with it: a tuple key was never found in a `Hash`
+- **A tuple and a range are their members, which is what `==` had never
+  said.** The prelude wrote `Tuple#size`, `#[]`, `#to_s` and `#inspect` and
+  never `==` or `hash`, and wrote neither for `Range` either, so `Object`'s
+  answered — identity, on a value type — and `{1, 2} == {1, 2}` and
+  `(1..3) == (1..3)` were both **false**. Everything that asks a value
+  whether it is equal was wrong with them: a key was never found in a `Hash`
   (`table[{1, 2}]?` after `table[{1, 2}] = "x"` answered nil), a `Set` of
-  them was a list, `includes?`, `index` and `uniq` over `zip`'s *own*
-  result answered no, and a `case` over a tuple matched nothing, because a
-  `when` is `===` and `===` is `==`. Both written now, element-wise, and
+  them was a list, `includes?`, `index` and `uniq` over `zip`'s *own* result
+  answered no, and a `case` over a tuple matched nothing, because a `when`
+  is `===` and `===` is `==`. All four written now, element-wise, and
   hashing follows equality because a key is found by its slot first and
   compared second. Found by probing the prelude's collections for the same
-  self-disagreement the string surface had, and `bench/tuple_exercise.sh`
-  is the gate: the surface plain and optimised, the sample whose `zip`
-  reaches it, and seven broken methods of a copied prelude to prove each
+  self-disagreement the string surface had, and `bench/value_exercise.sh`
+  is the gate: both surfaces plain and optimised, the sample whose `zip`
+  reaches one, and ten broken methods of a copied prelude to prove each
   check can fail.
+- **And the reason, measured rather than argued.** SPEC.md said for one
+  commit that a type-id hash "starts being wrong" once a type defines
+  equality. It does not: the requirement runs one way — equal values must
+  hash equally — and a coarser hash keeps it, so `Object#hash`'s default is
+  correct and slow. Keyed two ways with 40,000 lookups each, 2,000
+  `Array(Int32)` keys (an `==` of their own, no `hash`) answer in 28 ms
+  against 3 ms for tuples, and at 4,000 keys it is 104 ms against 8. The
+  broken direction is a hash *finer* than `==`, which nothing in the
+  prelude has. `Set` and `Hash` still compare by identity, which is
+  coherent for references and is recorded beside `Array#==` because the
+  prelude's collections do not all answer that question the same way.
 - **Padding is measured in characters, because `size` is.** `ljust` and
   `rjust` counted bytes: `"héllo".ljust(7, '.')` answered a string whose own
   `size` was 6, so the one thing padding is asked for — lining a column up —
@@ -5279,7 +5291,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 13,878-line library and nothing else. Every other
+  written against iyi's own 13,896-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 
