@@ -189,7 +189,8 @@ pub struct LLVMType
   end
 
   def const_int(val : Int64, sign_extend : Bool = false) : LLVMValue
-    LLVMValue.new(LibLLVM.const_int(@unwrap, val.to_u64, sign_extend ? 1 : 0))
+    u = pointerof(val).as(UInt64*).value
+    LLVMValue.new(LibLLVM.const_int(@unwrap, u, sign_extend ? 1 : 0))
   end
 
   def const_int(val : UInt64, sign_extend : Bool = false) : LLVMValue
@@ -197,7 +198,9 @@ pub struct LLVMType
   end
 
   def const_int(val : Int32, sign_extend : Bool = false) : LLVMValue
-    LLVMValue.new(LibLLVM.const_int(@unwrap, val.to_i64.to_u64, sign_extend ? 1 : 0))
+    v64 = val.to_i64
+    u = pointerof(v64).as(UInt64*).value
+    LLVMValue.new(LibLLVM.const_int(@unwrap, u, sign_extend ? 1 : 0))
   end
 
   def const_float(val : Float64) : LLVMValue
