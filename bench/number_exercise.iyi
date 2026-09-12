@@ -1,0 +1,82 @@
+# The prelude's integers at their edges - SPEC.md, "0.1.0", item 3.
+#
+#     bash bench/number_exercise.sh
+#
+# Three questions, each one a place where a number stops behaving like the
+# mathematics and starts behaving like a machine word:
+#
+#   1. A value printed is a value read back, including the smallest one.
+#      `Int32::MIN` has no positive twin, so a parser that accumulates the
+#      magnitude and negates it cannot read what `to_s` wrote.
+#   2. A string too large for the type answers `nil` rather than panicking,
+#      because that is what the `?` in `to_i?` promises.
+#   3. `//` and `%` agree with each other, and the two divisions that leave
+#      the type - a zero divisor, and `MIN // -1` - are reported rather than
+#      left to the processor, which calls an integer divide a floating-point
+#      fault and kills the program.
+#
+# Exits non-zero at the first check that does not hold.
+module main
+
+def assert_true(condition : Bool, msg : String) : Nil
+  raise "assert failed: #{msg}" unless condition
+end
+
+def assert_int(actual : Int32, expected : Int32, msg : String) : Nil
+  raise "assert failed: #{msg} (#{actual} != #{expected})" unless actual == expected
+end
+
+def assert_str(actual : String, expected : String, msg : String) : Nil
+  raise "assert failed: #{msg} (#{actual} != #{expected})" unless actual == expected
+end
+
+# ---- 1. Printed and read back, at the bounds
+assert_str((-2147483648).to_s, "-2147483648", "number: int32 min prints")
+assert_str(2147483647.to_s, "2147483647", "number: int32 max prints")
+assert_int("-2147483648".to_i, -2147483648, "number: int32 min reads back")
+assert_int("2147483647".to_i, 2147483647, "number: int32 max reads back")
+assert_int((-2147483648).to_s.to_i, -2147483648, "number: int32 min round trip")
+assert_str((-9223372036854775808_i64).to_s, "-9223372036854775808", "number: int64 min prints")
+assert_str(9223372036854775807_i64.to_s, "9223372036854775807", "number: int64 max prints")
+assert_str(18446744073709551615_u64.to_s, "18446744073709551615", "number: uint64 max prints")
+
+# The ordinary ones, so a broken parser cannot pass by refusing everything.
+assert_int("0".to_i, 0, "number: zero reads")
+assert_int("-0".to_i, 0, "number: minus zero reads")
+assert_int("123".to_i, 123, "number: a number reads")
+assert_int("-123".to_i, -123, "number: a negative reads")
+
+# ---- 2. What does not fit says so
+assert_true("2147483648".to_i? == nil, "number: max plus one is nil")
+assert_true("-2147483649".to_i? == nil, "number: min minus one is nil")
+assert_true("99999999999999999999".to_i? == nil, "number: far too large is nil")
+assert_true("12abc".to_i? == nil, "number: trailing letters are nil")
+assert_true("".to_i? == nil, "number: empty is nil")
+assert_true("-".to_i? == nil, "number: a lone sign is nil")
+
+# ---- 3. Division and remainder, which have to agree with each other
+assert_int(7 // 2, 3, "number: division truncates")
+assert_int(-7 // 2, -3, "number: division truncates toward zero")
+assert_int(7 // -2, -3, "number: a negative divisor truncates")
+assert_int(-7 % 2, -1, "number: remainder takes the dividend's sign")
+assert_int(7 % -2, 1, "number: remainder ignores the divisor's sign")
+assert_int((-7 // 2) * 2 + (-7 % 2), -7, "number: division identity, negative dividend")
+assert_int((7 // -2) * -2 + (7 % -2), 7, "number: division identity, negative divisor")
+assert_true((-7_i64 // 2_i64) * 2_i64 + (-7_i64 % 2_i64) == -7_i64, "number: int64 identity")
+
+# The two divisions that leave the type are panics, so they are driven from
+# `bench/number_exercise.sh` rather than from here: a program that panics
+# has no next line to assert on. What belongs here is the remainder beside
+# them, which is zero and fits: the answer is written
+# rather than the fault the processor would raise underneath it.
+assert_int(-2147483648 % -1, 0, "number: min remainder minus one is zero")
+assert_true((-9223372036854775808_i64 % -1_i64) == 0_i64, "number: int64 min remainder is zero")
+
+# ---- 4. Base conversion, the other direction of printing
+assert_str(255.to_s(16), "ff", "number: hex")
+assert_str(5.to_s(2), "101", "number: binary")
+assert_str((-255).to_s(16), "-ff", "number: a negative in hex")
+assert_str(35.to_s(36), "z", "number: base 36")
+assert_str((-2147483648).to_s(16), "-80000000", "number: int32 min in hex")
+
+puts "all number checks passed"

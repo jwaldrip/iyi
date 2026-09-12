@@ -820,15 +820,25 @@ class ::String
     return nil if empty?
 
     index = 0
-    sign = 1
+    negative = false
     if self[0] == '-'
       return nil if bytesize == 1
-      sign = -1
+      negative = true
       index = 1
     elsif self[0] == '+'
       return nil if bytesize == 1
       index = 1
     end
+
+    # Accumulated as a negative magnitude, because that is the range that
+    # holds every value: `Int32::MIN` has no positive twin, so a parser that
+    # builds `2147483648` first cannot read what `Int32::MIN.to_s` wrote, and
+    # with checked arithmetic it panicked rather than answering the `nil` a
+    # `?` promises. The two bounds below are that limit divided by the base
+    # and what is left of it, so the last digit is checked before it is used.
+    limit = -2147483648
+    bound = limit // base
+    cutoff = 0 - (limit - bound * base)
 
     value = 0
     while index < bytesize
@@ -844,11 +854,14 @@ class ::String
         return nil
       end
       return nil if digit >= base
-      value = value * base + digit
+      return nil if value < bound || (value == bound && digit > cutoff)
+      value = value * base - digit
       index = index + 1
     end
 
-    value * sign
+    return value if negative
+    return nil if value == limit
+    0 - value
   end
 
   def to_i64 : Int64
@@ -868,17 +881,23 @@ class ::String
     return nil if empty?
 
     index = 0
-    sign = 1_i64
+    negative = false
     if self[0] == '-'
       return nil if bytesize == 1
-      sign = -1_i64
+      negative = true
       index = 1
     elsif self[0] == '+'
       return nil if bytesize == 1
       index = 1
     end
 
+    # The same negative accumulation, for the type whose own `MIN` a program
+    # is most likely to read back: a nanosecond timestamp is an `Int64`.
     radix = base.to_i64
+    limit = -9223372036854775808_i64
+    bound = limit // radix
+    cutoff = 0_i64 - (limit - bound * radix)
+
     value = 0_i64
     while index < bytesize
       b = to_unsafe[index]
@@ -893,11 +912,14 @@ class ::String
         return nil
       end
       return nil if digit >= radix
-      value = value * radix + digit
+      return nil if value < bound || (value == bound && digit > cutoff)
+      value = value * radix - digit
       index = index + 1
     end
 
-    value * sign
+    return value if negative
+    return nil if value == limit
+    0_i64 - value
   end
 
   def to_f? : Float64?

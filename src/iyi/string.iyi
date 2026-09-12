@@ -249,14 +249,21 @@ class String
     to_i? || raise "not a number: #{inspect}"
   end
 
+  # Read as a *negative* magnitude, which is the one that holds every value
+  # the type has: `Int32::MIN` has no positive twin, so a parser that
+  # accumulates `2147483648` and negates it cannot read the number its own
+  # `to_s` wrote - it overflowed on the last digit, and because the
+  # prelude's arithmetic is checked that was a panic rather than the `nil`
+  # this method promises. Every string too large for the type now answers
+  # `nil`, including the positive ones, which is what `?` means.
   def to_i? : Int32?
     return nil if empty?
 
     index = 0
-    sign = 1
+    negative = false
     if self[0] == '-'
       return nil if @bytesize == 1
-      sign = -1
+      negative = true
       index = 1
     end
 
@@ -264,11 +271,17 @@ class String
     while index < @bytesize
       digit = to_unsafe[index].to_i - 48
       return nil if digit < 0 || digit > 9
-      value = value * 10 + digit
+      # The next step would leave the type: -214748364 * 10 is the last
+      # multiple that fits, and after it only eight of the ten digits do.
+      return nil if value < -214748364 || (value == -214748364 && digit > 8)
+      value = value * 10 - digit
       index = index + 1
     end
 
-    value * sign
+    return value if negative
+    # And the magnitude that only exists as a negative is not a positive.
+    return nil if value == -2147483648
+    0 - value
   end
 
   def +(other : String) : String

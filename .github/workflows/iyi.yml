@@ -298,6 +298,17 @@ jobs:
       - name: A tuple and a range are their members
         run: bash bench/value_exercise.sh
 
+      # And the integers at their edges, which is where a number stops
+      # behaving like the mathematics: `Int32::MIN` could not be read back
+      # from its own `to_s` (the parser built the positive magnitude, and
+      # with checked arithmetic that was a panic where `to_i?` promises
+      # nil), and `MIN // -1` was left to the processor, which reports an
+      # integer divide as a floating-point fault and kills the program.
+      # Six broken methods of a copied prelude prove the checks, and a
+      # seventh proof asks for the signal itself.
+      - name: Numbers print, read back, and refuse what does not fit
+        run: bash bench/number_exercise.sh
+
       # Three gates that existed, passed on the machine that wrote them, and
       # were named in this file by nothing: `format_exercise` (seven proofs
       # over patched copies of `std/format`), `io_exercise` (`IyiIO` flush,

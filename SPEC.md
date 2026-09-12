@@ -63,7 +63,7 @@ own reference accepts.
 | warm full build, `hello` / 6,900-line pair | 0.07 s / 0.24 s, against `go build`'s 0.08 s / 0.09 s |
 | front end, `hello.iyi` | **0.036 s** against the 0.050 s target: MET |
 | starting the compiler and doing nothing | 0.018 s of that |
-| iyi's own prelude | 13,896 lines, of which 3,681 are the library held to the 3,734 ceiling; the rest is the collector, the scheduler and the float printer, which 0.1.0's prelude got from libgc, pthreads and libc |
+| iyi's own prelude | 13,925 lines, of which 3,710 are the library held to the 3,734 ceiling; the rest is the collector, the scheduler and the float printer, which 0.1.0's prelude got from libgc, pthreads and libc |
 | compiler | 84,068 lines, none of it written in iyi |
 | artifact format | `.iyimod` v19, checksum per section |
 | samples | 9, of which 5 rebuild from artifacts with their modules' source deleted |
@@ -88,7 +88,7 @@ shape.
 > is a library and the rules are the language, so a program can keep one and
 > change the other: `--crystal` builds against Crystal's standard library, and
 > there `require` reaches the ecosystem while every rule stays where it was.
-> "No standard library worth the name" is still true of iyi's own 13,896 lines
+> "No standard library worth the name" is still true of iyi's own 13,925 lines
 > and no longer true of what a program can have. Part V item 12a is the
 > measurement, nine shards wide.
 
@@ -270,8 +270,8 @@ of binary. It is not made the default on that trade, and the middle needs the
 initialisers to run *later* rather than not at all, which is the `dlsym` table
 above, and a larger piece of work than the number it wins.
 
-**3. A deliberately tiny prelude, written in iyi. Done: 13,896 lines,
-primitives included, of which the library is 3,681.** Not a standard library:
+**3. A deliberately tiny prelude, written in iyi. Done: 13,925 lines,
+primitives included, of which the library is 3,710.** Not a standard library:
 integers, booleans, a string, one sequence, one dictionary, one range, `puts`,
 and an `enum`'s surface — the member's name, an order, the members, and the
 bits of a `@[Flags]` one. **Its scope is set by what the
@@ -299,7 +299,7 @@ collector (GC_DESIGN.md, the block between two marks in `prelude.iyi`),
 the scheduler and the kernel thread (III.4, `concurrency.iyi` and
 `thread.iyi`), the shortest-round-trip float text (`float.iyi`) - and they
 are most of its lines. So the figure held to the ceiling is the library:
-**3,681 lines** of the 13,896, measured by `bench/doc_numbers.py` as
+**3,710 lines** of the 13,925, measured by `bench/doc_numbers.py` as
 everything under `src/iyi/` except those three. The whole-prelude figure is
 stated beside it because a reader sees the whole file, and a "tiny prelude"
 claim that hid 9,000 lines of runtime would be a claim about the wrong number.
@@ -317,6 +317,31 @@ padding is for — lining a column up — held for ASCII and nothing else. Each
 was the prelude disagreeing with itself rather than with a standard, which
 is why the sentence is here: the two units are a choice, and a method
 belongs to one of them.
+
+**And the integers say which arithmetic they are.** `//` truncates toward
+zero and `%` takes the dividend's sign — C's pair, and Go's and Rust's, not
+Crystal's floor-and-modulo: `-7 // 2` is -3 here and -4 there, and `-7 % 2`
+is -1 here and 1 there. Self-consistent, measured across all four sign
+combinations: `(a // b) * b + (a % b) == a`. It is written here because it
+was not written anywhere, and it is the kind of difference a program carried
+over from Crystal keeps silently; `src/std/time.iyi` was checked against
+negative epochs and negative spans before this was recorded rather than
+changed.
+
+Two values at the edge are the prelude's own to report rather than the
+processor's. `Int32::MIN` has no positive twin, so `String#to_i?` - which
+built the positive magnitude and negated it - could not read what
+`Int32::MIN.to_s` wrote, and because the arithmetic is checked that was a
+panic where a `?` promises `nil`; every out-of-range string panicked the
+same way. It accumulates a negative magnitude now, and the last digit is
+checked before it is used. `MIN // -1` is the other one: the single division
+whose result the type does not hold. Left to `unsafe_div` it trapped, and
+the program died of "Process terminated because of a floating-point system
+exception" for an integer divide - the same unactionable sentence the zero
+divisor was checked to avoid, with the overflow beside it left unchecked.
+Both are panics with names now, and `MIN % -1` answers the zero it
+mathematically is. `bench/number_exercise.sh` holds all of it, with a proof
+that asks for SIGFPE itself to show the guard is load-bearing.
 
 **And a value type owes an `==` before it owes a `hash`.** The requirement
 runs one way: equal values must hash equally, because a `Hash` finds a key
@@ -899,7 +924,7 @@ Checking it moved two things and left the shape alone.
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
 | Compiler | 24,984 lines, **written in Crystal** | 109,598 lines, Crystal, forked |
-| Library | 8,161 lines (3,551 of it core) | 13,896-line own prelude + 5,997 in std |
+| Library | 8,161 lines (3,551 of it core) | 13,925-line own prelude + 6,019 in std |
 | Specs | 21,146 lines | 10,040 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
@@ -8952,7 +8977,7 @@ Named honestly, so nobody mistakes this draft for complete.
     shards exist and none of them is written to iyi's rules, so "run them
     directly" is not a compatibility problem, it is the four rules: `require`
     against R-1, inference against R-2, monkey patching against R-3, and
-    Crystal's 8,161-line standard library against iyi's own 13,896-line prelude.
+    Crystal's 8,161-line standard library against iyi's own 13,925-line prelude.
 
     What is measurable is narrower and better than that framing suggests, and
     it was measured on **Kemal 1.12.0**, which compiles under this compiler

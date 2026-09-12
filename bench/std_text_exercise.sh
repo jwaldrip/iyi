@@ -107,9 +107,11 @@ prove_fails "ascii letter predicate broken" no_letter "char: ascii_letter lowerc
 prove_fails "string capitalize broken" no_capitalize "string: capitalize standard" \
   's/b0 - 32_u8/b0/'
 
-# 3. Base parsing broken (base 16 returns zero)
+# 3. Base parsing broken (every digit read as zero). The parser accumulates
+#    a negative magnitude, so `Int32::MIN` reads back; the line moved with
+#    that fix and this proof moved with it.
 prove_fails "base parsing broken" no_base "string: to_i base 16" \
-  's/value \* base + digit/0/'
+  's/^      value = value \* base - digit$/      value = 0/'
 
 # 4. Chomp CRLF broken
 prove_fails "chomp crlf broken" no_chomp "string: chomp crlf" \

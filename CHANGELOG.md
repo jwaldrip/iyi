@@ -4,6 +4,35 @@
 
 ### Fixed
 
+- **`Int32::MIN` can be read back from what it prints, and the division
+  that overflows is a sentence rather than a signal.** Three defects at the
+  edges of the integers, all found by one probe. `String#to_i?`
+  accumulated the *positive* magnitude, so the one value with no positive
+  twin was unreadable — `"-2147483648".to_i` panicked with "arithmetic
+  overflow" — and every out-of-range string panicked the same way instead
+  of answering the `nil` a `?` promises. It reads a negative magnitude now
+  and checks the last digit before using it, so `MIN` round-trips and
+  `"2147483648".to_i?` is nil. `src/std/text.iyi` carried the same defect
+  twice, in `to_i?(base)` and `to_i64?(base)`, and carries the same fix.
+  And `MIN // -1` — the one division whose result the type does not hold —
+  reached `unsafe_div` and **killed the process with SIGFPE**: "Process
+  terminated because of a floating-point system exception", for an integer
+  divide, which is the exact sentence the zero divisor was checked to avoid
+  one commit earlier and the overflow beside it was not. Checked now for
+  `Int32` and `Int64`; `MIN % -1` is zero and answers zero rather than
+  trapping underneath.
+- **And `//` truncates while `%` takes the dividend's sign**, which is
+  C's pair and not Crystal's floor-and-modulo. It was never written down,
+  and it is the sort of difference a program ported from Crystal keeps
+  silently: `-7 // 2` is -3 here and -4 there. Self-consistent — the
+  identity `(a // b) * b + (a % b) == a` holds for all four sign
+  combinations, measured — and `src/std/time.iyi` was checked against
+  negative epochs and negative spans before this was recorded rather than
+  changed. `bench/number_exercise.sh` is the gate for all of it: the edges
+  plain and optimised, the four panics driven from the driver because a
+  panicking program has no next line, six broken methods of a copied
+  prelude, and a seventh proof that asks for SIGFPE itself to show the new
+  guard is load-bearing.
 - **A tuple and a range are their members, which is what `==` had never
   said.** The prelude wrote `Tuple#size`, `#[]`, `#to_s` and `#inspect` and
   never `==` or `hash`, and wrote neither for `Range` either, so `Object`'s
@@ -5291,7 +5320,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 13,896-line library and nothing else. Every other
+  written against iyi's own 13,925-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 

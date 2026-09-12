@@ -15,11 +15,17 @@ struct Int32
   # sentence nobody can act on.
   def //(other : Int32) : Int32
     raise "division by zero" if other == 0
+    # And the one division that overflows, for the same reason the zero is
+    # here: `MIN // -1` is 2147483648, which the type does not hold, and the
+    # processor reports it as the same unactionable floating-point fault.
+    raise "arithmetic overflow" if self == -2147483648 && other == -1
     unsafe_div(other)
   end
 
   def %(other : Int32) : Int32
     raise "modulo by zero" if other == 0
+    # Zero, and it fits: only the division underneath traps.
+    return 0 if self == -2147483648 && other == -1
     unsafe_mod(other)
   end
 
@@ -154,11 +160,21 @@ end
 struct Int64
   def //(other : Int64) : Int64
     raise "division by zero" if other == 0
+    # And the one division that overflows: the type's smallest value has no
+    # positive twin, so `MIN // -1` is a number the type does not hold. Left
+    # to the processor it traps the same way a zero divisor did, and the
+    # program died of "a floating-point system exception" for an integer
+    # divide. Reported the way every other arithmetic that leaves the type
+    # is.
+    raise "arithmetic overflow" if self == -9223372036854775808_i64 && other == -1_i64
     unsafe_div(other)
   end
 
   def %(other : Int64) : Int64
     raise "modulo by zero" if other == 0
+    # `MIN % -1` is zero and fits; it is only the division underneath it
+    # that traps, so the answer is written rather than the fault.
+    return 0_i64 if self == -9223372036854775808_i64 && other == -1_i64
     unsafe_mod(other)
   end
 
