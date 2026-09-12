@@ -47,7 +47,9 @@ module Iyi::IyiMod
   # code is in a main module and main modules do not travel.
   # v49: a match type is named the way its `~match<...>` symbol is, which for
   # a union of virtual types is not the way it prints.
-  FORMAT_VERSION = 49_u32
+  # v50: a nested module says whether it writes `extend self`, so a body that
+  # travels can call it the way the shard does (SPEC.md III.6).
+  FORMAT_VERSION = 50_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -598,7 +600,21 @@ module Iyi::IyiMod
     annotations : Array(String) = [] of String,
     # iyi: the doc comment above the declaration, verbatim — see
     # `Signature#doc`.
-    doc : String = ""
+    doc : String = "",
+    # iyi: whether this module writes `extend self` (SPEC.md IV.2).
+    #
+    # `Artifact#module_extends_self` says it of the module a boundary is *of*.
+    # A shard nests them: `module Backtrace::Parser; extend self; def parse` is
+    # called as `Parser.parse`, and a declaration that carried the instance
+    # method alone left a consumer with `undefined method 'parse' for
+    # Backtracer::Backtrace::Parser:Module`. It showed when the body that calls
+    # it began to travel (III.6) — before that, the call was inside the
+    # producer's object code and no consumer ever resolved the name.
+    #
+    # The word rather than a second copy of every method on the metaclass:
+    # `extend self` is what the shard wrote, one line says it, and the compiler
+    # on the far side does with it what the compiler here did.
+    extends_self : Bool = false
 
   # How a body is found again on the far side.
   #
@@ -2261,6 +2277,12 @@ module Iyi::IyiMod
 
     inner = indent + "  "
 
+    # First inside the module, because that is where the shard wrote it and
+    # because everything below is reached through it: `extend self` is what
+    # makes `Parser.parse` the same method as `Parser#parse`. See
+    # `TypeDecl#extends_self`.
+    io << inner << "extend self\n" if declaration.extends_self
+
     # Before everything the type declares, because a macro is read before it is
     # called and what it is called from is below it.
     declaration.macros.each do |source|
@@ -2814,6 +2836,7 @@ module Iyi::IyiMod
       write_strings io, declaration.funs
       write_strings io, declaration.annotations
       write_string io, (docs ? declaration.doc : "")
+      io.write_byte(declaration.extends_self ? 1_u8 : 0_u8)
       write_signatures io, declaration.methods, docs
       write_type_declarations io, declaration.types, docs
     end
@@ -2837,10 +2860,11 @@ module Iyi::IyiMod
       funs = read_strings(io)
       annotations = read_strings(io)
       doc = read_string(io)
+      extends_self = io.read_byte == 1_u8
       methods = read_signatures(io)
       TypeDecl.new(name, kind, parameters, assoc_types, supertraits, fields, methods,
         visibility, read_type_declarations(io), value, macros, members, class_vars,
-        superclass, includes, funs, annotations, doc)
+        superclass, includes, funs, annotations, doc, extends_self)
     end
   end
 

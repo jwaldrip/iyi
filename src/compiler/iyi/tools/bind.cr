@@ -384,6 +384,22 @@ module Iyi
     methods = [] of BindMethod
     collect_bind program.types?, root, methods
 
+    # iyi: which of them cannot cross as object code (SPEC.md III.6).
+    #
+    # Here rather than in the build that got us this program, because the
+    # instantiations this reads are the ones `collect_bind` just made: a shard
+    # compiled alone types almost none of its own bodies, and `infer_return`
+    # instantiates each method on purpose. The answer is read back below by
+    # location — a `BindMethod` is a record of strings and holds no `Def`.
+    #
+    # Bounded by the root, which is what this artifact carries object code for.
+    # A method of the *library* is the consumer's to compile whatever it
+    # dispatches over, so it is not in this closure — see `Iyi::OpenTravel`.
+    OpenTravel.mark(program) do |owner|
+      name = owner.instance_type.to_s
+      name == root || name.starts_with?("#{root}::")
+    end
+
     ready = methods.count(&.verdict.ready?)
     inferable = methods.count(&.verdict.needs_return?)
     human = methods.count(&.verdict.needs_human?)
@@ -752,7 +768,7 @@ module Iyi
       travels = method.body_answers ||
                 (signature.receiver.empty? && !extends_self?(program, root))
       if travels && (body = method.body) && !body.empty?
-        @@mono_bodies[IyiMod.mono_body_key(iyi_module_name(root), signature)] = body
+        @@mono_bodies[IyiMod.mono_body_key(iyi_module_name(root), signature)] = travelling_body(body)
       end
     end
 
@@ -804,7 +820,7 @@ module Iyi
       key = "#{signature.name}(#{signature.parameters.join(", ")})#{signature.block_parameter}"
       next unless top_seen.add?(key)
       top_level << signature
-      @@mono_bodies[IyiMod.mono_body_key(IyiMod::TOP_LEVEL_CONTAINER, signature)] = body
+      @@mono_bodies[IyiMod.mono_body_key(IyiMod::TOP_LEVEL_CONTAINER, signature)] = travelling_body(body)
     end
 
     # And what the shard added to types it does not own.
@@ -1618,6 +1634,10 @@ module Iyi
         # class was not an `HTTP::Handler`, and `Kemal.use(middleware)` — the
         # line that installs it — said so.
         includes: included_modules(type, root),
+        # And whether it extends itself, because that is how its methods are
+        # called: `Backtracer::Backtrace::Parser` writes `extend self` and the
+        # shard says `Parser.parse(backtrace)`. See `TypeDecl#extends_self`.
+        extends_self: extends_self?(type),
       )
     end
 
@@ -1698,6 +1718,7 @@ module Iyi
         macros: declared_macros(type),
         superclass: superclass_name(type, root),
         includes: included_modules(type, root),
+        extends_self: extends_self?(type),
       )
     end
   end
@@ -2624,9 +2645,29 @@ module Iyi
   private def self.strip_root_declaration(declaration : IyiMod::TypeDecl,
                                           root : String,
                                           path : String = declaration.name) : IyiMod::TypeDecl
+    # A name is read from where it is written, and everything below is written
+    # *inside* this declaration: its fields, its methods, its bodies, its class
+    # variables and its `fun`s are all rendered between `class X` and its `end`.
+    # So the type's own name comes off them too, deepest first.
+    #
+    # It reads as a no-op for every public name — `Kemal::Config` written from
+    # inside `ParamParser` resolves either way, because the first item of a path
+    # is searched in the enclosing namespaces — and it is not one for a private
+    # nested type. `private class ParamParser::LimitedBodyIO` is found only as
+    # the *first* item of a path (`lookup_path_item`'s `include_private`), so
+    # `ParamParser::LimitedBodyIO` is refused where `LimitedBodyIO` is the name
+    # the shard itself wrote. It took a body that had just started to travel to
+    # reach it: `private constant Kemal::ParamParser::LimitedBodyIO referenced`,
+    # on a declaration whose own class declares it (SPEC.md III.6).
+    #
+    # The header line is not inside it. A superclass, an `include` and an
+    # `alias`'s value are read in the enclosing scope, so they keep the root's.
+    inside = "#{root}::#{declaration.name}"
+    scoped = ->(text : String) { strip_root(strip_root(text, inside), root) }
+
     # `copy_with`, for the reason `prune_declaration` gives.
     declaration.copy_with(
-      fields: declaration.fields.map { |(name, type, value)| {name, strip_root(type, root), strip_root(value, root)} },
+      fields: declaration.fields.map { |(name, type, value)| {name, scoped.call(type), scoped.call(value)} },
       # `map_with_index` over the ordinals, because two definitions of one
       # signature are two bodies and each has to move to its own new key. The
       # pruner does not need the same care: it filters on the signature's text,
@@ -2634,8 +2675,8 @@ module Iyi
       methods: begin
         ordinals = IyiMod.mono_body_ordinals(declaration.methods)
         declaration.methods.map_with_index do |signature, index|
-          rekey_body(path, signature, strip_root(signature, root), ordinals[index]) do |body|
-            strip_root body, root
+          rekey_body(path, signature, strip_root(strip_root(signature, inside), root), ordinals[index]) do |body|
+            scoped.call body
           end
         end
       end,
@@ -2652,16 +2693,33 @@ module Iyi
       # `@@config = Config.new` — and it is rendered inside the module the same
       # way an alias's right-hand side is.
       class_vars: declaration.class_vars.map do |class_var|
-        class_var.copy_with(type: strip_root(class_var.type, root),
-          value: strip_root(class_var.value, root))
+        class_var.copy_with(type: scoped.call(class_var.type),
+          value: scoped.call(class_var.value))
       end,
       superclass: strip_root(declaration.superclass, root),
       includes: declaration.includes.map { |name| strip_root(name, root) },
       # A `fun` line is text and the types in it are the shard's like any
       # other: `fun open_v2 = sqlite3_open_v2(… flags : SQLite3::Flag …)` is
       # `flags : Flag` once the declaration is inside the module.
-      funs: declaration.funs.map { |source| strip_root(source, root) },
+      funs: declaration.funs.map { |source| scoped.call(source) },
     )
+  end
+
+  # The text a body travels as, which for an empty method is `nil`.
+  #
+  # `def backtracer : Backtracer::Configuration?` with nothing in it is a hook
+  # a subclass overrides, and the format cannot carry it as written: the
+  # declaration renders `def backtracer\nend`, which is exactly how a *header*
+  # is written, and `IyiMod::DeclarationMarker` reads a `Nop` body as a method
+  # somebody else compiled. The consumer then promises a symbol the producer
+  # never emitted, because a travelling method is left out of the keep file —
+  # `undefined symbol: *ExceptionPage+@ExceptionPage#backtracer:Nil`,
+  # referenced by the consumer's own copy of the `initialize` that calls it.
+  #
+  # `nil` is the same method: an empty body answers `nil`, and the declaration
+  # already says `Nil`. What changes is that a parser can see it.
+  private def self.travelling_body(body : String) : String
+    body.blank? ? "nil" : body
   end
 
   # A body is found again by its signature, so rewriting one moves the other.
@@ -3110,7 +3168,7 @@ module Iyi
         )
         ordinal = signatures.count { |seen| IyiMod.mono_body_key("", seen) == IyiMod.mono_body_key("", signature) }
         signatures << signature
-        @@mono_bodies[IyiMod.mono_body_key(container, signature, ordinal)] = body unless method.abstract_def
+        @@mono_bodies[IyiMod.mono_body_key(container, signature, ordinal)] = travelling_body(body) unless method.abstract_def
       end
     end
 
@@ -3150,7 +3208,20 @@ module Iyi
       # about a `Database` that had every other method on it.
       superclass: superclass_name(type, root),
       includes: included_modules(type, root, parameters),
+      extends_self: extends_self?(type),
     )
+  end
+
+  # Whether this module writes `extend self`.
+  #
+  # A module that does has its own instance methods on its metaclass as well,
+  # which is what `Parser.parse` resolves through — and the metaclass says so
+  # by having the module among its ancestors. Asked of the metaclass rather
+  # than searched for in the source: `extend self` is one spelling of it and
+  # `extend Parser` from inside `Parser` is another.
+  private def self.extends_self?(type : Type) : Bool
+    return false unless type.is_a?(ModuleType) && !type.is_a?(ClassType)
+    !!type.metaclass.ancestors.includes?(type)
   end
 
   # An enum, as its members and the integer they are numbered on.
@@ -3623,8 +3694,31 @@ module Iyi
         # And a setter, for the same reason written a third way: its answer is
         # the value it was handed, so there is no one return type and no one
         # symbol. `body_answers` is the question both cases are asking.
+        #
+        # And the fourth: a body whose machine code enumerates the members of
+        # an open type, or which calls one that does (SPEC.md III.6). A module
+        # used as a type is dispatched as a test per including type, and a
+        # consumer that writes one of its own joins that set — so the producer's
+        # compiled test is the answer to a question it was not asked. The
+        # `abstract_owner` clause above is the half of this that was already
+        # known: a method *on* a module. This is the other half — the methods
+        # that call one, which is how a `First#run` compiled against two
+        # includers reached a consumer's third.
+        #
+        # And a fifth that is about the type rather than the method: one the
+        # shard keeps to itself. `keep_type` refuses to name a private
+        # declaration — `private constant IO::Encoder referenced` is what
+        # naming it costs — so the keep file calls nothing on it and the
+        # producer emits a symbol only where its own object code happened to
+        # reach one. Once the reaching body travels, nothing does:
+        # `undefined symbol: *Kemal::HeadRequestHandler::NullIO::new<HTTP::
+        # Server::Response>`, referenced by the consumer's own copy of
+        # `HeadRequestHandler#call`. A private type's methods are the
+        # consumer's to compile, all of them.
         carries_body = (!method.written_block.empty? || abstract_owner ||
-                        method.body_answers) && !method.abstract_def
+                        method.body_answers || type.private? ||
+                        type.program.iyi_open_travel_defs.includes?(method.location)) &&
+                       !method.abstract_def
 
         # A block-taking `new` does not travel at all. It is synthesised from
         # `initialize` rather than written, so its body is the compiler's —
@@ -3664,7 +3758,7 @@ module Iyi
         signatures << signature
         if carries_body && body
           key = IyiMod.mono_body_key(name, signature, ordinal)
-          @@mono_bodies[key] = body
+          @@mono_bodies[key] = travelling_body(body)
           @@travelling << key
         end
       end
@@ -3740,7 +3834,7 @@ module Iyi
         required: false,
       )
       added << signature
-      @@mono_bodies[IyiMod.mono_body_key(name, signature)] = body
+      @@mono_bodies[IyiMod.mono_body_key(name, signature)] = travelling_body(body)
     end
 
     added
@@ -3958,7 +4052,7 @@ module Iyi
         added << signature
         body = method.body
         if body
-          @@mono_bodies[IyiMod.mono_body_key(name, signature)] = body
+          @@mono_bodies[IyiMod.mono_body_key(name, signature)] = travelling_body(body)
           reach << body
         end
       end
@@ -4672,9 +4766,20 @@ module Iyi
   # function takes is the integer, and Crystal's own rule converts an enum to
   # its base type at a `fun` call without being asked — so a caller inside the
   # module goes on writing `SQLite3::Flag::ReadWrite`. Anything else the top
-  # level cannot name
-  # is left as written — if that ever happens it should say so at the far side
-  # rather than be guessed at here.
+  # level cannot name is left as written — if that ever happens it should say
+  # so at the far side rather than be guessed at here.
+  #
+  # **The return side is the same answer and it is not always right.** `fun
+  # column_type = sqlite3_column_type(…) : ::SQLite3::Type` crosses as `Int32`,
+  # so a body compiled on the far side reads an integer where the shard's own
+  # code has an enum, and `case column_type(self, col) when Type::TEXT` matches
+  # nothing and takes the `else`. Nothing reaches it today: the only bodies
+  # that case on one are the shard's own object code, and III.6's rule is
+  # bounded to the module's own call graph — a wider closure walked into it
+  # (`another row available`, on `sqlite3`'s `ResultSet#read`). Writing the
+  # enum instead needs a name that resolves inside a *global* `lib`, which the
+  # module's own namespace is not: `Type` is `undefined constant` there and
+  # `SQLite3::Type` is a namespace the far side does not have.
   private def self.fun_type(written : String, type : Type?, owner : NamedType?) : String
     return written unless owner
     return written unless type
@@ -4792,7 +4897,7 @@ module Iyi
         required: false,
       )
       methods << signature
-      @@mono_bodies[IyiMod.mono_body_key("::#{type}", signature)] = body
+      @@mono_bodies[IyiMod.mono_body_key("::#{type}", signature)] = travelling_body(body)
     end
 
     return nil if fields.empty? && defaulted.empty? && methods.empty?
@@ -5076,12 +5181,27 @@ module Iyi
       # program that calls this has the driver, so the consumer's own compiler
       # can type what the producer's could not. If it cannot, it says so on the
       # method's own source rather than on a name that went missing.
+      #
+      # And a fifth, which is the same sentence about a *parameter*: the shard
+      # alone does not have the type its own signature names.
+      # `exception_page` writes `def self.new(context : HTTP::Server::Context,
+      # exception : Exception)` and requires no `http` — the consumer of an
+      # exception page is a web application, so the name is one every caller
+      # has and this build has not. Instantiating it is refused here, and the
+      # method was dropped: `Kemal::ExceptionPage` inherits it, `render_500`
+      # calls it, and a consumer compiling that body got `wrong number of
+      # arguments for 'Kemal::ExceptionPage.new' (given 2, expected 4..10)` —
+      # the synthesised `new` was the only one left. The parameter travels as
+      # the text the shard wrote, which is what III.6 rule 1 means by a
+      # binding that asserts.
       body_answers: setter_body?(a_def) || delegating_overload?(a_def) ||
                     caller_shaped?(a_def) ||
                     (refused == "block returns `_`" ||
                      refused == "block is not annotated" ||
                      refused == "yields without a block parameter" ||
-                     refused == "no type" || uncompilable) && !a_def.abstract? &&
+                     refused == "no type" ||
+                     refused.try(&.starts_with?("cannot resolve ")) ||
+                     uncompilable) && !a_def.abstract? &&
                     !a_def.body.nil? && !a_def.body.is_a?(Nop),
       # The return type is asked the same question the parameters are. `Int` is
       # the head of a family on either side of the arrow, and a method that

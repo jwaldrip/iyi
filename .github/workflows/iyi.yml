@@ -388,6 +388,15 @@ jobs:
       - name: Two bound shards keep their own regex literals
         run: bash bench/bind_regex_identity.sh
 
+      # A module held as a type, whose includers the consumer adds to (III.6).
+      # Forty lines and no network: the shard's two includers are compiled into
+      # the artifact's dispatch, the consumer writes a third, and before this
+      # rule the program printed half a line and stopped — which is what a
+      # kemal application did one request in. The arm with `IYI_OPEN_TRAVEL=off`
+      # is what keeps this gate honest: it still prints half a line.
+      - name: An open type's members are the program's answer
+        run: bash bench/open_dispatch.sh
+
       # And a chain of four, installed from the network. One boundary cannot
       # collide with another's synthesised names, cannot have an import edge to
       # get wrong, and cannot be a *class* root standing beside module roots —

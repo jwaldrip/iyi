@@ -854,7 +854,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 108,930 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 109,376 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 13,609-line own prelude + 6,057 in std |
 | Specs | 21,146 lines | 9,683 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3384,9 +3384,9 @@ demand-driven and a consumer links every unit every artifact carries.
 Both numbers are about the artifact rather than about the rule: what it
 carries, and when a consumer has to decode it.
 
-**And what it does not survive: the first request.** The application boots
-and faults on the first HTTP request it is given, and the reason is a rule
-this format does not keep. A *module used as a type* — kemal's
+**And what it did not survive: the first request.** The application booted
+and faulted on the first HTTP request it was given, and the reason was a
+rule this format did not keep. A *module used as a type* — kemal's
 `@next : HTTP::Handler | Nil`, the handler chain — is dispatched as a test
 per includer, and the includers are the ones the *producing* build had. A
 consumer writes its own middleware, joins that set, and the artifact's
@@ -3396,24 +3396,50 @@ pointer that was never a function.
 
 `bench/open_dispatch_fixture/` is that defect with no shard in it: a module
 `Link`, two includers in the shard, one in the consumer, and a boundary
-build that prints `first ` where the source build prints `first mine end`.
-It is not a gate, because it fails.
+build that printed `first ` where the source build prints `first mine end`.
 
-The rule the fix needs is the same sentence IV.1g already makes about
-blocks and generics, said about *sets*: **an instantiation whose machine
+**The rule is the same sentence IV.1g already makes about blocks and
+generics, said about *sets*, and it is BUILT: an instantiation whose machine
 code enumerates the members of an open type is the whole program's answer,
 not the module's, so its body travels and the consumer compiles it.** A
-module is the open case — anybody may include one — and a class is the
-half already written down. Measured on a prototype: making such bodies
-travel fixes the fixture and reaches two further shapes behind it, both of
-which are the same kind of thing as the twelve above. A private helper
-kept out of the declarations because its *default value* names the module
-it lives in (`limit : Int32 = Kemal.config.max_request_body_size`) — fixed
-here, because the module a consumer imported is always a name it can
-resolve — and a private nested type named by a call inside a body that has
-just started to travel (`private constant Kemal::ParamParser::LimitedBodyIO
-referenced`). The measurement above is therefore a floor: the application
-builds, boots and answers nothing.
+module is the open case — anybody may include one — and a class is the half
+already written down. The closure reaches the bodies that *call* one, because
+a caller the producer compiled binds to the producer's copy by name and
+carries the stale answer one call deep. `Iyi::OpenTravel` marks the call
+where the set is read (`Call#lookup_matches_in`), walks this build's
+instantiated defs, and marks every caller; `bench/open_dispatch.sh` runs the
+fixture both ways — `IYI_OPEN_TRAVEL=off` writes the boundary the way it was
+written before the rule, and answers `first `.
+
+**Bounded by what the artifact carries**, which is the part that had to be
+measured rather than reasoned. Walked over the whole program the closure
+reaches almost every method of every shard: `raise` dispatches over
+`Crystal::EventLoop`, `String.new` over four more modules, and a body that
+can raise is every body there is. None of it needs to travel — the library is
+what the consumer compiles for itself, so the symbol a shard's object code
+calls is the consumer's own, with the consumer's includers. So the walk stops
+at the module's own types. What that leaves open is a library method *copied*
+into an artifact's unit (IV.1g's internal-linkage copies): it holds the
+producer's set, and only a caller that travels would replace it. Nothing
+measured has reached it.
+
+Two further shapes came with it, both the same kind of thing as the twelve
+above. A private helper kept out of the declarations because its *default
+value* names the module it lives in (`limit : Int32 =
+Kemal.config.max_request_body_size`). And a declaration a travelling body
+needs that never crossed: a private nested type named from a sibling scope
+(`private constant Kemal::ParamParser::LimitedBodyIO referenced` — a
+declaration's members are written *inside* it now, so the name is the one the
+shard wrote), a method the shard alone cannot type (`exception_page` writes
+`def self.new(context : HTTP::Server::Context, …)` and requires no `http`, so
+its body travels and the consumer types it), a nested module that writes
+`extend self` (`Backtracer::Backtrace::Parser.parse`, carried as the word
+rather than as a second copy of every method — `.iyimod` v50), a method of a
+private type (the keep file cannot name one, so the producer emits no symbol
+for any of its methods and all of them travel), and an *empty* body, which
+the format spelled exactly the way it spells a header (`def backtracer` with
+nothing in it travels as `nil`). The application builds, boots and answers:
+`bench/kemal_serves.sh` holds it.
 
 Three rules came out of it. **A boundary is rooted at one namespace, and a
 shard need not have one**: `pg` declares `PG` and `PQ`, its wire protocol,

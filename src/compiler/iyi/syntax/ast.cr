@@ -918,6 +918,17 @@ module Iyi
     # of a call a Crystal file is free to mean differently.
     property? iyi_group = false
 
+    # iyi: this call's answer came out of an *open* set — a module's including
+    # types, or a generic's instantiations (SPEC.md III.6).
+    #
+    # The machine code under it is one type-id test per member of that set,
+    # and the set is the whole program's: anybody may include a module. So the
+    # code answers a question the module that wrote the call cannot, and the
+    # def holding it cannot cross a boundary as object code. Marked where the
+    # set is read — `Call#lookup_matches_in` — because nothing about the
+    # call's own shape says which kind of receiver it had.
+    property? iyi_open_dispatch = false
+
     def initialize(@obj : ASTNode?, @name : String, @args : Array(ASTNode) = [] of ASTNode, @block = nil, @block_arg = nil, @named_args = nil, @global : Bool = false)
       if block = @block
         block.call = self
@@ -968,6 +979,7 @@ module Iyi
       clone.name_size = name_size
       clone.expansion = expansion?
       clone.iyi_group = iyi_group?
+      clone.iyi_open_dispatch = iyi_open_dispatch?
       clone
     end
 
@@ -1539,6 +1551,24 @@ module Iyi
     # longer enough to say whose machine code this is.
     property? iyi_body_travelled = false
 
+    # iyi: the *written* def this one was instantiated from (SPEC.md III.6).
+    #
+    # A typed def is a clone of it, and the clone is what holds the body every
+    # question about machine code is asked of — while the artifact writers hold
+    # the written one, out of the type's own `defs`. `Iyi::OpenTravel` walks the
+    # first and marks the second, and this is the only way back.
+    property iyi_origin : Def?
+
+    # iyi: this def's machine code enumerates the members of an open type, or
+    # it calls something whose does (SPEC.md III.6).
+    #
+    # Set after semantic analysis by `Iyi::OpenTravel`, read where an artifact
+    # decides what travels. Such a body has to: the producer's object code
+    # answers a question only the whole program can, so a consumer that adds a
+    # member of its own — one more includer of a module — gets a dispatch that
+    # matches none of its cases and falls off the end of one.
+    property? iyi_open_travel = false
+
     property? macro_def : Bool
     property? calls_super = false
     property? calls_initialize = false
@@ -1574,6 +1604,10 @@ module Iyi
       a_def.iyi_from_impl = iyi_from_impl?
       a_def.iyi_from_artifact = iyi_from_artifact?
       a_def.iyi_body_travelled = iyi_body_travelled?
+      # The clone of an instance answers for the same written def: an expansion
+      # of one is still that method's code.
+      a_def.iyi_origin = iyi_origin
+      a_def.iyi_open_travel = iyi_open_travel?
       a_def.name_location = name_location
       a_def.visibility = visibility
       a_def.free_var_bounds = @free_var_bounds.clone

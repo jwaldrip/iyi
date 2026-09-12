@@ -1,5 +1,62 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A module used as a type survives the boundary: the consumer's own
+  includer is in the dispatch.** 0.12.0 shipped this diagnosed and not
+  fixed, and it is the one thing a bound kemal application did not
+  survive — it booted and faulted on the first request. A module held as
+  a type (`@next : HTTP::Handler | Nil`, the handler chain every
+  middleware joins) is compiled as one type-id test per *including* type,
+  and the includers are whichever ones the producing build had;
+  `codegen_dispatch` ends in `unreachable`, so a consumer that writes its
+  own middleware falls off the end of the chain. IV.1g's sentence about
+  blocks and generics, said about **sets**: an instantiation whose machine
+  code enumerates the members of an open type is the whole program's
+  answer, so its body travels and the consumer compiles it — and so do the
+  bodies that *call* one, because a caller the producer compiled binds to
+  the producer's copy by name. `Iyi::OpenTravel` marks the call where the
+  set is read, walks this build's instantiated defs and marks every
+  caller. `bench/kemal_serves.sh` answers what the source arm answers now,
+  and `bench/open_dispatch.sh` holds the forty-line fixture both ways:
+  `IYI_OPEN_TRAVEL=off` writes the boundary the way it was written before
+  the rule and still prints `first ` where the source prints
+  `first mine end`.
+- **The closure is bounded by what the artifact carries, which is the half
+  that had to be measured.** Walked over the whole program it reaches
+  almost every method of every shard: `raise` dispatches over
+  `Crystal::EventLoop`, `String.new` over four more modules, and a body
+  that can raise is every body there is. None of it needs to travel — the
+  library is what a consumer compiles for itself, so the symbol a shard's
+  object code calls is the consumer's own, with the consumer's includers.
+  Unbounded it also turned `sqlite3`'s `ResultSet#read` into text, which
+  found a latent defect in the *other* direction and is now written down
+  where it lives (`Iyi.fun_type`): a `fun` returning an enum crosses as the
+  enum's base type, and a body compiled on the far side then cases on an
+  integer and takes the `else` — `another row available`, on the first
+  query. Bounded to the module's own call graph, nothing reaches it.
+- **Five declarations a travelling body needs, which never crossed.** Each
+  was invisible while the body that names it was machine code in the
+  artifact. A declaration's members are written *inside* it now, so a
+  private nested type is the name the shard wrote (`private constant
+  Kemal::ParamParser::LimitedBodyIO referenced`, on the class that
+  declares it). A method the shard alone cannot type travels as its body:
+  `exception_page` writes `def self.new(context : HTTP::Server::Context,
+  exception : Exception)` and requires no `http`, so instantiating it here
+  is refused and a consumer of `Kemal::ExceptionPage` got the synthesised
+  `new` alone — `wrong number of arguments (given 2, expected 4..10)`. A
+  nested module says whether it writes `extend self`, carried as the word
+  rather than as a second copy of every method, because
+  `Backtracer::Backtrace::Parser.parse` is how the shard calls it
+  (`.iyimod` v50). Every method of a *private* type travels, because
+  `keep_type` cannot name one and so the producer emits no symbol for any
+  of them (`undefined symbol: *Kemal::HeadRequestHandler::NullIO::new<…>`).
+  And an **empty** body travels as `nil`: the format spelled it exactly the
+  way it spells a header, so `def backtracer` with nothing in it arrived as
+  a promise of a symbol nobody emitted.
+
 ## 0.12.0 — 2026-09-11
 
 **A Crystal project becomes iyi modules, and the thing people download

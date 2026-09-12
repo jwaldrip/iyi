@@ -1,4 +1,4 @@
-# The shape an artifact cannot carry, in forty lines and no shard.
+# The shape an artifact could not carry, in forty lines and no shard.
 #
 # `Chainy::Link` is a module used as a *type*: `@next : Link | Nil` holds
 # whatever includes it, and a call on that field is compiled as a test per
@@ -14,15 +14,17 @@
 #       -o keep mods/chainy_keep.cr
 #     iyi run --crystal --use-iyimod mods app.iyi
 #
-# prints `first ` and stops, where the same two files built from source print
-# `first mine end`. This is the miniature of the defect an application hits:
-# kemal's handler chain is `@next : HTTP::Handler | Nil`, every middleware a
-# person writes joins that set, and `Kemal::InitHandler@HTTP::Handler#call_next`
-# matched none of its cases, fell through to the `Proc` arm of the union and
-# jumped through a pointer that was never a function — a segfault on the
-# first request, behind a front end that compiled clean.
+# printed `first ` and stopped, where the same two files built from source
+# print `first mine end`. This is the miniature of the defect an application
+# hit: kemal's handler chain is `@next : HTTP::Handler | Nil`, every
+# middleware a person writes joins that set, and
+# `Kemal::InitHandler@HTTP::Handler#call_next` matched none of its cases, fell
+# through to the `Proc` arm of the union and jumped through a pointer that was
+# never a function — a segfault on the first request, behind a front end that
+# compiled clean.
 #
-# Not a gate: it fails, and it fails for a reason SPEC.md III.6 now names.
+# It is a gate now: `bash bench/open_dispatch.sh` runs both arms, and
+# `IYI_OPEN_TRAVEL=off` is the one that still prints `first ` (SPEC.md III.6).
 module Chainy
   module Link
     abstract def run(io : IO) : Nil
