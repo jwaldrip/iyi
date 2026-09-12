@@ -35,6 +35,20 @@ pub def constant_time_compare(a : String, b : String) : Bool
   constant_time_compare(Bytes.new(a.to_unsafe, a.bytesize), Bytes.new(b.to_unsafe, b.bytesize))
 end
 
+pub struct Subtle
+  def self.constant_time_compare(a : Bytes, b : Bytes) : Bool
+    Std::Crypto.constant_time_compare(a, b)
+  end
+
+  def self.constant_time_compare(a : String, b : String) : Bool
+    Std::Crypto.constant_time_compare(a, b)
+  end
+
+  def self.constant_time_byte_eq(x : UInt8, y : UInt8) : Bool
+    (x ^ y) == 0_u8
+  end
+end
+
 # -----------------------------------------------------------------------------
 # CSPRNG (Cryptographically Secure Pseudo-Random Number Generator)
 # -----------------------------------------------------------------------------
@@ -359,7 +373,7 @@ end
 # -----------------------------------------------------------------------------
 # ChaCha20 Stream Cipher (RFC 8439)
 # -----------------------------------------------------------------------------
-module ChaCha20
+pub struct ChaCha20
   def self.rotl32(x : UInt64, n : Int32) : UInt64
     ((x.unsafe_shl(n.to_u64)) | (x.unsafe_shr((32 - n).to_u64))) & 0xffffffff_u64
   end
@@ -469,7 +483,7 @@ end
 # -----------------------------------------------------------------------------
 # Poly1305 MAC (RFC 8439)
 # -----------------------------------------------------------------------------
-module Poly1305
+pub struct Poly1305
   def self.mac(key : Bytes, msg : Bytes) : Bytes
     raise "Poly1305: key must be 32 bytes" if key.size != 32
 
@@ -743,7 +757,7 @@ end
 # -----------------------------------------------------------------------------
 # AES Block Cipher (FIPS 197) and Galois/Counter Mode (NIST SP 800-38D)
 # -----------------------------------------------------------------------------
-module AES
+pub struct AES
   SBOX = [
     0x63_u8, 0x7c_u8, 0x77_u8, 0x7b_u8, 0xf2_u8, 0x6b_u8, 0x6f_u8, 0xc5_u8, 0x30_u8, 0x01_u8, 0x67_u8, 0x2b_u8, 0xfe_u8, 0xd7_u8, 0xab_u8, 0x76_u8,
     0xca_u8, 0x82_u8, 0xc9_u8, 0x7d_u8, 0xfa_u8, 0x59_u8, 0x47_u8, 0xf0_u8, 0xad_u8, 0xd4_u8, 0xa2_u8, 0xaf_u8, 0x9c_u8, 0xa4_u8, 0x72_u8, 0xc0_u8,
@@ -891,6 +905,129 @@ module AES
     c = 0
     while c < 4
       k = rk[4 * nr + c]
+      output[4 * c] = state[4 * c] ^ ((k.unsafe_shr(24_u64)) & 0xff_u64).to_u8
+      output[4 * c + 1] = state[4 * c + 1] ^ ((k.unsafe_shr(16_u64)) & 0xff_u64).to_u8
+      output[4 * c + 2] = state[4 * c + 2] ^ ((k.unsafe_shr(8_u64)) & 0xff_u64).to_u8
+      output[4 * c + 3] = state[4 * c + 3] ^ (k & 0xff_u64).to_u8
+      c = c + 1
+    end
+  end
+
+  INV_SBOX = [
+    0x52_u8, 0x09_u8, 0x6a_u8, 0xd5_u8, 0x30_u8, 0x36_u8, 0xa5_u8, 0x38_u8, 0xbf_u8, 0x40_u8, 0xa3_u8, 0x9e_u8, 0x81_u8, 0xf3_u8, 0xd7_u8, 0xfb_u8,
+    0x7c_u8, 0xe3_u8, 0x39_u8, 0x82_u8, 0x9b_u8, 0x2f_u8, 0xff_u8, 0x87_u8, 0x34_u8, 0x8e_u8, 0x43_u8, 0x44_u8, 0xc4_u8, 0xde_u8, 0xe9_u8, 0xcb_u8,
+    0x54_u8, 0x7b_u8, 0x94_u8, 0x32_u8, 0xa6_u8, 0xc2_u8, 0x23_u8, 0x3d_u8, 0xee_u8, 0x4c_u8, 0x95_u8, 0x0b_u8, 0x42_u8, 0xfa_u8, 0xc3_u8, 0x4e_u8,
+    0x08_u8, 0x2e_u8, 0xa1_u8, 0x66_u8, 0x28_u8, 0xd9_u8, 0x24_u8, 0xb2_u8, 0x76_u8, 0x5b_u8, 0xa2_u8, 0x49_u8, 0x6d_u8, 0x8b_u8, 0xd1_u8, 0x25_u8,
+    0x72_u8, 0xf8_u8, 0xf6_u8, 0x64_u8, 0x86_u8, 0x68_u8, 0x98_u8, 0x16_u8, 0xd4_u8, 0xa4_u8, 0x5c_u8, 0xcc_u8, 0x5d_u8, 0x65_u8, 0xb6_u8, 0x92_u8,
+    0x6c_u8, 0x70_u8, 0x48_u8, 0x50_u8, 0xfd_u8, 0xed_u8, 0xb9_u8, 0xda_u8, 0x5e_u8, 0x15_u8, 0x46_u8, 0x57_u8, 0xa7_u8, 0x8d_u8, 0x9d_u8, 0x84_u8,
+    0x90_u8, 0xd8_u8, 0xab_u8, 0x00_u8, 0x8c_u8, 0xbc_u8, 0xd3_u8, 0x0a_u8, 0xf7_u8, 0xe4_u8, 0x58_u8, 0x05_u8, 0xb8_u8, 0xb3_u8, 0x45_u8, 0x06_u8,
+    0xd0_u8, 0x2c_u8, 0x1e_u8, 0x8f_u8, 0xca_u8, 0x3f_u8, 0x0f_u8, 0x02_u8, 0xc1_u8, 0xaf_u8, 0xbd_u8, 0x03_u8, 0x01_u8, 0x13_u8, 0x8a_u8, 0x6b_u8,
+    0x3a_u8, 0x91_u8, 0x11_u8, 0x41_u8, 0x4f_u8, 0x67_u8, 0xdc_u8, 0xea_u8, 0x97_u8, 0xf2_u8, 0xcf_u8, 0xce_u8, 0xf0_u8, 0xb4_u8, 0xe6_u8, 0x73_u8,
+    0x96_u8, 0xac_u8, 0x74_u8, 0x22_u8, 0xe7_u8, 0xad_u8, 0x35_u8, 0x85_u8, 0xe2_u8, 0xf9_u8, 0x37_u8, 0xe8_u8, 0x1c_u8, 0x75_u8, 0xdf_u8, 0x6e_u8,
+    0x47_u8, 0xf1_u8, 0x1a_u8, 0x71_u8, 0x1d_u8, 0x29_u8, 0xc5_u8, 0x89_u8, 0x6f_u8, 0xb7_u8, 0x62_u8, 0x0e_u8, 0xaa_u8, 0x18_u8, 0xbe_u8, 0x1b_u8,
+    0xfc_u8, 0x56_u8, 0x3e_u8, 0x4b_u8, 0xc6_u8, 0xd2_u8, 0x79_u8, 0x20_u8, 0x9a_u8, 0xdb_u8, 0xc0_u8, 0xfe_u8, 0x78_u8, 0xcd_u8, 0x5a_u8, 0xf4_u8,
+    0x1f_u8, 0xdd_u8, 0xa8_u8, 0x33_u8, 0x88_u8, 0x07_u8, 0xc7_u8, 0x31_u8, 0xb1_u8, 0x12_u8, 0x10_u8, 0x59_u8, 0x27_u8, 0x80_u8, 0xec_u8, 0x5f_u8,
+    0x60_u8, 0x51_u8, 0x7f_u8, 0xa9_u8, 0x19_u8, 0xb5_u8, 0x4a_u8, 0x0d_u8, 0x2d_u8, 0xe5_u8, 0x7a_u8, 0x9f_u8, 0x93_u8, 0xc9_u8, 0x9c_u8, 0xef_u8,
+    0xa0_u8, 0xe0_u8, 0x3b_u8, 0x4d_u8, 0xae_u8, 0x2a_u8, 0xf5_u8, 0xb0_u8, 0xc8_u8, 0xeb_u8, 0xbb_u8, 0x3c_u8, 0x83_u8, 0x53_u8, 0x99_u8, 0x61_u8,
+    0x17_u8, 0x2b_u8, 0x04_u8, 0x7e_u8, 0xba_u8, 0x77_u8, 0xd6_u8, 0x26_u8, 0xe1_u8, 0x69_u8, 0x14_u8, 0x63_u8, 0x55_u8, 0x21_u8, 0x0c_u8, 0x7d_u8,
+  ]
+
+  def self.mul(a : UInt8, b : Int32) : UInt8
+    res = 0_u8
+    cur = a
+    val = b
+    while val > 0
+      res = res ^ cur if (val & 1) != 0
+      cur = xtime(cur)
+      val = val >> 1
+    end
+    res
+  end
+
+  def self.decrypt_block(nr : Int32, rk : Pointer(UInt64), input : Pointer(UInt8), output : Pointer(UInt8)) : Nil
+    state = Pointer(UInt8).malloc(16_u64)
+    i = 0
+    while i < 16
+      state[i] = input[i]
+      i = i + 1
+    end
+
+    # AddRoundKey nr
+    c = 0
+    while c < 4
+      k = rk[4 * nr + c]
+      state[4 * c] = state[4 * c] ^ ((k.unsafe_shr(24_u64)) & 0xff_u64).to_u8
+      state[4 * c + 1] = state[4 * c + 1] ^ ((k.unsafe_shr(16_u64)) & 0xff_u64).to_u8
+      state[4 * c + 2] = state[4 * c + 2] ^ ((k.unsafe_shr(8_u64)) & 0xff_u64).to_u8
+      state[4 * c + 3] = state[4 * c + 3] ^ (k & 0xff_u64).to_u8
+      c = c + 1
+    end
+
+    r = nr - 1
+    while r >= 1
+      # InvShiftRows
+      t1 = state[13]; t5 = state[1]; t9 = state[5]; t13 = state[9]
+      state[1] = t1; state[5] = t5; state[9] = t9; state[13] = t13
+      t2 = state[10]; t6 = state[14]; t10 = state[2]; t14 = state[6]
+      state[2] = t2; state[6] = t6; state[10] = t10; state[14] = t14
+      t3 = state[7]; t7 = state[11]; t11 = state[15]; t15 = state[3]
+      state[3] = t3; state[7] = t7; state[11] = t11; state[15] = t15
+
+      # InvSubBytes
+      i = 0
+      while i < 16
+        state[i] = INV_SBOX[state[i].to_i32]
+        i = i + 1
+      end
+
+      # AddRoundKey r
+      c = 0
+      while c < 4
+        k = rk[4 * r + c]
+        state[4 * c] = state[4 * c] ^ ((k.unsafe_shr(24_u64)) & 0xff_u64).to_u8
+        state[4 * c + 1] = state[4 * c + 1] ^ ((k.unsafe_shr(16_u64)) & 0xff_u64).to_u8
+        state[4 * c + 2] = state[4 * c + 2] ^ ((k.unsafe_shr(8_u64)) & 0xff_u64).to_u8
+        state[4 * c + 3] = state[4 * c + 3] ^ (k & 0xff_u64).to_u8
+        c = c + 1
+      end
+
+      # InvMixColumns
+      c = 0
+      while c < 4
+        s0 = state[4 * c]
+        s1 = state[4 * c + 1]
+        s2 = state[4 * c + 2]
+        s3 = state[4 * c + 3]
+        state[4 * c] = mul(s0, 0x0e) ^ mul(s1, 0x0b) ^ mul(s2, 0x0d) ^ mul(s3, 0x09)
+        state[4 * c + 1] = mul(s0, 0x09) ^ mul(s1, 0x0e) ^ mul(s2, 0x0b) ^ mul(s3, 0x0d)
+        state[4 * c + 2] = mul(s0, 0x0d) ^ mul(s1, 0x09) ^ mul(s2, 0x0e) ^ mul(s3, 0x0b)
+        state[4 * c + 3] = mul(s0, 0x0b) ^ mul(s1, 0x0d) ^ mul(s2, 0x09) ^ mul(s3, 0x0e)
+        c = c + 1
+      end
+
+      r = r - 1
+    end
+
+    # Final round
+    # InvShiftRows
+    t1 = state[13]; t5 = state[1]; t9 = state[5]; t13 = state[9]
+    state[1] = t1; state[5] = t5; state[9] = t9; state[13] = t13
+    t2 = state[10]; t6 = state[14]; t10 = state[2]; t14 = state[6]
+    state[2] = t2; state[6] = t6; state[10] = t10; state[14] = t14
+    t3 = state[7]; t7 = state[11]; t11 = state[15]; t15 = state[3]
+    state[3] = t3; state[7] = t7; state[11] = t11; state[15] = t15
+
+    # InvSubBytes
+    i = 0
+    while i < 16
+      state[i] = INV_SBOX[state[i].to_i32]
+      i = i + 1
+    end
+
+    # AddRoundKey 0
+    c = 0
+    while c < 4
+      k = rk[c]
       output[4 * c] = state[4 * c] ^ ((k.unsafe_shr(24_u64)) & 0xff_u64).to_u8
       output[4 * c + 1] = state[4 * c + 1] ^ ((k.unsafe_shr(16_u64)) & 0xff_u64).to_u8
       output[4 * c + 2] = state[4 * c + 2] ^ ((k.unsafe_shr(8_u64)) & 0xff_u64).to_u8
@@ -1276,3 +1413,1480 @@ pub class HeaderProtection
     mask
   end
 end
+
+# -----------------------------------------------------------------------------
+# Blowfish & Bcrypt (Bruce Schneier 1993, Provos & Mazières 1999)
+# -----------------------------------------------------------------------------
+
+pub class Blowfish
+  DEFAULT_ROUNDS = 16
+
+  @rounds : Int32
+  @p : Pointer(UInt32)
+  @s : Pointer(UInt32)
+  @s1 : Pointer(UInt32)
+  @s2 : Pointer(UInt32)
+  @s3 : Pointer(UInt32)
+
+  P_INIT = [
+    0x243f6a88_u32,
+    0x85a308d3_u32,
+    0x13198a2e_u32,
+    0x03707344_u32,
+    0xa4093822_u32,
+    0x299f31d0_u32,
+    0x082efa98_u32,
+    0xec4e6c89_u32,
+    0x452821e6_u32,
+    0x38d01377_u32,
+    0xbe5466cf_u32,
+    0x34e90c6c_u32,
+    0xc0ac29b7_u32,
+    0xc97c50dd_u32,
+    0x3f84d5b5_u32,
+    0xb5470917_u32,
+    0x9216d5d9_u32,
+    0x8979fb1b_u32,
+  ]
+
+  S_INIT = [
+    0xd1310ba6_u32,
+    0x98dfb5ac_u32,
+    0x2ffd72db_u32,
+    0xd01adfb7_u32,
+    0xb8e1afed_u32,
+    0x6a267e96_u32,
+    0xba7c9045_u32,
+    0xf12c7f99_u32,
+    0x24a19947_u32,
+    0xb3916cf7_u32,
+    0x0801f2e2_u32,
+    0x858efc16_u32,
+    0x636920d8_u32,
+    0x71574e69_u32,
+    0xa458fea3_u32,
+    0xf4933d7e_u32,
+    0x0d95748f_u32,
+    0x728eb658_u32,
+    0x718bcd58_u32,
+    0x82154aee_u32,
+    0x7b54a41d_u32,
+    0xc25a59b5_u32,
+    0x9c30d539_u32,
+    0x2af26013_u32,
+    0xc5d1b023_u32,
+    0x286085f0_u32,
+    0xca417918_u32,
+    0xb8db38ef_u32,
+    0x8e79dcb0_u32,
+    0x603a180e_u32,
+    0x6c9e0e8b_u32,
+    0xb01e8a3e_u32,
+    0xd71577c1_u32,
+    0xbd314b27_u32,
+    0x78af2fda_u32,
+    0x55605c60_u32,
+    0xe65525f3_u32,
+    0xaa55ab94_u32,
+    0x57489862_u32,
+    0x63e81440_u32,
+    0x55ca396a_u32,
+    0x2aab10b6_u32,
+    0xb4cc5c34_u32,
+    0x1141e8ce_u32,
+    0xa15486af_u32,
+    0x7c72e993_u32,
+    0xb3ee1411_u32,
+    0x636fbc2a_u32,
+    0x2ba9c55d_u32,
+    0x741831f6_u32,
+    0xce5c3e16_u32,
+    0x9b87931e_u32,
+    0xafd6ba33_u32,
+    0x6c24cf5c_u32,
+    0x7a325381_u32,
+    0x28958677_u32,
+    0x3b8f4898_u32,
+    0x6b4bb9af_u32,
+    0xc4bfe81b_u32,
+    0x66282193_u32,
+    0x61d809cc_u32,
+    0xfb21a991_u32,
+    0x487cac60_u32,
+    0x5dec8032_u32,
+    0xef845d5d_u32,
+    0xe98575b1_u32,
+    0xdc262302_u32,
+    0xeb651b88_u32,
+    0x23893e81_u32,
+    0xd396acc5_u32,
+    0x0f6d6ff3_u32,
+    0x83f44239_u32,
+    0x2e0b4482_u32,
+    0xa4842004_u32,
+    0x69c8f04a_u32,
+    0x9e1f9b5e_u32,
+    0x21c66842_u32,
+    0xf6e96c9a_u32,
+    0x670c9c61_u32,
+    0xabd388f0_u32,
+    0x6a51a0d2_u32,
+    0xd8542f68_u32,
+    0x960fa728_u32,
+    0xab5133a3_u32,
+    0x6eef0b6c_u32,
+    0x137a3be4_u32,
+    0xba3bf050_u32,
+    0x7efb2a98_u32,
+    0xa1f1651d_u32,
+    0x39af0176_u32,
+    0x66ca593e_u32,
+    0x82430e88_u32,
+    0x8cee8619_u32,
+    0x456f9fb4_u32,
+    0x7d84a5c3_u32,
+    0x3b8b5ebe_u32,
+    0xe06f75d8_u32,
+    0x85c12073_u32,
+    0x401a449f_u32,
+    0x56c16aa6_u32,
+    0x4ed3aa62_u32,
+    0x363f7706_u32,
+    0x1bfedf72_u32,
+    0x429b023d_u32,
+    0x37d0d724_u32,
+    0xd00a1248_u32,
+    0xdb0fead3_u32,
+    0x49f1c09b_u32,
+    0x075372c9_u32,
+    0x80991b7b_u32,
+    0x25d479d8_u32,
+    0xf6e8def7_u32,
+    0xe3fe501a_u32,
+    0xb6794c3b_u32,
+    0x976ce0bd_u32,
+    0x04c006ba_u32,
+    0xc1a94fb6_u32,
+    0x409f60c4_u32,
+    0x5e5c9ec2_u32,
+    0x196a2463_u32,
+    0x68fb6faf_u32,
+    0x3e6c53b5_u32,
+    0x1339b2eb_u32,
+    0x3b52ec6f_u32,
+    0x6dfc511f_u32,
+    0x9b30952c_u32,
+    0xcc814544_u32,
+    0xaf5ebd09_u32,
+    0xbee3d004_u32,
+    0xde334afd_u32,
+    0x660f2807_u32,
+    0x192e4bb3_u32,
+    0xc0cba857_u32,
+    0x45c8740f_u32,
+    0xd20b5f39_u32,
+    0xb9d3fbdb_u32,
+    0x5579c0bd_u32,
+    0x1a60320a_u32,
+    0xd6a100c6_u32,
+    0x402c7279_u32,
+    0x679f25fe_u32,
+    0xfb1fa3cc_u32,
+    0x8ea5e9f8_u32,
+    0xdb3222f8_u32,
+    0x3c7516df_u32,
+    0xfd616b15_u32,
+    0x2f501ec8_u32,
+    0xad0552ab_u32,
+    0x323db5fa_u32,
+    0xfd238760_u32,
+    0x53317b48_u32,
+    0x3e00df82_u32,
+    0x9e5c57bb_u32,
+    0xca6f8ca0_u32,
+    0x1a87562e_u32,
+    0xdf1769db_u32,
+    0xd542a8f6_u32,
+    0x287effc3_u32,
+    0xac6732c6_u32,
+    0x8c4f5573_u32,
+    0x695b27b0_u32,
+    0xbbca58c8_u32,
+    0xe1ffa35d_u32,
+    0xb8f011a0_u32,
+    0x10fa3d98_u32,
+    0xfd2183b8_u32,
+    0x4afcb56c_u32,
+    0x2dd1d35b_u32,
+    0x9a53e479_u32,
+    0xb6f84565_u32,
+    0xd28e49bc_u32,
+    0x4bfb9790_u32,
+    0xe1ddf2da_u32,
+    0xa4cb7e33_u32,
+    0x62fb1341_u32,
+    0xcee4c6e8_u32,
+    0xef20cada_u32,
+    0x36774c01_u32,
+    0xd07e9efe_u32,
+    0x2bf11fb4_u32,
+    0x95dbda4d_u32,
+    0xae909198_u32,
+    0xeaad8e71_u32,
+    0x6b93d5a0_u32,
+    0xd08ed1d0_u32,
+    0xafc725e0_u32,
+    0x8e3c5b2f_u32,
+    0x8e7594b7_u32,
+    0x8ff6e2fb_u32,
+    0xf2122b64_u32,
+    0x8888b812_u32,
+    0x900df01c_u32,
+    0x4fad5ea0_u32,
+    0x688fc31c_u32,
+    0xd1cff191_u32,
+    0xb3a8c1ad_u32,
+    0x2f2f2218_u32,
+    0xbe0e1777_u32,
+    0xea752dfe_u32,
+    0x8b021fa1_u32,
+    0xe5a0cc0f_u32,
+    0xb56f74e8_u32,
+    0x18acf3d6_u32,
+    0xce89e299_u32,
+    0xb4a84fe0_u32,
+    0xfd13e0b7_u32,
+    0x7cc43b81_u32,
+    0xd2ada8d9_u32,
+    0x165fa266_u32,
+    0x80957705_u32,
+    0x93cc7314_u32,
+    0x211a1477_u32,
+    0xe6ad2065_u32,
+    0x77b5fa86_u32,
+    0xc75442f5_u32,
+    0xfb9d35cf_u32,
+    0xebcdaf0c_u32,
+    0x7b3e89a0_u32,
+    0xd6411bd3_u32,
+    0xae1e7e49_u32,
+    0x00250e2d_u32,
+    0x2071b35e_u32,
+    0x226800bb_u32,
+    0x57b8e0af_u32,
+    0x2464369b_u32,
+    0xf009b91e_u32,
+    0x5563911d_u32,
+    0x59dfa6aa_u32,
+    0x78c14389_u32,
+    0xd95a537f_u32,
+    0x207d5ba2_u32,
+    0x02e5b9c5_u32,
+    0x83260376_u32,
+    0x6295cfa9_u32,
+    0x11c81968_u32,
+    0x4e734a41_u32,
+    0xb3472dca_u32,
+    0x7b14a94a_u32,
+    0x1b510052_u32,
+    0x9a532915_u32,
+    0xd60f573f_u32,
+    0xbc9bc6e4_u32,
+    0x2b60a476_u32,
+    0x81e67400_u32,
+    0x08ba6fb5_u32,
+    0x571be91f_u32,
+    0xf296ec6b_u32,
+    0x2a0dd915_u32,
+    0xb6636521_u32,
+    0xe7b9f9b6_u32,
+    0xff34052e_u32,
+    0xc5855664_u32,
+    0x53b02d5d_u32,
+    0xa99f8fa1_u32,
+    0x08ba4799_u32,
+    0x6e85076a_u32,
+    0x4b7a70e9_u32,
+    0xb5b32944_u32,
+    0xdb75092e_u32,
+    0xc4192623_u32,
+    0xad6ea6b0_u32,
+    0x49a7df7d_u32,
+    0x9cee60b8_u32,
+    0x8fedb266_u32,
+    0xecaa8c71_u32,
+    0x699a17ff_u32,
+    0x5664526c_u32,
+    0xc2b19ee1_u32,
+    0x193602a5_u32,
+    0x75094c29_u32,
+    0xa0591340_u32,
+    0xe4183a3e_u32,
+    0x3f54989a_u32,
+    0x5b429d65_u32,
+    0x6b8fe4d6_u32,
+    0x99f73fd6_u32,
+    0xa1d29c07_u32,
+    0xefe830f5_u32,
+    0x4d2d38e6_u32,
+    0xf0255dc1_u32,
+    0x4cdd2086_u32,
+    0x8470eb26_u32,
+    0x6382e9c6_u32,
+    0x021ecc5e_u32,
+    0x09686b3f_u32,
+    0x3ebaefc9_u32,
+    0x3c971814_u32,
+    0x6b6a70a1_u32,
+    0x687f3584_u32,
+    0x52a0e286_u32,
+    0xb79c5305_u32,
+    0xaa500737_u32,
+    0x3e07841c_u32,
+    0x7fdeae5c_u32,
+    0x8e7d44ec_u32,
+    0x5716f2b8_u32,
+    0xb03ada37_u32,
+    0xf0500c0d_u32,
+    0xf01c1f04_u32,
+    0x0200b3ff_u32,
+    0xae0cf51a_u32,
+    0x3cb574b2_u32,
+    0x25837a58_u32,
+    0xdc0921bd_u32,
+    0xd19113f9_u32,
+    0x7ca92ff6_u32,
+    0x94324773_u32,
+    0x22f54701_u32,
+    0x3ae5e581_u32,
+    0x37c2dadc_u32,
+    0xc8b57634_u32,
+    0x9af3dda7_u32,
+    0xa9446146_u32,
+    0x0fd0030e_u32,
+    0xecc8c73e_u32,
+    0xa4751e41_u32,
+    0xe238cd99_u32,
+    0x3bea0e2f_u32,
+    0x3280bba1_u32,
+    0x183eb331_u32,
+    0x4e548b38_u32,
+    0x4f6db908_u32,
+    0x6f420d03_u32,
+    0xf60a04bf_u32,
+    0x2cb81290_u32,
+    0x24977c79_u32,
+    0x5679b072_u32,
+    0xbcaf89af_u32,
+    0xde9a771f_u32,
+    0xd9930810_u32,
+    0xb38bae12_u32,
+    0xdccf3f2e_u32,
+    0x5512721f_u32,
+    0x2e6b7124_u32,
+    0x501adde6_u32,
+    0x9f84cd87_u32,
+    0x7a584718_u32,
+    0x7408da17_u32,
+    0xbc9f9abc_u32,
+    0xe94b7d8c_u32,
+    0xec7aec3a_u32,
+    0xdb851dfa_u32,
+    0x63094366_u32,
+    0xc464c3d2_u32,
+    0xef1c1847_u32,
+    0x3215d908_u32,
+    0xdd433b37_u32,
+    0x24c2ba16_u32,
+    0x12a14d43_u32,
+    0x2a65c451_u32,
+    0x50940002_u32,
+    0x133ae4dd_u32,
+    0x71dff89e_u32,
+    0x10314e55_u32,
+    0x81ac77d6_u32,
+    0x5f11199b_u32,
+    0x043556f1_u32,
+    0xd7a3c76b_u32,
+    0x3c11183b_u32,
+    0x5924a509_u32,
+    0xf28fe6ed_u32,
+    0x97f1fbfa_u32,
+    0x9ebabf2c_u32,
+    0x1e153c6e_u32,
+    0x86e34570_u32,
+    0xeae96fb1_u32,
+    0x860e5e0a_u32,
+    0x5a3e2ab3_u32,
+    0x771fe71c_u32,
+    0x4e3d06fa_u32,
+    0x2965dcb9_u32,
+    0x99e71d0f_u32,
+    0x803e89d6_u32,
+    0x5266c825_u32,
+    0x2e4cc978_u32,
+    0x9c10b36a_u32,
+    0xc6150eba_u32,
+    0x94e2ea78_u32,
+    0xa5fc3c53_u32,
+    0x1e0a2df4_u32,
+    0xf2f74ea7_u32,
+    0x361d2b3d_u32,
+    0x1939260f_u32,
+    0x19c27960_u32,
+    0x5223a708_u32,
+    0xf71312b6_u32,
+    0xebadfe6e_u32,
+    0xeac31f66_u32,
+    0xe3bc4595_u32,
+    0xa67bc883_u32,
+    0xb17f37d1_u32,
+    0x018cff28_u32,
+    0xc332ddef_u32,
+    0xbe6c5aa5_u32,
+    0x65582185_u32,
+    0x68ab9802_u32,
+    0xeecea50f_u32,
+    0xdb2f953b_u32,
+    0x2aef7dad_u32,
+    0x5b6e2f84_u32,
+    0x1521b628_u32,
+    0x29076170_u32,
+    0xecdd4775_u32,
+    0x619f1510_u32,
+    0x13cca830_u32,
+    0xeb61bd96_u32,
+    0x0334fe1e_u32,
+    0xaa0363cf_u32,
+    0xb5735c90_u32,
+    0x4c70a239_u32,
+    0xd59e9e0b_u32,
+    0xcbaade14_u32,
+    0xeecc86bc_u32,
+    0x60622ca7_u32,
+    0x9cab5cab_u32,
+    0xb2f3846e_u32,
+    0x648b1eaf_u32,
+    0x19bdf0ca_u32,
+    0xa02369b9_u32,
+    0x655abb50_u32,
+    0x40685a32_u32,
+    0x3c2ab4b3_u32,
+    0x319ee9d5_u32,
+    0xc021b8f7_u32,
+    0x9b540b19_u32,
+    0x875fa099_u32,
+    0x95f7997e_u32,
+    0x623d7da8_u32,
+    0xf837889a_u32,
+    0x97e32d77_u32,
+    0x11ed935f_u32,
+    0x16681281_u32,
+    0x0e358829_u32,
+    0xc7e61fd6_u32,
+    0x96dedfa1_u32,
+    0x7858ba99_u32,
+    0x57f584a5_u32,
+    0x1b227263_u32,
+    0x9b83c3ff_u32,
+    0x1ac24696_u32,
+    0xcdb30aeb_u32,
+    0x532e3054_u32,
+    0x8fd948e4_u32,
+    0x6dbc3128_u32,
+    0x58ebf2ef_u32,
+    0x34c6ffea_u32,
+    0xfe28ed61_u32,
+    0xee7c3c73_u32,
+    0x5d4a14d9_u32,
+    0xe864b7e3_u32,
+    0x42105d14_u32,
+    0x203e13e0_u32,
+    0x45eee2b6_u32,
+    0xa3aaabea_u32,
+    0xdb6c4f15_u32,
+    0xfacb4fd0_u32,
+    0xc742f442_u32,
+    0xef6abbb5_u32,
+    0x654f3b1d_u32,
+    0x41cd2105_u32,
+    0xd81e799e_u32,
+    0x86854dc7_u32,
+    0xe44b476a_u32,
+    0x3d816250_u32,
+    0xcf62a1f2_u32,
+    0x5b8d2646_u32,
+    0xfc8883a0_u32,
+    0xc1c7b6a3_u32,
+    0x7f1524c3_u32,
+    0x69cb7492_u32,
+    0x47848a0b_u32,
+    0x5692b285_u32,
+    0x095bbf00_u32,
+    0xad19489d_u32,
+    0x1462b174_u32,
+    0x23820e00_u32,
+    0x58428d2a_u32,
+    0x0c55f5ea_u32,
+    0x1dadf43e_u32,
+    0x233f7061_u32,
+    0x3372f092_u32,
+    0x8d937e41_u32,
+    0xd65fecf1_u32,
+    0x6c223bdb_u32,
+    0x7cde3759_u32,
+    0xcbee7460_u32,
+    0x4085f2a7_u32,
+    0xce77326e_u32,
+    0xa6078084_u32,
+    0x19f8509e_u32,
+    0xe8efd855_u32,
+    0x61d99735_u32,
+    0xa969a7aa_u32,
+    0xc50c06c2_u32,
+    0x5a04abfc_u32,
+    0x800bcadc_u32,
+    0x9e447a2e_u32,
+    0xc3453484_u32,
+    0xfdd56705_u32,
+    0x0e1e9ec9_u32,
+    0xdb73dbd3_u32,
+    0x105588cd_u32,
+    0x675fda79_u32,
+    0xe3674340_u32,
+    0xc5c43465_u32,
+    0x713e38d8_u32,
+    0x3d28f89e_u32,
+    0xf16dff20_u32,
+    0x153e21e7_u32,
+    0x8fb03d4a_u32,
+    0xe6e39f2b_u32,
+    0xdb83adf7_u32,
+    0xe93d5a68_u32,
+    0x948140f7_u32,
+    0xf64c261c_u32,
+    0x94692934_u32,
+    0x411520f7_u32,
+    0x7602d4f7_u32,
+    0xbcf46b2e_u32,
+    0xd4a20068_u32,
+    0xd4082471_u32,
+    0x3320f46a_u32,
+    0x43b7d4b7_u32,
+    0x500061af_u32,
+    0x1e39f62e_u32,
+    0x97244546_u32,
+    0x14214f74_u32,
+    0xbf8b8840_u32,
+    0x4d95fc1d_u32,
+    0x96b591af_u32,
+    0x70f4ddd3_u32,
+    0x66a02f45_u32,
+    0xbfbc09ec_u32,
+    0x03bd9785_u32,
+    0x7fac6dd0_u32,
+    0x31cb8504_u32,
+    0x96eb27b3_u32,
+    0x55fd3941_u32,
+    0xda2547e6_u32,
+    0xabca0a9a_u32,
+    0x28507825_u32,
+    0x530429f4_u32,
+    0x0a2c86da_u32,
+    0xe9b66dfb_u32,
+    0x68dc1462_u32,
+    0xd7486900_u32,
+    0x680ec0a4_u32,
+    0x27a18dee_u32,
+    0x4f3ffea2_u32,
+    0xe887ad8c_u32,
+    0xb58ce006_u32,
+    0x7af4d6b6_u32,
+    0xaace1e7c_u32,
+    0xd3375fec_u32,
+    0xce78a399_u32,
+    0x406b2a42_u32,
+    0x20fe9e35_u32,
+    0xd9f385b9_u32,
+    0xee39d7ab_u32,
+    0x3b124e8b_u32,
+    0x1dc9faf7_u32,
+    0x4b6d1856_u32,
+    0x26a36631_u32,
+    0xeae397b2_u32,
+    0x3a6efa74_u32,
+    0xdd5b4332_u32,
+    0x6841e7f7_u32,
+    0xca7820fb_u32,
+    0xfb0af54e_u32,
+    0xd8feb397_u32,
+    0x454056ac_u32,
+    0xba489527_u32,
+    0x55533a3a_u32,
+    0x20838d87_u32,
+    0xfe6ba9b7_u32,
+    0xd096954b_u32,
+    0x55a867bc_u32,
+    0xa1159a58_u32,
+    0xcca92963_u32,
+    0x99e1db33_u32,
+    0xa62a4a56_u32,
+    0x3f3125f9_u32,
+    0x5ef47e1c_u32,
+    0x9029317c_u32,
+    0xfdf8e802_u32,
+    0x04272f70_u32,
+    0x80bb155c_u32,
+    0x05282ce3_u32,
+    0x95c11548_u32,
+    0xe4c66d22_u32,
+    0x48c1133f_u32,
+    0xc70f86dc_u32,
+    0x07f9c9ee_u32,
+    0x41041f0f_u32,
+    0x404779a4_u32,
+    0x5d886e17_u32,
+    0x325f51eb_u32,
+    0xd59bc0d1_u32,
+    0xf2bcc18f_u32,
+    0x41113564_u32,
+    0x257b7834_u32,
+    0x602a9c60_u32,
+    0xdff8e8a3_u32,
+    0x1f636c1b_u32,
+    0x0e12b4c2_u32,
+    0x02e1329e_u32,
+    0xaf664fd1_u32,
+    0xcad18115_u32,
+    0x6b2395e0_u32,
+    0x333e92e1_u32,
+    0x3b240b62_u32,
+    0xeebeb922_u32,
+    0x85b2a20e_u32,
+    0xe6ba0d99_u32,
+    0xde720c8c_u32,
+    0x2da2f728_u32,
+    0xd0127845_u32,
+    0x95b794fd_u32,
+    0x647d0862_u32,
+    0xe7ccf5f0_u32,
+    0x5449a36f_u32,
+    0x877d48fa_u32,
+    0xc39dfd27_u32,
+    0xf33e8d1e_u32,
+    0x0a476341_u32,
+    0x992eff74_u32,
+    0x3a6f6eab_u32,
+    0xf4f8fd37_u32,
+    0xa812dc60_u32,
+    0xa1ebddf8_u32,
+    0x991be14c_u32,
+    0xdb6e6b0d_u32,
+    0xc67b5510_u32,
+    0x6d672c37_u32,
+    0x2765d43b_u32,
+    0xdcd0e804_u32,
+    0xf1290dc7_u32,
+    0xcc00ffa3_u32,
+    0xb5390f92_u32,
+    0x690fed0b_u32,
+    0x667b9ffb_u32,
+    0xcedb7d9c_u32,
+    0xa091cf0b_u32,
+    0xd9155ea3_u32,
+    0xbb132f88_u32,
+    0x515bad24_u32,
+    0x7b9479bf_u32,
+    0x763bd6eb_u32,
+    0x37392eb3_u32,
+    0xcc115979_u32,
+    0x8026e297_u32,
+    0xf42e312d_u32,
+    0x6842ada7_u32,
+    0xc66a2b3b_u32,
+    0x12754ccc_u32,
+    0x782ef11c_u32,
+    0x6a124237_u32,
+    0xb79251e7_u32,
+    0x06a1bbe6_u32,
+    0x4bfb6350_u32,
+    0x1a6b1018_u32,
+    0x11caedfa_u32,
+    0x3d25bdd8_u32,
+    0xe2e1c3c9_u32,
+    0x44421659_u32,
+    0x0a121386_u32,
+    0xd90cec6e_u32,
+    0xd5abea2a_u32,
+    0x64af674e_u32,
+    0xda86a85f_u32,
+    0xbebfe988_u32,
+    0x64e4c3fe_u32,
+    0x9dbc8057_u32,
+    0xf0f7c086_u32,
+    0x60787bf8_u32,
+    0x6003604d_u32,
+    0xd1fd8346_u32,
+    0xf6381fb0_u32,
+    0x7745ae04_u32,
+    0xd736fccc_u32,
+    0x83426b33_u32,
+    0xf01eab71_u32,
+    0xb0804187_u32,
+    0x3c005e5f_u32,
+    0x77a057be_u32,
+    0xbde8ae24_u32,
+    0x55464299_u32,
+    0xbf582e61_u32,
+    0x4e58f48f_u32,
+    0xf2ddfda2_u32,
+    0xf474ef38_u32,
+    0x8789bdc2_u32,
+    0x5366f9c3_u32,
+    0xc8b38e74_u32,
+    0xb475f255_u32,
+    0x46fcd9b9_u32,
+    0x7aeb2661_u32,
+    0x8b1ddf84_u32,
+    0x846a0e79_u32,
+    0x915f95e2_u32,
+    0x466e598e_u32,
+    0x20b45770_u32,
+    0x8cd55591_u32,
+    0xc902de4c_u32,
+    0xb90bace1_u32,
+    0xbb8205d0_u32,
+    0x11a86248_u32,
+    0x7574a99e_u32,
+    0xb77f19b6_u32,
+    0xe0a9dc09_u32,
+    0x662d09a1_u32,
+    0xc4324633_u32,
+    0xe85a1f02_u32,
+    0x09f0be8c_u32,
+    0x4a99a025_u32,
+    0x1d6efe10_u32,
+    0x1ab93d1d_u32,
+    0x0ba5a4df_u32,
+    0xa186f20f_u32,
+    0x2868f169_u32,
+    0xdcb7da83_u32,
+    0x573906fe_u32,
+    0xa1e2ce9b_u32,
+    0x4fcd7f52_u32,
+    0x50115e01_u32,
+    0xa70683fa_u32,
+    0xa002b5c4_u32,
+    0x0de6d027_u32,
+    0x9af88c27_u32,
+    0x773f8641_u32,
+    0xc3604c06_u32,
+    0x61a806b5_u32,
+    0xf0177a28_u32,
+    0xc0f586e0_u32,
+    0x006058aa_u32,
+    0x30dc7d62_u32,
+    0x11e69ed7_u32,
+    0x2338ea63_u32,
+    0x53c2dd94_u32,
+    0xc2c21634_u32,
+    0xbbcbee56_u32,
+    0x90bcb6de_u32,
+    0xebfc7da1_u32,
+    0xce591d76_u32,
+    0x6f05e409_u32,
+    0x4b7c0188_u32,
+    0x39720a3d_u32,
+    0x7c927c24_u32,
+    0x86e3725f_u32,
+    0x724d9db9_u32,
+    0x1ac15bb4_u32,
+    0xd39eb8fc_u32,
+    0xed545578_u32,
+    0x08fca5b5_u32,
+    0xd83d7cd3_u32,
+    0x4dad0fc4_u32,
+    0x1e50ef5e_u32,
+    0xb161e6f8_u32,
+    0xa28514d9_u32,
+    0x6c51133c_u32,
+    0x6fd5c7e7_u32,
+    0x56e14ec4_u32,
+    0x362abfce_u32,
+    0xddc6c837_u32,
+    0xd79a3234_u32,
+    0x92638212_u32,
+    0x670efa8e_u32,
+    0x406000e0_u32,
+    0x3a39ce37_u32,
+    0xd3faf5cf_u32,
+    0xabc27737_u32,
+    0x5ac52d1b_u32,
+    0x5cb0679e_u32,
+    0x4fa33742_u32,
+    0xd3822740_u32,
+    0x99bc9bbe_u32,
+    0xd5118e9d_u32,
+    0xbf0f7315_u32,
+    0xd62d1c7e_u32,
+    0xc700c47b_u32,
+    0xb78c1b6b_u32,
+    0x21a19045_u32,
+    0xb26eb1be_u32,
+    0x6a366eb4_u32,
+    0x5748ab2f_u32,
+    0xbc946e79_u32,
+    0xc6a376d2_u32,
+    0x6549c2c8_u32,
+    0x530ff8ee_u32,
+    0x468dde7d_u32,
+    0xd5730a1d_u32,
+    0x4cd04dc6_u32,
+    0x2939bbdb_u32,
+    0xa9ba4650_u32,
+    0xac9526e8_u32,
+    0xbe5ee304_u32,
+    0xa1fad5f0_u32,
+    0x6a2d519a_u32,
+    0x63ef8ce2_u32,
+    0x9a86ee22_u32,
+    0xc089c2b8_u32,
+    0x43242ef6_u32,
+    0xa51e03aa_u32,
+    0x9cf2d0a4_u32,
+    0x83c061ba_u32,
+    0x9be96a4d_u32,
+    0x8fe51550_u32,
+    0xba645bd6_u32,
+    0x2826a2f9_u32,
+    0xa73a3ae1_u32,
+    0x4ba99586_u32,
+    0xef5562e9_u32,
+    0xc72fefd3_u32,
+    0xf752f7da_u32,
+    0x3f046f69_u32,
+    0x77fa0a59_u32,
+    0x80e4a915_u32,
+    0x87b08601_u32,
+    0x9b09e6ad_u32,
+    0x3b3ee593_u32,
+    0xe990fd5a_u32,
+    0x9e34d797_u32,
+    0x2cf0b7d9_u32,
+    0x022b8b51_u32,
+    0x96d5ac3a_u32,
+    0x017da67d_u32,
+    0xd1cf3ed6_u32,
+    0x7c7d2d28_u32,
+    0x1f9f25cf_u32,
+    0xadf2b89b_u32,
+    0x5ad6b472_u32,
+    0x5a88f54c_u32,
+    0xe029ac71_u32,
+    0xe019a5e6_u32,
+    0x47b0acfd_u32,
+    0xed93fa9b_u32,
+    0xe8d3c48d_u32,
+    0x283b57cc_u32,
+    0xf8d56629_u32,
+    0x79132e28_u32,
+    0x785f0191_u32,
+    0xed756055_u32,
+    0xf7960e44_u32,
+    0xe3d35e8c_u32,
+    0x15056dd4_u32,
+    0x88f46dba_u32,
+    0x03a16125_u32,
+    0x0564f0bd_u32,
+    0xc3eb9e15_u32,
+    0x3c9057a2_u32,
+    0x97271aec_u32,
+    0xa93a072a_u32,
+    0x1b3f6d9b_u32,
+    0x1e6321f5_u32,
+    0xf59c66fb_u32,
+    0x26dcf319_u32,
+    0x7533d928_u32,
+    0xb155fdf5_u32,
+    0x03563482_u32,
+    0x8aba3cbb_u32,
+    0x28517711_u32,
+    0xc20ad9f8_u32,
+    0xabcc5167_u32,
+    0xccad925f_u32,
+    0x4de81751_u32,
+    0x3830dc8e_u32,
+    0x379d5862_u32,
+    0x9320f991_u32,
+    0xea7a90c2_u32,
+    0xfb3e7bce_u32,
+    0x5121ce64_u32,
+    0x774fbe32_u32,
+    0xa8b6e37e_u32,
+    0xc3293d46_u32,
+    0x48de5369_u32,
+    0x6413e680_u32,
+    0xa2ae0810_u32,
+    0xdd6db224_u32,
+    0x69852dfd_u32,
+    0x09072166_u32,
+    0xb39a460a_u32,
+    0x6445c0dd_u32,
+    0x586cdecf_u32,
+    0x1c20c8ae_u32,
+    0x5bbef7dd_u32,
+    0x1b588d40_u32,
+    0xccd2017f_u32,
+    0x6bb4e3bb_u32,
+    0xdda26a7e_u32,
+    0x3a59ff45_u32,
+    0x3e350a44_u32,
+    0xbcb4cdd5_u32,
+    0x72eacea8_u32,
+    0xfa6484bb_u32,
+    0x8d6612ae_u32,
+    0xbf3c6f47_u32,
+    0xd29be463_u32,
+    0x542f5d9e_u32,
+    0xaec2771b_u32,
+    0xf64e6370_u32,
+    0x740e0d8d_u32,
+    0xe75b1357_u32,
+    0xf8721671_u32,
+    0xaf537d5d_u32,
+    0x4040cb08_u32,
+    0x4eb4e2cc_u32,
+    0x34d2466a_u32,
+    0x0115af84_u32,
+    0xe1b00428_u32,
+    0x95983a1d_u32,
+    0x06b89fb4_u32,
+    0xce6ea048_u32,
+    0x6f3f3b82_u32,
+    0x3520ab82_u32,
+    0x011a1d4b_u32,
+    0x277227f8_u32,
+    0x611560b1_u32,
+    0xe7933fdc_u32,
+    0xbb3a792b_u32,
+    0x344525bd_u32,
+    0xa08839e1_u32,
+    0x51ce794b_u32,
+    0x2f32c9b7_u32,
+    0xa01fbac9_u32,
+    0xe01cc87e_u32,
+    0xbcc7d1f6_u32,
+    0xcf0111c3_u32,
+    0xa1e8aac7_u32,
+    0x1a908749_u32,
+    0xd44fbd9a_u32,
+    0xd0dadecb_u32,
+    0xd50ada38_u32,
+    0x0339c32a_u32,
+    0xc6913667_u32,
+    0x8df9317c_u32,
+    0xe0b12b4f_u32,
+    0xf79e59b7_u32,
+    0x43f5bb3a_u32,
+    0xf2d519ff_u32,
+    0x27d9459c_u32,
+    0xbf97222c_u32,
+    0x15e6fc2a_u32,
+    0x0f91fc71_u32,
+    0x9b941525_u32,
+    0xfae59361_u32,
+    0xceb69ceb_u32,
+    0xc2a86459_u32,
+    0x12baa8d1_u32,
+    0xb6c1075e_u32,
+    0xe3056a0c_u32,
+    0x10d25065_u32,
+    0xcb03a442_u32,
+    0xe0ec6e0e_u32,
+    0x1698db3b_u32,
+    0x4c98a0be_u32,
+    0x3278e964_u32,
+    0x9f1f9532_u32,
+    0xe0d392df_u32,
+    0xd3a0342b_u32,
+    0x8971f21e_u32,
+    0x1b0a7441_u32,
+    0x4ba3348c_u32,
+    0xc5be7120_u32,
+    0xc37632d8_u32,
+    0xdf359f8d_u32,
+    0x9b992f2e_u32,
+    0xe60b6f47_u32,
+    0x0fe3f11d_u32,
+    0xe54cda54_u32,
+    0x1edad891_u32,
+    0xce6279cf_u32,
+    0xcd3e7e6f_u32,
+    0x1618b166_u32,
+    0xfd2c1d05_u32,
+    0x848fd2c5_u32,
+    0xf6fb2299_u32,
+    0xf523f357_u32,
+    0xa6327623_u32,
+    0x93a83531_u32,
+    0x56cccd02_u32,
+    0xacf08162_u32,
+    0x5a75ebb5_u32,
+    0x6e163697_u32,
+    0x88d273cc_u32,
+    0xde966292_u32,
+    0x81b949d0_u32,
+    0x4c50901b_u32,
+    0x71c65614_u32,
+    0xe6c6c7bd_u32,
+    0x327a140a_u32,
+    0x45e1d006_u32,
+    0xc3f27b9a_u32,
+    0xc9aa53fd_u32,
+    0x62a80f00_u32,
+    0xbb25bfe2_u32,
+    0x35bdd2f6_u32,
+    0x71126905_u32,
+    0xb2040222_u32,
+    0xb6cbcf7c_u32,
+    0xcd769c2b_u32,
+    0x53113ec0_u32,
+    0x1640e3d3_u32,
+    0x38abbd60_u32,
+    0x2547adf0_u32,
+    0xba38209c_u32,
+    0xf746ce76_u32,
+    0x77afa1c5_u32,
+    0x20756060_u32,
+    0x85cbfe4e_u32,
+    0x8ae88dd8_u32,
+    0x7aaaf9b0_u32,
+    0x4cf9aa7e_u32,
+    0x1948c25c_u32,
+    0x02fb8a8c_u32,
+    0x01c36ae4_u32,
+    0xd6ebe1f9_u32,
+    0x90d4f869_u32,
+    0xa65cdea0_u32,
+    0x3f09252d_u32,
+    0xc208e69f_u32,
+    0xb74e6132_u32,
+    0xce77e25b_u32,
+    0x578fdfe3_u32,
+    0x3ac372e6_u32,
+  ]
+
+  def initialize(@rounds = DEFAULT_ROUNDS)
+    @p = Pointer(UInt32).malloc(18_u64)
+    @s = Pointer(UInt32).malloc(1024_u64)
+    i = 0
+    while i < 18
+      @p[i] = P_INIT[i]
+      i = i + 1
+    end
+    i = 0
+    while i < 1024
+      @s[i] = S_INIT[i]
+      i = i + 1
+    end
+    @s1 = @s + 256
+    @s2 = @s + 512
+    @s3 = @s + 768
+  end
+
+  def expand_key(key : Bytes) : Nil
+    raise "Blowfish: key cannot be empty" if key.empty?
+    pos = 0
+    i = 0
+    while i < 18
+      word = 0_u32
+      j = 0
+      while j < 4
+        word = (word.unsafe_shl(8_u32)) | key[pos].to_u32
+        pos = (pos + 1) % key.size
+        j = j + 1
+      end
+      @p[i] = @p[i] ^ word
+      i = i + 1
+    end
+
+    l = 0_u32
+    r = 0_u32
+    i = 0
+    while i < 18
+      l, r = encrypt_pair(l, r)
+      @p[i] = l
+      @p[i + 1] = r
+      i = i + 2
+    end
+
+    i = 0
+    while i < 1024
+      l, r = encrypt_pair(l, r)
+      @s[i] = l
+      @s[i + 1] = r
+      i = i + 2
+    end
+  end
+
+  def encrypt_pair(l : UInt32, r : UInt32) : Tuple(UInt32, UInt32)
+    cur_l = l
+    cur_r = r
+    i = 0
+    while i < @rounds
+      cur_l = cur_l ^ @p[i]
+      cur_r = cur_r ^ f(cur_l)
+      temp = cur_l
+      cur_l = cur_r
+      cur_r = temp
+      i = i + 1
+    end
+    temp = cur_l
+    cur_l = cur_r
+    cur_r = temp
+
+    cur_r = cur_r ^ @p[@rounds]
+    cur_l = cur_l ^ @p[@rounds + 1]
+
+    {cur_l, cur_r}
+  end
+
+  def decrypt_pair(l : UInt32, r : UInt32) : Tuple(UInt32, UInt32)
+    cur_l = l
+    cur_r = r
+    i = @rounds + 1
+    while i >= 2
+      cur_l = cur_l ^ @p[i]
+      cur_r = cur_r ^ f(cur_l)
+      temp = cur_l
+      cur_l = cur_r
+      cur_r = temp
+      i = i - 1
+    end
+    temp = cur_l
+    cur_l = cur_r
+    cur_r = temp
+
+    cur_r = cur_r ^ @p[1]
+    cur_l = cur_l ^ @p[0]
+
+    {cur_l, cur_r}
+  end
+
+  private def f(x : UInt32) : UInt32
+    d = (x & 0xff_u32).to_i32
+    c = ((x.unsafe_shr(8_u32)) & 0xff_u32).to_i32
+    b = ((x.unsafe_shr(16_u32)) & 0xff_u32).to_i32
+    a = ((x.unsafe_shr(24_u32)) & 0xff_u32).to_i32
+    ((@s[a] &+ @s1[b]) ^ @s2[c]) &+ @s3[d]
+  end
+end
+
+module BcryptBase64
+  ALPHABET = "./ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+
+  def self.encode(d : Bytes, len : Int32) : String
+    off = 0
+    chars = ALPHABET.to_unsafe
+
+    # Max output length
+    out_cap = ((len + 2) // 3) * 4 + 4
+    buf = Pointer(UInt8).malloc(out_cap.to_u64)
+    out_pos = 0
+
+    while off < len
+      c1 = d[off].to_i32
+      off = off + 1
+      buf[out_pos] = chars[(c1 >> 2) & 0x3f]
+      out_pos = out_pos + 1
+      c1 = (c1 & 0x03) << 4
+
+      if off >= len
+        buf[out_pos] = chars[c1 & 0x3f]
+        out_pos = out_pos + 1
+        break
+      end
+
+      c2 = d[off].to_i32
+      off = off + 1
+      c1 = c1 | ((c2 >> 4) & 0x0f)
+      buf[out_pos] = chars[c1 & 0x3f]
+      out_pos = out_pos + 1
+      c1 = (c2 & 0x0f) << 2
+
+      if off >= len
+        buf[out_pos] = chars[c1 & 0x3f]
+        out_pos = out_pos + 1
+        break
+      end
+
+      c2 = d[off].to_i32
+      off = off + 1
+      c1 = c1 | ((c2 >> 6) & 0x03)
+      buf[out_pos] = chars[c1 & 0x3f]
+      out_pos = out_pos + 1
+      buf[out_pos] = chars[c2 & 0x3f]
+      out_pos = out_pos + 1
+    end
+
+    String.new(out_pos) do |target|
+      target.copy_from(buf, out_pos)
+    end
+  end
+
+  private def self.char64(c : UInt8) : Int32
+    if c == 46_u8 # '.'
+      0
+    elsif c == 47_u8 # '/'
+      1
+    elsif c >= 65_u8 && c <= 90_u8 # 'A'..'Z'
+      (c - 65_u8).to_i32 + 2
+    elsif c >= 97_u8 && c <= 122_u8 # 'a'..'z'
+      (c - 97_u8).to_i32 + 28
+    elsif c >= 48_u8 && c <= 57_u8 # '0'..'9'
+      (c - 48_u8).to_i32 + 54
+    else
+      -1
+    end
+  end
+
+  def self.decode(string : String, maxolen : Int32) : Bytes
+    off = 0
+    slen = string.bytesize
+    olen = 0
+    str = Bytes.new(maxolen)
+    ptr = string.to_unsafe
+
+    while off < slen - 1 && olen < maxolen
+      c1 = char64(ptr[off])
+      c2 = char64(ptr[off + 1])
+      break if c1 == -1 || c2 == -1
+      off = off + 2
+
+      str[olen] = (((c1 << 2) | ((c2 & 0x30) >> 4)) & 0xff).to_u8
+      olen = olen + 1
+      break if olen >= maxolen || off >= slen
+
+      c3 = char64(ptr[off])
+      off = off + 1
+      break if c3 == -1
+
+      str[olen] = ((((c2 & 0x0f) << 4) | ((c3 & 0x3c) >> 2)) & 0xff).to_u8
+      olen = olen + 1
+      break if olen >= maxolen || off >= slen
+
+      c4 = char64(ptr[off])
+      off = off + 1
+      break if c4 == -1
+
+      str[olen] = ((((c3 & 0x03) << 6) | c4) & 0xff).to_u8
+      olen = olen + 1
+    end
+    str
+  end
+end
+
+class BcryptBlowfish < Blowfish
+  def enhance_key_schedule(data : Bytes, key : Bytes, cost : Int32) : Nil
+    enhance_key_schedule(data, key)
+    count = (1_u32.unsafe_shl(cost.to_u32))
+    iter = 0_u32
+    while iter < count
+      expand_key(key)
+      expand_key(data)
+      iter = iter + 1_u32
+    end
+  end
+
+  def enhance_key_schedule(data : Bytes, key : Bytes) : Nil
+    pos = 0
+    i = 0
+    while i < 18
+      word = 0_u32
+      j = 0
+      while j < 4
+        word = (word.unsafe_shl(8_u32)) | key[pos].to_u32
+        pos = (pos + 1) % key.size
+        j = j + 1
+      end
+      @p[i] = @p[i] ^ word
+      i = i + 1
+    end
+
+    l = 0_u32
+    r = 0_u32
+    pos = 0
+    i = 0
+    while i < 18
+      w1 = 0_u32
+      j = 0
+      while j < 4
+        w1 = (w1.unsafe_shl(8_u32)) | data[pos].to_u32
+        pos = (pos + 1) % data.size
+        j = j + 1
+      end
+      l = l ^ w1
+
+      w2 = 0_u32
+      j = 0
+      while j < 4
+        w2 = (w2.unsafe_shl(8_u32)) | data[pos].to_u32
+        pos = (pos + 1) % data.size
+        j = j + 1
+      end
+      r = r ^ w2
+
+      pair = encrypt_pair(l, r)
+      l = pair[0]
+      r = pair[1]
+      @p[i] = l
+      @p[i + 1] = r
+      i = i + 2
+    end
+
+    i = 0
+    while i < 1024
+      w1 = 0_u32
+      j = 0
+      while j < 4
+        w1 = (w1.unsafe_shl(8_u32)) | data[pos].to_u32
+        pos = (pos + 1) % data.size
+        j = j + 1
+      end
+      l = l ^ w1
+
+      w2 = 0_u32
+      j = 0
+      while j < 4
+        w2 = (w2.unsafe_shl(8_u32)) | data[pos].to_u32
+        pos = (pos + 1) % data.size
+        j = j + 1
+      end
+      r = r ^ w2
+
+      pair = encrypt_pair(l, r)
+      l = pair[0]
+      r = pair[1]
+      @s[i] = l
+      @s[i + 1] = r
+      i = i + 2
+    end
+  end
+end
+
+pub class Bcrypt
+  class Error < Exception
+    getter message : String
+
+    def initialize(@message : String)
+    end
+  end
+
+  DEFAULT_COST   = 10
+  COST_RANGE     = 4..31
+  PASSWORD_RANGE = 0..72
+  SALT_SIZE      = 16
+
+  CIPHER_TEXT = [
+    0x4f727068_u32, 0x65616e42_u32, 0x65686f6c_u32,
+    0x64657253_u32, 0x63727944_u32, 0x6f756274_u32,
+  ]
+
+  getter cost : Int32
+  getter salt : Bytes
+  getter password : Bytes
+  getter digest : Bytes
+
+  def initialize(password_bytes : Bytes, @salt : Bytes, @cost : Int32 = DEFAULT_COST)
+    @password = password_bytes
+    @digest = hash_password
+  end
+
+  def self.new(password : String, salt_b64 : String, cost : Int32 = DEFAULT_COST) : Bcrypt
+    pw_bytes = Bytes.new(password.bytesize + 1)
+    i = 0
+    while i < password.bytesize
+      pw_bytes[i] = password.to_unsafe[i]
+      i = i + 1
+    end
+    pw_bytes[password.bytesize] = 0_u8
+    salt_bytes = BcryptBase64.decode(salt_b64, SALT_SIZE)
+    new(pw_bytes, salt_bytes, cost)
+  end
+
+  private def hash_password : Bytes
+    bf = BcryptBlowfish.new(16)
+    bf.enhance_key_schedule(salt, password, cost)
+
+    cdata = Pointer(UInt32).malloc(6_u64)
+    i = 0
+    while i < 6
+      cdata[i] = CIPHER_TEXT[i]
+      i = i + 1
+    end
+
+    i = 0
+    while i < 6
+      round = 0
+      while round < 64
+        pair = bf.encrypt_pair(cdata[i], cdata[i + 1])
+        cdata[i] = pair[0]
+        cdata[i + 1] = pair[1]
+        round = round + 1
+      end
+      i = i + 2
+    end
+
+    ret = Bytes.new(24)
+    j = 0
+    i = 0
+    while i < 6
+      ret[j] = ((cdata[i].unsafe_shr(24_u32)) & 0xff_u32).to_u8
+      ret[j + 1] = ((cdata[i].unsafe_shr(16_u32)) & 0xff_u32).to_u8
+      ret[j + 2] = ((cdata[i].unsafe_shr(8_u32)) & 0xff_u32).to_u8
+      ret[j + 3] = (cdata[i] & 0xff_u32).to_u8
+      j = j + 4
+      i = i + 1
+    end
+    ret
+  end
+
+  def to_s : String
+    salt64 = BcryptBase64.encode(salt, salt.size)
+    digest64 = BcryptBase64.encode(digest, digest.size - 1)
+    cost_str = cost < 10 ? "0" + cost.to_s : cost.to_s
+    "$2a$" + cost_str + "$" + salt64 + digest64
+  end
+end
+
+pub class Password
+  getter version : String
+  getter cost : Int32
+  getter salt : String
+  getter digest : String
+
+  def initialize(@raw_hash : String)
+    parts = @raw_hash.split('$')
+    raise "Invalid hash string" unless parts.size == 4
+    @version = parts[1]
+    @cost = parts[2].to_i
+    @salt = parts[3][0, 22]
+    @digest = parts[3][22, parts[3].bytesize - 22]
+  end
+
+  def verify(password : String) : Bool
+    hashed = Bcrypt.new(password, @salt, @cost)
+    hashed_digest = BcryptBase64.encode(hashed.digest, hashed.digest.size - 1)
+    @digest == hashed_digest
+  end
+
+  def to_s : String
+    @raw_hash
+  end
+end
+
+alias ::Crypto::Blowfish = Std::Crypto::Blowfish
+alias ::Crypto::Bcrypt = Std::Crypto::Bcrypt
+alias ::Crypto::Bcrypt::Password = Std::Crypto::Password
+alias ::Crypto::HMAC = Std::Crypto::HMAC
+alias ::Crypto::HKDF = Std::Crypto::HKDF
