@@ -1,36 +1,10 @@
 module std/math
 
 lib ::LibLLVMMMath
-  fun sin_f64 = "llvm.sin.f64"(x : Float64) : Float64
-  fun sin_f32 = "llvm.sin.f32"(x : Float32) : Float32
-  fun cos_f64 = "llvm.cos.f64"(x : Float64) : Float64
-  fun cos_f32 = "llvm.cos.f32"(x : Float32) : Float32
   fun sqrt_f64 = "llvm.sqrt.f64"(x : Float64) : Float64
   fun sqrt_f32 = "llvm.sqrt.f32"(x : Float32) : Float32
-  fun exp_f64 = "llvm.exp.f64"(x : Float64) : Float64
-  fun exp_f32 = "llvm.exp.f32"(x : Float32) : Float32
-  fun exp2_f64 = "llvm.exp2.f64"(x : Float64) : Float64
-  fun exp2_f32 = "llvm.exp2.f32"(x : Float32) : Float32
-  fun log_f64 = "llvm.log.f64"(x : Float64) : Float64
-  fun log_f32 = "llvm.log.f32"(x : Float32) : Float32
-  fun log2_f64 = "llvm.log2.f64"(x : Float64) : Float64
-  fun log2_f32 = "llvm.log2.f32"(x : Float32) : Float32
-  fun log10_f64 = "llvm.log10.f64"(x : Float64) : Float64
-  fun log10_f32 = "llvm.log10.f32"(x : Float32) : Float32
-  fun pow_f64 = "llvm.pow.f64"(x : Float64, y : Float64) : Float64
-  fun pow_f32 = "llvm.pow.f32"(x : Float32, y : Float32) : Float32
   fun copysign_f64 = "llvm.copysign.f64"(mag : Float64, sgn : Float64) : Float64
   fun copysign_f32 = "llvm.copysign.f32"(mag : Float32, sgn : Float32) : Float32
-  fun fma_f64 = "llvm.fma.f64"(a : Float64, b : Float64, c : Float64) : Float64
-  fun fma_f32 = "llvm.fma.f32"(a : Float32, b : Float32, c : Float32) : Float32
-  fun floor_f64 = "llvm.floor.f64"(x : Float64) : Float64
-  fun floor_f32 = "llvm.floor.f32"(x : Float32) : Float32
-  fun ceil_f64 = "llvm.ceil.f64"(x : Float64) : Float64
-  fun ceil_f32 = "llvm.ceil.f32"(x : Float32) : Float32
-  fun trunc_f64 = "llvm.trunc.f64"(x : Float64) : Float64
-  fun trunc_f32 = "llvm.trunc.f32"(x : Float32) : Float32
-  fun round_f64 = "llvm.round.f64"(x : Float64) : Float64
-  fun round_f32 = "llvm.round.f32"(x : Float32) : Float32
 end
 
 module ::Math
@@ -41,12 +15,66 @@ module ::Math
   LOG2  = 0.693147180559945309417
   LOG10 =  2.30258509299404568402
 
+  private P1 = 1.57079632673412561417
+  private P2 = 6.07710050630396597660e-11
+  private P3 = 6.12323399573676588613e-17
+  private INV_HALF_PI = 0.636619772367581343075535
+
+  private def sin_taylor(r : Float64) : Float64
+    r2 = r * r
+    s = 1.0 / 355687428096000.0
+    s = s * r2 - 1.0 / 1307674368000.0
+    s = s * r2 + 1.0 / 6227020800.0
+    s = s * r2 - 1.0 / 39916800.0
+    s = s * r2 + 1.0 / 362880.0
+    s = s * r2 - 1.0 / 5040.0
+    s = s * r2 + 1.0 / 120.0
+    s = s * r2 - 1.0 / 6.0
+    s = s * r2 + 1.0
+    r * s
+  end
+
+  private def cos_taylor(r : Float64) : Float64
+    r2 = r * r
+    s = 1.0 / 20922789888000.0
+    s = s * r2 - 1.0 / 87178291200.0
+    s = s * r2 + 1.0 / 479001600.0
+    s = s * r2 - 1.0 / 3628800.0
+    s = s * r2 + 1.0 / 40320.0
+    s = s * r2 - 1.0 / 720.0
+    s = s * r2 + 1.0 / 24.0
+    s = s * r2 - 1.0 / 2.0
+    s = s * r2 + 1.0
+    s
+  end
+
+  private def sincos_reduced(x : Float64) : {Float64, Float64}
+    scaled = x * INV_HALF_PI
+    q = (scaled + (scaled >= 0.0 ? 0.5 : -0.5)).to_i64
+    q_f = q.to_f64
+    r = ((x - q_f * P1) - q_f * P2) - q_f * P3
+    s_r = sin_taylor(r)
+    c_r = cos_taylor(r)
+    quad = (q % 4_i64 + 4_i64) % 4_i64
+    if quad == 0_i64
+      {s_r, c_r}
+    elsif quad == 1_i64
+      {c_r, 0.0 - s_r}
+    elsif quad == 2_i64
+      {0.0 - s_r, 0.0 - c_r}
+    else
+      {0.0 - c_r, s_r}
+    end
+  end
+
   def sin(value : Float64) : Float64
-    LibLLVMMMath.sin_f64(value)
+    return 0.0 if value == 0.0
+    return 0.0 / 0.0 if value != value || (value != 0.0 && value == 2.0 * value)
+    sincos_reduced(value)[0]
   end
 
   def sin(value : Float32) : Float32
-    LibLLVMMMath.sin_f32(value)
+    sin(value.to_f64).to_f32
   end
 
   def sin(value) : Float64
@@ -54,11 +82,13 @@ module ::Math
   end
 
   def cos(value : Float64) : Float64
-    LibLLVMMMath.cos_f64(value)
+    return 1.0 if value == 0.0
+    return 0.0 / 0.0 if value != value || (value != 0.0 && value == 2.0 * value)
+    sincos_reduced(value)[1]
   end
 
   def cos(value : Float32) : Float32
-    LibLLVMMMath.cos_f32(value)
+    cos(value.to_f64).to_f32
   end
 
   def cos(value) : Float64
@@ -91,9 +121,20 @@ module ::Math
 
   def cbrt(value : Float64) : Float64
     return 0.0 if value == 0.0
+    return 0.0 / 0.0 if value != value
+    return value if value != 0.0 && value == 2.0 * value
     neg = value < 0.0
     v = neg ? 0.0 - value : value
     res = pow(v, 1.0 / 3.0)
+    v3 = res * res * res
+    res = res * (v3 + 2.0 * v) / (2.0 * v3 + v)
+    if v <= 2.0e14 && v == v.to_i64.to_f64
+      iv = v.to_i64
+      ir = (res + 0.5).to_i64
+      if ir * ir * ir == iv
+        res = ir.to_f64
+      end
+    end
     neg ? 0.0 - res : res
   end
 
@@ -105,12 +146,32 @@ module ::Math
     cbrt(value.to_f64)
   end
 
+  private INV_LN2 = 1.442695040888963407359924681
+  private LN2_HI  = 0.6931471803691238
+  private LN2_LO  = 1.9082149292705877e-10
+
   def exp(value : Float64) : Float64
-    LibLLVMMMath.exp_f64(value)
+    return 0.0 / 0.0 if value != value
+    return 1.0 / 0.0 if value > 709.782712893384
+    return 0.0 if value < -745.1332191019412
+    return 1.0 if value == 0.0
+
+    scaled = value * INV_LN2
+    k = (scaled + (scaled >= 0.0 ? 0.5 : -0.5)).to_i32
+    k_f = k.to_f64
+    r = (value - k_f * LN2_HI) - k_f * LN2_LO
+
+    poly = 1.0
+    i = 14
+    while i >= 1
+      poly = 1.0 + (r / i.to_f64) * poly
+      i = i - 1
+    end
+    ldexp(poly, k)
   end
 
   def exp(value : Float32) : Float32
-    LibLLVMMMath.exp_f32(value)
+    exp(value.to_f64).to_f32
   end
 
   def exp(value) : Float64
@@ -118,11 +179,18 @@ module ::Math
   end
 
   def exp2(value : Float64) : Float64
-    LibLLVMMMath.exp2_f64(value)
+    return 0.0 / 0.0 if value != value
+    return 1.0 if value == 0.0
+    int_val = value.to_i64
+    if int_val.to_f64 == value && int_val >= -1022_i64 && int_val <= 1023_i64
+      ldexp(1.0, int_val.to_i32)
+    else
+      exp(value * LOG2)
+    end
   end
 
   def exp2(value : Float32) : Float32
-    LibLLVMMMath.exp2_f32(value)
+    exp2(value.to_f64).to_f32
   end
 
   def exp2(value) : Float64
@@ -145,12 +213,36 @@ module ::Math
     expm1(value.to_f64)
   end
 
+  private SQRT2_INV = 0.7071067811865475244
+
   def log(value : Float64) : Float64
-    LibLLVMMMath.log_f64(value)
+    return 0.0 / 0.0 if value != value || value < 0.0
+    return 0.0 - (1.0 / 0.0) if value == 0.0
+    return 1.0 / 0.0 if value == 2.0 * value && value > 0.0
+    return 0.0 if value == 1.0
+
+    m, k = frexp(value)
+    if m < SQRT2_INV
+      m = m * 2.0
+      k = k - 1
+    end
+
+    z = (m - 1.0) / (m + 1.0)
+    z2 = z * z
+
+    s = 0.0
+    j = 9
+    while j >= 0
+      s = s * z2 + 1.0 / (2 * j + 1).to_f64
+      j = j - 1
+    end
+    ln_m = 2.0 * z * s
+    k_f = k.to_f64
+    k_f * LN2_HI + (k_f * LN2_LO + ln_m)
   end
 
   def log(value : Float32) : Float32
-    LibLLVMMMath.log_f32(value)
+    log(value.to_f64).to_f32
   end
 
   def log(value) : Float64
@@ -166,11 +258,11 @@ module ::Math
   end
 
   def log2(value : Float64) : Float64
-    LibLLVMMMath.log2_f64(value)
+    log(value) / LOG2
   end
 
   def log2(value : Float32) : Float32
-    LibLLVMMMath.log2_f32(value)
+    log2(value.to_f64).to_f32
   end
 
   def log2(value) : Float64
@@ -178,11 +270,11 @@ module ::Math
   end
 
   def log10(value : Float64) : Float64
-    LibLLVMMMath.log10_f64(value)
+    log(value) / LOG10
   end
 
   def log10(value : Float32) : Float32
-    LibLLVMMMath.log10_f32(value)
+    log10(value.to_f64).to_f32
   end
 
   def log10(value) : Float64
@@ -206,11 +298,46 @@ module ::Math
   end
 
   def pow(base : Float64, exp : Float64) : Float64
-    LibLLVMMMath.pow_f64(base, exp)
+    return 1.0 if exp == 0.0
+    return 1.0 if base == 1.0
+    return 0.0 / 0.0 if base != base || exp != exp
+    return base if exp == 1.0
+    return base * base if exp == 2.0
+
+    if base == 0.0
+      if exp > 0.0
+        return 0.0
+      else
+        return 1.0 / 0.0
+      end
+    end
+
+    int_exp = exp.to_i64
+    is_int = int_exp.to_f64 == exp
+
+    if base < 0.0
+      return 0.0 / 0.0 unless is_int
+      pos_res = pow(0.0 - base, exp)
+      return (int_exp & 1_i64) != 0_i64 ? 0.0 - pos_res : pos_res
+    end
+
+    if is_int && int_exp >= -64_i64 && int_exp <= 64_i64
+      b = int_exp < 0_i64 ? 1.0 / base : base
+      e = int_exp < 0_i64 ? 0_i64 - int_exp : int_exp
+      res = 1.0
+      while e > 0_i64
+        res = res * b if (e & 1_i64) != 0_i64
+        b = b * b
+        e = e >> 1_i64
+      end
+      return res
+    end
+
+    exp(exp * log(base))
   end
 
   def pow(base : Float32, exp : Float32) : Float32
-    LibLLVMMMath.pow_f32(base, exp)
+    pow(base.to_f64, exp.to_f64).to_f32
   end
 
   def pow(base, exp) : Float64
@@ -226,11 +353,11 @@ module ::Math
   end
 
   def fma(a : Float64, b : Float64, c : Float64) : Float64
-    LibLLVMMMath.fma_f64(a, b, c)
+    a * b + c
   end
 
   def fma(a : Float32, b : Float32, c : Float32) : Float32
-    LibLLVMMMath.fma_f32(a, b, c)
+    (a.to_f64 * b.to_f64 + c.to_f64).to_f32
   end
 
   def min(a : Float64, b : Float64) : Float64
@@ -256,7 +383,7 @@ module ::Math
 
     reductions = 0
     while val > 0.05
-      val = val / (1.0 + LibLLVMMMath.sqrt_f64(1.0 + val * val))
+      val = val / (1.0 + sqrt(1.0 + val * val))
       reductions = reductions + 1
     end
 
@@ -423,19 +550,47 @@ module ::Math
   end
 
   def ldexp(value : Float64, exponent : Int32) : Float64
-    value * (2.0 ** exponent)
+    return value if value == 0.0 || exponent == 0
+    exp = exponent
+    res = value
+    while exp > 500
+      res = res * (2.0 ** 500)
+      exp = exp - 500
+    end
+    while exp < -500
+      res = res * (2.0 ** -500)
+      exp = exp + 500
+    end
+    res * (2.0 ** exp)
   end
 
   def frexp(value : Float64) : {Float64, Int32}
     return {0.0, 0} if value == 0.0
+    return {value, 0} if value != value || (value != 0.0 && value == 2.0 * value)
     neg = value < 0.0
     v = neg ? 0.0 - value : value
     exp = 0
+    while v >= 1.0e64
+      v = v * (2.0 ** -256)
+      exp = exp + 256
+    end
+    while v >= 1.0e16
+      v = v * (2.0 ** -64)
+      exp = exp + 64
+    end
     while v >= 1.0
       v = v / 2.0
       exp = exp + 1
     end
-    while v < 0.5
+    while v < 1.0e-64 && v > 0.0
+      v = v * (2.0 ** 256)
+      exp = exp - 256
+    end
+    while v < 1.0e-16 && v > 0.0
+      v = v * (2.0 ** 64)
+      exp = exp - 64
+    end
+    while v < 0.5 && v > 0.0
       v = v * 2.0
       exp = exp - 1
     end
