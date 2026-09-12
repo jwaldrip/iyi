@@ -18,20 +18,6 @@ using std/time::{Time, Span}
 
 using std/digest::{MD5, SHA1}
 
-struct ::Enum
-  def ==(other : self) : Bool
-    value == other.value
-  end
-
-  def ===(other : self) : Bool
-    value == other.value
-  end
-
-  def <=>(other : self) : Int32
-    value <=> other.value
-  end
-end
-
 struct ::UUID
   enum Variant
     Unknown   = 0

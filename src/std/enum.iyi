@@ -4,7 +4,7 @@ import std/traits
 using std/traits::{Cmp}
 
 # Enum is the base type of all enums.
-abstract struct ::Enum
+struct ::Enum
   def to_i : Int32
     value.to_i32
   end
@@ -57,14 +57,6 @@ abstract struct ::Enum
     self.class.new(value - other)
   end
 
-  def |(other : self) : self
-    self.class.new(value | other.value)
-  end
-
-  def &(other : self) : self
-    self.class.new(value & other.value)
-  end
-
   def ^(other : self) : self
     self.class.new(value ^ other.value)
   end
@@ -79,95 +71,24 @@ abstract struct ::Enum
     v1 < v2 ? -1 : (v1 > v2 ? 1 : 0)
   end
 
-  def <(other : self) : ::Bool
-    value < other.value
-  end
-
-  def <=(other : self) : ::Bool
-    value <= other.value
-  end
-
-  def >(other : self) : ::Bool
-    value > other.value
-  end
-
-  def >=(other : self) : ::Bool
-    value >= other.value
-  end
-
-  def ==(other : self) : ::Bool
-    value == other.value
-  end
-
-  def includes?(other : self) : ::Bool
-    (value & other.value) == other.value
-  end
-
-  def hash : Int32
-    value
-  end
-
   def clone : self
     self
-  end
-
-  def to_s : String
-    {% for member in @type.constants %}
-      if value == {{@type.constant(member)}}
-        return {{member.stringify}}
-      end
-    {% end %}
-    value.to_s
   end
 
   def to_s(io : IyiIO) : ::Nil
     io.print(to_s)
   end
 
-  def inspect : String
-    to_s
-  end
-
   def inspect(io : IyiIO) : ::Nil
     io.print(inspect)
   end
 
-  def self.names : Array(String)
-    {{ @type.constants.map &.stringify }}
-  end
-
-  def self.values : Array(self)
-    {% begin %}
-      arr = [] of self
-      {% for member in @type.constants %}
-        arr << new({{@type.constant(member)}})
-      {% end %}
-      arr
-    {% end %}
-  end
-
-  def self.from_value?(val : Int) : self?
-    {% for member in @type.constants %}
-      return new({{@type.constant(member)}}) if {{@type.constant(member)}} == val
-    {% end %}
-    nil
-  end
-
   def self.from_value(val : Int) : self
-    from_value?(val) || raise "Unknown enum value: #{val}"
+    from_value?(val.to_i) || raise "Unknown enum value: #{val}"
   end
 
   def self.valid?(val : self) : ::Bool
-    !from_value?(val.value).nil?
-  end
-
-  def self.parse?(string : String) : self?
-    {% for member in @type.constants %}
-      if string == {{member.stringify}}
-        return new({{@type.constant(member)}})
-      end
-    {% end %}
-    nil
+    !from_value?(val.value.to_i).nil?
   end
 
   def self.parse(string : String) : self

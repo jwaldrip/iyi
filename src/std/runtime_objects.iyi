@@ -46,17 +46,6 @@ class ::Object
     nil
   end
 
-  def in?(collection : Object) : Bool
-    collection == self
-  end
-
-  def in?(*values : *T) : Bool forall T
-    {% for index in 0...T.size %}
-      return true if self == values[{{ index }}]
-    {% end %}
-    false
-  end
-
   def unsafe_as(type : T.class) forall T
     x = self
     pointerof(x).as(T*).value

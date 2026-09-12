@@ -2,25 +2,6 @@
 
 module std/winerror
 pub import std/errno
-
-struct ::UInt32
-  @[Primitive(:convert)]
-  def to_i32 : Int32
-  end
-
-  @[Primitive(:convert)]
-  def to_u64 : UInt64
-  end
-
-  @[Primitive(:binary)]
-  def ==(other : UInt32) : Bool
-  end
-
-  @[Primitive(:binary)]
-  def !=(other : UInt32) : Bool
-  end
-end
-
 pub enum WinError : UInt32
   ERROR_SUCCESS                   =    0_u32
   NO_ERROR                        =    0_u32

@@ -862,7 +862,7 @@ pub class BufferedTransportReader
       end
     end
 
-    parts = status_line.split(' ', 3)
+    parts = status_line.split_on(" ", 3)
     if parts.size < 2
       return HttpError.new("Invalid status line: expected version and status code")
     end

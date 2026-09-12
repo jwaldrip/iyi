@@ -33,9 +33,9 @@ pub class OptionParser
 
   def on(flag : String, description : String, &block : String? -> Nil) : Nil
     @flags << "    #{flag.ljust(30)} #{description}"
-    parts = flag.split(", ")
+    parts = flag.split(',')
     parts.each do |p|
-      name = p.split(' ')[0]
+      name = p.strip.split(' ')[0]
       @handlers[name] = block
     end
   end
@@ -72,8 +72,8 @@ pub class OptionParser
       if arg.starts_with?("--") && arg.includes?("=")
         idx = arg.index('=')
         if idx
-          arg_name = arg[0...idx]
-          arg_val = arg[(idx + 1)...arg.size]
+          arg_name = arg[0, idx]
+          arg_val = arg[idx + 1, arg.size - idx - 1]
         end
       end
 
@@ -1856,7 +1856,7 @@ pub class CLI
 
   def add_tag(tag : String) : Nil
     if tag.starts_with?("~")
-      @anti_tags.add(tag[1...tag.size])
+      @anti_tags.add(tag[1, tag.size - 1])
     else
       @tags.add(tag)
     end
@@ -1937,8 +1937,8 @@ pub class CLI
       if val = loc
         idx = val.index(':')
         if idx
-          file = val[0...idx]
-          line_num = val[(idx + 1)...val.size].to_i? || 0
+          file = val[0, idx]
+          line_num = val[idx + 1, val.size - idx - 1].to_i? || 0
           add_location(file, line_num)
         end
       end
