@@ -306,7 +306,7 @@ class ::StringScanner
       @last_regex_match = nil
       pattern
     else
-      idx = @string.index_of(pattern, @byte_offset)
+      idx = @string.index(pattern, @byte_offset)
       return nil unless idx
       finish = idx + p_len
       result = @string[@byte_offset, finish - @byte_offset]

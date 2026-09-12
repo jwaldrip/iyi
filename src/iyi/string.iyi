@@ -295,6 +295,19 @@ class String
     byte_slice(0, bytesize - 1)
   end
 
+  # Without the line ending, whichever of the two it is. This is the shape a
+  # program reading lines asks for, and the reason it is here rather than in
+  # `std/text` is the one that put `split` and `to_i` here: `chomp` is already
+  # a name on this type, so R-3 lets nobody else add another of it.
+  def chomp : String
+    return self if bytesize == 0
+    last = to_unsafe[bytesize - 1]
+    return self unless last == 10_u8 || last == 13_u8
+    cut = bytesize - 1
+    cut = cut - 1 if last == 10_u8 && cut > 0 && to_unsafe[cut - 1] == 13_u8
+    byte_slice(0, cut)
+  end
+
   def lchop(char : Char) : String
     return self unless starts_with?(char)
     byte_slice(1, bytesize - 1)
@@ -336,24 +349,14 @@ class String
     nil
   end
 
-  # Splitting on a string, and stopping after a count. `limit` of 0 means all
-  # of them; a positive one leaves the remainder in the last piece, which is
-  # how a status line or a header is cut without losing what follows.
+  # Splitting on a string, stopping after a count: `limit` of 0 means all of
+  # them, a positive one leaves the remainder in the last piece.
   def split(separator : String, limit : Int32 = 0) : Array(String)
     pieces = [] of String
-    return pieces if bytesize == 0 && separator.bytesize > 0
-
-    if separator.bytesize == 0
-      each_char { |c| pieces << c.to_s }
-      return pieces
-    end
-
+    return pieces if bytesize == 0
     start = 0
-    while true
-      if limit > 0 && pieces.size == limit - 1
-        break
-      end
-      found = index_of(separator, start)
+    while limit <= 0 || pieces.size < limit - 1
+      found = index(separator, start)
       break if found.nil?
       pieces << byte_slice(start, found - start)
       start = found + separator.bytesize
@@ -366,33 +369,38 @@ class String
     split(separator.to_s, limit)
   end
 
+  # On whitespace, with no empty piece at either end: a line cut into words.
+  def split : Array(String)
+    pieces = [] of String
+    start = 0
+    index = 0
+    while index <= bytesize
+      if index == bytesize || to_unsafe[index].unsafe_chr.whitespace?
+        pieces << byte_slice(start, index - start) if index > start
+        start = index + 1
+      end
+      index = index + 1
+    end
+    pieces
+  end
+
   # Where a substring first is, from an offset, or nil. The character form is
   # above; this is the one a parser scanning for a delimiter asks.
-  def index_of(search : String, offset : Int32 = 0) : Int32?
+  def index(search : String, offset : Int32 = 0) : Int32?
     offset = bytesize + offset if offset < 0
     return nil if offset < 0
     return offset if search.bytesize == 0 && offset <= bytesize
-    return nil if offset + search.bytesize > bytesize
-
-    limit = bytesize - search.bytesize
+    last = bytesize - search.bytesize
     i = offset
-    mine = to_unsafe
-    theirs = search.to_unsafe
-    wanted = search.bytesize
-
-    while i <= limit
+    while i <= last
       j = 0
-      while j < wanted && mine[i + j] == theirs[j]
+      while j < search.bytesize && to_unsafe[i + j] == search.to_unsafe[j]
         j = j + 1
       end
-      return i if j == wanted
+      return i if j == search.bytesize
       i = i + 1
     end
     nil
-  end
-
-  def index(search : String, offset : Int32 = 0) : Int32?
-    index_of(search, offset)
   end
 
   # In a base other than ten: 16 for a hex escape, 2 for a bit string.
@@ -401,13 +409,10 @@ class String
   end
 
   def to_i?(base : Int32) : Int32?
-    return nil if empty?
-
     index = 0
     negative = false
-    first = to_unsafe[0]
-    if first == 45_u8 || first == 43_u8
-      negative = first == 45_u8
+    if bytesize > 0 && (to_unsafe[0] == 45_u8 || to_unsafe[0] == 43_u8)
+      negative = to_unsafe[0] == 45_u8
       index = 1
     end
     return nil if index >= bytesize
@@ -415,15 +420,10 @@ class String
     value = 0
     while index < bytesize
       byte = to_unsafe[index]
-      digit = if byte >= 48_u8 && byte <= 57_u8
-                (byte - 48_u8).to_i
-              elsif byte >= 97_u8 && byte <= 122_u8
-                (byte - 97_u8).to_i + 10
-              elsif byte >= 65_u8 && byte <= 90_u8
-                (byte - 65_u8).to_i + 10
-              else
-                return nil
-              end
+      # A digit, or a letter in either case, which is how a base above ten is
+      # written; `| 32` lowercases a letter and leaves a digit alone.
+      lower = byte | 32_u8
+      digit = byte >= 48_u8 && byte <= 57_u8 ? (byte - 48_u8).to_i : (lower >= 97_u8 && lower <= 122_u8 ? (lower - 97_u8).to_i + 10 : base)
       return nil if digit >= base
       value = value * base + digit
       index = index + 1
