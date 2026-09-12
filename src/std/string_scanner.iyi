@@ -67,7 +67,7 @@ class ::StringScanner
   end
 
   def rest : String
-    @string.byte_slice(@byte_offset, @string.bytesize - @byte_offset)
+    @string[@byte_offset, @string.bytesize - @byte_offset]
   end
 
   def peek(len : Int32) : String
@@ -75,7 +75,7 @@ class ::StringScanner
     if @string.single_byte_optimizable?
       available = @string.bytesize - @byte_offset
       count = len < available ? len : available
-      @string.byte_slice(@byte_offset, count)
+      @string[@byte_offset, count]
     else
       rem = rest
       ch = rem.chars
@@ -94,9 +94,9 @@ class ::StringScanner
     return "" if len <= 0 || @byte_offset <= 0
     if @string.single_byte_optimizable?
       count = len < @byte_offset ? len : @byte_offset
-      @string.byte_slice(@byte_offset - count, count)
+      @string[@byte_offset - count, count]
     else
-      prefix = @string.byte_slice(0, @byte_offset)
+      prefix = @string[0, @byte_offset]
       ch = prefix.chars
       start_char = ch.size - len
       start_char = 0 if start_char < 0
@@ -123,7 +123,7 @@ class ::StringScanner
 
   def previous_char? : Char?
     return nil if @byte_offset <= 0
-    prefix = @string.byte_slice(0, @byte_offset)
+    prefix = @string[0, @byte_offset]
     ch = prefix.chars
     ch.empty? ? nil : ch.last
   end
@@ -167,7 +167,7 @@ class ::StringScanner
     return nil if len < 0 || eos?
     if @string.single_byte_optimizable?
       return nil if @byte_offset + len > @string.bytesize
-      res = @string.byte_slice(@byte_offset, len)
+      res = @string[@byte_offset, len]
       @byte_offset += len
       @last_string_match = res
       @last_regex_match = nil
@@ -285,7 +285,7 @@ class ::StringScanner
   def inspect : String
     limit = @string.bytesize - @byte_offset
     limit = 10 if limit > 10
-    preview = @string.byte_slice(@byte_offset, limit)
+    preview = @string[@byte_offset, limit]
     "#<StringScanner #{@byte_offset}/#{@string.bytesize} #{eos? ? "fin" : preview.inspect}>"
   end
 
@@ -306,10 +306,10 @@ class ::StringScanner
       @last_regex_match = nil
       pattern
     else
-      idx = @string.index(pattern, @byte_offset)
+      idx = @string.index_of(pattern, @byte_offset)
       return nil unless idx
       finish = idx + p_len
-      result = @string.byte_slice(@byte_offset, finish - @byte_offset)
+      result = @string[@byte_offset, finish - @byte_offset]
       @byte_offset = finish if advance
       @last_string_match = result
       @last_regex_match = nil
@@ -328,13 +328,13 @@ class ::StringScanner
 
     if anchored
       return nil unless b0 == @byte_offset
-      result = @string.byte_slice(@byte_offset, e0 - @byte_offset)
+      result = @string[@byte_offset, e0 - @byte_offset]
       @byte_offset = e0 if advance
       @last_regex_match = match
       @last_string_match = nil
       result
     else
-      result = @string.byte_slice(@byte_offset, e0 - @byte_offset)
+      result = @string[@byte_offset, e0 - @byte_offset]
       @byte_offset = e0 if advance
       @last_regex_match = match
       @last_string_match = nil
