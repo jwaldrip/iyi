@@ -1193,7 +1193,15 @@ pub class Parser
         error_at(start_line, start_col, "empty numeric character reference")
       end
 
-      codepoint = is_hex ? num_str.to_i?(16) : num_str.to_i?
+      codepoint = if is_hex
+                    if val = num_str.to_i64?(16)
+                      val.to_i
+                    else
+                      nil
+                    end
+                  else
+                    num_str.to_i?
+                  end
       if codepoint.nil?
         error_at(start_line, start_col, "invalid numeric character reference: '#{num_str}'")
       end
@@ -1360,7 +1368,7 @@ pub def unescape(text : String) : String
           next
         elsif ent.starts_with?("#x") || ent.starts_with?("#X")
           hex_str = ent[2, ent.bytesize - 2]
-          cp = hex_str.to_i?(16)
+          cp = hex_str.to_i64?(16)
           if !cp.nil?
             parts << cp.unsafe_chr.to_s
             i = semi + 1
