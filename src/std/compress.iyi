@@ -19,6 +19,10 @@ module std/compress
 
 import std/slice
 using std/slice::{Slice}
+import std/io
+using std/io::{IO, Memory}
+import std/file
+using std/file::{File}
 
 pub alias Bytes = Std::Slice::Bytes
 
@@ -1888,3 +1892,1064 @@ pub struct Gzip
     decompressed
   end
 end
+
+# -----------------------------------------------------------------------------
+# IO Helper for generic IO reading and writing
+# -----------------------------------------------------------------------------
+
+module CompressIOHelper
+  def self.read_all(io) : Bytes
+    if io.is_a?(Std::Io::Memory)
+      m = io.as(Std::Io::Memory)
+      rem = m.bytesize - m.pos
+      return Bytes.empty if rem <= 0
+      b = Bytes.new(rem)
+      i = 0
+      while i < rem
+        byte = m.read_byte
+        break if byte.nil?
+        b[i] = byte
+        i = i + 1
+      end
+      return b[0, i]
+    elsif io.is_a?(IyiIO)
+      s = io.as(IyiIO).read_all
+      return Bytes.new(s.to_unsafe, s.bytesize)
+    end
+    Bytes.empty
+  end
+
+  def self.write_bytes(io, b : Bytes) : Nil
+    if io.is_a?(Std::Io::Memory)
+      io.as(Std::Io::Memory).write(b.to_unsafe, b.size)
+    elsif io.is_a?(IyiIO)
+      io.as(IyiIO).write(b.to_unsafe, b.size)
+    end
+  end
+
+  def self.close_io(io) : Nil
+    if io.is_a?(Std::Io::Memory)
+      io.as(Std::Io::Memory).close
+    elsif io.is_a?(IyiIO)
+      io.as(IyiIO).close
+    end
+  end
+end
+
+# -----------------------------------------------------------------------------
+# Compress::Deflate (Reader, Writer, Strategy, Error)
+# -----------------------------------------------------------------------------
+
+pub struct Deflate
+  BEST_COMPRESSION    =  9
+  BEST_SPEED          =  1
+  DEFAULT_COMPRESSION = -1
+  NO_COMPRESSION      =  0
+
+  class Error < Exception
+    getter message : String
+
+    def initialize(@message : String)
+    end
+  end
+
+  enum Strategy
+    DEFAULT      = 0
+    FILTERED     = 1
+    HUFFMAN_ONLY = 2
+    RLE          = 3
+    FIXED        = 4
+
+    def default? : Bool
+      self == DEFAULT
+    end
+
+    def filtered? : Bool
+      self == FILTERED
+    end
+
+    def huffman_only? : Bool
+      self == HUFFMAN_ONLY
+    end
+
+    def rle? : Bool
+      self == RLE
+    end
+
+    def fixed? : Bool
+      self == FIXED
+    end
+  end
+
+  class Reader(T)
+    getter sync_close : Bool
+    getter closed : Bool
+
+    def sync_close? : Bool
+      @sync_close
+    end
+
+    def closed? : Bool
+      @closed
+    end
+
+    @io : T
+    @buf : Memory
+    @dict : Bytes?
+
+    def initialize(@io : T, @sync_close : Bool = false, @dict : Bytes? = nil)
+      @closed = false
+      compressed = CompressIOHelper.read_all(@io)
+      decompressed = Inflate.decompress(compressed)
+      @buf = Memory.new(decompressed.size)
+      @buf.write(decompressed.to_unsafe, decompressed.size)
+      @buf.rewind
+    end
+
+    def self.open(io : T, sync_close : Bool = false, dict : Bytes? = nil, &block : Reader(T) -> Nil) : Nil
+      r = Reader(T).new(io, sync_close, dict)
+      yield r
+      r.close
+    end
+
+    def read(slice : Bytes) : Int32
+      raise "cannot read from closed Deflate::Reader" if @closed
+      return 0 if slice.empty?
+      i = 0
+      while i < slice.size
+        b = @buf.read_byte
+        break if b.nil?
+        slice[i] = b
+        i = i + 1
+      end
+      i
+    end
+
+    def sync_close=(val : Bool)
+      @sync_close = val
+    end
+
+    def close : Nil
+      return if @closed
+      @closed = true
+      @buf.close
+      if @sync_close
+        CompressIOHelper.close_io(@io)
+      end
+    end
+  end
+
+  class Writer(T)
+    getter sync_close : Bool
+    getter closed : Bool
+
+    def sync_close? : Bool
+      @sync_close
+    end
+
+    def closed? : Bool
+      @closed
+    end
+
+    @io : T
+    @level : Int32
+    @strategy : Strategy
+    @buf : Memory
+    @dict : Bytes?
+
+    def initialize(
+      @io : T,
+      @level : Int32 = DEFAULT_COMPRESSION,
+      @strategy : Strategy = Strategy::DEFAULT,
+      @sync_close : Bool = false,
+      @dict : Bytes? = nil,
+    )
+      @closed = false
+      @buf = Memory.new(4096)
+    end
+
+    def self.open(
+      io : T,
+      level : Int32 = DEFAULT_COMPRESSION,
+      strategy : Strategy = Strategy::DEFAULT,
+      sync_close : Bool = false,
+      dict : Bytes? = nil,
+      &block : Writer(T) -> Nil
+    ) : Nil
+      w = Writer(T).new(io, level, strategy, sync_close, dict)
+      yield w
+      w.close
+    end
+
+    def write(slice : Bytes) : Nil
+      raise "cannot write to closed Deflate::Writer" if @closed
+      @buf.write(slice.to_unsafe, slice.size)
+    end
+
+    def write(str : String) : Nil
+      write(Bytes.new(str.to_unsafe, str.bytesize))
+    end
+
+    def flush : Nil
+      # Flush in Deflate::Writer writes out accumulated compressed data
+    end
+
+    def sync_close=(val : Bool)
+      @sync_close = val
+    end
+
+    def close : Nil
+      return if @closed
+      @closed = true
+      raw = Bytes.new(@buf.bytesize)
+      raw.to_unsafe.copy_from(@buf.to_slice, @buf.bytesize)
+      lvl = @level == DEFAULT_COMPRESSION ? 6 : @level
+      compressed = Deflate.compress(raw, lvl)
+      CompressIOHelper.write_bytes(@io, compressed)
+      @buf.close
+      if @sync_close
+        CompressIOHelper.close_io(@io)
+      end
+    end
+  end
+end
+
+# -----------------------------------------------------------------------------
+# Compress::Zlib (Reader, Writer, Error)
+# -----------------------------------------------------------------------------
+
+pub struct Zlib
+  BEST_COMPRESSION    =  9
+  BEST_SPEED          =  1
+  DEFAULT_COMPRESSION = -1
+  NO_COMPRESSION      =  0
+
+  class Error < Exception
+    getter message : String
+
+    def initialize(@message : String)
+    end
+  end
+
+  class Reader(T)
+    getter sync_close : Bool
+    getter closed : Bool
+
+    def sync_close? : Bool
+      @sync_close
+    end
+
+    def closed? : Bool
+      @closed
+    end
+
+    @io : T
+    @buf : Memory
+
+    def initialize(@io : T, @sync_close : Bool = false, dict : Bytes? = nil)
+      @closed = false
+      compressed = CompressIOHelper.read_all(@io)
+      decompressed = Zlib.decompress(compressed)
+      @buf = Memory.new(decompressed.size)
+      @buf.write(decompressed.to_unsafe, decompressed.size)
+      @buf.rewind
+    end
+
+    def self.open(io : T, sync_close : Bool = false, dict : Bytes? = nil, &block : Reader(T) -> Nil) : Nil
+      r = Reader(T).new(io, sync_close, dict)
+      yield r
+      r.close
+    end
+
+    def read(slice : Bytes) : Int32
+      raise "cannot read from closed Zlib::Reader" if @closed
+      return 0 if slice.empty?
+      i = 0
+      while i < slice.size
+        b = @buf.read_byte
+        break if b.nil?
+        slice[i] = b
+        i = i + 1
+      end
+      i
+    end
+
+    def sync_close=(val : Bool)
+      @sync_close = val
+    end
+
+    def close : Nil
+      return if @closed
+      @closed = true
+      @buf.close
+      if @sync_close
+        CompressIOHelper.close_io(@io)
+      end
+    end
+  end
+
+  class Writer(T)
+    getter sync_close : Bool
+    getter closed : Bool
+
+    def sync_close? : Bool
+      @sync_close
+    end
+
+    def closed? : Bool
+      @closed
+    end
+
+    @io : T
+    @level : Int32
+    @buf : Memory
+
+    def initialize(
+      @io : T,
+      @level : Int32 = DEFAULT_COMPRESSION,
+      @sync_close : Bool = false,
+      dict : Bytes? = nil,
+    )
+      @closed = false
+      @buf = Memory.new(4096)
+    end
+
+    def self.open(
+      io : T,
+      level : Int32 = DEFAULT_COMPRESSION,
+      sync_close : Bool = false,
+      dict : Bytes? = nil,
+      &block : Writer(T) -> Nil
+    ) : Nil
+      w = Writer(T).new(io, level, sync_close, dict)
+      yield w
+      w.close
+    end
+
+    def write(slice : Bytes) : Nil
+      raise "cannot write to closed Zlib::Writer" if @closed
+      @buf.write(slice.to_unsafe, slice.size)
+    end
+
+    def write(str : String) : Nil
+      write(Bytes.new(str.to_unsafe, str.bytesize))
+    end
+
+    def flush : Nil
+    end
+
+    def sync_close=(val : Bool)
+      @sync_close = val
+    end
+
+    def close : Nil
+      return if @closed
+      @closed = true
+      raw = Bytes.new(@buf.bytesize)
+      raw.to_unsafe.copy_from(@buf.to_slice, @buf.bytesize)
+      lvl = @level == DEFAULT_COMPRESSION ? 6 : @level
+      compressed = Zlib.compress(raw, lvl)
+      CompressIOHelper.write_bytes(@io, compressed)
+      @buf.close
+      if @sync_close
+        CompressIOHelper.close_io(@io)
+      end
+    end
+  end
+end
+
+# -----------------------------------------------------------------------------
+# Compress::Gzip (Reader, Writer, Header, Error)
+# -----------------------------------------------------------------------------
+
+pub struct Gzip
+  BEST_COMPRESSION    =  9
+  BEST_SPEED          =  1
+  DEFAULT_COMPRESSION = -1
+  NO_COMPRESSION      =  0
+
+  class Error < Exception
+    getter message : String
+
+    def initialize(@message : String)
+    end
+  end
+
+  class Header
+    property name : String?
+    property comment : String?
+    property extra : Bytes?
+    property modification_time : Int64?
+    property os : UInt8
+
+    def initialize
+      @name = nil
+      @comment = nil
+      @extra = nil
+      @modification_time = nil
+      @os = 255_u8
+    end
+  end
+
+  class Reader(T)
+    getter sync_close : Bool
+    getter closed : Bool
+
+    def sync_close? : Bool
+      @sync_close
+    end
+
+    def closed? : Bool
+      @closed
+    end
+
+    getter header : Header
+    @io : T
+    @buf : Memory
+
+    def initialize(@io : T, @sync_close : Bool = false)
+      @closed = false
+      @header = Header.new
+      compressed = CompressIOHelper.read_all(@io)
+      decompressed = Gzip.decompress(compressed)
+      @buf = Memory.new(decompressed.size)
+      @buf.write(decompressed.to_unsafe, decompressed.size)
+      @buf.rewind
+    end
+
+    def self.open(io : T, sync_close : Bool = false, &block : Reader(T) -> Nil) : Nil
+      r = Reader(T).new(io, sync_close)
+      yield r
+      r.close
+    end
+
+    def self.open(filename : String, &block : Reader(IyiIO) -> Nil) : Nil
+      f = File.open(filename, "rb")
+      r = Reader(IyiIO).new(f, sync_close: true)
+      yield r
+      r.close
+    end
+
+    def read(slice : Bytes) : Int32
+      raise "cannot read from closed Gzip::Reader" if @closed
+      return 0 if slice.empty?
+      i = 0
+      while i < slice.size
+        b = @buf.read_byte
+        break if b.nil?
+        slice[i] = b
+        i = i + 1
+      end
+      i
+    end
+
+    def sync_close=(val : Bool)
+      @sync_close = val
+    end
+
+    def close : Nil
+      return if @closed
+      @closed = true
+      @buf.close
+      if @sync_close
+        CompressIOHelper.close_io(@io)
+      end
+    end
+  end
+
+  class Writer(T)
+    getter sync_close : Bool
+    getter closed : Bool
+
+    def sync_close? : Bool
+      @sync_close
+    end
+
+    def closed? : Bool
+      @closed
+    end
+
+    getter header : Header
+    @io : T
+    @level : Int32
+    @buf : Memory
+
+    def initialize(
+      @io : T,
+      @level : Int32 = DEFAULT_COMPRESSION,
+      @sync_close : Bool = false,
+    )
+      @closed = false
+      @header = Header.new
+      @buf = Memory.new(4096)
+    end
+
+    def self.open(
+      io : T,
+      level : Int32 = DEFAULT_COMPRESSION,
+      sync_close : Bool = false,
+      &block : Writer(T) -> Nil
+    ) : Nil
+      w = Writer(T).new(io, level, sync_close)
+      yield w
+      w.close
+    end
+
+    def self.open(
+      filename : String,
+      level : Int32 = DEFAULT_COMPRESSION,
+      &block : Writer(IyiIO) -> Nil
+    ) : Nil
+      f = File.open(filename, "wb")
+      w = Writer(IyiIO).new(f, level, sync_close: true)
+      yield w
+      w.close
+    end
+
+    def write(slice : Bytes) : Nil
+      raise "cannot write to closed Gzip::Writer" if @closed
+      @buf.write(slice.to_unsafe, slice.size)
+    end
+
+    def write(str : String) : Nil
+      write(Bytes.new(str.to_unsafe, str.bytesize))
+    end
+
+    def flush : Nil
+    end
+
+    def sync_close=(val : Bool)
+      @sync_close = val
+    end
+
+    def close : Nil
+      return if @closed
+      @closed = true
+      raw = Bytes.new(@buf.bytesize)
+      raw.to_unsafe.copy_from(@buf.to_slice, @buf.bytesize)
+      lvl = @level == DEFAULT_COMPRESSION ? 6 : @level
+      compressed = Gzip.compress(raw, lvl)
+      CompressIOHelper.write_bytes(@io, compressed)
+      @buf.close
+      if @sync_close
+        CompressIOHelper.close_io(@io)
+      end
+    end
+  end
+end
+
+# -----------------------------------------------------------------------------
+# Compress::Zip (Reader, Writer, File, FileInfo, CompressionMethod, Error)
+# -----------------------------------------------------------------------------
+
+pub struct Zip
+  CENTRAL_DIRECTORY_HEADER_SIGNATURE        = 0x02014b50_u32
+  END_OF_CENTRAL_DIRECTORY_HEADER_SIGNATURE = 0x06054b50_u32
+  VERSION                                   =         20_u16
+
+  class Error < Exception
+    getter message : String
+
+    def initialize(@message : String)
+    end
+  end
+
+  enum CompressionMethod : UInt16
+    STORED   = 0_u16
+    DEFLATED = 8_u16
+
+    def stored? : Bool
+      self == STORED
+    end
+
+    def deflated? : Bool
+      self == DEFLATED
+    end
+  end
+
+  class FileInfo
+    property filename : String
+    property time : Int64
+    property comment : String
+    property extra : Bytes
+    property crc32 : UInt32
+    property compressed_size : UInt64
+    property uncompressed_size : UInt64
+    property compression_method : CompressionMethod
+    property offset : UInt64
+
+    def initialize(
+      @filename : String,
+      @time : Int64 = 0_i64,
+      @comment : String = "",
+      @extra : Bytes = Bytes.empty,
+    )
+      @crc32 = 0_u32
+      @compressed_size = 0_u64
+      @uncompressed_size = 0_u64
+      @compression_method = CompressionMethod::DEFLATED
+      @offset = 0_u64
+    end
+
+    def file? : Bool
+      !dir?
+    end
+
+    def dir? : Bool
+      @filename.ends_with?("/")
+    end
+  end
+
+  class Entry
+    getter filename : String
+    getter compression_method : CompressionMethod
+    getter crc32 : UInt32
+    getter compressed_size : UInt64
+    getter uncompressed_size : UInt64
+    getter dir : Bool
+
+    def dir? : Bool
+      @dir
+    end
+
+    @data : Bytes
+
+    def initialize(
+      @filename : String,
+      @compression_method : CompressionMethod,
+      @crc32 : UInt32,
+      @compressed_size : UInt64,
+      @uncompressed_size : UInt64,
+      @dir : Bool,
+      @data : Bytes,
+    )
+    end
+
+    def file? : Bool
+      !@dir
+    end
+
+    def io : Memory
+      m = Memory.new(@data.size)
+      m.write(@data.to_unsafe, @data.size)
+      m.rewind
+      m
+    end
+
+    def data : Bytes
+      @data
+    end
+  end
+
+  class Reader(T)
+    getter sync_close : Bool
+    getter closed : Bool
+
+    def sync_close? : Bool
+      @sync_close
+    end
+
+    def closed? : Bool
+      @closed
+    end
+
+    @io : T
+    @entries : Array(Entry)
+    @index : Int32
+
+    def initialize(@io : T, @sync_close : Bool = false)
+      @closed = false
+      @index = 0
+      bytes = CompressIOHelper.read_all(@io)
+      @entries = Zip.parse_entries(bytes)
+    end
+
+    def self.open(io : T, sync_close : Bool = false, &block : Reader(T) -> Nil) : Nil
+      r = Reader(T).new(io, sync_close)
+      yield r
+      r.close
+    end
+
+    def self.open(filename : String, &block : Reader(IyiIO) -> Nil) : Nil
+      f = File.open(filename, "rb")
+      r = Reader(IyiIO).new(f, sync_close: true)
+      yield r
+      r.close
+    end
+
+    def next_entry : Entry?
+      raise "cannot read from closed Zip::Reader" if @closed
+      return nil if @index >= @entries.size
+      entry = @entries[@index]
+      @index = @index + 1
+      entry
+    end
+
+    def each_entry(&block : Entry -> Nil) : Nil
+      while e = next_entry
+        yield e
+      end
+    end
+
+    def sync_close=(val : Bool)
+      @sync_close = val
+    end
+
+    def close : Nil
+      return if @closed
+      @closed = true
+      if @sync_close
+        CompressIOHelper.close_io(@io)
+      end
+    end
+  end
+
+  class Writer(T)
+    getter sync_close : Bool
+    getter closed : Bool
+
+    def sync_close? : Bool
+      @sync_close
+    end
+
+    def closed? : Bool
+      @closed
+    end
+
+    @io : T
+    @entries : Array(NamedTuple(info: FileInfo, data: Bytes))
+    @pos : UInt64
+
+    def initialize(@io : T, @sync_close : Bool = false)
+      @closed = false
+      @entries = [] of NamedTuple(info: FileInfo, data: Bytes)
+      @pos = 0_u64
+    end
+
+    def self.open(io : T, sync_close : Bool = false, &block : Writer(T) -> Nil) : Nil
+      w = Writer(T).new(io, sync_close)
+      yield w
+      w.close
+    end
+
+    def self.open(filename : String, &block : Writer(IyiIO) -> Nil) : Nil
+      f = File.open(filename, "wb")
+      w = Writer(IyiIO).new(f, sync_close: true)
+      yield w
+      w.close
+    end
+
+    def add(filename : String, data : Bytes | String, method : CompressionMethod = CompressionMethod::DEFLATED) : Nil
+      raise "cannot write to closed Zip::Writer" if @closed
+      b = data.is_a?(String) ? Bytes.new(data.to_unsafe, data.bytesize) : data.as(Bytes)
+
+      crc = CRC32.checksum(b)
+      compressed = method == CompressionMethod::DEFLATED ? Deflate.compress(b) : b
+
+      info = FileInfo.new(filename)
+      info.compression_method = method
+      info.crc32 = crc.to_u32
+      info.uncompressed_size = b.size.to_u64
+      info.compressed_size = compressed.size.to_u64
+      info.offset = @pos
+
+      # Write local file header
+      hdr = Bytes.new(30 + filename.bytesize)
+      hdr_ptr = hdr.to_unsafe
+      # signature 0x04034b50
+      hdr_ptr[0] = 0x50_u8; hdr_ptr[1] = 0x4b_u8; hdr_ptr[2] = 0x03_u8; hdr_ptr[3] = 0x04_u8
+      # version needed 20
+      hdr_ptr[4] = 20_u8; hdr_ptr[5] = 0_u8
+      # flags 0
+      hdr_ptr[6] = 0_u8; hdr_ptr[7] = 0_u8
+      # compression method
+      m_val = method == CompressionMethod::DEFLATED ? 8_u16 : 0_u16
+      hdr_ptr[8] = (m_val & 0xff_u16).to_u8; hdr_ptr[9] = (m_val.to_u32.unsafe_shr(8_u32)).to_u8
+      # time, date 0
+      hdr_ptr[10] = 0_u8; hdr_ptr[11] = 0_u8; hdr_ptr[12] = 0_u8; hdr_ptr[13] = 0_u8
+      # crc32 (little endian)
+      hdr_ptr[14] = (crc & 0xff_u64).to_u8
+      hdr_ptr[15] = ((crc.unsafe_shr(8_u64)) & 0xff_u64).to_u8
+      hdr_ptr[16] = ((crc.unsafe_shr(16_u64)) & 0xff_u64).to_u8
+      hdr_ptr[17] = ((crc.unsafe_shr(24_u64)) & 0xff_u64).to_u8
+      # compressed size
+      cs = compressed.size.to_u64
+      hdr_ptr[18] = (cs & 0xff_u64).to_u8
+      hdr_ptr[19] = ((cs.unsafe_shr(8_u64)) & 0xff_u64).to_u8
+      hdr_ptr[20] = ((cs.unsafe_shr(16_u64)) & 0xff_u64).to_u8
+      hdr_ptr[21] = ((cs.unsafe_shr(24_u64)) & 0xff_u64).to_u8
+      # uncompressed size
+      us = b.size.to_u64
+      hdr_ptr[22] = (us & 0xff_u64).to_u8
+      hdr_ptr[23] = ((us.unsafe_shr(8_u64)) & 0xff_u64).to_u8
+      hdr_ptr[24] = ((us.unsafe_shr(16_u64)) & 0xff_u64).to_u8
+      hdr_ptr[25] = ((us.unsafe_shr(24_u64)) & 0xff_u64).to_u8
+      # filename length
+      fn_len = filename.bytesize
+      hdr_ptr[26] = (fn_len & 0xff).to_u8; hdr_ptr[27] = ((fn_len.to_u32.unsafe_shr(8_u32)) & 0xff_u32).to_u8
+      # extra length 0
+      hdr_ptr[28] = 0_u8; hdr_ptr[29] = 0_u8
+      # filename
+      i = 0
+      while i < fn_len
+        hdr_ptr[30 + i] = filename.to_unsafe[i]
+        i = i + 1
+      end
+
+      CompressIOHelper.write_bytes(@io, hdr)
+      CompressIOHelper.write_bytes(@io, compressed)
+      @pos = @pos + hdr.size.to_u64 + compressed.size.to_u64
+      @entries << {info: info, data: compressed}
+    end
+
+    def add_dir(name : String) : Nil
+      dirname = name.ends_with?("/") ? name : name + "/"
+      add(dirname, Bytes.empty, CompressionMethod::STORED)
+    end
+
+    def sync_close=(val : Bool)
+      @sync_close = val
+    end
+
+    def close : Nil
+      return if @closed
+      @closed = true
+
+      cd_start = @pos
+      # Write Central Directory Headers
+      entry_idx = 0
+      while entry_idx < @entries.size
+        item = @entries[entry_idx]
+        info = item[:info]
+        fn = info.filename
+        fn_len = fn.bytesize
+
+        cd_hdr = Bytes.new(46 + fn_len)
+        ptr = cd_hdr.to_unsafe
+        # signature 0x02014b50
+        ptr[0] = 0x50_u8; ptr[1] = 0x4b_u8; ptr[2] = 0x01_u8; ptr[3] = 0x02_u8
+        # version made by
+        ptr[4] = 20_u8; ptr[5] = 0_u8
+        # version needed
+        ptr[6] = 20_u8; ptr[7] = 0_u8
+        # flags
+        ptr[8] = 0_u8; ptr[9] = 0_u8
+        # compression method
+        m_val = info.compression_method == CompressionMethod::DEFLATED ? 8_u16 : 0_u16
+        ptr[10] = (m_val & 0xff_u16).to_u8; ptr[11] = (m_val.to_u32.unsafe_shr(8_u32)).to_u8
+        # time, date
+        ptr[12] = 0_u8; ptr[13] = 0_u8; ptr[14] = 0_u8; ptr[15] = 0_u8
+        # crc32
+        crc = info.crc32.to_u64
+        ptr[16] = (crc & 0xff_u64).to_u8
+        ptr[17] = ((crc.unsafe_shr(8_u64)) & 0xff_u64).to_u8
+        ptr[18] = ((crc.unsafe_shr(16_u64)) & 0xff_u64).to_u8
+        ptr[19] = ((crc.unsafe_shr(24_u64)) & 0xff_u64).to_u8
+        # compressed size
+        cs = info.compressed_size
+        ptr[20] = (cs & 0xff_u64).to_u8
+        ptr[21] = ((cs.unsafe_shr(8_u64)) & 0xff_u64).to_u8
+        ptr[22] = ((cs.unsafe_shr(16_u64)) & 0xff_u64).to_u8
+        ptr[23] = ((cs.unsafe_shr(24_u64)) & 0xff_u64).to_u8
+        # uncompressed size
+        us = info.uncompressed_size
+        ptr[24] = (us & 0xff_u64).to_u8
+        ptr[25] = ((us.unsafe_shr(8_u64)) & 0xff_u64).to_u8
+        ptr[26] = ((us.unsafe_shr(16_u64)) & 0xff_u64).to_u8
+        ptr[27] = ((us.unsafe_shr(24_u64)) & 0xff_u64).to_u8
+        # fn length
+        ptr[28] = (fn_len & 0xff).to_u8; ptr[29] = ((fn_len.to_u32.unsafe_shr(8_u32)) & 0xff_u32).to_u8
+        # extra length, comment length, disk start, internal attr
+        ptr[30] = 0_u8; ptr[31] = 0_u8; ptr[32] = 0_u8; ptr[33] = 0_u8
+        ptr[34] = 0_u8; ptr[35] = 0_u8; ptr[36] = 0_u8; ptr[37] = 0_u8
+        # external attr
+        ext_attr = info.dir? ? 0x10_u32 : 0x20_u32
+        ptr[38] = (ext_attr & 0xff_u32).to_u8
+        ptr[39] = ((ext_attr >> 8_u32) & 0xff_u32).to_u8
+        ptr[40] = ((ext_attr >> 16_u32) & 0xff_u32).to_u8
+        ptr[41] = ((ext_attr >> 24_u32) & 0xff_u32).to_u8
+        # relative offset
+        off = info.offset
+        ptr[42] = (off & 0xff_u64).to_u8
+        ptr[43] = ((off.unsafe_shr(8_u64)) & 0xff_u64).to_u8
+        ptr[44] = ((off.unsafe_shr(16_u64)) & 0xff_u64).to_u8
+        ptr[45] = ((off.unsafe_shr(24_u64)) & 0xff_u64).to_u8
+        # filename
+        i = 0
+        while i < fn_len
+          ptr[46 + i] = fn.to_unsafe[i]
+          i = i + 1
+        end
+
+        CompressIOHelper.write_bytes(@io, cd_hdr)
+        @pos = @pos + cd_hdr.size.to_u64
+        entry_idx = entry_idx + 1
+      end
+
+      cd_size = @pos - cd_start
+
+      # Write End of Central Directory
+      eocd = Bytes.new(22)
+      eocd_ptr = eocd.to_unsafe
+      # signature 0x06054b50
+      eocd_ptr[0] = 0x50_u8; eocd_ptr[1] = 0x4b_u8; eocd_ptr[2] = 0x05_u8; eocd_ptr[3] = 0x06_u8
+      # disk number 0
+      eocd_ptr[4] = 0_u8; eocd_ptr[5] = 0_u8
+      # disk with CD 0
+      eocd_ptr[6] = 0_u8; eocd_ptr[7] = 0_u8
+      # total entries this disk
+      cnt = @entries.size
+      eocd_ptr[8] = (cnt & 0xff).to_u8; eocd_ptr[9] = ((cnt.to_u32.unsafe_shr(8_u32)) & 0xff_u32).to_u8
+      # total entries in CD
+      eocd_ptr[10] = (cnt & 0xff).to_u8; eocd_ptr[11] = ((cnt.to_u32.unsafe_shr(8_u32)) & 0xff_u32).to_u8
+      # size of CD
+      eocd_ptr[12] = (cd_size & 0xff_u64).to_u8
+      eocd_ptr[13] = ((cd_size.unsafe_shr(8_u64)) & 0xff_u64).to_u8
+      eocd_ptr[14] = ((cd_size.unsafe_shr(16_u64)) & 0xff_u64).to_u8
+      eocd_ptr[15] = ((cd_size.unsafe_shr(24_u64)) & 0xff_u64).to_u8
+      # offset of CD
+      eocd_ptr[16] = (cd_start & 0xff_u64).to_u8
+      eocd_ptr[17] = ((cd_start.unsafe_shr(8_u64)) & 0xff_u64).to_u8
+      eocd_ptr[18] = ((cd_start.unsafe_shr(16_u64)) & 0xff_u64).to_u8
+      eocd_ptr[19] = ((cd_start.unsafe_shr(24_u64)) & 0xff_u64).to_u8
+      # comment len 0
+      eocd_ptr[20] = 0_u8; eocd_ptr[21] = 0_u8
+
+      CompressIOHelper.write_bytes(@io, eocd)
+      if @sync_close
+        CompressIOHelper.close_io(@io)
+      end
+    end
+  end
+
+  class File
+    getter entries : Array(Entry)
+    getter closed : Bool
+
+    def closed? : Bool
+      @closed
+    end
+
+    @sync_close : Bool
+    @io : IyiIO?
+
+    def initialize(io : IO, @sync_close : Bool = false)
+      @closed = false
+      bytes = CompressIOHelper.read_all(io)
+      @entries = Zip.parse_entries(bytes)
+      @io = io
+    end
+
+    def initialize(filename : String)
+      @closed = false
+      @sync_close = true
+      f = ::File.open(filename, "rb")
+      bytes = CompressIOHelper.read_all(f)
+      @entries = Zip.parse_entries(bytes)
+      @io = f
+    end
+
+    def self.open(filename : String, &block : File -> Nil) : Nil
+      zf = File.new(filename)
+      yield zf
+      zf.close
+    end
+
+    def self.open(io : IO, sync_close : Bool = false, &block : File -> Nil) : Nil
+      zf = File.new(io, sync_close)
+      yield zf
+      zf.close
+    end
+
+    def [](filename : String) : Entry
+      entry = find_entry(filename)
+      raise Error.new("Zip file entry not found: #{filename}") if entry.nil?
+      entry
+    end
+
+    def find_entry(filename : String) : Entry?
+      entry_internal(filename)
+    end
+
+    def []?(filename : String) : Entry?
+      entry_internal(filename)
+    end
+
+    private def entry_internal(filename : String) : Entry?
+      i = 0
+      while i < @entries.size
+        return @entries[i] if @entries[i].filename == filename
+        i = i + 1
+      end
+      nil
+    end
+
+    def close : Nil
+      return if @closed
+      @closed = true
+      if @sync_close && (f = @io)
+        CompressIOHelper.close_io(f)
+      end
+    end
+  end
+
+  # Internal parser for zip byte streams (bounded to max_output_size)
+  def self.parse_entries(data : Bytes, max_total_decompressed : Int64 = 100_000_000_i64) : Array(Entry)
+    entries = [] of Entry
+    pos = 0
+    size = data.size
+    ptr = data.to_unsafe
+    total_decompressed = 0_i64
+
+    while pos + 30 <= size
+      sig = (ptr[pos].to_u32) | (ptr[pos + 1].to_u32.unsafe_shl(8_u32)) | (ptr[pos + 2].to_u32.unsafe_shl(16_u32)) | (ptr[pos + 3].to_u32.unsafe_shl(24_u32))
+      break if sig != 0x04034b50_u32
+
+      method_val = (ptr[pos + 8].to_u16) | (ptr[pos + 9].to_u16.unsafe_shl(8_u16))
+      method = method_val == 8_u16 ? CompressionMethod::DEFLATED : CompressionMethod::STORED
+      crc = (ptr[pos + 14].to_u32) | (ptr[pos + 15].to_u32.unsafe_shl(8_u32)) | (ptr[pos + 16].to_u32.unsafe_shl(16_u32)) | (ptr[pos + 17].to_u32.unsafe_shl(24_u32))
+      cs = (ptr[pos + 18].to_u64) | (ptr[pos + 19].to_u64.unsafe_shl(8_u64)) | (ptr[pos + 20].to_u64.unsafe_shl(16_u64)) | (ptr[pos + 21].to_u64.unsafe_shl(24_u64))
+      us = (ptr[pos + 22].to_u64) | (ptr[pos + 23].to_u64.unsafe_shl(8_u64)) | (ptr[pos + 24].to_u64.unsafe_shl(16_u64)) | (ptr[pos + 25].to_u64.unsafe_shl(24_u64))
+      fn_len = (ptr[pos + 26].to_i32) | (ptr[pos + 27].to_i32 << 8)
+      extra_len = (ptr[pos + 28].to_i32) | (ptr[pos + 29].to_i32 << 8)
+
+      header_size = 30 + fn_len + extra_len
+      break if pos + header_size + cs.to_i32 > size
+
+      fn_sub = data[pos + 30, fn_len]
+      filename = String.new(fn_len) { |buf| buf.copy_from(fn_sub.to_unsafe, fn_len) }
+
+      payload = data[pos + header_size, cs.to_i32]
+
+      # Enforce bounded decompression to prevent zip bombs
+      if us.to_i64 > max_total_decompressed || (total_decompressed + us.to_i64) > max_total_decompressed
+        raise DecompressLimitExceeded.new(max_total_decompressed, total_decompressed + us.to_i64).to_s
+      end
+
+      decompressed = if method == CompressionMethod::DEFLATED
+                       dec_res = Inflate.decompress(payload, max_total_decompressed)
+                       case dec_res
+                       when Bytes                   then dec_res
+                       when DecompressLimitExceeded then raise dec_res.to_s
+                       when DecompressError         then raise dec_res.message
+                       else                              raise "decompression error in zip entry"
+                       end
+                     else
+                       payload
+                     end
+
+      total_decompressed = total_decompressed + decompressed.size.to_i64
+      if total_decompressed > max_total_decompressed
+        raise DecompressLimitExceeded.new(max_total_decompressed, total_decompressed).to_s
+      end
+
+      is_dir = filename.ends_with?("/")
+      entries << Entry.new(filename, method, crc, cs, us, is_dir, decompressed)
+
+      pos = pos + header_size + cs.to_i32
+    end
+    entries
+  end
+end
+
+alias ::Compress::Zip = Std::Compress::Zip
