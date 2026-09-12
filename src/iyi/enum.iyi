@@ -1,0 +1,161 @@
+# What an `enum` can do — SPEC.md, "0.1.0", item 3.
+#
+# The compiler gives an enum exactly two methods: `value`, the integer the
+# member was numbered with, and `new`, which wraps one (`EnumType#initialize`).
+# Everything a program does with an enum is the library's, and until
+# `samples/iyi/enums.iyi` asked there was none of it — so the answers were
+# `Object`'s: `Level::Warn == Level::Warn` was **false**, `to_s` printed the
+# type's name, and `case level when Level::Warn` matched nothing, because a
+# `when` naming a member lowers to `Level::Warn === level` and `===` is `==`.
+# The compiler's own per-member question methods (`level.warn?`) call that
+# same `==`, and a `@[Flags]` enum's call `includes?`, so those were broken by
+# one gap apiece.
+#
+# `Enum` is predefined — it is what every enum's ancestor is, created before a
+# prelude line is read — so this reopens it the way `Range` and `String` are
+# reopened rather than declaring it.
+#
+# Read off the type at each instantiation: a method here is stencilled onto the
+# enum that calls it, so `@type` is that enum and `@type.constants` are its
+# members. Nothing walks a table at run time and nothing is allocated to answer
+# a name: `to_s` is a `case` over integers the compiler folds.
+struct Enum
+  # Equality is the value's, which is what makes every other name work: `!=`
+  # and `===` are `Object`'s and both read this, `case` lowers to `===`, and
+  # the question methods the compiler writes are `self == Member`.
+  def ==(other : self) : Bool
+    value == other.value
+  end
+
+  # An order, because a level is a threshold: `level >= Level::Info` is the
+  # first thing a program writes after a `case`. Four operators rather than a
+  # `Comparable` include — the prelude has no such module, and a trait would be
+  # `std/traits`' to carry (SPEC.md II.6).
+  def <(other : self) : Bool
+    value < other.value
+  end
+
+  def <=(other : self) : Bool
+    value <= other.value
+  end
+
+  def >(other : self) : Bool
+    value > other.value
+  end
+
+  def >=(other : self) : Bool
+    value >= other.value
+  end
+
+  # The member's name, and the value's digits where no member has it —
+  # `Level.new(9).to_s` is `"9"`, which is what a value off a wire prints as.
+  #
+  # A flags enum answers with the names of the bits it holds, joined, and
+  # `None` for zero: that is what the annotation means, and the compiler has
+  # already added those two members.
+  def to_s : String
+    {% if @type.annotation(Flags) %}
+      return "None" if value == 0
+      text = ""
+      {% for member in @type.constants %}
+        {% unless member.stringify == "None" || member.stringify == "All" %}
+          if value & {{ @type.constant(member) }} == {{ @type.constant(member) }}
+            text = text + " | " unless text == ""
+            text = text + {{ member.stringify }}
+          end
+        {% end %}
+      {% end %}
+      text == "" ? value.to_s : text
+    {% else %}
+      {% for member in @type.constants %}
+        return {{ member.stringify }} if value == {{ @type.constant(member) }}
+      {% end %}
+      value.to_s
+    {% end %}
+  end
+
+  # `#{Level::Warn.inspect}` is the member written down rather than printed,
+  # and for an enum the two are the same text. It is here because `Object`'s
+  # sends it back to `to_s` — which was the type's name — and a sample that
+  # inspects a `Level?` was reading that.
+  def inspect : String
+    to_s
+  end
+
+  # A key in a `Hash` is hashed and then compared, so a type used as one owes
+  # both (`src/iyi/hash.iyi`). The value is the whole of what a member is.
+  def hash : Int32
+    value.to_i32
+  end
+
+  # Whether every bit of *other* is in this one, which is what a `@[Flags]`
+  # enum's question methods ask: the compiler writes `mode.read?` as
+  # `self.includes?(Mode::Read)`.
+  def includes?(other : self) : Bool
+    value & other.value == other.value
+  end
+
+  # The two set operators a flags enum is built to be used with. `Mode::Read |
+  # Mode::Write` is how one is written down, and `mode & Mode::Write` is how a
+  # bit is taken out of it.
+  def |(other : self) : self
+    self.class.new(value | other.value)
+  end
+
+  def &(other : self) : self
+    self.class.new(value & other.value)
+  end
+
+  # Every member, in the order they were written. A menu, a validation table,
+  # a loop that has to reach all of them — and for a flags enum the members
+  # rather than `None` and `All`, which are the compiler's own.
+  def self.values : Array(self)
+    all = Array(self).new
+    {% for member in @type.constants %}
+      {% unless @type.annotation(Flags) && (member.stringify == "None" || member.stringify == "All") %}
+        all << self.new({{ @type.constant(member) }})
+      {% end %}
+    {% end %}
+    all
+  end
+
+  # The same list said in text, which is what a message naming the choices
+  # needs: `"one of #{Level.names.join(", ")}"`.
+  def self.names : Array(String)
+    all = Array(String).new
+    {% for member in @type.constants %}
+      {% unless @type.annotation(Flags) && (member.stringify == "None" || member.stringify == "All") %}
+        all << {{ member.stringify }}
+      {% end %}
+    {% end %}
+    all
+  end
+
+  # A member read back from text, or `nil` where no member has that name. What
+  # a program does with an argument or a configuration line, so the comparison
+  # is the lenient one a person types: `"warn"`, `"Warn"` and `"WARN"` all
+  # answer `Level::Warn`, and nothing else does.
+  #
+  # `nil` rather than a panic, because the text is somebody else's input and
+  # the caller is the only thing that knows what to say about it (III.1).
+  def self.parse?(name : String) : self?
+    wanted = name.downcase
+    {% for member in @type.constants %}
+      return self.new({{ @type.constant(member) }}) if wanted == {{ member.stringify }}.downcase
+    {% end %}
+    nil
+  end
+
+  # A member from the integer it was numbered with, or `nil` where no member
+  # has it. `new` takes any value of the base type by design — that is how an
+  # enum comes back from C or off a wire — and this is the question that asks
+  # whether the one in hand is a member.
+  def self.from_value?(value : Int32) : self?
+    {% for member in @type.constants %}
+      {% unless @type.annotation(Flags) && member.stringify == "All" %}
+        return self.new({{ @type.constant(member) }}) if value == {{ @type.constant(member) }}
+      {% end %}
+    {% end %}
+    nil
+  end
+end

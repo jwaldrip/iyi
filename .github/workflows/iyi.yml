@@ -272,6 +272,15 @@ jobs:
       - name: A float prints as the shortest decimal that reads back
         run: bash bench/float_text.sh
 
+      # The prelude's `Enum` surface, which the compiler depends on in three
+      # places it writes itself: a `when` naming a member lowers to `===`, a
+      # per-member question method is `self == Member`, and a `@[Flags]`
+      # enum's is `includes?`. All three answered `Object`'s defaults until
+      # `samples/iyi/enums.iyi` asked, so `==` was false and `case` matched
+      # nothing. Eight broken methods of a copied prelude prove each check.
+      - name: An enum is its name, its order and its members
+        run: bash bench/enum_exercise.sh
+
       # The collector's own gates (GC_DESIGN.md Stages 2, 3, 5, 6 and the
       # allocation-pressure trigger). Each drives its exercise plain and
       # optimised, audits what the `-Dgc_iyi` binary asks the machine for,

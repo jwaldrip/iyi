@@ -4,6 +4,50 @@
 
 ### Fixed
 
+- **An `enum` in iyi is its name, its order, its value and its members.**
+  The compiler gives an enum two methods — `value`, the integer the member
+  was numbered with, and `new`, which wraps one — and the prelude gave it
+  nothing, so every other answer was `Object`'s: `Level::Warn ==
+  Level::Warn` was **false**, `"#{Level::Warn}"` printed the *type's* name,
+  and `case level when Level::Warn` matched nothing, because a `when` that
+  names a member lowers to `Level::Warn === level` and `===` is `==`. The
+  compiler's own per-member question methods (`level.warn?`) are that same
+  `==`, and a `@[Flags]` enum's are `includes?`, so those were broken by one
+  gap apiece. Reproduced on 0.12.0 as released.
+  `src/iyi/enum.iyi` is the surface, and `samples/iyi/enums.iyi` is what
+  asked for each piece of it: equality and the `case` built on it, an order
+  (`level >= Level::Info` is the first thing written after a `case`), the
+  member's name and the value's digits where no member has it, `hash` so a
+  member can be a `Hash` key, the members as a list (`values`, `names`), a
+  name read back (`parse?`, folding case, `nil` for unknown text), a value
+  read back (`from_value?`), and for a `@[Flags]` enum the membership its
+  question methods ask plus `|` and `&`. Read off the type at each
+  instantiation, so nothing walks a table at run time: `to_s` is a `case`
+  over integers. 161 lines, which leaves the library at 3,570 of its 3,734
+  ceiling. `bench/enum_exercise.sh` runs the exercise plain and
+  `--release`, runs the sample, and then breaks one method of a copied
+  prelude eight times over to prove each check can fail.
+- **And a `pub enum` crosses a module boundary**, which is the half of the
+  feature that had never been asked of it. Three defects were in the way,
+  each invisible until an enum was exported. The per-member question
+  methods the compiler writes carried no return type, so R-2 refused the
+  module that declared one: "`debug?` is exported and does not say what it
+  returns", about a method nobody wrote whose answer is never anything but
+  a `Bool`. The artifact writer asked an enum for its instance variables —
+  `BUG: Level::Level doesn't implement instance_vars` — where what a
+  consumer needs is the *members* and the numbers they were given, since
+  the module's own object code was compiled against those and a consumer
+  that counted from zero again would agree with it only by luck. And an
+  enum's members read as code inside a type body, so the module could not
+  be imported from an artifact at all ("has code inside a type body that
+  has to run") — a member is an `Arg` the compiler numbers where it is
+  written, and there is nothing to run. A `@[Flags]` enum also travels with
+  the word that numbers it, and without the `None` and `All` it is given
+  wherever it is declared: carried, they arrived as a redefinition of the
+  consumer's own. Both writers take that rule now, the iyi-native one and
+  `iyi tool bind`'s. `bench/enum_exercise.sh` builds a consumer against a
+  module's source and against its `.iyimod` and requires the same answers;
+  `spec/compiler/iyimod_spec.cr` pins the declaration.
 - **A `.iyi` file may add to the other language's type and may not replace
   one of its methods.** `import std/text` in a `--crystal` program answered
   `private method 'byte_slice' called for String`, at a line in Crystal's
@@ -5139,7 +5183,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 13,609-line library and nothing else. Every other
+  written against iyi's own 13,780-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 

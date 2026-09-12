@@ -1752,7 +1752,14 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
   def define_enum_question_method(enum_type, member, is_flags)
     method_name = is_flags ? "includes?" : "=="
     body = Call.new(Var.new("self").at(member), method_name, Path.new(member.name).at(member)).at(member)
-    a_def = Def.new("#{member.name.underscore}?", body: body).at(member)
+    # iyi: written with its return type, because R-2 asks an exported
+    # signature for one and this def is the *compiler's* (R-2's macro rule,
+    # one kind of synthesis over). A `pub enum` in a module that writes its
+    # `.iyimod` was refused on it — "`debug?` is exported and does not say
+    # what it returns" — about a method nobody wrote and whose answer is
+    # never anything but a `Bool`.
+    a_def = Def.new("#{member.name.underscore}?", body: body,
+      return_type: Path.global("Bool").at(member)).at(member)
 
     a_def.doc = if member.doc.try &.starts_with?(":nodoc:")
                   ":nodoc:"
@@ -1765,7 +1772,8 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
 
   def define_enum_none_question_method(enum_type, node)
     body = Call.new(Call.new(nil, "value").at(node), "==", NumberLiteral.new(0)).at(node)
-    a_def = Def.new("none?", body: body).at(node)
+    # Its return type for the reason the one above carries one.
+    a_def = Def.new("none?", body: body, return_type: Path.global("Bool").at(node)).at(node)
     enum_type.add_def a_def
   end
 

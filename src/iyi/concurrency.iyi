@@ -345,7 +345,13 @@ end
 # Not user-facing (III.4.6): a raw spawn is the leak III.4.1 exists to
 # make unrepresentable. `IyiTask` and `group` are the only doors.
 class IyiFiber
-  # States. An Int32 rather than an enum, which the prelude does not have.
+  # States, as an Int32. The prelude has an `Enum` surface now
+  # (`src/iyi/enum.iyi`) and this is the one place that would rather keep the
+  # integer: every line of the scheduler below reads and writes a state under
+  # the runtime lock, and what those comparisons cost is measured
+  # (`bench/server_load.sh`: 23,705 requests a second). Naming them is a
+  # change to the scheduler, so it belongs with that measurement rather than
+  # with the surface.
   #
   #   0 running    the one fiber whose instructions are executing
   #   1 runnable   in the run queue

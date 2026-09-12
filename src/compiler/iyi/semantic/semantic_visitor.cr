@@ -1022,6 +1022,15 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
       iyi_initialiser?(node.body)
     when EnumDef
       node.members.any? { |member| iyi_initialiser?(member) }
+    when Arg
+      # An enum's member, which is what an `Arg` in a body position is, and
+      # nothing to run: the compiler numbers it where it is written, folds the
+      # expression if the author wrote one, and stores the answer in the type
+      # (`EnumType#add_constant`). Read as code, a `pub enum Level` made its
+      # module unimportable — "level has code inside a type body that has to
+      # run" — about integers that are part of the declaration a consumer
+      # reads.
+      false
     when VisibilityModifier
       # `pub struct List(T)` is a `VisibilityModifier` around the declaration,
       # not a declaration — which made every module with a `pub` type read as
