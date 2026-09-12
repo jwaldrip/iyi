@@ -572,6 +572,16 @@ jobs:
       - name: The numbers the docs state
         run: python3 bench/doc_numbers.py --list
 
+      # Every failure proof works by breaking the library and requiring the
+      # exercise to notice. When the library moves underneath one, its patch
+      # stops matching, and a patch that breaks nothing lets the exercise pass
+      # while proving nothing. Each driver catches that at run time, but only
+      # for the platform and the exercise that ran: two proofs written on
+      # macOS matched nothing here for a week. This reads all of them in a
+      # second, including the drivers this job does not run.
+      - name: Every failure proof still patches the code it names
+        run: python3 bench/mutation_anchors.py
+
   std:
     needs: build
     runs-on: ubuntu-24.04
