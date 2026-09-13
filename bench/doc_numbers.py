@@ -261,6 +261,38 @@ def as_number(raw: str) -> int | None:
     return WORDS.get(bare.lower())
 
 
+# The ceiling is a decision, not a measurement, and every number beside it here
+# is a measurement. That difference is easy to lose: a pass updating drifted
+# counts rewrote the ceiling too, because the prelude's library happened to
+# measure exactly 3,734 and a blind replace of that literal moved both. A
+# raised ceiling reads as a passing gate, which is the one failure this file
+# must never have. So the figure is checked against a constant, and moving it
+# is an edit to this line with a reason written beside it.
+PRELUDE_LIBRARY_CEILING = 3734
+
+
+def ceiling_intact() -> list[str]:
+    """Every sentence that states the ceiling still states the same ceiling."""
+    complaints: list[str] = []
+    text = (REPO / "SPEC.md").read_text()
+    patterns = (
+        r"held to the ([\d,]+)[- ]line ceiling",
+        r"held to the ([\d,]+) ceiling",
+        r"The\n?([\d,]+) lines were Crystal's \*library\*",
+    )
+    for pattern in patterns:
+        for m in re.finditer(pattern, text):
+            if as_number(m.group(1)) == PRELUDE_LIBRARY_CEILING:
+                continue
+            line = text[: m.start()].count("\n") + 1
+            complaints.append(
+                f"SPEC.md:{line}  states the ceiling as {m.group(1)}, and it is "
+                f"{PRELUDE_LIBRARY_CEILING:,}. A ceiling that moves to meet the "
+                f"measurement is not a ceiling"
+            )
+    return complaints
+
+
 def main() -> int:
     show_all = "--list" in sys.argv
     truth = measured()
@@ -272,7 +304,8 @@ def main() -> int:
 
         print(json.dumps(truth, indent=2, sort_keys=True))
         return 0
-    wrong: list[str] = []
+
+    wrong: list[str] = ceiling_intact()
     found: list[str] = []
 
     for key, pattern, rel, expected in CLAIMS:
