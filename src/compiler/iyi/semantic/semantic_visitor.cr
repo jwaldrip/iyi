@@ -313,6 +313,10 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
   # `.iyi` wins over `.cr` so an iyi module can shadow a Crystal file of the
   # same name during the transition.
   private def resolve_import(path : String) : String?
+    resolve_program_import(path) || resolve_library_import(path)
+  end
+
+  private def resolve_program_import(path : String) : String?
     candidates = [] of String
 
     if root = project_root
@@ -330,6 +334,14 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
       candidates << File.join(header_root, "#{path}.cr")
     end
 
+    candidates.find do |candidate|
+      @program.iyi_file_overrides.has_key?(candidate) || File.file?(candidate)
+    end
+  end
+
+  private def resolve_library_import(path : String) : String?
+    candidates = [] of String
+
     @program.iyi_path.entries.each do |entry|
       candidates << File.join(entry, "#{path}.iyi")
       candidates << File.join(entry, "#{path}.cr")
@@ -337,6 +349,14 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
 
     candidates.find do |candidate|
       @program.iyi_file_overrides.has_key?(candidate) || File.file?(candidate)
+    end
+  end
+
+  private def source_in_library?(path : String) : Bool
+    expanded = File.expand_path(path)
+    @program.iyi_path.entries.any? do |entry|
+      expanded_entry = File.expand_path(entry, @program.iyi_path.current_dir)
+      expanded == expanded_entry || expanded.starts_with?(expanded_entry.ends_with?('/') ? expanded_entry : "#{expanded_entry}/")
     end
   end
 
@@ -527,15 +547,27 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
     # about whether this compiler may adopt it at all.
     return nil if summary.hashes.source.empty?
 
-    if source = resolve_import(module_path)
-      # iyi: a module path is a file path (SPEC.md R-1), so the same name can
-      # come to mean a different file — delete a program's own `std/text.iyi`
-      # and `import std/text` reaches the library's module of that path. The
-      # artifact is then not stale, it is about a file nobody asked for, and
-      # "src/std/text.iyi has changed since it was written" named a library
-      # file the author has never edited. Said as what happened: the name
-      # moved.
-      written = summary.source_path
+    written = summary.source_path
+    if !written.empty? && !source_in_library?(written)
+      # iyi: resolution prefers the program's own module over the shipped
+      # library (SPEC.md IV.1f). The artifact was written from a module
+      # defined by the program. If the program provides a source file for this
+      # module, that source must match where it was written and must not have
+      # changed. If the program's source file was deleted, the artifact property
+      # holds (SPEC.md IV.1): the artifact continues to satisfy the module,
+      # and does not fall back to a shipped library of the same name.
+      if program_source = resolve_program_import(module_path)
+        here = File.expand_path(program_source)
+        there = File.expand_path(written)
+        if here != there
+          return "\"#{module_path}\" is #{here} now, and this was written from #{there}"
+        end
+
+        unless IyiMod.digest(File.read(program_source)) == summary.hashes.source
+          return "#{program_source} has changed since it was written"
+        end
+      end
+    elsif source = resolve_import(module_path)
       unless written.empty?
         here = File.expand_path(source)
         there = File.expand_path(written)
