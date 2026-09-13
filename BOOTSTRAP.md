@@ -8,20 +8,22 @@ and `bash bench/dependency_floor.sh`, not estimated.
 
 ## Where this actually stands
 
-`src/compiler` is **109,825 lines of Crystal and 18,080 lines of iyi**. The iyi
+`src/compiler` is **109,825 lines of Crystal and 22,576 lines of iyi**. The iyi
 side is the lexer, the token, the AST, the visitor and transformer, the parser's
-expressions and declarations, the normalizer, the bind tool, the four foundation files, and the LLVM bindings:
+expressions and declarations, the normalizer, the bind tool, the formatter, the
+artifact format, the four foundation files, and the LLVM bindings:
 
 | in iyi | lines | proved by |
 |---|---|---|
 | `syntax/lexer.iyi`, `syntax/token.iyi` | 3,103 | `bench/selfhost_lexer_exercise.sh`: 42 fixtures, 21,034 tokens identical to the Crystal front end |
-| `syntax/ast.iyi`, `visitor.iyi`, `transformer.iyi` | 7,199 | `bench/selfhost_ast_exercise.sh`, five guarded mutation proofs |
-| `syntax/parser.iyi` (no macros) | 3,926 | `bench/selfhost_parser_exercise.sh`: 24 fixtures, 1,609 normalised nodes identical to the Crystal front end, nine guarded mutation proofs |
-| `semantic/normalizer.iyi` | 714 | `bench/selfhost_normalizer_exercise.sh`: 11 fixtures, 577 normalised nodes identical to the Crystal front end, five guarded mutation proofs |
+| `syntax/ast.iyi`, `visitor.iyi`, `transformer.iyi` | 7,202 | `bench/selfhost_ast_exercise.sh`, five guarded mutation proofs |
+| `syntax/parser.iyi` (no macros) | 4,072 | `bench/selfhost_parser_exercise.sh`: 24 fixtures, 1,609 normalised nodes identical to the Crystal front end, nine guarded mutation proofs |
+| `semantic/normalizer.iyi` | 705 | `bench/selfhost_normalizer_exercise.sh`: 11 fixtures, 577 normalised nodes identical to the Crystal front end, five guarded mutation proofs |
 | `tools/bind.iyi` | 727 | `bench/selfhost_bind_exercise.sh`: 11 fixtures, 80 public methods, four guarded mutation proofs. Read the note below before trusting this row |
+| `tools/formatter.iyi` | 1,669 | `bench/format_exercise.sh`: idempotence, format checks |
+| `artifact/iyimod.iyi` | 2,680 | `bench/selfhost_iyimod_exercise.sh`: 16 modules, 80,414 bytes identical to the Crystal front end, cross-reading, refusal, five guarded mutation proofs |
 | `llvm/*.iyi` | 2,285 | `bench/selfhost_llvm_exercise.sh`: a real object file emitted from iyi code, linked against a C driver, run |
 | `foundation/*.iyi` | 122 | compiled by the above |
-
 The bind row is weaker than the rows above it, and the difference matters.
 Every other gate here compares against the code being replaced. The bind gate
 does not: its oracle is a second implementation written inside the gate
@@ -33,8 +35,18 @@ as unproven against `src/compiler/iyi/tools/bind.cr` until semantic analysis
 is ported and the gate can drive the real one.
 
 What is **not** in iyi: semantic analysis, the type system, the
-macro engine, the artifact format, the formatter, codegen, the command driver,
-the daemon, and platform support. That is the 109,825.
+macro engine, codegen, the command driver, the daemon, and platform support.
+That is the 109,825.
+
+The artifact row proves binary parity: 16 modules across `samples/iyi` and
+`src/std` (80,414 bytes) produce byte-identical `.iyimod` files between Crystal
+and iyi, each implementation cross-reads what the other wrote with identical
+dumps, and damaged or corrupted artifacts are refused by both with identical
+verdicts. What this gate does not prove on its own is standalone artifact
+emission from un-analyzed user source code: extracting exported signatures,
+type definitions, and layout pointer maps requires semantic analysis and the
+type checker, which remain in Crystal. Once semantic analysis lands in iyi,
+the artifact writer can be plugged directly into the front-end AST walk.
 
 The parser is the one thing in between. Expressions and declarations are
 ported, 3,868 lines of iyi against the 7,600 of

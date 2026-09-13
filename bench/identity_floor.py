@@ -70,6 +70,11 @@ ALLOWED_PATHS: list[tuple[str, str]] = [
     # the frontend iyi is still bootstrapped from, and requires the bound
     # methods identical. The other language is the thing being compared against.
     (r"^bench/selfhost_bind_exercise\.sh$", "the frontend the selfhost bind tool is checked against"),
+    # The self-hosting artifact format's oracle: it compares what the iyi
+    # artifact reader and writer produce against what the frontend emits, and
+    # requires the artifacts and dumps identical. The other language is the
+    # frontend being compared against.
+    (r"^bench/selfhost_iyimod_exercise\.sh$", "the frontend the selfhost artifact format is checked against"),
     # The UUID exercise records a spelling iyi cannot have: `v1!`..`v8!` are
     # the other language's names, and `!` is an iyi operator. Naming the
     # language there is the whole point of the note.
