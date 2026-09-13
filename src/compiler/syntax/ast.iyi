@@ -2980,16 +2980,15 @@ pub class Arg < ASTNode
   property name : String
   property default_value : ASTNode?
   property restriction : ASTNode?
-  property external_name : String?
+  # The front end resolves this once, at construction, and stores a plain
+  # String: an argument with no external name is externally its own name.
+  # A nilable field with a getter that filled the name in instead reads the
+  # same from outside and compares differently from inside, which is exactly
+  # what `==` below did: ivar on one side, getter on the other.
+  property external_name : String
 
-  def external_name : String
-    @external_name || @name
-  end
-
-  def external_name=(@external_name : String?)
-  end
-
-  def initialize(@name : String, @default_value : ASTNode? = nil, @restriction : ASTNode? = nil, @external_name : String? = nil)
+  def initialize(@name : String, @default_value : ASTNode? = nil, @restriction : ASTNode? = nil, external_name : String? = nil)
+    @external_name = external_name || @name
   end
 
   def clone_without_location : self

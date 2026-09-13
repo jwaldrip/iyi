@@ -1016,6 +1016,7 @@ pub class Formatter < Visitor
     accept(node.exp)
     false
   end
+
   def visit(node : ClassDef) : Bool
     if @token.keyword?(Keyword::ABSTRACT)
       write_keyword(Keyword::ABSTRACT, " ")
@@ -1285,7 +1286,7 @@ pub class Formatter < Visitor
          when Visibility::Public    then Keyword::PUB
          when Visibility::Private   then Keyword::PRIVATE
          when Visibility::Protected then Keyword::PROTECTED
-         else Keyword::PUB
+         else                            Keyword::PUB
          end
     write_keyword(kw, " ")
     accept(node.exp)

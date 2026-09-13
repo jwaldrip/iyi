@@ -3104,6 +3104,7 @@ pub class Parser < Lexer
     skip_space
     segments
   end
+
   def parse_import : ImportDecl
     location = @token.location
     next_token_skip_space
