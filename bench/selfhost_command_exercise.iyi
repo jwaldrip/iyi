@@ -1,3 +1,11 @@
+# Dumps what the ported command driver decides for a corpus of argument
+# vectors: the command it selects, the exit code, and the text it prints.
+#
+# NOTHING COMPARES THIS AGAINST THE DRIVER IT REPLACES YET. There is no
+# bench/selfhost_command_exercise.sh, so every line below is this port
+# describing itself. Read it as a corpus waiting for an oracle, not as a
+# parity result, and do not quote a number out of it.
+
 import compiler/command/driver
 
 using compiler/command/driver::{CommandDriver, CommandResult, Exit}
