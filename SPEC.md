@@ -5554,22 +5554,15 @@ is the 95% prelude tax stated as a measurement rather than as an argument, and
 it is why item 3 of the 0.1.0 list. A prelude small enough to be one of these
 modules: is what decides the schedule and not this section.
 
-**And a module path can come to mean a different file.** A path is a file's
-path (R-1) and it is resolved from the entry's own directory first and from
-`IYI_PATH` after, so a program that writes `std/text.iyi` of its own has that
-file while it exists and the library's `std/text` after it is deleted — the
-same name, two files, and only one of them is the one an artifact was written
-from. The artifact is refused, which is right: its surface is not the surface
-at that path. What was wrong is what it said. The reader compared the two
-source *hashes* and reported "`src/std/text.iyi` has changed since it was
-written", naming a library file the author has never opened and sending them
-to look for an edit nobody made. The artifact records the path it was written
-from, so the two paths are compared first and the sentence is the fact:
-`"std/text" is <the library's file> now, and this was written from <the
-program's>`. The name a program gives a module is therefore worth choosing
-against what `src/std/` already ships, and that is a naming consequence of
-R-1 rather than a rule of its own: nothing is reserved, and whichever file
-the search order reaches is what the name means.
+**And a module path can come to mean a different file.** Resolution prefers
+the program's own module over the shipped library. When an artifact was
+written from a module defined by the program, that module's artifact
+satisfies the import even if the source file is deleted (upholding Part IV's
+promise that an artifact compiles without source), rather than falling through
+to a shipped library of the same path. If the module's path in the program
+moves to a different source file, the artifact records the path it was written
+from, so the paths are compared and the reader reports:
+`"<module>" is <new file> now, and this was written from <old file>`.
 
 ### IV.1g `ObjectCode`. The module's own machine code
 
