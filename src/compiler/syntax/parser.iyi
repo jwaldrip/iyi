@@ -1,0 +1,1803 @@
+module compiler/syntax/parser
+
+# Expression core of the iyi parser (pure iyi stage 0 selfhost).
+#
+# IN SCOPE:
+# - literals: integers, floats, strings, symbols, chars, bools, nil, arrays, hashes, tuples, named tuples, ranges
+# - variables, instance variables, class variables, globals, constants and paths
+# - unary and binary operators with real precedence and associativity (&&, ||, ../..., ?:, =, op=)
+# - parentheses, calls with/without parentheses, blocks (do...end and {...}), block args, splats, named arguments
+# - if/unless/while/until/case as expressions, and their modifier forms
+#
+# OUT OF SCOPE (later slices):
+# - def/class/struct/module/enum/lib definitions
+# - macros and macro expressions
+# - annotations
+# - impl/trait definitions
+# - type declarations and type grammar
+
+import compiler/foundation/location
+import compiler/foundation/errors
+import compiler/foundation/enums
+import compiler/foundation/string_pool
+import compiler/syntax/token
+import compiler/syntax/lexer
+import compiler/syntax/ast
+
+using compiler/foundation/location::{Location}
+using compiler/foundation/errors::{SyntaxException}
+using compiler/foundation/string_pool::{StringPool}
+using compiler/syntax/token::{Token, TokenKind, Keyword, NumberKind, DelimiterKind, DelimiterState}
+using compiler/syntax/lexer::{Lexer}
+using compiler/syntax/ast::{ASTNode, Expressions, Nop, NilLiteral, BoolLiteral, NumberLiteral, CharLiteral, StringLiteral, StringInterpolation, SymbolLiteral, ArrayLiteral, HashLiteral, TupleLiteral, NamedTupleLiteral, RangeLiteral, RegexLiteral, Var, InstanceVar, ClassVar, Global, Path, Generic, Self, Underscore, ImplicitObj, Return, Break, Next, Yield, If, Unless, While, Until, Case, When, Assign, OpAssign, MultiAssign, And, Or, Not, Splat, DoubleSplat, Cast, NilableCast, IsA, RespondsTo, TypeOf, NamedArgument, Block, Call}
+
+pub struct CallArgs
+  property args : Array(ASTNode)?
+  property block : Block?
+  property block_arg : ASTNode?
+  property named_args : Array(NamedArgument)?
+  property stopped_on_do_after_space : Bool
+  property end_location : Location?
+  property has_parentheses : Bool
+
+  def initialize(
+    @args : Array(ASTNode)? = nil,
+    @block : Block? = nil,
+    @block_arg : ASTNode? = nil,
+    @named_args : Array(NamedArgument)? = nil,
+    @stopped_on_do_after_space : Bool = false,
+    @end_location : Location? = nil,
+    @has_parentheses : Bool = false,
+  )
+  end
+end
+
+pub struct Piece
+  property value : String | ASTNode
+  property line_number : Int32
+
+  def initialize(@value : String | ASTNode, @line_number : Int32)
+  end
+end
+
+pub class Parser < Lexer
+  property var_scopes : Array(Set(String))
+  property stop_on_do : Bool
+  property stop_on_yield : Int32
+  property inside_defer : Int32
+  property wants_doc : Bool
+  property doc_enabled : Bool
+  property is_constant_assignment : Bool
+  property assigned_vars : Array(String)
+  property call_args_start_locations : Array(Location)
+  property temp_arg_count : Int32
+
+  def self.parse(str : String, string_pool : StringPool? = nil, var_scopes : Array(Set(String)) = [Set(String).new]) : ASTNode
+    new(str, "", string_pool, var_scopes).parse
+  end
+
+  def initialize(str : String, filename : String = "", string_pool : StringPool? = nil, var_scopes : Array(Set(String)) = [Set(String).new])
+    super(str, filename, string_pool)
+    @var_scopes = var_scopes
+    @stop_on_do = false
+    @stop_on_yield = 0
+    @inside_defer = 0
+    @wants_doc = false
+    @doc_enabled = false
+    @is_constant_assignment = false
+    @assigned_vars = [] of String
+    @call_args_start_locations = [] of Location
+    @temp_arg_count = 0
+  end
+
+  def token_end_location : Location
+    Location.new(@filename, @line_number, @column_number > 0 ? @column_number - 1 : 0)
+  end
+
+  def set_slash_is_regex(val : Bool) : Nil
+    @slash_is_regex = val
+  end
+
+  def node_and_next_token(node : ASTNode) : ASTNode
+    node.end_location = token_end_location
+    next_token
+    node
+  end
+
+  def parse : ASTNode
+    next_token_skip_statement_end
+    nodes = parse_expressions
+    check(TokenKind::EOF)
+    nodes
+  end
+
+  def parse_expressions : ASTNode
+    preserve_stop_on_do { parse_expressions_internal }
+  end
+
+  def parse_expressions_internal : ASTNode
+    if end_token?
+      return Nop.new
+    end
+
+    exp = parse_multi_assign
+
+    set_slash_is_regex(true)
+    skip_statement_end
+
+    if end_token?
+      return exp
+    end
+
+    exps = [exp] of ASTNode
+    while !end_token?
+      exps << parse_multi_assign
+      skip_statement_end
+    end
+
+    Expressions.from(exps)
+  end
+
+  def preserve_stop_on_do(&)
+    old = @stop_on_do
+    @stop_on_do = false
+    val = yield
+    @stop_on_do = old
+    val
+  end
+
+  def preserve_stop_on_do(new_val : Bool, &)
+    old = @stop_on_do
+    @stop_on_do = new_val
+    val = yield
+    @stop_on_do = old
+    val
+  end
+
+  def end_token? : Bool
+    case @token.type
+    when TokenKind::OP_RCURLY, TokenKind::OP_RSQUARE, TokenKind::OP_PERCENT_RCURLY, TokenKind::EOF
+      return true
+    end
+
+    if kw = @token.keyword
+      case kw
+      when Keyword::DO, Keyword::END, Keyword::ELSE, Keyword::ELSIF, Keyword::WHEN, Keyword::IN, Keyword::RESCUE, Keyword::ENSURE
+        return true
+      end
+    end
+
+    false
+  end
+
+  def parse_multi_assign : ASTNode
+    location = @token.location
+    lhs_splat_index = -1
+    lhs_splat_location = location
+
+    if @token.type == TokenKind::OP_STAR
+      lhs_splat_index = 0
+      lhs_splat_location = @token.location
+      next_token_skip_space
+    end
+
+    last = parse_expression
+    skip_space
+
+    last_is_target = multi_assign_target?(last) || multi_assign_middle?(last)
+
+    case @token.type
+    when TokenKind::OP_COMMA
+      if !last_is_target
+        unexpected_token("site_1") if lhs_splat_index >= 0
+        if last.is_a?(Path)
+          syntax_error("Multiple assignment is not allowed for constants", last.location)
+        end
+        unexpected_token("site_2")
+      end
+    when TokenKind::NEWLINE, TokenKind::OP_SEMICOLON
+      unexpected_token("site_3") if lhs_splat_index >= 0 && !multi_assign_middle?(last)
+      return last if lhs_splat_index < 0
+    else
+      if end_token?
+        unexpected_token("site_4") if lhs_splat_index >= 0 && !multi_assign_middle?(last)
+        return last if lhs_splat_index < 0
+      else
+        unexpected_token("site_5")
+      end
+    end
+
+    exps = [last] of ASTNode
+    i = 0
+    assign_index = -1
+
+    while @token.type == TokenKind::OP_COMMA
+      if assign_index == -1 && multi_assign_middle?(last)
+        assign_index = i
+      end
+
+      i = i + 1
+      next_token_skip_space_or_newline
+      if @token.type == TokenKind::OP_STAR
+        if assign_index == -1
+          if lhs_splat_index >= 0
+            syntax_error("splat assignment already specified", @token.location)
+          end
+          lhs_splat_index = i
+          lhs_splat_location = @token.location
+        else
+          unexpected_token("site_6")
+        end
+        next_token_skip_space
+      end
+
+      last = parse_op_assign(allow_ops: false)
+      if assign_index == -1 && !multi_assign_target?(last) && !multi_assign_middle?(last)
+        unexpected_token("site_7")
+      end
+
+      exps << last
+      skip_space
+    end
+
+    if assign_index == -1 && multi_assign_middle?(last)
+      assign_index = i
+    end
+
+    if assign_index == -1
+      unexpected_token("site_8")
+    end
+
+    targets = [] of ASTNode
+    t_idx = 0
+    while t_idx < assign_index
+      targets << multi_assign_left_hand(exps[t_idx])
+      t_idx = t_idx + 1
+    end
+
+    assign = exps[assign_index]
+    values = [] of ASTNode
+
+    if assign.is_a?(Assign)
+      targets << multi_assign_left_hand(assign.target)
+      values << assign.value
+    elsif assign.is_a?(Call)
+      call_name = assign.name
+      assign.name = call_name[0, call_name.bytesize - 1]
+      targets << assign
+      values << assign.args.pop
+    else
+      syntax_error("BUG: multi_assign index expression can only be Assign or Call", location)
+    end
+
+    if lhs_splat_index >= 0
+      targets[lhs_splat_index] = Splat.new(targets[lhs_splat_index]).at(lhs_splat_location)
+    end
+
+    v_idx = assign_index + 1
+    while v_idx < exps.size
+      values << exps[v_idx]
+      v_idx = v_idx + 1
+    end
+
+    if values.size != 1
+      if lhs_splat_index >= 0
+        if targets.size - 1 > values.size
+          syntax_error("Multiple assignment count mismatch", location)
+        end
+      else
+        if targets.size != values.size
+          syntax_error("Multiple assignment count mismatch", location)
+        end
+      end
+    end
+
+    multi = MultiAssign.new(targets, values).at(location)
+    parse_expression_suffix(multi, location)
+  end
+
+  def multi_assign_target?(exp : ASTNode) : Bool
+    case exp
+    when Underscore, Var, InstanceVar, ClassVar, Global
+      true
+    when Call
+      !exp.block && (exp.args.empty? || exp.name == "[]")
+    else
+      false
+    end
+  end
+
+  def multi_assign_middle?(exp : ASTNode) : Bool
+    case exp
+    when Assign
+      true
+    when Call
+      exp.name.ends_with?('=') || exp.name == "[]="
+    else
+      false
+    end
+  end
+
+  def multi_assign_left_hand(exp : ASTNode) : ASTNode
+    if exp.is_a?(Path)
+      syntax_error("can't assign to constant in multiple assignment", exp.location)
+    end
+
+    if exp.is_a?(Call)
+      if exp.obj.nil? && exp.args.empty?
+        exp = Var.new(exp.name).at(exp)
+      end
+    end
+
+    if exp.is_a?(Var)
+      if exp.name == "self"
+        syntax_error("can't change the value of self", exp.location)
+      end
+      push_var(exp)
+    end
+
+    exp
+  end
+
+  def parse_expression : ASTNode
+    location = @token.location
+    atomic = parse_op_assign
+    parse_expression_suffix(atomic, location)
+  end
+
+  def parse_expression_suffix(atomic : ASTNode, location : Location) : ASTNode
+    res = atomic
+    while true
+      case @token.type
+      when TokenKind::SPACE
+        next_token
+      when TokenKind::IDENT
+        if kw = @token.keyword
+          case kw
+          when Keyword::IF
+            res = parse_expression_suffix_helper(location) { |exp| If.new(exp, res, Nop.new) }
+          when Keyword::UNLESS
+            res = parse_expression_suffix_helper(location) { |exp| Unless.new(exp, res, Nop.new) }
+          when Keyword::WHILE
+            syntax_error("trailing `while` is not supported", @token.location)
+          when Keyword::UNTIL
+            syntax_error("trailing `until` is not supported", @token.location)
+          else
+            break
+          end
+        else
+          break
+        end
+      when TokenKind::OP_RPAREN, TokenKind::OP_COMMA, TokenKind::OP_SEMICOLON, TokenKind::OP_PERCENT_RCURLY, TokenKind::NEWLINE, TokenKind::EOF
+        break
+      else
+        if end_token?
+          break
+        else
+          unexpected_token("site_9")
+        end
+      end
+    end
+    res
+  end
+
+  def parse_expression_suffix_helper(location : Location, &) : ASTNode
+    set_slash_is_regex(true)
+    next_token_skip_statement_end
+    exp = parse_op_assign_no_control
+    (yield exp).at(location).at_end(exp)
+  end
+
+  def parse_op_assign_no_control(allow_ops : Bool = true, allow_suffix : Bool = true) : ASTNode
+    check_void_expression_keyword
+    parse_op_assign(allow_ops, allow_suffix)
+  end
+
+  def parse_op_assign(allow_ops : Bool = true, allow_suffix : Bool = true) : ASTNode
+    location = @token.location
+    atomic = parse_question_colon
+
+    while true
+      case @token.type
+      when TokenKind::SPACE
+        next_token
+      when TokenKind::IDENT
+        if !allow_suffix
+          unexpected_token("site_10")
+        end
+        break
+      when TokenKind::OP_EQ
+        set_slash_is_regex(true)
+        if !can_be_assigned?(atomic)
+          break
+        end
+
+        if atomic.is_a?(Call) && atomic.name == "[]"
+          next_token_skip_space_or_newline
+          atomic.name = "[]="
+          arg = parse_op_assign_no_control
+          atomic.args << arg
+          atomic.end_location = arg.end_location
+        else
+          if atomic.is_a?(Var) && atomic.name == "self"
+            syntax_error("can't change the value of self", location)
+          end
+
+          if atomic.is_a?(Call)
+            if atomic.name.ends_with?('?') || atomic.name.ends_with?('!')
+              unexpected_token("site_11")
+            end
+            atomic = Var.new(atomic.name).at(atomic)
+          end
+
+          next_token_skip_space_or_newline
+
+          atomic_value = parse_op_assign_no_control
+          push_var(atomic)
+          atomic = Assign.new(atomic, atomic_value).at(location)
+        end
+      else
+        if @token.type.assignment_operator?
+          if !allow_ops || !can_be_assigned?(atomic)
+            break
+          end
+
+          if atomic.is_a?(Path)
+            syntax_error("can't reassign to constant", location)
+          end
+
+          if atomic.is_a?(Var) && atomic.name == "self"
+            syntax_error("can't change the value of self", location)
+          end
+
+          op_str = @token.type.to_s
+          method = op_str[0, op_str.bytesize - 1]
+          push_var(atomic)
+          next_token_skip_space_or_newline
+          value = parse_op_assign_no_control
+          atomic = OpAssign.new(atomic, method, value).at(location)
+        else
+          break
+        end
+      end
+      allow_ops = true
+    end
+
+    atomic
+  end
+
+  def can_be_assigned?(node : ASTNode) : Bool
+    case node
+    when Var, InstanceVar, ClassVar, Path, Global, Underscore
+      true
+    when Call
+      no_args = node.args.empty? && node.named_args.nil? && node.block.nil? && node.block_arg.nil?
+      return true if no_args
+      node.name == "[]"
+    else
+      false
+    end
+  end
+
+  def parse_question_colon : ASTNode
+    cond = parse_range
+
+    while @token.type == TokenKind::OP_QUESTION
+      location = @token.location
+      next_token_skip_space_or_newline
+
+      true_val = parse_question_colon
+
+      skip_space_or_newline
+      check(TokenKind::OP_COLON)
+      next_token_skip_space_or_newline
+
+      false_val = parse_question_colon
+
+      cond = If.new(cond, true_val, false_val, true).at(cond).at_end(false_val)
+    end
+
+    cond
+  end
+
+  def parse_range : ASTNode
+    location = @token.location
+
+    if @token.type == TokenKind::OP_PERIOD_PERIOD || @token.type == TokenKind::OP_PERIOD_PERIOD_PERIOD
+      exp = Nop.new.at(location)
+    else
+      exp = parse_or
+    end
+
+    while true
+      case @token.type
+      when TokenKind::OP_PERIOD_PERIOD
+        exp = new_range(exp, location, false)
+      when TokenKind::OP_PERIOD_PERIOD_PERIOD
+        exp = new_range(exp, location, true)
+      else
+        return exp
+      end
+    end
+  end
+
+  def new_range(exp : ASTNode, location : Location, exclusive : Bool) : ASTNode
+    end_location = token_end_location
+    next_token_skip_space
+    check_void_expression_keyword
+    if end_token? || @token.type == TokenKind::OP_RPAREN || @token.type == TokenKind::OP_COMMA ||
+       @token.type == TokenKind::OP_SEMICOLON || @token.type == TokenKind::NEWLINE
+      right = Nop.new
+    else
+      right = parse_or
+      end_location = right.end_location || end_location
+    end
+    RangeLiteral.new(exp, right, exclusive).at(location).at_end(end_location)
+  end
+
+  def parse_or : ASTNode
+    location = @token.location
+    left = parse_and
+    while true
+      case @token.type
+      when TokenKind::SPACE
+        next_token
+      when TokenKind::OP_BAR_BAR
+        set_slash_is_regex(true)
+        next_token_skip_space_or_newline
+        right = parse_and
+        left = Or.new(left, right).at(location).at_end(right)
+      else
+        return left
+      end
+    end
+  end
+
+  def parse_and : ASTNode
+    location = @token.location
+    left = parse_equality
+    while true
+      case @token.type
+      when TokenKind::SPACE
+        next_token
+      when TokenKind::OP_AMP_AMP
+        set_slash_is_regex(true)
+        next_token_skip_space_or_newline
+        right = parse_equality
+        left = And.new(left, right).at(location).at_end(right)
+      else
+        return left
+      end
+    end
+  end
+
+  def parse_equality : ASTNode
+    location = @token.location
+    left = parse_cmp
+    while true
+      case @token.type
+      when TokenKind::SPACE
+        next_token
+      when TokenKind::OP_LT, TokenKind::OP_LT_EQ, TokenKind::OP_GT, TokenKind::OP_GT_EQ, TokenKind::OP_LT_EQ_GT
+        method = @token.type.to_s
+        set_slash_is_regex(true)
+        next_token_skip_space_or_newline
+        right = parse_cmp
+        left = Call.new(left, method, [right] of ASTNode).at(location).at_end(right)
+      else
+        return left
+      end
+    end
+  end
+
+  def parse_cmp : ASTNode
+    location = @token.location
+    left = parse_logical_or
+    while true
+      case @token.type
+      when TokenKind::SPACE
+        next_token
+      when TokenKind::OP_EQ_EQ, TokenKind::OP_BANG_EQ, TokenKind::OP_EQ_TILDE, TokenKind::OP_BANG_TILDE, TokenKind::OP_EQ_EQ_EQ
+        method = @token.type.to_s
+        set_slash_is_regex(true)
+        next_token_skip_space_or_newline
+        right = parse_logical_or
+        left = Call.new(left, method, [right] of ASTNode).at(location).at_end(right)
+      else
+        return left
+      end
+    end
+  end
+
+  def parse_logical_or : ASTNode
+    location = @token.location
+    left = parse_logical_and
+    while true
+      case @token.type
+      when TokenKind::SPACE
+        next_token
+      when TokenKind::OP_BAR, TokenKind::OP_CARET
+        method = @token.type.to_s
+        set_slash_is_regex(true)
+        next_token_skip_space_or_newline
+        right = parse_logical_and
+        left = Call.new(left, method, [right] of ASTNode).at(location).at_end(right)
+      else
+        return left
+      end
+    end
+  end
+
+  def parse_logical_and : ASTNode
+    location = @token.location
+    left = parse_shift
+    while true
+      case @token.type
+      when TokenKind::SPACE
+        next_token
+      when TokenKind::OP_AMP
+        method = @token.type.to_s
+        set_slash_is_regex(true)
+        next_token_skip_space_or_newline
+        right = parse_shift
+        left = Call.new(left, method, [right] of ASTNode).at(location).at_end(right)
+      else
+        return left
+      end
+    end
+  end
+
+  def parse_shift : ASTNode
+    location = @token.location
+    left = parse_add_or_sub
+    while true
+      case @token.type
+      when TokenKind::SPACE
+        next_token
+      when TokenKind::OP_LT_LT, TokenKind::OP_GT_GT
+        method = @token.type.to_s
+        set_slash_is_regex(true)
+        next_token_skip_space_or_newline
+        right = parse_add_or_sub
+        left = Call.new(left, method, [right] of ASTNode).at(location).at_end(right)
+      else
+        return left
+      end
+    end
+  end
+
+  def parse_add_or_sub : ASTNode
+    location = @token.location
+    left = parse_mul_or_div
+    while true
+      case @token.type
+      when TokenKind::SPACE
+        next_token
+      when TokenKind::OP_PLUS, TokenKind::OP_MINUS, TokenKind::OP_AMP_PLUS, TokenKind::OP_AMP_MINUS
+        method = @token.type.to_s
+        next_token_skip_space_or_newline
+        right = parse_mul_or_div
+        left = Call.new(left, method, [right] of ASTNode).at(location).at_end(right)
+      else
+        return left
+      end
+    end
+  end
+
+  def parse_mul_or_div : ASTNode
+    location = @token.location
+    left = parse_pow
+    while true
+      case @token.type
+      when TokenKind::SPACE
+        next_token
+      when TokenKind::OP_STAR, TokenKind::OP_SLASH, TokenKind::OP_SLASH_SLASH, TokenKind::OP_PERCENT, TokenKind::OP_AMP_STAR
+        method = @token.type.to_s
+        set_slash_is_regex(true)
+        next_token_skip_space_or_newline
+        right = parse_pow
+        left = Call.new(left, method, [right] of ASTNode).at(location).at_end(right)
+      else
+        return left
+      end
+    end
+  end
+
+  def parse_pow : ASTNode
+    location = @token.location
+    left = parse_prefix
+    while true
+      case @token.type
+      when TokenKind::SPACE
+        next_token
+      when TokenKind::OP_STAR_STAR, TokenKind::OP_AMP_STAR_STAR
+        method = @token.type.to_s
+        set_slash_is_regex(true)
+        next_token_skip_space_or_newline
+        right = parse_pow
+        left = Call.new(left, method, [right] of ASTNode).at(location).at_end(right)
+      else
+        return left
+      end
+    end
+  end
+
+  def parse_prefix : ASTNode
+    case @token.type
+    when TokenKind::OP_BANG
+      location = @token.location
+      next_token_skip_space_or_newline
+      check_void_expression_keyword
+      arg = parse_prefix
+      Not.new(arg).at(location).at_end(arg)
+    when TokenKind::OP_PLUS, TokenKind::OP_MINUS, TokenKind::OP_TILDE
+      location = @token.location
+      method = @token.type.to_s
+      next_token_skip_space_or_newline
+      check_void_expression_keyword
+      arg = parse_prefix
+      Call.new(arg, method).at(location).at_end(arg)
+    else
+      parse_atomic_with_method
+    end
+  end
+
+  def parse_atomic_with_method : ASTNode
+    location = @token.location
+    atomic = parse_atomic
+    parse_atomic_method_suffix(atomic, location)
+  end
+
+  def parse_atomic_method_suffix(atomic : ASTNode, location : Location) : ASTNode
+    res = atomic
+    while true
+      case @token.type
+      when TokenKind::SPACE
+        next_token
+      when TokenKind::OP_PERIOD
+        next_token_skip_space_or_newline
+        if @token.type == TokenKind::INSTANCE_VAR
+          ivar_name = @token.value[1, @token.value.bytesize - 1]
+          res = Call.new(res, ivar_name).at(location)
+          next_token
+          next
+        end
+
+        name = @token.value.empty? ? @token.type.to_s : @token.value
+        next_token
+
+        space_consumed = false
+        if @token.type == TokenKind::SPACE
+          next_token
+          space_consumed = true
+        end
+
+        call_args = preserve_stop_on_do { space_consumed ? parse_call_args_space_consumed : parse_call_args }
+        args = call_args ? (call_args.args || [] of ASTNode) : [] of ASTNode
+        block = call_args ? call_args.block : nil
+        block_arg = call_args ? call_args.block_arg : nil
+        named_args = call_args ? call_args.named_args : nil
+
+        block = parse_block(block, @stop_on_do)
+        res = Call.new(res, name, args, block, block_arg, named_args).at(location)
+      when TokenKind::OP_LSQUARE
+        next_token_skip_space_or_newline
+        call_args = preserve_stop_on_do { parse_call_args_space_consumed(false, true) }
+        skip_space_or_newline
+        check(TokenKind::OP_RSQUARE)
+        next_token
+
+        args = call_args ? (call_args.args || [] of ASTNode) : [] of ASTNode
+        named_args = call_args ? call_args.named_args : nil
+
+        if @token.type == TokenKind::OP_QUESTION
+          method_name = "[]?"
+          next_token_skip_space
+        else
+          method_name = "[]"
+          skip_space
+        end
+
+        res = Call.new(res, method_name, args, nil, nil, named_args).at(location)
+      when TokenKind::OP_LCURLY
+        if res.is_a?(Call) && res.block.nil?
+          res.block = parse_curly_block(nil)
+        else
+          break
+        end
+      else
+        if @token.keyword == Keyword::DEF
+          if res.is_a?(Call) && res.block.nil? && !@stop_on_do
+            res.block = parse_block(nil, @stop_on_do)
+          else
+            break
+          end
+        else
+          break
+        end
+      end
+    end
+    res
+  end
+
+  def parse_atomic : ASTNode
+    location = @token.location
+    case @token.type
+    when TokenKind::OP_LPAREN
+      parse_parenthesized_expression
+    when TokenKind::OP_LSQUARE_RSQUARE
+      parse_empty_array_literal
+    when TokenKind::OP_LSQUARE
+      parse_array_literal
+    when TokenKind::OP_LCURLY
+      parse_hash_or_tuple_literal
+    when TokenKind::NUMBER
+      @wants_regex = false
+      node_and_next_token(NumberLiteral.new(@token.value, @token.number_kind).at(location))
+    when TokenKind::CHAR
+      char_val = @token.value.empty? ? '\0' : @token.value[0]
+      node_and_next_token(CharLiteral.new(char_val).at(location))
+    when TokenKind::STRING
+      node_and_next_token(StringLiteral.new(@token.value).at(location))
+    when TokenKind::DELIMITER_START
+      parse_delimiter
+    when TokenKind::SYMBOL
+      node_and_next_token(SymbolLiteral.new(@token.value).at(location))
+    when TokenKind::OP_DOLLAR_QUESTION
+      node_and_next_token(Global.new("$?").at(location))
+    when TokenKind::OP_DOLLAR_TILDE
+      node_and_next_token(Global.new("$~").at(location))
+    when TokenKind::GLOBAL_MATCH_DATA_INDEX
+      val = @token.value
+      method = "[]"
+      if val.ends_with?('?')
+        method = "[]?"
+        val = val[0, val.bytesize - 1]
+      end
+      node_and_next_token(Call.new(Global.new("$~").at(location), method, [NumberLiteral.new(val, NumberKind::I32)] of ASTNode).at(location))
+    when TokenKind::UNDERSCORE
+      node_and_next_token(Underscore.new.at(location))
+    when TokenKind::INSTANCE_VAR
+      node_and_next_token(InstanceVar.new(@token.value).at(location))
+    when TokenKind::CLASS_VAR
+      node_and_next_token(ClassVar.new(@token.value).at(location))
+    when TokenKind::GLOBAL
+      syntax_error("$global_variables are not supported, use @@class_variables instead", location)
+    when TokenKind::CONST
+      parse_const(false, location)
+    when TokenKind::OP_COLON_COLON
+      next_token_skip_space_or_newline
+      parse_const(true, location)
+    when TokenKind::IDENT
+      if kw = @token.keyword
+        case kw
+        when Keyword::NIL
+          node_and_next_token(NilLiteral.new.at(location))
+        when Keyword::TRUE
+          node_and_next_token(BoolLiteral.new(true).at(location))
+        when Keyword::FALSE
+          node_and_next_token(BoolLiteral.new(false).at(location))
+        when Keyword::IF
+          parse_if
+        when Keyword::UNLESS
+          parse_unless
+        when Keyword::WHILE
+          parse_while
+        when Keyword::UNTIL
+          parse_until
+        when Keyword::CASE
+          parse_case
+        when Keyword::RETURN
+          parse_return
+        when Keyword::BREAK
+          parse_break
+        when Keyword::NEXT
+          parse_next
+        when Keyword::YIELD
+          parse_yield
+        when Keyword::SELF
+          node_and_next_token(Var.new("self").at(location))
+        else
+          parse_var_or_call(location)
+        end
+      else
+        parse_var_or_call(location)
+      end
+    else
+      unexpected_token("site_12")
+    end
+  end
+
+  def parse_var_or_call(location : Location) : ASTNode
+    name = @token.value
+    is_var = var?(name)
+
+    next_token
+
+    call_args = preserve_stop_on_do(@stop_on_do) { parse_call_args(@stop_on_do) }
+    if call_args
+      args = call_args.args || [] of ASTNode
+      block = call_args.block
+      block_arg = call_args.block_arg
+      named_args = call_args.named_args
+      has_parens = call_args.has_parentheses
+      force_call = has_parens || !args.empty? || (named_args ? !named_args.empty? : false) || !block.nil? || !block_arg.nil?
+
+      if is_var && !force_call
+        var = Var.new(name).at(location)
+        return var
+      end
+
+      block = parse_block(block, @stop_on_do)
+      Call.new(nil, name, args, block, block_arg, named_args).at(location)
+    else
+      if is_var
+        Var.new(name).at(location)
+      else
+        Call.new(nil, name).at(location)
+      end
+    end
+  end
+
+  def var?(name : String) : Bool
+    return true if name == "self"
+    i = @var_scopes.size - 1
+    while i >= 0
+      return true if @var_scopes[i].includes?(name)
+      i = i - 1
+    end
+    false
+  end
+
+  def push_var(node : ASTNode) : Nil
+    case node
+    when Var
+      @var_scopes.last.add(node.name)
+    when InstanceVar, ClassVar, Global
+      # not a local var
+    end
+  end
+
+  def push_var_name(name : String) : Nil
+    @var_scopes.last.add(name)
+  end
+
+  def parse_call_args(stop_on_do_after_space : Bool = false) : CallArgs?
+    case @token.type
+    when TokenKind::OP_LCURLY
+      nil
+    when TokenKind::OP_LPAREN
+      args = [] of ASTNode
+      @stop_on_do = false
+      next_token_skip_space_or_newline
+      named_args : Array(NamedArgument)? = nil
+      block_arg : ASTNode? = nil
+
+      while @token.type != TokenKind::OP_RPAREN
+        if @token.type == TokenKind::OP_AMP
+          next_token_skip_space
+          block_arg = parse_op_assign_no_control
+          skip_space_or_newline
+          check(TokenKind::OP_RPAREN)
+          break
+        end
+
+        if named_tuple_start?
+          named_args = parse_named_args(allow_newline: true)
+          check(TokenKind::OP_RPAREN)
+          break
+        end
+
+        arg = parse_call_arg
+        args << arg
+
+        skip_space
+        if @token.type == TokenKind::OP_COMMA
+          next_token_skip_space_or_newline
+        else
+          skip_space_or_newline
+          check(TokenKind::OP_RPAREN)
+          break
+        end
+      end
+      next_token_skip_space
+      CallArgs.new(args, nil, block_arg, named_args, false, token_end_location, true)
+    when TokenKind::SPACE
+      next_token
+      if @token.keyword == Keyword::DO
+        return CallArgs.new(nil, nil, nil, nil, stop_on_do_after_space, token_end_location, false)
+      end
+      parse_call_args_space_consumed
+    else
+      nil
+    end
+  end
+
+  def parse_call_args_space_consumed(allow_curly : Bool = false, allow_beginless_range : Bool = false) : CallArgs?
+    if @token.keyword == Keyword::DO || @token.keyword == Keyword::END || @token.type == TokenKind::EOF
+      return nil
+    end
+
+    case @token.type
+    when TokenKind::OP_AMP
+      return nil if current_char.ascii_whitespace?
+    when TokenKind::OP_PLUS, TokenKind::OP_MINUS
+      return nil if current_char.ascii_whitespace?
+    when TokenKind::OP_LCURLY
+      return nil unless allow_curly
+    when TokenKind::CHAR, TokenKind::STRING, TokenKind::DELIMITER_START,
+         TokenKind::NUMBER, TokenKind::IDENT, TokenKind::SYMBOL,
+         TokenKind::INSTANCE_VAR, TokenKind::CLASS_VAR, TokenKind::CONST, TokenKind::GLOBAL,
+         TokenKind::OP_DOLLAR_TILDE, TokenKind::OP_DOLLAR_QUESTION, TokenKind::GLOBAL_MATCH_DATA_INDEX,
+         TokenKind::OP_LPAREN, TokenKind::OP_BANG, TokenKind::OP_LSQUARE, TokenKind::OP_LSQUARE_RSQUARE,
+         TokenKind::OP_TILDE, TokenKind::UNDERSCORE
+      # valid argument start
+    when TokenKind::OP_STAR, TokenKind::OP_STAR_STAR
+      return nil if current_char.ascii_whitespace?
+    when TokenKind::OP_COLON_COLON
+      return nil if current_char.ascii_whitespace?
+    when TokenKind::OP_PERIOD_PERIOD, TokenKind::OP_PERIOD_PERIOD_PERIOD
+      return nil unless allow_beginless_range
+    else
+      return nil
+    end
+
+    if kw = @token.keyword
+      case kw
+      when Keyword::IF, Keyword::UNLESS, Keyword::WHILE, Keyword::UNTIL, Keyword::RESCUE, Keyword::ENSURE
+        return nil
+      end
+    end
+
+    args = [] of ASTNode
+    @stop_on_do = true
+    named_args : Array(NamedArgument)? = nil
+    block_arg : ASTNode? = nil
+
+    while true
+      if @token.type == TokenKind::OP_AMP
+        next_token_skip_space
+        block_arg = parse_op_assign_no_control
+        break
+      end
+
+      if named_tuple_start?
+        named_args = parse_named_args(allow_newline: false)
+        break
+      end
+
+      arg = parse_call_arg
+      args << arg
+
+      skip_space
+      if @token.type == TokenKind::OP_COMMA
+        next_token_skip_space
+        if @token.type == TokenKind::NEWLINE || @token.type == TokenKind::OP_SEMICOLON || end_token?
+          break
+        end
+      else
+        break
+      end
+    end
+
+    CallArgs.new(args, nil, block_arg, named_args, false, token_end_location, false)
+  end
+
+  def parse_call_arg : ASTNode
+    if @token.type == TokenKind::OP_STAR
+      location = @token.location
+      next_token_skip_space
+      Splat.new(parse_op_assign_no_control).at(location)
+    elsif @token.type == TokenKind::OP_STAR_STAR
+      location = @token.location
+      next_token_skip_space
+      DoubleSplat.new(parse_op_assign_no_control).at(location)
+    else
+      parse_op_assign_no_control
+    end
+  end
+
+  def named_tuple_start? : Bool
+    if @token.type == TokenKind::IDENT || @token.type == TokenKind::CONST
+      if current_char == ':'
+        if @pos + 1 < @source.bytesize && @source.byte_at(@pos + 1) == 58_u8
+          return false
+        end
+        return true
+      end
+    end
+    false
+  end
+
+  def parse_named_args(allow_newline : Bool = false) : Array(NamedArgument)
+    named_args = [] of NamedArgument
+    location = @token.location
+
+    while true
+      if named_tuple_start?
+        name = @token.value
+        next_token_never_a_symbol
+      else
+        unexpected_token("site_13")
+      end
+
+      check(TokenKind::OP_COLON)
+      set_slash_is_regex(true)
+      next_token_skip_space_or_newline
+
+      value = parse_op_assign
+      named_args << NamedArgument.new(name, value).at(location)
+
+      skip_space
+      if @token.type == TokenKind::OP_COMMA
+        next_token_skip_space_or_newline
+        if @token.type == TokenKind::OP_RPAREN || @token.type == TokenKind::OP_RSQUARE || @token.type == TokenKind::OP_AMP
+          break
+        end
+      elsif @token.type == TokenKind::NEWLINE && allow_newline
+        skip_space_or_newline
+        break
+      else
+        break
+      end
+      location = @token.location
+    end
+    named_args
+  end
+
+  def parse_block(existing_block : Block?, stop_on_do : Bool) : Block?
+    if @token.keyword == Keyword::DO
+      return existing_block if stop_on_do
+      parse_block_body(false)
+    else
+      parse_curly_block(existing_block)
+    end
+  end
+
+  def parse_curly_block(existing_block : Block?) : Block?
+    if @token.type == TokenKind::OP_LCURLY
+      parse_block_body(true)
+    else
+      existing_block
+    end
+  end
+
+  def parse_block_body(curly : Bool) : Block
+    location = @token.location
+    block_params = [] of Var
+    splat_index : Int32? = nil
+    param_index = 0
+
+    set_slash_is_regex(true)
+    next_token_skip_space
+
+    if @token.type == TokenKind::OP_BAR
+      next_token_skip_space_or_newline
+      while @token.type != TokenKind::OP_BAR
+        if @token.type == TokenKind::OP_STAR
+          splat_index = param_index
+          next_token_skip_space
+        end
+
+        name = @token.value
+        block_params << Var.new(name).at(@token.location)
+        param_index = param_index + 1
+        next_token_skip_space
+
+        if @token.type == TokenKind::OP_COMMA
+          next_token_skip_space_or_newline
+        else
+          break
+        end
+      end
+      check(TokenKind::OP_BAR)
+      next_token_skip_statement_end
+    else
+      skip_statement_end
+    end
+
+    new_scope = Set(String).new
+    block_params.each { |p| new_scope.add(p.name) }
+    @var_scopes << new_scope
+
+    body = parse_expressions
+    skip_statement_end
+
+    @var_scopes.pop
+
+    if curly
+      check(TokenKind::OP_RCURLY)
+      next_token_skip_space
+    else
+      check_keyword(Keyword::END)
+      next_token_skip_space
+    end
+
+    Block.new(block_params, body, splat_index).at(location)
+  end
+
+  def parse_if(check_end : Bool = true) : ASTNode
+    location = @token.location
+    set_slash_is_regex(true)
+    next_token_skip_space_or_newline
+
+    cond = parse_op_assign_no_control(allow_suffix: false)
+    parse_if_after_condition(cond, location, check_end)
+  end
+
+  def parse_if_after_condition(cond : ASTNode, location : Location, check_end : Bool) : ASTNode
+    set_slash_is_regex(true)
+    skip_statement_end
+
+    a_then = parse_expressions
+    skip_statement_end
+    a_else : ASTNode? = nil
+    if @token.type == TokenKind::IDENT
+      if kw = @token.keyword
+        case kw
+        when Keyword::ELSE
+          next_token_skip_statement_end
+          a_else = parse_expressions
+        when Keyword::ELSIF
+          a_else = parse_if(false)
+        end
+      end
+    end
+
+    if check_end
+      check_keyword(Keyword::END)
+      next_token_skip_space
+    end
+
+    If.new(cond, a_then, a_else).at(location)
+  end
+
+  def parse_unless : ASTNode
+    location = @token.location
+    set_slash_is_regex(true)
+    next_token_skip_space_or_newline
+
+    cond = parse_op_assign_no_control(allow_suffix: false)
+    set_slash_is_regex(true)
+    skip_statement_end
+
+    a_then = parse_expressions
+    skip_statement_end
+    a_else : ASTNode? = nil
+    if @token.keyword == Keyword::ELSE
+      next_token_skip_statement_end
+      a_else = parse_expressions
+    end
+
+    check_keyword(Keyword::END)
+    next_token_skip_space
+
+    Unless.new(cond, a_then, a_else).at(location)
+  end
+
+  def parse_while : ASTNode
+    location = @token.location
+    set_slash_is_regex(true)
+    next_token_skip_space_or_newline
+
+    cond = parse_op_assign_no_control(allow_suffix: false)
+    set_slash_is_regex(true)
+    skip_statement_end
+
+    body = parse_expressions
+    skip_statement_end
+
+    check_keyword(Keyword::END)
+    next_token_skip_space
+
+    While.new(cond, body).at(location)
+  end
+
+  def parse_until : ASTNode
+    location = @token.location
+    set_slash_is_regex(true)
+    next_token_skip_space_or_newline
+
+    cond = parse_op_assign_no_control(allow_suffix: false)
+    set_slash_is_regex(true)
+    skip_statement_end
+
+    body = parse_expressions
+    skip_statement_end
+
+    check_keyword(Keyword::END)
+    next_token_skip_space
+
+    Until.new(cond, body).at(location)
+  end
+
+  def parse_case : ASTNode
+    location = @token.location
+    set_slash_is_regex(true)
+    next_token_skip_space_or_newline
+    while @token.type == TokenKind::OP_SEMICOLON
+      next_token_skip_space
+    end
+    cond : ASTNode? = nil
+    unless @token.keyword == Keyword::WHEN || @token.keyword == Keyword::ELSE || @token.keyword == Keyword::END
+      cond = parse_op_assign_no_control
+      skip_statement_end
+    end
+
+    whens = [] of When
+    a_else : ASTNode? = nil
+    while true
+      case @token.keyword
+      when Keyword::WHEN
+        when_loc = @token.location
+        set_slash_is_regex(true)
+        next_token_skip_space_or_newline
+
+        when_conds = [] of ASTNode
+        while true
+          when_conds << parse_op_assign_no_control
+          skip_space
+          break if when_expression_end
+        end
+
+        when_body = parse_expressions
+        skip_statement_end
+        whens << When.new(when_conds, when_body).at(when_loc)
+      when Keyword::ELSE
+        next_token_skip_statement_end
+        a_else = parse_expressions
+        skip_statement_end
+        check_keyword(Keyword::END)
+        next_token
+        break
+      when Keyword::END
+        next_token
+        break
+      else
+        unexpected_token("expecting when, else or end")
+      end
+    end
+
+    Case.new(cond, whens, a_else, false).at(location)
+  end
+
+  def when_expression_end : Bool
+    set_slash_is_regex(true)
+    if @token.keyword == Keyword::THEN
+      next_token_skip_space_or_newline
+      return true
+    else
+      case @token.type
+      when TokenKind::OP_COMMA
+        next_token_skip_space_or_newline
+      when TokenKind::NEWLINE
+        skip_space_or_newline
+        return true
+      when TokenKind::OP_SEMICOLON
+        skip_statement_end
+        return true
+      else
+        unexpected_token("expecting ',', ';' or '\n'")
+      end
+    end
+    false
+  end
+
+  def parse_return : ASTNode
+    location = @token.location
+    next_token
+    call_args = preserve_stop_on_do { parse_call_args }
+    exp : ASTNode? = nil
+    if call_args
+      if a = call_args.args
+        if !a.empty?
+          exp = a.first
+        end
+      end
+    end
+    Return.new(exp).at(location)
+  end
+
+  def parse_break : ASTNode
+    location = @token.location
+    next_token
+    call_args = preserve_stop_on_do { parse_call_args }
+    exp : ASTNode? = nil
+    if call_args
+      if a = call_args.args
+        if !a.empty?
+          exp = a.first
+        end
+      end
+    end
+    Break.new(exp).at(location)
+  end
+
+  def parse_next : ASTNode
+    location = @token.location
+    next_token
+    call_args = preserve_stop_on_do { parse_call_args }
+    exp : ASTNode? = nil
+    if call_args
+      if a = call_args.args
+        if !a.empty?
+          exp = a.first
+        end
+      end
+    end
+    Next.new(exp).at(location)
+  end
+
+  def parse_yield : ASTNode
+    location = @token.location
+    next_token
+    call_args = preserve_stop_on_do { parse_call_args }
+    exps = [] of ASTNode
+    if call_args
+      if a = call_args.args
+        exps = a
+      end
+    end
+    Yield.new(exps).at(location)
+  end
+
+  def parse_parenthesized_expression : ASTNode
+    location = @token.location
+    set_slash_is_regex(true)
+    next_token_skip_space_or_newline
+
+    if @token.type == TokenKind::OP_RPAREN
+      next_token_skip_space
+      node = Expressions.new([Nop.new] of ASTNode).at(location)
+      node.keyword = Expressions::Keyword::Paren
+      return node
+    end
+
+    exps = [] of ASTNode
+    @stop_on_do = false
+
+    while true
+      exps << parse_expression
+      case @token.type
+      when TokenKind::OP_RPAREN
+        next_token_skip_space
+        break
+      when TokenKind::NEWLINE, TokenKind::OP_SEMICOLON
+        next_token_skip_statement_end
+        if @token.type == TokenKind::OP_RPAREN
+          next_token_skip_space
+          break
+        end
+      else
+        syntax_error("unterminated parenthesized expression", location)
+      end
+    end
+
+    node = Expressions.new(exps).at(location)
+    node.keyword = Expressions::Keyword::Paren
+    node
+  end
+
+  def parse_type_spec : ASTNode
+    parse_path(false, @token.location)
+  end
+
+  def parse_empty_array_literal : ASTNode
+    next_token_skip_space
+    if @token.keyword == Keyword::OF
+      next_token_skip_space_or_newline
+      of_type = parse_type_spec
+      ArrayLiteral.new([] of ASTNode, of_type)
+    else
+      syntax_error("for empty arrays use '[] of ElementType'")
+    end
+  end
+
+  def parse_array_literal : ASTNode
+    location = @token.location
+    set_slash_is_regex(true)
+    next_token_skip_space_or_newline
+    exps = [] of ASTNode
+
+    while @token.type != TokenKind::OP_RSQUARE
+      exp_loc = @token.location
+      if @token.type == TokenKind::OP_STAR
+        next_token_skip_space_or_newline
+        exps << Splat.new(parse_op_assign_no_control).at(exp_loc)
+      else
+        exps << parse_op_assign_no_control
+      end
+
+      skip_space
+      if @token.type == TokenKind::OP_COMMA
+        set_slash_is_regex(true)
+        next_token_skip_space_or_newline
+      else
+        skip_space_or_newline
+        check(TokenKind::OP_RSQUARE)
+        break
+      end
+    end
+    next_token_skip_space
+    of : ASTNode? = nil
+    if @token.keyword == Keyword::OF
+      next_token_skip_space_or_newline
+      of = parse_type_spec
+    end
+
+    ArrayLiteral.new(exps, of).at(location)
+  end
+
+  def parse_hash_or_tuple_literal : ASTNode
+    location = @token.location
+    set_slash_is_regex(true)
+    next_token_skip_space_or_newline
+
+    if @token.type == TokenKind::OP_RCURLY
+      next_token_skip_space
+      of : HashLiteral::Entry? = nil
+      if @token.keyword == Keyword::OF
+        next_token_skip_space_or_newline
+        of_key = parse_type_spec
+        skip_space_or_newline
+        check(TokenKind::OP_EQ_GT)
+        next_token_skip_space_or_newline
+        of_val = parse_type_spec
+        of = HashLiteral::Entry.new(of_key, of_val)
+      end
+      return HashLiteral.new([] of HashLiteral::Entry, of).at(location)
+    end
+
+    if named_tuple_start?
+      return parse_named_tuple(location)
+    end
+
+    first_is_splat = false
+    first_splat_loc = @token.location
+    if @token.type == TokenKind::OP_STAR
+      first_is_splat = true
+      next_token_skip_space_or_newline
+    end
+
+    first_key = parse_op_assign_no_control
+    if first_is_splat
+      first_key = Splat.new(first_key).at(first_splat_loc)
+    end
+
+    case @token.type
+    when TokenKind::OP_COMMA
+      set_slash_is_regex(true)
+      next_token_skip_space_or_newline
+      return parse_tuple(first_key, location)
+    when TokenKind::OP_RCURLY
+      next_token_skip_space
+      return TupleLiteral.new([first_key] of ASTNode).at(location)
+    when TokenKind::OP_EQ_GT
+      set_slash_is_regex(true)
+      next_token_skip_space_or_newline
+      return parse_hash_literal(first_key, location)
+    else
+      unexpected_token("site_14")
+    end
+  end
+
+  def parse_tuple(first_exp : ASTNode, location : Location) : ASTNode
+    exps = [first_exp] of ASTNode
+    while @token.type != TokenKind::OP_RCURLY
+      exp_loc = @token.location
+      if @token.type == TokenKind::OP_STAR
+        next_token_skip_space_or_newline
+        exps << Splat.new(parse_op_assign_no_control).at(exp_loc)
+      else
+        exps << parse_op_assign_no_control
+      end
+
+      skip_space
+      if @token.type == TokenKind::OP_COMMA
+        next_token_skip_space_or_newline
+      else
+        skip_space_or_newline
+        check(TokenKind::OP_RCURLY)
+        break
+      end
+    end
+    next_token_skip_space
+    TupleLiteral.new(exps).at(location)
+  end
+
+  def parse_named_tuple(location : Location) : ASTNode
+    entries = [] of NamedTupleLiteral::Entry
+    first_key = @token.value
+    next_token_never_a_symbol
+    set_slash_is_regex(true)
+    next_token_skip_space
+
+    first_val = parse_op_assign
+    skip_space_or_newline
+    entries << NamedTupleLiteral::Entry.new(first_key, first_val)
+
+    if @token.type == TokenKind::OP_COMMA
+      next_token_skip_space_or_newline
+      while @token.type != TokenKind::OP_RCURLY
+        key = @token.value
+        next_token_never_a_symbol
+        set_slash_is_regex(true)
+        next_token_skip_space
+
+        val = parse_op_assign
+        entries << NamedTupleLiteral::Entry.new(key, val)
+        skip_space_or_newline
+        if @token.type == TokenKind::OP_COMMA
+          next_token_skip_space_or_newline
+        else
+          break
+        end
+      end
+    end
+    check(TokenKind::OP_RCURLY)
+    next_token_skip_space
+    NamedTupleLiteral.new(entries).at(location)
+  end
+
+  def parse_hash_literal(first_key : ASTNode, location : Location) : ASTNode
+    first_val = parse_op_assign
+    entries = [HashLiteral::Entry.new(first_key, first_val)] of HashLiteral::Entry
+
+    skip_space_or_newline
+    if @token.type == TokenKind::OP_COMMA
+      set_slash_is_regex(true)
+      next_token_skip_space_or_newline
+      while @token.type != TokenKind::OP_RCURLY
+        key = parse_op_assign_no_control
+        skip_space_or_newline
+        check(TokenKind::OP_EQ_GT)
+        set_slash_is_regex(true)
+        next_token_skip_space_or_newline
+        val = parse_op_assign
+        entries << HashLiteral::Entry.new(key, val)
+        skip_space
+        if @token.type == TokenKind::OP_COMMA
+          set_slash_is_regex(true)
+          next_token_skip_space_or_newline
+        else
+          skip_space_or_newline
+          check(TokenKind::OP_RCURLY)
+          break
+        end
+      end
+    end
+    check(TokenKind::OP_RCURLY)
+    next_token_skip_space
+    HashLiteral.new(entries).at(location)
+  end
+
+  def parse_const(global : Bool, location : Location) : ASTNode
+    names = [@token.value] of String
+    next_token
+
+    while @token.type == TokenKind::OP_COLON_COLON
+      next_token
+      if @token.type == TokenKind::CONST
+        names << @token.value
+        next_token
+      else
+        unexpected_token("site_15")
+      end
+    end
+
+    Path.new(names, global).at(location)
+  end
+
+  def parse_path(global : Bool, location : Location) : Path
+    names = [@token.value] of String
+    next_token
+    while @token.type == TokenKind::OP_COLON_COLON
+      next_token
+      if @token.type == TokenKind::CONST
+        names << @token.value
+        next_token
+      else
+        unexpected_token("site_16")
+      end
+    end
+    Path.new(names, global).at(location)
+  end
+
+  def parse_delimiter : ASTNode
+    location = @token.location
+    delimiter_state = @token.delimiter_state
+    check(TokenKind::DELIMITER_START)
+
+    next_string_token(delimiter_state)
+    delimiter_state = @token.delimiter_state
+
+    pieces = [] of Piece
+    while true
+      case @token.type
+      when TokenKind::STRING
+        pieces << Piece.new(@token.value, @token.line_number)
+      when TokenKind::INTERPOLATION_START
+        next_token_skip_space_or_newline
+        interp_exp = parse_expression
+        skip_space_or_newline
+        check(TokenKind::OP_RCURLY)
+        pieces << Piece.new(interp_exp, @token.line_number)
+      when TokenKind::DELIMITER_END, TokenKind::EOF
+        break
+      end
+      next_string_token(delimiter_state)
+      delimiter_state = @token.delimiter_state
+    end
+    next_token
+
+    has_interp = false
+    pieces.each do |p|
+      if p.value.is_a?(ASTNode)
+        has_interp = true
+      end
+    end
+
+    if has_interp
+      nodes = [] of ASTNode
+      pieces.each do |p|
+        val = p.value
+        if val.is_a?(String)
+          nodes << StringLiteral.new(val)
+        elsif val.is_a?(ASTNode)
+          nodes << val
+        end
+      end
+      StringInterpolation.new(nodes).at(location)
+    else
+      str = ""
+      pieces.each do |p|
+        val = p.value
+        if val.is_a?(String)
+          str = str + val
+        end
+      end
+      if delimiter_state.kind == DelimiterKind::REGEX
+        RegexLiteral.new(StringLiteral.new(str)).at(location)
+      else
+        StringLiteral.new(str).at(location)
+      end
+    end
+  end
+
+  def check(kind : TokenKind) : Nil
+    if @token.type != kind
+      syntax_error("expecting token '#{kind}', not '#{@token.type}'", @token.location)
+    end
+  end
+
+  def check_keyword(kw : Keyword) : Nil
+    if @token.keyword != kw
+      syntax_error("expecting keyword '#{kw}', not '#{@token.type}'", @token.location)
+    end
+  end
+
+  def unexpected_token(msg : String? = nil) : NoReturn
+    token_str = @token.type == TokenKind::EOF ? "EOF" : @token.type.to_s
+    if m = msg
+      syntax_error("unexpected token: #{token_str} (#{m})", @token.location)
+    else
+      syntax_error("unexpected token: #{token_str}", @token.location)
+    end
+  end
+
+  def check_void_expression_keyword : Nil
+    if kw = @token.keyword
+      case kw
+      when Keyword::BREAK, Keyword::NEXT, Keyword::RETURN
+        syntax_error("void value expression", @token.location)
+      end
+    end
+  end
+
+  def syntax_error(msg : String, loc : Location? = nil) : NoReturn
+    l = loc || @token.location
+    puts "SYNTAX ERROR: " + msg + " at " + l.line_number.to_s + ":" + l.column_number.to_s
+    ex = SyntaxException.new(msg, l.line_number, l.column_number, l.filename)
+    raise ex.to_s
+  end
+end

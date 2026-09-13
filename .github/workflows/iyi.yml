@@ -575,6 +575,20 @@ jobs:
       - name: The dependency floor
         run: bash bench/dependency_floor.sh
 
+      # The self-hosting front end, checked against the front end iyi is still
+      # bootstrapped from (BOOTSTRAP.md). Each of these compares what the iyi
+      # code produces against what the Crystal code produces on the same input
+      # and requires them identical, so a divergence fails here rather than
+      # being discovered when a stage is switched over.
+      - name: The selfhost lexer matches the front end it replaces
+        run: bash bench/selfhost_lexer_exercise.sh
+
+      - name: The selfhost AST and visitors hold their shape
+        run: bash bench/selfhost_ast_exercise.sh
+
+      - name: The selfhost parser matches the front end it replaces
+        run: bash bench/selfhost_parser_exercise.sh
+
       # What a kernel thread costs that floor, measured before anything is
       # designed on one (GC_DESIGN.md Stages 4, 7, 8, 9; III.4.7's `Share`):
       # raw `clone`, a `tgkill` stop-the-world, a futex join, and the

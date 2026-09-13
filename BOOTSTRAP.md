@@ -8,20 +8,29 @@ and `bash bench/dependency_floor.sh`, not estimated.
 
 ## Where this actually stands
 
-`src/compiler` is **109,825 lines of Crystal and 12,617 lines of iyi**. The iyi
-side is the lexer, the token, the AST, the visitor and transformer, the four
-foundation files, and the LLVM bindings:
+`src/compiler` is **109,825 lines of Crystal and 14,409 lines of iyi**. The iyi
+side is the lexer, the token, the AST, the visitor and transformer, the parser's
+expression core, the four foundation files, and the LLVM bindings:
 
 | in iyi | lines | proved by |
 |---|---|---|
 | `syntax/lexer.iyi`, `syntax/token.iyi` | 3,103 | `bench/selfhost_lexer_exercise.sh`: 42 fixtures, 21,034 tokens identical to the Crystal front end |
 | `syntax/ast.iyi`, `visitor.iyi`, `transformer.iyi` | 7,096 | `bench/selfhost_ast_exercise.sh`, five guarded mutation proofs |
-| `llvm/*.iyi` | 2,296 | `bench/selfhost_llvm_exercise.sh`: a real object file emitted from iyi code, linked against a C driver, run |
+| `syntax/parser.iyi` (expressions only) | 1,803 | `bench/selfhost_parser_exercise.sh`: 15 fixtures, 1,066 normalised nodes identical to the Crystal front end |
+| `llvm/*.iyi` | 2,285 | `bench/selfhost_llvm_exercise.sh`: a real object file emitted from iyi code, linked against a C driver, run |
 | `foundation/*.iyi` | 122 | compiled by the above |
 
-What is **not** in iyi: the parser, the normalizer, semantic analysis, the type
-system, the macro engine, the artifact format, the formatter, codegen, the
-command driver, the daemon, and platform support. That is the 109,825.
+What is **not** in iyi: the normalizer, semantic analysis, the type system, the
+macro engine, the artifact format, the formatter, codegen, the command driver,
+the daemon, and platform support. That is the 109,825.
+
+The parser is the one thing in between. Its expression core is ported, 1,803
+lines of iyi against the 7,600 of `src/compiler/iyi/syntax/parser.cr`, and
+`bench/selfhost_parser_exercise.sh` requires every one of fifteen syntax
+fixtures to produce a normalised tree identical to the frontend's, 1,066 nodes
+in all. Declarations, macros and type grammar are not ported, and nothing in
+the build calls the iyi parser yet: it is checked against the Crystal one, not
+used in place of it. Porting the rest is what closes stage one.
 
 ## The stages
 

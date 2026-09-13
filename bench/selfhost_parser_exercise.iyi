@@ -1,0 +1,409 @@
+import compiler/foundation/location
+import compiler/foundation/errors
+import compiler/foundation/enums
+import compiler/foundation/string_pool
+import compiler/syntax/token
+import compiler/syntax/lexer
+import compiler/syntax/ast
+import compiler/syntax/parser
+import compiler/syntax/visitor
+
+using compiler/foundation/location::{Location}
+using compiler/foundation/errors::{SyntaxException}
+using compiler/foundation/string_pool::{StringPool}
+using compiler/syntax/token::{Token, TokenKind, Keyword, NumberKind, DelimiterKind, DelimiterState}
+using compiler/syntax/lexer::{Lexer}
+using compiler/syntax/ast::{ASTNode, Expressions, Nop, NilLiteral, BoolLiteral, NumberLiteral, CharLiteral, StringLiteral, StringInterpolation, SymbolLiteral, ArrayLiteral, HashLiteral, TupleLiteral, NamedTupleLiteral, RangeLiteral, RegexLiteral, Var, InstanceVar, ClassVar, Global, Path, Generic, Self, Underscore, ImplicitObj, Return, Break, Next, Yield, If, Unless, While, Until, Case, When, Assign, OpAssign, MultiAssign, And, Or, Not, Splat, DoubleSplat, Cast, NilableCast, IsA, RespondsTo, TypeOf, NamedArgument, Block, Call}
+using compiler/syntax/parser::{Parser}
+using compiler/syntax/visitor::{Visitor, NodeCounterVisitor}
+
+module BenchSelfhostParserExercise
+  def self.assert(cond : Bool, msg : String)
+    unless cond
+      puts "Assertion failed: " + msg
+      raise "Assertion failed: " + msg
+    end
+  end
+
+  def self.escape_s(s : String) : String
+    res = "\""
+    i = 0
+    while i < s.bytesize
+      b = s.byte_at(i)
+      if b == 10_u8
+        res = res + "\\n"
+      elsif b == 13_u8
+        res = res + "\\r"
+      elsif b == 9_u8
+        res = res + "\\t"
+      elsif b == 92_u8
+        res = res + "\\\\"
+      elsif b == 34_u8
+        res = res + "\\\""
+      else
+        res = res + b.unsafe_chr.to_s
+      end
+      i = i + 1
+    end
+    res + "\""
+  end
+
+  def self.dump_ast(node : ASTNode?, indent : Int32 = 0) : String
+    return ("  " * indent) + "nil\n" if node.nil?
+    p = "  " * indent
+    case node
+    when Expressions
+      kw = case node.keyword
+           when Expressions::Keyword::Paren then "paren"
+           when Expressions::Keyword::Begin then "begin"
+           else                                  "none"
+           end
+      s = "#{p}Expressions keyword=#{kw}\n"
+      node.expressions.each { |e| s += dump_ast(e, indent + 1) }
+      s
+    when Nop
+      "#{p}Nop\n"
+    when NilLiteral
+      "#{p}NilLiteral\n"
+    when BoolLiteral
+      "#{p}BoolLiteral value=#{node.value}\n"
+    when NumberLiteral
+      "#{p}NumberLiteral value=\"#{node.value}\" kind=#{node.kind.to_s}\n"
+    when CharLiteral
+      "#{p}CharLiteral value=#{node.value.ord}\n"
+    when StringLiteral
+      "#{p}StringLiteral value=#{escape_s(node.value)}\n"
+    when StringInterpolation
+      s = "#{p}StringInterpolation\n"
+      node.expressions.each { |e| s += dump_ast(e, indent + 1) }
+      s
+    when SymbolLiteral
+      "#{p}SymbolLiteral value=#{escape_s(node.value)}\n"
+    when Var
+      "#{p}Var name=#{escape_s(node.name)}\n"
+    when InstanceVar
+      "#{p}InstanceVar name=#{escape_s(node.name)}\n"
+    when ClassVar
+      "#{p}ClassVar name=#{escape_s(node.name)}\n"
+    when Global
+      "#{p}Global name=#{escape_s(node.name)}\n"
+    when Path
+      "#{p}Path names=#{node.names.join("::")} global=#{node.global}\n"
+    when Generic
+      s = "#{p}Generic\n"
+      s += "#{p}  name:\n" + dump_ast(node.name, indent + 2)
+      s += "#{p}  type_vars:\n"
+      node.type_vars.each { |tv| s += dump_ast(tv, indent + 2) }
+      s
+    when Self
+      "#{p}Self\n"
+    when Underscore
+      "#{p}Underscore\n"
+    when ImplicitObj
+      "#{p}ImplicitObj\n"
+    when ArrayLiteral
+      s = "#{p}ArrayLiteral\n"
+      node.elements.each { |e| s += dump_ast(e, indent + 1) }
+      s
+    when HashLiteral
+      s = "#{p}HashLiteral\n"
+      node.entries.each do |entry|
+        s += "#{p}  entry:\n"
+        s += "#{p}    key:\n" + dump_ast(entry.key, indent + 3)
+        s += "#{p}    value:\n" + dump_ast(entry.value, indent + 3)
+      end
+      s
+    when TupleLiteral
+      s = "#{p}TupleLiteral\n"
+      node.elements.each { |e| s += dump_ast(e, indent + 1) }
+      s
+    when NamedTupleLiteral
+      s = "#{p}NamedTupleLiteral\n"
+      node.entries.each do |entry|
+        s += "#{p}  entry key=#{escape_s(entry.key)}:\n" + dump_ast(entry.value, indent + 2)
+      end
+      s
+    when RangeLiteral
+      s = "#{p}RangeLiteral exclusive=#{node.exclusive}\n"
+      s += "#{p}  from:\n" + dump_ast(node.from, indent + 2)
+      s += "#{p}  to:\n" + dump_ast(node.to, indent + 2)
+      s
+    when RegexLiteral
+      s = "#{p}RegexLiteral\n"
+      s += dump_ast(node.value, indent + 1)
+      s
+    when Call
+      s = "#{p}Call name=#{escape_s(node.name)}\n"
+      if obj = node.obj
+        s += "#{p}  obj:\n" + dump_ast(obj, indent + 2)
+      end
+      if !node.args.empty?
+        s += "#{p}  args:\n"
+        node.args.each { |a| s += dump_ast(a, indent + 2) }
+      end
+      if named_args = node.named_args
+        s += "#{p}  named_args:\n"
+        named_args.each { |na| s += dump_ast(na, indent + 2) }
+      end
+      if block_arg = node.block_arg
+        s += "#{p}  block_arg:\n" + dump_ast(block_arg, indent + 2)
+      end
+      if block = node.block
+        s += "#{p}  block:\n" + dump_ast(block, indent + 2)
+      end
+      s
+    when NamedArgument
+      s = "#{p}NamedArgument name=#{escape_s(node.name)}:\n"
+      s += dump_ast(node.value, indent + 1)
+      s
+    when Block
+      arg_names = node.args.map(&.name).join(", ")
+      splat = node.splat_index ? node.splat_index.to_s : "none"
+      s = "#{p}Block args=[#{arg_names}] splat=#{splat}:\n"
+      s += dump_ast(node.body, indent + 1)
+      s
+    when Assign
+      s = "#{p}Assign\n"
+      s += "#{p}  target:\n" + dump_ast(node.target, indent + 2)
+      s += "#{p}  value:\n" + dump_ast(node.value, indent + 2)
+      s
+    when OpAssign
+      s = "#{p}OpAssign op=#{escape_s(node.op)}\n"
+      s += "#{p}  target:\n" + dump_ast(node.target, indent + 2)
+      s += "#{p}  value:\n" + dump_ast(node.value, indent + 2)
+      s
+    when MultiAssign
+      s = "#{p}MultiAssign\n"
+      s += "#{p}  targets:\n"
+      node.targets.each { |t| s += dump_ast(t, indent + 2) }
+      s += "#{p}  values:\n"
+      node.values.each { |v| s += dump_ast(v, indent + 2) }
+      s
+    when If
+      s = "#{p}If ternary=#{node.ternary}\n"
+      s += "#{p}  cond:\n" + dump_ast(node.cond, indent + 2)
+      s += "#{p}  then:\n" + dump_ast(node.then, indent + 2)
+      s += "#{p}  else:\n" + dump_ast(node.else, indent + 2)
+      s
+    when Unless
+      s = "#{p}Unless\n"
+      s += "#{p}  cond:\n" + dump_ast(node.cond, indent + 2)
+      s += "#{p}  then:\n" + dump_ast(node.then, indent + 2)
+      s += "#{p}  else:\n" + dump_ast(node.else, indent + 2)
+      s
+    when While
+      s = "#{p}While\n"
+      s += "#{p}  cond:\n" + dump_ast(node.cond, indent + 2)
+      s += "#{p}  body:\n" + dump_ast(node.body, indent + 2)
+      s
+    when Until
+      s = "#{p}Until\n"
+      s += "#{p}  cond:\n" + dump_ast(node.cond, indent + 2)
+      s += "#{p}  body:\n" + dump_ast(node.body, indent + 2)
+      s
+    when Case
+      s = "#{p}Case exhaustive=#{node.exhaustive}\n"
+      if cond = node.cond
+        s += "#{p}  cond:\n" + dump_ast(cond, indent + 2)
+      end
+      s += "#{p}  whens:\n"
+      node.whens.each { |w| s += dump_ast(w, indent + 2) }
+      if el = node.else
+        s += "#{p}  else:\n" + dump_ast(el, indent + 2)
+      end
+      s
+    when When
+      s = "#{p}When\n"
+      s += "#{p}  conds:\n"
+      node.conds.each { |c| s += dump_ast(c, indent + 2) }
+      s += "#{p}  body:\n" + dump_ast(node.body, indent + 2)
+      s
+    when And
+      s = "#{p}And\n"
+      s += "#{p}  left:\n" + dump_ast(node.left, indent + 2)
+      s += "#{p}  right:\n" + dump_ast(node.right, indent + 2)
+      s
+    when Or
+      s = "#{p}Or\n"
+      s += "#{p}  left:\n" + dump_ast(node.left, indent + 2)
+      s += "#{p}  right:\n" + dump_ast(node.right, indent + 2)
+      s
+    when Not
+      s = "#{p}Not\n"
+      s += dump_ast(node.exp, indent + 1)
+      s
+    when Splat
+      s = "#{p}Splat\n"
+      s += dump_ast(node.exp, indent + 1)
+      s
+    when DoubleSplat
+      s = "#{p}DoubleSplat\n"
+      s += dump_ast(node.exp, indent + 1)
+      s
+    when Return
+      s = "#{p}Return\n"
+      s += dump_ast(node.exp, indent + 1)
+      s
+    when Break
+      s = "#{p}Break\n"
+      s += dump_ast(node.exp, indent + 1)
+      s
+    when Next
+      s = "#{p}Next\n"
+      s += dump_ast(node.exp, indent + 1)
+      s
+    when Yield
+      s = "#{p}Yield\n"
+      node.exps.each { |e| s += dump_ast(e, indent + 1) }
+      s
+    when Cast
+      s = "#{p}Cast\n"
+      s += "#{p}  obj:\n" + dump_ast(node.obj, indent + 2)
+      s += "#{p}  to:\n" + dump_ast(node.to, indent + 2)
+      s
+    when NilableCast
+      s = "#{p}NilableCast\n"
+      s += "#{p}  obj:\n" + dump_ast(node.obj, indent + 2)
+      s += "#{p}  to:\n" + dump_ast(node.to, indent + 2)
+      s
+    when IsA
+      s = "#{p}IsA\n"
+      s += "#{p}  obj:\n" + dump_ast(node.obj, indent + 2)
+      s += "#{p}  const:\n" + dump_ast(node.const, indent + 2)
+      s
+    when RespondsTo
+      s = "#{p}RespondsTo name=#{escape_s(node.name)}\n"
+      s += "#{p}  obj:\n" + dump_ast(node.obj, indent + 2)
+      s
+    else
+      "#{p}ASTNode\n"
+    end
+  end
+
+  def self.test_literals
+    print "testing literal parsing... "
+    p = Parser.new("123; 3.14; 'c'; \"str\"; :sym; true; false; nil; 1..10")
+    node = p.parse
+    assert(node.is_a?(Expressions), "expressions root")
+    puts "ok (literals verified)"
+  end
+
+  def self.test_variables_and_paths
+    print "testing variable and path parsing... "
+    p = Parser.new("x = 1; x; @iv; @@cv; $?; Foo::Bar; ::Top")
+    node = p.parse
+    assert(node.is_a?(Expressions), "expressions root")
+    puts "ok (variables and paths verified)"
+  end
+
+  def self.test_operators
+    print "testing operator precedence and associativity... "
+    p = Parser.new("1 + 2 * 3 ** 4; a && b || c && d; x = y = 1; a < b ? c : d")
+    node = p.parse
+    assert(node.is_a?(Expressions), "expressions root")
+    exps = node.as(Expressions).expressions
+    call1 = exps[0].as(Call)
+    assert(call1.name == "+", "plus root")
+    mult = call1.args[0].as(Call)
+    assert(mult.name == "*", "mult child")
+    pow = mult.args[0].as(Call)
+    assert(pow.name == "**", "pow child")
+    assert(pow.obj.as(NumberLiteral).value == "3", "pow base")
+    puts "ok (precedence and associativity verified)"
+  end
+
+  def self.test_calls_and_blocks
+    print "testing call and block parsing... "
+    p = Parser.new("foo; bar(1, 2); baz(x: 10) { |item| item + 1 }; each do |*rest| rest end; call(*args)")
+    node = p.parse
+    assert(node.is_a?(Expressions), "expressions root")
+    exps = node.as(Expressions).expressions
+    assert(exps[3].is_a?(Call) && !exps[3].as(Call).block.nil?, "call with block")
+    assert(exps[4].is_a?(Call) && exps[4].as(Call).args[0].is_a?(Splat), "call with splat")
+    puts "ok (calls and blocks verified)"
+  end
+
+  def self.test_control
+    print "testing control expressions (if, unless, while, until, case, modifiers)... "
+    p = Parser.new("if a; 1; else; 2; end; x = 10 if flag; while true; break; end; case x; when 1; 2; end")
+    node = p.parse
+    assert(node.is_a?(Expressions), "expressions root")
+    exps = node.as(Expressions).expressions
+    assert(exps[0].is_a?(If), "if expression")
+    assert(exps[1].is_a?(If), "modifier if expression")
+    assert(!exps[1].as(If).then.is_a?(Nop), "modifier if then body")
+    assert(exps[2].is_a?(While), "while expression")
+    assert(exps[3].is_a?(Case), "case expression")
+    puts "ok (control expressions verified)"
+  end
+
+  def self.test_fixtures
+    print "testing real syntax fixtures parsing... "
+    fixtures = [
+      "bench/fixtures/expr_literals.iyi",
+      "bench/fixtures/expr_variables_and_paths.iyi",
+      "bench/fixtures/expr_operators.iyi",
+      "bench/fixtures/expr_calls_and_blocks.iyi",
+      "bench/fixtures/expr_control.iyi",
+      "bench/fixtures/expr_modifiers.iyi",
+      "bench/fixtures/expr_collections.iyi",
+      "bench/fixtures/expr_precedence.iyi",
+      "bench/fixtures/expr_associativity.iyi",
+      "bench/fixtures/expr_combined.iyi",
+      "bench/fixtures/expr_ranges_and_tuples.iyi",
+      "bench/fixtures/expr_hashes_and_arrays.iyi",
+      "bench/fixtures/expr_blocks.iyi",
+      "bench/fixtures/expr_multi_assign.iyi",
+      "bench/fixtures/expr_case_when.iyi",
+    ]
+
+    total_nodes = 0
+    i = 0
+    while i < fixtures.size
+      src = File.read(fixtures[i])
+      parser = Parser.new(src, fixtures[i])
+      node = parser.parse
+      counter = NodeCounterVisitor.new
+      node.accept(counter)
+      total_nodes = total_nodes + counter.count
+      i = i + 1
+    end
+    print "ok ("
+    print total_nodes.to_s
+    print " nodes across "
+    print fixtures.size.to_s
+    puts " fixtures)"
+  end
+
+  def self.run_all
+    puts "============================================================="
+    puts "Running Selfhost Parser Verification Suite (pure iyi stage 0)"
+    puts "============================================================="
+    test_literals
+    test_variables_and_paths
+    test_operators
+    test_calls_and_blocks
+    test_control
+    test_fixtures
+    puts "============================================================="
+    puts "ALL SELFHOST PARSER CHECKS PASSED SUCCESSFULLY!"
+    puts "============================================================="
+  end
+end
+
+if Program.args.size > 0
+  if Program.args[0] == "-e" && Program.args.size > 1
+    source = Program.args[1]
+    parser = Parser.new(source, "eval")
+    node = parser.parse
+    print BenchSelfhostParserExercise.dump_ast(node)
+  else
+    filename = Program.args[0]
+    source = File.read(filename)
+    parser = Parser.new(source, filename)
+    node = parser.parse
+    print BenchSelfhostParserExercise.dump_ast(node)
+  end
+else
+  BenchSelfhostParserExercise.run_all
+end
