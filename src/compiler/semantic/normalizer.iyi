@@ -3,6 +3,7 @@ module compiler/semantic/normalizer
 import compiler/syntax/ast
 import compiler/syntax/transformer
 import compiler/syntax/visitor
+import std/digest
 
 using compiler/syntax/ast::{
   ASTNode, Alias, And, Arg, ArrayLiteral, Assign, Block, BoolLiteral,
@@ -37,11 +38,22 @@ pub class NormalizerProgram
   end
 
   def new_temp_var_name(node : ASTNode) : String
-    new_temp_var_name("__temp_")
+    prefix = "__temp_"
+    if loc = node.location
+      fn = loc.filename
+      if !fn.empty?
+        prefix = "__temp_#{Std::Digest::MD5.hexdigest(fn)[0, 8]}_"
+      end
+    end
+    new_temp_var_name(prefix)
   end
 
   def new_temp_var(node : ASTNode? = nil) : Var
-    Var.new(new_temp_var_name("__temp_"))
+    if n = node
+      Var.new(new_temp_var_name(n))
+    else
+      Var.new(new_temp_var_name("__temp_"))
+    end
   end
 
   def new_temp_var(prefix : String) : Var
