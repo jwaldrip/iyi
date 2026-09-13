@@ -589,6 +589,9 @@ jobs:
       - name: The selfhost parser matches the front end it replaces
         run: bash bench/selfhost_parser_exercise.sh
 
+      - name: The selfhost normalizer rewrites what the front end rewrites
+        run: bash bench/selfhost_normalizer_exercise.sh
+
       # What a kernel thread costs that floor, measured before anything is
       # designed on one (GC_DESIGN.md Stages 4, 7, 8, 9; III.4.7's `Share`):
       # raw `clone`, a `tgkill` stop-the-world, a futex join, and the

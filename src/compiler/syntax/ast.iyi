@@ -2592,6 +2592,7 @@ pub class IsA < ASTNode
     isa.error_construct = @error_construct
     isa
   end
+
   def accept_children(visitor) : Nil
     @obj.accept(visitor)
     @const.accept(visitor)
@@ -2762,14 +2763,15 @@ pub class Block < ASTNode
   def clone_without_location : self
     cloned_args = @args.map { |a| a.clone.as(Var) }
     cloned_unpacks = if u = @unpacks
-      cu = Hash(Int32, Expressions).new
-      u.each { |k, v| cu[k] = v.clone.as(Expressions) }
-      cu
-    else
-      nil
-    end
+                       cu = Hash(Int32, Expressions).new
+                       u.each { |k, v| cu[k] = v.clone.as(Expressions) }
+                       cu
+                     else
+                       nil
+                     end
     Block.new(cloned_args, @body.clone, @splat_index, cloned_unpacks)
   end
+
   def accept_children(visitor) : Nil
     @args.each { |a| a.accept(visitor) }
     @body.accept(visitor)
@@ -3235,6 +3237,7 @@ pub class Def < ASTNode
   def uses_block_arg? : Bool
     @uses_block_arg
   end
+
   def initialize(
     @name : String = "",
     @args : Array(Arg) = [] of Arg,
