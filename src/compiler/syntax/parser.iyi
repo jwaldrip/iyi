@@ -29,7 +29,7 @@ using compiler/foundation/errors::{SyntaxException}
 using compiler/foundation/string_pool::{StringPool}
 using compiler/syntax/token::{Token, TokenKind, Keyword, NumberKind, DelimiterKind, DelimiterState}
 using compiler/syntax/lexer::{Lexer}
-using compiler/syntax/ast::{ASTNode, Expressions, Nop, NilLiteral, BoolLiteral, NumberLiteral, CharLiteral, StringLiteral, StringInterpolation, SymbolLiteral, ArrayLiteral, HashLiteral, TupleLiteral, NamedTupleLiteral, RangeLiteral, RegexLiteral, Var, InstanceVar, ClassVar, Global, Path, Generic, Self, Underscore, ImplicitObj, Return, Break, Next, Yield, If, Unless, While, Until, Case, When, Assign, OpAssign, MultiAssign, And, Or, Not, Splat, DoubleSplat, Cast, NilableCast, IsA, RespondsTo, TypeOf, NamedArgument, Block, Call, Def, Arg, ClassDef, ModuleDef, EnumDef, Alias, Include, Extend, TraitDef, ImplDef, AssocTypeDecl, AnnotationDef, Annotation, TypeDeclaration, UninitializedVar, VisibilityModifier, LibDef, FunDef, TypeDef, CStructOrUnionDef, ExternalVar, ProcNotation, Union, Metaclass, Visibility, ModuleHeader, SizeOf, InstanceSizeOf, AlignOf, InstanceAlignOf, OffsetOf, PointerOf, Defer, Recover}
+using compiler/syntax/ast::{ASTNode, Expressions, Nop, NilLiteral, BoolLiteral, NumberLiteral, CharLiteral, StringLiteral, StringInterpolation, SymbolLiteral, ArrayLiteral, HashLiteral, TupleLiteral, NamedTupleLiteral, RangeLiteral, RegexLiteral, Var, InstanceVar, ClassVar, Global, Path, Generic, Self, Underscore, ImplicitObj, Return, Break, Next, Yield, If, Unless, While, Until, Case, When, Assign, OpAssign, MultiAssign, And, Or, Not, Splat, DoubleSplat, Cast, NilableCast, IsA, RespondsTo, TypeOf, NamedArgument, Block, Call, Def, Arg, ClassDef, ModuleDef, EnumDef, Alias, Include, Extend, TraitDef, ImplDef, AssocTypeDecl, AnnotationDef, Annotation, TypeDeclaration, UninitializedVar, VisibilityModifier, LibDef, FunDef, TypeDef, CStructOrUnionDef, ExternalVar, ProcNotation, Union, Metaclass, Visibility, ModuleHeader, SizeOf, InstanceSizeOf, AlignOf, InstanceAlignOf, OffsetOf, PointerOf, Defer, Recover, ImportDecl, UsingDecl, Propagate}
 
 pub struct CallArgs
   property args : Array(ASTNode)?
@@ -793,12 +793,34 @@ pub class Parser < Lexer
     parse_atomic_method_suffix(atomic, location)
   end
 
+  def lookahead_period? : Bool
+    old_pos = @pos
+    old_line = @line_number
+    old_column = @column_number
+    old_token = Token.new
+    old_token.copy_from(@token)
+    next_token_skip_space_or_newline
+    is_period = @token.type == TokenKind::OP_PERIOD
+    @pos = old_pos
+    @line_number = old_line
+    @column_number = old_column
+    @token.copy_from(old_token)
+    is_period
+  end
+
   def parse_atomic_method_suffix(atomic : ASTNode, location : Location) : ASTNode
     res = atomic
     while true
       case @token.type
       when TokenKind::SPACE
         next_token
+      when TokenKind::NEWLINE
+        if lookahead_period?
+          next_token_skip_space_or_newline
+          next
+        else
+          break
+        end
       when TokenKind::OP_PERIOD
         next_token_skip_space_or_newline
         if @token.type == TokenKind::INSTANCE_VAR
@@ -831,6 +853,9 @@ pub class Parser < Lexer
         has_parens = call_args ? call_args.has_parentheses : false
         res = Call.new(res, name, args, block, block_arg, named_args).at(location)
         res.has_parentheses = has_parens
+      when TokenKind::OP_BANG
+        res = Propagate.new(res).at(location)
+        next_token
       when TokenKind::OP_LSQUARE
         next_token_skip_space_or_newline
         call_args = preserve_stop_on_do { parse_call_args_space_consumed(false, true) }
@@ -980,6 +1005,14 @@ pub class Parser < Lexer
           check_not_inside_def("can't define module") do
             parse_module_def
           end
+        when Keyword::IMPORT
+          check_not_inside_def("can't import") do
+            parse_import
+          end
+        when Keyword::USING
+          check_not_inside_def("can't use using") do
+            parse_using
+          end
         when Keyword::ENUM
           check_not_inside_def("can't define enum") do
             parse_enum_def
@@ -1113,14 +1146,28 @@ pub class Parser < Lexer
       next_token_skip_space_or_newline
       named_args : Array(NamedArgument)? = nil
       block_arg : ASTNode? = nil
+      block : Block? = nil
 
       while @token.type != TokenKind::OP_RPAREN
         if @token.type == TokenKind::OP_AMP
           next_token_skip_space
-          block_arg = parse_op_assign_no_control
-          skip_space_or_newline
-          check(TokenKind::OP_RPAREN)
-          break
+          if @token.type == TokenKind::OP_PERIOD
+            next_token_skip_space
+            temp_arg = Var.new("__arg0")
+            call = parse_var_or_call(@token.location)
+            if call.is_a?(Call)
+              call.obj = temp_arg
+            end
+            block = Block.new([temp_arg], call)
+            skip_space_or_newline
+            check(TokenKind::OP_RPAREN)
+            break
+          else
+            block_arg = parse_op_assign_no_control
+            skip_space_or_newline
+            check(TokenKind::OP_RPAREN)
+            break
+          end
         end
 
         if named_tuple_start?
@@ -1142,7 +1189,7 @@ pub class Parser < Lexer
         end
       end
       next_token_skip_space
-      CallArgs.new(args, nil, block_arg, named_args, false, token_end_location, true)
+      CallArgs.new(args, block, block_arg, named_args, false, token_end_location, true)
     when TokenKind::SPACE
       next_token
       if @token.keyword == Keyword::DO
@@ -1194,12 +1241,24 @@ pub class Parser < Lexer
     @stop_on_do = true
     named_args : Array(NamedArgument)? = nil
     block_arg : ASTNode? = nil
+    block : Block? = nil
 
     while true
       if @token.type == TokenKind::OP_AMP
         next_token_skip_space
-        block_arg = parse_op_assign_no_control
-        break
+        if @token.type == TokenKind::OP_PERIOD
+          next_token_skip_space
+          temp_arg = Var.new("__arg0")
+          call = parse_var_or_call(@token.location)
+          if call.is_a?(Call)
+            call.obj = temp_arg
+          end
+          block = Block.new([temp_arg], call)
+          break
+        else
+          block_arg = parse_op_assign_no_control
+          break
+        end
       end
 
       if named_tuple_start?
@@ -1221,7 +1280,7 @@ pub class Parser < Lexer
       end
     end
 
-    CallArgs.new(args, nil, block_arg, named_args, false, token_end_location, false)
+    CallArgs.new(args, block, block_arg, named_args, false, token_end_location, false)
   end
 
   def parse_call_arg : ASTNode
@@ -1467,10 +1526,13 @@ pub class Parser < Lexer
 
     whens = [] of When
     a_else : ASTNode? = nil
+    is_exhaustive = false
     while true
       case @token.keyword
-      when Keyword::WHEN
+      when Keyword::WHEN, Keyword::IN
         when_loc = @token.location
+        exhaustive = @token.keyword == Keyword::IN
+        is_exhaustive = is_exhaustive || exhaustive
         set_slash_is_regex(true)
         next_token_skip_space_or_newline
 
@@ -1483,7 +1545,7 @@ pub class Parser < Lexer
 
         when_body = parse_expressions
         skip_statement_end
-        whens << When.new(when_conds, when_body).at(when_loc)
+        whens << When.new(when_conds, when_body, exhaustive).at(when_loc)
       when Keyword::ELSE
         next_token_skip_statement_end
         a_else = parse_expressions
@@ -1495,11 +1557,11 @@ pub class Parser < Lexer
         next_token
         break
       else
-        unexpected_token("expecting when, else or end")
+        unexpected_token("expecting when, in, else or end")
       end
     end
 
-    Case.new(cond, whens, a_else, false).at(location)
+    Case.new(cond, whens, a_else, is_exhaustive).at(location)
   end
 
   def when_expression_end : Bool
@@ -1809,7 +1871,16 @@ pub class Parser < Lexer
     end
     check(TokenKind::OP_RCURLY)
     next_token_skip_space
-    HashLiteral.new(entries).at(location)
+    of : HashLiteral::Entry? = nil
+    if @token.keyword == Keyword::OF
+      next_token_skip_space_or_newline
+      of_key = parse_type_spec
+      check(TokenKind::OP_EQ_GT)
+      next_token_skip_space_or_newline
+      of_val = parse_type_spec
+      of = HashLiteral::Entry.new(of_key, of_val)
+    end
+    HashLiteral.new(entries, of).at(location)
   end
 
   def parse_const(global : Bool = false, location : Location = @token.location) : ASTNode
@@ -3033,6 +3104,76 @@ pub class Parser < Lexer
     skip_space
     segments
   end
+  def parse_import : ImportDecl
+    location = @token.location
+    next_token_skip_space
+    path = parse_import_path
+    node = ImportDecl.new(path).at(location)
+    node.end_location = token_end_location
+    node
+  end
+
+  def parse_import_path : Array(String)
+    segments = [] of String
+    segments << parse_import_path_segment
+
+    while @token.type == TokenKind::OP_SLASH
+      suppress_regex
+      next_token
+      segments << parse_import_path_segment
+    end
+
+    @wants_regex = true
+    skip_space
+    segments
+  end
+
+  def parse_import_path_segment : String
+    check(TokenKind::IDENT)
+    segment = @token.value
+    suppress_regex
+    next_token
+    while (current_char == '.' || current_char == '-') && peek_next_char.letter?
+      segment = segment + current_char.to_s
+      next_char
+      next_token
+      check(TokenKind::IDENT)
+      segment = segment + @token.value
+      suppress_regex
+      next_token
+    end
+    check_module_path_segment(segment) unless segment.includes?(".") || segment.includes?("-")
+    segment
+  end
+
+  def parse_using : UsingDecl
+    location = @token.location
+    next_token_skip_space
+    path = parse_import_path
+    names : Array(String)? = nil
+    if @token.type == TokenKind::OP_COLON_COLON
+      next_token
+      check(TokenKind::OP_LCURLY)
+      list = [] of String
+      next_token_skip_space_or_newline
+      while true
+        unless @token.type == TokenKind::IDENT || @token.type == TokenKind::CONST
+          syntax_error("expected a name to bring into scope", @token.location)
+        end
+        list << @token.value
+        next_token_skip_space_or_newline
+        break unless @token.type == TokenKind::OP_COMMA
+        next_token_skip_space_or_newline
+      end
+      check(TokenKind::OP_RCURLY)
+      next_token_skip_space
+      names = list
+    end
+
+    node = UsingDecl.new(path, names).at(location)
+    node.end_location = token_end_location
+    node
+  end
 
   def check_module_path_segment(segment : String) : String
     start_of_group = true
@@ -3218,6 +3359,7 @@ pub class Parser < Lexer
     next_token_skip_space_or_newline
 
     target = parse_path(false, @token.location)
+    target = parse_type_args(target.as(Path))
     skip_space
 
     type_vars : Array(String)? = nil
@@ -3717,6 +3859,10 @@ pub class Parser < Lexer
         en = parse_enum_def
         en.visibility = Visibility::Public
         return en.at(pub_location)
+      when Keyword::IMPORT
+        decl = parse_import
+        decl.exported = true
+        return decl.at(pub_location)
       else
         syntax_error("can't apply `pub` to #{@token.type}", @token.location)
       end

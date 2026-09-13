@@ -3606,20 +3606,21 @@ end
 pub class ImplDef < ASTNode
   property trait : Path
   property trait_args : Array(ASTNode)?
-  property target : Path
+  property target : ASTNode
   property body : ASTNode
   property type_vars : Array(String)?
   property assoc_types : Array(AssocTypeDecl)?
 
   def initialize(
     @trait : Path = Path.new(""),
-    @target : Path = Path.new(""),
+    target : ASTNode? = nil,
     body : ASTNode? = nil,
     @type_vars : Array(String)? = nil,
     @trait_args : Array(ASTNode)? = nil,
     @assoc_types : Array(AssocTypeDecl)? = nil,
   )
     @body = body || Nop.new
+    @target = target || Path.new("")
   end
 
   def clone_without_location : self
@@ -3631,7 +3632,7 @@ pub class ImplDef < ASTNode
     end
     ImplDef.new(
       @trait.clone.as(Path),
-      @target.clone.as(Path),
+      @target.clone,
       @body.clone,
       clone_opt_strings(@type_vars),
       cloned_trait_args,
