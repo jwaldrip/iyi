@@ -421,4 +421,15 @@ assert_eq(list.to_a.size, 4, "list: to_a")
 puts "== std/derives: Show trait"
 assert_str(s1.show, "Score(10)", "derives: show")
 
+puts "== std/traits: the arithmetic a comparison and a hash are made of"
+# `cmp` was `self - other`, so two numbers far enough apart left `Int32` and
+# panicked - and every `Enumerable` method that reads `cmp` refused a pair
+# that `<` answers for. `Indexable#hash` mixed with the checked `*` and `+`,
+# so a collection of six two-digit numbers panicked while five passed.
+assert_eq(2000000000.cmp(-2000000000), 1, "cmp: a wide span")
+assert_eq((-2000000000).cmp(2000000000), -1, "cmp: the other way")
+assert_eq(5.cmp(5), 0, "cmp: equal")
+assert_eq("a".cmp("b"), -1, "cmp: strings")
+assert_eq([2000000000, -2000000000].sorted[0], -2000000000, "cmp: sorted reads it")
+
 puts "all std checks passed"

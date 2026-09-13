@@ -77,14 +77,6 @@ prove_fails() {
   mkdir -p "$WORK/$dir/std"
   cp -R "$REPO/src/std/." "$WORK/$dir/std/"
   sed -e "$sed_script" "$REPO/src/std/format.iyi" > "$WORK/$dir/std/format.iyi"
-  # A patch that matches nothing leaves the library intact, and an intact
-  # library passes, which reads as "this check cannot fail" when the truth is
-  # that nothing was broken to test it. Line-anchored patches drift.
-  if cmp -s "$REPO/src/std/format.iyi" "$WORK/$dir/std/format.iyi"; then
-    echo "  $label: the patch changed nothing, so this proves nothing"
-    status=1
-    return
-  fi
   if ! IYI_PATH="$WORK/$dir:$REPO/src" "$IYI" build \
        -o "$WORK/$dir/program" "$REPO/bench/format_exercise.iyi" \
        >"$WORK/$dir/build.log" 2>&1; then
@@ -112,11 +104,11 @@ prove_fails() {
 
 # 1. Width padding removed
 prove_fails "width padding broken" no_width "format: width" \
-  's/pad = " " \* (width - res\.bytesize)/pad = ""/'
+  's/pad = " " \* (width - res\.size)/pad = ""/'
 
 # 2. Alignment reversed
 prove_fails "alignment ignored" no_align "format: alignment" \
-  's/minus [?] res + pad : pad + res/pad + res/'
+  's/minus ? res + pad : pad + res/pad + res/'
 
 # 3. Zero padding replaced with spaces
 prove_fails "zero pad broken" no_zero "format: zero pad" \
@@ -124,7 +116,17 @@ prove_fails "zero pad broken" no_zero "format: zero pad" \
 
 # 4. Float precision rounding dropped (always rounds down)
 prove_fails "precision rounding broken" no_prec "format: precision" \
-  's/carry = round_digit >= 5 [?] 1 : 0/carry = 0/'
+  's/^    if round_digit > 5$/    if false/'
+
+# 4b. The tie decided away from zero again, which is what every reference
+#     formatter disagrees with and what this file pinned before.
+prove_fails "a tie rounds away from zero" no_even "format: precision float tie to even" \
+  's/^        carry = tie > 0 || (tie == 0 \&\& keep_digit % 2 == 1) ? 1 : 0$/        carry = 1/'
+
+# 4c. The tie decided by the digits rather than by the value, so a value a
+#     shade above or below its shortest decimal is rounded the wrong way.
+prove_fails "the digits decide the tie" no_exact "format: precision float small carry" \
+  's/^        tie = exact_above_tie?(f, e, raw_digits, count, k, precision)$/        tie = 0/'
 
 # 5. Base conversion broken (binary emits decimal)
 prove_fails "base conversion broken" no_base "format: base" \
@@ -136,7 +138,7 @@ prove_fails "sign flag broken" no_neg "format: sign space positive" \
 
 # 7. Boundary case broken (precision 0 on value 0 produces "0" instead of "")
 prove_fails "boundary zero precision broken" no_bound "format: boundary" \
-  's/digits = precision == 0 [?] "" : "0"/digits = "0"/'
+  's/digits = precision == 0 ? "" : "0"/digits = "0"/'
 
 echo
 if [ "$status" -eq 0 ]; then

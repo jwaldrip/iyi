@@ -52,6 +52,13 @@ jobs:
       - name: Build the compiler
         run: make crystal
 
+      # v5 because it is current, and not because it silences the annotation
+      # every run carries: "Node.js 20 is deprecated ... forced to run on
+      # Node.js 24". That line names GitHub's own actions at their newest
+      # tags — upload-artifact@v5, download-artifact@v5, cache@v4,
+      # setup-go@v5 — so it is upstream's manifest and not this file's
+      # version pins. Measured by bumping all twenty-one uses and reading
+      # the next run: the warning came back naming v5.
       - uses: actions/upload-artifact@v5
         with:
           name: crystal
@@ -284,6 +291,37 @@ jobs:
       # nothing. Eight broken methods of a copied prelude prove each check.
       - name: An enum is its name, its order and its members
         run: bash bench/enum_exercise.sh
+
+      # And the same question asked of the two values the prelude writes
+      # itself: a tuple and a range. Neither had `==` or `hash`, so
+      # `Object`'s answered — identity, on a value — and `{1, 2} == {1, 2}`
+      # and `(1..3) == (1..3)` were both false, which made either one
+      # unfindable as a key, a `Set` of them a list, and
+      # `includes?`/`index`/`uniq` over `zip`'s own result answer no. Ten
+      # broken methods of a copied prelude prove each check.
+      - name: A tuple and a range are their members
+        run: bash bench/value_exercise.sh
+
+      # And the integers at their edges, which is where a number stops
+      # behaving like the mathematics: `Int32::MIN` could not be read back
+      # from its own `to_s` (the parser built the positive magnitude, and
+      # with checked arithmetic that was a panic where `to_i?` promises
+      # nil), and `MIN // -1` was left to the processor, which reports an
+      # integer divide as a floating-point fault and kills the program.
+      # Six broken methods of a copied prelude prove the checks, and a
+      # seventh proof asks for the signal itself.
+      - name: Numbers print, read back, and refuse what does not fit
+        run: bash bench/number_exercise.sh
+
+      # And the three collections a program gets, at their edges: a key
+      # written twice, a table grown past its first capacity, a key deleted
+      # with the rest still findable, keys that all land in one slot, an
+      # array appended to itself. The last one is why this gate exists -
+      # `a.concat(a)` walked the other array's growing size and grew the
+      # buffer until the capacity arithmetic overflowed. Eight panics with
+      # names and eight broken methods of a copied prelude.
+      - name: Arrays, hashes and sets at their edges
+        run: bash bench/collections_exercise.sh
 
       # Three gates that existed, passed on the machine that wrote them, and
       # were named in this file by nothing: `format_exercise` (seven proofs

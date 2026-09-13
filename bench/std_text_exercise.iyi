@@ -278,4 +278,27 @@ raise "utf8: reverse size" unless reversed.size == 5
 raise "utf8: reverse bytesize" unless reversed.bytesize == 6
 puts "    utf8 awareness: multi-byte characters, byte indexing, chars decoding, and reverse verified"
 
+# A `Char` above ASCII is more than one byte, and this family narrowed it to
+# one through a checked convert: ten methods panicked with "arithmetic
+# overflow" on a question about text, and `center` and `tr` answered wrongly
+# rather than panicking.
+raise "utf8: lstrip char" unless "☃a☃".lstrip('☃') == "a☃"
+raise "utf8: rstrip char" unless "☃a☃".rstrip('☃') == "☃a"
+raise "utf8: ends_with char" unless "a☃".ends_with?('☃')
+raise "utf8: split char" unless "a☃b".split('☃', 0).size == 2
+raise "utf8: index char" unless "a☃b".index('☃', 0) == 1
+raise "utf8: rindex char" unless "a☃b".rindex('☃') == 1
+raise "utf8: delete char" unless "a☃b".delete('☃') == "ab"
+raise "utf8: squeeze char" unless "a☃☃b".squeeze('☃') == "a☃b"
+raise "utf8: count char" unless "a☃b☃".count('☃') == 2
+raise "utf8: tr char" unless "a☃b".tr("☃", "x") == "axb"
+raise "utf8: center width" unless "héllo".center(9, '.').size == 9
+raise "utf8: center content" unless "héllo".center(9, '.') == "..héllo.."
+raise "utf8: center multi-byte pad" unless "héllo".center(9, "·").size == 9
+# And the ASCII the same methods have always answered
+raise "utf8: ascii lstrip" unless "xxhi".lstrip('x') == "hi"
+raise "utf8: ascii tr" unless "abc".tr("ab", "x") == "xxc"
+raise "utf8: ascii center" unless "hello".center(12, "-=") == "-=-hello-=-="
+puts "    the char family: strip, search, delete, squeeze, count, tr and center verified"
+
 puts "all std/text checks passed"

@@ -366,8 +366,11 @@ pub struct Slice(T)
 
   # String representation: Bytes[...] for Slice(UInt8), Slice[...] for others.
   def to_s : String
+    # Inspected, not printed, which is what `Array#to_s` does: a slice of
+    # strings read back as `Slice[a, b]` where the array beside it says
+    # `["a", "b"]`, so the same data printed two ways.
     items = [] of String
-    each { |value| items << value.to_s }
+    each { |value| items << value.inspect }
     {% if T == UInt8 %}
       "Bytes[" + items.join(", ") + "]"
     {% else %}

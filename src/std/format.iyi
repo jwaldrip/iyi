@@ -148,7 +148,41 @@ module ::IyiFloatText
     {digits, count, k}
   end
 
-  # Fixed-point decimal format with exact places, rounding half away from zero.
+  # Is `f * 2^e` above, at, or below the decimal the shortest digits spell
+  # when they end in a 5 at the place after *precision*? Answered exactly:
+  # both sides are scaled by `10^(precision+1)` and by `2^-e`, which makes
+  # them integers, and `IyiBig` compares them.
+  #
+  # *raw_digits* holds the shortest digits, `k` is the place of the first of
+  # them, and the tie decimal is those digits down to the rounding place.
+  def self.exact_above_tie?(f : UInt64, e : Int32, raw_digits : Pointer(UInt8),
+                            count : Int32, k : Int32, precision : Int32) : Int32
+    # The tie's own integer: every digit from the top down to the rounding
+    # place, which ends in the 5 that made this a tie.
+    tie = IyiBig.new(0_u64)
+    place = k - 1
+    while place >= 0 - precision - 1
+      index = k - place
+      digit = (index >= 1 && index <= count) ? raw_digits[index - 1].to_u64 : 0_u64
+      tie.mul_small(10_u64)
+      tie.add_small(digit)
+      place = place - 1
+    end
+
+    left = IyiBig.new(f)
+    right = tie
+    scale = precision + 1
+    if e >= 0
+      left.shl(e)
+      left.mul_pow10(scale)
+    else
+      left.mul_pow10(scale)
+      right.shl(0 - e)
+    end
+    left.compare(right)
+  end
+
+  # Fixed-point decimal format with exact places, half to even.
   def self.format_fixed(value : Float64, precision : Int32) : String
     bits = bits_of(value)
     exponent_bits = bits.unsafe_shr(52_u64) & 2047_u64
@@ -165,6 +199,12 @@ module ::IyiFloatText
       end
     end
 
+    # The mantissa and exponent of the value itself, which the tie question
+    # below needs and the shortest digits cannot answer.
+    hidden = 4503599627370496_u64
+    f = exponent_bits == 0_u64 ? fraction : fraction | hidden
+    e = exponent_bits == 0_u64 ? -1074 : exponent_bits.to_i64.to_i32 - 1075
+
     res = dragon4(value.abs)
     raw_digits = res[0]
     count = res[1]
@@ -176,7 +216,35 @@ module ::IyiFloatText
 
     round_i = k - round_p
     round_digit = (round_i >= 1 && round_i <= count) ? raw_digits[round_i - 1].to_i32 : 0
-    carry = round_digit >= 5 ? 1 : 0
+
+    # Half to even, which is what every reference formatter does and what
+    # this did not: `%.1f` of 0.25 answered 0.3 and `%.0f` of 0.5 answered 1,
+    # against 0.2 and 0 from the other language, from C and from Python. A
+    # tie is decided by the digit being kept, not by rounding away from zero.
+    rest_nonzero = false
+    after = round_i + 1
+    while after <= count
+      rest_nonzero = true if raw_digits[after - 1].to_i32 != 0
+      after = after + 1
+    end
+    keep_i = k - (0 - precision)
+    keep_digit = (keep_i >= 1 && keep_i <= count) ? raw_digits[keep_i - 1].to_i32 : 0
+    carry = 0
+    if round_digit > 5
+      carry = 1
+    elsif round_digit == 5
+      if rest_nonzero
+        carry = 1
+      else
+        # The shortest digits say "exactly half", and the *value* may not:
+        # 2.345 is stored a shade above and 1.015 a shade below, so rounding
+        # the string answered 2.34 and 1.02 where every reference answers
+        # 2.35 and 1.01. Asked of the value itself, exactly - `f * 2^e`
+        # against the tie decimal, both sides scaled to integers.
+        tie = exact_above_tie?(f, e, raw_digits, count, k, precision)
+        carry = tie > 0 || (tie == 0 && keep_digit % 2 == 1) ? 1 : 0
+      end
+    end
 
     place_digits = [] of Int32
     p = 0 - precision
@@ -249,7 +317,37 @@ module ::IyiFloatText
     round_idx = total_needed + 1
 
     round_d = (round_idx >= 1 && round_idx <= count) ? raw_digits[round_idx - 1].to_i32 : 0
-    carry = round_d >= 5 ? 1 : 0
+
+    # Half to even, and a tie decided by the value rather than by the digits
+    # - the same two corrections `format_fixed` above needed, in the form
+    # that writes an exponent: `%.0e` of 2.5 answered 3e+00 against 2e+00,
+    # and `%.2e` of 9.995 answered 1.00e+01 against 9.99e+00.
+    hidden = 4503599627370496_u64
+    f = exponent_bits == 0_u64 ? fraction : fraction | hidden
+    e = exponent_bits == 0_u64 ? -1074 : exponent_bits.to_i64.to_i32 - 1075
+
+    rest_nonzero = false
+    after = round_idx + 1
+    while after <= count
+      rest_nonzero = true if raw_digits[after - 1].to_i32 != 0
+      after = after + 1
+    end
+    keep_d = (total_needed >= 1 && total_needed <= count) ? raw_digits[total_needed - 1].to_i32 : 0
+
+    carry = 0
+    if round_d > 5
+      carry = 1
+    elsif round_d == 5
+      if rest_nonzero
+        carry = 1
+      else
+        # The rounding place here is `precision` digits after the first, so
+        # the scale the tie is measured at is that many places below the
+        # exponent.
+        tie = exact_above_tie?(f, e, raw_digits, count, k, precision - exp)
+        carry = tie > 0 || (tie == 0 && keep_d % 2 == 1) ? 1 : 0
+      end
+    end
 
     digits_out = [] of Int32
     total_needed.times { digits_out << 0 }
@@ -530,13 +628,25 @@ module ::IyiFormat
     end
   end
 
+  # Width and precision in characters, because `size` is and because
+  # `%-10s` is a column: counted in bytes, a multi-byte string came out
+  # short by one space per extra byte, and a precision cut a character in
+  # half. The prelude's `ljust`/`rjust` decided the same thing.
   def self.format_string_arg(str : String, minus : Bool, width : Int32, precision : Int32) : String
     res = str
-    if precision >= 0 && res.bytesize > precision
-      res = res[0, precision]
+    if precision >= 0 && res.size > precision
+      kept = ""
+      taken = 0
+      res.each_char do |c|
+        if taken < precision
+          kept = kept + c.to_s
+          taken = taken + 1
+        end
+      end
+      res = kept
     end
-    if res.bytesize < width
-      pad = " " * (width - res.bytesize)
+    if res.size < width
+      pad = " " * (width - res.size)
       minus ? res + pad : pad + res
     else
       res

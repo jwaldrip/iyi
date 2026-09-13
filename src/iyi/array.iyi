@@ -19,6 +19,9 @@ class Array(T)
   end
 
   def initialize(capacity : Int32)
+    # A negative capacity reached `to_u64` and panicked about arithmetic,
+    # which says nothing about the array that was asked for.
+    raise "negative capacity" if capacity < 0
     @size = 0
     @capacity = capacity
     @buffer = capacity == 0 ? Pointer(T).new(0_u64) : Pointer(T).malloc(capacity.to_u64)
@@ -154,8 +157,16 @@ class Array(T)
     result
   end
 
+  # `a.concat(a)` is a doubling, not a loop: `each` walked *other*'s growing
+  # size while `<<` grew it, so `[1, 2].concat(itself)` grew the buffer until
+  # the capacity arithmetic overflowed. The length is read once.
   def concat(other : Array(T)) : Array(T)
-    other.each { |value| self << value }
+    index = 0
+    taking = other.size
+    while index < taking
+      self << other[index]
+      index = index + 1
+    end
     self
   end
 

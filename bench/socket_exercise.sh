@@ -129,9 +129,54 @@ prove_fails "local port returns 0" badport "local_port failed:" \
   '{ sub(/\(high << 8\) \| low/, "0"); print }'
 
 echo
+echo "== what is not a port, and what is not an address"
+
+# A panicking program has no next line to assert on, so these are driven
+# here. `listen(70000)` used to pack the port into sixteen bits without
+# asking and bind 4464; `-1` bound 65535. The address parser accumulated
+# digits unbounded, so a long run of them left `Int32` and panicked about
+# arithmetic rather than naming the address it could not resolve.
+refuses() { # refuses <label> <name> <phrase> <expression>
+  local label="$1" name="$2" phrase="$3" expression="$4"
+  printf 'module main\n\nimport std/socket\n\nusing std/socket::{IyiSocket}\n\nputs (%s).to_s\n' \
+    "$expression" > "$WORK/$name.iyi"
+  if ! "$IYI" build -o "$WORK/$name" "$WORK/$name.iyi" > "$WORK/$name.build" 2>&1; then
+    echo "  $label: the program did not build"
+    sed -n '1,8p' "$WORK/$name.build"
+    status=1
+    return
+  fi
+  "$WORK/$name" > "$WORK/$name.out" 2>&1
+  local code=$?
+  if [ "$code" -eq 0 ]; then
+    echo "  $label: it answered instead of refusing"
+    status=1
+    return
+  fi
+  if ! grep -q "$phrase" "$WORK/$name.out"; then
+    echo "  $label: refused, but not with '$phrase'"
+    tail -2 "$WORK/$name.out"
+    status=1
+    return
+  fi
+  printf '  %s: exits %s at "%s"\n' "$label" "$code" \
+    "$(grep -m1 -o "$phrase.*" "$WORK/$name.out")"
+}
+
+refuses "a port past sixteen bits" port_big "is not a port" \
+  "IyiSocket.listen(70000, 1).local_port"
+refuses "a negative port" port_neg "is not a port" \
+  "IyiSocket.listen(-1, 1).local_port"
+refuses "an address with too many digits" addr_long "cannot resolve address" \
+  "IyiSocket.connect(\"999999999999.1.1.1\", 80).to_unsafe"
+refuses "an octet past 255" addr_octet "cannot resolve address" \
+  "IyiSocket.connect(\"256.1.1.1\", 80).to_unsafe"
+
+echo
 if [ "$status" -eq 0 ]; then
   echo "Sockets: connect, accept, message exchange, short reads, closed peer, and"
-  echo "refused connections all verified, and checks proved to fail when broken."
+  echo "refused connections all verified, a port and an address are checked before"
+  echo "they are packed, and every check is proved to fail when broken."
 else
   echo "Sockets: something above failed."
 fi

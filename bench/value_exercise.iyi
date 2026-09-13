@@ -1,0 +1,136 @@
+# The prelude's value types, exercised - SPEC.md II.6, IV.2.
+#
+#     bash bench/value_exercise.sh
+#
+# A tuple and a range are values, and every check here is about that one
+# fact: two written the same way are the same value, and everything that
+# asks a value whether it is equal - a `Hash` key, a `Set` member,
+# `includes?`, `index`, `uniq`, a `case` arm - has to get one answer.
+#
+# `==` and `hash` were the two the prelude never wrote for either, so
+# `Object`'s answered: identity, on a value type. `{1, 2} == {1, 2}` and
+# `(1..3) == (1..3)` were both false, and `zip`'s own result could not be
+# searched for a pair it contained.
+#
+# Exits non-zero at the first check that does not hold, so the driver can
+# break one method at a time and read which check noticed.
+module main
+
+def assert_true(condition : Bool, msg : String) : Nil
+  raise "assert failed: #{msg}" unless condition
+end
+
+def assert_int(actual : Int32, expected : Int32, msg : String) : Nil
+  raise "assert failed: #{msg} (#{actual} != #{expected})" unless actual == expected
+end
+
+def assert_str(actual : String, expected : String, msg : String) : Nil
+  raise "assert failed: #{msg} (#{actual} != #{expected})" unless actual == expected
+end
+
+# ---- 1. The shape: how many, and which one
+pair = {1, 2}
+triple = {1, "two", 'c'}
+assert_int(pair.size, 2, "tuple: size of a pair")
+assert_int(triple.size, 3, "tuple: size of a triple")
+assert_true(pair[0] == 1 && pair[1] == 2, "tuple: literal index")
+
+# Indexed by a value rather than a literal, which is what walking one needs.
+walk = 0
+i = 0
+while i < pair.size
+  walk = walk + 1
+  i = i + 1
+end
+assert_int(walk, 2, "tuple: walked by value")
+assert_true(pair[i - 1] == 2, "tuple: index by value")
+
+# ---- 2. Equality, which is the whole point of the type
+assert_true({1, 2} == {1, 2}, "tuple: == same members")
+assert_true(({1, 2} == {1, 3}) == false, "tuple: == different members")
+assert_true(({1, 2} != {1, 3}), "tuple: != follows ==")
+assert_true(({1, 2} != {1, 2}) == false, "tuple: != says the opposite")
+assert_true({1, "two", 'c'} == {1, "two", 'c'}, "tuple: == mixed members")
+assert_true(({1, "two", 'c'} == {1, "two", 'd'}) == false, "tuple: == mixed differs")
+# A member's own `==` is what decides, so a string member compares by text.
+one = "tw"
+assert_true({1, one + "o"} == {1, "two"}, "tuple: member equality is the member's")
+
+# ---- 3. Hashing, which has to agree with equality
+assert_int({1, 2}.hash, {1, 2}.hash, "tuple: equal tuples hash the same")
+assert_true({1, 2}.hash != {2, 1}.hash, "tuple: order changes the hash")
+assert_true({1, 2}.hash != {1, 3}.hash, "tuple: a member changes the hash")
+
+table = {} of Tuple(Int32, Int32) => String
+table[{1, 2}] = "one-two"
+table[{3, 4}] = "three-four"
+assert_str(table[{1, 2}]? || "missing", "one-two", "tuple: hash key found")
+assert_str(table[{3, 4}]? || "missing", "three-four", "tuple: second hash key found")
+assert_int(table.size, 2, "tuple: two keys, two entries")
+table[{1, 2}] = "again"
+assert_int(table.size, 2, "tuple: the same key is the same slot")
+assert_true(table.has_key?({1, 2}), "tuple: has_key? agrees")
+assert_true(table[{9, 9}]? == nil, "tuple: a key nobody put in")
+
+# ---- 4. The collections that ask
+members = Set(Tuple(Int32, Int32)).new
+members.add({1, 2})
+members.add({1, 2})
+members.add({3, 4})
+assert_int(members.size, 2, "tuple: set holds each once")
+assert_true(members.includes?({1, 2}), "tuple: set includes?")
+assert_true(members.includes?({5, 6}) == false, "tuple: set excludes")
+
+pairs = [{1, 2}, {3, 4}, {5, 6}]
+assert_true(pairs.includes?({3, 4}), "tuple: array includes?")
+assert_true(pairs.includes?({4, 3}) == false, "tuple: array excludes the reverse")
+assert_int(pairs.index({5, 6}) || -1, 2, "tuple: array index")
+assert_int([{1, 2}, {1, 2}, {3, 4}].uniq.size, 2, "tuple: uniq")
+
+# `zip` answers tuples, so a program that zips and then searches is asking
+# exactly this question.
+zipped = [1, 2].zip(["a", "b"])
+assert_int(zipped.size, 2, "tuple: zip size")
+assert_true(zipped.includes?({2, "b"}), "tuple: zip result searchable")
+assert_true(zipped[0] == {1, "a"}, "tuple: zip first pair")
+
+# A `when` naming a tuple lowers to `===`, which is `==`.
+named = case pair
+        when {1, 2} then "one-two"
+        when {3, 4} then "three-four"
+        else             "other"
+        end
+assert_str(named, "one-two", "tuple: case over a tuple")
+
+# ---- 5. Printing, which is a tuple's members written down
+assert_str({1, 2}.to_s, "{1, 2}", "tuple: to_s")
+assert_str({1, "two"}.to_s, "{1, \"two\"}", "tuple: to_s inspects its members")
+assert_str({1, 2}.inspect, "{1, 2}", "tuple: inspect")
+assert_str([{1, 2}].to_s, "[{1, 2}]", "tuple: inside an array")
+
+# ---- 6. The other value type, which had the same defect
+assert_true((1..3) == (1..3), "range: == same bounds")
+assert_true(((1..3) == (1..4)) == false, "range: == different end")
+assert_true(((1..3) == (2..3)) == false, "range: == different begin")
+assert_true(((1..3) == (1...3)) == false, "range: inclusive is not exclusive")
+assert_true(((1..3) != (1...3)), "range: != follows ==")
+assert_int((1..3).hash, (1..3).hash, "range: equal ranges hash the same")
+assert_true((1..3).hash != (1...3).hash, "range: the flag changes the hash")
+assert_true((1..3).hash != (1..4).hash, "range: a bound changes the hash")
+
+spans = {} of Range(Int32, Int32) => String
+spans[1..3] = "low"
+spans[5..9] = "high"
+assert_str(spans[1..3]? || "missing", "low", "range: hash key found")
+assert_int(spans.size, 2, "range: two keys, two entries")
+assert_true(spans[1...3]? == nil, "range: the exclusive twin is another key")
+assert_true([(1..3), (5..9)].includes?(1..3), "range: array includes?")
+assert_int([(1..3), (5..9)].index(5..9) || -1, 1, "range: array index")
+
+# A range still counts what it counted, which is what the samples call.
+counted = 0
+(1..4).each { |value| counted = counted + 1 }
+assert_int(counted, 4, "range: each still counts")
+assert_int((1...4).size, 3, "range: exclusive size")
+
+puts "all value checks passed"

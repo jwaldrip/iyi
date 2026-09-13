@@ -249,14 +249,19 @@ class String
     to_i? || raise "not a number: #{inspect}"
   end
 
+  # Read as a *negative* magnitude, the range that holds every value the
+  # type has: `Int32::MIN` has no positive twin, so accumulating
+  # `2147483648` and negating it could not read what `to_s` wrote - it
+  # overflowed on the last digit, and with checked arithmetic that was a
+  # panic rather than the `nil` a `?` promises.
   def to_i? : Int32?
     return nil if empty?
 
     index = 0
-    sign = 1
+    negative = false
     if self[0] == '-'
       return nil if @bytesize == 1
-      sign = -1
+      negative = true
       index = 1
     end
 
@@ -264,11 +269,17 @@ class String
     while index < @bytesize
       digit = to_unsafe[index].to_i - 48
       return nil if digit < 0 || digit > 9
-      value = value * 10 + digit
+      # The next step would leave the type: -214748364 * 10 is the last
+      # multiple that fits, and after it only eight of the ten digits do.
+      return nil if value < -214748364 || (value == -214748364 && digit > 8)
+      value = value * 10 - digit
       index = index + 1
     end
 
-    value * sign
+    return value if negative
+    # And the magnitude that only exists as a negative is not a positive.
+    return nil if value == -2147483648
+    0 - value
   end
 
   def +(other : String) : String
@@ -295,30 +306,23 @@ class String
     true
   end
 
+  # A `Char` above ASCII is more than one byte, and these narrowed it to one
+  # through a *checked* convert, so `"a☃b".index('☃')` died of "arithmetic
+  # overflow". Each compares the character's own bytes now.
   def starts_with?(char : Char) : Bool
-    bytesize > 0 && to_unsafe[0] == char.ord.to_u8
+    starts_with?(char.to_s)
   end
 
   def chomp(char : Char) : String
-    return self if bytesize == 0 || to_unsafe[bytesize - 1] != char.ord.to_u8
-    byte_slice(0, bytesize - 1)
-  end
-
-  # Without the line ending, whichever of the two it is: what a program
-  # reading lines asks for. Here because `chomp` is already a name on this
-  # type, and R-3 lets nobody else add another of it.
-  def chomp : String
-    return self if bytesize == 0
-    last = to_unsafe[bytesize - 1]
-    return self unless last == 10_u8 || last == 13_u8
-    cut = bytesize - 1
-    cut = cut - 1 if last == 10_u8 && cut > 0 && to_unsafe[cut - 1] == 13_u8
-    byte_slice(0, cut)
+    text = char.to_s
+    return self unless ends_with?(text)
+    byte_slice(0, bytesize - text.bytesize)
   end
 
   def lchop(char : Char) : String
-    return self unless starts_with?(char)
-    byte_slice(1, bytesize - 1)
+    text = char.to_s
+    return self unless starts_with?(text)
+    byte_slice(text.bytesize, bytesize - text.bytesize)
   end
 
   def ends_with?(suffix : String) : Bool
@@ -332,102 +336,25 @@ class String
     true
   end
 
-  # The symmetric form of `starts_with?(char)`. Six modules in `src/std` ask
-  # a string whether it ends in one character, and R-3 lets none of them
-  # answer it: `ends_with?` is already a name this type has.
-  def ends_with?(char : Char) : Bool
-    bytesize > 0 && to_unsafe[bytesize - 1] == char.ord.to_u8
-  end
-
   # Where a character first is, or nil: the question a parser asks before
-  # it cuts. The offset is where to start looking, which is how a parser walks
-  # a string it is cutting repeatedly; a negative one counts from the end.
-  def index(char : Char, offset : Int32 = 0) : Int32?
-    offset = bytesize + offset if offset < 0
-    return nil if offset < 0
-
-    wanted = char.ord.to_u8
-    index = offset
-    while index < bytesize
-      return index if to_unsafe[index] == wanted
+  # it cuts.
+  def index(char : Char) : Int32?
+    wanted = char.to_s
+    index = 0
+    while index + wanted.bytesize <= bytesize
+      return index if byte_window?(index, wanted)
       index = index + 1
     end
     nil
   end
 
-  # On a string, stopping after `limit` pieces; 0 means all of them.
-  def split(separator : String, limit : Int32 = 0) : Array(String)
-    pieces = [] of String
-    return pieces if bytesize == 0
-    start = 0
-    while limit <= 0 || pieces.size < limit - 1
-      found = index(separator, start)
-      break if found.nil?
-      pieces << byte_slice(start, found - start)
-      start = found + separator.bytesize
+  # *wanted*'s bytes at *at*: `index` and `split` both ask it.
+  private def byte_window?(at : Int32, wanted : String) : Bool
+    matched = 0
+    while matched < wanted.bytesize && to_unsafe[at + matched] == wanted.to_unsafe[matched]
+      matched = matched + 1
     end
-    pieces << byte_slice(start, bytesize - start)
-    pieces
-  end
-
-  # On whitespace, with no empty piece at either end: a line cut into words.
-  def split : Array(String)
-    pieces = [] of String
-    start = 0
-    index = 0
-    while index <= bytesize
-      if index == bytesize || to_unsafe[index].unsafe_chr.whitespace?
-        pieces << byte_slice(start, index - start) if index > start
-        start = index + 1
-      end
-      index = index + 1
-    end
-    pieces
-  end
-
-  # Where a substring first is from an offset, or nil; the character form is above.
-  def index(search : String, offset : Int32 = 0) : Int32?
-    offset = bytesize + offset if offset < 0
-    return nil if offset < 0
-    return offset if search.bytesize == 0 && offset <= bytesize
-    last = bytesize - search.bytesize
-    i = offset
-    while i <= last
-      j = 0
-      while j < search.bytesize && to_unsafe[i + j] == search.to_unsafe[j]
-        j = j + 1
-      end
-      return i if j == search.bytesize
-      i = i + 1
-    end
-    nil
-  end
-
-  # In a base other than ten: 16 for a hex escape, 2 for a bit string.
-  def to_i(base : Int32) : Int32
-    to_i?(base) || raise "not a number in base #{base}: #{inspect}"
-  end
-
-  def to_i?(base : Int32) : Int32?
-    index = 0
-    negative = false
-    if bytesize > 0 && (to_unsafe[0] == 45_u8 || to_unsafe[0] == 43_u8)
-      negative = to_unsafe[0] == 45_u8
-      index = 1
-    end
-    return nil if index >= bytesize
-
-    value = 0
-    while index < bytesize
-      byte = to_unsafe[index]
-      # A digit, or a letter: `| 32` lowercases one and leaves a digit alone.
-      lower = byte | 32_u8
-      digit = byte >= 48_u8 && byte <= 57_u8 ? (byte - 48_u8).to_i : (lower >= 97_u8 && lower <= 122_u8 ? (lower - 97_u8).to_i + 10 : base)
-      return nil if digit >= base
-      value = value * base + digit
-      index = index + 1
-    end
-    negative ? -value : value
+    matched == wanted.bytesize
   end
 
   # Without the whitespace at either end.
@@ -449,15 +376,18 @@ class String
   # under both.
   def split(separator : Char) : Array(String)
     pieces = [] of String
-    wanted = separator.ord.to_u8
+    wanted = separator.to_s
+    width = wanted.bytesize
     start = 0
     index = 0
-    while index < bytesize
-      if to_unsafe[index] == wanted
+    while index + width <= bytesize
+      if byte_window?(index, wanted)
         pieces << byte_slice(start, index - start)
-        start = index + 1
+        index = index + width
+        start = index
+      else
+        index = index + 1
       end
-      index = index + 1
     end
     pieces << byte_slice(start, bytesize - start)
     pieces

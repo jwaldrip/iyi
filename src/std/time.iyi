@@ -843,7 +843,13 @@ pub struct Time
     end
   end
 
+  # Four digits, and a negative year keeps its sign in front of them rather
+  # than inside: written as `n < 10 ? "000" + n.to_s`, year -1 printed
+  # `000-1-01-01`, which is neither a year nor a date. ISO 8601 spells it
+  # `-0001`, and the conversions themselves were right all along - the epoch
+  # round-trips through it.
   def self.pad4(n : Int32) : String
+    return "-" + pad4(0 - n) if n < 0
     if n < 10
       "000" + n.to_s
     elsif n < 100

@@ -393,6 +393,11 @@ pub trait Enumerable
   end
 
   def each_slice(n : Int32) : Array(Array(Elem))
+    # The same refusal `Indexable#each_slice` makes: a window of zero is a
+    # question with no answer, and the three trait towers gave it three
+    # different ones - a panic here, nothing there, and a shift of an empty
+    # array in the iterator.
+    raise "slice size must be positive" if n <= 0
     slices = [] of Array(Elem)
     current = [] of Elem
     each do |e|
@@ -411,6 +416,7 @@ pub trait Enumerable
   end
 
   def each_cons(n : Int32) : Array(Array(Elem))
+    raise "cons size must be positive" if n <= 0
     result = [] of Array(Elem)
     window = [] of Elem
     each do |e|

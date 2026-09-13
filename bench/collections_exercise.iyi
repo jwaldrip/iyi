@@ -1,0 +1,215 @@
+# The prelude's collections at their edges - SPEC.md, "0.1.0", item 3.
+#
+#     bash bench/collections_exercise.sh
+#
+# `Array`, `Hash` and `Set` are three of the six things a program gets, and
+# what a program does to them at the edges is what this file is: a key
+# written twice, a table grown past its first capacity, a key deleted and
+# the rest still findable, keys that all hash to one slot, an array appended
+# to itself, an empty receiver asked for its first element.
+#
+# The one defect this file was written for: `a.concat(a)` walked *other*'s
+# size while `<<` grew it, so it never reached the end - it grew the buffer
+# until the capacity arithmetic overflowed and `[1, 2].concat(itself)` died
+# of "arithmetic overflow".
+#
+# The panics belong to the driver, because a panicking program has no next
+# line to assert on.
+module main
+
+def assert_true(condition : Bool, msg : String) : Nil
+  raise "assert failed: #{msg}" unless condition
+end
+
+def assert_int(actual : Int32, expected : Int32, msg : String) : Nil
+  raise "assert failed: #{msg} (#{actual} != #{expected})" unless actual == expected
+end
+
+def assert_str(actual : String, expected : String, msg : String) : Nil
+  raise "assert failed: #{msg} (#{actual} != #{expected})" unless actual == expected
+end
+
+# ---- Hash: one key, one entry, whatever it is written with
+counts = {} of String => Int32
+counts["a"] = 1
+counts["a"] = 2
+assert_int(counts.size, 1, "hash: a key written twice is one entry")
+assert_int(counts["a"]? || 0, 2, "hash: the second write is the value")
+
+# Past the first capacity, which is where a table rebuilds its index
+wide = {} of Int32 => Int32
+i = 0
+while i < 64
+  wide[i] = i * 10
+  i = i + 1
+end
+assert_int(wide.size, 64, "hash: sixty-four keys are sixty-four entries")
+missed = 0
+i = 0
+while i < 64
+  missed = missed + 1 if wide[i]? != i * 10
+  i = i + 1
+end
+assert_int(missed, 0, "hash: every key survives the growth")
+
+# A delete has to remove its own and leave the keys that probed past it
+i = 0
+while i < 64
+  wide.delete(i) if i % 2 == 0
+  i = i + 1
+end
+assert_int(wide.size, 32, "hash: deletes leave half")
+gone = 0
+kept = 0
+i = 0
+while i < 64
+  if i % 2 == 0
+    gone = gone + 1 if wide[i]? == nil
+  else
+    kept = kept + 1 if wide[i]? == i * 10
+  end
+  i = i + 1
+end
+assert_int(gone, 32, "hash: the deleted are gone")
+assert_int(kept, 32, "hash: the rest are findable")
+
+walked = 0
+wide.each { |key, value| walked = walked + 1 }
+assert_int(walked, wide.size, "hash: each counts what size says")
+assert_int(wide.keys.size, wide.size, "hash: keys is as long as size")
+assert_int(wide.values.size, wide.size, "hash: values is as long as size")
+
+# Emptied and used again
+i = 0
+while i < 64
+  wide.delete(i)
+  i = i + 1
+end
+assert_true(wide.empty?, "hash: emptied")
+assert_int(wide.size, 0, "hash: empty size")
+wide[7] = 70
+assert_int(wide[7]? || 0, 70, "hash: refilled after emptying")
+
+# A key nobody put in
+absent = {} of String => Int32
+absent["x"] = 1
+assert_true(absent.delete("y") == nil, "hash: deleting a missing key is nil")
+assert_int(absent.size, 1, "hash: a missing delete removes nothing")
+assert_true(absent.has_key?("x"), "hash: the survivor is still there")
+
+# Keys that share one slot by construction: `Array` has an `==` of its own
+# and takes `Object`'s hash, so every array key lands in the same slot and
+# the comparison is what finds it.
+crowded = {} of Array(Int32) => Int32
+i = 0
+while i < 16
+  crowded[[i]] = i
+  i = i + 1
+end
+wrong = 0
+i = 0
+while i < 16
+  wrong = wrong + 1 if crowded[[i]]? != i
+  i = i + 1
+end
+assert_int(wrong, 0, "hash: colliding keys are all findable")
+crowded.delete([8])
+assert_true(crowded[[8]]? == nil, "hash: one of the crowd deleted")
+assert_int(crowded[[9]]? || -1, 9, "hash: its neighbour survives")
+assert_int(crowded[[7]]? || -1, 7, "hash: and the one before it")
+
+# The order `each` promises, which is the order they went in
+order = {} of String => Int32
+order["z"] = 1
+order["a"] = 2
+order["m"] = 3
+names = order.keys
+assert_str(names[0], "z", "hash: first in, first out")
+assert_str(names[1], "a", "hash: second")
+assert_str(names[2], "m", "hash: third")
+
+# ---- Set
+members = Set(Int32).new
+members.add(1)
+members.add(2)
+members.add(1)
+assert_int(members.size, 2, "set: the same value once")
+assert_true(members.delete(1), "set: delete says it was there")
+assert_true(members.delete(1) == false, "set: and says when it was not")
+assert_int(members.size, 1, "set: size after a delete")
+assert_true(members.includes?(2), "set: the other one is still in")
+walked = 0
+members.each { |value| walked = walked + 1 }
+assert_int(walked, members.size, "set: each counts what size says")
+assert_int(members.to_a.size, members.size, "set: to_a is as long as size")
+
+others = Set(Int32).new
+others.add(2)
+others.add(3)
+assert_int((members - others).size, 0, "set: difference removes what is shared")
+assert_int((others - members).size, 1, "set: and keeps what is not")
+assert_int(Set(Int32).new.size, 0, "set: an empty one is empty")
+
+# ---- Array
+three = [1, 2, 3]
+assert_int(three[-1], 3, "array: the last through a negative index")
+assert_int(three[-3], 1, "array: the first through a negative index")
+assert_true(three[-4]? == nil, "array: past the start is nil")
+assert_true(three[3]? == nil, "array: past the end is nil")
+assert_int(three.first(2).size, 2, "array: first n")
+assert_int(three.first(9).size, 3, "array: first n past the end is all of it")
+assert_int([3, 1, 3, 2, 1].uniq.size, 3, "array: uniq")
+assert_int([1, 2, 3].reversed[0], 3, "array: reversed")
+assert_int([3, 1, 2].sorted[0], 1, "array: sorted")
+assert_int([1, 2].concat([3]).size, 3, "array: concat")
+
+# The defect: an array appended to itself is a doubling, not a loop.
+doubling = [1, 2]
+doubling.concat(doubling)
+assert_int(doubling.size, 4, "array: concat with itself doubles")
+assert_int(doubling[2], 1, "array: and copies what was there")
+assert_int(doubling[3], 2, "array: including the last of it")
+
+# An empty array answers the questions that have answers
+nothing = [] of Int32
+assert_int(nothing.size, 0, "array: empty size")
+assert_true(nothing.empty?, "array: empty?")
+assert_true(nothing.last? == nil, "array: empty last? is nil")
+assert_str(nothing.join, "", "array: empty join is empty")
+assert_int(nothing.sorted.size, 0, "array: empty sorted")
+assert_int(nothing.uniq.size, 0, "array: empty uniq")
+assert_int(nothing.count { |value| true }, 0, "array: empty count")
+assert_true(nothing.index(1) == nil, "array: empty index is nil")
+
+# Growth through `<<`, which is the other half of the buffer's arithmetic
+grown = [] of Int32
+i = 0
+while i < 1000
+  grown << i
+  i = i + 1
+end
+assert_int(grown.size, 1000, "array: a thousand appends")
+assert_int(grown[999], 999, "array: the last one is there")
+assert_int(grown[0], 0, "array: and the first")
+i = 0
+while i < 500
+  grown.pop
+  i = i + 1
+end
+assert_int(grown.size, 500, "array: five hundred pops")
+assert_int(grown[499], 499, "array: the new last")
+
+# ---- Range, whose walk used to step past its own end
+# `value <= @end` meant the last step left the type on the checked `+`, so a
+# range ending at the type's maximum panicked at the value it was asked to
+# yield last.
+assert_int((2147483645..2147483647).to_a.size, 3, "range: up to the type's maximum")
+assert_int((2147483645..2147483647).to_a[2], 2147483647, "range: and the maximum is in it")
+assert_int((1..3).to_a.size, 3, "range: inclusive counts both ends")
+assert_int((1...3).to_a.size, 2, "range: exclusive drops the end")
+assert_int((3..1).to_a.size, 0, "range: backwards is empty")
+assert_int((5..5).to_a.size, 1, "range: one value")
+assert_int((5...5).to_a.size, 0, "range: no values")
+assert_int((1..4).sum, 10, "range: sum")
+
+puts "all collection checks passed"

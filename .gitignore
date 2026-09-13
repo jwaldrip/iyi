@@ -58,3 +58,6 @@ __pycache__/
 /samples/crystal/kemal/app_artifact
 /samples/crystal/kemal/app_artifact.iyi
 /samples/crystal/kemal/*.log
+
+# Scratch compile state a build leaves beside the source it built.
+.iyi/

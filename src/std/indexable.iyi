@@ -376,13 +376,17 @@ pub trait Indexable
     result
   end
 
-  # Computes a hash code by combining element hash values.
+  # Combines the elements' hashes. Wrapping arithmetic, because a hash is a
+  # number modulo the word and nothing else: written with the checked `*` and
+  # `+`, this panicked with "arithmetic overflow" the moment a collection was
+  # long enough for `31 * h` to leave `Int32` - six elements of two digits
+  # each was enough, while the five-element cases in the gates passed.
   def hash : Int32
     h = size
     i = 0
     while i < size
       elem = unsafe_fetch(i)
-      h = 31 * h + (elem.responds_to?(:hash) ? elem.hash : 0)
+      h = (31 &* h) &+ (elem.responds_to?(:hash) ? elem.hash : 0)
       i = i + 1
     end
     h

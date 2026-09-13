@@ -4,6 +4,176 @@
 
 ### Fixed
 
+- **A range that ends at the type's maximum stepped past it.** The inclusive
+  walk was `while value <= @end` followed by `value = value + 1`, so the
+  last step left the type on the checked `+` and
+  `(2147483645..2147483647).each` panicked with "arithmetic overflow" at the
+  value it was asked to yield last — `Int64`'s maximum too. It stops *at*
+  the end now and yields it there. `Array(Int32).new(-1)` was the same shape
+  of message about the wrong thing: a negative capacity reached `to_u64` and
+  panicked about arithmetic, where "negative capacity" is what happened.
+  Both are in `bench/collections_exercise.sh`, one of them with a proof that
+  puts the old step back and watches the overflow return.
+- **`%f` and `%e` rounded the shortest decimal, not the number.** Two
+  corrections, both measured against the other language, C and Python over
+  908 cases. A tie went *away from zero*, so `%.1f` of 0.25 answered 0.3 and
+  `%.0f` of 2.5 answered 3 where every reference answers 0.2 and 2 — a tie
+  goes to the even digit. And a tie was read off the value's *shortest*
+  decimal, which is not the value: 2.345 is stored a shade above and 1.015 a
+  shade below, so `%.2f` answered 2.34 and 1.02 against 2.35 and 1.01. The
+  tie is now decided by asking the number — `f * 2^e` against the tie
+  decimal, both sides scaled to integers and compared with the prelude's own
+  bignum — and only when the digits actually say "half", so the ordinary
+  path is unchanged. 568 fixed-point cases and 340 exponent cases match the
+  references exactly. `bench/format_exercise.iyi` pins the fourteen that
+  moved, and the check that read `%.0f` of 2.5 as "3" — a deviation from
+  every reference, pinned as if it were a rule — now reads 2.
+- **A year before the era printed as `000-1-01-01`.** `pad4` filled a
+  four-character field with zeros in front of a minus sign, so the sign
+  landed inside the year. The conversions were right all along — every epoch
+  from year -100 to 9999 round-trips through `Time.unix`/`to_unix` — so this
+  was the printing alone: ISO 8601 spells it `-0001`, and now so does this.
+- **Ten text methods panicked on a character above ASCII.** `"a☃b".index('☃')`
+  died of "arithmetic overflow" — a sentence about arithmetic for a question
+  about text — because a `Char` was narrowed to one byte through a *checked*
+  convert. In the prelude that was `index`, `split`, `starts_with?`, `chomp`
+  and `lchop`; in `src/std/text.iyi` it was `lstrip`, `rstrip`,
+  `ends_with?`, `split`, `index`, `rindex`, `delete`, `squeeze` and `count`
+  as well. Each compares the character's own bytes now, which is what
+  `Char#to_s` writes and what the string holds. Two more answered wrongly
+  rather than panicking: `center` padded by bytes, so `"héllo".center(9)`
+  came back eight characters wide, and `tr` used a 256-entry byte table, so
+  `"a☃".tr("☃", "x")` answered `"axxx"` — one `x` per byte of the character
+  it was asked to replace once. Both count characters now, and `%s`'s width
+  and precision in `src/std/format.iyi` do too, which is the same decision
+  the prelude's `ljust`/`rjust` made.
+- **An array appended to itself grew until the arithmetic stopped it.**
+  `concat` walked *other*'s size with `each` while `<<` grew it, so
+  `[1, 2].concat(itself)` never reached the end: it grew the buffer until
+  the capacity arithmetic overflowed. The length is read once now, so it is
+  a doubling. `bench/collections_exercise.sh` is the gate it arrived with —
+  `Array`, `Hash` and `Set` at their edges, eight panics with names and
+  eight broken methods of a copied prelude.
+- **Two checked-arithmetic panics in the trait floor.** `Indexable#hash`
+  mixed with `31 * h + …` on the *checked* operators, so a collection long
+  enough to leave `Int32` panicked instead of hashing — six two-digit
+  numbers were enough, while the five-element cases in the gates passed. A
+  hash is a number modulo the word, so it wraps now. And `impl Cmp for
+  Int32` defined `cmp` as `self - other`, so `2000000000.cmp(-2000000000)`
+  overflowed and every `Enumerable` method that reads `cmp` — `sorted`,
+  `min`, `max`, `includes?`, `clamp` — refused a pair that `<` answers for.
+  It compares now. `impl Cmp for String` called a `<=>` the prelude's
+  `String` does not have, which nobody could ever have called.
+- **A port and an address are checked before they are packed.**
+  `IyiSocket.listen(70000, 1)` packed the port into sixteen bits without
+  asking and bound **4464**; `-1` bound 65535. And the address parser
+  accumulated digits unbounded, so `"999999999999.1.1.1"` left `Int32` and
+  panicked about arithmetic rather than naming the address it could not
+  resolve. Both refuse by name now, driven from `bench/socket_exercise.sh`.
+- **One window, three answers.** `each_slice(0)` and `each_cons(0)` raised
+  a named panic in `Indexable`, yielded nothing in `Enumerable`, and shifted
+  an empty array inside the `Iterator` adaptor — the same call on three
+  trait towers. All three refuse by name now. And `Slice#to_s` printed its
+  elements with `to_s` where `Array#to_s` inspects them, so the same data
+  read back two ways (`Slice[a, b]` beside `["a", "b"]`).
+- **The float surface was probed and found right, so it is pinned.** The
+  same question asked of `Float64` — which methods disagree with each other
+  at the edges — came back with nothing: `NaN` is not itself and cannot be
+  found again as a key it nevertheless occupies, `-0.0` equals `0.0` and
+  shares its slot, a comparison sort handed a `NaN` comes back with
+  everything it was given, `to_i` truncates toward zero the way `//` does,
+  and every conversion that cannot fit — `1e20.to_i`, `NaN.to_i`,
+  `Infinity.to_i`, and the boundary `2147483647.9.to_i` — is a panic rather
+  than whatever the hardware left behind. The boundary is the interesting
+  one: it truncates to a value that fits and is still refused, which this
+  compiler and the other language were both measured doing. Sixteen of
+  those properties are checks in `bench/number_exercise.iyi` now, with four
+  driver-run panics and two proofs that break `floor` and `round` in a
+  copied prelude — a clean probe is worth keeping only if it becomes a
+  gate.
+- **`Int32::MIN` can be read back from what it prints, and the division
+  that overflows is a sentence rather than a signal.** Three defects at the
+  edges of the integers, all found by one probe. `String#to_i?`
+  accumulated the *positive* magnitude, so the one value with no positive
+  twin was unreadable — `"-2147483648".to_i` panicked with "arithmetic
+  overflow" — and every out-of-range string panicked the same way instead
+  of answering the `nil` a `?` promises. It reads a negative magnitude now
+  and checks the last digit before using it, so `MIN` round-trips and
+  `"2147483648".to_i?` is nil. `src/std/text.iyi` carried the same defect
+  twice, in `to_i?(base)` and `to_i64?(base)`, and carries the same fix.
+  And `MIN // -1` — the one division whose result the type does not hold —
+  reached `unsafe_div` and **killed the process with SIGFPE**: "Process
+  terminated because of a floating-point system exception", for an integer
+  divide, which is the exact sentence the zero divisor was checked to avoid
+  one commit earlier and the overflow beside it was not. Checked now for
+  `Int32` and `Int64`; `MIN % -1` is zero and answers zero rather than
+  trapping underneath.
+- **And `//` truncates while `%` takes the dividend's sign**, which is
+  C's pair and not Crystal's floor-and-modulo. It was never written down,
+  and it is the sort of difference a program ported from Crystal keeps
+  silently: `-7 // 2` is -3 here and -4 there. Self-consistent — the
+  identity `(a // b) * b + (a % b) == a` holds for all four sign
+  combinations, measured — and `src/std/time.iyi` was checked against
+  negative epochs and negative spans before this was recorded rather than
+  changed. `bench/number_exercise.sh` is the gate for all of it: the edges
+  plain and optimised, the four panics driven from the driver because a
+  panicking program has no next line, six broken methods of a copied
+  prelude, and a seventh proof that asks for SIGFPE itself to show the new
+  guard is load-bearing.
+- **A tuple and a range are their members, which is what `==` had never
+  said.** The prelude wrote `Tuple#size`, `#[]`, `#to_s` and `#inspect` and
+  never `==` or `hash`, and wrote neither for `Range` either, so `Object`'s
+  answered — identity, on a value type — and `{1, 2} == {1, 2}` and
+  `(1..3) == (1..3)` were both **false**. Everything that asks a value
+  whether it is equal was wrong with them: a key was never found in a `Hash`
+  (`table[{1, 2}]?` after `table[{1, 2}] = "x"` answered nil), a `Set` of
+  them was a list, `includes?`, `index` and `uniq` over `zip`'s *own* result
+  answered no, and a `case` over a tuple matched nothing, because a `when`
+  is `===` and `===` is `==`. All four written now, element-wise, and
+  hashing follows equality because a key is found by its slot first and
+  compared second. Found by probing the prelude's collections for the same
+  self-disagreement the string surface had, and `bench/value_exercise.sh`
+  is the gate: both surfaces plain and optimised, the sample whose `zip`
+  reaches one, and ten broken methods of a copied prelude to prove each
+  check can fail.
+- **And the reason, measured rather than argued.** SPEC.md said for one
+  commit that a type-id hash "starts being wrong" once a type defines
+  equality. It does not: the requirement runs one way — equal values must
+  hash equally — and a coarser hash keeps it, so `Object#hash`'s default is
+  correct and slow. Keyed two ways with 40,000 lookups each, 2,000
+  `Array(Int32)` keys (an `==` of their own, no `hash`) answer in 28 ms
+  against 3 ms for tuples, and at 4,000 keys it is 104 ms against 8. The
+  broken direction is a hash *finer* than `==`, which nothing in the
+  prelude has. `Set` and `Hash` still compare by identity, which is
+  coherent for references and is recorded beside `Array#==` because the
+  prelude's collections do not all answer that question the same way.
+- **Padding is measured in characters, because `size` is.** `ljust` and
+  `rjust` counted bytes: `"héllo".ljust(7, '.')` answered a string whose own
+  `size` was 6, so the one thing padding is asked for — lining a column up —
+  worked for ASCII and for nothing else. The pad was written as one byte
+  too, so a multi-byte one (`'·'`) left a lone continuation byte inside the
+  result. Both fixed: the width is the count `size` reports and the pad
+  travels as its own bytes. ASCII is unchanged, which is every sample.
+  Found by probing the prelude's string surface for the same
+  self-disagreement `each_char` had — `size` said 5 and the method said 6 —
+  and `bench/std_text_exercise.iyi` now holds the padded widths with two
+  more proofs that patch the prelude where they live (eleven in all).
+- **The scheduler's fiber states are named.** They were an `Int32` with
+  seven numbers and their meanings in a comment, because the prelude had no
+  `Enum` surface when the scheduler was written. It has one, and the comment
+  was the argument for keeping the integer: every line of the scheduler
+  reads or writes a state under the runtime lock, and what those
+  comparisons cost is measured, so naming them is a change that had to be
+  measured too. It was. `enum IyiFiberState : Int32` with `Running`,
+  `Runnable`, `Sleeping`, `WaitingIo`, `WaitingCh`, `Joining` and `Done`,
+  across nineteen sites in `concurrency.iyi` and the one in the collector's
+  root walk that skipped a running or finished fiber by number. Two million
+  channel round trips cost 127 ms optimised and 343 ms plain, against 164
+  and 343 for the integer — inside the noise either way, because `==` on an
+  enum is its value compared and a member is a constant. `server_load`,
+  `concurrency_exercise`, `thread_exercise`, `thread_floor`,
+  `parallel_mark`, `concurrent_mark`, `panics`, `runtime_exercise`, the
+  five collector gates and `dependency_floor` all hold.
 - **A module may not replace one of the prelude's methods either.** The
   rule said "a `.iyi` file may add to the other language's type and may not
   replace one of its methods", and stopped at the other language on the
@@ -24,6 +194,20 @@
   `std/text` keeps what the prelude does not have. `Array#join` with no
   separator and a `byte_slice` helper were the prelude's twice over and are
   its once.
+- **And a macro is the same act, one layer wider.** R-3 was asked of `def`
+  and not of `macro`, which is where it costs more: `getter` is a
+  *declaration* macro, so `class ::Object; macro getter(*names)` in one file
+  decided what every field declaration in the program meant — including the
+  ones in files that never heard of it — and `getter value` answered 99 with
+  nothing said at either definition. Macros travel in an artifact too, so a
+  consumer could inherit one from a module whose source it never reads.
+  Asked at the same place now: `add_macro` answers which macro this one took
+  the place of, the way `add_def` always has. An addition is still an
+  addition, and a macro on a type the module declared is its own — a
+  program's `class Holder; macro getter` is untouched, because `Holder`'s is
+  not `Object`'s. A class method was already covered and a constant is
+  refused by name (`already initialized constant`); those were checked
+  rather than assumed.
 - **An artifact whose module path now reaches another file says so.** A
   path is a file's path (R-1) and it resolves from the entry's directory
   before `IYI_PATH`, so a program with its own `std/text.iyi` has that file
@@ -5223,7 +5407,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 13,948-line library and nothing else. Every other
+  written against iyi's own 13,949-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 
