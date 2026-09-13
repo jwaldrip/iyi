@@ -812,7 +812,6 @@ pub class Parser < Lexer
           next
         end
 
-
         name = @token.value.empty? ? @token.type.to_s : @token.value
         next_token
 
@@ -3651,6 +3650,7 @@ pub class Parser < Lexer
     exp = parse_op_assign
     VisibilityModifier.new(modifier, exp).at(location)
   end
+
   def parse_defer : ASTNode
     location = @token.location
     next_token_skip_space
@@ -3690,7 +3690,6 @@ pub class Parser < Lexer
 
     Recover.new(atomic, default).at_end(end_location)
   end
-
 
   def parse_pub : ASTNode
     pub_location = @token.location

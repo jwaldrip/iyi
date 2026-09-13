@@ -5,16 +5,7 @@ import compiler/syntax/transformer
 import compiler/syntax/visitor
 import std/digest
 
-using compiler/syntax/ast::{
-  ASTNode, Alias, And, Arg, ArrayLiteral, Assign, Block, BoolLiteral,
-  Break, Call, CharLiteral, ClassVar, Def, Defer, DoubleSplat,
-  ExceptionHandler, Expressions, Generic, Global, If, InstanceVar,
-  IsA, Macro, MultiAssign, NamedArgument, Next, NilLiteral, Nop,
-  Not, NumberLiteral, OpAssign, Or, Path, ProcLiteral, ProcNotation,
-  Propagate, Recover, Return, Splat, StringInterpolation, StringLiteral,
-  SymbolLiteral, TupleLiteral, Underscore, Union, Unless, Until,
-  Var, While
-}
+using compiler/syntax/ast::{ASTNode, Alias, And, Arg, ArrayLiteral, Assign, Block, BoolLiteral, Break, Call, CharLiteral, ClassVar, Def, Defer, DoubleSplat, ExceptionHandler, Expressions, Generic, Global, If, InstanceVar, IsA, Macro, MultiAssign, NamedArgument, Next, NilLiteral, Nop, Not, NumberLiteral, OpAssign, Or, Path, ProcLiteral, ProcNotation, Propagate, Recover, Return, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, Underscore, Union, Unless, Until, Var, While}
 using compiler/syntax/transformer::{Transformer}
 using compiler/syntax/visitor::{Visitor}
 
@@ -181,10 +172,10 @@ pub class Normalizer < Transformer
 
     body = block.body
     statements = if body.is_a?(Expressions)
-      body.expressions.dup
-    else
-      [body] of ASTNode
-    end
+                   body.expressions.dup
+                 else
+                   [body] of ASTNode
+                 end
 
     handles = [] of ASTNode
     rewritten = [] of ASTNode
@@ -413,11 +404,11 @@ pub class Normalizer < Transformer
     check.error_construct = node.panic? ? ".or_panic" : ".or"
 
     recovery = if d = node.default
-      d.transform(self)
-    else
-      msg_call = Call.new(temp_var.clone, "message").at(node)
-      Call.new(nil, "raise", [msg_call] of ASTNode, nil, nil, nil, false, nil, true).at(node)
-    end
+                 d.transform(self)
+               else
+                 msg_call = Call.new(temp_var.clone, "message").at(node)
+                 Call.new(nil, "raise", [msg_call] of ASTNode, nil, nil, nil, false, nil, true).at(node)
+               end
 
     value = If.new(check, recovery, temp_var.clone).at(node)
 
@@ -672,7 +663,7 @@ pub class Normalizer < Transformer
   private def block_unpack_multiassign(
     var_name : String,
     expressions : Expressions,
-    next_unpacks : Array({String, Expressions})
+    next_unpacks : Array({String, Expressions}),
   ) : ASTNode
     targets = [] of ASTNode
     i = 0

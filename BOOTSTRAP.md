@@ -8,19 +8,20 @@ and `bash bench/dependency_floor.sh`, not estimated.
 
 ## Where this actually stands
 
-`src/compiler` is **109,825 lines of Crystal and 16,474 lines of iyi**. The iyi
+`src/compiler` is **109,825 lines of Crystal and 17,349 lines of iyi**. The iyi
 side is the lexer, the token, the AST, the visitor and transformer, the parser's
-expressions and declarations, the four foundation files, and the LLVM bindings:
+expressions and declarations, the normalizer, the four foundation files, and the LLVM bindings:
 
 | in iyi | lines | proved by |
 |---|---|---|
 | `syntax/lexer.iyi`, `syntax/token.iyi` | 3,103 | `bench/selfhost_lexer_exercise.sh`: 42 fixtures, 21,034 tokens identical to the Crystal front end |
-| `syntax/ast.iyi`, `visitor.iyi`, `transformer.iyi` | 7,096 | `bench/selfhost_ast_exercise.sh`, five guarded mutation proofs |
-| `syntax/parser.iyi` (no macros) | 3,868 | `bench/selfhost_parser_exercise.sh`: 24 fixtures, 1,609 normalised nodes identical to the Crystal front end, nine guarded mutation proofs |
+| `syntax/ast.iyi`, `visitor.iyi`, `transformer.iyi` | 7,199 | `bench/selfhost_ast_exercise.sh`, five guarded mutation proofs |
+| `syntax/parser.iyi` (no macros) | 3,926 | `bench/selfhost_parser_exercise.sh`: 24 fixtures, 1,609 normalised nodes identical to the Crystal front end, nine guarded mutation proofs |
+| `semantic/normalizer.iyi` | 714 | `bench/selfhost_normalizer_exercise.sh`: 11 fixtures, 577 normalised nodes identical to the Crystal front end, five guarded mutation proofs |
 | `llvm/*.iyi` | 2,285 | `bench/selfhost_llvm_exercise.sh`: a real object file emitted from iyi code, linked against a C driver, run |
 | `foundation/*.iyi` | 122 | compiled by the above |
 
-What is **not** in iyi: the normalizer, semantic analysis, the type system, the
+What is **not** in iyi: semantic analysis, the type system, the
 macro engine, the artifact format, the formatter, codegen, the command driver,
 the daemon, and platform support. That is the 109,825.
 
