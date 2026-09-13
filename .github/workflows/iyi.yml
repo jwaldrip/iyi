@@ -592,8 +592,12 @@ jobs:
       - name: The selfhost normalizer rewrites what the front end rewrites
         run: bash bench/selfhost_normalizer_exercise.sh
 
-      - name: The selfhost bind tool matches the front end it replaces
+      # Not a parity gate: its oracle is a second implementation, not the tool
+      # being replaced. The header of the script says why, and what would make
+      # it one.
+      - name: The selfhost bind tool answers consistently, and can fail
         run: bash bench/selfhost_bind_exercise.sh
+
       # What a kernel thread costs that floor, measured before anything is
       # designed on one (GC_DESIGN.md Stages 4, 7, 8, 9; III.4.7's `Share`):
       # raw `clone`, a `tgkill` stop-the-world, a futex join, and the
