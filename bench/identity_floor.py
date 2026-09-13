@@ -60,6 +60,11 @@ ALLOWED_PATHS: list[tuple[str, str]] = [
     # still bootstrapped from, and requires the normalised trees identical.
     # The other language is what is being compared against, so it is named.
     (r"^bench/selfhost_parser_exercise\.sh$", "the frontend the selfhost parser is checked against"),
+    # The self-hosting normalizer's oracle, for the same reason as the
+    # parser's: it normalises each fixture with the iyi normalizer and with
+    # the frontend iyi is still bootstrapped from, and requires the dumped
+    # trees identical. The other language is the thing being compared against.
+    (r"^bench/selfhost_normalizer_exercise\.sh$", "the frontend the selfhost normalizer is checked against"),
     # The UUID exercise records a spelling iyi cannot have: `v1!`..`v8!` are
     # the other language's names, and `!` is an iyi operator. Naming the
     # language there is the whole point of the note.

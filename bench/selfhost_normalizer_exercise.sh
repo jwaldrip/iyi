@@ -268,6 +268,25 @@ def dump_ast(node : Iyi::ASTNode?, indent : Int32 = 0) : String
     s = "#{p}Yield\n"
     node.exps.each { |e| s += dump_ast(e, indent + 1) }
     s
+  when Iyi::Cast
+    s = "#{p}Cast\n"
+    s += "#{p}  obj:\n" + dump_ast(node.obj, indent + 2)
+    s += "#{p}  to:\n" + dump_ast(node.to, indent + 2)
+    s
+  when Iyi::NilableCast
+    s = "#{p}NilableCast\n"
+    s += "#{p}  obj:\n" + dump_ast(node.obj, indent + 2)
+    s += "#{p}  to:\n" + dump_ast(node.to, indent + 2)
+    s
+  when Iyi::IsA
+    s = "#{p}IsA\n"
+    s += "#{p}  obj:\n" + dump_ast(node.obj, indent + 2)
+    s += "#{p}  const:\n" + dump_ast(node.const, indent + 2)
+    s
+  when Iyi::RespondsTo
+    s = "#{p}RespondsTo name=#{escape_s(node.name)}\n"
+    s += "#{p}  obj:\n" + dump_ast(node.obj, indent + 2)
+    s
   when Iyi::Def
     receiver_s = node.receiver ? " receiver" : ""
     abstract_s = node.abstract? ? " abstract=true" : ""
@@ -466,6 +485,46 @@ def dump_ast(node : Iyi::ASTNode?, indent : Int32 = 0) : String
   when Iyi::Metaclass
     s = "#{p}Metaclass\n"
     s += "#{p}  name:\n" + dump_ast(node.name, indent + 2)
+    s
+  when Iyi::ExceptionHandler
+    s = "#{p}ExceptionHandler\n"
+    s += "#{p}  body:\n" + dump_ast(node.body, indent + 2)
+    if rescues = node.rescues
+      rescues.each do |r|
+        s += "#{p}  rescue:\n"
+        s += "#{p}    name=#{escape_s(r.name || "")}\n"
+        if types = r.types
+          s += "#{p}    types:\n"
+          types.each { |t| s += dump_ast(t, indent + 3) }
+        end
+        s += "#{p}    body:\n" + dump_ast(r.body, indent + 3)
+      end
+    end
+    if else_body = node.else
+      s += "#{p}  else:\n" + dump_ast(else_body, indent + 2)
+    end
+    if ensure_body = node.ensure
+      s += "#{p}  ensure:\n" + dump_ast(ensure_body, indent + 2)
+    end
+    s
+  when Iyi::ProcLiteral
+    s = "#{p}ProcLiteral\n"
+    s += dump_ast(node.def, indent + 1)
+    s
+  when Iyi::Propagate
+    s = "#{p}Propagate\n"
+    s += dump_ast(node.exp, indent + 1)
+    s
+  when Iyi::Defer
+    s = "#{p}Defer\n"
+    s += dump_ast(node.exp, indent + 1)
+    s
+  when Iyi::Recover
+    s = "#{p}Recover\n"
+    s += "#{p}  exp:\n" + dump_ast(node.exp, indent + 2)
+    if d = node.default
+      s += "#{p}  default:\n" + dump_ast(d, indent + 2)
+    end
     s
   else
     "#{p}#{node.class.name}\n"
