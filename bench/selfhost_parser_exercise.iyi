@@ -13,7 +13,7 @@ using compiler/foundation/errors::{SyntaxException}
 using compiler/foundation/string_pool::{StringPool}
 using compiler/syntax/token::{Token, TokenKind, Keyword, NumberKind, DelimiterKind, DelimiterState}
 using compiler/syntax/lexer::{Lexer}
-using compiler/syntax/ast::{ASTNode, Expressions, Nop, NilLiteral, BoolLiteral, NumberLiteral, CharLiteral, StringLiteral, StringInterpolation, SymbolLiteral, ArrayLiteral, HashLiteral, TupleLiteral, NamedTupleLiteral, RangeLiteral, RegexLiteral, Var, InstanceVar, ClassVar, Global, Path, Generic, Self, Underscore, ImplicitObj, Return, Break, Next, Yield, If, Unless, While, Until, Case, When, Assign, OpAssign, MultiAssign, And, Or, Not, Splat, DoubleSplat, Cast, NilableCast, IsA, RespondsTo, TypeOf, NamedArgument, Block, Call}
+using compiler/syntax/ast::{ASTNode, Expressions, Nop, NilLiteral, BoolLiteral, NumberLiteral, CharLiteral, StringLiteral, StringInterpolation, SymbolLiteral, ArrayLiteral, HashLiteral, TupleLiteral, NamedTupleLiteral, RangeLiteral, RegexLiteral, Var, InstanceVar, ClassVar, Global, Path, Generic, Self, Underscore, ImplicitObj, Return, Break, Next, Yield, If, Unless, While, Until, Case, When, Assign, OpAssign, MultiAssign, And, Or, Not, Splat, DoubleSplat, Cast, NilableCast, IsA, RespondsTo, TypeOf, NamedArgument, Block, Call, Def, Arg, ClassDef, ModuleDef, EnumDef, Alias, Include, Extend, TraitDef, ImplDef, AssocTypeDecl, AnnotationDef, Annotation, TypeDeclaration, UninitializedVar, VisibilityModifier, LibDef, FunDef, TypeDef, CStructOrUnionDef, ExternalVar, ProcNotation, Union, Metaclass, ModuleHeader}
 using compiler/syntax/parser::{Parser}
 using compiler/syntax/visitor::{Visitor, NodeCounterVisitor}
 
@@ -275,6 +275,205 @@ module BenchSelfhostParserExercise
       s = "#{p}RespondsTo name=#{escape_s(node.name)}\n"
       s += "#{p}  obj:\n" + dump_ast(node.obj, indent + 2)
       s
+    when Def
+      receiver_s = node.receiver ? " receiver" : ""
+      abstract_s = node.abstract ? " abstract=true" : ""
+      splat_s = node.splat_index ? " splat=#{node.splat_index}" : ""
+      s = "#{p}Def name=#{escape_s(node.name)}#{receiver_s}#{abstract_s}#{splat_s}\n"
+      if r = node.receiver
+        s += "#{p}  receiver:\n" + dump_ast(r, indent + 2)
+      end
+      if !node.args.empty?
+        s += "#{p}  args:\n"
+        node.args.each { |a| s += dump_ast(a, indent + 2) }
+      end
+      if ds = node.double_splat
+        s += "#{p}  double_splat:\n" + dump_ast(ds, indent + 2)
+      end
+      if ba = node.block_arg
+        s += "#{p}  block_arg:\n" + dump_ast(ba, indent + 2)
+      end
+      if rt = node.return_type
+        s += "#{p}  return_type:\n" + dump_ast(rt, indent + 2)
+      end
+      if fv = node.free_vars
+        s += "#{p}  free_vars=[#{fv.join(", ")}]\n"
+      end
+      s += "#{p}  body:\n" + dump_ast(node.body, indent + 2)
+      s
+    when Arg
+      ext_s = (ext = node.external_name) && ext != node.name ? " external_name=#{escape_s(ext)}" : ""
+      s = "#{p}Arg name=#{escape_s(node.name)}#{ext_s}\n"
+      if rest = node.restriction
+        s += "#{p}  restriction:\n" + dump_ast(rest, indent + 2)
+      end
+      if def_val = node.default_value
+        s += "#{p}  default_value:\n" + dump_ast(def_val, indent + 2)
+      end
+      s
+    when ClassDef
+      splat_s = node.splat_index ? " splat=#{node.splat_index}" : ""
+      s = "#{p}ClassDef struct=#{node.struct} abstract=#{node.abstract}#{splat_s}\n"
+      s += "#{p}  name:\n" + dump_ast(node.name, indent + 2)
+      if tv = node.type_vars
+        s += "#{p}  type_vars=[#{tv.join(", ")}]\n"
+      end
+      if sc = node.superclass
+        s += "#{p}  superclass:\n" + dump_ast(sc, indent + 2)
+      end
+      s += "#{p}  body:\n" + dump_ast(node.body, indent + 2)
+      s
+    when ModuleDef
+      splat_s = node.splat_index ? " splat=#{node.splat_index}" : ""
+      s = "#{p}ModuleDef#{splat_s}\n"
+      s += "#{p}  name:\n" + dump_ast(node.name, indent + 2)
+      if tv = node.type_vars
+        s += "#{p}  type_vars=[#{tv.join(", ")}]\n"
+      end
+      s += "#{p}  body:\n" + dump_ast(node.body, indent + 2)
+      s
+    when EnumDef
+      s = "#{p}EnumDef\n"
+      s += "#{p}  name:\n" + dump_ast(node.name, indent + 2)
+      if bt = node.base_type
+        s += "#{p}  base_type:\n" + dump_ast(bt, indent + 2)
+      end
+      if !node.members.empty?
+        s += "#{p}  members:\n"
+        node.members.each { |m| s += dump_ast(m, indent + 2) }
+      end
+      s
+    when Alias
+      s = "#{p}Alias\n"
+      s += "#{p}  name:\n" + dump_ast(node.name, indent + 2)
+      s += "#{p}  value:\n" + dump_ast(node.value, indent + 2)
+      s
+    when Include
+      s = "#{p}Include\n"
+      s += "#{p}  name:\n" + dump_ast(node.name, indent + 2)
+      s
+    when Extend
+      s = "#{p}Extend\n"
+      s += "#{p}  name:\n" + dump_ast(node.name, indent + 2)
+      s
+    when TraitDef
+      s = "#{p}TraitDef\n"
+      s += "#{p}  name:\n" + dump_ast(node.name, indent + 2)
+      if tv = node.type_vars
+        s += "#{p}  type_vars=[#{tv.join(", ")}]\n"
+      end
+      if at = node.assoc_types
+        s += "#{p}  assoc_types=[#{at.join(", ")}]\n"
+      end
+      if st = node.supertraits
+        s += "#{p}  supertraits:\n"
+        st.each { |st_node| s += dump_ast(st_node, indent + 2) }
+      end
+      s += "#{p}  body:\n" + dump_ast(node.body, indent + 2)
+      s
+    when ImplDef
+      s = "#{p}ImplDef\n"
+      s += "#{p}  trait:\n" + dump_ast(node.trait, indent + 2)
+      if ta = node.trait_args
+        s += "#{p}  trait_args:\n"
+        ta.each { |arg| s += dump_ast(arg, indent + 2) }
+      end
+      s += "#{p}  target:\n" + dump_ast(node.target, indent + 2)
+      if tv = node.type_vars
+        s += "#{p}  type_vars=[#{tv.join(", ")}]\n"
+      end
+      s += "#{p}  body:\n" + dump_ast(node.body, indent + 2)
+      s
+    when AssocTypeDecl
+      s = "#{p}AssocTypeDecl name=#{escape_s(node.name)}\n"
+      if val = node.value
+        s += "#{p}  value:\n" + dump_ast(val, indent + 2)
+      end
+      s
+    when AnnotationDef
+      s = "#{p}AnnotationDef\n"
+      s += "#{p}  name:\n" + dump_ast(node.name, indent + 2)
+      s
+    when Annotation
+      s = "#{p}Annotation\n"
+      s += "#{p}  path:\n" + dump_ast(node.path, indent + 2)
+      if !node.args.empty?
+        s += "#{p}  args:\n"
+        node.args.each { |a| s += dump_ast(a, indent + 2) }
+      end
+      if na = node.named_args
+        s += "#{p}  named_args:\n"
+        na.each { |a| s += dump_ast(a, indent + 2) }
+      end
+      s
+    when TypeDeclaration
+      s = "#{p}TypeDeclaration\n"
+      s += "#{p}  var:\n" + dump_ast(node.var, indent + 2)
+      s += "#{p}  declared_type:\n" + dump_ast(node.declared_type, indent + 2)
+      if val = node.value
+        s += "#{p}  value:\n" + dump_ast(val, indent + 2)
+      end
+      s
+    when UninitializedVar
+      s = "#{p}UninitializedVar\n"
+      s += "#{p}  var:\n" + dump_ast(node.var, indent + 2)
+      s += "#{p}  declared_type:\n" + dump_ast(node.declared_type, indent + 2)
+      s
+    when VisibilityModifier
+      s = "#{p}VisibilityModifier modifier=#{node.modifier.to_s.downcase}\n"
+      s += "#{p}  exp:\n" + dump_ast(node.exp, indent + 2)
+      s
+    when LibDef
+      s = "#{p}LibDef\n"
+      s += "#{p}  name:\n" + dump_ast(node.name, indent + 2)
+      s += "#{p}  body:\n" + dump_ast(node.body, indent + 2)
+      s
+    when FunDef
+      real_s = (r = node.real_name) ? " real_name=#{escape_s(r)}" : ""
+      s = "#{p}FunDef name=#{escape_s(node.name)}#{real_s}\n"
+      if !node.args.empty?
+        s += "#{p}  args:\n"
+        node.args.each { |a| s += dump_ast(a, indent + 2) }
+      end
+      if rt = node.return_type
+        s += "#{p}  return_type:\n" + dump_ast(rt, indent + 2)
+      end
+      if b = node.body
+        s += "#{p}  body:\n" + dump_ast(b, indent + 2)
+      end
+      s
+    when TypeDef
+      s = "#{p}TypeDef name=#{escape_s(node.name)}\n"
+      s += "#{p}  type_spec:\n" + dump_ast(node.type_spec, indent + 2)
+      s
+    when CStructOrUnionDef
+      s = "#{p}CStructOrUnionDef name=#{escape_s(node.name)} union=#{node.union}\n"
+      s += "#{p}  body:\n" + dump_ast(node.body, indent + 2)
+      s
+    when ExternalVar
+      real_s = (r = node.real_name) ? " real_name=#{escape_s(r)}" : ""
+      s = "#{p}ExternalVar name=#{escape_s(node.name)}#{real_s}\n"
+      s += "#{p}  type_spec:\n" + dump_ast(node.type_spec, indent + 2)
+      s
+    when ProcNotation
+      s = "#{p}ProcNotation\n"
+      if inputs = node.inputs
+        s += "#{p}  inputs:\n"
+        inputs.each { |inp| s += dump_ast(inp, indent + 2) }
+      end
+      if o = node.output
+        s += "#{p}  output:\n" + dump_ast(o, indent + 2)
+      end
+      s
+    when Compiler::Syntax::Ast::Union
+      s = "#{p}Union\n"
+      s += "#{p}  types:\n"
+      node.types.each { |t| s += dump_ast(t, indent + 2) }
+      s
+    when Metaclass
+      s = "#{p}Metaclass\n"
+      s += "#{p}  name:\n" + dump_ast(node.name, indent + 2)
+      s
     else
       "#{p}ASTNode\n"
     end
@@ -337,6 +536,43 @@ module BenchSelfhostParserExercise
     puts "ok (control expressions verified)"
   end
 
+  def self.test_declarations
+    print "testing declaration parsing... "
+    p = Parser.new("def foo(x : Int32) : String; return \"ok\"; end; class Bar < Foo; end; enum Color; Red; Green; end")
+    node = p.parse
+    assert(node.is_a?(Expressions), "expressions root")
+    exps = node.as(Expressions).expressions
+    assert(exps[0].is_a?(Def), "def declaration")
+    assert(exps[1].is_a?(ClassDef), "class declaration")
+    assert(exps[2].is_a?(EnumDef), "enum declaration")
+
+    # The declaration's own details, not just its node kind. A parser that
+    # dropped the return type or the superclass would still answer `Def` and
+    # `ClassDef` here, so those two are read back directly.
+    def_node = exps[0].as(Def)
+    assert(def_node.name == "foo", "def name")
+    assert(def_node.return_type.as(Path).names.join("::") == "String", "def return type")
+    class_node = exps[1].as(ClassDef)
+    assert(class_node.superclass.as(Path).names.join("::") == "Foo", "class superclass")
+
+    # A trait implementation, whose target is a path written without a leading
+    # `::`. The target's own global flag is asserted because nothing else here
+    # observes it, and a parser that marked every path global would otherwise
+    # produce a tree that still passes every other check in this file.
+    p2 = Parser.new("trait Show; abstract def show : String; end; impl Show for User; def show : String; return \"u\"; end; end")
+    node2 = p2.parse
+    exps2 = node2.as(Expressions).expressions
+    assert(exps2[0].is_a?(TraitDef), "trait declaration")
+    impl_node = exps2[1].as(ImplDef)
+    trait_path = impl_node.trait.as(Path)
+    target_path = impl_node.target.as(Path)
+    assert(trait_path.names.join("::") == "Show", "impl trait name")
+    assert(trait_path.global == false, "impl trait path is not global")
+    assert(target_path.names.join("::") == "User", "impl target name")
+    assert(target_path.global == false, "impl target path is not global")
+    puts "ok (declarations verified)"
+  end
+
   def self.test_fixtures
     print "testing real syntax fixtures parsing... "
     fixtures = [
@@ -355,6 +591,15 @@ module BenchSelfhostParserExercise
       "bench/fixtures/expr_blocks.iyi",
       "bench/fixtures/expr_multi_assign.iyi",
       "bench/fixtures/expr_case_when.iyi",
+      "bench/fixtures/decl_classes_and_structs.iyi",
+      "bench/fixtures/decl_def.iyi",
+      "bench/fixtures/decl_enums.iyi",
+      "bench/fixtures/decl_lib_and_fun.iyi",
+      "bench/fixtures/decl_modules_and_inclusion.iyi",
+      "bench/fixtures/decl_operators.iyi",
+      "bench/fixtures/decl_traits_and_impls.iyi",
+      "bench/fixtures/decl_types_and_vars.iyi",
+      "bench/fixtures/decl_visibility_and_annotations.iyi",
     ]
 
     total_nodes = 0
@@ -384,6 +629,7 @@ module BenchSelfhostParserExercise
     test_operators
     test_calls_and_blocks
     test_control
+    test_declarations
     test_fixtures
     puts "============================================================="
     puts "ALL SELFHOST PARSER CHECKS PASSED SUCCESSFULLY!"

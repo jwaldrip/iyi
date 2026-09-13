@@ -34,7 +34,8 @@ for phrase in \
   "testing operator precedence and associativity... ok (precedence and associativity verified)" \
   "testing call and block parsing... ok (calls and blocks verified)" \
   "testing control expressions (if, unless, while, until, case, modifiers)... ok (control expressions verified)" \
-  "testing real syntax fixtures parsing... ok (1066 nodes across 15 fixtures)" \
+  "testing declaration parsing... ok (declarations verified)" \
+  "testing real syntax fixtures parsing... ok (1647 nodes across 24 fixtures)" \
   "ALL SELFHOST PARSER CHECKS PASSED SUCCESSFULLY!"; do
   if ! grep -qF "$phrase" "$WORK/plain.out"; then
     echo "  MISSING REPORTED CHECK: '$phrase'"
@@ -311,6 +312,205 @@ def dump_ast(node : Iyi::ASTNode?, indent : Int32 = 0) : String
     s = "#{p}Yield\n"
     node.exps.each { |e| s += dump_ast(e, indent + 1) }
     s
+  when Iyi::Def
+    receiver_s = node.receiver ? " receiver" : ""
+    abstract_s = node.abstract? ? " abstract=true" : ""
+    splat_s = node.splat_index ? " splat=#{node.splat_index}" : ""
+    s = "#{p}Def name=#{escape_s(node.name)}#{receiver_s}#{abstract_s}#{splat_s}\n"
+    if r = node.receiver
+      s += "#{p}  receiver:\n" + dump_ast(r, indent + 2)
+    end
+    if !node.args.empty?
+      s += "#{p}  args:\n"
+      node.args.each { |a| s += dump_ast(a, indent + 2) }
+    end
+    if ds = node.double_splat
+      s += "#{p}  double_splat:\n" + dump_ast(ds, indent + 2)
+    end
+    if ba = node.block_arg
+      s += "#{p}  block_arg:\n" + dump_ast(ba, indent + 2)
+    end
+    if rt = node.return_type
+      s += "#{p}  return_type:\n" + dump_ast(rt, indent + 2)
+    end
+    if fv = node.free_vars
+      s += "#{p}  free_vars=[#{fv.join(", ")}]\n"
+    end
+    s += "#{p}  body:\n" + dump_ast(node.body, indent + 2)
+    s
+  when Iyi::Arg
+    ext_s = (ext = node.external_name) && ext != node.name ? " external_name=#{escape_s(ext)}" : ""
+    s = "#{p}Arg name=#{escape_s(node.name)}#{ext_s}\n"
+    if rest = node.restriction
+      s += "#{p}  restriction:\n" + dump_ast(rest, indent + 2)
+    end
+    if def_val = node.default_value
+      s += "#{p}  default_value:\n" + dump_ast(def_val, indent + 2)
+    end
+    s
+  when Iyi::ClassDef
+    splat_s = node.splat_index ? " splat=#{node.splat_index}" : ""
+    s = "#{p}ClassDef struct=#{node.struct?} abstract=#{node.abstract?}#{splat_s}\n"
+    s += "#{p}  name:\n" + dump_ast(node.name, indent + 2)
+    if tv = node.type_vars
+      s += "#{p}  type_vars=[#{tv.join(", ")}]\n"
+    end
+    if sc = node.superclass
+      s += "#{p}  superclass:\n" + dump_ast(sc, indent + 2)
+    end
+    s += "#{p}  body:\n" + dump_ast(node.body, indent + 2)
+    s
+  when Iyi::ModuleDef
+    splat_s = node.splat_index ? " splat=#{node.splat_index}" : ""
+    s = "#{p}ModuleDef#{splat_s}\n"
+    s += "#{p}  name:\n" + dump_ast(node.name, indent + 2)
+    if tv = node.type_vars
+      s += "#{p}  type_vars=[#{tv.join(", ")}]\n"
+    end
+    s += "#{p}  body:\n" + dump_ast(node.body, indent + 2)
+    s
+  when Iyi::EnumDef
+    s = "#{p}EnumDef\n"
+    s += "#{p}  name:\n" + dump_ast(node.name, indent + 2)
+    if bt = node.base_type
+      s += "#{p}  base_type:\n" + dump_ast(bt, indent + 2)
+    end
+    if !node.members.empty?
+      s += "#{p}  members:\n"
+      node.members.each { |m| s += dump_ast(m, indent + 2) }
+    end
+    s
+  when Iyi::Alias
+    s = "#{p}Alias\n"
+    s += "#{p}  name:\n" + dump_ast(node.name, indent + 2)
+    s += "#{p}  value:\n" + dump_ast(node.value, indent + 2)
+    s
+  when Iyi::Include
+    s = "#{p}Include\n"
+    s += "#{p}  name:\n" + dump_ast(node.name, indent + 2)
+    s
+  when Iyi::Extend
+    s = "#{p}Extend\n"
+    s += "#{p}  name:\n" + dump_ast(node.name, indent + 2)
+    s
+  when Iyi::TraitDef
+    s = "#{p}TraitDef\n"
+    s += "#{p}  name:\n" + dump_ast(node.name, indent + 2)
+    if tv = node.type_vars
+      s += "#{p}  type_vars=[#{tv.join(", ")}]\n"
+    end
+    if at = node.assoc_types
+      s += "#{p}  assoc_types=[#{at.join(", ")}]\n"
+    end
+    if st = node.supertraits
+      s += "#{p}  supertraits:\n"
+      st.each { |st_node| s += dump_ast(st_node, indent + 2) }
+    end
+    s += "#{p}  body:\n" + dump_ast(node.body, indent + 2)
+    s
+  when Iyi::ImplDef
+    s = "#{p}ImplDef\n"
+    s += "#{p}  trait:\n" + dump_ast(node.trait, indent + 2)
+    if ta = node.trait_args
+      s += "#{p}  trait_args:\n"
+      ta.each { |arg| s += dump_ast(arg, indent + 2) }
+    end
+    s += "#{p}  target:\n" + dump_ast(node.target, indent + 2)
+    if tv = node.type_vars
+      s += "#{p}  type_vars=[#{tv.join(", ")}]\n"
+    end
+    s += "#{p}  body:\n" + dump_ast(node.body, indent + 2)
+    s
+  when Iyi::AssocTypeDecl
+    s = "#{p}AssocTypeDecl name=#{escape_s(node.name)}\n"
+    if val = node.value
+      s += "#{p}  value:\n" + dump_ast(val, indent + 2)
+    end
+    s
+  when Iyi::AnnotationDef
+    s = "#{p}AnnotationDef\n"
+    s += "#{p}  name:\n" + dump_ast(node.name, indent + 2)
+    s
+  when Iyi::Annotation
+    s = "#{p}Annotation\n"
+    s += "#{p}  path:\n" + dump_ast(node.path, indent + 2)
+    if !node.args.empty?
+      s += "#{p}  args:\n"
+      node.args.each { |a| s += dump_ast(a, indent + 2) }
+    end
+    if na = node.named_args
+      s += "#{p}  named_args:\n"
+      na.each { |a| s += dump_ast(a, indent + 2) }
+    end
+    s
+  when Iyi::TypeDeclaration
+    s = "#{p}TypeDeclaration\n"
+    s += "#{p}  var:\n" + dump_ast(node.var, indent + 2)
+    s += "#{p}  declared_type:\n" + dump_ast(node.declared_type, indent + 2)
+    if val = node.value
+      s += "#{p}  value:\n" + dump_ast(val, indent + 2)
+    end
+    s
+  when Iyi::UninitializedVar
+    s = "#{p}UninitializedVar\n"
+    s += "#{p}  var:\n" + dump_ast(node.var, indent + 2)
+    s += "#{p}  declared_type:\n" + dump_ast(node.declared_type, indent + 2)
+    s
+  when Iyi::VisibilityModifier
+    s = "#{p}VisibilityModifier modifier=#{node.modifier.to_s.downcase}\n"
+    s += "#{p}  exp:\n" + dump_ast(node.exp, indent + 2)
+    s
+  when Iyi::LibDef
+    s = "#{p}LibDef\n"
+    s += "#{p}  name:\n" + dump_ast(node.name, indent + 2)
+    s += "#{p}  body:\n" + dump_ast(node.body, indent + 2)
+    s
+  when Iyi::FunDef
+    real_s = (r = node.real_name) ? " real_name=#{escape_s(r)}" : ""
+    s = "#{p}FunDef name=#{escape_s(node.name)}#{real_s}\n"
+    if !node.args.empty?
+      s += "#{p}  args:\n"
+      node.args.each { |a| s += dump_ast(a, indent + 2) }
+    end
+    if rt = node.return_type
+      s += "#{p}  return_type:\n" + dump_ast(rt, indent + 2)
+    end
+    if b = node.body
+      s += "#{p}  body:\n" + dump_ast(b, indent + 2)
+    end
+    s
+  when Iyi::TypeDef
+    s = "#{p}TypeDef name=#{escape_s(node.name)}\n"
+    s += "#{p}  type_spec:\n" + dump_ast(node.type_spec, indent + 2)
+    s
+  when Iyi::CStructOrUnionDef
+    s = "#{p}CStructOrUnionDef name=#{escape_s(node.name)} union=#{node.union?}\n"
+    s += "#{p}  body:\n" + dump_ast(node.body, indent + 2)
+    s
+  when Iyi::ExternalVar
+    real_s = (r = node.real_name) ? " real_name=#{escape_s(r)}" : ""
+    s = "#{p}ExternalVar name=#{escape_s(node.name)}#{real_s}\n"
+    s += "#{p}  type_spec:\n" + dump_ast(node.type_spec, indent + 2)
+    s
+  when Iyi::ProcNotation
+    s = "#{p}ProcNotation\n"
+    if inputs = node.inputs
+      s += "#{p}  inputs:\n"
+      inputs.each { |inp| s += dump_ast(inp, indent + 2) }
+    end
+    if o = node.output
+      s += "#{p}  output:\n" + dump_ast(o, indent + 2)
+    end
+    s
+  when Iyi::Union
+    s = "#{p}Union\n"
+    s += "#{p}  types:\n"
+    node.types.each { |t| s += dump_ast(t, indent + 2) }
+    s
+  when Iyi::Metaclass
+    s = "#{p}Metaclass\n"
+    s += "#{p}  name:\n" + dump_ast(node.name, indent + 2)
+    s
   else
     "#{p}#{node.class.name}\n"
   end
@@ -357,7 +557,16 @@ for fixture in \
   "$REPO"/bench/fixtures/expr_hashes_and_arrays.iyi \
   "$REPO"/bench/fixtures/expr_blocks.iyi \
   "$REPO"/bench/fixtures/expr_multi_assign.iyi \
-  "$REPO"/bench/fixtures/expr_case_when.iyi; do
+  "$REPO"/bench/fixtures/expr_case_when.iyi \
+  "$REPO"/bench/fixtures/decl_classes_and_structs.iyi \
+  "$REPO"/bench/fixtures/decl_def.iyi \
+  "$REPO"/bench/fixtures/decl_enums.iyi \
+  "$REPO"/bench/fixtures/decl_lib_and_fun.iyi \
+  "$REPO"/bench/fixtures/decl_modules_and_inclusion.iyi \
+  "$REPO"/bench/fixtures/decl_operators.iyi \
+  "$REPO"/bench/fixtures/decl_traits_and_impls.iyi \
+  "$REPO"/bench/fixtures/decl_types_and_vars.iyi \
+  "$REPO"/bench/fixtures/decl_visibility_and_annotations.iyi; do
   fixture_name="${fixture#"$REPO/"}"
   "$WORK/exercise-plain" "$fixture" > "$WORK/iyi.ast"
   "$WORK/dump_crystal" "$fixture" > "$WORK/crystal.ast"
@@ -495,6 +704,82 @@ fi
 cp "$REPO/src/compiler/syntax/parser.iyi.orig" "$REPO/src/compiler/syntax/parser.iyi"
 rm -f "$REPO/src/compiler/syntax/parser.iyi.orig"
 echo "    reverted mutation 5"
+
+# Mutation 6: Break return type parsing in parse_def_helper
+echo "  [mutation 6] altering return type parsing in parse_def_helper"
+cp "$REPO/src/compiler/syntax/parser.iyi" "$REPO/src/compiler/syntax/parser.iyi.orig"
+sed -i.bak 's/end_location = return_type[.]end_location/return_type = nil; end_location = nil/' "$REPO/src/compiler/syntax/parser.iyi" && rm -f "$REPO/src/compiler/syntax/parser.iyi.bak"
+if diff -u "$REPO/src/compiler/syntax/parser.iyi.orig" "$REPO/src/compiler/syntax/parser.iyi" >/dev/null; then
+  echo "    patch did not apply"
+  status=1
+fi
+echo "    patch verified applied in working tree"
+if "$IYI" run "$REPO/bench/selfhost_parser_exercise.iyi" > "$WORK/mut6.log" 2>&1; then
+  echo "    FAILED: exercise still passed with mutation 6"
+  status=1
+else
+  echo "    mutation caught: exercise failed as expected"
+fi
+cp "$REPO/src/compiler/syntax/parser.iyi.orig" "$REPO/src/compiler/syntax/parser.iyi"
+rm -f "$REPO/src/compiler/syntax/parser.iyi.orig"
+echo "    reverted mutation 6"
+
+# Mutation 7: Break superclass parsing in parse_class_def
+echo "  [mutation 7] altering superclass parsing in parse_class_def"
+cp "$REPO/src/compiler/syntax/parser.iyi" "$REPO/src/compiler/syntax/parser.iyi.orig"
+sed -i.bak 's/superclass = parse_generic(false, @token.location, false)/superclass = nil/' "$REPO/src/compiler/syntax/parser.iyi" && rm -f "$REPO/src/compiler/syntax/parser.iyi.bak"
+if diff -u "$REPO/src/compiler/syntax/parser.iyi.orig" "$REPO/src/compiler/syntax/parser.iyi" >/dev/null; then
+  echo "    patch did not apply"
+  status=1
+fi
+echo "    patch verified applied in working tree"
+if "$IYI" run "$REPO/bench/selfhost_parser_exercise.iyi" > "$WORK/mut7.log" 2>&1; then
+  echo "    FAILED: exercise still passed with mutation 7"
+  status=1
+else
+  echo "    mutation caught: exercise failed as expected"
+fi
+cp "$REPO/src/compiler/syntax/parser.iyi.orig" "$REPO/src/compiler/syntax/parser.iyi"
+rm -f "$REPO/src/compiler/syntax/parser.iyi.orig"
+echo "    reverted mutation 7"
+
+# Mutation 8: Break enum member value parsing in parse_enum_body_expressions
+echo "  [mutation 8] altering enum member value parsing in parse_enum_body_expressions"
+cp "$REPO/src/compiler/syntax/parser.iyi" "$REPO/src/compiler/syntax/parser.iyi.orig"
+sed -i.bak 's/constant_value = parse_logical_or/constant_value = nil/' "$REPO/src/compiler/syntax/parser.iyi" && rm -f "$REPO/src/compiler/syntax/parser.iyi.bak"
+if diff -u "$REPO/src/compiler/syntax/parser.iyi.orig" "$REPO/src/compiler/syntax/parser.iyi" >/dev/null; then
+  echo "    patch did not apply"
+  status=1
+fi
+echo "    patch verified applied in working tree"
+if "$IYI" run "$REPO/bench/selfhost_parser_exercise.iyi" > "$WORK/mut8.log" 2>&1; then
+  echo "    FAILED: exercise still passed with mutation 8"
+  status=1
+else
+  echo "    mutation caught: exercise failed as expected"
+fi
+cp "$REPO/src/compiler/syntax/parser.iyi.orig" "$REPO/src/compiler/syntax/parser.iyi"
+rm -f "$REPO/src/compiler/syntax/parser.iyi.orig"
+echo "    reverted mutation 8"
+
+# Mutation 9: Break trait implementation target parsing in parse_impl_def
+echo "  [mutation 9] altering trait implementation target parsing in parse_impl_def"
+cp "$REPO/src/compiler/syntax/parser.iyi" "$REPO/src/compiler/syntax/parser.iyi.orig"
+sed -i.bak 's/target = parse_path(false, @token.location)/target = parse_path(true, @token.location)/' "$REPO/src/compiler/syntax/parser.iyi" && rm -f "$REPO/src/compiler/syntax/parser.iyi.bak"
+if diff -u "$REPO/src/compiler/syntax/parser.iyi.orig" "$REPO/src/compiler/syntax/parser.iyi" >/dev/null; then
+  echo "    patch did not apply"
+  status=1
+fi
+echo "    patch verified applied in working tree"
+if "$IYI" run "$REPO/bench/selfhost_parser_exercise.iyi" > "$WORK/mut9.log" 2>&1; then
+  echo "    FAILED: exercise still passed with mutation 9"
+  status=1
+else
+  echo "    mutation caught: exercise failed as expected"
+fi
+cp "$REPO/src/compiler/syntax/parser.iyi.orig" "$REPO/src/compiler/syntax/parser.iyi"
+rm -f "$REPO/src/compiler/syntax/parser.iyi.orig"
+echo "    reverted mutation 9"
 
 echo
 echo "== Verification clean state confirmed"
