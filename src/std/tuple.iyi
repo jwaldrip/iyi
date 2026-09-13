@@ -84,14 +84,6 @@ struct ::Tuple
     {% end %}
   end
 
-  # Element-wise equality comparing all corresponding elements.
-  def ==(other : self) : Bool
-    {% for i in 0...T.size %}
-      return false unless self[{{i}}] == other[{{i}}]
-    {% end %}
-    true
-  end
-
   # Value identity.
   def same?(other : self) : Bool
     self == other

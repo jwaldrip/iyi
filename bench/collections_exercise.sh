@@ -171,7 +171,7 @@ prove_fails "delete leaves the index stale" stale_index hash.iyi \
 # 4. `each` walking the table rather than the entries, so it counts slots.
 prove_fails "each skips one" each_skips hash.iyi \
   "hash: each counts what size says" \
-  's/^      yield @keys\[entry\], @values\[entry\]$/      yield @keys[entry], @values[entry] if entry > 0/'
+  's/^      yield({@keys\[entry\], @values\[entry\]})$/      yield({@keys[entry], @values[entry]}) if entry > 0/'
 
 # 5. A set that keeps duplicates, which is the one thing a set is.
 prove_fails "a set forgets its members" dup_set set.iyi \

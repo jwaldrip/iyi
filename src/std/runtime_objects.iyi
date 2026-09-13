@@ -238,12 +238,3 @@ struct ::Struct
     to_s
   end
 end
-
-struct ::Tuple
-  def ==(other : self) : Bool
-    {% for i in 0...T.size %}
-      return false unless self[{{i}}] == other[{{i}}]
-    {% end %}
-    true
-  end
-end

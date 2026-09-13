@@ -171,9 +171,9 @@ prove_fails "Set union operation" broken_union "set.iyi" "union size is 8" \
 prove_fails "Set difference operation" broken_diff "set.iyi" "s1 - s2" \
   's/unless other\.includes[?](v)/if other.includes?(v)/'
 
-# 5. Break Tuple equality
-prove_fails "Tuple equality" broken_tuple_eq "tuple.iyi" "tuple equality" \
-  's/self\[{{i}}\] == other\[{{i}}\]/false/'
+# 5. Break Tuple first
+prove_fails "Tuple first" broken_tuple_first "tuple.iyi" "tuple first" \
+  's/self\[0\]/self[1]/'
 
 echo
 if [ "$status" -eq 0 ]; then
