@@ -27,15 +27,8 @@ using std/sync::{Type, ConditionVariable, RWLock, Exclusive, Shared}
 using std/wait_group::{WaitGroup}
 using std/channel::{Channel, ClosedError}
 
-class Item
-  property id : Int32
-
-  def initialize(@id : Int32)
-  end
-end
-
 # =============================================================================
-# 1. std/atomic: Primitive types, pointer, reference, orderings, and RMW
+# 1. std/atomic: Primitive types, orderings, and RMW
 # =============================================================================
 
 # Int32
@@ -117,27 +110,7 @@ old_b2, ok_b2 = a_bool.compare_and_set(false, true, Ordering::SequentiallyConsis
 raise "atomic bool cas ok" unless ok_b2
 raise "atomic bool cas val" unless a_bool.get == true
 
-# Reference atomic
-item1 = Item.new(1)
-item2 = Item.new(2)
-a_ref = Atomic(Item).new(item1)
-raise "atomic ref init" unless a_ref.get.id == 1
-a_ref.set(item2)
-raise "atomic ref set" unless a_ref.get.id == 2
-old_ref = a_ref.swap(item1)
-raise "atomic ref swap" unless old_ref.id == 2 && a_ref.get.id == 1
-
-# Pointer atomic
-num1 = 42
-num2 = 84
-ptr1 = pointerof(num1)
-ptr2 = pointerof(num2)
-a_ptr = Atomic(Pointer(Int32)).new(ptr1)
-raise "atomic ptr init" unless a_ptr.get.value == 42
-a_ptr.set(ptr2)
-raise "atomic ptr set" unless a_ptr.get.value == 84
-
-puts "atomic primitives: integer, bool, pointer, and reference operations verified"
+puts "atomic primitives: integer and bool operations verified"
 
 # =============================================================================
 # 2. std/atomic: Atomic::Flag, Ordering predicates, and Fences

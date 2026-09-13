@@ -97,6 +97,13 @@ using std/path::{Path}
     fun access(path : UInt8*, mode : Int32) : Int32
   end
 {% end %}
+private def c_path(path : String) : UInt8*
+  n = path.bytesize
+  buffer = Pointer(UInt8).malloc((n + 1).to_u64)
+  buffer.copy_from(path.to_unsafe, n)
+  buffer[n] = 0_u8
+  buffer
+end
 
 class ::File
   SEPARATOR        = '/'
@@ -298,9 +305,9 @@ class ::File
     {% if flag?(:darwin) %}
       stat_buf = uninitialized Std::File::LibC::Stat
       ret = if follow_symlinks
-              Std::File::LibC.stat(File.c_path(p), pointerof(stat_buf))
+              Std::File::LibC.stat(c_path(p), pointerof(stat_buf))
             else
-              Std::File::LibC.lstat(File.c_path(p), pointerof(stat_buf))
+              Std::File::LibC.lstat(c_path(p), pointerof(stat_buf))
             end
       return nil if ret != 0
 
@@ -334,9 +341,9 @@ class ::File
     {% elsif flag?(:linux) %}
       stat_buf = uninitialized Std::File::LibC::Stat
       ret = if follow_symlinks
-              Std::File::LibC.stat(File.c_path(p), pointerof(stat_buf))
+              Std::File::LibC.stat(c_path(p), pointerof(stat_buf))
             else
-              Std::File::LibC.lstat(File.c_path(p), pointerof(stat_buf))
+              Std::File::LibC.lstat(c_path(p), pointerof(stat_buf))
             end
       return nil if ret != 0
 
@@ -448,11 +455,11 @@ class ::File
     o = old_path.to_s
     n = new_path.to_s
     {% if flag?(:darwin) || flag?(:linux) %}
-      if Std::File::LibC.rename(File.c_path(o), File.c_path(n)) != 0
+      if Std::File::LibC.rename(c_path(o), c_path(n)) != 0
         raise "Cannot rename #{o} to #{n}"
       end
     {% elsif flag?(:win32) %}
-      if LibKernel32.MoveFileA(File.c_path(o), File.c_path(n)) == 0
+      if LibKernel32.MoveFileA(c_path(o), c_path(n)) == 0
         raise "Cannot rename #{o} to #{n}"
       end
     {% end %}
@@ -462,11 +469,11 @@ class ::File
     o = old_path.to_s
     n = new_path.to_s
     {% if flag?(:darwin) || flag?(:linux) %}
-      if Std::File::LibC.link(File.c_path(o), File.c_path(n)) != 0
+      if Std::File::LibC.link(c_path(o), c_path(n)) != 0
         raise "Cannot link #{o} to #{n}"
       end
     {% elsif flag?(:win32) %}
-      if LibKernel32.CreateHardLinkA(File.c_path(n), File.c_path(o), Pointer(Void).new(0_u64)) == 0
+      if LibKernel32.CreateHardLinkA(c_path(n), c_path(o), Pointer(Void).new(0_u64)) == 0
         raise "Cannot link #{o} to #{n}"
       end
     {% end %}
@@ -476,11 +483,11 @@ class ::File
     o = old_path.to_s
     n = new_path.to_s
     {% if flag?(:darwin) || flag?(:linux) %}
-      if Std::File::LibC.symlink(File.c_path(o), File.c_path(n)) != 0
+      if Std::File::LibC.symlink(c_path(o), c_path(n)) != 0
         raise "Cannot symlink #{o} to #{n}"
       end
     {% elsif flag?(:win32) %}
-      if LibKernel32.CreateSymbolicLinkA(File.c_path(n), File.c_path(o), 0_u32) == 0
+      if LibKernel32.CreateSymbolicLinkA(c_path(n), c_path(o), 0_u32) == 0
         raise "Cannot symlink #{o} to #{n}"
       end
     {% end %}
@@ -490,7 +497,7 @@ class ::File
     p = path.to_s
     {% if flag?(:darwin) || flag?(:linux) %}
       buf = Pointer(UInt8).malloc(4096_u64)
-      res = Std::File::LibC.readlink(File.c_path(p), buf, 4096_u64)
+      res = Std::File::LibC.readlink(c_path(p), buf, 4096_u64)
       if res <= 0_i64
         raise "Cannot readlink: #{p}"
       end
@@ -504,7 +511,7 @@ class ::File
     p = path.to_s
     {% if flag?(:darwin) || flag?(:linux) %}
       buf = Pointer(UInt8).malloc(4096_u64)
-      res = Std::File::LibC.realpath(File.c_path(p), buf)
+      res = Std::File::LibC.realpath(c_path(p), buf)
       if res.address == 0_u64
         raise "Cannot resolve realpath for #{p}"
       end
@@ -521,7 +528,7 @@ class ::File
   def self.chmod(path : String | Path, mode : Int32) : Nil
     p = path.to_s
     {% if flag?(:darwin) || flag?(:linux) %}
-      if Std::File::LibC.chmod(File.c_path(p), mode) != 0
+      if Std::File::LibC.chmod(c_path(p), mode) != 0
         raise "Cannot chmod #{p}"
       end
     {% end %}
@@ -530,7 +537,7 @@ class ::File
   def self.chown(path : String | Path, uid : Int32, gid : Int32) : Nil
     p = path.to_s
     {% if flag?(:darwin) || flag?(:linux) %}
-      if Std::File::LibC.chown(File.c_path(p), uid.to_u32, gid.to_u32) != 0
+      if Std::File::LibC.chown(c_path(p), uid.to_u32, gid.to_u32) != 0
         raise "Cannot chown #{p}"
       end
     {% end %}
@@ -539,7 +546,7 @@ class ::File
   def self.truncate(path : String | Path, size : Int64 = 0_i64) : Nil
     p = path.to_s
     {% if flag?(:darwin) || flag?(:linux) %}
-      if Std::File::LibC.truncate(File.c_path(p), size) != 0
+      if Std::File::LibC.truncate(c_path(p), size) != 0
         raise "Cannot truncate #{p}"
       end
     {% end %}
