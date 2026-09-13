@@ -1328,6 +1328,7 @@ class Iyi::CodeGenVisitor
       inst
     end
   end
+
   def codegen_primitive_store_atomic(call, node, target_def, call_args)
     call = check_atomic_call(call, target_def)
     ptr, value, ordering, _ = call_args
@@ -1346,6 +1347,7 @@ class Iyi::CodeGenVisitor
     set_alignment inst, call.args[1].type
     inst
   end
+
   def codegen_va_arg(call, node, target_def, call_args)
     ptr = call_args.first
     builder.va_arg(ptr, llvm_type(node.type))
