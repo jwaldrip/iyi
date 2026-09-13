@@ -142,6 +142,11 @@ ALLOWED_LINES: list[tuple[str, str]] = [
     # `crystal` are one compiler with two command surfaces, and each looks up a
     # server named after the binary that was typed.
     (r"CRYSTAL_DAEMON_(BIN|SOCKET)", "the other command surface's own daemon"),
+    # A message that has to name the language the *file* is written in: this
+    # compiler reads both, and reporting a `.iyi` file of unreadable bytes as
+    # "not a valid Crystal source file" named the wrong one. The line is the
+    # choice between them, so it mentions both by necessity.
+    (r'ends_with\?\(".iyi"\) \? "iyi" : "Crystal"', "the line that picks which language a file is"),
     (r"Crystal (caches|runs|takes)", "a sentence about the other language"),
     # `iyi migrate` and `iyi bind` are about the other language by
     # definition: a Crystal project, a Crystal file kept as Crystal, the

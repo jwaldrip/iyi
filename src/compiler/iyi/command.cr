@@ -884,6 +884,18 @@ class Iyi::Command
       abort! "can't use `#{output_filename}` as output filename because it's a directory", :USAGE_ERROR
     end
 
+    # iyi: and the directory it would be written into, which nothing asked
+    # about until the linker did: `-o nodir/prog` reached `ld.lld` and came
+    # back as "ld.lld: error: cannot open output file ...: No such file or
+    # directory" - a message from a program the author did not run, after a
+    # whole compilation had already been paid for.
+    if !compiler.no_codegen? && !run
+      directory = File.dirname(output_filename)
+      unless Dir.exists?(directory)
+        abort! "there is no #{directory} to write #{File.basename(output_filename)} into", :USAGE_ERROR
+      end
+    end
+
     if run
       emit_base_filename = ::Path[sources.first.filename].stem
     end
