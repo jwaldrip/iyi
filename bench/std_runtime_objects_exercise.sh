@@ -123,7 +123,7 @@ prove_fails "box value unbox broken" no_box_val "Unboxing null pointer" "box.iyi
 
 # 2. WeakRef live dereference broken
 prove_fails "weak_ref dereference broken" no_weak_deref "weak_ref: unexpectedly nil" "weak_ref.iyi" \
-  's/@target\.as(T?)/nil/'
+  's/Pointer(Void)\.new(@target)\.as(T[?])/nil/'
 
 # 3. ReferenceStorage equality broken
 prove_fails "reference_storage equality broken" no_rs_eq "ref_storage: equality mismatch" "reference_storage.iyi" \
