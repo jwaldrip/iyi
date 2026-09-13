@@ -1,8 +1,8 @@
 # Crystal-compatible Atomic API — full memory orderings, bitwise operations,
-# pointer and reference atomics, and Atomic::Flag.
+# and Atomic::Flag.
 #
-# Complements iyi's core sequentially-consistent integer Atomic(T) with
-# Crystal's full standard-library atomic surface.
+# Complements iyi's core sequentially-consistent Atomic(T) with
+# Crystal's standard-library atomic orderings and flag surface.
 
 module std/atomic
 pub alias Atomic = ::Atomic
@@ -79,8 +79,6 @@ struct ::Atomic(T)
   private def as_ptr
     {% if T == Bool %}
       pointerof(@value).as(Pointer(UInt8))
-    {% elsif T < Pointer || (T.union_types.all? { |t| t == Nil || t < Reference } && T != Nil) %}
-      pointerof(@value).as(Pointer(UInt64))
     {% else %}
       pointerof(@value)
     {% end %}
@@ -89,8 +87,6 @@ struct ::Atomic(T)
   private def cast_in(val : T)
     {% if T == Bool %}
       val ? 1_u8 : 0_u8
-    {% elsif T < Pointer || (T.union_types.all? { |t| t == Nil || t < Reference } && T != Nil) %}
-      val.as(Void*).address
     {% else %}
       val
     {% end %}
@@ -99,10 +95,6 @@ struct ::Atomic(T)
   private def cast_out(val) : T
     {% if T == Bool %}
       val != 0_u8
-    {% elsif T < Pointer %}
-      T.new(val)
-    {% elsif T.union_types.all? { |t| t == Nil || t < Reference } && T != Nil %}
-      Pointer(T).new(val).as(T)
     {% else %}
       val
     {% end %}
@@ -146,6 +138,7 @@ struct ::Atomic(T)
   end
 
   def add(value : T, ordering : Ordering) : T
+    {% raise "Atomic(Bool) does not support add: arithmetic verbs belong to integer atomics" if T == Bool %}
     case ordering.value
     when 0 then IyiAtomic.rmw(:add, as_ptr, cast_in(value), :monotonic, false)
     when 1 then IyiAtomic.rmw(:add, as_ptr, cast_in(value), :acquire, false)
@@ -156,6 +149,7 @@ struct ::Atomic(T)
   end
 
   def sub(value : T, ordering : Ordering) : T
+    {% raise "Atomic(Bool) does not support sub: arithmetic verbs belong to integer atomics" if T == Bool %}
     case ordering.value
     when 0 then IyiAtomic.rmw(:sub, as_ptr, cast_in(value), :monotonic, false)
     when 1 then IyiAtomic.rmw(:sub, as_ptr, cast_in(value), :acquire, false)

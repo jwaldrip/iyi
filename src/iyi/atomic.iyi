@@ -30,14 +30,13 @@
 # weaker spelling, and it will be added as its own verb rather than a
 # parameter, so a call site says what it means.
 #
-# `T` is one of the four integers `primitives.iyi` gives arithmetic to.
-# A pointer or a reference is refused by name rather than admitted
-# untested: the arena list that will want one is the caller that will
-# bring it. The verbs and their answers are Crystal's, so a program that
-# reads the same under `--crystal` means the same: `add`, `sub` and
-# `swap` answer the value the word held before; `compare_and_set`
-# answers that value and whether the exchange happened, which is what a
-# retry loop needs without a second load.
+# `T` is one of the four integers `primitives.iyi` gives arithmetic to,
+# or `Bool` for flags. Codegen zero-extends `Atomic(Bool)` to a byte as
+# LLVM refuses sub-byte atomics; `add` and `sub` are refused on it. A
+# pointer or reference is refused by name rather than admitted untested:
+# the arena list that wants one is the caller that will bring it. `add`,
+# `sub` and `swap` answer the value the word held before;
+# `compare_and_set` answers that value and whether exchange happened.
 #
 # An `Atomic(T)` is a struct holding the word, so it lives where it is
 # declared — a class's field, a class variable, a mapping — and the
@@ -48,11 +47,10 @@ struct Atomic(T)
   @value : T
 
   def initialize(@value : T)
-    # Admits integer, pointer, boolean, and reference types. Full
-    # memory orderings, bitwise operations, and atomic flag are
-    # provided by std/atomic, while this core prelude type provides
-    # the six sequentially consistent verbs on the runtime word.
-    # Copying one copies a number, not a synchronisation.
+    {% unless T == Int32 || T == Int64 || T == UInt8 || T == UInt64 || T == Bool %}
+      {% raise "Atomic(#{T}) is not one iyi's prelude admits: T is Int32, Int64, UInt8, UInt64 or Bool. " \
+               "A pointer or a reference is refused by name rather than admitted untested." %}
+    {% end %}
   end
 
   # The word, read once, ordered.
@@ -67,11 +65,13 @@ struct Atomic(T)
 
   # `word += value`; answers what the word held before.
   def add(value : T) : T
+    {% raise "Atomic(Bool) does not support add: arithmetic verbs belong to integer atomics" if T == Bool %}
     IyiAtomic.rmw(:add, pointerof(@value), value, :sequentially_consistent, false)
   end
 
   # `word -= value`; answers what the word held before.
   def sub(value : T) : T
+    {% raise "Atomic(Bool) does not support sub: arithmetic verbs belong to integer atomics" if T == Bool %}
     IyiAtomic.rmw(:sub, pointerof(@value), value, :sequentially_consistent, false)
   end
 

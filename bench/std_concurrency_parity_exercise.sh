@@ -139,35 +139,37 @@ prove_fails_module "atomic" "atomic compare_and_set broken" no_cas "atomic cas s
 # 3. std/atomic: Atomic::Flag test_and_set broken
 prove_fails_module "atomic" "atomic flag test_and_set broken" no_flag "flag initial test_and_set" \
   's/@value\.swap(true) == false/@value.swap(true) == true/'
+# 4. std/atomic: Atomic(Bool) cast_in broken (inverts boolean value)
+prove_fails_module "atomic" "atomic bool cast_in broken" no_bool_cast "atomic bool cas ok" \
+  's/val [?] 1_u8 : 0_u8/val ? 0_u8 : 1_u8/'
 
-# 4. std/fiber: dead? query broken (checks wrong state)
+# 5. std/fiber: dead? query broken (checks wrong state)
 prove_fails_module "fiber" "fiber dead? query broken" no_dead "worker dead after execution" \
   's/@state == IyiFiberState::Done/@state == IyiFiberState::Running/'
 
-# 5. std/concurrent: spawn execution broken (does not enqueue fiber)
+# 6. std/concurrent: spawn execution broken (does not enqueue fiber)
 prove_fails_module "concurrent" "concurrent spawn broken" no_spawn "spawn block executed" \
   's/f\.enqueue/nil/'
 
-# 6. std/sync: Mutex try_lock broken (always fails when available)
+# 7. std/sync: Mutex try_lock broken (always fails when available)
 prove_fails_module "sync" "mutex try_lock broken" no_trylock "checked_m try_lock" \
   's/@owner\.nil?/false/'
 
-# 7. std/sync: ConditionVariable signal broken (does not wake waiter)
+# 8. std/sync: ConditionVariable signal broken (does not wake waiter)
 prove_fails_module "sync" "condition variable signal broken" no_signal "condition variable signal woke waiter" \
   's/waiter = @waiters\.shift?/waiter = nil/'
 
-# 8. std/wait_group: WaitGroup done? broken
+# 9. std/wait_group: WaitGroup done? broken
 prove_fails_module "wait_group" "wait group done? broken" no_wg "wg not done initially" \
   's/@counter\.get == 0/@counter.get != 0/'
 
-# 9. std/channel: capacity tracking broken
+# 10. std/channel: capacity tracking broken
 prove_fails_module "channel" "channel capacity tracking broken" no_cap "channel capacity 2" \
   's/def capacity : Int32/def capacity : Int32; return @capacity + 1;/'
 
-# 10. std/channel: empty? query broken
+# 11. std/channel: empty? query broken
 prove_fails_module "channel" "channel empty? query broken" no_empty "channel initially empty" \
   's/def empty? : Bool/def empty? : Bool; return false;/'
-
 echo
 echo "== dedicated boundary failure probes (invalid concurrency shapes)"
 
@@ -227,9 +229,49 @@ using std/channel::{Channel}
 ch = Channel(Int32).new(-1)' \
   "a channel's capacity is not negative"
 
+prove_refuse() {
+  local label="$1" code="$2" expected_phrase="$3"
+  local probe_src="$WORK/probe_${label}.iyi"
+  local probe_bin="$WORK/probe_${label}"
+  local probe_log="$WORK/probe_${label}.log"
+
+  cat <<EOF > "$probe_src"
+$code
+EOF
+
+  if PATH=/opt/homebrew/bin:/usr/bin:/bin LIBRARY_PATH=/opt/homebrew/opt/bdw-gc/lib \
+       "$IYI" build -o "$probe_bin" "$probe_src" >"$probe_log" 2>&1; then
+    echo "  $label: probe unexpectedly built (expected compilation error)"
+    status=1
+    return
+  fi
+
+  if ! grep -qi "$expected_phrase" "$probe_log"; then
+    echo "  $label: compile error missing '$expected_phrase'"
+    cat "$probe_log"
+    status=1
+    return
+  fi
+
+  printf '  %s: refuses with "%s"\n' "$label" \
+    "$(grep -i -m1 "$expected_phrase" "$probe_log" | sed 's/^.*Error: //')"
+}
+
+prove_refuse "atomic_string_refused" \
+  'Atomic(String).new("invalid")' \
+  "Atomic(String) is not one iyi's prelude admits"
+
+prove_refuse "atomic_pointer_refused" \
+  'x = 42; p = pointerof(x); Atomic(Pointer(Int32)).new(p)' \
+  "Atomic(Pointer(Int32)) is not one iyi's prelude admits"
+
+prove_refuse "atomic_bool_add_refused" \
+  'a = Atomic(Bool).new(false); a.add(true)' \
+  "Atomic(Bool) does not support add"
+
 echo
 if [ "$status" -eq 0 ]; then
-  echo "concurrency parity exercise: ALL CHECKS PASSED (plain, release, 10 mutations, 3 boundary panics)"
+  echo "concurrency parity exercise: ALL CHECKS PASSED (plain, release, 11 mutations, 3 boundary panics, 3 compile-time refusals)"
 else
   echo "concurrency parity exercise: FAILED"
 fi
