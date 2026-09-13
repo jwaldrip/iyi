@@ -115,7 +115,14 @@ trap 'rm -rf "$WORK"' EXIT
 # stand in its place: the same libc floor, one process, an argument vector
 # nobody parses, and no shell under anything.
 ALLOWED_SYMBOLS_DARWIN="__error _tlv_bootstrap accept bind chmod clock_gettime_nsec_np close connect environ exit getcwd getentropy getenv getsockname getsockopt kevent kqueue listen lstat64 madvise mkdir mmap mprotect munmap open pipe posix_spawnp pthread_create pthread_get_stackaddr_np pthread_kill pthread_self read recv rename rewinddir rmdir send setenv setsockopt sigaction socket stat64 sysctlbyname truncate unlink unsetenv waitpid write _dyld_get_image_header _dyld_get_image_vmaddr_slide"
-ALLOWED_SYMBOLS_LINUX="ITM_deregisterTMCloneTable ITM_registerTMCloneTable _cxa_finalize _gmon_start__ _libc_start_main"
+# Linux names `posix_spawnp` and `waitpid` for the same reason darwin does:
+# `std/spec` starts a process, and starting one is libc's on both. It also
+# names the directory, file and environment calls `std/dir`, `std/file`,
+# `std/file_utils` and `std/env` bind, in their unsuffixed spellings where
+# darwin carries the 64-bit ones. The prelude still issues raw syscalls and
+# names none of these; they arrive with a module a program chose to import.
+# The rest of this list is the C runtime's template, not the prelude's.
+ALLOWED_SYMBOLS_LINUX="ITM_deregisterTMCloneTable ITM_registerTMCloneTable _cxa_finalize _errno_location _gmon_start__ _libc_start_main closedir environ getcwd getenv lstat mkdir opendir posix_spawnp readdir rename rewinddir rmdir setenv stat truncate unsetenv waitpid"
 
 # What a program may link. The platform libc only.
 ALLOWED_LIBS_PROGRAM="libSystem libc.so ld-linux libgcc_s"

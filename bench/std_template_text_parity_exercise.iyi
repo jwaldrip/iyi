@@ -158,7 +158,7 @@ class ECRGreetingView
     @items.size
   end
 
-  ECR.def_to_s("/tmp/my_test_template.ecr")
+  ECR.def_to_s("bench/fixtures/ecr_greeting.ecr")
 end
 
 greet_view = ECRGreetingView.new("Greetings from ECR", ["alpha", "beta"])
@@ -169,7 +169,7 @@ raise "ecr: def_to_s" unless greet_mem.to_s.includes?("Greetings from ECR")
 # 4. ECR.render to String
 name = "RenderUser"
 count = 3
-rendered_str = ECR.render("/tmp/my_test_template.ecr")
+rendered_str = ECR.render("bench/fixtures/ecr_greeting.ecr")
 raise "ecr: render output" unless rendered_str.includes?("Hello RenderUser!")
 raise "ecr: render logic" unless rendered_str.includes?("Count is 3")
 
