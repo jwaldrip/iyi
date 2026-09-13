@@ -6,16 +6,20 @@ module std/fiber
 class ::IyiFiber
   property name : String?
 
+  # `@state` is an `IyiFiberState`, and comparing one against a bare integer
+  # answers `false` rather than refusing to compile, so these name the members.
+  # The numbers were right and the comparison was not, which is the shape that
+  # reported the main fiber as not running.
   def running? : Bool
-    @state == 0
+    @state == IyiFiberState::Running
   end
 
   def resumable? : Bool
-    @state == 1 || @state == 2 || @state == 3 || @state == 4 || @state == 5
+    @state != IyiFiberState::Running && @state != IyiFiberState::Done
   end
 
   def dead? : Bool
-    @state == 6
+    @state == IyiFiberState::Done
   end
 
   def enqueue : Nil

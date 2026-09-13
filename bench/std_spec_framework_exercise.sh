@@ -150,6 +150,6 @@ prove_fails "randomization seed broken" no_rand_seed "Expected seed 12345" "spec
 
 # 7. Runner exit code on failure broken
 prove_fails "runner failure exit code broken" no_exit_code "Expected fail file to exit 1" "spec.iyi" \
-  's/[(]raw >> 8[)] & 0xFF/0/'
+  's/[(]status >> 8[)] & 0xFF/0/'
 
 exit "$status"

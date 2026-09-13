@@ -99,8 +99,30 @@ trap 'rm -rf "$WORK"' EXIT
 # `connect`, `getsockname`, `listen`, `recv`, `send`, `setsockopt` and `socket`
 # joined with `IyiSocket` (samples/iyi/socket.iyi): on darwin libSystem is the
 # platform interface, while Linux issues raw socket syscalls and names none of them.
-ALLOWED_SYMBOLS_DARWIN="__error _tlv_bootstrap accept bind chmod clock_gettime_nsec_np close connect exit getsockname kevent kqueue listen madvise mmap mprotect munmap open pipe pthread_create pthread_get_stackaddr_np pthread_kill pthread_self read recv send setsockopt sigaction socket sysctlbyname unlink write _dyld_get_image_header _dyld_get_image_vmaddr_slide"
-ALLOWED_SYMBOLS_LINUX="ITM_deregisterTMCloneTable ITM_registerTMCloneTable _cxa_finalize _gmon_start__ _libc_start_main"
+#
+# The standard library's own modules brought the rest, each with a module
+# behind it and nothing behind it but the platform libc. `getcwd`, `mkdir`,
+# `rmdir` and `rewinddir` came with `std/dir`; `stat64`, `lstat64`, `rename`
+# and `truncate` with `std/file` and `std/file_utils`; `getenv`, `setenv`,
+# `unsetenv` and `environ` with `std/env`; `getsockopt` with `std/socket` and
+# `std/udp`; `getentropy` with `std/random` and `std/crypto`, which is the
+# kernel's entropy and not a crypto library's. On Linux each of these is a
+# syscall the prelude issues itself, which is why that list does not move.
+#
+# `system` was here and is gone: `std/spec` ran a file by handing a sentence
+# to `/bin/sh`, which put a shell under every program importing it and let a
+# path with a semicolon in it mean something. `posix_spawnp` and `waitpid`
+# stand in its place: the same libc floor, one process, an argument vector
+# nobody parses, and no shell under anything.
+ALLOWED_SYMBOLS_DARWIN="__error _tlv_bootstrap accept bind chmod clock_gettime_nsec_np close connect environ exit getcwd getentropy getenv getsockname getsockopt kevent kqueue listen lstat64 madvise mkdir mmap mprotect munmap open pipe posix_spawnp pthread_create pthread_get_stackaddr_np pthread_kill pthread_self read recv rename rewinddir rmdir send setenv setsockopt sigaction socket stat64 sysctlbyname truncate unlink unsetenv waitpid write _dyld_get_image_header _dyld_get_image_vmaddr_slide"
+# Linux names `posix_spawnp` and `waitpid` for the same reason darwin does:
+# `std/spec` starts a process, and starting one is libc's on both. It also
+# names the directory, file and environment calls `std/dir`, `std/file`,
+# `std/file_utils` and `std/env` bind, in their unsuffixed spellings where
+# darwin carries the 64-bit ones. The prelude still issues raw syscalls and
+# names none of these; they arrive with a module a program chose to import.
+# The rest of this list is the C runtime's template, not the prelude's.
+ALLOWED_SYMBOLS_LINUX="ITM_deregisterTMCloneTable ITM_registerTMCloneTable _cxa_finalize _errno_location _gmon_start__ _libc_start_main closedir environ getcwd getenv lstat mkdir opendir posix_spawnp readdir rename rewinddir rmdir setenv stat truncate unsetenv waitpid"
 
 # What a program may link. The platform libc only.
 ALLOWED_LIBS_PROGRAM="libSystem libc.so ld-linux libgcc_s"
@@ -277,6 +299,12 @@ echo "== what the library declares, reached or not"
 # It is also the shape a link line grows in: one annotation, no caller yet,
 # and the floor moves the first time a module uses it. So the annotations are
 # read as text, and the list is the three the library has reasons for.
+#
+# Only annotations the compiler would act on count: one written as prose
+# inside a comment is a sentence about a dependency, not a dependency, and
+# reading those too had this gate reporting libxml2 against a file whose own
+# header says it binds nothing. A check that cries wolf gets ignored, which
+# costs more than the check is worth.
 while IFS= read -r annotation; do
   [ -n "$annotation" ] || continue
   case "$annotation" in
@@ -292,9 +320,9 @@ while IFS= read -r annotation; do
       ;;
   esac
 done <<LINKS
-$(grep -rhoE '@\[Link\([^]]*\)\]' "$REPO/src/iyi" "$REPO/src/std" | sort -u)
+$(grep -rhE '^[[:space:]]*@\[Link\(' "$REPO/src/iyi" "$REPO/src/std" | sed -e 's/^[[:space:]]*//' | grep -oE '@\[Link\([^]]*\)\]' | sort -u)
 LINKS
-printf '  %s\n' "$(grep -rhoE '@\[Link\([^]]*\)\]' "$REPO/src/iyi" "$REPO/src/std" | sort -u | tr '\n' ' ')"
+printf '  %s\n' "$(grep -rhE '^[[:space:]]*@\[Link\(' "$REPO/src/iyi" "$REPO/src/std" | sed -e 's/^[[:space:]]*//' | grep -oE '@\[Link\([^]]*\)\]' | sort -u | tr '\n' ' ')"
 
 echo
 report() {

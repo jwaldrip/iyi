@@ -24,16 +24,11 @@ export PATH="/opt/homebrew/bin:/usr/bin:/bin:$PATH"
 export LIBRARY_PATH="/opt/homebrew/opt/bdw-gc/lib:${LIBRARY_PATH:-}"
 export IYI_PATH="$REPO/src:$REPO/samples/iyi"
 
-# The ECR section compiles a template from a fixed path at compile time.
-# Provide it deterministically instead of depending on leftover state.
-cat > /tmp/my_test_template.ecr <<'TEMPLATE'
-Hello <%= name %>!
-<%- if count > 1 -%>
-Count is <%= count %>
-<%- else -%>
-Single
-<%- end -%>
-TEMPLATE
+# The ECR section compiles a template at compile time. It reads
+# bench/fixtures/ecr_greeting.ecr, which is in the repository, so the
+# exercise builds on its own rather than only after this driver has run:
+# a compile-time read of /tmp meant anything building it directly failed,
+# which is how bench/dependency_floor.sh found it on Linux.
 
 echo "== the template and text parity exercise, plain build"
 if ! "$IYI" build -o "$WORK/exercise" "$REPO/bench/std_template_text_parity_exercise.iyi" \

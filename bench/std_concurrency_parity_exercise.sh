@@ -142,7 +142,7 @@ prove_fails_module "atomic" "atomic flag test_and_set broken" no_flag "flag init
 
 # 4. std/fiber: dead? query broken (checks wrong state)
 prove_fails_module "fiber" "fiber dead? query broken" no_dead "worker dead after execution" \
-  's/@state == 6/@state == 0/'
+  's/@state == IyiFiberState::Done/@state == IyiFiberState::Running/'
 
 # 5. std/concurrent: spawn execution broken (does not enqueue fiber)
 prove_fails_module "concurrent" "concurrent spawn broken" no_spawn "spawn block executed" \
