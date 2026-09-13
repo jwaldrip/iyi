@@ -8,9 +8,9 @@ and `bash bench/dependency_floor.sh`, not estimated.
 
 ## Where this actually stands
 
-`src/compiler` is **109,825 lines of Crystal and 17,349 lines of iyi**. The iyi
+`src/compiler` is **109,825 lines of Crystal and 18,080 lines of iyi**. The iyi
 side is the lexer, the token, the AST, the visitor and transformer, the parser's
-expressions and declarations, the normalizer, the four foundation files, and the LLVM bindings:
+expressions and declarations, the normalizer, the bind tool, the four foundation files, and the LLVM bindings:
 
 | in iyi | lines | proved by |
 |---|---|---|
@@ -18,9 +18,9 @@ expressions and declarations, the normalizer, the four foundation files, and the
 | `syntax/ast.iyi`, `visitor.iyi`, `transformer.iyi` | 7,199 | `bench/selfhost_ast_exercise.sh`, five guarded mutation proofs |
 | `syntax/parser.iyi` (no macros) | 3,926 | `bench/selfhost_parser_exercise.sh`: 24 fixtures, 1,609 normalised nodes identical to the Crystal front end, nine guarded mutation proofs |
 | `semantic/normalizer.iyi` | 714 | `bench/selfhost_normalizer_exercise.sh`: 11 fixtures, 577 normalised nodes identical to the Crystal front end, five guarded mutation proofs |
+| `tools/bind.iyi` | 727 | `bench/selfhost_bind_exercise.sh`: 11 fixtures, 80 public methods identical to the Crystal front end, four guarded mutation proofs |
 | `llvm/*.iyi` | 2,285 | `bench/selfhost_llvm_exercise.sh`: a real object file emitted from iyi code, linked against a C driver, run |
 | `foundation/*.iyi` | 122 | compiled by the above |
-
 What is **not** in iyi: semantic analysis, the type system, the
 macro engine, the artifact format, the formatter, codegen, the command driver,
 the daemon, and platform support. That is the 109,825.
@@ -48,7 +48,7 @@ rather than a feeling.
 **Stage 0, the contract.** No compiler is built. What has to be true:
 
 1. Every iyi file under `src/compiler` compiles with the current compiler and
-   is exercised by a gate that carries a failure proof. True today for all four
+   is exercised by a gate that carries a failure proof. True today for all five
    groups above.
 2. A stage-one compiler is built *by Crystal* from iyi sources. Its output is
    the thing under test, never its own source.
@@ -104,5 +104,5 @@ each one is a gate or it is not being checked:
   not; they had different producers.
 - A byte comparison that passes because both binaries embed the same timestamp
   path rather than the same code.
-- `src/compiler/*.iyi` growing a file no gate exercises. The four groups above
-  each have one; a fifth needs one in the same commit.
+- `src/compiler/*.iyi` growing a file no gate exercises. The five groups above
+  each have one; a sixth needs one in the same commit.
