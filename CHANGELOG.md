@@ -4,6 +4,30 @@
 
 ### Fixed
 
+- **Three ways a command answered with the compiler's guts instead of a
+  sentence.** `iyi daemon start --socket <a path longer than the kernel
+  takes>` died with "Path size exceeds the maximum size of 107 bytes
+  (ArgumentError)" and a backtrace through `src/socket/address.cr` — a file
+  the author never opened, about a socket they did ask for. A unix socket's
+  path is a fixed field in `sockaddr_un`, so the length is checked where the
+  path is decided and every verb that takes `--socket` gets the same
+  refusal, naming the path, its length and the machine's limit. A `.iyi`
+  file of bytes that are not text was reported as "not a valid **Crystal**
+  source file" — the other language's name for this one's file, in the
+  compiler and in the formatter both; each names the language the file is
+  written in now. And `-o nodir/prog` reached `ld.lld`, which answered
+  "cannot open output file" from a program the author did not run, after a
+  whole compilation had been paid for; the directory is checked before the
+  work starts.
+- **And the verbs have a gate.** `bench/verbs_exercise.sh` drives sixteen
+  mistakes a person makes at the command line — an unknown verb, a missing
+  file, a directory as the entry, two module headers, unreadable bytes, a
+  missing output directory, a truncated artifact, a flipped byte, a source
+  file dumped as an artifact, an artifact directory that is not there, an
+  over-long socket path to three verbs — and asserts the same three things
+  of each: a non-zero exit, a phrase that names what was asked for, and *no*
+  trace. The trace detector is proved against a recording of the daemon
+  crash above, because a check that cannot fail is not a check.
 - **A range that ends at the type's maximum stepped past it.** The inclusive
   walk was `while value <= @end` followed by `value = value + 1`, so the
   last step left the type on the checked `+` and

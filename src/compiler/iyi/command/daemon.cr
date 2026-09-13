@@ -150,6 +150,15 @@ class Iyi::Command
     socket
   end
 
+  # iyi: the one place a socket path is decided, so the one place its length
+  # is checked. A unix socket's path is a fixed field in the kernel's
+  # `sockaddr_un` — 107 bytes on Linux, 103 on darwin — and handing it a
+  # longer one raised Crystal's `ArgumentError` out of `Socket::UNIXAddress`:
+  # `iyi daemon start --socket <long path>` died with "Path size exceeds the
+  # maximum size of 107 bytes (ArgumentError)" and a stack trace through
+  # `src/socket/address.cr`, which names a file the author never opened and
+  # says nothing about the socket they asked for. Every verb that takes
+  # `--socket` comes through here.
   private def daemon_socket_path : String
     path = nil
     options.each_with_index do |opt, i|
@@ -159,7 +168,19 @@ class Iyi::Command
         break
       end
     end
-    path || File.join(CacheDir.instance.dir, "daemon.sock")
+    path ||= File.join(CacheDir.instance.dir, "daemon.sock")
+
+    limit = Socket::UNIXAddress::MAX_PATH_SIZE
+    if path.bytesize > limit
+      abort! "the socket path is #{path.bytesize} bytes and the kernel takes " \
+             "#{limit}: #{path}. A unix socket's path is a fixed field in " \
+             "`sockaddr_un`, so this is the machine's limit rather than " \
+             "this compiler's. Pass a shorter `--socket`, or set TMPDIR to " \
+             "a shorter directory and let the default sit under it",
+        :FAILURE
+    end
+
+    path
   end
 
   private def daemon_start

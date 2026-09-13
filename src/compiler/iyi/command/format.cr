@@ -150,7 +150,10 @@ class Iyi::Command
         end
       end
     rescue ex : InvalidByteSequenceError
-      print_error "file '#{filename}' is not a valid Crystal source file: #{ex.message}"
+      # The same question the compiler asks: whichever language the file is
+      # written in, not whichever one this command was forked from.
+      language = filename.ends_with?(".iyi") ? "iyi" : "Crystal"
+      print_error "file '#{filename}' is not a valid #{language} source file: #{ex.message}"
       @status_code = 1
     rescue ex : Iyi::SyntaxException
       print_error "syntax error in '#{filename}:#{ex.line_number}:#{ex.column_number}': #{ex.message}"

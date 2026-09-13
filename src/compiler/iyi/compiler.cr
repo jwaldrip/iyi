@@ -2111,8 +2111,13 @@ module Iyi
       parser.wants_doc = program.wants_doc?
       parser.parse
     rescue ex : InvalidByteSequenceError
+      # iyi: whichever language the file is written in. A `.iyi` file full of
+      # bytes that are not text was reported as "not a valid Crystal source
+      # file", which names the other language for a file this one was asked
+      # to read - the identity `bench/identity_floor.py` exists to keep.
+      language = source.filename.ends_with?(".iyi") ? "iyi" : "Crystal"
       stderr.print colorize("Error: ").red.bold
-      stderr.print colorize("file '#{Iyi.relative_filename(source.filename)}' is not a valid Crystal source file: ").bold
+      stderr.print colorize("file '#{Iyi.relative_filename(source.filename)}' is not a valid #{language} source file: ").bold
       stderr.puts ex.message
       exit 1
     end
