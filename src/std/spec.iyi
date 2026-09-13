@@ -110,6 +110,12 @@ lib LibC
   fun posix_spawnp(pid : Int32*, file : UInt8*, file_actions : Void*,
                    attrp : Void*, argv : UInt8**, envp : UInt8**) : Int32
   fun waitpid(pid : Int32, status : Int32*, options : Int32) : Int32
+
+  # The child gets this process's environment. Passing a null `envp` hands it
+  # an empty one, which a shell would never have done: the compiler it starts
+  # then has no `PATH`, and its link step fails with `cc` not found. That cost
+  # a green macOS run and a red Linux one, because macOS found `cc` anyway.
+  $environ : UInt8**
 end
 
 # -----------------------------------------------------------------------------
@@ -2125,7 +2131,7 @@ pub class CLI
 
     pid = 0
     spawned = LibC.posix_spawnp(pointerof(pid), parts[0].to_unsafe,
-      Pointer(Void).new(0_u64), Pointer(Void).new(0_u64), argv, Pointer(UInt8*).new(0_u64))
+      Pointer(Void).new(0_u64), Pointer(Void).new(0_u64), argv, LibC.environ)
     return 127 unless spawned == 0
 
     status = 0
