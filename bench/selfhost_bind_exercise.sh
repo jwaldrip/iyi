@@ -1,11 +1,19 @@
 #!/usr/bin/env bash
-# Fails when the iyi bind tool stops agreeing with the one it replaces.
+# Fails when the iyi bind tool stops agreeing with a Crystal implementation of
+# the same description, which is NOT the same thing as agreeing with the tool
+# it replaces.
 #
-# The port is only worth something if it reports the same method classifications,
-# verdicts, parameters, and draft boundary declarations as the front end iyi is
-# bootstrapped from. Every fixture is parsed and analyzed twice, once by each
-# implementation, dumped in one text form, and required byte-identical. A check
-# that ran only the iyi side would pass for a tool that analyzed nothing at all.
+# Read this before quoting the result. The other selfhost gates build their
+# oracle out of the code being replaced. This one cannot yet: `Iyi.print_bind`
+# takes a semantically analysed program, semantic analysis is not ported, and
+# this port works from a parsed tree. So the oracle below is a second
+# implementation, written here, and two implementations of one description can
+# share a misreading and agree anyway.
+#
+# What this gate does prove: the port is internally consistent, its output is
+# stable, and every mutation named below changes what it answers. What it does
+# not prove is parity with `src/compiler/iyi/tools/bind.cr`. When semantic
+# analysis lands, this oracle should be replaced by the real tool.
 #
 # Machine-specific properties (absolute filesystem paths) are normalized in
 # BOTH implementations' dumps identically by stripping workspace prefixes to

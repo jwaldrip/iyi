@@ -18,9 +18,20 @@ expressions and declarations, the normalizer, the bind tool, the four foundation
 | `syntax/ast.iyi`, `visitor.iyi`, `transformer.iyi` | 7,199 | `bench/selfhost_ast_exercise.sh`, five guarded mutation proofs |
 | `syntax/parser.iyi` (no macros) | 3,926 | `bench/selfhost_parser_exercise.sh`: 24 fixtures, 1,609 normalised nodes identical to the Crystal front end, nine guarded mutation proofs |
 | `semantic/normalizer.iyi` | 714 | `bench/selfhost_normalizer_exercise.sh`: 11 fixtures, 577 normalised nodes identical to the Crystal front end, five guarded mutation proofs |
-| `tools/bind.iyi` | 727 | `bench/selfhost_bind_exercise.sh`: 11 fixtures, 80 public methods identical to the Crystal front end, four guarded mutation proofs |
+| `tools/bind.iyi` | 727 | `bench/selfhost_bind_exercise.sh`: 11 fixtures, 80 public methods, four guarded mutation proofs. Read the note below before trusting this row |
 | `llvm/*.iyi` | 2,285 | `bench/selfhost_llvm_exercise.sh`: a real object file emitted from iyi code, linked against a C driver, run |
 | `foundation/*.iyi` | 122 | compiled by the above |
+
+The bind row is weaker than the rows above it, and the difference matters.
+Every other gate here compares against the code being replaced. The bind gate
+does not: its oracle is a second implementation written inside the gate
+script, so what it proves is that two implementations of the same description
+agree, which a shared misreading would satisfy. The shipped tool also works
+from a semantically analysed program while this port works from a parsed
+tree, so they are not the same tool on the same input. Treat `tools/bind.iyi`
+as unproven against `src/compiler/iyi/tools/bind.cr` until semantic analysis
+is ported and the gate can drive the real one.
+
 What is **not** in iyi: semantic analysis, the type system, the
 macro engine, the artifact format, the formatter, codegen, the command driver,
 the daemon, and platform support. That is the 109,825.
