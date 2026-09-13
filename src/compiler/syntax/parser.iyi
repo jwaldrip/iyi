@@ -490,12 +490,15 @@ pub class Parser < Lexer
             syntax_error("can't change the value of self", location)
           end
 
+          op_loc = @token.location
           op_str = @token.type.to_s
           method = op_str[0, op_str.bytesize - 1]
           push_var(atomic)
           next_token_skip_space_or_newline
           value = parse_op_assign_no_control
-          atomic = OpAssign.new(atomic, method, value).at(location)
+          oa = OpAssign.new(atomic, method, value).at(location)
+          oa.name_location = op_loc
+          atomic = oa
         else
           break
         end
@@ -821,7 +824,9 @@ pub class Parser < Lexer
         named_args = call_args ? call_args.named_args : nil
 
         block = parse_block(block, @stop_on_do)
+        has_parens = call_args ? call_args.has_parentheses : false
         res = Call.new(res, name, args, block, block_arg, named_args).at(location)
+        res.has_parentheses = has_parens
       when TokenKind::OP_LSQUARE
         next_token_skip_space_or_newline
         call_args = preserve_stop_on_do { parse_call_args_space_consumed(false, true) }
@@ -1053,7 +1058,11 @@ pub class Parser < Lexer
       end
 
       block = parse_block(block, @stop_on_do)
-      Call.new(nil, name, args, block, block_arg, named_args).at(location)
+      c = Call.new(nil, name, args, block, block_arg, named_args).at(location)
+      c.has_parentheses = has_parens
+      c.name_location = location
+      c.iyi_group = true if name == "group" && block && args.empty?
+      c
     else
       if is_var
         Var.new(name).at(location)

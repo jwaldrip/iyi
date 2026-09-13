@@ -1199,6 +1199,14 @@ pub class Path < ASTNode
     new([name], false)
   end
 
+  def self.global(names : Array(String)) : Path
+    new(names, true)
+  end
+
+  def self.global(name : String) : Path
+    new([name] of String, true)
+  end
+
   def clone_without_location : self
     Path.new(@names.dup, @global)
   end
@@ -1389,12 +1397,17 @@ pub class ImplicitObj < ASTNode
 end
 
 pub class Return < ControlExpression
+  property from_propagate : Bool = false
+
   def initialize(exp : ASTNode? = nil)
     super(exp)
+    @from_propagate = false
   end
 
   def clone_without_location : self
-    Return.new(clone_node(@exp))
+    ret = Return.new(clone_node(@exp))
+    ret.from_propagate = @from_propagate
+    ret
   end
 
   def to_s(sb : StringBuilder) : Nil
@@ -1523,7 +1536,9 @@ pub class Expressions < ASTNode
   end
 
   def self.from(nodes : Array(ASTNode)) : ASTNode
-    if nodes.size == 1
+    if nodes.size == 0
+      Nop.new
+    elsif nodes.size == 1
       nodes[0]
     else
       new(nodes)
@@ -2166,12 +2181,15 @@ pub class OpAssign < ASTNode
   property target : ASTNode
   property op : String
   property value : ASTNode
+  property name_location : Location? = nil
 
   def initialize(@target : ASTNode, @op : String, @value : ASTNode)
   end
 
   def clone_without_location : self
-    OpAssign.new(@target.clone, @op, @value.clone)
+    oa = OpAssign.new(@target.clone, @op, @value.clone)
+    oa.name_location = @name_location
+    oa
   end
 
   def accept_children(visitor) : Nil
@@ -2564,14 +2582,16 @@ pub class IsA < ASTNode
   property obj : ASTNode
   property const : ASTNode
   property nil_check : Bool
+  property error_construct : String? = nil
 
   def initialize(@obj : ASTNode, @const : ASTNode, @nil_check : Bool = false)
   end
 
   def clone_without_location : self
-    IsA.new(@obj.clone, @const.clone, @nil_check)
+    isa = IsA.new(@obj.clone, @const.clone, @nil_check)
+    isa.error_construct = @error_construct
+    isa
   end
-
   def accept_children(visitor) : Nil
     @obj.accept(visitor)
     @const.accept(visitor)
@@ -2733,16 +2753,23 @@ pub class Block < ASTNode
   property args : Array(Var)
   property body : ASTNode
   property splat_index : Int32?
+  property unpacks : Hash(Int32, Expressions)? = nil
 
-  def initialize(@args : Array(Var) = [] of Var, body : ASTNode? = nil, @splat_index : Int32? = nil)
+  def initialize(@args : Array(Var) = [] of Var, body : ASTNode? = nil, @splat_index : Int32? = nil, @unpacks : Hash(Int32, Expressions)? = nil)
     @body = body || Nop.new
   end
 
   def clone_without_location : self
     cloned_args = @args.map { |a| a.clone.as(Var) }
-    Block.new(cloned_args, @body.clone, @splat_index)
+    cloned_unpacks = if u = @unpacks
+      cu = Hash(Int32, Expressions).new
+      u.each { |k, v| cu[k] = v.clone.as(Expressions) }
+      cu
+    else
+      nil
+    end
+    Block.new(cloned_args, @body.clone, @splat_index, cloned_unpacks)
   end
-
   def accept_children(visitor) : Nil
     @args.each { |a| a.accept(visitor) }
     @body.accept(visitor)
@@ -2796,8 +2823,51 @@ pub class Call < ASTNode
   property block : Block?
   property block_arg : ASTNode?
   property named_args : Array(NamedArgument)?
+  property has_parentheses : Bool = false
+  property name_location : Location? = nil
+  property global : Bool = false
+  property iyi_group : Bool = false
 
-  def initialize(@obj : ASTNode? = nil, @name : String = "", @args : Array(ASTNode) = [] of ASTNode, @block : Block? = nil, @block_arg : ASTNode? = nil, @named_args : Array(NamedArgument)? = nil)
+  def initialize(
+    @obj : ASTNode? = nil,
+    @name : String = "",
+    @args : Array(ASTNode) = [] of ASTNode,
+    @block : Block? = nil,
+    @block_arg : ASTNode? = nil,
+    @named_args : Array(NamedArgument)? = nil,
+    @has_parentheses : Bool = false,
+    @name_location : Location? = nil,
+    @global : Bool = false,
+    @iyi_group : Bool = false,
+  )
+  end
+
+  def self.new(obj : ASTNode?, name : String, arg : ASTNode) : Call
+    new(obj, name, [arg] of ASTNode)
+  end
+
+  def self.global(name : String, arg : ASTNode? = nil) : Call
+    if a = arg
+      new(nil, name, [a] of ASTNode, nil, nil, nil, false, nil, true)
+    else
+      new(nil, name, [] of ASTNode, nil, nil, nil, false, nil, true)
+    end
+  end
+
+  def has_parentheses? : Bool
+    @has_parentheses
+  end
+
+  def super? : Bool
+    @name == "super"
+  end
+
+  def previous_def? : Bool
+    @name == "previous_def"
+  end
+
+  def iyi_group? : Bool
+    @iyi_group
   end
 
   def clone_without_location : self
@@ -2811,7 +2881,18 @@ pub class Call < ASTNode
     else
       cloned_named_args = nil
     end
-    Call.new(clone_node(@obj), @name, clone_nodes(@args), cloned_block, clone_node(@block_arg), cloned_named_args)
+    Call.new(
+      clone_node(@obj),
+      @name,
+      clone_nodes(@args),
+      cloned_block,
+      clone_node(@block_arg),
+      cloned_named_args,
+      @has_parentheses,
+      @name_location,
+      @global,
+      @iyi_group,
+    )
   end
 
   def accept_children(visitor) : Nil
@@ -2898,6 +2979,13 @@ pub class Arg < ASTNode
   property default_value : ASTNode?
   property restriction : ASTNode?
   property external_name : String?
+
+  def external_name : String
+    @external_name || @name
+  end
+
+  def external_name=(@external_name : String?)
+  end
 
   def initialize(@name : String, @default_value : ASTNode? = nil, @restriction : ASTNode? = nil, @external_name : String? = nil)
   end
@@ -3142,7 +3230,11 @@ pub class Def < ASTNode
   property splat_index : Int32?
   property double_splat : Arg?
   property free_vars : Array(String)?
+  property uses_block_arg : Bool = false
 
+  def uses_block_arg? : Bool
+    @uses_block_arg
+  end
   def initialize(
     @name : String = "",
     @args : Array(Arg) = [] of Arg,
@@ -3155,13 +3247,14 @@ pub class Def < ASTNode
     @splat_index : Int32? = nil,
     @double_splat : Arg? = nil,
     @free_vars : Array(String)? = nil,
+    @uses_block_arg : Bool = false,
   )
     @body = body || Nop.new
   end
 
   def clone_without_location : self
     cloned_args = @args.map { |a| a.clone.as(Arg) }
-    Def.new(
+    d = Def.new(
       @name,
       cloned_args,
       @body.clone,
@@ -3180,8 +3273,10 @@ pub class Def < ASTNode
       else
         nil
       end),
-      clone_opt_strings(@free_vars)
+      clone_opt_strings(@free_vars),
     )
+    d.uses_block_arg = @uses_block_arg
+    d
   end
 
   def accept_children(visitor) : Nil
@@ -3724,6 +3819,10 @@ pub class Recover < ASTNode
   property default : ASTNode?
 
   def initialize(@exp : ASTNode, @default : ASTNode? = nil)
+  end
+
+  def panic? : Bool
+    @default.nil?
   end
 
   def clone_without_location : self
@@ -4552,6 +4651,10 @@ pub class Union < ASTNode
   property types : Array(ASTNode)
 
   def initialize(@types : Array(ASTNode) = [] of ASTNode)
+  end
+
+  def singleton? : Bool
+    @types.size == 1
   end
 
   def clone_without_location : self
