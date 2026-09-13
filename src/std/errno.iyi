@@ -2,12 +2,6 @@
 
 module std/errno
 
-struct ::Enum
-  def to_i : Int32
-    value.to_i32
-  end
-end
-
 lib LibErrno
   {% if flag?(:darwin) %}
     fun __error : Int32*
