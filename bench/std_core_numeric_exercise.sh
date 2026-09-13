@@ -155,6 +155,33 @@ prove_fails_prelude() {
   printf '  %s: exits %s at "%s"\n' "$label" "$exit_code" \
     "$(grep -m1 "$phrase" "$WORK/$dir/out" | sed 's/^iyi: panic: //')"
 }
+prove_fails_reopen() {
+  local label="$1" mod_file="$2" dir="$3" phrase="$4" sed_script="$5"
+  mkdir -p "$WORK/$dir/std"
+  sed -e "$sed_script" "$REPO/src/std/$mod_file" > "$WORK/$dir/std/$mod_file"
+  if cmp -s "$REPO/src/std/$mod_file" "$WORK/$dir/std/$mod_file"; then
+    echo "  $label: the patch changed nothing, so this proves nothing"
+    status=1
+    return
+  fi
+  if PATH=/opt/homebrew/bin:/usr/bin:/bin LIBRARY_PATH=/opt/homebrew/opt/bdw-gc/lib \
+       IYI_PATH="$WORK/$dir:$REPO/src" "$IYI" build \
+       -o "$WORK/$dir/program" "$REPO/bench/std_core_numeric_exercise.iyi" \
+       >"$WORK/$dir/build.log" 2>&1; then
+    echo "  $label: the patched library built, but replacing a prelude method must be refused"
+    status=1
+    return
+  fi
+  if ! grep -q "$phrase" "$WORK/$dir/build.log"; then
+    echo "  $label: failed to build, but not with expected refusal (expected '$phrase')"
+    sed -n '1,12p' "$WORK/$dir/build.log"
+    status=1
+    return
+  fi
+  printf '  %s: build refused at "%s"\n' "$label" \
+    "$(grep -m1 "$phrase" "$WORK/$dir/build.log" | sed 's/^.*Error: //')"
+}
+
 
 # 1. Bool bitwise AND broken
 prove_fails "bool & broken" bool.iyi no_bool_and "bool and true" \
@@ -203,6 +230,18 @@ prove_fails "math hypot broken" math.iyi no_math_hypot "math hypot" \
 # 12. Complex addition broken
 prove_fails "complex + broken" complex.iyi no_cplx_add "complex +" \
   's/@real + other.real/@real/'
+
+# 13. Enum flags to_s broken
+prove_fails_prelude "enum flags to_s broken" enum.iyi no_enum_flags_to_s "enum flags to_s Read | Write" \
+  's/text = text + " | " unless text == ""/text = "All"/'
+
+# 14. Enum parse? case folding broken
+prove_fails_prelude "enum parse? case folding broken" enum.iyi no_enum_parse_case "enum parse? found" \
+  's/wanted = name.downcase/wanted = name/'
+# 15. Enum prelude method replacement refused (R-3)
+prove_fails_reopen "enum prelude method replacement refused" enum.iyi enum_reopen_refused \
+  "Enum#to_s is the prelude's method, and this replaces it" \
+  's/def to_i : Int32/def to_s : String/'
 
 echo
 if [ "$status" -eq 0 ]; then

@@ -23,6 +23,17 @@ enum Color
   Blue  = 4
 end
 
+@[Flags]
+enum Mode
+  Read
+  Write
+end
+
+enum Level : Int32
+  Debug = 0
+  Warn  = 2
+end
+
 struct Score
   getter val : Int32
 
@@ -205,6 +216,9 @@ def main : ::Nil
     count = count + 1
   end
   assert(count == 3, "enum each count")
+  # Maintainer reproducer: ensure std/enum does not override prelude's Enum#to_s or Enum.parse?
+  assert((Mode::Read | Mode::Write).to_s == "Read | Write", "enum flags to_s Read | Write")
+  assert(Level.parse?("WARN") == Level::Warn, "enum parse? WARN")
   print "enum surface: all passed\n"
 
   # ---- 7. Char surface ----
