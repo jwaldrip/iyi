@@ -27,7 +27,7 @@ def assert_true(cond : Bool, msg : String) : Nil
   end
 end
 
-def assert_equal(expected : Int32, actual : Int32, msg : String) : Nil
+def assert_equal(expected : Int32, actual, msg : String) : Nil
   if expected != actual
     raise "ASSERTION FAILED: #{msg} (expected #{expected}, got #{actual})"
   end

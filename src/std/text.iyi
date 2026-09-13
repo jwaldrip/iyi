@@ -919,6 +919,71 @@ class ::String
     result
   end
 
+  def byte_slice?(start : Int32, count : Int32) : String?
+    return nil if count < 0
+    start = bytesize + start if start < 0
+    return nil if start < 0 || start > bytesize
+    available = bytesize - start
+    taken = count < available ? count : available
+    String.new(taken) do |buffer|
+      buffer.copy_from(to_unsafe + start, taken)
+    end
+  end
+
+  def byte_slice(range : Range(Int32, Int32)) : String
+    byte_slice?(range) || raise "Range #{range.begin}..#{range.end} out of bounds for bytesize #{bytesize}"
+  end
+
+  def byte_slice?(range : Range(Int32, Int32)) : String?
+    b = range.begin
+    e = range.end
+    b = bytesize + b if b < 0
+    e = bytesize + e if e < 0
+    return nil if b < 0 || b > bytesize
+    e = bytesize if e > bytesize
+    count = range.exclusive? ? e - b : e - b + 1
+    count = 0 if count < 0
+    byte_slice?(b, count)
+  end
+
+  def ascii_only? : Bool
+    bytesize == size
+  end
+
+  def present? : Bool
+    !blank?
+  end
+
+  def same?(other : String) : Bool
+    to_unsafe.address == other.to_unsafe.address
+  end
+
+  def <=>(other : String) : Int32
+    return 0 if same?(other)
+    min_len = bytesize < other.bytesize ? bytesize : other.bytesize
+    p1 = to_unsafe
+    p2 = other.to_unsafe
+    i = 0
+    while i < min_len
+      b1 = p1[i]
+      b2 = p2[i]
+      if b1 != b2
+        return b1 < b2 ? -1 : 1
+      end
+      i += 1
+    end
+    bytesize < other.bytesize ? -1 : (bytesize > other.bytesize ? 1 : 0)
+  end
+
+  def compare(other : String, case_insensitive : Bool = false) : Int32
+    unless case_insensitive
+      return self <=> other
+    end
+    s1 = downcase
+    s2 = other.downcase
+    s1 <=> s2
+  end
+
   def to_slice : Bytes
     Bytes.new(to_unsafe, bytesize)
   end
@@ -1082,6 +1147,167 @@ class ::String
         i += 1
       end
       res
+    end
+  end
+
+  def rchop(suffix : String) : String
+    return self unless ends_with?(suffix)
+    byte_slice(0, bytesize - suffix.bytesize)
+  end
+
+  def rchop(suffix : Char) : String
+    rchop(suffix.to_s)
+  end
+
+  def hexbytes? : Bytes?
+    return nil unless bytesize.even?
+    b_len = bytesize // 2
+    slice = Bytes.new(b_len)
+    i = 0
+    while i < b_len
+      c1 = to_unsafe[i * 2]
+      c2 = to_unsafe[i * 2 + 1]
+      h1 = hex_val(c1)
+      h2 = hex_val(c2)
+      return nil if h1 < 0 || h2 < 0
+      slice[i] = ((h1 << 4) | h2).to_u8
+      i += 1
+    end
+    slice
+  end
+
+  def hexbytes : Bytes
+    hexbytes? || raise "Invalid hex string: #{inspect}"
+  end
+
+  private def hex_val(b : UInt8) : Int32
+    if b >= 48_u8 && b <= 57_u8
+      (b - 48_u8).to_i
+    elsif b >= 97_u8 && b <= 102_u8
+      (b - 97_u8).to_i + 10
+    elsif b >= 65_u8 && b <= 70_u8
+      (b - 65_u8).to_i + 10
+    else
+      -1
+    end
+  end
+
+  def to_hex : String
+    String.new(bytesize * 2) do |buf|
+      digits = "0123456789abcdef".to_unsafe
+      i = 0
+      while i < bytesize
+        b = to_unsafe[i].to_i
+        buf[i * 2] = digits[(b >> 4) & 0xF]
+        buf[i * 2 + 1] = digits[b & 0xF]
+        i += 1
+      end
+    end
+  end
+
+  def count(&block : Char -> Bool) : Int32
+    c = 0
+    each_char do |ch|
+      c += 1 if yield ch
+    end
+    c
+  end
+
+  def delete(&block : Char -> Bool) : String
+    res = ""
+    each_char do |ch|
+      res = res + ch.to_s unless yield ch
+    end
+    res
+  end
+
+  def squeeze(&block : Char -> Bool) : String
+    return self if empty?
+    res = ""
+    has_prev = false
+    prev = ' '
+    each_char do |ch|
+      if has_prev && prev == ch && (yield ch)
+        # skip duplicate
+      else
+        res = res + ch.to_s
+        prev = ch
+        has_prev = true
+      end
+    end
+    res
+  end
+
+  def underscore : String
+    return "" if empty?
+    res = ""
+    last_is_separator = true
+    each_char_with_index do |c, i|
+      if c >= 'A' && c <= 'Z'
+        if i > 0 && !last_is_separator
+          res = res + "_"
+        end
+        res = res + (c.ord + 32).unsafe_chr.to_s
+        last_is_separator = false
+      elsif c == '-' || c == ' ' || c == '_'
+        unless last_is_separator
+          res = res + "_"
+        end
+        last_is_separator = true
+      else
+        res = res + c.to_s
+        last_is_separator = false
+      end
+    end
+    res
+  end
+
+  def camelcase(lower : Bool = false) : String
+    return "" if empty?
+    res = ""
+    next_upper = !lower
+    each_char do |c|
+      if c == '_' || c == '-' || c == ' '
+        next_upper = true
+      elsif next_upper
+        res = res + ((c >= 'a' && c <= 'z') ? (c.ord - 32).unsafe_chr.to_s : c.to_s)
+        next_upper = false
+      else
+        res = res + c.to_s
+      end
+    end
+    res
+  end
+
+  def titleize : String
+    return "" if empty?
+    res = ""
+    next_upper = true
+    each_char do |c|
+      if c == '_' || c == '-' || c == ' '
+        res = res + " "
+        next_upper = true
+      elsif next_upper
+        res = res + ((c >= 'a' && c <= 'z') ? (c.ord - 32).unsafe_chr.to_s : c.to_s)
+        next_upper = false
+      else
+        res = res + ((c >= 'A' && c <= 'Z') ? (c.ord + 32).unsafe_chr.to_s : c.to_s)
+      end
+    end
+    res
+  end
+
+  def each_char_with_index(&block : Char, Int32 -> Nil) : Nil
+    i = 0
+    each_char do |c|
+      yield c, i
+      i += 1
+    end
+  end
+
+  def each_codepoint(&block : Int32 -> Nil) : Nil
+    each_char do |c|
+      yield c.ord
     end
   end
 
