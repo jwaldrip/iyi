@@ -96,6 +96,18 @@ def test_weak_ref : Nil
   allocated = WeakRef(Person).allocate
   fail("weak_ref: allocate null") if allocated.value
   log_check("weak_ref: custom allocate")
+
+  # Weak reference clears when unrooted target is collected
+  make_ephemeral = -> {
+    ephemeral = Person.new("Ephemeral", 1)
+    WeakRef.new(ephemeral)
+  }
+  ephemeral_ref = make_ephemeral.call
+  s = 0_u64
+  100.times { |i| s += i }
+  GC.collect
+  fail("weak_ref: unrooted object not collected") unless ephemeral_ref.value.nil?
+  log_check("weak_ref: collected target clears to nil")
 end
 
 def test_reference_storage : Nil
@@ -235,6 +247,16 @@ def test_gc : Nil
   GC.enable
   GC.disable
   log_check("gc: collection control hooks")
+
+  heap_probe = GC.malloc(64)
+  fail("gc: is_heap_ptr failed on malloc") unless GC.is_heap_ptr(heap_probe)
+  fail("gc: is_heap_ptr failed on interior") unless GC.is_heap_ptr((heap_probe + 16_i64))
+  fail("gc: is_heap_ptr true for null") if GC.is_heap_ptr(Pointer(Void).new(0_u64))
+  stack_probe = 99
+  fail("gc: is_heap_ptr true for stack") if GC.is_heap_ptr(pointerof(stack_probe).as(Void*))
+  GC.free(heap_probe)
+  fail("gc: is_heap_ptr true after free") if GC.is_heap_ptr(heap_probe)
+  log_check("gc: is_heap_ptr discrimination")
 
   stats = GC.stats
   fail("gc: stats type") unless stats.heap_size >= 0_u64

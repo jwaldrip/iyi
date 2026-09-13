@@ -3,24 +3,30 @@
 
 module std/weak_ref
 
+import std/gc
+
 pub class WeakRef(T)
-  @target : Void*
+  @target : UInt64
 
   def initialize(target : T)
-    @target = target.as(Void*)
-  end
-
-  def self.allocate : self
-    ptr = Pointer(UInt8).malloc(instance_sizeof(self).to_u64).as(self)
-    ptr
+    {% raise "Cannot create a WeakRef of a module" if T.module? %}
+    ptr = target.as(Void*)
+    if GC.is_heap_ptr(ptr)
+      @target = ptr.address
+    else
+      @target = 0_u64
+    end
   end
 
   # Returns the referenced object or Nil if it has been collected.
   def value : T?
-    if @target.address == 0
+    if @target == 0_u64
+      nil
+    elsif !GC.is_heap_ptr(Pointer(Void).new(@target))
+      @target = 0_u64
       nil
     else
-      @target.as(T?)
+      Pointer(Void).new(@target).as(T?)
     end
   end
 end

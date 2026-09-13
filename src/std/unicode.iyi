@@ -1,6 +1,18 @@
 # Unicode standard library for iyi.
 #
 # Provides case mapping, categories, UTF-8/UTF-16 encoding and normalization.
+#
+# Supported subsets:
+# - Categories (letter?, number?, whitespace?, control?, mark?, ascii?):
+#   * Letters: Latin (Basic, Supplement, Extended-A), Greek, Cyrillic,
+#     Hebrew, Arabic, Devanagari, Thai, CJK Unified Ideographs, Hiragana,
+#     Katakana, Hangul Syllables.
+#   * Numbers: ASCII digits, Arabic-Indic, Extended Arabic-Indic, Roman numerals.
+# - Normalization (NFC, NFD):
+#   * Hangul canonical decomposition and composition (algorithmic).
+#   * Latin-1 Supplement canonical decomposition and composition (precomposed
+#     letters and combining marks).
+# - Case mappings: ASCII, Latin-1, Greek, Cyrillic, Latin Extended-A, Turkic, Fold.
 
 module std/unicode
 
@@ -10,7 +22,7 @@ using std/slice::{Slice, Bytes}
 pub alias Bytes = Std::Slice::Bytes
 
 module ::Unicode
-  VERSION = "17.0.0"
+  VERSION = "17.0.0-subset"
 
   enum CaseOptions : Int32
     None   = 0
@@ -365,10 +377,18 @@ module ::Unicode
   def self.letter?(char : Char) : Bool
     cp = char.ord
     lowercase?(char) || uppercase?(char) ||
-      (cp >= 0x4E00 && cp <= 0x9FFF) || # CJK Unified Ideographs
-      (cp >= 0x3040 && cp <= 0x309F) || # Hiragana
-      (cp >= 0x30A0 && cp <= 0x30FF) || # Katakana
-      (cp >= 0xAC00 && cp <= 0xD7AF)    # Hangul Syllables
+      (cp >= 0x0100 && cp <= 0x017F) ||                                   # Latin Extended-A
+      (cp >= 0x0370 && cp <= 0x03FF) ||                                   # Greek
+      (cp >= 0x0400 && cp <= 0x04FF) ||                                   # Cyrillic
+      (cp >= 0x05D0 && cp <= 0x05EA) || (cp >= 0x05EF && cp <= 0x05F2) || # Hebrew
+      (cp >= 0x0620 && cp <= 0x064A) || (cp >= 0x066E && cp <= 0x06D3) || cp == 0x06D5 ||
+      (cp >= 0x06E5 && cp <= 0x06E6) || (cp >= 0x06EE && cp <= 0x06EF) || (cp >= 0x06FA && cp <= 0x06FC) || cp == 0x06FF || # Arabic
+      (cp >= 0x0904 && cp <= 0x0939) || (cp >= 0x0958 && cp <= 0x0961) || (cp >= 0x0972 && cp <= 0x097F) ||                 # Devanagari
+      (cp >= 0x0E01 && cp <= 0x0E30) || (cp >= 0x0E32 && cp <= 0x0E33) || (cp >= 0x0E40 && cp <= 0x0E47) ||                 # Thai
+      (cp >= 0x4E00 && cp <= 0x9FFF) ||                                                                                     # CJK Unified Ideographs
+      (cp >= 0x3040 && cp <= 0x309F) ||                                                                                     # Hiragana
+      (cp >= 0x30A0 && cp <= 0x30FF) ||                                                                                     # Katakana
+      (cp >= 0xAC00 && cp <= 0xD7AF)                                                                                        # Hangul Syllables
   end
 
   def self.number?(char : Char) : Bool
@@ -484,6 +504,177 @@ module ::Unicode
   HANGUL_N_COUNT =    588 # V_COUNT * T_COUNT
   HANGUL_S_COUNT =  11172 # L_COUNT * N_COUNT
 
+  def self.latin1_decompose(cp : Int32) : Tuple(Int32, Int32)?
+    case cp
+    # Uppercase
+    when 0x00C0 then {0x0041, 0x0300} # À -> A + grave
+    when 0x00C1 then {0x0041, 0x0301} # Á -> A + acute
+    when 0x00C2 then {0x0041, 0x0302} # Â -> A + circumflex
+    when 0x00C3 then {0x0041, 0x0303} # Ã -> A + tilde
+    when 0x00C4 then {0x0041, 0x0308} # Ä -> A + diaeresis
+    when 0x00C5 then {0x0041, 0x030A} # Å -> A + ring above
+    when 0x00C7 then {0x0043, 0x0327} # Ç -> C + cedilla
+    when 0x00C8 then {0x0045, 0x0300} # È -> E + grave
+    when 0x00C9 then {0x0045, 0x0301} # É -> E + acute
+    when 0x00CA then {0x0045, 0x0302} # Ê -> E + circumflex
+    when 0x00CB then {0x0045, 0x0308} # Ë -> E + diaeresis
+    when 0x00CC then {0x0049, 0x0300} # Ì -> I + grave
+    when 0x00CD then {0x0049, 0x0301} # Í -> I + acute
+    when 0x00CE then {0x0049, 0x0302} # Î -> I + circumflex
+    when 0x00CF then {0x0049, 0x0308} # Ï -> I + diaeresis
+    when 0x00D1 then {0x004E, 0x0303} # Ñ -> N + tilde
+    when 0x00D2 then {0x004F, 0x0300} # Ò -> O + grave
+    when 0x00D3 then {0x004F, 0x0301} # Ó -> O + acute
+    when 0x00D4 then {0x004F, 0x0302} # Ô -> O + circumflex
+    when 0x00D5 then {0x004F, 0x0303} # Õ -> O + tilde
+    when 0x00D6 then {0x004F, 0x0308} # Ö -> O + diaeresis
+    when 0x00D9 then {0x0055, 0x0300} # Ù -> U + grave
+    when 0x00DA then {0x0055, 0x0301} # Ú -> U + acute
+    when 0x00DB then {0x0055, 0x0302} # Û -> U + circumflex
+    when 0x00DC then {0x0055, 0x0308} # Ü -> U + diaeresis
+    when 0x00DD then {0x0059, 0x0301} # Ý -> Y + acute
+    # Lowercase
+    when 0x00E0 then {0x0061, 0x0300} # à -> a + grave
+    when 0x00E1 then {0x0061, 0x0301} # á -> a + acute
+    when 0x00E2 then {0x0061, 0x0302} # â -> a + circumflex
+    when 0x00E3 then {0x0061, 0x0303} # ã -> a + tilde
+    when 0x00E4 then {0x0061, 0x0308} # ä -> a + diaeresis
+    when 0x00E5 then {0x0061, 0x030A} # å -> a + ring above
+    when 0x00E7 then {0x0063, 0x0327} # ç -> c + cedilla
+    when 0x00E8 then {0x0065, 0x0300} # è -> e + grave
+    when 0x00E9 then {0x0065, 0x0301} # é -> e + acute
+    when 0x00EA then {0x0065, 0x0302} # ê -> e + circumflex
+    when 0x00EB then {0x0065, 0x0308} # ë -> e + diaeresis
+    when 0x00EC then {0x0069, 0x0300} # ì -> i + grave
+    when 0x00ED then {0x0069, 0x0301} # í -> i + acute
+    when 0x00EE then {0x0069, 0x0302} # î -> i + circumflex
+    when 0x00EF then {0x0069, 0x0308} # ï -> i + diaeresis
+    when 0x00F1 then {0x006E, 0x0303} # ñ -> n + tilde
+    when 0x00F2 then {0x006F, 0x0300} # ò -> o + grave
+    when 0x00F3 then {0x006F, 0x0301} # ó -> o + acute
+    when 0x00F4 then {0x006F, 0x0302} # ô -> o + circumflex
+    when 0x00F5 then {0x006F, 0x0303} # õ -> o + tilde
+    when 0x00F6 then {0x006F, 0x0308} # ö -> o + diaeresis
+    when 0x00F9 then {0x0075, 0x0300} # ù -> u + grave
+    when 0x00FA then {0x0075, 0x0301} # ú -> u + acute
+    when 0x00FB then {0x0075, 0x0302} # û -> u + circumflex
+    when 0x00FC then {0x0075, 0x0308} # ü -> u + diaeresis
+    when 0x00FD then {0x0079, 0x0301} # ý -> y + acute
+    when 0x00FF then {0x0079, 0x0308} # ÿ -> y + diaeresis
+    else
+      nil
+    end
+  end
+
+  def self.latin1_compose(c0 : Int32, c1 : Int32) : Int32?
+    case c0
+    when 0x0041 # 'A'
+      case c1
+      when 0x0300 then 0x00C0
+      when 0x0301 then 0x00C1
+      when 0x0302 then 0x00C2
+      when 0x0303 then 0x00C3
+      when 0x0308 then 0x00C4
+      when 0x030A then 0x00C5
+      else             nil
+      end
+    when 0x0043 # 'C'
+      c1 == 0x0327 ? 0x00C7 : nil
+    when 0x0045 # 'E'
+      case c1
+      when 0x0300 then 0x00C8
+      when 0x0301 then 0x00C9
+      when 0x0302 then 0x00CA
+      when 0x0308 then 0x00CB
+      else             nil
+      end
+    when 0x0049 # 'I'
+      case c1
+      when 0x0300 then 0x00CC
+      when 0x0301 then 0x00CD
+      when 0x0302 then 0x00CE
+      when 0x0308 then 0x00CF
+      else             nil
+      end
+    when 0x004E # 'N'
+      c1 == 0x0303 ? 0x00D1 : nil
+    when 0x004F # 'O'
+      case c1
+      when 0x0300 then 0x00D2
+      when 0x0301 then 0x00D3
+      when 0x0302 then 0x00D4
+      when 0x0303 then 0x00D5
+      when 0x0308 then 0x00D6
+      else             nil
+      end
+    when 0x0055 # 'U'
+      case c1
+      when 0x0300 then 0x00D9
+      when 0x0301 then 0x00DA
+      when 0x0302 then 0x00DB
+      when 0x0308 then 0x00DC
+      else             nil
+      end
+    when 0x0059 # 'Y'
+      c1 == 0x0301 ? 0x00DD : nil
+    when 0x0061 # 'a'
+      case c1
+      when 0x0300 then 0x00E0
+      when 0x0301 then 0x00E1
+      when 0x0302 then 0x00E2
+      when 0x0303 then 0x00E3
+      when 0x0308 then 0x00E4
+      when 0x030A then 0x00E5
+      else             nil
+      end
+    when 0x0063 # 'c'
+      c1 == 0x0327 ? 0x00E7 : nil
+    when 0x0065 # 'e'
+      case c1
+      when 0x0300 then 0x00E8
+      when 0x0301 then 0x00E9
+      when 0x0302 then 0x00EA
+      when 0x0308 then 0x00EB
+      else             nil
+      end
+    when 0x0069 # 'i'
+      case c1
+      when 0x0300 then 0x00EC
+      when 0x0301 then 0x00ED
+      when 0x0302 then 0x00EE
+      when 0x0308 then 0x00EF
+      else             nil
+      end
+    when 0x006E # 'n'
+      c1 == 0x0303 ? 0x00F1 : nil
+    when 0x006F # 'o'
+      case c1
+      when 0x0300 then 0x00F2
+      when 0x0301 then 0x00F3
+      when 0x0302 then 0x00F4
+      when 0x0303 then 0x00F5
+      when 0x0308 then 0x00F6
+      else             nil
+      end
+    when 0x0075 # 'u'
+      case c1
+      when 0x0300 then 0x00F9
+      when 0x0301 then 0x00FA
+      when 0x0302 then 0x00FB
+      when 0x0308 then 0x00FC
+      else             nil
+      end
+    when 0x0079 # 'y'
+      case c1
+      when 0x0301 then 0x00FD
+      when 0x0308 then 0x00FF
+      else             nil
+      end
+    else
+      nil
+    end
+  end
+
   def self.canonical_decompose(all_codepoints : Array(Int32), codepoint : Int32) : Nil
     if codepoint >= HANGUL_S_BASE && codepoint < HANGUL_S_BASE + HANGUL_S_COUNT
       s_index = codepoint - HANGUL_S_BASE
@@ -494,6 +685,9 @@ module ::Unicode
       all_codepoints << l
       all_codepoints << v
       all_codepoints << t unless t == HANGUL_T_BASE
+    elsif (decomp = latin1_decompose(codepoint))
+      all_codepoints << decomp[0]
+      all_codepoints << decomp[1]
     else
       all_codepoints << codepoint
     end
@@ -541,6 +735,10 @@ module ::Unicode
             next
           end
         end
+      elsif i + 1 < len && (comp = latin1_compose(c0, codepoints[i + 1]))
+        res = res + codepoint_to_s(comp)
+        i += 2
+        next
       end
       res = res + codepoint_to_s(c0)
       i += 1
