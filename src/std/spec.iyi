@@ -101,8 +101,15 @@ end
 import std/regex
 using std/regex::{Regex}
 
+# Running a file means starting a process, not asking a shell to parse a
+# sentence. `system` would put `/bin/sh` under every program that imports this
+# module, and a path with a space or a semicolon in it would be the shell's to
+# interpret rather than ours. `posix_spawn` is the same libc floor with neither
+# property: the argument vector is passed as a vector (SPEC.md III.10).
 lib LibC
-  fun system(command : UInt8*) : Int32
+  fun posix_spawnp(pid : Int32*, file : UInt8*, file_actions : Void*,
+                   attrp : Void*, argv : UInt8**, envp : UInt8**) : Int32
+  fun waitpid(pid : Int32, status : Int32*, options : Int32) : Int32
 end
 
 # -----------------------------------------------------------------------------
@@ -2100,12 +2107,32 @@ pub class CLI
   end
 
   def self.run_file(file_path : String, args : Array(String) = [] of String) : Int32
-    cmd = "./bin/iyi run #{file_path}"
+    # argv is built as a vector, so a path or an argument carrying a space, a
+    # quote or a semicolon is one argument and not a sentence for a shell.
+    parts = ["./bin/iyi", "run", file_path]
     unless args.empty?
-      cmd = cmd + " -- " + args.join(" ")
+      parts << "--"
+      args.each { |arg| parts << arg }
     end
-    raw = LibC.system(cmd.to_unsafe)
-    (raw >> 8) & 0xFF
+
+    argv = Pointer(UInt8*).malloc((parts.size + 1).to_u64)
+    index = 0
+    while index < parts.size
+      argv[index] = parts[index].to_unsafe
+      index = index + 1
+    end
+    argv[parts.size] = Pointer(UInt8).new(0_u64)
+
+    pid = 0
+    spawned = LibC.posix_spawnp(pointerof(pid), parts[0].to_unsafe,
+      Pointer(Void).new(0_u64), Pointer(Void).new(0_u64), argv, Pointer(UInt8*).new(0_u64))
+    return 127 unless spawned == 0
+
+    status = 0
+    return 127 unless LibC.waitpid(pid, pointerof(status), 0) == pid
+    # The low seven bits are a signal when one killed it; the exit code is
+    # the next eight, which is what a caller comparing against 0 or 1 wants.
+    (status & 0x7F) != 0 ? 128 + (status & 0x7F) : (status >> 8) & 0xFF
   end
 
   def self.run_files(file_paths : Array(String), args : Array(String) = [] of String) : Int32
