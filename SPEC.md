@@ -419,14 +419,100 @@ question — "too few arguments for format string" — where it used to borrow
 a raise from an index.
 
 **The standard library is deliberately outside that count, and this is the
-answer this section left open.** `src/std/` is 6,057 lines across twelve
-modules: `traits`, `cmp`, `enumerable`, `indexable`, `iterator`, `slice`,
-`text`, `time`, `format`, `socket`, `list` and `derives`. It is opt-in via
-`import std/...`, it lives outside `src/iyi/` where `bench/doc_numbers.py`
-measures the ceiling, and a program that imports none of it pays for none of
-it. So the prelude rule keeps its meaning, "a method enters because a
-program in this repository needs it", and the number it is held to is the
-one the rule named.
+answer this section left open.** `src/std/` is **67,792 lines across 102
+modules**. It is opt-in via `import std/...`, it lives outside `src/iyi/` where
+`bench/doc_numbers.py` measures the ceiling, and a program that imports none of
+it pays for none of it. So the prelude rule keeps its meaning, "a method enters
+because a program in this repository needs it", while the language still gets a
+library. The other answer this section named, moving the ceiling, is not taken.
+What is not open is pretending the prelude number itself still fits.
+
+**Nothing in it links a C library, and six modules exist because of that
+rule.** Crystal binds libyaml, libxml2, zlib, GMP and PCRE; each is written
+here instead, which is the same choice `src/compiler/iyi/rx.cr` already made by
+writing 2,031 lines of regex engine rather than binding PCRE:
+
+| Crystal binds | iyi writes | what proves it |
+|---|---|---|
+| libyaml | `yaml.iyi` | the Norway problem, merge keys, an alias bomb bounded |
+| libxml2 | `xml.iyi` | an XXE attempt refused, billion laughs bounded |
+| zlib | `compress.iyi` | round trips against the real `gzip` in both directions |
+| GMP | `big.iyi` | 5,000 random algebraic identities, and `102!` |
+| PCRE | `regex.iyi` | a Thompson NFA, so `(a+)+b` is linear rather than 2^n |
+| OpenSSL digests | `digest.iyi`, `crypto.iyi` | NIST CAVP and RFC 2202, 4231, 5869, 8439 vectors |
+
+Two of these close gaps the prelude could not. `dns.iyi` resolves a hostname,
+which `src/std/socket.iyi` deliberately refuses to do because `getaddrinfo`
+drags in libc and NSS and ends III.9's floor; the resolver is written instead,
+over `udp.iyi`, which did not exist either. And `hpack.iyi`, `qpack.iyi` and
+`capsule.iyi` are header compression and HTTP datagrams for HTTP/2 and HTTP/3,
+which Crystal does not have at all, so they are written from the RFCs and
+checked against the worked examples in RFC 7541 appendix C, RFC 9204 appendix
+B and RFC 9000 appendix A rather than against themselves.
+
+**The protocol layer is where "Crystal does not have this" stops being a
+footnote.** TLS 1.3, HTTP/1.1, WebSocket, HTTP/2, and QUIC with HTTP/3 are
+written on top of the modules above, and three of the five have no Crystal
+equivalent to port from at all. Each is gated against the RFC's own worked
+bytes rather than against itself, which is the only test that catches an
+implementation that round-trips happily while disagreeing with the world:
+
+| module | gated on | what it answers |
+|---|---|---|
+| `tls.iyi` | RFC 8448's worked traces, byte for byte | a live authenticated TLS 1.3 connection to `example.com`, cipher `0x1301` |
+| `http1.iyi` | RFC 9112, and nineteen smuggling framings refused | a client and concurrent server, live HTTP and authenticated HTTPS |
+| `websocket.iyi` | RFC 6455 section 1.3's handshake vector | UTF-8 across fragments and stateless `permessage-deflate` negotiation |
+| `http2.iyi` | RFC 9113, sixteen h2spec shapes | three concurrent streams, and 102 KB through a 65,535-byte window |
+| `quic.iyi`, `http3.iyi` | RFC 9001 appendix A, byte for byte | TLS 1.3, 1-RTT, ACK/PTO, H3/QPACK and WebTransport over UDP loopback |
+| `http_client.iyi` | simulated negotiation against mock origin transports | one client offers `h2` then `http/1.1`, selecting each without application input |
+
+**Protocol is transport policy, not application policy.** `std/http_client`
+accepts the shared `Request` and returns the shared `Response`; `get` and
+`post` expose no protocol argument. Direct HTTPS offers `h2` and `http/1.1`
+through TLS ALPN. When the caller supplies an HTTP/3 upstream, an `Alt-Svc`
+advertisement moves the next request to that transport (`std/http_client` does
+not wire QUIC or HTTP/3 on its own, leaving `@http3` nil by default), and an
+upstream proxy receives the ordered `h3`, `h2`, `http/1.1` offer and reports
+what it negotiated. The protocol remains observable as `last_protocol` for
+operations, but an application does not branch on it to send a request. The
+exercise (`bench/std_http_client_exercise.iyi`) runs the same call and models
+through all three outcomes against mock `RecordingUpstream` transports that
+verify the protocol offer list, rather than opening live network sockets.
+
+The QUIC result is the one worth stating precisely, because it was produced
+twice. Its author first wrote its own AES rather than reach across a module
+boundary, and after being given `Std::Crypto::HeaderProtection` instead, every
+appendix A mask still matched. Two independently written AES paths agreeing on
+the same bytes is a stronger statement than either one passing alone.
+
+**TLS carries a limitation section rather than an assurance.** It verifies
+X25519, Ed25519, ECDSA P-256, RSA-PSS and PKCS1v15, parses X.509 and matches
+hostnames per RFC 6125, and it fails closed on a bad Finished MAC, an
+unverifiable signature, an expired certificate and a hostname mismatch, each
+proven. It has also had no independent cryptographic review, its BigInt
+modular arithmetic is not guaranteed constant-time on every microarchitecture,
+and it is client-only. Hand-rolled TLS fails silently, so the honest posture is
+written down here beside the capability rather than left to be inferred from
+the fact that it works.
+
+**Each of those gates carries a failure proof, and two of the proofs were
+found to be proving nothing.** The pattern throughout this repository is to
+break the mechanism deliberately and require the check to catch it, which is
+what makes a green gate mean something. It has a silent failure mode. The
+AES-128-GCM tampered-tag proof patched a line range and the comparison it
+meant to remove had moved past the end of it; the QUIC varint proof matched
+`MAX_1BYTE = 63_u64` after the formatter had column-aligned the constant. A
+patch that matches nothing leaves the library intact, an intact library
+passes, and the driver reports that as the check being unable to fail. Both
+read as green for as long as nobody ran them together.
+
+The mechanism is guarded now rather than the two instances fixed: every
+driver that patches a source file compares the patched copy against the
+original and refuses to draw a conclusion when they are identical, across
+sixty sites in fifty-two scripts, and patches are anchored on text
+rather than on line numbers. The AES one is the reason this is recorded here
+rather than only in a commit: an AEAD that accepts a forged tag is worse than
+no AEAD, TLS and QUIC are built on it, and the exercise said it was covered.
 
 The ceiling was not a guess. Crystal's own 0.1.0 shipped 8,161 lines of
 library. Its core is **3,551 lines** of that: `object`, `nil`, `bool`, `char`,

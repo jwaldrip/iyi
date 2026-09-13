@@ -85,13 +85,13 @@ prove_fails "ALPN h2 offer removed" no_h2 \
   "assertion failed: origin selected unoffered protocol h2" \
   's/offers = scheme == "https" [?] \[Protocol::HTTP2, Protocol::HTTP1\] : \[Protocol::HTTP1\]/offers = [Protocol::HTTP1]/'
 prove_fails "Alt-Svc h3 route ignored" no_h3 \
-  "assertion failed: second request uses learned HTTP\/3 transport" \
+  "assertion failed: second request uses learned HTTP/3 transport" \
   's/if http3 = @http3/if http3 = nil.as(Upstream?)/'
 prove_fails "proxy precedence bypassed" no_proxy \
   "assertion failed: proxy response returned" \
   's/if proxy = @proxy/if proxy = nil.as(Upstream?)/'
 prove_fails "Alt-Svc ma zero accepted" stale_h3 \
-  "assertion failed: ma=0 clears HTTP\/3 route" \
+  "assertion failed: ma=0 clears HTTP/3 route" \
   's/max_age = parsed$/max_age = parsed == 0_i64 ? 60_i64 : parsed/'
 
 echo
