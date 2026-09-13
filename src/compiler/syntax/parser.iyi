@@ -807,6 +807,11 @@ pub class Parser < Lexer
           next_token
           next
         end
+        if @token.type == TokenKind::IDENT && (@token.value == "or" || @token.value == "or_panic")
+          res = parse_iyi_recover(res).at(location)
+          next
+        end
+
 
         name = @token.value.empty? ? @token.type.to_s : @token.value
         next_token
@@ -1030,7 +1035,11 @@ pub class Parser < Lexer
           check_type_declaration { parse_var_or_call(location) }
         end
       else
-        check_type_declaration { parse_var_or_call(location) }
+        if @token.value == "defer"
+          parse_defer
+        else
+          check_type_declaration { parse_var_or_call(location) }
+        end
       end
     else
       unexpected_token("site_12")
@@ -3642,6 +3651,46 @@ pub class Parser < Lexer
     exp = parse_op_assign
     VisibilityModifier.new(modifier, exp).at(location)
   end
+  def parse_defer : ASTNode
+    location = @token.location
+    next_token_skip_space
+
+    @inside_defer = @inside_defer + 1
+    exp = parse_op_assign
+    @inside_defer = @inside_defer - 1
+
+    Defer.new(exp).at(location).at_end(exp)
+  end
+
+  def parse_iyi_recover(atomic : ASTNode) : ASTNode
+    panic = @token.value == "or_panic"
+    end_location = token_end_location
+    next_token
+
+    if panic
+      if @token.type == TokenKind::OP_LPAREN
+        next_token_skip_space_or_newline
+        check(TokenKind::OP_RPAREN)
+        end_location = token_end_location
+        next_token
+      end
+      return Recover.new(atomic).at_end(end_location)
+    end
+
+    skip_space
+    unless @token.type == TokenKind::OP_LPAREN
+      unexpected_token("expected '(': `.or` takes the default to use when the value is an error")
+    end
+    next_token_skip_space_or_newline
+    default = parse_op_assign
+    skip_space_or_newline
+    check(TokenKind::OP_RPAREN)
+    end_location = token_end_location
+    next_token
+
+    Recover.new(atomic, default).at_end(end_location)
+  end
+
 
   def parse_pub : ASTNode
     pub_location = @token.location
