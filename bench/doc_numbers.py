@@ -132,6 +132,8 @@ def measured() -> dict[str, int]:
         "generated": generated_project_lines(),
         "spec_iyi": iyi_spec_lines(),
         "targets": targets(),
+        "guard_sites": guard_counts()[0],
+        "guard_scripts": guard_counts()[1],
     }
 
 
@@ -177,6 +179,26 @@ def targets() -> int:
             "this check cannot find it and so is not checking anything"
         )
     return len([t for t in m.group(1).replace("\\", "").split() if t])
+
+def guard_counts() -> tuple[int, int]:
+    """Guard sites where a failure proof driver checks that its patch changed something.
+
+    SPEC.md notes that drivers check their failure proofs with `cmp -s` to
+    refuse to draw a conclusion when a patch matches nothing, and quotes how
+    many such sites and scripts there are across `bench/`.
+    """
+    sites = 0
+    scripts = 0
+    for sh in sorted((REPO / "bench").glob("*.sh")):
+        matches = [
+            line
+            for line in sh.read_text().splitlines()
+            if re.search(r"\bcmp\s+-s\b", line) and not line.strip().startswith("#")
+        ]
+        if matches:
+            sites += len(matches)
+            scripts += 1
+    return sites, scripts
 
 # Each entry: the measured key, the pattern that quotes it as current, the file,
 # and how many times that pattern is expected to appear there. The count is
@@ -227,6 +249,8 @@ CLAIMS: list[tuple[str, str, str, int]] = [
     # hyphenated, and `\w+` silently stopped matching the sentence at
     # "twenty-three" rather than reporting the count had moved.
     ("samples", r"\| ([\w-]+) programs:", "README.md", 1),
+    ("guard_sites", r"across\s+([\w-]+)\s+sites in", "SPEC.md", 1),
+    ("guard_scripts", r"sites in ([\w-]+) scripts", "SPEC.md", 1),
 ]
 
 # The prose spells small numbers as words and should keep doing so, so the
