@@ -1,0 +1,71 @@
+import compiler/tools/formatter
+import compiler/syntax/parser
+import compiler/syntax/ast
+using compiler/syntax/parser::{Parser}
+using compiler/syntax/ast::{Def, Expressions}
+using compiler/tools/formatter::{Formatter}
+
+module BenchSelfhostFormatterExercise
+  def self.run_self_tests : Nil
+    puts "Running Selfhost Formatter Verification Suite (pure iyi stage 0)"
+    puts "============================================================="
+
+    # Test 1: simple expression
+    t1 = "x = 1 + 2\n"
+    r1 = Formatter.format(t1, "test1.iyi")
+    unless r1 == t1
+      puts "Assertion failed on test 1: expected #{t1.inspect}, got #{r1.inspect}"
+      raise "Assertion failed on test 1"
+    end
+    puts "testing simple expressions... ok (expressions verified)"
+
+    t2 = "def add(a : Int32, b : Int32) : Int32\n  a + b\nend\n"
+    p = Parser.new(t2, "test2.iyi")
+    ast = p.parse
+    puts "AST for t2: #{ast.class}"
+    if ast.is_a?(Def)
+      puts "Def body: #{ast.body.class}"
+      if ast.body.is_a?(Expressions)
+        puts "Expressions size: #{ast.body.as(Expressions).expressions.size}"
+        ast.body.as(Expressions).expressions.each { |e| puts "  exp: #{e.class}" }
+      end
+    end
+    r2 = Formatter.format(t2, "test2.iyi")
+    unless r2 == t2
+      puts "Assertion failed on test 2: expected #{t2.inspect}, got #{r2.inspect}"
+      raise "Assertion failed on test 2"
+    end
+    puts "testing def declarations... ok (def verified)"
+
+    # Test 3: control flow
+    t3 = "if x > 0\n  puts 1\nelse\n  puts 0\nend\n"
+    r3 = Formatter.format(t3, "test3.iyi")
+    unless r3 == t3
+      puts "Assertion failed on test 3: expected #{t3.inspect}, got #{r3.inspect}"
+      raise "Assertion failed on test 3"
+    end
+    puts "testing control flow... ok (if/else verified)"
+
+    puts "============================================================="
+    puts "ALL SELFHOST FORMATTER CHECKS PASSED SUCCESSFULLY!"
+    puts "============================================================="
+  end
+end
+
+if Program.args.size > 0
+  filename = Program.args[0]
+  source = File.read(filename)
+  formatted = Formatter.format(source, filename)
+  if Program.args.size > 1 && Program.args[1] == "--idempotent"
+    formatted2 = Formatter.format(formatted, filename)
+    if formatted2 == formatted
+      puts "idempotent"
+    else
+      puts "NON_IDEMPOTENT"
+    end
+  else
+    print formatted
+  end
+else
+  BenchSelfhostFormatterExercise.run_self_tests
+end
