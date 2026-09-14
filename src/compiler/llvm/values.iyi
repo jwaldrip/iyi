@@ -485,6 +485,7 @@ pub struct LLVMBasicBlock
       nil
     end
   end
+
   def last_instruction : LLVMValue?
     inst = LibLLVM.get_last_instruction(@unwrap)
     if inst.address != 0
@@ -493,7 +494,6 @@ pub struct LLVMBasicBlock
       nil
     end
   end
-
 
   def delete : Nil
     LibLLVM.delete_basic_block(@unwrap)

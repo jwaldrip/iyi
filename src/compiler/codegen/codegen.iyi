@@ -2589,74 +2589,74 @@ pub class CodeGenVisitor < Visitor
               return false
             end
           end
-        if obj.is_a?(Path) && node.name != "new" && node.name != "malloc"
-          if info = @custom_types[type_name]?
-            if m = info.methods[node.name]?
-              arg_vals = [] of LLVMValue
-              arg_type_names = [] of String
-              node.args.each do |a|
-                a.accept(self)
-                if l = @last
-                  arg_vals << l
+          if obj.is_a?(Path) && node.name != "new" && node.name != "malloc"
+            if info = @custom_types[type_name]?
+              if m = info.methods[node.name]?
+                arg_vals = [] of LLVMValue
+                arg_type_names = [] of String
+                node.args.each do |a|
+                  a.accept(self)
+                  if l = @last
+                    arg_vals << l
+                  end
+                  arg_type_names << (a.is_a?(NumberLiteral) ? (a.as(NumberLiteral).kind == NumberKind::F64 ? "Float64" : (a.as(NumberLiteral).kind == NumberKind::I64 ? "Int64" : "Int32")) : "Int32")
                 end
-                arg_type_names << (a.is_a?(NumberLiteral) ? (a.as(NumberLiteral).kind == NumberKind::F64 ? "Float64" : (a.as(NumberLiteral).kind == NumberKind::I64 ? "Int64" : "Int32")) : "Int32")
-              end
 
-              ret_tname = m.return_type ? m.return_type.to_s.lstrip(':') : "Int32"
-              expected_arg_types = m.args.map { |a| a.restriction ? a.restriction.to_s : "Int32" }
-              method_fn_name = if gname = info.generic_name
-                                 if expected_arg_types.empty?
-                                   "*#{info.name}@#{gname}##{node.name}:#{ret_tname}"
+                ret_tname = m.return_type ? m.return_type.to_s.lstrip(':') : "Int32"
+                expected_arg_types = m.args.map { |a| a.restriction ? a.restriction.to_s : "Int32" }
+                method_fn_name = if gname = info.generic_name
+                                   if expected_arg_types.empty?
+                                     "*#{info.name}@#{gname}##{node.name}:#{ret_tname}"
+                                   else
+                                     "*#{info.name}@#{gname}##{node.name}<#{expected_arg_types.join(", ")}>:#{ret_tname}"
+                                   end
                                  else
-                                   "*#{info.name}@#{gname}##{node.name}<#{expected_arg_types.join(", ")}>:#{ret_tname}"
+                                   if expected_arg_types.empty?
+                                     "*#{info.name}##{node.name}:#{ret_tname}"
+                                   else
+                                     "*#{info.name}##{node.name}<#{expected_arg_types.join(", ")}>:#{ret_tname}"
+                                   end
                                  end
+
+                method_fn = @mod.get_function?(method_fn_name)
+                if method_fn.nil?
+                  alt_name = if gname = info.generic_name
+                               if arg_type_names.empty?
+                                 "*#{info.name}@#{gname}##{node.name}:#{ret_tname}"
                                else
-                                 if expected_arg_types.empty?
-                                   "*#{info.name}##{node.name}:#{ret_tname}"
-                                 else
-                                   "*#{info.name}##{node.name}<#{expected_arg_types.join(", ")}>:#{ret_tname}"
-                                 end
+                                 "*#{info.name}@#{gname}##{node.name}<#{arg_type_names.join(", ")}>:#{ret_tname}"
                                end
-
-              method_fn = @mod.get_function?(method_fn_name)
-              if method_fn.nil?
-                alt_name = if gname = info.generic_name
-                             if arg_type_names.empty?
-                               "*#{info.name}@#{gname}##{node.name}:#{ret_tname}"
                              else
-                               "*#{info.name}@#{gname}##{node.name}<#{arg_type_names.join(", ")}>:#{ret_tname}"
+                               if arg_type_names.empty?
+                                 "*#{info.name}##{node.name}:#{ret_tname}"
+                               else
+                                 "*#{info.name}##{node.name}<#{arg_type_names.join(", ")}>:#{ret_tname}"
+                               end
                              end
-                           else
-                             if arg_type_names.empty?
-                               "*#{info.name}##{node.name}:#{ret_tname}"
-                             else
-                               "*#{info.name}##{node.name}<#{arg_type_names.join(", ")}>:#{ret_tname}"
-                             end
-                           end
-                method_fn = @mod.get_function?(alt_name)
-              end
-              if method_fn.nil?
-                call_args_tys = [@context.pointer] of LLVMType
-                expected_arg_types.each { |eat| call_args_tys << llvm_type_from_name(eat) }
-                method_fn_ty = LLVMType.function(call_args_tys, llvm_type_from_name(ret_tname), false)
-                method_fn = @mod.add_function(method_fn_name, method_fn_ty)
-                method_fn.linkage = LibLLVM::Linkage::External
-              end
+                  method_fn = @mod.get_function?(alt_name)
+                end
+                if method_fn.nil?
+                  call_args_tys = [@context.pointer] of LLVMType
+                  expected_arg_types.each { |eat| call_args_tys << llvm_type_from_name(eat) }
+                  method_fn_ty = LLVMType.function(call_args_tys, llvm_type_from_name(ret_tname), false)
+                  method_fn = @mod.add_function(method_fn_name, method_fn_ty)
+                  method_fn.linkage = LibLLVM::Linkage::External
+                end
 
-              if method_fn
-                call_args = [@context.pointer.null] of LLVMValue
-                arg_vals.each { |av| call_args << av }
-                call_ret_ty = llvm_type_from_name(ret_tname)
-                m_param_tys = call_args.map(&.type)
-                method_fn_ty = LLVMType.function(m_param_tys, call_ret_ty, false)
-                call_val = @builder.call(method_fn_ty, method_fn.to_value, call_args)
-                @last = call_val
-                @terminated = false
-                return false
+                if method_fn
+                  call_args = [@context.pointer.null] of LLVMValue
+                  arg_vals.each { |av| call_args << av }
+                  call_ret_ty = llvm_type_from_name(ret_tname)
+                  m_param_tys = call_args.map(&.type)
+                  method_fn_ty = LLVMType.function(m_param_tys, call_ret_ty, false)
+                  call_val = @builder.call(method_fn_ty, method_fn.to_value, call_args)
+                  @last = call_val
+                  @terminated = false
+                  return false
+                end
               end
             end
           end
-        end
         end
         if type_name.includes?("Pointer") && node.name == "malloc" && !node.args.empty?
           node.args[0].accept(self)
@@ -3025,7 +3025,7 @@ pub class CodeGenVisitor < Visitor
                   if idx_val = @last
                     node.args[1].accept(self)
                     if val = @last
-                    idx64 = idx_val.type == @context.int64 ? idx_val : (idx_val.type.pointer? ? @builder.ptr_to_int(idx_val, @context.int64) : (idx_val.type.int_width < 64 ? @builder.sext(idx_val, @context.int64) : @builder.trunc(idx_val, @context.int64)))
+                      idx64 = idx_val.type == @context.int64 ? idx_val : (idx_val.type.pointer? ? @builder.ptr_to_int(idx_val, @context.int64) : (idx_val.type.int_width < 64 ? @builder.sext(idx_val, @context.int64) : @builder.trunc(idx_val, @context.int64)))
                       gep = @builder.inbounds_gep(elem_llvm_t, ptr_val, [idx64])
                       store_val = if elem_llvm_t.int? && val.type.int?
                                     if val.type.int_width < elem_llvm_t.int_width

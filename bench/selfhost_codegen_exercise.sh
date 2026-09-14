@@ -265,9 +265,12 @@ prove_cg_mutation "corrupt addition opcode to subtraction" "cg_int_arith.iyi" \
   '@last = is_float ? @builder.fsub(lhs, rhs) : @builder.sub(lhs, rhs)'
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+# Anchored on the signed-integer compare itself, not on the first textual
+# occurrence of SLT: pointer comparison paths added later sit above this one,
+# and patching those leaves the fixture's IR untouched and proves nothing.
 prove_cg_mutation "corrupt comparison predicate SLT to SGT" "cg_comparisons.iyi" \
-  'LibLLVM::IntPredicate::SLT' \
-  'LibLLVM::IntPredicate::SGT'
+  'is_signed ? @builder.icmp(LibLLVM::IntPredicate::SLT, lhs, rhs)' \
+  'is_signed ? @builder.icmp(LibLLVM::IntPredicate::SGT, lhs, rhs)'
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_cg_mutation "bypass variable store in assignment" "cg_control.iyi" \
