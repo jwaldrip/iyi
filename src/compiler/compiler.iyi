@@ -51,6 +51,7 @@ pub struct CompilerConfig
   property verbose : Bool
   property target_triple : String?
   property probe_phase : Bool
+  property probe_verify : Bool
 
   def initialize(
     @output_filename : String = "a.out",
@@ -59,6 +60,7 @@ pub struct CompilerConfig
     @verbose : Bool = false,
     @target_triple : String? = nil,
     @probe_phase : Bool = false,
+    @probe_verify : Bool = false,
   )
   end
 end
@@ -199,6 +201,16 @@ pub class Compiler
     if @config.probe_phase
       puts "[phase] codegen: pass"
       STDOUT.flush
+    end
+    if @config.probe_verify
+      is_valid, err = mod.verify_safely
+      if is_valid
+        puts "[verify] pass"
+      else
+        puts "[verify] fail: #{err.strip}"
+      end
+      STDOUT.flush
+      return CompileResult.new(@config.output_filename, "", resolved_modules)
     end
     # 6. Emit: write native object file
     obj_path = @config.obj_output_filename || (@config.output_filename + ".o")
