@@ -4055,7 +4055,18 @@ def emit_custom_types_code(cg : CodeGenVisitor) : Nil
 
         # Store type_id at index 0
         tid_gep = builder.inbounds_gep(st, obj_ptr, [context.int32.const_int(0), context.int32.const_int(0)])
-        tid_global = mod.get_global("#{info.name}:type_id")
+        # Create on demand rather than requiring it: the eager loop skips a
+        # class with no fields and no methods, and such a class can still be
+        # allocated by some construct.
+        tid_global = if g = mod.get_global?("#{info.name}:type_id")
+                       g
+                     else
+                       g2 = mod.add_global("#{info.name}:type_id", context.int32)
+                       g2.initializer = context.int32.const_int(info.type_id)
+                       g2.global_constant = true
+                       g2.linkage = LibLLVM::Linkage::Internal
+                       g2
+                     end
         tid_val = builder.load(context.int32, tid_global)
         tid_val.alignment = 4
         s_tid = builder.store(tid_val, tid_gep)
