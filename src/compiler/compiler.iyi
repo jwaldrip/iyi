@@ -52,6 +52,8 @@ pub struct CompilerConfig
   property target_triple : String?
   property probe_phase : Bool
   property single_file : Bool
+  property probe_verify : Bool
+  property dump_ir : Bool
 
   def initialize(
     @output_filename : String = "a.out",
@@ -61,6 +63,8 @@ pub struct CompilerConfig
     @target_triple : String? = nil,
     @probe_phase : Bool = false,
     @single_file : Bool = false,
+    @probe_verify : Bool = false,
+    @dump_ir : Bool = false,
   )
   end
 end
@@ -207,6 +211,21 @@ pub class Compiler
     if @config.probe_phase
       puts "[phase] codegen: pass"
       STDOUT.flush
+    end
+    if @config.probe_verify
+      is_valid, err = mod.verify_safely
+      if is_valid
+        puts "[verify] pass"
+      else
+        puts "[verify] fail: #{err.strip}"
+      end
+      STDOUT.flush
+      return CompileResult.new(@config.output_filename, "", resolved_modules)
+    end
+    if @config.dump_ir
+      puts mod.to_s
+      STDOUT.flush
+      return CompileResult.new(@config.output_filename, "", resolved_modules)
     end
     # 6. Emit: write native object file
     obj_path = @config.obj_output_filename || (@config.output_filename + ".o")
@@ -362,7 +381,17 @@ pub class Compiler
       body_nodes = [] of ASTNode
       val = 0
       ed.members.each do |m|
-        if m.is_a?(Assign)
+        if m.is_a?(Arg)
+          arg = m.as(Arg)
+          m_name = arg.name
+          if def_val = arg.default_value
+            if def_val.is_a?(NumberLiteral)
+              val = def_val.as(NumberLiteral).value.to_i
+            end
+          end
+          body_nodes << Assign.new(Path.new(m_name), NumberLiteral.new(val.to_s, NumberKind::I32))
+          body_nodes << Assign.new(Path.new("#{enum_name}::#{m_name}"), NumberLiteral.new(val.to_s, NumberKind::I32))
+        elsif m.is_a?(Assign)
           a = m.as(Assign)
           m_name = a.target.to_s
           if a.value.is_a?(NumberLiteral)

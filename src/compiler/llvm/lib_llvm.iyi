@@ -409,6 +409,7 @@ module compiler/llvm/lib_llvm
     fun get_basic_block_parent = LLVMGetBasicBlockParent(bb : BasicBlockRef) : ValueRef
     fun get_first_instruction = LLVMGetFirstInstruction(bb : BasicBlockRef) : ValueRef
     fun get_next_instruction = LLVMGetNextInstruction(inst : ValueRef) : ValueRef
+    fun get_last_instruction = LLVMGetLastInstruction(bb : BasicBlockRef) : ValueRef
 
     # Builder
     fun create_builder_in_context = LLVMCreateBuilderInContext(c : ContextRef) : BuilderRef
