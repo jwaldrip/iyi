@@ -40,6 +40,7 @@ module CompileTool
     verbose = false
     probe_phase = false
     probe_verify = false
+    dump_ir = false
     i = 0
     while i < args.size
       arg = args[i]
@@ -54,6 +55,8 @@ module CompileTool
         probe_phase = true
       when "--probe-verify"
         probe_verify = true
+      when "--dump-ir"
+        dump_ir = true
       when "--emit-obj"
         emit_obj_only = true
         i = i + 1
@@ -96,7 +99,7 @@ module CompileTool
       LibC.exit(1)
       return
     end
-    config = CompilerConfig.new(output_file, emit_obj_only, obj_output_file, verbose, nil, probe_phase, probe_verify)
+    config = CompilerConfig.new(output_file, emit_obj_only, obj_output_file, verbose, nil, probe_phase, probe_verify, dump_ir)
     compiler = Compiler.new(config)
     compiler.compile(in_file)
   end
