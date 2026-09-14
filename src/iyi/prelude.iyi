@@ -17,6 +17,7 @@
 # arithmetic, conversions, comparisons and `Pointer`. It is iyi's own rather
 # than Crystal's, and the reason is measured there.
 require "./primitives"
+require "./exception"
 
 require "./macros"
 require "./object"
@@ -7150,34 +7151,6 @@ require "./file"
 {% end %}
 # ── end of the memory layer ─────────────────────────────────────────────
 
-# Codegen emits a call to this on every overflowing operation, so a program
-# cannot link without it. It aborts rather than raising: 0.1.0's `raise` is a
-# panic (SPEC.md III.1.4) and there is no unwinder under it.
-# Every function with an `ensure` names a personality function, so a program
-# with a `defer` in it does not link without this symbol. It is not reachable:
-# reaching it would mean something is unwinding, and nothing here unwinds.
-fun __crystal_personality
-  print "iyi: __crystal_personality called, which cannot happen\n"
-  __iyi_exit(1)
-end
-
-# Reached from the same landing pad, for the same reason, and just as
-# unreachable: `ensure` compiles a path that would ask the unwinder what was
-# thrown, and nothing here throws.
-fun __crystal_get_exception(exception : Void*) : UInt64
-  print "iyi: __crystal_get_exception called, which cannot happen\n"
-  __iyi_exit(1)
-  0_u64
-end
-
-# Codegen emits a call to this wherever a `rescue` would re-raise. Nothing in
-# this prelude can reach it either — `raise` panics rather than unwinding —
-# but a program with an `ensure` in it names the symbol.
-@[Raises]
-fun __crystal_raise(exception : Void*) : NoReturn
-  print "iyi: __crystal_raise called, which cannot happen\n"
-  __iyi_exit(1)
-end
 
 # Codegen emits a call to this on every overflowing checked operation.
 # It is a `fun` — the name is the ABI — but the body just steps into the
@@ -7305,7 +7278,11 @@ private def __iyi_say(text : String) : Nil
   end
 end
 
-def raise(message : String, file : String = __FILE__, line : Int32 = __LINE__) : NoReturn
+# The panic's site print, which `raise(message)` makes before anything
+# unwinds: the message, then the site when it is the program's. A raise of
+# an exception object does not print here — the object carries the site its
+# constructor named, and the print happens at whichever `raise` throws it.
+private def __iyi_panic_say(message : String, file : String, line : Int32) : Nil
   __iyi_say("iyi: panic: ")
   __iyi_say(message)
   __iyi_say("\n")
@@ -7320,12 +7297,17 @@ def raise(message : String, file : String = __FILE__, line : Int32 = __LINE__) :
     __iyi_say(line.to_s)
     __iyi_say("\n")
   end
-  {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
-    IyiScheduler.panic_current(message)
-  {% else %}
-    IyiDefers.drain
-    __iyi_exit(1)
-  {% end %}
+end
+
+def raise(message : String, file : String = __FILE__, line : Int32 = __LINE__) : NoReturn
+  # III.1.4: the panic prints once, at the site of the bug - the message,
+  # then the program's file and line - and then it throws. The runtime in
+  # exception.iyi carries the packet through the platform unwinder, a
+  # `rescue` in the program observes it the way a task boundary's `.value`
+  # does, and a panic nobody rescues returns to `__crystal_raise` at the
+  # end of the stack, which is where the boundary dance below lives.
+  __iyi_panic_say(message, file, line)
+  __crystal_raise(RuntimeError.new(message, file, line).as(Void*))
 end
 
 # The one word a test needs, and no framework under it (`iyi test`): a

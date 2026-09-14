@@ -1,0 +1,294 @@
+# iyi's exception runtime — the adapter over the platform unwinder, and the
+# prelude's own `raise`.
+#
+# The compiler used to carry this runtime as a string it parsed and injected
+# (`Compiler.append_raise_runtime`) whenever the program did not define
+# `__crystal_raise`. A prelude program defines one, so the injected copy was
+# dead code there and the prelude's panic stubs stood in its place: a prelude
+# program could not raise and rescue. The runtime lives here now, and the
+# injected copy serves only the programs that define their own exception
+# hierarchy and carry no prelude at all (`bench/fixtures/compile_raise.iyi`,
+# which covers that path).
+#
+# What lives here, against the ABI `src/raise.cr` speaks: an exception object
+# whose first four bytes are its type id; a 48-byte packet whose word 0 is
+# the class id, word 4 the exception object, and whose eleventh `Int32` slot
+# carries the object's type id; the personality function that parses the
+# function's LSDA call site table during two-phase unwinding and answers
+# GR0/GR1 with the packet and the type id; and `__crystal_raise`, which
+# accepts either shape — a landing pad's re-raise hands the packet back, a
+# fresh raise hands the exception object in.
+#
+# The unwinder is the one macOS and Linux ship inside libc/libSystem
+# (`_Unwind_*`); there is no Boehm, no external libunwind and no libstdc++
+# behind a program built with this.
+#
+# A raise has two observers, and the panic line belongs to both of them: the
+# site prints it first ("iyi: panic: ", the message, and the site for a raise
+# in the program's own code — exactly III.1.4's shape, unchanged), and then
+# the exception is thrown. A `rescue` in the program observes it the way a
+# task boundary's `.value` does; a landing pad's `ensure` pops its own
+# registry entry on the way out, which is the same innermost-first walk the
+# panic path's drain did; and a panic nobody rescues returns to
+# `__crystal_raise` at the end of the stack, which runs the boundary the old
+# panic tail ran. The print lives with `__iyi_say` in prelude.iyi
+# (`__iyi_panic_say`), which is where a program's own `raise(message)` calls
+# it.
+{% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
+  lib LibUnwind
+    fun raise_exception = _Unwind_RaiseException(ex : Void*) : Int32
+    fun get_region_start = _Unwind_GetRegionStart(context : Void*) : UInt64
+    fun get_ip = _Unwind_GetIP(context : Void*) : UInt64
+    fun get_language_specific_data = _Unwind_GetLanguageSpecificData(context : Void*) : UInt8*
+    fun set_gr = _Unwind_SetGR(context : Void*, index : Int32, value : UInt64) : Void
+    fun set_ip = _Unwind_SetIP(context : Void*, value : UInt64) : Void
+  end
+
+  # The packet's first word. `src/raise.cr` carries the same class id; a
+  # landing pad's re-raise hands `__crystal_raise` the packet back, and this
+  # is how the two shapes are told apart — the exception *object* a fresh
+  # raise passes has its type id here instead.
+  IYI_UNWIND_PACKET_MAGIC = 0x4352590000000000_u64
+
+  # The packet outlives the frame that built it: the unwinder owns it while
+  # frames are torn down and the landing pads run, and the collector does
+  # not scan the unwinder's cache, so each packet is kept rooted on this
+  # chain. A packet nobody re-reads after its unwind returns is never
+  # freed — the same cost Crystal's runtime pays with `malloc` and never
+  # collects.
+  class IyiUnwindPackets
+    @@head : Pointer(UInt64) = Pointer(UInt64).new(0_u64)
+
+    def self.alloc : Pointer(UInt64)
+      packet = Pointer(UInt64).malloc(6_u64)
+      (packet + 1_i64).value = @@head.address
+      @@head = packet
+      packet
+    end
+  end
+
+  # The exception every `raise` in the prelude answers with, and the class
+  # every program's own exception descends from.
+  class Exception
+    @message : String
+    @file : String
+    @line : Int32
+
+    def initialize(@message : String = "exception raised", @file : String = __FILE__, @line : Int32 = __LINE__)
+    end
+
+    def message : String
+      @message
+    end
+
+    def file : String
+      @file
+    end
+
+    def line : Int32
+      @line
+    end
+  end
+
+  # What `raise "message"` throws. Crystal names it the same way, and it
+  # gives a plain `rescue` and a `rescue ex : RuntimeError` the same type
+  # the message-panic already had.
+  class RuntimeError < Exception
+  end
+
+  # The personality the unwinder calls: parse the function's LSDA call site
+  # table, find the call site covering the throwing instruction, and answer
+  # 6 (handler found) in the search phase, or 7 (install) with GR0/GR1 set to
+  # the packet and the exception's type id in the cleanup phase. The walk is
+  # the same table `src/raise.cr` reads and the injected runtime parsed; the
+  # prelude owns it now.
+  fun __crystal_personality(version : Int32, actions : Int32, exception_class : UInt64, exception_object : Void*, context : Void*) : Int32
+    start = LibUnwind.get_region_start(context)
+    ip = LibUnwind.get_ip(context)
+    lsd = LibUnwind.get_language_specific_data(context)
+    if lsd.address == 0_u64
+      return 8
+    end
+
+    throw_offset = (ip &- 1_u64) &- start
+    p = lsd
+    lp_start_encoding = p.value
+    p = p + 1_i64
+    if lp_start_encoding != 0xff_u8
+      LibC.exit(1)
+    end
+
+    ttype_encoding = p.value
+    p = p + 1_i64
+    if ttype_encoding != 0xff_u8
+      shift = 0
+      while true
+        b = p.value
+        p = p + 1_i64
+        break if (b & 0x80_u8) == 0_u8
+        shift = shift &+ 7
+      end
+    end
+
+    cs_encoding = p.value
+    p = p + 1_i64
+
+    cs_table_length = 0_u64
+    shift = 0
+    while true
+      b = p.value
+      p = p + 1_i64
+      cs_table_length = cs_table_length | ((b & 0x7f_u8).to_u64.unsafe_shl(shift))
+      break if (b & 0x80_u8) == 0_u8
+      shift = shift &+ 7
+    end
+
+    cs_table_end = p + cs_table_length.to_i64
+
+    while p.address < cs_table_end.address
+      cs_offset = 0_u64
+      cs_length = 0_u64
+      cs_addr = 0_u64
+      action = 0_u64
+
+      if cs_encoding == 3_u8
+        p32 = p.as(Pointer(UInt32))
+        cs_offset = p32.value.to_u64
+        cs_length = (p + 1_i64).as(Pointer(UInt32)).value.to_u64
+        cs_addr = (p + 2_i64).as(Pointer(UInt32)).value.to_u64
+        p = p + 12_i64
+      else
+        shift = 0
+        while true
+          b = p.value; p = p + 1_i64
+          cs_offset = cs_offset | ((b & 0x7f_u8).to_u64.unsafe_shl(shift))
+          break if (b & 0x80_u8) == 0_u8; shift = shift &+ 7
+        end
+        shift = 0
+        while true
+          b = p.value; p = p + 1_i64
+          cs_length = cs_length | ((b & 0x7f_u8).to_u64.unsafe_shl(shift))
+          break if (b & 0x80_u8) == 0_u8; shift = shift &+ 7
+        end
+        shift = 0
+        while true
+          b = p.value; p = p + 1_i64
+          cs_addr = cs_addr | ((b & 0x7f_u8).to_u64.unsafe_shl(shift))
+          break if (b & 0x80_u8) == 0_u8; shift = shift &+ 7
+        end
+      end
+
+      shift = 0
+      while true
+        b = p.value; p = p + 1_i64
+        action = action | ((b & 0x7f_u8).to_u64.unsafe_shl(shift))
+        break if (b & 0x80_u8) == 0_u8; shift = shift &+ 7
+      end
+
+      if cs_addr != 0_u64 && cs_offset <= throw_offset && throw_offset <= (cs_offset &+ cs_length)
+        if (actions & 1) != 0
+          return 6
+        end
+        if (actions & 2) != 0 || (actions & 4) != 0
+          unwind_ip = start &+ cs_addr
+          tid = (exception_object.as(Pointer(UInt64)) + 5_i64).as(Pointer(Int32)).value.to_u64
+          LibUnwind.set_gr(context, 0, exception_object.address)
+          LibUnwind.set_gr(context, 1, tid)
+          LibUnwind.set_ip(context, unwind_ip)
+          return 7
+        end
+      end
+    end
+
+    8
+  end
+
+  # The packet's word 4 is the exception object itself.
+  fun __crystal_get_exception(ex : Void*) : UInt64
+    (ex.as(Pointer(UInt64)) + 4_i64).value
+  end
+
+  # Throws. *ex* is either the exception object (a fresh raise) or a packet
+  # (a landing pad's re-raise, which carries the object at word 4 and is
+  # handed straight back to the unwinder). When the unwinder walks every
+  # frame and finds no landing pad above the raise, the panic path the
+  # prelude has always owned takes over: the boundary dance, which is where
+  # `panic_current` lives.
+  @[Raises]
+  fun __crystal_raise(ex : Void*) : NoReturn
+    obj = ex
+    packet : Pointer(UInt64) = Pointer(UInt64).new(ex.address)
+    is_packet = ex.address != 0_u64 && ex.as(Pointer(UInt64)).value == IYI_UNWIND_PACKET_MAGIC
+    unless is_packet
+      packet = IyiUnwindPackets.alloc
+      packet.value = IYI_UNWIND_PACKET_MAGIC
+      (packet + 1_i64).value = 0_u64
+      (packet + 2_i64).value = 0_u64
+      (packet + 3_i64).value = 0_u64
+      (packet + 4_i64).value = ex.address
+      ex_obj = ex.as(Pointer(Int32))
+      (packet + 5_i64).as(Pointer(Int32)).value = ex_obj.value
+    end
+
+    LibUnwind.raise_exception(packet.as(Void*))
+
+    # No landing pad above the raise: the panic nobody caught. The site
+    # already printed (the raise's own work, before the unwind); what is
+    # left is the boundary.
+    IyiScheduler.panic_current(obj.as(Exception).message)
+  end
+
+  # A raise of the program's own exception: the object is already built and
+  # carries its own site.
+  def raise(ex : Exception) : NoReturn
+    __crystal_raise(ex.as(Void*))
+  end
+{% else %}
+  # Targets without the platform unwinder keep the stubs the prelude used to
+  # carry in prelude.iyi: `raise` stays the panic that prints and dies, and
+  # an exception object reaches the same boundary carrying its message. The
+  # print helpers are prelude.iyi's (`__iyi_say`, `__iyi_panic_say`).
+  class Exception
+    @message : String
+    @file : String
+    @line : Int32
+
+    def initialize(@message : String = "exception raised", @file : String = __FILE__, @line : Int32 = __LINE__)
+    end
+
+    def message : String
+      @message
+    end
+
+    def file : String
+      @file
+    end
+
+    def line : Int32
+      @line
+    end
+  end
+
+  class RuntimeError < Exception
+  end
+
+  fun __crystal_get_exception(ex : Void*) : UInt64
+    print "iyi: __crystal_get_exception called, which cannot happen\n"
+    __iyi_exit(1)
+    0_u64
+  end
+
+  @[Raises]
+  fun __crystal_raise(ex : Void*) : NoReturn
+    {% if flag?(:win32) %}
+      IyiScheduler.panic_current(ex.as(Exception).message)
+    {% else %}
+      print "iyi: __crystal_raise called, which cannot happen\n"
+      __iyi_exit(1)
+    {% end %}
+  end
+
+  def raise(ex : Exception) : NoReturn
+    __crystal_raise(ex.as(Void*))
+  end
+{% end %}
