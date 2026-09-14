@@ -7151,7 +7151,6 @@ require "./file"
 {% end %}
 # ── end of the memory layer ─────────────────────────────────────────────
 
-
 # Codegen emits a call to this on every overflowing checked operation.
 # It is a `fun` — the name is the ABI — but the body just steps into the
 # ordinary panic def, so an overflow in a task dies at the task

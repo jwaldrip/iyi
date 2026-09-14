@@ -70,9 +70,12 @@
   # The exception every `raise` in the prelude answers with, and the class
   # every program's own exception descends from.
   class Exception
-    @message : String
-    @file : String
-    @line : Int32
+    # Declaration defaults, not just parameter defaults: a subclass writes its
+    # own initialize (src/compiler/foundation/errors.iyi does) and must not be
+    # forced to set fields it does not know about.
+    @message : String = "exception raised"
+    @file : String = ""
+    @line : Int32 = 0
 
     def initialize(@message : String = "exception raised", @file : String = __FILE__, @line : Int32 = __LINE__)
     end
@@ -249,9 +252,9 @@
   # an exception object reaches the same boundary carrying its message. The
   # print helpers are prelude.iyi's (`__iyi_say`, `__iyi_panic_say`).
   class Exception
-    @message : String
-    @file : String
-    @line : Int32
+    @message : String = "exception raised"
+    @file : String = ""
+    @line : Int32 = 0
 
     def initialize(@message : String = "exception raised", @file : String = __FILE__, @line : Int32 = __LINE__)
     end

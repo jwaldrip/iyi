@@ -114,7 +114,15 @@ trap 'rm -rf "$WORK"' EXIT
 # path with a semicolon in it mean something. `posix_spawnp` and `waitpid`
 # stand in its place: the same libc floor, one process, an argument vector
 # nobody parses, and no shell under anything.
-ALLOWED_SYMBOLS_DARWIN="__error _tlv_bootstrap accept bind chmod clock_gettime_nsec_np close connect environ exit getcwd getentropy getenv getsockname getsockopt kevent kqueue listen lstat64 madvise mkdir mmap mprotect munmap open pipe posix_spawnp pthread_create pthread_get_stackaddr_np pthread_kill pthread_self read recv rename rewinddir rmdir send setenv setsockopt sigaction socket stat64 sysctlbyname truncate unlink unsetenv waitpid write _dyld_get_image_header _dyld_get_image_vmaddr_slide"
+# The `_Unwind_*` six arrive with the prelude's own exception runtime
+# (src/iyi/exception.iyi): raising walks the DWARF/Itanium tables through the
+# platform unwinder rather than a runtime of iyi's own invention. They are the
+# boundary, and the boundary is deliberate: on darwin these live inside
+# libSystem, which is the platform libc this floor already permits, so a
+# program that raises still links libSystem and nothing else. Naming them here
+# is what keeps the check honest, since the alternative was linking an
+# external libunwind and that would have failed the library check instead.
+ALLOWED_SYMBOLS_DARWIN="__error _tlv_bootstrap _Unwind_GetIP _Unwind_GetLanguageSpecificData _Unwind_GetRegionStart _Unwind_RaiseException _Unwind_SetGR _Unwind_SetIP accept bind chmod clock_gettime_nsec_np close connect environ exit getcwd getentropy getenv getsockname getsockopt kevent kqueue listen lstat64 madvise mkdir mmap mprotect munmap open pipe posix_spawnp pthread_create pthread_get_stackaddr_np pthread_kill pthread_self read recv rename rewinddir rmdir send setenv setsockopt sigaction socket stat64 sysctlbyname truncate unlink unsetenv waitpid write _dyld_get_image_header _dyld_get_image_vmaddr_slide"
 # Linux names `posix_spawnp` and `waitpid` for the same reason darwin does:
 # `std/spec` starts a process, and starting one is libc's on both. It also
 # names the directory, file and environment calls `std/dir`, `std/file`,
@@ -122,7 +130,7 @@ ALLOWED_SYMBOLS_DARWIN="__error _tlv_bootstrap accept bind chmod clock_gettime_n
 # darwin carries the 64-bit ones. The prelude still issues raw syscalls and
 # names none of these; they arrive with a module a program chose to import.
 # The rest of this list is the C runtime's template, not the prelude's.
-ALLOWED_SYMBOLS_LINUX="ITM_deregisterTMCloneTable ITM_registerTMCloneTable _cxa_finalize _errno_location _gmon_start__ _libc_start_main closedir environ getcwd getenv lstat mkdir opendir posix_spawnp readdir rename rewinddir rmdir setenv stat truncate unsetenv waitpid"
+ALLOWED_SYMBOLS_LINUX="ITM_deregisterTMCloneTable ITM_registerTMCloneTable _cxa_finalize _errno_location _gmon_start__ _libc_start_main _Unwind_GetIP _Unwind_GetLanguageSpecificData _Unwind_GetRegionStart _Unwind_RaiseException _Unwind_SetGR _Unwind_SetIP closedir environ getcwd getenv lstat mkdir opendir posix_spawnp readdir rename rewinddir rmdir setenv stat truncate unsetenv waitpid"
 
 # What a program may link. The platform libc only.
 ALLOWED_LIBS_PROGRAM="libSystem libc.so ld-linux libgcc_s"
