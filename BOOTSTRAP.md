@@ -8,7 +8,7 @@ and `bash bench/dependency_floor.sh`, not estimated.
 
 ## Where this actually stands
 
-`src/compiler` is **110,105 lines of Crystal and 39,650 lines of iyi**. The
+`src/compiler` is **110,105 lines of Crystal and 41,496 lines of iyi**. The
 iyi side is the lexer, the token, the AST, the visitor and transformer, the
 parser's expressions and declarations, the normalizer, the top-level declaration
 and expression and method body typing passes of semantic analysis, the type
@@ -41,7 +41,7 @@ bindings, and the first slice of code generation:
 | `loader.iyi` | 304 | `bench/selfhost_compile_exercise.sh`: multi-file dependency graph and import resolver with IYI_PATH search and cycle detection, two guarded mutation proofs |
 | `compiler.iyi` | 278 | `bench/selfhost_compile_exercise.sh`: top-level compiler pipeline orchestrator (resolve, parse, normalise, semantic, codegen, emit, link), sharing the entry point wrapper with the single-file path, three guarded mutation proofs |
 | `tools/compile.iyi` | 100 | `bench/selfhost_compile_exercise.sh`: 10 fixtures including multi-file import, diamond dependency and top-level statements, 100% execution parity and dependency floor against the shipped compiler, refusal parity on missing imports, seven guarded mutation proofs |
-| `bench/selfhost_prelude_exercise.sh` | - | `bench/selfhost_prelude_exercise.sh`: 17 prelude files (13,949 lines) phase tracking against committed floor (3 to object, 1 to codegen, 4 to semantic), four guarded mutation proofs |
+| `bench/selfhost_prelude_exercise.sh` | - | `bench/selfhost_prelude_exercise.sh`: 17 prelude files (13,949 lines) phase tracking against committed floor (all 17 to link on pure-iyi raise runtime), 17 guarded mutation proofs |
 
 ### Prelude Compilation Status (Hole 3)
 
@@ -49,23 +49,23 @@ The prelude compilation gate (`bench/selfhost_prelude_exercise.sh`) tracks the h
 
 | File | Lines | Phase Reached | Current Blocker / Status |
 |---|---|---|---|
-| `macros.iyi` | 63 | object | Cleanly compiles to object code |
-| `range.iyi` | 87 | object | Cleanly compiles to object code |
-| `hash.iyi` | 175 | object | Cleanly compiles to object code |
-| `set.iyi` | 68 | codegen | Compiles through LLVM code generation |
-| `array.iyi` | 507 | semantic | Reaches codegen; stops on missing `__crystal_raise` runtime symbol |
-| `number.iyi` | 240 | semantic | Reaches codegen; stops on missing `__crystal_raise` runtime symbol |
-| `float.iyi` | 718 | semantic | Reaches codegen; stops on AST type extraction |
-| `file.iyi` | 65 | semantic | Reaches codegen; stops on missing `__crystal_personality` runtime symbol |
-| `io.iyi` | 421 | none | Advanced past line 170 return block; stops at line 337 on `{%` |
-| `atomic.iyi` | 89 | none | Stops at line 50 on macro delimiter grammar `{%` |
-| `concurrency.iyi` | 1946 | none | Stops at line 59 on macro delimiter grammar `{%` |
-| `enum.iyi` | 161 | none | Stops at line 57 on macro delimiter grammar `{%` |
-| `object.iyi` | 153 | none | Stops at line 10 on macro expression grammar `{{` |
-| `prelude.iyi` | 7471 | none | Stops at line 48 on macro delimiter grammar `{%` |
-| `primitives.iyi` | 260 | none | Stops at line 64 on macro delimiter grammar `{%` |
-| `string.iyi` | 583 | none | Stops at line 36 on macro delimiter grammar `{%` |
-| `thread.iyi` | 942 | none | Stops at line 60 on macro delimiter grammar `{%` |
+| `array.iyi` | 507 | link | Reaches link on pure-iyi raise runtime |
+| `atomic.iyi` | 89 | link | Reaches link on pure-iyi raise runtime |
+| `concurrency.iyi` | 1946 | link | Reaches link on pure-iyi raise runtime |
+| `enum.iyi` | 161 | link | Reaches link on pure-iyi raise runtime |
+| `file.iyi` | 65 | link | Reaches link on pure-iyi raise runtime |
+| `float.iyi` | 718 | link | Reaches link on pure-iyi raise runtime |
+| `hash.iyi` | 175 | link | Reaches link on pure-iyi raise runtime |
+| `io.iyi` | 421 | link | Reaches link on pure-iyi raise runtime |
+| `macros.iyi` | 63 | link | Reaches link on pure-iyi raise runtime |
+| `number.iyi` | 240 | link | Reaches link on pure-iyi raise runtime |
+| `object.iyi` | 153 | link | Reaches link on pure-iyi raise runtime |
+| `prelude.iyi` | 7471 | link | Reaches link on pure-iyi raise runtime |
+| `primitives.iyi` | 260 | link | Reaches link on pure-iyi raise runtime |
+| `range.iyi` | 87 | link | Reaches link on pure-iyi raise runtime |
+| `set.iyi` | 68 | link | Reaches link on pure-iyi raise runtime |
+| `string.iyi` | 583 | link | Reaches link on pure-iyi raise runtime |
+| `thread.iyi` | 942 | link | Reaches link on pure-iyi raise runtime |
 The bind gate is now a real parity gate against the shipped `Iyi.print_bind`
 over a corpus the shipped tool can analyse. The oracle consumes a semantically
 analysed program. The five original parser fixtures were syntax exercises rather
@@ -90,16 +90,19 @@ user-defined generic instantiation, heap layout, and runtime symbol declaration 
 109,871. The formatter, macro engine and codegen are partly ported, and their
 rows above say which parts are not.
 Before this change, nothing in the build called any of the ports above: each
-was checked against the code it would replace, not used in its place. Two
+was checked against the code it would replace, not used in its place. Three
 wiring steps are now active: `iyi mod dump --selfhost` routes artifact inspection
 through the pure iyi port (`src/compiler/tools/mod.iyi` and
 `src/compiler/artifact/iyimod.iyi`), proved byte-identical across the entire
-module corpus by `bench/selfhost_mod_wiring_exercise.sh`; and
+module corpus by `bench/selfhost_mod_wiring_exercise.sh`;
 `iyi tool format --selfhost` routes source code formatting through the pure iyi
 port (`src/compiler/tools/format.iyi` and `src/compiler/tools/formatter.iyi`),
 proved byte-identical across all 35 corpus files by
-`bench/selfhost_format_wiring_exercise.sh`.
-
+`bench/selfhost_format_wiring_exercise.sh`; and
+`iyi check --parse-only --selfhost` routes source code syntax checking through
+the pure iyi port (`src/compiler/tools/parse.iyi` and `src/compiler/syntax/parser.iyi`),
+proved byte-identical across 68 corpus files and 5 refusal scenarios by
+`bench/selfhost_parser_wiring_exercise.sh`.
 The artifact row proves binary parity: 16 modules across `samples/iyi` and
 `src/std` (80,414 bytes) produce byte-identical `.iyimod` files between Crystal
 and iyi, each implementation cross-reads what the other wrote with identical

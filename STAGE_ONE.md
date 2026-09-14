@@ -43,9 +43,9 @@ allocator and runtime (`src/iyi/prelude.iyi`), eliminating `libgc` completely.
 
 As measured by `python3 bench/doc_numbers.py`, the compiler source consists of:
 
-* **110,105 lines of Crystal** across 114 files in `src/compiler/iyi/**/*.cr`
+* **110,105 lines of Crystal** across 177 files in `src/compiler/**/*.cr`
   and top-level wrappers (`crystal.cr`, `iyi.cr`, `crystal_front.cr`).
-* **34,730 lines of pure iyi** across 45 files in `src/compiler/**/*.iyi`.
+* **41,496 lines of pure iyi** across 51 files in `src/compiler/**/*.iyi`.
 
 ### Verification of the `BOOTSTRAP.md` Claim
 
@@ -67,9 +67,11 @@ isolated gate runs in `bench/selfhost_*_exercise.sh` where a standalone test
 harness imported a single ported module and compared its output against a Crystal
 oracle script.
 
-The first wiring steps have now been implemented: `bin/iyi mod dump --selfhost`
-wires `src/compiler/artifact/iyimod.iyi` into the shipped compiler CLI, and
+The first three wiring steps have now been implemented: `bin/iyi mod dump --selfhost`
+wires `src/compiler/artifact/iyimod.iyi` into the shipped compiler CLI,
 `bin/iyi tool format --selfhost` wires `src/compiler/tools/formatter.iyi` into
+the shipped compiler CLI, and `bin/iyi check --parse-only --selfhost` wires
+the ported front end (`src/compiler/syntax/parser.iyi` and `syntax/lexer.iyi`) into
 the shipped compiler CLI.
 ## 3. Component Inventory and Blockers
 
@@ -78,101 +80,120 @@ subsystems, their line counts, and what blocks each from being wired into
 the compiler pipeline today:
 
 ### Layer 0: Foundation
-* **`foundation/*.iyi` (122 lines) vs `src/compiler/iyi/` foundation types**
+* **`foundation/*.iyi` (122 lines across 4 files) vs `src/compiler/iyi/` foundation types**
   * Ported: `location.iyi`, `errors.iyi`, `enums.iyi`, `string_pool.iyi`.
   * Status: Tested by `bench/selfhost_lexer_exercise.sh` and downstream gates.
+  * Wiring: Unwired directly into CLI. Consumed by downstream components.
   * Blockers: Foundation types are ready. Blocked only on downstream consumers.
 
 ### Layer 1: Lexer and AST
-* **`syntax/lexer.iyi`, `syntax/token.iyi` (3,103 lines) vs `src/compiler/iyi/syntax/lexer.cr` (1,939 lines)**
-  * Status: 42 fixtures, 21,034 tokens identical to Crystal frontend.
-  * Blockers: In-memory runtime boundary. Crystal's `Parser` (`parser.cr`)
+* **`syntax/lexer.iyi`, `syntax/token.iyi` (3,468 lines across 2 files) vs `src/compiler/iyi/syntax/lexer.cr` (1,939 lines)**
+  * Status: 44 fixtures, 21,206 tokens identical to Crystal frontend.
+  * Wiring: Wired behind `iyi check --parse-only --selfhost` via companion tool `iyi-parse`.
+  * Blockers for compilation pipeline: In-memory runtime boundary. Crystal's `Parser` (`parser.cr`)
     instantiates `Iyi::Lexer` in-process. Replacing `Iyi::Lexer` inside Crystal
     with `Lexer.iyi` requires an in-process FFI bridge between incompatible
     runtimes (Boehm GC vs pure-iyi heap) or a token serialization protocol over
     a pipe. It must be wired together with `Parser.iyi` in pure iyi.
-* **`syntax/ast.iyi`, `visitor.iyi`, `transformer.iyi` (7,202 lines) vs `src/compiler/iyi/syntax/ast.cr` (4,482 lines)**
+* **`syntax/ast.iyi`, `visitor.iyi`, `transformer.iyi` (7,217 lines across 3 files) vs `src/compiler/iyi/syntax/ast.cr` (4,482 lines)**
   * Status: 104 concrete AST node kinds verified by `bench/selfhost_ast_exercise.sh`.
-  * Blockers: Central in-memory data structures. Consumed by semantic analysis
+  * Wiring: Consumed by companion tools (`iyi-parse`, `iyi-format`).
+  * Blockers for compilation pipeline: Central in-memory data structures. Consumed by semantic analysis
     and codegen. Cannot replace Crystal's AST nodes until semantic analysis and
-    codegen are ported.
+    codegen are assembled in pure iyi.
 
 ### Layer 2: Parser and Normalizer
-* **`syntax/parser.iyi` (4,072 lines) vs `src/compiler/iyi/syntax/parser.cr` (7,600 lines)**
-  * Status: 24 fixtures, 1,609 normalized nodes identical to Crystal frontend.
-  * Blockers:
-    1. Macro grammar parsing: `{% if %}`, `{% for %}`, macro expressions are
-       handled by `src/compiler/macros/macro_parser.iyi` rather than the main
-       grammar.
-    2. Output AST mismatch: Produces `ast.iyi` nodes rather than `ast.cr` nodes.
+* **`syntax/parser.iyi` (5,171 lines) vs `src/compiler/iyi/syntax/parser.cr` (7,600 lines)**
+  * Status: 26 fixtures, 1,715 normalized nodes identical to Crystal frontend.
+  * Wiring: Wired behind `iyi check --parse-only --selfhost` via companion tool `iyi-parse`
+    (verified by `bench/selfhost_parser_wiring_exercise.sh`).
+  * Blockers for compilation pipeline: Produces `ast.iyi` nodes rather than `ast.cr` nodes,
+    blocked by the in-process heap boundary from being consumed by Crystal's semantic analysis.
 * **`semantic/normalizer.iyi` (705 lines) vs `src/compiler/iyi/semantic/normalizer.cr` (1,236 lines)**
   * Status: 11 fixtures, 577 normalized nodes identical to Crystal frontend.
-  * Blockers: Transforms `ast.iyi` nodes. Blocked on `ast.iyi` and `parser.iyi`.
+  * Wiring: Unwired into CLI.
+  * Blockers: Transforms `ast.iyi` nodes in memory. Blocked on the in-process heap boundary.
 
 ### Layer 3: Macro Expansion
-* **`macros/*.iyi` (1,583 lines) vs `src/compiler/iyi/macros/*.cr` (4,396 lines)**
+* **`macros/*.iyi` (1,614 lines across 5 files) vs `src/compiler/iyi/macros/*.cr` (4,396 lines)**
   * Status: 12 fixtures, 71 expanded nodes verified by `bench/selfhost_macros_exercise.sh`.
+  * Wiring: Unwired into CLI.
   * Blockers:
-    1. `TypeNode` semantic inspection: accessing type tables from macros.
-    2. External macro execution (`macro run`).
-    3. Semantic hook callbacks (`inherited`, `included`, `extended`).
+    1. In-process heap boundary.
+    2. `TypeNode` semantic inspection: accessing type tables from macros.
+    3. External macro execution (`macro run`).
+    4. Semantic hook callbacks (`inherited`, `included`, `extended`).
 
 ### Layer 4: Type System and Semantic Analysis
-* **`types/*.iyi` (2,123 lines) vs `src/compiler/iyi/types.cr` (3,800+ lines)**
-  * Status: 13 fixtures, 66 types verified by `bench/selfhost_types_exercise.sh`.
-  * Blockers: Type system operates on iyi types. Blocked on semantic analysis.
-* **`semantic/top_level.iyi`, `semantic/main_visitor.iyi`, `semantic/recursive_struct_checker.iyi` (2,996 lines) vs `src/compiler/iyi/semantic/*.cr` (25,000+ lines)**
-  * Status: 42 fixtures, 39 declarations, 312 typed nodes, 23 errors, 16 mutation proofs.
-  * Ported: Instance variable type inference across a type, class variable initializers, recursive struct check, overload resolution by argument types with specificity ranking and autocast ambiguity detection, multiple dispatch over union receivers, and block and closure type inference.
-  * Blockers: Unported components in Crystal:
+* **`types/*.iyi` (2,115 lines across 6 files) vs `src/compiler/iyi/types.cr` (3,800+ lines)**
+  * Status: 7 fixtures, 66 types verified by `bench/selfhost_types_exercise.sh`.
+  * Wiring: Unwired into CLI. Blocked on semantic analysis and the in-process heap boundary.
+* **`semantic/top_level.iyi`, `semantic/main_visitor.iyi`, `semantic/recursive_struct_checker.iyi` (3,273 lines across 3 files) vs `src/compiler/iyi/semantic/*.cr` (25,000+ lines)**
+  * Status: 25 error fixtures, 9 feature fixtures (39 declarations), 16 typed expression fixtures (390 typed nodes), 21 mutation proofs.
+  * Ported: Instance variable type inference across a type, class variable initializers, recursive struct check, overload resolution by argument types with specificity ranking and autocast ambiguity detection, multiple dispatch over union receivers, block and closure type inference.
+  * Wiring: Unwired into CLI.
+  * Blockers: In-process heap boundary and unported components in Crystal:
     1. First-class captured proc values and closure lifting (`Proc(T, R)` allocation).
     2. Exception handling typing (`exception_handler.cr`).
     3. `TypeNode` semantic inspection in macros (`src/compiler/iyi/macros/types.cr`).
 
 ### Layer 5: Platform and LLVM C-API
-* **`platform/*.iyi` (698 lines) vs `src/compiler/iyi/codegen/target.cr` and `compiler.cr`**
+* **`platform/*.iyi` (698 lines across 3 files) vs `src/compiler/iyi/codegen/target.cr` and `compiler.cr`**
   * Status: 24 target triples verified by `bench/selfhost_platform_exercise.sh`.
-  * Blockers: Consumed by compiler driver and linker invocation.
-* **`llvm/*.iyi` (2,285 lines) vs Crystal LLVM bindings**
-  * Status: Emits native object file linked with C driver in `bench/selfhost_llvm_exercise.sh`.
-  * Blockers: Consumed by codegen.
+  * Wiring: Unwired into CLI. Consumed by compiler driver and linker invocation.
+* **`llvm/*.iyi`, `llvm.iyi` (2,365 lines across 10 files) vs Crystal LLVM bindings**
+  * Status: Verified in `bench/selfhost_codegen_exercise.sh` and `bench/selfhost_compile_exercise.sh`.
+  * Wiring: Unwired into CLI. Consumed by codegen.
 
 ### Layer 6: Code Generation
-* **`codegen/codegen.iyi` (2,178 lines) vs `src/compiler/iyi/codegen/*.cr` (15,000+ lines)**
-  * Status: 12 fixtures, 71 functions with identical LLVM IR and execution.
-  * Blockers:
-    1. Closures and proc pointers (block inlining ported; full proc closures require capture analysis and lambda lifting).
-    2. Exceptions (`raise`, `rescue`, `ensure`, landing pads: require unported LibLLVM bindings and runtime unwinding).
-    3. Generics monomorphization.
-    4. GC interface and runtime integration.
+* **`codegen/codegen.iyi` (4,611 lines) vs `src/compiler/iyi/codegen/*.cr` (15,000+ lines)**
+  * Status: 18 fixtures, 108 functions with identical LLVM IR and execution verified by `bench/selfhost_codegen_exercise.sh`.
+  * Ported: Functions, structs, classes, virtual dispatch, nilable, blocks, exceptions, closures, string literals, generics, heap layouts, and runtime symbols.
+  * Wiring: Unwired into CLI.
+  * Blockers: Generics monomorphization, GC interface integration, and in-process heap boundary.
 
 ### Layer 7: Artifact Serializer
 * **`artifact/iyimod.iyi` (2,681 lines) vs `src/compiler/iyi/iyimod.cr` (1,348 lines)**
   * Status: 16 modules, 80,414 bytes, 100% byte-for-byte parity, cross-reading,
     refusal verified by `bench/selfhost_iyimod_exercise.sh`.
-  * Blockers: NONE for standalone inspection and dumping. Fully wired into
-    `bin/iyi mod dump --selfhost` as the first working stage one port.
+  * Wiring: Wired behind `bin/iyi mod dump --selfhost` via companion tool `iyi-mod`
+    (verified by `bench/selfhost_mod_wiring_exercise.sh`).
+  * Blockers for compilation pipeline: Standalone dumping is fully wired. In-pipeline artifact writing requires semantic analysis.
 
 ### Layer 8: Command Driver and Tooling
-* **`command/driver.iyi` (1,963 lines) vs `src/compiler/iyi/command.cr` (1,104 lines)**
+* **`command/driver.iyi` (1,970 lines) vs `src/compiler/iyi/command.cr` (1,104 lines)**
   * Status: 115 argument vectors verified by `bench/selfhost_command_exercise.sh`.
+  * Wiring: Unwired into CLI.
   * Blockers: Option parsing and dispatch only. Cannot compile programs until
     the full compiler pipeline is wired.
 * **`command/daemon.iyi` (717 lines) vs `src/compiler/iyi/command/daemon.cr` (537 lines)**
   * Status: 30 scenarios verified by `bench/selfhost_daemon_exercise.sh`.
+  * Wiring: Unwired into CLI.
   * Blockers: Socket paths and identity only. Does not implement worker fork loop.
-* **`tools/formatter.iyi` (2,090 lines) vs `src/compiler/iyi/tools/formatter.cr` (5,457 lines)**
+* **`tools/formatter.iyi` (2,436 lines) vs `src/compiler/iyi/tools/formatter.cr` (5,457 lines)**
   * Status: 35 files verified in `bench/selfhost_formatter_exercise.sh`.
-    Wired into `bin/iyi tool format --selfhost` with 100% byte-for-byte parity across
-    all 35 corpus files verified by `bench/selfhost_format_wiring_exercise.sh`.
-  * Blockers: Incomplete formatting coverage on complex constructs. Still missing alignment (when,
-    hash, assign, comments), doc comment formatting, heredoc fixes, and macros.
-    Unblocked for all 35 verified constructs and clean formatting runs.
-* **`tools/bind.iyi` (727 lines) vs `src/compiler/iyi/tools/bind.cr`**
+  * Wiring: Wired behind `bin/iyi tool format --selfhost` via companion tool `iyi-format`
+    (verified by `bench/selfhost_format_wiring_exercise.sh`).
+* **`tools/bind.iyi` (1,213 lines) vs `src/compiler/iyi/tools/bind.cr`**
   * Status: 11 fixtures in `bench/selfhost_bind_exercise.sh`.
-  * Blockers: Works from parsed AST rather than semantically analyzed types.
-    Unproven against real frontend until semantic analysis lands.
+  * Wiring: Unwired into CLI.
+  * Blockers: Works from parsed AST rather than semantically analyzed types and LLVM data layout for `size_of`.
+    Cannot bind real shards until semantic analysis lands.
+* **`compiler.iyi`, `loader.iyi`, `tools/compile.iyi` (1,112 lines across 6 files)**
+  * Status: 14 whole-program fixtures verified by `bench/selfhost_compile_exercise.sh`.
+  * Wiring: Standalone tool `.build/iyi-compile` exists. Unwired into shipped compiler `bin/iyi build`
+    because it only compiles with `--prelude=empty` and cannot compile the full prelude yet.
 
+### Current Wiring Summary
+
+| Component | Ported Lines | Shipped Crystal Lines | Wiring Status | Gating Script |
+|---|---|---|---|---|
+| Artifact Dumper (`iyimod.iyi`) | 2,681 | 1,348 | Wired (`bin/iyi mod dump --selfhost`) | `bench/selfhost_mod_wiring_exercise.sh` |
+| Formatter (`formatter.iyi`) | 2,436 | 5,457 | Wired (`bin/iyi tool format --selfhost`) | `bench/selfhost_format_wiring_exercise.sh` |
+| Parser/Lexer (`parser.iyi`) | 8,639 | 9,539 | Wired (`bin/iyi check --parse-only --selfhost`) | `bench/selfhost_parser_wiring_exercise.sh` |
+| Bind Tool (`bind.iyi`) | 1,213 | ~5,600 | Not wired (unproven on real shards) | `bench/selfhost_bind_exercise.sh` (standalone only) |
+| End-to-End Compiler (`compile.iyi`) | 1,112 | ~15,000 | Not wired (only compiles with `--prelude=empty`) | `bench/selfhost_compile_exercise.sh` (standalone only) |
+| Compilation Pipeline (AST/Semantic/Codegen) | 25,415 | ~88,000 | Not wired (blocked by heap boundary) | Individual standalone gates |
 ## 4. The Stage One Wiring Sequence
 
 To achieve Stage One, components must be wired in strict topological dependency
@@ -211,8 +232,68 @@ process or file boundary exists. An in-memory boundary (e.g. passing AST nodes
 from pure iyi Lexer/Parser into Crystal's Semantic Analyzer) requires either
 full serialization or an FFI bridge that is more complex than completing the
 port. Therefore, the compilation pipeline must be assembled entirely within iyi,
-while standalone tools (`mod`, `format`, `bind`) can be wired immediately via
+while standalone tools (`mod`, `format`, `check --parse-only`) are wired via
 CLI companion dispatch.
+
+### The Heap Boundary: In-Process Replacement vs. Self-Hosted Pipeline
+
+The question that determines whether Stage One is close or far is whether
+ported components can be wired in-process into Crystal's compiler pipeline
+(`src/compiler/iyi.cr`), or whether Stage One requires assembling the full
+pipeline in pure iyi (`src/compiler/iyi.iyi`).
+
+`STAGE_ONE.md` originally identified the heap boundary as the primary blocker.
+With the prelude now compiling and linking on iyi's own raise runtime
+(`__crystal_raise`, `__crystal_personality`, `__crystal_get_exception` in
+commit `a509d59a7`), we verified whether this boundary still holds.
+
+**The heap boundary is still 100% load-bearing.** In fact, the arrival of iyi's
+own raise runtime confirms that pure-iyi is a sovereign, distinct runtime that
+cannot be linked in-process into Crystal.
+
+Four concrete technical barriers prevent in-process component replacement:
+
+1. **Incompatible Memory Allocators:**
+   Crystal runs on Boehm GC (`libgc.1.dylib`). Every Crystal object allocation
+   calls `GC_malloc`, and the collector traces references across Boehm pages.
+   In contrast, pure iyi compiles with `IyiHeap` (`src/iyi/prelude.iyi`), which
+   allocates via direct `mmap` into custom size-class arenas with thread-local
+   caches. Boehm GC does not scan `IyiHeap` memory, and `IyiHeap` does not scan
+   Crystal stack frames or Boehm heap objects. If an `ast.iyi` node were passed
+   to Crystal's semantic analyzer, any Crystal object pointed to only from
+   `IyiHeap` would be collected as garbage, causing use-after-free corruption.
+
+2. **Binary Symbol Collisions:**
+   Both runtimes export identical C ABI symbol names. As verified by `nm -gU`:
+   * `.build/iyi` (Crystal) defines `___crystal_malloc64`, `___crystal_malloc_atomic64`,
+     `___crystal_realloc64`, `___crystal_personality`, `___crystal_raise`, and
+     `___crystal_get_exception`.
+   * Any object file compiled from `src/compiler/**/*.iyi` defines `___crystal_malloc64`,
+     `___crystal_malloc_atomic64`, `___crystal_personality`, `___crystal_raise`, and
+     `_IyiHeap::*`.
+   Attempting to link a pure-iyi `.o` file into `.build/iyi` fails immediately
+   at link time with duplicate symbol errors.
+
+3. **Incompatible Object Layout and VTables:**
+   Crystal's `ASTNode` is laid out by Crystal's compiler with Crystal type IDs,
+   vtable pointers, and instance variable offsets. Pure iyi's `ASTNode` is laid out
+   by `codegen.iyi` with `IyiHeap` headers and vtables emitted by the ported backend.
+   A Crystal method cannot dispatch virtual calls on an `ast.iyi` node.
+
+4. **The Raise Runtime Does Not Unify Heaps:**
+   Implementing `__crystal_raise` in pure iyi over Itanium DWARF unwinding solved
+   Hole 3 for pure-iyi programs (allowing all 17 prelude files to link into binaries
+   that need only `libSystem`). It did not build an FFI bridge to Crystal. Both
+   Crystal and iyi now implement personality routines that handle their respective
+   exception hierarchies, making linking them into the same binary even more
+   structurally impossible.
+
+**Conclusion:** Stage One cannot be achieved by incrementally swapping classes
+inside Crystal's `src/compiler/iyi.cr`. Stage One is achieved when the bootstrap
+compiler (`bin/iyi`) compiles the pure-iyi pipeline (`src/compiler/iyi.iyi`) into
+an executable compiler (`.build/iyi-stage1`). CLI companion dispatch (`--selfhost`)
+remains the only sound mechanism for running ported components from the bootstrap
+compiler today.
 
 ## 5. The First Wired Component: `iyi mod dump --selfhost`
 
@@ -324,7 +405,57 @@ Parity summary: 35/35 files match byte-for-byte across stdin, in-place, and pref
 ALL SELFHOST FORMAT WIRING CHECKS PASSED SUCCESSFULLY!
 ```
 
-## 7. Observable Proof of Stage One
+## 7. The Third Wired Component: `iyi check --parse-only --selfhost`
+
+`syntax/parser.iyi` and `syntax/lexer.iyi` were selected as the third component to wire into the
+shipped compiler because:
+
+1. **Clean process boundary:** Front-end syntax checking is a file-in or text-in, verdict-out
+   transform that validates syntax without mutating disk state or executing codegen. It avoids
+   any in-memory runtime or Boehm GC conflict between Crystal and pure iyi.
+2. **Proven 100% parity on real corpus:** All 68 files in the test corpus (the 24 parser syntax
+   fixtures and the 44 sample programs in the samples tree) produce identical verdicts and
+   clean exits (exit code 0, empty output) across files, STDIN, and flag ordering.
+3. **Identical error text on malformed input:** Syntax errors on malformed input exit with
+   status 1 and output byte-identical error messages between the Crystal and self-hosted paths.
+4. **Direct user-facing command:** `iyi check --parse-only [--selfhost] [files...]` extends the
+   shipped `check` command so users and CI can exercise the pure iyi front end on real codebases.
+5. **Preserved default behavior:** Default invocation (`iyi check`) and standard syntax checking
+   (`iyi check --parse-only`) are completely untouched, while `--selfhost` routes execution to
+   the companion tool `iyi-parse`.
+
+### Implementation
+
+1. **Companion tool (`src/compiler/tools/parse.iyi`):**
+   Pure iyi tool that imports `compiler/syntax/parser` and parses source files or standard input.
+2. **Compiler CLI wiring (`src/compiler/iyi/command/check.cr`):**
+   `Iyi::Command#check` accepts `--parse-only` and `--selfhost`. When `--selfhost` is combined
+   with `--parse-only`, `run_selfhost_parse` locates `iyi-parse` beside the compiler binary,
+   in `.build/iyi-parse`, or via `IYI_PARSE_BIN`, and delegates execution.
+3. **Build system (`Makefile`):**
+   Added `.PHONY: iyi-parse` target compiling `$(O)/iyi-parse$(EXE)` using
+   `$(O)/iyi build -o $@ src/compiler/tools/parse.iyi`.
+4. **Differential wiring gate (`bench/selfhost_parser_wiring_exercise.sh`):**
+   Verifies that:
+   * `iyi check --parse-only file` equals `iyi check --parse-only --selfhost file` across all 68 files.
+   * `iyi check --parse-only - < file` equals `iyi check --parse-only --selfhost - < file`.
+   * Flag ordering `iyi check --selfhost --parse-only` works identically.
+   * Syntax error refusal parity on malformed source files with identical exit code (rc=1) and error text.
+   * Five guarded mutation proofs verify that defects in the companion tool, STDIN parsing,
+     tool discovery, flag routing, and status code propagation are caught.
+
+### Measured Parity Summary
+
+Running `bash bench/selfhost_parser_wiring_exercise.sh` confirms:
+
+```
+Parity summary: 68/68 files match byte-for-byte across files, stdin, and flag ordering (100% parity)
+Refusal summary: 5/5 malformed scenarios refused with identical error text and status (rc=1)
+Mutation summary: 5/5 guarded wiring mutations caught and reverted
+ALL SELFHOST PARSER WIRING CHECKS PASSED SUCCESSFULLY!
+```
+
+## 8. Observable Proof of Stage One
 
 Stage One will be demonstrably complete when:
 
@@ -345,7 +476,7 @@ Stage One will be demonstrably complete when:
    The compiled binary `.build/calc-stage1` runs, passes its tests, and matches
    the behavior of the binary compiled by `bin/iyi`.
 6. **Selfhost gate pass:**
-   All fourteen selfhost exercise scripts pass when invoked with `IYI=.build/iyi-stage1`.
+   All twenty selfhost exercise scripts pass when invoked with `IYI=.build/iyi-stage1`.
 7. **Dependency floor holds:**
    `bash bench/dependency_floor.sh` confirms that binaries produced by Stage One
    continue to link only the platform libc (`libSystem.B.dylib` on darwin).
