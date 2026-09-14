@@ -211,6 +211,10 @@ class LocalVarCollector < Visitor
     end
     true
   end
+
+  def visit(node : ASTNode) : Bool
+    true
+  end
 end
 
 class StructCallCollector < Visitor
@@ -3795,7 +3799,11 @@ def emit_custom_types_code(cg : CodeGenVisitor) : Nil
                        "*#{info.name}#initialize<#{arg_type_names.join(", ")}>:#{init_ret_tname}"
                      end
 
-      init_fn = mod.add_function(init_fn_name, init_fn_ty)
+      init_fn = if existing = mod.get_function?(init_fn_name)
+                  existing
+                else
+                  mod.add_function(init_fn_name, init_fn_ty)
+                end
       init_fn.linkage = LibLLVM::Linkage::Internal
 
       self_param = init_fn.param(0)
@@ -3950,7 +3958,11 @@ def emit_custom_types_code(cg : CodeGenVisitor) : Nil
                     end
                   end
 
-      ctor_fn = mod.add_function(ctor_name, ctor_fn_ty)
+      ctor_fn = if existing = mod.get_function?(ctor_name)
+                  existing
+                else
+                  mod.add_function(ctor_name, ctor_fn_ty)
+                end
       ctor_fn.linkage = LibLLVM::Linkage::Internal
       if info.generic_name
         ctor_fn.param(0).name = "self"
