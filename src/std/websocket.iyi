@@ -217,6 +217,44 @@ pub struct Base64
     out
   end
 
+  # Returns `true` when *str* decodes, `false` when it does not.
+  #
+  # `decode` calls `decode_char`, which raises on a character outside the
+  # alphabet, and an iyi file cannot rescue that: an error is a value the
+  # caller handles (SPEC.md III.1). This is that value, for a caller holding a
+  # client-supplied key.
+  pub def self.valid?(str : String) : Bool
+    bytesize = str.bytesize
+    return true if bytesize == 0
+    return false if (bytesize & 3) != 0
+
+    s_ptr = str.to_unsafe
+    i = 0
+    pad = 0
+    while i < bytesize
+      c = s_ptr[i]
+      if c == 61_u8
+        # Padding belongs to the last two positions, and nothing but padding
+        # may follow it.
+        return false if i < bytesize - 2
+        pad = pad + 1
+      else
+        return false if pad > 0
+        return false unless in_alphabet?(c)
+      end
+      i = i + 1
+    end
+
+    true
+  end
+
+  private def self.in_alphabet?(c : UInt8) : Bool
+    (c >= 65_u8 && c <= 90_u8) ||
+      (c >= 97_u8 && c <= 122_u8) ||
+      (c >= 48_u8 && c <= 57_u8) ||
+      c == 43_u8 || c == 47_u8
+  end
+
   private def self.decode_char(c : UInt8) : Int32
     if c >= 65_u8 && c <= 90_u8
       (c - 65_u8).to_i32
@@ -411,13 +449,15 @@ pub struct Handshake
       return WebSocketError.new(CLOSE_PROTOCOL_ERROR, "Sec-WebSocket-Key must be 24-character base64 ending in ==")
     end
 
-    begin
-      decoded = Base64.decode(key)
-      if decoded.size != 16
-        return WebSocketError.new(CLOSE_PROTOCOL_ERROR, "Sec-WebSocket-Key must decode to 16 bytes")
-      end
-    rescue
-      return WebSocketError.new(CLOSE_PROTOCOL_ERROR, "Invalid base64 in Sec-WebSocket-Key")
+    # Asked, not rescued: `Base64.decode` raises on invalid input and an iyi
+    # file cannot rescue that (SPEC.md III.1). The key arrives from a client,
+    # so its validity is a value this function returns rather than an
+    # exception it catches.
+    return WebSocketError.new(CLOSE_PROTOCOL_ERROR, "Invalid base64 in Sec-WebSocket-Key") unless Base64.valid?(key)
+
+    decoded = Base64.decode(key)
+    if decoded.size != 16
+      return WebSocketError.new(CLOSE_PROTOCOL_ERROR, "Sec-WebSocket-Key must decode to 16 bytes")
     end
 
     key

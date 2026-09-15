@@ -122,7 +122,11 @@ end
 # Spec Errors
 # -----------------------------------------------------------------------------
 
-pub class SpecError < Exception
+# `::Exception`, not `Exception`: inside `module std/spec` the bare name
+# resolves to `Std::Exception`, which is a module rather than a class, and a
+# compiler carrying that rule says so. `src/std/option_parser.iyi` already
+# carries the working form, `pub class Exception < ::Exception`.
+pub class SpecError < ::Exception
   getter file : String
   getter line : Int32
 
@@ -204,9 +208,9 @@ pub class Result
   getter file : String
   getter line : Int32
   getter elapsed : Span?
-  getter exception : Exception?
+  getter exception : ::Exception?
 
-  def initialize(@kind : Status, @description : String, @file : String = "", @line : Int32 = 0, @elapsed : Span? = nil, @exception : Exception? = nil)
+  def initialize(@kind : Status, @description : String, @file : String = "", @line : Int32 = 0, @elapsed : Span? = nil, @exception : ::Exception? = nil)
   end
 end
 
@@ -486,7 +490,7 @@ pub class RootContext < Context
     internal_run
   end
 
-  def report(status : Status, full_description : String, file : String = "", line : Int32 = 0, elapsed : Span? = nil, ex : Exception? = nil) : Nil
+  def report(status : Status, full_description : String, file : String = "", line : Int32 = 0, elapsed : Span? = nil, ex : ::Exception? = nil) : Nil
     result = Result.new(status, full_description, file, line, elapsed, ex)
     report_formatters(result)
     @results[status] << result
@@ -637,11 +641,11 @@ pub class RootContext < Context
 
     old_context = @cli.current_context
     @cli.current_context = group
-    begin
-      block.call
-    ensure
-      @cli.current_context = old_context
-    end
+    # `defer`, not `ensure`: a panic unwinds by registry and skips `ensure`
+    # (SPEC.md III.1.4), and restoring the context is exactly the half of
+    # cleanup that has to survive a panicking example.
+    defer @cli.current_context = old_context
+    block.call
   end
 
   def it(description : String, file : String, line : Int32, end_line : Int32, focus : Bool, tags : Set(String)?, &block : -> Nil) : Nil
@@ -666,11 +670,8 @@ pub class RootContext < Context
       raise "Can't nest `it` or `pending`", file, line
     end
     @spec_nesting = true
-    begin
-      block.call
-    ensure
-      @spec_nesting = false
-    end
+    defer @spec_nesting = false
+    block.call
   end
 
   def run_filters(pattern : String? = nil, line : Int32? = nil, locations : Hash(String, Array(Int32))? = nil, split_filter : SplitFilter? = nil, focus : Bool? = nil, tags : Set(String)? = nil, anti_tags : Set(String)? = nil) : Nil
@@ -789,7 +790,7 @@ pub class ExampleGroup < Context
     end
   end
 
-  def report(status : Status, desc : String, file : String = "", line : Int32 = 0, elapsed : Span? = nil, ex : Exception? = nil) : Nil
+  def report(status : Status, desc : String, file : String = "", line : Int32 = 0, elapsed : Span? = nil, ex : ::Exception? = nil) : Nil
     full = @description.empty? ? desc : "#{@description} #{desc}"
     if @parent.is_a?(RootContext)
       @parent.as(RootContext).report(status, full, file, line, elapsed, ex)
@@ -947,7 +948,7 @@ pub class Example
     @pending_state
   end
 
-  getter exception : Exception?
+  getter exception : ::Exception?
 
   @@example_counter : Int32 = -1
 
@@ -963,14 +964,14 @@ pub class Example
     @exception = nil
   end
 
-  def record_failure(msg : String, file : String, line : Int32, ex : Exception? = nil) : Nil
+  def record_failure(msg : String, file : String, line : Int32, ex : ::Exception? = nil) : Nil
     return if @failed
     @failed = true
     @failure_message = msg
     @exception = ex || AssertionFailed.new(msg, file, line)
   end
 
-  def record_pending(msg : String, file : String, line : Int32, ex : Exception? = nil) : Nil
+  def record_pending(msg : String, file : String, line : Int32, ex : ::Exception? = nil) : Nil
     return if @pending_state
     @pending_state = true
     @pending_message = msg
@@ -1011,6 +1012,9 @@ pub class Example
 
   private def internal_run(start_ns : Int64, blk : -> Nil) : Nil
     @parent.run_before_each_hooks
+    # Registered before the body runs, so the after-each hooks run whether the
+    # example returns or panics. `ensure` skipped them on a panic.
+    defer @parent.run_after_each_hooks
 
     # Execute test body safely
     blk.call
@@ -1028,11 +1032,9 @@ pub class Example
     else
       report_result(Status::Success, elapsed_span, nil)
     end
-  ensure
-    @parent.run_after_each_hooks
   end
 
-  private def report_result(status : Status, elapsed : Span?, ex : Exception?) : Nil
+  private def report_result(status : Status, elapsed : Span?, ex : ::Exception?) : Nil
     if @parent.is_a?(RootContext)
       @parent.as(RootContext).report(status, @description, @file, @line, elapsed, ex)
     else

@@ -1045,31 +1045,34 @@ pub struct Config
   #   Falls back to FALLBACK_NAMESERVERS.
   def self.nameservers(resolv_conf_path : String = "/etc/resolv.conf") : Array(String)
     servers = [] of String
+    # No `rescue`: iyi has no exceptions to rescue, an error is a value the
+    # caller handles (SPEC.md III.1), and the bare `rescue` that used to wrap
+    # this would never have run. What it was really guarding is a missing file,
+    # which is a question that can be asked. This module imports nothing, so
+    # `File` here is the prelude's, which offers `exists?` and not
+    # `readable?`; an unreadable path panics, and a panic is the right answer
+    # to a genuine defect.
     if File.exists?(resolv_conf_path)
-      begin
-        content = File.read(resolv_conf_path)
-        lines = content.split('\n')
-        i = 0
-        while i < lines.size
-          line = lines[i].strip
-          if !line.empty? && line[0] != '#' && line[0] != ';'
-            if line.starts_with?("nameserver")
-              rest = line[10, line.bytesize - 10].strip
-              token = ""
-              j = 0
-              while j < rest.bytesize
-                ch = rest[j]
-                break if ch == ' ' || ch == '\t' || ch == '#' || ch == ';'
-                token = token + ch.to_s
-                j = j + 1
-              end
-              servers << token if !token.empty?
+      content = File.read(resolv_conf_path)
+      lines = content.split('\n')
+      i = 0
+      while i < lines.size
+        line = lines[i].strip
+        if !line.empty? && line[0] != '#' && line[0] != ';'
+          if line.starts_with?("nameserver")
+            rest = line[10, line.bytesize - 10].strip
+            token = ""
+            j = 0
+            while j < rest.bytesize
+              ch = rest[j]
+              break if ch == ' ' || ch == '\t' || ch == '#' || ch == ';'
+              token = token + ch.to_s
+              j = j + 1
             end
+            servers << token if !token.empty?
           end
-          i = i + 1
         end
-      rescue
-        # Fall back on any read or parse failure
+        i = i + 1
       end
     end
 
