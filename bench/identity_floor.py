@@ -184,6 +184,12 @@ ALLOWED_PATHS: list[tuple[str, str]] = [
 # Lines that name Crystal legitimately inside a file that is otherwise iyi's.
 ALLOWED_LINES: list[tuple[str, str]] = [
     (r"--crystal", "the compatibility mode's own flag"),
+    # `bench/std_dependency_floor.sh` fails when a standard library module
+    # reaches an ancestor dependency, and the failure message has to say where
+    # the reachable bindings are. They are Crystal's, under src/openssl,
+    # src/yaml, src/xml, src/compress, src/digest, src/crypto and src/big, so
+    # the sentence names the other language because that is what it denotes.
+    (r"vendored Crystal bindings under", "the ancestor's bindings the std floor warns about"),
     (r"crystal_prelude", "the flag recording a build against Crystal's standard library"),
     # The ported command driver is checked byte for byte against the driver it
     # replaces, and that driver prints this sentence. Changing the wording here
