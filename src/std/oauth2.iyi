@@ -572,17 +572,21 @@ pub class Client
     end
 
     unless response.status_code >= 200 && response.status_code < 300
-      err_msg = begin
-        err_resp = ErrorResponse.from_json(response.body)
-        desc = err_resp.error_description
-        if desc && !desc.empty?
-          "OAuth2 Error: " + err_resp.error + " - " + desc
-        else
-          "OAuth2 Error: " + err_resp.error
-        end
-      rescue
-        "Unexpected response status: " + response.status_code.to_s + " " + response.body
-      end
+      # Asked, not rescued: `from_json` raises on a body that is not JSON, and
+      # an iyi file cannot rescue that (SPEC.md III.1). A failing token
+      # endpoint is exactly where a non-JSON body arrives, an HTML error page
+      # or an empty response, so validity is a question asked before parsing.
+      err_msg = if JSON.valid?(response.body)
+                  err_resp = ErrorResponse.from_json(response.body)
+                  desc = err_resp.error_description
+                  if desc && !desc.empty?
+                    "OAuth2 Error: " + err_resp.error + " - " + desc
+                  else
+                    "OAuth2 Error: " + err_resp.error
+                  end
+                else
+                  "Unexpected response status: " + response.status_code.to_s + " " + response.body
+                end
       raise Error.new(err_msg)
     end
 

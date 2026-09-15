@@ -1856,6 +1856,218 @@ pub struct JSON
     Parser.new(input).parse
   end
 
+  # Returns `true` when *input* is a complete JSON document, `false` when it
+  # is not.
+  #
+  # `parse` raises from inside the parser, and an iyi file cannot rescue that:
+  # an error is a value the caller handles (SPEC.md III.1). A caller holding a
+  # response body it did not author asks first and parses second, which is the
+  # shape `std/oauth2` needs for an error body that may not be JSON at all.
+  #
+  # This is a scanner rather than a call into `Parser`, because the point is to
+  # answer without raising, and the parser's job is to raise. It accepts the
+  # same grammar: one value, trailing whitespace allowed, nothing after it.
+  def self.valid?(input : String) : Bool
+    scanner = Validator.new(input)
+    return false unless scanner.value?
+    scanner.skip_space
+    scanner.done?
+  end
+
+  # A non-raising JSON scanner. Answers shape, not content: it does not build
+  # values and it does not enforce the nesting limit `Parser` applies, because
+  # a caller asking "is this JSON" is deciding whether to call `parse`, and
+  # `parse` remains the thing that enforces its own limits.
+  private struct Validator
+    # A pointer and a length rather than a slice: this module imports nothing,
+    # so a bare `Slice` here is not the type `String#to_slice` answers, and the
+    # scanner only ever reads bytes in order.
+    @ptr : Pointer(UInt8)
+    @size : Int32
+    @pos : Int32
+
+    def initialize(input : String)
+      @ptr = input.to_unsafe
+      @size = input.bytesize
+      @pos = 0
+    end
+
+    def done? : Bool
+      @pos >= @size
+    end
+
+    def skip_space : Nil
+      while @pos < @size
+        c = @ptr[@pos]
+        break unless c == 32_u8 || c == 9_u8 || c == 10_u8 || c == 13_u8
+        @pos = @pos + 1
+      end
+    end
+
+    def value? : Bool
+      skip_space
+      return false if done?
+      c = @ptr[@pos]
+      if c == 123_u8 # {
+        object?
+      elsif c == 91_u8 # [
+        array?
+      elsif c == 34_u8 # "
+        string?
+      elsif c == 116_u8 # t
+        literal?("true")
+      elsif c == 102_u8 # f
+        literal?("false")
+      elsif c == 110_u8 # n
+        literal?("null")
+      else
+        number?
+      end
+    end
+
+    private def literal?(word : String) : Bool
+      w = word.to_slice
+      return false if @pos + w.size > @size
+      i = 0
+      while i < w.size
+        return false if @ptr[@pos + i] != w[i]
+        i = i + 1
+      end
+      @pos = @pos + w.size
+      true
+    end
+
+    private def object? : Bool
+      @pos = @pos + 1 # {
+      skip_space
+      if !done? && @ptr[@pos] == 125_u8 # }
+        @pos = @pos + 1
+        return true
+      end
+      loop_guard = true
+      while loop_guard
+        skip_space
+        return false if done? || @ptr[@pos] != 34_u8
+        return false unless string?
+        skip_space
+        return false if done? || @ptr[@pos] != 58_u8 # :
+        @pos = @pos + 1
+        return false unless value?
+        skip_space
+        return false if done?
+        c = @ptr[@pos]
+        if c == 44_u8 # ,
+          @pos = @pos + 1
+        elsif c == 125_u8 # }
+          @pos = @pos + 1
+          loop_guard = false
+        else
+          return false
+        end
+      end
+      true
+    end
+
+    private def array? : Bool
+      @pos = @pos + 1 # [
+      skip_space
+      if !done? && @ptr[@pos] == 93_u8 # ]
+        @pos = @pos + 1
+        return true
+      end
+      loop_guard = true
+      while loop_guard
+        return false unless value?
+        skip_space
+        return false if done?
+        c = @ptr[@pos]
+        if c == 44_u8 # ,
+          @pos = @pos + 1
+        elsif c == 93_u8 # ]
+          @pos = @pos + 1
+          loop_guard = false
+        else
+          return false
+        end
+      end
+      true
+    end
+
+    private def string? : Bool
+      @pos = @pos + 1 # opening quote
+      while @pos < @size
+        c = @ptr[@pos]
+        if c == 34_u8
+          @pos = @pos + 1
+          return true
+        elsif c == 92_u8 # backslash
+          @pos = @pos + 1
+          return false if done?
+          e = @ptr[@pos]
+          if e == 117_u8 # u, four hex digits
+            @pos = @pos + 1
+            i = 0
+            while i < 4
+              return false if done?
+              return false unless hex?(@ptr[@pos])
+              @pos = @pos + 1
+              i = i + 1
+            end
+          elsif e == 34_u8 || e == 92_u8 || e == 47_u8 || e == 98_u8 ||
+                e == 102_u8 || e == 110_u8 || e == 114_u8 || e == 116_u8
+            @pos = @pos + 1
+          else
+            return false
+          end
+        elsif c < 32_u8
+          return false # control characters are not legal in a string
+        else
+          @pos = @pos + 1
+        end
+      end
+      false # ran out before the closing quote
+    end
+
+    private def hex?(c : UInt8) : Bool
+      (c >= 48_u8 && c <= 57_u8) ||
+        (c >= 97_u8 && c <= 102_u8) ||
+        (c >= 65_u8 && c <= 70_u8)
+    end
+
+    private def digit?(c : UInt8) : Bool
+      c >= 48_u8 && c <= 57_u8
+    end
+
+    private def number? : Bool
+      start = @pos
+      @pos = @pos + 1 if !done? && @ptr[@pos] == 45_u8 # -
+      return false if done? || !digit?(@ptr[@pos])
+      if @ptr[@pos] == 48_u8
+        @pos = @pos + 1
+      else
+        while !done? && digit?(@ptr[@pos])
+          @pos = @pos + 1
+        end
+      end
+      if !done? && @ptr[@pos] == 46_u8 # .
+        @pos = @pos + 1
+        return false if done? || !digit?(@ptr[@pos])
+        while !done? && digit?(@ptr[@pos])
+          @pos = @pos + 1
+        end
+      end
+      if !done? && (@ptr[@pos] == 101_u8 || @ptr[@pos] == 69_u8) # e E
+        @pos = @pos + 1
+        @pos = @pos + 1 if !done? && (@ptr[@pos] == 43_u8 || @ptr[@pos] == 45_u8)
+        return false if done? || !digit?(@ptr[@pos])
+        while !done? && digit?(@ptr[@pos])
+          @pos = @pos + 1
+        end
+      end
+      @pos > start
+    end
+  end
+
   # Builds a JSON string using `JSON::Builder`.
   def self.build(indent : String | Int32 | Nil = nil, & : Builder -> Nil) : String
     builder = Builder.new

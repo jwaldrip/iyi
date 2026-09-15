@@ -1,0 +1,68 @@
+# Proves JSON.valid? discriminates. A predicate that answers true for
+# everything would have satisfied every build check, so it is tested against
+# documents that must be rejected as well as accepted.
+module json_valid_probe
+
+import std/json
+
+using std/json::{JSON}
+
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+fails = 0
+
+def check(label : String, input : String, want : Bool) : Bool
+  got = JSON.valid?(input)
+  ok = got == want
+  print ok ? "  ok   " : "  FAIL "
+  print label
+  print "  want="
+  print want.to_s
+  print " got="
+  print got.to_s
+  print "\n"
+  ok
+end
+
+print "== must be accepted\n"
+fails = fails + 1 unless check("object        ", "{\"a\":1}", true)
+fails = fails + 1 unless check("nested        ", "{\"a\":[1,2,{\"b\":null}]}", true)
+fails = fails + 1 unless check("empty object  ", "{}", true)
+fails = fails + 1 unless check("empty array   ", "[]", true)
+fails = fails + 1 unless check("string        ", "\"hi\"", true)
+fails = fails + 1 unless check("escape        ", "\"a\\nb\\u00e9\"", true)
+fails = fails + 1 unless check("negative float", "-1.5e-3", true)
+fails = fails + 1 unless check("true          ", "true", true)
+fails = fails + 1 unless check("null          ", "null", true)
+fails = fails + 1 unless check("whitespace    ", "  { \"a\" : 1 }  ", true)
+
+print "== must be rejected\n"
+fails = fails + 1 unless check("html page     ", "<html>Bad Gateway</html>", false)
+fails = fails + 1 unless check("empty body    ", "", false)
+fails = fails + 1 unless check("bare word     ", "Unauthorized", false)
+fails = fails + 1 unless check("unclosed      ", "{\"a\":1", false)
+fails = fails + 1 unless check("trailing comma", "{\"a\":1,}", false)
+fails = fails + 1 unless check("missing colon ", "{\"a\" 1}", false)
+fails = fails + 1 unless check("unquoted key  ", "{a:1}", false)
+fails = fails + 1 unless check("unterminated  ", "\"abc", false)
+fails = fails + 1 unless check("bad escape    ", "\"a\\xb\"", false)
+fails = fails + 1 unless check("short unicode ", "\"a\\u12\"", false)
+fails = fails + 1 unless check("leading zero  ", "01", false)
+fails = fails + 1 unless check("lone minus    ", "-", false)
+fails = fails + 1 unless check("dot no digit  ", "1.", false)
+fails = fails + 1 unless check("exp no digit  ", "1e", false)
+fails = fails + 1 unless check("trailing junk ", "{\"a\":1} tail", false)
+fails = fails + 1 unless check("truthy typo   ", "tru", false)
+
+print "\n"
+if fails == 0
+  print "PASS: the predicate discriminates\n"
+  LibC.exit(0)
+else
+  print "FAIL: "
+  print fails.to_s
+  print " case(s) wrong\n"
+  LibC.exit(1)
+end
