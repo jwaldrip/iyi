@@ -5044,29 +5044,36 @@ closed by measurement: **`-Dgc_none` is not viable for the compiler itself.**
 The verdict has survived a re-measurement on 2026-09-16 and the symptom has
 not, so what stands here is today's, because a reason nobody can reproduce is
 worse than no reason. A collector-free compiler builds clean and emits no
-invalid IR at all. Nor does it lose the symbol the error names, which is what
-this paragraph said next and what the error invites you to believe. It hands
-the linker nothing:
+invalid IR at all. It fails at the link, deterministically: **5/5** on
+`samples/iyi/collections.iyi` against **0/5** with the collector, with
+`Undefined symbols` reached from `__iyi_main`, and a `Trace/BPT trap: 5`
+inside the compiler itself on some runs.
 
-| build | objects on the `cc` line | exit |
+Two explanations were measured and refuted along the way. Both are recorded
+because each held for a while and each would have sent a reader somewhere
+wrong.
+
+*Not a dropped symbol.* Both builds emit 39 objects, and both define
+`Nums@Std::Enumerable::Enumerable#zip<Words>`, the instantiation the error
+names, so codegen is not where the work is lost.
+
+*Not an empty link line, and not the link path.* Counting objects on the `cc`
+line said 39 with the collector and 0 without, which read as the compiler
+handing the linker nothing. That was an artifact of two command shapes: the
+direct-link template inlines the objects, while the driver passes them through
+`"${@}"`, so a probe that counts tokens on the printed line sees one and not
+the other. Forcing each path with `IYI_LINK_DRIVER` settles it:
+
+| | direct link | driver |
 |---|---|---|
-| with bdw-gc | 39 | 0 |
-| `-Dgc_none` | **0** | 1 |
+| with bdw-gc | 0/3 | 0/3 |
+| `-Dgc_none` | 3/3 | 3/3 |
 
-Both builds emit 39 objects, and both define
-`Nums@Std::Enumerable::Enumerable#zip<Words>` in one of them, so codegen is
-not where the work is lost. The list of objects the compiler passes to the
-linker is empty, which is exactly why the failure reads as undefined symbols
-reached from `__iyi_main`: none of the program was linked. Deterministic, 5/5
-on `samples/iyi/collections.iyi`, against **0 failures in 5 runs** with the
-collector. `--single-module` succeeds, which fits a lost list rather than lost
-code: it has one object and no list to lose.
+The collector is the discriminator, not the linker.
 
-So the cause is narrower and more ordinary than "an allocator that never frees
-corrupts a long walk over ASTs": something the compiler builds to hold its own
-object paths does not survive to the link under `-Dgc_none`. That is a bug
-with an address, not a reason to expect a collector-free compiler to be
-impossible. So the compiler keeps
+What is left is narrow and true: `--single-module`, `--emit llvm-ir` and
+`--no-codegen` all succeed without the collector, and only the default
+multi-module object path fails. So the compiler keeps
 its collector, and the collected default for programs arrived through the
 real collector, exactly as this sentence once predicted.
 

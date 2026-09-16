@@ -55,22 +55,27 @@ override FLAGS += -D strict_multi_assign -D preview_overload_order $(if $(releas
 # nobody spends the afternoon again. The conclusion has held through a
 # re-measurement on 2026-09-16; the symptom has not, so the old one is replaced
 # rather than left to mislead. A collector-free compiler builds clean and emits
-# no invalid IR at all, and it does not drop the symbols it is accused of
-# dropping either. It hands the linker nothing.
+# no invalid IR at all. It fails at the link, deterministically, 5/5 on
+# samples/iyi/collections.iyi against 0/5 with the collector, with `Undefined
+# symbols` reached from `__iyi_main` and a `Trace/BPT trap: 5` in the compiler
+# itself on some runs.
 #
-# Measured on the same program, `--verbose` on both builds, counting the
-# objects on the `cc` line:
+# Two things it is NOT, both measured here rather than reasoned about, because
+# each looked true for a while:
 #
-#   with bdw-gc    39 objects on the link line, exit 0
-#   -Dgc_none       0 objects on the link line, exit 1
+#   Not a dropped symbol. Both builds emit 39 objects and both define the
+#   instantiation the error names (`Nums@...#zip<Words>`), so codegen is not
+#   where the work is lost.
 #
-# Both emit 39 object files and both define the instantiation the error names
-# (`Nums@Std::Enumerable::Enumerable#zip<Words>`) in one of them, so codegen is
-# not the loss. The list of objects the compiler then passes to the linker is
-# empty, which is why the failure reads as undefined symbols reached from
-# `__iyi_main`: nothing of the program was linked at all. Deterministic, 5/5.
-# `--single-module` succeeds, which fits: it has one object and no list to
-# lose.
+#   Not the link path. The objects reach the linker either way; the two builds
+#   merely print differently, since the direct-link template inlines them and
+#   the driver passes them through `"${@}"`. Forcing each path with
+#   `IYI_LINK_DRIVER`: with the collector 0/3 both ways, without it 3/3 both
+#   ways. The collector is the discriminator, not the linker.
+#
+# `--single-module`, `--emit llvm-ir` and `--no-codegen` all succeed without
+# the collector; only the default multi-module object path fails. That is the
+# narrowest true statement available today, and where a fix would start.
 #
 # The cause was half right and the half that named parallel codegen is wrong,
 # which matters because it is also the exit condition. Tested against the
