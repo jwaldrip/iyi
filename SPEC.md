@@ -5044,10 +5044,13 @@ closed by measurement: **`-Dgc_none` is not viable for the compiler itself.**
 The verdict has survived a re-measurement on 2026-09-16 and the symptom has
 not, so what stands here is today's, because a reason nobody can reproduce is
 worse than no reason. A collector-free compiler builds clean and emits no
-invalid IR at all. It fails at the link, deterministically: **5/5** on
-`samples/iyi/collections.iyi` against **0/5** with the collector, with
-`Undefined symbols` reached from `__iyi_main`, and a `Trace/BPT trap: 5`
-inside the compiler itself on some runs.
+invalid IR at all. It fails at the link, on almost every run but not quite
+every one: **9 of 10** on `samples/iyi/collections.iyi` against **0 of 10**
+with the collector, each run given a fresh cache directory so cache warmth
+cannot be doing the work. `Undefined symbols` reached from `__iyi_main`, with
+a `Trace/BPT trap: 5` inside the compiler itself on some runs. The tenth run
+is the interesting one and it is left in the number rather than rounded away:
+whatever this is, it is not total.
 
 Two explanations were measured and refuted along the way. Both are recorded
 because each held for a while and each would have sent a reader somewhere

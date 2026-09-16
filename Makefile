@@ -55,10 +55,12 @@ override FLAGS += -D strict_multi_assign -D preview_overload_order $(if $(releas
 # nobody spends the afternoon again. The conclusion has held through a
 # re-measurement on 2026-09-16; the symptom has not, so the old one is replaced
 # rather than left to mislead. A collector-free compiler builds clean and emits
-# no invalid IR at all. It fails at the link, deterministically, 5/5 on
-# samples/iyi/collections.iyi against 0/5 with the collector, with `Undefined
-# symbols` reached from `__iyi_main` and a `Trace/BPT trap: 5` in the compiler
-# itself on some runs.
+# no invalid IR at all. It fails at the link on almost every run: 9 of 10 on
+# samples/iyi/collections.iyi against 0 of 10 with the collector, each run
+# given a fresh cache directory so cache warmth is not doing the work, with
+# `Undefined symbols` reached from `__iyi_main` and a `Trace/BPT trap: 5` in
+# the compiler itself on some runs. The tenth run passed, and that is left in
+# the number rather than rounded off.
 #
 # Two things it is NOT, both measured here rather than reasoned about, because
 # each looked true for a while:
