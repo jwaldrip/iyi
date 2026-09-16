@@ -257,6 +257,23 @@ puts "realloc: same-class, cross-class and null all hold their bytes"
     raise "large: an arena claimed a large object"
   end
 
+  # realloc across the large boundary in both directions: a class chunk
+  # growing past the top class, a large object growing to another mapping,
+  # and one shrinking back into a class. Each one allocates, copies the
+  # smaller of the two sizes and frees the old, so a lost byte or a leaked
+  # node shows up here rather than in a program.
+  crossing = Pointer(UInt8).malloc(500_u64)
+  fill(crossing, 500, 11)
+  crossing = crossing.realloc(2000000_u64)
+  verify(crossing, 500, 11, "realloc class to large")
+  fill(crossing, 3000, 21)
+  crossing = crossing.realloc(3000000_u64)
+  verify(crossing, 3000, 21, "realloc large to larger")
+  fill(crossing, 300, 31)
+  crossing = crossing.realloc(100_u64)
+  verify(crossing, 100, 31, "realloc large to class")
+  puts "realloc: class to large, large to larger and large back to class all hold their bytes"
+
   # --- Traversal: the arena list and the large list both walk ---
   arenas = 0
   arena = IyiHeap.first_arena
