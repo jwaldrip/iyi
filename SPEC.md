@@ -5043,17 +5043,30 @@ is `-Dgc_none`'s price now, chosen rather than shipped. One shortcut stays
 closed by measurement: **`-Dgc_none` is not viable for the compiler itself.**
 The verdict has survived a re-measurement on 2026-09-16 and the symptom has
 not, so what stands here is today's, because a reason nobody can reproduce is
-worse than no reason. A collector-free compiler now builds clean and emits no
-invalid IR at all. What it does instead is lose work it had already agreed to
-do: building `samples/iyi/collections.iyi` failed **9 runs out of 10** with
-`Undefined symbols for architecture arm64` naming a generic instantiation,
-`Nums@Std::Enumerable::Enumerable#zip<Words>`, with one run taking a
-`Trace/BPT trap: 5` inside the compiler, and
-`bench/std_iterator_exercise.sh` failing the same way. The same compiler with
-bdw-gc, measured in the same session: **0 failures in 5 runs** of that sample,
-0 across two passes of every sample, and that exercise green. The cause is
-unchanged: a long walk over ASTs with parallel codegen and fibers under an
-allocator that never frees. So the compiler keeps
+worse than no reason. A collector-free compiler builds clean and emits no
+invalid IR at all. Nor does it lose the symbol the error names, which is what
+this paragraph said next and what the error invites you to believe. It hands
+the linker nothing:
+
+| build | objects on the `cc` line | exit |
+|---|---|---|
+| with bdw-gc | 39 | 0 |
+| `-Dgc_none` | **0** | 1 |
+
+Both builds emit 39 objects, and both define
+`Nums@Std::Enumerable::Enumerable#zip<Words>` in one of them, so codegen is
+not where the work is lost. The list of objects the compiler passes to the
+linker is empty, which is exactly why the failure reads as undefined symbols
+reached from `__iyi_main`: none of the program was linked. Deterministic, 5/5
+on `samples/iyi/collections.iyi`, against **0 failures in 5 runs** with the
+collector. `--single-module` succeeds, which fits a lost list rather than lost
+code: it has one object and no list to lose.
+
+So the cause is narrower and more ordinary than "an allocator that never frees
+corrupts a long walk over ASTs": something the compiler builds to hold its own
+object paths does not survive to the link under `-Dgc_none`. That is a bug
+with an address, not a reason to expect a collector-free compiler to be
+impossible. So the compiler keeps
 its collector, and the collected default for programs arrived through the
 real collector, exactly as this sentence once predicted.
 

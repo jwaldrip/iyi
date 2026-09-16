@@ -54,15 +54,23 @@ override FLAGS += -D strict_multi_assign -D preview_overload_order $(if $(releas
 # -Dgc_none was tried here too and is not viable, which is worth recording so
 # nobody spends the afternoon again. The conclusion has held through a
 # re-measurement on 2026-09-16; the symptom has not, so the old one is replaced
-# rather than left to mislead. A collector-free compiler now builds clean and
-# emits no invalid IR at all. What it does instead is drop symbols and fall
-# over: building samples/iyi/collections.iyi failed 9 runs out of 10 with
-# `Undefined symbols for architecture arm64` naming a generic instantiation the
-# compiler had already agreed to emit
-# (`Nums@Std::Enumerable::Enumerable#zip<Words>`), one of those runs taking a
-# `Trace/BPT trap: 5` in the compiler itself, and bench/std_iterator_exercise.sh
-# failing the same way. The same compiler with bdw-gc: 0 failures in 5 runs of
-# that sample, 0 across two passes of every sample, and that exercise green.
+# rather than left to mislead. A collector-free compiler builds clean and emits
+# no invalid IR at all, and it does not drop the symbols it is accused of
+# dropping either. It hands the linker nothing.
+#
+# Measured on the same program, `--verbose` on both builds, counting the
+# objects on the `cc` line:
+#
+#   with bdw-gc    39 objects on the link line, exit 0
+#   -Dgc_none       0 objects on the link line, exit 1
+#
+# Both emit 39 object files and both define the instantiation the error names
+# (`Nums@Std::Enumerable::Enumerable#zip<Words>`) in one of them, so codegen is
+# not the loss. The list of objects the compiler then passes to the linker is
+# empty, which is why the failure reads as undefined symbols reached from
+# `__iyi_main`: nothing of the program was linked at all. Deterministic, 5/5.
+# `--single-module` succeeds, which fits: it has one object and no list to
+# lose.
 #
 # The cause was half right and the half that named parallel codegen is wrong,
 # which matters because it is also the exit condition. Tested against the
