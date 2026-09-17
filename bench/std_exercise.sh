@@ -203,13 +203,46 @@ echo "== the library is iyi all the way down"
 # syscalls on Linux, libSystem on darwin, and the floor names every symbol
 # they add there.
 #
+# Whether `file` and `dir` should keep those bindings at all was left open for
+# a while, and it is settled by measurement rather than by taste: a program
+# that imports both and calls into them links **libSystem and nothing else**.
+# The two declare `LibC` and `LibKernel32` only, 29 `fun`s between them, so
+# what they reach is the platform libc that Appendix B #19 already permits and
+# `ALLOWED_LIBS_PROGRAM` already lists. They cost no ancestor library, which is
+# the property the whole dependency floor exists to hold, so they stay as they
+# are. Shrinking them to the prelude's intrinsics would move the same syscalls
+# into the prelude and spend its measured line budget to change nothing a
+# program links.
+#
 # Every other module is iyi over the prelude's own intrinsics: no `lib`,
 # no `fun`, no inline `asm`, no `@[Link]`. A binding that appears anywhere
 # else is a dependency being taken on without a word.
+# An exemption is permission to reach the *platform*, not permission to reach
+# anything. The exempt modules used to be skipped outright, so `@[Link("yaml")]`
+# added to `std/socket` was seen by nothing here: the library floor catches it
+# only once a program reaches it and links libyaml, and a declaration nothing
+# reaches yet is exactly what this loop exists to name. So they are checked
+# too, against the libraries the platform supplies.
+PLATFORM_LIBS='LibC|LibSystem|LibKernel32|LibWasi|LibLLVMMath'
 reaching=""
+foreign=""
 for source in "$REPO"/src/std/*.iyi; do
   name="$(basename "$source" .iyi)"
-  case "$name" in socket|time|debug|file|dir|udp) continue ;; esac
+  case "$name" in
+    socket|time|debug|file|dir|udp)
+      # Named libraries only: a `lib` block of platform bindings is the
+      # exemption, an `@[Link]` to something the platform does not supply is
+      # not covered by it.
+      grep -nE '^\s*(lib [A-Z]|@\[Link)' "$source" \
+        | grep -vE "lib ($PLATFORM_LIBS)\b" > "$WORK/foreign.$name" || true
+      if [ -s "$WORK/foreign.$name" ]; then
+        foreign="$foreign $name"
+        echo "  std/$name is exempt for the platform, and this is not the platform:"
+        sed 's/^/    /' "$WORK/foreign.$name"
+      fi
+      continue
+      ;;
+  esac
   if [ "$name" = math ]; then
     grep -nE '^\s*(lib [A-Z]|fun [a-z_]|asm\(|@\[Link)' "$source" \
       | grep -vE 'llvm\.(sqrt|copysign|fma)\.' > "$WORK/reach.$name" || true
@@ -225,8 +258,12 @@ done
 if [ -n "$reaching" ]; then
   echo "  FAIL: a std module other than socket and time binds something"
   status=1
+elif [ -n "$foreign" ]; then
+  echo "  FAIL: an exempt std module binds something the platform does not supply"
+  status=1
 else
-  echo "  every module but socket and time is iyi over the prelude's intrinsics"
+  echo "  every module but socket and time is iyi over the prelude's intrinsics,"
+  echo "  and those reach the platform and nothing else"
 fi
 
 echo
