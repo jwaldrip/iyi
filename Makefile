@@ -86,6 +86,27 @@ override FLAGS += -D strict_multi_assign -D preview_overload_order $(if $(releas
 # says is that a collector is required: it is not, and the bug it was hiding
 # was in the standard library the whole time.
 override COMPILER_FLAGS += -Dwithout_openssl -Dwithout_zlib -Dwithout_iconv$(if $(sequential_codegen), -Dwithout_mt,)
+
+# The collector choice, and it is deliberately not in COMPILER_FLAGS, because
+# the shipped binary and the spec harness want opposite answers.
+#
+# `-Dgc_none` is the default because the objective is a compiler carrying no
+# ancestor library, and `libgc` was the last one that was not a deliberate
+# toolchain choice. `src/gc/none.cr` never frees, so peak memory is a function
+# of how much a process allocates: a compiler invocation compiles one program
+# and exits, measured at 598MB against 464MB on the 7,207-line project and
+# 7,430MB against 5,702MB self-hosting.
+#
+# `compiler_spec` is the opposite shape. It compiles thousands of programs
+# inside one long-lived process, and with no collector that process was
+# `Killed` on CI, `Error 137`, which is the honest upper bound on an allocator
+# that never frees rather than a bug. So the harness keeps bdw-gc and the
+# binaries do not, which is the same split SPEC.md III.9 draws between the
+# compiler and the programs it builds.
+#
+# `collector=1` puts bdw-gc back on the binaries too, and is the configuration
+# every number above was measured against.
+BINARY_GC_FLAGS := $(if $(collector),,-Dgc_none)
 SPEC_WARNINGS_OFF := --exclude-warnings spec/std --exclude-warnings spec/compiler --exclude-warnings spec/primitives --exclude-warnings src/float/printer --exclude-warnings src/random.cr
 override SPEC_FLAGS += $(if $(verbose),-v )$(if $(junit_output),--junit_output $(junit_output) )$(if $(order),--order=$(order) )
 IYI_CONFIG_LIBRARY_PATH := '$$ORIGIN/../lib/iyi'
@@ -472,11 +493,15 @@ iyi-tarball: $(O)/iyi$(EXE) $(O)/$(IYI_DAEMON_BIN) check_iyi_is_release
 	find "$(O)/iyi-package/share/iyi/samples" -type f -perm -u+x -delete
 	find "$(O)/iyi-package/share/iyi/samples" -type d -empty -delete
 # What the binaries need at runtime and a fresh machine has no reason to
-# own — libgc, and libstdc++ on Linux; LLVM is inside the binary when it
-# was linked against `scripts/build-static-llvm.sh`'s archive, and the
-# script refuses a package that carries libLLVM in that case. Not a
-# curated list: the script takes what the loader reports, and CI's clean
-# room (a bare image with nothing but a C toolchain) is what judges it.
+# own. The collector is no longer among them by default; `collector=1` puts
+# libgc back and the bundle follows it. What is left depends on how LLVM was
+# linked, and both cases are measured: against `scripts/build-static-llvm.sh`
+# LLVM is inside the binary and `lib/` is empty, and the script refuses a
+# package that carries libLLVM in that case; against a shared LLVM, `lib/`
+# carries it and whatever it names (here libLLVM, libz3, libzstd), plus
+# libstdc++ on Linux. Not a curated list: the script takes what the loader
+# reports, which is why it needed no change when the collector left, and
+# CI's clean room (a bare image with nothing but a C toolchain) judges it.
 	bash scripts/bundle-runtime-libs.sh "$(O)/iyi-package"
 	tar -czf "$(O)/$(IYI_PACKAGE).tar.gz" -C "$(O)/iyi-package" .
 	@echo "wrote $(O)/$(IYI_PACKAGE).tar.gz"
@@ -556,7 +581,7 @@ $(O)/cli_spec$(EXE): $(O)/$(CRYSTAL_BIN) $(O)/$(IYI_DAEMON_BIN) $(DEPS) $(SOURCE
 $(O)/$(CRYSTAL_BIN): $(DEPS) $(SOURCES)
 	$(call check_llvm_config)
 	@mkdir -p $(O)
-	$(EXPORTS) $(EXPORTS_BUILD) ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) -o $(if $(WINDOWS),$(O)/crystal-next.exe,$@) src/compiler/crystal.cr
+	$(EXPORTS) $(EXPORTS_BUILD) ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) $(BINARY_GC_FLAGS) -o $(if $(WINDOWS),$(O)/crystal-next.exe,$@) src/compiler/crystal.cr
 	@# NOTE: on MSYS2 it is not possible to overwrite a running program, so the compiler must be first built with
 	@# a different filename and then moved to the final destination.
 	$(if $(WINDOWS),mv $(O)/crystal-next.exe $@)
@@ -572,7 +597,7 @@ $(O)/iyi$(EXE): $(DEPS) $(SOURCES)
 	$(call check_llvm_config)
 	@mkdir -p $(O)
 	$(EXPORTS) $(EXPORTS_BUILD) IYI_CONFIG_PATH='$$ORIGIN/../share/iyi/src:$$ORIGIN/../share/iyi/crystal:$$ORIGIN/../src' \
-	  ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) $(SELF_RPATH) -o $@ src/compiler/iyi.cr
+	  ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) $(BINARY_GC_FLAGS) $(SELF_RPATH) -o $@ src/compiler/iyi.cr
 	@echo "built $@ — run it as ./bin/iyi"
 
 # iyi: the same compiler, single-threaded, which is what lets it fork.
@@ -585,7 +610,7 @@ $(O)/$(IYI_DAEMON_BIN): $(DEPS) $(SOURCES)
 	$(call check_llvm_config)
 	@mkdir -p $(O)
 	$(EXPORTS) $(EXPORTS_BUILD) IYI_CONFIG_PATH='$$ORIGIN/../share/iyi/src:$$ORIGIN/../share/iyi/crystal:$$ORIGIN/../src' \
-	  ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) $(SELF_RPATH) -Dwithout_mt -o $@ src/compiler/iyi.cr
+	  ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) $(BINARY_GC_FLAGS) $(SELF_RPATH) -Dwithout_mt -o $@ src/compiler/iyi.cr
 	@echo "built $@ — \`iyi daemon start\` finds it beside iyi"
 
 # iyi: the front end on its own. Linking libLLVM costs 26 ms of load-time
@@ -600,12 +625,12 @@ $(O)/crystal-front$(EXE): $(DEPS) $(SOURCES) $(O)/$(CRYSTAL_BIN)
 	$(EXPORTS) $(EXPORTS_BUILD) \
 	  IYI_CONFIG_TARGET="$$($(O)/$(CRYSTAL_BIN) --version | sed -n 's/^Default target: //p')" \
 	  IYI_CONFIG_LLVM_VERSION="$$($(O)/$(CRYSTAL_BIN) --version | sed -n 's/^LLVM: //p')" \
-	  ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) -Dwithout_llvm -o $@ src/compiler/crystal_front.cr
+	  ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) $(BINARY_GC_FLAGS) -Dwithout_llvm -o $@ src/compiler/crystal_front.cr
 
 $(O)/$(CRYSTAL_DAEMON_BIN): $(DEPS) $(SOURCES)
 	$(call check_llvm_config)
 	@mkdir -p $(O)
-	$(EXPORTS) $(EXPORTS_BUILD) ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) -Dwithout_mt -o $@ src/compiler/crystal.cr
+	$(EXPORTS) $(EXPORTS_BUILD) ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) $(BINARY_GC_FLAGS) -Dwithout_mt -o $@ src/compiler/crystal.cr
 
 ifneq ($(DEPS),)
 $(LLVM_EXT_OBJ): $(LLVM_EXT_DIR)/llvm_ext.cc
