@@ -7884,25 +7884,179 @@ require "./file"
 {% end %}
 # ── end of the memory layer ─────────────────────────────────────────────
 
-# The three symbols an `ensure` names and a `defer` links: a personality,
-# the exception fetch and the re-raise. None is reachable — reaching one
-# would mean something is unwinding, and nothing here unwinds (III.1.4).
-fun __iyi_personality
-  print "iyi: __iyi_personality called, which cannot happen\n"
-  __iyi_exit(1)
-end
+# A personality, the exception fetch and the re-raise: the three symbols a
+# landing pad names. No iyi program reaches them. An error in iyi is a value
+# (SPEC.md III.1) and a panic unwinds by registry (III.1.4), so nothing an
+# `.iyi` file can write raises through a frame, and that stays true. A `.cr`
+# program on this library is Crystal, where `raise` throws, and the file's
+# language decides that rather than the library underneath it.
+#
+# Both conditions say the same thing: the cost follows the language that
+# asked for it. `iyi_crystal_compat` is the compiler's word for "this
+# program is a `.cr` file on iyi's library"; without it a binary carries
+# none of this, which `bench/dependency_floor.sh` required by naming the six
+# `_Unwind_*` imports the first version put in every program. darwin,
+# because the unwinder is in libSystem there and a working `rescue` costs no
+# library (measured: the program still links libSystem and nothing else);
+# elsewhere it is in `libgcc_s` and the compiler refuses the `rescue`
+# instead of putting a library on the link line to serve it.
+{% if flag?(:darwin) && flag?(:iyi_crystal_compat) %}
+  lib LibUnwind
+    # The Itanium C++ ABI's exception header, and the two fields past it
+    # that are the language's own: the object thrown, and the type id a
+    # landing pad compares against each `rescue`'s type.
+    struct Exception
+      exception_class : UInt64
+      exception_cleanup : UInt64
+      private1 : UInt64
+      private2 : UInt64
+      exception_object : Void*
+      exception_type_id : Int32
+    end
 
-fun __iyi_get_exception(exception : Void*) : UInt64
-  print "iyi: __iyi_get_exception called, which cannot happen\n"
-  __iyi_exit(1)
-  0_u64
-end
+    fun get_language_specific_data = _Unwind_GetLanguageSpecificData(context : Void*) : Pointer(UInt8)
+    fun get_region_start = _Unwind_GetRegionStart(context : Void*) : UInt64
+    fun get_ip = _Unwind_GetIP(context : Void*) : UInt64
+    fun set_ip = _Unwind_SetIP(context : Void*, ip : UInt64) : UInt64
+    fun set_gr = _Unwind_SetGR(context : Void*, index : Int32, value : UInt64) : Nil
+    fun raise_exception = _Unwind_RaiseException(ex : Pointer(LibUnwind::Exception)) : Int32
+  end
 
-@[Raises]
-fun __iyi_raise(exception : Void*) : NoReturn
-  print "iyi: __iyi_raise called, which cannot happen\n"
-  __iyi_exit(1)
-end
+  # One unsigned LEB128 number; the cursor moves through the pointer because
+  # a tuple would allocate on a path that runs during an unwind.
+  fun __iyi_eh_uleb128(cursor : Pointer(Pointer(UInt8))) : UInt64
+    data = cursor.value
+    result = 0_u64
+    shift = 0_u64
+    keep = true
+    while keep
+      byte = data.value
+      data = data + 1_i64
+      result = result | (byte & 0x7f_u8).to_u64.unsafe_shl(shift)
+      keep = (byte & 0x80_u8) != 0_u8
+      shift = shift + 7_u64
+    end
+    cursor.value = data
+    result
+  end
+
+  # A fixed four-byte call-site field, assembled from its bytes: `UInt32`
+  # has no `to_u64` here (primitives.iyi gives conversions to five types and
+  # that is not one), and a table walk is no place to widen the surface.
+  fun __iyi_eh_uint32(cursor : Pointer(Pointer(UInt8))) : UInt64
+    data = cursor.value
+    b0 = data[0].to_u64
+    b1 = data[1].to_u64
+    b2 = data[2].to_u64
+    b3 = data[3].to_u64
+    cursor.value = data + 4_i64
+    b0 | b1.unsafe_shl(8_u64) | b2.unsafe_shl(16_u64) | b3.unsafe_shl(24_u64)
+  end
+
+  # The routine every landing pad names. It reads the call-site table the
+  # back end emitted beside the function and answers one of three things:
+  # no handler here (keep unwinding), one here (phase one), or install it
+  # (phase two). Ported from Crystal's `src/raise.cr`, which cites
+  # pnacl-libcxxabi's `cxa_personality.cpp`: the shape is the ABI's.
+  fun __iyi_personality(version : Int32, actions : Int32, exception_class : UInt64,
+                        exception_object : Pointer(LibUnwind::Exception),
+                        context : Void*) : Int32
+    continue_unwind = 8  # _URC_CONTINUE_UNWIND
+    handler_found = 6    # _URC_HANDLER_FOUND
+    install_context = 7  # _URC_INSTALL_CONTEXT
+    search_phase = 1     # _UA_SEARCH_PHASE
+    handler_frame = 4    # _UA_HANDLER_FRAME
+
+    data = LibUnwind.get_language_specific_data(context)
+    return continue_unwind if data.address == 0_u64
+
+    start = LibUnwind.get_region_start(context)
+    ip = LibUnwind.get_ip(context)
+    throw_offset = ip - 1_u64 - start
+
+    # @LPStart encoding: 0xff means "the region start", the only form the
+    # back end emits. Anything else and this table is not one we can read.
+    lp_start_encoding = data.value
+    data = data + 1_i64
+    return continue_unwind if lp_start_encoding != 0xff_u8
+
+    # @TType encoding, and the base offset that follows when there is one.
+    ttype_encoding = data.value
+    data = data + 1_i64
+    if ttype_encoding != 0xff_u8
+      __iyi_eh_uleb128(pointerof(data))
+    end
+
+    # The call-site table: entries are either uleb128 (1) or fixed uint32 (3).
+    cs_encoding = data.value
+    data = data + 1_i64
+    return continue_unwind if cs_encoding != 1_u8 && cs_encoding != 3_u8
+
+    cs_table_length = __iyi_eh_uleb128(pointerof(data))
+    cs_table_end = data + cs_table_length.to_i64
+
+    while data.address < cs_table_end.address
+      if cs_encoding == 3_u8
+        cs_offset = __iyi_eh_uint32(pointerof(data))
+        cs_length = __iyi_eh_uint32(pointerof(data))
+        cs_addr = __iyi_eh_uint32(pointerof(data))
+      else
+        cs_offset = __iyi_eh_uleb128(pointerof(data))
+        cs_length = __iyi_eh_uleb128(pointerof(data))
+        cs_addr = __iyi_eh_uleb128(pointerof(data))
+      end
+      __iyi_eh_uleb128(pointerof(data))  # the action record, unused: every
+                                         # landing pad here catches everything
+                                         # and sorts the types itself.
+
+      if cs_addr != 0_u64 && cs_offset <= throw_offset && throw_offset <= cs_offset + cs_length
+        return handler_found if (actions & search_phase) != 0
+
+        if (actions & handler_frame) != 0
+          # The pad reads the exception and its type id out of these two
+          # registers, which is the contract the back end generated against.
+          LibUnwind.set_gr(context, 0, exception_object.address)
+          LibUnwind.set_gr(context, 1, exception_object.value.exception_type_id.to_u64)
+          LibUnwind.set_ip(context, start + cs_addr)
+          return install_context
+        end
+      end
+    end
+
+    continue_unwind
+  end
+
+  fun __iyi_get_exception(exception : Pointer(LibUnwind::Exception)) : UInt64
+    exception.value.exception_object.address
+  end
+
+  # `_Unwind_RaiseException` either transfers control to a landing pad or
+  # comes back, and coming back means no frame wanted it.
+  @[Raises]
+  fun __iyi_raise(exception : Pointer(LibUnwind::Exception)) : NoReturn
+    LibUnwind.raise_exception(exception)
+    print "iyi: unhandled exception\n"
+    __iyi_exit(1)
+  end
+{% else %}
+  # Unreachable: the compiler refuses a `rescue` on these targets.
+  fun __iyi_personality
+    print "iyi: __iyi_personality called, which cannot happen\n"
+    __iyi_exit(1)
+  end
+
+  fun __iyi_get_exception(exception : Void*) : UInt64
+    print "iyi: __iyi_get_exception called, which cannot happen\n"
+    __iyi_exit(1)
+    0_u64
+  end
+
+  @[Raises]
+  fun __iyi_raise(exception : Void*) : NoReturn
+    print "iyi: __iyi_raise called, which cannot happen\n"
+    __iyi_exit(1)
+  end
+{% end %}
 
 # Every checked operation names this; the body is the ordinary panic, so an
 # overflow in a task dies at the task boundary like any other bug.

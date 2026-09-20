@@ -95,7 +95,7 @@ class Array(T)
     @buffer[index] = value
   end
 
-  def each(& : T -> Nil) : Nil
+  def each(& : T -> _) : Nil
     index = 0
     while index < @size
       yield @buffer[index]

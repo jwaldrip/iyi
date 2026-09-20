@@ -1,18 +1,50 @@
-# The macros a declaration cannot be written without — SPEC.md, "0.1.0",
-# item 3.
+# The macros a declaration cannot be written without (SPEC.md, "0.1.0",
+# item 3).
 #
 # `getter` is here because every sample declares a field with it, and a field
 # reader written by hand five times in a row is what a macro is for. The
-# variants Crystal's `object.cr` carries — lazy, nilable, `?`, raise-on-nil —
-# are not here, because no sample writes one.
+# variants Crystal's `object.cr` carries (`?`, raise-on-nil) are not here,
+# because nothing that compiles against this prelude writes one.
+#
+# Three forms are, and each arrived with a program that needed it:
+#
+#   getter name : String          a declaration
+#   getter width : Int32 = 32     a declaration with a default
+#   getter parser : P { build }   computed once, on first read
+#
+# The second came from `OptionParser#summary_width` and the third from
+# `Spec::CLI#option_parser`. Without them the field is left uninitialised and
+# the compiler is right to refuse the program.
 class Object
-  macro getter(*names)
+  macro getter(*names, &block)
     {% for name in names %}
-      {% if name.is_a?(TypeDeclaration) %}
-        @{{ name.var.id }} : {{ name.type }}
+      {% if block %}
+        # The lazy form. The variable is nilable because nothing has computed
+        # it yet; the reader is not, because reading it computes it.
+        @{{ name.var.id }} : {{ name.type }}?
+
+        def {{ name.var.id }} : {{ name.type }}
+          if (value = @{{ name.var.id }}).nil?
+            @{{ name.var.id }} = {{ block.body }}
+          else
+            value
+          end
+        end
+      {% elsif name.is_a?(TypeDeclaration) %}
+        {% if name.value %}
+          @{{ name.var.id }} : {{ name.type }} = {{ name.value }}
+        {% else %}
+          @{{ name.var.id }} : {{ name.type }}
+        {% end %}
 
         def {{ name.var.id }} : {{ name.type }}
           @{{ name.var.id }}
+        end
+      {% elsif name.is_a?(Assign) %}
+        @{{ name.target.id }} = {{ name.value }}
+
+        def {{ name.target.id }}
+          @{{ name.target.id }}
         end
       {% else %}
         def {{ name.id }}
@@ -22,11 +54,11 @@ class Object
     {% end %}
   end
 
-  # `record Point, x : Int32, y : Int32` — a struct whose fields are its
+  # `record Point, x : Int32, y : Int32`: a struct whose fields are its
   # constructor. Crystal's version also generates `copy_with` and `clone` and
   # takes default values; this one takes what the Kemal port writes, which is
   # a name and a list of typed fields.
-  macro record(name, *fields)
+  macro record(name, *fields, &block)
     struct {{ name.id }}
       {% for field in fields %}
         getter {{ field }}
@@ -34,13 +66,39 @@ class Object
 
       def initialize({{ fields.map { |field| "@#{field}".id }.splat }})
       end
+
+      # The block is where the type's own methods go, and dropping it was
+      # silent: `record Color256, value : UInt8 do def fore(io) ... end`
+      # produced a struct with no `fore`, and the failure read as a type
+      # missing a method nobody could find the definition for.
+      {% if block %}
+        {{ block.body }}
+      {% end %}
     end
   end
 
-  macro property(*names)
+  macro property(*names, &block)
     {% for name in names %}
-      {% if name.is_a?(TypeDeclaration) %}
-        @{{ name.var.id }} : {{ name.type }}
+      {% if block %}
+        @{{ name.var.id }} : {{ name.type }}?
+
+        def {{ name.var.id }} : {{ name.type }}
+          if (value = @{{ name.var.id }}).nil?
+            @{{ name.var.id }} = {{ block.body }}
+          else
+            value
+          end
+        end
+
+        def {{ name.var.id }}=(value : {{ name.type }}) : {{ name.type }}
+          @{{ name.var.id }} = value
+        end
+      {% elsif name.is_a?(TypeDeclaration) %}
+        {% if name.value %}
+          @{{ name.var.id }} : {{ name.type }} = {{ name.value }}
+        {% else %}
+          @{{ name.var.id }} : {{ name.type }}
+        {% end %}
 
         def {{ name.var.id }} : {{ name.type }}
           @{{ name.var.id }}
@@ -49,6 +107,16 @@ class Object
         def {{ name.var.id }}=(value : {{ name.type }}) : {{ name.type }}
           @{{ name.var.id }} = value
         end
+      {% elsif name.is_a?(Assign) %}
+        @{{ name.target.id }} = {{ name.value }}
+
+        def {{ name.target.id }}
+          @{{ name.target.id }}
+        end
+
+        def {{ name.target.id }}=(value)
+          @{{ name.target.id }} = value
+        end
       {% else %}
         def {{ name.id }}
           @{{ name.id }}
@@ -56,6 +124,261 @@ class Object
 
         def {{ name.id }}=(value)
           @{{ name.id }} = value
+        end
+      {% end %}
+    {% end %}
+  end
+
+  # The rest of the family. Crystal's `object.cr` carries eleven accessor
+  # macros and its own library reaches for all of them; counted across the
+  # 1,631 `.cr` files here, `property` 714 times, `getter` 614, `property?`
+  # 185, `getter?` 67, `property!` 52, `setter` 26, `getter!` 20, and the
+  # four class-scope forms 21 between them.
+  #
+  # Nine of the eleven can be named in iyi and are here. The two that cannot
+  # are `getter!` and `property!`: `!` is not part of a name in this language
+  # (SPEC.md III.1.7a), and no amount of wanting changes that. They are
+  # written in Crystal instead, in the compatibility layer a `.cr` file gets,
+  # which is the right side of the seam for a name only Crystal code can spell.
+
+  # `getter? enabled = false` reads back as `enabled?`, which is how a
+  # predicate should read at the call site.
+  macro getter?(*names, &block)
+    {% for name in names %}
+      {% if block %}
+        @{{ name.var.id }} : {{ name.type }}?
+
+        def {{ name.var.id }}? : {{ name.type }}
+          if (value = @{{ name.var.id }}).nil?
+            @{{ name.var.id }} = {{ block.body }}
+          else
+            value
+          end
+        end
+      {% elsif name.is_a?(TypeDeclaration) %}
+        {% if name.value %}
+          @{{ name.var.id }} : {{ name.type }} = {{ name.value }}
+        {% else %}
+          @{{ name.var.id }} : {{ name.type }}
+        {% end %}
+
+        def {{ name.var.id }}? : {{ name.type }}
+          @{{ name.var.id }}
+        end
+      {% elsif name.is_a?(Assign) %}
+        @{{ name.target.id }} = {{ name.value }}
+
+        def {{ name.target.id }}?
+          @{{ name.target.id }}
+        end
+      {% else %}
+        def {{ name.id }}?
+          @{{ name.id }}
+        end
+      {% end %}
+    {% end %}
+  end
+
+  macro property?(*names, &block)
+    {% for name in names %}
+      {% if block %}
+        getter? {{ name }} { {{ block.body }} }
+
+        def {{ name.var.id }}=(value : {{ name.type }}) : {{ name.type }}
+          @{{ name.var.id }} = value
+        end
+      {% elsif name.is_a?(TypeDeclaration) %}
+        getter? {{ name }}
+
+        def {{ name.var.id }}=(value : {{ name.type }}) : {{ name.type }}
+          @{{ name.var.id }} = value
+        end
+      {% elsif name.is_a?(Assign) %}
+        getter? {{ name }}
+
+        def {{ name.target.id }}=(value)
+          @{{ name.target.id }} = value
+        end
+      {% else %}
+        getter? {{ name }}
+
+        def {{ name.id }}=(value)
+          @{{ name.id }} = value
+        end
+      {% end %}
+    {% end %}
+  end
+
+  # A writer with no reader, for a field a type takes but does not answer.
+  macro setter(*names)
+    {% for name in names %}
+      {% if name.is_a?(TypeDeclaration) %}
+        {% if name.value %}
+          @{{ name.var.id }} : {{ name.type }} = {{ name.value }}
+        {% else %}
+          @{{ name.var.id }} : {{ name.type }}
+        {% end %}
+
+        def {{ name.var.id }}=(value : {{ name.type }}) : {{ name.type }}
+          @{{ name.var.id }} = value
+        end
+      {% elsif name.is_a?(Assign) %}
+        @{{ name.target.id }} = {{ name.value }}
+
+        def {{ name.target.id }}=(value)
+          @{{ name.target.id }} = value
+        end
+      {% else %}
+        def {{ name.id }}=(value)
+          @{{ name.id }} = value
+        end
+      {% end %}
+    {% end %}
+  end
+
+  # The class-scope four. The variable is the type's, not the instance's, and
+  # the reader is on the type, which is the only difference.
+  macro class_getter(*names, &block)
+    {% for name in names %}
+      {% if block %}
+        @@{{ name.var.id }} : {{ name.type }}?
+
+        def self.{{ name.var.id }} : {{ name.type }}
+          if (value = @@{{ name.var.id }}).nil?
+            @@{{ name.var.id }} = {{ block.body }}
+          else
+            value
+          end
+        end
+      {% elsif name.is_a?(TypeDeclaration) %}
+        {% if name.value %}
+          @@{{ name.var.id }} : {{ name.type }} = {{ name.value }}
+        {% else %}
+          @@{{ name.var.id }} : {{ name.type }}
+        {% end %}
+
+        def self.{{ name.var.id }} : {{ name.type }}
+          @@{{ name.var.id }}
+        end
+      {% elsif name.is_a?(Assign) %}
+        @@{{ name.target.id }} = {{ name.value }}
+
+        def self.{{ name.target.id }}
+          @@{{ name.target.id }}
+        end
+      {% else %}
+        def self.{{ name.id }}
+          @@{{ name.id }}
+        end
+      {% end %}
+    {% end %}
+  end
+
+  macro class_getter?(*names, &block)
+    {% for name in names %}
+      {% if block %}
+        @@{{ name.var.id }} : {{ name.type }}?
+
+        def self.{{ name.var.id }}? : {{ name.type }}
+          if (value = @@{{ name.var.id }}).nil?
+            @@{{ name.var.id }} = {{ block.body }}
+          else
+            value
+          end
+        end
+      {% elsif name.is_a?(TypeDeclaration) %}
+        {% if name.value %}
+          @@{{ name.var.id }} : {{ name.type }} = {{ name.value }}
+        {% else %}
+          @@{{ name.var.id }} : {{ name.type }}
+        {% end %}
+
+        def self.{{ name.var.id }}? : {{ name.type }}
+          @@{{ name.var.id }}
+        end
+      {% elsif name.is_a?(Assign) %}
+        @@{{ name.target.id }} = {{ name.value }}
+
+        def self.{{ name.target.id }}?
+          @@{{ name.target.id }}
+        end
+      {% else %}
+        def self.{{ name.id }}?
+          @@{{ name.id }}
+        end
+      {% end %}
+    {% end %}
+  end
+
+  macro class_setter(*names)
+    {% for name in names %}
+      {% if name.is_a?(TypeDeclaration) %}
+        {% if name.value %}
+          @@{{ name.var.id }} : {{ name.type }} = {{ name.value }}
+        {% else %}
+          @@{{ name.var.id }} : {{ name.type }}
+        {% end %}
+
+        def self.{{ name.var.id }}=(value : {{ name.type }}) : {{ name.type }}
+          @@{{ name.var.id }} = value
+        end
+      {% elsif name.is_a?(Assign) %}
+        @@{{ name.target.id }} = {{ name.value }}
+
+        def self.{{ name.target.id }}=(value)
+          @@{{ name.target.id }} = value
+        end
+      {% else %}
+        def self.{{ name.id }}=(value)
+          @@{{ name.id }} = value
+        end
+      {% end %}
+    {% end %}
+  end
+
+  macro class_property(*names, &block)
+    {% for name in names %}
+      {% if block %}
+        class_getter {{ name }} { {{ block.body }} }
+        class_setter {{ name }}
+      {% else %}
+        class_getter {{ name }}
+        {% if name.is_a?(TypeDeclaration) %}
+          def self.{{ name.var.id }}=(value : {{ name.type }}) : {{ name.type }}
+            @@{{ name.var.id }} = value
+          end
+        {% elsif name.is_a?(Assign) %}
+          def self.{{ name.target.id }}=(value)
+            @@{{ name.target.id }} = value
+          end
+        {% else %}
+          def self.{{ name.id }}=(value)
+            @@{{ name.id }} = value
+          end
+        {% end %}
+      {% end %}
+    {% end %}
+  end
+
+  macro class_property?(*names, &block)
+    {% for name in names %}
+      {% if block %}
+        class_getter? {{ name }} { {{ block.body }} }
+      {% else %}
+        class_getter? {{ name }}
+      {% end %}
+
+      {% if name.is_a?(TypeDeclaration) %}
+        def self.{{ name.var.id }}=(value : {{ name.type }}) : {{ name.type }}
+          @@{{ name.var.id }} = value
+        end
+      {% elsif name.is_a?(Assign) %}
+        def self.{{ name.target.id }}=(value)
+          @@{{ name.target.id }} = value
+        end
+      {% else %}
+        def self.{{ name.id }}=(value)
+          @@{{ name.id }} = value
         end
       {% end %}
     {% end %}

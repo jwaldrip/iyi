@@ -2150,6 +2150,16 @@ module Iyi
       program.flags << "debug" unless debug.none?
       program.flags << "static" if static?
       program.flags.concat @flags
+
+      # iyi: a `.cr` program on iyi's library. The prelude reads this to
+      # decide whether to carry the unwinder, because the cost should follow
+      # the language that asked for it: an iyi program cannot `rescue` at
+      # all, and `bench/dependency_floor.sh` caught the first version of
+      # this putting six `_Unwind_*` symbols into every binary shipped,
+      # including the ones that never raise.
+      if program.iyi_prelude? && sources.any? { |source| !source.filename.ends_with?(".iyi") }
+        program.flags << "iyi_crystal_compat"
+      end
       program.define_crystal_constants
       program.wants_doc = wants_doc? || !@emit_iyimod.nil?
       program.color = color?
@@ -2193,7 +2203,19 @@ module Iyi
 
         # Prepend the prelude to the parsed program
         location = Location.new(program.filename, 1, 1)
-        nodes = Expressions.new([Require.new(prelude).tap(&.iyi_prelude=(true)).at(location), nodes] of ASTNode)
+        preamble = [Require.new(prelude).tap(&.iyi_prelude=(true)).at(location)] of ASTNode
+
+        # iyi: a `.cr` program on iyi's library also gets `iyi/compat`, which
+        # is the handful of names Crystal code expects to be ambient and iyi either
+        # spells differently or cannot spell at all: `ENV`, `not_nil!`,
+        # `getter!`, `property!`. It is Crystal source, so it is parsed by
+        # Crystal's rules, which is the only reason the bang names are
+        # writable. An `.iyi` program never sees it.
+        if program.has_flag?("iyi_crystal_compat")
+          preamble << Require.new("iyi/compat").at(location)
+        end
+
+        nodes = Expressions.new(preamble + [nodes] of ASTNode)
 
         # And normalize
         program.normalize(nodes)
