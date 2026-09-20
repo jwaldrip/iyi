@@ -249,7 +249,9 @@ end
 # than a second implementation, with one exception: `PCG32` is written out,
 # because a seeded run is the whole point of the flag that asks for one and
 # quietly substituting a different generator would make `--seed` a lie.
-class Random
+# A module, as Crystal's is: code says `include Random` to get `rand` from
+# its own `next_u`, and a class here refuses that.
+module Random
   # PCG-XSH-RR 32. Written in `UInt64` throughout because `UInt32` has no
   # conversions and no shifts in this prelude: the arithmetic is the
   # algorithm's, masked back to 32 bits at each step rather than relying on
