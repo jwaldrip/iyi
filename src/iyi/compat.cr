@@ -98,6 +98,40 @@ class String
     builder.to_s
   end
 
+  # `split(char) { |piece| ... }`: the block form, which hands each piece
+  # over instead of building the array. iyi has the array-returning one.
+  def split(separator : Char, &block : String -> Nil) : Nil
+    split(separator).each { |piece| yield piece }
+  end
+
+  # `inspect_unquoted(io)`: the escaped form without the quotes around it,
+  # which is how a value gets written into an XML attribute or a message
+  # without a control character going through raw. iyi's own `inspect` only
+  # wraps the string in quotes, so the escaping is written here.
+  def inspect_unquoted(io) : Nil
+    each_char do |character|
+      if character == '\n'
+        io << "\\n"
+      elsif character == '\t'
+        io << "\\t"
+      elsif character == '\r'
+        io << "\\r"
+      elsif character == '"'
+        io << "\\\""
+      elsif character == '\\'
+        io << "\\\\"
+      elsif character.control?
+        io << "\\u{" << character.ord.to_s(16) << "}"
+      else
+        io << character
+      end
+    end
+  end
+
+  def inspect_unquoted : String
+    String.build { |io| inspect_unquoted(io) }
+  end
+
   # `lchop?`: the prefix removed, or nil when it was not there, which is how
   # Crystal code asks "is this one of mine" and takes the rest in one step.
   # iyi has `lchop(Char)` and `starts_with?`, so this is the pair written as
@@ -280,8 +314,43 @@ end
 # a shallow one wearing that name would be a quiet wrong answer for anything
 # holding mutable state.
 class Array(T)
+  # `a + b`: a new array of both. iyi has `concat`, which changes the
+  # receiver; Crystal code adds two lists and keeps them.
+  def +(other : Array(T)) : Array(T)
+    result = dup
+    result.concat(other)
+    result
+  end
+
   def clone : Array(T)
     dup
+  end
+
+  # iyi names the copy after the participle: `sorted`, `sorted_by`. Crystal
+  # spells the same thing `sort` and `sort_by`, and the mutating pair with a
+  # bang. Both names, each doing what its own language means by it.
+  # `block.call` rather than `yield`: `sorted` and `sorted_by` take captured
+  # blocks, and a `yield` inside one is refused.
+  def sort(&block : T, T -> Int32) : Array(T)
+    sorted { |left, right| block.call(left, right) }
+  end
+
+  def sort_by(&block : T -> U) : Array(T) forall U
+    sorted_by { |value| block.call(value) }
+  end
+
+  def sort!(&block : T, T -> Int32) : Array(T)
+    ordered = sorted { |left, right| block.call(left, right) }
+    clear
+    concat(ordered)
+    self
+  end
+
+  def sort_by!(&block : T -> U) : Array(T) forall U
+    ordered = sorted_by { |value| block.call(value) }
+    clear
+    concat(ordered)
+    self
   end
 
   # Written with `each` rather than `select`, because `select` is iyi's
@@ -343,6 +412,39 @@ end
 # with a `!`. Both spellings exist in the program now, each in the language
 # that can say it: these are only reachable from a `.cr` file.
 class Hash(K, V)
+  # `Hash(K, V).new(0)`: a default for a key that is not there, which is how
+  # Crystal code counts things without testing first. iyi's `Hash` answers
+  # nil and leaves the decision to the caller, so the default is held here
+  # and `[]` consults it.
+  @compat_default : V? = nil
+
+  def self.new(default : V) : Hash(K, V)
+    table = Hash(K, V).new
+    table.compat_default = default
+    table
+  end
+
+  protected def compat_default=(value : V) : V
+    @compat_default = value
+  end
+
+  def [](key : K) : V
+    value = self[key]?
+    return value unless value.nil?
+    fallback = @compat_default
+    return fallback unless fallback.nil?
+    raise KeyError.new("Missing hash key: #{key}")
+  end
+
+  # `update(key) { |old| new }`: read, change, write, in one step. The
+  # counter next to it is why: `counts.update(tag) { |n| n + 1 }`.
+  def update(key : K, &block : V -> V) : V
+    current = self[key]
+    replacement = block.call(current)
+    self[key] = replacement
+    replacement
+  end
+
   def select!(&block : K, V -> Bool) : Hash(K, V)
     doomed = [] of K
     each { |key, value| doomed << key unless yield key, value }
@@ -371,6 +473,37 @@ class Set(T)
   def <<(value : T) : Set(T)
     add(value)
     self
+  end
+
+  # `tally(into)`: count into a table the caller already has, so counts from
+  # several sets add up instead of each answering its own map.
+  def tally(into : Hash(T, Int32)) : Hash(T, Int32)
+    each do |value|
+      current = into[value]?
+      into[value] = current.nil? ? 1 : current + 1
+    end
+    into
+  end
+
+  # Whether the two sets share anything, which is how a tag filter asks
+  # "does this example carry one of the tags I was given".
+  def intersects?(other : Set(T)) : Bool
+    found = false
+    each { |value| found = true if other.includes?(value) }
+    found
+  end
+
+  # `a + b`: a new set of both, leaving each alone. `concat` below is the
+  # one that changes the receiver.
+  def +(other : Set(T)) : Set(T)
+    result = Set(T).new
+    each { |value| result.add(value) }
+    other.each { |value| result.add(value) }
+    result
+  end
+
+  def dup : Set(T)
+    self + Set(T).new
   end
 
   def concat(values) : Set(T)
@@ -453,11 +586,108 @@ module System
   end
 end
 
+# A cursor over a string's characters, and the two predicates the callers
+# of one reach for. iyi's `String` walks with `each_char` and has no cursor,
+# because nothing in iyi wanted to stop halfway; the XML escaper in the spec
+# framework does, so the characters are collected once and indexed.
+struct Char
+  # `value.to_s(io)`: Crystal writes into a stream rather than building a
+  # string to throw away. iyi's `to_s` answers the string, which is the
+  # whole reason its `Object` is small (SPEC.md, object.iyi), so the
+  # stream-taking form belongs on this side of the seam.
+  def to_s(io) : Nil
+    io << to_s
+  end
+
+  def control? : Bool
+    ord < 32 || ord == 127
+  end
+
+  def ascii_control? : Bool
+    control?
+  end
+
+  class Reader
+    def initialize(string : String)
+      @chars = [] of Char
+      string.each_char { |character| @chars << character }
+      @pos = 0
+    end
+
+    def has_next? : Bool
+      @pos < @chars.size
+    end
+
+    def current_char : Char
+      @chars[@pos]
+    end
+
+    def pos : Int32
+      @pos
+    end
+
+    def next_char : Char
+      @pos = @pos + 1
+      has_next? ? @chars[@pos] : '\0'
+    end
+  end
+end
+
+# `at_exit { ... }`: run this when the program ends. iyi has no such hook
+# and does not want one (a program there ends when its last line runs), but
+# a Crystal program registers its whole spec run inside one, so the hooks
+# are kept and drained by `exit` and by libc's `atexit` for the ordinary
+# end of `main`.
+lib LibCompatExit
+  fun atexit(handler : -> Nil) : Int32
+end
+
+module AtExitHandlers
+  # The handler takes the exit status, because Crystal's does and the spec
+  # framework reads it: a run that is already failing does not start.
+  @@handlers = [] of Proc(Int32, Nil)
+  @@status = 0
+  @@armed = false
+  @@draining = false
+
+  def self.register(handler : Proc(Int32, Nil)) : Nil
+    unless @@armed
+      LibCompatExit.atexit(->AtExitHandlers.drain)
+      @@armed = true
+    end
+    @@handlers << handler
+  end
+
+  # Last registered first, which is the order Crystal runs them in, and
+  # once: `exit` drains and then libc calls this again.
+  def self.status=(status : Int32) : Int32
+    @@status = status
+  end
+
+  def self.drain : Nil
+    return if @@draining
+    @@draining = true
+    index = @@handlers.size - 1
+    while index >= 0
+      @@handlers[index].call(@@status)
+      index = index - 1
+    end
+    @@handlers.clear
+    @@draining = false
+  end
+end
+
+def at_exit(&block : Int32 -> Nil) : Nil
+  AtExitHandlers.register(block)
+end
+
 # `exit`, which iyi does not have on purpose: a program there ends when its
 # last line runs and a failure is a panic (SPEC.md III.1.4). A Crystal
 # program ends where it says so, and the prelude's own `__iyi_exit` is the
 # same call underneath.
 def exit(status : Int32 = 0) : NoReturn
+  AtExitHandlers.status = status
+  AtExitHandlers.drain
   __iyi_exit(status)
 end
 
@@ -479,6 +709,18 @@ class Hash(K, V)
   end
 end
 
+# Asking whether a path is a directory by opening it as one. The first
+# version read `st_mode` out of a `stat` buffer at an offset worked out from
+# the struct layout, and the offset was wrong: measured against a real file
+# and a real directory, the mode sits at `UInt16` index 2, while the guessed
+# index 4 happened to match for the file and read zero for the directory. A
+# wrong answer about every directory would have shipped. `opendir` asks the
+# question directly and carries no layout at all.
+lib LibCompatDir
+  fun opendir(path : UInt8*) : Void*
+  fun closedir(dir : Void*) : Int32
+end
+
 # `File.expand_path`, written here rather than forwarded, and the reason is
 # worth keeping: `import std/file` in this file rebinds the name `File` to
 # the module `Std::File` for *every* module in the program, so `std/random`
@@ -487,6 +729,27 @@ end
 # a prelude type cannot be imported here at all.
 class File
   SEPARATOR = '/'
+
+  # `file?` and `directory?`: which kind of thing is at the path. The
+  # prelude answers `exists?` only, and `std/file` has both, but importing
+  # that module here rebinds the name `File` program-wide (see below), so
+  # the kernel is asked directly.
+  def self.directory?(path : String | Path) : Bool
+    handle = LibCompatDir.opendir(path.to_s)
+    return false if handle.address == 0_u64
+    LibCompatDir.closedir(handle)
+    true
+  end
+
+  def self.file?(path : String | Path) : Bool
+    name = path.to_s
+    exists?(name) && !directory?(name)
+  end
+
+  # The file's lines, without their terminators. `read` is the prelude's.
+  def self.read_lines(path : String | Path) : Array(String)
+    read(path.to_s).split('\n')
+  end
 
   # `File.new(path, "w")`: Crystal code constructs a file and gets something it
   # can write to. The prelude spells the same thing `File.open`, which hands
@@ -507,6 +770,33 @@ class File
     root = base || Dir.current
     root = root[0, root.size - 1] if root.size > 1 && root.ends_with?('/')
     path.empty? ? root : root + "/" + path
+  end
+end
+
+# Two things a summary line asks of a number: round it to a couple of
+# decimals, and print it without an exponent. Neither is in iyi's prelude,
+# and `std/float` carries the `Float32` versions only.
+struct Float64
+  def round(digits : Int32 = 0) : Float64
+    scale = 1.0
+    count = 0
+    while count < digits
+      scale = scale * 10.0
+      count = count + 1
+    end
+    shifted = self * scale
+    whole = shifted.to_i64
+    fraction = shifted - whole.to_f64
+    whole = whole + 1_i64 if fraction >= 0.5
+    whole = whole - 1_i64 if fraction <= -0.5
+    whole.to_f64 / scale
+  end
+
+  # `humanize` in Crystal abbreviates with an SI suffix. The only caller
+  # here prints a count of seconds, so this rounds rather than inventing a
+  # suffix table nothing in this program would exercise.
+  def humanize : String
+    round(3).to_s
   end
 end
 
@@ -538,6 +828,13 @@ end
 alias Path = ::Std::Path::Path
 alias Dir = ::Std::Dir::Dir
 alias Bytes = ::Std::Slice::Slice(UInt8)
+
+# `Fiber` is iyi's own, under the name its runtime uses. Crystal code asks
+# `Fiber.has_constant?(:ExecutionContext)` at macro time to find out whether
+# this runtime schedules across threads, and the honest answer here is no:
+# iyi's scheduler is a group, not an execution context (SPEC.md III.4). The
+# alias exists so the question can be asked rather than failing to compile.
+alias Fiber = IyiFiber
 
 class Object
   # `!` is not part of a name in iyi (SPEC.md III.1.7a): postfix `!` there
@@ -638,6 +935,13 @@ end
 # registry, and an `.iyi` file cannot write a `rescue` at all. A `.cr` file is
 # Crystal, and in Crystal `raise` throws.
 class Exception
+  # Also on `Exception` itself, not only on `Object`: the call site holds an
+  # `Exception+`, the virtual type over every subclass, and the lookup does
+  # not reach `Object`'s from there.
+  def self.name : String
+    {{ @type.name.stringify }}
+  end
+
   getter message : String?
   getter cause : Exception?
 
@@ -646,6 +950,27 @@ class Exception
 
   def to_s : String
     @message || {{ @type.name.stringify }}
+  end
+
+  # No backtrace. Crystal's comes from `Exception::CallStack`, which walks
+  # the unwinder's frames and reads DWARF to name them; iyi has neither, and
+  # a made-up frame list would be worse than an honest absence. Callers that
+  # ask get nil and print the message instead, which is what they do for a
+  # backtrace-less exception in Crystal too.
+  def backtrace? : Array(String)?
+    nil
+  end
+
+  def backtrace : Array(String)
+    [] of String
+  end
+
+  def inspect_with_backtrace : String
+    inspect
+  end
+
+  def inspect_with_backtrace(io) : Nil
+    io << inspect
   end
 
   def inspect : String

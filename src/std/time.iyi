@@ -238,6 +238,14 @@ pub struct Span
     @seconds.to_f + (@nanoseconds.to_f / 1000000000.0)
   end
 
+  # The span as a number, which is seconds: the unit every other `total_*`
+  # is named after, and the one a caller that just wants to divide by it
+  # means. Named for the conversion rather than the unit because that is
+  # what a program asking a duration for a number writes.
+  def to_f : Float64
+    total_seconds
+  end
+
   def total_milliseconds : Float64
     @seconds.to_f * 1000.0 + (@nanoseconds.to_f / 1000000.0)
   end
