@@ -169,6 +169,16 @@ impl Hashable for Char
   end
 end
 
+# An enum is its value, which is what `==` already reads, so it is a key by
+# the same rule every scalar above is. The first program to need it was a
+# program written in Crystal, keying a count by an enum: `Object#hash` puts
+# every member in one slot, the type id being the same for all of them.
+impl Hashable for Enum
+  def hash_key : Int32
+    value
+  end
+end
+
 impl Hashable for Bool
   def hash_key : Int32
     self ? 1231 : 1237
