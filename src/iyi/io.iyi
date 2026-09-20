@@ -39,6 +39,14 @@ class IyiIO
     @fd.to_i32
   end
 
+  # Whether this stream is a terminal. The prelude already asks the kernel
+  # (`__iyi_isatty`) and `std/colorize` already uses the answer; this is the
+  # question asked of a stream rather than of a descriptor number, which is
+  # how a program that takes an `IO` has to ask it.
+  def tty? : Bool
+    __iyi_isatty(fd)
+  end
+
   def handle : Int64
     @fd
   end

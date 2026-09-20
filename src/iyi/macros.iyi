@@ -131,7 +131,7 @@ class Object
   # are `getter!` and `property!`: `!` is not part of a name in this language
   # (SPEC.md III.1.7a), and no amount of wanting changes that. They are
   # written in Crystal instead, in the compatibility layer a `.cr` file gets,
-  # which is the right side of the seam for a name only Crystal can spell.
+  # which is the right side of the seam for a name only Crystal code can spell.
 
   # `getter? enabled = false` reads back as `enabled?`, which is how a
   # predicate should read at the call site.

@@ -3012,19 +3012,38 @@ module Iyi
       # handles (SPEC.md III.1), and a panic unwinds by registry to a task
       # boundary (III.1.4), through no `rescue` on the way. `ensure` ran on
       # the ordinary exit and not on the panic, which is the half of
-      # cleanup that matters; `defer` runs on both. Refused in an iyi file
-      # under iyi's library, so a habit from the other language is a
-      # sentence rather than a silent nothing. `.cr` sources keep theirs,
-      # and so does the handler `defer` itself lowers to, which is the
-      # registry's pop and carries the flag that says so.
-      if @program.iyi_prelude? && !node.iyi_defer? && node.location.try(&.original_filename.try(&.ends_with?(".iyi")))
+      # cleanup that matters; `defer` runs on both.
+      #
+      # The condition is iyi's *library*, not the file's extension. When
+      # this refusal was written a `.cr` file always meant Crystal's library
+      # and Crystal's runtime, where `rescue` works and is kept. A `.cr`
+      # file on iyi's prelude is the case that did not exist then, and it is
+      # the worst of the three: it compiles, nothing raises a catchable
+      # exception because iyi's `raise` panics and iyi has no `Exception` at
+      # all, and the handler is silently dead. Measured: a two-line program
+      # with `begin raise "boom" rescue puts "caught" end` built clean and
+      # printed the panic, never "caught".
+      if @program.iyi_prelude? && !node.iyi_defer?
+        iyi_file = node.location.try(&.original_filename.try(&.ends_with?(".iyi")))
+
         if node.rescues || node.else
-          node.raise "iyi has no exceptions to rescue: an error is a value the caller handles (SPEC.md III.1), " \
-                     "and a panic is caught at a task boundary (III.1.4), never here - this `rescue` would not run. " \
-                     "Return the error, or read the task's `value`"
+          if iyi_file
+            node.raise "iyi has no exceptions to rescue: an error is a value the caller handles (SPEC.md III.1), " \
+                       "and a panic is caught at a task boundary (III.1.4), never here - this `rescue` would not run. " \
+                       "Return the error, or read the task's `value`"
+          else
+            node.raise "this `rescue` cannot run: the program is built on iyi's library, where `raise` panics and " \
+                       "there is no `Exception` to catch. Crystal's exceptions come with Crystal's runtime - build " \
+                       "with `--crystal` - and iyi's answer is an error returned as a value (SPEC.md III.1)"
+          end
         elsif node.ensure
-          node.raise "iyi has no `ensure`: a panic unwinds by registry and skips it (SPEC.md III.1.4). " \
-                     "Write `defer`, which runs on return, on `!` and on a panic"
+          if iyi_file
+            node.raise "iyi has no `ensure`: a panic unwinds by registry and skips it (SPEC.md III.1.4). " \
+                       "Write `defer`, which runs on return, on `!` and on a panic"
+          else
+            node.raise "this `ensure` is not reliable on iyi's library: a panic unwinds by registry and skips it " \
+                       "(SPEC.md III.1.4). Build with `--crystal` for Crystal's runtime, or write `defer`"
+          end
         end
       end
 
