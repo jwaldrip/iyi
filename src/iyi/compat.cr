@@ -326,6 +326,20 @@ class Array(T)
     dup
   end
 
+  # A Fisher-Yates shuffle driven by the caller's generator, because the
+  # point of passing one is that `--seed` reproduces the order.
+  def shuffle!(generator) : Array(T)
+    index = size - 1
+    while index > 0
+      target = generator.rand(index + 1)
+      held = self[index]
+      self[index] = self[target]
+      self[target] = held
+      index = index - 1
+    end
+    self
+  end
+
   # iyi names the copy after the participle: `sorted`, `sorted_by`. Crystal
   # spells the same thing `sort` and `sort_by`, and the mutating pair with a
   # bang. Both names, each doing what its own language means by it.
@@ -344,6 +358,30 @@ class Array(T)
     clear
     concat(ordered)
     self
+  end
+
+  # `join(io, separator)`: write the pieces straight into a stream instead
+  # of building the joined string first.
+  def join(io, separator : Char) : Nil
+    join(io, separator.to_s)
+  end
+
+  def join(io, separator : String) : Nil
+    index = 0
+    while index < size
+      io << separator if index > 0
+      io << self[index]
+      index = index + 1
+    end
+  end
+
+  def max_of(&block : T -> U) : U forall U
+    best = nil
+    each do |value|
+      candidate = block.call(value)
+      best = candidate if best.nil? || candidate > best
+    end
+    best.not_nil!
   end
 
   def sort_by!(&block : T -> U) : Array(T) forall U
@@ -436,6 +474,24 @@ class Hash(K, V)
     raise KeyError.new("Missing hash key: #{key}")
   end
 
+  # `to_a`: the pairs, so they can be sorted. iyi's `Hash` walks with
+  # `each` and answers `keys` and `values`; the pair list is what a program
+  # that wants them in an order asks for.
+  def to_a : Array(Tuple(K, V))
+    pairs = [] of Tuple(K, V)
+    each { |key, value| pairs << {key, value} }
+    pairs
+  end
+
+  def max_of(&block : K, V -> U) : U forall U
+    best = nil
+    each do |key, value|
+      candidate = block.call(key, value)
+      best = candidate if best.nil? || candidate > best
+    end
+    best.not_nil!
+  end
+
   # `update(key) { |old| new }`: read, change, write, in one step. The
   # counter next to it is why: `counts.update(tag) { |n| n + 1 }`.
   def update(key : K, &block : V -> V) : V
@@ -464,6 +520,32 @@ class Hash(K, V)
 
   def clone : Hash(K, V)
     dup
+  end
+end
+
+# Ordering a tuple, element by element, which is how Crystal code sorts by
+# more than one key: `sort_by { |k, v| {-v, k} }` is a count descending and
+# then a name. The prelude's `Tuple` indexes and sizes itself and stops
+# there, so the comparison is written from the members' own `<`.
+struct Tuple
+  def <(other : Tuple) : Bool
+    {% for index in 0...T.size %}
+      return true if self[{{ index }}] < other[{{ index }}]
+      return false if other[{{ index }}] < self[{{ index }}]
+    {% end %}
+    false
+  end
+
+  def >(other : Tuple) : Bool
+    other < self
+  end
+
+  def <=(other : Tuple) : Bool
+    !(other < self)
+  end
+
+  def >=(other : Tuple) : Bool
+    !(self < other)
   end
 end
 
@@ -547,9 +629,26 @@ end
 # `io << value << "\n"`: Crystal code chains writes, iyi says `print`. One call
 # underneath, and chaining is why the return is the stream.
 class IyiIO
+  # `value.to_s(self)`, not `print(value)`. A type that writes itself into a
+  # stream overrides `to_s(io)` and leaves the no-argument `to_s` alone, and
+  # iyi's default for that one is the type's own name: going through `print`
+  # made a colorized string print as `Colorize::Object(String)`.
   def <<(value) : IyiIO
-    print(value)
+    value.to_s(self)
     self
+  end
+
+  # `print` and `puts` go the same way, and for the same reason: the spec
+  # summary printed `Colorize::Object(String)` because `puts value` reached
+  # the no-argument `to_s`, which on a type that only writes itself into a
+  # stream is iyi's default, the type's own name.
+  def print(value) : Nil
+    value.to_s(self)
+  end
+
+  def puts(value) : Nil
+    value.to_s(self)
+    puts
   end
 
   # `write_string(bytes)`: the byte-level write Crystal's escaping code uses
@@ -836,6 +935,22 @@ alias Bytes = ::Std::Slice::Slice(UInt8)
 # alias exists so the question can be asked rather than failing to compile.
 alias Fiber = IyiFiber
 
+
+# `Fiber.yield`: hand the processor to whatever else is ready. iyi spells it
+# `IyiScheduler.reschedule`, and the name is on the fiber because that is
+# where Crystal code looks for it. The spec framework calls it between
+# examples so a Ctrl-C is noticed promptly.
+class IyiFiber
+  # A yield with nothing else to run is a no-op, not a wait. iyi's
+  # `reschedule` parks the caller and looks for another fiber, and panics
+  # with "every fiber is blocked" when there is none: correct for a fiber
+  # that is waiting on something, wrong for one that is only being polite.
+  # The spec framework calls this between examples on the main fiber.
+  def self.yield : Nil
+    IyiScheduler.reschedule unless IyiScheduler.state.run_head.is_a?(Nil)
+  end
+end
+
 class Object
   # `!` is not part of a name in iyi (SPEC.md III.1.7a): postfix `!` there
   # propagates an error. So `not_nil!` cannot be written in the prelude no
@@ -890,7 +1005,44 @@ class Object
   end
 end
 
+# A type that declares its own `to_s` hides `Object`'s stream-taking one:
+# iyi resolves by name before arity, so `String#to_s` alone means
+# `"x".to_s(io)` is a wrong-arity error rather than a fall-through. Every
+# core type that writes itself needs the pair written out.
+class ::String
+  def to_s(io) : Nil
+    io.print(self)
+  end
+end
+
+{% for type in %w(Char Bool Symbol Int32 Int64 UInt8 UInt64 Float64) %}
+  struct ::{{ type.id }}
+    def to_s(io) : Nil
+      io.print(to_s)
+    end
+  end
+{% end %}
+
+# An enum's number. The compiler gives an enum `value`; Crystal code asks
+# for `to_i`, and both mean the integer the member was declared with.
+struct Enum
+  def to_i : Int32
+    value
+  end
+
+  def to_s(io) : Nil
+    io.print(to_s)
+  end
+end
+
 class Object
+  # `pretty_inspect`: Crystal's pretty printer wraps a long value across
+  # lines. Nothing here has one, and a failure message that reads the value
+  # on a single line is the same message, only wider.
+  def pretty_inspect : String
+    inspect
+  end
+
   # `value.try { |v| ... }`: run the block on a value that is there, and
   # answer nil for one that is not. iyi does not carry this because its
   # nil-safety is flow typing: you test the variable and the compiler narrows

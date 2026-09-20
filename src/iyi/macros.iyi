@@ -58,7 +58,7 @@ class Object
   # constructor. Crystal's version also generates `copy_with` and `clone` and
   # takes default values; this one takes what the Kemal port writes, which is
   # a name and a list of typed fields.
-  macro record(name, *fields)
+  macro record(name, *fields, &block)
     struct {{ name.id }}
       {% for field in fields %}
         getter {{ field }}
@@ -66,6 +66,14 @@ class Object
 
       def initialize({{ fields.map { |field| "@#{field}".id }.splat }})
       end
+
+      # The block is where the type's own methods go, and dropping it was
+      # silent: `record Color256, value : UInt8 do def fore(io) ... end`
+      # produced a struct with no `fore`, and the failure read as a type
+      # missing a method nobody could find the definition for.
+      {% if block %}
+        {{ block.body }}
+      {% end %}
     end
   end
 
