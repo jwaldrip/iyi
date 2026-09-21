@@ -1327,6 +1327,13 @@ end
 pub def read_source(path : String, into : Array(Node), seen : Array(String)) : Nil
   return if seen.includes?(path)
   seen << path
+  # Not expanded, and that is measured rather than assumed. A macro
+  # body is not iyi until it has run, so `primitives.iyi` declares
+  # 549 methods this reads as 36; every fixture agrees either way,
+  # because none of them reaches one. Expanding it costs what
+  # `prelude.iyi` costs, which is 31 seconds against 0.3 for the
+  # other thirteen files together. The slice that needs a macro-
+  # written declaration is the slice that pays for fixing that.
   tree = Parser.new(File.read(path)).parse
   here = directory_of(path)
   top_items(tree).each do |node|

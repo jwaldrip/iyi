@@ -334,6 +334,24 @@ Load-bearing: searching the raw bytes again turns `parser.iyi` from
 it back. The port's own source is now the fourth declarations corpus:
 **5 agree, 0 differ, 5 with no oracle**.
 
+Walking code rather than bytes made the expander slower, and it was
+slower in a way worth measuring rather than tolerating. Two changes,
+both checked rather than assumed. A file with no `{%` and no `{{` in
+it expands to itself, so the walk that proves that is skipped. And
+the scan starts where the caller asked rather than at the top of the
+file: every caller passes a position an earlier scan already left
+outside a comment and outside a literal, so the state it needs is the
+state it has. Expanding all 84 files of the prelude and the standard
+library gives output identical byte for byte either way, in two
+thirds of the time.
+
+What is left is one file. `src/iyi/prelude.iyi` takes 31 seconds and
+the other thirteen prelude files take 0.3 between them, which is the
+shape of something quadratic in its directives rather than its size.
+It is why the codegen slice reads the prelude without expanding it,
+and the first slice that needs a macro-written declaration is the one
+that will have to fix it.
+
 The four that remain need what a macro cannot give them. `named_tuple`
 is missing exactly the methods `tuple.iyi` declares, `traits` and
 `float` are missing the integer tower that `std/int` writes, and
