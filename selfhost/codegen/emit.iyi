@@ -195,6 +195,14 @@ pub class Known
     !@names.index(name).nil?
   end
 
+  # What a top-level method says it answers, which a call has to know
+  # before it can name the register it lands in.
+  def def_named(name : String) : Array(DefNode)
+    found = @names.index(name)
+    return [] of DefNode if found.nil?
+    [@nodes[found]] of DefNode
+  end
+
   def add_shape(shape : Shape) : Nil
     @shapes << shape
   end
@@ -243,7 +251,10 @@ pub def kind_of(name : String, shape : Shape, known : Known) : String
   # A `String` is a pointer at the object the compiler laid out, and it
   # is the one type here whose shape the prelude did not decide.
   return "ptr" if name == "String"
-  return "i32" if name == "Int32" || name == "Int64" || name == "UInt64"
+  return "i8" if name == "Int8" || name == "UInt8"
+  return "i16" if name == "Int16" || name == "UInt16"
+  return "i64" if name == "Int64" || name == "UInt64"
+  return "i32" if name == "Int32" || name == "UInt32" || name == "Int" || name == "UInt"
   hit = known.shape_named(name)
   return hit[0].kind if hit.size > 0
   "i32"
@@ -476,17 +487,91 @@ pub class Body
   end
 end
 
-# `+`, `-` and `*` on integers are instructions. The prelude declares
-# them as primitives, so there is no body to emit and no call to make.
+# `+`, `-`, `*`, `//` and `%` on integers are instructions. The prelude
+# declares them as primitives, so there is no body to emit and no call
+# to make. `//` is the one that stays an integer: a bare `/` on two of
+# them answers a `Float64`, which this slice does not carry.
+# The conversions, by the type each one names. `to_i` and `to_u` are
+# the pointer-wide pair, which on every target this builds for is 32
+# and 64 bits respectively for `Int32` and `UInt64`; the prelude spells
+# the rest out.
+# How wide a written number has to be. Ten digits is the width of
+# `Int32`'s largest, so a longer one is an `Int64` and one that long
+# is decided by reading it against that number.
+pub def literal_kind(text : String) : String
+  digits = text
+  digits = text[1, text.bytesize - 1] if text.bytesize > 0 && text[0] == '-'
+  return "i32" if digits.bytesize < 10
+  return "i64" if digits.bytesize > 10
+  digits > "2147483647" ? "i64" : "i32"
+end
+
+pub def conversion(name : String) : String
+  return "Int8" if name == "to_i8"
+  return "Int16" if name == "to_i16"
+  return "Int32" if name == "to_i32" || name == "to_i"
+  return "Int64" if name == "to_i64"
+  return "UInt8" if name == "to_u8"
+  return "UInt16" if name == "to_u16"
+  return "UInt32" if name == "to_u32" || name == "to_u"
+  return "UInt64" if name == "to_u64"
+  ""
+end
+
 pub def instruction(name : String) : String
   return "add" if name == "+"
   return "sub" if name == "-"
   return "mul" if name == "*"
+  return "sdiv" if name == "//"
+  return "srem" if name == "%"
   ""
 end
 
+# How wide an integer kind is, so that two of them can be brought to
+# the same width before an instruction reads both.
+pub def unsigned?(name : String) : Bool
+  name.bytesize > 0 && name[0] == 'U'
+end
+
+pub def width_of(kind : String) : Int32
+  return 1 if kind == "i1"
+  return 8 if kind == "i8"
+  return 16 if kind == "i16"
+  return 64 if kind == "i64"
+  32
+end
+
+# One value at another width. Widening is signed for a signed type and
+# zero-filled for an unsigned one, and narrowing drops the top bits,
+# which is what the conversions the prelude declares do.
+pub def widened(value : Val, kind : String, body : Body) : Val
+  return value if value.kind == kind
+  here = width_of(value.kind)
+  there = width_of(kind)
+  op = there > here ? (unsigned?(value.shape) ? "zext" : "sext") : "trunc"
+  reg = body.register
+  body.write("#{reg} = #{op} #{value.kind} #{value.text} to #{kind}")
+  Val.new(reg, kind, value.shape)
+end
+
+# Division and remainder read their operands' sign; addition,
+# subtraction and multiplication do not.
+pub def unsigned_instruction(op : String) : String
+  return "udiv" if op == "sdiv"
+  return "urem" if op == "srem"
+  op
+end
+
+pub def unsigned_compare(test : String) : String
+  return "ult" if test == "slt"
+  return "ule" if test == "sle"
+  return "ugt" if test == "sgt"
+  return "uge" if test == "sge"
+  test
+end
+
 # A comparison is a primitive too, and it answers an `i1` rather than an
-# `i32`. Signed, because every integer in this slice is an `Int32`.
+# `i32`. Which spelling depends on whether either side is unsigned.
 pub def compare(name : String) : String
   return "slt" if name == "<"
   return "sle" if name == "<="
@@ -690,7 +775,7 @@ end
 pub def emit(node : Node, body : Body, known : Known, constants : Constants) : Val
   case node
   when NumNode
-    int_val(node.value)
+    Val.new(node.value, literal_kind(node.value), "")
   when StrNode
     # The literal as an object rather than as bytes: a pointer at the
     # `@bytesize` the constant opens with, which is where a pointer from
@@ -804,8 +889,12 @@ pub def emit_call(node : CallNode, body : Body, known : Known, constants : Const
   if test != "" && node.recv.size == 1 && node.args.size == 1
     left = emit(node.recv[0], body, known, constants)
     right = emit(node.args[0], body, known, constants)
+    kind = width_of(left.kind) >= width_of(right.kind) ? left.kind : right.kind
+    left = widened(left, kind, body)
+    right = widened(right, kind, body)
+    test = unsigned?(left.shape) || unsigned?(right.shape) ? unsigned_compare(test) : test
     reg = body.register
-    body.write("#{reg} = icmp #{test} i32 #{left.text}, #{right.text}")
+    body.write("#{reg} = icmp #{test} #{kind} #{left.text}, #{right.text}")
     return Val.new(reg, "i1")
   end
 
@@ -815,9 +904,14 @@ pub def emit_call(node : CallNode, body : Body, known : Known, constants : Const
   if op != "" && node.recv.size == 1 && node.args.size == 1
     left = emit(node.recv[0], body, known, constants)
     right = emit(node.args[0], body, known, constants)
+    kind = width_of(left.kind) >= width_of(right.kind) ? left.kind : right.kind
+    shape = width_of(left.kind) >= width_of(right.kind) ? left.shape : right.shape
+    left = widened(left, kind, body)
+    right = widened(right, kind, body)
+    op = unsigned?(shape) ? unsigned_instruction(op) : op
     reg = body.register
-    body.write("#{reg} = #{op} i32 #{left.text}, #{right.text}")
-    return int_val(reg)
+    body.write("#{reg} = #{op} #{kind} #{left.text}, #{right.text}")
+    return Val.new(reg, kind, shape)
   end
 
   # `print` of a string is a write, the same way `+` is an `add`: the
@@ -865,6 +959,18 @@ pub def emit_call(node : CallNode, body : Body, known : Known, constants : Const
     end
   end
 
+  # `x.to_i64` and its siblings are conversions the prelude declares as
+  # primitives: a widening, a narrowing, or nothing at all when the
+  # value is already that wide.
+  converted = conversion(node.name)
+  if converted != "" && node.recv.size == 1 && node.args.size == 0
+    said = emit(node.recv[0], body, known, constants)
+    if integer?(said.kind)
+      want = kind_of(converted, Shape.new("", false), known)
+      return Val.new(widened(said, want, body).text, want, converted)
+    end
+  end
+
   # The two things a `String` answers out of its own header. The prelude
   # writes the bodies, and both read a field the compiler placed, so
   # this reads the field rather than the body.
@@ -901,9 +1007,26 @@ pub def emit_call(node : CallNode, body : Body, known : Known, constants : Const
   if known.knows?(node.name)
     written = [] of Val
     node.args.each { |arg| written << emit(arg, body, known, constants) }
+    answered = known.def_named(node.name)
+    # An argument arrives at the width the parameter was declared with:
+    # `doubled(5)` passes an `i64` when `doubled` asks for one.
+    if answered.size > 0
+      index = 0
+      answered[0].args.each do |arg|
+        case arg
+        when ArgNode
+          want = argument_kind(arg, Shape.new("", false), known)
+          written[index] = widened(written[index], want, body) if index < written.size &&
+                                                                  integer?(want) && integer?(written[index].kind)
+          index = index + 1
+        end
+      end
+    end
+    kind = answered.size == 0 || answered[0].ret.size == 0 ? "i32" : kind_of(path_of(answered[0].ret), Shape.new("", false), known)
+    named = answered.size == 0 || answered[0].ret.size == 0 ? "" : path_of(answered[0].ret)
     reg = body.register
-    body.write("#{reg} = call i32 @#{mangle(node.name)}(#{arguments(written)})")
-    return int_val(reg)
+    body.write("#{reg} = call #{kind} @#{mangle(node.name)}(#{arguments(written)})")
+    return Val.new(reg, kind, named)
   end
 
   # A name with no method and no instruction is a local read as a call,
@@ -1017,7 +1140,15 @@ pub def emit_def(node : DefNode, known : Known, constants : Constants) : String
   plain = Shape.new("", false)
   store_arguments(node, body, plain, known)
   answer = emit_one(node.body, body, known, constants)
-  "define i32 @#{mangle(node.name)}(#{parameters(node, "", plain, known)}) {\nentry:\n#{body.text}  ret i32 #{answer.text}\n}\n"
+  kind = node.ret.size == 0 ? answer.kind : kind_of(path_of(node.ret), plain, known)
+  answer = widened(answer, kind, body) if integer?(kind) && integer?(answer.kind)
+  "define #{kind} @#{mangle(node.name)}(#{parameters(node, "", plain, known)}) {\nentry:\n#{body.text}  ret #{kind} #{answer.text}\n}\n"
+end
+
+# Whether a kind is one of the widths, as opposed to a pointer or a
+# struct: only those two can be widened into one another.
+pub def integer?(kind : String) : Bool
+  kind == "i1" || kind == "i8" || kind == "i16" || kind == "i32" || kind == "i64"
 end
 
 # A method of a struct. `self` arrives by value and is put in a slot, so
@@ -1069,6 +1200,7 @@ pub def emit_main(nodes : Array(Node), known : Known, constants : Constants) : S
       end
     end
   end
+  answer = widened(answer, "i32", body) if integer?(answer.kind)
   "define i32 @main() {\nentry:\n#{body.text}  ret i32 #{answer.text}\n}\n"
 end
 

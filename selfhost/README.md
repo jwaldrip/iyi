@@ -573,7 +573,8 @@ into 6, and restoring the file byte-for-byte turns it back.
       reference.iyi agrees: exit 8
       struct.iyi agrees: exit 10
       text.iyi agrees: exit 87, 6 bytes out
-      agree 11, differ 0
+      wide.iyi agrees: exit 88
+      agree 12, differ 0
 
 Every other slice diffs an artifact: a token stream, a tree, a
 declaration, a type. Two independent backends do not write the same LLVM
@@ -591,8 +592,8 @@ Scope, and it is narrow on purpose: integer literals, `+`, `-` and `*`,
 comparisons, `if`, `while`, local assignment and lookup, arguments, a
 call to a method in the same file, `print` of a literal, and a struct
 with fields and methods, a class, which is a reference, a generic type
-with its instantiations, a string as a value, and the rest of the
-control flow: `return`,
+with its instantiations, a string as a value, the integer tower with
+its conversions, and the rest of the control flow: `return`,
 `unless`, `&&`, `||`, `!`, `next`, `break`, `case` and a typed local.
 Not here: anything that would need the prelude compiled first, which
 is measured at the end of this section.
@@ -900,11 +901,45 @@ prints.
 What it still cannot do is make a string: that needs the allocator and
 the collector, which is the bootstrap.
 
+### The integer tower
+
+This one was found rather than chosen. Every integer in the slices
+above was emitted as an `i32`, `Int64` included, because nothing had
+asked for a second width yet: `kind_of` answered `i32` for `Int64` and
+`UInt64` both, and the gate had no fixture that could tell. A program
+that doubles two billion can, and the port answered 0 where the
+current compiler answered 40.
+
+The whole tower is primitives, so none of it needs a body compiled. A
+conversion is a `sext`, a `zext` or a `trunc`, decided by the two
+widths, and an instruction reads two operands of one width, so the
+narrower side is widened first. `//` and `%` arrived with it, since a
+bare `/` on two integers is a `Float64` this slice does not carry.
+
+Signedness is the other half, and it is not a width. `//`, `%` and
+every ordering comparison have two spellings, and the sign of a
+widening comes from the value being widened rather than from what it
+is being widened to. `200.to_u8.to_i32` is 200 because the byte is
+unsigned, whatever the `Int32` on the other side of it says.
+
+`wide.iyi` exercises five rules and each one is load-bearing on its
+own: one width for every integer (the port exits 39), division always
+signed (79), comparison always signed (83), every widening signed
+(52), and a literal always an `i32` (147), against 88.
+
+One of those took two attempts to make fail. A signed byte and an
+unsigned one differ by exactly 256, and an exit status keeps only what
+is under that, so the fixture divides the byte rather than adding it.
+A fixture that cannot see the defect is not a gate, and multiplying it
+by three does not help: that difference is 768.
+
 ### What the bootstrap still needs
 
 The same count says what is left. In the port's own source: `cast`
 137, `stringinterpolation` 126, `arrayliteral` 109, and a scattering
-of `procliteral`, `hashliteral` and `yield`. The string slice above
+of `procliteral`, `hashliteral` and `yield`. The `cast` count is
+smaller than it was: a conversion between two integers is one of
+those, and the tower slice carries it. The string slice above
 shows what separates them from the shapes already carried, and it is
 not the type: a literal `String` needed a layout the compiler decides,
 and every one of these needs a *body* the prelude writes. An
