@@ -137,7 +137,11 @@ pub class Declarations
   def at(kind : String, key : String, shown : String, vars : String) : Decl
     @found.each do |decl|
       if decl.key == key
-        decl.report_it if @reporting
+        # A type an expansion reopens keeps the home it already had:
+        # `src/std/float.iyi` writes `struct ::{{ num.id }}` for every
+        # integer, and the compiler locates those inside the macro
+        # rather than inside the file. The methods still land.
+        decl.report_it if @reporting && !@methods_only
         return decl
       end
     end

@@ -434,6 +434,20 @@ pub def evaluate(source : String, env : Env, flags : Array(String)) : Value
     return bool_value(held)
   end
 
+  # `nums + %w(Float32)` is one list and then another. A `+` inside a
+  # literal belongs to the literal: `%w(+ - *)` lists an operator.
+  spot = find_top(text, "+")
+  if spot > 0 && text[0] != '{' && text[0] != '[' && !text.starts_with?("%w(")
+    left = evaluate(slice(text, 0, spot), env, flags)
+    right = evaluate(slice(text, spot + 1, text.bytesize), env, flags)
+    if left.kind == "list" && right.kind == "list"
+      joined = [] of Value
+      left.items.each { |item| joined << item }
+      right.items.each { |item| joined << item }
+      return list_value(joined)
+    end
+  end
+
   if text[0] == '(' && text[text.bytesize - 1] == ')'
     return evaluate(slice(text, 1, text.bytesize - 1), env, flags)
   end
