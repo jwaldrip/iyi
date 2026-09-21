@@ -115,6 +115,15 @@ jobs:
             spec/compiler/iyi_derive_spec.cr \
             spec/compiler/compiler_spec.cr
 
+      # The three steps below run `bin/iyi`, and nothing in this job has
+      # built one: they answered `iyi is not built yet` from the first
+      # day they were added. It went unseen because `Formatted` failed
+      # ahead of them and a failed step skips the rest, so one red step
+      # was hiding another. The samples job builds the same pair the
+      # same way.
+      - name: Build `iyi` and its daemon
+        run: make -o .build/crystal iyi iyi-daemon
+
       # What `iyi mod diff` answers, against what a rebuild would show. It
       # is the one question a build system branches on, and it was wrong
       # for the edit that matters most: a block-taking def's body is
