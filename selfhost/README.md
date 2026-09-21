@@ -72,6 +72,12 @@ heredocs, regex literals, `lib` and `fun` bodies, `with ... yield`, and
 the macro language itself, which every corpus skips to its `{% end %}`
 rather than parsing.
 
+One rule came out of the port reading its own source rather than a
+sample: `"\#{"` is a `#` and a `{` with no interpolation, and `inspect`
+writes the backslash back when it prints the value, because without it
+a re-read would open one. The printer holds a `#` for one character to
+see whether a `{` follows it.
+
 ## The semantic pass
 
 `semantic/oracle.cr` is the first slice's oracle, and the slice is what a
@@ -310,6 +316,24 @@ corpus went to **14 agree, 1 differ** and the standard library to
 loop run no times turns `atomic.iyi` from `agree 1` into `differ 1`, and
 restoring the file byte-for-byte turns it back.
 
+One more rule, and the corpus that found it was the port's own source.
+A macro delimiter written inside a comment or a string is text about
+macros rather than a macro, and the expander was reading the raw bytes:
+`selfhost/parser/parser.iyi` explains `{%` in a comment and spells both
+delimiters as string literals a few lines below, so the expander read
+the first as an opener, the second as its close, and deleted the 967
+lines between them. The class the deletion ran through lost its `end`,
+and `dump_all` was reported as the module's method as well as the
+class's. The search now walks code only, skipping comments, string
+literals and character literals, which took a second bug with it: an
+escape is two bytes, and stepping three over `"\\"` put the scanner
+inside every string from there on.
+
+Load-bearing: searching the raw bytes again turns `parser.iyi` from
+`agree 1` into `differ 1`, and restoring the file byte-for-byte turns
+it back. The port's own source is now the fourth declarations corpus:
+**5 agree, 0 differ, 5 with no oracle**.
+
 The four that remain need what a macro cannot give them. `named_tuple`
 is missing exactly the methods `tuple.iyi` declares, `traits` and
 `float` are missing the integer tower that `std/int` writes, and
@@ -542,12 +566,13 @@ into 6, and restoring the file byte-for-byte turns it back.
       branch.iyi agrees: exit 16
       control.iyi agrees: exit 16
       dispatch.iyi agrees: exit 31
+      generic.iyi agrees: exit 48
       loop.iyi agrees: exit 32
       nested.iyi agrees: exit 14
       print.iyi agrees: exit 3, 60 bytes out
       reference.iyi agrees: exit 8
       struct.iyi agrees: exit 10
-      agree 9, differ 0
+      agree 10, differ 0
 
 Every other slice diffs an artifact: a token stream, a tree, a
 declaration, a type. Two independent backends do not write the same LLVM
@@ -564,10 +589,11 @@ way, so the gate refuses one and says why rather than counting it.
 Scope, and it is narrow on purpose: integer literals, `+`, `-` and `*`,
 comparisons, `if`, `while`, local assignment and lookup, arguments, a
 call to a method in the same file, `print` of a literal, and a struct
-with fields and methods, a class, which is a reference, and the rest of
-the control flow: `return`, `unless`, `&&`, `||`, `!`, `next`, `break`,
-`case` and a typed local. Not here: anything that would need the
-prelude compiled first, which is measured at the end of this section.
+with fields and methods, a class, which is a reference, a generic type
+with its instantiations, and the rest of the control flow: `return`,
+`unless`, `&&`, `||`, `!`, `next`, `break`, `case` and a typed local.
+Not here: anything that would need the prelude compiled first, which
+is measured at the end of this section.
 The sections
 below are the fixtures in the order they were written, and each names
 what it added and how the gate was made to fail without it.
@@ -801,10 +827,45 @@ Load-bearing: inverting the `when` comparison makes every arm answer
 the wrong one, and `dispatch.iyi` exits 15 where the current compiler
 exits 31.
 
+### A generic type, one copy per type argument
+
+`generic` is the most common shape the port's own source writes that
+the emitter did not carry, at 241, and it is the first thing the
+prelude needs: `Pointer(T)`, `Array(T)` and every container under them
+are generic. It is also the first shape where one written type becomes
+more than one emitted type.
+
+`generic.iyi` writes `Box(T)` and `Pair(A, B)` and then asks for
+`Box(Int32)`, `Box(Bool)`, `Pair(Int32, Int32)` and
+`Pair(Bool, Int32)`. The emitter keeps the written type as a template
+and never emits it. Naming an instantiation copies the template, binds
+the parameters to the arguments, and adds the copy to the same list of
+shapes under a name that carries the arguments:
+
+```
+%Box.Int32 = type { i32 }
+%Box.Bool = type { i1 }
+%Pair.Bool.Int32 = type { i1, i32 }
+```
+
+A field's type comes from the constructor argument it was assigned, so
+`@value = value` with `value : T` records `T` and the instance answers
+what `T` was bound to. The list of shapes is walked by index rather
+than with `each`, and the program is emitted before it, because naming
+`Box(Int32)` is what brings that shape into being: the list grows while
+it is read.
+
+Load-bearing, and the failure has a different shape from every slice
+before it. Taking the substitution away - a parameter answers as
+itself - makes every field an `i32` while the calls still pass an `i1`,
+and the module stops assembling: `generic.iyi` fails where the other
+nine keep agreeing. LLVM IR is typed, so a wrong substitution cannot be
+a quiet wrong answer here; it is a module that does not exist.
+
 ### What the bootstrap still needs
 
 The same count says what is left, and it is not another handful of
-nodes. In the port's own source: `generic` 241, `cast` 137,
+nodes. In the port's own source: `cast` 137,
 `stringinterpolation` 126, `arrayliteral` 109, and a scattering of
 `procliteral`, `hashliteral` and `yield`. Every one of them needs a
 type the prelude declares - a `String`, an `Array`, a type argument, a

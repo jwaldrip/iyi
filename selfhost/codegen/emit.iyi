@@ -23,7 +23,7 @@ module main
 import std/file
 import parser/parser
 using std/file::{File}
-using parser/parser::{Parser, Node, IfNode, UnlessNode, WhileNode, ReturnNode, NextNode, BreakNode, AndNode, OrNode, NotNode, BoolNode, CaseNode, WhenNode, TypeDeclNode, StrNode, NumNode, VarNode, IvarNode, AssignNode, ExprsNode, DefNode, ArgNode, CallNode, ClassDefNode, PathNode, VisibilityModifierNode}
+using parser/parser::{Parser, Node, IfNode, UnlessNode, WhileNode, ReturnNode, NextNode, BreakNode, AndNode, OrNode, NotNode, BoolNode, CaseNode, WhenNode, TypeDeclNode, GenericNode, StrNode, NumNode, VarNode, IvarNode, AssignNode, ExprsNode, DefNode, ArgNode, CallNode, ClassDefNode, PathNode, VisibilityModifierNode}
 
 # A value, and what shape it has. Everything in this slice is either an
 # `i32` or a struct passed by value, and knowing which decides how it is
@@ -58,14 +58,73 @@ pub class Shape
   # fields the same way and are passed around differently: one is a
   # pointer to an object on the heap, the other is the object.
   getter reference : Bool
+  # The parameters a generic declares, and what they were given. Empty
+  # for a plain type, and the same length for an instance of one.
+  getter vars : Array(String)
+  getter args : Array(String)
+  # The type each field was declared with, before substitution.
+  getter field_types : Array(String)
 
   def initialize(@name : String, @reference : Bool)
     @fields = [] of String
+    @field_types = [] of String
     @defs = [] of DefNode
+    @vars = [] of String
+    @args = [] of String
+  end
+
+  # The parser hands the parameter list over as it was written, brackets
+  # and all: `struct Box(T)` says `(T)` and `Pair(A, B)` says `(A B)`.
+  def declare_vars(written : String) : Nil
+    name = ""
+    index = 0
+    while index < written.bytesize
+      ch = written[index]
+      if ch == '(' || ch == ')' || ch == ',' || ch == ' '
+        @vars << name unless name == ""
+        name = ""
+      else
+        name = name + ch.to_s
+      end
+      index = index + 1
+    end
+    @vars << name unless name == ""
+  end
+
+  def bind(args : Array(String)) : Nil
+    args.each { |one| @args << one }
+  end
+
+  # What a parameter was given, or the name itself when it is not one.
+  def binding(name : String) : String
+    found = @vars.index(name)
+    return name if found.nil? || found >= @args.size
+    @args[found]
+  end
+
+  def generic? : Bool
+    @vars.size > 0 && @args.size == 0
+  end
+
+  def add_field_type(written : String) : Nil
+    @field_types << written
+  end
+
+  def type_of(field : String) : String
+    found = @fields.index(field)
+    return "Int32" if found.nil? || found >= @field_types.size
+    @field_types[found]
   end
 
   def add_field(field : String) : Nil
     @fields << field unless @fields.includes?(field)
+  end
+
+  def copy_from(other : Shape) : Nil
+    other.fields.each { |field| @fields << field }
+    other.field_types.each { |written| @field_types << written }
+    other.defs.each { |node| @defs << node }
+    other.vars.each { |one| @vars << one }
   end
 
   def add(node : DefNode) : Nil
@@ -98,15 +157,16 @@ pub class Shape
     "%#{@name}"
   end
 
-  # Four bytes a field, because every field in this slice is an `Int32`.
-  def bytes : Int32
-    @fields.size * 4
+  def declaration(known : Known) : String
+    written = [] of String
+    @fields.each { |field| written << kind_of(type_of(field), self, known) }
+    "#{layout} = type { #{written.join(", ")} }"
   end
 
-  def declaration : String
-    written = [] of String
-    @fields.each { |field| written << "i32" }
-    "#{layout} = type { #{written.join(", ")} }"
+  # Four bytes an `i32` and one a `Bool`, rounded up to four so the
+  # offsets stay where `getelementptr` puts them.
+  def bytes_of(known : Known) : Int32
+    @fields.size * 4
   end
 end
 
@@ -153,10 +213,37 @@ pub class Known
     shape_named(name).size > 0
   end
 
+  # `Box(Int32)` is a type of its own, made the first time it is named
+  # and reused after that. The name carries its arguments, because two
+  # instantiations of one generic are two types.
+  def instantiate(name : String, args : Array(String)) : Array(Shape)
+    template = shape_named(name)
+    return [] of Shape if template.size == 0
+    full = "#{name}.#{args.join(".")}"
+    found = shape_named(full)
+    return found if found.size > 0
+    made = Shape.new(full, template[0].reference)
+    made.copy_from(template[0])
+    made.bind(args)
+    @shapes << made
+    shape_named(full)
+  end
+
   def shape_of(name : String) : Array(Shape)
     return [] of Shape if name == ""
     shape_named(name)
   end
+end
+
+pub def kind_of(name : String, shape : Shape, known : Known) : String
+  return "i32" if name == ""
+  bound = shape.binding(name)
+  return kind_of(bound, Shape.new("", false), known) unless bound == name
+  return "i1" if name == "Bool"
+  return "i32" if name == "Int32" || name == "Int64" || name == "UInt64"
+  hit = known.shape_named(name)
+  return hit[0].kind if hit.size > 0
+  "i32"
 end
 
 # The module's string constants. A literal is bytes with a name, and the
@@ -560,10 +647,12 @@ pub def emit(node : Node, body : Body, known : Known, constants : Constants) : V
     body.write("#{reg} = load #{kind}, ptr #{place}")
     Val.new(reg, kind, body.slot_shape(node.name))
   when IvarNode
+    shape = known.shape_named(body.holder)[0]
+    kind = kind_of(shape.type_of(node.name), shape, known)
     place = field_place(node.name, body, known)
     reg = body.register
-    body.write("#{reg} = load i32, ptr #{place}")
-    int_val(reg)
+    body.write("#{reg} = load #{kind}, ptr #{place}")
+    Val.new(reg, kind, kind == "ptr" ? shape.type_of(node.name) : "")
   when AssignNode
     value = emit_one(node.value, body, known, constants)
     if node.target.size > 0
@@ -573,7 +662,7 @@ pub def emit(node : Node, body : Body, known : Known, constants : Constants) : V
         body.write("store #{value.kind} #{value.text}, ptr #{body.slot_of(target.name, value.kind, value.shape)}")
       when IvarNode
         place = field_place(target.name, body, known)
-        body.write("store i32 #{value.text}, ptr #{place}")
+        body.write("store #{value.kind} #{value.text}, ptr #{place}")
       end
     end
     value
@@ -693,6 +782,17 @@ pub def emit_call(node : CallNode, body : Body, known : Known, constants : Const
     return emit_new(named, node, body, known, constants)
   end
 
+  if node.name == "new" && node.recv.size == 1
+    written = node.recv[0]
+    case written
+    when GenericNode
+      args = [] of String
+      written.args.each { |one| args << path_of([one] of Node) }
+      made = known.instantiate(path_of(written.name), args)
+      return emit_new(made[0].name, node, body, known, constants) if made.size > 0
+    end
+  end
+
   # A method on a struct. The value arrives as the first argument,
   # because a struct is passed by value and there is nothing to point at.
   if node.recv.size == 1
@@ -750,9 +850,18 @@ pub def emit_method(shape : Shape, node : CallNode, receiver : Val, body : Body,
   written = [] of Val
   written << receiver
   node.args.each { |arg| written << emit(arg, body, known, constants) }
+  kind = answers(shape, node.name, known)
   reg = body.register
-  body.write("#{reg} = call i32 @#{mangle_method(shape.name, node.name)}(#{arguments(written)})")
-  int_val(reg)
+  body.write("#{reg} = call #{kind} @#{mangle_method(shape.name, node.name)}(#{arguments(written)})")
+  Val.new(reg, kind)
+end
+
+# The kind a method answers: its declared return type, substituted for
+# the arguments this instance was made with.
+pub def answers(shape : Shape, name : String, known : Known) : String
+  found = shape.method(name)
+  return "i32" if found.size == 0 || found[0].ret.size == 0
+  kind_of(path_of(found[0].ret), shape, known)
 end
 
 pub def arguments(written : Array(Val)) : String
@@ -780,28 +889,36 @@ pub def mangle_method(holder : String, name : String) : String
   "iyi_#{holder}_#{name}"
 end
 
-pub def parameters(node : DefNode, first : String) : String
+pub def parameters(node : DefNode, first : String, shape : Shape,
+                   known : Known) : String
   pieces = [] of String
   pieces << first unless first == ""
   index = 0
   node.args.each do |arg|
     case arg
     when ArgNode
-      pieces << "i32 %arg#{index}"
+      pieces << "#{argument_kind(arg, shape, known)} %arg#{index}"
       index = index + 1
     end
   end
   pieces.join(", ")
 end
 
+pub def argument_kind(arg : ArgNode, shape : Shape, known : Known) : String
+  return "i32" if arg.restriction.size == 0
+  kind_of(path_of(arg.restriction), shape, known)
+end
+
 # An argument arrives in a register and a local lives in a slot, so the
 # first thing a body does is put it there.
-pub def store_arguments(node : DefNode, body : Body) : Nil
+pub def store_arguments(node : DefNode, body : Body, shape : Shape,
+                        known : Known) : Nil
   index = 0
   node.args.each do |arg|
     case arg
     when ArgNode
-      body.write("store i32 %arg#{index}, ptr #{body.slot(arg.name, "i32")}")
+      kind = argument_kind(arg, shape, known)
+      body.write("store #{kind} %arg#{index}, ptr #{body.slot(arg.name, kind)}")
       index = index + 1
     end
   end
@@ -809,9 +926,10 @@ end
 
 pub def emit_def(node : DefNode, known : Known, constants : Constants) : String
   body = Body.new("")
-  store_arguments(node, body)
+  plain = Shape.new("", false)
+  store_arguments(node, body, plain, known)
   answer = emit_one(node.body, body, known, constants)
-  "define i32 @#{mangle(node.name)}(#{parameters(node, "")}) {\nentry:\n#{body.text}  ret i32 #{answer.text}\n}\n"
+  "define i32 @#{mangle(node.name)}(#{parameters(node, "", plain, known)}) {\nentry:\n#{body.text}  ret i32 #{answer.text}\n}\n"
 end
 
 # A method of a struct. `self` arrives by value and is put in a slot, so
@@ -820,9 +938,10 @@ pub def emit_method_def(shape : Shape, node : DefNode, known : Known,
                         constants : Constants) : String
   body = Body.new(shape.name)
   body.write("store #{shape.kind} %self, ptr #{body.slot("self", shape.kind)}")
-  store_arguments(node, body)
+  store_arguments(node, body, shape, known)
   answer = emit_one(node.body, body, known, constants)
-  "define i32 @#{mangle_method(shape.name, node.name)}(#{parameters(node, "#{shape.kind} %self")}) {\nentry:\n#{body.text}  ret i32 #{answer.text}\n}\n"
+  kind = answers(shape, node.name, known)
+  "define #{kind} @#{mangle_method(shape.name, node.name)}(#{parameters(node, "#{shape.kind} %self", shape, known)}) {\nentry:\n#{body.text}  ret #{kind} #{answer.text}\n}\n"
 end
 
 # The `new` the compiler writes: it runs the constructor's body against a
@@ -834,14 +953,14 @@ pub def emit_new_def(shape : Shape, node : DefNode, known : Known,
   body.slot("self", shape.kind)
   if shape.reference
     object = body.register
-    body.write("#{object} = call ptr @malloc(i64 #{shape.bytes})")
+    body.write("#{object} = call ptr @malloc(i64 #{shape.bytes_of(known)})")
     body.write("store ptr #{object}, ptr %self.slot")
   end
-  store_arguments(node, body)
+  store_arguments(node, body, shape, known)
   emit_one(node.body, body, known, constants)
   reg = body.register
   body.write("#{reg} = load #{shape.kind}, ptr %self.slot")
-  "define #{shape.kind} @#{mangle_method(shape.name, "new")}(#{parameters(node, "")}) {\nentry:\n#{body.text}  ret #{shape.kind} #{reg}\n}\n"
+  "define #{shape.kind} @#{mangle_method(shape.name, "new")}(#{parameters(node, "", shape, known)}) {\nentry:\n#{body.text}  ret #{shape.kind} #{reg}\n}\n"
 end
 
 # The program's own entry. `__iyi_exit(e)` is what a fixture ends on and
@@ -868,19 +987,43 @@ end
 # What a struct holds, read off the constructor: the parser writes
 # `def initialize(@x : Int32)` as an argument and an assignment, so the
 # fields are the assignments in the order they are made.
-pub def learn_fields(nodes : Array(Node), shape : Shape) : Nil
+pub def learn_fields(nodes : Array(Node), shape : Shape, args : Array(Node)) : Nil
   nodes.each do |node|
     case node
     when ExprsNode
-      learn_fields(node.items, shape)
+      learn_fields(node.items, shape, args)
     when AssignNode
       if node.target.size > 0
         target = node.target[0]
         case target
-        when IvarNode then shape.add_field(target.name)
+        when IvarNode
+          held = shape.fields.size
+          shape.add_field(target.name)
+          shape.add_field_type(declared_type(node.value, args)) if shape.fields.size > held
         end
       end
     end
+  end
+end
+
+# What the value assigned to a field was declared as. `@x = x` in a
+# constructor is the argument's type, and a type parameter arrives here
+# as its own name.
+pub def declared_type(value : Array(Node), args : Array(Node)) : String
+  return "Int32" if value.size == 0
+  written = value[0]
+  case written
+  when VarNode
+    answer = "Int32"
+    args.each do |arg|
+      case arg
+      when ArgNode
+        answer = path_of(arg.restriction) if arg.name == written.name && arg.restriction.size > 0
+      end
+    end
+    answer
+  else
+    "Int32"
   end
 end
 
@@ -895,6 +1038,7 @@ pub def collect(nodes : Array(Node), known : Known) : Nil
       known.add(node)
     when ClassDefNode
       shape = Shape.new(path_of(node.name), node.kind == "class")
+      shape.declare_vars(node.vars)
       known.add_shape(shape)
       collect_shape(node.body, shape)
     end
@@ -910,7 +1054,7 @@ pub def collect_shape(nodes : Array(Node), shape : Shape) : Nil
       collect_shape(node.body, shape)
     when DefNode
       shape.add(node)
-      learn_fields(node.body, shape) if node.name == "initialize"
+      learn_fields(node.body, shape, node.args) if node.name == "initialize"
     end
   end
 end
@@ -933,7 +1077,18 @@ else
 
   constants = Constants.new
   functions = ""
-  known.shapes.each do |shape|
+  known.nodes.each { |node| functions = functions + emit_def(node, known, constants) + "\n" }
+  functions = functions + emit_main(items, known, constants)
+
+  # Walked by index rather than with `each`: emitting one instance can
+  # ask for another, and the list grows while it is being read. The
+  # program is emitted before them for the same reason, because naming
+  # `Box(Int32)` is what brings it into being.
+  index = 0
+  while index < known.shapes.size
+    shape = known.shapes[index]
+    index = index + 1
+    next if shape.generic?
     shape.defs.each do |node|
       functions = functions + if node.name == "initialize"
         emit_new_def(shape, node, known, constants)
@@ -942,8 +1097,6 @@ else
       end + "\n"
     end
   end
-  known.nodes.each { |node| functions = functions + emit_def(node, known, constants) + "\n" }
-  functions = functions + emit_main(items, known, constants)
 
   puts "; #{path}, emitted by selfhost/codegen/emit.iyi"
   # The one thing this slice borrows from outside the program it is
@@ -953,7 +1106,7 @@ else
   puts "declare i64 @write(i32, ptr, i64)"
   puts "declare ptr @malloc(i64)"
   puts ""
-  known.shapes.each { |shape| puts shape.declaration }
+  known.shapes.each { |shape| puts shape.declaration(known) unless shape.generic? }
   puts ""
   print constants.text
   puts ""

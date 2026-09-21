@@ -131,6 +131,50 @@ pub def find(source : String, needle : String, from : Int32) : Int32
   -1
 end
 
+# The same search, over code only. A macro delimiter written inside a
+# comment or a string is text about macros rather than a macro: the
+# lexer this pass runs over explains `{%` in a comment and spells both
+# delimiters as string literals, and a scanner that counted those
+# swallowed the four hundred lines between them.
+pub def find_code(source : String, needle : String, from : Int32) : Int32
+  return -1 if needle.bytesize == 0
+  # Written as strings because a double quote and an apostrophe cannot
+  # be spelled as character literals in this language.
+  quote = "\""
+  tick = "'"
+  index = 0
+  limit = source.bytesize - needle.bytesize
+  start = from < 0 ? 0 : from
+  while index < source.bytesize
+    ch = source[index].to_s
+    if ch == "#" && !matches_at?(source, "\#{", index)
+      # A comment runs to the end of its line.
+      index = index + 1
+      while index < source.bytesize && source[index] != '\n'
+        index = index + 1
+      end
+    elsif ch == quote
+      index = index + 1
+      while index < source.bytesize && source[index].to_s != quote
+        # An escape is two bytes and the second one is not a closer:
+        # `"\\"` ends where it looks like it does.
+        index = source[index] == '\\' ? index + 2 : index + 1
+      end
+      index = index + 1
+    elsif ch == tick
+      # A character literal, and never the apostrophe in a word: the
+      # closing quote is two or three bytes along, or this is not one.
+      shut = index + 2
+      shut = index + 3 if index + 1 < source.bytesize && source[index + 1] == '\\'
+      index = shut < source.bytesize && source[shut].to_s == tick ? shut + 1 : index + 1
+    else
+      return index if index >= start && index <= limit && matches_at?(source, needle, index)
+      index = index + 1
+    end
+  end
+  -1
+end
+
 pub def matches_at?(source : String, needle : String, at : Int32) : Bool
   offset = 0
   while offset < needle.bytesize
@@ -163,9 +207,9 @@ pub def matching_end(source : String, from : Int32) : Int32
   depth = 1
   index = from
   while true
-    open = find(source, "{%", index)
+    open = find_code(source, "{%", index)
     return -1 if open < 0
-    close = find(source, "%}", open)
+    close = find_code(source, "%}", open)
     return -1 if close < 0
     word = first_word(slice(source, open + 2, close).strip)
     if word == "end"
@@ -184,9 +228,9 @@ pub def branch_split(region : String) : Int32
   depth = 0
   index = 0
   while true
-    open = find(region, "{%", index)
+    open = find_code(region, "{%", index)
     return -1 if open < 0
-    close = find(region, "%}", open)
+    close = find_code(region, "%}", open)
     return -1 if close < 0
     word = first_word(slice(region, open + 2, close).strip)
     if word == "end"
@@ -387,13 +431,13 @@ pub def render(source : String, env : Env, flags : Array(String)) : String
   built = ""
   pos = 0
   while true
-    open = find(source, "{%", pos)
+    open = find_code(source, "{%", pos)
     if open < 0
       built = built + interpolate(slice(source, pos, source.bytesize), env, flags)
       return built
     end
     built = built + interpolate(slice(source, pos, open), env, flags)
-    close = find(source, "%}", open)
+    close = find_code(source, "%}", open)
     return built if close < 0
     directive = slice(source, open + 2, close).strip
     after = close + 2
@@ -415,7 +459,7 @@ pub def render(source : String, env : Env, flags : Array(String)) : String
 
     stop = matching_end(source, after)
     return built if stop < 0
-    stop_close = find(source, "%}", stop)
+    stop_close = find_code(source, "%}", stop)
     return built if stop_close < 0
     region = slice(source, after, stop)
 
@@ -446,7 +490,7 @@ pub def render_branches(taken : String, region : String, env : Env, flags : Arra
     return taken == "true" ? render(region, env, flags) : ""
   end
   head = slice(region, 0, split)
-  close = find(region, "%}", split)
+  close = find_code(region, "%}", split)
   return "" if close < 0
   directive = slice(region, split + 2, close).strip
   tail = slice(region, close + 2, region.bytesize)

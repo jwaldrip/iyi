@@ -1103,9 +1103,21 @@ impl Sexp for StrNode
     # so a literal control character has to be written as its escape here
     # too. The backslash is left alone on purpose: an escape written in
     # the source already arrives as the two characters that spell it, and
-    # escaping it again would double every one of them.
+    # escaping it again would double every one of them. A `#` that a `{`
+    # follows is the one exception: `inspect` writes it back as `\#{`,
+    # because unescaped it would open an interpolation on a re-read. The
+    # `#` is held for one character to see what comes next.
     out = ""
+    hash = false
     value.each_char do |ch|
+      if hash
+        out = out + (ch == '{' ? "\\#" : "#")
+        hash = false
+      end
+      if ch == '#'
+        hash = true
+        next
+      end
       code = ch.ord
       if ch == '\n'
         out = out + "\\n"
@@ -1135,6 +1147,7 @@ impl Sexp for StrNode
         out = out + ch.to_s
       end
     end
+    out = out + "#" if hash
     "(str \"" + out + "\")"
   end
 end
