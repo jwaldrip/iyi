@@ -22,31 +22,37 @@ module macro/expand
 pub class Value
   getter kind : String
   getter text : String
-  getter items : Array(String)
+  getter items : Array(Value)
   getter keys : Array(String)
 
-  def initialize(@kind : String, @text : String, @items : Array(String), @keys : Array(String))
+  def initialize(@kind : String, @text : String, @items : Array(Value), @keys : Array(String))
   end
 end
 
 pub def none_value : Value
-  Value.new("none", "", [] of String, [] of String)
+  Value.new("none", "", [] of Value, [] of String)
 end
 
 pub def text_value(text : String) : Value
-  Value.new("text", text, [] of String, [] of String)
+  Value.new("text", text, [] of Value, [] of String)
 end
 
 pub def bool_value(truth : Bool) : Value
-  Value.new("bool", truth ? "true" : "false", [] of String, [] of String)
+  Value.new("bool", truth ? "true" : "false", [] of Value, [] of String)
 end
 
-pub def list_value(items : Array(String)) : Value
+pub def list_value(items : Array(Value)) : Value
   Value.new("list", "", items, [] of String)
 end
 
-pub def map_value(keys : Array(String), items : Array(String)) : Value
+pub def map_value(keys : Array(String), items : Array(Value)) : Value
   Value.new("map", "", items, keys)
+end
+
+pub def texts(words : Array(String)) : Array(Value)
+  values = [] of Value
+  words.each { |word| values << text_value(word) }
+  values
 end
 
 # The flags of the machine this pass was compiled for. The pass is built
@@ -204,10 +210,10 @@ pub def render(source : String, env : Env, flags : Array(String)) : String
   while true
     open = find(source, "{%", pos)
     if open < 0
-      built = built + interpolate(slice(source, pos, source.bytesize), env)
+      built = built + interpolate(slice(source, pos, source.bytesize), env, flags)
       return built
     end
-    built = built + interpolate(slice(source, pos, open), env)
+    built = built + interpolate(slice(source, pos, open), env, flags)
     close = find(source, "%}", open)
     return built if close < 0
     directive = slice(source, open + 2, close).strip
@@ -288,7 +294,7 @@ pub def render_loop(directive : String, region : String, env : Env, flags : Arra
   built = ""
   if value.kind == "list" && vars.size == 1
     value.items.each do |item|
-      piece = render(region, env.bind(vars[0], text_value(item)), flags)
+      piece = render(region, env.bind(vars[0], item), flags)
       # A body that still carries `{{` asked something of its value that
       # this pass cannot answer - indexing it, or calling a method on it.
       # The loop wrote nothing rather than a method named `{{`.
@@ -301,7 +307,7 @@ pub def render_loop(directive : String, region : String, env : Env, flags : Arra
     index = 0
     while index < value.keys.size
       inner = env.bind(vars[0], text_value(value.keys[index]))
-        .bind(vars[1], text_value(value.items[index]))
+        .bind(vars[1], value.items[index])
       piece = render(region, inner, flags)
       return "" if unresolved?(piece)
       built = built + piece
@@ -317,7 +323,7 @@ end
 # `{{ name }}` is the text the name is bound to. A name this pass does not
 # know is left as it was written: the tree carries a macro expression for
 # it, which is what the current parser builds.
-pub def interpolate(source : String, env : Env) : String
+pub def interpolate(source : String, env : Env, flags : Array(String)) : String
   built = ""
   pos = 0
   while true
@@ -330,8 +336,11 @@ pub def interpolate(source : String, env : Env) : String
     built = built + slice(source, pos, open)
     name = slice(source, open + 2, close).strip
     name = slice(name, 0, name.bytesize - 3) if ends_with_id?(name)
-    if env.has?(name)
-      built = built + env.get(name).text
+    # `{{ mins[name] }}` is read the way a condition is: the value is
+    # whatever the expression answers, not only what a bare name holds.
+    value = evaluate(name, env, flags)
+    if value.kind == "text" || value.kind == "bool"
+      built = built + value.text
     else
       built = built + slice(source, open, close + 2)
     end
@@ -406,15 +415,26 @@ pub def evaluate(source : String, env : Env, flags : Array(String)) : Value
   end
 
   if text.starts_with?("%w(")
-    return list_value(split_words(slice(text, 3, text.bytesize - 1)))
+    return list_value(texts(split_words(slice(text, 3, text.bytesize - 1))))
+  end
+
+  # `t[0]` reads a row and `mins[name]` reads a table. The brackets come
+  # after what they read, which is how they are told from a literal.
+  if text[text.bytesize - 1] == ']' && text[0] != '['
+    open = index_open(text)
+    if open > 0
+      base = evaluate(slice(text, 0, open), env, flags)
+      key = evaluate(slice(text, open + 1, text.bytesize - 1), env, flags)
+      return index_into(base, key)
+    end
   end
 
   if text[0] == '['
-    return list_value(split_top(slice(text, 1, text.bytesize - 1)))
+    return read_list(slice(text, 1, text.bytesize - 1), env, flags)
   end
 
   if text[0] == '{'
-    return read_map(slice(text, 1, text.bytesize - 1))
+    return read_braces(slice(text, 1, text.bytesize - 1), env, flags)
   end
 
   if text[0] == '"'
@@ -422,19 +442,118 @@ pub def evaluate(source : String, env : Env, flags : Array(String)) : Value
   end
 
   return env.get(text) if env.has?(text)
+  # A literal is worth itself: `t[0]` needs the zero, and a row holds
+  # numbers and truths beside its strings.
+  return bool_value(true) if text == "true"
+  return bool_value(false) if text == "false"
+  return text_value(text) if number?(text)
   none_value
 end
 
-pub def read_map(source : String) : Value
+pub def number?(text : String) : Bool
+  return false if text.bytesize == 0
+  index = text[0] == '-' ? 1 : 0
+  return false if index >= text.bytesize
+  while index < text.bytesize
+    ch = text[index]
+    return false unless (ch >= '0' && ch <= '9') || ch == '_'
+    index = index + 1
+  end
+  true
+end
+
+# The `[` that opens the trailing index, or -1.
+pub def index_open(text : String) : Int32
+  depth = 0
+  index = text.bytesize - 1
+  while index >= 0
+    ch = text[index]
+    depth = depth + 1 if ch == ']' || ch == ')' || ch == '}'
+    depth = depth - 1 if ch == '[' || ch == '(' || ch == '{'
+    return index if depth == 0
+    index = index - 1
+  end
+  -1
+end
+
+pub def index_into(base : Value, key : Value) : Value
+  if base.kind == "list"
+    position = to_position(key.text)
+    return none_value if position < 0 || position >= base.items.size
+    return base.items[position]
+  end
+  if base.kind == "map"
+    place = base.keys.index(key.text)
+    return place.nil? ? none_value : base.items[place]
+  end
+  none_value
+end
+
+pub def to_position(text : String) : Int32
+  return -1 if text.bytesize == 0
+  total = 0
+  index = 0
+  while index < text.bytesize
+    ch = text[index]
+    return -1 unless ch >= '0' && ch <= '9'
+    total = total * 10 + (ch.ord - 48)
+    index = index + 1
+  end
+  total
+end
+
+pub def list_items(source : String, env : Env, flags : Array(String)) : Array(Value)
+  values = [] of Value
+  split_top(source).each { |piece| values << evaluate(piece, env, flags) }
+  values
+end
+
+pub def read_list(source : String, env : Env, flags : Array(String)) : Value
+  list_value(list_items(source, env, flags))
+end
+
+# Braces spell three things: `{a => b}` is a table with written keys,
+# `{a: b}` is a table with named ones, and `{a, b}` is a row.
+pub def read_braces(source : String, env : Env, flags : Array(String)) : Value
+  pieces = split_top(source)
   keys = [] of String
-  items = [] of String
-  split_top(source).each do |pair|
-    colon = find(pair, ":", 0)
-    next if colon < 0
-    keys << slice(pair, 0, colon).strip
-    items << slice(pair, colon + 1, pair.bytesize).strip
+  items = [] of Value
+  arrow = false
+  named = false
+  pieces.each do |piece|
+    arrow = true if find_top(piece, "=>") > 0
+    named = true if !arrow && named_pair?(piece)
+  end
+  return read_list(source, env, flags) unless arrow || named
+  pieces.each do |piece|
+    if arrow
+      at = find_top(piece, "=>")
+      next if at < 0
+      keys << evaluate(slice(piece, 0, at), env, flags).text
+      items << evaluate(slice(piece, at + 2, piece.bytesize), env, flags)
+    else
+      colon = find(piece, ":", 0)
+      next if colon < 0
+      keys << slice(piece, 0, colon).strip
+      items << text_value(slice(piece, colon + 1, piece.bytesize).strip)
+    end
   end
   map_value(keys, items)
+end
+
+# `to_i: Int32` names a key; `a == b` does not, and neither does a bare
+# value with a colon inside a string.
+pub def named_pair?(piece : String) : Bool
+  colon = find(piece, ":", 0)
+  return false if colon <= 0
+  return false if piece[0] == '"'
+  index = 0
+  while index < colon
+    ch = piece[index]
+    return false unless ch.alphanumeric? || ch == '_' || ch.whitespace?
+    index = index + 1
+  end
+  true
 end
 
 pub def split_words(source : String) : Array(String)

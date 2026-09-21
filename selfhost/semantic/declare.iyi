@@ -42,6 +42,11 @@ pub class Decl
   # an import brought is still reopened and still collects methods; it is
   # not something this file brought into being.
   getter reported : Bool
+  # Whether an import brought this type into being before the file under
+  # the pass reopened it. The compiler writes a struct's `initialize`
+  # where the struct is first declared, so a file that reopens one does
+  # not write it again.
+  getter from_import : Bool
   # A struct the file brings into being answers `new`, and the compiler
   # writes the `initialize` that `new` calls when the struct declares
   # none. A type the compiler already had keeps what it already had.
@@ -51,6 +56,11 @@ pub class Decl
     @defs = [] of String
     @defaulted = false
     @reported = false
+    @from_import = false
+  end
+
+  def arrived_with_import : Nil
+    @from_import = true
   end
 
   def report_it : Nil
@@ -112,7 +122,11 @@ pub class Declarations
       end
     end
     made = Decl.new(kind, key, shown, vars)
-    made.report_it if @reporting
+    if @reporting
+      made.report_it
+    else
+      made.arrived_with_import
+    end
     @found << made unless @methods_only
     made
   end
@@ -359,9 +373,10 @@ pub class Walk
     entry = @into.at(own == "" ? kind : own, full, shown, vars)
     # Every struct answers `new`, and `Reference` is the root the compiler
     # builds the same way: each is given the `initialize` that `new` calls
-    # when it declares none.
-    defaults = (kind == "struct" && own == "" && !compiler_struct?(full)) ||
-               full == "Reference"
+    # when it declares none. A struct an import already declared was given
+    # it there.
+    defaults = (kind == "struct" && own == "" && !compiler_struct?(full) &&
+                !entry.from_import) || full == "Reference"
     entry.defaults_initialize if defaults
     body(inner, full, entry)
   end
@@ -499,12 +514,18 @@ end
 
 # Both readings of one file: as written, for what it declares, and as
 # expanded, for the methods its macros write onto those declarations.
-pub def read_file(source : String, into : Declarations) : Nil
+#
+# For the file under the pass the second reading adds methods and brings
+# nothing into being, because the type a macro writes has its home in the
+# expansion. For a file that arrived with an import the second reading
+# declares as well: `std/int` writes the whole integer tower with a macro,
+# and `std/traits` reopens `Int64` expecting to find it there.
+pub def read_file(source : String, into : Declarations, imported : Bool) : Nil
   into.declaring
   walk_file(source, into)
   expanded = expand(source, host_flags)
   unless expanded == source
-    into.methods_only
+    into.methods_only unless imported
     walk_file(expanded, into)
     into.declaring
   end
@@ -528,7 +549,7 @@ pub def load_imports(source : String, roots : Array(String),
       seen << found
       imported = File.read(found)
       load_imports(imported, roots, seen, into)
-      read_file(imported, into)
+      read_file(imported, into, true)
     end
   end
 end
@@ -544,7 +565,7 @@ else
   # file declares, which is what gets reported.
   load_imports(written, source_roots, [] of String, into)
   into.reporting(true)
-  read_file(written, into)
+  read_file(written, into, false)
 
   puts into.report
 end
