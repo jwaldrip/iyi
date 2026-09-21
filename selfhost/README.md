@@ -543,8 +543,9 @@ into 6, and restoring the file byte-for-byte turns it back.
       loop.iyi agrees: exit 32
       nested.iyi agrees: exit 14
       print.iyi agrees: exit 3, 60 bytes out
+      reference.iyi agrees: exit 8
       struct.iyi agrees: exit 10
-      agree 6, differ 0
+      agree 7, differ 0
 
 Every other slice diffs an artifact: a token stream, a tree, a
 declaration, a type. Two independent backends do not write the same LLVM
@@ -561,8 +562,9 @@ way, so the gate refuses one and says why rather than counting it.
 Scope, and it is narrow on purpose: integer literals, `+`, `-` and `*`,
 comparisons, `if`, `while`, local assignment and lookup, arguments, a
 call to a method in the same file, `print` of a literal, and a struct
-with fields and methods. Not here: a class, which is a reference and
-needs a heap; any other type; anything that allocates. The sections
+with fields and methods, and a class, which is a reference. Not here:
+any other type, and nothing that the prelude would have to be compiled
+for. The sections
 below are the fixtures in the order they were written, and each names
 what it added and how the gate was made to fail without it.
 
@@ -691,10 +693,6 @@ constructor's body against a value of its own and answers it, so an
 `initialize` doing more than assigning its arguments still works: the
 body is emitted rather than pattern-matched.
 
-A class is the slice after this one, and it is a different problem: a
-reference needs a heap, and a heap needs the runtime this slice has been
-avoiding.
-
 Load-bearing: fixing every field offset at zero makes both readers
 answer `@x`, and `struct.iyi` exits 8 where the current compiler exits
 10.
@@ -711,3 +709,33 @@ asked whether the token before the word could end an expression, which
 makes `next if done` and `return 0 if n < 0` into blocks: both follow a
 keyword and both are modifiers. Four files caught it, and the rule that
 holds names the openers rather than guessing at the closers.
+
+### A class, which is a reference
+
+`fixtures/reference.iyi` is the same fields as the struct and a
+different thing to pass around. The fixture is built so that getting it
+wrong changes the answer rather than the shape of the IR: `bump` is
+called twice on one counter, and a port that copied the object by value
+answers 7 - or 6, which is what it actually answers, because the writes
+land on copies that are then thrown away.
+
+A reference prints as `ptr` and every reference prints the same, so a
+value has to carry which type it is as well as how it prints. That is
+the second thing the emitter learned to track, after the struct made it
+track kinds at all: `Val` holds a text, a kind and a shape, and dispatch
+reads the shape while a store reads the kind.
+
+A field is then an offset into what the pointer points at rather than
+into the slot: the slot holds the pointer, so it is loaded first and the
+offset is taken from that. The constructor is the same function it was
+for a struct except that it begins by asking `malloc` for the bytes -
+four a field, because every field here is an `Int32` - and stores what
+it answered into `self`.
+
+What this borrows is a heap. The current compiler brings its own; this
+calls the C library's `malloc` the same way it calls `write`, and
+nothing frees anything. A collector is not a codegen slice.
+
+Load-bearing: emitting a `class` as a value turns `reference.iyi` from 8
+into 6 while the struct fixture keeps agreeing, which is the difference
+between the two fixtures and nothing else.

@@ -31,8 +31,16 @@ using parser/parser::{Parser, Node, IfNode, WhileNode, StrNode, NumNode, VarNode
 pub class Val
   getter text : String
   getter kind : String
+  # Which type this is, for looking a method up. A reference prints as
+  # `ptr` and every reference prints the same, so the name cannot be read
+  # back out of the kind.
+  getter shape : String
 
   def initialize(@text : String, @kind : String)
+    @shape = ""
+  end
+
+  def initialize(@text : String, @kind : String, @shape : String)
   end
 end
 
@@ -46,8 +54,12 @@ pub class Shape
   getter name : String
   getter fields : Array(String)
   getter defs : Array(DefNode)
+  # A `class` is a reference and a `struct` is a value. They hold their
+  # fields the same way and are passed around differently: one is a
+  # pointer to an object on the heap, the other is the object.
+  getter reference : Bool
 
-  def initialize(@name : String)
+  def initialize(@name : String, @reference : Bool)
     @fields = [] of String
     @defs = [] of DefNode
   end
@@ -75,16 +87,26 @@ pub class Shape
     method(name).size > 0
   end
 
-  # How the type is written in the IR, and what a value of it is worth
-  # as a kind.
+  # How a value of the type is written in the IR. A reference is an
+  # opaque pointer; the struct type below it is what an offset into it
+  # is measured against.
   def kind : String
+    @reference ? "ptr" : "%#{@name}"
+  end
+
+  def layout : String
     "%#{@name}"
+  end
+
+  # Four bytes a field, because every field in this slice is an `Int32`.
+  def bytes : Int32
+    @fields.size * 4
   end
 
   def declaration : String
     written = [] of String
     @fields.each { |field| written << "i32" }
-    "%#{@name} = type { #{written.join(", ")} }"
+    "#{layout} = type { #{written.join(", ")} }"
   end
 end
 
@@ -131,11 +153,9 @@ pub class Known
     shape_named(name).size > 0
   end
 
-  # The struct a kind belongs to: `%Point` is `Point`, and `i32` is
-  # nothing's.
-  def shape_of(kind : String) : Array(Shape)
-    return [] of Shape unless kind.bytesize > 1 && kind[0] == '%'
-    shape_named(kind[1, kind.bytesize - 1])
+  def shape_of(name : String) : Array(Shape)
+    return [] of Shape if name == ""
+    shape_named(name)
   end
 end
 
@@ -200,6 +220,7 @@ pub class Body
   @next : Int32
   @slots : Array(String)
   @slot_kinds : Array(String)
+  @slot_shapes : Array(String)
   # Which block the cursor is in, and how many branches have been given
   # labels, so two `if`s in one method do not share them.
   @label : String
@@ -213,6 +234,7 @@ pub class Body
     @next = 0
     @slots = [] of String
     @slot_kinds = [] of String
+    @slot_shapes = [] of String
     @label = "entry"
     @marks = 0
   end
@@ -241,13 +263,23 @@ pub class Body
   # A local lives in a slot rather than a register, so an assignment can
   # rewrite it without this pass having to ask which branch wrote it.
   def slot(name : String, kind : String) : String
+    slot_of(name, kind, "")
+  end
+
+  def slot_of(name : String, kind : String, shape : String) : String
     index = @slots.index(name)
     if index.nil?
       @slots << name
       @slot_kinds << kind
+      @slot_shapes << shape
       write("%#{name}.slot = alloca #{kind}")
     end
     "%#{name}.slot"
+  end
+
+  def slot_shape(name : String) : String
+    index = @slots.index(name)
+    index.nil? ? "" : @slot_shapes[index]
   end
 
   def slot?(name : String) : Bool
@@ -356,10 +388,19 @@ end
 # Where a field lives: the struct arrived in a slot, and a field is an
 # offset into it.
 pub def field_place(name : String, body : Body, known : Known) : String
-  holder = known.shape_named(body.holder)
-  place = body.slot("self", holder[0].kind)
+  shape = known.shape_named(body.holder)[0]
+  place = body.slot("self", shape.kind)
+  # For a value the fields are in the slot; for a reference the slot
+  # holds the pointer and the fields are where it points.
+  unless shape.reference
+    reg = body.register
+    body.write("#{reg} = getelementptr #{shape.layout}, ptr #{place}, i32 0, i32 #{shape.index_of(name)}")
+    return reg
+  end
+  object = body.register
+  body.write("#{object} = load ptr, ptr #{place}")
   reg = body.register
-  body.write("#{reg} = getelementptr #{holder[0].kind}, ptr #{place}, i32 0, i32 #{holder[0].index_of(name)}")
+  body.write("#{reg} = getelementptr #{shape.layout}, ptr #{object}, i32 0, i32 #{shape.index_of(name)}")
   reg
 end
 
@@ -372,7 +413,7 @@ pub def emit(node : Node, body : Body, known : Known, constants : Constants) : V
     place = body.slot(node.name, kind)
     reg = body.register
     body.write("#{reg} = load #{kind}, ptr #{place}")
-    Val.new(reg, kind)
+    Val.new(reg, kind, body.slot_shape(node.name))
   when IvarNode
     place = field_place(node.name, body, known)
     reg = body.register
@@ -384,7 +425,7 @@ pub def emit(node : Node, body : Body, known : Known, constants : Constants) : V
       target = node.target[0]
       case target
       when VarNode
-        body.write("store #{value.kind} #{value.text}, ptr #{body.slot(target.name, value.kind)}")
+        body.write("store #{value.kind} #{value.text}, ptr #{body.slot_of(target.name, value.kind, value.shape)}")
       when IvarNode
         place = field_place(target.name, body, known)
         body.write("store i32 #{value.text}, ptr #{place}")
@@ -463,7 +504,7 @@ pub def emit_call(node : CallNode, body : Body, known : Known, constants : Const
   # because a struct is passed by value and there is nothing to point at.
   if node.recv.size == 1
     receiver = emit(node.recv[0], body, known, constants)
-    holder = known.shape_of(receiver.kind)
+    holder = known.shape_of(receiver.shape)
     if holder.size > 0 && holder[0].knows?(node.name)
       return emit_method(holder[0], node, receiver, body, known, constants)
     end
@@ -478,7 +519,7 @@ pub def emit_call(node : CallNode, body : Body, known : Known, constants : Const
     place = body.slot("self", holder.kind)
     reg = body.register
     body.write("#{reg} = load #{holder.kind}, ptr #{place}")
-    return emit_method(holder, node, Val.new(reg, holder.kind), body, known, constants)
+    return emit_method(holder, node, Val.new(reg, holder.kind, holder.name), body, known, constants)
   end
 
   if known.knows?(node.name)
@@ -496,7 +537,7 @@ pub def emit_call(node : CallNode, body : Body, known : Known, constants : Const
     place = body.slot(node.name, kind)
     reg = body.register
     body.write("#{reg} = load #{kind}, ptr #{place}")
-    return Val.new(reg, kind)
+    return Val.new(reg, kind, body.slot_shape(node.name))
   end
   int_val("0")
 end
@@ -508,7 +549,7 @@ pub def emit_new(named : String, node : CallNode, body : Body, known : Known,
   node.args.each { |arg| written << emit(arg, body, known, constants) }
   reg = body.register
   body.write("#{reg} = call #{shape.kind} @#{mangle_method(named, "new")}(#{arguments(written)})")
-  Val.new(reg, shape.kind)
+  Val.new(reg, shape.kind, shape.name)
 end
 
 pub def emit_method(shape : Shape, node : CallNode, receiver : Val, body : Body,
@@ -598,6 +639,11 @@ pub def emit_new_def(shape : Shape, node : DefNode, known : Known,
                      constants : Constants) : String
   body = Body.new(shape.name)
   body.slot("self", shape.kind)
+  if shape.reference
+    object = body.register
+    body.write("#{object} = call ptr @malloc(i64 #{shape.bytes})")
+    body.write("store ptr #{object}, ptr %self.slot")
+  end
   store_arguments(node, body)
   emit_one(node.body, body, known, constants)
   reg = body.register
@@ -655,7 +701,7 @@ pub def collect(nodes : Array(Node), known : Known) : Nil
     when DefNode
       known.add(node)
     when ClassDefNode
-      shape = Shape.new(path_of(node.name))
+      shape = Shape.new(path_of(node.name), node.kind == "class")
       known.add_shape(shape)
       collect_shape(node.body, shape)
     end
@@ -712,6 +758,7 @@ else
   # calls the C library's, and what the gate compares is the bytes that
   # reach stdout either way.
   puts "declare i64 @write(i32, ptr, i64)"
+  puts "declare ptr @malloc(i64)"
   puts ""
   known.shapes.each { |shape| puts shape.declaration }
   puts ""
