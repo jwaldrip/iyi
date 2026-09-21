@@ -23,7 +23,7 @@ module main
 import std/file
 import parser/parser
 using std/file::{File}
-using parser/parser::{Parser, Node, IfNode, UnlessNode, WhileNode, ReturnNode, NextNode, BreakNode, AndNode, OrNode, NotNode, BoolNode, StrNode, NumNode, VarNode, IvarNode, AssignNode, ExprsNode, DefNode, ArgNode, CallNode, ClassDefNode, PathNode, VisibilityModifierNode}
+using parser/parser::{Parser, Node, IfNode, UnlessNode, WhileNode, ReturnNode, NextNode, BreakNode, AndNode, OrNode, NotNode, BoolNode, CaseNode, WhenNode, TypeDeclNode, StrNode, NumNode, VarNode, IvarNode, AssignNode, ExprsNode, DefNode, ArgNode, CallNode, ClassDefNode, PathNode, VisibilityModifierNode}
 
 # A value, and what shape it has. Everything in this slice is either an
 # `i32` or a struct passed by value, and knowing which decides how it is
@@ -388,6 +388,63 @@ pub def emit_if(node : IfNode, body : Body, known : Known, constants : Constants
   Val.new(reg, kind, first.shape)
 end
 
+# A `case` over values is a chain of comparisons, which is what it is
+# once the subject is an integer: each `when` gets a block that answers
+# and a block that asks the next one, and the `else` is the last answer.
+# The subject is emitted once, into a slot, because a `case` over a call
+# must not call it again per arm.
+pub def emit_case(node : CaseNode, body : Body, known : Known,
+                  constants : Constants) : Val
+  mark = body.mark
+  subject = emit_one(node.cond, body, known, constants)
+  place = body.slot_of("case#{mark}", subject.kind, subject.shape)
+  body.write("store #{subject.kind} #{subject.text}, ptr #{place}")
+
+  join = "chose#{mark}"
+  answers = [] of String
+  froms = [] of String
+  index = 0
+  node.arms.each do |arm|
+    case arm
+    when WhenNode
+      taken = "arm#{mark}_#{index}"
+      other = "ask#{mark}_#{index}"
+      held = body.register
+      body.write("#{held} = load #{subject.kind}, ptr #{place}")
+      wanted = emit_one(arm.conds, body, known, constants)
+      test = body.register
+      body.write("#{test} = icmp eq #{subject.kind} #{held}, #{wanted.text}")
+      body.write("br i1 #{test}, label %#{taken}, label %#{other}")
+
+      body.block(taken)
+      answer = emit_one(arm.body, body, known, constants)
+      answers << answer.text
+      froms << body.label
+      body.write("br label %#{join}")
+
+      body.block(other)
+      index = index + 1
+    end
+  end
+
+  # The `else` is the block the last `when` fell into.
+  fallback = emit_one(node.else_branch, body, known, constants)
+  answers << fallback.text
+  froms << body.label
+  body.write("br label %#{join}")
+
+  body.block(join)
+  reg = body.register
+  pieces = [] of String
+  step = 0
+  while step < answers.size
+    pieces << "[ #{answers[step]}, %#{froms[step]} ]"
+    step = step + 1
+  end
+  body.write("#{reg} = phi i32 #{pieces.join(", ")}")
+  int_val(reg)
+end
+
 # `unless` is an `if` with its arms the other way round. The parser
 # keeps them as written, so this is where the swap belongs.
 pub def emit_unless(node : UnlessNode, body : Body, known : Known,
@@ -530,6 +587,22 @@ pub def emit(node : Node, body : Body, known : Known, constants : Constants) : V
     emit_if(node, body, known, constants)
   when UnlessNode
     emit_unless(node, body, known, constants)
+  when CaseNode
+    emit_case(node, body, known, constants)
+  when TypeDeclNode
+    # `total : Int32 = 0` declares a local and gives it a value. The
+    # shape the compiler prints does not carry the value, so the node
+    # does: a zero written as a five has to arrive as a five.
+    declared = int_val("0")
+    declared = emit_one(node.value, body, known, constants) if node.value.size > 0
+    if node.target.size > 0
+      target = node.target[0]
+      case target
+      when VarNode
+        body.write("store #{declared.kind} #{declared.text}, ptr #{body.slot_of(target.name, declared.kind, declared.shape)}")
+      end
+    end
+    declared
   when AndNode
     emit_shortcut(node.left, node.right, "false", body, known, constants)
   when OrNode

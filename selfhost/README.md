@@ -541,12 +541,13 @@ into 6, and restoring the file byte-for-byte turns it back.
       arith.iyi agrees: exit 11
       branch.iyi agrees: exit 16
       control.iyi agrees: exit 16
+      dispatch.iyi agrees: exit 31
       loop.iyi agrees: exit 32
       nested.iyi agrees: exit 14
       print.iyi agrees: exit 3, 60 bytes out
       reference.iyi agrees: exit 8
       struct.iyi agrees: exit 10
-      agree 8, differ 0
+      agree 9, differ 0
 
 Every other slice diffs an artifact: a token stream, a tree, a
 declaration, a type. Two independent backends do not write the same LLVM
@@ -564,9 +565,10 @@ Scope, and it is narrow on purpose: integer literals, `+`, `-` and `*`,
 comparisons, `if`, `while`, local assignment and lookup, arguments, a
 call to a method in the same file, `print` of a literal, and a struct
 with fields and methods, a class, which is a reference, and the rest of
-the control flow: `return`, `unless`, `&&`, `||`, `!`, `next` and
-`break`. Not here: anything that would need the prelude compiled first,
-which is measured at the end of this section. The sections
+the control flow: `return`, `unless`, `&&`, `||`, `!`, `next`, `break`,
+`case` and a typed local. Not here: anything that would need the
+prelude compiled first, which is measured at the end of this section.
+The sections
 below are the fixtures in the order they were written, and each names
 what it added and how the gate was made to fail without it.
 
@@ -771,13 +773,41 @@ predecessor it does not name. Swapping what the short circuit answers is
 the pointed one: `control.iyi` exits 17 where the current compiler exits
 16.
 
+### A case, and a local that says its type
+
+The two shapes left that need no prelude: `case` 23 with `when` 69, and
+`typedecl` 182.
+
+A `case` over values is a chain of comparisons, which is what it
+becomes once the subject is an integer. The subject is emitted once
+into a slot, because a `case` over a call must not call it again per
+arm, and each `when` gets a block that answers and a block that asks
+the next one. The `else` is whatever the last `when` fell into, and the
+`phi` names every arm that answered.
+
+A typed local cost a change to the parser rather than the emitter.
+`total : Int32 = 6` prints as a declaration and the value is not in the
+shape, so the tree the port builds could not carry it, the way
+`RequireNode` could not carry its path. The node carries it now and
+prints the same.
+
+That is also the second fixture this session that was wrong until a
+mutation proof said so. It declared `total : Int32 = 0`, so ignoring
+the value entirely still answered 25: the fixture exercised the
+declaration and never the value. It declares 6 now, and ignoring the
+value answers 25 where the current compiler answers 31.
+
+Load-bearing: inverting the `when` comparison makes every arm answer
+the wrong one, and `dispatch.iyi` exits 15 where the current compiler
+exits 31.
+
 ### What the bootstrap still needs
 
 The same count says what is left, and it is not another handful of
-nodes. In the port's own source: `generic` 241, `typedecl` 182, `cast`
-137, `stringinterpolation` 126, `arrayliteral` 109, and a scattering of
-`procliteral`, `hashliteral` and `yield`. Every one of them needs a type
-the prelude declares - a `String`, an `Array`, a type argument, a
+nodes. In the port's own source: `generic` 241, `cast` 137,
+`stringinterpolation` 126, `arrayliteral` 109, and a scattering of
+`procliteral`, `hashliteral` and `yield`. Every one of them needs a
+type the prelude declares - a `String`, an `Array`, a type argument, a
 closure - compiled first.
 
 That is the wall between this slice and the bootstrap, and it is a

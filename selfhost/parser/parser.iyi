@@ -922,8 +922,15 @@ end
 pub class TypeDeclNode
   getter target : Array(Node)
   getter declared : Array(Node)
+  # What the declaration was given, when it was given one. The shape
+  # does not print it and codegen cannot do without it.
+  getter value : Array(Node)
 
   def initialize(@target : Array(Node), @declared : Array(Node))
+    @value = [] of Node
+  end
+
+  def initialize(@target : Array(Node), @declared : Array(Node), @value : Array(Node))
   end
 end
 
@@ -2958,13 +2965,15 @@ pub class Parser
         end
         declared = parse_type
         # `@@word : UInt64 = 0` declares and assigns in one line. The
-        # declaration is the shape; the value is read so it does not
-        # become a statement of its own.
+        # declaration is the shape the compiler prints, and the value is
+        # not in it, so the node carries it: a pass that has to emit the
+        # local cannot read a zero that was written as a five.
+        value = [] of Node
         if peek.kind == "="
           advance
-          parse_expression
+          value << parse_expression
         end
-        return TypeDeclNode.new(target, [declared] of Node).as(Node)
+        return TypeDeclNode.new(target, [declared] of Node, value).as(Node)
       end
     end
 
