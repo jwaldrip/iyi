@@ -562,6 +562,7 @@ into 6, and restoring the file byte-for-byte turns it back.
 ## The codegen slice
 
     bash selfhost/codegen/diff.sh
+      across.iyi agrees: exit 29
       arith.iyi agrees: exit 11
       branch.iyi agrees: exit 16
       control.iyi agrees: exit 16
@@ -574,7 +575,7 @@ into 6, and restoring the file byte-for-byte turns it back.
       struct.iyi agrees: exit 10
       text.iyi agrees: exit 87, 6 bytes out
       wide.iyi agrees: exit 88
-      agree 12, differ 0
+      agree 13, differ 0
 
 Every other slice diffs an artifact: a token stream, a tree, a
 declaration, a type. Two independent backends do not write the same LLVM
@@ -593,7 +594,8 @@ comparisons, `if`, `while`, local assignment and lookup, arguments, a
 call to a method in the same file, `print` of a literal, and a struct
 with fields and methods, a class, which is a reference, a generic type
 with its instantiations, a string as a value, the integer tower with
-its conversions, and the rest of the control flow: `return`,
+its conversions, a program spread over more than one file, and the
+rest of the control flow: `return`,
 `unless`, `&&`, `||`, `!`, `next`, `break`, `case` and a typed local.
 Not here: anything that would need the prelude compiled first, which
 is measured at the end of this section.
@@ -932,6 +934,33 @@ unsigned one differ by exactly 256, and an exit status keeps only what
 is under that, so the fixture divides the byte rather than adding it.
 A fixture that cannot see the defect is not a gate, and multiplying it
 by three does not help: that difference is 768.
+
+### More than one file
+
+Every fixture until here was one file, which let the emitter read the
+tree it was handed and emit what was in it. The bootstrap cannot be
+one file: `src/iyi/prelude.iyi` is fourteen of them and one program,
+and reaching a method the prelude writes means reading the file that
+wrote it first.
+
+A require names a file, relative to the file that wrote it, and what
+it brings is read as if it had been written there. The emitter reads
+the required file before the requiring one and puts its items in
+front, and reads a file once however many paths reach it:
+`across.iyi` requires two files and the second requires the first.
+
+The prelude is the require it does not follow, and that is the whole
+boundary this slice is drawn against. Every fixture requires
+`src/iyi/prelude` because the compiler it is measured against needs
+it to build them at all; the port borrows `write`, `malloc` and the
+string layout out of it instead. Following it was the first thing
+that happened when requires were wired, and ten fixtures stopped
+assembling at once.
+
+Load-bearing both ways. Following no require at all leaves `tripled`
+undefined and `across.iyi` exits 0 where the current compiler exits
+29; reading a file once per path that reaches it emits `tripled`
+twice, and a module with two of a function in it is not a module.
 
 ### What the bootstrap still needs
 

@@ -1,0 +1,18 @@
+# A file with no program in it, required by the fixture beside it.
+# What a require brings is read as if it had been written there, which
+# is how `src/iyi/prelude.iyi` is fourteen files and one program.
+
+def tripled(value : Int32) : Int32
+  value * 3
+end
+
+struct Tally
+  @count : Int32
+
+  def initialize(@count : Int32)
+  end
+
+  def plus(more : Int32) : Int32
+    @count + more
+  end
+end

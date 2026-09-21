@@ -1,0 +1,9 @@
+# A second required file that requires the first. Two paths reach
+# `helpers.iyi`, and it is read once: emitting it twice is a module
+# with two of every function in it, which is not a module.
+
+require "./helpers"
+
+def quadrupled(value : Int32) : Int32
+  tripled(value) + value
+end

@@ -23,7 +23,7 @@ module main
 import std/file
 import parser/parser
 using std/file::{File}
-using parser/parser::{Parser, Node, IfNode, UnlessNode, WhileNode, ReturnNode, NextNode, BreakNode, AndNode, OrNode, NotNode, BoolNode, CaseNode, WhenNode, TypeDeclNode, GenericNode, StrNode, NumNode, VarNode, IvarNode, AssignNode, ExprsNode, DefNode, ArgNode, CallNode, ClassDefNode, PathNode, VisibilityModifierNode}
+using parser/parser::{Parser, Node, RequireNode, IfNode, UnlessNode, WhileNode, ReturnNode, NextNode, BreakNode, AndNode, OrNode, NotNode, BoolNode, CaseNode, WhenNode, TypeDeclNode, GenericNode, StrNode, NumNode, VarNode, IvarNode, AssignNode, ExprsNode, DefNode, ArgNode, CallNode, ClassDefNode, PathNode, VisibilityModifierNode}
 
 # A value, and what shape it has. Everything in this slice is either an
 # `i32` or a struct passed by value, and knowing which decides how it is
@@ -1286,12 +1286,70 @@ pub def top_items(tree : Node) : Array(Node)
   end
 end
 
+# A require names a file, relative to the file that wrote it, and what
+# it brings is read as if it had been written there. So the required
+# file's items are put in front of the requiring file's, and a file
+# already read is not read again: two files requiring one third are
+# one copy of it, which is what `require` means.
+pub def read_source(path : String, into : Array(Node), seen : Array(String)) : Nil
+  return if seen.includes?(path)
+  seen << path
+  tree = Parser.new(File.read(path)).parse
+  here = directory_of(path)
+  top_items(tree).each do |node|
+    case node
+    when RequireNode
+      next if node.path == ""
+      found = resolve_require(node.path, here)
+      # The prelude is the one require this slice does not follow. It
+      # is the boundary the whole slice is drawn against: `write`,
+      # `malloc` and the string layout are borrowed from it rather than
+      # compiled, and every fixture requires it because the compiler
+      # this is measured against needs it to build them at all.
+      next if prelude?(found)
+      read_source(found, into, seen)
+    else
+      into << node
+    end
+  end
+end
+
+# Anything under `src/iyi` is the prelude: fourteen files and one
+# program, and the wall this slice stops at.
+pub def prelude?(path : String) : Bool
+  index = 0
+  while index + 8 <= path.bytesize
+    return true if path[index, 8] == "src/iyi/"
+    index = index + 1
+  end
+  false
+end
+
+# `require "./shared/helpers"` from `fixtures/across.iyi` is
+# `fixtures/shared/helpers.iyi`. A relative require is the only shape
+# the fixtures write, and the only one the prelude writes either.
+pub def resolve_require(written : String, here : String) : String
+  bare = written
+  bare = written[2, written.bytesize - 2] if written.bytesize > 2 && written[0] == '.' && written[1] == '/'
+  "#{here}/#{bare}.iyi"
+end
+
+pub def directory_of(path : String) : String
+  cut = -1
+  index = 0
+  while index < path.bytesize
+    cut = index if path[index] == '/'
+    index = index + 1
+  end
+  cut < 0 ? "." : path[0, cut]
+end
+
 path = Program.args[0]?
 if path.nil?
   puts "usage: emit <file.iyi>"
 else
-  tree = Parser.new(File.read(path)).parse
-  items = top_items(tree)
+  items = [] of Node
+  read_source(path, items, [] of String)
   known = Known.new
   collect(items, known)
 
