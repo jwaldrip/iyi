@@ -44,7 +44,7 @@ for f in "${files[@]}"; do
     echo "  NO ORACLE $(basename "$f")"
     continue
   fi
-  "$WORK/declare" "$f" > "$WORK/b.txt" 2>/dev/null
+  IYI_PATH="$REPO/src:$REPO/selfhost" "$WORK/declare" "$f" > "$WORK/b.txt" 2>/dev/null
   if diff -q "$WORK/a.txt" "$WORK/b.txt" > /dev/null; then
     agree=$((agree + 1))
   else
