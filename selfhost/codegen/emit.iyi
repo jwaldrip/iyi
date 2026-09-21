@@ -175,11 +175,15 @@ pub class Known
   @names : Array(String)
   @nodes : Array(DefNode)
   @shapes : Array(Shape)
+  @wanted : Array(String)
+  @taken : Array(String)
 
   def initialize
     @names = [] of String
     @nodes = [] of DefNode
     @shapes = [] of Shape
+    @wanted = [] of String
+    @taken = [] of String
   end
 
   def add(node : DefNode) : Nil
@@ -193,6 +197,23 @@ pub class Known
 
   def knows?(name : String) : Bool
     !@names.index(name).nil?
+  end
+
+  # The methods the program has reached, and the ones already written
+  # out. A name goes on the first list when a call to it is emitted and
+  # moves to the second when its body is.
+  def want(name : String) : Nil
+    @wanted << name unless @wanted.includes?(name) || @taken.includes?(name)
+  end
+
+  def wanted : Array(String)
+    @wanted
+  end
+
+  def take : String
+    name = @wanted.shift
+    @taken << name
+    name
   end
 
   # What a top-level method says it answers, which a call has to know
@@ -1024,6 +1045,7 @@ pub def emit_call(node : CallNode, body : Body, known : Known, constants : Const
     end
     kind = answered.size == 0 || answered[0].ret.size == 0 ? "i32" : kind_of(path_of(answered[0].ret), Shape.new("", false), known)
     named = answered.size == 0 || answered[0].ret.size == 0 ? "" : path_of(answered[0].ret)
+    known.want(node.name)
     reg = body.register
     body.write("#{reg} = call #{kind} @#{mangle(node.name)}(#{arguments(written)})")
     return Val.new(reg, kind, named)
@@ -1355,8 +1377,16 @@ else
 
   constants = Constants.new
   functions = ""
-  known.nodes.each { |node| functions = functions + emit_def(node, known, constants) + "\n" }
-  functions = functions + emit_main(items, known, constants)
+  # The program first, and then what it reached. A declaration nobody
+  # calls is not emitted: the prelude declares thousands of methods and
+  # a program calls a handful, so a bootstrap has to follow the calls
+  # rather than the file. Emitting one body reaches more, so the list
+  # is drained rather than walked.
+  functions = emit_main(items, known, constants) + "\n"
+  while known.wanted.size > 0
+    found = known.def_named(known.take)
+    functions = functions + emit_def(found[0], known, constants) + "\n" if found.size > 0
+  end
 
   # Walked by index rather than with `each`: emitting one instance can
   # ask for another, and the list grows while it is being read. The

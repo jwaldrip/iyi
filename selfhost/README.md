@@ -962,6 +962,25 @@ undefined and `across.iyi` exits 0 where the current compiler exits
 29; reading a file once per path that reaches it emits `tripled`
 twice, and a module with two of a function in it is not a module.
 
+### Reaching, not reading
+
+Reading more than one file makes the other half of the bootstrap
+visible immediately. A file is not a list of things to emit: the
+prelude declares thousands of methods and a program calls a handful,
+and emitting a declaration nobody reaches means compiling shapes the
+program never asked for.
+
+So emission follows the calls. The program is emitted first, a call
+puts the name it reached on a list, and the list is drained rather
+than walked, because emitting one body reaches more. What nobody
+calls is never written out.
+
+`shared/helpers.iyi` carries a method the emitter cannot compile, a
+`Float64` this slice does not have, and `across.iyi` is unaffected by
+it. Emitting every declaration instead - which is what this did
+before - writes `ret i32 2.5` and the module stops assembling. That
+is the shape of every file the bootstrap will read.
+
 ### What the bootstrap still needs
 
 The same count says what is left. In the port's own source: `cast`

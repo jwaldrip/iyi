@@ -16,3 +16,11 @@ struct Tally
     @count + more
   end
 end
+
+# Nobody calls this, and the emitter cannot compile it: a Float64 is
+# not one of the shapes this slice carries. A bootstrap reads files
+# full of methods it will never reach, so reaching is what decides
+# what gets emitted, not reading.
+def ratio : Float64
+  2.5
+end
