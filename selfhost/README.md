@@ -412,11 +412,23 @@ one side's count instead of the sum, or telling it the byte count
 instead of the character count, each turns it red, and restoring the
 file byte for byte turns it green.
 
-The second is measured and not yet fixed. `Pointer#copy_from` is a
-byte-at-a-time loop where the platform has `memcpy`, and it is the
-other half of that profile. It is a prelude change that touches every
-platform this compiler targets, so it wants its own slice and its own
-gates rather than a ride on this one.
+The second half of that profile is `Pointer#copy_from`, which copies
+one byte at a time, and the obvious answer is closed. `memcpy` would
+mean calling libc, and on Linux this prelude calls libc for nothing:
+it issues its own syscalls for `write`, `exit` and the allocator, and
+`nm -u` on the emitted object prints nothing at all. That is a stated
+property of the fork, not an accident, and the `lib LibC` blocks in
+`prelude.iyi` bear it out: there are seven, under `darwin` and
+`win32`, and none under `linux`.
+
+What is left is a word at a time rather than a byte, written in iyi.
+That is worth doing and it is not free: the destination of the second
+copy in `+` starts at `bytesize`, which is not eight-byte aligned, and
+this compiler emits for nine targets including wasm32 and 32-bit
+arm. An unaligned 64-bit load is fine on two of them and a question on
+the rest, so it wants alignment analysis and its own gates rather than
+a ride on this change. Measured, scoped, and deliberately not taken
+here.
 
 Reading the prelude without expanding it is still what the codegen
 slice does, and the first slice that needs a macro-written declaration
