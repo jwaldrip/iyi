@@ -33,58 +33,58 @@ braces = [] of Int32
 lines = [] of String
 begin
   loop do
-  # Reset before every call: the lexer sets it back to true as it goes, on
-  # the assumption a parser is driving and will say otherwise each time.
-  lexer.slash_is_regex = false
-  lexer.wants_regex = false
-  token = in_string ? lexer.next_string_token(lexer.token.delimiter_state) : lexer.next_token
-  case token.type
-  when .delimiter_start?
-    in_string = true
-  when .delimiter_end?
-    # A string written inside an interpolation ends back into that
-    # interpolation's code, not into the string around it. Only the `}`
-    # that closes the interpolation resumes a body, so popping the
-    # resume stack here threw away the state that `}` needed and the
-    # quote after it opened a second string that ran to end of file.
-    in_string = false
-  when .interpolation_start?
-    # The body is code until the `}` that matches this one.
-    resume << lexer.token.delimiter_state
-    braces << 0
-    in_string = false
-  when .op_lcurly?
-    braces[-1] = braces[-1] + 1 unless braces.empty?
-  when .op_rcurly?
-    unless braces.empty?
-      if braces[-1] == 0
-        braces.pop
-        state = resume.pop?
-        if state
-          lexer.token.delimiter_state = state
-          in_string = true
+    # Reset before every call: the lexer sets it back to true as it goes, on
+    # the assumption a parser is driving and will say otherwise each time.
+    lexer.slash_is_regex = false
+    lexer.wants_regex = false
+    token = in_string ? lexer.next_string_token(lexer.token.delimiter_state) : lexer.next_token
+    case token.type
+    when .delimiter_start?
+      in_string = true
+    when .delimiter_end?
+      # A string written inside an interpolation ends back into that
+      # interpolation's code, not into the string around it. Only the `}`
+      # that closes the interpolation resumes a body, so popping the
+      # resume stack here threw away the state that `}` needed and the
+      # quote after it opened a second string that ran to end of file.
+      in_string = false
+    when .interpolation_start?
+      # The body is code until the `}` that matches this one.
+      resume << lexer.token.delimiter_state
+      braces << 0
+      in_string = false
+    when .op_lcurly?
+      braces[-1] = braces[-1] + 1 unless braces.empty?
+    when .op_rcurly?
+      unless braces.empty?
+        if braces[-1] == 0
+          braces.pop
+          state = resume.pop?
+          if state
+            lexer.token.delimiter_state = state
+            in_string = true
+          end
+        else
+          braces[-1] = braces[-1] - 1
         end
-      else
-        braces[-1] = braces[-1] - 1
       end
     end
-  end
-  break if token.type.eof?
-  value =
-    case v = token.value
-    when Nil    then token.type.to_s
-    when Char   then v.to_s
-    when String then v
-    else             v.to_s
-    end
-  # Same reason as the port: escapes print as escapes, so one token stays
-  # one line. A carriage return is one of them, and leaving it raw made a
-  # `\r` in a string look like a difference the port had invented.
-  shown = value.gsub("\\", "\\\\").gsub("\n", "\\n").gsub("\r", "\\r")
-    .gsub("\t", "\\t").gsub("\0", "\\0")
-  lines << "#{token.type}\t#{token.line_number}\t#{token.column_number}\t#{shown}"
-  count += 1
-  break if count > 200_000
+    break if token.type.eof?
+    value =
+      case v = token.value
+      when Nil    then token.type.to_s
+      when Char   then v.to_s
+      when String then v
+      else             v.to_s
+      end
+    # Same reason as the port: escapes print as escapes, so one token stays
+    # one line. A carriage return is one of them, and leaving it raw made a
+    # `\r` in a string look like a difference the port had invented.
+    shown = value.gsub("\\", "\\\\").gsub("\n", "\\n").gsub("\r", "\\r")
+      .gsub("\t", "\\t").gsub("\0", "\\0")
+    lines << "#{token.type}\t#{token.line_number}\t#{token.column_number}\t#{shown}"
+    count += 1
+    break if count > 200_000
   end
 rescue error
   # The lexer raised, so this file has no oracle rather than a short one.
