@@ -534,3 +534,56 @@ is not.
 The gate is load-bearing: making the interpolation branch match a
 character that never appears turns the sample corpus from 27 agreeing
 into 6, and restoring the file byte-for-byte turns it back.
+
+## The codegen slice
+
+    bash selfhost/codegen/diff.sh
+      arith.iyi agrees: exit 11
+      nested.iyi agrees: exit 14
+      agree 2, differ 0
+
+Every other slice diffs an artifact: a token stream, a tree, a
+declaration, a type. Two independent backends do not write the same LLVM
+IR, and diffing the text would measure spelling rather than meaning. So
+this slice compares what the programs *do*. Each fixture ends in
+`__iyi_exit`, which is the prelude's own exit, so it is an ordinary iyi
+program the current compiler builds and runs. The port emits LLVM IR,
+`clang` assembles it, and the gate compares the status the two processes
+exit with.
+
+A fixture that exits 0 either way would pass for free, so the gate
+refuses one and says why rather than counting it.
+
+Scope, and it is narrow on purpose: integer literals, `+`, `-` and `*`,
+local assignment and lookup, arguments, and a call to a method declared
+in the same file. Not here: any other type, `if`, loops, strings,
+allocation, a method on anything but an integer. The arithmetic is the
+one part that needs no runtime underneath the emitted code, which is
+what makes it a first slice rather than a bootstrap.
+
+Two things the slice is allowed to assume, and both are the prelude's
+doing. The operators are primitives, so `@[Primitive(:binary)] def
++(other : Int32) : self` is an instruction and `add` can be emitted
+without reading a body. And every value is an `Int32`, so there is no
+boxing and nothing to size.
+
+A local lives in a slot rather than a register, so an assignment can
+rewrite it without this pass building a phi. The first slice has no
+branches, so nothing needs one, and `if` will be the slice that does.
+
+The second fixture is there because the first is one operation per line,
+which an emitter reading left to right would also get right.
+`triple(a) + b * 2 - 1` is three operators of two precedences with a
+call in front of them, and what decides the answer is the shape the
+parser built.
+
+Writing this cost an hour to a keyword. `out = body.register` is not an
+assignment, because `out` is a keyword, and the block it was written in
+never closed: the error the compiler printed was `can't export inside
+def` at the next method, thirty lines below. The port's own parser reads
+`out` as a keyword too, so it agrees with the compiler about the file
+and neither says why.
+
+The gate is load-bearing: emitting `add` where the instruction is `mul`
+turns 11 into 10 and 14 into 8 and exits non-zero, and restoring the
+file byte-for-byte turns it back.

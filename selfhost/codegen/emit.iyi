@@ -1,0 +1,264 @@
+module main
+
+# The first codegen slice, written in iyi: LLVM IR for a program whose
+# every value is an `Int32`.
+#
+# The other slices diff a tree or a type against the current compiler's.
+# Two independent backends do not write the same IR, so comparing the
+# text would measure spelling. What this slice compares is what the
+# program *does*: the fixture ends in `__iyi_exit`, both compilers turn
+# it into an executable, and the gate diffs the exit status.
+#
+# Scope, and it is narrow on purpose: integer literals, `+`, `-` and `*`,
+# local assignment and lookup, arguments, and a call to a method declared
+# in the same file. Not here: any other type, `if`, loops, strings,
+# allocation, a method on anything but an integer. Each of those wants
+# its own diffed slice rather than a guess, and the arithmetic is the one
+# that needs no runtime underneath it.
+#
+# The operators are the prelude's primitives. `@[Primitive(:binary)] def
+# +(other : Int32) : self` is an instruction rather than a body, which is
+# why this slice can emit `add` without reading the prelude at all.
+
+import std/file
+import parser/parser
+using std/file::{File}
+using parser/parser::{Parser, Node, NumNode, VarNode, AssignNode, ExprsNode, DefNode, ArgNode, CallNode, RequireNode, VisibilityModifierNode}
+
+# The methods the file declares, by name, so a call can find the one it
+# reaches and know how many arguments to pass.
+pub class Methods
+  @names : Array(String)
+  @nodes : Array(DefNode)
+
+  def initialize
+    @names = [] of String
+    @nodes = [] of DefNode
+  end
+
+  def add(node : DefNode) : Nil
+    @names << node.name
+    @nodes << node
+  end
+
+  def names : Array(String)
+    @names
+  end
+
+  def nodes : Array(DefNode)
+    @nodes
+  end
+
+  def knows?(name : String) : Bool
+    !@names.index(name).nil?
+  end
+end
+
+# One function's worth of instructions. `value` names what an expression
+# answered: either a literal, which needs no instruction, or a register.
+pub class Body
+  @lines : String
+  @next : Int32
+  @slots : Array(String)
+
+  def initialize
+    @lines = ""
+    @next = 0
+    @slots = [] of String
+  end
+
+  def text : String
+    @lines
+  end
+
+  def write(line : String) : Nil
+    @lines = @lines + "  " + line + "\n"
+  end
+
+  # A fresh register. LLVM names them itself when they are unnamed, and
+  # naming them here keeps the emitted text readable and the counter
+  # under this pass's control rather than the printer's.
+  def register : String
+    name = "%t#{@next}"
+    @next = @next + 1
+    name
+  end
+
+  # A local lives in a slot rather than a register, so an assignment can
+  # rewrite it without this pass having to build a phi. The first slice
+  # has no branches, so nothing else needs one either.
+  def slot(name : String) : String
+    unless @slots.includes?(name)
+      @slots << name
+      write("%#{name}.slot = alloca i32")
+    end
+    "%#{name}.slot"
+  end
+
+  def slot?(name : String) : Bool
+    @slots.includes?(name)
+  end
+end
+
+# `+`, `-` and `*` on integers are instructions. The prelude declares
+# them as primitives, so there is no body to emit and no call to make.
+pub def instruction(name : String) : String
+  return "add" if name == "+"
+  return "sub" if name == "-"
+  return "mul" if name == "*"
+  ""
+end
+
+pub def emit(node : Node, body : Body, methods : Methods) : String
+  case node
+  when NumNode
+    node.value
+  when VarNode
+    place = body.slot(node.name)
+    reg = body.register
+    body.write("#{reg} = load i32, ptr #{place}")
+    reg
+  when AssignNode
+    value = emit_one(node.value, body, methods)
+    if node.target.size > 0
+      target = node.target[0]
+      case target
+      when VarNode
+        body.write("store i32 #{value}, ptr #{body.slot(target.name)}")
+      end
+    end
+    value
+  when ExprsNode
+    answer = "0"
+    node.items.each { |item| answer = emit(item, body, methods) }
+    answer
+  when VisibilityModifierNode
+    emit_one(node.body, body, methods)
+  when CallNode
+    emit_call(node, body, methods)
+  else
+    "0"
+  end
+end
+
+pub def emit_one(nodes : Array(Node), body : Body, methods : Methods) : String
+  return "0" if nodes.size == 0
+  answer = "0"
+  nodes.each { |node| answer = emit(node, body, methods) }
+  answer
+end
+
+pub def emit_call(node : CallNode, body : Body, methods : Methods) : String
+  # `a + b` is a call on a value, and the value is an integer: the
+  # operator is an instruction rather than a function.
+  op = instruction(node.name)
+  if op != "" && node.recv.size == 1 && node.args.size == 1
+    left = emit(node.recv[0], body, methods)
+    right = emit(node.args[0], body, methods)
+    reg = body.register
+    body.write("#{reg} = #{op} i32 #{left}, #{right}")
+    return reg
+  end
+
+  if node.recv.size == 0 && methods.knows?(node.name)
+    written = [] of String
+    node.args.each { |arg| written << emit(arg, body, methods) }
+    reg = body.register
+    body.write("#{reg} = call i32 @#{mangle(node.name)}(#{arguments(written)})")
+    return reg
+  end
+
+  # A name with no method and no instruction is a local read as a call,
+  # which is what a bare `total` is before the parser knows it is one.
+  if node.recv.size == 0 && node.args.size == 0 && body.slot?(node.name)
+    place = body.slot(node.name)
+    reg = body.register
+    body.write("#{reg} = load i32, ptr #{place}")
+    return reg
+  end
+  "0"
+end
+
+pub def arguments(written : Array(String)) : String
+  pieces = [] of String
+  written.each { |value| pieces << "i32 #{value}" }
+  pieces.join(", ")
+end
+
+# The name a method is emitted under. Prefixed, because `add` and `main`
+# are names a C runtime already has and an operator is not a name at all.
+pub def mangle(name : String) : String
+  "iyi_#{name}"
+end
+
+pub def parameters(node : DefNode) : String
+  pieces = [] of String
+  index = 0
+  node.args.each do |arg|
+    case arg
+    when ArgNode
+      pieces << "i32 %arg#{index}"
+      index = index + 1
+    end
+  end
+  pieces.join(", ")
+end
+
+pub def emit_def(node : DefNode, methods : Methods) : String
+  body = Body.new
+  index = 0
+  node.args.each do |arg|
+    case arg
+    when ArgNode
+      # An argument arrives in a register and a local lives in a slot, so
+      # the first thing a body does is put it there.
+      body.write("store i32 %arg#{index}, ptr #{body.slot(arg.name)}")
+      index = index + 1
+    end
+  end
+  answer = emit_one(node.body, body, methods)
+  "define i32 @#{mangle(node.name)}(#{parameters(node)}) {\nentry:\n#{body.text}  ret i32 #{answer}\n}\n"
+end
+
+# The program's own entry. `__iyi_exit(e)` is what the fixture ends on
+# and what it is worth, so it is emitted as the return from `main`: the
+# status a process exits with is the one thing both compilers can be
+# asked for.
+pub def emit_main(nodes : Array(Node), methods : Methods) : String
+  body = Body.new
+  answer = "0"
+  nodes.each do |node|
+    case node
+    when CallNode
+      if node.name == "__iyi_exit" && node.args.size == 1
+        answer = emit(node.args[0], body, methods)
+      end
+    end
+  end
+  "define i32 @main() {\nentry:\n#{body.text}  ret i32 #{answer}\n}\n"
+end
+
+pub def top_items(tree : Node) : Array(Node)
+  case tree
+  when ExprsNode then tree.items
+  else                [tree] of Node
+  end
+end
+
+path = Program.args[0]?
+if path.nil?
+  puts "usage: emit <file.iyi>"
+else
+  tree = Parser.new(File.read(path)).parse
+  items = top_items(tree)
+  methods = Methods.new
+  items.each do |node|
+    case node
+    when DefNode then methods.add(node)
+    end
+  end
+
+  puts "; #{path}, emitted by selfhost/codegen/emit.iyi"
+  methods.nodes.each { |node| puts emit_def(node, methods) }
+  puts emit_main(items, methods)
+end
