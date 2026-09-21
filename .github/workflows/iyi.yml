@@ -317,13 +317,19 @@ jobs:
       # missing everything a directory deeper. A gate that shrinks
       # without saying so is the failure this workflow exists against,
       # so it counts what it read and says the number.
+      #
+      # `shell: bash` because this workflow's default is `sh -e`, where
+      # `mapfile` and `<(...)` are a syntax error rather than a feature
+      # that quietly does less.
       - name: The lexer answers what the current lexer answers
+        shell: bash
         run: |
           mapfile -t port < <(find selfhost -name '*.iyi' | sort)
           echo "port files: ${#port[@]}"
           bash selfhost/lexer/diff.sh "${port[@]}" src/iyi/*.iyi
 
       - name: The parser builds the tree the current parser builds
+        shell: bash
         run: |
           mapfile -t port < <(find selfhost -name '*.iyi' | sort)
           echo "port files: ${#port[@]}"
