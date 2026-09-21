@@ -32,6 +32,31 @@ wrong first and made the port look better or worse than it was:
   disagreeing about it.
 - The oracle prints **branches and members**, not just node names. `(if)`
   on its own lets a port that mis-read a condition agree with it.
+- The corpus is listed with `find`, not with `selfhost/**/*.iyi`. That
+  glob is `selfhost/*/*.iyi` unless `globstar` is on, which is 10 files
+  where the port has 40. It matches, it passes, and it says nothing
+  about the thirty it never read. Every count below that says "the
+  port's own source" is 40 files: the parser agrees on all 40, and the
+  lexer on 55 of those plus the prelude.
+
+## Where CI runs them
+
+Nowhere, until now. Every gate here was a script a person ran by hand,
+so each number in this file held on one laptop and a regression would
+have landed green. `.github/workflows/iyi.yml` now runs the string
+invariants, the lexer, the parser, the declaration pass and inference
+in the `samples` job, where `bin/iyi` and `bin/crystal` are already
+built, and the codegen slice in the `darwin` job, which is the one
+with a `clang` to assemble what the port emits.
+
+Two things had to change for that to be honest. The gate scripts
+replaced `PATH` outright with a Homebrew-first list, which is this
+laptop's layout and nobody else's; they now prepend it when it exists
+and leave the runner's own toolchain alone otherwise. And the
+`windows-probe` job answered a failed link with `exit 0`, which
+skipped the twenty runs underneath it and left the job green on a
+build that never linked. Its three sibling steps already exited with
+the linker's status.
 
 ## Where it is
 

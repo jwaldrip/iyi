@@ -12,8 +12,14 @@
 # A fixture that exits 0 either way would pass for free, so a fixture is
 # required to exit non-zero and the gate says so rather than counting it.
 set -u
-export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
-export LIBRARY_PATH=/opt/homebrew/opt/bdw-gc/lib
+# Homebrew is where this laptop keeps clang and libgc. On a machine
+# without it these add nothing and, unlike replacing PATH outright,
+# they take nothing away either: a runner that puts its toolchain
+# somewhere else keeps it.
+if [ -d /opt/homebrew/bin ]; then export PATH="/opt/homebrew/bin:$PATH"; fi
+if [ -d /opt/homebrew/opt/bdw-gc/lib ]; then
+  export LIBRARY_PATH="/opt/homebrew/opt/bdw-gc/lib:${LIBRARY_PATH:-}"
+fi
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"

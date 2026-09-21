@@ -295,6 +295,47 @@ jobs:
       - name: Build the samples again with their modules' source deleted
         run: bash bench/samples_roundtrip.sh
 
+      # What a string knows about itself. The prelude fills in a
+      # `String`'s two counts, and a wrong one is a number that comes
+      # out wrong somewhere far away rather than a crash: nothing else
+      # here would catch it, because the specs are the compiler's, the
+      # roundtrip compares a program against itself, and no sample has
+      # expected output pinned.
+      - name: A string knows its own two counts
+        run: bash bench/string_invariants.sh
+
+      # The self-hosting port, against the compiler it is a port of.
+      # Every one of these was a script a person ran by hand, which
+      # meant the answers in `selfhost/README.md` held on one laptop and
+      # a regression landed green. The oracles are `bin/crystal`, built
+      # above; the port is `bin/iyi`, built above; neither needs the
+      # network and both write only under `mktemp -d`.
+      #
+      # The corpus is listed with `find` rather than `selfhost/**/*.iyi`
+      # because that glob is `selfhost/*/*.iyi` unless `globstar` is on:
+      # 10 files instead of 40, still matching, still passing, quietly
+      # missing everything a directory deeper. A gate that shrinks
+      # without saying so is the failure this workflow exists against,
+      # so it counts what it read and says the number.
+      - name: The lexer answers what the current lexer answers
+        run: |
+          mapfile -t port < <(find selfhost -name '*.iyi' | sort)
+          echo "port files: ${#port[@]}"
+          bash selfhost/lexer/diff.sh "${port[@]}" src/iyi/*.iyi
+
+      - name: The parser builds the tree the current parser builds
+        run: |
+          mapfile -t port < <(find selfhost -name '*.iyi' | sort)
+          echo "port files: ${#port[@]}"
+          bash selfhost/parser/diff.sh
+          bash selfhost/parser/diff.sh "${port[@]}"
+
+      - name: The declaration pass declares what the semantic pass does
+        run: bash selfhost/semantic/diff.sh
+
+      - name: Inference answers the types the semantic pass answers
+        run: bash selfhost/semantic/infer_diff.sh
+
       # III.4, built in III.4.8's order: a scheduler, cancellable blocking
       # primitives, then `group` and `Channel`. Two arms because the context
       # switch is naked asm and the optimiser is what corrupted it once; two
@@ -1238,6 +1279,15 @@ jobs:
       - name: Samples, from artifacts (R-1)
         run: bash bench/samples_roundtrip.sh
 
+      # The codegen slice, here rather than on Linux because it needs
+      # `clang` to assemble what the port emits and a macOS runner has
+      # one. Every other slice diffs an artifact; this one builds each
+      # fixture twice, once with the compiler that exists and once from
+      # the port's own LLVM IR, and compares the exit status and the
+      # bytes each program printed.
+      - name: The emitter's programs do what the compiler's programs do
+        run: bash selfhost/codegen/diff.sh
+
       - name: Token boundaries and the transport soak (III.8)
         run: |
           python3 bench/lsp_token_boundaries.py
@@ -1353,7 +1403,11 @@ jobs:
           Write-Host "linking with: $command"
           $parts = $command -split '\s+'
           & $parts[0] $parts[1..($parts.Length - 1)]
-          if ($LASTEXITCODE -ne 0) { Write-Host "link failed with $LASTEXITCODE"; exit 0 }
+          # Exits with the linker's status, not 0. It used to exit 0,
+          # which skipped the twenty runs below and left the job green
+          # on a build that never linked: the three steps under this one
+          # already do it the right way round.
+          if ($LASTEXITCODE -ne 0) { Write-Host "link failed with $LASTEXITCODE"; exit $LASTEXITCODE }
 
           # Normalised before comparing, both sides: `Out-String` hands back CRLF
           # and the reference was written on Linux. The first version of this

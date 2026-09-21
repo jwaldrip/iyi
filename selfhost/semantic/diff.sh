@@ -11,8 +11,14 @@
 # and this pass resolves no imports. They are reported as having no
 # oracle rather than skipped, so the number says what it is measuring.
 set -u
-export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
-export LIBRARY_PATH=/opt/homebrew/opt/bdw-gc/lib
+# Homebrew is where this laptop keeps clang and libgc. On a machine
+# without it these add nothing and, unlike replacing PATH outright,
+# they take nothing away either: a runner that puts its toolchain
+# somewhere else keeps it.
+if [ -d /opt/homebrew/bin ]; then export PATH="/opt/homebrew/bin:$PATH"; fi
+if [ -d /opt/homebrew/opt/bdw-gc/lib ]; then
+  export LIBRARY_PATH="/opt/homebrew/opt/bdw-gc/lib:${LIBRARY_PATH:-}"
+fi
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
