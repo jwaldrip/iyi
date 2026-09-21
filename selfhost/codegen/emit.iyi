@@ -23,7 +23,7 @@ module main
 import std/file
 import parser/parser
 using std/file::{File}
-using parser/parser::{Parser, Node, IfNode, WhileNode, StrNode, NumNode, VarNode, IvarNode, AssignNode, ExprsNode, DefNode, ArgNode, CallNode, ClassDefNode, PathNode, VisibilityModifierNode}
+using parser/parser::{Parser, Node, IfNode, UnlessNode, WhileNode, ReturnNode, NextNode, BreakNode, AndNode, OrNode, NotNode, BoolNode, StrNode, NumNode, VarNode, IvarNode, AssignNode, ExprsNode, DefNode, ArgNode, CallNode, ClassDefNode, PathNode, VisibilityModifierNode}
 
 # A value, and what shape it has. Everything in this slice is either an
 # `i32` or a struct passed by value, and knowing which decides how it is
@@ -228,6 +228,10 @@ pub class Body
   # The struct this method belongs to, if any. Its fields are read
   # through the slot `self` arrived in.
   @holder : String
+  # The loops this pass is inside, innermost last: `next` branches to
+  # the condition of the one it is in and `break` past its end.
+  @again : Array(String)
+  @after : Array(String)
 
   def initialize(@holder : String)
     @lines = ""
@@ -237,6 +241,30 @@ pub class Body
     @slot_shapes = [] of String
     @label = "entry"
     @marks = 0
+    @again = [] of String
+    @after = [] of String
+  end
+
+  def enter_loop(again : String, after : String) : Nil
+    @again << again
+    @after << after
+  end
+
+  def leave_loop : Nil
+    @again.pop
+    @after.pop
+  end
+
+  def in_loop? : Bool
+    @again.size > 0
+  end
+
+  def loop_again : String
+    @again[@again.size - 1]
+  end
+
+  def loop_after : String
+    @after[@after.size - 1]
   end
 
   def holder : String
@@ -355,8 +383,66 @@ pub def emit_if(node : IfNode, body : Body, known : Known, constants : Constants
 
   body.block(join)
   reg = body.register
-  body.write("#{reg} = phi i32 [ #{first.text}, %#{from_first} ], [ #{second.text}, %#{from_second} ]")
-  int_val(reg)
+  kind = first.kind == second.kind ? first.kind : "i32"
+  body.write("#{reg} = phi #{kind} [ #{first.text}, %#{from_first} ], [ #{second.text}, %#{from_second} ]")
+  Val.new(reg, kind, first.shape)
+end
+
+# `unless` is an `if` with its arms the other way round. The parser
+# keeps them as written, so this is where the swap belongs.
+pub def emit_unless(node : UnlessNode, body : Body, known : Known,
+                    constants : Constants) : Val
+  condition = emit_one(node.cond, body, known, constants)
+  mark = body.mark
+  taken = "unless#{mark}"
+  other = "otherwise#{mark}"
+  join = "joined#{mark}"
+
+  body.write("br i1 #{condition.text}, label %#{other}, label %#{taken}")
+  body.block(taken)
+  first = emit_one(node.then_branch, body, known, constants)
+  from_first = body.label
+  body.write("br label %#{join}")
+
+  body.block(other)
+  second = emit_one(node.else_branch, body, known, constants)
+  from_second = body.label
+  body.write("br label %#{join}")
+
+  body.block(join)
+  reg = body.register
+  kind = first.kind == second.kind ? first.kind : "i32"
+  body.write("#{reg} = phi #{kind} [ #{first.text}, %#{from_first} ], [ #{second.text}, %#{from_second} ]")
+  Val.new(reg, kind, first.shape)
+end
+
+# `&&` and `||` answer without asking the other side when the first one
+# settles it, which is why they are blocks rather than instructions. The
+# `phi` reads `false` for an `&&` that stopped early and `true` for an
+# `||` that did, because that is the answer the short circuit gives.
+pub def emit_shortcut(left : Array(Node), right : Array(Node), settled : String,
+                      body : Body, known : Known, constants : Constants) : Val
+  mark = body.mark
+  other = "rest#{mark}"
+  join = "settled#{mark}"
+
+  first = emit_one(left, body, known, constants)
+  from_first = body.label
+  if settled == "false"
+    body.write("br i1 #{first.text}, label %#{other}, label %#{join}")
+  else
+    body.write("br i1 #{first.text}, label %#{join}, label %#{other}")
+  end
+
+  body.block(other)
+  second = emit_one(right, body, known, constants)
+  from_second = body.label
+  body.write("br label %#{join}")
+
+  body.block(join)
+  reg = body.register
+  body.write("#{reg} = phi i1 [ #{settled}, %#{from_first} ], [ #{second.text}, %#{from_second} ]")
+  Val.new(reg, "i1")
 end
 
 # A loop: the condition in a block of its own, because it is asked again
@@ -378,7 +464,9 @@ pub def emit_while(node : WhileNode, body : Body, known : Known, constants : Con
   body.write("br i1 #{condition.text}, label %#{inside}, label %#{after}")
 
   body.block(inside)
+  body.enter_loop(again, after)
   emit_one(node.body, body, known, constants)
+  body.leave_loop
   body.write("br label %#{again}")
 
   body.block(after)
@@ -440,6 +528,38 @@ pub def emit(node : Node, body : Body, known : Known, constants : Constants) : V
     emit_one(node.body, body, known, constants)
   when IfNode
     emit_if(node, body, known, constants)
+  when UnlessNode
+    emit_unless(node, body, known, constants)
+  when AndNode
+    emit_shortcut(node.left, node.right, "false", body, known, constants)
+  when OrNode
+    emit_shortcut(node.left, node.right, "true", body, known, constants)
+  when NotNode
+    value = emit_one(node.exp, body, known, constants)
+    reg = body.register
+    body.write("#{reg} = xor i1 #{value.text}, true")
+    Val.new(reg, "i1")
+  when BoolNode
+    Val.new(node.value, "i1")
+  when ReturnNode
+    # A block ends at its terminator, so what follows a `return` is
+    # written into a block of its own and nothing branches to it.
+    value = emit_one(node.value, body, known, constants)
+    body.write("ret i32 #{value.text}")
+    body.block("unreached#{body.mark}")
+    int_val("0")
+  when NextNode
+    if body.in_loop?
+      body.write("br label %#{body.loop_again}")
+      body.block("after_next#{body.mark}")
+    end
+    int_val("0")
+  when BreakNode
+    if body.in_loop?
+      body.write("br label %#{body.loop_after}")
+      body.block("after_break#{body.mark}")
+    end
+    int_val("0")
   when WhileNode
     emit_while(node, body, known, constants)
   when CallNode

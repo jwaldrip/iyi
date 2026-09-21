@@ -540,12 +540,13 @@ into 6, and restoring the file byte-for-byte turns it back.
     bash selfhost/codegen/diff.sh
       arith.iyi agrees: exit 11
       branch.iyi agrees: exit 16
+      control.iyi agrees: exit 16
       loop.iyi agrees: exit 32
       nested.iyi agrees: exit 14
       print.iyi agrees: exit 3, 60 bytes out
       reference.iyi agrees: exit 8
       struct.iyi agrees: exit 10
-      agree 7, differ 0
+      agree 8, differ 0
 
 Every other slice diffs an artifact: a token stream, a tree, a
 declaration, a type. Two independent backends do not write the same LLVM
@@ -562,9 +563,10 @@ way, so the gate refuses one and says why rather than counting it.
 Scope, and it is narrow on purpose: integer literals, `+`, `-` and `*`,
 comparisons, `if`, `while`, local assignment and lookup, arguments, a
 call to a method in the same file, `print` of a literal, and a struct
-with fields and methods, and a class, which is a reference. Not here:
-any other type, and nothing that the prelude would have to be compiled
-for. The sections
+with fields and methods, a class, which is a reference, and the rest of
+the control flow: `return`, `unless`, `&&`, `||`, `!`, `next` and
+`break`. Not here: anything that would need the prelude compiled first,
+which is measured at the end of this section. The sections
 below are the fixtures in the order they were written, and each names
 what it added and how the gate was made to fail without it.
 
@@ -739,3 +741,49 @@ nothing frees anything. A collector is not a codegen slice.
 Load-bearing: emitting a `class` as a value turns `reference.iyi` from 8
 into 6 while the struct fixture keeps agreeing, which is the difference
 between the two fixtures and nothing else.
+
+### The rest of the control flow
+
+This fixture was measured rather than chosen. Counting the shapes the
+port's own source writes against the ones the emitter carried, the
+cheapest remaining class was control flow: `and` 434 and `or` 360,
+`return` 390, `not` 114, `bool` 106, `unless` 74, `next` 29 and `break`
+10. None of them needs anything from the prelude, which is what makes
+them a fixture rather than a plan.
+
+`&&` and `||` are blocks rather than instructions, because they answer
+without asking the other side when the first one settles it. A `return`
+ends its block, so what follows one is written into a block of its own
+that nothing branches to. `next` and `break` are branches to labels the
+loop holds, and it holds a stack of them so an inner `break` leaves the
+inner loop.
+
+The first version of this fixture was wrong, and the mutation proof is
+what said so. Every `&&` and `||` in it settled on the second side, so
+swapping what a short circuit answers when it stops early changed
+nothing: the fixture exercised the blocks and never the short cut. It
+now calls `both(0, 1)` and `either(1, 0)`, which are the two cases where
+the first side decides.
+
+Load-bearing both ways round. Emitting the branch as an unconditional
+jump is caught by LLVM's verifier, because the `phi` then has a
+predecessor it does not name. Swapping what the short circuit answers is
+the pointed one: `control.iyi` exits 17 where the current compiler exits
+16.
+
+### What the bootstrap still needs
+
+The same count says what is left, and it is not another handful of
+nodes. In the port's own source: `generic` 241, `typedecl` 182, `cast`
+137, `stringinterpolation` 126, `arrayliteral` 109, and a scattering of
+`procliteral`, `hashliteral` and `yield`. Every one of them needs a type
+the prelude declares - a `String`, an `Array`, a type argument, a
+closure - compiled first.
+
+That is the wall between this slice and the bootstrap, and it is a
+different problem from adding shapes. The emitter would have to compile
+`src/iyi` itself, which is where the collector, the syscalls and the
+integer tower live, and the two borrowings this slice makes - `write`
+and `malloc` - are exactly what compiling it would replace. Every slice
+up to here was chosen so that it did not need the prelude compiled. The
+next one cannot be.
