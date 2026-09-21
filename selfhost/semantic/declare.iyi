@@ -24,7 +24,7 @@ import parser/parser
 using std/env::{ENV}
 using std/file::{File}
 using macro/expand::{expand, host_flags}
-using parser/parser::{Parser, Node, PathNode, DefNode, ClassDefNode, TraitDefNode, ImplDefNode, ModuleDefNode, EnumDefNode, AssocTypeNode, ExprsNode, AssignNode, AnnotationNode, CallNode, VarNode, ArgNode, GenericNode, VisibilityModifierNode, AliasNode, ImportNode}
+using parser/parser::{Parser, Node, PathNode, DefNode, ClassDefNode, TraitDefNode, ImplDefNode, ModuleDefNode, EnumDefNode, AssocTypeNode, ExprsNode, AssignNode, AnnotationNode, CallNode, VarNode, ArgNode, GenericNode, VisibilityModifierNode, AliasNode, ImportNode, LibDefNode, RequireNode}
 
 # One declared type. `path` is what the compiler calls it, `vars` is the
 # parameter list it prints after that, and `defs` are the methods that
@@ -98,11 +98,16 @@ pub class Declarations
   # They are held until everything has been read.
   @impl_nodes : Array(Node)
   @impl_scopes : Array(String)
+  # Whether the file being read now arrived through a require rather
+  # than an import. A require is this program's own text continued, so
+  # what it declares is not something another module owns.
+  @from_require : Bool
 
   def initialize
     @found = [] of Decl
     @methods_only = false
     @reporting = false
+    @from_require = false
     @impl_nodes = [] of Node
     @impl_scopes = [] of String
   end
@@ -132,6 +137,10 @@ pub class Declarations
     @reporting = answer
   end
 
+  def from_require(answer : Bool) : Nil
+    @from_require = answer
+  end
+
   # The entry for a path, or a new one. Two passes reach the same type:
   # the declaration that names it and any `impl` written for it.
   def at(kind : String, key : String, shown : String, vars : String) : Decl
@@ -148,7 +157,7 @@ pub class Declarations
     made = Decl.new(kind, key, shown, vars)
     if @reporting
       made.report_it
-    else
+    elsif !@from_require
       made.arrived_with_import
     end
     @found << made unless @methods_only
@@ -397,6 +406,13 @@ pub class Walk
       enum_type(node, scope, flags)
     when ImplDefNode
       @into.defer_impl(node, scope)
+    when LibDefNode
+      # A lib is a type and the functions it declares are its methods.
+      # There is no body to walk: a `fun` inside a lib is a name and a
+      # signature, and the signature is not what a declaration prints.
+      full = join_scope(scope, node.name)
+      entry = @into.at("libtype", full, full, "")
+      node.funs.each { |name| entry.add(name) }
     end
   end
 
@@ -425,10 +441,12 @@ pub class Walk
       vars = compiler_vars(full)
     end
     entry = @into.at(own == "" ? kind : own, full, shown, vars)
-    # Every struct answers `new`, and `Reference` is the root the compiler
-    # builds the same way: each is given the `initialize` that `new` calls
-    # when it declares none. A struct an import already declared was given
-    # it there.
+    # Every struct answers `new`, and `Reference` is the root the
+    # compiler builds the same way: each is given the `initialize` that
+    # `new` calls when it declares none. A struct an import already
+    # declared was given it there, in the module that owns it. A struct
+    # a require declared is this program's own text, and reopening it
+    # here is the same declaration continued.
     defaults = (kind == "struct" && own == "" && !compiler_struct?(full) &&
                 !entry.from_import) || full == "Reference"
     entry.defaults_initialize if defaults
@@ -608,6 +626,47 @@ pub def load_imports(source : String, roots : Array(String),
   end
 end
 
+# The directory a path is in, which is what a relative require is
+# relative to. `src/iyi/prelude.iyi` requiring `./object` is asking for
+# `src/iyi/object.iyi`.
+pub def directory_of(path : String) : String
+  cut = path.rindex('/')
+  return "" if cut.nil?
+  path[0, cut]
+end
+
+pub def resolve_require(path : String, from : String) : String
+  # A require with no path resolves to the directory it was written in,
+  # and reading a directory is a panic rather than an answer.
+  return "" if path == ""
+  written = path.starts_with?("./") ? path[2, path.bytesize - 2] : path
+  base = from == "" ? written : from + "/" + written
+  candidate = base + ".iyi"
+  return candidate if File.exists?(candidate)
+  ""
+end
+
+# A require reads a file as if it had been written here: the prelude is
+# fourteen files and one program, and `src/iyi/prelude.iyi` reopens the
+# `Pointer` that `src/iyi/primitives.iyi` brought into being. What they
+# declare is not this file's, so it is read the way an import is.
+pub def load_requires(source : String, from : String,
+                      seen : Array(String), into : Declarations) : Nil
+  parser = Parser.new(source)
+  parser.parse
+  parser.requires.each do |node|
+    case node
+    when RequireNode
+      found = resolve_require(node.path, from)
+      next if found == "" || seen.includes?(found)
+      seen << found
+      required = File.read(found)
+      load_requires(required, directory_of(found), seen, into)
+      read_file(required, into, true)
+    end
+  end
+end
+
 path = Program.args[0]?
 if path.nil?
   puts "usage: declare <file.iyi>"
@@ -615,9 +674,12 @@ else
   into = Declarations.new
   written = File.read(path)
 
-  # What the imports declare, which this file did not, and then what this
-  # file declares, which is what gets reported.
+  # What the imports and the requires declare, which this file did not,
+  # and then what this file declares, which is what gets reported.
   load_imports(written, source_roots, [] of String, into)
+  into.from_require(true)
+  load_requires(written, directory_of(path), [] of String, into)
+  into.from_require(false)
   into.reporting(true)
   read_file(written, into, false)
   Walk.new(into).attach_impls

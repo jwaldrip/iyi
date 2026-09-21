@@ -698,8 +698,13 @@ pub struct ClassVarNode
   end
 end
 
+# `require "./primitives"` names a file rather than a module: the path is
+# relative to the file that wrote it, and what it brings is read as if it
+# had been written there. The shape does not print the path.
 pub struct RequireNode
-  def initialize
+  getter path : String
+
+  def initialize(@path : String)
   end
 end
 
@@ -723,8 +728,14 @@ pub struct FunDefNode
   end
 end
 
+# A `lib` is a type the compiler prints as `libtype`, and the functions
+# it declares are its methods. Nothing gives them a body, so the name is
+# the whole of what a `fun` inside one says.
 pub struct LibDefNode
-  def initialize
+  getter name : String
+  getter funs : Array(String)
+
+  def initialize(@name : String, @funs : Array(String))
   end
 end
 
@@ -1600,6 +1611,9 @@ pub class Parser
   @pos : Int32
   @locals : Array(String)
   @imports : Array(Node)
+  # The files this one requires, in the order it wrote them. A require
+  # is not a module edge: what it names is read as if it were here.
+  @requires : Array(Node)
   @header : String
   # How many method bodies enclose the cursor. A name declared with a type
   # is a local inside one and a field outside one, and the two are read
@@ -1618,6 +1632,12 @@ pub class Parser
     @imports
   end
 
+  # The files this one requires. They are answered after a parse, the
+  # way the imports are: the list is built while the statements are read.
+  def requires : Array(Node)
+    @requires
+  end
+
   # The module path as written, empty when the file has no header. The
   # driver used to re-lex the file to find this and printed a header for a
   # file that had none.
@@ -1630,6 +1650,7 @@ pub class Parser
     @pos = 0
     @locals = [] of String
     @imports = [] of Node
+    @requires = [] of Node
     @header = ""
     @def_depth = 0
     @path_from_root = false
@@ -2000,8 +2021,15 @@ pub class Parser
       end
       if word.value == "require"
         advance if offset == 1
+        # A string is an opening delimiter, its pieces, and a closing
+        # one, so the path a plain `require "./object"` names is the
+        # piece after the delimiter rather than the token after `require`.
+        target = peek_at(1).kind == "DELIMITER_START" &&
+                 peek_at(2).kind == "STRING" ? peek_at(2).value : ""
+        node = RequireNode.new(target)
+        @requires << node.as(Node)
         skip_line
-        return RequireNode.new.as(Node)
+        return node.as(Node)
       end
       if word.value == "macro"
         advance if offset == 1
@@ -2016,9 +2044,9 @@ pub class Parser
       if word.value == "lib"
         advance if offset == 1
         advance # lib
+        name = peek.value
         advance # the name
-        skip_to_matching_end
-        return LibDefNode.new.as(Node)
+        return LibDefNode.new(name, skip_lib_body).as(Node)
       end
       if word.value == "enum"
         advance if offset == 1
@@ -2253,6 +2281,42 @@ pub class Parser
         depth = depth + 1
       end
     end
+  end
+
+  # The same walk, keeping the names of the functions a `lib` declares.
+  # They are the lib type's methods, and a `fun` inside one has no body
+  # to descend into: the name follows the word.
+  def skip_lib_body : Array(String)
+    names = [] of String
+    depth = 1
+    while !at_end? && depth > 0
+      index = @pos
+      token = advance
+      if token.kind == "{%"
+        word = peek
+        if word.kind == "IDENT" && word.value == "end"
+          depth = depth - 1
+        elsif word.kind == "IDENT" &&
+              (word.value == "if" || word.value == "unless" ||
+              word.value == "for" || word.value == "begin")
+          depth = depth + 1
+        end
+        while !at_end? && peek.kind != "%}"
+          advance
+        end
+        advance if peek.kind == "%}"
+        next
+      end
+      next unless token.kind == "IDENT"
+      if token.value == "end"
+        depth = depth - 1
+      elsif token.value == "fun" && depth == 1
+        names << peek.value if peek.kind == "IDENT"
+      elsif opens_block?(index, token.value)
+        depth = depth + 1
+      end
+    end
+    names
   end
 
   # `fun name(a : Int32) : Int32` with a body, or without one inside a
