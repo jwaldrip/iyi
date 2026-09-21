@@ -396,15 +396,50 @@ Five things the first fixture did not say:
   here: the lexer drops it, so `1_i64` arrives as `1`, and neither
   fixture writes one.
 
-Neither fixture calls a method on a value. The pass runs on one file with
-no prelude, so `i < 3` is an undefined method rather than a comparison,
-and the first attempt at this fixture died on exactly that. Typing
-`1 + 1` means loading the prelude, which is the work the bootstrap needs
-and the same wall `big.iyi` hit in the declaration pass.
-
 The second gate is load-bearing too: dropping the collection of `return`
 types changes two rows and exits non-zero, and restoring the file
 byte-for-byte returns the rows above.
+
+### A method on a value
+
+The third fixture, `fixtures/infer_types.iyi`, is the first one with a
+type in it, and it is where inference stops being a walk over one file's
+top level:
+
+    infer_types.iyi agrees: <Program>#make_label=Label <Program>#make_point=Point <Program>#reach_field=Int32 <Program>#reach_self=Int32 Label#initialize=String Label.class#new=Label Point#first=Int32 Point#initialize=Int32 Point#x=Int32 Point#y=Int32 Point.class#new=Point
+
+Eleven rows, and each one is a different question:
+
+* A constructor is worth the type it builds, and it reaches the
+  `initialize` that the `new` the compiler writes calls. That `new`
+  lives on the metaclass, which is why it prints as `Point.class#new`.
+* `initialize` needs no special case. The parser writes
+  `def initialize(@x : Int32, @y : Int32)` as two arguments and two
+  assignments, so it is typed by its body like anything else, and the
+  body ends on `@y = y`: `Point#initialize` is an `Int32` and `Label`'s
+  is a `String`.
+* A field's type is read off that same constructor. Reading it means
+  inferring a body, and that is not a call, so it is done with recording
+  turned off: a field read must not make `initialize` look reached.
+* A call on a local is looked up on the local's type. `point` carries
+  what `make_point` answered.
+* A call written with no receiver inside a method is a call on that
+  method's own type before it is one on the program. `Point#first` calls
+  `x`, and `x` is `Point`'s.
+* Nothing calls `Point#unused` or `Label#text`, and neither side reports
+  them. `Point#x` is reported because `first` reaches it, not because it
+  is declared.
+
+No fixture calls a method the prelude owns. The pass runs on one file
+with no prelude, so `i < 3` is an undefined method rather than a
+comparison, and the first attempt at the second fixture died on exactly
+that. Typing `1 + 1` means loading the prelude, which is the work the
+bootstrap needs.
+
+This gate is load-bearing as well: making the receiver lookup refuse the
+types it knows turns `reach_field` and `reach_self` into `Unknown` and
+exits non-zero, while the two fixtures with no receiver in them keep
+agreeing. Restoring the file byte-for-byte returns the rows above.
 
 ## The lexer, on everything
 

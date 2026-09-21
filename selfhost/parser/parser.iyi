@@ -2206,6 +2206,7 @@ pub class Parser
     return "\b" if ch == 'b'
     return "\f" if ch == 'f'
     return "\v" if ch == 'v'
+    return "\a" if ch == 'a'
     ch.to_s
   end
 
