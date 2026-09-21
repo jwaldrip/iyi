@@ -1045,7 +1045,7 @@ pub def emit_call(node : CallNode, body : Body, known : Known, constants : Const
     end
     kind = answered.size == 0 || answered[0].ret.size == 0 ? "i32" : kind_of(path_of(answered[0].ret), Shape.new("", false), known)
     named = answered.size == 0 || answered[0].ret.size == 0 ? "" : path_of(answered[0].ret)
-    known.want(node.name)
+    known.want(mangle(node.name))
     reg = body.register
     body.write("#{reg} = call #{kind} @#{mangle(node.name)}(#{arguments(written)})")
     return Val.new(reg, kind, named)
@@ -1068,6 +1068,7 @@ pub def emit_new(named : String, node : CallNode, body : Body, known : Known,
   shape = known.shape_named(named)[0]
   written = [] of Val
   node.args.each { |arg| written << emit(arg, body, known, constants) }
+  known.want(mangle_method(named, "new"))
   reg = body.register
   body.write("#{reg} = call #{shape.kind} @#{mangle_method(named, "new")}(#{arguments(written)})")
   Val.new(reg, shape.kind, shape.name)
@@ -1079,6 +1080,7 @@ pub def emit_method(shape : Shape, node : CallNode, receiver : Val, body : Body,
   written << receiver
   node.args.each { |arg| written << emit(arg, body, known, constants) }
   kind = answers(shape, node.name, known)
+  known.want(mangle_method(shape.name, node.name))
   reg = body.register
   body.write("#{reg} = call #{kind} @#{mangle_method(shape.name, node.name)}(#{arguments(written)})")
   Val.new(reg, kind)
@@ -1356,6 +1358,23 @@ pub def resolve_require(written : String, here : String) : String
   "#{here}/#{bare}.iyi"
 end
 
+# One name off the list, as its body. A mangled name says which of the
+# three it is: `iyi_answer` is a function, `iyi_Point_new` is the
+# constructor the compiler writes, and `iyi_Point_x` is a method.
+pub def emit_wanted(name : String, known : Known, constants : Constants) : String
+  known.nodes.each do |node|
+    return emit_def(node, known, constants) + "\n" if mangle(node.name) == name
+  end
+  known.shapes.each do |shape|
+    shape.defs.each do |node|
+      wanted = node.name == "initialize" ? mangle_method(shape.name, "new") : mangle_method(shape.name, node.name)
+      next unless wanted == name
+      return (node.name == "initialize" ? emit_new_def(shape, node, known, constants) : emit_method_def(shape, node, known, constants)) + "\n"
+    end
+  end
+  ""
+end
+
 pub def directory_of(path : String) : String
   cut = -1
   index = 0
@@ -1383,27 +1402,12 @@ else
   # rather than the file. Emitting one body reaches more, so the list
   # is drained rather than walked.
   functions = emit_main(items, known, constants) + "\n"
+  # One list holds both, under the name each is mangled to, because
+  # emitting either can reach either: a method calls a function, a
+  # function makes an instance, and naming `Box(Int32)` brings a shape
+  # into being that was not there when the list started.
   while known.wanted.size > 0
-    found = known.def_named(known.take)
-    functions = functions + emit_def(found[0], known, constants) + "\n" if found.size > 0
-  end
-
-  # Walked by index rather than with `each`: emitting one instance can
-  # ask for another, and the list grows while it is being read. The
-  # program is emitted before them for the same reason, because naming
-  # `Box(Int32)` is what brings it into being.
-  index = 0
-  while index < known.shapes.size
-    shape = known.shapes[index]
-    index = index + 1
-    next if shape.generic?
-    shape.defs.each do |node|
-      functions = functions + if node.name == "initialize"
-        emit_new_def(shape, node, known, constants)
-      else
-        emit_method_def(shape, node, known, constants)
-      end + "\n"
-    end
+    functions = functions + emit_wanted(known.take, known, constants)
   end
 
   puts "; #{path}, emitted by selfhost/codegen/emit.iyi"

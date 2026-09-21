@@ -972,14 +972,19 @@ program never asked for.
 
 So emission follows the calls. The program is emitted first, a call
 puts the name it reached on a list, and the list is drained rather
-than walked, because emitting one body reaches more. What nobody
-calls is never written out.
+than walked, because emitting one body reaches more. Functions and
+methods share the list, under the name each is mangled to, because
+emitting either can reach either: a method calls a function, a
+function makes an instance, and naming `Box(Int32)` brings a shape
+into being that was not on the list when it started.
 
-`shared/helpers.iyi` carries a method the emitter cannot compile, a
-`Float64` this slice does not have, and `across.iyi` is unaffected by
-it. Emitting every declaration instead - which is what this did
-before - writes `ret i32 2.5` and the module stops assembling. That
-is the shape of every file the bootstrap will read.
+`shared/helpers.iyi` carries two things the emitter cannot compile, a
+function and a method on a type the program does use, both answering
+a `Float64` this slice does not have. `across.iyi` is unaffected by
+either. Reading the file instead - walking every declaration and
+every method of every type, which is what this did before - writes
+`ret i32 2.5` and the module stops assembling. That is the shape of
+every file the bootstrap will read.
 
 ### What the bootstrap still needs
 

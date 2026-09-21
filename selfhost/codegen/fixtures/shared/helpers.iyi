@@ -15,6 +15,12 @@ struct Tally
   def plus(more : Int32) : Int32
     @count + more
   end
+
+  # A method of a reached type that nobody calls. The prelude is mostly
+  # this: `String` answers hundreds of methods and a program calls two.
+  def share : Float64
+    1.5
+  end
 end
 
 # Nobody calls this, and the emitter cannot compile it: a Float64 is
