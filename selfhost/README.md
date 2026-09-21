@@ -45,9 +45,14 @@ Nowhere, until now. Every gate here was a script a person ran by hand,
 so each number in this file held on one laptop and a regression would
 have landed green. `.github/workflows/iyi.yml` now runs the string
 invariants, the lexer, the parser, the declaration pass and inference
-in the `samples` job, where `bin/iyi` and `bin/crystal` are already
-built, and the codegen slice in the `darwin` job, which is the one
-with a `clang` to assemble what the port emits.
+in a job of their own, and the codegen slice in the `darwin` job,
+which is the one with a `clang` to assemble what the port emits.
+
+A job of their own for two reasons, both learned by doing it the other
+way first. Bolted onto `samples` they took that job past its 45 minute
+timeout and cancelled twenty steps that had nothing to do with them.
+And a gate that fails should name itself rather than arriving as
+"samples failed".
 
 Two things had to change for that to be honest. The gate scripts
 replaced `PATH` outright with a Homebrew-first list, which is this
