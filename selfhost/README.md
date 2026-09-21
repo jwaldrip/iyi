@@ -572,7 +572,8 @@ into 6, and restoring the file byte-for-byte turns it back.
       print.iyi agrees: exit 3, 60 bytes out
       reference.iyi agrees: exit 8
       struct.iyi agrees: exit 10
-      agree 10, differ 0
+      text.iyi agrees: exit 87, 6 bytes out
+      agree 11, differ 0
 
 Every other slice diffs an artifact: a token stream, a tree, a
 declaration, a type. Two independent backends do not write the same LLVM
@@ -590,7 +591,8 @@ Scope, and it is narrow on purpose: integer literals, `+`, `-` and `*`,
 comparisons, `if`, `while`, local assignment and lookup, arguments, a
 call to a method in the same file, `print` of a literal, and a struct
 with fields and methods, a class, which is a reference, a generic type
-with its instantiations, and the rest of the control flow: `return`,
+with its instantiations, a string as a value, and the rest of the
+control flow: `return`,
 `unless`, `&&`, `||`, `!`, `next`, `break`, `case` and a typed local.
 Not here: anything that would need the prelude compiled first, which
 is measured at the end of this section.
@@ -862,19 +864,55 @@ and the module stops assembling: `generic.iyi` fails where the other
 nine keep agreeing. LLVM IR is typed, so a wrong substitution cannot be
 a quiet wrong answer here; it is a module that does not exist.
 
+### A string as a value
+
+Every slice before this one was chosen so that it needed nothing of
+the prelude compiled. This one needs one thing, and it turns out to be
+a shape rather than a body: `String` is laid out by the compiler
+itself, in `Program#initialize`, as `@bytesize`, `@length` and the
+bytes, with the type id in the word underneath the pointer. The
+prelude reopens that type and says what can be done with it; it does
+not decide what it is.
+
+So the emitter borrows the layout the way it already borrows `write`
+and `malloc`. A literal becomes a constant with that shape, a local
+holding one is a pointer into it, and the two methods that read the
+header answer out of the header:
+
+```
+@text0 = private unnamed_addr constant { i32, i32, i32, [5 x i8] }
+           { i32 0, i32 5, i32 5, [5 x i8] c"hello" }
+```
+
+`text.iyi` passes strings to a method, prints one, and adds up what
+`bytesize` and `size` answer. One of them is `"héllo"`, six bytes and
+five characters, because a fixture where the two counts are the same
+number cannot tell them apart - the first version of this one summed
+them and passed with the header reversed.
+
+Load-bearing twice over, and both failures are wrong answers rather
+than broken modules. Swapping the two counts in the constant makes
+`text.iyi` exit 78 where the current compiler exits 87. Taking the
+header as four bytes rather than eight leaves the status alone and
+writes the wrong bytes, which the gate catches because this fixture
+prints.
+
+What it still cannot do is make a string: that needs the allocator and
+the collector, which is the bootstrap.
+
 ### What the bootstrap still needs
 
-The same count says what is left, and it is not another handful of
-nodes. In the port's own source: `cast` 137,
-`stringinterpolation` 126, `arrayliteral` 109, and a scattering of
-`procliteral`, `hashliteral` and `yield`. Every one of them needs a
-type the prelude declares - a `String`, an `Array`, a type argument, a
-closure - compiled first.
+The same count says what is left. In the port's own source: `cast`
+137, `stringinterpolation` 126, `arrayliteral` 109, and a scattering
+of `procliteral`, `hashliteral` and `yield`. The string slice above
+shows what separates them from the shapes already carried, and it is
+not the type: a literal `String` needed a layout the compiler decides,
+and every one of these needs a *body* the prelude writes. An
+interpolation calls `to_s` and concatenates; an array literal
+allocates and grows; a proc is a closure the runtime carries.
 
-That is the wall between this slice and the bootstrap, and it is a
-different problem from adding shapes. The emitter would have to compile
-`src/iyi` itself, which is where the collector, the syscalls and the
-integer tower live, and the two borrowings this slice makes - `write`
-and `malloc` - are exactly what compiling it would replace. Every slice
-up to here was chosen so that it did not need the prelude compiled. The
-next one cannot be.
+That is the wall, and it is a different problem from adding shapes.
+The emitter would have to compile `src/iyi` itself, which is where the
+collector, the syscalls and the integer tower live, and the three
+borrowings this slice makes - `write`, `malloc` and the string layout
+- are exactly what compiling it would replace.

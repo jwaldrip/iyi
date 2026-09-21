@@ -240,10 +240,26 @@ pub def kind_of(name : String, shape : Shape, known : Known) : String
   bound = shape.binding(name)
   return kind_of(bound, Shape.new("", false), known) unless bound == name
   return "i1" if name == "Bool"
+  # A `String` is a pointer at the object the compiler laid out, and it
+  # is the one type here whose shape the prelude did not decide.
+  return "ptr" if name == "String"
   return "i32" if name == "Int32" || name == "Int64" || name == "UInt64"
   hit = known.shape_named(name)
   return hit[0].kind if hit.size > 0
   "i32"
+end
+
+# One word out of a string's header: `@bytesize` is the first and
+# `@length` the second, and the pointer points at the first.
+pub def string_field(said : Val, at : Int32, body : Body) : String
+  place = said.text
+  unless at == 0
+    place = body.register
+    body.write("#{place} = getelementptr inbounds i32, ptr #{said.text}, i64 #{at}")
+  end
+  reg = body.register
+  body.write("#{reg} = load i32, ptr #{place}")
+  reg
 end
 
 # The module's string constants. A literal is bytes with a name, and the
@@ -282,6 +298,41 @@ pub class Constants
     end
     @lines = @lines + "#{name} = private unnamed_addr constant [#{text.bytesize} x i8] c\"#{written}\"\n"
     name
+  end
+
+  # The same bytes as a `String` object. The compiler lays that type out
+  # itself, before any prelude is read: `@bytesize`, `@length`, then the
+  # bytes, with the type id in the word underneath the pointer. The
+  # constant carries all four so that a pointer into it has the same
+  # shape a pointer from the allocator would, and the id is zero because
+  # nothing this slice emits reads one.
+  def add_object(text : String) : String
+    name = "@text#{@count}"
+    @count = @count + 1
+    bytes = text.bytesize
+    @lines = @lines +
+             "#{name} = private unnamed_addr constant #{object_type(bytes)} " +
+             "{ i32 0, i32 #{bytes}, i32 #{text.size}, [#{bytes} x i8] c\"#{escaped(text)}\" }\n"
+    name
+  end
+
+  def object_type(bytes : Int32) : String
+    "{ i32, i32, i32, [#{bytes} x i8] }"
+  end
+
+  def escaped(text : String) : String
+    written = ""
+    index = 0
+    while index < text.bytesize
+      ch = text[index]
+      written = written + if ch == '"' || ch == '\\' || ch.ord < 32 || ch.ord > 126
+        "\\#{hex(ch.ord)}"
+      else
+        ch.to_s
+      end
+      index = index + 1
+    end
+    written
   end
 
   # Integer division, spelled so: a bare `/` on two integers is a float
@@ -640,6 +691,14 @@ pub def emit(node : Node, body : Body, known : Known, constants : Constants) : V
   case node
   when NumNode
     int_val(node.value)
+  when StrNode
+    # The literal as an object rather than as bytes: a pointer at the
+    # `@bytesize` the constant opens with, which is where a pointer from
+    # the allocator would point too.
+    name = constants.add_object(node.value)
+    reg = body.register
+    body.write("#{reg} = getelementptr inbounds #{constants.object_type(node.value.bytesize)}, ptr #{name}, i32 0, i32 1")
+    Val.new(reg, "ptr", "String")
   when VarNode
     kind = body.slot_kind(node.name)
     place = body.slot(node.name, kind)
@@ -761,9 +820,11 @@ pub def emit_call(node : CallNode, body : Body, known : Known, constants : Const
     return int_val(reg)
   end
 
-  # `print` of a literal is a write, the same way `+` is an `add`: the
+  # `print` of a string is a write, the same way `+` is an `add`: the
   # prelude declares both and this knows what they do. Nothing else in
-  # the prelude is known by name.
+  # the prelude is known by name. A literal is written straight out of
+  # its bytes; a value is a pointer to a `String`, so the bytes are
+  # eight along and the count is at the front.
   if node.name == "print" && node.recv.size == 0 && node.args.size == 1
     written = node.args[0]
     case written
@@ -771,6 +832,17 @@ pub def emit_call(node : CallNode, body : Body, known : Known, constants : Const
       name = constants.add(written.value)
       reg = body.register
       body.write("#{reg} = call i64 @write(i32 1, ptr #{name}, i64 #{written.value.bytesize})")
+      return int_val("0")
+    end
+    said = emit(written, body, known, constants)
+    if said.shape == "String"
+      count = string_field(said, 0, body)
+      wide = body.register
+      body.write("#{wide} = sext i32 #{count} to i64")
+      at = body.register
+      body.write("#{at} = getelementptr inbounds i8, ptr #{said.text}, i64 8")
+      reg = body.register
+      body.write("#{reg} = call i64 @write(i32 1, ptr #{at}, i64 #{wide})")
       return int_val("0")
     end
   end
@@ -790,6 +862,17 @@ pub def emit_call(node : CallNode, body : Body, known : Known, constants : Const
       written.args.each { |one| args << path_of([one] of Node) }
       made = known.instantiate(path_of(written.name), args)
       return emit_new(made[0].name, node, body, known, constants) if made.size > 0
+    end
+  end
+
+  # The two things a `String` answers out of its own header. The prelude
+  # writes the bodies, and both read a field the compiler placed, so
+  # this reads the field rather than the body.
+  if node.recv.size == 1 && node.args.size == 0 &&
+     (node.name == "bytesize" || node.name == "size")
+    said = emit(node.recv[0], body, known, constants)
+    if said.shape == "String"
+      return int_val(string_field(said, node.name == "bytesize" ? 0 : 1, body))
     end
   end
 
@@ -918,7 +1001,12 @@ pub def store_arguments(node : DefNode, body : Body, shape : Shape,
     case arg
     when ArgNode
       kind = argument_kind(arg, shape, known)
-      body.write("store #{kind} %arg#{index}, ptr #{body.slot(arg.name, kind)}")
+      # A pointer argument carries what it points at, the way an
+      # assignment does: without it, a `String` in a parameter is a
+      # pointer with nothing known about it.
+      named = arg.restriction.size == 0 ? "" : shape.binding(path_of(arg.restriction))
+      place = kind == "ptr" ? body.slot_of(arg.name, kind, named) : body.slot(arg.name, kind)
+      body.write("store #{kind} %arg#{index}, ptr #{place}")
       index = index + 1
     end
   end
