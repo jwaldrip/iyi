@@ -44,7 +44,8 @@ bash selfhost/parser/diff.sh samples/iyi/*.iyi
 ```
 
 The lexer slice (`lexer/`) agrees with the current lexer token for token
-on 7 of 7 non-interpolated samples.
+on **116 files**: every sample, every standard library file, the
+prelude, and the port's own source.
 
 ## What the port carries
 
@@ -404,3 +405,52 @@ and the same wall `big.iyi` hit in the declaration pass.
 The second gate is load-bearing too: dropping the collection of `return`
 types changes two rows and exits non-zero, and restoring the file
 byte-for-byte returns the rows above.
+
+## The lexer, on everything
+
+    bash selfhost/lexer/diff.sh              # 27 samples
+    bash selfhost/lexer/diff.sh src/std/*.iyi  # 65 of the standard library
+    bash selfhost/lexer/where.sh <file>      # the first token that differs
+
+Measured: **116 files agree, 0 differ**, from 6 when the corpus skipped
+every file with a `#{` in it. Four files have no oracle at all, which is
+reported rather than skipped.
+
+The skip was the point. Twenty-one files were out of scope for
+interpolation, and eleven of them turned out to differ for reasons that
+had nothing to do with it: `**`, `//`, `@[`, `{%`, `{{`, `%w(`, symbols,
+a line continuation, a byte-order mark. Nothing was wrong with the
+measurement while those files sat outside it, and nothing was right
+either.
+
+What interpolation needed is a lexer that holds what it is in the middle
+of. A string body is not code and an interpolation inside one is, so the
+two alternate and they nest: `"to_a #{n.to_a.join(",")}"` is a string
+holding code holding a string. The port keeps a stack of modes and the
+oracle keeps the same stack, because the current lexer only reads a body
+when a parser tells it to.
+
+Three of the differences were in the instrument:
+
+- After `INTERPOLATION_START` the driver kept asking for string tokens,
+  so `#{name}!` read as the string `name}!`. An interpolation is code.
+- A string written inside an interpolation ends back into that
+  interpolation, not into the string around it. Popping the wrong
+  context made the quote after it open a second string that ran to the
+  end of the file.
+- A stream that stops where the lexer raised is not an oracle. The
+  prelude reaches a `{%` the lexer wants a parser's macro state for, and
+  the tokens before it looked like agreement followed by a difference
+  that was ours. The oracle now prints nothing unless it reaches the
+  end, and `diff.sh` reports the file as having none.
+
+Two rules were measured rather than assumed. A number is reported as
+what it means: `0x80` is `128`, `0xFFFFFFFFFFFFFFFF_u64` is
+`18446744073709551615`, and `1_000` is `1000`, while `1e3` stays as it
+was written. And `empty?`, `nil?` and `in?` are one word where `to_u64!`
+and `end!` are two, so a question mark is part of a name here and a bang
+is not.
+
+The gate is load-bearing: making the interpolation branch match a
+character that never appears turns the sample corpus from 27 agreeing
+into 6, and restoring the file byte-for-byte turns it back.

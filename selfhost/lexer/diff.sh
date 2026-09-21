@@ -51,10 +51,6 @@ agree=0
 differ=0
 skipped=0
 for f in "${files[@]}"; do
-  if grep -q '#{' "$f" 2>/dev/null; then
-    skipped=$((skipped + 1))
-    continue
-  fi
   CRYSTAL_CACHE_DIR="$WORK/cr" "$REPO/bin/crystal" run --no-color "$HERE/oracle.cr" -- "$f" 2>/dev/null \
     | grep -v "Using compiled" > "$WORK/a.txt"
   if [ ! -s "$WORK/a.txt" ]; then
@@ -71,6 +67,6 @@ for f in "${files[@]}"; do
     echo "  DIFFERS $(basename "$f")  $(diff "$WORK/an.txt" "$WORK/bn.txt" | head -4 | tr '\n' ' ' | cut -c1-110)"
   fi
 done
-echo "  agree $agree, differ $differ, skipped $skipped (interpolation, out of this slice)"
+echo "  agree $agree, differ $differ, skipped $skipped"
 # Nothing compared is a failure, not a pass.
 [ "$differ" -eq 0 ] && [ "$agree" -gt 0 ]
