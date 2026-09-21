@@ -281,8 +281,13 @@ pub def render_branches(taken : String, region : String, env : Env, flags : Arra
   render(tail, env, flags)
 end
 
+# Whether an expansion left a declaration without a name. A body this
+# pass could not finish is not read by anything downstream, but
+# `def {{ conv[0] }}` is a method named `{{`, which is not a method.
 pub def unresolved?(source : String) : Bool
-  find(source, "{{", 0) >= 0
+  find(source, "def {{", 0) >= 0 || find(source, "struct {{", 0) >= 0 ||
+    find(source, "class {{", 0) >= 0 || find(source, "module {{", 0) >= 0 ||
+    find(source, "::{{", 0) >= 0 || find(source, "enum {{", 0) >= 0
 end
 
 pub def render_loop(directive : String, region : String, env : Env, flags : Array(String)) : String
@@ -404,6 +409,31 @@ pub def evaluate(source : String, env : Env, flags : Array(String)) : Value
     return bool_value(left.text != right.text)
   end
 
+  index = compare_at(text)
+  if index > 0
+    op = comparison(text, index)
+    left = evaluate(slice(text, 0, index), env, flags)
+    right = evaluate(slice(text, index + op.bytesize, text.bytesize), env, flags)
+    return none_value unless number?(left.text) && number?(right.text)
+    return bool_value(compare(to_position(left.text), to_position(right.text), op))
+  end
+
+  # `types.find { |t| t[0] == name }` answers the row that agrees, and
+  # `prelude.includes?(name)` answers whether a list holds a value.
+  spot = find_top(text, ".find")
+  if spot > 0 && text[text.bytesize - 1] == '}'
+    return find_in(text, spot, env, flags)
+  end
+
+  spot = find_top(text, ".includes?(")
+  if spot > 0 && text[text.bytesize - 1] == ')'
+    base = evaluate(slice(text, 0, spot), env, flags)
+    wanted = evaluate(slice(text, spot + 11, text.bytesize - 1), env, flags)
+    held = false
+    base.items.each { |item| held = true if item.text == wanted.text }
+    return bool_value(held)
+  end
+
   if text[0] == '(' && text[text.bytesize - 1] == ')'
     return evaluate(slice(text, 1, text.bytesize - 1), env, flags)
   end
@@ -514,6 +544,51 @@ end
 
 # Braces spell three things: `{a => b}` is a table with written keys,
 # `{a: b}` is a table with named ones, and `{a, b}` is a row.
+# A comparison at the top level, with the longer spelling first so that
+# `<=` is not read as `<`. A brace or a bracket is a literal rather than
+# a comparison, whatever is inside it.
+pub def compare_at(text : String) : Int32
+  return -1 if text[0] == '{' || text[0] == '[' || text.starts_with?("%w(")
+  at = find_top(text, "<=")
+  return at if at > 0
+  at = find_top(text, ">=")
+  return at if at > 0
+  at = find_top(text, "<")
+  return at if at > 0
+  find_top(text, ">")
+end
+
+pub def comparison(text : String, at : Int32) : String
+  return "<=" if matches_at?(text, "<=", at)
+  return ">=" if matches_at?(text, ">=", at)
+  text[at].to_s
+end
+
+pub def compare(left : Int32, right : Int32, op : String) : Bool
+  return left < right if op == "<"
+  return left > right if op == ">"
+  return left <= right if op == "<="
+  left >= right
+end
+
+pub def find_in(text : String, spot : Int32, env : Env, flags : Array(String)) : Value
+  base = evaluate(slice(text, 0, spot), env, flags)
+  brace = find(text, "{", spot)
+  return none_value if brace < 0
+  inner = slice(text, brace + 1, text.bytesize - 1).strip
+  return none_value unless inner.bytesize > 0 && inner[0] == '|'
+  close = find(inner, "|", 1)
+  return none_value if close < 0
+  name = slice(inner, 1, close).strip
+  condition = slice(inner, close + 1, inner.bytesize)
+  answer = none_value
+  base.items.each do |item|
+    next unless answer.kind == "none"
+    answer = item if evaluate(condition, env.bind(name, item), flags).text == "true"
+  end
+  answer
+end
+
 pub def read_braces(source : String, env : Env, flags : Array(String)) : Value
   pieces = split_top(source)
   keys = [] of String

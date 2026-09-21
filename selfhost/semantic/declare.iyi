@@ -93,11 +93,31 @@ pub class Declarations
   @methods_only : Bool
   # Whether what is declared now belongs to the file under the pass.
   @reporting : Bool
+  # An `impl` attaches to a type, and the type can be declared after it:
+  # below it in the same file, or in the file that imported this one.
+  # They are held until everything has been read.
+  @impl_nodes : Array(Node)
+  @impl_scopes : Array(String)
 
   def initialize
     @found = [] of Decl
     @methods_only = false
     @reporting = false
+    @impl_nodes = [] of Node
+    @impl_scopes = [] of String
+  end
+
+  def defer_impl(node : Node, scope : String) : Nil
+    @impl_nodes << node
+    @impl_scopes << scope
+  end
+
+  def impl_nodes : Array(Node)
+    @impl_nodes
+  end
+
+  def impl_scopes : Array(String)
+    @impl_scopes
   end
 
   def methods_only : Nil
@@ -277,6 +297,23 @@ pub class Walk
     end
   end
 
+  # Every `impl` the run collected, attached to the type it names now
+  # that every file has been read. `std/traits` implements `Comparable
+  # for String` and `src/std/big.iyi` is the file that declares `String`.
+  def attach_impls : Nil
+    index = 0
+    while index < @into.impl_nodes.size
+      node = @into.impl_nodes[index]
+      scope = @into.impl_scopes[index]
+      case node
+      when ImplDefNode
+        hit = lookup(bare(path_text(node.target)), scope)
+        body(node.body, scope, hit[0]) if hit.size > 0
+      end
+      index = index + 1
+    end
+  end
+
   def statement(node : Node, scope : String, holder : Decl?) : Nil
     statement(node, scope, holder, false)
   end
@@ -292,6 +329,10 @@ pub class Walk
       when ExprsNode     then roots(node.items, scope)
       when ClassDefNode  then statement(node, scope, nil) if node.from_root
       when ModuleDefNode then statement(node, scope, nil) if node.from_root
+        # An `impl` names the type it is for, and that type can be the
+        # root's even where the module around it was never established:
+        # `std/traits` implements `Hashable for Char`.
+      when ImplDefNode then @into.defer_impl(node, scope)
       end
     end
   end
@@ -351,13 +392,22 @@ pub class Walk
     when EnumDefNode
       enum_type(node, scope, flags)
     when ImplDefNode
-      target = join_scope(scope, bare(path_text(node.target)))
-      hit = @into.existing(target)
-      # An `impl` for a type this file did not declare puts its methods
-      # on a type whose home is elsewhere, and the oracle only reports
-      # what this file brought into being.
-      body(node.body, scope, hit.size == 0 ? nil : hit[0]) if hit.size > 0
+      @into.defer_impl(node, scope)
     end
+  end
+
+  # A name as the scope it is written in sees it: here, then in what
+  # encloses it, out to the root.
+  def lookup(name : String, scope : String) : Array(Decl)
+    here = scope
+    while true
+      hit = @into.existing(join_scope(here, name))
+      return hit if hit.size > 0
+      break if here == ""
+      cut = here.rindex(':')
+      here = cut.nil? ? "" : here[0, cut - 1]
+    end
+    [] of Decl
   end
 
   def declare(kind : String, name : String, vars : String,
@@ -566,6 +616,7 @@ else
   load_imports(written, source_roots, [] of String, into)
   into.reporting(true)
   read_file(written, into, false)
+  Walk.new(into).attach_impls
 
   puts into.report
 end
