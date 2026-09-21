@@ -16,7 +16,7 @@ require "./shared/counter"
 
 def answer : Int32
   count = Tally.new(4)
-  tripled(count.plus(3)) + quadrupled(2)
+  tripled(count.plus(3)) + quadrupled(2) + count.doubled
 end
 
 __iyi_exit(answer)

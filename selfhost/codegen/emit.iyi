@@ -1281,9 +1281,18 @@ pub def collect(nodes : Array(Node), known : Known) : Nil
     when DefNode
       known.add(node)
     when ClassDefNode
-      shape = Shape.new(path_of(node.name), node.kind == "class")
-      shape.declare_vars(node.vars)
-      known.add_shape(shape)
+      # A type reopened in another file is the same declaration
+      # continued, which is what a require means: the prelude declares
+      # `Int32` in one file and adds to it in three more, and two
+      # shapes of one name are two `%Int32` in a module that will not
+      # assemble.
+      named = path_of(node.name)
+      held = known.shape_named(named)
+      shape = held.size > 0 ? held[0] : Shape.new(named, node.kind == "class")
+      if held.size == 0
+        shape.declare_vars(node.vars)
+        known.add_shape(shape)
+      end
       collect_shape(node.body, shape)
     end
   end
@@ -1324,29 +1333,16 @@ pub def read_source(path : String, into : Array(Node), seen : Array(String)) : N
     case node
     when RequireNode
       next if node.path == ""
-      found = resolve_require(node.path, here)
-      # The prelude is the one require this slice does not follow. It
-      # is the boundary the whole slice is drawn against: `write`,
-      # `malloc` and the string layout are borrowed from it rather than
-      # compiled, and every fixture requires it because the compiler
-      # this is measured against needs it to build them at all.
-      next if prelude?(found)
-      read_source(found, into, seen)
+      # The prelude is read like any other require. It was skipped
+      # while emission followed the file rather than the calls,
+      # because reading it then meant emitting all of it; now what it
+      # declares is in scope and only what a program reaches is
+      # written out.
+      read_source(resolve_require(node.path, here), into, seen)
     else
       into << node
     end
   end
-end
-
-# Anything under `src/iyi` is the prelude: fourteen files and one
-# program, and the wall this slice stops at.
-pub def prelude?(path : String) : Bool
-  index = 0
-  while index + 8 <= path.bytesize
-    return true if path[index, 8] == "src/iyi/"
-    index = index + 1
-  end
-  false
 end
 
 # `require "./shared/helpers"` from `fixtures/across.iyi` is

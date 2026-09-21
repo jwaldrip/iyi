@@ -562,7 +562,7 @@ into 6, and restoring the file byte-for-byte turns it back.
 ## The codegen slice
 
     bash selfhost/codegen/diff.sh
-      across.iyi agrees: exit 29
+      across.iyi agrees: exit 37
       arith.iyi agrees: exit 11
       branch.iyi agrees: exit 16
       control.iyi agrees: exit 16
@@ -949,17 +949,23 @@ the required file before the requiring one and puts its items in
 front, and reads a file once however many paths reach it:
 `across.iyi` requires two files and the second requires the first.
 
-The prelude is the require it does not follow, and that is the whole
-boundary this slice is drawn against. Every fixture requires
-`src/iyi/prelude` because the compiler it is measured against needs
-it to build them at all; the port borrows `write`, `malloc` and the
-string layout out of it instead. Following it was the first thing
-that happened when requires were wired, and ten fixtures stopped
-assembling at once.
+The prelude is read like any other require now, and it was not while
+emission followed the file: reading it then meant emitting all of it,
+and following it for the first time stopped ten fixtures assembling
+at once. Once emission followed the calls instead, the fourteen files
+under `src/iyi` became declarations in scope and nothing else. What
+the port still borrows out of the prelude rather than compiling is
+`write`, `malloc` and the string layout.
+
+That move needed one rule. A type reopened in another file is the
+same declaration continued, which is what a require means:
+`counter.iyi` reopens the `Tally` that `helpers.iyi` declared and
+adds a method to it. Declaring it twice instead puts two `%Tally` in
+one module and `across.iyi` stops assembling.
 
 Load-bearing both ways. Following no require at all leaves `tripled`
 undefined and `across.iyi` exits 0 where the current compiler exits
-29; reading a file once per path that reaches it emits `tripled`
+37; reading a file once per path that reaches it emits `tripled`
 twice, and a module with two of a function in it is not a module.
 
 ### Reaching, not reading
@@ -999,8 +1005,10 @@ and every one of these needs a *body* the prelude writes. An
 interpolation calls `to_s` and concatenates; an array literal
 allocates and grows; a proc is a closure the runtime carries.
 
-That is the wall, and it is a different problem from adding shapes.
-The emitter would have to compile `src/iyi` itself, which is where the
-collector, the syscalls and the integer tower live, and the three
-borrowings this slice makes - `write`, `malloc` and the string layout
-- are exactly what compiling it would replace.
+The wall has moved. It used to be that the prelude could not be read
+at all; it is read now, and no body of it is emitted because no
+fixture reaches one. The next slice is the first program that does,
+and what it will need is the part of `src/iyi` that has no iyi under
+it: the collector, the syscalls, and the three borrowings this slice
+still makes - `write`, `malloc` and the string layout - which are
+exactly what compiling the prelude would replace.
