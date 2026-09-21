@@ -441,6 +441,51 @@ types it knows turns `reach_field` and `reach_self` into `Unknown` and
 exits non-zero, while the two fixtures with no receiver in them keep
 agreeing. Restoring the file byte-for-byte returns the rows above.
 
+### A method the prelude owns
+
+The wall the first three fixtures named was `1 + 1`. They ran on one
+file with nothing under it, so there was no `+` to reach, and the
+fixture that tried died on exactly that. `fixtures/infer_prelude.iyi`
+requires the prelude, which is what the bootstrap does:
+
+    infer_prelude.iyi agrees: <Program>#fraction=Float64 <Program>#length=Int32 <Program>#sum=Int32 <Program>#through_local=Int32 <Program>#wider=Int64
+
+R-2 is what makes this tractable rather than a second compiler. An
+exported method carries its return type, so a required method is typed
+by reading its declaration rather than by inferring its body:
+`def to_i64 : Int64` answers an `Int64`, and `def +(other : Int32) :
+self` answers whatever the receiver is. Nothing in the prelude is
+inferred and nothing in it is reported: a row is this file's method or
+it is nothing.
+
+Two things had to be true for `1 + 1` to answer `Int32`.
+
+The prelude writes its integer tower with a macro. `to_i64` and `+` are
+not written anywhere in `src/iyi`: they are a `{% for %}` over a map and
+a cross of operators in `src/iyi/primitives.iyi`, so the pass expands
+each required file before reading it. Reading the source instead finds
+no method of that name at all, which is what the mutation proof shows.
+
+And `self` in a type position is its own node rather than a path.
+Reading the return type as a path answered nothing, so every operator
+the prelude declares that way came out `Unknown` while `to_i64` was
+already right. A call with an argument also has to choose among
+overloads, and it chooses by the type of the first argument: `1 + 1` and
+`1 + 1.5` are one name and two answers.
+
+Writing this slice found a defect in the expander rather than in the
+prelude. `macro_params` asked a string for its last bracket with
+`rindex`, which is a method `std/text` adds, and `selfhost/macro/expand`
+imports nothing. It compiled anyway, because the declaration pass that
+uses it does import `std/text`, and the macro driver on its own stopped
+building. A module that leans on what another file imported is not a
+module.
+
+This gate is load-bearing: reading the required files without expanding
+them turns `sum`, `fraction` and `wider` into `Unknown` and exits
+non-zero, while the three fixtures with no prelude under them keep
+agreeing.
+
 ## The lexer, on everything
 
     bash selfhost/lexer/diff.sh              # 27 samples

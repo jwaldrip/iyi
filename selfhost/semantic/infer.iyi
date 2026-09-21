@@ -20,9 +20,11 @@ module main
 # fixture writes one.
 
 import std/file
+import macro/expand
 import parser/parser
 using std/file::{File}
-using parser/parser::{Parser, Node, NumNode, StrNode, BoolNode, NilNode, NopNode, CharNode, VarNode, IvarNode, AssignNode, ExprsNode, IfNode, UnlessNode, WhileNode, ReturnNode, DefNode, ArgNode, PathNode, CallNode, ClassDefNode, ModuleDefNode, VisibilityModifierNode}
+using macro/expand::{expand_with, host_flags}
+using parser/parser::{Parser, Node, RequireNode, SelfNode, NumNode, StrNode, BoolNode, NilNode, NopNode, CharNode, VarNode, IvarNode, AssignNode, ExprsNode, IfNode, UnlessNode, WhileNode, ReturnNode, DefNode, ArgNode, PathNode, CallNode, ClassDefNode, ModuleDefNode, VisibilityModifierNode}
 
 pub class TypeEnv
   @names : Array(String)
@@ -126,6 +128,11 @@ pub class Known
   # A type's fields are read by inferring its `initialize`, and that
   # reading is not a call. Rows are only recorded for what a call reached.
   @recording : Bool
+  # The types a require brought. They are not this file's, so nothing
+  # about them is ever reported, and their methods are typed by what
+  # they declare: R-2 makes an exported method carry its return type, so
+  # `def to_i64 : Int64` is an answer without reading a body.
+  @library : Array(TypeInfo)
 
   def initialize
     @defs = [] of DefNode
@@ -133,6 +140,27 @@ pub class Known
     @active = [] of String
     @rows = [] of String
     @recording = true
+    @library = [] of TypeInfo
+  end
+
+  def library_named(path : String) : Array(TypeInfo)
+    hit = [] of TypeInfo
+    @library.each { |info| hit << info if info.path == path }
+    hit
+  end
+
+  def library?(path : String) : Bool
+    library_named(path).size > 0
+  end
+
+  # A required type reopened by a second file is one type, so the
+  # methods land on the entry that is already there.
+  def library_at(path : String) : TypeInfo
+    found = library_named(path)
+    return found[0] if found.size > 0
+    made = TypeInfo.new(path)
+    @library << made
+    made
   end
 
   def add(node : DefNode) : Nil
@@ -354,12 +382,55 @@ pub def call_type(node : CallNode, env : TypeEnv, program : Known) : String
   end
 
   # Anything else is a method on a value, and the value's type is where
-  # it is looked up. A value this pass cannot type has no method it can
-  # reach.
+  # it is looked up. A type this file declared is read; a type a require
+  # brought answers what its declaration says.
   receiver = infer(node.recv[0], env, program)
-  return "Unknown" unless program.type?(receiver)
-  return "Unknown" unless program.type_named(receiver)[0].knows?(node.name)
-  program.type_of(receiver, node.name)
+  if program.type?(receiver) && program.type_named(receiver)[0].knows?(node.name)
+    return program.type_of(receiver, node.name)
+  end
+  if program.library?(receiver)
+    return declared_type(program.library_named(receiver)[0], node, receiver, env, program)
+  end
+  "Unknown"
+end
+
+# What a required method answers, read off its declaration. R-2 makes an
+# exported method carry its return type, so the prelude is read rather
+# than inferred: `def to_i64 : Int64` is an `Int64` and
+# `def +(other : Int32) : self` is whatever the receiver is.
+pub def declared_type(info : TypeInfo, node : CallNode, receiver : String,
+                      env : TypeEnv, program : Known) : String
+  found = overload(info, node, env, program)
+  return "Unknown" if found.size == 0
+  return "Unknown" if found[0].ret.size == 0
+  written = found[0].ret[0]
+  case written
+  # `def +(other : Int32) : self` answers whatever the receiver is, and
+  # `self` in a type position is its own node rather than a path.
+  when SelfNode then receiver
+  when PathNode then written.names
+  else               "Unknown"
+  end
+end
+
+# The overload a call reaches: the one whose first parameter is the type
+# of the first argument, and the first declared otherwise. `1 + 1` and
+# `1 + 1.5` are the same name and two answers.
+pub def overload(info : TypeInfo, node : CallNode, env : TypeEnv,
+                 program : Known) : Array(DefNode)
+  found = info.method(node.name)
+  return found if found.size < 2 || node.args.size == 0
+  given = infer(node.args[0], env, program)
+  answer = found
+  found.each do |candidate|
+    next if candidate.args.size == 0
+    first = candidate.args[0]
+    case first
+    when ArgNode
+      answer = [candidate] of DefNode if restriction(first) == given
+    end
+  end
+  answer
 end
 
 pub def restriction(arg : ArgNode) : String
@@ -408,6 +479,78 @@ pub def entry_calls(nodes : Array(Node), found : Array(CallNode)) : Nil
   end
 end
 
+# The directory a path is in, which is what a relative require is
+# relative to. Written here rather than shared with the declaration
+# pass: that file is a driver as well as a module, and importing it
+# would run it.
+pub def directory_of(path : String) : String
+  cut = -1
+  index = 0
+  while index < path.bytesize
+    cut = index if path[index] == '/'
+    index = index + 1
+  end
+  return "" if cut < 0
+  path[0, cut]
+end
+
+pub def resolve_require(written : String, from : String) : String
+  return "" if written == ""
+  path = written.starts_with?("./") ? written[2, written.bytesize - 2] : written
+  base = from == "" ? path : "#{from}/#{path}"
+  candidate = "#{base}.iyi"
+  File.exists?(candidate) ? candidate : ""
+end
+
+# What a require brought, registered as library. Each file is expanded
+# first, because the prelude writes its integer tower with a macro: the
+# conversions `1.to_i64` reaches are a `{% for %}` over a map, and a
+# pass that read the source rather than the expansion would find no
+# method of that name at all.
+pub def load_requires(source : String, from : String, seen : Array(String),
+                      program : Known) : Nil
+  parser = Parser.new(source)
+  parser.parse
+  parser.requires.each do |node|
+    case node
+    when RequireNode
+      found = resolve_require(node.path, from)
+      next if found == "" || seen.includes?(found)
+      seen << found
+      written = File.read(found)
+      load_requires(written, directory_of(found), seen, program)
+      absorb(expand_with("", written, host_flags), program)
+    end
+  end
+end
+
+# The declarations of a required file. Only types and their methods: a
+# body is never read, so nothing here is inferred and nothing is
+# reported.
+pub def absorb(source : String, program : Known) : Nil
+  tree = Parser.new(source).parse
+  absorb_nodes([tree] of Node, "", program, nil)
+end
+
+pub def absorb_nodes(nodes : Array(Node), scope : String, program : Known,
+                     holder : TypeInfo?) : Nil
+  nodes.each do |node|
+    case node
+    when ExprsNode
+      absorb_nodes(node.items, scope, program, holder)
+    when VisibilityModifierNode
+      absorb_nodes(node.body, scope, program, holder)
+    when DefNode
+      holder.add(node) unless holder.nil?
+    when ModuleDefNode
+      absorb_nodes(node.body, join(scope, path_of(node.name)), program, nil)
+    when ClassDefNode
+      info = program.library_at(join(scope, path_of(node.name)))
+      absorb_nodes(node.body, info.path, program, info)
+    end
+  end
+end
+
 path = Program.args[0]?
 if path.nil?
   puts "usage: infer <file.iyi>"
@@ -415,6 +558,9 @@ else
   source = File.read(path)
   tree = Parser.new(source).parse
   program = Known.new
+  # What the file requires is read first and never reported: a row is
+  # this file's method or it is nothing.
+  load_requires(source, directory_of(path), [] of String, program)
   collect([tree] of Node, "", program, nil)
 
   calls = [] of CallNode

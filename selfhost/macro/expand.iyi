@@ -282,8 +282,16 @@ end
 pub def macro_params(header : String) : Array(String)
   open = header.index('(')
   return [] of String if open.nil?
-  close = header.rindex(')')
-  return [] of String if close.nil?
+  # The last bracket, found by looking rather than by asking: `rindex` is
+  # a method `std/text` adds, and this file imports nothing. It compiled
+  # only because another file in the same program had imported it.
+  close = -1
+  index = open
+  while index < header.bytesize
+    close = index if header[index] == ')'
+    index = index + 1
+  end
+  return [] of String if close < 0
   written = [] of String
   split_top(slice(header, open + 1, close)).each { |piece| written << piece.strip }
   written
