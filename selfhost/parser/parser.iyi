@@ -2897,8 +2897,12 @@ pub class Parser
     # for it: one node for two spellings, because they mean one thing.
     if peek.kind == "?"
       advance
+      skip_newlines
       then_branch = parse_binary(0)
-      advance if peek.kind == ":"
+      if peek.kind == ":"
+        advance
+        skip_newlines
+      end
       else_branch = parse_binary(0)
       return IfNode.new([left] of Node, [then_branch] of Node,
         [else_branch] of Node).as(Node)
@@ -2986,8 +2990,14 @@ pub class Parser
       value = parse_binary(0)
       if peek.kind == "?"
         advance
+        # Neither `?` nor `:` can end a statement, so a branch written
+        # on the line below one of them belongs to this ternary.
+        skip_newlines
         then_branch = parse_binary(0)
-        advance if peek.kind == ":"
+        if peek.kind == ":"
+          advance
+          skip_newlines
+        end
         else_branch = parse_binary(0)
         value = IfNode.new([value] of Node, [then_branch] of Node,
           [else_branch] of Node).as(Node)

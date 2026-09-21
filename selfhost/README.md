@@ -316,6 +316,45 @@ is missing exactly the methods `tuple.iyi` declares, `traits` and
 capability away, and it is the same one the bootstrap needs: loading
 what a file imports.
 
+### What a file imports, and what it requires
+
+Both corpora are closed now, and they were closed by two different
+edges. An `import` is a module edge: what it brings is another module's,
+and `std/traits` reopening `Int64` expects to find the tower `std/int`
+wrote. A `require` names a file rather than a module, relative to the
+file that wrote it, and what it brings is read as if it had been written
+there: `src/iyi/prelude.iyi` is fourteen files and one program.
+
+The distinction is load-bearing beyond resolution. A struct is given the
+`initialize` that `new` calls when it declares none, and the compiler
+writes that once, where the struct was declared. For an import that is
+the other module: `src/std/named_tuple.iyi` reopens a `NamedTuple` that
+`src/std/tuple.iyi` owns, and only `tuple.iyi` reports the `initialize`.
+For a require it is this program's own text, so `prelude.iyi` reopening
+the `Pointer` that `primitives.iyi` declared reports it. All three were
+measured before the rule was written.
+
+A macro runs where its declaration reaches the file, which is the same
+edge again. `getter` and `property` are declared in `src/iyi/macros.iyi`,
+so a module file writing `getter a : Int32` declares no reader at all,
+and the compiler agrees: it reports the type with `initialize` and
+nothing else. `prelude.iyi` requires that file, so its `property
+next_node : IyiDeferNode?` writes the reader, the writer and the field.
+The expander answers what such an argument is, with
+`name.is_a?(TypeDeclaration)`, and the two halves of it, with `name.var`
+and `name.type`.
+
+A `lib` is a type the compiler prints as `libtype` and the functions it
+declares are its methods. There is no body to walk, so the parser keeps
+the names while it skips to the end.
+
+Measured after all of it: the standard library **35 agree, 0 differ**,
+the prelude **15 agree, 0 differ**, the samples **23 agree, 0 differ**.
+Every file with an oracle agrees with it. The expansion is load-bearing:
+making `expand_calls` return its source unchanged turns `prelude.iyi`
+from `agree` into a file missing exactly `next_node` and `next_node=`,
+and restoring it byte-for-byte turns it back.
+
 ## The inference slice
 
 `semantic/infer.iyi` infers the return type of every called internal method

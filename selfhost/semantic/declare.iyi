@@ -23,7 +23,7 @@ import macro/expand
 import parser/parser
 using std/env::{ENV}
 using std/file::{File}
-using macro/expand::{expand, host_flags}
+using macro/expand::{expand_with, host_flags}
 using parser/parser::{Parser, Node, PathNode, DefNode, ClassDefNode, TraitDefNode, ImplDefNode, ModuleDefNode, EnumDefNode, AssocTypeNode, ExprsNode, AssignNode, AnnotationNode, CallNode, VarNode, ArgNode, GenericNode, VisibilityModifierNode, AliasNode, ImportNode, LibDefNode, RequireNode}
 
 # One declared type. `path` is what the compiler calls it, `vars` is the
@@ -102,12 +102,16 @@ pub class Declarations
   # than an import. A require is this program's own text continued, so
   # what it declares is not something another module owns.
   @from_require : Bool
+  # The text of every file a require brought, which is where the macros
+  # this file calls are declared.
+  @required_text : String
 
   def initialize
     @found = [] of Decl
     @methods_only = false
     @reporting = false
     @from_require = false
+    @required_text = ""
     @impl_nodes = [] of Node
     @impl_scopes = [] of String
   end
@@ -139,6 +143,14 @@ pub class Declarations
 
   def from_require(answer : Bool) : Nil
     @from_require = answer
+  end
+
+  def required_text : String
+    @required_text
+  end
+
+  def add_required_text(source : String) : Nil
+    @required_text = @required_text + "\n" + source
   end
 
   # The entry for a path, or a new one. Two passes reach the same type:
@@ -595,7 +607,9 @@ end
 pub def read_file(source : String, into : Declarations, imported : Bool) : Nil
   into.declaring
   walk_file(source, into)
-  expanded = expand(source, host_flags)
+  # A macro runs where its declaration reaches the file, and what a
+  # require brought is where `getter` and `property` are declared.
+  expanded = expand_with(into.required_text, source, host_flags)
   unless expanded == source
     into.methods_only unless imported
     walk_file(expanded, into)
@@ -662,6 +676,7 @@ pub def load_requires(source : String, from : String,
       seen << found
       required = File.read(found)
       load_requires(required, directory_of(found), seen, into)
+      into.add_required_text(required)
       read_file(required, into, true)
     end
   end

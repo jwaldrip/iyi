@@ -200,8 +200,179 @@ pub def branch_split(region : String) : Int32
   end
 end
 
+# One macro a file declares. `params` is what its header names and
+# `body` is the text between the header and its `end`.
+pub class Macro
+  getter name : String
+  getter params : Array(String)
+  getter body : String
+
+  def initialize(@name : String, @params : Array(String), @body : String)
+  end
+end
+
 pub def expand(source : String, flags : Array(String)) : String
-  render(source, Env.new, flags)
+  expand_with("", source, flags)
+end
+
+# A macro runs where its declaration reaches the file. `getter` and
+# `property` are declared in `src/iyi/macros.iyi`, and a file that does
+# not require it does not get them: measured against the compiler, a
+# module file writing `getter a : Int32` declares no reader at all.
+# `defs` is the text of whatever this file required.
+pub def expand_with(defs : String, source : String, flags : Array(String)) : String
+  macros = collect_macros(defs)
+  collect_macros(source).each { |found| macros << found }
+  render(expand_calls(source, macros, flags), Env.new, flags)
+end
+
+# The macros a text declares. A macro ends at the `end` written in the
+# column the `macro` was written in, which is what the formatter
+# guarantees and what reading the nesting by hand would have to guess.
+pub def collect_macros(source : String) : Array(Macro)
+  found = [] of Macro
+  return found if source.bytesize == 0
+  pos = 0
+  while pos < source.bytesize
+    stop = line_stop(source, pos)
+    line = slice(source, pos, stop)
+    bare = line.strip
+    if bare.starts_with?("macro ")
+      column = stop - pos - bare.bytesize
+      header = slice(bare, 6, bare.bytesize).strip
+      name = macro_name(header)
+      body_at = stop + 1
+      closing = closing_end(source, body_at, column)
+      unless name == "" || closing < 0
+        found << Macro.new(name, macro_params(header), slice(source, body_at, closing))
+        pos = line_stop(source, closing) + 1
+        next
+      end
+    end
+    pos = stop + 1
+  end
+  found
+end
+
+# The end of the line `from` is inside, not counting its newline.
+pub def line_stop(source : String, from : Int32) : Int32
+  at = find(source, "\n", from)
+  at < 0 ? source.bytesize : at
+end
+
+# Where the `end` for a declaration opened in `column` is written.
+pub def closing_end(source : String, from : Int32, column : Int32) : Int32
+  pos = from
+  while pos < source.bytesize
+    stop = line_stop(source, pos)
+    line = slice(source, pos, stop)
+    bare = line.strip
+    return pos if bare == "end" && stop - pos - bare.bytesize == column
+    pos = stop + 1
+  end
+  -1
+end
+
+pub def macro_name(header : String) : String
+  cut = header.index('(')
+  bare = cut.nil? ? first_word(header) : header[0, cut]
+  bare.strip
+end
+
+pub def macro_params(header : String) : Array(String)
+  open = header.index('(')
+  return [] of String if open.nil?
+  close = header.rindex(')')
+  return [] of String if close.nil?
+  written = [] of String
+  split_top(slice(header, open + 1, close)).each { |piece| written << piece.strip }
+  written
+end
+
+pub def macro_named(macros : Array(Macro), name : String) : Array(Macro)
+  hit = [] of Macro
+  macros.each { |found| hit << found if found.name == name }
+  hit
+end
+
+# A macro call written as a statement: the name, then its arguments, on
+# one line. `property next_node : IyiDeferNode?` is one, and so is a
+# `getter` with several names after it.
+pub def expand_calls(source : String, macros : Array(Macro), flags : Array(String)) : String
+  return source if macros.size == 0
+  built = ""
+  pos = 0
+  while pos < source.bytesize
+    stop = line_stop(source, pos)
+    line = slice(source, pos, stop)
+    bare = line.strip
+    word = first_word(bare)
+    hit = macro_named(macros, word)
+    rest = bare.bytesize > word.bytesize ? slice(bare, word.bytesize, bare.bytesize).strip : ""
+    if hit.size > 0 && rest != "" && !bare.starts_with?("macro ") && !bare.starts_with?("#")
+      built = built + render(hit[0].body, bind_arguments(hit[0], rest), flags)
+    else
+      built = built + line
+    end
+    built = built + "\n" if stop < source.bytesize
+    pos = stop + 1
+  end
+  built
+end
+
+# The arguments a call wrote, bound to the names the macro declared. A
+# `*names` parameter takes all of them as a list, which is how `getter a,
+# b` and `property x : Int32` are one shape.
+pub def bind_arguments(found : Macro, written : String) : Env
+  args = [] of Value
+  inner = written.starts_with?("(") && written.ends_with?(")") ? slice(written, 1, written.bytesize - 1) : written
+  split_top(inner).each { |piece| args << text_value(piece.strip) }
+  env = Env.new
+  index = 0
+  found.params.each do |param|
+    if param.starts_with?("*")
+      rest = [] of Value
+      while index < args.size
+        rest << args[index]
+        index = index + 1
+      end
+      env = env.bind(slice(param, 1, param.bytesize), list_value(rest))
+    else
+      env = env.bind(param, index < args.size ? args[index] : none_value)
+      index = index + 1
+    end
+  end
+  env
+end
+
+# `next_node : IyiDeferNode?` declares a name with a type; `next_node`
+# on its own does not. The colon that says so is this text's own, not
+# one inside a generic argument, and `::` is a path rather than a type.
+pub def declaration_colon(text : String) : Int32
+  depth = 0
+  index = 0
+  while index < text.bytesize
+    ch = text[index]
+    depth = depth + 1 if ch == '(' || ch == '[' || ch == '{'
+    depth = depth - 1 if ch == ')' || ch == ']' || ch == '}'
+    if depth == 0 && ch == ':' && index > 0
+      return index unless text[index + 1] == ':' || text[index - 1] == ':'
+    end
+    index = index + 1
+  end
+  -1
+end
+
+pub def declaration?(text : String) : Bool
+  declaration_colon(text) > 0
+end
+
+# The name a declaration gives, or the type it gives it.
+pub def declaration_half(text : String, name : Bool) : Value
+  at = declaration_colon(text)
+  return none_value if at < 0
+  return text_value(slice(text, 0, at).strip) if name
+  text_value(slice(text, at + 1, text.bytesize).strip)
 end
 
 pub def render(source : String, env : Env, flags : Array(String)) : String
@@ -432,6 +603,29 @@ pub def evaluate(source : String, env : Env, flags : Array(String)) : Value
     held = false
     base.items.each { |item| held = true if item.text == wanted.text }
     return bool_value(held)
+  end
+
+  # What a macro argument is, and the two halves of it when it is a
+  # declaration. `property next_node : IyiDeferNode?` hands its body one
+  # argument, and the body asks whether it carries a type before it
+  # writes the reader that answers one.
+  spot = find_top(text, ".is_a?(")
+  if spot > 0 && text[text.bytesize - 1] == ')'
+    base = evaluate(slice(text, 0, spot), env, flags)
+    wanted = slice(text, spot + 7, text.bytesize - 1).strip
+    return bool_value(wanted == "TypeDeclaration" && declaration?(base.text))
+  end
+
+  spot = find_top(text, ".var")
+  if spot > 0 && spot + 4 == text.bytesize
+    base = evaluate(slice(text, 0, spot), env, flags)
+    return declaration_half(base.text, true)
+  end
+
+  spot = find_top(text, ".type")
+  if spot > 0 && spot + 5 == text.bytesize
+    base = evaluate(slice(text, 0, spot), env, flags)
+    return declaration_half(base.text, false)
   end
 
   # `nums + %w(Float32)` is one list and then another. A `+` inside a
