@@ -67,7 +67,7 @@ clause rather than in their braces.
 
 Three corpora are closed: the samples, the prelude, and the standard
 library. The parser also reproduces its own source, which is the largest
-single iyi file there is. What no corpus exercises is what remains:
+file under `selfhost/`. What no corpus exercises is what remains:
 heredocs, regex literals, `lib` and `fun` bodies, `with ... yield`, and
 the macro language itself, which every corpus skips to its `{% end %}`
 rather than parsing.
@@ -124,7 +124,7 @@ corpus, rather than a hand-picked fixture, is what exposed both.
 ## The standard library
 
 `src/std` is the third corpus and the one nobody wrote with a port in
-mind: 67 files, an order of magnitude more code than the prelude, and the
+mind: 67 files and 39,015 lines against the prelude's 17 and 15,907, and the
 only corpus large enough that a first-divergence column was the only
 usable worklist.
 
@@ -160,7 +160,7 @@ error:
 
 The corpus also closed `%w(...)` as one literal, `private record Name,`
 continuing onto the next line, and a union alias wrapping after a `|`.
-With those, the parser reproduces the tree of its own source: 3,597 lines
+With those, the parser reproduces the tree of its own source: 3,777 lines
 of iyi, printed identically by the compiler that exists and by the port.
 
 `where.sh` is the worklist and `diff.sh` is the gate, and the gate takes
@@ -345,12 +345,57 @@ state it has. Expanding all 84 files of the prelude and the standard
 library gives output identical byte for byte either way, in two
 thirds of the time.
 
-What is left is one file. `src/iyi/prelude.iyi` takes 31 seconds and
-the other thirteen prelude files take 0.3 between them, which is the
-shape of something quadratic in its directives rather than its size.
-It is why the codegen slice reads the prelude without expanding it,
-and the first slice that needs a macro-written declaration is the one
-that will have to fix it.
+What was left after that was one file. `src/iyi/prelude.iyi` took 31
+seconds where the other sixteen prelude files took 0.3 between them,
+and every guess about why was wrong. Not the code-aware scan:
+pointing the delimiter searches back at the raw bytes changed 29.4
+seconds into 29.9. Not the multibyte characters in its comments:
+rewriting every one of them as ASCII changed 32.8 into 33.3. Not the
+slicing, which copies 3MB across 24,716 calls, and not the
+concatenation, which builds 400KB in 0.4 seconds on its own.
+
+A profile answered it in one run where six ablations had not. Almost
+all of the time was inside `String#+`, in two places: `character_count`,
+which walks every byte of the result to count its characters, and
+`Pointer#copy_from`, which copies one byte at a time.
+
+The first of those is now fixed, in the prelude rather than in this
+pass. The characters of `a + b` are the characters of `a` and then
+those of `b`, because a byte that starts a character in either one
+still starts one after the join, so the count is the sum and the scan
+is redundant. Doing it on every `+` made building any string in a loop
+quadratic in its own length. `String.new` gained an overload that is
+told the count instead of finding it, and `+` uses it: the prelude
+expands in 22.3 seconds rather than 29.4, to the same 5,586 lines, and
+a benchmark that concatenates 400KB drops from 0.41 to 0.30.
+
+That change needed a gate that did not exist. A wrong character count
+is not a crash: it is a number that comes out quietly wrong somewhere
+far away, and nothing in this repository would have caught one. The
+specs are the compiler's rather than the prelude's,
+`bench/samples_roundtrip.sh` compares a program against itself, and
+the samples have no expected output pinned. So `+` reporting four
+characters where it holds five would have passed every check there
+is, including all six corpora above.
+
+`bench/string_invariants.sh` runs one iyi program and diffs twelve
+answers against the ones written down beside it: ASCII, one multibyte
+operand, two multibyte operands, the empty-operand short path that
+returns the other string whole, and a hundred concatenations in a
+loop. Load-bearing, both ways it can be got wrong: telling the join
+one side's count instead of the sum, or telling it the byte count
+instead of the character count, each turns it red, and restoring the
+file byte for byte turns it green.
+
+The second is measured and not yet fixed. `Pointer#copy_from` is a
+byte-at-a-time loop where the platform has `memcpy`, and it is the
+other half of that profile. It is a prelude change that touches every
+platform this compiler targets, so it wants its own slice and its own
+gates rather than a ride on this one.
+
+Reading the prelude without expanding it is still what the codegen
+slice does, and the first slice that needs a macro-written declaration
+is the one that will have to finish this.
 
 The four that remain need what a macro cannot give them. `named_tuple`
 is missing exactly the methods `tuple.iyi` declares, `traits` and
@@ -366,7 +411,7 @@ edges. An `import` is a module edge: what it brings is another module's,
 and `std/traits` reopening `Int64` expects to find the tower `std/int`
 wrote. A `require` names a file rather than a module, relative to the
 file that wrote it, and what it brings is read as if it had been written
-there: `src/iyi/prelude.iyi` is fourteen files and one program.
+there: `src/iyi/prelude.iyi` is seventeen files and one program on this platform.
 
 The distinction is load-bearing beyond resolution. A struct is given the
 `initialize` that `new` calls when it declares none, and the compiler
@@ -531,7 +576,7 @@ agreeing.
 ## The lexer, on everything
 
     bash selfhost/lexer/diff.sh              # 27 samples
-    bash selfhost/lexer/diff.sh src/std/*.iyi  # 65 of the standard library
+    bash selfhost/lexer/diff.sh src/std/*.iyi  # 67 of the standard library
     bash selfhost/lexer/where.sh <file>      # the first token that differs
 
 Measured: **116 files agree, 0 differ**, from 6 when the corpus skipped
@@ -705,12 +750,14 @@ A literal becomes a module constant, and every byte that is not plain
 printable ASCII is written as two hex digits, because a newline inside a
 constant would end the line it is written on. `print` is an intrinsic
 the same way `+` is: the prelude declares both and the backend knows
-what they do. Nothing else in the prelude is known by name.
+what they do. That was the whole of what this slice knew by name; the
+string and integer slices below add `bytesize`, `size` and the
+conversions, and each one says what it is borrowing.
 
-This slice does not build an iyi `String` - a bytesize, a length and the
-bytes - because nothing in the fixture asks a string for anything. It
-writes the bytes the literal holds, which is all `print` of a literal
-does.
+This slice does not build an iyi `String` - a bytesize, a length and
+the bytes - because nothing in the fixture asks a string for anything.
+It writes the bytes the literal holds, which is all `print` of a
+literal does. The slice that does build one is further down.
 
 One thing is borrowed from outside the program being compiled: the write
 itself. The current compiler emits the syscall; the port calls the C
@@ -797,8 +844,8 @@ between the two fixtures and nothing else.
 
 This fixture was measured rather than chosen. Counting the shapes the
 port's own source writes against the ones the emitter carried, the
-cheapest remaining class was control flow: `and` 434 and `or` 360,
-`return` 390, `not` 114, `bool` 106, `unless` 74, `next` 29 and `break`
+cheapest remaining class was control flow: `and` 381 and `or` 461,
+`return` 440, `not` 116, `bool` 113, `unless` 80, `next` 30 and `break`
 10. None of them needs anything from the prelude, which is what makes
 them a fixture rather than a plan.
 
@@ -824,8 +871,8 @@ the pointed one: `control.iyi` exits 17 where the current compiler exits
 
 ### A case, and a local that says its type
 
-The two shapes left that need no prelude: `case` 23 with `when` 69, and
-`typedecl` 182.
+The two shapes left that need no prelude: `case` 27 with `when` 86, and
+`typedecl` 192.
 
 A `case` over values is a chain of comparisons, which is what it
 becomes once the subject is an integer. The subject is emitted once
@@ -882,7 +929,7 @@ Load-bearing, and the failure has a different shape from every slice
 before it. Taking the substitution away - a parameter answers as
 itself - makes every field an `i32` while the calls still pass an `i1`,
 and the module stops assembling: `generic.iyi` fails where the other
-nine keep agreeing. LLVM IR is typed, so a wrong substitution cannot be
+twelve keep agreeing. LLVM IR is typed, so a wrong substitution cannot be
 a quiet wrong answer here; it is a module that does not exist.
 
 ### A string as a value
@@ -957,7 +1004,7 @@ by three does not help: that difference is 768.
 
 Every fixture until here was one file, which let the emitter read the
 tree it was handed and emit what was in it. The bootstrap cannot be
-one file: `src/iyi/prelude.iyi` is fourteen of them and one program,
+one file: `src/iyi/prelude.iyi` is seventeen of them and one program,
 and reaching a method the prelude writes means reading the file that
 wrote it first.
 
@@ -970,7 +1017,7 @@ front, and reads a file once however many paths reach it:
 The prelude is read like any other require now, and it was not while
 emission followed the file: reading it then meant emitting all of it,
 and following it for the first time stopped ten fixtures assembling
-at once. Once emission followed the calls instead, the fourteen files
+at once. Once emission followed the calls instead, the seventeen files
 under `src/iyi` became declarations in scope and nothing else. What
 the port still borrows out of the prelude rather than compiling is
 `write`, `malloc` and the string layout.
@@ -1013,7 +1060,7 @@ every file the bootstrap will read.
 ### What the bootstrap still needs
 
 The same count says what is left. In the port's own source: `cast`
-137, `stringinterpolation` 126, `arrayliteral` 109, and a scattering
+137, `stringinterpolation` 167, `arrayliteral` 127, and a scattering
 of `procliteral`, `hashliteral` and `yield`. The `cast` count is
 smaller than it was: a conversion between two integers is one of
 those, and the tower slice carries it. The string slice above

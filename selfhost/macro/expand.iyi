@@ -138,10 +138,12 @@ end
 # swallowed the four hundred lines between them.
 pub def find_code(source : String, needle : String, from : Int32) : Int32
   return -1 if needle.bytesize == 0
-  # Written as strings because a double quote and an apostrophe cannot
-  # be spelled as character literals in this language.
-  quote = "\""
-  tick = "'"
+  # A double quote and an apostrophe cannot be spelled as character
+  # literals in this language, so they are read out of a string once.
+  # Once, and not per byte: `to_s` on a character allocates, and this
+  # loop runs over every byte of every file the pass reads.
+  quote = "\""[0]
+  tick = "'"[0]
   # The scan begins where the caller asked rather than at the start of
   # the file. Every caller passes a position an earlier scan left
   # outside a comment and outside a literal - the beginning of the
@@ -153,8 +155,8 @@ pub def find_code(source : String, needle : String, from : Int32) : Int32
   start = from < 0 ? 0 : from
   index = start
   while index < source.bytesize
-    ch = source[index].to_s
-    if ch == "#" && !matches_at?(source, "\#{", index)
+    ch = source[index]
+    if ch == '#' && !matches_at?(source, "\#{", index)
       # A comment runs to the end of its line.
       index = index + 1
       while index < source.bytesize && source[index] != '\n'
@@ -162,7 +164,7 @@ pub def find_code(source : String, needle : String, from : Int32) : Int32
       end
     elsif ch == quote
       index = index + 1
-      while index < source.bytesize && source[index].to_s != quote
+      while index < source.bytesize && source[index] != quote
         # An escape is two bytes and the second one is not a closer:
         # `"\\"` ends where it looks like it does.
         index = source[index] == '\\' ? index + 2 : index + 1
@@ -173,7 +175,7 @@ pub def find_code(source : String, needle : String, from : Int32) : Int32
       # closing quote is two or three bytes along, or this is not one.
       shut = index + 2
       shut = index + 3 if index + 1 < source.bytesize && source[index + 1] == '\\'
-      index = shut < source.bytesize && source[shut].to_s == tick ? shut + 1 : index + 1
+      index = shut < source.bytesize && source[shut] == tick ? shut + 1 : index + 1
     else
       return index if index >= start && index <= limit && matches_at?(source, needle, index)
       index = index + 1

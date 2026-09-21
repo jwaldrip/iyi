@@ -32,6 +32,25 @@ class String
     memory.as(String)
   end
 
+  # The same, for a caller that already knows how many characters it is
+  # about to write. Concatenation is the caller that matters: the
+  # characters of `a + b` are the characters of `a` and then those of
+  # `b`, because a byte that starts a character in either one still
+  # starts one after the join, so the count is the sum and scanning for
+  # it again reads the whole result a second time. Doing that on every
+  # `+` makes building a string in a loop quadratic in its own length,
+  # which is how a 400 kilobyte file took half a minute to expand.
+  def self.new(bytesize : Int32, length : Int32, & : Pointer(UInt8) -> Nil) : String
+    memory = String.memory(bytesize + HEADER_SIZE + 1)
+    buffer = memory + HEADER_SIZE
+    yield buffer
+
+    header = memory.as(Pointer(Int32))
+    header[0] = bytesize
+    header[1] = length
+    memory.as(String)
+  end
+
   protected def self.memory(bytes : Int32) : Pointer(UInt8)
     {% if !flag?(:gc_none) && !flag?(:gc_boehm) && ((flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || flag?(:darwin) || flag?(:wasm32) || flag?(:win32)) %}
       IyiHeap.new_object(bytes.to_u64, "".crystal_type_id.to_u64, true, true).as(Pointer(UInt8))
@@ -282,7 +301,7 @@ class String
     return other if empty?
     return self if other.empty?
 
-    String.new(bytesize + other.bytesize) do |buffer|
+    String.new(bytesize + other.bytesize, size + other.size) do |buffer|
       buffer.copy_from(to_unsafe, bytesize)
       (buffer + bytesize).copy_from(other.to_unsafe, other.bytesize)
     end
