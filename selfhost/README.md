@@ -540,8 +540,9 @@ into 6, and restoring the file byte-for-byte turns it back.
     bash selfhost/codegen/diff.sh
       arith.iyi agrees: exit 11
       branch.iyi agrees: exit 16
+      loop.iyi agrees: exit 32
       nested.iyi agrees: exit 14
-      agree 3, differ 0
+      agree 4, differ 0
 
 Every other slice diffs an artifact: a token stream, a tree, a
 declaration, a type. Two independent backends do not write the same LLVM
@@ -615,3 +616,23 @@ to assemble rather than measuring an answer. Emitting `sgt` where the
 comparison is `slt` is the pointed one: `branch.iyi` exits 12 where the
 current compiler exits 16, while the two fixtures with no comparison in
 them keep agreeing.
+
+### A loop
+
+`fixtures/loop.iyi` is a branch that goes backwards. The condition gets
+a block of its own, because it is asked again on every turn, and the
+body ends by branching to it. What makes it cheap is the slot decision
+above: the counter is loaded where it is read and stored where it is
+written, so nothing has to be threaded around the back edge.
+
+A loop is not a value, which the inference slice already said. It
+answers zero and the method answers what follows it.
+
+The second method in that fixture has a branch inside the loop, so one
+method holds the condition block, both arms, the join, the body and the
+exit: six blocks, and the `phi` in the middle of them has to name the
+arm it came from rather than the loop it is in.
+
+Load-bearing, and without hanging the gate: sending the body's back edge
+to the exit instead of the condition runs each loop once, so `loop.iyi`
+exits 1 where the current compiler exits 32.

@@ -23,7 +23,7 @@ module main
 import std/file
 import parser/parser
 using std/file::{File}
-using parser/parser::{Parser, Node, IfNode, NumNode, VarNode, AssignNode, ExprsNode, DefNode, ArgNode, CallNode, RequireNode, VisibilityModifierNode}
+using parser/parser::{Parser, Node, IfNode, WhileNode, NumNode, VarNode, AssignNode, ExprsNode, DefNode, ArgNode, CallNode, RequireNode, VisibilityModifierNode}
 
 # The methods the file declares, by name, so a call can find the one it
 # reaches and know how many arguments to pass.
@@ -172,6 +172,32 @@ pub def emit_if(node : IfNode, body : Body, methods : Methods) : String
   reg
 end
 
+# A loop: the condition in a block of its own, because it is asked
+# again on every turn, and a body that branches back to it. Nothing has
+# to be threaded around the back edge, because a local lives in a slot
+# and is loaded where it is read.
+#
+# A loop is not a value, so it answers zero and the method answers what
+# follows it.
+pub def emit_while(node : WhileNode, body : Body, methods : Methods) : String
+  mark = body.mark
+  again = "loop#{mark}"
+  inside = "body#{mark}"
+  after = "done#{mark}"
+
+  body.write("br label %#{again}")
+  body.block(again)
+  condition = emit_one(node.cond, body, methods)
+  body.write("br i1 #{condition}, label %#{inside}, label %#{after}")
+
+  body.block(inside)
+  emit_one(node.body, body, methods)
+  body.write("br label %#{again}")
+
+  body.block(after)
+  "0"
+end
+
 pub def emit(node : Node, body : Body, methods : Methods) : String
   case node
   when NumNode
@@ -199,6 +225,8 @@ pub def emit(node : Node, body : Body, methods : Methods) : String
     emit_one(node.body, body, methods)
   when IfNode
     emit_if(node, body, methods)
+  when WhileNode
+    emit_while(node, body, methods)
   when CallNode
     emit_call(node, body, methods)
   else
