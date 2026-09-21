@@ -1,48 +1,108 @@
 module main
 
-# The first codegen slice, written in iyi: LLVM IR for a program whose
-# every value is an `Int32`.
+# The codegen slice, written in iyi: LLVM IR for the shapes the fixtures
+# under `fixtures/` write.
 #
 # The other slices diff a tree or a type against the current compiler's.
 # Two independent backends do not write the same IR, so comparing the
 # text would measure spelling. What this slice compares is what the
-# program *does*: the fixture ends in `__iyi_exit`, both compilers turn
-# it into an executable, and the gate diffs the exit status.
+# program *does*: each fixture ends in `__iyi_exit`, both compilers turn
+# it into an executable, and the gate diffs the exit status and stdout.
 #
-# Scope, and it is narrow on purpose: integer literals, `+`, `-` and `*`,
-# local assignment and lookup, arguments, and a call to a method declared
-# in the same file. Not here: any other type, `if`, loops, strings,
-# allocation, a method on anything but an integer. Each of those wants
-# its own diffed slice rather than a guess, and the arithmetic is the one
-# that needs no runtime underneath it.
+# What it carries: integer literals and arithmetic, comparisons, `if`,
+# `while`, locals, arguments, calls to methods in the file, `print` of a
+# literal, and a struct with fields and methods. Not here: a class, which
+# is a reference and needs a heap; any other type; anything that
+# allocates. Each of those wants its own diffed fixture rather than a
+# guess.
 #
 # The operators are the prelude's primitives. `@[Primitive(:binary)] def
 # +(other : Int32) : self` is an instruction rather than a body, which is
-# why this slice can emit `add` without reading the prelude at all.
+# why this can emit `add` without reading the prelude at all.
 
 import std/file
 import parser/parser
 using std/file::{File}
-using parser/parser::{Parser, Node, IfNode, WhileNode, StrNode, NumNode, VarNode, AssignNode, ExprsNode, DefNode, ArgNode, CallNode, RequireNode, VisibilityModifierNode}
+using parser/parser::{Parser, Node, IfNode, WhileNode, StrNode, NumNode, VarNode, IvarNode, AssignNode, ExprsNode, DefNode, ArgNode, CallNode, ClassDefNode, PathNode, VisibilityModifierNode}
 
-# The methods the file declares, by name, so a call can find the one it
-# reaches and know how many arguments to pass.
-pub class Methods
+# A value, and what shape it has. Everything in this slice is either an
+# `i32` or a struct passed by value, and knowing which decides how it is
+# stored, loaded and passed.
+pub class Val
+  getter text : String
+  getter kind : String
+
+  def initialize(@text : String, @kind : String)
+  end
+end
+
+pub def int_val(text : String) : Val
+  Val.new(text, "i32")
+end
+
+# One struct the file declares: the fields it holds, in the order its
+# constructor assigns them, and the methods written on it.
+pub class Shape
+  getter name : String
+  getter fields : Array(String)
+  getter defs : Array(DefNode)
+
+  def initialize(@name : String)
+    @fields = [] of String
+    @defs = [] of DefNode
+  end
+
+  def add_field(field : String) : Nil
+    @fields << field unless @fields.includes?(field)
+  end
+
+  def add(node : DefNode) : Nil
+    @defs << node
+  end
+
+  def index_of(field : String) : Int32
+    found = @fields.index(field)
+    found.nil? ? 0 : found
+  end
+
+  def method(name : String) : Array(DefNode)
+    hit = [] of DefNode
+    @defs.each { |node| hit << node if node.name == name }
+    hit
+  end
+
+  def knows?(name : String) : Bool
+    method(name).size > 0
+  end
+
+  # How the type is written in the IR, and what a value of it is worth
+  # as a kind.
+  def kind : String
+    "%#{@name}"
+  end
+
+  def declaration : String
+    written = [] of String
+    @fields.each { |field| written << "i32" }
+    "%#{@name} = type { #{written.join(", ")} }"
+  end
+end
+
+# What the file declares: its own methods, and its structs.
+pub class Known
   @names : Array(String)
   @nodes : Array(DefNode)
+  @shapes : Array(Shape)
 
   def initialize
     @names = [] of String
     @nodes = [] of DefNode
+    @shapes = [] of Shape
   end
 
   def add(node : DefNode) : Nil
     @names << node.name
     @nodes << node
-  end
-
-  def names : Array(String)
-    @names
   end
 
   def nodes : Array(DefNode)
@@ -52,12 +112,37 @@ pub class Methods
   def knows?(name : String) : Bool
     !@names.index(name).nil?
   end
+
+  def add_shape(shape : Shape) : Nil
+    @shapes << shape
+  end
+
+  def shapes : Array(Shape)
+    @shapes
+  end
+
+  def shape_named(name : String) : Array(Shape)
+    hit = [] of Shape
+    @shapes.each { |shape| hit << shape if shape.name == name }
+    hit
+  end
+
+  def shape?(name : String) : Bool
+    shape_named(name).size > 0
+  end
+
+  # The struct a kind belongs to: `%Point` is `Point`, and `i32` is
+  # nothing's.
+  def shape_of(kind : String) : Array(Shape)
+    return [] of Shape unless kind.bytesize > 1 && kind[0] == '%'
+    shape_named(kind[1, kind.bytesize - 1])
+  end
 end
 
-# The module's string constants. A literal is bytes with a name, and
-# the name is what the call passes. Collected while the functions are
-# emitted and printed above them, so the text reads in the order LLVM
-# would have written it.
+# The module's string constants. A literal is bytes with a name, and the
+# name is what a call passes. Collected while the functions are emitted
+# and printed above them, so the text reads in the order LLVM would have
+# written it.
 pub class Constants
   @lines : String
   @count : Int32
@@ -72,8 +157,8 @@ pub class Constants
   end
 
   # The bytes of a literal, as LLVM spells them: every byte that is not
-  # plain ASCII is written as two hex digits, because a newline inside a
-  # constant would end the line it is written on.
+  # plain printable ASCII is written as two hex digits, because a newline
+  # inside a constant would end the line it is written on.
   def add(text : String) : String
     name = "@str#{@count}"
     @count = @count + 1
@@ -92,9 +177,9 @@ pub class Constants
     name
   end
 
+  # Integer division, spelled so: a bare `/` on two integers is a float
+  # here, and the prelude offers both.
   def hex(value : Int32) : String
-    # Integer division, spelled so: a bare `/` on two integers is a
-    # float here, and the prelude offers both.
     "#{digit(value // 16)}#{digit(value % 16)}"
   end
 
@@ -109,23 +194,31 @@ pub class Constants
   end
 end
 
-# One function's worth of instructions. `value` names what an expression
-# answered: either a literal, which needs no instruction, or a register.
+# One function's worth of instructions.
 pub class Body
   @lines : String
   @next : Int32
   @slots : Array(String)
+  @slot_kinds : Array(String)
   # Which block the cursor is in, and how many branches have been given
   # labels, so two `if`s in one method do not share them.
   @label : String
   @marks : Int32
+  # The struct this method belongs to, if any. Its fields are read
+  # through the slot `self` arrived in.
+  @holder : String
 
-  def initialize
+  def initialize(@holder : String)
     @lines = ""
     @next = 0
     @slots = [] of String
+    @slot_kinds = [] of String
     @label = "entry"
     @marks = 0
+  end
+
+  def holder : String
+    @holder
   end
 
   def text : String
@@ -147,22 +240,29 @@ pub class Body
 
   # A local lives in a slot rather than a register, so an assignment can
   # rewrite it without this pass having to ask which branch wrote it.
-  def slot(name : String) : String
-    unless @slots.includes?(name)
+  def slot(name : String, kind : String) : String
+    index = @slots.index(name)
+    if index.nil?
       @slots << name
-      write("%#{name}.slot = alloca i32")
+      @slot_kinds << kind
+      write("%#{name}.slot = alloca #{kind}")
     end
     "%#{name}.slot"
   end
 
   def slot?(name : String) : Bool
-    @slots.includes?(name)
+    !@slots.index(name).nil?
+  end
+
+  def slot_kind(name : String) : String
+    index = @slots.index(name)
+    index.nil? ? "i32" : @slot_kinds[index]
   end
 
   # A block, and the label this pass is writing into now. A `phi` names
-  # the block each of its values came from, and that is the block the
-  # arm *ended* in rather than the one it started in: an `if` inside an
-  # arm leaves the cursor somewhere else.
+  # the block each of its values came from, and that is the block the arm
+  # *ended* in rather than the one it started in: an `if` inside an arm
+  # leaves the cursor somewhere else.
   def block(name : String) : Nil
     @lines = @lines + name + ":\n"
     @label = name
@@ -203,38 +303,38 @@ end
 # each arm answered and the block it answered from. An arm with nothing
 # in it answers zero, which is what an `if` with no `else` is worth on
 # the side that did not run.
-pub def emit_if(node : IfNode, body : Body, methods : Methods, constants : Constants) : String
-  condition = emit_one(node.cond, body, methods, constants)
+pub def emit_if(node : IfNode, body : Body, known : Known, constants : Constants) : Val
+  condition = emit_one(node.cond, body, known, constants)
   mark = body.mark
   taken = "then#{mark}"
   other = "else#{mark}"
   join = "join#{mark}"
 
-  body.write("br i1 #{condition}, label %#{taken}, label %#{other}")
+  body.write("br i1 #{condition.text}, label %#{taken}, label %#{other}")
   body.block(taken)
-  first = emit_one(node.then_branch, body, methods, constants)
+  first = emit_one(node.then_branch, body, known, constants)
   from_first = body.label
   body.write("br label %#{join}")
 
   body.block(other)
-  second = emit_one(node.else_branch, body, methods, constants)
+  second = emit_one(node.else_branch, body, known, constants)
   from_second = body.label
   body.write("br label %#{join}")
 
   body.block(join)
   reg = body.register
-  body.write("#{reg} = phi i32 [ #{first}, %#{from_first} ], [ #{second}, %#{from_second} ]")
-  reg
+  body.write("#{reg} = phi i32 [ #{first.text}, %#{from_first} ], [ #{second.text}, %#{from_second} ]")
+  int_val(reg)
 end
 
-# A loop: the condition in a block of its own, because it is asked
-# again on every turn, and a body that branches back to it. Nothing has
-# to be threaded around the back edge, because a local lives in a slot
-# and is loaded where it is read.
+# A loop: the condition in a block of its own, because it is asked again
+# on every turn, and a body that branches back to it. Nothing has to be
+# threaded around the back edge, because a local lives in a slot and is
+# loaded where it is read.
 #
 # A loop is not a value, so it answers zero and the method answers what
 # follows it.
-pub def emit_while(node : WhileNode, body : Body, methods : Methods, constants : Constants) : String
+pub def emit_while(node : WhileNode, body : Body, known : Known, constants : Constants) : Val
   mark = body.mark
   again = "loop#{mark}"
   inside = "body#{mark}"
@@ -242,81 +342,100 @@ pub def emit_while(node : WhileNode, body : Body, methods : Methods, constants :
 
   body.write("br label %#{again}")
   body.block(again)
-  condition = emit_one(node.cond, body, methods, constants)
-  body.write("br i1 #{condition}, label %#{inside}, label %#{after}")
+  condition = emit_one(node.cond, body, known, constants)
+  body.write("br i1 #{condition.text}, label %#{inside}, label %#{after}")
 
   body.block(inside)
-  emit_one(node.body, body, methods, constants)
+  emit_one(node.body, body, known, constants)
   body.write("br label %#{again}")
 
   body.block(after)
-  "0"
+  int_val("0")
 end
 
-pub def emit(node : Node, body : Body, methods : Methods, constants : Constants) : String
+# Where a field lives: the struct arrived in a slot, and a field is an
+# offset into it.
+pub def field_place(name : String, body : Body, known : Known) : String
+  holder = known.shape_named(body.holder)
+  place = body.slot("self", holder[0].kind)
+  reg = body.register
+  body.write("#{reg} = getelementptr #{holder[0].kind}, ptr #{place}, i32 0, i32 #{holder[0].index_of(name)}")
+  reg
+end
+
+pub def emit(node : Node, body : Body, known : Known, constants : Constants) : Val
   case node
   when NumNode
-    node.value
+    int_val(node.value)
   when VarNode
-    place = body.slot(node.name)
+    kind = body.slot_kind(node.name)
+    place = body.slot(node.name, kind)
+    reg = body.register
+    body.write("#{reg} = load #{kind}, ptr #{place}")
+    Val.new(reg, kind)
+  when IvarNode
+    place = field_place(node.name, body, known)
     reg = body.register
     body.write("#{reg} = load i32, ptr #{place}")
-    reg
+    int_val(reg)
   when AssignNode
-    value = emit_one(node.value, body, methods, constants)
+    value = emit_one(node.value, body, known, constants)
     if node.target.size > 0
       target = node.target[0]
       case target
       when VarNode
-        body.write("store i32 #{value}, ptr #{body.slot(target.name)}")
+        body.write("store #{value.kind} #{value.text}, ptr #{body.slot(target.name, value.kind)}")
+      when IvarNode
+        place = field_place(target.name, body, known)
+        body.write("store i32 #{value.text}, ptr #{place}")
       end
     end
     value
   when ExprsNode
-    answer = "0"
-    node.items.each { |item| answer = emit(item, body, methods, constants) }
+    answer = int_val("0")
+    node.items.each { |item| answer = emit(item, body, known, constants) }
     answer
   when VisibilityModifierNode
-    emit_one(node.body, body, methods, constants)
+    emit_one(node.body, body, known, constants)
   when IfNode
-    emit_if(node, body, methods, constants)
+    emit_if(node, body, known, constants)
   when WhileNode
-    emit_while(node, body, methods, constants)
+    emit_while(node, body, known, constants)
   when CallNode
-    emit_call(node, body, methods, constants)
+    emit_call(node, body, known, constants)
   else
-    "0"
+    int_val("0")
   end
 end
 
-pub def emit_one(nodes : Array(Node), body : Body, methods : Methods, constants : Constants) : String
-  return "0" if nodes.size == 0
-  answer = "0"
-  nodes.each { |node| answer = emit(node, body, methods, constants) }
+pub def emit_one(nodes : Array(Node), body : Body, known : Known, constants : Constants) : Val
+  return int_val("0") if nodes.size == 0
+  answer = int_val("0")
+  nodes.each { |node| answer = emit(node, body, known, constants) }
   answer
 end
 
-pub def emit_call(node : CallNode, body : Body, methods : Methods, constants : Constants) : String
-  # `a + b` is a call on a value, and the value is an integer: the
-  # operator is an instruction rather than a function.
+pub def emit_call(node : CallNode, body : Body, known : Known, constants : Constants) : Val
   # A comparison answers an `i1`, which is what a branch takes and the
   # only place this slice puts one.
   test = compare(node.name)
   if test != "" && node.recv.size == 1 && node.args.size == 1
-    left = emit(node.recv[0], body, methods, constants)
-    right = emit(node.args[0], body, methods, constants)
+    left = emit(node.recv[0], body, known, constants)
+    right = emit(node.args[0], body, known, constants)
     reg = body.register
-    body.write("#{reg} = icmp #{test} i32 #{left}, #{right}")
-    return reg
+    body.write("#{reg} = icmp #{test} i32 #{left.text}, #{right.text}")
+    return Val.new(reg, "i1")
   end
 
+  # `a + b` is a call on a value, and the value is an integer: the
+  # operator is an instruction rather than a function.
   op = instruction(node.name)
   if op != "" && node.recv.size == 1 && node.args.size == 1
-    left = emit(node.recv[0], body, methods, constants)
-    right = emit(node.args[0], body, methods, constants)
+    left = emit(node.recv[0], body, known, constants)
+    right = emit(node.args[0], body, known, constants)
     reg = body.register
-    body.write("#{reg} = #{op} i32 #{left}, #{right}")
-    return reg
+    body.write("#{reg} = #{op} i32 #{left.text}, #{right.text}")
+    return int_val(reg)
   end
 
   # `print` of a literal is a write, the same way `+` is an `add`: the
@@ -329,33 +448,92 @@ pub def emit_call(node : CallNode, body : Body, methods : Methods, constants : C
       name = constants.add(written.value)
       reg = body.register
       body.write("#{reg} = call i64 @write(i32 1, ptr #{name}, i64 #{written.value.bytesize})")
-      return "0"
+      return int_val("0")
     end
   end
 
-  if node.recv.size == 0 && methods.knows?(node.name)
-    written = [] of String
-    node.args.each { |arg| written << emit(arg, body, methods, constants) }
+  # `Point.new(3, 1)` names a type rather than a value, and what it
+  # answers is the struct itself.
+  named = path_of(node.recv)
+  if node.name == "new" && named != "" && known.shape?(named)
+    return emit_new(named, node, body, known, constants)
+  end
+
+  # A method on a struct. The value arrives as the first argument,
+  # because a struct is passed by value and there is nothing to point at.
+  if node.recv.size == 1
+    receiver = emit(node.recv[0], body, known, constants)
+    holder = known.shape_of(receiver.kind)
+    if holder.size > 0 && holder[0].knows?(node.name)
+      return emit_method(holder[0], node, receiver, body, known, constants)
+    end
+    return int_val("0")
+  end
+
+  # Written with no receiver inside a method of a struct, this is a call
+  # on that struct: `spread` reaches `x` and `y` without naming itself.
+  if body.holder != "" && known.shape?(body.holder) &&
+     known.shape_named(body.holder)[0].knows?(node.name)
+    holder = known.shape_named(body.holder)[0]
+    place = body.slot("self", holder.kind)
+    reg = body.register
+    body.write("#{reg} = load #{holder.kind}, ptr #{place}")
+    return emit_method(holder, node, Val.new(reg, holder.kind), body, known, constants)
+  end
+
+  if known.knows?(node.name)
+    written = [] of Val
+    node.args.each { |arg| written << emit(arg, body, known, constants) }
     reg = body.register
     body.write("#{reg} = call i32 @#{mangle(node.name)}(#{arguments(written)})")
-    return reg
+    return int_val(reg)
   end
 
   # A name with no method and no instruction is a local read as a call,
   # which is what a bare `total` is before the parser knows it is one.
-  if node.recv.size == 0 && node.args.size == 0 && body.slot?(node.name)
-    place = body.slot(node.name)
+  if node.args.size == 0 && body.slot?(node.name)
+    kind = body.slot_kind(node.name)
+    place = body.slot(node.name, kind)
     reg = body.register
-    body.write("#{reg} = load i32, ptr #{place}")
-    return reg
+    body.write("#{reg} = load #{kind}, ptr #{place}")
+    return Val.new(reg, kind)
   end
-  "0"
+  int_val("0")
 end
 
-pub def arguments(written : Array(String)) : String
+pub def emit_new(named : String, node : CallNode, body : Body, known : Known,
+                 constants : Constants) : Val
+  shape = known.shape_named(named)[0]
+  written = [] of Val
+  node.args.each { |arg| written << emit(arg, body, known, constants) }
+  reg = body.register
+  body.write("#{reg} = call #{shape.kind} @#{mangle_method(named, "new")}(#{arguments(written)})")
+  Val.new(reg, shape.kind)
+end
+
+pub def emit_method(shape : Shape, node : CallNode, receiver : Val, body : Body,
+                    known : Known, constants : Constants) : Val
+  written = [] of Val
+  written << receiver
+  node.args.each { |arg| written << emit(arg, body, known, constants) }
+  reg = body.register
+  body.write("#{reg} = call i32 @#{mangle_method(shape.name, node.name)}(#{arguments(written)})")
+  int_val(reg)
+end
+
+pub def arguments(written : Array(Val)) : String
   pieces = [] of String
-  written.each { |value| pieces << "i32 #{value}" }
+  written.each { |value| pieces << "#{value.kind} #{value.text}" }
   pieces.join(", ")
+end
+
+pub def path_of(nodes : Array(Node)) : String
+  return "" if nodes.size == 0
+  node = nodes[0]
+  case node
+  when PathNode then node.names
+  else               ""
+  end
 end
 
 # The name a method is emitted under. Prefixed, because `add` and `main`
@@ -364,8 +542,13 @@ pub def mangle(name : String) : String
   "iyi_#{name}"
 end
 
-pub def parameters(node : DefNode) : String
+pub def mangle_method(holder : String, name : String) : String
+  "iyi_#{holder}_#{name}"
+end
+
+pub def parameters(node : DefNode, first : String) : String
   pieces = [] of String
+  pieces << first unless first == ""
   index = 0
   node.args.each do |arg|
     case arg
@@ -377,40 +560,120 @@ pub def parameters(node : DefNode) : String
   pieces.join(", ")
 end
 
-pub def emit_def(node : DefNode, methods : Methods, constants : Constants) : String
-  body = Body.new
+# An argument arrives in a register and a local lives in a slot, so the
+# first thing a body does is put it there.
+pub def store_arguments(node : DefNode, body : Body) : Nil
   index = 0
   node.args.each do |arg|
     case arg
     when ArgNode
-      # An argument arrives in a register and a local lives in a slot, so
-      # the first thing a body does is put it there.
-      body.write("store i32 %arg#{index}, ptr #{body.slot(arg.name)}")
+      body.write("store i32 %arg#{index}, ptr #{body.slot(arg.name, "i32")}")
       index = index + 1
     end
   end
-  answer = emit_one(node.body, body, methods, constants)
-  "define i32 @#{mangle(node.name)}(#{parameters(node)}) {\nentry:\n#{body.text}  ret i32 #{answer}\n}\n"
 end
 
-# The program's own entry. `__iyi_exit(e)` is what the fixture ends on
-# and what it is worth, so it is emitted as the return from `main`: the
+pub def emit_def(node : DefNode, known : Known, constants : Constants) : String
+  body = Body.new("")
+  store_arguments(node, body)
+  answer = emit_one(node.body, body, known, constants)
+  "define i32 @#{mangle(node.name)}(#{parameters(node, "")}) {\nentry:\n#{body.text}  ret i32 #{answer.text}\n}\n"
+end
+
+# A method of a struct. `self` arrives by value and is put in a slot, so
+# a field read is the same shape as a local read: an offset and a load.
+pub def emit_method_def(shape : Shape, node : DefNode, known : Known,
+                        constants : Constants) : String
+  body = Body.new(shape.name)
+  body.write("store #{shape.kind} %self, ptr #{body.slot("self", shape.kind)}")
+  store_arguments(node, body)
+  answer = emit_one(node.body, body, known, constants)
+  "define i32 @#{mangle_method(shape.name, node.name)}(#{parameters(node, "#{shape.kind} %self")}) {\nentry:\n#{body.text}  ret i32 #{answer.text}\n}\n"
+end
+
+# The `new` the compiler writes: it runs the constructor's body against a
+# value of its own and answers that value. A struct is passed by value,
+# so there is nothing to allocate beyond the slot the body writes into.
+pub def emit_new_def(shape : Shape, node : DefNode, known : Known,
+                     constants : Constants) : String
+  body = Body.new(shape.name)
+  body.slot("self", shape.kind)
+  store_arguments(node, body)
+  emit_one(node.body, body, known, constants)
+  reg = body.register
+  body.write("#{reg} = load #{shape.kind}, ptr %self.slot")
+  "define #{shape.kind} @#{mangle_method(shape.name, "new")}(#{parameters(node, "")}) {\nentry:\n#{body.text}  ret #{shape.kind} #{reg}\n}\n"
+end
+
+# The program's own entry. `__iyi_exit(e)` is what a fixture ends on and
+# what it is worth, so it is emitted as the return from `main`: the
 # status a process exits with is the one thing both compilers can be
-# asked for.
-pub def emit_main(nodes : Array(Node), methods : Methods, constants : Constants) : String
-  body = Body.new
-  answer = "0"
+# asked for. Everything above it is emitted in order, because a `print`
+# before the exit is part of what the program does.
+pub def emit_main(nodes : Array(Node), known : Known, constants : Constants) : String
+  body = Body.new("")
+  answer = int_val("0")
   nodes.each do |node|
     case node
     when CallNode
       if node.name == "__iyi_exit" && node.args.size == 1
-        answer = emit(node.args[0], body, methods, constants)
+        answer = emit(node.args[0], body, known, constants)
       else
-        emit(node, body, methods, constants)
+        emit(node, body, known, constants)
       end
     end
   end
-  "define i32 @main() {\nentry:\n#{body.text}  ret i32 #{answer}\n}\n"
+  "define i32 @main() {\nentry:\n#{body.text}  ret i32 #{answer.text}\n}\n"
+end
+
+# What a struct holds, read off the constructor: the parser writes
+# `def initialize(@x : Int32)` as an argument and an assignment, so the
+# fields are the assignments in the order they are made.
+pub def learn_fields(nodes : Array(Node), shape : Shape) : Nil
+  nodes.each do |node|
+    case node
+    when ExprsNode
+      learn_fields(node.items, shape)
+    when AssignNode
+      if node.target.size > 0
+        target = node.target[0]
+        case target
+        when IvarNode then shape.add_field(target.name)
+        end
+      end
+    end
+  end
+end
+
+pub def collect(nodes : Array(Node), known : Known) : Nil
+  nodes.each do |node|
+    case node
+    when ExprsNode
+      collect(node.items, known)
+    when VisibilityModifierNode
+      collect(node.body, known)
+    when DefNode
+      known.add(node)
+    when ClassDefNode
+      shape = Shape.new(path_of(node.name))
+      known.add_shape(shape)
+      collect_shape(node.body, shape)
+    end
+  end
+end
+
+pub def collect_shape(nodes : Array(Node), shape : Shape) : Nil
+  nodes.each do |node|
+    case node
+    when ExprsNode
+      collect_shape(node.items, shape)
+    when VisibilityModifierNode
+      collect_shape(node.body, shape)
+    when DefNode
+      shape.add(node)
+      learn_fields(node.body, shape) if node.name == "initialize"
+    end
+  end
 end
 
 pub def top_items(tree : Node) : Array(Node)
@@ -426,17 +689,22 @@ if path.nil?
 else
   tree = Parser.new(File.read(path)).parse
   items = top_items(tree)
-  methods = Methods.new
-  items.each do |node|
-    case node
-    when DefNode then methods.add(node)
-    end
-  end
+  known = Known.new
+  collect(items, known)
 
   constants = Constants.new
   functions = ""
-  methods.nodes.each { |node| functions = functions + emit_def(node, methods, constants) + "\n" }
-  functions = functions + emit_main(items, methods, constants)
+  known.shapes.each do |shape|
+    shape.defs.each do |node|
+      functions = functions + if node.name == "initialize"
+        emit_new_def(shape, node, known, constants)
+      else
+        emit_method_def(shape, node, known, constants)
+      end + "\n"
+    end
+  end
+  known.nodes.each { |node| functions = functions + emit_def(node, known, constants) + "\n" }
+  functions = functions + emit_main(items, known, constants)
 
   puts "; #{path}, emitted by selfhost/codegen/emit.iyi"
   # The one thing this slice borrows from outside the program it is
@@ -444,6 +712,8 @@ else
   # calls the C library's, and what the gate compares is the bytes that
   # reach stdout either way.
   puts "declare i64 @write(i32, ptr, i64)"
+  puts ""
+  known.shapes.each { |shape| puts shape.declaration }
   puts ""
   print constants.text
   puts ""

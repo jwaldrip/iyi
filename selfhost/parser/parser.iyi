@@ -3106,10 +3106,21 @@ pub class Parser
     return false unless word == "if" || word == "unless" ||
                         word == "while" || word == "until"
     return true if index == 0
+    # A modifier trails a complete expression and a block does not, so
+    # what decides it is the token in front of the word. An operator
+    # leaves an expression unfinished - `text + if flag` is a value
+    # waiting for one - and `=` is only the most common of them rather
+    # than a case of its own.
+    #
+    # Read the other way round this is wrong: `next if done` and
+    # `return 0 if n < 0` both follow a keyword, and both are modifiers.
     before = @tokens[index - 1]
-    before.kind == "NEWLINE" || before.kind == "=" ||
-      (before.kind == "IDENT" && (before.value == "do" || before.value == "else" ||
-        before.value == "then" || before.value == "begin"))
+    kind = before.kind
+    return true if kind == "NEWLINE" || kind == ";" || kind == "=" ||
+                   kind == "(" || kind == "[" || kind == "," ||
+                   kind == "=>" || kind == "->" || precedence(kind) > 0
+    kind == "IDENT" && (before.value == "do" || before.value == "else" ||
+      before.value == "then" || before.value == "begin")
   end
 
   # A `do` block is read to its `end` the same way every other body is.

@@ -543,7 +543,8 @@ into 6, and restoring the file byte-for-byte turns it back.
       loop.iyi agrees: exit 32
       nested.iyi agrees: exit 14
       print.iyi agrees: exit 3, 60 bytes out
-      agree 5, differ 0
+      struct.iyi agrees: exit 10
+      agree 6, differ 0
 
 Every other slice diffs an artifact: a token stream, a tree, a
 declaration, a type. Two independent backends do not write the same LLVM
@@ -558,17 +559,17 @@ A fixture that exits 0 and prints nothing would pass for free either
 way, so the gate refuses one and says why rather than counting it.
 
 Scope, and it is narrow on purpose: integer literals, `+`, `-` and `*`,
-local assignment and lookup, arguments, and a call to a method declared
-in the same file. Not here: any other type, `if`, loops, strings,
-allocation, a method on anything but an integer. The arithmetic is the
-one part that needs no runtime underneath the emitted code, which is
-what makes it a first slice rather than a bootstrap.
+comparisons, `if`, `while`, local assignment and lookup, arguments, a
+call to a method in the same file, `print` of a literal, and a struct
+with fields and methods. Not here: a class, which is a reference and
+needs a heap; any other type; anything that allocates. The sections
+below are the fixtures in the order they were written, and each names
+what it added and how the gate was made to fail without it.
 
-Two things the slice is allowed to assume, and both are the prelude's
-doing. The operators are primitives, so `@[Primitive(:binary)] def
+One thing the slice is allowed to assume, and it is the prelude's
+doing: the operators are primitives, so `@[Primitive(:binary)] def
 +(other : Int32) : self` is an instruction and `add` can be emitted
-without reading a body. And every value is an `Int32`, so there is no
-boxing and nothing to size.
+without reading a body.
 
 A local lives in a slot rather than a register, so an assignment can
 rewrite it without asking which branch wrote it, which is what the
@@ -665,3 +666,48 @@ dependency.
 
 Load-bearing: passing `bytesize - 1` to the write drops a byte from each
 line, the statuses still match, and the gate fails on the output.
+
+### A type with fields
+
+`fixtures/struct.iyi` is the first value with a shape. Everything before
+it was an `i32` in a register or a slot, so the emitter could assume one
+type and never ask. A struct makes it carry what each value is, and that
+is what this fixture paid for: every expression now answers its text
+*and* its kind, and a store, a load and an argument are written from the
+kind rather than assumed.
+
+`Point` is two `i32`s side by side. The fields are read off the
+constructor, which the parser already writes as an argument and an
+assignment, so their order is the order the assignments are made.
+
+A struct is passed by value, which is what makes this a first slice with
+a type in it: nothing is allocated and nothing is collected. `self`
+arrives as the first argument and is put in a slot, so a field read is
+the same shape as a local read - an offset and a load - and a method
+that names no receiver finds the struct it is already inside.
+
+The `new` the compiler writes is emitted as a function that runs the
+constructor's body against a value of its own and answers it, so an
+`initialize` doing more than assigning its arguments still works: the
+body is emitted rather than pattern-matched.
+
+A class is the slice after this one, and it is a different problem: a
+reference needs a heap, and a heap needs the runtime this slice has been
+avoiding.
+
+Load-bearing: fixing every field offset at zero makes both readers
+answer `@x`, and `struct.iyi` exits 8 where the current compiler exits
+10.
+
+Writing this found a parser gap, and the port's own source is what found
+it. An `if` used as an operand inside a `do` block, `text = text + if
+cond ... end`, had its `end` counted as the block's, so the block closed
+early and the method's last expression became a statement of its own.
+The rule said an `if` opens a block after a newline or an `=`, and `=`
+is only the most common operator rather than a case of its own.
+
+Read the other way round the rule is wrong twice. The first attempt
+asked whether the token before the word could end an expression, which
+makes `next if done` and `return 0 if n < 0` into blocks: both follow a
+keyword and both are modifiers. Four files caught it, and the rule that
+holds names the openers rather than guessing at the closers.
