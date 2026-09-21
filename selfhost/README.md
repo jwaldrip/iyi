@@ -539,8 +539,9 @@ into 6, and restoring the file byte-for-byte turns it back.
 
     bash selfhost/codegen/diff.sh
       arith.iyi agrees: exit 11
+      branch.iyi agrees: exit 16
       nested.iyi agrees: exit 14
-      agree 2, differ 0
+      agree 3, differ 0
 
 Every other slice diffs an artifact: a token stream, a tree, a
 declaration, a type. Two independent backends do not write the same LLVM
@@ -568,8 +569,8 @@ without reading a body. And every value is an `Int32`, so there is no
 boxing and nothing to size.
 
 A local lives in a slot rather than a register, so an assignment can
-rewrite it without this pass building a phi. The first slice has no
-branches, so nothing needs one, and `if` will be the slice that does.
+rewrite it without asking which branch wrote it, which is what the
+branch fixture below leans on.
 
 The second fixture is there because the first is one operation per line,
 which an emitter reading left to right would also get right.
@@ -587,3 +588,30 @@ and neither says why.
 The gate is load-bearing: emitting `add` where the instruction is `mul`
 turns 11 into 10 and 14 into 8 and exits non-zero, and restoring the
 file byte-for-byte turns it back.
+
+### A branch
+
+`fixtures/branch.iyi` is the first shape this slice cannot emit by
+appending. An `if` is two blocks and a value that depends on which one
+ran, so the emitter tracks which block it is writing into and ends each
+arm with a `phi` naming what the arm answered and where it answered
+from. That block is the one the arm *ended* in rather than the one it
+started in: an `if` inside an arm leaves the cursor somewhere else.
+
+An arm with nothing in it answers zero, which is what an `if` with no
+`else` is worth on the side that did not run. `clamp` writes its answer
+into a local instead, and the `phi` it leaves behind is dead.
+
+The comparison in front of a branch is a primitive as well, and it is
+the first value in this slice that is not an `i32`:
+`def <(other : Int32) : Bool` is an `icmp` answering an `i1`. A
+condition is the only place one appears, because nothing here stores a
+`Bool`, returns one, or prints one.
+
+Two mutations, and the difference between them is worth keeping.
+Swapping the `phi`'s arms is caught, but by LLVM's own verifier
+(`Instruction does not dominate all uses`), which is the gate refusing
+to assemble rather than measuring an answer. Emitting `sgt` where the
+comparison is `slt` is the pointed one: `branch.iyi` exits 12 where the
+current compiler exits 16, while the two fixtures with no comparison in
+them keep agreeing.

@@ -23,7 +23,7 @@ module main
 import std/file
 import parser/parser
 using std/file::{File}
-using parser/parser::{Parser, Node, NumNode, VarNode, AssignNode, ExprsNode, DefNode, ArgNode, CallNode, RequireNode, VisibilityModifierNode}
+using parser/parser::{Parser, Node, IfNode, NumNode, VarNode, AssignNode, ExprsNode, DefNode, ArgNode, CallNode, RequireNode, VisibilityModifierNode}
 
 # The methods the file declares, by name, so a call can find the one it
 # reaches and know how many arguments to pass.
@@ -60,11 +60,17 @@ pub class Body
   @lines : String
   @next : Int32
   @slots : Array(String)
+  # Which block the cursor is in, and how many branches have been given
+  # labels, so two `if`s in one method do not share them.
+  @label : String
+  @marks : Int32
 
   def initialize
     @lines = ""
     @next = 0
     @slots = [] of String
+    @label = "entry"
+    @marks = 0
   end
 
   def text : String
@@ -85,8 +91,7 @@ pub class Body
   end
 
   # A local lives in a slot rather than a register, so an assignment can
-  # rewrite it without this pass having to build a phi. The first slice
-  # has no branches, so nothing else needs one either.
+  # rewrite it without this pass having to ask which branch wrote it.
   def slot(name : String) : String
     unless @slots.includes?(name)
       @slots << name
@@ -98,6 +103,24 @@ pub class Body
   def slot?(name : String) : Bool
     @slots.includes?(name)
   end
+
+  # A block, and the label this pass is writing into now. A `phi` names
+  # the block each of its values came from, and that is the block the
+  # arm *ended* in rather than the one it started in: an `if` inside an
+  # arm leaves the cursor somewhere else.
+  def block(name : String) : Nil
+    @lines = @lines + name + ":\n"
+    @label = name
+  end
+
+  def label : String
+    @label
+  end
+
+  def mark : Int32
+    @marks = @marks + 1
+    @marks
+  end
 end
 
 # `+`, `-` and `*` on integers are instructions. The prelude declares
@@ -107,6 +130,46 @@ pub def instruction(name : String) : String
   return "sub" if name == "-"
   return "mul" if name == "*"
   ""
+end
+
+# A comparison is a primitive too, and it answers an `i1` rather than an
+# `i32`. Signed, because every integer in this slice is an `Int32`.
+pub def compare(name : String) : String
+  return "slt" if name == "<"
+  return "sle" if name == "<="
+  return "sgt" if name == ">"
+  return "sge" if name == ">="
+  return "eq" if name == "=="
+  return "ne" if name == "!="
+  ""
+end
+
+# A branch: the condition, a block per arm, and a `phi` that names what
+# each arm answered and the block it answered from. An arm with nothing
+# in it answers zero, which is what an `if` with no `else` is worth on
+# the side that did not run.
+pub def emit_if(node : IfNode, body : Body, methods : Methods) : String
+  condition = emit_one(node.cond, body, methods)
+  mark = body.mark
+  taken = "then#{mark}"
+  other = "else#{mark}"
+  join = "join#{mark}"
+
+  body.write("br i1 #{condition}, label %#{taken}, label %#{other}")
+  body.block(taken)
+  first = emit_one(node.then_branch, body, methods)
+  from_first = body.label
+  body.write("br label %#{join}")
+
+  body.block(other)
+  second = emit_one(node.else_branch, body, methods)
+  from_second = body.label
+  body.write("br label %#{join}")
+
+  body.block(join)
+  reg = body.register
+  body.write("#{reg} = phi i32 [ #{first}, %#{from_first} ], [ #{second}, %#{from_second} ]")
+  reg
 end
 
 pub def emit(node : Node, body : Body, methods : Methods) : String
@@ -134,6 +197,8 @@ pub def emit(node : Node, body : Body, methods : Methods) : String
     answer
   when VisibilityModifierNode
     emit_one(node.body, body, methods)
+  when IfNode
+    emit_if(node, body, methods)
   when CallNode
     emit_call(node, body, methods)
   else
@@ -151,6 +216,17 @@ end
 pub def emit_call(node : CallNode, body : Body, methods : Methods) : String
   # `a + b` is a call on a value, and the value is an integer: the
   # operator is an instruction rather than a function.
+  # A comparison answers an `i1`, which is what a branch takes and the
+  # only place this slice puts one.
+  test = compare(node.name)
+  if test != "" && node.recv.size == 1 && node.args.size == 1
+    left = emit(node.recv[0], body, methods)
+    right = emit(node.args[0], body, methods)
+    reg = body.register
+    body.write("#{reg} = icmp #{test} i32 #{left}, #{right}")
+    return reg
+  end
+
   op = instruction(node.name)
   if op != "" && node.recv.size == 1 && node.args.size == 1
     left = emit(node.recv[0], body, methods)
