@@ -23,7 +23,7 @@ module main
 import std/file
 import parser/parser
 using std/file::{File}
-using parser/parser::{Parser, Node, IfNode, WhileNode, NumNode, VarNode, AssignNode, ExprsNode, DefNode, ArgNode, CallNode, RequireNode, VisibilityModifierNode}
+using parser/parser::{Parser, Node, IfNode, WhileNode, StrNode, NumNode, VarNode, AssignNode, ExprsNode, DefNode, ArgNode, CallNode, RequireNode, VisibilityModifierNode}
 
 # The methods the file declares, by name, so a call can find the one it
 # reaches and know how many arguments to pass.
@@ -51,6 +51,61 @@ pub class Methods
 
   def knows?(name : String) : Bool
     !@names.index(name).nil?
+  end
+end
+
+# The module's string constants. A literal is bytes with a name, and
+# the name is what the call passes. Collected while the functions are
+# emitted and printed above them, so the text reads in the order LLVM
+# would have written it.
+pub class Constants
+  @lines : String
+  @count : Int32
+
+  def initialize
+    @lines = ""
+    @count = 0
+  end
+
+  def text : String
+    @lines
+  end
+
+  # The bytes of a literal, as LLVM spells them: every byte that is not
+  # plain ASCII is written as two hex digits, because a newline inside a
+  # constant would end the line it is written on.
+  def add(text : String) : String
+    name = "@str#{@count}"
+    @count = @count + 1
+    written = ""
+    index = 0
+    while index < text.bytesize
+      ch = text[index]
+      written = written + if ch == '"' || ch == '\\' || ch.ord < 32 || ch.ord > 126
+        "\\#{hex(ch.ord)}"
+      else
+        ch.to_s
+      end
+      index = index + 1
+    end
+    @lines = @lines + "#{name} = private unnamed_addr constant [#{text.bytesize} x i8] c\"#{written}\"\n"
+    name
+  end
+
+  def hex(value : Int32) : String
+    # Integer division, spelled so: a bare `/` on two integers is a
+    # float here, and the prelude offers both.
+    "#{digit(value // 16)}#{digit(value % 16)}"
+  end
+
+  def digit(value : Int32) : String
+    return "#{value}" if value < 10
+    return "A" if value == 10
+    return "B" if value == 11
+    return "C" if value == 12
+    return "D" if value == 13
+    return "E" if value == 14
+    "F"
   end
 end
 
@@ -148,8 +203,8 @@ end
 # each arm answered and the block it answered from. An arm with nothing
 # in it answers zero, which is what an `if` with no `else` is worth on
 # the side that did not run.
-pub def emit_if(node : IfNode, body : Body, methods : Methods) : String
-  condition = emit_one(node.cond, body, methods)
+pub def emit_if(node : IfNode, body : Body, methods : Methods, constants : Constants) : String
+  condition = emit_one(node.cond, body, methods, constants)
   mark = body.mark
   taken = "then#{mark}"
   other = "else#{mark}"
@@ -157,12 +212,12 @@ pub def emit_if(node : IfNode, body : Body, methods : Methods) : String
 
   body.write("br i1 #{condition}, label %#{taken}, label %#{other}")
   body.block(taken)
-  first = emit_one(node.then_branch, body, methods)
+  first = emit_one(node.then_branch, body, methods, constants)
   from_first = body.label
   body.write("br label %#{join}")
 
   body.block(other)
-  second = emit_one(node.else_branch, body, methods)
+  second = emit_one(node.else_branch, body, methods, constants)
   from_second = body.label
   body.write("br label %#{join}")
 
@@ -179,7 +234,7 @@ end
 #
 # A loop is not a value, so it answers zero and the method answers what
 # follows it.
-pub def emit_while(node : WhileNode, body : Body, methods : Methods) : String
+pub def emit_while(node : WhileNode, body : Body, methods : Methods, constants : Constants) : String
   mark = body.mark
   again = "loop#{mark}"
   inside = "body#{mark}"
@@ -187,18 +242,18 @@ pub def emit_while(node : WhileNode, body : Body, methods : Methods) : String
 
   body.write("br label %#{again}")
   body.block(again)
-  condition = emit_one(node.cond, body, methods)
+  condition = emit_one(node.cond, body, methods, constants)
   body.write("br i1 #{condition}, label %#{inside}, label %#{after}")
 
   body.block(inside)
-  emit_one(node.body, body, methods)
+  emit_one(node.body, body, methods, constants)
   body.write("br label %#{again}")
 
   body.block(after)
   "0"
 end
 
-pub def emit(node : Node, body : Body, methods : Methods) : String
+pub def emit(node : Node, body : Body, methods : Methods, constants : Constants) : String
   case node
   when NumNode
     node.value
@@ -208,7 +263,7 @@ pub def emit(node : Node, body : Body, methods : Methods) : String
     body.write("#{reg} = load i32, ptr #{place}")
     reg
   when AssignNode
-    value = emit_one(node.value, body, methods)
+    value = emit_one(node.value, body, methods, constants)
     if node.target.size > 0
       target = node.target[0]
       case target
@@ -219,37 +274,37 @@ pub def emit(node : Node, body : Body, methods : Methods) : String
     value
   when ExprsNode
     answer = "0"
-    node.items.each { |item| answer = emit(item, body, methods) }
+    node.items.each { |item| answer = emit(item, body, methods, constants) }
     answer
   when VisibilityModifierNode
-    emit_one(node.body, body, methods)
+    emit_one(node.body, body, methods, constants)
   when IfNode
-    emit_if(node, body, methods)
+    emit_if(node, body, methods, constants)
   when WhileNode
-    emit_while(node, body, methods)
+    emit_while(node, body, methods, constants)
   when CallNode
-    emit_call(node, body, methods)
+    emit_call(node, body, methods, constants)
   else
     "0"
   end
 end
 
-pub def emit_one(nodes : Array(Node), body : Body, methods : Methods) : String
+pub def emit_one(nodes : Array(Node), body : Body, methods : Methods, constants : Constants) : String
   return "0" if nodes.size == 0
   answer = "0"
-  nodes.each { |node| answer = emit(node, body, methods) }
+  nodes.each { |node| answer = emit(node, body, methods, constants) }
   answer
 end
 
-pub def emit_call(node : CallNode, body : Body, methods : Methods) : String
+pub def emit_call(node : CallNode, body : Body, methods : Methods, constants : Constants) : String
   # `a + b` is a call on a value, and the value is an integer: the
   # operator is an instruction rather than a function.
   # A comparison answers an `i1`, which is what a branch takes and the
   # only place this slice puts one.
   test = compare(node.name)
   if test != "" && node.recv.size == 1 && node.args.size == 1
-    left = emit(node.recv[0], body, methods)
-    right = emit(node.args[0], body, methods)
+    left = emit(node.recv[0], body, methods, constants)
+    right = emit(node.args[0], body, methods, constants)
     reg = body.register
     body.write("#{reg} = icmp #{test} i32 #{left}, #{right}")
     return reg
@@ -257,16 +312,30 @@ pub def emit_call(node : CallNode, body : Body, methods : Methods) : String
 
   op = instruction(node.name)
   if op != "" && node.recv.size == 1 && node.args.size == 1
-    left = emit(node.recv[0], body, methods)
-    right = emit(node.args[0], body, methods)
+    left = emit(node.recv[0], body, methods, constants)
+    right = emit(node.args[0], body, methods, constants)
     reg = body.register
     body.write("#{reg} = #{op} i32 #{left}, #{right}")
     return reg
   end
 
+  # `print` of a literal is a write, the same way `+` is an `add`: the
+  # prelude declares both and this knows what they do. Nothing else in
+  # the prelude is known by name.
+  if node.name == "print" && node.recv.size == 0 && node.args.size == 1
+    written = node.args[0]
+    case written
+    when StrNode
+      name = constants.add(written.value)
+      reg = body.register
+      body.write("#{reg} = call i64 @write(i32 1, ptr #{name}, i64 #{written.value.bytesize})")
+      return "0"
+    end
+  end
+
   if node.recv.size == 0 && methods.knows?(node.name)
     written = [] of String
-    node.args.each { |arg| written << emit(arg, body, methods) }
+    node.args.each { |arg| written << emit(arg, body, methods, constants) }
     reg = body.register
     body.write("#{reg} = call i32 @#{mangle(node.name)}(#{arguments(written)})")
     return reg
@@ -308,7 +377,7 @@ pub def parameters(node : DefNode) : String
   pieces.join(", ")
 end
 
-pub def emit_def(node : DefNode, methods : Methods) : String
+pub def emit_def(node : DefNode, methods : Methods, constants : Constants) : String
   body = Body.new
   index = 0
   node.args.each do |arg|
@@ -320,7 +389,7 @@ pub def emit_def(node : DefNode, methods : Methods) : String
       index = index + 1
     end
   end
-  answer = emit_one(node.body, body, methods)
+  answer = emit_one(node.body, body, methods, constants)
   "define i32 @#{mangle(node.name)}(#{parameters(node)}) {\nentry:\n#{body.text}  ret i32 #{answer}\n}\n"
 end
 
@@ -328,14 +397,16 @@ end
 # and what it is worth, so it is emitted as the return from `main`: the
 # status a process exits with is the one thing both compilers can be
 # asked for.
-pub def emit_main(nodes : Array(Node), methods : Methods) : String
+pub def emit_main(nodes : Array(Node), methods : Methods, constants : Constants) : String
   body = Body.new
   answer = "0"
   nodes.each do |node|
     case node
     when CallNode
       if node.name == "__iyi_exit" && node.args.size == 1
-        answer = emit(node.args[0], body, methods)
+        answer = emit(node.args[0], body, methods, constants)
+      else
+        emit(node, body, methods, constants)
       end
     end
   end
@@ -362,7 +433,19 @@ else
     end
   end
 
+  constants = Constants.new
+  functions = ""
+  methods.nodes.each { |node| functions = functions + emit_def(node, methods, constants) + "\n" }
+  functions = functions + emit_main(items, methods, constants)
+
   puts "; #{path}, emitted by selfhost/codegen/emit.iyi"
-  methods.nodes.each { |node| puts emit_def(node, methods) }
-  puts emit_main(items, methods)
+  # The one thing this slice borrows from outside the program it is
+  # compiling. The current compiler writes the syscall itself; the port
+  # calls the C library's, and what the gate compares is the bytes that
+  # reach stdout either way.
+  puts "declare i64 @write(i32, ptr, i64)"
+  puts ""
+  print constants.text
+  puts ""
+  print functions
 end

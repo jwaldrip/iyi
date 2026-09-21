@@ -542,7 +542,8 @@ into 6, and restoring the file byte-for-byte turns it back.
       branch.iyi agrees: exit 16
       loop.iyi agrees: exit 32
       nested.iyi agrees: exit 14
-      agree 4, differ 0
+      print.iyi agrees: exit 3, 60 bytes out
+      agree 5, differ 0
 
 Every other slice diffs an artifact: a token stream, a tree, a
 declaration, a type. Two independent backends do not write the same LLVM
@@ -553,8 +554,8 @@ program the current compiler builds and runs. The port emits LLVM IR,
 `clang` assembles it, and the gate compares the status the two processes
 exit with.
 
-A fixture that exits 0 either way would pass for free, so the gate
-refuses one and says why rather than counting it.
+A fixture that exits 0 and prints nothing would pass for free either
+way, so the gate refuses one and says why rather than counting it.
 
 Scope, and it is narrow on purpose: integer literals, `+`, `-` and `*`,
 local assignment and lookup, arguments, and a call to a method declared
@@ -636,3 +637,31 @@ arm it came from rather than the loop it is in.
 Load-bearing, and without hanging the gate: sending the body's back edge
 to the exit instead of the condition runs each loop once, so `loop.iyi`
 exits 1 where the current compiler exits 32.
+
+### What it prints
+
+`fixtures/print.iyi` moves the observable from a number to bytes, which
+is what a compiler is eventually judged by. The gate compares stdout as
+well as the status, and a fixture that exits 0 *and* prints nothing is
+refused rather than counted.
+
+A literal becomes a module constant, and every byte that is not plain
+printable ASCII is written as two hex digits, because a newline inside a
+constant would end the line it is written on. `print` is an intrinsic
+the same way `+` is: the prelude declares both and the backend knows
+what they do. Nothing else in the prelude is known by name.
+
+This slice does not build an iyi `String` - a bytesize, a length and the
+bytes - because nothing in the fixture asks a string for anything. It
+writes the bytes the literal holds, which is all `print` of a literal
+does.
+
+One thing is borrowed from outside the program being compiled: the write
+itself. The current compiler emits the syscall; the port calls the C
+library's, and what the gate compares is the bytes that reach stdout
+either way. A port that emitted the syscall directly would be measured
+by the same diff, which is why this is a scope note rather than a
+dependency.
+
+Load-bearing: passing `bytesize - 1` to the write drops a byte from each
+line, the statuses still match, and the gate fails on the output.

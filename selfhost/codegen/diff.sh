@@ -44,7 +44,7 @@ for fixture in "${fixtures[@]}"; do
     echo "  $name: the current compiler does not build it"
     differ=$((differ + 1)); continue
   }
-  "$WORK/oracle"; oracle_status=$?
+  "$WORK/oracle" > "$WORK/oracle.out" 2>/dev/null; oracle_status=$?
 
   # The port: emit IR, assemble it, and run that.
   "$WORK/emit" "$fixture" > "$WORK/out.ll" 2> "$WORK/emit.err" || {
@@ -55,18 +55,28 @@ for fixture in "${fixtures[@]}"; do
     grep -aoE "error:.{0,100}" "$WORK/clang.log" | head -3 | sed 's|^|    |'
     differ=$((differ + 1)); continue
   }
-  "$WORK/port"; port_status=$?
+  "$WORK/port" > "$WORK/port.out" 2>/dev/null; port_status=$?
 
-  if [ "$oracle_status" -eq 0 ]; then
-    echo "  $name: exits 0, which any emitter passes; give it an answer"
+  if [ "$oracle_status" -eq 0 ] && [ ! -s "$WORK/oracle.out" ]; then
+    echo "  $name: exits 0 and prints nothing, which any emitter passes"
     differ=$((differ + 1)); continue
   fi
-  if [ "$oracle_status" -eq "$port_status" ]; then
-    agree=$((agree + 1))
-    echo "  $name agrees: exit $oracle_status"
-  else
+  if [ "$oracle_status" -ne "$port_status" ]; then
     differ=$((differ + 1))
     echo "  DIFFERS $name: the current compiler exits $oracle_status, the port $port_status"
+    continue
+  fi
+  if ! diff -q "$WORK/oracle.out" "$WORK/port.out" > /dev/null; then
+    differ=$((differ + 1))
+    echo "  DIFFERS $name: same status, different output:"
+    diff "$WORK/oracle.out" "$WORK/port.out" | head -4 | sed 's|^|    |'
+    continue
+  fi
+  agree=$((agree + 1))
+  if [ -s "$WORK/oracle.out" ]; then
+    echo "  $name agrees: exit $oracle_status, $(wc -c < "$WORK/oracle.out" | tr -d ' ') bytes out"
+  else
+    echo "  $name agrees: exit $oracle_status"
   fi
 done
 
