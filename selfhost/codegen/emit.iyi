@@ -25,7 +25,7 @@ import std/kernel
 import parser/parser
 using std/file::{File}
 using std/kernel::{abort}
-using parser/parser::{Parser, Node, RequireNode, IfNode, UnlessNode, WhileNode, ReturnNode, NextNode, BreakNode, AndNode, OrNode, NotNode, BoolNode, CaseNode, WhenNode, TypeDeclNode, GenericNode, StrNode, NumNode, VarNode, IvarNode, AssignNode, ExprsNode, DefNode, ArgNode, CallNode, ClassDefNode, PathNode, VisibilityModifierNode}
+using parser/parser::{Parser, Node, RequireNode, IfNode, UnlessNode, WhileNode, ReturnNode, NextNode, BreakNode, AndNode, OrNode, NotNode, NopNode, BoolNode, CaseNode, WhenNode, TypeDeclNode, GenericNode, StrNode, NumNode, VarNode, IvarNode, AssignNode, ExprsNode, DefNode, ArgNode, CallNode, ClassDefNode, PathNode, VisibilityModifierNode}
 
 # A value, and what shape it has. Everything in this slice is either an
 # `i32` or a struct passed by value, and knowing which decides how it is
@@ -893,8 +893,19 @@ pub def emit(node : Node, body : Body, known : Known, constants : Constants) : V
     emit_while(node, body, known, constants)
   when CallNode
     emit_call(node, body, known, constants)
-  else
+  when NopNode
+    # Nothing, written down: an `if` with an empty `else`, a `while`
+    # with an empty body. Zero is the right answer here and the only
+    # place it is.
     int_val("0")
+  else
+    # The same defect as the unresolved call, one level up: a node shape
+    # this slice does not carry used to come back as a literal zero. An
+    # interpolation, an array literal or a proc became `0` and whatever
+    # was built on it was wrong rather than refused. Naming the shape is
+    # the whole message, because what a bootstrap needs next is exactly
+    # the list of shapes that reach here.
+    abort("#{node.class}: this slice has no way to emit that", 2)
   end
 end
 

@@ -1155,16 +1155,36 @@ is the shape of the problem: this gate compares exit status, and a
 wrong status is still a status. A silent zero is worse than a refusal
 precisely because it is plausible.
 
-Two places did it, one for a call with a receiver and one for a call
-without, and both now name what they could not do and exit non-zero.
+Three places did it, and the third was the largest. Two were calls, one
+with a receiver and one without. The third was the `else` arm of the
+switch in `emit`: any node shape this slice does not carry came back as
+zero, so an interpolation, an array literal or a proc silently became
+`0` and whatever was built on it was wrong rather than refused. All
+three now name what they could not do and exit non-zero.
+
+`NopNode` is the one place zero is right, and it is now written down
+rather than caught by a fallback. It is an `if` with an empty `else`
+and a `while` with an empty body, which three fixtures write.
+
 The gate has a second half for it: `selfhost/codegen/refuses/` holds
 programs the slice is *required* to refuse, and `diff.sh` reports
-`refused` beside `agree` and `differ`. Load-bearing both ways it can
-be got wrong: putting the zero back turns it red, and refusing without
-a message turns it red too.
+`refused` beside `agree` and `differ`.
 
     prelude_body.iyi refused: exit 2, abs: this slice has no way to
     emit that call on a i32
+    unheld_shape.iyi refused: exit 2, Parser::Parser::InterpNode: this
+    slice has no way to emit that
 
-That line is also the measure of the next slice. When it stops being a
-refusal and becomes an `agrees`, the prelude is being compiled.
+Writing the second of those found a gate that could not fail. It was an
+array literal, `xs = [3, 5, 9]` and then `xs.size`, and it stayed green
+with the shape refusal removed: the zero the array became was asked a
+question, so the *call* refusal caught it either way. The fixture was
+measuring the wrong one of the two. What replaced it builds an
+interpolation and never reads it, so nothing downstream can catch it,
+and removing the shape refusal turns it red. The five mutations that
+hold this up are in the session notes: each of the three zeros put
+back, each refusal made silent, and `NopNode` treated as a gap, which
+has to stay green.
+
+That first line is also the measure of the next slice. When it stops
+being a refusal and becomes an `agrees`, the prelude is being compiled.
