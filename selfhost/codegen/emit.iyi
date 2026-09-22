@@ -529,6 +529,14 @@ pub def literal_kind(text : String) : String
   digits > "2147483647" ? "i64" : "i32"
 end
 
+# And what that width is called. A kind cannot be read back into a name:
+# `Int32`, `UInt32`, `Int` and `UInt` are all `i32`, and their methods
+# are different bodies. So the name travels with the value from the
+# place that knows it, which for a literal is here.
+pub def literal_name(text : String) : String
+  literal_kind(text) == "i64" ? "Int64" : "Int32"
+end
+
 pub def conversion(name : String) : String
   return "Int8" if name == "to_i8"
   return "Int16" if name == "to_i16"
@@ -798,7 +806,7 @@ end
 pub def emit(node : Node, body : Body, known : Known, constants : Constants) : Val
   case node
   when NumNode
-    Val.new(node.value, literal_kind(node.value), "")
+    Val.new(node.value, literal_kind(node.value), literal_name(node.value))
   when StrNode
     # The literal as an object rather than as bytes: a pointer at the
     # `@bytesize` the constant opens with, which is where a pointer from

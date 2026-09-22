@@ -1217,3 +1217,25 @@ So the slice is: carry the type name on an integer `Val` and keep it
 through arithmetic, then emit a method on a primitive type, where
 `self` is the value rather than a struct arrived at by pointer. The
 fixtures for it are already written down as refusals.
+
+The first half of that is done and is in this branch, because it is
+small and it stands on its own: a literal carries `Int32` or `Int64`,
+and arithmetic already passed the name along from the wider operand.
+The refusal reads `abs: this slice has no way to emit that call on a
+Int32` rather than `on a i32`, which is the difference between naming
+a type and naming a register width.
+
+The second half has a wall in front of it, found by trying. A fixture
+that requires `number.iyi` does make `Int32` a known shape, and the
+very next thing that happens is `-: this slice has no way to emit that
+call on a %Int32`: subtraction, which was an instruction a moment ago.
+`Shape` in this emitter means a struct with a layout, and `%Int32` is
+the layout name it invents. The prelude's `struct Int32` is not that.
+It is a primitive with no fields whose methods take the value itself.
+
+So the slice is not "look the method up on the shape". It is: a
+primitive type needs a shape that carries methods without carrying a
+layout, and `self` inside one of its methods is the value in a
+register. Until that exists, requiring the prelude into a fixture
+makes arithmetic worse rather than making `abs` work, which is worth
+knowing before starting rather than after.
