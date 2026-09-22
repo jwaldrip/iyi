@@ -63,7 +63,11 @@ for f in "${files[@]}"; do
     echo "  NO ORACLE $(basename "$f")"
     continue
   fi
-  "$WORK/lexer" "$f" > "$WORK/b.txt" 2>/dev/null
+  # Status and stderr kept rather than dropped: a crash and a wrong
+  # token stream otherwise print the same diff of one file against
+  # nothing.
+  "$WORK/lexer" "$f" > "$WORK/b.txt" 2> "$WORK/b.err"
+  status=$?
   normalise "$WORK/a.txt" > "$WORK/an.txt"
   normalise "$WORK/b.txt" > "$WORK/bn.txt"
   if diff -q "$WORK/an.txt" "$WORK/bn.txt" > /dev/null; then
@@ -71,6 +75,9 @@ for f in "${files[@]}"; do
   else
     differ=$((differ + 1))
     echo "  DIFFERS $(basename "$f")  $(diff "$WORK/an.txt" "$WORK/bn.txt" | head -4 | tr '\n' ' ' | cut -c1-110)"
+    if [ "$status" -ne 0 ] || [ ! -s "$WORK/b.txt" ]; then
+      echo "    the port exited $status saying: $(head -2 "$WORK/b.err" | tr '\n' ' ' | cut -c1-150)"
+    fi
   fi
 done
 echo "  agree $agree, differ $differ, skipped $skipped"

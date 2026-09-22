@@ -52,12 +52,18 @@ for f in "${files[@]}"; do
     echo "  NO ORACLE $(basename "$f")"
     continue
   fi
-  "$WORK/parser" "$f" > "$WORK/b.txt" 2>/dev/null
+  # Status and stderr kept rather than dropped: a crash, a refusal and a
+  # wrong tree all print the same blank `port:` line otherwise.
+  "$WORK/parser" "$f" > "$WORK/b.txt" 2> "$WORK/b.err"
+  status=$?
   if diff -q "$WORK/a.txt" "$WORK/b.txt" > /dev/null; then
     agree=$((agree + 1))
   else
     differ=$((differ + 1))
     echo "  DIFFERS $(basename "$f")"
+    if [ "$status" -ne 0 ] || [ ! -s "$WORK/b.txt" ]; then
+      echo "    the port exited $status saying: $(head -2 "$WORK/b.err" | tr '\n' ' ' | cut -c1-150)"
+    fi
     echo "    oracle: $(cut -c1-150 "$WORK/a.txt")"
     echo "    port:   $(cut -c1-150 "$WORK/b.txt")"
   fi

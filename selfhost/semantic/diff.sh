@@ -50,12 +50,21 @@ for f in "${files[@]}"; do
     echo "  NO ORACLE $(basename "$f")"
     continue
   fi
-  IYI_PATH="$REPO/src:$REPO/selfhost" "$WORK/declare" "$f" > "$WORK/b.txt" 2>/dev/null
+  # The port's status and its stderr are kept, not dropped. They used to
+  # be, and the cost showed up as a CI failure that said only
+  # `port:` with nothing after it: a crash, a file it refused, and a
+  # genuinely wrong answer all print the same blank line, and the one
+  # sentence that would have said which was being thrown away.
+  IYI_PATH="$REPO/src:$REPO/selfhost" "$WORK/declare" "$f" > "$WORK/b.txt" 2> "$WORK/b.err"
+  status=$?
   if diff -q "$WORK/a.txt" "$WORK/b.txt" > /dev/null; then
     agree=$((agree + 1))
   else
     differ=$((differ + 1))
     echo "  DIFFERS $(basename "$f")"
+    if [ "$status" -ne 0 ] || [ ! -s "$WORK/b.txt" ]; then
+      echo "    the port exited $status saying: $(head -2 "$WORK/b.err" | tr '\n' ' ' | cut -c1-150)"
+    fi
     echo "    oracle: $(cut -c1-150 "$WORK/a.txt")"
     echo "    port:   $(cut -c1-150 "$WORK/b.txt")"
   fi

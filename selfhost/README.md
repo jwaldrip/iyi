@@ -1275,6 +1275,44 @@ a dead `%Int32 = type { }` out of the module, and LLVM accepts that
 declaration perfectly well. It is tidiness. The mutation now aims at
 `Shape#kind`, which is the line that actually decides anything.
 
+### A gate that could not say why
+
+The slice above went green locally and red in CI, on a step it had not
+touched: the declaration pass, on one sample, `std_iterator.iyi`. The
+whole of what CI could tell me was this.
+
+    DIFFERS std_iterator.iyi
+      oracle: (class Samples::StdIterator::NaturalNumbers
+      port:
+
+The port answered nothing, and nothing is what a crash, a file the port
+refused, and a genuinely empty answer all look like. The sentence that
+would have separated them existed: the port writes it to stderr. The
+harness was throwing it away, along with the exit status, on the line
+that ran it.
+
+    "$WORK/declare" "$f" > "$WORK/b.txt" 2>/dev/null
+
+That is the same defect as the silent zero further up, in a different
+organ. A measurement that cannot distinguish two causes reports the one
+the reader guesses.
+
+It was a class, not a line. Four gates did it: the lexer, the parser,
+the declaration pass and inference. All four keep the status and the
+message now, and print them when they differ:
+
+    DIFFERS std_iterator.iyi
+      the port exited 3 saying: planted: this port was made to fail
+
+Proven on each by planting an `abort` at the top of the port's own main
+and checking the line appears, then restoring the file byte for byte.
+The `2>/dev/null` on the *oracle* side stays: each gate already has an
+explicit "no oracle" path that says what that means.
+
+This does not yet explain `std_iterator.iyi`. It is what makes the next
+occurrence explain itself, which is the only honest thing to do with a
+failure whose cause was discarded before it was read.
+
 ### Bounds that sat on the edge of what they catch
 
 CI went red on darwin, and not on anything above: `bench/parallel_mark.sh`

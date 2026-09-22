@@ -41,14 +41,19 @@ for fixture in "${fixtures[@]}"; do
   CRYSTAL_CACHE_DIR="$WORK/cr" "$REPO/bin/crystal" run --no-color \
     "$HERE/infer_oracle.cr" -- "$fixture" 2>/dev/null \
     | grep -v "Using compiled" > "$WORK/oracle.txt"
-  "$WORK/infer" "$fixture" > "$WORK/port.txt" 2>/dev/null
+  # Status and stderr kept rather than dropped: "port answered nothing"
+  # is true of a crash and of a refusal alike, and the sentence that
+  # separates them was being discarded.
+  "$WORK/infer" "$fixture" > "$WORK/port.txt" 2> "$WORK/port.err"
+  port_status=$?
 
   name="$(basename "$fixture")"
   if [ ! -s "$WORK/oracle.txt" ]; then
     echo "  $name: oracle answered nothing"; status=1; continue
   fi
   if [ ! -s "$WORK/port.txt" ]; then
-    echo "  $name: port answered nothing"; status=1; continue
+    echo "  $name: port answered nothing, exiting $port_status: $(head -2 "$WORK/port.err" | tr '\n' ' ' | cut -c1-150)"
+    status=1; continue
   fi
   if diff -q "$WORK/oracle.txt" "$WORK/port.txt" >/dev/null; then
     echo "  $name agrees: $(cat "$WORK/port.txt")"
