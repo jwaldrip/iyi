@@ -1215,30 +1215,65 @@ for half the tower, silently, which is the defect this section is about.
 
 So the slice is: carry the type name on an integer `Val` and keep it
 through arithmetic, then emit a method on a primitive type, where
-`self` is the value rather than a struct arrived at by pointer. The
-fixtures for it are already written down as refusals.
+`self` is the value rather than a struct arrived at by pointer.
 
-The first half of that is done and is in this branch, because it is
-small and it stands on its own: a literal carries `Int32` or `Int64`,
-and arithmetic already passed the name along from the wider operand.
-The refusal reads `abs: this slice has no way to emit that call on a
-Int32` rather than `on a i32`, which is the difference between naming
-a type and naming a register width.
+It is done, and `prelude_body.iyi` moved out of `refuses/` and into
+`fixtures/` to say so. The fourteenth fixture agrees with the compiler
+at exit 39.
 
-The second half has a wall in front of it, found by trying. A fixture
-that requires `number.iyi` does make `Int32` a known shape, and the
-very next thing that happens is `-: this slice has no way to emit that
+The first half was small and stood on its own: a literal carries
+`Int32` or `Int64`, and arithmetic already passed the name along from
+the wider operand.
+
+The second half had a wall in front of it, found by trying. A fixture
+that reaches `number.iyi` does make `Int32` a known shape, and the very
+next thing that happened was `-: this slice has no way to emit that
 call on a %Int32`: subtraction, which was an instruction a moment ago.
-`Shape` in this emitter means a struct with a layout, and `%Int32` is
-the layout name it invents. The prelude's `struct Int32` is not that.
-It is a primitive with no fields whose methods take the value itself.
+`Shape` in this emitter meant a struct with a layout, and `%Int32` is
+the layout name it invents. The body of `Int32#abs` stored `self` as a
+`%Int32`, and `-self` on a value of that kind is not arithmetic.
 
-So the slice is not "look the method up on the shape". It is: a
-primitive type needs a shape that carries methods without carrying a
-layout, and `self` inside one of its methods is the value in a
-register. Until that exists, requiring the prelude into a fixture
-makes arithmetic worse rather than making `abs` work, which is worth
-knowing before starting rather than after.
+Four things closed it, and each is held up by a mutation.
+
+`register_kind` is the types whose values live in a register, asked as
+a question rather than repeated as a table. `Shape#kind` answers it
+before reaching for `%Name`, which is what makes `self` an `i32` inside
+a prelude method body. Taking that away turns the fixture red.
+
+Unary minus. `-x` is one operand and the instruction path wants a
+receiver and an argument, so it fell through to the refusal. A written
+`-1` never arrives there, because the lexer hands the sign to the
+literal; this is the negation of something computed, which is a
+subtraction from zero at the operand's own width. Removing it turns the
+fixture red, and an `add` where the `sub` belongs answers 21 instead of
+39, which is the kind of wrong number the refusal above exists to stop
+being silent.
+
+Quoted symbols. `even?` and `odd?` are ordinary iyi method names and
+`?` is not a character a bare LLVM symbol can hold, so `@iyi_Int32_even?`
+does not assemble. Every symbol is quoted now rather than the awkward
+ones: `@"iyi_answer"` and `@iyi_answer` name the same thing, and a rule
+with no exceptions needs nothing that decides which side of it a name
+falls on. Leaving them bare turns the fixture red at the assembler.
+
+The prelude, read without being asked for. An iyi program is compiled
+against it without writing a `require`, and a fixture that required its
+own copy would be a program the *compiler* refuses, because a file may
+not redefine a method the prelude has. So the emitter finds it on
+`IYI_PATH`, the same list the compiler searches. Emptying that in
+`diff.sh` turns all fourteen red rather than quietly reading as
+programs that need no prelude, which is why it is exported once at the
+top rather than put in front of each run.
+
+What it costs: the gate went from 16.6 seconds to 22.3 for fourteen
+fixtures, because the prelude is parsed for every one of them. Not
+expanded. Expanding is still the 2.7x above, and still unpaid for.
+
+One thing that is not load-bearing, said out loud because the mutation
+that was supposed to prove it came back green. `Shape#primitive?` keeps
+a dead `%Int32 = type { }` out of the module, and LLVM accepts that
+declaration perfectly well. It is tidiness. The mutation now aims at
+`Shape#kind`, which is the line that actually decides anything.
 
 ### Bounds that sat on the edge of what they catch
 

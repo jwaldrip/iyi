@@ -20,9 +20,12 @@ module main
 # +(other : Int32) : self` is an instruction rather than a body, which is
 # why this can emit `add` without reading the prelude at all.
 
+import std/env
 import std/file
 import std/kernel
+import macro/expand
 import parser/parser
+using std/env::{ENV}
 using std/file::{File}
 using std/kernel::{abort}
 using parser/parser::{Parser, Node, RequireNode, IfNode, UnlessNode, WhileNode, ReturnNode, NextNode, BreakNode, AndNode, OrNode, NotNode, NopNode, BoolNode, CaseNode, WhenNode, TypeDeclNode, GenericNode, StrNode, NumNode, VarNode, IvarNode, AssignNode, ExprsNode, DefNode, ArgNode, CallNode, ClassDefNode, PathNode, VisibilityModifierNode}
@@ -148,10 +151,28 @@ pub class Shape
     method(name).size > 0
   end
 
-  # How a value of the type is written in the IR. A reference is an
-  # opaque pointer; the struct type below it is what an offset into it
-  # is measured against.
+  # A type the compiler already knows the width of: `Int32`, `Bool`,
+  # every rung of the tower. The prelude declares each as a `struct`
+  # with methods and no fields, so it arrives here looking exactly like
+  # `Point` does.
+  #
+  # This one is tidiness rather than correctness, said plainly because
+  # the mutation written to prove it came back green: all it does is
+  # keep `%Int32 = type { }` out of the module, and LLVM accepts that
+  # declaration. `kind` below is the line that decides anything, and
+  # answering `%Int32` there is what broke subtraction the first time
+  # this was tried: the body of `Int32#abs` stored `self` as a `%Int32`,
+  # and `-self` on a value of that kind is not arithmetic any more.
+  def primitive? : Bool
+    register_kind(@name) != ""
+  end
+
+  # How a value of the type is written in the IR. A primitive is its
+  # register kind, a reference is an opaque pointer, and the struct type
+  # below it is what an offset into it is measured against.
   def kind : String
+    said = register_kind(@name)
+    return said unless said == ""
     @reference ? "ptr" : "%#{@name}"
   end
 
@@ -266,10 +287,13 @@ pub class Known
   end
 end
 
-pub def kind_of(name : String, shape : Shape, known : Known) : String
-  return "i32" if name == ""
-  bound = shape.binding(name)
-  return kind_of(bound, Shape.new("", false), known) unless bound == name
+# The types whose values live in a register rather than in a layout.
+# The prelude declares every one of them as a `struct` with methods and
+# no fields, so what separates them from `Point` is not how they are
+# written: it is that the compiler already knows how wide they are.
+# Answers "" for everything else, which is what makes it a question a
+# caller can ask rather than a table it has to repeat.
+pub def register_kind(name : String) : String
   return "i1" if name == "Bool"
   # A `String` is a pointer at the object the compiler laid out, and it
   # is the one type here whose shape the prelude did not decide.
@@ -278,6 +302,15 @@ pub def kind_of(name : String, shape : Shape, known : Known) : String
   return "i16" if name == "Int16" || name == "UInt16"
   return "i64" if name == "Int64" || name == "UInt64"
   return "i32" if name == "Int32" || name == "UInt32" || name == "Int" || name == "UInt"
+  ""
+end
+
+pub def kind_of(name : String, shape : Shape, known : Known) : String
+  return "i32" if name == ""
+  bound = shape.binding(name)
+  return kind_of(bound, Shape.new("", false), known) unless bound == name
+  said = register_kind(name)
+  return said unless said == ""
   hit = known.shape_named(name)
   return hit[0].kind if hit.size > 0
   "i32"
@@ -956,6 +989,21 @@ pub def emit_call(node : CallNode, body : Body, known : Known, constants : Const
     return Val.new(reg, kind, shape)
   end
 
+  # `-x` is one operand, which the path above will not take: it wants a
+  # receiver and an argument. A written `-1` never arrives here, because
+  # the lexer hands the sign to the literal, so this is the negation of
+  # something computed. It is a subtraction from zero at the operand's
+  # own width, and the type name travels with it: negating an `Int32`
+  # answers an `Int32`.
+  if node.name == "-" && node.recv.size == 1 && node.args.size == 0
+    said = emit(node.recv[0], body, known, constants)
+    if integer?(said.kind)
+      reg = body.register
+      body.write("#{reg} = sub #{said.kind} 0, #{said.text}")
+      return Val.new(reg, said.kind, said.shape)
+    end
+  end
+
   # `print` of a string is a write, the same way `+` is an `add`: the
   # prelude declares both and this knows what they do. Nothing else in
   # the prelude is known by name. A literal is written straight out of
@@ -1141,11 +1189,22 @@ end
 # The name a method is emitted under. Prefixed, because `add` and `main`
 # are names a C runtime already has and an operator is not a name at all.
 pub def mangle(name : String) : String
-  "iyi_#{name}"
+  quoted("iyi_#{name}")
 end
 
 pub def mangle_method(holder : String, name : String) : String
-  "iyi_#{holder}_#{name}"
+  quoted("iyi_#{holder}_#{name}")
+end
+
+# LLVM writes a symbol as a bare identifier or as a quoted string, and
+# only the second can hold a `?`. `even?` and `odd?` are ordinary iyi
+# method names, `+` and `<=>` are method names too, and the prelude is
+# full of both. Every symbol is quoted rather than the awkward ones,
+# because a rule with no exceptions needs nothing that decides which
+# side of it a name falls on, and `@"iyi_answer"` and `@iyi_answer`
+# name the same thing.
+pub def quoted(name : String) : String
+  "\"#{name}\""
 end
 
 pub def parameters(node : DefNode, first : String, shape : Shape,
@@ -1424,12 +1483,45 @@ pub def directory_of(path : String) : String
   cut < 0 ? "." : path[0, cut]
 end
 
+# Where the prelude lives, for a program that did not ask for it. Every
+# iyi program is compiled against it without writing a `require`, so a
+# fixture that reaches `Int32#abs` has to find it the same way rather
+# than requiring a copy: the compiler refuses a file that redefines a
+# method the prelude has, so a copy is a program the oracle will not
+# build and a gate cannot compare.
+#
+# `IYI_PATH` is the list the compiler itself searches, so this asks the
+# same question. It is a list because the port is built with `src` and
+# `selfhost` on it, and the prelude is under the first entry that holds
+# it.
+pub def prelude_path : String
+  written = ENV["IYI_PATH"]?
+  return "" if written.nil?
+  here = ""
+  index = 0
+  while index <= written.bytesize
+    ch = index < written.bytesize ? written[index] : ':'
+    if ch == ':'
+      found = "#{here}/iyi/prelude.iyi"
+      return found if here != "" && File.exists?(found)
+      here = ""
+    else
+      here = here + ch.to_s
+    end
+    index = index + 1
+  end
+  ""
+end
+
 path = Program.args[0]?
 if path.nil?
   puts "usage: emit <file.iyi>"
 else
   items = [] of Node
-  read_source(path, items, [] of String)
+  seen = [] of String
+  found = prelude_path
+  read_source(found, items, seen) unless found == ""
+  read_source(path, items, seen)
   known = Known.new
   collect(items, known)
 
@@ -1457,7 +1549,11 @@ else
   puts "declare i64 @write(i32, ptr, i64)"
   puts "declare ptr @malloc(i64)"
   puts ""
-  known.shapes.each { |shape| puts shape.declaration(known) unless shape.generic? }
+  # A generic with nothing bound has no layout yet, and a primitive has
+  # none at all: `%Int32 = type { }` is a type nothing is a value of.
+  known.shapes.each do |shape|
+    puts shape.declaration(known) unless shape.generic? || shape.primitive?
+  end
   puts ""
   print constants.text
   puts ""

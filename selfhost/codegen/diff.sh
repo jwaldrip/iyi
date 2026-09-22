@@ -36,6 +36,13 @@ IYI_CACHE_DIR="$WORK/iyi" IYI_PATH="$REPO/src:$REPO/selfhost" \
   exit 1
 }
 
+# The emitter reads the prelude for a program that did not require it,
+# the way the compiler does, and it finds it on `IYI_PATH`. Exported
+# rather than put in front of each run, because the port is invoked in
+# two places below and a fixture that silently found no prelude would
+# look like a fixture whose program does not need one.
+export IYI_PATH="$REPO/src:$REPO/selfhost"
+
 fixtures=("$HERE"/fixtures/*.iyi)
 [ "$#" -gt 0 ] && fixtures=("$@")
 
