@@ -1188,3 +1188,32 @@ has to stay green.
 
 That first line is also the measure of the next slice. When it stops
 being a refusal and becomes an `agrees`, the prelude is being compiled.
+
+### What compiling `abs` actually needs
+
+Refusing it made the next slice's shape legible, so here is what was
+measured rather than guessed.
+
+The declaration is already there. `collect` registers `struct Int32`
+from `number.iyi` as a shape and `collect_shape` puts `abs`, `even?`,
+`odd?` and the rest on it, because the prelude is read like any other
+require. Nothing needs to be found.
+
+What is missing is one link. A `Val` carries a `kind` and a `shape`,
+and `int_val` sets the kind to `i32` and leaves the shape empty, so
+`(0 - 9)` arrives at the call with nothing to look a method up by. That
+is why the refusal says `on a i32`: `i32` is the kind, printed because
+there is no name to print.
+
+Reading the name back out of the kind does not work, and it is worth
+saying why rather than finding out later. `kind_of` sends `Int32`,
+`UInt32`, `Int` and `UInt` all to `i32`, and `Int64` and `UInt64` both
+to `i64`. The mapping is many-to-one and the methods differ across it:
+`Int32#abs` is `self < 0 ? -self : self` and `UInt32#abs` is the value
+itself. Guessing the name from the kind would compile the wrong body
+for half the tower, silently, which is the defect this section is about.
+
+So the slice is: carry the type name on an integer `Val` and keep it
+through arithmetic, then emit a method on a primitive type, where
+`self` is the value rather than a struct arrived at by pointer. The
+fixtures for it are already written down as refusals.
