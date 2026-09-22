@@ -1140,3 +1140,31 @@ and what it will need is the part of `src/iyi` that has no iyi under
 it: the collector, the syscalls, and the three borrowings this slice
 still makes - `write`, `malloc` and the string layout - which are
 exactly what compiling the prelude would replace.
+
+### A zero that was an answer
+
+Reaching for the next slice found a defect in this one. `Int32#abs` is
+declared in `number.iyi` as `self < 0 ? -self : self`, a body written in
+iyi rather than a primitive, and the emitter has no way to compile it
+yet. What it did was return a literal zero. So a program writing
+`(0 - 9).abs` emitted `add i32 %t, 0`, the module assembled, the program
+ran, and it exited 0 where the compiler exits 39.
+
+Every fixture passed throughout, because none of them reaches one. That
+is the shape of the problem: this gate compares exit status, and a
+wrong status is still a status. A silent zero is worse than a refusal
+precisely because it is plausible.
+
+Two places did it, one for a call with a receiver and one for a call
+without, and both now name what they could not do and exit non-zero.
+The gate has a second half for it: `selfhost/codegen/refuses/` holds
+programs the slice is *required* to refuse, and `diff.sh` reports
+`refused` beside `agree` and `differ`. Load-bearing both ways it can
+be got wrong: putting the zero back turns it red, and refusing without
+a message turns it red too.
+
+    prelude_body.iyi refused: exit 2, abs: this slice has no way to
+    emit that call on a i32
+
+That line is also the measure of the next slice. When it stops being a
+refusal and becomes an `agrees`, the prelude is being compiled.

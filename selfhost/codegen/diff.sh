@@ -86,6 +86,34 @@ for fixture in "${fixtures[@]}"; do
   fi
 done
 
-echo "  agree $agree, differ $differ"
+# The other half of the gate: programs this slice is required to
+# refuse. A call it cannot answer used to come back as a literal zero,
+# which assembles, runs, and exits with a plausible wrong number. That
+# is invisible to everything above, because it compares exit status and
+# a wrong status is still a status. So each file under `refuses/` has to
+# make the emitter exit non-zero and say what it could not do.
+#
+# Only when the whole corpus was asked for. Naming fixtures on the
+# command line is how one is looked at, and that should not drag these in.
+refused=0
+if [ "$#" -eq 0 ]; then
+  for program in "$HERE"/refuses/*.iyi; do
+    [ -e "$program" ] || continue
+    name="$(basename "$program")"
+    "$WORK/emit" "$program" > /dev/null 2> "$WORK/refuse.err"; status=$?
+    if [ "$status" -eq 0 ]; then
+      echo "  DIFFERS $name: the port emitted it, and it is meant to refuse"
+      differ=$((differ + 1)); continue
+    fi
+    if [ ! -s "$WORK/refuse.err" ]; then
+      echo "  DIFFERS $name: refused with exit $status and said nothing"
+      differ=$((differ + 1)); continue
+    fi
+    refused=$((refused + 1))
+    echo "  $name refused: exit $status, $(head -1 "$WORK/refuse.err")"
+  done
+fi
+
+echo "  agree $agree, differ $differ, refused $refused"
 # Nothing compared is a failure, not a pass.
 [ "$differ" -eq 0 ] && [ "$agree" -gt 0 ]

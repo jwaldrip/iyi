@@ -21,8 +21,10 @@ module main
 # why this can emit `add` without reading the prelude at all.
 
 import std/file
+import std/kernel
 import parser/parser
 using std/file::{File}
+using std/kernel::{abort}
 using parser/parser::{Parser, Node, RequireNode, IfNode, UnlessNode, WhileNode, ReturnNode, NextNode, BreakNode, AndNode, OrNode, NotNode, BoolNode, CaseNode, WhenNode, TypeDeclNode, GenericNode, StrNode, NumNode, VarNode, IvarNode, AssignNode, ExprsNode, DefNode, ArgNode, CallNode, ClassDefNode, PathNode, VisibilityModifierNode}
 
 # A value, and what shape it has. Everything in this slice is either an
@@ -1011,7 +1013,7 @@ pub def emit_call(node : CallNode, body : Body, known : Known, constants : Const
     if holder.size > 0 && holder[0].knows?(node.name)
       return emit_method(holder[0], node, receiver, body, known, constants)
     end
-    return int_val("0")
+    abort("#{node.name}: this slice has no way to emit that call on a #{receiver.shape == "" ? receiver.kind : receiver.shape}", 2)
   end
 
   # Written with no receiver inside a method of a struct, this is a call
@@ -1060,7 +1062,15 @@ pub def emit_call(node : CallNode, body : Body, known : Known, constants : Const
     body.write("#{reg} = load #{kind}, ptr #{place}")
     return Val.new(reg, kind, body.slot_shape(node.name))
   end
-  int_val("0")
+
+  # Anything else is a call this slice cannot answer, and answering it
+  # with a zero is worse than refusing it. That is what this did: a
+  # program calling `abs` on a prelude method with a body emitted
+  # `add i32 %t, 0`, assembled, ran, and exited 0 where the compiler
+  # exits 39. A gate comparing exit status cannot see a wrong answer
+  # that is also a plausible one, so the emitter says what it could not
+  # do and stops.
+  abort("#{node.name}: this slice has no way to emit that call", 2)
 end
 
 pub def emit_new(named : String, node : CallNode, body : Body, known : Known,
