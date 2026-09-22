@@ -408,7 +408,7 @@ the samples have no expected output pinned. So `+` reporting four
 characters where it holds five would have passed every check there
 is, including all six corpora above.
 
-`bench/string_invariants.sh` runs one iyi program and diffs twelve
+`bench/string_invariants.sh` runs one iyi program and diffs nineteen
 answers against the ones written down beside it: ASCII, one multibyte
 operand, two multibyte operands, the empty-operand short path that
 returns the other string whole, and a hundred concatenations in a
@@ -426,14 +426,28 @@ property of the fork, not an accident, and the `lib LibC` blocks in
 `prelude.iyi` bear it out: there are seven, under `darwin` and
 `win32`, and none under `linux`.
 
-What is left is a word at a time rather than a byte, written in iyi.
-That is worth doing and it is not free: the destination of the second
-copy in `+` starts at `bytesize`, which is not eight-byte aligned, and
-this compiler emits for nine targets including wasm32 and 32-bit
-arm. An unaligned 64-bit load is fine on two of them and a question on
-the rest, so it wants alignment analysis and its own gates rather than
-a ride on this change. Measured, scoped, and deliberately not taken
-here.
+What is left is a word at a time rather than a byte, written in iyi,
+and it is done. `String.copy_bytes` moves eight bytes at a time when
+both ends are eight-byte aligned and one at a time when they are not.
+Only when both are aligned: an unaligned 64-bit access is fine on two
+of the nine targets this compiles for and a question on the rest, so
+it is not attempted. That still catches the copy that matters, because
+a string's bytes begin one header along from an allocation and the
+allocator returns aligned memory, so building a string in a loop
+copies the accumulator by word every time.
+
+Together with the count, expanding `src/iyi/prelude.iyi` went from
+31 seconds to 3.5, to the same 5,586 lines, and the 400KB
+concatenation benchmark from 0.41 to 0.12.
+
+Gating it meant admitting the first gate could not see it. Counting
+alone passed three mutations of the word loop, because the fixture's
+longest string was built two bytes at a time and only its length was
+compared. It compares bytes now, through a position-weighted checksum,
+across a string joined at a multiple of eight and one joined a byte
+off it. Shifting the word read by one, or copying every other word,
+each turns it red; removing the word path entirely leaves it green,
+which is right, because that is slower and not wrong.
 
 Reading the prelude without expanding it is still what the codegen
 slice does, and the first slice that needs a macro-written declaration
