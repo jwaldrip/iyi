@@ -450,8 +450,15 @@ each turns it red; removing the word path entirely leaves it green,
 which is right, because that is slower and not wrong.
 
 Reading the prelude without expanding it is still what the codegen
-slice does, and the first slice that needs a macro-written declaration
-is the one that will have to finish this.
+slice does, and what that costs was re-measured once expansion got
+cheap. Wiring it into the emitter takes the thirteen fixtures from
+11.6 seconds to 31.6, and all thirteen still agree: 2.7x rather than
+the 25x it was, and a price a slice could now pay. It is still not
+wired, because it buys nothing yet. The conversions `wide.iyi` writes
+are answered by a table of names in the emitter rather than by reading
+what `primitives.iyi` declares, so no fixture reaches a macro-written
+declaration. The slice that replaces that table with a read is the
+slice that pays for it.
 
 The four that remain need what a macro cannot give them. `named_tuple`
 is missing exactly the methods `tuple.iyi` declares, `traits` and

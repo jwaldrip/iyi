@@ -1329,11 +1329,18 @@ pub def read_source(path : String, into : Array(Node), seen : Array(String)) : N
   seen << path
   # Not expanded, and that is measured rather than assumed. A macro
   # body is not iyi until it has run, so `primitives.iyi` declares
-  # 549 methods this reads as 36; every fixture agrees either way,
-  # because none of them reaches one. Expanding it costs what
-  # `prelude.iyi` costs, which is 31 seconds against 0.3 for the
-  # other thirteen files together. The slice that needs a macro-
-  # written declaration is the slice that pays for fixing that.
+  # 549 methods this reads as 36. Every fixture agrees either way,
+  # because none of them reaches one: the conversions `wide.iyi`
+  # writes are answered by the table at `conversion`, not by reading
+  # what the prelude declares.
+  #
+  # Expanding here costs 2.7x, 11.6 seconds against 31.6 across the
+  # thirteen, measured with it wired in. That was 25x before the
+  # expander walked code rather than bytes and `String#+` stopped
+  # rescanning, so the price is now one a slice could pay. It buys
+  # nothing yet, because nothing here reads a macro-written
+  # declaration. The slice that replaces that table with a read of
+  # what the prelude actually declares is the slice that pays for it.
   tree = Parser.new(File.read(path)).parse
   here = directory_of(path)
   top_items(tree).each do |node|
