@@ -1239,3 +1239,44 @@ layout, and `self` inside one of its methods is the value in a
 register. Until that exists, requiring the prelude into a fixture
 makes arithmetic worse rather than making `abs` work, which is worth
 knowing before starting rather than after.
+
+### Bounds that sat on the edge of what they catch
+
+CI went red on darwin, and not on anything above: `bench/parallel_mark.sh`
+proves that a pool which never recycles a batch is refused, and the
+proof did not fire. The three-core runner mapped exactly 4,194,304
+bytes with `free_batch` removed, and the check was `pool > 4194304_u64`,
+which is false at 4,194,304. The bound was sitting on the bottom edge of
+the population it exists to catch.
+
+Sampled across CI runs on both runners, healthy and with `free_batch`
+removed:
+
+    recycling     65,536   262,144   393,216   589,824   1,507,328
+    removed    4,194,304 4,521,984 4,587,520 4,653,056 5,111,808
+
+The gap is 1.5 MB to 4.19 MB, so the bound moved to 2.5 MB: 1.74x above
+the largest healthy reading and 1.6x below the smallest broken one,
+which is its middle measured the way these numbers vary. The high-water
+depends on core count, because the wide mark's spills outrun the helpers
+for a moment and more helpers drain them sooner, so margin on both sides
+is what makes the check travel between machines.
+
+What this machine can prove is that the check is live: lowering the
+bound under a healthy reading makes it fire. What it cannot prove is the
+three-core reading itself, because with eighteen cores the broken value
+is 20 MB, far above either bound. The separation at 4,194,304 is
+arithmetic over the sampled data rather than a local reproduction, and
+the comment in the file says so.
+
+The complaint names a class, so the others were looked for rather than
+waited for. `bench/arena_exercise.iyi` had the same shape: twelve
+one-object arenas must not be backed by huge pages, and the bound was
+`grew > 2048_u64` where 2,048 KB is exactly one huge page. A single huge
+page lands on `>` and does not fire. Sampled healthy across three runs:
+324 KB, every time. That bound moved to 1 MB, 3.2x above the reading and
+half a huge page.
+
+One more was checked and left alone. `bench/collect_trigger.iyi` refuses
+fewer than four arenas for 64 MiB live, and the sampled reading is 21.
+That is not an edge.
