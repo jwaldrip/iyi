@@ -147,11 +147,19 @@ grep -E '^(threads|speed):' answers-release.txt | sed 's/^/  /'
 # any runner, and within a runner's patience - 32 threads on the darwin
 # runner's three cores are a stop of 33 for every one of the three that
 # can run, and the step outlived its five minutes there.
+#
+# Clamping to nine was not enough. On 2026-09-21 the darwin runner ran
+# nine threads on its three cores for the full three hundred seconds and
+# was killed a moment after printing its answer, with every live list
+# intact. The work is bounded by the runner's cores, not by anything
+# this is testing, so the bound here is ten minutes rather than five.
+# The run either holds its properties or it does not; how long three
+# cores take to park nine threads is not the question being asked.
 over=$((cores * 2))
 [ "$over" -lt 9 ] && over=9
 [ "$over" -gt 32 ] && over=32
 step "the same, $over threads, release (past the $cores cores here)"
-if ! timeout 300 ./threads-release "$over" > answers-32.txt 2>&1; then
+if ! timeout 600 ./threads-release "$over" > answers-32.txt 2>&1; then
   cat answers-32.txt; exit 1
 fi
 grep -q 'every property held' answers-32.txt || { cat answers-32.txt; exit 1; }

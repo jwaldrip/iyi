@@ -72,6 +72,80 @@ jobs:
           path: .build/crystal
           retention-days: 1
 
+  # The self-hosting port, against the compiler it is a port of. Its own
+  # job rather than steps bolted onto `samples`, for two reasons: the
+  # first time these ran there they took that job past its 45 minute
+  # timeout and cancelled work that had nothing to do with them, and a
+  # gate that fails should name itself rather than arriving as "samples
+  # failed".
+  #
+  # Every one of these was a script a person ran by hand, which meant
+  # the answers in `selfhost/README.md` held on one laptop and a
+  # regression landed green. The oracle is `bin/crystal`, downloaded;
+  # the port is `bin/iyi`, built here. Neither needs the network and
+  # both write only under `mktemp -d`. The codegen slice is not here: it
+  # needs `clang` to assemble what the port emits, and it runs on the
+  # darwin job, which has one.
+  selfhost:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: crystallang/crystal:1.21.0-build
+    name: "The port, against the compiler it is a port of"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v5
+        with:
+          name: crystal
+          path: .build
+      - run: chmod +x .build/crystal
+
+      - name: Build `iyi`
+        run: make -o .build/crystal iyi
+
+      # What a string knows about itself. The prelude fills in a
+      # `String`'s two counts, and a wrong one is a number that comes
+      # out wrong somewhere far away rather than a crash: nothing else
+      # here would catch it, because the specs are the compiler's, the
+      # roundtrip compares a program against itself, and no sample has
+      # expected output pinned.
+      - name: A string knows its own two counts
+        run: bash bench/string_invariants.sh
+
+      # The corpus is listed with `find` rather than `selfhost/**/*.iyi`
+      # because that glob is `selfhost/*/*.iyi` unless `globstar` is on:
+      # 10 files instead of 40, still matching, still passing, quietly
+      # missing everything a directory deeper. A gate that shrinks
+      # without saying so is the failure this workflow exists against,
+      # so it counts what it read and says the number.
+      #
+      # `shell: bash` because this workflow's default is `sh -e`, where
+      # `mapfile` and `<(...)` are a syntax error rather than a feature
+      # that quietly does less.
+      - name: The lexer answers what the current lexer answers
+        shell: bash
+        run: |
+          mapfile -t port < <(find selfhost -name '*.iyi' | sort)
+          echo "port files: ${#port[@]}"
+          bash selfhost/lexer/diff.sh "${port[@]}" src/iyi/*.iyi
+
+      - name: The parser builds the tree the current parser builds
+        shell: bash
+        run: |
+          mapfile -t port < <(find selfhost -name '*.iyi' | sort)
+          echo "port files: ${#port[@]}"
+          bash selfhost/parser/diff.sh
+          bash selfhost/parser/diff.sh "${port[@]}"
+
+      - name: The declaration pass declares what the semantic pass does
+        run: bash selfhost/semantic/diff.sh
+
+      - name: Inference answers the types the semantic pass answers
+        run: bash selfhost/semantic/infer_diff.sh
+
   iyi:
     needs: build
     runs-on: ubuntu-24.04
@@ -114,6 +188,15 @@ jobs:
             spec/compiler/semantic/iyi_spec.cr \
             spec/compiler/iyi_derive_spec.cr \
             spec/compiler/compiler_spec.cr
+
+      # The three steps below run `bin/iyi`, and nothing in this job has
+      # built one: they answered `iyi is not built yet` from the first
+      # day they were added. It went unseen because `Formatted` failed
+      # ahead of them and a failed step skips the rest, so one red step
+      # was hiding another. The samples job builds the same pair the
+      # same way.
+      - name: Build `iyi` and its daemon
+        run: make -o .build/crystal iyi iyi-daemon
 
       # What `iyi mod diff` answers, against what a rebuild would show. It
       # is the one question a build system branches on, and it was wrong
@@ -1238,6 +1321,15 @@ jobs:
       - name: Samples, from artifacts (R-1)
         run: bash bench/samples_roundtrip.sh
 
+      # The codegen slice, here rather than on Linux because it needs
+      # `clang` to assemble what the port emits and a macOS runner has
+      # one. Every other slice diffs an artifact; this one builds each
+      # fixture twice, once with the compiler that exists and once from
+      # the port's own LLVM IR, and compares the exit status and the
+      # bytes each program printed.
+      - name: The emitter's programs do what the compiler's programs do
+        run: bash selfhost/codegen/diff.sh
+
       - name: Token boundaries and the transport soak (III.8)
         run: |
           python3 bench/lsp_token_boundaries.py
@@ -1353,7 +1445,11 @@ jobs:
           Write-Host "linking with: $command"
           $parts = $command -split '\s+'
           & $parts[0] $parts[1..($parts.Length - 1)]
-          if ($LASTEXITCODE -ne 0) { Write-Host "link failed with $LASTEXITCODE"; exit 0 }
+          # Exits with the linker's status, not 0. It used to exit 0,
+          # which skipped the twenty runs below and left the job green
+          # on a build that never linked: the three steps under this one
+          # already do it the right way round.
+          if ($LASTEXITCODE -ne 0) { Write-Host "link failed with $LASTEXITCODE"; exit $LASTEXITCODE }
 
           # Normalised before comparing, both sides: `Out-String` hands back CRLF
           # and the reference was written on Linux. The first version of this
