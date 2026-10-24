@@ -1170,7 +1170,8 @@ pub class CodeGenVisitor < Visitor
          else
            @mod.add_function(node.name, fn_ty)
          end
-    if node.body && node.name.starts_with?("__crystal_") && node.name != "__crystal_personality"
+    is_darwin_personality = (@mod.target.includes?("darwin") || @mod.target.includes?("apple")) && node.name == "__crystal_personality"
+    if node.body && (node.name.starts_with?("__crystal_") || node.name.starts_with?("__iyi_")) && !is_darwin_personality
       fn.linkage = LibLLVM::Linkage::Internal
     end
     @current_fn = fn

@@ -200,8 +200,9 @@ for fixture in "$REPO"/bench/fixtures/cg_*.iyi; do
   "$WORK/dump_crystal_cg" --emit-obj "$fixture" "$WORK/cr_${base}.o"
 done
 
-clang "$REPO/bench/fixtures/cg_runner.c" "$WORK"/iyi_*.o -o "$WORK/iyi_runner"
-clang "$REPO/bench/fixtures/cg_runner.c" "$WORK"/cr_*.o -o "$WORK/cr_runner"
+CC="${CC:-$(command -v clang || command -v cc || command -v gcc)}"
+"$CC" "$REPO/bench/fixtures/cg_runner.c" "$WORK"/iyi_*.o -o "$WORK/iyi_runner"
+"$CC" "$REPO/bench/fixtures/cg_runner.c" "$WORK"/cr_*.o -o "$WORK/cr_runner"
 
 "$WORK/iyi_runner" > "$WORK/iyi_runner.out"
 "$WORK/cr_runner" > "$WORK/cr_runner.out"
