@@ -1,14 +1,9 @@
 module compiler/semantic/top_level
 
-import compiler/foundation/location
-import compiler/syntax/ast
-import compiler/syntax/visitor
-import compiler/macros/engine
-
-using compiler/foundation/location::{Location}
-using compiler/syntax/ast::{ASTNode, Alias, Arg, Assign, Call, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, Generic, ImplDef, Include, InstanceVar, Macro, MacroIf, MacroLiteral, Metaclass, ModuleDef, Nop, NumberLiteral, Path, ProcNotation, Self, StringLiteral, TraitDef, TypeDeclaration, Union, Var, Visibility, VisibilityModifier}
-using compiler/syntax/visitor::{Visitor}
-using compiler/macros/engine::{MacroEngine}
+import compiler/foundation/location::{Location}
+import compiler/syntax/ast::{ASTNode, Alias, Arg, Assign, Call, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, Generic, ImplDef, Include, InstanceVar, Macro, MacroIf, MacroLiteral, Metaclass, ModuleDef, Nop, NumberLiteral, Path, ProcNotation, Self, StringLiteral, TraitDef, TypeDeclaration, Union, Var, Visibility, VisibilityModifier}
+import compiler/syntax/visitor::{Visitor}
+import compiler/macros/engine::{MacroEngine}
 
 pub class TypeException < Exception
   getter message : String

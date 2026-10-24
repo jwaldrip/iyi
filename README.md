@@ -878,7 +878,7 @@ not the library.
 | | |
 |---|---|
 | [SPEC.md](SPEC.md) | the design, and the record of what measurement settled |
-| [`samples/iyi`](samples/iyi) | thirty-four programs: nineteen documenting a part of it, seven being a first hour, and `calc`, a language |
+| [`samples/iyi`](samples/iyi) | twenty-seven programs: nineteen documenting a part of it, seven being a first hour, and `calc`, a language |
 | [`samples/crystal/kemal`](samples/crystal/kemal) | a kemal application, from `shard.yml`: built from source and across four `.iyimod` boundaries |
 | [`src/iyi`](src/iyi) | iyi's own library, 22,608 lines. `--crystal` swaps it for Crystal's |
 | [`src/std`](src/std) | the standard library, in iyi. Opt-in with `import std/...`, outside the prelude's ceiling |

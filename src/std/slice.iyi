@@ -39,19 +39,6 @@ pub struct Slice(T)
     @size = size
   end
 
-  # Allocates a slice of size elements initialized by yielding each index.
-  def initialize(size : Int32, & : Int32 -> T)
-    raise "negative size: #{size}" if size < 0
-    @size = size
-    @read_only = false
-    @pointer = size == 0 ? Pointer(T).new(0_u64) : Pointer(T).malloc(size.to_u64)
-    i = 0
-    while i < size
-      @pointer[i] = yield i
-      i = i + 1
-    end
-  end
-
   # Allocates a slice of *size* elements on the heap.
   def self.new(size : Int32, *, read_only : Bool = false) : self
     raise "negative size: #{size}" if size < 0

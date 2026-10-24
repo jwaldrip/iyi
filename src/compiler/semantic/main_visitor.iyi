@@ -1,20 +1,12 @@
 module compiler/semantic/main_visitor
 
-import compiler/foundation/location
-import compiler/syntax/ast
-import compiler/syntax/token
-import compiler/syntax/visitor
-import compiler/syntax/transformer
-import compiler/macros/engine
-import compiler/semantic/top_level
-
-using compiler/foundation/location::{Location}
-using compiler/syntax/ast::{ASTNode, Arg, Assign, Block, BoolLiteral, Call, CharLiteral, ClassDef, ClassVar, Def, Expressions, If, InstanceVar, Macro, ModuleDef, NilLiteral, NodeMap, Nop, NumberLiteral, Path, ProcNotation, Return, StringLiteral, SymbolLiteral, TypeDeclaration, Var, While, Yield}
-using compiler/syntax/token::{NumberKind}
-using compiler/syntax/visitor::{Visitor}
-using compiler/syntax/transformer::{Transformer}
-using compiler/macros/engine::{MacroEngine}
-using compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, MetaTypeVar, MetaclassType, ModuleType, NamedType, NonGenericClassType, NonGenericModuleType, SemanticProgram, TopLevelVisitor, TraitType, Type, UnionType}
+import compiler/foundation/location::{Location}
+import compiler/syntax/ast::{ASTNode, Arg, Assign, Block, BoolLiteral, Call, CharLiteral, ClassDef, ClassVar, Def, Expressions, If, InstanceVar, Macro, ModuleDef, NilLiteral, NodeMap, Nop, NumberLiteral, Path, ProcNotation, Return, StringLiteral, SymbolLiteral, TypeDeclaration, Var, While, Yield}
+import compiler/syntax/token::{NumberKind}
+import compiler/syntax/visitor::{Visitor}
+import compiler/syntax/transformer::{Transformer}
+import compiler/macros/engine::{MacroEngine}
+import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, MetaTypeVar, MetaclassType, ModuleType, NamedType, NonGenericClassType, NonGenericModuleType, SemanticProgram, TopLevelVisitor, TraitType, Type, UnionType}
 
 pub class MainVisitor < Visitor
   property program : SemanticProgram

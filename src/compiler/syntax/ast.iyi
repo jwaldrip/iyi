@@ -1,11 +1,8 @@
 module compiler/syntax/ast
 
-import compiler/foundation/location
+import compiler/foundation/location::{Location}
 import compiler/foundation/enums
-import compiler/syntax/token
-
-using compiler/foundation/location::{Location}
-using compiler/syntax/token::{Keyword, TokenKind, NumberKind}
+import compiler/syntax/token::{Keyword, TokenKind, NumberKind}
 
 pub enum Visibility : Int8
   Public    = 0

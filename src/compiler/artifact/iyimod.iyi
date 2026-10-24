@@ -1,14 +1,10 @@
 module compiler/artifact/iyimod
 
 import std/int
-import std/digest
-using std/digest::{MD5}
-import std/json
-using std/json::{Builder}
-import compiler/syntax/ast
-using compiler/syntax/ast::{ASTNode, Def, Arg, Path, Nop}
-import compiler/syntax/visitor
-using compiler/syntax/visitor::{Visitor}
+import std/digest::{MD5}
+import std/json::{Builder}
+import compiler/syntax/ast::{ASTNode, Def, Arg, Path, Nop}
+import compiler/syntax/visitor::{Visitor}
 
 # iyi: `.iyimod`, the module artifact — SPEC.md Part IV.
 #

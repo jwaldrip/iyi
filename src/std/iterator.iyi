@@ -102,6 +102,7 @@ pub trait Iterator
   def self.of(range : Range(Nil, E)) : Nil forall E
     {% raise "Iterator.of takes a range with a beginning: a beginless range has no first element to count up from" %}
   end
+
   def self.of_keys(hash : Hash(K, V)) : KeyIterator(K, V) forall K, V
     KeyIterator(K, V).new(hash)
   end

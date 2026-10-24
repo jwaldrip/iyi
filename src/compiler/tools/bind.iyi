@@ -1,14 +1,9 @@
 module compiler/tools/bind
 
-import compiler/foundation/location
-import compiler/syntax/ast
-import compiler/syntax/parser
-import compiler/syntax/visitor
-
-using compiler/foundation/location::{Location}
-using compiler/syntax/ast::{ASTNode, Arg, ClassDef, Def, EnumDef, Expressions, ImplDef, LibDef, ModuleDef, Path, StringBuilder, TraitDef, Visibility, VisibilityModifier}
-using compiler/syntax/parser::{Parser}
-using compiler/syntax/visitor::{Visitor}
+import compiler/foundation/location::{Location}
+import compiler/syntax/ast::{ASTNode, Arg, ClassDef, Def, EnumDef, Expressions, ImplDef, LibDef, ModuleDef, Path, StringBuilder, TraitDef, Visibility, VisibilityModifier}
+import compiler/syntax/parser::{Parser}
+import compiler/syntax/visitor::{Visitor}
 
 # What a method is, for a boundary.
 pub enum BindVerdict

@@ -1,9 +1,7 @@
 module compiler/llvm/target
 
-import compiler/llvm/lib_llvm
-import compiler/llvm/memory_buffer
-using compiler/llvm/lib_llvm::{string_from_c, string_and_dispose, to_c_str}
-using compiler/llvm/memory_buffer::{MemoryBuffer}
+import compiler/llvm/lib_llvm::{string_from_c, string_and_dispose, to_c_str}
+import compiler/llvm/memory_buffer::{MemoryBuffer}
 
 pub struct Target
   getter unwrap : LibLLVM::TargetRef

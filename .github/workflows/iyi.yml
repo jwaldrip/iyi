@@ -455,6 +455,9 @@ jobs:
       - name: Numbers print, read back, and refuse what does not fit
         run: bash bench/number_exercise.sh
 
+      - name: Primitive comparison exercise
+        run: bash bench/primitive_comparison_exercise.sh
+
       # And the three collections a program gets, at their edges: a key
       # written twice, a table grown past its first capacity, a key deleted
       # with the rest still findable, keys that all land in one slot, an
@@ -873,6 +876,8 @@ jobs:
 
       - name: The selfhost code generator matches the front end it replaces
         run: bash bench/selfhost_codegen_exercise.sh
+      - name: The selfhost LLVM backend matches the front end it replaces
+        run: bash bench/selfhost_llvm_exercise.sh
       - name: The wired selfhost artifact reader matches the front end it replaces
         run: bash bench/selfhost_mod_wiring_exercise.sh
       - name: The wired selfhost formatter matches the front end it replaces

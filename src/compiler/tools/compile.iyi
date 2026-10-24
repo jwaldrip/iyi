@@ -5,9 +5,7 @@
 
 module compiler/tools/compile
 
-import compiler/compiler
-
-using compiler/compiler::{Compiler, CompilerConfig}
+import compiler/compiler::{Compiler, CompilerConfig}
 
 lib LibC
   fun exit(status : Int32) : NoReturn

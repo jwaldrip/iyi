@@ -1,8 +1,6 @@
 module compiler/macros/ast
 
-import compiler/syntax/ast
-
-using compiler/syntax/ast::{ASTNode, StringBuilder, StringLiteral, SymbolLiteral, Var}
+import compiler/syntax/ast::{ASTNode, StringBuilder, StringLiteral, SymbolLiteral, Var}
 
 pub class MacroId < ASTNode
   property value : String

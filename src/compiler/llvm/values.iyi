@@ -1,7 +1,6 @@
 module compiler/llvm/values
 
-import compiler/llvm/lib_llvm
-using compiler/llvm/lib_llvm::{string_from_c, string_and_dispose, to_c_str}
+import compiler/llvm/lib_llvm::{string_from_c, string_and_dispose, to_c_str}
 
 pub struct LLVMType
   getter unwrap : LibLLVM::TypeRef

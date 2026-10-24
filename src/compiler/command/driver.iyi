@@ -1,10 +1,7 @@
 module compiler/command/driver
 
-import std/option_parser
-import compiler/platform/target
-
-using std/option_parser::{OptionParser}
-using compiler/platform/target::{Target}
+import std/option_parser::{OptionParser}
+import compiler/platform/target::{Target}
 
 # What a command invocation exits with.
 pub enum Exit

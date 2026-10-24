@@ -63,8 +63,8 @@ own reference accepts.
 | warm full build, `hello` / 6,900-line pair | 0.07 s / 0.24 s, against `go build`'s 0.08 s / 0.09 s |
 | front end, `hello.iyi` | **0.036 s** against the 0.050 s target: MET |
 | starting the compiler and doing nothing | 0.018 s of that |
-| iyi's own prelude | 22,608 lines, of which 4,634 are the library held to the 4,650 ceiling (6,647 with every platform's floor, which the ceiling stopped counting after Windows); the rest is the collector, the scheduler and the float printer, which 0.1.0's prelude got from libgc, pthreads and libc |
-| compiler | 129,939 lines, none of it written in iyi |
+| iyi's own prelude | 22,608 lines, of which 4,634 are the library held to the 3,734 ceiling (6,647 with every platform's floor, which the ceiling stopped counting after Windows); the rest is the collector, the scheduler and the float printer, which 0.1.0's prelude got from libgc, pthreads and libc |
+| compiler | 130,371 lines, none of it written in iyi |
 | artifact format | `.iyimod` v59, checksum per section |
 | samples | 27 programs, of which 12 rebuild from artifacts with their modules' source deleted |
 | what runs in CI | iyi's specs, Crystal's 13,798 compiler examples, the standard library's, the CLI's, the samples, nine targets iyi's own prelude type-checks for, seven whose own-prelude emitted objects are audited for undefined symbols, the tarball |
@@ -513,7 +513,7 @@ question — "too few arguments for format string" — where it used to borrow
 a raise from an index.
 
 **The standard library is deliberately outside that count, and this is the
-answer this section left open.** `src/std/` is **68,284 lines across 102
+answer this section left open.** `src/std/` is **124,809 lines across 118
 modules**. It is opt-in via `import std/...`, it lives outside `src/iyi/` where
 `bench/doc_numbers.py` measures the ceiling, and a program that imports none of
 it pays for none of it. So the prelude rule keeps its meaning, "a method enters
@@ -603,7 +603,7 @@ read as green for as long as nobody ran them together.
 The mechanism is guarded now rather than the two instances fixed: every
 driver that patches a source file compares the patched copy against the
 original and refuses to draw a conclusion when they are identical, across
-seventy-seven sites in sixty-four scripts, and patches are anchored on text
+125 sites in 69 scripts, and patches are anchored on text
 rather than on line numbers. The AES one is the reason this is recorded here
 rather than only in a commit: an AEAD that accepts a forged tag is worse than
 no AEAD, TLS and QUIC are built on it, and the exercise said it was covered.
@@ -1112,9 +1112,9 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 129,939 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 130,371 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 22,608-line own prelude + 124,809 in std |
-| Specs | 21,146 lines | 15,270 for iyi |
+| Specs | 21,146 lines | 15,312 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
 | Own status line | *"pre-alpha: we are still designing the language"* | design largely settled, 0.2.0 released, a language written in it |

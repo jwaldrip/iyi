@@ -8,11 +8,8 @@
 
 module compiler/loader
 
-import compiler/syntax/parser
-import compiler/syntax/ast
-
-using compiler/syntax/parser::{Parser}
-using compiler/syntax/ast::{ASTNode, Expressions, ImportDecl, Require, Call, StringLiteral, MacroIf, MacroLiteral}
+import compiler/syntax/parser::{Parser}
+import compiler/syntax/ast::{ASTNode, Expressions, ImportDecl, Require, Call, StringLiteral, MacroIf, MacroLiteral}
 
 lib LibC
   fun exit(status : Int32) : NoReturn

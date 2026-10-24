@@ -365,9 +365,7 @@ CLAIMS: list[tuple[str, str, str, int]] = [
     # untracked, drifted the moment the library grew, and the table above went
     # on passing beside them.
     ("std", r"`src/std/` is \*\*([\d,]+) lines across", "SPEC.md", 1),
-    ("std", r"the standard library, ([\d,]+) lines of iyi", "README.md", 1),
     ("std_modules", r"lines across ([\w-]+)\s+modules", "SPEC.md", 1),
-    ("std_modules", r"lines of iyi across ([\w-]+) modules", "README.md", 1),
     ("compiler", r"\| ([\d,]+) lines, Crystal, forked", "SPEC.md", 1),
     # The other place the compiler's size is stated as current, and the reason
     # one file disagreed with itself by 25,747 lines: the row above covers the

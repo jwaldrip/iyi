@@ -607,6 +607,7 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
     end
     siblings.uniq!
   end
+
   private def project_root : String?
     if root = @program.iyi_project_root
       return root

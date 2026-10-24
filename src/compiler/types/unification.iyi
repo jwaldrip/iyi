@@ -1,15 +1,10 @@
 module compiler/types/unification
 
-import compiler/foundation/location
-import compiler/syntax/ast
+import compiler/foundation/location::{Location}
+import compiler/syntax/ast::{ASTNode}
 import compiler/syntax/token
-import compiler/semantic/top_level
-import compiler/types/types
-
-using compiler/foundation/location::{Location}
-using compiler/syntax/ast::{ASTNode}
-using compiler/semantic/top_level::{AliasType, ClassType, GenericClassType, GenericModuleType, MetaclassType, ModuleType, NamedType, NonGenericClassType, SemanticProgram, Type, UnionType}
-using compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType, GenericInstanceType, GenericModuleInstanceMetaclassType, GenericModuleInstanceType, MixedUnionType, NamedArgumentType, NamedTupleInstanceType, NilType, NilableProcType, NilableReferenceUnionType, NilableType, NoReturnType, PointerInstanceType, ProcInstanceType, ReferenceUnionType, StaticArrayInstanceType, TupleInstanceType, VirtualMetaclassType, VirtualType, VoidType}
+import compiler/semantic/top_level::{AliasType, ClassType, GenericClassType, GenericModuleType, MetaclassType, ModuleType, NamedType, NonGenericClassType, SemanticProgram, Type, UnionType}
+import compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType, GenericInstanceType, GenericModuleInstanceMetaclassType, GenericModuleInstanceType, MixedUnionType, NamedArgumentType, NamedTupleInstanceType, NilType, NilableProcType, NilableReferenceUnionType, NilableType, NoReturnType, PointerInstanceType, ProcInstanceType, ReferenceUnionType, StaticArrayInstanceType, TupleInstanceType, VirtualMetaclassType, VirtualType, VoidType}
 
 pub class TypeUnification
   def self.type_merge(program : SemanticProgram, types : Array(Type)) : Type

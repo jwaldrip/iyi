@@ -10,9 +10,7 @@
 
 module compiler/stage1
 
-import compiler/command/driver
-
-using compiler/command/driver::{CommandDriver, OutputBuffer, CommandResult}
+import compiler/command/driver::{CommandDriver, OutputBuffer, CommandResult}
 
 lib LibC
   fun exit(status : Int32) : NoReturn

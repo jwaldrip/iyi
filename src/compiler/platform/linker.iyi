@@ -1,7 +1,6 @@
 module compiler/platform/linker
 
-import compiler/platform/target
-using compiler/platform/target::{Target}
+import compiler/platform/target::{Target}
 
 # Record of a link annotation attached to a library or function binding.
 pub class LinkAnnotation

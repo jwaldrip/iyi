@@ -1,15 +1,10 @@
 module compiler/llvm/module
 
-import compiler/llvm/lib_llvm
-import compiler/llvm/memory_buffer
-import compiler/llvm/target
-import compiler/llvm/values
-import compiler/llvm/context
-using compiler/llvm/lib_llvm::{string_from_c, string_and_dispose, to_c_str}
-using compiler/llvm/memory_buffer::{MemoryBuffer}
-using compiler/llvm/target::{Target, TargetData, TargetMachine}
-using compiler/llvm/values::{LLVMType, LLVMValue, LLVMFunction, LLVMBasicBlock, Type, Value, Function, BasicBlock}
-using compiler/llvm/context::{Context}
+import compiler/llvm/lib_llvm::{string_from_c, string_and_dispose, to_c_str}
+import compiler/llvm/memory_buffer::{MemoryBuffer}
+import compiler/llvm/target::{Target, TargetData, TargetMachine}
+import compiler/llvm/values::{LLVMType, LLVMValue, LLVMFunction, LLVMBasicBlock, Type, Value, Function, BasicBlock}
+import compiler/llvm/context::{Context}
 
 pub class Module
   getter unwrap : LibLLVM::ModuleRef

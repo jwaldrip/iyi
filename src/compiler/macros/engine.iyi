@@ -1,18 +1,12 @@
 module compiler/macros/engine
 
-import compiler/syntax/ast
-import compiler/syntax/parser
-import compiler/semantic/normalizer
+import compiler/syntax/ast::{ASTNode, Call, Macro}
+import compiler/syntax/parser::{Parser}
+import compiler/semantic/normalizer::{Normalizer}
 import compiler/macros/ast
 import compiler/macros/methods
-import compiler/macros/interpreter
-import compiler/macros/macro_parser
-
-using compiler/syntax/ast::{ASTNode, Call, Macro}
-using compiler/syntax/parser::{Parser}
-using compiler/semantic/normalizer::{Normalizer}
-using compiler/macros/interpreter::{MacroInterpreter}
-using compiler/macros/macro_parser::{MacroParser}
+import compiler/macros/interpreter::{MacroInterpreter}
+import compiler/macros/macro_parser::{MacroParser}
 
 pub class MacroEngine
   property interpreter : MacroInterpreter

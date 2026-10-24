@@ -1,10 +1,7 @@
 module compiler/command/daemon
 
-import std/json
-import compiler/command/driver
-
-using std/json::{JSON}
-using compiler/command/driver::{OutputBuffer, Exit}
+import std/json::{JSON}
+import compiler/command/driver::{OutputBuffer, Exit}
 
 # Communication frame kinds between daemon and client
 pub DAEMON_FRAME_EXIT   = 0_u8
