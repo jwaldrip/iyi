@@ -170,6 +170,20 @@ jobs:
           path: .build
       - run: chmod +x .build/crystal
 
+      # Selfhost parity gates compile oracles with LibLLVM and require llvm-config
+      - name: Provision llvm-config
+        run: |
+          cfg="$(src/llvm/ext/find-llvm-config.sh 2>/dev/null || true)"
+          if [ -n "$cfg" ] && [ -x "$cfg" ]; then
+            ln -sf "$cfg" /usr/local/bin/llvm-config
+            ln -sf "$cfg" /usr/bin/llvm-config
+            echo "LLVM_CONFIG=$cfg" >> "$GITHUB_ENV"
+          elif command -v llvm-config-20 >/dev/null 2>&1; then
+            ln -sf "$(command -v llvm-config-20)" /usr/local/bin/llvm-config
+            ln -sf "$(command -v llvm-config-20)" /usr/bin/llvm-config
+            echo "LLVM_CONFIG=$(command -v llvm-config-20)" >> "$GITHUB_ENV"
+          fi
+
       # Built here so that what runs the samples is the binary a person
       # downloads, not the compiler under its Crystal name.
       - name: Build `iyi`
