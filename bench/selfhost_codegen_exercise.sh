@@ -52,7 +52,6 @@ end
 src = %(require "primitives"\n) + File.read(fixture)
 program = Iyi::Program.new
 program.define_crystal_constants
-program.filename = fixture
 program.iyi_prelude = false
 parser = program.new_parser(src)
 parser.filename = fixture
@@ -346,18 +345,18 @@ prove_cg_mutation "corrupt class field offset index shift" "cg_layouts.iyi" \
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_cg_mutation "corrupt runtime raise symbol resolution" "cg_raise.iyi" \
-  'iyi_raise_fn = ensure_iyi_raise' \
-  'iyi_raise_fn = ensure_iyi_personality'
+  'crystal_raise_fn = ensure_crystal_raise' \
+  'crystal_raise_fn = ensure_crystal_personality'
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_cg_mutation "corrupt runtime personality symbol resolution" "cg_exceptions.iyi" \
-  'pers_fn = ensure_iyi_personality' \
-  'pers_fn = ensure_iyi_raise'
+  'pers_fn = ensure_crystal_personality' \
+  'pers_fn = ensure_crystal_raise'
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_cg_mutation "corrupt runtime get_exception symbol resolution" "cg_exceptions.iyi" \
-  'get_ex_fn = ensure_iyi_get_exception' \
-  'get_ex_fn = ensure_iyi_raise'
+  'get_ex_fn = ensure_crystal_get_exception' \
+  'get_ex_fn = ensure_crystal_raise'
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 echo "  $MUTATIONS_RUN mutation proofs run"
 

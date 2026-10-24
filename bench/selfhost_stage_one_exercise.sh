@@ -18,9 +18,16 @@ status=0
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 BOOTSTRAP="$REPO/bin/iyi"
 ENTRY="$REPO/src/compiler/stage1.iyi"
+MUT_TARGET="$REPO/src/compiler/command/driver.iyi"
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
-
+cleanup() {
+  if [ -f "$MUT_TARGET.orig" ]; then
+    cp "$MUT_TARGET.orig" "$MUT_TARGET"
+    rm -f "$MUT_TARGET.orig"
+  fi
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 export LIBRARY_PATH="/opt/homebrew/opt/bdw-gc/lib:${LIBRARY_PATH:-}"
 export IYI_CACHE_DIR="${IYI_CACHE_DIR:-/tmp/iyi-s1e-cache}"
@@ -41,13 +48,25 @@ echo "  built .build/iyi-stage1 successfully"
 
 echo
 echo "== 2. Dependency floor on the stage-one binary itself"
-libs="$(otool -L "$REPO/.build/iyi-stage1" 2>/dev/null | awk 'NR>1 {print $1}' | grep -v '^$')"
-echo "$libs" | sed 's/^/    /'
-if [ -z "$libs" ] || echo "$libs" | grep -qv '/usr/lib/libSystem.B.dylib'; then
-  echo "  FLOOR BROKEN: the stage-one binary links more than the platform libc"
-  status=1
+if command -v otool >/dev/null 2>&1; then
+  libs="$(otool -L "$REPO/.build/iyi-stage1" 2>/dev/null | awk 'NR>1 {print $1}' | grep -v '^$')"
+  echo "$libs" | sed 's/^/    /'
+  if [ -z "$libs" ] || echo "$libs" | grep -qv '/usr/lib/libSystem.B.dylib'; then
+    echo "  FLOOR BROKEN: the stage-one binary links more than the platform libc"
+    status=1
+  else
+    echo "  stage-one binary links only the platform libc"
+  fi
 else
-  echo "  stage-one binary links only the platform libc"
+  libs="$(readelf -d "$REPO/.build/iyi-stage1" 2>/dev/null | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p' | sort -u)"
+  echo "$libs" | sed 's/^/    /'
+  bad="$(echo "$libs" | grep -v -E '^(libc\.so|ld-linux|libgcc_s)' || true)"
+  if [ -z "$libs" ] || [ -n "$bad" ]; then
+    echo "  FLOOR BROKEN: the stage-one binary links more than the platform libc"
+    status=1
+  else
+    echo "  stage-one binary links only the platform libc"
+  fi
 fi
 
 echo
@@ -122,8 +141,7 @@ mutations_run=0
 mutations_run=$((mutations_run + 1))
 echo "  [version banner severed from the driver]"
 MUT_TARGET="$REPO/src/compiler/command/driver.iyi"
-mkdir -p "$WORK/backup"
-cp "$MUT_TARGET" "$WORK/backup/driver.iyi"
+cp "$MUT_TARGET" "$MUT_TARGET.orig"
 sed -e 's|puts CommandDriver.version_description|puts "mutated"|' \
   "$MUT_TARGET" > "$WORK/mutated_driver.iyi"
 if cmp -s "$MUT_TARGET" "$WORK/mutated_driver.iyi"; then
@@ -133,7 +151,8 @@ else
   cp "$WORK/mutated_driver.iyi" "$MUT_TARGET"
   "$BOOTSTRAP" build -o "$REPO/.build/iyi-stage1" "$ENTRY" > "$WORK/mut_build.log" 2>&1 || true
   mut_phase="$(probe_stage1)"
-  cp "$WORK/backup/driver.iyi" "$MUT_TARGET"
+  cp "$MUT_TARGET.orig" "$MUT_TARGET"
+  rm -f "$MUT_TARGET.orig"
   "$BOOTSTRAP" build -o "$REPO/.build/iyi-stage1" "$ENTRY" > /dev/null 2>&1 || true
   mut_rank="$(phase_rank "$mut_phase")"
   if [ "$mut_rank" -lt "$floor_rank" ]; then

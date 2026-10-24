@@ -64,6 +64,10 @@ class Iyi::Compiler
   def test_linker_command(program, object_names, output_filename, output_dir)
     linker_command(program, object_names, output_filename, output_dir)
   end
+
+  private def use_modern_linker(link_flags)
+    link_flags
+  end
 end
 
 class Iyi::Program
@@ -79,6 +83,7 @@ end
 def normalize_paths(cmd : String) : String
   # Normalise absolute library search paths identically on both sides with a comment saying so:
   # Host library search paths vary across build machines, so paths ending in /lib are mapped to <LIBPATH>.
+  # Modern linker selection (-fuse-ld=) depends on host-installed tools and is normalized out for target parity.
   parts = cmd.split(' ')
   norm_parts = [] of String
   parts.each do |p|
@@ -88,6 +93,8 @@ def normalize_paths(cmd : String) : String
       norm_parts << "-L<LIBPATH>"
     elsif p.starts_with?("/LIBPATH:/") && p.ends_with?("/lib")
       norm_parts << "/LIBPATH:<LIBPATH>"
+    elsif p.starts_with?("-fuse-ld=")
+      next
     else
       norm_parts << p
     end
