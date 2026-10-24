@@ -20,8 +20,9 @@ BOOTSTRAP="$REPO/bin/iyi"
 ENTRY="$REPO/src/compiler/stage1.iyi"
 MUT_TARGET="$REPO/src/compiler/command/driver.iyi"
 WORK="$(mktemp -d)"
+mut_active=0
 cleanup() {
-  if [ -f "$MUT_TARGET.orig" ]; then
+  if [ "$mut_active" -eq 1 ] && [ -f "$MUT_TARGET.orig" ]; then
     cp "$MUT_TARGET.orig" "$MUT_TARGET"
     rm -f "$MUT_TARGET.orig"
   fi
@@ -96,7 +97,8 @@ probe_stage1() {
   local ok=1
   # version answers
   "$REPO/.build/iyi-stage1" version > "$out" 2>&1 || ok=0
-  grep -q "iyi 0.12.0" "$out" || ok=0
+  expected_version="iyi $(tr -d ' \r\n' < "$REPO/src/IYI_VERSION")"
+  grep -qF "$expected_version" "$out" || ok=0
   # help answers with the command banner
   "$REPO/.build/iyi-stage1" help > "$out" 2>&1 || ok=0
   grep -q "Usage: iyi \[command\]" "$out" || ok=0
@@ -142,6 +144,7 @@ mutations_run=$((mutations_run + 1))
 echo "  [version banner severed from the driver]"
 MUT_TARGET="$REPO/src/compiler/command/driver.iyi"
 cp "$MUT_TARGET" "$MUT_TARGET.orig"
+mut_active=1
 sed -e 's|puts CommandDriver.version_description|puts "mutated"|' \
   "$MUT_TARGET" > "$WORK/mutated_driver.iyi"
 if cmp -s "$MUT_TARGET" "$WORK/mutated_driver.iyi"; then
@@ -153,6 +156,7 @@ else
   mut_phase="$(probe_stage1)"
   cp "$MUT_TARGET.orig" "$MUT_TARGET"
   rm -f "$MUT_TARGET.orig"
+  mut_active=0
   "$BOOTSTRAP" build -o "$REPO/.build/iyi-stage1" "$ENTRY" > /dev/null 2>&1 || true
   mut_rank="$(phase_rank "$mut_phase")"
   if [ "$mut_rank" -lt "$floor_rank" ]; then

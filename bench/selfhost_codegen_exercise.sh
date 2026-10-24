@@ -98,7 +98,7 @@ if mode == "--dump-ir"
   fns = [] of LLVM::Function
   llvm_mod.functions.each do |fn|
     next if fn.basic_blocks.empty?
-    next if fn.name == "__crystal_main" || fn.name == "__iyi_main"
+    next if fn.name == "__crystal_main"
     fns << fn
   end
   fns.sort_by!(&.name).each do |fn|
@@ -201,11 +201,19 @@ for fixture in "$REPO"/bench/fixtures/cg_*.iyi; do
 done
 
 CC="${CC:-$(command -v clang || command -v cc || command -v gcc)}"
-"$CC" "$REPO/bench/fixtures/cg_runner.c" "$WORK"/iyi_*.o -o "$WORK/iyi_runner"
-"$CC" "$REPO/bench/fixtures/cg_runner.c" "$WORK"/cr_*.o -o "$WORK/cr_runner"
+if ! $CC "$REPO/bench/fixtures/cg_runner.c" "$WORK"/iyi_*.o -o "$WORK/iyi_runner" > "$WORK/iyi_runner.build.log" 2>&1 || [ ! -x "$WORK/iyi_runner" ]; then
+  echo "  FAIL: failed to build pure iyi C runner:"
+  cat "$WORK/iyi_runner.build.log"
+  status=1
+fi
+if ! $CC "$REPO/bench/fixtures/cg_runner.c" "$WORK"/cr_*.o -o "$WORK/cr_runner" > "$WORK/cr_runner.build.log" 2>&1 || [ ! -x "$WORK/cr_runner" ]; then
+  echo "  FAIL: failed to build Crystal oracle C runner:"
+  cat "$WORK/cr_runner.build.log"
+  status=1
+fi
 
-"$WORK/iyi_runner" > "$WORK/iyi_runner.out"
-"$WORK/cr_runner" > "$WORK/cr_runner.out"
+"$WORK/iyi_runner" > "$WORK/iyi_runner.out" 2>&1 || status=1
+"$WORK/cr_runner" > "$WORK/cr_runner.out" 2>&1 || status=1
 
 if diff -u "$WORK/cr_runner.out" "$WORK/iyi_runner.out" > "$WORK/runner.diff"; then
   echo "  C driver output identical between Crystal and pure iyi backends:"

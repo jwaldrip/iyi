@@ -28,7 +28,7 @@ def run_driver : Nil
   end
   stderr_text = result.stderr_output
   if !stderr_text.empty?
-    STDERR.puts stderr_text
+    STDERR.print stderr_text
   end
   code = result.exit_code
   if code
