@@ -26,9 +26,11 @@
 
 # The stopwatch. Linux reads CLOCK_MONOTONIC with a raw syscall for the
 # prelude's own reason (libc is not bound there); darwin asks libSystem,
-# which is the platform's documented interface. Either way the answer is
-# nanoseconds; what it costs is two allocations of sixteen bytes, once per
-# call, which a per-allocation measurement can afford at the ends of a run.
+# which is the platform's documented interface; Windows has no
+# `clock_gettime` at all, so its own monotonic clock is kernel32's
+# performance counter. Whichever it is, the answer is nanoseconds; what it
+# costs is two allocations of sixteen bytes, once per call, which a
+# per-allocation measurement can afford at the ends of a run.
 {% if flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64)) %}
   def monotonic_ns : UInt64
     stamp = Pointer(UInt64).malloc(2_u64)
@@ -60,6 +62,25 @@
     # figure in nanoseconds wants the ticks.
     LibC.clock_gettime(4, stamp.as(Void*))
     stamp[0] * 1000000000_u64 + stamp[1]
+  end
+{% elsif flag?(:win32) && flag?(:x86_64) %}
+  lib LibKernel32
+    fun QueryPerformanceCounter(count : Int64*) : Int32
+    fun QueryPerformanceFrequency(freq : Int64*) : Int32
+  end
+
+  def monotonic_ns : UInt64
+    count = uninitialized Int64
+    freq = uninitialized Int64
+    LibKernel32.QueryPerformanceCounter(pointerof(count))
+    LibKernel32.QueryPerformanceFrequency(pointerof(freq))
+    return 0_u64 if freq == 0_i64
+    # The divide goes first: the counter is in its own ticks, and
+    # `count * 1000000000` overflows a UInt64 half an hour into an uptime
+    # on a 10 MHz counter.
+    sec = count.to_u64 // freq.to_u64
+    rem = count.to_u64 % freq.to_u64
+    sec * 1000000000_u64 + (rem * 1000000000_u64) // freq.to_u64
   end
 {% end %}
 
@@ -120,6 +141,27 @@ while index < blocks.size
 end
 puts "alignment: every pointer 8-aligned"
 
+{% if !flag?(:gc_none) && !flag?(:gc_boehm) && ((flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || flag?(:darwin) || (flag?(:win32) && flag?(:x86_64))) %}
+  # An allocation whose size is a multiple of 16 is 16-aligned, a large
+  # one too: a struct with a `UInt128` in it is 16-aligned and 16-sized to
+  # LLVM, and `--release` reads one in an array with an aligned load. A
+  # large object began 8 bytes past a 16-byte boundary, and an `Array` of
+  # 65,536 such structs faulted on its first read. A size that is not a
+  # multiple of 16 holds no such value, and its class (24, 40, ...) is not
+  # held to it: 24 bytes was asked here once, and passed on Linux only
+  # because its chunk happened to fall on a boundary.
+  wide = [32_u64, 112_u64, 4096_u64, 70000_u64, 1048592_u64, 2097152_u64, 8388608_u64]
+  wide.each do |bytes|
+    held = Pointer(UInt8).malloc(bytes)
+    raise "alignment: #{bytes} bytes at #{held.address & 15} past 16" unless held.address & 15 == 0
+    grown = held.realloc(bytes * 2_u64)
+    raise "alignment: #{bytes} bytes grown at #{grown.address & 15} past 16" unless grown.address & 15 == 0
+    # Given back, so the traversal below counts its own large object alone.
+    IyiHeap.free(grown.as(Void*))
+  end
+  puts "alignment: small and large allocations of a multiple of 16 bytes 16-aligned, and grown"
+{% end %}
+
 # --- realloc: same-class growth, cross-class growth, and null, both allocators ---
 grown = Pointer(UInt8).malloc(24_u64)
 fill(grown, 24, 3)
@@ -134,7 +176,7 @@ fill(nothing, 64, 9)
 verify(nothing, 64, 9, "realloc of null")
 puts "realloc: same-class, cross-class and null all hold their bytes"
 
-{% if !flag?(:gc_none) && !flag?(:gc_boehm) && ((flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || flag?(:darwin)) %}
+{% if !flag?(:gc_none) && !flag?(:gc_boehm) && ((flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || flag?(:darwin) || (flag?(:win32) && flag?(:x86_64))) %}
   # The allocation-pressure trigger is off for this exercise: it
   # choreographs colours and free lists across explicit collections,
   # and a string interpolation running a collection mid-check would be
@@ -240,7 +282,7 @@ puts "realloc: same-class, cross-class and null all hold their bytes"
     index = index + 1
   end
   # The same check end to end through codegen's clearing entry point:
-  # Pointer of a pointerful type routes to `__crystal_malloc64`.
+  # Pointer of a pointerful type routes to `__iyi_malloc64`.
   words = Pointer(Pointer(UInt8)).malloc(16_u64)
   index = 0
   while index < 128
@@ -252,7 +294,7 @@ puts "realloc: same-class, cross-class and null all hold their bytes"
   index = 0
   while index < 128
     if words.as(Pointer(UInt8))[index] != 0_u8
-      raise "clearing: __crystal_malloc64 reused chunk dirty at byte #{index}"
+      raise "clearing: __iyi_malloc64 reused chunk dirty at byte #{index}"
     end
     index = index + 1
   end
@@ -265,7 +307,7 @@ puts "realloc: same-class, cross-class and null all hold their bytes"
   if IyiMark.flags(words.address) != IyiMark.epoch_flag | IyiHeap::UNTYPED_FLAG
     raise "clearing: reused chunk carried stale bits: #{IyiMark.flags(words.address).to_i64}"
   end
-  puts "clearing: a freed chunk of 0xAA bytes comes back zeroed, directly, through __crystal_malloc64, and in its byte"
+  puts "clearing: a freed chunk of 0xAA bytes comes back zeroed, directly, through __iyi_malloc64, and in its byte"
 
   # --- No corruption under reuse: freed chunks serve new owners, survivors unchanged ---
   rblocks = [] of Pointer(UInt8)
@@ -474,7 +516,17 @@ puts "realloc: same-class, cross-class and null all hold their bytes"
         index = index + 1
       end
       grew = resident_kb - resident_before
-      if grew > 2048_u64
+      # One mebibyte, which is between the two readings rather than on
+      # top of one of them. The bound was 2048 KB, which is exactly one
+      # huge page, so a single huge page landed on `>` and did not fire.
+      # Same defect the mark pool's bound had, and the same fix: put it
+      # where the populations separate.
+      #
+      # Measured across CI runs, this adds 324 KB with no huge page
+      # behind it, three runs running, and one huge page is 2048. A
+      # mebibyte is 3.2x above the first and half the second, which is
+      # about the middle of them the way they scale.
+      if grew > 1024_u64
         raise "huge: twelve arenas of one object each added #{grew.to_i64} KB resident, so small arenas are taking huge pages"
       end
       puts "huge: twelve one-object arenas added #{grew.to_i64} KB resident, none of it a huge page"
@@ -536,7 +588,7 @@ while pass < 3
 end
 puts "speed: #{best.unsafe_div(runs.to_u64).to_i64} ns per allocation over #{runs} (sink #{(sink & 1023).to_i64})"
 
-{% if !flag?(:gc_none) && !flag?(:gc_boehm) && ((flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || flag?(:darwin)) %}
+{% if !flag?(:gc_none) && !flag?(:gc_boehm) && ((flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || flag?(:darwin) || (flag?(:win32) && flag?(:x86_64))) %}
   # The pair loop: what an allocation costs when its chunk is freed each
   # time, which is the shape a collecting heap's mutator actually takes.
   best = 0_u64

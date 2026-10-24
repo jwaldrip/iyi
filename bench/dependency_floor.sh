@@ -23,14 +23,40 @@
 # machine that does not have it.
 #
 # Needs `make` for bin/iyi, plus `nm` and `otool` on darwin or `nm` and
-# `readelf` on Linux. Exits non-zero if any floor moved, in either direction: a
+# `readelf` on Linux. On Windows a PE leaves nothing undefined and names
+# imports instead, so the floor there is the import table and the reader is
+# the MSVC toolchain's own `dumpbin`, found the way the compiler finds the
+# linker. Exits non-zero if any floor moved, in either direction: a
 # floor that got lower with this script left behind stops having teeth.
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-IYI="$REPO/bin/iyi"
+# The gate runs whatever compiler the caller names; `bin/iyi` is a shell
+# wrapper, and on Windows the caller has to point at the built exe itself.
+IYI="${IYI:-$REPO/bin/iyi}"
 WORK="$(mktemp -d)"
+# A native compiler cannot resolve this shell's own path mapping: a search
+# path built from the shell's `pwd` finds no prelude at all, and a scratch
+# directory named `/tmp/tmp.X` on it is silently ignored, so the patched
+# copy is never read and the proof that a check can fail quietly stops
+# proving it.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT)
+    REPO="$(cygpath -m "$REPO")"
+    WORK="$(cygpath -m "$WORK")"
+    ;;
+esac
 trap 'rm -rf "$WORK"' EXIT
+
+# The floor is read from the built compiler, and on Windows the loader's own
+# suffix is part of its name.
+COMPILER="$REPO/.build/iyi"
+[ -f "$COMPILER" ] || COMPILER="$REPO/.build/iyi.exe"
+
+# The part of the floor every program carries, shared with the other gates
+# that audit one: bench/floor_base.sh. What is added below it here is what
+# the library's platform modules ask for.
+. "$REPO/bench/floor_base.sh"
 
 # What a program iyi builds may leave undefined. On darwin these are libSystem's
 # and there is no way around that: Apple supports libSystem as its only
@@ -89,46 +115,135 @@ trap 'rm -rf "$WORK"' EXIT
 # (Stage 9): helper 0 takes the mark's second stop, which stops the main
 # thread, so the main thread registers a line - and on darwin a line's park
 # is a pipe - the first time a mark runs beside it, and `sigaction`
-# joins with it, the stop's handler installed then. `madvise` is the
-# sweep handing a run of dead pages back (`MADV_FREE_REUSABLE`, the
-# advice darwin's accounting honours). `mprotect` joined with the first
+# joins with it, the stop's handler installed then. `madvise` left when
+# the sweep's release of dead pages became a fresh `mmap` over the run:
+# its advice, `MADV_FREE_REUSABLE`, kept the bytes, and a fresh object
+# carved there read them. `mprotect` joined with the first
 # sample that starts a task (`samples/iyi/workers.iyi`, III.4): a fiber's
 # stack has a guard page under it, and on darwin the guard is libSystem's
-# `mprotect`. Linux names none of the six: clone, sched_getaffinity,
-# futex, rt_sigaction, madvise and mprotect are syscalls. `accept`, `bind`,
+# `mprotect`. Linux names none of the five: clone, sched_getaffinity,
+# futex, rt_sigaction and mprotect are syscalls. `accept`, `bind`,
 # `connect`, `getsockname`, `listen`, `recv`, `send`, `setsockopt` and `socket`
 # joined with `IyiSocket` (samples/iyi/socket.iyi): on darwin libSystem is the
 # platform interface, while Linux issues raw socket syscalls and names none of them.
-#
-# The standard library's own modules brought the rest, each with a module
-# behind it and nothing behind it but the platform libc. `getcwd`, `mkdir`,
-# `rmdir` and `rewinddir` came with `std/dir`; `stat64`, `lstat64`, `rename`
-# and `truncate` with `std/file` and `std/file_utils`; `getenv`, `setenv`,
-# `unsetenv` and `environ` with `std/env`; `getsockopt` with `std/socket` and
-# `std/udp`; `getentropy` with `std/random` and `std/crypto`, which is the
-# kernel's entropy and not a crypto library's. On Linux each of these is a
-# syscall the prelude issues itself, which is why that list does not move.
-#
-# `system` was here and is gone: `std/spec` ran a file by handing a sentence
-# to `/bin/sh`, which put a shell under every program importing it and let a
-# path with a semicolon in it mean something. `posix_spawnp` and `waitpid`
-# stand in its place: the same libc floor, one process, an argument vector
-# nobody parses, and no shell under anything.
-ALLOWED_SYMBOLS_DARWIN="__error _tlv_bootstrap accept bind chmod clock_gettime_nsec_np close connect environ exit getcwd getentropy getenv getsockname getsockopt kevent kqueue listen lstat64 madvise mkdir mmap mprotect munmap open pipe posix_spawnp pthread_create pthread_get_stackaddr_np pthread_kill pthread_self read recv rename rewinddir rmdir send setenv setsockopt sigaction socket stat64 sysctlbyname truncate unlink unsetenv waitpid write _dyld_get_image_header _dyld_get_image_vmaddr_slide"
-# Linux names `posix_spawnp` and `waitpid` for the same reason darwin does:
-# `std/spec` starts a process, and starting one is libc's on both. It also
-# names the directory, file and environment calls `std/dir`, `std/file`,
-# `std/file_utils` and `std/env` bind, in their unsuffixed spellings where
-# darwin carries the 64-bit ones. The prelude still issues raw syscalls and
-# names none of these; they arrive with a module a program chose to import.
-# The rest of this list is the C runtime's template, not the prelude's.
-ALLOWED_SYMBOLS_LINUX="ITM_deregisterTMCloneTable ITM_registerTMCloneTable _cxa_finalize _errno_location _gmon_start__ _libc_start_main closedir environ getcwd getenv lstat mkdir opendir posix_spawnp readdir rename rewinddir rmdir setenv stat truncate unsetenv waitpid"
+# `sigaltstack` joined with the stack guard (concurrency.iyi, III.1.4): a
+# stack overflow is the program's own panic, said from a handler on an
+# alternate stack, and every darwin program installs one. Linux's is a
+# syscall.
+# `environ` joined when the std exercises started calling `Program.env`
+# (`std/colorize` reads `NO_COLOR`/`TERM`, `std/path` reads `HOME`/`PWD`).
+# The prelude walks the C runtime's exported global, which on darwin is
+# libSystem and on Linux is the one libc data symbol env has. Samples
+# never asked, so the name was invisible until the exercises did.
+# `pthread_join` joined with `IyiThread.join` on darwin: `pthread_create`
+# was already on the list for the collector's helpers, and an exercise
+# that starts a thread and waits for it names the other half. Linux's
+# join is a futex.
+# `backtrace` and `backtrace_symbols_fd` joined when panics gained backtraces:
+# the panic path captures the frames and writes them directly to stderr
+# through libSystem, linking no new library.
+# `std/file` and `std/dir` (stat64, lstat64, rename, link, symlink, readlink,
+# realpath, truncate, opendir, readdir, closedir, rewinddir, getcwd, chdir,
+# mkdir, rmdir) and `std/udp` (sendto, recvfrom) joined the way `IyiSocket`
+# did: libSystem is darwin's interface, and on Linux each is a raw syscall
+# the object does not name. What the modules declare but their gates never
+# reach (chown) is not on the list; the floor is what a program leaves
+# undefined, not what a module could ask.
+# `fcntl` and `getsockopt` joined when the socket started parking: every
+# socket is O_NONBLOCK now, and a connect that is in progress reads
+# SO_ERROR when the poller says it finished. Linux does both by syscall.
+# `access` and `utimes` joined when `bench/std_file_exercise.sh` started
+# reaching them: asking whether a path is readable or writable without
+# opening it is `access`, and setting a file's times is `utimes`. Both were
+# on the unreached list above until the exercise exercised them, which is
+# the second time that list has handed a symbol back. Neither adds a
+# library: libSystem on darwin, a syscall on Linux, and the
+# `ALLOWED_LIBS_PROGRAM` check below is what proves it.
+# `isatty` is the newest, and it arrived for a defect rather than a
+# feature: `std/colorize` wrote its escapes into pipes and files because
+# the prelude had no way to ask whether standard output was a terminal.
+# Windows answers with `GetConsoleMode`, Linux by making the terminal-only
+# `ioctl` itself, and darwin with libSystem's own `isatty` — the same
+# library every other symbol on this line comes from.
+# `lseek` joined with `IO#seek`, `#pos` and `#pos=` in `std/file`: moving a
+# file's offset is that call and nothing else. `arc4random_buf` joined with
+# `File.tempfile`'s random name, which has to be unpredictable or the
+# exclusive create is a race another user can win: libSystem's own entropy
+# call, where Linux asks `getrandom` by syscall. Both are libSystem's.
+# `std/process` starts a program with `posix_spawn` and the file actions and
+# attributes that go with it (the child's three streams, its directory, an
+# empty signal mask), waits for it with `waitpid`, ends a cancelled one with
+# `kill`, and finds its own executable with `_NSGetExecutablePath`: all
+# libSystem's. Linux spells the same with `clone`, `execve`, `wait4`, `kill`
+# and `/proc/self/exe`, by syscall. `Process.exec` is `posix_spawn` with
+# POSIX_SPAWN_SETEXEC, keeping the three streams by
+# `posix_spawn_file_actions_addinherit_np`, and `Process.pid` is `getpid`;
+# Linux's are `execve` and `getpid`, by syscall.
+# `std/system` asks libSystem for the host name (`gethostname`) and the
+# page size (`getpagesize`), and `std/term` reads and sets a terminal's
+# mode and size (`tcgetattr`, `tcsetattr`, `ioctl`); Linux spells the
+# same with `uname`, `/proc/self/auxv` and `ioctl` by syscall.
+# `getpeername` joined with `IyiSocket#remote_address`, the other end's
+# name as `getsockname` gives this end's; Linux's is a syscall.
+# `std/user` asks libSystem who an account is: `getuid` and `getgid` for
+# this process, `getpwuid_r`, `getpwnam_r`, `getgrgid_r` and `getgrnam_r`
+# for a user or a group by id or name, and `getgrouplist` for a user's
+# groups. darwin's accounts are Directory Services', which these calls are
+# the door to; Linux spells the same with `getuid` and `getgid` by syscall
+# and reads `/etc/passwd` and `/etc/group` itself.
+# The eight 128-bit helpers - `__divti3`, `__modti3`, `__udivti3`,
+# `__umodti3` and the four int-to-float conversions - are calls LLVM makes
+# for a division or conversion no instruction does, and arrived when
+# `bench/std_int_exercise.iyi` began converting and printing 128-bit values
+# the optimiser cannot see. libSystem re-exports compiler-rt, which
+# defines them; Linux links libgcc's copies into the program; Windows has
+# neither and the prelude's win32 arm defines them itself.
+# `fstat64` came back off that unreached list for a hang: a program
+# reading a regular file as standard input waits on kqueue before each
+# read, and kqueue's EVFILT_READ never fires at a file's end, so darwin
+# asks whether standard input is a regular file and reads it unwaited
+# (`bench/std_io_exercise.sh` holds it). Every program that reads a
+# stream - standard input, a pipe, a socket - links the name, and only
+# standard input makes the call; Linux's epoll refuses a regular file
+# and says the same by syscall.
+ALLOWED_SYMBOLS_DARWIN="$FLOOR_BASE_DARWIN __divti3 __modti3 __udivti3 __umodti3 __floattidf __floattisf __floatuntidf __floatuntisf accept access bind chmod close connect environ getsockname isatty listen open pthread_join recv send setsockopt socket unlink utimes stat64 lstat64 rename link symlink readlink realpath truncate opendir readdir closedir rewinddir getcwd chdir mkdir rmdir sendto recvfrom fcntl getsockopt lseek arc4random_buf posix_spawn posix_spawn_file_actions_init posix_spawn_file_actions_destroy posix_spawn_file_actions_adddup2 posix_spawn_file_actions_addchdir_np posix_spawn_file_actions_addinherit_np posix_spawnattr_init posix_spawnattr_destroy posix_spawnattr_setflags posix_spawnattr_setsigmask waitpid kill getpid _NSGetExecutablePath gethostname getpagesize tcgetattr tcsetattr ioctl getpeername getuid getgid getpwuid_r getpwnam_r getgrgid_r getgrnam_r getgrouplist fstat64"
+# `std/system_roots` reads the roots darwin trusts, which are kept behind
+# Security.framework and nowhere else - no file holds them - and arrive in
+# CoreFoundation's containers: the anchors and the administrator's and
+# user's trust settings, each certificate's DER, and the release of every
+# copy. Linux reads a bundle file instead; Windows asks crypt32.
+ALLOWED_SYMBOLS_DARWIN="$ALLOWED_SYMBOLS_DARWIN SecTrustCopyAnchorCertificates SecTrustSettingsCopyCertificates SecTrustSettingsCopyTrustSettings SecCertificateCopyData CFArrayGetCount CFArrayGetValueAtIndex CFDataGetBytePtr CFDataGetLength CFDictionaryGetValue CFNumberGetValue CFRelease CFStringCreateWithCString"
+# `flock` is an open file's whole-file lock, `IyiIO#flock_*` in std/file:
+# libSystem's call, which Linux makes as a system call and Windows as
+# kernel32's `LockFileEx`.
+ALLOWED_SYMBOLS_DARWIN="$ALLOWED_SYMBOLS_DARWIN flock"
+# `shutdown` is a socket's half-close, `IyiSocket#close_write` in
+# std/socket: libSystem's POSIX call, nothing new to the machine, which
+# Linux makes as a system call and Windows as ws2_32's `shutdown`, already
+# imported for `close`. The fuzz exercise's scripted peers reach it.
+ALLOWED_SYMBOLS_DARWIN="$ALLOWED_SYMBOLS_DARWIN shutdown"
+ALLOWED_SYMBOLS_LINUX="$FLOOR_BASE_LINUX environ"
 
 # What a program may link. The platform libc only.
-ALLOWED_LIBS_PROGRAM="libSystem libc.so ld-linux libgcc_s"
+ALLOWED_LIBS_PROGRAM="$FLOOR_LIBS_PROGRAM"
+
+# What a program may import on Windows, which is the same claim read through
+# the loader's own list: a PE asks for DLLs rather than leaving libc symbols
+# undefined, so the floor there is written in DLLs and the imported names are
+# the detail under each one. Each DLL's reason is beside the list in
+# bench/floor_base.sh.
+ALLOWED_DLLS_PROGRAM="$FLOOR_DLLS_PROGRAM"
 
 # What the compiler may link, each with a reason recorded in SPEC.md.
-#   LLVM, c++  the back end, and libc++ arrives with it (B.2, Part V.9)
+#   LLVM       the back end (B.2, Part V.9)
+#   c++        conditional, and on two independent reasons, the same two the
+#              Makefile gates NEEDS_CXX_RUNTIME on. llvm_ext.cc shims operand
+#              bundles and debug locations below LLVM 18, and a statically
+#              linked libLLVM carries its own C++ symbols at any version. When
+#              both are absent, libc++ (and libstdc++ on Linux) drops off the
+#              floor; when either holds it is on it, and this list says so
+#              rather than the gate going red for a library the build was
+#              right to link
 #   gc         a compiler without a collector emits invalid IR (III.9)
 #
 # Every entry is a library the compiler names on its own link line. What
@@ -143,22 +258,105 @@ ALLOWED_LIBS_PROGRAM="libSystem libc.so ld-linux libgcc_s"
 # compiled into itself (option_parser, semantic_version, process/shell,
 # spec/cli) parse by hand, so pcre2 is on the denylist below and the
 # compiler is held to it too (Appendix B #22).
-ALLOWED_LIBS_COMPILER="libLLVM libc++ libgc libSystem libc.so ld-linux libgcc_s libstdc++ libm.so libdl libpthread librt"
+ALLOWED_LIBS_COMPILER="libLLVM libgc libSystem libc.so ld-linux libgcc_s libm.so libdl libpthread librt"
+if [ -z "${LLVM_VERSION:-}" ]; then
+  _llvm_config="${LLVM_CONFIG:-$("$REPO/src/llvm/ext/find-llvm-config.sh" 2>/dev/null || true)}"
+  _llvm_version="$([ -n "$_llvm_config" ] && "$_llvm_config" --version 2>/dev/null || true)"
+  [ -z "$_llvm_version" ] && _llvm_version="$("$REPO/bin/crystal" --version 2>/dev/null | sed -n 's/^LLVM: //p')"
+else
+  _llvm_version="$LLVM_VERSION"
+fi
+_llvm_major="${_llvm_version%%.*}"
+_llvm_shared="$([ -n "${_llvm_config:-}" ] && "$_llvm_config" --shared-mode 2>/dev/null || true)"
+[ -n "${LLVM_SHARED_MODE:-}" ] && _llvm_shared="$LLVM_SHARED_MODE"
+_cxx_shim=false
+[ -n "$_llvm_major" ] && [ "$_llvm_major" -lt 18 ] 2>/dev/null && _cxx_shim=true
+# Unknown shared mode is not read as shared: a missing answer must not quietly
+# widen the floor, and must not narrow it either, so it allows and the
+# measurement below is what decides.
+_llvm_static=true
+[ "$_llvm_shared" = "shared" ] && _llvm_static=false
+if [ "$_cxx_shim" = true ] || [ "$_llvm_static" = true ]; then
+  ALLOWED_LIBS_COMPILER="$ALLOWED_LIBS_COMPILER libc++ libstdc++"
+fi
 
-# Every library on Crystal's list that must never appear on a link line of
-# iyi's own: a program's or the compiler's.
-FORBIDDEN="libevent libgmp mpir libiconv libssl libcrypto libxml2 libyaml libz. libffi libpcre"
+# What the compiler may import on Windows: the three a program may, plus the
+# back end and what LLVM's own Windows support reaches through.
+#   llvm-c.dll    the back end (SPEC.md III.9, Part V.9)
+#   dbghelp.dll   LLVM's symboliser and the crash handler it installs
+#   ntdll.dll     LLVM's stack walk, which is `RtlCaptureStackBackTrace`
+#   ole32.dll     LLVM's path code asking the shell for a known folder
+#   shell32.dll   the same question, the other half of its answer
+ALLOWED_DLLS_COMPILER="$ALLOWED_DLLS_PROGRAM llvm-c.dll dbghelp.dll ntdll.dll ole32.dll shell32.dll"
+
+# Crystal requires thirteen libraries:
+#   1. libc        platform runtime (permitted for programs and compiler)
+#   2. bdw-gc      garbage collector (compiler only, until self-hosting; forbidden for programs)
+#   3. LLVM        code generation back end (compiler only, toolchain requirement; forbidden for programs)
+#   4. libevent    event loop (forbidden for both; in-tree event loop)
+#   5. compiler-rt runtime builtins (forbidden for both; ported in tree)
+#   6. pcre2       regular expressions (forbidden for both; owned Iyi::Rx engine)
+#   7. gmp         arbitrary precision numbers (forbidden for both)
+#   8. iconv       character encoding (forbidden for both; UTF-8 only)
+#   9. openssl     TLS and cryptography (forbidden for both; digests in tree)
+#  10. libxml2     XML parsing (forbidden for both)
+#  11. libyaml     YAML parsing (forbidden for both)
+#  12. zlib        compression (forbidden for both; std/compress in tree)
+#  13. libffi      interpreter FFI (forbidden for both; interpreter removed)
+#
+# The ancestor denylist names all thirteen. If an ancestor library appears on
+# a link line, the failure message names it and identifies it as an ancestor
+# dependency from Crystal's required-libraries list.
+#
+# Ancestor libraries forbidden for ALL binaries (programs and compiler alike):
+ANCESTOR_FORBIDDEN_ALL="libevent:libevent compiler-rt:libclang_rt compiler-rt:compiler_rt pcre2:libpcre gmp:libgmp gmp:mpir iconv:libiconv openssl:libssl openssl:libcrypto libxml2:libxml2 libyaml:libyaml zlib:libz\\. libffi:libffi"
+
+# Ancestor libraries permitted for the compiler only (with a recorded reason in SPEC.md III.9),
+# but strictly forbidden for any program iyi builds:
+ANCESTOR_COMPILER_ONLY="bdw-gc:libgc LLVM:libLLVM"
+
+# The name a reader has to be given is not always the name `-o` was given:
+# the compiler writes `hello.exe` beside it, and `dumpbin` resolves an
+# argument without a suffix as an object file and refuses to open it. So
+# every read goes through here, and on the other two platforms it is the
+# name itself.
+readable() { # readable <path>
+  if [ -n "$DUMPBIN" ] && [ -f "$1.exe" ]; then
+    printf '%s\n' "$1.exe"
+  else
+    printf '%s\n' "$1"
+  fi
+}
 
 symbols() {
-  nm -u "$1" 2>/dev/null |
+  local binary
+  binary="$(readable "$1")"
+  # A PE has no undefined symbols to report and `nm` says nothing at all
+  # about one, which reads as a floor of zero that passes every check. What
+  # a Windows binary has instead is an import table, and the names in it are
+  # the detail under the DLL list the floor is written in.
+  if [ -n "$DUMPBIN" ]; then
+    pe_imports "$binary"
+    return 0
+  fi
+  nm -u "$binary" 2>/dev/null |
     sed -e 's/^ *//' -e 's/^U  *//' -e 's/@.*$//' |
     awk '{ print $NF }' |
     sed -e 's/^_//' |
+    # glibc exports `environ` as a weak alias of `__environ`, and which of the
+    # two a binary names is the libc's choice rather than the program's: a
+    # newer one links the alias, so this read `_environ` here (the `^_` strip
+    # above is darwin's) and `environ` on the machine the allowlist was
+    # written on — and called a floor that had not moved moved. One datum,
+    # one name.
+    sed -e 's/^_environ$/environ/' |
     grep -v '^$' |
     sort -u
 }
 
 libraries() {
+  local binary
+  binary="$(readable "$1")"
   # What the binary itself asks to have loaded, and nothing more. `otool -L`
   # reports exactly that on darwin: the binary's own LC_LOAD_DYLIB commands.
   # readelf's NEEDED entries are the same thing on Linux. `ldd` was here and is
@@ -170,12 +368,29 @@ libraries() {
   # The cost of reading direct dependencies is honest and small: a change in
   # what an ACCEPTED library pulls is not caught. LLVM taking on a new library
   # is not a decision any iyi commit made, and no iyi commit can unmake it.
-  if command -v otool >/dev/null 2>&1; then
-    otool -L "$1" 2>/dev/null | sed -n '2,$p' | awk '{ print $1 }' | sed 's|.*/||' | sort -u
+  if [ -n "$DUMPBIN" ]; then
+    # A PE's own import table, which is the list the loader will bind and so
+    # the same claim the other two make with LC_LOAD_DYLIB and NEEDED.
+    pe_dlls "$binary"
+  elif command -v otool >/dev/null 2>&1; then
+    otool -L "$binary" 2>/dev/null | sed -n '2,$p' | awk '{ print $1 }' | sed 's|.*/||' | sort -u
   else
-    readelf -d "$1" 2>/dev/null |
+    readelf -d "$binary" 2>/dev/null |
       sed -n 's/.*Shared library: \[\(.*\)\]/\1/p' |
       sed 's|.*/||' | sort -u
+  fi
+}
+
+# What the symbol column says. On the other two it is the undefined symbols
+# themselves, because there are a handful and each one is the claim. A PE
+# imports a hundred UCRT and kernel32 names per program, and printing all of
+# them once per binary buries the DLL list that is the floor here, so the
+# column is their count and the names are held in the set below.
+detail() { # detail <binary>
+  if [ -n "$DUMPBIN" ]; then
+    printf '%s names' "$(symbols "$1" | grep -c .)"
+  else
+    symbols "$1" | tr '\n' ' '
   fi
 }
 
@@ -192,7 +407,28 @@ unexpected() {
   return 0
 }
 
+# Windows names its floor per program: the DLL list is the claim, so a DLL
+# outside it has to be reported with the program that asked for it. An
+# aggregate set says the floor moved and not where to look.
+imports_audit() { # imports_audit <program> <binary>
+  [ -n "$DUMPBIN" ] || return 0
+  local program="$1" binary="$2" extra dll
+  extra="$(unexpected "$allowed_libs_program" "$(libraries "$binary" | tr '\n' ' ')")"
+  [ -n "$extra" ] || return 0
+  for dll in $extra; do
+    echo "THE FLOOR MOVED: $program imports $dll"
+  done
+  echo "A program iyi builds may import the process interface, OS entropy, Winsock,
+the certificate stores and the MSVC runtime, each with a reason in SPEC.md
+III.10. Another DLL is a dependency being taken on, and it needs a reason
+there before a line here."
+  status=1
+}
+
 status=0
+DUMPBIN=""
+allowed_libs_program="$ALLOWED_LIBS_PROGRAM"
+allowed_libs_compiler="$ALLOWED_LIBS_COMPILER"
 case "$(uname -s)" in
   Linux)
     allowed_symbols="$ALLOWED_SYMBOLS_LINUX"
@@ -200,6 +436,26 @@ case "$(uname -s)" in
     # required up front rather than discovered missing one binary at a time.
     if ! command -v readelf >/dev/null 2>&1; then
       echo "dependency_floor: readelf is required on Linux to read NEEDED entries" >&2
+      exit 2
+    fi
+    ;;
+  MINGW* | MSYS* | CYGWIN* | Windows_NT)
+    # Windows has no symbol allowlist of its own, because a PE leaves nothing
+    # undefined: what a program asks of the machine is the DLLs it imports,
+    # and the names under them are read as the detail. Falling through to the
+    # darwin arm audited a Windows binary against libSystem, read nothing out
+    # of it, and reported the whole darwin floor as no longer needed.
+    allowed_symbols=""
+    allowed_libs_program="$ALLOWED_DLLS_PROGRAM"
+    allowed_libs_compiler="$ALLOWED_DLLS_COMPILER"
+    DUMPBIN="$(find_dumpbin || true)"
+    # Required, the way `readelf` is on Linux: a reader that prints nothing
+    # passes every check, and exiting 0 over an unmeasured floor is the
+    # failure this whole file exists to prevent. Nothing builds an iyi binary
+    # on Windows without the toolchain that carries `dumpbin`, so its absence
+    # is a broken environment rather than a platform without the tool.
+    if [ -z "$DUMPBIN" ]; then
+      echo "dependency_floor: an import table is read with the toolchain's dumpbin, which is not installed here, so no floor can be measured" >&2
       exit 2
     fi
     ;;
@@ -231,8 +487,9 @@ for mode in "" "--release"; do
     symbols "$WORK/$sample" >>"$found_syms"
     libraries "$WORK/$sample" >>"$found_libs"
     printf '  %-20s %s | %s\n' "$sample" \
-      "$(symbols "$WORK/$sample" | tr '\n' ' ')" \
+      "$(detail "$WORK/$sample")" \
       "$(libraries "$WORK/$sample" | tr '\n' ' ')"
+    imports_audit "$sample" "$WORK/$sample"
   done
 done
 
@@ -254,8 +511,9 @@ for source in "$REPO"/bench/std_*_exercise.iyi; do
   symbols "$WORK/$exercise" >>"$found_syms"
   libraries "$WORK/$exercise" >>"$found_libs"
   printf '  %-28s %s | %s\n' "$exercise" \
-    "$(symbols "$WORK/$exercise" | tr '\n' ' ')" \
+    "$(detail "$WORK/$exercise")" \
     "$(libraries "$WORK/$exercise" | tr '\n' ' ')"
+  imports_audit "$exercise" "$WORK/$exercise"
 done
 
 [ "$status" -eq 0 ] || { echo; echo "a sample did not build, so no floor was measured"; exit 1; }
@@ -268,12 +526,53 @@ echo "== libgc is opt-in, and asking for it is the only way to get it"
 # The default is the owned collector, which links nothing; libgc arrives
 # only with -Dgc_boehm, and -Dgc_none (the bump pointer) must stay as
 # library-free as the default it used to be.
-"$IYI" build -Dgc_boehm -o "$WORK/boehm" "$REPO/samples/iyi/hello.iyi" >/dev/null 2>&1
-boehm_libs="$(libraries "$WORK/boehm")"
-printf '  -Dgc_boehm  %s\n' "$(echo "$boehm_libs" | tr '\n' ' ')"
-if ! echo "$boehm_libs" | grep -q 'libgc\.'; then
-  echo "  -Dgc_boehm did not link a collector, so the opt-in is broken"
-  status=1
+boehm_libs=""
+if ! "$IYI" build -Dgc_boehm -o "$WORK/boehm" "$REPO/samples/iyi/hello.iyi" >"$WORK/boehm.log" 2>&1; then
+  # A collector that cannot be linked here has not been measured here. libgc
+  # is a library somebody installs, and its absence on this machine is not
+  # the opt-in being broken — reporting it as broken is a claim the run
+  # cannot make.
+  echo "  -Dgc_boehm did not build, so the opt-in was not measured here: $(sed -n '1p' "$WORK/boehm.log")"
+else
+  boehm_libs="$(libraries "$WORK/boehm")"
+  printf '  -Dgc_boehm  %s\n' "$(echo "$boehm_libs" | tr '\n' ' ')"
+  if echo "$boehm_libs" | grep -q 'libgc\.'; then
+    :
+  elif [ -n "$DUMPBIN" ]; then
+    # The import table is what a PE has, and Windows' collector is the
+    # static `gc.lib` that ships beside the bootstrap compiler's libraries
+    # (`CRYSTAL_LIBRARY_PATH`), which leaves no entry in it. So the opt-in
+    # is read off the one thing linking a library in cannot avoid: the
+    # bytes. A build that asked for a collector and got none is the same
+    # size as one that did not ask.
+    # The bytes, and what they can honestly be held against. Not the size
+    # of a plain build: that carries the owned collector, which
+    # `-Dgc_boehm` drops, so the first run of this check read 46 KB
+    # against 124 KB as "no collector" when what it had measured was the
+    # owned one coming out. Not a size *ordering* against `-Dgc_none`
+    # either: on Linux, where libgc is a shared object, the boehm binary
+    # is the smaller of the two (91,056 against 95,920), so "bigger" is a
+    # claim about static linking and not about collectors.
+    #
+    # What is true either way: two different allocators cannot compile to
+    # the same binary. If asking for a collector produces what asking for
+    # none produces, the flag did nothing — which is the failure this
+    # check is for, and the one the import table cannot see.
+    "$IYI" build -Dgc_none -o "$WORK/gc_none_probe" "$REPO/samples/iyi/hello.iyi" >/dev/null 2>&1
+    "$IYI" build -o "$WORK/gc_default" "$REPO/samples/iyi/hello.iyi" >/dev/null 2>&1
+    boehm_size="$(wc -c < "$(readable "$WORK/boehm")" | tr -d ' ')"
+    none_size="$(wc -c < "$(readable "$WORK/gc_none_probe")" | tr -d ' ')"
+    default_size="$(wc -c < "$(readable "$WORK/gc_default")" | tr -d ' ')"
+    printf '  -Dgc_boehm  %s bytes, -Dgc_none %s, the owned collector %s\n' \
+      "$boehm_size" "$none_size" "$default_size"
+    if cmp -s "$(readable "$WORK/boehm")" "$(readable "$WORK/gc_none_probe")"; then
+      echo "  -Dgc_boehm and -Dgc_none built the same binary, so the opt-in did nothing"
+      status=1
+    fi
+  else
+    echo "  -Dgc_boehm did not link a collector, so the opt-in is broken"
+    status=1
+  fi
 fi
 if echo "$prog_libs" | grep -q 'libgc\.'; then
   echo "  a plain build linked libgc, so the owned default is not holding the floor"
@@ -289,7 +588,7 @@ fi
 
 echo
 echo "== the compiler"
-compiler_libs="$(libraries "$REPO/.build/iyi")"
+compiler_libs="$(libraries "$COMPILER")"
 printf '  %s\n' "$(echo "$compiler_libs" | tr '\n' ' ')"
 
 echo
@@ -298,23 +597,42 @@ echo "== what the library declares, reached or not"
 # library against the day somebody calls it is invisible to everything above.
 # It is also the shape a link line grows in: one annotation, no caller yet,
 # and the floor moves the first time a module uses it. So the annotations are
-# read as text, and the list is the three the library has reasons for.
-#
-# Only annotations the compiler would act on count: one written as prose
-# inside a comment is a sentence about a dependency, not a dependency, and
-# reading those too had this gate reporting libxml2 against a file whose own
-# header says it binds nothing. A check that cries wolf gets ignored, which
-# costs more than the check is worth.
+# read as text, and the list is the ones the library has reasons for.
 while IFS= read -r annotation; do
   [ -n "$annotation" ] || continue
   case "$annotation" in
     '@[Link("kernel32")]') ;;
     '@[Link(ldflags: "msvcrt.lib ucrt.lib vcruntime.lib")]') ;;
     '@[Link("gc", pkg_config: "bdw-gc")]') ;;
+    # Windows has no kernel32 name for OS entropy: `RtlGenRandom` lives in
+    # advapi32, which ships with every Windows the way kernel32 does, and
+    # `std/random` calls it; `std/socket` reads the registry there for the
+    # name servers Windows was configured with, which the platform's own
+    # resolver API would have taken iphlpapi or dnsapi to ask (SPEC.md
+    # III.10's inventory says so); `std/user` asks it for the account name
+    # (`GetUserNameW`) and the process token's SIDs, which are advapi32's
+    # alone, and leaves netapi32's account database and userenv's profile
+    # call unlinked.
+    '@[Link("advapi32")]') ;;
+    # Windows' sockets are Winsock's: `ws2_32` is the platform's network
+    # interface the way kernel32 is its process interface, it ships with
+    # every Windows, and `std/socket` and `std/udp` are its only callers
+    # (SPEC.md III.10's inventory says so). The completion port's
+    # `AcceptEx` and `ConnectEx` are mswsock's exports reached through
+    # `WSAIoctl`, so they add no second annotation.
+    '@[Link("ws2_32")]') ;;
+    # The trusted roots are each platform's own, kept where only its own
+    # interface reaches: crypt32's stores on Windows, Security.framework's
+    # anchors and trust settings on darwin with CoreFoundation's containers
+    # around them. `std/system_roots` is their only caller (SPEC.md
+    # III.10's inventory says so); Linux's are a file.
+    '@[Link("crypt32")]') ;;
+    '@[Link(framework: "Security")]') ;;
+    '@[Link(framework: "CoreFoundation")]') ;;
     *)
       echo "  THE FLOOR MOVED: the library declares $annotation"
       echo "  A library iyi ships links the platform libc and, opt-in, a"
-      echo "  collector. A fourth annotation needs a reason in SPEC.md III.10"
+      echo "  collector. Another annotation needs a reason in SPEC.md III.10"
       echo "  before it needs a line here."
       status=1
       ;;
@@ -335,17 +653,30 @@ report() {
   fi
 }
 
-report "a program's undefined symbols" \
-  "$(unexpected "$allowed_symbols" "$(echo $prog_syms)")" \
-  "Each is something the machine must supply. If that is the decision, add it to
+if [ -n "$allowed_symbols" ]; then
+  report "a program's undefined symbols" \
+    "$(unexpected "$allowed_symbols" "$(echo $prog_syms)")" \
+    "Each is something the machine must supply. If that is the decision, add it to
 ALLOWED_SYMBOLS_* in this script and say why in the commit (SPEC.md III.9)."
+else
+  # Windows' floor is the DLL list above, and this run has no symbol
+  # allowlist to hold the names against, so it says what it read instead of
+  # claiming a layer it did not check.
+  printf '  %s names imported from those DLLs, read as the detail under them\n' \
+    "$(printf '%s\n' "$prog_syms" | grep -c .)"
+fi
 
-report "a program's libraries" \
-  "$(unexpected "$ALLOWED_LIBS_PROGRAM" "$(echo $prog_libs)")" \
-  "A program iyi builds may link the platform libc and nothing else (SPEC.md III.10)."
+# Windows' program floor is audited per program above, where the message can
+# name which program asked for the DLL; the libc sentence here is not the
+# claim that platform makes.
+if [ -z "$DUMPBIN" ]; then
+  report "a program's libraries" \
+    "$(unexpected "$allowed_libs_program" "$(echo $prog_libs)")" \
+    "A program iyi builds may link the platform libc and nothing else (SPEC.md III.10)."
+fi
 
 report "the compiler's libraries" \
-  "$(unexpected "$ALLOWED_LIBS_COMPILER" "$(echo $compiler_libs)")" \
+  "$(unexpected "$allowed_libs_compiler" "$(echo $compiler_libs)")" \
   "The compiler's list is short and every entry has a reason in SPEC.md III.9 or
 III.10. A new one needs a reason there before it needs a line here."
 
@@ -354,24 +685,60 @@ III.10. A new one needs a reason there before it needs a line here."
 # names. It is read against what a binary itself loads, so iyi naming one of
 # these on its own link line fails here even when the same name arrives
 # legitimately inside libLLVM's own dependency list.
-for binary in "$WORK"/* "$REPO/.build/iyi"; do
+for binary in "$WORK"/* "$COMPILER"; do
   [ -f "$binary" ] || continue
-  case "$binary" in *.log | *syms | *libs) continue ;; esac
-  for forbidden in $FORBIDDEN; do
-    if libraries "$binary" | grep -q "$forbidden"; then
-      echo "FORBIDDEN: $(basename "$binary") links $forbidden, which is on Crystal's"
-      echo "required-libraries list and iyi is not allowed to need it."
+  case "$binary" in *.log | *.pdb | *syms | *libs | */boehm | */boehm.exe) continue ;; esac
+  bin_libs="$(libraries "$binary")"
+  is_compiler=no
+  [ "$binary" = "$COMPILER" ] && is_compiler=yes
+
+  for entry in $ANCESTOR_FORBIDDEN_ALL; do
+    name="${entry%%:*}"
+    pattern="${entry#*:}"
+    if match="$(echo "$bin_libs" | grep -E "$pattern" | head -n 1)"; then
+      [ -n "$match" ] || continue
+      echo "FORBIDDEN: $(basename "$binary") links $name ($match), which is an ancestor dependency"
+      echo "from Crystal's required-libraries list and iyi is not allowed to need it."
       status=1
     fi
   done
+
+  if [ "$is_compiler" = no ]; then
+    for entry in $ANCESTOR_COMPILER_ONLY; do
+      name="${entry%%:*}"
+      pattern="${entry#*:}"
+      if match="$(echo "$bin_libs" | grep -E "$pattern" | head -n 1)"; then
+        [ -n "$match" ] || continue
+        echo "FORBIDDEN: $(basename "$binary") links $name ($match), which is an ancestor dependency"
+        echo "from Crystal's required-libraries list and is not allowed in an iyi program."
+        status=1
+      fi
+    done
+  fi
 done
 
-# A floor that dropped and was not recorded stops being a floor.
-missing="$(unexpected "$(echo $prog_syms)" "$allowed_symbols")"
-if [ -n "$missing" ]; then
-  echo "The floor got lower and this script is out of date. No longer needed:"
-  printf '  %s\n' $missing
-  echo "Remove them from ALLOWED_SYMBOLS_* so the check keeps its teeth."
+# A floor that dropped and was not recorded stops being a floor. A reader
+# that read nothing has not measured a drop, though, and inviting somebody to
+# delete the floor on the strength of an empty set is worse than saying
+# nothing: that is what a Linux box without `nm` used to get, and what
+# Windows got from the darwin arm.
+if [ -n "$allowed_symbols" ] && [ -n "$prog_syms" ]; then
+  missing="$(unexpected "$(echo $prog_syms)" "$allowed_symbols")"
+  if [ -n "$missing" ]; then
+    echo "The floor got lower and this script is out of date. No longer needed:"
+    printf '  %s\n' $missing
+    echo "Remove them from ALLOWED_SYMBOLS_* so the check keeps its teeth."
+    status=1
+  fi
+fi
+
+# And the reader itself, on the platform where an empty answer is not a
+# floor of zero: every PE imports something — kernel32 at the very least —
+# so a run that read no library out of any binary read nothing at all, which
+# is what a changed `dumpbin` output format would look like from here.
+if [ -n "$DUMPBIN" ] && [ ! -s "$found_libs" ]; then
+  echo "dependency_floor: no binary reported a single imported DLL, which no PE"
+  echo "does — the import table was not read, so nothing above was measured."
   status=1
 fi
 

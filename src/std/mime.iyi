@@ -1,781 +1,348 @@
-# Standard MIME media type parsing and registry for iyi.
+# Media types for naming and serving files: the type a file name's
+# extension stands for, the extensions a type is written with, whether a
+# type is worth compressing on the wire, the type with its charset, and
+# RFC 9110's `type/subtype; name=value` parsed.
 #
-# Answers RFC 1521, RFC 2045, RFC 2046 media type representation:
-# type/subtype with optional parameters (e.g. text/html; charset=utf-8),
-# supporting quoted values with escape sequences and case-insensitive keys.
+# The table is fixed and lives here. Crystal's `MIME` and Python's
+# `mimetypes` read `/etc/mime.types` and its relatives, so the same name
+# answers differently on two machines; this one reads no file and answers
+# the same everywhere. The values are IANA's registrations where one
+# exists and what browsers and Go's `mime` send where none does:
+# `.js` and `.mjs` are `text/javascript` (RFC 9239), `.xml` is
+# `application/xml` (RFC 7303 prefers it to `text/xml`), `.ico` is IANA's
+# `image/vnd.microsoft.icon` rather than the older `image/x-icon`, which
+# browsers accept as well. Every entry is checked against Python's table
+# by bench/std_mime_exercise.sh, which lists the few deliberate
+# differences and why.
 #
-# System mime.types decision:
-# We do not automatically load /etc/mime.types or OS database files on startup.
-# In iyi, programs adhere to minimal dependency and footprint floors (SPEC III.9).
-# Reading an OS file unconditionally creates non-deterministic cross-target behavior
-# (macOS, Linux, Alpine, Windows, wasm32-wasi) and requires filesystem access during
-# type initialization. We embed a rich standard table of common media types directly,
-# and provide MIME.load_mime_database(content) and MIME.register(ext, type) for
-# applications that explicitly want to load custom or host-provided databases.
+# Left out: registering types at run time, which would make the answer
+# depend on what ran before, and sniffing a type from the bytes of a
+# file. Extensions are looked up by the last dot of the base name only,
+# so `a.tar.gz` is `application/gzip`, as every server answers it.
 
 module std/mime
 
-import std/text
+pub struct MIME
+  # Extension without its dot, lowercase, then the media type. The first
+  # entry of a type is not special; `extensions` sorts them.
+  TABLE = [
+    {"html", "text/html"}, {"htm", "text/html"},
+    {"css", "text/css"},
+    {"js", "text/javascript"}, {"mjs", "text/javascript"},
+    {"json", "application/json"},
+    # A source map is JSON; browsers fetch it as such.
+    {"map", "application/json"},
+    {"jsonld", "application/ld+json"},
+    {"webmanifest", "application/manifest+json"},
+    {"xml", "application/xml"},
+    {"rss", "application/rss+xml"},
+    {"atom", "application/atom+xml"},
+    {"txt", "text/plain"}, {"ini", "text/plain"},
+    {"csv", "text/csv"},
+    {"md", "text/markdown"},
+    {"ics", "text/calendar"},
+    {"vcf", "text/vcard"},
+    {"yaml", "application/yaml"}, {"yml", "application/yaml"},
+    {"toml", "application/toml"},
+    {"sh", "application/x-sh"},
+    {"py", "text/x-python"},
+    {"rb", "application/x-ruby"},
+    {"c", "text/x-csrc"},
+    {"h", "text/x-chdr"},
+    {"cpp", "text/x-c++src"},
+    {"java", "text/x-java"},
+    {"go", "text/x-go"},
+    {"rs", "text/x-rust"},
+    {"svg", "image/svg+xml"},
+    {"png", "image/png"},
+    {"jpg", "image/jpeg"}, {"jpeg", "image/jpeg"},
+    {"gif", "image/gif"},
+    {"webp", "image/webp"},
+    {"avif", "image/avif"},
+    {"ico", "image/vnd.microsoft.icon"},
+    {"bmp", "image/bmp"},
+    {"tif", "image/tiff"}, {"tiff", "image/tiff"},
+    {"woff", "font/woff"},
+    {"woff2", "font/woff2"},
+    {"ttf", "font/ttf"},
+    {"otf", "font/otf"},
+    {"eot", "application/vnd.ms-fontobject"},
+    {"pdf", "application/pdf"},
+    {"rtf", "application/rtf"},
+    {"epub", "application/epub+zip"},
+    {"zip", "application/zip"},
+    {"gz", "application/gzip"}, {"tgz", "application/gzip"},
+    {"tar", "application/x-tar"},
+    {"bz2", "application/x-bzip2"},
+    {"xz", "application/x-xz"},
+    {"7z", "application/x-7z-compressed"},
+    {"rar", "application/vnd.rar"},
+    {"wasm", "application/wasm"},
+    {"mp3", "audio/mpeg"},
+    {"wav", "audio/wav"},
+    {"ogg", "audio/ogg"}, {"oga", "audio/ogg"}, {"opus", "audio/ogg"},
+    {"ogv", "video/ogg"},
+    {"flac", "audio/flac"},
+    {"m4a", "audio/mp4"},
+    {"aac", "audio/aac"},
+    {"mp4", "video/mp4"}, {"m4v", "video/mp4"},
+    {"webm", "video/webm"},
+    {"mov", "video/quicktime"},
+    {"avi", "video/x-msvideo"},
+    {"mkv", "video/matroska"},
+    {"mpeg", "video/mpeg"}, {"mpg", "video/mpeg"},
+    {"doc", "application/msword"},
+    {"docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+    {"xls", "application/vnd.ms-excel"},
+    {"xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+    {"ppt", "application/vnd.ms-powerpoint"},
+    {"pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"},
+    {"odt", "application/vnd.oasis.opendocument.text"},
+    {"ods", "application/vnd.oasis.opendocument.spreadsheet"},
+    {"odp", "application/vnd.oasis.opendocument.presentation"},
+    {"apk", "application/vnd.android.package-archive"},
+    {"dmg", "application/x-apple-diskimage"},
+    {"exe", "application/vnd.microsoft.portable-executable"},
+    {"msi", "application/x-msi"},
+    {"iso", "application/x-iso9660-image"},
+    {"bin", "application/octet-stream"},
+    {"jar", "application/java-archive"},
+  ]
 
-import std/slice
-import std/http
-using std/http::{Headers}
+  @@by_extension : Hash(String, String)?
+  @@by_type : Hash(String, Array(String))?
 
-pub class Error < Exception
-  getter message : String
-
-  def initialize(@message : String)
-  end
-end
-
-pub struct MediaType
-  @media_type : String
-  @params : Hash(String, String)
-
-  getter media_type : String
-
-  def initialize(@media_type : String, @params : Hash(String, String))
-  end
-
-  def initialize(media_type : String)
-    @media_type = media_type.downcase
-    @params = Hash(String, String).new
-  end
-
-  # Returns the top-level type (before the slash), e.g. "text" from "text/html".
-  def type : String
-    idx = @media_type.index('/')
-    idx ? @media_type[0, idx] : @media_type
-  end
-
-  # Returns the subtype (after the slash), e.g. "html" from "text/html".
-  def sub_type : String
-    idx = @media_type.index('/')
-    idx ? @media_type[idx + 1, @media_type.bytesize - idx - 1] : ""
-  end
-
-  # Returns parameter value for *key*, or raises if not found.
-  def [](key : String) : String
-    val = @params[key.downcase]?
-    if val
-      val
-    else
-      raise "missing media type parameter: " + key
+  # Built on the first lookup, once; a lookup after that is a hash probe.
+  private def self.by_extension : Hash(String, String)
+    @@by_extension ||= begin
+      map = Hash(String, String).new
+      TABLE.each { |entry| map[entry[0]] = entry[1] }
+      map
     end
   end
 
-  # Returns parameter value for *key*, or nil if not found.
-  def []?(key : String) : String?
-    @params[key.downcase]?
-  end
-
-  def has_key?(key : String) : Bool
-    @params.has_key?(key.downcase)
-  end
-
-  def fetch(key : String, default_value : String) : String
-    val = @params[key.downcase]?
-    val ? val : default_value
-  end
-
-  def []=(key : String, value : String) : Nil
-    @params[key.downcase] = value
-  end
-
-  def each_parameter(& : (String, String) -> Nil) : Nil
-    @params.each do |k, v|
-      yield k, v
+  private def self.by_type : Hash(String, Array(String))
+    @@by_type ||= begin
+      map = Hash(String, Array(String)).new
+      TABLE.each do |entry|
+        list = map[entry[1]]? || (map[entry[1]] = Array(String).new)
+        list << "." + entry[0]
+      end
+      map.each_value(&.sort_in_place)
+      map
     end
   end
 
-  # Returns true if *byte* is a valid RFC 2045 / RFC 2616 token character.
-  def self.token_byte?(b : UInt8) : Bool
-    (b >= 97_u8 && b <= 122_u8) ||  # a-z
-      (b >= 65_u8 && b <= 90_u8) || # A-Z
-      (b >= 48_u8 && b <= 57_u8) || # 0-9
-      b == 33_u8 ||                 # !
-      b == 35_u8 ||                 # #
-      b == 36_u8 ||                 # $
-      b == 37_u8 ||                 # %
-      b == 38_u8 ||                 # &
-      b == 39_u8 ||                 # '
-      b == 42_u8 ||                 # *
-      b == 43_u8 ||                 # +
-      b == 45_u8 ||                 # -
-      b == 46_u8 ||                 # .
-      b == 94_u8 ||                 # ^
-      b == 95_u8 ||                 # _
-      b == 96_u8 ||                 # `
-      b == 124_u8 ||                # |
-      b == 126_u8                   # ~
-  end
-
-  def self.token_string?(str : String) : Bool
-    return false if str.empty?
-    raw = str.to_unsafe
-    len = str.bytesize
+  # The text lowercased, and the text itself when it has no uppercase
+  # ASCII, which is nearly always, so nothing is allocated for it.
+  private def self.lower(text : String) : String
+    bytes = text.to_unsafe
     i = 0
-    while i < len
-      return false unless token_byte?(raw[i])
+    while i < text.bytesize
+      b = bytes[i]
+      return text.downcase if b >= 'A'.ord.to_u8 && b <= 'Z'.ord.to_u8
       i = i + 1
     end
-    true
+    text
   end
 
-  # Parses a media type string with optional parameters, e.g.:
-  # "text/html; charset=utf-8" or "multipart/form-data; boundary=\"---123\""
-  def self.parse?(string : String) : MediaType?
-    s = string.strip
-    return nil if s.empty?
-
-    # Separate media_type from parameters at first ';'
-    semi = s.index(';')
-    raw_type = ""
-    raw_params = ""
-    if semi
-      raw_type = s[0, semi].strip.downcase
-      raw_params = s[semi + 1, s.bytesize - semi - 1]
-    else
-      raw_type = s.downcase
-    end
-
-    # Validate type/subtype format
-    slash = raw_type.index('/')
-    return nil unless slash
-    return nil if slash == 0 || slash == raw_type.bytesize - 1
-
-    params = Hash(String, String).new
-
-    # Parse parameters if present
-    unless raw_params.empty?
-      raw = raw_params.to_unsafe
-      len = raw_params.bytesize
-      ptr = 0
-
-      while ptr < len
-        # Skip leading whitespace and semicolons
-        while ptr < len && (raw[ptr] == 32_u8 || raw[ptr] == 9_u8 || raw[ptr] == 10_u8 || raw[ptr] == 13_u8 || raw[ptr] == 59_u8)
-          ptr = ptr + 1
-        end
-        break if ptr >= len
-
-        # Read parameter name until '='
-        key_start = ptr
-        while ptr < len && raw[ptr] != 61_u8 && raw[ptr] != 59_u8 # '=' or ';'
-          ptr = ptr + 1
-        end
-        return nil if ptr >= len || raw[ptr] != 61_u8 # must find '='
-
-        key_str = raw_params[key_start, ptr - key_start].strip.downcase
-        return nil if key_str.empty?
-
-        ptr = ptr + 1 # skip '='
-
-        # Skip whitespace before value
-        while ptr < len && (raw[ptr] == 32_u8 || raw[ptr] == 9_u8)
-          ptr = ptr + 1
-        end
-        return nil if ptr >= len
-
-        val_str = ""
-        if raw[ptr] == 34_u8 # '"' (quoted value)
-          ptr = ptr + 1      # skip opening quote
-          val_bytes = [] of UInt8
-          closed = false
-          while ptr < len
-            if raw[ptr] == 92_u8 # '\\'
-              if ptr + 1 < len
-                val_bytes << raw[ptr + 1]
-                ptr = ptr + 2
-              else
-                val_bytes << raw[ptr]
-                ptr = ptr + 1
-              end
-            elsif raw[ptr] == 34_u8 # '"'
-              closed = true
-              ptr = ptr + 1
-              break
-            else
-              val_bytes << raw[ptr]
-              ptr = ptr + 1
-            end
-          end
-          return nil unless closed
-
-          val_str = String.new(val_bytes.size) do |buf|
-            buf.copy_from(val_bytes.to_unsafe, val_bytes.size)
-          end
-
-          # Skip whitespace after closing quote until ';' or end
-          while ptr < len && raw[ptr] != 59_u8
-            ptr = ptr + 1
-          end
-        else
-          # Unquoted token value
-          val_start = ptr
-          while ptr < len && raw[ptr] != 59_u8
-            ptr = ptr + 1
-          end
-          val_str = raw_params[val_start, ptr - val_start].strip
-        end
-
-        params[key_str] = val_str
-        ptr = ptr + 1 if ptr < len && raw[ptr] == 59_u8
+  # The media type for a file name or extension: ".html", "html",
+  # "index.HTML" and "a/b.tar.gz" (by its last extension) all work, in
+  # any case. A path whose base name has no dot has no extension; a bare
+  # word is taken as the extension itself. Nil when unknown.
+  def self.from_extension?(name : String) : String?
+    bytes = name.to_unsafe
+    size = name.bytesize
+    dot = -1
+    i = size - 1
+    while i >= 0
+      b = bytes[i]
+      if b == '.'.ord.to_u8
+        dot = i
+        break
       end
+      return nil if b == '/'.ord.to_u8 || b == '\\'.ord.to_u8
+      i = i - 1
     end
-
-    MediaType.new(raw_type, params)
+    ext = dot < 0 ? name : slice(name, dot + 1, size - dot - 1)
+    return nil if ext.empty?
+    by_extension[lower(ext)]?
   end
 
-  def self.parse(string : String) : MediaType
-    res = parse?(string)
-    if res
-      res
-    else
-      raise "invalid media type: " + string
-    end
+  # The same, falling back to *default*.
+  def self.from_extension(name : String, default : String = "application/octet-stream") : String
+    from_extension?(name) || default
   end
 
-  def to_s : String
-    parts = [] of String
-    parts << @media_type
-    @params.each do |k, v|
-      if MediaType.token_string?(v)
-        parts << ("; " + k + "=" + v)
-      else
-        escaped_bytes = [] of UInt8
-        v_raw = v.to_unsafe
-        v_len = v.bytesize
-        vi = 0
-        while vi < v_len
-          vb = v_raw[vi]
-          if vb == 34_u8 || vb == 92_u8 # '"' or '\\'
-            escaped_bytes << 92_u8
-          end
-          escaped_bytes << vb
-          vi = vi + 1
-        end
-        v_esc = String.new(escaped_bytes.size) do |buf|
-          buf.copy_from(escaped_bytes.to_unsafe, escaped_bytes.size)
-        end
-        parts << ("; " + k + "=\"" + v_esc + "\"")
-      end
-    end
-    parts.join("")
-  end
-
-  def fetch(key : String) : String
-    val = @params[key.downcase]?
-    if val
-      val
-    else
-      raise "missing media type parameter: " + key
-    end
-  end
-
-  def []=(key : String, value : String) : Nil
-    @params[key.downcase] = value
-  end
-
-  def to_s(io) : Nil
-    io << to_s
-  end
-end
-
-pub struct MIME
-  pub class Error < Exception
-    getter message : String
-
-    def initialize(@message : String)
-    end
-  end
-
-  @@custom_extensions : Hash(String, String) = Hash(String, String).new
-  @@custom_reverse : Hash(String, Array(String)) = Hash(String, Array(String)).new
-
-  @@initialized : Bool = false
-
-  def self.init(load_defaults : Bool = true) : Nil
-    @@initialized = true
-    if load_defaults
-      register_defaults
-    end
-  end
-
-  private def self.register_defaults : Nil
-    register(".css", "text/css; charset=utf-8")
-    register(".gif", "image/gif")
-    register(".htm", "text/html; charset=utf-8")
-    register(".html", "text/html; charset=utf-8")
-    register(".jpg", "image/jpeg")
-    register(".jpeg", "image/jpeg")
-    register(".js", "text/javascript; charset=utf-8")
-    register(".json", "application/json")
-    register(".pdf", "application/pdf")
-    register(".png", "image/png")
-    register(".svg", "image/svg+xml")
-    register(".txt", "text/plain; charset=utf-8")
-    register(".xml", "text/xml; charset=utf-8")
-    register(".wasm", "application/wasm")
-    register(".webp", "image/webp")
-  end
-
-  # Registers or overrides an extension to media type mapping.
-  # Extension can be specified with or without leading dot (e.g. ".cr" or "cr").
-  def self.register(ext : String, media_type : String) : Nil
-    normalized_ext = ext.starts_with?('.') ? ext.downcase : ("." + ext.downcase)
-    normalized_type = media_type.downcase
-    @@custom_extensions[normalized_ext] = normalized_type
-
-    list = @@custom_reverse[normalized_type]?
-    if list
-      unless list.includes?(normalized_ext)
-        list << normalized_ext
-      end
-    else
-      new_list = [] of String
-      new_list << normalized_ext
-      @@custom_reverse[normalized_type] = new_list
-    end
-  end
-
-  # Returns the media type for *ext*, or nil if not registered.
-  def self.from_extension?(ext : String) : String?
-    normalized = ext.starts_with?('.') ? ext.downcase : ("." + ext.downcase)
-
-    # Check custom overrides first
-    custom = @@custom_extensions[normalized]?
-    return custom if custom
-
-    # Common built-in table
-    case normalized
-    when ".html", ".htm"
-      "text/html; charset=utf-8"
-    when ".css"
-      "text/css; charset=utf-8"
-    when ".js", ".mjs"
-      "text/javascript; charset=utf-8"
-    when ".json"
-      "application/json"
-    when ".xml"
-      "text/xml; charset=utf-8"
-    when ".txt", ".text"
-      "text/plain; charset=utf-8"
-    when ".csv"
-      "text/csv; charset=utf-8"
-    when ".md", ".markdown"
-      "text/markdown; charset=utf-8"
-    when ".png"
-      "image/png"
-    when ".jpg", ".jpeg"
-      "image/jpeg"
-    when ".gif"
-      "image/gif"
-    when ".svg"
-      "image/svg+xml"
-    when ".webp"
-      "image/webp"
-    when ".ico"
-      "image/x-icon"
-    when ".avif"
-      "image/avif"
-    when ".bmp"
-      "image/bmp"
-    when ".tif", ".tiff"
-      "image/tiff"
-    when ".pdf"
-      "application/pdf"
-    when ".zip"
-      "application/zip"
-    when ".gz"
-      "application/gzip"
-    when ".tar"
-      "application/x-tar"
-    when ".wasm"
-      "application/wasm"
-    when ".bin"
-      "application/octet-stream"
-    when ".mp3"
-      "audio/mpeg"
-    when ".wav"
-      "audio/wav"
-    when ".ogg"
-      "audio/ogg"
-    when ".flac"
-      "audio/flac"
-    when ".mp4"
-      "video/mp4"
-    when ".webm"
-      "video/webm"
-    when ".woff"
-      "font/woff"
-    when ".woff2"
-      "font/woff2"
-    when ".ttf"
-      "font/ttf"
-    when ".otf"
-      "font/otf"
-    when ".epub"
-      "application/epub+zip"
-    else
-      nil
-    end
-  end
-
-  # Returns the media type for *ext*, or raises if not found.
-  def self.from_extension(ext : String) : String
-    res = from_extension?(ext)
-    if res
-      res
-    else
-      raise "unknown mime extension: " + ext
-    end
-  end
-
-  # Returns media type from file path or file name.
-  def self.from_filename?(filename : String) : String?
-    # Extract file extension after last dot, after last slash
-    slash = filename.rindex('/')
-    name = slash ? filename[slash + 1, filename.bytesize - slash - 1] : filename
-    dot = name.rindex('.')
-    return nil unless dot
-    ext = name[dot, name.bytesize - dot]
-    from_extension?(ext)
-  end
-
-  def self.from_filename(filename : String) : String
-    res = from_filename?(filename)
-    if res
-      res
-    else
-      raise "unknown mime filename: " + filename
-    end
-  end
-
-  # Returns extensions registered for the given media type.
+  # The extensions a media type is written with, dotted and sorted
+  # ("text/html" is [".htm", ".html"]). Parameters are ignored and case
+  # does not matter; empty when the type is unknown. The array is a fresh
+  # copy the caller may change.
   def self.extensions(media_type : String) : Array(String)
-    t = media_type.downcase
-    custom = @@custom_reverse[t]?
-    result = [] of String
-    if custom
+    essence = essence_of(media_type)
+    return Array(String).new if essence.nil?
+    list = by_type[essence]?
+    list ? list.dup : Array(String).new
+  end
+
+  # Whether a body of this type shrinks under gzip or deflate: text,
+  # JSON, JavaScript, XML and their `+json`/`+xml` kin (SVG among them),
+  # YAML, TOML, scripts, WebAssembly, uncompressed fonts and archives,
+  # bitmaps and icons. Not images, audio and video that are already
+  # compressed, nor zip, gzip and the other archives, nor WOFF and WOFF2,
+  # which are compressed fonts. WebAssembly is included because its code
+  # roughly halves under gzip, which is why servers compress it.
+  def self.compressible?(media_type : String) : Bool
+    essence = essence_of(media_type)
+    return false if essence.nil?
+    return true if essence.starts_with?("text/")
+    return true if essence.ends_with?("+json") || essence.ends_with?("+xml") || essence.ends_with?("+yaml")
+    case essence
+    when "application/json", "application/javascript", "application/ecmascript",
+         "application/xml", "application/yaml", "application/toml",
+         "application/x-sh", "application/x-ruby", "application/wasm",
+         "application/x-tar", "application/vnd.ms-fontobject",
+         "font/ttf", "font/otf", "image/bmp", "image/vnd.microsoft.icon", "image/x-icon"
+      true
+    else
+      false
+    end
+  end
+
+  # The media type with `; charset=utf-8` added when it is text, JSON,
+  # JavaScript or XML (`+json` and `+xml` included) and names no charset
+  # yet. Anything else, and anything that does not parse, comes back as
+  # given.
+  def self.with_charset(media_type : String) : String
+    parsed = parse?(media_type)
+    return media_type if parsed.nil?
+    essence, params = parsed
+    return media_type if params.has_key?("charset")
+    textual = essence.starts_with?("text/") || essence.ends_with?("+json") || essence.ends_with?("+xml") ||
+              essence == "application/json" || essence == "application/javascript" || essence == "application/xml"
+    textual ? media_type + "; charset=utf-8" : media_type
+  end
+
+  # RFC 9110 §8.3.1: `type/subtype` followed by `; name=value` parameters,
+  # whitespace allowed around the semicolons and at either end, a value a
+  # token or a quoted string whose backslash escapes are undone. Answers
+  # the type lowercased and the parameters with lowercased names and
+  # values as written; a name given twice keeps its last value. Nil when
+  # any part is not a token, a parameter has no `=`, or a quote is left
+  # open.
+  def self.parse?(value : String) : {String, Hash(String, String)}?
+    bytes = value.to_unsafe
+    size = value.bytesize
+    pos = skip_ows(bytes, 0, size)
+    type_start = pos
+    pos = skip_token(bytes, pos, size)
+    return nil if pos == type_start || pos >= size || bytes[pos] != '/'.ord.to_u8
+    pos = pos + 1
+    sub_start = pos
+    pos = skip_token(bytes, pos, size)
+    return nil if pos == sub_start
+    essence = lower(slice(value, type_start, pos - type_start))
+    params = Hash(String, String).new
+    loop do
+      pos = skip_ows(bytes, pos, size)
+      break if pos >= size
+      return nil unless bytes[pos] == ';'.ord.to_u8
+      pos = skip_ows(bytes, pos + 1, size)
+      # An empty parameter, as in `a/b;` or `a/b; ; c=d`, is allowed.
+      next if pos >= size || bytes[pos] == ';'.ord.to_u8
+      name_start = pos
+      pos = skip_token(bytes, pos, size)
+      return nil if pos == name_start || pos >= size || bytes[pos] != '='.ord.to_u8
+      name = lower(slice(value, name_start, pos - name_start))
+      pos = pos + 1
+      if pos < size && bytes[pos] == '"'.ord.to_u8
+        unquoted = unquote(value, pos)
+        return nil if unquoted.nil?
+        params[name] = unquoted[0]
+        pos = unquoted[1]
+      else
+        value_start = pos
+        pos = skip_token(bytes, pos, size)
+        return nil if pos == value_start
+        params[name] = slice(value, value_start, pos - value_start)
+      end
+    end
+    {essence, params}
+  end
+
+  # The type and subtype lowercased, or nil when the value does not parse.
+  private def self.essence_of(media_type : String) : String?
+    parsed = parse?(media_type)
+    parsed ? parsed[0] : nil
+  end
+
+  private def self.skip_ows(bytes : Pointer(UInt8), pos : Int32, size : Int32) : Int32
+    while pos < size && (bytes[pos] == ' '.ord.to_u8 || bytes[pos] == '\t'.ord.to_u8)
+      pos = pos + 1
+    end
+    pos
+  end
+
+  private def self.skip_token(bytes : Pointer(UInt8), pos : Int32, size : Int32) : Int32
+    while pos < size && token_byte?(bytes[pos])
+      pos = pos + 1
+    end
+    pos
+  end
+
+  # tchar: a letter, a digit, or one of ``!#$%&'*+-.^_`|~``.
+  private def self.token_byte?(b : UInt8) : Bool
+    return true if b >= 'a'.ord.to_u8 && b <= 'z'.ord.to_u8
+    return true if b >= 'A'.ord.to_u8 && b <= 'Z'.ord.to_u8
+    return true if b >= '0'.ord.to_u8 && b <= '9'.ord.to_u8
+    case b.unsafe_chr
+    when '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~'
+      true
+    else
+      false
+    end
+  end
+
+  # The bytes of *text* from *start*, *count* of them, as a string.
+  private def self.slice(text : String, start : Int32, count : Int32) : String
+    String.new(count) { |dst| dst.copy_from(text.to_unsafe + start, count) }
+  end
+
+  # The quoted string opening at *start*, unescaped, and the position
+  # after its closing quote. A control byte other than a tab inside, or a
+  # string that never closes, is nil. The first pass measures and checks,
+  # the second copies, so the value is allocated once.
+  private def self.unquote(value : String, start : Int32) : {String, Int32}?
+    bytes = value.to_unsafe
+    size = value.bytesize
+    pos = start + 1
+    count = 0
+    close = -1
+    while pos < size
+      b = bytes[pos]
+      if b == '"'.ord.to_u8
+        close = pos
+        break
+      elsif b == '\\'.ord.to_u8
+        return nil if pos + 1 >= size
+        pos = pos + 1
+        b = bytes[pos]
+      end
+      return nil if (b < 0x20_u8 && b != '\t'.ord.to_u8) || b == 0x7f_u8
+      count = count + 1
+      pos = pos + 1
+    end
+    return nil if close < 0
+    text = String.new(count) do |dst|
+      at = start + 1
       i = 0
-      while i < custom.size
-        result << custom[i]
+      while at < close
+        at = at + 1 if bytes[at] == '\\'.ord.to_u8
+        dst[i] = bytes[at]
         i = i + 1
+        at = at + 1
       end
     end
-
-    # Built-in reverse mappings
-    case t
-    when "text/html", "text/html; charset=utf-8"
-      result << ".html" unless result.includes?(".html")
-      result << ".htm" unless result.includes?(".htm")
-    when "text/css", "text/css; charset=utf-8"
-      result << ".css" unless result.includes?(".css")
-    when "text/javascript", "text/javascript; charset=utf-8"
-      result << ".js" unless result.includes?(".js")
-      result << ".mjs" unless result.includes?(".mjs")
-    when "application/json"
-      result << ".json" unless result.includes?(".json")
-    when "text/plain", "text/plain; charset=utf-8"
-      result << ".txt" unless result.includes?(".txt")
-    when "image/png"
-      result << ".png" unless result.includes?(".png")
-    when "image/jpeg"
-      result << ".jpg" unless result.includes?(".jpg")
-      result << ".jpeg" unless result.includes?(".jpeg")
-    when "image/gif"
-      result << ".gif" unless result.includes?(".gif")
-    when "image/svg+xml"
-      result << ".svg" unless result.includes?(".svg")
-    when "application/pdf"
-      result << ".pdf" unless result.includes?(".pdf")
-    when "application/wasm"
-      result << ".wasm" unless result.includes?(".wasm")
-    end
-
-    result
-  end
-
-  # Loads a mime database from mime.types format content.
-  # Each line: media/type ext1 ext2 ...
-  # Lines starting with # and blank lines are ignored.
-  def self.load_mime_database(content : String) : Nil
-    lines = content.split('\n')
-    line_idx = 0
-    while line_idx < lines.size
-      raw_line = lines[line_idx].strip
-      unless raw_line.empty? || raw_line.starts_with?('#')
-        # Strip comment if present
-        hash_idx = raw_line.index('#')
-        line = hash_idx ? raw_line[0, hash_idx].strip : raw_line
-        unless line.empty?
-          tokens = line.split(' ')
-          clean_tokens = [] of String
-          ti = 0
-          while ti < tokens.size
-            t = tokens[ti].strip
-            clean_tokens << t unless t.empty?
-            ti = ti + 1
-          end
-
-          if clean_tokens.size >= 2
-            media_type = clean_tokens[0]
-            ext_idx = 1
-            while ext_idx < clean_tokens.size
-              register(clean_tokens[ext_idx], media_type)
-              ext_idx = ext_idx + 1
-            end
-          end
-        end
-      end
-      line_idx = line_idx + 1
-    end
-  end
-
-  def self.from_extension(ext : String, default : String) : String
-    from_extension?(ext) || default
-  end
-
-  def self.from_extension(ext : String, &block : String -> String) : String
-    res = from_extension?(ext)
-    res ? res : yield(ext)
-  end
-
-  def self.from_filename(filename : String, default : String) : String
-    from_filename?(filename) || default
-  end
-
-  def self.from_filename(filename : String, &block : String -> String) : String
-    res = from_filename?(filename)
-    res ? res : yield(filename)
-  end
-
-  pub struct Multipart
-    pub class Error < MIME::Error
-      getter message : String
-
-      def initialize(@message : String)
-      end
-    end
-
-    def self.generate_boundary : String
-      "---------------------------dQu6bXHYb4m5zrRC3xPTGwV"
-    end
-
-    def self.parse_boundary(content_type : String) : String?
-      if type = MediaType.parse?(content_type)
-        if type.type == "multipart"
-          return type["boundary"]?
-        end
-      end
-      nil
-    end
-
-    def self.build(io : T, boundary : String = Multipart.generate_boundary, &block : Builder(T) -> Nil) : Nil forall T
-      builder = Builder(T).new(io, boundary)
-      block.call(builder)
-      builder.finish
-    end
-
-    def self.build(boundary : String = Multipart.generate_boundary, &block : Builder(StringAccumulator) -> Nil) : String
-      io = StringAccumulator.new
-      builder = Builder(StringAccumulator).new(io, boundary)
-      block.call(builder)
-      builder.finish
-      io.to_s
-    end
-
-    def self.parse(io : T, boundary : String, &block : (Headers, StringAccumulator) -> Nil) : Nil forall T
-      parser = Parser(T).new(io, boundary)
-      while parser.has_next?
-        parser.next do |headers, body_io|
-          yield headers, body_io
-        end
-      end
-    end
-
-    class StringAccumulator
-      @parts : Array(String)
-
-      def initialize
-        @parts = [] of String
-      end
-
-      def <<(str) : self
-        @parts << str.to_s
-        self
-      end
-
-      def write(bytes : Bytes) : Int32
-        len = bytes.size
-        @parts << String.new(len) { |ptr| ptr.copy_from(bytes.to_unsafe, len); len }
-        len
-      end
-
-      def to_s : String
-        @parts.join("")
-      end
-    end
-
-    pub class Builder(T)
-      getter boundary : String
-      @io : T
-
-      def initialize(@io : T, @boundary : String = Multipart.generate_boundary)
-        @state = 0 # 0: start, 1: preamble, 2: body, 3: epilogue, 4: finished
-      end
-
-      def content_type(subtype : String = "mixed") : String
-        "multipart/#{subtype}; boundary=\"#{@boundary}\""
-      end
-
-      def preamble(string : String) : Nil
-        preamble { |io| io << string }
-      end
-
-      def preamble(data : Bytes) : Nil
-        preamble { |io| io.write(data) }
-      end
-
-      def preamble(io) : Nil
-        preamble { |out_io| out_io << io.to_s }
-      end
-
-      def preamble(&block) : Nil
-        raise Error.new("Cannot generate preamble: body already started").message if @state > 1
-        yield @io
-        @state = 1
-      end
-
-      def body_part(headers : Headers, string : String) : Nil
-        body_part(headers) { |io| io << string }
-      end
-
-      def body_part(headers : Headers, data : Bytes) : Nil
-        body_part(headers) { |io| io.write(data) }
-      end
-
-      def body_part(headers : Headers, body_io) : Nil
-        body_part(headers) { |io| io << body_io.to_s }
-      end
-
-      def body_part(headers : Headers, &block) : Nil
-        raise Error.new("Cannot generate body part: already finished").message if @state >= 4
-        raise Error.new("Cannot generate body part: after epilogue").message if @state == 3
-
-        @io << "\r\n" unless @state == 0
-        @io << "--" << @boundary
-        headers.each do |name, val|
-          @io << "\r\n" << name << ": " << val
-        end
-        @io << "\r\n\r\n"
-        yield @io
-        @state = 2
-      end
-
-      def body_part(headers : Headers) : Nil
-        body_part(headers) { }
-      end
-
-      def epilogue(string : String) : Nil
-        epilogue { |io| io << string }
-      end
-
-      def epilogue(data : Bytes) : Nil
-        epilogue { |io| io.write(data) }
-      end
-
-      def epilogue(io) : Nil
-        epilogue { |out_io| out_io << io.to_s }
-      end
-
-      def epilogue(&block) : Nil
-        raise Error.new("Cannot generate epilogue: already finished").message if @state >= 4
-        finish_parts unless @state == 3
-        yield @io
-        @state = 3
-      end
-
-      def finish : Nil
-        return if @state >= 4
-        finish_parts unless @state == 3
-        @state = 4
-      end
-
-      private def finish_parts : Nil
-        @io << "\r\n--" << @boundary << "--\r\n"
-      end
-    end
-
-    pub class Parser(T)
-      @io : T
-      @dash_boundary : String
-      @close_boundary : String
-      @parts : Array(Tuple(Headers, String))
-      @raw_content : String
-      @idx : Int32
-
-      def initialize(@io : T, @boundary : String)
-        @dash_boundary = "--#{@boundary}"
-        @close_boundary = "--#{@boundary}--"
-        @parts = [] of Tuple(Headers, String)
-        @raw_content = @io.to_s
-        @idx = 0
-        parse_all_parts
-      end
-
-      def has_next? : Bool
-        @idx < @parts.size
-      end
-
-      def next(&block : (Headers, StringAccumulator) -> Nil) : Nil
-        raise Error.new("Multipart parser already finished parsing").message if @idx >= @parts.size
-        headers, body = @parts[@idx]
-        @idx += 1
-        io = StringAccumulator.new
-        io << body
-        yield headers, io
-      end
-
-      private def parse_all_parts : Nil
-        content = @raw_content
-        return if content.empty?
-
-        chunks = content.split(@dash_boundary)
-        return if chunks.size < 2
-
-        chunk_idx = 1
-        while chunk_idx < chunks.size
-          chunk = chunks[chunk_idx]
-          if chunk.starts_with?("--")
-            break
-          end
-
-          c = chunk.starts_with?("\r\n") ? chunk[2, chunk.bytesize - 2] : chunk
-          if c.ends_with?("\r\n")
-            c = c[0, c.bytesize - 2]
-          end
-
-          sep_idx = c.index("\r\n\r\n")
-          if sep_idx
-            header_text = c[0, sep_idx]
-            body_text = c[sep_idx + 4, c.bytesize - sep_idx - 4]
-            headers = Headers.new
-            header_text.lines.each do |line|
-              colon = line.index(":")
-              if colon
-                k = line[0, colon].strip
-                v = line[colon + 1, line.bytesize - colon - 1].strip
-                headers.add(k, v)
-              end
-            end
-            @parts << {headers, body_text}
-          end
-
-          chunk_idx += 1
-        end
-      end
-    end
+    {text, close + 1}
   end
 end

@@ -18,6 +18,8 @@
 #   %f - floating point in fixed-point decimal notation
 #   %e - floating point in scientific notation (lowercase e)
 #   %E - floating point in scientific notation (uppercase E)
+#   %g - the shorter of %f and %e, trailing zeros trimmed (C's rule)
+#   %G - the same, with an uppercase E
 #   %% - literal percent sign
 #
 # Flags:
@@ -31,7 +33,7 @@
 # Precision:
 #   integers: minimum digits to appear (padded with leading zeros);
 #             precision 0 on value 0 produces zero digits.
-#   floats: fractional decimal places, correctly rounded (half away from zero).
+#   floats: fractional decimal places, exact and rounded half to even.
 #   strings: maximum characters to include (truncated if longer).
 
 # Where it lives:
@@ -80,6 +82,7 @@ module ::IyiFloatText
       m_plus = IyiBig.new(unequal ? 2_u64 : 1_u64)
       m_minus = IyiBig.new(1_u64)
     end
+    scratch = IyiBig.new(0_u64)
 
     even = f & 1_u64 == 0_u64
 
@@ -99,7 +102,7 @@ module ::IyiFloatText
       m_plus.mul_pow10(-k)
       m_minus.mul_pow10(-k)
     end
-    while (c = r.compare_sum(m_plus, s)) > 0 || (c == 0 && even)
+    while (c = r.compare_sum(m_plus, s, scratch)) > 0 || (c == 0 && even)
       s.mul_small(10_u64)
       k = k + 1
     end
@@ -108,7 +111,7 @@ module ::IyiFloatText
       r_ten.mul_small(10_u64)
       m_ten = m_plus.copy
       m_ten.mul_small(10_u64)
-      c = r_ten.compare_sum(m_ten, s)
+      c = r_ten.compare_sum(m_ten, s, scratch)
       break if c > 0 || (c == 0 && even)
       r.mul_small(10_u64)
       m_plus.mul_small(10_u64)
@@ -125,7 +128,7 @@ module ::IyiFloatText
       digit = r.divide_digit(s)
       low_c = r.compare(m_minus)
       low = low_c < 0 || (low_c == 0 && even)
-      high_c = r.compare_sum(m_plus, s)
+      high_c = r.compare_sum(m_plus, s, scratch)
       high = high_c > 0 || (high_c == 0 && even)
       if !low && !high
         digits[count] = digit.to_u8
@@ -148,39 +151,105 @@ module ::IyiFloatText
     {digits, count, k}
   end
 
-  # Is `f * 2^e` above, at, or below the decimal the shortest digits spell
-  # when they end in a 5 at the place after *precision*? Answered exactly:
-  # both sides are scaled by `10^(precision+1)` and by `2^-e`, which makes
-  # them integers, and `IyiBig` compares them.
-  #
-  # *raw_digits* holds the shortest digits, `k` is the place of the first of
-  # them, and the tie decimal is those digits down to the rounding place.
-  def self.exact_above_tie?(f : UInt64, e : Int32, raw_digits : Pointer(UInt8),
-                            count : Int32, k : Int32, precision : Int32) : Int32
-    # The tie's own integer: every digit from the top down to the rounding
-    # place, which ends in the 5 that made this a tie.
-    tie = IyiBig.new(0_u64)
-    place = k - 1
-    while place >= 0 - precision - 1
-      index = k - place
-      digit = (index >= 1 && index <= count) ? raw_digits[index - 1].to_u64 : 0_u64
-      tie.mul_small(10_u64)
-      tie.add_small(digit)
-      place = place - 1
+  # Every digit the double has, not the shortest ones padded with zeros:
+  # `round(f * 2^e * 10^places)`, half to even, as decimal digits. This is
+  # what a fixed or scientific format prints, and what it did not print:
+  # `%.0f` of 1e23 answered 100000000000000000000000 where the double is
+  # 99999999999999991611392, `%.20f` of 0.1 answered twenty zeros where
+  # the value's digits are 0.10000000000000000555, and `%e` of the
+  # smallest denormal answered 5.000000e-324 for 4.940656e-324 - the
+  # shortest digits, which round-trip, are not the value, and past them
+  # there was nothing but zeros. `places` may be negative, a scale down.
+  def self.scaled_digits(f : UInt64, e : Int32, places : Int32) : String
+    if quick = scaled_quick(f, e, places)
+      return quick.to_s
     end
-
-    left = IyiBig.new(f)
-    right = tie
-    scale = precision + 1
+    num = IyiBig.new(f)
+    den = IyiBig.new(1_u64)
+    if places > 0
+      num.mul_pow10(places)
+    elsif places < 0
+      den.mul_pow10(0 - places)
+    end
     if e >= 0
-      left.shl(e)
-      left.mul_pow10(scale)
+      num.shl(e)
     else
-      left.mul_pow10(scale)
-      right.shl(0 - e)
+      den.shl(0 - e)
     end
-    left.compare(right)
+    quotient = IyiBig.new(0_u64)
+    num.divide(den, quotient)
+    # Half to even, asked of the remainder against the divisor.
+    num.shl(1)
+    c = num.compare(den)
+    if c > 0 || (c == 0 && quotient.low_bit == 1_u64)
+      quotient.add_small(1_u64)
+    end
+    quotient.to_decimal
   end
+
+  # `scaled_digits` in two words, when they hold it: f * 10^places is
+  # under 2^117 for the places a word of ten's powers reaches, and the
+  # quotient by 2^-e and its half-to-even rounding are shifts and one
+  # comparison of the remainder with the half. The same integer the
+  # bignum's division gives - it is the same arithmetic, exact - where
+  # that division made `%.2f` three times what Go's takes. nil when the
+  # value, the places or the answer do not fit.
+  def self.scaled_quick(f : UInt64, e : Int32, places : Int32) : UInt64?
+    return nil if places < 0 || places > 19
+    power = 1_u64
+    places.times { power = power &* 10_u64 }
+    if e >= 0
+      return nil if e > 10
+      hi, lo = mul_wide(f.unsafe_shl(e.to_u64), power)
+      return hi == 0_u64 ? lo : nil
+    end
+    hi, lo = mul_wide(f, power)
+    shift = (0 - e).to_u64
+    # Past 117 bits of shift the product is under half of the divisor.
+    return 0_u64 if shift > 117_u64
+    if shift < 64_u64
+      return nil if hi.unsafe_shr(shift) != 0_u64
+      quotient = lo.unsafe_shr(shift) | (shift == 0_u64 ? 0_u64 : hi.unsafe_shl(64_u64 - shift))
+      rest_hi = 0_u64
+      rest_lo = lo & (1_u64.unsafe_shl(shift) &- 1_u64)
+      half_hi = 0_u64
+      half_lo = 1_u64.unsafe_shl(shift - 1_u64)
+    else
+      quotient = hi.unsafe_shr(shift - 64_u64)
+      rest_hi = shift == 64_u64 ? 0_u64 : hi & (1_u64.unsafe_shl(shift - 64_u64) &- 1_u64)
+      rest_lo = lo
+      half_hi = shift == 64_u64 ? 0_u64 : 1_u64.unsafe_shl(shift - 65_u64)
+      half_lo = shift == 64_u64 ? 9223372036854775808_u64 : 0_u64
+    end
+    above = rest_hi > half_hi || (rest_hi == half_hi && rest_lo > half_lo)
+    tie = rest_hi == half_hi && rest_lo == half_lo
+    if above || (tie && quotient & 1_u64 == 1_u64)
+      return nil if quotient == 18446744073709551615_u64
+      quotient = quotient + 1_u64
+    end
+    quotient
+  end
+
+  # a * b as its high and low words, from 32-bit halves.
+  def self.mul_wide(a : UInt64, b : UInt64) : {UInt64, UInt64}
+    mask = 4294967295_u64
+    a_lo = a & mask
+    a_hi = a.unsafe_shr(32_u64)
+    b_lo = b & mask
+    b_hi = b.unsafe_shr(32_u64)
+    low = a_lo &* b_lo
+    cross1 = a_lo &* b_hi
+    cross2 = a_hi &* b_lo
+    high = a_hi &* b_hi
+    middle = low.unsafe_shr(32_u64) &+ (cross1 & mask) &+ (cross2 & mask)
+    {high &+ cross1.unsafe_shr(32_u64) &+ cross2.unsafe_shr(32_u64) &+ middle.unsafe_shr(32_u64),
+     middle.unsafe_shl(32_u64) | (low & mask)}
+  end
+
+  # The most digits a format may ask for: the bignum has a fixed capacity
+  # sized for a double's largest scaled boundary, and 400 places of the
+  # largest double stay under it with room to spare.
+  MAX_PLACES = 400
 
   # Fixed-point decimal format with exact places, half to even.
   def self.format_fixed(value : Float64, precision : Int32) : String
@@ -191,6 +260,9 @@ module ::IyiFloatText
     if exponent_bits == 2047_u64
       return fraction != 0_u64 ? "NaN" : (bits.unsafe_shr(63_u64) != 0_u64 ? "-Infinity" : "Infinity")
     end
+    if precision > MAX_PLACES
+      raise "precision must be at most #{MAX_PLACES}, not #{precision}"
+    end
     if exponent_bits == 0_u64 && fraction == 0_u64
       if precision <= 0
         return "0"
@@ -199,97 +271,19 @@ module ::IyiFloatText
       end
     end
 
-    # The mantissa and exponent of the value itself, which the tie question
-    # below needs and the shortest digits cannot answer.
     hidden = 4503599627370496_u64
     f = exponent_bits == 0_u64 ? fraction : fraction | hidden
     e = exponent_bits == 0_u64 ? -1074 : exponent_bits.to_i64.to_i32 - 1075
 
-    res = dragon4(value.abs)
-    raw_digits = res[0]
-    count = res[1]
-    k = res[2]
-
-    # Map place P to digit (P = 0 for units, -1 for tenths, etc.)
-    top_p = k - 1 > 0 ? k - 1 : 0
-    round_p = 0 - precision - 1
-
-    round_i = k - round_p
-    round_digit = (round_i >= 1 && round_i <= count) ? raw_digits[round_i - 1].to_i32 : 0
-
-    # Half to even, which is what every reference formatter does and what
-    # this did not: `%.1f` of 0.25 answered 0.3 and `%.0f` of 0.5 answered 1,
-    # against 0.2 and 0 from the other language, from C and from Python. A
-    # tie is decided by the digit being kept, not by rounding away from zero.
-    rest_nonzero = false
-    after = round_i + 1
-    while after <= count
-      rest_nonzero = true if raw_digits[after - 1].to_i32 != 0
-      after = after + 1
+    digits = scaled_digits(f, e, precision)
+    return digits if precision <= 0
+    while digits.size < precision + 1
+      digits = "0" + digits
     end
-    keep_i = k - (0 - precision)
-    keep_digit = (keep_i >= 1 && keep_i <= count) ? raw_digits[keep_i - 1].to_i32 : 0
-    carry = 0
-    if round_digit > 5
-      carry = 1
-    elsif round_digit == 5
-      if rest_nonzero
-        carry = 1
-      else
-        # The shortest digits say "exactly half", and the *value* may not:
-        # 2.345 is stored a shade above and 1.015 a shade below, so rounding
-        # the string answered 2.34 and 1.02 where every reference answers
-        # 2.35 and 1.01. Asked of the value itself, exactly - `f * 2^e`
-        # against the tie decimal, both sides scaled to integers.
-        tie = exact_above_tie?(f, e, raw_digits, count, k, precision)
-        carry = tie > 0 || (tie == 0 && keep_digit % 2 == 1) ? 1 : 0
-      end
-    end
-
-    place_digits = [] of Int32
-    p = 0 - precision
-    while p <= top_p || carry > 0
-      i = k - p
-      d = (i >= 1 && i <= count) ? raw_digits[i - 1].to_i32 : 0
-      d = d + carry
-      if d >= 10
-        place_digits << (d - 10)
-        carry = 1
-      else
-        place_digits << d
-        carry = 0
-      end
-      p = p + 1
-    end
-
-    actual_top = p - 1
-    actual_top = top_p if actual_top < top_p
-
-    int_digits = ""
-    cur = actual_top
-    while cur >= 0
-      offset = cur - (0 - precision)
-      d = (offset >= 0 && offset < place_digits.size) ? place_digits[offset] : 0
-      int_digits = int_digits + d.to_s
-      cur = cur - 1
-    end
-
-    if precision > 0
-      frac_digits = ""
-      cur = -1
-      while cur >= 0 - precision
-        offset = cur - (0 - precision)
-        d = (offset >= 0 && offset < place_digits.size) ? place_digits[offset] : 0
-        frac_digits = frac_digits + d.to_s
-        cur = cur - 1
-      end
-      int_digits + "." + frac_digits
-    else
-      int_digits
-    end
+    digits[0, digits.size - precision] + "." + digits[digits.size - precision, precision]
   end
 
-  # Scientific notation with exact places and rounding half away from zero.
+  # Scientific notation with exact places, half to even.
   def self.format_exp(value : Float64, uppercase : Bool, precision : Int32, hash_flag : Bool) : String
     bits = bits_of(value)
     exponent_bits = bits.unsafe_shr(52_u64) & 2047_u64
@@ -297,6 +291,9 @@ module ::IyiFloatText
 
     if exponent_bits == 2047_u64
       return fraction != 0_u64 ? "NaN" : (bits.unsafe_shr(63_u64) != 0_u64 ? "-Infinity" : "Infinity")
+    end
+    if precision > MAX_PLACES
+      raise "precision must be at most #{MAX_PLACES}, not #{precision}"
     end
     if exponent_bits == 0_u64 && fraction == 0_u64
       e_tag = uppercase ? "E+00" : "e+00"
@@ -307,90 +304,46 @@ module ::IyiFloatText
       end
     end
 
-    res = dragon4(value.abs)
-    raw_digits = res[0]
-    count = res[1]
-    k = res[2]
-
-    exp = k - 1
-    total_needed = 1 + precision
-    round_idx = total_needed + 1
-
-    round_d = (round_idx >= 1 && round_idx <= count) ? raw_digits[round_idx - 1].to_i32 : 0
-
-    # Half to even, and a tie decided by the value rather than by the digits
-    # - the same two corrections `format_fixed` above needed, in the form
-    # that writes an exponent: `%.0e` of 2.5 answered 3e+00 against 2e+00,
-    # and `%.2e` of 9.995 answered 1.00e+01 against 9.99e+00.
     hidden = 4503599627370496_u64
     f = exponent_bits == 0_u64 ? fraction : fraction | hidden
     e = exponent_bits == 0_u64 ? -1074 : exponent_bits.to_i64.to_i32 - 1075
 
-    rest_nonzero = false
-    after = round_idx + 1
-    while after <= count
-      rest_nonzero = true if raw_digits[after - 1].to_i32 != 0
-      after = after + 1
+    # The decimal exponent, guessed from the shortest digits and then held
+    # to the exact digits: the shortest spelling of 99999999999999991611392
+    # is 1e+23, one place up, and rounding can carry the other way -
+    # `%.2e` of 9.995 is 1.00e+01. Either moves the exponent by one, and
+    # the digit count says which way.
+    res = dragon4(value.abs)
+    exp = res[2] - 1
+    digits = scaled_digits(f, e, precision - exp)
+    attempts = 0
+    while digits.size != precision + 1 && attempts < 4
+      exp = digits.size > precision + 1 ? exp + 1 : exp - 1
+      digits = scaled_digits(f, e, precision - exp)
+      attempts = attempts + 1
     end
-    keep_d = (total_needed >= 1 && total_needed <= count) ? raw_digits[total_needed - 1].to_i32 : 0
-
-    carry = 0
-    if round_d > 5
-      carry = 1
-    elsif round_d == 5
-      if rest_nonzero
-        carry = 1
-      else
-        # The rounding place here is `precision` digits after the first, so
-        # the scale the tie is measured at is that many places below the
-        # exponent.
-        tie = exact_above_tie?(f, e, raw_digits, count, k, precision - exp)
-        carry = tie > 0 || (tie == 0 && keep_d % 2 == 1) ? 1 : 0
+    # A guess one too high passes that count as well: at the shortest
+    # digits' exponent `%.15e` of 1e23 rounds to 1.000000000000000e+23,
+    # where the value's own digits are 9.999999999999999e+22. Only a
+    # 10...0 can be that, and the exponent below is the value's when its
+    # digits still fit there.
+    tail = 1
+    while tail < digits.bytesize && digits.to_unsafe[tail] == 48_u8
+      tail = tail + 1
+    end
+    if tail == digits.bytesize && digits.size == precision + 1 && digits.to_unsafe[0] == 49_u8
+      lower = scaled_digits(f, e, precision - exp + 1)
+      if lower.size == precision + 1
+        exp = exp - 1
+        digits = lower
       end
     end
 
-    digits_out = [] of Int32
-    total_needed.times { digits_out << 0 }
-
-    idx = total_needed
-    while idx >= 1
-      d = (idx >= 1 && idx <= count) ? raw_digits[idx - 1].to_i32 : 0
-      d = d + carry
-      if d >= 10
-        digits_out[idx - 1] = d - 10
-        carry = 1
-      else
-        digits_out[idx - 1] = d
-        carry = 0
-      end
-      idx = idx - 1
-    end
-
-    if carry > 0
-      digits_out[0] = 1
-      z = 1
-      while z < total_needed
-        digits_out[z] = 0
-        z = z + 1
-      end
-      exp = exp + 1
-    end
-
-    int_part = digits_out[0].to_s
-    frac_part = ""
-    f_idx = 1
-    while f_idx < total_needed
-      frac_part = frac_part + digits_out[f_idx].to_s
-      f_idx = f_idx + 1
-    end
-
-    num = ""
+    num = digits[0, 1]
     if precision > 0
-      num = int_part + "." + frac_part
+      num = num + "." + digits[1, precision]
     elsif hash_flag
-      num = int_part + "."
-    else
-      num = int_part
+      num = num + "."
     end
 
     e_char = uppercase ? "E" : "e"
@@ -398,6 +351,46 @@ module ::IyiFloatText
     exp_mag = exp < 0 ? 0 - exp : exp
     exp_str = exp_mag < 10 ? "0" + exp_mag.to_s : exp_mag.to_s
     num + e_char + sign_char + exp_str
+  end
+end
+
+# The two operations the exact formats need that the printer's bignum did
+# not have: a division by a small number, and its digits in base ten.
+class ::IyiBig
+  # self / small for a `small` under 2^32, self reduced to the quotient,
+  # the remainder answered. A limb is 32 bits in a 64-bit word, so the
+  # running remainder shifted up by a limb still fits the word.
+  def div_small(small : UInt64) : UInt64
+    rem = 0_u64
+    index = @size - 1
+    while index >= 0
+      cur = rem.unsafe_shl(32_u64) | @limbs[index]
+      @limbs[index] = cur // small
+      rem = cur % small
+      index = index - 1
+    end
+    while @size > 0 && @limbs[@size - 1] == 0_u64
+      @size = @size - 1
+    end
+    rem
+  end
+
+  # Base ten, most significant digit first, nine digits per division.
+  def to_decimal : String
+    return "0" if @size == 0
+    work = copy
+    chunks = [] of UInt64
+    while work.size > 0
+      chunks << work.div_small(1000000000_u64)
+    end
+    text = chunks[chunks.size - 1].to_s
+    index = chunks.size - 2
+    while index >= 0
+      chunk = chunks[index].to_s
+      text = text + ("0" * (9 - chunk.size)) + chunk
+      index = index - 1
+    end
+    text
   end
 end
 
@@ -548,7 +541,7 @@ module ::IyiFormat
     bits = IyiFloatText.bits_of(val)
     is_nan = (bits.unsafe_shr(52_u64) & 2047_u64 == 2047_u64) && (bits & 4503599627370495_u64 != 0_u64)
     if is_nan
-      return format_string_arg("NaN", minus, width, -1)
+      return format_string_arg(plus ? "+NaN" : (space ? " NaN" : "NaN"), minus, width, -1)
     end
 
     is_inf = (bits.unsafe_shr(52_u64) & 2047_u64 == 2047_u64) && (bits & 4503599627370495_u64 == 0_u64)
@@ -592,7 +585,7 @@ module ::IyiFormat
     bits = IyiFloatText.bits_of(val)
     is_nan = (bits.unsafe_shr(52_u64) & 2047_u64 == 2047_u64) && (bits & 4503599627370495_u64 != 0_u64)
     if is_nan
-      return format_string_arg("NaN", minus, width, -1)
+      return format_string_arg(plus ? "+NaN" : (space ? " NaN" : "NaN"), minus, width, -1)
     end
 
     is_inf = (bits.unsafe_shr(52_u64) & 2047_u64 == 2047_u64) && (bits & 4503599627370495_u64 == 0_u64)
@@ -628,22 +621,98 @@ module ::IyiFormat
     end
   end
 
+  # `%g`: the shorter of the two notations, C's rule. With P the precision
+  # (6 when none is given, 1 when it is 0) and X the exponent `%e` would
+  # write at P - 1 places, it is `%e` at P - 1 places when X < -4 or X >= P
+  # and `%f` at P - 1 - X places otherwise; either way the trailing zeros
+  # of the fraction go, and its point with them, unless `#` keeps them.
+  # NaN and the infinities are written as `%e` writes them.
+  def self.format_float_general(val : Float64, uppercase : Bool, minus : Bool, plus : Bool, space : Bool, zero : Bool, hash : Bool, width : Int32, precision : Int32) : String
+    prec = precision < 0 ? 6 : (precision == 0 ? 1 : precision)
+    bits = IyiFloatText.bits_of(val)
+    if bits.unsafe_shr(52_u64) & 2047_u64 == 2047_u64
+      return format_float_exp(val, uppercase, minus, plus, space, zero, hash, width, precision)
+    end
+
+    # Significant digits, one more than the places `%e` is asked for: left
+    # to `%e`, `%.402g` was refused as "at most 400, not 401", a precision
+    # nobody wrote under a limit `%.401g` had just passed.
+    limit = IyiFloatText::MAX_PLACES + 1
+    raise "precision must be at most #{limit}, not #{prec}" if prec > limit
+    scientific = IyiFloatText.format_exp(val.abs, uppercase, prec - 1, hash)
+    marker = scientific.index(uppercase ? 'E' : 'e') || scientific.bytesize
+    exp = scientific[marker + 1, scientific.bytesize - marker - 1].to_i
+    if exp < -4 || exp >= prec
+      mantissa = scientific[0, marker]
+      num_str = (hash ? mantissa : IyiFormat.trim_fraction(mantissa)) + scientific[marker, scientific.bytesize - marker]
+    else
+      # The digits `%e` just wrote, the point moved: `%f` at P - 1 - X
+      # places rounds at the same place, and asked again of `format_fixed`
+      # those places pass MAX_PLACES for an X under zero at a precision
+      # within it - `%.400g` of 0.0001 panicked.
+      sig = scientific[0, 1] + (marker > 2 ? scientific[2, marker - 2] : "")
+      if exp >= 0
+        fixed = exp + 1 < prec ? sig[0, exp + 1] + "." + sig[exp + 1, prec - 1 - exp] : sig
+      else
+        fixed = "0." + ("0" * (0 - exp - 1)) + sig
+      end
+      num_str = hash ? (fixed.index('.') ? fixed : fixed + ".") : IyiFormat.trim_fraction(fixed)
+    end
+
+    sign = ""
+    if bits.unsafe_shr(63_u64) != 0_u64
+      sign = "-"
+    elsif plus
+      sign = "+"
+    elsif space
+      sign = " "
+    end
+    total_len = sign.bytesize + num_str.bytesize
+    return sign + num_str if total_len >= width
+    pad_count = width - total_len
+    if minus
+      sign + num_str + (" " * pad_count)
+    elsif zero
+      sign + ("0" * pad_count) + num_str
+    else
+      (" " * pad_count) + sign + num_str
+    end
+  end
+
+  # A decimal's fraction without its trailing zeros, and without its point
+  # when nothing is left after it: `%g`'s trim.
+  def self.trim_fraction(text : String) : String
+    return text unless text.index('.')
+    stop = text.bytesize
+    while stop > 0 && text.to_unsafe[stop - 1] == 48_u8
+      stop = stop - 1
+    end
+    stop = stop - 1 if stop > 0 && text.to_unsafe[stop - 1] == 46_u8
+    text[0, stop]
+  end
+
   # Width and precision in characters, because `size` is and because
   # `%-10s` is a column: counted in bytes, a multi-byte string came out
   # short by one space per extra byte, and a precision cut a character in
   # half. The prelude's `ljust`/`rjust` decided the same thing.
+  #
+  # The characters a precision keeps are written into one buffer, as
+  # `each_char` decodes them and `size` counts them: added one at a time
+  # onto a string of their own, the text was copied once per character,
+  # and `%.800000s` of a megabyte took 12.8 s, four times as long for
+  # every doubling.
   def self.format_string_arg(str : String, minus : Bool, width : Int32, precision : Int32) : String
     res = str
     if precision >= 0 && res.size > precision
-      kept = ""
+      kept = String::Builder.new
       taken = 0
       res.each_char do |c|
         if taken < precision
-          kept = kept + c.to_s
+          kept << c
           taken = taken + 1
         end
       end
-      res = kept
+      res = kept.to_s
     end
     if res.size < width
       pad = " " * (width - res.size)
@@ -653,18 +722,31 @@ module ::IyiFormat
     end
   end
 
+  # A number is a code point, as Crystal's `%c` has it: `%c` of 233 is
+  # `é`, where it panicked "233 is out of char range" (`chr` is ASCII).
+  # Anything else is its first character, not its first byte, which cut
+  # `é` in half.
   def self.format_char_arg(val, minus : Bool, width : Int32) : String
     ch = case val
          when Char
            val
          when Int32
-           val.chr
+           code_point(val.to_i64)
          when Int64
-           val.to_i32.chr
-         when UInt8
-           val.to_i32.chr
+           code_point(val)
+         when UInt64
+           # `UInt8`, `UInt16` and `UInt32` arrive widened, and the last two
+           # and this were the first character of their digits: `%c` of
+           # 65_u32 was "6".
+           code_point(val)
          else
-           val.to_s.empty? ? ' ' : val.to_s[0]
+           first = ' '
+           taken = false
+           val.to_s.each_char do |c|
+             first = c unless taken
+             taken = true
+           end
+           first
          end
     s = ch.to_s
     if width > 1
@@ -675,7 +757,39 @@ module ::IyiFormat
     end
   end
 
+  # Any integer: an `Int64` or a `UInt64`, whose top half `to_i64` refuses.
+  def self.code_point(code) : Char
+    raise "%c of #{code}: not a Unicode code point" if code < 0 || code > 0x10FFFF || (code >= 0xD800 && code <= 0xDFFF)
+    code.to_i32.unsafe_chr
+  end
+
   def self.format_arg(val, verb : Char, minus : Bool, plus : Bool, space : Bool, zero : Bool, hash : Bool, width : Int32, precision : Int32) : String
+    # The rest of the tower `std/int` and `std/float` make usable is
+    # formatted as the prelude's own four are: `%d` of an `Int8`, `UInt32`
+    # or `Float32` panicked "wants a number". A value is widened without
+    # loss; an `Int128` or `UInt128` is written from its own digits.
+    case val
+    when Int8
+      # `%u` is the word's bits at the word's own width, as an `Int32`'s
+      # are below: widened first, `%u` of -5_i8 and of -5_i16 printed
+      # 18446744073709551611, the bits of an `Int64`.
+      return format_arg(verb == 'u' ? val.to_i64 & 255_i64 : val.to_i64, verb, minus, plus, space, zero, hash, width, precision)
+    when Int16
+      return format_arg(verb == 'u' ? val.to_i64 & 65535_i64 : val.to_i64, verb, minus, plus, space, zero, hash, width, precision)
+    when UInt8
+      # Widened as `Int8` is: it had every integer verb's branch of its own
+      # and none of the float verbs', so `%f` of 200_u8 panicked "wants a
+      # number" where `%d` printed 200.
+      return format_arg(val.to_i64, verb, minus, plus, space, zero, hash, width, precision)
+    when UInt16, UInt32
+      return format_arg(val.to_u64, verb, minus, plus, space, zero, hash, width, precision)
+    when Float32
+      # Widened for a number's verbs only: `%s` and `%p` are the value's
+      # own text, and the double's was 0.10000000149011612 for 0.1_f32.
+      return format_arg(val.to_f64, verb, minus, plus, space, zero, hash, width, precision) unless verb == 's' || verb == 'p'
+    when Int128, UInt128
+      return format_wide(val, verb, minus, plus, space, zero, hash, width, precision)
+    end
     case verb
     when 's'
       format_string_arg(val.to_s, minus, width, precision)
@@ -691,75 +805,82 @@ module ::IyiFormat
         format_int64(val, 10, false, true, minus, plus, space, zero, hash, width, precision)
       when UInt64
         format_uint64(val, 10, false, true, minus, plus, space, zero, hash, width, precision)
-      when UInt8
-        format_int64(val.to_i64, 10, false, true, minus, plus, space, zero, hash, width, precision)
+      when Float64
+        format_truncated(val, verb, minus, plus, space, zero, hash, width, precision)
       else
-        format_string_arg(val.to_s, minus, width, precision)
+        not_a_number(val, verb)
       end
     when 'u'
       case val
       when Int32
         format_int64(val < 0 ? (val.to_i64 & 4294967295_i64) : val.to_i64, 10, false, false, minus, plus, space, zero, hash, width, precision)
       when Int64
-        format_int64(val, 10, false, false, minus, plus, space, zero, hash, width, precision)
+        # Unsigned is the word's bits, as an Int32's are above: `%u` of
+        # -5_i64 printed -5.
+        format_uint64(val.unsafe_to_u64, 10, false, false, minus, plus, space, zero, hash, width, precision)
       when UInt64
         format_uint64(val, 10, false, false, minus, plus, space, zero, hash, width, precision)
-      when UInt8
-        format_int64(val.to_i64, 10, false, false, minus, plus, space, zero, hash, width, precision)
+      when Float64
+        format_truncated(val, verb, minus, plus, space, zero, hash, width, precision)
       else
-        format_string_arg(val.to_s, minus, width, precision)
+        not_a_number(val, verb)
       end
     when 'x'
+      # The sign flags hold in every base, as `%d`'s: a negative value is
+      # written with its `-` (`%x` of -255 is -ff), so `+` and space are
+      # the other bases' too, as the other library and Python have them.
+      # `%+x` of 255 printed ff, and a column of signed deltas lost its signs
+      # on one side. Only `%u` is the word's bits, and never signed.
       case val
       when Int32
-        format_int64(val.to_i64, 16, false, false, minus, plus, space, zero, hash, width, precision)
+        format_int64(val.to_i64, 16, false, true, minus, plus, space, zero, hash, width, precision)
       when Int64
-        format_int64(val, 16, false, false, minus, plus, space, zero, hash, width, precision)
+        format_int64(val, 16, false, true, minus, plus, space, zero, hash, width, precision)
       when UInt64
-        format_uint64(val, 16, false, false, minus, plus, space, zero, hash, width, precision)
-      when UInt8
-        format_int64(val.to_i64, 16, false, false, minus, plus, space, zero, hash, width, precision)
+        format_uint64(val, 16, false, true, minus, plus, space, zero, hash, width, precision)
+      when Float64
+        format_truncated(val, verb, minus, plus, space, zero, hash, width, precision)
       else
-        format_string_arg(val.to_s, minus, width, precision)
+        not_a_number(val, verb)
       end
     when 'X'
       case val
       when Int32
-        format_int64(val.to_i64, 16, true, false, minus, plus, space, zero, hash, width, precision)
+        format_int64(val.to_i64, 16, true, true, minus, plus, space, zero, hash, width, precision)
       when Int64
-        format_int64(val, 16, true, false, minus, plus, space, zero, hash, width, precision)
+        format_int64(val, 16, true, true, minus, plus, space, zero, hash, width, precision)
       when UInt64
-        format_uint64(val, 16, true, false, minus, plus, space, zero, hash, width, precision)
-      when UInt8
-        format_int64(val.to_i64, 16, true, false, minus, plus, space, zero, hash, width, precision)
+        format_uint64(val, 16, true, true, minus, plus, space, zero, hash, width, precision)
+      when Float64
+        format_truncated(val, verb, minus, plus, space, zero, hash, width, precision)
       else
-        format_string_arg(val.to_s, minus, width, precision)
+        not_a_number(val, verb)
       end
     when 'o'
       case val
       when Int32
-        format_int64(val.to_i64, 8, false, false, minus, plus, space, zero, hash, width, precision)
+        format_int64(val.to_i64, 8, false, true, minus, plus, space, zero, hash, width, precision)
       when Int64
-        format_int64(val, 8, false, false, minus, plus, space, zero, hash, width, precision)
+        format_int64(val, 8, false, true, minus, plus, space, zero, hash, width, precision)
       when UInt64
-        format_uint64(val, 8, false, false, minus, plus, space, zero, hash, width, precision)
-      when UInt8
-        format_int64(val.to_i64, 8, false, false, minus, plus, space, zero, hash, width, precision)
+        format_uint64(val, 8, false, true, minus, plus, space, zero, hash, width, precision)
+      when Float64
+        format_truncated(val, verb, minus, plus, space, zero, hash, width, precision)
       else
-        format_string_arg(val.to_s, minus, width, precision)
+        not_a_number(val, verb)
       end
     when 'b'
       case val
       when Int32
-        format_int64(val.to_i64, 2, false, false, minus, plus, space, zero, hash, width, precision)
+        format_int64(val.to_i64, 2, false, true, minus, plus, space, zero, hash, width, precision)
       when Int64
-        format_int64(val, 2, false, false, minus, plus, space, zero, hash, width, precision)
+        format_int64(val, 2, false, true, minus, plus, space, zero, hash, width, precision)
       when UInt64
-        format_uint64(val, 2, false, false, minus, plus, space, zero, hash, width, precision)
-      when UInt8
-        format_int64(val.to_i64, 2, false, false, minus, plus, space, zero, hash, width, precision)
+        format_uint64(val, 2, false, true, minus, plus, space, zero, hash, width, precision)
+      when Float64
+        format_truncated(val, verb, minus, plus, space, zero, hash, width, precision)
       else
-        format_string_arg(val.to_s, minus, width, precision)
+        not_a_number(val, verb)
       end
     when 'f'
       case val
@@ -772,7 +893,7 @@ module ::IyiFormat
       when UInt64
         format_float64(val.to_f64, minus, plus, space, zero, hash, width, precision)
       else
-        format_string_arg(val.to_s, minus, width, precision)
+        not_a_number(val, verb)
       end
     when 'e'
       case val
@@ -785,7 +906,7 @@ module ::IyiFormat
       when UInt64
         format_float_exp(val.to_f64, false, minus, plus, space, zero, hash, width, precision)
       else
-        format_string_arg(val.to_s, minus, width, precision)
+        not_a_number(val, verb)
       end
     when 'E'
       case val
@@ -798,20 +919,160 @@ module ::IyiFormat
       when UInt64
         format_float_exp(val.to_f64, true, minus, plus, space, zero, hash, width, precision)
       else
-        format_string_arg(val.to_s, minus, width, precision)
+        not_a_number(val, verb)
+      end
+    when 'g', 'G'
+      case val
+      when Float64
+        format_float_general(val, verb == 'G', minus, plus, space, zero, hash, width, precision)
+      when Int32
+        format_float_general(val.to_f64, verb == 'G', minus, plus, space, zero, hash, width, precision)
+      when Int64
+        format_float_general(val.to_f64, verb == 'G', minus, plus, space, zero, hash, width, precision)
+      when UInt64
+        format_float_general(val.to_f64, verb == 'G', minus, plus, space, zero, hash, width, precision)
+      else
+        not_a_number(val, verb)
       end
     else
       raise "unknown format specifier '%#{verb}'"
     end
   end
+
+  # An `Int128` or `UInt128`: an integer verb writes its digits, which may
+  # not fit 64 bits; a float verb its nearest double, as `%f` of an
+  # `Int64` is.
+  def self.format_wide(val, verb : Char, minus : Bool, plus : Bool, space : Bool, zero : Bool, hash : Bool, width : Int32, precision : Int32) : String
+    base = case verb
+           when 'd', 'i', 'u' then 10
+           when 'x', 'X'      then 16
+           when 'o'           then 8
+           when 'b'           then 2
+           else                    0
+           end
+    if base == 0
+      return format_arg(val.to_f64, verb, minus, plus, space, zero, hash, width, precision) if verb == 'f' || verb == 'e' || verb == 'E' || verb == 'g' || verb == 'G'
+      # The value's own text, as every other integer's: written as its
+      # digits and then asked again as a string, `%p` of 65_i128 was "65" in
+      # quotes, the string's inspection; and `%c` is a code point here too,
+      # where it was refused as "wants a character".
+      return format_string_arg(verb == 'p' ? val.inspect : val.to_s, minus, width, precision) if verb == 's' || verb == 'p'
+      return format_char_arg(code_point(val), minus, width) if verb == 'c'
+      raise "unknown format specifier '%#{verb}'"
+    end
+    # `%u` is the word's bits, as an `Int64`'s are: `%u` of -5_i128
+    # printed -5.
+    text = verb == 'u' && val < 0 ? val.unsafe_to_u128.to_s(base) : val.to_s(base)
+    format_digits(text, verb, base, minus, plus, space, zero, hash, width, precision)
+  end
+
+  # Digits as `to_s(base)` writes them, a `-` first when negative, given
+  # the verb's sign, prefix, precision and width.
+  def self.format_digits(text : String, verb : Char, base : Int32, minus : Bool, plus : Bool, space : Bool, zero : Bool, hash : Bool, width : Int32, precision : Int32) : String
+    negative = text.starts_with?('-')
+    digits = negative ? text[1, text.bytesize - 1] : text
+    digits = digits.upcase if verb == 'X'
+    digits = "" if digits == "0" && precision == 0
+    sign = negative ? "-" : (verb != 'u' ? (plus ? "+" : (space ? " " : "")) : "")
+    prefix = ""
+    if hash && text != "0"
+      prefix = base == 16 ? (verb == 'X' ? "0X" : "0x") : (base == 8 ? "0o" : (base == 2 ? "0b" : ""))
+    end
+    if precision >= 0
+      zero = false
+      digits = ("0" * (precision - digits.bytesize)) + digits if digits.bytesize < precision
+    end
+    total_len = sign.bytesize + prefix.bytesize + digits.bytesize
+    return sign + prefix + digits if total_len >= width
+    pad_count = width - total_len
+    if minus
+      sign + prefix + digits + (" " * pad_count)
+    elsif zero
+      sign + prefix + ("0" * pad_count) + digits
+    else
+      (" " * pad_count) + sign + prefix + digits
+    end
+  end
+
+  # A float under an integer verb is truncated, which is what Ruby, Python
+  # and the other language answer to it. Past an `Int64` the truncation is
+  # the double's own integer, f * 2^e, written whole as Python writes it:
+  # `%d` of 1e30 is 1000000000000000019884624838656, where `to_i64`
+  # panicked "arithmetic overflow". NaN and the infinities have no
+  # integer, and the refusal says that rather than "arithmetic overflow".
+  def self.format_truncated(val : Float64, verb : Char, minus : Bool, plus : Bool, space : Bool, zero : Bool, hash : Bool, width : Int32, precision : Int32) : String
+    bits = IyiFloatText.bits_of(val)
+    exponent_bits = bits.unsafe_shr(52_u64) & 2047_u64
+    raise "%#{verb} wants a finite number, and #{val} is not one" if exponent_bits == 2047_u64
+    if val >= -9223372036854775808.0 && val < 9223372036854775808.0
+      return format_arg(val.to_i64, verb, minus, plus, space, zero, hash, width, precision)
+    end
+    # Past 2^63 the exponent is at least ten and the integer is f shifted
+    # up: in base ten the bignum's digits, and in a base of 2^step those
+    # of f shifted by the exponent's remainder, then one zero per step.
+    f = (bits & 4503599627370495_u64) | 4503599627370496_u64
+    e = exponent_bits.to_i64.to_i32 - 1075
+    base = verb == 'x' || verb == 'X' ? 16 : (verb == 'o' ? 8 : (verb == 'b' ? 2 : 10))
+    if base == 10
+      whole = IyiBig.new(f)
+      whole.shl(e)
+      digits = whole.to_decimal
+    else
+      step = base == 16 ? 4 : (base == 8 ? 3 : 1)
+      digits = f.unsafe_shl((e % step).to_u64).to_s(base) + ("0" * (e // step))
+    end
+    format_digits(bits.unsafe_shr(63_u64) != 0_u64 ? "-" + digits : digits, verb, base, minus, plus, space, zero, hash, width, precision)
+  end
+
+  # A width or a precision, which an `Int32` holds: read into one, the
+  # digits of `%99999999999d` panicked "arithmetic overflow".
+  def self.field_number(format_string : String, start : Int32, stop : Int32, what : String) : Int32
+    value = 0_i64
+    index = start
+    while index < stop
+      value = value * 10_i64 + (format_string.to_unsafe[index] - 48_u8).to_i64
+      raise "#{what} must be at most 2147483647, not #{format_string[start, stop - start]}" if value > 2147483647_i64
+      index = index + 1
+    end
+    value.to_i32
+  end
+
+  # A numeric verb is a claim about the argument, and an argument that is
+  # not a number contradicts it: `%d` of "abc" printed abc, `%f` of a
+  # `Char` printed the character, and the caller who had mistyped the
+  # argument order saw their strings where their numbers should be and
+  # nothing said so.
+  def self.not_a_number(val, verb : Char) : NoReturn
+    raise "%#{verb} wants a number, and #{val.inspect} is a #{val.class}"
+  end
 end
 
 pub def sprintf(format_string : String, *args : *T) : String forall T
+  sprintf(format_string, args)
+end
+
+# The argument list may be one array or tuple, as the other library takes
+# it: `"%s, %s, %s, D" % ['A', 'B', 'C']`, its own example, panicked "too
+# few arguments for format string" here, and `"[%s]" % ["A"]` printed
+# `[["A"]]` where it prints `[A]`. Two overloads rather than one taking
+# `Array | Tuple`: a union with Array in it cannot be written into an
+# artifact ("can't use Array(T) in unions yet").
+pub def sprintf(format_string : String, args : Array) : String
+  format_list(format_string, args)
+end
+
+pub def sprintf(format_string : String, args : Tuple) : String
+  format_list(format_string, args)
+end
+
+private def format_list(format_string : String, args) : String
   index = 0
   format_bytesize = format_string.bytesize
   format_ptr = format_string.to_unsafe
   arg_index = 0
-  result = ""
+  # Written into one buffer: `result = result + piece` copied the whole
+  # result once per piece, and a `%%` is a piece.
+  result = String::Builder.new(format_bytesize)
 
   while index < format_bytesize
     byte = format_ptr[index]
@@ -820,7 +1081,7 @@ pub def sprintf(format_string : String, *args : *T) : String forall T
       while index < format_bytesize && format_ptr[index] != 37_u8
         index = index + 1
       end
-      result = result + format_string[start, index - start]
+      result.write(format_ptr + start, index - start)
       next
     end
 
@@ -830,7 +1091,7 @@ pub def sprintf(format_string : String, *args : *T) : String forall T
     end
 
     if format_ptr[index] == 37_u8 # '%%'
-      result = result + "%"
+      result << '%'
       index = index + 1
       next
     end
@@ -866,26 +1127,33 @@ pub def sprintf(format_string : String, *args : *T) : String forall T
 
     zero = false if minus
 
-    width = 0
+    width_at = index
     while index < format_bytesize && format_ptr[index] >= 48_u8 && format_ptr[index] <= 57_u8
-      width = width * 10 + (format_ptr[index] - 48_u8).to_i32
       index = index + 1
     end
+    width = IyiFormat.field_number(format_string, width_at, index, "width")
 
     precision = -1
     if index < format_bytesize && format_ptr[index] == 46_u8 # '.'
       index = index + 1
-      precision = 0
+      precision_at = index
       while index < format_bytesize && format_ptr[index] >= 48_u8 && format_ptr[index] <= 57_u8
-        precision = precision * 10 + (format_ptr[index] - 48_u8).to_i32
         index = index + 1
       end
+      precision = IyiFormat.field_number(format_string, precision_at, index, "precision")
     end
 
     if index >= format_bytesize
       raise "incomplete format specifier at end of string"
     end
 
+    # A verb is ASCII; past it is a character of several bytes, named whole
+    # - its lead byte read as a character of its own was `%Ã` for `%é`.
+    if format_ptr[index] >= 0x80_u8
+      format_string[index, format_bytesize - index].each_char do |char|
+        raise "unknown format specifier '%#{char}'"
+      end
+    end
     verb = format_ptr[index].unsafe_chr
     index = index + 1
 
@@ -897,15 +1165,29 @@ pub def sprintf(format_string : String, *args : *T) : String forall T
     val = args[arg_index]
     arg_index = arg_index + 1
 
-    formatted = IyiFormat.format_arg(val, verb, minus, plus, space, zero, hash, width, precision)
-    result = result + formatted
+    result << IyiFormat.format_arg(val, verb, minus, plus, space, zero, hash, width, precision)
   end
 
-  result
+  # And the mirror of "too few": an argument no specifier took is a `%s`
+  # somebody forgot, and it was dropped without a word.
+  if arg_index < args.size
+    raise "too many arguments for format string: #{args.size} given, #{arg_index} used"
+  end
+
+  result.to_s
 end
 
 pub def printf(format_string : String, *args : *T) : Nil forall T
-  print sprintf(format_string, *args)
+  print sprintf(format_string, args)
+end
+
+# The argument list as one array or tuple, as `sprintf` takes it.
+pub def printf(format_string : String, args : Array) : Nil
+  print sprintf(format_string, args)
+end
+
+pub def printf(format_string : String, args : Tuple) : Nil
+  print sprintf(format_string, args)
 end
 
 # Qualified, because a reopening is not inside the module that writes it:

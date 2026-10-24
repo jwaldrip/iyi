@@ -1,344 +1,359 @@
-# Lexical string scanner for iyi.
+# A lexical scanner over one string: an offset that moves forward as
+# patterns match at it, and the last match kept for its groups - the other
+# library's `StringScanner`, which is Ruby's `strscan`, for the tokenizer a
+# small language or a wire format needs.
 #
-# Provides scanning and pattern matching over a string with position tracking.
+# `scan` matches at the offset and moves past what matched; `skip` does the
+# same and answers how far it moved; `check` and `matches?` look without
+# moving. Their `_until` forms search forward from the offset instead and
+# take everything up to the end of the match. A pattern is a `Regex`, a
+# `String` or a `Char` compared byte for byte, or for `scan`, `skip` and
+# `check` a count of characters. Each records its match, or that there was
+# none, and `[]` / `[]?` read the last match's groups, by number or by
+# name; a string, a character or a count is a match with group 0 alone.
+#
+# A regex is matched at the offset by std/regex's own machine,
+# `Regex#match_at`: no thread starts after the offset, so a failed `scan`
+# costs what the pattern read, not the rest of the text. The text before
+# the offset is still the text, as in the other library and in Python's
+# `pattern.match(text, pos)`: `^` and `\A` mean its start, so `/^b/` does
+# not match at offset 1 of `ab`, and `\b` sees the byte before the offset.
+#
+# Offsets are bytes, as every position in iyi is (`Regex#match`'s `pos`,
+# `MatchData#byte_begin`, `String#[](start, count)`), and as the other
+# library keeps its own internally; its `offset` answers characters, and
+# for ASCII the two are the same number. `skip` answers bytes too, so
+# `offset` moves by what `skip` says. A count given to `scan`, `check`,
+# `skip` and `peek` is characters, as there: `scan(2)` on `文字列` is
+# `文字`. A character is what `String#each_char` reads, a byte that begins
+# none being one U+FFFD.
+#
+# Refused, as mistakes the program made: an offset that is negative, past
+# the end, or inside a character (`offset = 1` in `é`); a negative count;
+# a group the last match does not have, one that took no part in it, and
+# any group when the last scan matched nothing. `[]?` answers nil for
+# those instead. What the scanner reads is never refused: a pattern that
+# does not match is nil, and whether input is malformed is the tokenizer's
+# to say with an error value of its own, as bench/std_string_scanner_exercise
+# does.
+#
+# Left out: `peek_behind`, `rewind`, `current_char`, `previous_byte` and
+# `beginning_of_line?`, which read `string` and `offset` in a line each.
 
 module std/string_scanner
 
-import std/text
-import std/regex
+import std/regex::{Regex}
 
-class ::StringScanner
-  getter string : String
-  getter byte_offset : Int32
-  @last_regex_match : Std::Regex::MatchData?
-  @last_string_match : String?
+pub class StringScanner
+  @string : String
+  @offset : Int32
+  # The last match: its span in bytes, -1 when there is none, and the
+  # regex match when it was one, which is where named and numbered groups
+  # come from. A string, a character or a count matches group 0 alone.
+  @last_start : Int32
+  @last_end : Int32
+  @last_data : Regex::MatchData?
 
   def initialize(@string : String)
-    @byte_offset = 0
-    @last_regex_match = nil
-    @last_string_match = nil
+    @offset = 0
+    @last_start = -1
+    @last_end = -1
+    @last_data = nil
   end
 
-  def eos? : Bool
-    @byte_offset >= @string.bytesize
+  # The string being scanned.
+  def string : String
+    @string
   end
 
+  # The offset, in bytes.
   def offset : Int32
-    return @byte_offset if @string.single_byte_optimizable?
-    @string.byte_index_to_char_index(@byte_offset) || 0
+    @offset
   end
 
-  def offset=(position : Int32) : Nil
-    raise "Index out of range: #{position}" if position < 0
-    if @string.single_byte_optimizable?
-      @byte_offset = position > @string.bytesize ? @string.bytesize : position
-    else
-      @byte_offset = @string.char_index_to_byte_index(position) || @string.bytesize
-    end
+  # Moves the offset to byte *position*: the end of the string is the
+  # furthest it goes, and a position inside a character is refused, as
+  # every read after it would start on half of one.
+  def offset=(position : Int32) : Int32
+    raise "string_scanner: offset #{position} is negative" if position < 0
+    raise "string_scanner: offset #{position} is past the end of a string of #{@string.bytesize} bytes" if position > @string.bytesize
+    raise "string_scanner: offset #{position} is inside a character" unless boundary?(position)
+    @offset = position
   end
 
-  def byte_offset=(position : Int32) : Nil
-    raise "Index out of range: #{position}" if position < 0
-    @byte_offset = position > @string.bytesize ? @string.bytesize : position
+  # Whether the offset is at the end of the string.
+  def eos? : Bool
+    @offset >= @string.bytesize
   end
 
-  def reset : Nil
-    @byte_offset = 0
-    @last_regex_match = nil
-    @last_string_match = nil
-  end
-
-  def terminate : Nil
-    @byte_offset = @string.bytesize
-    @last_regex_match = nil
-    @last_string_match = nil
-  end
-
-  def rewind(len : Int32 = 1) : Nil
-    raise "Cannot rewind negative length #{len}" if len < 0
-    if @string.single_byte_optimizable?
-      raise "Index out of range" if len > @byte_offset
-      @byte_offset -= len
-    else
-      cur_char_idx = offset
-      raise "Index out of range" if len > cur_char_idx
-      self.offset = cur_char_idx - len
-    end
-  end
-
+  # The string from the offset on.
   def rest : String
-    @string[@byte_offset, @string.bytesize - @byte_offset]
+    @string[@offset, @string.bytesize - @offset]
   end
 
-  def peek(len : Int32) : String
-    return "" if len <= 0 || eos?
-    if @string.single_byte_optimizable?
-      available = @string.bytesize - @byte_offset
-      count = len < available ? len : available
-      @string[@byte_offset, count]
-    else
-      rem = rest
-      ch = rem.chars
-      count = len < ch.size ? len : ch.size
-      result = ""
-      i = 0
-      while i < count
-        result = result + ch[i].to_s
-        i += 1
-      end
-      result
-    end
+  # Matches *pattern* at the offset and moves past it, answering what
+  # matched, or nil without moving.
+  def scan(pattern : Regex | String | Char | Int32) : String?
+    start = @offset
+    return nil unless here(pattern)
+    @offset = @last_end
+    @string[start, @last_end - start]
   end
 
-  def peek_behind(len : Int32) : String
-    return "" if len <= 0 || @byte_offset <= 0
-    if @string.single_byte_optimizable?
-      count = len < @byte_offset ? len : @byte_offset
-      @string[@byte_offset - count, count]
-    else
-      prefix = @string[0, @byte_offset]
-      ch = prefix.chars
-      start_char = ch.size - len
-      start_char = 0 if start_char < 0
-      result = ""
-      i = start_char
-      while i < ch.size
-        result = result + ch[i].to_s
-        i += 1
-      end
-      result
-    end
+  # Searches for *pattern* from the offset and moves past the match,
+  # answering everything from the offset to the match's end.
+  def scan_until(pattern : Regex | String | Char) : String?
+    start = @offset
+    return nil unless ahead(pattern)
+    @offset = @last_end
+    @string[start, @last_end - start]
   end
 
-  def current_char? : Char?
-    return nil if eos?
-    rest_str = rest
-    ch = rest_str.chars
-    ch.empty? ? nil : ch.first
+  # `scan`, answering how many bytes the offset moved.
+  def skip(pattern : Regex | String | Char | Int32) : Int32?
+    start = @offset
+    return nil unless here(pattern)
+    @offset = @last_end
+    @last_end - start
   end
 
-  def current_char : Char
-    current_char? || raise "End of string reached"
+  # `scan_until`, answering how many bytes the offset moved.
+  def skip_until(pattern : Regex | String | Char) : Int32?
+    start = @offset
+    return nil unless ahead(pattern)
+    @offset = @last_end
+    @last_end - start
   end
 
-  def previous_char? : Char?
-    return nil if @byte_offset <= 0
-    prefix = @string[0, @byte_offset]
-    ch = prefix.chars
-    ch.empty? ? nil : ch.last
+  # What `scan` would answer, without moving; the match is still the last.
+  def check(pattern : Regex | String | Char | Int32) : String?
+    return nil unless here(pattern)
+    @string[@offset, @last_end - @offset]
   end
 
-  def previous_char : Char
-    previous_char? || raise "Beginning of string reached"
+  # What `scan_until` would answer, without moving.
+  def check_until(pattern : Regex | String | Char) : String?
+    return nil unless ahead(pattern)
+    @string[@offset, @last_end - @offset]
   end
 
-  def current_byte? : UInt8?
-    return nil if eos?
-    @string.to_unsafe[@byte_offset]
+  # How many bytes *pattern* matches at the offset, without moving, or nil.
+  def matches?(pattern : Regex | String | Char) : Int32?
+    return nil unless here(pattern)
+    @last_end - @offset
   end
 
-  def current_byte : UInt8
-    current_byte? || raise "End of string reached"
-  end
-
-  def previous_byte? : UInt8?
-    return nil if @byte_offset <= 0
-    @string.to_unsafe[@byte_offset - 1]
-  end
-
-  def previous_byte : UInt8
-    previous_byte? || raise "Beginning of string reached"
-  end
-
-  def scan(pattern : String) : String?
-    match_string(pattern, advance: true, anchored: true)
-  end
-
-  def scan(pattern : Char) : String?
-    match_string(pattern.to_s, advance: true, anchored: true)
-  end
-
-  def scan(pattern : Std::Regex::Regex) : String?
-    match_regex(pattern, advance: true, anchored: true)
-  end
-
-  def scan(len : Int32) : String?
-    return "" if len == 0
-    return nil if len < 0 || eos?
-    if @string.single_byte_optimizable?
-      return nil if @byte_offset + len > @string.bytesize
-      res = @string[@byte_offset, len]
-      @byte_offset += len
-      @last_string_match = res
-      @last_regex_match = nil
-      res
-    else
-      rem = rest
-      ch = rem.chars
-      return nil if ch.size < len
-      res = ""
-      i = 0
-      while i < len
-        res = res + ch[i].to_s
-        i += 1
-      end
-      @byte_offset += res.bytesize
-      @last_string_match = res
-      @last_regex_match = nil
-      res
-    end
-  end
-
-  def scan_until(pattern : String) : String?
-    match_string(pattern, advance: true, anchored: false)
-  end
-
-  def scan_until(pattern : Char) : String?
-    match_string(pattern.to_s, advance: true, anchored: false)
-  end
-
-  def scan_until(pattern : Std::Regex::Regex) : String?
-    match_regex(pattern, advance: true, anchored: false)
-  end
-
-  def skip(pattern : String) : Int32?
-    m = scan(pattern)
-    m ? m.size : nil
-  end
-
-  def skip(pattern : Char) : Int32?
-    m = scan(pattern)
-    m ? m.size : nil
-  end
-
-  def skip(pattern : Std::Regex::Regex) : Int32?
-    m = scan(pattern)
-    m ? m.size : nil
-  end
-
-  def skip(len : Int32) : Int32?
-    m = scan(len)
-    m ? m.size : nil
-  end
-
-  def skip_until(pattern : String) : Int32?
-    m = scan_until(pattern)
-    m ? m.size : nil
-  end
-
-  def skip_until(pattern : Char) : Int32?
-    m = scan_until(pattern)
-    m ? m.size : nil
-  end
-
-  def skip_until(pattern : Std::Regex::Regex) : Int32?
-    m = scan_until(pattern)
-    m ? m.size : nil
-  end
-
-  def check(pattern : String) : String?
-    match_string(pattern, advance: false, anchored: true)
-  end
-
-  def check(pattern : Char) : String?
-    match_string(pattern.to_s, advance: false, anchored: true)
-  end
-
-  def check(pattern : Std::Regex::Regex) : String?
-    match_regex(pattern, advance: false, anchored: true)
-  end
-
-  def check(len : Int32) : String?
-    peek(len)
-  end
-
-  def check_until(pattern : String) : String?
-    match_string(pattern, advance: false, anchored: false)
-  end
-
-  def check_until(pattern : Char) : String?
-    match_string(pattern.to_s, advance: false, anchored: false)
-  end
-
-  def check_until(pattern : Std::Regex::Regex) : String?
-    match_regex(pattern, advance: false, anchored: false)
-  end
-
+  # Whether the last scan, skip, check or match matched.
   def matched? : Bool
-    !@last_regex_match.nil? || !@last_string_match.nil?
+    @last_start >= 0
   end
 
-  def [](group : Int32) : String
-    self[group]? || raise "Group #{group} did not match"
-  end
-
-  def []?(group : Int32) : String?
-    if m = @last_regex_match
-      m[group]
-    elsif s = @last_string_match
-      group == 0 ? s : nil
-    else
-      nil
+  # Up to *count* characters from the offset, without moving: fewer at the
+  # end of the string. The last match is left as it was.
+  def peek(count : Int32) : String
+    raise "string_scanner: negative lookahead count: #{count}" if count < 0
+    stop = @offset
+    n = 0
+    while n < count && stop < @string.bytesize
+      stop = stop + width_at(stop)
+      n = n + 1
     end
+    @string[@offset, stop - @offset]
   end
 
+  # Group *n* of the last match, the whole match being 0; a negative *n*
+  # counts from the last group. No last match, a group it does not have and
+  # one that took no part are mistakes, and panic with which.
+  def [](n : Int32) : String
+    raise "string_scanner: the last scan matched nothing, so it has no group #{n}" unless matched?
+    if data = @last_data
+      raise "string_scanner: the last match has no group #{n} (it has #{data.size - 1})" if n < -data.size || n >= data.size
+      found = data[n]?
+      raise "string_scanner: group #{n} took no part in the last match" unless found
+      return found
+    end
+    raise "string_scanner: the last match has no group #{n} (it has 0)" unless n == 0 || n == -1
+    @string[@last_start, @last_end - @last_start]
+  end
+
+  # Group *n* of the last match, or nil for any of the reasons `[]` panics.
+  def []?(n : Int32) : String?
+    return nil unless matched?
+    if data = @last_data
+      return data[n]?
+    end
+    return nil unless n == 0 || n == -1
+    @string[@last_start, @last_end - @last_start]
+  end
+
+  # The group called *name* of the last match.
+  def [](name : String) : String
+    raise "string_scanner: the last scan matched nothing, so it has no group named '#{name}'" unless matched?
+    data = @last_data
+    raise "string_scanner: the last match has no group named '#{name}'" unless data && data.regex.group_index(name)
+    found = data[name]?
+    raise "string_scanner: group '#{name}' took no part in the last match" unless found
+    found
+  end
+
+  # The group called *name* of the last match, or nil.
+  def []?(name : String) : String?
+    return nil unless matched?
+    data = @last_data
+    data ? data[name]? : nil
+  end
+
+  # Back to the start, with no last match.
+  def reset : Nil
+    @offset = 0
+    forget
+  end
+
+  # On to the end, with no last match.
+  def terminate : Nil
+    @offset = @string.bytesize
+    forget
+  end
+
+  # `#<StringScanner 5/16 …s ‣is …>`, as the other library writes it: the
+  # offset, the length, and five characters around the offset, two before
+  # it where there are, with `‣` at the offset and `…` where the string
+  # goes on. The two numbers are bytes here, as `offset` is.
   def inspect : String
-    limit = @string.bytesize - @byte_offset
-    limit = 10 if limit > 10
-    preview = @string[@byte_offset, limit]
-    "#<StringScanner #{@byte_offset}/#{@string.bytesize} #{eos? ? "fin" : preview.inspect}>"
-  end
-
-  private def match_string(pattern : String, advance : Bool, anchored : Bool) : String?
-    p_len = pattern.bytesize
-    return nil if p_len > @string.bytesize - @byte_offset
-
-    if anchored
-      s_ptr = @string.to_unsafe + @byte_offset
-      p_ptr = pattern.to_unsafe
-      i = 0
-      while i < p_len
-        return nil if s_ptr[i] != p_ptr[i]
-        i += 1
+    starts = [] of Int32
+    at = 0
+    here_char = 0
+    while at < @string.bytesize
+      here_char = starts.size if at == @offset
+      starts << at
+      at = at + width_at(at)
+    end
+    total = starts.size
+    here_char = total if @offset >= @string.bytesize
+    starts << @string.bytesize
+    first = here_char - 2
+    first = 0 if first < 0
+    first = total - 5 if first > total - 5
+    first = 0 if first < 0
+    last = first + 5
+    last = total if last > total
+    String.build do |io|
+      io << "#<StringScanner " << @offset << "/" << @string.bytesize << " "
+      io << (first == 0 ? "\"" : "…")
+      c = first
+      while c <= last
+        io << "‣" if c == here_char
+        break if c == last
+        point = @string[starts[c], starts[c + 1] - starts[c]]
+        point.each_char { |ch| ch.inspect_into(io, '"') }
+        c = c + 1
       end
-      @byte_offset += p_len if advance
-      @last_string_match = pattern
-      @last_regex_match = nil
-      pattern
-    else
-      idx = @string.index(pattern, @byte_offset)
-      return nil unless idx
-      finish = idx + p_len
-      result = @string[@byte_offset, finish - @byte_offset]
-      @byte_offset = finish if advance
-      @last_string_match = result
-      @last_regex_match = nil
-      result
+      io << (last < total ? "…" : "\"") << ">"
     end
   end
 
-  private def match_regex(pattern : Std::Regex::Regex, advance : Bool, anchored : Bool) : String?
-    return nil if eos?
-    match = pattern.match(@string, @byte_offset)
-    return nil unless match
+  # Records a match at the offset of *pattern*, or that there was none.
+  private def here(pattern : Regex) : Bool
+    data = pattern.match_at(@string, @offset)
+    return forget unless data
+    remember(data.byte_begin(0), data.byte_end(0), data)
+  end
 
-    b0 = match.begin(0)
-    e0 = match.end(0)
-    return nil unless b0 && e0
-
-    if anchored
-      return nil unless b0 == @byte_offset
-      result = @string[@byte_offset, e0 - @byte_offset]
-      @byte_offset = e0 if advance
-      @last_regex_match = match
-      @last_string_match = nil
-      result
-    else
-      result = @string[@byte_offset, e0 - @byte_offset]
-      @byte_offset = e0 if advance
-      @last_regex_match = match
-      @last_string_match = nil
-      result
+  private def here(pattern : String) : Bool
+    n = pattern.bytesize
+    return forget if @offset + n > @string.bytesize
+    src = @string.to_unsafe + @offset
+    want = pattern.to_unsafe
+    i = 0
+    while i < n
+      return forget if src[i] != want[i]
+      i = i + 1
     end
+    remember(@offset, @offset + n, nil)
+  end
+
+  private def here(pattern : Char) : Bool
+    here(pattern.to_s)
+  end
+
+  # *count* characters, or nothing when fewer are left.
+  private def here(count : Int32) : Bool
+    raise "string_scanner: negative lookahead count: #{count}" if count < 0
+    stop = @offset
+    n = 0
+    while n < count
+      return forget if stop >= @string.bytesize
+      stop = stop + width_at(stop)
+      n = n + 1
+    end
+    remember(@offset, stop, nil)
+  end
+
+  # Records the first match of *pattern* at or after the offset.
+  private def ahead(pattern : Regex) : Bool
+    data = pattern.match(@string, @offset)
+    return forget unless data
+    remember(data.byte_begin(0), data.byte_end(0), data)
+  end
+
+  private def ahead(pattern : String) : Bool
+    found = @string.byte_index(pattern, @offset)
+    return forget unless found
+    remember(found, found + pattern.bytesize, nil)
+  end
+
+  private def ahead(pattern : Char) : Bool
+    ahead(pattern.to_s)
+  end
+
+  private def remember(start : Int32, stop : Int32, data : Regex::MatchData?) : Bool
+    @last_start = start
+    @last_end = stop
+    @last_data = data
+    true
+  end
+
+  private def forget : Bool
+    @last_start = -1
+    @last_end = -1
+    @last_data = nil
+    false
+  end
+
+  # How many bytes the character at *at* takes, as `String#each_char`
+  # reads it: a byte that begins no well-formed character is one U+FFFD
+  # one byte long.
+  private def width_at(at : Int32) : Int32
+    p = @string.to_unsafe
+    lead = p[at].to_i32
+    return 1 if lead < 0xC2 || lead > 0xF4
+    width = lead < 0xE0 ? 2 : lead < 0xF0 ? 3 : 4
+    point = lead & (0x7F >> width)
+    k = 1
+    while k < width
+      return 1 unless at + k < @string.bytesize
+      byte = p[at + k].to_i32
+      return 1 unless (byte & 0xC0) == 0x80
+      point = (point << 6) | (byte & 0x3F)
+      k = k + 1
+    end
+    return 1 if point < (1 << (5 * width - 4)) || point > 0x10FFFF || (point >= 0xD800 && point < 0xE000)
+    width
+  end
+
+  # Whether a character begins at *at*. Every byte that is not a
+  # continuation begins one; a continuation does unless the nearest byte
+  # before it that is not one - at most three back - begins a well-formed
+  # character long enough to cover it.
+  private def boundary?(at : Int32) : Bool
+    return true if at <= 0 || at >= @string.bytesize
+    p = @string.to_unsafe
+    k = 0
+    while k <= 3 && at - k >= 0
+      b = p[at - k]
+      return k == 0 || width_at(at - k) <= k if b < 0x80_u8 || b >= 0xC0_u8
+      k = k + 1
+    end
+    true
   end
 end

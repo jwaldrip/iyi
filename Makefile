@@ -51,15 +51,62 @@ override FLAGS += -D strict_multi_assign -D preview_overload_order $(if $(releas
 # iyi: -Dwithout_iconv because iyi's String has no encoding conversion, so the
 # compiler asks libiconv for nothing.
 #
-# -Dgc_none was tried here too and is not viable, which is worth recording so
-# nobody spends the afternoon again. A compiler built without a collector emits
-# invalid IR ("Load operand must be a pointer", from `LLVM::Module#verify`) on
-# some runs and dies in `main_user_code` on others: the compiler is not a short
-# lived process that allocates a little, it is a long walk over ASTs with
-# parallel codegen and fibers, and `src/gc/none.cr` never frees. So the compiler
-# keeps bdw-gc and the programs it builds do not, which is the split SPEC.md
-# III.9 already draws. The owned collector it tracks is what ends this.
+# -Dgc_none was not viable here for a long time, and the reason was never a
+# collector. It was one byte. `String::Builder` grew its buffer to
+# `real_bytesize + count` while `to_s` writes the string's terminator at
+# `@buffer[real_bytesize]`, so a string whose final size landed exactly on its
+# capacity had its terminator written one byte outside its allocation, and the
+# reclaiming shrink was skipped because the capacity was not bigger than what
+# was needed. bdw-gc rounds a block up and never reissues an address something
+# still points at, so under the collector every program was correct. Plain
+# `malloc` returns exactly the size asked for, and the next allocation
+# overwrote the byte.
+#
+# What that looked like from outside: a 116-byte mangled function name in a
+# 128-byte block, needing 129, clean at `target_def_fun` and corrupt at the
+# same address by `check_mod_fun`, LLVM's `strlen` reading into the next
+# allocation, and `samples/iyi/collections.iyi` failing to link 10 runs out of
+# 10. Four mechanisms were written down before it and all four were wrong:
+# invalid IR, a dropped symbol, an empty link line, and parallel codegen. The
+# switch two lines below removes the parallel half and changed nothing, 5/5
+# either way, which is what finally ruled threading out.
+#
+# Fixed in src/string/builder.cr, and measured: the same sample now builds 0
+# failures in 10 runs with a fresh cache each, every sample builds, and the
+# collector-free compiler links libLLVM and libSystem only. bench/collector_
+# free_floor.sh is the gate, and it fails if the reservation is removed again.
+#
+# The compiler still builds with bdw-gc by default, and that is now a trade
+# with numbers on it rather than a limit. Collector-free against default, zero
+# failures in ten runs each: the 7,207-line generated project 598MB peak
+# against 464MB, the compiler's own source 7,430MB against 5,702MB, wall time
+# within noise both times. So it is 29% more peak memory for one fewer library
+# on a binary whose floor already permits libc, and flipping this is a one-line
+# change here whenever that is judged worth taking. What this note no longer
+# says is that a collector is required: it is not, and the bug it was hiding
+# was in the standard library the whole time.
 override COMPILER_FLAGS += -Dwithout_openssl -Dwithout_zlib -Dwithout_iconv$(if $(sequential_codegen), -Dwithout_mt,)
+
+# The collector choice, and it is deliberately not in COMPILER_FLAGS, because
+# the shipped binary and the spec harness want opposite answers.
+#
+# `-Dgc_none` is the default because the objective is a compiler carrying no
+# ancestor library, and `libgc` was the last one that was not a deliberate
+# toolchain choice. `src/gc/none.cr` never frees, so peak memory is a function
+# of how much a process allocates: a compiler invocation compiles one program
+# and exits, measured at 598MB against 464MB on the 7,207-line project and
+# 7,430MB against 5,702MB self-hosting.
+#
+# `compiler_spec` is the opposite shape. It compiles thousands of programs
+# inside one long-lived process, and with no collector that process was
+# `Killed` on CI, `Error 137`, which is the honest upper bound on an allocator
+# that never frees rather than a bug. So the harness keeps bdw-gc and the
+# binaries do not, which is the same split SPEC.md III.9 draws between the
+# compiler and the programs it builds.
+#
+# `collector=1` puts bdw-gc back on the binaries too, and is the configuration
+# every number above was measured against.
+BINARY_GC_FLAGS := $(if $(collector),,-Dgc_none)
 SPEC_WARNINGS_OFF := --exclude-warnings spec/std --exclude-warnings spec/compiler --exclude-warnings spec/primitives --exclude-warnings src/float/printer --exclude-warnings src/random.cr
 override SPEC_FLAGS += $(if $(verbose),-v )$(if $(junit_output),--junit_output $(junit_output) )$(if $(order),--order=$(order) )
 IYI_CONFIG_LIBRARY_PATH := '$$ORIGIN/../lib/iyi'
@@ -91,11 +138,11 @@ SHELL = sh
 
 manpages_gz := $(patsubst %.1,%.1.gz,$(MAN1PAGES))
 
+ifndef LLVM_CONFIG
+  LLVM_CONFIG := $(shell src/llvm/ext/find-llvm-config.sh)
+endif
 ifeq ($(LLVM_VERSION),)
-	ifndef LLVM_CONFIG
-  	LLVM_CONFIG := $(shell src/llvm/ext/find-llvm-config.sh)
-	endif
-	LLVM_VERSION := $(if $(LLVM_CONFIG),$(shell "$(LLVM_CONFIG)" --version 2> /dev/null))
+  LLVM_VERSION := $(if $(LLVM_CONFIG),$(shell "$(LLVM_CONFIG)" --version 2> /dev/null))
 endif
 
 # FIXME: Crystal docker images before 1.8 can't build a functional compiler
@@ -171,10 +218,27 @@ else
   colorize = $(shell printf "\033[33m%s\033[0m\n" "$1" >&2)
 endif
 
+# The C++ runtime is needed for two independent reasons, and dropping it
+# requires both to be absent.
+#
+#   1. `llvm_ext.cc`, the shim, which only has bodies below LLVM 18.
+#   2. A statically linked LLVM. `libLLVM*.a` carries its own C++ symbols, so
+#      linking the archives pulls in `std::__1::future_error` and a pile of
+#      error-category vtables. A shared `libLLVM.dylib` resolves those inside
+#      itself and asks nothing of us.
+#
+# The first version of this checked only the shim and broke CI, which builds
+# against a static LLVM: locally the dylib hid the requirement completely.
+LLVM_SHARED_MODE := $(if $(LLVM_CONFIG),$(shell "$(LLVM_CONFIG)" --shared-mode 2> /dev/null))
+
 DEPS = $(LLVM_EXT_OBJ)
+NEEDS_CXX_RUNTIME = 1
 ifneq ($(LLVM_VERSION),)
   ifeq ($(shell test $(firstword $(subst ., ,$(LLVM_VERSION))) -ge 18; echo $$?),0)
     DEPS =
+    ifeq ($(LLVM_SHARED_MODE),shared)
+      NEEDS_CXX_RUNTIME =
+    endif
   endif
 endif
 
@@ -290,11 +354,21 @@ manpages: $(manpages_gz)
 
 .PHONY: deps llvm_ext
 deps: $(DEPS) ## Build dependencies
-llvm_ext: $(LLVM_EXT_OBJ)
+llvm_ext: $(DEPS)
 
 .PHONY: format
 format: ## Format sources
-	./bin/crystal tool format$(if $(check), --check) src spec samples scripts
+# The files this repository owns, which is not the same as the files under
+# these directories: `shards install` in a sample writes other projects'
+# source into a `lib/` beside it, and the formatter's own `-e lib` default
+# is anchored at the top level, so a vendored tree one directory down was
+# walked into and `check=1` failed on code nobody here wrote. Tracked plus
+# new-and-not-ignored is the same rule `bench/identity_floor.py` reads for
+# the same reason, `safe.directory` included: inside the build image the
+# checkout is owned by another user and git 2.35+ refuses `ls-files`
+# without it, which would turn this gate into a crash rather than a check.
+	git -c safe.directory='*' ls-files -z --cached --others --exclude-standard '*.cr' '*.iyi' \
+	  | xargs -0 ./bin/crystal tool format$(if $(check), --check)
 
 .PHONY: generate_data
 generate_data: ## Run generator scripts for Unicode, SSL config, ...
@@ -310,10 +384,19 @@ uninstall: uninstall_compiler uninstall_man uninstall_completions
 
 # iyi: the binary and its prelude, and nothing else — an iyi program requires
 # only the prelude and the prelude requires only itself, so what is installed
-# beside `bin/iyi` is 541 KB rather than a standard library.
+# beside `bin/iyi` is 940 KB rather than a standard library.
 .PHONY: install_iyi
 install_iyi: ## iyi: install `iyi` and its prelude at DESTDIR
 install_iyi: $(O)/iyi$(EXE) $(O)/$(IYI_DAEMON_BIN)
+# The library is replaced, not merged into. `cp -R` writes the files it has
+# and leaves the ones a release deleted where they are, and this directory is
+# not a pile of files - `crystal/dwarf.cr` requires `./dwarf/**`, so one stale
+# file from an older install is still *required*, and a machine that upgraded
+# in place had every `--crystal` build die on a constant a deleted file
+# mentioned. Under `DESTDIR` (packaging, and the tarball rule above) the
+# directory is fresh and this does nothing; installing over yourself is where
+# it matters.
+	rm -rf "$(DESTDIR)$(DATADIR)/iyi"
 	$(INSTALL) -d -m 0755 "$(DESTDIR)$(BINDIR)/"
 	$(INSTALL) -m 0755 "$(O)/iyi$(EXE)" "$(DESTDIR)$(BINDIR)/iyi$(EXE)"
 
@@ -336,7 +419,7 @@ install_iyi: $(O)/iyi$(EXE) $(O)/$(IYI_DAEMON_BIN)
 # iyi: the other library, because `--crystal` is not a developer's switch.
 #
 # A program built with it gets Crystal's standard library, and an install that
-# ships only iyi's own 541 KB answers `require "json"` with "can't find file",
+# ships only iyi's own 940 KB answers `require "json"` with "can't find file",
 # which is the headline feature failing in the thing people download.
 #
 # `compiler/` was cut from this, on the grounds that a compiler carrying its own
@@ -358,7 +441,7 @@ install_iyi: $(O)/iyi$(EXE) $(O)/$(IYI_DAEMON_BIN)
 	cp -R -p $(if $(deref_symlinks),-L,-P) src/. "$(DESTDIR)$(DATADIR)/iyi/crystal/"
 	rm -rf "$(DESTDIR)$(DATADIR)/iyi/crystal/iyi"
 # And `std/`, for the reason it is above under its own name: nothing in
-# Crystal's library requires `std/...`, the directory's 1,889 KB is a second
+# Crystal's library requires `std/...`, the directory's 4,898 KB is a second
 # copy of a library that already shipped, and while it is there it answers
 # `import std/text` out of `share/iyi/crystal` — which is how the accident
 # looked before `src/std` was installed at all, and which would let that
@@ -428,11 +511,15 @@ iyi-tarball: $(O)/iyi$(EXE) $(O)/$(IYI_DAEMON_BIN) check_iyi_is_release
 	find "$(O)/iyi-package/share/iyi/samples" -type f -perm -u+x -delete
 	find "$(O)/iyi-package/share/iyi/samples" -type d -empty -delete
 # What the binaries need at runtime and a fresh machine has no reason to
-# own — libgc, and libstdc++ on Linux; LLVM is inside the binary when it
-# was linked against `scripts/build-static-llvm.sh`'s archive, and the
-# script refuses a package that carries libLLVM in that case. Not a
-# curated list: the script takes what the loader reports, and CI's clean
-# room (a bare image with nothing but a C toolchain) is what judges it.
+# own. The collector is no longer among them by default; `collector=1` puts
+# libgc back and the bundle follows it. What is left depends on how LLVM was
+# linked, and both cases are measured: against `scripts/build-static-llvm.sh`
+# LLVM is inside the binary and `lib/` is empty, and the script refuses a
+# package that carries libLLVM in that case; against a shared LLVM, `lib/`
+# carries it and whatever it names (here libLLVM, libz3, libzstd), plus
+# libstdc++ on Linux. Not a curated list: the script takes what the loader
+# reports, which is why it needed no change when the collector left, and
+# CI's clean room (a bare image with nothing but a C toolchain) judges it.
 	bash scripts/bundle-runtime-libs.sh "$(O)/iyi-package"
 	tar -czf "$(O)/$(IYI_PACKAGE).tar.gz" -C "$(O)/iyi-package" .
 	@echo "wrote $(O)/$(IYI_PACKAGE).tar.gz"
@@ -512,7 +599,7 @@ $(O)/cli_spec$(EXE): $(O)/$(CRYSTAL_BIN) $(O)/$(IYI_DAEMON_BIN) $(DEPS) $(SOURCE
 $(O)/$(CRYSTAL_BIN): $(DEPS) $(SOURCES)
 	$(call check_llvm_config)
 	@mkdir -p $(O)
-	$(EXPORTS) $(EXPORTS_BUILD) ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) -o $(if $(WINDOWS),$(O)/crystal-next.exe,$@) src/compiler/crystal.cr
+	$(EXPORTS) $(EXPORTS_BUILD) ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) $(BINARY_GC_FLAGS) -o $(if $(WINDOWS),$(O)/crystal-next.exe,$@) src/compiler/crystal.cr
 	@# NOTE: on MSYS2 it is not possible to overwrite a running program, so the compiler must be first built with
 	@# a different filename and then moved to the final destination.
 	$(if $(WINDOWS),mv $(O)/crystal-next.exe $@)
@@ -520,7 +607,7 @@ $(O)/$(CRYSTAL_BIN): $(DEPS) $(SOURCES)
 # iyi: the same compiler under its own name — the commands iyi has, a usage
 # line that names them, and a version that says what it is a fork of. It links
 # what `crystal` links, because it *is* `crystal`; what differs is the surface.
-# Its prelude is its own, and it is 541 KB: `iyi` installed as `bin/iyi` finds
+# Its prelude is its own, and it is 940 KB: `iyi` installed as `bin/iyi` finds
 # `share/iyi/src/iyi/prelude.iyi` beside it and needs nothing else — no
 # `IYI_PATH`, no standard library, because an iyi program requires only the
 # prelude and the prelude requires only itself.
@@ -528,7 +615,7 @@ $(O)/iyi$(EXE): $(DEPS) $(SOURCES)
 	$(call check_llvm_config)
 	@mkdir -p $(O)
 	$(EXPORTS) $(EXPORTS_BUILD) IYI_CONFIG_PATH='$$ORIGIN/../share/iyi/src:$$ORIGIN/../share/iyi/crystal:$$ORIGIN/../src' \
-	  ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) $(SELF_RPATH) -o $@ src/compiler/iyi.cr
+	  ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) $(BINARY_GC_FLAGS) $(SELF_RPATH) -o $@ src/compiler/iyi.cr
 	@echo "built $@ — run it as ./bin/iyi"
 
 # iyi: the same compiler, single-threaded, which is what lets it fork.
@@ -541,7 +628,7 @@ $(O)/$(IYI_DAEMON_BIN): $(DEPS) $(SOURCES)
 	$(call check_llvm_config)
 	@mkdir -p $(O)
 	$(EXPORTS) $(EXPORTS_BUILD) IYI_CONFIG_PATH='$$ORIGIN/../share/iyi/src:$$ORIGIN/../share/iyi/crystal:$$ORIGIN/../src' \
-	  ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) $(SELF_RPATH) -Dwithout_mt -o $@ src/compiler/iyi.cr
+	  ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) $(BINARY_GC_FLAGS) $(SELF_RPATH) -Dwithout_mt -o $@ src/compiler/iyi.cr
 	@echo "built $@ — \`iyi daemon start\` finds it beside iyi"
 
 # iyi: the self-hosted artifact inspection tool, built by iyi from pure iyi source.
@@ -580,17 +667,18 @@ $(O)/crystal-front$(EXE): $(DEPS) $(SOURCES) $(O)/$(CRYSTAL_BIN)
 	$(EXPORTS) $(EXPORTS_BUILD) \
 	  IYI_CONFIG_TARGET="$$($(O)/$(CRYSTAL_BIN) --version | sed -n 's/^Default target: //p')" \
 	  IYI_CONFIG_LLVM_VERSION="$$($(O)/$(CRYSTAL_BIN) --version | sed -n 's/^LLVM: //p')" \
-	  ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) -Dwithout_llvm -o $@ src/compiler/crystal_front.cr
+	  ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) $(BINARY_GC_FLAGS) -Dwithout_llvm -o $@ src/compiler/crystal_front.cr
 
 $(O)/$(CRYSTAL_DAEMON_BIN): $(DEPS) $(SOURCES)
 	$(call check_llvm_config)
 	@mkdir -p $(O)
-	$(EXPORTS) $(EXPORTS_BUILD) ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) -Dwithout_mt -o $@ src/compiler/crystal.cr
+	$(EXPORTS) $(EXPORTS_BUILD) ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) $(BINARY_GC_FLAGS) -Dwithout_mt -o $@ src/compiler/crystal.cr
 
+ifneq ($(DEPS),)
 $(LLVM_EXT_OBJ): $(LLVM_EXT_DIR)/llvm_ext.cc
 	$(call check_llvm_config)
 	$(CXX) -c $(CXXFLAGS) -o $@ $< $(if $(LLVM_CONFIG),$(shell $(LLVM_CONFIG) --cxxflags))
-
+endif
 $(O)/crystal-pu$(EXE): spec/support/process-utils.cr $(SOURCES)
 	@mkdir -p $(O)
 	$(EXPORT_CC) ./bin/crystal build $(FLAGS) -o $@ $<

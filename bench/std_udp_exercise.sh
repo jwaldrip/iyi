@@ -1,177 +1,558 @@
 #!/usr/bin/env bash
-# Datagram sockets: UDP standard library exercise driver.
-# Runs the UDP exercise in plain and release mode, checks every section
-# reported, verifies timeout/would_block diagnostics, and proves the checks
-# can fail by patching copies of std/udp.iyi.
+# Exercises `std/udp`.
 #
 #     bash bench/std_udp_exercise.sh
 #
-# A check that cannot fail is not a check. This script proves failure across
-# payload transmission, local port retrieval, IPv6 addressing, datagram
-# truncation, receive timeout, and poller readiness.
-#
-# Exits non-zero if any check fails.
-
+# Proves the exercise holds plain and --release, that a broken address
+# resolution is caught, and what address parsing refuses: an invalid IPv4
+# host, an out of range octet, an incomplete IPv4 address, and an invalid
+# hex character in an IPv6 address; and that a bind or send that fails
+# says why.
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-IYI="$REPO/bin/iyi"
+# The gate runs the compiler the caller names; bin/iyi is a POSIX shell
+# wrapper a Windows build cannot run.
+IYI="${IYI:-$REPO/bin/iyi}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-status=0
+# A native compiler cannot resolve this shell's own path mapping: a search
+# path built from the shell's `pwd` finds no prelude at all, and a scratch
+# directory named `/tmp/tmp.X` is silently ignored on that path, so the
+# patched copy is never read and the proof that a check can fail quietly
+# stops proving it.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT)
+    REPO="$(cygpath -m "$REPO")"
+    WORK="$(cygpath -m "$WORK")"
+    ;;
+esac
 
-run_case() {
+# The search path is a list, and the byte between its entries is the
+# platform's: `;` where a drive letter already owns the colon.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT) PSEP=';' ;;
+  *) PSEP=':' ;;
+esac
+
+# The negative proofs are patched by python, and a machine can answer
+# `python3` with a store stub that prints a refusal instead of running, so
+# the interpreter is resolved once and proven to run before it is trusted.
+PY=""
+for candidate in python3 python; do
+  if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys' >/dev/null 2>&1; then
+    PY="$candidate"
+    break
+  fi
+done
+
+status=0
+export IYI_PATH="$REPO/src${PSEP}$REPO/samples/iyi"
+
+build_and_run() {
   local label="$1" name="$2"
   shift 2
   if ! "$IYI" build "$@" -o "$WORK/$name" "$REPO/bench/std_udp_exercise.iyi" \
        >"$WORK/$name.build.log" 2>&1; then
-    echo "  $label: build failed"
-    tail -n 15 "$WORK/$name.build.log"
+    echo "$label: build failed"
+    tail -12 "$WORK/$name.build.log"
     status=1
     return 1
   fi
-  if ! "$WORK/$name" >"$WORK/$name.out" 2>&1; then
-    echo "  $label: run failed"
-    cat "$WORK/$name.out"
+  "$WORK/$name" >"$WORK/$name.out" 2>&1
+  local exit_code=$?
+  sed 's/^/  /' "$WORK/$name.out"
+  if [ "$exit_code" -ne 0 ]; then
+    echo "$label: exited $exit_code"
     status=1
     return 1
   fi
   return 0
 }
 
-echo "== the UDP exercise, plain build"
-run_case "plain" udp-plain
-if ! grep -q "std_udp_exercise: all checks passed" "$WORK/udp-plain.out" 2>/dev/null; then
-  echo "  plain build did not report completion"
+echo "== the std/udp exercise, plain build"
+build_and_run "plain" udp-plain
+if ! grep -q "ALL CHECKS PASSED" "$WORK/udp-plain.out" 2>/dev/null; then
+  echo "plain: missing pass sentinel"
   status=1
-else
-  echo "  plain build: completed successfully"
 fi
 
 echo
-echo "== every UDP section reported"
-for phrase in round_trip datagram_struct buffer_sizes non_blocking timeout_mode poll_read truncation closed_port_send connected_mode ipv6_round_trip; do
-  if ! grep -q "$phrase: ok" "$WORK/udp-plain.out" 2>/dev/null; then
+echo "== every udp section reported"
+for phrase in "== address parsing" "== bind to port 0 and loopback exchange" "== connected sockets" "== maximum datagram size" "== nothing queued: the ? variants answer nil, and a bounded wait ends" "== a connected peer that refused" "== socket lifecycle and close"; do
+  if ! grep -q "$phrase" "$WORK/udp-plain.out" 2>/dev/null; then
     echo "  missing section: $phrase"
     status=1
   fi
 done
-[ "$status" -eq 0 ] && echo "  round_trip, datagram_struct, buffer_sizes, non_blocking, timeout_mode, poll_read, truncation, closed_port_send, connected_mode, and ipv6_round_trip all reported ok"
+[ "$status" -eq 0 ] && echo "  sections reported"
 
 echo
 echo "== the same program with optimisation on (--release)"
-run_case "release" udp-release --release
-if ! grep -q "std_udp_exercise: all checks passed" "$WORK/udp-release.out" 2>/dev/null; then
-  echo "  release build did not report completion"
+build_and_run "release" udp-release --release >/dev/null
+if ! grep -q "ALL CHECKS PASSED" "$WORK/udp-release.out" 2>/dev/null; then
+  echo "release: missing pass sentinel"
   status=1
-else
-  echo "  release build: completed successfully"
 fi
 
 echo
-echo "== timeout and non-blocking subcommands exit non-zero with diagnostic"
-"$WORK/udp-plain" timeout >"$WORK/timeout.out" 2>&1
-exit_code=$?
-if [ "$exit_code" -eq 0 ]; then
-  echo "  timeout subcommand exited zero; expected non-zero"
-  status=1
-elif ! grep -q "receive timed out" "$WORK/timeout.out"; then
-  echo "  timeout subcommand did not report 'receive timed out'"
-  cat "$WORK/timeout.out"
-  status=1
+echo "== proving the checks can fail when the module is broken"
+if [ -z "$PY" ]; then
+  echo "  skipped: no working python3, so the broken copy could not be made"
 else
-  printf '  timeout diagnostic: exits %s at "%s"\n' "$exit_code" \
-    "$(grep -m1 "receive timed out" "$WORK/timeout.out" | sed 's/^iyi: panic: //')"
-fi
-
-"$WORK/udp-plain" would_block >"$WORK/would_block.out" 2>&1
-exit_code=$?
-if [ "$exit_code" -eq 0 ]; then
-  echo "  would_block subcommand exited zero; expected non-zero"
-  status=1
-elif ! grep -q "receive would block" "$WORK/would_block.out"; then
-  echo "  would_block subcommand did not report 'receive would block'"
-  cat "$WORK/would_block.out"
-  status=1
-else
-  printf '  would_block diagnostic: exits %s at "%s"\n' "$exit_code" \
-    "$(grep -m1 "receive would block" "$WORK/would_block.out" | sed 's/^iyi: panic: //')"
+  mkdir -p "$WORK/patched/std"
+  "$PY" - <<PY
+from pathlib import Path
+# The parser is std/socket's now, so the module broken is that one.
+src = Path("$REPO/src/std/socket.iyi").read_text()
+old = 'return IPv4Address.new(127_u8, 0_u8, 0_u8, 1_u8) if localhost?(host)'
+if old not in src:
+    raise SystemExit("patch site missing")
+Path("$WORK/patched/std/socket.iyi").write_text(src.replace(old, 'return IPv4Address.new(127_u8, 0_u8, 0_u8, 2_u8) if localhost?(host)', 1))
+PY
+  if [ $? -ne 0 ]; then
+    echo "  the patch did not apply"
+    status=1
+  elif IYI_PATH="$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/samples/iyi" "$IYI" run "$REPO/bench/std_udp_exercise.iyi" >"$WORK/mut.out" 2>&1; then
+    echo "  the exercise PASSED on a broken module"
+    status=1
+  else
+    echo "  a broken udp is caught"
+  fi
 fi
 
 echo
-echo "== proving the checks can fail when UDP operations are broken"
-
-prove_fails() {
-  local label="$1" dir="$2" phrase="$3" sed_script="$4"
-  mkdir -p "$WORK/$dir/std"
-  sed -e "$sed_script" "$REPO/src/std/udp.iyi" > "$WORK/$dir/std/udp.iyi"
-  # A patch that matches nothing leaves the library intact, and an intact
-  # library passes, which reads as "this check cannot fail" when the truth is
-  # that nothing was broken to test it. Line-anchored patches drift.
-  if cmp -s "$REPO/src/std/udp.iyi" "$WORK/$dir/std/udp.iyi"; then
-    echo "  $label: the patch changed nothing, so this proves nothing"
+echo "== what address parsing refuses"
+refuses() { # refuses <label> <name> <phrase> <expression>
+  local label="$1" name="$2" phrase="$3" expression="$4"
+  printf 'module main\n\nimport std/udp::{UdpSocket}\nimport std/socket::{IyiSocket}\n\nputs (%s).to_s\n' \
+    "$expression" > "$WORK/$name.iyi"
+  if ! "$IYI" build -o "$WORK/$name" "$WORK/$name.iyi" > "$WORK/$name.build" 2>&1; then
+    echo "  $label: the program did not build"
+    sed -n '1,8p' "$WORK/$name.build"
     status=1
     return
   fi
-  if ! IYI_PATH="$WORK/$dir:$REPO/src" "$IYI" build \
-       -o "$WORK/$dir/program" "$REPO/bench/std_udp_exercise.iyi" \
-       >"$WORK/$dir/build.log" 2>&1; then
-    echo "  $label: the patched UDP library did not build"
-    sed -n '1,12p' "$WORK/$dir/build.log"
+  "$WORK/$name" > "$WORK/$name.out" 2>&1
+  local code=$?
+  if [ "$code" -eq 0 ]; then
+    echo "  $label: it answered instead of refusing: $(cat "$WORK/$name.out")"
     status=1
     return
   fi
-  "$WORK/$dir/program" >"$WORK/$dir/out" 2>&1
-  local exit_code=$?
-  if [ "$exit_code" -eq 0 ]; then
-    echo "  $label: the exercise still passed, so it does not test this"
+  if ! grep -qF -- "$phrase" "$WORK/$name.out"; then
+    echo "  $label: refused, but not with '$phrase'"
+    sed -n '1,3p' "$WORK/$name.out"
     status=1
     return
   fi
-  if ! grep -a -q "$phrase" "$WORK/$dir/out"; then
-    echo "  $label: failed, but not at expected check (expected '$phrase')"
-    sed -n '$p' "$WORK/$dir/out"
-    status=1
-    return
-  fi
-  printf '  %s: exits %s at "%s"\n' "$label" "$exit_code" \
-    "$(grep -a -m1 "$phrase" "$WORK/$dir/out" | tr -d '\0' | sed 's/^iyi: panic: //')"
+  printf '  %s: exits %s at "%s"\n' "$label" "$code" "$(sed -n '1p' "$WORK/$name.out" | sed 's/^iyi: panic: //')"
 }
 
-# 1. Broken payload reception
-prove_fails "payload reception broken" bad_payload "round_trip: payload mismatch" \
-  's/bytes\.to_unsafe\.copy_from(buffer, count\.to_i32)/bytes.to_unsafe[0] = 63_u8/'
+refuses "an invalid host string" bad_host "cannot resolve address: \"invalid.ip\"" \
+  'IyiSocket.parse_ip("invalid.ip")'
+refuses "an out-of-range octet" octet_range "cannot resolve address: \"999.1.1.1\"" \
+  'IyiSocket.parse_ip("999.1.1.1")'
+refuses "an incomplete IPv4 address" incomplete_ip "cannot resolve address: \"1.2.3\"" \
+  'IyiSocket.parse_ip("1.2.3")'
+refuses "an invalid hex character in IPv6" bad_hex "cannot resolve address: \"2001:xyz::1\": 'x' is not a hex digit" \
+  'IyiSocket.parse_ipv6("2001:xyz::1")'
+refuses "a leading-zero octet" leading_zero "an octet with a leading zero is not decimal" \
+  'IyiSocket.parse_ip("010.1.1.1")'
+refuses "an overflowing octet" overflow_octet "cannot resolve address: \"2147483648.1.1.1\"" \
+  'IyiSocket.parse_ip("2147483648.1.1.1")'
+refuses "a second IPv6 compression" two_compressions "cannot resolve address: \"1::2::3\": a second \`::\`" \
+  'IyiSocket.parse_ipv6("1::2::3")'
+refuses "a five-digit IPv6 group" long_group "a group of more than four hex digits" \
+  'IyiSocket.parse_ipv6("00000::1")'
+refuses "a leading single colon" lead_colon "a single leading colon" \
+  'IyiSocket.parse_ipv6(":1:2:3:4:5:6:7")'
 
-# 2. Broken local port (answers 0 instead of assigned ephemeral port)
-prove_fails "local port returns 0" bad_port "round_trip: server port must be positive" \
-  's/(addr\[2\]\.to_i32 << 8) | addr\[3\]\.to_i32/0/'
+refuses_body() { # refuses_body <label> <name> <phrase>
+  local label="$1" name="$2" phrase="$3"
+  cat > "$WORK/$name.iyi"
+  if ! "$IYI" build -o "$WORK/$name" "$WORK/$name.iyi" > "$WORK/$name.build" 2>&1; then
+    echo "  $label: the program did not build"
+    sed -n '1,8p' "$WORK/$name.build"
+    status=1
+    return
+  fi
+  "$WORK/$name" > "$WORK/$name.out" 2>&1
+  local code=$?
+  if [ "$code" -eq 0 ]; then
+    echo "  $label: it answered instead of refusing: $(cat "$WORK/$name.out")"
+    status=1
+    return
+  fi
+  if ! grep -qF -- "$phrase" "$WORK/$name.out"; then
+    echo "  $label: refused, but not with '$phrase'"
+    sed -n '1,3p' "$WORK/$name.out"
+    status=1
+    return
+  fi
+  printf '  %s: exits %s at "%s"\n' "$label" "$code" "$(sed -n '1p' "$WORK/$name.out" | sed 's/^iyi: panic: //')"
+}
 
-# 3. Broken IPv6 address formatting
-prove_fails "ipv6 address formatting broken" bad_v6 "ipv6_round_trip:" \
-  's/"::1"/"::99"/'
+refuses_body "a negative port" neg_port "port -1 is not a port: 0 to 65535" <<'IYI'
+module main
+import std/udp::{UdpSocket}
+s = UdpSocket.bind("127.0.0.1", -1)
+puts s.local_port
+IYI
 
-# 4. Broken datagram truncation (altering received slice size)
-prove_fails "datagram truncation broken" bad_trunc "truncation: size mismatch" \
-  's/count = UdpSocket\.__sys_recvfrom(@fd, buffer, max_bytes\.to_u64/if max_bytes == 10; max_bytes = 1; end; count = UdpSocket.__sys_recvfrom(@fd, buffer, max_bytes.to_u64/'
-# 5. Broken non-blocking receive (fails to recognize EAGAIN and raises)
-prove_fails "non-blocking receive broken" bad_nonblock "cannot receive from UDP socket" \
-  's/if UdpSocket\.__is_eagain(count)/if false/'
-# 6. Broken receive timeout configuration (timeout syscall rejected)
-prove_fails "receive timeout broken" bad_timeout "cannot set read timeout" \
-  's/res = UdpSocket\.__sys_set_timeout(@fd, SO_RCVTIMEO, ms)/res = -1/'
+refuses_body "a port above 65535" high_port "port 70000 is not a port: 0 to 65535" <<'IYI'
+module main
+import std/udp::{UdpSocket}
+s = UdpSocket.bind("127.0.0.1", 70000)
+puts s.local_port
+IYI
 
-# 7. Broken poll_read (returns false when packet is waiting)
-prove_fails "poll_read broken" bad_poll "poll_read: expected true with packet waiting" \
-  's/UdpSocket\.__sys_poll_read(@fd, timeout_ms)/false/'
+refuses_body "a Datagram index that is not 0, 1, or 2" dg_index "Datagram index -1 is not 0, 1, or 2" <<'IYI'
+module main
+import std/udp::{Datagram, Bytes}
+buf = Bytes.new(1)
+buf[0] = 120_u8
+dg = Datagram.new(buf, "h", 7)
+puts dg[-1]
+IYI
+
+refuses_body "a negative receive count" neg_recv "negative count: -1" <<'IYI'
+module main
+import std/udp::{UdpSocket}
+s = UdpSocket.bind("127.0.0.1", 0)
+s.receive_from(-1)
+IYI
+
+refuses_body "local_port after close" closed_port "socket is closed" <<'IYI'
+module main
+import std/udp::{UdpSocket}
+s = UdpSocket.bind("127.0.0.1", 0)
+s.close
+puts s.local_port
+IYI
+
+refuses_body "a negative poll timeout" neg_poll "negative timeout: -1" <<'IYI'
+module main
+import std/udp::{UdpSocket}
+s = UdpSocket.bind("127.0.0.1", 0)
+puts s.poll_read(-1)
+IYI
+
+echo
+echo "== a refusal says why"
+# Each refusal was a fixed sentence that dropped the platform's number:
+# a port in use was "cannot bind UDP socket to 127.0.0.1:P" and nothing
+# more, a datagram past 65,507 bytes and an IPv6 address from an IPv4
+# socket were both "cannot send to H:P". A sentence that names a port the
+# system chose prints it as P, so this output is the same on every run.
+refuses_port() { # refuses_port <label> <name> <phrase>, the program on stdin
+  refuses_body "$@" > "$WORK/$2.said"
+  sed 's/:[0-9][0-9]*\([:"]\)/:P\1/g' "$WORK/$2.said"
+}
+
+# And a port is its first binder's: no SO_REUSEADDR, which on Linux let
+# this second bind through.
+refuses_port "a second bind of a held port" rebind ": the address is in use" <<'IYI'
+module main
+import std/udp::{UdpSocket}
+held = UdpSocket.bind("127.0.0.1", 0)
+again = UdpSocket.bind("127.0.0.1", held.local_port)
+puts again.local_port
+IYI
+
+refuses_body "a datagram past 65,507 bytes" too_big "cannot send to 127.0.0.1:9: the datagram is too large to send" <<'IYI'
+module main
+import std/udp::{UdpSocket}
+puts UdpSocket.client.send_to("x" * 65508, "127.0.0.1", 9)
+IYI
+
+refuses_body "an IPv6 address from an IPv4 socket" other_family "cannot send to [::1]:9: the address is not of the socket's family" <<'IYI'
+module main
+import std/udp::{UdpSocket}
+puts UdpSocket.client.send_to("x", "::1", 9)
+IYI
+
+# A broadcast needs SO_BROADCAST. Linux answers that only where it has a
+# route for the address, and ENETUNREACH on a machine with none, so the
+# sentence is asked for where it was measured and a reason elsewhere.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT) broadcast_said="cannot send to 255.255.255.255:9: the destination is a broadcast address" ;;
+  *) broadcast_said="cannot send to 255.255.255.255:9: " ;;
+esac
+refuses_body "a broadcast without SO_BROADCAST" broadcast "$broadcast_said" <<'IYI'
+module main
+import std/udp::{UdpSocket}
+puts UdpSocket.client.send_to("x", "255.255.255.255", 9)
+IYI
+
+echo
+echo "== a receive parks rather than blocking the thread (SPEC.md III.4.2)"
+# Two tasks on one thread: one parked in `receive_datagram` on a socket
+# nobody has written to, the other sleeps and then sends. A receive that
+# blocked the worker would never let the sender run, and the program would
+# hang; it is given ten seconds. Then the same shape with a `close` instead
+# of a send: the parked receive answers `Cancelled`.
+cat > "$WORK/park.iyi" <<'IYI'
+module park
+
+import std/udp::{UdpSocket, Datagram}
+
+server = UdpSocket.bind("127.0.0.1", 0)
+port = server.local_port
+client = UdpSocket.client
+
+answered = ""
+group do |g|
+  g.spawn do
+    case dg = server.receive_datagram
+    in Cancelled
+      answered = "cancelled"
+    in Datagram
+      answered = dg.text
+    end
+    nil
+  end
+  g.spawn do
+    sleep(50)
+    client.send_to("after a wait", "127.0.0.1", port)
+    nil
+  end
+end
+puts "parked receive answered: #{answered}"
+
+other = UdpSocket.bind("127.0.0.1", 0)
+closed_answer = ""
+group do |g|
+  g.spawn do
+    case other.receive_datagram
+    in Cancelled
+      closed_answer = "cancelled"
+    in Datagram
+      closed_answer = "datagram"
+    end
+    nil
+  end
+  g.spawn do
+    sleep(50)
+    other.close
+    nil
+  end
+end
+puts "closed under a parked receive: #{closed_answer}"
+
+# A group cancelled by a sibling's error releases the parked receive too,
+# and the ? variant asked beside a parked sibling answers nil at once.
+struct Boom
+end
+
+impl Error for Boom
+  def message : String
+    "boom"
+  end
+end
+
+third = UdpSocket.bind("127.0.0.1", 0)
+third_port = third.local_port
+cancel_answer = ""
+probe_answer = ""
+group do |g|
+  g.spawn do
+    r = third.receive_datagram
+    cancel_answer = r.is_a?(Cancelled) ? "cancelled" : "datagram"
+    0
+  end
+  g.spawn do
+    sleep(10)
+    probe_answer = third.receive_datagram?.nil? ? "nil" : "datagram"
+    Boom.new
+  end
+end
+puts "sibling error under a parked receive: #{cancel_answer}, probe beside it: #{probe_answer}"
+IYI
+if ! "$IYI" build -o "$WORK/park" "$WORK/park.iyi" > "$WORK/park.build" 2>&1; then
+  echo "  the parking program did not build:"
+  sed -n '1,8p' "$WORK/park.build"
+  status=1
+elif timeout 10 "$WORK/park" > "$WORK/park.out" 2>&1; then
+  if grep -q "parked receive answered: after a wait" "$WORK/park.out" &&
+     grep -q "closed under a parked receive: cancelled" "$WORK/park.out" &&
+     grep -q "sibling error under a parked receive: cancelled, probe beside it: nil" "$WORK/park.out"; then
+    echo "  the sibling ran under a parked receive, and close woke it with Cancelled"
+  else
+    echo "  the parking program answered otherwise:"
+    sed 's/^/    /' "$WORK/park.out"
+    status=1
+  fi
+else
+  echo "  the parking program hung or died: the receive blocked the thread"
+  sed 's/^/    /' "$WORK/park.out" | head -5
+  status=1
+fi
+
+# And the proof that this arm tests parking: a copy whose first receive is
+# a blocking `recvfrom` (no MSG_DONTWAIT) pins the one thread, the sender
+# never runs, and the program is killed at the bound. On Windows the flag
+# is not where blocking lives: Winsock has no MSG_DONTWAIT, the module's
+# win32 arm defines it as 0 and makes the socket itself non-blocking with
+# FIONBIO, so the flag edit left that copy exactly the program it copied -
+# measured: its sender ran and it exited inside the bound. There the copy
+# leaves the socket blocking instead, which is what makes its first
+# `recvfrom` block.
+#
+# The copy is killed on every run, and Git Bash loses a SIGTERM that lands
+# while it is still starting a native program: measured, a TERM sent 50 ms
+# into a fresh build's start left it pinned until something else ended
+# it, and one first start under load took nine seconds, so the gate hung
+# past its bound. A SIGKILL is not lost, and it takes the program with it,
+# so it follows the TERM; elsewhere the TERM ends the copy and the KILL
+# never goes.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT) BLOCKING_SITE=win32 ;;
+  *) BLOCKING_SITE=posix ;;
+esac
+if [ -z "$PY" ]; then
+  echo "  skipped: no working python3, so the broken copy could not be made"
+else
+  mkdir -p "$WORK/blocking/std"
+  "$PY" - <<PY
+from pathlib import Path
+src = Path("$REPO/src/std/udp.iyi").read_text()
+if "$BLOCKING_SITE" == "win32":
+    old = "on = 1\n      LibWs2_32.ioctlsocket(s, FIONBIO, pointerof(on))"
+    new = "on = 0\n      LibWs2_32.ioctlsocket(s, FIONBIO, pointerof(on))"
+else:
+    old = "count = UdpSocket.__sys_recvfrom(@fd, buffer, capacity.to_u64, MSG_DONTWAIT, addr, pointerof(len))"
+    new = "count = UdpSocket.__sys_recvfrom(@fd, buffer, capacity.to_u64, 0, addr, pointerof(len))"
+if old not in src:
+    raise SystemExit("patch site missing")
+Path("$WORK/blocking/std/udp.iyi").write_text(src.replace(old, new, 1))
+PY
+  if [ $? -ne 0 ]; then
+    echo "  the blocking patch did not apply"
+    status=1
+  elif ! IYI_PATH="$WORK/blocking${PSEP}$REPO/src${PSEP}$REPO/samples/iyi" "$IYI" build -o "$WORK/park_blocking" "$WORK/park.iyi" > "$WORK/park_blocking.build" 2>&1; then
+    echo "  the blocking copy did not build:"
+    sed -n '1,8p' "$WORK/park_blocking.build"
+    status=1
+  elif timeout -k 5 5 "$WORK/park_blocking" > "$WORK/park_blocking.out" 2>&1; then
+    echo "  a blocking receive still let the sibling run, so this arm does not test parking"
+    status=1
+  else
+    echo "  a blocking receive pins the thread and is killed at the bound, so the arm has teeth"
+  fi
+fi
+
+echo
+echo "== proving a Datagram index check can fail when the module is broken"
+if [ -z "$PY" ]; then
+  echo "  skipped: no working python3, so the broken copy could not be made"
+else
+  mkdir -p "$WORK/patched_dg/std"
+  "$PY" - <<PY
+from pathlib import Path
+src = Path("$REPO/src/std/udp.iyi").read_text()
+old = '''    elsif i == 2
+      @port
+    else
+      raise "Datagram index #{i} is not 0, 1, or 2"'''
+if old not in src:
+    raise SystemExit("datagram patch site missing")
+new = '''    else
+      @port'''
+Path("$WORK/patched_dg/std/udp.iyi").write_text(src.replace(old, new, 1))
+PY
+  if [ $? -ne 0 ]; then
+    echo "  the datagram patch did not apply"
+    status=1
+  else
+    cat > "$WORK/dg_idx.iyi" <<'IYI'
+module main
+import std/udp::{Datagram, Bytes}
+buf = Bytes.new(1)
+buf[0] = 120_u8
+dg = Datagram.new(buf, "h", 7)
+puts dg[-1]
+IYI
+    if IYI_PATH="$WORK/patched_dg${PSEP}$REPO/src${PSEP}$REPO/samples/iyi" "$IYI" run "$WORK/dg_idx.iyi" >"$WORK/dg_mut.out" 2>&1; then
+      echo "  a broken Datagram index is caught"
+    else
+      echo "  the index program refused on a broken module (cannot prove the check)"
+      sed -n '1,3p' "$WORK/dg_mut.out"
+      status=1
+    fi
+  fi
+fi
+
+echo
+echo "== proving the refusal checks can fail when the module is broken"
+# A connected socket's ICMP refusal is reported by the next call on Linux
+# (and darwin); Windows is told not to report it, so a copy that forgets
+# it there changes nothing. Measured on Linux.
+breaks_udp() { # breaks_udp <label> <dir> <phrase> <old> <new>
+  local label="$1" dir="$2" phrase="$3"
+  mkdir -p "$WORK/$dir/std"
+  OLD="$4" NEW="$5" "$PY" - <<PY
+import os
+from pathlib import Path
+src = Path("$REPO/src/std/udp.iyi").read_text()
+old, new = os.environ["OLD"], os.environ["NEW"]
+if old not in src:
+    raise SystemExit("patch site missing")
+Path("$WORK/$dir/std/udp.iyi").write_text(src.replace(old, new, 1))
+PY
+  if [ $? -ne 0 ]; then
+    echo "  $label: the patch did not apply"
+    status=1
+  elif ! IYI_PATH="$WORK/$dir${PSEP}$REPO/src${PSEP}$REPO/samples/iyi" "$IYI" build -o "$WORK/$dir/program" "$REPO/bench/std_udp_exercise.iyi" >"$WORK/$dir/build.log" 2>&1; then
+    echo "  $label: the broken copy did not build"
+    sed -n '1,8p' "$WORK/$dir/build.log"
+    status=1
+  elif timeout -k 5 60 "$WORK/$dir/program" >"$WORK/$dir/out" 2>&1; then
+    echo "  $label: the exercise PASSED on a broken module"
+    status=1
+  elif ! grep -qF -- "$phrase" "$WORK/$dir/out"; then
+    echo "  $label: failed, but not at '$phrase'"
+    sed -n '$p' "$WORK/$dir/out"
+    status=1
+  else
+    echo "  $label: caught at \"$(grep -m1 -F -- "$phrase" "$WORK/$dir/out" | sed 's/^iyi: panic: //')\""
+  fi
+}
+if [ -z "$PY" ]; then
+  echo "  skipped: no working python3, so the broken copy could not be made"
+elif [ "$(uname -s)" = Linux ]; then
+  breaks_udp "a send the refusal is reported to, not sent again" refused_send "cannot send on UDP socket" \
+    "    res = UdpSocket.__sys_send(@fd, bytes.to_unsafe, bytes.size.to_u64) if UdpSocket.__is_refused(res)
+" ""
+  breaks_udp "a receive? the refusal is reported to" refused_now "cannot receive from UDP socket" \
+    "next if count < 0_i64 && (UdpSocket.__is_eintr(count) || UdpSocket.__is_refused(count))
+      return count.to_i32 if count >= 0_i64
+      return capacity" \
+    "next if count < 0_i64 && UdpSocket.__is_eintr(count)
+      return count.to_i32 if count >= 0_i64
+      return capacity"
+  breaks_udp "a parked receive the refusal is reported to" refused_parked "cannot receive from UDP socket" \
+    "next if count < 0_i64 && (UdpSocket.__is_eintr(count) || UdpSocket.__is_refused(count))
+      return count.to_i32 if count >= 0_i64
+      # A datagram" \
+    "next if count < 0_i64 && UdpSocket.__is_eintr(count)
+      return count.to_i32 if count >= 0_i64
+      # A datagram"
+  breaks_udp "a bind? that raises its refusal" bind_raises "panic: cannot bind UDP socket to 127.0.0.1" \
+    '      return SocketError.new("bind UDP socket to #{IyiSocket.endpoint(host, port)}", code, nil, why)' \
+    '      raise "cannot bind UDP socket to #{IyiSocket.endpoint(host, port)}: #{why}"'
+  breaks_udp "a bind? that answers a socket for a refused bind" bind_ignores "a held port's bind? answers a SocketError" \
+    "    bound = __sys_bind(fd, addr, addrlen)
+    if bound < 0" \
+    "    bound = __sys_bind(fd, addr, addrlen)
+    if false"
+fi
 
 echo
 if [ "$status" -eq 0 ]; then
-  echo "Datagram sockets standard library: IPv4 loopback round-trip, Datagram struct,"
-  echo "buffer sizing, non-blocking receive, receive timeouts, poller readiness,"
-  echo "datagram truncation, closed port sends, connected mode, and IPv6 loopback"
-  echo "all pass plain and optimised, and each check is proven to fail when broken."
+  echo "the std/udp exercise holds"
 else
-  echo "Datagram sockets standard library: something above failed."
+  echo "the std/udp exercise did not hold"
 fi
-exit "$status"
+exit $status

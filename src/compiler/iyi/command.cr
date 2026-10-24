@@ -38,11 +38,19 @@ class Iyi::Command
   # says `crystal`.
   class_property program_name : String = "crystal"
 
+  # `git`-style: the executable on PATH that `<program> <name>` runs, if
+  # there is one. Both dispatches ask this - `iyi`'s own, which decides
+  # whether a word is a command at all, and this one's, which runs it.
+  def self.external_command(name : String) : String?
+    Process.find_executable("#{program_name}-#{name}")
+  end
+
   USAGE = <<-USAGE
     Usage: crystal [command] [switches] [program file] [--] [arguments]
 
     Command:
         init                     generate a new project
+        get                      add a requirement to iyi.mod, or move one; -u brings all up to date
         doc                      print a module's exported surface, docs included
         build                    build an executable
         clear_cache              clear the compiler cache
@@ -101,7 +109,13 @@ class Iyi::Command
   def initialize(@options : Array(String))
     @color = Colorize.default_enabled?(STDOUT, STDERR)
     @error_trace = false
+    # iyi: `-f json` was asked for, so every refusal is data (`json_report`).
+    @json_output = false
     @progress_tracker = ProgressTracker.new
+    # iyi: `build --force`, and whether the source came from standard input,
+    # which the up-to-date check has no file to look at again for.
+    @force_build = false
+    @stdin_source = false
   end
 
   def run
@@ -113,6 +127,11 @@ class Iyi::Command
     when command == "init"
       options.shift
       init
+    when command == "get"
+      # Exact: it writes the manifest and fetches; not something to reach
+      # by prefix.
+      options.shift
+      get
     when "build".starts_with?(command)
       options.shift
       # A daemon named by the environment serves ordinary builds too, so the
@@ -132,11 +151,6 @@ class Iyi::Command
     when command == "eval"
       options.shift
       eval
-    when command == "repl"
-      # iyi: the interpreter slice on the macro evaluator (SPEC.md III.11).
-      # Exact rather than a prefix, so `r` cannot be captured ahead of `run`.
-      options.shift
-      repl
     when command == "run"
       options.shift
       # `--sandbox` re-routes before the native pipeline parses anything:
@@ -155,7 +169,7 @@ class Iyi::Command
       options.shift
       doc
     when command == "test"
-      # Exact, like `repl`: `t` stays `tool`'s.
+      # Exact, like `doc`: `t` stays `tool`'s.
       options.shift
       test
     when command == "vet"
@@ -204,9 +218,25 @@ class Iyi::Command
       options.shift
       mod
     when "help".starts_with?(command), "--help" == command, "-h" == command
+      # `iyi help nonesuch` printed the whole usage and exited 0, which reads
+      # as "yes, that is a command"; `iyi help build` did the same, as if
+      # the verb had no help of its own. A verb's help is the verb's, and a
+      # word that is no verb is said to be none.
+      if (verb = options[1]?) && verb != "help"
+        # A verb's own help, through the same door `iyi <verb> --help` uses.
+        known = USAGE.lines.any? { |line| line.starts_with?("    #{verb} ") }
+        abort! "help: there is no `#{verb}` command. Run `#{Command.program_name} help` for what there is", :USAGE_ERROR unless known
+        Command.new([verb, "--help"]).run
+        exit
+      end
       puts USAGE
       exit
     when "version".starts_with?(command), "--version" == command, "-v" == command
+      # `iyi version extra` printed the version and exited 0 with the extra
+      # word dropped, the way `clear_cache extra` used to.
+      if extra = options[1]?
+        abort! "version takes no arguments, and '#{extra}' is one", :USAGE_ERROR
+      end
       puts Iyi::Config.description
       exit
     when File.file?(command)
@@ -217,7 +247,7 @@ class Iyi::Command
         # iyi: `git`-style subcommand extension, keyed on the name a person
         # typed. Hardcoded to `crystal-`, `iyi foo` could never find `iyi-foo`,
         # so the extension point existed for one of the two binaries only.
-      elsif external_command = Process.find_executable("#{Command.program_name}-#{command}")
+      elsif external_command = Command.external_command(command)
         options.shift
 
         iyi_exec_path = Iyi::Config.exec_path
@@ -250,17 +280,30 @@ class Iyi::Command
       end
     end
   rescue ex : Iyi::CodeError
-    report_warnings
-
     ex.color = @color
     ex.error_trace = @error_trace
-    if @config.try(&.output_format) == "json"
-      STDERR.puts ex.to_json
+    if @json_output
+      json_report { |json| ex.to_json_single(json) }
     else
+      report_warnings
       STDERR.puts ex
     end
     exit 1
   rescue ex : Iyi::Error
+    # Under `-f json` the chain is one array, outermost first. Printed a line
+    # at a time, `check -f json` on a module with a byte that is not UTF-8
+    # answered `Error: while importing "app/lib"` as text.
+    if @json_output
+      json_report do |json|
+        link = ex.as(Exception?)
+        while link
+          json_message_frame(json, link.message.to_s)
+          link = link.cause
+        end
+      end
+      exit Exit::CODE_ERROR.to_i
+    end
+
     report_warnings
 
     # This unwraps nested errors which could be caused by `require` which wraps
@@ -282,14 +325,29 @@ class Iyi::Command
     # compiler. The reader closing the pipe is how `head` says it has enough,
     # and every other tool on the machine treats it as the end of the output
     # rather than as a crash with a backtrace and an invitation to file an
-    # issue. Anything else that reaches here still does.
-    raise ex unless ex.os_error == Errno::EPIPE
-    ::exit 0
+    # issue.
+    ::exit 0 if ex.os_error == Errno::EPIPE
+
+    # iyi: and the rest of what the filesystem answers is a sentence too.
+    # This clause used to `raise ex` here, and a `raise` inside a rescue
+    # clause is not caught by the later clauses of the same `begin`: the
+    # catch-all below never saw a `File::Error`, so `iyi doc` on a file
+    # with mode 000 printed "Unhandled exception: Error opening file with
+    # mode 'r' ... (File::AccessDeniedError)" and a dozen frames of this
+    # compiler's own files. A permission bit is not a compiler bug.
+    report_warnings
+    abort! filesystem_sentence(ex), :FAILURE
   rescue ex
     report_warnings
 
     ex.inspect_with_backtrace STDERR
-    abort! "you've found a bug in the Crystal compiler. Please open an issue, including source code that will allow us to reproduce the bug: https://github.com/crystal-lang/crystal/issues", :SOFTWARE_ERROR
+    # iyi: this fork's tracker, not the upstream project's. Whoever ran
+    # this binary cannot tell which half of it crashed, and the half they
+    # can reach is the one that ships it — `iyilang/iyi` carries the
+    # fork's patches and every line of the compiler it built from.
+    abort! "you've found a bug in the #{Command.program_name} compiler. Please open an issue, " \
+           "including the trace above and source code that will allow us to reproduce it: " \
+           "https://github.com/iyilang/iyi/issues", :SOFTWARE_ERROR
   end
 
   private def tool
@@ -342,7 +400,13 @@ class Iyi::Command
   end
 
   private def init
-    Init.run(options)
+    # iyi: the `iyi` binary's `init` writes an iyi project (command/init.cr);
+    # `crystal init` underneath is still Crystal's shard scaffold.
+    if Command.program_name == "iyi"
+      iyi_init
+    else
+      Init.run(options)
+    end
   end
 
   # iyi: `iyi vet` — SPEC.md III.8 #3's row, closed the way the table
@@ -362,12 +426,100 @@ class Iyi::Command
       exit
     end
     options.unshift "--check"
-    unreachable
+    unreachable "vet"
   end
 
+  # iyi: a build that finds nothing changed since its output was built says
+  # so and compiles nothing (SPEC.md V.9 (e), `UpToDate`). The recorder
+  # starts before the options are read, because reading them reads files too:
+  # the source, `IYI_OPTS`, the workspace's `mods` that a build reads without
+  # being told.
   private def build
-    config = create_compiler "build"
-    config.compile
+    arguments = options.dup
+    inputs = BuildInputs.new(nil)
+    BuildInputs.current = inputs
+    begin
+      config = create_compiler "build", defer_move_aside: true
+      compiler = config.compiler
+      inputs.cache_root = CacheDir.instance.dir
+      check = up_to_date_check(config, arguments)
+
+      if check && !@force_build
+        reason = @progress_tracker.stage("Up-to-date check") { check.stale_reason }
+        unless reason
+          BuildInputs.current = nil
+          up_to_date_note(compiler, "none of the #{check.checked} files, listings and environment values it was built from changed")
+          fingerprint_note(compiler, inputs)
+          puts "#{Iyi.relative_filename(check.output)} is up to date" unless @json_output
+          return
+        end
+        up_to_date_note(compiler, "rebuilding: #{reason}")
+      elsif check
+        up_to_date_note(compiler, "rebuilding: --force")
+      end
+
+      check.try &.forget
+      move_output_aside(compiler, config.output_filename)
+      config.compile
+      BuildInputs.current = nil
+
+      if check
+        unless (warnings = compiler.warnings.reports.size).zero?
+          inputs.cannot("the build printed #{warnings} warning#{warnings == 1 ? "" : "s"}, which a skipped build would not")
+        end
+        if reasons = check.record(inputs)
+          up_to_date_note(compiler, "the next build compiles: #{reasons.join("; ")}")
+        end
+        fingerprint_note(compiler, inputs)
+      end
+    ensure
+      BuildInputs.current = nil
+    end
+  end
+
+  # The files the recorder read whole because their times could not vouch for
+  # them (`BuildInputs.racy?`), said when there were any: a file just written,
+  # which in the edit loop is the file just edited.
+  private def fingerprint_note(compiler : Compiler, inputs : BuildInputs) : Nil
+    return if (files = inputs.fingerprinted).empty?
+    names = files.first(3).map { |path| Iyi.relative_filename(path) }.join(", ")
+    names += " and #{files.size - 3} more" if files.size > 3
+    up_to_date_note(compiler, "fingerprinted #{names}, #{inputs.fingerprinted_bytes} bytes, written too recently for their times to vouch for them")
+  end
+
+  # The check for this build, or nil where it does not apply: a build that
+  # writes no program, or one whose inputs or outputs it cannot follow.
+  private def up_to_date_check(config : CompilerConfig, arguments : Array(String)) : UpToDate?
+    compiler = config.compiler
+    return nil if compiler.no_codegen?
+    reason =
+      if compiler.cross_compile?
+        "a cross-compile prints its link command rather than linking"
+      elsif !compiler.emit_targets.none?
+        "--emit writes files this check does not follow"
+      elsif @stdin_source
+        "the source came from standard input"
+      end
+    if reason
+      up_to_date_note(compiler, "off: #{reason}")
+      return nil
+    end
+
+    output = config.output_filename
+    extras = [] of String
+    {% if flag?(:msvc) %}
+      extras << "#{output.rchop(::Path[output].extension)}.pdb"
+    {% end %}
+    {% if flag?(:darwin) %}
+      extras << "#{output}.dwarf"
+    {% end %}
+    UpToDate.new(output, config.sources, arguments, extras)
+  end
+
+  # What the check decided and why, for `-s` and `--verbose`.
+  private def up_to_date_note(compiler : Compiler, text : String) : Nil
+    return unless @progress_tracker.stats? || compiler.verbose?
+    puts "Up-to-date check: #{text}"
   end
 
   # The compiler a `crystal build` with these arguments would use, so the daemon
@@ -412,6 +564,7 @@ class Iyi::Command
       return
     end
 
+    Iyi.sweep_run_leftovers
     output_filename = Iyi.temp_executable(config.output_filename)
 
     config.compile output_filename
@@ -440,6 +593,53 @@ class Iyi::Command
     {config, result}
   end
 
+  # iyi: what a program's death says, when the kernel ended it rather than
+  # the program exiting. `Process::Status#description` speaks in the
+  # kernel's terms - "Process terminated because of an invalid memory
+  # access" - and for an iyi program, which outside `Pointer` cannot reach
+  # memory it does not own, that sends a reader hunting for a null
+  # dereference in a language whose nil is a type. The stack running out
+  # is the program's own panic now (`IyiStackGuard`, on the targets with a
+  # runtime), so a fault that reaches here is a `Pointer` the program
+  # wrote, a stack on a target with no guard, or ours. Every other signal
+  # is named, because "an unhandled signal" is a sentence with the fact
+  # left out.
+  def self.death_sentence(status : Process::Status) : String
+    case status.exit_reason
+    when .bad_memory_access?, .access_violation?
+      "the program died of a memory fault. Outside `Pointer`, an iyi program cannot reach memory " \
+      "it does not own: if the program uses `Pointer`, that is the place to look, and on a target " \
+      "without iyi's runtime it can also be the stack running out. If neither, it is a bug in " \
+      "#{program_name}'s own runtime, and ours to fix: https://github.com/iyilang/iyi/issues"
+    when .unknown?
+      # The code is the one fact left, and without it an intermittent
+      # Windows exit crash could not be told from another: a stack cookie
+      # (0xc0000409), a heap corruption (0xc0000374), a fast-fail.
+      "#{status.description} (status 0x#{status.system_exit_status.to_s(16)})"
+    else
+      if signal = status.exit_signal?
+        "the program was killed by signal #{signal} (#{status.description.lchop("Process ")})"
+      else
+        status.description
+      end
+    end
+  end
+
+  # iyi: a Windows exit code the program chose, where `Process::Status`
+  # sees an abnormal end. Every code with the top two bits set reads as an
+  # NTSTATUS error to it, and a program's `exit(-1)` is 0xFFFFFFFF: `iyi
+  # run` said "terminated abnormally, the cause is unknown" and exited 1
+  # where the program itself exits -1. A status the system raises has the
+  # customer bit (29) clear; one with it set is an application's - a
+  # program's small negative code, or a runtime's own exception code - and
+  # is passed on as the exit code it is.
+  def self.application_code?(status : Process::Status) : Int32?
+    {% if flag?(:win32) %}
+      code = status.system_exit_status
+      code.to_i32! if code & 0x20000000_u32 != 0
+    {% end %}
+  end
+
   private def execute(output_filename, run_args, compiler, *, error_on_exit = false)
     time = @time && !@progress_tracker.stats?
     status, elapsed_time = @progress_tracker.stage("Execute") do
@@ -462,6 +662,21 @@ class Iyi::Command
           {% unless flag?(:win32) || flag?(:wasm32) %}
             Signal::TERM.trap { process.terminate rescue nil }
             Signal::HUP.trap { process.terminate rescue nil }
+          {% end %}
+
+          # iyi: Windows delivers no signal to trap, and `TerminateProcess`
+          # — which is what an editor, a CI step or `taskkill /F` uses —
+          # runs no code in this process at all. Measured: `iyi run` on a
+          # program that listens, then `taskkill /PID <runner> /F`, left
+          # the child alive and the port still LISTENING; the next build
+          # of the same program then failed to link, because the orphan
+          # holds its own exe open (`LNK1104: cannot open file
+          # iyi-run-....exe`). The kernel's own answer is a job object
+          # with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: the last handle to
+          # the job closing kills everything in it, and a dying process
+          # closes its handles however it died.
+          {% if flag?(:win32) %}
+            kill_child_with_runner(process)
           {% end %}
         end
       end
@@ -489,17 +704,68 @@ class Iyi::Command
       puts "Execute: #{elapsed_time}"
     end
 
-    if (exit_code = status.exit_code?) && !error_on_exit
+    if (exit_code = status.exit_code? || Command.application_code?(status)) && !error_on_exit
       exit exit_code
     end
 
     unless status.exit_reason.normal?
-      STDERR.puts status.description
+      # iyi: in iyi's own words when the program is iyi's. A `--crystal`
+      # program carries Crystal's runtime, which catches the fault itself
+      # and exits saying so; only a program under iyi's library dies here.
+      if compiler.prelude == "iyi/prelude"
+        STDERR.puts "#{Command.program_name}: #{Command.death_sentence(status)}"
+      else
+        STDERR.puts status.description
+      end
       STDERR.flush
     end
 
     exit 1
   end
+
+  {% if flag?(:win32) %}
+    # iyi: the job this runner's child lives in. Every call is one
+    # `src/lib_c/x86_64-windows-msvc/c/jobapi2.cr` already binds, and the
+    # handle is kept in a class variable because a job dies with its last
+    # handle: a local would be closed by the collector and take the
+    # running program with it while `iyi run` was still waiting for it.
+    @@run_job : Void* = Pointer(Void).null
+
+    # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, which winnt.cr does not spell.
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000_u32
+
+    # JOB_OBJECT_LIMIT_BREAKAWAY_OK: a child the program starts with
+    # CREATE_BREAKAWAY_FROM_JOB leaves the job, as it does when the program
+    # is run from a shell. Without it that start was refused with "Access is
+    # denied" under `iyi run` alone.
+    JOB_OBJECT_LIMIT_BREAKAWAY_OK = 0x0800_u32
+
+    private def kill_child_with_runner(process)
+      job = LibC.CreateJobObjectW(Pointer(LibC::SECURITY_ATTRIBUTES).null, Pointer(UInt16).null)
+      return if job.null?
+      limits = LibC::JOBOBJECT_EXTENDED_LIMIT_INFORMATION.new
+      limits.basicLimitInformation.limitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK
+      if LibC.SetInformationJobObject(job, LibC::JOBOBJECTINFOCLASS::ExtendedLimitInformation,
+           pointerof(limits).as(Void*),
+           sizeof(LibC::JOBOBJECT_EXTENDED_LIMIT_INFORMATION).to_u32) == 0
+        LibC.CloseHandle(job)
+        return
+      end
+      # PROCESS_TERMINATE | PROCESS_SET_QUOTA, which is what assigning asks for.
+      handle = LibC.OpenProcess(0x0001_u32 | 0x0100_u32, 0, process.pid.to_u32)
+      if handle.null?
+        LibC.CloseHandle(job)
+        return
+      end
+      assigned = LibC.AssignProcessToJobObject(job, handle)
+      LibC.CloseHandle(handle)
+      if assigned == 0
+        LibC.CloseHandle(job)
+        return
+      end
+      @@run_job = job
+    end
+  {% end %}
 
   record CompilerConfig,
     compiler : Compiler,
@@ -537,7 +803,7 @@ class Iyi::Command
                               hierarchy = false, cursor_command = false,
                               single_file = false, dependencies = false,
                               path_filter = false, unreachable_command = false,
-                              allowed_formats = ["text", "json"])
+                              allowed_formats = ["text", "json"], defer_move_aside = false)
     compiler = new_compiler
     compiler.progress_tracker = @progress_tracker
     compiler.no_codegen = no_codegen
@@ -596,7 +862,9 @@ class Iyi::Command
         end
 
         opts.on("--x86-asm-syntax att|intel", "X86 dialect for --emit=asm: AT&T (default), Intel") do |value|
-          case value = LLVM::InlineAsmDialect.parse?(value)
+          # `dialect`, not `value`: the parse wrote over the word it read,
+          # and the refusal said "Invalid value `` for x86-asm-syntax".
+          case dialect = LLVM::InlineAsmDialect.parse?(value)
           in Nil
             abort! "Invalid value `#{value}` for x86-asm-syntax", :USAGE_ERROR
           in .att?
@@ -635,6 +903,9 @@ class Iyi::Command
 
       opts.on("-f #{allowed_formats.join("|")}", "--format #{allowed_formats.join("|")}", "Output format: #{allowed_formats[0]} (default), #{allowed_formats[1..].join(", ")}") do |f|
         output_format = f
+        # iyi: as soon as it is known, so a refusal before the compile (`no
+        # such file`) is data too (`json_report`).
+        @json_output = true if f == "json" && allowed_formats.includes?(f)
       end
 
       if unreachable_command
@@ -688,12 +959,23 @@ class Iyi::Command
           compiler.no_codegen = true
         end
         opts.on("-o FILE", "--output FILE", "Output path. If a directory, the filename is derived from the first source file (default: ./)") do |an_output_filename|
+          # `-o ""` is what a shell produces from `-o "$OUT"` with `OUT`
+          # unset, and it used to mean the current directory - the
+          # program was written beside its source under a name nobody
+          # typed, or, when that name was taken, `ld.lld: error: cannot
+          # open output file <cwd>: Is a directory`.
+          if an_output_filename.empty?
+            abort! "-o takes a path", :USAGE_ERROR
+          end
           opt_output_filename = an_output_filename
           specified_output = true
         end
       end
 
       opts.on("--prelude ", "Use given file as prelude") do |prelude|
+        # `--prelude ""` went looking for a file called nothing and answered
+        # with the other language's advice about shards. A name, or nothing.
+        abort! "--prelude takes a file name", :USAGE_ERROR if prelude.empty?
         compiler.prelude = prelude
         specified_prelude = true
       end
@@ -711,6 +993,7 @@ class Iyi::Command
       # are untouched — they are the language's, and a prelude is a library.
       opts.on("--crystal", "iyi: build against Crystal's standard library, so `require` works") do
         compiler.prelude = "prelude"
+        compiler.crystal_library = true
         specified_prelude = true
       end
 
@@ -727,10 +1010,14 @@ class Iyi::Command
         compiler.emit_bind = dir
       end
 
-      opts.on("--emit-iyimod DIR", "iyi: write a .iyimod per imported module into DIR") do |dir|
+      opts.on("--emit-iyimod DIR", "iyi: write a .iyimod per imported module this build reads from source into DIR (a package's is III.7 step 5's, and is not one of these)") do |dir|
         # iyi: answered here rather than by `Dir.mkdir_p` half an hour into a
         # build. A path that names a file, or a directory nobody may write to,
         # used to arrive as `Unable to create directory` and a stack trace.
+        # And `""`, which is `"$DIR"` with `DIR` unset, arrived as
+        # `--emit-iyimod cannot use : No such file or directory` - a sentence
+        # with a hole where the name goes.
+        abort! "--emit-iyimod takes a directory", :USAGE_ERROR if dir.empty?
         if File.exists?(dir) && !File.directory?(dir)
           abort! "--emit-iyimod needs a directory, and #{dir} is a file", :USAGE_ERROR
         end
@@ -750,12 +1037,24 @@ class Iyi::Command
       # that, and what is missing shows up as an undefined symbol at link —
       # which is the honest failure for this stage, and a great deal more
       # useful than refusing to try.
-      opts.on("--use-iyimod DIR", "iyi: compile imported modules from DIR's .iyimod files") do |dir|
+      # And the line says "first", because the workspace's own `mods` is
+      # read without being asked for — after its sources, for a module whose
+      # file is not there (`Compiler.workspace_artifacts`, SPEC.md IV.1f).
+      # A reader who has seen a build use an artifact it was never told
+      # about is owed the difference between the two.
+      opts.on("--use-iyimod DIR", "iyi: compile imported modules from DIR's .iyimod files first; `mods` beside the project root is read for a module with no source either way") do |dir|
         # iyi: a module with no artifact is ordinary — the first build of the
         # loop has none at all, and compiles from source. A *directory* that is
         # not there is a typo, and it used to be ignored: the build compiled
         # every module from source and looked like it had used artifacts.
+        abort! "--use-iyimod takes a directory", :USAGE_ERROR if dir.empty?
         unless File.directory?(dir)
+          # A file that is there is not a directory that is missing: `--use-iyimod
+          # mods/app/lib.iyimod` answered "there is no mods/app/lib.iyimod" about
+          # the artifact the author had just been looking at.
+          if File.exists?(dir)
+            abort! "--use-iyimod needs a directory of .iyimod files, and #{dir} is a file", :USAGE_ERROR
+          end
           abort! "--use-iyimod needs a directory of .iyimod files, and there is no #{dir}", :USAGE_ERROR
         end
         compiler.use_iyimod = dir
@@ -804,6 +1103,11 @@ class Iyi::Command
         opts.on("--static", "Link statically") do
           compiler.static = true
         end
+        if command == "build"
+          opts.on("--force", "Build even when nothing the output was built from has changed") do
+            @force_build = true
+          end
+        end
       end
 
       opts.on("--stdin-filename ", "Source file name to be read from STDIN") do |stdin_filename|
@@ -842,6 +1146,7 @@ class Iyi::Command
     sources = [] of Compiler::Source
     if has_stdin_filename
       sources << Compiler::Source.new(filenames.shift, STDIN.gets_to_end)
+      @stdin_source = true
     end
     sources.concat gather_sources(filenames)
 
@@ -851,6 +1156,14 @@ class Iyi::Command
     # compiler knows before it reads anything. `--prelude` still wins, and a
     # `.cr` file is untouched — the two languages share this compiler and do
     # not share a standard library.
+    # The extension is the stored name's (`gather_sources`), compared as it
+    # is stored. The case was folded here instead, so on Windows a file
+    # stored as `UP.IYI` got iyi's prelude and the other language's lexer
+    # (`Lexer.iyi_source?`), and valid iyi answered `unexpected token:
+    # "!"`; such a name is refused now (`Lexer.iyi_miscased?`).
+    if (entry = sources.first?) && Lexer.iyi_miscased?(entry.filename)
+      abort! Lexer.iyi_miscased_sentence(entry.filename), :USAGE_ERROR
+    end
     if !specified_prelude && sources.first?.try(&.filename.ends_with?(".iyi"))
       compiler.prelude = "iyi/prelude"
     end
@@ -860,12 +1173,17 @@ class Iyi::Command
     # FIXME: The explicit cast should not be necessary (#15472)
     output_path = ::Path[opt_output_filename.as?(String) || "./"]
 
-    if output_path.ends_with_separator? || File.directory?(output_path)
+    # The recorder looks away for this one question, which may be about the
+    # output itself (`ignore_output`), and is told the answer when it is a
+    # directory, which is then an input like any other.
+    if output_path.ends_with_separator? || BuildInputs.paused { File.directory?(output_path) }
+      BuildInputs.current.try &.looked_at(output_path.to_s)
       first_filename = sources.first.filename
       output_filename = (output_path / "#{::Path[first_filename].stem}#{output_extension}").normalize.to_s
+      ignore_output(output_filename)
 
       # Check if we'll overwrite the main source file
-      if !compiler.no_codegen? && !run && first_filename == File.expand_path(output_filename)
+      if !compiler.no_codegen? && !run && Iyi.same_file?(first_filename, output_filename)
         abort! "compilation will overwrite source file '#{Iyi.relative_filename(first_filename)}', either change its extension to '.cr' or specify an output file with '-o'", :USAGE_ERROR
       end
     else
@@ -873,14 +1191,34 @@ class Iyi::Command
       if output_path.extension.empty?
         output_filename += output_extension
       end
+      ignore_output(output_filename)
+
+      # iyi: and the same question of a name the author typed. The check
+      # above covers only the name the compiler derives itself, so
+      # `-o good.iyi good.iyi` - one word, typed twice - read the source,
+      # built it and linked the executable over it: the program's only
+      # copy was 12 KB of ELF, exit 0. A module the entry imports is the
+      # same mistake one step removed, and is refused once it is known
+      # (`Compiler#codegen`), before anything is written.
+      if !compiler.no_codegen? && !run
+        if source = sources.find { |candidate| Iyi.same_file?(candidate.filename, output_filename) }
+          abort! "-o #{output_filename} names #{Iyi.relative_filename(source.filename)}, the source it would build from, " \
+                 "and linking there would replace it. Name the program something else", :USAGE_ERROR
+        end
+      end
     end
 
     output_format ||= allowed_formats[0]
     unless output_format.in?(allowed_formats)
       abort! "You have input an invalid format: #{output_format}. Supported formats: #{allowed_formats.join(", ")}", :USAGE_ERROR
     end
+    # iyi: data has no colour. The program's colour reaches the text of its
+    # messages, and `check -f json` on a terminal carried `\u001b[33;1m
+    # (compile-time type is (String | Nil))\u001b[39;22m` in "message".
+    compiler.color = false if output_format == "json"
 
     abort! "maximum number of threads cannot be lower than 1", :USAGE_ERROR if compiler.n_threads < 1
+    validate_mcpu(compiler)
 
     if !compiler.no_codegen? && !run && Dir.exists?(output_filename)
       abort! "can't use `#{output_filename}` as output filename because it's a directory", :USAGE_ERROR
@@ -896,10 +1234,47 @@ class Iyi::Command
       unless Dir.exists?(directory)
         abort! "there is no #{directory} to write #{File.basename(output_filename)} into", :USAGE_ERROR
       end
+
+      # The same sentence for a directory that is there and will not take
+      # the file. `-o ro/prog` under a mode-500 directory was three lines
+      # of `ld.lld: error: cannot open output file`, once per link
+      # attempt, for a permission bit.
+      unless Iyi.writable_directory?(directory)
+        abort! "#{directory} will not take #{File.basename(output_filename)}: no permission to write there", :USAGE_ERROR
+      end
+
+      # A build moves its output aside after the up-to-date check instead, so
+      # that a program that is running and current is left running in place.
+      move_output_aside(compiler, output_filename) unless defer_move_aside
     end
 
     if run
       emit_base_filename = ::Path[sources.first.filename].stem
+    end
+
+    # iyi: the artifacts a workspace keeps, where nobody said otherwise.
+    #
+    # A library arrives as `.iyimod` files and no source (III.7). Told
+    # `--use-iyimod DIR` a build reads them first and does not open a
+    # source at all — that is the flag's contract and it is untouched here.
+    # Told nothing, a build used to have no way to reach one, so a
+    # workspace that `build --use-iyimod mods` compiles was `can't find
+    # module 'app/base'` under `iyi build`, `iyi run` and `iyi test`: the
+    # library was there, as the thing it ships as.
+    #
+    # Source first, so a workspace with its sources present compiles
+    # exactly as it did — the artifact is reached for a module whose file
+    # is not there, which is the case that used to be an error. The same
+    # reading the language server, `check` and `doc` do; the name is
+    # `Compiler.workspace_artifacts`.
+    if compiler.use_iyimod.nil?
+      if entry = sources.first?
+        root = Compiler.header_root_of(entry.filename, entry.code) || File.dirname(entry.filename)
+        if artifacts = Compiler.workspace_artifacts(root)
+          compiler.use_iyimod = artifacts
+          compiler.iyi_prefers_source = true
+        end
+      end
     end
 
     @config = CompilerConfig.new compiler, sources, output_filename, emit_base_filename,
@@ -907,16 +1282,81 @@ class Iyi::Command
       includes, excludes, verbose, check, tallies
   end
 
+  # iyi: the output is what the up-to-date check stamps after the build, not
+  # an input, and the questions `create_compiler` asks next are about it. Told
+  # before they are asked: an output a build has just written is one whose
+  # time cannot vouch for it (`BuildInputs.racy?`), so the recorder would read
+  # the whole program to fingerprint it - 1.8 s of a debug compiler's 2.0 s,
+  # on a 1.3 MB program, in the build after a build.
+  #
+  # And what the link writes beside it, which the build asks about too
+  # (`move_output_aside` moves a busy `.pdb`): taken for an input, the
+  # `.pdb` the last link wrote never matched its record, and a Windows build
+  # with nothing changed was never up to date (job 120808845030).
+  private def ignore_output(output_filename : String) : Nil
+    return unless inputs = BuildInputs.current
+    inputs.ignore(output_filename)
+    {% if flag?(:msvc) %}
+      inputs.ignore("#{output_filename.rchop(::Path[output_filename].extension)}.pdb")
+    {% end %}
+    {% if flag?(:darwin) %}
+      inputs.ignore("#{output_filename}.dwarf")
+    {% end %}
+  end
+
+  # Windows will not write over a program that is running, nor over a
+  # read-only file, and the linker said so only after the whole
+  # compile: "LNK1104: cannot open file", exit status 1104, and the
+  # linker's command line on stderr. It does let the file be renamed,
+  # which is how `make -f Makefile.win` replaces a running `iyi.exe`,
+  # so the old program is moved aside - it goes on running - and the
+  # new one written where it was.
+  private def move_output_aside(compiler : Compiler, output_filename : String) : Nil
+    {% if flag?(:win32) %}
+      return if compiler.cross_compile?
+      # And the program database the MSVC linker writes beside it,
+      # first, so a refusal leaves the program as it was. A `.pdb` a
+      # debugger holds open, or a read-only one from an extracted tree,
+      # failed the link after the whole compile - "LNK1201: error writing
+      # to program database", exit status 1201, the linker's command line
+      # - and the linker deleted the program on its way out.
+      {% if flag?(:msvc) %}
+        unless compiler.debug.none?
+          pdb = "#{output_filename.rchop(::Path[output_filename].extension)}.pdb"
+          unless Iyi.move_aside_if_busy(pdb)
+            abort! "#{pdb} is in use and cannot be replaced or moved aside", :USAGE_ERROR
+          end
+        end
+      {% end %}
+      unless Iyi.move_aside_if_busy(output_filename)
+        abort! "#{output_filename} is in use and cannot be replaced or moved aside", :USAGE_ERROR
+      end
+    {% end %}
+  end
+
   private def gather_sources(filenames)
     filenames.map do |filename|
+      # And the third is no name at all: `iyi run "$FILE"` with `FILE`
+      # unset. `File.expand_path("")` is the working directory, so this
+      # answered "Error:  is a directory, not a source file" - a sentence
+      # with a hole in it, about a directory nobody named.
+      abort! "the file name is empty, so it names nothing", :USAGE_ERROR if filename.empty?
       expanded = File.expand_path(filename)
       # iyi: the commonest thing to get wrong about a command is the name of
       # the file, and the answer to it was "Error: Error opening file with
       # mode 'r': '/…/typo.iyi': No such file or directory" — the word Error
       # twice, a mode nobody asked about, and the path spelled out twice over.
       unless File.file?(expanded)
+        # And the second commonest is handing it a directory, which used to
+        # come back as "no such file" about a path that is right there — so
+        # the reader runs `ls`, finds it, and learns nothing. Same sentence
+        # `doc` and `mod` give, because it is the same mistake.
+        abort! "#{filename} is a directory, not a source file", :USAGE_ERROR if Dir.exists?(expanded)
         abort! "no such file: #{filename}", :USAGE_ERROR
       end
+      # The name as stored, which the language and `Lexer.iyi_miscased?`
+      # are read off.
+      expanded = Lexer.stored_name(expanded)
       Compiler::Source.new(expanded, File.read(expanded))
     end
   rescue exc : IO::Error
@@ -973,6 +1413,40 @@ class Iyi::Command
     target_specific_opts(opts, compiler)
     setup_compiler_warning_options(opts, compiler)
     opts.invalid_option { }
+  end
+
+  # iyi: whether LLVM knows the `--mcpu` it was given, asked before anything
+  # is compiled. It was handed over unchecked, and an unknown name reached
+  # each codegen thread: `iyi build --mcpu nonesuch` printed "'nonesuch' is
+  # not a recognized processor for this target" once per thread, the lines
+  # running into each other, then "LLVM ERROR: 64-bit code requested on a
+  # subtarget that doesn't support it!", and died in `abort()`, exit
+  # 0xC0000409 on Windows. LLVM's C interface has no question for this, and
+  # its one list of the names is what `--mcpu help` prints to stderr as a
+  # target machine is made; so a child of this binary is asked for that list,
+  # for this target. When it cannot answer, LLVM is left to answer as before.
+  private def validate_mcpu(compiler) : Nil
+    cpu = compiler.mcpu
+    return if cpu.nil? || cpu.empty? || cpu == LLVM.host_cpu_name
+    return unless exe = Process.executable_path
+    listing = IO::Memory.new
+    Process.run(exe, ["build", "--target", compiler.codegen_target.to_s, "--mcpu", "help"],
+      env: {"IYI_OPTS" => nil, "CRYSTAL_OPTS" => nil}, error: listing)
+    # "Available CPUs for this target:", a blank line, one `  name - what`
+    # a line, and "Available features for this target:" after them.
+    known = [] of String
+    listed = false
+    listing.to_s.each_line do |line|
+      if line.starts_with?("Available")
+        break if listed
+        listed = true
+      elsif listed && !line.blank?
+        known << line.strip.split(' ', 2).first
+      end
+    end
+    return if known.empty? || known.includes?(cpu)
+    abort! "--mcpu #{cpu} is not a CPU LLVM knows for #{compiler.codegen_target}; `--mcpu help` lists the ones it does", :USAGE_ERROR
+  rescue IO::Error
   end
 
   private def target_specific_opts(opts, compiler)
@@ -1040,15 +1514,42 @@ class Iyi::Command
     emit_targets
   end
 
+  # iyi: what the filesystem said, as a sentence about the path the author
+  # named. Crystal's own wording for a `File::Error` is "Error opening file
+  # with mode 'r': '<path>': Permission denied" — it names an argument of
+  # `open(2)` nobody passed, and prefixed with "Error: " it says the word
+  # twice. The path and the reason are the two facts.
+  private def filesystem_sentence(ex : IO::Error) : String
+    reason = ex.os_error.try(&.message) || ex.message.to_s
+    ex.is_a?(File::Error) ? "#{ex.file}: #{reason}" : reason
+  end
+
   private def abort!(msg, exit : Command::Exit)
     print_error(msg)
     exit exit.to_i
   end
 
   private def print_error(msg)
+    if @json_output
+      json_report { |json| json_message_frame(json, msg.to_s) }
+      return
+    end
     # This is for the case where the main command is wrong
     @color = false if ARGV.includes?("--no-color") || !Colorize.default_enabled?(STDOUT, STDERR)
     Iyi.print_error(msg, @color)
+  end
+
+  # iyi: a refusal with no place in a source file, as a `-f json` frame: the
+  # shape every frame has, with the place left empty as an error from a
+  # macro's virtual file leaves it. `no such file: x.iyi` was text there.
+  private def json_message_frame(json : JSON::Builder, message : String) : Nil
+    json.object do
+      json.field "file", ""
+      json.field "line", nil
+      json.field "column", nil
+      json.field "size", 0
+      json.field "message", message
+    end
   end
 
   private def self.iyi_opts
@@ -1099,7 +1600,10 @@ class Iyi::Command
     Command.parse_with_iyi_opts(@options) { |opts| yield opts }
   end
 
+  # iyi: with the colour this command has, which is none unless the output
+  # is a terminal. `Compiler#color?` defaulted to true and nothing here set
+  # it, so a message's colour reached a file `iyi check` was redirected to.
   private def new_compiler
-    @compiler = Compiler.new
+    @compiler = Compiler.new.tap(&.color = @color)
   end
 end

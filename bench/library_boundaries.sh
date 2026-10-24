@@ -35,13 +35,33 @@
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-CRYSTAL="$REPO/bin/crystal"
-IYI="$REPO/bin/iyi"
+# Both compilers are whichever ones the caller names; `bin/crystal` and
+# `bin/iyi` are shell wrappers, and on Windows the caller has to point at
+# the built exes themselves.
+CRYSTAL="${CRYSTAL:-$REPO/bin/crystal}"
+IYI="${IYI:-$REPO/bin/iyi}"
 WORK="$(mktemp -d)"
+# A native compiler cannot resolve this shell's own path mapping: a search
+# path built from the shell's `pwd` finds no prelude at all, and a scratch
+# directory named `/tmp/tmp.X` on it is silently ignored, so the boundary
+# is built against nothing.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT)
+    REPO="$(cygpath -m "$REPO")"
+    WORK="$(cygpath -m "$WORK")"
+    ;;
+esac
 cd "$WORK" || exit 1
 
+# The search path is a list, and the byte between its entries is the
+# platform's: `;` where a drive letter already owns the colon.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT) PSEP=';' ;;
+  *) PSEP=':' ;;
+esac
+
 export CRYSTAL_PATH="$REPO/src"
-export IYI_PATH="$REPO/share/iyi/src:$REPO/share/iyi/crystal:$REPO/src"
+export IYI_PATH="$REPO/share/iyi/src${PSEP}$REPO/share/iyi/crystal${PSEP}$REPO/src"
 
 status=0
 
@@ -149,8 +169,13 @@ puts t.day_of_week'
 # module functions over `IO`, `UUID` is a struct wrapping a `StaticArray` and
 # an enum read back by name, `INI` returns a hash of hashes, `CSV` is a parser
 # and a builder that takes a block, `Colorize` is macro-written methods on
-# `Object` — a type the *library* owns — and `XML` calls libxml2, so its
-# boundary has to carry a `@[Link]` flag the consumer never wrote.
+# `Object` — a type the *library* owns.
+#
+# `XML` used to be the twelfth, chosen because it calls libxml2 and so its
+# boundary has to carry a `@[Link]` flag the consumer never wrote. libxml2 is
+# an ancestor dependency and the module is gone, so that property is proven
+# by `bench/yaml_reads.sh` instead, which binds `YAML` the same way and for
+# the same reason. Eleven here, and the link-flag question still asked.
 check Base64 base64 base64 'e = Base64.strict_encode("iyi, encoded")
 puts e
 puts String.new(Base64.decode(e))'
@@ -171,12 +196,6 @@ puts CSV.build { |b| b.row "x", "y" }.strip'
 
 check Colorize colorize colorize 'puts "x".colorize(:red).to_s.inspect
 puts Colorize.enabled?'
-
-check XML xml x_m_l 'doc = XML.parse("<a><b id=\"1\">t</b></a>")
-puts doc.root.try(&.name)
-n = doc.first_element_child.try(&.first_element_child)
-puts n.try(&.content)
-puts n.try(&.[]("id"))'
 
 # And the one that took a change to the format. `Random` is a *mixin* module
 # with `abstract def next_u` for its includers to answer, and iyi's own module

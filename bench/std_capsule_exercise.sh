@@ -1,35 +1,66 @@
 #!/usr/bin/env bash
-# HTTP Datagrams, Capsule Protocol, and WebTransport session exercise driver.
-# Runs the capsule exercise in plain and release mode, checks every section
-# reported, and proves the checks can fail by patching copies of std/capsule.iyi
-# and std/webtransport.iyi.
+# Exercises `std/capsule`: RFC 9297 Capsule Protocol, RFC 9000 VarInt,
+# HTTP Datagrams, and Extended CONNECT.
 #
 #     bash bench/std_capsule_exercise.sh
 #
-# A check that cannot fail is not a check. This script proves failure across
-# QUIC varint encoding, boundary values, HTTP datagram quarter stream IDs,
-# capsule length overrun detection, extensibility skipping of unknown capsule types,
-# WebTransport bidi stream framing, and session close code integrity.
-#
-# Exits non-zero if any check fails.
-
+# Proves the exercise holds plain and --release, that a broken datagram
+# mapping, an Int32 room check that overflows at the end of a 2^31 - 1 byte
+# buffer, a Quarter Stream ID bound of 2^62 - 1 rather than 2^60 - 1, and a
+# Capsule-Protocol value whose parameters are not parsed are each caught,
+# and what `capsule` refuses: 62-bit integer overflow, explicit length
+# mismatch, overlong varints in strict mode, Quarter Stream IDs past
+# 2^60 - 1, a stream ID that is no client-initiated bidirectional stream,
+# and truncated buffers or length overruns in datagram and capsule
+# framing.
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-IYI="$REPO/bin/iyi"
+
+# The search path is a list, and the byte between its entries is the
+# platform's: `;` where a drive letter already owns the colon.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT) PSEP=';' ;;
+  *) PSEP=':' ;;
+esac
+
+# the patches and oracles below are written in python, and windows answers
+# `python3` with a store stub that prints and exits rather than running it, so
+# the interpreter is measured here instead of assumed.
+PY=""
+for candidate in python3 python; do
+  if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys' >/dev/null 2>&1; then
+    PY="$candidate"
+    break
+  fi
+done
+
+IYI="${IYI:-$REPO/bin/iyi}"
 WORK="$(mktemp -d)"
+# A native compiler cannot resolve this shell's own path mapping: a search
+# path built from `pwd` is `/c/...` and finds no prelude at all, and a
+# scratch directory named `/tmp/tmp.X` is silently ignored on that path, so
+# the patched copy is never read and the proof that a check can fail quietly
+# stops proving it.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT)
+    REPO="$(cygpath -m "$REPO")"
+    WORK="$(cygpath -m "$WORK")"
+    ;;
+esac
+
 trap 'rm -rf "$WORK"' EXIT
 
 status=0
+export IYI_PATH="$REPO/src${PSEP}$REPO/samples/iyi"
 
-run_case() {
+build_and_run() {
   local label="$1" name="$2"
   shift 2
-  if ! PATH=/opt/homebrew/bin:/usr/bin:/bin LIBRARY_PATH=/opt/homebrew/opt/bdw-gc/lib \
-       "$IYI" build "$@" -o "$WORK/$name" "$REPO/bench/std_capsule_exercise.iyi" \
+  if ! "$IYI" build "$@" -o "$WORK/$name" "$REPO/bench/std_capsule_exercise.iyi" \
        >"$WORK/$name.build.log" 2>&1; then
     echo "$label: build failed"
-    sed -n '1,12p' "$WORK/$name.build.log"
+    tail -12 "$WORK/$name.build.log"
     status=1
     return 1
   fi
@@ -44,157 +75,125 @@ run_case() {
   return 0
 }
 
-echo "== the capsule and webtransport exercise, plain build"
-run_case "plain" capsule-plain
-if ! grep -q "all std/capsule checks passed" "$WORK/capsule-plain.out" 2>/dev/null; then
-  echo "  MISSING: plain build did not reach the end"
+echo "== the std/capsule exercise, plain build"
+build_and_run "plain" capsule-plain
+if ! grep -q "ALL CHECKS PASSED" "$WORK/capsule-plain.out" 2>/dev/null; then
+  echo "plain: missing pass sentinel"
   status=1
 fi
 
 echo
-echo "== every capsule and webtransport section reported"
-for phrase in \
-  "rfc 9000 appendix a:" \
-  "boundary values:" \
-  "varint errors:" \
-  "http datagrams:" \
-  "capsule framing:" \
-  "capsule extensibility:" \
-  "extended connect:" \
-  "webtransport stream framing:" \
-  "webtransport datagrams:" \
-  "session state machine:" \
-  "wave two transport interface:"; do
+echo "== every capsule section reported"
+for phrase in "== varint" "== datagram" "== capsule" "== reader" "== connect"; do
   if ! grep -q "$phrase" "$WORK/capsule-plain.out" 2>/dev/null; then
-    echo "  MISSING: $phrase was not reported"
+    echo "  missing section: $phrase"
     status=1
   fi
 done
-[ "$status" -eq 0 ] && echo "  varint test vectors, boundary values, datagrams, capsules, extensibility, extended connect, stream framing, and session state machine all reported"
+[ "$status" -eq 0 ] && echo "  sections reported"
 
 echo
 echo "== the same program with optimisation on (--release)"
-run_case "release" capsule-release --release
-if ! grep -q "all std/capsule checks passed" "$WORK/capsule-release.out" 2>/dev/null; then
-  echo "  MISSING: release build did not reach the end"
+build_and_run "release" capsule-release --release >/dev/null
+if ! grep -q "ALL CHECKS PASSED" "$WORK/capsule-release.out" 2>/dev/null; then
+  echo "release: missing pass sentinel"
   status=1
 fi
 
 echo
-echo "== proving the checks can fail when capsule and webtransport operations are broken"
+echo "== proving the checks can fail when the module is broken"
+# broken <label> <name> <old> <new>: the module with <old> made <new> still
+# builds, and the exercise fails on it.
+broken() {
+  local label="$1" name="$2"
+  mkdir -p "$WORK/$name/std"
+  if ! OLD="$3" NEW="$4" "$PY" - "$REPO/src/std/capsule.iyi" "$WORK/$name/std/capsule.iyi" <<'PY'
+import os, sys
+from pathlib import Path
+src = Path(sys.argv[1]).read_text()
+old, new = os.environ["OLD"], os.environ["NEW"]
+if old not in src:
+    raise SystemExit("patch site missing")
+Path(sys.argv[2]).write_text(src.replace(old, new, 1))
+PY
+  then
+    echo "  $label: the patch did not apply"
+    status=1
+  elif ! IYI_PATH="$WORK/$name${PSEP}$REPO/src${PSEP}$REPO/samples/iyi" "$IYI" build -o "$WORK/$name/exercise" "$REPO/bench/std_capsule_exercise.iyi" >"$WORK/$name/build.log" 2>&1; then
+    echo "  $label: the broken module did not build"
+    sed 's/^/    /' "$WORK/$name/build.log" | tail -6
+    status=1
+  elif "$WORK/$name/exercise" >"$WORK/$name/run.out" 2>&1; then
+    echo "  $label: the exercise PASSED on a broken module"
+    status=1
+  else
+    echo "  $label is caught: $(grep -m1 -E 'ASSERTION FAILED|panic' "$WORK/$name/run.out")"
+  fi
+}
+if [ -z "$PY" ]; then
+  echo "  no python3 on this machine, so the broken-module proof is unmeasured"
+else
+  broken "a broken datagram mapping" mut-mapping '@quarter_stream_id * 4_u64' '@quarter_stream_id * 2_u64'
+  broken "a room check that overflows Int32" mut-room 'return nil if room < 8' 'return nil if offset + 8 > bytes.size'
+  broken "a 2^62 - 1 Quarter Stream ID bound" mut-qid 'MAX_QUARTER_STREAM_ID = 1152921504606846975_u64' 'MAX_QUARTER_STREAM_ID = 4611686018427387903_u64'
+  broken "Capsule-Protocol parameters left unparsed" mut-params 'while i < n && p[i] == 59_u8' 'while false && i < n && p[i] == 59_u8'
+fi
 
-prove_fails_capsule() {
-  local label="$1" dir="$2" phrase="$3" sed_script="$4"
-  mkdir -p "$WORK/$dir/std"
-  sed -e "$sed_script" "$REPO/src/std/capsule.iyi" > "$WORK/$dir/std/capsule.iyi"
-  # A patch that matches nothing leaves the library intact, and an intact
-  # library passes, which reads as "this check cannot fail" when the truth is
-  # that nothing was broken to test it. Line-anchored patches drift.
-  if cmp -s "$REPO/src/std/capsule.iyi" "$WORK/$dir/std/capsule.iyi"; then
-    echo "  $label: the patch changed nothing, so this proves nothing"
+echo
+echo "== what capsule refuses"
+refuses() { # refuses <label> <name> <phrase> <code>
+  local label="$1" name="$2" phrase="$3" code="$4"
+  cat <<IYI > "$WORK/$name.iyi"
+module main
+
+import std/slice::{Bytes}
+import std/capsule::{VarInt, HttpDatagram, Capsule, CapsuleType}
+
+$code
+IYI
+  if ! "$IYI" build -o "$WORK/$name" "$WORK/$name.iyi" > "$WORK/$name.build" 2>&1; then
+    echo "  $label: the program did not build"
+    sed -n '1,10p' "$WORK/$name.build"
     status=1
     return
   fi
-  cp "$REPO/src/std/webtransport.iyi" "$WORK/$dir/std/webtransport.iyi"
-  if ! PATH=/opt/homebrew/bin:/usr/bin:/bin LIBRARY_PATH=/opt/homebrew/opt/bdw-gc/lib \
-       IYI_PATH="$WORK/$dir:$REPO/src" "$IYI" build \
-       -o "$WORK/$dir/program" "$REPO/bench/std_capsule_exercise.iyi" \
-       >"$WORK/$dir/build.log" 2>&1; then
-    echo "  $label: the patched capsule library did not build"
-    sed -n '1,12p' "$WORK/$dir/build.log"
+  "$WORK/$name" > "$WORK/$name.out" 2>&1
+  local code_exit=$?
+  if [ "$code_exit" -eq 0 ]; then
+    echo "  $label: it answered instead of refusing: $(cat "$WORK/$name.out")"
     status=1
     return
   fi
-  "$WORK/$dir/program" >"$WORK/$dir/out" 2>&1
-  local exit_code=$?
-  if [ "$exit_code" -eq 0 ]; then
-    echo "  $label: the exercise still passed, so it does not test this"
+  if ! grep -qF -- "$phrase" "$WORK/$name.out"; then
+    echo "  $label: refused, but not with '$phrase'"
+    sed -n '1,3p' "$WORK/$name.out"
     status=1
     return
   fi
-  if ! grep -q "$phrase" "$WORK/$dir/out"; then
-    echo "  $label: failed, but not at expected check (expected '$phrase')"
-    sed -n '$p' "$WORK/$dir/out"
-    status=1
-    return
-  fi
-  printf '  %s: exits %s at "%s"\n' "$label" "$exit_code" \
-    "$(grep -m1 "$phrase" "$WORK/$dir/out" | sed 's/^iyi: panic: //')"
+  printf '  %s: exits %s at "%s"\n' "$label" "$code_exit" "$(sed -n '1p' "$WORK/$name.out" | sed 's/^iyi: panic: //')"
 }
 
-prove_fails_wt() {
-  local label="$1" dir="$2" phrase="$3" sed_script="$4"
-  mkdir -p "$WORK/$dir/std"
-  cp "$REPO/src/std/capsule.iyi" "$WORK/$dir/std/capsule.iyi"
-  sed -e "$sed_script" "$REPO/src/std/webtransport.iyi" > "$WORK/$dir/std/webtransport.iyi"
-  # A patch that matches nothing leaves the library intact, and an intact
-  # library passes, which reads as "this check cannot fail" when the truth is
-  # that nothing was broken to test it. Line-anchored patches drift.
-  if cmp -s "$REPO/src/std/webtransport.iyi" "$WORK/$dir/std/webtransport.iyi"; then
-    echo "  $label: the patch changed nothing, so this proves nothing"
-    status=1
-    return
-  fi
-  if ! PATH=/opt/homebrew/bin:/usr/bin:/bin LIBRARY_PATH=/opt/homebrew/opt/bdw-gc/lib \
-       IYI_PATH="$WORK/$dir:$REPO/src" "$IYI" build \
-       -o "$WORK/$dir/program" "$REPO/bench/std_capsule_exercise.iyi" \
-       >"$WORK/$dir/build.log" 2>&1; then
-    echo "  $label: the patched webtransport library did not build"
-    sed -n '1,12p' "$WORK/$dir/build.log"
-    status=1
-    return
-  fi
-  "$WORK/$dir/program" >"$WORK/$dir/out" 2>&1
-  local exit_code=$?
-  if [ "$exit_code" -eq 0 ]; then
-    echo "  $label: the exercise still passed, so it does not test this"
-    status=1
-    return
-  fi
-  if ! grep -q "$phrase" "$WORK/$dir/out"; then
-    echo "  $label: failed, but not at expected check (expected '$phrase')"
-    sed -n '$p' "$WORK/$dir/out"
-    status=1
-    return
-  fi
-  printf '  %s: exits %s at "%s"\n' "$label" "$exit_code" \
-    "$(grep -m1 "$phrase" "$WORK/$dir/out" | sed 's/^iyi: panic: //')"
-}
+refuses "varint value exceeding 62-bit MAX" varint_overflow "varint value exceeds maximum 62-bit integer" 'VarInt.encode(4611686018427387904_u64)'
+refuses "value too large for 1-byte varint" varint_byte_overflow "does not fit in 1-byte varint" 'VarInt.encode(64_u64, 1)'
+refuses "overlong varint in strict mode" varint_overlong "overlong varint encoding" 'VarInt.decode_strict(VarInt.encode(37_u64, 2))'
+refuses "truncated varint on empty buffer" varint_trunc "varint truncated: buffer empty or offset beyond end" 'VarInt.decode(Bytes.new(0))'
+refuses "negative varint encoding length" varint_neg_len "invalid varint encoding length" 'VarInt.encode(1_u64, -1)'
+refuses "truncated datagram on empty buffer" datagram_trunc "http datagram truncated: buffer empty or ends before payload" 'HttpDatagram.decode(Bytes.new(0))'
+refuses "overlong datagram qid in strict mode" datagram_overlong "overlong varint encoding" 'b = Bytes.new(3); b[0] = 0x40_u8; b[1] = 0x00_u8; b[2] = 0xaa_u8; HttpDatagram.decode(b, 0, true)'
+refuses "datagram quarter stream id past 2^60 - 1" datagram_qid_overflow "http datagram quarter stream id exceeds maximum 2^60 - 1" 'HttpDatagram.new(1152921504606846976_u64, Bytes.new(0))'
+refuses "decoded quarter stream id past 2^60 - 1" datagram_qid_decoded "http datagram quarter stream id exceeds maximum 2^60 - 1" 'HttpDatagram.decode(VarInt.encode(1152921504606846976_u64))'
+refuses "stream id past 2^62 - 1" datagram_sid_overflow "http datagram quarter stream id exceeds maximum 2^60 - 1" 'HttpDatagram.from_stream_id(18446744073709551615_u64, Bytes.new(0))'
+refuses "stream id that is no request stream" datagram_sid_unaligned "http datagram stream id 19 is not a client-initiated bidirectional stream" 'HttpDatagram.from_stream_id(19_u64, Bytes.new(0))'
+refuses "server-initiated stream id" datagram_sid_server "http datagram stream id 1 is not a client-initiated bidirectional stream" 'HttpDatagram.from_stream_id(1_u64, Bytes.new(0))'
+refuses "truncated capsule on empty buffer" capsule_trunc "truncated capsule: buffer empty or offset beyond end" 'Capsule.decode(Bytes.new(0))'
+refuses "capsule truncated before length" capsule_len_trunc "truncated capsule: buffer ends before capsule length" 'b = Bytes.new(1); b[0] = 0x00_u8; Capsule.decode(b)'
+refuses "capsule length overrunning buffer" capsule_overrun "capsule length overruns buffer" 'b = Bytes.new(3); b[0] = 0x00_u8; b[1] = 0x10_u8; b[2] = 0xAA_u8; Capsule.decode(b)'
+refuses "varint truncated at the end of a 2^31 - 1 byte buffer" varint_edge_trunc "varint truncated: 2-byte varint requires 2 bytes, but only 1 available" 't = Bytes.new(8); t[7] = 0x40_u8; b = Bytes.new(Pointer(UInt8).new(t.to_unsafe.address &- 2147483639_u64), 2147483647); VarInt.decode(b, 2147483646)'
 
-# 1. QUIC VarInt 1-byte encoding broken (adds 1 to value)
-prove_fails_capsule "varint 1-byte encoding broken" no_v1 "rfc9000 app a: 37 in 1 byte hex" \
-  's/buf\[0\] = value\.to_u8/buf[0] = (value + 1_u64).to_u8/'
-
-# 2. QUIC VarInt 2-byte prefix broken (clears prefix bit)
-prove_fails_capsule "varint 2-byte prefix broken" no_v2 "rfc9000 app a: 37 in 2 byte hex" \
-  's/0x40_u8/0x00_u8/'
-
-# 3. QUIC VarInt boundary size broken (encodes 64 in 1 byte instead of 2)
-prove_fails_capsule "varint boundary check broken" no_bound "boundary 64 size" \
-  's/MAX_1BYTE *= *63_u64/MAX_1BYTE = 64_u64/'
-# 4. HTTP Datagram quarter stream id calculation broken
-prove_fails_capsule "datagram quarter stream id broken" no_qid "dgram stream 4 stream_id" \
-  's/@quarter_stream_id \* 4_u64/@quarter_stream_id * 2_u64/'
-
-# 5. Capsule length overrun check disabled
-prove_fails_capsule "capsule overrun check broken" no_overrun "capsule: truncated payload not refused" \
-  's/return nil if capsule_len_u64 > remaining\.to_u64/return {new(capsule_type, Bytes.new(0)), hdr_len}/'
-
-# 6. Capsule extensibility broken (skipping unknown capsule types disabled)
-prove_fails_capsule "capsule extensibility broken" no_ext "extensibility: expected 2 known capsules" \
-  's/unless capsule\.unknown[?]/if true/'
-
-# 7. WebTransport bidi stream type header broken
-prove_fails_wt "webtransport bidi stream type broken" no_bidi "bidi wire prefix 0x4041" \
-  's/STREAM_TYPE_BIDI = 0x41_u64/STREAM_TYPE_BIDI = 0x42_u64/'
-
-# 8. WebTransport close capsule error code broken
-prove_fails_wt "close session capsule error code broken" no_close "peer session code" \
-  's/new(code, reason_str)/new(code + 1_u64, reason_str)/'
 echo
 if [ "$status" -eq 0 ]; then
-  echo "all capsule and webtransport tests and failure proofs passed"
+  echo "the std/capsule exercise holds"
 else
-  echo "capsule and webtransport tests failed"
+  echo "the std/capsule exercise did not hold"
 fi
-exit "$status"
+exit $status

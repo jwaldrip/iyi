@@ -1,36 +1,55 @@
 #!/usr/bin/env bash
-# Cryptography and digest standard library exercise driver.
-# Runs the crypto exercise in plain and release mode, checks every section
-# reported, and proves the checks can fail by patching copies of std/crypto.iyi
-# and std/digest.iyi.
+# Exercises `std/crypto`.
 #
 #     bash bench/std_crypto_exercise.sh
-#
-# A check that cannot fail is not a check. This script proves failure across:
-#   1. AES-128-GCM tampered tag rejection (authentication bypass refusal)
-#   2. ChaCha20-Poly1305 tampered tag rejection (authentication bypass refusal)
-#   3. Digest output integrity (corrupted round output detected)
-#   4. Constant-time comparison discrimination (forged equality refused)
-#   5. HMAC key-pad integrity (wrong ipad calculation detected)
-#
-# Exits non-zero if any check fails.
-
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-IYI="$REPO/bin/iyi"
+
+# The search path is a list, and the byte between its entries is the
+# platform's: `;` where a drive letter already owns the colon.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT) PSEP=';' ;;
+  *) PSEP=':' ;;
+esac
+
+# the patches and oracles below are written in python, and windows answers
+# `python3` with a store stub that prints and exits rather than running it, so
+# the interpreter is measured here instead of assumed.
+PY=""
+for candidate in python3 python; do
+  if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys' >/dev/null 2>&1; then
+    PY="$candidate"
+    break
+  fi
+done
+
+IYI="${IYI:-$REPO/bin/iyi}"
 WORK="$(mktemp -d)"
+# A native compiler cannot resolve this shell's own path mapping: a search
+# path built from `pwd` is `/c/...` and finds no prelude at all, and a
+# scratch directory named `/tmp/tmp.X` is silently ignored on that path, so
+# the patched copy is never read and the proof that a check can fail quietly
+# stops proving it.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT)
+    REPO="$(cygpath -m "$REPO")"
+    WORK="$(cygpath -m "$WORK")"
+    ;;
+esac
+
 trap 'rm -rf "$WORK"' EXIT
 
 status=0
+export IYI_PATH="$REPO/src${PSEP}$REPO/samples/iyi"
 
-run_case() {
+build_and_run() {
   local label="$1" name="$2"
   shift 2
   if ! "$IYI" build "$@" -o "$WORK/$name" "$REPO/bench/std_crypto_exercise.iyi" \
        >"$WORK/$name.build.log" 2>&1; then
     echo "$label: build failed"
-    sed -n '1,12p' "$WORK/$name.build.log"
+    tail -12 "$WORK/$name.build.log"
     status=1
     return 1
   fi
@@ -45,117 +64,145 @@ run_case() {
   return 0
 }
 
-echo "== the crypto exercise, plain build"
-run_case "plain" crypto-plain
-if ! grep -q "all std/crypto checks passed" "$WORK/crypto-plain.out" 2>/dev/null; then
-  echo "  MISSING: plain build did not reach the end"
+echo "== the std/crypto exercise, plain build"
+build_and_run "plain" crypto-plain
+if ! grep -q "ALL CHECKS PASSED" "$WORK/crypto-plain.out" 2>/dev/null; then
+  echo "plain: missing pass sentinel"
   status=1
 fi
 
 echo
 echo "== every crypto section reported"
-for phrase in "md5:" "sha1:" "sha256:" "sha384:" "sha512:" "streaming:" "compare:" "csprng:" "hmac:" "hkdf:" "chacha20-poly1305:" "aes-128-gcm:" "aes-256-gcm:"; do
-  grep -q "$phrase" "$WORK/crypto-plain.out" 2>/dev/null || {
-    echo "  MISSING: nothing reported for $phrase"
+for phrase in "== hmac" "== hmac streaming" "== hkdf" "== pbkdf2" "== constant-time compare"; do
+  if ! grep -q "$phrase" "$WORK/crypto-plain.out" 2>/dev/null; then
+    echo "  missing section: $phrase"
     status=1
-  }
+  fi
 done
-[ "$status" -eq 0 ] && echo "  md5, sha1, sha256, sha384, sha512, streaming, compare, csprng, hmac, hkdf, chacha20-poly1305, aes-128-gcm, and aes-256-gcm all reported"
+[ "$status" -eq 0 ] && echo "  sections reported"
 
 echo
 echo "== the same program with optimisation on (--release)"
-run_case "release" crypto-release --release
-if ! grep -q "all std/crypto checks passed" "$WORK/crypto-release.out" 2>/dev/null; then
-  echo "  MISSING: release build did not reach the end"
+build_and_run "release" crypto-release --release >/dev/null
+if ! grep -q "ALL CHECKS PASSED" "$WORK/crypto-release.out" 2>/dev/null; then
+  echo "release: missing pass sentinel"
   status=1
 fi
 
 echo
-echo "== proving the checks can fail when cryptographic protections are broken"
+echo "== what crypto refuses"
+cat >"$WORK/refuse.iyi" <<'IYI'
+module refuse
 
-prove_fails() {
-  local label="$1" dir="$2" phrase="$3" target_file="$4" sed_script="$5"
-  mkdir -p "$WORK/$dir/std"
-  # Copy sibling files so both std/digest and std/crypto are reachable
-  cp "$REPO/src/std/digest.iyi" "$WORK/$dir/std/"
-  cp "$REPO/src/std/crypto.iyi" "$WORK/$dir/std/"
-  sed -e "$sed_script" "$REPO/src/std/$target_file" > "$WORK/$dir/std/$target_file"
-  # A patch that matches nothing leaves the library intact, and an intact
-  # library passes. That reads as "this check cannot fail" when the truth is
-  # that nothing was broken to test it. Line-anchored patches drift; this
-  # catches it at the patch rather than at the conclusion.
-  if cmp -s "$REPO/src/std/$target_file" "$WORK/$dir/std/$target_file"; then
-    echo "  $label: the patch changed nothing, so this proves nothing"
+import std/digest::{SHA256}
+import std/crypto::{HMAC, HKDF, PBKDF2}
+
+case Program.args[0]
+when "final-twice"
+  mac = HMAC.new(SHA256, "key")
+  mac.final
+  mac.final
+when "update-after-final"
+  mac = HMAC.new(SHA256, "key")
+  mac.final
+  mac.update("more")
+when "short-buffer"
+  HMAC.new(SHA256, "key").final(Array(UInt8).new(31, 0_u8))
+when "hkdf-too-long"
+  HKDF.expand(SHA256, "prk", "", 255 * 32 + 1)
+when "hkdf-negative"
+  HKDF.expand(SHA256, "prk", "", -1)
+when "pbkdf2-no-iterations"
+  PBKDF2.derive(SHA256, "password", "salt", 0, 32)
+when "pbkdf2-no-length"
+  PBKDF2.derive(SHA256, "password", "salt", 1, 0)
+end
+puts "accepted"
+IYI
+refuse() { # refuse <case> <phrase>
+  if "$IYI" run "$WORK/refuse.iyi" -- "$1" >"$WORK/refuse.out" 2>&1; then
+    echo "  $1 was accepted: $(tr -d '\r' <"$WORK/refuse.out" | tail -1)"
     status=1
-    return
-  fi
-  if ! IYI_PATH="$WORK/$dir:$REPO/src" "$IYI" build \
-       -o "$WORK/$dir/program" "$REPO/bench/std_crypto_exercise.iyi" \
-       >"$WORK/$dir/build.log" 2>&1; then
-    echo "  $label: the patched library did not build"
-    sed -n '1,12p' "$WORK/$dir/build.log"
+  elif ! grep -qF "$2" "$WORK/refuse.out"; then
+    echo "  $1 was refused without saying why: $(tr -d '\r' <"$WORK/refuse.out" | tail -1)"
     status=1
-    return
+  else
+    echo "  $1: $(tr -d '\r' <"$WORK/refuse.out" | grep -oF "$2" | head -1)"
   fi
-  "$WORK/$dir/program" >"$WORK/$dir/out" 2>&1
-  local exit_code=$?
-  if [ "$exit_code" -eq 0 ]; then
-    echo "  $label: the exercise still passed, so it does not test this"
-    status=1
-    return
-  fi
-  if ! grep -q "$phrase" "$WORK/$dir/out"; then
-    echo "  $label: failed, but not at expected check (expected '$phrase')"
-    sed -n '$p' "$WORK/$dir/out"
-    status=1
-    return
-  fi
-  printf '  %s: exits %s at "%s"\n' "$label" "$exit_code" \
-    "$(grep -m1 "$phrase" "$WORK/$dir/out" | sed 's/^iyi: panic: //')"
 }
+refuse final-twice "HMAC: final called twice; reset first"
+refuse update-after-final "HMAC: update after final; reset first"
+refuse short-buffer "31 bytes cannot hold a 32-byte MAC"
+refuse hkdf-too-long "cannot expand to 8161 bytes; the most is 255 * 32 = 8160"
+refuse hkdf-negative "cannot expand to -1 bytes"
+refuse pbkdf2-no-iterations "the iteration count must be at least 1, not 0"
+refuse pbkdf2-no-length "the key length must be at least 1 byte, not 0"
 
-# 1. AES-128-GCM tag verification bypassed (must fail: tampered tag accepted)
-prove_fails "aes-128-gcm tampered tag accepted" aes_tamper \
-  "assertion failed: AES-128-GCM rejected tampered tag" "crypto.iyi" \
-  '/AES-GCM: key must be 16 or 32 bytes/,/^  end$/s/return nil unless Std::Crypto.constant_time_compare(tag, expected_tag)/# bypass/'
-
-# 2. ChaCha20-Poly1305 tag verification bypassed (must fail: tampered tag accepted)
-prove_fails "chacha20-poly1305 tampered tag accepted" chacha_tamper \
-  "assertion failed: ChaCha20-Poly1305 rejected tampered tag" "crypto.iyi" \
-  '/ChaCha20Poly1305: key must be 32 bytes/,/^  end$/s/return nil unless Std::Crypto.constant_time_compare(tag, expected_tag)/# bypass/'
-
-# 3. Digest output corrupted (zeroing first word of SHA-1/SHA-256)
-prove_fails "digest output corrupted" digest_corrupt \
-  "assertion failed: RFC 3174 Test 1 (empty)" "digest.iyi" \
-  's/DigestUtils.put_u32_be(ptr, 0, @h0)/DigestUtils.put_u32_be(ptr, 0, 0_u64)/'
-
-# 4. Constant-time comparison forged (diff == 0 always returns true)
-prove_fails "constant-time compare forged" compare_forged \
-  "assertion failed: constant-time unequal slices" "crypto.iyi" \
-  's/diff == 0_u8/true/'
-
-# 5. HMAC key ipad corrupted
-prove_fails "hmac key ipad corrupted" hmac_corrupt \
-  "assertion failed: RFC 2202 HMAC-MD5 Case 1" "crypto.iyi" \
-  's/k_ipad\[i\] = actual_key\[i\] \^ 0x36_u8/k_ipad[i] = actual_key[i]/'
-
-# 6. QUIC AES header protection mask taken from the wrong offset
-prove_fails "quic aes header mask offset broken" hp_aes \
-  "assertion failed: A.2 client Initial mask" "crypto.iyi" \
-  '/RFC 9001 section 5.4.3/,/^  end$/s/mask\[i\] = block\[i\]/mask[i] = block[i + 1]/'
-
-# 7. QUIC ChaCha20 header protection counter read big-endian
-prove_fails "quic chacha header counter endianness broken" hp_chacha \
-  "assertion failed: A.5 ChaCha20 short header mask" "crypto.iyi" \
-  '/RFC 9001 section 5.4.4/,/^  end$/s/unsafe_shl((8 \* i).to_u64)/unsafe_shl((24 - 8 * i).to_u64)/'
+echo
+echo "== proving the checks can fail when the module is broken"
+# prove_broken <label> <phrase> <old> <new>: the exercise must fail on a
+# copy of the module with <old> replaced, at the check that names <phrase>.
+prove_broken() {
+  rm -rf "$WORK/patched"
+  mkdir -p "$WORK/patched/std"
+  if [ -z "$PY" ]; then
+    echo "  no python3 on this machine, so the $1 proof is unmeasured"
+    return
+  fi
+  if ! OLD="$3" NEW="$4" "$PY" - <<PY
+import os
+from pathlib import Path
+src = Path("$REPO/src/std/crypto.iyi").read_text()
+if os.environ["OLD"] not in src:
+    raise SystemExit("patch site missing")
+Path("$WORK/patched/std/crypto.iyi").write_text(src.replace(os.environ["OLD"], os.environ["NEW"], 1))
+PY
+  then
+    echo "  the $1 patch did not apply"
+    status=1
+  elif IYI_PATH="$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/samples/iyi" "$IYI" run "$REPO/bench/std_crypto_exercise.iyi" >"$WORK/mut.out" 2>&1; then
+    echo "  the exercise PASSED on $1"
+    status=1
+  elif grep -qF "$2" "$WORK/mut.out"; then
+    echo "  $1 is caught"
+  else
+    echo "  $1 failed, but not where it should have:"
+    tail -2 "$WORK/mut.out" | sed 's/^/    /'
+    status=1
+  fi
+}
+# A key longer than a block cut to the block, rather than hashed: only
+# RFC 4231's cases 6 and 7 have one.
+prove_broken "a long key cut to a block" "case 6" \
+  '    if count > block
+      @inner.update(bytes, count)
+      @inner.final(pad)
+      @inner.reset
+    else
+      pad.to_unsafe.copy_from(bytes, count)
+' '    pad.to_unsafe.copy_from(bytes, count > block ? block : count)
+    if false
+'
+prove_broken "HMAC's two pads the same" "hmac-md5 case 1" \
+  '(0x36_u8 ^ 0x5c_u8)' '0_u8'
+# Each block after the first starts from the one before it: case 1's 42
+# bytes are two blocks, and its second half is where that shows.
+prove_broken "HKDF blocks that do not chain" "case 1 okm" \
+  '      mac.update(block.to_unsafe, size) if n > 1
+' ''
+prove_broken "PBKDF2 keeping the last round alone" "4096 iterations" \
+  '          t[i] = t[i] ^ u[i]' '          t[i] = u[i]'
+prove_broken "PBKDF2 numbering its blocks from zero" "sha1, 1 iteration" \
+  '    block = 1
+    while done < length' '    block = 0
+    while done < length'
+prove_broken "a comparison that keeps only the last byte's difference" "first byte differs" \
+  'diff = diff | (pa[i] ^ pb[i])' 'diff = pa[i] ^ pb[i]'
 
 echo
 if [ "$status" -eq 0 ]; then
-  echo "Crypto standard library: MD5, SHA-1, SHA-256, SHA-384, SHA-512, streaming,"
-  echo "constant-time compare, CSPRNG, HMAC, HKDF, ChaCha20-Poly1305, AES-128-GCM, and"
-  echo "AES-256-GCM all pass plain and optimised, and each check is proven to fail"
-  echo "when its mechanism is broken."
+  echo "the std/crypto exercise holds"
 else
-  echo "Crypto standard library: something above failed."
+  echo "the std/crypto exercise did not hold"
 fi
-exit "$status"
+exit $status

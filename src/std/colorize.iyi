@@ -1,10 +1,32 @@
-# Terminal ANSI colorization and text decoration for iyi.
+# Terminal colour and style: `"text".colorize.red.on_blue.bold` is the
+# text wrapped in the ANSI SGR escape that paints it, and back to plain
+# text with `\e[0m`. Sixteen named colours (`ColorANSI`), the 256-colour
+# palette (`Color256`, `fore(200_u8)`), 24-bit RGB (`ColorRGB`,
+# `fore(r, g, b)`), and one style slot (`Mode`: bold, dim, underline,
+# blink, reverse, hidden — the last one asked for wins, and `bright` is
+# `bold`).
 #
-# Pure iyi implementation conforming to Crystal's Colorize specification.
+# `Colorize.enabled?` decides whether escapes are written at all. Until
+# set, it asks two things: whether standard output is a terminal, and
+# whether the environment refuses colour the way the NO_COLOR convention
+# asks — false when `NO_COLOR` is set to anything but the empty string,
+# false when `TERM` is `dumb`, true otherwise. The terminal question is
+# the prelude's `__iyi_isatty`, which is `isatty` on POSIX and
+# `GetConsoleMode` answering at all on Windows; before it existed this
+# module wrote escapes into pipes and files and said so here, and a
+# program redirecting its own output had to set `Colorize.enabled = false`
+# by hand. `Colorize.reset(io)` writes `\e[0m`; `Colorize.with` is an
+# empty coloured object to build a prefix from.
+#
+# `.colorize` is added to every value by reopening the prelude's
+# `Object` at the end of this file: the method is the whole of the
+# module's surface, and a wrapper call on every value is the one shape
+# `42.colorize.yellow` can take. That reopen is the only thing this
+# module puts outside its own namespace.
 
 module std/colorize
 
-module ::Colorize
+pub struct Colorize
   enum ColorANSI
     Default      = 39
     Black        = 30
@@ -57,22 +79,47 @@ module ::Colorize
     Hidden    = 8
   end
 
-  @@enabled : Bool = true
+  @@enabled : Bool? = nil
 
   def self.enabled? : Bool
-    @@enabled
+    e = @@enabled
+    return e if e.is_a?(Bool)
+    on = Colorize.environment_allows?
+    @@enabled = on
+    on
   end
 
   def self.enabled : Bool
-    @@enabled
+    enabled?
   end
 
   def self.enabled=(value : Bool) : Bool
     @@enabled = value
   end
 
-  def self.reset(io) : Nil
-    io.write("\e[0m") if @@enabled
+  # The environment's answer, read once: standard output and standard
+  # error must both be terminals, `NO_COLOR` set to anything but `""`
+  # refuses, `TERM=dumb` refuses, and nothing else is asked. The terminal
+  # test is first because it is the one a reader cannot set: escapes in a
+  # file are a defect in every environment, and this module wrote them
+  # there until the prelude could answer the question (`__iyi_isatty`).
+  # Both, as Crystal's `on_tty_only!` asks, because the answer is one for
+  # the program and text is painted before anyone knows which stream it
+  # goes to: with only standard output asked, `prog 2> err.log` from a
+  # terminal wrote escapes into err.log.
+  def self.environment_allows? : Bool
+    return false unless __iyi_isatty(1) && __iyi_isatty(2)
+    if no_color = Program.env("NO_COLOR")
+      return false unless no_color.empty?
+    end
+    if term = Program.env("TERM")
+      return false if term == "dumb"
+    end
+    true
+  end
+
+  def self.reset(io : IO) : Nil
+    io.write("\e[0m") if enabled?
   end
 
   def self.reset : Nil
@@ -93,8 +140,12 @@ module ::Colorize
       Object(T).new(@target, @fore, @back, @mode, enabled)
     end
 
+    # A name that is no colour raises, as the other library's `fore(:purple)`
+    # does: answering `Default` painted a typo in no colour at all, and
+    # `on(:purpel)` quietly cleared a background already set.
     private def parse_color(symbol : Symbol) : ColorANSI
       case symbol
+      when :default       then ColorANSI::Default
       when :black         then ColorANSI::Black
       when :red           then ColorANSI::Red
       when :green         then ColorANSI::Green
@@ -111,7 +162,7 @@ module ::Colorize
       when :light_magenta then ColorANSI::LightMagenta
       when :light_cyan    then ColorANSI::LightCyan
       when :white         then ColorANSI::White
-      else                     ColorANSI::Default
+      else                     raise "Unknown color: #{symbol}"
       end
     end
 
@@ -155,15 +206,19 @@ module ::Colorize
       Object(T).new(@target, @fore, @back, mode, @enabled)
     end
 
+    # `:bright` is `:bold`, as the `bright` method is; a name that is no mode
+    # raises rather than answering `Default`, which cleared the mode already
+    # set: `bold.mode(:italic)` printed the text plain.
     def mode(sym : Symbol) : self
       m = case sym
-          when :bold      then Mode::Bold
-          when :dim       then Mode::Dim
-          when :underline then Mode::Underline
-          when :blink     then Mode::Blink
-          when :reverse   then Mode::Reverse
-          when :hidden    then Mode::Hidden
-          else                 Mode::Default
+          when :default       then Mode::Default
+          when :bold, :bright then Mode::Bold
+          when :dim           then Mode::Dim
+          when :underline     then Mode::Underline
+          when :blink         then Mode::Blink
+          when :reverse       then Mode::Reverse
+          when :hidden        then Mode::Hidden
+          else                     raise "Unknown mode: #{sym}"
           end
       mode(m)
     end
@@ -336,7 +391,18 @@ module ::Colorize
     end
 
     def to_s : String
-      target_str = @target.to_s
+      wrap(@target.to_s)
+    end
+
+    # The target written down, painted: `"hi".colorize.red.inspect` is the
+    # escape around `"\"hi\""`, the way the other library has it. It was
+    # `to_s`, so a coloured string inspected lost its quotes and read as a
+    # name.
+    def inspect : String
+      wrap(@target.inspect)
+    end
+
+    private def wrap(target_str : String) : String
       return target_str unless Colorize.enabled? && @enabled
 
       parts = [] of String
@@ -382,12 +448,8 @@ module ::Colorize
       io.write(to_s)
     end
 
-    def inspect : String
-      to_s
-    end
-
     def inspect(io) : Nil
-      io.write(to_s)
+      io.write(inspect)
     end
   end
 
@@ -415,7 +477,5 @@ module ::Colorize
 end
 
 class ::Object
-  include Colorize::ObjectExtensions
+  include Std::Colorize::Colorize::ObjectExtensions
 end
-
-pub alias Colorize = ::Colorize

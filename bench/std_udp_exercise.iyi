@@ -1,190 +1,293 @@
-# Datagram sockets: UDP standard library runtime verification exercise.
+# Exercises `std/udp`.
 #
-#   ./bin/iyi run bench/std_udp_exercise.iyi
-#   ./bin/iyi run bench/std_udp_exercise.iyi -- timeout
-#   ./bin/iyi run bench/std_udp_exercise.iyi -- would_block
-#
-# Exercised rather than asserted:
-# 1. loopback round trip on IPv4 with ephemeral port (port 0): client to server, server to client
-# 2. receive_from with caller buffer and Datagram struct with payload text decoder
-# 3. receive buffer and send buffer size configuration (SO_RCVBUF, SO_SNDBUF)
-# 4. non-blocking receive: returns nil when empty, raises on would block
-# 5. receive timeout (read_timeout=): returns nil when empty, raises on timeout
-# 6. poll_read on empty socket (false) and when datagram arrives (true)
-# 7. datagram truncation when payload exceeds receive buffer (remainder dropped by OS)
-# 8. send to closed port (completes without error, UDP is connectionless)
-# 9. connected socket mode (connect, send, receive)
-# 10. IPv6 loopback round trip on [::1] with ephemeral port
+# Run via:
+#     ./bin/iyi run bench/std_udp_exercise.iyi
 
-import std/udp
-using std/udp::{UdpSocket, Datagram, Bytes}
+module bench/std_udp_exercise
 
-def bytes_to_s(b : Bytes) : String
-  String.new(b.size) do |dst|
-    dst.copy_from(b.to_unsafe, b.size)
+def assert_true(cond : Bool, msg : String) : Nil
+  raise "ASSERTION FAILED: #{msg}" unless cond
+end
+
+def assert_str(expected : String, actual : String, msg : String) : Nil
+  raise "ASSERTION FAILED: #{msg}\n  expected #{expected.inspect}\n  got      #{actual.inspect}" unless expected == actual
+end
+
+def assert_int(expected : Int32, actual : Int32, msg : String) : Nil
+  raise "ASSERTION FAILED: #{msg}\n  expected #{expected}\n  got      #{actual}" unless expected == actual
+end
+
+import std/udp::{UdpSocket, Datagram, IPv4Address, Bytes}
+import std/socket::{IyiSocket, SocketError}
+
+puts "== address parsing"
+ip = IyiSocket.parse_ip("127.0.0.1")
+assert_str "127.0.0.1", ip.to_s, "ipv4 to_s"
+assert_true ip.b0 == 127_u8 && ip.b1 == 0_u8 && ip.b2 == 0_u8 && ip.b3 == 1_u8, "ipv4 octets"
+
+ip_local = IyiSocket.parse_ip("localhost")
+assert_str "127.0.0.1", ip_local.to_s, "localhost resolves to 127.0.0.1"
+
+ip_zero = IyiSocket.parse_ip("0.0.0.0")
+assert_str "0.0.0.0", ip_zero.to_s, "0.0.0.0 resolves to 0.0.0.0"
+
+v6 = IyiSocket.parse_ipv6("::1")
+assert_true v6[15] == 1_u8 && v6[0] == 0_u8, "ipv6 loopback parsed"
+puts "  numeric IPv4 and IPv6 parsing without libc"
+
+puts "\n== bind to port 0 and loopback exchange"
+server = UdpSocket.bind("127.0.0.1", 0)
+server_port = server.local_port
+assert_true server_port > 0, "OS assigns port > 0"
+assert_str "127.0.0.1", server.local_address, "bound local address is 127.0.0.1"
+
+client = UdpSocket.client
+# A client that has sent nothing has no address yet, and nothing can have
+# come to it: a receive that does not wait answers nothing, and its port
+# is 0. Windows refuses both calls on such a socket (WSAEINVAL), and they
+# panicked there, "cannot receive from UDP socket".
+assert_true client.receive_from?.nil?, "an unbound client has nothing queued"
+assert_int 0, client.local_port, "an unbound client's port is 0"
+# And its address the any-address: Windows refuses the call, and this
+# panicked "cannot get local address" where the port answered 0.
+assert_str "0.0.0.0", client.local_address, "an unbound client's address is the any-address"
+sent = client.send_to("ping loopback", "127.0.0.1", server_port)
+assert_int 13, sent, "sent byte count"
+
+dg = server.receive_datagram.or_panic
+assert_str "ping loopback", dg.text, "received datagram text"
+assert_str "127.0.0.1", dg.host, "sender host is 127.0.0.1"
+client_port = dg.port
+assert_true client_port > 0, "sender port is non-zero"
+assert_int 13, dg.data.size, "datagram byte size"
+assert_str "ping loopback", dg.to_s, "datagram to_s matches text"
+
+server.send_to("pong reply", dg.host, client_port)
+reply_dg = client.receive_datagram.or_panic
+assert_str "pong reply", reply_dg.text, "reply text"
+assert_str "127.0.0.1", reply_dg.host, "reply sender host"
+assert_int server_port, reply_dg.port, "reply sender port matches server port"
+
+client.send_to("slice payload", "127.0.0.1", server_port)
+buf = Bytes.new(32)
+slice, r_host, r_port = server.receive_from(buf).or_panic
+assert_int 13, slice.size, "caller buffer received slice size"
+assert_str "127.0.0.1", r_host, "caller buffer received sender host"
+assert_int client_port, r_port, "caller buffer received sender port"
+
+self_sent = server.send_to("self datagram", "127.0.0.1", server_port)
+assert_int 13, self_sent, "self-sent byte count"
+self_dg = server.receive_datagram.or_panic
+assert_str "self datagram", self_dg.text, "self datagram text"
+assert_str "127.0.0.1", self_dg.host, "self datagram sender host"
+assert_int server_port, self_dg.port, "self datagram sender port is own port"
+puts "  OS assigns port 0, send_to and receive_from report sender address"
+
+puts "\n== a refused bind answered, and another port taken"
+# `bind?` answers a refusal where `bind` raises it, so a program can go on
+# to another port: what a test server on Windows needs, whose excluded
+# port ranges refuse a bind as "access denied".
+holder = UdpSocket.bind("127.0.0.1", 0)
+refused = UdpSocket.bind?("127.0.0.1", holder.local_port)
+assert_true refused.is_a?(SocketError), "a held port's bind? answers a SocketError"
+if refused.is_a?(SocketError)
+  assert_str "cannot bind UDP socket to 127.0.0.1:#{holder.local_port}: the address is in use", refused.message, "bind?'s refusal says what bind raises"
+end
+taken = UdpSocket.bind?("127.0.0.1", 0)
+assert_true taken.is_a?(UdpSocket), "bind? of a free port answers the socket"
+if taken.is_a?(UdpSocket)
+  assert_true taken.local_port > 0 && taken.local_port != holder.local_port, "bind?'s socket has its own port"
+  taken.close
+end
+holder.close
+puts "  bind? answers a refusal, and binds a free port"
+
+puts "\n== connected sockets"
+c1 = UdpSocket.bind("127.0.0.1", 0)
+c2 = UdpSocket.bind("127.0.0.1", 0)
+cp1 = c1.local_port
+cp2 = c2.local_port
+
+c1.connect("127.0.0.1", cp2)
+c2.connect("127.0.0.1", cp1)
+
+c1.send("connected datagram")
+c2_recv = c2.receive.or_panic
+assert_int 18, c2_recv.size, "connected receive byte size"
+c1.close
+c2.close
+puts "  connect, send, and receive"
+
+# A connected socket whose peer is not there yet. The ICMP refusal of a
+# datagram is reported once, by whichever call on the socket comes next,
+# and that call panicked on Linux and darwin - "cannot send on UDP
+# socket", "cannot receive from UDP socket" - where Windows is told not to
+# report it and went on. The send it is reported to did not go out, so it
+# goes again, and a peer that binds afterwards hears it.
+gone = UdpSocket.bind("127.0.0.1", 0)
+gone_port = gone.local_port
+gone.close
+asker = UdpSocket.bind("127.0.0.1", 0)
+asker.connect("127.0.0.1", gone_port)
+asker.send("nobody")
+sleep(50)
+assert_int 6, asker.send("nobody"), "a send after a refusal sends"
+sleep(50)
+assert_true asker.receive?.nil?, "a refusal reported to a receive is nothing queued"
+asker.send("nobody")
+sleep(50)
+late = UdpSocket.bind("127.0.0.1", gone_port)
+asker.send("somebody")
+assert_str "somebody", late.receive_datagram.or_panic.text, "the send the refusal was reported to goes out"
+late.close
+asker.send("nobody")
+sleep(50)
+parked_heard = ""
+group do |g|
+  g.spawn do
+    parked_heard = asker.receive_datagram.or_panic.text
+    0
+  end
+  g.spawn do
+    sleep(20)
+    again = UdpSocket.bind("127.0.0.1", gone_port)
+    again.send_to("reply", "127.0.0.1", asker.local_port)
+    again.close
+    0
+  end
+end
+assert_str "reply", parked_heard, "a parked receive passes over a refusal and hears the reply"
+asker.close
+puts "  a refusal from a peer not there yet is not a panic"
+
+puts "\n== maximum datagram size"
+server.send_buffer_size = 131072
+server.receive_buffer_size = 131072
+client.send_buffer_size = 131072
+client.receive_buffer_size = 131072
+
+max_payload = Bytes.new(65507)
+max_payload[0] = 0xAA_u8
+max_payload[32768] = 0x55_u8
+max_payload[65506] = 0xFF_u8
+
+client.send_to(max_payload, "127.0.0.1", server_port)
+big_dg = server.receive_datagram(65536).or_panic
+assert_int 65507, big_dg.data.size, "received max payload size"
+assert_true big_dg.data[0] == 0xAA_u8 && big_dg.data[32768] == 0x55_u8 && big_dg.data[65506] == 0xFF_u8, "payload contents intact"
+puts "  65,507-byte datagram sent and received intact"
+
+puts "\n== a datagram larger than the buffer the reader offered"
+# POSIX fills the buffer, drops the rest and answers what fit; Winsock
+# refuses the call with WSAEMSGSIZE and fills the buffer anyway, so
+# without an arm for it a Windows program panicked here with "cannot
+# receive from UDP socket" — measured, on a ten-byte datagram read with
+# a four-byte buffer. Both the immediate read and the parked one, since
+# on Windows those are two different calls.
+client.send_to("0123456789", "127.0.0.1", server_port)
+assert_true server.poll_read(1000), "a datagram to truncate is queued"
+short_now = server.receive?(4)
+assert_true !short_now.nil? && short_now.size == 4, "an immediate read answers the bytes that fit"
+
+client.send_to("0123456789", "127.0.0.1", server_port)
+short_parked = server.receive(4).or_panic
+assert_int 4, short_parked.size, "a parked read answers the bytes that fit"
+puts "  a ten-byte datagram read with a four-byte buffer answers four bytes"
+
+puts "\n== nothing queued: the ? variants answer nil, and a bounded wait ends"
+assert_true !server.poll_read(0), "poll_read is false when no data pending"
+assert_true server.receive_from?.nil?, "receive_from? is nil when nothing is queued"
+assert_true server.receive_datagram?.nil?, "receive_datagram? is nil when nothing is queued"
+assert_true server.receive?.nil?, "receive? is nil when nothing is queued"
+assert_true !server.poll_read(10), "poll_read(10) is false after 10ms with nothing queued"
+client.send_to("late", "127.0.0.1", server_port)
+assert_true server.poll_read(1000), "poll_read is true once a datagram is queued"
+late = server.receive_datagram?
+assert_true !late.nil? && late.text == "late", "receive_datagram? answers the queued one"
+puts "  the ? variants never park, and poll_read bounds a wait"
+
+puts "\n== a connected peer that refused: nothing queued, and the next send goes"
+# The peer's ICMP port-unreachable is reported to a connected datagram
+# socket on Linux and BSD as ECONNREFUSED, on its next send or receive,
+# and the module read that as its own failure: "cannot send on UDP
+# socket" [INFERENCE: not run on Linux]. Windows has the report turned
+# off and answers the byte count and nil, so that is the answer on every
+# platform.
+gone = UdpSocket.bind("127.0.0.1", 0)
+gone_port = gone.local_port
+gone.close
+talker = UdpSocket.client
+talker.connect("127.0.0.1", gone_port)
+assert_int 1, talker.send("x"), "the first send to a port nobody holds"
+sleep(100)
+assert_int 1, talker.send("y"), "the send after the peer's port-unreachable"
+sleep(100)
+assert_true talker.receive?.nil?, "nothing is queued after the peer's port-unreachable"
+talker.close
+puts "  the peer's port-unreachable is neither a failed send nor a failed receive"
+
+puts "\n== socket lifecycle and close"
+assert_true !client.closed?, "client initially not closed"
+client.close
+assert_true client.closed?, "client is closed"
+assert_int -1, client.to_unsafe, "closed client fd is -1"
+
+assert_true !server.closed?, "server initially not closed"
+server.close
+assert_true server.closed?, "server is closed"
+assert_int -1, server.to_unsafe, "closed server fd is -1"
+puts "  close marks socket closed and invalidates fd"
+
+# An IPv6 literal in brackets, as a URL and `IyiSocket.connect` write it:
+# it was "'[' is not a hex digit".
+six = UdpSocket.bind("::1", 0)
+six_client = UdpSocket.client_v6
+six_client.send_to("over six", "[::1]", six.local_port)
+six_dg = six.receive_datagram.or_panic
+assert_str "over six", six_dg.text, "a datagram sent to [::1]"
+six_client.close
+six.close
+puts "  an unbound client's address, and a datagram to [::1]"
+
+# A receive cancelled while its datagram lands: the datagram is the
+# receiver's, or still queued for the next receive, and never gone. On
+# Windows the receive is a posted operation that takes the datagram, and a
+# cancel answered on the flag alone dropped it - 300 rounds in 300.
+struct SenderFailed
+end
+
+impl Error for SenderFailed
+  def message : String
+    "the sender failed after sending"
   end
 end
 
-args = Program.args
-if args.size > 0 && args[0] == "timeout"
-  s = UdpSocket.bind("127.0.0.1", 0)
-  s.read_timeout = 50 # 50 ms
-  # Must raise "receive timed out" and exit non-zero
-  s.receive_from(1024)
-  __iyi_exit(0)
+lander = UdpSocket.bind("127.0.0.1", 0)
+lander_port = lander.local_port
+sender = UdpSocket.bind("127.0.0.1", 0)
+kept = 0
+rounds = 50
+rounds.times do |round|
+  took = false
+  group do |g|
+    g.spawn do
+      took = true unless lander.receive_from(100).is_a?(Cancelled)
+      0
+    end
+    g.spawn do
+      sender.send_to("round #{round}", "127.0.0.1", lander_port)
+      SenderFailed.new
+    end
+  end
+  unless took
+    sleep(2)
+    took = !lander.receive_from?(100).nil?
+  end
+  kept = kept + 1 if took
 end
+lander.close
+sender.close
+assert_int rounds, kept, "every datagram sent beside a cancelled receive is received or still queued"
+puts "  a cancelled receive loses no datagram"
 
-if args.size > 0 && args[0] == "would_block"
-  s = UdpSocket.bind("127.0.0.1", 0)
-  s.non_blocking = true
-  # Must raise "receive would block" and exit non-zero
-  s.receive_from(1024)
-  __iyi_exit(0)
-end
-
-# 1. Ephemeral port bind and IPv4 round-trip
-server = UdpSocket.bind("127.0.0.1", 0)
-s_port = server.local_port
-raise "round_trip: server port must be positive" if s_port <= 0
-raise "round_trip: server address must be 127.0.0.1" if server.local_address != "127.0.0.1"
-
-client = UdpSocket.client
-raise "round_trip: client socket is closed" if client.closed?
-
-# Ping from client to server
-sent = client.send_to("ping-from-client", "127.0.0.1", s_port)
-raise "round_trip: client sent bytes mismatch" if sent != 16
-
-# Server receives from client
-payload, peer_host, peer_port = server.receive_from(1024)
-raise "round_trip: peer host mismatch: #{peer_host}" if peer_host != "127.0.0.1"
-raise "round_trip: peer port must be positive" if peer_port <= 0
-msg = bytes_to_s(payload)
-raise "round_trip: payload mismatch: #{msg}" if msg != "ping-from-client"
-
-# Pong from server back to client
-sent2 = server.send_to("pong-from-server", peer_host, peer_port)
-raise "round_trip: server sent bytes mismatch" if sent2 != 16
-
-# Client receives reply
-payload2, s_host, s_reply_port = client.receive_from(1024)
-raise "round_trip: server reply host mismatch" if s_host != "127.0.0.1"
-raise "round_trip: server reply port mismatch" if s_reply_port != s_port
-msg2 = bytes_to_s(payload2)
-raise "round_trip: reply payload mismatch: #{msg2}" if msg2 != "pong-from-server"
-puts "round_trip: ok"
-
-# 2. Datagram struct and caller buffer
-client.send_to("slice-datagram-test", "127.0.0.1", s_port)
-buf = Bytes.new(64, 0_u8)
-slice_res, from_h, from_p = server.receive_from(buf)
-slice_msg = bytes_to_s(slice_res)
-raise "datagram_struct: caller buffer mismatch: #{slice_msg}" if slice_msg != "slice-datagram-test"
-
-client.send_to("datagram-struct-test", "127.0.0.1", s_port)
-dgram = server.receive_datagram(1024)
-d_msg = dgram.text
-raise "datagram_struct: struct text mismatch: #{d_msg}" if d_msg != "datagram-struct-test"
-raise "datagram_struct: host mismatch" if dgram.host != "127.0.0.1"
-raise "datagram_struct: port mismatch" if dgram.port != peer_port
-puts "datagram_struct: ok"
-
-# 3. Buffer sizes configuration
-server.receive_buffer_size = 65536
-raise "buffer_sizes: receive buffer size not set" if server.receive_buffer_size <= 0
-
-server.send_buffer_size = 65536
-raise "buffer_sizes: send buffer size not set" if server.send_buffer_size <= 0
-puts "buffer_sizes: ok"
-
-# 4. Non-blocking mode
-server.non_blocking = true
-raise "non_blocking: flag not set" unless server.non_blocking?
-nb_res = server.receive_from?(1024)
-raise "non_blocking: expected nil on empty receive" unless nb_res.nil?
-
-nb_dgram = server.receive_datagram?(1024)
-raise "non_blocking: expected nil on empty receive_datagram" unless nb_dgram.nil?
-server.non_blocking = false
-puts "non_blocking: ok"
-
-# 5. Receive timeout mode
-server.read_timeout = 50 # 50 ms
-t_res = server.receive_from?(1024)
-raise "timeout_mode: expected nil on timed out receive_from?" unless t_res.nil?
-
-t_dgram = server.receive_datagram?(1024)
-raise "timeout_mode: expected nil on timed out receive_datagram?" unless t_dgram.nil?
-server.read_timeout = 0
-puts "timeout_mode: ok"
-
-# 6. Polling (poll_read)
-p_empty = server.poll_read(20) # 20 ms
-raise "poll_read: expected false on empty socket" if p_empty
-
-client.send_to("poll-test-packet", "127.0.0.1", s_port)
-p_ready = server.poll_read(50) # 50 ms
-raise "poll_read: expected true with packet waiting" unless p_ready
-
-drain_data, _, _ = server.receive_from(1024)
-raise "poll_read: drained packet mismatch" if bytes_to_s(drain_data) != "poll-test-packet"
-puts "poll_read: ok"
-
-# 7. Datagram truncation
-client.send_to("0123456789ABCDEF0123456789ABCDEF", "127.0.0.1", s_port) # 32 bytes
-trunc_payload, _, _ = server.receive_from(10)                           # buffer size 10
-raise "truncation: size mismatch #{trunc_payload.size}" if trunc_payload.size != 10
-trunc_str = bytes_to_s(trunc_payload)
-raise "truncation: content mismatch #{trunc_str}" if trunc_str != "0123456789"
-puts "truncation: ok"
-
-# 8. Send to closed port
-probe = UdpSocket.bind(0)
-closed_port = probe.local_port
-probe.close
-raise "closed_port_send: probe close failed" unless probe.closed?
-
-sent_closed = client.send_to("packet to nowhere", "127.0.0.1", closed_port)
-raise "closed_port_send: send to closed port failed" if sent_closed != 17
-puts "closed_port_send: ok"
-
-# 9. Connected socket mode
-c_conn = UdpSocket.client
-c_conn.connect("127.0.0.1", s_port)
-c_conn.send("connected-hello")
-c_recv, _, _ = server.receive_from(1024)
-raise "connected_mode: content mismatch" if bytes_to_s(c_recv) != "connected-hello"
-c_conn.close
-puts "connected_mode: ok"
-
-# 10. IPv6 loopback round-trip
-v6_server = UdpSocket.bind("::1", 0)
-v6_port = v6_server.local_port
-raise "ipv6_round_trip: v6 port must be positive" if v6_port <= 0
-raise "ipv6_round_trip: v6 address mismatch" if v6_server.local_address != "::1"
-
-v6_client = UdpSocket.client_v6
-v6_sent = v6_client.send_to("v6-ping", "::1", v6_port)
-raise "ipv6_round_trip: v6 sent bytes mismatch" if v6_sent != 7
-
-v6_payload, v6_peer_host, v6_peer_port = v6_server.receive_from(1024)
-v6_msg = bytes_to_s(v6_payload)
-raise "ipv6_round_trip: v6 message mismatch: #{v6_msg}" if v6_msg != "v6-ping"
-raise "ipv6_round_trip: v6 peer host mismatch" if v6_peer_host != "::1"
-raise "ipv6_round_trip: v6 peer port must be positive" if v6_peer_port <= 0
-
-v6_server.send_to("v6-pong", v6_peer_host, v6_peer_port)
-v6_reply, _, _ = v6_client.receive_from(1024)
-v6_reply_msg = bytes_to_s(v6_reply)
-raise "ipv6_round_trip: v6 reply mismatch: #{v6_reply_msg}" if v6_reply_msg != "v6-pong"
-
-v6_server.close
-v6_client.close
-puts "ipv6_round_trip: ok"
-
-server.close
-client.close
-raise "server close failed" unless server.closed?
-raise "client close failed" unless client.closed?
-
-puts "std_udp_exercise: all checks passed"
+puts "\nALL CHECKS PASSED"

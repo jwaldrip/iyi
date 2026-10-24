@@ -17,10 +17,25 @@
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-IYI="$REPO/bin/iyi"
+
+# Overridable for the same reason `bench/wasm32_exercise.sh` says: in CI the
+# compiler here is the tarball's, because that is the one that runs beside
+# wasmtime.
+IYI="${IYI:-$REPO/bin/iyi}"
 WASI_SDK="${WASI_SDK:-/opt/wasi-sdk}"
 WASMTIME="${WASMTIME:-$HOME/.wasmtime/bin/wasmtime}"
 WORK="$(mktemp -d)"
+# A native compiler cannot resolve this shell's own path mapping: a search
+# path built from `pwd` is `/c/...` and finds no prelude at all, and a
+# scratch directory named `/tmp/tmp.X` is silently ignored on that path, so
+# the patched copy is never read and the proof that a check can fail quietly
+# stops proving it.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT)
+    REPO="$(cygpath -m "$REPO")"
+    WORK="$(cygpath -m "$WORK")"
+    ;;
+esac
 
 cd "$WORK" || exit 1
 step() { echo "== $1"; }
@@ -52,6 +67,15 @@ grep -q 'root:' theft.txt && { echo "the host's file leaked through:"; cat theft
 
 step "the refusal is the prelude's rule, by name"
 grep -q 'File is not available on wasm32-wasi' theft.txt || { echo "the refusal is unnamed:"; cat theft.txt; exit 1; }
+
+step "File.exists? is refused by name, not answered false"
+printf 'puts File.exists?("/etc/passwd")\n' > exists.iyi
+build_wasm exists
+"$WASMTIME" exists > exists.txt 2>&1
+status=$?
+[ $status -ne 0 ] || { echo "exists? exited 0:"; cat exists.txt; exit 1; }
+grep -q 'root:' exists.txt && { echo "the host's file leaked through exists?:"; cat exists.txt; exit 1; }
+grep -q 'File.exists? is not available on wasm32-wasi' exists.txt || { echo "exists? was not named:"; cat exists.txt; exit 1; }
 
 echo "workdir $WORK"
 echo "sandbox gate: every step held"

@@ -12,6 +12,10 @@
 #      `wrk -c 100` over a sample web application died at request ~400,
 #      inside `String#+`, on a free list the poller had scribbled over.
 #
+#      On Windows the kernel writes into each fiber's OVERLAPPED instead,
+#      and a connection's is collected between its read and its write
+#      and must come out of it live.
+#
 #   2. **A finished fiber's stack comes back.** 256 KiB a fiber, mapped
 #      and never returned, is a leak with a connection counter on it:
 #      the mappings alone killed the program - `/proc/self/maps` outgrew
@@ -19,22 +23,33 @@
 #      connections must run on the same few stacks.
 module server_load
 
-import std/socket
-using std/socket::{IyiSocket}
+import std/socket::{IyiSocket, SocketError}
 
 ROUNDS      = 200
 STACK_BOUND =   8
 
-# One connection, server side: park, read, answer, and report the stack
-# it ran on, so the caller can count how many stacks the run used.
+# One connection, server side: read (which parks), answer, and report the
+# stack it ran on, so the caller can count how many stacks the run used.
+# The socket parks by itself now; nothing here names the poller.
 pub def serve(client : IyiSocket) : UInt64
   top = IyiScheduler.current.stack_top
-  case wait_readable(client.to_unsafe)
-  in Cancelled
+  case request = client.read(256)
+  in Cancelled, SocketError
     client.close
     0_u64
-  in Nil
-    request = client.read(256)
+  in String
+    # Windows' poller keeps no event buffer; what the kernel writes into
+    # is the fiber's OVERLAPPED, one per fiber and reused for each of its
+    # operations. Between two of them - the read answered, the write not
+    # yet armed - the fiber's field is all that holds it, so a collection
+    # is made exactly there and the OVERLAPPED asked about.
+    {% if flag?(:win32) %}
+      IyiMark.collect
+      overlapped = IyiScheduler.current.wait_overlapped.address
+      if IyiMark.flags(overlapped) & IyiHeap::FREE_FLAG != 0
+        raise "FAIL: a collection between a connection's read and its write freed the OVERLAPPED the write hands the kernel"
+      end
+    {% end %}
     client.write("reply-" + request.size.to_s)
     client.close
     top
@@ -43,19 +58,22 @@ end
 
 # One connection, client side: the other half of the same park.
 pub def ask(port : Int32, id : Int32) : Int32
-  socket = IyiSocket.connect("127.0.0.1", port)
-  socket.write("ping-" + id.to_s)
-  case wait_readable(socket.to_unsafe)
-  in Cancelled
-    socket.close
+  case socket = IyiSocket.connect("127.0.0.1", port)
+  in Cancelled, SocketError
     1
-  in Nil
-    reply = socket.read(256)
-    socket.close
-    want = "reply-" + ("ping-" + id.to_s).size.to_s
-    return 0 if reply == want
-    puts "FAIL: reply " + reply + ", wanted " + want
-    1
+  in IyiSocket
+    socket.write("ping-" + id.to_s)
+    case reply = socket.read(256)
+    in Cancelled, SocketError
+      socket.close
+      1
+    in String
+      socket.close
+      want = "reply-" + ("ping-" + id.to_s).size.to_s
+      return 0 if reply == want
+      puts "FAIL: reply " + reply + ", wanted " + want
+      1
+    end
   end
 end
 
@@ -128,13 +146,15 @@ group do |outer|
   outer.spawn do
     n = 0
     while n < ROUNDS
-      case wait_readable(listener.to_unsafe)
+      case client = listener.accept
       in Cancelled
         n = ROUNDS
-      in Nil
-        client = listener.accept
+      in SocketError
+        raise client.message
+      in IyiSocket
+        accepted = client
         outer.spawn do
-          tops << serve(client)
+          tops << serve(accepted)
           0
         end
         n = n + 1

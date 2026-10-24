@@ -1,0 +1,99 @@
+# Exercises `std/number`: Number#abs, sign, zero? on Int32, round by mode,
+# and divmod on the floats through std/float's `//` and `%`.
+#
+# Run via:
+#     ./bin/iyi run bench/std_number_exercise.iyi
+
+module bench/std_number_exercise
+
+def assert_true(cond : Bool, msg : String) : Nil
+  raise "ASSERTION FAILED: #{msg}" unless cond
+end
+
+def assert_str(expected : String, actual : String, msg : String) : Nil
+  raise "ASSERTION FAILED: #{msg}\n  expected #{expected.inspect}\n  got      #{actual.inspect}" unless expected == actual
+end
+
+import std/number::{RoundingMode}
+import std/float
+
+puts "== abs"
+assert_true (-7).abs == 7, "abs"
+assert_true 7.abs == 7, "abs pos"
+assert_true 3.abs2 == 9, "abs2"
+puts "  abs, abs2"
+
+puts "\n== sign"
+assert_true (-2).sign == -1, "neg"
+assert_true 0.sign == 0, "zero"
+assert_true 4.sign == 1, "pos"
+assert_true 0.zero?, "zero?"
+puts "  sign and zero?"
+
+puts "\n== round"
+assert_true 2.5.round(RoundingMode::TiesEven) == 2.0, "ties even 2.5"
+assert_true 2.5.round(RoundingMode::TiesAway) == 3.0, "ties away 2.5"
+assert_true 2.5.round(RoundingMode::ToZero) == 2.0, "to zero 2.5"
+assert_true 2.5.round(RoundingMode::ToPositive) == 3.0, "to positive 2.5"
+assert_true 2.5.round(RoundingMode::ToNegative) == 2.0, "to negative 2.5"
+assert_true (-2.5).round(RoundingMode::TiesEven) == -2.0, "ties even -2.5"
+assert_true (-2.5).round(RoundingMode::TiesAway) == -3.0, "ties away -2.5"
+assert_true (-2.5).round(RoundingMode::ToZero) == -2.0, "to zero -2.5"
+assert_true (-2.5).round(RoundingMode::ToPositive) == -2.0, "to positive -2.5"
+assert_true (-2.5).round(RoundingMode::ToNegative) == -3.0, "to negative -2.5"
+assert_true 3.5.round(RoundingMode::TiesEven) == 4.0, "ties even 3.5"
+assert_true 2.5.round == 2.0, "no-arg round is ties even, as the mode's default"
+assert_true 25.0.round(-1, RoundingMode::TiesAway) == 30.0 && 25.0.round(-1, RoundingMode::TiesEven) == 20.0, "places and a mode together"
+assert_true 2.675.round(2, RoundingMode::ToZero) == 2.67, "places toward zero"
+assert_true 5.round(RoundingMode::ToZero) == 5, "int identity"
+# The nearest integer, not the floor of the value plus a half: that sum
+# rounds, and rounded 0.49999999999999994 up to 1.0 and 4503599627370497.0
+# (an integer already) up by one. Python's round agrees with both below.
+assert_true 0.49999999999999994.round(RoundingMode::TiesAway) == 0.0, "ties away, just under a half"
+assert_true (-0.49999999999999994).round(RoundingMode::TiesAway) == 0.0, "ties away, just over minus a half"
+assert_true 4503599627370497.0.round(RoundingMode::TiesAway) == 4503599627370497.0, "ties away, an integer past 2^52 stays"
+assert_true (-4503599627370497.0).round(RoundingMode::TiesAway) == -4503599627370497.0, "and its negative"
+assert_true 0.49999999999999994.round(RoundingMode::TiesEven) == 0.0, "ties even, just under a half"
+assert_true (-0.49999999999999994).round(RoundingMode::TiesEven) == 0.0, "ties even, just over minus a half"
+assert_true 4503599627370497.0.round(RoundingMode::TiesEven) == 4503599627370497.0, "ties even, an integer past 2^52 stays"
+assert_true 0.5.round(RoundingMode::TiesAway) == 1.0 && (-0.5).round(RoundingMode::TiesAway) == -1.0, "a half goes away from zero"
+assert_true 0.5.round(RoundingMode::TiesEven) == 0.0 && (-0.5).round(RoundingMode::TiesEven) == 0.0, "and to the even neighbour"
+assert_true 1.5.round(RoundingMode::TiesEven) == 2.0 && (-1.5).round(RoundingMode::TiesEven) == -2.0, "one and a half"
+assert_true 2.4999999999999996.round(RoundingMode::TiesAway) == 2.0, "the double under 2.5"
+assert_true 9007199254740991.0.round(RoundingMode::TiesAway) == 9007199254740991.0, "the last integer under 2^53 stays"
+assert_true (0.0 / 0.0).round(RoundingMode::TiesAway).nan?, "NaN rounds to NaN"
+puts "  the mode is the rounding"
+
+# `divmod` is declared on every Number and used to fail to compile for a
+# float, which had no `//`: std/float gives both floats the floored one,
+# so `7.5.divmod(2.0)` is Python's `(3.0, 1.5)`. Integers still truncate,
+# the prelude's `//` and `%` being theirs.
+puts "\n== divmod"
+q, r = 7.5.divmod(2.0)
+assert_true q == 3.0 && r == 1.5, "divmod(7.5, 2.0) is (3.0, 1.5)"
+q, r = (-7.5).divmod(2.0)
+assert_true q == -4.0 && r == 0.5, "divmod(-7.5, 2.0) is (-4.0, 0.5)"
+q, r = 7.5.divmod(-2.0)
+assert_true q == -4.0 && r == -0.5, "divmod(7.5, -2.0) is (-4.0, -0.5)"
+q, r = (-7.5).divmod(-2.0)
+assert_true q == 3.0 && r == -1.5, "divmod(-7.5, -2.0) is (3.0, -1.5)"
+q32, r32 = 7.5_f32.divmod(2.0_f32)
+assert_true q32 == 3.0_f32 && r32 == 1.5_f32, "the single's divmod"
+qi, ri = 7.divmod(2)
+assert_true qi == 3 && ri == 1, "divmod(7, 2) is (3, 1)"
+puts "  divmod on both floats is floored, as its // and % are"
+
+# A number's identities are its literals. `Number.zero` and
+# `multiplicative_identity` called `new(0)` and `new(1)`, which no number
+# has: `Float32.zero`, `Int64.multiplicative_identity` and
+# `[1.5_f32, 2.25_f32].sum`, which asks `Float32.zero`, failed to compile.
+puts "\n== identities"
+assert_true [1.5_f32, 2.25_f32].sum == 3.75_f32 && ([] of Float32).sum == 0.0_f32, "a single's sum"
+assert_true [1_i8, 2_i8].sum == 3_i8 && ([] of UInt16).sum == 0_u16, "an Int8's sum and a UInt16's"
+assert_true Float32.zero == 0.0_f32 && Float32.multiplicative_identity == 1.0_f32, "the single's identities"
+assert_true Float64.additive_identity == 0.0 && Float64.multiplicative_identity == 1.0, "the double's identities"
+assert_true Int32.multiplicative_identity == 1 && Int64.multiplicative_identity == 1_i64, "the prelude integers' ones"
+assert_true Int8.zero == 0_i8 && Int16.additive_identity == 0_i16 && UInt128.multiplicative_identity == 1_u128, "the rest of the tower's"
+puts "  every number's zero and one are its literals"
+
+puts "\nALL CHECKS PASSED"

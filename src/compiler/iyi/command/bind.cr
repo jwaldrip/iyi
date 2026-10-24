@@ -21,6 +21,11 @@
 # verbs — so a failure is the step's own message and the artifacts of the
 # shards before it stand.
 class Iyi::Command
+  # Which shard wrote which artifact this run. Two shards that declare
+  # the same root would otherwise share one file; see the check in
+  # `bind_boundary`.
+  @bind_owners = {} of String => String
+
   private def bind
     mods = "mods"
     lib_dir = "lib"
@@ -28,10 +33,13 @@ class Iyi::Command
       case option
       when "--mods"
         options.shift
-        mods = options.shift? || abort!("--mods takes a directory", :USAGE_ERROR)
+        # The flag's value, not whatever flag was written after it: `--mods`
+        # with nothing behind it took `--lib` for a directory name and made
+        # one. `flag_value!` is in migrate.cr, whose `--out` had it too.
+        mods = flag_value!("--mods", "a directory")
       when "--lib"
         options.shift
-        lib_dir = options.shift? || abort!("--lib takes a directory", :USAGE_ERROR)
+        lib_dir = flag_value!("--lib", "a directory")
       when "--help", "-h"
         puts <<-USAGE
           Usage: #{Command.program_name} bind [--lib DIR] [--mods DIR] [SHARD ...]
@@ -45,14 +53,46 @@ class Iyi::Command
           `kemal`, `DB` is `d_b`), and the output says it.
           USAGE
         exit
+      when .starts_with?('-')
+        # A flag this verb does not have, not a shard: `iyi bind --bogus`
+        # was read as a shard named `--bogus` and answered "no lib/ here",
+        # about a directory the line never mentioned.
+        abort! "bind: unknown flag #{option}", :USAGE_ERROR
       else
         break
       end
     end
+    # The shards come last, as the usage writes them, and a flag among them
+    # was bound as one more shard's name.
+    if flag = options.find(&.starts_with?('-'))
+      abort! "bind: #{flag} comes after the shard names, where no flag is read; the flags come first: " \
+             "#{Command.program_name} bind [--lib DIR] [--mods DIR] [SHARD ...]", :USAGE_ERROR
+    end
+    # Without a `\\?\` prefix, which names the same directory and which
+    # `Dir.mkdir_p` takes apart one component at a time: `--mods
+    # \\?\C:\p\mods` stopped on "\\?\: The filename, directory name, or
+    # volume label syntax is incorrect." See `Iyi.unverbatim`.
+    mods = Iyi.unverbatim(mods)
+    lib_dir = Iyi.unverbatim(lib_dir)
 
     unless Dir.exists?(lib_dir)
+      # A file that is there is not a directory that is missing: `--lib
+      # shard.yml` answered "no shard.yml/ here; run `shards install`"
+      # about the file the person had just named.
+      abort! "bind: --lib needs the directory `shards install` wrote, and #{lib_dir} is a file", :USAGE_ERROR if File.exists?(lib_dir)
       abort! "bind: no #{lib_dir}/ here; run `shards install` first, or --lib DIR", :USAGE_ERROR
     end
+    # And the other way: `--mods shard.yml` died of `mkdir`'s own words,
+    # "shard.yml: File exists", which names no flag and blames nothing.
+    if File.exists?(mods) && !Dir.exists?(mods)
+      abort! "bind: --mods needs a directory for the .iyimod files, and #{mods} is a file", :USAGE_ERROR
+    end
+
+    # Artifact name is the root namespace, so two shards that both declare
+    # `Shared` both write `mods/shared.iyimod`. The second used to overwrite
+    # the first and exit 0. The owner is the shard that bound it, and a
+    # later shard that would write the same file is refused.
+    @bind_owners = {} of String => String
 
     shards = {} of String => Shard
     Dir.each_child(lib_dir) do |name|
@@ -82,6 +122,7 @@ class Iyi::Command
         shards.keys
       end
     wanted.each do |name|
+      abort! "bind: the shard name is empty, so it names nothing", :USAGE_ERROR if name.empty?
       abort! "bind: no shard named #{name} under #{lib_dir}/", :USAGE_ERROR unless shards[name]?
     end
 
@@ -97,6 +138,12 @@ class Iyi::Command
     wanted.each { |name| visit.call(name) }
 
     executable = Process.executable_path || abort!("bind: cannot find the compiler's own executable", :USAGE_ERROR)
+    # And one that is there and will not take a file: the first thing
+    # written is the shard's bind log, and its "Permission denied" named
+    # the log, not the flag.
+    if Dir.exists?(mods) && !Iyi.writable_directory?(mods)
+      abort! "bind: --mods #{mods} will not take the .iyimod files: no permission to write there", :USAGE_ERROR
+    end
     Dir.mkdir_p(mods)
     mods_path = File.expand_path(mods)
 
@@ -106,7 +153,9 @@ class Iyi::Command
     lib_path = File.expand_path(lib_dir)
     search = IyiPath.default_paths.map { |path| path == "lib" ? lib_path : File.expand_path(path) }
     search.unshift(lib_path) unless search.includes?(lib_path)
-    env = {"IYI_PATH" => search.join(Process::PATH_DELIMITER), "CRYSTAL_PATH" => search.join(Process::PATH_DELIMITER)}
+    # One spelling per step, because the two run in different directories.
+    # See `bind_search_env`.
+    envs = {bind: bind_search_env(search, Dir.current), fill: bind_search_env(search, mods_path)}
 
     # A shard that fails is named and the rest go on: the ones before it
     # stand, and a shard that does not depend on it binds regardless.
@@ -148,7 +197,7 @@ class Iyi::Command
       # The root goes first because binding it is what *finds* the others -
       # `tool bind` reads them off the program and says so - and then it is
       # bound again, with those boundaries beside it to refer to.
-      result = bind_namespaces(executable, env, mods, mods_path, shard,
+      result = bind_namespaces(executable, envs, mods, mods_path, shard,
         shard.entry, root, "  #{shard.name} (#{root})")
 
       macros << shard.name if result.macros
@@ -165,10 +214,11 @@ class Iyi::Command
       optional_entries(shard.entry).each do |part|
         next unless part_root = shard_root(part)
         next if part_root == root
-        label = "    #{part_root} (#{part.lchop(File.dirname(File.dirname(shard.entry)) + "/")})"
+        shard_dir = File.dirname(File.dirname(shard.entry))
+        label = "    #{part_root} (#{Iyi.path_under?(part, shard_dir) || part})"
         print "\n#{label}"
         STDOUT.flush
-        report_boundary mods, bind_namespaces(executable, env, mods, mods_path, shard,
+        report_boundary mods, bind_namespaces(executable, envs, mods, mods_path, shard,
           part, part_root, label)
       end
     end
@@ -182,6 +232,34 @@ class Iyi::Command
 
   record Shard, name : String, entry : String, root : String?, dependencies : Array(String)
 
+  # The search path each of a boundary's two steps is given: `bind` runs
+  # `tool bind` from here, `fill` runs the keep build from inside mods/.
+  alias BindEnvs = NamedTuple(bind: Hash(String, String), fill: Hash(String, String))
+
+  # *search* as IYI_PATH spells it for a step run from *from*.
+  #
+  # An entry holding the delimiter is written relative to *from*, because
+  # the variable is a list of entries joined by `;` on Windows (`:`
+  # elsewhere) and an absolute path holding one arrives as two entries. A
+  # project in `p8 ü;x y` bound nothing that requires another shard: `top`
+  # said `can't find file 'base'` in its bind log, about a lib/ a plain
+  # build of the same directory finds. An entry with no such path - another
+  # drive, or a delimiter in the part that differs - is refused by name.
+  private def bind_search_env(search : Array(String), from : String) : Hash(String, String)
+    delimiter = Process::PATH_DELIMITER
+    entries = search.map do |entry|
+      next entry unless entry.includes?(delimiter)
+      relative = ::Path[entry].relative_to?(from).try(&.to_s)
+      if relative.nil? || relative.includes?(delimiter)
+        abort! "bind: #{entry} holds `#{delimiter}`, which separates IYI_PATH's entries, " \
+               "and no path to it from #{from} goes without one", :USAGE_ERROR
+      end
+      relative
+    end
+    joined = entries.join(delimiter)
+    {"IYI_PATH" => joined, "CRYSTAL_PATH" => joined}
+  end
+
   # One entry file's namespaces, root first.
   #
   # A boundary is rooted at a namespace and a file need not declare only one:
@@ -194,10 +272,10 @@ class Iyi::Command
   # The root goes first because binding it is what *finds* the others -
   # `tool bind` reads them off the program and says so - and then it is bound
   # again, with those boundaries beside it to refer to.
-  private def bind_namespaces(executable : String, env : Hash(String, String), mods : String,
+  private def bind_namespaces(executable : String, envs : BindEnvs, mods : String,
                               mods_path : String, shard : Shard, entry : String,
                               root : String, label : String) : Boundary
-    result = bind_boundary(executable, env, mods, mods_path, shard, entry, root)
+    result = bind_boundary(executable, envs, mods, mods_path, shard, entry, root)
     # Not one that already has an artifact: it was bound earlier, in
     # dependency order, and rebinding it here would put this run's edges the
     # wrong way round. An optional part sees the whole shard, so the shard's
@@ -217,12 +295,12 @@ class Iyi::Command
     others.each do |other|
       print "\n    #{other} (also declared here)"
       STDOUT.flush
-      report_boundary mods, bind_boundary(executable, env, mods, mods_path, shard, entry, other)
+      report_boundary mods, bind_boundary(executable, envs, mods, mods_path, shard, entry, other)
     end
 
     # And the root again, now that they exist: the first run had nothing to
     # refer to, so its declarations named types it could not name.
-    result = bind_boundary(executable, env, mods, mods_path, shard, entry, root)
+    result = bind_boundary(executable, envs, mods, mods_path, shard, entry, root)
     print "\n#{label}"
     STDOUT.flush
     result
@@ -236,11 +314,17 @@ class Iyi::Command
     macros : Bool,
     dropped : Array(String),
     message : String,
-    others : Array(String)
+    others : Array(String),
+    # How many of the shard's methods carry a name `!` ends, which iyi
+    # cannot write (SPEC.md III.1.7). The boundary still declares them —
+    # a travelling body that calls one has to typecheck — and no call a
+    # person writes can reach them, so the count belongs where somebody
+    # is looking at the shard rather than at a call site.
+    unspellable : Int32 = 0
 
   # Binds one namespace: the declarations, then the object code, then again
   # without whatever the fill build could not compile. See `DROP_CAP`.
-  private def bind_boundary(executable : String, env : Hash(String, String), mods : String,
+  private def bind_boundary(executable : String, envs : BindEnvs, mods : String,
                             mods_path : String, shard : Shard, entry : String,
                             root : String) : Boundary
     artifact = Iyi.iyi_module_name(root)
@@ -248,23 +332,31 @@ class Iyi::Command
     bind_log = File.join(mods_path, "#{artifact}.bind.log")
     fill_log = File.join(mods_path, "#{artifact}.fill.log")
     drop_path = File.join(mods_path, "#{artifact}.drop")
+    owners = @bind_owners ||= {} of String => String
+    if (owner = owners[artifact]?) && owner != shard.name
+      return Boundary.new(root, artifact, false, false, [] of String,
+        "#{shard.name} also declares #{root}, and #{owner} already wrote #{mods}/#{artifact}.iyimod",
+        [] of String)
+    end
 
     # Discovery is this run's, not the last one's: a shard fixed since then
     # binds whole, and a person who deleted a line gets it retried.
     File.delete?(drop_path)
     dropped = [] of String
     others = [] of String
+    unspellable = 0
     bound = false
     macros = false
     message = ""
 
     until bound
-      step = run_step(executable, env, ["tool", "bind", "--crystal", "-e", root, "--emit-bind", mods_path, "--use-iyimod", mods_path, entry], chdir: nil, log: bind_log)
+      step = run_step(executable, envs[:bind], ["tool", "bind", "--crystal", "-e", root, "--emit-bind", mods_path, "--use-iyimod", mods_path, entry], chdir: nil, log: bind_log)
       unless step
         message = "binding failed; #{mods}/#{artifact}.bind.log has the compiler's answer"
         break
       end
       others = other_namespaces(bind_log)
+      unspellable = unspellable_names(bind_log).as(Int32)
 
       # A shard whose surface is macros - `prop`, say - has nothing R-2 can
       # write and `tool bind` writes no file; III.6 rule 4 says macros do
@@ -280,7 +372,7 @@ class Iyi::Command
       # `--error-trace`, because the frame this needs is the outermost one:
       # the compiler names the shard's own line by default, and which
       # method of the boundary reached it is the whole question here.
-      if run_step(executable, env, ["build", "--crystal", "--error-trace", "--iyi-keep", root, "--emit-bind", ".", "-o", "keep_#{artifact}", "#{artifact}_keep.cr"], chdir: mods_path, log: fill_log)
+      if run_step(executable, envs[:fill], ["build", "--crystal", "--error-trace", "--iyi-keep", root, "--emit-bind", ".", "-o", "keep_#{artifact}", "#{artifact}_keep.cr"], chdir: mods_path, log: fill_log)
         bound = true
         break
       end
@@ -304,7 +396,9 @@ class Iyi::Command
       }
     end
 
-    Boundary.new(root, artifact, bound, macros, dropped, message, others)
+    owners[artifact] = shard.name if bound
+    Boundary.new(root, artifact, bound, macros, dropped, message, others,
+      unspellable: unspellable)
   end
 
   private def report_boundary(mods : String, boundary : Boundary) : Nil
@@ -319,6 +413,22 @@ class Iyi::Command
            "(#{boundary.dropped.size} method#{boundary.dropped.size == 1 ? "" : "s"} left out, " \
            "whose body does not compile: #{mods}/#{boundary.artifact}.drop names them)"
     end
+    if boundary.unspellable > 0
+      puts "   #{boundary.unspellable} method#{boundary.unspellable == 1 ? " carries a name" : "s carry names"} " \
+           "`!` ends, which no call in iyi can spell (SPEC.md III.1.7); " \
+           "#{mods}/#{boundary.artifact}.bind.log names them"
+    end
+  end
+
+  # The count `tool bind` reported. Read back rather than recomputed: the
+  # tool is what walked the shard's types.
+  private def unspellable_names(log : String) : Int32
+    return 0 unless File.file?(log)
+    File.each_line(log) do |line|
+      next unless line.starts_with?("names iyi cannot write (")
+      return line.lchop("names iyi cannot write (").rchop("):").to_i? || 0
+    end
+    0
   end
 
   # The namespaces `tool bind` found beside the one it was given. See
@@ -339,33 +449,64 @@ class Iyi::Command
   private SHARD_ROOT     = Rx::Pattern.compile("^(?:abstract[ \\t]+)?(?:module|class|struct)[ \\t]+([A-Z][A-Za-z0-9_]*)")
   private SHARD_REQUIRE  = Rx::Pattern.compile("^require[ \\t]+\"(\\.[^\"]+)\"")
   private MANIFEST_TOP   = Rx::Pattern.compile("^[^ \\t]")
-  private MANIFEST_ENTRY = Rx::Pattern.compile("^  ([A-Za-z0-9_]+):")
+  private MANIFEST_ENTRY = Rx::Pattern.compile("^([ \\t]+)([A-Za-z0-9_.-]+):")
 
-  # The shard's root namespace: the first top-level `module`, `class` or
-  # `struct` its entry file declares, which is what `-e` selects. A shard
-  # whose entry only requires its parts declares nothing there, and then
-  # the first part in require order that does is read instead.
+  # The shard's root namespace: the top-level `module`, `class` or `struct`
+  # that is the shard's own, which is what `-e` selects. A shard whose entry
+  # only requires its parts declares nothing there, and then the parts are
+  # read in require order.
+  #
+  # The shard's own is the one its file is named for - `loud.cr` declares
+  # `Loud`, `db.cr` declares `DB`, `exception_page.cr` `ExceptionPage` - and
+  # it was the first declaration instead. A shard that reopens `class
+  # String` before it opens `module Loud` was bound as `loud (String)`: the
+  # bind log described Crystal's String, 454 methods of it, and `Loud` was
+  # never bound. Where no name matches, the first declaration still answers,
+  # unless the standard library already declares it, because a reopened
+  # type is somebody else's namespace.
   private def shard_root(entry : String) : String?
+    own = File.basename(entry, ".cr").downcase.delete('_').delete('-')
+    first = nil
     seen = Set(String).new
     queue = [entry]
     while file = queue.shift?
       next unless seen.add?(file)
       next unless File.file?(file)
-      File.each_line(file) do |line|
-        if match = SHARD_ROOT.match(line)
-          return match[1]
+      shard_source(file).each_line do |line|
+        if (match = SHARD_ROOT.match(line)) && (name = match[1])
+          return name if name.downcase.delete('_') == own
+          first ||= name unless library_type?(name)
         end
         if match = SHARD_REQUIRE.match(line)
           required = File.expand_path(match[1] || "", File.dirname(file))
-          if required.ends_with?("/*") || required.ends_with?("/**")
-            Dir.glob(File.join(required.rchop("*").rchop("*"), "**", "*.cr")).sort.each { |part| queue << part }
+          # Asked of the posix reading: `File.expand_path` answers in the
+          # platform's separators, so `require "./parts/*"` came back as
+          # `…\parts\*` and this test saw no glob at all.
+          posix = ::Path[required].to_posix.to_s
+          if posix.ends_with?("/*") || posix.ends_with?("/**")
+            Dir.glob(::Path[posix.rchop("*").rchop("*")].to_posix.join("**", "*.cr")).sort.each { |part| queue << part }
           else
             queue << (required.ends_with?(".cr") ? required : required + ".cr")
           end
         end
       end
     end
-    nil
+    first
+  end
+
+  # Whether the standard library declares *name*: a top-level type there
+  # lives in the file its name is spelled as, `String` in `string.cr`.
+  private def library_type?(name : String) : Bool
+    file = "#{name.underscore}.cr"
+    IyiPath.default_paths.any? { |path| File.file?(File.join(path, file)) }
+  end
+
+  # A file of the shard as its lines are read, without a byte order mark: a
+  # `module Bom` on a first line that begins with one was `^`-anchored out
+  # of `SHARD_ROOT`, and the shard was refused as declaring "no top-level
+  # module, class or struct" while the compiler built the same file.
+  private def shard_source(file : String) : String
+    File.read(file).lchop('\uFEFF')
   end
 
   # The files under `src/` that the entry never requires, and that nothing
@@ -389,7 +530,7 @@ class Iyi::Command
     # come made every file of every part look like an entry of its own -
     # `asn1/identifier.cr` among them, which is one file of `asn1.cr`.
     reached = required_files(entry)
-    rest = Dir.glob(File.join(source, "**", "*.cr")).map { |path| File.expand_path(path) }
+    rest = Dir.glob(Iyi.glob_root(source).join("**", "*.cr")).map { |path| File.expand_path(path) }
       .sort.reject { |path| reached.includes?(path) }
     return [] of String if rest.empty?
 
@@ -407,11 +548,12 @@ class Iyi::Command
     while current = queue.shift?
       next unless seen.add?(current)
       next unless File.file?(current)
-      File.each_line(current) do |line|
+      shard_source(current).each_line do |line|
         next unless match = SHARD_REQUIRE.match(line)
         required = File.expand_path(match[1] || "", File.dirname(current))
-        if required.ends_with?("/*") || required.ends_with?("/**")
-          Dir.glob(File.join(required.rchop("*").rchop("*"), "**", "*.cr")).sort.each { |part| queue << part }
+        posix = ::Path[required].to_posix.to_s
+        if posix.ends_with?("/*") || posix.ends_with?("/**")
+          Dir.glob(::Path[posix.rchop("*").rchop("*")].to_posix.join("**", "*.cr")).sort.each { |part| queue << part }
         else
           queue << (required.ends_with?(".cr") ? required : required + ".cr")
         end
@@ -425,22 +567,30 @@ class Iyi::Command
   # verb can bind, and the compiler will say so when the shard's own
   # `require` misses it. `development_dependencies` are not read; they
   # are the shard's tests', not its consumers'.
+  #
+  # A name is what shards allows in one, `-` included, at whatever
+  # indentation the first entry sets; YAML asks only that it be the same
+  # down the list. Two spaces and no `-` was all this read: `my-lib:`
+  # was dropped without a word beside `tiny:`, and with nothing else
+  # listed - or with every entry indented four - the run was refused as
+  # "shard.yml lists no dependency that is under lib/".
   private def shard_dependencies(dir : String, shards_available : String) : Array(String)
     manifest = File.join(dir, "shard.yml")
     return [] of String unless File.file?(manifest)
     names = [] of String
     in_dependencies = false
-    File.each_line(manifest) do |line|
+    level = nil
+    shard_source(manifest).each_line do |line|
+      next if line.blank? || line.lstrip.starts_with?('#')
       if MANIFEST_TOP.matches?(line)
         in_dependencies = line.starts_with?("dependencies:")
+        level = nil
         next
       end
       next unless in_dependencies
-      if match = MANIFEST_ENTRY.match(line)
-        if (name = match[1]) && Dir.exists?(File.join(shards_available, name))
-          names << name
-        end
-      end
+      next unless (match = MANIFEST_ENTRY.match(line)) && (indent = match[1]) && (name = match[2])
+      level ||= indent
+      names << name if indent == level && Dir.exists?(File.join(shards_available, name))
     end
     names
   end

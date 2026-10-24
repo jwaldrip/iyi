@@ -1,20 +1,40 @@
 # iyi: `iyi lsp` — serve the language over stdio (SPEC.md III.8 #2).
 #
-# No flags: the protocol negotiates everything a flag would say, and a
-# server that is configured outside the protocol is a server that lies to
-# its client. The process speaks JSON-RPC on stdin/stdout until the
-# client says `exit`; anything a person would want printed goes to the
-# client as a response, never to the transport.
+# Two processes, one verb. `iyi lsp` is the proxy the editor talks to: it
+# speaks the protocol, keeps the open buffers, and runs `iyi lsp
+# --worker` — this same binary, today's server — to do the compiling. The
+# worker is replaced when the wire goes quiet, so the memory a
+# collector-free front end never gives back goes back to the kernel the
+# way `iyi build`'s does, by exiting (SPEC.md III.9, `lsp/proxy.cr`).
+#
+# No flags for the person: the protocol negotiates everything a flag
+# would say, and a server that is configured outside the protocol is a
+# server that lies to its client. `--worker` is the architecture, not an
+# option — it is what the proxy runs, and what a gate measures the old
+# single-process shape with.
 require "../lsp/server"
+require "../lsp/proxy"
 
 class Iyi::Command
   private def lsp
-    if options.first?.in?("--help", "-h")
+    # What the protocol's own guidance has a client pass: `--stdio`, which
+    # is the one transport this server speaks (LSP 3.17, "Implementation
+    # Considerations"). Anything else was served without a word: `iyi lsp
+    # --bogus extra` ran a session as if it had been `iyi lsp`, where `mcp`
+    # refuses the same line and `test` its flags.
+    options.each do |option|
+      next if option.in?("--help", "-h", "--worker", "--stdio")
+      abort! "lsp: unknown flag #{option}", :USAGE_ERROR if option.starts_with?('-')
+      abort! "lsp takes no arguments, and '#{option}' is one", :USAGE_ERROR
+    end
+    if options.any?(&.in?("--help", "-h"))
       puts <<-USAGE
-        Usage: #{Command.program_name} lsp
+        Usage: #{Command.program_name} lsp [--stdio]
 
         Speak the Language Server Protocol over stdin/stdout. Point an editor
-        at it; there is nothing to configure.
+        at it; there is nothing to configure. `--stdio`, which some clients
+        pass, names the transport it speaks anyway; any other argument is
+        refused.
 
         Beyond LSP 3.17's earning subset — diagnostics pushed on every
         change and pulled on request (one file or the whole workspace),
@@ -30,9 +50,28 @@ class Iyi::Command
         pack for a file (`mod context --json` over the wire), and
         `iyi/surface` returns a module's rendered surface (`doc`), unsaved
         buffer included.
+
+        The session runs in two processes: this one holds the buffers and
+        the protocol, and a child (`#{Command.program_name} lsp --worker`)
+        does the compiling and is replaced while nobody is typing, so an
+        hour of editing does not cost an hour of allocation.
         USAGE
       exit
     end
-    Lsp::Server.new.run
+
+    # The worker: today's server, one process, no proxy. What the proxy
+    # spawns, and what `bench/lsp_memory.py --direct` measures to show
+    # what the split is worth.
+    if options.first? == "--worker"
+      server = Lsp::Server.new
+      server.run
+      exit server.exit_code
+    end
+
+    proxy = Lsp::Proxy.new
+    proxy.run
+    # 0 after a `shutdown`, 1 for an `exit` that skipped it, which is the
+    # protocol's own rule and what a client that reads the code expects.
+    exit proxy.exit_code
   end
 end
