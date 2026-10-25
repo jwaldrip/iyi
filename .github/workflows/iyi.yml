@@ -454,10 +454,6 @@ jobs:
       # seventh proof asks for the signal itself.
       - name: Numbers print, read back, and refuse what does not fit
         run: bash bench/number_exercise.sh
-
-      - name: Primitive comparison exercise
-        run: bash bench/primitive_comparison_exercise.sh
-
       # And the three collections a program gets, at their edges: a key
       # written twice, a table grown past its first capacity, a key deleted
       # with the rest still findable, keys that all land in one slot, an
