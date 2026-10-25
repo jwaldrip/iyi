@@ -632,7 +632,7 @@ fi
 mkdir -p "$WORK/runcache"
 : > "$WORK/runcache/iyi-run-main-99999.tmp.exe"
 : > "$WORK/runcache/iyi-run-main-99998.tmp.exe"
-touch -d '2 hours ago' "$WORK/runcache/iyi-run-main-99999.tmp.exe"
+touch -d '2 hours ago' "$WORK/runcache/iyi-run-main-99999.tmp.exe" 2>/dev/null || touch -A -020000 "$WORK/runcache/iyi-run-main-99999.tmp.exe" 2>/dev/null || python3 -c 'import os, time; p = "'"$WORK"'/runcache/iyi-run-main-99999.tmp.exe"; t = time.time() - 7200; os.utime(p, (t, t))'
 IYI_CACHE_DIR="$WORK/runcache" "$IYI" run twin_b/main.iyi > sweep.out 2>&1
 if [ -e "$WORK/runcache/iyi-run-main-99999.tmp.exe" ]; then
   echo "  a runner's leftover from two hours ago is still in the cache"; status=1

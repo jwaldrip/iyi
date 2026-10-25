@@ -30,10 +30,6 @@ module Iyi
       new(str, string_pool, var_scopes).parse
     end
 
-    private def formatter_command_name : String
-      @iyi ? "iyi tool format" : "iyi fmt"
-    end
-
     def initialize(str, string_pool : StringPool? = nil, @var_scopes = [Set(String).new], warnings : WarningCollection? = nil)
       super(str, string_pool, warnings)
       @unclosed_stack = [] of Unclosed
@@ -1827,7 +1823,7 @@ module Iyi
         var = Var.new(name).at(@token.location).at_end(token_end_location)
         next_token
         unless @token.type.space?
-          warnings.add_warning_at(@token.location, "space required before colon in type declaration (run `#{formatter_command_name}` to fix this)")
+          warnings.add_warning_at(@token.location, "space required before colon in type declaration (run `iyi fmt` to fix this)")
         end
         skip_space
         check :OP_COLON
@@ -1878,7 +1874,7 @@ module Iyi
 
       if @no_type_declaration == 0 && @token.type.op_colon?
         unless space_after_name
-          warnings.add_warning_at(@token.location, "space required before colon in type declaration (run `#{formatter_command_name}` to fix this)")
+          warnings.add_warning_at(@token.location, "space required before colon in type declaration (run `iyi fmt` to fix this)")
         end
         parse_type_declaration(var)
       else
@@ -1900,7 +1896,7 @@ module Iyi
 
       if @no_type_declaration == 0 && @token.type.op_colon? && type.is_a?(Path)
         unless space_after_name
-          warnings.add_warning_at(@token.location, "space required before colon in type declaration (run `#{formatter_command_name}` to fix this)")
+          warnings.add_warning_at(@token.location, "space required before colon in type declaration (run `iyi fmt` to fix this)")
         end
         parse_type_declaration(type, is_const: true)
       else
@@ -5323,7 +5319,7 @@ module Iyi
       if @token.type.op_colon?
         iyi_check_python_colon
         unless last_was_space
-          warnings.add_warning_at @token.location, "space required before colon in return type restriction (run `#{formatter_command_name}` to fix this)"
+          warnings.add_warning_at @token.location, "space required before colon in return type restriction (run `iyi fmt` to fix this)"
         end
         next_token_skip_space
         return_type = parse_bare_proc_type
@@ -5719,7 +5715,7 @@ module Iyi
         skip_space_or_newline
 
         if @token.type.op_colon? && !space_after_amp # anonymous block arg without space
-          warnings.add_warning_at @token.location, "space required before colon in type restriction (run `#{formatter_command_name}` to fix this)"
+          warnings.add_warning_at @token.location, "space required before colon in type restriction (run `iyi fmt` to fix this)"
         end
 
         block_param = parse_def_block_param(extra_assigns, annotations)
@@ -5871,7 +5867,7 @@ module Iyi
 
       if @token.type.op_colon?
         unless param_name.empty? || found_space
-          warnings.add_warning_at @token.location, "space required before colon in type restriction (run `#{formatter_command_name}` to fix this)"
+          warnings.add_warning_at @token.location, "space required before colon in type restriction (run `iyi fmt` to fix this)"
         end
         next_token_skip_space_or_newline
 
@@ -6401,7 +6397,7 @@ module Iyi
           else
             if @no_type_declaration == 0 && @token.type.op_colon?
               unless name_followed_by_space
-                warnings.add_warning_at(@token.location, "space required before colon in type declaration (run `#{formatter_command_name}` to fix this)")
+                warnings.add_warning_at(@token.location, "space required before colon in type declaration (run `iyi fmt` to fix this)")
               end
               declare_var = parse_type_declaration(Var.new(name).at(location).at_end(end_location))
               end_location = declare_var.end_location

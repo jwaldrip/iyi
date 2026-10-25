@@ -73,7 +73,7 @@ describe "Parser warnings" do
     it "names the formatter that owns the source language" do
       assert_parser_warning(
         "x: Int32",
-        "warning in /test.iyi:1\nWarning: space required before colon in type declaration (run `iyi tool format` to fix this)",
+        "warning in /test.iyi:1\nWarning: space required before colon in type declaration (run `iyi fmt` to fix this)",
         filename: "/test.iyi",
       )
     end
