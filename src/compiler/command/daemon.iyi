@@ -1,8 +1,9 @@
 module compiler/command/daemon
 
-import std/json::{JSON}
+import std/json::{JSON, Any}
+import std/text
+import std/indexable
 import compiler/command/driver::{OutputBuffer, Exit}
-
 # Communication frame kinds between daemon and client
 pub DAEMON_FRAME_EXIT   = 0_u8
 pub DAEMON_FRAME_STDOUT = 1_u8
@@ -327,17 +328,17 @@ pub class BuildDaemon
 
   # --- Framing Protocol Helpers ---
 
-  def self.write_frame(io : IyiIO, kind : UInt8, bytes : Bytes) : Nil
+  def self.write_frame(io : IyiIO, kind : UInt8, text : String) : Nil
     b = kind
     io.write(pointerof(b), 1)
-    write_u32_le(io, bytes.size)
-    io.write(bytes.to_unsafe, bytes.size)
+    write_u32_le(io, text.bytesize)
+    io.write(text.to_unsafe, text.bytesize)
     io.flush
   end
 
   def self.write_refusal(io : IyiIO, message : String) : Nil
     message.each_line do |line|
-      write_frame(io, DAEMON_FRAME_STDERR, "#{line}\n".to_slice)
+      write_frame(io, DAEMON_FRAME_STDERR, "#{line}\n")
     end
     b = DAEMON_FRAME_EXIT
     io.write(pointerof(b), 1)
@@ -398,9 +399,8 @@ pub class BuildDaemon
         json.field("version", @version_description)
       end
     end
-    bytes = json_payload.to_slice
-    BuildDaemon.write_u32_le(client, bytes.size)
-    client.write(bytes.to_unsafe, bytes.size)
+    BuildDaemon.write_u32_le(client, json_payload.bytesize)
+    client.write(json_payload.to_unsafe, json_payload.bytesize)
     client.flush
 
     loop do
@@ -464,7 +464,7 @@ pub class BuildDaemon
   end
 
   # Reads a 4-byte size-prefixed JSON request from a client connection
-  def daemon_read_request(client : IyiIO) : JSON::Any
+  def daemon_read_request(client : IyiIO) : Any
     size = BuildDaemon.read_u32_le(client)
     str = client.read_bytes(size)
     JSON.parse(str)
@@ -473,12 +473,10 @@ pub class BuildDaemon
   # Completes a build by sending the exit frame and closing the connection
   def daemon_finish(build : DaemonBuild, exit_code : Int32 = 0) : Bool
     if client = build.client
-      begin
-        client.write_byte(DAEMON_FRAME_EXIT)
-        BuildDaemon.write_u32_le(client, exit_code)
-        client.flush
-      rescue
-      end
+      b = DAEMON_FRAME_EXIT
+      client.write(pointerof(b), 1)
+      BuildDaemon.write_u32_le(client, exit_code)
+      client.flush
       client.close
     end
     exit_code == 0

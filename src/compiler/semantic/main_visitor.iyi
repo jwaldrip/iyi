@@ -380,24 +380,20 @@ pub class MainVisitor < Visitor
   end
 
   def visit(node : Path) : Bool
-    begin
-      t = @program.lookup_type_path(node, @current_type)
-      if t.const?
-        c = t.as(Const)
-        if c_type = type_of?(c.value)
-          set_type(node, c_type)
-        else
-          c.value.accept(self)
-          c_type = type_of(c.value)
-          set_type(node, c_type)
-        end
-      elsif t.is_a?(ModuleType)
-        set_type(node, t.as(ModuleType).metaclass)
+    t = @program.lookup_type_path(node, @current_type)
+    if t.const?
+      c = t.as(Const)
+      if c_type = type_of?(c.value)
+        set_type(node, c_type)
       else
-        set_type(node, t)
+        c.value.accept(self)
+        c_type = type_of(c.value)
+        set_type(node, c_type)
       end
-    rescue ex : Exception
-      raise("undefined constant #{node.to_s}")
+    elsif t.is_a?(ModuleType)
+      set_type(node, t.as(ModuleType).metaclass)
+    else
+      set_type(node, t)
     end
     false
   end

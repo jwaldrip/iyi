@@ -1,12 +1,18 @@
 module compiler/llvm/lib_llvm
 
 {% begin %}
-  {% llvm_config = env("LLVM_CONFIG") || "llvm-config" %}
-  {% llvm_version = env("LLVM_VERSION") || `#{llvm_config.id} --version 2> /dev/null || true`.strip.stringify %}
-  {% llvm_version = "22.1.8" if llvm_version.empty? %}
-  {% llvm_targets = env("LLVM_TARGETS") || `#{llvm_config.id} --targets-built 2> /dev/null || true`.strip.stringify %}
-  {% llvm_ldflags = env("LLVM_LDFLAGS") || `#{llvm_config.id} --libs --system-libs --ldflags 2> /dev/null || true`.strip.gsub(/\n/, " ").stringify %}
-  {% llvm_ldflags = "-lLLVM" if llvm_ldflags.empty? %}
+  {% if flag?(:win32) %}
+    {% llvm_version = env("LLVM_VERSION") || "22.1.8" %}
+    {% llvm_targets = env("LLVM_TARGETS") || "X86 AArch64 ARM WebAssembly" %}
+    {% llvm_ldflags = env("LLVM_LDFLAGS") || "" %}
+  {% else %}
+    {% llvm_config = env("LLVM_CONFIG") || "llvm-config" %}
+    {% llvm_version = env("LLVM_VERSION") || `#{llvm_config.id} --version 2> /dev/null || true`.strip.stringify %}
+    {% llvm_version = "22.1.8" if llvm_version.empty? %}
+    {% llvm_targets = env("LLVM_TARGETS") || `#{llvm_config.id} --targets-built 2> /dev/null || true`.strip.stringify %}
+    {% llvm_ldflags = env("LLVM_LDFLAGS") || `#{llvm_config.id} --libs --system-libs --ldflags 2> /dev/null || true`.strip.gsub(/\n/, " ").stringify %}
+    {% llvm_ldflags = "-lLLVM" if llvm_ldflags.empty? %}
+  {% end %}
 
   @[Link("stdc++")]
   {% if llvm_ldflags && !llvm_ldflags.empty? %}

@@ -749,7 +749,7 @@ pub class BindTool
     while i < n - 1
       j = 0
       while j < n - i - 1
-        if arr[j] > arr[j + 1]
+        if arr[j + 1] < arr[j]
           temp = arr[j]
           arr[j] = arr[j + 1]
           arr[j + 1] = temp
@@ -768,7 +768,7 @@ pub class BindTool
       while j < n - i - 1
         a_key = "#{arr[j].owner}##{arr[j].name}"
         b_key = "#{arr[j + 1].owner}##{arr[j + 1].name}"
-        if a_key > b_key
+        if b_key < a_key
           temp = arr[j]
           arr[j] = arr[j + 1]
           arr[j + 1] = temp

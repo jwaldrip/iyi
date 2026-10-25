@@ -171,9 +171,14 @@ pub class CommandDriver
   BASE_VERSION = {{ read_file("#{__DIR__}/../../VERSION").chomp }}
 
   {% begin %}
-    {% llvm_config = env("LLVM_CONFIG") || "llvm-config" %}
-    {% llvm_ver = env("IYI_CONFIG_LLVM_VERSION") || env("LLVM_VERSION") || `#{llvm_config.id} --version 2> /dev/null || true`.strip.stringify %}
-    {% raw_triple = env("IYI_CONFIG_TARGET") || env("TARGET") || `#{llvm_config.id} --host-target 2> /dev/null || true`.strip.stringify %}
+    {% if flag?(:win32) %}
+      {% llvm_ver = env("IYI_CONFIG_LLVM_VERSION") || env("LLVM_VERSION") || "22.1.8" %}
+      {% raw_triple = env("IYI_CONFIG_TARGET") || env("TARGET") || "x86_64-pc-windows-msvc" %}
+    {% else %}
+      {% llvm_config = env("LLVM_CONFIG") || "llvm-config" %}
+      {% llvm_ver = env("IYI_CONFIG_LLVM_VERSION") || env("LLVM_VERSION") || `#{llvm_config.id} --version 2> /dev/null || true`.strip.stringify %}
+      {% raw_triple = env("IYI_CONFIG_TARGET") || env("TARGET") || `#{llvm_config.id} --host-target 2> /dev/null || true`.strip.stringify %}
+    {% end %}
     LLVM_VERSION = {{ llvm_ver }}
     CONFIG_TARGET = {{ raw_triple }}
   {% end %}

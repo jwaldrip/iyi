@@ -146,6 +146,10 @@ pub abstract class Type
     end
     false
   end
+
+  def implements?(other : Type) : Bool
+    subtype_of?(other)
+  end
 end
 
 pub abstract class NamedType < Type

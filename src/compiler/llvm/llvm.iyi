@@ -31,9 +31,9 @@ pub struct LLVM
     {% if LibLLVM::IS_LT_160 %}
       LibLLVM::VERSION
     {% else %}
-      major = 0_u32
-      minor = 0_u32
-      patch = 0_u32
+      major = 0
+      minor = 0
+      patch = 0
       LibLLVM.get_version(pointerof(major), pointerof(minor), pointerof(patch))
       "#{major}.#{minor}.#{patch}"
     {% end %}

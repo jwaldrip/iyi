@@ -683,11 +683,11 @@ pub class IyiMod
     lines = source.lines
     return source if lines.empty?
     first = lines[0]
-    written = first.lstrip
+    written = first.strip
     return source if written.starts_with?("pub ")
     return source unless written.starts_with?("macro ")
 
-    rest = written[6, written.bytesize - 6].lstrip
+    rest = written[6, written.bytesize - 6].strip
     name_buf = ""
     i = 0
     while i < rest.bytesize
