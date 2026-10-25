@@ -534,7 +534,7 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
     end
 
     candidates.find do |candidate|
-      @program.iyi_file_overrides.has_key?(candidate) || File.file?(candidate)
+      !@program.iyi_file_override(candidate).nil? || File.file?(candidate)
     end
   end
 
@@ -867,19 +867,20 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
     # every boundary this compiler wrote. A boundary's answer is its inputs,
     # taken above.
     written = summary.source_path
-    if !written.empty? && !source_in_library?(written)
-      if program_source = resolve_program_import(module_path)
-        here = File.expand_path(program_source)
-        there = File.expand_path(written)
-        if here != there
-          return "\"#{module_path}\" is #{here} now, and this was written from #{there}"
-        end
+    if summary.inputs.empty?
+      if !written.empty? && !source_in_library?(written)
+        if program_source = resolve_program_import(module_path)
+          here = File.expand_path(program_source)
+          there = File.expand_path(written)
+          if here != there
+            return "\"#{module_path}\" is #{here} now, and this was written from #{there}"
+          end
 
-        unless IyiMod.digest(File.read(program_source)) == summary.hashes.source
-          return "#{program_source} has changed since it was written"
+          unless IyiMod.digest(File.read(program_source)) == summary.hashes.source
+            return "#{program_source} has changed since it was written"
+          end
         end
-      end
-    elsif summary.inputs.empty? && (source = resolve_import(module_path))
+      elsif source = resolve_import(module_path)
       # iyi: a module path is a file path (SPEC.md R-1), so the same name can
       # come to mean a different file — delete a program's own `std/text.iyi`
       # and `import std/text` reaches the library's module of that path. The
@@ -914,6 +915,7 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
         was = summary.package_name.empty? ? "outside any package" : "under the package name `#{summary.package_name}`"
         now = expected.empty? ? "outside any package" : "under `#{expected}`"
         return "it was written #{was}, and this build reads \"#{module_path}\" #{now}"
+      end
       end
     end
 
