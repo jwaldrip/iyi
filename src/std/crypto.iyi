@@ -30,7 +30,8 @@
 module std/crypto
 
 import std/int
-import std/digest::{Digest}
+import std/slice::{Slice, Bytes}
+import std/digest::{Digest, SHA1, SHA256, SHA384, SHA512}
 
 pub class HMAC
   @inner : Digest
@@ -40,7 +41,7 @@ pub class HMAC
   @hashed : Array(UInt8)
   @finished : Bool
 
-  def initialize(algorithm : H.class, key : String | Array(UInt8)) forall H
+  def initialize(algorithm : H.class, key : String | Array(UInt8) | Bytes) forall H
     @inner = algorithm.new
     @outer = algorithm.new
     @inner_start = algorithm.new
@@ -74,11 +75,11 @@ pub class HMAC
     @outer.copy_from(@outer_start)
   end
 
-  def self.digest(algorithm : H.class, key : String | Array(UInt8), data : String | Array(UInt8)) : Array(UInt8) forall H
+  def self.digest(algorithm : H.class, key : String | Array(UInt8) | Bytes, data : String | Array(UInt8) | Bytes) : Array(UInt8) forall H
     HMAC.new(algorithm, key).update(data).final
   end
 
-  def self.hexdigest(algorithm : H.class, key : String | Array(UInt8), data : String | Array(UInt8)) : String forall H
+  def self.hexdigest(algorithm : H.class, key : String | Array(UInt8) | Bytes, data : String | Array(UInt8) | Bytes) : String forall H
     HMAC.new(algorithm, key).update(data).hexfinal
   end
 
@@ -87,7 +88,7 @@ pub class HMAC
     @hashed.size
   end
 
-  def update(data : String | Array(UInt8)) : self
+  def update(data : String | Array(UInt8) | Bytes) : self
     bytes, count = CryptoBytes.of(data)
     update(bytes, count)
   end
@@ -133,14 +134,34 @@ end
 # An empty salt is the RFC's default, a hash's length of zeros, which is
 # the same key to HMAC.
 pub struct HKDF
-  def self.extract(algorithm : H.class, salt : String | Array(UInt8), ikm : String | Array(UInt8)) : Array(UInt8) forall H
-    HMAC.digest(algorithm, salt, ikm)
+  def self.extract(algorithm : H.class, salt : String | Array(UInt8) | Slice(UInt8), ikm : String | Array(UInt8) | Slice(UInt8)) : Array(UInt8) forall H
+    s = salt.is_a?(Slice(UInt8)) ? salt.to_a : salt
+    i = ikm.is_a?(Slice(UInt8)) ? ikm.to_a : ikm
+    HMAC.digest(algorithm, s, i)
   end
 
-  # At most 255 hashes' worth of bytes, which is what a one-byte block
-  # counter can number.
-  def self.expand(algorithm : H.class, prk : String | Array(UInt8), info : String | Array(UInt8), length : Int32) : Array(UInt8) forall H
-    mac = HMAC.new(algorithm, prk)
+  def self.extract(algorithm : Symbol, salt, ikm) : Array(UInt8)
+    case algorithm
+    when :sha256 then extract(SHA256, salt, ikm)
+    when :sha384 then extract(SHA384, salt, ikm)
+    when :sha512 then extract(SHA512, salt, ikm)
+    else              extract(SHA1, salt, ikm)
+    end
+  end
+
+  def self.expand(algorithm : Symbol, prk, info, length : Int32) : Array(UInt8)
+    case algorithm
+    when :sha256 then expand(SHA256, prk, info, length)
+    when :sha384 then expand(SHA384, prk, info, length)
+    when :sha512 then expand(SHA512, prk, info, length)
+    else              expand(SHA1, prk, info, length)
+    end
+  end
+
+  def self.expand(algorithm : H.class, prk : String | Array(UInt8) | Slice(UInt8), info : String | Array(UInt8) | Slice(UInt8), length : Int32) : Array(UInt8) forall H
+    p = prk.is_a?(Slice(UInt8)) ? prk.to_a : prk
+    inf = info.is_a?(Slice(UInt8)) ? info.to_a : info
+    mac = HMAC.new(algorithm, p)
     size = mac.digest_size
     if length < 0 || length > 255 * size
       raise "HKDF: cannot expand to #{length} bytes; the most is 255 * #{size} = #{255 * size}"
@@ -153,7 +174,7 @@ pub struct HKDF
     while done < length
       mac.reset
       mac.update(block.to_unsafe, size) if n > 1
-      mac.update(info)
+      mac.update(inf)
       counter[0] = n.to_u8
       mac.update(counter)
       mac.final(block)
@@ -222,7 +243,7 @@ pub struct Subtle
   # differences are gathered with `|` rather than tested one at a time.
   # Byte strings of different sizes answer false at once, so the size is
   # not a secret this keeps.
-  def self.constant_time_compare(a : String | Array(UInt8), b : String | Array(UInt8)) : Bool
+  def self.constant_time_compare(a : String | Array(UInt8) | Bytes, b : String | Array(UInt8) | Bytes) : Bool
     pa, na = CryptoBytes.of(a)
     pb, nb = CryptoBytes.of(b)
     return false if na != nb
@@ -237,7 +258,7 @@ pub struct Subtle
 end
 
 struct CryptoBytes
-  def self.of(data : String | Array(UInt8)) : {Pointer(UInt8), Int32}
+  def self.of(data : String | Array(UInt8) | Bytes) : {Pointer(UInt8), Int32}
     if data.is_a?(String)
       {data.to_unsafe, data.bytesize}
     else

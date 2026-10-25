@@ -221,6 +221,7 @@ pub class Certificate
   end
 
   # The certificate *der* holds (RFC 5280 section 4.1).
+
   def self.parse(der : Array(UInt8)) : Certificate | X509Error
     outer = X509Asn1.values(X509Asn1.value(Der.parse(der))!.sequence)!
     return X509Error.new("a Certificate of #{outer.size} values, not 3") unless outer.size == 3

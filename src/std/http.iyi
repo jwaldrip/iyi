@@ -167,6 +167,8 @@ import std/time::{Time}
 # A block `Server.serve_parallel` keeps, as a value every worker may call.
 import std/shared_proc::{SharedProc}
 
+pub alias Headers = Hash(String, String)
+
 # What the other end did that HTTP does not allow, as a value: `reason` is
 # the sentence, `status` the answer a server gives a request that did it
 # (400, or 413 and 431 for the limits). `message` says it is HTTP's.
@@ -1255,6 +1257,37 @@ pub class Request
     @text = nil
   end
 
+  def self.new(method : String, path : String, headers : Hash(String, String)? = nil, body : String = "")
+    query = nil
+    actual_path = path
+    if (q = path.index('?'))
+      actual_path = path[0...q]
+      query = path[(q + 1)..-1]
+    end
+    new(method, actual_path, query, headers || {} of String => String, body)
+  end
+
+  def target : String
+    @query ? "#{@path}?#{@query}" : @path
+  end
+
+  def query_params : Params
+    if q = @query
+      Params.parse(q)
+    else
+      Params.new
+    end
+  end
+
+  def form_params : Params
+    b = body
+    if !b.empty?
+      Params.parse(b)
+    else
+      Params.new
+    end
+  end
+
   # Whether the TLS connection the request came over resumed a session by
   # a ticket, under `serve(tls:)`: its `peer_certificates` are then the
   # ticket's. False in the clear.
@@ -1345,6 +1378,11 @@ pub class Response
   getter status : Int32
   getter reason : String
   getter headers : Hash(String, String)
+
+  def status_code : Int32
+    @status
+  end
+
   # The values of each field on more than one line, by its name in
   # `headers`, one entry a line.
   @apart : Hash(String, Array(String))?

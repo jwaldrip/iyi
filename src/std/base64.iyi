@@ -25,6 +25,16 @@ pub struct Base64
     encode_with(data, plus_slash, PAIRS_STD, true)
   end
 
+  def self.encode(bytes : Array(UInt8)) : String
+    s = String.new(bytes.size) { |buf| buf.copy_from(bytes.to_unsafe, bytes.size); bytes.size }
+    encode(s)
+  end
+
+  def self.urlsafe_encode(bytes : Array(UInt8)) : String
+    s = String.new(bytes.size) { |buf| buf.copy_from(bytes.to_unsafe, bytes.size); bytes.size }
+    urlsafe_encode(s)
+  end
+
   def self.urlsafe_encode(data : String) : String
     encode_with(data, minus_underscore, PAIRS_URL, true)
   end
