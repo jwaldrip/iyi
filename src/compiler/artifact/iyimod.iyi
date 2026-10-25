@@ -1,14 +1,10 @@
 module compiler/artifact/iyimod
 
 import std/int
-import std/digest
-using std/digest::{MD5}
-import std/json
-using std/json::{Builder}
-import compiler/syntax/ast
-using compiler/syntax/ast::{ASTNode, Def, Arg, Path, Nop}
-import compiler/syntax/visitor
-using compiler/syntax/visitor::{Visitor}
+import std/digest::{MD5}
+import std/json::{Builder}
+import compiler/syntax/ast::{ASTNode, Def, Arg, Path, Nop}
+import compiler/syntax/visitor::{Visitor}
 
 # iyi: `.iyimod`, the module artifact — SPEC.md Part IV.
 #
@@ -48,7 +44,7 @@ end
 pub TOP_LEVEL_CONTAINER = "::"
 pub MACRO_HOOKS         = ["included", "extended", "inherited", "method_added", "finished"]
 
-pub class Error < Exception
+pub class Error
   getter message : String
 
   def initialize(@message : String)
@@ -687,11 +683,11 @@ pub class IyiMod
     lines = source.lines
     return source if lines.empty?
     first = lines[0]
-    written = first.lstrip
+    written = first.strip
     return source if written.starts_with?("pub ")
     return source unless written.starts_with?("macro ")
 
-    rest = written[6, written.bytesize - 6].lstrip
+    rest = written[6, written.bytesize - 6].strip
     name_buf = ""
     i = 0
     while i < rest.bytesize

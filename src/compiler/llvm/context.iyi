@@ -1,9 +1,7 @@
 module compiler/llvm/context
 
-import compiler/llvm/lib_llvm
-import compiler/llvm/values
-using compiler/llvm/lib_llvm::{string_from_c, string_and_dispose, to_c_str}
-using compiler/llvm/values::{LLVMType, LLVMValue, LLVMFunction, LLVMBasicBlock, Type, Value, Function, BasicBlock}
+import compiler/llvm/lib_llvm::{string_from_c, string_and_dispose, to_c_str}
+import compiler/llvm/values::{LLVMType, LLVMValue, LLVMFunction, LLVMBasicBlock, Type, Value, Function, BasicBlock}
 
 pub class Context
   getter unwrap : LibLLVM::ContextRef

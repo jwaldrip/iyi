@@ -44,15 +44,403 @@ pub import std/digest
 pub import std/tls
 pub import std/big
 pub import std/time
+pub import std/aead
+pub import std/random
+pub import std/curve25519
+pub import std/x509
+pub import std/system_roots
+pub import std/rsa
 
-using std/slice::{Slice, Bytes}
-using std/capsule::{VarInt}
-using std/crypto::{HKDF, HMAC, AES128GCM, AES256GCM, ChaCha20Poly1305, constant_time_compare, HeaderProtection, random_bytes}
-using std/udp::{UdpSocket, Datagram}
-using std/digest::{SHA256, SHA384, SHA512}
-using std/tls::{Certificate, CertificateStore, ASN1Element}
-using std/big::{BigInt}
-using std/time::{Time}
+import std/slice::{Slice, Bytes}
+import std/capsule::{VarInt}
+import std/crypto::{HKDF, HMAC, Subtle}
+import std/aead::{AES, AesGcm, ChaCha20, AeadError}
+import std/random::{Random}
+import std/udp::{UdpSocket, Datagram}
+import std/digest::{SHA256, SHA384, SHA512}
+import std/x509::{Certificate, X509, X509Error}
+import std/system_roots::{SystemRoots}
+import std/rsa::{RsaPublicKey}
+import std/curve25519::{X25519}
+import std/big::{BigInt}
+import std/time::{Time}
+
+pub class CertificateStore
+  property certificates : Array(Certificate)
+
+  def initialize(@certificates : Array(Certificate) = [] of Certificate)
+  end
+
+  def self.load_system_store : CertificateStore
+    roots = SystemRoots.load
+    certs = roots.is_a?(SystemRoots) ? roots.certificates : [] of Certificate
+    CertificateStore.new(certs)
+  end
+
+  def add(cert : Certificate) : Nil
+    @certificates << cert
+  end
+
+  def add_certificate(cert : Certificate) : Nil
+    @certificates << cert
+  end
+
+  def verify_chain(chain : Array(Certificate), hostname : String, time_sec : Int64) : Bool
+    return false if chain.empty? || @certificates.empty? || hostname.empty?
+    leaf = chain[0]
+    return false unless QuicTlsContext.matches_hostname(leaf, hostname)
+    t = 0
+    while t < @certificates.size
+      anchor = @certificates[t]
+      return true if anchor.raw == leaf.raw
+      t = t + 1
+    end
+    now_time = Time.unix(time_sec)
+    v = X509.verify(leaf, chain[1, chain.size - 1], @certificates, hostname, now_time)
+    !v.is_a?(X509Error)
+  end
+end
+
+pub class AES128GCM
+  def self.encrypt_detached(key : Bytes, nonce : Bytes, plaintext : Bytes, ad : Bytes = Bytes.empty) : {Bytes, Bytes}
+    cipher = AesGcm.new(key.to_a)
+    sealed_str = cipher.seal(nonce.to_a, plaintext.to_a, ad.to_a)
+    out = Bytes.new(sealed_str.bytesize)
+    out.to_unsafe.copy_from(sealed_str.to_unsafe, sealed_str.bytesize)
+    ct_len = out.size - 16
+    {out[0, ct_len], out[ct_len, 16]}
+  end
+
+  def self.encrypt(key : Bytes, nonce : Bytes, plaintext : Bytes, ad : Bytes = Bytes.empty) : Bytes
+    cipher = AesGcm.new(key.to_a)
+    sealed_str = cipher.seal(nonce.to_a, plaintext.to_a, ad.to_a)
+    out = Bytes.new(sealed_str.bytesize)
+    out.to_unsafe.copy_from(sealed_str.to_unsafe, sealed_str.bytesize)
+    out
+  end
+
+  def self.decrypt(key : Bytes, nonce : Bytes, ciphertext_and_tag : Bytes, ad : Bytes = Bytes.empty) : Bytes?
+    return nil if ciphertext_and_tag.size < 16
+    cipher = AesGcm.new(key.to_a)
+    res = cipher.open(nonce.to_a, ciphertext_and_tag.to_a, ad.to_a)
+    if res.is_a?(String)
+      out = Bytes.new(res.bytesize)
+      out.to_unsafe.copy_from(res.to_unsafe, res.bytesize)
+      out
+    else
+      nil
+    end
+  end
+end
+
+pub class AES256GCM
+  def self.encrypt_detached(key : Bytes, nonce : Bytes, plaintext : Bytes, ad : Bytes = Bytes.empty) : {Bytes, Bytes}
+    cipher = AesGcm.new(key.to_a)
+    sealed_str = cipher.seal(nonce.to_a, plaintext.to_a, ad.to_a)
+    out = Bytes.new(sealed_str.bytesize)
+    out.to_unsafe.copy_from(sealed_str.to_unsafe, sealed_str.bytesize)
+    ct_len = out.size - 16
+    {out[0, ct_len], out[ct_len, 16]}
+  end
+
+  def self.encrypt(key : Bytes, nonce : Bytes, plaintext : Bytes, ad : Bytes = Bytes.empty) : Bytes
+    cipher = AesGcm.new(key.to_a)
+    sealed_str = cipher.seal(nonce.to_a, plaintext.to_a, ad.to_a)
+    out = Bytes.new(sealed_str.bytesize)
+    out.to_unsafe.copy_from(sealed_str.to_unsafe, sealed_str.bytesize)
+    out
+  end
+
+  def self.decrypt(key : Bytes, nonce : Bytes, ciphertext_and_tag : Bytes, ad : Bytes = Bytes.empty) : Bytes?
+    return nil if ciphertext_and_tag.size < 16
+    cipher = AesGcm.new(key.to_a)
+    res = cipher.open(nonce.to_a, ciphertext_and_tag.to_a, ad.to_a)
+    if res.is_a?(String)
+      out = Bytes.new(res.bytesize)
+      out.to_unsafe.copy_from(res.to_unsafe, res.bytesize)
+      out
+    else
+      nil
+    end
+  end
+end
+
+pub struct HKDF
+  def self.extract(algorithm : Symbol, ikm, salt) : Bytes
+    arr = Std::Crypto::HKDF.extract(algorithm, salt, ikm)
+    out = Bytes.new(arr.size)
+    out.to_unsafe.copy_from(arr.to_unsafe, arr.size)
+    out
+  end
+
+  def self.expand(algorithm : Symbol, prk, info, length : Int32) : Bytes
+    arr = Std::Crypto::HKDF.expand(algorithm, prk, info, length)
+    out = Bytes.new(arr.size)
+    out.to_unsafe.copy_from(arr.to_unsafe, arr.size)
+    out
+  end
+end
+
+pub class ChaCha20Poly1305
+  def self.encrypt(key : Bytes, nonce : Bytes, plaintext : Bytes, ad : Bytes = Bytes.empty) : Bytes
+    cipher = Std::Aead::ChaCha20Poly1305.new(key.to_a)
+    sealed_str = cipher.seal(nonce.to_a, plaintext.to_a, ad.to_a)
+    out = Bytes.new(sealed_str.bytesize)
+    out.to_unsafe.copy_from(sealed_str.to_unsafe, sealed_str.bytesize)
+    out
+  end
+
+  def self.decrypt(key : Bytes, nonce : Bytes, ciphertext_and_tag : Bytes, ad : Bytes = Bytes.empty) : Bytes?
+    return nil if ciphertext_and_tag.size < 16
+    cipher = Std::Aead::ChaCha20Poly1305.new(key.to_a)
+    res = cipher.open(nonce.to_a, ciphertext_and_tag.to_a, ad.to_a)
+    if res.is_a?(String)
+      out = Bytes.new(res.bytesize)
+      out.to_unsafe.copy_from(res.to_unsafe, res.bytesize)
+      out
+    else
+      nil
+    end
+  end
+end
+
+pub class HeaderProtection
+  def self.aes_mask(hp_key : Bytes, sample : Bytes) : Bytes
+    raise "HeaderProtection: AES key must be 16 or 32 bytes" if hp_key.size != 16 && hp_key.size != 32
+    raise "HeaderProtection: sample must be 16 bytes" if sample.size != 16
+    aes = AES.new(hp_key.to_a)
+    out_str = aes.encrypt_block(sample.to_a)
+    mask = Bytes.new(5)
+    mask.to_unsafe.copy_from(out_str.to_unsafe, 5)
+    mask
+  end
+
+  def self.chacha_mask(hp_key : Bytes, sample : Bytes) : Bytes
+    raise "HeaderProtection: ChaCha20 key must be 32 bytes" if hp_key.size != 32
+    raise "HeaderProtection: sample must be 16 bytes" if sample.size != 16
+    counter = 0_u32
+    i = 0
+    while i < 4
+      counter = counter | sample[i].to_u32.unsafe_shl((8 * i).to_u32)
+      i = i + 1
+    end
+    nonce = sample[4, 12]
+    cipher = ChaCha20.new(hp_key.to_a, nonce.to_a, counter)
+    zeroes = Array(UInt8).new(5, 0_u8)
+    masked = cipher.xor(zeroes)
+    mask = Bytes.new(5)
+    mask.to_unsafe.copy_from(masked.to_unsafe, 5)
+    mask
+  end
+end
+
+pub def constant_time_compare(a : Bytes | Array(UInt8), b : Bytes | Array(UInt8)) : Bool
+  return false if a.size != b.size
+  a_arr = a.is_a?(Bytes) ? a.to_a : a
+  b_arr = b.is_a?(Bytes) ? b.to_a : b
+  Subtle.constant_time_compare(a_arr, b_arr)
+end
+
+pub def random_bytes(n : Int32) : Bytes
+  arr = Random::Secure.random_bytes(n)
+  out = Bytes.new(n)
+  i = 0
+  while i < n
+    out[i] = arr[i]
+    i = i + 1
+  end
+  out
+end
+
+module QuicTls
+  module X25519
+    def self.generate_keypair : {Bytes, Bytes}
+      priv = Random::Secure.random_bytes(32)
+      pub_k = Std::Curve25519::X25519.public_key(priv)
+      out_priv = Bytes.new(32)
+      out_priv.to_unsafe.copy_from(priv.to_unsafe, 32)
+      out_pub = Bytes.new(32)
+      out_pub.to_unsafe.copy_from(pub_k.to_unsafe, 32)
+      {out_priv, out_pub}
+    end
+
+    def self.scalar_mult(priv : Bytes, peer_pub : Bytes) : Bytes
+      shared = Std::Curve25519::X25519.shared(priv.to_a, peer_pub.to_a)
+      out = Bytes.new(32)
+      if shared.is_a?(String)
+        out.to_unsafe.copy_from(shared.to_unsafe, 32)
+      end
+      out
+    end
+
+    def self.is_all_zero(b : Bytes) : Bool
+      i = 0
+      while i < b.size
+        return false if b[i] != 0_u8
+        i = i + 1
+      end
+      true
+    end
+  end
+
+  def self.hkdf_expand_label(secret : Bytes | Array(UInt8), label : String, context : Bytes | Array(UInt8), length : Int32) : Bytes
+    sec_arr = secret.is_a?(Bytes) ? secret.to_a : secret
+    ctx_arr = context.is_a?(Bytes) ? context.to_a : context
+    prefixed_label = "tls13 " + label
+    label_size = prefixed_label.bytesize
+    hkdf_label = Bytes.new(2 + 1 + label_size + 1 + ctx_arr.size)
+    hkdf_label[0] = (length.unsafe_shr(8) & 0xff).to_u8
+    hkdf_label[1] = (length & 0xff).to_u8
+    hkdf_label[2] = label_size.to_u8
+    i = 0; while i < label_size
+      hkdf_label[3 + i] = prefixed_label.to_unsafe[i]; i = i + 1
+    end
+    hkdf_label[3 + label_size] = ctx_arr.size.to_u8
+    j = 0; while j < ctx_arr.size
+      hkdf_label[4 + label_size + j] = ctx_arr[j]; j = j + 1
+    end
+    res = Std::Crypto::HKDF.expand(SHA256, sec_arr, hkdf_label.to_a, length)
+    out = Bytes.new(length)
+    out.to_unsafe.copy_from(res.to_unsafe, length)
+    out
+  end
+
+  def self.derive_secret(secret : Bytes | Array(UInt8), label : String, transcript_hash : Bytes | Array(UInt8)) : Bytes
+    hkdf_expand_label(secret, label, transcript_hash, 32)
+  end
+
+  module RSA
+    private def self.bit_length(n : BigInt) : Int32
+      bytes = n.to_bytes(512) || n.to_bytes(256) || [] of UInt8
+      i = 0
+      while i < bytes.size && bytes[i] == 0_u8
+        i = i + 1
+      end
+      return 0 if i == bytes.size
+      top = bytes[i].to_i32
+      bits = (bytes.size - i - 1) * 8
+      while top > 0
+        bits = bits + 1
+        top = top >> 1
+      end
+      bits
+    end
+
+    def self.sign_pss(n : BigInt, d : BigInt, hash_algo : Symbol, m_hash : Bytes | Array(UInt8), salt : Bytes? = nil) : Bytes
+      h_len = 32
+      actual_salt = salt || random_bytes(h_len)
+      mod_bits = bit_length(n)
+      em_bits = mod_bits - 1
+      em_len = (em_bits + 7) // 8
+      db_len = em_len - h_len - 1
+      ps_len = db_len - actual_salt.size - 1
+      db = Bytes.new(db_len, 0_u8)
+      db[ps_len] = 0x01_u8
+      i = 0; while i < actual_salt.size
+        db[ps_len + 1 + i] = actual_salt[i]; i = i + 1
+      end
+      m_prime = Bytes.new(8 + m_hash.size + actual_salt.size, 0_u8)
+      i = 0; while i < m_hash.size
+        m_prime[8 + i] = m_hash[i]; i = i + 1
+      end
+      i = 0; while i < actual_salt.size
+        m_prime[8 + m_hash.size + i] = actual_salt[i]; i = i + 1
+      end
+      h = SHA256.digest(m_prime.to_a)
+      db_mask = mgf1(h, db_len)
+      masked_db = Bytes.new(db_len)
+      i = 0; while i < db_len
+        masked_db[i] = db[i] ^ db_mask[i]; i = i + 1
+      end
+      unused_bits = 8 * em_len - em_bits
+      masked_db[0] = masked_db[0] & (0xff_u8.unsafe_shr(unused_bits.to_u64)) if unused_bits > 0
+      em = Bytes.new(em_len)
+      i = 0; while i < db_len
+        em[i] = masked_db[i]; i = i + 1
+      end
+      i = 0; while i < h_len
+        em[db_len + i] = h[i]; i = i + 1
+      end
+      em[em_len - 1] = 0xbc_u8
+      m_int = BigInt.from_bytes(em.to_a)
+      s_int = m_int.pow_mod(d, n)
+      s_bytes = s_int.to_bytes(em_len) || [] of UInt8
+      out = Bytes.new(em_len, 0_u8)
+      offset = em_len - s_bytes.size
+      i = 0; while i < s_bytes.size
+        out[offset + i] = s_bytes[i]; i = i + 1
+      end
+      out
+    end
+
+    def self.verify_pss(n : BigInt, e : BigInt, hash_algo : Symbol, m_hash : Bytes | Array(UInt8), sig : Bytes, salt_len : Int32 = 32) : Bool
+      s_int = BigInt.from_bytes(sig.to_a)
+      m_int = s_int.pow_mod(e, n)
+      mod_bits = bit_length(n)
+      em_bits = mod_bits - 1
+      em_len = (em_bits + 7) // 8
+      em_arr = m_int.to_bytes(em_len) || [] of UInt8
+      em = Bytes.new(em_len)
+      i = 0; while i < em_len
+        em[i] = em_arr[i]; i = i + 1
+      end
+      return false if em[em_len - 1] != 0xbc_u8
+      h_len = 32
+      db_len = em_len - h_len - 1
+      masked_db = em[0, db_len]
+      h = em[db_len, h_len]
+      db_mask = mgf1(h.to_a, db_len)
+      db = Bytes.new(db_len)
+      i = 0; while i < db_len
+        db[i] = masked_db[i] ^ db_mask[i]; i = i + 1
+      end
+      unused_bits = 8 * em_len - em_bits
+      db[0] = db[0] & (0xff_u8.unsafe_shr(unused_bits.to_u64)) if unused_bits > 0
+      pad_len = db_len - salt_len - 1
+      i = 0; while i < pad_len
+        return false if db[i] != 0_u8; i = i + 1
+      end
+      return false if db[pad_len] != 0x01_u8
+      salt = db[pad_len + 1, salt_len]
+      m_prime = Bytes.new(8 + m_hash.size + salt.size, 0_u8)
+      i = 0; while i < m_hash.size
+        m_prime[8 + i] = m_hash[i]; i = i + 1
+      end
+      i = 0; while i < salt.size
+        m_prime[8 + m_hash.size + i] = salt[i]; i = i + 1
+      end
+      h_prime = SHA256.digest(m_prime.to_a)
+      i = 0; while i < h_len
+        return false if h[i] != h_prime[i]; i = i + 1
+      end
+      true
+    end
+
+    private def self.mgf1(seed : Array(UInt8) | Bytes, mask_len : Int32) : Bytes
+      out = Bytes.new(mask_len)
+      counter = 0_u32
+      out_offset = 0
+      while out_offset < mask_len
+        buf = Array(UInt8).new(seed.size + 4, 0_u8)
+        i = 0; while i < seed.size
+          buf[i] = seed[i]; i = i + 1
+        end
+        buf[seed.size] = (counter.unsafe_shr(24) & 0xff).to_u8
+        buf[seed.size + 1] = (counter.unsafe_shr(16) & 0xff).to_u8
+        buf[seed.size + 2] = (counter.unsafe_shr(8) & 0xff).to_u8
+        buf[seed.size + 3] = (counter & 0xff).to_u8
+        digest = SHA256.digest(buf)
+        to_copy = mask_len - out_offset < 32 ? mask_len - out_offset : 32
+        j = 0; while j < to_copy
+          out[out_offset + j] = digest[j]; j = j + 1
+        end
+        out_offset = out_offset + to_copy
+        counter = counter + 1_u32
+      end
+      out
+    end
+  end
+end
 
 # =============================================================================
 # 1. Constants and Protocol Identifiers
@@ -2501,6 +2889,29 @@ pub class QuicTlsContext
   getter handshake_done : Bool
   getter cert_verified : Bool
 
+  def self.matches_hostname(cert : Certificate, hostname : String) : Bool
+    return false if hostname.empty?
+    target = hostname.downcase
+    return true if cert.matches_host?(target)
+    sub = cert.subject_name
+    cn = nil.as(String?)
+    sub.split(',').each do |part|
+      trimmed = part.strip
+      if trimmed.starts_with?("CN=") || trimmed.starts_with?("cn=")
+        cn = trimmed[3, trimmed.size - 3].strip
+      end
+    end
+    if c = cn
+      c_down = c.downcase
+      return true if c_down == target
+      if c_down.starts_with?("*.")
+        suffix = c_down[1, c_down.size - 1]
+        return true if target.ends_with?(suffix) && target.size > suffix.size
+      end
+    end
+    false
+  end
+
   @transcript : Array(Bytes)
   @handshake_secret : Bytes
   @master_secret : Bytes
@@ -2547,16 +2958,19 @@ pub class QuicTlsContext
     limit = upto < 0 ? @transcript.size : upto
     i = 0
     while i < limit
-      h.update(@transcript[i])
+      h.update(@transcript[i].to_unsafe, @transcript[i].size)
       i = i + 1
     end
-    h.final
+    arr = h.final
+    out = Bytes.new(arr.size)
+    out.to_unsafe.copy_from(arr.to_unsafe, arr.size)
+    out
   end
 
   def start_client_handshake : Bytes
-    @priv_key, @pub_key = Std::Tls::X25519.generate_keypair
-    @client_random = Std::Crypto.random_bytes(32)
-    @session_id = Std::Crypto.random_bytes(32)
+    @priv_key, @pub_key = QuicTls::X25519.generate_keypair
+    @client_random = random_bytes(32)
+    @session_id = random_bytes(32)
     tp_bytes = @local_tp.encode
 
     sni_len = @hostname.bytesize
@@ -2766,11 +3180,11 @@ pub class QuicTlsContext
     parsed_tp = TransportParameters.decode(client_tp_bytes, ConnectionRole::SERVER)
     @peer_tp = parsed_tp
 
-    @priv_key, @pub_key = Std::Tls::X25519.generate_keypair
-    @server_random = Std::Crypto.random_bytes(32)
+    @priv_key, @pub_key = QuicTls::X25519.generate_keypair
+    @server_random = random_bytes(32)
 
-    @shared_secret = Std::Tls::X25519.scalar_mult(@priv_key, client_pub)
-    if Std::Tls::X25519.is_all_zero(@shared_secret)
+    @shared_secret = QuicTls::X25519.scalar_mult(@priv_key, client_pub)
+    if QuicTls::X25519.is_all_zero(@shared_secret)
       raise "X25519 shared secret is all-zero (invalid curve point)"
     end
 
@@ -2820,13 +3234,12 @@ pub class QuicTlsContext
     zeros32 = Bytes.new(32, 0_u8)
     early_secret = HKDF.extract(:sha256, zeros32, zeros32)
     empty_hash = SHA256.digest(Bytes.empty)
-    derived_secret = Std::Tls.derive_secret(early_secret, "derived", empty_hash)
+    derived_secret = QuicTls.derive_secret(early_secret, "derived", empty_hash)
     @handshake_secret = HKDF.extract(:sha256, @shared_secret, derived_secret)
 
     th_sh = hash_transcript
-    @c_hs_traffic = Std::Tls.derive_secret(@handshake_secret, "c hs traffic", th_sh)
-    @s_hs_traffic = Std::Tls.derive_secret(@handshake_secret, "s hs traffic", th_sh)
-
+    @c_hs_traffic = QuicTls.derive_secret(@handshake_secret, "c hs traffic", th_sh)
+    @s_hs_traffic = QuicTls.derive_secret(@handshake_secret, "s hs traffic", th_sh)
     server_tp_bytes = @local_tp.encode
     ee_ext_len = 4 + server_tp_bytes.size
     ee_body_len = 2 + ee_ext_len
@@ -2891,7 +3304,7 @@ pub class QuicTlsContext
       cv_input[cv_prefix.bytesize + 1 + i] = th_cert[i]; i = i + 1
     end
 
-    cv_sig = Std::Tls::RSA.sign_pss(credentials.private_n, credentials.private_d, :sha256, SHA256.digest(cv_input))
+    cv_sig = QuicTls::RSA.sign_pss(credentials.private_n, credentials.private_d, :sha256, SHA256.digest(cv_input))
     cv_body_len = 2 + 2 + cv_sig.size
     cv_msg = Bytes.new(4 + cv_body_len)
     cv_msg[0] = 0x0f_u8
@@ -2904,8 +3317,8 @@ pub class QuicTlsContext
     @transcript << cv_msg
 
     th_cv = hash_transcript
-    s_fin_key = Std::Tls.hkdf_expand_label(@s_hs_traffic, "finished", Bytes.empty, 32)
-    s_verify_data = HMAC.digest(:sha256, s_fin_key, th_cv)
+    s_fin_key = QuicTls.hkdf_expand_label(@s_hs_traffic, "finished", Bytes.empty, 32)
+    s_verify_data = HMAC.digest(SHA256, s_fin_key, th_cv)
     fin_msg = Bytes.new(4 + 32)
     fin_msg[0] = 0x14_u8
     fin_msg[1] = 0x00_u8; fin_msg[2] = 0x00_u8; fin_msg[3] = 32_u8
@@ -2914,11 +3327,10 @@ pub class QuicTlsContext
     end
     @transcript << fin_msg
 
-    @master_secret = HKDF.extract(:sha256, zeros32, Std::Tls.derive_secret(@handshake_secret, "derived", empty_hash))
+    @master_secret = HKDF.extract(:sha256, zeros32, QuicTls.derive_secret(@handshake_secret, "derived", empty_hash))
     th_sfin = hash_transcript
-    @c_ap_traffic = Std::Tls.derive_secret(@master_secret, "c ap traffic", th_sfin)
-    @s_ap_traffic = Std::Tls.derive_secret(@master_secret, "s ap traffic", th_sfin)
-
+    @c_ap_traffic = QuicTls.derive_secret(@master_secret, "c ap traffic", th_sfin)
+    @s_ap_traffic = QuicTls.derive_secret(@master_secret, "s ap traffic", th_sfin)
     flight_total = ee_msg.size + cert_msg.size + cv_msg.size + fin_msg.size
     flight = Bytes.new(flight_total)
     f_off = 0
@@ -2993,20 +3405,20 @@ pub class QuicTlsContext
     raise "Server did not provide X25519 key share" if server_pub.size != 32
     @peer_pub_key = server_pub
 
-    @shared_secret = Std::Tls::X25519.scalar_mult(@priv_key, server_pub)
-    if Std::Tls::X25519.is_all_zero(@shared_secret)
+    @shared_secret = QuicTls::X25519.scalar_mult(@priv_key, server_pub)
+    if QuicTls::X25519.is_all_zero(@shared_secret)
       raise "X25519 shared secret is all-zero (invalid curve point)"
     end
 
     zeros32 = Bytes.new(32, 0_u8)
     early_secret = HKDF.extract(:sha256, zeros32, zeros32)
     empty_hash = SHA256.digest(Bytes.empty)
-    derived_secret = Std::Tls.derive_secret(early_secret, "derived", empty_hash)
+    derived_secret = QuicTls.derive_secret(early_secret, "derived", empty_hash)
     @handshake_secret = HKDF.extract(:sha256, @shared_secret, derived_secret)
 
     th_sh = hash_transcript
-    @c_hs_traffic = Std::Tls.derive_secret(@handshake_secret, "c hs traffic", th_sh)
-    @s_hs_traffic = Std::Tls.derive_secret(@handshake_secret, "s hs traffic", th_sh)
+    @c_hs_traffic = QuicTls.derive_secret(@handshake_secret, "c hs traffic", th_sh)
+    @s_hs_traffic = QuicTls.derive_secret(@handshake_secret, "s hs traffic", th_sh)
 
     {@c_hs_traffic, @s_hs_traffic}
   end
@@ -3062,9 +3474,10 @@ pub class QuicTlsContext
           c_idx = c_idx + 3
           raise "Certificate entry is truncated" if c_idx + c_len + 2 > c_end
           der_cert = msg_data[c_idx, c_len]
-          parsed_cert = Certificate.parse(der_cert)
-          raise "Certificate entry could not be parsed" if parsed_cert.nil?
-          server_chain << parsed_cert
+          der_arr = der_cert.to_a
+          parsed_cert = Certificate.parse(der_arr)
+          raise "Certificate entry could not be parsed: #{parsed_cert.message}" if parsed_cert.is_a?(X509Error)
+          server_chain << parsed_cert.as(Certificate)
           c_idx = c_idx + c_len
           cert_ext_len = (msg_data[c_idx].to_i32 << 8) | msg_data[c_idx + 1].to_i32
           c_idx = c_idx + 2
@@ -3085,8 +3498,8 @@ pub class QuicTlsContext
       elsif msg_type == 0x14_u8
         raise "Finished message must contain 32 verify bytes" unless msg_data.size == 36
         s_verify_data = msg_data[4, 32]
-        s_fin_key = Std::Tls.hkdf_expand_label(@s_hs_traffic, "finished", Bytes.empty, 32)
-        expected_mac = HMAC.digest(:sha256, s_fin_key, th_cv)
+        s_fin_key = QuicTls.hkdf_expand_label(@s_hs_traffic, "finished", Bytes.empty, 32)
+        expected_mac = HMAC.digest(SHA256, s_fin_key, th_cv)
         if !constant_time_compare(s_verify_data, expected_mac)
           raise "Server Finished MAC verification failed"
         end
@@ -3104,14 +3517,18 @@ pub class QuicTlsContext
     @peer_cert = server_chain[0]
 
     cert = server_chain[0]
-    now_sec = @verification_time || Time.utc.seconds
-    if !cert.matches_hostname(@hostname)
-      raise "Certificate hostname mismatch: expected #{@hostname}, got #{cert.common_name}"
+    now_time = if vt = @verification_time
+                 Time.unix(vt)
+               else
+                 Time.utc
+               end
+    if !QuicTlsContext.matches_hostname(cert, @hostname)
+      raise "Certificate hostname mismatch: expected #{@hostname}"
     end
-    if !cert.valid_at?(now_sec)
+    if !cert.valid_at?(now_time)
       raise "Certificate expired or not yet valid"
     end
-    if !@ca_store.verify_chain(server_chain, @hostname, now_sec)
+    if !@ca_store.verify_chain(server_chain, @hostname, now_time.to_unix)
       raise "Certificate chain verification failed against trust store"
     end
 
@@ -3125,24 +3542,25 @@ pub class QuicTlsContext
       cv_input[cv_prefix.bytesize + 1 + i] = th_cert[i]; i = i + 1
     end
 
-    rn = cert.rsa_n
-    re = cert.rsa_e
-    raise "Missing RSA public key on certificate" if rn.zero? || re.zero?
+    pk = cert.public_key
+    raise "Missing RSA public key on certificate" unless pk.is_a?(RsaPublicKey)
+    rn = pk.modulus
+    re = pk.exponent
     raise "TLS 1.3 requires rsa_pss_rsae_sha256 CertificateVerify" unless cert_verify_scheme == 0x0804
-    if !Std::Tls::RSA.verify_pss(rn, re, :sha256, SHA256.digest(cv_input), cert_verify_sig, 32)
+    if !QuicTls::RSA.verify_pss(rn, re, :sha256, SHA256.digest(cv_input), cert_verify_sig, 32)
       raise "CertificateVerify signature verification failed"
     end
     @cert_verified = true
 
     zeros32 = Bytes.new(32, 0_u8)
     empty_hash = SHA256.digest(Bytes.empty)
-    @master_secret = HKDF.extract(:sha256, zeros32, Std::Tls.derive_secret(@handshake_secret, "derived", empty_hash))
+    @master_secret = HKDF.extract(:sha256, zeros32, QuicTls.derive_secret(@handshake_secret, "derived", empty_hash))
     th_sfin = hash_transcript
-    @c_ap_traffic = Std::Tls.derive_secret(@master_secret, "c ap traffic", th_sfin)
-    @s_ap_traffic = Std::Tls.derive_secret(@master_secret, "s ap traffic", th_sfin)
+    @c_ap_traffic = QuicTls.derive_secret(@master_secret, "c ap traffic", th_sfin)
+    @s_ap_traffic = QuicTls.derive_secret(@master_secret, "s ap traffic", th_sfin)
 
-    c_fin_key = Std::Tls.hkdf_expand_label(@c_hs_traffic, "finished", Bytes.empty, 32)
-    c_verify_data = HMAC.digest(:sha256, c_fin_key, th_sfin)
+    c_fin_key = QuicTls.hkdf_expand_label(@c_hs_traffic, "finished", Bytes.empty, 32)
+    c_verify_data = HMAC.digest(SHA256, c_fin_key, th_sfin)
     c_fin_msg = Bytes.new(4 + 32)
     c_fin_msg[0] = 0x14_u8
     c_fin_msg[1] = 0x00_u8; c_fin_msg[2] = 0x00_u8; c_fin_msg[3] = 32_u8
@@ -3158,8 +3576,8 @@ pub class QuicTlsContext
   def handle_client_finished(c_fin_data : Bytes) : Nil
     c_verify_data = c_fin_data[4, 32]
     th_sfin = hash_transcript
-    c_fin_key = Std::Tls.hkdf_expand_label(@c_hs_traffic, "finished", Bytes.empty, 32)
-    expected_mac = HMAC.digest(:sha256, c_fin_key, th_sfin)
+    c_fin_key = QuicTls.hkdf_expand_label(@c_hs_traffic, "finished", Bytes.empty, 32)
+    expected_mac = HMAC.digest(SHA256, c_fin_key, th_sfin)
     if !constant_time_compare(c_verify_data, expected_mac)
       raise "Client Finished MAC verification failed"
     end
@@ -3174,7 +3592,6 @@ pub class QuicEndpoint
 
   def initialize(bind_host : String = "127.0.0.1", port : Int32 = 0)
     @socket = UdpSocket.bind(bind_host, port)
-    @socket.read_timeout = 50
     @connections = [] of QuicConnection
     @closed = false
   end

@@ -35,12 +35,9 @@
 module std/qpack
 
 import std/traits
-import std/slice
+import std/slice::{Slice, Bytes}
 import std/text
-import std/hpack
-
-using std/slice::{Slice, Bytes}
-using std/hpack::{Integer, Huffman, HpackError}
+import std/hpack::{Integer, Huffman, HpackError}
 
 # ---------------------------------------------------------------------------
 # Qpack Error Codes and Error Structure

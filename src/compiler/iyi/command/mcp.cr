@@ -17,7 +17,15 @@ require "json"
 
 class Iyi::Command
   private def mcp
-    if options.first?.in?("--help", "-h")
+    # iyi: this used to look at `options.first?` alone and serve whatever
+    # it did not recognise, so `iyi mcp --nonesuch` reached the read loop
+    # and the agent harness on the other end got a server it never
+    # configured. `--help` and `-h` are the whole of this command line.
+    if unknown = options.find { |option| !option.in?("--help", "-h") }
+      abort! "mcp takes no arguments but --help, and '#{unknown}' is one", :USAGE_ERROR
+    end
+
+    unless options.empty?
       puts <<-USAGE
         Usage: #{Command.program_name} mcp
 
@@ -43,8 +51,45 @@ class Iyi::Command
           next
         end
 
+      # A line that parses and is not an object - a batch array, `42`, a
+      # string - is not a request. Every field below is read with `[]?`,
+      # which raises on what is not an object, so each of these killed the
+      # server with "Expected Hash for #[]?(key : String), not
+      # Array(JSON::Any)" and "you've found a bug". MCP sends no batches
+      # since 2025-06-18, so one is refused like any other non-object.
+      unless message.as_h?
+        STDOUT.puts %({"jsonrpc": "2.0", "id": null, "error": {"code": -32600, "message": "invalid request: #{message.as_a? ? "a batch is not served; send one message per line" : "a message is a JSON object"}"}})
+        STDOUT.flush
+        next
+      end
+
       id = message["id"]?
-      case message["method"]?.try(&.as_s?)
+      method = message["method"]?.try(&.as_s?)
+
+      # A request with no `method` is not a method that is missing: it is
+      # not a request. JSON-RPC has a code for each and they mean
+      # different things to a client - -32601 says "ask for something
+      # else", -32600 says "what you sent is not a request at all".
+      if method.nil? && id
+        STDOUT.puts %({"jsonrpc": "2.0", "id": #{id.to_json}, "error": {"code": -32600, "message": "invalid request: no method"}})
+        STDOUT.flush
+        next
+      end
+
+      # `params`, and a tool call's `arguments`, are objects when they are
+      # there at all (JSON-RPC 2.0 §4.2); one that is not an object, an
+      # array or a number, was dug into and killed the server the same way.
+      params = message["params"]?
+      arguments = params.try(&.as_h?).try(&.["arguments"]?)
+      if (params && !params.as_h?) || (method == "tools/call" && arguments && !arguments.as_h?)
+        if id
+          STDOUT.puts %({"jsonrpc": "2.0", "id": #{id.to_json}, "error": {"code": -32602, "message": "invalid params: #{params.try(&.as_h?) ? "arguments" : "params"} is an object when it is given"}})
+          STDOUT.flush
+        end
+        next
+      end
+
+      case method
       when "initialize"
         respond_mcp(id) do |json|
           json.field "protocolVersion", message.dig?("params", "protocolVersion").try(&.as_s?) || "2025-06-18"
@@ -75,7 +120,15 @@ class Iyi::Command
           end
         end
       when "tools/call"
-        name = message.dig?("params", "name").try(&.as_s?) || ""
+        # A call with no `name` came back "unknown tool: " - a sentence
+        # about a tool whose name is nothing, which reads as a tool this
+        # server has and the caller misspelled. What is missing is the
+        # field, so the field is what it says.
+        name = message.dig?("params", "name").try(&.as_s?)
+        if name.nil? || name.empty?
+          mcp_tool_error(id, "tools/call needs a name: #{mcp_tool_names.join(", ")}")
+          next
+        end
         arguments = message.dig?("params", "arguments")
         mcp_call(id, name, arguments)
       when "exit", "shutdown"
@@ -106,7 +159,7 @@ class Iyi::Command
       },
       {
         "name": "fix",
-        "description": "Apply the compiler's own did-you-mean edits to a file, recompiling after each, until clean or an error carries no edit. Returns the edits applied and whether the file ended clean.",
+        "description": "Apply the compiler's own did-you-mean edits to a file, recompiling after each, until clean or an error carries no edit. Returns the edits applied and whether the file ended clean; when the remaining error lives in another file of the program, `cause` names that file and position, and that is the file to call this on next.",
         "inputSchema": {
           "type": "object",
           "properties": {"file": {"type": "string", "description": "path to the .iyi file"}},
@@ -145,6 +198,12 @@ class Iyi::Command
     ]
     JSON
 
+  # The names, read from the catalogue above: a list typed twice is a
+  # list that goes out of date once.
+  private def mcp_tool_names : Array(String)
+    JSON.parse(MCP_TOOLS).as_a.compact_map { |tool| tool["name"]?.try(&.as_s?) }
+  end
+
   private def mcp_call(id, name : String, arguments : JSON::Any?) : Nil
     file = arguments.try(&.dig?("file")).try(&.as_s?)
 
@@ -175,7 +234,10 @@ class Iyi::Command
         return mcp_tool_error(id, "doc needs a target: a .iyi module, a .iyimod artifact, or a prelude type's name") unless target
         ["doc", target]
       else
-        return mcp_tool_error(id, "unknown tool: #{name}")
+        # With the catalogue, because a caller that guessed a name wrong
+        # has no other way to learn the five from an error, and the list
+        # is five words long.
+        return mcp_tool_error(id, "unknown tool: #{name}. This server has #{mcp_tool_names.join(", ")}")
       end
 
     stdout = IO::Memory.new
@@ -190,6 +252,36 @@ class Iyi::Command
     text = "[]" if text.blank? && name == "check"
     text = "(exit #{status.exit_code}, no output)" if text.blank?
 
+    # iyi: `isError` was the constant `false`, so a tool that could not
+    # answer said it had. A missing file, a directory, bytes that are not
+    # text and an unknown prelude type all came back as success envelopes
+    # whose text began with "Error:" — and an agent branches on this flag;
+    # that is what it is for.
+    #
+    # The exit code cannot decide it alone: `check` exits 1 when the file
+    # has diagnostics and `test` exits 1 when a test fails, and both of
+    # those are *answers*. So the question asked here is whether the tool
+    # produced the shape it promises. The four JSON tools have answered
+    # when their output parses as JSON — diagnostics, a fix record, a
+    # context pack, a test report — and have refused when it is a sentence.
+    # `check -f json` refuses in JSON too, so that a caller of the verb
+    # always parses what it gets: a file that is not there, or bytes that
+    # are not text, is a frame with no line (`Command#json_message_frame`),
+    # and a verdict about the code places at least one of its frames.
+    # `doc` promises text, so for it the exit code is the answer.
+    answered =
+      if name == "doc"
+        status.success?
+      else
+        begin
+          parsed = JSON.parse(text)
+          frames = parsed.as_a? if name == "check"
+          !frames || frames.empty? || frames.any? { |frame| frame["line"]?.try(&.as_i?) }
+        rescue JSON::ParseException
+          false
+        end
+      end
+
     respond_mcp(id) do |json|
       json.field "content" do
         json.array do
@@ -199,7 +291,7 @@ class Iyi::Command
           end
         end
       end
-      json.field "isError", false
+      json.field "isError", !answered
     end
   end
 

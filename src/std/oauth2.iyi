@@ -7,7 +7,6 @@
 module std/oauth2
 
 pub import std/http
-pub import std/http1
 pub import std/uri
 pub import std/crypto
 pub import std/digest
@@ -16,13 +15,15 @@ pub import std/time
 pub import std/json
 pub import std/random
 pub import std/oauth
-
-using std/http::{Request, Response, Headers, Status}
-using std/uri::{URI, Params}
-using std/crypto::{HMAC}
-using std/base64::{Base64}
-using std/time::{Time, Span}
-using std/json::{JSON, Builder, PullParser}
+pub import std/io
+import std/http::{Request, Response, Headers}
+import std/uri::{URI, Params}
+import std/crypto::{HMAC}
+import std/base64::{Base64}
+import std/digest::{SHA1, SHA256}
+import std/time::{Time, Span}
+import std/json::{JSON, Builder, PullParser}
+import std/random::{Random}
 
 # -----------------------------------------------------------------------------
 # OAuth2::AuthScheme
@@ -45,21 +46,25 @@ end
 # OAuth2::Error
 # -----------------------------------------------------------------------------
 
-pub class Error < Exception
+pub struct Error
   getter message : String
-  getter cause : Exception?
 
-  def initialize(@message : String, @cause : Exception? = nil)
+  def initialize(@message : String, cause = nil)
   end
 
+  def to_s : String
+    @message
+  end
+end
+
+impl ::Error for Error
   def message : String
     @message
   end
 end
 
 def raise(err : Error, file : String = __FILE__, line : Int32 = __LINE__) : NoReturn
-  m = err.message
-  ::raise(m ? m : "OAuth2::Error", file, line)
+  ::raise(err.message, file, line)
 end
 
 # -----------------------------------------------------------------------------
@@ -155,9 +160,9 @@ pub abstract class AccessToken
 
   abstract def token_type : String
 
-  abstract def authenticate(request : HTTP::Request, tls : Bool) : Nil
+  abstract def authenticate(request : Request, tls : Bool) : Nil
 
-  def authenticate(client : HTTP::Client) : Nil
+  def authenticate(client : Std::Oauth::Client) : Nil
     client.before_request do |request|
       authenticate(request, client.tls?)
     end
@@ -266,7 +271,7 @@ pub class Bearer < AccessToken
     "Bearer"
   end
 
-  def authenticate(request : HTTP::Request, tls : Bool) : Nil
+  def authenticate(request : Request, tls : Bool) : Nil
     request.headers["Authorization"] = "Bearer " + @access_token
   end
 
@@ -341,10 +346,10 @@ pub class Mac < AccessToken
     "Mac"
   end
 
-  def authenticate(request : HTTP::Request, tls : Bool) : Nil
+  def authenticate(request : Request, tls : Bool) : Nil
     ts = Time.utc.to_unix
     diff = ts - @issued_at
-    nonce = diff.to_s + ":" + Std::Crypto.random_bytes(8).hexstring
+    nonce = diff.to_s + ":" + Random::Secure.hex(8)
     method = request.method
     uri = request.target
     h, p = host_and_port(request, tls)
@@ -365,16 +370,15 @@ pub class Mac < AccessToken
                      mac_algorithm : String,
                      mac_key : String) : String
     normalized = ts + "\n" + nonce + "\n" + method + "\n" + uri + "\n" + host + "\n" + port.to_s + "\n" + ext + "\n"
-    algo = case mac_algorithm.downcase
-           when "hmac-sha-1", "hmac-sha1"
-             :sha1
-           when "hmac-sha-256", "hmac-sha256"
-             :sha256
-           else
-             raise Error.new("Unsupported algorithm: " + mac_algorithm)
-           end
-    digest = HMAC.digest(algo, mac_key, normalized)
-    Base64.strict_encode(digest)
+    digest = case mac_algorithm.downcase
+             when "hmac-sha-1", "hmac-sha1"
+               HMAC.digest(SHA1, mac_key, normalized)
+             when "hmac-sha-256", "hmac-sha256"
+               HMAC.digest(SHA256, mac_key, normalized)
+             else
+               raise Error.new("Unsupported algorithm: " + mac_algorithm)
+             end
+    Base64.encode(digest)
   end
 
   def to_json(json : Builder) : Nil
@@ -423,7 +427,7 @@ pub class Mac < AccessToken
     io << "OAuth2::AccessToken::Mac(access_token=" << @access_token << ")"
   end
 
-  private def host_and_port(request : HTTP::Request, tls : Bool) : Tuple(String, Int32)
+  private def host_and_port(request : Request, tls : Bool) : Tuple(String, Int32)
     host_hdr = request.headers["Host"]?
     if host_hdr && !host_hdr.empty?
       if colon_idx = host_hdr.index(':')
@@ -456,7 +460,7 @@ pub class Client
   getter redirect_uri : String?
   property auth_scheme : AuthScheme
 
-  def http_client=(client : HTTP::Client?) : HTTP::Client?
+  def http_client=(client : Std::Oauth::Client?) : Std::Oauth::Client?
     @http_client = client
   end
 
@@ -472,8 +476,8 @@ pub class Client
     @http_client = nil
   end
 
-  def http_client : HTTP::Client
-    @http_client ||= HTTP::Client.new(parsed_token_uri)
+  def http_client : Std::Oauth::Client
+    @http_client ||= Std::Oauth::Client.new(parsed_token_uri)
   end
 
   def get_authorize_uri(scope : String? = nil, state : String? = nil) : String
@@ -555,7 +559,7 @@ pub class Client
       form.add("client_id", @client_id)
       form.add("client_secret", @client_secret)
     elsif @auth_scheme.http_basic?
-      basic_creds = Base64.strict_encode(@client_id + ":" + @client_secret)
+      basic_creds = Base64.encode(@client_id + ":" + @client_secret)
       headers["Authorization"] = "Basic " + basic_creds
     end
 
@@ -571,18 +575,18 @@ pub class Client
       yield form
     end
 
-    unless response.status_code >= 200 && response.status_code < 300
-      err_msg = begin
-        err_resp = ErrorResponse.from_json(response.body)
-        desc = err_resp.error_description
-        if desc && !desc.empty?
-          "OAuth2 Error: " + err_resp.error + " - " + desc
-        else
-          "OAuth2 Error: " + err_resp.error
-        end
-      rescue
-        "Unexpected response status: " + response.status_code.to_s + " " + response.body
-      end
+    unless response.status >= 200 && response.status < 300
+      err_msg = if response.body.starts_with?("{")
+                  err_resp = ErrorResponse.from_json(response.body)
+                  desc = err_resp.error_description
+                  if desc && !desc.empty?
+                    "OAuth2 Error: " + err_resp.error + " - " + desc
+                  else
+                    "OAuth2 Error: " + err_resp.error
+                  end
+                else
+                  "Unexpected response status: " + response.status.to_s + " " + response.body
+                end
       raise Error.new(err_msg)
     end
 
@@ -615,7 +619,7 @@ pub class Session
     @callback = callback
   end
 
-  def authenticate(http_client : HTTP::Client) : Nil
+  def authenticate(http_client : Std::Oauth::Client) : Nil
     check_refresh_token
     @access_token.authenticate(http_client)
   end
@@ -659,13 +663,3 @@ end
 
 pub struct OAuth2
 end
-
-alias ::OAuth2 = Std::Oauth2::OAuth2
-alias ::OAuth2::Client = Std::Oauth2::Client
-alias ::OAuth2::AccessToken = Std::Oauth2::AccessToken
-alias ::OAuth2::AuthScheme = Std::Oauth2::AuthScheme
-alias ::OAuth2::Error = Std::Oauth2::Error
-alias ::OAuth2::ErrorResponse = Std::Oauth2::ErrorResponse
-alias ::OAuth2::Session = Std::Oauth2::Session
-alias ::OAuth2::AccessToken::Bearer = Std::Oauth2::Bearer
-alias ::OAuth2::AccessToken::Mac = Std::Oauth2::Mac

@@ -5,8 +5,7 @@
 
 module compiler/tools/format
 
-import compiler/tools/formatter
-using compiler/tools/formatter::{Formatter}
+import compiler/tools/formatter::{Formatter}
 
 module FormatTool
   def self.run : Nil

@@ -1,11 +1,8 @@
 module compiler/llvm/builder
 
-import compiler/llvm/lib_llvm
-import compiler/llvm/values
-import compiler/llvm/context
-using compiler/llvm/lib_llvm::{string_from_c, string_and_dispose}
-using compiler/llvm/values::{LLVMType, LLVMValue, LLVMFunction, LLVMBasicBlock, Type, Value, Function, BasicBlock}
-using compiler/llvm/context::{Context}
+import compiler/llvm/lib_llvm::{string_from_c, string_and_dispose}
+import compiler/llvm/values::{LLVMType, LLVMValue, LLVMFunction, LLVMBasicBlock, Type, Value, Function, BasicBlock}
+import compiler/llvm/context::{Context}
 
 pub class Builder
   getter unwrap : LibLLVM::BuilderRef
@@ -148,10 +145,6 @@ pub class Builder
 
   def bitwise_and(lhs : LLVMValue, rhs : LLVMValue, name : String = "") : LLVMValue
     build_and(lhs, rhs, name)
-  end
-
-  def or(lhs : LLVMValue, rhs : LLVMValue, name : String = "") : LLVMValue
-    build_or(lhs, rhs, name)
   end
 
   def build_or(lhs : LLVMValue, rhs : LLVMValue, name : String = "") : LLVMValue

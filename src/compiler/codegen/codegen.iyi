@@ -22,31 +22,22 @@
 
 module compiler/codegen/codegen
 
-import compiler/foundation/location
-import compiler/syntax/ast
-import compiler/syntax/parser
-import compiler/syntax/visitor
-import compiler/syntax/token
-import compiler/semantic/top_level
-import compiler/semantic/main_visitor
+import compiler/foundation/location::{Location}
+import compiler/syntax/ast::{ASTNode, Annotation, Arg, ArrayLiteral, Assign, Block, BoolLiteral, Break, Call, Cast, CharLiteral, ClassDef, ClassVar, Def, ExceptionHandler, Expressions, FunDef, Generic, If, InstanceVar, LibDef, Next, NilLiteral, Nop, NumberLiteral, Path, PointerOf, ProcLiteral, Rescue, Return, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, TypeDeclaration, Var, While, Yield, MacroIf, MacroLiteral}
+import compiler/syntax/parser::{Parser}
+import compiler/syntax/visitor::{Visitor}
+import compiler/syntax/token::{NumberKind}
+import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, ClassType, NonGenericClassType}
+import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/llvm
-import compiler/macros/interpreter
-import compiler/macros/methods
+import compiler/macros/interpreter::{MacroInterpreter}
+import compiler/macros/methods::{MacroMethods}
 
-using compiler/foundation/location::{Location}
-using compiler/syntax/ast::{ASTNode, Annotation, Arg, ArrayLiteral, Assign, Block, BoolLiteral, Break, Call, Cast, CharLiteral, ClassDef, ClassVar, Def, ExceptionHandler, Expressions, FunDef, Generic, If, InstanceVar, LibDef, Next, NilLiteral, Nop, NumberLiteral, Path, PointerOf, ProcLiteral, Rescue, Return, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, TypeDeclaration, Var, While, Yield, MacroIf, MacroLiteral}
-using compiler/syntax/token::{NumberKind}
-using compiler/macros/interpreter::{MacroInterpreter}
-using compiler/macros/methods::{MacroMethods}
-using compiler/syntax/parser::{Parser}
-using compiler/syntax/visitor::{Visitor}
-using compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, ClassType, NonGenericClassType}
-using compiler/semantic/main_visitor::{MainVisitor}
-using compiler/llvm/target::{Target, TargetData, TargetMachine}
-using compiler/llvm/context::{Context}
-using compiler/llvm/values::{LLVMType, LLVMValue, LLVMFunction, LLVMBasicBlock, Function, BasicBlock}
-using compiler/llvm/module::{Module}
-using compiler/llvm/builder::{Builder}
+import compiler/llvm/target::{Target, TargetData, TargetMachine}
+import compiler/llvm/context::{Context}
+import compiler/llvm/values::{LLVMType, LLVMValue, LLVMFunction, LLVMBasicBlock, Function, BasicBlock}
+import compiler/llvm/module::{Module}
+import compiler/llvm/builder::{Builder}
 
 pub def register_primitive_operators(prog : SemanticProgram) : Nil
   int_names = ["Int8", "UInt8", "Int16", "UInt16", "Int32", "UInt32", "Int64", "UInt64", "Int128", "UInt128"]

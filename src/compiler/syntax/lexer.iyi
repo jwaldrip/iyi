@@ -6,10 +6,10 @@ pub import compiler/foundation/errors
 pub import compiler/foundation/enums
 pub import compiler/foundation/string_pool
 pub import compiler/syntax/token
-using compiler/foundation/location::{Location}
-using compiler/foundation/errors::{SyntaxException}
-using compiler/foundation/string_pool::{StringPool}
-using compiler/syntax/token::{Token, TokenKind, Keyword, NumberKind, DelimiterKind, DelimiterState, MacroState, MacroKeywordState}
+import compiler/foundation/location::{Location}
+import compiler/foundation/errors::{SyntaxException}
+import compiler/foundation/string_pool::{StringPool}
+import compiler/syntax/token::{Token, TokenKind, Keyword, NumberKind, DelimiterKind, DelimiterState, MacroState, MacroKeywordState}
 
 pub class Lexer
   property doc_enabled : Bool

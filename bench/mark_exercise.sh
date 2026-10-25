@@ -17,9 +17,38 @@
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-IYI="$REPO/bin/iyi"
+# The gate runs whatever compiler the caller names; `bin/iyi` is a shell
+# wrapper, and on Windows the caller has to point at the built exe itself.
+IYI="${IYI:-$REPO/bin/iyi}"
 WORK="$(mktemp -d)"
+# A native compiler cannot resolve this shell's own path mapping: a search
+# path built from the shell's `pwd` finds no prelude at all, and a scratch
+# directory named `/tmp/tmp.X` on it is silently ignored, so the patched
+# copy is never read and the proof that a check can fail quietly stops
+# proving it.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT)
+    REPO="$(cygpath -m "$REPO")"
+    WORK="$(cygpath -m "$WORK")"
+    ;;
+esac
 trap 'rm -rf "$WORK"' EXIT
+
+# The search path is a list, and the byte between its entries is the
+# platform's: `;` where a drive letter already owns the colon.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT) PSEP=';' ;;
+  *) PSEP=':' ;;
+esac
+
+# Marking needs the collector's allocator, which is the default on
+# linux-x86_64, linux-aarch64, darwin and windows-x86_64; where a build
+# deselects it the exercise itself refuses every section, and a gate that
+# then reports those sections as MISSING claims more than it measured.
+case "$(uname -s)" in
+  Linux | Darwin | MINGW* | MSYS* | CYGWIN* | Windows_NT) ;;
+  *) echo "mark exercise: marking needs the collector's allocator, which this platform's build deselects; nothing to measure here"; exit 0 ;;
+esac
 
 status=0
 
@@ -114,7 +143,8 @@ if [ -f "$WORK/mark" ]; then
   # and bench/dependency_floor.sh's, not marking's.
   extra="$(undefined_symbols "$WORK/mark" | grep -vxF -e clock_gettime -e exit -e mmap -e munmap -e write \
     -e pthread_self -e pthread_get_stackaddr_np -e _dyld_get_image_header -e _dyld_get_image_vmaddr_slide \
-    -e kqueue -e kevent -e clock_gettime_nsec_np -e __error -e _tlv_bootstrap -e pthread_kill -e pthread_create -e sysctlbyname -e pipe -e sigaction -e madvise \
+    -e kqueue -e kevent -e clock_gettime_nsec_np -e __error -e _tlv_bootstrap -e pthread_kill -e pthread_create -e sysctlbyname -e pipe -e sigaction -e sigaltstack \
+    -e backtrace -e backtrace_symbols_fd \
     -e open -e openat -e close -e read -e unlink -e chmod \
     -e ITM_deregisterTMCloneTable -e ITM_registerTMCloneTable -e _cxa_finalize -e _gmon_start__ -e _libc_start_main || true)"
   if [ -n "$extra" ]; then
@@ -137,7 +167,7 @@ prove_fails() {
   mkdir -p "$WORK/$dir/iyi"
   cp -R "$REPO/src/iyi/." "$WORK/$dir/iyi/"
   awk "$script" "$REPO/src/iyi/prelude.iyi" > "$WORK/$dir/iyi/prelude.iyi"
-  if ! IYI_PATH="$WORK/$dir:$REPO/src" "$IYI" build \
+  if ! IYI_PATH="$WORK/$dir${PSEP}$REPO/src" "$IYI" build \
        -o "$WORK/$dir/program" "$REPO/bench/mark_exercise.iyi" \
        >"$WORK/$dir/build.log" 2>&1; then
     echo "  $label: the patched prelude did not build"
@@ -165,7 +195,13 @@ prove_fails() {
 # Never blacken. The queue drains and every object stays gray, which is the
 # shape of a mark phase that loses track of what it has already scanned.
 prove_fails "no black shading" noblack "should be black" \
-  '{ if ($0 ~ /IyiHeap\.write8\(IyiHeap\.mark_byte\(arena, base\), BLACK\)/) next; print }'
+  '{ if ($0 ~ /IyiHeap\.write8\(IyiHeap\.read64\(arena &\+ IyiHeap::OFF_MARKS\) &\+ slot, BLACK\)/) next; print }'
+
+# The chunk's index is worked out once and serves its entry and its mark
+# byte both; blacken the chunk after it instead, and the object scanned
+# stays gray.
+prove_fails "the neighbour blackened" wrongslot "should be black" \
+  '{ sub(/IyiHeap::OFF_MARKS\) &\+ slot, BLACK\)/, "IyiHeap::OFF_MARKS) \\&+ slot \\&+ 1_u64, BLACK)"); print }'
 
 # Stop following pointers. Roots are marked and nothing they reach is, which is
 # the defect that frees a live object.

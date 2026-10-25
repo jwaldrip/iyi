@@ -25,16 +25,55 @@
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-IYI="$REPO/bin/iyi"
+# the wrapper in bin is a posix shell script, so a caller that already has a
+# compiler of its own names it through the environment.
+IYI="${IYI:-$REPO/bin/iyi}"
 WORK="$(mktemp -d)"
+
+# A native compiler cannot resolve this shell's own path mapping: a search
+# path built from the shell's `pwd` finds no prelude at all, and a scratch
+# directory named `/tmp/tmp.X` is silently ignored on that path, so the
+# patched copy is never read and the proof that a check can fail quietly
+# stops proving it.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT)
+    REPO="$(cygpath -m "$REPO")"
+    WORK="$(cygpath -m "$WORK")"
+    ;;
+esac
+
+. "$REPO/bench/floor_base.sh"
+
+# The search path is a list, and the byte between its entries is the
+# platform's: `;` where a drive letter already owns the colon.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT) PSEP=';' ;;
+  *) PSEP=':' ;;
+esac
+
 trap 'rm -rf "$WORK"' EXIT
 
 status=0
 
+# A floor measured with a reader that is not installed is not measured at
+# all: `nm -u` in a shell with no `nm` prints nothing, and an empty symbol
+# list reads as a floor that held. The readers are resolved once here, and
+# the arm that needs them says what it could not measure instead.
+NM=""
+command -v nm >/dev/null 2>&1 && NM=nm
+LIBS_READER=""
+for candidate in otool readelf; do
+  if command -v "$candidate" >/dev/null 2>&1; then
+    LIBS_READER="$candidate"
+    break
+  fi
+done
+unmeasured=0
+
 # The same readers `bench/dependency_floor.sh` uses, for the same reason: what
 # a binary itself leaves undefined and what it itself asks to have loaded.
 symbols() {
-  nm -u "$1" 2>/dev/null |
+  "$NM" -u "$1" 2>/dev/null |
     sed -e 's/^ *//' -e 's/^U  *//' -e 's/@.*$//' |
     awk '{ print $NF }' |
     sed -e 's/^_//' |
@@ -43,7 +82,7 @@ symbols() {
 }
 
 libraries() {
-  if command -v otool >/dev/null 2>&1; then
+  if [ "$LIBS_READER" = otool ]; then
     otool -L "$1" 2>/dev/null | sed -n '2,$p' | awk '{ print $1 }' | sed 's|.*/||' | sort -u
   else
     readelf -d "$1" 2>/dev/null |
@@ -107,7 +146,7 @@ build_and_run "default, release" exercise-gc-release "$REPO/bench/arena_exercise
 echo
 echo "== every arena check reported"
 # The huge-page check reads /proc, so it reports on Linux only.
-for check in "size classes:" "addressability:" "clearing:" "reuse:" "traversal:" "large:" $( [ "$(uname -s)" = Linux ] && echo "huge:" ); do
+for check in "alignment: small and large" "size classes:" "addressability:" "clearing:" "reuse:" "traversal:" "large:" $( [ "$(uname -s)" = Linux ] && echo "huge:" ); do
   if ! grep -q "$check" "$WORK/exercise-gc.out" 2>/dev/null; then
     echo "  MISSING: $check"
     status=1
@@ -129,9 +168,15 @@ else
   probe_exit=$?
   # 128 + SIGSEGV(11), or 128 + SIGBUS(10) where a platform reports an
   # unmapped read that way. Either is the read faulting, which is the claim.
+  # Windows has no signal to die of: the runtime's vectored handler names
+  # the access violation itself and exits 1, and that sentence is the same
+  # claim in the runtime's words.
+  if [ "$probe_exit" = 1 ] && grep -q "died of a memory fault" "$WORK/large-probe.out"; then
+    probe_exit=fault
+  fi
   case "$probe_exit" in
-    139 | 138)
-      echo "  the read faulted (exit $probe_exit): munmap released the mapping"
+    139 | 138 | fault)
+      echo "  the read faulted (exit $probe_exit): the mapping was released"
       ;;
     0)
       echo "  the probe READ the freed mapping and lived, so nothing was released:"
@@ -162,7 +207,7 @@ if [ "$(uname -s)" = Linux ]; then
     if cmp -s "$WORK/$dir/iyi/prelude.iyi" "$REPO/src/iyi/prelude.iyi"; then
       echo "  $label: the awk found nothing to change"; status=1; return
     fi
-    if ! IYI_PATH="$WORK/$dir:$REPO/src" "$IYI" build -o "$WORK/$dir/program" "$REPO/bench/arena_exercise.iyi" >"$WORK/$dir/build.log" 2>&1; then
+    if ! IYI_PATH="$WORK/$dir${PSEP}$REPO/src" "$IYI" build -o "$WORK/$dir/program" "$REPO/bench/arena_exercise.iyi" >"$WORK/$dir/build.log" 2>&1; then
       echo "  $label: the patched prelude did not build"; sed -n '1,12p' "$WORK/$dir/build.log"; status=1; return
     fi
     "$WORK/$dir/program" >"$WORK/$dir/out" 2>&1
@@ -186,6 +231,26 @@ if [ "$(uname -s)" = Linux ]; then
         '{ if ($0 ~ /^          __iyi_madvise_nohuge\(base, HUGE_AT\)$/) { print "          __iyi_madvise_nohuge(base, MAP)"; next } print }'
       ;;
   esac
+fi
+
+# Large objects 16-aligned: the padding word taken back out, so a large
+# object begins 8 past a boundary again. Every platform.
+echo
+echo "== a large object 8 bytes off a 16-byte boundary fails by name"
+mkdir -p "$WORK/align8/iyi"
+cp -R "$REPO/src/iyi/." "$WORK/align8/iyi/"
+awk '{ if ($0 ~ /^      LARGE_USER = 32_u64$/) { print "      LARGE_USER = 24_u64"; next } if ($0 ~ /^      LARGE_HEAD = 24_u64$/) { print "      LARGE_HEAD = 16_u64"; next } print }' "$REPO/src/iyi/prelude.iyi" > "$WORK/align8/iyi/prelude.iyi"
+if cmp -s "$WORK/align8/iyi/prelude.iyi" "$REPO/src/iyi/prelude.iyi"; then
+  echo "  the awk found nothing to change"; status=1
+elif ! IYI_PATH="$WORK/align8${PSEP}$REPO/src" "$IYI" build -o "$WORK/align8/program" "$REPO/bench/arena_exercise.iyi" >"$WORK/align8/build.log" 2>&1; then
+  echo "  the patched prelude did not build"; sed -n '1,12p' "$WORK/align8/build.log"; status=1
+else
+  "$WORK/align8/program" >"$WORK/align8/out" 2>&1
+  if grep -q "panic: alignment: [0-9]* bytes\( grown\)\? at 8 past 16" "$WORK/align8/out"; then
+    echo "  caught at \"$(grep -m1 'panic: alignment' "$WORK/align8/out" | sed 's/^iyi: panic: //')\""
+  else
+    echo "  the exercise did not fail at the alignment check:"; sed -n '$p' "$WORK/align8/out"; status=1
+  fi
 fi
 
 echo
@@ -212,11 +277,54 @@ case "$(uname -s)" in
       exit 2
     fi
     ;;
-  *) allowed_symbols="__error _tlv_bootstrap madvise pipe pthread_create pthread_kill sigaction sysctlbyname read _dyld_get_image_header _dyld_get_image_vmaddr_slide clock_gettime clock_gettime_nsec_np exit kevent kqueue mmap munmap pthread_get_stackaddr_np pthread_self write" ;;
+  MINGW* | MSYS* | CYGWIN* | Windows_NT)
+    # A PE leaves nothing undefined: the floor is the DLLs it imports
+    # (bench/floor_base.sh), and the arena allocator's mappings are
+    # kernel32's `VirtualAlloc` and `VirtualFree`, so it may add none.
+    allowed_symbols=""
+    ;;
+  *) allowed_symbols="__error _tlv_bootstrap backtrace backtrace_symbols_fd pipe pthread_create pthread_kill sigaction sigaltstack sysctlbyname read _dyld_get_image_header _dyld_get_image_vmaddr_slide clock_gettime clock_gettime_nsec_np exit kevent kqueue mmap munmap pthread_get_stackaddr_np pthread_self write" ;;
 esac
 allowed_libs="libSystem libc.so ld-linux libgcc_s"
 
-if [ -x "$WORK/exercise-gc" ]; then
+if [ -z "$allowed_symbols" ]; then
+  DUMPBIN="$(find_dumpbin || true)"
+  if [ -z "$DUMPBIN" ]; then
+    # The toolchain that linked the binary carries it, so its absence is a
+    # broken machine, not a platform without the reader.
+    echo "  no dumpbin here, and a machine that built this binary has the toolchain that carries it"
+    status=1
+  else
+    floor_held=yes
+    for bin in exercise-gc exercise-gc-release; do
+      if [ ! -f "$WORK/$bin.exe" ]; then
+        echo "  no $bin to audit"
+        status=1
+        floor_held=no
+        continue
+      fi
+      dlls="$(pe_dlls "$WORK/$bin.exe")"
+      if [ -z "$dlls" ]; then
+        echo "  dumpbin read no import table out of $bin"
+        status=1
+        floor_held=no
+        continue
+      fi
+      extra="$(extra_dlls "$FLOOR_DLLS_RUNTIME" "$dlls")"
+      if [ -n "$extra" ]; then
+        echo "  the arena allocator links something new in $bin: $(echo $extra)"
+        status=1
+        floor_held=no
+      else
+        printf '  %-16s %s\n' "$bin" "$(echo $dlls)"
+      fi
+    done
+    [ "$floor_held" = yes ] && echo "  nothing new: kernel32 and the C runtime's DLLs"
+  fi
+elif [ -z "$NM" ] || [ -z "$LIBS_READER" ]; then
+  echo "  no nm and no otool or readelf here, so the allocation floor is not measured"
+  unmeasured=$((unmeasured + 1))
+elif [ -x "$WORK/exercise-gc" ]; then
   gc_syms="$(symbols "$WORK/exercise-gc")"
   gc_libs="$(libraries "$WORK/exercise-gc")"
   printf '  symbols   %s\n' "$(echo $gc_syms)"
@@ -308,7 +416,40 @@ echo "  price of a heap that can hand memory back."
 # So the gate is the ratio, and the ratio is what a regression crosses -
 # not a target to tune to, and checked rather than eyeballed because
 # nobody reads a printed number twice.
+#
+# Of the *minimum* of three runs each, which is the same answer this
+# repository gives noise everywhere else (`bench/daemon_full_build.py`:
+# "build time has a floor and noise only ever adds"). One sample per arm
+# failed a darwin runner at 44 ns against a 13 ns bump - 3.4x - on a
+# commit that touched neither allocator: a shared three-core box that
+# happened to give the bump pointer its best run and the arena one of its
+# worst. A regression multiplies every run, so it survives a minimum; a
+# runner's weather does not.
 ALLOCATION_RATIO=${ALLOCATION_RATIO:-25}
+ALLOCATION_RUNS=${ALLOCATION_RUNS:-3}
+
+min_ns() { # binary, awk-selectable line
+  local binary="$1" pattern="$2" best="" value=""
+  local run=1
+  while [ "$run" -le "$ALLOCATION_RUNS" ]; do
+    value="$("$binary" 2>/dev/null | grep -m1 "$pattern" | awk '{ print $2 }')"
+    case "$value" in
+      '' | *[!0-9]*) : ;;
+      *) if [ -z "$best" ] || [ "$value" -lt "$best" ]; then best="$value"; fi ;;
+    esac
+    run=$((run + 1))
+  done
+  printf '%s' "$best"
+}
+
+if [ -x "$WORK/exercise-default-release" ] && [ -x "$WORK/exercise-gc-release" ]; then
+  bump_rel="$(min_ns "$WORK/exercise-default-release" '^ *speed:')"
+  arena_rel="$(min_ns "$WORK/exercise-gc-release" '^ *speed:')"
+  pair_rel="$(min_ns "$WORK/exercise-gc-release" 'alloc+free')"
+  printf '  best of %s: bump %s ns, arena %s ns, pair %s ns\n' \
+    "$ALLOCATION_RUNS" "${bump_rel:-?}" "${arena_rel:-?}" "${pair_rel:-?}"
+fi
+
 ratio_holds() { # name arena bump
   [ -n "$2" ] && [ -n "$3" ] && [ "$3" -gt 0 ] || return 0
   if [ $(( $2 * 10 )) -gt $(( $3 * ALLOCATION_RATIO )) ]; then
@@ -320,9 +461,13 @@ ratio_holds "an allocation" "$arena_rel" "$bump_rel"
 ratio_holds "an alloc+free pair" "$pair_rel" "$bump_rel"
 
 echo
-if [ "$status" -eq 0 ]; then
-  echo "the arena allocator holds"
-else
+if [ "$status" -ne 0 ]; then
   echo "the arena allocator did not hold"
+elif [ "$unmeasured" -gt 0 ]; then
+  # A summary may not claim more than was measured: an arm whose reader is
+  # missing is counted here rather than folded into the pass.
+  echo "the arena allocator holds, with $unmeasured check not measured here"
+else
+  echo "the arena allocator holds"
 fi
 exit $status

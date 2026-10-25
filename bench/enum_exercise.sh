@@ -20,9 +20,29 @@
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-IYI="$REPO/bin/iyi"
+# The gate runs whatever compiler the caller names; `bin/iyi` is a shell
+# wrapper, and on Windows the caller has to point at the built exe itself.
+IYI="${IYI:-$REPO/bin/iyi}"
 WORK="$(mktemp -d)"
+# A native compiler cannot resolve this shell's own path mapping: a search
+# path built from the shell's `pwd` finds no prelude at all, and a scratch
+# directory named `/tmp/tmp.X` on it is silently ignored, so the patched
+# copy is never read and the proof that a check can fail quietly stops
+# proving it.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT)
+    REPO="$(cygpath -m "$REPO")"
+    WORK="$(cygpath -m "$WORK")"
+    ;;
+esac
 trap 'rm -rf "$WORK"' EXIT
+
+# The search path is a list, and the byte between its entries is the
+# platform's: `;` where a drive letter already owns the colon.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT) PSEP=';' ;;
+  *) PSEP=':' ;;
+esac
 
 status=0
 
@@ -114,8 +134,7 @@ IYI
 cat > "$WORK/boundary/main.iyi" <<'IYI'
 module main
 
-import level
-using level::{Level, Mode, loudest}
+import level::{Level, Mode, loudest}
 
 l = loudest
 puts "name: #{l}"
@@ -176,7 +195,7 @@ prove_fails() { # prove_fails <label> <dir> <phrase> <sed script>
     return
   fi
 
-  if ! IYI_PATH="$WORK/$dir:$REPO/src" "$IYI" build \
+  if ! IYI_PATH="$WORK/$dir${PSEP}$REPO/src" "$IYI" build \
        -o "$WORK/$dir/program" "$REPO/bench/enum_exercise.iyi" \
        > "$WORK/$dir/build" 2>&1; then
     # A patch that stops the build is a failure the exercise cannot report,
@@ -221,12 +240,16 @@ prove_fails "> reversed" no_gt "enum: >" \
 prove_fails "to_s without names" no_to_s "enum: to_s first member" \
   's/^        return {{ member.stringify }} if value == {{ @type.constant(member) }}$//'
 
+# 3b. A flags `to_s` that skips `All` again, so every bit is spelled out.
+prove_fails "to_s skips All" no_all "flags: to_s of every bit is All" \
+  's/^      {% for member in @type.constants %}return {{ member.stringify }} if value == {{ @type.constant(member) }}; {% end %}$/      {% for member in @type.constants %}{% unless member.stringify == "All" %}return {{ member.stringify }} if value == {{ @type.constant(member) }}; {% end %}{% end %}/'
+
 # 4. `hash` collapsed to one number. A `Hash` of members still answers
 #    correctly — it compares the keys it finds — so what this breaks is the
 #    distribution, and the check that sees it is the one asking two members to
 #    hash apart.
 prove_fails "hash collapsed" no_hash "enum: members hash apart" \
-  's/^    value.to_i32$/    0/'
+  's/^    value.hash$/    0/'
 
 # 5. `includes?` asking equality instead of membership, which is what a flags
 #    enum's question methods go through.

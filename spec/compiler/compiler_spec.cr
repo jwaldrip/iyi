@@ -33,14 +33,29 @@ end
 
 # Undefined symbols, by name, with the leading underscore Mach-O puts on a C
 # name and ELF does not, and without the `U` column ELF's `nm` prints.
+#
+# Also without glibc's version tag. ELF `nm` prints `abort@GLIBC_2.17`, and a
+# name carrying its symbol version does not compare equal to the plain name an
+# allowlist is written with, so every versioned symbol read as unrecognised.
+# The version is the loader's business, not this check's: two builds against
+# different glibc minor versions are the same dependency.
 private def undefined_symbols(path : String) : Array(String)
   Process.capture(["nm", "-u", path]).lines.compact_map do |line|
-    line.split.last?.try(&.lchop('_'))
+    line.split.last?.try(&.lchop('_')).try(&.split('@').first)
   end
 end
 
+# Whether this machine has an `nm` that can read what this machine links.
+# On Windows the runners carry a GNU `nm` (Git's, MinGW's) and it exits 1 on
+# an executable MSVC linked, so "the tool is on PATH" was the wrong question:
+# the instrument there is `dumpbin /symbols`, which CI's `windows-probe` job
+# already reads the cross-compiled objects with.
 private def nm_available?
-  !!Process.find_executable("nm")
+  {% if flag?(:win32) %}
+    false
+  {% else %}
+    !!Process.find_executable("nm")
+  {% end %}
 end
 
 describe "Compiler" do
@@ -58,6 +73,33 @@ describe "Compiler" do
     end
   end
 
+  # iyi: a build that finds nothing changed since its output was built leaves
+  # the output as it is and compiles nothing (SPEC.md V.9 (e)); `--force`
+  # builds anyway. Asked of the output's time because a skipped build does
+  # not link, and a link writes the file again. bench/up_to_date.sh is the
+  # gate for each kind of input; this is the verb's contract, in process.
+  # An iyi program, because one on Crystal's prelude runs `pkg-config` from
+  # a macro (`src/gc/boehm.cr`), which turns the check off for it.
+  it "leaves a current output as it is, and builds it again under --force" do
+    with_tempdir("iyi-up-to-date") do
+      File.write "main.iyi", "module main\n\nputs \"Hello!\"\n"
+      path = File.expand_path("prog#{{{ flag?(:win32) ? ".exe" : "" }}}")
+      # A new array each time: `Command` shifts the verb off the one it is given.
+      args = -> { ["build", "main.iyi", "-o", path] }
+      Iyi::Command.run args.call
+      built = File.info(path).modification_time
+
+      # With `-s`, which says why when the check found something changed: the
+      # first Windows run of this rebuilt, and said nothing of what it saw.
+      Iyi::Command.run args.call + ["-s"]
+      File.info(path).modification_time.should eq built
+
+      Iyi::Command.run args.call + ["--force"]
+      File.info(path).modification_time.should_not eq built
+      Process.capture(path).should eq("Hello!\n")
+    end
+  end
+
   # iyi: the linker probe is asked once per `PATH`, not once per build.
   #
   # Before linking, the compiler searches `PATH` for `mold` and then for
@@ -67,13 +109,25 @@ describe "Compiler" do
   # third of a warm build spent looking for linkers nobody had installed
   # (SPEC.md 0.1.0 item 2). This is the file that keeps the answer.
   it "remembers which linker it found rather than searching PATH per build" do
+    # The msvc link searches no `PATH`: its linker is the one the Visual C++
+    # installation names, and what is remembered is where that is - `vswhere`
+    # is a process of its own, 35 ms of every build before.
+    probe = Iyi::CacheDir.instance.join({{ flag?(:msvc) ? "msvc-probe" : "linker-probe" }})
+    # Gone first, so that the file below is this build's and not one an
+    # earlier build left: with it standing, the check passed against a
+    # compiler that never wrote it.
+    File.delete?(probe)
+
     with_temp_executable "compiler_spec_output" do |path|
       Iyi::Command.run ["build"].concat(program_flags_options).concat([compiler_datapath("compiler_sample"), "-o", path])
 
-      probe = Iyi::CacheDir.instance.join("linker-probe")
       File.exists?(probe).should be_true
-      # The `PATH` it was found under, so that changing `PATH` asks again.
-      File.read(probe).lines.first.size.should eq 32
+      {% if flag?(:msvc) %}
+        Dir.exists?(File.join(File.read(probe).chomp, "bin")).should be_true
+      {% else %}
+        # The `PATH` it was found under, so that changing `PATH` asks again.
+        File.read(probe).lines.first.size.should eq 32
+      {% end %}
     end
   end
 
@@ -425,6 +479,25 @@ describe "Compiler" do
         exception.should_not be_nil
       end
     end
+
+    # `open` takes a directory and `read` refuses it, and the refusal read
+    # as the end of an empty file: `File.read("adir")` was "", exit 0.
+    it "refuses to read a directory rather than answering an empty file" do
+      with_tempdir("iyi-file-directory") do
+        Dir.mkdir("adir")
+        File.write "dir.iyi", <<-'IYI'
+          puts File.read("adir").size
+          IYI
+        source = Iyi::Compiler::Source.new(
+          File.expand_path("dir.iyi"), File.read("dir.iyi"))
+        iyi_compiler.compile(source, File.expand_path("dir"))
+
+        error = IO::Memory.new
+        status = Process.run(File.expand_path("dir"), error: error)
+        status.success?.should be_false
+        error.to_s.should contain "cannot read adir: it is a directory"
+      end
+    end
   end
 
   # iyi: the concurrency runtime — SPEC.md III.4, Linux only. The bench gate
@@ -539,11 +612,22 @@ describe "Compiler" do
           Iyi::Command.run ["build"].concat(program_flags_options)
             .concat(["floor.iyi", "-o", File.expand_path("floor")])
 
-          # The C runtime template's five, and nothing of the runtime's own:
+          # The C runtime template's six, and nothing of the runtime's own:
           # the scheduler, the poller and the switch are raw syscalls and asm.
+          #
+          # `abort` is the template's, not iyi's, and the way to see that is to
+          # link an empty C program the same way: `int main(void){return 0;}`
+          # through `cc -rdynamic` carries `abort@GLIBC_2.17` beside the other
+          # five. Nothing in the tree names it: no `fun abort`, no `LibC.abort`,
+          # and it is absent from the LLVM IR of `puts "ok"`. It is also not
+          # concurrency's, which this spec's name would suggest: a program that
+          # is only `puts "ok"`, with no channel, group or spawn, brings it in
+          # too. glibc's crt reaches it, so it belongs here with that reason
+          # rather than being read as a dependency iyi took on.
           symbols = undefined_symbols(File.expand_path("floor"))
           template = ["ITM_deregisterTMCloneTable", "ITM_registerTMCloneTable",
-                      "_cxa_finalize", "_gmon_start__", "_libc_start_main"]
+                      "_cxa_finalize", "_gmon_start__", "_libc_start_main",
+                      "abort"]
           (symbols - template).should be_empty
         end
       end

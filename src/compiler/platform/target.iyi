@@ -1,7 +1,7 @@
 module compiler/platform/target
 
 # Target platform error raised when a triple cannot be parsed or normalized.
-pub class TargetError < Exception
+pub class TargetError
   getter message : String
 
   def initialize(@message : String)

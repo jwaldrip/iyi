@@ -128,13 +128,13 @@ module Iyi
       type = typed_def.owner
       if type.is_a?(GenericInstanceType)
         type.type_vars.each_value do |type_var|
-          add_context type_var.name, type_var.type if type_var.is_a?(Var)
+          add_context type_var.name, type_var.type? if type_var.is_a?(Var)
         end
       end
       add_context "self", type
       if type.is_a?(InstanceVarContainer)
         type.instance_vars.each_value do |ivar|
-          add_context ivar.name, ivar.type
+          add_context ivar.name, ivar.type?
         end
       end
       inside_typed_def { typed_def.accept(self) }
@@ -148,7 +148,7 @@ module Iyi
       if @contexts.empty?
         @context = Hash(String, Type).new
         result.program.vars.each do |name, var|
-          add_context name, var.type
+          add_context name, var.type?
         end
         result.node.accept(self)
 
@@ -188,11 +188,11 @@ module Iyi
       end
 
       node.args.each do |arg|
-        add_context arg.name, arg.type
+        add_context arg.name, arg.type?
       end
       node.vars.try do |vars|
         vars.each do |name, meta_var|
-          add_context name, meta_var.type
+          add_context name, meta_var.type?
         end
       end
 
@@ -203,12 +203,12 @@ module Iyi
       return false unless contains_target(node)
 
       node.args.each do |arg|
-        add_context arg.name, arg.type
+        add_context arg.name, arg.type?
       end
 
       node.vars.try do |vars|
         vars.each do |_, var|
-          add_context var.name, var.type
+          add_context var.name, var.type?
         end
       end
 
@@ -217,7 +217,7 @@ module Iyi
 
     def visit(node : Call)
       if node.location && @target_location.between?(node.name_location, node.name_end_location)
-        add_context node.to_s, node.type
+        add_context node.to_s, node.type?
       end
 
       contains_target(node)
@@ -246,10 +246,17 @@ module Iyi
         end
 
         # restrict the whole context
+        #
+        # iyi: only the names the context has. A condition can test one it
+        # never recorded - `x.or(0)` tests the compiler's own `__temp_3`,
+        # which `add_context` leaves out - and looking it up anyway raised
+        # a KeyError that the server answered as the client's mistake,
+        # "the request is missing \"__temp_3\"", for a hover inside
+        # `"#{load(path).or(0)}"`.
         filters.each do |name, filter|
-          filtered_var = current_context[name]
-          filtered_var.bind_to(current_context[name].filtered_by(filter))
-          add_context name, filtered_var.type
+          next unless filtered_var = current_context[name]?
+          filtered_var.bind_to(filtered_var.filtered_by(filter))
+          add_context name, filtered_var.type?
         end
       end
 
@@ -260,8 +267,14 @@ module Iyi
       contains_target(node)
     end
 
-    private def add_context(name, type)
-      return if name.starts_with?("__temp_") # ignore temp vars
+    # iyi: `type?`, not `type`. A node the front end never typed - a
+    # variable assigned only in a macro branch the target does not take,
+    # `s_len` inside an `if` the probe skipped - ended every cursor question
+    # near it on "BUG: ... has no type", -32603 to the editor; it is no
+    # context rather than a crash.
+    private def add_context(name, type : Type?)
+      return unless type
+      return if Iyi.compiler_variable?(name)
       return if type.is_a?(Program) || type.is_a?(FileModule)
 
       @context[name] = type

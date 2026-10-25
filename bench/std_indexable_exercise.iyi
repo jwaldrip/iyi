@@ -1,19 +1,19 @@
 # Exercise for `src/std/indexable.iyi`.
 #
 # Verifies the full surface of the Indexable trait across two types:
-#   1. The prelude's `Array(T)` equipped with `impl Indexable`.
-#   2. `MinimalSeq(T)`, a custom type implementing ONLY `size` and `unsafe_fetch`,
-#      receiving all Indexable defaults and satisfying Enumerable without writing
-#      `def each`.
+#   1. The prelude's `Array(T)` equipped with `impl Indexable`,
+#      `impl IndexableMutable` and the `class ::Array(T)` mutators.
+#   2. `MinimalSeq(T)`, a custom type implementing ONLY `size`, `unsafe_fetch`
+#      and `unsafe_put`, receiving all Indexable and IndexableMutable defaults
+#      and satisfying Enumerable without writing `def each`.
 #
 # Every method in `src/std/indexable.iyi` is exercised here.
 
 module bench/std_indexable_exercise
 
-import std/indexable
-using std/indexable::{Indexable}
-import std/enumerable
-using std/enumerable::{Enumerable}
+import std/indexable::{Indexable, IndexableMutable}
+import std/enumerable::{Enumerable}
+import std/random::{Random}
 
 # Minimal custom sequence implementing ONLY the two requirements.
 # Does NOT implement `def each`. Indexable supplies `def each`, which then
@@ -37,26 +37,34 @@ impl Indexable for MinimalSeq(T) forall T
   end
 end
 
+impl IndexableMutable for MinimalSeq(T) forall T
+  type Elem = T
+
+  def unsafe_put(index : Int32, value : T) : T
+    @data.unsafe_put(index, value)
+  end
+end
+
 impl Enumerable for MinimalSeq(T) forall T
   type Elem = T
 end
 
-# Nested box for testing dig and dig?
-pub struct NestedBox
-  @data : Array(Array(Int32))
-
-  def initialize(@data : Array(Array(Int32)))
+# A sequence that is `Indexable` and nothing else, so that what it is asked
+# is answered by this trait: `MinimalSeq` is `Enumerable` too, and where the
+# two traits both write a method - `join` - it gets the later impl's.
+pub struct IndexOnly
+  def initialize(@data : Array(Int32))
   end
 end
 
-impl Indexable for NestedBox
-  type Elem = Array(Int32)
+impl Indexable for IndexOnly
+  type Elem = Int32
 
   def size : Int32
     @data.size
   end
 
-  def unsafe_fetch(index : Int32) : Array(Int32)
+  def unsafe_fetch(index : Int32) : Int32
     @data.unsafe_fetch(index)
   end
 end
@@ -155,12 +163,20 @@ assert_equal("10+20+30,20+30+40,30+40+50", cons_accum.join(","), "each_cons bloc
 s_default = arr.sample
 assert_true(arr.includes?(s_default), "sample default in range")
 
-s_seed1 = arr.sample(42)
-s_seed2 = arr.sample(42)
-assert_true(s_seed1 == s_seed2, "sample deterministic for same seed")
-
 s_block = arr.sample { |sz| 1 }
 assert_true(s_block == 20, "sample with custom block")
+
+# `sample(Int32)` is a count, the only meaning it has: it was a seed on
+# `Indexable` and a count on an array with std/random imported, so
+# `xs.sample(3)` answered one element or three by the imports, and a
+# `Deque`'s answered 20 either way. A collection other than an array
+# chooses what an array chooses with the same generator.
+ten = MinimalSeq(Int32).new([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+ten_picked = ten.sample(3, Random.new(5))
+assert_equal("7,8,4", ten_picked.join(","), "a collection samples three as an array does")
+assert_true(ten.sample(Random.new(3)) == ten.to_a.sample(Random.new(3)), "a collection samples one as an array does")
+assert_true(ten.sample(3).uniq.size == 3, "sample(3) is three distinct elements")
+puts "  sample(n) is a count, and chooses what an array chooses"
 
 # Binary search
 bs_elem = arr.bsearch { |x| x >= 35 }
@@ -175,12 +191,6 @@ assert_true(arr.bsearch_index { |x| x > 100 }.nil?, "bsearch_index not found")
 assert_true(arr.dig(2) == 30, "dig flat")
 assert_true(arr.dig?(2) == 30, "dig? flat")
 assert_true(arr.dig?(10).nil?, "dig? out of bounds")
-
-nested = NestedBox.new([[1, 2], [3, 4, 5], [6]])
-assert_true(nested.dig(1, 2) == 5, "dig nested")
-assert_true(nested.dig?(1, 2) == 5, "dig? nested")
-assert_true(nested.dig?(1, 10).nil?, "dig? nested out of bounds")
-assert_true(nested.dig?(10, 0).nil?, "dig? outer out of bounds")
 
 # Equals
 arr_copy = [10, 20, 30, 40, 50]
@@ -231,10 +241,26 @@ assert_true(seq.rindex { |x| x <= 3 } == 2, "seq rindex predicate")
 assert_equal("1,3,5", seq.values_at(0, 2, 4).join(","), "seq values_at splat")
 assert_equal("2,4", seq.values_at([1, 3]).join(","), "seq values_at array")
 assert_equal("1-2-3-4-5", seq.join("-"), "seq join")
+# `Indexable#join` itself, which `MinimalSeq` does not reach, into one
+# builder: adding each element to the text so far copied that text once per
+# element, and 20,000 elements took 1.8 s where the same array's `join`
+# took 1 ms. A bound, not a benchmark: twenty times the array's time and
+# 200 ms over.
+assert_equal("1-2-3", IndexOnly.new([1, 2, 3]).join("-"), "indexable join")
+assert_equal("", IndexOnly.new([] of Int32).join("-"), "indexable join of nothing")
+long_data = Array(Int32).new(20000) { |i| i % 10 }
+join_started = __iyi_monotonic_ns
+long_joined = IndexOnly.new(long_data).join(",")
+seq_join_ns = __iyi_monotonic_ns - join_started
+join_started = __iyi_monotonic_ns
+array_joined = long_data.join(",")
+array_join_ns = __iyi_monotonic_ns - join_started
+assert_true(long_joined == array_joined, "indexable join of 20,000 elements matches the array's")
+assert_true(seq_join_ns <= array_join_ns * 20 + 200_000_000_i64, "indexable join in linear time: 20,000 elements took #{seq_join_ns // 1000000} ms where the array's took #{array_join_ns // 1000000} ms")
 assert_equal("1,2,3,4,5", seq.to_a.join(","), "seq to_a")
 assert_true(seq.bsearch { |x| x >= 3 } == 3, "seq bsearch")
 assert_true(seq.bsearch_index { |x| x >= 3 } == 2, "seq bsearch_index")
-assert_true(seq.sample(10) >= 1 && seq.sample(10) <= 5, "seq sample seeded")
+assert_true(seq.sample(10).sorted.join(",") == "1,2,3,4,5", "seq sample of more than it holds is all of it")
 assert_true(seq.equals?(seq), "seq equals? self")
 
 # 12+ Enumerable methods on MinimalSeq:
@@ -244,8 +270,8 @@ assert_true(seq.all? { |x| x > 0 }, "seq all?")
 assert_true(seq.none? { |x| x < 0 }, "seq none?")
 assert_true(seq.one? { |x| x == 5 }, "seq one?")
 assert_true(seq.count { |x| x % 2 == 1 } == 3, "seq count")
-assert_true(seq.find? { |x| x == 4 } == 4, "seq find? found")
-assert_true(seq.find? { |x| x == 99 }.nil?, "seq find? not found")
+assert_true(seq.find { |x| x == 4 } == 4, "seq find found")
+assert_true(seq.find { |x| x == 99 }.nil?, "seq find not found")
 assert_true(seq.find { |x| x == 4 } == 4, "seq find")
 assert_equal("2,4,6,8,10", seq.map { |x| x * 2 }.join(","), "seq map")
 assert_equal("1,3,5", seq.select { |x| x % 2 == 1 }.join(","), "seq select")
@@ -276,7 +302,84 @@ assert_true(empty_seq.rindex(1).nil?, "empty_seq rindex nil")
 
 puts "empty collection handling: all passed"
 
-# 4. Probe triggers when invoked with an argument for failure proof testing
+# 4. IndexableMutable defaults and the Array mutators
+puts "== mutable surface"
+mut = MinimalSeq(Int32).new([1, 2, 3, 4, 5])
+assert_true(mut.update(0) { |x| x + 100 } == 101, "update answers the new value")
+assert_true(mut[0] == 101, "update wrote")
+assert_true(mut.update(-1) { |x| x * 2 } == 10, "update negative index")
+mut.swap(0, -1)
+assert_equal("10,2,3,4,101", mut.join(","), "swap")
+mut.swap(2, 2)
+assert_equal("10,2,3,4,101", mut.join(","), "swap same index")
+mut.reverse_in_place
+assert_equal("101,4,3,2,10", mut.join(","), "reverse_in_place")
+mut.rotate_in_place(2)
+assert_equal("3,2,10,101,4", mut.join(","), "rotate_in_place(2)")
+mut.rotate_in_place(-1)
+assert_equal("4,3,2,10,101", mut.join(","), "rotate_in_place(-1)")
+mut.rotate_in_place(5)
+assert_equal("4,3,2,10,101", mut.join(","), "rotate_in_place(size) is identity")
+mut.rotate_in_place
+assert_equal("3,2,10,101,4", mut.join(","), "rotate_in_place default 1")
+mut.fill(7, 1, 3)
+assert_equal("3,7,7,7,4", mut.join(","), "fill(value, offset, count)")
+mut.fill(9, -2, 2)
+assert_equal("3,7,7,9,9", mut.join(","), "fill negative offset")
+mut.fill(0, 5, 0)
+assert_equal("3,7,7,9,9", mut.join(","), "fill at size with count 0")
+mut.fill { |i| i * i }
+assert_equal("0,1,4,9,16", mut.join(","), "fill block")
+mut.fill(1)
+assert_equal("1,1,1,1,1", mut.join(","), "fill value")
+single = MinimalSeq(Int32).new([42])
+single.rotate_in_place(3)
+single.reverse_in_place
+assert_equal("42", single.join(","), "one element stays")
+
+marr = [1, 2, 3, 4, 5]
+marr.insert(1, 10)
+assert_equal("1,10,2,3,4,5", marr.join(","), "insert")
+marr.insert(-1, 99)
+assert_equal("1,10,2,3,4,5,99", marr.join(","), "insert -1 appends")
+marr.insert(7, 100)
+assert_equal("1,10,2,3,4,5,99,100", marr.join(","), "insert at size appends")
+marr.insert(0, 0)
+assert_equal("0,1,10,2,3,4,5,99,100", marr.join(","), "insert at 0")
+assert_true(marr.delete_at(2) == 10, "delete_at answers the element")
+assert_equal("0,1,2,3,4,5,99,100", marr.join(","), "delete_at shifted")
+assert_true(marr.delete_at(-1) == 100, "delete_at -1")
+assert_true(marr.delete_at(0) == 0, "delete_at 0")
+assert_equal("1,2,3,4,5,99", marr.join(","), "delete_at ends")
+marr.delete_if { |x| x % 2 == 0 }
+assert_equal("1,3,5,99", marr.join(","), "delete_if")
+marr.keep_if { |x| x < 50 }
+assert_equal("1,3,5", marr.join(","), "keep_if")
+marr.swap(0, 2)
+assert_equal("5,3,1", marr.join(","), "Array swap via IndexableMutable")
+marr.fill(8, 1, 1)
+assert_equal("5,8,1", marr.join(","), "Array fill via IndexableMutable")
+rot = marr.rotated(1)
+assert_equal("8,1,5", rot.join(","), "rotated is a copy")
+assert_equal("5,8,1", marr.join(","), "rotated left the original")
+assert_equal("1,5,8", marr.rotated(-1).join(","), "rotated(-1)")
+marr.rotate_in_place(1)
+assert_equal("8,1,5", marr.join(","), "Array rotate_in_place")
+marr.clear
+assert_true(marr.empty? && marr.size == 0, "clear")
+marr << 4
+assert_equal("4", marr.join(","), "usable after clear")
+nils = [1, nil, 2, nil] of Int32?
+nils.compact_in_place
+assert_true(nils.size == 2 && nils[0] == 1 && nils[1] == 2, "compact_in_place")
+pairs = [1, 2].cartesian(["a", "b"])
+assert_equal("[{1, \"a\"}, {1, \"b\"}, {2, \"a\"}, {2, \"b\"}]", pairs.to_s, "cartesian")
+assert_true([1, 2].cartesian([] of String).empty?, "cartesian with empty")
+assert_true([1, 2, 3].product == 6, "product stays the multiplicative fold")
+
+puts "mutable surface: all passed"
+
+# 5. Probe triggers when invoked with an argument for failure proof testing
 if Program.args.size > 0
   mode = Program.args[0]
   case mode
@@ -295,6 +398,33 @@ if Program.args.size > 0
   when "probe_empty_sample"
     puts "triggering empty sample raise:"
     empty_seq.sample
+  when "probe_trait_out_of_range"
+    puts "triggering trait out of range raise:"
+    seq[7]
+  when "probe_update_out_of_range"
+    puts "triggering update out of range raise:"
+    mut.update(5) { |x| x }
+  when "probe_swap_out_of_range"
+    puts "triggering swap out of range raise:"
+    mut.swap(0, -6)
+  when "probe_fill_negative_count"
+    puts "triggering fill negative count raise:"
+    mut.fill(0, 0, -1)
+  when "probe_fill_past_end"
+    puts "triggering fill past end raise:"
+    mut.fill(0, 3, 3)
+  when "probe_fill_huge_count"
+    puts "triggering fill past end with a huge count raise:"
+    mut.fill(0, 1, 2147483647)
+  when "probe_fill_past_end_from_negative"
+    puts "triggering fill past end from a negative offset raise:"
+    mut.fill(0, -2, 5)
+  when "probe_insert_out_of_range"
+    puts "triggering insert out of range raise:"
+    marr.insert(2, 0)
+  when "probe_delete_at_out_of_range"
+    puts "triggering delete_at out of range raise:"
+    marr.delete_at(-2)
   else
     raise "unknown probe mode: #{mode}"
   end
@@ -309,5 +439,13 @@ raise "hash: twenty elements" unless [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
 raise "hash: equal collections agree" unless [1, 2, 3].hash == [1, 2, 3].hash
 raise "hash: order counts" unless [1, 2, 3].hash != [3, 2, 1].hash
 puts "  hash: a long collection mixes without leaving the type"
+
+pairs = [] of String
+[1, 2].each_cartesian(["a", "b"]) { |n, s| pairs << "#{n}#{s}" }
+assert_equal "1a,1b,2a,2b", pairs.join(","), "each_cartesian: every pair, this array's order first"
+zipped = [] of String
+[1, 2].zip(["x", "y", "z"]) { |n, s| zipped << "#{n}#{s}" }
+assert_equal "1x,2y", zipped.join(","), "zip with a block: as many pairs as this array holds"
+puts "  each_cartesian and zip with a block hand pairs over without an array of them"
 
 puts "all indexable checks passed"

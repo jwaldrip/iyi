@@ -1,17 +1,11 @@
 module compiler/types/filtering
 
-import compiler/foundation/location
-import compiler/syntax/ast
+import compiler/foundation/location::{Location}
+import compiler/syntax/ast::{ASTNode}
 import compiler/syntax/token
-import compiler/semantic/top_level
-import compiler/types/types
-import compiler/types/unification
-
-using compiler/foundation/location::{Location}
-using compiler/syntax/ast::{ASTNode}
-using compiler/semantic/top_level::{AliasType, ClassType, GenericClassType, GenericModuleType, MetaclassType, ModuleType, NamedType, NonGenericClassType, SemanticProgram, Type, UnionType}
-using compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType, GenericInstanceType, GenericModuleInstanceMetaclassType, GenericModuleInstanceType, MixedUnionType, NamedArgumentType, NamedTupleInstanceType, NilableProcType, NilableReferenceUnionType, NilableType, NoReturnType, PointerInstanceType, ProcInstanceType, ReferenceUnionType, StaticArrayInstanceType, TupleInstanceType, VirtualMetaclassType, VirtualType, VoidType}
-using compiler/types/unification::{TypeUnification}
+import compiler/semantic/top_level::{AliasType, ClassType, GenericClassType, GenericModuleType, MetaclassType, ModuleType, NamedType, NonGenericClassType, SemanticProgram, Type, UnionType}
+import compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType, GenericInstanceType, GenericModuleInstanceMetaclassType, GenericModuleInstanceType, MixedUnionType, NamedArgumentType, NamedTupleInstanceType, NilableProcType, NilableReferenceUnionType, NilableType, NoReturnType, PointerInstanceType, ProcInstanceType, ReferenceUnionType, StaticArrayInstanceType, TupleInstanceType, VirtualMetaclassType, VirtualType, VoidType}
+import compiler/types/unification::{TypeUnification}
 
 pub class TypeFiltering
   def self.filter_by(program : SemanticProgram, type : Type, target : Type) : Type?

@@ -1,10 +1,7 @@
 module compiler/command/driver
 
-import std/option_parser
-import compiler/platform/target
-
-using std/option_parser::{OptionParser}
-using compiler/platform/target::{Target}
+import std/option_parser::{OptionParser}
+import compiler/platform/target::{Target}
 
 # What a command invocation exits with.
 pub enum Exit
@@ -95,6 +92,7 @@ pub class CompilerOptions
   property filenames : Array(String)
   property arguments : Array(String)
   property single_file : Bool
+  property force : Bool = false
 
   def initialize
     @cross_compile = false
@@ -173,9 +171,14 @@ pub class CommandDriver
   BASE_VERSION = {{ read_file("#{__DIR__}/../../VERSION").chomp }}
 
   {% begin %}
-    {% llvm_config = env("LLVM_CONFIG") || "llvm-config" %}
-    {% llvm_ver = env("IYI_CONFIG_LLVM_VERSION") || env("LLVM_VERSION") || `#{llvm_config.id} --version 2> /dev/null || true`.strip.stringify %}
-    {% raw_triple = env("IYI_CONFIG_TARGET") || env("TARGET") || `#{llvm_config.id} --host-target 2> /dev/null || true`.strip.stringify %}
+    {% if flag?(:win32) %}
+      {% llvm_ver = env("IYI_CONFIG_LLVM_VERSION") || env("LLVM_VERSION") || "22.1.8" %}
+      {% raw_triple = env("IYI_CONFIG_TARGET") || env("TARGET") || "x86_64-pc-windows-msvc" %}
+    {% else %}
+      {% llvm_config = env("LLVM_CONFIG") || "llvm-config" %}
+      {% llvm_ver = env("IYI_CONFIG_LLVM_VERSION") || env("LLVM_VERSION") || `#{llvm_config.id} --version 2> /dev/null || true`.strip.stringify %}
+      {% raw_triple = env("IYI_CONFIG_TARGET") || env("TARGET") || `#{llvm_config.id} --host-target 2> /dev/null || true`.strip.stringify %}
+    {% end %}
     LLVM_VERSION = {{ llvm_ver }}
     CONFIG_TARGET = {{ raw_triple }}
   {% end %}
@@ -250,6 +253,7 @@ pub class CommandDriver
 
     Command:
         init                     generate a new project
+        get                      add a requirement to iyi.mod, or move one; -u brings all up to date
         doc                      print a module's exported surface, docs included
         build                    build an executable
         clear_cache              clear the compiler cache
@@ -297,14 +301,17 @@ pub class CommandDriver
 
   def self.doc_usage : String
     <<-USAGE
-    Usage: #{CommandDriver.program_name} doc FILE | TYPE
+    Usage: #{CommandDriver.program_name} doc MODULE | FILE | TYPE
 
     Prints a module's exported surface with its doc comments — functions,
-    types, methods, impls; no bodies, nothing private. FILE is a `.iyimod`
-    artifact (read directly, source not needed) or a `.iyi` module (compiled
-    alone, front end only). TYPE is a type of the prelude - `String`,
-    `Array`, `Hash`, `Program` - printed the same way: what it can do, with
-    the prelude's own comments; `prelude` lists them all, one line each.
+    types, methods, impls; no bodies, nothing private. MODULE is a module
+    path written the way `import` writes it — `app/greeter`, `std/set` —
+    found under the project root and `IYI_PATH`, then as an artifact in the
+    project's `mods`. FILE is a `.iyimod` artifact (read directly, source
+    not needed) or a `.iyi` module (compiled alone, front end only). TYPE
+    is a type of the prelude - `String`, `Array`, `Hash`, `Program` -
+    printed the same way: what it can do, with the prelude's own comments;
+    `prelude` lists them all, one line each.
     USAGE
   end
 
@@ -360,6 +367,9 @@ pub class CommandDriver
     and `-f json` makes each one data — file, line, column, size,
     message, the SPEC sections it cites, and, when the compiler
     knows the fix, a `suggested_edit` with the exact replacement.
+    An error inside a macro's expansion is placed at the call, with
+    no edit, and its `expansion` names the macro and the place in
+    the text the macro wrote.
 
     `--parse-only` checks syntax only without semantic or type analysis.
     Combine with `--selfhost` to use the pure iyi self-hosted parser.
@@ -372,16 +382,32 @@ pub class CommandDriver
     one file: every .iyi under the current directory whose imports
     reach a changed file is compiled alone, and every failure is
     named.
+
+    Under `-f json` standard error holds one JSON array whatever
+    ends the run: a warning is a frame marked `"severity":
+    "warning"`, after the error's frames when there is one, and a
+    refusal with no place in a file - no such file, bytes that are
+    not text - is a frame whose `line` is null.
     USAGE
   end
 
   def self.fix_usage : String
     <<-USAGE
-    Usage: #{CommandDriver.program_name} fix [--json] <file>
+    Usage: #{CommandDriver.program_name} fix [--json] <file or directory>...
 
     Apply the compiler's did-you-mean edits to <file>, recompiling
     after each one, until the file is clean or carries an error the
-    compiler has no edit for. Exit 0 when the file ends clean.
+    compiler has no edit for. Every `using` is first written as the
+    `import` that replaced it: `using X` is `import X::*`, `using
+    X::{a}` is `import X::{a}`, folded into a bare `import X`. Exit 0 when the file ends clean. When
+    the remaining error lives in another file of the program, the
+    verb names it (`cause` in `--json`): that is the file to fix next.
+
+    Several files, or a directory - every .iyi under it, hidden
+    directories and lib/ aside - are one run: every `using` in all
+    of them is rewritten first, since one file's compile reads the
+    others, and then each is fixed in turn; `--json` prints one
+    object per file, a line each. Exit 0 when every file ends clean.
 
     To see the edits without applying them, use
     `#{CommandDriver.program_name} check -f json`: the same edits travel
@@ -410,7 +436,7 @@ pub class CommandDriver
     Write every .cr under SRC as an iyi module under DIR: the
     namespace as the path, the wrapper off, `pub` on the top level,
     relative requires as imports, and every constant path this tree
-    declares as the bare name its module exports, under a `using`
+    declares as the bare name its module exports, named on its `import`
     line. Import cycles are written as one module; a reopening of a
     type the tree does not own is kept as Crystal in a `.cr` file
     beside its module.
@@ -473,6 +499,16 @@ pub class CommandDriver
     Usage: #{CommandDriver.program_name} mod [subcommand]
 
     Subcommand:
+        tidy [--check]           make iyi.mod and iyi.sum say what the source
+                                 imports: add what is missing, remove what
+                                 nothing uses, drop sums nothing builds
+        reach                    say what every module the build selects
+                                 touches outside the language: std modules,
+                                 File, C libraries and functions
+        release [VERSION]        say what the next release of this package has
+                                 to be called, from what its exported surface
+                                 did since the last tag; exit 1 when VERSION
+                                 understates it
         context FILE.iyi         print what a change to this module is allowed
                                  to know: the exact exported surface of every
                                  module it imports, and nothing's body. This is
@@ -496,6 +532,52 @@ pub class CommandDriver
     USAGE
   end
 
+  def self.mod_context_usage : String
+    <<-USAGE
+    Usage: #{CommandDriver.program_name} mod context [--json] [--budget N] FILE.iyi
+
+    Print what a change to this module is allowed to know: the exact
+    exported surface of every module FILE.iyi imports, and nothing's body.
+
+    Switches:
+        --json          the same pack as data, one object per import
+        --budget N      cut the text pack to about N tokens by a defined
+                        ladder — docs off from the last import backwards,
+                        then surfaces collapse to a header naming the
+                        module and what eliding it cost. Every import is
+                        named at every budget. A token is four bytes
+    USAGE
+  end
+
+  def self.mod_diff_usage : String
+    <<-USAGE
+    Usage: #{CommandDriver.program_name} mod diff [--exit-code] OLD.iyimod NEW.iyimod
+
+    Say whether a change reaches this module's consumers, and what changed
+    if it does: interface, implementation, source, and the dependencies it
+    was compiled against.
+
+    Switches:
+        --exit-code     exit 1 when consumers have to be rebuilt, 0 when
+                        they do not — for a branch in a script
+    USAGE
+  end
+
+  def self.mod_dump_usage : String
+    <<-USAGE
+    Usage: #{CommandDriver.program_name} mod dump [--declarations | --json] FILE.iyimod
+
+    Print a .iyimod as text: what a module offers a consumer, read back out
+    of the artifact itself.
+
+    Switches:
+        --declarations  the iyi declarations a consumer compiles against,
+                        which is what `import` reads instead of the source
+        --json          the module's exported surface as data: signatures,
+                        types, fields, impls, and the interface hash
+    USAGE
+  end
+
   def self.format_usage : String
     <<-USAGE
     Usage: #{CommandDriver.program_name} tool format [options] [- | file or directory ...]
@@ -503,9 +585,13 @@ pub class CommandDriver
     Formats iyi and Crystal code in place.
 
     If a file or directory is omitted,
-    Crystal source files beneath the working directory are formatted.
+    iyi and Crystal source files beneath the working directory are formatted.
 
     To format STDIN to STDOUT, use '-' in place of any path arguments.
+    Which language those bytes are read as is a question a path answers
+    and a pipe does not: stdin is read as iyi, and --stdin-filename says
+    where it came from when it is Crystal, or when an editor wants its
+    own path in the errors.
 
     Options:
     USAGE
@@ -530,10 +616,12 @@ pub class CommandDriver
 
   def self.lsp_usage : String
     <<-USAGE
-    Usage: #{CommandDriver.program_name} lsp
+    Usage: #{CommandDriver.program_name} lsp [--stdio]
 
     Speak the Language Server Protocol over stdin/stdout. Point an editor
-    at it; there is nothing to configure.
+    at it; there is nothing to configure. `--stdio`, which some clients
+    pass, names the transport it speaks anyway; any other argument is
+    refused.
 
     Beyond LSP 3.17's earning subset — diagnostics pushed on every
     change and pulled on request (one file or the whole workspace),
@@ -549,6 +637,11 @@ pub class CommandDriver
     pack for a file (`mod context --json` over the wire), and
     `iyi/surface` returns a module's rendered surface (`doc`), unsaved
     buffer included.
+
+    The session runs in two processes: this one holds the buffers and
+    the protocol, and a child (`#{CommandDriver.program_name} lsp --worker`)
+    does the compiling and is replaced while nobody is typing, so an
+    hour of editing does not cost an hour of allocation.
     USAGE
   end
 
@@ -1054,8 +1147,7 @@ pub class CommandDriver
 
     target = @options.shift?
     unless target
-      @stderr.puts("fix: which file? Usage: #{CommandDriver.program_name} fix [--json] <file>")
-      exit(1)
+      abort "fix: which file? Usage: #{CommandDriver.program_name} fix [--json] <file or directory>...", Exit::USAGE_ERROR
       return
     end
     @subcommand_options["json"] = json_mode.to_s
@@ -1173,7 +1265,7 @@ pub class CommandDriver
     parser = OptionParser.new
     parser.banner = CommandDriver.clear_cache_usage
     parser.invalid_option do |flag|
-      abort "Invalid option: #{flag}", Exit::USAGE_ERROR
+      abort "clear_cache takes no arguments, and '#{flag}' is one", Exit::USAGE_ERROR
       parser.stop
     end
     parser.missing_option do |flag|
@@ -1187,6 +1279,13 @@ pub class CommandDriver
     end
     parser.on("-v", "--verbose", "Display detailed information") do
       verbose = true
+    end
+    parser.unknown_args do |before, after|
+      next if @exit_code != nil
+      extra = before + after
+      unless extra.empty?
+        abort "clear_cache takes no arguments, and '#{extra.first}' is one", Exit::USAGE_ERROR
+      end
     end
     parser.parse(@options)
     @subcommand_options["verbose"] = verbose.to_s
@@ -1256,6 +1355,11 @@ pub class CommandDriver
 
   private def mod_dump : Nil
     @selected_command = "mod dump"
+    if @options.any? { |opt| opt == "--help" || opt == "-h" }
+      puts CommandDriver.mod_dump_usage
+      exit(0)
+      return
+    end
     declarations = false
     as_json = false
     if first_opt(@options) == "--declarations"
@@ -1282,6 +1386,11 @@ pub class CommandDriver
 
   private def mod_diff : Nil
     @selected_command = "mod diff"
+    if @options.any? { |opt| opt == "--help" || opt == "-h" }
+      puts CommandDriver.mod_diff_usage
+      exit(0)
+      return
+    end
     exit_code = false
     if first_opt(@options) == "--exit-code"
       @options.shift
@@ -1309,6 +1418,11 @@ pub class CommandDriver
 
   private def mod_context : Nil
     @selected_command = "mod context"
+    if @options.any? { |opt| opt == "--help" || opt == "-h" }
+      puts CommandDriver.mod_context_usage
+      exit(0)
+      return
+    end
     as_json = false
     if first_opt(@options) == "--json"
       @options.shift
@@ -1406,6 +1520,9 @@ pub class CommandDriver
     end
     parser.on("-e <path>", "--exclude <path>", "Exclude path (default: lib)") do |f|
       excludes << f
+    end
+    parser.on("--stdin-filename <path>", "Path the piped source came from (its extension picks the language)") do |f|
+      @subcommand_options["stdin_filename"] = f
     end
     parser.on("-h", "--help", "Show this message") do
       puts parser
@@ -1551,7 +1668,7 @@ pub class CommandDriver
         when "intel"
           opts.x86_asm_syntax = "intel"
         else
-          abort "Invalid value `` for x86-asm-syntax", Exit::USAGE_ERROR
+          abort "Invalid value `#{value}` for x86-asm-syntax", Exit::USAGE_ERROR
           parser.stop
         end
       end
@@ -1666,11 +1783,11 @@ pub class CommandDriver
       opts.emit_bind = dir
     end
 
-    parser.on("--emit-iyimod DIR", "iyi: write a .iyimod per imported module into DIR") do |dir|
+    parser.on("--emit-iyimod DIR", "iyi: write a .iyimod per imported module this build reads from source into DIR (a package's is III.7 step 5's, and is not one of these)") do |dir|
       opts.emit_iyimod = dir
     end
 
-    parser.on("--use-iyimod DIR", "iyi: compile imported modules from DIR's .iyimod files") do |dir|
+    parser.on("--use-iyimod DIR", "iyi: compile imported modules from DIR's .iyimod files first; `mods` beside the project root is read for a module with no source either way") do |dir|
       opts.use_iyimod = dir
     end
 
@@ -1724,6 +1841,11 @@ pub class CommandDriver
       end
       parser.on("--static", "Link statically") do
         opts.static_link = true
+      end
+    end
+    if command == "build"
+      parser.on("--force", "Build even when nothing the output was built from has changed") do
+        opts.force = true
       end
     end
 

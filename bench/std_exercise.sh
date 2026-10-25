@@ -15,8 +15,28 @@
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-IYI="$REPO/bin/iyi"
+
+# The search path is a list, and the byte between its entries is the
+# platform's: `;` where a drive letter already owns the colon.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT) PSEP=';' ;;
+  *) PSEP=':' ;;
+esac
+
+IYI="${IYI:-$REPO/bin/iyi}"
 WORK="$(mktemp -d)"
+# A native compiler cannot resolve this shell's own path mapping: a search
+# path built from `pwd` is `/c/...` and finds no prelude at all, and a
+# scratch directory named `/tmp/tmp.X` is silently ignored on that path, so
+# the patched copy is never read and the proof that a check can fail quietly
+# stops proving it.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT)
+    REPO="$(cygpath -m "$REPO")"
+    WORK="$(cygpath -m "$WORK")"
+    ;;
+esac
+
 trap 'rm -rf "$WORK"' EXIT
 
 status=0
@@ -51,7 +71,7 @@ fi
 
 echo
 echo "== every std section reported"
-for phrase in "std/traits:" "std/cmp:" "std/enumerable:" "std/list:" "std/derives:"; do
+for phrase in "std/traits:" "std/enumerable:" "std/list:" "std/derives:"; do
   grep -q "$phrase" "$WORK/std-plain.out" 2>/dev/null || {
     echo "  MISSING: nothing reported for $phrase"
     status=1
@@ -83,7 +103,7 @@ prove_fails() {
     status=1
     return
   fi
-  if ! IYI_PATH="$WORK/$dir:$REPO/src" "$IYI" build \
+  if ! IYI_PATH="$WORK/$dir${PSEP}$REPO/src" "$IYI" build \
        -o "$WORK/$dir/program" "$REPO/bench/std_exercise.iyi" \
        >"$WORK/$dir/build.log" 2>&1; then
     echo "  $label: the patched std library did not build"
@@ -108,12 +128,12 @@ prove_fails() {
     "$(grep -m1 "$phrase" "$WORK/$dir/out" | sed 's/^iyi: panic: //')"
 }
 
-# 1. Cmp operator < inverted
-prove_fails "Cmp < inverted" no_lt "traits.iyi" "Cmp: <" \
-  's/cmp(other) < 0/cmp(other) > 0/'
+# 1. Comparable operator < inverted
+prove_fails "Comparable < inverted" no_lt "traits.iyi" "Comparable: <" \
+  's/(self <=> other) < 0/(self <=> other) > 0/'
 
-# 2. Cmp clamp broken (returns max instead of min when low)
-prove_fails "Cmp clamp broken" no_clamp "traits.iyi" "Cmp: clamp min" \
+# 2. Comparable clamp broken (returns max instead of min when low)
+prove_fails "Comparable clamp broken" no_clamp "traits.iyi" "Comparable: clamp min" \
   's/return min if self < min/return max if self < min/'
 
 # 3. Enumerable present? inverted
@@ -126,27 +146,522 @@ prove_fails "Enumerable minmax inverted" no_minmax "enumerable.iyi" "enum: minma
 
 # 5. Enumerable each_cons_pair skips yields
 prove_fails "Enumerable each_cons_pair broken" no_cons_pair "enumerable.iyi" "enum: each_cons_pair" \
-  's/yield last, e unless last\.nil[?]/previous = nil/'
+  's/yield previous\.as(Elem), e if started/previous = nil/'
 
 # 6. Enumerable to_h corrupted
 prove_fails "Enumerable to_h corrupted" no_to_h "enumerable.iyi" "enum: to_h" \
   's/result\[pair\[0\]\] = pair\[1\]/result[pair[0]] = 0/'
 
+# 6b. `take` pulling past the nth element again: with the guard for a
+#     zero count gone, `take(0)` pulls an element and keeps it.
+prove_fails "take(0) pulls an element" take_zero_pulls "enumerable.iyi" "enum: take pulls no element past the nth" \
+  's/^    return result if n == 0$/    result/'
+
+# 7. String hash_key is the length
+prove_fails "Hashable String hash_key is length" no_strhash "traits.iyi" "Hashable: String hash_key is the string" \
+  's/hash # FNV, not the length/size/'
+
+# 8. The rest of the tower's `hash`, which `impl Hashable` promised and did
+#    not have: it lives in `std/int`, which `std/traits` did not import, so
+#    `Int8#hash` was `Object#hash` — the type's id, one slot for every value
+#    of the type. Renaming the definition puts the program back where it was,
+#    and `Int8` is the first of the six the exercise asks.
+prove_fails "the tower's hash falls back to the type id" no_inthash "int.iyi" "hash: Int8 values differ" \
+  's/def hash : Int32/def hash_elsewhere : Int32/'
+
+# 9. The same for `Float32`, whose `hash` lives in `std/float`. `Float64`'s
+#    is the prelude's, as every prelude type's is, so a table of doubles
+#    spreads without an import.
+prove_fails "Float32 hash falls back to the type id" no_floathash "float.iyi" "hash: Float32 values differ" \
+  's/def hash : Int32/def hash_elsewhere : Int32/'
+
+# 10. And the import itself is load-bearing, not decoration: `std/traits` is
+#     the only module this exercise imports for the scalars, so taking the
+#     `std/float` line out of it leaves `Float32` hashing to its type id
+#     however complete `std/float` is.
+prove_fails "traits without its std/float import" no_floatimport "traits.iyi" "hash: Float32 values differ" \
+  's|^import std/float$||'
+
+# 11. A list built by `appended` handed to the copying constructor, which is
+#     the second of the three copies an append used to make.
+prove_fails "an append that copies twice" no_owning "list.iyi" "list: an append copies the list once" \
+  's/List(T).owning(copy)/List(T).new(copy)/'
+
+# 12. And the constructor that stops copying: the caller's array becomes the
+#     list's, and the caller's next push lands in the list.
+prove_fails "a list that keeps the caller's array" no_copy "list.iyi" "list: the caller's array is not the list's" \
+  's/@items = items.dup/@items = items/'
+
+# 12b. A list's iterator copied into the adaptor built on it (a struct again).
+prove_fails "a list iterator copied into its adaptor" copied_list_iter "list.iyi" "list: an adaptor shares its iterator" \
+  's/^pub class ListIterator(T)/pub struct ListIterator(T)/'
+prove_fails "a slice iterator copied into its adaptor" copied_slice_iter "slice.iyi" "slice: an adaptor shares its iterator" \
+  's/^pub class SliceIterator(T)/pub struct SliceIterator(T)/'
+
+# 13-15. A nil element read back as "no previous element": the nil test
+#     each of the three used before the flag, put back.
+prove_fails "each_cons_pair skips the pair after a nil" nil_cons_pair "enumerable.iyi" "enum: each_cons_pair after a nil element" \
+  's/yield previous\.as(Elem), e if started/yield previous.as(Elem), e unless previous.nil?/'
+prove_fails "chunk_while joins the element after a nil" nil_chunk_while "enumerable.iyi" "enum: chunk_while after a nil element" \
+  's/if !started || (yield previous\.as(Elem), e)/if previous.nil? || (yield previous.as(Elem), e)/'
+prove_fails "reduce? restarts at a nil" nil_reduce "enumerable.iyi" "enum: reduce? from a nil element" \
+  's/acc = found ? (yield acc\.as(Elem), e) : e/acc = acc.nil? ? e : (yield acc.as(Elem), e)/'
+
+# 16-18. The same nil test in `max_by`, `min_by` and `minmax_by`, put back:
+#     the element, not the key, deciding there was none. A panic has no
+#     assertion after it, so the proof is the sentence the check's call
+#     stops with.
+prove_fails "max_by refuses a nil answer" nil_max_by "enumerable.iyi" "panic: max_by of an empty collection" \
+  's/raise "max_by of an empty collection" if entry\[1\]\.nil?/raise "max_by of an empty collection" if entry[0].nil?/'
+prove_fails "min_by refuses a nil answer" nil_min_by "enumerable.iyi" "panic: min_by of an empty collection" \
+  's/raise "min_by of an empty collection" if entry\[1\]\.nil?/raise "min_by of an empty collection" if entry[0].nil?/'
+prove_fails "minmax_by refuses a nil answer" nil_minmax_by "enumerable.iyi" "panic: minmax_by of an empty collection" \
+  's/raise "minmax_by of an empty collection" if entry\[2\]\.nil?/raise "minmax_by of an empty collection" if entry[0].nil?/'
+
+# 19. `includes?` asking anything but `==` again: a hash, which agrees for
+#     two NaNs. (`<=>`, which it asked once, no longer compiles here: the
+#     exercise asks it of a list of arrays now, and an array has no `<=>`.)
+prove_fails "includes? by hash" hash_includes "enumerable.iyi" "enum: includes? asks ==" \
+  's/return true if e == value/return true if e.hash == value.hash/'
+
 echo
-echo "== discovering and running sibling std exercises"
-found_siblings=0
-for sibling in "$REPO"/bench/std_*_exercise.sh; do
-  [ -f "$sibling" ] || continue
-  [ "$(basename "$sibling")" = "std_exercise.sh" ] && continue
-  found_siblings=$((found_siblings + 1))
-  echo "-- running sibling: $(basename "$sibling")"
-  if ! bash "$sibling"; then
-    echo "FAIL: sibling $(basename "$sibling") failed"
+echo "== one mistake, one sentence, whichever tower answers"
+# `first` of an empty receiver, a negative count and a zero step used to be
+# answered by a bare `empty`, by `[]`, and by two different sentences from
+# two towers. A panicking program has no next line to assert on, so these
+# are driven here rather than written into the exercise.
+panics_with() { # panics_with <label> <name> <phrase> <expression>
+  local label="$1" name="$2" phrase="$3" expression="$4"
+  {
+    printf 'module main\n\n'
+    printf 'import std/list::{List}\n'
+    printf 'import std/enumerable::{Enumerable}\n'
+    printf 'import std/iterator::{Iterator, ArrayIterator}\n\n'
+    printf 'puts (%s).to_s\n' "$expression"
+  } > "$WORK/$name.iyi"
+  if ! "$IYI" build -o "$WORK/$name" "$WORK/$name.iyi" > "$WORK/$name.build" 2>&1; then
+    echo "  $label: the program did not build"
+    sed -n '1,10p' "$WORK/$name.build"
     status=1
+    return
+  fi
+  "$WORK/$name" > "$WORK/$name.out" 2>&1
+  local code=$?
+  if [ "$code" -eq 0 ]; then
+    echo "  $label: it answered instead of panicking"
+    status=1
+    return
+  fi
+  if ! grep -qF -- "$phrase" "$WORK/$name.out"; then
+    echo "  $label: panicked, but not with '$phrase'"
+    sed -n '1,3p' "$WORK/$name.out"
+    status=1
+    return
+  fi
+  printf '  %s: exits 1 at "%s"\n' "$label" \
+    "$(sed -n '1p' "$WORK/$name.out" | sed 's/^iyi: panic: //')"
+}
+
+panics_with "first of an empty list" first_empty "first of an empty collection" \
+  'List(Int32).new([] of Int32).first'
+panics_with "a negative count taken" take_negative "negative count: -1" \
+  'List(Int32).new([1, 2, 3]).take(-1)'
+panics_with "a negative count skipped" skip_negative "negative count: -1" \
+  'List(Int32).new([1, 2, 3]).skip(-1)'
+panics_with "a negative count, lazily" iter_take_negative "negative count: -1" \
+  'ArrayIterator(Int32).new([1, 2, 3]).take(-1).to_a'
+panics_with "a step of nothing" step_zero "step size must be positive" \
+  'ArrayIterator(Int32).new([1, 2, 3]).step(0).to_a'
+panics_with "a step of nothing, eagerly" each_step_zero "step size must be positive" \
+  'List(Int32).new([1, 2, 3]).each_step(0) { |x| x }'
+panics_with "an index past a list" list_index "index 7 out of range for 3 elements" \
+  'List(Int32).new([1, 2, 3])[7]'
+panics_with "max_by of an empty list" max_by_empty "max_by of an empty collection" \
+  'List(Int32).new([] of Int32).max_by { |x| x }'
+panics_with "min_by of an empty list" min_by_empty "min_by of an empty collection" \
+  'List(Int32).new([] of Int32).min_by { |x| x }'
+panics_with "minmax_by of an empty list" minmax_by_empty "minmax_by of an empty collection" \
+  'List(Int32).new([] of Int32).minmax_by { |x| x }[0]'
+panics_with "groups of nothing" in_groups_zero "group size must be positive" \
+  'List(Int32).new([1, 2, 3]).in_groups_of(0, 0)'
+# A zip with a shorter collection is refused, as the other library refuses
+# it: the pairs stopped at the shorter, and an element went unsaid.
+panics_with "a zip with a shorter collection" zip_shorter "index 3 out of range for 3 elements" \
+  'List(Int32).new([1, 2, 3, 4]).zip(List(Int32).new([5, 6, 7])).size'
+
+echo
+echo "== the library is iyi all the way down"
+# Three modules reach the platform themselves. Two were written before the
+# rule: `socket` (raw syscalls on Linux, libSystem on darwin, SPEC.md III.9)
+# and `time` (the clocks). `math` may name the three LLVM hardware intrinsics
+# `llvm.sqrt`, `llvm.copysign` and `llvm.fma` (the instruction, not libm).
+#
+# `debug` is the third, and it is a deliberate exception rather than an
+# oversight. It resolves a panic's frames to `file:line:column` by reading the
+# program's own DWARF, and finding those bytes is not something the prelude's
+# intrinsics can do: it needs the image's load address and ASLR slide
+# (`_dyld_get_image_vmaddr_slide`), the executable's path
+# (`_NSGetExecutablePath`, `dladdr`), and the file mapped to read it
+# (`open`, `mmap`, `munmap`, `lseek`, `close`). Every one of those is in
+# libSystem, the platform libc `bench/dependency_floor.sh` already permits, so
+# this costs no library: a program importing `std/debug` still links
+# libSystem and nothing else, which the floor checks separately. On Linux it
+# walks the stack itself, reading the registers with `asm` and the image
+# through the linker's `__ehdr_start`, and maps `/proc/self/exe` through the
+# prelude's raw syscalls: libc is asked for nothing there.
+#
+# `file`, `dir` and `udp` are platform modules of `socket`'s shape: raw
+# syscalls on Linux, libSystem on darwin, and the floor names every symbol
+# they add there.
+#
+# `random` joined them for Windows first: `/dev/urandom` is a file on the
+# POSIX targets and there is no such path there, so its win32 arm asks the
+# OS for the bytes. Before that arm, `Random.new` panicked on Windows and
+# took `std/uuid`, `Array#sample` and `#shuffle` with it. `Random::Secure`
+# then made it a platform module everywhere: `getrandom` by syscall on
+# Linux, `arc4random_buf` from libSystem on darwin, WASI's `random_get` on
+# wasm32.
+#
+# `signal` installs a handler, which is the platform's act and nobody
+# else's: `rt_sigaction` on Linux, `sigaction` and `pipe` from libSystem on
+# darwin, `SetConsoleCtrlHandler` from kernel32 on Windows.
+#
+# `process` starts a program, which is the platform's act too: `clone` and
+# `execve` by syscall on Linux, `posix_spawn` from libSystem on darwin,
+# `CreateProcessW` from kernel32 on Windows.
+#
+# `system` asks the machine about itself, and `term` sets a terminal's
+# mode: `uname`, `sched_getaffinity` and `ioctl` by syscall on Linux,
+# `gethostname`, `getpagesize`, `sysctlbyname`, `tcgetattr`, `tcsetattr`
+# and `ioctl` from libSystem on darwin, and kernel32's own calls on
+# Windows - there is no other place a host name, a CPU mask or a termios
+# comes from.
+#
+# `user` asks who an account is: `getuid` and `getgid` by syscall on Linux,
+# which reads `/etc/passwd` and `/etc/group` itself; `getpwuid_r`,
+# `getpwnam_r`, `getgrgid_r`, `getgrnam_r` and `getgrouplist` from
+# libSystem on darwin, where Directory Services and not a file answers;
+# and advapi32's `GetUserNameW` and the process token's SIDs on Windows.
+# An account database is the operating system's, and has no other door.
+#
+# `system_roots` reads the roots the operating system trusts: a bundle file
+# on Linux, which needs no binding, Security.framework's anchors and trust
+# settings in CoreFoundation's containers on darwin, and crypt32's ROOT and
+# Disallowed stores on Windows. A trust store is the platform's, and on
+# those two it is behind those interfaces alone.
+#
+# Every other module is iyi over the prelude's own intrinsics: no `lib`,
+# no `fun`, no inline `asm`, no `@[Link]`. A binding that appears anywhere
+# else is a dependency being taken on without a word.
+# An exemption is permission to reach the *platform*, not permission to reach
+# anything. The exempt modules used to be skipped outright, so `@[Link("yaml")]`
+# added to `std/socket` was seen by nothing here: the library floor catches it
+# only once a program reaches it and links libyaml, and a declaration nothing
+# reaches yet is exactly what this loop exists to name. So they are checked
+# too, against the libraries the platform supplies.
+PLATFORM_LIBS='LibC|LibSystem|LibKernel32|LibWasi|LibLLVMMath|LibAdvapi32|LibWs2_32|LibCrypt32|LibSecurity|LibCoreFoundation'
+# The `@[Link]`s an exempt module may carry: the DLLs Windows itself ships,
+# named in SPEC.md III.10's inventory. `std/random` is here for `advapi32` —
+# the OS entropy `Random::Secure` reads is `RtlGenRandom`, and Windows has
+# no kernel32 name for it — and `std/socket` for it too, the registry its
+# resolver reads the name servers from, and `std/user` for the account name
+# and the process token's SIDs (`GetUserNameW`, `OpenProcessToken`,
+# `GetTokenInformation`, `ConvertSidToStringSidW`), which are advapi32's
+# and nobody else's; `std/socket` and `std/udp` for `ws2_32`, because
+# Winsock is the whole of Windows' network interface and a socket call has
+# nowhere else to come from; `std/system_roots` for `crypt32` and darwin's
+# Security and CoreFoundation frameworks, the trust stores' only doors.
+# Everything else in this list reaches the platform through a `lib` block
+# alone.
+PLATFORM_LINKS='@\[Link\(("(kernel32|advapi32|ws2_32|crypt32)"|framework: "(Security|CoreFoundation)")\)\]'
+reaching=""
+foreign=""
+for source in "$REPO"/src/std/*.iyi; do
+  name="$(basename "$source" .iyi)"
+  case "$name" in
+    # `std/path` folds a Windows name's case the way NTFS does, which is
+    # the platform's own table (LCMapStringEx); ASCII alone called `C:\Ä`
+    # and `c:\ä` two names.
+    socket|time|debug|file|dir|udp|random|signal|process|path|system|term|user|system_roots)
+      # Named libraries only: a `lib` block of platform bindings is the
+      # exemption, an `@[Link]` to something the platform does not supply is
+      # not covered by it.
+      grep -nE '^\s*(lib [A-Z]|@\[Link)' "$source" \
+        | grep -vE "lib ($PLATFORM_LIBS)\b" \
+        | grep -vE "$PLATFORM_LINKS" > "$WORK/foreign.$name" || true
+      if [ -s "$WORK/foreign.$name" ]; then
+        foreign="$foreign $name"
+        echo "  std/$name is exempt for the platform, and this is not the platform:"
+        sed 's/^/    /' "$WORK/foreign.$name"
+      fi
+      continue
+      ;;
+  esac
+  if [ "$name" = math ]; then
+    grep -nE '^\s*(lib [A-Z]|fun [a-z_]|asm\(|@\[Link)' "$source" \
+      | grep -vE 'llvm\.(sqrt|copysign|fma)\.' > "$WORK/reach.$name" || true
+  else
+    grep -nE '^\s*(lib [A-Z]|fun [a-z_]|asm\(|@\[Link)' "$source" > "$WORK/reach.$name" || true
+  fi
+  if [ -s "$WORK/reach.$name" ]; then
+    reaching="$reaching $name"
+    echo "  std/$name reaches past the prelude:"
+    sed 's/^/    /' "$WORK/reach.$name"
   fi
 done
-if [ "$found_siblings" -eq 0 ]; then
-  echo "  (no sibling exercises found yet)"
+if [ -n "$reaching" ]; then
+  echo "  FAIL: a std module other than socket and time binds something"
+  status=1
+elif [ -n "$foreign" ]; then
+  echo "  FAIL: an exempt std module binds something the platform does not supply"
+  status=1
+else
+  echo "  every module but socket and time is iyi over the prelude's intrinsics,"
+  echo "  and those reach the platform and nothing else"
+fi
+
+echo
+echo "== every module has its own exercise"
+# A module `iyi check` accepts is not a module that works: a generic body
+# nobody instantiates is never typed. The exercise is what instantiates it.
+ungated=""
+for source in "$REPO"/src/std/*.iyi; do
+  name="$(basename "$source" .iyi)"
+  case "$name" in traits|cmp|enumerable|list|derives) continue ;; esac # this file's own
+  gate="$REPO/bench/std_${name}_exercise.sh"
+  case "$name" in format|socket) gate="$REPO/bench/${name}_exercise.sh" ;; esac # named before the prefix
+  [ -f "$gate" ] || ungated="$ungated $name"
+done
+if [ -n "$ungated" ]; then
+  echo "  FAIL: no bench/std_<name>_exercise.sh for:$ungated"
+  status=1
+else
+  echo "  each module under src/std has a bench/std_<name>_exercise.sh"
+fi
+
+echo
+echo "== every std module compiles alone and writes its artifact"
+# `iyi doc FILE` compiles the module on its own, front end only, and writes
+# the artifact a consumer would read - which is where R-2 asks every
+# exported signature for its types (IyiMod.check_types_written), and
+# where an enum nested in an exported class ended the build on a BUG.
+# Fifteen modules could not be packaged, and nothing here noticed, because
+# every gate compiles its module from source inside a program.
+unpackaged=""
+for source in "$REPO"/src/std/*.iyi; do
+  name="$(basename "$source" .iyi)"
+  if ! "$IYI" doc "$source" > "$WORK/doc_$name.txt" 2>&1; then
+    unpackaged="$unpackaged $name"
+    echo "  $name: $(grep -m1 -E 'Error|BUG' "$WORK/doc_$name.txt" | cut -c1-140)"
+  fi
+done
+if [ -n "$unpackaged" ]; then
+  echo "  FAIL: cannot be written as an artifact:$unpackaged"
+  status=1
+else
+  echo "  every module under src/std writes its artifact"
+fi
+
+echo
+echo "== every std module exercise runs from artifacts as it runs from source"
+# The other half of the question above. Writing an artifact is the
+# producer's side; this is R-1's consumer side, which nothing measured:
+# build each exercise with `--emit-iyimod`, build the same program again
+# with `--use-iyimod`, and compare what the two binaries print. Twenty-one
+# of the sixty did that when it was first asked, and the thirty-nine that
+# did not each named a different thing a module never carried — a class
+# hierarchy's `<`, a `@[Primitive]`, an enum's members, a body whose symbol
+# the consumer keys differently, the `using` (the keyword `import X::{...}`
+# replaced) written inside a reopened type. Every one of those is a defect
+# a consumer meets and no gate here could see, because every other gate
+# compiles its module from source.
+#
+# The output is compared and not merely the exit status: a program that
+# links against the wrong body runs fine and answers differently, which is
+# the failure this is most worth catching.
+unconsumable=""
+for source in "$REPO"/bench/std_*_exercise.iyi; do
+  name="$(basename "$source" .iyi)"
+  work="$WORK/r1/$name"
+  mkdir -p "$work/mods"
+  if ! (cd "$work" && "$IYI" build --emit-iyimod mods -o from-source "$source") \
+       > "$work/emit.log" 2>&1; then
+    unconsumable="$unconsumable $name"
+    why="$(grep -m1 -E 'Error|BUG' "$work/emit.log" | cut -c1-140)"
+    # A failure with no Error line was seen twice, under a loaded machine,
+    # and its log was gone with the work directory: name its last lines.
+    [ -n "$why" ] || why="no Error line; it ended: $(tail -3 "$work/emit.log" | tr '\n' ' ' | cut -c1-200)"
+    echo "  $name: cannot write its artifacts: $why"
+    continue
+  fi
+  (cd "$work" && "$IYI" build --use-iyimod mods -o from-artifact "$source") \
+    > "$work/use.log" 2>&1
+  use_status=$?
+  if [ "$use_status" -ne 0 ]; then
+    unconsumable="$unconsumable $name"
+    # A failure with no such line printed the name and nothing after it:
+    # std_compress_exercise did, once, and the next runs consumed it
+    # cleanly. The status and the log's last line say what it was.
+    said="$(grep -m1 -E 'Error|BUG|undefined' "$work/use.log")"
+    [ -n "$said" ] || said="exits $use_status: $(tail -n 1 "$work/use.log")"
+    echo "  $name: $(printf '%s' "$said" | cut -c1-140)"
+    continue
+  fi
+  "$work/from-source" > "$work/source.out" 2>&1
+  source_status=$?
+  "$work/from-artifact" > "$work/artifact.out" 2>&1
+  artifact_status=$?
+  if [ "$source_status" -ne "$artifact_status" ]; then
+    unconsumable="$unconsumable $name"
+    echo "  $name: exits $artifact_status from its artifacts and $source_status from source"
+    # The end of the run that failed, which is where its check is named:
+    # the head of the one that passed said nothing about why.
+    failed_out="$work/source.out"
+    [ "$artifact_status" -ne 0 ] && failed_out="$work/artifact.out"
+    tail -n 6 "$failed_out" | sed 's/^/    /'
+    continue
+  fi
+  # Four exercises print something no two builds can agree on, and for them
+  # the exit status is the whole of the promise: each raises on its own
+  # assertions, so a wrong answer is a non-zero exit either way.
+  #
+  #   * `std_big_exercise` prints how long three exponentiations took, for
+  #     its driver to set beside Python's, and raises if the fast one is
+  #     not three times the old.
+  #   * `std_gc_exercise` prints how many bytes a collection freed, which
+  #     is a property of what the build allocated and not of the program.
+  #   * `std_time_exercise` prints the clock.
+  #   * `std_weak_ref_exercise` prints how many targets a conservative root
+  #     still reached - a register's leftover, which two builds allocate
+  #     differently - and how many reads four threads made beside the
+  #     collector in two seconds.
+  #
+  # Named rather than guessed at. A rule that decided this by running the
+  # binary twice would pass the clock and still fail the collector, whose
+  # two runs agree with each other and not across builds.
+  case "$name" in
+    std_big_exercise | std_gc_exercise | std_time_exercise | std_weak_ref_exercise)
+      continue
+      ;;
+  esac
+  if ! cmp -s "$work/source.out" "$work/artifact.out"; then
+    unconsumable="$unconsumable $name"
+    echo "  $name: runs differently from its artifacts"
+    diff "$work/source.out" "$work/artifact.out" | sed -n '1,6p' | sed 's/^/    /'
+  fi
+done
+if [ -n "$unconsumable" ]; then
+  echo "  FAIL: cannot be consumed as artifacts:$unconsumable"
+  status=1
+else
+  echo "  all $(ls "$REPO"/bench/std_*_exercise.iyi | wc -l | tr -d ' ') exercises answer the same from source and from artifacts"
+fi
+
+echo
+echo "== a panic std raises names no site from its artifact either"
+# A panic the library raises prints no site, the library's own line not
+# being where the bug is - but that test knew `src/std/` and not an
+# artifact's path, and from artifacts `Deque#pop` of an empty deque printed
+# `at mods\std\deque.iyimod:297`, which its build from source did not.
+site="$WORK/r1/panic_site"
+mkdir -p "$site/mods"
+printf 'import std/deque::{Deque}\n\nDeque(Int32).new.pop\n' > "$site/pop.iyi"
+if (cd "$site" && "$IYI" build --emit-iyimod mods -o from-source pop.iyi \
+      && "$IYI" build --use-iyimod mods -o from-artifact pop.iyi) > "$site/build.log" 2>&1; then
+  "$site/from-source" > "$site/source.out" 2>&1
+  "$site/from-artifact" > "$site/artifact.out" 2>&1
+  # The first line and the absence of a site, not the whole stream: darwin
+  # prints a backtrace after it, and its addresses differ between builds.
+  if [ "$(head -1 "$site/source.out")" != "$(head -1 "$site/artifact.out")" ] || grep -q '^  at ' "$site/artifact.out"; then
+    echo "  FAIL: from artifacts the panic reads"; sed -n '1,4p' "$site/artifact.out" | sed 's/^/    /'
+    status=1
+  else
+    echo "  both print: $(head -1 "$site/artifact.out")"
+  fi
+else
+  echo "  FAIL: did not build: $(grep -m1 -E 'Error|BUG' "$site/build.log" | cut -c1-140)"
+  status=1
+fi
+
+echo
+echo "== and on the platforms this runner is not"
+# The front end only, which is where a platform differs: a module's
+# `{% if flag?(:darwin) %}` branch declares a different `lib` with
+# different `fun`s, and nothing outside darwin ever read one. That is how
+# the section above passed here and failed there — `undefined fun
+# 'opendir' for LibC` — a whole day after it was written.
+#
+# `--no-codegen` because the answer is what a consumer's front end
+# resolves, and because it costs half a second per exercise instead of
+# five: the whole sweep over four targets is a minute.
+unportable=""
+for target in aarch64-darwin x86_64-windows-msvc aarch64-linux-gnu x86_64-linux-musl; do
+  for source in "$REPO"/bench/std_*_exercise.iyi; do
+    name="$(basename "$source" .iyi)"
+    work="$WORK/cross/$target/$name"
+    mkdir -p "$work/mods"
+    if ! (cd "$work" && "$IYI" build --no-codegen --target "$target" \
+            --emit-iyimod mods -o out "$source") > "$work/emit.log" 2>&1; then
+      unportable="$unportable $target/$name"
+      echo "  $target $name: cannot write its artifacts: $(grep -m1 -E 'Error|BUG' "$work/emit.log" | cut -c1-120)"
+      continue
+    fi
+    if ! (cd "$work" && "$IYI" build --no-codegen --target "$target" \
+            --use-iyimod mods -o out2 "$source") > "$work/use.log" 2>&1; then
+      unportable="$unportable $target/$name"
+      echo "  $target $name: $(grep -m1 -E 'Error|BUG' "$work/use.log" | cut -c1-120)"
+    fi
+  done
+done
+if [ -n "$unportable" ]; then
+  echo "  FAIL: cannot be consumed on another platform:$unportable"
+  status=1
+else
+  echo "  every exercise reads its own artifacts on darwin, windows, aarch64 and musl"
+fi
+
+echo
+echo "== every std module together, beside std/bool, on every platform"
+# `module std/bool` declares the namespace `Std::Bool`, and inside every
+# other std module a bare `Bool` then names it rather than the type: a
+# program importing std/bool with std/socket, std/udp, std/http, std/debug
+# or std/process did not compile, each on some target. One program that
+# imports every module, typechecked for each target, is the check.
+together="$WORK/together"
+mkdir -p "$together"
+{
+  for module in "$REPO"/src/std/*.iyi; do
+    echo "import std/$(basename "$module" .iyi)"
+  done
+  echo 'puts 1'
+} > "$together/all.iyi"
+apart=""
+for target in "" x86_64-windows-msvc aarch64-darwin aarch64-linux-gnu x86_64-linux-musl; do
+  if [ -n "$target" ]; then
+    flags=(--no-codegen --target "$target")
+  else
+    flags=(--no-codegen)
+  fi
+  if ! (cd "$together" && "$IYI" build "${flags[@]}" -o all all.iyi) > "$together/${target:-host}.log" 2>&1; then
+    apart="$apart ${target:-host}"
+    echo "  ${target:-host}: $(grep -m1 -E 'Error|BUG' "$together/${target:-host}.log" | cut -c1-160)"
+  fi
+done
+if [ -n "$apart" ]; then
+  echo "  FAIL: every std module does not compile together on:$apart"
+  status=1
+else
+  echo "  every std module compiles beside every other, std/bool among them, on five targets"
+fi
+
+echo
+echo "== discovering and running sibling std exercises"
+# Every module's own exercise, through bench/std_siblings.sh, which CI runs
+# in shards side by side instead: `STD_SIBLINGS=0` leaves them to it.
+if [ "${STD_SIBLINGS:-1}" = 0 ]; then
+  echo "  left to bench/std_siblings.sh (STD_SIBLINGS=0)"
+elif ! bash "$REPO/bench/std_siblings.sh"; then
+  status=1
 fi
 
 echo

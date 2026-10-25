@@ -50,8 +50,21 @@
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-IYI="$REPO/bin/iyi"
+# The compiler, overridable: `bin/iyi` is a POSIX shell wrapper, and on
+# Windows the caller is the only one who knows where the real binary is.
+IYI="${IYI:-$REPO/bin/iyi}"
 WORK="$(mktemp -d)"
+# A native compiler cannot resolve this shell's own path mapping: a search
+# path built from the shell's `pwd` finds no prelude at all, and a scratch
+# directory named `/tmp/tmp.X` is silently ignored on the search path, so
+# the patched copy is never read and the proof that a check can fail
+# quietly stops proving it.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT)
+    REPO="$(cygpath -m "$REPO")"
+    WORK="$(cygpath -m "$WORK")"
+    ;;
+esac
 
 cd "$WORK" || exit 1
 
@@ -156,7 +169,7 @@ case "$(uname -s)" in
     # refused variants carry them for the same reason - the Mach one
     # included, whose own stop never signals - so the five sit in the
     # runtime's list, not the probe's.
-    runtime='___error __dyld_get_image_header __dyld_get_image_vmaddr_slide _clock_gettime_nsec_np _exit _kevent _kqueue _madvise _mmap _munmap _pipe _pthread_create _pthread_get_stackaddr_np _pthread_kill _pthread_self _read _sigaction _sysctlbyname _write'
+    runtime='___error __dyld_get_image_header __dyld_get_image_vmaddr_slide _backtrace _backtrace_symbols_fd _clock_gettime_nsec_np _exit _kevent _kqueue _mmap _munmap _pipe _pthread_create _pthread_get_stackaddr_np _pthread_kill _pthread_self _read _sigaction _sigaltstack _sysctlbyname _write'
     thread='__tlv_bootstrap _pthread_join _pthread_threadid_np'
     # The refused parks: the lock's two calls in place of `pipe` and `read`,
     # and `sigsuspend` alone in their place. The Mach stop swaps the stop

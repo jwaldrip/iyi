@@ -15,9 +15,30 @@
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-IYI="$REPO/bin/iyi"
+# The gate runs the compiler the caller names; bin/iyi is a POSIX shell
+# wrapper a Windows build cannot run.
+IYI="${IYI:-$REPO/bin/iyi}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+
+# A native compiler cannot resolve this shell's own path mapping: a search
+# path built from the shell's `pwd` finds no prelude at all, and a scratch
+# directory named `/tmp/tmp.X` is silently ignored on that path, so the
+# patched copy is never read and the proof that a check can fail quietly
+# stops proving it.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT)
+    REPO="$(cygpath -m "$REPO")"
+    WORK="$(cygpath -m "$WORK")"
+    ;;
+esac
+
+# The search path is a list, and the byte between its entries is the
+# platform's: `;` where a drive letter already owns the colon.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT) PSEP=';' ;;
+  *) PSEP=':' ;;
+esac
 
 status=0
 
@@ -74,7 +95,7 @@ prove_fails() {
   local label="$1" dir="$2" phrase="$3" sed_script="$4"
   mkdir -p "$WORK/$dir/std"
   sed -e "$sed_script" "$REPO/src/std/text.iyi" > "$WORK/$dir/std/text.iyi"
-  if ! IYI_PATH="$WORK/$dir:$REPO/src" "$IYI" build \
+  if ! IYI_PATH="$WORK/$dir${PSEP}$REPO/src" "$IYI" build \
        -o "$WORK/$dir/program" "$REPO/bench/std_text_exercise.iyi" \
        >"$WORK/$dir/build.log" 2>&1; then
     echo "  $label: the patched text library did not build"
@@ -91,7 +112,7 @@ prove_fails() {
   fi
   if ! grep -q "$phrase" "$WORK/$dir/out"; then
     echo "  $label: failed, but not at expected check (expected '$phrase')"
-    sed -n '$p' "$WORK/$dir/out"
+    tail -n 2 "$WORK/$dir/out"
     status=1
     return
   fi
@@ -100,6 +121,12 @@ prove_fails() {
 }
 
 # 1. ASCII letter predicate broken
+prove_fails "to_u64 overflow unchecked" u64_wrap "arithmetic overflow" \
+  's/^      return nil if value > (18446744073709551615_u64 - digit).unsafe_div(radix)$/      value = value \&* 1_u64/'
+
+prove_fails "a range keeps its end" range_end "string: range" \
+  's/^    last = last - 1 if range.exclusive?$/    last = last + 0 if range.exclusive?/'
+
 prove_fails "ascii letter predicate broken" no_letter "char: ascii_letter lowercase" \
   's/def ascii_letter? : Bool/def ascii_letter? : Bool; return false/'
 
@@ -117,6 +144,50 @@ prove_fails "base parsing broken" no_base "string: to_i base 16" \
 prove_fails "chomp crlf broken" no_chomp "string: chomp crlf" \
   's/return byte_slice(0, bytesize - 2)/return self/'
 
+# Characters, not bytes: a wide character in the set stripped whatever
+# wide character was there; "\n" to chomp only a newline; \v and \f not
+# separators; the limit ignored with an empty separator; a squeezed run
+# written one byte of its character; a final \r dropped.
+prove_fails "strip chars takes any wide character" strip_wide "string: rstrip chars shares a byte" \
+  's/^    !chars.index(byte_slice(at, width)).nil?$/    true/'
+prove_fails "chomp of a newline only a newline" chomp_nl "string: chomp newline" \
+  '/^    return chomp if suffix == "\\n"$/d'
+# (Blind as the prelude's `whitespace?` was before it took \v and \f, which
+# it now does, so that set is written out rather than named.)
+prove_fails "split blind to vertical tab" split_vt "string: split vertical tab and form feed" \
+  's/^      if b.ascii_whitespace?$/      if b.in?(32.unsafe_chr, 9.unsafe_chr, 10.unsafe_chr, 13.unsafe_chr)/'
+prove_fails "empty separator ignores the limit" split_limit "string: split empty separator limit" \
+  '/^        return pieces << byte_slice(at, bytesize - at) if limit > 1 \&\& pieces.size == limit - 1$/d'
+prove_fails "squeeze writes a byte of each character" squeeze_byte "string: squeeze" \
+  's/^        io << point.unsafe_chr unless point == previous$/        io.write_byte(point.to_u8) unless point == previous/'
+prove_fails "squeeze writes no U+FFFD for a byte that begins no character" squeeze_lone "utf8: tr and squeeze write U+FFFD" \
+  's/^        point = 0xFFFD if point < 0$/        point = 0x3F if point < 0/'
+prove_fails "each_line drops a final cr" line_cr "utf8: each_line final cr" \
+  's/^      yield byte_slice(start, bytesize - start)$/      yield byte_slice(start, source[bytesize - 1] == 13_u8 ? bytesize - start - 1 : bytesize - start)/'
+# An offset or a range end near a limit of `Int32` added to again, which
+# panicked with "arithmetic overflow" where the answer is nil or the rest.
+prove_fails "index offset added to its needle" index_far "arithmetic overflow" \
+  's/^    return nil if offset > bytesize - search.bytesize$/    return nil if offset + search.bytesize > bytesize/'
+prove_fails "range counted in Int32" range_far "arithmetic overflow" \
+  's/^    first = (range.begin < 0 ? bytesize + range.begin : range.begin).to_i64$/    first = range.begin < 0 ? bytesize + range.begin : range.begin/; s/^    last = (range.end < 0 ? bytesize + range.end : range.end).to_i64$/    last = range.end < 0 ? bytesize + range.end : range.end/'
+# Characters found by their `10xxxxxx` bytes again rather than by the rule
+# `each_char` decodes with, a set blind to a byte that begins no
+# character, the byte table keeping one, and a run through the surrogates.
+prove_fails "reverse groups continuation bytes" reverse_cont "utf8: reverse by each_char's characters" \
+  's/^        start = char_start(stop)$/        start = stop - 1\n        while start > 0 \&\& (source[start] \& 0xC0_u8) == 0x80_u8\n          start = start - 1\n        end/'
+prove_fails "chop groups continuation bytes" chop_cont "utf8: chop by each_char's characters" \
+  's/^    cut = char_start(bytesize)$/    cut = bytesize - 1\n    while cut > 0 \&\& (to_unsafe[cut] \& 0xC0_u8) == 0x80_u8\n      cut = cut - 1\n    end/'
+prove_fails "a set blind to a byte that begins no character" strip_lone "utf8: a set names a byte that begins no character" \
+  '/^    return chars.chars.includes?(.\\uFFFD.) if width == 1/d'
+prove_fails "lstrip groups continuation bytes" lstrip_cont "utf8: lstrip a set by each_char's characters" \
+  's/^      width = point_width(at)$/      width = 1\n      while at + width < bytesize \&\& (to_unsafe[at + width] \& 0xC0_u8) == 0x80_u8\n        width = width + 1\n      end/'
+prove_fails "rstrip groups continuation bytes" rstrip_cont "utf8: rstrip a set by each_char's characters" \
+  's/^      start = char_start(last)$/      start = last - 1\n      while start > 0 \&\& (to_unsafe[start] \& 0xC0_u8) == 0x80_u8\n        start = start - 1\n      end/'
+prove_fails "the byte table keeps a byte that begins no character" tr_lone "utf8: an ascii tr writes U+FFFD too" \
+  's/ \&\& well_formed?$//'
+prove_fails "a tr run through the surrogates" tr_surrogate "utf8: a tr run has no surrogates" \
+  's/^          named << cp.unsafe_chr unless cp >= 0xD800 \&\& cp < 0xE000$/          named << cp.unsafe_chr/'
+
 # 5. String split broken
 prove_fails "string split broken" no_split "string: split str" \
   's/byte_slice(start, idx - start)/"broken"/'
@@ -128,6 +199,16 @@ prove_fails "string substitution broken" no_sub "string: sub str" \
 # 7. UTF-8 reverse broken
 prove_fails "utf8 reverse broken" no_reverse "utf8: reverse content" \
   's/def reverse : String/def reverse : String; return "broken"/'
+
+# 12. The block forms narrowing a character to one byte again
+prove_fails "sub char block narrowed" no_sub_block "utf8: sub char block" \
+  's/idx + text.bytesize, bytesize - idx - text.bytesize/idx + 1, bytesize - idx - 1/'
+prove_fails "gsub char block narrowed" no_gsub_block "utf8: gsub char block" \
+  's/^    s_len = text.bytesize$/    s_len = 1/'
+
+# 13. tr with `a-z` as three plain characters
+prove_fails "tr range not expanded" no_tr_range "string: tr range" \
+  's/^      if chars\[i\] == .-. \&\& i > 0 \&\& i + 1 < chars.size$/      if false/'
 
 # The two the prelude owns: `Char#to_s` encodes and `String#each_char`
 # decodes, and they are its own because the prelude counts code points in
@@ -142,7 +223,7 @@ prove_fails_prelude() {
     status=1
     return
   fi
-  if ! IYI_PATH="$WORK/$dir:$REPO/src" "$IYI" build \
+  if ! IYI_PATH="$WORK/$dir${PSEP}$REPO/src" "$IYI" build \
        -o "$WORK/$dir/program" "$REPO/bench/std_text_exercise.iyi" \
        >"$WORK/$dir/build.log" 2>&1; then
     echo "  $label: the patched prelude did not build"
@@ -159,7 +240,7 @@ prove_fails_prelude() {
   fi
   if ! grep -q "$phrase" "$WORK/$dir/out"; then
     echo "  $label: failed, but not at expected check (expected '$phrase')"
-    sed -n '$p' "$WORK/$dir/out"
+    tail -n 2 "$WORK/$dir/out"
     status=1
     return
   fi
@@ -168,12 +249,45 @@ prove_fails_prelude() {
 }
 
 # 8. Multi-byte char to_s encoding broken, in the prelude
-prove_fails_prelude "char utf8 encoding broken" no_encode "utf8: char to_s" \
-  's/buffer\[1\] = (0x80 | (point \& 0x3F)).to_u8/buffer[1] = 0_u8/'
+# A string built without its count is counted by `size`; answering the
+# stored zero instead is wrong for every string the prelude builds.
+prove_fails_prelude "an uncounted string answered as it is" no_count "utf8: char to_s size" \
+  's/^    return @length if @length > 0 || @bytesize == 0$/    return @length/'
 
-# 9. And the decoder the same string's `size` already agrees with
-prove_fails_prelude "utf8 each_char decoding broken" no_decode "utf8: chars size" \
-  's/index = index + 2$/index = index + 1/'
+# `Char#to_s` and `String::Builder#<<` share the encoder now, and the
+# `squeeze` check, which builds an `é`, comes before the `to_s` ones.
+prove_fails_prelude "char utf8 encoding broken" no_encode "string: squeeze multi-byte run" \
+  's/yield (0x80 | (point \& 0x3F)).to_u8/yield 0_u8/'
+
+# 9. And the decoder `size`, `each_char` and `squeeze` share, which a run
+# of `é` is the first check to read
+prove_fails_prelude "utf8 decoding broken" no_decode "string: squeeze multi-byte run" \
+  's/^      index = index + (point < 0 ? 1 : point.unsafe_chr.bytesize)$/      index = index + 1/'
+
+# 9b. A byte that starts no well-formed sequence counted as the start of
+#     one again: a lead byte taking the next bytes whatever they were (C3
+#     41 was one character), or an overlong form, a surrogate or a value
+#     past U+10FFFF decoded whole. Either makes a built string disagree
+#     with its literal.
+prove_fails_prelude "a lead byte takes any byte after it" no_continuation "utf8: an invalid byte is one character" \
+  's/^      point = (byte \& 0xC0) == 0x80 ? (point << 6) | (byte \& 0x3F) : -1$/      point = (point << 6) | (byte \& 0x3F)/'
+prove_fails_prelude "a lead byte read as a sequence" lenient_lead "utf8: an invalid byte is one character" \
+  's/^    width > 1 \&\& (point < .* ? -1 : point$/    point/'
+
+# 9c. `whitespace?` without \v and \f - which `blank?`, `lstrip` and
+#     `rstrip` ask too, `blank?` first - `chomp('\n')` blind to the `\r`
+#     before it, and `lines` cutting a `\r` that ends no line.
+prove_fails_prelude "whitespace blind to vertical tab" strip_vt "string: blank? vertical tab and form feed" \
+  's/ || (self >= .\\t. \&\& self <= .\\r.)$/ || self == 9.unsafe_chr || self == 10.unsafe_chr || self == 13.unsafe_chr/'
+# And whitespace above ASCII, which `strip` and its byte loops never saw.
+prove_fails_prelude "strip blind to unicode spaces" strip_unicode "prelude: strip unicode whitespace" \
+  '/^    return ord.in?(0xA0, /d'
+prove_fails_prelude "trailing space read from its last byte" strip_tail "prelude: strip unicode whitespace" \
+  's/ \&\& start + char.bytesize == last$//'
+prove_fails_prelude "chomp of a newline only a newline" chomp_char_nl "prelude: chomp newline takes the cr" \
+  's/^    text = char == .\\n. ? .*$/    text = char.to_s/'
+prove_fails_prelude "lines cuts every cr" lines_cr "prelude: lines keeps a last cr" \
+  's/^    pieces.map { |line| line.chomp(.\\r.) }.concat(tail.empty? ? \[\] of String : \[tail\])$/    pieces.concat(tail.empty? ? [] of String : [tail]).map { |line| line.chomp(13.unsafe_chr) }/'
 
 # 10. Padding measured in bytes again, which is what it did
 prove_fails_prelude "padding width in bytes" no_width "utf8: ljust width" \
@@ -183,6 +297,102 @@ prove_fails_prelude "padding width in bytes" no_width "utf8: ljust width" \
 prove_fails_prelude "wide pad truncated" no_wide "utf8: wide pad bytes" \
   's/^    pad_bytes = padding.bytesize$/    pad_bytes = 1/'
 
+echo
+echo "== the prelude's own String at its edges, which is a panic with a name"
+# `[](start, count)` has said for a long time that a negative count "is not
+# a wrap, it is a mistake"; `*` did not, and `"ab" * -3` answered `""` where
+# Crystal raises. `"abcd" * 600_000_000` answered "arithmetic overflow",
+# which names the machine's adder rather than the string that does not fit.
+# Driven here rather than asserted in the exercise: a panicking program has
+# no next line to check.
+panics_with() { # panics_with <label> <name> <phrase> <expression>
+  local label="$1" name="$2" phrase="$3" expression="$4"
+  printf 'module main\n\nputs (%s).to_s\n' "$expression" > "$WORK/$name.iyi"
+  if ! "$IYI" build -o "$WORK/$name" "$WORK/$name.iyi" > "$WORK/$name.build" 2>&1; then
+    echo "  $label: the program did not build"
+    sed -n '1,10p' "$WORK/$name.build"
+    status=1
+    return
+  fi
+  "$WORK/$name" > "$WORK/$name.out" 2>&1
+  local code=$?
+  if [ "$code" -eq 0 ]; then
+    echo "  $label: it answered instead of panicking"
+    status=1
+    return
+  fi
+  if [ "$code" -ne 1 ]; then
+    echo "  $label: died with exit $code rather than a panic"
+    status=1
+    return
+  fi
+  if ! grep -q "$phrase" "$WORK/$name.out"; then
+    echo "  $label: panicked, but not with '$phrase'"
+    sed -n '1,3p' "$WORK/$name.out"
+    status=1
+    return
+  fi
+  printf '  %s: exits 1 at "%s"\n' "$label" \
+    "$(sed -n '1p' "$WORK/$name.out" | sed 's/^iyi: panic: //')"
+}
+
+panics_with "a negative repeat" mul_negative "negative count: -3" '"ab" * -3'
+panics_with "a repeat that does not fit" mul_overflow \
+  "past the 2147483647 bytes a string holds" '"abcd" * 600_000_000'
+panics_with "a negative slice count" slice_negative "negative count: -1" '"abc"[0, -1]'
+panics_with "an index past the end" index_past \
+  "out of range for a string of 3 bytes" '"abc"[9]'
+# A build doubled its capacity in Int32, so growing past 1 GiB and a write
+# past 2147483647 bytes both panicked with "arithmetic overflow". It grows
+# to that limit and refuses past it with the sentence `*` has.
+panics_with "a build that does not fit" build_overflow \
+  "past the 2147483647 bytes a string holds" \
+  'String.build { |io| io << "ab"; io.write("x".to_unsafe, 2147483647) }'
+printf 'module main\n\nbig = ("a" * 1025) * 1047553\nio = String::Builder.new\nio << big << "b"\nputs io.bytesize\n' > "$WORK/build_gib.iyi"
+if "$IYI" build -o "$WORK/build_gib" "$WORK/build_gib.iyi" > "$WORK/build_gib.build" 2>&1; then
+  gib="$("$WORK/build_gib" 2>&1 | sed -n '1p')"
+  if [ "$gib" = "1073741826" ]; then
+    echo "  a build past 1 GiB: 1073741826 bytes"
+  else
+    echo "  a build past 1 GiB: answered '$gib', not 1073741826"
+    status=1
+  fi
+else
+  echo "  a build past 1 GiB: the program did not build"
+  sed -n '1,10p' "$WORK/build_gib.build"
+  status=1
+fi
+
+echo
+echo "== what std/text refuses, which is a panic with its own sentence"
+refuses() { # refuses <label> <name> <phrase> <expression>
+  local label="$1" name="$2" phrase="$3" expression="$4"
+  printf 'module main\n\nimport std/text\n\nputs (%s).to_s\n' "$expression" > "$WORK/$name.iyi"
+  if ! "$IYI" build -o "$WORK/$name" "$WORK/$name.iyi" > "$WORK/$name.build" 2>&1; then
+    echo "  $label: the program did not build"
+    sed -n '1,10p' "$WORK/$name.build"
+    status=1
+    return
+  fi
+  "$WORK/$name" > "$WORK/$name.out" 2>&1
+  local code=$?
+  if [ "$code" -eq 0 ]; then
+    echo "  $label: it answered instead of refusing"
+    status=1
+    return
+  fi
+  if ! grep -q "$phrase" "$WORK/$name.out"; then
+    echo "  $label: refused, but not with '$phrase'"
+    sed -n '1,3p' "$WORK/$name.out"
+    status=1
+    return
+  fi
+  printf '  %s: exits %s at "%s"\n' "$label" "$code" \
+    "$(sed -n '1p' "$WORK/$name.out" | sed 's/^iyi: panic: //')"
+}
+
+refuses "a tr range that runs backwards" tr_backwards \
+  "text: tr range c-a runs backwards" '"abc".tr("c-a", "x")'
 echo
 if [ "$status" -eq 0 ]; then
   echo "Text standard library: inspection, cases, conversions, strip, chomp, split,"

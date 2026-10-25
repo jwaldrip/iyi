@@ -4,11 +4,8 @@
 #
 # Compared against the shipped daemon in bench/selfhost_daemon_exercise.sh.
 
-import compiler/command/daemon
-import compiler/command/driver
-
-using compiler/command/daemon::{BuildDaemon, DaemonBuild, DAEMON_FRAME_EXIT, DAEMON_FRAME_STDOUT, DAEMON_FRAME_STDERR, MAX_PATH_SIZE}
-using compiler/command/driver::{OutputBuffer, Exit}
+import compiler/command/daemon::{BuildDaemon, DaemonBuild, DAEMON_FRAME_EXIT, DAEMON_FRAME_STDOUT, DAEMON_FRAME_STDERR, MAX_PATH_SIZE}
+import compiler/command/driver::{OutputBuffer, Exit}
 
 module BenchSelfhostDaemonExercise
   def self.run_case(name : String, & : -> Nil) : Nil

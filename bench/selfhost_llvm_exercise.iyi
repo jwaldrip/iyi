@@ -1,11 +1,11 @@
 import compiler/llvm
-using compiler/llvm/target::{Target, TargetData, TargetMachine}
-using compiler/llvm/context::{Context}
-using compiler/llvm/values::{LLVMType, LLVMValue, LLVMFunction, LLVMBasicBlock, Type, Value, Function, BasicBlock}
-using compiler/llvm/module::{Module}
-using compiler/llvm/builder::{Builder}
-using compiler/llvm/pass_manager::{PassBuilderOptions, ModulePassManager, run_passes}
-using compiler/llvm/memory_buffer::{MemoryBuffer}
+import compiler/llvm/target::{Target, TargetData, TargetMachine}
+import compiler/llvm/context::{Context}
+import compiler/llvm/values::{LLVMType, LLVMValue, LLVMFunction, LLVMBasicBlock, Type, Value, Function, BasicBlock}
+import compiler/llvm/module::{Module}
+import compiler/llvm/builder::{Builder}
+import compiler/llvm/pass_manager::{PassBuilderOptions, ModulePassManager, run_passes}
+import compiler/llvm/memory_buffer::{MemoryBuffer}
 
 module BenchSelfhostLlvmExercise
   def self.assert(cond : Bool, msg : String)

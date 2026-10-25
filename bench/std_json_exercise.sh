@@ -1,249 +1,373 @@
 #!/usr/bin/env bash
-# Native JSON standard library exercise driver.
-# Runs the JSON exercise in plain and release mode, checks every section
-# reported, proves the checks can fail by patching copies of std/json.iyi,
-# and executes dedicated boundary-failure probes against invalid JSON shapes.
+# Exercises `std/json`: parse, Any, PullParser, Builder, to_json / from_json.
 #
 #     bash bench/std_json_exercise.sh
 #
-# A check that cannot fail is not a check. This script proves failure across
-# number parsing, surrogate pair decoding, dynamic traversal, compact serialization,
-# and streaming pull parsing, and validates that every invalid JSON shape is rejected
-# with a precise message naming what and where.
-#
-# Exits non-zero if any check fails.
-
+# Proves the exercise holds plain and --release, the compact corpus round-trips
+# through python3's json, what the reader refuses is refused in the program,
+# what the pull parser, the builder and from_json refuse by panic is refused
+# in a small program each, a union from_json cannot read without guessing is
+# refused when it is compiled, and a copy that stops treating a repeated
+# object key as a mistake is caught, in the parser and in the pull parser, as
+# is a copy that drops a union member's branch, writing or reading.
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-IYI="$REPO/bin/iyi"
+# The gate runs the compiler the caller names; bin/iyi is a POSIX shell
+# wrapper a Windows build cannot run.
+IYI="${IYI:-$REPO/bin/iyi}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-status=0
+# A native compiler cannot resolve this shell's own path mapping: a search
+# path built from the shell's `pwd` finds no prelude at all, and a scratch
+# directory named `/tmp/tmp.X` is silently ignored on that path, so the
+# patched copy is never read and the proof that a check can fail quietly
+# stops proving it.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT)
+    REPO="$(cygpath -m "$REPO")"
+    WORK="$(cygpath -m "$WORK")"
+    ;;
+esac
 
-run_case() {
+# The search path is a list, and the byte between its entries is the
+# platform's: `;` where a drive letter already owns the colon.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT) PSEP=';' ;;
+  *) PSEP=':' ;;
+esac
+
+# The negative proofs are patched by python, and a machine can answer
+# `python3` with a store stub that prints a refusal instead of running, so
+# the interpreter is resolved once and proven to run before it is trusted.
+PY=""
+for candidate in python3 python; do
+  if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys' >/dev/null 2>&1; then
+    PY="$candidate"
+    break
+  fi
+done
+
+status=0
+export IYI_PATH="$REPO/src${PSEP}$REPO/samples/iyi"
+
+build_and_run() {
   local label="$1" name="$2"
   shift 2
   if ! "$IYI" build "$@" -o "$WORK/$name" "$REPO/bench/std_json_exercise.iyi" \
        >"$WORK/$name.build.log" 2>&1; then
     echo "$label: build failed"
-    sed -n '1,12p' "$WORK/$name.build.log"
+    tail -12 "$WORK/$name.build.log"
     status=1
     return 1
   fi
   "$WORK/$name" >"$WORK/$name.out" 2>&1
   local exit_code=$?
-  sed 's/^/  /' "$WORK/$name.out"
+  grep -av '^[{["0-9tfn-]' "$WORK/$name.out" | grep -av '^  ' | sed 's/^/  /' || true
   if [ "$exit_code" -ne 0 ]; then
     echo "$label: exited $exit_code"
+    tail -8 "$WORK/$name.out"
     status=1
     return 1
   fi
   return 0
 }
 
-echo "== the json exercise, plain build"
-run_case "plain" json-plain
-if ! grep -q "all std/json checks passed" "$WORK/json-plain.out" 2>/dev/null; then
-  echo "  MISSING: plain build did not reach the end"
+echo "== the std/json exercise, plain build"
+build_and_run "plain" json-plain
+if ! grep -aq "ALL CHECKS PASSED" "$WORK/json-plain.out" 2>/dev/null; then
+  echo "plain: missing pass sentinel"
   status=1
 fi
 
 echo
 echo "== every json section reported"
-for phrase in "number parsing:" "string parsing:" "dynamic traversal:" "builder & serializer:" "streaming pull parser:" "JSONTestSuite acceptance:" "depth limiting:" "round-trip:"; do
-  grep -q "$phrase" "$WORK/json-plain.out" 2>/dev/null || {
-    echo "  MISSING: nothing reported for $phrase"
+for phrase in "== parse corpus" "== to_json and to_pretty_json" "== pull parser walk" "== builder" "== equality and hash" "== to_json and from_json" "== derive serializable" "== unions" "== what the reader refuses" "== differential corpus"; do
+  if ! grep -aq "$phrase" "$WORK/json-plain.out" 2>/dev/null; then
+    echo "  missing section: $phrase"
     status=1
-  }
+  fi
 done
-[ "$status" -eq 0 ] && echo "  numbers, strings, traversal, builder, pull parser, acceptance, depth, and round-trip all reported"
+[ "$status" -eq 0 ] && echo "  parse, print, pull, builder, hash, from_json, unions, refusals and the corpus all reported"
+
+echo
+echo "== compact corpus against python3 json"
+grep -a '^oracle json' "$WORK/json-plain.out" | cut -f2- > "$WORK/compact.iyi.txt"
+if [ "$(wc -l < "$WORK/compact.iyi.txt")" -lt 20 ]; then
+  echo "  the corpus shrank ($(wc -l < "$WORK/compact.iyi.txt") compact lines)"
+  status=1
+elif [ -z "$PY" ]; then
+  echo "  skipped: no working python3, so the compact corpus was not read back as JSON"
+else
+  "$PY" - "$WORK/compact.iyi.txt" <<'PY'
+import json, sys
+n = 0
+for i, line in enumerate(open(sys.argv[1]), 1):
+    line = line.rstrip("\n")
+    if not line:
+        continue
+    try:
+        json.loads(line)
+    except Exception as e:
+        print(f"  line {i} is not JSON python3 accepts: {e}")
+        print(f"    {line[:120]}")
+        sys.exit(1)
+    n += 1
+print(f"  {n} compact documents are JSON python3 accepts")
+PY
+  if [ $? -ne 0 ]; then
+    status=1
+  fi
+fi
 
 echo
 echo "== the same program with optimisation on (--release)"
-run_case "release" json-release --release
-if ! grep -q "all std/json checks passed" "$WORK/json-release.out" 2>/dev/null; then
-  echo "  MISSING: release build did not reach the end"
+build_and_run "release" json-release --release >/dev/null
+if ! grep -aq "ALL CHECKS PASSED" "$WORK/json-release.out" 2>/dev/null; then
+  echo "release: missing pass sentinel"
   status=1
 fi
 
 echo
-echo "== proving the checks can fail when json operations are broken"
-
-prove_fails() {
-  local label="$1" dir="$2" phrase="$3" sed_script="$4"
-  mkdir -p "$WORK/$dir/std"
-  sed -e "$sed_script" "$REPO/src/std/json.iyi" > "$WORK/$dir/std/json.iyi"
-  # A patch that matches nothing leaves the library intact, and an intact
-  # library passes, which reads as "this check cannot fail" when the truth is
-  # that nothing was broken to test it. Line-anchored patches drift.
-  if cmp -s "$REPO/src/std/json.iyi" "$WORK/$dir/std/json.iyi"; then
-    echo "  $label: the patch changed nothing, so this proves nothing"
+echo "== what the pull parser, the builder and from_json refuse, by name"
+refuses() { # refuses <label> <name> <phrase> <statements>
+  local label="$1" name="$2" phrase="$3" statements="$4"
+  printf 'module main\n\nimport std/json::{JSON, Any, PullParser, Builder}\n\n\n%s\n' \
+    "$statements" > "$WORK/$name.iyi"
+  if ! "$IYI" build -o "$WORK/$name" "$WORK/$name.iyi" > "$WORK/$name.build" 2>&1; then
+    echo "  $label: the program did not build"
+    sed -n '1,8p' "$WORK/$name.build"
     status=1
     return
   fi
-  if ! IYI_PATH="$WORK/$dir:$REPO/src" "$IYI" build \
-       -o "$WORK/$dir/program" "$REPO/bench/std_json_exercise.iyi" \
-       >"$WORK/$dir/build.log" 2>&1; then
-    echo "  $label: the patched json library did not build"
-    sed -n '1,12p' "$WORK/$dir/build.log"
+  "$WORK/$name" > "$WORK/$name.out" 2>&1
+  local code=$?
+  if [ "$code" -eq 0 ]; then
+    echo "  $label: it answered instead of refusing"
     status=1
     return
   fi
-  "$WORK/$dir/program" >"$WORK/$dir/out" 2>&1
-  local exit_code=$?
-  if [ "$exit_code" -eq 0 ]; then
-    echo "  $label: the exercise still passed, so it does not test this"
+  if ! grep -q "$phrase" "$WORK/$name.out"; then
+    echo "  $label: refused, but not with '$phrase'"
+    tail -2 "$WORK/$name.out"
     status=1
     return
   fi
-  if ! grep -q "$phrase" "$WORK/$dir/out"; then
-    echo "  $label: failed, but not at expected check (expected '$phrase')"
-    sed -n '$p' "$WORK/$dir/out"
-    status=1
-    return
-  fi
-  printf '  %s: exits %s at "%s"\n' "$label" "$exit_code" \
-    "$(grep -m1 "$phrase" "$WORK/$dir/out" | sed 's/^iyi: panic: //')"
+  printf '  %s: exits %s at "%s"\n' "$label" "$code" \
+    "$(grep -m1 -o "$phrase.*" "$WORK/$name.out")"
 }
-
-# 1. Number parsing broken (beyond Int64 fallback broken)
-prove_fails "huge number fallback broken" no_huge "num: huge beyond Int64 is float" \
-  's/raw_num\.to_f/0.0/'
-
-# 2. Surrogate pair decoding broken
-prove_fails "surrogate pair decoding broken" no_surrogate "str: surrogate pair emoji" \
-  's/codepoint = 0x10000 + ((hex1 - 0xD800) << 10) + (hex2 - 0xDC00)/codepoint = 63/'
-
-# 3. Negative zero detection broken
-prove_fails "negative zero broken" no_neg_zero "num: negative zero sign bit" \
-  's/raw_num == "-0"/false/'
-
-# 4. Dynamic traversal as_i broken
-prove_fails "as_i conversion broken" no_as_i "num: i32 value" \
-  's/r\.to_i32/0/'
-
-# 5. Builder compact output broken (inserts wrong separator)
-prove_fails "builder compact output broken" no_compact "builder: compact output" \
-  's/@buffer\.append(58_u8)/@buffer.append(61_u8)/'
-
-# 6. Streaming pull parser broken (read_int returns 0)
-prove_fails "pull parser read_int broken" no_pull_int "pull: v_val" \
-  's/val = @int_value/val = 0_i64/'
+refuses "one past UInt64 max" u64_over "integer 18446744073709551616 out of UInt64 range" \
+  'puts JSON.from_json("18446744073709551616", UInt64)'
+refuses "a negative integer past Int64 into UInt64" u64_neg_big "integer -9223372036854775809 out of UInt64 range" \
+  'puts JSON.from_json("-9223372036854775809", UInt64)'
+refuses "a negative integer into UInt64" u64_neg "integer -1 out of UInt64 range" \
+  'puts JSON.from_json("-1", UInt64)'
+refuses "a fraction into UInt64" u64_frac "expected int, got Float at line 1, column 1" \
+  'puts JSON.from_json("1.5", UInt64)'
+refuses "an exponent into UInt64" u64_exp "expected int, got Float at line 1, column 1" \
+  'puts JSON.from_json("1e3", UInt64)'
+refuses "a repeated key in read_object" pull_dup "duplicate key 'a' at line 1, column 8" \
+  'p = PullParser.new("{\"a\":1,\"a\":2}"); p.read_object { |k| p.skip }; puts p.kind'
+refuses "a repeated key past the thirty-second" wide_dup "duplicate key 'k3' at line 1, column 342" \
+  'p = PullParser.new("{" + (0...40).map { |i| "\"k#{i}\":#{i}" }.join(",") + ",\"k3\":0}"); p.read_object { |k| p.read_int }'
+refuses "a repeated key in on_key" onkey_dup "duplicate key 'a' at line 1, column 8" \
+  'p = PullParser.new("{\"a\":1,\"a\":2}"); p.on_key("b") { p.skip }; puts p.kind'
+refuses "a repeated key skipped over" skip_dup "duplicate key 'a' at line 1, column 10" \
+  'p = PullParser.new("[{\"a\":{},\"a\":2}]"); p.skip; puts p.kind'
+refuses "a repeated key into a Hash" hash_dup "duplicate key 'a' at line 1, column 8" \
+  'puts JSON.from_json("{\"a\":1,\"a\":2}", Hash(String, Int32)).size'
+refuses "to_s with an array still open" open_array "to_s with an array still open" \
+  'b = Builder.new; b.start_array; b.number(1); puts b.to_s'
+refuses "to_s with an object still open" open_object "to_s with an object still open" \
+  'b = Builder.new; b.start_object; b.field("k"); puts b.to_s'
+refuses "to_s with no value written" no_value "to_s with no value written" \
+  'puts Builder.new.to_s'
+refuses "a build that wrote nothing" build_empty "build wrote no value" \
+  'puts JSON.build { |b| }'
+refuses "a build that left an array open" build_open "to_s with an array still open" \
+  'puts JSON.build { |b| b.start_array }'
+refuses "a float into Int32 | String" union_float "expected (Int32 | String), got Float at line 1, column 1" \
+  'puts JSON.from_json("1.5", Int32 | String)'
+refuses "an integer past Int32 into Int32 | String" union_range "integer 5000000000 out of (Int32 | String) range at line 1, column 1" \
+  'puts JSON.from_json("5000000000", Int32 | String)'
 
 echo
-echo "== dedicated boundary failure probes (invalid JSONTestSuite shapes)"
-
-prove_panic() {
-  local label="$1" code="$2" expected_phrase="$3"
-  local probe_file="$WORK/probe_${label}.iyi"
-  local bin_file="$WORK/probe_${label}"
-
-  cat <<EOF > "$probe_file"
-module bench/probe_${label}
-
-import std/json
-
-$code
-EOF
-
-  if ! IYI_PATH="$REPO/src" "$IYI" build -o "$bin_file" "$probe_file" > "$WORK/${label}.build.log" 2>&1; then
-    echo "  probe $label: build failed unexpectedly"
-    sed -n '1,12p' "$WORK/${label}.build.log"
+echo "== what derive serializable refuses when the type is compiled, by name"
+compile_refuses() { # compile_refuses <label> <name> <phrase> <fields>
+  local label="$1" name="$2" phrase="$3" fields="$4"
+  printf 'module main\n\nimport std/json::{JSON, serializable}\n\nstruct Typed\n%s\n  derive serializable\nend\n\nputs Typed.from_json(%%({"a": 1, "b": 2})).to_json\n' \
+    "$fields" > "$WORK/$name.iyi"
+  if "$IYI" build -o "$WORK/$name" "$WORK/$name.iyi" > "$WORK/$name.build" 2>&1; then
+    echo "  $label: it built"
     status=1
-    return
-  fi
-
-  "$bin_file" > "$WORK/${label}.out" 2>&1
-  local exit_code=$?
-
-  if [ "$exit_code" -ne 1 ]; then
-    echo "  probe $label: succeeded unexpectedly (should have panicked with exit 1, got $exit_code)"
+  elif ! grep -q "$phrase" "$WORK/$name.build"; then
+    echo "  $label: refused, but not with '$phrase'"
+    grep -m2 'Error' "$WORK/$name.build"
     status=1
-    return
+  else
+    echo "  $label: $(grep -m1 -o "$phrase.*" "$WORK/$name.build")"
   fi
-
-  if ! grep -q "$expected_phrase" "$WORK/${label}.out"; then
-    echo "  probe $label: failed but with wrong message (expected '$expected_phrase'):"
-    sed -n '1,5p' "$WORK/${label}.out"
-    status=1
-    return
-  fi
-
-  echo "  probe $label: panicked as expected ($expected_phrase)"
 }
+compile_refuses "an option JSON::Field does not have" unknown_option "a: name is not an option" \
+  '  @[JSON::Field(name: "x")]
+  getter a : Int32'
+compile_refuses "a key that is not a string" number_key "a: key: is a string, not 5" \
+  '  @[JSON::Field(key: 5)]
+  getter a : Int32'
+compile_refuses "two fields under one key" one_key "two fields from the key \"b\"" \
+  '  @[JSON::Field(key: "b")]
+  getter a : Int32
+  getter b : Int32'
+compile_refuses "a field never read with neither a default nor nil" unread "a: a field that is not read needs a default, or a type that admits nil" \
+  '  @[JSON::Field(ignore: true)]
+  getter a : Int32'
+compile_refuses "a union whose array member would be a guess" two_arrays "JSON cannot read (Array(Int32) | Array(String)): which of Array(Int32) and Array(String) a value is read into would be a guess" \
+  '  getter a : Array(Int32) | Array(String)'
+echo
+echo "== proving the checks can fail when a repeated key is accepted"
+if [ -z "$PY" ]; then
+  echo "  skipped: no working python3, so the broken copy could not be made"
+else
+  mkdir -p "$WORK/patched_dup/std"
+  "$PY" - <<PY
+src = open("$REPO/src/std/json.iyi").read()
+old = 'return fail("duplicate key \\'#{key}\\'")'
+new = 'return fail("duplicate key \\'#{key}\\'") if false'
+if old not in src:
+    raise SystemExit("patch site missing")
+open("$WORK/patched_dup/std/json.iyi", "w").write(src.replace(old, new, 1))
+PY
+  if [ $? -ne 0 ]; then
+    echo "  the patch did not apply"
+    status=1
+  elif IYI_PATH="$WORK/patched_dup${PSEP}$REPO/src${PSEP}$REPO/samples/iyi" "$IYI" run "$REPO/bench/std_json_exercise.iyi" >"$WORK/dup.out" 2>&1; then
+    echo "  the exercise PASSED with duplicate keys accepted"
+    status=1
+  elif ! grep -aq "duplicate key" "$WORK/dup.out"; then
+    echo "  failed, but not at the duplicate-key check:"
+    grep -am1 panic "$WORK/dup.out" || sed -n '1,8p' "$WORK/dup.out"
+    status=1
+  else
+    echo "  a repeated object key is caught"
+  fi
+fi
 
-prove_panic "trailing_comma_array" \
-  'JSON.parse("[1, 2,]")' \
-  "trailing comma in array at line 1, column 6"
+echo
+echo "== proving the pull parser's own check is what refuses a repeated key"
+if [ -z "$PY" ]; then
+  echo "  skipped: no working python3, so the broken copy could not be made"
+else
+  mkdir -p "$WORK/patched_pull/std"
+  "$PY" - <<PY
+src = open("$REPO/src/std/json.iyi").read()
+for old in ["parse_error(\\"duplicate key '#{candidate}'\\") if seen.has_key?(candidate)",
+            "parse_error(\\"duplicate key '#{candidate}'\\") if @keys[i] == candidate"]:
+    if src.count(old) != 1:
+        raise SystemExit("patch site missing: " + old)
+    src = src.replace(old, "nil", 1)
+open("$WORK/patched_pull/std/json.iyi", "w").write(src)
+PY
+  if [ $? -ne 0 ]; then
+    echo "  the patch did not apply"
+    status=1
+  elif ! IYI_PATH="$WORK/patched_pull${PSEP}$REPO/src${PSEP}$REPO/samples/iyi" "$IYI" run "$WORK/pull_dup.iyi" >"$WORK/pull_dup.patched.out" 2>&1; then
+    echo "  read_object still refused the repeated key with its check removed:"
+    grep -m1 panic "$WORK/pull_dup.patched.out" || sed -n '1,4p' "$WORK/pull_dup.patched.out"
+    status=1
+  else
+    echo "  with the check removed read_object yields the repeated key, so the check is what refuses it"
+  fi
+fi
 
-prove_panic "trailing_comma_object" \
-  'JSON.parse("{\"a\": 1,}")' \
-  "trailing comma in object at line 1, column 8"
-
-prove_panic "unterminated_string" \
-  'JSON.parse("\"hello")' \
-  "unterminated string at line 1, column 1"
-
-prove_panic "bare_identifier_truefoo" \
-  'JSON.parse("truefoo")' \
-  "bare identifier 'foo' at line 1, column 1"
-
-prove_panic "bare_identifier_undefined" \
-  'JSON.parse("undefined")' \
-  "bare identifier 'undefined' at line 1, column 1"
-
-prove_panic "duplicate_key" \
-  'JSON.parse("{\"k\": 1, \"k\": 2}")' \
-  "duplicate key 'k' at line 1, column 10"
-
-prove_panic "lone_high_surrogate" \
-  'JSON.parse("[\"\\ud83d \"]")' \
-  "lone high surrogate"
-
-prove_panic "lone_low_surrogate" \
-  'JSON.parse("[\"\\ude00\"]")' \
-  "lone low surrogate"
-
-prove_panic "invalid_escape" \
-  'JSON.parse("[\"\\a\"]")' \
-  "invalid escape sequence" 
-
-prove_panic "leading_zero_number" \
-  'JSON.parse("012")' \
-  "leading zero not allowed in number at line 1, column 2"
-
-prove_panic "leading_plus" \
-  'JSON.parse("+42")' \
-  "unexpected character '+' at line 1, column 1"
-
-prove_panic "trailing_decimal" \
-  'JSON.parse("42.")' \
-  "expected at least one digit after decimal point at line 1, column 1"
-
-prove_panic "lone_minus" \
-  'JSON.parse("-")' \
-  "expected digit after minus sign in number at line 1, column 1"
-
-prove_panic "depth_limit" \
-  'p = JSON::Parser.new("[[[[[[1]]]]]]"); p.max_nesting = 4; p.parse' \
-  "nesting depth of 5 exceeds maximum depth 4 at line 1, column 5"
-
-prove_panic "extra_token_root" \
-  'JSON.parse("123 456")' \
-  "unexpected token after JSON root value at line 1, column 5"
-
-prove_panic "empty_input" \
-  'JSON.parse("   ")' \
-  "empty JSON input at line 1, column 1"
+echo
+echo "== proving the checks can fail when the reader's shape is broken"
+broken() { # broken <label> <phrase> <old> <new>
+  if [ -z "$PY" ]; then
+    echo "  $1: skipped, no working python3 to make the broken copy with"
+    return
+  fi
+  rm -rf "$WORK/broken"
+  mkdir -p "$WORK/broken/std"
+  if ! OLD="$3" NEW="$4" "$PY" - <<PY
+import os
+src = open("$REPO/src/std/json.iyi").read()
+if src.count(os.environ["OLD"]) < 1:
+    raise SystemExit("patch site missing")
+open("$WORK/broken/std/json.iyi", "w").write(src.replace(os.environ["OLD"], os.environ["NEW"], 1))
+PY
+  then
+    echo "  $1: the patch did not apply"
+    status=1
+  elif IYI_PATH="$WORK/broken${PSEP}$REPO/src${PSEP}$REPO/samples/iyi" "$IYI" run "$REPO/bench/std_json_exercise.iyi" >"$WORK/broken.out" 2>&1; then
+    echo "  $1: the exercise PASSED on a broken module"
+    status=1
+  elif ! grep -aq "$2" "$WORK/broken.out"; then
+    echo "  $1: failed, but not at the check:"
+    grep -am1 panic "$WORK/broken.out" || sed -n '1,4p' "$WORK/broken.out"
+    status=1
+  else
+    echo "  $1: caught"
+  fi
+}
+broken "a hash for every object's keys" "walking an object allocates" \
+  'seen = nil.as(Hash(String, Bool)?)' 'seen = {} of String => Bool'
+broken "a substring for every key" "walking an object allocates" \
+  'return @input[start, size] if size > SHORT_MAX || size == 0' 'return @input[start, size]'
+broken "a substring for every number" "walking an object allocates" \
+  'if digits <= 15 && exponent_digits <= 3' 'if false'
+broken "a number scaled by the wrong power" "ASSERTION FAILED" \
+  'f = mantissa.to_f64 / POW10[0 - power]' 'f = mantissa.to_f64 / POW10[1 - power]'
+broken "a derive that reads an unknown key's first token only" "ASSERTION FAILED\|expected\|unexpected" \
+  '          else
+            pull.skip
+          end' '          else
+            pull.read_next
+          end'
+broken "a derive that refuses a missing key without its name" "a missing field refused by name" \
+  'has no key #{ \{{ json_key_{{ field[:name][1..].id }} }}.inspect }' 'is missing a key'
+broken "a derive that reads a null into the other type" "ASSERTION FAILED\|expected" \
+  'pull.read_null? ? nil : ::Std::Json::JSON.read_value' '::Std::Json::JSON.read_value'
+broken "a repeat past the scanned keys let through" "a repeat past the scanned keys" \
+  "parse_error(\"duplicate key '#{candidate}'\") if seen.has_key?(candidate)" 'nil'
+broken "bytes that are not UTF-8 written through by to_json" "to_json writes bytes that are not a code point as U+FFFD" \
+  'elsif b >= 128_u8
+        # Bytes that are not a code point' 'elsif @ascii_only && b >= 128_u8
+        # Bytes that are not a code point'
+broken "a null refused for a field with a default" "a null for a field with a default its type does not admit keeps the default" \
+  'pull.read_null? ? nil : ::Std::Json::JSON.read_value(pull, typeof({{ field[:name].id }}))' '::Std::Json::JSON.read_value(pull, typeof({{ field[:name].id }}))'
+# JSON::Field's options and the enums, each broken where it is applied.
+broken "a JSON::Field key ignored when written" "renamed, ignored, emit_null: false, converted and enums written" \
+  "          \{% json_key = json_ann && json_ann[:key] ? json_ann[:key] : {{ field[:name][1..] }} %}" \
+  "          \{% json_key = {{ field[:name][1..] }} %}"
+broken "emit_null: false ignored" "renamed, ignored, emit_null: false, converted and enums written" \
+  "= json_ann && json_ann[:emit_null] == false %}" "= false %}"
+broken "a converter passed over when written" "renamed, ignored, emit_null: false, converted and enums written" \
+  '\{{ json_converter_{{ field[:name][1..].id }} }}.to_json({{ field[:name].id }}, json)' '::Std::Json::JSON.write_value({{ field[:name].id }}, json)'
+broken "an ignored field read anyway" "an ignored field keeps its default" \
+  '        \{% json_read = !(json_ann && (json_ann[:ignore] || json_ann[:ignore_deserialize])) %}' '        \{% json_read = !(json_ann && json_ann[:ignore_deserialize]) %}'
+broken "an enum written by its own name" "renamed, ignored, emit_null: false, converted and enums written" \
+  'if member = T.from_value?(val.value)
+        b.string(underscore(member.to_s))' 'if member = T.from_value?(val.value)
+        b.string(member.to_s)'
+broken "an enum name matched as written" "is no Bench::StdJsonExercise::Shade member\|ASSERTION FAILED" \
+  '    wanted = enum_key(text)' '    wanted = text'
+# A union: written as one type, which is issue #135 back; a member's branch
+# dropped where it is written and where it is read. The written member is
+# an enum because an `Int32` member never reaches `Object#__json_write`:
+# its own `write_value` overload takes it when the program runs, and a copy
+# that dropped `Int32` there passed.
+broken "a union written as one type, as before #135" "undefined method 'to_json' for Int32" \
+  'val.__json_write(b)' 'val.to_json(b)'
+broken "a union written without its enum members" "integers, a ToJSON type, a derived type, an array, a hash and an Any as members" \
+  '::Std::Json::JSON.write_value(self, json)' '::Std::Json::JSON.write_value(self, json) unless self.is_a?(::Enum)'
+broken "a union read without its Int32 member" "an integer into the first integer member that holds it" \
+  'return read_value(pull, ::Int32) if int >= -2147483648_i64 && int <= 2147483647_i64' 'nil'
 
 echo
 if [ "$status" -eq 0 ]; then
-  echo "Native JSON standard library: numbers, strings, dynamic traversal, builder, streaming"
-  echo "pull parser, JSONTestSuite acceptance and rejections all pass plain and release, and"
-  echo "each check is proven to fail when its mechanism is broken."
+  echo "the std/json exercise holds"
 else
-  echo "Native JSON standard library: something above failed."
+  echo "the std/json exercise did not hold"
 fi
-exit "$status"
+exit $status

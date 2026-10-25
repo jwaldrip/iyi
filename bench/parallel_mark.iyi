@@ -13,7 +13,7 @@
 # bench/parallel_mark.sh drives it and proves the sharing check fails when
 # the marker stops donating its stack's bottom.
 
-{% if !flag?(:gc_none) && !flag?(:gc_boehm) && ((flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64))) %}
+{% if !flag?(:gc_none) && !flag?(:gc_boehm) && ((flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64))) %}
   def fail(message : String) : Nil
     print "FAIL: #{message}\n"
     __iyi_exit(1)
@@ -76,38 +76,120 @@
   alone = collect_five(tree, expected)
   fail("helpers blackened #{alone[1]} objects with none asked") if alone[1] != 0_i64
 
+  # A mark's round of permits is closed by the thread that waits for its
+  # takers, and a helper that wakes after that finds none: one that took
+  # a permit after the wait had passed drained through the second stop
+  # of a mark beside the program, took the batch the stop had flushed
+  # from the mutators, and what that batch reached was swept live. Asked
+  # here before any helper exists, so no helper takes a permit meant for
+  # this check.
+  IyiMark.open_mark_permits(3_u64)
+  first = IyiMark.take_mark_permit
+  takers = IyiMark.close_mark_permits
+  late = IyiMark.take_mark_permit
+  IyiMark.open_mark_permits(0_u64)
+  fail("permits: the first of three permits was not slot 0 (#{first.to_i64})") if first != 0_u64
+  fail("permits: a closed round counted #{takers.to_i64} takers for the one permit taken") if takers != 1_u64
+  fail("permits: a helper waking after the round closed took permit #{late.to_i64}") if late != IyiMark::NO_PERMIT
+  puts "permits: a round of three, one taken, closed at one taker, and no permit after the close"
+
   IyiMark.workers = 15_u64
   puts "phase: one mark with helpers"
   IyiMark.collect
   puts "phase: five marks with helpers"
   helped = collect_five(tree, expected)
-  fail("the helpers blackened nothing: the mark was one thread and the rest watched") if helped[1] == 0_i64
+  # One core runs one thread at a time, and the marker finishes its own
+  # stack before a helper is scheduled to ask for a share: nothing to
+  # blacken is the right answer there, not a marker that never shares.
+  # The script says how many cores it gave the program.
+  one_core = Program.env("PARALLEL_MARK_CORES") == "1"
+  fail("the helpers blackened nothing: the mark was one thread and the rest watched") if helped[1] == 0_i64 && !one_core
 
   puts "mark: #{alone[0] // 1000_i64} us alone, #{helped[0] // 1000_i64} us with helpers, which blackened #{helped[1]} nodes across the five marks"
 
-  # The pool's memory is the most batches ever in it at once, not every
-  # batch a mark published: a batch taken is a batch's words free again.
-  # Eleven marks of a million nodes with fifteen helpers published tens
-  # of thousands of batches; the pool holds a handful of 64 KB pieces.
-  pool = IyiMark.pool_bytes
-  fail("pool: #{pool.to_i64} bytes mapped for batches after the marks, so taken batches are not being recycled") if pool > 1048576_u64
-  puts "pool: #{pool.to_i64} bytes mapped for the marks' batches"
-
-  # A worker's stack starts small and grows: a mark alone of one object
-  # holding 300,000 pointers pushes them all, and the stack of 8,192
-  # entries it began with doubles until they fit.
-  IyiMark.workers = 0_u64
   wide = Array(Node?).new
   index = 0
   while index < 300000
     wide << Node.new(nil, nil, index.to_i64)
     index = index + 1
   end
+
+  # The pool's memory is the most batches ever in it at once, not every
+  # batch a mark published: a batch taken is a batch's words free again.
+  # The tree's marks publish only by donation - when the pool is empty and
+  # a helper is idle - which is a number of batches that depends on the
+  # cores the machine has, and on a three-core runner stayed inside the
+  # first piece with the recycling removed, so the proof below it did not
+  # fire. The wide object publishes by spilling: a stack past SPILL_AT
+  # gives a batch to the pool on every push after it, 300,000 pointers
+  # are thousands of batches on any machine, and thousands of batches
+  # never recycled are megabytes.
+  puts "phase: one mark of the wide object with helpers"
+  IyiMark.collect
+  fail("the wide object lost a node under the shared mark") if wide.size != 300000 || wide[299999].as(Node).sum != 299999_i64
+  # Recycling is asked of the pool directly: a batch handed out again
+  # off the free list. The helped tree marks took and freed batches -
+  # the helpers blackened nodes, above - and the wide mark published
+  # thousands after them, so a pool that recycles has reused some, and
+  # one that never frees a batch has reused none, on any machine. The
+  # bytes mapped used to be the proof: the copy that never recycled
+  # mapped eleven pieces and more everywhere measured, until a loaded
+  # three-core darwin runner mapped 3.4 MB of it under the 4 MB bound
+  # and the proof did not fire.
+  pool = IyiMark.pool_bytes
+  reused = IyiMark.pool_reused
+  # A batch is taken by a helper, and one core never schedules one while
+  # the marker works: nothing taken is nothing to hand out again.
+  fail("pool: no batch was handed out twice in eleven marks, so taken batches are not being recycled") if reused == 0_u64 && !one_core
+  # Four megabytes: the wide mark's spills outrun fifteen helpers for a
+  # moment and the pool's high-water mark is a handful of pieces - 1.5 MB
+  # on a three-core darwin runner. What the pool holds, bounded.
+  fail("pool: #{pool.to_i64} bytes mapped for batches after the marks, past the bound a recycling pool keeps") if pool > 4194304_u64
+  puts "pool: #{pool.to_i64} bytes mapped for the marks' batches, #{reused.to_i64} batches reused"
+
+  # A worker's stack starts small and grows: a mark alone of one object
+  # holding 300,000 pointers pushes them all, and the stack of 8,192
+  # entries it began with doubles until they fit.
+  IyiMark.workers = 0_u64
   grown_before = IyiMark.stacks_grown
   IyiMark.collect
-  fail("stack: a 300,000-wide object was marked alone and the stack never grew past its #{IyiMark::STACK_START.to_i64} entries") if IyiMark.stacks_grown == grown_before
+  # On one core the wide object's mark with helpers was the marker's alone
+  # too - nobody took a spill - so its stack had already grown to hold it,
+  # and the growth to look for is the run's.
+  # The wide object is read before the growth is: the other order let a
+  # compiler that saw `stacks_grown` never move - the failure proof's copy,
+  # whose every growth dies first - fail the check unconditionally and
+  # drop `wide` before the mark, which then had no wide object to push,
+  # grew nothing, and never reached the growth the proof is for. darwin's
+  # proof missed that way in two runs of five.
   fail("stack: the wide object lost a node under the mark") if wide.size != 300000 || wide[299999].as(Node).sum != 299999_i64
-  puts "stack: the mark of a 300,000-wide object grew a worker's stack #{(IyiMark.stacks_grown - grown_before).to_i64} times from #{IyiMark::STACK_START.to_i64} entries"
+  grew = one_core ? IyiMark.stacks_grown > 0_u64 : IyiMark.stacks_grown != grown_before
+  fail("stack: a 300,000-wide object was marked alone and the stack never grew past its #{IyiMark::STACK_START.to_i64} entries") unless grew
+  grown = one_core ? IyiMark.stacks_grown : IyiMark.stacks_grown - grown_before
+  puts "stack: the mark of a 300,000-wide object grew a worker's stack #{grown.to_i64} times from #{IyiMark::STACK_START.to_i64} entries"
+
+  # A helper with nothing to do spins for fifty microseconds by the clock
+  # and then parks, whatever a pause hint costs here: counted in hints, it
+  # was 400 us on a machine whose hint is 20 ns, and a program collecting
+  # every half millisecond had helpers that never parked. The shortest of
+  # ten spins on a word nobody turns, so a spin the scheduler interrupted
+  # does not count; a quarter millisecond is five times the bound.
+  {% if flag?(:linux) || flag?(:win32) %}
+    cell = Pointer(UInt64).malloc(1_u64)
+    word = Pointer(Atomic(UInt64)).new(cell.address)
+    shortest = 0_u64
+    attempt = 0
+    while attempt < 10
+      started = IyiMark.now_ns
+      IyiMark.spin_for_generation(word, 0_u64)
+      took = IyiMark.now_ns - started
+      shortest = took if attempt == 0 || took < shortest
+      attempt = attempt + 1
+    end
+    fail("park: a helper with no work spun #{(shortest // 1000_u64).to_i64} us before it parked, past five times the #{(IyiMark::SPIN_BEFORE_PARK_NS // 1000_u64).to_i64} us it should") if shortest > 5_u64 * IyiMark::SPIN_BEFORE_PARK_NS
+    fail("park: a helper with no work spun #{(shortest // 1000_u64).to_i64} us, short of the #{(IyiMark::SPIN_BEFORE_PARK_NS // 1000_u64).to_i64} us it should") if shortest < IyiMark::SPIN_BEFORE_PARK_NS
+    puts "park: a helper with no work spins #{(shortest // 1000_u64).to_i64} us before it parks, for #{(IyiMark::SPIN_BEFORE_PARK_NS // 1000_u64).to_i64} asked"
+  {% end %}
   puts "parallel mark: every property held"
 {% else %}
   puts "parallel mark: needs the collector and a thread target; nothing to exercise here"

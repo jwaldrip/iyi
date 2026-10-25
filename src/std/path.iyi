@@ -1,12 +1,48 @@
-# Path: hierarchical filesystem path manipulation according to POSIX and Windows rules.
+# File system paths, read lexically: nothing here touches the file
+# system. A `Path` is a name and a kind, POSIX (`/` separates) or
+# Windows (`\` and `/` both separate); `Path.new` takes the kind the
+# program was built for, `Path.posix` and `Path.windows` name one.
 #
-# Provides parsing, lexical inspection, normalization, extension modification,
-# joining, relative path resolution, and comparison without external C libraries.
+# The anchor of a path is its drive and root: `/` on POSIX; on Windows a
+# drive letter (`C:`, `C:\`), a UNC share (`\\server\share`, `\\server\share\`)
+# or a bare root (`\`). A Windows path is absolute only with both a drive
+# and a root, so `C:foo` (drive-relative) and `\foo` (rooted) are not.
+# DOS device paths (`\\.\`, `\\?\`) are not recognised: they read as UNC
+# shares named `.` and `?`, except `\\?\UNC\server\share`, the long form
+# of `\\server\share`, whose drive runs through the share as Python's
+# reads it. Windows names compare case-insensitively: in
+# every script on Windows, as its file systems fold them, and in ASCII
+# letters alone where the program was built for another platform.
+#
+# Lexical operations: `basename`, `dirname`, `extension`, `stem`,
+# `parent`, `parents`, `parts`, `join` and `/`, `normalize` (`.` and `..`
+# folded, repeated separators collapsed, a trailing one dropped, a
+# Windows anchor spelled with `\`: `C:/a` is `C:\a`),
+# `relative_to?` and `relative_to` (nil, or a panic, when the paths have
+# different anchors or the base climbs through `..` — where that leads
+# cannot be known without the file system), `sibling`, `to_posix` and
+# `to_windows` (the kind changes and, for `to_posix`, `\` becomes `/`;
+# `to_windows` keeps the name, since Windows reads `/` as a separator).
+#
+# `expand(base, home:)` makes the path absolute under *base*, which is
+# `Program.env("PWD")` when not given, and the process's own directory
+# when no shell set that; on Windows it is the process's own directory
+# always, since nothing there keeps `PWD` true. With neither, `expand`
+# panics rather than guess. `home: true` reads a leading `~` from
+# `HOME`, or from `USERPROFILE` on Windows, which is where that platform
+# keeps it.
 
 module std/path
 
-import std/traits
-using std/traits::{Cmp}
+import std/traits::{Comparable}
+
+{% if flag?(:win32) %}
+  lib LibKernel32
+    fun LCMapStringEx(locale : UInt16*, flags : Int32, source : UInt16*, source_length : Int32,
+                      destination : UInt16*, destination_length : Int32, version : Void*,
+                      reserved : Void*, sort_handle : Int64) : Int32
+  end
+{% end %}
 
 pub struct Path
   pub enum Kind : UInt8
@@ -27,13 +63,6 @@ pub struct Path
 
     def windows? : Bool
       value == 1_u8
-    end
-  end
-
-  pub class Error < Exception
-    getter message : String
-
-    def initialize(@message : String)
     end
   end
 
@@ -95,223 +124,235 @@ pub struct Path
     io.write(@name)
   end
 
+  # A path of the kind this platform does not use names its constructor,
+  # as the other library writes it: `Path.posix("/usr/bin")` on Windows
+  # inspected as `Path["/usr/bin"]`, a Windows path, which `==` tells
+  # apart from it.
+  def inspect : String
+    return "Path[" + @name.inspect + "]" if native?
+    (posix? ? "Path.posix(" : "Path.windows(") + @name.inspect + ")"
+  end
+
   def inspect(io : IO) : Nil
-    io.write("Path[\"")
-    io.write(@name)
-    io.write("\"]")
+    io.write(inspect)
   end
 
   def to_posix : Path
     return self if posix?
-    # Convert backslashes to slashes
-    buf = Pointer(UInt8).malloc(@name.bytesize.to_u64)
-    i = 0
-    while i < @name.bytesize
-      b = @name.to_unsafe[i]
-      buf[i] = (b == 92_u8) ? 47_u8 : b
-      i = i + 1
-    end
-    str = String.new(@name.bytesize) do |target|
-      target.copy_from(buf, @name.bytesize)
+    len = @name.bytesize
+    ptr = @name.to_unsafe
+    str = String.new(len) do |buf|
+      i = 0
+      while i < len
+        b = ptr[i]
+        buf[i] = b == 92_u8 ? 47_u8 : b
+        i = i + 1
+      end
     end
     Path.new(str, Kind::POSIX)
   end
 
   def to_windows : Path
     return self if windows?
-    # Convert slashes to backslashes
-    buf = Pointer(UInt8).malloc(@name.bytesize.to_u64)
-    i = 0
-    while i < @name.bytesize
-      b = @name.to_unsafe[i]
-      buf[i] = (b == 47_u8) ? 92_u8 : b
-      i = i + 1
-    end
-    str = String.new(@name.bytesize) do |target|
-      target.copy_from(buf, @name.bytesize)
-    end
-    Path.new(str, Kind::WINDOWS)
+    Path.new(@name, Kind::WINDOWS)
   end
 
   def to_native : Path
-    if Kind.native.windows?
-      to_windows
-    else
-      to_posix
-    end
+    Kind.native.windows? ? to_windows : to_posix
   end
 
-  private def is_sep(b : UInt8) : Bool
-    if @kind.windows?
-      b == 47_u8 || b == 92_u8
-    else
-      b == 47_u8
-    end
+  def to_kind(kind : Kind) : Path
+    kind.windows? ? to_windows : to_posix
   end
 
-  def root : String?
-    return nil if @name.empty?
-    b0 = @name.to_unsafe[0]
-    if posix?
-      if b0 == 47_u8
-        return "/"
-      else
-        return nil
-      end
-    end
+  private def separator : String
+    posix? ? "/" : "\\"
+  end
 
-    # Windows root / drive
+  private def sep?(b : UInt8) : Bool
+    b == 47_u8 || (windows? && b == 92_u8)
+  end
+
+  # Bytes of the drive and of the anchor (drive plus root); 0 where there
+  # is none. A root without a drive (`/`, `\foo`) is anchor 1, drive 0.
+  private def anchor_indices : Tuple(Int32, Int32)
     len = @name.bytesize
+    return {0, 0} if len == 0
     ptr = @name.to_unsafe
-    # Check drive: C: or C:\
-    if len >= 2 && ((b0 >= 65_u8 && b0 <= 90_u8) || (b0 >= 97_u8 && b0 <= 122_u8)) && ptr[1] == 58_u8
-      if len >= 3 && is_sep(ptr[2])
-        return String.new(3) { |t| t.copy_from(ptr, 3) }
-      else
-        return String.new(2) { |t| t.copy_from(ptr, 2) }
+    b0 = ptr[0]
+
+    unless windows?
+      return b0 == 47_u8 ? {0, 1} : {0, 0}
+    end
+
+    letter = (b0 >= 65_u8 && b0 <= 90_u8) || (b0 >= 97_u8 && b0 <= 122_u8)
+    if letter && len >= 2 && ptr[1] == 58_u8 # "C:"
+      return len >= 3 && sep?(ptr[2]) ? {2, 3} : {2, 2}
+    end
+
+    return {0, 0} unless sep?(b0)
+    if len >= 5 && sep?(ptr[1]) && !sep?(ptr[2])
+      # "\\server\share": a host run, a separator, a share run. After
+      # `\\?\UNC\` the host comes after the prefix: read as host `?` and
+      # share `UNC`, `\\?\UNC\srv\sh\x` had the drive `\\?\UNC`, and
+      # `\\?\UNC\srv\other\x` relative to `\\?\UNC\srv\sh` was `..\other\x`,
+      # across shares.
+      i = long_unc? ? 8 : 2
+      while i < len && !sep?(ptr[i])
+        i = i + 1
+      end
+      if i + 1 < len && !sep?(ptr[i + 1])
+        i = i + 1
+        while i < len && !sep?(ptr[i])
+          i = i + 1
+        end
+        share_end = i
+        while i < len && sep?(ptr[i])
+          i = i + 1
+        end
+        return {share_end, i}
       end
     end
-    if is_sep(b0)
-      return "\\"
-    end
-    nil
+    {0, 1}
   end
 
-  def anchor : String?
-    root
+  # `\\?\UNC\` at the start, `UNC` in any case and either separator, as
+  # Python's `splitroot` matches it.
+  private def long_unc? : Bool
+    ptr = @name.to_unsafe
+    return false unless @name.bytesize > 8 && ptr[2] == 63_u8 && sep?(ptr[3]) && sep?(ptr[7])
+    (ptr[4] | 32_u8) == 117_u8 && (ptr[5] | 32_u8) == 110_u8 && (ptr[6] | 32_u8) == 99_u8
   end
 
   def drive : String?
-    return nil unless windows?
-    len = @name.bytesize
-    return nil if len < 2
-    ptr = @name.to_unsafe
-    b0 = ptr[0]
-    if ((b0 >= 65_u8 && b0 <= 90_u8) || (b0 >= 97_u8 && b0 <= 122_u8)) && ptr[1] == 58_u8
-      String.new(2) { |t| t.copy_from(ptr, 2) }
-    else
-      nil
-    end
+    drive_end, _ = anchor_indices
+    drive_end > 0 ? @name[0, drive_end] : nil
   end
 
-  def root? : Bool
-    r = root
-    return false unless r
-    r == @name
+  def root : String?
+    drive_end, anchor_end = anchor_indices
+    anchor_end > drive_end ? @name[drive_end, anchor_end - drive_end] : nil
   end
 
+  def anchor : String?
+    _, anchor_end = anchor_indices
+    anchor_end > 0 ? @name[0, anchor_end] : nil
+  end
+
+  # A share is absolute without a separator after it: `\\server\share` is
+  # the share's root, as Windows and Python read it. It was relative, so
+  # after `Dir.cd` to a share every `expand` panicked "base is not
+  # absolute".
   def absolute? : Bool
-    return false if @name.empty?
-    if posix?
-      @name.to_unsafe[0] == 47_u8
-    else
-      d = drive
-      r = root
-      if d && r && r.bytesize >= 3
-        true
-      else
-        is_sep(@name.to_unsafe[0])
-      end
-    end
+    drive_end, anchor_end = anchor_indices
+    posix? ? anchor_end > 0 : (drive_end > 0 && (anchor_end > drive_end || share?))
+  end
+
+  # A `\\server\share` drive, where `C:` is the other kind.
+  private def share? : Bool
+    drive_end, _ = anchor_indices
+    drive_end > 0 && sep?(@name.to_unsafe[0])
+  end
+
+  # The anchor with the root a share has whether written or not.
+  protected def rooted_anchor : String
+    found = anchor || ""
+    share? && root.nil? ? found + separator : found
   end
 
   def relative? : Bool
     !absolute?
   end
 
-  def basename(suffix : String? = nil) : String
+  def ends_with_separator? : Bool
     len = @name.bytesize
-    return "" if len == 0
-    ptr = @name.to_unsafe
+    len > 0 && sep?(@name.to_unsafe[len - 1])
+  end
 
-    # Strip trailing separators
-    last = len - 1
-    while last > 0 && is_sep(ptr[last])
+  # The last byte that is not a trailing separator, plus one; the anchor
+  # keeps its own separator.
+  private def trimmed_end : Int32
+    _, anchor_end = anchor_indices
+    last = @name.bytesize
+    while last > anchor_end && sep?(@name.to_unsafe[last - 1])
       last = last - 1
     end
+    last
+  end
 
-    if last == 0 && is_sep(ptr[0])
-      return posix? ? "/" : "\\"
-    end
+  # The last component; the anchor, or the empty name, is its own. A
+  # *suffix* found at the end is left off.
+  def basename(suffix : String? = nil) : String
+    _, anchor_end = anchor_indices
+    last = trimmed_end
+    return @name[0, anchor_end] if last <= anchor_end
 
+    ptr = @name.to_unsafe
     first = last
-    while first > 0 && !is_sep(ptr[first - 1])
+    while first > anchor_end && !sep?(ptr[first - 1])
       first = first - 1
     end
 
-    base_len = last - first + 1
-    if suffix && !suffix.empty? && base_len >= suffix.bytesize
+    base_len = last - first
+    if suffix && !suffix.empty? && base_len > suffix.bytesize
       s_len = suffix.bytesize
       s_ptr = suffix.to_unsafe
-      match = true
       k = 0
-      while k < s_len
-        if ptr[first + base_len - s_len + k] != s_ptr[k]
-          match = false
-          break
-        end
+      while k < s_len && ptr[first + base_len - s_len + k] == s_ptr[k]
         k = k + 1
       end
-      if match
-        base_len = base_len - s_len
-      end
+      base_len = base_len - s_len if k == s_len
     end
 
-    String.new(base_len) do |target|
-      target.copy_from(ptr + first, base_len)
-    end
+    @name[first, base_len]
   end
 
+  # Everything before the last component: `"."` for a bare name, the
+  # anchor for a single component under it.
   def dirname : String
-    len = @name.bytesize
-    return "." if len == 0
+    return "." if @name.empty?
+    _, anchor_end = anchor_indices
+    last = trimmed_end
+    return @name[0, anchor_end] if last <= anchor_end
+
     ptr = @name.to_unsafe
-
-    # Strip trailing separators
-    last = len - 1
-    while last > 0 && is_sep(ptr[last])
+    while last > anchor_end && !sep?(ptr[last - 1])
       last = last - 1
     end
-
-    if last == 0 && is_sep(ptr[0])
-      return posix? ? "/" : "\\"
-    end
-
-    # Skip current filename
-    while last >= 0 && !is_sep(ptr[last])
+    while last > anchor_end && sep?(ptr[last - 1])
       last = last - 1
     end
-
-    if last < 0
-      return "."
-    end
-
-    # Strip trailing separators from dirname
-    while last > 0 && is_sep(ptr[last])
-      last = last - 1
-    end
-
-    if last == 0 && is_sep(ptr[0])
-      return posix? ? "/" : "\\"
-    end
-
-    String.new(last + 1) do |target|
-      target.copy_from(ptr, last + 1)
-    end
+    return "." if last == 0
+    @name[0, last]
   end
 
   def parent : Path
     Path.new(dirname, @kind)
   end
 
+  # Every ancestor, the outermost first: `"a/b/c"` has `"."`, `"a"`,
+  # `"a/b"`; `"/a/b"` has `"/"`, `"/a"`. Each is a `parent` of the one
+  # after it, so it keeps the spelling `parent` keeps: rebuilt from
+  # `parts` and joined with `separator`, `Path.windows("C:/a/b/c")` had
+  # `"C:/a\\b"` where its `parent` is `"C:/a/b"`.
   def parents : Array(Path)
     res = [] of Path
-    curr = self
-    while true
-      p = curr.parent
-      break if p == curr || (p.name == "." && curr.name == ".")
-      res << p
-      curr = p
+    return res if @name.empty?
+    child = self
+    up = parent
+    while up.to_s != child.to_s
+      res << up
+      child = up
+      up = up.parent
+    end
+    i = 0
+    j = res.size - 1
+    while i < j
+      outer = res[j]
+      res[j] = res[i]
+      res[i] = outer
+      i = i + 1
+      j = j - 1
     end
     res
   end
@@ -322,85 +363,47 @@ pub struct Path
     end
   end
 
+  # The last `.suffix` of the basename, with its dot; none for a name
+  # that starts with its only dot (`.bashrc`) or ends with one (`foo.`).
   def extension : String
+    # An anchor is no file name: the UNC share `\\srv\a.\` answered `.\`,
+    # a separator inside the extension, with a stem that did not add up.
+    _, anchor_end = anchor_indices
+    return "" if trimmed_end <= anchor_end
     base = basename
     len = base.bytesize
-    return "" if len == 0
     ptr = base.to_unsafe
-
-    # Find last '.'
-    last_dot = -1
     i = len - 1
-    while i > 0
-      if ptr[i] == 46_u8
-        last_dot = i
-        break
-      end
+    while i > 0 && ptr[i] != 46_u8
       i = i - 1
     end
-
-    if last_dot <= 0 || last_dot == len - 1
-      return ""
-    end
-
-    ext_len = len - last_dot
-    String.new(ext_len) do |target|
-      target.copy_from(ptr + last_dot, ext_len)
-    end
-  end
-
-  def extname : String
-    extension
+    return "" if i <= 0 || i == len - 1
+    base[i, len - i]
   end
 
   def stem : String
-    base = basename
-    ext = extension
-    if ext.empty?
-      base
-    else
-      rem_len = base.bytesize - ext.bytesize
-      String.new(rem_len) do |target|
-        target.copy_from(base.to_unsafe, rem_len)
-      end
-    end
+    basename(extension)
   end
 
+  # The anchor, if any, then each non-empty component.
   def parts : Array(String)
     res = [] of String
-    return res if @name.empty?
     len = @name.bytesize
+    return res if len == 0
     ptr = @name.to_unsafe
+    _, anchor_end = anchor_indices
+    res << @name[0, anchor_end] if anchor_end > 0
 
-    start_idx = 0
-    if is_sep(ptr[0])
-      res << (posix? ? "/" : "\\")
-      while start_idx < len && is_sep(ptr[start_idx])
-        start_idx = start_idx + 1
-      end
-    end
-
-    i = start_idx
-    seg_start = start_idx
-    while i <= len
-      if i == len
-        if i > seg_start
-          seg_len = i - seg_start
-          res << String.new(seg_len) { |t| t.copy_from(ptr + seg_start, seg_len) }
-        end
-        break
-      elsif is_sep(ptr[i])
-        if i > seg_start
-          seg_len = i - seg_start
-          res << String.new(seg_len) { |t| t.copy_from(ptr + seg_start, seg_len) }
-        end
-        while i < len && is_sep(ptr[i])
-          i = i + 1
-        end
-        seg_start = i
-      else
+    i = anchor_end
+    while i < len
+      while i < len && sep?(ptr[i])
         i = i + 1
       end
+      start = i
+      while i < len && !sep?(ptr[i])
+        i = i + 1
+      end
+      res << @name[start, i - start] if i > start
     end
     res
   end
@@ -411,23 +414,57 @@ pub struct Path
     end
   end
 
+  # The name spelled by the first *count* entries of a `parts` array.
+  private def build_name(list : Array(String), count : Int32) : String
+    _, anchor_end = anchor_indices
+    res = ""
+    i = 0
+    while i < count
+      if i == 0
+        res = list[0]
+      elsif i == 1 && anchor_end > 0 && (list[0].bytesize == 2 || sep?(list[0].to_unsafe[list[0].bytesize - 1]))
+        # under a root, or right after a bare drive letter (`C:a`)
+        res = res + list[1]
+      else
+        res = res + separator + list[i]
+      end
+      i = i + 1
+    end
+    res
+  end
+
+  # `self` with *part* under it; a *part* with an anchor of its own is
+  # the answer by itself, and an empty one changes nothing. A Windows
+  # anchor can be half of one, and then the other half is `self`'s, as
+  # ntpath joins and Windows reads the name: a root with no drive is on
+  # `self`'s drive, and a drive-relative *part* on `self`'s drive goes
+  # under `self`. Answered by itself, `C:\a` joined with `\b` was `\b`,
+  # a root on whatever drive is current, and with `C:b` it was `C:b`,
+  # where `expand` read both on `C:\a`.
   def join(part : String) : Path
     return self if part.empty?
     p = Path.new(part, @kind)
-    return p if p.absolute?
-
-    sep = posix? ? "/" : "\\"
-    if @name.empty? || @name == "."
-      return Path.new(part, @kind)
+    return p if @name.empty?
+    if p.anchor
+      own = drive
+      their = p.drive
+      return Path.new(own + part, @kind) if own && their.nil?
+      return p unless own && their && p.root.nil? && compare_names(own, their) == 0
+      part = part[their.bytesize, part.bytesize - their.bytesize]
+      return self if part.empty?
     end
 
-    last_b = @name.to_unsafe[@name.bytesize - 1]
-    joined = if is_sep(last_b)
-               @name + part
-             else
-               @name + sep + part
-             end
-    Path.new(joined, @kind)
+    # Nor after a bare drive: `C:` is the current directory on C:, and
+    # `C:` joined with `foo` is `C:foo`, the way `normalize` spells it;
+    # a separator there made it `C:\foo`, the drive's root.
+    # Only a bare drive, though: `foo:` is a name, and `foo:` joined with
+    # `bar` came out as `foo:bar`, one name where there were two.
+    drive_end, anchor_end = anchor_indices
+    if ends_with_separator? || (drive_end == 2 && anchor_end == 2 && @name.bytesize == 2)
+      Path.new(@name + part, @kind)
+    else
+      Path.new(@name + separator + part, @kind)
+    end
   end
 
   def join(part : Path) : Path
@@ -454,148 +491,191 @@ pub struct Path
     join(part)
   end
 
+  # `.` dropped, `..` folded into the component before it (kept at the
+  # front of a relative path, dropped under a root), separators collapsed.
   def normalize : Path
     return Path.new(".", @kind) if @name.empty?
-    orig_parts = parts
-    return Path.new(posix? ? "/" : "\\", @kind) if orig_parts.empty? && is_sep(@name.to_unsafe[0])
-
-    is_abs = absolute?
+    _, anchor_end = anchor_indices
+    rooted = root != nil
+    all = parts
     norm = [] of String
+    # The anchor in the kind's own spelling: Windows kept `C:/` and `/` as
+    # written, so `C:/a/b` normalized to `C:/a\b`, and was refused as
+    # relative to `C:\a` over nothing but the anchor's separator.
+    if anchor_end > 0
+      norm << (posix? ? "/" : backslashed(drive || "") + (rooted ? "\\" : ""))
+    end
 
-    orig_parts.each do |seg|
-      next if seg == "."
-      if seg == ".."
-        if !norm.empty? && norm.last != ".." && norm.last != "/" && norm.last != "\\"
+    i = anchor_end > 0 ? 1 : 0
+    while i < all.size
+      seg = all[i]
+      if seg == "."
+      elsif seg == ".."
+        if norm.size > (anchor_end > 0 ? 1 : 0) && norm.last != ".."
           norm.pop
-        elsif !is_abs
+        elsif !rooted
           norm << ".."
         end
       else
         norm << seg
       end
+      i = i + 1
     end
 
-    if norm.empty?
-      return Path.new(is_abs ? (posix? ? "/" : "\\") : ".", @kind)
-    end
-
-    sep = posix? ? "/" : "\\"
-    res = ""
-    first_elem = true
-    norm.each do |elem|
-      if first_elem
-        res = elem
-        first_elem = false
-      elsif res == "/" || res == "\\"
-        res = res + elem
-      else
-        res = res + sep + elem
-      end
-    end
-    Path.new(res, @kind)
+    return Path.new(".", @kind) if norm.empty?
+    Path.new(build_name(norm, norm.size), @kind)
   end
 
+  # The path that reaches `self` from *base*, or nil where none can be
+  # spelled: different anchors, or a *base* that climbs through `..`.
   def relative_to?(base : Path | String) : Path?
     base_path = base.is_a?(Path) ? base : Path.new(base, @kind)
     target = normalize
-    base_norm = base_path.normalize
+    base_norm = base_path.to_kind(@kind).normalize
 
-    return nil if target.absolute? != base_norm.absolute?
+    t_anchor = target.rooted_anchor
+    b_anchor = base_norm.rooted_anchor
+    return nil if compare_names(t_anchor, b_anchor) != 0
 
     t_parts = target.parts
     b_parts = base_norm.parts
+    t_parts = [] of String if t_parts == ["."]
+    b_parts = [] of String if b_parts == ["."]
+    t_parts.shift if !t_anchor.empty?
+    b_parts.shift if !b_anchor.empty?
 
-    # Find common prefix length
     common = 0
     min_len = t_parts.size < b_parts.size ? t_parts.size : b_parts.size
-    while common < min_len && t_parts[common] == b_parts[common]
+    while common < min_len && compare_names(t_parts[common], b_parts[common]) == 0
       common = common + 1
     end
 
     res = [] of String
-    # Step up from base
-    up_count = b_parts.size - common
-    u = 0
-    while u < up_count
+    u = common
+    while u < b_parts.size
+      return nil if b_parts[u] == ".."
       res << ".."
       u = u + 1
     end
-
-    # Step down to target
     d = common
     while d < t_parts.size
       res << t_parts[d]
       d = d + 1
     end
 
-    if res.empty?
-      Path.new(".", @kind)
-    else
-      sep = posix? ? "/" : "\\"
-      Path.new(res.join(sep), @kind)
-    end
+    return Path.new(".", @kind) if res.empty?
+    Path.new(res.join(separator), @kind)
   end
 
   def relative_to(base : Path | String) : Path
-    rel = relative_to?(base)
-    if rel
-      rel
-    else
-      raise "Cannot compute relative path between #{@name} and #{base.to_s}"
-    end
+    relative_to?(base) || raise "no relative path from #{base.to_s.inspect} to #{@name.inspect}"
   end
 
-  def expand(base : Path | String? = nil, home : Bool = false) : Path
+  # Absolute and normalized, under *base* when relative. *base* is
+  # `Program.env("PWD")` when not given (on Windows, never), the
+  # process's own directory when nothing set that, and a relative path
+  # with neither is refused.
+  # `home: true` reads a leading `~` from the home directory the
+  # platform names (see `home_directory`).
+  def expand(base : Path | String | Nil = nil, home : Bool = false) : Path
     name_str = @name
-    if home && name_str.starts_with?("~/")
-      home_dir = Program.env("HOME")
-      if home_dir
-        name_str = home_dir + name_str[1..]
-      end
-    elsif home && name_str == "~"
-      home_dir = Program.env("HOME")
-      name_str = home_dir if home_dir
+    if home && (name_str == "~" || name_str.starts_with?("~/") || (windows? && name_str.starts_with?("~\\")))
+      home_dir = home_directory || raise "cannot expand #{@name.inspect}: HOME is not set"
+      name_str = name_str == "~" ? home_dir : home_dir + name_str[1, name_str.bytesize - 1]
     end
 
     p = Path.new(name_str, @kind)
-    if p.absolute?
-      p.normalize
-    else
-      base_dir = if base
-                   base.is_a?(Path) ? base : Path.new(base, @kind)
-                 else
-                   # Default to current directory or "/"
-                   pwd = Program.env("PWD")
-                   pwd ? Path.new(pwd, @kind) : Path.new("/", @kind)
-                 end
-      base_dir.join(p).normalize
+    return p.normalize if p.absolute?
+
+    base_dir = if base.is_a?(Path)
+                 base.to_kind(@kind)
+               elsif base.is_a?(String)
+                 Path.new(base, @kind)
+               else
+                 # `PWD` first, because a shell that keeps it keeps the
+                 # path the person walked, symlinks and all; the
+                 # process's own directory when there is none. On Windows
+                 # the process's own directory always: only Git Bash sets
+                 # `PWD` there, in its own `C:/...` spelling, and nothing
+                 # keeps it - a `cd` in cmd or PowerShell after it, or a
+                 # child started in another directory, left it naming a
+                 # directory the program was not in, and a relative path
+                 # expanded there. A rename onto an open file moved the
+                 # file into that other directory.
+                 pwd = {% if flag?(:win32) %} Program.cwd {% else %} Program.env("PWD") || Program.cwd {% end %}
+                 Path.new(pwd || raise("cannot expand #{@name.inspect}: no base given, and neither PWD nor the process's own directory answers"), @kind)
+               end
+    raise "cannot expand #{@name.inspect}: base #{base_dir.name.inspect} is not absolute" unless base_dir.absolute?
+    # A Windows path can be anchored and still not absolute. `join` puts
+    # `\foo` on the base's drive and `C:foo` under the base when the base
+    # is on C:; on another drive `C:foo` is under C:'s root, which is what
+    # Windows makes of a drive this process has not been to.
+    unless posix?
+      drive = p.drive
+      base_drive = base_dir.drive
+      if drive && p.root.nil? && !(base_drive && compare_names(base_drive, drive) == 0)
+        # Bytes, as the slice counts: `size` counts characters, and
+        # `C:é` expanded to a cut-off `C:\b\` plus half of the `é`.
+        rest = p.name[drive.bytesize, p.name.bytesize - drive.bytesize]
+        return Path.new(drive + separator + rest, @kind).normalize
+      end
     end
+    base_dir.join(p).normalize
+  end
+
+  # Windows shells do not set `HOME`: the home directory there is named
+  # `USERPROFILE`, and `HOME` shows up only under a POSIX-shaped shell
+  # such as MSYS or a CI runner. So win32 asks both, its own name first;
+  # every other platform asks `HOME` alone.
+  private def home_directory : String | Nil
+    {% if flag?(:win32) %}
+      profile = Program.env("USERPROFILE")
+      return profile if profile && !profile.empty?
+      Program.env("HOME")
+    {% else %}
+      Program.env("HOME")
+    {% end %}
   end
 
   def sibling(name : String | Path) : Path
     parent.join(name)
   end
 
-  def change_extension(new_ext : String) : Path
-    stem_str = stem
-    new_ext_str = if new_ext.empty? || new_ext.starts_with?(".")
-                    new_ext
-                  else
-                    "." + new_ext
-                  end
-    parent.join(stem_str + new_ext_str)
+  # Byte order; a Windows name folded as `windows_fold` folds it.
+  private def compare_names(a : String, b : String) : Int32
+    windows? ? Path.compare_strings_ci(a, b) : Path.compare_strings(a, b)
   end
 
   def <=>(other : Path) : Int32
-    if @kind.windows? && other.kind.windows?
-      Path.compare_strings_ci(@name, other.name)
-    else
-      Path.compare_strings(@name, other.name)
-    end
+    r = if windows? || other.windows?
+          Path.compare_strings_ci(@name, other.name)
+        else
+          Path.compare_strings(@name, other.name)
+        end
+    return r if r != 0
+    @kind.value == other.kind.value ? 0 : (@kind.value < other.kind.value ? -1 : 1)
   end
 
   def ==(other : Path) : Bool
-    (@kind == other.kind) && ((self <=> other) == 0)
+    (self <=> other) == 0
+  end
+
+  def hash : Int32
+    (windows? ? Path.windows_fold(@name) : @name).hash &* 31 &+ @kind.value.to_i32
+  end
+
+  # *s* with each `/` written `\`.
+  private def backslashed(s : String) : String
+    len = s.bytesize
+    ptr = s.to_unsafe
+    String.new(len) do |buf|
+      i = 0
+      while i < len
+        b = ptr[i]
+        buf[i] = b == 47_u8 ? 92_u8 : b
+        i = i + 1
+      end
+    end
   end
 
   def self.compare_strings(s1 : String, s2 : String) : Int32
@@ -608,22 +688,14 @@ pub struct Path
     while i < min_len
       b1 = p1[i]
       b2 = p2[i]
-      if b1 < b2
-        return -1
-      elsif b1 > b2
-        return 1
-      end
+      return b1 < b2 ? -1 : 1 if b1 != b2
       i = i + 1
     end
-    if len1 < len2
-      -1
-    elsif len1 > len2
-      1
-    else
-      0
-    end
+    len1 == len2 ? 0 : (len1 < len2 ? -1 : 1)
   end
 
+  # As the two names' `windows_fold`s compare, read here without folding
+  # either while both are ASCII.
   def self.compare_strings_ci(s1 : String, s2 : String) : Int32
     len1 = s1.bytesize
     len2 = s2.bytesize
@@ -634,66 +706,77 @@ pub struct Path
     while i < min_len
       b1 = p1[i]
       b2 = p2[i]
+      return compare_strings(windows_fold(s1), windows_fold(s2)) if b1 >= 128_u8 || b2 >= 128_u8
       b1 = b1 + 32_u8 if b1 >= 65_u8 && b1 <= 90_u8
       b2 = b2 + 32_u8 if b2 >= 65_u8 && b2 <= 90_u8
-      if b1 < b2
-        return -1
-      elsif b1 > b2
-        return 1
-      end
+      b1 = 92_u8 if b1 == 47_u8
+      b2 = 92_u8 if b2 == 47_u8
+      return b1 < b2 ? -1 : 1 if b1 != b2
       i = i + 1
     end
-    if len1 < len2
-      -1
-    elsif len1 > len2
-      1
-    else
-      0
-    end
+    len1 == len2 ? 0 : (len1 < len2 ? -1 : 1)
   end
 
-  def match?(pattern : String) : Bool
-    Path.match_pattern(pattern, @name)
-  end
-
-  def self.match_pattern(pattern : String, str : String) : Bool
-    p_len = pattern.bytesize
-    s_len = str.bytesize
-    p_ptr = pattern.to_unsafe
-    s_ptr = str.to_unsafe
-
-    pi = 0
-    si = 0
-    star_pi = -1
-    star_si = 0
-
-    while si < s_len
-      if pi < p_len && (p_ptr[pi] == 63_u8 || p_ptr[pi] == s_ptr[si])
-        pi = pi + 1
-        si = si + 1
-      elsif pi < p_len && p_ptr[pi] == 42_u8
-        star_pi = pi
-        star_si = si
-        pi = pi + 1
-      elsif star_pi >= 0
-        pi = star_pi + 1
-        star_si = star_si + 1
-        si = star_si
-      else
-        return false
+  # *s* as a Windows name compares: `/` written `\`, ASCII letters lower
+  # case, and on Windows every other letter in the case its file systems
+  # fold it to - LCMAP_UPPERCASE without linguistic casing, measured to
+  # make the same classes as CompareStringOrdinal's on every BMP unit. A
+  # surrogate pair stays as written, as both leave it. ASCII alone folded,
+  # `C:\Ä` and `c:\ä` were two paths where NTFS has one file; built for
+  # another platform there is no table to ask, and ASCII alone is folded.
+  def self.windows_fold(s : String) : String
+    {% if flag?(:win32) %}
+      index = 0
+      while index < s.bytesize && s.to_unsafe[index] < 128_u8
+        index = index + 1
+      end
+      if index < s.bytesize
+        folded = native_fold(s)
+        return folded if folded
+      end
+    {% end %}
+    String.new(s.bytesize) do |buffer|
+      at = 0
+      while at < s.bytesize
+        byte = s.to_unsafe[at]
+        byte = byte + 32_u8 if byte >= 65_u8 && byte <= 90_u8
+        buffer[at] = byte == 47_u8 ? 92_u8 : byte
+        at = at + 1
       end
     end
-
-    while pi < p_len && p_ptr[pi] == 42_u8
-      pi = pi + 1
-    end
-
-    pi == p_len
   end
+
+  {% if flag?(:win32) %}
+    # Text that is not UTF-8 has no UTF-16 to fold, and is folded as ASCII.
+    private def self.native_fold(s : String) : String?
+      wide = __iyi_win_env_wide(s.to_unsafe, s.bytesize)
+      return nil if wide.address == 0_u64
+      length = 0
+      while wide[length] != 0_u16
+        length = length + 1
+      end
+      upper = Pointer(UInt16).malloc((length + 1).to_u64)
+      invariant = Pointer(UInt16).malloc(1_u64)
+      invariant[0] = 0_u16
+      nothing = Pointer(Void).new(0_u64)
+      return nil if LibKernel32.LCMapStringEx(invariant, 0x200, wide, length, upper, length, nothing, nothing, 0_i64) != length
+      at = 0
+      while at < length
+        unit = wide[at] >= 0xD800_u16 && wide[at] <= 0xDFFF_u16 ? wide[at] : upper[at]
+        unit = unit + 32_u16 if unit >= 65_u16 && unit <= 90_u16
+        upper[at] = unit == 47_u16 ? 92_u16 : unit
+        at = at + 1
+      end
+      upper[length] = 0_u16
+      size = __iyi_utf8_size_from_wide(upper)
+      return nil if size <= 1
+      String.new(size - 1) { |t| __iyi_utf8_bytes_from_wide(upper, t, size) }
+    end
+  {% end %}
 end
 
-impl Cmp for Path
-  def cmp(other : self) : Int32
+impl Comparable for Path
+  def <=>(other : self) : Int32
     self <=> other
   end
 end

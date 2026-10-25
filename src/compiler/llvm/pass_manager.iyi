@@ -1,11 +1,8 @@
 module compiler/llvm/pass_manager
 
-import compiler/llvm/lib_llvm
-import compiler/llvm/module
-import compiler/llvm/target
-using compiler/llvm/lib_llvm::{string_from_c, string_and_dispose}
-using compiler/llvm/module::{Module}
-using compiler/llvm/target::{TargetMachine}
+import compiler/llvm/lib_llvm::{string_from_c, string_and_dispose}
+import compiler/llvm/module::{Module}
+import compiler/llvm/target::{TargetMachine}
 
 pub class PassBuilderOptions
   getter unwrap : LibLLVM::PassBuilderOptionsRef

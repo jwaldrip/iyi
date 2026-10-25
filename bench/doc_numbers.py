@@ -44,7 +44,10 @@ def bang_names() -> int:
     """
     names: set[str] = set()
     for p in (REPO / "src").rglob("*.cr"):
-        if "/compiler/" in str(p):
+        # By the path's parts, not its text: on Windows `str(p)` is spelled
+        # with `\`, `"/compiler/"` matched nothing, and the compiler's own
+        # names were counted - 60 there against 50 on Linux.
+        if "compiler" in p.relative_to(REPO / "src").parts:
             continue
         try:
             text = p.read_text()
@@ -113,10 +116,16 @@ def measured() -> dict[str, int]:
     return {
         "prelude": wc(sorted((REPO / "src/iyi").glob("*.iyi"))),
         "prelude_library": prelude_library_lines(),
+        # The platform floor the rule above excludes, and the library with it
+        # still in: both are stated in SPEC.md beside the figure itself, so
+        # that what the ceiling does not count is as visible as what it does.
+        "platform_floor": platform_floor_lines(),
+        "library_with_floor": library_with_floor_lines(),
         "std": wc(sorted((REPO / "src/std").glob("*.iyi"))),
         "std_modules": len(sorted((REPO / "src/std").glob("*.iyi"))),
         "compiler": wc(sorted((REPO / "src/compiler").rglob("*.cr"))),
         "samples": len(sorted((REPO / "samples/iyi").glob("*.iyi"))),
+        "samples_roundtrip": samples_roundtrip(),
         # Bytes on disk, not lines: the docs quote the library's size as a
         # download, which is what a person unpacking the tarball sees.
         "prelude_kb": round(
@@ -134,17 +143,44 @@ def measured() -> dict[str, int]:
         "targets": targets(),
         "guard_sites": guard_counts()[0],
         "guard_scripts": guard_counts()[1],
+        "iyimod_format": iyimod_format(),
     }
 
 
+# The number iyi's own library is held under (SPEC.md I.4). It was the other
+# language's 0.1.0 core library - 3,551 lines of core files plus 183 of fibers
+# over pthreads - until the 0.18 collections and assertions took the library
+# past it and the owner raised it to 4,650 rather than move them behind an
+# import. A check rather than a habit since the night Windows' floor walked
+# 508 lines over it and nothing failed.
+CEILING = 4_650
+
+
 def prelude_library_lines() -> int:
-    """The prelude's lines that do what Crystal's 0.1.0 core did, which is
-    the figure SPEC.md holds to the 3,734-line ceiling: everything under
-    `src/iyi/` except what that core got from outside its own count - the
-    allocator and collector (Boehm's libgc; the block between two marks in
-    prelude.iyi), the scheduler and kernel thread (pthreads and libevent,
-    beyond the 183 lines the ceiling already carries for fibers), and the
-    float printer and parser (libc's printf and strtod)."""
+    """The figure SPEC.md holds to the 4,650-line ceiling: the library
+    without any platform's floor.
+
+    Everything under `src/iyi/` except two things. First, what Crystal's
+    0.1.0 core got from outside its own count - the allocator and collector
+    (Boehm's libgc; the block between two marks in prelude.iyi), the
+    scheduler and kernel thread (pthreads and libevent, beyond the 183 lines
+    the ceiling already carries for fibers), and the float printer and parser
+    (libc's printf and strtod). Second, every platform's floor
+    (`platform_floor_lines`), which is the rule SPEC.md I.4 settled after
+    Windows: 0.1.0's own floor was libc and was not in its 3,734 either, so
+    counting iyi's kernel32, syscall and libSystem arms compared a library
+    that carries its floor against one that did not.
+
+    `library_with_floor` is the same walk without that second exclusion, and
+    is stated beside this everywhere this is, because a reader opening
+    `src/iyi/` sees those lines too.
+    """
+    return library_with_floor_lines() - platform_floor_lines()
+
+
+def library_with_floor_lines() -> int:
+    """The library with every platform's floor still in it: the number a
+    reader counts by opening the files. See `prelude_library_lines`."""
     files = sorted((REPO / "src/iyi").glob("*.iyi"))
     outside = {"concurrency.iyi", "thread.iyi", "float.iyi"}
     total = 0
@@ -159,6 +195,88 @@ def prelude_library_lines() -> int:
         else:
             total += len(lines)
     return total
+
+
+# The OS, architecture and ABI flags. A build-configuration flag
+# (`gc_boehm`, `release`, `preview_mt`) is not one: its arm is a choice
+# about this build, not a platform's floor, and it stays in the count.
+PLATFORM_FLAGS = frozenset("""
+    linux darwin win32 wasm32 wasi unix bsd openbsd freebsd netbsd dragonfly
+    solaris android musl gnu msvc x86_64 aarch64 arm armhf i386 avr bits32 bits64
+""".split())
+
+MACRO_DIRECTIVE = re.compile(r"\{%-?\s*(if|unless|elsif|else|end)\b(.*?)-?%\}")
+MACRO_FLAG = re.compile(r"flag\?\(\s*:(\w+)")
+
+
+def platform_floor_lines(only: str | None = None) -> int:
+    """Lines of the library that exist only for a platform: inside a macro
+    conditional whose condition names an OS, architecture or ABI flag.
+
+    Every arm of such a conditional counts, `else` included: an `else` under
+    `flag?(:linux)` is the code the other platforms take, and it exists for
+    the same reason. Measured over exactly what `prelude_library_lines`
+    counts, so the two subtract.
+
+    SPEC.md I.4 held the library to 3,734 lines and records that Windows
+    breached it. This is the number that says what closing the breach by
+    rule rather than by rewrite would cost, and it is measured rather than
+    counted by hand: the two figures the breach was first written with
+    disagreed, one of them having subtracted Windows' arms alone from a
+    sentence about every platform's.
+
+    *only* narrows it to the arms naming one flag, for the breakdown.
+    """
+    files = sorted((REPO / "src/iyi").glob("*.iyi"))
+    outside = {"concurrency.iyi", "thread.iyi", "float.iyi"}
+    total = 0
+    for path in files:
+        if path.name in outside:
+            continue
+        lines = path.read_text().splitlines()
+        if path.name == "prelude.iyi":
+            start = next(i for i, l in enumerate(lines) if l.startswith("# ── The memory layer"))
+            end = next(i for i, l in enumerate(lines) if l.startswith("# ── end of the memory layer"))
+            lines = lines[:start] + lines[end + 1:]
+        stack: list[bool] = []
+        for line in lines:
+            inside_before = any(stack)
+            for kind, rest in MACRO_DIRECTIVE.findall(line):
+                named = set(MACRO_FLAG.findall(rest))
+                if only is None:
+                    platform = bool(named) and named <= PLATFORM_FLAGS
+                else:
+                    platform = only in named
+                if kind in ("if", "unless"):
+                    stack.append(platform)
+                elif kind in ("elsif", "else"):
+                    if stack:
+                        stack[-1] = stack[-1] or platform
+                elif kind == "end":
+                    if stack:
+                        stack.pop()
+            # The line carrying `{% if flag?(:win32) %}` is the arm's own.
+            if inside_before or any(stack):
+                total += 1
+    return total
+
+
+def samples_roundtrip() -> int:
+    """The samples `bench/samples_roundtrip.sh` builds a second time from
+    artifacts, with the source of every module they import deleted.
+
+    The script's own list is the authority rather than a count typed beside it:
+    the list names six and two files went on saying five.
+    """
+    text = (REPO / "bench/samples_roundtrip.sh").read_text()
+    m = re.search(r'^SAMPLES="([^"]*)"', text, re.M)
+    if not m:
+        raise SystemExit(
+            "doc_numbers: bench/samples_roundtrip.sh no longer names its samples "
+            'in a `SAMPLES="..."` line, so this check cannot find them and is '
+            "not checking anything"
+        )
+    return len(m.group(1).split())
 
 
 def targets() -> int:
@@ -200,6 +318,25 @@ def guard_counts() -> tuple[int, int]:
             scripts += 1
     return sites, scripts
 
+
+def iyimod_format() -> int:
+    """The `.iyimod` format version the compiler writes.
+
+    SPEC.md quotes it as a current fact about the artifact, and it said v19
+    while the compiler wrote v51 — thirty-three bumps, none of which anyone
+    thought to carry into the sentence. Read out of the constant, like every
+    other number here.
+    """
+    text = (REPO / "src/compiler/iyi/iyimod.cr").read_text()
+    m = re.search(r"^\s*FORMAT_VERSION = (\d+)_u32", text, re.M)
+    if not m:
+        raise SystemExit(
+            "doc_numbers: src/compiler/iyi/iyimod.cr no longer states "
+            "`FORMAT_VERSION = N_u32`, so this check cannot find it and is "
+            "not checking anything"
+        )
+    return int(m.group(1))
+
 # Each entry: the measured key, the pattern that quotes it as current, the file,
 # and how many times that pattern is expected to appear there. The count is
 # load-bearing: two sites in one file shared a pattern, and dropping one of them
@@ -211,6 +348,10 @@ CLAIMS: list[tuple[str, str, str, int]] = [
     ("prelude", r"standard library instead of ([\d,]+)", "README.md", 1),
     ("prelude", r"iyi's own prelude \| ([\d,]+) lines", "SPEC.md", 1),
     ("prelude_library", r"of which ([\d,]+) are the library held to the", "SPEC.md", 1),
+    ("platform_floor", r"the platform floor measures \*\*([\d,]+) lines\*\*", "SPEC.md", 1),
+    ("platform_floor", r"floor of ([\d,]+) lines", "SPEC.md", 1),
+    ("library_with_floor", r"([\d,]+) with every platform's floor", "SPEC.md", 1),
+    ("library_with_floor", r"pening `src/iyi/` counts ([\d,]+)", "SPEC.md", 1),
     ("prelude_library", r"of which the library is ([\d,]+)", "SPEC.md", 1),
     ("prelude_library", r"the library:\n\*\*([\d,]+) lines\*\* of the", "SPEC.md", 1),
     ("prelude", r"still true of iyi's own ([\d,]+) lines", "SPEC.md", 1),
@@ -224,11 +365,17 @@ CLAIMS: list[tuple[str, str, str, int]] = [
     # untracked, drifted the moment the library grew, and the table above went
     # on passing beside them.
     ("std", r"`src/std/` is \*\*([\d,]+) lines across", "SPEC.md", 1),
-    ("std", r"the standard library, ([\d,]+) lines of iyi", "README.md", 1),
     ("std_modules", r"lines across ([\w-]+)\s+modules", "SPEC.md", 1),
-    ("std_modules", r"lines of iyi across ([\w-]+) modules", "README.md", 1),
     ("compiler", r"\| ([\d,]+) lines, Crystal, forked", "SPEC.md", 1),
+    # The other place the compiler's size is stated as current, and the reason
+    # one file disagreed with itself by 25,747 lines: the row above covers the
+    # comparison table, this one the release's own numbers table, and only the
+    # first of them existed.
+    ("compiler", r"\| ([\d,]+) lines, none of it written in iyi", "SPEC.md", 1),
     ("spec_iyi", r"\| ([\d,]+) for iyi \|", "SPEC.md", 1),
+    # The artifact format, which drifted furthest of anything here: the
+    # sentence said v19 while the compiler wrote v51.
+    ("iyimod_format", r"`\.iyimod` v([\d,]+), checksum per section", "SPEC.md", 1),
     ("prelude_kb", r"library is ([\d,]+) KB on disk", "README.md", 1),
     ("prelude_kb", r"iyi's own ([\d,]+) KB prelude", "README.md", 1),
     ("std_kb", r"the ([\d,]+) KB of `src/std`", "README.md", 1),
@@ -239,6 +386,22 @@ CLAIMS: list[tuple[str, str, str, int]] = [
     ("bang_names", r"standard library has \*\*([\d,]+) such names\*\*", "README.md", 1),
     ("generated", r"edit one module in a ([\d,]+)-line project", "README.md", 1),
     ("generated", r"on the same ([\d,]+) lines", "README.md", 1),
+    # The same generated project, quoted seven more times in SPEC.md — the
+    # numbers table at the top of it included — and every one of the seven said
+    # 7,208 while the generator emitted 7,207. The two rows above name
+    # README.md, so the correction landed there and nowhere else. The file that
+    # states a number most often is the one that most needs a pattern.
+    ("generated", r"rebuild \(30 modules, ([\d,]+) lines\)", "SPEC.md", 1),
+    # Two sites, and the second wraps between "300" and "types", which is why
+    # this matches whitespace rather than a space.
+    ("generated", r"300\s+types, ([\d,]+) lines", "SPEC.md", 2),
+    ("generated", r"30 modules and ([\d,]+) lines", "SPEC.md", 1),
+    ("generated", r"it pays it on a ([\d,]+)-line project", "SPEC.md", 1),
+    ("generated", r"one module edited in a ([\d,]+)-line project", "SPEC.md", 1),
+    ("generated", r"30-module, ([\d,]+)-line project", "SPEC.md", 1),
+    # The same project again as one row of the size sweep, which is where the
+    # figure was right while the seven sentences above it were wrong.
+    ("generated", r"30 modules of 10 types, ([\d,]+) lines", "SPEC.md", 1),
     ("targets", r"compiles for \*\*(\w+) targets\*\*", "README.md", 1),
     ("targets", r"for (\w+) targets and was tested on one", "SPEC.md", 1),
     ("targets", r"Four of the (\w+) now", "SPEC.md", 1),
@@ -251,6 +414,12 @@ CLAIMS: list[tuple[str, str, str, int]] = [
     ("samples", r"\| ([\w-]+) programs:", "README.md", 1),
     ("guard_sites", r"across\s+([\w-]+)\s+sites in", "SPEC.md", 1),
     ("guard_scripts", r"sites in ([\w-]+) scripts", "SPEC.md", 1),
+    # The same count in SPEC.md's numbers table, where it said 9 — the number
+    # of samples there were when the row was written.
+    ("samples", r"\| samples \| ([\d,]+) programs,", "SPEC.md", 1),
+    # And the other half of that row, which is a count of the roundtrip's list
+    # rather than of the directory, and had drifted the same way.
+    ("samples_roundtrip", r"of which ([\d,]+) rebuild from artifacts", "SPEC.md", 1),
 ]
 
 # The prose spells small numbers as words and should keep doing so, so the
@@ -360,6 +529,19 @@ def main() -> int:
                 wrong.append(
                     f"{rel}:{line}  says {key} is {stated:,}, tree measures {truth[key]:,}"
                 )
+
+    # The ceiling itself, which was prose and a habit until Windows walked
+    # 508 lines over it and nothing failed. SPEC.md I.4 holds the library -
+    # the figure above, every platform's floor excluded - to the lines that
+    # core carried, and the rule is that a method entering
+    # the library moves another out first. That is a number, so it is a
+    # check: a library over the ceiling fails here, with what it is over by.
+    if truth["prelude_library"] > CEILING:
+        wrong.append(
+            f"the library is {truth['prelude_library']:,} lines, {truth['prelude_library'] - CEILING:,} "
+            f"over the {CEILING:,} ceiling (SPEC.md I.4). What enters the library moves something "
+            f"out of it first, or moves to `src/std/`, which this figure does not count"
+        )
 
     if show_all:
         for f in found:

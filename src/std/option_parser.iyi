@@ -1,155 +1,87 @@
-# Standard OptionParser library for command-line arguments processing in iyi.
+# Flag parsing, written in iyi.
 #
-# Conforms to standard POSIX and GNU command-line conventions:
-#   * Short flags (-f) and long flags (--flag)
-#   * Flags with required arguments (-o VAL, --output=VAL, --output VAL)
-#   * Flags with optional arguments (-c [LEVEL], --compress[=LEVEL])
-#   * Short option bundling (-vxf)
-#   * Double-dash (--) terminating option parsing (everything after is positional)
-#   * Configurable error handlers for missing arguments and invalid options
-#   * Subcommand support
-#   * Aligned, readable automatic help message generation
+# `on("--name VALUE", "help") { |v| ... }` and `on("-h", "help") { }`
+# register flags, and `on("--color [WHEN]", "help")` one whose value may
+# be left out. `parse` walks `Program.args` (or the array given),
+# calls the blocks, and answers the leftover operands.
 #
-# Scope and omissions from Crystal's option_parser.cr:
-#   Crystal's option_parser.cr includes complex regex-based string scanners that
-#   depended on PCRE2. This implementation relies strictly on zero-allocation byte
-#   and character inspection without regular expressions or external C libraries.
+#     op = OptionParser.new
+#     op.banner = "usage: tool [options] COMMAND"
+#     op.on("-v", "--verbose", "say more") { verbose = true }
+#     op.on("-n NAME", "--name=NAME", "who") { |v| name = v }
+#     op.separator("commands:")
+#     op.on("deploy", "ship it") do
+#       op.on("-f", "--force", "even if dirty") { force = true }
+#     end
+#     puts op   # the banner, then a line for each flag and command
+#
+# A pair, `-v` and `--verbose`, is one flag spelled two ways; a value
+# either spelling states, `-n NAME` or `--name=NAME`, both take.
+#
+# A command is a name with no dash, and is one only as the first operand:
+# `tool deploy -f` runs `deploy`'s block, which registers what follows it
+# - its flags, and the commands below it, which replace the ones beside
+# it. Flags registered before the command still apply after it, where the
+# other library forgets them; a name after an operand is an operand.
+#
+# What the person typed wrong is the program's to answer, the way
+# Crystal's `OptionParser` has it: `invalid_option { |flag| ... }` is
+# handed an unknown flag and a value given to a flag that takes none,
+# `missing_option { |flag| ... }` a flag that takes a value and is last,
+# and parsing goes on after either. With no handler set they panic -
+# `unknown flag: --x`, `flag --x takes no value`, `flag --name needs a
+# value` - which is a bug report where a usage line was wanted, so a
+# program reading its own command line sets both.
 
 module std/option_parser
 
-pub enum FlagValue
-  None     = 0
-  Optional = 1
-  Required = 2
-
-  def none? : Bool
-    value == 0
-  end
-
-  def optional? : Bool
-    value == 1
-  end
-
-  def required? : Bool
-    value == 2
-  end
-end
-
-pub struct Handler
-  getter value_type : FlagValue
-  getter block : Proc(String, Nil)
-
-  def initialize(@value_type : FlagValue, @block : Proc(String, Nil))
-  end
-end
-
 pub class OptionParser
-  pub class Exception < ::Exception
+  # What a flag does with the argument after it: `--name VALUE` needs one,
+  # `--color [WHEN]` takes one unless it is missing or is a flag itself,
+  # and `--verbose` takes none.
+  enum Value
+    None
+    Required
+    Optional
   end
 
-  pub class InvalidOption < Exception
-    getter flag : String
-    getter message : String
-
-    def initialize(@flag : String)
-      @message = "Invalid option: #{@flag}"
-    end
-  end
-
-  pub class MissingOption < Exception
-    getter flag : String
-    getter message : String
-
-    def initialize(@flag : String)
-      @message = "Missing option: #{@flag}"
-    end
-  end
-
-  property banner : String?
-  property summary_width : Int32
-  property summary_indent : String
-  property gnu_optional_args : Bool
-
-  def gnu_optional_args? : Bool
-    @gnu_optional_args
-  end
-
-  @flags : Array(String)
-  @handlers : Hash(String, Handler)
-  @unknown_args : Proc(Array(String), Array(String), Nil)?
-  @missing_option : Proc(String, Nil)?
-  @invalid_option : Proc(String, Nil)?
-  @before_each : Proc(String, Nil)?
+  @long : Hash(String, {Value, (String -> Nil)})
+  @short : Hash(String, {Value, (String -> Nil)})
+  # The help's lines, each marked when it is a command's, which a command
+  # matched takes away with the commands beside it.
+  @help : Array({String, Bool})
+  @commands : Hash(String, (String -> Nil))
+  @banner : String?
+  @invalid : (String -> Nil)?
+  @missing : (String -> Nil)?
   @stop : Bool
+  @before_each : (String -> Nil)?
+  @unknown_args : (Array(String), Array(String) -> Nil)?
 
-  def initialize(*, @gnu_optional_args : Bool = false)
+  def initialize
+    @long = {} of String => {Value, (String -> Nil)}
+    @short = {} of String => {Value, (String -> Nil)}
+    @help = [] of {String, Bool}
+    @commands = {} of String => (String -> Nil)
     @banner = nil
-    @summary_width = 32
-    @summary_indent = "    "
-    @flags = [] of String
-    @handlers = Hash(String, Handler).new
-    @missing_option = ->(flag : String) { raise MissingOption.new(flag).message }
-    @invalid_option = ->(flag : String) { raise InvalidOption.new(flag).message }
-    @before_each = nil
+    @invalid = nil
+    @missing = nil
     @stop = false
+    @before_each = nil
+    @unknown_args = nil
   end
 
-  def self.new(*, gnu_optional_args : Bool = false, &block : OptionParser -> Nil) : OptionParser
-    parser = OptionParser.new(gnu_optional_args: gnu_optional_args)
-    block.call(parser)
-    parser
+  # The help's first line, "options:" until it is set.
+  def banner=(text : String) : Nil
+    @banner = text
   end
 
-  def self.parse(args : Array(String) = ARGV, *, gnu_optional_args : Bool = false, &block : OptionParser -> Nil) : OptionParser
-    parser = OptionParser.new(gnu_optional_args: gnu_optional_args)
-    block.call(parser)
-    parser.parse(args)
-    parser
-  end
-
-  def on(flag : String, description : String, &block : String -> Nil) : Nil
-    append_flag(flag, description)
-    name, value_type = parse_flag_definition(flag)
-    @handlers[name] = Handler.new(value_type, block)
+  def banner : String?
+    @banner
   end
 
   def before_each(&block : String -> Nil) : Nil
     @before_each = block
-  end
-
-  def on(short_flag : String, long_flag : String, description : String, &block : String -> Nil) : Nil
-    if short_flag.empty?
-      append_flag(long_flag, description)
-    else
-      append_flag("#{short_flag}, #{long_flag}", description)
-    end
-
-    s_name, s_val = parse_flag_definition(short_flag)
-    l_name, l_val = parse_flag_definition(long_flag)
-
-    val_type = if s_val.required? || l_val.required?
-                 FlagValue::Required
-               elsif s_val.optional? || l_val.optional?
-                 FlagValue::Optional
-               else
-                 FlagValue::None
-               end
-
-    handler = Handler.new(val_type, block)
-    @handlers[s_name] = handler unless s_name.empty?
-    @handlers[l_name] = handler unless l_name.empty?
-  end
-
-  def separator(message : String = "") : Nil
-    @flags << message
-  end
-
-  def missing_option(&block : String -> Nil) : Nil
-    @missing_option = block
-  end
-
-  def invalid_option(&block : String -> Nil) : Nil
-    @invalid_option = block
   end
 
   def unknown_args(&block : Array(String), Array(String) -> Nil) : Nil
@@ -160,248 +92,282 @@ pub class OptionParser
     @stop = true
   end
 
+  def stop? : Bool
+    @stop
+  end
+
+  # A line of its own in the help, between the flags and commands
+  # registered before it and after it.
+  def separator(text : String) : Nil
+    @help << {text, false}
+  end
+
+  def invalid_option(&block : String -> Nil) : Nil
+    @invalid = block
+  end
+
+  def missing_option(&block : String -> Nil) : Nil
+    @missing = block
+  end
+
+  private def invalid(flag : String, sentence : String) : Nil
+    handler = @invalid
+    raise sentence unless handler
+    handler.call(flag)
+  end
+
+  private def missing(flag : String) : Nil
+    handler = @missing
+    raise "flag #{flag} needs a value" unless handler
+    handler.call(flag)
+  end
+
+  # A value is taken by `--name VALUE`, `--name=VALUE`, `-n VALUE` and
+  # `-nVALUE`, the four spellings the other library reads. Only the space
+  # form was: `--name=VALUE` was stored under the key `--name=VALUE`, which
+  # no argument ever looks up, and `-nVALUE` refused itself as not a flag.
+  # A short flag is one character, not one byte: `-é` was refused too.
+  #
+  # A bracketed value, `--color [WHEN]`, `-c [WHEN]` or `-c[WHEN]`, may be
+  # left out, as the other library reads the brackets. It was a required
+  # value: `--color` last panicked "flag --color needs a value", and
+  # `--color -v` handed `-v` to `--color` instead of running it.
+  def on(flag : String, description : String, &block : String -> Nil) : Nil
+    unless flag.starts_with?("-")
+      raise "option: not a flag or a command: #{flag}" if flag.empty? || flag.includes?(" ")
+      @commands[flag] = block
+      @help << {"  #{flag}  #{description}", true}
+      return
+    end
+    name, takes = spelled(flag)
+    @help << {"  #{flag}  #{description}", false}
+    store(name, takes, block)
+  end
+
+  # One flag spelled two ways, `-v` and `--verbose`: the value either
+  # states, both take.
+  def on(short : String, long : String, description : String, &block : String -> Nil) : Nil
+    first, first_takes = spelled(short)
+    second, second_takes = spelled(long)
+    if !first_takes.none? && !second_takes.none? && first_takes != second_takes
+      raise "option: #{short} and #{long} differ on the value: one needs it, the other may leave it out"
+    end
+    takes = first_takes.none? ? second_takes : first_takes
+    @help << {"  #{short}, #{long}  #{description}", false}
+    store(first, takes, block)
+    store(second, takes, block)
+  end
+
+  # The name *flag* is looked up by, and what it does with a value.
+  private def spelled(flag : String) : {String, Value}
+    name = flag.split(' ')[0]
+    takes = flag.includes?(" ") ? Value::Required : Value::None
+    takes = Value::Optional if bracketed?(flag[name.bytesize, flag.bytesize - name.bytesize].strip)
+    if name.starts_with?("--")
+      eq = name.index('=')
+      if eq
+        takes = Value::Required
+        name = name[0, eq]
+      end
+    elsif name.starts_with?("-") && name.bytesize >= 2
+      at = char_end(name, 1)
+      if at < name.bytesize
+        takes = bracketed?(name[at, name.bytesize - at]) ? Value::Optional : Value::Required
+        name = name[0, at]
+      end
+    else
+      raise "option: not a flag: #{flag}"
+    end
+    {name, takes}
+  end
+
+  private def store(name : String, takes : Value, block : String -> Nil) : Nil
+    if name.starts_with?("--")
+      @long[name] = {takes, block}
+    else
+      @short[name] = {takes, block}
+    end
+  end
+
+  # `[WHEN]`: a name in brackets, the way a usage line marks what may be
+  # left out.
+  private def bracketed?(text : String) : Bool
+    text.bytesize >= 3 && text.starts_with?("[") && text.ends_with?("]")
+  end
+
+  # Whether *arg* is a flag this parser knows, which an optional value
+  # never takes as its own, as the other library leaves it to run.
+  private def known?(arg : String) : Bool
+    @long.has_key?(arg) || @short.has_key?(arg)
+  end
+
+  # Where the character starting at byte *at* ends: a short flag is `-`
+  # and one character, and cutting it at two bytes handed `invalid_option`
+  # half of an `é`.
+  private def char_end(s : String, at : Int32) : Int32
+    b = s.to_unsafe[at]
+    width = b < 0xC0_u8 ? 1 : (b < 0xE0_u8 ? 2 : (b < 0xF0_u8 ? 3 : 4))
+    e = at + width
+    e > s.bytesize ? s.bytesize : e
+  end
+
+  def parse : Array(String)
+    parse(Program.args)
+  end
+
   def parse(args : Array(String)) : Array(String)
-    handled_indices = [] of Int32
-    double_dash_index : Int32? = nil
-    @stop = false
-
+    rest = [] of String
+    double_dash_index = nil.as(Int32?)
     i = 0
-    while i < args.size
-      arg = args[i]
-
+    n = args.size
+    while i < n
       if @stop
-        double_dash_index = i - 1
         @stop = false
+        while i < n
+          rest << args[i]
+          i = i + 1
+        end
         break
       end
-
-      if arg == "--"
+      a = args[i]
+      if cb = @before_each
+        cb.call(a)
+      end
+      if a == "--"
         double_dash_index = i
-        handled_indices << i
+        i = i + 1
+        while i < n
+          rest << args[i]
+          i = i + 1
+        end
         break
-      end
-
-      if bundle = validate_bundle(arg)
-        handled_indices << i
-        bundle.each_with_index do |handler, b_idx|
-          if !handler.value_type.none?
-            val = arg[b_idx + 2, arg.bytesize - b_idx - 2]
-            handler.block.call(val)
+      elsif a.starts_with?("--")
+        eq = a.index('=')
+        if eq
+          name = a[0, eq]
+          val = a[eq + 1, a.bytesize - eq - 1]
+          spec = @long[name]?
+          if !spec
+            invalid(name, "unknown flag: #{name}")
+          elsif spec[0].none?
+            invalid(name, "flag #{name} takes no value")
           else
-            handler.block.call("")
+            spec[1].call(val)
           end
+        else
+          spec = @long[a]?
+          if !spec
+            invalid(a, "unknown flag: #{a}")
+          elsif spec[0].none?
+            spec[1].call("")
+          elsif i + 1 < n && (spec[0].required? || !known?(args[i + 1]))
+            i = i + 1
+            spec[1].call(args[i])
+          elsif spec[0].required?
+            missing(a)
+          else
+            spec[1].call("")
+          end
+        end
+      elsif a.starts_with?("-") && a.bytesize >= 2 && a != "-"
+        at = char_end(a, 1)
+        name = a[0, at]
+        spec = @short[name]?
+        if !spec
+          invalid(name, "unknown flag: #{name}")
+        elsif !spec[0].none?
+          if a.bytesize > at
+            spec[1].call(a[at, a.bytesize - at])
+          elsif i + 1 < n && (spec[0].required? || !known?(args[i + 1]))
+            i = i + 1
+            spec[1].call(args[i])
+          elsif spec[0].required?
+            missing(name)
+          else
+            spec[1].call("")
+          end
+        elsif a.bytesize == at
+          spec[1].call("")
+        elsif bundle?(a)
+          run_bundle(a)
+        else
+          invalid(name, "flag #{name} takes no value")
         end
       else
-        flag, inline_val = parse_arg_to_flag_and_value(arg)
-        if handler = @handlers[flag]?
-          handled_indices << i
-          val = inline_val
-          if val.nil?
-            if handler.value_type.required?
-              if i + 1 < args.size && !args[i + 1].starts_with?('-')
-                val = args[i + 1]
-                handled_indices << i + 1
-                i = i + 1
-              elsif i + 1 < args.size && args[i + 1] != "--"
-                val = args[i + 1]
-                handled_indices << i + 1
-                i = i + 1
-              else
-                if cb = @missing_option
-                  cb.call(flag)
-                end
-              end
-            elsif handler.value_type.optional?
-              if i + 1 < args.size && !args[i + 1].starts_with?('-') && !@handlers.has_key?(args[i + 1])
-                val = args[i + 1]
-                handled_indices << i + 1
-                i = i + 1
-              else
-                val = ""
-              end
-            else
-              val = ""
-            end
-          end
-
-          # If subcommand (flag not starting with -), remove subcommands
-          unless flag.starts_with?('-')
-            to_remove = [] of String
-            @handlers.each do |k, _|
-              to_remove << k unless k.starts_with?('-')
-            end
-            to_remove.each { |k| @handlers.delete(k) }
-          end
-
-          handler.block.call(val || "")
+        command = rest.empty? ? @commands[a]? : nil
+        if command
+          # The level below is the block's to register: the commands beside
+          # this one, and their lines in the help, are gone.
+          @commands.clear
+          @help = @help.reject { |entry| entry[1] }
+          command.call(a)
+        else
+          rest << a
         end
-      end
-
-      i = i + 1
-    end
-
-    # Collect remaining arguments
-    remaining = [] of String
-    i = 0
-    while i < args.size
-      if !handled_indices.includes?(i)
-        remaining << args[i]
       end
       i = i + 1
     end
-
-    # Handle unknown options in remaining (before double dash)
-    remaining.each do |rem_arg|
-      if double_dash_index
-        orig_idx = args.index(rem_arg)
-        if orig_idx && orig_idx < double_dash_index
-          if rem_arg.starts_with?('-') && rem_arg != "-"
-            if cb = @invalid_option
-              cb.call(rem_arg)
-            end
-          end
-        end
-      else
-        if rem_arg.starts_with?('-') && rem_arg != "-"
-          if cb = @invalid_option
-            cb.call(rem_arg)
-          end
-        end
-      end
-    end
-
-    if unknown_args = @unknown_args
-      if double_dash_index
+    if callback = @unknown_args
+      if dd = double_dash_index
         before_dash = [] of String
         after_dash = [] of String
-        remaining.each do |arg|
+        rest.each do |arg|
           orig_idx = args.index(arg)
-          if orig_idx && orig_idx < double_dash_index
+          if orig_idx && orig_idx < dd
             before_dash << arg
           else
             after_dash << arg
           end
         end
-        unknown_args.call(before_dash, after_dash)
+        callback.call(before_dash, after_dash)
       else
-        unknown_args.call(remaining, [] of String)
+        callback.call(rest, [] of String)
       end
     end
-
-    # Mutate args in-place to match Crystal behavior
-    args.unsafe_set_size(remaining.size)
-    i = 0
-    while i < remaining.size
-      args[i] = remaining[i]
-      i = i + 1
-    end
-
-    remaining
+    rest
   end
 
-  def to_s(io) : Nil
-    if b = @banner
-      io << b
-      io << '\n'
+  # `-vq` is `-v -q`, and `-vp8080` is `-v -p 8080`: every character up to
+  # the first flag that takes a value is a flag, and what follows that one
+  # is its value, the reading the other library gives. Only the first
+  # character was read and the rest dropped, so `-vq` never ran `-q` and
+  # `-vx`, with no `-x`, passed as `-v`. A bundle with a character that is
+  # no flag runs none of it: it is `-v` handed a value it does not take.
+  private def bundle?(a : String) : Bool
+    pos = 1
+    while pos < a.bytesize
+      e = char_end(a, pos)
+      spec = @short["-" + a[pos, e - pos]]?
+      return false unless spec
+      return true unless spec[0].none?
+      pos = e
     end
-    @flags.each_with_index do |flag_desc, idx|
-      io << flag_desc
-      io << '\n' unless idx == @flags.size - 1
+    true
+  end
+
+  private def run_bundle(a : String) : Nil
+    pos = 1
+    while pos < a.bytesize
+      e = char_end(a, pos)
+      spec = @short["-" + a[pos, e - pos]]?
+      if spec
+        unless spec[0].none?
+          spec[1].call(a[e, a.bytesize - e])
+          return
+        end
+        spec[1].call("")
+      end
+      pos = e
     end
   end
 
-  def to_s : String
-    lines = [] of String
-    if b = @banner
-      lines << b
-    end
-    @flags.each do |flag_desc|
-      lines << flag_desc
-    end
+  def help : String
+    lines = [@banner || "options:"]
+    @help.each { |entry| lines << entry[0] }
     lines.join("\n")
   end
 
-  private def append_flag(flag : String, description : String) : Nil
-    display_flag = flag.starts_with?("--") ? "    #{flag}" : flag
-    indent = @summary_indent
-    width = @summary_width
-
-    if display_flag.size > width
-      @flags << "#{indent}#{display_flag}\n#{indent}#{" " * width} #{description}"
-    else
-      padding = " " * (width - display_flag.size)
-      @flags << "#{indent}#{display_flag}#{padding} #{description}"
-    end
-  end
-
-  private def parse_flag_definition(flag : String) : Tuple(String, FlagValue)
-    return {"", FlagValue::None} if flag.empty?
-
-    if flag.starts_with?("--")
-      bracket = flag.index('[')
-      if bracket
-        name = flag[0, bracket].strip
-        return {name, FlagValue::Optional}
-      end
-      eq = flag.index('=')
-      if eq
-        return {flag[0, eq].strip, FlagValue::Required}
-      end
-      space = flag.index(' ')
-      if space
-        name = flag[0, space].strip
-        return {name, FlagValue::Required}
-      end
-      return {flag, FlagValue::None}
-    elsif flag.starts_with?('-')
-      if flag.size > 2
-        name = flag[0, 2]
-        bracket = flag.index('[')
-        if bracket
-          return {name, FlagValue::Optional}
-        end
-        return {name, FlagValue::Required}
-      else
-        return {flag, FlagValue::None}
-      end
-    else
-      {flag, FlagValue::None}
-    end
-  end
-
-  private def parse_arg_to_flag_and_value(arg : String) : Tuple(String, String?)
-    if arg.starts_with?("--")
-      eq = arg.index('=')
-      if eq
-        name = arg[0, eq]
-        val = arg[eq + 1, arg.bytesize - eq - 1]
-        return {name, val}
-      end
-      return {arg, nil}
-    elsif arg.starts_with?('-') && !arg.starts_with?("--") && arg.size > 2
-      name = arg[0, 2]
-      val = arg[2, arg.bytesize - 2]
-      return {name, val}
-    else
-      return {arg, nil}
-    end
-  end
-
-  private def validate_bundle(arg : String) : Array(Handler)?
-    return nil unless arg.starts_with?('-') && !arg.starts_with?("--") && arg.size > 2
-    handlers = [] of Handler
-    i = 1
-    while i < arg.size
-      ch = arg[i]
-      flag = "-#{ch}"
-      handler = @handlers[flag]?
-      return nil unless handler
-      handlers << handler
-      if handler.value_type.required? || handler.value_type.optional?
-        break
-      end
-      i = i + 1
-    end
-    handlers
+  def to_s : String
+    help
   end
 end

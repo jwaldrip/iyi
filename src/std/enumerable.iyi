@@ -1,11 +1,11 @@
-# `Enumerable`, ported — SPEC.md II.6.
+# `Enumerable` — SPEC.md II.6.
 #
-# The load-bearing abstraction of Crystal's standard library: 71 method names
-# in 117 defs, written against a single `abstract def each`, included by 17
-# types. If traits
-# cannot express this shape, the library cannot be written in Crystal's idiom
-# and the ergonomics half of the pitch fails. So this file is the evidence for
-# the claim, not an illustration of it.
+# The load-bearing abstraction of a collections library: 71 method names
+# written against a single `abstract def each`, shared by every type that
+# can yield its elements. If traits cannot express this shape, the library
+# cannot be written in the idiom the pitch promises and the ergonomics half
+# of it fails. So this file is the evidence for the claim, not an
+# illustration of it.
 #
 #   ./bin/crystal run samples/iyi/collections.iyi
 #
@@ -21,32 +21,30 @@
 #   * `forall U` on methods — `map`, `flat_map`, `group_by`, `min_by`,
 #     `reduce`, `accumulate` and eight more. `U` belongs to the method, not to
 #     the trait.
-#   * `where Elem : Cmp` — about a quarter of `Enumerable` is valid only for
-#     some element types. `max`, `min`, `sum`, `product`, `tally`, `sorted`,
-#     `includes?` and `minmax` say so instead of duck-typing. `sum` and
+#   * `where Elem : Comparable` — about a quarter of `Enumerable` is valid
+#     only for some element types. `max`, `min`, `sum`, `product`, `tally`, `sorted`
+#     and `minmax` say so instead of duck-typing. `sum` and
 #     `product` also need `Num` to require `self.zero` and `self.one`: an
 #     identity belongs to the type, since an empty collection has no element
 #     to ask.
 #
-# What the port corrected in the spec's own sketch:
+# What this file corrected in the spec's own sketch:
 #
 #   * II.6 writes `abstract def each(&block : Elem -> Nil)`. That form
 #     *captures* the block into a `Proc`, and a captured block cannot `return`
 #     from the enclosing method — which kills early exit in `find`, `any?`,
 #     `all?`, `none?`, `first`, `take`, `take_while`, `empty?`, `index` and
 #     `find_value`. The block has to be typed without being captured, as
-#     `& : Elem -> Nil`, and yielded. That is the form the Crystal stdlib uses
-#     for the same reason.
-#   * Crystal spells two of these `find!` and `index!`. With `!` out of
-#     identifiers (III.1.7) the port takes the convention `Enumerable` already
+#     `& : Elem -> Nil`, and yielded.
+#   * Two of these are elsewhere spelled `find!` and `index!`. With `!` out of
+#     identifiers (III.1.7) the file takes the convention `Enumerable` already
 #     uses everywhere else — `max?`/`max`, `first?`/`first` — and applies it
 #     here too: `?` is the nilable one, the plain name raises. Dropping `!`
 #     made the library *more* consistent, not less.
 
 module std/enumerable
 
-import std/traits
-using std/traits::{Cmp, Num, Hashable}
+import std/traits::{Comparable, Num, Hashable}
 
 pub trait Enumerable
   type Elem
@@ -112,37 +110,42 @@ pub trait Enumerable
 
   # ---- searching -----------------------------------------------------------
   #
-  # Crystal spells these `find` (nilable) and `find!` (raises). With `!` out of
-  # identifiers, the port takes the convention `Enumerable` already uses
-  # everywhere else — `max?`/`max`, `first?`/`first` — and applies it here too:
-  # `?` is the nilable one, the plain name is the one that raises.
+  # `find` and `index` answer nil when nothing matched, which is the
+  # meaning `Indexable`, `Array` and every other library give both names.
+  #
+  # They raised here for a while, on a rule this trait had stated and
+  # generalised too far: `?` for the nilable one, the plain name for the
+  # one that raises, "the convention `max?`/`max` and `first?`/`first`
+  # already use". Those two are not that rule. The plain `max` raises
+  # because an empty collection has no largest element — a question with no
+  # answer — and the plain `find` answers nil because *not finding* is the
+  # ordinary outcome of a search. The rule is "the plain name is the common
+  # case", and applying the wrong half of it here made one name mean two
+  # things inside this library: `Enumerable#index` raised while
+  # `Indexable#index` and `Array#index` answered nil, which is the shape
+  # SPEC.md III.1.7a exists to keep out.
+  #
+  # The direction matters too. A caller who wants the panic writes what the
+  # prelude writes — `list.find { … } || raise "no element matched"` — one
+  # expression. A caller handed the panic cannot get back: a panic in this
+  # language is caught at a task boundary and nowhere else (III.4.3), so
+  # the raising default put the recoverable answer out of reach.
+  #
+  # `max?`/`max`, `min?`/`min`, `first?`/`first` and `minmax?`/`minmax` keep
+  # their pairs: there the plain name raising *is* the common case.
 
-  def find?(& : Elem -> Bool) : Elem?
+  def find(& : Elem -> Bool) : Elem?
     each { |e| return e if yield e }
     nil
   end
 
-  def find(& : Elem -> Bool) : Elem
-    each { |e| return e if yield e }
-    raise "no element matched"
-  end
-
-  def index?(& : Elem -> Bool) : Int32?
+  def index(& : Elem -> Bool) : Int32?
     i = 0
     each do |e|
       return i if yield e
       i = i + 1
     end
     nil
-  end
-
-  def index(& : Elem -> Bool) : Int32
-    i = 0
-    each do |e|
-      return i if yield e
-      i = i + 1
-    end
-    raise "no element matched"
   end
 
   def first? : Elem?
@@ -152,7 +155,7 @@ pub trait Enumerable
 
   def first : Elem
     each { |e| return e }
-    raise "empty"
+    raise "first of an empty collection"
   end
 
   # ---- transforming --------------------------------------------------------
@@ -208,15 +211,30 @@ pub trait Enumerable
   end
 
   def take(n : Int32) : Array(Elem)
+    # A negative prefix is not a prefix. `result.size >= n` holds before the
+    # first element for any negative `n`, so the unchecked form answered `[]`
+    # where `Array#first(-1)` and `Slice.new(-1)` refuse. `first(n)` forwards
+    # here, so this is the one place that has to say so. Zero still answers
+    # `[]`: an empty prefix is a real answer to a real question.
+    raise "negative count: #{n}" if n < 0
+    # And it stops at the nth element rather than at the one after it, as
+    # the other library's `first(n)` does: the check came before the
+    # append, so every call pulled one element more than it kept, and a
+    # source read once (a pipe, a generator) lost it - `take(2)` twice
+    # over 1..6 answered [1, 2] and then [4, 5], and `take(0)` pulled one.
     result = [] of Elem
+    return result if n == 0
     each do |e|
-      return result if result.size >= n
       result << e
+      return result if result.size >= n
     end
     result
   end
 
   def skip(n : Int32) : Array(Elem)
+    # Dropping a negative number of elements is the same mistake as taking one,
+    # and the unchecked form hid it by answering with everything.
+    raise "negative count: #{n}" if n < 0
     result = [] of Elem
     i = 0
     each do |e|
@@ -261,20 +279,32 @@ pub trait Enumerable
     end
   end
 
-  def each_with_object(obj : U, & : U, Elem -> Nil) : U forall U
-    each { |e| yield obj, e }
+  # The element first and the memo second, as the other library yields them.
+  # It was the reverse, so `[[1], [2]].each_with_object([] of Int32) { |x,
+  # acc| acc.concat(x) }` compiled under both and answered `[]` here: the
+  # element was the one mutated (SPEC.md III.1.7a's worst shape).
+  def each_with_object(obj : U, & : Elem, U -> Nil) : U forall U
+    each { |e| yield e, obj }
     obj
   end
 
-  def join(separator : String) : String
-    result = ""
-    first = true
-    each do |e|
-      result = result + separator unless first
-      result = result + e.to_s
-      first = false
+  # The separator defaults to nothing, the way `Array#join` (src/iyi/array.iyi)
+  # and `Indexable#join` already default it: one name means one thing
+  # (SPEC.md III.1.7a), and `slice.join` has to compile
+  # where `array.join` does. A mandatory separator made the arity of one name
+  # depend on which tower the receiver came from.
+  #
+  # Into one builder: adding each element to the text so far copied that
+  # text once per element, and a `List` of 100,000 took nine seconds.
+  def join(separator : String = "") : String
+    String.build do |io|
+      first = true
+      each do |e|
+        io << separator unless first
+        io << e.to_s
+        first = false
+      end
     end
-    result
   end
 
   # ---- needing something of the element type -------------------------------
@@ -284,39 +314,44 @@ pub trait Enumerable
   # and failing at instantiation with a message naming neither the bound nor
   # the element type.
 
-  def includes?(value : Elem) : Bool where Elem : Cmp
-    each { |e| return true if e.cmp(value) == 0 }
+  # Equality, as `Array#includes?` asks it: `<=>` answering 0 is ordering,
+  # and for a float it said a NaN was present in a list of NaNs, which no
+  # `==` says and `[nan].includes?(nan)` does not. And so no bound: every
+  # type has `==`, and the `Comparable` one left from the `<=>` days
+  # refused a list of arrays, of nilable numbers or of any class.
+  def includes?(value : Elem) : Bool
+    each { |e| return true if e == value }
     false
   end
 
-  def max? : Elem? where Elem : Cmp
+  def max? : Elem? where Elem : Comparable
     best = nil
     each do |e|
       current = best
-      best = e if current.nil? || e.gt(current)
+      best = e if current.nil? || ((e <=> current) > 0)
     end
     best
   end
 
-  def max : Elem where Elem : Cmp
+  def max : Elem where Elem : Comparable
     found = max?
     return found unless found.nil?
-    raise "empty"
+    raise "max of an empty collection"
   end
 
-  def min? : Elem? where Elem : Cmp
+  def min? : Elem? where Elem : Comparable
     best = nil
     each do |e|
       current = best
-      best = e if current.nil? || e.lt(current)
+      best = e if current.nil? || ((e <=> current) < 0)
     end
     best
   end
 
-  def min : Elem where Elem : Cmp
+  def min : Elem where Elem : Comparable
     found = min?
     return found unless found.nil?
-    raise "empty"
+    raise "min of an empty collection"
   end
 
   def sum : Elem where Elem : Num
@@ -337,30 +372,41 @@ pub trait Enumerable
     counts
   end
 
-  def sorted : Array(Elem) where Elem : Cmp
-    to_a.sorted { |a, b| a.cmp(b) }
+  def sorted : Array(Elem) where Elem : Comparable
+    to_a.sorted { |a, b| (a <=> b) }
   end
 
   # ---- needing something of the block's result type -------------------------
 
-  def max_by?(& : Elem -> U) : Elem? forall U : Cmp
+  def max_by?(& : Elem -> U) : Elem? forall U : Comparable
+    max_by_entry { |e| yield e }[0]
+  end
+
+  # Whether there was an element is the key's to say, not the element's: a
+  # nil element can be the largest, and `found.nil?` refused
+  # `List.new([nil, 1]).max_by { |x| x ? x : 5 }` as empty where
+  # `Array#max_by` and the other library answer nil. `min_by` and
+  # `minmax_by` read the key the same way.
+  def max_by(& : Elem -> U) : Elem forall U : Comparable
+    entry = max_by_entry { |e| yield e }
+    raise "max_by of an empty collection" if entry[1].nil?
+    entry[0].as(Elem)
+  end
+
+  # The first element with the largest key, and that key: nil only when
+  # there was no element.
+  private def max_by_entry(& : Elem -> U) : Tuple(Elem?, U?) forall U : Comparable
     best = nil
     best_key = nil
     each do |e|
       key = yield e
       current = best_key
-      if current.nil? || key.gt(current)
+      if current.nil? || ((key <=> current) > 0)
         best = e
         best_key = key
       end
     end
-    best
-  end
-
-  def max_by(& : Elem -> U) : Elem forall U : Cmp
-    found = max_by? { |e| yield e }
-    return found unless found.nil?
-    raise "empty"
+    {best, best_key}
   end
 
   def group_by(& : Elem -> U) : Hash(U, Array(Elem)) forall U : Hashable
@@ -383,7 +429,7 @@ pub trait Enumerable
     result
   end
 
-  def to_h(& : Elem -> ::Tuple(K, V)) : Hash(K, V) forall K : Hashable, V
+  def to_h(& : Elem -> Tuple(K, V)) : Hash(K, V) forall K : Hashable, V
     result = {} of K => V
     each do |e|
       pair = yield e
@@ -392,6 +438,27 @@ pub trait Enumerable
     result
   end
 
+  # Yields each window of *n* elements, the last one short if the source
+  # does not divide. The block form is the one `each_` promises everywhere
+  # else in this trait — `each`, `each_with_index`, `each_with_object`,
+  # `each_cons_pair`, `each_step` all take one — and these two were the
+  # exception: they materialised `Array(Array(Elem))` and refused a block,
+  # which allocates every window up front, the cost a block exists to
+  # avoid. `Indexable` has had both shapes all along.
+  def each_slice(n : Int32, & : Array(Elem) -> Nil) : Nil
+    raise "slice size must be positive" if n <= 0
+    current = [] of Elem
+    each do |e|
+      current << e
+      if current.size == n
+        yield current
+        current = [] of Elem
+      end
+    end
+    yield current unless current.empty?
+  end
+
+  # And the same windows as an array, for a caller that wants them all.
   def each_slice(n : Int32) : Array(Array(Elem))
     # The same refusal `Indexable#each_slice` makes: a window of zero is a
     # question with no answer, and the three trait towers gave it three
@@ -411,6 +478,18 @@ pub trait Enumerable
     slices
   end
 
+  # Yields each overlapping window of *n* elements; nothing when the source
+  # is shorter than one window.
+  def each_cons(n : Int32, & : Array(Elem) -> Nil) : Nil
+    raise "cons size must be positive" if n <= 0
+    window = [] of Elem
+    each do |e|
+      window << e
+      window.shift if window.size > n
+      yield window.dup if window.size == n
+    end
+  end
+
   def in_slices_of(n : Int32) : Array(Array(Elem))
     each_slice(n)
   end
@@ -427,12 +506,16 @@ pub trait Enumerable
     result
   end
 
+  # Whether there is a previous element is a flag, not a nil: an element
+  # that is itself nil is still an element, and `[nil, 2]` has the pair
+  # `{nil, 2}`. The nil test skipped every pair whose first half was nil.
   def each_cons_pair(& : Elem, Elem -> Nil) : Nil
+    started = false
     previous = nil
     each do |e|
-      last = previous
-      yield last, e unless last.nil?
+      yield previous.as(Elem), e if started
       previous = e
+      started = true
     end
   end
 
@@ -445,19 +528,23 @@ pub trait Enumerable
     end
   end
 
+  # The same flag as `each_cons_pair`: with the nil test, a nil element
+  # read as "no previous element", so the block was never asked about the
+  # element after it and `[nil, nil, 1]` came back as one chunk.
   def chunk_while(& : Elem, Elem -> Bool) : Array(Array(Elem))
     chunks = [] of Array(Elem)
     current = [] of Elem
+    started = false
     previous = nil
     each do |e|
-      last = previous
-      if last.nil? || (yield last, e)
+      if !started || (yield previous.as(Elem), e)
         current << e
       else
         chunks << current
         current = [e]
       end
       previous = e
+      started = true
     end
     chunks << current unless current.empty?
     chunks
@@ -484,10 +571,14 @@ pub trait Enumerable
     result
   end
 
+  # The first truthy answer, as the other library's: this took the first
+  # non-nil one, `false` included, so `[1, 2, 3, 4].find_value { |i| i > 2 }`
+  # answered false where the other library documents true for that very
+  # call, and `{ |i| i > 8 }` answered false where it answers nil.
   def find_value(& : Elem -> U?) : U? forall U
     each do |e|
       value = yield e
-      return value unless value.nil?
+      return value if value
     end
     nil
   end
@@ -502,16 +593,23 @@ pub trait Enumerable
     result
   end
 
+  # A flag for "an element was seen", not a nil accumulator: a nil element
+  # reset the fold, so `[nil, 2]` answered 2 without calling the block.
   def reduce?(& : Elem, Elem -> Elem) : Elem?
+    found = false
     acc = nil
     each do |e|
-      current = acc
-      acc = current.nil? ? e : (yield current, e)
+      acc = found ? (yield acc.as(Elem), e) : e
+      found = true
     end
     acc
   end
 
+  # Refused under its own name, as `minmax` below is: delegated, a size of
+  # zero was refused with `each_slice`'s sentence, "slice size must be
+  # positive", from a call the reader never wrote.
   def in_groups_of(n : Int32, filler : Elem) : Array(Array(Elem))
+    raise "group size must be positive" if n <= 0
     groups = each_slice(n)
     last = groups.last?
     if last
@@ -522,86 +620,123 @@ pub trait Enumerable
     groups
   end
 
-  def zip(other : O) : Array(::Tuple(Elem, O::Elem)) forall O : Enumerable
-    # SPEC.md II.6 finding 6: Crystal's
+  def zip(other : O) : Array(Tuple(Elem, O::Elem)) forall O : Enumerable
+    # SPEC.md II.6 finding 6: a
     # `zip(*others : Indexable | Iterable | Iterator)` is duck typing left over
     # from having no traits. One bound replaces the union, and `O::Elem` names
     # what the other collection yields without the caller stating it.
     theirs = other.to_a
-    result = [] of ::Tuple(Elem, O::Elem)
+    result = [] of Tuple(Elem, O::Elem)
     i = 0
+    # As many pairs as this collection has elements, and a shorter *other*
+    # refused at its first missing index, as the other library refuses it:
+    # the pairs stopped at the shorter, and an element went without a word.
     each do |e|
-      result << {e, theirs[i]} if i < theirs.size
+      result << {e, theirs[i]}
       i = i + 1
     end
     result
   end
 
-  def min_by?(& : Elem -> U) : Elem? forall U : Cmp
+  def min_by?(& : Elem -> U) : Elem? forall U : Comparable
+    min_by_entry { |e| yield e }[0]
+  end
+
+  def min_by(& : Elem -> U) : Elem forall U : Comparable
+    entry = min_by_entry { |e| yield e }
+    raise "min_by of an empty collection" if entry[1].nil?
+    entry[0].as(Elem)
+  end
+
+  private def min_by_entry(& : Elem -> U) : Tuple(Elem?, U?) forall U : Comparable
     best = nil
     best_key = nil
     each do |e|
       key = yield e
       current = best_key
-      if current.nil? || key.lt(current)
+      if current.nil? || ((key <=> current) < 0)
         best = e
         best_key = key
       end
     end
-    best
+    {best, best_key}
   end
 
-  def min_by(& : Elem -> U) : Elem forall U : Cmp
-    found = min_by? { |e| yield e }
-    return found unless found.nil?
-    raise "empty"
-  end
-
-  def max_of?(& : Elem -> U) : U? forall U : Cmp
+  def max_of?(& : Elem -> U) : U? forall U : Comparable
     best = nil
     each do |e|
       key = yield e
       current = best
-      best = key if current.nil? || key.gt(current)
+      best = key if current.nil? || ((key <=> current) > 0)
     end
     best
   end
 
-  def max_of(& : Elem -> U) : U forall U : Cmp
+  def max_of(& : Elem -> U) : U forall U : Comparable
     found = max_of? { |e| yield e }
     return found unless found.nil?
-    raise "empty"
+    raise "max_of of an empty collection"
   end
 
-  def min_of?(& : Elem -> U) : U? forall U : Cmp
+  def min_of?(& : Elem -> U) : U? forall U : Comparable
     best = nil
     each do |e|
       key = yield e
       current = best
-      best = key if current.nil? || key.lt(current)
+      best = key if current.nil? || ((key <=> current) < 0)
     end
     best
   end
 
-  def min_of(& : Elem -> U) : U forall U : Cmp
+  def min_of(& : Elem -> U) : U forall U : Comparable
     found = min_of? { |e| yield e }
     return found unless found.nil?
-    raise "empty"
+    raise "min_of of an empty collection"
   end
 
-  def minmax? : ::Tuple(Elem?, Elem?) where Elem : Cmp
-    low = min?
-    high = max?
+  # One walk, as `minmax_of?` below takes: `min?` and then `max?` walked the
+  # collection twice, so a source that can be read once (a pipe, a
+  # generator) answered {1, nil} for [3, 1, 4, 1, 5] and `minmax` refused
+  # it as empty.
+  def minmax? : Tuple(Elem?, Elem?) where Elem : Comparable
+    low = nil
+    high = nil
+    each do |e|
+      cur_low = low
+      low = e if cur_low.nil? || (e <=> cur_low) < 0
+      cur_high = high
+      high = e if cur_high.nil? || (e <=> cur_high) > 0
+    end
     {low, high}
   end
 
-  def minmax : ::Tuple(Elem, Elem) where Elem : Cmp
-    low = min
-    high = max
+  # Refuses under its own name rather than letting `min`'s refusal surface
+  # from a call the reader never wrote: `minmax` of an empty collection is
+  # `minmax`'s mistake, not `min`'s.
+  def minmax : Tuple(Elem, Elem) where Elem : Comparable
+    pair = minmax?
+    low = pair[0]
+    high = pair[1]
+    if low.nil? || high.nil?
+      raise "minmax of an empty collection"
+    end
     {low, high}
   end
 
-  def minmax_by?(& : Elem -> U) : ::Tuple(Elem?, Elem?) forall U : Cmp
+  def minmax_by?(& : Elem -> U) : Tuple(Elem?, Elem?) forall U : Comparable
+    entry = minmax_by_entry { |e| yield e }
+    {entry[0], entry[1]}
+  end
+
+  def minmax_by(& : Elem -> U) : Tuple(Elem, Elem) forall U : Comparable
+    entry = minmax_by_entry { |e| yield e }
+    raise "minmax_by of an empty collection" if entry[2].nil?
+    {entry[0].as(Elem), entry[1].as(Elem)}
+  end
+
+  # The first smallest and first largest elements, and the smallest key,
+  # which is nil only when there was no element.
+  private def minmax_by_entry(& : Elem -> U) : Tuple(Elem?, Elem?, U?) forall U : Comparable
     min_elem = nil
     max_elem = nil
     min_key = nil
@@ -609,52 +744,42 @@ pub trait Enumerable
     each do |e|
       key = yield e
       cur_min = min_key
-      if cur_min.nil? || key.cmp(cur_min) < 0
+      if cur_min.nil? || (key <=> cur_min) < 0
         min_elem = e
         min_key = key
       end
       cur_max = max_key
-      if cur_max.nil? || key.cmp(cur_max) > 0
+      if cur_max.nil? || (key <=> cur_max) > 0
         max_elem = e
         max_key = key
       end
     end
-    {min_elem, max_elem}
+    {min_elem, max_elem, min_key}
   end
 
-  def minmax_by(& : Elem -> U) : ::Tuple(Elem, Elem) forall U : Cmp
-    pair = minmax_by? { |e| yield e }
-    low = pair[0]
-    high = pair[1]
-    if low.nil? || high.nil?
-      raise "empty"
-    end
-    {low, high}
-  end
-
-  def minmax_of?(& : Elem -> U) : ::Tuple(U?, U?) forall U : Cmp
+  def minmax_of?(& : Elem -> U) : Tuple(U?, U?) forall U : Comparable
     low = nil
     high = nil
     each do |e|
       key = yield e
       cur_low = low
-      if cur_low.nil? || key.cmp(cur_low) < 0
+      if cur_low.nil? || (key <=> cur_low) < 0
         low = key
       end
       cur_high = high
-      if cur_high.nil? || key.cmp(cur_high) > 0
+      if cur_high.nil? || (key <=> cur_high) > 0
         high = key
       end
     end
     {low, high}
   end
 
-  def minmax_of(& : Elem -> U) : ::Tuple(U, U) forall U : Cmp
+  def minmax_of(& : Elem -> U) : Tuple(U, U) forall U : Comparable
     pair = minmax_of? { |e| yield e }
     low = pair[0]
     high = pair[1]
     if low.nil? || high.nil?
-      raise "empty"
+      raise "minmax_of of an empty collection"
     end
     {low, high}
   end
@@ -675,426 +800,36 @@ pub trait Enumerable
   end
 end
 
-# ---------------------------------------------------------------------------
-# Enumerable implementations for core collection types
-# ---------------------------------------------------------------------------
-
-# `Array` already answers `each` with exactly this shape, so the impl only
-# names what it enumerates. Writing the body again here would reach into the
-# prelude's own `@size` and `@buffer` from another module, and would redefine
-# a method the prelude declares, which is what R-3 refuses.
+# The prelude's `Array` is an `Enumerable`, which it was not: `Indexable`
+# has `impl Indexable for Array(T)` and that trait's header claimed its
+# `each` "satisfies Enumerable's abstract def each requirement" — it does
+# not, and SPEC.md II.6 says so, prescribing the second impl that answers
+# only `type Elem`. Without this line `slice.zip(array)` did not compile
+# ("Array(Int32) does not implement Enumerable, required by `O` in `zip`"),
+# which is the most ordinary thing a caller could ask of two sequences, and
+# `array.take(2)` did not exist. `Array#each` is the prelude's own, so the
+# impl needs nothing but the element type. It lives here rather than in the
+# prelude because R-3 puts an impl with the trait or with the type, and the
+# prelude does not know std exists.
 impl Enumerable for Array(T) forall T
   type Elem = T
 end
 
-# `Hash` already answers `each` with this shape, so the impl only names what
-# it enumerates. Writing the body again here would reach into the prelude's
-# own `@size`, `@keys` and `@values` from another module, and would redefine
-# a method the prelude declares, which is what R-3 refuses.
-impl Enumerable for Hash(K, V) forall K, V
-  type Elem = ::Tuple(K, V)
-end
-
-class ::Hash(K, V)
-  def each_entry(&block : ::Tuple(K, V) -> Nil) : Nil
-    each(&block)
-  end
-
-  def each_key(& : K -> Nil) : Nil
-    entry = 0
-    while entry < @size
-      yield @keys[entry]
-      entry = entry + 1
-    end
-  end
-
-  def each_value(& : V -> Nil) : Nil
-    entry = 0
-    while entry < @size
-      yield @values[entry]
-      entry = entry + 1
-    end
-  end
-
-  def has_value?(val : V) : Bool
-    entry = 0
-    while entry < @size
-      return true if @values[entry] == val
-      entry = entry + 1
-    end
-    false
-  end
-
-  def fetch(key : K, default : V) : V
-    res = self[key]?
-    res.nil? ? default : res
-  end
-
-  def fetch(key : K, & : K -> V) : V
-    res = self[key]?
-    res.nil? ? (yield key) : res
-  end
-
-  def key_for(val : V) : K
-    key_for?(val) || raise "no such value #{val.inspect}"
-  end
-
-  def key_for?(val : V) : K?
-    entry = 0
-    while entry < @size
-      return @keys[entry] if @values[entry] == val
-      entry = entry + 1
-    end
-    nil
-  end
-
-  def values_at(*search_keys : K) : Array(V)
-    result = Array(V).new(search_keys.size)
-    search_keys.each do |k|
-      result << self[k]
-    end
-    result
-  end
-
-  def merge(other : Hash(K, V)) : Hash(K, V)
-    copy = dup
-    copy.merge_in_place(other)
-    copy
-  end
-
-  def merge_in_place(other : Hash(K, V)) : Hash(K, V)
-    entry = 0
-    while entry < other.size
-      self[other.keys[entry]] = other.values[entry]
-      entry = entry + 1
-    end
-    self
-  end
-
-  def select(& : K, V -> Bool) : Hash(K, V)
-    result = {} of K => V
-    entry = 0
-    while entry < @size
-      k = @keys[entry]
-      v = @values[entry]
-      result[k] = v if yield k, v
-      entry = entry + 1
-    end
-    result
-  end
-
-  def select_in_place(& : K, V -> Bool) : Hash(K, V)
-    to_del = [] of K
-    entry = 0
-    while entry < @size
-      k = @keys[entry]
-      v = @values[entry]
-      to_del << k unless yield k, v
-      entry = entry + 1
-    end
-    to_del.each { |k| delete(k) }
-    self
-  end
-
-  def reject(& : K, V -> Bool) : Hash(K, V)
-    self.select { |k, v| !(yield k, v) }
-  end
-
-  def reject_in_place(& : K, V -> Bool) : Hash(K, V)
-    self.select_in_place { |k, v| !(yield k, v) }
-  end
-
-  def compact : Hash(K, V)
-    self.select { |_, v| !v.nil? }
-  end
-
-  def compact_in_place : Hash(K, V)
-    self.select_in_place { |_, v| !v.nil? }
-  end
-
-  def transform_keys(& : K -> NK) : Hash(NK, V) forall NK
-    result = {} of NK => V
-    entry = 0
-    while entry < @size
-      result[yield @keys[entry]] = @values[entry]
-      entry = entry + 1
-    end
-    result
-  end
-
-  def transform_values(& : V -> NV) : Hash(K, NV) forall NV
-    result = {} of K => NV
-    entry = 0
-    while entry < @size
-      result[@keys[entry]] = yield @values[entry]
-      entry = entry + 1
-    end
-    result
-  end
-
-  def self.zip(keys : Array(K), values : Array(V)) : Hash(K, V)
-    raise "size mismatch in Hash.zip" if keys.size != values.size
-    result = {} of K => V
-    i = 0
-    while i < keys.size
-      result[keys[i]] = values[i]
-      i = i + 1
-    end
-    result
-  end
-
-  def first_key : K
-    first_key? || raise "empty hash"
-  end
-
-  def first_key? : K?
-    @size == 0 ? nil : @keys[0]
-  end
-
-  def first_value : V
-    first_value? || raise "empty hash"
-  end
-
-  def first_value? : V?
-    @size == 0 ? nil : @values[0]
-  end
-
-  def last_key : K
-    last_key? || raise "empty hash"
-  end
-
-  def last_key? : K?
-    @size == 0 ? nil : @keys[@size - 1]
-  end
-
-  def last_value : V
-    last_value? || raise "empty hash"
-  end
-
-  def last_value? : V?
-    @size == 0 ? nil : @values[@size - 1]
-  end
-
-  def shift : ::Tuple(K, V)
-    shift? || raise "empty hash"
-  end
-
-  def shift? : ::Tuple(K, V)?
-    return nil if @size == 0
-    k = @keys[0]
-    v = @values[0]
-    delete(k)
-    {k, v}
-  end
-
-  def clear : Hash(K, V)
-    while @size > 0
-      delete(@keys[0])
-    end
-    self
-  end
-
-  def subset_of?(other : Hash(K, V)) : Bool
-    return false if @size > other.size
-    entry = 0
-    while entry < @size
-      k = @keys[entry]
-      ov = other[k]?
-      return false if ov.nil? || ov != @values[entry]
-      entry = entry + 1
-    end
-    true
-  end
-
-  def proper_subset_of?(other : Hash(K, V)) : Bool
-    @size < other.size && subset_of?(other)
-  end
-
-  def superset_of?(other : Hash(K, V)) : Bool
-    other.subset_of?(self)
-  end
-
-  def proper_superset_of?(other : Hash(K, V)) : Bool
-    other.proper_subset_of?(self)
-  end
-
-  def dup : Hash(K, V)
-    result = {} of K => V
-    entry = 0
-    while entry < @size
-      result[@keys[entry]] = @values[entry]
-      entry = entry + 1
-    end
-    result
-  end
-
-  def invert : Hash(V, K)
-    result = {} of V => K
-    entry = 0
-    while entry < @size
-      result[@values[entry]] = @keys[entry]
-      entry = entry + 1
-    end
-    result
-  end
-
-  def to_a : Array(::Tuple(K, V))
-    result = Array(::Tuple(K, V)).new(@size)
-    entry = 0
-    while entry < @size
-      result << {@keys[entry], @values[entry]}
-      entry = entry + 1
-    end
-    result
-  end
-
-  def to_h : Hash(K, V)
-    self
-  end
-
-  def put_if_absent(key : K, val : V) : V
-    cur = self[key]?
-    if cur.nil?
-      self[key] = val
-      val
-    else
-      cur
-    end
-  end
-
-  def update(key : K, & : V -> V) : V
-    cur = self[key]?
-    if cur.nil?
-      raise "no such key #{key.inspect}"
-    else
-      new_val = yield cur
-      self[key] = new_val
-      new_val
-    end
-  end
-
-  def ==(other : Hash(K, V)) : Bool
-    return false unless @size == other.size
-    entry = 0
-    while entry < @size
-      k = @keys[entry]
-      ov = other[k]?
-      return false if ov.nil? || ov != @values[entry]
-      entry = entry + 1
-    end
-    true
-  end
-end
-
-# `Hash` implements `Enumerable` above. The prelude declares `Hash#each`
-# yielding the key and value as a single tuple `{K, V}`, so the impl answers
-# `type Elem = ::Tuple(K, V)` and inherits all 71 Enumerable defaults without
-# redefining `each` (R-3). Block destructuring preserves `|k, v|` callers.
-
-struct ::Range(B, E)
-  def each_element(& : B -> Nil) : Nil
-    val = @begin
-    if @exclusive
-      while val < @end
-        yield val
-        val = val + 1
-      end
-    else
-      while val <= @end
-        yield val
-        val = val + 1
-      end
-    end
-  end
-
-  def includes?(val : B) : Bool
-    if @exclusive
-      @begin <= val && val < @end
-    else
-      @begin <= val && val <= @end
-    end
-  end
-
-  def cover?(val : B) : Bool
-    includes?(val)
-  end
-
-  def ===(val : B) : Bool
-    includes?(val)
-  end
-
-  def step(by : Int32 = 1, & : B -> Nil) : Nil
-    raise "step must be positive: #{by}" if by <= 0
-    val = @begin
-    if @exclusive
-      while val < @end
-        yield val
-        val = val + by
-      end
-    else
-      while val <= @end
-        yield val
-        val = val + by
-      end
-    end
-  end
-
-  def cycle(& : B -> Nil) : Nil
-    while true
-      each_element { |x| yield x }
-    end
-  end
-
-  def reverse_each(& : B -> Nil) : Nil
-    items = to_a
-    i = items.size - 1
-    while i >= 0
-      yield items[i]
-      i = i - 1
-    end
-  end
-
-  def bsearch(& : B -> Bool) : B?
-    low = @begin
-    high = @exclusive ? @end - 1 : @end
-    ans = nil
-    while low <= high
-      mid = low + (high - low) // 2
-      if yield mid
-        ans = mid
-        high = mid - 1
-      else
-        low = mid + 1
-      end
-    end
-    ans
-  end
-
-  def min : B
-    @begin
-  end
-
-  def max : B
-    @exclusive ? @end - 1 : @end
-  end
-
-  def ==(other : Range(B, E)) : Bool
-    @begin == other.begin && @end == other.end && @exclusive == other.exclusive?
-  end
-end
-
-# `Range` already answers `each` with this exact shape, so the impl only names
-# what it enumerates. See the note on the `Array` impl above for why writing
-# the body again here would be a second definition rather than an addition.
-impl Enumerable for Range(B, E) forall B, E
-  type Elem = B
+# The prelude's `Set` likewise: `Set#each` is the prelude's own, so the
+# impl answers only the element type. It lives here for the same reason
+# `Array`'s does — R-3 puts an impl with the trait or with the type, and
+# the prelude does not know std exists — and std/set, which adds the set
+# algebra to the same type, imports this module so that a caller of one
+# gets both.
+impl Enumerable for Set(T) forall T
+  type Elem = T
 end
 
 # ---------------------------------------------------------------------------
 # Method coverage
 # ---------------------------------------------------------------------------
 #
-# All 71 method names from Crystal's Enumerable are ported here against `each`.
-# Methods taking block transforms map element keys into `Cmp`, `Num`, or
+# All 71 method names of the trait are written here against `each`.
+# Methods taking block transforms map element keys into `Comparable`, `Num`, or
 # `Hashable` traits, providing full coverage for sorting, min/max calculations,
 # grouping, counting, and slicing.

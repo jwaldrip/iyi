@@ -1,12 +1,8 @@
 module compiler/macros/macro_parser
 
-import compiler/syntax/ast
-import compiler/syntax/parser
-import compiler/macros/ast
-
-using compiler/syntax/ast::{ASTNode, Arg, BoolLiteral, Call, Expressions, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, MacroVar, MacroVerbatim, Nop, NumberLiteral, StringLiteral, Var, StringBuilder}
-using compiler/syntax/parser::{Parser}
-using compiler/macros/ast::{MacroId}
+import compiler/syntax/ast::{ASTNode, Arg, BoolLiteral, Call, Expressions, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, MacroVar, MacroVerbatim, Nop, NumberLiteral, StringLiteral, Var, StringBuilder}
+import compiler/syntax/parser::{Parser}
+import compiler/macros/ast::{MacroId}
 
 class MacroBodyScanner
   property source : String

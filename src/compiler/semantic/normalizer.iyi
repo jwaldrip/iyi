@@ -1,13 +1,9 @@
 module compiler/semantic/normalizer
 
-import compiler/syntax/ast
-import compiler/syntax/transformer
-import compiler/syntax/visitor
+import compiler/syntax/ast::{ASTNode, Alias, And, Arg, ArrayLiteral, Assign, Block, BoolLiteral, Break, Call, CharLiteral, ClassVar, Def, Defer, DoubleSplat, ExceptionHandler, Expressions, Generic, Global, If, InstanceVar, IsA, Macro, MultiAssign, NamedArgument, Next, NilLiteral, Nop, Not, NumberLiteral, OpAssign, Or, Path, ProcLiteral, ProcNotation, Propagate, Recover, Return, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, Underscore, Union, Unless, Until, Var, While}
+import compiler/syntax/transformer::{Transformer}
+import compiler/syntax/visitor::{Visitor}
 import std/digest
-
-using compiler/syntax/ast::{ASTNode, Alias, And, Arg, ArrayLiteral, Assign, Block, BoolLiteral, Break, Call, CharLiteral, ClassVar, Def, Defer, DoubleSplat, ExceptionHandler, Expressions, Generic, Global, If, InstanceVar, IsA, Macro, MultiAssign, NamedArgument, Next, NilLiteral, Nop, Not, NumberLiteral, OpAssign, Or, Path, ProcLiteral, ProcNotation, Propagate, Recover, Return, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, Underscore, Union, Unless, Until, Var, While}
-using compiler/syntax/transformer::{Transformer}
-using compiler/syntax/visitor::{Visitor}
 
 pub class NormalizerProgram
   property iyi_prelude : Bool

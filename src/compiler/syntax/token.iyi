@@ -1,8 +1,7 @@
 module compiler/syntax/token
 
-import compiler/foundation/location
+import compiler/foundation/location::{Location}
 import compiler/foundation/enums
-using compiler/foundation/location::{Location}
 
 pub enum Keyword
   ABSTRACT

@@ -1,7 +1,6 @@
 module compiler/llvm/memory_buffer
 
-import compiler/llvm/lib_llvm
-using compiler/llvm/lib_llvm::{string_from_c, string_and_dispose}
+import compiler/llvm/lib_llvm::{string_from_c, string_and_dispose}
 
 pub class MemoryBuffer
   getter unwrap : LibLLVM::MemoryBufferRef

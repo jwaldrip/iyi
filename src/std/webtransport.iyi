@@ -48,10 +48,8 @@
 
 module std/webtransport
 
-import std/slice
-import std/capsule
-using std/slice::{Slice, Bytes}
-using std/capsule::{VarInt, HttpDatagram, Capsule, CapsuleType, CapsuleReader, ExtendedConnect, CapsuleProtocol}
+import std/slice::{Slice, Bytes}
+import std/capsule::{VarInt, HttpDatagram, Capsule, CapsuleType, CapsuleReader, ExtendedConnect, CapsuleProtocol}
 
 # =============================================================================
 # Constants for WebTransport over HTTP/3

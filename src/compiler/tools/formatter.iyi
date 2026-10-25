@@ -1,18 +1,11 @@
 module compiler/tools/formatter
 
-import compiler/foundation/location
-import compiler/syntax/token
-import compiler/syntax/lexer
-import compiler/syntax/ast
-import compiler/syntax/visitor
-import compiler/syntax/parser
-
-using compiler/foundation/location::{Location}
-using compiler/syntax/token::{Token, TokenKind, Keyword, NumberKind, DelimiterKind, DelimiterState}
-using compiler/syntax/lexer::{Lexer}
-using compiler/syntax/ast::{ASTNode, Expressions, Nop, NilLiteral, BoolLiteral, NumberLiteral, CharLiteral, StringLiteral, StringInterpolation, SymbolLiteral, ArrayLiteral, HashLiteral, TupleLiteral, NamedTupleLiteral, RangeLiteral, RegexLiteral, Var, InstanceVar, ClassVar, Global, Path, Generic, Self, Underscore, ImplicitObj, Return, Break, Next, Yield, If, Unless, While, Until, Case, When, Assign, OpAssign, MultiAssign, And, Or, Not, Splat, DoubleSplat, Cast, NilableCast, IsA, RespondsTo, TypeOf, NamedArgument, Block, Call, Def, Arg, ClassDef, ModuleDef, EnumDef, Alias, Include, Extend, TraitDef, ImplDef, AssocTypeDecl, AnnotationDef, Annotation, TypeDeclaration, UninitializedVar, VisibilityModifier, LibDef, FunDef, TypeDef, CStructOrUnionDef, ExternalVar, ProcNotation, ProcPointer, ProcLiteral, Union, Metaclass, ModuleHeader, SizeOf, InstanceSizeOf, AlignOf, InstanceAlignOf, OffsetOf, PointerOf, Defer, Recover, ImportDecl, UsingDecl, Propagate, ExceptionHandler, Rescue, Visibility}
-using compiler/syntax/visitor::{Visitor}
-using compiler/syntax/parser::{Parser}
+import compiler/foundation/location::{Location}
+import compiler/syntax/token::{Token, TokenKind, Keyword, NumberKind, DelimiterKind, DelimiterState}
+import compiler/syntax/lexer::{Lexer}
+import compiler/syntax/ast::{ASTNode, Expressions, Nop, NilLiteral, BoolLiteral, NumberLiteral, CharLiteral, StringLiteral, StringInterpolation, SymbolLiteral, ArrayLiteral, HashLiteral, TupleLiteral, NamedTupleLiteral, RangeLiteral, RegexLiteral, Var, InstanceVar, ClassVar, Global, Path, Generic, Self, Underscore, ImplicitObj, Return, Break, Next, Yield, If, Unless, While, Until, Case, When, Assign, OpAssign, MultiAssign, And, Or, Not, Splat, DoubleSplat, Cast, NilableCast, IsA, RespondsTo, TypeOf, NamedArgument, Block, Call, Def, Arg, ClassDef, ModuleDef, EnumDef, Alias, Include, Extend, TraitDef, ImplDef, AssocTypeDecl, AnnotationDef, Annotation, TypeDeclaration, UninitializedVar, VisibilityModifier, LibDef, FunDef, TypeDef, CStructOrUnionDef, ExternalVar, ProcNotation, ProcPointer, ProcLiteral, Union, Metaclass, ModuleHeader, SizeOf, InstanceSizeOf, AlignOf, InstanceAlignOf, OffsetOf, PointerOf, Defer, Recover, ImportDecl, UsingDecl, Propagate, ExceptionHandler, Rescue, Visibility, MacroExpression}
+import compiler/syntax/visitor::{Visitor}
+import compiler/syntax/parser::{Parser}
 
 pub struct AlignInfo
   property id : UInt64
@@ -1458,6 +1451,13 @@ pub class Formatter < Visitor
     has_parens = @token.type == TokenKind::OP_LPAREN
     write_token(TokenKind::OP_LPAREN) if has_parens
 
+    if @token.type == TokenKind::IDENT && @token.value == "self?" && node.types.size == 2 && node.types[0].is_a?(Self)
+      write("self?")
+      next_token
+      write_token(TokenKind::OP_RPAREN) if has_parens
+      return false
+    end
+
     column = @column
     node.types.each_with_index do |type, i|
       if @token.type == TokenKind::OP_QUESTION
@@ -1652,6 +1652,27 @@ pub class Formatter < Visitor
     write_keyword(Keyword::PUB, " ") if node.exported
     write_keyword(Keyword::IMPORT, " ")
     format_module_path(node.path)
+
+    if node.glob
+      write_token(TokenKind::OP_COLON_COLON)
+      skip_space
+      write_token(TokenKind::OP_STAR)
+    elsif names = node.names
+      write_token(TokenKind::OP_COLON_COLON)
+      skip_space_or_newline
+      write_token(TokenKind::OP_LCURLY)
+      skip_space_or_newline
+      names.each_with_index do |name, i|
+        write(name)
+        next_token_skip_space_or_newline
+        if @token.type == TokenKind::OP_COMMA
+          write(", ") unless i == names.size - 1
+          next_token_skip_space_or_newline
+        end
+      end
+      write_token(TokenKind::OP_RCURLY)
+    end
+
     false
   end
 
@@ -1672,6 +1693,36 @@ pub class Formatter < Visitor
         end
       end
       write_token(TokenKind::OP_RCURLY)
+    end
+    false
+  end
+
+  def visit(node : MacroExpression) : Bool
+    if node.output
+      check(TokenKind::OP_LCURLY_LCURLY)
+      write("{{")
+      next_token
+      skip_space
+      write(" ")
+      accept(node.exp)
+      skip_space
+      write(" ")
+      check(TokenKind::OP_RCURLY)
+      next_token
+      check(TokenKind::OP_RCURLY)
+      write("}}")
+      next_token
+    else
+      check(TokenKind::OP_LCURLY_PERCENT)
+      write("{%")
+      next_token
+      skip_space
+      write(" ")
+      accept(node.exp)
+      skip_space
+      check(TokenKind::OP_PERCENT_RCURLY)
+      write("%}")
+      next_token
     end
     false
   end

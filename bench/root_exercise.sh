@@ -37,21 +37,68 @@
 # check that cannot fail is not a check. The copy is why nothing in the tree is
 # touched to do it.
 #
-# Needs `make` for bin/iyi, plus `nm`, and `otool` on darwin or `readelf` on
-# Linux. Exits non-zero if any check fails.
+# Needs `make` for bin/iyi, plus `nm` (or LLVM's `llvm-nm`), and `otool` on
+# darwin, `readelf` on Linux or the MSVC toolchain's `dumpbin` on Windows.
+# Exits non-zero if any check fails.
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-IYI="$REPO/bin/iyi"
+. "$REPO/bench/floor_base.sh"
+
+# The search path is a list, and the byte between its entries is the
+# platform's: `;` where a drive letter already owns the colon.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT) PSEP=';' ;;
+  *) PSEP=':' ;;
+esac
+
+IYI="${IYI:-$REPO/bin/iyi}"
 WORK="$(mktemp -d)"
+# A native compiler cannot resolve this shell's own path mapping: a search
+# path built from `pwd` is `/c/...` and finds no prelude at all, and a
+# scratch directory named `/tmp/tmp.X` is silently ignored on that path, so
+# the patched copy is never read and the proof that a check can fail quietly
+# stops proving it.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT)
+    REPO="$(cygpath -m "$REPO")"
+    WORK="$(cygpath -m "$WORK")"
+    ;;
+esac
+
 trap 'rm -rf "$WORK"' EXIT
 
 status=0
 
+# A floor measured with a reader that is not installed is not measured at
+# all: `nm -u` in a shell with no `nm` prints nothing, and an empty symbol
+# list reads as a floor that held. The readers are resolved once here, and
+# the arm that needs them says what it could not measure instead.
+NM=""
+command -v nm >/dev/null 2>&1 && NM=nm
+# Windows has no `nm`; LLVM's reads the ELF objects the cross-compile
+# arm below writes, and the runners carry it where LLVM installs itself.
+if [ -z "$NM" ]; then
+  for candidate in llvm-nm "/c/Program Files/LLVM/bin/llvm-nm.exe"; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      NM="$candidate"
+      break
+    fi
+  done
+fi
+LIBS_READER=""
+for candidate in otool readelf; do
+  if command -v "$candidate" >/dev/null 2>&1; then
+    LIBS_READER="$candidate"
+    break
+  fi
+done
+unmeasured=0
+
 # The same readers `bench/dependency_floor.sh` uses, for the same reason: what
 # a binary itself leaves undefined and what it itself asks to have loaded.
 symbols() {
-  nm -u "$1" 2>/dev/null |
+  "$NM" -u "$1" 2>/dev/null |
     sed -e 's/^ *//' -e 's/^U  *//' -e 's/@.*$//' |
     awk '{ print $NF }' |
     sed -e 's/^_//' |
@@ -60,7 +107,7 @@ symbols() {
 }
 
 libraries() {
-  if command -v otool >/dev/null 2>&1; then
+  if [ "$LIBS_READER" = otool ]; then
     otool -L "$1" 2>/dev/null | sed -n '2,$p' | awk '{ print $1 }' | sed 's|.*/||' | sort -u
   else
     readelf -d "$1" 2>/dev/null |
@@ -106,18 +153,31 @@ build_and_run() {
 echo "== the exercise, the default allocator"
 build_and_run "default" roots-gc
 
+# Where the collector's allocator is not the default the program says so and
+# exercises nothing. The arms below would then be reading an empty run, and a
+# negative proof whose program has nothing to fail at reports the opposite of
+# the truth, so they say what went unmeasured instead.
+EXERCISED=yes
+grep -q "root discovery needs the collector" "$WORK/roots-gc.out" 2>/dev/null &&
+  EXERCISED=no
+
 echo
 echo "== every check reported"
-for check in "stack bounds:" "global range:" "stack root:" "register root:" \
-             "global root:" "interior pointer:" "not a pointer:" "arena tail:" \
-             "freed chunk:" "freed large:" "many roots:" "maps parser:" \
-             "all root checks passed"; do
-  if ! grep -q "$check" "$WORK/roots-gc.out" 2>/dev/null; then
-    echo "  MISSING: $check"
-    status=1
-  fi
-done
-[ "$status" -eq 0 ] && echo "  bounds, stack, register, global, interior, rejection, tail, freed, many and the maps parser all reported"
+if [ "$EXERCISED" = no ]; then
+  echo "  the collector's allocator is not the default here, so there is nothing reported to check"
+  unmeasured=$((unmeasured + 1))
+else
+  for check in "stack bounds:" "global range:" "stack root:" "register root:" \
+               "global root:" "interior pointer:" "not a pointer:" "large walk:" "arena tail:" \
+               "freed chunk:" "freed large:" "many roots:" "maps parser:" "dead helper:" \
+               "all root checks passed"; do
+    if ! grep -q "$check" "$WORK/roots-gc.out" 2>/dev/null; then
+      echo "  MISSING: $check"
+      status=1
+    fi
+  done
+  [ "$status" -eq 0 ] && echo "  bounds, stack, register, global, interior, rejection, large walk, tail, freed, many, the maps parser and the dead helper all reported"
+fi
 
 echo
 echo "== the same program, opted out with -Dgc_none"
@@ -137,10 +197,64 @@ echo "== the same program with optimisation on"
 # build that changes register allocation is the one worth running twice. The
 # register check names its own premises and fails when one is gone, so this
 # run is not a formality: it is the one that would catch the ordering that
-# lets the optimiser reuse the register before the scan reaches it.
+# lets the optimiser reuse the register before the scan reaches it. The
+# dead-helper check is asserted only here, where `IyiMark.collect` is
+# inlined into the program's frame and zeroes everything under it.
 build_and_run "release" roots-release --release
-if ! grep -q "all root checks passed" "$WORK/roots-release.out" 2>/dev/null; then
+if [ "$EXERCISED" = no ]; then
+  echo "  nothing was exercised here, so the optimised run is unmeasured too"
+  unmeasured=$((unmeasured + 1))
+elif ! grep -q "all root checks passed" "$WORK/roots-release.out" 2>/dev/null; then
   echo "  MISSING: the optimised build did not reach the end"
+  status=1
+fi
+
+echo
+echo "== a collection in a --release build that writes artifacts"
+# The dead-stack clearing stored through a call that such a build does not
+# inline, and the call's return address sat in the stretch it cleared:
+# std_slice_exercise, built so, died of a memory fault at its first
+# collection.
+if ! "$IYI" build --release --emit-iyimod "$WORK/mods-rel" -o "$WORK/slice-rel" "$REPO/bench/std_slice_exercise.iyi" >"$WORK/slice-rel.build.log" 2>&1; then
+  echo "  the --release --emit-iyimod build failed:"; sed -n '1,8p' "$WORK/slice-rel.build.log"; status=1
+elif ! "$WORK/slice-rel" >"$WORK/slice-rel.out" 2>&1; then
+  echo "  a --release --emit-iyimod build died: $(tail -1 "$WORK/slice-rel.out")"; status=1
+else
+  echo "  std_slice_exercise built --release --emit-iyimod collects and ends"
+fi
+
+echo
+echo "== a helper the top level called once leaves nothing in its frame"
+# An optimised build inlined `make` - one call site, which LLVM inlines
+# whatever its size - into `__iyi_main`, whose frame lives as long as the
+# program, and spilled the array to a slot of it nothing wrote again: the
+# 4,000-array form of this kept 312 MB marked through three collections,
+# where a debug build freed all of it. The compiler keeps a call the top
+# level makes once out of line (codegen/call.cr, `keep_call_out_of_main`).
+# Built with --release only, because only that build inlines.
+cat > "$WORK/dropped.iyi" <<'IYI'
+def make(count : Int32) : Int32
+  a = [] of Array(Int64)
+  count.times { a << Array(Int64).new(10000, 7_i64) }
+  a.size
+end
+
+puts "made #{make(1000)} arrays of 80 KB"
+3.times { IyiMark.collect }
+puts "dropped: under 8 MB marked after three collections (#{IyiMark.bytes_marked < 8_388_608_u64})"
+IYI
+if [ "$EXERCISED" = no ]; then
+  echo "  nothing was exercised here, so the inlined helper is unmeasured too"
+  unmeasured=$((unmeasured + 1))
+elif ! "$IYI" build --release -o "$WORK/dropped" "$WORK/dropped.iyi" >"$WORK/dropped.log" 2>&1; then
+  echo "  build failed"
+  sed -n '1,12p' "$WORK/dropped.log"
+  status=1
+elif "$WORK/dropped" >"$WORK/dropped.out" 2>&1 && grep -q "after three collections (true)" "$WORK/dropped.out"; then
+  sed 's/^/  /' "$WORK/dropped.out"
+else
+  echo "  FAIL: the helper's arrays stayed marked"
+  sed 's/^/    /' "$WORK/dropped.out" | tail -3
   status=1
 fi
 
@@ -169,19 +283,60 @@ echo "== what root discovery asks the machine for"
 # entry nothing uses is a check without teeth.
 case "$(uname -s)" in
   Linux)
-    allowed_symbols="ITM_deregisterTMCloneTable ITM_registerTMCloneTable _cxa_finalize _gmon_start__ _libc_start_main __data_start _end"
+    allowed_symbols="$FLOOR_BASE_LINUX __data_start _end"
     if ! command -v readelf >/dev/null 2>&1; then
       echo "  readelf is required on Linux to read NEEDED entries" >&2
       exit 2
     fi
     ;;
+  MINGW* | MSYS* | CYGWIN* | Windows_NT)
+    # A PE leaves nothing undefined; what it asks of the machine is the
+    # DLLs it imports, read with the toolchain's own `dumpbin`, the floor
+    # `bench/dependency_floor.sh` and `thread_exercise.sh` hold there.
+    # Root discovery reads the stack bounds out of the TEB, the globals
+    # out of the image's own section table (`GetModuleHandleA`), and
+    # another thread's registers with `GetThreadContext`: kernel32's, all
+    # of them, and nothing may join the C runtime.
+    allowed_symbols=""
+    windows_floor=yes
+    ;;
   *)
-    allowed_symbols="__error _tlv_bootstrap madvise pipe pthread_create pthread_kill sigaction sysctlbyname read _dyld_get_image_header _dyld_get_image_vmaddr_slide clock_gettime_nsec_np exit kevent kqueue mmap mprotect munmap pthread_get_stackaddr_np pthread_self write"
+    allowed_symbols="$FLOOR_BASE_DARWIN"
     ;;
 esac
-allowed_libs="libSystem libc.so ld-linux libgcc_s"
+allowed_libs="$FLOOR_LIBS_PROGRAM"
 
-if [ -x "$WORK/roots-gc" ]; then
+if [ "${windows_floor:-no}" = yes ]; then
+  DUMPBIN="$(find_dumpbin || true)"
+  if [ -z "$DUMPBIN" ]; then
+    # The toolchain that linked these binaries carries it, so its absence
+    # is a broken machine, not a platform without the reader.
+    echo "  no dumpbin here, and a machine that built these binaries has the toolchain that carries it"
+    status=1
+  else
+    for bin in roots-gc roots-release; do
+      dlls="$(pe_dlls "$WORK/$bin.exe")"
+      if [ -z "$dlls" ]; then
+        echo "  dumpbin read no import table out of $bin"
+        status=1
+        continue
+      fi
+      extra="$(extra_dlls "$FLOOR_DLLS_RUNTIME" "$dlls")"
+      if [ -n "$extra" ]; then
+        echo "  $bin: root discovery links something new: $(echo $extra)"
+        status=1
+      else
+        printf '  %-14s %s names from %s\n' "$bin" "$(pe_imports "$WORK/$bin.exe" | grep -c .)" "$(echo $dlls)"
+      fi
+    done
+  fi
+elif [ -z "$allowed_symbols" ]; then
+  echo "  no floor is on record for this platform, so what root discovery asks for is unmeasured"
+  unmeasured=$((unmeasured + 1))
+elif [ -z "$NM" ] || [ -z "$LIBS_READER" ]; then
+  echo "  no nm and no otool or readelf here, so what root discovery asks for is unmeasured"
+  unmeasured=$((unmeasured + 1))
+elif [ -x "$WORK/roots-gc" ]; then
   gc_syms="$(symbols "$WORK/roots-gc")"
   gc_libs="$(libraries "$WORK/roots-gc")"
   printf '  symbols   %s\n' "$(echo $gc_syms)"
@@ -217,6 +372,10 @@ case "$(uname -s)" in
   Linux) other_targets="x86_64-darwin aarch64-darwin" ; other_expect="" ;;
   *)     other_targets="x86_64-linux-gnu aarch64-linux-gnu" ; other_expect="__data_start __ehdr_start _end" ;;
 esac
+if [ -z "$NM" ]; then
+  echo "  no nm here, so what these objects leave undefined is unmeasured; they still have to compile"
+  unmeasured=$((unmeasured + 1))
+fi
 for target in $other_targets; do
   if ! "$IYI" build --cross-compile --target "$target" \
        -o "$WORK/roots-$target" "$REPO/bench/root_exercise.iyi" \
@@ -226,7 +385,10 @@ for target in $other_targets; do
     status=1
     continue
   fi
-  found="$(nm -u "$WORK/roots-$target.o" 2>/dev/null |
+  # the object compiled, which is half of what this arm says; with no reader
+  # the other half goes unsaid rather than reading as an empty symbol list.
+  [ -z "$NM" ] && continue
+  found="$("$NM" -u "$WORK/roots-$target.o" 2>/dev/null |
     sed -e 's/^ *//' -e 's/^U  *//' | awk '{ print $NF }' | sort -u | tr '\n' ' ')"
   printf '  %-20s undefined: %s\n' "$target" "${found:-(none)}"
   if [ -n "$other_expect" ]; then
@@ -255,10 +417,15 @@ prove_fails() {
   # $1 label, $2 directory name, $3 expected phrase, rest: the awk program
   local label="$1" dir="$2" phrase="$3"
   shift 3
+  if [ "$EXERCISED" = no ]; then
+    echo "  $label: the exercise has nothing to run here, so this proof is unmeasured"
+    unmeasured=$((unmeasured + 1))
+    return
+  fi
   mkdir -p "$WORK/$dir/iyi"
   cp "$REPO"/src/iyi/*.iyi "$WORK/$dir/iyi/"
   awk "$1" "$REPO/src/iyi/prelude.iyi" > "$WORK/$dir/iyi/prelude.iyi"
-  if ! IYI_PATH="$WORK/$dir:$REPO/src" "$IYI" build \
+  if ! IYI_PATH="$WORK/$dir${PSEP}$REPO/src" "$IYI" build \
        -o "$WORK/$dir/program" "$REPO/bench/root_exercise.iyi" \
        >"$WORK/$dir/build.log" 2>&1; then
     echo "  $label: the patched prelude did not build"
@@ -308,11 +475,89 @@ prove_fails "no fiber walk" nofiber "fiber root:" '
   { sub(/each_fiber_root\(visit\)/, "each_global_root(visit)"); print }
 '
 
+# The probe ignored, so the parser takes the line named `[stack]` whatever
+# holds the arguments: the stack end valgrind's own stack gave, which a scan
+# from the program's stack pointer ran past into unmapped memory.
+prove_fails "the stack named, not held" named_stack "maps parser: the mapping holding" '
+  { sub(/if probe != 0_u64$/, "if false"); print }
+'
+
+# The main stack's top, found after the program has spawned thousands of
+# tasks: two mappings each, a stack and its guard, before the first
+# collection asks where the main stack ends. Linux reads that out of
+# `/proc/self/maps`, whose `[stack]` line is near the end, and read only the
+# first 64 KB of it - so a program that spawned a few hundred tasks before
+# its first collection died there with "no [stack] line" (now "no mapping
+# ... holds the program's arguments": the line is found by the argv it
+# holds).
 echo
-if [ "$status" -eq 0 ]; then
+echo "== the main stack is found past thousands of task stacks"
+cat > "$WORK/tasks.iyi" <<'IYI'
+IyiMark.auto = false
+parked = Channel(Int32).new
+seen = 0
+group do |g|
+  3000.times do
+    g.spawn do
+      case parked.receive
+      in Int32         then it
+      in ChannelClosed then 0
+      in Cancelled     then 0
+      end
+    end
+  end
+  g.spawn do
+    IyiMark.collect
+    seen = 1
+    parked.close
+    0
+  end
+end
+puts "tasks: 3000 parked, a collection after them, and it found the main stack (#{seen})"
+IYI
+many_tasks() { # many_tasks <label> [IYI_PATH]
+  if ! IYI_PATH="${2:-$REPO/src}" "$IYI" build -o "$WORK/tasks-$1" "$WORK/tasks.iyi" > "$WORK/tasks-$1.log" 2>&1; then
+    echo "  $1: build failed"; sed -n '1,12p' "$WORK/tasks-$1.log"; status=1; return 2
+  fi
+  "$WORK/tasks-$1" > "$WORK/tasks-$1.out" 2>&1
+}
+if many_tasks plain && grep -q "found the main stack (1)" "$WORK/tasks-plain.out"; then
+  printf '  %s\n' "$(cat "$WORK/tasks-plain.out")"
+else
+  echo "  FAIL:"; sed 's/^/    /' "$WORK/tasks-plain.out" | tail -3; status=1
+fi
+case "$(uname -s)" in
+  Linux)
+    # The read stopped after its first buffer, as it did.
+    mkdir -p "$WORK/onebuffer/iyi"
+    cp "$REPO"/src/iyi/*.iyi "$WORK/onebuffer/iyi/"
+    awk '{ if ($0 ~ /^            kept = filled - last$/) { print; print "            break if base == 0_u64"; next } print }' \
+      "$REPO/src/iyi/prelude.iyi" > "$WORK/onebuffer/iyi/prelude.iyi"
+    if cmp -s "$WORK/onebuffer/iyi/prelude.iyi" "$REPO/src/iyi/prelude.iyi"; then
+      echo "  the proof's awk found nothing to change"; status=1
+    else
+      many_tasks onebuffer "$WORK/onebuffer${PSEP}$REPO/src"
+      if grep -q "no mapping in /proc/self/maps holds" "$WORK/tasks-onebuffer.out"; then
+        echo "  failure proof: a read of the first 64 KB alone dies at \"$(grep -m1 "no mapping in /proc/self/maps holds" "$WORK/tasks-onebuffer.out")\""
+      else
+        echo "  failure proof: the one-buffer read still found the stack, so this proves nothing"; status=1
+      fi
+    fi
+    ;;
+esac
+
+echo
+if [ "$status" -ne 0 ]; then
+  echo "Roots: something above failed."
+elif [ "$unmeasured" -eq 1 ]; then
+  # A summary may not claim more than was measured: an arm with no reader,
+  # no floor on record, or nothing to exercise is counted here rather than
+  # folded into the pass.
+  echo "Roots: what ran holds, with 1 check not measured here."
+elif [ "$unmeasured" -gt 1 ]; then
+  echo "Roots: what ran holds, with $unmeasured checks not measured here."
+else
   echo "Roots: stack, registers and globals are all found, an interior pointer"
   echo "resolves to its base, and nothing that is not a live chunk is reported."
-else
-  echo "Roots: something above failed."
 fi
 exit $status

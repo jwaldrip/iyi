@@ -1,23 +1,14 @@
 module compiler/types/type_system
 
-import compiler/foundation/location
-import compiler/syntax/ast
+import compiler/foundation/location::{Location}
+import compiler/syntax/ast::{ASTNode, Call, Generic, Metaclass, NamedArgument, NumberLiteral, Path, ProcNotation, Union}
 import compiler/syntax/token
-import compiler/semantic/top_level
-import compiler/types/types
-import compiler/types/unification
-import compiler/types/filtering
-import compiler/types/restrictions
-import compiler/types/rendering
-
-using compiler/foundation/location::{Location}
-using compiler/syntax/ast::{ASTNode, Call, Generic, Metaclass, NamedArgument, NumberLiteral, Path, ProcNotation, Union}
-using compiler/semantic/top_level::{AliasType, ClassType, GenericClassType, GenericModuleType, GenericTraitType, MetaclassType, ModuleType, NamedType, NonGenericClassType, SemanticProgram, TraitType, Type, TypeException, UnionType}
-using compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType, GenericInstanceType, GenericModuleInstanceMetaclassType, GenericModuleInstanceType, GenericTraitInstanceType, MixedUnionType, NamedArgumentType, NamedTupleInstanceType, NilType, NilableProcType, NilableReferenceUnionType, NilableType, NoReturnType, PointerInstanceType, ProcInstanceType, ReferenceUnionType, StaticArrayInstanceType, TupleInstanceType, TypeParameter, TypeSplat, VirtualMetaclassType, VirtualType, VoidType}
-using compiler/types/unification::{TypeUnification}
-using compiler/types/filtering::{TypeFiltering}
-using compiler/types/restrictions::{TypeRestrictions}
-using compiler/types/rendering::{TypeRenderer}
+import compiler/semantic/top_level::{AliasType, ClassType, GenericClassType, GenericModuleType, GenericTraitType, MetaclassType, ModuleType, NamedType, NonGenericClassType, SemanticProgram, TraitType, Type, TypeException, UnionType}
+import compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType, GenericInstanceType, GenericModuleInstanceMetaclassType, GenericModuleInstanceType, GenericTraitInstanceType, MixedUnionType, NamedArgumentType, NamedTupleInstanceType, NilType, NilableProcType, NilableReferenceUnionType, NilableType, NoReturnType, PointerInstanceType, ProcInstanceType, ReferenceUnionType, StaticArrayInstanceType, TupleInstanceType, TypeParameter, TypeSplat, VirtualMetaclassType, VirtualType, VoidType}
+import compiler/types/unification::{TypeUnification}
+import compiler/types/filtering::{TypeFiltering}
+import compiler/types/restrictions::{TypeRestrictions}
+import compiler/types/rendering::{TypeRenderer}
 
 pub class TypeSystem
   property program : SemanticProgram

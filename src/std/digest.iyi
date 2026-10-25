@@ -1,2012 +1,1501 @@
-# Native cryptographic hash functions: MD5, SHA-1, SHA-256, SHA-384, SHA-512.
+# Digests, written in iyi: MD5, SHA-1, the SHA-2 family (SHA-224, SHA-256,
+# SHA-384, SHA-512), the SHA-3 family (SHA3-224, SHA3-256, SHA3-384,
+# SHA3-512) with its extendable-output functions SHAKE128 and SHAKE256,
+# CRC-32, CRC-64 and Adler-32, and the non-cryptographic XXH64.
 #
-# Notice: this implementation has not undergone independent cryptographic review.
+# Nothing here reaches OpenSSL, zlib or compiler-rt. The words are the
+# RFCs' and FIPS 180-4's and FIPS 202's (1321, 3174, 6234, 1950, ISO 3309); the
+# arithmetic is `std/int`'s wrapping `&+` and the shifts. `hexdigest`
+# answers lowercase hex. MD5 and SHA-1 are the checksums they always
+# were, not a lock.
 #
-# Provides one-shot digest/hexdigest and incremental streaming (new/update/final).
-# Pure iyi implementation without OpenSSL or libcrypto dependencies.
+# The ten hashes are each a `Digest`. `SHA256.hexdigest(data)` and
+# `SHA256.hash_bytes(data)` hash one piece of data; `SHA256.new`, then
+# `update` as often as the data arrives, then `final` or `hexfinal` once,
+# hash it in pieces. Data is a `String`, whose bytes are hashed, or an
+# `Array(UInt8)`. A digest that has given its `final` refuses `update`
+# and a second `final` until `reset`. `copy_from` takes another digest's
+# state without allocating, which is how std/crypto's HMAC starts each
+# message from its keyed state, and `dup` is a copy that shares nothing.
+# CRC-32, CRC-64 and Adler-32 are checksums: a `checksum` of one piece,
+# and an `update` that goes on from a checksum already taken, as
+# std/compress's and std/xz's streams take theirs. SHAKE128 and SHAKE256
+# are not a `Digest`, having no one size: `update` as the data arrives,
+# then `read(n)` as often as more output is wanted, each read going on
+# where the last one stopped. XXH64 is the hash std/zstd's frames carry
+# the low half of: `checksum(data, seed)`, or `update` in pieces and a
+# `digest` that can be asked midway.
 
 module std/digest
 
-import std/slice
-using std/slice::{Slice}
-pub alias Bytes = Std::Slice::Bytes
+import std/int
+import std/slice::{Slice, Bytes}
 
-module DigestUtils
-  def self.get_u32_le(ptr : Pointer(UInt8), offset : Int32) : UInt64
-    ptr[offset].to_u64 |
-      (ptr[offset + 1].to_u64.unsafe_shl(8_u64)) |
-      (ptr[offset + 2].to_u64.unsafe_shl(16_u64)) |
-      (ptr[offset + 3].to_u64.unsafe_shl(24_u64))
-  end
+# What every block hash shares: the message is cut into blocks, the last
+# one padded with a one bit, zeros and the message's length in bits, and
+# each block is compressed into the state. A subclass is the state and
+# its compression; this is the cutting and the padding.
+pub abstract class Digest
+  @block : Pointer(UInt8)
+  @block_size : Int32
+  @fill : Int32
+  @length : UInt64
+  @finished : Bool
 
-  def self.put_u32_le(ptr : Pointer(UInt8), offset : Int32, v : UInt64) : Nil
-    ptr[offset] = (v & 0xff_u64).to_u8
-    ptr[offset + 1] = ((v.unsafe_shr(8_u64)) & 0xff_u64).to_u8
-    ptr[offset + 2] = ((v.unsafe_shr(16_u64)) & 0xff_u64).to_u8
-    ptr[offset + 3] = ((v.unsafe_shr(24_u64)) & 0xff_u64).to_u8
-  end
-
-  def self.get_u32_be(ptr : Pointer(UInt8), offset : Int32) : UInt64
-    (ptr[offset].to_u64.unsafe_shl(24_u64)) |
-      (ptr[offset + 1].to_u64.unsafe_shl(16_u64)) |
-      (ptr[offset + 2].to_u64.unsafe_shl(8_u64)) |
-      ptr[offset + 3].to_u64
-  end
-
-  def self.put_u32_be(ptr : Pointer(UInt8), offset : Int32, v : UInt64) : Nil
-    ptr[offset] = ((v.unsafe_shr(24_u64)) & 0xff_u64).to_u8
-    ptr[offset + 1] = ((v.unsafe_shr(16_u64)) & 0xff_u64).to_u8
-    ptr[offset + 2] = ((v.unsafe_shr(8_u64)) & 0xff_u64).to_u8
-    ptr[offset + 3] = (v & 0xff_u64).to_u8
-  end
-
-  def self.get_u64_be(ptr : Pointer(UInt8), offset : Int32) : UInt64
-    (ptr[offset].to_u64.unsafe_shl(56_u64)) |
-      (ptr[offset + 1].to_u64.unsafe_shl(48_u64)) |
-      (ptr[offset + 2].to_u64.unsafe_shl(40_u64)) |
-      (ptr[offset + 3].to_u64.unsafe_shl(32_u64)) |
-      (ptr[offset + 4].to_u64.unsafe_shl(24_u64)) |
-      (ptr[offset + 5].to_u64.unsafe_shl(16_u64)) |
-      (ptr[offset + 6].to_u64.unsafe_shl(8_u64)) |
-      ptr[offset + 7].to_u64
-  end
-
-  def self.put_u64_be(ptr : Pointer(UInt8), offset : Int32, v : UInt64) : Nil
-    ptr[offset] = ((v.unsafe_shr(56_u64)) & 0xff_u64).to_u8
-    ptr[offset + 1] = ((v.unsafe_shr(48_u64)) & 0xff_u64).to_u8
-    ptr[offset + 2] = ((v.unsafe_shr(40_u64)) & 0xff_u64).to_u8
-    ptr[offset + 3] = ((v.unsafe_shr(32_u64)) & 0xff_u64).to_u8
-    ptr[offset + 4] = ((v.unsafe_shr(24_u64)) & 0xff_u64).to_u8
-    ptr[offset + 5] = ((v.unsafe_shr(16_u64)) & 0xff_u64).to_u8
-    ptr[offset + 6] = ((v.unsafe_shr(8_u64)) & 0xff_u64).to_u8
-    ptr[offset + 7] = (v & 0xff_u64).to_u8
-  end
-
-  def self.rotl32(x : UInt64, n : Int32) : UInt64
-    ((x.unsafe_shl(n.to_u64)) | (x.unsafe_shr((32 - n).to_u64))) & 0xffffffff_u64
-  end
-
-  def self.rotr32(x : UInt64, n : Int32) : UInt64
-    ((x.unsafe_shr(n.to_u64)) | (x.unsafe_shl((32 - n).to_u64))) & 0xffffffff_u64
-  end
-
-  def self.rotl64(x : UInt64, n : Int32) : UInt64
-    (x.unsafe_shl(n.to_u64)) | (x.unsafe_shr((64 - n).to_u64))
-  end
-
-  def self.rotr64(x : UInt64, n : Int32) : UInt64
-    (x.unsafe_shr(n.to_u64)) | (x.unsafe_shl((64 - n).to_u64))
-  end
-end
-
-pub class MD5
-  @a : UInt64 = 0x67452301_u64
-  @b : UInt64 = 0xefcdab89_u64
-  @c : UInt64 = 0x98badcfe_u64
-  @d : UInt64 = 0x10325476_u64
-  @buffer : Pointer(UInt8)
-  @buffer_len : Int32 = 0
-  @total_bytes : UInt64 = 0_u64
-  @finished : Bool = false
-
-  def initialize
-    @buffer = Pointer(UInt8).malloc(64_u64)
-    reset
-  end
-
-  def reset : self
-    @a = 0x67452301_u64
-    @b = 0xefcdab89_u64
-    @c = 0x98badcfe_u64
-    @d = 0x10325476_u64
-    @buffer_len = 0
-    @total_bytes = 0_u64
+  def initialize(block_size : Int32)
+    @block_size = block_size
+    @block = Pointer(UInt8).malloc(block_size.to_u64)
+    @fill = 0
+    @length = 0_u64
     @finished = false
-    self
+    start
   end
 
-  def update(data : Bytes) : self
-    raise "MD5: already finalized" if @finished
-    offset = 0
-    len = data.size
-    @total_bytes = @total_bytes &+ len.to_u64
-    if @buffer_len > 0
-      needed = 64 - @buffer_len
-      to_copy = len < needed ? len : needed
-      i = 0
-      while i < to_copy
-        @buffer[@buffer_len + i] = data[offset + i]
-        i = i + 1
-      end
-      @buffer_len = @buffer_len + to_copy
-      offset = offset + to_copy
-      len = len - to_copy
-      if @buffer_len == 64
-        process_block(@buffer)
-        @buffer_len = 0
-      end
+  # Bytes in a digest: 16 for MD5, 20 for SHA-1, 28, 32, 48 and 64 for
+  # the SHA-2s.
+  abstract def digest_size : Int32
+
+  # The state the algorithm starts from.
+  private abstract def start : Nil
+
+  # One block of `block_size` bytes into the state.
+  private abstract def compress(block : Pointer(UInt8)) : Nil
+
+  # The first `digest_size` bytes of the state, in the algorithm's order.
+  private abstract def write_state(dst : Pointer(UInt8)) : Nil
+
+  # Another digest's state into this one's, which is the same algorithm.
+  private abstract def take_state(other : Digest) : Nil
+
+  # MD5 writes its length and its words least significant byte first.
+  private def little_endian? : Bool
+    false
+  end
+
+  # Bytes compressed at a time: 64, or 128 for SHA-384 and SHA-512. HMAC
+  # pads its key to this.
+  def block_size : Int32
+    @block_size
+  end
+
+  def self.hexdigest(data : String | Array(UInt8)) : String
+    new.update(data).hexfinal
+  end
+
+  def self.hash_bytes(data : String | Array(UInt8)) : Array(UInt8)
+    new.update(data).final
+  end
+
+  def self.digest(data : String | Array(UInt8) | Slice(UInt8)) : Array(UInt8)
+    d = new
+    if data.is_a?(String)
+      d.update(data)
+    elsif data.is_a?(Array(UInt8))
+      d.update(data)
+    else
+      d.update(data.to_unsafe, data.size)
     end
-    while len >= 64
-      process_block(data.to_unsafe + offset.to_i64)
-      offset = offset + 64
-      len = len - 64
-    end
-    if len > 0
-      i = 0
-      while i < len
-        @buffer[i] = data[offset + i]
-        i = i + 1
-      end
-      @buffer_len = len
-    end
-    self
+    d.final
+  end
+
+  # The digest of no bytes yet, ready again after a `final`.
+  def reset : Nil
+    @fill = 0
+    @length = 0_u64
+    @finished = false
+    start
   end
 
   def update(data : String) : self
-    update(Bytes.new(data.to_unsafe, data.bytesize))
+    update(data.to_unsafe, data.bytesize)
   end
 
-  private def process_block(ptr : Pointer(UInt8)) : Nil
-    m0 = DigestUtils.get_u32_le(ptr, 0)
-    m1 = DigestUtils.get_u32_le(ptr, 4)
-    m2 = DigestUtils.get_u32_le(ptr, 8)
-    m3 = DigestUtils.get_u32_le(ptr, 12)
-    m4 = DigestUtils.get_u32_le(ptr, 16)
-    m5 = DigestUtils.get_u32_le(ptr, 20)
-    m6 = DigestUtils.get_u32_le(ptr, 24)
-    m7 = DigestUtils.get_u32_le(ptr, 28)
-    m8 = DigestUtils.get_u32_le(ptr, 32)
-    m9 = DigestUtils.get_u32_le(ptr, 36)
-    m10 = DigestUtils.get_u32_le(ptr, 40)
-    m11 = DigestUtils.get_u32_le(ptr, 44)
-    m12 = DigestUtils.get_u32_le(ptr, 48)
-    m13 = DigestUtils.get_u32_le(ptr, 52)
-    m14 = DigestUtils.get_u32_le(ptr, 56)
-    m15 = DigestUtils.get_u32_le(ptr, 60)
-    a = @a; b = @b; c = @c; d = @d
-    t = (b &+ DigestUtils.rotl32((a &+ ((b & c) | ((b ^ 0xffffffff_u64) & d)) &+ m0 &+ 0xd76aa478_u64) & 0xffffffff_u64, 7)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ ((b & c) | ((b ^ 0xffffffff_u64) & d)) &+ m1 &+ 0xe8c7b756_u64) & 0xffffffff_u64, 12)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ ((b & c) | ((b ^ 0xffffffff_u64) & d)) &+ m2 &+ 0x242070db_u64) & 0xffffffff_u64, 17)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ ((b & c) | ((b ^ 0xffffffff_u64) & d)) &+ m3 &+ 0xc1bdceee_u64) & 0xffffffff_u64, 22)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ ((b & c) | ((b ^ 0xffffffff_u64) & d)) &+ m4 &+ 0xf57c0faf_u64) & 0xffffffff_u64, 7)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ ((b & c) | ((b ^ 0xffffffff_u64) & d)) &+ m5 &+ 0x4787c62a_u64) & 0xffffffff_u64, 12)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ ((b & c) | ((b ^ 0xffffffff_u64) & d)) &+ m6 &+ 0xa8304613_u64) & 0xffffffff_u64, 17)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ ((b & c) | ((b ^ 0xffffffff_u64) & d)) &+ m7 &+ 0xfd469501_u64) & 0xffffffff_u64, 22)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ ((b & c) | ((b ^ 0xffffffff_u64) & d)) &+ m8 &+ 0x698098d8_u64) & 0xffffffff_u64, 7)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ ((b & c) | ((b ^ 0xffffffff_u64) & d)) &+ m9 &+ 0x8b44f7af_u64) & 0xffffffff_u64, 12)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ ((b & c) | ((b ^ 0xffffffff_u64) & d)) &+ m10 &+ 0xffff5bb1_u64) & 0xffffffff_u64, 17)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ ((b & c) | ((b ^ 0xffffffff_u64) & d)) &+ m11 &+ 0x895cd7be_u64) & 0xffffffff_u64, 22)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ ((b & c) | ((b ^ 0xffffffff_u64) & d)) &+ m12 &+ 0x6b901122_u64) & 0xffffffff_u64, 7)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ ((b & c) | ((b ^ 0xffffffff_u64) & d)) &+ m13 &+ 0xfd987193_u64) & 0xffffffff_u64, 12)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ ((b & c) | ((b ^ 0xffffffff_u64) & d)) &+ m14 &+ 0xa679438e_u64) & 0xffffffff_u64, 17)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ ((b & c) | ((b ^ 0xffffffff_u64) & d)) &+ m15 &+ 0x49b40821_u64) & 0xffffffff_u64, 22)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ ((b & d) | (c & (d ^ 0xffffffff_u64))) &+ m1 &+ 0xf61e2562_u64) & 0xffffffff_u64, 5)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ ((b & d) | (c & (d ^ 0xffffffff_u64))) &+ m6 &+ 0xc040b340_u64) & 0xffffffff_u64, 9)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ ((b & d) | (c & (d ^ 0xffffffff_u64))) &+ m11 &+ 0x265e5a51_u64) & 0xffffffff_u64, 14)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ ((b & d) | (c & (d ^ 0xffffffff_u64))) &+ m0 &+ 0xe9b6c7aa_u64) & 0xffffffff_u64, 20)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ ((b & d) | (c & (d ^ 0xffffffff_u64))) &+ m5 &+ 0xd62f105d_u64) & 0xffffffff_u64, 5)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ ((b & d) | (c & (d ^ 0xffffffff_u64))) &+ m10 &+ 0x02441453_u64) & 0xffffffff_u64, 9)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ ((b & d) | (c & (d ^ 0xffffffff_u64))) &+ m15 &+ 0xd8a1e681_u64) & 0xffffffff_u64, 14)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ ((b & d) | (c & (d ^ 0xffffffff_u64))) &+ m4 &+ 0xe7d3fbc8_u64) & 0xffffffff_u64, 20)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ ((b & d) | (c & (d ^ 0xffffffff_u64))) &+ m9 &+ 0x21e1cde6_u64) & 0xffffffff_u64, 5)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ ((b & d) | (c & (d ^ 0xffffffff_u64))) &+ m14 &+ 0xc33707d6_u64) & 0xffffffff_u64, 9)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ ((b & d) | (c & (d ^ 0xffffffff_u64))) &+ m3 &+ 0xf4d50d87_u64) & 0xffffffff_u64, 14)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ ((b & d) | (c & (d ^ 0xffffffff_u64))) &+ m8 &+ 0x455a14ed_u64) & 0xffffffff_u64, 20)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ ((b & d) | (c & (d ^ 0xffffffff_u64))) &+ m13 &+ 0xa9e3e905_u64) & 0xffffffff_u64, 5)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ ((b & d) | (c & (d ^ 0xffffffff_u64))) &+ m2 &+ 0xfcefa3f8_u64) & 0xffffffff_u64, 9)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ ((b & d) | (c & (d ^ 0xffffffff_u64))) &+ m7 &+ 0x676f02d9_u64) & 0xffffffff_u64, 14)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ ((b & d) | (c & (d ^ 0xffffffff_u64))) &+ m12 &+ 0x8d2a4c8a_u64) & 0xffffffff_u64, 20)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ (b ^ c ^ d) &+ m5 &+ 0xfffa3942_u64) & 0xffffffff_u64, 4)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ (b ^ c ^ d) &+ m8 &+ 0x8771f681_u64) & 0xffffffff_u64, 11)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ (b ^ c ^ d) &+ m11 &+ 0x6d9d6122_u64) & 0xffffffff_u64, 16)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ (b ^ c ^ d) &+ m14 &+ 0xfde5380c_u64) & 0xffffffff_u64, 23)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ (b ^ c ^ d) &+ m1 &+ 0xa4beea44_u64) & 0xffffffff_u64, 4)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ (b ^ c ^ d) &+ m4 &+ 0x4bdecfa9_u64) & 0xffffffff_u64, 11)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ (b ^ c ^ d) &+ m7 &+ 0xf6bb4b60_u64) & 0xffffffff_u64, 16)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ (b ^ c ^ d) &+ m10 &+ 0xbebfbc70_u64) & 0xffffffff_u64, 23)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ (b ^ c ^ d) &+ m13 &+ 0x289b7ec6_u64) & 0xffffffff_u64, 4)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ (b ^ c ^ d) &+ m0 &+ 0xeaa127fa_u64) & 0xffffffff_u64, 11)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ (b ^ c ^ d) &+ m3 &+ 0xd4ef3085_u64) & 0xffffffff_u64, 16)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ (b ^ c ^ d) &+ m6 &+ 0x04881d05_u64) & 0xffffffff_u64, 23)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ (b ^ c ^ d) &+ m9 &+ 0xd9d4d039_u64) & 0xffffffff_u64, 4)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ (b ^ c ^ d) &+ m12 &+ 0xe6db99e5_u64) & 0xffffffff_u64, 11)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ (b ^ c ^ d) &+ m15 &+ 0x1fa27cf8_u64) & 0xffffffff_u64, 16)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ (b ^ c ^ d) &+ m2 &+ 0xc4ac5665_u64) & 0xffffffff_u64, 23)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ (c ^ (b | (d ^ 0xffffffff_u64))) &+ m0 &+ 0xf4292244_u64) & 0xffffffff_u64, 6)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ (c ^ (b | (d ^ 0xffffffff_u64))) &+ m7 &+ 0x432aff97_u64) & 0xffffffff_u64, 10)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ (c ^ (b | (d ^ 0xffffffff_u64))) &+ m14 &+ 0xab9423a7_u64) & 0xffffffff_u64, 15)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ (c ^ (b | (d ^ 0xffffffff_u64))) &+ m5 &+ 0xfc93a039_u64) & 0xffffffff_u64, 21)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ (c ^ (b | (d ^ 0xffffffff_u64))) &+ m12 &+ 0x655b59c3_u64) & 0xffffffff_u64, 6)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ (c ^ (b | (d ^ 0xffffffff_u64))) &+ m3 &+ 0x8f0ccc92_u64) & 0xffffffff_u64, 10)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ (c ^ (b | (d ^ 0xffffffff_u64))) &+ m10 &+ 0xffeff47d_u64) & 0xffffffff_u64, 15)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ (c ^ (b | (d ^ 0xffffffff_u64))) &+ m1 &+ 0x85845dd1_u64) & 0xffffffff_u64, 21)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ (c ^ (b | (d ^ 0xffffffff_u64))) &+ m8 &+ 0x6fa87e4f_u64) & 0xffffffff_u64, 6)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ (c ^ (b | (d ^ 0xffffffff_u64))) &+ m15 &+ 0xfe2ce6e0_u64) & 0xffffffff_u64, 10)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ (c ^ (b | (d ^ 0xffffffff_u64))) &+ m6 &+ 0xa3014314_u64) & 0xffffffff_u64, 15)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ (c ^ (b | (d ^ 0xffffffff_u64))) &+ m13 &+ 0x4e0811a1_u64) & 0xffffffff_u64, 21)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ (c ^ (b | (d ^ 0xffffffff_u64))) &+ m4 &+ 0xf7537e82_u64) & 0xffffffff_u64, 6)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ (c ^ (b | (d ^ 0xffffffff_u64))) &+ m11 &+ 0xbd3af235_u64) & 0xffffffff_u64, 10)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ (c ^ (b | (d ^ 0xffffffff_u64))) &+ m2 &+ 0x2ad7d2bb_u64) & 0xffffffff_u64, 15)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    t = (b &+ DigestUtils.rotl32((a &+ (c ^ (b | (d ^ 0xffffffff_u64))) &+ m9 &+ 0xeb86d391_u64) & 0xffffffff_u64, 21)) & 0xffffffff_u64
-    a = d; d = c; c = b; b = t
-    @a = (@a &+ a) & 0xffffffff_u64
-    @b = (@b &+ b) & 0xffffffff_u64
-    @c = (@c &+ c) & 0xffffffff_u64
-    @d = (@d &+ d) & 0xffffffff_u64
+  def update(data : Array(UInt8)) : self
+    update(data.to_unsafe, data.size)
   end
 
-  def final : Bytes
-    return out_digest if @finished
-    @finished = true
-    bit_len = @total_bytes.unsafe_shl(3_u64)
-    @buffer[@buffer_len] = 0x80_u8
-    @buffer_len = @buffer_len + 1
-    if @buffer_len > 56
-      while @buffer_len < 64
-        @buffer[@buffer_len] = 0_u8
-        @buffer_len = @buffer_len + 1
+  def update(data : Pointer(UInt8), count : Int32) : self
+    raise "#{self.class}: update after final; reset first" if @finished
+    raise "#{self.class}: a negative count of bytes: #{count}" if count < 0
+    @length = @length &+ count.to_u64
+    done = 0
+    if @fill > 0
+      take = @block_size - @fill
+      take = count if count < take
+      (@block + @fill.to_i64).copy_from(data, take)
+      @fill = @fill + take
+      done = take
+      if @fill == @block_size
+        compress(@block)
+        @fill = 0
       end
-      process_block(@buffer)
-      @buffer_len = 0
     end
-    while @buffer_len < 56
-      @buffer[@buffer_len] = 0_u8
-      @buffer_len = @buffer_len + 1
+    # Whole blocks straight from the caller's bytes, with no copy.
+    while count - done >= @block_size
+      compress(data + done.to_i64)
+      done = done + @block_size
     end
-    DigestUtils.put_u32_le(@buffer, 56, bit_len & 0xffffffff_u64)
-    DigestUtils.put_u32_le(@buffer, 60, bit_len.unsafe_shr(32_u64))
-    process_block(@buffer)
-    out_digest
+    if done < count
+      @block.copy_from(data + done.to_i64, count - done)
+      @fill = count - done
+    end
+    self
   end
 
-  private def out_digest : Bytes
-    out = Bytes.new(16)
-    ptr = out.to_unsafe
-    DigestUtils.put_u32_le(ptr, 0, @a)
-    DigestUtils.put_u32_le(ptr, 4, @b)
-    DigestUtils.put_u32_le(ptr, 8, @c)
-    DigestUtils.put_u32_le(ptr, 12, @d)
-    out
+  # The digest, into the first `digest_size` bytes of *dst*: no array is
+  # made, which is what a loop that hashes a hash wants.
+  def final(dst : Array(UInt8)) : Nil
+    raise "#{self.class}: final called twice; reset first" if @finished
+    raise "#{self.class}: #{dst.size} bytes cannot hold a #{digest_size}-byte digest" if dst.size < digest_size
+    pad
+    write_state(dst.to_unsafe)
+    @finished = true
   end
 
-  def hexdigest : String
-    final.hexstring
+  def final : Array(UInt8)
+    bytes = Array(UInt8).new(digest_size, 0_u8)
+    final(bytes)
+    bytes
   end
 
-  def self.digest(data : Bytes) : Bytes
-    new.update(data).final
+  def hexfinal : String
+    DigestUtil.hex(final, digest_size)
   end
 
-  def self.digest(data : String) : Bytes
-    new.update(data).final
+  # Becomes *other*: the same bytes taken, the same state, the same
+  # `final` given or not. Nothing is allocated. *other* must be the same
+  # algorithm, and a different one is refused by name.
+  def copy_from(other : Digest) : Nil
+    unless other.crystal_type_id == crystal_type_id
+      raise "#{self.class}: cannot take the state of a #{other.class}"
+    end
+    @block.copy_from(other.@block, @block_size)
+    @fill = other.@fill
+    @length = other.@length
+    @finished = other.@finished
+    take_state(other)
   end
 
-  def self.hexdigest(data : Bytes) : String
-    new.update(data).hexdigest
+  def dup : self
+    copy = self.class.new
+    copy.copy_from(self)
+    copy
   end
 
-  def self.hexdigest(data : String) : String
-    new.update(data).hexdigest
+  # The one bit, the zeros and the length. The length field is the last
+  # eight bytes of a 64-byte block and the last sixteen of a 128-byte one,
+  # where the top eight hold what a 64-bit count of bits carried out.
+  private def pad : Nil
+    field = @block_size == 128 ? 16 : 8
+    @block[@fill] = 0x80_u8
+    @fill = @fill + 1
+    if @fill > @block_size - field
+      while @fill < @block_size
+        @block[@fill] = 0_u8
+        @fill = @fill + 1
+      end
+      compress(@block)
+      @fill = 0
+    end
+    while @fill < @block_size - 8
+      @block[@fill] = 0_u8
+      @fill = @fill + 1
+    end
+    bits = @length.unsafe_shl(3)
+    at = @block_size - 8
+    if field == 16
+      DigestUtil.store_u64_be(@block + (at - 8).to_i64, @length.unsafe_shr(61))
+    end
+    if little_endian?
+      i = 0
+      while i < 8
+        @block[at + i] = (bits.unsafe_shr(i * 8) & 255_u64).to_u8
+        i = i + 1
+      end
+    else
+      DigestUtil.store_u64_be(@block + at.to_i64, bits)
+    end
+    compress(@block)
+    @fill = 0
   end
+end
 
-  def self.digest_size : Int32
-    16
-  end
+pub class MD5 < Digest
+  @h : Pointer(UInt32)
+  @w : Pointer(UInt32)
 
-  def self.block_size : Int32
-    64
+  def initialize
+    @h = Pointer(UInt32).malloc(4_u64)
+    @w = Pointer(UInt32).malloc(16_u64)
+    super(64)
   end
 
   def digest_size : Int32
     16
   end
 
-  def block_size : Int32
-    64
+  private def little_endian? : Bool
+    true
   end
 
-  def finished? : Bool
-    @finished
+  private def start : Nil
+    @h[0] = 0x67452301_u32
+    @h[1] = 0xEFCDAB89_u32
+    @h[2] = 0x98BADCFE_u32
+    @h[3] = 0x10325476_u32
+  end
+
+  private def take_state(other : Digest) : Nil
+    @h.copy_from(other.as(MD5).@h, 4)
+  end
+
+  private def write_state(dst : Pointer(UInt8)) : Nil
+    i = 0
+    while i < 16
+      dst[i] = (@h[i >> 2].unsafe_shr((i & 3) * 8) & 255_u32).to_u8
+      i = i + 1
+    end
+  end
+
+  private def compress(block : Pointer(UInt8)) : Nil
+    w = @w
+    i = 0
+    while i < 16
+      j = i * 4
+      w[i] = block[j].to_u32 | block[j + 1].to_u32.unsafe_shl(8) | block[j + 2].to_u32.unsafe_shl(16) | block[j + 3].to_u32.unsafe_shl(24)
+      i = i + 1
+    end
+    a = @h[0]
+    b = @h[1]
+    c = @h[2]
+    d = @h[3]
+
+    a = ff(a, b, c, d, w[0], 7, 0xd76aa478_u32)
+    d = ff(d, a, b, c, w[1], 12, 0xe8c7b756_u32)
+    c = ff(c, d, a, b, w[2], 17, 0x242070db_u32)
+    b = ff(b, c, d, a, w[3], 22, 0xc1bdceee_u32)
+    a = ff(a, b, c, d, w[4], 7, 0xf57c0faf_u32)
+    d = ff(d, a, b, c, w[5], 12, 0x4787c62a_u32)
+    c = ff(c, d, a, b, w[6], 17, 0xa8304613_u32)
+    b = ff(b, c, d, a, w[7], 22, 0xfd469501_u32)
+    a = ff(a, b, c, d, w[8], 7, 0x698098d8_u32)
+    d = ff(d, a, b, c, w[9], 12, 0x8b44f7af_u32)
+    c = ff(c, d, a, b, w[10], 17, 0xffff5bb1_u32)
+    b = ff(b, c, d, a, w[11], 22, 0x895cd7be_u32)
+    a = ff(a, b, c, d, w[12], 7, 0x6b901122_u32)
+    d = ff(d, a, b, c, w[13], 12, 0xfd987193_u32)
+    c = ff(c, d, a, b, w[14], 17, 0xa679438e_u32)
+    b = ff(b, c, d, a, w[15], 22, 0x49b40821_u32)
+
+    a = gg(a, b, c, d, w[1], 5, 0xf61e2562_u32)
+    d = gg(d, a, b, c, w[6], 9, 0xc040b340_u32)
+    c = gg(c, d, a, b, w[11], 14, 0x265e5a51_u32)
+    b = gg(b, c, d, a, w[0], 20, 0xe9b6c7aa_u32)
+    a = gg(a, b, c, d, w[5], 5, 0xd62f105d_u32)
+    d = gg(d, a, b, c, w[10], 9, 0x02441453_u32)
+    c = gg(c, d, a, b, w[15], 14, 0xd8a1e681_u32)
+    b = gg(b, c, d, a, w[4], 20, 0xe7d3fbc8_u32)
+    a = gg(a, b, c, d, w[9], 5, 0x21e1cde6_u32)
+    d = gg(d, a, b, c, w[14], 9, 0xc33707d6_u32)
+    c = gg(c, d, a, b, w[3], 14, 0xf4d50d87_u32)
+    b = gg(b, c, d, a, w[8], 20, 0x455a14ed_u32)
+    a = gg(a, b, c, d, w[13], 5, 0xa9e3e905_u32)
+    d = gg(d, a, b, c, w[2], 9, 0xfcefa3f8_u32)
+    c = gg(c, d, a, b, w[7], 14, 0x676f02d9_u32)
+    b = gg(b, c, d, a, w[12], 20, 0x8d2a4c8a_u32)
+
+    a = hh(a, b, c, d, w[5], 4, 0xfffa3942_u32)
+    d = hh(d, a, b, c, w[8], 11, 0x8771f681_u32)
+    c = hh(c, d, a, b, w[11], 16, 0x6d9d6122_u32)
+    b = hh(b, c, d, a, w[14], 23, 0xfde5380c_u32)
+    a = hh(a, b, c, d, w[1], 4, 0xa4beea44_u32)
+    d = hh(d, a, b, c, w[4], 11, 0x4bdecfa9_u32)
+    c = hh(c, d, a, b, w[7], 16, 0xf6bb4b60_u32)
+    b = hh(b, c, d, a, w[10], 23, 0xbebfbc70_u32)
+    a = hh(a, b, c, d, w[13], 4, 0x289b7ec6_u32)
+    d = hh(d, a, b, c, w[0], 11, 0xeaa127fa_u32)
+    c = hh(c, d, a, b, w[3], 16, 0xd4ef3085_u32)
+    b = hh(b, c, d, a, w[6], 23, 0x04881d05_u32)
+    a = hh(a, b, c, d, w[9], 4, 0xd9d4d039_u32)
+    d = hh(d, a, b, c, w[12], 11, 0xe6db99e5_u32)
+    c = hh(c, d, a, b, w[15], 16, 0x1fa27cf8_u32)
+    b = hh(b, c, d, a, w[2], 23, 0xc4ac5665_u32)
+
+    a = ii(a, b, c, d, w[0], 6, 0xf4292244_u32)
+    d = ii(d, a, b, c, w[7], 10, 0x432aff97_u32)
+    c = ii(c, d, a, b, w[14], 15, 0xab9423a7_u32)
+    b = ii(b, c, d, a, w[5], 21, 0xfc93a039_u32)
+    a = ii(a, b, c, d, w[12], 6, 0x655b59c3_u32)
+    d = ii(d, a, b, c, w[3], 10, 0x8f0ccc92_u32)
+    c = ii(c, d, a, b, w[10], 15, 0xffeff47d_u32)
+    b = ii(b, c, d, a, w[1], 21, 0x85845dd1_u32)
+    a = ii(a, b, c, d, w[8], 6, 0x6fa87e4f_u32)
+    d = ii(d, a, b, c, w[15], 10, 0xfe2ce6e0_u32)
+    c = ii(c, d, a, b, w[6], 15, 0xa3014314_u32)
+    b = ii(b, c, d, a, w[13], 21, 0x4e0811a1_u32)
+    a = ii(a, b, c, d, w[4], 6, 0xf7537e82_u32)
+    d = ii(d, a, b, c, w[11], 10, 0xbd3af235_u32)
+    c = ii(c, d, a, b, w[2], 15, 0x2ad7d2bb_u32)
+    b = ii(b, c, d, a, w[9], 21, 0xeb86d391_u32)
+
+    @h[0] = @h[0] &+ a
+    @h[1] = @h[1] &+ b
+    @h[2] = @h[2] &+ c
+    @h[3] = @h[3] &+ d
+  end
+
+  private def ff(a : UInt32, b : UInt32, c : UInt32, d : UInt32, x : UInt32, s : Int32, ac : UInt32) : UInt32
+    DigestUtil.rotl(a &+ ((b & c) | ((~b) & d)) &+ x &+ ac, s) &+ b
+  end
+
+  private def gg(a : UInt32, b : UInt32, c : UInt32, d : UInt32, x : UInt32, s : Int32, ac : UInt32) : UInt32
+    DigestUtil.rotl(a &+ ((b & d) | (c & (~d))) &+ x &+ ac, s) &+ b
+  end
+
+  private def hh(a : UInt32, b : UInt32, c : UInt32, d : UInt32, x : UInt32, s : Int32, ac : UInt32) : UInt32
+    DigestUtil.rotl(a &+ (b ^ c ^ d) &+ x &+ ac, s) &+ b
+  end
+
+  private def ii(a : UInt32, b : UInt32, c : UInt32, d : UInt32, x : UInt32, s : Int32, ac : UInt32) : UInt32
+    DigestUtil.rotl(a &+ (c ^ (b | (~d))) &+ x &+ ac, s) &+ b
   end
 end
 
-pub class SHA1
-  @h0 : UInt64 = 0x67452301_u64
-  @h1 : UInt64 = 0xefcdab89_u64
-  @h2 : UInt64 = 0x98badcfe_u64
-  @h3 : UInt64 = 0x10325476_u64
-  @h4 : UInt64 = 0xc3d2e1f0_u64
-  @buffer : Pointer(UInt8)
-  @buffer_len : Int32 = 0
-  @total_bytes : UInt64 = 0_u64
-  @w : Pointer(UInt64)
-  @finished : Bool = false
+pub class SHA1 < Digest
+  @h : Pointer(UInt32)
+  @w : Pointer(UInt32)
 
   def initialize
-    @buffer = Pointer(UInt8).malloc(64_u64)
-    @w = Pointer(UInt64).malloc(80_u64)
-    reset
+    @h = Pointer(UInt32).malloc(5_u64)
+    @w = Pointer(UInt32).malloc(80_u64)
+    super(64)
   end
 
-  def reset : self
-    @h0 = 0x67452301_u64
-    @h1 = 0xefcdab89_u64
-    @h2 = 0x98badcfe_u64
-    @h3 = 0x10325476_u64
-    @h4 = 0xc3d2e1f0_u64
-    @buffer_len = 0
-    @total_bytes = 0_u64
-    @finished = false
-    self
+  def digest_size : Int32
+    20
   end
 
-  def update(data : Bytes) : self
-    raise "SHA1: already finalized" if @finished
-    offset = 0
-    len = data.size
-    @total_bytes = @total_bytes &+ len.to_u64
-    if @buffer_len > 0
-      needed = 64 - @buffer_len
-      to_copy = len < needed ? len : needed
-      i = 0
-      while i < to_copy
-        @buffer[@buffer_len + i] = data[offset + i]
-        i = i + 1
-      end
-      @buffer_len = @buffer_len + to_copy
-      offset = offset + to_copy
-      len = len - to_copy
-      if @buffer_len == 64
-        process_block(@buffer)
-        @buffer_len = 0
-      end
-    end
-    while len >= 64
-      process_block(data.to_unsafe + offset.to_i64)
-      offset = offset + 64
-      len = len - 64
-    end
-    if len > 0
-      i = 0
-      while i < len
-        @buffer[i] = data[offset + i]
-        i = i + 1
-      end
-      @buffer_len = len
-    end
-    self
+  private def start : Nil
+    @h[0] = 0x67452301_u32
+    @h[1] = 0xEFCDAB89_u32
+    @h[2] = 0x98BADCFE_u32
+    @h[3] = 0x10325476_u32
+    @h[4] = 0xC3D2E1F0_u32
   end
 
-  def update(data : String) : self
-    update(Bytes.new(data.to_unsafe, data.bytesize))
+  private def take_state(other : Digest) : Nil
+    @h.copy_from(other.as(SHA1).@h, 5)
   end
 
-  private def process_block(ptr : Pointer(UInt8)) : Nil
-    i = 0
-    while i < 16
-      @w[i] = DigestUtils.get_u32_be(ptr, i * 4)
-      i = i + 1
-    end
+  private def write_state(dst : Pointer(UInt8)) : Nil
+    DigestUtil.store_u32s_be(dst, @h, 20)
+  end
+
+  private def compress(block : Pointer(UInt8)) : Nil
+    w = @w
+    DigestUtil.load_u32s_be(w, block, 16)
+    i = 16
     while i < 80
-      @w[i] = DigestUtils.rotl32(@w[i - 3] ^ @w[i - 8] ^ @w[i - 14] ^ @w[i - 16], 1)
+      w[i] = DigestUtil.rotl(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1)
       i = i + 1
     end
-    a = @h0; b = @h1; c = @h2; d = @h3; e = @h4
+    a = @h[0]
+    b = @h[1]
+    c = @h[2]
+    d = @h[3]
+    e = @h[4]
     t = 0
     while t < 80
+      f = 0_u32
+      k = 0_u32
       if t < 20
-        f = (b & c) | ((b ^ 0xffffffff_u64) & d)
-        k = 0x5a827999_u64
+        f = (b & c) | ((~b) & d)
+        k = 0x5A827999_u32
       elsif t < 40
         f = b ^ c ^ d
-        k = 0x6ed9eba1_u64
+        k = 0x6ED9EBA1_u32
       elsif t < 60
         f = (b & c) | (b & d) | (c & d)
-        k = 0x8f1bbcdc_u64
+        k = 0x8F1BBCDC_u32
       else
         f = b ^ c ^ d
-        k = 0xca62c1d6_u64
+        k = 0xCA62C1D6_u32
       end
-      temp = (DigestUtils.rotl32(a, 5) &+ f &+ e &+ k &+ @w[t]) & 0xffffffff_u64
-      e = d; d = c; c = DigestUtils.rotl32(b, 30); b = a; a = temp
+      temp = DigestUtil.rotl(a, 5) &+ f &+ e &+ w[t] &+ k
+      e = d
+      d = c
+      c = DigestUtil.rotl(b, 30)
+      b = a
+      a = temp
       t = t + 1
     end
-    @h0 = (@h0 &+ a) & 0xffffffff_u64
-    @h1 = (@h1 &+ b) & 0xffffffff_u64
-    @h2 = (@h2 &+ c) & 0xffffffff_u64
-    @h3 = (@h3 &+ d) & 0xffffffff_u64
-    @h4 = (@h4 &+ e) & 0xffffffff_u64
-  end
-
-  def final : Bytes
-    return out_digest if @finished
-    @finished = true
-    bit_len = @total_bytes.unsafe_shl(3_u64)
-    @buffer[@buffer_len] = 0x80_u8
-    @buffer_len = @buffer_len + 1
-    if @buffer_len > 56
-      while @buffer_len < 64
-        @buffer[@buffer_len] = 0_u8
-        @buffer_len = @buffer_len + 1
-      end
-      process_block(@buffer)
-      @buffer_len = 0
-    end
-    while @buffer_len < 56
-      @buffer[@buffer_len] = 0_u8
-      @buffer_len = @buffer_len + 1
-    end
-    DigestUtils.put_u64_be(@buffer, 56, bit_len)
-    process_block(@buffer)
-    out_digest
-  end
-
-  private def out_digest : Bytes
-    out = Bytes.new(20)
-    ptr = out.to_unsafe
-    DigestUtils.put_u32_be(ptr, 0, @h0)
-    DigestUtils.put_u32_be(ptr, 4, @h1)
-    DigestUtils.put_u32_be(ptr, 8, @h2)
-    DigestUtils.put_u32_be(ptr, 12, @h3)
-    DigestUtils.put_u32_be(ptr, 16, @h4)
-    out
-  end
-
-  def hexdigest : String
-    final.hexstring
-  end
-
-  def self.digest(data : Bytes) : Bytes
-    new.update(data).final
-  end
-
-  def self.digest(data : String) : Bytes
-    new.update(data).final
-  end
-
-  def self.hexdigest(data : Bytes) : String
-    new.update(data).hexdigest
-  end
-
-  def self.hexdigest(data : String) : String
-    new.update(data).hexdigest
-  end
-
-  def self.digest_size : Int32
-    20
-  end
-
-  def self.block_size : Int32
-    64
-  end
-
-  def digest_size : Int32
-    20
-  end
-
-  def block_size : Int32
-    64
-  end
-
-  def finished? : Bool
-    @finished
+    @h[0] = @h[0] &+ a
+    @h[1] = @h[1] &+ b
+    @h[2] = @h[2] &+ c
+    @h[3] = @h[3] &+ d
+    @h[4] = @h[4] &+ e
   end
 end
 
-pub class SHA256
-  @h0 : UInt64 = 0x6a09e667_u64
-  @h1 : UInt64 = 0xbb67ae85_u64
-  @h2 : UInt64 = 0x3c6ef372_u64
-  @h3 : UInt64 = 0xa54ff53a_u64
-  @h4 : UInt64 = 0x510e527f_u64
-  @h5 : UInt64 = 0x9b05688c_u64
-  @h6 : UInt64 = 0x1f83d9ab_u64
-  @h7 : UInt64 = 0x5be0cd19_u64
-  @buffer : Pointer(UInt8)
-  @buffer_len : Int32 = 0
-  @total_bytes : UInt64 = 0_u64
-  @w : Pointer(UInt64)
-  @finished : Bool = false
+# SHA-256, FIPS 180-4 §6.2. SHA-224 is the same compression from another
+# starting state, its digest the first 28 bytes.
+pub class SHA256 < Digest
+  @h : Pointer(UInt32)
+  @w : Pointer(UInt32)
 
   def initialize
-    @buffer = Pointer(UInt8).malloc(64_u64)
-    @w = Pointer(UInt64).malloc(64_u64)
-    reset
+    @h = Pointer(UInt32).malloc(8_u64)
+    @w = Pointer(UInt32).malloc(64_u64)
+    super(64)
   end
 
-  def reset : self
-    @h0 = 0x6a09e667_u64
-    @h1 = 0xbb67ae85_u64
-    @h2 = 0x3c6ef372_u64
-    @h3 = 0xa54ff53a_u64
-    @h4 = 0x510e527f_u64
-    @h5 = 0x9b05688c_u64
-    @h6 = 0x1f83d9ab_u64
-    @h7 = 0x5be0cd19_u64
-    @buffer_len = 0
-    @total_bytes = 0_u64
-    @finished = false
-    self
+  def digest_size : Int32
+    32
   end
 
-  def update(data : Bytes) : self
-    raise "SHA256: already finalized" if @finished
-    offset = 0
-    len = data.size
-    @total_bytes = @total_bytes &+ len.to_u64
-    if @buffer_len > 0
-      needed = 64 - @buffer_len
-      to_copy = len < needed ? len : needed
-      i = 0
-      while i < to_copy
-        @buffer[@buffer_len + i] = data[offset + i]
-        i = i + 1
-      end
-      @buffer_len = @buffer_len + to_copy
-      offset = offset + to_copy
-      len = len - to_copy
-      if @buffer_len == 64
-        process_block(@buffer)
-        @buffer_len = 0
-      end
-    end
-    while len >= 64
-      process_block(data.to_unsafe + offset.to_i64)
-      offset = offset + 64
-      len = len - 64
-    end
-    if len > 0
-      i = 0
-      while i < len
-        @buffer[i] = data[offset + i]
-        i = i + 1
-      end
-      @buffer_len = len
-    end
-    self
+  private def start : Nil
+    @h[0] = 0x6a09e667_u32
+    @h[1] = 0xbb67ae85_u32
+    @h[2] = 0x3c6ef372_u32
+    @h[3] = 0xa54ff53a_u32
+    @h[4] = 0x510e527f_u32
+    @h[5] = 0x9b05688c_u32
+    @h[6] = 0x1f83d9ab_u32
+    @h[7] = 0x5be0cd19_u32
   end
 
-  def update(data : String) : self
-    update(Bytes.new(data.to_unsafe, data.bytesize))
+  private def take_state(other : Digest) : Nil
+    @h.copy_from(other.as(SHA256).@h, 8)
   end
 
-  private def process_block(ptr : Pointer(UInt8)) : Nil
-    i = 0
-    while i < 16
-      @w[i] = DigestUtils.get_u32_be(ptr, i * 4)
-      i = i + 1
-    end
+  private def write_state(dst : Pointer(UInt8)) : Nil
+    DigestUtil.store_u32s_be(dst, @h, digest_size)
+  end
+
+  private def compress(block : Pointer(UInt8)) : Nil
+    w = @w
+    k = round_constants
+    DigestUtil.load_u32s_be(w, block, 16)
+    i = 16
     while i < 64
-      s0 = DigestUtils.rotr32(@w[i - 15], 7) ^ DigestUtils.rotr32(@w[i - 15], 18) ^ (@w[i - 15].unsafe_shr(3_u64))
-      s1 = DigestUtils.rotr32(@w[i - 2], 17) ^ DigestUtils.rotr32(@w[i - 2], 19) ^ (@w[i - 2].unsafe_shr(10_u64))
-      @w[i] = (@w[i - 16] &+ s0 &+ @w[i - 7] &+ s1) & 0xffffffff_u64
+      x = w[i - 15]
+      y = w[i - 2]
+      s0 = DigestUtil.ror32(x, 7) ^ DigestUtil.ror32(x, 18) ^ x.unsafe_shr(3)
+      s1 = DigestUtil.ror32(y, 17) ^ DigestUtil.ror32(y, 19) ^ y.unsafe_shr(10)
+      w[i] = w[i - 16] &+ s0 &+ w[i - 7] &+ s1
       i = i + 1
     end
-    a = @h0; b = @h1; c = @h2; d = @h3; e = @h4; f = @h5; g = @h6; h = @h7
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x428a2f98_u64 &+ @w[0]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x71374491_u64 &+ @w[1]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0xb5c0fbcf_u64 &+ @w[2]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0xe9b5dba5_u64 &+ @w[3]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x3956c25b_u64 &+ @w[4]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x59f111f1_u64 &+ @w[5]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x923f82a4_u64 &+ @w[6]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0xab1c5ed5_u64 &+ @w[7]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0xd807aa98_u64 &+ @w[8]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x12835b01_u64 &+ @w[9]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x243185be_u64 &+ @w[10]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x550c7dc3_u64 &+ @w[11]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x72be5d74_u64 &+ @w[12]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x80deb1fe_u64 &+ @w[13]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x9bdc06a7_u64 &+ @w[14]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0xc19bf174_u64 &+ @w[15]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0xe49b69c1_u64 &+ @w[16]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0xefbe4786_u64 &+ @w[17]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x0fc19dc6_u64 &+ @w[18]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x240ca1cc_u64 &+ @w[19]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x2de92c6f_u64 &+ @w[20]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x4a7484aa_u64 &+ @w[21]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x5cb0a9dc_u64 &+ @w[22]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x76f988da_u64 &+ @w[23]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x983e5152_u64 &+ @w[24]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0xa831c66d_u64 &+ @w[25]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0xb00327c8_u64 &+ @w[26]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0xbf597fc7_u64 &+ @w[27]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0xc6e00bf3_u64 &+ @w[28]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0xd5a79147_u64 &+ @w[29]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x06ca6351_u64 &+ @w[30]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x14292967_u64 &+ @w[31]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x27b70a85_u64 &+ @w[32]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x2e1b2138_u64 &+ @w[33]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x4d2c6dfc_u64 &+ @w[34]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x53380d13_u64 &+ @w[35]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x650a7354_u64 &+ @w[36]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x766a0abb_u64 &+ @w[37]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x81c2c92e_u64 &+ @w[38]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x92722c85_u64 &+ @w[39]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0xa2bfe8a1_u64 &+ @w[40]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0xa81a664b_u64 &+ @w[41]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0xc24b8b70_u64 &+ @w[42]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0xc76c51a3_u64 &+ @w[43]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0xd192e819_u64 &+ @w[44]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0xd6990624_u64 &+ @w[45]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0xf40e3585_u64 &+ @w[46]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x106aa070_u64 &+ @w[47]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x19a4c116_u64 &+ @w[48]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x1e376c08_u64 &+ @w[49]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x2748774c_u64 &+ @w[50]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x34b0bcb5_u64 &+ @w[51]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x391c0cb3_u64 &+ @w[52]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x4ed8aa4a_u64 &+ @w[53]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x5b9cca4f_u64 &+ @w[54]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x682e6ff3_u64 &+ @w[55]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x748f82ee_u64 &+ @w[56]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x78a5636f_u64 &+ @w[57]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x84c87814_u64 &+ @w[58]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x8cc70208_u64 &+ @w[59]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0x90befffa_u64 &+ @w[60]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0xa4506ceb_u64 &+ @w[61]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0xbef9a3f7_u64 &+ @w[62]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    s1 = DigestUtils.rotr32(e, 6) ^ DigestUtils.rotr32(e, 11) ^ DigestUtils.rotr32(e, 25)
-    ch = (e & f) ^ ((e ^ 0xffffffff_u64) & g)
-    t1 = (h &+ s1 &+ ch &+ 0xc67178f2_u64 &+ @w[63]) & 0xffffffff_u64
-    s0 = DigestUtils.rotr32(a, 2) ^ DigestUtils.rotr32(a, 13) ^ DigestUtils.rotr32(a, 22)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = (s0 &+ maj) & 0xffffffff_u64
-    h = g; g = f; f = e; e = (d &+ t1) & 0xffffffff_u64; d = c; c = b; b = a; a = (t1 &+ t2) & 0xffffffff_u64
-    @h0 = (@h0 &+ a) & 0xffffffff_u64
-    @h1 = (@h1 &+ b) & 0xffffffff_u64
-    @h2 = (@h2 &+ c) & 0xffffffff_u64
-    @h3 = (@h3 &+ d) & 0xffffffff_u64
-    @h4 = (@h4 &+ e) & 0xffffffff_u64
-    @h5 = (@h5 &+ f) & 0xffffffff_u64
-    @h6 = (@h6 &+ g) & 0xffffffff_u64
-    @h7 = (@h7 &+ h) & 0xffffffff_u64
-  end
-
-  def final : Bytes
-    return out_digest if @finished
-    @finished = true
-    bit_len = @total_bytes.unsafe_shl(3_u64)
-    @buffer[@buffer_len] = 0x80_u8
-    @buffer_len = @buffer_len + 1
-    if @buffer_len > 56
-      while @buffer_len < 64
-        @buffer[@buffer_len] = 0_u8
-        @buffer_len = @buffer_len + 1
-      end
-      process_block(@buffer)
-      @buffer_len = 0
+    a = @h[0]
+    b = @h[1]
+    c = @h[2]
+    d = @h[3]
+    e = @h[4]
+    f = @h[5]
+    g = @h[6]
+    hh = @h[7]
+    # Eight rounds a pass, the names turned instead of the values: a round
+    # changes only d and h (`DigestUtil.round256`), and after eight the
+    # letters are back where they started. The loop that passed the eight
+    # values along spent a dozen register moves a round in a --release
+    # build. Hashing 16 MiB, best of five on a machine other jobs shared:
+    # SHA-256 549 MB/s where that loop gave 435, SHA-384 790 where it gave
+    # 637; Python's hashlib (OpenSSL) 787 and 1167.
+    t = 0
+    while t < 64
+      d, hh = DigestUtil.round256(a, b, c, d, e, f, g, hh, k[t] &+ w[t])
+      c, g = DigestUtil.round256(hh, a, b, c, d, e, f, g, k[t + 1] &+ w[t + 1])
+      b, f = DigestUtil.round256(g, hh, a, b, c, d, e, f, k[t + 2] &+ w[t + 2])
+      a, e = DigestUtil.round256(f, g, hh, a, b, c, d, e, k[t + 3] &+ w[t + 3])
+      hh, d = DigestUtil.round256(e, f, g, hh, a, b, c, d, k[t + 4] &+ w[t + 4])
+      g, c = DigestUtil.round256(d, e, f, g, hh, a, b, c, k[t + 5] &+ w[t + 5])
+      f, b = DigestUtil.round256(c, d, e, f, g, hh, a, b, k[t + 6] &+ w[t + 6])
+      e, a = DigestUtil.round256(b, c, d, e, f, g, hh, a, k[t + 7] &+ w[t + 7])
+      t = t + 8
     end
-    while @buffer_len < 56
-      @buffer[@buffer_len] = 0_u8
-      @buffer_len = @buffer_len + 1
-    end
-    DigestUtils.put_u64_be(@buffer, 56, bit_len)
-    process_block(@buffer)
-    out_digest
+    @h[0] = @h[0] &+ a
+    @h[1] = @h[1] &+ b
+    @h[2] = @h[2] &+ c
+    @h[3] = @h[3] &+ d
+    @h[4] = @h[4] &+ e
+    @h[5] = @h[5] &+ f
+    @h[6] = @h[6] &+ g
+    @h[7] = @h[7] &+ hh
   end
 
-  private def out_digest : Bytes
-    out = Bytes.new(32)
-    ptr = out.to_unsafe
-    DigestUtils.put_u32_be(ptr, 0, @h0)
-    DigestUtils.put_u32_be(ptr, 4, @h1)
-    DigestUtils.put_u32_be(ptr, 8, @h2)
-    DigestUtils.put_u32_be(ptr, 12, @h3)
-    DigestUtils.put_u32_be(ptr, 16, @h4)
-    DigestUtils.put_u32_be(ptr, 20, @h5)
-    DigestUtils.put_u32_be(ptr, 24, @h6)
-    DigestUtils.put_u32_be(ptr, 28, @h7)
-    out
-  end
+  @@k = Pointer(UInt32).new(0_u64)
 
-  def hexdigest : String
-    final.hexstring
-  end
-
-  def self.digest(data : Bytes) : Bytes
-    new.update(data).final
-  end
-
-  def self.digest(data : String) : Bytes
-    new.update(data).final
-  end
-
-  def self.hexdigest(data : Bytes) : String
-    new.update(data).hexdigest
-  end
-
-  def self.hexdigest(data : String) : String
-    new.update(data).hexdigest
-  end
-
-  def self.digest_size : Int32
-    32
-  end
-
-  def self.block_size : Int32
-    64
-  end
-
-  def digest_size : Int32
-    32
-  end
-
-  def block_size : Int32
-    64
-  end
-
-  def finished? : Bool
-    @finished
+  # The 64 round constants, made once: the first 32 bits of the
+  # fractional parts of the cube roots of the first 64 primes.
+  private def round_constants : Pointer(UInt32)
+    return @@k if @@k.address != 0_u64
+    words = [
+      0x428a2f98_u32, 0x71374491_u32, 0xb5c0fbcf_u32, 0xe9b5dba5_u32,
+      0x3956c25b_u32, 0x59f111f1_u32, 0x923f82a4_u32, 0xab1c5ed5_u32,
+      0xd807aa98_u32, 0x12835b01_u32, 0x243185be_u32, 0x550c7dc3_u32,
+      0x72be5d74_u32, 0x80deb1fe_u32, 0x9bdc06a7_u32, 0xc19bf174_u32,
+      0xe49b69c1_u32, 0xefbe4786_u32, 0x0fc19dc6_u32, 0x240ca1cc_u32,
+      0x2de92c6f_u32, 0x4a7484aa_u32, 0x5cb0a9dc_u32, 0x76f988da_u32,
+      0x983e5152_u32, 0xa831c66d_u32, 0xb00327c8_u32, 0xbf597fc7_u32,
+      0xc6e00bf3_u32, 0xd5a79147_u32, 0x06ca6351_u32, 0x14292967_u32,
+      0x27b70a85_u32, 0x2e1b2138_u32, 0x4d2c6dfc_u32, 0x53380d13_u32,
+      0x650a7354_u32, 0x766a0abb_u32, 0x81c2c92e_u32, 0x92722c85_u32,
+      0xa2bfe8a1_u32, 0xa81a664b_u32, 0xc24b8b70_u32, 0xc76c51a3_u32,
+      0xd192e819_u32, 0xd6990624_u32, 0xf40e3585_u32, 0x106aa070_u32,
+      0x19a4c116_u32, 0x1e376c08_u32, 0x2748774c_u32, 0x34b0bcb5_u32,
+      0x391c0cb3_u32, 0x4ed8aa4a_u32, 0x5b9cca4f_u32, 0x682e6ff3_u32,
+      0x748f82ee_u32, 0x78a5636f_u32, 0x84c87814_u32, 0x8cc70208_u32,
+      0x90befffa_u32, 0xa4506ceb_u32, 0xbef9a3f7_u32, 0xc67178f2_u32,
+    ]
+    table = Pointer(UInt32).malloc(64_u64)
+    table.copy_from(words.to_unsafe, 64)
+    @@k = table
+    table
   end
 end
 
-pub class SHA512
-  @h0 : UInt64 = 0x6a09e667f3bcc908_u64
-  @h1 : UInt64 = 0xbb67ae8584caa73b_u64
-  @h2 : UInt64 = 0x3c6ef372fe94f82b_u64
-  @h3 : UInt64 = 0xa54ff53a5f1d36f1_u64
-  @h4 : UInt64 = 0x510e527fade682d1_u64
-  @h5 : UInt64 = 0x9b05688c2b3e6c1f_u64
-  @h6 : UInt64 = 0x1f83d9abfb41bd6b_u64
-  @h7 : UInt64 = 0x5be0cd19137e2179_u64
-  @buffer : Pointer(UInt8)
-  @buffer_len : Int32 = 0
-  @total_bytes : UInt64 = 0_u64
+pub class SHA224 < SHA256
+  def digest_size : Int32
+    28
+  end
+
+  # The second 32 bits of the fractional parts of the square roots of the
+  # ninth to sixteenth primes.
+  private def start : Nil
+    @h[0] = 0xc1059ed8_u32
+    @h[1] = 0x367cd507_u32
+    @h[2] = 0x3070dd17_u32
+    @h[3] = 0xf70e5939_u32
+    @h[4] = 0xffc00b31_u32
+    @h[5] = 0x68581511_u32
+    @h[6] = 0x64f98fa7_u32
+    @h[7] = 0xbefa4fa4_u32
+  end
+end
+
+# SHA-512, FIPS 180-4 §6.4: 64-bit words, 128-byte blocks, 80 rounds.
+# SHA-384 is the same compression from another starting state, its digest
+# the first 48 bytes.
+pub class SHA512 < Digest
+  @h : Pointer(UInt64)
   @w : Pointer(UInt64)
-  @finished : Bool = false
 
   def initialize
-    @buffer = Pointer(UInt8).malloc(128_u64)
+    @h = Pointer(UInt64).malloc(8_u64)
     @w = Pointer(UInt64).malloc(80_u64)
-    reset
+    super(128)
   end
 
-  def reset : self
-    @h0 = 0x6a09e667f3bcc908_u64
-    @h1 = 0xbb67ae8584caa73b_u64
-    @h2 = 0x3c6ef372fe94f82b_u64
-    @h3 = 0xa54ff53a5f1d36f1_u64
-    @h4 = 0x510e527fade682d1_u64
-    @h5 = 0x9b05688c2b3e6c1f_u64
-    @h6 = 0x1f83d9abfb41bd6b_u64
-    @h7 = 0x5be0cd19137e2179_u64
-    @buffer_len = 0
-    @total_bytes = 0_u64
-    @finished = false
-    self
+  def digest_size : Int32
+    64
   end
 
-  def update(data : Bytes) : self
-    raise "SHA512: already finalized" if @finished
-    offset = 0
-    len = data.size
-    @total_bytes = @total_bytes &+ len.to_u64
-    if @buffer_len > 0
-      needed = 128 - @buffer_len
-      to_copy = len < needed ? len : needed
-      i = 0
-      while i < to_copy
-        @buffer[@buffer_len + i] = data[offset + i]
-        i = i + 1
-      end
-      @buffer_len = @buffer_len + to_copy
-      offset = offset + to_copy
-      len = len - to_copy
-      if @buffer_len == 128
-        process_block(@buffer)
-        @buffer_len = 0
-      end
+  private def start : Nil
+    @h[0] = 0x6a09e667f3bcc908_u64
+    @h[1] = 0xbb67ae8584caa73b_u64
+    @h[2] = 0x3c6ef372fe94f82b_u64
+    @h[3] = 0xa54ff53a5f1d36f1_u64
+    @h[4] = 0x510e527fade682d1_u64
+    @h[5] = 0x9b05688c2b3e6c1f_u64
+    @h[6] = 0x1f83d9abfb41bd6b_u64
+    @h[7] = 0x5be0cd19137e2179_u64
+  end
+
+  private def take_state(other : Digest) : Nil
+    @h.copy_from(other.as(SHA512).@h, 8)
+  end
+
+  private def write_state(dst : Pointer(UInt8)) : Nil
+    i = 0
+    while i < digest_size
+      dst[i] = (@h[i >> 3].unsafe_shr(56 - (i & 7) * 8) & 255_u64).to_u8
+      i = i + 1
     end
-    while len >= 128
-      process_block(data.to_unsafe + offset.to_i64)
-      offset = offset + 128
-      len = len - 128
-    end
-    if len > 0
-      i = 0
-      while i < len
-        @buffer[i] = data[offset + i]
-        i = i + 1
-      end
-      @buffer_len = len
-    end
-    self
   end
 
-  def update(data : String) : self
-    update(Bytes.new(data.to_unsafe, data.bytesize))
-  end
-
-  protected def process_block(ptr : Pointer(UInt8)) : Nil
+  private def compress(block : Pointer(UInt8)) : Nil
+    w = @w
+    k = round_constants
     i = 0
     while i < 16
-      @w[i] = DigestUtils.get_u64_be(ptr, i * 8)
+      w[i] = DigestUtil.load_u64_be(block + (i * 8).to_i64)
       i = i + 1
     end
     while i < 80
-      s0 = DigestUtils.rotr64(@w[i - 15], 1) ^ DigestUtils.rotr64(@w[i - 15], 8) ^ (@w[i - 15].unsafe_shr(7_u64))
-      s1 = DigestUtils.rotr64(@w[i - 2], 19) ^ DigestUtils.rotr64(@w[i - 2], 61) ^ (@w[i - 2].unsafe_shr(6_u64))
-      @w[i] = @w[i - 16] &+ s0 &+ @w[i - 7] &+ s1
+      x = w[i - 15]
+      y = w[i - 2]
+      s0 = DigestUtil.ror64(x, 1) ^ DigestUtil.ror64(x, 8) ^ x.unsafe_shr(7)
+      s1 = DigestUtil.ror64(y, 19) ^ DigestUtil.ror64(y, 61) ^ y.unsafe_shr(6)
+      w[i] = w[i - 16] &+ s0 &+ w[i - 7] &+ s1
       i = i + 1
     end
-    a = @h0; b = @h1; c = @h2; d = @h3; e = @h4; f = @h5; g = @h6; h = @h7
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x428a2f98d728ae22_u64 &+ @w[0]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x7137449123ef65cd_u64 &+ @w[1]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0xb5c0fbcfec4d3b2f_u64 &+ @w[2]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0xe9b5dba58189dbbc_u64 &+ @w[3]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x3956c25bf348b538_u64 &+ @w[4]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x59f111f1b605d019_u64 &+ @w[5]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x923f82a4af194f9b_u64 &+ @w[6]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0xab1c5ed5da6d8118_u64 &+ @w[7]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0xd807aa98a3030242_u64 &+ @w[8]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x12835b0145706fbe_u64 &+ @w[9]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x243185be4ee4b28c_u64 &+ @w[10]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x550c7dc3d5ffb4e2_u64 &+ @w[11]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x72be5d74f27b896f_u64 &+ @w[12]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x80deb1fe3b1696b1_u64 &+ @w[13]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x9bdc06a725c71235_u64 &+ @w[14]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0xc19bf174cf692694_u64 &+ @w[15]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0xe49b69c19ef14ad2_u64 &+ @w[16]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0xefbe4786384f25e3_u64 &+ @w[17]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x0fc19dc68b8cd5b5_u64 &+ @w[18]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x240ca1cc77ac9c65_u64 &+ @w[19]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x2de92c6f592b0275_u64 &+ @w[20]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x4a7484aa6ea6e483_u64 &+ @w[21]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x5cb0a9dcbd41fbd4_u64 &+ @w[22]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x76f988da831153b5_u64 &+ @w[23]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x983e5152ee66dfab_u64 &+ @w[24]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0xa831c66d2db43210_u64 &+ @w[25]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0xb00327c898fb213f_u64 &+ @w[26]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0xbf597fc7beef0ee4_u64 &+ @w[27]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0xc6e00bf33da88fc2_u64 &+ @w[28]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0xd5a79147930aa725_u64 &+ @w[29]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x06ca6351e003826f_u64 &+ @w[30]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x142929670a0e6e70_u64 &+ @w[31]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x27b70a8546d22ffc_u64 &+ @w[32]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x2e1b21385c26c926_u64 &+ @w[33]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x4d2c6dfc5ac42aed_u64 &+ @w[34]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x53380d139d95b3df_u64 &+ @w[35]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x650a73548baf63de_u64 &+ @w[36]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x766a0abb3c77b2a8_u64 &+ @w[37]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x81c2c92e47edaee6_u64 &+ @w[38]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x92722c851482353b_u64 &+ @w[39]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0xa2bfe8a14cf10364_u64 &+ @w[40]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0xa81a664bbc423001_u64 &+ @w[41]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0xc24b8b70d0f89791_u64 &+ @w[42]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0xc76c51a30654be30_u64 &+ @w[43]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0xd192e819d6ef5218_u64 &+ @w[44]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0xd69906245565a910_u64 &+ @w[45]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0xf40e35855771202a_u64 &+ @w[46]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x106aa07032bbd1b8_u64 &+ @w[47]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x19a4c116b8d2d0c8_u64 &+ @w[48]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x1e376c085141ab53_u64 &+ @w[49]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x2748774cdf8eeb99_u64 &+ @w[50]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x34b0bcb5e19b48a8_u64 &+ @w[51]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x391c0cb3c5c95a63_u64 &+ @w[52]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x4ed8aa4ae3418acb_u64 &+ @w[53]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x5b9cca4f7763e373_u64 &+ @w[54]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x682e6ff3d6b2b8a3_u64 &+ @w[55]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x748f82ee5defb2fc_u64 &+ @w[56]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x78a5636f43172f60_u64 &+ @w[57]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x84c87814a1f0ab72_u64 &+ @w[58]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x8cc702081a6439ec_u64 &+ @w[59]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x90befffa23631e28_u64 &+ @w[60]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0xa4506cebde82bde9_u64 &+ @w[61]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0xbef9a3f7b2c67915_u64 &+ @w[62]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0xc67178f2e372532b_u64 &+ @w[63]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0xca273eceea26619c_u64 &+ @w[64]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0xd186b8c721c0c207_u64 &+ @w[65]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0xeada7dd6cde0eb1e_u64 &+ @w[66]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0xf57d4f7fee6ed178_u64 &+ @w[67]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x06f067aa72176fba_u64 &+ @w[68]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x0a637dc5a2c898a6_u64 &+ @w[69]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x113f9804bef90dae_u64 &+ @w[70]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x1b710b35131c471b_u64 &+ @w[71]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x28db77f523047d84_u64 &+ @w[72]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x32caab7b40c72493_u64 &+ @w[73]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x3c9ebe0a15c9bebc_u64 &+ @w[74]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x431d67c49c100d4c_u64 &+ @w[75]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x4cc5d4becb3e42b6_u64 &+ @w[76]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x597f299cfc657e2a_u64 &+ @w[77]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x5fcb6fab3ad6faec_u64 &+ @w[78]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    s1 = DigestUtils.rotr64(e, 14) ^ DigestUtils.rotr64(e, 18) ^ DigestUtils.rotr64(e, 41)
-    ch = (e & f) ^ ((e ^ 0xffffffffffffffff_u64) & g)
-    t1 = h &+ s1 &+ ch &+ 0x6c44198c4a475817_u64 &+ @w[79]
-    s0 = DigestUtils.rotr64(a, 28) ^ DigestUtils.rotr64(a, 34) ^ DigestUtils.rotr64(a, 39)
-    maj = (a & b) ^ (a & c) ^ (b & c)
-    t2 = s0 &+ maj
-    h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-    @h0 = @h0 &+ a
-    @h1 = @h1 &+ b
-    @h2 = @h2 &+ c
-    @h3 = @h3 &+ d
-    @h4 = @h4 &+ e
-    @h5 = @h5 &+ f
-    @h6 = @h6 &+ g
-    @h7 = @h7 &+ h
-  end
-
-  def final : Bytes
-    return out_digest if @finished
-    @finished = true
-    bit_len = @total_bytes.unsafe_shl(3_u64)
-    @buffer[@buffer_len] = 0x80_u8
-    @buffer_len = @buffer_len + 1
-    if @buffer_len > 112
-      while @buffer_len < 128
-        @buffer[@buffer_len] = 0_u8
-        @buffer_len = @buffer_len + 1
-      end
-      process_block(@buffer)
-      @buffer_len = 0
+    a = @h[0]
+    b = @h[1]
+    c = @h[2]
+    d = @h[3]
+    e = @h[4]
+    f = @h[5]
+    g = @h[6]
+    hh = @h[7]
+    # Eight rounds a pass, the names turned, as SHA-256 does.
+    t = 0
+    while t < 80
+      d, hh = DigestUtil.round512(a, b, c, d, e, f, g, hh, k[t] &+ w[t])
+      c, g = DigestUtil.round512(hh, a, b, c, d, e, f, g, k[t + 1] &+ w[t + 1])
+      b, f = DigestUtil.round512(g, hh, a, b, c, d, e, f, k[t + 2] &+ w[t + 2])
+      a, e = DigestUtil.round512(f, g, hh, a, b, c, d, e, k[t + 3] &+ w[t + 3])
+      hh, d = DigestUtil.round512(e, f, g, hh, a, b, c, d, k[t + 4] &+ w[t + 4])
+      g, c = DigestUtil.round512(d, e, f, g, hh, a, b, c, k[t + 5] &+ w[t + 5])
+      f, b = DigestUtil.round512(c, d, e, f, g, hh, a, b, k[t + 6] &+ w[t + 6])
+      e, a = DigestUtil.round512(b, c, d, e, f, g, hh, a, k[t + 7] &+ w[t + 7])
+      t = t + 8
     end
-    while @buffer_len < 112
-      @buffer[@buffer_len] = 0_u8
-      @buffer_len = @buffer_len + 1
-    end
-    DigestUtils.put_u64_be(@buffer, 112, 0_u64)
-    DigestUtils.put_u64_be(@buffer, 120, bit_len)
-    process_block(@buffer)
-    out_digest
+    @h[0] = @h[0] &+ a
+    @h[1] = @h[1] &+ b
+    @h[2] = @h[2] &+ c
+    @h[3] = @h[3] &+ d
+    @h[4] = @h[4] &+ e
+    @h[5] = @h[5] &+ f
+    @h[6] = @h[6] &+ g
+    @h[7] = @h[7] &+ hh
   end
 
-  private def out_digest : Bytes
-    out = Bytes.new(64)
-    ptr = out.to_unsafe
-    DigestUtils.put_u64_be(ptr, 0, @h0)
-    DigestUtils.put_u64_be(ptr, 8, @h1)
-    DigestUtils.put_u64_be(ptr, 16, @h2)
-    DigestUtils.put_u64_be(ptr, 24, @h3)
-    DigestUtils.put_u64_be(ptr, 32, @h4)
-    DigestUtils.put_u64_be(ptr, 40, @h5)
-    DigestUtils.put_u64_be(ptr, 48, @h6)
-    DigestUtils.put_u64_be(ptr, 56, @h7)
-    out
-  end
+  @@k = Pointer(UInt64).new(0_u64)
 
-  def hexdigest : String
-    final.hexstring
-  end
-
-  def self.digest(data : Bytes) : Bytes
-    new.update(data).final
-  end
-
-  def self.digest(data : String) : Bytes
-    new.update(data).final
-  end
-
-  def self.hexdigest(data : Bytes) : String
-    new.update(data).hexdigest
-  end
-
-  def self.hexdigest(data : String) : String
-    new.update(data).hexdigest
-  end
-
-  def self.digest_size : Int32
-    64
-  end
-
-  def self.block_size : Int32
-    128
-  end
-
-  def digest_size : Int32
-    64
-  end
-
-  def block_size : Int32
-    128
-  end
-
-  def finished? : Bool
-    @finished
+  # The 80 round constants, made once: the first 64 bits of the
+  # fractional parts of the cube roots of the first 80 primes.
+  private def round_constants : Pointer(UInt64)
+    return @@k if @@k.address != 0_u64
+    words = [
+      0x428a2f98d728ae22_u64, 0x7137449123ef65cd_u64, 0xb5c0fbcfec4d3b2f_u64, 0xe9b5dba58189dbbc_u64,
+      0x3956c25bf348b538_u64, 0x59f111f1b605d019_u64, 0x923f82a4af194f9b_u64, 0xab1c5ed5da6d8118_u64,
+      0xd807aa98a3030242_u64, 0x12835b0145706fbe_u64, 0x243185be4ee4b28c_u64, 0x550c7dc3d5ffb4e2_u64,
+      0x72be5d74f27b896f_u64, 0x80deb1fe3b1696b1_u64, 0x9bdc06a725c71235_u64, 0xc19bf174cf692694_u64,
+      0xe49b69c19ef14ad2_u64, 0xefbe4786384f25e3_u64, 0x0fc19dc68b8cd5b5_u64, 0x240ca1cc77ac9c65_u64,
+      0x2de92c6f592b0275_u64, 0x4a7484aa6ea6e483_u64, 0x5cb0a9dcbd41fbd4_u64, 0x76f988da831153b5_u64,
+      0x983e5152ee66dfab_u64, 0xa831c66d2db43210_u64, 0xb00327c898fb213f_u64, 0xbf597fc7beef0ee4_u64,
+      0xc6e00bf33da88fc2_u64, 0xd5a79147930aa725_u64, 0x06ca6351e003826f_u64, 0x142929670a0e6e70_u64,
+      0x27b70a8546d22ffc_u64, 0x2e1b21385c26c926_u64, 0x4d2c6dfc5ac42aed_u64, 0x53380d139d95b3df_u64,
+      0x650a73548baf63de_u64, 0x766a0abb3c77b2a8_u64, 0x81c2c92e47edaee6_u64, 0x92722c851482353b_u64,
+      0xa2bfe8a14cf10364_u64, 0xa81a664bbc423001_u64, 0xc24b8b70d0f89791_u64, 0xc76c51a30654be30_u64,
+      0xd192e819d6ef5218_u64, 0xd69906245565a910_u64, 0xf40e35855771202a_u64, 0x106aa07032bbd1b8_u64,
+      0x19a4c116b8d2d0c8_u64, 0x1e376c085141ab53_u64, 0x2748774cdf8eeb99_u64, 0x34b0bcb5e19b48a8_u64,
+      0x391c0cb3c5c95a63_u64, 0x4ed8aa4ae3418acb_u64, 0x5b9cca4f7763e373_u64, 0x682e6ff3d6b2b8a3_u64,
+      0x748f82ee5defb2fc_u64, 0x78a5636f43172f60_u64, 0x84c87814a1f0ab72_u64, 0x8cc702081a6439ec_u64,
+      0x90befffa23631e28_u64, 0xa4506cebde82bde9_u64, 0xbef9a3f7b2c67915_u64, 0xc67178f2e372532b_u64,
+      0xca273eceea26619c_u64, 0xd186b8c721c0c207_u64, 0xeada7dd6cde0eb1e_u64, 0xf57d4f7fee6ed178_u64,
+      0x06f067aa72176fba_u64, 0x0a637dc5a2c898a6_u64, 0x113f9804bef90dae_u64, 0x1b710b35131c471b_u64,
+      0x28db77f523047d84_u64, 0x32caab7b40c72493_u64, 0x3c9ebe0a15c9bebc_u64, 0x431d67c49c100d4c_u64,
+      0x4cc5d4becb3e42b6_u64, 0x597f299cfc657e2a_u64, 0x5fcb6fab3ad6faec_u64, 0x6c44198c4a475817_u64,
+    ]
+    table = Pointer(UInt64).malloc(80_u64)
+    table.copy_from(words.to_unsafe, 80)
+    @@k = table
+    table
   end
 end
 
 pub class SHA384 < SHA512
-  def reset : self
-    @h0 = 0xcbbb9d5dc1059ed8_u64
-    @h1 = 0x629a292a367cd507_u64
-    @h2 = 0x9159015a3070dd17_u64
-    @h3 = 0x152fecd8f70e5939_u64
-    @h4 = 0x67332667ffc00b31_u64
-    @h5 = 0x8eb44a8768581511_u64
-    @h6 = 0xdb0c2e0d64f98fa7_u64
-    @h7 = 0x47b5481dbefa4fa4_u64
-    @buffer_len = 0
-    @total_bytes = 0_u64
-    @finished = false
-    self
-  end
-
-  def initialize
-    super
-    reset
-  end
-
-  private def out_digest : Bytes
-    out = Bytes.new(48)
-    ptr = out.to_unsafe
-    DigestUtils.put_u64_be(ptr, 0, @h0)
-    DigestUtils.put_u64_be(ptr, 8, @h1)
-    DigestUtils.put_u64_be(ptr, 16, @h2)
-    DigestUtils.put_u64_be(ptr, 24, @h3)
-    DigestUtils.put_u64_be(ptr, 32, @h4)
-    DigestUtils.put_u64_be(ptr, 40, @h5)
-    out
-  end
-
-  def self.digest_size : Int32
+  def digest_size : Int32
     48
   end
 
-  def self.block_size : Int32
-    128
+  # The first 64 bits of the fractional parts of the square roots of the
+  # ninth to sixteenth primes.
+  private def start : Nil
+    @h[0] = 0xcbbb9d5dc1059ed8_u64
+    @h[1] = 0x629a292a367cd507_u64
+    @h[2] = 0x9159015a3070dd17_u64
+    @h[3] = 0x152fecd8f70e5939_u64
+    @h[4] = 0x67332667ffc00b31_u64
+    @h[5] = 0x8eb44a8768581511_u64
+    @h[6] = 0xdb0c2e0d64f98fa7_u64
+    @h[7] = 0x47b5481dbefa4fa4_u64
+  end
+end
+
+# FIPS 202's Keccak-f[1600]: twenty-five 64-bit lanes, lane x + 5y at
+# index x + 5y, a lane's bytes least significant first. The rotations
+# and the order rho and pi visit the lanes in are walked as one cycle
+# (lane 1, then each lane pi sends it to), the compact form of the
+# Keccak team's reference, so the step needs one lane of temporary.
+struct Keccak
+  @@tables = Pointer(UInt64).new(0_u64)
+
+  # The 24 iota round constants, then the 24 rho offsets of the lanes the
+  # cycle visits, then the 24 lanes themselves, FIPS 202 sections 3.2.2
+  # to 3.2.5.
+  private def self.tables : Pointer(UInt64)
+    return @@tables if @@tables.address != 0_u64
+    words = [
+      0x0000000000000001_u64, 0x0000000000008082_u64, 0x800000000000808a_u64, 0x8000000080008000_u64,
+      0x000000000000808b_u64, 0x0000000080000001_u64, 0x8000000080008081_u64, 0x8000000000008009_u64,
+      0x000000000000008a_u64, 0x0000000000000088_u64, 0x0000000080008009_u64, 0x000000008000000a_u64,
+      0x000000008000808b_u64, 0x800000000000008b_u64, 0x8000000000008089_u64, 0x8000000000008003_u64,
+      0x8000000000008002_u64, 0x8000000000000080_u64, 0x000000000000800a_u64, 0x800000008000000a_u64,
+      0x8000000080008081_u64, 0x8000000000008080_u64, 0x0000000080000001_u64, 0x8000000080008008_u64,
+      1_u64, 3_u64, 6_u64, 10_u64, 15_u64, 21_u64, 28_u64, 36_u64, 45_u64, 55_u64, 2_u64, 14_u64,
+      27_u64, 41_u64, 56_u64, 8_u64, 25_u64, 43_u64, 62_u64, 18_u64, 39_u64, 61_u64, 20_u64, 44_u64,
+      10_u64, 7_u64, 11_u64, 17_u64, 18_u64, 3_u64, 5_u64, 16_u64, 8_u64, 21_u64, 24_u64, 4_u64,
+      15_u64, 23_u64, 19_u64, 13_u64, 12_u64, 2_u64, 20_u64, 14_u64, 22_u64, 9_u64, 6_u64, 1_u64,
+    ]
+    table = Pointer(UInt64).malloc(72_u64)
+    table.copy_from(words.to_unsafe, 72)
+    @@tables = table
+    table
+  end
+
+  # Every rotation here is by 1 to 63, so no branch for a zero.
+  private def self.rotl(x : UInt64, n : Int32) : UInt64
+    x.unsafe_shl(n) | x.unsafe_shr(64 - n)
+  end
+
+  # The 24 rounds over the 25 lanes at *a*; *c* is five lanes of scratch.
+  def self.permute(a : Pointer(UInt64), c : Pointer(UInt64)) : Nil
+    t = tables
+    round = 0
+    while round < 24
+      # theta: each lane takes the parity of the two columns beside it.
+      x = 0
+      while x < 5
+        c[x] = a[x] ^ a[x + 5] ^ a[x + 10] ^ a[x + 15] ^ a[x + 20]
+        x = x + 1
+      end
+      x = 0
+      while x < 5
+        d = c[(x + 4) % 5] ^ rotl(c[(x + 1) % 5], 1)
+        y = 0
+        while y < 25
+          a[x + y] = a[x + y] ^ d
+          y = y + 5
+        end
+        x = x + 1
+      end
+      # rho and pi together, along the cycle.
+      last = a[1]
+      i = 0
+      while i < 24
+        j = t[48 + i].to_i32
+        moved = a[j]
+        a[j] = rotl(last, t[24 + i].to_i32)
+        last = moved
+        i = i + 1
+      end
+      # chi, a row at a time.
+      y = 0
+      while y < 25
+        x = 0
+        while x < 5
+          c[x] = a[y + x]
+          x = x + 1
+        end
+        x = 0
+        while x < 5
+          a[y + x] = c[x] ^ ((~c[(x + 1) % 5]) & c[(x + 2) % 5])
+          x = x + 1
+        end
+        y = y + 5
+      end
+      # iota.
+      a[0] = a[0] ^ t[round]
+      round = round + 1
+    end
+  end
+
+  # One block of *rate* bytes xored into the lanes, then the permutation.
+  def self.absorb(a : Pointer(UInt64), c : Pointer(UInt64), block : Pointer(UInt8), rate : Int32) : Nil
+    i = 0
+    while i < rate // 8
+      p = block + (i * 8).to_i64
+      lane = 0_u64
+      k = 7
+      while k >= 0
+        lane = lane.unsafe_shl(8) | p[k].to_u64
+        k = k - 1
+      end
+      a[i] = a[i] ^ lane
+      i = i + 1
+    end
+    permute(a, c)
+  end
+
+  # The last block: the domain's suffix bits (0x06 for SHA-3's `01`, 0x1f
+  # for SHAKE's `1111`) with pad10*1's first one bit after them, zeros,
+  # and pad10*1's last one bit at the top of the block's last byte. A
+  # suffix landing in the last byte shares it with that bit.
+  def self.pad(a : Pointer(UInt64), c : Pointer(UInt64), block : Pointer(UInt8), fill : Int32, rate : Int32, suffix : UInt8) : Nil
+    block[fill] = suffix
+    i = fill + 1
+    while i < rate
+      block[i] = 0_u8
+      i = i + 1
+    end
+    block[rate - 1] = block[rate - 1] | 0x80_u8
+    absorb(a, c, block, rate)
+  end
+
+  def self.byte(a : Pointer(UInt64), i : Int32) : UInt8
+    (a[i >> 3].unsafe_shr((i & 7) * 8) & 255_u64).to_u8
+  end
+end
+
+# SHA-3, FIPS 202 section 6.1: Keccak[c] with a capacity twice the
+# digest, so a rate (the `block_size`) of 200 bytes less two digests.
+# The sponge has no length field, so the base's cutting into blocks is
+# kept and its padding is replaced. The digest is shorter than the rate
+# in all four, so it is the first bytes of the state after the last
+# block, with no further permutation.
+pub abstract class SHA3 < Digest
+  @a : Pointer(UInt64)
+  @c : Pointer(UInt64)
+
+  def initialize(rate : Int32)
+    @a = Pointer(UInt64).malloc(25_u64)
+    @c = Pointer(UInt64).malloc(5_u64)
+    super(rate)
+  end
+
+  private def start : Nil
+    i = 0
+    while i < 25
+      @a[i] = 0_u64
+      i = i + 1
+    end
+  end
+
+  # `copy_from` has refused another algorithm by then; `as?` rather than
+  # `as` because a cast from an unrelated digest is a compile error.
+  private def take_state(other : Digest) : Nil
+    from = other.as?(SHA3)
+    @a.copy_from(from.@a, 25) if from
+  end
+
+  private def write_state(dst : Pointer(UInt8)) : Nil
+    i = 0
+    while i < digest_size
+      dst[i] = Keccak.byte(@a, i)
+      i = i + 1
+    end
+  end
+
+  private def compress(block : Pointer(UInt8)) : Nil
+    Keccak.absorb(@a, @c, block, @block_size)
+  end
+
+  private def pad : Nil
+    Keccak.pad(@a, @c, @block, @fill, @block_size, 0x06_u8)
+    @fill = 0
+  end
+end
+
+pub class SHA3_224 < SHA3
+  def initialize
+    super(144)
+  end
+
+  def digest_size : Int32
+    28
+  end
+end
+
+pub class SHA3_256 < SHA3
+  def initialize
+    super(200 - 2 * 32)
+  end
+
+  def digest_size : Int32
+    32
+  end
+end
+
+pub class SHA3_384 < SHA3
+  def initialize
+    super(104)
   end
 
   def digest_size : Int32
     48
   end
+end
 
-  def block_size : Int32
-    128
+pub class SHA3_512 < SHA3
+  def initialize
+    super(72)
+  end
+
+  def digest_size : Int32
+    64
   end
 end
 
-pub def md5(data : Bytes) : Bytes
-  MD5.digest(data)
+# SHAKE128 and SHAKE256, FIPS 202 section 6.2: the sponge at a capacity of
+# 256 and 512 bits, as much output as is asked for. `update` absorbs;
+# the first `read` pads and every `read` squeezes on from where the last
+# stopped, so reads of 3 and 5 bytes are the first 8 bytes of one read.
+# Absorbing after squeezing would be a different function, not more
+# input, and is refused until `reset`.
+pub abstract class Shake
+  @a : Pointer(UInt64)
+  @c : Pointer(UInt64)
+  @block : Pointer(UInt8)
+  @rate : Int32
+  @fill : Int32
+  @squeezing : Bool
+
+  def initialize(rate : Int32)
+    @rate = rate
+    @a = Pointer(UInt64).malloc(25_u64)
+    @c = Pointer(UInt64).malloc(5_u64)
+    @block = Pointer(UInt8).malloc(rate.to_u64)
+    @fill = 0
+    @squeezing = false
+  end
+
+  # *count* bytes of the output for *data*.
+  def self.hash_bytes(data : String | Array(UInt8), count : Int32) : Array(UInt8)
+    new.update(data).read(count)
+  end
+
+  def self.hexdigest(data : String | Array(UInt8), count : Int32) : String
+    DigestUtil.hex(hash_bytes(data, count), count)
+  end
+
+  # Bytes absorbed at a time: 168 for SHAKE128, 136 for SHAKE256.
+  def block_size : Int32
+    @rate
+  end
+
+  def reset : Nil
+    i = 0
+    while i < 25
+      @a[i] = 0_u64
+      i = i + 1
+    end
+    @fill = 0
+    @squeezing = false
+  end
+
+  def update(data : String) : self
+    update(data.to_unsafe, data.bytesize)
+  end
+
+  def update(data : Array(UInt8)) : self
+    update(data.to_unsafe, data.size)
+  end
+
+  def update(data : Pointer(UInt8), count : Int32) : self
+    raise "#{self.class}: update after read; reset first" if @squeezing
+    raise "#{self.class}: a negative count of bytes: #{count}" if count < 0
+    done = 0
+    if @fill > 0
+      take = @rate - @fill
+      take = count if count < take
+      (@block + @fill.to_i64).copy_from(data, take)
+      @fill = @fill + take
+      done = take
+      if @fill == @rate
+        Keccak.absorb(@a, @c, @block, @rate)
+        @fill = 0
+      end
+    end
+    while count - done >= @rate
+      Keccak.absorb(@a, @c, data + done.to_i64, @rate)
+      done = done + @rate
+    end
+    if done < count
+      @block.copy_from(data + done.to_i64, count - done)
+      @fill = count - done
+    end
+    self
+  end
+
+  # The next `dst.size` bytes of output into *dst*, with no array made.
+  # While squeezing, `@fill` counts the bytes of the state given out.
+  def read(dst : Array(UInt8)) : Nil
+    unless @squeezing
+      Keccak.pad(@a, @c, @block, @fill, @rate, 0x1f_u8)
+      @fill = 0
+      @squeezing = true
+    end
+    i = 0
+    while i < dst.size
+      if @fill == @rate
+        Keccak.permute(@a, @c)
+        @fill = 0
+      end
+      dst[i] = Keccak.byte(@a, @fill)
+      @fill = @fill + 1
+      i = i + 1
+    end
+  end
+
+  def read(count : Int32) : Array(UInt8)
+    raise "#{self.class}: a negative count of bytes to read: #{count}" if count < 0
+    bytes = Array(UInt8).new(count, 0_u8)
+    read(bytes)
+    bytes
+  end
 end
 
-pub def md5(data : String) : Bytes
-  MD5.digest(data)
+pub class SHAKE128 < Shake
+  def initialize
+    super(168)
+  end
 end
 
-pub def sha1(data : Bytes) : Bytes
-  SHA1.digest(data)
+pub class SHAKE256 < Shake
+  def initialize
+    super(136)
+  end
 end
 
-pub def sha1(data : String) : Bytes
-  SHA1.digest(data)
+# `checksum(data)` is the CRC-32 of *data*. `update(crc, data, count)` goes
+# on from a CRC-32 already taken, zlib's `crc32(crc, buf, len)` convention:
+# what goes in and what comes out are finished checksums, the inversion
+# before and after done inside, so 0 is the start (the CRC-32 of nothing)
+# and `update(update(0, a), b)` is the CRC-32 of *a* then *b*, the same
+# number `checksum` answers for the two joined.
+pub struct CRC32
+  def self.checksum(data : String) : UInt32
+    update(0_u32, data.to_unsafe, data.bytesize)
+  end
+
+  # Eight bytes a step through eight tables (slicing-by-8), where it had
+  # been one bit a step: twenty megabytes took 105 ms, which was most of
+  # what `Gzip.decompress` spent, the inflating itself taking 30.
+  def self.update(crc : UInt32, data : Pointer(UInt8), count : Int32) : UInt32
+    raise "CRC32: a negative count of bytes: #{count}" if count < 0
+    t = tables
+    crc = crc ^ 0xffffffff_u32
+    p = data
+    n = count
+    i = 0
+    while i + 8 <= n
+      one = crc ^ (p[i].to_u32 | p[i + 1].to_u32.unsafe_shl(8) | p[i + 2].to_u32.unsafe_shl(16) | p[i + 3].to_u32.unsafe_shl(24))
+      crc = t[1792 + (one & 255_u32).to_i32] ^ t[1536 + (one.unsafe_shr(8) & 255_u32).to_i32] ^
+            t[1280 + (one.unsafe_shr(16) & 255_u32).to_i32] ^ t[1024 + one.unsafe_shr(24).to_i32] ^
+            t[768 + p[i + 4].to_i32] ^ t[512 + p[i + 5].to_i32] ^ t[256 + p[i + 6].to_i32] ^ t[p[i + 7].to_i32]
+      i = i + 8
+    end
+    while i < n
+      crc = t[((crc ^ p[i].to_u32) & 255_u32).to_i32] ^ crc.unsafe_shr(8)
+      i = i + 1
+    end
+    crc ^ 0xffffffff_u32
+  end
+
+  @@tables = Pointer(UInt32).new(0_u64)
+
+  # The eight tables, made once: the first is the byte-at-a-time table,
+  # and each after it is one more byte of zeros through the one before.
+  private def self.tables : Pointer(UInt32)
+    return @@tables if @@tables.address != 0_u64
+    t = Pointer(UInt32).malloc(2048_u64)
+    n = 0
+    while n < 256
+      c = n.to_u32
+      k = 0
+      while k < 8
+        c = (c & 1_u32) == 1_u32 ? c.unsafe_shr(1) ^ 0xedb88320_u32 : c.unsafe_shr(1)
+        k = k + 1
+      end
+      t[n] = c
+      n = n + 1
+    end
+    slice = 1
+    while slice < 8
+      n = 0
+      while n < 256
+        before = t[(slice - 1) * 256 + n]
+        t[slice * 256 + n] = before.unsafe_shr(8) ^ t[(before & 255_u32).to_i32]
+        n = n + 1
+      end
+      slice = slice + 1
+    end
+    @@tables = t
+    t
+  end
+
+  def self.hexdigest(data : String) : String
+    DigestUtil.hex_u32(checksum(data))
+  end
 end
 
-pub def sha256(data : Bytes) : Bytes
-  SHA256.digest(data)
+# The same convention as `CRC32`: `update(sum, data, count)` goes on from a
+# finished Adler-32, and 1 is the start (the Adler-32 of nothing), as in
+# zlib's `adler32(adler, buf, len)`.
+pub struct Adler32
+  def self.checksum(data : String) : UInt32
+    update(1_u32, data.to_unsafe, data.bytesize)
+  end
+
+  def self.update(sum : UInt32, data : Pointer(UInt8), count : Int32) : UInt32
+    raise "Adler32: a negative count of bytes: #{count}" if count < 0
+    a = (sum & 0xffff_u32) % 65521_u32
+    b = sum.unsafe_shr(16) % 65521_u32
+    p = data
+    n = count
+    i = 0
+    # The modulo once per 5,552 bytes, the most that cannot carry `b` past
+    # 32 bits, rather than twice a byte.
+    while i < n
+      stop = n - i > 5552 ? i + 5552 : n
+      while i < stop
+        a = a + p[i].to_u32
+        b = b + a
+        i = i + 1
+      end
+      a = a % 65521_u32
+      b = b % 65521_u32
+    end
+    (b << 16) | a
+  end
+
+  def self.hexdigest(data : String) : String
+    DigestUtil.hex_u32(checksum(data))
+  end
 end
 
-pub def sha256(data : String) : Bytes
-  SHA256.digest(data)
+# CRC-64 with ECMA-182's polynomial, reflected (0xc96c5795d7870f42), and
+# inverted before and after: the CRC-64 the .xz format checks a block
+# with (xz file format 1.0.4 §3.4, check ID 0x04), which reveng's
+# catalogue names CRC-64/XZ. The same convention as `CRC32`: `update(crc,
+# data, count)` goes on from a finished checksum, 0 is the start (the
+# CRC-64 of nothing), and `hexdigest` writes the number most significant
+# digit first, as `xz --robot --list` does; the stream stores it
+# little-endian.
+pub struct CRC64
+  def self.checksum(data : String) : UInt64
+    update(0_u64, data.to_unsafe, data.bytesize)
+  end
+
+  # Eight bytes a step through eight tables, as `CRC32` goes: the bytes
+  # loaded as one little-endian word, xored into the checksum, and each
+  # of the eight looked up in the table for how many bytes of zeros
+  # follow it in the step.
+  def self.update(crc : UInt64, data : Pointer(UInt8), count : Int32) : UInt64
+    raise "CRC64: a negative count of bytes: #{count}" if count < 0
+    t = tables
+    crc = crc ^ 0xffffffffffffffff_u64
+    p = data
+    n = count
+    i = 0
+    while i + 8 <= n
+      x = crc ^ (p[i].to_u64 | p[i + 1].to_u64.unsafe_shl(8) | p[i + 2].to_u64.unsafe_shl(16) | p[i + 3].to_u64.unsafe_shl(24) |
+                 p[i + 4].to_u64.unsafe_shl(32) | p[i + 5].to_u64.unsafe_shl(40) | p[i + 6].to_u64.unsafe_shl(48) | p[i + 7].to_u64.unsafe_shl(56))
+      crc = t[1792 + (x & 255_u64).to_i32] ^ t[1536 + (x.unsafe_shr(8) & 255_u64).to_i32] ^
+            t[1280 + (x.unsafe_shr(16) & 255_u64).to_i32] ^ t[1024 + (x.unsafe_shr(24) & 255_u64).to_i32] ^
+            t[768 + (x.unsafe_shr(32) & 255_u64).to_i32] ^ t[512 + (x.unsafe_shr(40) & 255_u64).to_i32] ^
+            t[256 + (x.unsafe_shr(48) & 255_u64).to_i32] ^ t[x.unsafe_shr(56).to_i32]
+      i = i + 8
+    end
+    while i < n
+      crc = t[((crc ^ p[i].to_u64) & 255_u64).to_i32] ^ crc.unsafe_shr(8)
+      i = i + 1
+    end
+    crc ^ 0xffffffffffffffff_u64
+  end
+
+  @@tables = Pointer(UInt64).new(0_u64)
+
+  # The eight tables, made once, as `CRC32` makes its own.
+  private def self.tables : Pointer(UInt64)
+    return @@tables if @@tables.address != 0_u64
+    t = Pointer(UInt64).malloc(2048_u64)
+    n = 0
+    while n < 256
+      c = n.to_u64
+      k = 0
+      while k < 8
+        c = (c & 1_u64) == 1_u64 ? c.unsafe_shr(1) ^ 0xc96c5795d7870f42_u64 : c.unsafe_shr(1)
+        k = k + 1
+      end
+      t[n] = c
+      n = n + 1
+    end
+    slice = 1
+    while slice < 8
+      n = 0
+      while n < 256
+        before = t[(slice - 1) * 256 + n]
+        t[slice * 256 + n] = before.unsafe_shr(8) ^ t[(before & 255_u64).to_i32]
+        n = n + 1
+      end
+      slice = slice + 1
+    end
+    @@tables = t
+    t
+  end
+
+  def self.hexdigest(data : String) : String
+    sum = checksum(data)
+    DigestUtil.hex_u32(sum.unsafe_shr(32).to_u32) + DigestUtil.hex_u32((sum & 0xffffffff_u64).to_u32)
+  end
 end
 
-pub def sha384(data : Bytes) : Bytes
-  SHA384.digest(data)
+# XXH64, the 64-bit xxHash (Yann Collet; the algorithm as xxhash's
+# `doc/xxhash_spec.md` gives it): the hash whose low 32 bits are a
+# Zstandard frame's content checksum (RFC 8878 §3.1.1), which is what
+# std/zstd takes it for. Not a cryptographic hash - a fast check that
+# bytes arrived as they left, with nothing to keep anyone from making two
+# messages that collide.
+#
+# `checksum(data, seed)` hashes one piece. `new(seed)`, then `update` as
+# the data arrives, then `digest`, hashes it in pieces; `digest` leaves
+# the state as it was, as xxhash's `XXH64_digest` does, so it can be
+# asked midway and the hash go on. `hexdigest` is xxhash's canonical form,
+# most significant byte first. A word of the message is loaded as one
+# little-endian load, which is what every target iyi builds for is.
+pub class XXH64
+  P1 = 0x9E3779B185EBCA87_u64
+  P2 = 0xC2B2AE3D27D4EB4F_u64
+  P3 = 0x165667B19E3779F9_u64
+  P4 = 0x85EBCA77C2B2AE63_u64
+  P5 = 0x27D4EB2F165667C5_u64
+
+  @seed : UInt64
+  @v1 : UInt64
+  @v2 : UInt64
+  @v3 : UInt64
+  @v4 : UInt64
+  @total : UInt64
+  # The stripe in progress: up to 31 bytes a 32-byte stripe has not had.
+  @stripe : Pointer(UInt8)
+  @fill : Int32
+
+  def initialize(seed : UInt64 = 0_u64)
+    @seed = seed
+    @v1 = 0_u64
+    @v2 = 0_u64
+    @v3 = 0_u64
+    @v4 = 0_u64
+    @total = 0_u64
+    @stripe = Pointer(UInt8).malloc(32_u64)
+    @fill = 0
+    reset
+  end
+
+  def self.checksum(data : String, seed : UInt64 = 0_u64) : UInt64
+    h = new(seed)
+    h.update(data.to_unsafe, data.bytesize)
+    h.digest
+  end
+
+  def self.hexdigest(data : String, seed : UInt64 = 0_u64) : String
+    sum = checksum(data, seed)
+    DigestUtil.hex_u32(sum.unsafe_shr(32).to_u32) + DigestUtil.hex_u32((sum & 0xffffffff_u64).to_u32)
+  end
+
+  # Back to the hash of nothing, under the same seed.
+  def reset : Nil
+    @v1 = @seed &+ P1 &+ P2
+    @v2 = @seed &+ P2
+    @v3 = @seed
+    @v4 = @seed &- P1
+    @total = 0_u64
+    @fill = 0
+  end
+
+  def update(data : String) : Nil
+    update(data.to_unsafe, data.bytesize)
+  end
+
+  def update(data : Pointer(UInt8), count : Int32) : Nil
+    raise "XXH64: a negative count of bytes: #{count}" if count < 0
+    @total = @total &+ count.to_u64
+    i = 0
+    if @fill > 0
+      take = 32 - @fill
+      take = count if count < take
+      (@stripe + @fill.to_i64).copy_from(data, take)
+      @fill = @fill + take
+      i = take
+      return if @fill < 32
+      stripe(@stripe)
+      @fill = 0
+    end
+    v1 = @v1
+    v2 = @v2
+    v3 = @v3
+    v4 = @v4
+    while i + 32 <= count
+      p = data + i.to_i64
+      v1 = XXH64.round(v1, p.as(Pointer(UInt64)).value)
+      v2 = XXH64.round(v2, (p + 8_i64).as(Pointer(UInt64)).value)
+      v3 = XXH64.round(v3, (p + 16_i64).as(Pointer(UInt64)).value)
+      v4 = XXH64.round(v4, (p + 24_i64).as(Pointer(UInt64)).value)
+      i = i + 32
+    end
+    @v1 = v1
+    @v2 = v2
+    @v3 = v3
+    @v4 = v4
+    if i < count
+      @stripe.copy_from(data + i.to_i64, count - i)
+      @fill = count - i
+    end
+  end
+
+  # The hash of everything given since the start or `reset`; the state is
+  # left as it was.
+  def digest : UInt64
+    h = 0_u64
+    if @total >= 32_u64
+      h = XXH64.rotl(@v1, 1) &+ XXH64.rotl(@v2, 7) &+ XXH64.rotl(@v3, 12) &+ XXH64.rotl(@v4, 18)
+      h = XXH64.merge(h, @v1)
+      h = XXH64.merge(h, @v2)
+      h = XXH64.merge(h, @v3)
+      h = XXH64.merge(h, @v4)
+    else
+      h = @seed &+ P5
+    end
+    h = h &+ @total
+    p = @stripe
+    n = @fill
+    i = 0
+    while i + 8 <= n
+      h = h ^ XXH64.round(0_u64, (p + i.to_i64).as(Pointer(UInt64)).value)
+      h = XXH64.rotl(h, 27) &* P1 &+ P4
+      i = i + 8
+    end
+    if i + 4 <= n
+      h = h ^ ((p + i.to_i64).as(Pointer(UInt32)).value.to_u64 &* P1)
+      h = XXH64.rotl(h, 23) &* P2 &+ P3
+      i = i + 4
+    end
+    while i < n
+      h = h ^ (p[i].to_u64 &* P5)
+      h = XXH64.rotl(h, 11) &* P1
+      i = i + 1
+    end
+    h = h ^ h.unsafe_shr(33)
+    h = h &* P2
+    h = h ^ h.unsafe_shr(29)
+    h = h &* P3
+    h ^ h.unsafe_shr(32)
+  end
+
+  private def stripe(p : Pointer(UInt8)) : Nil
+    @v1 = XXH64.round(@v1, p.as(Pointer(UInt64)).value)
+    @v2 = XXH64.round(@v2, (p + 8_i64).as(Pointer(UInt64)).value)
+    @v3 = XXH64.round(@v3, (p + 16_i64).as(Pointer(UInt64)).value)
+    @v4 = XXH64.round(@v4, (p + 24_i64).as(Pointer(UInt64)).value)
+  end
+
+  def self.round(acc : UInt64, input : UInt64) : UInt64
+    rotl(acc &+ input &* P2, 31) &* P1
+  end
+
+  def self.merge(acc : UInt64, v : UInt64) : UInt64
+    (acc ^ round(0_u64, v)) &* P1 &+ P4
+  end
+
+  def self.rotl(x : UInt64, n : Int32) : UInt64
+    x.unsafe_shl(n) | x.unsafe_shr(64 - n)
+  end
 end
 
-pub def sha384(data : String) : Bytes
-  SHA384.digest(data)
-end
+struct DigestUtil
+  def self.rotl(x : UInt32, n : Int32) : UInt32
+    n = n & 31
+    return x if n == 0
+    (x << n) | (x >> (32 - n))
+  end
 
-pub def sha512(data : Bytes) : Bytes
-  SHA512.digest(data)
-end
+  # A rotation by a constant between 1 and the width less one, which every
+  # caller passes: no branch for the zero the general rotation allows.
+  def self.ror32(x : UInt32, n : Int32) : UInt32
+    x.unsafe_shr(n) | x.unsafe_shl(32 - n)
+  end
 
-pub def sha512(data : String) : Bytes
-  SHA512.digest(data)
+  def self.ror64(x : UInt64, n : Int32) : UInt64
+    x.unsafe_shr(n) | x.unsafe_shl(64 - n)
+  end
+
+  # One SHA-256 round (FIPS 180-4 §6.2.2 step 3) on the working variables,
+  # *kw* its constant and schedule word summed: the new e (d + T1) and the
+  # new a (T1 + T2), which take d's and h's places.
+  @[AlwaysInline]
+  def self.round256(a : UInt32, b : UInt32, c : UInt32, d : UInt32, e : UInt32, f : UInt32, g : UInt32, h : UInt32, kw : UInt32) : {UInt32, UInt32}
+    s1 = ror32(e, 6) ^ ror32(e, 11) ^ ror32(e, 25)
+    ch = (e & f) ^ ((~e) & g)
+    temp1 = h &+ s1 &+ ch &+ kw
+    s0 = ror32(a, 2) ^ ror32(a, 13) ^ ror32(a, 22)
+    maj = (a & b) ^ (a & c) ^ (b & c)
+    {d &+ temp1, temp1 &+ s0 &+ maj}
+  end
+
+  # One SHA-512 round (§6.4.2 step 3), the same way.
+  @[AlwaysInline]
+  def self.round512(a : UInt64, b : UInt64, c : UInt64, d : UInt64, e : UInt64, f : UInt64, g : UInt64, h : UInt64, kw : UInt64) : {UInt64, UInt64}
+    s1 = ror64(e, 14) ^ ror64(e, 18) ^ ror64(e, 41)
+    ch = (e & f) ^ ((~e) & g)
+    temp1 = h &+ s1 &+ ch &+ kw
+    s0 = ror64(a, 28) ^ ror64(a, 34) ^ ror64(a, 39)
+    maj = (a & b) ^ (a & c) ^ (b & c)
+    {d &+ temp1, temp1 &+ s0 &+ maj}
+  end
+
+  def self.load_u32s_be(words : Pointer(UInt32), bytes : Pointer(UInt8), count : Int32) : Nil
+    i = 0
+    while i < count
+      j = i * 4
+      words[i] = bytes[j].to_u32.unsafe_shl(24) | bytes[j + 1].to_u32.unsafe_shl(16) | bytes[j + 2].to_u32.unsafe_shl(8) | bytes[j + 3].to_u32
+      i = i + 1
+    end
+  end
+
+  # The first *count* bytes of *words*, each word most significant byte
+  # first.
+  def self.store_u32s_be(dst : Pointer(UInt8), words : Pointer(UInt32), count : Int32) : Nil
+    i = 0
+    while i < count
+      dst[i] = (words[i >> 2].unsafe_shr(24 - (i & 3) * 8) & 255_u32).to_u8
+      i = i + 1
+    end
+  end
+
+  def self.load_u64_be(bytes : Pointer(UInt8)) : UInt64
+    value = 0_u64
+    i = 0
+    while i < 8
+      value = value.unsafe_shl(8) | bytes[i].to_u64
+      i = i + 1
+    end
+    value
+  end
+
+  def self.store_u64_be(dst : Pointer(UInt8), value : UInt64) : Nil
+    i = 0
+    while i < 8
+      dst[i] = (value.unsafe_shr(56 - i * 8) & 255_u64).to_u8
+      i = i + 1
+    end
+  end
+
+  def self.hex(bytes : Array(UInt8), n : Int32) : String
+    String.new(n * 2) do |buf|
+      i = 0
+      while i < n
+        b = bytes[i].to_i32
+        buf[i * 2] = nibble(b >> 4)
+        buf[i * 2 + 1] = nibble(b & 15)
+        i = i + 1
+      end
+    end
+  end
+
+  def self.hex_u32(w : UInt32) : String
+    String.new(8) do |buf|
+      i = 0
+      while i < 8
+        shift = (7 - i) * 4
+        buf[i] = nibble(((w >> shift) & 15_u32).to_i32)
+        i = i + 1
+      end
+    end
+  end
+
+  private def self.nibble(n : Int32) : UInt8
+    n < 10 ? (48 + n).to_u8 : (87 + n).to_u8
+  end
 end

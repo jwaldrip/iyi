@@ -1,8 +1,6 @@
 module compiler/semantic/recursive_struct_checker
 
-import compiler/semantic/top_level
-
-using compiler/semantic/top_level::{AliasType, ClassType, ModuleType, NamedType, SemanticProgram, Type}
+import compiler/semantic/top_level::{AliasType, ClassType, ModuleType, NamedType, SemanticProgram, Type}
 
 pub class RecursiveStructChecker
   property program : SemanticProgram

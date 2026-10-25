@@ -9,14 +9,14 @@ pub import compiler/llvm/module
 pub import compiler/llvm/builder
 pub import compiler/llvm/pass_manager
 
-using compiler/llvm/lib_llvm::{string_from_c, string_and_dispose}
-using compiler/llvm/memory_buffer::{MemoryBuffer}
-using compiler/llvm/target::{Target, TargetData, TargetMachine}
-using compiler/llvm/values::{LLVMType, LLVMValue, LLVMFunction, LLVMBasicBlock, Type, Value, Function, BasicBlock}
-using compiler/llvm/context::{Context}
-using compiler/llvm/module::{Module}
-using compiler/llvm/builder::{Builder}
-using compiler/llvm/pass_manager::{PassBuilderOptions, ModulePassManager, run_passes}
+import compiler/llvm/lib_llvm::{string_from_c, string_and_dispose}
+import compiler/llvm/memory_buffer::{MemoryBuffer}
+import compiler/llvm/target::{Target, TargetData, TargetMachine}
+import compiler/llvm/values::{LLVMType, LLVMValue, LLVMFunction, LLVMBasicBlock, Type, Value, Function, BasicBlock}
+import compiler/llvm/context::{Context}
+import compiler/llvm/module::{Module}
+import compiler/llvm/builder::{Builder}
+import compiler/llvm/pass_manager::{PassBuilderOptions, ModulePassManager, run_passes}
 
 pub struct LLVM
   def self.init_native_target : Nil
@@ -31,9 +31,9 @@ pub struct LLVM
     {% if LibLLVM::IS_LT_160 %}
       LibLLVM::VERSION
     {% else %}
-      major = 0_u32
-      minor = 0_u32
-      patch = 0_u32
+      major = 0
+      minor = 0
+      patch = 0
       LibLLVM.get_version(pointerof(major), pointerof(minor), pointerof(patch))
       "#{major}.#{minor}.#{patch}"
     {% end %}

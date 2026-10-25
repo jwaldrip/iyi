@@ -11,33 +11,22 @@
 
 module compiler/compiler
 
-import compiler/syntax/parser
-import compiler/syntax/ast
-import compiler/semantic/normalizer
-import compiler/semantic/top_level
-import compiler/semantic/main_visitor
+import compiler/syntax/parser::{Parser}
+import compiler/syntax/ast::{ASTNode, Annotation, Nop, Expressions, ClassDef, ModuleDef, FunDef, Def, LibDef, Arg, EnumDef, Assign, Path, NumberLiteral, ImportDecl, Require, Call, VisibilityModifier, MacroIf, MacroFor, MacroExpression, Alias, ImplDef}
+import compiler/semantic/normalizer::{Normalizer, NormalizerProgram}
+import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor}
+import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/llvm
-import compiler/codegen/codegen
+import compiler/codegen/codegen::{append_entry_point, compile_declarations_to_module, register_primitive_operators}
 import compiler/platform/target
-import compiler/platform/linker
-import compiler/loader
-import compiler/syntax/token
-import compiler/macros/interpreter
-import compiler/macros/methods
+import compiler/platform/linker::{Linker}
+import compiler/loader::{Loader, ModuleInfo, IyiPath}
+import compiler/syntax/token::{NumberKind}
+import compiler/macros/interpreter::{MacroInterpreter}
+import compiler/macros/methods::{MacroMethods}
 
-using compiler/syntax/parser::{Parser}
-using compiler/syntax/token::{NumberKind}
-using compiler/syntax/ast::{ASTNode, Annotation, Nop, Expressions, ClassDef, ModuleDef, FunDef, Def, LibDef, Arg, EnumDef, Assign, Path, NumberLiteral, ImportDecl, Require, Call, VisibilityModifier, MacroIf, MacroFor, MacroExpression, Alias, ImplDef}
-using compiler/macros/interpreter::{MacroInterpreter}
-using compiler/macros/methods::{MacroMethods}
-using compiler/semantic/normalizer::{Normalizer, NormalizerProgram}
-using compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor}
-using compiler/semantic/main_visitor::{MainVisitor}
-using compiler/llvm/context::{Context}
-using compiler/llvm/module::{Module}
-using compiler/codegen/codegen::{append_entry_point, compile_declarations_to_module, register_primitive_operators}
-using compiler/platform/linker::{Linker}
-using compiler/loader::{Loader, ModuleInfo, IyiPath}
+import compiler/llvm/context::{Context}
+import compiler/llvm/module::{Module}
 
 alias LLVMTarget = ::Compiler::Llvm::Target::Target
 alias PlatformTarget = ::Compiler::Platform::Target::Target

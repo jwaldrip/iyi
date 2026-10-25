@@ -7,7 +7,6 @@
 module std/oauth
 
 pub import std/http
-pub import std/http1
 pub import std/uri
 pub import std/crypto
 pub import std/digest
@@ -15,109 +14,104 @@ pub import std/base64
 pub import std/time
 pub import std/json
 pub import std/random
-
-using std/http::{Request, Response, Headers, Status}
-using std/uri::{URI, Params}
-using std/crypto::{HMAC}
-using std/base64::{Base64}
-using std/time::{Time, Span}
-using std/json::{JSON, Builder, PullParser}
+pub import std/io
+import std/http::{Request, Response, Headers}
+import std/uri::{URI, Params}
+import std/crypto::{HMAC}
+import std/base64::{Base64}
+import std/digest::{SHA1, SHA256}
+import std/time::{Time, Span}
+import std/json::{JSON, Builder, PullParser}
+import std/random::{Random}
 
 # -----------------------------------------------------------------------------
 # HTTP::Client support
 # -----------------------------------------------------------------------------
 
-module ::HTTP
-  alias Request = Std::Http::Request
-  alias Response = Std::Http::Response
-  alias Headers = Std::Http::Headers
+pub class Client
+  property host : String
+  property port : Int32?
+  property tls : Bool
+  property default_headers : Headers
+  property timeout_ms : Int32
+  @before_request : Array(Proc(Request, Nil))
 
-  class Client
-    property host : String
-    property port : Int32?
-    property tls : Bool
-    property default_headers : Headers
-    property timeout_ms : Int32
-    @before_request : Array(Proc(Request, Nil))
-    @http1_client : Std::Http1::Client?
+  def initialize(@host : String, @port : Int32? = nil, @tls : Bool = false)
+    @before_request = [] of Proc(Request, Nil)
+    @default_headers = Headers.new
+    @default_headers["User-Agent"] = "iyi-oauth/1.0"
+    @timeout_ms = 10000
+  end
 
-    def initialize(@host : String, @port : Int32? = nil, @tls : Bool = false)
-      @before_request = [] of Proc(Request, Nil)
-      @default_headers = Headers.new
-      @default_headers["User-Agent"] = "iyi-oauth/1.0"
-      @timeout_ms = 10000
-      @http1_client = nil
+  def initialize(uri : Std::Uri::URI)
+    @host = uri.host || "127.0.0.1"
+    @port = uri.port
+    @tls = uri.scheme == "https"
+    @before_request = [] of Proc(Request, Nil)
+    @default_headers = Headers.new
+    @default_headers["User-Agent"] = "iyi-oauth/1.0"
+    @timeout_ms = 10000
+  end
+
+  def tls? : Bool
+    @tls
+  end
+
+  def before_request(&block : Request -> Nil) : Nil
+    @before_request << block
+  end
+
+  def run_before_request(request : Request) : Nil
+    i = 0
+    while i < @before_request.size
+      @before_request[i].call(request)
+      i = i + 1
     end
+  end
 
-    def initialize(uri : Std::Uri::URI)
-      @host = uri.host || "127.0.0.1"
-      @port = uri.port
-      @tls = uri.scheme == "https"
-      @before_request = [] of Proc(Request, Nil)
-      @default_headers = Headers.new
-      @default_headers["User-Agent"] = "iyi-oauth/1.0"
-      @timeout_ms = 10000
-      @http1_client = nil
-    end
+  def get(path : String, headers : Headers? = nil) : Response
+    req = Request.new("GET", path, headers)
+    exec(req)
+  end
 
-    def tls? : Bool
-      @tls
-    end
-
-    def before_request(&block : Request -> Nil) : Nil
-      @before_request << block
-    end
-
-    def run_before_request(request : Request) : Nil
-      i = 0
-      while i < @before_request.size
-        @before_request[i].call(request)
-        i = i + 1
-      end
-    end
-
-    def get(path : String, headers : Headers? = nil) : Response
-      req = Request.new("GET", path, headers)
-      exec(req)
-    end
-
-    def post(path : String, headers : Headers? = nil, body : String = "", form : String | Std::Uri::Params | Nil = nil) : Response
-      hdrs = headers ? headers.dup : Headers.new
-      actual_body = if form
-                      unless hdrs.has_key?("Content-Type")
-                        hdrs["Content-Type"] = "application/x-www-form-urlencoded"
-                      end
-                      form.is_a?(Std::Uri::Params) ? form.to_s : form.as(String)
-                    else
-                      body
+  def post(path : String, headers : Headers? = nil, body : String = "", form : String | Std::Uri::Params | Nil = nil) : Response
+    hdrs = headers ? headers.dup : Headers.new
+    actual_body = if form
+                    unless hdrs.has_key?("Content-Type")
+                      hdrs["Content-Type"] = "application/x-www-form-urlencoded"
                     end
-      req = Request.new("POST", path, hdrs, actual_body)
-      exec(req)
-    end
+                    form.is_a?(Std::Uri::Params) ? form.to_s : form.as(String)
+                  else
+                    body
+                  end
+    req = Request.new("POST", path, hdrs, actual_body)
+    exec(req)
+  end
 
-    def exec(req : Request) : Response
-      run_before_request(req)
-      url = build_url(req.target)
-      c = @http1_client ||= Std::Http1::Client.new
-      c.execute(req, url)
+  def exec(req : Request) : Response
+    run_before_request(req)
+    url = build_url(req.target)
+    hdrs = @default_headers.dup
+    req.headers.each { |k, v| hdrs[k] = v }
+    res = Std::Http::HTTP.request(req.method, url, hdrs, req.body)
+    if res.is_a?(Response)
+      res
+    else
+      raise "HTTP request failed: #{res}"
     end
+  end
 
-    def close : Nil
-      if c = @http1_client
-        c.close
-      end
-      @http1_client = nil
-    end
+  def close : Nil
+  end
 
-    private def build_url(path : String) : String
-      if path.starts_with?("http://") || path.starts_with?("https://")
-        path
-      else
-        scheme = @tls ? "https" : "http"
-        p = @port ? ":" + @port.to_s : ""
-        slash = path.starts_with?("/") ? "" : "/"
-        scheme + "://" + @host + p + slash + path
-      end
+  private def build_url(path : String) : String
+    if path.starts_with?("http://") || path.starts_with?("https://")
+      path
+    else
+      scheme = @tls ? "https" : "http"
+      p = @port ? ":" + @port.to_s : ""
+      slash = path.starts_with?("/") ? "" : "/"
+      scheme + "://" + @host + p + slash + path
     end
   end
 end
@@ -126,27 +120,32 @@ end
 # OAuth::Error
 # -----------------------------------------------------------------------------
 
-pub class Error < Exception
+pub struct Error
   getter message : String
-  getter response : HTTP::Response?
+  getter response : Response?
 
   def initialize(@message : String)
     @response = nil
   end
 
-  def initialize(response : HTTP::Response)
+  def initialize(response : Response)
     @message = "OAuth:Error: " + response.body
     @response = response
   end
 
+  def to_s : String
+    @message
+  end
+end
+
+impl ::Error for Error
   def message : String
     @message
   end
 end
 
 def raise(err : Error, file : String = __FILE__, line : Int32 = __LINE__) : NoReturn
-  m = err.message
-  ::raise(m ? m : "OAuth::Error", file, line)
+  ::raise(err.message, file, line)
 end
 
 # -----------------------------------------------------------------------------
@@ -204,7 +203,7 @@ pub class AccessToken
     @extra ||= {} of String => String
   end
 
-  def authenticate(client : HTTP::Client, consumer_key : String, consumer_secret : String, extra_params : Hash(String, String)? = nil) : Nil
+  def authenticate(client : Client, consumer_key : String, consumer_secret : String, extra_params : Hash(String, String)? = nil) : Nil
     OAuth.authenticate(client, @token, @secret, consumer_key, consumer_secret, extra_params)
   end
 
@@ -372,18 +371,18 @@ pub struct Signature
     enc_client + "&" + enc_token
   end
 
-  def base_string(request : HTTP::Request, tls : Bool, ts : String, nonce : String) : String
+  def base_string(request : Request, tls : Bool, ts : String, nonce : String) : String
     norm = gather_and_normalize_params(request, ts, nonce)
     base_string_with_normalized(request, tls, norm)
   end
 
-  def compute(request : HTTP::Request, tls : Bool, ts : String, nonce : String) : String
+  def compute(request : Request, tls : Bool, ts : String, nonce : String) : String
     bs = base_string(request, tls, ts, nonce)
-    digest = HMAC.digest(:sha1, key, bs)
-    Base64.strict_encode(digest)
+    digest = HMAC.digest(SHA1, key, bs)
+    Base64.encode(digest)
   end
 
-  def authorization_header(request : HTTP::Request, tls : Bool, ts : String, nonce : String) : String
+  def authorization_header(request : Request, tls : Bool, ts : String, nonce : String) : String
     sig = compute(request, tls, ts, nonce)
 
     auth = AuthorizationHeader.new
@@ -412,7 +411,7 @@ pub struct Signature
     auth.to_s
   end
 
-  private def gather_and_normalize_params(request : HTTP::Request, ts : String, nonce : String) : String
+  private def gather_and_normalize_params(request : Request, ts : String, nonce : String) : String
     # Pairs of (encoded_key, encoded_value)
     pairs = [] of Tuple(String, String)
 
@@ -486,7 +485,7 @@ pub struct Signature
     parts.join("&")
   end
 
-  private def base_string_with_normalized(request : HTTP::Request, tls : Bool, normalized_params : String) : String
+  private def base_string_with_normalized(request : Request, tls : Bool, normalized_params : String) : String
     host, port = host_and_port(request, tls)
 
     scheme = tls ? "https" : "http"
@@ -520,7 +519,7 @@ pub struct Signature
     enc_method + "&" + enc_uri + "&" + enc_params
   end
 
-  private def host_and_port(request : HTTP::Request, tls : Bool) : Tuple(String, Int32?)
+  private def host_and_port(request : Request, tls : Bool) : Tuple(String, Int32?)
     host_hdr = request.headers["Host"]?
     if host_hdr && !host_hdr.empty?
       if colon_idx = host_hdr.index(':')
@@ -606,34 +605,31 @@ pub class Consumer
     end
   end
 
-  def authenticate(client : HTTP::Client, token : AccessToken) : Nil
+  def authenticate(client : Client, token : AccessToken) : Nil
     authenticate(client, token.token, token.secret, nil)
   end
 
-  def authenticate(client : HTTP::Client, token : String?, token_secret : String?, extra_params : Hash(String, String)? = nil) : Nil
+  def authenticate(client : Client, token : String?, token_secret : String?, extra_params : Hash(String, String)? = nil) : Nil
     OAuth.authenticate(client, token, token_secret, @consumer_key, @consumer_secret, extra_params)
   end
 
   private def post(oauth_token : String?, token_shared_secret : String?, extra_params : Hash(String, String)?, target_uri : String, &block : Response -> T) : T forall T
     uri = URI.parse(target_uri)
     client = if uri.host
-               HTTP::Client.new(uri)
+               Client.new(uri)
              else
-               HTTP::Client.new(@host, @port, @tls)
+               Client.new(@host, @port, @tls)
              end
 
     authenticate(client, oauth_token, token_shared_secret, extra_params)
 
-    begin
-      req_target = uri.host ? (uri.path.empty? ? "/" : uri.path) : target_uri
-      response = client.post(req_target)
-      unless response.status_code >= 200 && response.status_code < 300
-        raise Error.new(response)
-      end
-      yield response
-    ensure
-      client.close
+    defer client.close
+    req_target = uri.host ? (uri.path.empty? ? "/" : uri.path) : target_uri
+    response = client.post(req_target)
+    unless response.status >= 200 && response.status < 300
+      raise Error.new(response)
     end
+    yield response
   end
 end
 
@@ -642,7 +638,7 @@ end
 # -----------------------------------------------------------------------------
 
 pub struct OAuth
-  def self.authenticate(client : HTTP::Client,
+  def self.authenticate(client : Client,
                         token : String?,
                         token_secret : String?,
                         consumer_key : String,
@@ -653,8 +649,8 @@ pub struct OAuth
     end
   end
 
-  def self.authenticate(client : HTTP::Client,
-                        request : HTTP::Request,
+  def self.authenticate(client : Client,
+                        request : Request,
                         token : String?,
                         token_secret : String?,
                         consumer_key : String,
@@ -663,28 +659,16 @@ pub struct OAuth
     request.headers["Authorization"] = oauth_header(client, request, token, token_secret, consumer_key, consumer_secret, extra_params)
   end
 
-  def self.oauth_header(client : HTTP::Client,
-                        request : HTTP::Request,
+  def self.oauth_header(client : Client,
+                        request : Request,
                         token : String?,
                         token_secret : String?,
                         consumer_key : String,
                         consumer_secret : String,
                         extra_params : Hash(String, String)? = nil) : String
     ts = Time.utc.to_unix.to_s
-    nonce = Std::Crypto.random_bytes(16).hexstring
+    nonce = Random::Secure.hex(16)
     sig = Signature.new(consumer_key, consumer_secret, token, token_secret, extra_params)
     sig.authorization_header(request, client.tls?, ts, nonce)
   end
 end
-
-# -----------------------------------------------------------------------------
-# Top-Level Aliases
-# -----------------------------------------------------------------------------
-
-alias ::OAuth = Std::Oauth::OAuth
-alias ::OAuth::Consumer = Std::Oauth::Consumer
-alias ::OAuth::RequestToken = Std::Oauth::RequestToken
-alias ::OAuth::AccessToken = Std::Oauth::AccessToken
-alias ::OAuth::Error = Std::Oauth::Error
-alias ::OAuth::Signature = Std::Oauth::Signature
-alias ::OAuth::AuthorizationHeader = Std::Oauth::AuthorizationHeader

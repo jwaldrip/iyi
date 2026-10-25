@@ -15,8 +15,19 @@
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-IYI="$REPO/bin/iyi"
+IYI="${IYI:-$REPO/bin/iyi}"
 WORK="$(mktemp -d)"
+# A native compiler cannot resolve this shell's own path mapping: a search
+# path built from `pwd` is `/c/...` and finds no prelude at all, and a
+# scratch directory named `/tmp/tmp.X` is silently ignored on that path, so
+# the patched copy is never read and the proof that a check can fail quietly
+# stops proving it.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT)
+    REPO="$(cygpath -m "$REPO")"
+    WORK="$(cygpath -m "$WORK")"
+    ;;
+esac
 
 cd "$WORK" || exit 1
 
@@ -69,7 +80,9 @@ fi
 step "dependency floor: runtime stays on platform doorway"
 case "$(uname -s)" in
   Darwin)
-    allowed='___error|__tlv_bootstrap|_madvise|_pipe|_pthread_create|_pthread_kill|_sigaction|_sysctlbyname|__dyld_get_image_header|__dyld_get_image_vmaddr_slide|_clock_gettime_nsec_np|_exit|_kevent|_kqueue|_malloc|_memset|_mmap|_mprotect|_munmap|_pipe|_pthread_get_stackaddr_np|_pthread_self|_read|_realloc|_write'
+    # `_fstat64` is the runtime's read asking whether standard input is a
+    # regular file, which kqueue never says has reached its end.
+    allowed='___error|__tlv_bootstrap|_backtrace|_backtrace_symbols_fd|_pipe|_pthread_create|_pthread_kill|_sigaction|_sigaltstack|_sysctlbyname|__dyld_get_image_header|__dyld_get_image_vmaddr_slide|_clock_gettime_nsec_np|_exit|_fstat64|_kevent|_kqueue|_malloc|_memset|_mmap|_mprotect|_munmap|_pipe|_pthread_get_stackaddr_np|_pthread_self|_read|_realloc|_write'
     added="$(nm -u exercise | sed -e 's/^ *//' | awk '{ print $NF }' |
       grep -E -cv "^($allowed)\$")"
     extra_libs="$(otool -L exercise | sed -n '2,$p' | awk '{ print $1 }' |
