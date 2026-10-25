@@ -1696,6 +1696,7 @@ pub class Formatter < Visitor
     end
     false
   end
+
   def visit(node : MacroExpression) : Bool
     if node.output
       check(TokenKind::OP_LCURLY_LCURLY)
@@ -1725,7 +1726,6 @@ pub class Formatter < Visitor
     end
     false
   end
-
 
   private def format_module_path(path : Array(String)) : Nil
     path.each_with_index do |seg, i|

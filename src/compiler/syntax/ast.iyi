@@ -3937,6 +3937,7 @@ pub class ImportDecl < ASTNode
   def ==(other : self) : Bool
     (@path == other.path) && (@exported == other.exported) && (@names == other.names) && (@glob == other.glob)
   end
+
   def ==(other : ASTNode) : Bool
     if other.is_a?(self)
       self == other
