@@ -217,6 +217,7 @@ pub class OptionParser
 
   def parse(args : Array(String)) : Array(String)
     rest = [] of String
+    double_dash_index = nil.as(Int32?)
     i = 0
     n = args.size
     while i < n
@@ -233,6 +234,7 @@ pub class OptionParser
         cb.call(a)
       end
       if a == "--"
+        double_dash_index = i
         i = i + 1
         while i < n
           rest << args[i]
@@ -306,7 +308,21 @@ pub class OptionParser
       i = i + 1
     end
     if callback = @unknown_args
-      callback.call(rest, args)
+      if dd = double_dash_index
+        before_dash = [] of String
+        after_dash = [] of String
+        rest.each do |arg|
+          orig_idx = args.index(arg)
+          if orig_idx && orig_idx < dd
+            before_dash << arg
+          else
+            after_dash << arg
+          end
+        end
+        callback.call(before_dash, after_dash)
+      else
+        callback.call(rest, [] of String)
+      end
     end
     rest
   end

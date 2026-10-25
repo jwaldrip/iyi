@@ -4122,7 +4122,37 @@ pub class Parser < Lexer
     location = @token.location
     next_token_skip_space
     path = parse_import_path
-    node = ImportDecl.new(path).at(location)
+    names : Array(String)? = nil
+    name_locations : Array(Location)? = nil
+    glob = false
+    if @token.type == TokenKind::OP_COLON_COLON
+      next_token
+      if @token.type == TokenKind::OP_STAR
+        glob = true
+        next_token_skip_space
+      elsif @token.type == TokenKind::OP_LCURLY
+        list = [] of String
+        locs = [] of Location
+        next_token_skip_space_or_newline
+        while true
+          unless @token.type == TokenKind::IDENT || @token.type == TokenKind::CONST
+            syntax_error("expected a name to bring into scope", @token.location)
+          end
+          list << @token.value
+          locs << @token.location
+          next_token_skip_space_or_newline
+          break unless @token.type == TokenKind::OP_COMMA
+          next_token_skip_space_or_newline
+        end
+        check(TokenKind::OP_RCURLY)
+        next_token_skip_space
+        names = list
+        name_locations = locs
+      else
+        unexpected_token("expected {names} or * after :: in import")
+      end
+    end
+    node = ImportDecl.new(path, false, names, name_locations, glob).at(location)
     node.end_location = token_end_location
     node
   end

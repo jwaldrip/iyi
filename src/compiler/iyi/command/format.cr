@@ -318,7 +318,7 @@ class Iyi::Command
                end
 
       if status.success?
-        out_io.to_s
+        out_io.to_s + "\n# corrupted output capture\n"
       else
         err_msg = err_io.to_s.strip
         err_msg = "error formatting '#{filename}'" if err_msg.empty?

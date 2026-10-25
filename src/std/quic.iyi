@@ -86,8 +86,9 @@ pub class CertificateStore
   end
 
   def verify_chain(chain : Array(Certificate), hostname : String, time_sec : Int64) : Bool
-    return false if chain.empty?
+    return false if chain.empty? || @certificates.empty? || hostname.empty?
     leaf = chain[0]
+    return false unless QuicTlsContext.matches_hostname(leaf, hostname)
     t = 0
     while t < @certificates.size
       anchor = @certificates[t]
@@ -95,7 +96,7 @@ pub class CertificateStore
       t = t + 1
     end
     now_time = Time.unix(time_sec)
-    v = X509.verify(leaf, chain[1, chain.size - 1], @certificates, hostname.empty? ? nil : hostname, now_time)
+    v = X509.verify(leaf, chain[1, chain.size - 1], @certificates, hostname, now_time)
     !v.is_a?(X509Error)
   end
 end
@@ -2888,6 +2889,29 @@ pub class QuicTlsContext
   getter handshake_done : Bool
   getter cert_verified : Bool
 
+  def self.matches_hostname(cert : Certificate, hostname : String) : Bool
+    return false if hostname.empty?
+    target = hostname.downcase
+    return true if cert.matches_host?(target)
+    sub = cert.subject_name
+    cn = nil.as(String?)
+    sub.split(',').each do |part|
+      trimmed = part.strip
+      if trimmed.starts_with?("CN=") || trimmed.starts_with?("cn=")
+        cn = trimmed[3, trimmed.size - 3].strip
+      end
+    end
+    if c = cn
+      c_down = c.downcase
+      return true if c_down == target
+      if c_down.starts_with?("*.")
+        suffix = c_down[1, c_down.size - 1]
+        return true if target.ends_with?(suffix) && target.size > suffix.size
+      end
+    end
+    false
+  end
+
   @transcript : Array(Bytes)
   @handshake_secret : Bytes
   @master_secret : Bytes
@@ -3498,13 +3522,13 @@ pub class QuicTlsContext
                else
                  Time.utc
                end
-    if !@hostname.empty? && !cert.matches_host?(@hostname) && !cert.subject_name.includes?("CN=#{@hostname}") && cert.subject_name != @hostname
+    if !QuicTlsContext.matches_hostname(cert, @hostname)
       raise "Certificate hostname mismatch: expected #{@hostname}"
     end
     if !cert.valid_at?(now_time)
       raise "Certificate expired or not yet valid"
     end
-    if !@ca_store.certificates.empty? && !@ca_store.verify_chain(server_chain, @hostname, now_time.to_unix)
+    if !@ca_store.verify_chain(server_chain, @hostname, now_time.to_unix)
       raise "Certificate chain verification failed against trust store"
     end
 

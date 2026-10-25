@@ -179,6 +179,7 @@ module BenchSelfhostCommandExercise
     # that reaches it.
     vectors << ["clear_cache", "--bogus-flag"]
     vectors << ["env", "--bogus-flag"]
+    vectors << ["docs", "--bogus-flag"]
 
     vectors
   end

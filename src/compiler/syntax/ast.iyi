@@ -3916,18 +3916,27 @@ end
 pub class ImportDecl < ASTNode
   property path : Array(String)
   property exported : Bool
+  property names : Array(String)?
+  property name_locations : Array(Location)?
+  property glob : Bool
 
-  def initialize(@path : Array(String) = [] of String, @exported : Bool = false)
+  def initialize(@path : Array(String) = [] of String, @exported : Bool = false, @names : Array(String)? = nil, @name_locations : Array(Location)? = nil, @glob : Bool = false)
+  end
+
+  def scopes? : Bool
+    @glob || !@names.nil?
   end
 
   def clone_without_location : self
-    ImportDecl.new(@path.dup, @exported)
+    names_dup = (n = @names) ? n.dup : nil
+    name_locs_dup = (nl = @name_locations) ? nl.dup : nil
+    decl = ImportDecl.new(@path.dup, @exported, names_dup, name_locs_dup, @glob)
+    decl
   end
 
   def ==(other : self) : Bool
-    (@path == other.path) && (@exported == other.exported)
+    (@path == other.path) && (@exported == other.exported) && (@names == other.names) && (@glob == other.glob)
   end
-
   def ==(other : ASTNode) : Bool
     if other.is_a?(self)
       self == other

@@ -386,7 +386,6 @@ module std/tls
 
 import std/socket::{IyiSocket, SocketError}
 import std/x509::{Certificate, X509, X509Error, X509Purpose}
-pub alias Certificate = Std::X509::Certificate
 import std/system_roots::{SystemRoots}
 import std/rsa::{RsaPublicKey, RsaPrivateKey, RsaHash, RsaError}
 import std/ecdsa::{EcdsaPublicKey, EcdsaCurve, EcdsaHash, EcdsaError}

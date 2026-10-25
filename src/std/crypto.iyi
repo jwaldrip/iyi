@@ -145,7 +145,8 @@ pub struct HKDF
     when :sha256 then extract(SHA256, salt, ikm)
     when :sha384 then extract(SHA384, salt, ikm)
     when :sha512 then extract(SHA512, salt, ikm)
-    else              extract(SHA1, salt, ikm)
+    when :sha1   then extract(SHA1, salt, ikm)
+    else              raise "HKDF: unknown hash algorithm #{algorithm}"
     end
   end
 
@@ -154,7 +155,8 @@ pub struct HKDF
     when :sha256 then expand(SHA256, prk, info, length)
     when :sha384 then expand(SHA384, prk, info, length)
     when :sha512 then expand(SHA512, prk, info, length)
-    else              expand(SHA1, prk, info, length)
+    when :sha1   then expand(SHA1, prk, info, length)
+    else              raise "HKDF: unknown hash algorithm #{algorithm}"
     end
   end
 

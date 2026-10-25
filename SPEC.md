@@ -513,7 +513,7 @@ question — "too few arguments for format string" — where it used to borrow
 a raise from an index.
 
 **The standard library is deliberately outside that count, and this is the
-answer this section left open.** `src/std/` is **132,417 lines across 124
+answer this section left open.** `src/std/` is **132,430 lines across 124
 modules**. It is opt-in via `import std/...`, it lives outside `src/iyi/` where
 `bench/doc_numbers.py` measures the ceiling, and a program that imports none of
 it pays for none of it. So the prelude rule keeps its meaning, "a method enters
@@ -554,24 +554,14 @@ implementation that round-trips happily while disagreeing with the world:
 | module | gated on | what it answers |
 |---|---|---|
 | `tls.iyi` | RFC 8448's worked traces, byte for byte | a live authenticated TLS 1.3 connection to `example.com`, cipher `0x1301` |
-| `http1.iyi` | RFC 9112, and nineteen smuggling framings refused | a client and concurrent server, live HTTP and authenticated HTTPS |
+| `http.iyi` | RFC 9112 and RFC 9113, HTTP/1.1 and HTTP/2 | a client and concurrent server, live HTTP and authenticated HTTPS, h2 framing |
 | `websocket.iyi` | RFC 6455 section 1.3's handshake vector | UTF-8 across fragments and stateless `permessage-deflate` negotiation |
-| `http2.iyi` | RFC 9113, sixteen h2spec shapes | three concurrent streams, and 102 KB through a 65,535-byte window |
 | `quic.iyi`, `http3.iyi` | RFC 9001 appendix A, byte for byte | TLS 1.3, 1-RTT, ACK/PTO, H3/QPACK and WebTransport over UDP loopback |
-| `http_client.iyi` | simulated negotiation against mock origin transports | one client offers `h2` then `http/1.1`, selecting each without application input |
 
-**Protocol is transport policy, not application policy.** `std/http_client`
+**Protocol is transport policy, not application policy.** `std/http`
 accepts the shared `Request` and returns the shared `Response`; `get` and
 `post` expose no protocol argument. Direct HTTPS offers `h2` and `http/1.1`
-through TLS ALPN. When the caller supplies an HTTP/3 upstream, an `Alt-Svc`
-advertisement moves the next request to that transport (`std/http_client` does
-not wire QUIC or HTTP/3 on its own, leaving `@http3` nil by default), and an
-upstream proxy receives the ordered `h3`, `h2`, `http/1.1` offer and reports
-what it negotiated. The protocol remains observable as `last_protocol` for
-operations, but an application does not branch on it to send a request. The
-exercise (`bench/std_http_client_exercise.iyi`) runs the same call and models
-through all three outcomes against mock `RecordingUpstream` transports that
-verify the protocol offer list, rather than opening live network sockets.
+through TLS ALPN.
 
 The QUIC result is the one worth stating precisely, because it was produced
 twice. Its author first wrote its own AES rather than reach across a module
@@ -1113,7 +1103,7 @@ Checking it moved two things and left the shape alone.
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
 | Compiler | 24,984 lines, **written in Crystal** | 130,389 lines, Crystal, forked |
-| Library | 8,161 lines (3,551 of it core) | 22,608-line own prelude + 132,417 in std |
+| Library | 8,161 lines (3,551 of it core) | 22,608-line own prelude + 132,430 in std |
 | Specs | 21,146 lines | 15,312 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |

@@ -160,9 +160,9 @@ pub abstract class AccessToken
 
   abstract def token_type : String
 
-  abstract def authenticate(request : HTTP::Request, tls : Bool) : Nil
+  abstract def authenticate(request : Request, tls : Bool) : Nil
 
-  def authenticate(client : HTTP::Client) : Nil
+  def authenticate(client : Std::Oauth::Client) : Nil
     client.before_request do |request|
       authenticate(request, client.tls?)
     end
@@ -271,7 +271,7 @@ pub class Bearer < AccessToken
     "Bearer"
   end
 
-  def authenticate(request : HTTP::Request, tls : Bool) : Nil
+  def authenticate(request : Request, tls : Bool) : Nil
     request.headers["Authorization"] = "Bearer " + @access_token
   end
 
@@ -346,7 +346,7 @@ pub class Mac < AccessToken
     "Mac"
   end
 
-  def authenticate(request : HTTP::Request, tls : Bool) : Nil
+  def authenticate(request : Request, tls : Bool) : Nil
     ts = Time.utc.to_unix
     diff = ts - @issued_at
     nonce = diff.to_s + ":" + Random::Secure.hex(8)
@@ -427,7 +427,7 @@ pub class Mac < AccessToken
     io << "OAuth2::AccessToken::Mac(access_token=" << @access_token << ")"
   end
 
-  private def host_and_port(request : HTTP::Request, tls : Bool) : Tuple(String, Int32)
+  private def host_and_port(request : Request, tls : Bool) : Tuple(String, Int32)
     host_hdr = request.headers["Host"]?
     if host_hdr && !host_hdr.empty?
       if colon_idx = host_hdr.index(':')
@@ -460,7 +460,7 @@ pub class Client
   getter redirect_uri : String?
   property auth_scheme : AuthScheme
 
-  def http_client=(client : HTTP::Client?) : HTTP::Client?
+  def http_client=(client : Std::Oauth::Client?) : Std::Oauth::Client?
     @http_client = client
   end
 
@@ -476,8 +476,8 @@ pub class Client
     @http_client = nil
   end
 
-  def http_client : HTTP::Client
-    @http_client ||= HTTP::Client.new(parsed_token_uri)
+  def http_client : Std::Oauth::Client
+    @http_client ||= Std::Oauth::Client.new(parsed_token_uri)
   end
 
   def get_authorize_uri(scope : String? = nil, state : String? = nil) : String
@@ -619,7 +619,7 @@ pub class Session
     @callback = callback
   end
 
-  def authenticate(http_client : HTTP::Client) : Nil
+  def authenticate(http_client : Std::Oauth::Client) : Nil
     check_refresh_token
     @access_token.authenticate(http_client)
   end
@@ -663,13 +663,3 @@ end
 
 pub struct OAuth2
 end
-
-alias ::OAuth2 = Std::Oauth2::OAuth2
-alias ::OAuth2::Client = Std::Oauth2::Client
-alias ::OAuth2::AccessToken = Std::Oauth2::AccessToken
-alias ::OAuth2::AuthScheme = Std::Oauth2::AuthScheme
-alias ::OAuth2::Error = Std::Oauth2::Error
-alias ::OAuth2::ErrorResponse = Std::Oauth2::ErrorResponse
-alias ::OAuth2::Session = Std::Oauth2::Session
-alias ::OAuth2::AccessToken::Bearer = Std::Oauth2::Bearer
-alias ::OAuth2::AccessToken::Mac = Std::Oauth2::Mac
