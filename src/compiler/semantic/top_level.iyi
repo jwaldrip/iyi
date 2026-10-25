@@ -5,7 +5,7 @@ import compiler/syntax/ast::{ASTNode, Alias, Arg, Assign, Call, ClassDef, ClassV
 import compiler/syntax/visitor::{Visitor}
 import compiler/macros/engine::{MacroEngine}
 
-pub class TypeException < Exception
+pub class TypeException
   getter message : String
 
   def initialize(@message : String)

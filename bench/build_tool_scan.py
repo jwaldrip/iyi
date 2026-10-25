@@ -116,6 +116,8 @@ def scan_build(repo):
                 tokens = shlex.split(cmd_str)
             except Exception:
                 tokens = cmd_str.split()
+            if tokens and any(tokens[0].startswith(p) for p in ["$(O)/iyi", "./bin/iyi"]):
+                break
             for tok in tokens:
                 if tok.startswith("$(call"):
                     if "check_llvm_config" in tok:

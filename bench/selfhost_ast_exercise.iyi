@@ -1,15 +1,9 @@
-import compiler/foundation/location
+import compiler/foundation/location::{Location}
 import compiler/foundation/enums
-import compiler/syntax/token
-import compiler/syntax/ast
-import compiler/syntax/visitor
-import compiler/syntax/transformer
-
-using compiler/foundation/location::{Location}
-using compiler/syntax/token::{Keyword, TokenKind, NumberKind}
-using compiler/syntax/ast::{Alias, AlignOf, And, Annotation, AnnotationDef, Arg, ArrayLiteral, Asm, AsmOperand, Assign, AssocTypeDecl, Block, BoolLiteral, Break, CStructOrUnionDef, Call, Case, Cast, CharLiteral, ClassDef, ClassVar, Def, Defer, DoubleSplat, EnumDef, ExceptionHandler, Expressions, Extend, ExternalVar, FunDef, Generic, Global, HashLiteral, If, ImplDef, ImplicitObj, ImportDecl, Include, InstanceAlignOf, InstanceSizeOf, InstanceVar, IsA, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, MacroVar, MacroVerbatim, MagicConstant, Metaclass, ModuleDef, ModuleHeader, MultiAssign, NamedArgument, NamedTupleLiteral, Next, NilLiteral, NilableCast, Nop, Not, NumberLiteral, OffsetOf, OpAssign, Or, Out, Path, PointerOf, ProcLiteral, ProcNotation, ProcPointer, Propagate, RangeLiteral, ReadInstanceVar, Recover, RegexLiteral, Require, Rescue, RespondsTo, Return, Select, Self, SizeOf, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TraitDef, TupleLiteral, TypeDeclaration, TypeDef, TypeOf, Underscore, UninitializedVar, Unless, Until, UsingDecl, Var, VisibilityModifier, When, While, Yield, ASTNode, BinaryOp, UnaryExpression, ControlExpression, NodeMap, StringBuilder, Visibility, RegexOptions}
-using compiler/syntax/visitor::{Visitor, ToSVisitor, NodeCounterVisitor}
-using compiler/syntax/transformer::{Transformer}
+import compiler/syntax/token::{Keyword, TokenKind, NumberKind}
+import compiler/syntax/ast::{Alias, AlignOf, And, Annotation, AnnotationDef, Arg, ArrayLiteral, Asm, AsmOperand, Assign, AssocTypeDecl, Block, BoolLiteral, Break, CStructOrUnionDef, Call, Case, Cast, CharLiteral, ClassDef, ClassVar, Def, Defer, DoubleSplat, EnumDef, ExceptionHandler, Expressions, Extend, ExternalVar, FunDef, Generic, Global, HashLiteral, If, ImplDef, ImplicitObj, ImportDecl, Include, InstanceAlignOf, InstanceSizeOf, InstanceVar, IsA, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, MacroVar, MacroVerbatim, MagicConstant, Metaclass, ModuleDef, ModuleHeader, MultiAssign, NamedArgument, NamedTupleLiteral, Next, NilLiteral, NilableCast, Nop, Not, NumberLiteral, OffsetOf, OpAssign, Or, Out, Path, PointerOf, ProcLiteral, ProcNotation, ProcPointer, Propagate, RangeLiteral, ReadInstanceVar, Recover, RegexLiteral, Require, Rescue, RespondsTo, Return, Select, Self, SizeOf, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TraitDef, TupleLiteral, TypeDeclaration, TypeDef, TypeOf, Underscore, UninitializedVar, Unless, Until, UsingDecl, Var, VisibilityModifier, When, While, Yield, ASTNode, BinaryOp, UnaryExpression, ControlExpression, NodeMap, StringBuilder, Visibility, RegexOptions}
+import compiler/syntax/visitor::{Visitor, ToSVisitor, NodeCounterVisitor}
+import compiler/syntax/transformer::{Transformer}
 
 alias ASTUnion = Compiler::Syntax::Ast::Union
 

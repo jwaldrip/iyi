@@ -1,18 +1,10 @@
-import compiler/syntax/ast
-import compiler/syntax/visitor
-import compiler/macros/ast
-import compiler/macros/methods
-import compiler/macros/interpreter
-import compiler/macros/macro_parser
-import compiler/macros/engine
-
-using compiler/syntax/ast::{ASTNode, Arg, ArrayLiteral, Assign, Block, BoolLiteral, Call, CharLiteral, ClassDef, ClassVar, Def, DoubleSplat, Expressions, Generic, Global, HashLiteral, If, ImplicitObj, InstanceVar, IsA, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, MacroVar, MacroVerbatim, MultiAssign, NamedArgument, NamedTupleLiteral, Next, NilLiteral, Nop, Not, NumberLiteral, OpAssign, Or, Path, RangeLiteral, Return, Self, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, Underscore, Unless, Until, Var, While, Yield, StringBuilder}
-using compiler/syntax/visitor::{Visitor, NodeCounterVisitor}
-using compiler/macros/ast::{MacroId}
-using compiler/macros/methods::{MacroMethods}
-using compiler/macros/interpreter::{MacroInterpreter}
-using compiler/macros/macro_parser::{MacroParser}
-using compiler/macros/engine::{MacroEngine}
+import compiler/syntax/ast::{ASTNode, Arg, ArrayLiteral, Assign, Block, BoolLiteral, Call, CharLiteral, ClassDef, ClassVar, Def, DoubleSplat, Expressions, Generic, Global, HashLiteral, If, ImplicitObj, InstanceVar, IsA, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, MacroVar, MacroVerbatim, MultiAssign, NamedArgument, NamedTupleLiteral, Next, NilLiteral, Nop, Not, NumberLiteral, OpAssign, Or, Path, RangeLiteral, Return, Self, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, Underscore, Unless, Until, Var, While, Yield, StringBuilder}
+import compiler/syntax/visitor::{Visitor, NodeCounterVisitor}
+import compiler/macros/ast::{MacroId}
+import compiler/macros/methods::{MacroMethods}
+import compiler/macros/interpreter::{MacroInterpreter}
+import compiler/macros/macro_parser::{MacroParser}
+import compiler/macros/engine::{MacroEngine}
 
 module BenchSelfhostMacrosExercise
   def self.assert(cond : Bool, msg : String) : Nil

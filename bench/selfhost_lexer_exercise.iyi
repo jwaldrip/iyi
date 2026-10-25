@@ -1,15 +1,9 @@
-import compiler/foundation/location
-import compiler/foundation/errors
+import compiler/foundation/location::{Location}
+import compiler/foundation/errors::{SyntaxException}
 import compiler/foundation/enums
-import compiler/foundation/string_pool
-import compiler/syntax/token
-import compiler/syntax/lexer
-
-using compiler/foundation/location::{Location}
-using compiler/foundation/errors::{SyntaxException}
-using compiler/foundation/string_pool::{StringPool}
-using compiler/syntax/token::{Token, TokenKind, Keyword, NumberKind, DelimiterKind, DelimiterState, MacroState}
-using compiler/syntax/lexer::{Lexer}
+import compiler/foundation/string_pool::{StringPool}
+import compiler/syntax/token::{Token, TokenKind, Keyword, NumberKind, DelimiterKind, DelimiterState, MacroState}
+import compiler/syntax/lexer::{Lexer}
 
 module BenchSelfhostLexerExercise
   def self.assert(cond : Bool, msg : String)

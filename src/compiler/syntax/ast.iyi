@@ -4,7 +4,7 @@ import compiler/foundation/location::{Location}
 import compiler/foundation/enums
 import compiler/syntax/token::{Keyword, TokenKind, NumberKind}
 
-pub enum Visibility : Int8
+pub enum Visibility : Int32
   Public    = 0
   Protected = 1
   Private   = 2

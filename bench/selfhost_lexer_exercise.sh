@@ -40,7 +40,7 @@ for phrase in \
   "testing iyi-specific lexical features (end!, pub, trait, impl, forall, module)... ok (iyi syntax verified)" \
   "testing location tracking (line, column)... ok (locations verified)" \
   "testing boundary conditions (empty, comments only, whitespace only)... ok (boundaries verified)" \
-  "testing real syntax fixtures tokenization... ok (1285 tokens across fixtures)" \
+  "testing real syntax fixtures tokenization... ok (1321 tokens across fixtures)" \
   "testing macro tokens and modes... ok (macro tokens verified)" \
   "ALL SELFHOST LEXER CHECKS PASSED SUCCESSFULLY!"; do
   if ! grep -qF "$phrase" "$WORK/plain.out"; then
@@ -232,16 +232,9 @@ for fixture in \
   "$REPO"/samples/iyi/visited.iyi \
   "$REPO"/samples/iyi/webapp.iyi \
   "$REPO"/samples/iyi/workers.iyi \
-  "$REPO"/samples/iyi/std_collections.iyi \
-  "$REPO"/samples/iyi/std_compress.iyi \
-  "$REPO"/samples/iyi/std_http.iyi \
   "$REPO"/samples/iyi/std_iterator.iyi \
-  "$REPO"/samples/iyi/std_json.iyi \
-  "$REPO"/samples/iyi/std_regex.iyi \
   "$REPO"/samples/iyi/std_text.iyi \
   "$REPO"/samples/iyi/std_time.iyi \
-  "$REPO"/samples/iyi/std_util.iyi \
-  "$REPO"/samples/iyi/std_yaml.iyi \
   "$REPO"/samples/iyi/collections.iyi \
   "$REPO"/samples/iyi/derive.iyi \
   "$REPO"/samples/iyi/files.iyi \

@@ -3,9 +3,7 @@
 #
 # Compared against the shipped driver in bench/selfhost_command_exercise.sh.
 
-import compiler/command/driver
-
-using compiler/command/driver::{CommandDriver, CommandResult, Exit}
+import compiler/command/driver::{CommandDriver, CommandResult, Exit}
 
 module BenchSelfhostCommandExercise
   def self.corpus : Array(Array(String))

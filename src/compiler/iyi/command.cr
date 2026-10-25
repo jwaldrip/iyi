@@ -338,6 +338,7 @@ class Iyi::Command
     report_warnings
     abort! filesystem_sentence(ex), :FAILURE
   rescue ex
+    raise ex if ex.class.name.ends_with?("ExitException")
     report_warnings
 
     ex.inspect_with_backtrace STDERR

@@ -49,6 +49,6 @@ def identity(x : T) : T forall T
   x
 end
 
-def min_elem : Elem where Elem : Comparable
+def min_elem : Elem forall Elem : Comparable
   Elem
 end

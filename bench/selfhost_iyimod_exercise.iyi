@@ -1,10 +1,7 @@
 import std/int
-import std/digest
-using std/digest::{MD5}
-import std/json
-using std/json::{Builder}
-import compiler/artifact/iyimod
-using compiler/artifact/iyimod::{IyiMod, Artifact, Summary, Section, SectionEntry, Hashes, ImportEdge, Signature, TypeDecl, ImplRecord, Exports, ObjectUnit, TypeLayout, RegexConst, ClassVarRef, ClassVarDecl}
+import std/digest::{MD5}
+import std/json::{Builder}
+import compiler/artifact/iyimod::{IyiMod, Artifact, Summary, Section, SectionEntry, Hashes, ImportEdge, Signature, TypeDecl, ImplRecord, Exports, ObjectUnit, TypeLayout, RegexConst, ClassVarRef, ClassVarDecl}
 
 module BenchSelfhostIyimodExercise
   def self.assert(cond : Bool, msg : String)

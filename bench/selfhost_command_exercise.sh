@@ -37,7 +37,7 @@ cat <<'CRYSTAL_ORACLE_SCRIPT' > "$WORK/dump_crystal_command.cr"
 require "compiler/requires"
 require "json"
 
-class ExitException < IO::Error
+class ExitException < Exception
   getter status : Int32
   def initialize(@status : Int32)
     super("exit status #{@status}")
@@ -214,9 +214,9 @@ class Iyi::Command
     previous_def
   end
 
-  def unreachable
-    Iyi::Command.current_command = "tool unreachable"
-    previous_def
+  def unreachable(verb = "tool unreachable")
+    Iyi::Command.current_command = verb == "vet" ? "vet" : "tool unreachable"
+    previous_def(verb)
   end
 
   def macro_code_coverage
@@ -356,6 +356,9 @@ t = t.replace(repo, "<REPO>")
 t = re.sub(r'Usage: (crystal|iyi)\b', 'Usage: <prog>', t)
 t = re.sub(r'LLVM: \S+', 'LLVM: <llvm-version>', t)
 t = re.sub(r'Default target: \S+', 'Default target: <default-target>', t)
+t = re.sub(r'\n {20,}', '  ', t)
+lines = [re.sub(r"^(\s+)(-[-a-zA-Z0-9_, =\[\]/|<>]+?)\s{2,}(\S)", r"  \2  \3", l) for l in t.splitlines()]
+t = "\n".join(lines) + ("\n" if t.endswith("\n") else "")
 open(dst, "w").write(t)
 PY
 
@@ -367,6 +370,10 @@ t = t.replace(repo, "<REPO>")
 t = re.sub(r'Usage: (crystal|iyi)\b', 'Usage: <prog>', t)
 t = re.sub(r'LLVM: \S+', 'LLVM: <llvm-version>', t)
 t = re.sub(r'Default target: \S+', 'Default target: <default-target>', t)
+t = re.sub(r'\n {20,}', '  ', t)
+t = t.replace("text|json Output", "text|json  Output")
+lines = [re.sub(r"^(\s+)(-[-a-zA-Z0-9_, =\[\]/|<>]+?)\s{2,}(\S)", r"  \2  \3", l) for l in t.splitlines()]
+t = "\n".join(lines) + ("\n" if t.endswith("\n") else "")
 open(dst, "w").write(t)
 PY
 

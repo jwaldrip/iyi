@@ -557,6 +557,14 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
   # the written one, because `std/json` is only iyi's when that is where
   # it came from: a project with its own `std/` directory on `IYI_PATH`
   # names its own modules and gets no sentence about preludes.
+  private def source_in_library?(path : String) : Bool
+    expanded = File.expand_path(path)
+    @program.iyi_path.entries.any? do |entry|
+      expanded_entry = File.expand_path(entry, @program.iyi_path.current_dir)
+      expanded == expanded_entry || expanded.starts_with?(expanded_entry.ends_with?('/') ? expanded_entry : "#{expanded_entry}/")
+    end
+  end
+
   private def iyi_std_source?(filename : String) : Bool
     posix = ::Path[filename].to_posix.to_s
     return false unless index = posix.rindex("/std/")
@@ -858,7 +866,20 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
     # "the name moved" about a name that had never pointed there, and refused
     # every boundary this compiler wrote. A boundary's answer is its inputs,
     # taken above.
-    if summary.inputs.empty? && (source = resolve_import(module_path))
+    written = summary.source_path
+    if !written.empty? && !source_in_library?(written)
+      if program_source = resolve_program_import(module_path)
+        here = File.expand_path(program_source)
+        there = File.expand_path(written)
+        if here != there
+          return "\"#{module_path}\" is #{here} now, and this was written from #{there}"
+        end
+
+        unless IyiMod.digest(File.read(program_source)) == summary.hashes.source
+          return "#{program_source} has changed since it was written"
+        end
+      end
+    elsif summary.inputs.empty? && (source = resolve_import(module_path))
       # iyi: a module path is a file path (SPEC.md R-1), so the same name can
       # come to mean a different file — delete a program's own `std/text.iyi`
       # and `import std/text` reaches the library's module of that path. The

@@ -2,7 +2,7 @@ module compiler/foundation/errors
 
 import compiler/foundation/location::{Location}
 
-pub class SyntaxException < Exception
+pub class SyntaxException
   getter message : String
   getter line_number : Int32
   getter column_number : Int32

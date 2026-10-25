@@ -1,15 +1,12 @@
 import compiler/llvm
-import compiler/codegen/codegen
-import compiler/syntax/ast
-import compiler/syntax/parser
+import compiler/codegen/codegen::{CodeGenVisitor, compile_source_to_module}
+import compiler/syntax/ast::{ASTNode, Expressions, FunDef}
+import compiler/syntax/parser::{Parser}
 
-using compiler/llvm/context::{Context}
-using compiler/llvm/module::{Module}
-using compiler/llvm/target::{Target, TargetData, TargetMachine}
-using compiler/llvm/values::{LLVMType, Function}
-using compiler/codegen/codegen::{CodeGenVisitor, compile_source_to_module}
-using compiler/syntax/ast::{ASTNode, Expressions, FunDef}
-using compiler/syntax/parser::{Parser}
+import compiler/llvm/context::{Context}
+import compiler/llvm/module::{Module}
+import compiler/llvm/target::{Target, TargetData, TargetMachine}
+import compiler/llvm/values::{LLVMType, Function}
 
 module BenchSelfhostCodegenExercise
   def self.extract_functions_ir(mod : Module, names : Array(String)) : String
