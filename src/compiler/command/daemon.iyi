@@ -602,12 +602,15 @@ pub class BuildDaemon
   end
 
   def is_file?(path : String) : Bool
-    stat_buf = uninitialized LibC::Stat
-    ret = LibC.stat(path.to_unsafe, pointerof(stat_buf))
-    return false if ret != 0
     {% if flag?(:darwin) %}
+      stat_buf = uninitialized LibC::Stat
+      ret = LibC.stat(path.to_unsafe, pointerof(stat_buf))
+      return false if ret != 0
       (stat_buf.st_mode_nlink & 0xF000) == 0x8000
     {% elsif flag?(:linux) %}
+      stat_buf = uninitialized LibC::Stat
+      ret = LibC.stat(path.to_unsafe, pointerof(stat_buf))
+      return false if ret != 0
       (stat_buf.st_mode & 0xF000_u32) == 0x8000_u32
     {% else %}
       File.exists?(path)
