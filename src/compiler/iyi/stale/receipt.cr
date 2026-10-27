@@ -188,6 +188,9 @@ module Iyi::Stale
     property contradicted : Bool = false
     # Only on a local record the runner wrote; see `PortableRecord`.
     property portable_twin : PortableRecord? = nil
+    # In-memory namespace provenance, excluded from serialized receipt/signatures
+    @[JSON::Field(ignore: true)]
+    property namespace : String? = nil
 
     def initialize(
       @test : TestId,
@@ -201,6 +204,7 @@ module Iyi::Stale
       @seq : UInt64 = 0_u64,
       @contradicted : Bool = false,
       signature : String? = nil,
+      @namespace : String? = nil,
     )
       if signature
         @signature = signature

@@ -108,6 +108,7 @@ module Iyi::Stale
   # Reopen Snapshot to add validation, export, import, and shard union capabilities
   struct Snapshot
     ALLOWED_ROOTS        = {"src", "toolchain", "pkg"}
+    ALLOWED_OBS_ROOTS    = {"src", "toolchain", "pkg", "env"}
     TRUSTED_REPOSITORIES = {"github.com/iyilang/iyi", "iyilang/iyi"}
     TRUSTED_REFS         = {"refs/heads/master", "master"}
 
@@ -172,9 +173,10 @@ module Iyi::Stale
         # Test root check
         next unless ALLOWED_ROOTS.includes?(rec.test.root)
 
-        # Observations check
+        # Observations check: permit env root only for env_get and env_all
         has_forbidden_obs = rec.trace.observations.any? do |obs|
-          obs.root == "abs" || obs.root == "host" || obs.kind == "host" || !ALLOWED_ROOTS.includes?(obs.root)
+          obs.root == "abs" || obs.root == "host" || obs.kind == "host" ||
+            (obs.root == "env" ? (obs.kind != "env_get" && obs.kind != "env_all") : !ALLOWED_ROOTS.includes?(obs.root))
         end
         next if has_forbidden_obs
 
@@ -212,7 +214,8 @@ module Iyi::Stale
           mode: "portable",
           newest: "pass",
           seq: 0_u64,
-          contradicted: false
+          contradicted: false,
+          namespace: namespace
         )
         portable_rec.ensure_signature!
         portable_records << portable_rec
@@ -269,11 +272,10 @@ module Iyi::Stale
       res
     end
 
-    # Import and validate snapshot from file into store
-    def self.import(
-      store : Store,
-      namespace : String,
+    # Validate a snapshot file from disk according to all format and security rules
+    def self.validate_file(
       file : String,
+      namespace : String,
       ctx : ImportContext,
     ) : ImportResult
       # 1. File existence
@@ -381,8 +383,16 @@ module Iyi::Stale
               imported_path: nil
             )
           end
-
-          unless ALLOWED_ROOTS.includes?(obs.root)
+          if obs.root == "env"
+            unless obs.kind == "env_get" || obs.kind == "env_all"
+              return ImportResult.new(
+                success: false,
+                error: "env observation root has invalid kind: '#{obs.kind}' in test #{rec.test}",
+                snapshot: nil,
+                imported_path: nil
+              )
+            end
+          elsif !ALLOWED_ROOTS.includes?(obs.root)
             return ImportResult.new(
               success: false,
               error: "trace observation root outside allowed roots: '#{obs.root}' in test #{rec.test}",
@@ -542,7 +552,31 @@ module Iyi::Stale
         end
       end
 
-      # 8. Wholesale storage into store under imported/<hex D(namespace)>.json
+      # Set exact imported namespace in-memory on each receipt (excluded from JSON/signatures)
+      snapshot.records.each do |rec|
+        rec.namespace = snapshot.namespace
+      end
+
+      ImportResult.new(
+        success: true,
+        error: nil,
+        snapshot: snapshot,
+        imported_path: nil,
+        records_count: snapshot.records.size
+      )
+    end
+
+    # Import and validate snapshot from file into store
+    def self.import(
+      store : Store,
+      namespace : String,
+      file : String,
+      ctx : ImportContext,
+    ) : ImportResult
+      res = validate_file(file, namespace, ctx)
+      return res unless res.success? && (snapshot = res.snapshot)
+
+      # Wholesale storage into store under imported/<hex D(namespace)>.json
       imported_path = store.import_snapshot(snapshot)
 
       ImportResult.new(
@@ -551,6 +585,82 @@ module Iyi::Stale
         snapshot: snapshot,
         imported_path: imported_path,
         records_count: snapshot.records.size
+      )
+    end
+
+    # Validate a group of shard files for a given namespace and return union
+    def self.validate_shards(
+      files : Array(String),
+      namespace : String,
+      ctx : ImportContext,
+    ) : UnionResult
+      if files.empty?
+        return UnionResult.new(
+          success: false,
+          error: "no files provided for namespace '#{namespace}'",
+          snapshot: nil
+        )
+      end
+
+      if files.size == 1
+        res = validate_file(files.first, namespace, ctx)
+        if res.success? && (snap = res.snapshot)
+          return UnionResult.new(
+            success: true,
+            error: nil,
+            snapshot: snap,
+            records_count: snap.records.size
+          )
+        else
+          return UnionResult.new(
+            success: false,
+            error: res.error,
+            snapshot: nil
+          )
+        end
+      end
+
+      snapshots = [] of Snapshot
+      files.each do |f|
+        res = validate_file(f, namespace, ctx)
+        unless res.success? && (snap = res.snapshot)
+          return UnionResult.new(
+            success: false,
+            error: res.error,
+            snapshot: nil
+          )
+        end
+        snapshots << snap
+      end
+
+      union_shards(snapshots)
+    end
+
+    # Import a group of shard files for a given namespace into the store atomically
+    def self.import_shards(
+      store : Store,
+      namespace : String,
+      files : Array(String),
+      ctx : ImportContext,
+    ) : ImportResult
+      u_res = validate_shards(files, namespace, ctx)
+      unless u_res.success? && (snap = u_res.snapshot)
+        return ImportResult.new(
+          success: false,
+          error: u_res.error,
+          snapshot: nil,
+          imported_path: nil
+        )
+      end
+
+      imported_path = store.import_snapshot(snap)
+
+      ImportResult.new(
+        success: true,
+        error: nil,
+        snapshot: snap,
+        imported_path: imported_path,
+        records_count: snap.records.size
       )
     end
 
@@ -618,8 +728,9 @@ module Iyi::Stale
         end
       end
 
-      # Sort combined records by test
+      # Sort combined records by test and preserve in-memory namespace
       combined_records.sort_by! { |r| r.test.to_s }
+      combined_records.each { |r| r.namespace = first.namespace }
 
       union_producer = if fp = first.producer
                          dup = fp.dup

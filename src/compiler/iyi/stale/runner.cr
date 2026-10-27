@@ -17,13 +17,18 @@ module Iyi::Stale
 
   record TestResult,
     file : String,
+    test : TestId,
     status : String,
     seconds : Float64,
     output : String = "",
     cached : Bool = false,
     source : String = "local",
     reuse : String = "miss",
-    reason : String? = nil do
+    reason : String? = nil,
+    portable_build : String? = nil,
+    profile : String? = nil,
+    roots : Hash(String, String) = Hash(String, String).new,
+    blocked : Bool = false do
     def pass? : Bool
       @status == "pass"
     end
@@ -90,18 +95,32 @@ module Iyi::Stale
       @store.ensure_directories!
       @store.prune_outdated_toolchains
 
-      # Process imports
+      # Process imports: group repeated --import-index by namespace, validate and union shards, then store
+      import_groups = Hash(String, Array(String)).new
       @import_indices.each do |entry|
         parts = entry.split('=', 2)
         unless parts.size == 2 && !parts[0].empty? && !parts[1].empty?
           abort! "--import-index takes NS=FILE", :USAGE_ERROR
         end
         ns, file = parts[0], parts[1]
-        import_ctx = ImportContext.new(target: @target)
-        res = Snapshot.import(@store, ns, file, import_ctx)
-        unless res.success?
+        (import_groups[ns] ||= [] of String) << file
+      end
+
+      # Validate and union all shards for each namespace in memory before storing to avoid partial replacement
+      snapshots_to_store = [] of Snapshot
+      import_ctx = ImportContext.new(target: @target)
+
+      import_groups.each do |ns, ns_files|
+        res = Snapshot.validate_shards(ns_files, ns, import_ctx)
+        unless res.success? && (snap = res.snapshot)
           abort! "import-index: #{res.error}", :USAGE_ERROR
         end
+        snapshots_to_store << snap
+      end
+
+      # Atomically store all validated snapshots
+      snapshots_to_store.each do |snap|
+        @store.import_snapshot(snap)
       end
 
       files = if initial_files = @files
@@ -133,27 +152,14 @@ module Iyi::Stale
 
       if files.empty?
         if @as_json
-          puts %({"tests": [], "passed": 0, "failed": 0, "skipped": #{skipped}})
+          puts %({"tests": [], "passed": 0, "failed": 0, "skipped": #{skipped}, "cached": 0, "audit": []})
         else
           puts "0 to run, #{skipped} skipped: no test's imports reach the change"
         end
         return
       end
 
-      # Handle --shard K/N round-robin dealing
-      if @shard
-        files = files.each_with_index.select { |_, idx| (idx % shard_n) == (shard_k - 1) }.map(&.[0]).to_a
-        if files.empty?
-          if @as_json
-            puts %({"tests": [], "passed": 0, "failed": 0, "skipped": #{skipped}})
-          else
-            puts "0 to run: shard #{@shard} has no tests"
-          end
-          return
-        end
-      end
-
-      # C6: Ambiguous test id detection
+      # C6: Ambiguous test id detection across ALL discovered tests before sharding
       file_test_ids = Hash(String, TestId).new
       id_counts = Hash(TestId, Int32).new(0)
       files.each do |file|
@@ -164,6 +170,19 @@ module Iyi::Stale
         tid = TestId.new("src", rel_path)
         file_test_ids[file] = tid
         id_counts[tid] += 1
+      end
+
+      # Handle --shard K/N round-robin dealing
+      if @shard
+        files = files.each_with_index.select { |_, idx| (idx % shard_n) == (shard_k - 1) }.map(&.[0]).to_a
+        if files.empty?
+          if @as_json
+            puts %({"tests": [], "passed": 0, "failed": 0, "skipped": #{skipped}, "cached": 0, "audit": []})
+          else
+            puts "0 to run: shard #{@shard} has no tests"
+          end
+          return
+        end
       end
 
       machine_key = MachineKey.load_or_create(@store.cache_root)
@@ -184,6 +203,13 @@ module Iyi::Stale
         test_id = file_test_ids[file]
         is_ambiguous = id_counts[test_id] > 1
         roots = Roots.default_for_file(file, cache_root: @store.cache_root)
+        roots_map = {
+          "src"       => roots.src,
+          "toolchain" => roots.toolchain,
+          "pkg"       => roots.pkg,
+          "scratch"   => roots.scratch,
+          "abs"       => roots.abs,
+        }
 
         accept_rules = [] of KeyFile::StaleRule
         block_rules = [] of KeyFile::StaleRule
@@ -259,16 +285,30 @@ module Iyi::Stale
             matching_rec = candidates.find do |c|
               c.mode == hit.mode && c.build.build.compare(hit.build, case_insensitive: true) == 0
             end
-            source = matching_rec ? (matching_rec.mode == "local" ? "local" : "imported") : "local"
+            source = if matching_rec
+                       if matching_rec.mode == "local"
+                         "local"
+                       else
+                         matching_rec.namespace || "imported"
+                       end
+                     else
+                       "local"
+                     end
+            p_build = key_data.portable.try(&.build) || (matching_rec && matching_rec.portable? ? matching_rec.build.build : nil)
             res = TestResult.new(
               file: file,
+              test: test_id,
               status: "pass",
               seconds: elapsed(started),
               output: "",
               cached: true,
               source: source,
               reuse: "hit",
-              reason: nil
+              reason: nil,
+              portable_build: p_build,
+              profile: current_profile.fp,
+              roots: roots_map,
+              blocked: false
             )
             results << res
             if @explain
@@ -285,15 +325,22 @@ module Iyi::Stale
                 rec.profile.fp == current_profile.fp && Trace.replay(rec.trace.observations, keyer_for(rec, keyer_local), roots).nil?
               end
             end
+            p_build = key_data.try(&.portable.try(&.build))
+            is_blocked = key_data.try(&.blocked) == true
             res = TestResult.new(
               file: file,
+              test: test_id,
               status: "does not build",
               seconds: elapsed(started),
               output: build_out.to_s,
               cached: false,
               source: "local",
               reuse: "miss",
-              reason: nil
+              reason: nil,
+              portable_build: p_build,
+              profile: current_profile.fp,
+              roots: roots_map,
+              blocked: is_blocked
             )
             results << res
             if @explain
@@ -351,15 +398,22 @@ module Iyi::Stale
             @store.revoke(test_id) do |rec|
               rec.profile.fp == current_profile.fp && Trace.replay(rec.trace.observations, keyer_for(rec, keyer_local), roots).nil?
             end
+            p_build = key_data.try(&.portable.try(&.build))
+            is_blocked = key_data.try(&.blocked) == true
             res = TestResult.new(
               file: file,
+              test: test_id,
               status: test_status,
               seconds: elapsed(started),
               output: test_output,
               cached: false,
               source: "local",
               reuse: "miss",
-              reason: nil
+              reason: nil,
+              portable_build: p_build,
+              profile: current_profile.fp,
+              roots: roots_map,
+              blocked: is_blocked
             )
             results << res
             if @explain
@@ -378,15 +432,22 @@ module Iyi::Stale
 
           if !trace_res.complete
             # Pass with trace incomplete: write nothing
+            p_build = key_data.try(&.portable.try(&.build))
+            is_blocked = key_data.try(&.blocked) == true
             res = TestResult.new(
               file: file,
+              test: test_id,
               status: "pass",
               seconds: elapsed(started),
               output: "",
               cached: false,
               source: "local",
               reuse: "miss",
-              reason: "trace incomplete"
+              reason: "trace incomplete",
+              portable_build: p_build,
+              profile: current_profile.fp,
+              roots: roots_map,
+              blocked: is_blocked
             )
             results << res
             if @explain
@@ -421,17 +482,24 @@ module Iyi::Stale
             taint_reason = "ambiguous test id"
           end
 
+          p_build = key_data.try(&.portable.try(&.build))
+          is_blocked = key_data.try(&.blocked) == true
           if is_not_reusable
             reuse_tag = is_ambiguous ? "miss" : "not reusable"
             res = TestResult.new(
               file: file,
+              test: test_id,
               status: "pass",
               seconds: elapsed(started),
               output: "",
               cached: false,
               source: "local",
               reuse: reuse_tag,
-              reason: taint_reason
+              reason: taint_reason,
+              portable_build: p_build,
+              profile: current_profile.fp,
+              roots: roots_map,
+              blocked: is_blocked
             )
             results << res
             if @explain
@@ -488,15 +556,22 @@ module Iyi::Stale
               recorded_receipts << receipt
             end
 
+            p_build = key_data.try(&.portable.try(&.build))
+            is_blocked = key_data.try(&.blocked) == true
             res = TestResult.new(
               file: file,
+              test: test_id,
               status: "pass",
               seconds: elapsed(started),
               output: "",
               cached: false,
               source: "local",
               reuse: "miss",
-              reason: nil
+              reason: nil,
+              portable_build: p_build,
+              profile: current_profile.fp,
+              roots: roots_map,
+              blocked: is_blocked
             )
             results << res
             if @explain
@@ -552,6 +627,12 @@ module Iyi::Stale
                 results.each do |result|
                   json.object do
                     json.field "file", result.file
+                    json.field "test" do
+                      json.object do
+                        json.field "root", result.test.root
+                        json.field "path", result.test.path
+                      end
+                    end
                     json.field "status", result.status
                     json.field "seconds", result.seconds
                     json.field "output", result.output unless result.output.empty?
@@ -559,6 +640,16 @@ module Iyi::Stale
                     json.field "source", result.source
                     json.field "reuse", result.reuse
                     json.field "reason", result.reason if result.reason
+                    json.field "portable_build", result.portable_build
+                    json.field "profile", result.profile
+                    json.field "roots" do
+                      json.object do
+                        result.roots.each do |k, v|
+                          json.field k, v
+                        end
+                      end
+                    end
+                    json.field "blocked", result.blocked
                   end
                 end
               end
@@ -663,7 +754,7 @@ module Iyi::Stale
         rec_explain = newest.explain
         all_keys = (curr_explain.keys + rec_explain.keys).uniq
         diff_files = all_keys.select { |k| curr_explain[k]? != rec_explain[k]? }
-        clean_names = diff_files.map do |f|
+        clean_names = diff_files.reject { |k| k == "*" }.sort.map do |f|
           if f.starts_with?("src:")
             f[4..-1]
           elsif f.starts_with?("toolchain:")
