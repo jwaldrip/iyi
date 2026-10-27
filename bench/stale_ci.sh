@@ -1454,7 +1454,7 @@ test_master_path() {
   trap 'if [ "$clean_exit" -eq 1 ]; then rm -rf "$work"; else echo "Preserving test-master-path artifacts at $work" >&2; fi' RETURN
 
   "$PY" -c "
-import glob, hashlib, http.server, io, json, os, subprocess, sys, threading, time, urllib.error, urllib.parse, urllib.request
+import glob, hashlib, http.server, io, json, os, shutil, subprocess, sys, threading, time, urllib.error, urllib.parse, urllib.request
 
 repo = sys.argv[1]
 iyi = sys.argv[2]
@@ -1940,6 +1940,11 @@ try:
     if empty_data.get('producer', {}).get('run_id') != 4444 or len(empty_data.get('records', [])) != 0:
         print(f'test-master-path FAILED: empty snapshot data incorrect: {empty_data}', file=sys.stderr)
         sys.exit(1)
+
+    # Ensure cache is clean before empty snapshot consumption test
+    cache_tests_v1 = os.path.join(shared_cache, 'tests-v1')
+    if os.path.exists(cache_tests_v1):
+        shutil.rmtree(cache_tests_v1)
 
     # Import empty snapshot: verifies consumption is turned off (0 cached hits)
     res_empty_test = subprocess.run([iyi, 'test', '--cached', '--json',
