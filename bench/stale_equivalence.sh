@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Gate for S5b: RG2 (equivalence under observation) and RG5 (trace half: load-bearing observers).
+# Gate for S5b: RG2 (equivalence under observation), RG2a (equivalence with empty dir argument) and RG5 (trace half: load-bearing observers).
 # Usage:
-#     bash bench/stale_equivalence.sh [all|rg2|rg5]
+#     bash bench/stale_equivalence.sh [all|rg2|rg2a|rg5]
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -217,6 +217,186 @@ if failures:
 print('RG2 PASSED: observed builds match normal runs outside each program’s calibrated mask')
 " "$REPO" "$IYI" "$WORK"
 }
+run_rg2a() {
+  echo "== Running RG2a: equivalence with empty directory argument =="
+  "$PY" -c "
+import concurrent.futures, glob, os, re, subprocess, sys
+
+repo, iyi, work = sys.argv[1:]
+samples = sorted(glob.glob(os.path.join(repo, 'samples/iyi/*.iyi')))
+bench = sorted(glob.glob(os.path.join(repo, 'bench/std_*_exercise.iyi')))
+programs = samples + bench
+
+DEFAULT_TIMEOUT = 60
+HEAVY_TIMEOUT = 300
+HEAVY = {
+    'bench/std_big_exercise.iyi', 'bench/std_bzip2_exercise.iyi',
+    'bench/std_compress_exercise.iyi', 'bench/std_csv_exercise.iyi',
+    'bench/std_curve25519_exercise.iyi', 'bench/std_digest_exercise.iyi',
+    'bench/std_fuzz_exercise.iyi', 'bench/std_gc_exercise.iyi',
+    'bench/std_http_exercise.iyi', 'bench/std_mutex_exercise.iyi',
+    'bench/std_password_exercise.iyi', 'bench/std_shared_proc_exercise.iyi',
+    'bench/std_tar_exercise.iyi', 'bench/std_text_scale_exercise.iyi',
+    'bench/std_toml_exercise.iyi', 'bench/std_xml_exercise.iyi',
+    'bench/std_xz_exercise.iyi', 'bench/std_zstd_exercise.iyi',
+}
+
+def timeout_for(name):
+    return HEAVY_TIMEOUT if name in HEAVY else DEFAULT_TIMEOUT
+
+def run(argv, *, env=None, timeout):
+    return subprocess.run(argv, env=env, capture_output=True,
+                          text=False, timeout=timeout)
+
+def last_line(result):
+    tail = result.stderr.strip().splitlines()[-1:] or result.stdout.strip().splitlines()[-1:]
+    return tail[0].decode(errors='replace')[:160] if tail else '(no output)'
+
+def lines(value):
+    return value.splitlines(keepends=True)
+
+NON_REUSABLE_STDOUT_PATTERNS = [
+    re.compile(rb'^\s*mapped=\d+ since_collection=\d+ freed=\d+ kept=\d+ collections=\d+'),
+    re.compile(rb'^\s*64 MiB copied with \d+ KiB allocated, compared with \d+ KiB'),
+    re.compile(rb'^\s*wall clock steps: \d+ ns'),
+]
+
+def is_non_reusable_output(line):
+    return any(p.match(line) for p in NON_REUSABLE_STDOUT_PATTERNS)
+
+FRAME_RE = re.compile(rb'^\s*\d+\s+\S+\s+0x[0-9a-fA-F]+\s+(.*?)(?:\s+\+\s+\d+)?$')
+
+def normalize_stderr(raw):
+    if not raw:
+        return b''
+    raw_lines = lines(raw)
+    out = []
+    prev_sym = None
+    frame_run = 0
+    for line in raw_lines:
+        m = FRAME_RE.match(line.rstrip(b'\r\n'))
+        if not m:
+            out.append(line)
+            prev_sym = None
+            frame_run = 0
+            continue
+        sym = m.group(1).strip()
+        if b'__iyi_effect_raise' in sym:
+            continue
+        norm_sym = sym.replace(b'__iyi_effect_', b'')
+        if norm_sym == prev_sym:
+            continue
+        prev_sym = norm_sym
+        if frame_run < 62:
+            out.append(b'  FRAME: ' + norm_sym + b'\n')
+            frame_run += 1
+    return b''.join(out)
+
+def calibrated_mask(first, second):
+    one, two = lines(first), lines(second)
+    if len(one) != len(two):
+        return None
+    return {index for index, (left, right) in enumerate(zip(one, two)) if left != right}
+
+def matches_outside_mask(expected, actual, mask):
+    before, after = lines(expected), lines(actual)
+    if len(before) != len(after):
+        return False, 'line count %d != %d' % (len(before), len(after))
+    for index, (left, right) in enumerate(zip(before, after)):
+        if index not in mask and left != right:
+            if is_non_reusable_output(left) and is_non_reusable_output(right):
+                continue
+            return False, 'line %d differs outside normal-run mask' % (index + 1)
+    return True, ''
+
+def check_rg2a(item):
+    index, program = item
+    name = os.path.relpath(program, repo)
+    timeout = timeout_for(name)
+    directory = os.path.join(work, 'rg2a_' + str(index))
+    os.makedirs(directory, exist_ok=True)
+    cache = os.path.join(directory, 'cache')
+    os.makedirs(cache, exist_ok=True)
+    env = dict(os.environ, IYI_CACHE_DIR=cache)
+    normal = os.path.join(directory, 'normal.bin')
+    empty_dir = os.path.join(directory, 'empty_dir')
+    os.makedirs(empty_dir, exist_ok=True)
+
+    try:
+        normal_build = run([iyi, 'build', '-o', normal, program], env=env, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return 'excluded', name, 'normal build exceeded %ss ceiling' % timeout
+    if normal_build.returncode:
+        return 'excluded', name, 'normal build failed: ' + normal_build.stderr.decode(errors='replace')[:100]
+
+    # Calibration: two normal no-argument runs
+    try:
+        first = run([normal], timeout=timeout)
+        second = run([normal], timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return 'excluded', name, 'normal run exceeded %ss ceiling' % timeout
+
+    if first.returncode != second.returncode:
+        failed = first if first.returncode else second
+        return 'excluded', name, 'normal runs disagree on exit (%d != %d): %s' % (first.returncode, second.returncode, last_line(failed))
+
+    stdout_mask = calibrated_mask(first.stdout, second.stdout)
+    norm_stderr1 = normalize_stderr(first.stderr)
+    norm_stderr2 = normalize_stderr(second.stderr)
+    stderr_mask = calibrated_mask(norm_stderr1, norm_stderr2)
+
+    is_calib_excluded = (stdout_mask is None or stderr_mask is None)
+
+    # Run once more with argv = [a fresh empty directory]
+    try:
+        empty_run = run([normal, empty_dir], timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return 'fail', name, 'empty dir run exceeded %ss ceiling' % timeout
+
+    # Programs excluded after calibration must still match on exit status
+    if empty_run.returncode != first.returncode:
+        return 'fail', name, 'exit %d != empty-dir exit %d: %s' % (first.returncode, empty_run.returncode, last_line(empty_run if empty_run.returncode else first))
+
+    if is_calib_excluded:
+        return 'excluded', name, 'normal runs change output shape (exit matched %d)' % first.returncode
+
+    stdout_ok, stdout_reason = matches_outside_mask(first.stdout, empty_run.stdout, stdout_mask)
+    if not stdout_ok:
+        return 'fail', name, 'stdout ' + stdout_reason
+
+    empty_stderr = normalize_stderr(empty_run.stderr)
+    stderr_ok, stderr_reason = matches_outside_mask(norm_stderr1, empty_stderr, stderr_mask)
+    if not stderr_ok:
+        return 'fail', name, 'stderr ' + stderr_reason
+
+    return 'pass', name, '%d masked stdout lines, %d masked stderr lines' % (len(stdout_mask), len(stderr_mask))
+
+with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+    results = list(executor.map(check_rg2a, enumerate(programs)))
+
+passed = 0
+excluded = []
+failures = []
+for status, name, detail in results:
+    if status == 'pass':
+        passed += 1
+    elif status == 'excluded':
+        excluded.append((name, detail))
+    else:
+        failures.append((name, detail))
+
+print('RG2a: %d evaluated, %d passed, %d still excluded with reason, %d failures' %
+      (len(programs) - len(excluded), passed, len(excluded), len(failures)))
+for name, reason in excluded:
+    print('  [excluded after calibration] %s: %s' % (name, reason))
+for name, reason in failures:
+    print('  FAILED: %s -> %s' % (name, reason), file=sys.stderr)
+if failures:
+    sys.exit(1)
+print('RG2a PASSED: programs given one empty-directory argument match no-argument runs outside calibrated mask')
+" "$REPO" "$IYI" "$WORK"
+}
+
 
 run_rg5() {
   echo "== Running RG5 (trace half): each observer call is load-bearing =="
@@ -597,15 +777,19 @@ case "$MODE" in
   rg2)
     run_rg2
     ;;
+  rg2a)
+    run_rg2a
+    ;;
   rg5)
     run_rg5
     ;;
   all)
     run_rg2
+    run_rg2a
     run_rg5
     ;;
   *)
-    echo "Unknown mode: $MODE (expected: all, rg2, rg5)" >&2
+    echo "Unknown mode: $MODE (expected: all, rg2, rg2a, rg5)" >&2
     exit 1
     ;;
 esac

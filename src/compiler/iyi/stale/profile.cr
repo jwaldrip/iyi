@@ -1,5 +1,6 @@
 require "./encoding"
 require "./receipt"
+require "./roots"
 require "../codegen/target"
 require "../config"
 
@@ -39,11 +40,15 @@ module Iyi::Stale::Profile
     "DYLD_LIBRARY_PATH",
   }
 
-  def self.current(timeout : Float64 = 60.0, cwd_test_id : TestId? = nil, target : String? = nil) : ReceiptProfile
-    argv = [] of String
+  def self.current(
+    timeout : Float64 = 60.0,
+    target : String? = nil,
+    argv : Array(String) = [] of String,
+    cwd : RootPath | TestId = TestId.new("src", "."),
+  ) : ReceiptProfile
     stdin = "null"
     stdio = "piped"
-    cwd = cwd_test_id || TestId.new("src", ".")
+    cwd_test_id = cwd.is_a?(TestId) ? cwd : TestId.new(cwd.root, cwd.path)
     target_str = target || Iyi::Config.host_target.to_s
     os = {{ flag?(:darwin) ? "darwin" : (flag?(:linux) ? "linux" : (flag?(:win32) ? "windows" : "unknown")) }}
 

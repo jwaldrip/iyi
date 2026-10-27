@@ -187,7 +187,6 @@ module Iyi::Stale
 
       machine_key = MachineKey.load_or_create(@store.cache_root)
       keyer_local = Keyer.local(machine_key)
-      current_profile = Profile.current(timeout: @timeout, target: @target)
 
       active_tree : Command::TestTree? = nil
       Signal::INT.trap do
@@ -202,7 +201,15 @@ module Iyi::Stale
       files.each do |file|
         test_id = file_test_ids[file]
         is_ambiguous = id_counts[test_id] > 1
+        s = File.expand_path(File.join(@store.root_dir, "scratch", Stale.hex(Store.d_test_id(test_id))))
         roots = Roots.default_for_file(file, cache_root: @store.cache_root)
+        roots = Roots.new(
+          src: roots.src,
+          toolchain: roots.toolchain,
+          pkg: roots.pkg,
+          scratch: s,
+          abs: roots.abs
+        )
         roots_map = {
           "src"       => roots.src,
           "toolchain" => roots.toolchain,
@@ -210,6 +217,13 @@ module Iyi::Stale
           "scratch"   => roots.scratch,
           "abs"       => roots.abs,
         }
+        test_argv = [s]
+        current_profile = Profile.current(
+          timeout: @timeout,
+          target: @target,
+          argv: test_argv,
+          cwd: roots.map(Dir.current)
+        )
 
         accept_rules = [] of KeyFile::StaleRule
         block_rules = [] of KeyFile::StaleRule
@@ -239,19 +253,24 @@ module Iyi::Stale
             block_rules.any? { |br| br.mode == vr.mode && br.build.compare(vr.build, case_insensitive: true) == 0 }
           end
         end
-
         # Run test
-        started = Time.instant
-        out_key_path = File.tempname("iyi-stale-key", ".json")
-        accept_path = File.tempname("iyi-stale-accept", ".json")
-        block_path = File.tempname("iyi-stale-block", ".json")
-        binary = File.tempname("iyi-test", {{ flag?(:win32) ? ".exe" : nil }})
-        scratch_dir = File.tempname("iyi-test-scratch")
-        Dir.mkdir_p(scratch_dir)
-        trace_file = File.tempname("iyi-trace")
-        null_io : File? = nil
+        lock_path = s + ".lock"
+        Dir.mkdir_p(File.dirname(lock_path))
 
-        begin
+        File.open(lock_path, "a") do |lock_file|
+          lock_file.flock_exclusive do
+            FileUtils.rm_rf(s) if Dir.exists?(s) rescue nil
+            Dir.mkdir_p(s)
+
+            started = Time.instant
+            out_key_path = File.tempname("iyi-stale-key", ".json")
+            accept_path = File.tempname("iyi-stale-accept", ".json")
+            block_path = File.tempname("iyi-stale-block", ".json")
+            binary = File.tempname("iyi-test", {{ flag?(:win32) ? ".exe" : nil }})
+            trace_file = File.tempname("iyi-trace")
+            null_io : File? = nil
+
+            begin
           File.write(accept_path, accept_rules.to_json)
           File.write(block_path, block_rules.to_json)
 
@@ -350,19 +369,19 @@ module Iyi::Stale
           end
 
           # Case 3: Build succeeded and was not a hit -> execute under profile
-          child_env = Profile.clean_child_env(scratch_dir, trace_file, ENV)
+          child_env = Profile.clean_child_env(s, trace_file, ENV)
           run_out = IO::Memory.new
           null_io = File.open(File::NULL, "r")
 
           process = Process.new(
             binary,
+            args: test_argv,
             env: child_env,
             input: null_io,
             output: run_out,
             error: run_out,
             new_pgroup: true
           )
-          tree = Command::TestTree.new(process)
           active_tree = tree
 
           done = ::Channel(Process::Status).new
@@ -583,7 +602,7 @@ module Iyi::Stale
           active_tree.try &.close
           active_tree = nil
           null_io.try &.close rescue nil
-          FileUtils.rm_rf(scratch_dir) if Dir.exists?(scratch_dir) rescue nil
+          FileUtils.rm_rf(s) if Dir.exists?(s) rescue nil
           File.delete(trace_file) if File.file?(trace_file) rescue nil
           File.delete(out_key_path) if File.file?(out_key_path) rescue nil
           File.delete(accept_path) if File.file?(accept_path) rescue nil
@@ -596,6 +615,8 @@ module Iyi::Stale
           {% end %}
         end
       end
+    end
+  end
 
       # Handle export indices
       unless @export_indices.empty?
