@@ -666,7 +666,10 @@ class ::File
     getter permissions : Permissions
     getter type : Type
     getter flags : Flags
-    getter modification_time : Int64
+    @[Effect(:clock)]
+    def modification_time : Int64
+      @modification_time
+    end
     getter owner_id : String
     getter group_id : String
     getter dev : Int64

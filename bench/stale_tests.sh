@@ -188,7 +188,53 @@ expect_eq "$(printf '%s' "$r7_release" | json_cached)" 0 "IYI_OPTS=--release rer
 # Row 8 mutation proof: changing a reached std definition versus an unreached
 # sibling is an S3 call-path proof. Row 33 below checks the imported-module form.
 step 8 "reached std and prelude definitions participate in call path"
-# Covered by spec/compiler/stale/call_path_spec.cr:78-110
+mkdir -p "$WORK/r8/std"
+cat > "$WORK/r8/std/calc.iyi" <<'IYI'
+module std/calc
+pub def reached_fn(x : Int32) : Int32
+  x + 10
+end
+pub def unreached_fn(x : Int32) : Int32
+  x * 20
+end
+IYI
+cat > "$WORK/r8/r8_test.iyi" <<'IYI'
+import std/calc::{reached_fn}
+assert reached_fn(5) == 15
+IYI
+rm -rf "$CACHE/tests-v1"
+r8_run1="$(IYI_PATH="$WORK/r8:$REPO/src" run_json "$WORK/r8" r8_test.iyi)"
+expect_eq "$(printf '%s' "$r8_run1" | json_cached)" 0 "r8 recording run"
+r8_hit1="$(IYI_PATH="$WORK/r8:$REPO/src" run_json "$WORK/r8" r8_test.iyi)"
+expect_eq "$(printf '%s' "$r8_hit1" | json_cached)" 1 "r8 unchanged hit"
+
+# Unreached std sibling edit: test remains a hit
+cat > "$WORK/r8/std/calc.iyi" <<'IYI'
+module std/calc
+pub def reached_fn(x : Int32) : Int32
+  x + 10
+end
+pub def unreached_fn(x : Int32) : Int32
+  x * 999
+end
+IYI
+r8_hit2="$(IYI_PATH="$WORK/r8:$REPO/src" run_json "$WORK/r8" r8_test.iyi)"
+expect_eq "$(printf '%s' "$r8_hit2" | json_cached)" 1 "r8 unreached std sibling edit stays hit"
+
+# Reached std def edit: test misses
+cat > "$WORK/r8/std/calc.iyi" <<'IYI'
+module std/calc
+pub def reached_fn(x : Int32) : Int32
+  x + 20
+end
+pub def unreached_fn(x : Int32) : Int32
+  x * 999
+end
+IYI
+r8_miss="$(IYI_PATH="$WORK/r8:$REPO/src" run_json "$WORK/r8" r8_test.iyi)"
+expect_eq "$(printf '%s' "$r8_miss" | json_cached)" 0 "r8 reached std def edit misses"
+(cd "$WORK/r8" && IYI_PATH="$WORK/r8:$REPO/src" "$IYI" test --cached --explain r8_test.iyi) > "$WORK/r8/explain.txt" 2>&1
+expect_contains "$(cat "$WORK/r8/explain.txt")" "miss: call path" "reached std def miss reason"
 
 # Row 9 mutation proof: stale_reproducible rebuilds from the identical input;
 # the named scratch source mutation makes its executable identity assertion fail.
@@ -431,13 +477,76 @@ printf 'two' > "$WORK/cd/sub/value.txt"
 row25_miss="$(run_json "$WORK/cd" cd_test.iyi)"
 expect_eq "$(printf '%s' "$row25_miss" | json_cached)" 0 "cd target mutation reruns"
 
-# Row 26 mutation proof: runner_spec owns source/build signature race.
+# Row 26 mutation proof: receipt belongs to parsed source snapshot, not disk content after build.
 step 26 "receipt belongs to parsed source snapshot"
-# Covered by spec/compiler/stale/runner_spec.cr
+mkdir -p "$WORK/r26"
+r26_test_abs="$WORK/r26/r26_test.iyi"
+
+# Helper edit.iyi copies .next onto target DURING build (once) and prints 1
+cat > "$WORK/r26/edit.iyi" <<'IYI'
+import std/file::{File}
+
+target = Program.args[0]
+marker = target + ".edited"
+if !File.file?(marker)
+  File.write(marker, "done")
+  File.write(target, File.read(target + ".next"))
+end
+puts "1"
+IYI
+
+T0="raise \"macro run lost\" unless ({{ run(\"./edit\", \"$r26_test_abs\") }}) == 1"
+T1="$(printf '%s\nassert 2 > 1\n' "$T0")"
+
+printf '%s\n' "$T0" > "$WORK/r26/r26_test.iyi"
+printf '%s\n' "$T1" > "$WORK/r26/r26_test.iyi.next"
+
+rm -rf "$CACHE/tests-v1"
+r26_run1="$(run_json "$WORK/r26" r26_test.iyi)"
+expect_eq "$(printf '%s' "$r26_run1" | json_cached)" 0 "r26 run 1 cached 0"
+expect_eq "$(cat "$WORK/r26/r26_test.iyi")" "$T1" "r26 disk modified to T1 during build"
+
+r26_run2="$(run_json "$WORK/r26" r26_test.iyi)"
+expect_eq "$(printf '%s' "$r26_run2" | json_cached)" 0 "r26 run 2 cached 0 (disk T1 does not match receipt)"
+
+printf '%s\n' "$T0" > "$WORK/r26/r26_test.iyi"
+r26_run3="$(run_json "$WORK/r26" r26_test.iyi)"
+expect_eq "$(printf '%s' "$r26_run3" | json_cached)" 1 "r26 run 3 cached 1 (restored T0 hits receipt)"
+(cd "$WORK/r26" && "$IYI" test --cached --explain r26_test.iyi) > "$WORK/r26/explain.txt" 2>&1
+expect_contains "$(cat "$WORK/r26/explain.txt")" "hit from local" "r26 run 3 hit from local"
 step 27 "empty newer master snapshot disables consumption"
 # Covered by spec/compiler/stale/snapshot_spec.cr:403
 step 28 "loader variables are cleared while profile limits remain inputs"
-# Covered by spec/compiler/stale/profile_spec.cr
+mkdir -p "$WORK/r28"
+cat > "$WORK/r28/loader_test.iyi" <<'IYI'
+assert Program.env("LD_LIBRARY_PATH") == nil
+assert Program.env("DYLD_LIBRARY_PATH") == nil
+assert Program.env("LD_PRELOAD") == nil
+assert Program.env("DYLD_INSERT_LIBRARIES") == nil
+assert 1 + 1 == 2
+IYI
+
+case "$(uname -s)" in
+  Darwin) LOADER_VAR="DYLD_LIBRARY_PATH" ;;
+  *) LOADER_VAR="LD_LIBRARY_PATH" ;;
+esac
+
+rm -rf "$CACHE/tests-v1"
+r28_run1="$( (export "$LOADER_VAR=/tmp/r28_dir1"; run_json "$WORK/r28" loader_test.iyi) )"
+expect_eq "$(printf '%s' "$r28_run1" | json_cached)" 0 "r28 run 1 recorded"
+
+r28_run2="$( (export "$LOADER_VAR=/tmp/r28_dir2"; run_json "$WORK/r28" loader_test.iyi) )"
+expect_eq "$(printf '%s' "$r28_run2" | json_cached)" 1 "r28 run 2 hits with changed loader var"
+
+cur_nofile=$(ulimit -S -n)
+r28_explain="$WORK/r28/explain.txt"
+(ulimit -S -n $((cur_nofile - 1)); cd "$WORK/r28" && "$IYI" test --cached --explain loader_test.iyi) > "$r28_explain" 2>&1
+expect_contains "$(cat "$r28_explain")" "miss: profile changed" "different profile reason on rlimit change"
+expect_contains "$(cat "$r28_explain")" "0 from receipts" "zero receipts on profile miss"
+
+# Subsequent run with lowered limit hits newly recorded profile receipt
+r28_run3_hit="$( (ulimit -S -n $((cur_nofile - 1)); run_json "$WORK/r28" loader_test.iyi) )"
+expect_eq "$(printf '%s' "$r28_run3_hit" | json_cached)" 1 "subsequent run with lowered limit hits new profile receipt"
 
 # Row 29 mutation proof: scratch symlink resolves target outside scratch
 step 29 "scratch symlink resolves target outside scratch"
@@ -475,10 +584,67 @@ sym_run2="$(run_json "$WORK/symlink_shared" shared_link_test.iyi)"
 expect_eq "$(printf '%s' "$sym_run2" | json_cached)" 0 "symlink run2 cached 0 after non-reusable run1"
 rm -f "$WORK/symlink_shared/shared_link"
 
+# Row 30 mutation proof: hard link outside scratch taints shared-write.
 step 30 "hard link outside scratch taints shared-write"
-# Covered by spec/compiler/stale/trace_spec.cr
+mkdir -p "$WORK/r30"
+printf 'outside content' > "$WORK/r30/outside.txt"
+cat > "$WORK/r30/hardlink_test.iyi" <<'IYI'
+import std/file::{File}
+import std/dir::{Dir}
+
+outside = File.join(__DIR__, "outside.txt")
+hard = File.join(Dir.tempdir, "hard.txt")
+File.link(outside, hard)
+assert File.read(hard) == "outside content"
+IYI
+
+rm -rf "$CACHE/tests-v1"
+r30_run1="$(run_json "$WORK/r30" hardlink_test.iyi)"
+expect_eq "$(printf '%s' "$r30_run1" | json_cached)" 0 "hard link run 1 cached 0"
+expect_contains "$r30_run1" "shared" "hard link outside scratch not reusable reason"
+r30_run2="$(run_json "$WORK/r30" hardlink_test.iyi)"
+expect_eq "$(printf '%s' "$r30_run2" | json_cached)" 0 "hard link run 2 misses after non-reusable run 1"
+
+# Control: a link entirely inside scratch hits on run 2
+mkdir -p "$WORK/r30_control"
+cat > "$WORK/r30_control/control_link_test.iyi" <<'IYI'
+import std/file::{File}
+import std/dir::{Dir}
+
+source = File.join(Dir.tempdir, "src.txt")
+File.write(source, "scratch data")
+dest = File.join(Dir.tempdir, "hard.txt")
+File.link(source, dest)
+assert File.read(dest) == "scratch data"
+IYI
+
+rm -rf "$CACHE/tests-v1"
+r30_ctrl1="$(run_json "$WORK/r30_control" control_link_test.iyi)"
+expect_eq "$(printf '%s' "$r30_ctrl1" | json_cached)" 0 "internal link control run 1 cached 0"
+r30_ctrl2="$(run_json "$WORK/r30_control" control_link_test.iyi)"
+expect_eq "$(printf '%s' "$r30_ctrl2" | json_cached)" 1 "internal link control run 2 hits"
+
+# Row 31 mutation proof: returned scratch timestamp taints clock.
 step 31 "returned scratch timestamp taints clock"
-# Covered by spec/compiler/stale/trace_spec.cr
+mkdir -p "$WORK/r31"
+cat > "$WORK/r31/mtime_test.iyi" <<'IYI'
+import std/file::{File}
+import std/dir::{Dir}
+
+path = File.join(Dir.tempdir, "stamp.txt")
+File.write(path, "timestamp test")
+mtime = File.info(path).modification_time
+assert mtime > 0
+IYI
+
+rm -rf "$CACHE/tests-v1"
+r31_run1="$(run_json "$WORK/r31" mtime_test.iyi)"
+expect_eq "$(printf '%s' "$r31_run1" | json_cached)" 0 "r31 run 1 cached 0"
+expect_contains "$r31_run1" "clock" "scratch timestamp taints clock not reusable reason"
+r31_run2="$(run_json "$WORK/r31" mtime_test.iyi)"
+expect_eq "$(printf '%s' "$r31_run2" | json_cached)" 0 "r31 run 2 misses after clock-tainted run 1"
+(cd "$WORK/r31" && "$IYI" test --cached --explain mtime_test.iyi) > "$WORK/r31/explain.txt" 2>&1
+expect_contains "$(cat "$WORK/r31/explain.txt")" "clock" "clock reason in explain"
 step 32 "master provenance sidecar is verified"
 # Covered by spec/compiler/stale/snapshot_spec.cr:520
 
@@ -516,8 +682,80 @@ expect_eq "$(printf '%s' "$row33" | json_cached)" 1 "unreached-body mutation"
 # Rows 34, 36, 37, 38, 43, 45, 46 and 47 are one-source call path mutations.
 step 34 "capturing overload changes call path"
 # Covered by spec/compiler/stale/call_path_spec.cr:201
+# Row 35 mutation proof: reached macro input changes call path; unreached expansions stay hits; macro run timeprinter always misses.
 step 35 "reached macro input changes call path"
-# Covered by spec/compiler/stale/check_spec.cr
+mkdir -p "$WORK/r35"
+r35_data_file="$WORK/r35/data.txt"
+r35_unreached_file="$WORK/r35/unreached.txt"
+
+printf 'val1' > "$r35_data_file"
+printf 'unreached1' > "$r35_unreached_file"
+
+cat > "$WORK/r35/macro_test.iyi" <<IYI
+import std/file::{File}
+
+def reached_file_len : Int32
+  {{ read_file("$r35_data_file").size }}
+end
+
+def reached_env : String
+  {{ env("R35_REACHED_ENV") || "default" }}
+end
+
+def unreached_file : String
+  {{ read_file("$r35_unreached_file").chomp }}
+end
+
+def unreached_env : String
+  {{ env("R35_UNREACHED_ENV") || "default" }}
+end
+
+assert reached_file_len > 0
+assert reached_env != ""
+IYI
+
+rm -rf "$CACHE/tests-v1"
+r35_run1="$(R35_REACHED_ENV="env1" R35_UNREACHED_ENV="uenv1" run_json "$WORK/r35" macro_test.iyi)"
+expect_eq "$(printf '%s' "$r35_run1" | json_cached)" 0 "r35 run 1 recorded"
+
+r35_hit1="$(R35_REACHED_ENV="env1" R35_UNREACHED_ENV="uenv1" run_json "$WORK/r35" macro_test.iyi)"
+expect_eq "$(printf '%s' "$r35_hit1" | json_cached)" 1 "r35 unchanged run hits"
+
+# Unreached expansions change -> test still hits
+printf 'unreached_mutated_content' > "$r35_unreached_file"
+r35_hit2="$(R35_REACHED_ENV="env1" R35_UNREACHED_ENV="uenv_mutated" run_json "$WORK/r35" macro_test.iyi)"
+expect_eq "$(printf '%s' "$r35_hit2" | json_cached)" 1 "r35 unreached macro input changes stay hits"
+
+# Reached read_file input changes -> misses
+printf 'val_longer_content' > "$r35_data_file"
+r35_miss1="$(R35_REACHED_ENV="env1" R35_UNREACHED_ENV="uenv_mutated" run_json "$WORK/r35" macro_test.iyi)"
+expect_eq "$(printf '%s' "$r35_miss1" | json_cached)" 0 "r35 reached read_file input change misses"
+
+# Re-record with current data.txt
+r35_rec2="$(R35_REACHED_ENV="env1" R35_UNREACHED_ENV="uenv_mutated" run_json "$WORK/r35" macro_test.iyi)"
+r35_hit3="$(R35_REACHED_ENV="env1" R35_UNREACHED_ENV="uenv_mutated" run_json "$WORK/r35" macro_test.iyi)"
+expect_eq "$(printf '%s' "$r35_hit3" | json_cached)" 1 "r35 re-recorded hits"
+
+# Reached env input changes -> misses
+r35_miss2="$(R35_REACHED_ENV="env_changed" R35_UNREACHED_ENV="uenv_mutated" run_json "$WORK/r35" macro_test.iyi)"
+expect_eq "$(printf '%s' "$r35_miss2" | json_cached)" 0 "r35 reached env input change misses"
+
+# Macro run helper that prints time always misses
+cat > "$WORK/r35/clock.iyi" <<'IYI'
+import std/time::{Time}
+puts Time.utc.to_unix_ns
+IYI
+cat > "$WORK/r35/clock_test.iyi" <<'IYI'
+def helper_output : Int64
+  {{ run("./clock").id }}
+end
+assert helper_output > 0
+IYI
+
+r35_clock1="$(run_json "$WORK/r35" clock_test.iyi)"
+expect_eq "$(printf '%s' "$r35_clock1" | json_cached)" 0 "r35 clock helper run 1 cached 0"
+r35_clock2="$(run_json "$WORK/r35" clock_test.iyi)"
+expect_eq "$(printf '%s' "$r35_clock2" | json_cached)" 0 "r35 clock helper run 2 always misses"
 step 36 "reached type ivar changes call path"
 # Covered by spec/compiler/stale/call_path_spec.cr:226
 step 37 "virtual subtype closure changes call path"
@@ -544,8 +782,53 @@ set +e; r39_res="$(run_json "$WORK/r39" r39_test.iyi)"; r39_status=$?; set -e
 expect_eq "$r39_status" 1 "unreached type-error mutation"
 expect_contains "$r39_res" "does not build" "does-not-build report"
 
+# Row 40 mutation proof: linked object byte changes invalidate module build.
 step 40 "linked object byte changes invalidate module build"
-# Covered by spec/compiler/stale/link_spec.cr
+mkdir -p "$WORK/r40/lib" "$WORK/r40/mods"
+cat > "$WORK/r40/lib/calc.iyi" <<'IYI'
+module lib/calc
+pub def compute(x : Int32, y : Int32) : Int32
+  x + y
+end
+IYI
+cat > "$WORK/r40/producer.iyi" <<'IYI'
+import lib/calc::{compute}
+puts compute(1, 2)
+IYI
+cat > "$WORK/r40/calc_test.iyi" <<'IYI'
+import lib/calc::{compute}
+assert compute(10, 20) == 30
+IYI
+
+# Build initial .iyimod with object code
+(cd "$WORK/r40" && "$IYI" build --emit-iyimod mods -o producer producer.iyi) >/dev/null
+
+rm -rf "$CACHE/tests-v1"
+# Run 1: record receipt using the compiled .iyimod
+r40_run1="$(run_json "$WORK/r40" --use-iyimod mods calc_test.iyi)"
+expect_eq "$(printf '%s' "$r40_run1" | json_cached)" 0 "r40 run 1 recorded"
+
+# Run 2: rebuilt identical bytes -> hits!
+(cd "$WORK/r40" && "$IYI" build --emit-iyimod mods -o producer producer.iyi) >/dev/null
+r40_run2="$(run_json "$WORK/r40" --use-iyimod mods calc_test.iyi)"
+expect_eq "$(printf '%s' "$r40_run2" | json_cached)" 1 "r40 rebuilt identical bytes hits"
+
+# Run 3: rebuild with changed object code bytes (same signature/interface) -> misses!
+cat > "$WORK/r40/lib/calc.iyi" <<'IYI'
+module lib/calc
+pub def compute(x : Int32, y : Int32) : Int32
+  a = x * 2 - x
+  a + y
+end
+IYI
+(cd "$WORK/r40" && "$IYI" build --emit-iyimod mods -o producer producer.iyi) >/dev/null
+(cd "$WORK/r40" && "$IYI" test --cached --use-iyimod mods --explain calc_test.iyi) > "$WORK/r40/explain.txt" 2>&1
+expect_contains "$(cat "$WORK/r40/explain.txt")" "miss" "changed linked object bytes miss reason"
+expect_contains "$(cat "$WORK/r40/explain.txt")" "0 from receipts" "zero receipts on changed object bytes miss"
+
+# Subsequent run hits newly recorded receipt
+r40_run3_hit="$(run_json "$WORK/r40" --use-iyimod mods calc_test.iyi)"
+expect_eq "$(printf '%s' "$r40_run3_hit" | json_cached)" 1 "subsequent run hits newly recorded receipt"
 step 41 "link environment is quoted and keyed"
 # Covered by bench/stale_callpath.sh:61-140 and spec/compiler/stale/link_spec.cr
 step 42 "every reach edge kind cross-checks"
@@ -697,4 +980,4 @@ run_json "$WORK/macro-run" run_test.iyi >/dev/null
 row50_hit="$(run_json "$WORK/macro-run" run_test.iyi)"
 expect_eq "$(printf '%s' "$row50_hit" | json_cached)" 1 "cold macro run helper hits"
 
-echo "stale_tests PASSED: rows 1-22 and 25-50 are covered; rows 23-24 are CI-only"
+echo "stale_tests PASSED: rows 1-50 are covered; rows 23-24 are CI-only"
