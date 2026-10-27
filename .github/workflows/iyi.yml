@@ -228,7 +228,7 @@ jobs:
             --export-index "run:${GITHUB_RUN_ID}=stale-index/run-${GITHUB_RUN_ID}-x86_64-linux-gnu.json"
           )
           if [ "${GITHUB_REF}" = "refs/heads/master" ]; then
-            args+=(--export-index "master=stale-index/master-x86_64-linux-gnu.json")
+            args+=(--export-index "master=stale-index/master-candidate-x86_64-linux-gnu.json")
           fi
           mapfile -t tests < <(find samples/iyi -maxdepth 1 -type f -name '*.iyi' -print | sort)
           .build/iyi test "${args[@]}" "${tests[@]}"
@@ -251,14 +251,14 @@ jobs:
           archive: false
           retention-days: 1
 
-      - name: Publish master receipt snapshot
+      - name: Upload master candidate receipt snapshot
         if: github.event_name == 'push' && github.ref == 'refs/heads/master'
         uses: actions/upload-artifact@v7
         with:
-          name: master-x86_64-linux-gnu.json
-          path: stale-index/master-x86_64-linux-gnu.json
+          name: master-candidate-x86_64-linux-gnu.json
+          path: stale-index/master-candidate-x86_64-linux-gnu.json
           archive: false
-          retention-days: 7
+          retention-days: 1
 
   # A second runner gets only the producer's compiler and portable receipt
   # snapshot. No cache crosses this boundary: a hit here is evidence that the
@@ -291,6 +291,13 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: run-${{ github.run_id }}-x86_64-linux-gnu.json
+          path: stale-index
+
+      - name: Download master candidate receipt snapshot
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/download-artifact@v8
+        with:
+          name: master-candidate-x86_64-linux-gnu.json
           path: stale-index
 
       - name: All producer receipts hit on a fresh runner
@@ -360,19 +367,15 @@ jobs:
       - name: Census and overhead measurements
         run: IYI="$PWD/.build/iyi" bash bench/stale_census.sh
 
-      # RG6: an audit disagreement makes the next master consumer see an empty
-      # snapshot. The artifact is emitted only on master, and `always()` keeps
-      # this containment action reachable after the failing audit.
-      - name: Prepare empty master snapshot after disagreement
-        id: empty_snapshot
-        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.shadow_audit.outcome == 'failure'
+      # After required successful audits, publish canonical master snapshot once.
+      - name: Prepare audited master receipt snapshot
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        shell: bash
         run: |
-          bash bench/stale_ci.sh empty-snapshot \
-            --out stale-index/master-x86_64-linux-gnu.json \
-            --target x86_64-linux-gnu
+          cp -f stale-index/master-candidate-x86_64-linux-gnu.json stale-index/master-x86_64-linux-gnu.json
 
-      - name: Publish empty master snapshot after disagreement
-        if: always() && steps.empty_snapshot.outcome == 'success'
+      - name: Publish audited master receipt snapshot
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
         uses: actions/upload-artifact@v7
         with:
           name: master-x86_64-linux-gnu.json
@@ -380,6 +383,25 @@ jobs:
           archive: false
           retention-days: 7
 
+      # RG6: an audit disagreement makes the next master consumer see an empty
+      # snapshot. The artifact is emitted only on master, and `always()` keeps
+      # this containment action reachable after the failing audit.
+      - name: Prepare empty master snapshot after disagreement
+        id: empty_snapshot
+        if: always() && !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.shadow_audit.outcome == 'failure'
+        run: |
+          bash bench/stale_ci.sh empty-snapshot \
+            --out stale-index/master-x86_64-linux-gnu.json \
+            --target x86_64-linux-gnu
+
+      - name: Publish empty master snapshot after disagreement
+        if: always() && !cancelled() && steps.empty_snapshot.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: master-x86_64-linux-gnu.json
+          path: stale-index/master-x86_64-linux-gnu.json
+          archive: false
+          retention-days: 7
   compiler-specs:
     needs: build
     runs-on: ubuntu-24.04
