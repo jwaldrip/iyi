@@ -302,7 +302,7 @@ pub def emit(writer : RecordWriter) : Nil
   buf[2] = ((payload_len >> 16) & 0xFF_u32).to_u8
   buf[3] = ((payload_len >> 24) & 0xFF_u32).to_u8
 
-  offset = 0_u64
+  offset = 0_i64
   remaining = writer.size.to_u64
   while remaining > 0_u64
     written = channel_write(@@fd, (buf + offset).as(Void*), remaining)
@@ -310,7 +310,7 @@ pub def emit(writer : RecordWriter) : Nil
       @@failed = true
       break
     end
-    offset += written.to_u64
+    offset += written
     remaining -= written.to_u64
   end
   writer.reset
