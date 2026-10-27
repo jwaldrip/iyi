@@ -648,15 +648,25 @@ SystemRoots.load
     patched_observe_path = os.path.join(patched_lib, 'src/std/observe.iyi')
     orig_observe = open(os.path.join(repo, 'src/std/observe.iyi'), 'r').read()
 
-    # Delete or no-op the specific observer method in patched observe.iyi
-    target_method = f'def self.__iyi_observe_{kind}'
-    if target_method in orig_observe:
-        idx = orig_observe.find(target_method)
-        end_idx = orig_observe.find('\nend', idx)
-        sig_end = orig_observe.find('\n', idx)
-        patched_observe = orig_observe[:sig_end+1] + '  return\n' + orig_observe[end_idx+1:]
-    else:
-        patched_observe = orig_observe.replace('writer.flush(@@fd)', 'return # dropped for RG5')
+    # Stub this kind's own observer: the body of its one
+    # 'pub def __iyi_observe_<kind>' becomes a bare return. A patch that finds
+    # no such def, or leaves the file as it was, would prove nothing, so it
+    # fails the kind instead.
+    observe_lines = orig_observe.split('\n')
+    head = f'pub def __iyi_observe_{kind}'
+    heads = [i for i, line in enumerate(observe_lines)
+             if line.startswith(head + '(') or line.startswith(head + ' ')]
+    if len(heads) != 1:
+        failed_kinds.append((kind, f'expected one {head} in observe.iyi, found {len(heads)}'))
+        continue
+    tail = next((j for j in range(heads[0] + 1, len(observe_lines)) if observe_lines[j] == 'end'), None)
+    if tail is None:
+        failed_kinds.append((kind, f'{head} has no closing end'))
+        continue
+    patched_observe = '\n'.join(observe_lines[:heads[0] + 1] + ['  return'] + observe_lines[tail:])
+    if patched_observe == orig_observe:
+        failed_kinds.append((kind, f'stubbing {head} left observe.iyi unchanged'))
+        continue
     with open(patched_observe_path, 'w') as f:
         f.write(patched_observe)
 
