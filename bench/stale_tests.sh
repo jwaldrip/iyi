@@ -448,7 +448,7 @@ step 22 "compatibility-library mode stays fresh"
 # Its test aggregate remains unchanged; cached compatibility-library mode is
 # covered by the command/runner spec because this host cannot link its specs.
 
-step "ambiguous test id runs fresh and never records receipts"
+step "test identity" "ambiguous test id runs fresh and never records receipts"
 mkdir -p "$WORK/ambig/a" "$WORK/ambig/b"
 cat > "$WORK/ambig/a/t_test.iyi" <<'IYI'
 assert 1 == 1
