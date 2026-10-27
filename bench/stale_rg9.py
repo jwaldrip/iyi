@@ -30,13 +30,16 @@ def env_for(repo: str, cache: str, warm: bool) -> dict[str, str]:
     return env
 
 
-def build(compiler: str, repo: str, work: str, source: str, number: int, dump: bool, warm: bool) -> tuple[str, int, int]:
+def build(compiler: str, repo: str, work: str, source: str, number: int, dump: bool, warm: bool, observe: bool = False) -> tuple[str, int, int]:
     base = os.path.basename(source)
-    unique = f"{base}-{number}-{os.getpid()}-{time.time_ns()}"
+    tag = f"{number}-obs" if observe else f"{number}"
+    unique = f"{base}-{tag}-{os.getpid()}-{time.time_ns()}"
     key = os.path.join(work, f"{unique}.key")
     out = os.path.join(work, f"{unique}.bin")
     elements = os.path.join(work, f"{unique}.elements.jsonl")
     cmd = [compiler, "build", "--stale-key", key]
+    if observe:
+        cmd += ["-Diyi_observe"]
     if dump:
         cmd += ["--stale-dump-elements", elements]
     cmd += ["-o", out, source]
@@ -46,12 +49,12 @@ def build(compiler: str, repo: str, work: str, source: str, number: int, dump: b
         cache = os.path.join(work, f"cache-{base}")
         proc = subprocess.run(cmd, cwd=repo, env=env_for(repo, cache, warm), capture_output=True, text=True)
         if proc.returncode:
-            raise GateFailure(f"{os.path.relpath(source, repo)} run {number}: build exited {proc.returncode}: {proc.stderr.strip()[-500:]}")
+            raise GateFailure(f"{os.path.relpath(source, repo)} run {tag}: build exited {proc.returncode}: {proc.stderr.strip()[-500:]}")
         with open(key, encoding="utf-8") as f:
             data = json.load(f)
         mismatch = data.get("reach", {}).get("mismatch", [])
         if mismatch:
-            raise GateFailure(f"{os.path.relpath(source, repo)} run {number}: reach.mismatch={mismatch}")
+            raise GateFailure(f"{os.path.relpath(source, repo)} run {tag}: reach.mismatch={mismatch}")
         rows = []
         if dump and os.path.exists(elements):
             with open(elements, encoding="utf-8") as f:
@@ -62,7 +65,6 @@ def build(compiler: str, repo: str, work: str, source: str, number: int, dump: b
             if os.path.exists(p):
                 try: os.remove(p)
                 except OSError: pass
-
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="RG9 determinism proof gate")
@@ -87,15 +89,22 @@ def main() -> None:
     def check(source: str) -> tuple[str, int, int, str, str | None]:
         name = os.path.relpath(source, repo)
         try:
-            first, reached, encoded = build(compiler, repo, args.work, source, 1, True, False)
-            second, _, _ = build(compiler, repo, args.work, source, 2, False, False)
-            warm, _, _ = build(compiler, repo, args.work, source, 3, False, True)
+            # Plain legs
+            first, reached, encoded = build(compiler, repo, args.work, source, 1, True, False, observe=False)
+            second, _, _ = build(compiler, repo, args.work, source, 2, False, False, observe=False)
+            warm, _, _ = build(compiler, repo, args.work, source, 3, False, True, observe=False)
+
+            # Observed legs
+            obs_first, obs_reached, obs_encoded = build(compiler, repo, args.work, source, 4, True, False, observe=True)
+            obs_second, _, _ = build(compiler, repo, args.work, source, 5, False, False, observe=True)
+            obs_warm, _, _ = build(compiler, repo, args.work, source, 6, False, True, observe=True)
         except GateFailure as ex:
             return name, 0, 0, "", str(ex)
         if first != second or first != warm:
-            return name, reached, encoded, first, f"{name}: CallPathFp differs across processes/warm ({first}, {second}, {warm})"
+            return name, reached, encoded, first, f"{name}: plain CallPathFp differs across processes/warm ({first}, {second}, {warm})"
+        if obs_first != obs_second or obs_first != obs_warm:
+            return name, obs_reached, obs_encoded, obs_first, f"{name}: observed CallPathFp differs across processes/warm ({obs_first}, {obs_second}, {obs_warm})"
         return name, reached, encoded, first, None
-
     workers = min(8, os.cpu_count() or 4)
     failures = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -107,7 +116,7 @@ def main() -> None:
                 print(f"  RG9 report: {name}: reached={reached} encoded_bytes={encoded} callpath={fingerprint}")
     if failures:
         raise GateFailure("; ".join(failures))
-    print(f"RG9 PASSED: {len(programs)} corpus programs, two processes plus IYI_WARM=1")
+    print(f"RG9 PASSED: {len(programs)} corpus programs, plain and observed legs (two processes plus IYI_WARM=1)")
 
 
 if __name__ == "__main__":

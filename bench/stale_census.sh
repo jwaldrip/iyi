@@ -543,7 +543,10 @@ def measure_overhead(results):
             continue
         t_def = f"{p['t_default']:6.3f}s" if p.get('t_default') else "   N/A "
         t_fr = f"{p['t_fresh']:6.3f}s"
-        t_ca = f"{p['t_cached']:6.3f}s"
+        if p.get('reusable') and p.get('receipt_bytes', 0) > 0:
+            t_ca = f"{p['t_cached']:6.3f}s"
+        else:
+            t_ca = "   N/A "
         elem = f"{p.get('elements_count', 0):6}"
         enc_b = f"{p.get('encoded_bytes', 0):6} B"
         tr_b = f"{p.get('trace_bytes', 0):6} B"
@@ -589,30 +592,33 @@ def measure_overhead(results):
         try: os.remove(bin_def)
         except: pass
 
-    # 2. Compute stale build key
+    # 2. Compute stale build key for single normal producer with -Diyi_observe and --stale-dump-elements
     key_file = os.path.join(work, 'hello.key')
+    elements_prod = os.path.join(work, 'hello_prod.elements.jsonl')
     bin_k = os.path.join(work, 'hello_k')
-    subprocess.run([iyi, 'build', '-Diyi_observe', '--stale-key', key_file, '-o', bin_k, hello_path],
+    subprocess.run([iyi, 'build', '-Diyi_observe', '--stale-key', key_file, '--stale-dump-elements', elements_prod, '-o', bin_k, hello_path],
                    capture_output=True, text=True, env=env_base)
     if os.path.exists(bin_k):
         try: os.remove(bin_k)
         except: pass
 
     local_build_hex = None
+    kdata_norm = {}
     if os.path.exists(key_file):
         try:
             with open(key_file) as f:
-                kdata = json.load(f)
-                local_build_hex = kdata.get('local', {}).get('build')
+                kdata_norm = json.load(f)
+                local_build_hex = kdata_norm.get('local', {}).get('build')
         except:
             pass
 
+    # Single accept file holding ONLY the normal build, shared by both consumers
     accept_file = os.path.join(work, 'hello_accept.json')
     if local_build_hex:
         with open(accept_file, 'w') as f:
             json.dump([{'mode': 'local', 'build': local_build_hex}], f)
 
-    # 3. Cached Hit with Normal Prelude (own key file, with -Diyi_observe)
+    # 3. Cached Hit with Normal Prelude (consumer 1)
     key_file_norm = os.path.join(work, 'hello_hit_norm.key')
     bin_hit_norm = os.path.join(work, 'hello_hit_norm')
     cmd_hit_norm = [iyi, 'build', '-Diyi_observe', '--stats', '--stale-key', key_file_norm, '--stale-accept', accept_file, '-o', bin_hit_norm, hello_path]
@@ -621,11 +627,12 @@ def measure_overhead(results):
         try: os.remove(bin_hit_norm)
         except: pass
 
-    # 4. Cached Hit with Preanalysed Prelude (IYI_WARM=1) (own key file, with -Diyi_observe)
+    # 4. Cached Hit with Preanalysed Prelude (IYI_WARM=1) (consumer 2, with --stale-dump-elements)
     key_file_warm = os.path.join(work, 'hello_hit_warm.key')
+    elements_warm = os.path.join(work, 'hello_warm.elements.jsonl')
     bin_hit_warm = os.path.join(work, 'hello_hit_warm')
-    cmd_hit_warm = [iyi, 'build', '-Diyi_observe', '--stats', '--stale-key', key_file_warm, '--stale-accept', accept_file, '-o', bin_hit_warm, hello_path]
     env_warm = dict(env_base, IYI_WARM='1')
+    cmd_hit_warm = [iyi, 'build', '-Diyi_observe', '--stats', '--stale-key', key_file_warm, '--stale-dump-elements', elements_warm, '--stale-accept', accept_file, '-o', bin_hit_warm, hello_path]
     res_hit_warm = subprocess.run(cmd_hit_warm, capture_output=True, text=True, env=env_warm)
     if os.path.exists(bin_hit_warm):
         try: os.remove(bin_hit_warm)
@@ -661,21 +668,23 @@ def measure_overhead(results):
     norm_stages = parse_stats(res_hit_norm.stdout + '\n' + res_hit_norm.stderr)
     warm_stages = parse_stats(res_hit_warm.stdout + '\n' + res_hit_warm.stderr)
 
+    kdata_norm_consumer = {}
     phase_norm = "unknown"
     if os.path.exists(key_file_norm):
         try:
             with open(key_file_norm) as f:
-                kdata = json.load(f)
-                phase_norm = kdata.get("phase", "unknown")
+                kdata_norm_consumer = json.load(f) or {}
+                phase_norm = kdata_norm_consumer.get("phase", "unknown")
         except Exception:
             pass
 
+    kdata_warm = {}
     phase_warm = "unknown"
     if os.path.exists(key_file_warm):
         try:
             with open(key_file_warm) as f:
-                kdata = json.load(f)
-                phase_warm = kdata.get("phase", "unknown")
+                kdata_warm = json.load(f) or {}
+                phase_warm = kdata_warm.get("phase", "unknown")
         except Exception:
             pass
 
@@ -717,6 +726,54 @@ def measure_overhead(results):
     print(f"Normal prelude proof: exit={res_hit_norm.returncode}, phase={phase_norm}, codegen_lines={len(codegen_lines_norm)} -> {'phase hit no codegen' if norm_proven else 'hit not proven'}")
     print(f"Preanalysed prelude proof: exit={res_hit_warm.returncode}, phase={phase_warm}, codegen_lines={len(codegen_lines_warm)} -> {'phase hit no codegen' if warm_proven else 'hit not proven'}")
     print()
+    if not warm_proven:
+        print('### Warm Consumer Mismatch Diagnostic (Producer vs Warm Consumer):')
+        prod_local = kdata_norm.get('local') or {}
+        warm_local = kdata_warm.get('local') or {}
+        print(f"- Producer phase:      {kdata_norm.get('phase')}")
+        print(f"- Warm consumer phase: {kdata_warm.get('phase')}")
+        print(f"- Producer build:      {prod_local.get('build')}")
+        print(f"- Warm consumer build: {warm_local.get('build')}")
+        print("- Component breakdown:")
+        for comp in ['build', 'toolchain', 'behavior', 'callpath', 'link', 'cenv']:
+            pv = prod_local.get(comp)
+            wv = warm_local.get(comp)
+            match_str = "match" if (pv == wv and pv is not None) else ("MISMATCH" if pv != wv else "both-absent")
+            print(f"  * {comp:10}: producer={pv} warm_consumer={wv} [{match_str}]")
+        nr_prod = kdata_norm.get('not_reusable') or []
+        nr_warm = kdata_warm.get('not_reusable') or []
+        if nr_prod or nr_warm:
+            print(f"  * not_reusable: producer={nr_prod} warm_consumer={nr_warm}")
+        explain_prod = prod_local.get('explain') or {}
+        explain_warm = warm_local.get('explain') or {}
+        diff_keys = set(explain_prod.keys()) ^ set(explain_warm.keys())
+        diff_vals = {k: (explain_prod[k], explain_warm[k]) for k in explain_prod if k in explain_warm and explain_prod[k] != explain_warm[k]}
+        if diff_keys:
+            print(f"  * explain disjoint keys ({len(diff_keys)}): {list(diff_keys)[:10]}")
+        if diff_vals:
+            print(f"  * explain differing digests ({len(diff_vals)}):")
+            for k, (pd, wd) in list(diff_vals.items())[:10]:
+                print(f"    - {k}: prod={pd} warm={wd}")
+        if os.path.exists(elements_prod) and os.path.exists(elements_warm):
+            with open(elements_prod) as f:
+                rows_prod = {f"{r.get('kind')}:{r.get('key')}": r for line in f if line.strip() for r in [json.loads(line)]}
+            with open(elements_warm) as f:
+                rows_warm = {f"{r.get('kind')}:{r.get('key')}": r for line in f if line.strip() for r in [json.loads(line)]}
+            all_keys = sorted(set(rows_prod.keys()) | set(rows_warm.keys()))
+            diff_rows = []
+            for k in all_keys:
+                rp = rows_prod.get(k)
+                rw = rows_warm.get(k)
+                if rp is None or rw is None or rp.get('digest') != rw.get('digest'):
+                    diff_rows.append((k, rp, rw))
+            if diff_rows:
+                print(f"  * elements differing rows ({len(diff_rows)}):")
+                for k, rp, rw in diff_rows[:10]:
+                    pd = rp.get('digest') if rp else '(absent)'
+                    wd = rw.get('digest') if rw else '(absent)'
+                    loc = f"at {rp.get('file')}:{rp.get('line')}-{rp.get('end_line')}" if rp else ""
+                    print(f"    - {k} {loc}: prod={pd} warm={wd}")
+        print()
     print('### Raw Progress Tracker Output (`--stats` Cached Hit - Normal Prelude):')
     print('```')
     for line in out_norm.splitlines():
@@ -735,6 +792,7 @@ def measure_overhead(results):
     print()
 
     if not (norm_proven and warm_proven):
+        print(f"Diagnostic work directory retained at: {work}")
         print(f"ERROR: Cached hit not proven (normal_proven={norm_proven}, warm_proven={warm_proven})", file=sys.stderr)
         sys.exit(1)
 
