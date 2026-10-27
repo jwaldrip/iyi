@@ -66,14 +66,17 @@ module Iyi::Stale
       node : ASTNode,
       source_or_sources,
     ) : CheckResult
-      reach = Stale::ReachWalk.walk(program, node, drop: compiler.stale_drop)
-      program.stale_reach = reach
+      reach, recorder, closure = compiler.progress_tracker.stage("Walk") do
+        r = Stale::ReachWalk.walk(program, node, drop: compiler.stale_drop)
+        program.stale_reach = r
 
-      recorder = Stale::Recorder.new
-      program.stale_recorder = recorder
+        rec = Stale::Recorder.new
+        program.stale_recorder = rec
 
-      closure = Effects.closure_check(program, reach)
-      program.stale_closure_result = closure
+        c = Effects.closure_check(program, r)
+        program.stale_closure_result = c
+        {r, rec, c}
+      end
 
       primary_source = source_or_sources.is_a?(Array) ? source_or_sources.first : source_or_sources
       test_root = "src"
@@ -83,86 +86,89 @@ module Iyi::Stale
 
       cache_root = CacheDir.instance.dir
       roots = Stale::Roots.default(program, primary_source.filename, primary_source.code, cache_root)
-
-      callpath_result = Stale::CallPath.compute(program, reach, roots)
-
-      if dump_path = compiler.stale_dump_elements
-        dir = File.dirname(dump_path)
-        Dir.mkdir_p(dir) unless dir.empty? || Dir.exists?(dir)
-        tmp_dump = "#{dump_path}.tmp.#{Process.pid}"
-        File.open(tmp_dump, "w") do |io|
-          callpath_result.dump_rows.each do |row|
-            row.to_json(io)
-            io.puts
-          end
-        end
-        File.rename(tmp_dump, dump_path)
-      end
-
-      toolchain_fp = Stale::Toolchain.digest(cache_root)
-      behavior_fp = compiler.behavior_key
       lib_flags = program.lib_flags(compiler.cross_compile?)
-      link_fp = Stale::Link.fp(lib_flags, compiler.link_flags, compiler.static?, ENV)
-      cenv_fp = Stale::CompilerEnv.fp
 
-      machine_key = Stale::MachineKey.load_or_create(cache_root)
-      keyer_local = Stale::Keyer.local(machine_key)
-      keyer_portable = Stale::Keyer.portable
+      callpath_result, local_build, portable_build, local_mode_build, portable_mode_build = compiler.progress_tracker.stage("Hashing") do
+        cpr = Stale::CallPath.compute(program, reach, roots)
 
-      local_k_callpath = keyer_local.k(callpath_result.digest)
-      local_k_link = keyer_local.k(link_fp)
-      local_k_cenv = keyer_local.k(cenv_fp)
+        if dump_path = compiler.stale_dump_elements
+          dir = File.dirname(dump_path)
+          Dir.mkdir_p(dir) unless dir.empty? || Dir.exists?(dir)
+          tmp_dump = "#{dump_path}.tmp.#{Process.pid}"
+          File.open(tmp_dump, "w") do |io|
+            cpr.dump_rows.each do |row|
+              row.to_json(io)
+              io.puts
+            end
+          end
+          File.rename(tmp_dump, dump_path)
+        end
 
-      local_build = Stale.d("build") do |enc|
-        enc.digest(toolchain_fp)
-        enc.digest(behavior_fp)
-        enc.digest(local_k_callpath)
-        enc.digest(local_k_link)
-        enc.digest(local_k_cenv)
+        toolchain_fp = Stale::Toolchain.digest(cache_root)
+        behavior_fp = compiler.behavior_key
+        link_fp = Stale::Link.fp(lib_flags, compiler.link_flags, compiler.static?, ENV)
+        cenv_fp = Stale::CompilerEnv.fp
+
+        machine_key = Stale::MachineKey.load_or_create(cache_root)
+        keyer_local = Stale::Keyer.local(machine_key)
+        keyer_portable = Stale::Keyer.portable
+
+        local_k_callpath = keyer_local.k(cpr.digest)
+        local_k_link = keyer_local.k(link_fp)
+        local_k_cenv = keyer_local.k(cenv_fp)
+
+        lb = Stale.d("build") do |enc|
+          enc.digest(toolchain_fp)
+          enc.digest(behavior_fp)
+          enc.digest(local_k_callpath)
+          enc.digest(local_k_link)
+          enc.digest(local_k_cenv)
+        end
+
+        portable_k_callpath = keyer_portable.k(cpr.digest)
+        portable_k_link = keyer_portable.k(link_fp)
+        portable_k_cenv = keyer_portable.k(cenv_fp)
+
+        pb = Stale.d("build") do |enc|
+          enc.digest(toolchain_fp)
+          enc.digest(behavior_fp)
+          enc.digest(portable_k_callpath)
+          enc.digest(portable_k_link)
+          enc.digest(portable_k_cenv)
+        end
+
+        local_explain = Hash(String, String).new
+        cpr.explain.each do |k, v|
+          local_explain[k] = Stale.hex(keyer_local.k(v))
+        end
+
+        lmb = KeyFile::ModeBuild.new(
+          build: Stale.hex(lb),
+          toolchain: Stale.hex(toolchain_fp),
+          behavior: Stale.hex(behavior_fp),
+          callpath: Stale.hex(local_k_callpath),
+          link: Stale.hex(local_k_link),
+          cenv: Stale.hex(local_k_cenv),
+          explain: local_explain
+        )
+
+        portable_explain = Hash(String, String).new
+        cpr.explain.each do |k, v|
+          portable_explain[k] = Stale.hex(keyer_portable.k(v))
+        end
+
+        pmb = KeyFile::ModeBuild.new(
+          build: Stale.hex(pb),
+          toolchain: Stale.hex(toolchain_fp),
+          behavior: Stale.hex(behavior_fp),
+          callpath: Stale.hex(portable_k_callpath),
+          link: Stale.hex(portable_k_link),
+          cenv: Stale.hex(portable_k_cenv),
+          explain: portable_explain
+        )
+
+        {cpr, lb, pb, lmb, pmb}
       end
-
-      portable_k_callpath = keyer_portable.k(callpath_result.digest)
-      portable_k_link = keyer_portable.k(link_fp)
-      portable_k_cenv = keyer_portable.k(cenv_fp)
-
-      portable_build = Stale.d("build") do |enc|
-        enc.digest(toolchain_fp)
-        enc.digest(behavior_fp)
-        enc.digest(portable_k_callpath)
-        enc.digest(portable_k_link)
-        enc.digest(portable_k_cenv)
-      end
-
-      local_explain = Hash(String, String).new
-      callpath_result.explain.each do |k, v|
-        local_explain[k] = Stale.hex(keyer_local.k(v))
-      end
-
-      local_mode_build = KeyFile::ModeBuild.new(
-        build: Stale.hex(local_build),
-        toolchain: Stale.hex(toolchain_fp),
-        behavior: Stale.hex(behavior_fp),
-        callpath: Stale.hex(local_k_callpath),
-        link: Stale.hex(local_k_link),
-        cenv: Stale.hex(local_k_cenv),
-        explain: local_explain
-      )
-
-      portable_explain = Hash(String, String).new
-      callpath_result.explain.each do |k, v|
-        portable_explain[k] = Stale.hex(keyer_portable.k(v))
-      end
-
-      portable_mode_build = KeyFile::ModeBuild.new(
-        build: Stale.hex(portable_build),
-        toolchain: Stale.hex(toolchain_fp),
-        behavior: Stale.hex(behavior_fp),
-        callpath: Stale.hex(portable_k_callpath),
-        link: Stale.hex(portable_k_link),
-        cenv: Stale.hex(portable_k_cenv),
-        explain: portable_explain
-      )
-
       not_reusable = [] of KeyFile::NotReusable
 
       # S2 build mode refusals
@@ -210,6 +216,7 @@ module Iyi::Stale
           hit = KeyFile::Hit.new("portable", portable_build_hex)
         end
       end
+      compiler.progress_tracker.clear if hit
 
       phase = hit ? "hit" : "checked"
 

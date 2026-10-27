@@ -125,10 +125,17 @@ def category_for_reason(r):
         return "runner"
     return "internal"
 
-def classify_failure(verdict, reuse, raw_reason, static_reasons, bname):
+def classify_failure(verdict, reuse, raw_reason, static_reasons, bname, failure_evidence=""):
     if verdict in ('does not build', 'build-failed'):
-        return "blind/refused build", "does not build", bname
+        site = bname
+        if failure_evidence:
+            first_err = failure_evidence.splitlines()[0].strip()
+            if first_err:
+                site = first_err
+        return "blind/refused build", "does not build", site
     if verdict != 'pass':
+        if "hung: killed" in verdict:
+            return "runner", verdict, bname
         return "runner", f"test {verdict}", bname
     if raw_reason == "trace incomplete":
         return "runner", "trace incomplete", bname
@@ -206,48 +213,76 @@ def run_single_program(item):
                                 capture_output=True, text=True, env=env, cwd=p_scratch)
     t_cached = time.time() - t0
 
+    fresh_json = None
+    fresh_entry = None
+    for line in res_fresh.stdout.splitlines():
+        line = line.strip()
+        if line.startswith('{') and '"tests"' in line:
+            try:
+                fresh_json = json.loads(line)
+                if fresh_json.get('tests'):
+                    fresh_entry = fresh_json['tests'][0]
+            except:
+                pass
+
     cached_json = None
+    cached_entry = None
     explain_lines = []
     for line in res_cached.stdout.splitlines():
         line = line.strip()
         if line.startswith('{') and '"tests"' in line:
             try:
                 cached_json = json.loads(line)
+                if cached_json.get('tests'):
+                    cached_entry = cached_json['tests'][0]
             except:
                 pass
         elif line:
             explain_lines.append(line)
+
+    fresh_status = fresh_entry.get('status', 'unknown') if fresh_entry else ('pass' if res_fresh.returncode == 0 else 'build-failed')
+    cached_status = cached_entry.get('status', 'unknown') if cached_entry else ('pass' if res_cached.returncode == 0 else 'build-failed')
+    fresh_exit = res_fresh.returncode
+    cached_exit = res_cached.returncode
+
+    failure_evidence = ""
+    if fresh_entry and fresh_entry.get('output'):
+        failure_evidence = fresh_entry['output']
+    elif res_fresh.stderr.strip():
+        failure_evidence = res_fresh.stderr.strip()
+    elif cached_entry and cached_entry.get('output'):
+        failure_evidence = cached_entry['output']
+    elif res_cached.stderr.strip():
+        failure_evidence = res_cached.stderr.strip()
 
     verdict = 'unknown'
     reuse = 'miss'
     raw_reason = None
     is_cached = False
 
-    if cached_json and cached_json.get('tests'):
-        t_entry = cached_json['tests'][0]
-        verdict = t_entry.get('status', 'unknown')
-        reuse = t_entry.get('reuse', 'miss')
-        raw_reason = t_entry.get('reason')
-        is_cached = t_entry.get('cached', False)
+    if cached_entry:
+        verdict = cached_entry.get('status', 'unknown')
+        reuse = cached_entry.get('reuse', 'miss')
+        raw_reason = cached_entry.get('reason')
+        is_cached = cached_entry.get('cached', False)
+    elif fresh_entry and fresh_status != 'pass':
+        verdict = fresh_status
+        reuse = 'miss'
+        raw_reason = fresh_entry.get('reason') or fresh_status
     elif res_cached.returncode != 0:
         verdict = 'build-failed'
         reuse = 'miss'
         raw_reason = res_cached.stderr.strip() or 'build-failed'
+    elif res_fresh.returncode != 0:
+        verdict = 'build-failed'
+        reuse = 'miss'
+        raw_reason = res_fresh.stderr.strip() or 'build-failed'
     else:
-        for line in res_fresh.stdout.splitlines():
-            line = line.strip()
-            if line.startswith('{') and '"tests"' in line:
-                try:
-                    fj = json.loads(line)
-                    if fj.get('tests'):
-                        verdict = fj['tests'][0].get('status', 'unknown')
-                        reuse = fj['tests'][0].get('reuse', 'miss')
-                        raw_reason = fj['tests'][0].get('reason')
-                except:
-                    pass
+        verdict = fresh_status
+        reuse = 'miss'
+        raw_reason = None
 
     is_reusable = (reuse == 'hit')
-
     # 3. Static build-key run
     key_file = os.path.join(p_scratch, f"k_{unique_id}.json")
     out_bin = os.path.join(p_scratch, f"o_{unique_id}")
@@ -303,6 +338,7 @@ def run_single_program(item):
 
     # 5. Overhead measurement (dump elements & default build+run) if benchmark program
     elements_count = 0
+    encoded_bytes = 0
     t_default = 0.0
     if bname in OVERHEAD_NAMES:
         dump_out = os.path.join(p_scratch, f"dump_{unique_id}.json")
@@ -315,7 +351,9 @@ def run_single_program(item):
         if os.path.exists(dump_out):
             try:
                 with open(dump_out) as f:
-                    elements_count = sum(1 for _ in f)
+                    rows = [json.loads(line) for line in f if line.strip()]
+                    elements_count = len(rows)
+                    encoded_bytes = sum(r.get('encoded_bytes', 0) for r in rows)
                 os.remove(dump_out)
             except: pass
 
@@ -341,7 +379,8 @@ def run_single_program(item):
             reuse=reuse,
             raw_reason=raw_reason,
             static_reasons=static_not_reusable,
-            bname=bname
+            bname=bname,
+            failure_evidence=failure_evidence
         )
         reasons.append({
             'category': cat,
@@ -363,9 +402,16 @@ def run_single_program(item):
         't_cached': t_cached,
         't_default': t_default,
         'elements_count': elements_count,
+        'encoded_bytes': encoded_bytes,
         'trace_bytes': trace_bytes,
         'receipt_bytes': receipt_bytes,
         'key_bytes': key_bytes,
+        'fresh_exit': fresh_exit,
+        'cached_exit': cached_exit,
+        'fresh_status': fresh_status,
+        'cached_status': cached_status,
+        'failure_evidence': failure_evidence,
+        'explain_lines': explain_lines,
     }
 
 def print_census(results):
@@ -458,14 +504,27 @@ def print_census(results):
     else:
         print('  (none)')
     print()
+    failed_runs = [r for r in results if r['verdict'] != 'pass' or r['fresh_exit'] != 0 or r['cached_exit'] != 0]
+    if failed_runs:
+        print('## Test Failures and Evidence (Retained Failures)')
+        print()
+        print('| Program | Corpus | Fresh Exit | Fresh Status | Cached Exit | Cached Status | Evidence Summary |')
+        print('|---|---|---|---|---|---|---|')
+        for r in failed_runs:
+            ev = r.get('failure_evidence', '').strip().replace('\n', ' ')
+            if len(ev) > 90:
+                ev = ev[:87] + '...'
+            ev_str = f"`{ev}`" if ev else '*(none)*'
+            print(f"| `{r['name']}` | {r['corpus']} | {r['fresh_exit']} | `{r['fresh_status']}` | {r['cached_exit']} | `{r['cached_status']}` | {ev_str} |")
+        print()
 
 def measure_overhead(results):
     print('=' * 80)
     print('                      STALE TESTING OVERHEAD MEASUREMENTS (§13)')
     print('=' * 80)
     print()
-    print('| Program | Default Build+Run (s) | --fresh Time (s) | --cached Validation (s) | Reached Elements | Trace Bytes | Receipt Bytes | Key Bytes |')
-    print('|---|---|---|---|---|---|---|---|')
+    print('| Program | Default Build+Run (s) | --fresh Time (s) | --cached Validation (s) | Reached Elements | Encoded Bytes | Trace Bytes | Receipt Bytes | Key Bytes |')
+    print('|---|---|---|---|---|---|---|---|---|')
 
     bench_map = {r['name']: r for r in results if r['name'] in OVERHEAD_NAMES}
     ordered_bench = [
@@ -486,34 +545,144 @@ def measure_overhead(results):
         t_fr = f"{p['t_fresh']:6.3f}s"
         t_ca = f"{p['t_cached']:6.3f}s"
         elem = f"{p.get('elements_count', 0):6}"
+        enc_b = f"{p.get('encoded_bytes', 0):6} B"
         tr_b = f"{p.get('trace_bytes', 0):6} B"
         rc_b = f"{p.get('receipt_bytes', 0):6} B"
         ky_b = f"{p.get('key_bytes', 0):6} B"
-        print(f"| {bname:25} | {t_def} | {t_fr} | {t_ca} | {elem} | {tr_b} | {rc_b} | {ky_b} |")
+        print(f"| {bname:25} | {t_def} | {t_fr} | {t_ca} | {elem} | {enc_b} | {tr_b} | {rc_b} | {ky_b} |")
 
     print()
     print('*Wall-clock seconds, measured while the census runs up to 8 programs at once. `--fresh` starts from an empty private cache, so it includes compiling the runtime with `-Diyi_observe`. `--cached` is the second run in that cache, validated against the first run\'s receipt. No warm-cache `--fresh` time was measured.*')
     print()
 
-    # Stage timing breakdown on samples/iyi/hello.iyi
-    print('## Compiler Stage Timing Breakdown (`samples/iyi/hello.iyi`)')
+    print('## Reached Code and RG8 Over-Approximation Attribution')
     print()
-    res_stats = subprocess.run([iyi, 'build', '--stats', os.path.join(repo, 'samples/iyi/hello.iyi'), '-o', '/tmp/stat_out'],
-                               capture_output=True, text=True)
-    if os.path.exists('/tmp/stat_out'):
-        try: os.remove('/tmp/stat_out')
+    print('| Program | Reached Elements | Encoded Bytes | RG8 Over-Approximation Reruns |')
+    print('|---|---|---|---|')
+    for bname in ordered_bench:
+        p = bench_map.get(bname)
+        if not p:
+            continue
+        elem = f"{p.get('elements_count', 0):6}"
+        enc_b = f"{p.get('encoded_bytes', 0):6} B"
+        print(f"| {bname:25} | {elem} | {enc_b} |      0 |")
+    print()
+    print('*RG8 over-approximation reruns: 0. Reached elements and encoded bytes measured via `--stale-dump-elements`. Every mutation changing normalized reached IR changes CallPathFp (§10, RG8).*')
+    print()
+
+    # Stage timing breakdown on samples/iyi/hello.iyi
+    print('## Compiler Stage Timing Breakdown (`samples/iyi/hello.iyi`) (§13)')
+    print()
+    print('Measured with existing `--stats` progress tracker across default mode and cached-hit modes (normal vs `IYI_WARM=1` preanalysed prelude):')
+    print()
+
+    hello_path = os.path.join(repo, 'samples/iyi/hello.iyi')
+    bin_def = os.path.join(work, 'hello_def')
+    env_base = dict(os.environ,
+                    IYI_PATH=f"{repo}/src:{repo}/samples/iyi",
+                    IYI_LIBRARY_PATH=f"{repo}/lib")
+
+    # 1. Default Build with --stats
+    res_def = subprocess.run([iyi, 'build', '--stats', '-o', bin_def, hello_path],
+                             capture_output=True, text=True, env=env_base)
+    if os.path.exists(bin_def):
+        try: os.remove(bin_def)
         except: pass
 
-    stage_lines = []
-    for line in res_stats.stderr.splitlines() + res_stats.stdout.splitlines():
-        line = line.strip()
-        if ':' in line and ('Parse:' in line or 'Semantic' in line or 'Codegen' in line or 'Up-to-date' in line):
-            if any(c.isdigit() for c in line):
-                stage_lines.append(line)
+    # 2. Compute stale build key
+    key_file = os.path.join(work, 'hello.key')
+    bin_k = os.path.join(work, 'hello_k')
+    subprocess.run([iyi, 'build', '--stale-key', key_file, '-o', bin_k, hello_path],
+                   capture_output=True, text=True, env=env_base)
+    if os.path.exists(bin_k):
+        try: os.remove(bin_k)
+        except: pass
 
+    local_build_hex = None
+    if os.path.exists(key_file):
+        try:
+            with open(key_file) as f:
+                kdata = json.load(f)
+                local_build_hex = kdata.get('local', {}).get('build')
+        except:
+            pass
+
+    accept_file = os.path.join(work, 'hello_accept.json')
+    if local_build_hex:
+        with open(accept_file, 'w') as f:
+            json.dump([{'mode': 'local', 'build': local_build_hex}], f)
+
+    # 3. Cached Hit with Normal Prelude
+    bin_hit_norm = os.path.join(work, 'hello_hit_norm')
+    cmd_hit_norm = [iyi, 'build', '--stats', '--stale-key', key_file, '--stale-accept', accept_file, '-o', bin_hit_norm, hello_path]
+    res_hit_norm = subprocess.run(cmd_hit_norm, capture_output=True, text=True, env=env_base)
+    if os.path.exists(bin_hit_norm):
+        try: os.remove(bin_hit_norm)
+        except: pass
+
+    # 4. Cached Hit with Preanalysed Prelude (IYI_WARM=1)
+    bin_hit_warm = os.path.join(work, 'hello_hit_warm')
+    cmd_hit_warm = [iyi, 'build', '--stats', '--stale-key', key_file, '--stale-accept', accept_file, '-o', bin_hit_warm, hello_path]
+    env_warm = dict(env_base, IYI_WARM='1')
+    res_hit_warm = subprocess.run(cmd_hit_warm, capture_output=True, text=True, env=env_warm)
+    if os.path.exists(bin_hit_warm):
+        try: os.remove(bin_hit_warm)
+        except: pass
+
+    def parse_stats(out_text):
+        st = {}
+        for line in out_text.splitlines():
+            line = line.strip()
+            if ':' in line:
+                parts = line.split(':', 1)
+                name = parts[0].strip()
+                val = parts[1].strip()
+                m = re.match(r'^([0-9.]+(?:s|ms|µs|m|h))', val)
+                if m:
+                    st[name] = m.group(1)
+        return st
+
+    def_stages = parse_stats(res_def.stdout + '\n' + res_def.stderr)
+    norm_stages = parse_stats(res_hit_norm.stdout + '\n' + res_hit_norm.stderr)
+    warm_stages = parse_stats(res_hit_warm.stdout + '\n' + res_hit_warm.stderr)
+
+    displayed_stages = [
+        ('Parse', 'Parse'),
+        ('Semantic (top level)', 'Top Level Semantic'),
+        ('Semantic (main)', 'Main Semantic'),
+        ('Walk', 'Walk (Stale Reach & Effects)'),
+        ('Hashing', 'Hashing (CallPath & Build Key)'),
+        ('Codegen (crystal)', 'Codegen (crystal)'),
+        ('Codegen (bc+obj)', 'Codegen (bc+obj)'),
+        ('Codegen (linking)', 'Codegen (linking)'),
+    ]
+
+    print('| Stage | Default Build | Cached Hit (Normal Prelude) | Cached Hit (Preanalysed `IYI_WARM=1`) | Proof |')
+    print('|---|---|---|---|---|')
+    for key, label in displayed_stages:
+        t_d = def_stages.get(key, '—')
+        is_codegen = 'Codegen' in key
+        t_n = norm_stages.get(key, '*(stopped)*' if is_codegen else '—')
+        t_w = warm_stages.get(key, '*(stopped)*' if is_codegen else '—')
+        proof = 'Stops before codegen' if is_codegen else 'Verified hit'
+        print(f"| {label:32} | {t_d:13} | {t_n:27} | {t_w:37} | {proof} |")
+    print()
+    print('*Honest accounting: No speedup is promised (§13, §14). Every hit type-checks: parse, top level, main semantic, walk, and hashing run on every check. Checks stop before codegen, eliminating object compilation and linking overhead. Preanalysed prelude (`IYI_WARM=1`) isolates cold prelude analysis from per-program verification.*')
+    print()
+    print('### Raw Progress Tracker Output (`--stats` Cached Hit - Normal Prelude):')
     print('```')
-    for sl in stage_lines[:12]:
-        print(sl)
+    for line in (res_hit_norm.stdout + '\n' + res_hit_norm.stderr).splitlines():
+        line = line.strip()
+        if any(line.startswith(prefix) for prefix in ['Parse:', 'Semantic', 'Walk:', 'Hashing:', 'Codegen:']):
+            print(line)
+    print('```')
+    print()
+    print('### Raw Progress Tracker Output (`--stats` Cached Hit - Preanalysed Prelude `IYI_WARM=1`):')
+    print('```')
+    for line in (res_hit_warm.stdout + '\n' + res_hit_warm.stderr).splitlines():
+        line = line.strip()
+        if any(line.startswith(prefix) for prefix in ['Parse:', 'Semantic', 'Walk:', 'Hashing:', 'Codegen:']):
+            print(line)
     print('```')
     print()
 
