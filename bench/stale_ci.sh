@@ -3,7 +3,6 @@
 #
 #     bash bench/stale_ci.sh <command> [options]
 #
-# Commands:
 #     fetch-master                Download master snapshot through Actions API
 #     assert-export-env           Verify export step environment has no secrets
 #     assert-hits                 Verify all tests in a test run were cache hits
@@ -12,6 +11,8 @@
 #     git-diff-check              Verify run observations against git diff
 #     empty-snapshot              Generate an empty snapshot for disagreement (RG6)
 #     rg9                         Run RG9 deterministic CallPathFp check
+#     master-self-check           Import master snapshot and verify against git diff
+#     test-master-path            Verify master snapshot export, API fetch, and self-check
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -74,8 +75,9 @@ empty_snapshot() {
   local out="master.json"
   local target="x86_64-linux-gnu"
   local ns="master"
-  local repo="github.com/iyilang/iyi"
+  local repo="${GITHUB_REPOSITORY:-iyilang/iyi}"
   local wf=".github/workflows/iyi.yml"
+  local run_id=""
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -84,13 +86,27 @@ empty_snapshot() {
       --namespace) ns="$2"; shift 2 ;;
       --repo) repo="$2"; shift 2 ;;
       --workflow) wf="$2"; shift 2 ;;
+      --run-id) run_id="$2"; shift 2 ;;
       *) echo "Unknown option: $1" >&2; return 1 ;;
     esac
   done
 
   "$PY" -c "
 import json, sys
-out, target, ns, repo, wf = sys.argv[1:6]
+out, target, ns, repo, wf, run_id_str = sys.argv[1:7]
+
+if not run_id_str:
+    print('empty-snapshot FAILED: --run-id is required and must be a positive integer', file=sys.stderr)
+    sys.exit(1)
+
+try:
+    run_id_val = int(run_id_str)
+    if run_id_val <= 0:
+        raise ValueError()
+except Exception:
+    print(f'empty-snapshot FAILED: --run-id must be a positive integer, got: {run_id_str}', file=sys.stderr)
+    sys.exit(1)
+
 data = {
     'format': 'iyi-test-index',
     'version': 1,
@@ -100,7 +116,7 @@ data = {
     'ref': 'refs/heads/master',
     'target': target,
     'producer': {
-        'run_id': 0,
+        'run_id': run_id_val,
         'run_attempt': 1,
         'sha': '',
         'job': 'stale-fresh',
@@ -110,8 +126,8 @@ data = {
 }
 with open(out, 'w') as f:
     json.dump(data, f, indent=2)
-print(f'empty-snapshot: wrote empty snapshot to {out}')
-" "$out" "$target" "$ns" "$repo" "$wf"
+print(f'empty-snapshot: wrote empty snapshot with run_id {run_id_val} to {out}')
+" "$out" "$target" "$ns" "$repo" "$wf" "$run_id"
 }
 
 # 3. assert-hits: checks that every test in cached_results.json hit from cache
@@ -215,7 +231,7 @@ for t in tests:
 
     non_hits.append((tid, reuse, t.get('reason', '')))
 
- if non_hits:
+if non_hits:
     print(f'assert-hits FAILED: {len(non_hits)} tests did not hit from cache:', file=sys.stderr)
     for tid, r, reason in non_hits:
         print(f'  {tid[0]}:{tid[1]}: reuse={r} reason={reason}', file=sys.stderr)
@@ -599,8 +615,6 @@ fetch_master() {
   local target="x86_64-linux-gnu"
   local repo="${GITHUB_REPOSITORY:-iyilang/iyi}"
   local token="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
-  local mock_api=""
-  local mock_artifact=""
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -608,21 +622,21 @@ fetch_master() {
       --target) target="$2"; shift 2 ;;
       --repo) repo="$2"; shift 2 ;;
       --token) token="$2"; shift 2 ;;
-      --mock-api-file) mock_api="$2"; shift 2 ;;
-      --mock-artifact-file) mock_artifact="$2"; shift 2 ;;
       *) echo "Unknown option: $1" >&2; return 1 ;;
     esac
   done
 
   "$PY" -c "
-import json, sys, os, hashlib, zipfile, io, urllib.request
+import json, sys, os, hashlib, urllib.request, urllib.error, urllib.parse
 
 out = sys.argv[1]
 target = sys.argv[2]
 repo = sys.argv[3]
 token = sys.argv[4]
-mock_api = sys.argv[5]
-mock_artifact = sys.argv[6]
+
+if not token:
+    print('fetch-master FAILED: token is required (--token or GITHUB_TOKEN)', file=sys.stderr)
+    sys.exit(1)
 
 def write_sidecar(path, file_sha256, run_id, repo_name, workflow_file, ref):
     sidecar = {
@@ -637,140 +651,162 @@ def write_sidecar(path, file_sha256, run_id, repo_name, workflow_file, ref):
         json.dump(sidecar, f, indent=2)
     print(f'fetch-master: wrote sidecar {sidecar_path}')
 
-# A. Mock API testing path (for local verification without live API)
-if mock_api and os.path.exists(mock_api):
-    print(f'fetch-master: using mock API file {mock_api}')
-    with open(mock_api) as f:
-        api_data = json.load(f)
-    runs = api_data.get('workflow_runs', [])
-    master_run = None
-    for r in runs:
-        if r.get('head_branch') in ('master', 'refs/heads/master') and r.get('event') == 'push' and r.get('status') == 'completed' and r.get('path', '.github/workflows/iyi.yml') == '.github/workflows/iyi.yml':
-            master_run = r
-            break
-    if not master_run:
-        print('fetch-master: no completed master push run in mock data; importing nothing for master.')
-        sys.exit(0)
-
-    run_id = master_run.get('id', 0)
-    run_repo = master_run.get('repository', {}).get('full_name', repo)
-    run_wf = master_run.get('path', '.github/workflows/iyi.yml')
-
-    artifacts = api_data.get('artifacts', [])
-    target_artifact = None
-    for a in artifacts:
-        name = a.get('name', '')
-        if name in (f'master-{target}.json', 'master.json', f'iyi-test-index-master-{target}.json') or (target in name and 'master' in name):
-            target_artifact = a
-            break
-
-    if not target_artifact:
-        print(f'fetch-master: run {run_id} has no artifact for target {target}; importing nothing for master.')
-        sys.exit(0)
-
-    if mock_artifact and os.path.exists(mock_artifact):
-        with open(mock_artifact, 'rb') as f:
-            content = f.read()
-        with open(out, 'wb') as f:
-            f.write(content)
-        actual_sha256 = hashlib.sha256(content).hexdigest().lower()
-        exp_digest = target_artifact.get('digest', '')
-        if exp_digest:
-            exp_hex = exp_digest.split(':')[-1].lower()
-            if actual_sha256 != exp_hex:
-                print(f'fetch-master FAILED: sha256 mismatch (expected {exp_hex}, got {actual_sha256})', file=sys.stderr)
-                sys.exit(1)
-        write_sidecar(out, actual_sha256, run_id, run_repo, run_wf, 'refs/heads/master')
-        print(f'fetch-master: verified mock artifact and wrote {out}')
-        sys.exit(0)
-
-# B. Live Actions API path (only run in CI with github.token)
-if not token:
-    print('fetch-master: no token provided; skipping master fetch.')
-    sys.exit(0)
+api_base = os.environ.get('GITHUB_API_URL', 'https://api.github.com').rstrip('/')
 
 headers = {
     'Authorization': f'Bearer {token}',
     'Accept': 'application/vnd.github+json',
     'User-Agent': 'iyi-ci-fetch-master'
 }
-api_base = os.environ.get('GITHUB_API_URL', 'https://api.github.com')
-runs_url = f'{api_base}/repos/{repo}/actions/runs?branch=master&event=push&status=completed&per_page=10'
+
+# 1. Fetch runs for workflow iyi.yml
+runs_url = f'{api_base}/repos/{repo}/actions/workflows/iyi.yml/runs?branch=master&event=push&status=completed&per_page=1'
 
 try:
     req = urllib.request.Request(runs_url, headers=headers)
     with urllib.request.urlopen(req) as resp:
         runs_data = json.loads(resp.read().decode('utf-8'))
 except Exception as e:
-    print(f'fetch-master: query runs failed ({e}); importing nothing for master.')
+    print(f'fetch-master FAILED: query runs failed ({e})', file=sys.stderr)
+    sys.exit(1)
+
+workflow_runs = runs_data.get('workflow_runs', [])
+if not workflow_runs:
+    print('fetch-master: no completed master push run found for .github/workflows/iyi.yml; valid absent.')
     sys.exit(0)
 
-runs = runs_data.get('workflow_runs', [])
-master_run = None
-for r in runs:
-    if r.get('head_branch') in ('master', 'refs/heads/master') and r.get('event') == 'push' and r.get('status') == 'completed' and r.get('path', '.github/workflows/iyi.yml') == '.github/workflows/iyi.yml':
-        master_run = r
-        break
+master_run = workflow_runs[0]
 
-if not master_run:
-    print('fetch-master: no completed master push run found; importing nothing for master.')
-    sys.exit(0)
+# Require exact path / head_branch / event / repository.full_name
+run_path = master_run.get('path')
+if run_path != '.github/workflows/iyi.yml':
+    print(f\"fetch-master FAILED: run path '{run_path}' != '.github/workflows/iyi.yml'\", file=sys.stderr)
+    sys.exit(1)
+
+head_branch = master_run.get('head_branch')
+if head_branch not in ('master', 'refs/heads/master'):
+    print(f\"fetch-master FAILED: head_branch '{head_branch}' != master\", file=sys.stderr)
+    sys.exit(1)
+
+event = master_run.get('event')
+if event != 'push':
+    print(f\"fetch-master FAILED: event '{event}' != push\", file=sys.stderr)
+    sys.exit(1)
+
+run_repo = master_run.get('repository', {}).get('full_name')
+if run_repo != repo:
+    print(f\"fetch-master FAILED: repository '{run_repo}' != '{repo}'\", file=sys.stderr)
+    sys.exit(1)
 
 run_id = master_run['id']
-run_repo = master_run.get('repository', {}).get('full_name', repo)
-run_wf = master_run.get('path', '.github/workflows/iyi.yml')
 
-artifacts_url = f'{api_base}/repos/{repo}/actions/runs/{run_id}/artifacts'
+# 2. Query artifacts with EXACT name only
+expected_name = f'master-{target}.json'
+artifacts_url = f'{api_base}/repos/{repo}/actions/runs/{run_id}/artifacts?name={urllib.parse.quote(expected_name)}&per_page=100'
+
 try:
     req_art = urllib.request.Request(artifacts_url, headers=headers)
     with urllib.request.urlopen(req_art) as resp:
         art_data = json.loads(resp.read().decode('utf-8'))
 except Exception as e:
-    print(f'fetch-master: query artifacts failed ({e}); importing nothing for master.')
+    print(f'fetch-master FAILED: query artifacts failed ({e})', file=sys.stderr)
+    sys.exit(1)
+
+# Exact name filter and unexpired
+matching_artifacts = [
+    a for a in art_data.get('artifacts', [])
+    if a.get('name') == expected_name and not a.get('expired', False)
+]
+
+if len(matching_artifacts) == 0:
+    print(f'fetch-master: no non-expired artifact with exact name {expected_name}; valid absent.')
     sys.exit(0)
 
-target_art = None
-for a in art_data.get('artifacts', []):
-    name = a.get('name', '')
-    if name in (f'master-{target}.json', 'master.json') or (target in name and 'master' in name):
-        target_art = a
-        break
+if len(matching_artifacts) > 1:
+    print(f'fetch-master FAILED: multiple ({len(matching_artifacts)}) artifacts with name {expected_name}', file=sys.stderr)
+    sys.exit(1)
 
-if not target_art:
-    print(f'fetch-master: run {run_id} has no artifact for target {target}; importing nothing for master.')
-    sys.exit(0)
-
+target_art = matching_artifacts[0]
 art_id = target_art['id']
+
+# 3. Digest check
+digest_str = target_art.get('digest', '')
+if not digest_str:
+    print(f'fetch-master FAILED: artifact {art_id} has no digest', file=sys.stderr)
+    sys.exit(1)
+
+if digest_str.startswith('sha256:'):
+    exp_digest_hex = digest_str[7:].lower()
+else:
+    exp_digest_hex = digest_str.split(':')[-1].lower()
+
+if len(exp_digest_hex) != 64:
+    print(f'fetch-master FAILED: invalid digest format: {digest_str}', file=sys.stderr)
+    sys.exit(1)
+
+# 4. Download artifact with redirect disabled, then fetch Location without Authorization
+class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+opener = urllib.request.build_opener(NoRedirectHandler)
 download_url = f'{api_base}/repos/{repo}/actions/artifacts/{art_id}/zip'
+req_dl = urllib.request.Request(download_url, headers=headers)
+
+location = None
+raw_bytes = None
 try:
-    req_dl = urllib.request.Request(download_url, headers=headers)
-    with urllib.request.urlopen(req_dl) as resp:
-        zip_bytes = resp.read()
+    resp = opener.open(req_dl)
+    raw_bytes = resp.read()
+except urllib.error.HTTPError as e:
+    if e.code in (301, 302, 303, 307, 308):
+        location = e.headers.get('Location')
+    else:
+        print(f'fetch-master FAILED: download request returned HTTP {e.code}', file=sys.stderr)
+        sys.exit(1)
 except Exception as e:
-    print(f'fetch-master: download artifact failed ({e}); importing nothing for master.')
-    sys.exit(0)
+    print(f'fetch-master FAILED: download request error ({e})', file=sys.stderr)
+    sys.exit(1)
 
-with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
-    names = z.namelist()
-    if not names:
-        print('fetch-master: artifact zip was empty; importing nothing for master.', file=sys.stderr)
-        sys.exit(0)
-    with z.open(names[0]) as zf, open(out, 'wb') as out_f:
-        out_f.write(zf.read())
-
-with open(out, 'rb') as f:
-    content = f.read()
-actual_sha256 = hashlib.sha256(content).hexdigest().lower()
-exp_digest = target_art.get('digest', '')
-if exp_digest:
-    exp_hex = exp_digest.split(':')[-1].lower()
-    if actual_sha256 != exp_hex:
-        print(f'fetch-master FAILED: sha256 mismatch ({actual_sha256} != {exp_hex})', file=sys.stderr)
+if location:
+    blob_url = urllib.parse.urljoin(download_url, location)
+    req_blob = urllib.request.Request(blob_url, headers={'User-Agent': 'iyi-ci-fetch-master'})
+    try:
+        with urllib.request.urlopen(req_blob) as blob_resp:
+            raw_bytes = blob_resp.read()
+    except urllib.error.HTTPError as e:
+        print(f'fetch-master FAILED: blob download returned HTTP {e.code}', file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f'fetch-master FAILED: blob download error ({e})', file=sys.stderr)
         sys.exit(1)
 
-write_sidecar(out, actual_sha256, run_id, run_repo, run_wf, 'refs/heads/master')
-print(f'fetch-master: successfully fetched and verified master snapshot for {target}')
-" "$out" "$target" "$repo" "$token" "$mock_api" "$mock_artifact"
+if raw_bytes is None:
+    print('fetch-master FAILED: no bytes received from artifact download', file=sys.stderr)
+    sys.exit(1)
+
+# 5. Payload check: Refuse PK\x03\x04 (zip)
+if raw_bytes.startswith(b'PK\x03\x04'):
+    print('fetch-master FAILED: received ZIP payload (starts with PK\\x03\\x04); expected raw JSON from archive: false', file=sys.stderr)
+    sys.exit(1)
+
+# 6. Verify sha256 match
+actual_sha256 = hashlib.sha256(raw_bytes).hexdigest().lower()
+if actual_sha256 != exp_digest_hex:
+    print(f'fetch-master FAILED: sha256 mismatch (expected {exp_digest_hex}, got {actual_sha256})', file=sys.stderr)
+    sys.exit(1)
+
+# 7. Write output and provenance sidecar
+out_dir = os.path.dirname(out)
+if out_dir:
+    os.makedirs(out_dir, exist_ok=True)
+
+with open(out, 'wb') as f:
+    f.write(raw_bytes)
+
+write_sidecar(out, actual_sha256, run_id, run_repo, '.github/workflows/iyi.yml', 'refs/heads/master')
+print(f'fetch-master: successfully downloaded and verified {out}')
+" "$out" "$target" "$repo" "$token"
 }
 
 # 7. git-diff-check: validates run observations against git diff
@@ -977,312 +1013,368 @@ print('git-diff-check PASSED: all cached hits and misses respected git diff.')
 test_comparator_negatives() {
   echo "== Running CI evidence comparator negative and discrimination fixtures =="
   "$PY" -c "
-import os, sys, json
+import os, sys, json, tempfile, subprocess, shutil
 
-def extract_test_id(obj):
-    if not isinstance(obj, dict):
-        return None
-    test_obj = obj.get('test')
-    if isinstance(test_obj, dict) and 'root' in test_obj and 'path' in test_obj:
-        return (str(test_obj['root']), str(test_obj['path']))
-    if 'root' in obj and 'path' in obj:
-        return (str(obj['root']), str(obj['path']))
-    return None
+repo = sys.argv[1]
+stale_ci = os.path.join(repo, 'bench/stale_ci.sh')
 
-def is_file_observation(obs):
-    kind = obs.get('kind', '')
-    root = obs.get('root', '')
-    if root in ('abs', 'host', 'scratch', 'env'):
-        return False
-    return kind.startswith('file_') or kind == 'dir_list' or kind == 'file'
+work = tempfile.mkdtemp(prefix='comp_neg_')
+empty_repo = os.path.join(work, 'empty_repo')
+os.makedirs(empty_repo, exist_ok=True)
+empty_diff = os.path.join(work, 'empty_diff.txt')
+with open(empty_diff, 'w') as f:
+    pass
 
-def map_obs_to_repo_path(obs, test_entry, repo_root):
-    obs_root = obs.get('root', '')
-    obs_path = obs.get('path', '')
-    if obs_root == 'toolchain':
-        return os.path.normpath(os.path.join('src', obs_path))
-    roots = test_entry.get('roots', {})
-    if isinstance(roots, dict) and obs_root in roots:
-        abs_p = os.path.normpath(os.path.join(roots[obs_root], obs_path))
-        try:
-            rel = os.path.relpath(abs_p, repo_root)
-            if not rel.startswith('..'):
-                return rel
-        except ValueError:
-            pass
-    if obs_root == 'src':
-        test_obj = test_entry.get('test', {})
-        tpath = test_obj.get('path', '')
-        tdir = os.path.dirname(tpath)
-        combined = os.path.normpath(os.path.join(tdir, obs_path)) if tdir else obs_path
-        if os.path.exists(os.path.join(repo_root, combined)):
-            return combined
-        if os.path.exists(os.path.join(repo_root, obs_path)):
-            return os.path.normpath(obs_path)
-        return combined
-    return os.path.normpath(obs_path)
+def run_cmd(subcmd, args, cwd=None):
+    cmd = ['bash', stale_ci, subcmd] + args
+    return subprocess.run(cmd, cwd=cwd or work, capture_output=True, text=True)
 
-# --- 1. Assert-Hits Tests ---
-def run_ah(data, snap=None, expected_ns=''):
-    tests = data.get('tests', [])
-    if not tests: return False, 'no tests'
-    seen = set()
-    for t in tests:
-        tid = extract_test_id(t)
-        if not tid: return False, 'missing tid'
-        if tid in seen: return False, 'duplicate tid'
-        seen.add(tid)
-    exported = None
-    snap_ns = expected_ns
-    if snap:
-        if not snap_ns: snap_ns = snap.get('namespace', '')
-        exported = set()
-        for r in snap.get('records', []):
-            rid = extract_test_id(r)
-            if not rid: return False, 'missing rid'
-            if rid in exported: return False, 'duplicate rid'
-            exported.add(rid)
-    hit_ids = set()
-    for t in tests:
-        tid = extract_test_id(t)
-        reuse = t.get('reuse', '')
-        cached = t.get('cached', False)
-        source = t.get('source', '')
-        if cached and reuse == 'hit':
-            if snap_ns:
-                if source == 'local': return False, 'local hit substitution'
-                if source != snap_ns: return False, 'namespace substitution'
-            hit_ids.add(tid)
-            continue
-        if exported and reuse == 'not reusable' and tid not in exported:
-            continue
-        return False, 'non hit'
-    if exported is not None and exported != hit_ids:
-        return False, 'exact set mismatch'
-    return True, 'ok'
+def assert_negative(subcmd, args, expected_msg, cwd=None):
+    res = run_cmd(subcmd, args, cwd=cwd)
+    combined = res.stdout + res.stderr
+    assert res.returncode == 1, f'{subcmd} expected exit 1, got {res.returncode}. Output:\n{combined}'
+    assert expected_msg in combined, f'{subcmd} expected \"{expected_msg}\" in output. Output:\n{combined}'
 
-snap = {'namespace': 'run:1', 'records': [
-    {'test': {'root': 'src', 'path': 'a.iyi'}},
-    {'test': {'root': 'src', 'path': 'b.iyi'}}
-]}
+def assert_positive(subcmd, args, cwd=None):
+    res = run_cmd(subcmd, args, cwd=cwd)
+    combined = res.stdout + res.stderr
+    assert res.returncode == 0, f'{subcmd} expected exit 0, got {res.returncode}. Output:\n{combined}'
+    assert 'PASSED' in combined, f'{subcmd} expected PASSED in output. Output:\n{combined}'
 
-# Equal-count wrong IDs fail
-data_wrong = {'tests': [
-    {'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:1'},
-    {'test': {'root': 'src', 'path': 'c.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:1'}
-]}
-ok, err = run_ah(data_wrong, snap)
-assert not ok and 'exact set mismatch' in err, 'Equal count wrong IDs must fail'
+# --- 1. assert-hits cases ---
+snap_valid = os.path.join(work, 'snap_valid.json')
+with open(snap_valid, 'w') as f:
+    json.dump({
+        'namespace': 'run:100',
+        'records': [
+            {'test': {'root': 'src', 'path': 'a.iyi'}},
+            {'test': {'root': 'src', 'path': 'b.iyi'}}
+        ]
+    }, f)
 
-# Colliding basenames don't collapse
-snap_colliding = {'namespace': 'run:1', 'records': [
-    {'test': {'root': 'src', 'path': 'dir1/test.iyi'}},
-    {'test': {'root': 'src', 'path': 'dir2/test.iyi'}}
-]}
-data_colliding = {'tests': [
-    {'test': {'root': 'src', 'path': 'dir1/test.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:1'},
-    {'test': {'root': 'src', 'path': 'dir2/test.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:1'}
-]}
-ok, _ = run_ah(data_colliding, snap_colliding)
-assert ok, 'Colliding basenames with distinct paths must pass'
+# Duplicate identities in results
+f_dup_results = os.path.join(work, 'ah_dup_res.json')
+with open(f_dup_results, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:100'},
+        {'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:100'}
+    ]}, f)
+assert_negative('assert-hits', ['--json', f_dup_results, '--snapshot', snap_valid], 'duplicate test identity')
 
-# Missing one colliding basename fails
-data_colliding_missing = {'tests': [
-    {'test': {'root': 'src', 'path': 'dir1/test.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:1'}
-]}
-ok, _ = run_ah(data_colliding_missing, snap_colliding)
-assert not ok, 'Missing colliding basename must fail'
+# Duplicate identities in snapshot
+snap_dup = os.path.join(work, 'snap_dup.json')
+with open(snap_dup, 'w') as f:
+    json.dump({
+        'namespace': 'run:100',
+        'records': [
+            {'test': {'root': 'src', 'path': 'a.iyi'}},
+            {'test': {'root': 'src', 'path': 'a.iyi'}}
+        ]
+    }, f)
+f_valid_hits = os.path.join(work, 'ah_valid_hits.json')
+with open(f_valid_hits, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:100'},
+        {'test': {'root': 'src', 'path': 'b.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:100'}
+    ]}, f)
+assert_negative('assert-hits', ['--json', f_valid_hits, '--snapshot', snap_dup], 'snapshot contains duplicate test identity')
 
-# Duplicate identities fail
-data_dup = {'tests': [
-    {'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:1'},
-    {'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:1'}
-]}
-ok, err = run_ah(data_dup, snap)
-assert not ok and 'duplicate tid' in err, 'Duplicate identities must fail'
+# Equal-count wrong IDs
+f_wrong_ids = os.path.join(work, 'ah_wrong_ids.json')
+with open(f_wrong_ids, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:100'},
+        {'test': {'root': 'src', 'path': 'c.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:100'}
+    ]}, f)
+assert_negative('assert-hits', ['--json', f_wrong_ids, '--snapshot', snap_valid], 'hit identity set does not match snapshot identity set')
 
-# Duplicate identities in snapshot fail
-snap_dup = {'namespace': 'run:1', 'records': [
-    {'test': {'root': 'src', 'path': 'a.iyi'}},
-    {'test': {'root': 'src', 'path': 'a.iyi'}}
-]}
-ok, err = run_ah(data_colliding, snap_dup)
-assert not ok and 'duplicate rid' in err, 'Duplicate snapshot records must fail'
+# Missing IDs
+f_missing_ids = os.path.join(work, 'ah_missing_ids.json')
+with open(f_missing_ids, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:100'}
+    ]}, f)
+assert_negative('assert-hits', ['--json', f_missing_ids, '--snapshot', snap_valid], 'Missing 1 hits')
 
-# Local hit substitution fails
-data_local = {'tests': [
-    {'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'local'},
-    {'test': {'root': 'src', 'path': 'b.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:1'}
-]}
-ok, err = run_ah(data_local, snap)
-assert not ok and 'local hit substitution' in err, 'Local hit substitution must fail'
+# Unexpected IDs
+snap_single = os.path.join(work, 'snap_single.json')
+with open(snap_single, 'w') as f:
+    json.dump({'namespace': 'run:100', 'records': [{'test': {'root': 'src', 'path': 'a.iyi'}}]}, f)
+assert_negative('assert-hits', ['--json', f_valid_hits, '--snapshot', snap_single], 'Unexpected 1 hits')
+
+# Local hit substitution
+f_local_sub = os.path.join(work, 'ah_local_sub.json')
+with open(f_local_sub, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'local'},
+        {'test': {'root': 'src', 'path': 'b.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:100'}
+    ]}, f)
+assert_negative('assert-hits', ['--json', f_local_sub, '--snapshot', snap_valid], 'local hit substitution')
+
+# Namespace substitution
+f_ns_sub = os.path.join(work, 'ah_ns_sub.json')
+with open(f_ns_sub, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:other'},
+        {'test': {'root': 'src', 'path': 'b.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:100'}
+    ]}, f)
+assert_negative('assert-hits', ['--json', f_ns_sub, '--snapshot', snap_valid], 'namespace substitution')
+
+# Unexcused miss
+f_unexcused = os.path.join(work, 'ah_unexcused.json')
+with open(f_unexcused, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': False, 'reuse': 'miss', 'reason': 'changed'},
+        {'test': {'root': 'src', 'path': 'b.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:100'}
+    ]}, f)
+assert_negative('assert-hits', ['--json', f_unexcused, '--snapshot', snap_valid], 'tests did not hit from cache')
+
+# Excused not reusable (not in snapshot)
+f_excused = os.path.join(work, 'ah_excused.json')
+with open(f_excused, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:100'},
+        {'test': {'root': 'src', 'path': 'b.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:100'},
+        {'test': {'root': 'src', 'path': 'clock.iyi'}, 'cached': False, 'reuse': 'not reusable', 'reason': 'clock'}
+    ]}, f)
+assert_positive('assert-hits', ['--json', f_excused, '--snapshot', snap_valid])
+
+# Colliding basenames don't collapse (both distinct pass)
+snap_col = os.path.join(work, 'snap_col.json')
+with open(snap_col, 'w') as f:
+    json.dump({'namespace': 'run:100', 'records': [
+        {'test': {'root': 'src', 'path': 'd1/t.iyi'}},
+        {'test': {'root': 'src', 'path': 'd2/t.iyi'}}
+    ]}, f)
+f_col_pass = os.path.join(work, 'ah_col_pass.json')
+with open(f_col_pass, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'd1/t.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:100'},
+        {'test': {'root': 'src', 'path': 'd2/t.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:100'}
+    ]}, f)
+assert_positive('assert-hits', ['--json', f_col_pass, '--snapshot', snap_col])
 
 # Nested identities pass
-snap_nested = {'namespace': 'run:1', 'records': [
-    {'test': {'root': 'src', 'path': 'sub/deep/nested_test.iyi'}}
-]}
-data_nested = {'tests': [
-    {'test': {'root': 'src', 'path': 'sub/deep/nested_test.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:1'}
-]}
-ok, _ = run_ah(data_nested, snap_nested)
-assert ok, 'Nested identities must pass'
+snap_nest = os.path.join(work, 'snap_nest.json')
+with open(snap_nest, 'w') as f:
+    json.dump({'namespace': 'run:100', 'records': [
+        {'test': {'root': 'src', 'path': 'deep/sub/dir/test.iyi'}}
+    ]}, f)
+f_nest_pass = os.path.join(work, 'ah_nest_pass.json')
+with open(f_nest_pass, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'deep/sub/dir/test.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:100'}
+    ]}, f)
+assert_positive('assert-hits', ['--json', f_nest_pass, '--snapshot', snap_nest])
 
-# --- 2. Shadow-Audit Tests ---
-def run_sa(cached, fresh, expected_ns=''):
-    c_tests = {}
-    for t in cached.get('tests', []):
-        tid = extract_test_id(t)
-        if not tid or tid in c_tests: return False, 'duplicate cached'
-        c_tests[tid] = t
-    f_tests = {}
-    for t in fresh.get('tests', []):
-        tid = extract_test_id(t)
-        if not tid or tid in f_tests: return False, 'duplicate fresh'
-        f_tests[tid] = t
-    disagreements = []
-    for tid, c in c_tests.items():
-        if not (c.get('cached') and c.get('reuse') == 'hit'): continue
-        if expected_ns:
-            src = c.get('source', '')
-            if src == 'local': disagreements.append('local hit substitution')
-            elif src != expected_ns: disagreements.append('namespace substitution')
-        f = f_tests.get(tid)
-        if not f:
-            disagreements.append('missing fresh test')
-            continue
-        if c.get('status') != f.get('status'):
-            disagreements.append('verdict mismatch')
-        cb = c.get('portable_build')
-        fb = f.get('portable_build')
-        if cb and fb and cb != fb:
-            disagreements.append('build mismatch')
-    return len(disagreements) == 0, disagreements
+# --- 2. shadow-audit cases ---
+sa_dir = os.path.join(work, 'sa_run')
+os.makedirs(sa_dir, exist_ok=True)
 
-# Verdict mismatch fails
-c_run = {'tests': [{'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': True, 'reuse': 'hit', 'status': 'pass', 'source': 'master'}]}
-f_run = {'tests': [{'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': False, 'reuse': 'miss', 'status': 'fail'}]}
-ok, errs = run_sa(c_run, f_run, 'master')
-assert not ok and 'verdict mismatch' in errs, 'Verdict mismatch must be detected'
+# Verdict mismatch (cached pass vs fresh fail)
+c_fail = os.path.join(work, 'sa_c_fail.json')
+with open(c_fail, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'a.iyi'}, 'status': 'pass', 'cached': True, 'reuse': 'hit', 'source': 'master'}
+    ]}, f)
+f_fail = os.path.join(work, 'sa_f_fail.json')
+with open(f_fail, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'a.iyi'}, 'status': 'fail', 'cached': False, 'reuse': 'miss'}
+    ]}, f)
+assert_negative('shadow-audit', ['--cached-json', c_fail, '--fresh-json', f_fail], 'verdict mismatch', cwd=sa_dir)
+assert os.path.exists(os.path.join(sa_dir, '.disagreement_marker')), 'shadow-audit must write .disagreement_marker'
+os.remove(os.path.join(sa_dir, '.disagreement_marker'))
 
-# Build mismatch fails
-c_b = {'tests': [{'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': True, 'reuse': 'hit', 'status': 'pass', 'source': 'master', 'portable_build': 'b1'}]}
-f_b = {'tests': [{'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': False, 'reuse': 'miss', 'status': 'pass', 'portable_build': 'b2'}]}
-ok, errs = run_sa(c_b, f_b, 'master')
-assert not ok and 'build mismatch' in errs, 'Build mismatch must be detected'
+# Portable build mismatch in test result
+c_build = os.path.join(work, 'sa_c_build.json')
+with open(c_build, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'a.iyi'}, 'status': 'pass', 'cached': True, 'reuse': 'hit', 'source': 'master', 'portable_build': 'b1'}
+    ]}, f)
+f_build = os.path.join(work, 'sa_f_build.json')
+with open(f_build, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'a.iyi'}, 'status': 'pass', 'cached': False, 'reuse': 'miss', 'portable_build': 'b2'}
+    ]}, f)
+assert_negative('shadow-audit', ['--cached-json', c_build, '--fresh-json', f_build], 'portable Build mismatch', cwd=sa_dir)
+if os.path.exists(os.path.join(sa_dir, '.disagreement_marker')):
+    os.remove(os.path.join(sa_dir, '.disagreement_marker'))
 
-# Local hit substitution fails
-c_loc = {'tests': [{'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': True, 'reuse': 'hit', 'status': 'pass', 'source': 'local'}]}
-f_loc = {'tests': [{'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': False, 'reuse': 'miss', 'status': 'pass'}]}
-ok, errs = run_sa(c_loc, f_loc, 'master')
-assert not ok and 'local hit substitution' in errs, 'Local hit substitution must be detected'
+# Local hit substitution
+c_loc = os.path.join(work, 'sa_c_loc.json')
+with open(c_loc, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'a.iyi'}, 'status': 'pass', 'cached': True, 'reuse': 'hit', 'source': 'local'}
+    ]}, f)
+f_pass = os.path.join(work, 'sa_f_pass.json')
+with open(f_pass, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'a.iyi'}, 'status': 'pass', 'cached': False, 'reuse': 'miss'}
+    ]}, f)
+assert_negative('shadow-audit', ['--cached-json', c_loc, '--fresh-json', f_pass, '--namespace', 'master'], 'local hit substitution', cwd=sa_dir)
+if os.path.exists(os.path.join(sa_dir, '.disagreement_marker')):
+    os.remove(os.path.join(sa_dir, '.disagreement_marker'))
 
-# --- 3. Git-Diff-Check Tests ---
-def run_gd(master, cached, changed, repo='/repo'):
-    m_recs = {}
-    for r in master.get('records', []):
-        rid = extract_test_id(r)
-        if not rid or rid in m_recs: return False, ['duplicate master']
-        m_recs[rid] = r
-    c_tests = {}
-    for t in cached.get('tests', []):
-        tid = extract_test_id(t)
-        if not tid or tid in c_tests: return False, ['duplicate cached']
-        c_tests[tid] = t
-    errors = []
-    snap_ns = master.get('namespace', 'master')
-    for tid, t in c_tests.items():
-        if t.get('cached') and t.get('reuse') == 'hit':
-            if snap_ns:
-                s = t.get('source', '')
-                if s == 'local': errors.append('local hit substitution')
-                elif s != snap_ns: errors.append('namespace substitution')
-            rec = m_recs.get(tid)
-            if rec:
-                for obs in rec.get('trace', {}).get('observations', []):
-                    if not is_file_observation(obs): continue
-                    p = map_obs_to_repo_path(obs, t, repo)
-                    if p in changed or obs.get('path') in changed:
-                        errors.append(f'Hit test observed changed file {p}')
-        elif t.get('reuse') == 'miss':
-            rec = m_recs.get(tid)
-            if not rec: continue
-            status = t.get('status', '')
-            reason = str(t.get('reason', ''))
-            if t.get('reuse') == 'not reusable' or status == 'does not build' or 'not reusable' in reason or 'does not build' in reason:
-                continue
-            if t.get('blocked') is True or 'blocked' in reason:
-                continue
-            tp = t.get('profile')
-            rp = rec.get('profile', {})
-            rp_fp = rp.get('fp') if isinstance(rp, dict) else rp
-            if tp and rp_fp and tp != rp_fp: continue
-            if 'profile' in reason: continue
-            tb = t.get('portable_build')
-            rb = rec.get('build', {})
-            rb_hex = rb.get('build') if isinstance(rb, dict) else rb
-            if not (tb and rb_hex and str(tb).lower() == str(rb_hex).lower()): continue
-            has_changed = False
-            for obs in rec.get('trace', {}).get('observations', []):
-                if not is_file_observation(obs): continue
-                p = map_obs_to_repo_path(obs, t, repo)
-                if p in changed or obs.get('path') in changed:
-                    has_changed = True
-                    break
-            if not has_changed:
-                errors.append('Missed test has equal build and unchanged observed inputs')
-    return len(errors) == 0, errors
+# Namespace substitution
+c_ns = os.path.join(work, 'sa_c_ns.json')
+with open(c_ns, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'a.iyi'}, 'status': 'pass', 'cached': True, 'reuse': 'hit', 'source': 'run:other'}
+    ]}, f)
+assert_negative('shadow-audit', ['--cached-json', c_ns, '--fresh-json', f_pass, '--namespace', 'master'], 'namespace substitution', cwd=sa_dir)
+if os.path.exists(os.path.join(sa_dir, '.disagreement_marker')):
+    os.remove(os.path.join(sa_dir, '.disagreement_marker'))
 
-master_gd = {
-    'namespace': 'master',
-    'records': [
-        {
-            'test': {'root': 'src', 'path': 'pkg/test.iyi'},
-            'build': {'build': 'hash1'},
-            'profile': {'fp': 'prof1'},
-            'trace': {'observations': [
-                {'kind': 'file_read', 'root': 'src', 'path': 'data.txt'}
-            ]}
-        }
-    ]
-}
+# Missing fresh test
+f_empty = os.path.join(work, 'sa_f_empty.json')
+with open(f_empty, 'w') as f:
+    json.dump({'tests': []}, f)
+assert_negative('shadow-audit', ['--cached-json', c_fail, '--fresh-json', f_empty], 'missing from fresh audit', cwd=sa_dir)
+if os.path.exists(os.path.join(sa_dir, '.disagreement_marker')):
+    os.remove(os.path.join(sa_dir, '.disagreement_marker'))
+
+# Snapshot Build mismatch
+snap_b1 = os.path.join(work, 'snap_b1.json')
+with open(snap_b1, 'w') as f:
+    json.dump({'records': [{'test': {'root': 'src', 'path': 'a.iyi'}, 'build': {'build': 'hash1'}, 'trace': {'observations': []}}]}, f)
+snap_b2 = os.path.join(work, 'snap_b2.json')
+with open(snap_b2, 'w') as f:
+    json.dump({'records': [{'test': {'root': 'src', 'path': 'a.iyi'}, 'build': {'build': 'hash2'}, 'trace': {'observations': []}}]}, f)
+assert_negative('shadow-audit', ['--cached-json', c_fail, '--fresh-json', f_pass, '--cached-snapshot', snap_b1, '--fresh-snapshot', snap_b2], 'portable Build mismatch in snapshots', cwd=sa_dir)
+if os.path.exists(os.path.join(sa_dir, '.disagreement_marker')):
+    os.remove(os.path.join(sa_dir, '.disagreement_marker'))
+
+# Ordered observations mismatch
+snap_obs1 = os.path.join(work, 'snap_obs1.json')
+with open(snap_obs1, 'w') as f:
+    json.dump({'records': [{'test': {'root': 'src', 'path': 'a.iyi'}, 'build': {'build': 'hash1'}, 'trace': {'observations': [{'path': 'p1'}]}}]}, f)
+snap_obs2 = os.path.join(work, 'snap_obs2.json')
+with open(snap_obs2, 'w') as f:
+    json.dump({'records': [{'test': {'root': 'src', 'path': 'a.iyi'}, 'build': {'build': 'hash1'}, 'trace': {'observations': [{'path': 'p2'}]}}]}, f)
+assert_negative('shadow-audit', ['--cached-json', c_fail, '--fresh-json', f_pass, '--cached-snapshot', snap_obs1, '--fresh-snapshot', snap_obs2], 'ordered trace observation mismatch', cwd=sa_dir)
+if os.path.exists(os.path.join(sa_dir, '.disagreement_marker')):
+    os.remove(os.path.join(sa_dir, '.disagreement_marker'))
+
+# Matching pass
+assert_positive('shadow-audit', ['--cached-json', c_fail, '--fresh-json', f_pass, '--cached-snapshot', snap_b1, '--fresh-snapshot', snap_b1], cwd=sa_dir)
+
+# --- 3. git-diff-check cases ---
+# ALWAYS pass --changed-files FILE (empty okay) + --repo empty dir
+snap_gd = os.path.join(work, 'snap_gd.json')
+with open(snap_gd, 'w') as f:
+    json.dump({
+        'namespace': 'master',
+        'records': [
+            {
+                'test': {'root': 'src', 'path': 'pkg/test.iyi'},
+                'build': {'build': 'hash1'},
+                'profile': {'fp': 'prof1'},
+                'trace': {'observations': [
+                    {'kind': 'file_read', 'root': 'src', 'path': 'data.txt'}
+                ]}
+            }
+        ]
+    }, f)
+
+diff_changed = os.path.join(work, 'diff_changed.txt')
+with open(diff_changed, 'w') as f:
+    f.write('pkg/data.txt\n')
 
 # Direction 1: Changed tracked input hit fails
-hit_changed = {'tests': [{'test': {'root': 'src', 'path': 'pkg/test.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'master'}]}
-ok, errs = run_gd(master_gd, hit_changed, {'pkg/data.txt'})
-assert not ok and any('observed changed file' in e for e in errs), 'Direction 1: hit on changed input must fail'
+f_gd_hit = os.path.join(work, 'gd_hit.json')
+with open(f_gd_hit, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'pkg/test.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'master'}
+    ]}, f)
+assert_negative('git-diff-check', ['--master-snapshot', snap_gd, '--cached-json', f_gd_hit, '--changed-files', diff_changed, '--repo', empty_repo], 'observed changed file')
+
+# Direction 1: Local hit substitution
+f_gd_loc = os.path.join(work, 'gd_loc.json')
+with open(f_gd_loc, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'pkg/test.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'local'}
+    ]}, f)
+assert_negative('git-diff-check', ['--master-snapshot', snap_gd, '--cached-json', f_gd_loc, '--changed-files', empty_diff, '--repo', empty_repo], 'local hit substitution')
+
+# Direction 1: Namespace substitution
+f_gd_ns = os.path.join(work, 'gd_ns.json')
+with open(f_gd_ns, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'pkg/test.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:other'}
+    ]}, f)
+assert_negative('git-diff-check', ['--master-snapshot', snap_gd, '--cached-json', f_gd_ns, '--changed-files', empty_diff, '--repo', empty_repo], 'namespace substitution')
 
 # Direction 1: Unchanged tracked input hit passes
-ok, _ = run_gd(master_gd, hit_changed, set())
-assert ok, 'Direction 1: hit on unchanged input must pass'
+assert_positive('git-diff-check', ['--master-snapshot', snap_gd, '--cached-json', f_gd_hit, '--changed-files', empty_diff, '--repo', empty_repo])
 
 # Direction 2: Unchanged tracked input + equal build miss fails
-miss_unchanged = {'tests': [{'test': {'root': 'src', 'path': 'pkg/test.iyi'}, 'reuse': 'miss', 'portable_build': 'hash1', 'profile': 'prof1', 'blocked': False}]}
-ok, errs = run_gd(master_gd, miss_unchanged, set())
-assert not ok and any('equal build and unchanged observed inputs' in e for e in errs), 'Direction 2: miss on unchanged input with equal build must fail'
+f_gd_miss = os.path.join(work, 'gd_miss.json')
+with open(f_gd_miss, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'pkg/test.iyi'}, 'reuse': 'miss', 'portable_build': 'hash1', 'profile': 'prof1', 'blocked': False}
+    ]}, f)
+assert_negative('git-diff-check', ['--master-snapshot', snap_gd, '--cached-json', f_gd_miss, '--changed-files', empty_diff, '--repo', empty_repo], 'has equal build and unchanged observed inputs but missed')
 
 # Direction 2: Changed tracked input miss passes
-ok, _ = run_gd(master_gd, miss_unchanged, {'pkg/data.txt'})
-assert ok, 'Direction 2: miss on changed input must pass'
+assert_positive('git-diff-check', ['--master-snapshot', snap_gd, '--cached-json', f_gd_miss, '--changed-files', diff_changed, '--repo', empty_repo])
 
-# Direction 2: Exclusions pass (profile change, blocked, build mismatch, nonreusable)
-miss_prof = {'tests': [{'test': {'root': 'src', 'path': 'pkg/test.iyi'}, 'reuse': 'miss', 'portable_build': 'hash1', 'profile': 'prof2', 'blocked': False}]}
-ok, _ = run_gd(master_gd, miss_prof, set())
-assert ok, 'Direction 2: profile change exclusion must pass'
+# Direction 2: Profile changed miss passes (exclusion)
+f_gd_prof = os.path.join(work, 'gd_prof.json')
+with open(f_gd_prof, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'pkg/test.iyi'}, 'reuse': 'miss', 'portable_build': 'hash1', 'profile': 'prof2', 'blocked': False}
+    ]}, f)
+assert_positive('git-diff-check', ['--master-snapshot', snap_gd, '--cached-json', f_gd_prof, '--changed-files', empty_diff, '--repo', empty_repo])
 
-miss_blocked = {'tests': [{'test': {'root': 'src', 'path': 'pkg/test.iyi'}, 'reuse': 'miss', 'portable_build': 'hash1', 'profile': 'prof1', 'blocked': True}]}
-ok, _ = run_gd(master_gd, miss_blocked, set())
-assert ok, 'Direction 2: blocked exclusion must pass'
+# Direction 2: Blocked miss passes (exclusion)
+f_gd_blocked = os.path.join(work, 'gd_blocked.json')
+with open(f_gd_blocked, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'pkg/test.iyi'}, 'reuse': 'miss', 'portable_build': 'hash1', 'profile': 'prof1', 'blocked': True}
+    ]}, f)
+assert_positive('git-diff-check', ['--master-snapshot', snap_gd, '--cached-json', f_gd_blocked, '--changed-files', empty_diff, '--repo', empty_repo])
 
-miss_build = {'tests': [{'test': {'root': 'src', 'path': 'pkg/test.iyi'}, 'reuse': 'miss', 'portable_build': 'hash_different', 'profile': 'prof1', 'blocked': False}]}
-ok, _ = run_gd(master_gd, miss_build, set())
-assert ok, 'Direction 2: build mismatch exclusion must pass'
+# Direction 2: Build changed miss passes (exclusion)
+f_gd_b = os.path.join(work, 'gd_b.json')
+with open(f_gd_b, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'pkg/test.iyi'}, 'reuse': 'miss', 'portable_build': 'hash_different', 'profile': 'prof1', 'blocked': False}
+    ]}, f)
+assert_positive('git-diff-check', ['--master-snapshot', snap_gd, '--cached-json', f_gd_b, '--changed-files', empty_diff, '--repo', empty_repo])
 
-miss_nr = {'tests': [{'test': {'root': 'src', 'path': 'pkg/test.iyi'}, 'reuse': 'not reusable', 'reason': 'clock'}]}
-ok, _ = run_gd(master_gd, miss_nr, set())
-assert ok, 'Direction 2: nonreusable exclusion must pass'
+# Direction 2: Not reusable miss passes (exclusion)
+f_gd_nr = os.path.join(work, 'gd_nr.json')
+with open(f_gd_nr, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'pkg/test.iyi'}, 'reuse': 'not reusable', 'reason': 'clock'}
+    ]}, f)
+assert_positive('git-diff-check', ['--master-snapshot', snap_gd, '--cached-json', f_gd_nr, '--changed-files', empty_diff, '--repo', empty_repo])
 
+# Duplicate identities in master snapshot
+snap_gd_dup = os.path.join(work, 'snap_gd_dup.json')
+with open(snap_gd_dup, 'w') as f:
+    json.dump({
+        'namespace': 'master',
+        'records': [
+            {'test': {'root': 'src', 'path': 'pkg/test.iyi'}},
+            {'test': {'root': 'src', 'path': 'pkg/test.iyi'}}
+        ]
+    }, f)
+assert_negative('git-diff-check', ['--master-snapshot', snap_gd_dup, '--cached-json', f_gd_hit, '--changed-files', empty_diff, '--repo', empty_repo], 'duplicate test identity in master snapshot')
+
+# Duplicate identities in cached results
+f_gd_dup = os.path.join(work, 'gd_dup.json')
+with open(f_gd_dup, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'pkg/test.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'master'},
+        {'test': {'root': 'src', 'path': 'pkg/test.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'master'}
+    ]}, f)
+assert_negative('git-diff-check', ['--master-snapshot', snap_gd, '--cached-json', f_gd_dup, '--changed-files', empty_diff, '--repo', empty_repo], 'duplicate test identity in cached results')
+
+shutil.rmtree(work, ignore_errors=True)
 print('test-comparator-negatives PASSED: all comparator negative and discrimination fixtures verified.')
-"
+" "$REPO"
 }
 
 # 9. rg9: deterministic CallPathFp across processes and preanalysed prelude
@@ -1344,6 +1436,562 @@ print(f'RG9 PASSED: all {total} programs produced identical CallPathFp across in
 " "$REPO" "$IYI"
 }
 
+# 10. master-self-check: imports master snapshot, wipes cache to prevent pollution, and verifies diff
+master_self_check() {
+  local snapshot=""
+  local out_json=""
+  local repo_dir="$REPO"
+  local tests=()
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --snapshot) snapshot="$2"; shift 2 ;;
+      --out-json) out_json="$2"; shift 2 ;;
+      --repo) repo_dir="$2"; shift 2 ;;
+      --) shift; tests+=("$@"); break ;;
+      -*) echo "Unknown option: $1" >&2; return 1 ;;
+      *) tests+=("$1"); shift ;;
+    esac
+  done
+
+  if [ -z "$snapshot" ] || [ -z "$out_json" ]; then
+    echo "Usage: master-self-check --snapshot <file> --out-json <file> [--repo <dir>] [tests...]" >&2
+    return 1
+  fi
+
+  if [ ! -f "$snapshot" ]; then
+    echo "master-self-check: no snapshot file at $snapshot; nothing to import."
+    return 0
+  fi
+
+  if [ ${#tests[@]} -eq 0 ]; then
+    mapfile -t tests < <(find "$repo_dir/samples/iyi" -maxdepth 1 -type f -name '*.iyi' -print | sort)
+  fi
+
+  # Wipe test cache to prevent local/run substitution pollution
+  local cache_dir=""
+  cache_dir="$("$IYI" env IYI_CACHE_DIR 2>/dev/null || true)"
+  if [ -z "$cache_dir" ]; then
+    cache_dir="${IYI_CACHE_DIR:-${HOME}/.cache/iyi}"
+  fi
+  if [ -d "$cache_dir/tests-v1" ]; then
+    rm -rf "$cache_dir/tests-v1"
+  fi
+
+  local out_dir
+  out_dir="$(dirname "$out_json")"
+  if [ -n "$out_dir" ] && [ ! -d "$out_dir" ]; then
+    mkdir -p "$out_dir"
+  fi
+
+  "$IYI" test --cached --json \
+    --import-index "master=$snapshot" \
+    "${tests[@]}" > "$out_json"
+
+  git_diff_check \
+    --master-snapshot "$snapshot" \
+    --cached-json "$out_json" \
+    --repo "$repo_dir"
+}
+
+# 11. test-master-path: verifies producer export, mock Actions API with redirect isolation,
+#                       candidate vs canonical selection, negatives, cache wipe discrimination,
+#                       and empty snapshot handling.
+test_master_path() {
+  echo "== Running test-master-path: Actions API mock, canonical selection, and cache wipe tests =="
+  if ! "$IYI" --version >/dev/null 2>&1; then
+    echo "test-master-path: compiler binary not ready or executable at $IYI" >&2
+    exit 1
+  fi
+
+  local work
+  work="$(mktemp -d /tmp/test-master-path.XXXXXX)"
+  local clean_exit=0
+  trap 'if [ "$clean_exit" -eq 1 ]; then rm -rf "$work"; else echo "Preserving test-master-path artifacts at $work" >&2; fi' RETURN
+
+  "$PY" -c "
+import glob, hashlib, http.server, io, json, os, subprocess, sys, threading, time, urllib.error, urllib.parse, urllib.request
+
+repo = sys.argv[1]
+iyi = sys.argv[2]
+work = sys.argv[3]
+stale_ci = os.path.join(repo, 'bench/stale_ci.sh')
+
+# 1. Real producer fresh master export with CI-like environment
+print('Phase 1: Real producer fresh master export with CI-like environment...')
+cand_export_path = os.path.join(work, 'master-candidate-x86_64-linux-gnu.json')
+canonical_path = os.path.join(work, 'master-x86_64-linux-gnu.json')
+
+sha_res = subprocess.run(['/usr/bin/git', '-C', repo, 'rev-parse', 'HEAD'], capture_output=True, text=True)
+head_sha = sha_res.stdout.strip() if sha_res.returncode == 0 else '0123456789abcdef0123456789abcdef01234567'
+
+export_env = os.environ.copy()
+export_env['IYI_CI_PRODUCER'] = '1'
+export_env['GITHUB_WORKFLOW'] = 'iyi'
+export_env['GITHUB_WORKFLOW_REF'] = 'iyilang/iyi/.github/workflows/iyi.yml@refs/heads/master'
+export_env['GITHUB_SHA'] = head_sha
+export_env['GITHUB_REPOSITORY'] = 'iyilang/iyi'
+export_env['GITHUB_REF'] = 'refs/heads/master'
+export_env['GITHUB_RUN_ID'] = '7777'
+export_env['GITHUB_RUN_ATTEMPT'] = '1'
+
+sample_file = os.path.join(repo, 'samples/iyi/hello.iyi')
+if not os.path.exists(sample_file):
+    samples = sorted(glob.glob(os.path.join(repo, 'samples/iyi/*.iyi')))
+    sample_file = samples[0]
+
+res_exp = subprocess.run([iyi, 'test', '--fresh', '--export-index', f'master={cand_export_path}', sample_file],
+                         env=export_env, capture_output=True, text=True)
+if res_exp.returncode != 0 or not os.path.exists(cand_export_path):
+    print(f'test-master-path FAILED: producer export failed (code {res_exp.returncode}):\n{res_exp.stderr}', file=sys.stderr)
+    sys.exit(1)
+
+# Canonical master has identical content to the candidate at audit pass
+with open(cand_export_path, 'rb') as f:
+    master_bytes = f.read()
+
+with open(canonical_path, 'wb') as f:
+    f.write(master_bytes)
+
+master_sha = hashlib.sha256(master_bytes).hexdigest().lower()
+
+# Create distinct candidate bytes so we can prove candidate != master selection
+cand_data = json.loads(master_bytes.decode('utf-8'))
+cand_data['producer']['job'] = 'producer-candidate-test'
+cand_bytes = json.dumps(cand_data, indent=2).encode('utf-8')
+cand_sha = hashlib.sha256(cand_bytes).hexdigest().lower()
+
+# 2. Local faithful Actions API server on 127.0.0.1
+print('Phase 2: Starting faithful local Actions API server...')
+mode_file = os.path.join(work, 'server_mode.json')
+with open(mode_file, 'w') as f:
+    json.dump({'mode': 'default'}, f)
+
+class ActionsApiHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass
+
+    def do_GET(self):
+        with open(mode_file) as f:
+            cfg = json.load(f)
+        mode = cfg.get('mode', 'default')
+
+        if self.path.startswith('/repos/'):
+            auth = self.headers.get('Authorization', '')
+            if not auth.startswith('Bearer '):
+                self.send_response(401)
+                self.end_headers()
+                self.wfile.write(b'{\"message\":\"Bad credentials\"}')
+                return
+
+        if '/actions/workflows/iyi.yml/runs' in self.path:
+            if mode == 'runs_500':
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(b'{\"message\":\"Internal Server Error\"}')
+                return
+            if mode == 'no_runs':
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(b'{\"total_count\":0,\"workflow_runs\":[]}')
+                return
+            if mode == 'path_mismatch':
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                body = {
+                    'total_count': 1,
+                    'workflow_runs': [{
+                        'id': 8888, 'path': '.github/workflows/other.yml',
+                        'head_branch': 'master', 'event': 'push',
+                        'repository': {'full_name': 'iyilang/iyi'}
+                    }]
+                }
+                self.wfile.write(json.dumps(body).encode('utf-8'))
+                return
+
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            body = {
+                'total_count': 1,
+                'workflow_runs': [{
+                    'id': 8888,
+                    'name': 'iyi',
+                    'path': '.github/workflows/iyi.yml',
+                    'head_branch': 'master',
+                    'event': 'push',
+                    'status': 'completed',
+                    'conclusion': 'success',
+                    'repository': {'id': 12345, 'full_name': 'iyilang/iyi'}
+                }]
+            }
+            self.wfile.write(json.dumps(body).encode('utf-8'))
+            return
+
+        if '/actions/runs/8888/artifacts' in self.path:
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+
+            if mode == 'candidate_only':
+                body = {
+                    'total_count': 1,
+                    'artifacts': [{
+                        'id': 2001,
+                        'name': 'master-candidate-x86_64-linux-gnu.json',
+                        'size_in_bytes': len(cand_bytes),
+                        'expired': False,
+                        'digest': f'sha256:{cand_sha}'
+                    }]
+                }
+            elif mode == 'missing_digest':
+                body = {
+                    'total_count': 1,
+                    'artifacts': [{
+                        'id': 2002,
+                        'name': 'master-x86_64-linux-gnu.json',
+                        'size_in_bytes': len(master_bytes),
+                        'expired': False,
+                        'digest': ''
+                    }]
+                }
+            elif mode == 'wrong_digest':
+                body = {
+                    'total_count': 1,
+                    'artifacts': [{
+                        'id': 2002,
+                        'name': 'master-x86_64-linux-gnu.json',
+                        'size_in_bytes': len(master_bytes),
+                        'expired': False,
+                        'digest': 'sha256:0000000000000000000000000000000000000000000000000000000000000000'
+                    }]
+                }
+            elif mode == 'two_exact':
+                body = {
+                    'total_count': 2,
+                    'artifacts': [
+                        {
+                            'id': 2002,
+                            'name': 'master-x86_64-linux-gnu.json',
+                            'size_in_bytes': len(master_bytes),
+                            'expired': False,
+                            'digest': f'sha256:{master_sha}'
+                        },
+                        {
+                            'id': 2003,
+                            'name': 'master-x86_64-linux-gnu.json',
+                            'size_in_bytes': len(master_bytes),
+                            'expired': False,
+                            'digest': f'sha256:{master_sha}'
+                        }
+                    ]
+                }
+            else:
+                # Default: candidate listed BEFORE master to test exact selection
+                body = {
+                    'total_count': 2,
+                    'artifacts': [
+                        {
+                            'id': 2001,
+                            'name': 'master-candidate-x86_64-linux-gnu.json',
+                            'size_in_bytes': len(cand_bytes),
+                            'expired': False,
+                            'digest': f'sha256:{cand_sha}'
+                        },
+                        {
+                            'id': 2002,
+                            'name': 'master-x86_64-linux-gnu.json',
+                            'size_in_bytes': len(master_bytes),
+                            'expired': False,
+                            'digest': f'sha256:{master_sha}'
+                        }
+                    ]
+                }
+            self.wfile.write(json.dumps(body).encode('utf-8'))
+            return
+
+        if '/actions/artifacts/' in self.path and self.path.endswith('/zip'):
+            parts = self.path.split('/')
+            art_id = parts[-2]
+            loc = f'http://127.0.0.1:{server.server_port}/blob/{art_id}'
+            self.send_response(302)
+            self.send_header('Location', loc)
+            self.end_headers()
+            return
+
+        if self.path.startswith('/blob/'):
+            if 'Authorization' in self.headers:
+                self.send_response(401)
+                self.end_headers()
+                self.wfile.write(b'{\"error\":\"Authorization header forbidden on blob URL\"}')
+                return
+
+            if mode == 'zip_payload':
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/zip')
+                self.end_headers()
+                self.wfile.write(b'PK\\x03\\x04mockziparchivepayloadcontent')
+                return
+
+            art_id = self.path.split('/')[-1]
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            if art_id == '2001':
+                self.wfile.write(cand_bytes)
+            else:
+                self.wfile.write(master_bytes)
+            return
+
+        self.send_response(404)
+        self.end_headers()
+
+server = http.server.HTTPServer(('127.0.0.1', 0), ActionsApiHandler)
+server_thread = threading.Thread(target=server.serve_forever)
+server_thread.daemon = True
+server_thread.start()
+port = server.server_port
+api_url = f'http://127.0.0.1:{port}'
+print(f'Actions API mock listening on {api_url}')
+
+# 3. Behavioral proof: Authorization header forwarded to blob results in 401
+print('Phase 3: Proving blob endpoint rejects Authorization header (behavioral proof)...')
+req_blob_auth = urllib.request.Request(f'{api_url}/blob/2002', headers={'Authorization': 'Bearer test'})
+try:
+    urllib.request.urlopen(req_blob_auth)
+    print('test-master-path FAILED: blob endpoint accepted Authorization header', file=sys.stderr)
+    sys.exit(1)
+except urllib.error.HTTPError as e:
+    if e.code != 401:
+        print(f'test-master-path FAILED: blob endpoint returned {e.code}, expected 401', file=sys.stderr)
+        sys.exit(1)
+    print('Behavioral proof PASSED: blob endpoint correctly returns 401 if Authorization is sent.')
+
+# 4. Happy path: fetch-master with candidate before master in artifact listing
+print('Phase 4: Running fetch-master happy path (candidate before master in listings)...')
+fetched_out = os.path.join(work, 'fetched-master.json')
+fetch_env = os.environ.copy()
+fetch_env['GITHUB_API_URL'] = api_url
+
+res_fetch = subprocess.run(['bash', stale_ci, 'fetch-master',
+                            '--out', fetched_out,
+                            '--target', 'x86_64-linux-gnu',
+                            '--repo', 'iyilang/iyi',
+                            '--token', 'mock-token-xyz'],
+                           env=fetch_env, capture_output=True, text=True)
+if res_fetch.returncode != 0:
+    print(f'test-master-path FAILED: fetch-master returned {res_fetch.returncode}:\n{res_fetch.stderr}', file=sys.stderr)
+    sys.exit(1)
+
+if not os.path.exists(fetched_out):
+    print('test-master-path FAILED: fetch-master did not write output file', file=sys.stderr)
+    sys.exit(1)
+
+with open(fetched_out, 'rb') as f:
+    fetched_bytes = f.read()
+
+if fetched_bytes != master_bytes:
+    print('test-master-path FAILED: fetched bytes do not match canonical master bytes (candidate was selected!)', file=sys.stderr)
+    sys.exit(1)
+
+sidecar_file = f'{fetched_out}.provenance.json'
+if not os.path.exists(sidecar_file):
+    print('test-master-path FAILED: fetch-master did not write provenance sidecar', file=sys.stderr)
+    sys.exit(1)
+
+with open(sidecar_file) as f:
+    sidecar_data = json.load(f)
+
+if sidecar_data.get('sha256') != master_sha or sidecar_data.get('run_id') != 8888 or sidecar_data.get('workflow') != '.github/workflows/iyi.yml':
+    print(f'test-master-path FAILED: sidecar metadata incorrect: {sidecar_data}', file=sys.stderr)
+    sys.exit(1)
+
+print('fetch-master happy path PASSED: exact canonical master downloaded and sidecar verified.')
+
+# 5. Negative tests
+print('Phase 5: Running negative tests...')
+
+# 5.1 Candidate only -> exit 0, no file written (valid absent)
+with open(mode_file, 'w') as f: json.dump({'mode': 'candidate_only'}, f)
+cand_only_out = os.path.join(work, 'cand-only.json')
+res_cand_only = subprocess.run(['bash', stale_ci, 'fetch-master',
+                                '--out', cand_only_out,
+                                '--target', 'x86_64-linux-gnu',
+                                '--token', 'mock-token-xyz'],
+                               env=fetch_env, capture_output=True, text=True)
+if res_cand_only.returncode != 0 or os.path.exists(cand_only_out):
+    print(f'test-master-path FAILED: candidate-only expected exit 0 and no file (code {res_cand_only.returncode})', file=sys.stderr)
+    sys.exit(1)
+print('Negative test 1 (candidate only => valid absent exit 0) PASSED.')
+
+# 5.2 Missing digest -> exit 1
+with open(mode_file, 'w') as f: json.dump({'mode': 'missing_digest'}, f)
+res_md = subprocess.run(['bash', stale_ci, 'fetch-master', '--out', os.path.join(work, 'md.json'),
+                         '--target', 'x86_64-linux-gnu', '--token', 'mock-token-xyz'],
+                        env=fetch_env, capture_output=True, text=True)
+if res_md.returncode == 0:
+    print('test-master-path FAILED: missing digest should fail', file=sys.stderr)
+    sys.exit(1)
+print('Negative test 2 (missing digest => exit 1) PASSED.')
+
+# 5.3 Wrong digest -> exit 1
+with open(mode_file, 'w') as f: json.dump({'mode': 'wrong_digest'}, f)
+res_wd = subprocess.run(['bash', stale_ci, 'fetch-master', '--out', os.path.join(work, 'wd.json'),
+                         '--target', 'x86_64-linux-gnu', '--token', 'mock-token-xyz'],
+                        env=fetch_env, capture_output=True, text=True)
+if res_wd.returncode == 0:
+    print('test-master-path FAILED: wrong digest should fail', file=sys.stderr)
+    sys.exit(1)
+print('Negative test 3 (wrong digest => exit 1) PASSED.')
+
+# 5.4 ZIP payload refused -> exit 1
+with open(mode_file, 'w') as f: json.dump({'mode': 'zip_payload'}, f)
+res_zip = subprocess.run(['bash', stale_ci, 'fetch-master', '--out', os.path.join(work, 'zip.json'),
+                          '--target', 'x86_64-linux-gnu', '--token', 'mock-token-xyz'],
+                          env=fetch_env, capture_output=True, text=True)
+if res_zip.returncode == 0:
+    print('test-master-path FAILED: ZIP payload should be refused', file=sys.stderr)
+    sys.exit(1)
+print('Negative test 4 (ZIP payload refused => exit 1) PASSED.')
+
+# 5.5 Two exact artifacts -> exit 1
+with open(mode_file, 'w') as f: json.dump({'mode': 'two_exact'}, f)
+res_two = subprocess.run(['bash', stale_ci, 'fetch-master', '--out', os.path.join(work, 'two.json'),
+                          '--target', 'x86_64-linux-gnu', '--token', 'mock-token-xyz'],
+                         env=fetch_env, capture_output=True, text=True)
+if res_two.returncode == 0:
+    print('test-master-path FAILED: multiple exact artifacts should fail', file=sys.stderr)
+    sys.exit(1)
+print('Negative test 5 (two exact artifacts => exit 1) PASSED.')
+
+# 5.6 Runs 500 -> exit 1
+with open(mode_file, 'w') as f: json.dump({'mode': 'runs_500'}, f)
+res_500 = subprocess.run(['bash', stale_ci, 'fetch-master', '--out', os.path.join(work, '500.json'),
+                          '--target', 'x86_64-linux-gnu', '--token', 'mock-token-xyz'],
+                         env=fetch_env, capture_output=True, text=True)
+if res_500.returncode == 0:
+    print('test-master-path FAILED: runs 500 should fail', file=sys.stderr)
+    sys.exit(1)
+print('Negative test 6 (runs 500 => exit 1) PASSED.')
+
+# 5.7 Missing token -> exit 1
+res_notoken = subprocess.run(['bash', stale_ci, 'fetch-master', '--out', os.path.join(work, 'notoken.json'),
+                              '--target', 'x86_64-linux-gnu', '--token', ''],
+                             env={k: v for k, v in fetch_env.items() if 'TOKEN' not in k}, capture_output=True, text=True)
+if res_notoken.returncode == 0:
+    print('test-master-path FAILED: missing token should fail', file=sys.stderr)
+    sys.exit(1)
+print('Negative test 7 (missing token => exit 1) PASSED.')
+
+# 6. Cache wipe & pollution test with master-self-check
+print('Phase 6: Verifying cache wipe discrimination in master-self-check...')
+polluted_cache = os.path.join(work, 'polluted_cache')
+os.makedirs(polluted_cache, exist_ok=True)
+
+test_env = os.environ.copy()
+test_env['IYI_CACHE_DIR'] = polluted_cache
+
+# 6.1 Pollute cache with fresh run
+res_fresh = subprocess.run([iyi, 'test', '--fresh', sample_file],
+                           env=test_env, capture_output=True, text=True)
+if res_fresh.returncode != 0:
+    print('test-master-path FAILED: fresh test run failed to populate cache', file=sys.stderr)
+    sys.exit(1)
+
+# 6.2 Behavioral proof: without wipe, --cached hits local receipt (source != 'master')
+unwiped_out = os.path.join(work, 'unwiped.json')
+with open(unwiped_out, 'w') as f:
+    res_unwiped = subprocess.run([iyi, 'test', '--cached', '--json',
+                                  '--import-index', f'master={canonical_path}',
+                                  sample_file],
+                                 env=test_env, stdout=f, capture_output=False, text=True)
+with open(unwiped_out) as f:
+    unwiped_data = json.load(f)
+
+unwiped_sources = [t.get('source') for t in unwiped_data.get('tests', [])]
+if 'master' in unwiped_sources:
+    print('Notice: without wipe, hit already master?', unwiped_sources)
+else:
+    print(f'Behavioral proof PASSED: without wipe, local receipt substituted (sources: {unwiped_sources})')
+
+# 6.3 With master-self-check (which performs cache wipe before importing):
+check_out = os.path.join(work, 'check-out.json')
+res_check = subprocess.run(['bash', stale_ci, 'master-self-check',
+                            '--snapshot', canonical_path,
+                            '--out-json', check_out,
+                            '--repo', repo,
+                            sample_file],
+                           env=test_env, capture_output=True, text=True)
+if res_check.returncode != 0:
+    print(f'test-master-path FAILED: master-self-check failed:\n{res_check.stderr}', file=sys.stderr)
+    sys.exit(1)
+
+with open(check_out) as f:
+    check_data = json.load(f)
+
+check_sources = [t.get('source') for t in check_data.get('tests', [])]
+if any(s != 'master' for s in check_sources):
+    print(f'test-master-path FAILED: expected all sources to be master after wipe, got: {check_sources}', file=sys.stderr)
+    sys.exit(1)
+print(f'master-self-check with wipe PASSED: all tests imported from master (sources: {check_sources}).')
+
+# 7. Empty snapshot tests
+print('Phase 7: Testing empty snapshot handling and refusal of forged run_id...')
+empty_out = os.path.join(work, 'empty.json')
+res_empty_create = subprocess.run(['bash', stale_ci, 'empty-snapshot',
+                                   '--run-id', '4444',
+                                   '--out', empty_out,
+                                   '--target', 'x86_64-linux-gnu'],
+                                  capture_output=True, text=True)
+if res_empty_create.returncode != 0:
+    print('test-master-path FAILED: empty-snapshot --run-id 4444 failed', file=sys.stderr)
+    sys.exit(1)
+
+with open(empty_out) as f:
+    empty_data = json.load(f)
+if empty_data.get('producer', {}).get('run_id') != 4444 or len(empty_data.get('records', [])) != 0:
+    print(f'test-master-path FAILED: empty snapshot data incorrect: {empty_data}', file=sys.stderr)
+    sys.exit(1)
+
+# Import empty snapshot: verifies consumption is turned off (0 cached hits)
+empty_test_out = os.path.join(work, 'empty_test.json')
+with open(empty_test_out, 'w') as f:
+    subprocess.run([iyi, 'test', '--cached', '--json',
+                    '--import-index', f'master={empty_out}',
+                    sample_file],
+                   env=test_env, stdout=f)
+with open(empty_test_out) as f:
+    empty_test_data = json.load(f)
+hits = [t for t in empty_test_data.get('tests', []) if t.get('cached')]
+if len(hits) != 0:
+    print(f'test-master-path FAILED: empty snapshot should have 0 cached hits, got {len(hits)}', file=sys.stderr)
+    sys.exit(1)
+print('Empty snapshot --run-id 4444 PASSED: cleanly imported and turned off consumption.')
+
+# Forged/invalid run_id rejected
+res_zero = subprocess.run(['bash', stale_ci, 'empty-snapshot', '--run-id', '0', '--out', os.path.join(work, 'e0.json')],
+                          capture_output=True, text=True)
+if res_zero.returncode == 0:
+    print('test-master-path FAILED: empty-snapshot --run-id 0 should fail', file=sys.stderr)
+    sys.exit(1)
+
+res_norunid = subprocess.run(['bash', stale_ci, 'empty-snapshot', '--out', os.path.join(work, 'eno.json')],
+                             capture_output=True, text=True)
+if res_norunid.returncode == 0:
+    print('test-master-path FAILED: empty-snapshot without --run-id should fail', file=sys.stderr)
+    sys.exit(1)
+print('Empty snapshot refusal of invalid/zero run_id PASSED.')
+
+server.shutdown()
+print('All test-master-path tests completed successfully.')
+" "$REPO" "$IYI" "$work"
+
+  clean_exit=1
+  echo "test-master-path PASSED."
+}
+
 # Main command dispatcher
 COMMAND="${1:-help}"
 shift || true
@@ -1376,6 +2024,12 @@ case "$COMMAND" in
   rg9)
     run_rg9 "$@"
     ;;
+  master-self-check)
+    master_self_check "$@"
+    ;;
+  test-master-path)
+    test_master_path "$@"
+    ;;
   help|--help|-h)
     echo "Usage: $0 <command> [options]"
     echo "Commands:"
@@ -1387,6 +2041,8 @@ case "$COMMAND" in
   echo "  git-diff-check              Verify run observations against git diff"
     echo "  empty-snapshot              Generate an empty snapshot for disagreement (RG6)"
     echo "  rg9                         Run RG9 deterministic CallPathFp check"
+    echo "  master-self-check           Import master snapshot and verify against git diff"
+    echo "  test-master-path            Verify master snapshot export, API fetch, and self-check"
     ;;
   *)
     echo "Unknown command: $COMMAND" >&2

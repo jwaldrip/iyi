@@ -289,13 +289,13 @@ r19_ns="run:$r19_run_id"
 
 # 1. Unsharded fresh export
 rm -rf "$CACHE/tests-v1"
-(cd "$WORK/r19" && GITHUB_RUN_ID="$r19_run_id" "$IYI" test --fresh --json --export-index "$r19_ns=$WORK/r19/unsharded.json" .) >/dev/null
+(cd "$WORK/r19" && IYI_CI_PRODUCER=1 GITHUB_RUN_ID="$r19_run_id" "$IYI" test --fresh --json --export-index "$r19_ns=$WORK/r19/unsharded.json" .) >/dev/null
 
 # 2. Sharded fresh exports (1/3, 2/3, 3/3)
 rm -rf "$CACHE/tests-v1"
-(cd "$WORK/r19" && GITHUB_RUN_ID="$r19_run_id" "$IYI" test --fresh --json --shard 1/3 --export-index "$r19_ns=$WORK/r19/shard1.json" .) >/dev/null
-(cd "$WORK/r19" && GITHUB_RUN_ID="$r19_run_id" "$IYI" test --fresh --json --shard 2/3 --export-index "$r19_ns=$WORK/r19/shard2.json" .) >/dev/null
-(cd "$WORK/r19" && GITHUB_RUN_ID="$r19_run_id" "$IYI" test --fresh --json --shard 3/3 --export-index "$r19_ns=$WORK/r19/shard3.json" .) >/dev/null
+(cd "$WORK/r19" && IYI_CI_PRODUCER=1 GITHUB_RUN_ID="$r19_run_id" "$IYI" test --fresh --json --shard 1/3 --export-index "$r19_ns=$WORK/r19/shard1.json" .) >/dev/null
+(cd "$WORK/r19" && IYI_CI_PRODUCER=1 GITHUB_RUN_ID="$r19_run_id" "$IYI" test --fresh --json --shard 2/3 --export-index "$r19_ns=$WORK/r19/shard2.json" .) >/dev/null
+(cd "$WORK/r19" && IYI_CI_PRODUCER=1 GITHUB_RUN_ID="$r19_run_id" "$IYI" test --fresh --json --shard 3/3 --export-index "$r19_ns=$WORK/r19/shard3.json" .) >/dev/null
 
 # 3. Verify shard records union exact TestId set matches unsharded snapshot
 python3 -c "
@@ -321,12 +321,33 @@ if s_ids != u_ids:
 "
 
 # 4. Import repeated same namespace CLI options in clean consumer cache
-consumer_cache="$WORK/r19/consumer_cache"
-r19_cached="$(cd "$WORK/r19" && IYI_CACHE_DIR="$consumer_cache" GITHUB_RUN_ID="$r19_run_id" "$IYI" test --cached --json \
+rm -rf "$CACHE/tests-v1"
+r19_cached="$(cd "$WORK/r19" && GITHUB_RUN_ID="$r19_run_id" "$IYI" test --cached --json \
   --import-index "$r19_ns=$WORK/r19/shard1.json" \
   --import-index "$r19_ns=$WORK/r19/shard2.json" \
   --import-index "$r19_ns=$WORK/r19/shard3.json" .)"
 expect_eq "$(printf '%s' "$r19_cached" | json_cached)" 3 "all 3 tests hit via repeated same-namespace import"
+
+# 5. Validate exact hit identities with assert-hits and check entry fields
+printf '%s\n' "$r19_cached" > "$WORK/r19/cached.json"
+bash "$REPO/bench/stale_ci.sh" assert-hits --json "$WORK/r19/cached.json" --snapshot "$WORK/r19/unsharded.json" --namespace "$r19_ns"
+python3 -c "
+import json, sys
+with open('$WORK/r19/cached.json') as f:
+    data = json.load(f)
+tests = data.get('tests', [])
+assert len(tests) == 3, f'expected 3 tests in cached results, got {len(tests)}'
+for t in tests:
+    assert t.get('source') == '$r19_ns', f'expected source $r19_ns, got {t.get(\"source\")}'
+    pb = t.get('portable_build', '')
+    assert len(pb) == 64 and all(c in '0123456789abcdef' for c in pb.lower()), f'invalid portable_build: {pb}'
+    prof = t.get('profile', '')
+    assert len(prof) == 64 and all(c in '0123456789abcdef' for c in prof.lower()), f'invalid profile: {prof}'
+    roots = t.get('roots')
+    assert isinstance(roots, dict) and 'src' in roots, f'invalid roots: {roots}'
+    assert isinstance(t.get('blocked'), bool), f'invalid blocked bool: {t.get(\"blocked\")}'
+"
+
 step 20 "invalid snapshot metadata is refused"
 # Covered by spec/compiler/stale/snapshot_spec.cr:125,225
 step 21 "corruption and concurrent receipt writes are atomic"
@@ -334,6 +355,56 @@ step 21 "corruption and concurrent receipt writes are atomic"
 step 22 "compatibility-library mode stays fresh"
 # Its test aggregate remains unchanged; cached compatibility-library mode is
 # covered by the command/runner spec because this host cannot link its specs.
+
+step "ambiguous test id runs fresh and never records receipts"
+mkdir -p "$WORK/ambig/a" "$WORK/ambig/b"
+cat > "$WORK/ambig/a/t_test.iyi" <<'IYI'
+assert 1 == 1
+IYI
+cat > "$WORK/ambig/b/t_test.iyi" <<'IYI'
+assert 2 == 2
+IYI
+
+# First cached run on both files: both miss with reason "ambiguous test id", cached 0
+rm -rf "$CACHE/tests-v1"
+ambig_first="$(run_json "$WORK/ambig" a/t_test.iyi b/t_test.iyi)"
+expect_eq "$(printf '%s' "$ambig_first" | json_cached)" 0 "ambiguous first run cached 0"
+
+# Second cached run on both files: both still miss with reason "ambiguous test id", cached 0
+ambig_second="$(run_json "$WORK/ambig" a/t_test.iyi b/t_test.iyi)"
+expect_eq "$(printf '%s' "$ambig_second" | json_cached)" 0 "ambiguous second run cached 0"
+expect_contains "$ambig_second" "ambiguous test id" "ambiguous reason reported"
+
+# Verify test.path are equal across both entries
+python3 -c "
+import json, sys
+data = json.loads(sys.argv[1])
+tests = data.get('tests', [])
+assert len(tests) == 2, f'expected 2 tests, got {len(tests)}'
+assert tests[0]['test']['path'] == tests[1]['test']['path'], 'test.path must be equal'
+for t in tests:
+    assert t['reuse'] == 'miss', f'expected reuse miss, got {t[\"reuse\"]}'
+    assert t.get('reason') == 'ambiguous test id', f'expected reason ambiguous test id, got {t.get(\"reason\")}'
+" "$ambig_second"
+
+# Shard 1/2 with both files: single entry in shard, but STILL ambiguous!
+ambig_shard="$(run_json "$WORK/ambig" --shard 1/2 a/t_test.iyi b/t_test.iyi)"
+expect_eq "$(printf '%s' "$ambig_shard" | json_cached)" 0 "ambiguous sharded run cached 0"
+python3 -c "
+import json, sys
+data = json.loads(sys.argv[1])
+tests = data.get('tests', [])
+assert len(tests) == 1, f'expected 1 test in shard 1/2, got {len(tests)}'
+assert tests[0]['reuse'] == 'miss', f'expected reuse miss in shard, got {tests[0][\"reuse\"]}'
+assert tests[0].get('reason') == 'ambiguous test id', f'expected reason ambiguous test id in shard, got {tests[0].get(\"reason\")}'
+" "$ambig_shard"
+
+# Single file alone control: second run MUST HIT
+rm -rf "$CACHE/tests-v1"
+single_first="$(run_json "$WORK/ambig" a/t_test.iyi)"
+expect_eq "$(printf '%s' "$single_first" | json_cached)" 0 "single file first run cached 0"
+single_second="$(run_json "$WORK/ambig" a/t_test.iyi)"
+expect_eq "$(printf '%s' "$single_second" | json_cached)" 1 "single file second run hits (control)"
 
 # Rows 23 and 24: CI evidence exact identity, git-diff, and planted hidden-read proofs (§12).
 step 23 "CI evidence exact identity and git diff checks discriminate"
@@ -383,6 +454,26 @@ expect_eq "$(printf '%s' "$link_hit" | json_cached)" 1 "symlink target unchanged
 printf 'target_v2' > "$WORK/symlink/outside.txt"
 link_miss="$(run_json "$WORK/symlink" link_test.iyi)"
 expect_eq "$(printf '%s' "$link_miss" | json_cached)" 0 "symlink target mutation reruns"
+
+step "symlink outside scratch targeting scratch taints shared-write"
+mkdir -p "$WORK/symlink_shared"
+cat > "$WORK/symlink_shared/shared_link_test.iyi" <<'IYI'
+import std/file::{File}
+import std/dir::{Dir}
+data_path = File.join(Dir.tempdir, "data.txt")
+File.write(data_path, "scratch data")
+link_path = File.join(__DIR__, "shared_link")
+File.symlink(data_path, link_path)
+IYI
+
+rm -rf "$CACHE/tests-v1"
+sym_run1="$(run_json "$WORK/symlink_shared" shared_link_test.iyi)"
+expect_eq "$(printf '%s' "$sym_run1" | json_cached)" 0 "symlink run1 cached 0"
+expect_contains "$sym_run1" "shared" "symlink creation outside scratch not reusable reason"
+rm -f "$WORK/symlink_shared/shared_link"
+sym_run2="$(run_json "$WORK/symlink_shared" shared_link_test.iyi)"
+expect_eq "$(printf '%s' "$sym_run2" | json_cached)" 0 "symlink run2 cached 0 after non-reusable run1"
+rm -f "$WORK/symlink_shared/shared_link"
 
 step 30 "hard link outside scratch taints shared-write"
 # Covered by spec/compiler/stale/trace_spec.cr
