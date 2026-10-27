@@ -193,12 +193,9 @@ end
 @@written_env = ::Set(String).new
 @[ThreadLocal]
 @@thread_depth = 0_i32
-@[ThreadLocal]
-@@in_hook = false
 
-pub def enter_frame(tid : UInt64 = current_task_id) : ::Bool
+pub def enter_frame : ::Bool
   return true unless @@enabled
-  return false if @@in_hook
   {% if !flag?(:single_thread) && flag?(:iyi_observe) %}
     if IyiScheduler.state_id != 0_u64
       fiber = IyiScheduler.state.current
@@ -214,9 +211,8 @@ pub def enter_frame(tid : UInt64 = current_task_id) : ::Bool
   d == 0
 end
 
-pub def leave_frame(tid : UInt64 = current_task_id) : Nil
+pub def leave_frame : Nil
   return unless @@enabled
-  return if @@in_hook
   {% if !flag?(:single_thread) && flag?(:iyi_observe) %}
     if IyiScheduler.state_id != 0_u64
       fiber = IyiScheduler.state.current
@@ -231,7 +227,7 @@ pub def leave_frame(tid : UInt64 = current_task_id) : Nil
   @@thread_depth = d - 1 if d > 0
 end
 
-pub def frame_depth(tid : UInt64 = current_task_id) : Int32
+pub def frame_depth : Int32
   {% if !flag?(:single_thread) && flag?(:iyi_observe) %}
     if IyiScheduler.state_id != 0_u64
       fiber = IyiScheduler.state.current
