@@ -286,7 +286,7 @@ def run_single_program(item):
     # 3. Static build-key run
     key_file = os.path.join(p_scratch, f"k_{unique_id}.json")
     out_bin = os.path.join(p_scratch, f"o_{unique_id}")
-    res_static = subprocess.run([iyi, 'build', '--stale-key', key_file, '-o', out_bin, test_file],
+    res_static = subprocess.run([iyi, 'build', '-Diyi_observe', '--stale-key', key_file, '-o', out_bin, test_file],
                                 capture_output=True, text=True, env=env, cwd=p_scratch)
     if os.path.exists(out_bin):
         try: os.remove(out_bin)
@@ -343,7 +343,7 @@ def run_single_program(item):
     if bname in OVERHEAD_NAMES:
         dump_out = os.path.join(p_scratch, f"dump_{unique_id}.json")
         bin_dump = os.path.join(p_scratch, f"bd_{unique_id}")
-        subprocess.run([iyi, 'build', '--stale-dump-elements', dump_out, '-o', bin_dump, test_file],
+        subprocess.run([iyi, 'build', '-Diyi_observe', '--stale-dump-elements', dump_out, '-o', bin_dump, test_file],
                        capture_output=True, text=True, env=env, cwd=p_scratch)
         if os.path.exists(bin_dump):
             try: os.remove(bin_dump)
@@ -592,7 +592,7 @@ def measure_overhead(results):
     # 2. Compute stale build key
     key_file = os.path.join(work, 'hello.key')
     bin_k = os.path.join(work, 'hello_k')
-    subprocess.run([iyi, 'build', '--stale-key', key_file, '-o', bin_k, hello_path],
+    subprocess.run([iyi, 'build', '-Diyi_observe', '--stale-key', key_file, '-o', bin_k, hello_path],
                    capture_output=True, text=True, env=env_base)
     if os.path.exists(bin_k):
         try: os.remove(bin_k)
@@ -612,17 +612,19 @@ def measure_overhead(results):
         with open(accept_file, 'w') as f:
             json.dump([{'mode': 'local', 'build': local_build_hex}], f)
 
-    # 3. Cached Hit with Normal Prelude
+    # 3. Cached Hit with Normal Prelude (own key file, with -Diyi_observe)
+    key_file_norm = os.path.join(work, 'hello_hit_norm.key')
     bin_hit_norm = os.path.join(work, 'hello_hit_norm')
-    cmd_hit_norm = [iyi, 'build', '--stats', '--stale-key', key_file, '--stale-accept', accept_file, '-o', bin_hit_norm, hello_path]
+    cmd_hit_norm = [iyi, 'build', '-Diyi_observe', '--stats', '--stale-key', key_file_norm, '--stale-accept', accept_file, '-o', bin_hit_norm, hello_path]
     res_hit_norm = subprocess.run(cmd_hit_norm, capture_output=True, text=True, env=env_base)
     if os.path.exists(bin_hit_norm):
         try: os.remove(bin_hit_norm)
         except: pass
 
-    # 4. Cached Hit with Preanalysed Prelude (IYI_WARM=1)
+    # 4. Cached Hit with Preanalysed Prelude (IYI_WARM=1) (own key file, with -Diyi_observe)
+    key_file_warm = os.path.join(work, 'hello_hit_warm.key')
     bin_hit_warm = os.path.join(work, 'hello_hit_warm')
-    cmd_hit_warm = [iyi, 'build', '--stats', '--stale-key', key_file, '--stale-accept', accept_file, '-o', bin_hit_warm, hello_path]
+    cmd_hit_warm = [iyi, 'build', '-Diyi_observe', '--stats', '--stale-key', key_file_warm, '--stale-accept', accept_file, '-o', bin_hit_warm, hello_path]
     env_warm = dict(env_base, IYI_WARM='1')
     res_hit_warm = subprocess.run(cmd_hit_warm, capture_output=True, text=True, env=env_warm)
     if os.path.exists(bin_hit_warm):
@@ -630,21 +632,61 @@ def measure_overhead(results):
         except: pass
 
     def parse_stats(out_text):
-        st = {}
+        st = defaultdict(float)
+        found = set()
         for line in out_text.splitlines():
             line = line.strip()
             if ':' in line:
                 parts = line.split(':', 1)
                 name = parts[0].strip()
-                val = parts[1].strip()
-                m = re.match(r'^([0-9.]+(?:s|ms|µs|m|h))', val)
+                rest = parts[1].strip()
+                m = re.search(r'(\d+):(\d\d):(\d\d(?:\.\d+)?)', rest)
                 if m:
-                    st[name] = m.group(1)
-        return st
+                    sec = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+                    st[name] += sec
+                    found.add(name)
+                else:
+                    m2 = re.match(r'^([0-9.]+)\s*s', rest)
+                    if m2:
+                        st[name] += float(m2.group(1))
+                        found.add(name)
+                    else:
+                        m3 = re.match(r'^([0-9.]+)\s*ms', rest)
+                        if m3:
+                            st[name] += float(m3.group(1)) / 1000.0
+                            found.add(name)
+        return {k: f"{st[k]:.3f}s" for k in found}
 
     def_stages = parse_stats(res_def.stdout + '\n' + res_def.stderr)
     norm_stages = parse_stats(res_hit_norm.stdout + '\n' + res_hit_norm.stderr)
     warm_stages = parse_stats(res_hit_warm.stdout + '\n' + res_hit_warm.stderr)
+
+    phase_norm = "unknown"
+    if os.path.exists(key_file_norm):
+        try:
+            with open(key_file_norm) as f:
+                kdata = json.load(f)
+                phase_norm = kdata.get("phase", "unknown")
+        except Exception:
+            pass
+
+    phase_warm = "unknown"
+    if os.path.exists(key_file_warm):
+        try:
+            with open(key_file_warm) as f:
+                kdata = json.load(f)
+                phase_warm = kdata.get("phase", "unknown")
+        except Exception:
+            pass
+
+    out_norm = res_hit_norm.stdout + '\n' + res_hit_norm.stderr
+    out_warm = res_hit_warm.stdout + '\n' + res_hit_warm.stderr
+
+    codegen_lines_norm = [line.strip() for line in out_norm.splitlines() if 'Codegen (' in line]
+    codegen_lines_warm = [line.strip() for line in out_warm.splitlines() if 'Codegen (' in line]
+
+    norm_proven = (res_hit_norm.returncode == 0 and phase_norm == "hit" and len(codegen_lines_norm) == 0)
+    warm_proven = (res_hit_warm.returncode == 0 and phase_warm == "hit" and len(codegen_lines_warm) == 0)
 
     displayed_stages = [
         ('Parse', 'Parse'),
@@ -662,29 +704,39 @@ def measure_overhead(results):
     for key, label in displayed_stages:
         t_d = def_stages.get(key, '—')
         is_codegen = 'Codegen' in key
-        t_n = norm_stages.get(key, '*(stopped)*' if is_codegen else '—')
-        t_w = warm_stages.get(key, '*(stopped)*' if is_codegen else '—')
-        proof = 'Stops before codegen' if is_codegen else 'Verified hit'
+        t_n = norm_stages.get(key, '(not run)' if is_codegen else '—')
+        t_w = warm_stages.get(key, '(not run)' if is_codegen else '—')
+        if is_codegen:
+            proof = f"phase={phase_norm}/{phase_warm}, no codegen" if (phase_norm == "hit" and phase_warm == "hit" and not codegen_lines_norm and not codegen_lines_warm) else f"unproven (norm={phase_norm}, warm={phase_warm})"
+        else:
+            proof = f"phase={phase_norm}/{phase_warm} (exit {res_hit_norm.returncode}/{res_hit_warm.returncode})"
         print(f"| {label:32} | {t_d:13} | {t_n:27} | {t_w:37} | {proof} |")
     print()
     print('*Honest accounting: No speedup is promised (§13, §14). Every hit type-checks: parse, top level, main semantic, walk, and hashing run on every check. Checks stop before codegen, eliminating object compilation and linking overhead. Preanalysed prelude (`IYI_WARM=1`) isolates cold prelude analysis from per-program verification.*')
     print()
+    print(f"Normal prelude proof: exit={res_hit_norm.returncode}, phase={phase_norm}, codegen_lines={len(codegen_lines_norm)} -> {'phase hit no codegen' if norm_proven else 'hit not proven'}")
+    print(f"Preanalysed prelude proof: exit={res_hit_warm.returncode}, phase={phase_warm}, codegen_lines={len(codegen_lines_warm)} -> {'phase hit no codegen' if warm_proven else 'hit not proven'}")
+    print()
     print('### Raw Progress Tracker Output (`--stats` Cached Hit - Normal Prelude):')
     print('```')
-    for line in (res_hit_norm.stdout + '\n' + res_hit_norm.stderr).splitlines():
+    for line in out_norm.splitlines():
         line = line.strip()
-        if any(line.startswith(prefix) for prefix in ['Parse:', 'Semantic', 'Walk:', 'Hashing:', 'Codegen:']):
+        if any(line.startswith(prefix) for prefix in ['Parse:', 'Semantic', 'Walk:', 'Hashing:']) or 'Codegen (' in line:
             print(line)
     print('```')
     print()
     print('### Raw Progress Tracker Output (`--stats` Cached Hit - Preanalysed Prelude `IYI_WARM=1`):')
     print('```')
-    for line in (res_hit_warm.stdout + '\n' + res_hit_warm.stderr).splitlines():
+    for line in out_warm.splitlines():
         line = line.strip()
-        if any(line.startswith(prefix) for prefix in ['Parse:', 'Semantic', 'Walk:', 'Hashing:', 'Codegen:']):
+        if any(line.startswith(prefix) for prefix in ['Parse:', 'Semantic', 'Walk:', 'Hashing:']) or 'Codegen (' in line:
             print(line)
     print('```')
     print()
+
+    if not (norm_proven and warm_proven):
+        print(f"ERROR: Cached hit not proven (normal_proven={norm_proven}, warm_proven={warm_proven})", file=sys.stderr)
+        sys.exit(1)
 
 results = []
 if mode in ('all', 'census'):
