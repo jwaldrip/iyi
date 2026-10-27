@@ -589,6 +589,97 @@ printf 'in_v2' > "$WORK/scratch-write/in.txt"
 row49_miss="$(run_json "$WORK/scratch-write" tmp_test.iyi)"
 expect_eq "$(printf '%s' "$row49_miss" | json_cached)" 0 "input beside a scratch write reruns"
 
+# Process profile: argv and cwd sensitivity, default mode isolation, concurrent scratch lock
+step "process profile" "argv and cwd sensitivity, plain test isolation, concurrent scratch lock"
+
+# 1. Argv sensitivity: cache-a hits second, cp -R cache-b misses and fails with same portable_build, different profile
+mkdir -p "$WORK/argv-sensitivity"
+cat > "$WORK/argv-sensitivity/argv_test.iyi" <<'IYI'
+args = Program.args
+raise "argv size" unless args.size == 1
+if args[0].includes?("cache-b")
+  raise "cache-b hit forbidden"
+end
+IYI
+run1="$(cd "$WORK/argv-sensitivity" && IYI_CACHE_DIR="$WORK/cache-a" "$IYI" test --cached --json argv_test.iyi)"
+expect_eq "$(printf '%s' "$run1" | json_cached)" 0 "argv test run 1 records"
+run1_build="$(printf '%s' "$run1" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tests"][0]["portable_build"])')"
+run1_profile="$(printf '%s' "$run1" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tests"][0]["profile"])')"
+
+run2="$(cd "$WORK/argv-sensitivity" && IYI_CACHE_DIR="$WORK/cache-a" "$IYI" test --cached --json argv_test.iyi)"
+expect_eq "$(printf '%s' "$run2" | json_cached)" 1 "argv test run 2 hits"
+
+cp -R "$WORK/cache-a" "$WORK/cache-b"
+run3="$(cd "$WORK/argv-sensitivity" && IYI_CACHE_DIR="$WORK/cache-b" "$IYI" test --cached --json argv_test.iyi)"
+expect_eq "$(printf '%s' "$run3" | json_cached)" 0 "argv test run 3 in cache-b misses"
+run3_status="$(printf '%s' "$run3" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tests"][0]["status"])')"
+expect_eq "$run3_status" "fail" "argv test run 3 fails because S includes cache-b"
+run3_build="$(printf '%s' "$run3" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tests"][0]["portable_build"])')"
+run3_profile="$(printf '%s' "$run3" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tests"][0]["profile"])')"
+expect_eq "$run1_build" "$run3_build" "same portable_build between cache-a and cache-b"
+[ "$run1_profile" != "$run3_profile" ] || fail "expected different profile for cache-a vs cache-b"
+
+# 2. cwd sensitivity: run from cwdA hits; run from cwdB misses and fails
+mkdir -p "$WORK/cwd-sensitivity/cwdA" "$WORK/cwd-sensitivity/cwdB"
+printf 'a' > "$WORK/cwd-sensitivity/cwdA/rel.txt"
+printf 'b' > "$WORK/cwd-sensitivity/cwdB/rel.txt"
+cat > "$WORK/cwd-sensitivity/rel_test.iyi" <<'IYI'
+import std/file::{File}
+content = File.read("rel.txt")
+raise "cwd mismatch" unless content == "a"
+IYI
+cwd_run1="$( (cd "$WORK/cwd-sensitivity/cwdA" && "$IYI" test --cached --json "$WORK/cwd-sensitivity/rel_test.iyi") )"
+expect_eq "$(printf '%s' "$cwd_run1" | json_cached)" 0 "cwdA run 1 records"
+cwd_run2="$( (cd "$WORK/cwd-sensitivity/cwdA" && "$IYI" test --cached --json "$WORK/cwd-sensitivity/rel_test.iyi") )"
+expect_eq "$(printf '%s' "$cwd_run2" | json_cached)" 1 "cwdA run 2 hits"
+cwd_run3="$( (cd "$WORK/cwd-sensitivity/cwdB" && "$IYI" test --cached --json "$WORK/cwd-sensitivity/rel_test.iyi") )"
+expect_eq "$(printf '%s' "$cwd_run3" | json_cached)" 0 "cwdB run 3 misses"
+cwd_run3_status="$(printf '%s' "$cwd_run3" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tests"][0]["status"])')"
+expect_eq "$cwd_run3_status" "fail" "cwdB run 3 fails because rel.txt is b"
+
+# 3. Default mode unchanged: Program.args.empty? passes under plain iyi test and fails under --cached
+mkdir -p "$WORK/plain-mode"
+cat > "$WORK/plain-mode/args_empty_test.iyi" <<'IYI'
+raise "args not empty" unless Program.args.empty?
+IYI
+(cd "$WORK/plain-mode" && "$IYI" test args_empty_test.iyi) >/dev/null
+plain_cached="$( (cd "$WORK/plain-mode" && "$IYI" test --cached --json args_empty_test.iyi) )"
+expect_eq "$(printf '%s' "$plain_cached" | json_failed)" 1 "args_empty_test fails under --cached"
+
+# 4. Lock: two concurrent --fresh runs of lock_test.iyi in one cache both pass
+mkdir -p "$WORK/lock-test"
+cat > "$WORK/lock-test/lock_test.iyi" <<'IYI'
+import std/file::{File}
+import std/dir::{Dir}
+import std/time::{sleep}
+
+args = Program.args
+raise "no scratch arg" unless args.size == 1
+scratch = args[0]
+
+entries = Dir.children(scratch)
+raise "scratch not empty" unless entries.empty?
+
+token = "#{Process.pid}"
+token_file = File.join(scratch, "token.txt")
+File.write(token_file, token)
+
+sleep(0.3)
+
+read_token = File.read(token_file)
+raise "token corrupted" unless read_token == token
+IYI
+lock_out1="$WORK/lock-test/out1.json"
+lock_out2="$WORK/lock-test/out2.json"
+(cd "$WORK/lock-test" && "$IYI" test --fresh --json lock_test.iyi > "$lock_out1") &
+pid1=$!
+(cd "$WORK/lock-test" && "$IYI" test --fresh --json lock_test.iyi > "$lock_out2") &
+pid2=$!
+wait "$pid1"
+wait "$pid2"
+expect_eq "$(cat "$lock_out1" | json_failed)" 0 "lock test run 1 passes"
+expect_eq "$(cat "$lock_out2" | json_failed)" 0 "lock test run 2 passes"
+
 # Row 50 mutation proof: a test whose macro `run` helper is compiled cold on
 # the recording run hits on the next run, when the helper comes from the
 # cache. Linking the cold helper read IYI_LINK_DRIVER and the warm check did
