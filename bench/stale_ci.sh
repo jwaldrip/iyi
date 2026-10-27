@@ -1699,237 +1699,286 @@ server_thread.start()
 port = server.server_port
 api_url = f'http://127.0.0.1:{port}'
 print(f'Actions API mock listening on {api_url}')
-
-# 3. Behavioral proof: Authorization header forwarded to blob results in 401
-print('Phase 3: Proving blob endpoint rejects Authorization header (behavioral proof)...')
-req_blob_auth = urllib.request.Request(f'{api_url}/blob/2002', headers={'Authorization': 'Bearer test'})
 try:
-    urllib.request.urlopen(req_blob_auth)
-    print('test-master-path FAILED: blob endpoint accepted Authorization header', file=sys.stderr)
-    sys.exit(1)
-except urllib.error.HTTPError as e:
-    if e.code != 401:
-        print(f'test-master-path FAILED: blob endpoint returned {e.code}, expected 401', file=sys.stderr)
+    # 3. Behavioral proof: Authorization header forwarded to blob results in 401
+    print('Phase 3: Proving blob endpoint rejects Authorization header (behavioral proof)...')
+    req_blob_auth = urllib.request.Request(f'{api_url}/blob/2002', headers={'Authorization': 'Bearer test'})
+    try:
+        urllib.request.urlopen(req_blob_auth)
+        print('test-master-path FAILED: blob endpoint accepted Authorization header', file=sys.stderr)
         sys.exit(1)
-    print('Behavioral proof PASSED: blob endpoint correctly returns 401 if Authorization is sent.')
+    except urllib.error.HTTPError as e:
+        if e.code != 401:
+            print(f'test-master-path FAILED: blob endpoint returned {e.code}, expected 401', file=sys.stderr)
+            sys.exit(1)
+        print('Behavioral proof PASSED: blob endpoint correctly returns 401 if Authorization is sent.')
 
-# 4. Happy path: fetch-master with candidate before master in artifact listing
-print('Phase 4: Running fetch-master happy path (candidate before master in listings)...')
-fetched_out = os.path.join(work, 'fetched-master.json')
-fetch_env = os.environ.copy()
-fetch_env['GITHUB_API_URL'] = api_url
+    # 4. Happy path: fetch-master with candidate before master in artifact listing
+    print('Phase 4: Running fetch-master happy path (candidate before master in listings)...')
+    fetched_out = os.path.join(work, 'fetched-master.json')
+    fetch_env = os.environ.copy()
+    fetch_env['GITHUB_API_URL'] = api_url
 
-res_fetch = subprocess.run(['bash', stale_ci, 'fetch-master',
-                            '--out', fetched_out,
-                            '--target', 'x86_64-linux-gnu',
-                            '--repo', 'iyilang/iyi',
-                            '--token', 'mock-token-xyz'],
-                           env=fetch_env, capture_output=True, text=True)
-if res_fetch.returncode != 0:
-    print(f'test-master-path FAILED: fetch-master returned {res_fetch.returncode}:\n{res_fetch.stderr}', file=sys.stderr)
-    sys.exit(1)
-
-if not os.path.exists(fetched_out):
-    print('test-master-path FAILED: fetch-master did not write output file', file=sys.stderr)
-    sys.exit(1)
-
-with open(fetched_out, 'rb') as f:
-    fetched_bytes = f.read()
-
-if fetched_bytes != master_bytes:
-    print('test-master-path FAILED: fetched bytes do not match canonical master bytes (candidate was selected!)', file=sys.stderr)
-    sys.exit(1)
-
-sidecar_file = f'{fetched_out}.provenance.json'
-if not os.path.exists(sidecar_file):
-    print('test-master-path FAILED: fetch-master did not write provenance sidecar', file=sys.stderr)
-    sys.exit(1)
-
-with open(sidecar_file) as f:
-    sidecar_data = json.load(f)
-
-if sidecar_data.get('sha256') != master_sha or sidecar_data.get('run_id') != 8888 or sidecar_data.get('workflow') != '.github/workflows/iyi.yml':
-    print(f'test-master-path FAILED: sidecar metadata incorrect: {sidecar_data}', file=sys.stderr)
-    sys.exit(1)
-
-print('fetch-master happy path PASSED: exact canonical master downloaded and sidecar verified.')
-
-# 5. Negative tests
-print('Phase 5: Running negative tests...')
-
-# 5.1 Candidate only -> exit 0, no file written (valid absent)
-with open(mode_file, 'w') as f: json.dump({'mode': 'candidate_only'}, f)
-cand_only_out = os.path.join(work, 'cand-only.json')
-res_cand_only = subprocess.run(['bash', stale_ci, 'fetch-master',
-                                '--out', cand_only_out,
+    res_fetch = subprocess.run(['bash', stale_ci, 'fetch-master',
+                                '--out', fetched_out,
                                 '--target', 'x86_64-linux-gnu',
+                                '--repo', 'iyilang/iyi',
                                 '--token', 'mock-token-xyz'],
                                env=fetch_env, capture_output=True, text=True)
-if res_cand_only.returncode != 0 or os.path.exists(cand_only_out):
-    print(f'test-master-path FAILED: candidate-only expected exit 0 and no file (code {res_cand_only.returncode})', file=sys.stderr)
-    sys.exit(1)
-print('Negative test 1 (candidate only => valid absent exit 0) PASSED.')
+    if res_fetch.returncode != 0:
+        print(f'test-master-path FAILED: fetch-master returned {res_fetch.returncode}:\n{res_fetch.stderr}', file=sys.stderr)
+        sys.exit(1)
 
-# 5.2 Missing digest -> exit 1
-with open(mode_file, 'w') as f: json.dump({'mode': 'missing_digest'}, f)
-res_md = subprocess.run(['bash', stale_ci, 'fetch-master', '--out', os.path.join(work, 'md.json'),
-                         '--target', 'x86_64-linux-gnu', '--token', 'mock-token-xyz'],
-                        env=fetch_env, capture_output=True, text=True)
-if res_md.returncode == 0:
-    print('test-master-path FAILED: missing digest should fail', file=sys.stderr)
-    sys.exit(1)
-print('Negative test 2 (missing digest => exit 1) PASSED.')
+    if not os.path.exists(fetched_out):
+        print('test-master-path FAILED: fetch-master did not write output file', file=sys.stderr)
+        sys.exit(1)
 
-# 5.3 Wrong digest -> exit 1
-with open(mode_file, 'w') as f: json.dump({'mode': 'wrong_digest'}, f)
-res_wd = subprocess.run(['bash', stale_ci, 'fetch-master', '--out', os.path.join(work, 'wd.json'),
-                         '--target', 'x86_64-linux-gnu', '--token', 'mock-token-xyz'],
-                        env=fetch_env, capture_output=True, text=True)
-if res_wd.returncode == 0:
-    print('test-master-path FAILED: wrong digest should fail', file=sys.stderr)
-    sys.exit(1)
-print('Negative test 3 (wrong digest => exit 1) PASSED.')
+    with open(fetched_out, 'rb') as f:
+        fetched_bytes = f.read()
 
-# 5.4 ZIP payload refused -> exit 1
-with open(mode_file, 'w') as f: json.dump({'mode': 'zip_payload'}, f)
-res_zip = subprocess.run(['bash', stale_ci, 'fetch-master', '--out', os.path.join(work, 'zip.json'),
-                          '--target', 'x86_64-linux-gnu', '--token', 'mock-token-xyz'],
-                          env=fetch_env, capture_output=True, text=True)
-if res_zip.returncode == 0:
-    print('test-master-path FAILED: ZIP payload should be refused', file=sys.stderr)
-    sys.exit(1)
-print('Negative test 4 (ZIP payload refused => exit 1) PASSED.')
+    if fetched_bytes != master_bytes:
+        print('test-master-path FAILED: fetched bytes do not match canonical master bytes (candidate was selected!)', file=sys.stderr)
+        sys.exit(1)
 
-# 5.5 Two exact artifacts -> exit 1
-with open(mode_file, 'w') as f: json.dump({'mode': 'two_exact'}, f)
-res_two = subprocess.run(['bash', stale_ci, 'fetch-master', '--out', os.path.join(work, 'two.json'),
-                          '--target', 'x86_64-linux-gnu', '--token', 'mock-token-xyz'],
-                         env=fetch_env, capture_output=True, text=True)
-if res_two.returncode == 0:
-    print('test-master-path FAILED: multiple exact artifacts should fail', file=sys.stderr)
-    sys.exit(1)
-print('Negative test 5 (two exact artifacts => exit 1) PASSED.')
+    sidecar_file = f'{fetched_out}.provenance.json'
+    if not os.path.exists(sidecar_file):
+        print('test-master-path FAILED: fetch-master did not write provenance sidecar', file=sys.stderr)
+        sys.exit(1)
 
-# 5.6 Runs 500 -> exit 1
-with open(mode_file, 'w') as f: json.dump({'mode': 'runs_500'}, f)
-res_500 = subprocess.run(['bash', stale_ci, 'fetch-master', '--out', os.path.join(work, '500.json'),
-                          '--target', 'x86_64-linux-gnu', '--token', 'mock-token-xyz'],
-                         env=fetch_env, capture_output=True, text=True)
-if res_500.returncode == 0:
-    print('test-master-path FAILED: runs 500 should fail', file=sys.stderr)
-    sys.exit(1)
-print('Negative test 6 (runs 500 => exit 1) PASSED.')
+    with open(sidecar_file) as f:
+        sidecar_data = json.load(f)
 
-# 5.7 Missing token -> exit 1
-res_notoken = subprocess.run(['bash', stale_ci, 'fetch-master', '--out', os.path.join(work, 'notoken.json'),
-                              '--target', 'x86_64-linux-gnu', '--token', ''],
-                             env={k: v for k, v in fetch_env.items() if 'TOKEN' not in k}, capture_output=True, text=True)
-if res_notoken.returncode == 0:
-    print('test-master-path FAILED: missing token should fail', file=sys.stderr)
-    sys.exit(1)
-print('Negative test 7 (missing token => exit 1) PASSED.')
+    if sidecar_data.get('sha256') != master_sha or sidecar_data.get('run_id') != 8888 or sidecar_data.get('workflow') != '.github/workflows/iyi.yml':
+        print(f'test-master-path FAILED: sidecar metadata incorrect: {sidecar_data}', file=sys.stderr)
+        sys.exit(1)
 
-# 6. Cache wipe & pollution test with master-self-check
-print('Phase 6: Verifying cache wipe discrimination in master-self-check...')
-polluted_cache = os.path.join(work, 'polluted_cache')
-os.makedirs(polluted_cache, exist_ok=True)
+    print('fetch-master happy path PASSED: exact canonical master downloaded and sidecar verified.')
 
-test_env = os.environ.copy()
-test_env['IYI_CACHE_DIR'] = polluted_cache
+    # 5. Negative tests
+    print('Phase 5: Running negative tests...')
 
-# 6.1 Pollute cache with fresh run
-res_fresh = subprocess.run([iyi, 'test', '--fresh', sample_file],
-                           env=test_env, capture_output=True, text=True)
-if res_fresh.returncode != 0:
-    print('test-master-path FAILED: fresh test run failed to populate cache', file=sys.stderr)
-    sys.exit(1)
+    # 5.1 Candidate only -> exit 0, no file written (valid absent)
+    with open(mode_file, 'w') as f: json.dump({'mode': 'candidate_only'}, f)
+    cand_only_out = os.path.join(work, 'cand-only.json')
+    res_cand_only = subprocess.run(['bash', stale_ci, 'fetch-master',
+                                    '--out', cand_only_out,
+                                    '--target', 'x86_64-linux-gnu',
+                                    '--token', 'mock-token-xyz'],
+                                   env=fetch_env, capture_output=True, text=True)
+    if res_cand_only.returncode != 0 or os.path.exists(cand_only_out):
+        print(f'test-master-path FAILED: candidate-only expected exit 0 and no file (code {res_cand_only.returncode})', file=sys.stderr)
+        sys.exit(1)
+    print('Negative test 1 (candidate only => valid absent exit 0) PASSED.')
 
-# 6.2 Behavioral proof: without wipe, --cached hits local receipt (source != 'master')
-unwiped_out = os.path.join(work, 'unwiped.json')
-with open(unwiped_out, 'w') as f:
+    # 5.2 Missing digest -> exit 1
+    with open(mode_file, 'w') as f: json.dump({'mode': 'missing_digest'}, f)
+    res_md = subprocess.run(['bash', stale_ci, 'fetch-master', '--out', os.path.join(work, 'md.json'),
+                             '--target', 'x86_64-linux-gnu', '--token', 'mock-token-xyz'],
+                            env=fetch_env, capture_output=True, text=True)
+    if res_md.returncode == 0:
+        print('test-master-path FAILED: missing digest should fail', file=sys.stderr)
+        sys.exit(1)
+    print('Negative test 2 (missing digest => exit 1) PASSED.')
+
+    # 5.3 Wrong digest -> exit 1
+    with open(mode_file, 'w') as f: json.dump({'mode': 'wrong_digest'}, f)
+    res_wd = subprocess.run(['bash', stale_ci, 'fetch-master', '--out', os.path.join(work, 'wd.json'),
+                             '--target', 'x86_64-linux-gnu', '--token', 'mock-token-xyz'],
+                            env=fetch_env, capture_output=True, text=True)
+    if res_wd.returncode == 0:
+        print('test-master-path FAILED: wrong digest should fail', file=sys.stderr)
+        sys.exit(1)
+    print('Negative test 3 (wrong digest => exit 1) PASSED.')
+
+    # 5.4 ZIP payload refused -> exit 1
+    with open(mode_file, 'w') as f: json.dump({'mode': 'zip_payload'}, f)
+    res_zip = subprocess.run(['bash', stale_ci, 'fetch-master', '--out', os.path.join(work, 'zip.json'),
+                              '--target', 'x86_64-linux-gnu', '--token', 'mock-token-xyz'],
+                             env=fetch_env, capture_output=True, text=True)
+    if res_zip.returncode == 0:
+        print('test-master-path FAILED: ZIP payload should be refused', file=sys.stderr)
+        sys.exit(1)
+    print('Negative test 4 (ZIP payload refused => exit 1) PASSED.')
+
+    # 5.5 Two exact artifacts -> exit 1
+    with open(mode_file, 'w') as f: json.dump({'mode': 'two_exact'}, f)
+    res_two = subprocess.run(['bash', stale_ci, 'fetch-master', '--out', os.path.join(work, 'two.json'),
+                              '--target', 'x86_64-linux-gnu', '--token', 'mock-token-xyz'],
+                             env=fetch_env, capture_output=True, text=True)
+    if res_two.returncode == 0:
+        print('test-master-path FAILED: multiple exact artifacts should fail', file=sys.stderr)
+        sys.exit(1)
+    print('Negative test 5 (two exact artifacts => exit 1) PASSED.')
+
+    # 5.6 Runs 500 -> exit 1
+    with open(mode_file, 'w') as f: json.dump({'mode': 'runs_500'}, f)
+    res_500 = subprocess.run(['bash', stale_ci, 'fetch-master', '--out', os.path.join(work, '500.json'),
+                              '--target', 'x86_64-linux-gnu', '--token', 'mock-token-xyz'],
+                             env=fetch_env, capture_output=True, text=True)
+    if res_500.returncode == 0:
+        print('test-master-path FAILED: runs 500 should fail', file=sys.stderr)
+        sys.exit(1)
+    print('Negative test 6 (runs 500 => exit 1) PASSED.')
+
+    # 5.7 Missing token -> exit 1
+    res_notoken = subprocess.run(['bash', stale_ci, 'fetch-master', '--out', os.path.join(work, 'notoken.json'),
+                                  '--target', 'x86_64-linux-gnu', '--token', ''],
+                                 env={k: v for k, v in fetch_env.items() if 'TOKEN' not in k}, capture_output=True, text=True)
+    if res_notoken.returncode == 0:
+        print('test-master-path FAILED: missing token should fail', file=sys.stderr)
+        sys.exit(1)
+    print('Negative test 7 (missing token => exit 1) PASSED.')
+
+    # 6. Cache wipe & pollution test with master-self-check
+    print('Phase 6: Verifying cache wipe discrimination in master-self-check...')
+    # Reset server mode to default and perform a real fetch-master to establish valid provenance
+    with open(mode_file, 'w') as f:
+        json.dump({'mode': 'default'}, f)
+
+    phase6_master = os.path.join(work, 'phase6-master-x86_64-linux-gnu.json')
+    res_p6_fetch = subprocess.run(['bash', stale_ci, 'fetch-master',
+                                   '--out', phase6_master,
+                                   '--target', 'x86_64-linux-gnu',
+                                   '--repo', 'iyilang/iyi',
+                                   '--token', 'mock-token-xyz'],
+                                  env=fetch_env, capture_output=True, text=True)
+    if res_p6_fetch.returncode != 0:
+        print(f'test-master-path FAILED: Phase 6 fetch-master failed (code {res_p6_fetch.returncode}):\n{res_p6_fetch.stderr}', file=sys.stderr)
+        sys.exit(1)
+
+    if not os.path.exists(phase6_master):
+        print(f'test-master-path FAILED: Phase 6 fetch-master did not write {phase6_master}', file=sys.stderr)
+        sys.exit(1)
+
+    phase6_sidecar = f'{phase6_master}.provenance.json'
+    if not os.path.exists(phase6_sidecar):
+        print(f'test-master-path FAILED: Phase 6 fetch-master missing sidecar at {phase6_sidecar}', file=sys.stderr)
+        sys.exit(1)
+
+    polluted_cache = os.path.join(work, 'polluted_cache')
+    os.makedirs(polluted_cache, exist_ok=True)
+
+    test_env = os.environ.copy()
+    test_env['IYI_CACHE_DIR'] = polluted_cache
+
+    # 6.1 Pollute cache with fresh run
+    res_fresh = subprocess.run([iyi, 'test', '--fresh', sample_file],
+                               env=test_env, capture_output=True, text=True)
+    if res_fresh.returncode != 0:
+        print(f'test-master-path FAILED: fresh test run failed to populate cache (code {res_fresh.returncode}):\n{res_fresh.stderr}', file=sys.stderr)
+        sys.exit(1)
+
+    # 6.2 Behavioral proof: without wipe, --cached hits local receipt (source != 'master')
     res_unwiped = subprocess.run([iyi, 'test', '--cached', '--json',
-                                  '--import-index', f'master={canonical_path}',
+                                  '--import-index', f'master={phase6_master}',
                                   sample_file],
-                                 env=test_env, stdout=f, capture_output=False, text=True)
-with open(unwiped_out) as f:
-    unwiped_data = json.load(f)
+                                 env=test_env, capture_output=True, text=True)
+    if res_unwiped.returncode != 0:
+        print(f'test-master-path FAILED: unwiped cached test run failed (code {res_unwiped.returncode}):\n{res_unwiped.stderr}', file=sys.stderr)
+        sys.exit(1)
 
-unwiped_sources = [t.get('source') for t in unwiped_data.get('tests', [])]
-if 'master' in unwiped_sources:
-    print('Notice: without wipe, hit already master?', unwiped_sources)
-else:
-    print(f'Behavioral proof PASSED: without wipe, local receipt substituted (sources: {unwiped_sources})')
+    try:
+        unwiped_data = json.loads(res_unwiped.stdout)
+    except Exception as e:
+        print(f'test-master-path FAILED: could not parse unwiped test JSON ({e}):\nSTDOUT:\n{res_unwiped.stdout}\nSTDERR:\n{res_unwiped.stderr}', file=sys.stderr)
+        sys.exit(1)
 
-# 6.3 With master-self-check (which performs cache wipe before importing):
-check_out = os.path.join(work, 'check-out.json')
-res_check = subprocess.run(['bash', stale_ci, 'master-self-check',
-                            '--snapshot', canonical_path,
-                            '--out-json', check_out,
-                            '--repo', repo,
-                            sample_file],
-                           env=test_env, capture_output=True, text=True)
-if res_check.returncode != 0:
-    print(f'test-master-path FAILED: master-self-check failed:\n{res_check.stderr}', file=sys.stderr)
-    sys.exit(1)
+    unwiped_sources = [t.get('source') for t in unwiped_data.get('tests', [])]
+    if 'master' in unwiped_sources:
+        print(f'Notice: without wipe, hit already master? sources: {unwiped_sources}')
+    else:
+        print(f'Behavioral proof PASSED: without wipe, local receipt substituted (sources: {unwiped_sources})')
 
-with open(check_out) as f:
-    check_data = json.load(f)
+    # 6.3 With master-self-check (which performs cache wipe before importing):
+    check_out = os.path.join(work, 'check-out.json')
+    res_check = subprocess.run(['bash', stale_ci, 'master-self-check',
+                                '--snapshot', phase6_master,
+                                '--out-json', check_out,
+                                '--repo', repo,
+                                sample_file],
+                               env=test_env, capture_output=True, text=True)
+    if res_check.returncode != 0:
+        print(f'test-master-path FAILED: master-self-check failed (code {res_check.returncode}):\n{res_check.stderr}', file=sys.stderr)
+        sys.exit(1)
 
-check_sources = [t.get('source') for t in check_data.get('tests', [])]
-if any(s != 'master' for s in check_sources):
-    print(f'test-master-path FAILED: expected all sources to be master after wipe, got: {check_sources}', file=sys.stderr)
-    sys.exit(1)
-print(f'master-self-check with wipe PASSED: all tests imported from master (sources: {check_sources}).')
+    if not os.path.exists(check_out):
+        print(f'test-master-path FAILED: master-self-check did not write {check_out}', file=sys.stderr)
+        sys.exit(1)
 
-# 7. Empty snapshot tests
-print('Phase 7: Testing empty snapshot handling and refusal of forged run_id...')
-empty_out = os.path.join(work, 'empty.json')
-res_empty_create = subprocess.run(['bash', stale_ci, 'empty-snapshot',
-                                   '--run-id', '4444',
-                                   '--out', empty_out,
-                                   '--target', 'x86_64-linux-gnu'],
-                                  capture_output=True, text=True)
-if res_empty_create.returncode != 0:
-    print('test-master-path FAILED: empty-snapshot --run-id 4444 failed', file=sys.stderr)
-    sys.exit(1)
+    with open(check_out) as f:
+        try:
+            check_data = json.load(f)
+        except Exception as e:
+            print(f'test-master-path FAILED: could not parse check-out.json ({e})', file=sys.stderr)
+            sys.exit(1)
 
-with open(empty_out) as f:
-    empty_data = json.load(f)
-if empty_data.get('producer', {}).get('run_id') != 4444 or len(empty_data.get('records', [])) != 0:
-    print(f'test-master-path FAILED: empty snapshot data incorrect: {empty_data}', file=sys.stderr)
-    sys.exit(1)
+    check_sources = [t.get('source') for t in check_data.get('tests', [])]
+    if any(s != 'master' for s in check_sources):
+        print(f'test-master-path FAILED: expected all sources to be master after wipe, got: {check_sources}', file=sys.stderr)
+        sys.exit(1)
+    print(f'master-self-check with wipe PASSED: all tests imported from master (sources: {check_sources}).')
 
-# Import empty snapshot: verifies consumption is turned off (0 cached hits)
-empty_test_out = os.path.join(work, 'empty_test.json')
-with open(empty_test_out, 'w') as f:
-    subprocess.run([iyi, 'test', '--cached', '--json',
-                    '--import-index', f'master={empty_out}',
-                    sample_file],
-                   env=test_env, stdout=f)
-with open(empty_test_out) as f:
-    empty_test_data = json.load(f)
-hits = [t for t in empty_test_data.get('tests', []) if t.get('cached')]
-if len(hits) != 0:
-    print(f'test-master-path FAILED: empty snapshot should have 0 cached hits, got {len(hits)}', file=sys.stderr)
-    sys.exit(1)
-print('Empty snapshot --run-id 4444 PASSED: cleanly imported and turned off consumption.')
+    # 7. Empty snapshot tests
+    print('Phase 7: Testing empty snapshot handling and refusal of forged run_id...')
+    empty_out = os.path.join(work, 'empty.json')
+    res_empty_create = subprocess.run(['bash', stale_ci, 'empty-snapshot',
+                                       '--run-id', '4444',
+                                       '--out', empty_out,
+                                       '--target', 'x86_64-linux-gnu'],
+                                      capture_output=True, text=True)
+    if res_empty_create.returncode != 0:
+        print(f'test-master-path FAILED: empty-snapshot --run-id 4444 failed (code {res_empty_create.returncode}):\n{res_empty_create.stderr}', file=sys.stderr)
+        sys.exit(1)
 
-# Forged/invalid run_id rejected
-res_zero = subprocess.run(['bash', stale_ci, 'empty-snapshot', '--run-id', '0', '--out', os.path.join(work, 'e0.json')],
-                          capture_output=True, text=True)
-if res_zero.returncode == 0:
-    print('test-master-path FAILED: empty-snapshot --run-id 0 should fail', file=sys.stderr)
-    sys.exit(1)
+    with open(empty_out) as f:
+        try:
+            empty_data = json.load(f)
+        except Exception as e:
+            print(f'test-master-path FAILED: could not parse empty.json ({e})', file=sys.stderr)
+            sys.exit(1)
 
-res_norunid = subprocess.run(['bash', stale_ci, 'empty-snapshot', '--out', os.path.join(work, 'eno.json')],
-                             capture_output=True, text=True)
-if res_norunid.returncode == 0:
-    print('test-master-path FAILED: empty-snapshot without --run-id should fail', file=sys.stderr)
-    sys.exit(1)
-print('Empty snapshot refusal of invalid/zero run_id PASSED.')
+    if empty_data.get('producer', {}).get('run_id') != 4444 or len(empty_data.get('records', [])) != 0:
+        print(f'test-master-path FAILED: empty snapshot data incorrect: {empty_data}', file=sys.stderr)
+        sys.exit(1)
 
-server.shutdown()
-print('All test-master-path tests completed successfully.')
+    # Import empty snapshot: verifies consumption is turned off (0 cached hits)
+    res_empty_test = subprocess.run([iyi, 'test', '--cached', '--json',
+                                     '--import-index', f'master={empty_out}',
+                                     sample_file],
+                                    env=test_env, capture_output=True, text=True)
+    if res_empty_test.returncode != 0:
+        print(f'test-master-path FAILED: empty snapshot test run failed (code {res_empty_test.returncode}):\n{res_empty_test.stderr}', file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        empty_test_data = json.loads(res_empty_test.stdout)
+    except Exception as e:
+        print(f'test-master-path FAILED: could not parse empty snapshot test JSON ({e}):\nSTDOUT:\n{res_empty_test.stdout}\nSTDERR:\n{res_empty_test.stderr}', file=sys.stderr)
+        sys.exit(1)
+
+    hits = [t for t in empty_test_data.get('tests', []) if t.get('cached')]
+    if len(hits) != 0:
+        print(f'test-master-path FAILED: empty snapshot should have 0 cached hits, got {len(hits)}', file=sys.stderr)
+        sys.exit(1)
+    print('Empty snapshot --run-id 4444 PASSED: cleanly imported and turned off consumption.')
+
+    # Forged/invalid run_id rejected
+    res_zero = subprocess.run(['bash', stale_ci, 'empty-snapshot', '--run-id', '0', '--out', os.path.join(work, 'e0.json')],
+                              capture_output=True, text=True)
+    if res_zero.returncode == 0:
+        print('test-master-path FAILED: empty-snapshot --run-id 0 should fail', file=sys.stderr)
+        sys.exit(1)
+
+    res_norunid = subprocess.run(['bash', stale_ci, 'empty-snapshot', '--out', os.path.join(work, 'eno.json')],
+                                 capture_output=True, text=True)
+    if res_norunid.returncode == 0:
+        print('test-master-path FAILED: empty-snapshot without --run-id should fail', file=sys.stderr)
+        sys.exit(1)
+    print('Empty snapshot refusal of invalid/zero run_id PASSED.')
+
+    print('All test-master-path tests completed successfully.')
+finally:
+    server.shutdown()
 " "$REPO" "$IYI" "$work"
 
   clean_exit=1
