@@ -30,7 +30,7 @@ import std/dir::{Dir}
 import std/gc::{GC}
 # For TMPDIR, TEMP and TMP unset around `File.tempfile`'s GetTempPathW.
 import std/env::{ENV}
-
+import std/time::{Time}
 # The sandbox is the argument, then IYI_FILE_SANDBOX, then the platform's
 # own temporary directory. It was `/tmp` last, which is not a directory on
 # Windows: every write panicked there unless a gate set the variable, and
@@ -38,13 +38,15 @@ import std/env::{ENV}
 # artifacts without it, compared two panics whose locations differed.
 args = Program.args
 env_sandbox = Program.env("IYI_FILE_SANDBOX")
+scratch = args.size == 0 && env_sandbox.nil?
 sandbox = if args.size > 0
             args[0]
           elsif !env_sandbox.nil?
             env_sandbox
           else
-            Dir.tempdir
+            Dir.tempdir + "/iyi_file_exercise_#{Time.utc.to_unix_ms}"
           end
+Dir.mkdir_p(sandbox)
 
 puts "== write, read, and append"
 f1 = sandbox + "/std_file_ex_1.txt"
@@ -575,5 +577,6 @@ end
 File.delete(fren)
 assert_true !File.exists?(fren), "fren deleted"
 puts "  file deletion verified"
+Dir.delete(sandbox) if scratch && Dir.exists?(sandbox)
 
 puts "\nALL CHECKS PASSED"
