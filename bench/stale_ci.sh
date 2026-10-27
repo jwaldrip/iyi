@@ -408,10 +408,10 @@ test_planted_hidden_read() {
     exit 1
   fi
 
+  local failed=1
   local work
   work="$(mktemp -d /tmp/planted-hidden.XXXXXX)"
-  trap 'rm -rf "$work"' RETURN
-
+  trap 'if [ "$failed" -eq 0 ]; then rm -rf "$work"; else echo "Preserving diagnostics workdir at $work" >&2; fi' RETURN
   local e2e_lib="$work/runtime"
   mkdir -p "$e2e_lib"
   cp -R "$REPO/src" "$e2e_lib/src"
@@ -444,14 +444,14 @@ EOF
 
   local run_id="${GITHUB_RUN_ID:-999999}"
   local ns="run:$run_id"
-  local producer_cache="$work/producer_cache"
+  local cache_dir="$work/cache"
   local producer_snapshot="$work/producer_snapshot.json"
 
   # 1. Execute producer: runs with patched runtime, test passes, exports snapshot with hidden read
   set +e
   local producer_out
   producer_out="$(IYI_PATH="$e2e_lib/src" \
-    IYI_CACHE_DIR="$producer_cache" \
+    IYI_CACHE_DIR="$cache_dir" \
     IYI_CI_PRODUCER=1 \
     GITHUB_RUN_ID="$run_id" \
     PLANTED_INPUT="$input_file" \
@@ -490,13 +490,15 @@ for obs in rec.get('trace', {}).get('observations', []):
   # 2. Mutate input
   printf 'mutated_value' > "$input_file"
 
-  # 3. Import false hit: consumer imports snapshot with hidden read, input changed but not observed -> cached hit
-  local consumer_cache="$work/consumer_cache"
+  # 3. Simulate fresh runner: wipe the cache path, preserving the external snapshot
+  rm -rf "$cache_dir"
+
+  # 4. Import false hit: consumer imports snapshot with hidden read, input changed but not observed -> cached hit
   local cached_json="$work/cached.json"
   local cached_out
   set +e
   cached_out="$(IYI_PATH="$e2e_lib/src" \
-    IYI_CACHE_DIR="$consumer_cache" \
+    IYI_CACHE_DIR="$cache_dir" \
     GITHUB_RUN_ID="$run_id" \
     PLANTED_INPUT="$input_file" \
     "$IYI" test --cached --json \
@@ -504,35 +506,80 @@ for obs in rec.get('trace', {}).get('observations', []):
       "$test_file" 2>"$work/cached.err")"
   local cached_status=$?
   set -e
-  if [ $cached_status -ne 0 ]; then
-    echo "test-planted-hidden-read FAILED: cached consumer failed with exit code $cached_status:" >&2
-    echo "$cached_out" >&2
-    cat "$work/cached.err" >&2
-    return 1
-  fi
   printf '%s\n' "$cached_out" > "$cached_json"
 
-  # 4. Fresh actual failure: running --fresh executes the test with mutated input -> assertion failure
+  local is_hit
+  is_hit="$("$PY" -c 'import json,sys; d=json.load(open("'$cached_json'")); print(d.get("tests",[{}])[0].get("reuse",""))' 2>/dev/null || true)"
+
+  if [ $cached_status -ne 0 ] || [ "$is_hit" != "hit" ]; then
+    echo "test-planted-hidden-read FAILED: cached consumer did not hit from snapshot (status=$cached_status, reuse=$is_hit):" >&2
+    echo "$cached_out" >&2
+    if [ -s "$work/cached.err" ]; then cat "$work/cached.err" >&2; fi
+
+    local explain_out
+    explain_out="$(IYI_PATH="$e2e_lib/src" \
+      IYI_CACHE_DIR="$cache_dir" \
+      GITHUB_RUN_ID="$run_id" \
+      PLANTED_INPUT="$input_file" \
+      "$IYI" test --cached --explain \
+        --import-index "$ns=$producer_snapshot" \
+        "$test_file" 2>&1 || true)"
+    echo "Consumer explain diagnostic:" >&2
+    echo "$explain_out" >&2
+
+    "$PY" -c "
+import json, sys
+try:
+    with open('$producer_snapshot') as f: psnap = json.load(f)
+    prec = psnap.get('records', [{}])[0]
+    print('PRODUCER SNAPSHOT:', file=sys.stderr)
+    print(f'  build: {prec.get(\"build\")}', file=sys.stderr)
+    print(f'  profile: {prec.get(\"profile\")}', file=sys.stderr)
+    print(f'  observations count: {len(prec.get(\"trace\", {}).get(\"observations\", []))}', file=sys.stderr)
+    for obs in prec.get(\"trace\", {}).get(\"observations\", []):
+        print(f'    obs: {obs}', file=sys.stderr)
+except Exception as e:
+    print(f'Could not dump producer snapshot: {e}', file=sys.stderr)
+
+try:
+    with open('$cached_json') as f: cjson = json.load(f)
+    ctest = cjson.get('tests', [{}])[0]
+    print('CONSUMER TEST RESULT:', file=sys.stderr)
+    print(f'  status: {ctest.get(\"status\")}', file=sys.stderr)
+    print(f'  reuse: {ctest.get(\"reuse\")}', file=sys.stderr)
+    print(f'  reason: {ctest.get(\"reason\")}', file=sys.stderr)
+    print(f'  portable_build: {ctest.get(\"portable_build\")}', file=sys.stderr)
+    print(f'  profile: {ctest.get(\"profile\")}', file=sys.stderr)
+    print(f'  roots: {ctest.get(\"roots\")}', file=sys.stderr)
+    print(f'  output: {ctest.get(\"output\")}', file=sys.stderr)
+except Exception as e:
+    print(f'Could not dump consumer test result: {e}', file=sys.stderr)
+"
+    return 1
+  fi
+
+  # 5. Fresh actual failure: running --fresh executes the test with mutated input -> assertion failure
   local fresh_json="$work/fresh.json"
   set +e
   IYI_PATH="$e2e_lib/src" \
-  IYI_CACHE_DIR="$consumer_cache" \
+  IYI_CACHE_DIR="$cache_dir" \
   GITHUB_RUN_ID="$run_id" \
   PLANTED_INPUT="$input_file" \
   "$IYI" test --fresh --json \
     "$test_file" > "$fresh_json" 2>"$work/fresh.err"
   set -e
 
-  # 5. Shadow audit: cached claims hit (pass), fresh claims miss (fail) -> names mismatch
-  local failed=0
-  shadow_audit --cached-json "$cached_json" --fresh-json "$fresh_json" --cached-snapshot "$producer_snapshot" --namespace "$ns" >/dev/null 2>&1 || failed=1
-  if [ "$failed" -eq 1 ] && [ -f .disagreement_marker ]; then
+  # 6. Shadow audit: cached claims hit (pass), fresh claims miss (fail) -> names mismatch
+  local shadow_failed=0
+  shadow_audit --cached-json "$cached_json" --fresh-json "$fresh_json" --cached-snapshot "$producer_snapshot" --namespace "$ns" >/dev/null 2>&1 || shadow_failed=1
+  if [ "$shadow_failed" -eq 1 ] && [ -f .disagreement_marker ]; then
     local marker_content
     marker_content="$(cat .disagreement_marker)"
     rm -f .disagreement_marker
     case "$marker_content" in
       *"verdict mismatch"*)
         echo "test-planted-hidden-read PASSED: shadow audit correctly caught disagreement: $marker_content"
+        failed=0
         return 0
         ;;
       *)
