@@ -614,7 +614,7 @@ ALLOC_SRC="$WORK/alloc_measure.iyi"
 cat << 'EOF' > "$ALLOC_SRC"
 module test/alloc_measure
 import std/observe
-import std/gc
+import std/gc::{GC}
 
 names = Array(String).new(10000)
 10000.times do |i|
