@@ -657,7 +657,7 @@ module Iyi::Stale
       end
 
       if block_arg = target_def.block_arg
-        @encoder.str(block_arg.name)
+        encode_var_name(block_arg.name)
         encode_type(block_arg.type?)
       else
         @encoder.absent
@@ -709,7 +709,7 @@ module Iyi::Stale
       if anns = target_def.annotations
         total = anns.values.sum(&.size)
         @encoder.list(total) do
-          anns.each do |_ann_type, ann_list|
+          anns.to_a.sort_by { |(ann_type, _)| ann_type.to_s }.each do |_ann_type, ann_list|
             ann_list.each do |ann|
               @encoder.str(ann.path.to_s)
               @encoder.list(ann.args.size) { ann.args.each { |a| encode_node(a) } }
@@ -741,7 +741,7 @@ module Iyi::Stale
       if type.is_a?(Annotatable) && (anns = type.annotations)
         total = anns.values.sum(&.size)
         @encoder.list(total) do
-          anns.each do |_ann_type, ann_list|
+          anns.to_a.sort_by { |(ann_type, _)| ann_type.to_s }.each do |_ann_type, ann_list|
             ann_list.each do |ann|
               @encoder.str(ann.path.to_s)
               @encoder.list(ann.args.size) { ann.args.each { |a| encode_node(a) } }
@@ -759,9 +759,10 @@ module Iyi::Stale
       end
 
       if parents = type.parents
-        @encoder.list(parents.size) do
-          parents.each do |parent|
-            @encoder.str(CallPath.canonical_type_name(parent))
+        sorted_parents = parents.map { |parent| CallPath.canonical_type_name(parent) }.sort!
+        @encoder.list(sorted_parents.size) do
+          sorted_parents.each do |p_name|
+            @encoder.str(p_name)
           end
         end
       else
@@ -984,8 +985,12 @@ module Iyi::Stale
         end
 
         if target_defs = node.target_defs
-          @encoder.list(target_defs.size) do
-            target_defs.each do |td|
+          sorted_target_defs = target_defs.sort_by do |td|
+            owner = node.super? ? node.scope : td.owner
+            CallPath.canonical_def_key(td, owner)
+          end
+          @encoder.list(sorted_target_defs.size) do
+            sorted_target_defs.each do |td|
               owner = node.super? ? node.scope : td.owner
               if should_inline_target?(node, td, owner)
                 @encoder.tag("InlinedBody")
@@ -1139,7 +1144,7 @@ module Iyi::Stale
         if target_const = node.target_const
           @encoder.tag("ConstKey")
           @encoder.str(target_const.to_s)
-        elsif target_type = node.target_type
+        elsif target_type = node.target_type || (node.type?.try { |t| t.is_a?(MetaclassType) ? t.instance_type : t }) || @program.lookup_type?(node)
           @encoder.tag("TypeKey")
           @encoder.str(CallPath.canonical_type_name(target_type))
         else
@@ -1208,7 +1213,7 @@ module Iyi::Stale
         end
       when ClassDef
         encode_node(node.body)
-      when ModuleDef
+      when ModuleDef, ImplDef, TraitDef
         encode_node(node.body)
       when EnumDef, LibDef
       when FunDef
@@ -1302,7 +1307,7 @@ module Iyi::Stale
         else
           node_emits_in_main?(node.body)
         end
-      when ModuleDef
+      when ModuleDef, ImplDef, TraitDef
         node_emits_in_main?(node.body)
       when Expressions
         node.expressions.any? { |e| node_emits_in_main?(e) }
