@@ -1,6 +1,7 @@
 require "crystal/digest/sha256"
 require "./encoding"
 require "./roots"
+require "./profile"
 
 module Iyi::Stale
   record Observation,
@@ -101,6 +102,7 @@ module Iyi::Stale
       exit_status : Int32? = nil
 
       written_paths = Set(String).new
+      program_env : Hash(String, String)? = nil
 
       loop do
         len_buf = uninitialized UInt8[4]
@@ -316,7 +318,7 @@ module Iyi::Stale
 
           observations << Observation.new(task, "env_get", "env", name, answer)
         when TYPE_ENVALL
-          answer = compute_env_all_digest(keyer, scratch: roots.scratch)
+          answer = compute_env_all_digest(keyer, program_env ||= Profile.program_env)
           observations << Observation.new(task, "env_all", "env", "*", answer)
         when TYPE_CWD
           real = read_str(p_io)
@@ -405,6 +407,7 @@ module Iyi::Stale
     # Replay observations against current state.
     # Returns the first mismatch string or nil if all match.
     def self.replay(observations : Array(Observation), keyer : Keyer, roots : Roots = Roots.new(Dir.current)) : String?
+      program_env : Hash(String, String)? = nil
       observations.each do |obs|
         case obs.kind
         when "file_read"
@@ -502,11 +505,7 @@ module Iyi::Stale
             return "run: #{obs.path} directory listing changed"
           end
         when "env_get"
-          # The runner sets the scratch names for every run
-          # (`Profile.clean_child_env`), and the runtime records only that
-          # they were set: the directory is new each run.
-          scratch_name = obs.path == "TMPDIR" || obs.path == "TEMP" || obs.path == "TMP"
-          curr_val = scratch_name ? "scratch" : ENV[obs.path]?
+          curr_val = (program_env ||= Profile.program_env)[obs.path]?
           current_ans = compute_answer("env_get", "env", keyer) do |enc|
             enc.str(obs.path)
             enc.bool(!curr_val.nil?)
@@ -518,7 +517,7 @@ module Iyi::Stale
             return "run: env #{obs.path} changed"
           end
         when "env_all"
-          current_ans = compute_env_all_digest(keyer, scratch: roots.scratch)
+          current_ans = compute_env_all_digest(keyer, program_env ||= Profile.program_env)
           if current_ans != obs.answer
             return "run: env_all changed"
           end
@@ -551,14 +550,8 @@ module Iyi::Stale
       nil
     end
 
-    def self.compute_env_all_digest(keyer : Keyer, scratch : String = "") : StaticArray(UInt8, 32)
-      entries = [] of {String, String}
-      ENV.each do |k, v|
-        next if k == "IYI_OBSERVE"
-        val = (k == "TMPDIR" || k == "TEMP" || k == "TMP") ? "scratch" : v
-        entries << {k, val}
-      end
-      entries.sort_by! { |k, _| k }
+    def self.compute_env_all_digest(keyer : Keyer, env : Hash(String, String)) : StaticArray(UInt8, 32)
+      entries = env.to_a.sort_by! { |k, _| k }
       compute_answer("env_all", "env", keyer) do |enc|
         enc.list(entries.size) do |l|
           entries.each do |k, val|
