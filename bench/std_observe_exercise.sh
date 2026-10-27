@@ -1047,31 +1047,67 @@ mkdir -p "$MUT_ENTRY_DIR"
 cp -R "$REPO/src" "$MUT_ENTRY_DIR/src"
 MUT_OBSERVE_FILE="$MUT_ENTRY_DIR/src/std/observe.iyi"
 
-"$PY" -c "
-with open('$MUT_OBSERVE_FILE', 'r') as f:
+cat << 'EOF' > "$WORK/mutate_entry.py"
+import sys
+
+observe_file = sys.argv[1]
+with open(observe_file, "r") as f:
     content = f.read()
 
-start_tag = '# SAFE_REAL_PATH_ENTRY_START'
-end_tag = '# SAFE_REAL_PATH_ENTRY_END'
+header = "pub def safe_real_path_entry(path : String) : String\n"
+start_tag = "# SAFE_REAL_PATH_ENTRY_START"
+end_tag = "# SAFE_REAL_PATH_ENTRY_END"
+replacement = "return safe_real_path(path)"
+
+if content.count(header) != 1 or content.count(start_tag) != 1 or content.count(end_tag) != 1:
+    sys.exit("FAIL: expected one safe_real_path_entry and one entry tag pair")
+h_idx = content.find(header)
 s_idx = content.find(start_tag)
 e_idx = content.find(end_tag)
-if s_idx < 0 or e_idx < 0:
-    raise Exception('entry tags not found')
-content = content[:s_idx] + '  return safe_real_path(path)\n' + content[e_idx + len(end_tag):]
+if not h_idx < s_idx < e_idx or content[h_idx + len(header):s_idx].strip():
+    sys.exit("FAIL: the entry tags do not open the body of safe_real_path_entry")
 
-with open('$MUT_OBSERVE_FILE', 'w') as f:
+content = content[:s_idx] + replacement + content[e_idx + len(end_tag):]
+body_end = content.find("\nend\n", h_idx)
+if body_end < 0 or content[h_idx + len(header):body_end].strip() != replacement:
+    sys.exit("FAIL: safe_real_path_entry's body is not exactly: " + replacement)
+
+with open(observe_file, "w") as f:
     f.write(content)
-"
+print("OK: safe_real_path_entry's body is exactly: " + replacement)
+EOF
+"$PY" "$WORK/mutate_entry.py" "$MUT_OBSERVE_FILE"
+if cmp -s "$REPO/src/std/observe.iyi" "$MUT_OBSERVE_FILE"; then
+  echo "FAIL: the mutated std/observe is identical to the one it mutates"
+  exit 1
+fi
+
+# Built and run as case (a) is: only the std/observe on IYI_PATH differs.
+MUT_ARGV_OP="$WORK/argv_op_mut_entry"
+if ! IYI_PATH="$MUT_ENTRY_DIR/src${PSEP}$REPO/samples/iyi" "$IYI" build -Diyi_observe -o "$MUT_ARGV_OP" "$ARGV_OP_SRC"; then
+  echo "FAIL: argv_op did not build against the mutated std/observe"
+  exit 1
+fi
+
+# Resolved through the link, both endpoints are scratch/data, and the record names the pointee.
+MUT_REAL_A="$("$PY" -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$DATA_FIXTURE")"
+if [ "$MUT_REAL_A" = "$ENTRY_A" ]; then
+  echo "FAIL: the mutant's expected path is case (a)'s entry; nothing could discriminate"
+  exit 1
+fi
 
 MUT_TRACE_A="$WORK/mut_trace_a.bin"
 rm -f "$MUT_TRACE_A" "$LINK_A"
-IYI_PATH="$MUT_ENTRY_DIR/src${PSEP}$REPO/samples/iyi" TMPDIR="$SCRATCH_FIXTURE" IYI_OBSERVE="$MUT_TRACE_A" "$IYI" run -Diyi_observe "$ARGV_OP_SRC" symlink "$DATA_FIXTURE" "$LINK_A"
+if ! TMPDIR="$SCRATCH_FIXTURE" IYI_OBSERVE="$MUT_TRACE_A" "$MUT_ARGV_OP" symlink "$DATA_FIXTURE" "$LINK_A"; then
+  echo "FAIL: argv_op built against the mutated std/observe exited nonzero"
+  exit 1
+fi
 
 if "$PY" "$WORK/decode_07.py" "$MUT_TRACE_A" 6 0 "$ENTRY_A" >/dev/null 2>&1; then
   echo "FAIL: mutation did not discriminate: case (a) still had inside=0 despite entry=>safe_real_path"
   exit 1
 else
-  if "$PY" "$WORK/decode_07.py" "$MUT_TRACE_A" 6 1 >/dev/null 2>&1; then
+  if "$PY" "$WORK/decode_07.py" "$MUT_TRACE_A" 6 1 "$MUT_REAL_A"; then
     echo "  mutation proof passed: entry=>safe_real_path made case (a) inside=1 and failed as required"
   else
     echo "FAIL: mutated case (a) produced unexpected result"
