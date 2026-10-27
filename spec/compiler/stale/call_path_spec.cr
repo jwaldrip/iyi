@@ -22,6 +22,43 @@ private def compute_fp(code : String, filename : String = "test.iyi", flags : Ar
     end
   end
 end
+private def flatten_top_level(node : Iyi::ASTNode, into : Array(String)) : Nil
+  if node.is_a?(Iyi::Expressions)
+    node.expressions.each { |e| flatten_top_level(e, into) }
+  elsif node.is_a?(Iyi::FileNode)
+    into << "FileNode #{::Path[node.filename].parent.basename}/#{::Path[node.filename].basename}"
+  else
+    loc = node.location
+    into << "#{node.class.name.split("::").last} #{loc ? "#{File.basename(loc.filename.to_s)}:#{loc.line_number}" : "-"}"
+  end
+end
+
+private def compute_fp_and_top(code : String, filename : String, flags : Array(String)? = nil) : {String, Iyi::Stale::CallPathResult, Array(String)}
+  with_tempfile("callpath.key") do |key_path|
+    with_tempfile("callpath.bin") do |bin_path|
+      compiler = create_spec_compiler
+      compiler.prelude = "iyi/prelude"
+      compiler.no_codegen = true
+      compiler.stale_key = key_path
+      compiler.flags = flags if flags
+      program = compiler.compile(Iyi::Compiler::Source.new(filename, code), bin_path).program
+      reach = program.stale_reach.not_nil!
+      res = Iyi::Stale::CallPath.compute(program, reach, Iyi::Stale::Roots.default(program, filename, code))
+      top = [] of String
+      flatten_top_level(reach.elements.find { |e| e.kind == Iyi::Stale::ElementKind::Main }.not_nil!.node.not_nil!, top)
+      {res.hex_digest, res, top}
+    end
+  end
+end
+
+private def top_level_divergence(normal : Array(String), warm : Array(String)) : String?
+  return nil if normal == warm
+  at = (0...Math.min(normal.size, warm.size)).find { |i| normal[i] != warm[i] } || Math.min(normal.size, warm.size)
+  from = Math.max(at - 2, 0)
+  fn, fw = normal.select(&.starts_with?("FileNode ")), warm.select(&.starts_with?("FileNode "))
+  "top-level main differs at #{at}: normal=#{normal[from, 8]} warm=#{warm[from, 8]}; " +
+    (fn == fw ? "same initialiser order" : "initialiser order differs: normal=#{fn} warm=#{fw}")
+end
 
 describe "Iyi::Stale S3f: CallPathFp, typed encoder, roots, explain" do
   it "unreached def edit keeps call path fingerprint" do
@@ -516,12 +553,14 @@ describe "Iyi::Stale S3f: CallPathFp, typed encoder, roots, explain" do
     hello_code = File.read(hello_path)
     obs_flags = ["iyi_observe"]
 
-    fp1, res1 = compute_fp(hello_code, hello_path, flags: obs_flags)
+    fp1, res1, top1 = compute_fp_and_top(hello_code, hello_path, flags: obs_flags)
 
     ENV["IYI_WARM"] = "1"
     begin
       Iyi::Compiler.preanalysed.clear
-      fp2, res2 = compute_fp(hello_code, hello_path, flags: obs_flags)
+      fp2, res2, top2 = compute_fp_and_top(hello_code, hello_path, flags: obs_flags)
+
+      top_level_divergence(top1, top2).should be_nil
 
       rows1 = res1.dump_rows.to_h { |r| { {r.kind, r.key}, r.digest } }
       rows2 = res2.dump_rows.to_h { |r| { {r.kind, r.key}, r.digest } }
@@ -537,6 +576,61 @@ describe "Iyi::Stale S3f: CallPathFp, typed encoder, roots, explain" do
     ensure
       Iyi::Compiler.preanalysed.clear
       ENV.delete("IYI_WARM")
+    end
+  end
+
+  it "observed real modules normal-vs-preanalysed gives identical call path fingerprint" do
+    modules_path = File.expand_path("../../../samples/iyi/modules.iyi", __DIR__)
+    modules_code = File.read(modules_path)
+    obs_flags = ["iyi_observe"]
+
+    fp1, res1, top1 = compute_fp_and_top(modules_code, modules_path, flags: obs_flags)
+
+    ENV["IYI_WARM"] = "1"
+    begin
+      Iyi::Compiler.preanalysed.clear
+      fp2, res2, top2 = compute_fp_and_top(modules_code, modules_path, flags: obs_flags)
+
+      top_level_divergence(top1, top2).should be_nil
+
+      rows1 = res1.dump_rows.to_h { |r| { {r.kind, r.key}, r.digest } }
+      rows2 = res2.dump_rows.to_h { |r| { {r.kind, r.key}, r.digest } }
+
+      all_keys = (rows1.keys + rows2.keys).uniq
+      all_keys.each do |key|
+        d1 = rows1[key]?
+        d2 = rows2[key]?
+        d1.should eq(d2), "Element #{key} digest mismatch: normal=#{d1} warm=#{d2}"
+      end
+
+      fp2.should eq(fp1)
+    ensure
+      Iyi::Compiler.preanalysed.clear
+      ENV.delete("IYI_WARM")
+    end
+  end
+
+  it "observed initialiser order is part of CallPathFp" do
+    modules_path = File.expand_path("../../../samples/iyi/modules.iyi", __DIR__)
+    modules_code = File.read(modules_path)
+    obs_flags = ["iyi_observe"]
+
+    old_seed = ENV["IYI_INIT_SEED"]?
+    begin
+      ENV.delete("IYI_INIT_SEED")
+      fp0, _, top0 = compute_fp_and_top(modules_code, modules_path, flags: obs_flags)
+
+      ENV["IYI_INIT_SEED"] = "1"
+      fp1, _, top1 = compute_fp_and_top(modules_code, modules_path, flags: obs_flags)
+
+      top1.should_not eq(top0)
+      fp1.should_not eq(fp0)
+    ensure
+      if old_seed
+        ENV["IYI_INIT_SEED"] = old_seed
+      else
+        ENV.delete("IYI_INIT_SEED")
+      end
     end
   end
 end
