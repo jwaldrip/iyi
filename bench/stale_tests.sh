@@ -634,7 +634,7 @@ printf 'target_v2' > "$WORK/symlink/outside.txt"
 link_miss="$(run_json "$WORK/symlink" link_test.iyi)"
 expect_eq "$(printf '%s' "$link_miss" | json_cached)" 0 "symlink target mutation reruns"
 
-step "symlink outside scratch targeting scratch taints shared-write"
+step "scratch alias" "symlink outside scratch targeting scratch taints shared-write"
 mkdir -p "$WORK/symlink_shared"
 cat > "$WORK/symlink_shared/shared_link_test.iyi" <<'IYI'
 import std/file::{File}
