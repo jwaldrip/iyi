@@ -723,14 +723,14 @@ pub def safe_real_path(path : String) : String
       if res_dir.address != 0_u64
         base_dir = c_str(res_dir)
         fname = path[dir.bytesize, path.bytesize - dir.bytesize]
-        candidate = (base_dir.ends_with?('/') && fname.starts_with?('/')) ? (base_dir + fname[1, fname.bytesize - 1]) : ((base_dir.ends_with?('/') || fname.starts_with?('/')) ? (base_dir + fname) : (base_dir + "/" + fname))
+        candidate = (base_dir.ends_with?("/") && fname.starts_with?("/")) ? (base_dir + fname[1, fname.bytesize - 1]) : ((base_dir.ends_with?("/") || fname.starts_with?("/")) ? (base_dir + fname) : (base_dir + "/" + fname))
         return normalize_path(candidate)
       end
     end
   {% end %}
 
   p = path
-  unless p.starts_with?('/')
+  unless p.starts_with?("/")
     p = current_cwd + "/" + p
   end
   normalize_path(p)
@@ -752,9 +752,9 @@ end
 
 @[Effect(:observation_channel)]
 private def path_absolute?(path : String) : ::Bool
-  return true if path.starts_with?('/')
+  return true if path.starts_with?("/")
   {% if flag?(:win32) %}
-    return true if path.starts_with?('\\')
+    return true if path.starts_with?("\\")
     if path.bytesize >= 3
       bytes = path.to_unsafe
       if bytes[1] == 58_u8 && (bytes[2] == 47_u8 || bytes[2] == 92_u8)
