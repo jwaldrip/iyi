@@ -523,8 +523,8 @@ describe "Iyi::Stale S3f: CallPathFp, typed encoder, roots, explain" do
       Iyi::Compiler.preanalysed.clear
       fp2, res2 = compute_fp(hello_code, hello_path, flags: obs_flags)
 
-      rows1 = res1.dump_rows.to_h { |r| {{r.kind, r.key}, r.digest} }
-      rows2 = res2.dump_rows.to_h { |r| {{r.kind, r.key}, r.digest} }
+      rows1 = res1.dump_rows.to_h { |r| { {r.kind, r.key}, r.digest } }
+      rows2 = res2.dump_rows.to_h { |r| { {r.kind, r.key}, r.digest } }
 
       all_keys = (rows1.keys + rows2.keys).uniq
       all_keys.each do |key|
