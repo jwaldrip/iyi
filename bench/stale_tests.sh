@@ -36,6 +36,39 @@ json_failed() { json_field failed; }
 expect_eq() { [ "$1" = "$2" ] || fail "expected $2, got $1${3:+: $3}"; }
 expect_contains() { case "$1" in *"$2"*) ;; *) fail "missing $2${3:+: $3}";; esac; }
 
+# One `--json --explain` run prints a decision line per test as it finishes,
+# then the JSON document, all on stdout and with no text summary
+# (src/compiler/iyi/stale/runner.cr:333-335, 365-367, 439-442, 473-476,
+# 525-528, 597-600, 644-705). `explained FILE json` prints that run's document
+# for json_cached; `explained FILE lines` prints its decision lines. Both
+# refuse a capture whose lines do not pair in order with its tests, or whose
+# "hit from" lines disagree with "cached", so a reason and a count are always
+# the same run's.
+explained() {
+  python3 -c '
+import json, sys
+path, part = sys.argv[1], sys.argv[2]
+if part not in ("json", "lines"):
+    sys.exit("stale_tests: explained takes json or lines, not %s" % part)
+lines = open(path).read().splitlines()
+if not lines or not lines[-1].startswith("{"):
+    sys.exit("stale_tests: %s does not end in a JSON document" % path)
+doc = json.loads(lines[-1])
+decisions, tests = lines[:-1], doc["tests"]
+if len(decisions) != len(tests):
+    sys.exit("stale_tests: %s has %d decision lines for %d tests" % (path, len(decisions), len(tests)))
+for line, test in zip(decisions, tests):
+    prefix = test["file"] + ": "
+    if not line.startswith(prefix):
+        sys.exit("stale_tests: %s: %r is not the decision for %s" % (path, line, test["file"]))
+    if line.startswith(prefix + "hit from ") != test["cached"]:
+        sys.exit("stale_tests: %s: %r disagrees with cached=%s" % (path, line, test["cached"]))
+if doc["cached"] != sum(1 for test in tests if test["cached"]):
+    sys.exit("stale_tests: %s: cached=%s disagrees with its tests" % (path, doc["cached"]))
+print(lines[-1] if part == "json" else "\n".join(decisions))
+' "$1" "$2"
+}
+
 # Shared import fixture: a reached definition, an unreached one, and a test
 # which does not load the module.
 mkdir -p "$WORK/basic/lib"
@@ -241,9 +274,9 @@ pub def unreached_fn(x : Int32) : Int32
 end
 IYI
 r8_explain="$WORK/r8/explain.txt"
-(cd "$WORK/r8" && IYI_PATH="$WORK/r8:$REPO/src" "$IYI" test --cached --explain r8_test.iyi) > "$r8_explain" 2>&1
-expect_contains "$(cat "$r8_explain")" "miss: call path" "reached std def miss reason"
-expect_contains "$(cat "$r8_explain")" "0 from receipts" "zero receipts on reached std edit miss"
+IYI_PATH="$WORK/r8:$REPO/src" run_json "$WORK/r8" --explain r8_test.iyi > "$r8_explain"
+expect_contains "$(explained "$r8_explain" lines)" "miss: call path" "reached std def miss reason"
+expect_eq "$(explained "$r8_explain" json | json_cached)" 0 "zero receipts on reached std edit miss"
 
 # Subsequent run hits newly recorded receipt
 r8_hit3="$(IYI_PATH="$WORK/r8:$REPO/src" run_json "$WORK/r8" r8_test.iyi)"
@@ -529,33 +562,57 @@ expect_eq "$(printf '%s' "$r26_run3" | json_cached)" 1 "r26 run 3 cached 1 (rest
 expect_contains "$(cat "$WORK/r26/explain.txt")" "hit from local" "r26 run 3 hit from local"
 step 27 "empty newer master snapshot disables consumption"
 # Covered by spec/compiler/stale/snapshot_spec.cr:403
-step 28 "loader variables are cleared while profile limits remain inputs"
+# Row 28 mutation proof: loader and daemon variables are cleared for the test child
+# while profile limits remain inputs. SIP on macOS strips DYLD_* through /bin/sh
+# wrappers, so we reach the native compiler (.build/iyi) directly. We vary
+# DYLD_LIBRARY_PATH and LD_PRELOAD (with harmless ':' and '::' empty library paths)
+# rather than LD_LIBRARY_PATH (which is a link environment input).
+step 28 "loader and daemon variables are cleared for the test while profile limits remain inputs"
+case "$IYI" in
+  */bin/iyi) r28_iyi="$(dirname "$(dirname "$IYI")")/.build/iyi" ;;   # bench/up_to_date.sh:335-339
+  *) r28_iyi="$IYI" ;;
+esac
+r28_with() {
+  (export DYLD_LIBRARY_PATH="$1" LD_PRELOAD="$2" IYI_DAEMON_SOCKET="$3" CRYSTAL_DAEMON_SOCKET="$3"
+   cd "$4" && "$r28_iyi" test "${@:5}")
+}
+mkdir -p "$WORK/r28-reach"
+cat > "$WORK/r28-reach/reach_test.iyi" <<'IYI'
+assert ({{ env("DYLD_LIBRARY_PATH") || "unset" }}) == "/tmp/r28_dir1"
+assert ({{ env("LD_PRELOAD") || "unset" }}) == ":"
+assert ({{ env("IYI_DAEMON_SOCKET") || "unset" }}) == "unset"
+assert ({{ env("CRYSTAL_DAEMON_SOCKET") || "unset" }}) == "unset"
+IYI
+r28_reach="$(r28_with /tmp/r28_dir1 : "$WORK/r28-none.sock" "$WORK/r28-reach" --fresh --json reach_test.iyi)"
+expect_eq "$(printf '%s' "$r28_reach" | json_failed)" 0 "the runner's build sees the loader variables and no daemon"
 mkdir -p "$WORK/r28"
 cat > "$WORK/r28/loader_test.iyi" <<'IYI'
-assert Program.env("LD_LIBRARY_PATH") == nil
-assert Program.env("DYLD_LIBRARY_PATH") == nil
+import std/env::{ENV}
+
 assert Program.env("LD_PRELOAD") == nil
+assert Program.env("LD_LIBRARY_PATH") == nil
+assert Program.env("GLIBC_TUNABLES") == nil
 assert Program.env("DYLD_INSERT_LIBRARIES") == nil
-assert 1 + 1 == 2
+assert Program.env("DYLD_LIBRARY_PATH") == nil
+assert Program.env("IYI_DAEMON_SOCKET") == nil
+assert Program.env("CRYSTAL_DAEMON_SOCKET") == nil
+names = ENV.keys
+assert !names.includes?("LD_PRELOAD")
+assert !names.includes?("DYLD_LIBRARY_PATH")
+assert !names.includes?("IYI_DAEMON_SOCKET")
+assert !names.includes?("CRYSTAL_DAEMON_SOCKET")
 IYI
-
-case "$(uname -s)" in
-  Darwin) LOADER_VAR="DYLD_LIBRARY_PATH" ;;
-  *) LOADER_VAR="LD_LIBRARY_PATH" ;;
-esac
-
 rm -rf "$CACHE/tests-v1"
-r28_run1="$( (export "$LOADER_VAR=/tmp/r28_dir1"; run_json "$WORK/r28" loader_test.iyi) )"
+r28_run1="$(r28_with /tmp/r28_dir1 : "$WORK/r28-none-1.sock" "$WORK/r28" --cached --json loader_test.iyi)"
+expect_eq "$(printf '%s' "$r28_run1" | json_failed)" 0 "r28 run 1: the test sees no loader or daemon variable"
 expect_eq "$(printf '%s' "$r28_run1" | json_cached)" 0 "r28 run 1 recorded"
-
-r28_run2="$( (export "$LOADER_VAR=/tmp/r28_dir2"; run_json "$WORK/r28" loader_test.iyi) )"
-expect_eq "$(printf '%s' "$r28_run2" | json_cached)" 1 "r28 run 2 hits with changed loader var"
-
+r28_run2="$(r28_with /tmp/r28_dir2 :: "$WORK/r28-none-2.sock" "$WORK/r28" --cached --json loader_test.iyi)"
+expect_eq "$(printf '%s' "$r28_run2" | json_cached)" 1 "r28 run 2 hits with changed loader and daemon variables"
 cur_nofile=$(ulimit -S -n)
 r28_explain="$WORK/r28/explain.txt"
-(ulimit -S -n $((cur_nofile - 1)); cd "$WORK/r28" && "$IYI" test --cached --explain loader_test.iyi) > "$r28_explain" 2>&1
-expect_contains "$(cat "$r28_explain")" "miss: profile changed" "different profile reason on rlimit change"
-expect_contains "$(cat "$r28_explain")" "0 from receipts" "zero receipts on profile miss"
+(ulimit -S -n $((cur_nofile - 1)); run_json "$WORK/r28" --explain loader_test.iyi) > "$r28_explain"
+expect_contains "$(explained "$r28_explain" lines)" "miss: profile changed" "different profile reason on rlimit change"
+expect_eq "$(explained "$r28_explain" json | json_cached)" 0 "zero receipts on profile miss"
 
 # Subsequent run with lowered limit hits newly recorded profile receipt
 r28_run3_hit="$( (ulimit -S -n $((cur_nofile - 1)); run_json "$WORK/r28" loader_test.iyi) )"
@@ -655,9 +712,9 @@ r31_run1="$(run_json "$WORK/r31" mtime_test.iyi)"
 expect_eq "$(printf '%s' "$r31_run1" | json_cached)" 0 "r31 run 1 cached 0"
 expect_contains "$r31_run1" "clock" "scratch timestamp taints clock not reusable reason"
 r31_explain="$WORK/r31/explain.txt"
-(cd "$WORK/r31" && "$IYI" test --cached --explain mtime_test.iyi) > "$r31_explain" 2>&1
-expect_contains "$(cat "$r31_explain")" "clock" "clock reason in explain"
-expect_contains "$(cat "$r31_explain")" "0 from receipts" "zero receipts on clock taint"
+run_json "$WORK/r31" --explain mtime_test.iyi > "$r31_explain"
+expect_contains "$(explained "$r31_explain" lines)" "clock" "clock reason in explain"
+expect_eq "$(explained "$r31_explain" json | json_cached)" 0 "zero receipts on clock taint"
 step 32 "master provenance sidecar is verified"
 # Covered by spec/compiler/stale/snapshot_spec.cr:520
 
@@ -742,9 +799,9 @@ expect_eq "$(printf '%s' "$r35_hit2" | json_cached)" 1 "r35 unreached macro inpu
 # Reached read_file input changes -> misses on same invocation
 printf 'val_longer_content' > "$r35_data_file"
 r35_explain1="$WORK/r35/explain1.txt"
-(cd "$WORK/r35" && R35_REACHED_ENV="env1" R35_UNREACHED_ENV="uenv_mutated" "$IYI" test --cached --explain macro_test.iyi) > "$r35_explain1" 2>&1
-expect_contains "$(cat "$r35_explain1")" "miss: call path" "reached read_file input change miss reason"
-expect_contains "$(cat "$r35_explain1")" "0 from receipts" "zero receipts on reached read_file miss"
+R35_REACHED_ENV="env1" R35_UNREACHED_ENV="uenv_mutated" run_json "$WORK/r35" --explain macro_test.iyi > "$r35_explain1"
+expect_contains "$(explained "$r35_explain1" lines)" "miss: call path" "reached read_file input change miss reason"
+expect_eq "$(explained "$r35_explain1" json | json_cached)" 0 "zero receipts on reached read_file miss"
 
 # Subsequent run hits newly recorded receipt
 r35_hit3="$(R35_REACHED_ENV="env1" R35_UNREACHED_ENV="uenv_mutated" run_json "$WORK/r35" macro_test.iyi)"
@@ -752,9 +809,9 @@ expect_eq "$(printf '%s' "$r35_hit3" | json_cached)" 1 "r35 re-recorded hits"
 
 # Reached env input changes -> misses on same invocation
 r35_explain2="$WORK/r35/explain2.txt"
-(cd "$WORK/r35" && R35_REACHED_ENV="env_changed" R35_UNREACHED_ENV="uenv_mutated" "$IYI" test --cached --explain macro_test.iyi) > "$r35_explain2" 2>&1
-expect_contains "$(cat "$r35_explain2")" "miss: call path" "reached env input change miss reason"
-expect_contains "$(cat "$r35_explain2")" "0 from receipts" "zero receipts on reached env miss"
+R35_REACHED_ENV="env_changed" R35_UNREACHED_ENV="uenv_mutated" run_json "$WORK/r35" --explain macro_test.iyi > "$r35_explain2"
+expect_contains "$(explained "$r35_explain2" lines)" "miss: call path" "reached env input change miss reason"
+expect_eq "$(explained "$r35_explain2" json | json_cached)" 0 "zero receipts on reached env miss"
 
 # Subsequent run hits newly recorded receipt
 r35_hit4="$(R35_REACHED_ENV="env_changed" R35_UNREACHED_ENV="uenv_mutated" run_json "$WORK/r35" macro_test.iyi)"
@@ -824,13 +881,16 @@ IYI
 (cd "$WORK/r40" && "$IYI" build --emit-iyimod mods -o producer producer.iyi) >/dev/null
 
 rm -rf "$CACHE/tests-v1"
-# Run 1: record receipt using the compiled .iyimod
-r40_run1="$(run_json "$WORK/r40" --use-iyimod mods calc_test.iyi)"
+# `iyi test` takes no build flags (src/compiler/iyi/command/test.cr:101-105
+# answers "test: unknown flag --use-iyimod"). IYI_OPTS carries the flag to
+# the build each test runs, as row 7 carries --release; without it a build
+# reads mods only for a module with no source (command.cr:1287-1293).
+r40_run1="$(IYI_OPTS="--use-iyimod mods" run_json "$WORK/r40" calc_test.iyi)"
 expect_eq "$(printf '%s' "$r40_run1" | json_cached)" 0 "r40 run 1 recorded"
 
 # Run 2: rebuilt identical bytes -> hits!
 (cd "$WORK/r40" && "$IYI" build --emit-iyimod mods -o producer producer.iyi) >/dev/null
-r40_run2="$(run_json "$WORK/r40" --use-iyimod mods calc_test.iyi)"
+r40_run2="$(IYI_OPTS="--use-iyimod mods" run_json "$WORK/r40" calc_test.iyi)"
 expect_eq "$(printf '%s' "$r40_run2" | json_cached)" 1 "r40 rebuilt identical bytes hits"
 
 # Run 3: rebuild with changed object code bytes (same signature/interface) -> misses!
@@ -842,12 +902,13 @@ pub def compute(x : Int32, y : Int32) : Int32
 end
 IYI
 (cd "$WORK/r40" && "$IYI" build --emit-iyimod mods -o producer producer.iyi) >/dev/null
-(cd "$WORK/r40" && "$IYI" test --cached --use-iyimod mods --explain calc_test.iyi) > "$WORK/r40/explain.txt" 2>&1
-expect_contains "$(cat "$WORK/r40/explain.txt")" "miss" "changed linked object bytes miss reason"
-expect_contains "$(cat "$WORK/r40/explain.txt")" "0 from receipts" "zero receipts on changed object bytes miss"
+r40_explain="$WORK/r40/explain.txt"
+IYI_OPTS="--use-iyimod mods" run_json "$WORK/r40" --explain calc_test.iyi > "$r40_explain"
+expect_contains "$(explained "$r40_explain" lines)" "miss" "changed linked object bytes miss reason"
+expect_eq "$(explained "$r40_explain" json | json_cached)" 0 "zero receipts on changed object bytes miss"
 
 # Subsequent run hits newly recorded receipt
-r40_run3_hit="$(run_json "$WORK/r40" --use-iyimod mods calc_test.iyi)"
+r40_run3_hit="$(IYI_OPTS="--use-iyimod mods" run_json "$WORK/r40" calc_test.iyi)"
 expect_eq "$(printf '%s' "$r40_run3_hit" | json_cached)" 1 "subsequent run hits newly recorded receipt"
 step 41 "link environment is quoted and keyed"
 # Covered by bench/stale_callpath.sh:61-140 and spec/compiler/stale/link_spec.cr
@@ -892,8 +953,8 @@ printf 'in_v2' > "$WORK/scratch-write/in.txt"
 row49_miss="$(run_json "$WORK/scratch-write" tmp_test.iyi)"
 expect_eq "$(printf '%s' "$row49_miss" | json_cached)" 0 "input beside a scratch write reruns"
 
-# Process profile: argv and cwd sensitivity, default mode isolation, concurrent scratch lock
-step "process profile" "argv and cwd sensitivity, plain test isolation, concurrent scratch lock"
+# Process profile: argv and cwd sensitivity, default mode isolation, concurrent scratch lock, dirty scratch refusal
+step "process profile" "argv and cwd sensitivity, plain test isolation, concurrent scratch lock, dirty scratch refusal"
 
 # 1. Argv sensitivity: cache-a hits second, cp -R cache-b misses and fails with same portable_build, different profile
 mkdir -p "$WORK/argv-sensitivity"
@@ -913,7 +974,10 @@ run2="$(cd "$WORK/argv-sensitivity" && IYI_CACHE_DIR="$WORK/cache-a" "$IYI" test
 expect_eq "$(printf '%s' "$run2" | json_cached)" 1 "argv test run 2 hits"
 
 cp -R "$WORK/cache-a" "$WORK/cache-b"
-run3="$(cd "$WORK/argv-sensitivity" && IYI_CACHE_DIR="$WORK/cache-b" "$IYI" test --cached --json argv_test.iyi)"
+set +e
+run3="$(cd "$WORK/argv-sensitivity" && IYI_CACHE_DIR="$WORK/cache-b" "$IYI" test --cached --json argv_test.iyi)"; run3_rc=$?
+set -e
+expect_eq "$run3_rc" 1 "argv test run 3 exits 1"
 expect_eq "$(printf '%s' "$run3" | json_cached)" 0 "argv test run 3 in cache-b misses"
 run3_status="$(printf '%s' "$run3" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tests"][0]["status"])')"
 expect_eq "$run3_status" "fail" "argv test run 3 fails because S includes cache-b"
@@ -935,7 +999,10 @@ cwd_run1="$( (cd "$WORK/cwd-sensitivity/cwdA" && "$IYI" test --cached --json "$W
 expect_eq "$(printf '%s' "$cwd_run1" | json_cached)" 0 "cwdA run 1 records"
 cwd_run2="$( (cd "$WORK/cwd-sensitivity/cwdA" && "$IYI" test --cached --json "$WORK/cwd-sensitivity/rel_test.iyi") )"
 expect_eq "$(printf '%s' "$cwd_run2" | json_cached)" 1 "cwdA run 2 hits"
-cwd_run3="$( (cd "$WORK/cwd-sensitivity/cwdB" && "$IYI" test --cached --json "$WORK/cwd-sensitivity/rel_test.iyi") )"
+set +e
+cwd_run3="$( (cd "$WORK/cwd-sensitivity/cwdB" && "$IYI" test --cached --json "$WORK/cwd-sensitivity/rel_test.iyi") )"; cwd_run3_rc=$?
+set -e
+expect_eq "$cwd_run3_rc" 1 "cwdB run 3 exits 1"
 expect_eq "$(printf '%s' "$cwd_run3" | json_cached)" 0 "cwdB run 3 misses"
 cwd_run3_status="$(printf '%s' "$cwd_run3" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tests"][0]["status"])')"
 expect_eq "$cwd_run3_status" "fail" "cwdB run 3 fails because rel.txt is b"
@@ -946,43 +1013,119 @@ cat > "$WORK/plain-mode/args_empty_test.iyi" <<'IYI'
 raise "args not empty" unless Program.args.empty?
 IYI
 (cd "$WORK/plain-mode" && "$IYI" test args_empty_test.iyi) >/dev/null
-plain_cached="$( (cd "$WORK/plain-mode" && "$IYI" test --cached --json args_empty_test.iyi) )"
+set +e
+plain_cached="$( (cd "$WORK/plain-mode" && "$IYI" test --cached --json args_empty_test.iyi) )"; plain_cached_rc=$?
+set -e
+expect_eq "$plain_cached_rc" 1 "args_empty_test exits 1 under --cached"
 expect_eq "$(printf '%s' "$plain_cached" | json_failed)" 1 "args_empty_test fails under --cached"
 
-# 4. Lock: two concurrent --fresh runs of lock_test.iyi in one cache both pass
-mkdir -p "$WORK/lock-test"
+# 4. Lock: concurrent runs of the same test in one cache serialize on scratch lock
+mkdir -p "$WORK/lock-test/ctl"
 cat > "$WORK/lock-test/lock_test.iyi" <<'IYI'
 import std/file::{File}
 import std/dir::{Dir}
-import std/time::{sleep}
+import std/process::{Process}
 
 args = Program.args
 raise "no scratch arg" unless args.size == 1
 scratch = args[0]
-
-entries = Dir.children(scratch)
-raise "scratch not empty" unless entries.empty?
-
+raise "scratch not empty" unless Dir.children(scratch).empty?
+ctl = Program.env("LOCK_CTL") || ""
+raise "no LOCK_CTL" if ctl.empty?
 token = "#{Process.pid}"
 token_file = File.join(scratch, "token.txt")
 File.write(token_file, token)
-
-sleep(0.3)
-
-read_token = File.read(token_file)
-raise "token corrupted" unless read_token == token
+if Program.env("LOCK_ROLE") == "holder"
+  File.write(File.join(ctl, "holder-started"), token)
+  waited = 0
+  while !File.exists?(File.join(ctl, "release"))
+    raise "never released" if waited >= 2000
+    sleep(20)
+    waited += 1
+  end
+  raise "the second test ran while the holder held the scratch directory" if File.exists?(File.join(ctl, "second-ran"))
+else
+  File.write(File.join(ctl, "second-ran"), token)
+end
+raise "token corrupted" unless File.read(token_file) == token
 IYI
+lock_ctl="$WORK/lock-test/ctl"
 lock_out1="$WORK/lock-test/out1.json"
 lock_out2="$WORK/lock-test/out2.json"
-(cd "$WORK/lock-test" && "$IYI" test --fresh --json lock_test.iyi > "$lock_out1") &
+(cd "$WORK/lock-test" && LOCK_ROLE=holder LOCK_CTL="$lock_ctl" "$IYI" test --fresh --json lock_test.iyi > "$lock_out1") &
 pid1=$!
-(cd "$WORK/lock-test" && "$IYI" test --fresh --json lock_test.iyi > "$lock_out2") &
-pid2=$!
-wait "$pid1"
-wait "$pid2"
-expect_eq "$(cat "$lock_out1" | json_failed)" 0 "lock test run 1 passes"
-expect_eq "$(cat "$lock_out2" | json_failed)" 0 "lock test run 2 passes"
 
+holder_ready=0
+for i in $(seq 1 1200); do
+  if [ -f "$lock_ctl/holder-started" ]; then
+    holder_ready=1
+    break
+  fi
+  if ! kill -0 "$pid1" 2>/dev/null; then
+    break
+  fi
+  sleep 0.1
+done
+if [ "$holder_ready" -ne 1 ]; then
+  cat "$lock_out1" >&2
+  fail "holder never started or exited early"
+fi
+
+(cd "$WORK/lock-test" && LOCK_ROLE=second LOCK_CTL="$lock_ctl" "$IYI" test --fresh --json lock_test.iyi > "$lock_out2") &
+pid2=$!
+
+for i in $(seq 1 100); do
+  if [ -f "$lock_ctl/second-ran" ]; then
+    break
+  fi
+  if ! kill -0 "$pid2" 2>/dev/null; then
+    break
+  fi
+  sleep 0.1
+done
+
+touch "$lock_ctl/release"
+wait "$pid1" || true
+wait "$pid2" || true
+expect_eq "$(cat "$lock_out1" | json_failed)" 0 "the holder keeps its scratch directory while a second runner of the test waits"
+expect_eq "$(cat "$lock_out2" | json_failed)" 0 "the second runner of the test finishes successfully"
+
+# 5. Dirty scratch refusal: test leaves a read-only subdirectory; runner warns on cleanup and refuses run 2 until permissions restored
+mkdir -p "$WORK/dirty-scratch"
+cat > "$WORK/dirty-scratch/dirty_test.iyi" <<'IYI'
+import std/file::{File}
+import std/dir::{Dir}
+
+scratch = Program.args[0]
+raise "scratch not empty" unless Dir.children(scratch).empty?
+kept = File.join(scratch, "kept")
+Dir.mkdir(kept)
+File.write(File.join(kept, "file"), "left behind")
+File.chmod(kept, 0o555)
+IYI
+
+dirty_err1="$WORK/dirty-scratch/err1.txt"
+dirty_run1="$( (cd "$WORK/dirty-scratch" && "$IYI" test --cached --json dirty_test.iyi) 2> "$dirty_err1" )"
+expect_eq "$(printf '%s' "$dirty_run1" | json_failed)" 0 "dirty scratch test run 1 passes"
+
+if [ -z "$(ls -d "$CACHE"/tests-v1/scratch/*/kept 2>/dev/null || true)" ]; then
+  echo "process profile 5 not proven here: this user removes entries of a read-only directory (root)"
+else
+  expect_contains "$(cat "$dirty_err1")" "was not removed" "cleanup warning on leftover read-only directory"
+
+  dirty_run2_out="$WORK/dirty-scratch/run2.json"
+  dirty_err2="$WORK/dirty-scratch/err2.txt"
+  if (cd "$WORK/dirty-scratch" && "$IYI" test --cached --json dirty_test.iyi) > "$dirty_run2_out" 2> "$dirty_err2"; then
+    fail "run 2 reused or ran a test in a scratch directory it could not empty"
+  fi
+  expect_contains "$(cat "$dirty_err2")" "cannot empty scratch directory" "runner refuses run in uncleaned scratch"
+  expect_eq "$(cat "$dirty_run2_out")" "" "refusal writes nothing to stdout"
+
+  chmod -R u+w "$CACHE"/tests-v1/scratch 2>/dev/null || true
+  dirty_run3="$(run_json "$WORK/dirty-scratch" dirty_test.iyi)"
+  expect_eq "$(printf '%s' "$dirty_run3" | json_failed)" 0 "run 3 passes after permissions restored"
+  chmod -R u+w "$CACHE"/tests-v1/scratch 2>/dev/null || true
+fi
 # Row 50 mutation proof: a test whose macro `run` helper is compiled cold on
 # the recording run hits on the next run, when the helper comes from the
 # cache. Linking the cold helper read IYI_LINK_DRIVER and the warm check did
