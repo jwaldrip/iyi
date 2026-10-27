@@ -543,8 +543,10 @@ def measure_overhead(results):
             continue
         t_def = f"{p['t_default']:6.3f}s" if p.get('t_default') else "   N/A "
         t_fr = f"{p['t_fresh']:6.3f}s"
-        t_ca = f"{p['t_cached']:6.3f}s"
-        elem = f"{p.get('elements_count', 0):6}"
+        if p.get('reusable') and p.get('receipt_bytes', 0) > 0:
+            t_ca = f"{p['t_cached']:6.3f}s"
+        else:
+            t_ca = "   N/A "
         enc_b = f"{p.get('encoded_bytes', 0):6} B"
         tr_b = f"{p.get('trace_bytes', 0):6} B"
         rc_b = f"{p.get('receipt_bytes', 0):6} B"
@@ -589,7 +591,7 @@ def measure_overhead(results):
         try: os.remove(bin_def)
         except: pass
 
-    # 2. Compute stale build key
+    # 2. Compute stale build key for normal (cold) pipeline
     key_file = os.path.join(work, 'hello.key')
     bin_k = os.path.join(work, 'hello_k')
     subprocess.run([iyi, 'build', '-Diyi_observe', '--stale-key', key_file, '-o', bin_k, hello_path],
@@ -599,23 +601,53 @@ def measure_overhead(results):
         except: pass
 
     local_build_hex = None
+    kdata_norm = {}
     if os.path.exists(key_file):
         try:
             with open(key_file) as f:
-                kdata = json.load(f)
-                local_build_hex = kdata.get('local', {}).get('build')
+                kdata_norm = json.load(f)
+                local_build_hex = kdata_norm.get('local', {}).get('build')
         except:
             pass
 
-    accept_file = os.path.join(work, 'hello_accept.json')
+    # Compute stale build key for warm (preanalysed) pipeline
+    key_file_warm_prod = os.path.join(work, 'hello_warm_prod.key')
+    bin_k_warm = os.path.join(work, 'hello_k_warm')
+    subprocess.run([iyi, 'build', '-Diyi_observe', '--stale-key', key_file_warm_prod, '-o', bin_k_warm, hello_path],
+                   capture_output=True, text=True, env=env_warm)
+    if os.path.exists(bin_k_warm):
+        try: os.remove(bin_k_warm)
+        except: pass
+
+    local_build_hex_warm = None
+    kdata_warm = {}
+    if os.path.exists(key_file_warm_prod):
+        try:
+            with open(key_file_warm_prod) as f:
+                kdata_warm = json.load(f)
+                local_build_hex_warm = kdata_warm.get('local', {}).get('build')
+        except:
+            pass
+
+    # Build accept files
+    accept_file_norm = os.path.join(work, 'hello_accept_norm.json')
     if local_build_hex:
-        with open(accept_file, 'w') as f:
+        with open(accept_file_norm, 'w') as f:
             json.dump([{'mode': 'local', 'build': local_build_hex}], f)
+
+    accept_file_warm = os.path.join(work, 'hello_accept_warm.json')
+    warm_accept_rules = []
+    if local_build_hex_warm:
+        warm_accept_rules.append({'mode': 'local', 'build': local_build_hex_warm})
+    if local_build_hex and local_build_hex != local_build_hex_warm:
+        warm_accept_rules.append({'mode': 'local', 'build': local_build_hex})
+    with open(accept_file_warm, 'w') as f:
+        json.dump(warm_accept_rules, f)
 
     # 3. Cached Hit with Normal Prelude (own key file, with -Diyi_observe)
     key_file_norm = os.path.join(work, 'hello_hit_norm.key')
     bin_hit_norm = os.path.join(work, 'hello_hit_norm')
-    cmd_hit_norm = [iyi, 'build', '-Diyi_observe', '--stats', '--stale-key', key_file_norm, '--stale-accept', accept_file, '-o', bin_hit_norm, hello_path]
+    cmd_hit_norm = [iyi, 'build', '-Diyi_observe', '--stats', '--stale-key', key_file_norm, '--stale-accept', accept_file_norm, '-o', bin_hit_norm, hello_path]
     res_hit_norm = subprocess.run(cmd_hit_norm, capture_output=True, text=True, env=env_base)
     if os.path.exists(bin_hit_norm):
         try: os.remove(bin_hit_norm)
@@ -624,8 +656,7 @@ def measure_overhead(results):
     # 4. Cached Hit with Preanalysed Prelude (IYI_WARM=1) (own key file, with -Diyi_observe)
     key_file_warm = os.path.join(work, 'hello_hit_warm.key')
     bin_hit_warm = os.path.join(work, 'hello_hit_warm')
-    cmd_hit_warm = [iyi, 'build', '-Diyi_observe', '--stats', '--stale-key', key_file_warm, '--stale-accept', accept_file, '-o', bin_hit_warm, hello_path]
-    env_warm = dict(env_base, IYI_WARM='1')
+    cmd_hit_warm = [iyi, 'build', '-Diyi_observe', '--stats', '--stale-key', key_file_warm, '--stale-accept', accept_file_warm, '-o', bin_hit_warm, hello_path]
     res_hit_warm = subprocess.run(cmd_hit_warm, capture_output=True, text=True, env=env_warm)
     if os.path.exists(bin_hit_warm):
         try: os.remove(bin_hit_warm)
@@ -716,6 +747,28 @@ def measure_overhead(results):
     print()
     print(f"Normal prelude proof: exit={res_hit_norm.returncode}, phase={phase_norm}, codegen_lines={len(codegen_lines_norm)} -> {'phase hit no codegen' if norm_proven else 'hit not proven'}")
     print(f"Preanalysed prelude proof: exit={res_hit_warm.returncode}, phase={phase_warm}, codegen_lines={len(codegen_lines_warm)} -> {'phase hit no codegen' if warm_proven else 'hit not proven'}")
+    print()
+    print('### Producer Key Diagnostic (Normal vs IYI_WARM=1 Preanalysed Producer):')
+    norm_local = kdata_norm.get('local', {})
+    warm_local = kdata_warm.get('local', {})
+    keys_match = (local_build_hex == local_build_hex_warm and local_build_hex is not None)
+    print(f"- Normal producer build:   {local_build_hex}")
+    print(f"- Warm producer build:     {local_build_hex_warm}")
+    print(f"- Producer build match:    {keys_match}")
+    if not keys_match:
+        for comp in ['toolchain', 'behavior', 'callpath', 'link', 'cenv']:
+            nv = norm_local.get(comp)
+            wv = warm_local.get(comp)
+            eq = (nv == wv)
+            print(f"  * {comp:10}: norm={nv} warm={wv} match={eq}")
+        explain_norm = norm_local.get('explain', {})
+        explain_warm = warm_local.get('explain', {})
+        diff_keys = set(explain_norm.keys()) ^ set(explain_warm.keys())
+        diff_vals = {k for k in explain_norm if k in explain_warm and explain_norm[k] != explain_warm[k]}
+        if diff_keys:
+            print(f"  * explain disjoint keys: {len(diff_keys)} ({list(diff_keys)[:5]})")
+        if diff_vals:
+            print(f"  * explain differing values: {len(diff_vals)} ({list(diff_vals)[:5]})")
     print()
     print('### Raw Progress Tracker Output (`--stats` Cached Hit - Normal Prelude):')
     print('```')
