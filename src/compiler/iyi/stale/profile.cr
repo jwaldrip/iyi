@@ -39,6 +39,8 @@ module Iyi::Stale::Profile
     "DYLD_INSERT_LIBRARIES",
     "DYLD_LIBRARY_PATH",
   }
+  DAEMON_VARS = {"IYI_DAEMON_SOCKET", "CRYSTAL_DAEMON_SOCKET"}
+  SCRATCH_VARS = {"TMPDIR", "TEMP", "TMP"}
 
   def self.current(
     timeout : Float64 = 60.0,
@@ -95,16 +97,23 @@ module Iyi::Stale::Profile
   def self.clean_child_env(scratch_dir : String, trace_file : String, base_env = ENV) : Hash(String, String)
     env = Hash(String, String).new
     base_env.each do |k, v|
-      next if LOADER_VARS.includes?(k)
-      next if k == "IYI_DAEMON_SOCKET"
+      next if LOADER_VARS.includes?(k) || DAEMON_VARS.includes?(k)
       env[k] = v
     end
-
-    env["TMPDIR"] = scratch_dir
-    env["TEMP"] = scratch_dir
-    env["TMP"] = scratch_dir
+    SCRATCH_VARS.each { |k| env[k] = scratch_dir }
     env["IYI_OBSERVE"] = trace_file
+    env
+  end
 
+  def self.program_env(base_env = ENV) : Hash(String, String)
+    env = clean_child_env("scratch", "", base_env)
+    env.delete("IYI_OBSERVE") # the runtime unsets it before program code (observe.iyi:383-387)
+    env
+  end
+
+  def self.build_env(base_env = ENV) : Hash(String, String)
+    env = Hash(String, String).new
+    base_env.each { |k, v| env[k] = v unless DAEMON_VARS.includes?(k) }
     env
   end
 

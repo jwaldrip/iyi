@@ -259,8 +259,12 @@ module Iyi::Stale
 
         File.open(lock_path, "a") do |lock_file|
           lock_file.flock_exclusive do
-            FileUtils.rm_rf(s) if Dir.exists?(s) rescue nil
-            Dir.mkdir_p(s)
+            begin
+              FileUtils.rm_r(s) if File.info?(s, follow_symlinks: false)
+              Dir.mkdir(s)
+            rescue ex : File::Error
+              abort! "#{file}: cannot empty scratch directory #{s}: #{ex.message}"
+            end
 
             started = Time.instant
             out_key_path = File.tempname("iyi-stale-key", ".json")
@@ -275,8 +279,6 @@ module Iyi::Stale
           File.write(block_path, block_rules.to_json)
 
           build_out = IO::Memory.new
-          build_env = ENV.to_h
-          build_env.delete("IYI_DAEMON_SOCKET")
 
           build_status = Process.run(
             Process.executable_path.not_nil!,
@@ -288,7 +290,8 @@ module Iyi::Stale
               "--stale-accept", accept_path,
               "--stale-block", block_path,
             ],
-            env: build_env,
+            env: Profile.build_env,
+            clear_env: true,
             output: build_out,
             error: build_out
           )
@@ -377,6 +380,7 @@ module Iyi::Stale
             binary,
             args: test_argv,
             env: child_env,
+            clear_env: true,
             input: null_io,
             output: run_out,
             error: run_out,
@@ -603,7 +607,11 @@ module Iyi::Stale
               active_tree.try &.close
               active_tree = nil
               null_io.try &.close rescue nil
-              FileUtils.rm_rf(s) if Dir.exists?(s) rescue nil
+              begin
+                FileUtils.rm_r(s) if File.info?(s, follow_symlinks: false)
+              rescue ex : File::Error
+                STDERR.puts "#{file}: scratch directory #{s} was not removed: #{ex.message}"
+              end
               File.delete(trace_file) if File.file?(trace_file) rescue nil
               File.delete(out_key_path) if File.file?(out_key_path) rescue nil
               File.delete(accept_path) if File.file?(accept_path) rescue nil
