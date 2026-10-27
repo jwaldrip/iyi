@@ -775,11 +775,14 @@ pub def file_write(op : UInt8 | ::Symbol | String, path : String, target : Strin
       endpoint3 = dest_entry
     end
   else # create, delete, mkdir, touch, chmod
+    # One path each. A def's second argument reaches these as `target`
+    # (`Dir.mkdir`'s mode, `File.chmod`'s mode, `File.touch`'s time,
+    # `File.truncate`'s size, `File.chown`'s owner) and is not a path:
+    # resolved as one, `Dir.mkdir` recorded a write to `511` in the current
+    # directory.
     real = safe_real_path(path)
-    target_real = target.nil? || target.empty? ? "" : safe_real_path(target)
     inside_scratch = is_under_scratch?(real) ? 1_u8 : 0_u8
     endpoint1 = real
-    endpoint2 = target_real
   end
 
   task_id = current_task_id

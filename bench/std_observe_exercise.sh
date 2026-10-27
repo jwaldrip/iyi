@@ -15,6 +15,7 @@
 #     thread/fiber depth transfer are observed and discriminate under mutation.
 #   * std/observe builds, observed, beside every std module.
 #   * A missing relative name with no separator is recorded under the real current directory.
+#   * A single-path write records no second endpoint: a mode is not a path.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -924,6 +925,7 @@ trace_file = sys.argv[1]
 expected_op = int(sys.argv[2])
 expected_inside = int(sys.argv[3])
 expected_real = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] != "" else None
+expected_target = sys.argv[5] if len(sys.argv) > 5 else None
 
 with open(trace_file, "rb") as f:
     data = f.read()
@@ -957,6 +959,8 @@ if inside != expected_inside:
     sys.exit("FAIL: expected inside %d, got %d" % (expected_inside, inside))
 if expected_real is not None and real != expected_real:
     sys.exit("FAIL: expected real '%s', got '%s'" % (expected_real, real))
+if expected_target is not None and target_real != expected_target:
+    sys.exit("FAIL: expected target '%s', got '%s'" % (expected_target, target_real))
 
 print("OK: 0x07 op=%d inside=%d real=%s target=%s" % (op_code, inside, real, target_real))
 EOF
@@ -1190,6 +1194,16 @@ EOF
   (cd "$REL_DIR" && TMPDIR="$SCRATCH_FIXTURE" IYI_OBSERVE="$TRACE_H" "$WORK/single_op" delete "$REL_NAME")
   "$PY" "$WORK/decode_07.py" "$TRACE_H" 2 0 "$REL_REAL/$REL_NAME"
   echo "  case h passed: delete of a missing relative name => 2, 0, real(cwd)/name"
+  # i: Dir.mkdir's mode reaches the observer as the def's second argument and
+  # is no path => 4, 1, real, empty target
+  MADE_I="$SCRATCH_FIXTURE/made_by_mkdir"
+  rm -rf "$MADE_I"
+  MADE_I_REAL="$(cd "$SCRATCH_FIXTURE" && pwd -P)/made_by_mkdir"
+  TRACE_I="$WORK/trace_i.bin"
+  rm -f "$TRACE_I"
+  (cd "$REL_DIR" && TMPDIR="$SCRATCH_FIXTURE" IYI_OBSERVE="$TRACE_I" "$WORK/single_op" mkdir "$MADE_I")
+  "$PY" "$WORK/decode_07.py" "$TRACE_I" 4 1 "$MADE_I_REAL" ""
+  echo "  case i passed: mkdir's mode is no path => 4, 1, real, empty target"
 fi
 
 SUCCESS=1
