@@ -22,6 +22,7 @@ private def compute_fp(code : String, filename : String = "test.iyi", flags : Ar
     end
   end
 end
+
 private def flatten_top_level(node : Iyi::ASTNode, into : Array(String)) : Nil
   if node.is_a?(Iyi::Expressions)
     node.expressions.each { |e| flatten_top_level(e, into) }

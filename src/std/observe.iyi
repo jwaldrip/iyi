@@ -371,7 +371,6 @@ pub def emit(writer : RecordWriter) : Nil
   writer.reset
 end
 
-
 pub def enabled? : ::Bool
   @@enabled
 end
@@ -415,7 +414,6 @@ pub def finish(status : Int32 = 0) : Nil
   unlock_recorder
 end
 
-
 pub def file(kind : UInt8, path : String, open_flags : UInt32 = 0_u32) : Nil
   return if !@@enabled || @@tainted || @@failed
   if @@recording
@@ -452,7 +450,6 @@ pub def file(kind : UInt8, path : String, open_flags : UInt32 = 0_u32) : Nil
   end
   unlock_recorder
 end
-
 
 pub def __iyi_observe_file(kind : UInt8, path : String) : Nil
   file(kind, path)
@@ -799,7 +796,6 @@ pub def file_write(op : UInt8 | ::Symbol | String, path : String, target : Strin
   @@written_paths.add(endpoint2) unless endpoint2.empty?
   @@written_paths.add(endpoint3) unless endpoint3.empty?
 
-
   writer = @@writer
   if writer
     writer.begin_record(0x07_u8, task_id)
@@ -811,7 +807,6 @@ pub def file_write(op : UInt8 | ::Symbol | String, path : String, target : Strin
   end
   unlock_recorder
 end
-
 
 pub def __iyi_observe_file_write(op : UInt8 | ::Symbol | String, path : String, target : String? = nil) : Nil
   file_write(op, path, target)
@@ -862,7 +857,6 @@ pub def not_reusable(kind : UInt8 | ::Symbol | String, site : String) : Nil
   unlock_recorder
 end
 
-
 pub def __iyi_observe_not_reusable(kind : UInt8 | ::Symbol | String, site : String) : Nil
   not_reusable(kind, site)
 end
@@ -911,6 +905,7 @@ end
 pub def __iyi_observe_host_state(site : String) : Nil
   not_reusable(41_u8, site)
 end
+
 private def write_end(status : Int32) : Nil
   writer = @@writer
   return if writer.nil?
@@ -1086,6 +1081,7 @@ pub def safe_real_path(path : String) : String
   end
   normalize_path(p)
 end
+
 @[Effect(:observation_channel)]
 private def is_separator?(byte : UInt8) : ::Bool
   {% if flag?(:win32) %}

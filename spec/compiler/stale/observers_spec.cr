@@ -117,7 +117,6 @@ describe "Iyi::Semantic::Observers (Slice S5b)" do
         CODE
     end
 
-
     it "raises compile error for host def with Nil return type" do
       assert_error <<-CODE, "def 'read' cannot carry @[Effect(:host)]: result is Nil or cannot express its answer as a value; annotate with a not-reusable kind instead", flags: "iyi_observe", filename: runtime_file
         class SystemRoots
@@ -472,7 +471,6 @@ describe "Iyi::Semantic::Observers (Slice S5b)" do
       obs2.args[1].is_a?(Iyi::Var).should be_true
       obs2.args[2].is_a?(Iyi::Var).should be_true
     end
-
 
     it "generates wrapper for cwd and host" do
       result = semantic(<<-CODE, flags: "iyi_observe", filename: runtime_file)

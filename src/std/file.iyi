@@ -670,6 +670,7 @@ class ::File
     def modification_time : Int64
       @modification_time
     end
+
     getter owner_id : String
     getter group_id : String
     getter dev : Int64
