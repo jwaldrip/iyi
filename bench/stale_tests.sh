@@ -271,9 +271,60 @@ step 17 "incomplete trace never records"
 step 18 "filtered runs touch only selected tests"
 # Covered by bench/test_verb.sh
 
-# Rows 19, 20 and 27 are snapshot-spec rows, and row 21 is store-spec.
+# Row 19: Shard union equals unsharded snapshot via repeated same-namespace CLI import.
+# Rows 20 and 27 are snapshot-spec rows, and row 21 is store-spec.
 step 19 "shard union matches unsharded snapshot"
-# Covered by spec/compiler/stale/snapshot_spec.cr:338
+mkdir -p "$WORK/r19"
+cat > "$WORK/r19/a_test.iyi" <<'IYI'
+assert 1 + 1 == 2
+IYI
+cat > "$WORK/r19/b_test.iyi" <<'IYI'
+assert 2 + 2 == 4
+IYI
+cat > "$WORK/r19/c_test.iyi" <<'IYI'
+assert 3 + 3 == 6
+IYI
+
+# 1. Unsharded fresh export
+rm -rf "$CACHE/tests-v1"
+(cd "$WORK/r19" && "$IYI" test --fresh --json --export-index "run:r19=$WORK/r19/unsharded.json" .) >/dev/null
+
+# 2. Sharded fresh exports (1/3, 2/3, 3/3)
+rm -rf "$CACHE/tests-v1"
+(cd "$WORK/r19" && "$IYI" test --fresh --json --shard 1/3 --export-index "run:r19=$WORK/r19/shard1.json" .) >/dev/null
+(cd "$WORK/r19" && "$IYI" test --fresh --json --shard 2/3 --export-index "run:r19=$WORK/r19/shard2.json" .) >/dev/null
+(cd "$WORK/r19" && "$IYI" test --fresh --json --shard 3/3 --export-index "run:r19=$WORK/r19/shard3.json" .) >/dev/null
+
+# 3. Verify shard records union exact TestId set matches unsharded snapshot
+python3 -c "
+import json, sys
+with open('$WORK/r19/unsharded.json') as f:
+    unsharded = json.load(f)
+u_ids = {(r['test']['root'], r['test']['path']) for r in unsharded.get('records', [])}
+
+s_ids = set()
+for sfile in ['$WORK/r19/shard1.json', '$WORK/r19/shard2.json', '$WORK/r19/shard3.json']:
+    with open(sfile) as f:
+        sdata = json.load(f)
+    for r in sdata.get('records', []):
+        tid = (r['test']['root'], r['test']['path'])
+        if tid in s_ids:
+            print(f'Row 19 proof failed: duplicate test {tid} across shards', file=sys.stderr)
+            sys.exit(1)
+        s_ids.add(tid)
+
+if s_ids != u_ids:
+    print(f'Row 19 proof failed: sharded union {s_ids} != unsharded {u_ids}', file=sys.stderr)
+    sys.exit(1)
+"
+
+# 4. Import repeated same namespace CLI options in clean consumer cache
+consumer_cache="$WORK/r19/consumer_cache"
+r19_cached="$(cd "$WORK/r19" && IYI_CACHE_DIR="$consumer_cache" "$IYI" test --cached --json \
+  --import-index "run:r19=$WORK/r19/shard1.json" \
+  --import-index "run:r19=$WORK/r19/shard2.json" \
+  --import-index "run:r19=$WORK/r19/shard3.json" .)"
+expect_eq "$(printf '%s' "$r19_cached" | json_cached)" 3 "all 3 tests hit via repeated same-namespace import"
 step 20 "invalid snapshot metadata is refused"
 # Covered by spec/compiler/stale/snapshot_spec.cr:125,225
 step 21 "corruption and concurrent receipt writes are atomic"
@@ -282,7 +333,12 @@ step 22 "compatibility-library mode stays fresh"
 # Its test aggregate remains unchanged; cached compatibility-library mode is
 # covered by the command/runner spec because this host cannot link its specs.
 
-# Rows 23 and 24 are CI-only by §12.
+# Rows 23 and 24: CI evidence exact identity, git-diff, and planted hidden-read proofs (§12).
+step 23 "CI evidence exact identity and git diff checks discriminate"
+bash "$REPO/bench/stale_ci.sh" test-comparator-negatives
+
+step 24 "planted hidden-read test fails shadow audit"
+bash "$REPO/bench/stale_ci.sh" test-planted-hidden-read
 
 # Row 25 mutation proof: edit file read after Dir.cd; absolute target replay
 # must miss rather than incorrectly resolving from the runner's cwd.
