@@ -191,7 +191,8 @@ end
 @@scratch : ::String? = nil
 @@written_paths = ::Set(String).new
 @@written_env = ::Set(String).new
-@@main_depth = 0_i32
+@[ThreadLocal]
+@@thread_depth = 0_i32
 @[ThreadLocal]
 @@in_hook = false
 
@@ -208,8 +209,8 @@ pub def enter_frame(tid : UInt64 = current_task_id) : ::Bool
       end
     end
   {% end %}
-  d = @@main_depth
-  @@main_depth = d + 1
+  d = @@thread_depth
+  @@thread_depth = d + 1
   d == 0
 end
 
@@ -226,8 +227,8 @@ pub def leave_frame(tid : UInt64 = current_task_id) : Nil
       end
     end
   {% end %}
-  d = @@main_depth
-  @@main_depth = d - 1 if d > 0
+  d = @@thread_depth
+  @@thread_depth = d - 1 if d > 0
 end
 
 pub def frame_depth(tid : UInt64 = current_task_id) : Int32
@@ -237,7 +238,7 @@ pub def frame_depth(tid : UInt64 = current_task_id) : Int32
       return fiber.observe_depth if fiber.is_a?(IyiFiber)
     end
   {% end %}
-  @@main_depth
+  @@thread_depth
 end
 
 @[Effect(:observation_channel)]
