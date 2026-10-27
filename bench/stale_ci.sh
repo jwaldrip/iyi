@@ -215,7 +215,7 @@ for t in tests:
 
     non_hits.append((tid, reuse, t.get('reason', '')))
 
- if non_hits:
+if non_hits:
     print(f'assert-hits FAILED: {len(non_hits)} tests did not hit from cache:', file=sys.stderr)
     for tid, r, reason in non_hits:
         print(f'  {tid[0]}:{tid[1]}: reuse={r} reason={reason}', file=sys.stderr)
@@ -977,312 +977,368 @@ print('git-diff-check PASSED: all cached hits and misses respected git diff.')
 test_comparator_negatives() {
   echo "== Running CI evidence comparator negative and discrimination fixtures =="
   "$PY" -c "
-import os, sys, json
+import os, sys, json, tempfile, subprocess, shutil
 
-def extract_test_id(obj):
-    if not isinstance(obj, dict):
-        return None
-    test_obj = obj.get('test')
-    if isinstance(test_obj, dict) and 'root' in test_obj and 'path' in test_obj:
-        return (str(test_obj['root']), str(test_obj['path']))
-    if 'root' in obj and 'path' in obj:
-        return (str(obj['root']), str(obj['path']))
-    return None
+repo = sys.argv[1]
+stale_ci = os.path.join(repo, 'bench/stale_ci.sh')
 
-def is_file_observation(obs):
-    kind = obs.get('kind', '')
-    root = obs.get('root', '')
-    if root in ('abs', 'host', 'scratch', 'env'):
-        return False
-    return kind.startswith('file_') or kind == 'dir_list' or kind == 'file'
+work = tempfile.mkdtemp(prefix='comp_neg_')
+empty_repo = os.path.join(work, 'empty_repo')
+os.makedirs(empty_repo, exist_ok=True)
+empty_diff = os.path.join(work, 'empty_diff.txt')
+with open(empty_diff, 'w') as f:
+    pass
 
-def map_obs_to_repo_path(obs, test_entry, repo_root):
-    obs_root = obs.get('root', '')
-    obs_path = obs.get('path', '')
-    if obs_root == 'toolchain':
-        return os.path.normpath(os.path.join('src', obs_path))
-    roots = test_entry.get('roots', {})
-    if isinstance(roots, dict) and obs_root in roots:
-        abs_p = os.path.normpath(os.path.join(roots[obs_root], obs_path))
-        try:
-            rel = os.path.relpath(abs_p, repo_root)
-            if not rel.startswith('..'):
-                return rel
-        except ValueError:
-            pass
-    if obs_root == 'src':
-        test_obj = test_entry.get('test', {})
-        tpath = test_obj.get('path', '')
-        tdir = os.path.dirname(tpath)
-        combined = os.path.normpath(os.path.join(tdir, obs_path)) if tdir else obs_path
-        if os.path.exists(os.path.join(repo_root, combined)):
-            return combined
-        if os.path.exists(os.path.join(repo_root, obs_path)):
-            return os.path.normpath(obs_path)
-        return combined
-    return os.path.normpath(obs_path)
+def run_cmd(subcmd, args, cwd=None):
+    cmd = ['bash', stale_ci, subcmd] + args
+    return subprocess.run(cmd, cwd=cwd or work, capture_output=True, text=True)
 
-# --- 1. Assert-Hits Tests ---
-def run_ah(data, snap=None, expected_ns=''):
-    tests = data.get('tests', [])
-    if not tests: return False, 'no tests'
-    seen = set()
-    for t in tests:
-        tid = extract_test_id(t)
-        if not tid: return False, 'missing tid'
-        if tid in seen: return False, 'duplicate tid'
-        seen.add(tid)
-    exported = None
-    snap_ns = expected_ns
-    if snap:
-        if not snap_ns: snap_ns = snap.get('namespace', '')
-        exported = set()
-        for r in snap.get('records', []):
-            rid = extract_test_id(r)
-            if not rid: return False, 'missing rid'
-            if rid in exported: return False, 'duplicate rid'
-            exported.add(rid)
-    hit_ids = set()
-    for t in tests:
-        tid = extract_test_id(t)
-        reuse = t.get('reuse', '')
-        cached = t.get('cached', False)
-        source = t.get('source', '')
-        if cached and reuse == 'hit':
-            if snap_ns:
-                if source == 'local': return False, 'local hit substitution'
-                if source != snap_ns: return False, 'namespace substitution'
-            hit_ids.add(tid)
-            continue
-        if exported and reuse == 'not reusable' and tid not in exported:
-            continue
-        return False, 'non hit'
-    if exported is not None and exported != hit_ids:
-        return False, 'exact set mismatch'
-    return True, 'ok'
+def assert_negative(subcmd, args, expected_msg, cwd=None):
+    res = run_cmd(subcmd, args, cwd=cwd)
+    combined = res.stdout + res.stderr
+    assert res.returncode == 1, f'{subcmd} expected exit 1, got {res.returncode}. Output:\n{combined}'
+    assert expected_msg in combined, f'{subcmd} expected \"{expected_msg}\" in output. Output:\n{combined}'
 
-snap = {'namespace': 'run:1', 'records': [
-    {'test': {'root': 'src', 'path': 'a.iyi'}},
-    {'test': {'root': 'src', 'path': 'b.iyi'}}
-]}
+def assert_positive(subcmd, args, cwd=None):
+    res = run_cmd(subcmd, args, cwd=cwd)
+    combined = res.stdout + res.stderr
+    assert res.returncode == 0, f'{subcmd} expected exit 0, got {res.returncode}. Output:\n{combined}'
+    assert 'PASSED' in combined, f'{subcmd} expected PASSED in output. Output:\n{combined}'
 
-# Equal-count wrong IDs fail
-data_wrong = {'tests': [
-    {'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:1'},
-    {'test': {'root': 'src', 'path': 'c.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:1'}
-]}
-ok, err = run_ah(data_wrong, snap)
-assert not ok and 'exact set mismatch' in err, 'Equal count wrong IDs must fail'
+# --- 1. assert-hits cases ---
+snap_valid = os.path.join(work, 'snap_valid.json')
+with open(snap_valid, 'w') as f:
+    json.dump({
+        'namespace': 'run:100',
+        'records': [
+            {'test': {'root': 'src', 'path': 'a.iyi'}},
+            {'test': {'root': 'src', 'path': 'b.iyi'}}
+        ]
+    }, f)
 
-# Colliding basenames don't collapse
-snap_colliding = {'namespace': 'run:1', 'records': [
-    {'test': {'root': 'src', 'path': 'dir1/test.iyi'}},
-    {'test': {'root': 'src', 'path': 'dir2/test.iyi'}}
-]}
-data_colliding = {'tests': [
-    {'test': {'root': 'src', 'path': 'dir1/test.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:1'},
-    {'test': {'root': 'src', 'path': 'dir2/test.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:1'}
-]}
-ok, _ = run_ah(data_colliding, snap_colliding)
-assert ok, 'Colliding basenames with distinct paths must pass'
+# Duplicate identities in results
+f_dup_results = os.path.join(work, 'ah_dup_res.json')
+with open(f_dup_results, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:100'},
+        {'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:100'}
+    ]}, f)
+assert_negative('assert-hits', ['--json', f_dup_results, '--snapshot', snap_valid], 'duplicate test identity')
 
-# Missing one colliding basename fails
-data_colliding_missing = {'tests': [
-    {'test': {'root': 'src', 'path': 'dir1/test.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:1'}
-]}
-ok, _ = run_ah(data_colliding_missing, snap_colliding)
-assert not ok, 'Missing colliding basename must fail'
+# Duplicate identities in snapshot
+snap_dup = os.path.join(work, 'snap_dup.json')
+with open(snap_dup, 'w') as f:
+    json.dump({
+        'namespace': 'run:100',
+        'records': [
+            {'test': {'root': 'src', 'path': 'a.iyi'}},
+            {'test': {'root': 'src', 'path': 'a.iyi'}}
+        ]
+    }, f)
+f_valid_hits = os.path.join(work, 'ah_valid_hits.json')
+with open(f_valid_hits, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:100'},
+        {'test': {'root': 'src', 'path': 'b.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:100'}
+    ]}, f)
+assert_negative('assert-hits', ['--json', f_valid_hits, '--snapshot', snap_dup], 'snapshot contains duplicate test identity')
 
-# Duplicate identities fail
-data_dup = {'tests': [
-    {'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:1'},
-    {'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:1'}
-]}
-ok, err = run_ah(data_dup, snap)
-assert not ok and 'duplicate tid' in err, 'Duplicate identities must fail'
+# Equal-count wrong IDs
+f_wrong_ids = os.path.join(work, 'ah_wrong_ids.json')
+with open(f_wrong_ids, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:100'},
+        {'test': {'root': 'src', 'path': 'c.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:100'}
+    ]}, f)
+assert_negative('assert-hits', ['--json', f_wrong_ids, '--snapshot', snap_valid], 'hit identity set does not match snapshot identity set')
 
-# Duplicate identities in snapshot fail
-snap_dup = {'namespace': 'run:1', 'records': [
-    {'test': {'root': 'src', 'path': 'a.iyi'}},
-    {'test': {'root': 'src', 'path': 'a.iyi'}}
-]}
-ok, err = run_ah(data_colliding, snap_dup)
-assert not ok and 'duplicate rid' in err, 'Duplicate snapshot records must fail'
+# Missing IDs
+f_missing_ids = os.path.join(work, 'ah_missing_ids.json')
+with open(f_missing_ids, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:100'}
+    ]}, f)
+assert_negative('assert-hits', ['--json', f_missing_ids, '--snapshot', snap_valid], 'Missing 1 hits')
 
-# Local hit substitution fails
-data_local = {'tests': [
-    {'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'local'},
-    {'test': {'root': 'src', 'path': 'b.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:1'}
-]}
-ok, err = run_ah(data_local, snap)
-assert not ok and 'local hit substitution' in err, 'Local hit substitution must fail'
+# Unexpected IDs
+snap_single = os.path.join(work, 'snap_single.json')
+with open(snap_single, 'w') as f:
+    json.dump({'namespace': 'run:100', 'records': [{'test': {'root': 'src', 'path': 'a.iyi'}}]}, f)
+assert_negative('assert-hits', ['--json', f_valid_hits, '--snapshot', snap_single], 'Unexpected 1 hits')
+
+# Local hit substitution
+f_local_sub = os.path.join(work, 'ah_local_sub.json')
+with open(f_local_sub, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'local'},
+        {'test': {'root': 'src', 'path': 'b.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:100'}
+    ]}, f)
+assert_negative('assert-hits', ['--json', f_local_sub, '--snapshot', snap_valid], 'local hit substitution')
+
+# Namespace substitution
+f_ns_sub = os.path.join(work, 'ah_ns_sub.json')
+with open(f_ns_sub, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:other'},
+        {'test': {'root': 'src', 'path': 'b.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:100'}
+    ]}, f)
+assert_negative('assert-hits', ['--json', f_ns_sub, '--snapshot', snap_valid], 'namespace substitution')
+
+# Unexcused miss
+f_unexcused = os.path.join(work, 'ah_unexcused.json')
+with open(f_unexcused, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': False, 'reuse': 'miss', 'reason': 'changed'},
+        {'test': {'root': 'src', 'path': 'b.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:100'}
+    ]}, f)
+assert_negative('assert-hits', ['--json', f_unexcused, '--snapshot', snap_valid], 'tests did not hit from cache')
+
+# Excused not reusable (not in snapshot)
+f_excused = os.path.join(work, 'ah_excused.json')
+with open(f_excused, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:100'},
+        {'test': {'root': 'src', 'path': 'b.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:100'},
+        {'test': {'root': 'src', 'path': 'clock.iyi'}, 'cached': False, 'reuse': 'not reusable', 'reason': 'clock'}
+    ]}, f)
+assert_positive('assert-hits', ['--json', f_excused, '--snapshot', snap_valid])
+
+# Colliding basenames don't collapse (both distinct pass)
+snap_col = os.path.join(work, 'snap_col.json')
+with open(snap_col, 'w') as f:
+    json.dump({'namespace': 'run:100', 'records': [
+        {'test': {'root': 'src', 'path': 'd1/t.iyi'}},
+        {'test': {'root': 'src', 'path': 'd2/t.iyi'}}
+    ]}, f)
+f_col_pass = os.path.join(work, 'ah_col_pass.json')
+with open(f_col_pass, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'd1/t.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:100'},
+        {'test': {'root': 'src', 'path': 'd2/t.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:100'}
+    ]}, f)
+assert_positive('assert-hits', ['--json', f_col_pass, '--snapshot', snap_col])
 
 # Nested identities pass
-snap_nested = {'namespace': 'run:1', 'records': [
-    {'test': {'root': 'src', 'path': 'sub/deep/nested_test.iyi'}}
-]}
-data_nested = {'tests': [
-    {'test': {'root': 'src', 'path': 'sub/deep/nested_test.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:1'}
-]}
-ok, _ = run_ah(data_nested, snap_nested)
-assert ok, 'Nested identities must pass'
+snap_nest = os.path.join(work, 'snap_nest.json')
+with open(snap_nest, 'w') as f:
+    json.dump({'namespace': 'run:100', 'records': [
+        {'test': {'root': 'src', 'path': 'deep/sub/dir/test.iyi'}}
+    ]}, f)
+f_nest_pass = os.path.join(work, 'ah_nest_pass.json')
+with open(f_nest_pass, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'deep/sub/dir/test.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:100'}
+    ]}, f)
+assert_positive('assert-hits', ['--json', f_nest_pass, '--snapshot', snap_nest])
 
-# --- 2. Shadow-Audit Tests ---
-def run_sa(cached, fresh, expected_ns=''):
-    c_tests = {}
-    for t in cached.get('tests', []):
-        tid = extract_test_id(t)
-        if not tid or tid in c_tests: return False, 'duplicate cached'
-        c_tests[tid] = t
-    f_tests = {}
-    for t in fresh.get('tests', []):
-        tid = extract_test_id(t)
-        if not tid or tid in f_tests: return False, 'duplicate fresh'
-        f_tests[tid] = t
-    disagreements = []
-    for tid, c in c_tests.items():
-        if not (c.get('cached') and c.get('reuse') == 'hit'): continue
-        if expected_ns:
-            src = c.get('source', '')
-            if src == 'local': disagreements.append('local hit substitution')
-            elif src != expected_ns: disagreements.append('namespace substitution')
-        f = f_tests.get(tid)
-        if not f:
-            disagreements.append('missing fresh test')
-            continue
-        if c.get('status') != f.get('status'):
-            disagreements.append('verdict mismatch')
-        cb = c.get('portable_build')
-        fb = f.get('portable_build')
-        if cb and fb and cb != fb:
-            disagreements.append('build mismatch')
-    return len(disagreements) == 0, disagreements
+# --- 2. shadow-audit cases ---
+sa_dir = os.path.join(work, 'sa_run')
+os.makedirs(sa_dir, exist_ok=True)
 
-# Verdict mismatch fails
-c_run = {'tests': [{'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': True, 'reuse': 'hit', 'status': 'pass', 'source': 'master'}]}
-f_run = {'tests': [{'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': False, 'reuse': 'miss', 'status': 'fail'}]}
-ok, errs = run_sa(c_run, f_run, 'master')
-assert not ok and 'verdict mismatch' in errs, 'Verdict mismatch must be detected'
+# Verdict mismatch (cached pass vs fresh fail)
+c_fail = os.path.join(work, 'sa_c_fail.json')
+with open(c_fail, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'a.iyi'}, 'status': 'pass', 'cached': True, 'reuse': 'hit', 'source': 'master'}
+    ]}, f)
+f_fail = os.path.join(work, 'sa_f_fail.json')
+with open(f_fail, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'a.iyi'}, 'status': 'fail', 'cached': False, 'reuse': 'miss'}
+    ]}, f)
+assert_negative('shadow-audit', ['--cached-json', c_fail, '--fresh-json', f_fail], 'verdict mismatch', cwd=sa_dir)
+assert os.path.exists(os.path.join(sa_dir, '.disagreement_marker')), 'shadow-audit must write .disagreement_marker'
+os.remove(os.path.join(sa_dir, '.disagreement_marker'))
 
-# Build mismatch fails
-c_b = {'tests': [{'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': True, 'reuse': 'hit', 'status': 'pass', 'source': 'master', 'portable_build': 'b1'}]}
-f_b = {'tests': [{'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': False, 'reuse': 'miss', 'status': 'pass', 'portable_build': 'b2'}]}
-ok, errs = run_sa(c_b, f_b, 'master')
-assert not ok and 'build mismatch' in errs, 'Build mismatch must be detected'
+# Portable build mismatch in test result
+c_build = os.path.join(work, 'sa_c_build.json')
+with open(c_build, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'a.iyi'}, 'status': 'pass', 'cached': True, 'reuse': 'hit', 'source': 'master', 'portable_build': 'b1'}
+    ]}, f)
+f_build = os.path.join(work, 'sa_f_build.json')
+with open(f_build, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'a.iyi'}, 'status': 'pass', 'cached': False, 'reuse': 'miss', 'portable_build': 'b2'}
+    ]}, f)
+assert_negative('shadow-audit', ['--cached-json', c_build, '--fresh-json', f_build], 'portable Build mismatch', cwd=sa_dir)
+if os.path.exists(os.path.join(sa_dir, '.disagreement_marker')):
+    os.remove(os.path.join(sa_dir, '.disagreement_marker'))
 
-# Local hit substitution fails
-c_loc = {'tests': [{'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': True, 'reuse': 'hit', 'status': 'pass', 'source': 'local'}]}
-f_loc = {'tests': [{'test': {'root': 'src', 'path': 'a.iyi'}, 'cached': False, 'reuse': 'miss', 'status': 'pass'}]}
-ok, errs = run_sa(c_loc, f_loc, 'master')
-assert not ok and 'local hit substitution' in errs, 'Local hit substitution must be detected'
+# Local hit substitution
+c_loc = os.path.join(work, 'sa_c_loc.json')
+with open(c_loc, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'a.iyi'}, 'status': 'pass', 'cached': True, 'reuse': 'hit', 'source': 'local'}
+    ]}, f)
+f_pass = os.path.join(work, 'sa_f_pass.json')
+with open(f_pass, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'a.iyi'}, 'status': 'pass', 'cached': False, 'reuse': 'miss'}
+    ]}, f)
+assert_negative('shadow-audit', ['--cached-json', c_loc, '--fresh-json', f_pass, '--namespace', 'master'], 'local hit substitution', cwd=sa_dir)
+if os.path.exists(os.path.join(sa_dir, '.disagreement_marker')):
+    os.remove(os.path.join(sa_dir, '.disagreement_marker'))
 
-# --- 3. Git-Diff-Check Tests ---
-def run_gd(master, cached, changed, repo='/repo'):
-    m_recs = {}
-    for r in master.get('records', []):
-        rid = extract_test_id(r)
-        if not rid or rid in m_recs: return False, ['duplicate master']
-        m_recs[rid] = r
-    c_tests = {}
-    for t in cached.get('tests', []):
-        tid = extract_test_id(t)
-        if not tid or tid in c_tests: return False, ['duplicate cached']
-        c_tests[tid] = t
-    errors = []
-    snap_ns = master.get('namespace', 'master')
-    for tid, t in c_tests.items():
-        if t.get('cached') and t.get('reuse') == 'hit':
-            if snap_ns:
-                s = t.get('source', '')
-                if s == 'local': errors.append('local hit substitution')
-                elif s != snap_ns: errors.append('namespace substitution')
-            rec = m_recs.get(tid)
-            if rec:
-                for obs in rec.get('trace', {}).get('observations', []):
-                    if not is_file_observation(obs): continue
-                    p = map_obs_to_repo_path(obs, t, repo)
-                    if p in changed or obs.get('path') in changed:
-                        errors.append(f'Hit test observed changed file {p}')
-        elif t.get('reuse') == 'miss':
-            rec = m_recs.get(tid)
-            if not rec: continue
-            status = t.get('status', '')
-            reason = str(t.get('reason', ''))
-            if t.get('reuse') == 'not reusable' or status == 'does not build' or 'not reusable' in reason or 'does not build' in reason:
-                continue
-            if t.get('blocked') is True or 'blocked' in reason:
-                continue
-            tp = t.get('profile')
-            rp = rec.get('profile', {})
-            rp_fp = rp.get('fp') if isinstance(rp, dict) else rp
-            if tp and rp_fp and tp != rp_fp: continue
-            if 'profile' in reason: continue
-            tb = t.get('portable_build')
-            rb = rec.get('build', {})
-            rb_hex = rb.get('build') if isinstance(rb, dict) else rb
-            if not (tb and rb_hex and str(tb).lower() == str(rb_hex).lower()): continue
-            has_changed = False
-            for obs in rec.get('trace', {}).get('observations', []):
-                if not is_file_observation(obs): continue
-                p = map_obs_to_repo_path(obs, t, repo)
-                if p in changed or obs.get('path') in changed:
-                    has_changed = True
-                    break
-            if not has_changed:
-                errors.append('Missed test has equal build and unchanged observed inputs')
-    return len(errors) == 0, errors
+# Namespace substitution
+c_ns = os.path.join(work, 'sa_c_ns.json')
+with open(c_ns, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'a.iyi'}, 'status': 'pass', 'cached': True, 'reuse': 'hit', 'source': 'run:other'}
+    ]}, f)
+assert_negative('shadow-audit', ['--cached-json', c_ns, '--fresh-json', f_pass, '--namespace', 'master'], 'namespace substitution', cwd=sa_dir)
+if os.path.exists(os.path.join(sa_dir, '.disagreement_marker')):
+    os.remove(os.path.join(sa_dir, '.disagreement_marker'))
 
-master_gd = {
-    'namespace': 'master',
-    'records': [
-        {
-            'test': {'root': 'src', 'path': 'pkg/test.iyi'},
-            'build': {'build': 'hash1'},
-            'profile': {'fp': 'prof1'},
-            'trace': {'observations': [
-                {'kind': 'file_read', 'root': 'src', 'path': 'data.txt'}
-            ]}
-        }
-    ]
-}
+# Missing fresh test
+f_empty = os.path.join(work, 'sa_f_empty.json')
+with open(f_empty, 'w') as f:
+    json.dump({'tests': []}, f)
+assert_negative('shadow-audit', ['--cached-json', c_fail, '--fresh-json', f_empty], 'missing from fresh audit', cwd=sa_dir)
+if os.path.exists(os.path.join(sa_dir, '.disagreement_marker')):
+    os.remove(os.path.join(sa_dir, '.disagreement_marker'))
+
+# Snapshot Build mismatch
+snap_b1 = os.path.join(work, 'snap_b1.json')
+with open(snap_b1, 'w') as f:
+    json.dump({'records': [{'test': {'root': 'src', 'path': 'a.iyi'}, 'build': {'build': 'hash1'}, 'trace': {'observations': []}}]}, f)
+snap_b2 = os.path.join(work, 'snap_b2.json')
+with open(snap_b2, 'w') as f:
+    json.dump({'records': [{'test': {'root': 'src', 'path': 'a.iyi'}, 'build': {'build': 'hash2'}, 'trace': {'observations': []}}]}, f)
+assert_negative('shadow-audit', ['--cached-json', c_fail, '--fresh-json', f_pass, '--cached-snapshot', snap_b1, '--fresh-snapshot', snap_b2], 'portable Build mismatch in snapshots', cwd=sa_dir)
+if os.path.exists(os.path.join(sa_dir, '.disagreement_marker')):
+    os.remove(os.path.join(sa_dir, '.disagreement_marker'))
+
+# Ordered observations mismatch
+snap_obs1 = os.path.join(work, 'snap_obs1.json')
+with open(snap_obs1, 'w') as f:
+    json.dump({'records': [{'test': {'root': 'src', 'path': 'a.iyi'}, 'build': {'build': 'hash1'}, 'trace': {'observations': [{'path': 'p1'}]}}]}, f)
+snap_obs2 = os.path.join(work, 'snap_obs2.json')
+with open(snap_obs2, 'w') as f:
+    json.dump({'records': [{'test': {'root': 'src', 'path': 'a.iyi'}, 'build': {'build': 'hash1'}, 'trace': {'observations': [{'path': 'p2'}]}}]}, f)
+assert_negative('shadow-audit', ['--cached-json', c_fail, '--fresh-json', f_pass, '--cached-snapshot', snap_obs1, '--fresh-snapshot', snap_obs2], 'ordered trace observation mismatch', cwd=sa_dir)
+if os.path.exists(os.path.join(sa_dir, '.disagreement_marker')):
+    os.remove(os.path.join(sa_dir, '.disagreement_marker'))
+
+# Matching pass
+assert_positive('shadow-audit', ['--cached-json', c_fail, '--fresh-json', f_pass, '--cached-snapshot', snap_b1, '--fresh-snapshot', snap_b1], cwd=sa_dir)
+
+# --- 3. git-diff-check cases ---
+# ALWAYS pass --changed-files FILE (empty okay) + --repo empty dir
+snap_gd = os.path.join(work, 'snap_gd.json')
+with open(snap_gd, 'w') as f:
+    json.dump({
+        'namespace': 'master',
+        'records': [
+            {
+                'test': {'root': 'src', 'path': 'pkg/test.iyi'},
+                'build': {'build': 'hash1'},
+                'profile': {'fp': 'prof1'},
+                'trace': {'observations': [
+                    {'kind': 'file_read', 'root': 'src', 'path': 'data.txt'}
+                ]}
+            }
+        ]
+    }, f)
+
+diff_changed = os.path.join(work, 'diff_changed.txt')
+with open(diff_changed, 'w') as f:
+    f.write('pkg/data.txt\n')
 
 # Direction 1: Changed tracked input hit fails
-hit_changed = {'tests': [{'test': {'root': 'src', 'path': 'pkg/test.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'master'}]}
-ok, errs = run_gd(master_gd, hit_changed, {'pkg/data.txt'})
-assert not ok and any('observed changed file' in e for e in errs), 'Direction 1: hit on changed input must fail'
+f_gd_hit = os.path.join(work, 'gd_hit.json')
+with open(f_gd_hit, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'pkg/test.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'master'}
+    ]}, f)
+assert_negative('git-diff-check', ['--master-snapshot', snap_gd, '--cached-json', f_gd_hit, '--changed-files', diff_changed, '--repo', empty_repo], 'observed changed file')
+
+# Direction 1: Local hit substitution
+f_gd_loc = os.path.join(work, 'gd_loc.json')
+with open(f_gd_loc, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'pkg/test.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'local'}
+    ]}, f)
+assert_negative('git-diff-check', ['--master-snapshot', snap_gd, '--cached-json', f_gd_loc, '--changed-files', empty_diff, '--repo', empty_repo], 'local hit substitution')
+
+# Direction 1: Namespace substitution
+f_gd_ns = os.path.join(work, 'gd_ns.json')
+with open(f_gd_ns, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'pkg/test.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'run:other'}
+    ]}, f)
+assert_negative('git-diff-check', ['--master-snapshot', snap_gd, '--cached-json', f_gd_ns, '--changed-files', empty_diff, '--repo', empty_repo], 'namespace substitution')
 
 # Direction 1: Unchanged tracked input hit passes
-ok, _ = run_gd(master_gd, hit_changed, set())
-assert ok, 'Direction 1: hit on unchanged input must pass'
+assert_positive('git-diff-check', ['--master-snapshot', snap_gd, '--cached-json', f_gd_hit, '--changed-files', empty_diff, '--repo', empty_repo])
 
 # Direction 2: Unchanged tracked input + equal build miss fails
-miss_unchanged = {'tests': [{'test': {'root': 'src', 'path': 'pkg/test.iyi'}, 'reuse': 'miss', 'portable_build': 'hash1', 'profile': 'prof1', 'blocked': False}]}
-ok, errs = run_gd(master_gd, miss_unchanged, set())
-assert not ok and any('equal build and unchanged observed inputs' in e for e in errs), 'Direction 2: miss on unchanged input with equal build must fail'
+f_gd_miss = os.path.join(work, 'gd_miss.json')
+with open(f_gd_miss, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'pkg/test.iyi'}, 'reuse': 'miss', 'portable_build': 'hash1', 'profile': 'prof1', 'blocked': False}
+    ]}, f)
+assert_negative('git-diff-check', ['--master-snapshot', snap_gd, '--cached-json', f_gd_miss, '--changed-files', empty_diff, '--repo', empty_repo], 'has equal build and unchanged observed inputs but missed')
 
 # Direction 2: Changed tracked input miss passes
-ok, _ = run_gd(master_gd, miss_unchanged, {'pkg/data.txt'})
-assert ok, 'Direction 2: miss on changed input must pass'
+assert_positive('git-diff-check', ['--master-snapshot', snap_gd, '--cached-json', f_gd_miss, '--changed-files', diff_changed, '--repo', empty_repo])
 
-# Direction 2: Exclusions pass (profile change, blocked, build mismatch, nonreusable)
-miss_prof = {'tests': [{'test': {'root': 'src', 'path': 'pkg/test.iyi'}, 'reuse': 'miss', 'portable_build': 'hash1', 'profile': 'prof2', 'blocked': False}]}
-ok, _ = run_gd(master_gd, miss_prof, set())
-assert ok, 'Direction 2: profile change exclusion must pass'
+# Direction 2: Profile changed miss passes (exclusion)
+f_gd_prof = os.path.join(work, 'gd_prof.json')
+with open(f_gd_prof, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'pkg/test.iyi'}, 'reuse': 'miss', 'portable_build': 'hash1', 'profile': 'prof2', 'blocked': False}
+    ]}, f)
+assert_positive('git-diff-check', ['--master-snapshot', snap_gd, '--cached-json', f_gd_prof, '--changed-files', empty_diff, '--repo', empty_repo])
 
-miss_blocked = {'tests': [{'test': {'root': 'src', 'path': 'pkg/test.iyi'}, 'reuse': 'miss', 'portable_build': 'hash1', 'profile': 'prof1', 'blocked': True}]}
-ok, _ = run_gd(master_gd, miss_blocked, set())
-assert ok, 'Direction 2: blocked exclusion must pass'
+# Direction 2: Blocked miss passes (exclusion)
+f_gd_blocked = os.path.join(work, 'gd_blocked.json')
+with open(f_gd_blocked, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'pkg/test.iyi'}, 'reuse': 'miss', 'portable_build': 'hash1', 'profile': 'prof1', 'blocked': True}
+    ]}, f)
+assert_positive('git-diff-check', ['--master-snapshot', snap_gd, '--cached-json', f_gd_blocked, '--changed-files', empty_diff, '--repo', empty_repo])
 
-miss_build = {'tests': [{'test': {'root': 'src', 'path': 'pkg/test.iyi'}, 'reuse': 'miss', 'portable_build': 'hash_different', 'profile': 'prof1', 'blocked': False}]}
-ok, _ = run_gd(master_gd, miss_build, set())
-assert ok, 'Direction 2: build mismatch exclusion must pass'
+# Direction 2: Build changed miss passes (exclusion)
+f_gd_b = os.path.join(work, 'gd_b.json')
+with open(f_gd_b, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'pkg/test.iyi'}, 'reuse': 'miss', 'portable_build': 'hash_different', 'profile': 'prof1', 'blocked': False}
+    ]}, f)
+assert_positive('git-diff-check', ['--master-snapshot', snap_gd, '--cached-json', f_gd_b, '--changed-files', empty_diff, '--repo', empty_repo])
 
-miss_nr = {'tests': [{'test': {'root': 'src', 'path': 'pkg/test.iyi'}, 'reuse': 'not reusable', 'reason': 'clock'}]}
-ok, _ = run_gd(master_gd, miss_nr, set())
-assert ok, 'Direction 2: nonreusable exclusion must pass'
+# Direction 2: Not reusable miss passes (exclusion)
+f_gd_nr = os.path.join(work, 'gd_nr.json')
+with open(f_gd_nr, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'pkg/test.iyi'}, 'reuse': 'not reusable', 'reason': 'clock'}
+    ]}, f)
+assert_positive('git-diff-check', ['--master-snapshot', snap_gd, '--cached-json', f_gd_nr, '--changed-files', empty_diff, '--repo', empty_repo])
 
+# Duplicate identities in master snapshot
+snap_gd_dup = os.path.join(work, 'snap_gd_dup.json')
+with open(snap_gd_dup, 'w') as f:
+    json.dump({
+        'namespace': 'master',
+        'records': [
+            {'test': {'root': 'src', 'path': 'pkg/test.iyi'}},
+            {'test': {'root': 'src', 'path': 'pkg/test.iyi'}}
+        ]
+    }, f)
+assert_negative('git-diff-check', ['--master-snapshot', snap_gd_dup, '--cached-json', f_gd_hit, '--changed-files', empty_diff, '--repo', empty_repo], 'duplicate test identity in master snapshot')
+
+# Duplicate identities in cached results
+f_gd_dup = os.path.join(work, 'gd_dup.json')
+with open(f_gd_dup, 'w') as f:
+    json.dump({'tests': [
+        {'test': {'root': 'src', 'path': 'pkg/test.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'master'},
+        {'test': {'root': 'src', 'path': 'pkg/test.iyi'}, 'cached': True, 'reuse': 'hit', 'source': 'master'}
+    ]}, f)
+assert_negative('git-diff-check', ['--master-snapshot', snap_gd, '--cached-json', f_gd_dup, '--changed-files', empty_diff, '--repo', empty_repo], 'duplicate test identity in cached results')
+
+shutil.rmtree(work, ignore_errors=True)
 print('test-comparator-negatives PASSED: all comparator negative and discrimination fixtures verified.')
-"
+" "$REPO"
 }
 
 # 9. rg9: deterministic CallPathFp across processes and preanalysed prelude
