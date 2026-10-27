@@ -547,6 +547,7 @@ def measure_overhead(results):
             t_ca = f"{p['t_cached']:6.3f}s"
         else:
             t_ca = "   N/A "
+        elem = f"{p.get('elements_count', 0):6}"
         enc_b = f"{p.get('encoded_bytes', 0):6} B"
         tr_b = f"{p.get('trace_bytes', 0):6} B"
         rc_b = f"{p.get('receipt_bytes', 0):6} B"
@@ -667,21 +668,23 @@ def measure_overhead(results):
     norm_stages = parse_stats(res_hit_norm.stdout + '\n' + res_hit_norm.stderr)
     warm_stages = parse_stats(res_hit_warm.stdout + '\n' + res_hit_warm.stderr)
 
+    kdata_norm_consumer = {}
     phase_norm = "unknown"
     if os.path.exists(key_file_norm):
         try:
             with open(key_file_norm) as f:
-                kdata = json.load(f)
-                phase_norm = kdata.get("phase", "unknown")
+                kdata_norm_consumer = json.load(f) or {}
+                phase_norm = kdata_norm_consumer.get("phase", "unknown")
         except Exception:
             pass
 
+    kdata_warm = {}
     phase_warm = "unknown"
     if os.path.exists(key_file_warm):
         try:
             with open(key_file_warm) as f:
-                kdata = json.load(f)
-                phase_warm = kdata.get("phase", "unknown")
+                kdata_warm = json.load(f) or {}
+                phase_warm = kdata_warm.get("phase", "unknown")
         except Exception:
             pass
 
@@ -725,22 +728,28 @@ def measure_overhead(results):
     print()
     if not warm_proven:
         print('### Warm Consumer Mismatch Diagnostic (Producer vs Warm Consumer):')
-        prod_local = kdata_norm.get('local', {})
-        warm_local = kdata_warm.get('local', {})
-        print(f"- Producer build:      {local_build_hex}")
+        prod_local = kdata_norm.get('local') or {}
+        warm_local = kdata_warm.get('local') or {}
+        print(f"- Producer phase:      {kdata_norm.get('phase')}")
+        print(f"- Warm consumer phase: {kdata_warm.get('phase')}")
+        print(f"- Producer build:      {prod_local.get('build')}")
         print(f"- Warm consumer build: {warm_local.get('build')}")
         print("- Component breakdown:")
         for comp in ['build', 'toolchain', 'behavior', 'callpath', 'link', 'cenv']:
             pv = prod_local.get(comp)
             wv = warm_local.get(comp)
-            eq = (pv == wv)
-            print(f"  * {comp:10}: producer={pv} warm_consumer={wv} match={eq}")
-        explain_prod = prod_local.get('explain', {})
-        explain_warm = warm_local.get('explain', {})
+            match_str = "match" if (pv == wv and pv is not None) else ("MISMATCH" if pv != wv else "both-absent")
+            print(f"  * {comp:10}: producer={pv} warm_consumer={wv} [{match_str}]")
+        nr_prod = kdata_norm.get('not_reusable') or []
+        nr_warm = kdata_warm.get('not_reusable') or []
+        if nr_prod or nr_warm:
+            print(f"  * not_reusable: producer={nr_prod} warm_consumer={nr_warm}")
+        explain_prod = prod_local.get('explain') or {}
+        explain_warm = warm_local.get('explain') or {}
         diff_keys = set(explain_prod.keys()) ^ set(explain_warm.keys())
         diff_vals = {k: (explain_prod[k], explain_warm[k]) for k in explain_prod if k in explain_warm and explain_prod[k] != explain_warm[k]}
         if diff_keys:
-            print(f"  * explain disjoint keys: {len(diff_keys)} ({list(diff_keys)[:10]})")
+            print(f"  * explain disjoint keys ({len(diff_keys)}): {list(diff_keys)[:10]}")
         if diff_vals:
             print(f"  * explain differing digests ({len(diff_vals)}):")
             for k, (pd, wd) in list(diff_vals.items())[:10]:
