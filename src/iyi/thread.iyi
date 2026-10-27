@@ -701,7 +701,13 @@
       end
       IyiRuntimeLock.unlock
       raise "a thread started with no body" unless thread.is_a?(IyiThread)
+      {% if flag?(:iyi_observe) %}
+        __iyi_obs_depth = Std::Observe.suspend_frames
+      {% end %}
       thread.proc.call
+      {% if flag?(:iyi_observe) %}
+        Std::Observe.resume_frames(__iyi_obs_depth)
+      {% end %}
       # The body is over: a join waiting on it is woken here, parked
       # rather than held in the kernel (`join`), and what the join still
       # waits for in the kernel is the retire below and the exit.

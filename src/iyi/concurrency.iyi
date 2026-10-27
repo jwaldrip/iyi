@@ -1512,6 +1512,9 @@ class IyiScheduler
       main.stack_top = top
     {% end %}
     state.current = main
+    {% if flag?(:iyi_observe) %}
+      Std::Observe.thread_became_fiber(main)
+    {% end %}
     state.root = main
     main.home = state
     register(main)
@@ -1679,6 +1682,11 @@ class IyiScheduler
       base = following
     end
     state.stack_pool = 0_u64
+    {% if flag?(:iyi_observe) %}
+      if main.is_a?(IyiFiber)
+        Std::Observe.fiber_became_thread(main)
+      end
+    {% end %}
     @@state = nil
   end
 
@@ -3844,6 +3852,9 @@ class IyiScheduler
   # exits 1. Every registered cleanup on the path has run either way,
   # which is the promise `defer` makes.
   def self.panic_current(message : String) : NoReturn
+    {% if flag?(:iyi_observe) %}
+      Std::Observe.abandon_frames
+    {% end %}
     # A panic raised inside one of the scheduler's critical sections - the
     # runtime's own sanity checks raise there - lets the lock go first: the
     # boundary below takes it, and would wait on itself forever.
@@ -3910,6 +3921,9 @@ class IyiScheduler
   # nothing unbound, so a loop around it spun at a full core and its
   # group's join waited forever.
   def self.stop_current : NoReturn
+    {% if flag?(:iyi_observe) %}
+      Std::Observe.abandon_frames
+    {% end %}
     fiber = current
     while true
       node = fiber.defers
@@ -4115,7 +4129,7 @@ class IyiWorkers
   # is, a wait in the poller here, on this stack - the one stack on this
   # thread no other worker can resume. A switch back here is how a fiber
   # that parked with nothing after it gives the worker back.
-  def self.work : Nil
+  @[Effect(:scheduler)]; def self.work : Nil
     {% if !flag?(:gc_none) && !flag?(:gc_boehm) %}
       st = IyiScheduler.state
       root = IyiScheduler.current
@@ -4704,7 +4718,7 @@ class IyiWorkers
   end
 
   # The monitor's whole life.
-  def self.monitor(page : UInt64) : Nil
+  @[Effect(:scheduler)]; def self.monitor(page : UInt64) : Nil
     while true
       Pointer(Atomic(UInt64)).new(pointerof(@@looks).address).value.add(1_u64)
       if look

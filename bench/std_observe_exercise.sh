@@ -11,6 +11,8 @@
 #     required to end with END(0)).
 #   * Normal end writes END(0).
 #   * A panic writes END(1) and nothing else.
+#   * Observation boundaries: raw thread callback, panic defer drain, and
+#     thread/fiber depth transfer are observed and discriminate under mutation.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -229,5 +231,229 @@ case "$MUT_HEX" in
     echo "  mutation proof passed: without @[ThreadLocal], helper frame suppressed main thread observation"
     ;;
 esac
+
+echo "== boundary B-a: raw thread body observation and mutation proof"
+BOUNDARY_THREAD_SRC="$WORK/boundary_thread.iyi"
+cat << 'EOF' > "$BOUNDARY_THREAD_SRC"
+module test/boundary_thread
+import std/env::{ENV}
+
+t = IyiThread.start do
+  ENV["IYI_THREAD_BODY_PROBE"]?
+  nil
+end
+t.join
+EOF
+
+BOUNDARY_THREAD_TRACE="$WORK/boundary_thread_trace.bin"
+rm -f "$BOUNDARY_THREAD_TRACE"
+IYI_OBSERVE="$BOUNDARY_THREAD_TRACE" "$IYI" run -Diyi_observe "$BOUNDARY_THREAD_SRC"
+
+if [ ! -f "$BOUNDARY_THREAD_TRACE" ]; then
+  echo "FAIL: boundary thread trace was not created"
+  exit 1
+fi
+
+B_A_HEX="$(od -An -v -tx1 "$BOUNDARY_THREAD_TRACE" | tr -d ' \n')"
+# 4959495f5448524541445f424f44595f50524f4245 is "IYI_THREAD_BODY_PROBE"
+case "$B_A_HEX" in
+  *4959495f5448524541445f424f44595f50524f4245*) ;;
+  *)
+    echo "FAIL: expected IYI_THREAD_BODY_PROBE in boundary thread trace, got $B_A_HEX"
+    exit 1
+    ;;
+esac
+
+B_A_TAIL="$(tail -c 17 "$BOUNDARY_THREAD_TRACE" | od -An -v -tx1 | tr -d ' \n')"
+if [ "$B_A_TAIL" != "0d0000007f000000000000000000000000" ]; then
+  echo "FAIL: expected END(0) at end of boundary thread trace, got $B_A_TAIL"
+  exit 1
+fi
+echo "  boundary B-a observed: raw thread body ENV read recorded with END(0)"
+
+PATCH_DIR_BA="$WORK/patched_ba"
+mkdir -p "$PATCH_DIR_BA"
+cp -R "$REPO/src" "$PATCH_DIR_BA/src"
+THREAD_PATH="$PATCH_DIR_BA/src/iyi/thread.iyi"
+
+awk '
+  /Std::Observe\.suspend_frames/ {
+    print "        0_i32 # MUTATED_BA"
+    print "MUTATED" > "/dev/stderr"
+    next
+  }
+  /Std::Observe\.resume_frames/ {
+    print "        # MUTATED_BA"
+    next
+  }
+  { print }
+' "$THREAD_PATH" > "$THREAD_PATH.tmp" 2>"$WORK/awk_err_ba"
+mv "$THREAD_PATH.tmp" "$THREAD_PATH"
+
+if ! grep -q "MUTATED" "$WORK/awk_err_ba"; then
+  echo "FAIL: could not apply mutation: suspend_frames in thread.iyi not found"
+  exit 1
+fi
+
+MUT_BA_TRACE="$WORK/mut_ba_trace.bin"
+rm -f "$MUT_BA_TRACE"
+IYI_PATH="$PATCH_DIR_BA/src${PSEP}$REPO/samples/iyi" IYI_OBSERVE="$MUT_BA_TRACE" "$IYI" run -Diyi_observe "$BOUNDARY_THREAD_SRC"
+
+MUT_BA_HEX="$(od -An -v -tx1 "$MUT_BA_TRACE" | tr -d ' \n')"
+case "$MUT_BA_HEX" in
+  *4959495f5448524541445f424f44595f50524f4245*)
+    echo "FAIL: boundary B-a does not discriminate: IYI_THREAD_BODY_PROBE appeared without callback boundary"
+    exit 1
+    ;;
+  *)
+    echo "  mutation proof B-a passed: removing callback boundary hides raw thread observation"
+    ;;
+esac
+
+echo "== boundary B-b: panic defer drain observation and mutation proof"
+BOUNDARY_PANIC_SRC="$WORK/boundary_panic.iyi"
+cat << 'EOF' > "$BOUNDARY_PANIC_SRC"
+module test/boundary_panic
+import std/env::{ENV}
+
+assert_panics do
+  defer do
+    ENV["IYI_DEFER_PROBE"]?
+    nil
+  end
+  raise "planned"
+end
+EOF
+
+BOUNDARY_PANIC_TRACE="$WORK/boundary_panic_trace.bin"
+rm -f "$BOUNDARY_PANIC_TRACE"
+IYI_OBSERVE="$BOUNDARY_PANIC_TRACE" "$IYI" run -Diyi_observe "$BOUNDARY_PANIC_SRC"
+
+if [ ! -f "$BOUNDARY_PANIC_TRACE" ]; then
+  echo "FAIL: boundary panic trace was not created"
+  exit 1
+fi
+
+B_B_HEX="$(od -An -v -tx1 "$BOUNDARY_PANIC_TRACE" | tr -d ' \n')"
+# 4959495f44454645525f50524f4245 is "IYI_DEFER_PROBE"
+case "$B_B_HEX" in
+  *4959495f44454645525f50524f4245*) ;;
+  *)
+    echo "FAIL: expected IYI_DEFER_PROBE in boundary panic trace, got $B_B_HEX"
+    exit 1
+    ;;
+esac
+
+B_B_TAIL="$(tail -c 17 "$BOUNDARY_PANIC_TRACE" | od -An -v -tx1 | tr -d ' \n')"
+if [ "$B_B_TAIL" != "0d0000007f000000000000000000000000" ]; then
+  echo "FAIL: expected END(0) at end of boundary panic trace, got $B_B_TAIL"
+  exit 1
+fi
+echo "  boundary B-b observed: panic defer ENV read recorded with END(0)"
+
+PATCH_DIR_BB="$WORK/patched_bb"
+mkdir -p "$PATCH_DIR_BB"
+cp -R "$REPO/src" "$PATCH_DIR_BB/src"
+CONC_PATH_BB="$PATCH_DIR_BB/src/iyi/concurrency.iyi"
+
+awk '
+  /def self\.panic_current/ {
+    in_panic = 1
+    print
+    next
+  }
+  in_panic && /Std::Observe\.abandon_frames/ {
+    print "      # MUTATED_BB"
+    print "MUTATED" > "/dev/stderr"
+    in_panic = 0
+    next
+  }
+  { print }
+' "$CONC_PATH_BB" > "$CONC_PATH_BB.tmp" 2>"$WORK/awk_err_bb"
+mv "$CONC_PATH_BB.tmp" "$CONC_PATH_BB"
+
+if ! grep -q "MUTATED" "$WORK/awk_err_bb"; then
+  echo "FAIL: could not apply mutation: abandon_frames in panic_current not found"
+  exit 1
+fi
+
+MUT_BB_TRACE="$WORK/mut_bb_trace.bin"
+rm -f "$MUT_BB_TRACE"
+IYI_PATH="$PATCH_DIR_BB/src${PSEP}$REPO/samples/iyi" IYI_OBSERVE="$MUT_BB_TRACE" "$IYI" run -Diyi_observe "$BOUNDARY_PANIC_SRC"
+
+MUT_BB_HEX="$(od -An -v -tx1 "$MUT_BB_TRACE" | tr -d ' \n')"
+case "$MUT_BB_HEX" in
+  *4959495f44454645525f50524f4245*)
+    echo "FAIL: boundary B-b does not discriminate: IYI_DEFER_PROBE appeared without panic abandon_frames"
+    exit 1
+    ;;
+  *)
+    echo "  mutation proof B-b passed: removing panic abandon hides defer observation"
+    ;;
+esac
+
+MUT_PANIC_TRACE="$WORK/mut_panic_trace.bin"
+rm -f "$MUT_PANIC_TRACE"
+if IYI_PATH="$PATCH_DIR_BB/src${PSEP}$REPO/samples/iyi" IYI_OBSERVE="$MUT_PANIC_TRACE" "$IYI" run -Diyi_observe "$WORK/panic_prog.iyi" >/dev/null 2>&1; then
+  :
+fi
+MUT_PANIC_HEX="$(od -An -v -tx1 "$MUT_PANIC_TRACE" 2>/dev/null | tr -d ' \n' || true)"
+if [ "$MUT_PANIC_HEX" = "0d0000007f000000000000000001000000" ]; then
+  echo "FAIL: transfer without abandon unexpectedly produced valid END(1)"
+  exit 1
+fi
+echo "  mutation proof panicEND passed: transfer without abandon fails to write END(1)"
+
+echo "== boundary B-c: thread <-> fiber transfer observation and mutation proof"
+BOUNDARY_TRANSFER_SRC="$WORK/boundary_transfer.iyi"
+cat << 'EOF' > "$BOUNDARY_TRANSFER_SRC"
+module test/boundary_transfer
+import std/observe
+
+Std::Observe.enter_frame
+group do |g|
+  ch = Channel(Int32).new(1)
+  ch.send(1)
+end
+puts Std::Observe.frame_depth
+Std::Observe.leave_frame
+puts Std::Observe.frame_depth
+EOF
+
+B_C_OUT="$("$IYI" run -Diyi_observe "$BOUNDARY_TRANSFER_SRC")"
+EXPECTED_B_C_OUT="$(printf '1\n0')"
+if [ "$B_C_OUT" != "$EXPECTED_B_C_OUT" ]; then
+  echo "FAIL: expected boundary transfer output '$EXPECTED_B_C_OUT', got '$B_C_OUT'"
+  exit 1
+fi
+echo "  boundary B-c observed: depth 1->0 survived scheduler fiber transition"
+
+PATCH_DIR_BC="$WORK/patched_bc"
+mkdir -p "$PATCH_DIR_BC"
+cp -R "$REPO/src" "$PATCH_DIR_BC/src"
+CONC_PATH_BC="$PATCH_DIR_BC/src/iyi/concurrency.iyi"
+
+awk '
+  /Std::Observe\.thread_became_fiber/ {
+    print "      # MUTATED_BC"
+    print "MUTATED" > "/dev/stderr"
+    next
+  }
+  { print }
+' "$CONC_PATH_BC" > "$CONC_PATH_BC.tmp" 2>"$WORK/awk_err_bc"
+mv "$CONC_PATH_BC.tmp" "$CONC_PATH_BC"
+
+if ! grep -q "MUTATED" "$WORK/awk_err_bc"; then
+  echo "FAIL: could not apply mutation: thread_became_fiber in concurrency.iyi not found"
+  exit 1
+fi
+
+MUT_BC_OUT="$(IYI_PATH="$PATCH_DIR_BC/src${PSEP}$REPO/samples/iyi" "$IYI" run -Diyi_observe "$BOUNDARY_TRANSFER_SRC")"
+FIRST_LINE="$(printf '%s\n' "$MUT_BC_OUT" | head -n 1)"
+if [ "$FIRST_LINE" != "0" ]; then
+  echo "FAIL: boundary B-c does not discriminate: expected 0 first without transfer, got '$FIRST_LINE'"
+  exit 1
+fi
+echo "  mutation proof B-c passed: removing transfer gave 0 first"
 
 echo "OK: bench/std_observe_exercise.sh passed all checks"
