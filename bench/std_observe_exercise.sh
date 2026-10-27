@@ -14,6 +14,7 @@
 #   * Observation boundaries: raw thread callback, panic defer drain, and
 #     thread/fiber depth transfer are observed and discriminate under mutation.
 #   * std/observe builds, observed, beside every std module.
+#   * A missing relative name with no separator is recorded under the real current directory.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -1148,6 +1149,47 @@ EOF
     exit 1
   fi
   echo "  every recorder entry point builds beside all $(ls "$REPO"/src/std/*.iyi | wc -l | tr -d ' ') std modules"
+fi
+
+echo "== single-path writes: a missing relative name, and a second argument that is no path"
+if [ "$WINDOWS" = 1 ]; then
+  echo "  skipped on Windows, which records its paths in its own form"
+else
+  SINGLE_OP_SRC="$WORK/single_op.iyi"
+  cat << 'EOF' > "$SINGLE_OP_SRC"
+module test/single_op
+import std/dir::{Dir}
+import std/file::{File}
+
+op = Program.args[0]
+path = Program.args[1]
+
+case op
+when "delete"
+  File.delete(path)
+when "mkdir"
+  Dir.mkdir(path)
+else
+  raise "unknown op: #{op}"
+end
+EOF
+  "$IYI" build -Diyi_observe -o "$WORK/single_op" "$SINGLE_OP_SRC"
+
+  REL_DIR="$WORK/relative_fixture"
+  mkdir -p "$REL_DIR"
+  REL_REAL="$(cd "$REL_DIR" && pwd -P)"
+  # Longer than the directory's own path: a name cut at the wrong offset is
+  # then recorded wrong, not refused, which is the side RG2 cannot see.
+  REL_NAME="$("$PY" -c 'import sys; print("iyi-observe-relative-" + "n" * len(sys.argv[1]))' "$REL_REAL")"
+
+  # h: a relative name with no separator, gone once deleted, resolves under
+  # the real current directory => 2, 0, real(cwd)/name
+  printf 'gone' > "$REL_DIR/$REL_NAME"
+  TRACE_H="$WORK/trace_h.bin"
+  rm -f "$TRACE_H"
+  (cd "$REL_DIR" && TMPDIR="$SCRATCH_FIXTURE" IYI_OBSERVE="$TRACE_H" "$WORK/single_op" delete "$REL_NAME")
+  "$PY" "$WORK/decode_07.py" "$TRACE_H" 2 0 "$REL_REAL/$REL_NAME"
+  echo "  case h passed: delete of a missing relative name => 2, 0, real(cwd)/name"
 fi
 
 SUCCESS=1

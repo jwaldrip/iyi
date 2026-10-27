@@ -1067,7 +1067,10 @@ pub def safe_real_path(path : String) : String
       res_dir = LibObserveC.realpath(dir.to_unsafe, buf)
       if res_dir.address != 0_u64
         base_dir = c_str(res_dir)
-        fname = path[dir.bytesize, path.bytesize - dir.bytesize]
+        # `dirname_of` answers the current directory for a name with no
+        # separator (and for the empty path), and that is no prefix of
+        # `path`: the whole of `path` is then the name under it.
+        fname = path.starts_with?(dir) ? path[dir.bytesize, path.bytesize - dir.bytesize] : path
         candidate = (base_dir.ends_with?("/") && fname.starts_with?("/")) ? (base_dir + fname[1, fname.bytesize - 1]) : ((base_dir.ends_with?("/") || fname.starts_with?("/")) ? (base_dir + fname) : (base_dir + "/" + fname))
         return normalize_path(candidate)
       end
