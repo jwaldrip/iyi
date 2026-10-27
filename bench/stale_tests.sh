@@ -562,28 +562,52 @@ expect_eq "$(printf '%s' "$r26_run3" | json_cached)" 1 "r26 run 3 cached 1 (rest
 expect_contains "$(cat "$WORK/r26/explain.txt")" "hit from local" "r26 run 3 hit from local"
 step 27 "empty newer master snapshot disables consumption"
 # Covered by spec/compiler/stale/snapshot_spec.cr:403
-step 28 "loader variables are cleared while profile limits remain inputs"
+# Row 28 mutation proof: loader and daemon variables are cleared for the test child
+# while profile limits remain inputs. SIP on macOS strips DYLD_* through /bin/sh
+# wrappers, so we reach the native compiler (.build/iyi) directly. We vary
+# DYLD_LIBRARY_PATH and LD_PRELOAD (with harmless ':' and '::' empty library paths)
+# rather than LD_LIBRARY_PATH (which is a link environment input).
+step 28 "loader and daemon variables are cleared for the test while profile limits remain inputs"
+case "$IYI" in
+  */bin/iyi) r28_iyi="$(dirname "$(dirname "$IYI")")/.build/iyi" ;;   # bench/up_to_date.sh:335-339
+  *) r28_iyi="$IYI" ;;
+esac
+r28_with() {
+  (export DYLD_LIBRARY_PATH="$1" LD_PRELOAD="$2" IYI_DAEMON_SOCKET="$3" CRYSTAL_DAEMON_SOCKET="$3"
+   cd "$4" && "$r28_iyi" test "${@:5}")
+}
+mkdir -p "$WORK/r28-reach"
+cat > "$WORK/r28-reach/reach_test.iyi" <<'IYI'
+assert ({{ env("DYLD_LIBRARY_PATH") || "unset" }}) == "/tmp/r28_dir1"
+assert ({{ env("LD_PRELOAD") || "unset" }}) == ":"
+assert ({{ env("IYI_DAEMON_SOCKET") || "unset" }}) == "unset"
+assert ({{ env("CRYSTAL_DAEMON_SOCKET") || "unset" }}) == "unset"
+IYI
+r28_reach="$(r28_with /tmp/r28_dir1 : "$WORK/r28-none.sock" "$WORK/r28-reach" --fresh --json reach_test.iyi)"
+expect_eq "$(printf '%s' "$r28_reach" | json_failed)" 0 "the runner's build sees the loader variables and no daemon"
 mkdir -p "$WORK/r28"
 cat > "$WORK/r28/loader_test.iyi" <<'IYI'
-assert Program.env("LD_LIBRARY_PATH") == nil
-assert Program.env("DYLD_LIBRARY_PATH") == nil
+import std/env::{ENV}
+
 assert Program.env("LD_PRELOAD") == nil
+assert Program.env("LD_LIBRARY_PATH") == nil
+assert Program.env("GLIBC_TUNABLES") == nil
 assert Program.env("DYLD_INSERT_LIBRARIES") == nil
-assert 1 + 1 == 2
+assert Program.env("DYLD_LIBRARY_PATH") == nil
+assert Program.env("IYI_DAEMON_SOCKET") == nil
+assert Program.env("CRYSTAL_DAEMON_SOCKET") == nil
+names = ENV.keys
+assert !names.includes?("LD_PRELOAD")
+assert !names.includes?("DYLD_LIBRARY_PATH")
+assert !names.includes?("IYI_DAEMON_SOCKET")
+assert !names.includes?("CRYSTAL_DAEMON_SOCKET")
 IYI
-
-case "$(uname -s)" in
-  Darwin) LOADER_VAR="DYLD_LIBRARY_PATH" ;;
-  *) LOADER_VAR="LD_LIBRARY_PATH" ;;
-esac
-
 rm -rf "$CACHE/tests-v1"
-r28_run1="$( (export "$LOADER_VAR=/tmp/r28_dir1"; run_json "$WORK/r28" loader_test.iyi) )"
+r28_run1="$(r28_with /tmp/r28_dir1 : "$WORK/r28-none-1.sock" "$WORK/r28" --cached --json loader_test.iyi)"
+expect_eq "$(printf '%s' "$r28_run1" | json_failed)" 0 "r28 run 1: the test sees no loader or daemon variable"
 expect_eq "$(printf '%s' "$r28_run1" | json_cached)" 0 "r28 run 1 recorded"
-
-r28_run2="$( (export "$LOADER_VAR=/tmp/r28_dir2"; run_json "$WORK/r28" loader_test.iyi) )"
-expect_eq "$(printf '%s' "$r28_run2" | json_cached)" 1 "r28 run 2 hits with changed loader var"
-
+r28_run2="$(r28_with /tmp/r28_dir2 :: "$WORK/r28-none-2.sock" "$WORK/r28" --cached --json loader_test.iyi)"
+expect_eq "$(printf '%s' "$r28_run2" | json_cached)" 1 "r28 run 2 hits with changed loader and daemon variables"
 cur_nofile=$(ulimit -S -n)
 r28_explain="$WORK/r28/explain.txt"
 (ulimit -S -n $((cur_nofile - 1)); run_json "$WORK/r28" --explain loader_test.iyi) > "$r28_explain"
@@ -929,8 +953,8 @@ printf 'in_v2' > "$WORK/scratch-write/in.txt"
 row49_miss="$(run_json "$WORK/scratch-write" tmp_test.iyi)"
 expect_eq "$(printf '%s' "$row49_miss" | json_cached)" 0 "input beside a scratch write reruns"
 
-# Process profile: argv and cwd sensitivity, default mode isolation, concurrent scratch lock
-step "process profile" "argv and cwd sensitivity, plain test isolation, concurrent scratch lock"
+# Process profile: argv and cwd sensitivity, default mode isolation, concurrent scratch lock, dirty scratch refusal
+step "process profile" "argv and cwd sensitivity, plain test isolation, concurrent scratch lock, dirty scratch refusal"
 
 # 1. Argv sensitivity: cache-a hits second, cp -R cache-b misses and fails with same portable_build, different profile
 mkdir -p "$WORK/argv-sensitivity"
@@ -995,40 +1019,113 @@ set -e
 expect_eq "$plain_cached_rc" 1 "args_empty_test exits 1 under --cached"
 expect_eq "$(printf '%s' "$plain_cached" | json_failed)" 1 "args_empty_test fails under --cached"
 
-# 4. Lock: two concurrent --fresh runs of lock_test.iyi in one cache both pass
-mkdir -p "$WORK/lock-test"
+# 4. Lock: concurrent runs of the same test in one cache serialize on scratch lock
+mkdir -p "$WORK/lock-test/ctl"
 cat > "$WORK/lock-test/lock_test.iyi" <<'IYI'
 import std/file::{File}
 import std/dir::{Dir}
-import std/time::{sleep}
+import std/process::{Process}
 
 args = Program.args
 raise "no scratch arg" unless args.size == 1
 scratch = args[0]
-
-entries = Dir.children(scratch)
-raise "scratch not empty" unless entries.empty?
-
+raise "scratch not empty" unless Dir.children(scratch).empty?
+ctl = Program.env("LOCK_CTL") || ""
+raise "no LOCK_CTL" if ctl.empty?
 token = "#{Process.pid}"
 token_file = File.join(scratch, "token.txt")
 File.write(token_file, token)
-
-sleep(0.3)
-
-read_token = File.read(token_file)
-raise "token corrupted" unless read_token == token
+if Program.env("LOCK_ROLE") == "holder"
+  File.write(File.join(ctl, "holder-started"), token)
+  waited = 0
+  while !File.exists?(File.join(ctl, "release"))
+    raise "never released" if waited >= 2000
+    sleep(20)
+    waited += 1
+  end
+  raise "the second test ran while the holder held the scratch directory" if File.exists?(File.join(ctl, "second-ran"))
+else
+  File.write(File.join(ctl, "second-ran"), token)
+end
+raise "token corrupted" unless File.read(token_file) == token
 IYI
+lock_ctl="$WORK/lock-test/ctl"
 lock_out1="$WORK/lock-test/out1.json"
 lock_out2="$WORK/lock-test/out2.json"
-(cd "$WORK/lock-test" && "$IYI" test --fresh --json lock_test.iyi > "$lock_out1") &
+(cd "$WORK/lock-test" && LOCK_ROLE=holder LOCK_CTL="$lock_ctl" "$IYI" test --fresh --json lock_test.iyi > "$lock_out1") &
 pid1=$!
-(cd "$WORK/lock-test" && "$IYI" test --fresh --json lock_test.iyi > "$lock_out2") &
-pid2=$!
-wait "$pid1"
-wait "$pid2"
-expect_eq "$(cat "$lock_out1" | json_failed)" 0 "lock test run 1 passes"
-expect_eq "$(cat "$lock_out2" | json_failed)" 0 "lock test run 2 passes"
 
+holder_ready=0
+for i in $(seq 1 1200); do
+  if [ -f "$lock_ctl/holder-started" ]; then
+    holder_ready=1
+    break
+  fi
+  if ! kill -0 "$pid1" 2>/dev/null; then
+    break
+  fi
+  sleep 0.1
+done
+if [ "$holder_ready" -ne 1 ]; then
+  cat "$lock_out1" >&2
+  fail "holder never started or exited early"
+fi
+
+(cd "$WORK/lock-test" && LOCK_ROLE=second LOCK_CTL="$lock_ctl" "$IYI" test --fresh --json lock_test.iyi > "$lock_out2") &
+pid2=$!
+
+for i in $(seq 1 100); do
+  if [ -f "$lock_ctl/second-ran" ]; then
+    break
+  fi
+  if ! kill -0 "$pid2" 2>/dev/null; then
+    break
+  fi
+  sleep 0.1
+done
+
+touch "$lock_ctl/release"
+wait "$pid1" || true
+wait "$pid2" || true
+expect_eq "$(cat "$lock_out1" | json_failed)" 0 "the holder keeps its scratch directory while a second runner of the test waits"
+expect_eq "$(cat "$lock_out2" | json_failed)" 0 "the second runner of the test finishes successfully"
+
+# 5. Dirty scratch refusal: test leaves a read-only subdirectory; runner warns on cleanup and refuses run 2 until permissions restored
+mkdir -p "$WORK/dirty-scratch"
+cat > "$WORK/dirty-scratch/dirty_test.iyi" <<'IYI'
+import std/file::{File}
+import std/dir::{Dir}
+
+scratch = Program.args[0]
+raise "scratch not empty" unless Dir.children(scratch).empty?
+kept = File.join(scratch, "kept")
+Dir.mkdir(kept)
+File.write(File.join(kept, "file"), "left behind")
+File.chmod(kept, 0o555)
+IYI
+
+dirty_err1="$WORK/dirty-scratch/err1.txt"
+dirty_run1="$( (cd "$WORK/dirty-scratch" && "$IYI" test --cached --json dirty_test.iyi) 2> "$dirty_err1" )"
+expect_eq "$(printf '%s' "$dirty_run1" | json_failed)" 0 "dirty scratch test run 1 passes"
+
+if [ -z "$(ls -d "$CACHE"/tests-v1/scratch/*/kept 2>/dev/null || true)" ]; then
+  echo "process profile 5 not proven here: this user removes entries of a read-only directory (root)"
+else
+  expect_contains "$(cat "$dirty_err1")" "was not removed" "cleanup warning on leftover read-only directory"
+
+  dirty_run2_out="$WORK/dirty-scratch/run2.json"
+  dirty_err2="$WORK/dirty-scratch/err2.txt"
+  if (cd "$WORK/dirty-scratch" && "$IYI" test --cached --json dirty_test.iyi) > "$dirty_run2_out" 2> "$dirty_err2"; then
+    fail "run 2 reused or ran a test in a scratch directory it could not empty"
+  fi
+  expect_contains "$(cat "$dirty_err2")" "cannot empty scratch directory" "runner refuses run in uncleaned scratch"
+  expect_eq "$(cat "$dirty_run2_out")" "" "refusal writes nothing to stdout"
+
+  chmod -R u+w "$CACHE"/tests-v1/scratch 2>/dev/null || true
+  dirty_run3="$(run_json "$WORK/dirty-scratch" dirty_test.iyi)"
+  expect_eq "$(printf '%s' "$dirty_run3" | json_failed)" 0 "run 3 passes after permissions restored"
+  chmod -R u+w "$CACHE"/tests-v1/scratch 2>/dev/null || true
+fi
 # Row 50 mutation proof: a test whose macro `run` helper is compiled cold on
 # the recording run hits on the next run, when the helper comes from the
 # cache. Linking the cold helper read IYI_LINK_DRIVER and the warm check did
