@@ -13,6 +13,7 @@
 #   * A panic writes END(1) and nothing else.
 #   * Observation boundaries: raw thread callback, panic defer drain, and
 #     thread/fiber depth transfer are observed and discriminate under mutation.
+#   * std/observe builds, observed, beside every std module.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -1115,6 +1116,39 @@ else
   fi
 fi
 
+
+echo "== std/observe beside every std module, observed"
+# An observed build types std/observe beside whatever the program imports. A
+# bare `Bool` or `Atomic` in it named `Std::Bool` or `Std::Atomic` once a
+# program imported std/bool or std/atomic, and neither module's exercise
+# built under -Diyi_observe. Every recorder entry point, beside every module,
+# typed and not run.
+if [ "$WINDOWS" = 1 ]; then
+  echo "  skipped on Windows, whose observation runtime nothing else here measures"
+else
+  BESIDE_SRC="$WORK/beside_every_module.iyi"
+  {
+    for module in "$REPO"/src/std/*.iyi; do
+      echo "import std/$(basename "$module" .iyi)"
+    done
+    cat << 'EOF'
+Std::Observe.file(1_u8, "a")
+Std::Observe.dir_list("a", [] of String)
+Std::Observe.env_get("A", nil)
+Std::Observe.env_all
+Std::Observe.env_write("A")
+Std::Observe.cwd("a")
+Std::Observe.host("a")
+Std::Observe.file_write(6_u8, "a", "b")
+Std::Observe.not_reusable(32_u8, "a")
+EOF
+  } > "$BESIDE_SRC"
+  if ! "$IYI" build --no-codegen -Diyi_observe -o "$WORK/beside_every_module" "$BESIDE_SRC" > "$WORK/beside_every_module.log" 2>&1; then
+    echo "FAIL: std/observe does not build beside every std module: $(grep -E 'Error|BUG' "$WORK/beside_every_module.log" | tail -n 1 | cut -c1-200)"
+    exit 1
+  fi
+  echo "  every recorder entry point builds beside all $(ls "$REPO"/src/std/*.iyi | wc -l | tr -d ' ') std modules"
+fi
 
 SUCCESS=1
 echo "OK: bench/std_observe_exercise.sh passed all checks"

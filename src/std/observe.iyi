@@ -309,8 +309,8 @@ pub def channel_close(fd : Int64) : Nil
   __iyi_close(fd)
 end
 
-private def record_lock_word : Pointer(Atomic(UInt64))
-  Pointer(Atomic(UInt64)).new(pointerof(@@record_lock).address)
+private def record_lock_word : Pointer(::Atomic(UInt64))
+  Pointer(::Atomic(UInt64)).new(pointerof(@@record_lock).address)
 end
 
 private def lock_recorder : Nil
@@ -1081,7 +1081,7 @@ pub def safe_real_path(path : String) : String
   normalize_path(p)
 end
 @[Effect(:observation_channel)]
-private def is_separator?(byte : UInt8) : Bool
+private def is_separator?(byte : UInt8) : ::Bool
   {% if flag?(:win32) %}
     byte == 47_u8 || byte == 92_u8
   {% else %}
@@ -1090,7 +1090,7 @@ private def is_separator?(byte : UInt8) : Bool
 end
 
 @[Effect(:observation_channel)]
-private def ends_with_separator?(path : String) : Bool
+private def ends_with_separator?(path : String) : ::Bool
   return false if path.empty?
   is_separator?(path.to_unsafe[path.bytesize - 1])
 end
