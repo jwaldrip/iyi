@@ -239,6 +239,61 @@ pub def frame_depth : Int32
   @@thread_depth
 end
 
+pub def suspend_frames : Int32
+  return 0_i32 unless @@enabled
+  {% if !flag?(:single_thread) && flag?(:iyi_observe) %}
+    if IyiScheduler.state_id != 0_u64
+      fiber = IyiScheduler.state.current
+      if fiber.is_a?(IyiFiber)
+        old = fiber.observe_depth
+        fiber.observe_depth = 0_i32
+        return old
+      end
+    end
+  {% end %}
+  old = @@thread_depth
+  @@thread_depth = 0_i32
+  old
+end
+
+pub def resume_frames(depth : Int32) : Nil
+  return unless @@enabled
+  return if depth <= 0
+  {% if !flag?(:single_thread) && flag?(:iyi_observe) %}
+    if IyiScheduler.state_id != 0_u64
+      fiber = IyiScheduler.state.current
+      if fiber.is_a?(IyiFiber)
+        fiber.observe_depth += depth
+        return
+      end
+    end
+  {% end %}
+  @@thread_depth += depth
+end
+
+pub def abandon_frames : Nil
+  suspend_frames
+  nil
+end
+
+{% if !flag?(:single_thread) && flag?(:iyi_observe) %}
+  pub def thread_became_fiber(fiber : IyiFiber) : Nil
+    fiber.observe_depth += @@thread_depth
+    @@thread_depth = 0_i32
+  end
+
+  pub def fiber_became_thread(fiber : IyiFiber) : Nil
+    @@thread_depth += fiber.observe_depth
+    fiber.observe_depth = 0_i32
+  end
+{% else %}
+  pub def thread_became_fiber(fiber) : Nil
+  end
+
+  pub def fiber_became_thread(fiber) : Nil
+  end
+{% end %}
+
 @[Effect(:observation_channel)]
 pub def channel_open(path : String) : Int64
   __iyi_open_file(path.to_unsafe, false, true, true, false, true, 0o644)
