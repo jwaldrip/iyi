@@ -731,10 +731,7 @@ module test/boundary_panic
 import std/env::{ENV}
 
 assert_panics do
-  defer do
-    ENV["IYI_DEFER_PROBE"]?
-    nil
-  end
+  defer ENV["IYI_DEFER_PROBE"]?
   raise "planned"
 end
 EOF
