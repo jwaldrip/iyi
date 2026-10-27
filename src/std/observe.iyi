@@ -729,13 +729,30 @@ pub def safe_real_path(path : String) : String
   normalize_path(p)
 end
 @[Effect(:observation_channel)]
+private def is_separator?(byte : UInt8) : Bool
+  {% if flag?(:win32) %}
+    byte == 47_u8 || byte == 92_u8
+  {% else %}
+    byte == 47_u8
+  {% end %}
+end
+
+@[Effect(:observation_channel)]
+private def ends_with_separator?(path : String) : Bool
+  return false if path.empty?
+  is_separator?(path.to_unsafe[path.bytesize - 1])
+end
+
+@[Effect(:observation_channel)]
 private def path_absolute?(path : String) : ::Bool
   return true if path.starts_with?('/')
   {% if flag?(:win32) %}
     return true if path.starts_with?('\\')
     if path.bytesize >= 3
       bytes = path.to_unsafe
-      return true if bytes[1] == 58_u8 && (bytes[2] == 47_u8 || bytes[2] == 92_u8)
+      if bytes[1] == 58_u8 && (bytes[2] == 47_u8 || bytes[2] == 92_u8)
+        return true
+      end
     end
   {% end %}
   false
@@ -749,7 +766,7 @@ pub def safe_real_path_relative_to(path : String, base_dir : String) : String
   end
 
   base = base_dir.empty? ? current_cwd : base_dir
-  candidate = (base.ends_with?('/') {% if flag?(:win32) %} || base.ends_with?('\\') {% end %}) ? (base + path) : (base + "/" + path)
+  candidate = ends_with_separator?(base) ? (base + path) : (base + "/" + path)
 
   {% if flag?(:darwin) || flag?(:linux) %}
     buf = Pointer(UInt8).malloc(4096_u64)
@@ -768,16 +785,15 @@ private def dirname_of(path : String) : String
 
   end_idx = path.bytesize - 1
   bytes = path.to_unsafe
-  while end_idx > 0 && (bytes[end_idx] == 47_u8 {% if flag?(:win32) %} || bytes[end_idx] == 92_u8 {% end %})
+  while end_idx > 0 && is_separator?(bytes[end_idx])
     end_idx -= 1
   end
-  return path[0, 1] if end_idx == 0 && (bytes[0] == 47_u8 {% if flag?(:win32) %} || bytes[0] == 92_u8 {% end %})
+  return path[0, 1] if end_idx == 0 && is_separator?(bytes[0])
 
   last_sep = -1
   i = end_idx
   while i >= 0
-    c = bytes[i]
-    if c == 47_u8 {% if flag?(:win32) %} || c == 92_u8 {% end %}
+    if is_separator?(bytes[i])
       last_sep = i
       break
     end
