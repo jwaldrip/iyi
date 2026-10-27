@@ -887,9 +887,9 @@ cat << 'EOF' > "$ARGV_OP_SRC"
 module test/argv_op
 import std/file
 
-op = ARGV[0]
-path = ARGV[1]
-target = ARGV.size > 2 ? ARGV[2] : ""
+op = Program.args[0]
+path = Program.args[1]
+target = Program.args.size > 2 ? Program.args[2] : ""
 
 case op
 when "symlink", "6"
