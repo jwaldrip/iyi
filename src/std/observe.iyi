@@ -357,7 +357,7 @@ pub def emit(writer : RecordWriter) : Nil
   buf[2] = ((payload_len >> 16) & 0xFF_u32).to_u8
   buf[3] = ((payload_len >> 24) & 0xFF_u32).to_u8
 
-  offset = 0_u64
+  offset = 0_i64
   remaining = writer.size.to_u64
   while remaining > 0_u64
     written = channel_write(@@fd, (buf + offset).as(Void*), remaining)
@@ -365,7 +365,7 @@ pub def emit(writer : RecordWriter) : Nil
       @@failed = true
       break
     end
-    offset += written.to_u64
+    offset += written
     remaining -= written.to_u64
   end
   writer.reset
@@ -681,42 +681,105 @@ pub def file_write(op : UInt8 | ::Symbol | String, path : String, target : Strin
   real = ""
   target_real = ""
   inside_scratch = 0_u8
+  endpoint1 = ""
+  endpoint2 = ""
+  endpoint3 = ""
 
   case op_code
   when 6_u8 # symlink
-    # In symlink(target, link_path), path is the symlink target (what it points to),
-    # and target is the link path being created on disk.
-    target_real = target.nil? || target.empty? ? "" : safe_real_path(target)
-    link_in_scratch = !target_real.empty? && is_under_scratch?(target_real)
-
-    link_dir = dirname_of(target_real)
-    real = safe_real_path_relative_to(path, link_dir)
-    target_in_scratch = !real.empty? && is_under_scratch?(real)
-
-    inside_scratch = (link_in_scratch && target_in_scratch) ? 1_u8 : 0_u8
-    if !link_in_scratch && !target_real.empty? && target_in_scratch
-      real = target_real
-    end
-  when 3_u8, 5_u8 # rename, link
-    # rename/link must consider both source and destination
-    source_real = safe_real_path(path)
-    dest_real = target.nil? || target.empty? ? "" : safe_real_path(target)
-
-    source_in_scratch = is_under_scratch?(source_real)
-    dest_in_scratch = !dest_real.empty? && is_under_scratch?(dest_real)
-
-    inside_scratch = (source_in_scratch && dest_in_scratch) ? 1_u8 : 0_u8
-    if !dest_in_scratch && !dest_real.empty? && source_in_scratch
-      real = dest_real
-      target_real = source_real
+    if target.nil? || target.empty?
+      real = safe_real_path_entry(path)
+      target_real = ""
+      inside_scratch = 0_u8
+      endpoint1 = real
     else
-      real = source_real
-      target_real = dest_real
+      link = safe_real_path_entry(target)
+      link_dir = dirname_of(link)
+      pointee = safe_real_path_relative_to(path, link_dir)
+
+      link_in_scratch = !link.empty? && is_under_scratch?(link)
+      pointee_in_scratch = !pointee.empty? && is_under_scratch?(pointee)
+
+      inside_scratch = (link_in_scratch && pointee_in_scratch) ? 1_u8 : 0_u8
+
+      if !link_in_scratch
+        real = link
+        target_real = pointee
+      elsif !pointee_in_scratch
+        real = pointee
+        target_real = link
+      else
+        real = pointee
+        target_real = link
+      end
+      endpoint1 = link
+      endpoint2 = pointee
+    end
+  when 3_u8 # rename
+    if target.nil? || target.empty?
+      real = safe_real_path_entry(path)
+      target_real = ""
+      inside_scratch = 0_u8
+      endpoint1 = real
+    else
+      source = safe_real_path_entry(path)
+      dest = safe_real_path_entry(target)
+
+      source_in_scratch = !source.empty? && is_under_scratch?(source)
+      dest_in_scratch = !dest.empty? && is_under_scratch?(dest)
+
+      inside_scratch = (source_in_scratch && dest_in_scratch) ? 1_u8 : 0_u8
+
+      if !dest_in_scratch && source_in_scratch
+        real = dest
+        target_real = source
+      else
+        real = source
+        target_real = dest
+      end
+      endpoint1 = source
+      endpoint2 = dest
+    end
+  when 5_u8 # link (hard link)
+    if target.nil? || target.empty?
+      real = safe_real_path_entry(path)
+      target_real = ""
+      inside_scratch = 0_u8
+      endpoint1 = real
+    else
+      source_entry = safe_real_path_entry(path)
+      source_real = safe_real_path(path)
+      dest_entry = safe_real_path_entry(target)
+
+      source_entry_in_scratch = !source_entry.empty? && is_under_scratch?(source_entry)
+      source_real_in_scratch = !source_real.empty? && is_under_scratch?(source_real)
+      dest_entry_in_scratch = !dest_entry.empty? && is_under_scratch?(dest_entry)
+
+      inside_scratch = (source_entry_in_scratch && source_real_in_scratch && dest_entry_in_scratch) ? 1_u8 : 0_u8
+
+      if !dest_entry_in_scratch && source_entry_in_scratch
+        real = dest_entry
+        target_real = source_entry
+      elsif !source_entry_in_scratch
+        real = source_entry
+        target_real = dest_entry
+      elsif !source_real_in_scratch
+        real = source_real
+        target_real = dest_entry
+      else
+        real = source_entry
+        target_real = dest_entry
+      end
+      endpoint1 = source_entry
+      endpoint2 = source_real
+      endpoint3 = dest_entry
     end
   else # create, delete, mkdir, touch, chmod
     real = safe_real_path(path)
     target_real = target.nil? || target.empty? ? "" : safe_real_path(target)
     inside_scratch = is_under_scratch?(real) ? 1_u8 : 0_u8
+    endpoint1 = real
+    endpoint2 = target_real
   end
 
   task_id = current_task_id
@@ -729,6 +792,10 @@ pub def file_write(op : UInt8 | ::Symbol | String, path : String, target : Strin
 
   @@written_paths.add(real) unless real.empty?
   @@written_paths.add(target_real) unless target_real.empty?
+  @@written_paths.add(endpoint1) unless endpoint1.empty?
+  @@written_paths.add(endpoint2) unless endpoint2.empty?
+  @@written_paths.add(endpoint3) unless endpoint3.empty?
+
 
   writer = @@writer
   if writer
@@ -1111,6 +1178,65 @@ private def normalize_path(path : String) : String
     end
   end
   "/" + res.join("/")
+end
+
+@[Effect(:observation_channel)]
+pub def safe_real_path_entry(path : String) : String
+  # SAFE_REAL_PATH_ENTRY_START
+  return "" if path.empty?
+
+  end_idx = path.bytesize - 1
+  bytes = path.to_unsafe
+  while end_idx > 0 && is_separator?(bytes[end_idx])
+    end_idx -= 1
+  end
+
+  if end_idx == 0 && is_separator?(bytes[0])
+    return safe_real_path(path)
+  end
+
+  stripped = path[0, end_idx + 1]
+
+  last_sep = -1
+  i = end_idx
+  while i >= 0
+    if is_separator?(bytes[i])
+      last_sep = i
+      break
+    end
+    i -= 1
+  end
+
+  final_component = if last_sep < 0
+                      stripped
+                    else
+                      stripped[last_sep + 1, stripped.bytesize - (last_sep + 1)]
+                    end
+
+  if final_component.empty? || final_component == "." || final_component == ".."
+    return safe_real_path(path)
+  end
+
+  dir = if last_sep < 0
+          current_cwd
+        elsif last_sep == 0
+          path[0, 1]
+        else
+          {% if flag?(:win32) %}
+            if last_sep == 2 && path.bytesize >= 3 && bytes[1] == 58_u8
+              path[0, 3]
+            else
+              path[0, last_sep]
+            end
+          {% else %}
+            path[0, last_sep]
+          {% end %}
+        end
+
+  real_dir = safe_real_path(dir)
+  candidate = ends_with_separator?(real_dir) ? (real_dir + final_component) : (real_dir + "/" + final_component)
+  normalize_path(candidate)
+  # SAFE_REAL_PATH_ENTRY_END
 end
 
 @[Effect(:observation_channel)]

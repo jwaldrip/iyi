@@ -857,5 +857,197 @@ if [ "$FIRST_LINE" != "0" ]; then
   exit 1
 fi
 echo "  mutation proof B-c passed: removing transfer gave 0 first"
+echo "== endpoint entry rule: behavioral fixtures (symlink, rename, hardlink)"
+ARGV_OP_SRC="$WORK/argv_op.iyi"
+cat << 'EOF' > "$ARGV_OP_SRC"
+module test/argv_op
+import std/observe
+
+op = ARGV[0]
+path = ARGV[1]
+target = ARGV.size > 2 ? ARGV[2] : nil
+Std::Observe.file_write(op, path, target)
+EOF
+
+"$IYI" build -Diyi_observe -o "$WORK/argv_op" "$ARGV_OP_SRC"
+
+cat << 'EOF' > "$WORK/entry.py"
+import os, sys
+p = sys.argv[1]
+p_abs = os.path.abspath(p)
+dirname = os.path.dirname(p_abs)
+basename = os.path.basename(p_abs)
+print(os.path.normpath(os.path.join(os.path.realpath(dirname), basename)))
+EOF
+
+cat << 'EOF' > "$WORK/decode_07.py"
+import struct, sys
+
+trace_file = sys.argv[1]
+expected_op = int(sys.argv[2])
+expected_inside = int(sys.argv[3])
+expected_real = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] != "" else None
+
+with open(trace_file, "rb") as f:
+    data = f.read()
+
+pos = 0
+found = []
+while pos < len(data):
+    if pos + 4 > len(data):
+        break
+    payload_len, = struct.unpack_from("<I", data, pos)
+    pos += 4
+    payload = data[pos : pos + payload_len]
+    pos += payload_len
+    if payload and payload[0] == 0x07:
+        body = payload[9:]
+        op_code = body[0]
+        real_len, = struct.unpack_from("<I", body, 1)
+        real = body[5 : 5 + real_len].decode("utf-8", "replace")
+        target_len, = struct.unpack_from("<I", body, 5 + real_len)
+        target_real = body[9 + real_len : 9 + real_len + target_len].decode("utf-8", "replace")
+        inside_scratch = body[9 + real_len + target_len]
+        found.append((op_code, inside_scratch, real, target_real))
+
+if len(found) != 1:
+    sys.exit("FAIL: expected exactly 1 type07 record, found %d" % len(found))
+
+op_code, inside, real, target_real = found[0]
+if op_code != expected_op:
+    sys.exit("FAIL: expected op %d, got %d" % (expected_op, op_code))
+if inside != expected_inside:
+    sys.exit("FAIL: expected inside %d, got %d" % (expected_inside, inside))
+if expected_real is not None and real != expected_real:
+    sys.exit("FAIL: expected real '%s', got '%s'" % (expected_real, real))
+
+print("OK: 0x07 op=%d inside=%d real=%s target=%s" % (op_code, inside, real, target_real))
+EOF
+
+SHARED_FIXTURE="$WORK/shared_fixture"
+SCRATCH_FIXTURE="$WORK/scratch_fixture"
+mkdir -p "$SHARED_FIXTURE" "$SCRATCH_FIXTURE"
+DATA_FIXTURE="$SCRATCH_FIXTURE/data"
+printf 'endpoint_data' > "$DATA_FIXTURE"
+
+# a: shared/link -> scratch/data => 6, 0, entry(shared/link)
+LINK_A="$SHARED_FIXTURE/link_a"
+rm -f "$LINK_A"
+ln -s "$DATA_FILE" "$LINK_A"
+ENTRY_A="$("$PY" "$WORK/entry.py" "$LINK_A")"
+TRACE_A="$WORK/trace_a.bin"
+rm -f "$TRACE_A"
+TMPDIR="$SCRATCH_FIXTURE" IYI_OBSERVE="$TRACE_A" "$WORK/argv_op" 6 "$DATA_FIXTURE" "$LINK_A"
+"$PY" "$WORK/decode_07.py" "$TRACE_A" 6 0 "$ENTRY_A"
+echo "  case a passed: shared/link -> scratch/data => 6, 0, entry(shared/link)"
+
+# b: scratch/l2 -> data => 6, 1
+LINK_B="$SCRATCH_FIXTURE/l2"
+rm -f "$LINK_B"
+ln -s "$DATA_FIXTURE" "$LINK_B"
+TRACE_B="$WORK/trace_b.bin"
+rm -f "$TRACE_B"
+TMPDIR="$SCRATCH_FIXTURE" IYI_OBSERVE="$TRACE_B" "$WORK/argv_op" 6 "$DATA_FIXTURE" "$LINK_B"
+"$PY" "$WORK/decode_07.py" "$TRACE_B" 6 1
+echo "  case b passed: scratch/l2 -> data => 6, 1"
+
+# c: shared/l3 -> data => 6, 0
+LINK_C="$SHARED_FIXTURE/l3"
+rm -f "$LINK_C"
+ln -s "$DATA_FIXTURE" "$LINK_C"
+ENTRY_C="$("$PY" "$WORK/entry.py" "$LINK_C")"
+TRACE_C="$WORK/trace_c.bin"
+rm -f "$TRACE_C"
+TMPDIR="$SCRATCH_FIXTURE" IYI_OBSERVE="$TRACE_C" "$WORK/argv_op" 6 "$DATA_FIXTURE" "$LINK_C"
+"$PY" "$WORK/decode_07.py" "$TRACE_C" 6 0 "$ENTRY_C"
+echo "  case c passed: shared/l3 -> data => 6, 0"
+
+# d: rename scratch/l4(linkintoscratch) -> shared/moved => 3, 0, entry(shared/moved)
+LINK_D="$SCRATCH_FIXTURE/l4"
+MOVED_D="$SHARED_FIXTURE/moved"
+rm -f "$LINK_D" "$MOVED_D"
+ln -s "$DATA_FIXTURE" "$LINK_D"
+mv "$LINK_D" "$MOVED_D"
+ENTRY_D="$("$PY" "$WORK/entry.py" "$MOVED_D")"
+TRACE_D="$WORK/trace_d.bin"
+rm -f "$TRACE_D"
+TMPDIR="$SCRATCH_FIXTURE" IYI_OBSERVE="$TRACE_D" "$WORK/argv_op" 3 "$LINK_D" "$MOVED_D"
+"$PY" "$WORK/decode_07.py" "$TRACE_D" 3 0 "$ENTRY_D"
+echo "  case d passed: rename scratch/l4 -> shared/moved => 3, 0, entry(shared/moved)"
+
+# e: hardlink scratch/data -> shared/hard => 5, 0
+HARD_E="$SHARED_FIXTURE/hard"
+rm -f "$HARD_E"
+ln "$DATA_FIXTURE" "$HARD_E"
+ENTRY_E="$("$PY" "$WORK/entry.py" "$HARD_E")"
+TRACE_E="$WORK/trace_e.bin"
+rm -f "$TRACE_E"
+TMPDIR="$SCRATCH_FIXTURE" IYI_OBSERVE="$TRACE_E" "$WORK/argv_op" 5 "$DATA_FIXTURE" "$HARD_E"
+"$PY" "$WORK/decode_07.py" "$TRACE_E" 5 0 "$ENTRY_E"
+echo "  case e passed: hardlink scratch/data -> shared/hard => 5, 0"
+
+# f: hardlink scratch/s5(linkoutside) -> scratch/h5 => 5, 0
+OUTSIDE_F="$SHARED_FIXTURE/outside_f"
+printf 'outside' > "$OUTSIDE_F"
+S5="$SCRATCH_FIXTURE/s5"
+H5="$SCRATCH_FIXTURE/h5"
+rm -f "$S5" "$H5"
+ln -s "$OUTSIDE_F" "$S5"
+ln "$S5" "$H5"
+TRACE_F="$WORK/trace_f.bin"
+rm -f "$TRACE_F"
+TMPDIR="$SCRATCH_FIXTURE" IYI_OBSERVE="$TRACE_F" "$WORK/argv_op" 5 "$S5" "$H5"
+"$PY" "$WORK/decode_07.py" "$TRACE_F" 5 0
+echo "  case f passed: hardlink scratch/s5(linkoutside) -> scratch/h5 => 5, 0"
+
+# g: rename scratch/a -> scratch/b => 3, 1
+SRC_G="$SCRATCH_FIXTURE/a"
+DEST_G="$SCRATCH_FIXTURE/b"
+rm -f "$SRC_G" "$DEST_G"
+printf 'a' > "$SRC_G"
+mv "$SRC_G" "$DEST_G"
+TRACE_G="$WORK/trace_g.bin"
+rm -f "$TRACE_G"
+TMPDIR="$SCRATCH_FIXTURE" IYI_OBSERVE="$TRACE_G" "$WORK/argv_op" 3 "$SRC_G" "$DEST_G"
+"$PY" "$WORK/decode_07.py" "$TRACE_G" 3 1
+echo "  case g passed: rename scratch/a -> scratch/b => 3, 1"
+
+echo "== endpoint entry rule: mutation proof (entry => safe_real_path makes a inside 1 and fails)"
+MUT_ENTRY_DIR="$WORK/mut_entry"
+mkdir -p "$MUT_ENTRY_DIR"
+cp -R "$REPO/src" "$MUT_ENTRY_DIR/src"
+MUT_OBSERVE_FILE="$MUT_ENTRY_DIR/src/std/observe.iyi"
+
+"$PY" -c "
+with open('$MUT_OBSERVE_FILE', 'r') as f:
+    content = f.read()
+
+start_tag = '# SAFE_REAL_PATH_ENTRY_START'
+end_tag = '# SAFE_REAL_PATH_ENTRY_END'
+s_idx = content.find(start_tag)
+e_idx = content.find(end_tag)
+if s_idx < 0 or e_idx < 0:
+    raise Exception('entry tags not found')
+content = content[:s_idx] + '  return safe_real_path(path)\n' + content[e_idx + len(end_tag):]
+
+with open('$MUT_OBSERVE_FILE', 'w') as f:
+    f.write(content)
+"
+
+MUT_TRACE_A="$WORK/mut_trace_a.bin"
+rm -f "$MUT_TRACE_A"
+IYI_PATH="$MUT_ENTRY_DIR/src${PSEP}$REPO/samples/iyi" TMPDIR="$SCRATCH_FIXTURE" IYI_OBSERVE="$MUT_TRACE_A" "$IYI" run -Diyi_observe "$ARGV_OP_SRC" 6 "$DATA_FIXTURE" "$LINK_A"
+
+if "$PY" "$WORK/decode_07.py" "$MUT_TRACE_A" 6 0 "$ENTRY_A" >/dev/null 2>&1; then
+  echo "FAIL: mutation did not discriminate: case (a) still had inside=0 despite entry=>safe_real_path"
+  exit 1
+else
+  if "$PY" "$WORK/decode_07.py" "$MUT_TRACE_A" 6 1 >/dev/null 2>&1; then
+    echo "  mutation proof passed: entry=>safe_real_path made case (a) inside=1 and failed as required"
+  else
+    echo "FAIL: mutated case (a) produced unexpected result"
+    exit 1
+  fi
+fi
 
 echo "OK: bench/std_observe_exercise.sh passed all checks"
