@@ -284,16 +284,18 @@ IYI
 cat > "$WORK/r19/c_test.iyi" <<'IYI'
 assert 3 + 3 == 6
 IYI
+r19_run_id="${GITHUB_RUN_ID:-191919}"
+r19_ns="run:$r19_run_id"
 
 # 1. Unsharded fresh export
 rm -rf "$CACHE/tests-v1"
-(cd "$WORK/r19" && "$IYI" test --fresh --json --export-index "run:r19=$WORK/r19/unsharded.json" .) >/dev/null
+(cd "$WORK/r19" && GITHUB_RUN_ID="$r19_run_id" "$IYI" test --fresh --json --export-index "$r19_ns=$WORK/r19/unsharded.json" .) >/dev/null
 
 # 2. Sharded fresh exports (1/3, 2/3, 3/3)
 rm -rf "$CACHE/tests-v1"
-(cd "$WORK/r19" && "$IYI" test --fresh --json --shard 1/3 --export-index "run:r19=$WORK/r19/shard1.json" .) >/dev/null
-(cd "$WORK/r19" && "$IYI" test --fresh --json --shard 2/3 --export-index "run:r19=$WORK/r19/shard2.json" .) >/dev/null
-(cd "$WORK/r19" && "$IYI" test --fresh --json --shard 3/3 --export-index "run:r19=$WORK/r19/shard3.json" .) >/dev/null
+(cd "$WORK/r19" && GITHUB_RUN_ID="$r19_run_id" "$IYI" test --fresh --json --shard 1/3 --export-index "$r19_ns=$WORK/r19/shard1.json" .) >/dev/null
+(cd "$WORK/r19" && GITHUB_RUN_ID="$r19_run_id" "$IYI" test --fresh --json --shard 2/3 --export-index "$r19_ns=$WORK/r19/shard2.json" .) >/dev/null
+(cd "$WORK/r19" && GITHUB_RUN_ID="$r19_run_id" "$IYI" test --fresh --json --shard 3/3 --export-index "$r19_ns=$WORK/r19/shard3.json" .) >/dev/null
 
 # 3. Verify shard records union exact TestId set matches unsharded snapshot
 python3 -c "
@@ -320,10 +322,10 @@ if s_ids != u_ids:
 
 # 4. Import repeated same namespace CLI options in clean consumer cache
 consumer_cache="$WORK/r19/consumer_cache"
-r19_cached="$(cd "$WORK/r19" && IYI_CACHE_DIR="$consumer_cache" "$IYI" test --cached --json \
-  --import-index "run:r19=$WORK/r19/shard1.json" \
-  --import-index "run:r19=$WORK/r19/shard2.json" \
-  --import-index "run:r19=$WORK/r19/shard3.json" .)"
+r19_cached="$(cd "$WORK/r19" && IYI_CACHE_DIR="$consumer_cache" GITHUB_RUN_ID="$r19_run_id" "$IYI" test --cached --json \
+  --import-index "$r19_ns=$WORK/r19/shard1.json" \
+  --import-index "$r19_ns=$WORK/r19/shard2.json" \
+  --import-index "$r19_ns=$WORK/r19/shard3.json" .)"
 expect_eq "$(printf '%s' "$r19_cached" | json_cached)" 3 "all 3 tests hit via repeated same-namespace import"
 step 20 "invalid snapshot metadata is refused"
 # Covered by spec/compiler/stale/snapshot_spec.cr:125,225

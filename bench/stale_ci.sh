@@ -431,10 +431,9 @@ signature_end = observe_source.find('\n', start)
 with open(observe_path, 'w') as f:
     f.write(observe_source[:signature_end + 1] + '  return\n' + observe_source[finish + 1:])
 "
-
   local test_file="$work/hidden_read_test.iyi"
   local input_file="$work/input.txt"
-  echo "initial_value" > "$input_file"
+  printf 'initial_value' > "$input_file"
 
   cat > "$test_file" <<EOF
 import std/file::{File}
@@ -443,48 +442,82 @@ val = File.read(ENV["PLANTED_INPUT"])
 assert val == "initial_value"
 EOF
 
+  local run_id="${GITHUB_RUN_ID:-999999}"
+  local ns="run:$run_id"
   local producer_cache="$work/producer_cache"
   local producer_snapshot="$work/producer_snapshot.json"
 
   # 1. Execute producer: runs with patched runtime, test passes, exports snapshot with hidden read
-  IYI_PATH="$e2e_lib/src" \
-  IYI_CACHE_DIR="$producer_cache" \
-  IYI_CI_PRODUCER=1 \
-  PLANTED_INPUT="$input_file" \
-  "$IYI" test --fresh --json \
-    --export-index "run:planted=$producer_snapshot" \
-    "$test_file" > "$work/producer.json"
+  set +e
+  local producer_out
+  producer_out="$(IYI_PATH="$e2e_lib/src" \
+    IYI_CACHE_DIR="$producer_cache" \
+    IYI_CI_PRODUCER=1 \
+    GITHUB_RUN_ID="$run_id" \
+    PLANTED_INPUT="$input_file" \
+    "$IYI" test --fresh --json \
+      --export-index "$ns=$producer_snapshot" \
+      "$test_file" 2>&1)"
+  local producer_status=$?
+  set -e
+  if [ $producer_status -ne 0 ]; then
+    echo "test-planted-hidden-read FAILED: producer execution failed with exit code $producer_status:" >&2
+    echo "$producer_out" >&2
+    return 1
+  fi
+  printf '%s\n' "$producer_out" > "$work/producer.json"
 
-  # Verify producer exported snapshot and that file_read was indeed hidden (not in observations)
+  # Verify producer exported exactly 1 receipt and file_read was indeed hidden
   "$PY" -c "
 import json, sys
 with open('$producer_snapshot') as f:
     snap = json.load(f)
-for rec in snap.get('records', []):
-    for obs in rec.get('trace', {}).get('observations', []):
-        if 'input.txt' in obs.get('path', '') or obs.get('kind') == 'file_read':
-            print('ERROR: file_read was not hidden in producer snapshot!', file=sys.stderr)
-            sys.exit(1)
+records = snap.get('records', [])
+if len(records) != 1:
+    print(f'ERROR: expected exactly 1 exported receipt, got {len(records)}', file=sys.stderr)
+    sys.exit(1)
+rec = records[0]
+rec_test = rec.get('test', {})
+if not rec_test.get('path'):
+    print('ERROR: exported receipt missing test path!', file=sys.stderr)
+    sys.exit(1)
+for obs in rec.get('trace', {}).get('observations', []):
+    if 'input.txt' in obs.get('path', '') or obs.get('kind') == 'file_read':
+        print('ERROR: file_read was not hidden in producer snapshot!', file=sys.stderr)
+        sys.exit(1)
 "
 
   # 2. Mutate input
-  echo "mutated_value" > "$input_file"
+  printf 'mutated_value' > "$input_file"
 
   # 3. Import false hit: consumer imports snapshot with hidden read, input changed but not observed -> cached hit
   local consumer_cache="$work/consumer_cache"
   local cached_json="$work/cached.json"
-  IYI_PATH="$e2e_lib/src" \
-  IYI_CACHE_DIR="$consumer_cache" \
-  PLANTED_INPUT="$input_file" \
-  "$IYI" test --cached --json \
-    --import-index "run:planted=$producer_snapshot" \
-    "$test_file" > "$cached_json"
+  local cached_out
+  set +e
+  cached_out="$(IYI_PATH="$e2e_lib/src" \
+    IYI_CACHE_DIR="$consumer_cache" \
+    GITHUB_RUN_ID="$run_id" \
+    PLANTED_INPUT="$input_file" \
+    "$IYI" test --cached --json \
+      --import-index "$ns=$producer_snapshot" \
+      "$test_file" 2>"$work/cached.err")"
+  local cached_status=$?
+  set -e
+  if [ $cached_status -ne 0 ]; then
+    echo "test-planted-hidden-read FAILED: cached consumer failed with exit code $cached_status:" >&2
+    echo "$cached_out" >&2
+    cat "$work/cached.err" >&2
+    return 1
+  fi
+  printf '%s\n' "$cached_out" > "$cached_json"
 
   # 4. Fresh actual failure: running --fresh executes the test with mutated input -> assertion failure
   local fresh_json="$work/fresh.json"
   set +e
   IYI_PATH="$e2e_lib/src" \
   IYI_CACHE_DIR="$consumer_cache" \
+  GITHUB_RUN_ID="$run_id" \
   PLANTED_INPUT="$input_file" \
   "$IYI" test --fresh --json \
     "$test_file" > "$fresh_json" 2>"$work/fresh.err"
@@ -492,8 +525,7 @@ for rec in snap.get('records', []):
 
   # 5. Shadow audit: cached claims hit (pass), fresh claims miss (fail) -> names mismatch
   local failed=0
-  shadow_audit --cached-json "$cached_json" --fresh-json "$fresh_json" --cached-snapshot "$producer_snapshot" >/dev/null 2>&1 || failed=1
-
+  shadow_audit --cached-json "$cached_json" --fresh-json "$fresh_json" --cached-snapshot "$producer_snapshot" --namespace "$ns" >/dev/null 2>&1 || failed=1
   if [ "$failed" -eq 1 ] && [ -f .disagreement_marker ]; then
     local marker_content
     marker_content="$(cat .disagreement_marker)"
