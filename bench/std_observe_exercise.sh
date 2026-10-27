@@ -230,4 +230,407 @@ case "$MUT_HEX" in
     ;;
 esac
 
+PY=""
+for candidate in python3 python; do
+  if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys' >/dev/null 2>&1; then
+    PY="$candidate"
+    break
+  fi
+done
+if [ -z "$PY" ]; then
+  echo "FAIL: python3 or python interpreter required for trace validation"
+  exit 1
+fi
+
+echo "== concurrent recorder: 8 raw threads race, deduplication, taints, and post-taint drop"
+RACE_SRC="$WORK/recorder_race.iyi"
+cat << 'EOF' > "$RACE_SRC"
+module test/recorder_race
+import std/observe
+
+ready = Atomic(Int32).new(0_i32)
+go = Atomic(Int32).new(0_i32)
+done1 = Atomic(Int32).new(0_i32)
+go2 = Atomic(Int32).new(0_i32)
+
+threads = Array(IyiThread).new(8)
+8.times do |t|
+  threads << IyiThread.start do
+    ready.add(1_i32)
+    while go.get == 0_i32
+    end
+
+    2000.times do |i|
+      path = "/iyi-recorder-race/#{t}/#{i}"
+      Std::Observe.file_write(1_u8, path)
+      Std::Observe.file(1_u8, path)
+      env_name = "IYI_RACE_#{t}_#{i}"
+      Std::Observe.env_write(env_name)
+      Std::Observe.env_get(env_name, "v")
+    end
+
+    done1.add(1_i32)
+    while go2.get == 0_i32
+    end
+
+    # Barrier then kind33/34 reverseorder odds/evens
+    if t % 2 == 0
+      Std::Observe.not_reusable(33_u8, "entropy_site_#{t}")
+      Std::Observe.not_reusable(34_u8, "timer_site_#{t}")
+    else
+      Std::Observe.not_reusable(34_u8, "timer_site_#{t}")
+      Std::Observe.not_reusable(33_u8, "entropy_site_#{t}")
+    end
+
+    # After-taint envget + filewrite (must be dropped by recorder)
+    Std::Observe.env_get("AFTER_TAINT_#{t}", "v")
+    Std::Observe.file_write(1_u8, "/iyi-recorder-race/after/#{t}")
+    nil
+  end
+end
+
+while ready.get < 8_i32
+end
+go.set(1_i32)
+
+while done1.get < 8_i32
+end
+go2.set(1_i32)
+
+threads.each do |th|
+  th.join
+end
+EOF
+
+cat << 'EOF' > "$WORK/validate_race_trace.py"
+import struct, sys
+
+trace_file = sys.argv[1]
+with open(trace_file, "rb") as f:
+    data = f.read()
+
+pos = 0
+records = []
+while pos < len(data):
+    if pos + 4 > len(data):
+        sys.exit("FAIL: incomplete length header at pos %d of %d" % (pos, len(data)))
+    payload_len, = struct.unpack_from("<I", data, pos)
+    pos += 4
+    if pos + payload_len > len(data):
+        sys.exit("FAIL: incomplete payload: need %d bytes, got %d" % (payload_len, len(data) - pos))
+    payload = data[pos : pos + payload_len]
+    pos += payload_len
+    rec_type = payload[0]
+    task_id, = struct.unpack_from("<Q", payload, 1)
+    body = payload[9:]
+    records.append((rec_type, task_id, body))
+
+if not records:
+    sys.exit("FAIL: trace contains no records")
+
+if records[-1][0] != 0x7F:
+    sys.exit("FAIL: last record is type 0x%02x, expected 0x7f (END)" % records[-1][0])
+if len(records[-1][2]) < 4:
+    sys.exit("FAIL: END record payload too short")
+end_status, = struct.unpack_from("<i", records[-1][2], 0)
+if end_status != 0:
+    sys.exit("FAIL: END status is %d, expected 0" % end_status)
+
+type_counts = {}
+type07_paths = set()
+type03_written_first = 0
+taint_kinds = []
+first_taint_idx = None
+
+for idx, (rec_type, task_id, body) in enumerate(records[:-1]):
+    type_counts[rec_type] = type_counts.get(rec_type, 0) + 1
+    if rec_type == 0x07: # file_write: op(u8), real(str), target(str), scratch(u8)
+        op_code = body[0]
+        real_len, = struct.unpack_from("<I", body, 1)
+        real = body[5 : 5 + real_len].decode("utf-8", "replace")
+        type07_paths.add(real)
+    elif rec_type == 0x03: # env_get: name(str), present(u8), val(str), written_first(u8)
+        if body and body[-1] == 1:
+            type03_written_first += 1
+    elif rec_type == 0x08: # taint: kind_code(u8), site(str)
+        if first_taint_idx is None:
+            first_taint_idx = idx
+        kind_code = body[0]
+        taint_kinds.append(kind_code)
+
+if type_counts.get(0x07, 0) != 16000:
+    sys.exit("FAIL: expected 16000 type07 records, got %d" % type_counts.get(0x07, 0))
+if len(type07_paths) != 16000:
+    sys.exit("FAIL: expected 16000 unique type07 paths, got %d" % len(type07_paths))
+if type_counts.get(0x01, 0) != 0:
+    sys.exit("FAIL: expected 0 type01 records (all skipped by written_paths), got %d" % type_counts.get(0x01, 0))
+if type_counts.get(0x03, 0) != 16000:
+    sys.exit("FAIL: expected 16000 type03 records, got %d" % type_counts.get(0x03, 0))
+if type03_written_first != 16000:
+    sys.exit("FAIL: expected 16000 type03 with written_first=1, got %d" % type03_written_first)
+if type_counts.get(0x04, 0) != 16000:
+    sys.exit("FAIL: expected 16000 type04 records, got %d" % type_counts.get(0x04, 0))
+
+if taint_kinds.count(0x21) != 1 or taint_kinds.count(0x22) != 1 or len(taint_kinds) != 2:
+    sys.exit("FAIL: expected exactly 1 kind 0x21 and 1 kind 0x22, got %s" % taint_kinds)
+
+for idx, (rec_type, task_id, body) in enumerate(records[:-1]):
+    if rec_type != 0x08 and first_taint_idx is not None and idx > first_taint_idx:
+        sys.exit("FAIL: non-taint record type 0x%02x at index %d appeared after first taint at index %d" % (rec_type, idx, first_taint_idx))
+
+if b"AFTER_TAINT" in data or b"/iyi-recorder-race/after" in data:
+    sys.exit("FAIL: after-taint names appeared in trace")
+
+print("OK: 8-thread race trace valid")
+EOF
+
+RACE_TRACE="$WORK/race_trace.bin"
+rm -f "$RACE_TRACE"
+IYI_OBSERVE="$RACE_TRACE" "$IYI" run -Diyi_observe "$RACE_SRC"
+"$PY" "$WORK/validate_race_trace.py" "$RACE_TRACE"
+echo "  8-thread race verified: exact counts, written_first=1, 0 self-reads, taints 33/34 deduplicated, post-taints dropped, END last"
+
+echo "== concurrent recorder: mutation proof (nolock discriminates <= 5 attempts)"
+MUT_NOLOCK_DIR="$WORK/mut_nolock"
+mkdir -p "$MUT_NOLOCK_DIR"
+cp -R "$REPO/src" "$MUT_NOLOCK_DIR/src"
+MUT_OBSERVE="$MUT_NOLOCK_DIR/src/std/observe.iyi"
+
+"$PY" -c "
+with open('$MUT_OBSERVE', 'r') as f:
+    content = f.read()
+
+start_tag = '# RECORD_LOCK_START'
+end_tag = '# RECORD_LOCK_END'
+s_idx = content.find(start_tag)
+e_idx = content.find(end_tag)
+if s_idx < 0 or e_idx < 0:
+    raise Exception('lock tags not found in ' + '$MUT_OBSERVE')
+content = content[:s_idx] + '# MUTATED NO-OP LOCK\n' + content[e_idx + len(end_tag):]
+
+start_tag = '# RECORD_UNLOCK_START'
+end_tag = '# RECORD_UNLOCK_END'
+s_idx = content.find(start_tag)
+e_idx = content.find(end_tag)
+if s_idx < 0 or e_idx < 0:
+    raise Exception('unlock tags not found in ' + '$MUT_OBSERVE')
+content = content[:s_idx] + '# MUTATED NO-OP UNLOCK\n' + content[e_idx + len(end_tag):]
+
+with open('$MUT_OBSERVE', 'w') as f:
+    f.write(content)
+"
+
+MUTATION_FAILED=0
+for attempt in 1 2 3 4 5; do
+  MUT_RACE_TRACE="$WORK/mut_race_trace_$attempt.bin"
+  rm -f "$MUT_RACE_TRACE"
+  if ! IYI_PATH="$MUT_NOLOCK_DIR/src${PSEP}$REPO/samples/iyi" IYI_OBSERVE="$MUT_RACE_TRACE" "$IYI" run -Diyi_observe "$RACE_SRC" >/dev/null 2>&1; then
+    MUTATION_FAILED=1
+    break
+  fi
+  if ! "$PY" "$WORK/validate_race_trace.py" "$MUT_RACE_TRACE" >/dev/null 2>&1; then
+    MUTATION_FAILED=1
+    break
+  fi
+done
+
+if [ "$MUTATION_FAILED" -eq 1 ]; then
+  echo "  mutation proof passed: without lock, race caused failure (attempt $attempt)"
+else
+  echo "FAIL: mutation proof failed: 5 attempts unexpectedly passed without lock"
+  exit 1
+fi
+
+echo "== concurrent recorder: pool variant (8 g.spawn_parallel tasks)"
+POOL_SRC="$WORK/pool_race.iyi"
+cat << 'EOF' > "$POOL_SRC"
+module test/pool_race
+import std/observe
+import std/concurrency
+
+group do |g|
+  8.times do |t|
+    g.spawn_parallel do
+      2000.times do |i|
+        path = "/iyi-recorder-pool/#{t}/#{i}"
+        Std::Observe.file_write(1_u8, path)
+        Std::Observe.file(1_u8, path)
+        env_name = "IYI_POOL_#{t}_#{i}"
+        Std::Observe.env_write(env_name)
+        Std::Observe.env_get(env_name, "v")
+      end
+    end
+  end
+end
+EOF
+
+cat << 'EOF' > "$WORK/validate_pool_trace.py"
+import struct, sys
+
+trace_file = sys.argv[1]
+with open(trace_file, "rb") as f:
+    data = f.read()
+
+pos = 0
+records = []
+while pos < len(data):
+    if pos + 4 > len(data):
+        sys.exit("FAIL: incomplete length header")
+    payload_len, = struct.unpack_from("<I", data, pos)
+    pos += 4
+    if pos + payload_len > len(data):
+        sys.exit("FAIL: incomplete payload")
+    payload = data[pos : pos + payload_len]
+    pos += payload_len
+    rec_type = payload[0]
+    task_id, = struct.unpack_from("<Q", payload, 1)
+    body = payload[9:]
+    records.append((rec_type, task_id, body))
+
+if not records or records[-1][0] != 0x7F:
+    sys.exit("FAIL: expected END(0) last")
+end_status, = struct.unpack_from("<i", records[-1][2], 0)
+if end_status != 0:
+    sys.exit("FAIL: expected END status 0")
+
+type_counts = {}
+type07_paths = set()
+type03_written_first = 0
+
+for rec_type, task_id, body in records[:-1]:
+    type_counts[rec_type] = type_counts.get(rec_type, 0) + 1
+    if rec_type == 0x07:
+        op_code = body[0]
+        real_len, = struct.unpack_from("<I", body, 1)
+        real = body[5 : 5 + real_len].decode("utf-8", "replace")
+        type07_paths.add(real)
+    elif rec_type == 0x03:
+        if body and body[-1] == 1:
+            type03_written_first += 1
+
+if type_counts.get(0x07, 0) != 16000:
+    sys.exit("FAIL: pool expected 16000 type07, got %d" % type_counts.get(0x07, 0))
+if len(type07_paths) != 16000:
+    sys.exit("FAIL: pool expected 16000 unique type07 paths, got %d" % len(type07_paths))
+if type_counts.get(0x01, 0) != 0:
+    sys.exit("FAIL: pool expected 0 type01, got %d" % type_counts.get(0x01, 0))
+if type_counts.get(0x03, 0) != 16000:
+    sys.exit("FAIL: pool expected 16000 type03, got %d" % type_counts.get(0x03, 0))
+if type03_written_first != 16000:
+    sys.exit("FAIL: pool expected 16000 type03 written_first=1, got %d" % type03_written_first)
+if type_counts.get(0x04, 0) != 16000:
+    sys.exit("FAIL: pool expected 16000 type04, got %d" % type_counts.get(0x04, 0))
+
+print("OK: pool variant trace valid")
+EOF
+
+POOL_TRACE="$WORK/pool_trace.bin"
+rm -f "$POOL_TRACE"
+IYI_OBSERVE="$POOL_TRACE" "$IYI" run -Diyi_observe "$POOL_SRC"
+"$PY" "$WORK/validate_pool_trace.py" "$POOL_TRACE"
+echo "  pool variant verified: finished without deadlock/hang, exact counts written"
+
+echo "== concurrent recorder: END race (host late + main returns after 200)"
+END_RACE_SRC="$WORK/end_race.iyi"
+cat << 'EOF' > "$END_RACE_SRC"
+module test/end_race
+import std/observe
+
+count = Atomic(Int64).new(0_i64)
+stop = Atomic(Int32).new(0_i32)
+
+th = IyiThread.start do
+  while stop.get == 0_i32
+    Std::Observe.host("late-host")
+    count.add(1_i64)
+  end
+  nil
+end
+
+while count.get < 200_i64
+end
+EOF
+
+cat << 'EOF' > "$WORK/validate_end_race.py"
+import struct, sys
+
+trace_file = sys.argv[1]
+with open(trace_file, "rb") as f:
+    data = f.read()
+
+pos = 0
+records = []
+while pos < len(data):
+    if pos + 4 > len(data):
+        sys.exit("FAIL: incomplete length header")
+    payload_len, = struct.unpack_from("<I", data, pos)
+    pos += 4
+    if pos + payload_len > len(data):
+        sys.exit("FAIL: incomplete payload")
+    payload = data[pos : pos + payload_len]
+    pos += payload_len
+    rec_type = payload[0]
+    task_id, = struct.unpack_from("<Q", payload, 1)
+    body = payload[9:]
+    records.append((rec_type, task_id, body))
+
+if not records:
+    sys.exit("FAIL: empty trace in end race")
+if records[-1][0] != 0x7F:
+    sys.exit("FAIL: expected END(0) as last record, got 0x%02x" % records[-1][0])
+end_status, = struct.unpack_from("<i", records[-1][2], 0)
+if end_status != 0:
+    sys.exit("FAIL: expected END status 0")
+
+host_count = sum(1 for r in records[:-1] if r[0] == 0x06)
+if host_count < 200:
+    sys.exit("FAIL: expected at least 200 host records, got %d" % host_count)
+
+print("OK: END race trace valid")
+EOF
+
+END_RACE_TRACE="$WORK/end_race_trace.bin"
+rm -f "$END_RACE_TRACE"
+IYI_OBSERVE="$END_RACE_TRACE" "$IYI" run -Diyi_observe "$END_RACE_SRC"
+"$PY" "$WORK/validate_end_race.py" "$END_RACE_TRACE"
+echo "  END race verified: END(0) is last record with no trailing records after main returned"
+
+echo "== concurrent recorder: allocation measurement (shared writer < 256 bytes/record)"
+ALLOC_SRC="$WORK/alloc_measure.iyi"
+cat << 'EOF' > "$ALLOC_SRC"
+module test/alloc_measure
+import std/observe
+import std/gc
+
+names = Array(String).new(10000)
+10000.times do |i|
+  names << "PREBUILT_ENV_VAR_#{i}"
+end
+
+GC.disable
+before = IyiHeap.allocated_word.value.get
+
+10000.times do |i|
+  Std::Observe.env_get(names[i], "v")
+end
+
+after = IyiHeap.allocated_word.value.get
+GC.enable
+
+delta = after - before
+per_record = delta.to_f / 10000.0
+puts "ALLOC_DELTA=#{delta}"
+puts "ALLOC_PER_RECORD=#{per_record}"
+if per_record >= 256.0
+  raise "FAIL: allocation per record too high: #{per_record} bytes/record >= 256"
+end
+puts "OK: allocation per record < 256 bytes verified"
+EOF
+
+ALLOC_TRACE="$WORK/alloc_trace.bin"
+rm -f "$ALLOC_TRACE"
+IYI_OBSERVE="$ALLOC_TRACE" "$IYI" run -Diyi_observe "$ALLOC_SRC"
+echo "  allocation measurement verified: shared resettable RecordWriter allocates < 256 bytes/record"
+
+
 echo "OK: bench/std_observe_exercise.sh passed all checks"

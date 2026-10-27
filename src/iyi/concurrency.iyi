@@ -4562,6 +4562,9 @@ class IyiWorkers
       # A fresh quantum from here: the monitor sees the count move.
       st.switches = st.switches &+ 1_u64
       return if IyiSchedLock.held_here? || IyiRuntimeLock.held?
+      {% if flag?(:iyi_observe) %}
+        return if Std::Observe.recording_here?
+      {% end %}
       fiber = IyiScheduler.current
       root = st.root
       return if root.is_a?(IyiFiber) && root.object_id == fiber.object_id

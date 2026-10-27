@@ -99,14 +99,18 @@ import std/slice::{Slice, Bytes}
 {% end %}
 
 class RecordWriter
-  @buffer : Pointer(UInt8)
-  @capacity : Int32
-  @size : Int32
+  getter buffer : Pointer(UInt8)
+  getter capacity : Int32
+  getter size : Int32
 
   def initialize
     @capacity = 4096
     @size = 0
     @buffer = Pointer(UInt8).malloc(@capacity.to_u64)
+  end
+
+  def reset : Nil
+    @size = 0
   end
 
   def begin_record(rec_type : UInt8, task : UInt64) : Nil
@@ -157,15 +161,7 @@ class RecordWriter
   end
 
   def flush(fd : Int64) : Nil
-    return if @size <= 4
-    payload_len = (@size - 4).to_u32
-    @buffer[0] = (payload_len & 0xFF_u32).to_u8
-    @buffer[1] = ((payload_len >> 8) & 0xFF_u32).to_u8
-    @buffer[2] = ((payload_len >> 16) & 0xFF_u32).to_u8
-    @buffer[3] = ((payload_len >> 24) & 0xFF_u32).to_u8
-
-    Std::Observe.channel_write(fd, @buffer.as(Void*), @size.to_u64)
-    @size = 0
+    Std::Observe.emit(self)
   end
 
   private def ensure_room(extra : Int32) : Nil
@@ -193,6 +189,12 @@ end
 @@written_env = ::Set(String).new
 @[ThreadLocal]
 @@thread_depth = 0_i32
+
+@@record_lock : UInt64 = 0_u64
+@[ThreadLocal]
+@@recording : ::Bool = false
+@@failed : ::Bool = false
+@@writer : RecordWriter? = nil
 
 pub def enter_frame : ::Bool
   return true unless @@enabled
@@ -252,6 +254,69 @@ pub def channel_close(fd : Int64) : Nil
   __iyi_close(fd)
 end
 
+private def record_lock_word : Pointer(Atomic(UInt64))
+  Pointer(Atomic(UInt64)).new(pointerof(@@record_lock).address)
+end
+
+private def lock_recorder : Nil
+  # RECORD_LOCK_START
+  word = record_lock_word
+  spins = 0_i64
+  until word.value.get == 0_u64 && word.value.compare_and_set(0_u64, 1_u64)[1]
+    spins = spins &+ 1_i64
+    {% if !flag?(:gc_none) && !flag?(:gc_boehm) && ((flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64))) %}
+      IyiThread.park_if_requested
+      IyiThread.yield_cpu if (spins & 127_i64) == 0_i64
+      IyiThread.spin_pause
+    {% else %}
+      {% if flag?(:x86_64) %}
+        asm("pause" :::: "volatile")
+      {% elsif flag?(:aarch64) %}
+        asm("yield" :::: "volatile")
+      {% end %}
+    {% end %}
+  end
+  # RECORD_LOCK_END
+  @@recording = true
+end
+
+private def unlock_recorder : Nil
+  @@recording = false
+  # RECORD_UNLOCK_START
+  record_lock_word.value.set(0_u64)
+  # RECORD_UNLOCK_END
+end
+
+pub def recording_here? : ::Bool
+  @@recording
+end
+
+pub def emit(writer : RecordWriter) : Nil
+  return if @@failed || @@fd < 0_i64
+  return if writer.size <= 4
+
+  payload_len = (writer.size - 4).to_u32
+  buf = writer.buffer
+  buf[0] = (payload_len & 0xFF_u32).to_u8
+  buf[1] = ((payload_len >> 8) & 0xFF_u32).to_u8
+  buf[2] = ((payload_len >> 16) & 0xFF_u32).to_u8
+  buf[3] = ((payload_len >> 24) & 0xFF_u32).to_u8
+
+  offset = 0_u64
+  remaining = writer.size.to_u64
+  while remaining > 0_u64
+    written = channel_write(@@fd, (buf + offset).as(Void*), remaining)
+    if written <= 0_i64
+      @@failed = true
+      break
+    end
+    offset += written.to_u64
+    remaining -= written.to_u64
+  end
+  writer.reset
+end
+
+
 pub def enabled? : ::Bool
   @@enabled
 end
@@ -275,38 +340,64 @@ pub def start : Nil
   return if fd < 0_i64
 
   @@fd = fd
+  @@writer = RecordWriter.new
   @@enabled = true
 end
 
 pub def finish(status : Int32 = 0) : Nil
   return unless @@enabled
-  write_end(status)
-  channel_close(@@fd)
-  @@fd = -1_i64
-  @@enabled = false
+  if @@recording
+    @@failed = true
+    return
+  end
+  lock_recorder
+  if @@enabled
+    write_end(status) unless @@failed
+    channel_close(@@fd) if @@fd >= 0_i64
+    @@fd = -1_i64
+    @@enabled = false
+  end
+  unlock_recorder
 end
 
+
 pub def file(kind : UInt8, path : String, open_flags : UInt32 = 0_u32) : Nil
-  return if !@@enabled || @@tainted
+  return if !@@enabled || @@tainted || @@failed
+  if @@recording
+    @@failed = true
+    return
+  end
+
   real = safe_real_path(path)
-  return if is_under_scratch?(real) || @@written_paths.includes?(real)
+  return if is_under_scratch?(real)
 
   cwd_str = current_cwd
   present, ftype, size, mtime_ns = stat_path(real)
+  task_id = current_task_id
 
-  writer = RecordWriter.new
-  writer.begin_record(0x01_u8, current_task_id)
-  writer.write_u8(kind)
-  writer.write_str(path)
-  writer.write_str(real)
-  writer.write_str(cwd_str)
-  writer.write_u32(open_flags)
-  writer.write_u8(present)
-  writer.write_u8(ftype)
-  writer.write_u64(size)
-  writer.write_i64(mtime_ns)
-  writer.flush(@@fd)
+  lock_recorder
+  if !@@enabled || @@tainted || @@failed || @@written_paths.includes?(real)
+    unlock_recorder
+    return
+  end
+
+  writer = @@writer
+  if writer
+    writer.begin_record(0x01_u8, task_id)
+    writer.write_u8(kind)
+    writer.write_str(path)
+    writer.write_str(real)
+    writer.write_str(cwd_str)
+    writer.write_u32(open_flags)
+    writer.write_u8(present)
+    writer.write_u8(ftype)
+    writer.write_u64(size)
+    writer.write_i64(mtime_ns)
+    emit(writer)
+  end
+  unlock_recorder
 end
+
 
 pub def __iyi_observe_file(kind : UInt8, path : String) : Nil
   file(kind, path)
@@ -325,21 +416,37 @@ pub def __iyi_observe_file_exists(path : String) : Nil
 end
 
 pub def dir_list(path : String, names : Array(String)) : Nil
-  return if !@@enabled || @@tainted
+  return if !@@enabled || @@tainted || @@failed
+  if @@recording
+    @@failed = true
+    return
+  end
+
   real = safe_real_path(path)
-  return if is_under_scratch?(real) || @@written_paths.includes?(real)
+  return if is_under_scratch?(real)
 
   cwd_str = current_cwd
-  writer = RecordWriter.new
-  writer.begin_record(0x02_u8, current_task_id)
-  writer.write_str(path)
-  writer.write_str(real)
-  writer.write_str(cwd_str)
-  writer.write_u32(names.size.to_u32)
-  names.each do |n|
-    writer.write_str(n)
+  task_id = current_task_id
+
+  lock_recorder
+  if !@@enabled || @@tainted || @@failed || @@written_paths.includes?(real)
+    unlock_recorder
+    return
   end
-  writer.flush(@@fd)
+
+  writer = @@writer
+  if writer
+    writer.begin_record(0x02_u8, task_id)
+    writer.write_str(path)
+    writer.write_str(real)
+    writer.write_str(cwd_str)
+    writer.write_u32(names.size.to_u32)
+    names.each do |n|
+      writer.write_str(n)
+    end
+    emit(writer)
+  end
+  unlock_recorder
 end
 
 pub def __iyi_observe_dir_list(path : String, names : Array(String)) : Nil
@@ -347,7 +454,12 @@ pub def __iyi_observe_dir_list(path : String, names : Array(String)) : Nil
 end
 
 pub def env_get(name : String, value : String?) : Nil
-  return if !@@enabled || @@tainted
+  return if !@@enabled || @@tainted || @@failed
+  if @@recording
+    @@failed = true
+    return
+  end
+
   present = value.nil? ? 0_u8 : 1_u8
   # The scratch directory is the runner's, new for every run, so what is
   # recorded is that it was there, not where it was.
@@ -356,15 +468,27 @@ pub def env_get(name : String, value : String?) : Nil
             else
               value || ""
             end
+
+  task_id = current_task_id
+
+  lock_recorder
+  if !@@enabled || @@tainted || @@failed
+    unlock_recorder
+    return
+  end
+
   written_first = @@written_env.includes?(name) ? 1_u8 : 0_u8
 
-  writer = RecordWriter.new
-  writer.begin_record(0x03_u8, current_task_id)
-  writer.write_str(name)
-  writer.write_u8(present)
-  writer.write_str(val_str)
-  writer.write_u8(written_first)
-  writer.flush(@@fd)
+  writer = @@writer
+  if writer
+    writer.begin_record(0x03_u8, task_id)
+    writer.write_str(name)
+    writer.write_u8(present)
+    writer.write_str(val_str)
+    writer.write_u8(written_first)
+    emit(writer)
+  end
+  unlock_recorder
 end
 
 pub def __iyi_observe_env_get(name : String, value : String?) : Nil
@@ -372,10 +496,26 @@ pub def __iyi_observe_env_get(name : String, value : String?) : Nil
 end
 
 pub def env_all : Nil
-  return if !@@enabled || @@tainted
-  writer = RecordWriter.new
-  writer.begin_record(0x04_u8, current_task_id)
-  writer.flush(@@fd)
+  return if !@@enabled || @@tainted || @@failed
+  if @@recording
+    @@failed = true
+    return
+  end
+
+  task_id = current_task_id
+
+  lock_recorder
+  if !@@enabled || @@tainted || @@failed
+    unlock_recorder
+    return
+  end
+
+  writer = @@writer
+  if writer
+    writer.begin_record(0x04_u8, task_id)
+    emit(writer)
+  end
+  unlock_recorder
 end
 
 pub def __iyi_observe_env_all : Nil
@@ -383,12 +523,30 @@ pub def __iyi_observe_env_all : Nil
 end
 
 # `ENV.[]=` or `ENV.delete` on *name*: a later read of it records
-# `written_first`, and the trace keeps no observation for it. The write
-# itself records `env_all`, which covers what it returned.
 pub def env_write(name : String) : Nil
-  return unless @@enabled
+  return if !@@enabled || @@failed
+  if @@recording
+    @@failed = true
+    return
+  end
+
+  task_id = current_task_id
+
+  lock_recorder
+  if !@@enabled || @@failed
+    unlock_recorder
+    return
+  end
+
   @@written_env.add(name)
-  env_all
+  unless @@tainted
+    writer = @@writer
+    if writer
+      writer.begin_record(0x04_u8, task_id)
+      emit(writer)
+    end
+  end
+  unlock_recorder
 end
 
 pub def __iyi_observe_env_write(name : String) : Nil
@@ -400,12 +558,28 @@ end
 # would apply a relative `cd` twice (`sub` became `sub/sub`); the record is
 # the real current directory, which is what the program sees.
 pub def cwd(path : String) : Nil
-  return if !@@enabled || @@tainted
+  return if !@@enabled || @@tainted || @@failed
+  if @@recording
+    @@failed = true
+    return
+  end
+
   real = safe_real_path(current_cwd)
-  writer = RecordWriter.new
-  writer.begin_record(0x05_u8, current_task_id)
-  writer.write_str(real)
-  writer.flush(@@fd)
+  task_id = current_task_id
+
+  lock_recorder
+  if !@@enabled || @@tainted || @@failed
+    unlock_recorder
+    return
+  end
+
+  writer = @@writer
+  if writer
+    writer.begin_record(0x05_u8, task_id)
+    writer.write_str(real)
+    emit(writer)
+  end
+  unlock_recorder
 end
 
 pub def __iyi_observe_cwd(path : String) : Nil
@@ -413,11 +587,27 @@ pub def __iyi_observe_cwd(path : String) : Nil
 end
 
 pub def host(value : String) : Nil
-  return if !@@enabled || @@tainted
-  writer = RecordWriter.new
-  writer.begin_record(0x06_u8, current_task_id)
-  writer.write_str(value)
-  writer.flush(@@fd)
+  return if !@@enabled || @@tainted || @@failed
+  if @@recording
+    @@failed = true
+    return
+  end
+
+  task_id = current_task_id
+
+  lock_recorder
+  if !@@enabled || @@tainted || @@failed
+    unlock_recorder
+    return
+  end
+
+  writer = @@writer
+  if writer
+    writer.begin_record(0x06_u8, task_id)
+    writer.write_str(value)
+    emit(writer)
+  end
+  unlock_recorder
 end
 
 pub def __iyi_observe_host(value : String) : Nil
@@ -425,7 +615,11 @@ pub def __iyi_observe_host(value : String) : Nil
 end
 
 pub def file_write(op : UInt8 | ::Symbol | String, path : String, target : String? = nil) : Nil
-  return if !@@enabled || @@tainted
+  return if !@@enabled || @@tainted || @@failed
+  if @@recording
+    @@failed = true
+    return
+  end
 
   op_code = parse_op(op)
 
@@ -470,17 +664,29 @@ pub def file_write(op : UInt8 | ::Symbol | String, path : String, target : Strin
     inside_scratch = is_under_scratch?(real) ? 1_u8 : 0_u8
   end
 
+  task_id = current_task_id
+
+  lock_recorder
+  if !@@enabled || @@tainted || @@failed
+    unlock_recorder
+    return
+  end
+
   @@written_paths.add(real) unless real.empty?
   @@written_paths.add(target_real) unless target_real.empty?
 
-  writer = RecordWriter.new
-  writer.begin_record(0x07_u8, current_task_id)
-  writer.write_u8(op_code)
-  writer.write_str(real)
-  writer.write_str(target_real)
-  writer.write_u8(inside_scratch)
-  writer.flush(@@fd)
+  writer = @@writer
+  if writer
+    writer.begin_record(0x07_u8, task_id)
+    writer.write_u8(op_code)
+    writer.write_str(real)
+    writer.write_str(target_real)
+    writer.write_u8(inside_scratch)
+    emit(writer)
+  end
+  unlock_recorder
 end
+
 
 pub def __iyi_observe_file_write(op : UInt8 | ::Symbol | String, path : String, target : String? = nil) : Nil
   file_write(op, path, target)
@@ -499,21 +705,38 @@ end
 # each kind of taint is recorded once, at its first site, so the reasons
 # reported stay complete while the observers stop allocating. That keeps a
 # network-heavy program's own allocation measurements what they are in a
-# normal build (RG2). END is still written, so the trace stays complete.
 pub def not_reusable(kind : UInt8 | ::Symbol | String, site : String) : Nil
-  return unless @@enabled
+  return if !@@enabled || @@failed
+  if @@recording
+    @@failed = true
+    return
+  end
+
   kind_code = parse_kind(kind)
   bit = kind_code >= 32_u8 && kind_code < 95_u8 ? 1_u64 << (kind_code - 32_u8).to_i32 : 1_u64 << 63
   return if (@@taint_kinds & bit) != 0_u64
+
+  task_id = current_task_id
+
+  lock_recorder
+  if !@@enabled || @@failed || (@@taint_kinds & bit) != 0_u64
+    unlock_recorder
+    return
+  end
+
   @@taint_kinds = @@taint_kinds | bit
   @@tainted = true
 
-  writer = RecordWriter.new
-  writer.begin_record(0x08_u8, current_task_id)
-  writer.write_u8(kind_code)
-  writer.write_str(site)
-  writer.flush(@@fd)
+  writer = @@writer
+  if writer
+    writer.begin_record(0x08_u8, task_id)
+    writer.write_u8(kind_code)
+    writer.write_str(site)
+    emit(writer)
+  end
+  unlock_recorder
 end
+
 
 pub def __iyi_observe_not_reusable(kind : UInt8 | ::Symbol | String, site : String) : Nil
   not_reusable(kind, site)
@@ -563,12 +786,12 @@ end
 pub def __iyi_observe_host_state(site : String) : Nil
   not_reusable(41_u8, site)
 end
-
 private def write_end(status : Int32) : Nil
-  writer = RecordWriter.new
+  writer = @@writer
+  return if writer.nil?
   writer.begin_record(0x7F_u8, 0_u64)
   writer.write_i32(status)
-  writer.flush(@@fd)
+  emit(writer)
 end
 
 private def parse_op(op : UInt8 | ::Symbol | String) : UInt8
