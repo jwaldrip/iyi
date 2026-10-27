@@ -193,12 +193,9 @@ end
 @@written_env = ::Set(String).new
 @[ThreadLocal]
 @@thread_depth = 0_i32
-@[ThreadLocal]
-@@in_hook = false
 
-pub def enter_frame(tid : UInt64 = current_task_id) : ::Bool
+pub def enter_frame : ::Bool
   return true unless @@enabled
-  return false if @@in_hook
   {% if !flag?(:single_thread) && flag?(:iyi_observe) %}
     if IyiScheduler.state_id != 0_u64
       fiber = IyiScheduler.state.current
@@ -214,9 +211,8 @@ pub def enter_frame(tid : UInt64 = current_task_id) : ::Bool
   d == 0
 end
 
-pub def leave_frame(tid : UInt64 = current_task_id) : Nil
+pub def leave_frame : Nil
   return unless @@enabled
-  return if @@in_hook
   {% if !flag?(:single_thread) && flag?(:iyi_observe) %}
     if IyiScheduler.state_id != 0_u64
       fiber = IyiScheduler.state.current
@@ -231,7 +227,7 @@ pub def leave_frame(tid : UInt64 = current_task_id) : Nil
   @@thread_depth = d - 1 if d > 0
 end
 
-pub def frame_depth(tid : UInt64 = current_task_id) : Int32
+pub def frame_depth : Int32
   {% if !flag?(:single_thread) && flag?(:iyi_observe) %}
     if IyiScheduler.state_id != 0_u64
       fiber = IyiScheduler.state.current
@@ -720,6 +716,16 @@ pub def safe_real_path(path : String) : String
     res = LibObserveC.realpath(path.to_unsafe, buf)
     if res.address != 0_u64
       return c_str(res)
+    end
+    dir = dirname_of(path)
+    if dir != path
+      res_dir = LibObserveC.realpath(dir.to_unsafe, buf)
+      if res_dir.address != 0_u64
+        base_dir = c_str(res_dir)
+        fname = path[dir.bytesize, path.bytesize - dir.bytesize]
+        candidate = (base_dir.ends_with?('/') && fname.starts_with?('/')) ? (base_dir + fname[1, fname.bytesize - 1]) : ((base_dir.ends_with?('/') || fname.starts_with?('/')) ? (base_dir + fname) : (base_dir + "/" + fname))
+        return normalize_path(candidate)
+      end
     end
   {% end %}
 

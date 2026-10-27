@@ -14,7 +14,9 @@ Std::Observe.env_all
 # the script runs this from `/`.
 Std::Observe.cwd("/test/dir")
 Std::Observe.host("test-host")
-Std::Observe.file_write(1_u8, "/test/out.txt", "")
+tmp = Program.env("TMPDIR") || Program.env("TEMP") || Program.env("TMP")
+scratch = (tmp && !tmp.empty?) ? (tmp.ends_with?("/") ? tmp[0, tmp.bytesize - 1] : tmp) : "/tmp"
+Std::Observe.file_write(1_u8, "#{scratch}/out.txt", "")
 Std::Observe.not_reusable(32_u8, "src:test.iyi:10")
 # A tainted run never becomes a receipt: each taint kind is recorded once,
 # and nothing else is recorded after the first taint.
