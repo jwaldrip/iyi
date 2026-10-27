@@ -1478,6 +1478,9 @@ export_env['GITHUB_REPOSITORY'] = 'iyilang/iyi'
 export_env['GITHUB_REF'] = 'refs/heads/master'
 export_env['GITHUB_RUN_ID'] = '7777'
 export_env['GITHUB_RUN_ATTEMPT'] = '1'
+shared_cache = os.path.join(work, 'shared_cache')
+os.makedirs(shared_cache, exist_ok=True)
+export_env['IYI_CACHE_DIR'] = shared_cache
 
 sample_file = os.path.join(repo, 'samples/iyi/hello.iyi')
 if not os.path.exists(sample_file):
@@ -1485,7 +1488,7 @@ if not os.path.exists(sample_file):
     sample_file = samples[0]
 
 res_exp = subprocess.run([iyi, 'test', '--fresh', '--export-index', f'master={cand_export_path}', sample_file],
-                         env=export_env, capture_output=True, text=True)
+                         cwd=repo, env=export_env, capture_output=True, text=True)
 if res_exp.returncode != 0 or not os.path.exists(cand_export_path):
     print(f'test-master-path FAILED: producer export failed (code {res_exp.returncode}):\n{res_exp.stderr}', file=sys.stderr)
     sys.exit(1)
@@ -1855,15 +1858,12 @@ try:
         print(f'test-master-path FAILED: Phase 6 fetch-master missing sidecar at {phase6_sidecar}', file=sys.stderr)
         sys.exit(1)
 
-    polluted_cache = os.path.join(work, 'polluted_cache')
-    os.makedirs(polluted_cache, exist_ok=True)
-
     test_env = os.environ.copy()
-    test_env['IYI_CACHE_DIR'] = polluted_cache
+    test_env['IYI_CACHE_DIR'] = shared_cache
 
     # 6.1 Pollute cache with fresh run
     res_fresh = subprocess.run([iyi, 'test', '--fresh', sample_file],
-                               env=test_env, capture_output=True, text=True)
+                               cwd=repo, env=test_env, capture_output=True, text=True)
     if res_fresh.returncode != 0:
         print(f'test-master-path FAILED: fresh test run failed to populate cache (code {res_fresh.returncode}):\n{res_fresh.stderr}', file=sys.stderr)
         sys.exit(1)
@@ -1872,7 +1872,7 @@ try:
     res_unwiped = subprocess.run([iyi, 'test', '--cached', '--json',
                                   '--import-index', f'master={phase6_master}',
                                   sample_file],
-                                 env=test_env, capture_output=True, text=True)
+                                 cwd=repo, env=test_env, capture_output=True, text=True)
     if res_unwiped.returncode != 0:
         print(f'test-master-path FAILED: unwiped cached test run failed (code {res_unwiped.returncode}):\n{res_unwiped.stderr}', file=sys.stderr)
         sys.exit(1)
@@ -1896,7 +1896,7 @@ try:
                                 '--out-json', check_out,
                                 '--repo', repo,
                                 sample_file],
-                               env=test_env, capture_output=True, text=True)
+                               cwd=repo, env=test_env, capture_output=True, text=True)
     if res_check.returncode != 0:
         print(f'test-master-path FAILED: master-self-check failed (code {res_check.returncode}):\n{res_check.stderr}', file=sys.stderr)
         sys.exit(1)
@@ -1945,7 +1945,7 @@ try:
     res_empty_test = subprocess.run([iyi, 'test', '--cached', '--json',
                                      '--import-index', f'master={empty_out}',
                                      sample_file],
-                                    env=test_env, capture_output=True, text=True)
+                                    cwd=repo, env=test_env, capture_output=True, text=True)
     if res_empty_test.returncode != 0:
         print(f'test-master-path FAILED: empty snapshot test run failed (code {res_empty_test.returncode}):\n{res_empty_test.stderr}', file=sys.stderr)
         sys.exit(1)
