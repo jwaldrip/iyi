@@ -96,6 +96,8 @@ def normalize_stderr(raw):
     for line in raw_lines:
         m = FRAME_RE.match(line.rstrip(b'\r\n'))
         if not m:
+            if b'Cannot rename ' in line:
+                line = re.sub(rb'Cannot rename .* to .*', rb'Cannot rename <src> to <dst>', line)
             out.append(line)
             prev_sym = None
             frame_run = 0
@@ -276,6 +278,8 @@ def normalize_stderr(raw):
     for line in raw_lines:
         m = FRAME_RE.match(line.rstrip(b'\r\n'))
         if not m:
+            if b'Cannot rename ' in line:
+                line = re.sub(rb'Cannot rename .* to .*', rb'Cannot rename <src> to <dst>', line)
             out.append(line)
             prev_sym = None
             frame_run = 0

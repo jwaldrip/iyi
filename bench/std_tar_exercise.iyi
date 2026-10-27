@@ -698,7 +698,7 @@ def slip(work : String, archive : String, phrase : String, label : String) : Nil
   # A sentence that names the run's own directory is shown by what it says,
   # not where: the directory is new each run, and the output is compared
   # between a build from source and one from artifacts.
-  shown = got.message.includes?("iyi_tar_exercise_") ? "#{label}: refused, #{phrase}" : got.message
+  shown = (got.message.includes?("iyi_tar_exercise_") || got.message.includes?(work)) ? "#{label}: refused, #{phrase}" : got.message
   puts "  #{shown}"
 end
 
