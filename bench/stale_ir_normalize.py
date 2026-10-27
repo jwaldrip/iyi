@@ -682,15 +682,9 @@ def compile_and_extract(
     """Compiles source with DUMP=1 and IYI_DUMP_TYPE_ID=1, returning (ir_text, type_id_text)."""
     compiler = compiler_path or os.environ.get("IYI")
     if not compiler:
-        candidates = [
-            "/Users/jwaldrip/dev/worktrees/iyi-stale-plan-clean/bin/iyi",
-            "./bin/iyi",
-            "bin/iyi",
-        ]
-        for c in candidates:
-            if Path(c).is_file() and os.access(c, os.X_OK):
-                compiler = c
-                break
+        default = Path(__file__).resolve().parent.parent / "bin" / "iyi"
+        if default.is_file() and os.access(default, os.X_OK):
+            compiler = str(default)
 
     if not compiler:
         sys.exit("Error: no compiler executable found. Set $IYI or pass --compiler.")

@@ -13,19 +13,7 @@ NORMALIZER="$REPO/bench/stale_ir_normalize.py"
 PYTHON="${PYTHON:-python3}"
 
 # Locate the base compiler
-COMPILER="${IYI:-}"
-if [ -z "$COMPILER" ]; then
-  CANDIDATES=(
-    "/Users/jwaldrip/dev/worktrees/iyi-stale-plan-clean/bin/iyi"
-    "$REPO/bin/iyi"
-  )
-  for cand in "${CANDIDATES[@]}"; do
-    if [ -x "$cand" ]; then
-      COMPILER="$cand"
-      break
-    fi
-  done
-fi
+COMPILER="${IYI:-$REPO/bin/iyi}"
 
 if [ -z "$COMPILER" ] || [ ! -x "$COMPILER" ]; then
   echo "Error: no base compiler found. Set \$IYI or provide bin/iyi." >&2
