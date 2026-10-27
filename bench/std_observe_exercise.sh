@@ -467,6 +467,12 @@ group do |g|
         env_name = "IYI_POOL_#{t}_#{i}"
         Std::Observe.env_write(env_name)
         Std::Observe.env_get(env_name, "v")
+
+        if (i + t) % 2 == 0
+          Std::Observe.not_reusable(33_u8, "pool_site_#{t}")
+        else
+          Std::Observe.not_reusable(34_u8, "pool_site_#{t}")
+        end
       end
     end
   end
@@ -502,33 +508,32 @@ end_status, = struct.unpack_from("<i", records[-1][2], 0)
 if end_status != 0:
     sys.exit("FAIL: expected END status 0")
 
+first_rec = records[0]
+if first_rec[0] != 0x08:
+    sys.exit("FAIL: expected first record to be taint 0x08, got 0x%02x" % first_rec[0])
+first_kind = first_rec[2][0]
+if first_kind != 0x24:
+    sys.exit("FAIL: expected first record to be process taint 0x24, got 0x%02x" % first_kind)
+first_site_len, = struct.unpack_from("<I", first_rec[2], 1)
+first_site = first_rec[2][5 : 5 + first_site_len].decode("utf-8", "replace")
+if "concurrency.iyi" not in first_site:
+    sys.exit("FAIL: expected concurrency.iyi in first taint site, got '%s'" % first_site)
+
 type_counts = {}
-type07_paths = set()
-type03_written_first = 0
+taint_kinds = []
 
 for rec_type, task_id, body in records[:-1]:
     type_counts[rec_type] = type_counts.get(rec_type, 0) + 1
-    if rec_type == 0x07:
-        op_code = body[0]
-        real_len, = struct.unpack_from("<I", body, 1)
-        real = body[5 : 5 + real_len].decode("utf-8", "replace")
-        type07_paths.add(real)
-    elif rec_type == 0x03:
-        if body and body[-1] == 1:
-            type03_written_first += 1
+    if rec_type == 0x08:
+        kind_code = body[0]
+        taint_kinds.append(kind_code)
 
-if type_counts.get(0x07, 0) != 16000:
-    sys.exit("FAIL: pool expected 16000 type07, got %d" % type_counts.get(0x07, 0))
-if len(type07_paths) != 16000:
-    sys.exit("FAIL: pool expected 16000 unique type07 paths, got %d" % len(type07_paths))
-if type_counts.get(0x01, 0) != 0:
-    sys.exit("FAIL: pool expected 0 type01, got %d" % type_counts.get(0x01, 0))
-if type_counts.get(0x03, 0) != 16000:
-    sys.exit("FAIL: pool expected 16000 type03, got %d" % type_counts.get(0x03, 0))
-if type03_written_first != 16000:
-    sys.exit("FAIL: pool expected 16000 type03 written_first=1, got %d" % type03_written_first)
-if type_counts.get(0x04, 0) != 16000:
-    sys.exit("FAIL: pool expected 16000 type04, got %d" % type_counts.get(0x04, 0))
+for t in range(1, 8):
+    if type_counts.get(t, 0) != 0:
+        sys.exit("FAIL: expected 0 non-taint records of type 0x%02x, got %d" % (t, type_counts.get(t, 0)))
+
+if taint_kinds.count(0x21) != 1 or taint_kinds.count(0x22) != 1 or taint_kinds.count(0x24) != 1 or len(taint_kinds) != 3:
+    sys.exit("FAIL: expected taints [0x24, 0x21, 0x22], got %s" % taint_kinds)
 
 print("OK: pool variant trace valid")
 EOF
