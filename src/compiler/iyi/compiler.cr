@@ -458,6 +458,11 @@ module Iyi
 
       begin
         node, processor = program.top_level_semantic(node, processor: pre.processor)
+        # A preanalysed prelude was analysed without the entry file, so its module
+        # initialisers were spliced at the end of the prelude expressions. Rejoin the
+        # prelude's and the entry's module initialisers into a single block placed
+        # after the entry's header block (matching whole-program `semantic`).
+        node = program.iyi_rejoin_module_initialisers(pre.node, pre.module_inits, node)
         combined = Expressions.from([pre.node, node] of ASTNode)
         DefinitionTyping.append_probes(program, combined)
         node = program.semantic_after_top_level(
@@ -506,8 +511,9 @@ module Iyi
       # What the analysis read, for the up-to-date record of each build that
       # adopts it.
       getter inputs : BuildInputs
+      getter module_inits : Tuple(Array(ASTNode), ASTNode)?
 
-      def initialize(@program, @node, @processor, @key, @inputs)
+      def initialize(@program, @node, @processor, @key, @inputs, @module_inits = nil)
         @fingerprint = {} of String => Time
         @program.requires.each do |filename|
           if info = File.info?(filename)
@@ -732,7 +738,7 @@ module Iyi
         BuildInputs.current = held
       end
       @progress_tracker.clear
-      Preanalysed.new(program, node, processor, prelude_cache_key, inputs)
+      Preanalysed.new(program, node, processor, prelude_cache_key, inputs, program.iyi_spliced_module_inits)
     end
 
     # :ditto:
