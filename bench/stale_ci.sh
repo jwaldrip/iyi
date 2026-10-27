@@ -1942,6 +1942,10 @@ try:
         sys.exit(1)
 
     # 7.1 Import populated master into shared_cache; require cached hit and source "master"
+    cache_tests_v1 = os.path.join(shared_cache, 'tests-v1')
+    if os.path.exists(cache_tests_v1):
+        shutil.rmtree(cache_tests_v1)
+
     res_p7_pop = subprocess.run([iyi, 'test', '--cached', '--json',
                                  '--import-index', f'master={phase6_master}',
                                  sample_file],
