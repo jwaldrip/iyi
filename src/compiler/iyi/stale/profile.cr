@@ -42,13 +42,15 @@ module Iyi::Stale::Profile
 
   def self.current(
     timeout : Float64 = 60.0,
+    cwd_test_id : RootPath | TestId? = nil,
     target : String? = nil,
     argv : Array(String) = [] of String,
-    cwd : RootPath | TestId = TestId.new("src", "."),
+    cwd : RootPath | TestId? = nil,
   ) : ReceiptProfile
     stdin = "null"
     stdio = "piped"
-    cwd_test_id = cwd.is_a?(TestId) ? cwd : TestId.new(cwd.root, cwd.path)
+    resolved_cwd = cwd || cwd_test_id || TestId.new("src", ".")
+    cwd_id = resolved_cwd.is_a?(TestId) ? resolved_cwd : TestId.new(resolved_cwd.root, resolved_cwd.path)
     target_str = target || Iyi::Config.host_target.to_s
     os = {{ flag?(:darwin) ? "darwin" : (flag?(:linux) ? "linux" : (flag?(:win32) ? "windows" : "unknown")) }}
 
@@ -62,7 +64,7 @@ module Iyi::Stale::Profile
       argv: argv,
       stdin: stdin,
       stdio: stdio,
-      cwd: cwd,
+      cwd: cwd_id,
       timeout: timeout,
       umask: umask,
       rlimits: rlimits,
@@ -78,7 +80,7 @@ module Iyi::Stale::Profile
       argv: argv,
       stdin: stdin,
       stdio: stdio,
-      cwd: cwd,
+      cwd: cwd_id,
       timeout: timeout,
       umask: umask,
       rlimits: rlimits,

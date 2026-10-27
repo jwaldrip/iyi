@@ -382,6 +382,7 @@ module Iyi::Stale
             error: run_out,
             new_pgroup: true
           )
+          tree = Command::TestTree.new(process)
           active_tree = tree
 
           done = ::Channel(Process::Status).new
@@ -598,25 +599,25 @@ module Iyi::Stale
               puts "#{file}: miss: #{explain_msg}"
             end
           end
-        ensure
-          active_tree.try &.close
-          active_tree = nil
-          null_io.try &.close rescue nil
-          FileUtils.rm_rf(s) if Dir.exists?(s) rescue nil
-          File.delete(trace_file) if File.file?(trace_file) rescue nil
-          File.delete(out_key_path) if File.file?(out_key_path) rescue nil
-          File.delete(accept_path) if File.file?(accept_path) rescue nil
-          File.delete(block_path) if File.file?(block_path) rescue nil
-          File.delete(binary) if File.file?(binary) rescue nil
-          {% if flag?(:win32) %}
-            File.delete(binary.rchop(".exe") + ".pdb") rescue nil
-          {% elsif flag?(:darwin) %}
-            File.delete("#{binary}.dwarf") rescue nil
-          {% end %}
+            ensure
+              active_tree.try &.close
+              active_tree = nil
+              null_io.try &.close rescue nil
+              FileUtils.rm_rf(s) if Dir.exists?(s) rescue nil
+              File.delete(trace_file) if File.file?(trace_file) rescue nil
+              File.delete(out_key_path) if File.file?(out_key_path) rescue nil
+              File.delete(accept_path) if File.file?(accept_path) rescue nil
+              File.delete(block_path) if File.file?(block_path) rescue nil
+              File.delete(binary) if File.file?(binary) rescue nil
+              {% if flag?(:win32) %}
+                File.delete(binary.rchop(".exe") + ".pdb") rescue nil
+              {% elsif flag?(:darwin) %}
+                File.delete("#{binary}.dwarf") rescue nil
+              {% end %}
+            end
+          end
         end
       end
-    end
-  end
 
       # Handle export indices
       unless @export_indices.empty?
