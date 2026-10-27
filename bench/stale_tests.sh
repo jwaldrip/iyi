@@ -532,17 +532,21 @@ case "$(uname -s)" in
 esac
 
 rm -rf "$CACHE/tests-v1"
-r28_run1="$(env "$LOADER_VAR=/tmp/r28_dir1" run_json "$WORK/r28" loader_test.iyi)"
+r28_run1="$( (export "$LOADER_VAR=/tmp/r28_dir1"; run_json "$WORK/r28" loader_test.iyi) )"
 expect_eq "$(printf '%s' "$r28_run1" | json_cached)" 0 "r28 run 1 recorded"
 
-r28_run2="$(env "$LOADER_VAR=/tmp/r28_dir2" run_json "$WORK/r28" loader_test.iyi)"
+r28_run2="$( (export "$LOADER_VAR=/tmp/r28_dir2"; run_json "$WORK/r28" loader_test.iyi) )"
 expect_eq "$(printf '%s' "$r28_run2" | json_cached)" 1 "r28 run 2 hits with changed loader var"
 
 cur_nofile=$(ulimit -S -n)
-r28_run3="$( (ulimit -S -n $((cur_nofile - 1)); run_json "$WORK/r28" loader_test.iyi) )"
-expect_eq "$(printf '%s' "$r28_run3" | json_cached)" 0 "r28 run 3 misses with lowered nofile limit"
-(ulimit -S -n $((cur_nofile - 1)); cd "$WORK/r28" && "$IYI" test --cached --explain loader_test.iyi) > "$WORK/r28/explain.txt" 2>&1
-expect_contains "$(cat "$WORK/r28/explain.txt")" "miss: profile changed" "different profile reason on rlimit change"
+r28_explain="$WORK/r28/explain.txt"
+(ulimit -S -n $((cur_nofile - 1)); cd "$WORK/r28" && "$IYI" test --cached --explain loader_test.iyi) > "$r28_explain" 2>&1
+expect_contains "$(cat "$r28_explain")" "miss: profile changed" "different profile reason on rlimit change"
+expect_contains "$(cat "$r28_explain")" "0 from receipts" "zero receipts on profile miss"
+
+# Subsequent run with lowered limit hits newly recorded profile receipt
+r28_run3_hit="$( (ulimit -S -n $((cur_nofile - 1)); run_json "$WORK/r28" loader_test.iyi) )"
+expect_eq "$(printf '%s' "$r28_run3_hit" | json_cached)" 1 "subsequent run with lowered limit hits new profile receipt"
 
 # Row 29 mutation proof: scratch symlink resolves target outside scratch
 step 29 "scratch symlink resolves target outside scratch"
@@ -698,8 +702,12 @@ def reached_env : String
   {{ env("R35_REACHED_ENV") || "default" }}
 end
 
-def unreached_expansions : String
-  "{{ read_file("$r35_unreached_file") }}" + "{{ env("R35_UNREACHED_ENV") }}"
+def unreached_file : String
+  {{ read_file("$r35_unreached_file").chomp }}
+end
+
+def unreached_env : String
+  {{ env("R35_UNREACHED_ENV") || "default" }}
 end
 
 assert reached_file_len > 0
@@ -814,10 +822,13 @@ pub def compute(x : Int32, y : Int32) : Int32
 end
 IYI
 (cd "$WORK/r40" && "$IYI" build --emit-iyimod mods -o producer producer.iyi) >/dev/null
-r40_run3="$(run_json "$WORK/r40" --use-iyimod mods calc_test.iyi)"
-expect_eq "$(printf '%s' "$r40_run3" | json_cached)" 0 "r40 changed linked object bytes misses"
 (cd "$WORK/r40" && "$IYI" test --cached --use-iyimod mods --explain calc_test.iyi) > "$WORK/r40/explain.txt" 2>&1
 expect_contains "$(cat "$WORK/r40/explain.txt")" "miss" "changed linked object bytes miss reason"
+expect_contains "$(cat "$WORK/r40/explain.txt")" "0 from receipts" "zero receipts on changed object bytes miss"
+
+# Subsequent run hits newly recorded receipt
+r40_run3_hit="$(run_json "$WORK/r40" --use-iyimod mods calc_test.iyi)"
+expect_eq "$(printf '%s' "$r40_run3_hit" | json_cached)" 1 "subsequent run hits newly recorded receipt"
 step 41 "link environment is quoted and keyed"
 # Covered by bench/stale_callpath.sh:61-140 and spec/compiler/stale/link_spec.cr
 step 42 "every reach edge kind cross-checks"
