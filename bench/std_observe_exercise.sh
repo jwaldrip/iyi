@@ -446,7 +446,6 @@ POOL_SRC="$WORK/pool_race.iyi"
 cat << 'EOF' > "$POOL_SRC"
 module test/pool_race
 import std/observe
-import std/concurrency
 
 group do |g|
   8.times do |t|
