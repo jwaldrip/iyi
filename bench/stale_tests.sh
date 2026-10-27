@@ -10,7 +10,16 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 IYI="${IYI:-$REPO/bin/iyi}"
 WORK="$(mktemp -d /tmp/iyi-stale-tests.XXXXXX)"
 CACHE="$WORK/cache"
-trap 'rm -rf "$WORK"' EXIT
+cleanup() {
+  exit_status=$?
+  if [ "$exit_status" -eq 0 ]; then
+    rm -rf "$WORK"
+  else
+    echo "stale_tests FAILED (exit status $exit_status); preserving work directory: $WORK" >&2
+  fi
+  exit "$exit_status"
+}
+trap cleanup EXIT
 export IYI_CACHE_DIR="$CACHE"
 
 if [ ! -x "$IYI" ]; then
@@ -221,20 +230,24 @@ IYI
 r8_hit2="$(IYI_PATH="$WORK/r8:$REPO/src" run_json "$WORK/r8" r8_test.iyi)"
 expect_eq "$(printf '%s' "$r8_hit2" | json_cached)" 1 "r8 unreached std sibling edit stays hit"
 
-# Reached std def edit: test misses
+# Reached std def edit with SAME consumer result: test misses call path on same invocation
 cat > "$WORK/r8/std/calc.iyi" <<'IYI'
 module std/calc
 pub def reached_fn(x : Int32) : Int32
-  x + 20
+  x + 20 - 10
 end
 pub def unreached_fn(x : Int32) : Int32
   x * 999
 end
 IYI
-r8_miss="$(IYI_PATH="$WORK/r8:$REPO/src" run_json "$WORK/r8" r8_test.iyi)"
-expect_eq "$(printf '%s' "$r8_miss" | json_cached)" 0 "r8 reached std def edit misses"
-(cd "$WORK/r8" && IYI_PATH="$WORK/r8:$REPO/src" "$IYI" test --cached --explain r8_test.iyi) > "$WORK/r8/explain.txt" 2>&1
-expect_contains "$(cat "$WORK/r8/explain.txt")" "miss: call path" "reached std def miss reason"
+r8_explain="$WORK/r8/explain.txt"
+(cd "$WORK/r8" && IYI_PATH="$WORK/r8:$REPO/src" "$IYI" test --cached --explain r8_test.iyi) > "$r8_explain" 2>&1
+expect_contains "$(cat "$r8_explain")" "miss: call path" "reached std def miss reason"
+expect_contains "$(cat "$r8_explain")" "0 from receipts" "zero receipts on reached std edit miss"
+
+# Subsequent run hits newly recorded receipt
+r8_hit3="$(IYI_PATH="$WORK/r8:$REPO/src" run_json "$WORK/r8" r8_test.iyi)"
+expect_eq "$(printf '%s' "$r8_hit3" | json_cached)" 1 "subsequent run hits newly recorded receipt"
 
 # Row 9 mutation proof: stale_reproducible rebuilds from the identical input;
 # the named scratch source mutation makes its executable identity assertion fail.
@@ -641,10 +654,10 @@ rm -rf "$CACHE/tests-v1"
 r31_run1="$(run_json "$WORK/r31" mtime_test.iyi)"
 expect_eq "$(printf '%s' "$r31_run1" | json_cached)" 0 "r31 run 1 cached 0"
 expect_contains "$r31_run1" "clock" "scratch timestamp taints clock not reusable reason"
-r31_run2="$(run_json "$WORK/r31" mtime_test.iyi)"
-expect_eq "$(printf '%s' "$r31_run2" | json_cached)" 0 "r31 run 2 misses after clock-tainted run 1"
-(cd "$WORK/r31" && "$IYI" test --cached --explain mtime_test.iyi) > "$WORK/r31/explain.txt" 2>&1
-expect_contains "$(cat "$WORK/r31/explain.txt")" "clock" "clock reason in explain"
+r31_explain="$WORK/r31/explain.txt"
+(cd "$WORK/r31" && "$IYI" test --cached --explain mtime_test.iyi) > "$r31_explain" 2>&1
+expect_contains "$(cat "$r31_explain")" "clock" "clock reason in explain"
+expect_contains "$(cat "$r31_explain")" "0 from receipts" "zero receipts on clock taint"
 step 32 "master provenance sidecar is verified"
 # Covered by spec/compiler/stale/snapshot_spec.cr:520
 
@@ -726,19 +739,26 @@ printf 'unreached_mutated_content' > "$r35_unreached_file"
 r35_hit2="$(R35_REACHED_ENV="env1" R35_UNREACHED_ENV="uenv_mutated" run_json "$WORK/r35" macro_test.iyi)"
 expect_eq "$(printf '%s' "$r35_hit2" | json_cached)" 1 "r35 unreached macro input changes stay hits"
 
-# Reached read_file input changes -> misses
+# Reached read_file input changes -> misses on same invocation
 printf 'val_longer_content' > "$r35_data_file"
-r35_miss1="$(R35_REACHED_ENV="env1" R35_UNREACHED_ENV="uenv_mutated" run_json "$WORK/r35" macro_test.iyi)"
-expect_eq "$(printf '%s' "$r35_miss1" | json_cached)" 0 "r35 reached read_file input change misses"
+r35_explain1="$WORK/r35/explain1.txt"
+(cd "$WORK/r35" && R35_REACHED_ENV="env1" R35_UNREACHED_ENV="uenv_mutated" "$IYI" test --cached --explain macro_test.iyi) > "$r35_explain1" 2>&1
+expect_contains "$(cat "$r35_explain1")" "miss: call path" "reached read_file input change miss reason"
+expect_contains "$(cat "$r35_explain1")" "0 from receipts" "zero receipts on reached read_file miss"
 
-# Re-record with current data.txt
-r35_rec2="$(R35_REACHED_ENV="env1" R35_UNREACHED_ENV="uenv_mutated" run_json "$WORK/r35" macro_test.iyi)"
+# Subsequent run hits newly recorded receipt
 r35_hit3="$(R35_REACHED_ENV="env1" R35_UNREACHED_ENV="uenv_mutated" run_json "$WORK/r35" macro_test.iyi)"
 expect_eq "$(printf '%s' "$r35_hit3" | json_cached)" 1 "r35 re-recorded hits"
 
-# Reached env input changes -> misses
-r35_miss2="$(R35_REACHED_ENV="env_changed" R35_UNREACHED_ENV="uenv_mutated" run_json "$WORK/r35" macro_test.iyi)"
-expect_eq "$(printf '%s' "$r35_miss2" | json_cached)" 0 "r35 reached env input change misses"
+# Reached env input changes -> misses on same invocation
+r35_explain2="$WORK/r35/explain2.txt"
+(cd "$WORK/r35" && R35_REACHED_ENV="env_changed" R35_UNREACHED_ENV="uenv_mutated" "$IYI" test --cached --explain macro_test.iyi) > "$r35_explain2" 2>&1
+expect_contains "$(cat "$r35_explain2")" "miss: call path" "reached env input change miss reason"
+expect_contains "$(cat "$r35_explain2")" "0 from receipts" "zero receipts on reached env miss"
+
+# Subsequent run hits newly recorded receipt
+r35_hit4="$(R35_REACHED_ENV="env_changed" R35_UNREACHED_ENV="uenv_mutated" run_json "$WORK/r35" macro_test.iyi)"
+expect_eq "$(printf '%s' "$r35_hit4" | json_cached)" 1 "r35 env re-recorded hits"
 
 # Macro run helper that prints time always misses
 cat > "$WORK/r35/clock.iyi" <<'IYI'
