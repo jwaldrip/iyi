@@ -17,7 +17,15 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 IYI="${IYI:-$REPO/bin/iyi}"
 WORK="$(mktemp -d)"
 
-trap 'rm -rf "$WORK"' EXIT
+SUCCESS=0
+cleanup() {
+  if [ "$SUCCESS" -eq 1 ]; then
+    rm -rf "$WORK"
+  else
+    echo "Harness failed; preserving WORK=$WORK"
+  fi
+}
+trap cleanup EXIT
 
 WINDOWS=0
 case "$(uname -s)" in
@@ -830,4 +838,5 @@ else
 fi
 
 
+SUCCESS=1
 echo "OK: bench/std_observe_exercise.sh passed all checks"
