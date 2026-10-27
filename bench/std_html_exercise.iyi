@@ -21,7 +21,14 @@ assert_str("&amp;&lt;&gt;&quot;&#39;", HTML.escape("&<>\"'"), "the five")
 assert_str("plain", HTML.escape("plain"), "nothing to escape")
 assert_str("café &amp; bar", HTML.escape("café & bar"), "UTF-8 left alone, & escaped")
 puts "  &, <, >, quote and apostrophe; UTF-8 bytes kept"
-sandbox = Program.args.size > 0 ? Program.args[0] : __DIR__
+tmp = Program.env("TMPDIR") || Program.env("TEMP") || Program.env("TMP")
+sandbox = if Program.args.size > 0
+            Program.args[0]
+          elsif tmp && !tmp.empty?
+            tmp.ends_with?("/") ? tmp[0, tmp.bytesize - 1] : tmp
+          else
+            __DIR__
+          end
 sink_path = sandbox + "/std_html_exercise_escape.txt"
 sink = File.open(sink_path, "w")
 HTML.escape("café & <b> 😀 'q' né", sink)

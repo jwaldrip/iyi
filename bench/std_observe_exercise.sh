@@ -45,7 +45,7 @@ TRACE_FILE="$WORK/trace.bin"
 rm -f "$TRACE_FILE"
 # From `/`, so the cwd record (the real current directory) is the same in
 # every checkout.
-(cd / && IYI_OBSERVE="$TRACE_FILE" "$IYI" run -Diyi_observe "$REPO/bench/std_observe_exercise.iyi")
+(cd / && TMPDIR="/tmp" IYI_OBSERVE="$TRACE_FILE" "$IYI" run -Diyi_observe "$REPO/bench/std_observe_exercise.iyi")
 
 if [ ! -f "$TRACE_FILE" ]; then
   echo "FAIL: trace file was not created"

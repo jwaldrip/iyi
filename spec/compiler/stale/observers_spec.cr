@@ -106,6 +106,17 @@ describe "Iyi::Semantic::Observers (Slice S5b)" do
         end
         CODE
     end
+    it "raises mismatched signature error for file_write(:symlink) with fewer than 2 path parameters" do
+      assert_error <<-CODE, "def 'symlink_file' cannot carry @[Effect(:file_write, :symlink)]: mismatched signature (observer expects two path parameters); annotate the non-yielding helper it calls instead", flags: "iyi_observe", filename: runtime_file
+        class File
+          @[Effect(:file_write, :symlink)]
+          def self.symlink_file(target : String)
+            nil
+          end
+        end
+        CODE
+    end
+
 
     it "raises compile error for host def with Nil return type" do
       assert_error <<-CODE, "def 'read' cannot carry @[Effect(:host)]: result is Nil or cannot express its answer as a value; annotate with a not-reusable kind instead", flags: "iyi_observe", filename: runtime_file
@@ -425,6 +436,43 @@ describe "Iyi::Semantic::Observers (Slice S5b)" do
       obs2.args[0].as(Iyi::SymbolLiteral).value.should eq("rename")
       obs2.args[2].is_a?(Iyi::Var).should be_true
     end
+    it "generates wrapper for file_write two-path (:symlink) and (:link)" do
+      result = semantic(<<-CODE, flags: "iyi_observe", filename: runtime_file)
+        class File
+          @[Effect(:file_write, :symlink)]
+          def self.make_symlink(old_path : String, new_path : String) : Nil
+          end
+
+          @[Effect(:file_write, :link)]
+          def self.make_link(old_path : String, new_path : String) : Nil
+          end
+        end
+        CODE
+
+      file_type = result.program.types["File"].metaclass.as(Iyi::ModuleType)
+      defs = file_type.defs.not_nil!
+
+      defs.has_key?("__iyi_effect_make_symlink").should be_true
+      defs.has_key?("make_symlink").should be_true
+      wrapper1 = defs["make_symlink"].first.def
+      body1 = wrapper1.body.as(Iyi::Expressions)
+      obs1 = body1.expressions[2].as(Iyi::If).then.as(Iyi::Call)
+      obs1.name.should eq("__iyi_observe_file_write")
+      obs1.args[0].as(Iyi::SymbolLiteral).value.should eq("symlink")
+      obs1.args[1].is_a?(Iyi::Var).should be_true
+      obs1.args[2].is_a?(Iyi::Var).should be_true
+
+      defs.has_key?("__iyi_effect_make_link").should be_true
+      defs.has_key?("make_link").should be_true
+      wrapper2 = defs["make_link"].first.def
+      body2 = wrapper2.body.as(Iyi::Expressions)
+      obs2 = body2.expressions[2].as(Iyi::If).then.as(Iyi::Call)
+      obs2.name.should eq("__iyi_observe_file_write")
+      obs2.args[0].as(Iyi::SymbolLiteral).value.should eq("link")
+      obs2.args[1].is_a?(Iyi::Var).should be_true
+      obs2.args[2].is_a?(Iyi::Var).should be_true
+    end
+
 
     it "generates wrapper for cwd and host" do
       result = semantic(<<-CODE, flags: "iyi_observe", filename: runtime_file)

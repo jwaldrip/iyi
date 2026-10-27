@@ -171,7 +171,14 @@ puts "\n== descriptor stream"
 # the CRT's `environ`, and the audit reads what this binary asks the machine
 # for, so a harness's convenience became std/io's floor.
 args = Program.args
-sandbox = args.size > 0 ? args[0] : __DIR__
+tmp = Program.env("TMPDIR") || Program.env("TEMP") || Program.env("TMP")
+sandbox = if args.size > 0
+            args[0]
+          elsif tmp && !tmp.empty?
+            tmp.ends_with?("/") ? tmp[0, tmp.bytesize - 1] : tmp
+          else
+            __DIR__
+          end
 
 path = sandbox + "/std_io_exercise_#{args.size}.txt"
 File.write(path, "alpha\nb\u00e9\u0442\u0430\ngamma\n")
