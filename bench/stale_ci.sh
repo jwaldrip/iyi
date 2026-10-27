@@ -111,6 +111,13 @@ if not isinstance(src, dict):
     print('empty-snapshot FAILED: source snapshot JSON must be an object', file=sys.stderr)
     sys.exit(1)
 
+required_fields = ['format', 'version', 'repository', 'workflow', 'ref', 'target']
+for req in required_fields:
+    val = src.get(req)
+    if val is None or val == '':
+        print(f'empty-snapshot FAILED: source snapshot missing {req}', file=sys.stderr)
+        sys.exit(1)
+
 ns = src.get('namespace')
 if ns != 'master':
     print(f'empty-snapshot FAILED: source snapshot namespace must be \"master\", got: \"{ns}\"', file=sys.stderr)
@@ -131,13 +138,13 @@ except Exception:
     sys.exit(1)
 
 empty_data = {
-    'format': src.get('format', 'iyi-test-index'),
-    'version': src.get('version', 1),
+    'format': src['format'],
+    'version': src['version'],
     'namespace': 'master',
-    'repository': src.get('repository', 'iyilang/iyi'),
-    'workflow': src.get('workflow', '.github/workflows/iyi.yml'),
-    'ref': src.get('ref', 'refs/heads/master'),
-    'target': src.get('target', 'x86_64-linux-gnu'),
+    'repository': src['repository'],
+    'workflow': src['workflow'],
+    'ref': src['ref'],
+    'target': src['target'],
     'producer': dict(producer),
     'records': []
 }
@@ -2193,8 +2200,8 @@ try:
     # 1. empty-snapshot with no --from exits 1
     res = subprocess.run(['bash', stale_ci, 'empty-snapshot', '--out', os.path.join(work, 'nofrom.json')],
                          cwd=CWD, capture_output=True, text=True)
-    if res.returncode != 1:
-        print(f'test-master-path FAILED: empty-snapshot with no --from should exit 1, got {res.returncode}', file=sys.stderr)
+    if res.returncode != 1 or '--from is required' not in (res.stderr + res.stdout):
+        print(f'test-master-path FAILED: empty-snapshot with no --from should exit 1 with \"--from is required\", got {res.returncode}:\n{res.stderr}\n{res.stdout}', file=sys.stderr)
         sys.exit(1)
 
     # 2. --from a copy with namespace run:7777 exits 1
@@ -2205,8 +2212,8 @@ try:
         json.dump(bad_ns_data, f, indent=2)
     res = subprocess.run(['bash', stale_ci, 'empty-snapshot', '--from', bad_ns_file, '--out', os.path.join(work, 'out_bad_ns.json')],
                          cwd=CWD, capture_output=True, text=True)
-    if res.returncode != 1:
-        print(f'test-master-path FAILED: empty-snapshot with namespace run:7777 should exit 1, got {res.returncode}', file=sys.stderr)
+    if res.returncode != 1 or 'namespace must be' not in (res.stderr + res.stdout):
+        print(f'test-master-path FAILED: empty-snapshot with namespace run:7777 should exit 1 with \"namespace must be\", got {res.returncode}:\n{res.stderr}\n{res.stdout}', file=sys.stderr)
         sys.exit(1)
 
     # 3. --from a copy with run_id 0 exits 1
@@ -2217,11 +2224,23 @@ try:
         json.dump(bad_rid_data, f, indent=2)
     res = subprocess.run(['bash', stale_ci, 'empty-snapshot', '--from', bad_rid_file, '--out', os.path.join(work, 'out_bad_rid.json')],
                          cwd=CWD, capture_output=True, text=True)
-    if res.returncode != 1:
-        print(f'test-master-path FAILED: empty-snapshot with producer.run_id 0 should exit 1, got {res.returncode}', file=sys.stderr)
+    if res.returncode != 1 or 'run_id must be a positive integer' not in (res.stderr + res.stdout):
+        print(f'test-master-path FAILED: empty-snapshot with producer.run_id 0 should exit 1 with \"run_id must be a positive integer\", got {res.returncode}:\n{res.stderr}\n{res.stdout}', file=sys.stderr)
         sys.exit(1)
 
-    # 4. Forged run_id import refusal:
+    # 4. --from a copy with target deleted exits 1
+    bad_target_file = os.path.join(work, 'bad_target.json')
+    bad_target_data = json.loads(json.dumps(exp_data))
+    del bad_target_data['target']
+    with open(bad_target_file, 'w', encoding='utf-8') as f:
+        json.dump(bad_target_data, f, indent=2)
+    res = subprocess.run(['bash', stale_ci, 'empty-snapshot', '--from', bad_target_file, '--out', os.path.join(work, 'out_bad_target.json')],
+                         cwd=CWD, capture_output=True, text=True)
+    if res.returncode != 1 or 'missing target' not in (res.stderr + res.stdout):
+        print(f'test-master-path FAILED: empty-snapshot with missing target should exit 1 with \"missing target\", got {res.returncode}:\n{res.stderr}\n{res.stdout}', file=sys.stderr)
+        sys.exit(1)
+
+    # 5. Forged run_id import refusal:
     forged_file = os.path.join(work, f'forged-master-{LABEL}.json')
     with open(phase7_fetched, 'r', encoding='utf-8') as f:
         forged_data = json.load(f)
