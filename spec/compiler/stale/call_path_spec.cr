@@ -4,13 +4,14 @@ require "compiler/iyi/compiler"
 require "compiler/iyi/stale/call_path"
 require "compiler/iyi/stale/roots"
 
-private def compute_fp(code : String, filename : String = "test.iyi") : {String, Iyi::Stale::CallPathResult}
+private def compute_fp(code : String, filename : String = "test.iyi", flags : Array(String)? = nil) : {String, Iyi::Stale::CallPathResult}
   with_tempfile("callpath.key") do |key_path|
     with_tempfile("callpath.bin") do |bin_path|
       compiler = create_spec_compiler
       compiler.prelude = "iyi/prelude"
       compiler.no_codegen = true
       compiler.stale_key = key_path
+      compiler.flags = flags if flags
       source = Iyi::Compiler::Source.new(filename, code)
       result = compiler.compile(source, bin_path)
       program = result.program
@@ -508,5 +509,34 @@ describe "Iyi::Stale S3f: CallPathFp, typed encoder, roots, explain" do
     sample_row.should_not be_nil
     sample_row.not_nil!.kind.should eq("def")
     sample_row.not_nil!.digest.size.should eq(64)
+  end
+
+  it "observed real hello normal-vs-preanalysed gives identical call path fingerprint" do
+    hello_path = File.expand_path("../../../samples/iyi/hello.iyi", __DIR__)
+    hello_code = File.read(hello_path)
+    obs_flags = ["iyi_observe"]
+
+    fp1, res1 = compute_fp(hello_code, hello_path, flags: obs_flags)
+
+    ENV["IYI_WARM"] = "1"
+    begin
+      Iyi::Compiler.preanalysed.clear
+      fp2, res2 = compute_fp(hello_code, hello_path, flags: obs_flags)
+
+      rows1 = res1.dump_rows.to_h { |r| {{r.kind, r.key}, r.digest} }
+      rows2 = res2.dump_rows.to_h { |r| {{r.kind, r.key}, r.digest} }
+
+      all_keys = (rows1.keys + rows2.keys).uniq
+      all_keys.each do |key|
+        d1 = rows1[key]?
+        d2 = rows2[key]?
+        d1.should eq(d2), "Element #{key} digest mismatch: normal=#{d1} warm=#{d2}"
+      end
+
+      fp2.should eq(fp1)
+    ensure
+      Iyi::Compiler.preanalysed.clear
+      ENV.delete("IYI_WARM")
+    end
   end
 end
