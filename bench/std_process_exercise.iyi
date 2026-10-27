@@ -80,8 +80,13 @@ def breakaway_start : String
 end
 
 # ── The child ────────────────────────────────────────────────────────────
+CHILD_MODES = {
+  "lines", "echo", "pwd", "execchdir", "execexit", "execmissing", "execfds",
+  "argv", "cat", "flood", "exit", "panic", "has", "env", "envorder",
+  "sleep", "deaf", "fds", "fdsinherit", "parent", "late", "breakaway",
+}
 args = Program.args
-if mode = args[0]?
+if (mode = args[0]?) && CHILD_MODES.includes?(mode)
   case mode
   when "lines"
     # Answers each line as it comes, so its parent can talk to it while it
@@ -216,8 +221,6 @@ if mode = args[0]?
     File.write(args[1], "the grandchild outlived the cancel\n")
   when "breakaway"
     stdout.write("#{breakaway_start}\n")
-  else
-    fail("no child mode #{mode}")
   end
   stdout.flush
   __iyi_exit(0)

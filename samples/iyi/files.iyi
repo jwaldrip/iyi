@@ -7,8 +7,7 @@
 
 module samples/files
 
-tmp = Program.env("TMPDIR") || Program.env("TEMP") || Program.env("TMP")
-dir = (tmp && !tmp.empty?) ? (tmp.ends_with?("/") ? tmp[0, tmp.bytesize - 1] : tmp) : nil
+dir = Program.args[0]?
 path = dir ? "#{dir}/iyi-files-sample.txt" : "iyi-files-sample.txt"
 missing = dir ? "#{dir}/iyi-files-sample-missing.txt" : "iyi-files-sample-missing.txt"
 File.write(path, "hello from iyi\n")
