@@ -831,10 +831,23 @@ Std::Observe.leave_frame
 puts Std::Observe.frame_depth
 EOF
 
-B_C_OUT="$("$IYI" run -Diyi_observe "$BOUNDARY_TRANSFER_SRC")"
+BOUNDARY_TRANSFER_TRACE="$WORK/boundary_transfer_trace.bin"
+rm -f "$BOUNDARY_TRANSFER_TRACE"
+B_C_OUT="$(IYI_OBSERVE="$BOUNDARY_TRANSFER_TRACE" "$IYI" run -Diyi_observe "$BOUNDARY_TRANSFER_SRC")"
 EXPECTED_B_C_OUT="$(printf '1\n0')"
 if [ "$B_C_OUT" != "$EXPECTED_B_C_OUT" ]; then
   echo "FAIL: expected boundary transfer output '$EXPECTED_B_C_OUT', got '$B_C_OUT'"
+  exit 1
+fi
+
+if [ ! -f "$BOUNDARY_TRANSFER_TRACE" ]; then
+  echo "FAIL: boundary transfer trace was not created"
+  exit 1
+fi
+
+B_C_TAIL="$(tail -c 17 "$BOUNDARY_TRANSFER_TRACE" | od -An -v -tx1 | tr -d ' \n')"
+if [ "$B_C_TAIL" != "0d0000007f000000000000000000000000" ]; then
+  echo "FAIL: expected END(0) at end of boundary transfer trace, got $B_C_TAIL"
   exit 1
 fi
 echo "  boundary B-c observed: depth 1->0 survived scheduler fiber transition"
@@ -859,7 +872,9 @@ if ! grep -q "MUTATED" "$WORK/awk_err_bc"; then
   exit 1
 fi
 
-MUT_BC_OUT="$(IYI_PATH="$PATCH_DIR_BC/src${PSEP}$REPO/samples/iyi" "$IYI" run -Diyi_observe "$BOUNDARY_TRANSFER_SRC")"
+MUT_BC_TRACE="$WORK/mut_bc_trace.bin"
+rm -f "$MUT_BC_TRACE"
+MUT_BC_OUT="$(IYI_PATH="$PATCH_DIR_BC/src${PSEP}$REPO/samples/iyi" IYI_OBSERVE="$MUT_BC_TRACE" "$IYI" run -Diyi_observe "$BOUNDARY_TRANSFER_SRC")"
 FIRST_LINE="$(printf '%s\n' "$MUT_BC_OUT" | head -n 1)"
 if [ "$FIRST_LINE" != "0" ]; then
   echo "FAIL: boundary B-c does not discriminate: expected 0 first without transfer, got '$FIRST_LINE'"
