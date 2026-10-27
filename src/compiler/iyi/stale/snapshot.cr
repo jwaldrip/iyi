@@ -33,7 +33,19 @@ module Iyi::Stale
     end
 
     def resolved_workflow : String
-      @workflow || ENV["GITHUB_WORKFLOW"]? || ENV["GITHUB_WORKFLOW_REF"]? || ".github/workflows/iyi.yml"
+      if w = @workflow
+        return w
+      end
+
+      if wf_ref = ENV["GITHUB_WORKFLOW_REF"]?
+        if parsed = Snapshot.workflow_path_from_ref(wf_ref)
+          parsed
+        else
+          raise "GITHUB_WORKFLOW_REF is not <owner>/<repo>/<path>@<ref>: #{wf_ref}"
+        end
+      else
+        ".github/workflows/iyi.yml"
+      end
     end
 
     def resolved_ref : String
@@ -121,6 +133,25 @@ module Iyi::Stale
 
     def self.repos_match?(a : String, b : String) : Bool
       normalize_repo(a) == normalize_repo(b)
+    end
+
+    def self.workflow_path_from_ref(ref_str : String) : String?
+      at_idx = ref_str.index('@')
+      return nil if at_idx.nil? || at_idx == 0
+
+      prefix = ref_str[0...at_idx]
+      slash1 = prefix.index('/')
+      return nil if slash1.nil? || slash1 == 0
+
+      slash2 = prefix.index('/', slash1 + 1)
+      return nil if slash2.nil? || slash2 <= slash1 + 1
+
+      path = prefix[(slash2 + 1)..-1]
+      return nil if path.empty?
+      return nil unless path.starts_with?(".github/workflows/")
+      return nil if path.size <= ".github/workflows/".size
+
+      path
     end
 
     def self.hash_bytes_sha256(bytes : Bytes) : String
@@ -461,10 +492,93 @@ module Iyi::Stale
           )
         end
 
-        # Validate run metadata
+        # Validate run metadata fields presence on both sidecar and master snapshot
+        # run_id
         sidecar_run_id = prov_json["run_id"]?.try { |v| v.as_i64? || v.as_s?.try(&.to_i64?) }
+        if sidecar_run_id.nil?
+          return ImportResult.new(
+            success: false,
+            error: "provenance sidecar missing run_id",
+            snapshot: nil,
+            imported_path: nil
+          )
+        end
+
         prod_run_id = snapshot.producer.try(&.["run_id"]?.try { |v| v.as_i64? || v.as_s?.try(&.to_i64?) })
-        if sidecar_run_id && prod_run_id && sidecar_run_id != prod_run_id
+        if prod_run_id.nil?
+          return ImportResult.new(
+            success: false,
+            error: "master snapshot missing run_id",
+            snapshot: nil,
+            imported_path: nil
+          )
+        end
+
+        # repository
+        sidecar_repo = prov_json["repository"]?.try(&.as_s?).try { |s| s.empty? ? nil : s }
+        if sidecar_repo.nil?
+          return ImportResult.new(
+            success: false,
+            error: "provenance sidecar missing repository",
+            snapshot: nil,
+            imported_path: nil
+          )
+        end
+
+        snap_repo = snapshot.repository.try { |s| s.empty? ? nil : s }
+        if snap_repo.nil?
+          return ImportResult.new(
+            success: false,
+            error: "master snapshot missing repository",
+            snapshot: nil,
+            imported_path: nil
+          )
+        end
+
+        # workflow
+        sidecar_wf = prov_json["workflow"]?.try(&.as_s?).try { |s| s.empty? ? nil : s }
+        if sidecar_wf.nil?
+          return ImportResult.new(
+            success: false,
+            error: "provenance sidecar missing workflow",
+            snapshot: nil,
+            imported_path: nil
+          )
+        end
+
+        snap_wf = snapshot.workflow.try { |s| s.empty? ? nil : s }
+        if snap_wf.nil?
+          return ImportResult.new(
+            success: false,
+            error: "master snapshot missing workflow",
+            snapshot: nil,
+            imported_path: nil
+          )
+        end
+
+        # ref
+        sidecar_ref = prov_json["ref"]?.try(&.as_s?).try { |s| s.empty? ? nil : s }
+        if sidecar_ref.nil?
+          return ImportResult.new(
+            success: false,
+            error: "provenance sidecar missing ref",
+            snapshot: nil,
+            imported_path: nil
+          )
+        end
+
+        snap_ref = snapshot.ref.try { |s| s.empty? ? nil : s }
+        if snap_ref.nil?
+          return ImportResult.new(
+            success: false,
+            error: "master snapshot missing ref",
+            snapshot: nil,
+            imported_path: nil
+          )
+        end
+
+        # Equality checks
+        if sidecar_run_id != prod_run_id
           return ImportResult.new(
             success: false,
             error: "forged run metadata: producer run_id #{prod_run_id} != sidecar run_id #{sidecar_run_id}",
@@ -473,9 +587,7 @@ module Iyi::Stale
           )
         end
 
-        sidecar_repo = prov_json["repository"]?.try(&.as_s?)
-        snap_repo = snapshot.repository
-        if sidecar_repo && snap_repo && !repos_match?(sidecar_repo, snap_repo)
+        if !repos_match?(sidecar_repo, snap_repo)
           return ImportResult.new(
             success: false,
             error: "forged run metadata: repository mismatch (#{snap_repo} vs #{sidecar_repo})",
@@ -484,9 +596,7 @@ module Iyi::Stale
           )
         end
 
-        sidecar_wf = prov_json["workflow"]?.try(&.as_s?)
-        snap_wf = snapshot.workflow
-        if sidecar_wf && snap_wf && sidecar_wf != snap_wf
+        if sidecar_wf != snap_wf
           return ImportResult.new(
             success: false,
             error: "forged run metadata: workflow mismatch (#{snap_wf} vs #{sidecar_wf})",
@@ -495,9 +605,7 @@ module Iyi::Stale
           )
         end
 
-        sidecar_ref = prov_json["ref"]?.try(&.as_s?)
-        snap_ref = snapshot.ref
-        if sidecar_ref && snap_ref && sidecar_ref != snap_ref
+        if sidecar_ref != snap_ref
           return ImportResult.new(
             success: false,
             error: "forged run metadata: ref mismatch (#{snap_ref} vs #{sidecar_ref})",
@@ -506,9 +614,19 @@ module Iyi::Stale
           )
         end
 
-        # Master namespace must be from refs/heads/master of iyilang/iyi
-        check_repo = snap_repo || sidecar_repo
-        unless check_repo && TRUSTED_REPOSITORIES.any? { |tr| repos_match?(check_repo, tr) }
+        # Positive run_id requirement
+        if sidecar_run_id <= 0
+          return ImportResult.new(
+            success: false,
+            error: "master snapshot missing run_id",
+            snapshot: nil,
+            imported_path: nil
+          )
+        end
+
+        # Trusted repository, ref, and workflow checks
+        check_repo = snap_repo
+        unless TRUSTED_REPOSITORIES.any? { |tr| repos_match?(check_repo, tr) }
           return ImportResult.new(
             success: false,
             error: "untrusted repository for master namespace: #{check_repo}",
@@ -517,11 +635,21 @@ module Iyi::Stale
           )
         end
 
-        check_ref = snap_ref || sidecar_ref
-        unless check_ref && TRUSTED_REFS.includes?(check_ref)
+        check_ref = snap_ref
+        unless TRUSTED_REFS.includes?(check_ref)
           return ImportResult.new(
             success: false,
             error: "untrusted ref for master namespace: #{check_ref}",
+            snapshot: nil,
+            imported_path: nil
+          )
+        end
+
+        check_wf = snap_wf
+        unless check_wf == ctx.trusted_workflow
+          return ImportResult.new(
+            success: false,
+            error: "untrusted workflow for master namespace: #{check_wf}",
             snapshot: nil,
             imported_path: nil
           )

@@ -699,6 +699,125 @@ describe "Iyi::Stale S8: Portable Snapshots" do
         store.candidates(t1, "x86_64-linux-gnu").size.should eq(1)
       end
     end
+
+    it "parses workflow path from GITHUB_WORKFLOW_REF without regex" do
+      # canonical ref
+      Iyi::Stale::Snapshot.workflow_path_from_ref("iyilang/iyi/.github/workflows/iyi.yml@refs/heads/master")
+        .should eq(".github/workflows/iyi.yml")
+
+      # pull 147 merge
+      Iyi::Stale::Snapshot.workflow_path_from_ref("iyilang/iyi/.github/workflows/iyi.yml@refs/pull/147/merge")
+        .should eq(".github/workflows/iyi.yml")
+
+      # malformed refs
+      Iyi::Stale::Snapshot.workflow_path_from_ref("").should be_nil
+      Iyi::Stale::Snapshot.workflow_path_from_ref("malformed").should be_nil
+      Iyi::Stale::Snapshot.workflow_path_from_ref("@refs/heads/master").should be_nil
+      Iyi::Stale::Snapshot.workflow_path_from_ref("iyilang/iyi/workflows/iyi.yml@main").should be_nil
+      Iyi::Stale::Snapshot.workflow_path_from_ref("iyilang/iyi/.github/workflows/@main").should be_nil
+    end
+
+    it "resolves workflow from GITHUB_WORKFLOW_REF ignoring GITHUB_WORKFLOW display name and rejects malformed ref" do
+      old_wf = ENV["GITHUB_WORKFLOW"]?
+      old_wf_ref = ENV["GITHUB_WORKFLOW_REF"]?
+      begin
+        ENV["GITHUB_WORKFLOW"] = "iyi"
+        ENV["GITHUB_WORKFLOW_REF"] = "iyilang/iyi/.github/workflows/iyi.yml@refs/heads/master"
+
+        p_ctx = Iyi::Stale::ProducerContext.new(target: "x86_64-linux-gnu", fresh: true, ci_producer: true)
+        p_ctx.resolved_workflow.should eq(".github/workflows/iyi.yml")
+
+        # malformed ref rejects
+        ENV["GITHUB_WORKFLOW_REF"] = "not_a_valid_workflow_ref"
+        p_bad = Iyi::Stale::ProducerContext.new(target: "x86_64-linux-gnu", fresh: true, ci_producer: true)
+        expect_raises(Exception, "GITHUB_WORKFLOW_REF is not <owner>/<repo>/<path>@<ref>: not_a_valid_workflow_ref") do
+          p_bad.resolved_workflow
+        end
+      ensure
+        if old = old_wf
+          ENV["GITHUB_WORKFLOW"] = old
+        else
+          ENV.delete("GITHUB_WORKFLOW")
+        end
+        if old_ref = old_wf_ref
+          ENV["GITHUB_WORKFLOW_REF"] = old_ref
+        else
+          ENV.delete("GITHUB_WORKFLOW_REF")
+        end
+      end
+    end
+
+    it "verifies master import workflow matching, trusted workflow, missing fields, and forged run_ids" do
+      with_tempfile("snap_master_meta_checks") do |cache_root|
+        Dir.mkdir_p(cache_root)
+        store = Iyi::Stale::Store.new(cache_root)
+        ctx = Iyi::Stale::ImportContext.new(target: "x86_64-linux-gnu")
+
+        t1 = make_test_id("master_meta_test.iyi")
+        r1 = make_receipt(t1, mode: "portable")
+
+        write_test_snap = ->(snap_wf : String?, sidecar_wf : String?, snap_run_id : Int64?, sidecar_run_id : Int64?) {
+          snap_file = File.join(cache_root, "test_snap_#{Random::Secure.hex(4)}.json")
+          prod_hash = snap_run_id ? {"run_id" => JSON::Any.new(snap_run_id)} : nil
+          snap = Iyi::Stale::Snapshot.new(
+            namespace: "master",
+            target: "x86_64-linux-gnu",
+            repository: "github.com/iyilang/iyi",
+            workflow: snap_wf,
+            ref: "refs/heads/master",
+            producer: prod_hash,
+            records: [r1]
+          )
+          File.write(snap_file, snap.to_json)
+          actual_sha = Iyi::Stale::Snapshot.hash_file_sha256(snap_file)
+
+          sidecar = Hash(String, JSON::Any).new
+          sidecar["sha256"] = JSON::Any.new(actual_sha)
+          sidecar["run_id"] = JSON::Any.new(sidecar_run_id) if sidecar_run_id
+          sidecar["repository"] = JSON::Any.new("github.com/iyilang/iyi")
+          sidecar["workflow"] = JSON::Any.new(sidecar_wf) if sidecar_wf
+          sidecar["ref"] = JSON::Any.new("refs/heads/master")
+          File.write("#{snap_file}.provenance.json", sidecar.to_json)
+          snap_file
+        }
+
+        # 1. mismatch iyi/path
+        f_mismatch = write_test_snap.call(".github/workflows/iyi.yml", "iyi", 9999_i64, 9999_i64)
+        res = Iyi::Stale::Snapshot.import(store, "master", f_mismatch, ctx)
+        res.success?.should be_false
+        res.error.not_nil!.should contain("forged run metadata: workflow mismatch (.github/workflows/iyi.yml vs iyi)")
+
+        # 2. bothiyi untrusted
+        f_both_iyi = write_test_snap.call("iyi", "iyi", 9999_i64, 9999_i64)
+        res = Iyi::Stale::Snapshot.import(store, "master", f_both_iyi, ctx)
+        res.success?.should be_false
+        res.error.not_nil!.should contain("untrusted workflow for master namespace: iyi")
+
+        # 3. bothother.yml untrusted
+        f_other_wf = write_test_snap.call(".github/workflows/other.yml", ".github/workflows/other.yml", 9999_i64, 9999_i64)
+        res = Iyi::Stale::Snapshot.import(store, "master", f_other_wf, ctx)
+        res.success?.should be_false
+        res.error.not_nil!.should contain("untrusted workflow for master namespace: .github/workflows/other.yml")
+
+        # 4. missing sidecar workflow
+        f_missing_sc_wf = write_test_snap.call(".github/workflows/iyi.yml", nil, 9999_i64, 9999_i64)
+        res = Iyi::Stale::Snapshot.import(store, "master", f_missing_sc_wf, ctx)
+        res.success?.should be_false
+        res.error.not_nil!.should contain("provenance sidecar missing workflow")
+
+        # 5. missing producer run_id
+        f_missing_prod_run = write_test_snap.call(".github/workflows/iyi.yml", ".github/workflows/iyi.yml", nil, 9999_i64)
+        res = Iyi::Stale::Snapshot.import(store, "master", f_missing_prod_run, ctx)
+        res.success?.should be_false
+        res.error.not_nil!.should contain("master snapshot missing run_id")
+
+        # 6. 0 vs 4444 forged
+        f_forged_0 = write_test_snap.call(".github/workflows/iyi.yml", ".github/workflows/iyi.yml", 0_i64, 4444_i64)
+        res = Iyi::Stale::Snapshot.import(store, "master", f_forged_0, ctx)
+        res.success?.should be_false
+        res.error.not_nil!.should contain("forged run metadata: producer run_id 0 != sidecar run_id 4444")
+      end
+    end
   end
 
   describe "run:<id> namespace authorization" do
