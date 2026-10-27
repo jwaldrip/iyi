@@ -1941,12 +1941,27 @@ try:
         print(f'test-master-path FAILED: empty snapshot data incorrect: {empty_data}', file=sys.stderr)
         sys.exit(1)
 
-    # Ensure cache is clean before empty snapshot consumption test
-    cache_tests_v1 = os.path.join(shared_cache, 'tests-v1')
-    if os.path.exists(cache_tests_v1):
-        shutil.rmtree(cache_tests_v1)
+    # 7.1 Import populated master into shared_cache; require cached hit and source "master"
+    res_p7_pop = subprocess.run([iyi, 'test', '--cached', '--json',
+                                 '--import-index', f'master={phase6_master}',
+                                 sample_file],
+                                cwd=repo, env=test_env, capture_output=True, text=True)
+    if res_p7_pop.returncode != 0:
+        print(f'test-master-path FAILED: Phase 7 populate master import failed (code {res_p7_pop.returncode}):\n{res_p7_pop.stderr}', file=sys.stderr)
+        sys.exit(1)
 
-    # Import empty snapshot: verifies consumption is turned off (0 cached hits)
+    try:
+        p7_pop_data = json.loads(res_p7_pop.stdout)
+    except Exception as e:
+        print(f'test-master-path FAILED: could not parse Phase 7 populate JSON ({e}):\nSTDOUT:\n{res_p7_pop.stdout}\nSTDERR:\n{res_p7_pop.stderr}', file=sys.stderr)
+        sys.exit(1)
+
+    pop_hits = [t for t in p7_pop_data.get('tests', []) if t.get('cached') and t.get('source') == 'master']
+    if len(pop_hits) == 0:
+        print(f'test-master-path FAILED: expected cached hit from master in Phase 7 step 1, got: {p7_pop_data}', file=sys.stderr)
+        sys.exit(1)
+
+    # 7.2 Import empty snapshot into the SAME cache; require exit 0 and cached 0
     res_empty_test = subprocess.run([iyi, 'test', '--cached', '--json',
                                      '--import-index', f'master={empty_out}',
                                      sample_file],
@@ -1963,9 +1978,16 @@ try:
 
     hits = [t for t in empty_test_data.get('tests', []) if t.get('cached')]
     if len(hits) != 0:
-        print(f'test-master-path FAILED: empty snapshot should have 0 cached hits, got {len(hits)}', file=sys.stderr)
+        print(f'test-master-path FAILED: empty snapshot should have 0 cached hits (RG6 wholesale replacement), got {len(hits)}', file=sys.stderr)
         sys.exit(1)
-    print('Empty snapshot --run-id 4444 PASSED: cleanly imported and turned off consumption.')
+
+    # 7.3 Require that no test in step 2 reports source "master" (mutation check: if import were no-op, it would hit master)
+    master_sources = [t for t in empty_test_data.get('tests', []) if t.get('source') == 'master']
+    if len(master_sources) != 0:
+        print(f'test-master-path FAILED: empty snapshot failed mutation check: found tests with source master: {master_sources}', file=sys.stderr)
+        sys.exit(1)
+
+    print('Empty snapshot --run-id 4444 PASSED: wholesale replacement verified (100% mutation discrimination).')
 
     # Forged/invalid run_id rejected
     res_zero = subprocess.run(['bash', stale_ci, 'empty-snapshot', '--run-id', '0', '--out', os.path.join(work, 'e0.json')],
