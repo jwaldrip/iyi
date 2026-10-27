@@ -752,4 +752,187 @@ describe "Iyi::Stale S8: Portable Snapshots" do
       end
     end
   end
+
+  describe "Portable environment observations" do
+    it "exports and imports receipts with env_get and env_all observations" do
+      with_tempfile("snap_env_obs") do |cache_root|
+        Dir.mkdir_p(cache_root)
+        store = Iyi::Stale::Store.new(cache_root)
+        store.ensure_directories!
+
+        t1 = make_test_id("env_test.iyi")
+        obs_env = [
+          make_obs("env_get", "env", "MODE"),
+          make_obs("env_all", "env", "*"),
+        ]
+        r1 = make_receipt(t1, mode: "local", observations: obs_env)
+        # Update twin's trace to match
+        r1.portable_twin = Iyi::Stale::PortableRecord.new(
+          r1.build,
+          r1.explain,
+          Iyi::Stale::ReceiptTrace.new(
+            Iyi::Stale.hex(Iyi::Stale::ReceiptTrace.compute_fp(obs_env)),
+            obs_env
+          )
+        )
+
+        p_ctx = Iyi::Stale::ProducerContext.new(target: "x86_64-linux-gnu", fresh: true, ci_producer: true)
+        f_export = File.join(cache_root, "env_export.json")
+        res_exp = Iyi::Stale::Snapshot.export_to_file(f_export, store, [r1], "dev", p_ctx)
+        res_exp.success?.should be_true
+        res_exp.records_count.should eq(1)
+
+        ctx = Iyi::Stale::ImportContext.new(target: "x86_64-linux-gnu")
+        res_imp = Iyi::Stale::Snapshot.import(store, "dev", f_export, ctx)
+        res_imp.success?.should be_true
+        res_imp.records_count.should eq(1)
+
+        cands = store.candidates(t1, "x86_64-linux-gnu")
+        cands.size.should eq(1)
+        cands.first.namespace.should eq("dev")
+        cands.first.trace.observations.size.should eq(2)
+        cands.first.trace.observations[0].kind.should eq("env_get")
+        cands.first.trace.observations[0].root.should eq("env")
+        cands.first.trace.observations[1].kind.should eq("env_all")
+        cands.first.trace.observations[1].root.should eq("env")
+      end
+    end
+
+    it "rejects env observation root when kind is not env_get or env_all" do
+      with_tempfile("snap_bad_env_kind") do |cache_root|
+        Dir.mkdir_p(cache_root)
+        store = Iyi::Stale::Store.new(cache_root)
+        ctx = Iyi::Stale::ImportContext.new(target: "x86_64-linux-gnu")
+
+        t1 = make_test_id("bad_env.iyi")
+        r_bad = make_receipt(t1, mode: "portable", observations: [make_obs("file_read", "env", "bad_file")])
+        f = File.join(cache_root, "bad_env_kind.json")
+        File.write(f, Iyi::Stale::Snapshot.new(namespace: "dev", target: "x86_64-linux-gnu", records: [r_bad]).to_json)
+
+        res = Iyi::Stale::Snapshot.import(store, "dev", f, ctx)
+        res.success?.should be_false
+        res.error.not_nil!.should contain("env observation root has invalid kind")
+      end
+    end
+
+    it "retains filesystem allowlists: rejects test.root or explain outside src/toolchain/pkg" do
+      with_tempfile("snap_env_fs_root") do |cache_root|
+        Dir.mkdir_p(cache_root)
+        store = Iyi::Stale::Store.new(cache_root)
+        ctx = Iyi::Stale::ImportContext.new(target: "x86_64-linux-gnu")
+
+        # Test root: "env" is rejected
+        t_env_root = make_test_id("env.iyi", root: "env")
+        r_env_root = make_receipt(t_env_root, mode: "portable")
+        f1 = File.join(cache_root, "env_test_root.json")
+        File.write(f1, Iyi::Stale::Snapshot.new(namespace: "dev", target: "x86_64-linux-gnu", records: [r_env_root]).to_json)
+
+        res1 = Iyi::Stale::Snapshot.import(store, "dev", f1, ctx)
+        res1.success?.should be_false
+        res1.error.not_nil!.should contain("test root outside allowed roots")
+
+        # Explain key: "env:VAR" is rejected
+        t_ok = make_test_id("ok.iyi")
+        r_env_explain = make_receipt(t_ok, mode: "portable", explain: {"env:VAR" => "1" * 64})
+        f2 = File.join(cache_root, "env_explain.json")
+        File.write(f2, Iyi::Stale::Snapshot.new(namespace: "dev", target: "x86_64-linux-gnu", records: [r_env_explain]).to_json)
+
+        res2 = Iyi::Stale::Snapshot.import(store, "dev", f2, ctx)
+        res2.success?.should be_false
+        res2.error.not_nil!.should contain("explain entry root outside allowed roots")
+      end
+    end
+  end
+
+  describe "Multi-shard atomic imports and provenance" do
+    it "imports multiple shards for same namespace atomically into unified snapshot" do
+      with_tempfile("snap_multi_shard") do |cache_root|
+        Dir.mkdir_p(cache_root)
+        store = Iyi::Stale::Store.new(cache_root)
+        store.ensure_directories!
+
+        t1 = make_test_id("t1_test.iyi")
+        t2 = make_test_id("t2_test.iyi")
+        t3 = make_test_id("t3_test.iyi")
+
+        r1 = make_receipt(t1, mode: "portable")
+        r2 = make_receipt(t2, mode: "portable")
+        r3 = make_receipt(t3, mode: "portable")
+
+        prod = {"run_id" => JSON::Any.new(777_i64), "run_attempt" => JSON::Any.new(1_i64), "sha" => JSON::Any.new("sha"), "job" => JSON::Any.new("iyi"), "shard" => JSON::Any.new("1/3")}
+
+        f1 = File.join(cache_root, "shard1.json")
+        f2 = File.join(cache_root, "shard2.json")
+        f3 = File.join(cache_root, "shard3.json")
+
+        File.write(f1, Iyi::Stale::Snapshot.new(namespace: "run:777", target: "x86_64-linux-gnu", producer: prod, records: [r1]).to_json)
+        File.write(f2, Iyi::Stale::Snapshot.new(namespace: "run:777", target: "x86_64-linux-gnu", producer: prod, records: [r2]).to_json)
+        File.write(f3, Iyi::Stale::Snapshot.new(namespace: "run:777", target: "x86_64-linux-gnu", producer: prod, records: [r3]).to_json)
+
+        ctx = Iyi::Stale::ImportContext.new(target: "x86_64-linux-gnu", current_run_id: 777_i64)
+        res = Iyi::Stale::Snapshot.import_shards(store, "run:777", [f1, f2, f3], ctx)
+        res.success?.should be_true
+        res.records_count.should eq(3)
+
+        # Candidates from all 3 shards exist under run:777
+        c1 = store.candidates(t1, "x86_64-linux-gnu")
+        c2 = store.candidates(t2, "x86_64-linux-gnu")
+        c3 = store.candidates(t3, "x86_64-linux-gnu")
+
+        c1.size.should eq(1)
+        c2.size.should eq(1)
+        c3.size.should eq(1)
+
+        c1.first.namespace.should eq("run:777")
+        c2.first.namespace.should eq("run:777")
+        c3.first.namespace.should eq("run:777")
+      end
+    end
+
+    it "rejects shard group with duplicate test without partial replacement" do
+      with_tempfile("snap_dup_shard_atomic") do |cache_root|
+        Dir.mkdir_p(cache_root)
+        store = Iyi::Stale::Store.new(cache_root)
+        store.ensure_directories!
+
+        t1 = make_test_id("dup_test.iyi")
+        r1 = make_receipt(t1, mode: "portable")
+        r2 = make_receipt(t1, mode: "portable")
+
+        prod = {"run_id" => JSON::Any.new(888_i64), "shard" => JSON::Any.new("1/2")}
+
+        f1 = File.join(cache_root, "shard1.json")
+        f2 = File.join(cache_root, "shard2.json")
+
+        File.write(f1, Iyi::Stale::Snapshot.new(namespace: "run:888", target: "x86_64-linux-gnu", producer: prod, records: [r1]).to_json)
+        File.write(f2, Iyi::Stale::Snapshot.new(namespace: "run:888", target: "x86_64-linux-gnu", producer: prod, records: [r2]).to_json)
+
+        ctx = Iyi::Stale::ImportContext.new(target: "x86_64-linux-gnu", current_run_id: 888_i64)
+        res = Iyi::Stale::Snapshot.import_shards(store, "run:888", [f1, f2], ctx)
+        res.success?.should be_false
+        res.error.not_nil!.should contain("duplicate test across shards")
+
+        # Nothing stored in store!
+        store.candidates(t1, "x86_64-linux-gnu").size.should eq(0)
+      end
+    end
+
+    it "receipt namespace is excluded from serialized receipt JSON and signature" do
+      t = make_test_id("prov_test.iyi")
+      r = make_receipt(t, mode: "portable")
+      r.namespace = "secret_namespace"
+      r.ensure_signature!
+
+      # JSON serialization does not include "namespace"
+      json = r.to_json
+      json.includes?("secret_namespace").should be_false
+      json.includes?("\"namespace\"").should be_false
+
+      # Signature computation does not change with namespace
+      sig_with = r.ensure_signature!
+      r.namespace = "other_namespace"
+      sig_other = Iyi::Stale::Receipt.compute_signature(r.test, r.build.build, r.profile.fp, r.trace.fp)
+      Iyi::Stale.hex(sig_other).should eq(sig_with)
+    end
+  end
 end

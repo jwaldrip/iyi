@@ -243,7 +243,9 @@ module Iyi::Stale
         snapshot_files.each do |sfile|
           begin
             scontent = File.read(sfile)
-            snapshots << Snapshot.from_json(scontent)
+            snap = Snapshot.from_json(scontent)
+            snap.records.each { |r| r.namespace = snap.namespace }
+            snapshots << snap
           rescue
             # Bad snapshot file ignored or skipped
           end
@@ -255,6 +257,7 @@ module Iyi::Stale
           snap.records.each do |rec|
             if rec.test == test && rec.pass?
               rec.ensure_signature!
+              rec.namespace = snap.namespace
               # Skip masked imported receipts
               next if is_masked?(rec.signature)
               imported_candidates << rec
@@ -351,6 +354,7 @@ module Iyi::Stale
               content = File.read(fpath)
               snap = Snapshot.from_json(content)
               snap.records.each do |rec|
+                rec.namespace = snap.namespace
                 if rec.test == test
                   rec.ensure_signature!
                   mpath = mask_path(rec.signature)
