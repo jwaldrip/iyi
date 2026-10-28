@@ -112,16 +112,13 @@ expect_contains "$(cat "$explain_log")" "reached_test.iyi: miss: call path (lib/
 expect_contains "$(cat "$explain_log")" "other_test.iyi: hit from local" "unreached test hit"
 expect_contains "$(cat "$explain_log")" "1 from receipts" "one hit in text summary"
 
-# Row 3 mutation proof: a newly earlier IYI_PATH import candidate shadows
-# lib/util.iyi. The loaded changed definition must miss.
+# Row 3 mutation proof: a module found only through IYI_PATH is shadowed by a
+# new file in an earlier IYI_PATH entry, which the build then loads. The
+# entry's own directory is asked before IYI_PATH (resolve_import,
+# src/compiler/iyi/semantic/semantic_visitor.cr:491-540), so no copy sits
+# beside the entry. An earlier entry with no candidate changes a locator only
+# and must hit; the earlier candidate must miss and be named.
 step 3 "new import candidate path reruns changed reached code"
-mkdir -p "$WORK/shadow/lib"
-cat > "$WORK/shadow/lib/util.iyi" <<'IYI'
-module lib/util
-pub def used(x : Int32) : Int32
-  x + 99
-end
-IYI
 cat > "$WORK/basic/lib/util.iyi" <<'IYI'
 module lib/util
 pub def used(x : Int32) : Int32
@@ -131,10 +128,32 @@ pub def unused(x : Int32) : Int32
   x * 100
 end
 IYI
+mkdir -p "$WORK/r3/later/lib" "$WORK/r3/earlier/lib" "$WORK/r3/empty"
+cat > "$WORK/r3/later/lib/util.iyi" <<'IYI'
+module lib/util
+pub def used(x : Int32) : Int32
+  x + 1
+end
+IYI
+cat > "$WORK/r3/reached_test.iyi" <<'IYI'
+import lib/util::{used}
+assert used(1) == 2
+IYI
 rm -rf "$CACHE/tests-v1"
-IYI_PATH="$REPO/src:$WORK/basic" run_json "$WORK/basic" reached_test.iyi >/dev/null
-shadowed="$(IYI_PATH="$WORK/shadow:$REPO/src:$WORK/basic" run_json "$WORK/basic" reached_test.iyi)"
-expect_eq "$(printf '%s' "$shadowed" | json_cached)" 0 "new import candidate mutation"
+r3_record="$(IYI_PATH="$REPO/src:$WORK/r3/later" run_json "$WORK/r3" reached_test.iyi)"
+expect_eq "$(printf '%s' "$r3_record" | json_cached)" 0 "r3 recording run"
+r3_locator="$(IYI_PATH="$WORK/r3/empty:$REPO/src:$WORK/r3/later" run_json "$WORK/r3" reached_test.iyi)"
+expect_eq "$(printf '%s' "$r3_locator" | json_cached)" 1 "earlier IYI_PATH entry without a candidate hits"
+cat > "$WORK/r3/earlier/lib/util.iyi" <<'IYI'
+module lib/util
+pub def used(x : Int32) : Int32
+  x + 2 - 1
+end
+IYI
+r3_explain="$WORK/r3/explain.txt"
+IYI_PATH="$WORK/r3/earlier:$REPO/src:$WORK/r3/later" run_json "$WORK/r3" --explain reached_test.iyi > "$r3_explain"
+expect_contains "$(explained "$r3_explain" lines)" "reached_test.iyi: miss: call path (earlier/lib/util.iyi" "new import candidate named"
+expect_eq "$(explained "$r3_explain" json | json_cached)" 0 "new import candidate mutation"
 
 # Row 4 mutation proof: adding an entry to an observed directory changes a
 # directory observation; an unrelated directory would leave this assertion hit.
