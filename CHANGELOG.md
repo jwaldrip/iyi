@@ -15,6 +15,12 @@
   error state is now inspected via `SO_ERROR` without retrying connect
   (crystal-lang/crystal#17436, #17619).
 
+- **Fixed: macOS system libiconv handles invalid byte skip and shift states correctly.**
+  macOS 14+ provides FreeBSD Citrus iconv without GNU extensions. Crystal::Iconv no
+  longer appends //IGNORE on Darwin when using system libiconv, avoiding dropped
+  characters after invalid bytes, and std specs reflect Citrus shift state mappings
+  for BIG5-HKSCS and EUC-JP.
+
 - **Breaking: std/http's `Server.serve` serves on every core by default
   (#145).** `serve(listener) { |request| ... }` runs each connection as a
   parallel task on the pool, `IyiWorkers.count` workers - `IYI_WORKERS`,
