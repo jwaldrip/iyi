@@ -820,7 +820,7 @@ expect_eq "$(printf '%s' "$r35_hit4" | json_cached)" 1 "r35 env re-recorded hits
 # Macro run helper that prints time always misses
 cat > "$WORK/r35/clock.iyi" <<'IYI'
 import std/time::{Time}
-puts Time.utc.to_unix_ns
+puts Time.utc.to_unix_ms
 IYI
 cat > "$WORK/r35/clock_test.iyi" <<'IYI'
 def helper_output : Int64
