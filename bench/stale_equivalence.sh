@@ -36,6 +36,8 @@ run_rg2() {
 import concurrent.futures, glob, os, re, subprocess, sys
 
 repo, iyi, work = sys.argv[1:]
+sys.path.insert(0, os.path.join(repo, 'bench'))
+from frames_equivalent import FRAME_RE, canonical_function
 samples = sorted(glob.glob(os.path.join(repo, 'samples/iyi/*.iyi')))
 bench = sorted(glob.glob(os.path.join(repo, 'bench/std_*_exercise.iyi')))
 programs = samples + bench
@@ -84,32 +86,20 @@ NON_REUSABLE_STDOUT_PATTERNS = [
 def is_non_reusable_output(line):
     return any(p.match(line) for p in NON_REUSABLE_STDOUT_PATTERNS)
 
-FRAME_RE = re.compile(rb'^\s*\d+\s+\S+\s+0x[0-9a-fA-F]+\s+(.*?)(?:\s+\+\s+\d+)?$')
-
 def normalize_stderr(raw):
     if not raw:
         return b''
     raw_lines = lines(raw)
     out = []
-    prev_sym = None
-    frame_run = 0
     for line in raw_lines:
         m = FRAME_RE.match(line.rstrip(b'\r\n'))
         if not m:
             out.append(line)
-            prev_sym = None
-            frame_run = 0
-            continue
-        sym = m.group(1).strip()
-        if b'__iyi_effect_raise' in sym:
-            continue
-        norm_sym = sym.replace(b'__iyi_effect_', b'')
-        if norm_sym == prev_sym:
-            continue
-        prev_sym = norm_sym
-        if frame_run < 62:
-            out.append(b'  FRAME: ' + norm_sym + b'\n')
-            frame_run += 1
+        else:
+            idx = m.group(1)
+            img = m.group(2)
+            fn = canonical_function(m.group(3))
+            out.append(b'  FRAME: ' + idx + b' ' + img + b' ' + fn + b'\n')
     return b''.join(out)
 
 def calibrated_mask(first, second):
@@ -223,6 +213,8 @@ run_rg2a() {
 import concurrent.futures, glob, os, re, subprocess, sys
 
 repo, iyi, work = sys.argv[1:]
+sys.path.insert(0, os.path.join(repo, 'bench'))
+from frames_equivalent import FRAME_RE, canonical_function
 samples = sorted(glob.glob(os.path.join(repo, 'samples/iyi/*.iyi')))
 bench = sorted(glob.glob(os.path.join(repo, 'bench/std_*_exercise.iyi')))
 programs = samples + bench
@@ -264,32 +256,20 @@ NON_REUSABLE_STDOUT_PATTERNS = [
 def is_non_reusable_output(line):
     return any(p.match(line) for p in NON_REUSABLE_STDOUT_PATTERNS)
 
-FRAME_RE = re.compile(rb'^\s*\d+\s+\S+\s+0x[0-9a-fA-F]+\s+(.*?)(?:\s+\+\s+\d+)?$')
-
 def normalize_stderr(raw):
     if not raw:
         return b''
     raw_lines = lines(raw)
     out = []
-    prev_sym = None
-    frame_run = 0
     for line in raw_lines:
         m = FRAME_RE.match(line.rstrip(b'\r\n'))
         if not m:
             out.append(line)
-            prev_sym = None
-            frame_run = 0
-            continue
-        sym = m.group(1).strip()
-        if b'__iyi_effect_raise' in sym:
-            continue
-        norm_sym = sym.replace(b'__iyi_effect_', b'')
-        if norm_sym == prev_sym:
-            continue
-        prev_sym = norm_sym
-        if frame_run < 62:
-            out.append(b'  FRAME: ' + norm_sym + b'\n')
-            frame_run += 1
+        else:
+            idx = m.group(1)
+            img = m.group(2)
+            fn = canonical_function(m.group(3))
+            out.append(b'  FRAME: ' + idx + b' ' + img + b' ' + fn + b'\n')
     return b''.join(out)
 
 def calibrated_mask(first, second):
