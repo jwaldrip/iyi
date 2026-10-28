@@ -10,7 +10,11 @@ Runs P, C1, C3 with IYI_OBSERVE pointing to that leg's trace.
 Checks:
   - Every build exits 0, and no build output names __iyi_effect_
   - k1, k2, k3 have non-empty, equal portable.callpath and empty reach.mismatch
-  - P against C1, and C1 against C3, pass R-1 rule (exact match or frames_equivalent)
+  - P against C1, and C1 against C3, pass R-1 rule:
+      * Exit codes equal
+      * Four exit-only exercises checked for exit equality only
+      * Stdout must be strictly byte-for-byte equal
+      * Stderr must be byte-equal or pass compare_same_opt
   - No run output names __iyi_effect_, and every trace is non-empty
   - nm -U defined symbols check on consumer binary
   - 2 workers, private sandboxes/caches per row, cleaned up on success
@@ -33,7 +37,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-# Heavy exercises needing 300s timeout instead of 60s
+# Heavy exercises needing 300s runtime timeout instead of 60s
 HEAVY = {
     "bench/std_big_exercise.iyi",
     "bench/std_bzip2_exercise.iyi",
@@ -62,9 +66,16 @@ EXIT_ONLY_EXERCISES = {
     "std_weak_ref_exercise",
 }
 
+# All compiler builds have a 300s ceiling to prevent false timeouts under concurrent load
+BUILD_TIMEOUT = 300
 
-def timeout_for(relpath: str) -> int:
-    return 300 if relpath in HEAVY else 60
+# Runtime ceilings per RG2 (60s default, 300s heavy)
+RUN_DEFAULT_TIMEOUT = 60
+RUN_HEAVY_TIMEOUT = 300
+
+
+def run_timeout_for(relpath: str) -> int:
+    return RUN_HEAVY_TIMEOUT if relpath in HEAVY else RUN_DEFAULT_TIMEOUT
 
 
 def check_disk_space(path: str, min_gb: float = 20.0) -> None:
@@ -118,8 +129,10 @@ def compare_r1(
     name: str,
     status_a: int,
     status_b: int,
-    out_a: bytes,
-    out_b: bytes,
+    stdout_a: bytes,
+    stderr_a: bytes,
+    stdout_b: bytes,
+    stderr_b: bytes,
     compare_same_opt_fn,
 ) -> tuple[bool, str]:
     if status_a != status_b:
@@ -128,21 +141,27 @@ def compare_r1(
     if name in EXIT_ONLY_EXERCISES:
         return True, "exit-only check passed"
 
-    if out_a == out_b:
-        return True, "exact output match"
+    # Stdout must be strictly byte-for-byte identical across runs
+    if stdout_a != stdout_b:
+        diff_len = f"len {len(stdout_a)} != {len(stdout_b)}" if len(stdout_a) != len(stdout_b) else "differing bytes"
+        return False, f"stdout mismatch ({diff_len})"
 
-    lines_a = out_a.splitlines(keepends=True)
-    lines_b = out_b.splitlines(keepends=True)
+    # Stderr must be byte-equal or satisfy strict compare_same_opt (frames_equivalent)
+    if stderr_a == stderr_b:
+        return True, "exact stdout and stderr match"
+
+    lines_err_a = stderr_a.splitlines(keepends=True)
+    lines_err_b = stderr_b.splitlines(keepends=True)
 
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        ret = compare_same_opt_fn(lines_a, lines_b)
+        ret = compare_same_opt_fn(lines_err_a, lines_err_b)
 
     if ret == 0:
-        return True, "frames equivalent passed"
+        return True, "stdout byte-equal and stderr frames equivalent"
     else:
         violation = buf.getvalue().strip()
-        return False, f"frames equivalence failed: {violation}"
+        return False, f"stderr frames equivalence failed: {violation}"
 
 
 def run_single_program(
@@ -187,72 +206,88 @@ def run_single_program(
     c1_trace = os.path.join(pdir, "c1.trace")
     c3_trace = os.path.join(pdir, "c3.trace")
 
-    timeout = timeout_for(rel)
+    run_timeout = run_timeout_for(rel)
     failures: list[str] = []
 
     # --- Leg P Build ---
     cmd_p = [compiler, "build", "-Diyi_observe", "--emit-iyimod", mods, "-o", p_bin, source]
-    res_p_build = subprocess.run(
-        cmd_p,
-        cwd=repo,
-        env=clean_env(repo, cache_p, warm=False),
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=False,
-        timeout=timeout,
-    )
-    if res_p_build.returncode != 0:
-        failures.append(f"P build failed (exit {res_p_build.returncode}): {res_p_build.stderr.decode(errors='replace')[-300:]}")
-    if b"__iyi_effect_" in res_p_build.stdout or b"__iyi_effect_" in res_p_build.stderr:
-        failures.append("P build output names __iyi_effect_")
+    try:
+        res_p_build = subprocess.run(
+            cmd_p,
+            cwd=repo,
+            env=clean_env(repo, cache_p, warm=False),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=False,
+            timeout=BUILD_TIMEOUT,
+        )
+        if res_p_build.returncode != 0:
+            failures.append(f"P build failed (exit {res_p_build.returncode}): {res_p_build.stderr.decode(errors='replace')[-300:]}")
+        if b"__iyi_effect_" in res_p_build.stdout or b"__iyi_effect_" in res_p_build.stderr:
+            failures.append("P build output names __iyi_effect_")
+    except subprocess.TimeoutExpired:
+        res_p_build = None
+        failures.append(f"P build timed out after {BUILD_TIMEOUT}s")
 
     # --- Leg C1 Build ---
     cmd_c1 = [compiler, "build", "-Diyi_observe", "--use-iyimod", mods, "--stale-key", k1, "-o", c1_bin, source]
-    res_c1_build = subprocess.run(
-        cmd_c1,
-        cwd=repo,
-        env=clean_env(repo, cache_c, warm=False),
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=False,
-        timeout=timeout,
-    )
-    if res_c1_build.returncode != 0:
-        failures.append(f"C1 build failed (exit {res_c1_build.returncode}): {res_c1_build.stderr.decode(errors='replace')[-300:]}")
-    if b"__iyi_effect_" in res_c1_build.stdout or b"__iyi_effect_" in res_c1_build.stderr:
-        failures.append("C1 build output names __iyi_effect_")
+    try:
+        res_c1_build = subprocess.run(
+            cmd_c1,
+            cwd=repo,
+            env=clean_env(repo, cache_c, warm=False),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=False,
+            timeout=BUILD_TIMEOUT,
+        )
+        if res_c1_build.returncode != 0:
+            failures.append(f"C1 build failed (exit {res_c1_build.returncode}): {res_c1_build.stderr.decode(errors='replace')[-300:]}")
+        if b"__iyi_effect_" in res_c1_build.stdout or b"__iyi_effect_" in res_c1_build.stderr:
+            failures.append("C1 build output names __iyi_effect_")
+    except subprocess.TimeoutExpired:
+        res_c1_build = None
+        failures.append(f"C1 build timed out after {BUILD_TIMEOUT}s")
 
     # --- Leg C2 Build ---
     cmd_c2 = [compiler, "build", "-Diyi_observe", "--use-iyimod", mods, "--stale-key", k2, "-o", c2_bin, source]
-    res_c2_build = subprocess.run(
-        cmd_c2,
-        cwd=repo,
-        env=clean_env(repo, cache_c, warm=False),
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=False,
-        timeout=timeout,
-    )
-    if res_c2_build.returncode != 0:
-        failures.append(f"C2 build failed (exit {res_c2_build.returncode}): {res_c2_build.stderr.decode(errors='replace')[-300:]}")
-    if b"__iyi_effect_" in res_c2_build.stdout or b"__iyi_effect_" in res_c2_build.stderr:
-        failures.append("C2 build output names __iyi_effect_")
+    try:
+        res_c2_build = subprocess.run(
+            cmd_c2,
+            cwd=repo,
+            env=clean_env(repo, cache_c, warm=False),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=False,
+            timeout=BUILD_TIMEOUT,
+        )
+        if res_c2_build.returncode != 0:
+            failures.append(f"C2 build failed (exit {res_c2_build.returncode}): {res_c2_build.stderr.decode(errors='replace')[-300:]}")
+        if b"__iyi_effect_" in res_c2_build.stdout or b"__iyi_effect_" in res_c2_build.stderr:
+            failures.append("C2 build output names __iyi_effect_")
+    except subprocess.TimeoutExpired:
+        res_c2_build = None
+        failures.append(f"C2 build timed out after {BUILD_TIMEOUT}s")
 
     # --- Leg C3 Build (Warm) ---
     cmd_c3 = [compiler, "build", "-Diyi_observe", "--use-iyimod", mods, "--stale-key", k3, "-o", c3_bin, source]
-    res_c3_build = subprocess.run(
-        cmd_c3,
-        cwd=repo,
-        env=clean_env(repo, cache_c, warm=True),
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=False,
-        timeout=timeout,
-    )
-    if res_c3_build.returncode != 0:
-        failures.append(f"C3 build failed (exit {res_c3_build.returncode}): {res_c3_build.stderr.decode(errors='replace')[-300:]}")
-    if b"__iyi_effect_" in res_c3_build.stdout or b"__iyi_effect_" in res_c3_build.stderr:
-        failures.append("C3 build output names __iyi_effect_")
+    try:
+        res_c3_build = subprocess.run(
+            cmd_c3,
+            cwd=repo,
+            env=clean_env(repo, cache_c, warm=True),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=False,
+            timeout=BUILD_TIMEOUT,
+        )
+        if res_c3_build.returncode != 0:
+            failures.append(f"C3 build failed (exit {res_c3_build.returncode}): {res_c3_build.stderr.decode(errors='replace')[-300:]}")
+        if b"__iyi_effect_" in res_c3_build.stdout or b"__iyi_effect_" in res_c3_build.stderr:
+            failures.append("C3 build output names __iyi_effect_")
+    except subprocess.TimeoutExpired:
+        res_c3_build = None
+        failures.append(f"C3 build timed out after {BUILD_TIMEOUT}s")
 
     # --- Key Checks ---
     callpath1 = ""
@@ -293,7 +328,13 @@ def run_single_program(
     c1_run_exit = None
     c3_run_exit = None
 
-    if res_p_build.returncode == 0 and res_c1_build.returncode == 0 and res_c3_build.returncode == 0:
+    builds_ok = (
+        res_p_build is not None and res_p_build.returncode == 0
+        and res_c1_build is not None and res_c1_build.returncode == 0
+        and res_c3_build is not None and res_c3_build.returncode == 0
+    )
+
+    if builds_ok:
         # Prepare run environments and sandboxes
         if is_std:
             sandbox_p = os.path.join(pdir, "sandbox_p")
@@ -322,12 +363,12 @@ def run_single_program(
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=False,
-                timeout=timeout,
+                timeout=run_timeout,
             )
             p_run_exit = res_p_run.returncode
         except subprocess.TimeoutExpired:
             res_p_run = None
-            failures.append(f"P run timed out after {timeout}s")
+            failures.append(f"P run timed out after {run_timeout}s")
 
         # Run C1
         try:
@@ -338,12 +379,12 @@ def run_single_program(
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=False,
-                timeout=timeout,
+                timeout=run_timeout,
             )
             c1_run_exit = res_c1_run.returncode
         except subprocess.TimeoutExpired:
             res_c1_run = None
-            failures.append(f"C1 run timed out after {timeout}s")
+            failures.append(f"C1 run timed out after {run_timeout}s")
 
         # Run C3 (Warm)
         try:
@@ -354,12 +395,12 @@ def run_single_program(
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=False,
-                timeout=timeout,
+                timeout=run_timeout,
             )
             c3_run_exit = res_c3_run.returncode
         except subprocess.TimeoutExpired:
             res_c3_run = None
-            failures.append(f"C3 run timed out after {timeout}s")
+            failures.append(f"C3 run timed out after {run_timeout}s")
 
         # Check outputs for __iyi_effect_
         for tag, r in [("P", res_p_run), ("C1", res_c1_run), ("C3", res_c3_run)]:
@@ -372,30 +413,30 @@ def run_single_program(
             if not os.path.exists(tpath) or os.path.getsize(tpath) == 0:
                 failures.append(f"{tag} trace missing or empty ({tpath})")
 
-        # R-1 comparison: P vs C1, and C1 vs C3
+        # R-1 comparison: P vs C1, and C1 vs C3 (stdout byte-equal + stderr frames_equivalent)
         if res_p_run is not None and res_c1_run is not None:
-            out_p = res_p_run.stdout + res_p_run.stderr
-            out_c1 = res_c1_run.stdout + res_c1_run.stderr
             ok_pc1, msg_pc1 = compare_r1(
                 prog_base,
                 res_p_run.returncode,
                 res_c1_run.returncode,
-                out_p,
-                out_c1,
+                res_p_run.stdout,
+                res_p_run.stderr,
+                res_c1_run.stdout,
+                res_c1_run.stderr,
                 compare_same_opt_fn,
             )
             if not ok_pc1:
                 failures.append(f"R-1 [P vs C1] {msg_pc1}")
 
         if res_c1_run is not None and res_c3_run is not None:
-            out_c1 = res_c1_run.stdout + res_c1_run.stderr
-            out_c3 = res_c3_run.stdout + res_c3_run.stderr
             ok_c1c3, msg_c1c3 = compare_r1(
                 prog_base,
                 res_c1_run.returncode,
                 res_c3_run.returncode,
-                out_c1,
-                out_c3,
+                res_c1_run.stdout,
+                res_c1_run.stderr,
+                res_c3_run.stdout,
+                res_c3_run.stderr,
                 compare_same_opt_fn,
             )
             if not ok_c1c3:
@@ -441,7 +482,6 @@ def main() -> None:
     work = os.path.abspath(args.work)
     os.makedirs(work, exist_ok=True)
 
-    # Import frames_equivalent from repo/bench
     bench_dir = os.path.join(repo, "bench")
     if bench_dir not in sys.path:
         sys.path.insert(0, bench_dir)

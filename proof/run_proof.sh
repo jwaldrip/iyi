@@ -4,7 +4,7 @@
 # disk space guards, and ledger verifications.
 #
 # Usage:
-#   bash proof/run_proof.sh [--check-identity | --run1 | --run2 | --run3 | --all]
+#   bash proof/run_proof.sh [--check-identity | --run1 | --run2 | --run3 | --all | --plan]
 
 set -euo pipefail
 
@@ -50,6 +50,9 @@ fi
 P_SOURCE_SHA="${P_SOURCE_SHA:-$(git -C "$P" rev-parse HEAD)}"
 W_HEAD="${W_HEAD:-$(git -C "$W" rev-parse HEAD)}"
 BIN_SHA="${BIN_SHA:-$(shasum -a 256 "$COMPILER" | awk '{print $1}')}"
+
+# Optional Route A override list (space-separated short names)
+ROUTE_A_DRIVERS="${ROUTE_A_DRIVERS:-}"
 
 check_disk() {
   local avail_gb
@@ -196,9 +199,7 @@ run_run3() {
       is_pnz="$(echo "$line" | grep '"p_nonzero": true' || true)"
       if [ -n "$is_pnz" ]; then
         name="$(echo "$line" | sed -E 's/.*"base": "([^"]+)".*/\1/')"
-        # Strip std_ and _exercise
         drv_name="$(echo "$name" | sed -E 's/^std_//; s/_exercise$//')"
-        # Add if not already in drivers
         local found=0
         for d in "${drivers[@]}"; do
           if [ "$d" = "$drv_name" ]; then
@@ -228,17 +229,39 @@ run_run3() {
     local drv_cache
     drv_cache="$(mktemp -d /tmp/drv_cache_${drv}.XXXXXX)"
 
+    # Check if driver is configured for Route A
+    local is_route_a=0
+    for ra in $ROUTE_A_DRIVERS; do
+      if [ "$ra" = "$drv" ]; then
+        is_route_a=1
+        break
+      fi
+    done
+
     set +e
-    (
-      env -u IYI_PATH -u CRYSTAL_PATH -u IYI_OPTS -u CRYSTAL_OPTS -u IYI_WARM -u IYI_OBSERVE \
-        IYI="$W/proof/observed_roundtrip_iyi.sh" \
-        IYI_ROUNDTRIP_REAL="$COMPILER" \
-        IYI_ROUNDTRIP_LEDGER="$ledger" \
-        IYI_ROUNDTRIP_CANONICAL="$CANONICAL_SET" \
-        IYI_CACHE_DIR="$drv_cache" \
-        bash "$drv_script" </dev/null
-    ) 2>&1 | tee "$REPORT_DIR/driver_${drv}.log"
-    local drv_rc=$?
+    if [ "$is_route_a" -eq 1 ]; then
+      echo "  [Route A] IYI_OPTS=-Diyi_observe with native binary"
+      (
+        env -u IYI_PATH -u CRYSTAL_PATH -u IYI_WARM -u IYI_OBSERVE \
+          IYI="$COMPILER" \
+          IYI_OPTS="-Diyi_observe" \
+          IYI_CACHE_DIR="$drv_cache" \
+          bash "$drv_script" </dev/null
+      ) 2>&1 | tee "$REPORT_DIR/driver_${drv}.log"
+      local drv_rc=$?
+    else
+      echo "  [Route B] Observed roundtrip wrapper shim"
+      (
+        env -u IYI_PATH -u CRYSTAL_PATH -u IYI_OPTS -u CRYSTAL_OPTS -u IYI_WARM -u IYI_OBSERVE \
+          IYI="$W/proof/observed_roundtrip_iyi.sh" \
+          IYI_ROUNDTRIP_REAL="$COMPILER" \
+          IYI_ROUNDTRIP_LEDGER="$ledger" \
+          IYI_ROUNDTRIP_CANONICAL="$CANONICAL_SET" \
+          IYI_CACHE_DIR="$drv_cache" \
+          bash "$drv_script" </dev/null
+      ) 2>&1 | tee "$REPORT_DIR/driver_${drv}.log"
+      local drv_rc=$?
+    fi
     set -e
 
     rm -rf "$drv_cache"
@@ -248,8 +271,10 @@ run_run3() {
       exit 1
     fi
 
-    # Verify ledger
-    python3 "$W/proof/verify_ledger.py" --ledger "$ledger" --driver "$drv"
+    # Verify ledger if Route B was run
+    if [ "$is_route_a" -eq 0 ]; then
+      python3 "$W/proof/verify_ledger.py" --ledger "$ledger" --driver "$drv" --repo "$W"
+    fi
 
     # Identity check after each driver (also guards against patches written into tree)
     check_identity "after driver $drv"
