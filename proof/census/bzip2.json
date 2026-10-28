@@ -1,0 +1,112 @@
+{
+  "census_version": 1,
+  "driver": "bzip2",
+  "script": "bench/std_bzip2_exercise.sh",
+  "script_sha256": "5cdaea44d8b3d27d4e0b51e6568a00fd1be4b7a2c4d4229599aac6a0535cb306",
+  "sites": [
+    {
+      "lines": [
+        117,
+        118
+      ],
+      "command": "build",
+      "kind": "canonical-own",
+      "contains": [
+        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_bzi"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        260
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build -o \"$WORK/$name\" \"$WORK/$name.iyi\" > \"$WOR"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        312
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "elif ! IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/s"
+      ],
+      "variants": [
+        {
+          "id": "bzip2.negative.312",
+          "kind": "negative",
+          "first_root": "{WORK}/patched",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_bzip2_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-$mutations.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              313,
+              315,
+              317,
+              318,
+              319,
+              321
+            ],
+            "contains": [
+              "echo \"  $label: the broken copy did not compile\"",
+              "status=1"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "non_invocations": [],
+  "skips": [
+    {
+      "line": 56,
+      "class": "tool",
+      "what": "python3",
+      "regex": "no\\ python3\\ on\\ this\\ machine:\\ the\\ bz2\\ oracle\\ cannot\\ be\\ written,\\ so\\ std/bzip2\\ goes\\ unmeasured",
+      "text": "echo \"no python3 on this machine: the bz2 oracle cannot be written, so std/bzip2 goes unmeasured\""
+    }
+  ],
+  "not_skips": [],
+  "pass_sentinel": {
+    "line": 371,
+    "regex": "^the\\ std/bzip2\\ exercise\\ holds",
+    "text": "echo \"the std/bzip2 exercise holds\""
+  },
+  "exec_evidence": [
+    {
+      "site_line": 117,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "136": "plain",
+        "213": "release"
+      },
+      "exec_lines": [
+        124,
+        266
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        122,
+        123
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1",
+        "exit"
+      ],
+      "refs_ok": []
+    }
+  ]
+}

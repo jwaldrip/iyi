@@ -1,0 +1,179 @@
+{
+  "census_version": 1,
+  "driver": "math",
+  "script": "bench/std_math_exercise.sh",
+  "script_sha256": "b45cf3a8be719f5a1ee3639edd65d4e9bca20603e433d3902ba9423663da667d",
+  "sites": [
+    {
+      "lines": [
+        52,
+        53
+      ],
+      "command": "build",
+      "kind": "canonical-own",
+      "contains": [
+        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_mat"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        555,
+        556
+      ],
+      "command": "build",
+      "kind": "positive",
+      "contains": [
+        "elif IYI_PATH=\"$WORK/software${PSEP}$REPO/src${PSEP}$REPO/sa"
+      ],
+      "variants": [
+        {
+          "id": "math.positive.555",
+          "kind": "positive",
+          "first_root": "{WORK}/software",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_math_exercise.iyi"
+          ],
+          "output": "{WORK}/software/program",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              555,
+              556,
+              557,
+              558,
+              559,
+              561,
+              562,
+              563
+            ],
+            "contains": [
+              "  elif IYI_PATH=\"$WORK/software${PSEP}$REPO/src${P",
+              "         \"$REPO/bench/std_math_exercise.iyi\" > \"$W"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "lines": [
+        598
+      ],
+      "command": "run",
+      "kind": "negative",
+      "contains": [
+        "elif IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/sam"
+      ],
+      "variants": [
+        {
+          "id": "math.negative.598",
+          "kind": "negative",
+          "first_root": "{WORK}/patched",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_math_exercise.iyi"
+          ],
+          "output": null,
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              599,
+              600,
+              601,
+              602,
+              604,
+              605,
+              606
+            ],
+            "contains": [
+              "    echo \"  $label: the exercise PASSED on a broke",
+              "    status=1"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "non_invocations": [],
+  "skips": [
+    {
+      "line": 485,
+      "class": "tool",
+      "what": "python3",
+      "regex": "fma\\ against\\ the\\ exact\\ sum:\\ not\\ compared\\ here,\\ because\\ there\\ is\\ no\\ python3\\ to\\ write\\ the\\ cases\\ with",
+      "text": "echo \"fma against the exact sum: not compared here, because there is no python3 to write the cases with\""
+    },
+    {
+      "line": 572,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ .*?:\\ skipped,\\ no\\ working\\ python3\\ to\\ make\\ the\\ broken\\ copy\\ with",
+      "text": "echo \"  $label: skipped, no working python3 to make the broken copy with\""
+    },
+    {
+      "line": 643,
+      "class": "tool",
+      "what": "tool",
+      "regex": "\\ \\ the\\ last\\-bit\\ proofs\\ of\\ exp,\\ exp2,\\ expm1,\\ log,\\ log1p,\\ log2,\\ log10,\\ pow,\\ sinh,\\ cosh\\ and\\ tanh:\\ not\\ run,\\ no\\ oracle\\ here",
+      "text": "echo \"  the last-bit proofs of exp, exp2, expm1, log, log1p, log2, log10, pow, sinh, cosh and tanh: not run, no oracle here\""
+    },
+    {
+      "line": 698,
+      "class": "platform",
+      "what": "tool",
+      "regex": "\\ \\ the\\ software\\ fma's\\ four\\ proofs:\\ not\\ run\\ here,\\ because\\ .*?\\ fuses\\ with\\ its\\ own\\ instruction\\ and\\ never\\ runs\\ the\\ software\\ arm",
+      "text": "echo \"  the software fma's four proofs: not run here, because $(uname -m) fuses with its own instruction and never runs the software arm\" ;;"
+    },
+    {
+      "line": 705,
+      "class": "platform",
+      "what": "tool",
+      "regex": "\\ \\ vfmadd\\ with\\ its\\ operands\\ in\\ the\\ wrong\\ order:\\ not\\ proven\\ here,\\ because\\ this\\ is\\ not\\ an\\ x86_64\\ Linux\\ with\\ FMA3",
+      "text": "echo \"  vfmadd with its operands in the wrong order: not proven here, because this is not an x86_64 Linux with FMA3\""
+    },
+    {
+      "line": 708,
+      "class": "platform",
+      "what": "python3",
+      "regex": "\\ \\ the\\ fma\\ proofs:\\ not\\ run,\\ no\\ python3\\ to\\ write\\ the\\ cases\\ with",
+      "text": "echo \"  the fma proofs: not run, no python3 to write the cases with\""
+    }
+  ],
+  "not_skips": [],
+  "pass_sentinel": {
+    "line": 727,
+    "regex": "^the\\ std/math\\ exercise\\ holds",
+    "text": "echo \"the std/math exercise holds\""
+  },
+  "exec_evidence": [
+    {
+      "site_line": 52,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "491": "plain",
+        "529": "release"
+      },
+      "exec_lines": [
+        59
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        57,
+        58
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1",
+        "exit"
+      ],
+      "refs_ok": []
+    }
+  ]
+}

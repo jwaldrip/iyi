@@ -1,0 +1,199 @@
+{
+  "census_version": 1,
+  "driver": "autocert",
+  "script": "bench/std_autocert_exercise.sh",
+  "script_sha256": "b8ae4a1cb1d7809fc748f31f64479d4144d8b92f16bf30a2a4a54e9775cb57bc",
+  "sites": [
+    {
+      "lines": [
+        85
+      ],
+      "command": "build",
+      "kind": "canonical-own",
+      "contains": [
+        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_aut"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        259
+      ],
+      "command": "doc",
+      "kind": "unchanged",
+      "contains": [
+        "if \"$IYI\" doc \"$REPO/src/std/autocert.iyi\" >\"$WORK/doc.txt\" "
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        265
+      ],
+      "command": "fmt",
+      "kind": "unchanged",
+      "contains": [
+        "if \"$IYI\" fmt --check \"$REPO/src/std/autocert.iyi\" \"$REPO/sr"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        273
+      ],
+      "command": "build",
+      "kind": "unchanged",
+      "contains": [
+        "if ! \"$IYI\" build --no-codegen --target \"$target\" -o \"$WORK/"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        285
+      ],
+      "command": "build",
+      "kind": "passthrough",
+      "contains": [
+        "if (cd \"$WORK/r1\" && \"$IYI\" build --emit-iyimod mods -o from"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        286
+      ],
+      "command": "build",
+      "kind": "passthrough",
+      "contains": [
+        "\"$IYI\" build --use-iyimod mods -o from-artifact \"$REPO/bench"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        352,
+        353
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "if ! IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/sam"
+      ],
+      "variants": [
+        {
+          "id": "autocert.negative.352",
+          "kind": "negative",
+          "first_root": "{WORK}/patched",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_autocert_exercise.iyi"
+          ],
+          "output": "{WORK}/mutant",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              352,
+              353,
+              354,
+              355,
+              368,
+              369,
+              371,
+              372,
+              373,
+              374,
+              375
+            ],
+            "contains": [
+              "  if ! IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PS",
+              "      \"$REPO/bench/std_autocert_exercise.iyi\" >\"$W"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "non_invocations": [],
+  "skips": [
+    {
+      "line": 137,
+      "class": "tool",
+      "what": "go",
+      "regex": "\\ \\ no\\ python\\ with\\ ssl\\ and\\ cryptography\\ here,\\ so\\ the\\ cache's\\ files\\ go\\ unread\\ by\\ it",
+      "text": "echo \"  no python with ssl and cryptography here, so the cache's files go unread by it\""
+    },
+    {
+      "line": 174,
+      "class": "tool",
+      "what": "pebble",
+      "regex": "\\ \\ Pebble\\ could\\ not\\ be\\ fetched\\ or\\ built\\ here\\ \\(no\\ network\\?\\),\\ so\\ nothing\\ is\\ ordered:\\ .*?",
+      "text": "echo \"  Pebble could not be fetched or built here (no network?), so nothing is ordered: $(tail -1 \"$WORK/go-install.log\")\""
+    },
+    {
+      "line": 317,
+      "class": "tool",
+      "what": "tool",
+      "regex": "\\ \\ no\\ python\\ here,\\ so\\ the\\ .*?\\ proof\\ is\\ unmeasured",
+      "text": "echo \"  no python here, so the $label proof is unmeasured\""
+    },
+    {
+      "line": 321,
+      "class": "platform",
+      "what": "tool",
+      "regex": "\\ \\ .*?:\\ unmeasured\\ here,\\ as\\ its\\ check\\ is\\ POSIX's\\ modes\\ read\\ by\\ Python's\\ cryptography",
+      "text": "echo \"  $label: unmeasured here, as its check is POSIX's modes read by Python's cryptography\""
+    },
+    {
+      "line": 325,
+      "class": "platform",
+      "what": "tool",
+      "regex": "\\ \\ .*?:\\ unmeasured\\ here,\\ as\\ its\\ check\\ is\\ Python's\\ ssl\\ and\\ cryptography",
+      "text": "echo \"  $label: unmeasured here, as its check is Python's ssl and cryptography\""
+    },
+    {
+      "line": 332,
+      "class": "tool",
+      "what": "pebble",
+      "regex": "\\ \\ .*?:\\ unmeasured\\ here,\\ as\\ its\\ check\\ orders\\ from\\ Pebble\\ and\\ Pebble\\ is\\ not\\ running",
+      "text": "echo \"  $label: unmeasured here, as its check orders from Pebble and Pebble is not running\""
+    },
+    {
+      "line": 424,
+      "class": "tool",
+      "what": "tool",
+      "regex": "the\\ std/autocert\\ exercise\\ holds\\ \\(.*?\\ of\\ .*?\\ breaks\\ caught,\\ the\\ rest\\ unmeasured\\ here\\ as\\ said\\ above\\)",
+      "text": "echo \"the std/autocert exercise holds ($caught of $mutations breaks caught, the rest unmeasured here as said above)\""
+    }
+  ],
+  "not_skips": [],
+  "pass_sentinel": {
+    "line": 424,
+    "regex": "^the\\ std/autocert\\ exercise\\ holds\\ \\(",
+    "text": "echo \"the std/autocert exercise holds ($caught of $mutations breaks caught, the rest unmeasured here as said above)\""
+  },
+  "exec_evidence": [
+    {
+      "site_line": 85,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {},
+      "exec_lines": [
+        89
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        90,
+        91
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1",
+        "exit"
+      ],
+      "refs_ok": []
+    }
+  ]
+}

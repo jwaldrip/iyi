@@ -1,0 +1,159 @@
+{
+  "census_version": 1,
+  "driver": "png",
+  "script": "bench/std_png_exercise.sh",
+  "script_sha256": "5efcd5fa34cf2150cb69b1f2d79d7d480e0facd74658e075e18506a4a91be91c",
+  "sites": [
+    {
+      "lines": [
+        497,
+        498
+      ],
+      "command": "build",
+      "kind": "canonical-own",
+      "contains": [
+        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_png"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        707,
+        708
+      ],
+      "command": "build",
+      "kind": "passthrough",
+      "contains": [
+        "if (cd \"$WORK/r1\" && \"$IYI\" build --emit-iyimod mods -o from"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        708,
+        709
+      ],
+      "command": "build",
+      "kind": "passthrough",
+      "contains": [
+        "&& \"$IYI\" build --use-iyimod mods -o from-artifact \"$REPO/be"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        720
+      ],
+      "command": "build",
+      "kind": "unchanged",
+      "contains": [
+        "if ! \"$IYI\" build --no-codegen --target \"$target\" -o \"$WORK/"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        726
+      ],
+      "command": "doc",
+      "kind": "unchanged",
+      "contains": [
+        "if \"$IYI\" doc \"$REPO/src/std/png.iyi\" > \"$WORK/doc.out\" 2>&1"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        749
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build -o \"$WORK/$name\" \"$WORK/$name.iyi\" > \"$WOR"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        813
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "elif ! IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/s"
+      ],
+      "variants": [
+        {
+          "id": "png.negative.813",
+          "kind": "negative",
+          "first_root": "{WORK}/patched",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_png_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-$mutations.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              814,
+              816,
+              818,
+              819,
+              821,
+              823,
+              825
+            ],
+            "contains": [
+              "echo \"  the $1 copy did not compile\"",
+              "status=1"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "non_invocations": [],
+  "skips": [
+    {
+      "line": 715,
+      "class": "tool",
+      "what": "tool",
+      "regex": "\\ \\ FAIL:\\ the\\ exercise\\ does\\ not\\ run\\ the\\ same\\ from\\ its\\ artifacts",
+      "text": "echo \"  FAIL: the exercise does not run the same from its artifacts\""
+    }
+  ],
+  "not_skips": [],
+  "pass_sentinel": {
+    "line": 876,
+    "regex": "^the\\ std/png\\ exercise\\ holds\\ \\(",
+    "text": "echo \"the std/png exercise holds ($mutations breaks caught)\""
+  },
+  "exec_evidence": [
+    {
+      "site_line": 497,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "517": "plain",
+        "667": "release"
+      },
+      "exec_lines": [
+        504,
+        755
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        502,
+        503
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1",
+        "exit"
+      ],
+      "refs_ok": []
+    }
+  ]
+}

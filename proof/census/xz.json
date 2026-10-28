@@ -1,0 +1,153 @@
+{
+  "census_version": 1,
+  "driver": "xz",
+  "script": "bench/std_xz_exercise.sh",
+  "script_sha256": "87c056c836b6e171b0188451ca3760855e5df1566607d9e244ceb7ac530698a7",
+  "sites": [
+    {
+      "lines": [
+        304,
+        305
+      ],
+      "command": "build",
+      "kind": "canonical-own",
+      "contains": [
+        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_xz_"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        371
+      ],
+      "command": "build",
+      "kind": "passthrough",
+      "contains": [
+        "if ! (cd \"$WORK/r1\" && \"$IYI\" build --emit-iyimod mods -o fr"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        374
+      ],
+      "command": "build",
+      "kind": "passthrough",
+      "contains": [
+        "elif ! (cd \"$WORK/r1\" && \"$IYI\" build --use-iyimod mods -o f"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        392
+      ],
+      "command": "build",
+      "kind": "unchanged",
+      "contains": [
+        "if \"$IYI\" build --no-codegen --target \"$target\" -o \"$WORK/cr"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        409
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build -o \"$WORK/$name\" \"$WORK/$name.iyi\" > \"$WOR"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        463
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "elif ! IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/s"
+      ],
+      "variants": [
+        {
+          "id": "xz.negative.463",
+          "kind": "negative",
+          "first_root": "{WORK}/patched",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_xz_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-$mutations.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              464,
+              466,
+              467,
+              468,
+              470,
+              471,
+              472
+            ],
+            "contains": [
+              "echo \"  $label: the broken copy did not compile\"",
+              "status=1"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "non_invocations": [],
+  "skips": [
+    {
+      "line": 48,
+      "class": "platform",
+      "what": "python3",
+      "regex": "no\\ python3\\ on\\ this\\ machine:\\ the\\ lzma\\ oracle\\ cannot\\ be\\ written,\\ so\\ std/xz\\ goes\\ unmeasured",
+      "text": "echo \"no python3 on this machine: the lzma oracle cannot be written, so std/xz goes unmeasured\""
+    },
+    {
+      "line": 52,
+      "class": "platform",
+      "what": "go",
+      "regex": "this\\ python\\ has\\ no\\ lzma\\ module:\\ the\\ oracle\\ cannot\\ be\\ written,\\ so\\ std/xz\\ goes\\ unmeasured",
+      "text": "echo \"this python has no lzma module: the oracle cannot be written, so std/xz goes unmeasured\""
+    }
+  ],
+  "not_skips": [],
+  "pass_sentinel": {
+    "line": 549,
+    "regex": "^the\\ std/xz\\ exercise\\ holds\\ \\(",
+    "text": "echo \"the std/xz exercise holds ($mutations breaks caught)\""
+  },
+  "exec_evidence": [
+    {
+      "site_line": 304,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "324": "plain",
+        "343": "release"
+      },
+      "exec_lines": [
+        311,
+        415
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        309,
+        310
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1",
+        "exit"
+      ],
+      "refs_ok": []
+    }
+  ]
+}

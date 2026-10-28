@@ -1,0 +1,174 @@
+{
+  "census_version": 1,
+  "driver": "file_utils",
+  "script": "bench/std_file_utils_exercise.sh",
+  "script_sha256": "621560380ae5b9b62b8332bb5cf713ed07c2c97f57a0bc7e16dc4f19159caa42",
+  "sites": [
+    {
+      "lines": [
+        82,
+        83
+      ],
+      "command": "build",
+      "kind": "canonical-own",
+      "contains": [
+        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_fil"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        154
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build --release -o \"$TOOL\" \"$WORK/tool.iyi\" >\"$W"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        428
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "if ! IYI_PATH=\"$dir${PSEP}$REPO/src${PSEP}$REPO/samples/iyi\""
+      ],
+      "variants": [
+        {
+          "id": "file_utils.negative.428",
+          "kind": "negative",
+          "first_root": "$dir",
+          "vars": {
+            "dir": {
+              "values": [
+                "$WORK/patched1",
+                "$WORK/patched2",
+                "$WORK/patched3",
+                "$WORK/patched4",
+                "$WORK/patched5",
+                "$WORK/patched6",
+                "$WORK/patched7",
+                "$WORK/patched8",
+                "$WORK/patched9",
+                "$WORK/patched10",
+                "$WORK/patched11"
+              ],
+              "defined_at": "413-414",
+              "text": "  n=$((n + 1))\n  local dir=\"$WORK/patched$n\""
+            }
+          },
+          "sources": [
+            "{REPO}/bench/std_file_utils_exercise.iyi"
+          ],
+          "output": "$dir/program",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              428,
+              429,
+              431,
+              438,
+              439,
+              440,
+              441,
+              442,
+              446
+            ],
+            "contains": [
+              "  if ! IYI_PATH=\"$dir${PSEP}$REPO/src${PSEP}$REPO/",
+              "    echo \"  $1: the broken copy did not compile\""
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "non_invocations": [],
+  "skips": [
+    {
+      "line": 163,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ comparison\\ is\\ unmeasured",
+      "text": "echo \"  no python3 on this machine, so the comparison is unmeasured\""
+    },
+    {
+      "line": 367,
+      "class": "platform",
+      "what": "tool",
+      "regex": "\\ \\ cp_r\\ of\\ a\\ FIFO:\\ Windows\\ has\\ none,\\ so\\ unmeasured",
+      "text": "echo \"  cp_r of a FIFO: Windows has none, so unmeasured\""
+    },
+    {
+      "line": 372,
+      "class": "platform",
+      "what": "tool",
+      "regex": "\\ \\ cp_r\\ of\\ a\\ FIFO:\\ no\\ mkfifo\\ here,\\ so\\ unmeasured",
+      "text": "echo \"  cp_r of a FIFO: no mkfifo here, so unmeasured\""
+    },
+    {
+      "line": 410,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ .*?\\ proof\\ is\\ unmeasured",
+      "text": "echo \"  no python3 on this machine, so the $1 proof is unmeasured\""
+    },
+    {
+      "line": 463,
+      "class": "platform",
+      "what": "tool",
+      "regex": "\\ \\ a\\ trailing\\ separator\\ and\\ a\\ file's\\ mode\\ bits\\ are\\ POSIX's\\ questions,\\ so\\ those\\ two\\ proofs\\ are\\ unmeasured\\ on\\ Windows",
+      "text": "echo \"  a trailing separator and a file's mode bits are POSIX's questions, so those two proofs are unmeasured on Windows\""
+    },
+    {
+      "line": 498,
+      "class": "tool",
+      "what": "tool",
+      "regex": "\\ \\ root\\ writes\\ every\\ directory,\\ so\\ the\\ proof\\ that\\ a\\ read\\-only\\ source\\ is\\ refused\\ is\\ unmeasured",
+      "text": "echo \"  root writes every directory, so the proof that a read-only source is refused is unmeasured\""
+    },
+    {
+      "line": 504,
+      "class": "tool",
+      "what": "tool",
+      "regex": "\\ \\ no\\ second\\ device,\\ so\\ the\\ cross\\-device\\ move's\\ proof\\ is\\ unmeasured",
+      "text": "echo \"  no second device, so the cross-device move's proof is unmeasured\""
+    }
+  ],
+  "not_skips": [],
+  "pass_sentinel": {
+    "line": 524,
+    "regex": "holds",
+    "text": "exit $status"
+  },
+  "exec_evidence": [
+    {
+      "site_line": 82,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "104": "plain",
+        "127": "release"
+      },
+      "exec_lines": [
+        91
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        87,
+        88
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1",
+        "exit"
+      ],
+      "refs_ok": []
+    }
+  ]
+}

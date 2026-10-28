@@ -1,0 +1,135 @@
+{
+  "census_version": 1,
+  "driver": "sse",
+  "script": "bench/std_sse_exercise.sh",
+  "script_sha256": "d08eadfb384a4480f32e4ef33370385e3e141fd6635a6cd70982e80216c92692",
+  "sites": [
+    {
+      "lines": [
+        46,
+        47
+      ],
+      "command": "build",
+      "kind": "canonical-own",
+      "contains": [
+        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_sse"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        85
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build -o \"$WORK/$name\" \"$WORK/$name.iyi\" > \"$WOR"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        493
+      ],
+      "command": "run",
+      "kind": "negative",
+      "contains": [
+        "elif IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/sam"
+      ],
+      "variants": [
+        {
+          "id": "sse.negative.493",
+          "kind": "negative",
+          "first_root": "{WORK}/patched",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_sse_exercise.iyi"
+          ],
+          "output": null,
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              493,
+              494,
+              495,
+              496,
+              497,
+              498,
+              499,
+              501
+            ],
+            "contains": [
+              "  elif IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PS",
+              "    echo \"  the exercise PASSED on $1\""
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "non_invocations": [],
+  "skips": [
+    {
+      "line": 182,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ skipped:\\ no\\ working\\ python3",
+      "text": "echo \"  skipped: no working python3\""
+    },
+    {
+      "line": 264,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ skipped:\\ no\\ working\\ python3",
+      "text": "echo \"  skipped: no working python3\""
+    },
+    {
+      "line": 362,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ skipped:\\ no\\ working\\ python3",
+      "text": "echo \"  skipped: no working python3\""
+    },
+    {
+      "line": 479,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ .*?\\ proof\\ is\\ unmeasured",
+      "text": "echo \"  no python3 on this machine, so the $1 proof is unmeasured\""
+    }
+  ],
+  "not_skips": [],
+  "pass_sentinel": {
+    "line": 562,
+    "regex": "^the\\ std/sse\\ exercise\\ holds",
+    "text": "echo \"the std/sse exercise holds\""
+  },
+  "exec_evidence": [
+    {
+      "site_line": 46,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "65": "plain",
+        "73": "release"
+      },
+      "exec_lines": [
+        53,
+        91
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        51,
+        52
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1",
+        "exit"
+      ],
+      "refs_ok": []
+    }
+  ]
+}

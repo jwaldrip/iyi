@@ -1,0 +1,185 @@
+{
+  "census_version": 1,
+  "driver": "acme",
+  "script": "bench/std_acme_exercise.sh",
+  "script_sha256": "c49aba5f311e14bb4571add9305c8ebf120c2483a1f47c12a9183743e61f0e87",
+  "sites": [
+    {
+      "lines": [
+        70,
+        71
+      ],
+      "command": "build",
+      "kind": "canonical-own",
+      "contains": [
+        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_acm"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        399
+      ],
+      "command": "doc",
+      "kind": "unchanged",
+      "contains": [
+        "if \"$IYI\" doc \"$REPO/src/std/acme.iyi\" >\"$WORK/doc.txt\" 2>&1"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        405
+      ],
+      "command": "fmt",
+      "kind": "unchanged",
+      "contains": [
+        "if \"$IYI\" fmt --check \"$REPO/src/std/acme.iyi\" \"$REPO/src/st"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        413
+      ],
+      "command": "build",
+      "kind": "unchanged",
+      "contains": [
+        "if ! \"$IYI\" build --no-codegen --target \"$target\" -o \"$WORK/"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        425
+      ],
+      "command": "build",
+      "kind": "passthrough",
+      "contains": [
+        "if (cd \"$WORK/r1\" && \"$IYI\" build --emit-iyimod mods -o from"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        426
+      ],
+      "command": "build",
+      "kind": "passthrough",
+      "contains": [
+        "\"$IYI\" build --use-iyimod mods -o from-artifact \"$REPO/bench"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        465
+      ],
+      "command": "run",
+      "kind": "negative",
+      "contains": [
+        "elif IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/sam"
+      ],
+      "variants": [
+        {
+          "id": "acme.negative.465",
+          "kind": "negative",
+          "first_root": "{WORK}/patched",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_acme_exercise.iyi"
+          ],
+          "output": null,
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              465,
+              466,
+              467,
+              468,
+              469,
+              471,
+              472,
+              473
+            ],
+            "contains": [
+              "  elif IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PS",
+              "    echo \"  the exercise PASSED on $2\""
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "non_invocations": [],
+  "skips": [
+    {
+      "line": 145,
+      "class": "tool",
+      "what": "go",
+      "regex": "\\ \\ no\\ python\\ cryptography\\ here,\\ so\\ the\\ requests\\ and\\ signatures\\ go\\ unread\\ by\\ it",
+      "text": "echo \"  no python cryptography here, so the requests and signatures go unread by it\""
+    },
+    {
+      "line": 275,
+      "class": "tool",
+      "what": "pebble",
+      "regex": "\\ \\ no\\ Go\\ here\\ \\(or\\ no\\ python\\ to\\ drive\\ it\\),\\ so\\ Pebble\\ is\\ not\\ built\\ and\\ the\\ orders\\ go\\ unplaced",
+      "text": "echo \"  no Go here (or no python to drive it), so Pebble is not built and the orders go unplaced\""
+    },
+    {
+      "line": 281,
+      "class": "tool",
+      "what": "pebble",
+      "regex": "\\ \\ Pebble\\ could\\ not\\ be\\ fetched\\ or\\ built\\ here\\ \\(no\\ network\\?\\),\\ so\\ the\\ orders\\ go\\ unplaced:\\ .*?",
+      "text": "echo \"  Pebble could not be fetched or built here (no network?), so the orders go unplaced: $(tail -1 \"$WORK/go-install.log\")\""
+    },
+    {
+      "line": 366,
+      "class": "tool",
+      "what": "go",
+      "regex": "\\ \\ no\\ openssl\\ here,\\ so\\ the\\ chains\\ go\\ unverified\\ by\\ it",
+      "text": "echo \"  no openssl here, so the chains go unverified by it\""
+    },
+    {
+      "line": 451,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ .*?\\ proof\\ is\\ unmeasured",
+      "text": "echo \"  no python3 on this machine, so the $2 proof is unmeasured\""
+    }
+  ],
+  "not_skips": [],
+  "pass_sentinel": {
+    "line": 519,
+    "regex": "^the\\ std/acme\\ exercise\\ holds\\ \\(",
+    "text": "echo \"the std/acme exercise holds ($mutations breaks caught)\""
+  },
+  "exec_evidence": [
+    {
+      "site_line": 70,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "89": "plain",
+        "107": "release"
+      },
+      "exec_lines": [
+        77
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        75,
+        76
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1",
+        "exit"
+      ],
+      "refs_ok": []
+    }
+  ]
+}

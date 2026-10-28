@@ -1,0 +1,104 @@
+{
+  "census_version": 1,
+  "driver": "tar",
+  "script": "bench/std_tar_exercise.sh",
+  "script_sha256": "df592802609922641bbd5c034903739cd07fb873eb774b4d5039cafd2c593ace",
+  "sites": [
+    {
+      "lines": [
+        265,
+        266
+      ],
+      "command": "build",
+      "kind": "canonical-own",
+      "contains": [
+        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_tar"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        400
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build -o \"$WORK/$name\" \"$WORK/$name.iyi\" > \"$WOR"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        486
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "elif ! IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/s"
+      ],
+      "variants": [
+        {
+          "id": "tar.negative.486",
+          "kind": "negative",
+          "first_root": "{WORK}/patched",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_tar_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-$mutations.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              486,
+              489,
+              490,
+              492,
+              493,
+              498
+            ],
+            "contains": [
+              "elif ! IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PS",
+              "elif \"$WORK/mut-$mutations.bin\" \"$WORK/fixtures\" >"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "non_invocations": [],
+  "skips": [],
+  "not_skips": [],
+  "pass_sentinel": {
+    "line": 593,
+    "regex": "^the\\ std/tar\\ exercise\\ holds\\ \\(",
+    "text": "echo \"the std/tar exercise holds ($mutations breaks caught)\""
+  },
+  "exec_evidence": [
+    {
+      "site_line": 265,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "284": "plain",
+        "382": "release"
+      },
+      "exec_lines": [
+        272,
+        406
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        270,
+        271
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1",
+        "exit"
+      ],
+      "refs_ok": []
+    }
+  ]
+}

@@ -1,0 +1,282 @@
+{
+  "census_version": 1,
+  "driver": "websocket",
+  "script": "bench/std_websocket_exercise.sh",
+  "script_sha256": "c866cb64a7b327edb285f393972cdc31c92d8e4238878aa70b84821c47fca12c",
+  "sites": [
+    {
+      "lines": [
+        63,
+        64
+      ],
+      "command": "build",
+      "kind": "canonical-own",
+      "contains": [
+        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_web"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        120
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build -o \"$WORK/$name\" \"$WORK/$name.iyi\" > \"$WOR"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        1027
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "elif ! IYI_PATH=\"$WORK/bare${PSEP}$REPO/src${PSEP}$REPO/samp"
+      ],
+      "variants": [
+        {
+          "id": "websocket.negative.1027",
+          "kind": "negative",
+          "first_root": "{WORK}/bare",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_websocket_exercise.iyi"
+          ],
+          "output": "{WORK}/ws-bare",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              1027,
+              1028,
+              1030,
+              1035,
+              1036,
+              1037
+            ],
+            "contains": [
+              "    elif ! IYI_PATH=\"$WORK/bare${PSEP}$REPO/src${P",
+              "      echo \"  the bare-socket copy did not compile"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "lines": [
+        1052,
+        1053
+      ],
+      "command": "build",
+      "kind": "passthrough",
+      "contains": [
+        "if (cd \"$WORK/r1\" && \"$IYI\" build --emit-iyimod mods -o s/st"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        1053,
+        1054
+      ],
+      "command": "build",
+      "kind": "passthrough",
+      "contains": [
+        "&& \"$IYI\" build --use-iyimod mods -o a/std_websocket_exercis"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        1082
+      ],
+      "command": "build",
+      "kind": "unchanged",
+      "contains": [
+        "if ! \"$IYI\" build --no-codegen --target \"$target\" -o \"$WORK/"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        1088
+      ],
+      "command": "doc",
+      "kind": "unchanged",
+      "contains": [
+        "if \"$IYI\" doc \"$REPO/src/std/websocket.iyi\" > \"$WORK/doc.out"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        1094
+      ],
+      "command": "fmt",
+      "kind": "unchanged",
+      "contains": [
+        "if \"$IYI\" fmt --check \"$REPO/src/std/websocket.iyi\" \"$REPO/b"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        1131
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "elif ! IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/s"
+      ],
+      "variants": [
+        {
+          "id": "websocket.negative.1131",
+          "kind": "negative",
+          "first_root": "{WORK}/patched",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_websocket_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-$mutations",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              1131,
+              1132,
+              1134,
+              1135,
+              1136,
+              1137,
+              1138,
+              1139,
+              1145
+            ],
+            "contains": [
+              "  elif ! IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${",
+              "    echo \"  the $label copy did not compile\""
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "non_invocations": [],
+  "skips": [
+    {
+      "line": 191,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ skipped:\\ no\\ working\\ python3,\\ so\\ no\\ Python\\ client\\ was\\ run\\ against\\ the\\ server",
+      "text": "echo \"  skipped: no working python3, so no Python client was run against the server\""
+    },
+    {
+      "line": 335,
+      "class": "tool",
+      "what": "tool",
+      "regex": "\\ \\ skipped:\\ no\\ server",
+      "text": "echo \"  skipped: no server\""
+    },
+    {
+      "line": 337,
+      "class": "tool",
+      "what": "node",
+      "regex": "\\ \\ skipped:\\ no\\ node\\ with\\ a\\ WebSocket\\ client\\ \\(Node\\ 22\\ and\\ later\\ have\\ one\\)",
+      "text": "echo \"  skipped: no node with a WebSocket client (Node 22 and later have one)\""
+    },
+    {
+      "line": 592,
+      "class": "tool",
+      "what": "tool",
+      "regex": "\\ \\ skipped:\\ no\\ server",
+      "text": "echo \"  skipped: no server\""
+    },
+    {
+      "line": 594,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ skipped:\\ no\\ working\\ python3",
+      "text": "echo \"  skipped: no working python3\""
+    },
+    {
+      "line": 640,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ skipped:\\ no\\ working\\ python3\\ to\\ serve\\ the\\ client",
+      "text": "echo \"  skipped: no working python3 to serve the client\""
+    },
+    {
+      "line": 765,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ skipped:\\ no\\ working\\ python3\\ to\\ serve\\ the\\ client",
+      "text": "echo \"  skipped: no working python3 to serve the client\""
+    },
+    {
+      "line": 900,
+      "class": "tool",
+      "what": "tool",
+      "regex": "\\ \\ skipped:\\ no\\ python\\ cryptography\\ to\\ make\\ a\\ certificate\\ with",
+      "text": "echo \"  skipped: no python cryptography to make a certificate with\""
+    },
+    {
+      "line": 1067,
+      "class": "platform",
+      "what": "tool",
+      "regex": "\\ \\ FAIL:\\ the\\ exercise\\ does\\ not\\ run\\ the\\ same\\ from\\ its\\ artifacts",
+      "text": "echo \"  FAIL: the exercise does not run the same from its artifacts\""
+    },
+    {
+      "line": 1077,
+      "class": "tool",
+      "what": "tool",
+      "regex": "\\ \\ FAIL:\\ the\\ exercise\\ does\\ not\\ run\\ the\\ same\\ from\\ its\\ artifacts",
+      "text": "echo \"  FAIL: the exercise does not run the same from its artifacts\""
+    },
+    {
+      "line": 1113,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ .*?\\ proof\\ is\\ unmeasured",
+      "text": "echo \"  no python3 on this machine, so the $label proof is unmeasured\""
+    }
+  ],
+  "not_skips": [],
+  "pass_sentinel": {
+    "line": 1239,
+    "regex": "^the\\ std/websocket\\ exercise\\ holds",
+    "text": "echo \"the std/websocket exercise holds\""
+  },
+  "exec_evidence": [
+    {
+      "site_line": 63,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "84": "plain",
+        "106": "release"
+      },
+      "exec_lines": [
+        70,
+        126
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        68,
+        69
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1",
+        "exit"
+      ],
+      "refs_ok": []
+    }
+  ]
+}

@@ -1,0 +1,216 @@
+{
+  "census_version": 1,
+  "driver": "compress",
+  "script": "bench/std_compress_exercise.sh",
+  "script_sha256": "2534dc7e8f22826a3c379ca78349e526848efaa22ffb6fa9606d26de7cd3a26e",
+  "sites": [
+    {
+      "lines": [
+        158,
+        159
+      ],
+      "command": "build",
+      "kind": "canonical-own",
+      "contains": [
+        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_com"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        370
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build -o \"$WORK/$name\" \"$WORK/$name.iyi\" > \"$WOR"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        464,
+        465
+      ],
+      "command": "build",
+      "kind": "positive",
+      "contains": [
+        "if IYI_PATH=\"$WORK/small${PSEP}$REPO/src${PSEP}$REPO/samples"
+      ],
+      "variants": [
+        {
+          "id": "compress.positive.464",
+          "kind": "positive",
+          "first_root": "{WORK}/small",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_compress_exercise.iyi"
+          ],
+          "output": "{WORK}/small.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              465,
+              466,
+              468,
+              470
+            ],
+            "contains": [
+              "&& \"$WORK/small.bin\" >\"$WORK/small.out\" 2>&1 && gr",
+              "echo \"  segments of 70,001 bytes and a rebase past"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "lines": [
+        484,
+        485
+      ],
+      "command": "build",
+      "kind": "passthrough",
+      "contains": [
+        "if (cd \"$WORK/r1\" && \"$IYI\" build --emit-iyimod mods -o from"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        485,
+        486
+      ],
+      "command": "build",
+      "kind": "passthrough",
+      "contains": [
+        "&& \"$IYI\" build --use-iyimod mods -o from-artifact \"$REPO/be"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        497
+      ],
+      "command": "build",
+      "kind": "unchanged",
+      "contains": [
+        "if ! \"$IYI\" build --no-codegen --target \"$target\" -o \"$WORK/"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        503
+      ],
+      "command": "doc",
+      "kind": "unchanged",
+      "contains": [
+        "if \"$IYI\" doc \"$REPO/src/std/compress.iyi\" > \"$WORK/doc.out\""
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        509
+      ],
+      "command": "fmt",
+      "kind": "unchanged",
+      "contains": [
+        "if \"$IYI\" fmt --check \"$REPO/src/std/compress.iyi\" \"$REPO/be"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        546
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "elif ! IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/s"
+      ],
+      "variants": [
+        {
+          "id": "compress.negative.546",
+          "kind": "negative",
+          "first_root": "{WORK}/patched",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_compress_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-$mutations.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              547,
+              549,
+              551,
+              552,
+              554,
+              556,
+              557
+            ],
+            "contains": [
+              "echo \"  $label: the broken copy did not compile\"",
+              "status=1"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "non_invocations": [],
+  "skips": [
+    {
+      "line": 62,
+      "class": "tool",
+      "what": "python3",
+      "regex": "no\\ python3\\ on\\ this\\ machine:\\ the\\ zlib\\ oracle\\ cannot\\ be\\ written,\\ so\\ std/compress\\ goes\\ unmeasured",
+      "text": "echo \"no python3 on this machine: the zlib oracle cannot be written, so std/compress goes unmeasured\""
+    },
+    {
+      "line": 492,
+      "class": "tool",
+      "what": "tool",
+      "regex": "\\ \\ FAIL:\\ the\\ exercise\\ does\\ not\\ run\\ the\\ same\\ from\\ its\\ artifacts",
+      "text": "echo \"  FAIL: the exercise does not run the same from its artifacts\""
+    }
+  ],
+  "not_skips": [],
+  "pass_sentinel": {
+    "line": 601,
+    "regex": "^the\\ std/compress\\ exercise\\ holds",
+    "text": "echo \"the std/compress exercise holds\""
+  },
+  "exec_evidence": [
+    {
+      "site_line": 158,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "177": "plain",
+        "356": "release"
+      },
+      "exec_lines": [
+        165,
+        376
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        163,
+        164
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1",
+        "exit"
+      ],
+      "refs_ok": []
+    }
+  ]
+}

@@ -1,0 +1,266 @@
+{
+  "census_version": 1,
+  "driver": "regex",
+  "script": "bench/std_regex_exercise.sh",
+  "script_sha256": "fd36adcb44b5bb37b94f1f03b8806855b8651c8eba1a6768e225c8b7faca0823",
+  "sites": [
+    {
+      "lines": [
+        173,
+        174
+      ],
+      "command": "build",
+      "kind": "canonical-own",
+      "contains": [
+        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_reg"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        231
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build -o \"$WORK/$name\" \"$WORK/$name.iyi\" > \"$WOR"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        284
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if \"$IYI\" build -o \"$WORK/$name\" \"$WORK/$name.iyi\" > \"$WORK/"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        333
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if (cd \"$WORK/flags\" && \"$IYI\" build -o from-source main.iyi"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        336
+      ],
+      "command": "build",
+      "kind": "passthrough",
+      "contains": [
+        "(cd \"$WORK/flags\" && \"$IYI\" build --emit-iyimod mods -o emit"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        337
+      ],
+      "command": "build",
+      "kind": "passthrough",
+      "contains": [
+        "(cd \"$WORK/flags\" && \"$IYI\" build --use-iyimod mods -o from-"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        377
+      ],
+      "command": "build",
+      "kind": "passthrough",
+      "contains": [
+        "if (cd \"$WORK/lit\" && \"$IYI\" build --emit-iyimod mods -o fro"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        378
+      ],
+      "command": "build",
+      "kind": "passthrough",
+      "contains": [
+        "(cd \"$WORK/lit\" && \"$IYI\" build --use-iyimod mods -o from-ar"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        424
+      ],
+      "command": "run",
+      "kind": "negative",
+      "contains": [
+        "elif IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/sam"
+      ],
+      "variants": [
+        {
+          "id": "regex.negative.424",
+          "kind": "negative",
+          "first_root": "{WORK}/patched",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_regex_exercise.iyi"
+          ],
+          "output": null,
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              424,
+              425,
+              426,
+              427,
+              428,
+              430
+            ],
+            "contains": [
+              "elif IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP",
+              "elif [ -n \"$phrase\" ] && ! grep -qF -- \"$phrase\" \""
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "lines": [
+        522
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "if ! IYI_PATH=\"$path\" \"$IYI\" build -o \"$WORK/linear\" \"$WORK/"
+      ],
+      "variants": [
+        {
+          "id": "regex.negative.522",
+          "kind": "negative",
+          "first_root": "{WORK}/patched",
+          "vars": {
+            "path": {
+              "values": [
+                "$REPO/src${PSEP}$REPO/samples/iyi",
+                "$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/samples/iyi"
+              ],
+              "defined_at": "535, 555",
+              "text": "if bounded \"(a|a)*b\" \"$REPO/src${PSEP}$REPO/samples/iyi\"; then ... elif bounded \"a state joined more than once a step\" \"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/samples/iyi\"; then"
+            }
+          },
+          "sources": [
+            "{WORK}/linear.iyi"
+          ],
+          "output": "{WORK}/linear",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              522,
+              525,
+              533,
+              535,
+              538,
+              539,
+              555,
+              556,
+              557
+            ],
+            "contains": [
+              "if ! IYI_PATH=\"$path\" \"$IYI\" build -o \"$WORK/linea",
+              "[ \"$code\" -eq 0 ] && [ \"$(tr '\\n' ' ' < \"$WORK/lin"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "lines": [
+        575
+      ],
+      "command": "run",
+      "kind": "canonical-other",
+      "contains": [
+        "if \"$IYI\" run \"$WORK/script.iyi\" > \"$WORK/script.out\" 2>&1 &"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        592
+      ],
+      "command": "run",
+      "kind": "canonical-other",
+      "contains": [
+        "if \"$IYI\" run \"$WORK/walled.iyi\" > \"$WORK/walled.out\" 2>&1 &"
+      ],
+      "variants": []
+    }
+  ],
+  "non_invocations": [],
+  "skips": [
+    {
+      "line": 51,
+      "class": "platform",
+      "what": "python3",
+      "regex": "std/regex:\\ SKIPPED,\\ not\\ a\\ pass:\\ every\\ check\\ compares\\ against\\ oracle\\ cases\\ drawn\\ by\\ python3,\\ none\\ runs\\ here,\\ so\\ no\\ case\\ was\\ measured",
+      "text": "echo \"std/regex: SKIPPED, not a pass: every check compares against oracle cases drawn by python3, none runs here, so no case was measured\""
+    },
+    {
+      "line": 221,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ .*?:\\ skipped,\\ no\\ working\\ python3\\ to\\ write\\ the\\ probe\\ program\\ with",
+      "text": "echo \"  $label: skipped, no working python3 to write the probe program with\""
+    },
+    {
+      "line": 398,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ .*?:\\ skipped,\\ no\\ working\\ python3\\ to\\ make\\ the\\ broken\\ copy\\ with",
+      "text": "echo \"  $label: skipped, no working python3 to make the broken copy with\""
+    }
+  ],
+  "not_skips": [],
+  "pass_sentinel": {
+    "line": 602,
+    "regex": "^the\\ std/regex\\ exercise\\ holds",
+    "text": "echo \"the std/regex exercise holds\""
+  },
+  "exec_evidence": [
+    {
+      "site_line": 173,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "192": "plain",
+        "210": "release"
+      },
+      "exec_lines": [
+        180,
+        237
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        178,
+        179
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1",
+        "exit"
+      ],
+      "refs_ok": []
+    }
+  ]
+}

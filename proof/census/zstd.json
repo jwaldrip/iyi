@@ -1,0 +1,112 @@
+{
+  "census_version": 1,
+  "driver": "zstd",
+  "script": "bench/std_zstd_exercise.sh",
+  "script_sha256": "c033cd7067706bb1fb425dfa80c6c1bb44870e33069a2a0e7c55c6697e437c1f",
+  "sites": [
+    {
+      "lines": [
+        381,
+        382
+      ],
+      "command": "build",
+      "kind": "canonical-own",
+      "contains": [
+        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_zst"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        454
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build -o \"$WORK/$name\" \"$WORK/$name.iyi\" > \"$WOR"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        506
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "elif ! IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/s"
+      ],
+      "variants": [
+        {
+          "id": "zstd.negative.506",
+          "kind": "negative",
+          "first_root": "{WORK}/patched",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_zstd_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-$mutations.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              506,
+              509,
+              510,
+              512,
+              513,
+              516
+            ],
+            "contains": [
+              "elif ! IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PS",
+              "elif \"$WORK/mut-$mutations.bin\" \"data\" \"$WORK/fixt"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "non_invocations": [],
+  "skips": [
+    {
+      "line": 43,
+      "class": "platform",
+      "what": "go",
+      "regex": "no\\ python\\ with\\ compression\\.zstd\\ \\(3\\.14\\ or\\ later\\)\\ on\\ this\\ machine:\\ the\\ zstd\\ oracle\\ cannot\\ be\\ written,\\ so\\ std/zstd\\ goes\\ unmeasured",
+      "text": "echo \"no python with compression.zstd (3.14 or later) on this machine: the zstd oracle cannot be written, so std/zstd goes unmeasured\""
+    }
+  ],
+  "not_skips": [],
+  "pass_sentinel": {
+    "line": 588,
+    "regex": "^the\\ std/zstd\\ exercise\\ holds",
+    "text": "echo \"the std/zstd exercise holds\""
+  },
+  "exec_evidence": [
+    {
+      "site_line": 381,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "400": "plain",
+        "441": "release"
+      },
+      "exec_lines": [
+        388,
+        460
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        386,
+        387
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1",
+        "exit"
+      ],
+      "refs_ok": []
+    }
+  ]
+}

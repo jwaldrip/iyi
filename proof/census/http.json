@@ -1,0 +1,1037 @@
+{
+  "census_version": 1,
+  "driver": "http",
+  "script": "bench/std_http_exercise.sh",
+  "script_sha256": "16574ff3f49e871146ae059bb0cf763efac6d30da9a4eafea3aba2eadfcefd6d",
+  "sites": [
+    {
+      "lines": [
+        50,
+        51
+      ],
+      "command": "build",
+      "kind": "canonical-own",
+      "contains": [
+        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_htt"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        125
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build -o \"$WORK/$name\" \"$WORK/$name.iyi\" > \"$WOR"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        191
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if \"$IYI\" build -o \"$WORK/server\" \"$REPO/bench/std_http_serv"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        320
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build -o \"$WORK/reset_client\" \"$WORK/reset_clien"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        395
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build -o \"$WORK/py_client\" \"$WORK/py_client.iyi\""
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        683
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build -o \"$WORK/tls_client\" \"$WORK/tls_client.iy"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        729
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "if ! IYI_PATH=\"$WORK/tlsbreak${PSEP}$IYI_PATH\" \"$IYI\" build "
+      ],
+      "variants": [
+        {
+          "id": "http.negative.729",
+          "kind": "negative",
+          "first_root": "{WORK}/tlsbreak",
+          "vars": {},
+          "sources": [
+            "{WORK}/tls_client.iyi"
+          ],
+          "output": "{WORK}/tls_broken",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              729,
+              730,
+              731,
+              741,
+              744,
+              745
+            ],
+            "contains": [
+              "if ! IYI_PATH=\"$WORK/tlsbreak${PSEP}$IYI_PATH\" \"$I",
+              "echo \"  $label: the broken copy did not build\""
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "lines": [
+        760
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "elif ! IYI_PATH=\"$WORK/clear${PSEP}$IYI_PATH\" \"$IYI\" build -"
+      ],
+      "variants": [
+        {
+          "id": "http.negative.760",
+          "kind": "negative",
+          "first_root": "{WORK}/clear",
+          "vars": {},
+          "sources": [
+            "{WORK}/tls_client.iyi"
+          ],
+          "output": "{WORK}/tls_clear",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              760,
+              761,
+              762,
+              769,
+              770,
+              771
+            ],
+            "contains": [
+              "elif ! IYI_PATH=\"$WORK/clear${PSEP}$IYI_PATH\" \"$IY",
+              "echo \"  the client over the clear-text copy did no"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "lines": [
+        896
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "elif ! \"$IYI\" build --release -o \"$WORK/latency\" \"$REPO/benc"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        954
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "if ! IYI_PATH=\"$WORK/latencybreak${PSEP}$IYI_PATH\" \"$IYI\" bu"
+      ],
+      "variants": [
+        {
+          "id": "http.negative.954",
+          "kind": "negative",
+          "first_root": "{WORK}/latencybreak",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_latency.iyi"
+          ],
+          "output": "{WORK}/latency-broken",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              954,
+              955,
+              957,
+              963,
+              964,
+              965,
+              970,
+              971,
+              972
+            ],
+            "contains": [
+              "if ! IYI_PATH=\"$WORK/latencybreak${PSEP}$IYI_PATH\"",
+              "echo \"  $label: the broken copy did not build\""
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "lines": [
+        1079
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "elif ! \"$IYI\" build -o \"$WORK/stop\" \"$REPO/bench/std_http_st"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        1116
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "if ! IYI_PATH=\"$WORK/stopbreak${PSEP}$IYI_PATH\" \"$IYI\" build"
+      ],
+      "variants": [
+        {
+          "id": "http.negative.1116",
+          "kind": "negative",
+          "first_root": "{WORK}/stopbreak",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_stop.iyi"
+          ],
+          "output": "{WORK}/stop-broken",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              1116,
+              1117,
+              1119,
+              1128,
+              1131,
+              1132
+            ],
+            "contains": [
+              "if ! IYI_PATH=\"$WORK/stopbreak${PSEP}$IYI_PATH\" \"$",
+              "echo \"  $label: the broken copy did not build\""
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "lines": [
+        1185
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build -o \"$WORK/parallel\" \"$REPO/bench/std_http_"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        1213
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "if ! IYI_PATH=\"$WORK/parbreak${PSEP}$IYI_PATH\" \"$IYI\" build "
+      ],
+      "variants": [
+        {
+          "id": "http.negative.1213",
+          "kind": "negative",
+          "first_root": "{WORK}/parbreak",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_parallel.iyi"
+          ],
+          "output": "{WORK}/parallel-broken",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              1213,
+              1214,
+              1216,
+              1221,
+              1224,
+              1226
+            ],
+            "contains": [
+              "if ! IYI_PATH=\"$WORK/parbreak${PSEP}$IYI_PATH\" \"$I",
+              "echo \"  $label: the broken copy did not build\""
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "lines": [
+        1370
+      ],
+      "command": "build",
+      "kind": "unchanged",
+      "contains": [
+        "if \"$IYI\" build --no-codegen -o \"$WORK/refused\" \"$WORK/$file"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        1384
+      ],
+      "command": "build",
+      "kind": "unchanged",
+      "contains": [
+        "elif IYI_PATH=\"$WORK/refbreak${PSEP}$IYI_PATH\" \"$IYI\" build "
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        1396
+      ],
+      "command": "build",
+      "kind": "unchanged",
+      "contains": [
+        "if ! \"$IYI\" build --no-codegen -o \"$WORK/refused\" \"$WORK/$fi"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        1405
+      ],
+      "command": "build",
+      "kind": "unchanged",
+      "contains": [
+        "elif IYI_PATH=\"$WORK/refbreak${PSEP}$IYI_PATH\" \"$IYI\" build "
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        1596
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "elif ! \"$IYI\" build -o \"$WORK/resume\" \"$REPO/bench/std_http_"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        1649
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "if ! IYI_PATH=\"$WORK/resumebreak${PSEP}$IYI_PATH\" \"$IYI\" bui"
+      ],
+      "variants": [
+        {
+          "id": "http.negative.1649",
+          "kind": "negative",
+          "first_root": "{WORK}/resumebreak",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_resume.iyi"
+          ],
+          "output": "{WORK}/resume-broken",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              1649,
+              1650,
+              1652,
+              1664,
+              1667,
+              1668
+            ],
+            "contains": [
+              "if ! IYI_PATH=\"$WORK/resumebreak${PSEP}$IYI_PATH\" ",
+              "echo \"  $label: the broken copy did not build\""
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "lines": [
+        1709
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build -o \"$WORK/records\" \"$REPO/bench/std_http_h"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        1740
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "if ! IYI_PATH=\"$WORK/recordsbreak${PSEP}$IYI_PATH\" \"$IYI\" bu"
+      ],
+      "variants": [
+        {
+          "id": "http.negative.1740",
+          "kind": "negative",
+          "first_root": "{WORK}/recordsbreak",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_https_records.iyi"
+          ],
+          "output": "{WORK}/records-broken",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              1740,
+              1741,
+              1743,
+              1747,
+              1750,
+              1752
+            ],
+            "contains": [
+              "if ! IYI_PATH=\"$WORK/recordsbreak${PSEP}$IYI_PATH\"",
+              "echo \"  $label: the broken copy did not build\""
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "lines": [
+        1787
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build -o \"$H2BIN\" \"$REPO/bench/http2_exercise.iy"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        1800
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build --release -o \"$WORK/h2-release\" \"$REPO/ben"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        3263
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "elif ! \"$IYI\" build -o \"$WORK/proxy_origin\" \"$WORK/proxy_ori"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        3264
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "! \"$IYI\" build -o \"$WORK/proxy_client\" \"$WORK/proxy_client.i"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        3359
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "! \"$IYI\" build -o \"$WORK/proxy_table\" \"$WORK/proxy_table.iyi"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        3390
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "\"$IYI\" build --release -o \"$WORK/server-release\" \"$REPO/benc"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        3479
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "if ! IYI_CACHE_DIR=\"$P/cache\" IYI_PATH=\"$P${PSEP}$REPO/src${"
+      ],
+      "variants": [
+        {
+          "id": "http.negative.3479",
+          "kind": "negative",
+          "first_root": "$P",
+          "vars": {
+            "$P": {
+              "values": [
+                "$WORK/patched-1",
+                "$WORK/patched-2",
+                "$WORK/patched-3",
+                "$WORK/patched-4",
+                "$WORK/patched-5",
+                "$WORK/patched-6",
+                "$WORK/patched-7",
+                "$WORK/patched-8",
+                "$WORK/patched-9",
+                "$WORK/patched-10",
+                "$WORK/patched-11",
+                "$WORK/patched-12",
+                "$WORK/patched-13",
+                "$WORK/patched-14",
+                "$WORK/patched-15",
+                "$WORK/patched-16",
+                "$WORK/patched-17",
+                "$WORK/patched-18",
+                "$WORK/patched-19",
+                "$WORK/patched-20",
+                "$WORK/patched-21",
+                "$WORK/patched-22",
+                "$WORK/patched-23",
+                "$WORK/patched-24",
+                "$WORK/patched-25",
+                "$WORK/patched-26",
+                "$WORK/patched-27",
+                "$WORK/patched-28",
+                "$WORK/patched-29",
+                "$WORK/patched-30",
+                "$WORK/patched-31",
+                "$WORK/patched-32",
+                "$WORK/patched-33",
+                "$WORK/patched-34",
+                "$WORK/patched-35",
+                "$WORK/patched-36",
+                "$WORK/patched-37",
+                "$WORK/patched-38",
+                "$WORK/patched-39",
+                "$WORK/patched-40",
+                "$WORK/patched-41",
+                "$WORK/patched-42",
+                "$WORK/patched-43",
+                "$WORK/patched-44",
+                "$WORK/patched-45",
+                "$WORK/patched-46",
+                "$WORK/patched-47",
+                "$WORK/patched-48",
+                "$WORK/patched-49",
+                "$WORK/patched-50",
+                "$WORK/patched-51",
+                "$WORK/patched-52",
+                "$WORK/patched-53",
+                "$WORK/patched-54",
+                "$WORK/patched-55",
+                "$WORK/patched-56",
+                "$WORK/patched-57",
+                "$WORK/patched-58",
+                "$WORK/patched-59",
+                "$WORK/patched-60",
+                "$WORK/patched-61",
+                "$WORK/patched-62",
+                "$WORK/patched-63",
+                "$WORK/patched-64",
+                "$WORK/patched-65",
+                "$WORK/patched-66",
+                "$WORK/patched-67",
+                "$WORK/patched-68",
+                "$WORK/patched-69",
+                "$WORK/patched-70",
+                "$WORK/patched-71",
+                "$WORK/patched-72",
+                "$WORK/patched-73",
+                "$WORK/patched-74",
+                "$WORK/patched-75",
+                "$WORK/patched-76",
+                "$WORK/patched-77",
+                "$WORK/patched-78",
+                "$WORK/patched-79",
+                "$WORK/patched-80",
+                "$WORK/patched-81",
+                "$WORK/patched-82",
+                "$WORK/patched-83",
+                "$WORK/patched-84",
+                "$WORK/patched-85",
+                "$WORK/patched-86",
+                "$WORK/patched-87",
+                "$WORK/patched-88",
+                "$WORK/patched-89",
+                "$WORK/patched-90",
+                "$WORK/patched-91",
+                "$WORK/patched-92",
+                "$WORK/patched-93",
+                "$WORK/patched-94",
+                "$WORK/patched-95",
+                "$WORK/patched-96",
+                "$WORK/patched-97"
+              ],
+              "defined_at": "3453-3455",
+              "text": "mutations=$((mutations + 1)); local label=\"$1\" old=\"$2\" new=\"$3\" module=\"${4:-http.iyi}\" n=\"$mutations\"; local P=\"$WORK/patched-$n\""
+            }
+          },
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-$n.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3479,
+              3480,
+              3481,
+              3482,
+              3483,
+              3484,
+              3486,
+              3505
+            ],
+            "contains": [
+              "if ! IYI_CACHE_DIR=\"$P/cache\" IYI_PATH=\"$P${PSEP}$",
+              "mutation_said \"$n\" \"  $label: the broken copy did "
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "lines": [
+        3702
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "timeout 300 \"$IYI\" build -o \"$WORK/$name.bin\" \"$program\" >\"$"
+      ],
+      "variants": [
+        {
+          "id": "http.negative.3702",
+          "kind": "negative",
+          "first_root": "{WORK}/$name",
+          "vars": {
+            "$name": {
+              "values": [
+                "h2_stream_window",
+                "h2_conn_window",
+                "h2_peer_window",
+                "h2_preface",
+                "h2_cookies",
+                "h2_upgrade",
+                "h2_reset_closes",
+                "h2_gzip",
+                "h2_fields",
+                "h2_flood",
+                "h2_first",
+                "h2_frame_size",
+                "linger_h2",
+                "linger_head",
+                "linger_431",
+                "linger_body",
+                "close_nolinger",
+                "close_nohalf",
+                "close_nodrain",
+                "close_notify",
+                "close_client_tls",
+                "h2_stale",
+                "https_clear",
+                "https_plain",
+                "https_notify",
+                "guard_body",
+                "guard_h2",
+                "guard_cap",
+                "guard_leak",
+                "guard_head",
+                "mtls_h1",
+                "mtls_h2",
+                "mtls_upgrade",
+                "proxy_inside",
+                "proxy_connect_bare",
+                "proxy_no_tunnel",
+                "proxy_tunnel_key",
+                "proxy_upgrade_direct",
+                "proxy_upgrade_absolute"
+              ],
+              "defined_at": "3683-3684",
+              "text": "later() { local name=\"$1\" program=\"$2\" module=\"$3\" old=\"$4\" new=\"$5\""
+            }
+          },
+          "sources": [
+            "$program"
+          ],
+          "output": "{WORK}/$name.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3706,
+              3715,
+              3739,
+              3775,
+              3776,
+              3778,
+              3800,
+              3801,
+              3803,
+              3825,
+              3826,
+              3828,
+              3960,
+              3962,
+              3986,
+              4020,
+              4021,
+              4023,
+              4025,
+              4026,
+              4047,
+              4048,
+              4050,
+              4052,
+              4053,
+              4058,
+              4090,
+              4091,
+              4093,
+              4095,
+              4096,
+              4119,
+              4120,
+              4122,
+              4126,
+              4127
+            ],
+            "contains": [
+              "echo $? >\"$WORK/$name.built\"",
+              "[ \"$(cat \"$WORK/$1.built\" 2>/dev/null)\" = 0 ]"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "non_invocations": [],
+  "skips": [
+    {
+      "line": 201,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ skipped:\\ no\\ working\\ python3,\\ so\\ its\\ http\\.client\\ was\\ not\\ run\\ against\\ the\\ server",
+      "text": "echo \"  skipped: no working python3, so its http.client was not run against the server\""
+    },
+    {
+      "line": 301,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ skipped:\\ no\\ working\\ python3\\ to\\ reset\\ the\\ connection\\ with",
+      "text": "echo \"  skipped: no working python3 to reset the connection with\""
+    },
+    {
+      "line": 364,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ skipped:\\ no\\ working\\ python3\\ to\\ serve\\ with",
+      "text": "echo \"  skipped: no working python3 to serve with\""
+    },
+    {
+      "line": 529,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ skipped:\\ no\\ python3\\ with\\ ssl\\ and\\ cryptography\\ to\\ serve\\ TLS\\ with",
+      "text": "echo \"  skipped: no python3 with ssl and cryptography to serve TLS with\""
+    },
+    {
+      "line": 895,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ skipped:\\ the\\ https://\\ section\\ above\\ made\\ no\\ certificates\\ \\(no\\ python3\\ with\\ ssl\\ and\\ cryptography\\)",
+      "text": "echo \"  skipped: the https:// section above made no certificates (no python3 with ssl and cryptography)\""
+    },
+    {
+      "line": 938,
+      "class": "tool",
+      "what": "tool",
+      "regex": "\\ \\ .*?:\\ skipped,\\ as\\ the\\ check\\ that\\ names\\ it\\ is",
+      "text": "echo \"  $label: skipped, as the check that names it is\""
+    },
+    {
+      "line": 962,
+      "class": "platform",
+      "what": "tool",
+      "regex": "\\ \\ .*?:\\ unmeasured\\ at\\ \\\\\".*?\\\\\":\\ this\\ .*?\\ loopback\\ shows\\ no\\ stall\\ to\\ time,\\ as\\ Linux's\\ delayed\\ ACK\\ does",
+      "text": "echo \"  $label: unmeasured at \\\"$line\\\": this $(uname -s) loopback shows no stall to time, as Linux's delayed ACK does\""
+    },
+    {
+      "line": 1078,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ skipped:\\ the\\ https://\\ section\\ above\\ made\\ no\\ certificates\\ \\(no\\ python3\\ with\\ ssl\\ and\\ cryptography\\)",
+      "text": "echo \"  skipped: the https:// section above made no certificates (no python3 with ssl and cryptography)\""
+    },
+    {
+      "line": 1595,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ skipped:\\ the\\ https://\\ section\\ above\\ made\\ no\\ certificates\\ \\(no\\ python3\\ with\\ ssl\\ and\\ cryptography\\)",
+      "text": "echo \"  skipped: the https:// section above made no certificates (no python3 with ssl and cryptography)\""
+    },
+    {
+      "line": 1631,
+      "class": "tool",
+      "what": "tool",
+      "regex": "\\ \\ .*?:\\ skipped,\\ no\\ OpenSSL\\ here\\ to\\ read\\ the\\ ClientHello",
+      "text": "echo \"  $label: skipped, no OpenSSL here to read the ClientHello\""
+    },
+    {
+      "line": 1841,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ skipped:\\ no\\ server\\ built,\\ or\\ no\\ python3\\ to\\ write\\ frames\\ with",
+      "text": "echo \"  skipped: no server built, or no python3 to write frames with\""
+    },
+    {
+      "line": 2333,
+      "class": "platform",
+      "what": "python3",
+      "regex": "\\ \\ skipped:\\ no\\ server\\ built,\\ or\\ no\\ python3\\ to\\ be\\ the\\ client",
+      "text": "echo \"  skipped: no server built, or no python3 to be the client\""
+    },
+    {
+      "line": 2352,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ over\\ TLS:\\ skipped,\\ no\\ certificates\\ \\(no\\ python3\\ with\\ cryptography\\ to\\ make\\ them\\)",
+      "text": "echo \"  over TLS: skipped, no certificates (no python3 with cryptography to make them)\""
+    },
+    {
+      "line": 2453,
+      "class": "tool",
+      "what": "tool",
+      "regex": "\\ \\ skipped:\\ no\\ curl\\ that\\ speaks\\ HTTP/2",
+      "text": "echo \"  skipped: no curl that speaks HTTP/2\""
+    },
+    {
+      "line": 2492,
+      "class": "tool",
+      "what": "node",
+      "regex": "\\ \\ skipped:\\ no\\ node\\ to\\ be\\ the\\ client",
+      "text": "echo \"  skipped: no node to be the client\""
+    },
+    {
+      "line": 2543,
+      "class": "tool",
+      "what": "node",
+      "regex": "\\ \\ skipped:\\ no\\ node\\ to\\ be\\ the\\ server",
+      "text": "echo \"  skipped: no node to be the server\""
+    },
+    {
+      "line": 2623,
+      "class": "tool",
+      "what": "tool",
+      "regex": "\\ \\ TLS:\\ skipped:\\ no\\ certificate\\ from\\ the\\ https://\\ section\\ above",
+      "text": "echo \"  TLS: skipped: no certificate from the https:// section above\""
+    },
+    {
+      "line": 2771,
+      "class": "tool",
+      "what": "tool",
+      "regex": "\\ \\ skipped:\\ no\\ HTTP/2\\ exercise\\ or\\ no\\ Ed25519\\ certificate\\ from\\ the\\ https://\\ section\\ above",
+      "text": "echo \"  skipped: no HTTP/2 exercise or no Ed25519 certificate from the https:// section above\""
+    },
+    {
+      "line": 2980,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ skipped:\\ no\\ HTTPS\\ server\\ from\\ the\\ section\\ above,\\ or\\ no\\ python3\\ to\\ be\\ the\\ slow\\ clients",
+      "text": "echo \"  skipped: no HTTPS server from the section above, or no python3 to be the slow clients\""
+    },
+    {
+      "line": 3262,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ skipped:\\ no\\ python3,\\ or\\ no\\ certificate\\ from\\ the\\ https://\\ section\\ above",
+      "text": "echo \"  skipped: no python3, or no certificate from the https:// section above\""
+    },
+    {
+      "line": 3302,
+      "class": "tool",
+      "what": "tool",
+      "regex": "\\ \\ curl\\ is\\ not\\ installed",
+      "text": "echo \"  curl is not installed; its cross-check skipped\""
+    },
+    {
+      "line": 3357,
+      "class": "tool",
+      "what": "go",
+      "regex": "\\ \\ NO_PROXY\\ against\\ Go:\\ skipped,\\ no\\ Go\\ toolchain\\ \\(GO=.*?\\)",
+      "text": "echo \"  NO_PROXY against Go: skipped, no Go toolchain (GO=$GO)\""
+    },
+    {
+      "line": 3411,
+      "class": "tool",
+      "what": "wrk",
+      "regex": "\\ \\ wrk\\ is\\ not\\ installed",
+      "text": "echo \"  wrk is not installed; skipped\""
+    },
+    {
+      "line": 3774,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ .*?:\\ skipped,\\ no\\ HTTP/2\\ exercise\\ or\\ no\\ python3",
+      "text": "echo \"  $label: skipped, no HTTP/2 exercise or no python3\""
+    },
+    {
+      "line": 3799,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ .*?:\\ skipped,\\ no\\ HTTP/2\\ server,\\ python3\\ or\\ node",
+      "text": "echo \"  $label: skipped, no HTTP/2 server, python3 or node\""
+    },
+    {
+      "line": 3824,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ .*?:\\ skipped,\\ no\\ HTTP/2\\ server,\\ python3\\ or\\ frames\\ to\\ send\\ it",
+      "text": "echo \"  $label: skipped, no HTTP/2 server, python3 or frames to send it\""
+    },
+    {
+      "line": 3958,
+      "class": "tool",
+      "what": "tool",
+      "regex": "\\ \\ .*?:\\ skipped\\ with\\ the\\ close\\ cases",
+      "text": "echo \"  $label: skipped with the close cases\" >\"$WORK/closeres/$close_n\""
+    },
+    {
+      "line": 4019,
+      "class": "tool",
+      "what": "tool",
+      "regex": "\\ \\ .*?:\\ skipped,\\ no\\ HTTPS\\ server\\ to\\ break",
+      "text": "echo \"  $label: skipped, no HTTPS server to break\""
+    },
+    {
+      "line": 4046,
+      "class": "tool",
+      "what": "tool",
+      "regex": "\\ \\ .*?:\\ skipped\\ with\\ the\\ slow\\ clients'\\ section",
+      "text": "echo \"  $label: skipped with the slow clients' section\""
+    },
+    {
+      "line": 4089,
+      "class": "tool",
+      "what": "tool",
+      "regex": "\\ \\ .*?:\\ skipped,\\ no\\ HTTPS\\ server\\ to\\ break",
+      "text": "echo \"  $label: skipped, no HTTPS server to break\""
+    },
+    {
+      "line": 4116,
+      "class": "tool",
+      "what": "tool",
+      "regex": "\\ \\ .*?:\\ skipped,\\ no\\ proxy\\ round\\ to\\ break",
+      "text": "echo \"  $label: skipped, no proxy round to break\""
+    }
+  ],
+  "not_skips": [],
+  "pass_sentinel": {
+    "line": 4155,
+    "regex": "^the\\ std/http\\ exercise\\ holds",
+    "text": "echo \"the std/http exercise holds\""
+  },
+  "exec_evidence": [
+    {
+      "site_line": 50,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "69": "plain",
+        "87": "release"
+      },
+      "exec_lines": [
+        57,
+        131,
+        3690
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        55,
+        56
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1",
+        "exit"
+      ],
+      "refs_ok": []
+    }
+  ]
+}

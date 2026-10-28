@@ -1,0 +1,143 @@
+{
+  "census_version": 1,
+  "driver": "term",
+  "script": "bench/std_term_exercise.sh",
+  "script_sha256": "eb3cbe0ad09171b3359f2001c749c7c233563efe58907abf688cfe2c5ba1cd7a",
+  "sites": [
+    {
+      "lines": [
+        70,
+        71
+      ],
+      "command": "build",
+      "kind": "canonical-own",
+      "contains": [
+        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_ter"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        583
+      ],
+      "command": "run",
+      "kind": "canonical-other",
+      "contains": [
+        "if \"$IYI\" run \"$WORK/$name.iyi\" <\"$input\" >\"$WORK/$name.out\""
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        642,
+        643
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "if ! IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/sam"
+      ],
+      "variants": [
+        {
+          "id": "term.negative.642",
+          "kind": "negative",
+          "first_root": "{WORK}/patched",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_term_exercise.iyi"
+          ],
+          "output": "{WORK}/patched/program",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              642,
+              644,
+              646,
+              658,
+              659,
+              660,
+              661,
+              662,
+              666
+            ],
+            "contains": [
+              "  if ! IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PS",
+              "    echo \"  $label: the broken copy did not compil"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "non_invocations": [],
+  "skips": [
+    {
+      "line": 532,
+      "class": "tool",
+      "what": "tool",
+      "regex": "\\ \\ no\\ Python\\ pty,\\ termios\\ or\\ stty\\ on\\ this\\ machine,\\ so\\ the\\ terminal\\ half\\ is\\ unmeasured",
+      "text": "echo \"  no Python pty, termios or stty on this machine, so the terminal half is unmeasured\""
+    },
+    {
+      "line": 543,
+      "class": "tool",
+      "what": "tool",
+      "regex": "\\ \\ unmeasured,\\ as\\ above",
+      "text": "echo \"  unmeasured, as above\""
+    },
+    {
+      "line": 566,
+      "class": "platform",
+      "what": "tool",
+      "regex": "\\ \\ not\\ Linux,\\ or\\ no\\ nm:\\ unmeasured",
+      "text": "echo \"  not Linux, or no nm: unmeasured\""
+    },
+    {
+      "line": 623,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ .*?\\ proof\\ is\\ unmeasured",
+      "text": "echo \"  no python3 on this machine, so the $label proof is unmeasured\""
+    },
+    {
+      "line": 627,
+      "class": "tool",
+      "what": "tool",
+      "regex": "\\ \\ no\\ pseudo\\-terminal\\ here,\\ so\\ the\\ .*?\\ proof\\ is\\ unmeasured",
+      "text": "echo \"  no pseudo-terminal here, so the $label proof is unmeasured\""
+    }
+  ],
+  "not_skips": [],
+  "pass_sentinel": {
+    "line": 721,
+    "regex": "holds",
+    "text": "exit $status"
+  },
+  "exec_evidence": [
+    {
+      "site_line": 70,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "499": "plain",
+        "521": "release"
+      },
+      "exec_lines": [
+        77
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        75,
+        76
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1",
+        "exit"
+      ],
+      "refs_ok": []
+    }
+  ]
+}

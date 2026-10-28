@@ -9,35 +9,34 @@ Builds four artifact legs:
 Runs P, C1, C3 with IYI_OBSERVE pointing to that leg's trace.
 Checks:
   - Every build exits 0, and no build output names __iyi_effect_
-  - k1, k2, k3 have non-empty, equal portable.callpath and empty reach.mismatch
+  - k1, k2, k3: non-empty equal callpath, empty mismatch, phase=="linked", reach.checked==True
   - P against C1, and C1 against C3, pass R-1 rule:
       * Exit codes equal
       * Four exit-only exercises checked for exit equality only
       * Stdout must be strictly byte-for-byte equal
-      * Stderr must be byte-equal or pass compare_same_opt
+      * Stderr must be byte-equal or pass frames_equivalent.py CLI subprocess
   - No run output names __iyi_effect_, and every trace is non-empty
-  - nm -U defined symbols check on consumer binary
+  - nm -U defined symbols check on C1, C2, and C3 binaries
   - 2 workers, private sandboxes/caches per row, cleaned up on success
   - Stop if disk free space < 20 GB
+  - No assert statements (library rule).
 """
 
 from __future__ import annotations
 
 import argparse
-import contextlib
 import glob
-import io
 import json
 import os
-import re
+import platform
 import shutil
+import signal
 import subprocess
 import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-# Heavy exercises needing 300s runtime timeout instead of 60s
 HEAVY = {
     "bench/std_big_exercise.iyi",
     "bench/std_bzip2_exercise.iyi",
@@ -66,10 +65,7 @@ EXIT_ONLY_EXERCISES = {
     "std_weak_ref_exercise",
 }
 
-# All compiler builds have a 300s ceiling to prevent false timeouts under concurrent load
 BUILD_TIMEOUT = 300
-
-# Runtime ceilings per RG2 (60s default, 300s heavy)
 RUN_DEFAULT_TIMEOUT = 60
 RUN_HEAVY_TIMEOUT = 300
 
@@ -115,14 +111,57 @@ def clean_env(repo: str, cache_dir: str, warm: bool = False, extra: dict[str, st
     return env
 
 
-def check_defined_symbols(binary_path: str) -> list[str]:
-    if not os.path.exists(binary_path):
-        return []
+def run_session_proc(
+    cmd: list[str],
+    cwd: str,
+    env: dict[str, str],
+    timeout_sec: float,
+    stdin_devnull: bool = True,
+) -> tuple[int, bytes, bytes, bool]:
+    stdin = subprocess.DEVNULL if stdin_devnull else None
+    proc = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        env=env,
+        stdin=stdin,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    pgid = proc.pid
+    timed_out = False
+    stdout = b""
+    stderr = b""
     try:
-        proc = subprocess.run(["nm", "-U", binary_path], capture_output=True, text=True, check=True)
-        return [line.strip() for line in proc.stdout.splitlines() if "__iyi_effect_" in line]
-    except Exception as ex:
-        return [f"nm error: {ex}"]
+        stdout, stderr = proc.communicate(timeout=timeout_sec)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        time.sleep(0.5)
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        stdout, stderr = proc.communicate()
+
+    returncode = proc.returncode if proc.returncode is not None else -1
+    return returncode, stdout, stderr, timed_out
+
+
+def check_defined_symbols(binary_path: str, nm_bin: str = "nm") -> list[str]:
+    if not os.path.exists(binary_path):
+        raise RuntimeError(f"Binary does not exist for symbol scan: {binary_path}")
+    proc = subprocess.run([nm_bin, "-U", binary_path], capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        raise RuntimeError(f"{nm_bin} -U failed (exit {proc.returncode}): {proc.stderr.strip()}")
+    symbols = []
+    for line in proc.stdout.splitlines():
+        if "__iyi_effect_" in line:
+            symbols.append(line.strip())
+    return symbols
 
 
 def compare_r1(
@@ -133,7 +172,9 @@ def compare_r1(
     stderr_a: bytes,
     stdout_b: bytes,
     stderr_b: bytes,
-    compare_same_opt_fn,
+    repo_root: str,
+    pdir: str,
+    tag: str,
 ) -> tuple[bool, str]:
     if status_a != status_b:
         return False, f"exit status mismatch: {status_a} != {status_b}"
@@ -141,27 +182,44 @@ def compare_r1(
     if name in EXIT_ONLY_EXERCISES:
         return True, "exit-only check passed"
 
-    # Stdout must be strictly byte-for-byte identical across runs
+    # Stdout must be strictly byte-for-byte equal
     if stdout_a != stdout_b:
         diff_len = f"len {len(stdout_a)} != {len(stdout_b)}" if len(stdout_a) != len(stdout_b) else "differing bytes"
         return False, f"stdout mismatch ({diff_len})"
 
-    # Stderr must be byte-equal or satisfy strict compare_same_opt (frames_equivalent)
+    # Stderr must be byte-equal or satisfy frames_equivalent.py CLI
     if stderr_a == stderr_b:
         return True, "exact stdout and stderr match"
 
-    lines_err_a = stderr_a.splitlines(keepends=True)
-    lines_err_b = stderr_b.splitlines(keepends=True)
+    if platform.system() != "Darwin":
+        return False, "stderr differs (frames_equivalent CLI only available on Darwin)"
 
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        ret = compare_same_opt_fn(lines_err_a, lines_err_b)
+    # Write per-stream stderr files for frames_equivalent.py subprocess invocation
+    stderr_file_a = os.path.join(pdir, f"stderr_{tag}_a.out")
+    stderr_file_b = os.path.join(pdir, f"stderr_{tag}_b.out")
+    with open(stderr_file_a, "wb") as f:
+        f.write(stderr_a)
+    with open(stderr_file_b, "wb") as f:
+        f.write(stderr_b)
 
-    if ret == 0:
+    fe_script = os.path.join(repo_root, "bench/frames_equivalent.py")
+    if not os.path.isfile(fe_script):
+        raise RuntimeError(f"frames_equivalent.py not found at {fe_script}")
+
+    proc = subprocess.run(
+        [sys.executable, fe_script, stderr_file_a, stderr_file_b],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    if proc.returncode == 0:
         return True, "stdout byte-equal and stderr frames equivalent"
-    else:
-        violation = buf.getvalue().strip()
+    elif proc.returncode == 1:
+        violation = proc.stdout.strip() or proc.stderr.strip()
         return False, f"stderr frames equivalence failed: {violation}"
+    else:
+        raise RuntimeError(f"frames_equivalent.py crashed (exit {proc.returncode}): {proc.stderr.strip()}")
 
 
 def run_single_program(
@@ -169,7 +227,7 @@ def run_single_program(
     repo: str,
     compiler: str,
     work_root: str,
-    compare_same_opt_fn,
+    nm_bin: str = "nm",
 ) -> dict:
     check_disk_space(work_root, 20.0)
 
@@ -189,7 +247,6 @@ def run_single_program(
     os.makedirs(cache_c, exist_ok=True)
     os.makedirs(mods, exist_ok=True)
 
-    # Matching binary basenames under distinct subdirectories
     bin_name = prog_base
     p_bin = os.path.join(pdir, "p", bin_name)
     c1_bin = os.path.join(pdir, "c1", bin_name)
@@ -208,89 +265,62 @@ def run_single_program(
 
     run_timeout = run_timeout_for(rel)
     failures: list[str] = []
+    stop_condition: str | None = None
 
     # --- Leg P Build ---
     cmd_p = [compiler, "build", "-Diyi_observe", "--emit-iyimod", mods, "-o", p_bin, source]
-    try:
-        res_p_build = subprocess.run(
-            cmd_p,
-            cwd=repo,
-            env=clean_env(repo, cache_p, warm=False),
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=False,
-            timeout=BUILD_TIMEOUT,
-        )
-        if res_p_build.returncode != 0:
-            failures.append(f"P build failed (exit {res_p_build.returncode}): {res_p_build.stderr.decode(errors='replace')[-300:]}")
-        if b"__iyi_effect_" in res_p_build.stdout or b"__iyi_effect_" in res_p_build.stderr:
-            failures.append("P build output names __iyi_effect_")
-    except subprocess.TimeoutExpired:
-        res_p_build = None
+    rc, p_b_out, p_b_err, timed_out = run_session_proc(
+        cmd_p, cwd=repo, env=clean_env(repo, cache_p, warm=False), timeout_sec=BUILD_TIMEOUT
+    )
+    if timed_out:
         failures.append(f"P build timed out after {BUILD_TIMEOUT}s")
+    elif rc != 0:
+        failures.append(f"P build failed (exit {rc}): {p_b_err.decode(errors='replace')[-300:]}")
+    if b"__iyi_effect_" in p_b_out or b"__iyi_effect_" in p_b_err:
+        failures.append("P build output names __iyi_effect_")
 
     # --- Leg C1 Build ---
     cmd_c1 = [compiler, "build", "-Diyi_observe", "--use-iyimod", mods, "--stale-key", k1, "-o", c1_bin, source]
-    try:
-        res_c1_build = subprocess.run(
-            cmd_c1,
-            cwd=repo,
-            env=clean_env(repo, cache_c, warm=False),
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=False,
-            timeout=BUILD_TIMEOUT,
-        )
-        if res_c1_build.returncode != 0:
-            failures.append(f"C1 build failed (exit {res_c1_build.returncode}): {res_c1_build.stderr.decode(errors='replace')[-300:]}")
-        if b"__iyi_effect_" in res_c1_build.stdout or b"__iyi_effect_" in res_c1_build.stderr:
-            failures.append("C1 build output names __iyi_effect_")
-    except subprocess.TimeoutExpired:
-        res_c1_build = None
+    rc, c1_b_out, c1_b_err, timed_out = run_session_proc(
+        cmd_c1, cwd=repo, env=clean_env(repo, cache_c, warm=False), timeout_sec=BUILD_TIMEOUT
+    )
+    if timed_out:
         failures.append(f"C1 build timed out after {BUILD_TIMEOUT}s")
+    elif rc != 0:
+        failures.append(f"C1 build failed (exit {rc}): {c1_b_err.decode(errors='replace')[-300:]}")
+    if b"__iyi_effect_" in c1_b_out or b"__iyi_effect_" in c1_b_err:
+        failures.append("C1 build output names __iyi_effect_")
 
     # --- Leg C2 Build ---
     cmd_c2 = [compiler, "build", "-Diyi_observe", "--use-iyimod", mods, "--stale-key", k2, "-o", c2_bin, source]
-    try:
-        res_c2_build = subprocess.run(
-            cmd_c2,
-            cwd=repo,
-            env=clean_env(repo, cache_c, warm=False),
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=False,
-            timeout=BUILD_TIMEOUT,
-        )
-        if res_c2_build.returncode != 0:
-            failures.append(f"C2 build failed (exit {res_c2_build.returncode}): {res_c2_build.stderr.decode(errors='replace')[-300:]}")
-        if b"__iyi_effect_" in res_c2_build.stdout or b"__iyi_effect_" in res_c2_build.stderr:
-            failures.append("C2 build output names __iyi_effect_")
-    except subprocess.TimeoutExpired:
-        res_c2_build = None
+    rc, c2_b_out, c2_b_err, timed_out = run_session_proc(
+        cmd_c2, cwd=repo, env=clean_env(repo, cache_c, warm=False), timeout_sec=BUILD_TIMEOUT
+    )
+    if timed_out:
         failures.append(f"C2 build timed out after {BUILD_TIMEOUT}s")
+    elif rc != 0:
+        failures.append(f"C2 build failed (exit {rc}): {c2_b_err.decode(errors='replace')[-300:]}")
+    if b"__iyi_effect_" in c2_b_out or b"__iyi_effect_" in c2_b_err:
+        failures.append("C2 build output names __iyi_effect_")
 
     # --- Leg C3 Build (Warm) ---
     cmd_c3 = [compiler, "build", "-Diyi_observe", "--use-iyimod", mods, "--stale-key", k3, "-o", c3_bin, source]
-    try:
-        res_c3_build = subprocess.run(
-            cmd_c3,
-            cwd=repo,
-            env=clean_env(repo, cache_c, warm=True),
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=False,
-            timeout=BUILD_TIMEOUT,
-        )
-        if res_c3_build.returncode != 0:
-            failures.append(f"C3 build failed (exit {res_c3_build.returncode}): {res_c3_build.stderr.decode(errors='replace')[-300:]}")
-        if b"__iyi_effect_" in res_c3_build.stdout or b"__iyi_effect_" in res_c3_build.stderr:
-            failures.append("C3 build output names __iyi_effect_")
-    except subprocess.TimeoutExpired:
-        res_c3_build = None
+    rc, c3_b_out, c3_b_err, timed_out = run_session_proc(
+        cmd_c3, cwd=repo, env=clean_env(repo, cache_c, warm=True), timeout_sec=BUILD_TIMEOUT
+    )
+    if timed_out:
         failures.append(f"C3 build timed out after {BUILD_TIMEOUT}s")
+    elif rc != 0:
+        err_text = c3_b_err.decode(errors="replace")
+        if "cannot name it" in err_text:
+            stop_condition = f"C3 warm consumer refused on artifact name: {err_text[-300:]}"
+        failures.append(f"C3 build failed (exit {rc}): {err_text[-300:]}")
+    if b"__iyi_effect_" in c3_b_out or b"__iyi_effect_" in c3_b_err:
+        failures.append("C3 build output names __iyi_effect_")
 
     # --- Key Checks ---
     callpath1 = ""
+    not_reusable_count = 0
     if os.path.exists(k1) and os.path.exists(k2) and os.path.exists(k3):
         try:
             with open(k1, "r", encoding="utf-8") as f:
@@ -299,6 +329,12 @@ def run_single_program(
                 d2 = json.load(f)
             with open(k3, "r", encoding="utf-8") as f:
                 d3 = json.load(f)
+
+            for tag, d in [("k1", d1), ("k2", d2), ("k3", d3)]:
+                if d.get("phase") != "linked":
+                    failures.append(f"{tag} phase is '{d.get('phase')}', expected 'linked'")
+                if not d.get("reach", {}).get("checked"):
+                    failures.append(f"{tag} reach.checked is not True")
 
             cp1 = d1.get("portable", {}).get("callpath", "")
             cp2 = d2.get("portable", {}).get("callpath", "")
@@ -315,13 +351,28 @@ def run_single_program(
             m3 = d3.get("reach", {}).get("mismatch", [])
             if m1 or m2 or m3:
                 failures.append(f"Reach mismatch non-empty: m1={m1}, m2={m2}, m3={m3}")
+
+            not_reusable_count = len(d1.get("reach", {}).get("not_reusable", []))
+
         except Exception as ex:
             failures.append(f"Key parse error: {ex}")
     else:
         failures.append("One or more key files (k1, k2, k3) missing")
 
-    # --- Defined Symbols via nm -U ---
-    effect_symbols = check_defined_symbols(c1_bin)
+    # --- Defined Symbols via nm -U on C1, C2, and C3 ---
+    all_effect_symbols: list[str] = []
+    for c_tag, c_bin in [("C1", c1_bin), ("C2", c2_bin), ("C3", c3_bin)]:
+        if os.path.exists(c_bin):
+            try:
+                syms = check_defined_symbols(c_bin, nm_bin)
+                if syms:
+                    stop_condition = f"Defined __iyi_effect_ symbols found in {c_tag} binary: {syms}"
+                    failures.append(stop_condition)
+                all_effect_symbols.extend([f"{c_tag}:{s}" for s in syms])
+            except RuntimeError as ex:
+                failures.append(f"{c_tag} symbol scan failed: {ex}")
+        else:
+            failures.append(f"{c_tag} binary does not exist at {c_bin}")
 
     # --- Runs of P, C1, C3 ---
     p_run_exit = None
@@ -329,115 +380,104 @@ def run_single_program(
     c3_run_exit = None
 
     builds_ok = (
-        res_p_build is not None and res_p_build.returncode == 0
-        and res_c1_build is not None and res_c1_build.returncode == 0
-        and res_c3_build is not None and res_c3_build.returncode == 0
+        os.path.exists(p_bin)
+        and os.path.exists(c1_bin)
+        and os.path.exists(c3_bin)
+        and len(failures) == 0
     )
 
     if builds_ok:
-        # Prepare run environments and sandboxes
-        if is_std:
-            sandbox_p = os.path.join(pdir, "sandbox_p")
-            sandbox_c1 = os.path.join(pdir, "sandbox_c1")
-            sandbox_c3 = os.path.join(pdir, "sandbox_c3")
-            for sb in [sandbox_p, sandbox_c1, sandbox_c3]:
-                os.makedirs(sb, exist_ok=True)
-            run_cwd = pdir
-            env_p_extra = {"IYI_OBSERVE": p_trace, "IYI_FILE_SANDBOX": sandbox_p}
-            env_c1_extra = {"IYI_OBSERVE": c1_trace, "IYI_FILE_SANDBOX": sandbox_c1}
-            env_c3_extra = {"IYI_OBSERVE": c3_trace, "IYI_FILE_SANDBOX": sandbox_c3}
-        else:
-            samples_copy = os.path.join(pdir, "samples")
-            shutil.copytree(os.path.join(repo, "samples/iyi"), samples_copy)
-            run_cwd = samples_copy
-            env_p_extra = {"IYI_OBSERVE": p_trace}
-            env_c1_extra = {"IYI_OBSERVE": c1_trace}
-            env_c3_extra = {"IYI_OBSERVE": c3_trace}
+        # Recreate fresh sandbox / copytree before every single run
+        sandbox_dir = os.path.join(pdir, "row_sandbox")
+
+        def reset_sandbox() -> str:
+            if os.path.exists(sandbox_dir):
+                shutil.rmtree(sandbox_dir, ignore_errors=True)
+            if is_std:
+                os.makedirs(sandbox_dir, exist_ok=True)
+                return sandbox_dir
+            else:
+                shutil.copytree(os.path.join(repo, "samples/iyi"), sandbox_dir)
+                return sandbox_dir
 
         # Run P
-        try:
-            res_p_run = subprocess.run(
-                [p_bin],
-                cwd=run_cwd,
-                env=clean_env(repo, cache_p, warm=False, extra=env_p_extra),
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=False,
-                timeout=run_timeout,
-            )
-            p_run_exit = res_p_run.returncode
-        except subprocess.TimeoutExpired:
-            res_p_run = None
+        run_cwd = reset_sandbox()
+        env_extra = {"IYI_OBSERVE": p_trace}
+        if is_std:
+            env_extra["IYI_FILE_SANDBOX"] = sandbox_dir
+
+        rc_p, p_r_out, p_r_err, timed_out = run_session_proc(
+            [p_bin], cwd=run_cwd, env=clean_env(repo, cache_p, warm=False, extra=env_extra), timeout_sec=run_timeout
+        )
+        if timed_out:
             failures.append(f"P run timed out after {run_timeout}s")
+        p_run_exit = rc_p
 
         # Run C1
-        try:
-            res_c1_run = subprocess.run(
-                [c1_bin],
-                cwd=run_cwd,
-                env=clean_env(repo, cache_c, warm=False, extra=env_c1_extra),
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=False,
-                timeout=run_timeout,
-            )
-            c1_run_exit = res_c1_run.returncode
-        except subprocess.TimeoutExpired:
-            res_c1_run = None
+        run_cwd = reset_sandbox()
+        env_extra = {"IYI_OBSERVE": c1_trace}
+        if is_std:
+            env_extra["IYI_FILE_SANDBOX"] = sandbox_dir
+
+        rc_c1, c1_r_out, c1_r_err, timed_out = run_session_proc(
+            [c1_bin], cwd=run_cwd, env=clean_env(repo, cache_c, warm=False, extra=env_extra), timeout_sec=run_timeout
+        )
+        if timed_out:
             failures.append(f"C1 run timed out after {run_timeout}s")
+        c1_run_exit = rc_c1
 
         # Run C3 (Warm)
-        try:
-            res_c3_run = subprocess.run(
-                [c3_bin],
-                cwd=run_cwd,
-                env=clean_env(repo, cache_c, warm=True, extra=env_c3_extra),
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=False,
-                timeout=run_timeout,
-            )
-            c3_run_exit = res_c3_run.returncode
-        except subprocess.TimeoutExpired:
-            res_c3_run = None
+        run_cwd = reset_sandbox()
+        env_extra = {"IYI_OBSERVE": c3_trace}
+        if is_std:
+            env_extra["IYI_FILE_SANDBOX"] = sandbox_dir
+
+        rc_c3, c3_r_out, c3_r_err, timed_out = run_session_proc(
+            [c3_bin], cwd=run_cwd, env=clean_env(repo, cache_c, warm=True, extra=env_extra), timeout_sec=run_timeout
+        )
+        if timed_out:
             failures.append(f"C3 run timed out after {run_timeout}s")
+        c3_run_exit = rc_c3
 
         # Check outputs for __iyi_effect_
-        for tag, r in [("P", res_p_run), ("C1", res_c1_run), ("C3", res_c3_run)]:
-            if r is not None:
-                if b"__iyi_effect_" in r.stdout or b"__iyi_effect_" in r.stderr:
-                    failures.append(f"{tag} run output names __iyi_effect_")
+        for tag, out_b, err_b in [("P", p_r_out, p_r_err), ("C1", c1_r_out, c1_r_err), ("C3", c3_r_out, c3_r_err)]:
+            if b"__iyi_effect_" in out_b or b"__iyi_effect_" in err_b:
+                failures.append(f"{tag} run output names __iyi_effect_")
 
         # Check traces non-empty
         for tag, tpath in [("P", p_trace), ("C1", c1_trace), ("C3", c3_trace)]:
             if not os.path.exists(tpath) or os.path.getsize(tpath) == 0:
                 failures.append(f"{tag} trace missing or empty ({tpath})")
 
-        # R-1 comparison: P vs C1, and C1 vs C3 (stdout byte-equal + stderr frames_equivalent)
-        if res_p_run is not None and res_c1_run is not None:
+        # R-1 comparison: P vs C1, and C1 vs C3
+        if p_run_exit is not None and c1_run_exit is not None:
             ok_pc1, msg_pc1 = compare_r1(
                 prog_base,
-                res_p_run.returncode,
-                res_c1_run.returncode,
-                res_p_run.stdout,
-                res_p_run.stderr,
-                res_c1_run.stdout,
-                res_c1_run.stderr,
-                compare_same_opt_fn,
+                p_run_exit,
+                c1_run_exit,
+                p_r_out,
+                p_r_err,
+                c1_r_out,
+                c1_r_err,
+                repo,
+                pdir,
+                "pc1",
             )
             if not ok_pc1:
                 failures.append(f"R-1 [P vs C1] {msg_pc1}")
 
-        if res_c1_run is not None and res_c3_run is not None:
+        if c1_run_exit is not None and c3_run_exit is not None:
             ok_c1c3, msg_c1c3 = compare_r1(
                 prog_base,
-                res_c1_run.returncode,
-                res_c3_run.returncode,
-                res_c1_run.stdout,
-                res_c1_run.stderr,
-                res_c3_run.stdout,
-                res_c3_run.stderr,
-                compare_same_opt_fn,
+                c1_run_exit,
+                c3_run_exit,
+                c1_r_out,
+                c1_r_err,
+                c3_r_out,
+                c3_r_err,
+                repo,
+                pdir,
+                "c1c3",
             )
             if not ok_c1c3:
                 failures.append(f"R-1 [C1 vs C3] {msg_c1c3}")
@@ -445,25 +485,29 @@ def run_single_program(
     p_nonzero = bool(is_std and p_run_exit is not None and p_run_exit != 0)
 
     # Cleanup per row on success
-    if not failures:
+    if not failures and not stop_condition:
         shutil.rmtree(pdir, ignore_errors=True)
 
     check_disk_space(work_root, 20.0)
+
+    status = "STOP" if stop_condition else ("PASS" if not failures else "FAIL")
 
     return {
         "source": source,
         "name": rel,
         "base": prog_base,
         "kind": "std" if is_std else "sample",
-        "status": "PASS" if not failures else "FAIL",
+        "status": status,
         "failures": failures,
+        "stop_condition": stop_condition,
         "p_exit": p_run_exit,
         "c1_exit": c1_run_exit,
         "c3_exit": c3_run_exit,
         "callpath": callpath1,
-        "effect_symbols": effect_symbols,
+        "not_reusable_count": not_reusable_count,
+        "effect_symbols": all_effect_symbols,
         "p_nonzero": p_nonzero,
-        "preserved_dir": pdir if failures else None,
+        "preserved_dir": pdir if (failures or stop_condition) else None,
     }
 
 
@@ -474,7 +518,6 @@ def main() -> None:
     parser.add_argument("--work", default="/tmp/iyi_artifact_legs", help="Scratch work directory")
     parser.add_argument("--report", default="", help="Path to write JSONL results")
     parser.add_argument("--workers", type=int, default=2, help="Number of concurrent workers (default 2)")
-    parser.add_argument("--filter", default="", help="Filter substring for programs")
     args = parser.parse_args()
 
     repo = os.path.abspath(args.repo)
@@ -482,28 +525,18 @@ def main() -> None:
     work = os.path.abspath(args.work)
     os.makedirs(work, exist_ok=True)
 
-    bench_dir = os.path.join(repo, "bench")
-    if bench_dir not in sys.path:
-        sys.path.insert(0, bench_dir)
-    try:
-        from frames_equivalent import compare_same_opt
-    except ImportError as e:
-        sys.stderr.write(f"ERROR: Cannot import frames_equivalent from {bench_dir}: {e}\n")
-        sys.exit(1)
-
     c2_samples = sorted(glob.glob(os.path.join(repo, "samples/iyi/*.iyi")))
     c3_std = sorted(glob.glob(os.path.join(repo, "bench/std_*_exercise.iyi")))
 
     print(f"Asserting corpus counts: samples={len(c2_samples)} (expected 27), std={len(c3_std)} (expected 114)")
-    assert len(c2_samples) == 27, f"Expected exactly 27 samples, found {len(c2_samples)}"
-    assert len(c3_std) == 114, f"Expected exactly 114 std exercises, found {len(c3_std)}"
+    if len(c2_samples) != 27:
+        raise ValueError(f"Expected exactly 27 samples, found {len(c2_samples)}")
+    if len(c3_std) != 114:
+        raise ValueError(f"Expected exactly 114 std exercises, found {len(c3_std)}")
 
     all_programs = c2_samples + c3_std
-    assert len(all_programs) == 141, f"Expected exactly 141 corpus programs, found {len(all_programs)}"
-
-    if args.filter:
-        all_programs = [p for p in all_programs if args.filter in p]
-        print(f"Filtered corpus to {len(all_programs)} programs matching '{args.filter}'")
+    if len(all_programs) != 141:
+        raise ValueError(f"Expected exactly 141 corpus programs, found {len(all_programs)}")
 
     print(f"Starting Run 2 over {len(all_programs)} programs with {args.workers} workers...")
     print(f"Work directory: {work}")
@@ -512,7 +545,7 @@ def main() -> None:
     print_lock = threading.Lock()
 
     def task_fn(src: str):
-        res = run_single_program(src, repo, compiler, work, compare_same_opt)
+        res = run_single_program(src, repo, compiler, work)
         with print_lock:
             status_tag = f"[{res['status']}]"
             extra = ""
@@ -528,7 +561,6 @@ def main() -> None:
         for r in pool.map(task_fn, all_programs):
             results.append(r)
 
-    # Write report if requested
     if args.report:
         report_path = os.path.abspath(args.report)
         os.makedirs(os.path.dirname(report_path), exist_ok=True)
@@ -537,21 +569,24 @@ def main() -> None:
                 f.write(json.dumps(r) + "\n")
         print(f"Report written to {report_path}")
 
-    # Summary
     total = len(results)
     passed = sum(1 for r in results if r["status"] == "PASS")
-    failed = sum(1 for r in results if r["status"] != "PASS")
+    stops = sum(1 for r in results if r["status"] == "STOP")
+    failed = sum(1 for r in results if r["status"] not in ("PASS", "STOP"))
     p_nonzeros = [r["name"] for r in results if r["p_nonzero"]]
 
     print("\n" + "=" * 60)
-    print(f"RUN 2 SUMMARY: total={total} passed={passed} failed={failed}")
+    print(f"RUN 2 SUMMARY: total={total} passed={passed} failed={failed} stops={stops}")
     if p_nonzeros:
         print(f"  P-nonzero programs requiring Run 3 proof ({len(p_nonzeros)}):")
         for pnz in p_nonzeros:
             print(f"    - {pnz}")
     print("=" * 60)
 
-    if failed > 0:
+    if stops > 0:
+        print(f"RUN 2 STOP TRIGGERED: {stops} programs hit stop condition", file=sys.stderr)
+        sys.exit(1)
+    elif failed > 0:
         print(f"RUN 2 FAILED: {failed} programs failed", file=sys.stderr)
         sys.exit(1)
     else:

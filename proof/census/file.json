@@ -1,0 +1,773 @@
+{
+  "census_version": 1,
+  "driver": "file",
+  "script": "bench/std_file_exercise.sh",
+  "script_sha256": "ce307c64f1ccc50726534859fb77e50830d4f6374053df1f412963746113d93d",
+  "sites": [
+    {
+      "lines": [
+        65,
+        66
+      ],
+      "command": "build",
+      "kind": "canonical-own",
+      "contains": [
+        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_fil"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        169
+      ],
+      "command": "run",
+      "kind": "negative",
+      "contains": [
+        "\"$IYI\" run \"$REPO/bench/std_file_exercise.iyi\" -- \"$WORK/$di"
+      ],
+      "variants": [
+        {
+          "id": "file.negative.169",
+          "kind": "negative",
+          "first_root": "{WORK}/$dir",
+          "vars": {
+            "$dir": {
+              "values": [
+                "predictable",
+                "follows"
+              ],
+              "defined_at": "140-141",
+              "text": "tempfile_broken() { # tempfile_broken <label> <dir> <phrase> <exclusive: yes|no>\n  local label=\"$1\" dir=\"$2\" phrase=\"$3\" exclusive=\"$4\""
+            }
+          },
+          "sources": [
+            "{REPO}/bench/std_file_exercise.iyi"
+          ],
+          "output": null,
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              170,
+              171,
+              172,
+              173,
+              174,
+              175,
+              176,
+              177
+            ],
+            "contains": [
+              "    echo \"  $label: the exercise PASSED on a broke",
+              "    status=1"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "lines": [
+        200
+      ],
+      "command": "run",
+      "kind": "negative",
+      "contains": [
+        "\"$IYI\" run \"$REPO/bench/std_file_exercise.iyi\" -- \"$WORK/sta"
+      ],
+      "variants": [
+        {
+          "id": "file.negative.200",
+          "kind": "negative",
+          "first_root": "{WORK}/stale",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_file_exercise.iyi"
+          ],
+          "output": null,
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              201,
+              202,
+              203,
+              204,
+              205,
+              206,
+              207,
+              208
+            ],
+            "contains": [
+              "    echo \"  a seek that keeps the read-ahead: the ",
+              "    status=1"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "lines": [
+        230
+      ],
+      "command": "run",
+      "kind": "negative",
+      "contains": [
+        "\"$IYI\" run \"$REPO/bench/std_file_exercise.iyi\" -- \"$WORK/$2-"
+      ],
+      "variants": [
+        {
+          "id": "file.negative.230",
+          "kind": "negative",
+          "first_root": "{WORK}/$2",
+          "vars": {
+            "$2": {
+              "values": [
+                "star_sep",
+                "q_byte",
+                "brace_text",
+                "class_neg",
+                "dir_onto_file",
+                "no_escape"
+              ],
+              "defined_at": "214",
+              "text": "match_broken() { # match_broken <label> <dir> <old> <new> <phrase>"
+            }
+          },
+          "sources": [
+            "{REPO}/bench/std_file_exercise.iyi"
+          ],
+          "output": null,
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              231,
+              232,
+              233,
+              234,
+              235,
+              236,
+              237,
+              238
+            ],
+            "contains": [
+              "    echo \"  $1: the exercise PASSED on a broken mo",
+              "    status=1"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "lines": [
+        282
+      ],
+      "command": "run",
+      "kind": "negative",
+      "contains": [
+        "elif IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/sam"
+      ],
+      "variants": [
+        {
+          "id": "file.negative.282",
+          "kind": "negative",
+          "first_root": "{WORK}/patched",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_file_exercise.iyi"
+          ],
+          "output": null,
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              283,
+              284,
+              285,
+              286
+            ],
+            "contains": [
+              "  echo \"  the exercise PASSED on a broken module\"",
+              "  status=1"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "lines": [
+        305
+      ],
+      "command": "run",
+      "kind": "negative",
+      "contains": [
+        "elif IYI_PATH=\"$WORK/patched_touch${PSEP}$REPO/src${PSEP}$RE"
+      ],
+      "variants": [
+        {
+          "id": "file.negative.305",
+          "kind": "negative",
+          "first_root": "{WORK}/patched_touch",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_file_exercise.iyi"
+          ],
+          "output": null,
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              306,
+              307,
+              308,
+              309
+            ],
+            "contains": [
+              "  echo \"  the exercise PASSED on a truncating touc",
+              "  status=1"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "lines": [
+        349
+      ],
+      "command": "run",
+      "kind": "negative",
+      "contains": [
+        "elif IYI_PATH=\"$WORK/patched_time${PSEP}$REPO/src${PSEP}$REP"
+      ],
+      "variants": [
+        {
+          "id": "file.negative.349",
+          "kind": "negative",
+          "first_root": "{WORK}/patched_time",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_file_exercise.iyi"
+          ],
+          "output": null,
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              350,
+              351,
+              352,
+              353,
+              354,
+              355,
+              356,
+              357
+            ],
+            "contains": [
+              "  echo \"  the exercise PASSED on a touch that igno",
+              "  status=1"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "lines": [
+        377
+      ],
+      "command": "run",
+      "kind": "negative",
+      "contains": [
+        "elif IYI_PATH=\"$WORK/patched_lines${PSEP}$REPO/src${PSEP}$RE"
+      ],
+      "variants": [
+        {
+          "id": "file.negative.377",
+          "kind": "negative",
+          "first_root": "{WORK}/patched_lines",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_file_exercise.iyi"
+          ],
+          "output": null,
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              378,
+              379,
+              380,
+              381,
+              382,
+              383,
+              384,
+              385
+            ],
+            "contains": [
+              "  echo \"  the exercise PASSED on an each_line that",
+              "  status=1"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "lines": [
+        428
+      ],
+      "command": "run",
+      "kind": "negative",
+      "contains": [
+        "\"$IYI\" run \"$REPO/bench/std_file_exercise.iyi\" -- \"$WORK/$2-"
+      ],
+      "variants": [
+        {
+          "id": "file.negative.428",
+          "kind": "negative",
+          "first_root": "{WORK}/$2",
+          "vars": {
+            "$2": {
+              "values": [
+                "lone_cr",
+                "no_append",
+                "rplus_trunc",
+                "wplus_keep",
+                "aplus_noread",
+                "lock_contention",
+                "lock_kept",
+                "lock_nowait",
+                "lock_block",
+                "perm_dropped",
+                "append_seek",
+                "touch_unread",
+                "exists_read"
+              ],
+              "defined_at": "417-418",
+              "text": "exercise_broken() { # exercise_broken <label> <dir> <std|prelude> <old> <new> <phrase>"
+            }
+          },
+          "sources": [
+            "{REPO}/bench/std_file_exercise.iyi"
+          ],
+          "output": null,
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              429,
+              430,
+              431,
+              432,
+              433,
+              434,
+              435,
+              436
+            ],
+            "contains": [
+              "    echo \"  $1: the exercise PASSED on a broken mo",
+              "    status=1"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "lines": [
+        560
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build -o \"$WORK/$name\" \"$WORK/$name.iyi\" > \"$WOR"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        628
+      ],
+      "command": "build",
+      "kind": "positive",
+      "contains": [
+        "if ! IYI_PATH=\"$WORK/$2${PSEP}$REPO/src${PSEP}$REPO/samples/"
+      ],
+      "variants": [
+        {
+          "id": "file.positive.628",
+          "kind": "positive",
+          "first_root": "{WORK}/$2",
+          "vars": {
+            "$2": {
+              "values": [
+                "nul_cut",
+                "realpath_through"
+              ],
+              "defined_at": "616-617",
+              "text": "refusal_broken() { # refusal_broken <label> <dir> <std|prelude> <old> <new> <expression>"
+            }
+          },
+          "sources": [
+            "{WORK}/$2-prog.iyi"
+          ],
+          "output": "{WORK}/$2-prog",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              629,
+              630,
+              631,
+              632,
+              633,
+              635,
+              636
+            ],
+            "contains": [
+              "    echo \"  $1: the broken copy did not build\"",
+              "    sed -n '1,10p' \"$WORK/$2-prog.build\""
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "lines": [
+        651
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build -o \"$WORK/fifo_exists\" \"$WORK/fifo_exists."
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        668
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "elif ! IYI_PATH=\"$WORK/fifo_wait${PSEP}$REPO/src${PSEP}$REPO"
+      ],
+      "variants": [
+        {
+          "id": "file.negative.668",
+          "kind": "negative",
+          "first_root": "{WORK}/fifo_wait",
+          "vars": {},
+          "sources": [
+            "{WORK}/fifo_exists.iyi"
+          ],
+          "output": "{WORK}/fifo_wait-prog",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              669,
+              670,
+              672,
+              673,
+              674,
+              676,
+              677
+            ],
+            "contains": [
+              "    echo \"  an exists? that opens a FIFO to read: ",
+              "    status=1"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "lines": [
+        713
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build -o \"$WORK/locked_read\" \"$WORK/locked_read."
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        714
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "! \"$IYI\" build -o \"$WORK/locked_write\" \"$WORK/locked_write.i"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        758
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build -o \"$WORK/deny_same\" \"$WORK/deny_same.iyi\""
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        781
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "elif ! \"$IYI\" build -o \"$WORK/junction_delete\" \"$WORK/juncti"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        797
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build -o \"$WORK/hidden_write\" \"$WORK/hidden_writ"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        819
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build -o \"$WORK/access\" \"$WORK/access.iyi\" > \"$W"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        849
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "elif ! \"$IYI\" build -o \"$WORK/held\" \"$WORK/held.iyi\" > \"$WOR"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        867
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build -o \"$WORK/reparse_kind\" \"$WORK/reparse_kin"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        868
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "! \"$IYI\" build -o \"$WORK/dangling\" \"$WORK/dangling.iyi\" > \"$"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        910
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "elif ! \"$IYI\" build -o \"$WORK/readlink\" \"$WORK/readlink.iyi\""
+      ],
+      "variants": []
+    }
+  ],
+  "non_invocations": [],
+  "skips": [
+    {
+      "line": 143,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ .*?:\\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ proof\\ is\\ unmeasured",
+      "text": "echo \"  $label: no python3 on this machine, so the proof is unmeasured\""
+    },
+    {
+      "line": 184,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ a\\ seek\\ that\\ keeps\\ the\\ read\\-ahead:\\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ proof\\ is\\ unmeasured",
+      "text": "echo \"  a seek that keeps the read-ahead: no python3 on this machine, so the proof is unmeasured\""
+    },
+    {
+      "line": 216,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ .*?:\\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ proof\\ is\\ unmeasured",
+      "text": "echo \"  $1: no python3 on this machine, so the proof is unmeasured\""
+    },
+    {
+      "line": 257,
+      "class": "platform",
+      "what": "tool",
+      "regex": "\\ \\ a\\ planted\\ symlink:\\ not\\ measured\\ here,\\ this\\ account\\ may\\ not\\ make\\ a\\ symlink\\ \\(not\\ an\\ administrator,\\ no\\ Developer\\ Mode\\)",
+      "text": "echo \"  a planted symlink: not measured here, this account may not make a symlink (not an administrator, no Developer Mode)\""
+    },
+    {
+      "line": 270,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ broken\\-module\\ proof\\ is\\ unmeasured",
+      "text": "echo \"  no python3 on this machine, so the broken-module proof is unmeasured\""
+    },
+    {
+      "line": 293,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ broken\\-module\\ proof\\ is\\ unmeasured",
+      "text": "echo \"  no python3 on this machine, so the broken-module proof is unmeasured\""
+    },
+    {
+      "line": 336,
+      "class": "platform",
+      "what": "python3",
+      "regex": "\\ \\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ broken\\-module\\ proof\\ is\\ unmeasured",
+      "text": "echo \"  no python3 on this machine, so the broken-module proof is unmeasured\""
+    },
+    {
+      "line": 364,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ each_line\\ proof\\ is\\ unmeasured",
+      "text": "echo \"  no python3 on this machine, so the each_line proof is unmeasured\""
+    },
+    {
+      "line": 420,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ .*?:\\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ proof\\ is\\ unmeasured",
+      "text": "echo \"  $1: no python3 on this machine, so the proof is unmeasured\""
+    },
+    {
+      "line": 525,
+      "class": "tool",
+      "what": "tool",
+      "regex": "printf\\ 'x'\\ >\\ \".*?/unreadable_probe\"",
+      "text": "printf 'x' > \"$WORK/unreadable_probe\""
+    },
+    {
+      "line": 529,
+      "class": "tool",
+      "what": "tool",
+      "regex": "\\ \\ touch\\ and\\ exists\\?\\ of\\ a\\ file\\ its\\ owner\\ may\\ not\\ read:\\ not\\ measured,\\ this\\ user\\ reads\\ it\\ all\\ the\\ same",
+      "text": "echo \"  touch and exists? of a file its owner may not read: not measured, this user reads it all the same\""
+    },
+    {
+      "line": 619,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ .*?:\\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ proof\\ is\\ unmeasured",
+      "text": "echo \"  $1: no python3 on this machine, so the proof is unmeasured\""
+    },
+    {
+      "line": 662,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ an\\ exists\\?\\ that\\ opens\\ a\\ FIFO\\ to\\ read:\\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ proof\\ is\\ unmeasured",
+      "text": "echo \"  an exists? that opens a FIFO to read: no python3 on this machine, so the proof is unmeasured\""
+    },
+    {
+      "line": 708,
+      "class": "platform",
+      "what": "python3",
+      "regex": "\\ \\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ locked\\-range\\ reads\\ are\\ unmeasured",
+      "text": "echo \"  no python3 on this machine, so the locked-range reads are unmeasured\""
+    },
+    {
+      "line": 780,
+      "class": "tool",
+      "what": "tool",
+      "regex": "\\ \\ mklink\\ /J\\ made\\ no\\ junction,\\ so\\ its\\ delete\\ is\\ unmeasured",
+      "text": "echo \"  mklink /J made no junction, so its delete is unmeasured\""
+    },
+    {
+      "line": 848,
+      "class": "tool",
+      "what": "tool",
+      "regex": "\\ \\ no\\ paging\\ file\\ on\\ C:,\\ D:\\ or\\ E:,\\ so\\ a\\ file\\ the\\ system\\ holds\\ is\\ unmeasured",
+      "text": "echo \"  no paging file on C:, D: or E:, so a file the system holds is unmeasured\""
+    },
+    {
+      "line": 877,
+      "class": "platform",
+      "what": "tool",
+      "regex": "\\ \\ no\\ app\\ execution\\ alias\\ on\\ this\\ machine,\\ so\\ their\\ kind\\ is\\ unmeasured",
+      "text": "echo \"  no app execution alias on this machine, so their kind is unmeasured\""
+    },
+    {
+      "line": 909,
+      "class": "tool",
+      "what": "tool",
+      "regex": "\\ \\ mountvol\\ names\\ no\\ volume\\ here,\\ so\\ a\\ junction\\ to\\ one\\ is\\ unmeasured",
+      "text": "echo \"  mountvol names no volume here, so a junction to one is unmeasured\""
+    }
+  ],
+  "not_skips": [],
+  "pass_sentinel": {
+    "line": 934,
+    "regex": "^the\\ std/file\\ exercise\\ holds",
+    "text": "echo \"the std/file exercise holds\""
+  },
+  "exec_evidence": [
+    {
+      "site_line": 65,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "84": "plain",
+        "111": "release"
+      },
+      "exec_lines": [
+        72,
+        566
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        70,
+        71
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1",
+        "exit"
+      ],
+      "refs_ok": []
+    }
+  ]
+}

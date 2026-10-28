@@ -1,0 +1,160 @@
+{
+  "census_version": 1,
+  "driver": "zip",
+  "script": "bench/std_zip_exercise.sh",
+  "script_sha256": "e9fff48643f5977fb76d13157df36fe9c72133f3a3f5c75301e7370f3a46e15d",
+  "sites": [
+    {
+      "lines": [
+        347,
+        348
+      ],
+      "command": "build",
+      "kind": "canonical-own",
+      "contains": [
+        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_zip"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        503
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build -o \"$WORK/$name\" \"$WORK/$name.iyi\" > \"$WOR"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        593
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "elif ! IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/s"
+      ],
+      "variants": [
+        {
+          "id": "zip.negative.593",
+          "kind": "negative",
+          "first_root": "{WORK}/patched",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_zip_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-$mutations.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              593,
+              596,
+              597,
+              599,
+              600,
+              605
+            ],
+            "contains": [
+              "elif ! IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PS",
+              "elif \"$WORK/mut-$mutations.bin\" \"$WORK/fixtures\" >"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "lines": [
+        672
+      ],
+      "command": "doc",
+      "kind": "unchanged",
+      "contains": [
+        "if \"$IYI\" doc \"$REPO/src/std/zip.iyi\" >\"$WORK/doc.txt\" 2>&1 "
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        679
+      ],
+      "command": "fmt",
+      "kind": "unchanged",
+      "contains": [
+        "if \"$IYI\" fmt --check \"$REPO/src/std/zip.iyi\" \"$REPO/bench/s"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        688
+      ],
+      "command": "build",
+      "kind": "unchanged",
+      "contains": [
+        "if ! \"$IYI\" build --no-codegen --target \"$target\" -o \"$WORK/"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        702,
+        703
+      ],
+      "command": "build",
+      "kind": "passthrough",
+      "contains": [
+        "if (cd \"$WORK/r1\" && \"$IYI\" build --emit-iyimod mods -o from"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        703
+      ],
+      "command": "build",
+      "kind": "passthrough",
+      "contains": [
+        "&& \"$IYI\" build --use-iyimod mods -o from-artifact \"$REPO/be"
+      ],
+      "variants": []
+    }
+  ],
+  "non_invocations": [],
+  "skips": [],
+  "not_skips": [],
+  "pass_sentinel": {
+    "line": 720,
+    "regex": "^the\\ std/zip\\ exercise\\ holds\\ \\(",
+    "text": "echo \"the std/zip exercise holds ($mutations broken copies caught)\""
+  },
+  "exec_evidence": [
+    {
+      "site_line": 347,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "366": "plain",
+        "485": "release"
+      },
+      "exec_lines": [
+        354,
+        509
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        352,
+        353
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1",
+        "exit"
+      ],
+      "refs_ok": []
+    }
+  ]
+}

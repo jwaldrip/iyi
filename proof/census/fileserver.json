@@ -1,0 +1,107 @@
+{
+  "census_version": 1,
+  "driver": "fileserver",
+  "script": "bench/std_fileserver_exercise.sh",
+  "script_sha256": "139f4f3bc4a6972e83082030a6f4c0860ef8977f888895455f78846f7f9799c5",
+  "sites": [
+    {
+      "lines": [
+        46,
+        47
+      ],
+      "command": "build",
+      "kind": "canonical-own",
+      "contains": [
+        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_fil"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        176
+      ],
+      "command": "run",
+      "kind": "negative",
+      "contains": [
+        "elif IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/sam"
+      ],
+      "variants": [
+        {
+          "id": "fileserver.negative.176",
+          "kind": "negative",
+          "first_root": "{WORK}/patched",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_fileserver_exercise.iyi"
+          ],
+          "output": null,
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              176,
+              177,
+              178,
+              179,
+              180,
+              184
+            ],
+            "contains": [
+              "  elif IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PS",
+              "    echo \"  the exercise PASSED on $1\""
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "non_invocations": [],
+  "skips": [
+    {
+      "line": 90,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ skipped:\\ no\\ working\\ python3",
+      "text": "echo \"  skipped: no working python3\""
+    },
+    {
+      "line": 162,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ .*?\\ proof\\ is\\ unmeasured",
+      "text": "echo \"  no python3 on this machine, so the $1 proof is unmeasured\""
+    }
+  ],
+  "not_skips": [],
+  "pass_sentinel": {
+    "line": 209,
+    "regex": "^the\\ std/fileserver\\ exercise\\ holds",
+    "text": "echo \"the std/fileserver exercise holds\""
+  },
+  "exec_evidence": [
+    {
+      "site_line": 46,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "65": "plain",
+        "73": "release"
+      },
+      "exec_lines": [
+        53
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        51,
+        52
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1",
+        "exit"
+      ],
+      "refs_ok": []
+    }
+  ]
+}

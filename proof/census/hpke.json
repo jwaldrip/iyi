@@ -1,0 +1,162 @@
+{
+  "census_version": 1,
+  "driver": "hpke",
+  "script": "bench/std_hpke_exercise.sh",
+  "script_sha256": "8bb0bb3a15f77d0c42c0130bfdf54a8312c6d6b32549dfa218f76ed50632fc8c",
+  "sites": [
+    {
+      "lines": [
+        62,
+        63
+      ],
+      "command": "build",
+      "kind": "canonical-own",
+      "contains": [
+        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_hpk"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        274
+      ],
+      "command": "run",
+      "kind": "canonical-other",
+      "contains": [
+        "if \"$IYI\" run \"$WORK/refuse.iyi\" -- \"$1\" >\"$WORK/refuse.out\""
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        299
+      ],
+      "command": "doc",
+      "kind": "unchanged",
+      "contains": [
+        "if \"$IYI\" doc \"$REPO/src/std/hpke.iyi\" >\"$WORK/doc.txt\" 2>&1"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        305
+      ],
+      "command": "fmt",
+      "kind": "unchanged",
+      "contains": [
+        "if \"$IYI\" fmt --check \"$REPO/src/std/hpke.iyi\" \"$REPO/bench/"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        335
+      ],
+      "command": "run",
+      "kind": "negative",
+      "contains": [
+        "elif IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/sam"
+      ],
+      "variants": [
+        {
+          "id": "hpke.negative.335",
+          "kind": "negative",
+          "first_root": "{WORK}/patched",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_hpke_exercise.iyi"
+          ],
+          "output": null,
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              336,
+              337,
+              338,
+              339,
+              341,
+              342,
+              343
+            ],
+            "contains": [
+              "    echo \"  the exercise PASSED on $2\"",
+              "    status=1"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "non_invocations": [],
+  "skips": [
+    {
+      "line": 162,
+      "class": "platform",
+      "what": "tool",
+      "regex": "\\ \\ the\\ file\\ could\\ not\\ be\\ fetched\\ \\(.*?\\),\\ so\\ only\\ the\\ vendored\\ subset\\ was\\ checked",
+      "text": "echo \"  the file could not be fetched ($(tail -1 \"$WORK/curl.log\")), so only the vendored subset was checked\""
+    },
+    {
+      "line": 188,
+      "class": "tool",
+      "what": "go",
+      "regex": "\\ \\ no\\ python\\ with\\ cryptography\\ here,\\ so\\ the\\ Python\\ HPKE\\ goes\\ unasked",
+      "text": "echo \"  no python with cryptography here, so the Python HPKE goes unasked\""
+    },
+    {
+      "line": 217,
+      "class": "tool",
+      "what": "go",
+      "regex": "\\ \\ no\\ python\\ with\\ cryptography\\ here,\\ so\\ it\\ goes\\ unasked",
+      "text": "echo \"  no python with cryptography here, so it goes unasked\""
+    },
+    {
+      "line": 227,
+      "class": "tool",
+      "what": "tool",
+      "regex": "\\ \\ the\\ timing\\ did\\ not\\ run:\\ .*?",
+      "text": "echo \"  the timing did not run: $(tail -1 \"$WORK/cost.out\")\""
+    },
+    {
+      "line": 321,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ .*?\\ proof\\ is\\ unmeasured",
+      "text": "echo \"  no python3 on this machine, so the $2 proof is unmeasured\""
+    }
+  ],
+  "not_skips": [],
+  "pass_sentinel": {
+    "line": 403,
+    "regex": "^ALL\\ CHECKS\\ PASSED",
+    "text": "echo \"ALL CHECKS PASSED\""
+  },
+  "exec_evidence": [
+    {
+      "site_line": 62,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "81": "plain",
+        "101": "release"
+      },
+      "exec_lines": [
+        69
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        67,
+        68
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1",
+        "exit"
+      ],
+      "refs_ok": []
+    }
+  ]
+}

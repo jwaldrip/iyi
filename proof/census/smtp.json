@@ -1,0 +1,162 @@
+{
+  "census_version": 1,
+  "driver": "smtp",
+  "script": "bench/std_smtp_exercise.sh",
+  "script_sha256": "6cbc1ad57d7340624cc0087909e324bf776f9313a124f42a6de4ae8fefa28773",
+  "sites": [
+    {
+      "lines": [
+        54,
+        55
+      ],
+      "command": "build",
+      "kind": "canonical-own",
+      "contains": [
+        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_smt"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        370
+      ],
+      "command": "run",
+      "kind": "canonical-other",
+      "contains": [
+        "if \"$IYI\" run \"$WORK/refuse.iyi\" -- \"$1\" >\"$WORK/refuse.out\""
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        417
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "if ! IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/sam"
+      ],
+      "variants": [
+        {
+          "id": "smtp.negative.417",
+          "kind": "negative",
+          "first_root": "{WORK}/patched",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_smtp_exercise.iyi"
+          ],
+          "output": "{WORK}/smtp-broken",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              417,
+              418,
+              419,
+              426,
+              427,
+              428,
+              429,
+              430,
+              434
+            ],
+            "contains": [
+              "    if ! IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${",
+              "      echo \"  the $1 copy did not compile\""
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "lines": [
+        424
+      ],
+      "command": "run",
+      "kind": "negative",
+      "contains": [
+        "IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/samples/"
+      ],
+      "variants": [
+        {
+          "id": "smtp.negative.424",
+          "kind": "negative",
+          "first_root": "{WORK}/patched",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_smtp_exercise.iyi"
+          ],
+          "output": null,
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              424,
+              426,
+              427,
+              428,
+              429,
+              430,
+              434
+            ],
+            "contains": [
+              "    IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}",
+              "  if [ $? -eq 0 ]; then"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "non_invocations": [],
+  "skips": [
+    {
+      "line": 288,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ skipped:\\ no\\ python3\\ with\\ ssl\\ and\\ cryptography\\ to\\ serve\\ SMTP\\ with",
+      "text": "echo \"  skipped: no python3 with ssl and cryptography to serve SMTP with\""
+    },
+    {
+      "line": 399,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ .*?\\ proof\\ is\\ unmeasured",
+      "text": "echo \"  no python3 on this machine, so the $1 proof is unmeasured\""
+    }
+  ],
+  "not_skips": [],
+  "pass_sentinel": {
+    "line": 499,
+    "regex": "^the\\ std/smtp\\ exercise\\ holds",
+    "text": "echo \"the std/smtp exercise holds\""
+  },
+  "exec_evidence": [
+    {
+      "site_line": 54,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "73": "plain",
+        "91": "release"
+      },
+      "exec_lines": [
+        61
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        59,
+        60
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1",
+        "exit"
+      ],
+      "refs_ok": []
+    }
+  ]
+}

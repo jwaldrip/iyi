@@ -1,0 +1,133 @@
+{
+  "census_version": 1,
+  "driver": "router",
+  "script": "bench/std_router_exercise.sh",
+  "script_sha256": "067bec8e64b34f2e5058fa17b81916cc849d79773b813c98e5f890277cf57d8e",
+  "sites": [
+    {
+      "lines": [
+        68,
+        69
+      ],
+      "command": "build",
+      "kind": "canonical-own",
+      "contains": [
+        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_rou"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        109
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build -o \"$WORK/$name\" \"$WORK/$name.iyi\" > \"$WOR"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        390
+      ],
+      "command": "run",
+      "kind": "negative",
+      "contains": [
+        "elif IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/sam"
+      ],
+      "variants": [
+        {
+          "id": "router.negative.390",
+          "kind": "negative",
+          "first_root": "{WORK}/patched",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_router_exercise.iyi"
+          ],
+          "output": null,
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              390,
+              391,
+              392,
+              393,
+              394,
+              398
+            ],
+            "contains": [
+              "  elif IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PS",
+              "    echo \"  the exercise PASSED on $1\""
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "non_invocations": [],
+  "skips": [
+    {
+      "line": 158,
+      "class": "tool",
+      "what": "go",
+      "regex": "\\ \\ skipped:\\ no\\ Go\\ toolchain\\ of\\ 1\\.22\\ or\\ later",
+      "text": "echo \"  skipped: no Go toolchain of 1.22 or later\""
+    },
+    {
+      "line": 270,
+      "class": "tool",
+      "what": "go",
+      "regex": "\\ \\ Go\\ did\\ not\\ run:",
+      "text": "echo \"  Go did not run:\""
+    },
+    {
+      "line": 305,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ skipped:\\ no\\ working\\ python3",
+      "text": "echo \"  skipped: no working python3\""
+    },
+    {
+      "line": 376,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ .*?\\ proof\\ is\\ unmeasured",
+      "text": "echo \"  no python3 on this machine, so the $1 proof is unmeasured\""
+    }
+  ],
+  "not_skips": [],
+  "pass_sentinel": {
+    "line": 438,
+    "regex": "^the\\ std/router\\ exercise\\ holds",
+    "text": "echo \"the std/router exercise holds\""
+  },
+  "exec_evidence": [
+    {
+      "site_line": 68,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "89": "plain",
+        "97": "release"
+      },
+      "exec_lines": [
+        75,
+        115
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        73,
+        74
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1",
+        "exit"
+      ],
+      "refs_ok": []
+    }
+  ]
+}

@@ -1,0 +1,126 @@
+{
+  "census_version": 1,
+  "driver": "cookie",
+  "script": "bench/std_cookie_exercise.sh",
+  "script_sha256": "04278d4e0c04a05fb62002f7f66e991a6326bff6a3315fbaeb40ca803b1332cd",
+  "sites": [
+    {
+      "lines": [
+        46,
+        47
+      ],
+      "command": "build",
+      "kind": "canonical-own",
+      "contains": [
+        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_coo"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        85
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build -o \"$WORK/$name\" \"$WORK/$name.iyi\" > \"$WOR"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        215
+      ],
+      "command": "run",
+      "kind": "negative",
+      "contains": [
+        "elif IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/sam"
+      ],
+      "variants": [
+        {
+          "id": "cookie.negative.215",
+          "kind": "negative",
+          "first_root": "{WORK}/patched",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_cookie_exercise.iyi"
+          ],
+          "output": null,
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              215,
+              216,
+              217,
+              218,
+              219,
+              223
+            ],
+            "contains": [
+              "  elif IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PS",
+              "    echo \"  the exercise PASSED on $1\""
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "non_invocations": [],
+  "skips": [
+    {
+      "line": 114,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ skipped:\\ no\\ working\\ python3",
+      "text": "echo \"  skipped: no working python3\""
+    },
+    {
+      "line": 151,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ skipped:\\ no\\ working\\ python3",
+      "text": "echo \"  skipped: no working python3\""
+    },
+    {
+      "line": 201,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ .*?\\ proof\\ is\\ unmeasured",
+      "text": "echo \"  no python3 on this machine, so the $1 proof is unmeasured\""
+    }
+  ],
+  "not_skips": [],
+  "pass_sentinel": {
+    "line": 252,
+    "regex": "^the\\ std/cookie\\ exercise\\ holds",
+    "text": "echo \"the std/cookie exercise holds\""
+  },
+  "exec_evidence": [
+    {
+      "site_line": 46,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "65": "plain",
+        "73": "release"
+      },
+      "exec_lines": [
+        53,
+        91
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        51,
+        52
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1",
+        "exit"
+      ],
+      "refs_ok": []
+    }
+  ]
+}
