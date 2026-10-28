@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **Fix (compiler): inlined observed effect bodies eliminate synthetic backtrace frames.** Under `-Diyi_observe`, each renamed `__iyi_effect_*` body is emitted directly inside its wrapper in every build that has the body (source, producer, and consumer of a travelled body), with matching reach-walk and call-path encoding. Panics under observation match normal-build backtraces without synthetic wrapper or implementation frames.
+- **Fix (compiler): inlined observed effect bodies eliminate synthetic backtrace frames.** Under `-Diyi_observe`, each renamed `__iyi_effect_*` body is emitted directly inside its wrapper in every build that has the body (source, producer, and consumer of a travelled body), with matching reach-walk and call-path encoding. Panics under observation match normal-build backtraces without synthetic wrapper or implementation frames. An observed `--use-iyimod` build under `IYI_WARM=1` now reads the prelude's std artifacts without import-wall refusals resolving internal type ID references (resolving `"std/time" numbers \`Array(Std::Time::Location::Zone)\`, and this build cannot name it`).
 
 - **Fix (runtime): correct frame boundary symbol lookup in Darwin panics.** When a panic or NoReturn call is the last instruction of a function, the return address on the stack sits at offset 0 of the next function. The Darwin runtime backtrace resolves boundary frames with offset 0 by inspecting the caller symbol at `addr - 1` while preserving fiber entry start markers and raw address formats.
 
