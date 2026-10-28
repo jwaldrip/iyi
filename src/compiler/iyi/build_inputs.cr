@@ -421,18 +421,8 @@ module Iyi
                            {% end %}
 
     {% if flag?(:darwin) %}
-      # `SDKROOT` when it is set, which is what the driver reads first, and
-      # otherwise `xcrun`'s answer. Nil when neither answers, and a library
-      # only the SDK has is then one the check says it cannot see.
       private def darwin_sdk : String?
-        if sdk = ENV["SDKROOT"]?.presence
-          return sdk
-        end
-        output = IO::Memory.new
-        status = Process.run("xcrun", {"--show-sdk-path"}, output: output, error: Process::Redirect::Close)
-        status.success? ? output.to_s.strip.presence : nil
-      rescue IO::Error
-        nil
+        Iyi::Config.darwin_sdk
       end
     {% end %}
 
