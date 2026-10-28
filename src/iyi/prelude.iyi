@@ -316,6 +316,15 @@ end
   # Binding write, exit, backtrace and backtrace_symbols_fd here is Apple's platform rule rather than a compromise settled for.
   # libSystem ships with macOS, it is not something a person installs, and Go links it on darwin for the exact same reason.
   lib LibC
+    struct DlInfo
+      dli_fname : UInt8*
+      dli_fbase : Void*
+      dli_sname : UInt8*
+      dli_saddr : Void*
+    end
+
+    fun dladdr(addr : Void*, info : DlInfo*) : Int32
+    fun dprintf(fd : Int32, format : UInt8*, ...) : Int32
     fun write(fd : Int32, buf : Void*, count : UInt64) : Int64
     fun read(fd : Int32, buf : Void*, count : UInt64) : Int64
     fun open(path : UInt8*, oflag : Int32, ...) : Int32
@@ -9853,10 +9862,51 @@ end
   {% if flag?(:darwin) %}
     if r = IyiPanic.resolver
       r.call(count > 1 ? pointerof(callstack).as(Void**) + 1 : pointerof(callstack).as(Void**), count > 1 ? count - 1 : count)
-    elsif count > 1
-      LibC.backtrace_symbols_fd(pointerof(callstack).as(Void**) + 1, count - 1, 2)
-    elsif count == 1
-      LibC.backtrace_symbols_fd(pointerof(callstack).as(Void**), 1, 2)
+    elsif count > 0
+      frames = count > 1 ? pointerof(callstack).as(Void**) + 1 : pointerof(callstack).as(Void**)
+      total_frames = count > 1 ? count - 1 : count
+      {% if flag?(:aarch64) %}
+        fiber_marker = __iyi_fiber_entry_address
+      {% else %}
+        fiber_marker = 0_u64
+      {% end %}
+      frame_idx = 0
+      while frame_idx < total_frames
+        addr = frames[frame_idx]
+        info = uninitialized LibC::DlInfo
+        if LibC.dladdr(addr, pointerof(info)) != 0
+          fname = info.dli_fname
+          if fname.address != 0_u64 && fname.value != 0_u8
+            slash = fname
+            p = fname
+            while p.value != 0_u8
+              slash = p + 1_i64 if p.value == 47_u8
+              p = p + 1_i64
+            end
+            fname = slash
+          else
+            fname = "???".to_unsafe
+          end
+
+          if info.dli_sname.address != 0_u64 && info.dli_sname.value != 0_u8
+            sname = info.dli_sname
+            offset = addr.address - info.dli_saddr.address
+            if offset == 0_u64 && addr.address != fiber_marker && addr.address > 0_u64
+              info2 = uninitialized LibC::DlInfo
+              if LibC.dladdr(Pointer(Void).new(addr.address - 1_u64), pointerof(info2)) != 0 && info2.dli_sname.address != 0_u64 && info2.dli_sname.value != 0_u8
+                sname = info2.dli_sname
+                offset = addr.address - info2.dli_saddr.address
+              end
+            end
+            LibC.dprintf(2, "%-4d%-35s 0x%016lx %s + %lu\n".to_unsafe, frame_idx, fname, addr.address, sname, offset)
+          else
+            LibC.dprintf(2, "%-4d%-35s 0x%016lx %s + %lu\n".to_unsafe, frame_idx, fname, addr.address, fname, addr.address - info.dli_fbase.address)
+          end
+        else
+          LibC.dprintf(2, "%-4d%-35s 0x%016lx 0x0 + %lu\n".to_unsafe, frame_idx, "???".to_unsafe, addr.address, addr.address)
+        end
+        frame_idx += 1
+      end
     end
   {% end %}
   {% if flag?(:win32) && flag?(:x86_64) %}

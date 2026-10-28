@@ -19,12 +19,7 @@ module std/debug
 
 {% if flag?(:darwin) %}
   lib LibC
-    struct DlInfo
-      dli_fname : UInt8*
-      dli_fbase : Void*
-      dli_sname : UInt8*
-      dli_saddr : Void*
-    end
+    alias DlInfo = ::LibC::DlInfo
 
     fun dladdr(addr : Void*, info : DlInfo*) : Int32
     fun _NSGetExecutablePath(buf : UInt8*, bufsize : UInt32*) : Int32
