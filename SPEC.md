@@ -6316,15 +6316,19 @@ standard library and may pull every library a required shard pulls.
 
 #### What a plain own-prelude program depends on, counted
 
-Every undefined symbol in a linked own-prelude program, plain `iyi build`, read
-off the executable on darwin arm64:
+A plain build of `samples/iyi/hello.iyi` on darwin arm64 links only
+`/usr/lib/libSystem.B.dylib`. Its complete undefined-symbol list, with
+Mach-O's leading underscore removed:
 
 ```
-write  exit                                                # libc staples
-kqueue  kevent  clock_gettime_nsec_np  __error             # the poller (III.4.8)
+read  write  exit  pipe                                    # platform IO
+kqueue  kevent  clock_gettime_nsec_np  __error              # the poller (III.4.8)
 mmap  munmap                                               # the collector's arena
-pthread_self  pthread_get_stackaddr_np                     # root discovery
-_dyld_get_image_header  _dyld_get_image_vmaddr_slide       # root discovery, dyld
+pthread_create  pthread_self  pthread_get_stackaddr_np      # threads and root discovery
+pthread_kill  sigaction  sigaltstack  sysctlbyname          # thread stops and stack guards
+_tlv_bootstrap                                             # thread-local state
+_dyld_get_image_header  _dyld_get_image_vmaddr_slide         # root discovery, dyld
+backtrace  dladdr  dprintf                                  # panic frames and boundary-symbol lookup
 ```
 
 The symbols are all libSystem — the prelude's staples, the concurrency
@@ -6346,16 +6350,16 @@ So **an own-prelude program's dependency is the platform libc and nothing
 else**, and what that is worth depends on which artifact is being read, so this
 section says which. The gate checks this mode at two layers.
 
-**At the object layer**, which is the per-target cross-compile audit in CI, an
-own-prelude program's object for `x86_64-linux-gnu` leaves nothing undefined:
-the prelude issues the raw syscalls itself for `write`, `exit` and the
-collector's `mmap`/`munmap`, and imports nothing. That is the strong form of
-the claim and it is measured rather than projected. On darwin the same audit
-defers to libSystem, because Apple supports it as the only interface and raw
-syscalls are not a stable ABI there — the concurrency runtime and the
-collector follow the same rule, so on darwin their calls are undefined
-symbols in the object — counted by the exercise gates and by
-`bench/dependency_floor.sh` — where the Linux object carries nothing.
+**At the object layer**, which is the per-target cross-compile audit in CI,
+the measured hello objects for `x86_64-linux-gnu` and `aarch64-linux-gnu`
+request no external runtime functions. Their undefined names are
+`__data_start`, `__ehdr_start` and `_end`, supplied by the linker for root
+discovery. The prelude issues raw syscalls for `write`, `exit` and the
+collector's `mmap`/`munmap`. On darwin the same audit defers to libSystem,
+because Apple supports it as the only interface and raw syscalls are not a
+stable ABI there. The concurrency runtime and collector follow that rule:
+their libSystem calls are undefined symbols counted by the exercise gates
+and by `bench/dependency_floor.sh`.
 
 **At the executable layer**, the linked program carries what its link template
 adds. On Linux that is the C runtime's five undefined references,
