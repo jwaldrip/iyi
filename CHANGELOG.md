@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fix (spec): select TCP fixture ports across both address families.** Keep each IPv4 candidate bound while checking an IPv6-only wildcard bind, advancing only when that port is already in use. The dual-stack and refused-connect fixtures use the shared allocator without changing their assertions or timeouts.
+
 - **Fix (bench): separate search roots for import candidate shadowing in stale testing.** In `bench/stale_tests.sh` row 3, place candidate modules under dedicated `earlier` and `later` `IYI_PATH` entries with no project-root copy so the entry directory does not preempt resolver order. Verifies that an earlier search path without a candidate hits as a locator-only change, while a shadowed definition with an altered body misses and is named in the explanation.
 
 - **Fix (runtime): classify `IyiHeap.release_run` as collector work under stale testing observation.** Calling `__iyi_release_pages` inside `release_run` without an `@[Effect(:collector)]` annotation recorded an unclassified external runtime call, marking every observed test run not reusable under RG3. Classifying `release_run` matches its callers (`close_run`, `age_idle`) and preserves receipt reuse on second runs.
