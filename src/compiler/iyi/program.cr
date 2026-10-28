@@ -982,10 +982,7 @@ module Iyi
         if ref.match
           iyi_artifact_match_types[ref.name] = iyi_match_type_named(ref.name)
         else
-          parser = new_parser(ref.name)
-          parser.next_token
-          type_node = parser.parse_bare_proc_type
-          parser.check :EOF
+          type_node = iyi_artifact_type_node(ref.name)
           # Reaching what the module keeps to itself, which is what these names
           # are made of: `Array(Router::RouteDefinition)` names a `private
           # record` and the artifact carries it as one. R-2b is not weakened by
@@ -1037,6 +1034,31 @@ module Iyi
             MESSAGE
         end
       end
+    end
+
+    private class IyiArtifactNameMarker < Visitor
+      def visit(node : Path)
+        node.iyi_synthetic = true
+        false
+      end
+
+      def visit(node : ASTNode)
+        true
+      end
+    end
+
+    # iyi: Parses a type name read from an artifact for type ID numbering or match
+    # dispatch (SPEC.md:4833). Nobody writes this name; it is parsed with filename
+    # "", which equals the adopted prelude's placeholder. Cold builds never wall
+    # these names, and marking each parsed Path synthetic ensures adopted prelude
+    # builds resolve artifact-referenced types without import-wall refusals.
+    private def iyi_artifact_type_node(name : String) : ASTNode
+      parser = new_parser(name)
+      parser.next_token
+      type_node = parser.parse_bare_proc_type
+      parser.check :EOF
+      type_node.accept(IyiArtifactNameMarker.new)
+      type_node
     end
 
     # iyi: one match type, from the name its symbol carries.
@@ -1102,10 +1124,7 @@ module Iyi
     end
 
     private def iyi_match_named_type(body : String) : Type
-      parser = new_parser(body)
-      parser.next_token
-      type_node = parser.parse_bare_proc_type
-      parser.check :EOF
+      type_node = iyi_artifact_type_node(body)
       lookup_type(type_node, include_private: true)
     end
 

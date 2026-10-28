@@ -634,4 +634,36 @@ describe "Iyi::Stale S3f: CallPathFp, typed encoder, roots, explain" do
       end
     end
   end
+
+  it "editing non-trivial body of inlined @[Effect] def in std changes observed CallPathFp" do
+    runtime_file = File.join(Dir.current, "src", "std", "spec_effect_callpath_test.iyi")
+    obs_flags = ["iyi_observe"]
+
+    code1 = <<-IYI
+      class File
+        @[Effect(:file_read)]
+        def self.custom_read(path : String) : String
+          buf = path + "_v1"
+          buf
+        end
+      end
+      puts File.custom_read("test")
+      IYI
+
+    code2 = <<-IYI
+      class File
+        @[Effect(:file_read)]
+        def self.custom_read(path : String) : String
+          buf = path + "_v2"
+          buf
+        end
+      end
+      puts File.custom_read("test")
+      IYI
+
+    fp1, _ = compute_fp(code1, runtime_file, flags: obs_flags)
+    fp2, _ = compute_fp(code2, runtime_file, flags: obs_flags)
+
+    fp1.should_not eq(fp2)
+  end
 end
