@@ -155,51 +155,51 @@ module Iyi
       {{env("IYI_CONFIG_LIBRARY_PATH") || ""}}
     end
 
-{% if flag?(:darwin) %}
-    # `SDKROOT` when it is set, which is what the driver reads first, and
-    # otherwise `xcrun`'s answer. Nil when neither answers, and a library
-    # only the SDK has is then one the check says it cannot see.
-    def self.darwin_sdk : String?
-      if sdk = ENV["SDKROOT"]?.presence
-        return sdk
+    {% if flag?(:darwin) %}
+      # `SDKROOT` when it is set, which is what the driver reads first, and
+      # otherwise `xcrun`'s answer. Nil when neither answers, and a library
+      # only the SDK has is then one the check says it cannot see.
+      def self.darwin_sdk : String?
+        if sdk = ENV["SDKROOT"]?.presence
+          return sdk
+        end
+        output = IO::Memory.new
+        status = Process.run("xcrun", {"--show-sdk-path"}, output: output, error: Process::Redirect::Close)
+        status.success? ? output.to_s.strip.presence : nil
+      rescue IO::Error
+        nil
       end
-      output = IO::Memory.new
-      status = Process.run("xcrun", {"--show-sdk-path"}, output: output, error: Process::Redirect::Close)
-      status.success? ? output.to_s.strip.presence : nil
-    rescue IO::Error
-      nil
-    end
 
-    def self.macos_sdk_version(path : ::Path | String | Nil) : String?
-      return nil if path.nil? || path.to_s.empty?
-      settings_path = File.join(path.to_s, "SDKSettings.json")
-      return nil unless File.file?(settings_path)
-      content = File.read(settings_path)
-      JSON.parse(content)["Version"]?.try { |v| v.as_s? || v.to_s }
-    rescue
-      nil
-    end
+      def self.macos_sdk_version(path : ::Path | String | Nil) : String?
+        return nil if path.nil? || path.to_s.empty?
+        settings_path = File.join(path.to_s, "SDKSettings.json")
+        return nil unless File.file?(settings_path)
+        content = File.read(settings_path)
+        JSON.parse(content)["Version"]?.try { |v| v.as_s? || v.to_s }
+      rescue
+        nil
+      end
 
-    def self.macos_os_version : String?
-      size = 256_u64
-      buffer = uninitialized UInt8[256]
-      if LibC.sysctlbyname("kern.osproductversion".to_unsafe, buffer.to_unsafe.as(Void*), pointerof(size), Pointer(Void).null, 0_u64) == 0 && size > 1
-        raw = String.new(buffer.to_unsafe).strip
-        parts = raw.split('.')
-        if parts.size >= 2
-          "#{parts[0]}.#{parts[1]}"
-        elsif parts.size == 1 && !parts[0].empty?
-          parts[0]
+      def self.macos_os_version : String?
+        size = 256_u64
+        buffer = uninitialized UInt8[256]
+        if LibC.sysctlbyname("kern.osproductversion".to_unsafe, buffer.to_unsafe.as(Void*), pointerof(size), Pointer(Void).null, 0_u64) == 0 && size > 1
+          raw = String.new(buffer.to_unsafe).strip
+          parts = raw.split('.')
+          if parts.size >= 2
+            "#{parts[0]}.#{parts[1]}"
+          elsif parts.size == 1 && !parts[0].empty?
+            parts[0]
+          else
+            nil
+          end
         else
           nil
         end
-      else
+      rescue
         nil
       end
-    rescue
-      nil
-    end
-{% end %}
+    {% end %}
 
     def self.macos_link_version(sdk : String?, os : String?) : String?
       if sdk.nil? && os.nil?
@@ -226,6 +226,7 @@ module Iyi
         nil
       end
     end
+
     private def self.parse_version(str : String?) : Tuple(Int32, Int32)?
       return nil unless str
       parts = str.split('.')
