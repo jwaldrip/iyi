@@ -3230,7 +3230,9 @@ require "./file"
       # with `-Dgc_release_timing`, the time spent in them too, which is
       # two clock reads a call and a syscall each on Linux, so not by
       # default. `bench/release_pages.iyi` reads all four (issue #150).
-      def self.release_run(address : UInt64, length : UInt64) : Nil
+      # Classified as collector work like its callers; leaving the `fun`
+      # call unclassified makes every observed build not reusable (RG3).
+      @[Effect(:collector)]; def self.release_run(address : UInt64, length : UInt64) : Nil
         page = @@cache
         inside = page != 0 && read64(page + CACHE_INSIDE) != 0
         {% if flag?(:gc_release_timing) %}
