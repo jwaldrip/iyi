@@ -72,7 +72,7 @@ module Iyi::Semantic
       end
 
       original_name = a_def.name
-      renamed_name = "__iyi_effect_#{original_name}"
+      renamed_name = renamed_name_for(original_name)
 
       # Mark original def as wrapped and rename it
       a_def.name = renamed_name
@@ -348,6 +348,17 @@ module Iyi::Semantic
       else
         Call.new(Call.new(Var.new("self").at(a_def), "path").at(a_def), "to_s").at(a_def).as(ASTNode)
       end
+    end
+
+    # An observed artifact carries this def and the wrapper's call to it as source text
+    # (see iyimod.cr / semantic_visitor.cr). Operator def names (e.g. `[]=` or `[]?`)
+    # cannot be directly prefixed with `__iyi_effect_` because the result (`__iyi_effect_[]=`
+    # or `self.__iyi_effect_[] = key, value`) is not a valid iyi identifier and fails to parse.
+    # We hex-encode non-identifier operator names. Suffix begins with ASCII hex '2'..'7',
+    # so it cannot collide with any identifier's renamed name, preserving injectivity.
+    private def self.renamed_name_for(original_name : String) : String
+      suffix = Lexer.ident?(original_name) ? original_name : original_name.to_slice.hexstring
+      "__iyi_effect_#{suffix}"
     end
   end
 end
