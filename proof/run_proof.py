@@ -14,8 +14,6 @@ import glob
 import json
 import os
 import re
-import shutil
-import subprocess
 import sys
 import time
 
@@ -38,12 +36,9 @@ from proof.proofkit import (
     base_env,
     check_disk_space,
     check_identity,
-    extract_version_stamp,
-    git_clean,
-    git_rev_parse,
+    inspect_pin_inputs,
     load_pin,
     run_bounded,
-    sha256_file,
     validate_census,
     verify_ledger,
     write_pin,
@@ -67,45 +62,84 @@ def next_attempt_dir(parent_dir: str) -> str:
     os.makedirs(att_dir, exist_ok=True)
     return att_dir
 
+def read_log(log_path: str) -> bytes:
+    with open(log_path, "rb") as log_file:
+        return log_file.read()
+
+
+def fresh_stage_env(
+    pin: dict,
+    attempt_dir: str,
+    stage_name: str,
+    additions: dict[str, str] | None = None,
+) -> dict[str, str]:
+    tmp_dir = os.path.join(attempt_dir, f"{stage_name}.tmp")
+    cache_dir = os.path.join(attempt_dir, f"{stage_name}.cache")
+    os.makedirs(tmp_dir, exist_ok=False)
+    os.makedirs(cache_dir, exist_ok=False)
+    stage_additions = {
+        "TMPDIR": tmp_dir,
+        "IYI_CACHE_DIR": cache_dir,
+    }
+    if additions:
+        stage_additions.update(additions)
+    return base_env(pin, stage_additions)
+
+
+def run_logged(
+    cmd: list[str],
+    *,
+    cwd: str,
+    env: dict[str, str],
+    log_path: str,
+    times_path: str,
+    limit_sec: float | None,
+    grace_sec: float = 30.0,
+):
+    result = run_bounded(
+        cmd,
+        cwd,
+        env,
+        log_path,
+        times_path,
+        limit_sec,
+        grace_sec,
+    )
+    if result.interrupted_signal is not None:
+        raise RuntimeError(
+            f"interrupted by signal {result.interrupted_signal}; "
+            f"survivors={list(result.survivors)}"
+        )
+    return result, read_log(log_path)
+
 
 def cmd_plan(args):
-    p_path = os.path.realpath(args.p)
-    w_path = os.path.realpath(args.w)
-    c_path = os.path.realpath(args.compiler)
-
+    facts = inspect_pin_inputs(
+        args.p,
+        args.w,
+        args.compiler,
+        CORE_29_DRIVERS,
+    )
     print("Observed Corpus Proof Plan")
-    print(f"  P Path:    {p_path}")
-    print(f"  W Path:    {w_path}")
-    print(f"  Compiler:  {c_path}")
-
-    p_clean = git_clean(p_path)
-    w_clean = git_clean(w_path)
-    print(f"  P Clean:   {p_clean}")
-    print(f"  W Clean:   {w_clean}")
-
-    if not p_clean or not w_clean:
-        print("  WARNING: Tree is dirty. Pinning will fail.", file=sys.stderr)
-
-    p_sha = git_rev_parse("HEAD", p_path)
-    w_head = git_rev_parse("HEAD", w_path)
-    print(f"  P SHA:     {p_sha}")
-    print(f"  W HEAD:    {w_head}")
-
-    proc_v = subprocess.run([c_path, "--version"], capture_output=True, text=True, check=False)
-    v_line = proc_v.stdout.strip().splitlines()[0] if proc_v.returncode == 0 else "unknown"
-    print(f"  Version:   {v_line}")
-
-    c_sha = sha256_file(c_path)
-    print(f"  BIN SHA:   {c_sha}")
-
-    census_files = glob.glob(os.path.join(w_path, "proof/census/*.json"))
-    print(f"  Censuses:  {len(census_files)} of 29 drivers present")
-    if len(census_files) != 29:
-        print("  WARNING: Expected 29 census files!", file=sys.stderr)
+    print(f"  P Path:    {facts['p_path']}")
+    print(f"  W Path:    {facts['w_path']}")
+    print(f"  Compiler:  {facts['compiler_path']}")
+    print(f"  P SHA:     {facts['p_source_sha']}")
+    print(f"  W HEAD:    {facts['w_head']}")
+    print(f"  Version:   {facts['compiler_version_line']}")
+    print(f"  BIN SHA:   {facts['compiler_sha256']}")
+    print(f"  Timeout:   {facts['timeout_path']} ({facts['timeout_version']})")
+    print(f"  Censuses:  {len(facts['census_sha256'])} validated")
 
 
 def cmd_pin(args):
-    pin = write_pin(args.report_dir, args.p, args.w, args.compiler)
+    pin = write_pin(
+        args.report_dir,
+        args.p,
+        args.w,
+        args.compiler,
+        CORE_29_DRIVERS,
+    )
     print(f"Pin successfully written to {os.path.join(args.report_dir, 'pin.json')}")
     print(f"  Chain ID:  {pin['chain_id']}")
     print(f"  P SHA:     {pin['p_source_sha']}")
@@ -130,19 +164,25 @@ def cmd_run1(args):
     print("--- Run 1.1: stale_equivalence.sh all ---")
     log_1_1 = os.path.join(att_dir, "run1_1_equiv.log")
     times_1_1 = os.path.join(att_dir, "run1_1_equiv.times")
-    tmp_1_1 = os.path.join(att_dir, "tmp_1_1")
-    os.makedirs(tmp_1_1, exist_ok=True)
-    env_1_1 = base_env(pin, {"IYI": compiler, "TMPDIR": tmp_1_1})
-    rc, stdout, stderr, timed_out = run_bounded(
+    env_1_1 = fresh_stage_env(
+        pin,
+        att_dir,
+        "run1_1",
+        {"IYI": compiler},
+    )
+    result, stdout = run_logged(
         ["bash", "bench/stale_equivalence.sh", "all"],
         cwd=w_path,
         env=env_1_1,
-        timeout_sec=2100.0,
         log_path=log_1_1,
         times_path=times_1_1,
+        limit_sec=None,
     )
-    if rc != 0 or timed_out:
-        raise RuntimeError(f"Run 1.1 failed (exit {rc}, timed_out={timed_out})")
+    if result.returncode != 0 or result.timed_out:
+        raise RuntimeError(
+            f"Run 1.1 failed (exit {result.returncode}, "
+            f"timed_out={result.timed_out})"
+        )
     out_text = stdout.decode(errors="replace")
     for pat in [r"^RG2 PASSED: ", r"^RG2a PASSED: ", r"^RG2r PASSED: all (\d+) probes", r"^RG5 trace half PASSED: "]:
         if not re.search(pat, out_text, re.MULTILINE):
@@ -153,19 +193,27 @@ def cmd_run1(args):
     print("--- Run 1.2: std_observe_exercise.sh ---")
     log_1_2 = os.path.join(att_dir, "run1_2_observe.log")
     times_1_2 = os.path.join(att_dir, "run1_2_observe.times")
-    tmp_1_2 = os.path.join(att_dir, "tmp_1_2")
-    os.makedirs(tmp_1_2, exist_ok=True)
-    env_1_2 = base_env(pin, {"IYI": compiler, "TMPDIR": tmp_1_2})
-    rc, stdout, stderr, timed_out = run_bounded(
+    env_1_2 = fresh_stage_env(
+        pin,
+        att_dir,
+        "run1_2",
+        {"IYI": compiler},
+    )
+    result, stdout = run_logged(
         ["bash", "bench/std_observe_exercise.sh"],
         cwd=w_path,
         env=env_1_2,
-        timeout_sec=2100.0,
         log_path=log_1_2,
         times_path=times_1_2,
+        limit_sec=None,
     )
-    if rc != 0 or timed_out or "OK: bench/std_observe_exercise.sh passed all checks" not in stdout.decode(errors="replace"):
-        raise RuntimeError(f"Run 1.2 failed (exit {rc})")
+    if (
+        result.returncode != 0
+        or result.timed_out
+        or "OK: bench/std_observe_exercise.sh passed all checks"
+        not in stdout.decode(errors="replace")
+    ):
+        raise RuntimeError(f"Run 1.2 failed (exit {result.returncode})")
     check_identity(pin)
 
     # 1.3 stale_rg9.py
@@ -174,36 +222,61 @@ def cmd_run1(args):
     times_1_3 = os.path.join(att_dir, "run1_3_rg9.times")
     rg9_work = os.path.join(att_dir, "rg9_work")
     os.makedirs(rg9_work, exist_ok=True)
-    env_1_3 = base_env(pin, {"IYI": compiler})
-    rc, stdout, stderr, timed_out = run_bounded(
-        [pin["python_path"], "bench/stale_rg9.py", "--repo", w_path, "--compiler", compiler, "--work", rg9_work],
+    env_1_3 = fresh_stage_env(
+        pin,
+        att_dir,
+        "run1_3",
+        {"IYI": compiler},
+    )
+    result, stdout = run_logged(
+        [
+            pin["python_path"],
+            "bench/stale_rg9.py",
+            "--repo",
+            w_path,
+            "--compiler",
+            compiler,
+            "--work",
+            rg9_work,
+        ],
         cwd=w_path,
         env=env_1_3,
-        timeout_sec=2100.0,
         log_path=log_1_3,
         times_path=times_1_3,
+        limit_sec=None,
     )
-    if rc != 0 or timed_out or not re.search(r"^RG9 PASSED: 141 corpus programs", stdout.decode(errors="replace"), re.MULTILINE):
-        raise RuntimeError(f"Run 1.3 failed (exit {rc})")
+    if (
+        result.returncode != 0
+        or result.timed_out
+        or not re.search(
+            r"^RG9 PASSED: 141 corpus programs",
+            stdout.decode(errors="replace"),
+            re.MULTILINE,
+        )
+    ):
+        raise RuntimeError(f"Run 1.3 failed (exit {result.returncode})")
     check_identity(pin)
 
     # 1.4 std_exercise.sh
     print("--- Run 1.4: std_exercise.sh (unsharded siblings) ---")
     log_1_4 = os.path.join(att_dir, "run1_4_std.log")
     times_1_4 = os.path.join(att_dir, "run1_4_std.times")
-    tmp_1_4 = os.path.join(att_dir, "tmp_1_4")
-    os.makedirs(tmp_1_4, exist_ok=True)
-    env_1_4 = base_env(pin, {"IYI": compiler, "STD_SIBLINGS": "1", "TMPDIR": tmp_1_4})
-    rc, stdout, stderr, timed_out = run_bounded(
+    env_1_4 = fresh_stage_env(
+        pin,
+        att_dir,
+        "run1_4",
+        {"IYI": compiler, "STD_SIBLINGS": "1"},
+    )
+    result, stdout = run_logged(
         ["bash", "bench/std_exercise.sh"],
         cwd=w_path,
         env=env_1_4,
-        timeout_sec=2100.0,
         log_path=log_1_4,
         times_path=times_1_4,
+        limit_sec=None,
     )
-    if rc != 0 or timed_out:
-        raise RuntimeError(f"Run 1.4 failed (exit {rc})")
+    if result.returncode != 0 or result.timed_out:
+        raise RuntimeError(f"Run 1.4 failed (exit {result.returncode})")
 
     out_1_4 = stdout.decode(errors="replace")
     for req in [
@@ -253,26 +326,32 @@ def cmd_run2(args):
     os.makedirs(work_scratch, exist_ok=True)
 
     print(f"=== Starting Run 2 in {att_dir} ===")
-    env = base_env(pin)
-    rc, stdout, stderr, timed_out = run_bounded(
+    env = fresh_stage_env(pin, att_dir, "run2")
+    result, _output = run_logged(
         [
-            pin["python_path"], "-B",
+            pin["python_path"],
+            "-B",
             os.path.join(w_path, "proof/artifact_legs.py"),
-            "--repo", w_path,
-            "--compiler", compiler,
-            "--work", work_scratch,
-            "--report", report_jsonl,
-            "--workers", "2",
+            "--repo",
+            w_path,
+            "--compiler",
+            compiler,
+            "--work",
+            work_scratch,
+            "--report",
+            report_jsonl,
+            "--workers",
+            "2",
         ],
         cwd=w_path,
         env=env,
-        timeout_sec=2100.0,
         log_path=log_path,
         times_path=times_path,
+        limit_sec=None,
     )
 
-    if rc != 0 or timed_out:
-        raise RuntimeError(f"Run 2 failed (exit {rc})")
+    if result.returncode != 0 or result.timed_out:
+        raise RuntimeError(f"Run 2 failed (exit {result.returncode})")
 
     check_identity(pin)
     print("=== Run 2 PASSED ===")
@@ -390,23 +469,23 @@ def cmd_run3(args):
             "PATH": f"{bin_dir}:{pin['env_path']}",
         })
 
-        rc, stdout, stderr, timed_out = run_bounded(
+        result, output = run_logged(
             ["bash", driver_script],
             cwd=w_path,
             env=env,
-            timeout_sec=2100.0,
-            grace_sec=30.0,
             log_path=log_path,
             times_path=times_path,
+            limit_sec=2100.0,
+            grace_sec=30.0,
         )
 
-        log_text = stdout.decode(errors="replace") + stderr.decode(errors="replace")
+        log_text = output.decode(errors="replace")
 
         # 1. Exit code check
         status = "PASS"
-        if timed_out:
+        if result.timed_out:
             status = "TIMEOUT"
-        elif rc != 0:
+        elif result.returncode != 0:
             status = "FAIL"
 
         # 2. Check for REFUSED
@@ -428,14 +507,18 @@ def cmd_run3(args):
             "driver": drv,
             "attempt": os.path.basename(att_dir),
             "status": status,
-            "rc": rc,
-            "timed_out": timed_out,
+            "rc": result.returncode,
+            "timed_out": result.timed_out,
+            "survivors": list(result.survivors),
         }
         with open(os.path.join(att_dir, "result.json"), "w", encoding="utf-8") as f:
             json.dump(res_record, f, indent=2)
 
         check_identity(pin)
-        print(f"  [{status}] Driver {drv} finished (exit {rc})")
+        print(
+            f"  [{status}] Driver {drv} finished "
+            f"(exit {result.returncode})"
+        )
 
     print("=== Run 3 Complete ===")
 
@@ -464,7 +547,7 @@ def cmd_final(args):
     print(f"Final proof report written to {final_file}")
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser(description="Observed Corpus Proof Runner")
     subparsers = parser.add_subparsers(dest="subcmd", required=True)
 
@@ -497,24 +580,32 @@ def main():
 
     args = parser.parse_args()
 
-    if args.subcmd == "plan":
-        cmd_plan(args)
-    elif args.subcmd == "pin":
-        cmd_pin(args)
-    elif args.subcmd == "run1":
-        cmd_run1(args)
-    elif args.subcmd == "run2":
-        cmd_run2(args)
-    elif args.subcmd == "run3":
-        cmd_run3(args)
-    elif args.subcmd == "final":
-        cmd_final(args)
-    elif args.subcmd == "all":
-        cmd_run1(args)
-        cmd_run2(args)
-        cmd_run3(args)
-        cmd_final(args)
+    try:
+        if args.subcmd == "plan":
+            cmd_plan(args)
+        elif args.subcmd == "pin":
+            cmd_pin(args)
+        elif args.subcmd == "run1":
+            cmd_run1(args)
+        elif args.subcmd == "run2":
+            cmd_run2(args)
+        elif args.subcmd == "run3":
+            cmd_run3(args)
+        elif args.subcmd == "final":
+            cmd_final(args)
+        elif args.subcmd == "all":
+            cmd_run1(args)
+            cmd_run2(args)
+            cmd_run3(args)
+            cmd_final(args)
+    except IdentityError as error:
+        print(
+            f"REFUSED {error.reason}: {error.detail}",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

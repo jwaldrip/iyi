@@ -14,16 +14,22 @@ import hashlib
 import json
 import os
 import re
-import select
+import secrets
 import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 
 
 class IdentityError(RuntimeError):
-    pass
+    def __init__(self, reason: str, detail: str):
+        super().__init__(f"{reason}: {detail}")
+        self.reason = reason
+        self.detail = detail
 
 
 class CensusValidationError(RuntimeError):
@@ -158,71 +164,394 @@ def base_env(pin: dict | None = None, stage_extra: dict[str, str] | None = None)
     return env
 
 
-def compute_canonical_roots(w_path: str, p_path: str, compiler_path: str) -> list[str]:
-    c_list: list[str] = []
-    for base in [w_path, p_path]:
-        src = os.path.join(base, "src")
-        samples = os.path.join(base, "samples/iyi")
-        if os.path.isdir(src):
-            c_list.append(os.path.realpath(src))
-        if os.path.isdir(samples):
-            c_list.append(os.path.realpath(samples))
+def compute_canonical_roots(
+    w_path: str,
+    p_path: str,
+    compiler_path: str,
+    pin_env: dict[str, str],
+) -> list[str]:
+    roots: list[str] = []
+    for base in (w_path, p_path):
+        for relative in ("src", "samples/iyi"):
+            candidate = os.path.join(base, relative)
+            if os.path.isdir(candidate):
+                roots.append(os.path.realpath(candidate))
 
-    clean_e = base_env(None)
     proc = subprocess.run(
         [compiler_path, "env", "IYI_PATH"],
         cwd=w_path,
-        env=clean_e,
+        env=base_env(pin_env),
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
         check=False,
     )
-    if proc.returncode == 0 and proc.stdout.strip():
-        for entry in proc.stdout.strip().split(os.pathsep):
-            if entry:
-                resolved = os.path.abspath(os.path.join(w_path, entry))
-                if os.path.isdir(resolved):
-                    c_list.append(os.path.realpath(resolved))
+    if proc.returncode != 0:
+        raise IdentityError(
+            "COMPILER-ENV",
+            f"`env IYI_PATH` exited {proc.returncode}: {proc.stderr.strip()}",
+        )
+    for entry in proc.stdout.strip().split(os.pathsep):
+        if not entry:
+            continue
+        resolved = os.path.realpath(os.path.join(w_path, entry))
+        if os.path.isdir(resolved):
+            roots.append(resolved)
 
-    seen = set()
-    result = []
-    for path in c_list:
-        if path not in seen:
-            seen.add(path)
-            result.append(path)
-    return result
+    return list(dict.fromkeys(roots))
 
 
-def probe_atime_observable(dir_path: str) -> None:
-    """
-    Contract C3 Amendment B Precondition: Verify filesystem updates atime on execution.
-    1. Write tiny executable, hash it, link it, set atime 1s before mtime.
-    2. stat leaves atime unchanged.
-    3. Executing file moves atime past mtime.
-    """
-    test_exe = os.path.join(dir_path, f"probe_atime_{time.time_ns()}")
-    with open(test_exe, "w") as f:
-        f.write("#!/bin/sh\nexit 0\n")
-    os.chmod(test_exe, 0o755)
+def probe_atime_observable(
+    dir_path: str,
+    stat_fn: Callable[[str], os.stat_result] = os.stat,
+) -> dict[str, int | str]:
+    """Prove that executing an inode on the report volume advances its atime."""
+    probe_id = secrets.token_hex(8)
+    test_exe = os.path.join(dir_path, f"probe-atime-{probe_id}")
+    test_ref = os.path.join(dir_path, f"probe-atime-{probe_id}.ref")
     try:
-        st = os.stat(test_exe)
-        mtime_ns = st.st_mtime_ns
-        atime_ns = mtime_ns - 1_000_000_000
-        os.utime(test_exe, ns=(atime_ns, mtime_ns))
+        shutil.copyfile("/usr/bin/true", test_exe)
+        os.chmod(test_exe, 0o755)
+        original_sha = sha256_file(test_exe)
+        os.link(test_exe, test_ref)
 
-        # Check 2: stat leaves atime unchanged
-        st_after_stat = os.stat(test_exe)
-        if st_after_stat.st_atime_ns >= mtime_ns:
-            raise IdentityError("EXEC-UNOBSERVABLE: stat altered atime")
+        copied = stat_fn(test_exe)
+        mtime_ns = copied.st_mtime_ns
+        atime_set_ns = mtime_ns - 1_000_000_000
+        os.utime(test_exe, ns=(atime_set_ns, mtime_ns))
 
-        # Check 3: execution moves atime past mtime
-        subprocess.run([test_exe], check=True, capture_output=True)
-        st_after_exec = os.stat(test_exe)
-        if st_after_exec.st_atime_ns <= mtime_ns:
-            raise IdentityError("EXEC-UNOBSERVABLE: execution did not advance atime past mtime")
+        before_stat = stat_fn(test_ref)
+        after_stat = stat_fn(test_ref)
+        if before_stat.st_atime_ns != atime_set_ns:
+            raise IdentityError(
+                "EXEC-UNOBSERVABLE",
+                "the requested pre-exec atime was not retained",
+            )
+        if after_stat.st_atime_ns != before_stat.st_atime_ns:
+            raise IdentityError(
+                "EXEC-UNOBSERVABLE",
+                "a metadata-only stat changed atime",
+            )
+
+        executed = subprocess.run(
+            [test_exe],
+            cwd=dir_path,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if executed.returncode != 0:
+            raise IdentityError(
+                "EXEC-UNOBSERVABLE",
+                f"/usr/bin/true copy exited {executed.returncode}",
+            )
+
+        after_exec = stat_fn(test_ref)
+        if after_exec.st_atime_ns <= mtime_ns:
+            raise IdentityError(
+                "EXEC-UNOBSERVABLE",
+                "execution did not advance atime past mtime",
+            )
+        final_sha = sha256_file(test_ref)
+        if final_sha != original_sha:
+            raise IdentityError(
+                "EXEC-UNOBSERVABLE",
+                f"probe bytes changed: expected {original_sha}, got {final_sha}",
+            )
+        if after_exec.st_ino != copied.st_ino:
+            raise IdentityError(
+                "EXEC-UNOBSERVABLE",
+                "the hard-linked execution probe changed inode",
+            )
+
+        return {
+            "sha256": original_sha,
+            "inode": copied.st_ino,
+            "mtime_ns": mtime_ns,
+            "atime_set_ns": atime_set_ns,
+            "atime_after_exec_ns": after_exec.st_atime_ns,
+        }
+    except IdentityError:
+        raise
+    except (OSError, subprocess.SubprocessError) as error:
+        raise IdentityError("EXEC-UNOBSERVABLE", str(error)) from error
     finally:
-        if os.path.exists(test_exe):
-            os.remove(test_exe)
+        for path in (test_ref, test_exe):
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+
+
+def _first_output_line(
+    command: list[str],
+    *,
+    cwd: str,
+    env: dict[str, str],
+    reason: str,
+) -> str:
+    proc = subprocess.run(
+        command,
+        cwd=cwd,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    lines = proc.stdout.strip().splitlines()
+    if proc.returncode != 0 or not lines:
+        detail = proc.stderr.strip() or proc.stdout.strip() or "no output"
+        raise IdentityError(
+            reason,
+            f"{' '.join(command)} exited {proc.returncode}: {detail}",
+        )
+    return lines[0]
+
+def _nm_version_line(
+    nm_path: str,
+    *,
+    cwd: str,
+    env: dict[str, str],
+) -> str:
+    attempts: list[str] = []
+    for argument in ("--version", "-version"):
+        proc = subprocess.run(
+            [nm_path, argument],
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        lines = (proc.stdout.strip() or proc.stderr.strip()).splitlines()
+        if proc.returncode == 0 and lines:
+            return lines[0]
+        attempts.append(
+            f"{argument}: exit={proc.returncode} "
+            f"output={(proc.stdout.strip() or proc.stderr.strip())!r}"
+        )
+    raise IdentityError("NO-NM", "; ".join(attempts))
+
+
+def _census_shas_and_validate(
+    w_path: str,
+    drivers: Sequence[str],
+) -> dict[str, str]:
+    census_dir = os.path.join(w_path, "proof", "census")
+    expected_files = {f"{driver}.json" for driver in drivers}
+    try:
+        actual_files = {
+            name
+            for name in os.listdir(census_dir)
+            if name.endswith(".json")
+        }
+    except OSError as error:
+        raise IdentityError("CENSUS-SET", str(error)) from error
+    if actual_files != expected_files:
+        missing = sorted(expected_files - actual_files)
+        extra = sorted(actual_files - expected_files)
+        raise IdentityError(
+            "CENSUS-SET",
+            f"missing={missing}, extra={extra}",
+        )
+
+    census_shas: dict[str, str] = {}
+    for driver in drivers:
+        census_path = os.path.join(census_dir, f"{driver}.json")
+        try:
+            with open(census_path, "r", encoding="utf-8") as census_file:
+                census = json.load(census_file)
+            validate_census(census, w_path)
+        except (
+            CensusValidationError,
+            json.JSONDecodeError,
+            OSError,
+            TypeError,
+            ValueError,
+        ) as error:
+            raise IdentityError(
+                "CENSUS-INVALID",
+                f"{driver}: {error}",
+            ) from error
+        census_shas[driver] = sha256_file(census_path)
+    return census_shas
+
+
+def inspect_pin_inputs(
+    p_path: str,
+    w_path: str,
+    compiler_path: str,
+    drivers: Sequence[str],
+) -> dict:
+    """Validate every read-only pin precondition and return the pinned facts."""
+    p_real = os.path.realpath(p_path)
+    w_real = os.path.realpath(w_path)
+    c_real = os.path.realpath(compiler_path)
+    env_path = os.environ.get("PATH", "")
+    env_home = os.environ.get("HOME", "")
+    pin_env = {"env_path": env_path, "env_home": env_home}
+
+    try:
+        if not git_clean(p_real):
+            raise IdentityError("P-DIRTY", p_real)
+        if not git_clean(w_real):
+            raise IdentityError("W-DIRTY", w_real)
+        p_sha = git_rev_parse("HEAD", p_real)
+        p_time = git_commit_time("HEAD", p_real)
+        w_head = git_rev_parse("HEAD", w_real)
+    except IdentityError:
+        raise
+    except (OSError, RuntimeError, ValueError) as error:
+        raise IdentityError("GIT-ERROR", str(error)) from error
+
+    if not git_merge_base_is_ancestor(p_sha, w_head, w_real):
+        raise IdentityError(
+            "W-NOT-DESCENDANT",
+            f"W HEAD {w_head} does not descend from P {p_sha}",
+        )
+    try:
+        diff_files = git_diff_name_only(p_sha, w_head, w_real)
+        product_quiet = git_diff_quiet(
+            p_sha,
+            w_head,
+            w_real,
+            [".", ":(exclude)proof"],
+        )
+    except (OSError, RuntimeError) as error:
+        raise IdentityError("GIT-ERROR", str(error)) from error
+    product_files = [path for path in diff_files if not path.startswith("proof/")]
+    if product_files or not product_quiet:
+        raise IdentityError(
+            "PRODUCT-DIFF",
+            f"non-proof paths={product_files}",
+        )
+
+    if not os.path.isfile(c_real) or not os.access(c_real, os.X_OK):
+        raise IdentityError(
+            "COMPILER-NOT-EXECUTABLE",
+            c_real,
+        )
+    try:
+        compiler_stat = os.stat(c_real)
+        compiler_sha = sha256_file(c_real)
+    except OSError as error:
+        raise IdentityError("COMPILER-STAT", str(error)) from error
+    if compiler_stat.st_mtime_ns <= p_time * 1_000_000_000:
+        raise IdentityError(
+            "COMPILER-STALE",
+            f"mtime_ns={compiler_stat.st_mtime_ns}, p_commit_ns={p_time * 1_000_000_000}",
+        )
+
+    clean_env = base_env(pin_env)
+    version_line = _first_output_line(
+        [c_real, "--version"],
+        cwd=w_real,
+        env=clean_env,
+        reason="COMPILER-VERSION",
+    )
+    try:
+        stamp = extract_version_stamp(version_line)
+    except ValueError as error:
+        raise IdentityError("COMPILER-STAMP-MISSING", str(error)) from error
+    if not p_sha.startswith(stamp):
+        raise IdentityError(
+            "COMPILER-STAMP-MISMATCH",
+            f"stamp={stamp}, p_source_sha={p_sha}",
+        )
+
+    timeout_path = shutil.which("timeout", path=env_path)
+    if not timeout_path:
+        raise IdentityError(
+            "NO-TIMEOUT",
+            "timeout does not resolve on the pinned PATH",
+        )
+    timeout_real = os.path.realpath(timeout_path)
+    timeout_version = _first_output_line(
+        [timeout_real, "--version"],
+        cwd=w_real,
+        env=clean_env,
+        reason="NO-TIMEOUT",
+    )
+
+    nm_path = shutil.which("nm", path=env_path)
+    if not nm_path:
+        raise IdentityError("NO-NM", "nm does not resolve on the pinned PATH")
+    nm_real = os.path.realpath(nm_path)
+    nm_version = _nm_version_line(
+        nm_real,
+        cwd=w_real,
+        env=clean_env,
+    )
+
+    census_shas = _census_shas_and_validate(w_real, drivers)
+    canonical_roots = compute_canonical_roots(
+        w_real,
+        p_real,
+        c_real,
+        pin_env,
+    )
+
+    return {
+        "p_path": p_real,
+        "p_source_sha": p_sha,
+        "p_commit_time": p_time,
+        "w_path": w_real,
+        "w_head": w_head,
+        "compiler_path": c_real,
+        "compiler_sha256": compiler_sha,
+        "compiler_size": compiler_stat.st_size,
+        "compiler_mtime_ns": compiler_stat.st_mtime_ns,
+        "compiler_inode": compiler_stat.st_ino,
+        "compiler_version_line": version_line,
+        "compiler_stamp": stamp,
+        "canonical_roots": canonical_roots,
+        "env_path": env_path,
+        "env_home": env_home,
+        "python_path": os.path.realpath(sys.executable),
+        "python_version": sys.version.splitlines()[0],
+        "nm_path": nm_real,
+        "nm_version": nm_version,
+        "timeout_path": timeout_real,
+        "timeout_version": timeout_version,
+        "census_sha256": census_shas,
+    }
+
+
+def _validated_report_dir(
+    report_dir: str,
+    *,
+    require_empty: bool,
+    chain_id: str | None = None,
+) -> str:
+    report_real = os.path.realpath(report_dir)
+    match = re.fullmatch(r"/private/tmp/iyp-([0-9a-f]{8})", report_real)
+    if not match:
+        raise IdentityError(
+            "REPORT-DIR-NAME",
+            f"{report_real} does not match /private/tmp/iyp-<8 lowercase hex>",
+        )
+    if chain_id is not None:
+        if not re.fullmatch(r"[0-9a-f]{32}", chain_id):
+            raise IdentityError("CHAIN-ID", f"invalid chain_id {chain_id!r}")
+        if match.group(1) != chain_id[:8]:
+            raise IdentityError(
+                "REPORT-DIR-CHAIN",
+                f"basename suffix {match.group(1)} != chain prefix {chain_id[:8]}",
+            )
+    if require_empty and os.path.exists(report_real):
+        try:
+            entries = sorted(os.listdir(report_real))
+        except OSError as error:
+            raise IdentityError("REPORT-DIR", str(error)) from error
+        if entries:
+            raise IdentityError(
+                "REPORT-DIR-NOT-EMPTY",
+                f"{report_real} holds {entries}",
+            )
+    return report_real
 
 
 def write_pin(
@@ -230,302 +559,485 @@ def write_pin(
     p_path: str,
     w_path: str,
     compiler_path: str,
+    drivers: Sequence[str],
     chain_id: str | None = None,
+    stat_fn: Callable[[str], os.stat_result] = os.stat,
 ) -> dict:
-    """
-    Contract C3 + Amendments A & B: Write R/pin.json.
-    """
-    p_real = os.path.realpath(p_path)
-    w_real = os.path.realpath(w_path)
-    c_real = os.path.realpath(compiler_path)
-    r_real = os.path.realpath(report_dir)
+    """Validate C3/D4/D5 and write the immutable pin once."""
+    report_real = _validated_report_dir(
+        report_dir,
+        require_empty=True,
+        chain_id=chain_id,
+    )
+    facts = inspect_pin_inputs(p_path, w_path, compiler_path, drivers)
+    short_chain = os.path.basename(report_real).removeprefix("iyp-")
+    if chain_id is None:
+        chain_id = short_chain + secrets.token_hex(12)
+    report_real = _validated_report_dir(
+        report_real,
+        require_empty=True,
+        chain_id=chain_id,
+    )
 
-    if os.path.exists(r_real):
-        entries = os.listdir(r_real)
-        if entries:
-            raise IdentityError(f"Report directory R is not empty: {r_real} holds {entries}")
-    else:
-        os.makedirs(r_real, exist_ok=True)
-
-    # Precondition: atime observable on report volume
-    probe_atime_observable(r_real)
-
-    if not git_clean(p_real):
-        raise IdentityError(f"P worktree is dirty: {p_real}")
-    if not git_clean(w_real):
-        raise IdentityError(f"W worktree is dirty: {w_real}")
-
-    p_sha = git_rev_parse("HEAD", p_real)
-    p_time = git_commit_time("HEAD", p_real)
-    w_head = git_rev_parse("HEAD", w_real)
-
-    if not git_merge_base_is_ancestor(p_sha, w_head, w_real):
-        raise IdentityError(f"W HEAD {w_head} does not descend from P {p_sha}")
-
-    diff_files = git_diff_name_only(p_sha, w_head, w_real)
-    for df in diff_files:
-        if not df.startswith("proof/"):
-            raise IdentityError(f"Non-proof file differs between P and W: {df}")
-
-    if not git_diff_quiet(p_sha, w_head, w_real, [".", ":(exclude)proof"]):
-        raise IdentityError("Product diff between P and W is non-empty")
-
-    if not os.path.isfile(c_real) or not os.access(c_real, os.X_OK):
-        raise IdentityError(f"Compiler binary is not executable file: {c_real}")
-
-    c_stat = os.stat(c_real)
-    c_sha256 = sha256_file(c_real)
-    c_mtime_ns = c_stat.st_mtime_ns
-    c_mtime_sec = c_stat.st_mtime
-
-    if c_mtime_sec <= p_time:
-        raise IdentityError(
-            f"Compiler mtime ({c_mtime_sec}) is not later than P commit time ({p_time})"
-        )
-
-    proc_v = subprocess.run([c_real, "--version"], capture_output=True, text=True, check=False)
-    if proc_v.returncode != 0:
-        raise IdentityError(f"Compiler --version failed: {proc_v.stderr}")
-
-    version_line = proc_v.stdout.strip().splitlines()[0]
-    stamp = extract_version_stamp(version_line)
-    if not p_sha.startswith(stamp):
-        raise IdentityError(f"Compiler stamp [{stamp}] is not prefix of P SHA {p_sha}")
-
-    canonical_roots = compute_canonical_roots(w_real, p_real, c_real)
-
-    census_dir = os.path.join(w_real, "proof/census")
-    census_shas: dict[str, str] = {}
-    if os.path.isdir(census_dir):
-        for fname in sorted(os.listdir(census_dir)):
-            if fname.endswith(".json"):
-                drv_name = fname[:-5]
-                fpath = os.path.join(census_dir, fname)
-                census_shas[drv_name] = sha256_file(fpath)
-
-    nm_path = shutil.which("nm")
-    if not nm_path:
-        raise IdentityError("nm binary not found in PATH")
-    nm_real = os.path.realpath(nm_path)
-    proc_nm = subprocess.run([nm_real, "--version"], capture_output=True, text=True, check=False)
-    nm_version = proc_nm.stdout.strip().splitlines()[0] if proc_nm.stdout.strip() else "unknown"
-
-    if not chain_id:
-        chain_id = hashlib.sha256(f"{p_sha}:{w_head}:{time.time_ns()}".encode()).hexdigest()[:8]
-
-    pin_data = {
-        "p_path": p_real,
-        "p_source_sha": p_sha,
-        "p_commit_time": p_time,
-        "w_path": w_real,
-        "w_head": w_head,
-        "compiler_path": c_real,
-        "compiler_sha256": c_sha256,
-        "compiler_size": c_stat.st_size,
-        "compiler_mtime_ns": c_mtime_ns,
-        "compiler_inode": c_stat.st_ino,
-        "compiler_version_line": version_line,
-        "compiler_stamp": stamp,
-        "canonical_roots": canonical_roots,
-        "env_path": os.environ.get("PATH", ""),
-        "env_home": os.environ.get("HOME", ""),
-        "python_path": os.path.realpath(sys.executable),
-        "python_version": sys.version.splitlines()[0],
-        "nm_path": nm_real,
-        "nm_version": nm_version,
-        "census_sha256": census_shas,
-        "chain_id": chain_id,
-    }
-
-    pin_file = os.path.join(r_real, "pin.json")
-    with open(pin_file, "w", encoding="utf-8") as f:
-        json.dump(pin_data, f, indent=2)
-
-    return pin_data
+    created_report_dir = not os.path.exists(report_real)
+    try:
+        os.makedirs(report_real, exist_ok=True)
+        probe_atime_observable(report_real, stat_fn=stat_fn)
+        pin_data = {
+            **facts,
+            "report_dir": report_real,
+            "chain_id": chain_id,
+        }
+        pin_file = os.path.join(report_real, "pin.json")
+        with open(pin_file, "x", encoding="utf-8") as output:
+            json.dump(pin_data, output, indent=2, sort_keys=True)
+            output.write("\n")
+        return pin_data
+    except IdentityError:
+        if created_report_dir:
+            try:
+                os.rmdir(report_real)
+            except OSError:
+                pass
+        raise
+    except (OSError, TypeError, ValueError) as error:
+        if created_report_dir:
+            try:
+                os.rmdir(report_real)
+            except OSError:
+                pass
+        raise IdentityError("PIN-WRITE", str(error)) from error
 
 
 def load_pin(report_dir: str) -> dict:
-    pin_file = os.path.join(report_dir, "pin.json")
+    report_real = _validated_report_dir(report_dir, require_empty=False)
+    pin_file = os.path.join(report_real, "pin.json")
     if not os.path.isfile(pin_file):
-        raise IdentityError(f"Pin file not found: {pin_file}")
-    with open(pin_file, "r", encoding="utf-8") as f:
-        return json.load(f)
+        raise IdentityError("PIN-MISSING", pin_file)
+    try:
+        with open(pin_file, "r", encoding="utf-8") as source:
+            pin = json.load(source)
+    except (json.JSONDecodeError, OSError) as error:
+        raise IdentityError("PIN-INVALID", str(error)) from error
+    chain_id = pin.get("chain_id")
+    if not isinstance(chain_id, str):
+        raise IdentityError("CHAIN-ID", "pin has no string chain_id")
+    _validated_report_dir(
+        report_real,
+        require_empty=False,
+        chain_id=chain_id,
+    )
+    if pin.get("report_dir") != report_real:
+        raise IdentityError(
+            "REPORT-DIR-CHAIN",
+            f"pin report_dir={pin.get('report_dir')!r}, actual={report_real!r}",
+        )
+    return pin
+
+
+def _require_equal(reason: str, label: str, expected: object, got: object) -> None:
+    if got != expected:
+        raise IdentityError(
+            reason,
+            f"{label}: expected {expected!r}, got {got!r}",
+        )
 
 
 def check_identity(pin: dict) -> None:
     p_path = pin["p_path"]
     w_path = pin["w_path"]
-    c_path = pin["compiler_path"]
+    compiler_path = pin["compiler_path"]
 
-    curr_p_sha = git_rev_parse("HEAD", p_path)
-    if curr_p_sha != pin["p_source_sha"]:
-        raise IdentityError(f"P HEAD mutated: expected {pin['p_source_sha']}, got {curr_p_sha}")
-    if not git_clean(p_path):
-        raise IdentityError(f"P worktree is dirty: {p_path}")
+    _validated_report_dir(
+        pin["report_dir"],
+        require_empty=False,
+        chain_id=pin["chain_id"],
+    )
+    _require_equal(
+        "PATH-CHANGED",
+        "PATH",
+        pin["env_path"],
+        os.environ.get("PATH", ""),
+    )
 
-    curr_w_head = git_rev_parse("HEAD", w_path)
-    if curr_w_head != pin["w_head"]:
-        raise IdentityError(f"W HEAD mutated: expected {pin['w_head']}, got {curr_w_head}")
-    if not git_clean(w_path):
-        raise IdentityError(f"W worktree is dirty: {w_path}")
-
-    if not git_merge_base_is_ancestor(pin["p_source_sha"], curr_w_head, w_path):
-        raise IdentityError(f"W HEAD does not descend from P {pin['p_source_sha']}")
-
-    diff_files = git_diff_name_only(pin["p_source_sha"], curr_w_head, w_path)
-    for df in diff_files:
-        if not df.startswith("proof/"):
-            raise IdentityError(f"Non-proof file modified in W: {df}")
-
-    if not git_diff_quiet(pin["p_source_sha"], curr_w_head, w_path, [".", ":(exclude)proof"]):
-        raise IdentityError("Product files in W differ from pinned P")
-
-    curr_c_sha = sha256_file(c_path)
-    if curr_c_sha != pin["compiler_sha256"]:
-        raise IdentityError(f"Compiler sha256 mutated: expected {pin['compiler_sha256']}, got {curr_c_sha}")
-
-    c_stat = os.stat(c_path)
-    if c_stat.st_size != pin["compiler_size"]:
-        raise IdentityError(f"Compiler size mutated: expected {pin['compiler_size']}, got {c_stat.st_size}")
-    if c_stat.st_mtime_ns != pin["compiler_mtime_ns"]:
-        raise IdentityError(f"Compiler mtime_ns mutated: expected {pin['compiler_mtime_ns']}, got {c_stat.st_mtime_ns}")
-    if c_stat.st_ino != pin["compiler_inode"]:
-        raise IdentityError(f"Compiler inode mutated: expected {pin['compiler_inode']}, got {c_stat.st_ino}")
-
-    proc_v = subprocess.run([c_path, "--version"], capture_output=True, text=True, check=False)
-    if proc_v.returncode != 0:
-        raise IdentityError(f"Compiler --version failed during identity check: {proc_v.stderr}")
-    stamp = extract_version_stamp(proc_v.stdout.strip().splitlines()[0])
-    if stamp != pin["compiler_stamp"]:
-        raise IdentityError(f"Compiler stamp mutated: expected {pin['compiler_stamp']}, got {stamp}")
-
-    curr_path = os.environ.get("PATH", "")
-    if curr_path != pin["env_path"]:
-        raise IdentityError(f"PATH environment mutated: expected {pin['env_path']}, got {curr_path}")
-
-
-def sweep_process_group(pgid: int) -> None:
     try:
-        os.killpg(pgid, signal.SIGKILL)
+        current_p_sha = git_rev_parse("HEAD", p_path)
+        current_w_head = git_rev_parse("HEAD", w_path)
+    except (OSError, RuntimeError) as error:
+        raise IdentityError("GIT-ERROR", str(error)) from error
+    _require_equal("P-HEAD-CHANGED", "P HEAD", pin["p_source_sha"], current_p_sha)
+    if not git_clean(p_path):
+        raise IdentityError("P-DIRTY", p_path)
+    _require_equal("W-HEAD-CHANGED", "W HEAD", pin["w_head"], current_w_head)
+    if not git_clean(w_path):
+        raise IdentityError("W-DIRTY", w_path)
+    if not git_merge_base_is_ancestor(pin["p_source_sha"], current_w_head, w_path):
+        raise IdentityError(
+            "W-NOT-DESCENDANT",
+            f"W HEAD {current_w_head} does not descend from {pin['p_source_sha']}",
+        )
+    product_paths = [
+        path
+        for path in git_diff_name_only(
+            pin["p_source_sha"],
+            current_w_head,
+            w_path,
+        )
+        if not path.startswith("proof/")
+    ]
+    if product_paths or not git_diff_quiet(
+        pin["p_source_sha"],
+        current_w_head,
+        w_path,
+        [".", ":(exclude)proof"],
+    ):
+        raise IdentityError("PRODUCT-DIFF", f"non-proof paths={product_paths}")
+
+    if not os.path.isfile(compiler_path) or not os.access(compiler_path, os.X_OK):
+        raise IdentityError("COMPILER-NOT-EXECUTABLE", compiler_path)
+    try:
+        compiler_stat = os.stat(compiler_path)
+        compiler_sha = sha256_file(compiler_path)
+    except OSError as error:
+        raise IdentityError("COMPILER-STAT", str(error)) from error
+    _require_equal(
+        "COMPILER-SHA-CHANGED",
+        "compiler sha256",
+        pin["compiler_sha256"],
+        compiler_sha,
+    )
+    _require_equal(
+        "COMPILER-SIZE-CHANGED",
+        "compiler size",
+        pin["compiler_size"],
+        compiler_stat.st_size,
+    )
+    _require_equal(
+        "COMPILER-MTIME-CHANGED",
+        "compiler mtime_ns",
+        pin["compiler_mtime_ns"],
+        compiler_stat.st_mtime_ns,
+    )
+    _require_equal(
+        "COMPILER-INODE-CHANGED",
+        "compiler inode",
+        pin["compiler_inode"],
+        compiler_stat.st_ino,
+    )
+
+    clean_env = base_env(pin)
+    version_line = _first_output_line(
+        [compiler_path, "--version"],
+        cwd=w_path,
+        env=clean_env,
+        reason="COMPILER-VERSION",
+    )
+    _require_equal(
+        "COMPILER-VERSION-CHANGED",
+        "compiler version line",
+        pin["compiler_version_line"],
+        version_line,
+    )
+    try:
+        stamp = extract_version_stamp(version_line)
+    except ValueError as error:
+        raise IdentityError("COMPILER-STAMP-MISSING", str(error)) from error
+    _require_equal(
+        "COMPILER-STAMP-CHANGED",
+        "compiler stamp",
+        pin["compiler_stamp"],
+        stamp,
+    )
+
+    current_census_shas = _census_shas_and_validate(
+        w_path,
+        tuple(sorted(pin["census_sha256"])),
+    )
+    _require_equal(
+        "CENSUS-CHANGED",
+        "census sha256 map",
+        pin["census_sha256"],
+        current_census_shas,
+    )
+    roots = compute_canonical_roots(w_path, p_path, compiler_path, pin)
+    _require_equal(
+        "CANONICAL-ROOTS-CHANGED",
+        "canonical roots",
+        pin["canonical_roots"],
+        roots,
+    )
+
+    _require_equal(
+        "PYTHON-CHANGED",
+        "python realpath",
+        pin["python_path"],
+        os.path.realpath(sys.executable),
+    )
+    _require_equal(
+        "PYTHON-CHANGED",
+        "python version",
+        pin["python_version"],
+        sys.version.splitlines()[0],
+    )
+
+    timeout_path = shutil.which("timeout", path=pin["env_path"])
+    if not timeout_path:
+        raise IdentityError("NO-TIMEOUT", "timeout disappeared from pinned PATH")
+    timeout_real = os.path.realpath(timeout_path)
+    _require_equal(
+        "TIMEOUT-CHANGED",
+        "timeout realpath",
+        pin["timeout_path"],
+        timeout_real,
+    )
+    timeout_version = _first_output_line(
+        [timeout_real, "--version"],
+        cwd=w_path,
+        env=clean_env,
+        reason="NO-TIMEOUT",
+    )
+    _require_equal(
+        "TIMEOUT-CHANGED",
+        "timeout version",
+        pin["timeout_version"],
+        timeout_version,
+    )
+
+    nm_path = shutil.which("nm", path=pin["env_path"])
+    if not nm_path:
+        raise IdentityError("NO-NM", "nm disappeared from pinned PATH")
+    nm_real = os.path.realpath(nm_path)
+    _require_equal("NM-CHANGED", "nm realpath", pin["nm_path"], nm_real)
+    nm_version = _nm_version_line(
+        nm_real,
+        cwd=w_path,
+        env=clean_env,
+    )
+    _require_equal(
+        "NM-CHANGED",
+        "nm version",
+        pin["nm_version"],
+        nm_version,
+    )
+
+@dataclass(frozen=True)
+class BoundedResult:
+    returncode: int
+    timed_out: bool
+    survivors: tuple[int, ...]
+    interrupted_signal: int | None
+
+
+class _BoundedSignal(BaseException):
+    def __init__(self, signum: int):
+        super().__init__(signum)
+        self.signum = signum
+
+
+def _process_group_members(pgid: int, *, exclude: int | None = None) -> tuple[int, ...]:
+    ps_path = "/bin/ps" if os.path.exists("/bin/ps") else "ps"
+    proc = subprocess.run(
+        [ps_path, "-axo", "pid=,pgid="],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"ps failed while inspecting process group {pgid}: {proc.stderr.strip()}"
+        )
+    members: list[int] = []
+    for line in proc.stdout.splitlines():
+        fields = line.split()
+        if len(fields) != 2:
+            continue
+        try:
+            pid, member_pgid = (int(field) for field in fields)
+        except ValueError:
+            continue
+        if member_pgid == pgid and pid != exclude:
+            members.append(pid)
+    return tuple(sorted(set(members)))
+
+
+def _signal_process_group(pgid: int, signum: int) -> None:
+    try:
+        os.killpg(pgid, signum)
     except ProcessLookupError:
         pass
-    except PermissionError:
-        pass
+
+
+def _wait_for_group_exit(pgid: int, limit_sec: float) -> tuple[int, ...]:
+    deadline = time.monotonic() + max(0.0, limit_sec)
+    while True:
+        members = _process_group_members(pgid)
+        if not members or time.monotonic() >= deadline:
+            return members
+        time.sleep(0.02)
+
+
+def _stop_leader(proc: subprocess.Popen[bytes], pgid: int, grace_sec: float) -> None:
+    _signal_process_group(pgid, signal.SIGTERM)
+    try:
+        proc.wait(timeout=grace_sec)
+    except subprocess.TimeoutExpired:
+        _signal_process_group(pgid, signal.SIGKILL)
+        try:
+            proc.wait(timeout=5.0)
+        except subprocess.TimeoutExpired as error:
+            raise RuntimeError(
+                f"leader {proc.pid} survived SIGKILL"
+            ) from error
+
+
+def _record_and_stop_survivors(
+    pgid: int,
+    leader_pid: int,
+    grace_sec: float,
+) -> tuple[int, ...]:
+    survivors = _process_group_members(pgid, exclude=leader_pid)
+    if not survivors:
+        return ()
+    _signal_process_group(pgid, signal.SIGTERM)
+    remaining = _wait_for_group_exit(pgid, grace_sec)
+    if remaining:
+        _signal_process_group(pgid, signal.SIGKILL)
+        remaining = _wait_for_group_exit(pgid, 5.0)
+    if remaining:
+        raise RuntimeError(
+            f"process group {pgid} retained survivors after SIGKILL: {remaining}"
+        )
+    return survivors
+
+
+def _sample_log_growth(
+    log_path: str,
+    times_path: str,
+    stop: threading.Event,
+    errors: list[BaseException],
+) -> None:
+    try:
+        last_size = os.path.getsize(log_path)
+        with open(times_path, "a", encoding="utf-8", buffering=1) as times_file:
+            while not stop.wait(0.05):
+                size = os.path.getsize(log_path)
+                if size > last_size:
+                    times_file.write(f"{time.monotonic_ns()} {size}\n")
+                    last_size = size
+            final_size = os.path.getsize(log_path)
+            times_file.write(f"{time.monotonic_ns()} {final_size}\n")
+    except (OSError, ValueError) as error:
+        errors.append(error)
 
 
 def run_bounded(
     cmd: list[str],
     cwd: str,
     env: dict[str, str],
-    stdin_data: bytes | None = None,
-    timeout_sec: float = 2100.0,
+    log: str,
+    times: str,
+    limit_sec: float | None,
     grace_sec: float = 30.0,
-    log_path: str | None = None,
-    times_path: str | None = None,
-) -> tuple[int, bytes, bytes, bool]:
-    times_file = open(times_path, "w", encoding="utf-8") if times_path else None
-    log_file = open(log_path, "wb") if log_path else None
+) -> BoundedResult:
+    """Run against a log fd; leader exit, never pipe EOF, decides completion."""
+    if limit_sec is not None and limit_sec <= 0:
+        raise ValueError("limit_sec must be positive or None")
+    if grace_sec < 0:
+        raise ValueError("grace_sec must be non-negative")
 
-    stdin_r = None
-    if stdin_data is not None:
-        stdin_r, stdin_w = os.pipe()
-        os.write(stdin_w, stdin_data)
-        os.close(stdin_w)
-    else:
-        stdin_r = os.open(os.devnull, os.O_RDONLY)
-
-    stdout_r, stdout_w = os.pipe()
-    stderr_r, stderr_w = os.pipe()
-
-    proc = subprocess.Popen(
-        cmd,
-        cwd=cwd,
-        env=env,
-        stdin=stdin_r,
-        stdout=stdout_w,
-        stderr=stderr_w,
-        start_new_session=True,
+    log_fd = os.open(
+        log,
+        os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+        0o600,
     )
-    os.close(stdin_r)
-    os.close(stdout_w)
-    os.close(stderr_w)
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=log_fd,
+            stderr=log_fd,
+            start_new_session=True,
+        )
+    finally:
+        os.close(log_fd)
 
-    pgid = proc.pid
-    stdout_chunks: list[bytes] = []
-    stderr_chunks: list[bytes] = []
-    bytes_written = 0
+    stop_sampler = threading.Event()
+    sampler_errors: list[BaseException] = []
+    sampler = threading.Thread(
+        target=_sample_log_growth,
+        args=(log, times, stop_sampler, sampler_errors),
+        name=f"proof-log-sampler-{proc.pid}",
+        daemon=False,
+    )
+    sampler.start()
+
+    previous_handlers: dict[int, object] = {}
+    if threading.current_thread() is threading.main_thread():
+        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            previous_handlers[signum] = signal.getsignal(signum)
+
+            def interrupt_handler(
+                received: int,
+                _frame: object,
+            ) -> None:
+                raise _BoundedSignal(received)
+
+            signal.signal(signum, interrupt_handler)
+
     timed_out = False
-
-    start_time = time.monotonic()
-    deadline = start_time + timeout_sec
-
-    read_set = [stdout_r, stderr_r]
-
-    while read_set:
-        now = time.monotonic()
-        remaining = deadline - now
-        if remaining <= 0:
-            timed_out = True
-            break
-
-        r, _, _ = select.select(read_set, [], [], min(remaining, 1.0))
-        for fd in r:
-            chunk = os.read(fd, 65536)
-            t_ns = time.monotonic_ns()
-            if not chunk:
-                read_set.remove(fd)
-                os.close(fd)
-            else:
-                if fd == stdout_r:
-                    stdout_chunks.append(chunk)
-                else:
-                    stderr_chunks.append(chunk)
-
-                if log_file:
-                    log_file.write(chunk)
-                    log_file.flush()
-                    bytes_written += len(chunk)
-                    if times_file:
-                        times_file.write(f"{t_ns} {bytes_written}\n")
-                        times_file.flush()
-
-    if timed_out:
+    interrupted_signal: int | None = None
+    survivors: tuple[int, ...] = ()
+    try:
         try:
-            os.killpg(pgid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-
-        grace_deadline = time.monotonic() + grace_sec
-        while time.monotonic() < grace_deadline:
-            if proc.poll() is not None:
-                break
-            time.sleep(0.1)
+            if limit_sec is None:
+                proc.wait()
+            else:
+                proc.wait(timeout=limit_sec)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            _stop_leader(proc, proc.pid, grace_sec)
+        except _BoundedSignal as interrupted:
+            interrupted_signal = interrupted.signum
+            _stop_leader(proc, proc.pid, grace_sec)
 
         if proc.poll() is None:
-            sweep_process_group(pgid)
-            try:
-                proc.wait(timeout=5.0)
-            except subprocess.TimeoutExpired:
-                pass
+            raise RuntimeError(f"leader {proc.pid} has no exit status")
+        survivors = _record_and_stop_survivors(
+            proc.pid,
+            proc.pid,
+            grace_sec,
+        )
+    finally:
+        if proc.poll() is None:
+            _stop_leader(proc, proc.pid, grace_sec)
+        residual = _process_group_members(proc.pid, exclude=proc.pid)
+        if residual:
+            _signal_process_group(proc.pid, signal.SIGKILL)
+            residual = _wait_for_group_exit(proc.pid, 5.0)
+            if residual:
+                sampler_errors.append(
+                    RuntimeError(
+                        f"process group {proc.pid} retained {residual}"
+                    )
+                )
+        stop_sampler.set()
+        sampler.join()
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
 
-        for fd in list(read_set):
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-
-    else:
-        proc.wait()
-
-    if times_file:
-        times_file.close()
-    if log_file:
-        log_file.close()
-
-    sweep_process_group(pgid)
-
-    returncode = proc.returncode if proc.returncode is not None else -1
-    return returncode, b"".join(stdout_chunks), b"".join(stderr_chunks), timed_out
+    if sampler_errors:
+        raise RuntimeError(
+            "; ".join(str(error) for error in sampler_errors)
+        )
+    return BoundedResult(
+        returncode=proc.returncode if proc.returncode is not None else -1,
+        timed_out=timed_out,
+        survivors=survivors,
+        interrupted_signal=interrupted_signal,
+    )
 
 
 # --- Census & Ledger Verification ---

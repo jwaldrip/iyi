@@ -9,14 +9,24 @@ keeps an incomplete repair red until every required seed and control executes.
 from __future__ import annotations
 
 import ast
+import contextlib
 import glob
 import hashlib
+import io
 import json
 import os
+import re
+import shutil
+import signal
 import subprocess
 import sys
+import tempfile
+import threading
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from functools import partial
+from types import SimpleNamespace
 
 
 if __name__ == "__main__" and sys.flags.optimize:
@@ -30,7 +40,16 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from proof.proofkit import base_env
+from proof.proofkit import (
+    IdentityError,
+    base_env,
+    check_identity,
+    inspect_pin_inputs,
+    probe_atime_observable,
+    run_bounded,
+    write_pin,
+)
+from proof.run_proof import CORE_29_DRIVERS, cmd_plan, fresh_stage_env
 
 
 @dataclass(frozen=True)
@@ -331,6 +350,849 @@ def _fixture_coverage_complete_control() -> Observation:
         "missing_seed_ids": [],
         "missing_control_ids": [],
         "items_without_executed_seed": [],
+    }
+    return Observation(expected=expected, got=got)
+
+
+def _file_sha256(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as source:
+        while chunk := source.read(65536):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _read_pid(path: str) -> int:
+    with open(path, "r", encoding="utf-8") as source:
+        return int(source.read())
+
+
+def _git(cwd: str, *args: str) -> str:
+    completed = subprocess.run(
+        ["git", "-C", cwd, *args],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"git -C {cwd} {' '.join(args)} failed: {completed.stderr.strip()}"
+        )
+    return completed.stdout.strip()
+
+
+class PinFixture:
+    def __init__(self) -> None:
+        self.scratch = tempfile.mkdtemp(prefix="iyi-o2-pin-", dir="/tmp")
+        self.p = os.path.join(self.scratch, "p")
+        self.w = os.path.join(self.scratch, "w")
+        self.compiler = os.path.join(self.scratch, "iyi")
+        while True:
+            short_chain = hashlib.sha256(os.urandom(32)).hexdigest()[:8]
+            self.report = os.path.join("/tmp", f"iyp-{short_chain}")
+            if not os.path.exists(self.report):
+                break
+        try:
+            self._setup()
+        except (
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            subprocess.SubprocessError,
+        ):
+            self.cleanup()
+            raise
+
+    def __enter__(self) -> PinFixture:
+        return self
+
+    def __exit__(
+        self,
+        _exception_type: object,
+        _exception: object,
+        _traceback: object,
+    ) -> None:
+        self.cleanup()
+
+    def cleanup(self) -> None:
+        shutil.rmtree(self.report, ignore_errors=True)
+        shutil.rmtree(self.scratch, ignore_errors=True)
+
+    def _setup(self) -> None:
+        os.makedirs(self.p)
+        _git(self.p, "init", "-b", "main")
+        _git(self.p, "config", "user.name", "Proof Fixture")
+        _git(self.p, "config", "user.email", "proof-fixture@example.invalid")
+        _git(self.p, "config", "commit.gpgsign", "false")
+
+        census_target = os.path.join(self.p, "proof", "census")
+        os.makedirs(census_target)
+        copied_scripts: set[str] = set()
+        for census_source in sorted(
+            glob.glob(os.path.join(REPO_ROOT, "proof", "census", "*.json"))
+        ):
+            with open(census_source, "r", encoding="utf-8") as source:
+                census = json.load(source)
+            shutil.copyfile(
+                census_source,
+                os.path.join(census_target, os.path.basename(census_source)),
+            )
+            script_relative = census["script"]
+            if script_relative in copied_scripts:
+                continue
+            copied_scripts.add(script_relative)
+            script_source = os.path.join(REPO_ROOT, script_relative)
+            script_target = os.path.join(self.p, script_relative)
+            os.makedirs(os.path.dirname(script_target), exist_ok=True)
+            shutil.copyfile(script_source, script_target)
+
+        for relative in ("src/fixture.txt", "samples/iyi/fixture.iyi"):
+            target = os.path.join(self.p, relative)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, "w", encoding="utf-8") as fixture_file:
+                fixture_file.write("fixture\n")
+
+        _git(self.p, "add", ".")
+        _git(self.p, "commit", "-m", "fixture base")
+        self.p_sha = _git(self.p, "rev-parse", "HEAD")
+        self.p_commit_time = int(_git(self.p, "log", "-1", "--format=%ct"))
+
+        completed = subprocess.run(
+            ["git", "clone", "--quiet", self.p, self.w],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(f"git clone failed: {completed.stderr.strip()}")
+        _git(self.w, "config", "user.name", "Proof Fixture")
+        _git(self.w, "config", "user.email", "proof-fixture@example.invalid")
+        _git(self.w, "config", "commit.gpgsign", "false")
+        marker = os.path.join(self.w, "proof", "o2-fixture.txt")
+        with open(marker, "w", encoding="utf-8") as marker_file:
+            marker_file.write("proof-only\n")
+        _git(self.w, "add", "proof/o2-fixture.txt")
+        _git(self.w, "commit", "-m", "fixture proof delta")
+        self.write_compiler(f"iyi fixture [{self.p_sha[:9]}]")
+
+    def write_compiler(self, version_line: str) -> None:
+        with open(self.compiler, "w", encoding="utf-8") as compiler_file:
+            compiler_file.write(
+                "#!/bin/sh\n"
+                "if [ \"$1\" = \"--version\" ]; then\n"
+                f"  printf '%s\\n' '{version_line}'\n"
+                "  exit 0\n"
+                "fi\n"
+                "if [ \"$1\" = \"env\" ] && [ \"$2\" = \"IYI_PATH\" ]; then\n"
+                f"  printf '%s\\n' '{os.path.join(self.w, 'src')}'\n"
+                "  exit 0\n"
+                "fi\n"
+                "exit 0\n"
+            )
+        os.chmod(self.compiler, 0o755)
+        compiler_time_ns = (self.p_commit_time + 2) * 1_000_000_000
+        os.utime(
+            self.compiler,
+            ns=(compiler_time_ns, compiler_time_ns),
+        )
+
+    def pin(self) -> dict:
+        return write_pin(
+            self.report,
+            self.p,
+            self.w,
+            self.compiler,
+            CORE_29_DRIVERS,
+        )
+
+
+def _identity_reason(call: Callable[[], object]) -> str:
+    try:
+        call()
+    except IdentityError as error:
+        return error.reason
+    return "NO-REFUSAL"
+
+
+def _mutate_dirty_w(fixture: PinFixture) -> tuple[bool, str]:
+    path = os.path.join(fixture.w, "dirty-w")
+    with open(path, "w", encoding="utf-8") as dirty_file:
+        dirty_file.write("dirty\n")
+    applied = os.path.isfile(path)
+    return applied, f"untracked={path};exists={str(applied).lower()}"
+
+
+def _mutate_dirty_p(fixture: PinFixture) -> tuple[bool, str]:
+    path = os.path.join(fixture.p, "dirty-p")
+    with open(path, "w", encoding="utf-8") as dirty_file:
+        dirty_file.write("dirty\n")
+    applied = os.path.isfile(path)
+    return applied, f"untracked={path};exists={str(applied).lower()}"
+
+
+def _mutate_nondescendant(fixture: PinFixture) -> tuple[bool, str]:
+    _git(fixture.w, "checkout", "--orphan", "unrelated")
+    _git(fixture.w, "rm", "-rf", ".")
+    unrelated = os.path.join(fixture.w, "unrelated.txt")
+    with open(unrelated, "w", encoding="utf-8") as unrelated_file:
+        unrelated_file.write("unrelated\n")
+    _git(fixture.w, "add", "unrelated.txt")
+    _git(fixture.w, "commit", "-m", "unrelated history")
+    applied = subprocess.run(
+        [
+            "git",
+            "-C",
+            fixture.w,
+            "merge-base",
+            "--is-ancestor",
+            fixture.p_sha,
+            "HEAD",
+        ],
+        check=False,
+        capture_output=True,
+    ).returncode == 1
+    return applied, f"ancestor_check_failed={str(applied).lower()}"
+
+
+def _mutate_product_diff(fixture: PinFixture) -> tuple[bool, str]:
+    path = os.path.join(fixture.w, "src", "fixture.txt")
+    with open(path, "a", encoding="utf-8") as product_file:
+        product_file.write("changed\n")
+    _git(fixture.w, "add", "src/fixture.txt")
+    _git(fixture.w, "commit", "-m", "product mutation")
+    changed = _git(
+        fixture.w,
+        "diff",
+        "--name-only",
+        fixture.p_sha,
+        "HEAD",
+    ).splitlines()
+    applied = "src/fixture.txt" in changed
+    return applied, f"changed_paths={_render(changed)}"
+
+
+def _mutate_stale_compiler(fixture: PinFixture) -> tuple[bool, str]:
+    stale_ns = fixture.p_commit_time * 1_000_000_000
+    os.utime(fixture.compiler, ns=(stale_ns, stale_ns))
+    got = os.stat(fixture.compiler).st_mtime_ns
+    return got == stale_ns, f"mtime_ns={got};p_commit_ns={stale_ns}"
+
+
+def _mutate_missing_stamp(fixture: PinFixture) -> tuple[bool, str]:
+    fixture.write_compiler("iyi fixture without stamp")
+    output = subprocess.check_output(
+        [fixture.compiler, "--version"],
+        text=True,
+    ).strip()
+    applied = "[" not in output
+    return applied, f"version={_render(output)}"
+
+
+def _mutate_stamp_mismatch(fixture: PinFixture) -> tuple[bool, str]:
+    fixture.write_compiler("iyi fixture [deadbeef0]")
+    output = subprocess.check_output(
+        [fixture.compiler, "--version"],
+        text=True,
+    ).strip()
+    applied = "[deadbeef0]" in output
+    return applied, f"version={_render(output)}"
+
+
+def _mutate_nonempty_report(fixture: PinFixture) -> tuple[bool, str]:
+    os.makedirs(fixture.report)
+    sentinel = os.path.join(fixture.report, "occupied")
+    with open(sentinel, "w", encoding="utf-8") as occupied:
+        occupied.write("occupied\n")
+    applied = os.path.isfile(sentinel)
+    return applied, f"entry={sentinel};exists={str(applied).lower()}"
+
+
+def _mutate_bad_report_name(fixture: PinFixture) -> tuple[bool, str]:
+    fixture.report = os.path.join(
+        "/tmp",
+        f"not-iyp-{hashlib.sha256(os.urandom(8)).hexdigest()[:8]}",
+    )
+    report_real = os.path.realpath(fixture.report)
+    applied = re.fullmatch(r"/private/tmp/iyp-[0-9a-f]{8}", report_real) is None
+    return applied, f"report_real={report_real}"
+
+
+def _pin_reason_seed(
+    mutator: Callable[[PinFixture], tuple[bool, str]],
+    expected_reason: str,
+) -> Observation:
+    with PinFixture() as fixture:
+        applied, evidence = mutator(fixture)
+        reason = _identity_reason(fixture.pin)
+    expected = {"applied": True, "reason": expected_reason}
+    got = {"applied": applied, "reason": reason}
+    return Observation(expected=expected, got=got, applied=evidence)
+
+
+def _fixture_pin_control() -> Observation:
+    with PinFixture() as fixture:
+        pin = fixture.pin()
+        got = {
+            "chain_prefix_matches": os.path.basename(fixture.report)[4:]
+            == pin["chain_id"][:8],
+            "pin_exists": os.path.isfile(
+                os.path.join(fixture.report, "pin.json")
+            ),
+            "timeout_recorded": bool(pin.get("timeout_path"))
+            and bool(pin.get("timeout_version")),
+        }
+    expected = {
+        "chain_prefix_matches": True,
+        "pin_exists": True,
+        "timeout_recorded": True,
+    }
+    return Observation(expected=expected, got=got)
+
+
+def _mutate_p_head(fixture: PinFixture) -> tuple[bool, str]:
+    path = os.path.join(fixture.p, "proof-head.txt")
+    with open(path, "w", encoding="utf-8") as changed:
+        changed.write("changed\n")
+    _git(fixture.p, "add", "proof-head.txt")
+    _git(fixture.p, "commit", "-m", "move P")
+    head = _git(fixture.p, "rev-parse", "HEAD")
+    return head != fixture.p_sha, f"old={fixture.p_sha};new={head}"
+
+
+def _mutate_w_head(fixture: PinFixture) -> tuple[bool, str]:
+    old_head = _git(fixture.w, "rev-parse", "HEAD")
+    path = os.path.join(fixture.w, "proof", "head-move.txt")
+    with open(path, "w", encoding="utf-8") as changed:
+        changed.write("changed\n")
+    _git(fixture.w, "add", "proof/head-move.txt")
+    _git(fixture.w, "commit", "-m", "move W")
+    head = _git(fixture.w, "rev-parse", "HEAD")
+    return head != old_head, f"old={old_head};new={head}"
+
+
+def _mutate_compiler_bytes(fixture: PinFixture) -> tuple[bool, str]:
+    before = os.stat(fixture.compiler)
+    before_sha = _file_sha256(fixture.compiler)
+    with open(fixture.compiler, "ab") as compiler_file:
+        compiler_file.write(b"\n# byte mutation\n")
+    os.utime(
+        fixture.compiler,
+        ns=(before.st_atime_ns, before.st_mtime_ns),
+    )
+    after_sha = _file_sha256(fixture.compiler)
+    applied = before_sha != after_sha
+    return applied, f"before_sha={before_sha};after_sha={after_sha}"
+
+
+def _mutate_compiler_inode(fixture: PinFixture) -> tuple[bool, str]:
+    before = os.stat(fixture.compiler)
+    replacement = f"{fixture.compiler}.replacement"
+    shutil.copyfile(fixture.compiler, replacement)
+    os.chmod(replacement, before.st_mode)
+    os.utime(
+        replacement,
+        ns=(before.st_atime_ns, before.st_mtime_ns),
+    )
+    os.replace(replacement, fixture.compiler)
+    after = os.stat(fixture.compiler)
+    applied = before.st_ino != after.st_ino
+    return applied, f"before_inode={before.st_ino};after_inode={after.st_ino}"
+
+
+def _mutate_compiler_mtime(fixture: PinFixture) -> tuple[bool, str]:
+    before = os.stat(fixture.compiler)
+    changed_mtime = before.st_mtime_ns + 1
+    os.utime(
+        fixture.compiler,
+        ns=(before.st_atime_ns, changed_mtime),
+    )
+    after = os.stat(fixture.compiler)
+    applied = after.st_mtime_ns == changed_mtime
+    return applied, (
+        f"before_mtime_ns={before.st_mtime_ns};"
+        f"after_mtime_ns={after.st_mtime_ns}"
+    )
+
+
+def _identity_reason_seed(
+    mutator: Callable[[PinFixture], tuple[bool, str]],
+    expected_reason: str,
+) -> Observation:
+    with PinFixture() as fixture:
+        pin = fixture.pin()
+        applied, evidence = mutator(fixture)
+        reason = _identity_reason(lambda: check_identity(pin))
+    expected = {"applied": True, "reason": expected_reason}
+    got = {"applied": applied, "reason": reason}
+    return Observation(expected=expected, got=got, applied=evidence)
+
+
+def _fixture_identity_path_seed() -> Observation:
+    with PinFixture() as fixture:
+        pin = fixture.pin()
+        original_path = os.environ.get("PATH")
+        changed_path = f"{pin['env_path']}{os.pathsep}/path-mutant"
+        try:
+            os.environ["PATH"] = changed_path
+            reason = _identity_reason(lambda: check_identity(pin))
+        finally:
+            if original_path is None:
+                os.environ.pop("PATH", None)
+            else:
+                os.environ["PATH"] = original_path
+    applied = changed_path != pin["env_path"]
+    expected = {"applied": True, "reason": "PATH-CHANGED"}
+    got = {"applied": applied, "reason": reason}
+    return Observation(
+        expected=expected,
+        got=got,
+        applied=f"pinned={_render(pin['env_path'])};changed={_render(changed_path)}",
+    )
+
+
+def _fixture_identity_control() -> Observation:
+    with PinFixture() as fixture:
+        pin = fixture.pin()
+        reason = _identity_reason(lambda: check_identity(pin))
+    return Observation(expected="NO-REFUSAL", got=reason)
+
+
+def _mutate_plan_census(fixture: PinFixture) -> tuple[bool, str]:
+    census_path = os.path.join(fixture.w, "proof", "census", "cookie.json")
+    with open(census_path, "r", encoding="utf-8") as source:
+        census = json.load(source)
+    original = census["script_sha256"]
+    census["script_sha256"] = "0" * 64
+    with open(census_path, "w", encoding="utf-8") as output:
+        json.dump(census, output, indent=2, sort_keys=True)
+        output.write("\n")
+    _git(fixture.w, "add", "proof/census/cookie.json")
+    _git(fixture.w, "commit", "-m", "mutate census")
+    applied = original != census["script_sha256"]
+    return applied, (
+        f"old_sha={original};new_sha={census['script_sha256']};"
+        "substitutions=1"
+    )
+
+
+def _plan_reason_seed(
+    mutator: Callable[[PinFixture], tuple[bool, str]],
+    expected_reason: str,
+) -> Observation:
+    with PinFixture() as fixture:
+        applied, evidence = mutator(fixture)
+        output = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(output):
+                cmd_plan(
+                    SimpleNamespace(
+                        p=fixture.p,
+                        w=fixture.w,
+                        compiler=fixture.compiler,
+                    )
+                )
+        except IdentityError as error:
+            reason = error.reason
+        else:
+            reason = "NO-REFUSAL"
+        stdout_empty = output.getvalue() == ""
+    expected = {
+        "applied": True,
+        "reason": expected_reason,
+        "stdout_empty": True,
+    }
+    got = {
+        "applied": applied,
+        "reason": reason,
+        "stdout_empty": stdout_empty,
+    }
+    return Observation(expected=expected, got=got, applied=evidence)
+
+
+def _fixture_plan_control() -> Observation:
+    with PinFixture() as fixture:
+        output = io.StringIO()
+        report_absent_before = not os.path.exists(fixture.report)
+        with contextlib.redirect_stdout(output):
+            cmd_plan(
+                SimpleNamespace(
+                    p=fixture.p,
+                    w=fixture.w,
+                    compiler=fixture.compiler,
+                )
+            )
+        report_absent_after = not os.path.exists(fixture.report)
+        got = {
+            "census_validated": "Censuses:  29 validated" in output.getvalue(),
+            "report_absent_before": report_absent_before,
+            "report_absent_after": report_absent_after,
+        }
+    expected = {
+        "census_validated": True,
+        "report_absent_before": True,
+        "report_absent_after": True,
+    }
+    return Observation(expected=expected, got=got)
+
+
+def _fixture_no_timeout_seed() -> Observation:
+    with PinFixture() as fixture:
+        tool_dir = os.path.join(fixture.scratch, "without-timeout")
+        os.makedirs(tool_dir)
+        linked: list[str] = []
+        for tool in ("git", "nm"):
+            source = shutil.which(tool)
+            if not source:
+                raise RuntimeError(f"{tool} is unavailable for fixture")
+            target = os.path.join(tool_dir, tool)
+            os.symlink(source, target)
+            linked.append(target)
+
+        original_path = os.environ.get("PATH")
+        try:
+            os.environ["PATH"] = tool_dir
+            timeout_missing = shutil.which("timeout") is None
+            reason = _identity_reason(
+                lambda: inspect_pin_inputs(
+                    fixture.p,
+                    fixture.w,
+                    fixture.compiler,
+                    CORE_29_DRIVERS,
+                )
+            )
+        finally:
+            if original_path is None:
+                os.environ.pop("PATH", None)
+            else:
+                os.environ["PATH"] = original_path
+    expected = {"applied": True, "reason": "NO-TIMEOUT"}
+    got = {"applied": timeout_missing, "reason": reason}
+    return Observation(
+        expected=expected,
+        got=got,
+        applied=f"PATH={tool_dir};linked={_render(linked)};timeout=None",
+    )
+
+def _process_alive(pid: int) -> bool:
+    ps_path = "/bin/ps" if os.path.exists("/bin/ps") else "ps"
+    completed = subprocess.run(
+        [ps_path, "-p", str(pid), "-o", "stat="],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    state = completed.stdout.strip()
+    return completed.returncode == 0 and bool(state) and not state.startswith("Z")
+
+
+def _bounded_paths(scratch: str, name: str) -> tuple[str, str]:
+    return (
+        os.path.join(scratch, f"{name}.log"),
+        os.path.join(scratch, f"{name}.times"),
+    )
+
+
+def _grandchild_command(pid_file: str, *, leader_sleeps: bool) -> list[str]:
+    statements = [
+        "import pathlib, subprocess, sys, time",
+        (
+            "child = subprocess.Popen("
+            "[sys.executable, '-c', 'import time; time.sleep(100)'])"
+        ),
+        f"pathlib.Path({pid_file!r}).write_text(str(child.pid))",
+    ]
+    if leader_sleeps:
+        statements.append("time.sleep(100)")
+    return [sys.executable, "-c", "; ".join(statements)]
+
+
+def _fixture_bounded_control() -> Observation:
+    with tempfile.TemporaryDirectory(
+        prefix="iyi-o2-bounded-control-",
+        dir="/tmp",
+    ) as scratch:
+        log_path, times_path = _bounded_paths(scratch, "control")
+        result = run_bounded(
+            [sys.executable, "-c", "print('bounded-control')"],
+            scratch,
+            os.environ.copy(),
+            log_path,
+            times_path,
+            None,
+            0.1,
+        )
+        with open(log_path, "rb") as log_file:
+            log_bytes = log_file.read()
+        with open(times_path, "r", encoding="utf-8") as times_file:
+            samples = [
+                line.split()
+                for line in times_file.read().splitlines()
+                if line.strip()
+            ]
+        final_offset = int(samples[-1][1]) if samples else -1
+        got = {
+            "final_offset_matches": final_offset == len(log_bytes),
+            "interrupted_signal": result.interrupted_signal,
+            "returncode": result.returncode,
+            "survivors": list(result.survivors),
+            "timed_out": result.timed_out,
+        }
+    expected = {
+        "final_offset_matches": True,
+        "interrupted_signal": None,
+        "returncode": 0,
+        "survivors": [],
+        "timed_out": False,
+    }
+    return Observation(expected=expected, got=got)
+
+
+def _fixture_log_holder_survivor_seed() -> Observation:
+    with tempfile.TemporaryDirectory(
+        prefix="iyi-o2-log-holder-",
+        dir="/tmp",
+    ) as scratch:
+        pid_file = os.path.join(scratch, "child.pid")
+        log_path, times_path = _bounded_paths(scratch, "holder")
+        result = run_bounded(
+            _grandchild_command(pid_file, leader_sleeps=False),
+            scratch,
+            os.environ.copy(),
+            log_path,
+            times_path,
+            2.0,
+            0.1,
+        )
+        child_pid = _read_pid(pid_file)
+        applied = os.path.isfile(pid_file)
+        got = {
+            "applied": applied,
+            "child_gone": not _process_alive(child_pid),
+            "child_recorded": child_pid in result.survivors,
+            "returncode": result.returncode,
+            "survivor_count": len(result.survivors),
+            "timed_out": result.timed_out,
+        }
+    expected = {
+        "applied": True,
+        "child_gone": True,
+        "child_recorded": True,
+        "returncode": 0,
+        "survivor_count": 1,
+        "timed_out": False,
+    }
+    return Observation(
+        expected=expected,
+        got=got,
+        applied=f"pid_file={pid_file};child_pid={child_pid}",
+    )
+
+
+def _fixture_timeout_grandchild_seed() -> Observation:
+    with tempfile.TemporaryDirectory(
+        prefix="iyi-o2-timeout-",
+        dir="/tmp",
+    ) as scratch:
+        pid_file = os.path.join(scratch, "child.pid")
+        log_path, times_path = _bounded_paths(scratch, "timeout")
+        result = run_bounded(
+            _grandchild_command(pid_file, leader_sleeps=True),
+            scratch,
+            os.environ.copy(),
+            log_path,
+            times_path,
+            0.2,
+            0.1,
+        )
+        child_pid = _read_pid(pid_file)
+        applied = os.path.isfile(pid_file)
+        got = {
+            "applied": applied,
+            "child_gone": not _process_alive(child_pid),
+            "interrupted_signal": result.interrupted_signal,
+            "timed_out": result.timed_out,
+        }
+    expected = {
+        "applied": True,
+        "child_gone": True,
+        "interrupted_signal": None,
+        "timed_out": True,
+    }
+    return Observation(
+        expected=expected,
+        got=got,
+        applied=f"limit_sec=0.2;pid_file={pid_file};child_pid={child_pid}",
+    )
+
+
+def _fixture_interrupt_survivor_seed() -> Observation:
+    with tempfile.TemporaryDirectory(
+        prefix="iyi-o2-interrupt-",
+        dir="/tmp",
+    ) as scratch:
+        pid_file = os.path.join(scratch, "child.pid")
+        log_path, times_path = _bounded_paths(scratch, "interrupt")
+
+        def send_interrupt() -> None:
+            time.sleep(0.2)
+            os.kill(os.getpid(), signal.SIGINT)
+
+        sender = threading.Thread(target=send_interrupt, daemon=False)
+        sender.start()
+        try:
+            result = run_bounded(
+                _grandchild_command(pid_file, leader_sleeps=True),
+                scratch,
+                os.environ.copy(),
+                log_path,
+                times_path,
+                5.0,
+                0.1,
+            )
+        finally:
+            sender.join()
+        child_pid = _read_pid(pid_file)
+        applied = os.path.isfile(pid_file)
+        got = {
+            "applied": applied,
+            "child_gone": not _process_alive(child_pid),
+            "interrupted_signal": result.interrupted_signal,
+            "residual_survivors": [
+                pid for pid in result.survivors if _process_alive(pid)
+            ],
+        }
+    expected = {
+        "applied": True,
+        "child_gone": True,
+        "interrupted_signal": signal.SIGINT,
+        "residual_survivors": [],
+    }
+    return Observation(
+        expected=expected,
+        got=got,
+        applied=f"signal={signal.SIGINT};pid_file={pid_file};child_pid={child_pid}",
+    )
+
+
+def _fixture_probe_unobservable_seed() -> Observation:
+    calls = 0
+
+    def frozen_stat(path: str) -> object:
+        nonlocal calls
+        calls += 1
+        actual = os.stat(path)
+        return SimpleNamespace(
+            st_atime_ns=actual.st_mtime_ns - 1_000_000_000,
+            st_ino=actual.st_ino,
+            st_mtime_ns=actual.st_mtime_ns,
+        )
+
+    with tempfile.TemporaryDirectory(
+        prefix="iyi-o2-atime-seed-",
+        dir="/tmp",
+    ) as scratch:
+        reason = _identity_reason(
+            lambda: probe_atime_observable(scratch, stat_fn=frozen_stat)
+        )
+    got = {
+        "reason": reason,
+        "seam_called": calls >= 1,
+    }
+    expected = {
+        "reason": "EXEC-UNOBSERVABLE",
+        "seam_called": True,
+    }
+    return Observation(
+        expected=expected,
+        got=got,
+        applied=f"stat_fn_calls={calls};forced_atime=mtime-1000000000",
+    )
+
+
+def _fixture_probe_control() -> Observation:
+    with tempfile.TemporaryDirectory(
+        prefix="iyi-o2-atime-control-",
+        dir="/tmp",
+    ) as scratch:
+        evidence = probe_atime_observable(scratch)
+    got = {
+        "atime_advanced": evidence["atime_after_exec_ns"]
+        > evidence["mtime_ns"],
+        "sha_length": len(evidence["sha256"]),
+    }
+    expected = {
+        "atime_advanced": True,
+        "sha_length": 64,
+    }
+    return Observation(expected=expected, got=got)
+
+
+def _fixture_gate_env_reused_seed() -> Observation:
+    with tempfile.TemporaryDirectory(
+        prefix="iyi-o2-env-seed-",
+        dir="/tmp",
+    ) as scratch:
+        attempt = os.path.join(scratch, "attempt")
+        os.makedirs(attempt)
+        pin = {
+            "env_path": os.environ.get("PATH", ""),
+            "env_home": os.environ.get("HOME", ""),
+        }
+        first = fresh_stage_env(pin, attempt, "gate")
+        try:
+            fresh_stage_env(pin, attempt, "gate")
+        except FileExistsError as error:
+            reason = type(error).__name__
+        else:
+            reason = "NO-REFUSAL"
+        applied = os.path.isdir(first["TMPDIR"]) and os.path.isdir(
+            first["IYI_CACHE_DIR"]
+        )
+    expected = {"applied": True, "reason": "FileExistsError"}
+    got = {"applied": applied, "reason": reason}
+    return Observation(
+        expected=expected,
+        got=got,
+        applied=(
+            f"TMPDIR={first['TMPDIR']};"
+            f"IYI_CACHE_DIR={first['IYI_CACHE_DIR']}"
+        ),
+    )
+
+
+def _fixture_gate_env_fresh_control() -> Observation:
+    with tempfile.TemporaryDirectory(
+        prefix="iyi-o2-env-control-",
+        dir="/tmp",
+    ) as scratch:
+        first_attempt = os.path.join(scratch, "a1")
+        second_attempt = os.path.join(scratch, "a2")
+        os.makedirs(first_attempt)
+        os.makedirs(second_attempt)
+        pin = {
+            "env_path": os.environ.get("PATH", ""),
+            "env_home": os.environ.get("HOME", ""),
+        }
+        first = fresh_stage_env(pin, first_attempt, "gate")
+        second = fresh_stage_env(pin, second_attempt, "gate")
+        got = {
+            "cache_distinct": first["IYI_CACHE_DIR"]
+            != second["IYI_CACHE_DIR"],
+            "cache_exists": os.path.isdir(first["IYI_CACHE_DIR"])
+            and os.path.isdir(second["IYI_CACHE_DIR"]),
+            "tmp_distinct": first["TMPDIR"] != second["TMPDIR"],
+            "tmp_exists": os.path.isdir(first["TMPDIR"])
+            and os.path.isdir(second["TMPDIR"]),
+        }
+    expected = {
+        "cache_distinct": True,
+        "cache_exists": True,
+        "tmp_distinct": True,
+        "tmp_exists": True,
     }
     return Observation(expected=expected, got=got)
 
@@ -875,6 +1737,213 @@ FIXTURES: tuple[Fixture, ...] = (
         "s1.control.no-production-assert",
         "control",
         _fixture_no_production_assert_control,
+    ),
+    Fixture(
+        "s1.seed.pin-dirty-w",
+        "seed",
+        partial(_pin_reason_seed, _mutate_dirty_w, "W-DIRTY"),
+    ),
+    Fixture(
+        "s1.seed.pin-dirty-p",
+        "seed",
+        partial(_pin_reason_seed, _mutate_dirty_p, "P-DIRTY"),
+    ),
+    Fixture(
+        "s1.seed.pin-nondescendant",
+        "seed",
+        partial(
+            _pin_reason_seed,
+            _mutate_nondescendant,
+            "W-NOT-DESCENDANT",
+        ),
+    ),
+    Fixture(
+        "s1.seed.pin-product-diff",
+        "seed",
+        partial(_pin_reason_seed, _mutate_product_diff, "PRODUCT-DIFF"),
+    ),
+    Fixture(
+        "s1.seed.pin-stale-mtime",
+        "seed",
+        partial(_pin_reason_seed, _mutate_stale_compiler, "COMPILER-STALE"),
+    ),
+    Fixture(
+        "s1.seed.pin-missing-stamp",
+        "seed",
+        partial(
+            _pin_reason_seed,
+            _mutate_missing_stamp,
+            "COMPILER-STAMP-MISSING",
+        ),
+    ),
+    Fixture(
+        "s1.seed.pin-stamp-mismatch",
+        "seed",
+        partial(
+            _pin_reason_seed,
+            _mutate_stamp_mismatch,
+            "COMPILER-STAMP-MISMATCH",
+        ),
+    ),
+    Fixture(
+        "s1.seed.pin-report-nonempty",
+        "seed",
+        partial(
+            _pin_reason_seed,
+            _mutate_nonempty_report,
+            "REPORT-DIR-NOT-EMPTY",
+        ),
+    ),
+    Fixture(
+        "s1.seed.report-dir-name",
+        "seed",
+        partial(
+            _pin_reason_seed,
+            _mutate_bad_report_name,
+            "REPORT-DIR-NAME",
+        ),
+    ),
+    Fixture(
+        "s1.control.pin",
+        "control",
+        _fixture_pin_control,
+    ),
+    Fixture(
+        "s1.seed.identity-p-head",
+        "seed",
+        partial(
+            _identity_reason_seed,
+            _mutate_p_head,
+            "P-HEAD-CHANGED",
+        ),
+    ),
+    Fixture(
+        "s1.seed.identity-w-head",
+        "seed",
+        partial(
+            _identity_reason_seed,
+            _mutate_w_head,
+            "W-HEAD-CHANGED",
+        ),
+    ),
+    Fixture(
+        "s1.seed.identity-binary-bytes",
+        "seed",
+        partial(
+            _identity_reason_seed,
+            _mutate_compiler_bytes,
+            "COMPILER-SHA-CHANGED",
+        ),
+    ),
+    Fixture(
+        "s1.seed.identity-inode",
+        "seed",
+        partial(
+            _identity_reason_seed,
+            _mutate_compiler_inode,
+            "COMPILER-INODE-CHANGED",
+        ),
+    ),
+    Fixture(
+        "s1.seed.identity-mtime",
+        "seed",
+        partial(
+            _identity_reason_seed,
+            _mutate_compiler_mtime,
+            "COMPILER-MTIME-CHANGED",
+        ),
+    ),
+    Fixture(
+        "s1.seed.identity-path",
+        "seed",
+        _fixture_identity_path_seed,
+    ),
+    Fixture(
+        "s1.seed.identity-cross-invocation",
+        "seed",
+        partial(
+            _identity_reason_seed,
+            _mutate_compiler_bytes,
+            "COMPILER-SHA-CHANGED",
+        ),
+    ),
+    Fixture(
+        "s1.control.identity",
+        "control",
+        _fixture_identity_control,
+    ),
+    Fixture(
+        "s1.seed.timeout-grandchild",
+        "seed",
+        _fixture_timeout_grandchild_seed,
+    ),
+    Fixture(
+        "s1.seed.no-timeout",
+        "seed",
+        _fixture_no_timeout_seed,
+    ),
+    Fixture(
+        "s1.seed.log-holder-survivor",
+        "seed",
+        _fixture_log_holder_survivor_seed,
+    ),
+    Fixture(
+        "s1.seed.interrupt-survivor",
+        "seed",
+        _fixture_interrupt_survivor_seed,
+    ),
+    Fixture(
+        "s1.control.bounded",
+        "control",
+        _fixture_bounded_control,
+    ),
+    Fixture(
+        "s1.seed.plan-dirty",
+        "seed",
+        partial(_plan_reason_seed, _mutate_dirty_p, "P-DIRTY"),
+    ),
+    Fixture(
+        "s1.seed.plan-stale-compiler",
+        "seed",
+        partial(
+            _plan_reason_seed,
+            _mutate_stale_compiler,
+            "COMPILER-STALE",
+        ),
+    ),
+    Fixture(
+        "s1.seed.plan-invalid-census",
+        "seed",
+        partial(
+            _plan_reason_seed,
+            _mutate_plan_census,
+            "CENSUS-INVALID",
+        ),
+    ),
+    Fixture(
+        "s1.control.plan",
+        "control",
+        _fixture_plan_control,
+    ),
+    Fixture(
+        "amend-b.seed.probe-unobservable",
+        "seed",
+        _fixture_probe_unobservable_seed,
+    ),
+    Fixture(
+        "amend-b.control.real-probe",
+        "control",
+        _fixture_probe_control,
+    ),
+    Fixture(
+        "s5.seed.gate-env-reused",
+        "seed",
+        _fixture_gate_env_reused_seed,
+    ),
+    Fixture(
+        "s5.control.gate-env-fresh",
+        "control",
+        _fixture_gate_env_fresh_control,
     ),
 )
 
