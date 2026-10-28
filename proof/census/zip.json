@@ -129,7 +129,7 @@
   "not_skips": [],
   "pass_sentinel": {
     "line": 720,
-    "regex": "^the\\ std/zip\\ exercise\\ holds\\ \\(",
+    "regex": "the\\ std/zip\\ exercise\\ holds\\ \\(",
     "text": "echo \"the std/zip exercise holds ($mutations broken copies caught)\""
   },
   "exec_evidence": [

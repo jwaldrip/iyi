@@ -155,7 +155,7 @@
   "not_skips": [],
   "pass_sentinel": {
     "line": 519,
-    "regex": "^the\\ std/acme\\ exercise\\ holds\\ \\(",
+    "regex": "the\\ std/acme\\ exercise\\ holds\\ \\(",
     "text": "echo \"the std/acme exercise holds ($mutations breaks caught)\""
   },
   "exec_evidence": [

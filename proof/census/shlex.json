@@ -129,7 +129,7 @@
   "not_skips": [],
   "pass_sentinel": {
     "line": 371,
-    "regex": "^the\\ std/shlex\\ exercise\\ holds",
+    "regex": "the\\ std/shlex\\ exercise\\ holds",
     "text": "echo \"the std/shlex exercise holds\""
   },
   "exec_evidence": [

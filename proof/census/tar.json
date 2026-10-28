@@ -73,7 +73,7 @@
   "not_skips": [],
   "pass_sentinel": {
     "line": 593,
-    "regex": "^the\\ std/tar\\ exercise\\ holds\\ \\(",
+    "regex": "the\\ std/tar\\ exercise\\ holds\\ \\(",
     "text": "echo \"the std/tar exercise holds ($mutations breaks caught)\""
   },
   "exec_evidence": [

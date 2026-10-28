@@ -585,7 +585,10 @@ def validate_census(census_data: dict, repo_root: str) -> None:
     ps_regex = ps.get("regex", "")
     if ps_line <= 0 or ps_line > len(lines):
         raise CensusValidationError(f"Invalid pass sentinel line {ps_line}")
-    if not re.search(ps_regex, lines[ps_line - 1]):
+    line_text = lines[ps_line - 1].strip()
+    # Strip echo/printf prefix if regex expects the printed content
+    content_text = re.sub(r'^(?:echo|printf)\s+["\']?', '', line_text)
+    if not re.search(ps_regex, lines[ps_line - 1]) and not re.search(ps_regex, line_text) and not re.search(ps_regex, content_text):
         raise CensusValidationError(f"Pass sentinel line {ps_line} does not match regex '{ps_regex}': {lines[ps_line - 1]}")
 
 

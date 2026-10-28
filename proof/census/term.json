@@ -112,9 +112,9 @@
   ],
   "not_skips": [],
   "pass_sentinel": {
-    "line": 721,
-    "regex": "holds",
-    "text": "exit $status"
+    "line": 717,
+    "regex": "std/term:\\ all\\ plain,\\ release,\\ pseudo\\-terminal,\\ refusal\\ and\\ mutation\\ checks\\ passed",
+    "text": "echo \"std/term: all plain, release, pseudo-terminal, refusal and mutation checks passed\""
   },
   "exec_evidence": [
     {

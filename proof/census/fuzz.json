@@ -99,7 +99,7 @@
   "not_skips": [],
   "pass_sentinel": {
     "line": 285,
-    "regex": "^the\\ fuzz\\ exercise\\ holds",
+    "regex": "the\\ fuzz\\ exercise\\ holds",
     "text": "echo \"the fuzz exercise holds\""
   },
   "exec_evidence": [

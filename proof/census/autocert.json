@@ -172,7 +172,7 @@
   "not_skips": [],
   "pass_sentinel": {
     "line": 424,
-    "regex": "^the\\ std/autocert\\ exercise\\ holds\\ \\(",
+    "regex": "the\\ std/autocert\\ exercise\\ holds\\ \\(",
     "text": "echo \"the std/autocert exercise holds ($caught of $mutations breaks caught, the rest unmeasured here as said above)\""
   },
   "exec_evidence": [

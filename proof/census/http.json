@@ -1005,7 +1005,7 @@
   "not_skips": [],
   "pass_sentinel": {
     "line": 4155,
-    "regex": "^the\\ std/http\\ exercise\\ holds",
+    "regex": "the\\ std/http\\ exercise\\ holds",
     "text": "echo \"the std/http exercise holds\""
   },
   "exec_evidence": [

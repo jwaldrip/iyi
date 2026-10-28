@@ -132,7 +132,7 @@
   "not_skips": [],
   "pass_sentinel": {
     "line": 403,
-    "regex": "^ALL\\ CHECKS\\ PASSED",
+    "regex": "ALL\\ CHECKS\\ PASSED",
     "text": "echo \"ALL CHECKS PASSED\""
   },
   "exec_evidence": [

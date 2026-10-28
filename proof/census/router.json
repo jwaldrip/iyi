@@ -102,7 +102,7 @@
   "not_skips": [],
   "pass_sentinel": {
     "line": 438,
-    "regex": "^the\\ std/router\\ exercise\\ holds",
+    "regex": "the\\ std/router\\ exercise\\ holds",
     "text": "echo \"the std/router exercise holds\""
   },
   "exec_evidence": [

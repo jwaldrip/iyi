@@ -349,6 +349,8 @@ def main():
     end_record = {
         "v": 1, "nonce": nonce, "driver": driver_name, "pid": pid,
         "t_ns": time.monotonic_ns(), "phase": "end", "mode": "roundtrip",
+        "sources": [os.path.realpath(s) for s in sources_raw if os.path.exists(s)],
+        "out": final_out,
         "producer": {"argv": prod_argv, "rc": prod_proc.returncode, "mods_count": mods_count},
         "consumer": {"argv": cons_argv, "rc": cons_proc.returncode, "out_written": out_written, "out_sha256": out_sha},
         "run": {"argv": [final_out] + run_args, "rc": run_rc, "signal": run_signal} if is_run else None,

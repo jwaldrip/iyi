@@ -300,7 +300,7 @@
   "not_skips": [],
   "pass_sentinel": {
     "line": 3433,
-    "regex": "^the\\ std/tls\\ exercise\\ holds\\ \\(",
+    "regex": "the\\ std/tls\\ exercise\\ holds\\ \\(",
     "text": "echo \"the std/tls exercise holds ($mutations breaks caught)\""
   },
   "exec_evidence": [

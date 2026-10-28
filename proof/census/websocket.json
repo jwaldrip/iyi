@@ -251,7 +251,7 @@
   "not_skips": [],
   "pass_sentinel": {
     "line": 1239,
-    "regex": "^the\\ std/websocket\\ exercise\\ holds",
+    "regex": "the\\ std/websocket\\ exercise\\ holds",
     "text": "echo \"the std/websocket exercise holds\""
   },
   "exec_evidence": [

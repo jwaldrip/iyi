@@ -95,7 +95,7 @@
   "not_skips": [],
   "pass_sentinel": {
     "line": 252,
-    "regex": "^the\\ std/cookie\\ exercise\\ holds",
+    "regex": "the\\ std/cookie\\ exercise\\ holds",
     "text": "echo \"the std/cookie exercise holds\""
   },
   "exec_evidence": [

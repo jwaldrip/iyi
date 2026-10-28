@@ -135,7 +135,7 @@
   "not_skips": [],
   "pass_sentinel": {
     "line": 371,
-    "regex": "^the\\ std/secure_dns\\ exercise\\ holds",
+    "regex": "the\\ std/secure_dns\\ exercise\\ holds",
     "text": "echo \"the std/secure_dns exercise holds\""
   },
   "exec_evidence": [

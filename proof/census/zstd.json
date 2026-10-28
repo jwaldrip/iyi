@@ -81,7 +81,7 @@
   "not_skips": [],
   "pass_sentinel": {
     "line": 588,
-    "regex": "^the\\ std/zstd\\ exercise\\ holds",
+    "regex": "the\\ std/zstd\\ exercise\\ holds",
     "text": "echo \"the std/zstd exercise holds\""
   },
   "exec_evidence": [

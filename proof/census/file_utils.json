@@ -143,9 +143,9 @@
   ],
   "not_skips": [],
   "pass_sentinel": {
-    "line": 524,
-    "regex": "holds",
-    "text": "exit $status"
+    "line": 520,
+    "regex": "std/file_utils:\\ all\\ plain,\\ release,\\ oracle,\\ refusal\\ and\\ mutation\\ checks\\ passed",
+    "text": "echo \"std/file_utils: all plain, release, oracle, refusal and mutation checks passed\""
   },
   "exec_evidence": [
     {

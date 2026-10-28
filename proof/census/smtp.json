@@ -132,7 +132,7 @@
   "not_skips": [],
   "pass_sentinel": {
     "line": 499,
-    "regex": "^the\\ std/smtp\\ exercise\\ holds",
+    "regex": "the\\ std/smtp\\ exercise\\ holds",
     "text": "echo \"the std/smtp exercise holds\""
   },
   "exec_evidence": [

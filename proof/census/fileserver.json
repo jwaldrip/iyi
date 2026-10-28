@@ -77,7 +77,7 @@
   "not_skips": [],
   "pass_sentinel": {
     "line": 209,
-    "regex": "^the\\ std/fileserver\\ exercise\\ holds",
+    "regex": "the\\ std/fileserver\\ exercise\\ holds",
     "text": "echo \"the std/fileserver exercise holds\""
   },
   "exec_evidence": [

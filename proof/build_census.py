@@ -95,12 +95,11 @@ def find_pass_sentinel(script_path: str) -> dict:
     # Search backwards from end of script
     for idx in range(len(lines), max(0, len(lines) - 40), -1):
         line = lines[idx - 1].strip()
-        if "holds" in line or "ALL CHECKS PASSED" in line or "passed all checks" in line:
-            if line.startswith("echo ") or line.startswith("printf "):
+        if ("holds" in line or "passed" in line or "ALL CHECKS PASSED" in line) and ("failed" not in line and "did not hold" not in line):
+            if line.startswith("echo") or line.startswith("printf"):
                 m = re.search(r'["\'](.*?)["\']', line)
                 content = m.group(1) if m else line
-                # Create regex
-                pattern = "^" + re.escape(content.split("$")[0].strip())
+                pattern = re.escape(content.split("$")[0].strip())
                 return {"line": idx, "regex": pattern, "text": line}
 
     return {"line": len(lines), "regex": "holds", "text": lines[-1].strip()}

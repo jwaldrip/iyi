@@ -81,7 +81,7 @@
   "not_skips": [],
   "pass_sentinel": {
     "line": 371,
-    "regex": "^the\\ std/bzip2\\ exercise\\ holds",
+    "regex": "the\\ std/bzip2\\ exercise\\ holds",
     "text": "echo \"the std/bzip2 exercise holds\""
   },
   "exec_evidence": [

@@ -185,7 +185,7 @@
   "not_skips": [],
   "pass_sentinel": {
     "line": 601,
-    "regex": "^the\\ std/compress\\ exercise\\ holds",
+    "regex": "the\\ std/compress\\ exercise\\ holds",
     "text": "echo \"the std/compress exercise holds\""
   },
   "exec_evidence": [

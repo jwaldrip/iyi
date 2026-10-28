@@ -235,7 +235,7 @@
   "not_skips": [],
   "pass_sentinel": {
     "line": 602,
-    "regex": "^the\\ std/regex\\ exercise\\ holds",
+    "regex": "the\\ std/regex\\ exercise\\ holds",
     "text": "echo \"the std/regex exercise holds\""
   },
   "exec_evidence": [

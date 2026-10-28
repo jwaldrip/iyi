@@ -742,7 +742,7 @@
   "not_skips": [],
   "pass_sentinel": {
     "line": 934,
-    "regex": "^the\\ std/file\\ exercise\\ holds",
+    "regex": "the\\ std/file\\ exercise\\ holds",
     "text": "echo \"the std/file exercise holds\""
   },
   "exec_evidence": [

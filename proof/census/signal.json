@@ -110,7 +110,7 @@
   "not_skips": [],
   "pass_sentinel": {
     "line": 464,
-    "regex": "^the\\ std/signal\\ exercise\\ holds",
+    "regex": "the\\ std/signal\\ exercise\\ holds",
     "text": "echo \"the std/signal exercise holds\""
   },
   "exec_evidence": []
