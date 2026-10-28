@@ -8,6 +8,13 @@
 
   Four exercise fixes, each found by the equivalence and census runs on one macOS machine: `std_dns_exercise` skips its Happy Eyeballs races when a full listener resets SYNs instead of dropping them; `std_digest_exercise` times the best of seven, and `std_big_exercise` judges the pass whose division-to-product ratio is smallest, timed back to back, since both timing checks failed under load; and `std_tar_exercise` writes absolute names past 100 bytes through pax records, which a long `TMPDIR` needs.
 
+- **A refused TCP connect from a `--crystal` program on macOS 27 reported
+  success, and now raises `Socket::ConnectError`.** Non-blocking
+  `Socket#connect` on Unix waited for writability and retried `connect(2)`
+  treating `EISCONN` as success, hiding connection failures. The socket
+  error state is now inspected via `SO_ERROR` without retrying connect
+  (crystal-lang/crystal#17436, #17619).
+
 - **Breaking: std/http's `Server.serve` serves on every core by default
   (#145).** `serve(listener) { |request| ... }` runs each connection as a
   parallel task on the pool, `IyiWorkers.count` workers - `IYI_WORKERS`,
