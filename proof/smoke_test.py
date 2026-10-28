@@ -1,573 +1,1055 @@
 #!/usr/bin/env python3
 """
-smoke_test.py: Comprehensive test suite for all proof guards across S1, S2, S3, S4, S5.
-Every guard has a seeded failure and a passing control.
-Uses synthetic fixtures under /tmp only.
+Truthful synthetic proof harness for the native stale-testing acceptance.
+
+Registered fixtures emit machine-auditable seed or control lines. REVIEW_ITEMS
+keeps an incomplete repair red until every required seed and control executes.
 """
 
 from __future__ import annotations
 
 import ast
 import glob
+import hashlib
 import json
 import os
-import shutil
-import signal
 import subprocess
 import sys
-import tempfile
-import time
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+
+
+if __name__ == "__main__" and sys.flags.optimize:
+    print(
+        f"smoke_test.py refuses optimized Python: sys.flags.optimize={sys.flags.optimize}",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from proof.proofkit import (
-    IdentityError,
-    LedgerVerificationError,
-    base_env,
-    check_disk_space,
-    check_identity,
-    extract_version_stamp,
-    probe_atime_observable,
-    run_bounded,
-    sha256_bytes,
-    sha256_file,
-    validate_census,
-    verify_ledger,
-    write_pin,
-)
+from proof.proofkit import base_env
 
 
-def create_temp_git_repo(path: str) -> None:
-    os.makedirs(path, exist_ok=True)
-    subprocess.run(["git", "init", "-b", "main", path], check=True, capture_output=True)
-    subprocess.run(["git", "-C", path, "config", "user.name", "Tester"], check=True)
-    subprocess.run(["git", "-C", path, "config", "user.email", "test@test.local"], check=True)
-    subprocess.run(["git", "-C", path, "config", "commit.gpgsign", "false"], check=True)
+@dataclass(frozen=True)
+class Observation:
+    expected: object
+    got: object
+    applied: str = ""
 
 
-# ==============================================================================
-# S1 Smoke Tests
-# ==============================================================================
+@dataclass(frozen=True)
+class Fixture:
+    fixture_id: str
+    kind: str
+    run: Callable[[], Observation]
 
-def test_no_asserts_in_production_proof():
-    """S1: Verify zero assert statements exist in non-test proof modules."""
-    proof_dir = os.path.join(REPO_ROOT, "proof")
-    py_files = glob.glob(os.path.join(proof_dir, "*.py"))
-    assert len(py_files) > 0
 
-    for py_file in py_files:
-        basename = os.path.basename(py_file)
-        if basename in ("smoke_test.py", "build_census.py"):
+@dataclass(frozen=True)
+class CoverageAudit:
+    configuration_errors: tuple[str, ...]
+    missing_seed_ids: tuple[str, ...]
+    missing_control_ids: tuple[str, ...]
+    items_without_executed_seed: tuple[str, ...]
+    unmapped_registered_ids: tuple[str, ...]
+
+    @property
+    def passed(self) -> bool:
+        return not (
+            self.configuration_errors
+            or self.missing_seed_ids
+            or self.missing_control_ids
+            or self.items_without_executed_seed
+            or self.unmapped_registered_ids
+        )
+
+
+def _render(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _fixture_kind_from_id(fixture_id: str) -> str | None:
+    parts = fixture_id.split(".")
+    has_seed = "seed" in parts
+    has_control = "control" in parts
+    if has_seed == has_control:
+        return None
+    return "seed" if has_seed else "control"
+
+
+def _coverage_audit(
+    review_items: Mapping[str, tuple[str, ...]],
+    executed_seed_ids: set[str],
+    executed_control_ids: set[str],
+    registered_kinds: Mapping[str, str],
+) -> CoverageAudit:
+    errors: list[str] = []
+    all_mapped_ids: set[str] = set()
+    required_seed_ids: set[str] = set()
+    required_control_ids: set[str] = set()
+    items_without_executed_seed: list[str] = []
+
+    for item, fixture_ids in review_items.items():
+        if not fixture_ids:
+            errors.append(f"{item}: no fixture ids")
             continue
-        with open(py_file, "r", encoding="utf-8") as f:
-            tree = ast.parse(f.read(), filename=py_file)
-        assert_nodes = [node for node in ast.walk(tree) if isinstance(node, ast.Assert)]
-        assert len(assert_nodes) == 0, f"Found {len(assert_nodes)} assert statements in non-test module {basename}"
+
+        item_seed_ids: set[str] = set()
+        item_control_ids: set[str] = set()
+        for fixture_id in fixture_ids:
+            all_mapped_ids.add(fixture_id)
+            kind = _fixture_kind_from_id(fixture_id)
+            if kind == "seed":
+                item_seed_ids.add(fixture_id)
+                required_seed_ids.add(fixture_id)
+            elif kind == "control":
+                item_control_ids.add(fixture_id)
+                required_control_ids.add(fixture_id)
+            else:
+                errors.append(f"{item}: fixture id has no single kind: {fixture_id}")
+
+        if not item_seed_ids:
+            errors.append(f"{item}: no seed fixture")
+        elif not item_seed_ids.intersection(executed_seed_ids):
+            items_without_executed_seed.append(item)
+        if not item_control_ids:
+            errors.append(f"{item}: no control fixture")
+
+    for fixture_id, kind in registered_kinds.items():
+        named_kind = _fixture_kind_from_id(fixture_id)
+        if kind not in ("seed", "control"):
+            errors.append(f"{fixture_id}: invalid registered kind {kind}")
+        elif named_kind != kind:
+            errors.append(
+                f"{fixture_id}: id kind {named_kind!r} disagrees with registered kind {kind!r}"
+            )
+
+    return CoverageAudit(
+        configuration_errors=tuple(sorted(set(errors))),
+        missing_seed_ids=tuple(sorted(required_seed_ids - executed_seed_ids)),
+        missing_control_ids=tuple(sorted(required_control_ids - executed_control_ids)),
+        items_without_executed_seed=tuple(sorted(set(items_without_executed_seed))),
+        unmapped_registered_ids=tuple(sorted(set(registered_kinds) - all_mapped_ids)),
+    )
 
 
-def test_base_env_scrub():
-    """S1: Verify base_env scrubs dangerous vars while keeping pin PATH/HOME."""
-    ambient = {
-        "IYI_OPTS": "-Dbad",
-        "IYI_PATH": "/bad/path",
-        "CRYSTAL_PATH": "/bad/crystal",
-        "IYI_DAEMON_SOCKET": "/tmp/daemon.sock",
-        "CRYSTAL_DAEMON_SOCKET": "/tmp/cdaemon.sock",
-        "PYTHONOPTIMIZE": "2",
-        "PYTHONPATH": "/bad/py",
-        "ROUTE_A_DRIVERS": "cookie",
-        "STD_SIBLINGS": "0",
-        "PATH": "/system/path",
-        "HOME": "/user/home",
-    }
-    old_env = os.environ.copy()
+def _isolated_base_env(ambient: Mapping[str, str]) -> dict[str, str]:
+    original = os.environ.copy()
     try:
         os.environ.clear()
         os.environ.update(ambient)
-
         pin = {
             "env_path": "/pinned/bin:/usr/bin",
             "env_home": "/pinned/home",
         }
-        cleaned = base_env(pin, stage_extra={"CUSTOM_STAGE": "1"})
-
-        assert "IYI_OPTS" not in cleaned
-        assert "IYI_PATH" not in cleaned
-        assert "CRYSTAL_PATH" not in cleaned
-        assert "IYI_DAEMON_SOCKET" not in cleaned
-        assert "CRYSTAL_DAEMON_SOCKET" not in cleaned
-        assert "PYTHONOPTIMIZE" not in cleaned
-        assert "ROUTE_A_DRIVERS" not in cleaned
-
-        assert cleaned["PATH"] == "/pinned/bin:/usr/bin"
-        assert cleaned["HOME"] == "/pinned/home"
-        assert cleaned["LIBRARY_PATH"] == "/opt/homebrew/opt/bdw-gc/lib"
-        assert cleaned["PKG_CONFIG_PATH"] == "/opt/homebrew/opt/openssl@3/lib/pkgconfig"
-        assert cleaned["PYTHONDONTWRITEBYTECODE"] == "1"
-        assert cleaned["CUSTOM_STAGE"] == "1"
-
+        return base_env(pin)
     finally:
         os.environ.clear()
-        os.environ.update(old_env)
+        os.environ.update(original)
 
 
-def test_pin_refusals_and_control():
-    """S1: Verify write_pin refuses invalid conditions and succeeds on valid control."""
-    scratch = tempfile.mkdtemp(prefix="smoke_pin_")
-    try:
-        p_dir = os.path.join(scratch, "repo_p")
-        w_dir = os.path.join(scratch, "repo_w")
-        r_dir = os.path.join(scratch, "report")
-        c_bin = os.path.join(scratch, "fake_iyi")
-
-        create_temp_git_repo(p_dir)
-        with open(os.path.join(p_dir, "file.txt"), "w") as f:
-            f.write("base\n")
-        subprocess.run(["git", "-C", p_dir, "add", "file.txt"], check=True)
-        subprocess.run(["git", "-C", p_dir, "commit", "-m", "init P"], check=True)
-        p_sha = subprocess.check_output(["git", "-C", p_dir, "rev-parse", "HEAD"], text=True).strip()
-        stamp = p_sha[:9]
-
-        subprocess.run(["git", "clone", p_dir, w_dir], check=True, capture_output=True)
-        subprocess.run(["git", "-C", w_dir, "config", "user.name", "Tester"], check=True)
-        subprocess.run(["git", "-C", w_dir, "config", "user.email", "test@test.local"], check=True)
-        subprocess.run(["git", "-C", w_dir, "config", "commit.gpgsign", "false"], check=True)
-
-        os.makedirs(os.path.join(w_dir, "proof"), exist_ok=True)
-        with open(os.path.join(w_dir, "proof/tool.py"), "w") as f:
-            f.write("# proof\n")
-        subprocess.run(["git", "-C", w_dir, "add", "proof/tool.py"], check=True)
-        subprocess.run(["git", "-C", w_dir, "commit", "-m", "proof tool"], check=True)
-
-        with open(c_bin, "w") as f:
-            f.write(f"#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'iyi 0.19.1 [{stamp}] (2026-10-28)'; exit 0; fi\nif [ \"$1\" = \"env\" ]; then echo '/tmp/fake/src'; exit 0; fi\nexit 0\n")
-        os.chmod(c_bin, 0o755)
-
-        time.sleep(1.1)
-        os.utime(c_bin, None)
-
-        pin = write_pin(r_dir, p_dir, w_dir, c_bin)
-        assert pin["p_source_sha"] == p_sha
-        assert pin["compiler_stamp"] == stamp
-        assert os.path.isfile(os.path.join(r_dir, "pin.json"))
-
-        # Refusals
-        try:
-            write_pin(r_dir, p_dir, w_dir, c_bin)
-            assert False, "Should refuse non-empty R"
-        except IdentityError:
-            pass
-
-        r_dir2 = os.path.join(scratch, "report2")
-        with open(os.path.join(p_dir, "dirty.txt"), "w") as f:
-            f.write("dirty\n")
-        try:
-            write_pin(r_dir2, p_dir, w_dir, c_bin)
-            assert False, "Should refuse dirty P"
-        except IdentityError:
-            pass
-        os.remove(os.path.join(p_dir, "dirty.txt"))
-
-        with open(os.path.join(w_dir, "dirty.txt"), "w") as f:
-            f.write("dirty\n")
-        try:
-            write_pin(r_dir2, p_dir, w_dir, c_bin)
-            assert False, "Should refuse dirty W"
-        except IdentityError:
-            pass
-        os.remove(os.path.join(w_dir, "dirty.txt"))
-
-        with open(os.path.join(w_dir, "file.txt"), "w") as f:
-            f.write("modified product\n")
-        subprocess.run(["git", "-C", w_dir, "add", "file.txt"], check=True)
-        subprocess.run(["git", "-C", w_dir, "commit", "-m", "modify product"], check=True)
-        try:
-            write_pin(r_dir2, p_dir, w_dir, c_bin)
-            assert False, "Should refuse product diff"
-        except IdentityError:
-            pass
-        subprocess.run(["git", "-C", w_dir, "reset", "--hard", "HEAD~1"], check=True)
-
-        p_commit_time = int(subprocess.check_output(["git", "-C", p_dir, "log", "-1", "--format=%ct"], text=True).strip())
-        os.utime(c_bin, (p_commit_time - 10, p_commit_time - 10))
-        try:
-            write_pin(r_dir2, p_dir, w_dir, c_bin)
-            assert False, "Should refuse stale compiler mtime"
-        except IdentityError:
-            pass
-
-        os.utime(c_bin, None)
-        with open(c_bin, "w") as f:
-            f.write("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'iyi 0.19.1 [deadbeef0] (2026-10-28)'; exit 0; fi\nexit 0\n")
-        try:
-            write_pin(r_dir2, p_dir, w_dir, c_bin)
-            assert False, "Should refuse stamp mismatch"
-        except IdentityError:
-            pass
-
-    finally:
-        shutil.rmtree(scratch, ignore_errors=True)
+def _fixture_unoptimized_control() -> Observation:
+    return Observation(expected=0, got=sys.flags.optimize)
 
 
-def test_identity_check_mutations():
-    """S1: Verify check_identity catches all mutation scenarios."""
-    scratch = tempfile.mkdtemp(prefix="smoke_ident_")
-    try:
-        p_dir = os.path.join(scratch, "p")
-        w_dir = os.path.join(scratch, "w")
-        r_dir = os.path.join(scratch, "r")
-        c_bin = os.path.join(scratch, "iyi")
-
-        create_temp_git_repo(p_dir)
-        with open(os.path.join(p_dir, "init.txt"), "w") as f:
-            f.write("init\n")
-        subprocess.run(["git", "-C", p_dir, "add", "init.txt"], check=True)
-        subprocess.run(["git", "-C", p_dir, "commit", "-m", "init"], check=True)
-        p_sha = subprocess.check_output(["git", "-C", p_dir, "rev-parse", "HEAD"], text=True).strip()
-        stamp = p_sha[:9]
-
-        subprocess.run(["git", "clone", p_dir, w_dir], check=True, capture_output=True)
-        subprocess.run(["git", "-C", w_dir, "config", "user.name", "Tester"], check=True)
-        subprocess.run(["git", "-C", w_dir, "config", "user.email", "test@test.local"], check=True)
-        subprocess.run(["git", "-C", w_dir, "config", "commit.gpgsign", "false"], check=True)
-
-        os.makedirs(os.path.join(w_dir, "proof"), exist_ok=True)
-        with open(os.path.join(w_dir, "proof/p.txt"), "w") as f:
-            f.write("proof\n")
-        subprocess.run(["git", "-C", w_dir, "add", "proof/p.txt"], check=True)
-        subprocess.run(["git", "-C", w_dir, "commit", "-m", "proof commit"], check=True)
-
-        with open(c_bin, "w") as f:
-            f.write(f"#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'iyi 0.19.1 [{stamp}] (2026-10-28)'; exit 0; fi\nexit 0\n")
-        os.chmod(c_bin, 0o755)
-        time.sleep(1.1)
-        os.utime(c_bin, None)
-
-        pin = write_pin(r_dir, p_dir, w_dir, c_bin)
-        check_identity(pin)
-
-        # Mutation 1: P HEAD moved
-        with open(os.path.join(p_dir, "new.txt"), "w") as f:
-            f.write("new\n")
-        subprocess.run(["git", "-C", p_dir, "add", "new.txt"], check=True)
-        subprocess.run(["git", "-C", p_dir, "commit", "-m", "new P"], check=True)
-        try:
-            check_identity(pin)
-            assert False, "Should fail on P HEAD moved"
-        except IdentityError:
-            pass
-        subprocess.run(["git", "-C", p_dir, "reset", "--hard", "HEAD~1"], check=True)
-
-        # Mutation 2: W HEAD moved
-        with open(os.path.join(w_dir, "proof/new.txt"), "w") as f:
-            f.write("new\n")
-        subprocess.run(["git", "-C", w_dir, "add", "proof/new.txt"], check=True)
-        subprocess.run(["git", "-C", w_dir, "commit", "-m", "new W"], check=True)
-        try:
-            check_identity(pin)
-            assert False, "Should fail on W HEAD moved"
-        except IdentityError:
-            pass
-        subprocess.run(["git", "-C", w_dir, "reset", "--hard", "HEAD~1"], check=True)
-
-        # Mutation 3: Binary bytes changed with mtime restored
-        orig_mtime_ns = pin["compiler_mtime_ns"]
-        with open(c_bin, "a") as f:
-            f.write("# appended byte\n")
-        os.utime(c_bin, ns=(orig_mtime_ns, orig_mtime_ns))
-        try:
-            check_identity(pin)
-            assert False, "Should fail on compiler sha changed"
-        except IdentityError:
-            pass
-
-    finally:
-        shutil.rmtree(scratch, ignore_errors=True)
-
-
-def test_run_bounded_timeout():
-    """S1: Verify run_bounded handles timeout and kills grandchildren."""
-    cmd = [
-        sys.executable,
-        "-c",
-        "import subprocess, time; subprocess.Popen(['sleep', '100']); time.sleep(100)",
-    ]
-    rc, stdout, stderr, timed_out = run_bounded(
-        cmd,
-        cwd="/tmp",
-        env=os.environ.copy(),
-        timeout_sec=0.8,
-        grace_sec=0.2,
+def _fixture_optimized_refusal_seed() -> Observation:
+    command = [sys.executable, "-B", "-O", os.path.abspath(__file__)]
+    child_env = os.environ.copy()
+    child_env.pop("PYTHONOPTIMIZE", None)
+    completed = subprocess.run(
+        command,
+        cwd=REPO_ROOT,
+        env=child_env,
+        text=True,
+        capture_output=True,
+        check=False,
     )
-    assert timed_out is True
+    marker = "smoke_test.py refuses optimized Python: sys.flags.optimize=1"
+    got = {
+        "returncode": completed.returncode,
+        "marker": marker in completed.stderr,
+    }
+    expected = {"returncode": 2, "marker": True}
+    return Observation(
+        expected=expected,
+        got=got,
+        applied=f"argv={_render(command[1:])};stderr_sha256="
+        f"{hashlib.sha256(completed.stderr.encode()).hexdigest()}",
+    )
 
 
-# ==============================================================================
-# S2 Smoke Tests: Census validation and matching
-# ==============================================================================
-
-def test_census_all_29_validate():
-    """S2: Verify all 29 production census files validate against W."""
-    census_files = sorted(glob.glob(os.path.join(REPO_ROOT, "proof/census/*.json")))
-    assert len(census_files) == 29, f"Expected 29 census files, found {len(census_files)}"
-
-    for cf in census_files:
-        with open(cf, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        validate_census(data, REPO_ROOT)
-
-
-def test_census_validator_seeded_failures():
-    """S2: Verify census validator fails on corrupt/invalid schemas."""
-    # Control: cookie
-    cookie_file = os.path.join(REPO_ROOT, "proof/census/cookie.json")
-    with open(cookie_file, "r", encoding="utf-8") as f:
-        cookie_data = json.load(f)
-    validate_census(cookie_data, REPO_ROOT)
-
-    # 1. Wrong script sha256
-    bad_sha = dict(cookie_data)
-    bad_sha["script_sha256"] = "0000000000000000000000000000000000000000000000000000000000000000"
-    try:
-        validate_census(bad_sha, REPO_ROOT)
-        assert False, "Should have failed on wrong script_sha256"
-    except Exception:
-        pass
-
-    # 2. Missing contains literal
-    bad_contains = dict(cookie_data)
-    bad_contains["sites"] = [dict(s) for s in cookie_data["sites"]]
-    bad_contains["sites"][0]["contains"] = ["NONEXISTENT_LITERAL_XYZ"]
-    try:
-        validate_census(bad_contains, REPO_ROOT)
-        assert False, "Should have failed on missing contains literal"
-    except Exception:
-        pass
-
-    # 3. Invalid pass sentinel regex
-    bad_ps = dict(cookie_data)
-    bad_ps["pass_sentinel"] = {"line": cookie_data["pass_sentinel"]["line"], "regex": "^definitely_not_on_this_line$"}
-    try:
-        validate_census(bad_ps, REPO_ROOT)
-        assert False, "Should have failed on pass sentinel mismatch"
-    except Exception:
-        pass
+def _fixture_env_scrub_seed() -> Observation:
+    banned = (
+        "IYI_OPTS",
+        "IYI_PATH",
+        "CRYSTAL_PATH",
+        "IYI_DAEMON_SOCKET",
+        "CRYSTAL_DAEMON_SOCKET",
+        "PYTHONOPTIMIZE",
+        "IYI_FORK_PROBE",
+    )
+    ambient = {
+        **{key: f"seed-{key.lower()}" for key in banned},
+        "PATH": "/ambient/bin",
+        "HOME": "/ambient/home",
+    }
+    cleaned = _isolated_base_env(ambient)
+    applied = sorted(key for key in banned if ambient.get(key))
+    got = {
+        "applied_keys": applied,
+        "remaining_keys": sorted(key for key in banned if key in cleaned),
+    }
+    expected = {
+        "applied_keys": sorted(banned),
+        "remaining_keys": [],
+    }
+    return Observation(
+        expected=expected,
+        got=got,
+        applied=f"ambient_keys={','.join(applied)}",
+    )
 
 
-# ==============================================================================
-# S3 Smoke Tests: Shim and Ledger Verification
-# ==============================================================================
-
-def test_shim_and_ledger_verification():
-    """S3: Verify roundtrip_shim and verify_ledger under fake REAL."""
-    scratch = tempfile.mkdtemp(prefix="smoke_shim_")
-    try:
-        t_dir = os.path.join(scratch, "t")
-        s_dir = os.path.join(scratch, "s")
-        for d in [t_dir, s_dir]:
-            os.makedirs(d, exist_ok=True)
-
-        fake_real = os.path.join(scratch, "fake_real")
-        log_calls = os.path.join(scratch, "real_calls.log")
-        with open(fake_real, "w") as f:
-            f.write(f"""#!/bin/sh
-echo "$@" >> "{log_calls}"
-# Handle --emit-iyimod
-i=0
-for arg in "$@"; do
-  if [ "$arg" = "--emit-iyimod" ]; then
-    next_is_mods=1
-  elif [ "$next_is_mods" = "1" ]; then
-    mkdir -p "$arg/sub"
-    touch "$arg/sub/foo.iyimod"
-    next_is_mods=0
-  elif [ "$arg" = "-o" ]; then
-    next_is_out=1
-  elif [ "$next_is_out" = "1" ]; then
-    echo "binary" > "$arg"
-    chmod 755 "$arg"
-    next_is_out=0
-  fi
-done
-exit 0
-""")
-        os.chmod(fake_real, 0o755)
-
-        cookie_census = os.path.join(REPO_ROOT, "proof/census/cookie.json")
-        ledger_path = os.path.join(scratch, "ledger.jsonl")
-
-        config = {
-            "real": fake_real,
-            "census": cookie_census,
-            "ledger": ledger_path,
-            "nonce": "testnonce123",
-            "driver": "cookie",
-            "work_tmp": t_dir,
-            "scratch": s_dir,
-            "repo": REPO_ROOT,
-            "canonical_roots": [REPO_ROOT + "/src", REPO_ROOT + "/samples/iyi"],
-        }
-        config_path = os.path.join(scratch, "shim.json")
-        with open(config_path, "w") as f:
-            json.dump(config, f)
-
-        shim_script = os.path.join(REPO_ROOT, "proof/roundtrip_shim.py")
-        out_bin = os.path.join(scratch, "prog.bin")
-
-        # Canonical build
-        rc = subprocess.run(
-            [sys.executable, "-B", shim_script, "--config", config_path, "--",
-             "build", "-o", out_bin, os.path.join(REPO_ROOT, "bench/std_cookie_exercise.iyi")],
-            cwd=scratch,
-        ).returncode
-        assert rc == 0
-        assert os.path.isfile(out_bin)
-
-        # Simulate driver execution of out_bin (E3 observable: advances atime)
-        subprocess.run(["cat", out_bin], stdout=subprocess.DEVNULL)
-
-        # Verify ledger passes
-        with open(cookie_census) as f:
-            cdata = json.load(f)
-        pin = {"chain_id": "testnonce123"}
-        counts = verify_ledger(ledger_path, "cookie", cdata, pin, scratch)
-        assert counts["roundtrip"] >= 1
-
-    finally:
-        shutil.rmtree(scratch, ignore_errors=True)
+def _fixture_env_preserve_control() -> Observation:
+    ambient = {
+        "PATH": "/ambient/bin",
+        "HOME": "/ambient/home",
+    }
+    cleaned = _isolated_base_env(ambient)
+    got = {
+        "PATH": cleaned.get("PATH"),
+        "HOME": cleaned.get("HOME"),
+    }
+    expected = {
+        "PATH": "/pinned/bin:/usr/bin",
+        "HOME": "/pinned/home",
+    }
+    return Observation(expected=expected, got=got)
 
 
-# ==============================================================================
-# S5 Smoke Tests: atime probe
-# ==============================================================================
+def _assert_count(source: str, filename: str) -> int:
+    tree = ast.parse(source, filename=filename)
+    return sum(1 for node in ast.walk(tree) if isinstance(node, ast.Assert))
 
-def test_atime_probe():
-    """S5: Verify probe_atime_observable succeeds on /tmp with cc-built Mach-O."""
-    scratch = tempfile.mkdtemp(prefix="smoke_atime_")
-    try:
-        probe_atime_observable(scratch)
-    finally:
-        shutil.rmtree(scratch, ignore_errors=True)
 
-def test_amendment_b_seeded_failures():
-    """Amendment B: Verify verify_ledger catches NOT-EXECUTED and OUT-MODIFIED."""
-    scratch = tempfile.mkdtemp(prefix="smoke_amend_b_")
-    try:
-        t_dir = os.path.join(scratch, "t")
-        s_dir = os.path.join(scratch, "s")
-        for d in [t_dir, s_dir]:
-            os.makedirs(d, exist_ok=True)
+def _fixture_assert_detection_seed() -> Observation:
+    control_source = "value = 1\nvalue\n"
+    seed_source = "value = 1\nassert value\n"
+    count = _assert_count(seed_source, "seed_assert.py")
+    control_sha = hashlib.sha256(control_source.encode()).hexdigest()
+    seed_sha = hashlib.sha256(seed_source.encode()).hexdigest()
+    applied = control_sha != seed_sha
+    expected = {
+        "assert_count": 1,
+        "bytes_differ": True,
+    }
+    got = {
+        "assert_count": count,
+        "bytes_differ": applied,
+    }
+    return Observation(
+        expected=expected,
+        got=got,
+        applied=(
+            f"control_sha256={control_sha};seed_sha256={seed_sha};"
+            f"bytes_differ={str(applied).lower()}"
+        ),
+    )
 
-        fake_real = os.path.join(scratch, "fake_real")
-        with open(fake_real, "w") as f:
-            f.write("""#!/bin/sh
-next_is_mods=0
-next_is_out=0
-for arg in "$@"; do
-  if [ "$arg" = "--emit-iyimod" ]; then
-    next_is_mods=1
-  elif [ "$next_is_mods" = "1" ]; then
-    mkdir -p "$arg/sub"
-    touch "$arg/sub/foo.iyimod"
-    next_is_mods=0
-  elif [ "$arg" = "-o" ]; then
-    next_is_out=1
-  elif [ "$next_is_out" = "1" ]; then
-    echo "binary" > "$arg"
-    chmod 755 "$arg"
-    next_is_out=0
-  fi
-done
-exit 0
-""")
-        os.chmod(fake_real, 0o755)
 
-        cookie_census = os.path.join(REPO_ROOT, "proof/census/cookie.json")
-        with open(cookie_census) as f:
-            cdata = json.load(f)
+def _fixture_no_production_assert_control() -> Observation:
+    proof_dir = os.path.join(REPO_ROOT, "proof")
+    counts: dict[str, int] = {}
+    for py_file in sorted(glob.glob(os.path.join(proof_dir, "*.py"))):
+        basename = os.path.basename(py_file)
+        if basename in ("smoke_test.py", "build_census.py"):
+            continue
+        with open(py_file, "r", encoding="utf-8") as source_file:
+            counts[basename] = _assert_count(source_file.read(), py_file)
+    got = {
+        "asserts": {name: count for name, count in counts.items() if count},
+        "files_present": bool(counts),
+    }
+    expected = {
+        "asserts": {},
+        "files_present": True,
+    }
+    return Observation(expected=expected, got=got)
 
-        # Test Case 1: NOT-EXECUTED (OUT was built, but never executed/read, so atime did not advance)
-        ledger_path1 = os.path.join(scratch, "ledger1.jsonl")
-        config1 = {
-            "real": fake_real,
-            "census": cookie_census,
-            "ledger": ledger_path1,
-            "nonce": "nonce1",
-            "driver": "cookie",
-            "work_tmp": t_dir,
-            "scratch": s_dir,
-            "repo": REPO_ROOT,
-            "canonical_roots": [REPO_ROOT + "/src", REPO_ROOT + "/samples/iyi"],
-        }
-        cfg_path1 = os.path.join(scratch, "shim1.json")
-        with open(cfg_path1, "w") as f:
-            json.dump(config1, f)
 
-        out_bin1 = os.path.join(scratch, "prog1.bin")
-        shim_script = os.path.join(REPO_ROOT, "proof/roundtrip_shim.py")
-        subprocess.run([sys.executable, "-B", shim_script, "--config", cfg_path1, "--", "build", "-o", out_bin1, os.path.join(REPO_ROOT, "bench/std_cookie_exercise.iyi")], check=True)
-        # We do NOT read/execute out_bin1
-        pin1 = {"chain_id": "nonce1"}
+def _fixture_coverage_gap_seed() -> Observation:
+    synthetic_items = {
+        "synthetic.review": (
+            "synthetic.seed.required",
+            "synthetic.control.pair",
+        )
+    }
+    audit = _coverage_audit(
+        synthetic_items,
+        executed_seed_ids=set(),
+        executed_control_ids={"synthetic.control.pair"},
+        registered_kinds={},
+    )
+    got = {
+        "missing_seed_ids": list(audit.missing_seed_ids),
+        "items_without_executed_seed": list(audit.items_without_executed_seed),
+    }
+    expected = {
+        "missing_seed_ids": ["synthetic.seed.required"],
+        "items_without_executed_seed": ["synthetic.review"],
+    }
+    return Observation(
+        expected=expected,
+        got=got,
+        applied="executed_seed_ids=[];removed=synthetic.seed.required",
+    )
+
+
+def _fixture_coverage_complete_control() -> Observation:
+    synthetic_items = {
+        "synthetic.review": (
+            "synthetic.seed.required",
+            "synthetic.control.pair",
+        )
+    }
+    audit = _coverage_audit(
+        synthetic_items,
+        executed_seed_ids={"synthetic.seed.required"},
+        executed_control_ids={"synthetic.control.pair"},
+        registered_kinds={},
+    )
+    got = {
+        "configuration_errors": list(audit.configuration_errors),
+        "missing_seed_ids": list(audit.missing_seed_ids),
+        "missing_control_ids": list(audit.missing_control_ids),
+        "items_without_executed_seed": list(audit.items_without_executed_seed),
+    }
+    expected = {
+        "configuration_errors": [],
+        "missing_seed_ids": [],
+        "missing_control_ids": [],
+        "items_without_executed_seed": [],
+    }
+    return Observation(expected=expected, got=got)
+
+
+# This map is intentionally literal. A fixture id names either a seeded failure
+# or its passing control. The audit below refuses missing, unexecuted, unmapped,
+# or ambiguously named fixtures instead of inferring coverage from test names.
+REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
+    "review.p0.1.run3-import": (
+        "s5.seed.run3-import",
+        "s5.control.stage-chain",
+    ),
+    "review.p0.2.final-always-pass": (
+        "s5.seed.final-forged-pass",
+        "s5.seed.final-missing-result",
+        "s5.control.stage-chain",
+    ),
+    "review.p0.3.matcher-roots-and-whitelist": (
+        "s2.seed.matcher-variable-root",
+        "s3.seed.unknown-patched-root",
+        "s2.control.matcher-canonical",
+    ),
+    "review.p0.4.stage-bounds": (
+        "s5.seed.run3-driver-timeout",
+        "s5.seed.run1-slow-gate",
+        "s5.control.stage-chain",
+    ),
+    "review.p0.5.ledger-census-and-nonce": (
+        "s3.seed.ledger-stale-header",
+        "s3.seed.ledger-misclassified",
+        "s3.seed.ledger-not-exercised",
+        "s3.control.ledger",
+    ),
+    "review.p0.6.census-validator": (
+        "s2.seed.validator-schema",
+        "s2.seed.validator-duplicate-site",
+        "s2.seed.validator-verdict",
+        "s2.control.census-all",
+    ),
+    "review.p0.7.skip-classification": (
+        "s5.seed.skip-env-blocked",
+        "s5.seed.skip-partial",
+        "s5.control.stage-chain",
+    ),
+    "review.p1.smoke-coverage-and-optimization": (
+        "harness.seed.coverage-gap",
+        "harness.seed.optimize-refusal",
+        "harness.control.coverage-complete",
+        "harness.control.unoptimized",
+    ),
+    "review.p1.atime-probe": (
+        "amend-b.seed.probe-unobservable",
+        "amend-b.control.real-probe",
+    ),
+    "review.p1.pin-and-plan": (
+        "s1.seed.plan-dirty",
+        "s1.seed.plan-stale-compiler",
+        "s1.seed.plan-invalid-census",
+        "s1.control.plan",
+    ),
+    "review.p1.shim-run-semantics": (
+        "s3.seed.run-consumer-failure",
+        "s3.seed.run-signal-death",
+        "s3.seed.run-o-executes",
+        "s3.seed.implicit-file",
+        "s3.seed.run-sandbox",
+        "s3.seed.stdin-filename",
+        "s3.seed.unknown-option",
+        "s3.seed.cross-compile-roundtripped",
+        "s3.seed.roots-not-from-real",
+        "s3.seed.option-value-as-source",
+        "s3.seed.refusal-not-recorded",
+        "s3.control.run",
+        "s3.control.refusal",
+    ),
+    "review.p1.run3-prerequisites": (
+        "s5.seed.run3-missing-prerequisite",
+        "s5.seed.required-mismatch",
+        "s5.seed.census-missing-continues",
+        "s5.control.stage-chain",
+    ),
+    "review.p2.fresh-cache-and-tmp": (
+        "s5.seed.gate-env-reused",
+        "s5.control.gate-env-fresh",
+    ),
+    "review.p2.rg2r-count": (
+        "s5.seed.rg2r-zero",
+        "s5.control.stage-chain",
+    ),
+    "review.p2.exclusions-attempt-location": (
+        "s5.seed.exclusions-wrong-location",
+        "s5.control.stage-chain",
+    ),
+    "review.p2.artifact-leg-failures": (
+        "s4.seed.row-oserror",
+        "s4.seed.nm-unpinned",
+        "s4.seed.outputs-missing",
+        "s4.seed.not-reusable-nested",
+        "s4.control.row",
+    ),
+    "review.p2.run-bounded-survivors": (
+        "s1.seed.timeout-grandchild",
+        "s1.seed.log-holder-survivor",
+        "s1.control.bounded",
+    ),
+    "review.p2.report-dir-path": (
+        "s1.seed.report-dir-name",
+        "s1.control.pin",
+    ),
+    "review.p2.duplicate-census-sites": (
+        "s2.seed.validator-duplicate-site",
+        "s2.control.census-all",
+    ),
+    "review.output.smoke": (
+        "harness.seed.optimize-refusal",
+        "harness.seed.coverage-gap",
+        "harness.control.unoptimized",
+    ),
+    "review.output.plan": (
+        "s1.seed.plan-invalid-census",
+        "s1.control.plan",
+    ),
+    "review.output.census-report": (
+        "s2.seed.regression-1f",
+        "s2.control.census-all",
+    ),
+    "review.p1.pin-identity-specificity": (
+        "s1.seed.pin-missing-stamp",
+        "s1.seed.identity-inode",
+        "s1.control.identity",
+    ),
+    "review.p1.validator-specificity": (
+        "s2.seed.validator-sha",
+        "s2.seed.validator-contains",
+        "s2.control.census-all",
+    ),
+    "review.p1.timeout-grandchild-gone": (
+        "s1.seed.timeout-grandchild",
+        "s1.control.bounded",
+    ),
+    "review.p1.shim-seeded-failure": (
+        "s3.seed.canonical-argv-drift",
+        "s3.control.canonical-build",
+    ),
+    "review.accepted.pin-and-identity": (
+        "s1.seed.identity-binary-bytes",
+        "s1.control.identity",
+    ),
+    "review.accepted.environment-and-refusals": (
+        "s1.seed.env-scrub",
+        "s5.seed.route-a-drivers",
+        "s1.control.env-preserve",
+    ),
+    "review.accepted.run1": (
+        "s5.seed.run1-missing-sentinel",
+        "s5.seed.sample-exclusion",
+        "s5.seed.p-nonzero-not-added",
+        "s5.control.stage-chain",
+    ),
+    "review.accepted.artifact-legs": (
+        "s4.seed.frame-function",
+        "s4.seed.symbol-c2",
+        "s4.seed.wrong-count",
+        "s4.control.row",
+    ),
+    "review.accepted.shim": (
+        "s3.seed.canonical-argv-drift",
+        "amend-b.seed.not-executed",
+        "s3.control.canonical-build",
+    ),
+    "review.accepted.verify-ledger": (
+        "s3.seed.ledger-divergence",
+        "amend-b.seed.copy-modified",
+        "s3.control.ledger",
+    ),
+    "review.accepted.census-content": (
+        "s2.seed.regression-1f",
+        "s2.control.census-all",
+    ),
+    "contract.s1.environment": (
+        "s1.seed.env-scrub",
+        "s1.control.env-preserve",
+    ),
+    "contract.s1.pin-refusals": (
+        "s1.seed.pin-dirty-w",
+        "s1.seed.pin-dirty-p",
+        "s1.seed.pin-nondescendant",
+        "s1.seed.pin-product-diff",
+        "s1.seed.pin-stale-mtime",
+        "s1.seed.pin-missing-stamp",
+        "s1.seed.pin-stamp-mismatch",
+        "s1.seed.pin-report-nonempty",
+        "s1.seed.report-dir-name",
+        "s1.control.pin",
+    ),
+    "contract.s1.identity": (
+        "s1.seed.identity-p-head",
+        "s1.seed.identity-w-head",
+        "s1.seed.identity-binary-bytes",
+        "s1.seed.identity-inode",
+        "s1.seed.identity-mtime",
+        "s1.seed.identity-path",
+        "s1.seed.identity-cross-invocation",
+        "s1.control.identity",
+    ),
+    "contract.s1.timeout": (
+        "s1.seed.timeout-grandchild",
+        "s1.seed.no-timeout",
+        "s1.seed.log-holder-survivor",
+        "s1.seed.interrupt-survivor",
+        "s1.control.bounded",
+    ),
+    "contract.s1.production-asserts": (
+        "s1.seed.ast-detects-assert",
+        "s1.control.no-production-assert",
+    ),
+    "contract.s2.validator": (
+        "s2.seed.validator-schema",
+        "s2.seed.validator-sha",
+        "s2.seed.validator-unlisted-invocation",
+        "s2.seed.validator-duplicate-site",
+        "s2.seed.validator-contains",
+        "s2.seed.validator-verdict",
+        "s2.seed.validator-var-range",
+        "s2.seed.validator-unlisted-skip",
+        "s2.seed.validator-skip-regex",
+        "s2.seed.validator-unrenderable",
+        "s2.seed.validator-sentinel",
+        "s2.seed.validator-kind-variants",
+        "s2.seed.validator-template",
+        "s2.seed.validator-e1-missing",
+        "s2.seed.validator-e1-token",
+        "s2.seed.validator-e1-stray-reference",
+        "s2.seed.validator-e1-verdict",
+        "s2.seed.validator-e1-exit-line",
+        "s2.seed.regression-1f",
+        "s2.control.census-all",
+    ),
+    "contract.s2.matcher": (
+        "s2.seed.matcher-negative-noquestion",
+        "s2.seed.matcher-unknown-dir",
+        "s2.seed.matcher-outside-attempt",
+        "s2.seed.matcher-copied-exercise",
+        "s2.seed.matcher-two-same-kind",
+        "s2.seed.matcher-conflicting-kinds",
+        "s2.seed.matcher-variable-root",
+        "s2.control.matcher-canonical",
+    ),
+    "contract.s3.canonical-build": (
+        "s3.seed.canonical-argv-drift",
+        "s3.control.canonical-build",
+    ),
+    "contract.s3.b-prefix": (
+        "s3.seed.b-prefix-misparsed",
+        "s3.control.canonical-build",
+    ),
+    "contract.s3.run-without-separator": (
+        "s3.seed.run-temp-path",
+        "s3.control.run",
+    ),
+    "contract.s3.run-with-separator": (
+        "s3.seed.run-argv-or-rc",
+        "s3.control.run",
+    ),
+    "contract.s3.run-output-only": (
+        "s3.seed.run-o-executes",
+        "s3.control.run-o",
+    ),
+    "contract.s3.stdin": (
+        "s3.seed.stdin-to-build",
+        "s3.control.stdin",
+    ),
+    "contract.s3.producer-failure": (
+        "s3.seed.producer-failure",
+        "s3.control.canonical-build",
+    ),
+    "contract.s3.consumer-failure": (
+        "s3.seed.consumer-failure",
+        "s3.control.canonical-build",
+    ),
+    "contract.s3.zero-modules": (
+        "s3.seed.zero-modules",
+        "s3.control.canonical-build",
+    ),
+    "contract.s3.passthrough-modes": (
+        "s3.seed.passthrough-mutated",
+        "s3.control.passthrough",
+    ),
+    "contract.s3.observe-flag": (
+        "s3.seed.observe-duplicate",
+        "s3.control.observed-negative",
+    ),
+    "contract.s3.census-negative": (
+        "s3.seed.negative-roundtripped",
+        "s3.control.observed-negative",
+    ),
+    "contract.s3.census-positive": (
+        "s3.seed.positive-not-roundtripped",
+        "s3.control.positive",
+    ),
+    "contract.s3.unknown-root": (
+        "s3.seed.unknown-patched-root",
+        "s3.control.canonical-build",
+    ),
+    "contract.s3.empty-and-relative-roots": (
+        "s3.seed.relative-root-unresolved",
+        "s3.control.empty-root",
+        "s3.control.relative-root",
+    ),
+    "contract.s3.signals": (
+        "s3.seed.run-signal-death",
+        "s3.seed.sigterm-not-forwarded",
+        "s3.control.run",
+    ),
+    "contract.s3.refusals": (
+        "s3.seed.implicit-file",
+        "s3.seed.run-sandbox",
+        "s3.seed.stdin-filename",
+        "s3.seed.unknown-option",
+        "s3.seed.cross-compile-roundtripped",
+        "s3.seed.roots-not-from-real",
+        "s3.seed.option-value-as-source",
+        "s3.seed.missing-ledger",
+        "s3.seed.wrong-nonce",
+        "s3.seed.refusal-not-recorded",
+        "s3.control.refusal",
+    ),
+    "contract.s3.parallel-ledger": (
+        "s3.seed.parallel-ledger-corruption",
+        "s3.control.parallel-ledger",
+    ),
+    "contract.s3.verify-statuses": (
+        "s3.seed.ledger-stale-header",
+        "s3.seed.ledger-misclassified",
+        "s3.seed.ledger-unfaithful",
+        "s3.seed.ledger-divergence",
+        "s3.seed.ledger-not-roundtripped",
+        "s3.seed.ledger-not-exercised",
+        "s3.seed.ledger-positive-negative-only",
+        "s3.control.ledger",
+    ),
+    "contract.s4.callpath": (
+        "s4.seed.callpath-k2-diff",
+        "s4.seed.callpath-empty",
+        "s4.seed.callpath-mismatch",
+        "s4.control.row",
+    ),
+    "contract.s4.keys-and-traces": (
+        "s4.seed.phase-not-linked",
+        "s4.seed.reach-not-checked",
+        "s4.seed.key-file-missing",
+        "s4.seed.trace-empty",
+        "s4.control.row",
+    ),
+    "contract.s4.symbol-scan": (
+        "s4.seed.symbol-c2",
+        "s4.seed.symbol-c3",
+        "s4.seed.nm-error",
+        "s4.seed.build-output-symbol",
+        "s4.control.row",
+    ),
+    "contract.s4.row-timeout": (
+        "s4.seed.build-timeout",
+        "s4.seed.run-timeout",
+        "s4.control.row",
+    ),
+    "contract.s4.frame-comparison": (
+        "s4.seed.lone-cr",
+        "s4.seed.frame-function",
+        "s4.seed.frame-moved-byte",
+        "s4.seed.exit-code",
+        "s4.control.frames",
+    ),
+    "contract.s4.worker-isolation": (
+        "s4.seed.worker-reason-collision",
+        "s4.seed.stdout-replaced",
+        "s4.control.workers",
+    ),
+    "contract.s4.counts-under-optimization": (
+        "s4.seed.wrong-count",
+        "s4.control.counts",
+    ),
+    "contract.s4.sandbox": (
+        "s4.seed.sandbox-leak",
+        "s4.control.sandbox",
+    ),
+    "contract.s5.environment": (
+        "s5.seed.gate-env-reused",
+        "s5.control.gate-env-fresh",
+    ),
+    "contract.s5.run1-sentinels": (
+        "s5.seed.run1-missing-sentinel",
+        "s5.seed.rg2r-zero",
+        "s5.seed.rg9-140",
+        "s5.seed.sibling-count-114",
+        "s5.control.stage-chain",
+    ),
+    "contract.s5.exclusions": (
+        "s5.seed.std-exclusion",
+        "s5.seed.sample-exclusion",
+        "s5.seed.exclusions-wrong-location",
+        "s5.control.stage-chain",
+    ),
+    "contract.s5.run3-selection": (
+        "s5.seed.p-nonzero-not-added",
+        "s5.seed.run3-import",
+        "s5.control.stage-chain",
+    ),
+    "contract.s5.driver-timeout": (
+        "s5.seed.run3-driver-timeout",
+        "s5.control.stage-chain",
+    ),
+    "contract.s5.skip-classification": (
+        "s5.seed.skip-env-blocked",
+        "s5.seed.skip-partial",
+        "s5.seed.skip-platform",
+        "s5.control.stage-chain",
+    ),
+    "contract.s5.driver-verdict": (
+        "s5.seed.driver-missing-sentinel",
+        "s5.seed.driver-stale-ledger",
+        "s5.control.stage-chain",
+    ),
+    "contract.s5.refusals-and-identity": (
+        "s5.seed.route-a-drivers",
+        "s5.seed.binary-changed",
+        "s5.control.stage-chain",
+    ),
+    "contract.s5.continue-after-missing": (
+        "s5.seed.driver-missing-continues",
+        "s5.seed.census-missing-continues",
+        "s5.control.stage-chain",
+    ),
+    "contract.s5.final": (
+        "s5.seed.final-missing-result",
+        "s5.seed.final-forged-pass",
+        "s5.seed.final-chain-mismatch",
+        "s5.seed.final-earlier-failure-omitted",
+        "s5.control.stage-chain",
+    ),
+    "contract.s5.prerequisites": (
+        "s5.seed.run3-missing-prerequisite",
+        "s5.seed.required-mismatch",
+        "s5.control.stage-chain",
+    ),
+    "amendment-a.1.negative-environment": (
+        "amend-a.seed.negative-env-mutated",
+        "amend-a.control.negative-env",
+    ),
+    "amendment-a.2.positive-environment": (
+        "amend-a.seed.positive-env-mutated",
+        "amend-a.control.positive-env",
+    ),
+    "amendment-a.3.run-environment": (
+        "amend-a.seed.run-env-mutated",
+        "amend-a.control.run-env",
+    ),
+    "amendment-a.4.opts-unchanged": (
+        "amend-a.seed.opts-scrubbed",
+        "amend-a.control.opts-unchanged",
+    ),
+    "amendment-a.5.drop-cache": (
+        "amend-a.seed.drop-cache",
+        "amend-a.control.negative-env",
+    ),
+    "amendment-b.seed.not-executed": (
+        "amend-b.seed.not-executed",
+        "amend-b.control.stub-run",
+    ),
+    "amendment-b.seed.copy-modified": (
+        "amend-b.seed.copy-modified",
+        "amend-b.control.stub-run",
+    ),
+    "amendment-b.seed.move-replaced": (
+        "amend-b.seed.move-replaced",
+        "amend-b.control.stub-run",
+    ),
+    "amendment-b.seed.exec-token": (
+        "amend-b.seed.exec-token",
+        "amend-b.control.real-probe",
+    ),
+    "amendment-b.seed.stray-shasum": (
+        "amend-b.seed.stray-shasum",
+        "amend-b.control.real-probe",
+    ),
+    "amendment-b.seed.probe-unobservable": (
+        "amend-b.seed.probe-unobservable",
+        "amend-b.control.real-probe",
+    ),
+    "amendment-b.control.stub-run": (
+        "amend-b.seed.not-executed",
+        "amend-b.control.stub-run",
+    ),
+    "amendment-b.control.run-form": (
+        "amend-b.seed.run-form-not-counted",
+        "amend-b.control.run-form",
+    ),
+    "amendment-b.control.real-probe": (
+        "amend-b.seed.probe-unobservable",
+        "amend-b.control.real-probe",
+    ),
+}
+
+
+FIXTURES: tuple[Fixture, ...] = (
+    Fixture(
+        "harness.seed.optimize-refusal",
+        "seed",
+        _fixture_optimized_refusal_seed,
+    ),
+    Fixture(
+        "harness.control.unoptimized",
+        "control",
+        _fixture_unoptimized_control,
+    ),
+    Fixture(
+        "harness.seed.coverage-gap",
+        "seed",
+        _fixture_coverage_gap_seed,
+    ),
+    Fixture(
+        "harness.control.coverage-complete",
+        "control",
+        _fixture_coverage_complete_control,
+    ),
+    Fixture(
+        "s1.seed.env-scrub",
+        "seed",
+        _fixture_env_scrub_seed,
+    ),
+    Fixture(
+        "s1.control.env-preserve",
+        "control",
+        _fixture_env_preserve_control,
+    ),
+    Fixture(
+        "s1.seed.ast-detects-assert",
+        "seed",
+        _fixture_assert_detection_seed,
+    ),
+    Fixture(
+        "s1.control.no-production-assert",
+        "control",
+        _fixture_no_production_assert_control,
+    ),
+)
+
+
+class Harness:
+    def __init__(self) -> None:
+        self.executed_seed_ids: set[str] = set()
+        self.passed_seed_ids: set[str] = set()
+        self.executed_control_ids: set[str] = set()
+        self.failed_control_ids: set[str] = set()
+        self.execution_errors: list[str] = []
+
+    def run(self, fixture: Fixture) -> None:
+        executed = (
+            self.executed_seed_ids
+            if fixture.kind == "seed"
+            else self.executed_control_ids
+        )
+        if fixture.fixture_id in executed:
+            self.execution_errors.append(f"duplicate execution: {fixture.fixture_id}")
+            return
+        executed.add(fixture.fixture_id)
+
         try:
-            verify_ledger(ledger_path1, "cookie", cdata, pin1, scratch)
-            assert False, "Should have failed with NOT-EXECUTED"
-        except LedgerVerificationError as ex:
-            assert ex.status == "NOT-EXECUTED"
+            observation = fixture.run()
+            if not isinstance(observation, Observation):
+                raise TypeError(
+                    f"fixture returned {type(observation).__name__}, not Observation"
+                )
+        except (
+            AssertionError,
+            LookupError,
+            OSError,
+            RuntimeError,
+            SyntaxError,
+            TypeError,
+            ValueError,
+            subprocess.SubprocessError,
+        ) as error:
+            observation = Observation(
+                expected="fixture completes",
+                got=f"{type(error).__name__}: {error}",
+                applied=f"fixture_exception={type(error).__name__}",
+            )
 
-        # Test Case 2: OUT-MODIFIED (OUT was modified in place after shim recorded it)
-        ledger_path2 = os.path.join(scratch, "ledger2.jsonl")
-        config2 = dict(config1, ledger=ledger_path2, nonce="nonce2")
-        cfg_path2 = os.path.join(scratch, "shim2.json")
-        with open(cfg_path2, "w") as f:
-            json.dump(config2, f)
+        if fixture.kind == "seed":
+            if not observation.applied:
+                observation = Observation(
+                    expected={
+                        "observation": observation.expected,
+                        "harness": "applied evidence present",
+                    },
+                    got={
+                        "observation": observation.got,
+                        "harness": "missing applied evidence",
+                    },
+                    applied="MISSING",
+                )
+            print(
+                f"SEED {fixture.fixture_id} "
+                f"expect={_render(observation.expected)} "
+                f"got={_render(observation.got)} "
+                f"applied={_render(observation.applied)}"
+            )
+            if observation.got == observation.expected:
+                self.passed_seed_ids.add(fixture.fixture_id)
+        elif fixture.kind == "control":
+            if observation.got == observation.expected:
+                print(f"CONTROL {fixture.fixture_id} PASS")
+            else:
+                print(
+                    f"CONTROL {fixture.fixture_id} FAIL "
+                    f"expect={_render(observation.expected)} "
+                    f"got={_render(observation.got)}"
+                )
+                self.failed_control_ids.add(fixture.fixture_id)
+        else:
+            self.execution_errors.append(
+                f"{fixture.fixture_id}: invalid kind {fixture.kind}"
+            )
 
-        out_bin2 = os.path.join(scratch, "prog2.bin")
-        subprocess.run([sys.executable, "-B", shim_script, "--config", cfg_path2, "--", "build", "-o", out_bin2, os.path.join(REPO_ROOT, "bench/std_cookie_exercise.iyi")], check=True)
 
-        # Modify OUT content
-        with open(out_bin2, "a") as f:
-            f.write("corrupted\n")
-        # Execute so atime advances
-        subprocess.run(["cat", out_bin2], stdout=subprocess.DEVNULL)
+def _print_header() -> None:
+    head = subprocess.check_output(
+        ["git", "-C", REPO_ROOT, "rev-parse", "HEAD"],
+        text=True,
+    ).strip()
+    status = subprocess.run(
+        [
+            "git",
+            "-C",
+            REPO_ROOT,
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if status.returncode != 0:
+        raise RuntimeError(
+            f"git status failed with {status.returncode}: {status.stderr.strip()}"
+        )
+    print(f"HEADER executable={_render(sys.executable)}")
+    print(f"HEADER version={_render(sys.version)}")
+    print(f"HEADER flags={_render(repr(sys.flags))}")
+    print(f"HEADER head={head}")
+    print(f"HEADER clean={str(not bool(status.stdout)).lower()}")
 
-        pin2 = {"chain_id": "nonce2"}
-        try:
-            verify_ledger(ledger_path2, "cookie", cdata, pin2, scratch)
-            assert False, "Should have failed with OUT-MODIFIED"
-        except LedgerVerificationError as ex:
-            assert ex.status == "OUT-MODIFIED"
 
-    finally:
-        shutil.rmtree(scratch, ignore_errors=True)
+def main() -> int:
+    try:
+        _print_header()
+    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+        print(f"HARNESS ERROR header={_render(f'{type(error).__name__}: {error}')}")
+        return 1
 
+    registered_kinds: dict[str, str] = {}
+    duplicate_registered_ids: set[str] = set()
+    for fixture in FIXTURES:
+        if fixture.fixture_id in registered_kinds:
+            duplicate_registered_ids.add(fixture.fixture_id)
+        registered_kinds[fixture.fixture_id] = fixture.kind
 
-def main():
-    print("Running comprehensive proof smoke tests...")
-    test_no_asserts_in_production_proof()
-    print("  [PASS] test_no_asserts_in_production_proof")
-    test_base_env_scrub()
-    print("  [PASS] test_base_env_scrub")
-    test_pin_refusals_and_control()
-    print("  [PASS] test_pin_refusals_and_control")
-    test_identity_check_mutations()
-    print("  [PASS] test_identity_check_mutations")
-    test_run_bounded_timeout()
-    print("  [PASS] test_run_bounded_timeout")
-    test_census_all_29_validate()
-    print("  [PASS] test_census_all_29_validate (all 29 census JSON files)")
-    test_census_validator_seeded_failures()
-    print("  [PASS] test_census_validator_seeded_failures")
-    test_shim_and_ledger_verification()
-    print("  [PASS] test_shim_and_ledger_verification")
-    test_atime_probe()
-    print("  [PASS] test_atime_probe")
-    test_amendment_b_seeded_failures()
-    print("  [PASS] test_amendment_b_seeded_failures (NOT-EXECUTED and OUT-MODIFIED)")
-    print("\n=======================================================")
-    print("ALL COMPREHENSIVE PROOF SMOKE TESTS PASSED (100% GREEN)")
-    print("=======================================================")
+    harness = Harness()
+    if duplicate_registered_ids:
+        for fixture_id in sorted(duplicate_registered_ids):
+            harness.execution_errors.append(
+                f"duplicate registered fixture: {fixture_id}"
+            )
+    else:
+        for fixture in FIXTURES:
+            harness.run(fixture)
+
+    audit = _coverage_audit(
+        REVIEW_ITEMS,
+        harness.executed_seed_ids,
+        harness.executed_control_ids,
+        registered_kinds,
+    )
+    for error in audit.configuration_errors:
+        print(f"COVERAGE configuration_error={_render(error)}")
+    for fixture_id in audit.missing_seed_ids:
+        print(f"COVERAGE missing_seed={fixture_id}")
+    for fixture_id in audit.missing_control_ids:
+        print(f"COVERAGE missing_control={fixture_id}")
+    for item in audit.items_without_executed_seed:
+        print(f"COVERAGE item_without_executed_seed={item}")
+    for fixture_id in audit.unmapped_registered_ids:
+        print(f"COVERAGE unmapped_registered_fixture={fixture_id}")
+    for error in harness.execution_errors:
+        print(f"HARNESS execution_error={_render(error)}")
+
+    missed_seed_ids = harness.executed_seed_ids - harness.passed_seed_ids
+    print(
+        "TOTAL "
+        f"seeds_executed={len(harness.executed_seed_ids)} "
+        f"seeds_passed={len(harness.passed_seed_ids)} "
+        f"seeds_missed={len(missed_seed_ids)} "
+        f"seeds_missing={len(audit.missing_seed_ids)} "
+        f"controls_executed={len(harness.executed_control_ids)} "
+        f"controls_failed={len(harness.failed_control_ids)} "
+        f"controls_missing={len(audit.missing_control_ids)}"
+    )
+
+    failed = bool(
+        missed_seed_ids
+        or harness.failed_control_ids
+        or harness.execution_errors
+        or not audit.passed
+    )
+    print("HARNESS FAIL" if failed else "HARNESS PASS")
+    return 1 if failed else 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
