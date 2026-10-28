@@ -1331,6 +1331,8 @@ module Iyi::Stale
       return false if target_def.is_a?(External)
       return false if target_def.iyi_from_artifact?
 
+      return true if target_def.iyi_observer_body_inlined?
+
       if block = node.block
         return true unless (fun_literal = block.fun_literal) && target_def.uses_block_arg?
       end

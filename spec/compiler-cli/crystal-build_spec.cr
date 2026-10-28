@@ -48,7 +48,6 @@ describe "`crystal build`" do
     end
   {% end %}
 
-
   it "syntax error" do
     Process.capture_result(crystal, "build", fixture_path("syntax-error.cr.txt"))
       .should(be_failure(1))

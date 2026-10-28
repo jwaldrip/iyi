@@ -2196,11 +2196,10 @@ module Iyi
     # who did not already have it in their object code.
     property? iyi_from_artifact = false
 
-    # iyi: written by the definition-site typing probe (R-2c) rather than by
-    # an author. The probe is a def's own site asking about itself, so it
-    # names a type the def's module keeps to itself the way the module's
-    # own code can: `Call#check_visibility` lets its call through for the
-    # same reason.
+    # iyi: written by the compiler rather than by an author: the R-2c probe,
+    # the observer's `Std::Observe`, and the printed type names an artifact's
+    # object code numbers or matches (IV.1g). Neither R-1's import wall nor
+    # R-2's export rule applies to them.
     property? iyi_synthetic = false
 
     def initialize(@names : Array, @global = false)
