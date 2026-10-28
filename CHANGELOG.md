@@ -14,6 +14,56 @@
   Four exercise fixes, each found by the equivalence and census runs on one macOS machine: `std_dns_exercise` skips its Happy Eyeballs races when a full listener resets SYNs instead of dropping them; `std_digest_exercise` times the best of seven, and `std_big_exercise` judges the pass whose division-to-product ratio is smallest, timed back to back, since both timing checks failed under load; and `std_tar_exercise` writes absolute names past 100 bytes through pax records, which a long `TMPDIR` needs.
 
 - **Semantic backtrace equivalence for Darwin artifact verification.** Output comparison in standard library exercise gates (`bench/std_exercise.sh`, `bench/std_toml_exercise.sh`, `bench/std_websocket_exercise.sh`, `bench/std_big_exercise.sh`, and `bench/stale_equivalence.sh`) evaluates ordered semantic frames via `bench/frames_equivalent.py` when direct byte comparison fails on Darwin. Comparisons verify equal frame counts, positions, indices, images, and canonicalized function names while abstracting layout addresses, function size offsets, `~iyi` copy suffixes, and compiler proc numbers, with plain-vs-optimized comparisons verifying non-frame text and frame sequence structure.
+
+- **A refused TCP connect from a `--crystal` program on macOS 27 reported
+  success, and now raises `Socket::ConnectError`.** Non-blocking
+  `Socket#connect` on Unix waited for writability and retried `connect(2)`
+  treating `EISCONN` as success, hiding connection failures. The socket
+  error state is now inspected via `SO_ERROR` without retrying connect
+  (crystal-lang/crystal#17436, #17619).
+
+- **Fixed: macOS system libiconv handles invalid byte skip and shift states correctly.**
+  macOS 14+ provides FreeBSD Citrus iconv without GNU extensions. Crystal::Iconv no
+  longer appends //IGNORE on Darwin when using system libiconv, avoiding dropped
+  characters after invalid bytes, and std specs reflect Citrus shift state mappings
+  for BIG5-HKSCS and EUC-JP.
+- **A `std/tls` connection that refuses its peer lets the alert arrive.**
+  After a fatal alert either end now shuts the socket's sending half and
+  reads and drops what the peer sent until the peer closes, a second and
+  64 KiB at most, then closes the socket. The server read on before,
+  without the shut; the client closed at once, and with a server's
+  records past its Finished still unread - 0.5-RTT data, tickets - the
+  close was a reset. `bench/std_tls_server.py`'s new `untrusted-late`
+  sends a certificate the client refuses and three full records of
+  0.5-RTT data in one write: it read alert 42 and then a reset in 100 of
+  100 refusals on Linux and 100 of 100 on darwin, and the alert and then
+  the end of the stream in 100 of 100 on each with the change. Linux and
+  darwin still hand over the alert, even read 300 ms after the reset;
+  Windows throws away what a reset connection received and had not read,
+  as the ECH oracle's client showed the std/tls server, which lost
+  ech_required in 18 and 15 of 20 runs. A peer that closes once it has
+  the alert ends the wait then - OpenSSL's s_server 0.2 ms after it on
+  darwin - and `untrusted-hold`, a server that sends a record every 50 ms
+  and never closes, has the refusal back after its second (1000 to 1005
+  ms on Linux and darwin). `bench/std_tls_exercise.sh` asks
+  `untrusted-late` 20 times and `untrusted-hold` once, with broken copies
+  that close at once, linger without the shut, and linger ten seconds.
+  `untrusted-late` sends a fourth record 300 ms after the three: Windows
+  closes a socket with bytes unread in order, and resets it only when
+  bytes come after the close, so without it the copy that closes at once
+  had the alert and the end of the stream read in each of 20 runs there
+  (CI job 122639709895).
+
+- `bench/std_tls_exercise.sh` reads the alert s_server took from the
+  std/tls client once s_server has written it, five seconds at most,
+  before killing it. Two of darwin's stapling checks found no alert in
+  CI job 122532136003, the log holding the port probe's line alone:
+  s_server writes the alert after it reads it, and a client gone as soon
+  as its alert was sent left the gate to kill s_server first. With
+  s_server at nice 19 beside a busy loop on its CPU (Linux), such a
+  client's alert was written in 0 of 50 runs killed at once and in 50 of
+  50 awaited. The stapling checks waited for nothing, and `client_alert`
+  slept 300 ms.
 - **A shared block that reaches module state through a call is warned
   about (#148).** The block of `IyiThread.start`, of `spawn_parallel` and
   of a `@[Share]` def - `Server.serve`'s, a router's - was checked only
@@ -208,11 +258,21 @@
   object of `bench/std_cookie_exercise.iyi` named it undefined before
   and defines it after.
 
-- **`bench/parallel_migrate.iyi`'s closes step runs rounds of 16 until
-  one close is made on another worker than its reader's, five at most.**
-  That is the step's precondition, not the runtime's property: darwin's
-  release build once took all 16 closers on their readers' own workers,
-  where master's had crossed 15 and the same job's plain build 11.
+- **`bench/parallel_migrate.iyi`'s closes step has the main thread close
+  one socket under a parallel task's read, so a close crosses threads in
+  every run.** The step needs one close made on another thread than its
+  reader's, and its 16 closers, each a task of its reader's parallel
+  task, run on whichever worker takes them first: darwin's release build
+  once took all 16 on their readers' own workers, and its plain build on
+  3 cores, run in rounds of 16 until one crossed, had none of 80 cross
+  (job 122696158944). The main thread is never a pool worker, and its
+  close posts to the reader's worker as a worker's does (`wake_closed`):
+  120 runs on a 12-core Linux machine, 30 of each build on 3 cores and on
+  12, all crossed, two with no sibling crossing, and so did 20 on
+  macos-14's 3 cores (job 122760384513) and 20 on windows-2025's 4 (job
+  122760384624). A read made on the main thread instead
+  (`-Dparallel_closes_home`) fails the step by name in
+  bench/parallel_exercise.sh, and `noclose` still hangs it.
 
 - **An integer constant is cut to its type's width before LLVM gets it**
   (`LLVM::Type#const_int`, as Crystal 1.22 has it). A negative value went
