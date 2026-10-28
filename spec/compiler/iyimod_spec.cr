@@ -6394,4 +6394,56 @@ describe "a module compiled against Crystal's library" do
       from_artifact.should eq from_source
     end
   end
-end
+
+  it "observed producer and consumer inline effect bodies with no __iyi_effect_ artifact symbols" do
+      with_tempdir("iyimod_observed_effect_inline") do
+        modules = {
+          "helpers.iyi" => <<-IYI,
+            module helpers
+
+            import std/dir::{Dir}
+            import std/env::{ENV}
+
+            pub def probe_effects : Int32
+              ENV["X"] = "1"
+              Dir.children(".").size >= 0 ? 42 : 0
+            end
+            IYI
+        }
+        main = <<-IYI
+          module main
+
+          import helpers::{probe_effects}
+
+          puts probe_effects
+          IYI
+
+        modules.each do |path, text|
+          Dir.mkdir_p File.dirname(path)
+          File.write path, text
+        end
+        File.write "main.iyi", main
+        source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), main)
+
+        producer = create_spec_compiler
+        producer.prelude = "iyi/prelude"
+        producer.flags << "iyi_observe"
+        producer.emit_iyimod = "mods"
+        producer.compile source, File.expand_path("from-source")
+        from_source = `./from-source`
+
+        modules.each_key { |path| File.delete path }
+
+        consumer = create_spec_compiler
+        consumer.prelude = "iyi/prelude"
+        consumer.flags << "iyi_observe"
+        consumer.use_iyimod = "mods"
+        result = consumer.compile source, File.expand_path("from-artifact")
+        from_artifact = `./from-artifact`
+
+        result.program.iyi_artifact_symbols.none?(&.includes?("__iyi_effect_")).should be_true
+        from_source.should eq "42\n"
+        from_artifact.should eq from_source
+      end
+    end
+  end

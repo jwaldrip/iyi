@@ -173,4 +173,36 @@ describe "Iyi::Stale S3e: Reach walk, cross-check, drop per EdgeKind (row 42)" d
       end
     end
   end
+
+  it "observed program with real prelude reaching raise and puts has empty mismatch and no __iyi_effect_ elements" do
+    with_tempfile("reach_obs.key") do |key_path|
+      with_tempfile("reach_obs.elements.jsonl") do |elements_path|
+        with_tempfile("reach_obs.bin") do |bin_path|
+          compiler = create_spec_compiler
+          compiler.prelude = "iyi/prelude"
+          compiler.flags << "iyi_observe"
+          compiler.stale_key = key_path
+          compiler.stale_dump_elements = elements_path
+
+          source = Iyi::Compiler::Source.new("reach_obs.iyi", <<-IYI
+            module spec/reach_obs
+            def check_raise(x : Int32) : Int32
+              raise "panicked" if x == 0
+              x + 1
+            end
+            puts check_raise(1)
+            IYI
+          )
+
+          compiler.compile(source, bin_path)
+          File.exists?(key_path).should be_true
+          key = File.read(key_path)
+          key.should contain(%("mismatch": []))
+          File.exists?(elements_path).should be_true
+          elements = File.read(elements_path)
+          elements.should_not contain("__iyi_effect_")
+        end
+      end
+    end
+  end
 end

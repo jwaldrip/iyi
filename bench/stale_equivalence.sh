@@ -128,8 +128,16 @@ def check(item):
     cache = os.path.join(directory, 'cache')
     os.makedirs(cache, exist_ok=True)
     env = dict(os.environ, IYI_CACHE_DIR=cache)
-    normal = os.path.join(directory, 'normal.bin')
-    observed = os.path.join(directory, 'observe.bin')
+    stem = os.path.splitext(os.path.basename(program))[0]
+    normal_dir = os.path.join(directory, 'normal')
+    observed_dir = os.path.join(directory, 'observed')
+    os.makedirs(normal_dir, exist_ok=True)
+    os.makedirs(observed_dir, exist_ok=True)
+    # The image column in backtraces records the executable's basename.
+    # To compare normal and observed traces without masking the image column,
+    # both binaries share the same basename in distinct directories.
+    normal = os.path.join(normal_dir, stem)
+    observed = os.path.join(observed_dir, stem)
     trace = os.path.join(directory, 'trace.bin')
 
     try:
@@ -763,6 +771,189 @@ print('RG5 trace half PASSED: each wrapped observer call is load-bearing')
 " "$REPO" "$IYI" "$WORK"
 }
 
+run_rg2r() {
+  echo "== Running RG2r: observed artifact round-trip probe equivalence =="
+  "$PY" -c "
+import os, subprocess, sys
+
+repo, iyi, work = sys.argv[1:]
+sys.path.insert(0, os.path.join(repo, 'bench'))
+from frames_equivalent import compare_same_opt
+
+probes = {
+    'dir_probe': '''import std/dir::{Dir}
+
+def attempt(label : String, &work : -> Int32) : Nil
+  group do |g|
+    task = g.spawn { work.call }
+    outcome = task.value
+    if outcome.is_a?(Panicked)
+      puts label + \": refused: \" + outcome.message.to_s
+    else
+      puts label + \": answered\"
+    end
+    0
+  end
+end
+
+attempt(\"dir\") { Dir.children(\"\").size }
+''',
+    'env_probe': '''import std/env::{ENV}
+
+def attempt(label : String, &work : -> Int32) : Nil
+  group do |g|
+    task = g.spawn { work.call }
+    outcome = task.value
+    if outcome.is_a?(Panicked)
+      puts label + \": refused: \" + outcome.message.to_s
+    else
+      puts label + \": answered\"
+    end
+    0
+  end
+end
+
+attempt(\"env\") { ENV[\"A=B\"] = \"x\"; 0 }
+''',
+    'recursion_probe': '''def attempt(label : String, &work : -> Int32) : Nil
+  group do |g|
+    task = g.spawn { work.call }
+    outcome = task.value
+    if outcome.is_a?(Panicked)
+      puts label + \": refused: \" + outcome.message.to_s
+    else
+      puts label + \": answered\"
+    end
+    0
+  end
+end
+
+def down(n : Int32) : Int32
+  raise \"bottom of #{n}\" if n == 0
+  down(n - 1) + 1
+end
+
+attempt(\"recursion\") { down(3) }
+attempt(\"capped\") { down(80) }
+''',
+}
+
+rg2r_root = os.path.join(work, 'rg2r')
+os.makedirs(rg2r_root, exist_ok=True)
+timeout = 60
+
+failures = []
+
+for name, code in probes.items():
+    directory = os.path.join(rg2r_root, name)
+    os.makedirs(directory, exist_ok=True)
+    src = os.path.join(directory, name + '.iyi')
+    with open(src, 'w') as f:
+        f.write(code)
+
+    normal_dir = os.path.join(directory, 'normal')
+    observed_dir = os.path.join(directory, 'observed')
+    producer_dir = os.path.join(directory, 'producer')
+    artifact_dir = os.path.join(directory, 'artifact')
+    mods_dir = os.path.join(directory, 'mods')
+    for d in [normal_dir, observed_dir, producer_dir, artifact_dir, mods_dir]:
+        os.makedirs(d, exist_ok=True)
+
+    normal_bin = os.path.join(normal_dir, name)
+    observed_bin = os.path.join(observed_dir, name)
+    producer_bin = os.path.join(producer_dir, name)
+    artifact_bin = os.path.join(artifact_dir, name)
+
+    cache_n = os.path.join(directory, 'cache_n')
+    os.makedirs(cache_n, exist_ok=True)
+    res = subprocess.run([iyi, 'build', '-o', normal_bin, src],
+                         env=dict(os.environ, IYI_CACHE_DIR=cache_n),
+                         capture_output=True, timeout=timeout)
+    if res.returncode != 0:
+        failures.append((name, 'normal build failed: ' + res.stderr.decode()[:200]))
+        continue
+
+    cache_o = os.path.join(directory, 'cache_o')
+    os.makedirs(cache_o, exist_ok=True)
+    res = subprocess.run([iyi, 'build', '-Diyi_observe', '-o', observed_bin, src],
+                         env=dict(os.environ, IYI_CACHE_DIR=cache_o),
+                         capture_output=True, timeout=timeout)
+    if res.returncode != 0:
+        failures.append((name, 'observed build failed: ' + res.stderr.decode()[:200]))
+        continue
+
+    cache_p = os.path.join(directory, 'cache_p')
+    os.makedirs(cache_p, exist_ok=True)
+    res = subprocess.run([iyi, 'build', '-Diyi_observe', '--emit-iyimod', mods_dir, '-o', producer_bin, src],
+                         env=dict(os.environ, IYI_CACHE_DIR=cache_p),
+                         capture_output=True, timeout=timeout)
+    if res.returncode != 0:
+        failures.append((name, 'producer build failed: ' + res.stderr.decode()[:200]))
+        continue
+
+    cache_a = os.path.join(directory, 'cache_a')
+    os.makedirs(cache_a, exist_ok=True)
+    res = subprocess.run([iyi, 'build', '-Diyi_observe', '--use-iyimod', mods_dir, '-o', artifact_bin, src],
+                         env=dict(os.environ, IYI_CACHE_DIR=cache_a),
+                         capture_output=True, timeout=timeout)
+    if res.returncode != 0:
+        failures.append((name, 'artifact build failed: ' + res.stderr.decode()[:200]))
+        continue
+
+    trace_o = os.path.join(directory, 'trace_o.bin')
+    trace_a = os.path.join(directory, 'trace_a.bin')
+
+    run_n = subprocess.run([normal_bin], cwd=directory, capture_output=True, timeout=timeout)
+    run_o = subprocess.run([observed_bin], cwd=directory, env=dict(os.environ, IYI_OBSERVE=trace_o),
+                           capture_output=True, timeout=timeout)
+    run_a = subprocess.run([artifact_bin], cwd=directory, env=dict(os.environ, IYI_OBSERVE=trace_a),
+                           capture_output=True, timeout=timeout)
+
+    if not (run_n.returncode == run_o.returncode == run_a.returncode):
+        failures.append((name, f'exit status mismatch: n={run_n.returncode}, o={run_o.returncode}, a={run_a.returncode}'))
+        continue
+
+    if not (run_n.stdout == run_o.stdout == run_a.stdout):
+        failures.append((name, 'stdout not byte-equal across normal, observed, and artifact'))
+        continue
+
+    lines_n = run_n.stderr.splitlines(keepends=True)
+    lines_o = run_o.stderr.splitlines(keepends=True)
+    lines_a = run_a.stderr.splitlines(keepends=True)
+
+    oa_err = compare_same_opt(lines_o, lines_a)
+    if oa_err != 0:
+        failures.append((name, 'observed vs artifact stderr frames not equivalent'))
+        continue
+
+    na_err = compare_same_opt(lines_n, lines_a)
+    if na_err != 0:
+        failures.append((name, 'normal vs artifact stderr frames not equivalent'))
+        continue
+
+    if any(b'__iyi_effect_' in line for line in lines_o):
+        failures.append((name, 'found __iyi_effect_ in observed stderr'))
+        continue
+    if any(b'__iyi_effect_' in line for line in lines_a):
+        failures.append((name, 'found __iyi_effect_ in artifact stderr'))
+        continue
+
+    trace_o_size = os.path.getsize(trace_o) if os.path.exists(trace_o) else 0
+    trace_a_size = os.path.getsize(trace_a) if os.path.exists(trace_a) else 0
+    if trace_o_size == 0 or trace_a_size == 0:
+        failures.append((name, f'empty trace: trace_o={trace_o_size}, trace_a={trace_a_size}'))
+        continue
+
+    print(f'  [rg2r] {name}: exit {run_n.returncode}, stdout byte-equal, frames equivalent, trace sizes {trace_o_size}/{trace_a_size}')
+
+if failures:
+    for name, reason in failures:
+        print(f'  FAILED: {name} -> {reason}', file=sys.stderr)
+    sys.exit(1)
+print(f'RG2r PASSED: all {len(probes)} probes pass strict frame equivalence between normal, observed and artifact')
+" "$REPO" "$IYI" "$WORK"
+}
+
 case "$MODE" in
   rg2)
     run_rg2
@@ -773,13 +964,20 @@ case "$MODE" in
   rg5)
     run_rg5
     ;;
+  rg2r)
+    run_rg2r
+    ;;
+  rg5)
+    run_rg5
+    ;;
   all)
     run_rg2
     run_rg2a
+    run_rg2r
     run_rg5
     ;;
   *)
-    echo "Unknown mode: $MODE (expected: all, rg2, rg2a, rg5)" >&2
+    echo "Unknown mode: $MODE (expected: all, rg2, rg2a, rg2r, rg5)" >&2
     exit 1
     ;;
 esac

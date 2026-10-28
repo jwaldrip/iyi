@@ -364,6 +364,12 @@ module Iyi::Stale
         return
       end
 
+      if target_def.iyi_observer_body_inlined?
+        return if @drop == EdgeKind::BlockInline
+        reach_inlined_def(target_def, owner, nil)
+        return
+      end
+
       if try_inline_call?(target_def, owner)
         return
       end
@@ -413,8 +419,9 @@ module Iyi::Stale
       defining.responds_to?(:virtual_type) ? defining.virtual_type : defining
     end
 
-    private def reach_inlined_def(target_def : Def, owner : Type, block_context : BlockContext) : Nil
-      key = {target_def.object_id, owner.to_s, block_context.block.object_id}
+    private def reach_inlined_def(target_def : Def, owner : Type, block_context : BlockContext?) : Nil
+      block_id = block_context ? block_context.block.object_id : 0_u64
+      key = {target_def.object_id, owner.to_s, block_id}
       return if @inlined_defs_stack.includes?(key)
       @inlined_defs_stack << key
       old_block_context = @current_block_context

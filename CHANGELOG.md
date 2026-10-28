@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fix (compiler): inlined observed effect bodies eliminate synthetic backtrace frames.** Under `-Diyi_observe`, each renamed `__iyi_effect_*` body is emitted directly inside its wrapper in every build that has the body (source, producer, and consumer of a travelled body), with matching reach-walk and call-path encoding. Panics under observation match normal-build backtraces without synthetic wrapper or implementation frames.
+
 - **Fix (runtime): correct frame boundary symbol lookup in Darwin panics.** When a panic or NoReturn call is the last instruction of a function, the return address on the stack sits at offset 0 of the next function. The Darwin runtime backtrace resolves boundary frames with offset 0 by inspecting the caller symbol at `addr - 1` while preserving fiber entry start markers and raw address formats.
 
 - **Fix (compiler): observed artifact emission supports operator effect defs.** An observed build of a module with an operator-named `@[Effect]` def (such as `[]=` or `[]?`) renames the wrapped implementation with hex-encoded operator bytes rather than raw punctuation, so that serializing declarations into `.iyimod` artifacts preserves valid source text that consumer builds parse and adopt without syntax errors.
