@@ -13,8 +13,8 @@
 #
 # The reason each name is here is recorded beside the full list in
 # bench/dependency_floor.sh, which is this plus what the standard library's
-# platform modules add. The gates whose lists are *exact* — the runtime's
-# own twelve in bench/thread_exercise.sh, the thread variants in
+# The gates whose lists are *exact* — the runtime's
+# own in bench/thread_exercise.sh, the thread variants in
 # bench/thread_floor.sh, the collector's in bench/mark_exercise.sh — stay
 # written out, because "nothing else" is what they assert.
 #
@@ -23,8 +23,9 @@
 # collector (mmap, munmap, the stack base and dyld's image for root
 # discovery), the thread layer (pthread_*, sigaction, sigaltstack,
 # sysctlbyname, the one thread-local), errno's `__error` and the panic
-# path's backtrace are all its symbols.
-FLOOR_BASE_DARWIN="__error _tlv_bootstrap backtrace backtrace_symbols_fd clock_gettime_nsec_np exit kevent kqueue mmap mprotect munmap pipe pthread_create pthread_get_stackaddr_np pthread_kill pthread_self read sigaction sigaltstack sysctlbyname write _dyld_get_image_header _dyld_get_image_vmaddr_slide"
+# path (backtrace to capture frames, dladdr to name each, dprintf to write
+# it) are all its symbols.
+FLOOR_BASE_DARWIN="__error _tlv_bootstrap backtrace dladdr dprintf clock_gettime_nsec_np exit kevent kqueue mmap mprotect munmap pipe pthread_create pthread_get_stackaddr_np pthread_kill pthread_self read sigaction sigaltstack sysctlbyname write _dyld_get_image_header _dyld_get_image_vmaddr_slide"
 
 # Linux: the prelude issues raw syscalls and adds no symbol of its own; what
 # a program carries is what the C runtime's start files leave undefined.

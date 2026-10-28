@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Darwin panic dependency floor records `dladdr` and `dprintf` replacing `backtrace_symbols_fd` (SPEC.md III.9).** Commit 68c53c352 resolved boundary return addresses at `addr - 1` using `dladdr` and formatted panic frames to stderr with `dprintf` instead of `backtrace_symbols_fd`. The Darwin dependency floor (`bench/floor_base.sh`, `bench/dependency_floor.sh`, and exercise gates) updates its permitted symbol lists accordingly to match libSystem's interface without linking additional libraries. (Note: `dprintf` is not documented by Darwin as async-signal-safe).
+
 - **Fix (runtime): correct frame boundary symbol lookup in Darwin panics.** When a panic or NoReturn call is the last instruction of a function, the return address on the stack sits at offset 0 of the next function. The Darwin runtime backtrace resolves boundary frames with offset 0 by inspecting the caller symbol at `addr - 1` while preserving fiber entry start markers and raw address formats.
 
 - **Fix (compiler): observed artifact emission supports operator effect defs.** An observed build of a module with an operator-named `@[Effect]` def (such as `[]=` or `[]?`) renames the wrapped implementation with hex-encoded operator bytes rather than raw punctuation, so that serializing declarations into `.iyimod` artifacts preserves valid source text that consumer builds parse and adopt without syntax errors.
