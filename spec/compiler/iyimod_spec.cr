@@ -604,6 +604,60 @@ describe Iyi::IyiMod do
     end
   end
 
+  it "adopts std/env artifact with operator effect defs under observed and plain builds" do
+    with_tempdir("iyimod_env_operator_effects") do
+      var_name = "IYI_SPEC_ENV_#{Process.pid}"
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/twice
+        import std/env::{ENV}
+
+        ENV["#{var_name}"] = "set"
+        puts ENV["#{var_name}"]?.inspect
+        ENV["#{var_name}"] = nil
+        puts ENV["#{var_name}"]?.inspect
+        puts App::Twice.twice(21)
+        IYI
+
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      expected_output = %("set"\nnil\n42\n)
+
+      [true, false].each do |observed|
+        mode = observed ? "observed" : "plain"
+        mods_dir = "mods-#{mode}"
+
+        Dir.mkdir_p "app"
+        File.write "app/twice.iyi", <<-IYI
+          module app/twice
+
+          pub def twice(n : Int32) : Int32
+            n + n
+          end
+          IYI
+
+        producer = create_spec_compiler
+        producer.prelude = "iyi/prelude"
+        producer.emit_iyimod = mods_dir
+        producer.flags << "iyi_observe" if observed
+        producer.compile source, File.expand_path("from-source-#{mode}")
+        source_output = `./from-source-#{mode}`
+        source_output.should eq expected_output
+
+        File.delete "app/twice.iyi"
+
+        consumer = create_spec_compiler
+        consumer.prelude = "iyi/prelude"
+        consumer.use_iyimod = mods_dir
+        consumer.flags << "iyi_observe" if observed
+        result = consumer.compile source, File.expand_path("from-artifact-#{mode}")
+        result.program.iyi_artifact_hashes.has_key?("std/env").should be_true
+        artifact_output = `./from-artifact-#{mode}`
+        artifact_output.should eq source_output
+      end
+    end
+  end
+
   # An exported `enum`, which travels as its members and the numbers they were
   # given. Three things were in the way, each invisible until one was exported:
   # the question methods the compiler writes carried no return type, so R-2

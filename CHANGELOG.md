@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fix (compiler): observed artifact emission supports operator effect defs.** An observed build of a module with an operator-named `@[Effect]` def (such as `[]=` or `[]?`) renames the wrapped implementation with hex-encoded operator bytes rather than raw punctuation, so that serializing declarations into `.iyimod` artifacts preserves valid source text that consumer builds parse and adopt without syntax errors.
+
 - **Native stale testing for `iyi test`: opt-in `--cached` reuses passing receipts on equal build keys and replayed observations.** An observation build records run-time reads and effects, and the compiler hashes the reached call path (`CallPathFp`), linked object units, link environment, and compiler environment before codegen. A test that touches clock, entropy, timers, network, processes, signals, runtime timing, directory streams, host state, raw pointers, or shared writes outside its scratch directory runs fresh. In a census of 141 programs (27 sample programs and 114 standard library exercises), 90 of 141 (63.8%) were reusable on a second run, and static build keys were reusable for 138 of 141 (97.9%).
 
   Repairs cover lost scratch paths, reads of self-written environment variables, cold/warm compiler-environment keys, frame-depth isolation and transfer across threads and fibers, program callbacks during runtime frames, and concurrent observation writes. The recorder serializes records and deduplication state through a leaf CAS lock and reuses its encoding buffer.
