@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fix (runtime): classify `IyiHeap.release_run` as collector work under stale testing observation.** Calling `__iyi_release_pages` inside `release_run` without an `@[Effect(:collector)]` annotation recorded an unclassified external runtime call, marking every observed test run not reusable under RG3. Classifying `release_run` matches its callers (`close_run`, `age_idle`) and preserves receipt reuse on second runs.
+
 - **Compiler: omit unread predefined constants from codegen and stale build keys.** Predefined constants (`Crystal::*`) are initialized at startup and included in reach signatures only when referenced by typed code. `ARGC_UNSAFE` and `ARGV_UNSAFE` remain initialized unconditionally. Reading an uninitialized predefined constant in codegen raises an internal compiler bug.
 
 - **Fix (bench): recognize BSD and GNU `stty -g` formats in std/term exercise.** On Darwin, BSD `/bin/stty -g` outputs `gfmt1:cflag=hex:...:lflag=hex:...` rather than GNU coreutils colon-separated hex fields. The pseudo-terminal driver now parses both formats when masking the kernel-managed `PENDIN` flag on Darwin, leaving unknown text unchanged.
