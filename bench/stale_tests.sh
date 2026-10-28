@@ -877,8 +877,11 @@ import lib/calc::{compute}
 assert compute(10, 20) == 30
 IYI
 
-# Build initial .iyimod with object code
-(cd "$WORK/r40" && "$IYI" build --emit-iyimod mods -o producer producer.iyi) >/dev/null
+# Build initial .iyimod with object code. The runner builds every test with
+# -Diyi_observe (src/compiler/iyi/stale/runner.cr:288), and IV.5 adopts an
+# artifact only into a build under the same flags
+# (src/compiler/iyi/semantic/semantic_visitor.cr:1389-1391).
+(cd "$WORK/r40" && "$IYI" build -Diyi_observe --emit-iyimod mods -o producer producer.iyi) >/dev/null
 
 rm -rf "$CACHE/tests-v1"
 # `iyi test` takes no build flags (src/compiler/iyi/command/test.cr:101-105
@@ -888,8 +891,9 @@ rm -rf "$CACHE/tests-v1"
 r40_run1="$(IYI_OPTS="--use-iyimod mods" run_json "$WORK/r40" calc_test.iyi)"
 expect_eq "$(printf '%s' "$r40_run1" | json_cached)" 0 "r40 run 1 recorded"
 
-# Run 2: rebuilt identical bytes -> hits!
-(cd "$WORK/r40" && "$IYI" build --emit-iyimod mods -o producer producer.iyi) >/dev/null
+# Run 2: rebuilt identical bytes -> hits! --force, or the up-to-date check may
+# skip an unchanged build and write no artifact (src/compiler/iyi/command.cr:450-460).
+(cd "$WORK/r40" && "$IYI" build --force -Diyi_observe --emit-iyimod mods -o producer producer.iyi) >/dev/null
 r40_run2="$(IYI_OPTS="--use-iyimod mods" run_json "$WORK/r40" calc_test.iyi)"
 expect_eq "$(printf '%s' "$r40_run2" | json_cached)" 1 "r40 rebuilt identical bytes hits"
 
@@ -901,7 +905,7 @@ pub def compute(x : Int32, y : Int32) : Int32
   a + y
 end
 IYI
-(cd "$WORK/r40" && "$IYI" build --emit-iyimod mods -o producer producer.iyi) >/dev/null
+(cd "$WORK/r40" && "$IYI" build -Diyi_observe --emit-iyimod mods -o producer producer.iyi) >/dev/null
 r40_explain="$WORK/r40/explain.txt"
 IYI_OPTS="--use-iyimod mods" run_json "$WORK/r40" --explain calc_test.iyi > "$r40_explain"
 expect_contains "$(explained "$r40_explain" lines)" "miss" "changed linked object bytes miss reason"
