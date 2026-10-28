@@ -1370,6 +1370,8 @@ module Iyi
 
       argc_unsafe.no_init_flag = true
       argv_unsafe.no_init_flag = true
+      argc_unsafe.iyi_runtime_read = true
+      argv_unsafe.iyi_runtime_read = true
 
       predefined_constants << argc_unsafe
       predefined_constants << argv_unsafe
