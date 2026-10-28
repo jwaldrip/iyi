@@ -986,6 +986,7 @@ module Iyi
           parser.next_token
           type_node = parser.parse_bare_proc_type
           parser.check :EOF
+          iyi_mark_node_synthetic(type_node)
           # Reaching what the module keeps to itself, which is what these names
           # are made of: `Array(Router::RouteDefinition)` names a `private
           # record` and the artifact carries it as one. R-2b is not weakened by
@@ -1000,6 +1001,7 @@ module Iyi
           # code that asks. Nothing in this program asks for
           # `Regex::MatchOptions`, so codegen numbers these itself.
           iyi_artifact_numbered_types << lookup_type(type_node, include_private: true)
+
         end
       rescue CodeError
         # A name this build cannot resolve. The module's own types travel with
@@ -1036,6 +1038,21 @@ module Iyi
             Build the module from source, or import the module that declares it.
             MESSAGE
         end
+      end
+    end
+
+    private def iyi_mark_node_synthetic(node : ASTNode) : Nil
+      case node
+      when Path
+        node.iyi_synthetic = true
+      when Generic
+        iyi_mark_node_synthetic(node.name)
+        node.type_vars.each { |tv| iyi_mark_node_synthetic(tv) }
+      when ProcNotation
+        node.inputs.try &.each { |i| iyi_mark_node_synthetic(i) }
+        node.output.try { |o| iyi_mark_node_synthetic(o) }
+      when Union
+        node.types.each { |t| iyi_mark_node_synthetic(t) }
       end
     end
 
