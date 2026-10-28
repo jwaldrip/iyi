@@ -418,8 +418,19 @@ def cmd_run3(args):
 
         with open(census_file, "r", encoding="utf-8") as f:
             census_data = json.load(f)
-
-        validate_census(census_data, w_path)
+        script_relpath = census_data.get("script", "")
+        with open(os.path.join(w_path, script_relpath), "rb") as script_file:
+            script_bytes = script_file.read()
+        census_violations = validate_census(
+            census_data,
+            script_bytes,
+            script_relpath,
+        )
+        if census_violations:
+            raise RuntimeError(
+                f"CENSUS-INVALID: {drv}: "
+                f"{json.dumps(census_violations, sort_keys=True)}"
+            )
 
         drv_dir = os.path.join(r3_dir, drv)
         att_dir = next_attempt_dir(drv_dir)

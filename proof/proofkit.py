@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import glob
 import hashlib
+import shlex
 import json
 import os
 import re
@@ -364,9 +365,23 @@ def _census_shas_and_validate(
         try:
             with open(census_path, "r", encoding="utf-8") as census_file:
                 census = json.load(census_file)
-            validate_census(census, w_path)
+            script_relpath = census.get("script", "")
+            script_path = os.path.join(w_path, script_relpath)
+            with open(script_path, "rb") as script_file:
+                script_bytes = script_file.read()
+            violations = validate_census(
+                census,
+                script_bytes,
+                script_relpath,
+            )
+            if violations:
+                raise IdentityError(
+                    "CENSUS-INVALID",
+                    f"{driver}: {json.dumps(violations)}",
+                )
+        except IdentityError:
+            raise
         except (
-            CensusValidationError,
             json.JSONDecodeError,
             OSError,
             TypeError,
@@ -1042,66 +1057,1006 @@ def run_bounded(
 
 # --- Census & Ledger Verification ---
 
-def validate_census(census_data: dict, repo_root: str) -> None:
-    """
-    Contract C5 + Amendment B: Fail closed validation of a driver census.
-    """
-    script_rel = census_data.get("script", "")
-    script_path = os.path.join(repo_root, script_rel)
-    if not os.path.isfile(script_path):
-        raise CensusValidationError(f"Census script not found: {script_path}")
+Violation = tuple[str, int, str]
 
-    with open(script_path, "rb") as f:
-        script_bytes = f.read()
+_INVOCATION_RE = re.compile(
+    r'(\$IYI|"\$IYI"|\$\{IYI\})(?![A-Za-z0-9_:])'
+)
+_SKIP_VOCAB_RE = re.compile(
+    r"(?i)skip|unmeasured|unasked|unread|unproven|uncompared|"
+    r"unverified|unshown|unplaced|not run|not proven|not measured|"
+    r"not compared|not a pass|goes un|go un|could not be fetched|"
+    r"cannot be written"
+)
+_SITE_KINDS = {
+    "canonical-own",
+    "canonical-other",
+    "unchanged",
+    "passthrough",
+    "negative",
+    "positive",
+    "mixed",
+}
+_COMMANDS = {"build", "run", "doc", "fmt"}
+_VARIANT_KINDS = {"negative", "positive"}
+_TEMPLATE_FIELD_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_PRINT_BOUNDARY_RE = re.compile(
+    r"(?:^|[{};]|\&\&|\|\||\bthen\b|\belse\b|\bdo\b)"
+    r"\s*(echo|printf)\b"
+)
 
-    expected_sha = sha256_bytes(script_bytes)
-    if census_data.get("script_sha256") != expected_sha:
-        raise CensusValidationError(
-            f"Census script_sha256 mismatch: recorded {census_data.get('script_sha256')}, actual {expected_sha}"
+
+def _violation(
+    violations: list[Violation],
+    rule_id: str,
+    line: int,
+    detail: str,
+) -> None:
+    violations.append((rule_id, line if isinstance(line, int) else 0, detail))
+
+
+def _closed_keys(
+    value: object,
+    required: set[str],
+    path: str,
+    violations: list[Violation],
+    line: int = 0,
+) -> bool:
+    if not isinstance(value, dict):
+        _violation(
+            violations,
+            "C5.0-schema",
+            line,
+            f"{path} must be an object",
+        )
+        return False
+    missing = sorted(required - set(value))
+    unknown = sorted(set(value) - required)
+    if missing:
+        _violation(
+            violations,
+            "C5.0-schema",
+            line,
+            f"{path} missing keys {missing}",
+        )
+    if unknown:
+        _violation(
+            violations,
+            "C5.0-schema",
+            line,
+            f"{path} unknown keys {unknown}",
+        )
+    return not missing and not unknown
+
+
+def _source_text(lines: list[str], numbers: object) -> str:
+    if not isinstance(numbers, list):
+        return ""
+    return "\n".join(
+        lines[number - 1]
+        for number in numbers
+        if isinstance(number, int) and 1 <= number <= len(lines)
+    )
+
+
+def _replace_shell_expansions(text: str) -> str | None:
+    result: list[str] = []
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char == "`":
+            end = index + 1
+            escaped = False
+            while end < len(text):
+                if text[end] == "`" and not escaped:
+                    break
+                escaped = text[end] == "\\" and not escaped
+                if text[end] != "\\":
+                    escaped = False
+                end += 1
+            if end >= len(text):
+                return None
+            result.append("IYIVAR")
+            index = end + 1
+            continue
+        if char != "$":
+            result.append(char)
+            index += 1
+            continue
+        if index + 1 >= len(text):
+            result.append(char)
+            index += 1
+            continue
+        opener = text[index + 1]
+        if opener in "({":
+            closer = ")" if opener == "(" else "}"
+            depth = 1
+            end = index + 2
+            quote: str | None = None
+            escaped = False
+            while end < len(text):
+                current = text[end]
+                if escaped:
+                    escaped = False
+                elif current == "\\" and quote != "'":
+                    escaped = True
+                elif quote:
+                    if current == quote:
+                        quote = None
+                elif current in "'\"":
+                    quote = current
+                elif current == opener:
+                    depth += 1
+                elif current == closer:
+                    depth -= 1
+                    if depth == 0:
+                        break
+                end += 1
+            if depth:
+                return None
+            result.append("IYIVAR")
+            index = end + 1
+            continue
+        match = re.match(r"\$[A-Za-z_][A-Za-z0-9_]*|\$[0-9@#?*!-]", text[index:])
+        if match:
+            result.append("IYIVAR")
+            index += len(match.group(0))
+            continue
+        result.append(char)
+        index += 1
+    return "".join(result)
+
+
+def _render_printed_text(source_line: str) -> str | None:
+    command_match = _PRINT_BOUNDARY_RE.search(source_line)
+    if not command_match:
+        return None
+    expanded = _replace_shell_expansions(source_line[command_match.start(1):])
+    if expanded is None:
+        return None
+    try:
+        lexer = shlex.shlex(
+            expanded,
+            posix=True,
+            punctuation_chars=";&|(){}<>",
+        )
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError:
+        return None
+    if not tokens or tokens[0] not in ("echo", "printf"):
+        return None
+    command = tokens[0]
+    arguments: list[str] = []
+    for token in tokens[1:]:
+        if token in {";", "&&", "||", "|", ")", "}", ">", ">>", "<", "<<"}:
+            break
+        arguments.append(token)
+    if command == "echo":
+        while arguments and arguments[0] in ("-n", "-e", "-E"):
+            arguments.pop(0)
+        return " ".join(arguments)
+    while arguments and arguments[0].startswith("-") and arguments[0] != "-":
+        arguments.pop(0)
+    if not arguments:
+        return None
+    return re.sub(r"%(?:s|d)", "IYIVAR", arguments[0]).replace("\\n", "")
+
+
+def _template_violation(
+    value: object,
+    allowed_vars: set[str],
+    field: str,
+) -> str | None:
+    if not isinstance(value, str):
+        return f"{field} must be a string"
+    if any(char in value for char in ("$", "`", "*", "?", "[")):
+        return f"{field} contains forbidden shell syntax: {value!r}"
+    placeholders = set(_TEMPLATE_FIELD_RE.findall(value))
+    unknown = placeholders - {"REPO", "WORK"} - allowed_vars
+    if unknown:
+        return f"{field} has undeclared placeholders {sorted(unknown)}"
+    residue = _TEMPLATE_FIELD_RE.sub("", value)
+    if "{" in residue or "}" in residue:
+        return f"{field} has malformed placeholder syntax: {value!r}"
+    return None
+
+
+def _validate_census_schema(
+    census: object,
+    violations: list[Violation],
+) -> None:
+    top_keys = {
+        "census_version",
+        "driver",
+        "script",
+        "script_sha256",
+        "sites",
+        "non_invocations",
+        "skips",
+        "not_skips",
+        "pass_sentinel",
+        "exec_evidence",
+    }
+    if not _closed_keys(census, top_keys, "census", violations):
+        return
+    if not isinstance(census, dict):
+        return
+    scalar_types = {
+        "census_version": int,
+        "driver": str,
+        "script": str,
+        "script_sha256": str,
+        "sites": list,
+        "non_invocations": list,
+        "skips": list,
+        "not_skips": list,
+        "pass_sentinel": dict,
+        "exec_evidence": list,
+    }
+    for key, expected in scalar_types.items():
+        if not isinstance(census.get(key), expected):
+            _violation(
+                violations,
+                "C5.0-schema",
+                0,
+                f"census.{key} must be {expected.__name__}",
+            )
+    for index, site in enumerate(census.get("sites", [])):
+        line = (
+            site.get("lines", [0])[0]
+            if isinstance(site, dict) and site.get("lines")
+            else 0
+        )
+        if not _closed_keys(
+            site,
+            {"lines", "command", "kind", "contains", "variants"},
+            f"sites[{index}]",
+            violations,
+            line,
+        ):
+            continue
+        if (
+            not isinstance(site["lines"], list)
+            or not site["lines"]
+            or not all(isinstance(item, int) for item in site["lines"])
+            or not isinstance(site["contains"], list)
+            or not all(isinstance(item, str) for item in site["contains"])
+            or not isinstance(site["variants"], list)
+            or site["command"] not in _COMMANDS
+            or site["kind"] not in _SITE_KINDS
+        ):
+            _violation(
+                violations,
+                "C5.0-schema",
+                line,
+                f"sites[{index}] has invalid field types or enum values",
+            )
+        for variant_index, variant in enumerate(site["variants"]):
+            if not _closed_keys(
+                variant,
+                {
+                    "id",
+                    "kind",
+                    "first_root",
+                    "vars",
+                    "sources",
+                    "output",
+                    "darwin",
+                    "requires",
+                    "verdict",
+                },
+                f"sites[{index}].variants[{variant_index}]",
+                violations,
+                line,
+            ):
+                continue
+            if (
+                not isinstance(variant["id"], str)
+                or variant["kind"] not in _VARIANT_KINDS
+                or not isinstance(variant["first_root"], str)
+                or not isinstance(variant["vars"], dict)
+                or not isinstance(variant["sources"], list)
+                or not all(isinstance(item, str) for item in variant["sources"])
+                or variant["output"] is not None
+                and not isinstance(variant["output"], str)
+                or variant["darwin"] not in ("required", "platform-excluded")
+                or not isinstance(variant["requires"], list)
+                or not all(isinstance(item, str) for item in variant["requires"])
+            ):
+                _violation(
+                    violations,
+                    "C5.0-schema",
+                    line,
+                    f"variant {variant.get('id', variant_index)!r} has invalid fields",
+                )
+            for name, variable in variant["vars"].items():
+                if not isinstance(name, str) or not re.fullmatch(
+                    r"[A-Za-z_][A-Za-z0-9_]*",
+                    name,
+                ):
+                    _violation(
+                        violations,
+                        "C5.0-schema",
+                        line,
+                        f"variant variable name {name!r} is invalid",
+                    )
+                    continue
+                if not isinstance(variable, dict):
+                    _violation(
+                        violations,
+                        "C5.0-schema",
+                        line,
+                        f"variable {name!r} must be an object",
+                    )
+                    continue
+                value_form = set(variable) == {"lines", "values"}
+                pattern_form = set(variable) == {
+                    "lines",
+                    "pattern",
+                    "pattern_reason_line",
+                }
+                if not value_form and not pattern_form:
+                    _violation(
+                        violations,
+                        "C5.0-schema",
+                        line,
+                        f"variable {name!r} has invalid keys {sorted(variable)}",
+                    )
+                    continue
+                if (
+                    not isinstance(variable["lines"], list)
+                    or not variable["lines"]
+                    or not all(
+                        isinstance(item, int) for item in variable["lines"]
+                    )
+                    or value_form
+                    and (
+                        not isinstance(variable["values"], list)
+                        or not variable["values"]
+                        or not all(
+                            isinstance(item, str)
+                            for item in variable["values"]
+                        )
+                    )
+                    or pattern_form
+                    and (
+                        not isinstance(variable["pattern"], str)
+                        or not isinstance(variable["pattern_reason_line"], int)
+                    )
+                ):
+                    _violation(
+                        violations,
+                        "C5.0-schema",
+                        line,
+                        f"variable {name!r} has invalid field types",
+                    )
+            verdict = variant.get("verdict")
+            if _closed_keys(
+                verdict,
+                {"lines", "contains"},
+                f"variant {variant.get('id', variant_index)!r}.verdict",
+                violations,
+                line,
+            ) and (
+                not isinstance(verdict["lines"], list)
+                or not verdict["lines"]
+                or not all(isinstance(item, int) for item in verdict["lines"])
+                or not isinstance(verdict["contains"], list)
+                or not verdict["contains"]
+                or not all(isinstance(item, str) for item in verdict["contains"])
+            ):
+                _violation(
+                    violations,
+                    "C5.0-schema",
+                    line,
+                    f"variant {variant.get('id', variant_index)!r} verdict is invalid",
+                )
+    for key, required in (
+        ("non_invocations", {"line", "reason"}),
+        ("skips", {"line", "class", "what", "regex", "text"}),
+        ("not_skips", {"line", "reason", "text"}),
+    ):
+        for index, item in enumerate(census.get(key, [])):
+            line = item.get("line", 0) if isinstance(item, dict) else 0
+            if not _closed_keys(
+                item,
+                required,
+                f"{key}[{index}]",
+                violations,
+                line,
+            ):
+                continue
+            if not isinstance(item["line"], int):
+                _violation(
+                    violations,
+                    "C5.0-schema",
+                    0,
+                    f"{key}[{index}].line must be an integer",
+                )
+            if key == "non_invocations" and not isinstance(item["reason"], str):
+                _violation(
+                    violations,
+                    "C5.0-schema",
+                    line,
+                    f"{key}[{index}].reason must be a string",
+                )
+            if key == "skips" and (
+                item["class"] not in ("tool", "platform")
+                or not all(
+                    isinstance(item[field], str)
+                    for field in ("what", "regex", "text")
+                )
+            ):
+                _violation(
+                    violations,
+                    "C5.0-schema",
+                    line,
+                    f"{key}[{index}] has invalid fields",
+                )
+            if key == "not_skips" and not all(
+                isinstance(item[field], str) for field in ("reason", "text")
+            ):
+                _violation(
+                    violations,
+                    "C5.0-schema",
+                    line,
+                    f"{key}[{index}] has invalid fields",
+                )
+    sentinel = census.get("pass_sentinel")
+    if _closed_keys(
+        sentinel,
+        {"line", "regex", "text"},
+        "pass_sentinel",
+        violations,
+    ) and (
+        not isinstance(sentinel["line"], int)
+        or not isinstance(sentinel["regex"], str)
+        or not isinstance(sentinel["text"], str)
+    ):
+        _violation(
+            violations,
+            "C5.0-schema",
+            0,
+            "pass_sentinel has invalid fields",
+        )
+    for index, evidence in enumerate(census.get("exec_evidence", [])):
+        line = (
+            evidence.get("site_line", 0)
+            if isinstance(evidence, dict)
+            else 0
+        )
+        if not _closed_keys(
+            evidence,
+            {
+                "site_line",
+                "out_template",
+                "name_from_calls",
+                "exec_lines",
+                "exec_token",
+                "verdict_lines",
+                "failure_marks",
+                "refs_ok",
+            },
+            f"exec_evidence[{index}]",
+            violations,
+            line,
+        ):
+            continue
+        if (
+            not isinstance(evidence["site_line"], int)
+            or not isinstance(evidence["out_template"], str)
+            or not isinstance(evidence["name_from_calls"], dict)
+            or not all(
+                isinstance(key, str)
+                and key.isdigit()
+                and isinstance(value, str)
+                for key, value in evidence["name_from_calls"].items()
+            )
+            or not isinstance(evidence["exec_lines"], list)
+            or not evidence["exec_lines"]
+            or not all(isinstance(item, int) for item in evidence["exec_lines"])
+            or not isinstance(evidence["exec_token"], str)
+            or not evidence["exec_token"]
+            or not isinstance(evidence["verdict_lines"], list)
+            or not evidence["verdict_lines"]
+            or not all(
+                isinstance(item, int) for item in evidence["verdict_lines"]
+            )
+            or not isinstance(evidence["failure_marks"], list)
+            or not evidence["failure_marks"]
+            or not all(
+                isinstance(item, str) and item
+                for item in evidence["failure_marks"]
+            )
+            or not isinstance(evidence["refs_ok"], list)
+        ):
+            _violation(
+                violations,
+                "C5.0-schema",
+                line,
+                f"exec_evidence[{index}] has invalid fields",
+            )
+        for ref_index, reference in enumerate(evidence.get("refs_ok", [])):
+            if not _closed_keys(
+                reference,
+                {"line", "kind"},
+                f"exec_evidence[{index}].refs_ok[{ref_index}]",
+                violations,
+                line,
+            ) or (
+                not isinstance(reference["line"], int)
+                or reference["kind"] != "cleanup"
+            ):
+                _violation(
+                    violations,
+                    "C5.0-schema",
+                    line,
+                    f"exec_evidence[{index}].refs_ok[{ref_index}] is invalid",
+                )
+
+
+def validate_census(
+    census: object,
+    script_bytes: bytes,
+    script_relpath: str,
+) -> list[Violation]:
+    """Return every C5 and E1 violation for one source-grounded census."""
+    violations: list[Violation] = []
+    _validate_census_schema(census, violations)
+    if not isinstance(census, dict):
+        return violations
+
+    lines = script_bytes.decode("utf-8", errors="replace").splitlines()
+    driver = census.get("driver")
+    expected_script = (
+        f"bench/std_{driver}_exercise.sh"
+        if isinstance(driver, str)
+        else ""
+    )
+    if (
+        census.get("census_version") != 1
+        or script_relpath != census.get("script")
+        or census.get("script") != expected_script
+    ):
+        _violation(
+            violations,
+            "C5.0-schema",
+            0,
+            f"identity mismatch driver={driver!r}, "
+            f"script={census.get('script')!r}, input={script_relpath!r}",
+        )
+    actual_sha = sha256_bytes(script_bytes)
+    if census.get("script_sha256") != actual_sha:
+        _violation(
+            violations,
+            "C5.1-sha",
+            0,
+            f"recorded={census.get('script_sha256')!r}, actual={actual_sha}",
         )
 
-    lines = script_bytes.decode(errors="replace").splitlines()
+    sites = census.get("sites") if isinstance(census.get("sites"), list) else []
+    non_invocations = (
+        census.get("non_invocations")
+        if isinstance(census.get("non_invocations"), list)
+        else []
+    )
+    claims: dict[int, list[str]] = {}
+    for index, site in enumerate(sites):
+        if not isinstance(site, dict) or not isinstance(site.get("lines"), list):
+            continue
+        for number in site["lines"]:
+            if isinstance(number, int):
+                claims.setdefault(number, []).append(f"site[{index}]")
+    for index, item in enumerate(non_invocations):
+        if isinstance(item, dict) and isinstance(item.get("line"), int):
+            claims.setdefault(item["line"], []).append(
+                f"non_invocations[{index}]"
+            )
+    for number, owners in sorted(claims.items()):
+        if len(owners) > 1:
+            _violation(
+                violations,
+                "C5.2-duplicate-site",
+                number,
+                f"line claimed by {owners}",
+            )
+    invocation_lines = {
+        number
+        for number, source in enumerate(lines, 1)
+        if not source.lstrip().startswith("#")
+        and _INVOCATION_RE.search(source)
+    }
+    for number in sorted(invocation_lines):
+        if number not in claims:
+            _violation(
+                violations,
+                "C5.2-unlisted-invocation",
+                number,
+                "invocation is not listed in a site or non_invocations",
+            )
 
-    # 1. Check all invocations are accounted for
-    inv_re = re.compile(r"(\$IYI|\"\$IYI\"|\$\{IYI\})(?![A-Za-z0-9_:])")
-    inv_lines = []
-    for idx, l in enumerate(lines, 1):
-        if not l.strip().startswith("#") and inv_re.search(l):
-            inv_lines.append(idx)
+    variant_ids: set[str] = set()
+    evidence_sites: set[int] = set()
+    positive_sites: set[int] = set()
+    own_sites: set[int] = set()
+    for index, site in enumerate(sites):
+        if not isinstance(site, dict):
+            continue
+        site_lines = site.get("lines", [])
+        line = site_lines[0] if site_lines else 0
+        source = _source_text(lines, site_lines)
+        for literal in site.get("contains", []):
+            if isinstance(literal, str) and literal not in source:
+                _violation(
+                    violations,
+                    "C5.3-contains",
+                    line,
+                    f"site[{index}] lacks {literal!r}",
+                )
+        kind = site.get("kind")
+        variants = (
+            site.get("variants")
+            if isinstance(site.get("variants"), list)
+            else []
+        )
+        if (kind in ("negative", "positive", "mixed")) != bool(variants):
+            _violation(
+                violations,
+                "C5.6-kind-variants",
+                line,
+                f"kind={kind!r}, variants={len(variants)}",
+            )
+        if kind in ("canonical-own", "mixed"):
+            own_sites.add(line)
+        if kind == "positive":
+            positive_sites.add(line)
+        for variant in variants:
+            if not isinstance(variant, dict):
+                continue
+            variant_id = variant.get("id")
+            if isinstance(variant_id, str):
+                if variant_id in variant_ids:
+                    _violation(
+                        violations,
+                        "C5.0-schema",
+                        line,
+                        f"duplicate variant id {variant_id!r}",
+                    )
+                variant_ids.add(variant_id)
+            if kind in ("negative", "positive") and variant.get("kind") != kind:
+                _violation(
+                    violations,
+                    "C5.6-kind-variants",
+                    line,
+                    f"site kind {kind!r} disagrees with "
+                    f"variant {variant.get('kind')!r}",
+                )
+            variables = (
+                variant.get("vars")
+                if isinstance(variant.get("vars"), dict)
+                else {}
+            )
+            for name, variable in variables.items():
+                if not isinstance(variable, dict):
+                    continue
+                cited = _source_text(lines, variable.get("lines"))
+                for value in variable.get("values", []):
+                    if isinstance(value, str) and value not in cited:
+                        _violation(
+                            violations,
+                            "C5.3-var-range",
+                            line,
+                            f"{variant_id}.{name} value {value!r} "
+                            "is absent from cited lines",
+                        )
+                if "pattern" in variable:
+                    try:
+                        re.compile(variable["pattern"])
+                    except (re.error, TypeError) as error:
+                        _violation(
+                            violations,
+                            "C5.3-var-range",
+                            line,
+                            f"{variant_id}.{name} pattern is invalid: {error}",
+                        )
+                    reason_line = variable.get("pattern_reason_line")
+                    reason_source = (
+                        lines[reason_line - 1]
+                        if isinstance(reason_line, int)
+                        and 1 <= reason_line <= len(lines)
+                        else ""
+                    )
+                    if not reason_source or not re.search(
+                        r"\$|`|\(\(",
+                        reason_source,
+                    ):
+                        _violation(
+                            violations,
+                            "C5.3-var-range",
+                            line,
+                            f"{variant_id}.{name} reason line does not "
+                            "show a dynamic value",
+                        )
+            allowed_vars = set(variables)
+            for field in ("first_root",):
+                detail = _template_violation(
+                    variant.get(field),
+                    allowed_vars,
+                    f"{variant_id}.{field}",
+                )
+                if detail:
+                    _violation(
+                        violations,
+                        "C5.7-template",
+                        line,
+                        detail,
+                    )
+            for source_index, template in enumerate(variant.get("sources", [])):
+                detail = _template_violation(
+                    template,
+                    allowed_vars,
+                    f"{variant_id}.sources[{source_index}]",
+                )
+                if detail:
+                    _violation(
+                        violations,
+                        "C5.7-template",
+                        line,
+                        detail,
+                    )
+            if variant.get("output") is not None:
+                detail = _template_violation(
+                    variant.get("output"),
+                    allowed_vars,
+                    f"{variant_id}.output",
+                )
+                if detail:
+                    _violation(
+                        violations,
+                        "C5.7-template",
+                        line,
+                        detail,
+                    )
+            verdict = variant.get("verdict")
+            if isinstance(verdict, dict):
+                verdict_source = _source_text(lines, verdict.get("lines"))
+                for literal in verdict.get("contains", []):
+                    if isinstance(literal, str) and literal not in verdict_source:
+                        _violation(
+                            violations,
+                            "C5.3-verdict-literal",
+                            line,
+                            f"{variant_id} verdict lacks {literal!r}",
+                        )
 
-    covered_invs = set()
-    for site in census_data.get("sites", []):
-        for line_num in site.get("lines", []):
-            covered_invs.add(line_num)
-    for ni in census_data.get("non_invocations", []):
-        covered_invs.add(ni.get("line"))
+    listed_skip_lines: dict[int, str] = {}
+    for key in ("skips", "not_skips"):
+        entries = census.get(key) if isinstance(census.get(key), list) else []
+        for index, entry in enumerate(entries):
+            if not isinstance(entry, dict) or not isinstance(
+                entry.get("line"),
+                int,
+            ):
+                continue
+            number = entry["line"]
+            if number in listed_skip_lines:
+                _violation(
+                    violations,
+                    "C5.0-schema",
+                    number,
+                    f"skip line listed twice in {listed_skip_lines[number]} "
+                    f"and {key}[{index}]",
+                )
+            listed_skip_lines[number] = f"{key}[{index}]"
+            source = lines[number - 1].strip() if 1 <= number <= len(lines) else ""
+            if entry.get("text") != source:
+                _violation(
+                    violations,
+                    "C5.0-schema",
+                    number,
+                    f"{key}[{index}].text is not the cited source line",
+                )
+    rendered_by_line: dict[int, str] = {}
+    for number, source in enumerate(lines, 1):
+        if not re.search(r"\b(?:echo|printf)\b", source):
+            continue
+        rendered = _render_printed_text(source)
+        if rendered is not None:
+            rendered_by_line[number] = rendered
+            if _SKIP_VOCAB_RE.search(rendered) and number not in listed_skip_lines:
+                _violation(
+                    violations,
+                    "C5.4-unlisted-skip-line",
+                    number,
+                    f"printed text is skip vocabulary: {rendered!r}",
+                )
+        elif _SKIP_VOCAB_RE.search(source):
+            _violation(
+                violations,
+                "C5.4-unrenderable",
+                number,
+                "skip-vocabulary print line cannot be rendered",
+            )
+    for entry in census.get("skips", []):
+        if not isinstance(entry, dict) or not isinstance(entry.get("line"), int):
+            continue
+        number = entry["line"]
+        rendered = rendered_by_line.get(number)
+        if rendered is None:
+            _violation(
+                violations,
+                "C5.4-unrenderable",
+                number,
+                "listed skip line cannot be rendered",
+            )
+            continue
+        try:
+            regex = re.compile(entry.get("regex", ""))
+        except (re.error, TypeError) as error:
+            _violation(
+                violations,
+                "C5.4-skip-regex",
+                number,
+                f"invalid regex: {error}",
+            )
+            continue
+        if not regex.search(rendered):
+            _violation(
+                violations,
+                "C5.4-skip-regex",
+                number,
+                f"{entry.get('regex')!r} does not match {rendered!r}",
+            )
 
-    for inv in inv_lines:
-        if inv not in covered_invs:
-            raise CensusValidationError(f"Invocation on line {inv} not listed in sites or non_invocations")
+    sentinel = census.get("pass_sentinel")
+    if isinstance(sentinel, dict) and isinstance(sentinel.get("line"), int):
+        number = sentinel["line"]
+        source = lines[number - 1].strip() if 1 <= number <= len(lines) else ""
+        if sentinel.get("text") != source:
+            _violation(
+                violations,
+                "C5.0-schema",
+                number,
+                "pass_sentinel.text is not the cited source line",
+            )
+        rendered = rendered_by_line.get(number)
+        if rendered is None:
+            _violation(
+                violations,
+                "C5.4-unrenderable",
+                number,
+                "pass sentinel cannot be rendered",
+            )
+        else:
+            try:
+                matches = bool(re.search(sentinel.get("regex", ""), rendered))
+            except (re.error, TypeError):
+                matches = False
+            if not matches:
+                _violation(
+                    violations,
+                    "C5.5-sentinel",
+                    number,
+                    f"{sentinel.get('regex')!r} does not match {rendered!r}",
+                )
 
-    # 2. Check contains literals
-    for site in census_data.get("sites", []):
-        for c in site.get("contains", []):
-            found = False
-            for l_num in site.get("lines", []):
-                if l_num <= len(lines) and c in lines[l_num - 1]:
-                    found = True
-                    break
-            if not found:
-                raise CensusValidationError(f"Site lines {site.get('lines')} do not contain '{c}'")
-
-    # 3. Check pass sentinel
-    ps = census_data.get("pass_sentinel", {})
-    ps_line = ps.get("line", 0)
-    ps_regex = ps.get("regex", "")
-    if ps_line <= 0 or ps_line > len(lines):
-        raise CensusValidationError(f"Invalid pass sentinel line {ps_line}")
-    line_text = lines[ps_line - 1].strip()
-    # Strip echo/printf prefix if regex expects the printed content
-    content_text = re.sub(r'^(?:echo|printf)\s+["\']?', '', line_text)
-    if not re.search(ps_regex, lines[ps_line - 1]) and not re.search(ps_regex, line_text) and not re.search(ps_regex, content_text):
-        raise CensusValidationError(f"Pass sentinel line {ps_line} does not match regex '{ps_regex}': {lines[ps_line - 1]}")
+    evidences = (
+        census.get("exec_evidence")
+        if isinstance(census.get("exec_evidence"), list)
+        else []
+    )
+    for evidence in evidences:
+        if not isinstance(evidence, dict):
+            continue
+        site_line = evidence.get("site_line")
+        if isinstance(site_line, int):
+            evidence_sites.add(site_line)
+        detail = _template_violation(
+            evidence.get("out_template"),
+            {"name"},
+            f"exec_evidence[{site_line}].out_template",
+        )
+        if detail:
+            _violation(
+                violations,
+                "C5.7-template",
+                site_line,
+                detail,
+            )
+        token = evidence.get("exec_token")
+        exec_lines = evidence.get("exec_lines", [])
+        if isinstance(token, str):
+            for number in exec_lines:
+                source = (
+                    lines[number - 1]
+                    if isinstance(number, int) and 1 <= number <= len(lines)
+                    else ""
+                )
+                if (
+                    not isinstance(number, int)
+                    or number <= site_line
+                    or token not in source
+                ):
+                    _violation(
+                        violations,
+                        "E1-exec-token",
+                        number if isinstance(number, int) else site_line,
+                        f"expected {token!r} after site line {site_line}",
+                    )
+            allowed_refs = {
+                site_line,
+                *(
+                    number
+                    for number in exec_lines
+                    if isinstance(number, int)
+                ),
+                *(
+                    reference.get("line")
+                    for reference in evidence.get("refs_ok", [])
+                    if isinstance(reference, dict)
+                    and isinstance(reference.get("line"), int)
+                ),
+            }
+            for number, source in enumerate(lines, 1):
+                if token in source and number not in allowed_refs:
+                    _violation(
+                        violations,
+                        "E1-stray-reference",
+                        number,
+                        f"unlisted reference to {token!r}",
+                    )
+        for call_line, name in evidence.get("name_from_calls", {}).items():
+            number = int(call_line)
+            source = lines[number - 1] if 1 <= number <= len(lines) else ""
+            if name not in source:
+                _violation(
+                    violations,
+                    "C5.3-var-range",
+                    number,
+                    f"call name {name!r} is absent from cited line",
+                )
+        failure_marks = evidence.get("failure_marks", [])
+        for number in evidence.get("verdict_lines", []):
+            source = (
+                lines[number - 1]
+                if isinstance(number, int) and 1 <= number <= len(lines)
+                else ""
+            )
+            if not any(mark in source for mark in failure_marks):
+                _violation(
+                    violations,
+                    "E1-verdict-mark",
+                    number if isinstance(number, int) else site_line,
+                    f"verdict line lacks one of {failure_marks}",
+                )
+    if not own_sites.intersection(evidence_sites):
+        _violation(
+            violations,
+            "E1-missing",
+            min(own_sites) if own_sites else 0,
+            "no canonical-own or mixed own-exercise site has exec evidence",
+        )
+    for number in sorted(positive_sites - evidence_sites):
+        _violation(
+            violations,
+            "E1-missing",
+            number,
+            "positive site has no exec evidence",
+        )
+    last_nonblank = next(
+        (source.strip() for source in reversed(lines) if source.strip()),
+        "",
+    )
+    if last_nonblank != "exit $status":
+        _violation(
+            violations,
+            "E1-exit-line",
+            len(lines),
+            f"last non-blank line is {last_nonblank!r}",
+        )
+    return sorted(set(violations), key=lambda item: (item[1], item[0], item[2]))
 
 
 def verify_ledger(ledger_path: str, driver: str, census_data: dict, pin: dict, report_dir: str) -> dict[str, int]:
