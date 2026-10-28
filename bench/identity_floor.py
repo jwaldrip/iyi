@@ -102,6 +102,7 @@ ALLOWED_PATHS: list[tuple[str, str]] = [
     (r"^bench/(machine_probe|dependency_floor|build_tool_floor|build_tool_scan)", "measures the compatibility binary, its libraries, and build tools"),
     (r"^spec/compiler/util_spec\.cr$", "specs Crystal's own util module"),
     (r"^samples/iyi/", "programs whose comments compare iyi with Crystal"),
+    (r"^spec/compiler/stale/predefined_constants_spec\.cr$", "predefined constants in the Crystal module, tested for omission when unread"),
 ]
 
 # Lines that name Crystal legitimately inside a file that is otherwise iyi's.

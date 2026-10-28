@@ -233,6 +233,7 @@ module Iyi
         end
 
         node.target_const = type
+        type.iyi_runtime_read = true
         node.bind_to type.value
       when Type
         # We devirtualize the type because in an expression like

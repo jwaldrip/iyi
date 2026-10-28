@@ -168,9 +168,11 @@ module Iyi::Stale
       # 2. Well-known functions (codegen.cr:373, 679-713)
       reach_well_known_functions(node)
 
-      # 3. Predefined constants (codegen.cr:375, const.cr:37-41)
+      # 3. Predefined constants (codegen.cr:375, const.cr:37-41). Mirrored in
+      # initialize_predefined_constants: an unread predefined constant is
+      # in neither the executable nor the key.
       @program.predefined_constants.each do |const|
-        reach_const(const)
+        reach_const(const) if const.iyi_runtime_read?
       end
 
       # 4. Simple constants (codegen.cr:382, 422-430). An unreferenced
