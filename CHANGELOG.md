@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Bench: std/autocert's exercise runs its own builds by the path it built them to.** `bench/std_autocert_exercise.sh` runs its plain and release binaries as `"$WORK/$name"` from a new `run_own <name>`, rather than passing their paths to `local_run`, so each run can be matched to its build in the driver's own text. Arguments, environment, output files, exit status and verdicts are unchanged; `local_run` still runs the artifact consumer and broken copies.
+
 - **Fix (spec): select TCP fixture ports across both address families.** Keep each IPv4 candidate bound while checking an IPv6-only wildcard bind, advancing only when that port is already in use. The dual-stack and refused-connect fixtures use the shared allocator without changing their assertions or timeouts.
 
 - **Fix (bench): separate search roots for import candidate shadowing in stale testing.** In `bench/stale_tests.sh` row 3, place candidate modules under dedicated `earlier` and `later` `IYI_PATH` entries with no project-root copy so the entry directory does not preempt resolver order. Verifies that an earlier search path without a candidate hits as a locator-only change, while a shadowed definition with an altered body misses and is named in the explanation.
@@ -21,7 +23,7 @@
 
 - **Fix (compiler): observed artifact emission supports operator effect defs.** An observed build of a module with an operator-named `@[Effect]` def (such as `[]=` or `[]?`) renames the wrapped implementation with hex-encoded operator bytes rather than raw punctuation, so that serializing declarations into `.iyimod` artifacts preserves valid source text that consumer builds parse and adopt without syntax errors.
 
-- **Native stale testing for `iyi test`: opt-in `--cached` reuses passing receipts on equal build keys and replayed observations.** An observation build records run-time reads and effects, and the compiler hashes the reached call path (`CallPathFp`), linked object units, link environment, and compiler environment before codegen. A test that touches clock, entropy, timers, network, processes, signals, runtime timing, directory streams, host state, raw pointers, or shared writes outside its scratch directory runs fresh. In a census of 141 programs (27 sample programs and 114 standard library exercises), 90 of 141 (63.8%) were reusable on a second run, and static build keys were reusable for 138 of 141 (97.9%).
+- **Native stale testing for `iyi test`: opt-in `--cached` reuses passing receipts on equal build keys and replayed observations.** An observation build records run-time reads and effects, and the compiler hashes the reached call path (`CallPathFp`), linked object units, link environment, and compiler environment before codegen. A test that touches clock, entropy, timers, network, processes, signals, runtime timing, directory streams, host state, raw pointers, or shared writes outside its scratch directory runs fresh. In a census of 141 programs (27 sample programs and 114 standard library exercises), 87 of 141 (61.7%) were reusable on a second run, and static build keys were reusable for 138 of 141 (97.9%).
 
   Repairs cover lost scratch paths, reads of self-written environment variables, cold/warm compiler-environment keys, frame-depth isolation and transfer across threads and fibers, program callbacks during runtime frames, and concurrent observation writes. The recorder serializes records and deduplication state through a leaf CAS lock and reuses its encoding buffer.
 
@@ -25300,7 +25302,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 24,996-line library and nothing else. Every other
+  written against iyi's own 25,085-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 
