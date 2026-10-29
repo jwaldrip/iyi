@@ -41,11 +41,19 @@
           "id": "zip.negative.593",
           "kind": "negative",
           "first_root": "{WORK}/patched",
-          "vars": {},
+          "vars": {
+            "mutations": {
+              "lines": [
+                577
+              ],
+              "pattern": "[1-9][0-9]*",
+              "pattern_reason_line": 577
+            }
+          },
           "sources": [
             "{REPO}/bench/std_zip_exercise.iyi"
           ],
-          "output": "{WORK}/mut-$mutations.bin",
+          "output": "{WORK}/mut-{mutations}.bin",
           "darwin": "required",
           "requires": [
             "python3"
@@ -102,8 +110,7 @@
     },
     {
       "lines": [
-        702,
-        703
+        702
       ],
       "command": "build",
       "kind": "passthrough",
@@ -130,29 +137,66 @@
   "pass_sentinel": {
     "line": 720,
     "regex": "the\\ std/zip\\ exercise\\ holds\\ \\(",
-    "text": "echo \"the std/zip exercise holds ($mutations broken copies caught)\""
+    "text": "  echo \"the std/zip exercise holds ($mutations broken copies caught)\""
   },
   "exec_evidence": [
     {
       "site_line": 347,
       "out_template": "{WORK}/{name}",
       "name_from_calls": {
-        "366": "plain",
-        "485": "release"
+        "366": "zip-plain",
+        "485": "zip-release"
       },
       "exec_lines": [
-        354,
+        354
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        351,
+        352,
+        359,
+        360,
+        369,
+        489
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1"
+      ],
+      "refs_ok": []
+    },
+    {
+      "site_line": 503,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "524": "add_after",
+        "528": "finish_twice",
+        "532": "twice",
+        "536": "absolute",
+        "538": "backslash",
+        "540": "empty_name",
+        "542": "long_comment",
+        "544": "read_zero",
+        "551": "foreign",
+        "564": "not_zip",
+        "566": "streamed_bzip2",
+        "568": "streamed_zstd"
+      },
+      "exec_lines": [
         509
       ],
       "exec_token": "\"$WORK/$name\"",
       "verdict_lines": [
-        352,
-        353
+        506,
+        507,
+        513,
+        514,
+        519,
+        520
       ],
       "failure_marks": [
         "status=1",
-        "return 1",
-        "exit"
+        "return"
       ],
       "refs_ok": []
     }

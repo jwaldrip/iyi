@@ -79,63 +79,66 @@
       "class": "tool",
       "what": "tool",
       "regex": "\\ \\ no\\ Python\\ pty,\\ termios\\ or\\ stty\\ on\\ this\\ machine,\\ so\\ the\\ terminal\\ half\\ is\\ unmeasured",
-      "text": "echo \"  no Python pty, termios or stty on this machine, so the terminal half is unmeasured\""
+      "text": "  echo \"  no Python pty, termios or stty on this machine, so the terminal half is unmeasured\""
     },
     {
       "line": 543,
       "class": "tool",
       "what": "tool",
       "regex": "\\ \\ unmeasured,\\ as\\ above",
-      "text": "echo \"  unmeasured, as above\""
+      "text": "  echo \"  unmeasured, as above\""
     },
     {
       "line": 566,
-      "class": "platform",
+      "class": "tool",
       "what": "tool",
       "regex": "\\ \\ not\\ Linux,\\ or\\ no\\ nm:\\ unmeasured",
-      "text": "echo \"  not Linux, or no nm: unmeasured\""
+      "text": "  echo \"  not Linux, or no nm: unmeasured\""
     },
     {
       "line": 623,
       "class": "tool",
       "what": "python3",
       "regex": "\\ \\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ .*?\\ proof\\ is\\ unmeasured",
-      "text": "echo \"  no python3 on this machine, so the $label proof is unmeasured\""
+      "text": "    echo \"  no python3 on this machine, so the $label proof is unmeasured\""
     },
     {
       "line": 627,
       "class": "tool",
       "what": "tool",
       "regex": "\\ \\ no\\ pseudo\\-terminal\\ here,\\ so\\ the\\ .*?\\ proof\\ is\\ unmeasured",
-      "text": "echo \"  no pseudo-terminal here, so the $label proof is unmeasured\""
+      "text": "    echo \"  no pseudo-terminal here, so the $label proof is unmeasured\""
     }
   ],
   "not_skips": [],
   "pass_sentinel": {
     "line": 717,
     "regex": "std/term:\\ all\\ plain,\\ release,\\ pseudo\\-terminal,\\ refusal\\ and\\ mutation\\ checks\\ passed",
-    "text": "echo \"std/term: all plain, release, pseudo-terminal, refusal and mutation checks passed\""
+    "text": "  echo \"std/term: all plain, release, pseudo-terminal, refusal and mutation checks passed\""
   },
   "exec_evidence": [
     {
       "site_line": 70,
       "out_template": "{WORK}/{name}",
       "name_from_calls": {
-        "499": "plain",
-        "521": "release"
+        "499": "term-plain",
+        "521": "term-release"
       },
       "exec_lines": [
         77
       ],
       "exec_token": "\"$WORK/$name\"",
       "verdict_lines": [
+        74,
         75,
-        76
+        82,
+        83,
+        502,
+        524
       ],
       "failure_marks": [
         "status=1",
-        "return 1",
-        "exit"
+        "return 1"
       ],
       "refs_ok": []
     }

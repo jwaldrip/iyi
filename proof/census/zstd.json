@@ -41,11 +41,19 @@
           "id": "zstd.negative.506",
           "kind": "negative",
           "first_root": "{WORK}/patched",
-          "vars": {},
+          "vars": {
+            "mutations": {
+              "lines": [
+                490
+              ],
+              "pattern": "[1-9][0-9]*",
+              "pattern_reason_line": 490
+            }
+          },
           "sources": [
             "{REPO}/bench/std_zstd_exercise.iyi"
           ],
-          "output": "{WORK}/mut-$mutations.bin",
+          "output": "{WORK}/mut-{mutations}.bin",
           "darwin": "required",
           "requires": [
             "python3"
@@ -75,36 +83,64 @@
       "class": "platform",
       "what": "go",
       "regex": "no\\ python\\ with\\ compression\\.zstd\\ \\(3\\.14\\ or\\ later\\)\\ on\\ this\\ machine:\\ the\\ zstd\\ oracle\\ cannot\\ be\\ written,\\ so\\ std/zstd\\ goes\\ unmeasured",
-      "text": "echo \"no python with compression.zstd (3.14 or later) on this machine: the zstd oracle cannot be written, so std/zstd goes unmeasured\""
+      "text": "  echo \"no python with compression.zstd (3.14 or later) on this machine: the zstd oracle cannot be written, so std/zstd goes unmeasured\""
     }
   ],
   "not_skips": [],
   "pass_sentinel": {
     "line": 588,
     "regex": "the\\ std/zstd\\ exercise\\ holds",
-    "text": "echo \"the std/zstd exercise holds\""
+    "text": "  echo \"the std/zstd exercise holds\""
   },
   "exec_evidence": [
     {
       "site_line": 381,
       "out_template": "{WORK}/{name}",
       "name_from_calls": {
-        "400": "plain",
-        "441": "release"
+        "400": "zstd-plain",
+        "441": "zstd-release"
       },
       "exec_lines": [
-        388,
+        388
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        385,
+        386,
+        393,
+        394,
+        403,
+        444
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1"
+      ],
+      "refs_ok": []
+    },
+    {
+      "site_line": 454,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "477": "read_zero",
+        "479": "small_limit",
+        "481": "big_limit"
+      },
+      "exec_lines": [
         460
       ],
       "exec_token": "\"$WORK/$name\"",
       "verdict_lines": [
-        386,
-        387
+        457,
+        458,
+        464,
+        465,
+        470,
+        471
       ],
       "failure_marks": [
         "status=1",
-        "return 1",
-        "exit"
+        "return"
       ],
       "refs_ok": []
     }

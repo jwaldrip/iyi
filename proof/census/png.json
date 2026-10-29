@@ -18,8 +18,7 @@
     },
     {
       "lines": [
-        707,
-        708
+        707
       ],
       "command": "build",
       "kind": "passthrough",
@@ -30,8 +29,7 @@
     },
     {
       "lines": [
-        708,
-        709
+        708
       ],
       "command": "build",
       "kind": "passthrough",
@@ -87,11 +85,19 @@
           "id": "png.negative.813",
           "kind": "negative",
           "first_root": "{WORK}/patched",
-          "vars": {},
+          "vars": {
+            "mutations": {
+              "lines": [
+                797
+              ],
+              "pattern": "[1-9][0-9]*",
+              "pattern_reason_line": 797
+            }
+          },
           "sources": [
             "{REPO}/bench/std_png_exercise.iyi"
           ],
-          "output": "{WORK}/mut-$mutations.bin",
+          "output": "{WORK}/mut-{mutations}.bin",
           "darwin": "required",
           "requires": [
             "python3"
@@ -116,42 +122,75 @@
     }
   ],
   "non_invocations": [],
-  "skips": [
+  "skips": [],
+  "not_skips": [
     {
       "line": 715,
-      "class": "tool",
-      "what": "tool",
-      "regex": "\\ \\ FAIL:\\ the\\ exercise\\ does\\ not\\ run\\ the\\ same\\ from\\ its\\ artifacts",
-      "text": "echo \"  FAIL: the exercise does not run the same from its artifacts\""
+      "reason": "failure verdict, not an exclusion",
+      "text": "  echo \"  FAIL: the exercise does not run the same from its artifacts\""
     }
   ],
-  "not_skips": [],
   "pass_sentinel": {
     "line": 876,
     "regex": "the\\ std/png\\ exercise\\ holds\\ \\(",
-    "text": "echo \"the std/png exercise holds ($mutations breaks caught)\""
+    "text": "  echo \"the std/png exercise holds ($mutations breaks caught)\""
   },
   "exec_evidence": [
     {
       "site_line": 497,
       "out_template": "{WORK}/{name}",
       "name_from_calls": {
-        "517": "plain",
-        "667": "release"
+        "517": "png-plain",
+        "667": "png-release"
       },
       "exec_lines": [
-        504,
+        504
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        501,
+        502,
+        509,
+        510,
+        520,
+        671
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1"
+      ],
+      "refs_ok": []
+    },
+    {
+      "site_line": 749,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "770": "short_samples",
+        "772": "depth12",
+        "774": "empty",
+        "776": "key_alpha",
+        "778": "key_range",
+        "780": "outside",
+        "782": "index_past",
+        "784": "empty_palette",
+        "786": "keyword",
+        "788": "not_png"
+      },
+      "exec_lines": [
         755
       ],
       "exec_token": "\"$WORK/$name\"",
       "verdict_lines": [
-        502,
-        503
+        752,
+        753,
+        759,
+        760,
+        765,
+        766
       ],
       "failure_marks": [
         "status=1",
-        "return 1",
-        "exit"
+        "return"
       ],
       "refs_ok": []
     }

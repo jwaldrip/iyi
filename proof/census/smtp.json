@@ -119,42 +119,45 @@
       "class": "tool",
       "what": "python3",
       "regex": "\\ \\ skipped:\\ no\\ python3\\ with\\ ssl\\ and\\ cryptography\\ to\\ serve\\ SMTP\\ with",
-      "text": "echo \"  skipped: no python3 with ssl and cryptography to serve SMTP with\""
+      "text": "  echo \"  skipped: no python3 with ssl and cryptography to serve SMTP with\""
     },
     {
       "line": 399,
       "class": "tool",
       "what": "python3",
       "regex": "\\ \\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ .*?\\ proof\\ is\\ unmeasured",
-      "text": "echo \"  no python3 on this machine, so the $1 proof is unmeasured\""
+      "text": "    echo \"  no python3 on this machine, so the $1 proof is unmeasured\""
     }
   ],
   "not_skips": [],
   "pass_sentinel": {
     "line": 499,
     "regex": "the\\ std/smtp\\ exercise\\ holds",
-    "text": "echo \"the std/smtp exercise holds\""
+    "text": "  echo \"the std/smtp exercise holds\""
   },
   "exec_evidence": [
     {
       "site_line": 54,
       "out_template": "{WORK}/{name}",
       "name_from_calls": {
-        "73": "plain",
-        "91": "release"
+        "73": "smtp-plain",
+        "91": "smtp-release"
       },
       "exec_lines": [
         61
       ],
       "exec_token": "\"$WORK/$name\"",
       "verdict_lines": [
+        58,
         59,
-        60
+        66,
+        67,
+        76,
+        94
       ],
       "failure_marks": [
         "status=1",
-        "return 1",
-        "exit"
+        "return 1"
       ],
       "refs_ok": []
     }

@@ -138,7 +138,7 @@
         522
       ],
       "command": "build",
-      "kind": "negative",
+      "kind": "mixed",
       "contains": [
         "if ! IYI_PATH=\"$path\" \"$IYI\" build -o \"$WORK/linear\" \"$WORK/"
       ],
@@ -147,16 +147,7 @@
           "id": "regex.negative.522",
           "kind": "negative",
           "first_root": "{WORK}/patched",
-          "vars": {
-            "path": {
-              "values": [
-                "$REPO/src${PSEP}$REPO/samples/iyi",
-                "$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/samples/iyi"
-              ],
-              "defined_at": "535, 555",
-              "text": "if bounded \"(a|a)*b\" \"$REPO/src${PSEP}$REPO/samples/iyi\"; then ... elif bounded \"a state joined more than once a step\" \"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/samples/iyi\"; then"
-            }
-          },
+          "vars": {},
           "sources": [
             "{WORK}/linear.iyi"
           ],
@@ -167,19 +158,13 @@
           ],
           "verdict": {
             "lines": [
-              522,
-              525,
-              533,
-              535,
-              538,
-              539,
-              555,
               556,
-              557
+              557,
+              559
             ],
             "contains": [
-              "if ! IYI_PATH=\"$path\" \"$IYI\" build -o \"$WORK/linea",
-              "[ \"$code\" -eq 0 ] && [ \"$(tr '\\n' ' ' < \"$WORK/lin"
+              "status=1",
+              "caught, no answer within 20 s"
             ]
           }
         }
@@ -215,50 +200,101 @@
       "class": "platform",
       "what": "python3",
       "regex": "std/regex:\\ SKIPPED,\\ not\\ a\\ pass:\\ every\\ check\\ compares\\ against\\ oracle\\ cases\\ drawn\\ by\\ python3,\\ none\\ runs\\ here,\\ so\\ no\\ case\\ was\\ measured",
-      "text": "echo \"std/regex: SKIPPED, not a pass: every check compares against oracle cases drawn by python3, none runs here, so no case was measured\""
+      "text": "  echo \"std/regex: SKIPPED, not a pass: every check compares against oracle cases drawn by python3, none runs here, so no case was measured\""
     },
     {
       "line": 221,
       "class": "tool",
       "what": "python3",
       "regex": "\\ \\ .*?:\\ skipped,\\ no\\ working\\ python3\\ to\\ write\\ the\\ probe\\ program\\ with",
-      "text": "echo \"  $label: skipped, no working python3 to write the probe program with\""
+      "text": "    echo \"  $label: skipped, no working python3 to write the probe program with\""
     },
     {
       "line": 398,
       "class": "tool",
       "what": "python3",
       "regex": "\\ \\ .*?:\\ skipped,\\ no\\ working\\ python3\\ to\\ make\\ the\\ broken\\ copy\\ with",
-      "text": "echo \"  $label: skipped, no working python3 to make the broken copy with\""
+      "text": "    echo \"  $label: skipped, no working python3 to make the broken copy with\""
     }
   ],
   "not_skips": [],
   "pass_sentinel": {
     "line": 602,
     "regex": "the\\ std/regex\\ exercise\\ holds",
-    "text": "echo \"the std/regex exercise holds\""
+    "text": "  echo \"the std/regex exercise holds\""
   },
   "exec_evidence": [
     {
       "site_line": 173,
       "out_template": "{WORK}/{name}",
       "name_from_calls": {
-        "192": "plain",
-        "210": "release"
+        "192": "regex-plain",
+        "210": "regex-release"
       },
       "exec_lines": [
-        180,
+        180
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        177,
+        178,
+        185,
+        186,
+        195,
+        213
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1"
+      ],
+      "refs_ok": []
+    },
+    {
+      "site_line": 231,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "252": "look_ahead",
+        "253": "look_behind",
+        "254": "backref",
+        "255": "possessive",
+        "256": "inline_flag",
+        "257": "inline_empty",
+        "258": "atomic",
+        "259": "pclass",
+        "260": "any_byte",
+        "261": "name_twice",
+        "262": "count_order",
+        "263": "count_big",
+        "264": "range_order",
+        "265": "range_class",
+        "266": "escape_utf8",
+        "267": "escape_q",
+        "268": "trailing",
+        "269": "open_paren",
+        "270": "close_paren",
+        "271": "repeat_nothing",
+        "272": "class_open",
+        "273": "hex_short",
+        "274": "count_nothing",
+        "275": "count_twice",
+        "276": "name_empty",
+        "277": "count_nested"
+      },
+      "exec_lines": [
         237
       ],
       "exec_token": "\"$WORK/$name\"",
       "verdict_lines": [
-        178,
-        179
+        234,
+        235,
+        241,
+        242,
+        247,
+        248
       ],
       "failure_marks": [
         "status=1",
-        "return 1",
-        "exit"
+        "return"
       ],
       "refs_ok": []
     }

@@ -68,8 +68,7 @@
     },
     {
       "lines": [
-        484,
-        485
+        484
       ],
       "command": "build",
       "kind": "passthrough",
@@ -80,8 +79,7 @@
     },
     {
       "lines": [
-        485,
-        486
+        485
       ],
       "command": "build",
       "kind": "passthrough",
@@ -137,11 +135,19 @@
           "id": "compress.negative.546",
           "kind": "negative",
           "first_root": "{WORK}/patched",
-          "vars": {},
+          "vars": {
+            "mutations": {
+              "lines": [
+                523
+              ],
+              "pattern": "[1-9][0-9]*",
+              "pattern_reason_line": 523
+            }
+          },
           "sources": [
             "{REPO}/bench/std_compress_exercise.iyi"
           ],
-          "output": "{WORK}/mut-$mutations.bin",
+          "output": "{WORK}/mut-{mutations}.bin",
           "darwin": "required",
           "requires": [
             "python3"
@@ -172,43 +178,108 @@
       "class": "tool",
       "what": "python3",
       "regex": "no\\ python3\\ on\\ this\\ machine:\\ the\\ zlib\\ oracle\\ cannot\\ be\\ written,\\ so\\ std/compress\\ goes\\ unmeasured",
-      "text": "echo \"no python3 on this machine: the zlib oracle cannot be written, so std/compress goes unmeasured\""
-    },
-    {
-      "line": 492,
-      "class": "tool",
-      "what": "tool",
-      "regex": "\\ \\ FAIL:\\ the\\ exercise\\ does\\ not\\ run\\ the\\ same\\ from\\ its\\ artifacts",
-      "text": "echo \"  FAIL: the exercise does not run the same from its artifacts\""
+      "text": "  echo \"no python3 on this machine: the zlib oracle cannot be written, so std/compress goes unmeasured\""
     }
   ],
-  "not_skips": [],
+  "not_skips": [
+    {
+      "line": 492,
+      "reason": "failure verdict, not an exclusion",
+      "text": "  echo \"  FAIL: the exercise does not run the same from its artifacts\""
+    }
+  ],
   "pass_sentinel": {
     "line": 601,
     "regex": "the\\ std/compress\\ exercise\\ holds",
-    "text": "echo \"the std/compress exercise holds\""
+    "text": "  echo \"the std/compress exercise holds\""
   },
   "exec_evidence": [
     {
       "site_line": 158,
       "out_template": "{WORK}/{name}",
       "name_from_calls": {
-        "177": "plain",
-        "356": "release"
+        "177": "compress-plain",
+        "356": "compress-release"
       },
       "exec_lines": [
-        165,
+        165
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        162,
+        163,
+        170,
+        171,
+        180,
+        359,
+        362
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1"
+      ],
+      "refs_ok": []
+    },
+    {
+      "site_line": 370,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "392": "reserved",
+        "394": "short",
+        "396": "stored_len",
+        "398": "stored_cut",
+        "400": "zlib_method",
+        "402": "zlib_check",
+        "404": "zlib_dict",
+        "406": "zlib_sum",
+        "408": "zlib_cut",
+        "410": "gzip_magic",
+        "412": "gzip_crc",
+        "414": "gzip_len",
+        "416": "gzip_name",
+        "419": "gzip_reserved",
+        "423": "lit_incomplete",
+        "425": "len_incomplete",
+        "427": "dist_incomplete",
+        "429": "gzip_member_cut",
+        "434": "deflater_twice",
+        "436": "deflater_after",
+        "438": "read_zero",
+        "440": "level_high",
+        "442": "level_low"
+      },
+      "exec_lines": [
         376
       ],
       "exec_token": "\"$WORK/$name\"",
       "verdict_lines": [
-        163,
-        164
+        373,
+        374,
+        380,
+        381,
+        385,
+        386
       ],
       "failure_marks": [
         "status=1",
-        "return 1",
-        "exit"
+        "return"
+      ],
+      "refs_ok": []
+    },
+    {
+      "site_line": 464,
+      "out_template": "{WORK}/small.bin",
+      "name_from_calls": {},
+      "exec_lines": [
+        465
+      ],
+      "exec_token": "\"$WORK/small.bin\"",
+      "verdict_lines": [
+        470,
+        474
+      ],
+      "failure_marks": [
+        "status=1"
       ],
       "refs_ok": []
     }
