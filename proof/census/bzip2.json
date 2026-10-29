@@ -12,7 +12,7 @@
       "command": "build",
       "kind": "canonical-own",
       "contains": [
-        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_bzi"
+        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_bzip2_exercise.iyi\" \\"
       ],
       "variants": []
     },
@@ -23,7 +23,7 @@
       "command": "build",
       "kind": "canonical-other",
       "contains": [
-        "if ! \"$IYI\" build -o \"$WORK/$name\" \"$WORK/$name.iyi\" > \"$WOR"
+        "if ! \"$IYI\" build -o \"$WORK/$name\" \"$WORK/$name.iyi\" > \"$WORK/$name.build\" 2>&1; then"
       ],
       "variants": []
     },
@@ -34,33 +34,48 @@
       "command": "build",
       "kind": "negative",
       "contains": [
-        "elif ! IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/s"
+        "elif ! IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/samples/iyi\" \"$IYI\" build -o \"$WORK/mut-$mutations.bin\" \"$REPO/bench/std_bzip2_exercise.iyi\" >\"$WORK/mut.out\" 2>&1; then"
       ],
       "variants": [
         {
           "id": "bzip2.negative.312",
           "kind": "negative",
           "first_root": "{WORK}/patched",
-          "vars": {},
+          "vars": {
+            "mutations": {
+              "lines": [
+                294
+              ],
+              "pattern": "(?:[1-9]|1[0-7])",
+              "pattern_reason_line": 294
+            }
+          },
           "sources": [
             "{REPO}/bench/std_bzip2_exercise.iyi"
           ],
-          "output": "{WORK}/mut-$mutations.bin",
+          "output": "{WORK}/mut-{mutations}.bin",
           "darwin": "required",
           "requires": [
             "python3"
           ],
           "verdict": {
             "lines": [
+              312,
               313,
+              314,
               315,
+              316,
               317,
               318,
               319,
-              321
+              320,
+              321,
+              322
             ],
             "contains": [
               "echo \"  $label: the broken copy did not compile\"",
+              "echo \"  $label: the exercise PASSED on a broken module\"",
+              "elif ! grep -qF \"$phrase\" \"$WORK/mut.out\"; then",
               "status=1"
             ]
           }
@@ -74,37 +89,65 @@
       "line": 56,
       "class": "tool",
       "what": "python3",
-      "regex": "no\\ python3\\ on\\ this\\ machine:\\ the\\ bz2\\ oracle\\ cannot\\ be\\ written,\\ so\\ std/bzip2\\ goes\\ unmeasured",
-      "text": "echo \"no python3 on this machine: the bz2 oracle cannot be written, so std/bzip2 goes unmeasured\""
+      "regex": "^no python3 on this machine: the bz2 oracle cannot be written, so std/bzip2 goes unmeasured$",
+      "text": "  echo \"no python3 on this machine: the bz2 oracle cannot be written, so std/bzip2 goes unmeasured\""
     }
   ],
   "not_skips": [],
   "pass_sentinel": {
     "line": 371,
-    "regex": "the\\ std/bzip2\\ exercise\\ holds",
-    "text": "echo \"the std/bzip2 exercise holds\""
+    "regex": "^the std/bzip2 exercise holds$",
+    "text": "  echo \"the std/bzip2 exercise holds\""
   },
   "exec_evidence": [
     {
       "site_line": 117,
       "out_template": "{WORK}/{name}",
       "name_from_calls": {
-        "136": "plain",
-        "213": "release"
+        "136": "bzip2-plain",
+        "213": "bzip2-release"
       },
       "exec_lines": [
-        124,
+        124
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        121,
+        122,
+        129,
+        130,
+        139,
+        148,
+        158,
+        202,
+        216,
+        249
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1"
+      ],
+      "refs_ok": []
+    },
+    {
+      "site_line": 260,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "282": "level0",
+        "283": "level10",
+        "284": "read_zero"
+      },
+      "exec_lines": [
         266
       ],
       "exec_token": "\"$WORK/$name\"",
       "verdict_lines": [
-        122,
-        123
+        263,
+        270,
+        276
       ],
       "failure_marks": [
-        "status=1",
-        "return 1",
-        "exit"
+        "status=1"
       ],
       "refs_ok": []
     }

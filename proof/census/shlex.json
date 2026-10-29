@@ -12,7 +12,7 @@
       "command": "build",
       "kind": "canonical-own",
       "contains": [
-        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_shl"
+        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_shlex_exercise.iyi\" \\"
       ],
       "variants": []
     },
@@ -23,7 +23,7 @@
       "command": "build",
       "kind": "canonical-other",
       "contains": [
-        "if ! \"$IYI\" build -o \"$WORK/$name\" \"$WORK/$name.iyi\" > \"$WOR"
+        "if ! \"$IYI\" build -o \"$WORK/$name\" \"$WORK/$name.iyi\" > \"$WORK/$name.build\" 2>&1; then"
       ],
       "variants": []
     },
@@ -34,34 +34,52 @@
       "command": "build",
       "kind": "negative",
       "contains": [
-        "elif ! IYI_PATH=\"$WORK/patched${PSEP}$SEARCH\" \"$IYI\" build -"
+        "elif ! IYI_PATH=\"$WORK/patched${PSEP}$SEARCH\" \"$IYI\" build -o \"$WORK/mut-$mutations.bin\" \"$REPO/bench/std_shlex_exercise.iyi\" >\"$WORK/mut.out\" 2>&1; then"
       ],
       "variants": [
         {
           "id": "shlex.negative.275",
           "kind": "negative",
           "first_root": "{WORK}/patched",
-          "vars": {},
+          "vars": {
+            "mutations": {
+              "lines": [
+                262
+              ],
+              "pattern": "(?:[1-9]|1[0-4])",
+              "pattern_reason_line": 262
+            }
+          },
           "sources": [
             "{REPO}/bench/std_shlex_exercise.iyi"
           ],
-          "output": "{WORK}/mut-$mutations.bin",
+          "output": "{WORK}/mut-{mutations}.bin",
           "darwin": "required",
           "requires": [
-            "python3"
+            "python3",
+            "/bin/sh"
           ],
           "verdict": {
             "lines": [
               275,
+              276,
+              277,
               278,
               279,
+              280,
               281,
               282,
+              283,
+              284,
+              285,
+              286,
               287
             ],
             "contains": [
-              "elif ! IYI_PATH=\"$WORK/patched${PSEP}$SEARCH\" \"$IY",
-              "elif \"$WORK/mut-$mutations.bin\" \"data\" \"$WORK/corp"
+              "echo \"  the $1 copy did not compile\"",
+              "elif \"$WORK/mut-$mutations.bin\" \"data\" \"$WORK/corpus\" >\"$WORK/mut.out\" 2>&1; then",
+              "echo \"  the exercise PASSED on $1\"",
+              "status=1"
             ]
           }
         }
@@ -74,7 +92,7 @@
       "command": "doc",
       "kind": "unchanged",
       "contains": [
-        "if \"$IYI\" doc \"$REPO/src/std/shlex.iyi\" >\"$WORK/doc.txt\" 2>&"
+        "if \"$IYI\" doc \"$REPO/src/std/shlex.iyi\" >\"$WORK/doc.txt\" 2>&1; then"
       ],
       "variants": []
     },
@@ -85,7 +103,7 @@
       "command": "fmt",
       "kind": "unchanged",
       "contains": [
-        "if \"$IYI\" fmt --check \"$REPO/src/std/shlex.iyi\" \"$REPO/bench"
+        "if \"$IYI\" fmt --check \"$REPO/src/std/shlex.iyi\" \"$REPO/bench/std_shlex_exercise.iyi\" >\"$WORK/format.log\" 2>&1; then"
       ],
       "variants": []
     },
@@ -96,19 +114,18 @@
       "command": "build",
       "kind": "unchanged",
       "contains": [
-        "if ! \"$IYI\" build --no-codegen --target \"$target\" -o \"$WORK/"
+        "if ! \"$IYI\" build --no-codegen --target \"$target\" -o \"$WORK/cross\" \"$REPO/bench/std_shlex_exercise.iyi\" >\"$WORK/cross.log\" 2>&1; then"
       ],
       "variants": []
     },
     {
       "lines": [
-        353,
-        354
+        353
       ],
       "command": "build",
       "kind": "passthrough",
       "contains": [
-        "if (cd \"$WORK/r1\" && \"$IYI\" build --emit-iyimod mods -o from"
+        "if (cd \"$WORK/r1\" && \"$IYI\" build --emit-iyimod mods -o from-source \"$REPO/bench/std_shlex_exercise.iyi\" \\"
       ],
       "variants": []
     },
@@ -119,7 +136,7 @@
       "command": "build",
       "kind": "passthrough",
       "contains": [
-        "&& \"$IYI\" build --use-iyimod mods -o from-artifact \"$REPO/be"
+        "&& \"$IYI\" build --use-iyimod mods -o from-artifact \"$REPO/bench/std_shlex_exercise.iyi\") >\"$WORK/r1/build.log\" 2>&1; then"
       ],
       "variants": []
     }
@@ -129,30 +146,61 @@
   "not_skips": [],
   "pass_sentinel": {
     "line": 371,
-    "regex": "the\\ std/shlex\\ exercise\\ holds",
-    "text": "echo \"the std/shlex exercise holds\""
+    "regex": "^the std/shlex exercise holds$",
+    "text": "  echo \"the std/shlex exercise holds\""
   },
   "exec_evidence": [
     {
       "site_line": 122,
       "out_template": "{WORK}/{name}",
       "name_from_calls": {
-        "142": "plain",
-        "197": "release"
+        "142": "shlex-plain",
+        "197": "shlex-release"
       },
       "exec_lines": [
-        129,
+        129
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        126,
+        127,
+        134,
+        135,
+        145,
+        154,
+        165,
+        192,
+        200,
+        203,
+        214,
+        217
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1"
+      ],
+      "refs_ok": []
+    },
+    {
+      "site_line": 228,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "249": "unclosed_single",
+        "251": "unclosed_double",
+        "253": "final_backslash",
+        "255": "final_backslash_dq"
+      },
+      "exec_lines": [
         234
       ],
       "exec_token": "\"$WORK/$name\"",
       "verdict_lines": [
-        127,
-        128
+        231,
+        238,
+        244
       ],
       "failure_marks": [
-        "status=1",
-        "return 1",
-        "exit"
+        "status=1"
       ],
       "refs_ok": []
     }

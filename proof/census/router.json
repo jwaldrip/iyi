@@ -12,7 +12,7 @@
       "command": "build",
       "kind": "canonical-own",
       "contains": [
-        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_rou"
+        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_router_exercise.iyi\" \\"
       ],
       "variants": []
     },
@@ -23,7 +23,7 @@
       "command": "build",
       "kind": "canonical-other",
       "contains": [
-        "if ! \"$IYI\" build -o \"$WORK/$name\" \"$WORK/$name.iyi\" > \"$WOR"
+        "if ! \"$IYI\" build -o \"$WORK/$name\" \"$WORK/$name.iyi\" > \"$WORK/$name.build\" 2>&1; then"
       ],
       "variants": []
     },
@@ -34,7 +34,7 @@
       "command": "run",
       "kind": "negative",
       "contains": [
-        "elif IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/sam"
+        "elif IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/samples/iyi\" \"$IYI\" run \"$REPO/bench/std_router_exercise.iyi\" >\"$WORK/mut.out\" 2>&1; then"
       ],
       "variants": [
         {
@@ -57,11 +57,15 @@
               392,
               393,
               394,
+              395,
+              396,
+              397,
               398
             ],
             "contains": [
-              "  elif IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PS",
-              "    echo \"  the exercise PASSED on $1\""
+              "echo \"  the exercise PASSED on $1\"",
+              "elif grep -F \"ASSERTION FAILED\" \"$WORK/mut.out\" | grep -qF \"$2\"; then",
+              "status=1"
             ]
           }
         }
@@ -73,59 +77,92 @@
     {
       "line": 158,
       "class": "tool",
-      "what": "go",
-      "regex": "\\ \\ skipped:\\ no\\ Go\\ toolchain\\ of\\ 1\\.22\\ or\\ later",
-      "text": "echo \"  skipped: no Go toolchain of 1.22 or later\""
-    },
-    {
-      "line": 270,
-      "class": "tool",
-      "what": "go",
-      "regex": "\\ \\ Go\\ did\\ not\\ run:",
-      "text": "echo \"  Go did not run:\""
+      "what": "Go 1.22 or later",
+      "regex": "^  skipped: no Go toolchain of 1\\.22 or later$",
+      "text": "  echo \"  skipped: no Go toolchain of 1.22 or later\""
     },
     {
       "line": 305,
       "class": "tool",
       "what": "python3",
-      "regex": "\\ \\ skipped:\\ no\\ working\\ python3",
-      "text": "echo \"  skipped: no working python3\""
+      "regex": "^  skipped: no working python3$",
+      "text": "  echo \"  skipped: no working python3\""
     },
     {
       "line": 376,
       "class": "tool",
       "what": "python3",
-      "regex": "\\ \\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ .*?\\ proof\\ is\\ unmeasured",
-      "text": "echo \"  no python3 on this machine, so the $1 proof is unmeasured\""
+      "regex": "^  no python3 on this machine, so the .* proof is unmeasured$",
+      "text": "    echo \"  no python3 on this machine, so the $1 proof is unmeasured\""
     }
   ],
-  "not_skips": [],
+  "not_skips": [
+    {
+      "line": 270,
+      "reason": "The selected Go toolchain failed to run the comparison, and the driver sets status=1.",
+      "text": "      echo \"  Go did not run:\""
+    }
+  ],
   "pass_sentinel": {
     "line": 438,
-    "regex": "the\\ std/router\\ exercise\\ holds",
-    "text": "echo \"the std/router exercise holds\""
+    "regex": "^the std/router exercise holds$",
+    "text": "  echo \"the std/router exercise holds\""
   },
   "exec_evidence": [
     {
       "site_line": 68,
       "out_template": "{WORK}/{name}",
       "name_from_calls": {
-        "89": "plain",
-        "97": "release"
+        "89": "router-plain",
+        "97": "router-release"
       },
       "exec_lines": [
-        75,
+        75
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        72,
+        73,
+        82,
+        83,
+        92,
+        100,
+        262,
+        272,
+        278,
+        293,
+        318,
+        366
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1"
+      ],
+      "refs_ok": []
+    },
+    {
+      "site_line": 109,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "128": "conflict_doc",
+        "132": "conflict_paths",
+        "136": "conflict_same",
+        "140": "open_brace",
+        "143": "duplicate_name",
+        "146": "rest_not_last",
+        "149": "after_serving"
+      },
+      "exec_lines": [
         115
       ],
       "exec_token": "\"$WORK/$name\"",
       "verdict_lines": [
-        73,
-        74
+        112,
+        119,
+        123
       ],
       "failure_marks": [
-        "status=1",
-        "return 1",
-        "exit"
+        "status=1"
       ],
       "refs_ok": []
     }
