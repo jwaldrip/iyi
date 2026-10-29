@@ -30,9 +30,35 @@
         {
           "id": "dns.negative.292",
           "kind": "negative",
-          "first_root": "{WORK}/$dir",
+          "first_root": "{WORK}/{dir}",
           "vars": {
             "dir": {
+              "lines": [
+                327,
+                330,
+                335,
+                341,
+                344,
+                347,
+                350,
+                353,
+                356,
+                359,
+                362,
+                365,
+                372,
+                375,
+                378,
+                381,
+                384,
+                387,
+                396,
+                399,
+                406,
+                413,
+                420,
+                433
+              ],
               "values": [
                 "noquestion",
                 "notcp",
@@ -58,41 +84,26 @@
                 "helast",
                 "hefour",
                 "hewait"
-              ],
-              "defined_at": "333-440",
-              "text": "breaks <label> <dir> <phrase> <file> <old> <new> [<file> <old> <new>]"
+              ]
             }
           },
           "sources": [
             "{REPO}/bench/std_dns_exercise.iyi"
           ],
-          "output": "{WORK}/$dir/program",
+          "output": "{WORK}/{dir}/program",
           "darwin": "required",
           "requires": [
             "python3"
           ],
           "verdict": {
             "lines": [
-              292,
-              293,
-              294,
               296,
-              303,
-              304,
               305,
-              307,
-              308,
-              310,
-              311,
               312,
-              314,
-              315,
-              316,
-              318
+              317
             ],
             "contains": [
-              "  if ! IYI_PATH=\"$WORK/$dir${PSEP}$REPO/src\" \"$IYI",
-              "       \"$REPO/bench/std_dns_exercise.iyi\" >\"$WORK/"
+              "status=1"
             ]
           }
         }
@@ -106,91 +117,96 @@
       "class": "tool",
       "what": "dig",
       "regex": "\\ \\ skipped:\\ no\\ dig\\ and\\ nsupdate\\ here\\ \\(BIND's\\ dnsutils\\),\\ so\\ nothing\\ but\\ this\\ module\\ reads\\ the\\ records",
-      "text": "echo \"  skipped: no dig and nsupdate here (BIND's dnsutils), so nothing but this module reads the records\""
+      "text": "  echo \"  skipped: no dig and nsupdate here (BIND's dnsutils), so nothing but this module reads the records\""
     },
     {
       "line": 213,
       "class": "tool",
       "what": "nsupdate",
-      "regex": "\\ \\ skipped:\\ this\\ nsupdate\\ does\\ not\\ know\\ the\\ HTTPS\\ type\\ \\(.*?\\):\\ it\\ said\\ \\\\\".*?\\\\\"",
-      "text": "echo \"  skipped: this nsupdate does not know the HTTPS type ($bind_versions): it said \\\"$(printf '%s' \"$probe_said\" | head -1)\\\"\""
+      "regex": "skipped: this nsupdate does not know the HTTPS type .*: it said \".*\"",
+      "text": "    echo \"  skipped: this nsupdate does not know the HTTPS type ($bind_versions): it said \\\"$(printf '%s' \"$probe_said\" | head -1)\\\"\""
     },
     {
       "line": 218,
       "class": "tool",
       "what": "dig",
-      "regex": "\\ \\ skipped:\\ this\\ dig\\ does\\ not\\ know\\ the\\ HTTPS\\ type\\ \\(.*?\\):\\ it\\ said\\ \\\\\".*?\\\\\"",
-      "text": "echo \"  skipped: this dig does not know the HTTPS type ($bind_versions): it said \\\"$(printf '%s' \"$probe_dig\" | head -1)\\\"\""
+      "regex": "skipped: this dig does not know the HTTPS type .*: it said \".*\"",
+      "text": "    echo \"  skipped: this dig does not know the HTTPS type ($bind_versions): it said \\\"$(printf '%s' \"$probe_dig\" | head -1)\\\"\""
     },
     {
       "line": 324,
       "class": "tool",
       "what": "python3",
       "regex": "\\ \\ skipped:\\ no\\ working\\ python3,\\ so\\ the\\ broken\\ copies\\ could\\ not\\ be\\ made",
-      "text": "echo \"  skipped: no working python3, so the broken copies could not be made\""
+      "text": "  echo \"  skipped: no working python3, so the broken copies could not be made\""
     },
     {
       "line": 403,
       "class": "tool",
       "what": "tool",
       "regex": "\\ \\ the\\ attempt\\ delay's\\ two\\ copies:\\ skipped,\\ he_blackhole\\ did\\ not\\ run\\ on\\ this\\ machine",
-      "text": "echo \"  the attempt delay's two copies: skipped, he_blackhole did not run on this machine\""
+      "text": "    echo \"  the attempt delay's two copies: skipped, he_blackhole did not run on this machine\""
     },
     {
       "line": 410,
       "class": "tool",
       "what": "tool",
       "regex": "\\ \\ a\\ losing\\ attempt's\\ socket\\ left\\ open:\\ skipped,\\ descriptors\\ are\\ counted\\ on\\ Linux\\ alone",
-      "text": "echo \"  a losing attempt's socket left open: skipped, descriptors are counted on Linux alone\""
+      "text": "    echo \"  a losing attempt's socket left open: skipped, descriptors are counted on Linux alone\""
     },
     {
       "line": 417,
       "class": "tool",
       "what": "tool",
       "regex": "\\ \\ the\\ error\\ naming\\ the\\ last\\ address\\ alone:\\ skipped,\\ he_refused\\ did\\ not\\ run\\ on\\ this\\ machine",
-      "text": "echo \"  the error naming the last address alone: skipped, he_refused did not run on this machine\""
+      "text": "    echo \"  the error naming the last address alone: skipped, he_refused did not run on this machine\""
     },
     {
       "line": 424,
       "class": "tool",
       "what": "tool",
       "regex": "\\ \\ IPv4\\ first\\ whatever\\ the\\ routes\\ say:\\ skipped,\\ this\\ machine\\ has\\ no\\ route\\ to\\ ::1",
-      "text": "echo \"  IPv4 first whatever the routes say: skipped, this machine has no route to ::1\""
+      "text": "    echo \"  IPv4 first whatever the routes say: skipped, this machine has no route to ::1\""
     },
     {
       "line": 437,
-      "class": "platform",
+      "class": "tool",
       "what": "tool",
       "regex": "\\ \\ a\\ failure\\ that\\ waits\\ for\\ the\\ attempt\\ delay:\\ skipped,\\ it\\ needs\\ IPv6\\ to\\ refuse\\ first\\ and\\ a\\ refusal\\ that\\ is\\ not\\ Windows'\\ 2\\ s",
-      "text": "echo \"  a failure that waits for the attempt delay: skipped, it needs IPv6 to refuse first and a refusal that is not Windows' 2 s\""
+      "text": "    echo \"  a failure that waits for the attempt delay: skipped, it needs IPv6 to refuse first and a refusal that is not Windows' 2 s\""
     }
   ],
   "not_skips": [],
   "pass_sentinel": {
     "line": 443,
     "regex": "the\\ std/dns\\ exercise\\ holds",
-    "text": "echo \"the std/dns exercise holds\""
+    "text": "  echo \"the std/dns exercise holds\""
   },
   "exec_evidence": [
     {
       "site_line": 68,
       "out_template": "{WORK}/{name}",
       "name_from_calls": {
-        "104": "plain",
-        "108": "release"
+        "100": "dns-plain",
+        "104": "dns-release"
       },
       "exec_lines": [
         75
       ],
       "exec_token": "\"$WORK/$name\"",
       "verdict_lines": [
+        72,
         73,
-        74
+        80,
+        81,
+        87,
+        88,
+        108,
+        116
       ],
       "failure_marks": [
         "status=1",
-        "return 1",
-        "exit"
+        "return 1"
       ],
       "refs_ok": []
     }

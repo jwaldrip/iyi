@@ -74,11 +74,19 @@
           "id": "xz.negative.463",
           "kind": "negative",
           "first_root": "{WORK}/patched",
-          "vars": {},
+          "vars": {
+            "mutations": {
+              "lines": [
+                447
+              ],
+              "pattern": "[1-9][0-9]*",
+              "pattern_reason_line": 447
+            }
+          },
           "sources": [
             "{REPO}/bench/std_xz_exercise.iyi"
           ],
-          "output": "{WORK}/mut-$mutations.bin",
+          "output": "{WORK}/mut-{mutations}.bin",
           "darwin": "required",
           "requires": [
             "python3"
@@ -109,43 +117,73 @@
       "class": "platform",
       "what": "python3",
       "regex": "no\\ python3\\ on\\ this\\ machine:\\ the\\ lzma\\ oracle\\ cannot\\ be\\ written,\\ so\\ std/xz\\ goes\\ unmeasured",
-      "text": "echo \"no python3 on this machine: the lzma oracle cannot be written, so std/xz goes unmeasured\""
+      "text": "  echo \"no python3 on this machine: the lzma oracle cannot be written, so std/xz goes unmeasured\""
     },
     {
       "line": 52,
       "class": "platform",
       "what": "go",
       "regex": "this\\ python\\ has\\ no\\ lzma\\ module:\\ the\\ oracle\\ cannot\\ be\\ written,\\ so\\ std/xz\\ goes\\ unmeasured",
-      "text": "echo \"this python has no lzma module: the oracle cannot be written, so std/xz goes unmeasured\""
+      "text": "  echo \"this python has no lzma module: the oracle cannot be written, so std/xz goes unmeasured\""
     }
   ],
   "not_skips": [],
   "pass_sentinel": {
     "line": 549,
     "regex": "the\\ std/xz\\ exercise\\ holds\\ \\(",
-    "text": "echo \"the std/xz exercise holds ($mutations breaks caught)\""
+    "text": "  echo \"the std/xz exercise holds ($mutations breaks caught)\""
   },
   "exec_evidence": [
     {
       "site_line": 304,
       "out_template": "{WORK}/{name}",
       "name_from_calls": {
-        "324": "plain",
-        "343": "release"
+        "324": "xz-plain",
+        "343": "xz-release"
       },
       "exec_lines": [
-        311,
+        311
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        308,
+        309,
+        317,
+        318,
+        327,
+        346
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1"
+      ],
+      "refs_ok": []
+    },
+    {
+      "site_line": 409,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "430": "read_zero",
+        "432": "limit_low",
+        "434": "limit_high",
+        "436": "empty",
+        "438": "props"
+      },
+      "exec_lines": [
         415
       ],
       "exec_token": "\"$WORK/$name\"",
       "verdict_lines": [
-        309,
-        310
+        412,
+        413,
+        419,
+        420,
+        425,
+        426
       ],
       "failure_marks": [
         "status=1",
-        "return 1",
-        "exit"
+        "return"
       ],
       "refs_ok": []
     }

@@ -29,15 +29,20 @@
         {
           "id": "file.negative.169",
           "kind": "negative",
-          "first_root": "{WORK}/$dir",
+          "first_root": "{WORK}/{dir}",
           "vars": {
-            "$dir": {
+            "dir": {
+              "lines": [
+                259,
+                260,
+                263,
+                264,
+                266
+              ],
               "values": [
                 "predictable",
                 "follows"
-              ],
-              "defined_at": "140-141",
-              "text": "tempfile_broken() { # tempfile_broken <label> <dir> <phrase> <exclusive: yes|no>\n  local label=\"$1\" dir=\"$2\" phrase=\"$3\" exclusive=\"$4\""
+              ]
             }
           },
           "sources": [
@@ -122,9 +127,17 @@
         {
           "id": "file.negative.230",
           "kind": "negative",
-          "first_root": "{WORK}/$2",
+          "first_root": "{WORK}/{dir}",
           "vars": {
-            "$2": {
+            "dir": {
+              "lines": [
+                241,
+                242,
+                243,
+                244,
+                247,
+                248
+              ],
               "values": [
                 "star_sep",
                 "q_byte",
@@ -132,9 +145,7 @@
                 "class_neg",
                 "dir_onto_file",
                 "no_escape"
-              ],
-              "defined_at": "214",
-              "text": "match_broken() { # match_broken <label> <dir> <old> <new> <phrase>"
+              ]
             }
           },
           "sources": [
@@ -337,9 +348,24 @@
         {
           "id": "file.negative.428",
           "kind": "negative",
-          "first_root": "{WORK}/$2",
+          "first_root": "{WORK}/{dir}",
           "vars": {
-            "$2": {
+            "dir": {
+              "lines": [
+                439,
+                447,
+                450,
+                453,
+                456,
+                478,
+                481,
+                484,
+                489,
+                501,
+                511,
+                540,
+                548
+              ],
               "values": [
                 "lone_cr",
                 "no_append",
@@ -354,9 +380,7 @@
                 "append_seek",
                 "touch_unread",
                 "exists_read"
-              ],
-              "defined_at": "417-418",
-              "text": "exercise_broken() { # exercise_broken <label> <dir> <std|prelude> <old> <new> <phrase>"
+              ]
             }
           },
           "sources": [
@@ -410,21 +434,23 @@
         {
           "id": "file.positive.628",
           "kind": "positive",
-          "first_root": "{WORK}/$2",
+          "first_root": "{WORK}/{dir}",
           "vars": {
-            "$2": {
+            "dir": {
+              "lines": [
+                639,
+                643
+              ],
               "values": [
                 "nul_cut",
                 "realpath_through"
-              ],
-              "defined_at": "616-617",
-              "text": "refusal_broken() { # refusal_broken <label> <dir> <std|prelude> <old> <new> <expression>"
+              ]
             }
           },
           "sources": [
-            "{WORK}/$2-prog.iyi"
+            "{WORK}/{dir}-prog.iyi"
           ],
-          "output": "{WORK}/$2-prog",
+          "output": "{WORK}/{dir}-prog",
           "darwin": "required",
           "requires": [
             "python3"
@@ -477,7 +503,7 @@
             "{WORK}/fifo_exists.iyi"
           ],
           "output": "{WORK}/fifo_wait-prog",
-          "darwin": "required",
+          "darwin": "platform-excluded",
           "requires": [
             "python3"
           ],
@@ -617,155 +643,212 @@
       "class": "tool",
       "what": "python3",
       "regex": "\\ \\ .*?:\\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ proof\\ is\\ unmeasured",
-      "text": "echo \"  $label: no python3 on this machine, so the proof is unmeasured\""
+      "text": "    echo \"  $label: no python3 on this machine, so the proof is unmeasured\""
     },
     {
       "line": 184,
       "class": "tool",
       "what": "python3",
       "regex": "\\ \\ a\\ seek\\ that\\ keeps\\ the\\ read\\-ahead:\\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ proof\\ is\\ unmeasured",
-      "text": "echo \"  a seek that keeps the read-ahead: no python3 on this machine, so the proof is unmeasured\""
+      "text": "    echo \"  a seek that keeps the read-ahead: no python3 on this machine, so the proof is unmeasured\""
     },
     {
       "line": 216,
       "class": "tool",
       "what": "python3",
       "regex": "\\ \\ .*?:\\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ proof\\ is\\ unmeasured",
-      "text": "echo \"  $1: no python3 on this machine, so the proof is unmeasured\""
+      "text": "    echo \"  $1: no python3 on this machine, so the proof is unmeasured\""
     },
     {
       "line": 257,
-      "class": "platform",
+      "class": "tool",
       "what": "tool",
       "regex": "\\ \\ a\\ planted\\ symlink:\\ not\\ measured\\ here,\\ this\\ account\\ may\\ not\\ make\\ a\\ symlink\\ \\(not\\ an\\ administrator,\\ no\\ Developer\\ Mode\\)",
-      "text": "echo \"  a planted symlink: not measured here, this account may not make a symlink (not an administrator, no Developer Mode)\""
+      "text": "      echo \"  a planted symlink: not measured here, this account may not make a symlink (not an administrator, no Developer Mode)\""
     },
     {
       "line": 270,
       "class": "tool",
       "what": "python3",
       "regex": "\\ \\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ broken\\-module\\ proof\\ is\\ unmeasured",
-      "text": "echo \"  no python3 on this machine, so the broken-module proof is unmeasured\""
+      "text": "  echo \"  no python3 on this machine, so the broken-module proof is unmeasured\""
     },
     {
       "line": 293,
       "class": "tool",
       "what": "python3",
       "regex": "\\ \\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ broken\\-module\\ proof\\ is\\ unmeasured",
-      "text": "echo \"  no python3 on this machine, so the broken-module proof is unmeasured\""
+      "text": "  echo \"  no python3 on this machine, so the broken-module proof is unmeasured\""
     },
     {
       "line": 336,
-      "class": "platform",
+      "class": "tool",
       "what": "python3",
       "regex": "\\ \\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ broken\\-module\\ proof\\ is\\ unmeasured",
-      "text": "echo \"  no python3 on this machine, so the broken-module proof is unmeasured\""
+      "text": "  echo \"  no python3 on this machine, so the broken-module proof is unmeasured\""
     },
     {
       "line": 364,
       "class": "tool",
       "what": "python3",
       "regex": "\\ \\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ each_line\\ proof\\ is\\ unmeasured",
-      "text": "echo \"  no python3 on this machine, so the each_line proof is unmeasured\""
+      "text": "  echo \"  no python3 on this machine, so the each_line proof is unmeasured\""
     },
     {
       "line": 420,
       "class": "tool",
       "what": "python3",
       "regex": "\\ \\ .*?:\\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ proof\\ is\\ unmeasured",
-      "text": "echo \"  $1: no python3 on this machine, so the proof is unmeasured\""
-    },
-    {
-      "line": 525,
-      "class": "tool",
-      "what": "tool",
-      "regex": "printf\\ 'x'\\ >\\ \".*?/unreadable_probe\"",
-      "text": "printf 'x' > \"$WORK/unreadable_probe\""
+      "text": "    echo \"  $1: no python3 on this machine, so the proof is unmeasured\""
     },
     {
       "line": 529,
       "class": "tool",
       "what": "tool",
       "regex": "\\ \\ touch\\ and\\ exists\\?\\ of\\ a\\ file\\ its\\ owner\\ may\\ not\\ read:\\ not\\ measured,\\ this\\ user\\ reads\\ it\\ all\\ the\\ same",
-      "text": "echo \"  touch and exists? of a file its owner may not read: not measured, this user reads it all the same\""
+      "text": "  echo \"  touch and exists? of a file its owner may not read: not measured, this user reads it all the same\""
     },
     {
       "line": 619,
       "class": "tool",
       "what": "python3",
       "regex": "\\ \\ .*?:\\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ proof\\ is\\ unmeasured",
-      "text": "echo \"  $1: no python3 on this machine, so the proof is unmeasured\""
+      "text": "    echo \"  $1: no python3 on this machine, so the proof is unmeasured\""
     },
     {
       "line": 662,
       "class": "tool",
       "what": "python3",
       "regex": "\\ \\ an\\ exists\\?\\ that\\ opens\\ a\\ FIFO\\ to\\ read:\\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ proof\\ is\\ unmeasured",
-      "text": "echo \"  an exists? that opens a FIFO to read: no python3 on this machine, so the proof is unmeasured\""
+      "text": "    echo \"  an exists? that opens a FIFO to read: no python3 on this machine, so the proof is unmeasured\""
     },
     {
       "line": 708,
-      "class": "platform",
+      "class": "tool",
       "what": "python3",
       "regex": "\\ \\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ locked\\-range\\ reads\\ are\\ unmeasured",
-      "text": "echo \"  no python3 on this machine, so the locked-range reads are unmeasured\""
+      "text": "      echo \"  no python3 on this machine, so the locked-range reads are unmeasured\""
     },
     {
       "line": 780,
       "class": "tool",
       "what": "tool",
       "regex": "\\ \\ mklink\\ /J\\ made\\ no\\ junction,\\ so\\ its\\ delete\\ is\\ unmeasured",
-      "text": "echo \"  mklink /J made no junction, so its delete is unmeasured\""
+      "text": "      echo \"  mklink /J made no junction, so its delete is unmeasured\""
     },
     {
       "line": 848,
       "class": "tool",
       "what": "tool",
       "regex": "\\ \\ no\\ paging\\ file\\ on\\ C:,\\ D:\\ or\\ E:,\\ so\\ a\\ file\\ the\\ system\\ holds\\ is\\ unmeasured",
-      "text": "echo \"  no paging file on C:, D: or E:, so a file the system holds is unmeasured\""
+      "text": "      echo \"  no paging file on C:, D: or E:, so a file the system holds is unmeasured\""
     },
     {
       "line": 877,
-      "class": "platform",
+      "class": "tool",
       "what": "tool",
       "regex": "\\ \\ no\\ app\\ execution\\ alias\\ on\\ this\\ machine,\\ so\\ their\\ kind\\ is\\ unmeasured",
-      "text": "echo \"  no app execution alias on this machine, so their kind is unmeasured\""
+      "text": "        echo \"  no app execution alias on this machine, so their kind is unmeasured\""
     },
     {
       "line": 909,
       "class": "tool",
       "what": "tool",
       "regex": "\\ \\ mountvol\\ names\\ no\\ volume\\ here,\\ so\\ a\\ junction\\ to\\ one\\ is\\ unmeasured",
-      "text": "echo \"  mountvol names no volume here, so a junction to one is unmeasured\""
+      "text": "        echo \"  mountvol names no volume here, so a junction to one is unmeasured\""
     }
   ],
-  "not_skips": [],
+  "not_skips": [
+    {
+      "line": 525,
+      "reason": "unread appears only in the redirection path; printf prints x",
+      "text": "printf 'x' > \"$WORK/unreadable_probe\""
+    }
+  ],
   "pass_sentinel": {
     "line": 934,
     "regex": "the\\ std/file\\ exercise\\ holds",
-    "text": "echo \"the std/file exercise holds\""
+    "text": "  echo \"the std/file exercise holds\""
   },
   "exec_evidence": [
     {
       "site_line": 65,
       "out_template": "{WORK}/{name}",
       "name_from_calls": {
-        "84": "plain",
-        "111": "release"
+        "84": "file-plain",
+        "111": "file-release"
       },
       "exec_lines": [
-        72,
+        72
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        69,
+        70,
+        77,
+        78,
+        87,
+        114
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1"
+      ],
+      "refs_ok": []
+    },
+    {
+      "site_line": 560,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "582": "read_nonexistent",
+        "584": "read_dir",
+        "586": "each_line_nonexistent",
+        "588": "each_line_dir",
+        "590": "unknown_mode",
+        "592": "b_first_mode",
+        "594": "info_nonexistent",
+        "596": "realpath_empty",
+        "602": "path_nul",
+        "610": "realpath_file",
+        "688": "touch_late",
+        "690": "touch_early",
+        "927": "tempfile_bad"
+      },
+      "exec_lines": [
         566
       ],
       "exec_token": "\"$WORK/$name\"",
       "verdict_lines": [
-        70,
-        71
+        563,
+        564,
+        570,
+        571,
+        576,
+        577
       ],
       "failure_marks": [
         "status=1",
-        "return 1",
-        "exit"
+        "return"
+      ],
+      "refs_ok": []
+    },
+    {
+      "site_line": 628,
+      "out_template": "{WORK}/{name}-prog",
+      "name_from_calls": {
+        "639": "nul_cut",
+        "643": "realpath_through"
+      },
+      "exec_lines": [
+        632
+      ],
+      "exec_token": "\"$WORK/$2-prog\"",
+      "verdict_lines": [
+        631,
+        636
+      ],
+      "failure_marks": [
+        "status=1"
       ],
       "refs_ok": []
     }

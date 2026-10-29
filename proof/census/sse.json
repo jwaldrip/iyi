@@ -77,57 +77,90 @@
       "class": "tool",
       "what": "python3",
       "regex": "\\ \\ skipped:\\ no\\ working\\ python3",
-      "text": "echo \"  skipped: no working python3\""
+      "text": "  echo \"  skipped: no working python3\""
     },
     {
       "line": 264,
       "class": "tool",
       "what": "python3",
       "regex": "\\ \\ skipped:\\ no\\ working\\ python3",
-      "text": "echo \"  skipped: no working python3\""
+      "text": "  echo \"  skipped: no working python3\""
     },
     {
       "line": 362,
       "class": "tool",
       "what": "python3",
       "regex": "\\ \\ skipped:\\ no\\ working\\ python3",
-      "text": "echo \"  skipped: no working python3\""
+      "text": "  echo \"  skipped: no working python3\""
     },
     {
       "line": 479,
       "class": "tool",
       "what": "python3",
       "regex": "\\ \\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ .*?\\ proof\\ is\\ unmeasured",
-      "text": "echo \"  no python3 on this machine, so the $1 proof is unmeasured\""
+      "text": "    echo \"  no python3 on this machine, so the $1 proof is unmeasured\""
     }
   ],
   "not_skips": [],
   "pass_sentinel": {
     "line": 562,
     "regex": "the\\ std/sse\\ exercise\\ holds",
-    "text": "echo \"the std/sse exercise holds\""
+    "text": "  echo \"the std/sse exercise holds\""
   },
   "exec_evidence": [
     {
       "site_line": 46,
       "out_template": "{WORK}/{name}",
       "name_from_calls": {
-        "65": "plain",
-        "73": "release"
+        "65": "sse-plain",
+        "73": "sse-release"
       },
       "exec_lines": [
-        53,
+        53
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        50,
+        51,
+        58,
+        59,
+        68,
+        76
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1"
+      ],
+      "refs_ok": []
+    },
+    {
+      "site_line": 85,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "104": "event_break",
+        "106": "id_cr",
+        "108": "id_nul",
+        "110": "retry_negative",
+        "112": "data_bytes",
+        "114": "comment_bytes",
+        "116": "stream_type",
+        "118": "open_header",
+        "120": "open_id",
+        "122": "open_reconnects"
+      },
+      "exec_lines": [
         91
       ],
       "exec_token": "\"$WORK/$name\"",
       "verdict_lines": [
-        51,
-        52
+        88,
+        89,
+        95,
+        99
       ],
       "failure_marks": [
         "status=1",
-        "return 1",
-        "exit"
+        "return"
       ],
       "refs_ok": []
     }

@@ -40,30 +40,20 @@
         {
           "id": "file_utils.negative.428",
           "kind": "negative",
-          "first_root": "$dir",
+          "first_root": "{WORK}/patched{n}",
           "vars": {
-            "dir": {
-              "values": [
-                "$WORK/patched1",
-                "$WORK/patched2",
-                "$WORK/patched3",
-                "$WORK/patched4",
-                "$WORK/patched5",
-                "$WORK/patched6",
-                "$WORK/patched7",
-                "$WORK/patched8",
-                "$WORK/patched9",
-                "$WORK/patched10",
-                "$WORK/patched11"
+            "n": {
+              "lines": [
+                413
               ],
-              "defined_at": "413-414",
-              "text": "  n=$((n + 1))\n  local dir=\"$WORK/patched$n\""
+              "pattern": "(?:[1-9]|1[01])",
+              "pattern_reason_line": 413
             }
           },
           "sources": [
             "{REPO}/bench/std_file_utils_exercise.iyi"
           ],
-          "output": "$dir/program",
+          "output": "{WORK}/patched{n}/program",
           "darwin": "required",
           "requires": [
             "python3"
@@ -96,77 +86,80 @@
       "class": "tool",
       "what": "python3",
       "regex": "\\ \\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ comparison\\ is\\ unmeasured",
-      "text": "echo \"  no python3 on this machine, so the comparison is unmeasured\""
+      "text": "  echo \"  no python3 on this machine, so the comparison is unmeasured\""
     },
     {
       "line": 367,
       "class": "platform",
       "what": "tool",
       "regex": "\\ \\ cp_r\\ of\\ a\\ FIFO:\\ Windows\\ has\\ none,\\ so\\ unmeasured",
-      "text": "echo \"  cp_r of a FIFO: Windows has none, so unmeasured\""
+      "text": "  echo \"  cp_r of a FIFO: Windows has none, so unmeasured\""
     },
     {
       "line": 372,
-      "class": "platform",
+      "class": "tool",
       "what": "tool",
       "regex": "\\ \\ cp_r\\ of\\ a\\ FIFO:\\ no\\ mkfifo\\ here,\\ so\\ unmeasured",
-      "text": "echo \"  cp_r of a FIFO: no mkfifo here, so unmeasured\""
+      "text": "  echo \"  cp_r of a FIFO: no mkfifo here, so unmeasured\""
     },
     {
       "line": 410,
       "class": "tool",
       "what": "python3",
       "regex": "\\ \\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ .*?\\ proof\\ is\\ unmeasured",
-      "text": "echo \"  no python3 on this machine, so the $1 proof is unmeasured\""
+      "text": "    echo \"  no python3 on this machine, so the $1 proof is unmeasured\""
     },
     {
       "line": 463,
       "class": "platform",
       "what": "tool",
       "regex": "\\ \\ a\\ trailing\\ separator\\ and\\ a\\ file's\\ mode\\ bits\\ are\\ POSIX's\\ questions,\\ so\\ those\\ two\\ proofs\\ are\\ unmeasured\\ on\\ Windows",
-      "text": "echo \"  a trailing separator and a file's mode bits are POSIX's questions, so those two proofs are unmeasured on Windows\""
+      "text": "  echo \"  a trailing separator and a file's mode bits are POSIX's questions, so those two proofs are unmeasured on Windows\""
     },
     {
       "line": 498,
       "class": "tool",
       "what": "tool",
       "regex": "\\ \\ root\\ writes\\ every\\ directory,\\ so\\ the\\ proof\\ that\\ a\\ read\\-only\\ source\\ is\\ refused\\ is\\ unmeasured",
-      "text": "echo \"  root writes every directory, so the proof that a read-only source is refused is unmeasured\""
+      "text": "    echo \"  root writes every directory, so the proof that a read-only source is refused is unmeasured\""
     },
     {
       "line": 504,
-      "class": "tool",
+      "class": "platform",
       "what": "tool",
       "regex": "\\ \\ no\\ second\\ device,\\ so\\ the\\ cross\\-device\\ move's\\ proof\\ is\\ unmeasured",
-      "text": "echo \"  no second device, so the cross-device move's proof is unmeasured\""
+      "text": "  echo \"  no second device, so the cross-device move's proof is unmeasured\""
     }
   ],
   "not_skips": [],
   "pass_sentinel": {
     "line": 520,
     "regex": "std/file_utils:\\ all\\ plain,\\ release,\\ oracle,\\ refusal\\ and\\ mutation\\ checks\\ passed",
-    "text": "echo \"std/file_utils: all plain, release, oracle, refusal and mutation checks passed\""
+    "text": "  echo \"std/file_utils: all plain, release, oracle, refusal and mutation checks passed\""
   },
   "exec_evidence": [
     {
       "site_line": 82,
       "out_template": "{WORK}/{name}",
       "name_from_calls": {
-        "104": "plain",
-        "127": "release"
+        "104": "fu-plain",
+        "127": "fu-release"
       },
       "exec_lines": [
         91
       ],
       "exec_token": "\"$WORK/$name\"",
       "verdict_lines": [
+        86,
         87,
-        88
+        97,
+        98,
+        107,
+        132
       ],
       "failure_marks": [
         "status=1",
-        "return 1",
-        "exit"
+        "return 1"
       ],
       "refs_ok": []
     }
