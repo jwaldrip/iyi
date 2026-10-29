@@ -1112,10 +1112,6 @@ _SITE_KINDS = {
 _COMMANDS = {"build", "run", "doc", "fmt"}
 _VARIANT_KINDS = {"negative", "positive"}
 _TEMPLATE_FIELD_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
-_PRINT_BOUNDARY_RE = re.compile(
-    r"(?:^|[{};]|\&\&|\|\||\bthen\b|\belse\b|\bdo\b)"
-    r"\s*(echo|printf)\b"
-)
 
 
 def _violation(
@@ -1239,41 +1235,6 @@ def _replace_shell_expansions(text: str) -> str | None:
     return "".join(result)
 
 
-def _render_printed_text(source_line: str) -> str | None:
-    command_match = _PRINT_BOUNDARY_RE.search(source_line)
-    if not command_match:
-        return None
-    expanded = _replace_shell_expansions(source_line[command_match.start(1):])
-    if expanded is None:
-        return None
-    try:
-        lexer = shlex.shlex(
-            expanded,
-            posix=True,
-            punctuation_chars=";&|(){}<>",
-        )
-        lexer.whitespace_split = True
-        lexer.commenters = ""
-        tokens = list(lexer)
-    except ValueError:
-        return None
-    if not tokens or tokens[0] not in ("echo", "printf"):
-        return None
-    command = tokens[0]
-    arguments: list[str] = []
-    for token in tokens[1:]:
-        if token in {";", "&&", "||", "|", ")", "}", ">", ">>", "<", "<<"}:
-            break
-        arguments.append(token)
-    if command == "echo":
-        while arguments and arguments[0] in ("-n", "-e", "-E"):
-            arguments.pop(0)
-        return " ".join(arguments)
-    while arguments and arguments[0].startswith("-") and arguments[0] != "-":
-        arguments.pop(0)
-    if not arguments:
-        return None
-    return re.sub(r"%(?:s|d)", "IYIVAR", arguments[0]).replace("\\n", "")
 
 
 def _template_violation(
@@ -1295,11 +1256,6 @@ def _template_violation(
     return None
 
 
-_SHELL_FUNCTION_HEADER_RE = re.compile(
-    r"^\s*(?:(?P<plain>[A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)"
-    r"|function\s+(?P<keyword>[A-Za-z_][A-Za-z0-9_]*)"
-    r"(?:\s*\(\s*\))?)\s*\{\s*(?:#.*)?$"
-)
 _SHELL_OPERATORS = (
     ";;&",
     "&&",
@@ -1351,24 +1307,95 @@ _SHELL_COMMAND_PREFIXES = {
 }
 
 
-def _shell_function_header_name(source: str) -> str | None:
-    match = _SHELL_FUNCTION_HEADER_RE.fullmatch(source)
-    if not match:
-        return None
-    return match.group("plain") or match.group("keyword")
 
 
-def _shell_line_tokens(source: str) -> list[str]:
-    """Split one shell line while preserving the raw quoting of each word."""
+def _backtick_span_end(text: str, start: int) -> int | None:
+    index = start + 1
+    escaped = False
+    while index < len(text):
+        char = text[index]
+        if escaped:
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == "`":
+            return index + 1
+        index += 1
+    return None
+
+
+def _command_substitution_end(text: str, start: int) -> int | None:
+    index = start + 2
+    depth = 1
+    quote: str | None = None
+    escaped = False
+    while index < len(text):
+        char = text[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            index += 1
+            continue
+        if quote == "'":
+            if char == "'":
+                quote = None
+            index += 1
+            continue
+        if quote == '"':
+            if char == '"':
+                quote = None
+                index += 1
+                continue
+            if char == "$" and index + 1 < len(text) and text[index + 1] == "(":
+                end = _command_substitution_end(text, index)
+                if end is None:
+                    return None
+                index = end
+                continue
+            if char == "`":
+                end = _backtick_span_end(text, index)
+                if end is None:
+                    return None
+                index = end
+                continue
+            index += 1
+            continue
+        if char == "'":
+            quote = "'"
+            index += 1
+            continue
+        if char == '"':
+            quote = '"'
+            index += 1
+            continue
+        if char == "`":
+            end = _backtick_span_end(text, index)
+            if end is None:
+                return None
+            index = end
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+        index += 1
+    return None
+
+
+def _shell_line_tokens(source: str) -> list[str] | None:
+    """Split one shell line, preserving raw words and substitution spans."""
     text = source.rstrip("\r\n")
     tokens: list[str] = []
     index = 0
     while index < len(text):
         while index < len(text) and text[index].isspace():
             index += 1
-        if index >= len(text):
-            break
-        if text[index] == "#":
+        if index >= len(text) or text[index] == "#":
             break
         operator = next(
             (item for item in _SHELL_OPERATORS if text.startswith(item, index)),
@@ -1388,32 +1415,50 @@ def _shell_line_tokens(source: str) -> list[str]:
                 escaped = False
                 index += 1
                 continue
-            if quote is not None:
-                if char == "\\" and quote == '"':
-                    escaped = True
-                elif char == quote:
-                    quote = None
-                index += 1
-                continue
-            if char in ("'", '"'):
-                quote = char
-                index += 1
-                continue
-            if char == "\\":
+            if char == "\\" and quote != "'":
                 escaped = True
                 index += 1
                 continue
-            if char.isspace() or any(
-                text.startswith(item, index) for item in _SHELL_OPERATORS
+            if quote == "'":
+                if char == "'":
+                    quote = None
+                index += 1
+                continue
+            if char == "'":
+                quote = "'"
+                index += 1
+                continue
+            if char == "$" and index + 1 < len(text) and text[index + 1] == "(":
+                end = _command_substitution_end(text, index)
+                if end is None:
+                    return None
+                index = end
+                continue
+            if char == "`":
+                end = _backtick_span_end(text, index)
+                if end is None:
+                    return None
+                index = end
+                continue
+            if char == '"':
+                quote = None if quote == '"' else '"'
+                index += 1
+                continue
+            if quote is None and (
+                char.isspace()
+                or any(
+                    text.startswith(item, index) for item in _SHELL_OPERATORS
+                )
             ):
                 break
             index += 1
+        if quote is not None or escaped:
+            return None
         tokens.append(text[start:index])
     return [token for token in tokens if token]
 
 
-def _shell_commands(source: str) -> list[list[str]]:
-    """Return simple commands from one source line as raw shell words."""
+def _shell_commands_from_tokens(tokens: list[str]) -> list[list[str]]:
     commands: list[list[str]] = []
     current: list[str] = []
     skip_redirection_word = False
@@ -1424,7 +1469,7 @@ def _shell_commands(source: str) -> list[list[str]]:
             commands.append(current)
             current = []
 
-    for token in _shell_line_tokens(source):
+    for token in tokens:
         if token in _SHELL_COMMAND_BOUNDARIES:
             finish()
             skip_redirection_word = False
@@ -1445,492 +1490,168 @@ def _shell_commands(source: str) -> list[list[str]]:
     return commands
 
 
-def _shell_effective_command(command: list[str]) -> list[str]:
-    effective = list(command)
-    while (
-        len(effective) > 1
-        and effective[0] in {"builtin", "command"}
-    ):
-        effective = effective[1:]
-    return effective
+def _shell_commands(source: str) -> list[list[str]]:
+    """Return simple commands from one source line as raw shell words."""
+    tokens = _shell_line_tokens(source)
+    return _shell_commands_from_tokens(tokens) if tokens is not None else []
 
 
-def _shell_expansion_text(source: str) -> str:
-    """Keep active expansions while masking single quotes and comments."""
-    text = source.rstrip("\r\n")
-    rendered: list[str] = []
+def _shell_span_bodies(word: str) -> list[str] | None:
+    bodies: list[str] = []
+    index = 0
     quote: str | None = None
     escaped = False
-    index = 0
-    while index < len(text):
-        char = text[index]
-        if quote == "'":
-            rendered.append(" ")
-            if char == "'":
-                quote = None
-            index += 1
-            continue
+    while index < len(word):
+        char = word[index]
         if escaped:
-            rendered.append(" ")
             escaped = False
             index += 1
             continue
-        if char == "\\":
-            rendered.append(" ")
+        if char == "\\" and quote != "'":
             escaped = True
             index += 1
             continue
-        if quote == '"':
-            rendered.append(char)
-            if char == '"':
+        if quote == "'":
+            if char == "'":
                 quote = None
             index += 1
             continue
         if char == "'":
             quote = "'"
-            rendered.append(" ")
             index += 1
+            continue
+        if char == "$" and index + 1 < len(word) and word[index + 1] == "(":
+            end = _command_substitution_end(word, index)
+            if end is None:
+                return None
+            bodies.append(word[index + 2:end - 1])
+            index = end
+            continue
+        if char == "`":
+            end = _backtick_span_end(word, index)
+            if end is None:
+                return None
+            bodies.append(word[index + 1:end - 1])
+            index = end
             continue
         if char == '"':
-            quote = '"'
-            rendered.append(char)
-            index += 1
-            continue
-        if char == "#" and (
-            index == 0
-            or text[index - 1].isspace()
-            or text[index - 1] in ";|&(){}"
-        ):
-            break
-        rendered.append(char)
+            quote = None if quote == '"' else '"'
         index += 1
-    return "".join(rendered)
+    return None if quote is not None or escaped else bodies
 
 
-def _shell_syntax_text(source: str) -> str:
-    """Mask quotes, comments and parameter expansions for brace accounting."""
-    text = source.rstrip("\r\n")
-    rendered: list[str] = []
-    quote: str | None = None
-    escaped = False
-    parameter_depth = 0
-    index = 0
-    while index < len(text):
-        char = text[index]
-        if parameter_depth:
-            rendered.append(" ")
-            if char == "{":
-                parameter_depth += 1
-            elif char == "}":
-                parameter_depth -= 1
-            index += 1
-            continue
-        if quote is not None:
-            rendered.append(" ")
-            if escaped:
-                escaped = False
-            elif char == "\\" and quote == '"':
-                escaped = True
-            elif char == quote:
-                quote = None
-            index += 1
-            continue
-        if escaped:
-            rendered.append(" ")
-            escaped = False
-            index += 1
-            continue
-        if char == "\\":
-            rendered.append(" ")
-            escaped = True
-            index += 1
-            continue
-        if char in ("'", '"'):
-            quote = char
-            rendered.append(" ")
-            index += 1
-            continue
-        if char == "#" and (
-            index == 0
-            or text[index - 1].isspace()
-            or text[index - 1] in ";|&(){}"
-        ):
-            break
-        if char == "$" and index + 1 < len(text) and text[index + 1] == "{":
-            rendered.extend((" ", " "))
-            parameter_depth = 1
-            index += 2
-            continue
-        rendered.append(char)
-        index += 1
-    return "".join(rendered)
-
-
-def _shell_structural_brace_delta(source: str) -> int:
-    syntax = _shell_syntax_text(source)
-    delta = 0
-    for index, char in enumerate(syntax):
-        if char not in "{}":
-            continue
-        before = syntax[index - 1] if index else ""
-        after = syntax[index + 1] if index + 1 < len(syntax) else ""
-        before_boundary = not before or before.isspace() or before in ";|&(){}"
-        after_boundary = not after or after.isspace() or after in ";|&(){}"
-        if before_boundary and after_boundary:
-            delta += 1 if char == "{" else -1
-    return delta
-
-
-def _helper_definition_error(
-    lines: list[str],
-    function: str,
-    start: int,
-    end: int,
-) -> str | None:
-    if not 1 <= start < end <= len(lines):
-        return f"{function} definition range [{start}, {end}] is out of bounds"
-    if _shell_function_header_name(lines[start - 1]) != function:
-        return f"line {start} is not the {function} function header"
-    matching_headers = [
-        number
-        for number, source in enumerate(lines, 1)
-        if _shell_function_header_name(source) == function
-    ]
-    if matching_headers != [start]:
-        return f"{function} headers are {matching_headers}, expected [{start}]"
-    if _shell_syntax_text(lines[end - 1]).strip() != "}":
-        return f"line {end} is not the closing line of {function}"
-
-    depth = 0
-    for number in range(start, end + 1):
-        if number != start and _shell_function_header_name(lines[number - 1]):
-            return f"nested function definition at line {number}"
-        depth += _shell_structural_brace_delta(lines[number - 1])
-        if number < end and depth <= 0:
-            return f"{function} closes before cited line {end}"
-        if number == end and depth != 0:
-            return f"{function} brace depth is {depth} at cited closing line"
-    return None
-
-
-def _positional_reference_spans(
-    source: str,
-    argument_position: int,
-) -> list[tuple[int, int]]:
-    active = _shell_expansion_text(source)
-    pattern = re.compile(
-        rf"\$(?:\{{(?:!?{argument_position}|[@*])(?:[^}}]*)\}}"
-        rf"|{argument_position}(?![0-9])|[@*])"
+def _unterminated_print_commands(source: str) -> list[list[str]] | None:
+    match = re.search(
+        r"(?:^|[{};)]|\bthen\b|\belse\b|\bdo\b|&&|\|\|)"
+        r"\s*(echo|printf)\b(.*)$",
+        source,
     )
-    return [match.span() for match in pattern.finditer(active)]
-
-
-def _helper_binding_defects(
-    lines: list[str],
-    start: int,
-    end: int,
-    argument_position: int,
-) -> dict[int, str]:
-    defects: dict[int, str] = {}
-    dispatch_words = {"command", "exec", "env", "eval", "bash", "sh"}
-    for number in range(start + 1, end):
-        source = lines[number - 1]
-        active = _shell_expansion_text(source)
-        commands = _shell_commands(source)
-        effective_commands = [
-            _shell_effective_command(command) for command in commands
-        ]
-        reasons: list[str] = []
-        if any(
-            command and command[0] == "shift"
-            for command in effective_commands
-        ):
-            reasons.append("shift changes positional parameters")
-        if any(
-            command
-            and command[0] == "set"
-            and len(command) > 1
-            and command[1] == "--"
-            for command in effective_commands
-        ):
-            reasons.append("set -- changes positional parameters")
-        if any(
-            command and command[0] == "eval"
-            for command in effective_commands
-        ):
-            reasons.append("eval makes the executable binding indirect")
-        if "$(" in active or "`" in active:
-            reasons.append("command substitution makes the binding indirect")
-
-        references = _positional_reference_spans(source, argument_position)
-        tokens = _shell_line_tokens(source)
-        if references and any(
-            re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token)
-            for token in tokens
-        ):
-            reasons.append("assignment copies or rebinds the executable parameter")
-        if references and any(
-            command
-            and (
-                command[0] in dispatch_words
-                or _shell_effective_command(command)[0] in dispatch_words
-            )
-            for command in commands
-        ):
-            reasons.append("the executable parameter is indirectly dispatched")
-        if reasons:
-            defects[number] = "; ".join(sorted(set(reasons)))
-    return defects
-
-
-def _instantiate_helper_word(out_template: str, name: str) -> str | None:
-    placeholders = set(_TEMPLATE_FIELD_RE.findall(out_template))
-    if (
-        out_template.count("{name}") != 1
-        or placeholders - {"WORK", "name"}
-        or any(char in name for char in ('"', "\\", "$", "`", "\n", "\r"))
-        or not name
-    ):
+    if not match:
         return None
-    expanded = out_template.replace("{WORK}", "$WORK").replace("{name}", name)
-    return f'"{expanded}"'
+    words = [match.group(1)]
+    remainder = match.group(2).strip()
+    if remainder:
+        words.append(remainder)
+    return [words]
 
 
-def _validate_helper_execs(
-    evidences: list[dict],
+def _top_level_print_commands(source: str) -> list[list[str]] | None:
+    tokens = _shell_line_tokens(source)
+    if tokens is None:
+        return _unterminated_print_commands(source)
+    return [
+        command
+        for command in _shell_commands_from_tokens(tokens)
+        if command and command[0] in ("echo", "printf")
+    ]
+
+
+def _print_commands(source: str) -> list[list[str]] | None:
+    tokens = _shell_line_tokens(source)
+    if tokens is None:
+        return _unterminated_print_commands(source)
+    commands = [
+        command
+        for command in _shell_commands_from_tokens(tokens)
+        if command and command[0] in ("echo", "printf")
+    ]
+    for token in tokens:
+        bodies = _shell_span_bodies(token)
+        if bodies is None:
+            return None
+        for body in bodies:
+            nested = _print_commands(body)
+            if nested is None:
+                return None
+            commands.extend(nested)
+    return commands
+
+
+def _dequote_print_word(word: str) -> str | None:
+    if "$'" in word:
+        return None
+    expanded = _replace_shell_expansions(word)
+    if expanded is None:
+        return None
+    try:
+        values = shlex.split(expanded, posix=True)
+    except ValueError:
+        return None
+    return values[0] if len(values) == 1 else None
+
+
+def _render_print_words(words: list[str]) -> str | None:
+    if not words or words[0] not in ("echo", "printf"):
+        return None
+    arguments = list(words[1:])
+    if words[0] == "echo":
+        while arguments and arguments[0] in ("-n", "-e", "-E"):
+            arguments.pop(0)
+        rendered: list[str] = []
+        for word in arguments:
+            value = _dequote_print_word(word)
+            if value is None:
+                return None
+            rendered.append(value)
+        return " ".join(rendered)
+
+    while arguments and arguments[0].startswith("-") and arguments[0] != "-":
+        arguments.pop(0)
+    if not arguments:
+        return None
+    format_string = _dequote_print_word(arguments[0])
+    if format_string is None:
+        return None
+    return re.sub(r"%(?:s|d)", "IYIVAR", format_string).replace("\\n", "")
+
+
+def _declared_build_lines_for_token(
+    sites: list[dict],
     lines: list[str],
-    violations: list[Violation],
-) -> None:
-    groups: dict[str, list[tuple[int, dict, dict]]] = {}
-    for index, evidence in enumerate(evidences):
-        helper = evidence.get("helper_exec")
-        if isinstance(helper, dict) and isinstance(helper.get("function"), str):
-            groups.setdefault(helper["function"], []).append(
-                (index, evidence, helper)
-            )
-
-    for function, blocks in groups.items():
-        shapes = {
-            (
-                tuple(helper["definition_lines"]),
-                helper["argument_position"],
-            )
-            for _index, _evidence, helper in blocks
-        }
-        if len(shapes) != 1:
-            for _index, evidence, _helper in blocks:
-                _violation(
-                    violations,
-                    "E1-exec-token",
-                    evidence["site_line"],
-                    f"helper {function!r} has inconsistent binding shapes",
-                )
+    token: str,
+) -> set[int]:
+    declared: set[int] = set()
+    for site in sites:
+        if not isinstance(site, dict) or site.get("command") != "build":
             continue
-
-        definition_lines, argument_position = next(iter(shapes))
-        start, end = definition_lines
-        definition_error = _helper_definition_error(
-            lines,
-            function,
-            start,
-            end,
-        )
-        if definition_error:
-            _violation(
-                violations,
-                "E1-exec-token",
-                start,
-                definition_error,
-            )
+        site_lines = site.get("lines")
+        if not isinstance(site_lines, list):
             continue
-
-        binding_defects = _helper_binding_defects(
-            lines,
-            start,
-            end,
-            argument_position,
-        )
-        for number, detail in binding_defects.items():
-            _violation(
-                violations,
-                "E1-exec-token",
-                number,
-                f"{function}: {detail}",
-            )
-
-        declared_exec_lines = {
-            number
-            for _index, evidence, _helper in blocks
-            for number in evidence["exec_lines"]
-        }
-        invalid_exec_lines: set[int] = set()
-        for number in sorted(declared_exec_lines):
-            commands = (
-                _shell_commands(lines[number - 1])
-                if 1 <= number <= len(lines)
-                else []
-            )
-            expected_word = f'"${argument_position}"'
-            if (
-                not start < number < end
-                or len(commands) != 1
-                or not commands[0]
-                or commands[0][0] != expected_word
-            ):
-                invalid_exec_lines.add(number)
-                _violation(
-                    violations,
-                    "E1-exec-token",
-                    number,
-                    f"{function} must execute {expected_word} as its command word",
-                )
-
-        actual_calls: dict[int, int] = {}
-        for number, source in enumerate(lines, 1):
-            if _shell_function_header_name(source) is not None:
+        for number in site_lines:
+            if not isinstance(number, int) or not 1 <= number <= len(lines):
                 continue
-            count = sum(
-                1
-                for command in _shell_commands(source)
-                if command and command[0] == function
-            )
-            if count:
-                actual_calls[number] = count
-            elif re.search(
-                rf"(?<![A-Za-z0-9_]){re.escape(function)}"
-                r"(?![A-Za-z0-9_])",
-                _shell_expansion_text(source),
-            ):
-                _violation(
-                    violations,
-                    "E1-exec-token",
-                    number,
-                    f"{function} is referenced outside a direct helper call",
-                )
-
-        declared_call_counts: dict[int, int] = {}
-        concrete_words_by_block: list[tuple[dict, set[str]]] = []
-        for _index, evidence, helper in blocks:
-            names = list(evidence["name_from_calls"].values())
-            out_template = evidence["out_template"]
-            words = {
-                word
-                for name in names
-                if (word := _instantiate_helper_word(out_template, name))
-                is not None
-            }
-            if (
-                len(names) != len(set(names))
-                or len(words) != len(names)
-                or any(
-                    _instantiate_helper_word(out_template, name) is None
-                    for name in names
-                )
-            ):
-                _violation(
-                    violations,
-                    "E1-exec-token",
-                    evidence["site_line"],
-                    f"{function} has ambiguous or unsupported output names",
-                )
-            concrete_words_by_block.append((evidence, words))
-
-            matched_words: list[str] = []
-            for number in helper["call_lines"]:
-                declared_call_counts[number] = (
-                    declared_call_counts.get(number, 0) + 1
-                )
-                commands = (
-                    _shell_commands(lines[number - 1])
-                    if 1 <= number <= len(lines)
-                    else []
-                )
-                calls = [
-                    command
-                    for command in commands
-                    if command and command[0] == function
-                ]
-                argument_index = argument_position
-                if (
-                    len(calls) != 1
-                    or len(calls[0]) <= argument_index
-                    or calls[0][argument_index] not in words
-                ):
-                    _violation(
-                        violations,
-                        "E1-exec-token",
-                        number,
-                        f"{function} call does not bind argument "
-                        f"{argument_position} to a declared output",
-                    )
-                    continue
-                matched_words.append(calls[0][argument_index])
-            if sorted(matched_words) != sorted(words):
-                _violation(
-                    violations,
-                    "E1-exec-token",
-                    evidence["site_line"],
-                    f"{function} calls bind {sorted(matched_words)}, "
-                    f"expected {sorted(words)}",
-                )
-
-        all_call_lines = set(actual_calls) | set(declared_call_counts)
-        for number in sorted(all_call_lines):
-            actual_count = actual_calls.get(number, 0)
-            declared_count = declared_call_counts.get(number, 0)
-            if actual_count != 1 or declared_count != 1:
-                _violation(
-                    violations,
-                    "E1-exec-token",
-                    number,
-                    f"{function} invocation count actual={actual_count}, "
-                    f"declared={declared_count}",
-                )
-
-        for number in range(start + 1, end):
-            references = _positional_reference_spans(
-                lines[number - 1],
-                argument_position,
-            )
-            if not references or number in binding_defects:
+            source = lines[number - 1]
+            if source.count(token) != 1:
                 continue
-            if number in declared_exec_lines:
-                if number in invalid_exec_lines:
-                    continue
-                active = _shell_expansion_text(lines[number - 1])
-                expected_word = f'"${argument_position}"'
-                remainder = active.replace(expected_word, "", 1)
-                if not _positional_reference_spans(
-                    remainder,
-                    argument_position,
-                ):
-                    continue
-            _violation(
-                violations,
-                "E1-stray-reference",
-                number,
-                f"undeclared reference to helper parameter "
-                f"{argument_position} in {function}",
-            )
+            if any(
+                words[index] == "-o" and words[index + 1] == token
+                for words in _shell_commands(source)
+                for index in range(len(words) - 1)
+            ):
+                declared.add(number)
+    return declared
 
-        for evidence, concrete_words in concrete_words_by_block:
-            allowed_lines = {
-                *evidence["helper_exec"]["call_lines"],
-                *(
-                    reference["line"]
-                    for reference in evidence["refs_ok"]
-                    if reference.get("kind") == "cleanup"
-                ),
-            }
-            for word in concrete_words:
-                for number, source in enumerate(lines, 1):
-                    if word in source and number not in allowed_lines:
-                        _violation(
-                            violations,
-                            "E1-stray-reference",
-                            number,
-                            f"unlisted reference to concrete helper output {word!r}",
-                        )
+
 
 
 def _validate_census_schema(
@@ -1949,8 +1670,7 @@ def _validate_census_schema(
         "pass_sentinel",
         "exec_evidence",
     }
-    if not _closed_keys(census, top_keys, "census", violations):
-        return
+    _closed_keys(census, top_keys, "census", violations)
     if not isinstance(census, dict):
         return
 
@@ -2251,12 +1971,6 @@ def _validate_census_schema(
         "failure_marks",
         "refs_ok",
     }
-    helper_keys = {
-        "function",
-        "definition_lines",
-        "argument_position",
-        "call_lines",
-    }
     for index, evidence in enumerate(
         evidences if isinstance(evidences, list) else []
     ):
@@ -2265,14 +1979,9 @@ def _validate_census_schema(
             if isinstance(evidence, dict)
             else 0
         )
-        required_keys = (
-            evidence_keys | {"helper_exec"}
-            if isinstance(evidence, dict) and "helper_exec" in evidence
-            else evidence_keys
-        )
         if not _closed_keys(
             evidence,
-            required_keys,
+            evidence_keys,
             f"exec_evidence[{index}]",
             violations,
             line,
@@ -2320,59 +2029,6 @@ def _validate_census_schema(
             )
             continue
 
-        helper = evidence.get("helper_exec")
-        if helper is not None:
-            helper_path = f"exec_evidence[{index}].helper_exec"
-            if _closed_keys(
-                helper,
-                helper_keys,
-                helper_path,
-                violations,
-                line,
-            ):
-                definition_lines = (
-                    helper.get("definition_lines")
-                    if isinstance(helper, dict)
-                    else None
-                )
-                call_lines = (
-                    helper.get("call_lines")
-                    if isinstance(helper, dict)
-                    else None
-                )
-                argument_position = (
-                    helper.get("argument_position")
-                    if isinstance(helper, dict)
-                    else None
-                )
-                helper_valid = (
-                    isinstance(helper, dict)
-                    and isinstance(helper.get("function"), str)
-                    and bool(
-                        re.fullmatch(
-                            r"[A-Za-z_][A-Za-z0-9_]*",
-                            helper["function"],
-                        )
-                    )
-                    and isinstance(definition_lines, list)
-                    and len(definition_lines) == 2
-                    and all(type(item) is int for item in definition_lines)
-                    and definition_lines[0] < definition_lines[1]
-                    and type(argument_position) is int
-                    and argument_position >= 1
-                    and isinstance(call_lines, list)
-                    and bool(call_lines)
-                    and all(type(item) is int for item in call_lines)
-                    and len(call_lines) == len(set(call_lines))
-                )
-                if not helper_valid:
-                    _violation(
-                        violations,
-                        "C5.0-schema",
-                        line,
-                        f"{helper_path} has invalid fields",
-                    )
-
         for ref_index, reference in enumerate(evidence["refs_ok"]):
             if not _closed_keys(
                 reference,
@@ -2403,11 +2059,6 @@ def validate_census(
     """Return every C5 and E1 violation for one source-grounded census."""
     violations: list[Violation] = []
     _validate_census_schema(census, violations)
-    if violations:
-        return sorted(
-            set(violations),
-            key=lambda item: (item[1], item[0], item[2]),
-        )
     if not isinstance(census, dict):
         return violations
     if not isinstance(script_bytes, bytes):
@@ -2508,10 +2159,21 @@ def validate_census(
     for index, site in enumerate(sites):
         if not isinstance(site, dict):
             continue
-        site_lines = site.get("lines", [])
-        line = site_lines[0] if site_lines else 0
+        site_lines = (
+            site.get("lines") if isinstance(site.get("lines"), list) else []
+        )
+        line = (
+            site_lines[0]
+            if site_lines and isinstance(site_lines[0], int)
+            else 0
+        )
         source = _source_text(lines, site_lines)
-        for literal in site.get("contains", []):
+        contains = (
+            site.get("contains")
+            if isinstance(site.get("contains"), list)
+            else []
+        )
+        for literal in contains:
             if isinstance(literal, str) and literal not in source:
                 _violation(
                     violations,
@@ -2570,7 +2232,12 @@ def validate_census(
                 if not isinstance(variable, dict):
                     continue
                 cited = _source_text(lines, variable.get("lines"))
-                for value in variable.get("values", []):
+                values = (
+                    variable.get("values")
+                    if isinstance(variable.get("values"), list)
+                    else []
+                )
+                for value in values:
                     if isinstance(value, str) and value not in cited:
                         _violation(
                             violations,
@@ -2621,7 +2288,12 @@ def validate_census(
                         line,
                         detail,
                     )
-            for source_index, template in enumerate(variant.get("sources", [])):
+            sources = (
+                variant.get("sources")
+                if isinstance(variant.get("sources"), list)
+                else []
+            )
+            for source_index, template in enumerate(sources):
                 detail = _template_violation(
                     template,
                     allowed_vars,
@@ -2650,8 +2322,16 @@ def validate_census(
             verdict = variant.get("verdict")
             if isinstance(verdict, dict):
                 verdict_source = _source_text(lines, verdict.get("lines"))
-                for literal in verdict.get("contains", []):
-                    if isinstance(literal, str) and literal not in verdict_source:
+                verdict_literals = (
+                    verdict.get("contains")
+                    if isinstance(verdict.get("contains"), list)
+                    else []
+                )
+                for literal in verdict_literals:
+                    if (
+                        isinstance(literal, str)
+                        and literal not in verdict_source
+                    ):
                         _violation(
                             violations,
                             "C5.3-verdict-literal",
@@ -2686,38 +2366,52 @@ def validate_census(
                     number,
                     f"{key}[{index}].text is not the cited source line",
                 )
-    rendered_by_line: dict[int, str] = {}
     for number, source in enumerate(lines, 1):
-        if not re.search(r"\b(?:echo|printf)\b", source):
+        print_commands = _print_commands(source)
+        if print_commands is None:
             continue
-        rendered = _render_printed_text(source)
-        if rendered is not None:
-            rendered_by_line[number] = rendered
-            if _SKIP_VOCAB_RE.search(rendered) and number not in listed_skip_lines:
+        for words in print_commands:
+            rendered = _render_print_words(words)
+            if rendered is None:
+                if _SKIP_VOCAB_RE.search(" ".join(words)):
+                    _violation(
+                        violations,
+                        "C5.4-unrenderable",
+                        number,
+                        "skip-vocabulary print command cannot be rendered",
+                    )
+                continue
+            if (
+                _SKIP_VOCAB_RE.search(rendered)
+                and number not in listed_skip_lines
+            ):
                 _violation(
                     violations,
                     "C5.4-unlisted-skip-line",
                     number,
                     f"printed text is skip vocabulary: {rendered!r}",
                 )
-        elif _SKIP_VOCAB_RE.search(source):
-            _violation(
-                violations,
-                "C5.4-unrenderable",
-                number,
-                "skip-vocabulary print line cannot be rendered",
-            )
-    for entry in census.get("skips", []):
+
+    skip_entries = (
+        census.get("skips") if isinstance(census.get("skips"), list) else []
+    )
+    for entry in skip_entries:
         if not isinstance(entry, dict) or not isinstance(entry.get("line"), int):
             continue
         number = entry["line"]
-        rendered = rendered_by_line.get(number)
+        source = lines[number - 1] if 1 <= number <= len(lines) else ""
+        top_level = _top_level_print_commands(source)
+        rendered = (
+            _render_print_words(top_level[0])
+            if top_level
+            else None
+        )
         if rendered is None:
             _violation(
                 violations,
                 "C5.4-unrenderable",
                 number,
-                "listed skip line cannot be rendered",
+                "listed skip line has no renderable top-level print",
             )
             continue
         try:
@@ -2749,13 +2443,18 @@ def validate_census(
                 number,
                 "pass_sentinel.text is not the cited source line",
             )
-        rendered = rendered_by_line.get(number)
+        top_level = _top_level_print_commands(source)
+        rendered = (
+            _render_print_words(top_level[0])
+            if top_level
+            else None
+        )
         if rendered is None:
             _violation(
                 violations,
                 "C5.4-unrenderable",
                 number,
-                "pass sentinel cannot be rendered",
+                "pass sentinel has no renderable top-level print",
             )
         else:
             try:
@@ -2776,6 +2475,7 @@ def validate_census(
         else []
     )
     evidences_by_token: dict[str, list[dict]] = {}
+    declared_build_lines_by_token: dict[str, set[int]] = {}
     for evidence in evidences:
         if not isinstance(evidence, dict):
             continue
@@ -2783,6 +2483,10 @@ def validate_census(
         token = evidence.get("exec_token")
         if isinstance(token, str):
             evidences_by_token.setdefault(token, []).append(evidence)
+            declared_build_lines_by_token.setdefault(
+                token,
+                _declared_build_lines_for_token(sites, lines, token),
+            )
 
         detail = _template_violation(
             evidence.get("out_template"),
@@ -2797,60 +2501,58 @@ def validate_census(
                 detail,
             )
 
-        site_source = (
-            lines[site_line - 1]
-            if isinstance(site_line, int) and 1 <= site_line <= len(lines)
-            else ""
+        declared_build_lines = (
+            declared_build_lines_by_token.get(token, set())
+            if isinstance(token, str)
+            else set()
         )
-        site_declared = (
-            isinstance(site_line, int) and site_line in declared_site_lines
-        )
-        if (
-            site_declared
-            and isinstance(token, str)
-            and token not in site_source
-        ):
+        if not isinstance(site_line, int) or site_line not in declared_build_lines:
             _violation(
                 violations,
                 "E1-exec-token",
                 site_line,
-                f"declared compiler site lacks exact token {token!r}",
+                f"site line is not a declared build with exact -o {token!r}",
             )
-        if (
-            site_declared
-            and isinstance(token, str)
-            and token in site_source
-        ):
+        else:
             evidence_sites.add(site_owner_line[site_line])
 
-        helper = evidence.get("helper_exec")
-        for number in evidence.get("exec_lines", []):
+        exec_lines = (
+            evidence.get("exec_lines")
+            if isinstance(evidence.get("exec_lines"), list)
+            else []
+        )
+        for number in exec_lines:
             source = (
                 lines[number - 1]
                 if isinstance(number, int) and 1 <= number <= len(lines)
                 else ""
             )
-            invalid_order = (
+            if (
                 not isinstance(number, int)
                 or not isinstance(site_line, int)
                 or number <= site_line
-            )
-            direct_token_missing = (
-                helper is None
-                and (
-                    not isinstance(token, str)
-                    or token not in source
-                )
-            )
-            if invalid_order or direct_token_missing:
+                or not isinstance(token, str)
+                or token not in source
+            ):
                 _violation(
                     violations,
                     "E1-exec-token",
                     number if isinstance(number, int) else site_line,
-                    f"expected execution evidence after site line {site_line}",
+                    f"expected {token!r} after site line {site_line}",
                 )
 
-        for call_line, name in evidence.get("name_from_calls", {}).items():
+        name_from_calls = (
+            evidence.get("name_from_calls")
+            if isinstance(evidence.get("name_from_calls"), dict)
+            else {}
+        )
+        for call_line, name in name_from_calls.items():
+            if (
+                not isinstance(call_line, str)
+                or not call_line.isdigit()
+                or not isinstance(name, str)
+            ):
+                continue
             number = int(call_line)
             source = lines[number - 1] if 1 <= number <= len(lines) else ""
             if name not in source:
@@ -2861,46 +2563,54 @@ def validate_census(
                     f"call name {name!r} is absent from cited line",
                 )
 
-        failure_marks = evidence.get("failure_marks", [])
-        for number in evidence.get("verdict_lines", []):
+        failure_marks = (
+            evidence.get("failure_marks")
+            if isinstance(evidence.get("failure_marks"), list)
+            else []
+        )
+        valid_marks = [mark for mark in failure_marks if isinstance(mark, str)]
+        verdict_lines = (
+            evidence.get("verdict_lines")
+            if isinstance(evidence.get("verdict_lines"), list)
+            else []
+        )
+        for number in verdict_lines:
             source = (
                 lines[number - 1]
                 if isinstance(number, int) and 1 <= number <= len(lines)
                 else ""
             )
-            if not any(mark in source for mark in failure_marks):
+            if isinstance(number, int) and not any(
+                mark in source for mark in valid_marks
+            ):
                 _violation(
                     violations,
                     "E1-verdict-mark",
-                    number if isinstance(number, int) else site_line,
-                    f"verdict line lacks one of {failure_marks}",
+                    number,
+                    f"verdict line lacks one of {valid_marks}",
                 )
-
-    _validate_helper_execs(
-        [evidence for evidence in evidences if isinstance(evidence, dict)],
-        lines,
-        violations,
-    )
 
     for token, token_evidences in evidences_by_token.items():
-        allowed_references = {
-            evidence["site_line"]
-            for evidence in token_evidences
-            if isinstance(evidence.get("site_line"), int)
-            and evidence["site_line"] in declared_site_lines
-            and 1 <= evidence["site_line"] <= len(lines)
-            and token in lines[evidence["site_line"] - 1]
-        }
+        allowed_references = set(
+            declared_build_lines_by_token.get(token, set())
+        )
         for evidence in token_evidences:
-            if evidence.get("helper_exec") is None:
-                allowed_references.update(
-                    number
-                    for number in evidence.get("exec_lines", [])
-                    if isinstance(number, int)
-                )
+            exec_lines = (
+                evidence.get("exec_lines")
+                if isinstance(evidence.get("exec_lines"), list)
+                else []
+            )
+            allowed_references.update(
+                number for number in exec_lines if isinstance(number, int)
+            )
+            refs_ok = (
+                evidence.get("refs_ok")
+                if isinstance(evidence.get("refs_ok"), list)
+                else []
+            )
             allowed_references.update(
                 reference["line"]
-                for reference in evidence.get("refs_ok", [])
+                for reference in refs_ok
                 if isinstance(reference, dict)
                 and reference.get("kind") == "cleanup"
                 and isinstance(reference.get("line"), int)
