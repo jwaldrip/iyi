@@ -4236,8 +4236,562 @@ def run_o3_suite() -> int:
     )
 
 
-def main() -> int:
-    return _run_fixture_suite(FIXTURES, REVIEW_ITEMS)
+_COVERAGE_SOURCES: dict[str, str] = {
+    "proof.proofkit": "proofkit.py",
+    "proof.run_proof": "run_proof.py",
+    "proof.artifact_legs": "artifact_legs.py",
+    "proof.roundtrip_shim": "roundtrip_shim.py",
+}
+_COVERAGE_BOOTSTRAP = r"""
+import os
+import sys
+import trace
+import threading
+
+repo, coverdir = sys.argv[1:3]
+os.chdir(repo)
+if repo not in sys.path:
+    sys.path.insert(0, repo)
+
+required_fresh = {
+    "proof.smoke_test",
+    "proof.proofkit",
+    "proof.run_proof",
+    "proof.artifact_legs",
+    "proof.roundtrip_shim",
+}
+premature = sorted(required_fresh.intersection(sys.modules))
+if premature:
+    raise RuntimeError(f"coverage modules imported before trace: {premature}")
+
+tracer = trace.Trace(
+    count=1,
+    trace=0,
+    ignoredirs=[sys.prefix, sys.exec_prefix],
+)
+namespace = {}
+threading.settrace(tracer.globaltrace)
+try:
+    tracer.runctx(
+        "from proof import smoke_test as _smoke_test\n"
+        "_suite_status = _smoke_test.main([])\n",
+        namespace,
+        namespace,
+    )
+finally:
+    threading.settrace(None)
+    results = tracer.results()
+    target_paths = {
+        os.path.realpath(os.path.join(repo, "proof", filename))
+        for filename in (
+            "proofkit.py",
+            "run_proof.py",
+            "artifact_legs.py",
+            "roundtrip_shim.py",
+        )
+    }
+    for key in tuple(results.counts):
+        if os.path.realpath(key[0]) not in target_paths:
+            del results.counts[key]
+    results.write_results(
+        show_missing=True,
+        summary=False,
+        coverdir=coverdir,
+    )
+
+raise SystemExit(namespace.get("_suite_status", 1))
+"""
+
+
+# Each entry is:
+# (module, first_line, last_line, subprocess_fixture_id, observable).
+ALLOWLIST: tuple[tuple[str, int, int, str, str], ...] = (
+    (
+        "proof.roundtrip_shim",
+        1340,
+        1341,
+        "s3.control.passthrough",
+        "subprocess main dispatches passthrough ExecPlan to the sole os.execv "
+        "site; fake REAL records preserved argv and environment",
+    ),
+    (
+        "proof.roundtrip_shim",
+        1344,
+        1355,
+        "s3.control.passthrough",
+        "subprocess parses --config/-- in main and takes the ExecPlan branch",
+    ),
+    (
+        "proof.roundtrip_shim",
+        1356,
+        1356,
+        "s3.control.canonical-build",
+        "subprocess main returns the canonical producer/consumer roundtrip rc",
+    ),
+    (
+        "proof.roundtrip_shim",
+        1359,
+        1360,
+        "s3.control.canonical-build",
+        "top-level entry raises SystemExit from the exercised "
+        "main-to-roundtrip path",
+    ),
+    (
+        "proof.run_proof",
+        1568,
+        1574,
+        "o7.seed.run-proof-optimize-refusal",
+        "python -B -O proof/run_proof.py --help enters the nested optimize "
+        "guard, prints the exact refusal, and exits 2",
+    ),
+    (
+        "proof.run_proof",
+        1575,
+        1575,
+        "o7.control.run-proof-optimize",
+        "python -B proof/run_proof.py --help reaches the normal direct-script "
+        "main handoff and exits 0",
+    ),
+)
+
+
+def _main_guard(node: ast.AST) -> bool:
+    if not isinstance(node, ast.If):
+        return False
+    test = node.test
+    if not isinstance(test, ast.Compare):
+        return False
+    return (
+        isinstance(test.left, ast.Name)
+        and test.left.id == "__name__"
+        and len(test.ops) == 1
+        and isinstance(test.ops[0], ast.Eq)
+        and len(test.comparators) == 1
+        and isinstance(test.comparators[0], ast.Constant)
+        and test.comparators[0].value == "__main__"
+    )
+
+
+def _raises_system_exit_main(node: ast.AST) -> bool:
+    if not isinstance(node, ast.Raise) or not isinstance(node.exc, ast.Call):
+        return False
+    call = node.exc
+    if not isinstance(call.func, ast.Name) or call.func.id != "SystemExit":
+        return False
+    if len(call.args) != 1 or call.keywords:
+        return False
+    argument = call.args[0]
+    return (
+        isinstance(argument, ast.Call)
+        and isinstance(argument.func, ast.Name)
+        and argument.func.id == "main"
+        and not argument.args
+        and not argument.keywords
+    )
+
+
+def _raises_system_exit_two(node: ast.AST) -> bool:
+    if not isinstance(node, ast.Raise) or not isinstance(node.exc, ast.Call):
+        return False
+    call = node.exc
+    return (
+        isinstance(call.func, ast.Name)
+        and call.func.id == "SystemExit"
+        and len(call.args) == 1
+        and isinstance(call.args[0], ast.Constant)
+        and call.args[0].value == 2
+        and not call.keywords
+    )
+
+
+def _optimize_guard(node: ast.AST) -> bool:
+    if not isinstance(node, ast.If):
+        return False
+    test = node.test
+    return (
+        isinstance(test, ast.Attribute)
+        and test.attr == "optimize"
+        and isinstance(test.value, ast.Attribute)
+        and test.value.attr == "flags"
+        and isinstance(test.value.value, ast.Name)
+        and test.value.value.id == "sys"
+    )
+
+
+def _node_contains(node: ast.AST, first: int, last: int) -> bool:
+    return (
+        getattr(node, "lineno", 0) <= first
+        and last <= getattr(node, "end_lineno", 0)
+    )
+
+
+def _os_execv_call(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "execv"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "os"
+    )
+
+
+def _allowlist_ast_errors(
+    executed_fixture_ids: set[str],
+    missing_lines: Mapping[str, tuple[int, ...]],
+) -> tuple[str, ...]:
+    errors: list[str] = []
+    trees: dict[str, ast.Module] = {}
+    source_line_counts: dict[str, int] = {}
+    allowed_nodes: dict[str, tuple[ast.AST, ...]] = {}
+    shim_exec_function: ast.FunctionDef | ast.AsyncFunctionDef | None = None
+
+    for module, filename in _COVERAGE_SOURCES.items():
+        path = os.path.join(REPO_ROOT, "proof", filename)
+        try:
+            with open(path, "r", encoding="utf-8") as source_file:
+                source = source_file.read()
+            tree = ast.parse(source, filename=path)
+        except (OSError, SyntaxError) as error:
+            errors.append(f"{module}: AST unavailable: {type(error).__name__}: {error}")
+            continue
+
+        trees[module] = tree
+        source_line_counts[module] = len(source.splitlines())
+        guards = tuple(node for node in tree.body if _main_guard(node))
+        shim_functions: tuple[ast.AST, ...] = ()
+        if module == "proof.roundtrip_shim":
+            shim_functions = tuple(
+                node
+                for node in tree.body
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name in {"main", "_exec_real"}
+            )
+            exec_functions = tuple(
+                node
+                for node in shim_functions
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == "_exec_real"
+            )
+            if len(exec_functions) != 1:
+                errors.append(
+                    "proof.roundtrip_shim: expected exactly one top-level "
+                    "_exec_real function"
+                )
+            else:
+                shim_exec_function = exec_functions[0]
+        allowed_nodes[module] = (*guards, *shim_functions)
+
+        for guard in guards:
+            body = guard.body
+            if module == "proof.run_proof":
+                if not body or not _raises_system_exit_main(body[-1]):
+                    errors.append(
+                        "proof.run_proof: __main__ must end with "
+                        "raise SystemExit(main())"
+                    )
+                    continue
+                prefix = body[:-1]
+                if (
+                    len(prefix) != 1
+                    or not _optimize_guard(prefix[0])
+                    or prefix[0].orelse
+                    or not prefix[0].body
+                    or not _raises_system_exit_two(prefix[0].body[-1])
+                ):
+                    errors.append(
+                        "proof.run_proof: only the -O refusal may precede "
+                        "raise SystemExit(main()) in __main__"
+                    )
+            elif len(body) != 1 or not _raises_system_exit_main(body[0]):
+                errors.append(
+                    f"{module}: __main__ must contain only "
+                    "raise SystemExit(main())"
+                )
+
+    exec_sites: list[tuple[str, ast.Call]] = []
+    for module, tree in trees.items():
+        exec_sites.extend(
+            (module, node)
+            for node in ast.walk(tree)
+            if _os_execv_call(node)
+        )
+    if len(exec_sites) != 1:
+        errors.append(
+            "P10 requires exactly one os.execv site across the covered modules; "
+            f"found {len(exec_sites)}"
+        )
+    elif (
+        exec_sites[0][0] != "proof.roundtrip_shim"
+        or shim_exec_function is None
+        or not _node_contains(
+            shim_exec_function,
+            exec_sites[0][1].lineno,
+            exec_sites[0][1].end_lineno or exec_sites[0][1].lineno,
+        )
+    ):
+        errors.append(
+            "the only os.execv site must be inside "
+            "proof.roundtrip_shim._exec_real"
+        )
+
+    registered_fixture_ids = {fixture.fixture_id for fixture in FIXTURES}
+    seen_entries: set[tuple[str, int, int, str, str]] = set()
+    validated_entries: list[tuple[str, int, int, str, str]] = []
+    for index, entry in enumerate(ALLOWLIST):
+        label = f"ALLOWLIST[{index}]"
+        if not isinstance(entry, tuple) or len(entry) != 5:
+            errors.append(f"{label}: expected a five-element tuple")
+            continue
+        module, first, last, fixture_id, observable = entry
+        if not isinstance(module, str) or module not in _COVERAGE_SOURCES:
+            errors.append(f"{label}: unknown module {module!r}")
+            continue
+        if (
+            not isinstance(first, int)
+            or isinstance(first, bool)
+            or not isinstance(last, int)
+            or isinstance(last, bool)
+            or first < 1
+            or last < first
+        ):
+            errors.append(f"{label}: invalid line range {first!r}..{last!r}")
+            continue
+        if last > source_line_counts.get(module, 0):
+            errors.append(
+                f"{label}: line range {first}..{last} exceeds {module}"
+            )
+            continue
+        if not isinstance(fixture_id, str) or not fixture_id:
+            errors.append(f"{label}: subprocess fixture id must be nonempty")
+            continue
+        if (
+            not isinstance(observable, str)
+            or not observable.strip()
+            or "\n" in observable
+            or "\r" in observable
+        ):
+            errors.append(f"{label}: observable must be one nonempty line")
+            continue
+        if entry in seen_entries:
+            errors.append(f"{label}: duplicate entry")
+            continue
+        seen_entries.add(entry)
+
+        containing_nodes = tuple(
+            node
+            for node in allowed_nodes.get(module, ())
+            if _node_contains(node, first, last)
+        )
+        if not containing_nodes:
+            errors.append(
+                f"{label}: {module}:{first}-{last} is outside P10 glue"
+            )
+        if fixture_id not in registered_fixture_ids:
+            errors.append(f"{label}: unregistered fixture {fixture_id}")
+        elif fixture_id not in executed_fixture_ids:
+            errors.append(f"{label}: fixture did not run: {fixture_id}")
+        if not any(
+            first <= line <= last for line in missing_lines.get(module, ())
+        ):
+            errors.append(f"{label}: entry covers no missing executable line")
+        validated_entries.append(entry)
+
+    if len(exec_sites) == 1:
+        exec_module, exec_node = exec_sites[0]
+        if not any(
+            module == exec_module and first <= exec_node.lineno <= last
+            for module, first, last, _fixture_id, _observable in validated_entries
+        ):
+            errors.append("the os.execv line has no P10 allowlist entry")
+
+    return tuple(errors)
+
+
+def _executed_fixture_ids(output: str) -> set[str]:
+    return {
+        match.group(1)
+        for match in re.finditer(
+            r"^(?:SEED|CONTROL) ([^\s]+)(?:\s|$)",
+            output,
+            flags=re.MULTILINE,
+        )
+    }
+
+
+def _listing_candidate(trace_dir: str, module: str) -> str | None:
+    stem = _COVERAGE_SOURCES[module][:-3]
+    matches = tuple(
+        path
+        for path in glob.glob(
+            os.path.join(trace_dir, "**", "*.cover"),
+            recursive=True,
+        )
+        if (
+            os.path.basename(path) in {f"{stem}.cover", f"{stem}.py.cover"}
+            or os.path.basename(path).endswith(f".{stem}.cover")
+            or os.path.basename(path).endswith(f".{stem}.py.cover")
+        )
+    )
+    return matches[0] if len(matches) == 1 else None
+
+
+def _write_child_output(stream: io.TextIOBase, output: str) -> None:
+    if not output:
+        return
+    stream.write(output)
+    if not output.endswith("\n"):
+        stream.write("\n")
+    stream.flush()
+
+
+def _run_coverage_gate(directory: str) -> int:
+    coverage_dir = os.path.abspath(directory)
+    listing_paths = {
+        module: os.path.join(coverage_dir, f"{module}.cover")
+        for module in _COVERAGE_SOURCES
+    }
+    try:
+        os.makedirs(coverage_dir, exist_ok=True)
+        for listing_path in listing_paths.values():
+            try:
+                os.unlink(listing_path)
+            except FileNotFoundError:
+                pass
+        trace_dir = tempfile.mkdtemp(prefix=".trace-", dir=coverage_dir)
+    except OSError as error:
+        print(
+            f"COVERAGE gate_error={_render(f'{type(error).__name__}: {error}')}"
+        )
+        print("COVERAGE GATE FAIL")
+        return 1
+
+    try:
+        try:
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-B",
+                    "-c",
+                    _COVERAGE_BOOTSTRAP,
+                    REPO_ROOT,
+                    trace_dir,
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        except OSError as error:
+            print(
+                "COVERAGE gate_error="
+                f"{_render(f'{type(error).__name__}: {error}')}"
+            )
+            print("COVERAGE GATE FAIL")
+            return 1
+
+        _write_child_output(sys.stdout, completed.stdout)
+        _write_child_output(sys.stderr, completed.stderr)
+        executed_fixture_ids = _executed_fixture_ids(completed.stdout)
+
+        listing_errors: list[str] = []
+        missing_lines: dict[str, tuple[int, ...]] = {}
+        for module, listing_path in listing_paths.items():
+            candidate = _listing_candidate(trace_dir, module)
+            if candidate is None:
+                missing_lines[module] = ()
+                listing_errors.append(f"{module}: annotated listing missing")
+                print(
+                    f"COVERAGE module={module} missing_lines=UNKNOWN "
+                    "listing_missing=true"
+                )
+                continue
+            try:
+                with open(candidate, "r", encoding="utf-8") as source:
+                    listing = source.read()
+                with open(listing_path, "w", encoding="utf-8") as target:
+                    target.write(listing)
+            except OSError as error:
+                missing_lines[module] = ()
+                listing_errors.append(
+                    f"{module}: {type(error).__name__}: {error}"
+                )
+                print(
+                    f"COVERAGE module={module} missing_lines=UNKNOWN "
+                    "listing_missing=true"
+                )
+                continue
+
+            module_missing = tuple(
+                line_number
+                for line_number, line in enumerate(listing.splitlines(), 1)
+                if line.startswith(">>>>>>")
+            )
+            missing_lines[module] = module_missing
+            print(
+                f"COVERAGE module={module} "
+                f"missing_lines={len(module_missing)} "
+                f"listing={listing_path}"
+            )
+
+        ast_errors = _allowlist_ast_errors(
+            executed_fixture_ids,
+            missing_lines,
+        )
+        uncovered: list[tuple[str, int]] = []
+        for module, line_numbers in missing_lines.items():
+            for line_number in line_numbers:
+                if not any(
+                    entry_module == module
+                    and first <= line_number <= last
+                    for (
+                        entry_module,
+                        first,
+                        last,
+                        _fixture_id,
+                        _observable,
+                    ) in ALLOWLIST
+                ):
+                    uncovered.append((module, line_number))
+
+        for error in listing_errors:
+            print(f"COVERAGE listing_error={_render(error)}")
+        for error in ast_errors:
+            print(f"COVERAGE allowlist_error={_render(error)}")
+        for module, line_number in uncovered:
+            print(f"COVERAGE unallowlisted={module}:{line_number}")
+        for module, first, last, fixture_id, observable in ALLOWLIST:
+            print(
+                f"COVERAGE allowlisted={module}:{first}-{last} "
+                f"fixture={fixture_id} observable={_render(observable)}"
+            )
+        if completed.returncode != 0:
+            print(f"COVERAGE suite_exit={completed.returncode}")
+
+        failed = bool(
+            completed.returncode != 0
+            or listing_errors
+            or ast_errors
+            or uncovered
+        )
+        print("COVERAGE GATE FAIL" if failed else "COVERAGE GATE PASS")
+        return 1 if failed else 0
+    finally:
+        shutil.rmtree(trace_dir, ignore_errors=True)
+
+
+def main(argv: list[str] | tuple[str, ...] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if not args:
+        return _run_fixture_suite(FIXTURES, REVIEW_ITEMS)
+    if (
+        len(args) == 2
+        and args[0] == "--coverage"
+        and isinstance(args[1], str)
+        and bool(args[1])
+    ):
+        return _run_coverage_gate(args[1])
+    print("usage: smoke_test.py [--coverage DIR]", file=sys.stderr)
+    return 2
 
 
 if __name__ == "__main__":
