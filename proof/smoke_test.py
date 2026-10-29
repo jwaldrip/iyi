@@ -52,6 +52,10 @@ from proof.proofkit import (
     write_pin,
 )
 from proof.run_proof import cmd_plan, fresh_stage_env
+import proof.artifact_legs as legs_mod
+import proof.proofkit as proofkit_mod
+import proof.roundtrip_shim as shim_mod
+import proof.run_proof as stages_mod
 
 
 @dataclass(frozen=True)
@@ -3182,6 +3186,48 @@ O3_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+
+def _merged_review_items(
+    *maps: Mapping[str, tuple[str, ...]],
+) -> dict[str, tuple[str, ...]]:
+    merged: dict[str, tuple[str, ...]] = {}
+    for review_map in maps:
+        for key, fixture_ids in review_map.items():
+            if key in merged:
+                raise RuntimeError(f"duplicate review item {key}")
+            merged[key] = fixture_ids
+    return merged
+
+
+# ===== O4: matcher and shim (owner U4). Fixture functions go directly above
+# O4_FIXTURES. New review items only in O4_REVIEW_ITEMS, keys "o4.". =====
+
+
+O4_FIXTURES: tuple[Fixture, ...] = ()
+O4_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {}
+
+
+# ===== O5: ledger verification (owner U5). Keys "o5.". =====
+
+
+O5_FIXTURES: tuple[Fixture, ...] = ()
+O5_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {}
+
+
+# ===== O6: artifact legs (owner U6). Keys "o6.". =====
+
+
+O6_FIXTURES: tuple[Fixture, ...] = ()
+O6_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {}
+
+
+# ===== O7: stages (owner U7). Keys "o7.". =====
+
+
+O7_FIXTURES: tuple[Fixture, ...] = ()
+O7_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {}
+
+
 # This map is intentionally literal. A fixture id names either a seeded failure
 # or its passing control. The audit below refuses missing, unexecuted, unmapped,
 # or ambiguously named fixtures instead of inferring coverage from test names.
@@ -3708,6 +3754,10 @@ REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+REVIEW_ITEMS = _merged_review_items(
+    REVIEW_ITEMS, O4_REVIEW_ITEMS, O5_REVIEW_ITEMS, O6_REVIEW_ITEMS, O7_REVIEW_ITEMS,
+)
+
 
 FIXTURES: tuple[Fixture, ...] = (
     Fixture(
@@ -3958,6 +4008,10 @@ FIXTURES: tuple[Fixture, ...] = (
         _fixture_gate_env_fresh_control,
     ),
     *O3_FIXTURES,
+    *O4_FIXTURES,
+    *O5_FIXTURES,
+    *O6_FIXTURES,
+    *O7_FIXTURES,
 )
 
 
