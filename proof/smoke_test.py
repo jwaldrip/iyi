@@ -3203,8 +3203,3056 @@ def _merged_review_items(
 # O4_FIXTURES. New review items only in O4_REVIEW_ITEMS, keys "o4.". =====
 
 
-O4_FIXTURES: tuple[Fixture, ...] = ()
-O4_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {}
+def _fake_real_compiler(directory: str, *, version_line: str) -> str:
+    """Write the stateful fake REAL shared by O4 and the stage fixtures."""
+    root = os.path.realpath(directory)
+    os.makedirs(root, exist_ok=True)
+    default_root = os.path.join(root, "default-root")
+    default_cache = os.path.join(root, "default-cache")
+    os.makedirs(default_root, exist_ok=True)
+    os.makedirs(default_cache, exist_ok=True)
+    path = os.path.join(root, "iyi")
+    template = r"""#!/usr/bin/env python3
+import hashlib
+import json
+import os
+import shlex
+import subprocess
+import sys
+import time
+
+VERSION_LINE = __VERSION_LINE__
+DEFAULT_ROOT = __DEFAULT_ROOT__
+DEFAULT_CACHE = __DEFAULT_CACHE__
+
+ONE_VALUE = {
+    "-D", "--define", "--frame-pointers", "--emit",
+    "--x86-asm-syntax", "-f", "--format", "--link-flags",
+    "--mcpu", "--mattr", "--mcmodel", "--warnings",
+    "--exclude-warnings", "-o", "--output", "--prelude",
+    "--iyi-keep", "--emit-bind", "--emit-iyimod", "--use-iyimod",
+    "-O", "--threads", "--target", "--stale-key", "--stale-accept",
+    "--stale-block", "--stale-dump-elements", "--stdin-filename",
+}
+
+def append_json(path, record):
+    if not path:
+        return
+    payload = (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    try:
+        os.write(descriptor, payload)
+    finally:
+        os.close(descriptor)
+
+def split_args(args):
+    if "--" in args:
+        index = args.index("--")
+        return args[:index], args[index + 1:]
+    return args, []
+
+def option_value(args, *names):
+    found = None
+    index = 0
+    while index < len(args):
+        token = args[index]
+        for name in names:
+            if token == name and index + 1 < len(args):
+                found = args[index + 1]
+            elif name.startswith("--") and token.startswith(name + "="):
+                found = token.split("=", 1)[1]
+            elif len(name) == 2 and token.startswith(name) and token != name:
+                found = token[len(name):]
+        index += 1
+    return found
+
+def positional(args):
+    values = []
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token.startswith("-") and token != "-":
+            name = token.split("=", 1)[0]
+            attached = (
+                len(token) > 2
+                and token[:2] in {"-D", "-o", "-O", "-f"}
+            )
+            if name in ONE_VALUE and "=" not in token and not attached:
+                index += 2
+            else:
+                index += 1
+            continue
+        values.append(token)
+        index += 1
+    return values
+
+stdin_data = sys.stdin.buffer.read()
+args = sys.argv[1:]
+before, run_args = split_args(args)
+out_before = option_value(before, "-o", "--output")
+append_json(
+    os.environ.get("FAKE_REAL_LOG"),
+    {
+        "argv": sys.argv,
+        "cwd": os.getcwd(),
+        "env": dict(os.environ),
+        "stdin_len": len(stdin_data),
+        "stdin_sha256": hashlib.sha256(stdin_data).hexdigest(),
+        "out_existed_before": bool(out_before and os.path.exists(out_before)),
+    },
+)
+
+
+if args == ["--version"] or args == ["version"]:
+    print(VERSION_LINE)
+    raise SystemExit(0)
+
+if args and args[0] == "env":
+    values = {
+        "IYI_PATH": os.environ.get(
+            "IYI_PATH",
+            os.environ.get("CRYSTAL_PATH", DEFAULT_ROOT),
+        ),
+        "IYI_CACHE_DIR": os.environ.get("IYI_CACHE_DIR", DEFAULT_CACHE),
+        "IYI_EXEC_PATH": "",
+        "IYI_LIBRARY_PATH": "",
+        "IYI_OPTS": os.environ.get("IYI_OPTS", ""),
+        "CRYSTAL_VERSION": "fake",
+    }
+    names = args[1:]
+    if not names:
+        for name, value in values.items():
+            print(f"{name}={shlex.quote(value)}")
+    else:
+        for name in names:
+            if name not in values:
+                print(f"env: no such variable: {name}", file=sys.stderr)
+                raise SystemExit(2)
+            print(values[name])
+    raise SystemExit(0)
+
+if not args:
+    raise SystemExit(0)
+command = args[0]
+if not (command == "run" or (command and "build".startswith(command))):
+    raise SystemExit(0)
+
+compiler_args, run_args = split_args(args[1:])
+emit_dir = option_value(compiler_args, "--emit-iyimod")
+use_dir = option_value(compiler_args, "--use-iyimod")
+sleep_setting = os.environ.get("FAKE_REAL_SLEEP")
+if sleep_setting:
+    scope, separator, seconds = sleep_setting.partition(":")
+    if not separator:
+        scope, seconds = "all", scope
+    if (
+        scope == "all"
+        or (scope == "producer" and emit_dir is not None)
+        or (scope == "consumer" and use_dir is not None)
+    ):
+        time.sleep(float(seconds))
+failure = os.environ.get("FAKE_REAL_FAIL")
+if failure == "producer" and emit_dir is not None:
+    sys.stdout.buffer.write(b"fake producer stdout\n")
+    sys.stderr.buffer.write(b"fake producer stderr\n")
+    raise SystemExit(71)
+if failure == "consumer" and use_dir is not None:
+    print("fake consumer failure", file=sys.stderr)
+    raise SystemExit(72)
+
+if emit_dir is not None and os.environ.get("FAKE_REAL_ZERO_MODS") != "1":
+    os.makedirs(emit_dir, exist_ok=True)
+    with open(os.path.join(emit_dir, "fake.iyimod"), "wb") as module:
+        module.write(b"fake module\n")
+
+output = option_value(compiler_args, "-o", "--output")
+sources = positional(compiler_args)
+if output is None:
+    stem = os.path.splitext(os.path.basename(sources[0] if sources else "a.iyi"))[0]
+    if command == "run":
+        cache = os.environ.get("IYI_CACHE_DIR", DEFAULT_CACHE)
+        output = os.path.join(cache, f"iyi-run-{stem}-{os.getpid()}.tmp")
+    else:
+        output = os.path.join(os.getcwd(), stem)
+if not os.path.isabs(output):
+    output = os.path.join(os.getcwd(), output)
+os.makedirs(os.path.dirname(output), exist_ok=True)
+
+program_runtime = r'''import hashlib,json,os,sys,time
+data=sys.stdin.buffer.read()
+path=os.environ.get("FAKE_PROGRAM_LOG")
+if path:
+    payload=(json.dumps({"argv":sys.argv[1:],"cwd":os.getcwd(),"env":dict(os.environ),"stdin_len":len(data),"stdin_sha256":hashlib.sha256(data).hexdigest()},sort_keys=True,separators=(",",":"))+"\n").encode()
+    fd=os.open(path,os.O_WRONLY|os.O_APPEND|os.O_CREAT,0o600)
+    try: os.write(fd,payload)
+    finally: os.close(fd)
+sleep=os.environ.get("FAKE_PROGRAM_SLEEP")
+if sleep: time.sleep(float(sleep))
+rc=int(os.environ.get("FAKE_PROGRAM_RC","0"))
+if rc < 0:
+    os.kill(os.getpid(),-rc)
+    time.sleep(1)
+raise SystemExit(rc)
+'''
+program = (
+    "#!/bin/sh\nexec "
+    + shlex.quote(sys.executable)
+    + " -c "
+    + shlex.quote(program_runtime)
+    + ' "$@"\n'
+)
+with open(output, "w", encoding="utf-8") as executable:
+    executable.write(program)
+os.chmod(output, 0o755)
+
+if command == "run" and option_value(compiler_args, "-o", "--output") is None:
+    completed = subprocess.run([output, *run_args], check=False)
+    try:
+        os.unlink(output)
+    except FileNotFoundError:
+        pass
+    raise SystemExit(completed.returncode)
+raise SystemExit(0)
+"""
+    script = (
+        template.replace("__VERSION_LINE__", repr(version_line))
+        .replace("__DEFAULT_ROOT__", repr(default_root))
+        .replace("__DEFAULT_CACHE__", repr(default_cache))
+    )
+    with open(path, "w", encoding="utf-8") as target:
+        target.write(script)
+    os.chmod(path, 0o755)
+    return os.path.realpath(path)
+
+
+class _O4FixtureEnvironment:
+    def __init__(self) -> None:
+        created = tempfile.mkdtemp(prefix="iyi-o4-", dir="/tmp")
+        self.root = os.path.realpath(created)
+        self.repo = os.path.join(self.root, "repo")
+        self.work_tmp = os.path.join(self.root, "t")
+        self.scratch = os.path.join(self.root, "s")
+        self.cache = os.path.join(self.root, "cache")
+        self.fake_dir = os.path.join(self.root, "fake")
+        for path in (
+            self.repo,
+            self.work_tmp,
+            self.scratch,
+            self.cache,
+            self.fake_dir,
+        ):
+            os.makedirs(path, exist_ok=True)
+        self.canonical_root = os.path.join(self.repo, "src")
+        self.bench = os.path.join(self.repo, "bench")
+        os.makedirs(self.canonical_root, exist_ok=True)
+        os.makedirs(self.bench, exist_ok=True)
+        self.own_source = os.path.join(self.bench, "std_demo_exercise.iyi")
+        self.other_source = os.path.join(self.bench, "other.iyi")
+        for path, content in (
+            (self.own_source, "puts :own\n"),
+            (self.other_source, "puts :other\n"),
+        ):
+            with open(path, "w", encoding="utf-8") as target:
+                target.write(content)
+        self.real = _fake_real_compiler(
+            self.fake_dir,
+            version_line="iyi fake [0123456789abcdef]",
+        )
+        self.default_root = os.path.join(self.fake_dir, "default-root")
+        self.ledger = os.path.join(self.root, "ledger.jsonl")
+        self.real_log = os.path.join(self.root, "real.jsonl")
+        self.program_log = os.path.join(self.root, "program.jsonl")
+        self.census_path = os.path.join(self.root, "census.json")
+        self.config_path = os.path.join(self.root, "shim.json")
+        self.nonce = "a" * 32
+        self.chain_id = "b" * 32
+        self.driver = "demo"
+        self.census = {
+            "census_version": 1,
+            "driver": self.driver,
+            "sites": [
+                {
+                    "lines": [1],
+                    "command": "build",
+                    "kind": "mixed",
+                    "variants": [
+                        {
+                            "id": "demo.negative",
+                            "kind": "negative",
+                            "first_root": "{WORK}/negative",
+                            "vars": {},
+                            "sources": [
+                                "{REPO}/bench/std_demo_exercise.iyi"
+                            ],
+                            "output": None,
+                        },
+                        {
+                            "id": "demo.positive",
+                            "kind": "positive",
+                            "first_root": "{WORK}/positive",
+                            "vars": {},
+                            "sources": [
+                                "{REPO}/bench/std_demo_exercise.iyi"
+                            ],
+                            "output": None,
+                        },
+                    ],
+                }
+            ],
+            "exec_evidence": [],
+        }
+        self.config = {
+            "real": self.real,
+            "census": os.path.realpath(self.census_path),
+            "ledger": self.ledger,
+            "nonce": self.nonce,
+            "driver": self.driver,
+            "work_tmp": os.path.realpath(self.work_tmp),
+            "scratch": self.scratch,
+            "repo": os.path.realpath(self.repo),
+            "canonical_roots": [os.path.realpath(self.canonical_root)],
+        }
+        self.write_census(self.census)
+        self.write_header()
+        self.write_config()
+
+    def close(self) -> None:
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def __enter__(self) -> "_O4FixtureEnvironment":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
+
+    def write_census(self, census: dict) -> None:
+        self.census = census
+        with open(self.census_path, "w", encoding="utf-8") as target:
+            json.dump(census, target, sort_keys=True)
+
+    def write_header(
+        self,
+        *,
+        nonce: str | None = None,
+        driver: str | None = None,
+    ) -> None:
+        header = {
+            "v": 1,
+            "kind": "header",
+            "nonce": self.nonce if nonce is None else nonce,
+            "driver": self.driver if driver is None else driver,
+            "attempt": 1,
+            "chain_id": self.chain_id,
+        }
+        with open(self.ledger, "w", encoding="utf-8") as target:
+            target.write(json.dumps(header, sort_keys=True) + "\n")
+
+    def write_config(self) -> None:
+        with open(self.config_path, "w", encoding="utf-8") as target:
+            json.dump(self.config, target, sort_keys=True)
+
+    def environment(self, **updates: str | None) -> dict[str, str]:
+        environment = os.environ.copy()
+        for name in tuple(environment):
+            if name.startswith(("IYI_", "CRYSTAL_")) or name.startswith("FAKE_"):
+                environment.pop(name, None)
+        environment.update(
+            {
+                "IYI_PATH": self.canonical_root,
+                "IYI_CACHE_DIR": self.cache,
+                "FAKE_REAL_LOG": self.real_log,
+                "FAKE_PROGRAM_LOG": self.program_log,
+            }
+        )
+        for name, value in updates.items():
+            if value is None:
+                environment.pop(name, None)
+            else:
+                environment[name] = value
+        return environment
+
+    def run_in_process(
+        self,
+        argv: list[str],
+        *,
+        environment: dict[str, str] | None = None,
+    ) -> int | shim_mod.ExecPlan:
+        child_env = environment or self.environment()
+        previous_cwd = os.getcwd()
+        previous_env = os.environ.copy()
+        try:
+            os.chdir(self.repo)
+            os.environ.clear()
+            os.environ.update(child_env)
+            return shim_mod.run_shim(self.config_path, argv)
+        finally:
+            os.environ.clear()
+            os.environ.update(previous_env)
+            os.chdir(previous_cwd)
+
+    def run_process(
+        self,
+        argv: list[str],
+        *,
+        environment: dict[str, str] | None = None,
+        stdin: bytes = b"",
+        shim_path: str | None = None,
+    ) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                shim_path or os.path.abspath(shim_mod.__file__),
+                "--config",
+                self.config_path,
+                "--",
+                *argv,
+            ],
+            cwd=self.repo,
+            env=environment or self.environment(),
+            input=stdin,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+    def records(self) -> list[dict]:
+        return _o4_read_jsonl(self.ledger)
+
+    def real_calls(self) -> list[dict]:
+        return _o4_read_jsonl(self.real_log)
+
+    def program_calls(self) -> list[dict]:
+        return _o4_read_jsonl(self.program_log)
+
+
+def _o4_read_jsonl(path: str) -> list[dict]:
+    if not os.path.isfile(path):
+        return []
+    records: list[dict] = []
+    with open(path, "r", encoding="utf-8") as source:
+        for line in source:
+            if line.strip():
+                records.append(json.loads(line))
+    return records
+
+
+def _o4_phase(records: list[dict], phase: str) -> list[dict]:
+    return [
+        record
+        for record in records
+        if record.get("kind") == "record" and record.get("phase") == phase
+    ]
+
+
+@contextlib.contextmanager
+def _o4_devnull_stdin():
+    saved = os.dup(0)
+    null = os.open(os.devnull, os.O_RDONLY)
+    try:
+        os.dup2(null, 0)
+        yield
+    finally:
+        os.dup2(saved, 0)
+        os.close(null)
+        os.close(saved)
+
+
+def _o4_fake_calls(calls: list[dict], marker: str) -> list[dict]:
+    return [
+        call
+        for call in calls
+        if len(call.get("argv", [])) > 1 and marker in call["argv"]
+    ]
+
+
+def _o4_matcher_fixture(case: str) -> Observation:
+    with _O4FixtureEnvironment() as fixture:
+        repo = fixture.repo
+        work = fixture.work_tmp
+        driver_work = os.path.join(work, "driver-work")
+        source = fixture.own_source
+        base_variant = {
+            "id": "negative.one",
+            "kind": "negative",
+            "first_root": "{WORK}/{dir}",
+            "vars": {"dir": {"lines": [1, 1], "values": ["noquestion"]}},
+            "sources": ["{REPO}/bench/std_demo_exercise.iyi"],
+            "output": None,
+        }
+        variants = [base_variant]
+        first_root = os.path.join(driver_work, "noquestion")
+        sources = [source]
+        output = None
+        if case == "unknown-dir":
+            first_root = os.path.join(driver_work, "unknown")
+        elif case == "outside-attempt":
+            first_root = os.path.join(fixture.root, "outside", "noquestion")
+        elif case == "copied-exercise":
+            copied = os.path.join(fixture.root, "copy", "std_demo_exercise.iyi")
+            os.makedirs(os.path.dirname(copied), exist_ok=True)
+            shutil.copyfile(source, copied)
+            sources = [copied]
+        elif case == "two-same-kind":
+            variants.append({**base_variant, "id": "negative.two"})
+        elif case == "conflicting-kinds":
+            variants.append(
+                {**base_variant, "id": "positive.two", "kind": "positive"}
+            )
+        elif case == "variable-root":
+            base_variant = {
+                **base_variant,
+                "id": "negative.variable",
+                "sources": [
+                    "{REPO}/bench/std_{driver}_exercise.iyi"
+                ],
+                "vars": {
+                    "dir": {
+                        "lines": [1, 1],
+                        "values": ["noquestion"],
+                    },
+                    "driver": {
+                        "lines": [1, 1],
+                        "values": ["demo"],
+                    },
+                },
+                "output": "{WORK}/{dir}/result",
+            }
+            variants = [base_variant]
+            output = os.path.join(driver_work, "noquestion", "result")
+        census = {
+            "sites": [
+                {
+                    "command": "build",
+                    "kind": "mixed",
+                    "variants": variants,
+                }
+            ]
+        }
+        result = shim_mod.match_variants(
+            census,
+            "build",
+            first_root,
+            sources,
+            output,
+            work,
+            repo,
+        )
+        status, ids, kind, bindings = result
+        got = {
+            "status": status,
+            "ids": ids,
+            "kind": kind,
+            "bindings": bindings,
+        }
+        if case in ("unknown-dir", "outside-attempt", "copied-exercise"):
+            expected = {
+                "status": "unclassified",
+                "ids": [],
+                "kind": None,
+                "bindings": {},
+            }
+        elif case == "two-same-kind":
+            expected = {
+                "status": "matched",
+                "ids": ["negative.one", "negative.two"],
+                "kind": "negative",
+                "bindings": {
+                    "negative.one": {"dir": "noquestion"},
+                    "negative.two": {"dir": "noquestion"},
+                },
+            }
+        elif case == "conflicting-kinds":
+            expected = {
+                "status": "ambiguous",
+                "ids": ["negative.one", "positive.two"],
+                "kind": None,
+                "bindings": {
+                    "negative.one": {"dir": "noquestion"},
+                    "positive.two": {"dir": "noquestion"},
+                },
+            }
+        elif case == "variable-root":
+            expected = {
+                "status": "matched",
+                "ids": ["negative.variable"],
+                "kind": "negative",
+                "bindings": {
+                    "negative.variable": {
+                        "dir": "noquestion",
+                        "driver": "demo",
+                    }
+                },
+            }
+        else:
+            expected = {
+                "status": "matched",
+                "ids": ["negative.one"],
+                "kind": "negative",
+                "bindings": {
+                    "negative.one": {"dir": "noquestion"}
+                },
+            }
+        return Observation(
+            expected=expected,
+            got=got,
+            applied=(
+                f"case={case};root={os.path.realpath(first_root)};"
+                f"sources={_render([os.path.realpath(path) for path in sources])}"
+            ),
+        )
+
+
+def _o4_matcher_canonical_control() -> Observation:
+    with _O4FixtureEnvironment() as fixture:
+        invocation = shim_mod.parse_invocation(
+            ["build", "-o", os.path.join(fixture.root, "out"), fixture.own_source]
+        )
+        classification = shim_mod.classify(
+            fixture.census,
+            invocation,
+            [fixture.canonical_root],
+            [fixture.canonical_root],
+            [fixture.own_source],
+            os.path.join(fixture.root, "out"),
+            fixture.work_tmp,
+            fixture.repo,
+        )
+        got = {
+            "mode": classification.mode,
+            "canonical": classification.canonical,
+            "variant_ids": list(classification.variant_ids),
+        }
+        return Observation(
+            expected={
+                "mode": "roundtrip",
+                "canonical": True,
+                "variant_ids": [],
+            },
+            got=got,
+        )
+
+
+def _o4_normalized_roundtrip_call(call: dict) -> list[str]:
+    argv = list(call["argv"][1:])
+    for marker in ("--emit-iyimod", "--use-iyimod"):
+        if marker in argv:
+            index = argv.index(marker)
+            argv[index : index + 2] = [marker, "<MODS>"]
+    return argv
+
+
+def _o4_canonical_build(*, through_main: bool) -> dict:
+    with _O4FixtureEnvironment() as fixture:
+        output = os.path.join(fixture.root, "canonical-out")
+        argv = ["build", "-o", output, fixture.own_source]
+        if through_main:
+            completed = fixture.run_process(argv)
+            rc = completed.returncode
+        else:
+            result = fixture.run_in_process(argv)
+            rc = result if isinstance(result, int) else -999
+        calls = fixture.real_calls()
+        producers = _o4_fake_calls(calls, "--emit-iyimod")
+        consumers = _o4_fake_calls(calls, "--use-iyimod")
+        records = fixture.records()
+        begin = _o4_phase(records, "begin")
+        end = _o4_phase(records, "end")
+        producer_argv = (
+            _o4_normalized_roundtrip_call(producers[0]) if producers else []
+        )
+        consumer_argv = (
+            _o4_normalized_roundtrip_call(consumers[0]) if consumers else []
+        )
+        same_mods = False
+        if producers and consumers:
+            producer_raw = producers[0]["argv"]
+            consumer_raw = consumers[0]["argv"]
+            same_mods = (
+                producer_raw[producer_raw.index("--emit-iyimod") + 1]
+                == consumer_raw[consumer_raw.index("--use-iyimod") + 1]
+            )
+        return {
+            "rc": rc,
+            "producer_argv": producer_argv,
+            "consumer_argv": consumer_argv,
+            "same_mods": same_mods,
+            "consumer_saw_old_out": (
+                consumers[0].get("out_existed_before") if consumers else None
+            ),
+            "paired": (
+                len(begin) == 1
+                and len(end) == 1
+                and begin[0].get("inv") == end[0].get("inv")
+                and begin[0].get("argv") == end[0].get("argv")
+            ),
+        }
+
+
+def _o4_canonical_seed() -> Observation:
+    got = _o4_canonical_build(through_main=False)
+    producer = got.get("producer_argv", [])
+    consumer = got.get("consumer_argv", [])
+    expected = {
+        "rc": 0,
+        "producer_argv": producer,
+        "consumer_argv": consumer,
+        "same_mods": True,
+        "consumer_saw_old_out": False,
+        "paired": True,
+    }
+    exact = (
+        producer[:4] == ["build", "-Diyi_observe", "--emit-iyimod", "<MODS>"]
+        and consumer[:4]
+        == ["build", "-Diyi_observe", "--use-iyimod", "<MODS>"]
+        and producer[4:] == consumer[4:]
+    )
+    got = {**got, "exact_only_documented_insertions": exact}
+    expected["exact_only_documented_insertions"] = True
+    return Observation(
+        expected=expected,
+        got=got,
+        applied="canonical argv checked token-for-token around emit/use insertion",
+    )
+
+
+def _o4_canonical_control() -> Observation:
+    got = _o4_canonical_build(through_main=True)
+    producer = got.get("producer_argv", [])
+    consumer = got.get("consumer_argv", [])
+    expected = {
+        "rc": 0,
+        "producer_argv": producer,
+        "consumer_argv": consumer,
+        "same_mods": True,
+        "consumer_saw_old_out": False,
+        "paired": True,
+    }
+    return Observation(expected=expected, got=got)
+
+
+def _o4_b_prefix_seed() -> Observation:
+    with _O4FixtureEnvironment() as fixture:
+        output = os.path.join(fixture.root, "b-out")
+        result = fixture.run_in_process(
+            ["b", "-o", output, fixture.own_source]
+        )
+        calls = [
+            call
+            for call in fixture.real_calls()
+            if "--emit-iyimod" in call.get("argv", [])
+            or "--use-iyimod" in call.get("argv", [])
+        ]
+        got = {
+            "rc": result,
+            "command_words": [call["argv"][1] for call in calls],
+        }
+        return Observation(
+            expected={"rc": 0, "command_words": ["b", "b"]},
+            got=got,
+            applied="command_word=b",
+        )
+
+
+def _o4_run_fixture(case: str) -> Observation:
+    with _O4FixtureEnvironment() as fixture:
+        environment = fixture.environment()
+        argv = ["run", fixture.own_source]
+        stdin = b""
+        if case in ("argv-or-rc", "control"):
+            environment["FAKE_PROGRAM_RC"] = "3"
+            argv.extend(["--", "alpha", "two words"])
+        elif case == "stdin":
+            argv.extend(["--", "stdin-case"])
+            stdin = b"stdin reaches only the program\n"
+        elif case == "run-o":
+            argv = [
+                "run",
+                "-o",
+                os.path.join(fixture.root, "run-o"),
+                fixture.own_source,
+            ]
+        completed = fixture.run_process(argv, environment=environment, stdin=stdin)
+        end_records = _o4_phase(fixture.records(), "end")
+        end = end_records[-1] if end_records else {}
+        program_calls = fixture.program_calls()
+        build_calls = [
+            call
+            for call in fixture.real_calls()
+            if "--emit-iyimod" in call.get("argv", [])
+            or "--use-iyimod" in call.get("argv", [])
+        ]
+        if case == "temp-path":
+            out = end.get("out")
+            got = {
+                "rc": completed.returncode,
+                "name_ok": bool(
+                    isinstance(out, str)
+                    and re.fullmatch(
+                        r"iyi-run-std_demo_exercise-[0-9]+\\.tmp",
+                        os.path.basename(out),
+                    )
+                ),
+                "deleted": isinstance(out, str) and not os.path.exists(out),
+                "run_args": (end.get("run") or {}).get("argv", [])[1:],
+            }
+            expected = {
+                "rc": 0,
+                "name_ok": True,
+                "deleted": True,
+                "run_args": [],
+            }
+        elif case in ("argv-or-rc", "control"):
+            got = {
+                "rc": completed.returncode,
+                "program_args": (
+                    program_calls[-1].get("argv") if program_calls else None
+                ),
+                "ledger_rc": (end.get("run") or {}).get("rc"),
+                "ledger_signal": (end.get("run") or {}).get("signal"),
+            }
+            expected = {
+                "rc": 3,
+                "program_args": ["alpha", "two words"],
+                "ledger_rc": 3,
+                "ledger_signal": None,
+            }
+        elif case == "run-o":
+            got = {
+                "rc": completed.returncode,
+                "program_calls": len(program_calls),
+                "run_record": end.get("run"),
+                "out_exists": os.path.isfile(os.path.join(fixture.root, "run-o")),
+            }
+            expected = {
+                "rc": 0,
+                "program_calls": 0,
+                "run_record": None,
+                "out_exists": True,
+            }
+        else:
+            expected_sha = hashlib.sha256(stdin).hexdigest()
+            got = {
+                "rc": completed.returncode,
+                "build_stdin": [
+                    (call.get("stdin_len"), call.get("stdin_sha256"))
+                    for call in build_calls
+                ],
+                "program_stdin": (
+                    (
+                        program_calls[-1].get("stdin_len"),
+                        program_calls[-1].get("stdin_sha256"),
+                    )
+                    if program_calls
+                    else None
+                ),
+            }
+            expected = {
+                "rc": 0,
+                "build_stdin": [
+                    (0, hashlib.sha256(b"").hexdigest()),
+                    (0, hashlib.sha256(b"").hexdigest()),
+                ],
+                "program_stdin": (len(stdin), expected_sha),
+            }
+        return Observation(
+            expected=expected,
+            got=got,
+            applied=f"run-case={case};stdin_sha256={hashlib.sha256(stdin).hexdigest()}",
+        )
+
+
+def _o4_producer_failure_seed() -> Observation:
+    with _O4FixtureEnvironment() as fixture:
+        environment = fixture.environment(FAKE_REAL_FAIL="producer")
+        output = os.path.join(fixture.root, "producer-fail")
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            result = fixture.run_in_process(
+                ["build", "-o", output, fixture.own_source],
+                environment=environment,
+            )
+        consumers = _o4_fake_calls(fixture.real_calls(), "--use-iyimod")
+        end = _o4_phase(fixture.records(), "end")
+        got = {
+            "rc": result,
+            "stdout": stdout.getvalue(),
+            "stderr": stderr.getvalue(),
+            "consumer_calls": len(consumers),
+            "consumer_record": end[-1].get("consumer") if end else "missing",
+        }
+        return Observation(
+            expected={
+                "rc": 71,
+                "stdout": "fake producer stdout\n",
+                "stderr": "fake producer stderr\n",
+                "consumer_calls": 0,
+                "consumer_record": None,
+            },
+            got=got,
+            applied="FAKE_REAL_FAIL=producer",
+        )
+
+
+def _o4_evidence_census(
+    fixture: _O4FixtureEnvironment,
+    *,
+    command: str,
+    name: str,
+) -> dict:
+    census = {
+        "census_version": 1,
+        "driver": fixture.driver,
+        "sites": [
+            {
+                "lines": [1],
+                "command": command,
+                "kind": "canonical-own",
+                "variants": [],
+            }
+        ],
+        "exec_evidence": [
+            {
+                "site_line": 1,
+                "out_template": "{WORK}/{name}",
+                "name_from_calls": {"1": name},
+            }
+        ],
+    }
+    fixture.write_census(census)
+    return census
+
+
+def _o4_verify(
+    fixture: _O4FixtureEnvironment,
+    census: dict,
+) -> frozenset[str]:
+    verdict = proofkit_mod.verify_ledger(
+        fixture.ledger,
+        census=census,
+        driver=fixture.driver,
+        nonce=fixture.nonce,
+        attempt=1,
+        chain_id=fixture.chain_id,
+        work_tmp=fixture.work_tmp,
+        repo=fixture.repo,
+    )
+    return verdict.statuses
+
+
+def _o4_consumer_failure_seed() -> Observation:
+    with _O4FixtureEnvironment() as fixture:
+        evidence_dir = os.path.join(fixture.work_tmp, "evidence")
+        os.makedirs(evidence_dir, exist_ok=True)
+        own_out = os.path.join(evidence_dir, "own")
+        census = _o4_evidence_census(fixture, command="build", name="own")
+        control = fixture.run_in_process(
+            ["build", "-o", own_out, fixture.own_source]
+        )
+        subprocess.run(
+            [own_out],
+            cwd=fixture.repo,
+            env=fixture.environment(),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        failed = fixture.run_in_process(
+            [
+                "build",
+                "-o",
+                os.path.join(fixture.root, "consumer-fail"),
+                fixture.other_source,
+            ],
+            environment=fixture.environment(FAKE_REAL_FAIL="consumer"),
+        )
+        statuses = _o4_verify(fixture, census)
+        got = {
+            "control_rc": control,
+            "failure_rc": failed,
+            "statuses": sorted(statuses),
+        }
+        return Observation(
+            expected={
+                "control_rc": 0,
+                "failure_rc": 72,
+                "statuses": ["DIVERGENCE"],
+            },
+            got=got,
+            applied="second canonical-other consumer has FAKE_REAL_FAIL=consumer",
+        )
+
+
+def _o4_run_consumer_failure_seed() -> Observation:
+    with _O4FixtureEnvironment() as fixture:
+        completed = fixture.run_process(
+            ["run", fixture.own_source, "--", "must-not-run"],
+            environment=fixture.environment(FAKE_REAL_FAIL="consumer"),
+        )
+        end = _o4_phase(fixture.records(), "end")
+        record = end[-1] if end else {}
+        got = {
+            "rc": completed.returncode,
+            "consumer_rc": (record.get("consumer") or {}).get("rc"),
+            "run": record.get("run"),
+            "program_calls": len(fixture.program_calls()),
+        }
+        return Observation(
+            expected={
+                "rc": 72,
+                "consumer_rc": 72,
+                "run": None,
+                "program_calls": 0,
+            },
+            got=got,
+            applied="run consumer has FAKE_REAL_FAIL=consumer",
+        )
+
+
+def _o4_own_run_verifier_seed(case: str) -> Observation:
+    with _O4FixtureEnvironment() as fixture:
+        cache = os.path.join(fixture.work_tmp, "run-cache")
+        os.makedirs(cache, exist_ok=True)
+        updates: dict[str, str | None] = {"IYI_CACHE_DIR": cache}
+        if case == "zero-modules":
+            updates["FAKE_REAL_ZERO_MODS"] = "1"
+            expected_rc = 0
+            expected_statuses = ["NOT-ROUNDTRIPPED"]
+        else:
+            updates["FAKE_PROGRAM_RC"] = "-9"
+            expected_rc = 1
+            expected_statuses = ["UNFAITHFUL"]
+        stderr = io.StringIO()
+        with _o4_devnull_stdin(), contextlib.redirect_stderr(stderr):
+            result = fixture.run_in_process(
+                ["run", fixture.own_source],
+                environment=fixture.environment(**updates),
+            )
+        end = _o4_phase(fixture.records(), "end")
+        name = ""
+        if end and isinstance(end[-1].get("out"), str):
+            name = os.path.basename(end[-1]["out"])
+        census = _o4_evidence_census(fixture, command="run", name=name)
+        statuses = _o4_verify(fixture, census)
+        death_sentence = (
+            None
+            if case == "zero-modules"
+            else "iyi: the program was killed by signal 9 "
+            "(received and didn't handle signal KILL (9))\n"
+        )
+        got = {
+            "rc": result,
+            "statuses": sorted(statuses),
+            "run_signal": (
+                (end[-1].get("run") or {}).get("signal") if end else None
+            ),
+            "death_sentence": (
+                None
+                if case == "zero-modules"
+                else stderr.getvalue()
+            ),
+        }
+        expected = {
+            "rc": expected_rc,
+            "statuses": expected_statuses,
+            "run_signal": None if case == "zero-modules" else 9,
+            "death_sentence": death_sentence,
+        }
+        return Observation(
+            expected=expected,
+            got=got,
+            applied=(
+                "FAKE_REAL_ZERO_MODS=1"
+                if case == "zero-modules"
+                else "FAKE_PROGRAM_RC=-9"
+            ),
+        )
+
+
+def _o4_exec_plan_fixture(case: str) -> Observation:
+    with _O4FixtureEnvironment() as fixture:
+        output = os.path.join(fixture.root, "exec-out")
+        environment = fixture.environment()
+        argv = ["build", "-o", output, fixture.own_source]
+        if case in ("passthrough", "passthrough-control"):
+            argv = [
+                "build",
+                "--emit-iyimod",
+                os.path.join(fixture.root, "external-mods"),
+                "-o",
+                output,
+                fixture.own_source,
+            ]
+        elif case == "observe-duplicate":
+            negative = os.path.join(fixture.work_tmp, "driver-work", "negative")
+            os.makedirs(negative, exist_ok=True)
+            environment["IYI_PATH"] = negative
+            argv.insert(1, "-Diyi_observe")
+        elif case in ("negative", "negative-control"):
+            negative = os.path.join(fixture.work_tmp, "driver-work", "negative")
+            os.makedirs(negative, exist_ok=True)
+            environment["IYI_PATH"] = negative
+        elif case == "cross-compile":
+            argv = ["run", "--cross-compile", fixture.own_source]
+        if case == "passthrough-control":
+            completed = fixture.run_process(argv, environment=environment)
+            records = _o4_phase(fixture.records(), "exec")
+            build_calls = [
+                call
+                for call in fixture.real_calls()
+                if len(call.get("argv", [])) > 1
+                and call["argv"][1] == "build"
+            ]
+            got = {
+                "rc": completed.returncode,
+                "mode": records[-1].get("mode") if records else None,
+                "observe_count": (
+                    build_calls[-1]["argv"].count("-Diyi_observe")
+                    if build_calls
+                    else 0
+                ),
+            }
+            expected = {"rc": 0, "mode": "passthrough", "observe_count": 1}
+        else:
+            result = fixture.run_in_process(argv, environment=environment)
+            record = _o4_phase(fixture.records(), "exec")
+            got = {
+                "is_plan": isinstance(result, shim_mod.ExecPlan),
+                "mode": record[-1].get("mode") if record else None,
+                "argv": list(result.argv) if isinstance(result, shim_mod.ExecPlan) else [],
+            }
+            if case == "cross-compile":
+                expected_argv = argv
+                expected_mode = "unchanged"
+            else:
+                expected_argv = list(argv)
+                if "-Diyi_observe" not in expected_argv:
+                    expected_argv.insert(1, "-Diyi_observe")
+                expected_mode = (
+                    "observed-negative"
+                    if case in ("negative", "negative-control", "observe-duplicate")
+                    else "passthrough"
+                )
+            expected = {
+                "is_plan": True,
+                "mode": expected_mode,
+                "argv": expected_argv,
+            }
+            if case == "passthrough":
+                unchanged_inputs = [
+                    ["doc", fixture.own_source],
+                    ["fmt", fixture.own_source],
+                    ["env", "IYI_PATH"],
+                    ["build", "--no-codegen", fixture.own_source],
+                ]
+                unchanged: list[dict[str, object]] = []
+                for unchanged_argv in unchanged_inputs:
+                    unchanged_result = fixture.run_in_process(
+                        unchanged_argv,
+                        environment=environment,
+                    )
+                    unchanged_records = _o4_phase(fixture.records(), "exec")
+                    unchanged.append(
+                        {
+                            "is_plan": isinstance(
+                                unchanged_result,
+                                shim_mod.ExecPlan,
+                            ),
+                            "mode": (
+                                unchanged_records[-1].get("mode")
+                                if unchanged_records
+                                else None
+                            ),
+                            "argv": (
+                                list(unchanged_result.argv)
+                                if isinstance(unchanged_result, shim_mod.ExecPlan)
+                                else []
+                            ),
+                        }
+                    )
+                exact_unchanged = [
+                    {
+                        "is_plan": True,
+                        "mode": "unchanged",
+                        "argv": unchanged_argv,
+                    }
+                    for unchanged_argv in unchanged_inputs
+                ]
+                got["unchanged"] = unchanged
+                expected["unchanged"] = exact_unchanged
+        return Observation(
+            expected=expected,
+            got=got,
+            applied=f"exec-mode-case={case}",
+        )
+
+
+def _o4_positive_fixture(*, control: bool) -> Observation:
+    with _O4FixtureEnvironment() as fixture:
+        positive = os.path.join(fixture.work_tmp, "driver-work", "positive")
+        os.makedirs(positive, exist_ok=True)
+        output = os.path.join(fixture.root, "positive-out")
+        result = fixture.run_in_process(
+            ["build", "-o", output, fixture.own_source],
+            environment=fixture.environment(IYI_PATH=positive),
+        )
+        records = _o4_phase(fixture.records(), "end")
+        end = records[-1] if records else {}
+        got = {
+            "rc": result,
+            "variant_ids": end.get("variant_ids"),
+            "variant_kind": end.get("variant_kind"),
+            "producer_rc": (end.get("producer") or {}).get("rc"),
+            "consumer_rc": (end.get("consumer") or {}).get("rc"),
+        }
+        return Observation(
+            expected={
+                "rc": 0,
+                "variant_ids": ["demo.positive"],
+                "variant_kind": "positive",
+                "producer_rc": 0,
+                "consumer_rc": 0,
+            },
+            got=got,
+            applied="" if control else "IYI_PATH selects census positive root",
+        )
+
+
+def _o4_unknown_root_seed() -> Observation:
+    with _O4FixtureEnvironment() as fixture:
+        unknown = os.path.join(fixture.work_tmp, "driver-work", "unknown")
+        os.makedirs(unknown, exist_ok=True)
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            result = fixture.run_in_process(
+                [
+                    "build",
+                    "-o",
+                    os.path.join(fixture.root, "unknown-out"),
+                    fixture.own_source,
+                ],
+                environment=fixture.environment(IYI_PATH=unknown),
+            )
+        records = _o4_phase(fixture.records(), "refused")
+        compiler_calls = [
+            call
+            for call in fixture.real_calls()
+            if len(call.get("argv", [])) > 1
+            and (
+                call["argv"][1] == "run"
+                or "build".startswith(call["argv"][1])
+            )
+        ]
+        got = {
+            "rc": result,
+            "refused": "REFUSED unclassified variant match" in stderr.getvalue(),
+            "recorded": len(records),
+            "compiler_calls": len(compiler_calls),
+        }
+        return Observation(
+            expected={
+                "rc": 125,
+                "refused": True,
+                "recorded": 1,
+                "compiler_calls": 0,
+            },
+            got=got,
+            applied=f"unknown_root={unknown}",
+        )
+
+
+def _o4_root_fixture(case: str) -> Observation:
+    with _O4FixtureEnvironment() as fixture:
+        output = os.path.join(fixture.root, "root-out")
+        environment = fixture.environment()
+        if case == "empty":
+            environment["IYI_PATH"] = ""
+        else:
+            relative = "relative-root"
+            resolved = os.path.join(fixture.repo, relative)
+            os.makedirs(resolved, exist_ok=True)
+            fixture.config["canonical_roots"].append(os.path.realpath(resolved))
+            fixture.write_config()
+            environment["IYI_PATH"] = relative
+        result = fixture.run_in_process(
+            ["build", "-o", output, fixture.own_source],
+            environment=environment,
+        )
+        end = _o4_phase(fixture.records(), "end")
+        got = {
+            "rc": result,
+            "canonical": end[-1].get("canonical") if end else None,
+            "first_noncanonical_root": (
+                end[-1].get("first_noncanonical_root") if end else "missing"
+            ),
+        }
+        return Observation(
+            expected={
+                "rc": 0,
+                "canonical": True,
+                "first_noncanonical_root": None,
+            },
+            got=got,
+            applied=f"root-case={case}",
+        )
+
+
+def _o4_sigterm_forwarded_seed() -> Observation:
+    with _O4FixtureEnvironment() as fixture:
+        program_started = threading.Event()
+
+        def send_term() -> None:
+            for _ in range(500):
+                if (
+                    os.path.isfile(fixture.program_log)
+                    and os.path.getsize(fixture.program_log) > 0
+                ):
+                    program_started.set()
+                    time.sleep(0.05)
+                    os.kill(os.getpid(), signal.SIGTERM)
+                    return
+                time.sleep(0.01)
+
+        sender = threading.Thread(target=send_term)
+        sender.start()
+        stderr = io.StringIO()
+        with _o4_devnull_stdin(), contextlib.redirect_stderr(stderr):
+            result = fixture.run_in_process(
+                ["run", fixture.own_source],
+                environment=fixture.environment(FAKE_PROGRAM_SLEEP="30"),
+            )
+        sender.join()
+        end = _o4_phase(fixture.records(), "end")
+        got = {
+            "program_started": program_started.is_set(),
+            "rc": result,
+            "run_signal": (
+                (end[-1].get("run") or {}).get("signal") if end else None
+            ),
+        }
+        return Observation(
+            expected={"program_started": True, "rc": 1, "run_signal": 15},
+            got=got,
+            applied="SIGTERM sent to shim while fake program was sleeping",
+        )
+
+def _o4_build_signal_forwarded_seed() -> Observation:
+    got: dict[str, object] = {}
+    for phase, marker in (
+        ("producer", "--emit-iyimod"),
+        ("consumer", "--use-iyimod"),
+    ):
+        with _O4FixtureEnvironment() as fixture:
+            child_started = threading.Event()
+
+            def send_term() -> None:
+                for _ in range(500):
+                    if os.path.isfile(fixture.real_log):
+                        with open(fixture.real_log, "r", encoding="utf-8") as source:
+                            if marker in source.read():
+                                child_started.set()
+                                time.sleep(0.05)
+                                os.kill(os.getpid(), signal.SIGTERM)
+                                return
+                    time.sleep(0.01)
+
+            sender = threading.Thread(target=send_term)
+            sender.start()
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                result = fixture.run_in_process(
+                    [
+                        "build",
+                        "-o",
+                        os.path.join(fixture.root, f"{phase}-signal-out"),
+                        fixture.own_source,
+                    ],
+                    environment=fixture.environment(
+                        FAKE_REAL_SLEEP=f"{phase}:30"
+                    ),
+                )
+            sender.join()
+            end = _o4_phase(fixture.records(), "end")
+            record = end[-1] if end else {}
+            got[phase] = {
+                "child_started": child_started.is_set(),
+                "rc": result,
+                "interrupted": record.get("interrupted"),
+                "producer_rc": (record.get("producer") or {}).get("rc"),
+                "consumer_rc": (
+                    (record.get("consumer") or {}).get("rc")
+                    if record.get("consumer") is not None
+                    else None
+                ),
+            }
+    expected = {
+        "producer": {
+            "child_started": True,
+            "rc": 143,
+            "interrupted": True,
+            "producer_rc": -15,
+            "consumer_rc": None,
+        },
+        "consumer": {
+            "child_started": True,
+            "rc": 143,
+            "interrupted": True,
+            "producer_rc": 0,
+            "consumer_rc": -15,
+        },
+    }
+    return Observation(
+        expected=expected,
+        got=got,
+        applied="SIGTERM forwarded once during producer and once during consumer",
+    )
+
+
+def _o4_refusal_fixture(case: str) -> Observation:
+    with _O4FixtureEnvironment() as fixture:
+        output = os.path.join(fixture.root, "refusal-out")
+        argv = ["build", "-o", output, fixture.own_source]
+        if case == "implicit-file":
+            argv = [fixture.own_source]
+        elif case == "run-sandbox":
+            argv = ["run", "--sandbox", fixture.own_source]
+        elif case == "stdin-filename":
+            argv = ["build", "--stdin-filename", "virtual.iyi", fixture.own_source]
+        elif case in ("unknown-option", "refusal-recorded", "control"):
+            argv = ["build", "--not-a-real-option", fixture.own_source]
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            result = fixture.run_in_process(argv)
+        records = _o4_phase(fixture.records(), "refused")
+        got = {
+            "rc": result,
+            "refused_marker": "observed-roundtrip-shim: REFUSED " in stderr.getvalue(),
+            "records": len(records),
+            "mode": records[-1].get("mode") if records else None,
+            "exit": records[-1].get("exit") if records else None,
+        }
+        return Observation(
+            expected={
+                "rc": 125,
+                "refused_marker": True,
+                "records": 1,
+                "mode": "refused",
+                "exit": 125,
+            },
+            got=got,
+            applied=f"unsupported-form={case}",
+        )
+
+
+def _o4_roots_from_real_seed() -> Observation:
+    with _O4FixtureEnvironment() as fixture:
+        environment = fixture.environment(IYI_PATH=None, CRYSTAL_PATH=None)
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            result = fixture.run_in_process(
+                [
+                    "build",
+                    "-o",
+                    os.path.join(fixture.root, "default-root-out"),
+                    fixture.own_source,
+                ],
+                environment=environment,
+            )
+        records = _o4_phase(fixture.records(), "refused")
+        got = {
+            "rc": result,
+            "root": (
+                records[-1].get("first_noncanonical_root") if records else None
+            ),
+            "ambient_has_path": "IYI_PATH" in environment,
+        }
+        return Observation(
+            expected={
+                "rc": 125,
+                "root": os.path.realpath(fixture.default_root),
+                "ambient_has_path": False,
+            },
+            got=got,
+            applied="ambient IYI_PATH absent while REAL env returns its default root",
+        )
+
+
+def _o4_option_value_source_seed() -> Observation:
+    with _O4FixtureEnvironment() as fixture:
+        prelude = os.path.join(fixture.root, "prelude.iyi")
+        with open(prelude, "w", encoding="utf-8") as target:
+            target.write("prelude\n")
+        result = fixture.run_in_process(
+            [
+                "build",
+                "--prelude",
+                prelude,
+                "-o",
+                os.path.join(fixture.root, "option-out"),
+                fixture.own_source,
+            ]
+        )
+        end = _o4_phase(fixture.records(), "end")
+        got = {
+            "rc": result,
+            "sources": end[-1].get("sources") if end else None,
+        }
+        return Observation(
+            expected={
+                "rc": 0,
+                "sources": [os.path.realpath(fixture.own_source)],
+            },
+            got=got,
+            applied=f"--prelude value={prelude}",
+        )
+
+
+def _o4_header_refusal_seed(case: str) -> Observation:
+    with _O4FixtureEnvironment() as fixture:
+        if case == "missing":
+            os.unlink(fixture.ledger)
+            original_lines = None
+        else:
+            fixture.write_header(nonce="c" * 32)
+            original_lines = len(fixture.records())
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            result = fixture.run_in_process(
+                ["build", "-o", os.path.join(fixture.root, "out"), fixture.own_source]
+            )
+        final_lines = (
+            len(fixture.records()) if os.path.isfile(fixture.ledger) else None
+        )
+        got = {
+            "rc": result,
+            "marker": "observed-roundtrip-shim: REFUSED " in stderr.getvalue(),
+            "original_lines": original_lines,
+            "final_lines": final_lines,
+        }
+        expected = {
+            "rc": 125,
+            "marker": True,
+            "original_lines": original_lines,
+            "final_lines": original_lines,
+        }
+        return Observation(
+            expected=expected,
+            got=got,
+            applied=f"header-case={case}",
+        )
+
+
+def _o4_parallel_fixture(*, count: int, seed: bool) -> Observation:
+    with _O4FixtureEnvironment() as fixture:
+        environment = fixture.environment()
+        processes: list[subprocess.Popen[bytes]] = []
+        for index in range(count):
+            processes.append(
+                subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-B",
+                        os.path.abspath(shim_mod.__file__),
+                        "--config",
+                        fixture.config_path,
+                        "--",
+                        "build",
+                        "--emit-iyimod",
+                        os.path.join(fixture.root, f"mods-{index}"),
+                        "-o",
+                        os.path.join(fixture.root, f"out-{index}"),
+                        fixture.own_source,
+                    ],
+                    cwd=fixture.repo,
+                    env=environment,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+            )
+        returncodes = []
+        for process in processes:
+            process.communicate()
+            returncodes.append(process.returncode)
+        records = fixture.records()
+        record_lines = [
+            record for record in records if record.get("kind") == "record"
+        ]
+        invocations = {record.get("inv") for record in record_lines}
+        got = {
+            "returncodes": returncodes,
+            "json_lines": len(records),
+            "record_lines": len(record_lines),
+            "unique_invocations": len(invocations),
+        }
+        expected = {
+            "returncodes": [0] * count,
+            "json_lines": count + 1,
+            "record_lines": count,
+            "unique_invocations": count,
+        }
+        return Observation(
+            expected=expected,
+            got=got,
+            applied=(
+                f"parallel_processes={count}"
+                if seed
+                else ""
+            ),
+        )
+
+
+def _o4_amend_environment(case: str, *, control: bool) -> Observation:
+    with _O4FixtureEnvironment() as fixture:
+        x_cache = os.path.join(fixture.root, "driver-cache")
+        y_tmp = os.path.join(fixture.root, "driver-tmp")
+        os.makedirs(x_cache, exist_ok=True)
+        os.makedirs(y_tmp, exist_ok=True)
+        common = {
+            "IYI_CACHE_DIR": x_cache,
+            "IYI_OPTS": "-Dsmoke",
+            "TMPDIR": y_tmp,
+            "FOO": "1",
+        }
+        output = os.path.join(fixture.root, f"amend-{case}")
+        if case == "negative":
+            root = os.path.join(fixture.work_tmp, "driver-work", "negative")
+            os.makedirs(root, exist_ok=True)
+            environment = fixture.environment(IYI_PATH=root, **common)
+            completed = fixture.run_process(
+                ["build", "-o", output, fixture.own_source],
+                environment=environment,
+            )
+            calls = [
+                call
+                for call in fixture.real_calls()
+                if len(call.get("argv", [])) > 1
+                and "build".startswith(call["argv"][1])
+            ]
+            seen = calls[-1] if calls else {}
+            got = {
+                "rc": completed.returncode,
+                "variables": {
+                    key: seen.get("env", {}).get(key)
+                    for key in ("IYI_PATH", "IYI_CACHE_DIR", "IYI_OPTS", "TMPDIR", "FOO")
+                },
+                "argv": seen.get("argv", [])[1:],
+            }
+            expected_argv = [
+                "build",
+                "-Diyi_observe",
+                "-o",
+                output,
+                fixture.own_source,
+            ]
+            expected = {
+                "rc": 0,
+                "variables": {
+                    "IYI_PATH": root,
+                    "IYI_CACHE_DIR": x_cache,
+                    "IYI_OPTS": "-Dsmoke",
+                    "TMPDIR": y_tmp,
+                    "FOO": "1",
+                },
+                "argv": expected_argv,
+            }
+        elif case == "positive":
+            root = os.path.join(fixture.work_tmp, "driver-work", "positive")
+            os.makedirs(root, exist_ok=True)
+            environment = fixture.environment(IYI_PATH=root, **common)
+            completed = fixture.run_process(
+                ["build", "-o", output, fixture.own_source],
+                environment=environment,
+            )
+            calls = [
+                call
+                for call in fixture.real_calls()
+                if "--emit-iyimod" in call.get("argv", [])
+                or "--use-iyimod" in call.get("argv", [])
+            ]
+            variables = [
+                {
+                    key: call.get("env", {}).get(key)
+                    for key in ("IYI_PATH", "IYI_CACHE_DIR", "IYI_OPTS", "TMPDIR", "FOO")
+                }
+                for call in calls
+            ]
+            normalized = [
+                _o4_normalized_roundtrip_call(call) for call in calls
+            ]
+            got = {
+                "rc": completed.returncode,
+                "variables": variables,
+                "argv": normalized,
+                "same_mods": (
+                    len(calls) == 2
+                    and calls[0]["argv"][calls[0]["argv"].index("--emit-iyimod") + 1]
+                    == calls[1]["argv"][calls[1]["argv"].index("--use-iyimod") + 1]
+                ),
+            }
+            expected_variables = {
+                "IYI_PATH": root,
+                "IYI_CACHE_DIR": x_cache,
+                "IYI_OPTS": "-Dsmoke",
+                "TMPDIR": y_tmp,
+                "FOO": "1",
+            }
+            expected = {
+                "rc": 0,
+                "variables": [expected_variables, expected_variables],
+                "argv": [
+                    [
+                        "build",
+                        "-Diyi_observe",
+                        "--emit-iyimod",
+                        "<MODS>",
+                        "-o",
+                        output,
+                        fixture.own_source,
+                    ],
+                    [
+                        "build",
+                        "-Diyi_observe",
+                        "--use-iyimod",
+                        "<MODS>",
+                        "-o",
+                        output,
+                        fixture.own_source,
+                    ],
+                ],
+                "same_mods": True,
+            }
+        elif case == "run":
+            environment = fixture.environment(**common)
+            completed = fixture.run_process(
+                ["run", fixture.own_source, "--", "one", "two"],
+                environment=environment,
+            )
+            programs = fixture.program_calls()
+            shim_artifacts = [
+                name
+                for name in os.listdir(y_tmp)
+                if name.startswith(("mods", "inv", "out.ref"))
+            ]
+            got = {
+                "rc": completed.returncode,
+                "tmpdir": (
+                    programs[-1].get("env", {}).get("TMPDIR")
+                    if programs
+                    else None
+                ),
+                "argv": programs[-1].get("argv") if programs else None,
+                "shim_artifacts": shim_artifacts,
+            }
+            expected = {
+                "rc": 0,
+                "tmpdir": y_tmp,
+                "argv": ["one", "two"],
+                "shim_artifacts": [],
+            }
+        else:
+            environment = fixture.environment(
+                IYI_OPTS="--no-codegen",
+                IYI_CACHE_DIR=x_cache,
+                TMPDIR=y_tmp,
+                FOO="1",
+            )
+            received = ["build", "-o", output, fixture.own_source]
+            completed = fixture.run_process(received, environment=environment)
+            calls = [
+                call
+                for call in fixture.real_calls()
+                if len(call.get("argv", [])) > 1
+                and "build".startswith(call["argv"][1])
+            ]
+            record = _o4_phase(fixture.records(), "exec")
+            got = {
+                "rc": completed.returncode,
+                "argv": calls[-1].get("argv", [])[1:] if calls else None,
+                "opts": (
+                    calls[-1].get("env", {}).get("IYI_OPTS")
+                    if calls
+                    else None
+                ),
+                "mode": record[-1].get("mode") if record else None,
+            }
+            expected = {
+                "rc": 0,
+                "argv": received,
+                "opts": "--no-codegen",
+                "mode": "unchanged",
+            }
+        return Observation(
+            expected=expected,
+            got=got,
+            applied="" if control else f"environment-preservation-case={case}",
+        )
+
+
+def _o4_drop_cache_seed() -> Observation:
+    with _O4FixtureEnvironment() as fixture:
+        with open(shim_mod.__file__, "r", encoding="utf-8") as source:
+            control_source = source.read()
+        needle = (
+            "def _exec_real(plan: ExecPlan) -> NoReturn:\n"
+            "    os.execv(plan.real, [plan.real, *plan.argv])\n"
+        )
+        replacement = (
+            "def _exec_real(plan: ExecPlan) -> NoReturn:\n"
+            "    os.environ.pop(\"IYI_CACHE_DIR\", None)\n"
+            "    os.execv(plan.real, [plan.real, *plan.argv])\n"
+        )
+        replacements = control_source.count(needle)
+        mutant_source = control_source.replace(needle, replacement)
+        mutant = os.path.join(fixture.root, "drop_cache_shim.py")
+        with open(mutant, "w", encoding="utf-8") as target:
+            target.write(mutant_source)
+        root = os.path.join(fixture.work_tmp, "driver-work", "negative")
+        os.makedirs(root, exist_ok=True)
+        cache = os.path.join(fixture.root, "driver-cache")
+        os.makedirs(cache, exist_ok=True)
+        completed = fixture.run_process(
+            [
+                "build",
+                "-o",
+                os.path.join(fixture.root, "drop-cache-out"),
+                fixture.own_source,
+            ],
+            environment=fixture.environment(
+                IYI_PATH=root,
+                IYI_CACHE_DIR=cache,
+            ),
+            shim_path=mutant,
+        )
+        calls = [
+            call
+            for call in fixture.real_calls()
+            if len(call.get("argv", [])) > 1
+            and "build".startswith(call["argv"][1])
+        ]
+        cache_present = (
+            "IYI_CACHE_DIR" in calls[-1].get("env", {}) if calls else True
+        )
+        control_sha = hashlib.sha256(control_source.encode()).hexdigest()
+        mutant_sha = hashlib.sha256(mutant_source.encode()).hexdigest()
+        got = {
+            "rc": completed.returncode,
+            "replacements": replacements,
+            "bytes_differ": control_sha != mutant_sha,
+            "cache_present": cache_present,
+        }
+        return Observation(
+            expected={
+                "rc": 0,
+                "replacements": 1,
+                "bytes_differ": True,
+                "cache_present": False,
+            },
+            got=got,
+            applied=(
+                f"control_sha256={control_sha};mutant_sha256={mutant_sha};"
+                f"replacements={replacements};mutant_executed={bool(calls)}"
+            ),
+        )
+
+
+def _o4_config_header_refusals_seed() -> Observation:
+    passed: set[str] = set()
+    mutations: list[str] = []
+    with _O4FixtureEnvironment() as fixture:
+        control = json.loads(json.dumps(fixture.config))
+
+        def config_case(
+            name: str,
+            value: object,
+            fragment: str,
+            *,
+            raw: bool = False,
+        ) -> str:
+            path = os.path.join(fixture.root, f"config-{name}.json")
+            with open(path, "w", encoding="utf-8") as target:
+                if raw:
+                    target.write(str(value))
+                else:
+                    json.dump(value, target, sort_keys=True)
+            try:
+                shim_mod.load_config(path)
+            except shim_mod.ConfigError as error:
+                if fragment in str(error):
+                    passed.add(name)
+            with open(path, "rb") as mutated:
+                digest = hashlib.sha256(mutated.read()).hexdigest()
+            mutations.append(f"{name}:{digest}")
+            return path
+
+        invalid_config_path = config_case(
+            "unreadable-json",
+            "{",
+            "config unreadable",
+            raw=True,
+        )
+        config_case("not-object", [], "config is not an object")
+        missing = json.loads(json.dumps(control))
+        missing.pop("driver")
+        config_case("key-set", missing, "config keys differ")
+        non_string = json.loads(json.dumps(control))
+        non_string["driver"] = 1
+        config_case("non-string", non_string, "config driver is not a string")
+        roots_scalar = json.loads(json.dumps(control))
+        roots_scalar["canonical_roots"] = "root"
+        config_case(
+            "roots-scalar",
+            roots_scalar,
+            "config canonical_roots is not a string list",
+        )
+        roots_item = json.loads(json.dumps(control))
+        roots_item["canonical_roots"] = [1]
+        config_case(
+            "roots-item",
+            roots_item,
+            "config canonical_roots is not a string list",
+        )
+        bad_nonce = json.loads(json.dumps(control))
+        bad_nonce["nonce"] = "BAD"
+        config_case(
+            "nonce",
+            bad_nonce,
+            "config nonce is not 32 lowercase hex characters",
+        )
+        nonreal_repo = json.loads(json.dumps(control))
+        nonreal_repo["repo"] = os.path.join(fixture.repo, ".")
+        config_case(
+            "nonreal-repo",
+            nonreal_repo,
+            "config repo is not a realpath",
+        )
+        relative_ledger = json.loads(json.dumps(control))
+        relative_ledger["ledger"] = "ledger.jsonl"
+        config_case(
+            "relative-ledger",
+            relative_ledger,
+            "config ledger and scratch must be absolute",
+        )
+        nonreal_root = json.loads(json.dumps(control))
+        nonreal_root["canonical_roots"] = [
+            os.path.join(fixture.canonical_root, ".")
+        ]
+        config_case(
+            "nonreal-root",
+            nonreal_root,
+            "config canonical_roots contains a non-realpath",
+        )
+
+        def header_case(name: str, payload: object, fragment: str, *, raw: bool = False) -> None:
+            path = os.path.join(fixture.root, f"header-{name}.jsonl")
+            with open(path, "w", encoding="utf-8") as target:
+                if raw:
+                    target.write(str(payload))
+                elif payload is not None:
+                    target.write(json.dumps(payload, sort_keys=True) + "\n")
+            try:
+                shim_mod.read_header(
+                    path,
+                    nonce=fixture.nonce,
+                    driver=fixture.driver,
+                )
+            except shim_mod.ConfigError as error:
+                if fragment in str(error):
+                    passed.add(name)
+            with open(path, "rb") as mutated:
+                digest = hashlib.sha256(mutated.read()).hexdigest()
+            mutations.append(f"{name}:{digest}")
+
+        good_header = {
+            "v": 1,
+            "kind": "header",
+            "nonce": fixture.nonce,
+            "driver": fixture.driver,
+            "attempt": 1,
+            "chain_id": fixture.chain_id,
+        }
+        header_case("header-empty", None, "ledger header is missing")
+        header_case("header-json", "{", "ledger header is invalid JSON", raw=True)
+        header_case("header-shape", [], "ledger header shape is invalid")
+        bad_version = dict(good_header)
+        header_case(
+            "header-key-shape",
+            {},
+            "ledger header shape is invalid",
+        )
+        bad_version["v"] = 2
+        header_case(
+            "header-version",
+            bad_version,
+            "ledger header version or kind is invalid",
+        )
+        bad_attempt = dict(good_header)
+        bad_attempt["attempt"] = True
+        header_case(
+            "header-attempt",
+            bad_attempt,
+            "ledger header attempt is invalid",
+        )
+        bad_chain = dict(good_header)
+        bad_chain["chain_id"] = ""
+        header_case(
+            "header-chain",
+            bad_chain,
+            "ledger header chain_id is invalid",
+        )
+        bad_header_nonce = dict(good_header)
+        bad_header_nonce["nonce"] = "c" * 32
+        header_case(
+            "header-nonce",
+            bad_header_nonce,
+            "ledger header nonce does not match config",
+        )
+        bad_driver = dict(good_header)
+        bad_driver["driver"] = "other"
+        header_case(
+            "header-driver",
+            bad_driver,
+            "ledger header driver does not match config",
+        )
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            bad_run = shim_mod.run_shim(invalid_config_path, [])
+        if bad_run == 125 and "REFUSED config unreadable" in stderr.getvalue():
+            passed.add("run-shim-config")
+    expected = {
+        "unreadable-json",
+        "not-object",
+        "key-set",
+        "non-string",
+        "roots-scalar",
+        "roots-item",
+        "nonce",
+        "nonreal-repo",
+        "relative-ledger",
+        "nonreal-root",
+        "header-empty",
+        "header-json",
+        "header-shape",
+        "header-version",
+        "header-attempt",
+        "header-chain",
+        "header-nonce",
+        "header-driver",
+        "run-shim-config",
+        "header-key-shape",
+    }
+    return Observation(
+        expected=sorted(expected),
+        got=sorted(passed),
+        applied=";".join(mutations),
+    )
+
+
+def _o4_config_header_control() -> Observation:
+    with _O4FixtureEnvironment() as fixture:
+        config = shim_mod.load_config(fixture.config_path)
+        header = shim_mod.read_header(
+            fixture.ledger,
+            nonce=fixture.nonce,
+            driver=fixture.driver,
+        )
+        got = {
+            "config_keys": sorted(config),
+            "header_kind": header.get("kind"),
+            "attempt": header.get("attempt"),
+        }
+        return Observation(
+            expected={
+                "config_keys": sorted(shim_mod.CONFIG_KEYS),
+                "header_kind": "header",
+                "attempt": 1,
+            },
+            got=got,
+        )
+
+
+def _o4_parser_and_io_refusals_seed() -> Observation:
+    passed: set[str] = set()
+    details: list[str] = []
+
+    def invocation_error(name: str, argv: list[str], fragment: str) -> None:
+        try:
+            shim_mod.parse_invocation(argv)
+        except shim_mod.InvocationError as error:
+            if fragment in str(error):
+                passed.add(name)
+                details.append(f"{name}:{error}")
+
+    no_args = shim_mod.parse_invocation([])
+    if no_args.command == "" and not no_args.argv:
+        passed.add("parse-empty")
+    attached = shim_mod.parse_invocation(["build", "-oattached", "source.iyi"])
+    if attached.output == "attached" and attached.sources == ("source.iyi",):
+        passed.add("attached-output")
+    equals = shim_mod.parse_invocation(
+        ["build", "--output=equals", "source.iyi"]
+    )
+    if equals.output == "equals" and equals.sources == ("source.iyi",):
+        passed.add("equals-output")
+    optional_empty = shim_mod.parse_invocation(["build", "--emit"])
+    if optional_empty.sources == ():
+        passed.add("optional-empty")
+    optional_value = shim_mod.parse_invocation(["build", "--emit", "llvm"])
+    if optional_value.sources == ():
+        passed.add("optional-value")
+    invocation_error(
+        "missing-value",
+        ["build", "-o"],
+        "option requires a value",
+    )
+    invocation_error(
+        "run-build-only",
+        ["run", "--target", "x", "source.iyi"],
+        "build-only option on run",
+    )
+    invocation_error(
+        "unknown-equals",
+        ["build", "--unknown=value", "source.iyi"],
+        "unknown option",
+    )
+    separated_observe = shim_mod.parse_invocation(
+        ["build", "-D", "iyi_observe", "source.iyi"]
+    )
+    observed_exec = shim_mod.build_exec_argv(separated_observe)
+    observed_producer = shim_mod.build_producer_argv(
+        separated_observe,
+        "/mods",
+        "/out",
+    )
+    if (
+        observed_exec == list(separated_observe.argv)
+        and observed_producer.count("-Diyi_observe") == 0
+        and observed_producer.count("iyi_observe") == 1
+    ):
+        passed.add("observe-separated")
+
+    ambient_cases = (
+        ("ambient-quote", "build", "'unterminated", "cannot parse IYI_OPTS"),
+        ("ambient-positional", "build", "word", "may not contain positional"),
+        ("ambient-separator", "build", "--", "may not contain --"),
+        ("ambient-unknown", "build", "--unknown", "unknown option"),
+        ("ambient-build-only", "run", "--target x", "build-only option on run"),
+        (
+            "ambient-stdin",
+            "build",
+            "--stdin-filename virtual.iyi",
+            "--stdin-filename is unsupported",
+        ),
+    )
+    for name, command, opts, reason in ambient_cases:
+        with _O4FixtureEnvironment() as fixture:
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                result = fixture.run_in_process(
+                    [command, fixture.own_source],
+                    environment=fixture.environment(IYI_OPTS=opts),
+                )
+            refused = _o4_phase(fixture.records(), "refused")
+            if (
+                result == 125
+                and refused
+                and reason in str(refused[-1].get("reason"))
+            ):
+                passed.add(name)
+                details.append(f"{name}:{reason}")
+
+    valid_modes = (
+        ("emit-equals", ["build", "--emit=llvm", "source.iyi"], "unchanged"),
+        (
+            "emit-bind-equals",
+            ["build", "--emit-bind=mods", "source.iyi"],
+            "unchanged",
+        ),
+        (
+            "use-equals",
+            ["build", "--use-iyimod=mods", "source.iyi"],
+            "passthrough",
+        ),
+        ("crystal", ["build", "--crystal", "source.iyi"], "unchanged"),
+    )
+    with _O4FixtureEnvironment() as fixture:
+        for name, argv, expected_mode in valid_modes:
+            parsed = shim_mod.parse_invocation(argv)
+            classified = shim_mod.classify(
+                fixture.census,
+                parsed,
+                [fixture.canonical_root],
+                [fixture.canonical_root],
+                [os.path.realpath(os.path.join(fixture.repo, "source.iyi"))],
+                os.path.join(fixture.root, "out"),
+                fixture.work_tmp,
+                fixture.repo,
+            )
+            if classified.mode == expected_mode:
+                passed.add(name)
+        ambient_optional = shim_mod.classify(
+            fixture.census,
+            shim_mod.parse_invocation(["build", "source.iyi"]),
+            [fixture.canonical_root],
+            [fixture.canonical_root],
+            [os.path.join(fixture.repo, "source.iyi")],
+            os.path.join(fixture.root, "out"),
+            fixture.work_tmp,
+            fixture.repo,
+            ambient_tokens=("--emit", "llvm"),
+        )
+        if ambient_optional.mode == "unchanged":
+            passed.add("ambient-optional")
+        ambient_bare_optional = shim_mod.classify(
+            fixture.census,
+            shim_mod.parse_invocation(["build", "source.iyi"]),
+            [fixture.canonical_root],
+            [fixture.canonical_root],
+            [os.path.join(fixture.repo, "source.iyi")],
+            os.path.join(fixture.root, "out"),
+            fixture.work_tmp,
+            fixture.repo,
+            ambient_tokens=("--emit",),
+        )
+        if ambient_bare_optional.mode == "unchanged":
+            passed.add("ambient-bare-optional")
+        if shim_mod._realpath_from_cwd(
+            "relative.iyi",
+            fixture.repo,
+        ) == os.path.join(fixture.repo, "relative.iyi"):
+            passed.add("relative-path-helper")
+        if shim_mod._source_paths(
+            shim_mod.parse_invocation(["build", "relative.iyi"]),
+            fixture.repo,
+        ) == (os.path.join(fixture.repo, "relative.iyi"),):
+            passed.add("relative-source-helper")
+
+        scripts = os.path.join(fixture.root, "compiler-env")
+        os.makedirs(scripts, exist_ok=True)
+
+        def script(name: str, body: str) -> str:
+            path = os.path.join(scripts, name)
+            with open(path, "w", encoding="utf-8") as target:
+                target.write("#!/bin/sh\n" + body)
+            os.chmod(path, 0o755)
+            return path
+
+        try:
+            shim_mod.compiler_env(os.path.join(scripts, "missing"), fixture.repo)
+        except shim_mod.InvocationError as error:
+            if "compiler env failed" in str(error):
+                passed.add("env-oserror")
+        failing = script("failing", "echo bad >&2\nexit 5\n")
+        try:
+            shim_mod.compiler_env(failing, fixture.repo)
+        except shim_mod.InvocationError as error:
+            if "compiler env exited 5: bad" in str(error):
+                passed.add("env-exit")
+        one_line = script("one-line", "printf 'one\\n'\n")
+        try:
+            shim_mod.compiler_env(one_line, fixture.repo)
+        except shim_mod.InvocationError as error:
+            if "returned 1 lines, expected 2" in str(error):
+                passed.add("env-lines")
+        os.makedirs(os.path.join(fixture.repo, "relative-root"), exist_ok=True)
+        os.makedirs(os.path.join(fixture.repo, "relative-cache"), exist_ok=True)
+        relative = script(
+            "relative",
+            "printf 'relative-root\\nrelative-cache\\n'\n",
+        )
+        environment = shim_mod.compiler_env(relative, fixture.repo)
+        if environment == shim_mod.CompilerEnvironment(
+            (os.path.join(fixture.repo, "relative-root"),),
+            os.path.join(fixture.repo, "relative-cache"),
+        ):
+            passed.add("env-relative")
+
+        invalid_census = os.path.join(fixture.root, "invalid-census.json")
+        with open(invalid_census, "w", encoding="utf-8") as target:
+            target.write("{")
+        try:
+            shim_mod._load_census(invalid_census)
+        except shim_mod.InvocationError as error:
+            if "census unreadable" in str(error):
+                passed.add("census-json")
+        list_census = os.path.join(fixture.root, "list-census.json")
+        with open(list_census, "w", encoding="utf-8") as target:
+            json.dump([], target)
+        try:
+            shim_mod._load_census(list_census)
+        except shim_mod.InvocationError as error:
+            if "census is not an object" in str(error):
+                passed.add("census-object")
+
+        doc = shim_mod.parse_invocation(["doc"])
+        if shim_mod.compute_out(
+            doc,
+            cwd=fixture.repo,
+            cache_dir=fixture.cache,
+        ) is None:
+            passed.add("out-nonbuild")
+        no_source = shim_mod.parse_invocation(["build"])
+        if shim_mod.compute_out(
+            no_source,
+            cwd=fixture.repo,
+            cache_dir=fixture.cache,
+        ) == os.path.join(fixture.repo, "a"):
+            passed.add("out-no-source")
+        run = shim_mod.parse_invocation(["run", fixture.own_source])
+        try:
+            shim_mod.compute_out(run, cwd=fixture.repo, cache_dir="")
+        except shim_mod.InvocationError as error:
+            if "empty IYI_CACHE_DIR" in str(error):
+                passed.add("out-empty-cache")
+
+        missing_config = dict(fixture.config)
+        missing_config["ledger"] = os.path.join(fixture.root, "gone-ledger")
+        refusal_stderr = io.StringIO()
+        invocation = shim_mod.parse_invocation(
+            ["build", "-o", os.path.join(fixture.root, "x"), fixture.own_source]
+        )
+        with contextlib.redirect_stderr(refusal_stderr):
+            refused_rc = shim_mod._record_refusal(
+                missing_config,
+                invocation,
+                "forced missing ledger",
+                inv="f" * 32,
+            )
+        if refused_rc == 125 and "REFUSED forced missing ledger" in refusal_stderr.getvalue():
+            passed.add("refusal-write-oserror")
+
+        byte_buffer = io.BytesIO()
+        text_stream = io.TextIOWrapper(byte_buffer, encoding="utf-8")
+        shim_mod._write_bytes(text_stream, b"binary-path")
+        text_stream.detach()
+        if byte_buffer.getvalue() == b"binary-path":
+            passed.add("binary-stream")
+
+        sentences = {
+            "death-memory": shim_mod._death_sentence(signal.SIGSEGV),
+            "death-int": shim_mod._death_sentence(signal.SIGINT),
+            "death-ill": shim_mod._death_sentence(signal.SIGILL),
+            "death-fpe": shim_mod._death_sentence(signal.SIGFPE),
+            "death-unknown": shim_mod._death_sentence(999),
+        }
+        if "memory fault" in sentences["death-memory"]:
+            passed.add("death-memory")
+        if "was interrupted" in sentences["death-int"]:
+            passed.add("death-int")
+        if "invalid instruction" in sentences["death-ill"]:
+            passed.add("death-ill")
+        if "floating-point" in sentences["death-fpe"]:
+            passed.add("death-fpe")
+        if "signal 999" in sentences["death-unknown"]:
+            passed.add("death-unknown")
+
+    expected = {
+        "parse-empty",
+        "attached-output",
+        "equals-output",
+        "optional-empty",
+        "optional-value",
+        "missing-value",
+        "run-build-only",
+        "unknown-equals",
+        "observe-separated",
+        "ambient-optional",
+        "ambient-bare-optional",
+        "relative-path-helper",
+        "relative-source-helper",
+        *(name for name, _command, _opts, _reason in ambient_cases),
+        *(name for name, _argv, _mode in valid_modes),
+        "env-oserror",
+        "env-exit",
+        "env-lines",
+        "env-relative",
+        "census-json",
+        "census-object",
+        "out-nonbuild",
+        "out-no-source",
+        "out-empty-cache",
+        "refusal-write-oserror",
+        "binary-stream",
+        "death-memory",
+        "death-int",
+        "death-ill",
+        "death-fpe",
+        "death-unknown",
+    }
+    return Observation(
+        expected=sorted(expected),
+        got=sorted(passed),
+        applied=";".join(details) or "parser and I/O negative subcases applied",
+    )
+
+
+def _o4_parser_control() -> Observation:
+    invocation = shim_mod.parse_invocation(
+        ["b", "-Dsmoke", "-o", "out", "one.iyi", "two.iyi"]
+    )
+    got = {
+        "command_word": invocation.command_word,
+        "command": invocation.command,
+        "sources": list(invocation.sources),
+        "output": invocation.output,
+    }
+    return Observation(
+        expected={
+            "command_word": "b",
+            "command": "build",
+            "sources": ["one.iyi", "two.iyi"],
+            "output": "out",
+        },
+        got=got,
+    )
+
+
+def _o4_matcher_malformed_seed() -> Observation:
+    passed: set[str] = set()
+    with _O4FixtureEnvironment() as fixture:
+        driver_work = os.path.join(fixture.work_tmp, "driver-work")
+        root = os.path.join(driver_work, "12", "12")
+        output = os.path.join(driver_work, "12", "out")
+        pattern_variant = {
+            "id": "pattern",
+            "kind": "negative",
+            "first_root": "{WORK}/{n}/{n}",
+            "vars": {
+                "n": {
+                    "pattern": "[0-9]+",
+                    "pattern_reason_line": 1,
+                }
+            },
+            "sources": ["{REPO}/bench/std_demo_exercise.iyi"],
+            "output": "{WORK}/{n}/out",
+        }
+        pattern_census = {
+            "sites": [
+                {
+                    "command": "build",
+                    "variants": [pattern_variant],
+                }
+            ]
+        }
+        status, ids, kind, bindings = shim_mod.match_variants(
+            pattern_census,
+            "build",
+            root,
+            [fixture.own_source],
+            output,
+            fixture.work_tmp,
+            fixture.repo,
+        )
+        if (
+            status == "matched"
+            and ids == ["pattern"]
+            and kind == "negative"
+            and bindings == {"pattern": {"n": "12"}}
+        ):
+            passed.add("pattern-repeat")
+        repeated_work, _groups = shim_mod._template_regex(
+            "{WORK}/{WORK}",
+            variables={},
+            bound={},
+            work_tmp=fixture.work_tmp,
+            repo=fixture.repo,
+        )
+        if repeated_work.pattern:
+            passed.add("repeated-work")
+
+        malformed_cases = {
+            "none-root": ({}, None, [fixture.own_source], None),
+            "site-nondict": (
+                {"sites": [None]},
+                root,
+                [fixture.own_source],
+                None,
+            ),
+            "wrong-command": (
+                {"sites": [{"command": "run", "variants": [pattern_variant]}]},
+                root,
+                [fixture.own_source],
+                output,
+            ),
+            "variant-nondict": (
+                {"sites": [{"command": "build", "variants": [None]}]},
+                root,
+                [fixture.own_source],
+                output,
+            ),
+            "variant-shape": (
+                {
+                    "sites": [
+                        {
+                            "command": "build",
+                            "variants": [{"id": 1}],
+                        }
+                    ]
+                },
+                root,
+                [fixture.own_source],
+                output,
+            ),
+            "source-count": (
+                pattern_census,
+                root,
+                [fixture.own_source, fixture.other_source],
+                output,
+            ),
+            "root-nonstr": (
+                {
+                    "sites": [
+                        {
+                            "command": "build",
+                            "variants": [{**pattern_variant, "first_root": None}],
+                        }
+                    ]
+                },
+                root,
+                [fixture.own_source],
+                output,
+            ),
+            "unknown-placeholder": (
+                {
+                    "sites": [
+                        {
+                            "command": "build",
+                            "variants": [
+                                {
+                                    **pattern_variant,
+                                    "first_root": "{WORK}/{unknown}",
+                                }
+                            ],
+                        }
+                    ]
+                },
+                root,
+                [fixture.own_source],
+                output,
+            ),
+            "variable-nondict": (
+                {
+                    "sites": [
+                        {
+                            "command": "build",
+                            "variants": [
+                                {
+                                    **pattern_variant,
+                                    "vars": {"n": "bad"},
+                                }
+                            ],
+                        }
+                    ]
+                },
+                root,
+                [fixture.own_source],
+                output,
+            ),
+            "variable-empty": (
+                {
+                    "sites": [
+                        {
+                            "command": "build",
+                            "variants": [
+                                {
+                                    **pattern_variant,
+                                    "vars": {"n": {}},
+                                }
+                            ],
+                        }
+                    ]
+                },
+                root,
+                [fixture.own_source],
+                output,
+            ),
+            "variable-regex": (
+                {
+                    "sites": [
+                        {
+                            "command": "build",
+                            "variants": [
+                                {
+                                    **pattern_variant,
+                                    "vars": {"n": {"pattern": "("}},
+                                }
+                            ],
+                        }
+                    ]
+                },
+                root,
+                [fixture.own_source],
+                output,
+            ),
+            "output-missing": (
+                pattern_census,
+                root,
+                [fixture.own_source],
+                None,
+            ),
+            "output-mismatch": (
+                pattern_census,
+                root,
+                [fixture.own_source],
+                os.path.join(driver_work, "12", "wrong"),
+            ),
+        }
+        for name, (census, candidate_root, sources, candidate_output) in malformed_cases.items():
+            result = shim_mod.match_variants(
+                census,
+                "build",
+                candidate_root,
+                sources,
+                candidate_output,
+                fixture.work_tmp,
+                fixture.repo,
+            )
+            if result == ("unclassified", [], None, {}):
+                passed.add(name)
+    expected = {"pattern-repeat", "repeated-work", *malformed_cases}
+    return Observation(
+        expected=sorted(expected),
+        got=sorted(passed),
+        applied="malformed matcher cases=" + ",".join(sorted(malformed_cases)),
+    )
+
+
+def _o4_matcher_pattern_control() -> Observation:
+    with _O4FixtureEnvironment() as fixture:
+        root = os.path.join(fixture.work_tmp, "driver-work", "7")
+        census = {
+            "sites": [
+                {
+                    "command": "build",
+                    "variants": [
+                        {
+                            "id": "pattern-control",
+                            "kind": "negative",
+                            "first_root": "{WORK}/{n}",
+                            "vars": {"n": {"pattern": "[0-9]+"}},
+                            "sources": [
+                                "{REPO}/bench/std_demo_exercise.iyi"
+                            ],
+                            "output": None,
+                        }
+                    ],
+                }
+            ]
+        }
+        got = shim_mod.match_variants(
+            census,
+            "build",
+            root,
+            [fixture.own_source],
+            None,
+            fixture.work_tmp,
+            fixture.repo,
+        )
+        return Observation(
+            expected=(
+                "matched",
+                ["pattern-control"],
+                "negative",
+                {"pattern-control": {"n": "7"}},
+            ),
+            got=got,
+        )
+
+
+def _o4_e3_error_seed() -> Observation:
+    with _O4FixtureEnvironment() as fixture:
+        output = os.path.join(fixture.root, "e3-out")
+        invocation = shim_mod.parse_invocation(
+            ["build", "-o", output, fixture.own_source]
+        )
+        classification = shim_mod.classify(
+            fixture.census,
+            invocation,
+            [fixture.canonical_root],
+            [fixture.canonical_root],
+            [fixture.own_source],
+            output,
+            fixture.work_tmp,
+            fixture.repo,
+        )
+        inv = "e" * 32
+        candidate = os.path.join(fixture.scratch, inv, "out.ref")
+        os.makedirs(candidate, exist_ok=True)
+        previous_cwd = os.getcwd()
+        previous_env = os.environ.copy()
+        try:
+            os.chdir(fixture.repo)
+            os.environ.clear()
+            os.environ.update(fixture.environment())
+            result = shim_mod.run_roundtrip(
+                fixture.config,
+                invocation,
+                classification,
+                output,
+                roots=[fixture.canonical_root],
+                sources=[fixture.own_source],
+                ambient_tokens=(),
+                inv=inv,
+            )
+        finally:
+            os.environ.clear()
+            os.environ.update(previous_env)
+            os.chdir(previous_cwd)
+        end = _o4_phase(fixture.records(), "end")
+        record = end[-1] if end else {}
+        got = {
+            "rc": result,
+            "out_ref": record.get("out_ref"),
+            "has_e3_error": bool(record.get("e3_error")),
+            "candidate_is_directory": os.path.isdir(candidate),
+        }
+        return Observation(
+            expected={
+                "rc": 0,
+                "out_ref": None,
+                "has_e3_error": True,
+                "candidate_is_directory": True,
+            },
+            got=got,
+            applied=f"precreated out.ref directory at {candidate}",
+        )
+
+
+O4_FIXTURES: tuple[Fixture, ...] = (
+    Fixture(
+        "s2.seed.matcher-negative-noquestion",
+        "seed",
+        partial(_o4_matcher_fixture, "negative-noquestion"),
+    ),
+    Fixture(
+        "s2.seed.matcher-unknown-dir",
+        "seed",
+        partial(_o4_matcher_fixture, "unknown-dir"),
+    ),
+    Fixture(
+        "s2.seed.matcher-outside-attempt",
+        "seed",
+        partial(_o4_matcher_fixture, "outside-attempt"),
+    ),
+    Fixture(
+        "s2.seed.matcher-copied-exercise",
+        "seed",
+        partial(_o4_matcher_fixture, "copied-exercise"),
+    ),
+    Fixture(
+        "s2.seed.matcher-two-same-kind",
+        "seed",
+        partial(_o4_matcher_fixture, "two-same-kind"),
+    ),
+    Fixture(
+        "s2.seed.matcher-conflicting-kinds",
+        "seed",
+        partial(_o4_matcher_fixture, "conflicting-kinds"),
+    ),
+    Fixture(
+        "s2.seed.matcher-variable-root",
+        "seed",
+        partial(_o4_matcher_fixture, "variable-root"),
+    ),
+    Fixture(
+        "s2.control.matcher-canonical",
+        "control",
+        _o4_matcher_canonical_control,
+    ),
+    Fixture("s3.seed.canonical-argv-drift", "seed", _o4_canonical_seed),
+    Fixture("s3.control.canonical-build", "control", _o4_canonical_control),
+    Fixture("s3.seed.b-prefix-misparsed", "seed", _o4_b_prefix_seed),
+    Fixture(
+        "s3.seed.run-temp-path",
+        "seed",
+        partial(_o4_run_fixture, "temp-path"),
+    ),
+    Fixture(
+        "s3.seed.run-argv-or-rc",
+        "seed",
+        partial(_o4_run_fixture, "argv-or-rc"),
+    ),
+    Fixture(
+        "s3.seed.run-consumer-failure",
+        "seed",
+        _o4_run_consumer_failure_seed,
+    ),
+    Fixture(
+        "s3.seed.run-o-executes",
+        "seed",
+        partial(_o4_run_fixture, "run-o"),
+    ),
+    Fixture("s3.control.run", "control", partial(_o4_run_fixture, "control")),
+    Fixture("s3.control.run-o", "control", partial(_o4_run_fixture, "run-o")),
+    Fixture("s3.seed.stdin-to-build", "seed", partial(_o4_run_fixture, "stdin")),
+    Fixture("s3.control.stdin", "control", partial(_o4_run_fixture, "stdin")),
+    Fixture("s3.seed.producer-failure", "seed", _o4_producer_failure_seed),
+    Fixture("s3.seed.consumer-failure", "seed", _o4_consumer_failure_seed),
+    Fixture(
+        "s3.seed.zero-modules",
+        "seed",
+        partial(_o4_own_run_verifier_seed, "zero-modules"),
+    ),
+    Fixture(
+        "s3.seed.passthrough-mutated",
+        "seed",
+        partial(_o4_exec_plan_fixture, "passthrough"),
+    ),
+    Fixture(
+        "s3.control.passthrough",
+        "control",
+        partial(_o4_exec_plan_fixture, "passthrough-control"),
+    ),
+    Fixture(
+        "s3.seed.observe-duplicate",
+        "seed",
+        partial(_o4_exec_plan_fixture, "observe-duplicate"),
+    ),
+    Fixture(
+        "s3.seed.negative-roundtripped",
+        "seed",
+        partial(_o4_exec_plan_fixture, "negative"),
+    ),
+    Fixture(
+        "s3.control.observed-negative",
+        "control",
+        partial(_o4_exec_plan_fixture, "negative-control"),
+    ),
+    Fixture(
+        "s3.seed.positive-not-roundtripped",
+        "seed",
+        partial(_o4_positive_fixture, control=False),
+    ),
+    Fixture(
+        "s3.control.positive",
+        "control",
+        partial(_o4_positive_fixture, control=True),
+    ),
+    Fixture("s3.seed.unknown-patched-root", "seed", _o4_unknown_root_seed),
+    Fixture(
+        "s3.seed.relative-root-unresolved",
+        "seed",
+        partial(_o4_root_fixture, "relative"),
+    ),
+    Fixture(
+        "s3.control.empty-root",
+        "control",
+        partial(_o4_root_fixture, "empty"),
+    ),
+    Fixture(
+        "s3.control.relative-root",
+        "control",
+        partial(_o4_root_fixture, "relative"),
+    ),
+    Fixture(
+        "s3.seed.run-signal-death",
+        "seed",
+        partial(_o4_own_run_verifier_seed, "signal"),
+    ),
+    Fixture(
+        "s3.seed.sigterm-not-forwarded",
+        "seed",
+        _o4_sigterm_forwarded_seed,
+    ),
+    Fixture(
+        "s3.seed.implicit-file",
+        "seed",
+        partial(_o4_refusal_fixture, "implicit-file"),
+    ),
+    Fixture(
+        "s3.seed.run-sandbox",
+        "seed",
+        partial(_o4_refusal_fixture, "run-sandbox"),
+    ),
+    Fixture(
+        "s3.seed.stdin-filename",
+        "seed",
+        partial(_o4_refusal_fixture, "stdin-filename"),
+    ),
+    Fixture(
+        "s3.seed.unknown-option",
+        "seed",
+        partial(_o4_refusal_fixture, "unknown-option"),
+    ),
+    Fixture(
+        "s3.seed.cross-compile-roundtripped",
+        "seed",
+        partial(_o4_exec_plan_fixture, "cross-compile"),
+    ),
+    Fixture("s3.seed.roots-not-from-real", "seed", _o4_roots_from_real_seed),
+    Fixture(
+        "s3.seed.option-value-as-source",
+        "seed",
+        _o4_option_value_source_seed,
+    ),
+    Fixture(
+        "s3.seed.missing-ledger",
+        "seed",
+        partial(_o4_header_refusal_seed, "missing"),
+    ),
+    Fixture(
+        "s3.seed.wrong-nonce",
+        "seed",
+        partial(_o4_header_refusal_seed, "nonce"),
+    ),
+    Fixture(
+        "s3.seed.refusal-not-recorded",
+        "seed",
+        partial(_o4_refusal_fixture, "refusal-recorded"),
+    ),
+    Fixture(
+        "s3.control.refusal",
+        "control",
+        partial(_o4_refusal_fixture, "control"),
+    ),
+    Fixture(
+        "s3.seed.parallel-ledger-corruption",
+        "seed",
+        partial(_o4_parallel_fixture, count=8, seed=True),
+    ),
+    Fixture(
+        "s3.control.parallel-ledger",
+        "control",
+        partial(_o4_parallel_fixture, count=2, seed=False),
+    ),
+    Fixture(
+        "amend-a.seed.negative-env-mutated",
+        "seed",
+        partial(_o4_amend_environment, "negative", control=False),
+    ),
+    Fixture(
+        "amend-a.control.negative-env",
+        "control",
+        partial(_o4_amend_environment, "negative", control=True),
+    ),
+    Fixture(
+        "amend-a.seed.positive-env-mutated",
+        "seed",
+        partial(_o4_amend_environment, "positive", control=False),
+    ),
+    Fixture(
+        "amend-a.control.positive-env",
+        "control",
+        partial(_o4_amend_environment, "positive", control=True),
+    ),
+    Fixture(
+        "amend-a.seed.run-env-mutated",
+        "seed",
+        partial(_o4_amend_environment, "run", control=False),
+    ),
+    Fixture(
+        "amend-a.control.run-env",
+        "control",
+        partial(_o4_amend_environment, "run", control=True),
+    ),
+    Fixture(
+        "amend-a.seed.opts-scrubbed",
+        "seed",
+        partial(_o4_amend_environment, "opts", control=False),
+    ),
+    Fixture(
+        "amend-a.control.opts-unchanged",
+        "control",
+        partial(_o4_amend_environment, "opts", control=True),
+    ),
+    Fixture("amend-a.seed.drop-cache", "seed", _o4_drop_cache_seed),
+    Fixture(
+        "o4.seed.config-header-refusals",
+        "seed",
+        _o4_config_header_refusals_seed,
+    ),
+    Fixture(
+        "o4.control.config-header",
+        "control",
+        _o4_config_header_control,
+    ),
+    Fixture(
+        "o4.seed.parser-io-refusals",
+        "seed",
+        _o4_parser_and_io_refusals_seed,
+    ),
+    Fixture(
+        "o4.control.parser",
+        "control",
+        _o4_parser_control,
+    ),
+    Fixture(
+        "o4.seed.matcher-malformed",
+        "seed",
+        _o4_matcher_malformed_seed,
+    ),
+    Fixture(
+        "o4.control.matcher-pattern",
+        "control",
+        _o4_matcher_pattern_control,
+    ),
+    Fixture(
+        "o4.seed.e3-error",
+        "seed",
+        _o4_e3_error_seed,
+    ),
+    Fixture(
+        "o4.seed.build-signal-forwarded",
+        "seed",
+        _o4_build_signal_forwarded_seed,
+    ),
+)
+O4_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
+    "o4.matcher": (
+        "s2.seed.matcher-variable-root",
+        "s2.seed.matcher-conflicting-kinds",
+        "s2.control.matcher-canonical",
+    ),
+    "o4.argv-and-roundtrip": (
+        "s3.seed.canonical-argv-drift",
+        "s3.seed.b-prefix-misparsed",
+        "s3.control.canonical-build",
+    ),
+    "o4.run-semantics": (
+        "s3.seed.run-consumer-failure",
+        "s3.seed.run-o-executes",
+        "s3.seed.run-signal-death",
+        "s3.control.run",
+    ),
+    "o4.refusals": (
+        "s3.seed.implicit-file",
+        "s3.seed.unknown-option",
+        "s3.seed.refusal-not-recorded",
+        "s3.control.refusal",
+    ),
+    "o4.environment": (
+        "amend-a.seed.drop-cache",
+        "amend-a.seed.positive-env-mutated",
+        "amend-a.control.negative-env",
+    ),
+    "o4.main-process-paths": (
+        "s3.seed.passthrough-mutated",
+        "s3.control.passthrough",
+        "s3.control.canonical-build",
+    ),
+    "o4.config-header-defensive": (
+        "o4.seed.config-header-refusals",
+        "o4.control.config-header",
+    ),
+    "o4.parser-io-defensive": (
+        "o4.seed.parser-io-refusals",
+        "o4.control.parser",
+    ),
+    "o4.matcher-defensive": (
+        "o4.seed.matcher-malformed",
+        "o4.control.matcher-pattern",
+    ),
+    "o4.e3-error": (
+        "o4.seed.e3-error",
+        "s3.control.canonical-build",
+    ),
+    "o4.build-signals": (
+        "o4.seed.build-signal-forwarded",
+        "s3.control.canonical-build",
+    ),
+}
 
 
 # ===== O5: ledger verification (owner U5). Keys "o5.". =====
