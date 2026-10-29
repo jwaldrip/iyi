@@ -3210,8 +3210,1374 @@ O4_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {}
 # ===== O5: ledger verification (owner U5). Keys "o5.". =====
 
 
-O5_FIXTURES: tuple[Fixture, ...] = ()
-O5_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {}
+
+
+def _o5_census() -> dict:
+    return {
+        "census_version": 1,
+        "driver": "demo",
+        "sites": [
+            {
+                "lines": [10],
+                "command": "run",
+                "kind": "canonical-own",
+                "variants": [],
+            },
+            {
+                "lines": [15],
+                "command": "build",
+                "kind": "negative",
+                "variants": [
+                    {
+                        "id": "demo.negative.platform-excluded",
+                        "kind": "negative",
+                        "first_root": "{WORK}/excluded",
+                        "vars": {"value": {"values": ["excluded"]}},
+                        "sources": ["{REPO}/bench/std_demo_exercise.iyi"],
+                        "output": "{WORK}/excluded",
+                        "darwin": "platform-excluded",
+                        "requires": ["python3"],
+                        "verdict": {
+                            "lines": [15],
+                            "contains": ["status=1"],
+                        },
+                    }
+                ],
+            },
+        ],
+        "exec_evidence": [
+            {
+                "site_line": 10,
+                "out_template": "{WORK}/{name}",
+                "name_from_calls": {"11": "own"},
+            }
+        ],
+    }
+
+
+def _o5_add_variant(
+    census: dict,
+    *,
+    variant_id: str,
+    kind: str,
+    variables: dict,
+    evidence_name: str | None = None,
+) -> None:
+    site_line = 20 + len(census["sites"])
+    site = {
+        "lines": [site_line],
+        "command": "run",
+        "kind": kind,
+        "variants": [
+            {
+                "id": variant_id,
+                "kind": kind,
+                "first_root": "{WORK}/patched",
+                "vars": variables,
+                "sources": ["{REPO}/bench/std_demo_exercise.iyi"],
+                "output": "{WORK}/{name}",
+                "darwin": "required",
+                "requires": ["python3"],
+                "verdict": {"lines": [site_line], "contains": ["status=1"]},
+            }
+        ],
+    }
+    census["sites"].append(site)
+    if evidence_name is not None:
+        census["exec_evidence"].append(
+            {
+                "site_line": site_line,
+                "out_template": "{WORK}/{name}",
+                "name_from_calls": {str(site_line + 1): evidence_name},
+            }
+        )
+
+
+def _o5_pair(
+    *,
+    nonce: str,
+    driver: str,
+    invocation: str,
+    repo: str,
+    out: str,
+    own: bool,
+    canonical: bool = True,
+    variant_ids: tuple[str, ...] = (),
+    variant_kind: str | None = None,
+    bindings: dict | None = None,
+    mods_count: int = 1,
+    consumer_rc: int = 0,
+    run_form: bool = True,
+) -> list[dict]:
+    source = os.path.realpath(
+        os.path.join(repo, "bench", f"std_{driver}_exercise.iyi")
+    )
+    if not own:
+        source = os.path.realpath(os.path.join(repo, "bench", "helper.iyi"))
+    common = {
+        "v": 1,
+        "kind": "record",
+        "nonce": nonce,
+        "driver": driver,
+        "inv": invocation,
+        "pid": 100,
+        "t_ns": 1,
+        "mode": "roundtrip",
+        "command": "run" if run_form else "build",
+        "cwd": repo,
+        "argv": ["run" if run_form else "build", source],
+        "env_seen": {
+            "IYI_PATH": None,
+            "CRYSTAL_PATH": None,
+            "IYI_CACHE_DIR": None,
+            "IYI_OPTS": None,
+            "CRYSTAL_OPTS": None,
+        },
+        "roots": [],
+        "canonical": canonical,
+        "first_noncanonical_root": None if canonical else os.path.dirname(out),
+        "variant_ids": list(variant_ids),
+        "variant_kind": variant_kind,
+        "bindings": bindings or {},
+        "sources": [source],
+        "out": out,
+        "own": own,
+        "reason": None,
+    }
+    begin = dict(common, phase="begin")
+    consumer_sha = "a" * 64 if consumer_rc == 0 else None
+    end = dict(
+        common,
+        phase="end",
+        producer={"argv": ["fake", "build"], "rc": 0, "mods_count": mods_count},
+        consumer={
+            "argv": ["fake", "build"],
+            "rc": consumer_rc,
+            "out_written": consumer_rc == 0,
+            "out_sha256": consumer_sha,
+        },
+        run=(
+            {"argv": [out], "rc": 0, "signal": None}
+            if run_form and consumer_rc == 0
+            else None
+        ),
+        out_ref=None,
+        out_ino=None,
+        out_mtime_ns=None,
+        atime_set_ns=None,
+        e3_error=None,
+        interrupted=False,
+        exit=consumer_rc,
+    )
+    return [begin, end]
+
+
+def _o5_exec_record(
+    *,
+    nonce: str,
+    driver: str,
+    invocation: str,
+    mode: str,
+    command: str,
+    canonical: bool,
+    variant_ids: tuple[str, ...] = (),
+    variant_kind: str | None = None,
+    bindings: dict | None = None,
+    phase: str = "exec",
+) -> dict:
+    return {
+        "v": 1,
+        "kind": "record",
+        "nonce": nonce,
+        "driver": driver,
+        "inv": invocation,
+        "pid": 200,
+        "t_ns": 2,
+        "phase": phase,
+        "mode": mode,
+        "command": command,
+        "cwd": "/",
+        "argv": [command],
+        "env_seen": {},
+        "roots": [],
+        "canonical": canonical,
+        "first_noncanonical_root": None if canonical else "/patched",
+        "variant_ids": list(variant_ids),
+        "variant_kind": variant_kind,
+        "bindings": bindings or {},
+        "sources": [],
+        "out": None,
+        "own": False,
+        "reason": None,
+        "interrupted": False,
+        "run": None,
+        "exit": 0,
+    }
+
+
+def _o5_descriptor(
+    *,
+    include_header: bool,
+    header: dict,
+    census: dict,
+    records: list[dict],
+    raw_tail: tuple[str, ...],
+) -> bytes:
+    return json.dumps(
+        {
+            "include_header": include_header,
+            "header": header,
+            "census": census,
+            "records": records,
+            "raw_tail": raw_tail,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+
+
+def _o5_write_ledger(
+    path: str,
+    *,
+    include_header: bool,
+    header: dict,
+    records: list[dict],
+    raw_tail: tuple[str, ...] = (),
+) -> None:
+    lines = []
+    if include_header:
+        lines.append(json.dumps(header, sort_keys=True))
+    lines.extend(json.dumps(record, sort_keys=True) for record in records)
+    lines.extend(raw_tail)
+    with open(path, "w", encoding="utf-8") as ledger_file:
+        ledger_file.write("\n".join(lines) + "\n")
+
+
+def _o5_verify(
+    ledger_path: str,
+    *,
+    census: dict,
+    repo: str,
+    work_tmp: str,
+    stat_fn: Callable[[str], os.stat_result] = os.stat,
+) -> proofkit_mod.LedgerVerdict:
+    return proofkit_mod.verify_ledger(
+        ledger_path,
+        census=census,
+        driver="demo",
+        nonce="nonce-1",
+        attempt=1,
+        chain_id="12345678" + "a" * 24,
+        work_tmp=work_tmp,
+        repo=repo,
+        stat_fn=stat_fn,
+    )
+
+
+def _o5_ledger_fixture(case: str) -> Observation:
+    with tempfile.TemporaryDirectory(prefix="iyi-o5-ledger-") as root:
+        repo = os.path.join(root, "repo")
+        work_tmp = os.path.join(root, "t")
+        work = os.path.join(work_tmp, "w0")
+        os.makedirs(os.path.join(repo, "bench"))
+        os.makedirs(work)
+        ledger_path = os.path.join(root, "ledger.jsonl")
+        header = {
+            "v": 1,
+            "kind": "header",
+            "nonce": "nonce-1",
+            "driver": "demo",
+            "attempt": 1,
+            "chain_id": "12345678" + "a" * 24,
+        }
+        census = _o5_census()
+        records = _o5_pair(
+            nonce="nonce-1",
+            driver="demo",
+            invocation="own-1",
+            repo=repo,
+            out=os.path.join(work, "own"),
+            own=True,
+        )
+        include_header = True
+        raw_tail: tuple[str, ...] = ()
+        file_mode = "normal"
+        control = _o5_descriptor(
+            include_header=include_header,
+            header=header,
+            census=census,
+            records=records,
+            raw_tail=raw_tail,
+        ) + b"\0normal"
+        expected: tuple[str, ...] = ()
+        detail = "unmodified passing ledger"
+
+        if case == "ledger-stale-header":
+            header["nonce"] = "stale-nonce"
+            expected = ("STALE",)
+            detail = "header nonce changed"
+        elif case in ("ledger-misclassified", "canonical-observed-negative"):
+            records.append(
+                _o5_exec_record(
+                    nonce="nonce-1",
+                    driver="demo",
+                    invocation=f"{case}-1",
+                    mode="observed-negative",
+                    command="build",
+                    canonical=True,
+                )
+            )
+            expected = ("MISCLASSIFIED",)
+            detail = "canonical exec appended in observed-negative mode"
+        elif case == "ledger-unfaithful":
+            records.pop(0)
+            expected = ("UNFAITHFUL",)
+            detail = "begin record removed"
+        elif case == "ledger-divergence":
+            records.extend(
+                _o5_pair(
+                    nonce="nonce-1",
+                    driver="demo",
+                    invocation="divergent-helper",
+                    repo=repo,
+                    out=os.path.join(work, "helper"),
+                    own=False,
+                    consumer_rc=7,
+                    run_form=False,
+                )
+            )
+            expected = ("DIVERGENCE",)
+            detail = "canonical-other consumer changed to exit 7"
+        elif case == "ledger-not-roundtripped":
+            records[1]["producer"]["mods_count"] = 0
+            expected = ("NOT-ROUNDTRIPPED",)
+            detail = "own producer mods_count changed from 1 to 0"
+        elif case == "own-source-copy":
+            copied_source = os.path.join(
+                repo,
+                "copied",
+                "std_demo_exercise.iyi",
+            )
+            for record in records:
+                record["sources"] = [copied_source]
+            expected = ("NOT-ROUNDTRIPPED",)
+            detail = "own source changed to a same-named noncanonical copy"
+        elif case == "consumer-no-out":
+            divergent = _o5_pair(
+                nonce="nonce-1",
+                driver="demo",
+                invocation="consumer-no-out",
+                repo=repo,
+                out=os.path.join(work, "helper-no-out"),
+                own=False,
+            )
+            divergent[1]["consumer"]["out_written"] = False
+            records.extend(divergent)
+            expected = ("DIVERGENCE",)
+            detail = "canonical-other consumer succeeded without writing OUT"
+        elif case == "ledger-not-exercised":
+            _o5_add_variant(
+                census,
+                variant_id="demo.negative.missing",
+                kind="negative",
+                variables={"flavor": {"values": ["required"]}},
+            )
+            expected = ("NOT-EXERCISED",)
+            detail = "required enumerated value added without a record"
+        elif case == "ledger-positive-negative-only":
+            _o5_add_variant(
+                census,
+                variant_id="demo.positive.only-negative",
+                kind="positive",
+                variables={"flavor": {"values": ["fast"]}},
+                evidence_name="positive-negative-only",
+            )
+            records.append(
+                _o5_exec_record(
+                    nonce="nonce-1",
+                    driver="demo",
+                    invocation="positive-as-negative",
+                    mode="observed-negative",
+                    command="build",
+                    canonical=False,
+                    variant_ids=("demo.positive.only-negative",),
+                    variant_kind="positive",
+                    bindings={
+                        "demo.positive.only-negative": {"flavor": "fast"}
+                    },
+                )
+            )
+            expected = ("MISCLASSIFIED", "NOT-EXECUTED", "NOT-EXERCISED")
+            detail = "positive variant represented only by observed-negative exec"
+        elif case == "file-missing":
+            file_mode = "missing"
+            expected = ("STALE",)
+            detail = "ledger file omitted"
+        elif case == "file-empty":
+            file_mode = "empty"
+            expected = ("STALE",)
+            detail = "ledger file truncated to zero bytes"
+        elif case == "header-malformed":
+            file_mode = "malformed-header"
+            expected = ("STALE", "UNFAITHFUL")
+            detail = "header line replaced by malformed JSON"
+        elif case == "header-missing":
+            include_header = False
+            expected = ("STALE",)
+            detail = "header line removed"
+        elif case == "header-attempt":
+            header["attempt"] = 2
+            expected = ("STALE",)
+            detail = "header attempt changed from 1 to 2"
+        elif case == "header-chain":
+            header["chain_id"] = "87654321" + "b" * 24
+            expected = ("STALE",)
+            detail = "header chain_id changed"
+        elif case == "header-driver":
+            header["driver"] = "foreign-driver"
+            expected = ("STALE",)
+            detail = "header driver changed"
+        elif case == "record-foreign-nonce":
+            for record in records:
+                record["nonce"] = "foreign-nonce"
+            expected = ("STALE",)
+            detail = "paired records' nonce changed"
+        elif case == "record-foreign-driver":
+            for record in records:
+                record["driver"] = "foreign-driver"
+            expected = ("STALE",)
+            detail = "paired records' driver changed"
+        elif case == "refused-record":
+            records.append(
+                _o5_exec_record(
+                    nonce="nonce-1",
+                    driver="demo",
+                    invocation="refused-1",
+                    mode="refused",
+                    command="build",
+                    canonical=False,
+                    phase="refused",
+                )
+            )
+            expected = ("MISCLASSIFIED",)
+            detail = "refused record appended"
+        elif case == "unclassified-record":
+            records.append(
+                _o5_exec_record(
+                    nonce="nonce-1",
+                    driver="demo",
+                    invocation="unclassified-record",
+                    mode="unclassified",
+                    command="fmt",
+                    canonical=False,
+                )
+            )
+            expected = ("MISCLASSIFIED",)
+            detail = "unclassified exec record appended"
+        elif case == "noncanonical-without-ids":
+            records.append(
+                _o5_exec_record(
+                    nonce="nonce-1",
+                    driver="demo",
+                    invocation="unclassified-1",
+                    mode="observed-negative",
+                    command="build",
+                    canonical=False,
+                )
+            )
+            expected = ("MISCLASSIFIED",)
+            detail = "non-canonical build appended without variant ids"
+        elif case == "unknown-variant-id":
+            records.append(
+                _o5_exec_record(
+                    nonce="nonce-1",
+                    driver="demo",
+                    invocation="unknown-variant-1",
+                    mode="observed-negative",
+                    command="build",
+                    canonical=False,
+                    variant_ids=("demo.unknown",),
+                    variant_kind="negative",
+                )
+            )
+            expected = ("MISCLASSIFIED",)
+            detail = "unknown variant id appended"
+        elif case == "malformed-variant-ids":
+            malformed_ids = _o5_exec_record(
+                nonce="nonce-1",
+                driver="demo",
+                invocation="malformed-variant-ids",
+                mode="observed-negative",
+                command="build",
+                canonical=False,
+            )
+            malformed_ids["variant_ids"] = "not-a-list"
+            records.append(malformed_ids)
+            expected = ("MISCLASSIFIED",)
+            detail = "variant_ids changed from a list to a string"
+        elif case == "variant-kind-mismatch":
+            _o5_add_variant(
+                census,
+                variant_id="demo.negative.kind",
+                kind="negative",
+                variables={},
+            )
+            records.append(
+                _o5_exec_record(
+                    nonce="nonce-1",
+                    driver="demo",
+                    invocation="variant-kind-mismatch",
+                    mode="observed-negative",
+                    command="build",
+                    canonical=False,
+                    variant_ids=("demo.negative.kind",),
+                    variant_kind="positive",
+                )
+            )
+            expected = ("MISCLASSIFIED",)
+            detail = "record variant_kind changed away from census kind"
+        elif case == "negative-roundtrip":
+            _o5_add_variant(
+                census,
+                variant_id="demo.negative.roundtrip",
+                kind="negative",
+                variables={},
+            )
+            records.extend(
+                _o5_pair(
+                    nonce="nonce-1",
+                    driver="demo",
+                    invocation="negative-roundtrip",
+                    repo=repo,
+                    out=os.path.join(work, "negative-roundtrip"),
+                    own=False,
+                    canonical=False,
+                    variant_ids=("demo.negative.roundtrip",),
+                    variant_kind="negative",
+                )
+            )
+            expected = ("MISCLASSIFIED",)
+            detail = "negative variant appended in roundtrip mode"
+        elif case == "unpaired-end":
+            records.append(
+                _o5_pair(
+                    nonce="nonce-1",
+                    driver="demo",
+                    invocation="end-only",
+                    repo=repo,
+                    out=os.path.join(work, "helper"),
+                    own=False,
+                )[1]
+            )
+            expected = ("UNFAITHFUL",)
+            detail = "end record appended without its begin"
+        elif case == "interrupted":
+            interrupted = _o5_exec_record(
+                nonce="nonce-1",
+                driver="demo",
+                invocation="interrupted-1",
+                mode="unchanged",
+                command="fmt",
+                canonical=True,
+            )
+            interrupted["interrupted"] = True
+            records.append(interrupted)
+            expected = ("UNFAITHFUL",)
+            detail = "exec record marked interrupted"
+        elif case == "run-signal":
+            records[1]["run"]["signal"] = 15
+            expected = ("UNFAITHFUL",)
+            detail = "run signal changed from null to 15"
+        elif case == "malformed-line":
+            raw_tail = ("{not-json",)
+            expected = ("UNFAITHFUL",)
+            detail = "one malformed JSON line appended"
+        elif case == "blank-line":
+            raw_tail = ("",)
+            expected = ("UNFAITHFUL",)
+            detail = "blank JSONL line appended"
+        elif case == "invalid-record":
+            records.append({"v": 1, "kind": "not-record"})
+            expected = ("UNFAITHFUL",)
+            detail = "non-record JSON object appended"
+        elif case == "missing-inv":
+            del records[1]["inv"]
+            expected = ("UNFAITHFUL",)
+            detail = "end record invocation id removed"
+        elif case == "pair-field-drift":
+            records[1]["cwd"] = os.path.join(repo, "drifted")
+            expected = ("UNFAITHFUL",)
+            detail = "end record cwd changed away from its begin"
+        elif case == "e2-name-repeated":
+            records.extend(
+                _o5_pair(
+                    nonce="nonce-1",
+                    driver="demo",
+                    invocation="own-duplicate",
+                    repo=repo,
+                    out=os.path.join(work, "own"),
+                    own=True,
+                )
+            )
+            expected = ("NOT-EXECUTED",)
+            detail = "second own record reuses the declared output name"
+        elif case == "e2-count-short":
+            census["exec_evidence"][0]["name_from_calls"]["12"] = "second"
+            expected = ("NOT-EXECUTED",)
+            detail = "second declared output name added without a record"
+        elif case == "e2-consumer-unhashed":
+            records[1]["consumer"]["out_sha256"] = None
+            expected = ("NOT-EXECUTED", "NOT-ROUNDTRIPPED")
+            detail = "own consumer hash changed from a digest to null"
+        elif case == "e2-unmatched-own":
+            records.extend(
+                _o5_pair(
+                    nonce="nonce-1",
+                    driver="demo",
+                    invocation="own-unmatched",
+                    repo=repo,
+                    out=os.path.join(work, "stray"),
+                    own=True,
+                )
+            )
+            expected = ("NOT-EXECUTED",)
+            detail = "extra own output does not match execution evidence"
+        elif case == "e2-unknown-placeholder":
+            census["exec_evidence"][0]["out_template"] = "{WORK}/{unknown}"
+            expected = ("NOT-EXECUTED",)
+            detail = "execution evidence name placeholder changed to unknown"
+        elif case == "e2-repo-template-control":
+            repo_out = os.path.join(repo, "own")
+            for record in records:
+                record["out"] = repo_out
+            records[1]["run"]["argv"][0] = repo_out
+            census["exec_evidence"][0]["out_template"] = "{REPO}/own"
+            census["exec_evidence"][0]["name_from_calls"] = {}
+            detail = "passing static {REPO} execution-evidence template"
+        elif case == "value-missing":
+            _o5_add_variant(
+                census,
+                variant_id="demo.negative.values",
+                kind="negative",
+                variables={"flavor": {"values": ["red", "blue"]}},
+            )
+            records.append(
+                _o5_exec_record(
+                    nonce="nonce-1",
+                    driver="demo",
+                    invocation="value-red",
+                    mode="observed-negative",
+                    command="build",
+                    canonical=False,
+                    variant_ids=("demo.negative.values",),
+                    variant_kind="negative",
+                    bindings={"demo.negative.values": {"flavor": "red"}},
+                )
+            )
+            expected = ("NOT-EXERCISED",)
+            detail = "blue value omitted while red remains covered"
+        elif case == "pattern-var-unexercised":
+            _o5_add_variant(
+                census,
+                variant_id="demo.negative.pattern",
+                kind="negative",
+                variables={
+                    "mutation": {
+                        "pattern": "[1-9][0-9]*",
+                        "pattern_reason_line": 20,
+                    }
+                },
+            )
+            expected = ("NOT-EXERCISED",)
+            detail = "required pattern variable added without a record"
+        elif case == "positive-no-success":
+            _o5_add_variant(
+                census,
+                variant_id="demo.positive.no-success",
+                kind="positive",
+                variables={},
+                evidence_name="positive",
+            )
+            records.extend(
+                _o5_pair(
+                    nonce="nonce-1",
+                    driver="demo",
+                    invocation="positive-no-success",
+                    repo=repo,
+                    out=os.path.join(work, "positive"),
+                    own=False,
+                    canonical=False,
+                    variant_ids=("demo.positive.no-success",),
+                    variant_kind="positive",
+                    mods_count=0,
+                )
+            )
+            expected = ("NOT-EXERCISED",)
+            detail = "positive producer mods_count changed from 1 to 0"
+        elif case == "variant-coverage-control":
+            _o5_add_variant(
+                census,
+                variant_id="demo.negative.covered",
+                kind="negative",
+                variables={
+                    "flavor": {"values": ["red", "blue"]},
+                    "mutation": {
+                        "pattern": "[1-9][0-9]*",
+                        "pattern_reason_line": 20,
+                    },
+                },
+            )
+            for flavor, mutation in (("red", "1"), ("blue", "2")):
+                records.append(
+                    _o5_exec_record(
+                        nonce="nonce-1",
+                        driver="demo",
+                        invocation=f"covered-{flavor}",
+                        mode="observed-negative",
+                        command="build",
+                        canonical=False,
+                        variant_ids=("demo.negative.covered",),
+                        variant_kind="negative",
+                        bindings={
+                            "demo.negative.covered": {
+                                "flavor": flavor,
+                                "mutation": mutation,
+                            }
+                        },
+                    )
+                )
+            detail = "all enumerated and pattern bindings are represented"
+        elif case == "positive-success-control":
+            _o5_add_variant(
+                census,
+                variant_id="demo.positive.success",
+                kind="positive",
+                variables={},
+                evidence_name="positive",
+            )
+            records.extend(
+                _o5_pair(
+                    nonce="nonce-1",
+                    driver="demo",
+                    invocation="positive-success",
+                    repo=repo,
+                    out=os.path.join(work, "positive"),
+                    own=False,
+                    canonical=False,
+                    variant_ids=("demo.positive.success",),
+                    variant_kind="positive",
+                )
+            )
+            detail = "positive variant has a successful hashed roundtrip"
+        elif case == "run-form-not-counted":
+            records[1]["run"]["argv"][0] = os.path.join(work, "other")
+            expected = ("NOT-EXECUTED",)
+            detail = "run argv[0] changed away from OUT"
+        elif case not in (
+            "control",
+            "e2-repo-template-control",
+            "variant-coverage-control",
+            "positive-success-control",
+        ):
+            raise ValueError(f"unknown O5 ledger fixture case: {case}")
+
+        seeded = _o5_descriptor(
+            include_header=include_header,
+            header=header,
+            census=census,
+            records=records,
+            raw_tail=raw_tail,
+        ) + b"\0" + file_mode.encode()
+        if file_mode == "normal":
+            _o5_write_ledger(
+                ledger_path,
+                include_header=include_header,
+                header=header,
+                records=records,
+                raw_tail=raw_tail,
+            )
+        elif file_mode == "empty":
+            with open(ledger_path, "wb"):
+                pass
+        elif file_mode == "malformed-header":
+            with open(ledger_path, "w", encoding="utf-8") as ledger_file:
+                ledger_file.write("{malformed-header\n")
+        elif file_mode != "missing":
+            raise ValueError(f"unknown O5 ledger file mode: {file_mode}")
+        verdict = _o5_verify(
+            ledger_path,
+            census=census,
+            repo=repo,
+            work_tmp=work_tmp,
+        )
+        is_control = case in (
+            "control",
+            "e2-repo-template-control",
+            "variant-coverage-control",
+            "positive-success-control",
+        )
+        return Observation(
+            expected=expected,
+            got=tuple(sorted(verdict.statuses)),
+            applied=(
+                ""
+                if is_control
+                else f"serialized_input_changed={str(seeded != control).lower()}; {detail}"
+            ),
+        )
+
+
+def _o5_e3_fixture(case: str) -> Observation:
+    with tempfile.TemporaryDirectory(prefix="iyi-o5-e3-") as root:
+        repo = os.path.join(root, "repo")
+        work_tmp = os.path.join(root, "t")
+        work = os.path.join(work_tmp, "w0")
+        os.makedirs(os.path.join(repo, "bench"))
+        os.makedirs(work)
+        out = os.path.join(work, "own")
+        out_ref = os.path.join(root, "own.ref")
+        shutil.copyfile("/usr/bin/true", out)
+        os.chmod(out, 0o755)
+        os.link(out, out_ref)
+        linked = os.stat(out_ref)
+        recorded_mtime = linked.st_mtime_ns
+        with open(out, "rb") as executable:
+            expected_sha = hashlib.sha256(executable.read()).hexdigest()
+        atime_set = recorded_mtime - 1_000_000_000
+        os.utime(out, ns=(atime_set, recorded_mtime))
+
+        census = _o5_census()
+        records = _o5_pair(
+            nonce="nonce-1",
+            driver="demo",
+            invocation="own-e3",
+            repo=repo,
+            out=out,
+            own=True,
+            run_form=False,
+        )
+        end = records[1]
+        end["consumer"]["out_sha256"] = expected_sha
+        end["out_ref"] = out_ref
+        end["out_ino"] = linked.st_ino
+        end["out_mtime_ns"] = recorded_mtime
+        end["atime_set_ns"] = atime_set
+        ledger_path = os.path.join(root, "ledger.jsonl")
+        header = {
+            "v": 1,
+            "kind": "header",
+            "nonce": "nonce-1",
+            "driver": "demo",
+            "attempt": 1,
+            "chain_id": "12345678" + "a" * 24,
+        }
+        stat_calls: list[str] = []
+        expected_statuses: tuple[str, ...] = ()
+        detail = "hard-linked /usr/bin/true executed before verification"
+
+        def observing_stat(path: str) -> os.stat_result:
+            stat_calls.append(path)
+            return os.stat(path)
+
+        stat_fn: Callable[[str], os.stat_result] = observing_stat
+        if case == "control":
+            completed = subprocess.run(
+                [out],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            if completed.returncode != 0:
+                raise RuntimeError(
+                    f"hard-linked /usr/bin/true control exited {completed.returncode}"
+                )
+        elif case == "ref-missing":
+            end["out_ref"] = None
+            expected_statuses = ("NOT-EXECUTED",)
+            detail = "seed did not execute; out_ref changed to null"
+        elif case == "inode-changed":
+            os.unlink(out_ref)
+            shutil.copyfile(out, out_ref)
+            os.chmod(out_ref, 0o755)
+            replacement = os.stat(out_ref)
+            os.utime(
+                out_ref,
+                ns=(recorded_mtime + 1_000_000_000, recorded_mtime),
+            )
+            expected_statuses = ("NOT-EXECUTED",)
+            detail = (
+                "seed did not execute; "
+                f"inode_changed={replacement.st_ino != linked.st_ino}"
+            )
+        elif case == "atime-not-advanced":
+            expected_statuses = ("NOT-EXECUTED",)
+            detail = "seed did not execute; atime remains at the shim-set value"
+        elif case == "sha-changed":
+            os.utime(
+                out_ref,
+                ns=(recorded_mtime + 1_000_000_000, recorded_mtime),
+            )
+
+            def mutating_stat(path: str) -> os.stat_result:
+                stat_calls.append(path)
+                before_read = os.stat(path)
+                with open(path, "ab") as executable:
+                    executable.write(b"o5-after-stat")
+                return before_read
+
+            stat_fn = mutating_stat
+            expected_statuses = ("OUT-MODIFIED",)
+            detail = "seed did not execute; stat_fn mutates bytes after stat"
+        elif case == "copy-modified":
+            with open(out_ref, "r+b") as executable:
+                executable.seek(0)
+                executable.write(b"o5-in-place")
+            modified = os.stat(out_ref)
+            os.utime(
+                out_ref,
+                ns=(
+                    recorded_mtime + 1_000_000_000,
+                    modified.st_mtime_ns,
+                ),
+            )
+            expected_statuses = ("OUT-MODIFIED",)
+            detail = "seed did not execute; hard-linked OUT overwritten in place"
+        elif case == "stat-failed":
+            def failing_stat(path: str) -> os.stat_result:
+                stat_calls.append(path)
+                raise OSError("seeded stat failure")
+
+            stat_fn = failing_stat
+            expected_statuses = ("NOT-EXECUTED",)
+            detail = "seed did not execute; stat_fn raises after recording its call"
+        elif case == "read-failed":
+            os.utime(
+                out_ref,
+                ns=(recorded_mtime + 1_000_000_000, recorded_mtime),
+            )
+
+            def removing_stat(path: str) -> os.stat_result:
+                stat_calls.append(path)
+                before_read = os.stat(path)
+                os.unlink(path)
+                return before_read
+
+            stat_fn = removing_stat
+            expected_statuses = ("OUT-MODIFIED",)
+            detail = "seed did not execute; stat_fn removes OUT after stat"
+        else:
+            raise ValueError(f"unknown O5 E3 fixture case: {case}")
+
+        _o5_write_ledger(
+            ledger_path,
+            include_header=True,
+            header=header,
+            records=records,
+        )
+        verdict = _o5_verify(
+            ledger_path,
+            census=census,
+            repo=repo,
+            work_tmp=work_tmp,
+            stat_fn=stat_fn,
+        )
+        try:
+            current_atime = (
+                os.stat(out_ref).st_atime_ns
+                if isinstance(end.get("out_ref"), str)
+                else None
+            )
+        except OSError:
+            current_atime = None
+        expected_calls = 0 if case == "ref-missing" else 1
+        return Observation(
+            expected={
+                "statuses": expected_statuses,
+                "stat_calls": expected_calls,
+                "control_atime_advanced": True if case == "control" else None,
+            },
+            got={
+                "statuses": tuple(sorted(verdict.statuses)),
+                "stat_calls": len(stat_calls),
+                "control_atime_advanced": (
+                    current_atime > recorded_mtime
+                    if case == "control" and current_atime is not None
+                    else None
+                ),
+            },
+            applied=("" if case == "control" else f"{detail}; stat_calls={len(stat_calls)}"),
+        )
+
+
+O5_FIXTURES: tuple[Fixture, ...] = (
+    Fixture(
+        "s3.seed.ledger-stale-header",
+        "seed",
+        partial(_o5_ledger_fixture, "ledger-stale-header"),
+    ),
+    Fixture(
+        "s3.seed.ledger-misclassified",
+        "seed",
+        partial(_o5_ledger_fixture, "ledger-misclassified"),
+    ),
+    Fixture(
+        "s3.seed.ledger-unfaithful",
+        "seed",
+        partial(_o5_ledger_fixture, "ledger-unfaithful"),
+    ),
+    Fixture(
+        "s3.seed.ledger-divergence",
+        "seed",
+        partial(_o5_ledger_fixture, "ledger-divergence"),
+    ),
+    Fixture(
+        "o5.seed.consumer-no-out",
+        "seed",
+        partial(_o5_ledger_fixture, "consumer-no-out"),
+    ),
+    Fixture(
+        "s3.seed.ledger-not-roundtripped",
+        "seed",
+        partial(_o5_ledger_fixture, "ledger-not-roundtripped"),
+    ),
+    Fixture(
+        "o5.seed.own-source-copy",
+        "seed",
+        partial(_o5_ledger_fixture, "own-source-copy"),
+    ),
+    Fixture(
+        "s3.seed.ledger-not-exercised",
+        "seed",
+        partial(_o5_ledger_fixture, "ledger-not-exercised"),
+    ),
+    Fixture(
+        "s3.seed.ledger-positive-negative-only",
+        "seed",
+        partial(_o5_ledger_fixture, "ledger-positive-negative-only"),
+    ),
+    Fixture(
+        "s3.control.ledger",
+        "control",
+        partial(_o5_ledger_fixture, "control"),
+    ),
+    Fixture(
+        "o5.seed.file-missing",
+        "seed",
+        partial(_o5_ledger_fixture, "file-missing"),
+    ),
+    Fixture(
+        "o5.seed.file-empty",
+        "seed",
+        partial(_o5_ledger_fixture, "file-empty"),
+    ),
+    Fixture(
+        "o5.seed.header-malformed",
+        "seed",
+        partial(_o5_ledger_fixture, "header-malformed"),
+    ),
+    Fixture(
+        "o5.seed.header-missing",
+        "seed",
+        partial(_o5_ledger_fixture, "header-missing"),
+    ),
+    Fixture(
+        "o5.seed.header-attempt",
+        "seed",
+        partial(_o5_ledger_fixture, "header-attempt"),
+    ),
+    Fixture(
+        "o5.seed.header-chain",
+        "seed",
+        partial(_o5_ledger_fixture, "header-chain"),
+    ),
+    Fixture(
+        "o5.seed.header-driver",
+        "seed",
+        partial(_o5_ledger_fixture, "header-driver"),
+    ),
+    Fixture(
+        "o5.seed.record-foreign-nonce",
+        "seed",
+        partial(_o5_ledger_fixture, "record-foreign-nonce"),
+    ),
+    Fixture(
+        "o5.seed.record-foreign-driver",
+        "seed",
+        partial(_o5_ledger_fixture, "record-foreign-driver"),
+    ),
+    Fixture(
+        "o5.seed.refused-record",
+        "seed",
+        partial(_o5_ledger_fixture, "refused-record"),
+    ),
+    Fixture(
+        "o5.seed.unclassified-record",
+        "seed",
+        partial(_o5_ledger_fixture, "unclassified-record"),
+    ),
+    Fixture(
+        "o5.seed.noncanonical-without-ids",
+        "seed",
+        partial(_o5_ledger_fixture, "noncanonical-without-ids"),
+    ),
+    Fixture(
+        "o5.seed.canonical-observed-negative",
+        "seed",
+        partial(_o5_ledger_fixture, "canonical-observed-negative"),
+    ),
+    Fixture(
+        "o5.seed.unknown-variant-id",
+        "seed",
+        partial(_o5_ledger_fixture, "unknown-variant-id"),
+    ),
+    Fixture(
+        "o5.seed.malformed-variant-ids",
+        "seed",
+        partial(_o5_ledger_fixture, "malformed-variant-ids"),
+    ),
+    Fixture(
+        "o5.seed.variant-kind-mismatch",
+        "seed",
+        partial(_o5_ledger_fixture, "variant-kind-mismatch"),
+    ),
+    Fixture(
+        "o5.seed.negative-roundtrip",
+        "seed",
+        partial(_o5_ledger_fixture, "negative-roundtrip"),
+    ),
+    Fixture(
+        "o5.seed.unpaired-end",
+        "seed",
+        partial(_o5_ledger_fixture, "unpaired-end"),
+    ),
+    Fixture(
+        "o5.seed.interrupted",
+        "seed",
+        partial(_o5_ledger_fixture, "interrupted"),
+    ),
+    Fixture(
+        "o5.seed.run-signal",
+        "seed",
+        partial(_o5_ledger_fixture, "run-signal"),
+    ),
+    Fixture(
+        "o5.seed.malformed-line",
+        "seed",
+        partial(_o5_ledger_fixture, "malformed-line"),
+    ),
+    Fixture(
+        "o5.seed.blank-line",
+        "seed",
+        partial(_o5_ledger_fixture, "blank-line"),
+    ),
+    Fixture(
+        "o5.seed.invalid-record",
+        "seed",
+        partial(_o5_ledger_fixture, "invalid-record"),
+    ),
+    Fixture(
+        "o5.seed.missing-inv",
+        "seed",
+        partial(_o5_ledger_fixture, "missing-inv"),
+    ),
+    Fixture(
+        "o5.seed.pair-field-drift",
+        "seed",
+        partial(_o5_ledger_fixture, "pair-field-drift"),
+    ),
+    Fixture(
+        "o5.seed.e2-name-repeated",
+        "seed",
+        partial(_o5_ledger_fixture, "e2-name-repeated"),
+    ),
+    Fixture(
+        "o5.seed.e2-count-short",
+        "seed",
+        partial(_o5_ledger_fixture, "e2-count-short"),
+    ),
+    Fixture(
+        "o5.seed.e2-consumer-unhashed",
+        "seed",
+        partial(_o5_ledger_fixture, "e2-consumer-unhashed"),
+    ),
+    Fixture(
+        "o5.seed.e2-unmatched-own",
+        "seed",
+        partial(_o5_ledger_fixture, "e2-unmatched-own"),
+    ),
+    Fixture(
+        "o5.seed.e2-unknown-placeholder",
+        "seed",
+        partial(_o5_ledger_fixture, "e2-unknown-placeholder"),
+    ),
+    Fixture(
+        "o5.control.e2-repo-template",
+        "control",
+        partial(_o5_ledger_fixture, "e2-repo-template-control"),
+    ),
+    Fixture(
+        "o5.seed.e3-ref-missing",
+        "seed",
+        partial(_o5_e3_fixture, "ref-missing"),
+    ),
+    Fixture(
+        "o5.seed.e3-inode-changed",
+        "seed",
+        partial(_o5_e3_fixture, "inode-changed"),
+    ),
+    Fixture(
+        "o5.seed.e3-atime-not-advanced",
+        "seed",
+        partial(_o5_e3_fixture, "atime-not-advanced"),
+    ),
+    Fixture(
+        "o5.seed.e3-sha-changed",
+        "seed",
+        partial(_o5_e3_fixture, "sha-changed"),
+    ),
+    Fixture(
+        "o5.seed.e3-stat-failed",
+        "seed",
+        partial(_o5_e3_fixture, "stat-failed"),
+    ),
+    Fixture(
+        "o5.seed.e3-read-failed",
+        "seed",
+        partial(_o5_e3_fixture, "read-failed"),
+    ),
+    Fixture(
+        "o5.seed.value-missing",
+        "seed",
+        partial(_o5_ledger_fixture, "value-missing"),
+    ),
+    Fixture(
+        "o5.seed.pattern-var-unexercised",
+        "seed",
+        partial(_o5_ledger_fixture, "pattern-var-unexercised"),
+    ),
+    Fixture(
+        "o5.seed.positive-no-success",
+        "seed",
+        partial(_o5_ledger_fixture, "positive-no-success"),
+    ),
+    Fixture(
+        "o5.control.variant-coverage",
+        "control",
+        partial(_o5_ledger_fixture, "variant-coverage-control"),
+    ),
+    Fixture(
+        "o5.control.positive-success",
+        "control",
+        partial(_o5_ledger_fixture, "positive-success-control"),
+    ),
+    Fixture(
+        "o5.control.e2-e3",
+        "control",
+        partial(_o5_e3_fixture, "control"),
+    ),
+    Fixture(
+        "amend-b.seed.not-executed",
+        "seed",
+        partial(_o5_e3_fixture, "atime-not-advanced"),
+    ),
+    Fixture(
+        "amend-b.seed.copy-modified",
+        "seed",
+        partial(_o5_e3_fixture, "copy-modified"),
+    ),
+    Fixture(
+        "amend-b.seed.move-replaced",
+        "seed",
+        partial(_o5_e3_fixture, "inode-changed"),
+    ),
+    Fixture(
+        "amend-b.seed.run-form-not-counted",
+        "seed",
+        partial(_o5_ledger_fixture, "run-form-not-counted"),
+    ),
+    Fixture(
+        "amend-b.control.stub-run",
+        "control",
+        partial(_o5_e3_fixture, "control"),
+    ),
+    Fixture(
+        "amend-b.control.run-form",
+        "control",
+        partial(_o5_ledger_fixture, "control"),
+    ),
+)
+O5_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
+    "o5.header": (
+        "o5.seed.file-missing",
+        "o5.seed.file-empty",
+        "o5.seed.header-malformed",
+        "o5.seed.header-missing",
+        "o5.seed.header-attempt",
+        "o5.seed.header-chain",
+        "o5.seed.header-driver",
+        "o5.seed.record-foreign-nonce",
+        "o5.seed.record-foreign-driver",
+        "s3.control.ledger",
+    ),
+    "o5.classification": (
+        "o5.seed.refused-record",
+        "o5.seed.unclassified-record",
+        "o5.seed.noncanonical-without-ids",
+        "o5.seed.canonical-observed-negative",
+        "o5.seed.unknown-variant-id",
+        "o5.seed.malformed-variant-ids",
+        "o5.seed.variant-kind-mismatch",
+        "o5.seed.negative-roundtrip",
+        "s3.control.ledger",
+    ),
+    "o5.faithful": (
+        "o5.seed.unpaired-end",
+        "o5.seed.interrupted",
+        "o5.seed.run-signal",
+        "o5.seed.malformed-line",
+        "o5.seed.blank-line",
+        "o5.seed.invalid-record",
+        "o5.seed.missing-inv",
+        "o5.seed.pair-field-drift",
+        "s3.control.ledger",
+    ),
+    "o5.divergence": (
+        "o5.seed.consumer-no-out",
+        "s3.control.ledger",
+    ),
+    "o5.not-roundtripped": (
+        "s3.seed.ledger-not-roundtripped",
+        "o5.seed.own-source-copy",
+        "s3.control.ledger",
+    ),
+    "o5.e2": (
+        "o5.seed.e2-name-repeated",
+        "o5.seed.e2-count-short",
+        "o5.seed.e2-consumer-unhashed",
+        "o5.seed.e2-unmatched-own",
+        "o5.seed.e2-unknown-placeholder",
+        "o5.control.e2-repo-template",
+        "o5.control.e2-e3",
+    ),
+    "o5.e3": (
+        "o5.seed.e3-ref-missing",
+        "o5.seed.e3-inode-changed",
+        "o5.seed.e3-atime-not-advanced",
+        "o5.seed.e3-sha-changed",
+        "o5.seed.e3-stat-failed",
+        "o5.seed.e3-read-failed",
+        "o5.control.e2-e3",
+    ),
+    "o5.not-exercised": (
+        "o5.seed.value-missing",
+        "o5.seed.pattern-var-unexercised",
+        "o5.seed.positive-no-success",
+        "o5.control.variant-coverage",
+        "o5.control.positive-success",
+        "s3.control.ledger",
+    ),
+}
 
 
 # ===== O6: artifact legs (owner U6). Keys "o6.". =====
