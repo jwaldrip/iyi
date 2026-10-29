@@ -2103,6 +2103,199 @@ def _fixture_e1_shared_token_control() -> Observation:
     return Observation(expected=expected, got=got)
 
 
+_HELPER_EXEC_SCRIPT_LINES = (
+    "#!/usr/bin/env bash",
+    "status=0",
+    'WORK="/tmp/helper-fixture"',
+    "build() {",
+    '  local name="$1"',
+    '  "$IYI" build -o "$WORK/$name" "$REPO/bench/std_helper_fixture_exercise.iyi"',
+    "}",
+    "local_run() {",
+    '  rm -rf "$2"',
+    '  "$1" "$2" >"$3" 2>&1',
+    "}",
+    "unrelated_label() {",
+    """  printf '%s\\n' "label: $1" """.rstrip(),
+    "}",
+    "if build alpha; then",
+    '  local_run "$WORK/alpha" "$WORK/cache-alpha" "$WORK/alpha.out"',
+    '  if ! grep -q PASS "$WORK/alpha.out"; then status=1; fi',
+    "fi",
+    "if build beta; then",
+    '  local_run "$WORK/beta" "$WORK/cache-beta" "$WORK/beta.out"',
+    '  if ! grep -q PASS "$WORK/beta.out"; then status=1; fi',
+    "fi",
+    'unrelated_label "not executable" >/dev/null',
+    'echo "helper fixture holds"',
+    "exit $status",
+)
+_HELPER_EXEC_SCRIPT_RELPATH = "bench/std_helper_fixture_exercise.sh"
+
+
+def _helper_exec_case() -> tuple[dict, bytes, str]:
+    script_bytes = ("\n".join(_HELPER_EXEC_SCRIPT_LINES) + "\n").encode()
+    census = {
+        "census_version": 1,
+        "driver": "helper_fixture",
+        "script": _HELPER_EXEC_SCRIPT_RELPATH,
+        "script_sha256": hashlib.sha256(script_bytes).hexdigest(),
+        "sites": [
+            {
+                "lines": [6],
+                "command": "build",
+                "kind": "canonical-own",
+                "contains": [
+                    '  "$IYI" build -o "$WORK/$name" '
+                    '"$REPO/bench/std_helper_fixture_exercise.iyi"'
+                ],
+                "variants": [],
+            }
+        ],
+        "non_invocations": [],
+        "skips": [],
+        "not_skips": [],
+        "pass_sentinel": {
+            "line": 24,
+            "regex": "^helper fixture holds$",
+            "text": 'echo "helper fixture holds"',
+        },
+        "exec_evidence": [
+            {
+                "site_line": 6,
+                "out_template": "{WORK}/{name}",
+                "name_from_calls": {
+                    "15": "alpha",
+                    "19": "beta",
+                },
+                "exec_lines": [10],
+                "exec_token": '"$WORK/$name"',
+                "verdict_lines": [17, 21],
+                "failure_marks": ["status=1"],
+                "refs_ok": [],
+                "helper_exec": {
+                    "function": "local_run",
+                    "definition_lines": [8, 11],
+                    "argument_position": 1,
+                    "call_lines": [16, 20],
+                },
+            }
+        ],
+    }
+    return census, script_bytes, _HELPER_EXEC_SCRIPT_RELPATH
+
+
+def _helper_exec_mutation(
+    case: str,
+    census: dict,
+    lines: list[str],
+) -> str:
+    helper = census["exec_evidence"][0]["helper_exec"]
+    if case == "schema":
+        helper["unknown"] = True
+        return "helper_exec.unknown=true"
+    if case == "definition":
+        helper["definition_lines"] = [7, 11]
+        return "definition_lines=[7,11]"
+    if case == "exec-position":
+        lines[9] = """  printf '%s\\n' "$1" >"$3" 2>&1"""
+        return "line10-command=printf"
+    if case == "call-binding":
+        lines[15] = (
+            '  local_run "$WORK/gamma" "$WORK/cache-alpha" "$WORK/alpha.out"'
+        )
+        return "line16-output=gamma"
+    if case == "rebinding":
+        lines[8] = '  target="$1"'
+        return "line9-target-from-parameter1"
+    if case == "unlisted-call":
+        lines[22] = (
+            'local_run "$WORK/gamma" "$WORK/cache-gamma" "$WORK/gamma.out"'
+        )
+        return "line23-unlisted-local_run"
+    if case == "stray-read":
+        lines[8] = '  cat "$1" >/dev/null'
+        return "line9-read-parameter1"
+    if case == "stray-copy":
+        lines[8] = '  cp "$1" "$2"'
+        return "line9-copy-parameter1"
+    if case == "stray-move":
+        lines[8] = '  mv "$1" "$2"'
+        return "line9-move-parameter1"
+    if case == "stray-link":
+        lines[8] = '  ln "$1" "$2"'
+        return "line9-link-parameter1"
+    if case == "stray-redirect":
+        lines[8] = '  cat >"$1"'
+        return "line9-redirect-parameter1"
+    if case == "stray-concrete-path":
+        lines[22] = 'shasum "$WORK/alpha" >/dev/null'
+        return "line23-read-concrete-alpha"
+    raise ValueError(f"unknown helper_exec mutation {case!r}")
+
+
+def _fixture_helper_exec_seed(case: str, expected_rule: str) -> Observation:
+    census, control_script, script_relpath = _helper_exec_case()
+    control_ids = _rule_ids(
+        validate_census(census, control_script, script_relpath)
+    )
+    seed_census = _clone_census(census)
+    seed_lines = control_script.decode().splitlines()
+    applied = _helper_exec_mutation(case, seed_census, seed_lines)
+    seed_script = ("\n".join(seed_lines) + "\n").encode()
+    seed_census["script_sha256"] = hashlib.sha256(seed_script).hexdigest()
+    seed_ids = _rule_ids(
+        validate_census(seed_census, seed_script, script_relpath)
+    )
+    return Observation(
+        expected={"control": [], "seed": [expected_rule]},
+        got={"control": control_ids, "seed": seed_ids},
+        applied=f"{applied};lines={len(seed_lines)}",
+    )
+
+
+def _fixture_helper_exec_binding_control() -> Observation:
+    census, script_bytes, script_relpath = _helper_exec_case()
+    evidence = census["exec_evidence"][0]
+    got = {
+        "rules": _rule_ids(
+            validate_census(census, script_bytes, script_relpath)
+        ),
+        "names": sorted(evidence["name_from_calls"].values()),
+        "call_lines": evidence["helper_exec"]["call_lines"],
+        "argument_position": evidence["helper_exec"]["argument_position"],
+    }
+    expected = {
+        "rules": [],
+        "names": ["alpha", "beta"],
+        "call_lines": [16, 20],
+        "argument_position": 1,
+    }
+    return Observation(expected=expected, got=got)
+
+
+def _fixture_helper_exec_unrelated_control() -> Observation:
+    census, script_bytes, script_relpath = _helper_exec_case()
+    source_lines = script_bytes.decode().splitlines()
+    got = {
+        "rules": _rule_ids(
+            validate_census(census, script_bytes, script_relpath)
+        ),
+        "definition": source_lines[11],
+        "label": source_lines[12],
+        "helper_definition": census["exec_evidence"][0]["helper_exec"][
+            "definition_lines"
+        ],
+    }
+    expected = {
+        "rules": [],
+        "definition": "unrelated_label() {",
+        "label": """  printf '%s\\n' "label: $1" """.rstrip(),
+        "helper_definition": [8, 11],
+    }
+    return Observation(expected=expected, got=got)
+
+
 def _historical_census(driver: str) -> dict:
     completed = subprocess.run(
         [
@@ -2257,12 +2450,26 @@ O3_SEED_IDS = (
     "s2.seed.validator-e1-stray-reference",
     "s2.seed.validator-e1-verdict",
     "s2.seed.validator-e1-exit-line",
+    "s2.seed.validator-helper-schema",
+    "s2.seed.validator-helper-definition",
+    "s2.seed.validator-helper-exec-position",
+    "s2.seed.validator-helper-call-binding",
+    "s2.seed.validator-helper-rebinding",
+    "s2.seed.validator-helper-unlisted-call",
+    "s2.seed.validator-helper-stray-read",
+    "s2.seed.validator-helper-stray-copy",
+    "s2.seed.validator-helper-stray-move",
+    "s2.seed.validator-helper-stray-link",
+    "s2.seed.validator-helper-stray-redirect",
+    "s2.seed.validator-helper-stray-concrete-path",
     "s2.seed.regression-1f",
 )
 
 O3_CONTROL_IDS = (
     "s2.control.census-all",
     "s2.control.e1-shared-token",
+    "s2.control.validator-helper-binding",
+    "s2.control.validator-helper-unrelated-positional",
 )
 
 O3_FIXTURES: tuple[Fixture, ...] = (
@@ -2454,6 +2661,114 @@ O3_FIXTURES: tuple[Fixture, ...] = (
         ),
     ),
     Fixture(
+        "s2.seed.validator-helper-schema",
+        "seed",
+        partial(
+            _fixture_helper_exec_seed,
+            "schema",
+            "C5.0-schema",
+        ),
+    ),
+    Fixture(
+        "s2.seed.validator-helper-definition",
+        "seed",
+        partial(
+            _fixture_helper_exec_seed,
+            "definition",
+            "E1-exec-token",
+        ),
+    ),
+    Fixture(
+        "s2.seed.validator-helper-exec-position",
+        "seed",
+        partial(
+            _fixture_helper_exec_seed,
+            "exec-position",
+            "E1-exec-token",
+        ),
+    ),
+    Fixture(
+        "s2.seed.validator-helper-call-binding",
+        "seed",
+        partial(
+            _fixture_helper_exec_seed,
+            "call-binding",
+            "E1-exec-token",
+        ),
+    ),
+    Fixture(
+        "s2.seed.validator-helper-rebinding",
+        "seed",
+        partial(
+            _fixture_helper_exec_seed,
+            "rebinding",
+            "E1-exec-token",
+        ),
+    ),
+    Fixture(
+        "s2.seed.validator-helper-unlisted-call",
+        "seed",
+        partial(
+            _fixture_helper_exec_seed,
+            "unlisted-call",
+            "E1-exec-token",
+        ),
+    ),
+    Fixture(
+        "s2.seed.validator-helper-stray-read",
+        "seed",
+        partial(
+            _fixture_helper_exec_seed,
+            "stray-read",
+            "E1-stray-reference",
+        ),
+    ),
+    Fixture(
+        "s2.seed.validator-helper-stray-copy",
+        "seed",
+        partial(
+            _fixture_helper_exec_seed,
+            "stray-copy",
+            "E1-stray-reference",
+        ),
+    ),
+    Fixture(
+        "s2.seed.validator-helper-stray-move",
+        "seed",
+        partial(
+            _fixture_helper_exec_seed,
+            "stray-move",
+            "E1-stray-reference",
+        ),
+    ),
+    Fixture(
+        "s2.seed.validator-helper-stray-link",
+        "seed",
+        partial(
+            _fixture_helper_exec_seed,
+            "stray-link",
+            "E1-stray-reference",
+        ),
+    ),
+    Fixture(
+        "s2.seed.validator-helper-stray-redirect",
+        "seed",
+        partial(
+            _fixture_helper_exec_seed,
+            "stray-redirect",
+            "E1-stray-reference",
+        ),
+    ),
+    Fixture(
+        "s2.seed.validator-helper-stray-concrete-path",
+        "seed",
+        partial(
+            _fixture_helper_exec_seed,
+            "stray-concrete-path",
+            "E1-stray-reference",
+        ),
+    ),
+    Fixture(
         "s2.seed.regression-1f",
         "seed",
         _fixture_regression_1f_seed,
@@ -2468,11 +2783,22 @@ O3_FIXTURES: tuple[Fixture, ...] = (
         "control",
         _fixture_e1_shared_token_control,
     ),
+    Fixture(
+        "s2.control.validator-helper-binding",
+        "control",
+        _fixture_helper_exec_binding_control,
+    ),
+    Fixture(
+        "s2.control.validator-helper-unrelated-positional",
+        "control",
+        _fixture_helper_exec_unrelated_control,
+    ),
 )
 
 O3_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
     "o3.C5.0-schema": (
         "s2.seed.validator-schema",
+        "s2.seed.validator-helper-schema",
         "s2.control.census-all",
     ),
     "o3.C5.1-sha": (
@@ -2529,10 +2855,23 @@ O3_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
     ),
     "o3.E1-exec-token": (
         "s2.seed.validator-e1-token",
+        "s2.seed.validator-helper-definition",
+        "s2.seed.validator-helper-exec-position",
+        "s2.seed.validator-helper-call-binding",
+        "s2.seed.validator-helper-rebinding",
+        "s2.seed.validator-helper-unlisted-call",
+        "s2.control.validator-helper-binding",
+        "s2.control.validator-helper-unrelated-positional",
         "s2.control.census-all",
     ),
     "o3.E1-stray-reference": (
         "s2.seed.validator-e1-stray-reference",
+        "s2.seed.validator-helper-stray-read",
+        "s2.seed.validator-helper-stray-copy",
+        "s2.seed.validator-helper-stray-move",
+        "s2.seed.validator-helper-stray-link",
+        "s2.seed.validator-helper-stray-redirect",
+        "s2.seed.validator-helper-stray-concrete-path",
         "s2.control.e1-shared-token",
     ),
     "o3.E1-verdict-mark": (
@@ -2550,6 +2889,22 @@ O3_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
     "o3.e1-cross-site-subcases": (
         "s2.seed.validator-e1-stray-reference",
         "s2.control.e1-shared-token",
+    ),
+    "amendment.e1.helper-exec": (
+        "s2.seed.validator-helper-schema",
+        "s2.seed.validator-helper-definition",
+        "s2.seed.validator-helper-exec-position",
+        "s2.seed.validator-helper-call-binding",
+        "s2.seed.validator-helper-rebinding",
+        "s2.seed.validator-helper-unlisted-call",
+        "s2.seed.validator-helper-stray-read",
+        "s2.seed.validator-helper-stray-copy",
+        "s2.seed.validator-helper-stray-move",
+        "s2.seed.validator-helper-stray-link",
+        "s2.seed.validator-helper-stray-redirect",
+        "s2.seed.validator-helper-stray-concrete-path",
+        "s2.control.validator-helper-binding",
+        "s2.control.validator-helper-unrelated-positional",
     ),
 }
 
@@ -2787,6 +3142,22 @@ REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
         "s2.seed.regression-1f",
         "s2.control.census-all",
         "s2.control.e1-shared-token",
+    ),
+    "amendment.e1.helper-exec": (
+        "s2.seed.validator-helper-schema",
+        "s2.seed.validator-helper-definition",
+        "s2.seed.validator-helper-exec-position",
+        "s2.seed.validator-helper-call-binding",
+        "s2.seed.validator-helper-rebinding",
+        "s2.seed.validator-helper-unlisted-call",
+        "s2.seed.validator-helper-stray-read",
+        "s2.seed.validator-helper-stray-copy",
+        "s2.seed.validator-helper-stray-move",
+        "s2.seed.validator-helper-stray-link",
+        "s2.seed.validator-helper-stray-redirect",
+        "s2.seed.validator-helper-stray-concrete-path",
+        "s2.control.validator-helper-binding",
+        "s2.control.validator-helper-unrelated-positional",
     ),
     "contract.s2.matcher": (
         "s2.seed.matcher-negative-noquestion",
