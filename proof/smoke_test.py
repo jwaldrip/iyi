@@ -2116,7 +2116,8 @@ def _nested_type_control(
         auxiliary_index = next(
             index
             for index, site in enumerate(census["sites"])
-            if site.get("command") in ("doc", "fmt")
+            if site.get("kind")
+            in ("canonical-other", "unchanged", "passthrough")
             and site.get("lines")
             and site["lines"][0] not in evidence_sites
         )
@@ -3963,16 +3964,7 @@ class Harness:
                 raise TypeError(
                     f"fixture returned {type(observation).__name__}, not Observation"
                 )
-        except (
-            AssertionError,
-            LookupError,
-            OSError,
-            RuntimeError,
-            SyntaxError,
-            TypeError,
-            ValueError,
-            subprocess.SubprocessError,
-        ) as error:
+        except Exception as error:
             observation = Observation(
                 expected="fixture completes",
                 got=f"{type(error).__name__}: {error}",
