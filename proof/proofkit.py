@@ -1055,6 +1055,87 @@ def run_bounded(
     )
 
 
+RUN1_STD_EXERCISES = 114
+RUN1_SIBLINGS = 115
+RUN1_CORPUS = 141
+RG2R_MIN = 1
+RUN2_COUNTS = (27, 114, 141)
+DRIVER_LIMIT_SEC = 2100.0
+GRACE_SEC = 30.0
+DISK_MIN_GB = 20.0
+
+REQUIRED_CHECKS = {
+    "run1": (
+        "identity",
+        "gate-1.1",
+        "gate-1.2",
+        "gate-1.3",
+        "gate-1.4",
+        "rg2r-count",
+        "exclusions",
+        "baseline-skips",
+    ),
+    "run2": ("identity", "legs", "counts"),
+    "run3": (
+        "census",
+        "identity",
+        "disk",
+        "exit",
+        "sentinel",
+        "no-refused",
+        "skips",
+        "ledger",
+    ),
+}
+
+
+def write_result(path: str, record: dict) -> None:
+    """Atomically publish a stage result as the attempt's final write."""
+    parent = os.path.dirname(os.path.abspath(path))
+    os.makedirs(parent, exist_ok=True)
+    temporary = os.path.join(
+        parent,
+        f".{os.path.basename(path)}.{os.getpid()}.{secrets.token_hex(8)}.tmp",
+    )
+    try:
+        with open(temporary, "x", encoding="utf-8") as output:
+            json.dump(record, output, indent=2, sort_keys=True)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
+def load_result(path: str) -> dict | None:
+    """Load one stage result, returning None for absent or invalid content."""
+    try:
+        with open(path, "r", encoding="utf-8") as source:
+            record = json.load(source)
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    return record if isinstance(record, dict) else None
+
+
+def recompute_status(record: dict, kind: str) -> str:
+    """Recompute a result status from the fixed required-check order."""
+    required = REQUIRED_CHECKS.get(kind)
+    checks = record.get("checks")
+    if required is None or not isinstance(checks, dict):
+        return "FAIL"
+    for name in required:
+        if name in checks and checks[name] != "PASS":
+            value = checks[name]
+            return value if isinstance(value, str) else "FAIL"
+    if any(name not in checks for name in required):
+        return "FAIL"
+    return "PASS"
+
+
 # --- Census & Ledger Verification ---
 
 Violation = tuple[str, int, str]
