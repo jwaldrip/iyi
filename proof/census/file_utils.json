@@ -125,7 +125,7 @@
     },
     {
       "line": 504,
-      "class": "platform",
+      "class": "tool",
       "what": "tool",
       "regex": "\\ \\ no\\ second\\ device,\\ so\\ the\\ cross\\-device\\ move's\\ proof\\ is\\ unmeasured",
       "text": "  echo \"  no second device, so the cross-device move's proof is unmeasured\""

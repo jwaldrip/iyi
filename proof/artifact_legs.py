@@ -276,7 +276,7 @@ def _remove_success_scratch(paths: Sequence[str]) -> None:
         shutil.rmtree(path, ignore_errors=True)
 
 
-def _run_row(source: str, *, repo: str, compiler: str, work_root: str, nm_bin: str) -> dict:
+def _run_row(source: str, *, repo: str, compiler: str, work_root: str, nm_bin: str, disk_min_gb: float = DISK_MIN_GB) -> dict:
     result = _empty_row(source, repo, work_root)
     source_path = result["source"]
     relpath = result["name"]
@@ -285,7 +285,7 @@ def _run_row(source: str, *, repo: str, compiler: str, work_root: str, nm_bin: s
     row_dir = result["row_dir"]
 
     _prepare_row_directory(row_dir)
-    check_disk_space(work_root, DISK_MIN_GB)
+    check_disk_space(work_root, disk_min_gb)
 
     bin_root = os.path.join(row_dir, "bin")
     cache_p = os.path.join(row_dir, "cache_p")
@@ -397,18 +397,19 @@ def _run_row(source: str, *, repo: str, compiler: str, work_root: str, nm_bin: s
                 f"{leg} build timed out after {BUILD_TIMEOUT}s",
             )
         elif rc != 0:
-            detail = stderr.decode(errors="replace")[-300:]
+            stderr_text = stderr.decode(errors="replace")
+            detail = stderr_text[-300:]
             fail(
                 f"BUILD-EXIT-{leg}",
                 f"{leg} build failed (exit {rc}): {detail}",
             )
-            if leg == "C3" and "cannot name it" in detail:
+            if leg == "C3" and "cannot name it" in stderr_text:
                 stop_reasons.append(
-                    f"C3 warm consumer refused on artifact name: {detail}"
+                    "C3 warm consumer stderr contains 'cannot name it'"
                 )
                 fail(
                     "C3-CANNOT-NAME",
-                    f"C3 warm consumer refused on artifact name: {detail}",
+                    "C3 warm consumer stderr contains 'cannot name it'",
                 )
         elif not os.path.isfile(binaries[leg]):
             fail(
@@ -626,7 +627,7 @@ def _run_row(source: str, *, repo: str, compiler: str, work_root: str, nm_bin: s
     if status == "PASS":
         _remove_success_scratch(scratch_paths)
 
-    check_disk_space(work_root, DISK_MIN_GB)
+    check_disk_space(work_root, disk_min_gb)
 
     result.update(
         {
@@ -647,7 +648,7 @@ def _run_row(source: str, *, repo: str, compiler: str, work_root: str, nm_bin: s
     return result
 
 
-def run_row(source: str, *, repo: str, compiler: str, work_root: str, nm_bin: str) -> dict:
+def run_row(source: str, *, repo: str, compiler: str, work_root: str, nm_bin: str, disk_min_gb: float = DISK_MIN_GB) -> dict:
     """Run one row, converting only OSError and RuntimeError at the row boundary."""
     result = _empty_row(source, repo, work_root)
     try:
@@ -657,6 +658,7 @@ def run_row(source: str, *, repo: str, compiler: str, work_root: str, nm_bin: st
             compiler=compiler,
             work_root=work_root,
             nm_bin=nm_bin,
+            disk_min_gb=disk_min_gb,
         )
     except (OSError, RuntimeError) as error:
         category = "OSERROR" if isinstance(error, OSError) else "RUNTIMEERROR"
@@ -667,7 +669,7 @@ def run_row(source: str, *, repo: str, compiler: str, work_root: str, nm_bin: st
         return result
 
 
-def run_rows(sources: Sequence[str], *, repo: str, compiler: str, work_root: str, nm_bin: str, workers: int) -> list[dict]:
+def run_rows(sources: Sequence[str], *, repo: str, compiler: str, work_root: str, nm_bin: str, workers: int, disk_min_gb: float = DISK_MIN_GB) -> list[dict]:
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [
             pool.submit(
@@ -677,6 +679,7 @@ def run_rows(sources: Sequence[str], *, repo: str, compiler: str, work_root: str
                 compiler=compiler,
                 work_root=work_root,
                 nm_bin=nm_bin,
+                disk_min_gb=disk_min_gb,
             )
             for source in sources
         ]
@@ -719,7 +722,7 @@ def _argument_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None, *, disk_min_gb: float = DISK_MIN_GB) -> int:
     parser = _argument_parser()
     try:
         args = parser.parse_args(argv)
@@ -773,6 +776,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         work_root=work,
         nm_bin=nm_bin,
         workers=args.workers,
+        disk_min_gb=disk_min_gb,
     )
     write_report(report, rows)
     print(f"Report written to {report}")
