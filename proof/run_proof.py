@@ -28,8 +28,9 @@ run3/<driver>/a<N>/; and final.json. Every attempt ends with an atomic
 result.json. Attempt numbers are append-only. final uses the numerically
 highest attempt, recomputes its status from required checks, verifies its
 chain, unit, and attempt identity, and lists every earlier failure. A chain
-is bound to the report-directory suffix and pin identity. INVALID recovery
-requires a new pin and report directory.
+is bound to the report-directory suffix and pin identity. On Darwin the pin
+records and probes the real platform temp root used by bare mktemp.
+INVALID recovery requires a new pin and report directory.
 """
 
 from __future__ import annotations
@@ -46,8 +47,7 @@ from collections.abc import Sequence
 
 # Ensure the repository root is importable when this file is executed directly.
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if REPO_ROOT not in sys.path:
-    sys.path.insert(0, REPO_ROOT)
+sys.path.insert(0, REPO_ROOT)
 
 from proof.proofkit import (
     DISK_MIN_GB,
@@ -153,12 +153,7 @@ def read_log(log_path: str) -> bytes:
         return log_file.read()
 
 
-def fresh_stage_env(
-    pin: dict,
-    attempt_dir: str,
-    stage_name: str,
-    additions: dict[str, str] | None = None,
-) -> dict[str, str]:
+def fresh_stage_env(pin: dict, attempt_dir: str, stage_name: str, additions: dict[str, str] | None = None) -> dict[str, str]:
     tmp_dir = os.path.join(attempt_dir, f"{stage_name}.tmp")
     cache_dir = os.path.join(attempt_dir, f"{stage_name}.cache")
     os.makedirs(tmp_dir, exist_ok=False)
@@ -172,16 +167,7 @@ def fresh_stage_env(
     return base_env(pin, stage_additions)
 
 
-def run_logged(
-    cmd: list[str],
-    *,
-    cwd: str,
-    env: dict[str, str],
-    log_path: str,
-    times_path: str,
-    limit_sec: float | None,
-    grace_sec: float = GRACE_SEC,
-):
+def run_logged(cmd: list[str], *, cwd: str, env: dict[str, str], log_path: str, times_path: str, limit_sec: float | None, grace_sec: float = GRACE_SEC):
     result = run_bounded(
         cmd,
         cwd,
@@ -194,15 +180,7 @@ def run_logged(
     return result, read_log(log_path)
 
 
-def _new_result(
-    pin: dict,
-    unit: str,
-    attempt: int,
-    checks: dict[str, str],
-    reasons: list[str],
-    started_ns: int,
-    survivors: Sequence[int],
-) -> dict:
+def _new_result(pin: dict, unit: str, attempt: int, checks: dict[str, str], reasons: list[str], started_ns: int, survivors: Sequence[int]) -> dict:
     kind = unit.split("/", 1)[0]
     record = {
         "v": 1,
@@ -220,15 +198,7 @@ def _new_result(
     return record
 
 
-def _finish_attempt(
-    attempt_dir: str,
-    pin: dict,
-    unit: str,
-    checks: dict[str, str],
-    reasons: list[str],
-    started_ns: int,
-    survivors: Sequence[int],
-) -> dict:
+def _finish_attempt(attempt_dir: str, pin: dict, unit: str, checks: dict[str, str], reasons: list[str], started_ns: int, survivors: Sequence[int]) -> dict:
     record = _new_result(
         pin,
         unit,
@@ -242,11 +212,7 @@ def _finish_attempt(
     return record
 
 
-def _check_stage_identity(
-    pin: dict,
-    checks: dict[str, str],
-    reasons: list[str],
-) -> bool:
+def _check_stage_identity(pin: dict, checks: dict[str, str], reasons: list[str]) -> bool:
     try:
         check_identity(pin)
     except IdentityError as error:
@@ -258,15 +224,7 @@ def _check_stage_identity(
     return True
 
 
-def _check_stage_disk(
-    path: str,
-    minimum_gb: float,
-    checks: dict[str, str],
-    reasons: list[str],
-    *,
-    check_name: str,
-    low_status: str,
-) -> bool:
+def _check_stage_disk(path: str, minimum_gb: float, checks: dict[str, str], reasons: list[str], *, check_name: str, low_status: str) -> bool:
     try:
         check_disk_space(path, minimum_gb)
     except (OSError, RuntimeError) as error:
@@ -277,26 +235,11 @@ def _check_stage_disk(
     return True
 
 
-def _run_gate(
-    command: list[str],
-    *,
-    pin: dict,
-    attempt_dir: str,
-    stage_name: str,
-    additions: dict[str, str],
-    cwd: str,
-):
+def _run_gate(command: list[str], *, pin: dict, attempt_dir: str, stage_name: str, additions: dict[str, str], cwd: str):
     env = fresh_stage_env(pin, attempt_dir, stage_name, additions)
     log_path = os.path.join(attempt_dir, f"{stage_name}.log")
     times_path = os.path.join(attempt_dir, f"{stage_name}.times")
-    return run_logged(
-        command,
-        cwd=cwd,
-        env=env,
-        log_path=log_path,
-        times_path=times_path,
-        limit_sec=None,
-    )
+    return run_logged(command, cwd=cwd, env=env, log_path=log_path, times_path=times_path, limit_sec=None)
 
 
 def _exclusions(log_text: str) -> list[dict[str, str]]:
@@ -385,6 +328,7 @@ def cmd_plan(args, *, drivers: Sequence[str] = DRIVERS_29) -> int:
     print(f"  Version:   {facts['compiler_version_line']}")
     print(f"  BIN SHA:   {facts['compiler_sha256']}")
     print(f"  Timeout:   {facts['timeout_path']} ({facts['timeout_version']})")
+    print(f"  Platform:  {facts['platform_tmp']}")
     print(f"  Censuses:  {len(facts['census_sha256'])} validated")
     return 0
 
@@ -396,18 +340,11 @@ def cmd_pin(args, *, drivers: Sequence[str] = DRIVERS_29) -> int:
     print(f"  P SHA:     {pin['p_source_sha']}")
     print(f"  W HEAD:    {pin['w_head']}")
     print(f"  Compiler:  {pin['compiler_sha256']}")
+    print(f"  Platform:  {pin['platform_tmp']}")
     return 0
 
 
-def cmd_run1(
-    args,
-    *,
-    std_exercises: int = RUN1_STD_EXERCISES,
-    siblings: int = RUN1_SIBLINGS,
-    corpus: int = RUN1_CORPUS,
-    rg2r_min: int = RG2R_MIN,
-    disk_min_gb: float = DISK_MIN_GB,
-) -> int:
+def cmd_run1(args, *, std_exercises: int = RUN1_STD_EXERCISES, siblings: int = RUN1_SIBLINGS, corpus: int = RUN1_CORPUS, rg2r_min: int = RG2R_MIN, disk_min_gb: float = DISK_MIN_GB) -> int:
     pin = load_pin(args.report_dir)
     attempt_dir = next_attempt_dir(os.path.join(args.report_dir, "run1"))
     started_ns = time.time_ns()
@@ -684,12 +621,7 @@ def _read_run2_rows(path: str) -> list[dict]:
     return rows
 
 
-def cmd_run2(
-    args,
-    *,
-    expected_counts: tuple[int, int, int] = RUN2_COUNTS,
-    disk_min_gb: float = DISK_MIN_GB,
-) -> int:
+def cmd_run2(args, *, expected_counts: tuple[int, int, int] = RUN2_COUNTS, disk_min_gb: float = DISK_MIN_GB) -> int:
     pin = load_pin(args.report_dir)
     attempt_dir = next_attempt_dir(os.path.join(args.report_dir, "run2"))
     started_ns = time.time_ns()
@@ -800,11 +732,7 @@ def _driver_from_program(program: str) -> str | None:
     return match.group(1) if match else None
 
 
-def _compute_required_drivers(
-    drivers: Sequence[str],
-    exclusions_path: str,
-    run2_path: str,
-) -> list[str]:
+def _compute_required_drivers(drivers: Sequence[str], exclusions_path: str, run2_path: str) -> list[str]:
     required = list(dict.fromkeys(drivers))
     exclusions = _load_json(exclusions_path)
     if not isinstance(exclusions, list):
@@ -856,13 +784,7 @@ def _empty_run3_checks(status: str, check_name: str) -> dict[str, str]:
     return {check_name: status}
 
 
-def _record_run3_configuration_failure(
-    report_dir: str,
-    pin: dict,
-    selected: Sequence[str],
-    status: str,
-    reason: str,
-) -> None:
+def _record_run3_configuration_failure(report_dir: str, pin: dict, selected: Sequence[str], status: str, reason: str) -> None:
     for driver in selected:
         attempt_dir = next_attempt_dir(
             os.path.join(report_dir, "run3", driver)
@@ -896,11 +818,7 @@ def _baseline_keys(value: object) -> set[tuple[str, str, str, str]]:
     return keys
 
 
-def _classify_driver_skips(
-    census: dict,
-    log_text: str,
-    baseline: set[tuple[str, str, str, str]],
-) -> tuple[str, list[str]]:
+def _classify_driver_skips(census: dict, log_text: str, baseline: set[tuple[str, str, str, str]]) -> tuple[str, list[str]]:
     hits = _skip_hits(census, log_text)
     hit_keys = {
         (hit["driver"], hit["class"], hit["what"], hit["regex"])
@@ -933,17 +851,7 @@ def _launcher_text(pin: dict, shim_config_path: str) -> str:
     )
 
 
-def _run_one_driver(
-    report_dir: str,
-    pin: dict,
-    driver: str,
-    baseline: set[tuple[str, str, str, str]],
-    *,
-    driver_limit_sec: float,
-    grace_sec: float,
-    disk_min_gb: float,
-    stat_fn,
-) -> dict:
+def _run_one_driver(report_dir: str, pin: dict, driver: str, baseline: set[tuple[str, str, str, str]], *, driver_limit_sec: float, grace_sec: float, disk_min_gb: float, stat_fn) -> dict:
     attempt_dir = next_attempt_dir(
         os.path.join(report_dir, "run3", driver)
     )
@@ -1034,6 +942,7 @@ def _run_one_driver(
             "scratch": s_dir,
             "repo": os.path.realpath(w_path),
             "canonical_roots": pin["canonical_roots"],
+            "platform_tmp": pin["platform_tmp"],
         }
         _write_json_atomic(config_path, config)
         with open(launcher_path, "x", encoding="utf-8") as launcher:
@@ -1125,6 +1034,7 @@ def _run_one_driver(
             chain_id=pin["chain_id"],
             work_tmp=t_dir,
             repo=w_path,
+            platform_tmp=pin["platform_tmp"],
             stat_fn=stat_fn,
         )
         statuses = sorted(verdict.statuses)
@@ -1145,15 +1055,7 @@ def _run_one_driver(
     )
 
 
-def cmd_run3(
-    args,
-    *,
-    drivers: Sequence[str] = DRIVERS_29,
-    driver_limit_sec: float = DRIVER_LIMIT_SEC,
-    grace_sec: float = GRACE_SEC,
-    disk_min_gb: float = DISK_MIN_GB,
-    stat_fn=os.stat,
-) -> int:
+def cmd_run3(args, *, drivers: Sequence[str] = DRIVERS_29, driver_limit_sec: float = DRIVER_LIMIT_SEC, grace_sec: float = GRACE_SEC, disk_min_gb: float = DISK_MIN_GB, stat_fn=os.stat) -> int:
     pin = load_pin(args.report_dir)
     requested_driver = getattr(args, "driver", "")
     prerequisites = _run3_prerequisites(args.report_dir)
@@ -1245,14 +1147,7 @@ def cmd_run3(
     return 1 if failed else 0
 
 
-def _validate_record(
-    record: dict | None,
-    *,
-    pin: dict,
-    unit: str,
-    attempt: int,
-    kind: str,
-) -> tuple[str, list[str]]:
+def _validate_record(record: dict | None, *, pin: dict, unit: str, attempt: int, kind: str) -> tuple[str, list[str]]:
     if record is None:
         return "FAIL", [f"{unit} attempt {attempt} result is missing or unreadable"]
     reasons: list[str] = []
@@ -1283,12 +1178,7 @@ def _validate_record(
     return computed, []
 
 
-def _collect_final_unit(
-    pin: dict,
-    parent_dir: str,
-    unit: str,
-    kind: str,
-) -> tuple[dict[str, int | str], list[dict[str, int | str]], list[str]]:
+def _collect_final_unit(pin: dict, parent_dir: str, unit: str, kind: str) -> tuple[dict[str, int | str], list[dict[str, int | str]], list[str]]:
     entries = _attempt_entries(parent_dir)
     if not entries:
         return (
@@ -1444,20 +1334,7 @@ def _latest_was_interrupted(report_dir: str, unit: str) -> bool:
     )
 
 
-def cmd_all(
-    args,
-    *,
-    drivers: Sequence[str] = DRIVERS_29,
-    std_exercises: int = RUN1_STD_EXERCISES,
-    siblings: int = RUN1_SIBLINGS,
-    corpus: int = RUN1_CORPUS,
-    rg2r_min: int = RG2R_MIN,
-    expected_counts: tuple[int, int, int] = RUN2_COUNTS,
-    driver_limit_sec: float = DRIVER_LIMIT_SEC,
-    grace_sec: float = GRACE_SEC,
-    disk_min_gb: float = DISK_MIN_GB,
-    stat_fn=os.stat,
-) -> int:
+def cmd_all(args, *, drivers: Sequence[str] = DRIVERS_29, std_exercises: int = RUN1_STD_EXERCISES, siblings: int = RUN1_SIBLINGS, corpus: int = RUN1_CORPUS, rg2r_min: int = RG2R_MIN, expected_counts: tuple[int, int, int] = RUN2_COUNTS, driver_limit_sec: float = DRIVER_LIMIT_SEC, grace_sec: float = GRACE_SEC, disk_min_gb: float = DISK_MIN_GB, stat_fn=os.stat) -> int:
     cmd_run1(
         args,
         std_exercises=std_exercises,
@@ -1544,25 +1421,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 2
     args = _parser().parse_args(argv)
+    handlers = {
+        "plan": cmd_plan,
+        "pin": cmd_pin,
+        "run1": cmd_run1,
+        "run2": cmd_run2,
+        "run3": cmd_run3,
+        "final": cmd_final,
+        "all": cmd_all,
+    }
     try:
-        if args.subcmd == "plan":
-            return cmd_plan(args)
-        if args.subcmd == "pin":
-            return cmd_pin(args)
-        if args.subcmd == "run1":
-            return cmd_run1(args)
-        if args.subcmd == "run2":
-            return cmd_run2(args)
-        if args.subcmd == "run3":
-            return cmd_run3(args)
-        if args.subcmd == "final":
-            return cmd_final(args)
-        if args.subcmd == "all":
-            return cmd_all(args)
+        return handlers[args.subcmd](args)
     except IdentityError as error:
         print(f"REFUSED {error.reason}: {error.detail}", file=sys.stderr)
         return 1
-    return 2
 
 
 if __name__ == "__main__":

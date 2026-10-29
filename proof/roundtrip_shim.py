@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Observed-corpus compiler shim.
-
-The shim keeps parsing, classification, matching, argv construction, roundtrip
-execution, and ledger writes importable so the proof harness can exercise them
-without replacing production behavior.
-"""
+"""Importable observed-corpus compiler shim for matching, execution, and ledger proof."""
 
 from __future__ import annotations
 
@@ -37,6 +32,7 @@ CONFIG_KEYS = frozenset(
         "scratch",
         "repo",
         "canonical_roots",
+        "platform_tmp",
     }
 )
 HEADER_KEYS = frozenset({"v", "kind", "nonce", "driver", "attempt", "chain_id"})
@@ -192,9 +188,14 @@ def load_config(path: str) -> dict:
         missing = sorted(CONFIG_KEYS - keys)
         unknown = sorted(keys - CONFIG_KEYS)
         raise ConfigError(f"config keys differ: missing={missing}, unknown={unknown}")
-    for key in CONFIG_KEYS - {"canonical_roots"}:
+    for key in CONFIG_KEYS - {"canonical_roots", "platform_tmp"}:
         if not isinstance(config[key], str):
             raise ConfigError(f"config {key} is not a string")
+    platform_tmp = config["platform_tmp"]
+    if platform_tmp is not None and not isinstance(platform_tmp, str):
+        raise ConfigError("config platform_tmp is not a string or null")
+    if isinstance(platform_tmp, str) and os.path.realpath(platform_tmp) != platform_tmp:
+        raise ConfigError("config platform_tmp is not a realpath")
     roots = config["canonical_roots"]
     if not isinstance(roots, list) or any(not isinstance(root, str) for root in roots):
         raise ConfigError("config canonical_roots is not a string list")
@@ -211,12 +212,7 @@ def load_config(path: str) -> dict:
     return config
 
 
-def read_header(
-    ledger_path: str,
-    *,
-    nonce: str | None = None,
-    driver: str | None = None,
-) -> dict:
+def read_header(ledger_path: str, *, nonce: str | None = None, driver: str | None = None) -> dict:
     try:
         with open(ledger_path, "r", encoding="utf-8") as source:
             first = source.readline()
@@ -366,12 +362,7 @@ def _tokenize_ambient_options() -> tuple[str, ...]:
             raise InvocationError(f"cannot parse {name}: {error}") from error
     return tuple(tokens)
 
-def _recognized_option_tokens(
-    tokens: Sequence[str],
-    *,
-    command: str,
-    allow_positionals: bool,
-) -> tuple[str, ...]:
+def _recognized_option_tokens(tokens: Sequence[str], *, command: str, allow_positionals: bool) -> tuple[str, ...]:
     recognized: list[str] = []
     index = 0
     while index < len(tokens):
@@ -449,13 +440,7 @@ def _realpath_from_cwd(path: str, cwd: str) -> str:
     return os.path.realpath(candidate)
 
 
-def compute_out(
-    invocation: Invocation,
-    *,
-    cwd: str,
-    cache_dir: str,
-    pid: int | None = None,
-) -> str | None:
+def compute_out(invocation: Invocation, *, cwd: str, cache_dir: str, pid: int | None = None) -> str | None:
     if invocation.command not in ("build", "run"):
         return None
     if invocation.output is not None:
@@ -472,14 +457,7 @@ def compute_out(
     return os.path.realpath(os.path.join(cwd, stem))
 
 
-def _template_regex(
-    template: str,
-    *,
-    variables: Mapping[str, object],
-    bound: Mapping[str, str],
-    work_tmp: str,
-    repo: str,
-) -> tuple[re.Pattern[str], dict[str, str]]:
+def _template_regex(template: str, *, variables: Mapping[str, object], bound: Mapping[str, str], work_tmp: str, repo: str, platform_tmp: str | None) -> tuple[re.Pattern[str], dict[str, str]]:
     parts: list[str] = []
     group_names: dict[str, str] = {}
     position = 0
@@ -490,13 +468,20 @@ def _template_regex(
             parts.append(re.escape(repo))
         elif name == "WORK":
             if name in bound:
-                component = re.escape(bound[name])
+                parts.append(re.escape(bound[name]))
             elif name in group_names:
-                component = f"(?P={group_names[name]})"
+                parts.append(f"(?P={group_names[name]})")
             else:
+                roots = [os.path.realpath(work_tmp)]
+                if platform_tmp is not None:
+                    roots.append(os.path.realpath(platform_tmp))
+                root_body = "|".join(
+                    re.escape(root) for root in dict.fromkeys(roots)
+                )
                 group_names[name] = "iyi_work"
-                component = "(?P<iyi_work>[^/]+)"
-            parts.append(re.escape(work_tmp + os.sep) + component)
+                parts.append(
+                    f"(?P<iyi_work>(?:{root_body}){re.escape(os.sep)}[^/]+)"
+                )
         elif name in variables:
             if name in bound:
                 parts.append(re.escape(bound[name]))
@@ -526,15 +511,7 @@ def _template_regex(
     return re.compile("".join(parts)), group_names
 
 
-def _match_template(
-    template: object,
-    actual: str,
-    *,
-    variables: Mapping[str, object],
-    bindings: dict[str, str],
-    work_tmp: str,
-    repo: str,
-) -> bool:
+def _match_template(template: object, actual: str, *, variables: Mapping[str, object], bindings: dict[str, str], work_tmp: str, repo: str, platform_tmp: str | None) -> bool:
     if not isinstance(template, str):
         return False
     try:
@@ -544,6 +521,7 @@ def _match_template(
             bound=bindings,
             work_tmp=work_tmp,
             repo=repo,
+            platform_tmp=platform_tmp,
         )
     except (ValueError, re.error):
         return False
@@ -555,15 +533,7 @@ def _match_template(
     return True
 
 
-def match_variants(
-    census: dict,
-    command: str,
-    first_root: str | None,
-    sources: Sequence[str],
-    output: str | None,
-    work_tmp: str,
-    repo: str,
-) -> tuple[str, list[str], str | None, dict[str, dict[str, str]]]:
+def match_variants(census: dict, command: str, first_root: str | None, sources: Sequence[str], output: str | None, work_tmp: str, repo: str, *, platform_tmp: str | None) -> tuple[str, list[str], str | None, dict[str, dict[str, str]]]:
     if first_root is None:
         return "unclassified", [], None, {}
     normalized_work = os.path.realpath(work_tmp)
@@ -597,6 +567,7 @@ def match_variants(
                 bindings=bindings,
                 work_tmp=normalized_work,
                 repo=normalized_repo,
+                platform_tmp=platform_tmp,
             ):
                 continue
             matched_all = True
@@ -608,6 +579,7 @@ def match_variants(
                     bindings=bindings,
                     work_tmp=normalized_work,
                     repo=normalized_repo,
+                    platform_tmp=platform_tmp,
                 ):
                     matched_all = False
                     break
@@ -622,6 +594,7 @@ def match_variants(
                     bindings=bindings,
                     work_tmp=normalized_work,
                     repo=normalized_repo,
+                    platform_tmp=platform_tmp,
                 ):
                     continue
             declared_bindings = {
@@ -663,18 +636,7 @@ def _has_passthrough_trigger(tokens: Sequence[str]) -> bool:
     )
 
 
-def classify(
-    census: dict,
-    invocation: Invocation,
-    roots: Sequence[str],
-    canonical_roots: Sequence[str],
-    sources: Sequence[str],
-    output: str | None,
-    work_tmp: str,
-    repo: str,
-    *,
-    ambient_tokens: Sequence[str] = (),
-) -> Classification:
+def classify(census: dict, invocation: Invocation, roots: Sequence[str], canonical_roots: Sequence[str], sources: Sequence[str], output: str | None, work_tmp: str, repo: str, *, platform_tmp: str | None, ambient_tokens: Sequence[str] = ()) -> Classification:
     normalized_roots = tuple(os.path.realpath(root) for root in roots)
     canonical_set = {os.path.realpath(root) for root in canonical_roots}
     first_noncanonical = next(
@@ -718,6 +680,7 @@ def classify(
         output,
         work_tmp,
         repo,
+        platform_tmp=platform_tmp,
     )
     if status != "matched":
         return Classification(
@@ -759,32 +722,18 @@ def _observe_definitions(tokens: Sequence[str]) -> int:
     return count
 
 
-def _with_observe(
-    invocation: Invocation,
-    *,
-    ambient_tokens: Sequence[str] = (),
-) -> list[str]:
+def _with_observe(invocation: Invocation, *, ambient_tokens: Sequence[str] = ()) -> list[str]:
     tokens = list(invocation.argv)
     if _observe_definitions((*invocation.compiler_args, *ambient_tokens)) == 0:
         tokens.insert(1, "-Diyi_observe")
     return tokens
 
 
-def build_exec_argv(
-    invocation: Invocation,
-    *,
-    ambient_tokens: Sequence[str] = (),
-) -> list[str]:
+def build_exec_argv(invocation: Invocation, *, ambient_tokens: Sequence[str] = ()) -> list[str]:
     return _with_observe(invocation, ambient_tokens=ambient_tokens)
 
 
-def build_producer_argv(
-    invocation: Invocation,
-    mods: str,
-    output: str,
-    *,
-    ambient_tokens: Sequence[str] = (),
-) -> list[str]:
+def build_producer_argv(invocation: Invocation, mods: str, output: str, *, ambient_tokens: Sequence[str] = ()) -> list[str]:
     tokens = [invocation.command_word]
     if _observe_definitions((*invocation.compiler_args, *ambient_tokens)) == 0:
         tokens.append("-Diyi_observe")
@@ -795,13 +744,7 @@ def build_producer_argv(
     return tokens
 
 
-def build_consumer_argv(
-    invocation: Invocation,
-    mods: str,
-    output: str,
-    *,
-    ambient_tokens: Sequence[str] = (),
-) -> list[str]:
+def build_consumer_argv(invocation: Invocation, mods: str, output: str, *, ambient_tokens: Sequence[str] = ()) -> list[str]:
     tokens = [invocation.command_word]
     if _observe_definitions((*invocation.compiler_args, *ambient_tokens)) == 0:
         tokens.append("-Diyi_observe")
@@ -831,18 +774,7 @@ def _source_paths(invocation: Invocation, cwd: str) -> tuple[str, ...]:
     return tuple(_realpath_from_cwd(source, cwd) for source in invocation.sources)
 
 
-def _base_record(
-    config: Mapping[str, object],
-    invocation: Invocation,
-    classification: Classification,
-    roots: Sequence[str],
-    sources: Sequence[str],
-    output: str | None,
-    *,
-    inv: str,
-    phase: str,
-    reason: str | None = None,
-) -> dict[str, object]:
+def _base_record(config: Mapping[str, object], invocation: Invocation, classification: Classification, roots: Sequence[str], sources: Sequence[str], output: str | None, *, inv: str, phase: str, reason: str | None = None) -> dict[str, object]:
     driver = str(config["driver"])
     own_source = os.path.realpath(
         os.path.join(str(config["repo"]), "bench", f"std_{driver}_exercise.iyi")
@@ -886,17 +818,7 @@ def _print_refusal(reason: str) -> None:
     sys.stderr.flush()
 
 
-def _record_refusal(
-    config: Mapping[str, object],
-    invocation: Invocation,
-    reason: str,
-    *,
-    inv: str,
-    roots: Sequence[str] = (),
-    sources: Sequence[str] = (),
-    output: str | None = None,
-    classification: Classification | None = None,
-) -> int:
+def _record_refusal(config: Mapping[str, object], invocation: Invocation, reason: str, *, inv: str, roots: Sequence[str] = (), sources: Sequence[str] = (), output: str | None = None, classification: Classification | None = None) -> int:
     refused = classification or _minimal_refusal_classification(reason)
     record = _base_record(
         config,
@@ -1017,20 +939,7 @@ def _write_bytes(stream: object, data: bytes) -> None:
         stream.flush()
 
 
-def _end_record(
-    begin: Mapping[str, object],
-    *,
-    producer: Mapping[str, object],
-    consumer: Mapping[str, object] | None,
-    run: Mapping[str, object] | None,
-    out_ref: str | None,
-    out_ino: int | None,
-    out_mtime_ns: int | None,
-    atime_set_ns: int | None,
-    e3_error: str | None,
-    interrupted: bool,
-    exit_code: int,
-) -> dict[str, object]:
+def _end_record(begin: Mapping[str, object], *, producer: Mapping[str, object], consumer: Mapping[str, object] | None, run: Mapping[str, object] | None, out_ref: str | None, out_ino: int | None, out_mtime_ns: int | None, atime_set_ns: int | None, e3_error: str | None, interrupted: bool, exit_code: int) -> dict[str, object]:
     record = dict(begin)
     record.update(
         {
@@ -1051,17 +960,7 @@ def _end_record(
     return record
 
 
-def run_roundtrip(
-    config: Mapping[str, object],
-    invocation: Invocation,
-    classification: Classification,
-    output: str,
-    *,
-    roots: Sequence[str],
-    sources: Sequence[str],
-    ambient_tokens: Sequence[str],
-    inv: str,
-) -> int:
+def run_roundtrip(config: Mapping[str, object], invocation: Invocation, classification: Classification, output: str, *, roots: Sequence[str], sources: Sequence[str], ambient_tokens: Sequence[str], inv: str) -> int:
     invocation_dir = os.path.join(str(config["scratch"]), inv)
     mods = os.path.join(invocation_dir, "mods")
     os.makedirs(mods, exist_ok=False)
@@ -1288,6 +1187,7 @@ def run_shim(config_path: str, argv: Sequence[str]) -> int | ExecPlan:
             output,
             config["work_tmp"],
             config["repo"],
+            platform_tmp=config["platform_tmp"],
             ambient_tokens=ambient_tokens,
         )
     except InvocationError as error:

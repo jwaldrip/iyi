@@ -15,6 +15,7 @@ import shlex
 import json
 import os
 import re
+import platform
 import secrets
 import shutil
 import signal
@@ -156,12 +157,103 @@ def base_env(pin: dict | None = None, stage_extra: dict[str, str] | None = None)
     return env
 
 
-def compute_canonical_roots(
-    w_path: str,
-    p_path: str,
-    compiler_path: str,
-    pin_env: dict[str, str],
-) -> list[str]:
+def platform_temp_root(pin_env: dict[str, str], *, cwd: str, probe_mktemp: bool) -> str | None:
+    """Resolve and optionally prove Amendment E's platform temp root."""
+    if platform.system() != "Darwin":
+        return None
+    env_path = pin_env.get("env_path", "")
+    getconf = shutil.which("getconf", path=env_path)
+    if not getconf:
+        raise IdentityError(
+            "NO-PLATFORM-TMP",
+            "getconf does not resolve on the pinned PATH",
+        )
+    clean_env = base_env(pin_env)
+    try:
+        completed = subprocess.run(
+            [os.path.realpath(getconf), "DARWIN_USER_TEMP_DIR"],
+            cwd=cwd,
+            env=clean_env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as error:
+        raise IdentityError(
+            "NO-PLATFORM-TMP",
+            f"getconf DARWIN_USER_TEMP_DIR failed: {error}",
+        ) from error
+    lines = completed.stdout.strip().splitlines()
+    if completed.returncode != 0 or len(lines) != 1 or not lines[0]:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise IdentityError(
+            "NO-PLATFORM-TMP",
+            f"getconf DARWIN_USER_TEMP_DIR failed: {detail or 'no output'}",
+        )
+    root = os.path.realpath(lines[0])
+    if not os.path.isdir(root):
+        raise IdentityError(
+            "NO-PLATFORM-TMP",
+            f"getconf returned a non-directory: {root}",
+        )
+    if not probe_mktemp:
+        return root
+
+    mktemp = shutil.which("mktemp", path=env_path)
+    if not mktemp:
+        raise IdentityError(
+            "NO-PLATFORM-TMP",
+            "mktemp does not resolve on the pinned PATH",
+        )
+    probe_tmp = os.path.realpath(
+        os.path.join("/tmp", f"iyi-platform-tmp-{secrets.token_hex(8)}")
+    )
+    created = ""
+    try:
+        os.makedirs(probe_tmp, exist_ok=False)
+        probe_env = base_env(pin_env, {"TMPDIR": probe_tmp})
+        probe = subprocess.run(
+            [os.path.realpath(mktemp), "-d"],
+            cwd=cwd,
+            env=probe_env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        outputs = probe.stdout.strip().splitlines()
+        if probe.returncode != 0 or len(outputs) != 1 or not outputs[0]:
+            detail = probe.stderr.strip() or probe.stdout.strip()
+            raise IdentityError(
+                "PLATFORM-TMP-UNOBSERVABLE",
+                f"bare mktemp -d failed: {detail or 'no output'}",
+            )
+        created = os.path.realpath(outputs[0])
+        if not os.path.isdir(created):
+            raise IdentityError(
+                "PLATFORM-TMP-UNOBSERVABLE",
+                f"bare mktemp returned a non-directory: {created}",
+            )
+        parent = os.path.realpath(os.path.dirname(created))
+        if parent != root:
+            raise IdentityError(
+                "PLATFORM-TMP-UNOBSERVABLE",
+                f"bare mktemp parent {parent!r} != platform_tmp {root!r}",
+            )
+    except OSError as error:
+        raise IdentityError(
+            "PLATFORM-TMP-UNOBSERVABLE",
+            f"bare mktemp -d failed: {error}",
+        ) from error
+    finally:
+        if created:
+            shutil.rmtree(created, ignore_errors=True)
+        shutil.rmtree(probe_tmp, ignore_errors=True)
+    return root
+
+
+def compute_canonical_roots(w_path: str, p_path: str, compiler_path: str, pin_env: dict[str, str]) -> list[str]:
     roots: list[str] = []
     for base in (w_path, p_path):
         for relative in ("src", "samples/iyi"):
@@ -193,10 +285,7 @@ def compute_canonical_roots(
     return list(dict.fromkeys(roots))
 
 
-def probe_atime_observable(
-    dir_path: str,
-    stat_fn: Callable[[str], os.stat_result] = os.stat,
-) -> dict[str, int | str]:
+def probe_atime_observable(dir_path: str, stat_fn: Callable[[str], os.stat_result] = os.stat) -> dict[str, int | str]:
     """Prove that executing an inode on the report volume advances its atime."""
     probe_id = secrets.token_hex(8)
     test_exe = os.path.join(dir_path, f"probe-atime-{probe_id}")
@@ -276,13 +365,7 @@ def probe_atime_observable(
                 pass
 
 
-def _first_output_line(
-    command: list[str],
-    *,
-    cwd: str,
-    env: dict[str, str],
-    reason: str,
-) -> str:
+def _first_output_line(command: list[str], *, cwd: str, env: dict[str, str], reason: str) -> str:
     proc = subprocess.run(
         command,
         cwd=cwd,
@@ -301,12 +384,7 @@ def _first_output_line(
         )
     return lines[0]
 
-def _nm_version_line(
-    nm_path: str,
-    *,
-    cwd: str,
-    env: dict[str, str],
-) -> str:
+def _nm_version_line(nm_path: str, *, cwd: str, env: dict[str, str]) -> str:
     attempts: list[str] = []
     for argument in ("--version", "-version"):
         proc = subprocess.run(
@@ -328,10 +406,7 @@ def _nm_version_line(
     raise IdentityError("NO-NM", "; ".join(attempts))
 
 
-def _census_shas_and_validate(
-    w_path: str,
-    drivers: Sequence[str],
-) -> dict[str, str]:
+def _census_shas_and_validate(w_path: str, drivers: Sequence[str]) -> dict[str, str]:
     census_dir = os.path.join(w_path, "proof", "census")
     expected_files = {f"{driver}.json" for driver in drivers}
     try:
@@ -384,14 +459,33 @@ def _census_shas_and_validate(
             ) from error
         census_shas[driver] = sha256_file(census_path)
     return census_shas
+def _census_shas(w_path: str, drivers: Sequence[str]) -> dict[str, str]:
+    census_dir = os.path.join(w_path, "proof", "census")
+    expected_files = {f"{driver}.json" for driver in drivers}
+    try:
+        actual_files = {
+            name
+            for name in os.listdir(census_dir)
+            if name.endswith(".json")
+        }
+    except OSError as error:
+        raise IdentityError("CENSUS-SET", str(error)) from error
+    if actual_files != expected_files:
+        missing = sorted(expected_files - actual_files)
+        extra = sorted(actual_files - expected_files)
+        raise IdentityError(
+            "CENSUS-SET",
+            f"missing={missing}, extra={extra}",
+        )
+    return {
+        driver: sha256_file(os.path.join(census_dir, f"{driver}.json"))
+        for driver in drivers
+    }
 
 
-def inspect_pin_inputs(
-    p_path: str,
-    w_path: str,
-    compiler_path: str,
-    drivers: Sequence[str],
-) -> dict:
+
+
+def inspect_pin_inputs(p_path: str, w_path: str, compiler_path: str, drivers: Sequence[str]) -> dict:
     """Validate every read-only pin precondition and return the pinned facts."""
     p_real = os.path.realpath(p_path)
     w_real = os.path.realpath(w_path)
@@ -452,6 +546,11 @@ def inspect_pin_inputs(
         )
 
     clean_env = base_env(pin_env)
+    platform_tmp = platform_temp_root(
+        pin_env,
+        cwd=w_real,
+        probe_mktemp=True,
+    )
     version_line = _first_output_line(
         [c_real, "--version"],
         cwd=w_real,
@@ -514,6 +613,7 @@ def inspect_pin_inputs(
         "compiler_version_line": version_line,
         "compiler_stamp": stamp,
         "canonical_roots": canonical_roots,
+        "platform_tmp": platform_tmp,
         "env_path": env_path,
         "env_home": env_home,
         "python_path": os.path.realpath(sys.executable),
@@ -526,12 +626,7 @@ def inspect_pin_inputs(
     }
 
 
-def _validated_report_dir(
-    report_dir: str,
-    *,
-    require_empty: bool,
-    chain_id: str | None = None,
-) -> str:
+def _validated_report_dir(report_dir: str, *, require_empty: bool, chain_id: str | None = None) -> str:
     report_real = os.path.realpath(report_dir)
     match = re.fullmatch(r"/private/tmp/iyp-([0-9a-f]{8})", report_real)
     if not match:
@@ -560,15 +655,7 @@ def _validated_report_dir(
     return report_real
 
 
-def write_pin(
-    report_dir: str,
-    p_path: str,
-    w_path: str,
-    compiler_path: str,
-    drivers: Sequence[str],
-    chain_id: str | None = None,
-    stat_fn: Callable[[str], os.stat_result] = os.stat,
-) -> dict:
+def write_pin(report_dir: str, p_path: str, w_path: str, compiler_path: str, drivers: Sequence[str], chain_id: str | None = None, stat_fn: Callable[[str], os.stat_result] = os.stat) -> dict:
     """Validate C3/D4/D5 and write the immutable pin once."""
     report_real = _validated_report_dir(
         report_dir,
@@ -732,6 +819,17 @@ def check_identity(pin: dict) -> None:
     )
 
     clean_env = base_env(pin)
+    current_platform_tmp = platform_temp_root(
+        pin,
+        cwd=w_path,
+        probe_mktemp=False,
+    )
+    _require_equal(
+        "PLATFORM-TMP-CHANGED",
+        "platform temp root",
+        pin["platform_tmp"],
+        current_platform_tmp,
+    )
     version_line = _first_output_line(
         [compiler_path, "--version"],
         cwd=w_path,
@@ -755,7 +853,7 @@ def check_identity(pin: dict) -> None:
         stamp,
     )
 
-    current_census_shas = _census_shas_and_validate(
+    current_census_shas = _census_shas(
         w_path,
         tuple(sorted(pin["census_sha256"])),
     )
@@ -897,11 +995,7 @@ def _stop_leader(proc: subprocess.Popen[bytes], pgid: int, grace_sec: float) -> 
             ) from error
 
 
-def _record_and_stop_survivors(
-    pgid: int,
-    leader_pid: int,
-    grace_sec: float,
-) -> tuple[int, ...]:
+def _record_and_stop_survivors(pgid: int, leader_pid: int, grace_sec: float) -> tuple[int, ...]:
     survivors = _process_group_members(pgid, exclude=leader_pid)
     if not survivors:
         return ()
@@ -917,12 +1011,7 @@ def _record_and_stop_survivors(
     return survivors
 
 
-def _sample_log_growth(
-    log_path: str,
-    times_path: str,
-    stop: threading.Event,
-    errors: list[BaseException],
-) -> None:
+def _sample_log_growth(log_path: str, times_path: str, stop: threading.Event, errors: list[BaseException]) -> None:
     try:
         last_size = os.path.getsize(log_path)
         with open(times_path, "a", encoding="utf-8", buffering=1) as times_file:
@@ -937,15 +1026,7 @@ def _sample_log_growth(
         errors.append(error)
 
 
-def run_bounded(
-    cmd: list[str],
-    cwd: str,
-    env: dict[str, str],
-    log: str,
-    times: str,
-    limit_sec: float | None,
-    grace_sec: float = 30.0,
-) -> BoundedResult:
+def run_bounded(cmd: list[str], cwd: str, env: dict[str, str], log: str, times: str, limit_sec: float | None, grace_sec: float = 30.0) -> BoundedResult:
     """Run against a log fd; leader exit, never pipe EOF, decides completion."""
     if limit_sec is not None and limit_sec <= 0:
         raise ValueError("limit_sec must be positive or None")
@@ -985,10 +1066,7 @@ def run_bounded(
         for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             previous_handlers[signum] = signal.getsignal(signum)
 
-            def interrupt_handler(
-                received: int,
-                _frame: object,
-            ) -> None:
+            def interrupt_handler(received: int, _frame: object) -> None:
                 raise _BoundedSignal(received)
 
             signal.signal(signum, interrupt_handler)
@@ -1009,8 +1087,6 @@ def run_bounded(
             interrupted_signal = interrupted.signum
             _stop_leader(proc, proc.pid, grace_sec)
 
-        if proc.poll() is None:
-            raise RuntimeError(f"leader {proc.pid} has no exit status")
         survivors = _record_and_stop_survivors(
             proc.pid,
             proc.pid,
@@ -1186,22 +1262,11 @@ _VARIANT_KINDS = {"negative", "positive"}
 _TEMPLATE_FIELD_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
-def _violation(
-    violations: list[Violation],
-    rule_id: str,
-    line: int,
-    detail: str,
-) -> None:
+def _violation(violations: list[Violation], rule_id: str, line: int, detail: str) -> None:
     violations.append((rule_id, line if isinstance(line, int) else 0, detail))
 
 
-def _closed_keys(
-    value: object,
-    required: set[str],
-    path: str,
-    violations: list[Violation],
-    line: int = 0,
-) -> bool:
+def _closed_keys(value: object, required: set[str], path: str, violations: list[Violation], line: int = 0) -> bool:
     if not isinstance(value, dict):
         _violation(
             violations,
@@ -1309,11 +1374,7 @@ def _replace_shell_expansions(text: str) -> str | None:
 
 
 
-def _template_violation(
-    value: object,
-    allowed_vars: set[str],
-    field: str,
-) -> str | None:
+def _template_violation(value: object, allowed_vars: set[str], field: str) -> str | None:
     if not isinstance(value, str):
         return f"{field} must be a string"
     if any(char in value for char in ("$", "`", "*", "?", "[")):
@@ -1716,11 +1777,7 @@ def _render_print_words(words: list[str]) -> str | None:
     return re.sub(r"%(?:s|d)", "IYIVAR", format_string).replace("\\n", "")
 
 
-def _declared_build_lines_for_token(
-    sites: list[dict],
-    lines: list[str],
-    token: str,
-) -> set[int]:
+def _declared_build_lines_for_token(sites: list[dict], lines: list[str], token: str) -> set[int]:
     declared: set[int] = set()
     for site in sites:
         if not isinstance(site, dict) or site.get("command") != "build":
@@ -1745,10 +1802,7 @@ def _declared_build_lines_for_token(
 
 
 
-def _validate_census_schema(
-    census: object,
-    violations: list[Violation],
-) -> None:
+def _validate_census_schema(census: object, violations: list[Violation]) -> None:
     top_keys = {
         "census_version",
         "driver",
@@ -1803,8 +1857,6 @@ def _validate_census_schema(
             line,
         ):
             continue
-        if not isinstance(site, dict):
-            continue
         site_valid = (
             isinstance(site["lines"], list)
             and bool(site["lines"])
@@ -1845,8 +1897,6 @@ def _validate_census_schema(
                 violations,
                 line,
             ):
-                continue
-            if not isinstance(variant, dict):
                 continue
             variant_valid = (
                 isinstance(variant["id"], str)
@@ -1989,8 +2039,6 @@ def _validate_census_schema(
                 line,
             ):
                 continue
-            if not isinstance(item, dict):
-                continue
             if not isinstance(item["line"], int):
                 _violation(
                     violations,
@@ -2078,8 +2126,6 @@ def _validate_census_schema(
             line,
         ):
             continue
-        if not isinstance(evidence, dict):
-            continue
         evidence_valid = (
             isinstance(evidence["site_line"], int)
             and isinstance(evidence["out_template"], str)
@@ -2142,11 +2188,7 @@ def _validate_census_schema(
                 )
 
 
-def validate_census(
-    census: object,
-    script_bytes: bytes,
-    script_relpath: str,
-) -> list[Violation]:
+def validate_census(census: object, script_bytes: bytes, script_relpath: str) -> list[Violation]:
     """Return every C5 and E1 violation for one source-grounded census."""
     violations: list[Violation] = []
     _validate_census_schema(census, violations)
@@ -2754,12 +2796,7 @@ class LedgerVerdict:
     reasons: tuple[str, ...]
 
 
-def _ledger_add(
-    statuses: set[str],
-    reasons: list[str],
-    status: str,
-    detail: str,
-) -> None:
+def _ledger_add(statuses: set[str], reasons: list[str], status: str, detail: str) -> None:
     statuses.add(status)
     reason = f"{status}: {detail}"
     if reason not in reasons:
@@ -2777,9 +2814,7 @@ def _ledger_variant_ids(record: dict) -> tuple[str, ...]:
     return tuple(value for value in values if isinstance(value, str))
 
 
-def _ledger_census_index(
-    census: dict,
-) -> tuple[dict[str, tuple[dict, dict]], dict[int, dict]]:
+def _ledger_census_index(census: dict) -> tuple[dict[str, tuple[dict, dict]], dict[int, dict]]:
     variants: dict[str, tuple[dict, dict]] = {}
     sites_by_line: dict[int, dict] = {}
     sites_value = census.get("sites") if isinstance(census, dict) else []
@@ -2836,11 +2871,7 @@ def _ledger_is_own(record: dict, *, driver: str, repo: str) -> bool:
     )
 
 
-def _ledger_binding_values(
-    records: list[dict],
-    variant_id: str,
-    variable: str,
-) -> tuple[object, ...]:
+def _ledger_binding_values(records: list[dict], variant_id: str, variable: str) -> tuple[object, ...]:
     values: list[object] = []
     for record in records:
         bindings = record.get("bindings")
@@ -2850,20 +2881,20 @@ def _ledger_binding_values(
     return tuple(values)
 
 
-def _ledger_out_regex(
-    template: str,
-    *,
-    work_tmp: str,
-    repo: str,
-    name: str | None,
-) -> re.Pattern[str] | None:
+def _ledger_out_regex(template: str, *, work_tmp: str, repo: str, name: str | None, platform_tmp: str | None) -> re.Pattern[str] | None:
     parts: list[str] = []
     cursor = 0
     for match in re.finditer(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", template):
         parts.append(re.escape(template[cursor : match.start()]))
         placeholder = match.group(1)
         if placeholder == "WORK":
-            parts.append(re.escape(os.path.realpath(work_tmp)) + r"/[^/]+")
+            roots = [os.path.realpath(work_tmp)]
+            if platform_tmp is not None:
+                roots.append(os.path.realpath(platform_tmp))
+            root_body = "|".join(
+                re.escape(root) for root in dict.fromkeys(roots)
+            )
+            parts.append(f"(?:{root_body}){re.escape(os.sep)}[^/]+")
         elif placeholder == "REPO":
             parts.append(re.escape(os.path.realpath(repo)))
         elif placeholder == "name" and name is not None:
@@ -2889,18 +2920,7 @@ def _ledger_run_executed(record: dict) -> bool:
     )
 
 
-def verify_ledger(
-    ledger_path: str,
-    *,
-    census: dict,
-    driver: str,
-    nonce: str,
-    attempt: int,
-    chain_id: str,
-    work_tmp: str,
-    repo: str,
-    stat_fn: Callable[[str], os.stat_result] = os.stat,
-) -> LedgerVerdict:
+def verify_ledger(ledger_path: str, *, census: dict, driver: str, nonce: str, attempt: int, chain_id: str, work_tmp: str, repo: str, platform_tmp: str | None, stat_fn: Callable[[str], os.stat_result] = os.stat) -> LedgerVerdict:
     """Verify one P2 ledger and return every blocking P4 status."""
     statuses: set[str] = set()
     reasons: list[str] = []
@@ -3243,7 +3263,12 @@ def verify_ledger(
         )
     }
     scoped_indices = own_indices | positive_indices
-    matched_indices: set[int] = set()
+    run_executed_indices = {
+        index
+        for index in scoped_indices
+        if _ledger_run_executed(end_by_index[index])
+    }
+    matched_indices: set[int] = set(run_executed_indices)
     evidences_value = census.get("exec_evidence") if isinstance(census, dict) else []
     evidence_values = evidences_value if isinstance(evidences_value, list) else ()
     evidence_rows = (
@@ -3257,6 +3282,9 @@ def verify_ledger(
         and isinstance(evidence.get("out_template"), str)
         and isinstance(sites_by_line.get(evidence.get("site_line")), dict)
     )
+    if not scoped_indices:
+        evidence_rows = ()
+
 
     for evidence_index, evidence, site in evidence_rows:
         site_kind = site.get("kind")
@@ -3298,6 +3326,7 @@ def verify_ledger(
                 work_tmp=work_tmp,
                 repo=repo,
                 name=name,
+                platform_tmp=platform_tmp,
             )
             matches = {
                 index

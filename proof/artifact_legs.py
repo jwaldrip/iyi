@@ -1,17 +1,5 @@
 #!/usr/bin/env python3
-"""
-Run 2 over the 27 samples and 114 standard-library exercises.
-
-Each row builds four artifact legs:
-  P:  producer with --emit-iyimod
-  C1: cold consumer with stale key k1
-  C2: cold consumer with stale key k2
-  C3: warm consumer with stale key k3
-
-P, C1, and C3 are executed. Their exit status and output are compared under
-R-1. Every build and run stream is retained in the row directory. Successful
-rows discard only their scratch artifacts; failed rows retain them.
-"""
+"""Run and retain the four artifact legs for every observed corpus row."""
 
 from __future__ import annotations
 
@@ -24,7 +12,6 @@ import shutil
 import signal
 import subprocess
 import sys
-import time
 from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Sequence
 
@@ -79,12 +66,7 @@ def check_disk_space(path: str, min_gb: float = DISK_MIN_GB) -> None:
         )
 
 
-def clean_env(
-    repo: str,
-    cache_dir: str,
-    warm: bool = False,
-    extra: dict[str, str] | None = None,
-) -> dict[str, str]:
+def clean_env(repo: str, cache_dir: str, warm: bool = False, extra: dict[str, str] | None = None) -> dict[str, str]:
     """Add only the Run 2 leg variables to the already-scrubbed environment."""
     env = os.environ.copy()
     for key in tuple(env):
@@ -111,13 +93,7 @@ def _kill_process_group(pgid: int, sig: signal.Signals) -> None:
         return
 
 
-def run_session_proc(
-    cmd: list[str],
-    cwd: str,
-    env: dict[str, str],
-    timeout_sec: float,
-    stdin_devnull: bool = True,
-) -> tuple[int, bytes, bytes, bool]:
+def run_session_proc(cmd: list[str], cwd: str, env: dict[str, str], timeout_sec: float, stdin_devnull: bool = True) -> tuple[int, bytes, bytes, bool]:
     """Run one build or program in its own process group."""
     stdin = subprocess.DEVNULL if stdin_devnull else None
     proc = subprocess.Popen(
@@ -137,9 +113,11 @@ def run_session_proc(
     except subprocess.TimeoutExpired:
         timed_out = True
         _kill_process_group(proc.pid, signal.SIGTERM)
-        time.sleep(0.5)
-        _kill_process_group(proc.pid, signal.SIGKILL)
-        stdout, stderr = proc.communicate()
+        try:
+            stdout, stderr = proc.communicate(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            _kill_process_group(proc.pid, signal.SIGKILL)
+            stdout, stderr = proc.communicate()
 
     returncode = proc.returncode if proc.returncode is not None else -1
     return returncode, stdout, stderr, timed_out
@@ -166,13 +144,7 @@ def check_defined_symbols(binary_path: str, nm_bin: str) -> list[str]:
     ]
 
 
-def _compare_frame_stderr(
-    stderr_a: bytes,
-    stderr_b: bytes,
-    repo_root: str,
-    row_dir: str,
-    tag: str,
-) -> tuple[bool, str]:
+def _compare_frame_stderr(stderr_a: bytes, stderr_b: bytes, repo_root: str, row_dir: str, tag: str) -> tuple[bool, str]:
     stderr_file_a = os.path.join(row_dir, f"stderr_{tag}_a.out")
     stderr_file_b = os.path.join(row_dir, f"stderr_{tag}_b.out")
     with open(stderr_file_a, "wb") as stream:
@@ -201,18 +173,7 @@ def _compare_frame_stderr(
     )
 
 
-def compare_r1(
-    name: str,
-    status_a: int,
-    status_b: int,
-    stdout_a: bytes,
-    stderr_a: bytes,
-    stdout_b: bytes,
-    stderr_b: bytes,
-    repo_root: str,
-    row_dir: str,
-    tag: str,
-) -> tuple[bool, str]:
+def compare_r1(name: str, status_a: int, status_b: int, stdout_a: bytes, stderr_a: bytes, stdout_b: bytes, stderr_b: bytes, repo_root: str, row_dir: str, tag: str) -> tuple[bool, str]:
     if status_a != status_b:
         return False, f"exit status mismatch: {status_a} != {status_b}"
 
@@ -229,13 +190,10 @@ def compare_r1(
     return _compare_frame_stderr(stderr_a, stderr_b, repo_root, row_dir, tag) if platform.system() == "Darwin" else (False, "stderr differs (frames_equivalent CLI only available on Darwin)")
 
 
-def _row_identity(
-    source: str,
-    repo: str,
-    work_root: str,
-) -> tuple[str, str, str, bool, str]:
+def _row_identity(source: str, repo: str, work_root: str) -> tuple[str, str, str, bool, str]:
     source_path = os.path.realpath(source)
-    relpath = os.path.relpath(source_path, repo)
+    repo_path = os.path.realpath(repo)
+    relpath = os.path.relpath(source_path, repo_path)
     raw_base = os.path.basename(source_path)
     base = raw_base[:-4] if raw_base.endswith(".iyi") else raw_base
     is_std = relpath.startswith(f"bench{os.sep}")
@@ -243,11 +201,7 @@ def _row_identity(
     return source_path, relpath, base, is_std, row_dir
 
 
-def _empty_row(
-    source: str,
-    repo: str,
-    work_root: str,
-) -> dict:
+def _empty_row(source: str, repo: str, work_root: str) -> dict:
     source_path, relpath, base, is_std, row_dir = _row_identity(
         source, repo, work_root
     )
@@ -303,14 +257,7 @@ def _prepare_row_directory(row_dir: str) -> None:
             stream.write("NOT-RUN\n")
 
 
-def _save_process_output(
-    row_dir: str,
-    leg: str,
-    phase: str,
-    stdout: bytes,
-    stderr: bytes,
-    exit_code: int | None = None,
-) -> None:
+def _save_process_output(row_dir: str, leg: str, phase: str, stdout: bytes, stderr: bytes, exit_code: int | None = None) -> None:
     with open(_output_path(row_dir, leg, phase, "stdout"), "wb") as stream:
         stream.write(stdout)
     with open(_output_path(row_dir, leg, phase, "stderr"), "wb") as stream:
@@ -329,14 +276,7 @@ def _remove_success_scratch(paths: Sequence[str]) -> None:
         shutil.rmtree(path, ignore_errors=True)
 
 
-def _run_row(
-    source: str,
-    *,
-    repo: str,
-    compiler: str,
-    work_root: str,
-    nm_bin: str,
-) -> dict:
+def _run_row(source: str, *, repo: str, compiler: str, work_root: str, nm_bin: str) -> dict:
     result = _empty_row(source, repo, work_root)
     source_path = result["source"]
     relpath = result["name"]
@@ -707,14 +647,7 @@ def _run_row(
     return result
 
 
-def run_row(
-    source: str,
-    *,
-    repo: str,
-    compiler: str,
-    work_root: str,
-    nm_bin: str,
-) -> dict:
+def run_row(source: str, *, repo: str, compiler: str, work_root: str, nm_bin: str) -> dict:
     """Run one row, converting only OSError and RuntimeError at the row boundary."""
     result = _empty_row(source, repo, work_root)
     try:
@@ -734,15 +667,7 @@ def run_row(
         return result
 
 
-def run_rows(
-    sources: Sequence[str],
-    *,
-    repo: str,
-    compiler: str,
-    work_root: str,
-    nm_bin: str,
-    workers: int,
-) -> list[dict]:
+def run_rows(sources: Sequence[str], *, repo: str, compiler: str, work_root: str, nm_bin: str, workers: int) -> list[dict]:
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [
             pool.submit(
