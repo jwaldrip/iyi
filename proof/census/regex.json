@@ -217,7 +217,18 @@
       "text": "    echo \"  $label: skipped, no working python3 to make the broken copy with\""
     }
   ],
-  "not_skips": [],
+  "not_skips": [
+    {
+      "line": 94,
+      "reason": "failure verdict, not an exclusion",
+      "text": "[ $? -eq 0 ] || { echo \"  the oracle did not run\"; status=1; }"
+    },
+    {
+      "line": 168,
+      "reason": "failure verdict, not an exclusion",
+      "text": "[ $? -eq 0 ] || { echo \"  the groups oracle did not run\"; status=1; }"
+    }
+  ],
   "pass_sentinel": {
     "line": 602,
     "regex": "the\\ std/regex\\ exercise\\ holds",

@@ -1893,43 +1893,25 @@ def _mutate_e1_undeclared_build(
         if evidence.get("exec_token") == '"$WORK/$name"'
         and evidence.get("out_template") == "{WORK}/{name}"
     )
-    first_line = _insert_before_final_exit(
+    build_line = _insert_before_final_exit(
         lines,
         [
-            "name=o3-self-evidence",
             (
-                'if ! "$IYI" build -o "$WORK/$name" '
-                f'"$REPO/bench/std_{driver}_exercise.iyi"; '
-                "then status=1; fi"
-            ),
-            '"$WORK/$name" >/dev/null 2>&1',
-            'if [ "$?" -ne 0 ]; then status=1; fi',
+                '"$IYI" build -o "$WORK/$name" '
+                f'"$REPO/bench/std_{driver}_exercise.iyi"'
+            )
         ],
     )
-    build_line = first_line + 1
-    exec_line = first_line + 2
-    verdict_line = first_line + 3
     census["non_invocations"].append(
         {
             "line": build_line,
-            "reason": "O3 seed: undeclared compiler site self-referenced by evidence",
+            "reason": "O3 seed: compiler output site is not declared",
         }
     )
-    census["exec_evidence"].append(
-        {
-            "site_line": build_line,
-            "out_template": base["out_template"],
-            "name_from_calls": {
-                str(first_line): "o3-self-evidence",
-            },
-            "exec_lines": [exec_line],
-            "exec_token": base["exec_token"],
-            "verdict_lines": [verdict_line],
-            "failure_marks": ["status=1"],
-            "refs_ok": [],
-        }
+    return (
+        f"e1-undeclared-build-line-{build_line}-token-{base['exec_token']}",
+        1,
     )
-    return f"e1-undeclared-build-line-{build_line}-self-evidenced", 1
 
 
 def _mutate_e1_verdict(
@@ -2103,197 +2085,551 @@ def _fixture_e1_shared_token_control() -> Observation:
     return Observation(expected=expected, got=got)
 
 
-_HELPER_EXEC_SCRIPT_LINES = (
-    "#!/usr/bin/env bash",
-    "status=0",
-    'WORK="/tmp/helper-fixture"',
-    "build() {",
-    '  local name="$1"',
-    '  "$IYI" build -o "$WORK/$name" "$REPO/bench/std_helper_fixture_exercise.iyi"',
-    "}",
-    "local_run() {",
-    '  rm -rf "$2"',
-    '  "$1" "$2" >"$3" 2>&1',
-    "}",
-    "unrelated_label() {",
-    """  printf '%s\\n' "label: $1" """.rstrip(),
-    "}",
-    "if build alpha; then",
-    '  local_run "$WORK/alpha" "$WORK/cache-alpha" "$WORK/alpha.out"',
-    '  if ! grep -q PASS "$WORK/alpha.out"; then status=1; fi',
-    "fi",
-    "if build beta; then",
-    '  local_run "$WORK/beta" "$WORK/cache-beta" "$WORK/beta.out"',
-    '  if ! grep -q PASS "$WORK/beta.out"; then status=1; fi',
-    "fi",
-    'unrelated_label "not executable" >/dev/null',
-    'echo "helper fixture holds"',
-    "exit $status",
-)
-_HELPER_EXEC_SCRIPT_RELPATH = "bench/std_helper_fixture_exercise.sh"
 
 
-def _helper_exec_case() -> tuple[dict, bytes, str]:
-    script_bytes = ("\n".join(_HELPER_EXEC_SCRIPT_LINES) + "\n").encode()
-    census = {
-        "census_version": 1,
-        "driver": "helper_fixture",
-        "script": _HELPER_EXEC_SCRIPT_RELPATH,
-        "script_sha256": hashlib.sha256(script_bytes).hexdigest(),
-        "sites": [
-            {
-                "lines": [6],
-                "command": "build",
-                "kind": "canonical-own",
-                "contains": [
-                    '  "$IYI" build -o "$WORK/$name" '
-                    '"$REPO/bench/std_helper_fixture_exercise.iyi"'
-                ],
-                "variants": [],
-            }
-        ],
-        "non_invocations": [],
-        "skips": [],
-        "not_skips": [],
-        "pass_sentinel": {
-            "line": 24,
-            "regex": "^helper fixture holds$",
-            "text": 'echo "helper fixture holds"',
-        },
-        "exec_evidence": [
-            {
-                "site_line": 6,
-                "out_template": "{WORK}/{name}",
-                "name_from_calls": {
-                    "15": "alpha",
-                    "19": "beta",
-                },
-                "exec_lines": [10],
-                "exec_token": '"$WORK/$name"',
-                "verdict_lines": [17, 21],
-                "failure_marks": ["status=1"],
-                "refs_ok": [],
-                "helper_exec": {
-                    "function": "local_run",
-                    "definition_lines": [8, 11],
-                    "argument_position": 1,
-                    "call_lines": [16, 20],
-                },
-            }
-        ],
-    }
-    return census, script_bytes, _HELPER_EXEC_SCRIPT_RELPATH
 
 
-def _helper_exec_mutation(
-    case: str,
-    census: dict,
-    lines: list[str],
-) -> str:
-    helper = census["exec_evidence"][0]["helper_exec"]
-    if case == "schema":
-        helper["unknown"] = True
-        return "helper_exec.unknown=true"
-    if case == "definition":
-        helper["definition_lines"] = [7, 11]
-        return "definition_lines=[7,11]"
-    if case == "exec-position":
-        lines[9] = """  printf '%s\\n' "$1" >"$3" 2>&1"""
-        return "line10-command=printf"
-    if case == "call-binding":
-        lines[15] = (
-            '  local_run "$WORK/gamma" "$WORK/cache-alpha" "$WORK/alpha.out"'
-        )
-        return "line16-output=gamma"
-    if case == "rebinding":
-        lines[8] = '  target="$1"'
-        return "line9-target-from-parameter1"
-    if case == "unlisted-call":
-        lines[22] = (
-            'local_run "$WORK/gamma" "$WORK/cache-gamma" "$WORK/gamma.out"'
-        )
-        return "line23-unlisted-local_run"
-    if case == "stray-read":
-        lines[8] = '  cat "$1" >/dev/null'
-        return "line9-read-parameter1"
-    if case == "stray-copy":
-        lines[8] = '  cp "$1" "$2"'
-        return "line9-copy-parameter1"
-    if case == "stray-move":
-        lines[8] = '  mv "$1" "$2"'
-        return "line9-move-parameter1"
-    if case == "stray-link":
-        lines[8] = '  ln "$1" "$2"'
-        return "line9-link-parameter1"
-    if case == "stray-redirect":
-        lines[8] = '  cat >"$1"'
-        return "line9-redirect-parameter1"
-    if case == "stray-concrete-path":
-        lines[22] = 'shasum "$WORK/alpha" >/dev/null'
-        return "line23-read-concrete-alpha"
-    raise ValueError(f"unknown helper_exec mutation {case!r}")
-
-
-def _fixture_helper_exec_seed(case: str, expected_rule: str) -> Observation:
-    census, control_script, script_relpath = _helper_exec_case()
-    control_ids = _rule_ids(
-        validate_census(census, control_script, script_relpath)
+def _git_show_bytes(ref: str, path: str) -> bytes:
+    completed = subprocess.run(
+        ["git", "-C", REPO_ROOT, "show", f"{ref}:{path}"],
+        capture_output=True,
+        check=False,
     )
-    seed_census = _clone_census(census)
-    seed_lines = control_script.decode().splitlines()
-    applied = _helper_exec_mutation(case, seed_census, seed_lines)
-    seed_script = ("\n".join(seed_lines) + "\n").encode()
-    seed_census["script_sha256"] = hashlib.sha256(seed_script).hexdigest()
-    seed_ids = _rule_ids(
-        validate_census(seed_census, seed_script, script_relpath)
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"git show failed for {path}: "
+            f"{completed.stderr.decode(errors='replace').strip()}"
+        )
+    return completed.stdout
+
+
+def _nested_type_control(
+    driver: str,
+) -> tuple[dict, bytes, str]:
+    census, script_bytes, script_relpath = _census_case(driver)
+    if driver == "file" and not census["non_invocations"]:
+        evidence_sites = {
+            evidence.get("site_line")
+            for evidence in census["exec_evidence"]
+            if isinstance(evidence, dict)
+        }
+        auxiliary_index = next(
+            index
+            for index, site in enumerate(census["sites"])
+            if site.get("command") in ("doc", "fmt")
+            and site.get("lines")
+            and site["lines"][0] not in evidence_sites
+        )
+        auxiliary = census["sites"].pop(auxiliary_index)
+        census["non_invocations"].extend(
+            {
+                "line": number,
+                "reason": "nested-type control reclassifies an auxiliary invocation",
+            }
+            for number in auxiliary["lines"]
+        )
+    control_rules = _rule_ids(
+        validate_census(census, script_bytes, script_relpath)
+    )
+    if control_rules:
+        raise RuntimeError(
+            f"nested-type {driver} control is invalid: {control_rules}"
+        )
+    return census, script_bytes, script_relpath
+
+
+def _nested_type_cases(
+    census: dict,
+) -> tuple[tuple[str, Callable[[dict], None]], ...]:
+    def set_path(*path: object, value: object) -> Callable[[dict], None]:
+        def mutate(document: dict) -> None:
+            current: object = document
+            for segment in path[:-1]:
+                current = current[segment]  # type: ignore[index]
+            current[path[-1]] = value  # type: ignore[index]
+
+        return mutate
+
+    def append_path(*path: object, value: object) -> Callable[[dict], None]:
+        def mutate(document: dict) -> None:
+            current: object = document
+            for segment in path:
+                current = current[segment]  # type: ignore[index]
+            current.append(value)  # type: ignore[union-attr]
+
+        return mutate
+
+    variant_site, variant_index, variable_name = next(
+        (site_index, item_index, name)
+        for site_index, site in enumerate(census["sites"])
+        for item_index, variant in enumerate(site["variants"])
+        for name, variable in variant["vars"].items()
+        if isinstance(variable, dict)
+        and isinstance(variable.get("values"), list)
+        and variable["values"]
+    )
+    variant_path = ("sites", variant_site, "variants", variant_index)
+    variable_path = (*variant_path, "vars", variable_name)
+    return (
+        ("census_version.type", set_path("census_version", value="x")),
+        ("driver.type", set_path("driver", value=1)),
+        ("script.type", set_path("script", value=1)),
+        ("script_sha256.type", set_path("script_sha256", value=1)),
+        ("sites.type", set_path("sites", value="x")),
+        ("sites.append", append_path("sites", value="x")),
+        ("non_invocations.type", set_path("non_invocations", value="x")),
+        ("non_invocations.append", append_path("non_invocations", value="x")),
+        (
+            "non_invocations.line.type",
+            set_path("non_invocations", 0, "line", value="x"),
+        ),
+        (
+            "non_invocations.reason.type",
+            set_path("non_invocations", 0, "reason", value=1),
+        ),
+        ("skips.type", set_path("skips", value="x")),
+        ("skips.append", append_path("skips", value="x")),
+        ("skip.line.type", set_path("skips", 0, "line", value="x")),
+        ("skip.class.type", set_path("skips", 0, "class", value=1)),
+        ("skip.what.type", set_path("skips", 0, "what", value=1)),
+        ("skip.regex.type", set_path("skips", 0, "regex", value=1)),
+        ("skip.text.type", set_path("skips", 0, "text", value=1)),
+        ("not_skips.type", set_path("not_skips", value="x")),
+        ("not_skips.append", append_path("not_skips", value="x")),
+        (
+            "not_skips.line.type",
+            set_path("not_skips", 0, "line", value="x"),
+        ),
+        (
+            "not_skips.reason.type",
+            set_path("not_skips", 0, "reason", value=1),
+        ),
+        (
+            "not_skips.text.type",
+            set_path("not_skips", 0, "text", value=1),
+        ),
+        ("pass_sentinel.type", set_path("pass_sentinel", value="x")),
+        (
+            "pass_sentinel.line.type",
+            set_path("pass_sentinel", "line", value="x"),
+        ),
+        (
+            "pass_sentinel.regex.type",
+            set_path("pass_sentinel", "regex", value=1),
+        ),
+        (
+            "pass_sentinel.text.type",
+            set_path("pass_sentinel", "text", value=1),
+        ),
+        ("exec_evidence.type", set_path("exec_evidence", value="x")),
+        ("exec_evidence.append", append_path("exec_evidence", value="x")),
+        ("site.lines.type", set_path("sites", 0, "lines", value="x")),
+        ("site.lines.append", append_path("sites", 0, "lines", value="x")),
+        ("site.command.type", set_path("sites", 0, "command", value=1)),
+        ("site.kind.type", set_path("sites", 0, "kind", value=1)),
+        ("site.contains.type", set_path("sites", 0, "contains", value="x")),
+        ("site.contains.append", append_path("sites", 0, "contains", value=1)),
+        ("site.variants.type", set_path("sites", 0, "variants", value="x")),
+        ("site.variants.append", append_path("sites", 0, "variants", value="x")),
+        ("variant.id.type", set_path(*variant_path, "id", value=1)),
+        ("variant.kind.type", set_path(*variant_path, "kind", value=1)),
+        ("variant.vars.type", set_path(*variant_path, "vars", value="x")),
+        ("variant.var.type", set_path(*variable_path, value="x")),
+        (
+            "variant.var.lines.type",
+            set_path(*variable_path, "lines", value="x"),
+        ),
+        (
+            "variant.var.values.type",
+            set_path(*variable_path, "values", value="x"),
+        ),
+        (
+            "variant.var.values.append",
+            append_path(*variable_path, "values", value=1),
+        ),
+        (
+            "variant.sources.type",
+            set_path(*variant_path, "sources", value="x"),
+        ),
+        (
+            "variant.sources.append",
+            append_path(*variant_path, "sources", value=1),
+        ),
+        (
+            "variant.requires.type",
+            set_path(*variant_path, "requires", value="x"),
+        ),
+        (
+            "variant.requires.append",
+            append_path(*variant_path, "requires", value=1),
+        ),
+        (
+            "variant.verdict.type",
+            set_path(*variant_path, "verdict", value="x"),
+        ),
+        (
+            "variant.verdict.lines.type",
+            set_path(*variant_path, "verdict", "lines", value="x"),
+        ),
+        (
+            "variant.verdict.lines.append",
+            append_path(*variant_path, "verdict", "lines", value="x"),
+        ),
+        (
+            "variant.verdict.contains.type",
+            set_path(*variant_path, "verdict", "contains", value="x"),
+        ),
+        (
+            "variant.verdict.contains.append",
+            append_path(*variant_path, "verdict", "contains", value=1),
+        ),
+        (
+            "variant.first_root.type",
+            set_path(*variant_path, "first_root", value=1),
+        ),
+        (
+            "variant.output.type",
+            set_path(*variant_path, "output", value=1),
+        ),
+        (
+            "variant.darwin.type",
+            set_path(*variant_path, "darwin", value=1),
+        ),
+        (
+            "evidence.site_line.type",
+            set_path("exec_evidence", 0, "site_line", value="x"),
+        ),
+        (
+            "evidence.out_template.type",
+            set_path("exec_evidence", 0, "out_template", value=1),
+        ),
+        (
+            "evidence.exec_token.type",
+            set_path("exec_evidence", 0, "exec_token", value=1),
+        ),
+        (
+            "evidence.name_from_calls.type",
+            set_path("exec_evidence", 0, "name_from_calls", value="x"),
+        ),
+        (
+            "evidence.name_from_calls.append",
+            set_path("exec_evidence", 0, "name_from_calls", "x", value=1),
+        ),
+        (
+            "evidence.exec_lines.type",
+            set_path("exec_evidence", 0, "exec_lines", value="x"),
+        ),
+        (
+            "evidence.exec_lines.append",
+            append_path("exec_evidence", 0, "exec_lines", value="x"),
+        ),
+        (
+            "evidence.verdict_lines.type",
+            set_path("exec_evidence", 0, "verdict_lines", value="x"),
+        ),
+        (
+            "evidence.verdict_lines.append",
+            append_path("exec_evidence", 0, "verdict_lines", value="x"),
+        ),
+        (
+            "evidence.failure_marks.type",
+            set_path("exec_evidence", 0, "failure_marks", value="x"),
+        ),
+        (
+            "evidence.failure_marks.append",
+            append_path("exec_evidence", 0, "failure_marks", value=1),
+        ),
+        (
+            "evidence.refs_ok.type",
+            set_path("exec_evidence", 0, "refs_ok", value="x"),
+        ),
+        (
+            "evidence.refs_ok.append",
+            append_path("exec_evidence", 0, "refs_ok", value="x"),
+        ),
+    )
+
+
+def _fixture_validator_nested_types_seed() -> Observation:
+    census, script_bytes, script_relpath = _nested_type_control("file")
+    outcomes: dict[str, dict[str, bool]] = {}
+    applied: list[str] = []
+    cases = _nested_type_cases(census)
+    for label, mutate in cases:
+        changed = _clone_census(census)
+        before = json.dumps(changed, sort_keys=True, separators=(",", ":"))
+        mutate(changed)
+        after = json.dumps(changed, sort_keys=True, separators=(",", ":"))
+        if before == after:
+            raise RuntimeError(f"nested-type mutation did not change {label}")
+        raised = False
+        violations: object
+        try:
+            violations = validate_census(changed, script_bytes, script_relpath)
+        except Exception:
+            raised = True
+            violations = []
+        tuples = (
+            isinstance(violations, list)
+            and all(
+                isinstance(item, tuple) and len(item) == 3
+                for item in violations
+            )
+        )
+        schema = (
+            isinstance(violations, list)
+            and any(item[0] == "C5.0-schema" for item in violations)
+        )
+        outcomes[label] = {
+            "raised": raised,
+            "tuples": tuples,
+            "schema": schema,
+        }
+        applied.append(f"{label}:{str(before != after).lower()}")
+
+    pattern_census, pattern_script, pattern_relpath = _nested_type_control(
+        "compress"
+    )
+    pattern_site, pattern_variant, pattern_name = next(
+        (site_index, variant_index, name)
+        for site_index, site in enumerate(pattern_census["sites"])
+        for variant_index, variant in enumerate(site["variants"])
+        for name, variable in variant["vars"].items()
+        if isinstance(variable, dict) and "pattern" in variable
+    )
+    for label, field in (
+        ("variant.var.pattern.type", "pattern"),
+        ("variant.var.pattern_reason_line.type", "pattern_reason_line"),
+    ):
+        changed = _clone_census(pattern_census)
+        variable = changed["sites"][pattern_site]["variants"][pattern_variant][
+            "vars"
+        ][pattern_name]
+        variable[field] = 1 if field == "pattern" else "x"
+        raised = False
+        violations = []
+        try:
+            violations = validate_census(
+                changed,
+                pattern_script,
+                pattern_relpath,
+            )
+        except Exception:
+            raised = True
+        outcomes[label] = {
+            "raised": raised,
+            "tuples": all(
+                isinstance(item, tuple) and len(item) == 3
+                for item in violations
+            ),
+            "schema": any(
+                item[0] == "C5.0-schema" for item in violations
+            ),
+        }
+        applied.append(f"{label}:true")
+
+    cleanup_census, cleanup_script, cleanup_relpath = _nested_type_control(
+        "http"
+    )
+    cleanup_evidence = next(
+        index
+        for index, evidence in enumerate(cleanup_census["exec_evidence"])
+        if evidence["refs_ok"]
+    )
+    for label, field, value in (
+        ("evidence.refs_ok.line.type", "line", "x"),
+        ("evidence.refs_ok.kind.type", "kind", 1),
+    ):
+        changed = _clone_census(cleanup_census)
+        changed["exec_evidence"][cleanup_evidence]["refs_ok"][0][field] = value
+        raised = False
+        violations = []
+        try:
+            violations = validate_census(
+                changed,
+                cleanup_script,
+                cleanup_relpath,
+            )
+        except Exception:
+            raised = True
+        outcomes[label] = {
+            "raised": raised,
+            "tuples": all(
+                isinstance(item, tuple) and len(item) == 3
+                for item in violations
+            ),
+            "schema": any(
+                item[0] == "C5.0-schema" for item in violations
+            ),
+        }
+        applied.append(f"{label}:true")
+
+    expected_item = {"raised": False, "tuples": True, "schema": True}
+    expected = {label: expected_item for label, _mutate in cases}
+    expected["variant.var.pattern.type"] = expected_item
+    expected["variant.var.pattern_reason_line.type"] = expected_item
+    expected["evidence.refs_ok.line.type"] = expected_item
+    expected["evidence.refs_ok.kind.type"] = expected_item
+    return Observation(
+        expected=expected,
+        got=outcomes,
+        applied=";".join(applied),
+    )
+
+def _copied_validator_rules(
+    census: dict,
+    script_bytes: bytes,
+    script_relpath: str,
+    prefix: str,
+) -> list[str]:
+    with tempfile.TemporaryDirectory(prefix=prefix, dir="/tmp") as scratch:
+        census_path = os.path.join(scratch, "census.json")
+        script_path = os.path.join(scratch, os.path.basename(script_relpath))
+        with open(census_path, "w", encoding="utf-8") as census_file:
+            json.dump(census, census_file, indent=2, sort_keys=True)
+            census_file.write("\n")
+        with open(script_path, "wb") as script_file:
+            script_file.write(script_bytes)
+        with open(census_path, "r", encoding="utf-8") as census_file:
+            copied_census = json.load(census_file)
+        with open(script_path, "rb") as script_file:
+            copied_script = script_file.read()
+        return _rule_ids(
+            validate_census(copied_census, copied_script, script_relpath)
+        )
+
+
+
+def _uncited_blank_line(census: dict, lines: list[str]) -> int:
+    excluded = _non_skip_references(census)
+    for key in ("non_invocations", "skips", "not_skips"):
+        excluded.update(
+            entry["line"]
+            for entry in census.get(key, [])
+            if isinstance(entry, dict) and isinstance(entry.get("line"), int)
+        )
+    return next(
+        number
+        for number, source in enumerate(lines, 1)
+        if not source.strip() and number not in excluded
+    )
+
+
+def _print_fixture(
+    source: str,
+    *,
+    listed: bool,
+    regex: str = "",
+) -> Observation:
+    census, script_bytes, script_relpath = _census_case("compress")
+    lines = script_bytes.decode().splitlines()
+    number = _uncited_blank_line(census, lines)
+    lines[number - 1] = source
+    if listed:
+        census["skips"].append(
+            {
+                "line": number,
+                "class": "tool",
+                "what": "synthetic",
+                "regex": regex,
+                "text": source,
+            }
+        )
+    changed_script = ("\n".join(lines) + "\n").encode()
+    census["script_sha256"] = hashlib.sha256(changed_script).hexdigest()
+    return Observation(
+        expected=[],
+        got=_copied_validator_rules(
+            census,
+            changed_script,
+            script_relpath,
+            "iyi-o3-print-",
+        ),
+        applied=f"line={number};listed={str(listed).lower()}",
+    )
+
+
+def _fixture_print_capture_control() -> Observation:
+    return _print_fixture(
+        """  unasked="$(printf '%s\\n' "$said" | grep -m1 '^s_server never listened')" """.rstrip(),
+        listed=False,
+    )
+
+
+def _fixture_print_capture_seed() -> Observation:
+    observation = _print_fixture(
+        '  msg="$(echo "skipped: no tool")"',
+        listed=False,
     )
     return Observation(
-        expected={"control": [], "seed": [expected_rule]},
-        got={"control": control_ids, "seed": seed_ids},
-        applied=f"{applied};lines={len(seed_lines)}",
+        expected=["C5.4-unlisted-skip-line"],
+        got=observation.got,
+        applied=observation.applied,
     )
 
 
-def _fixture_helper_exec_binding_control() -> Observation:
-    census, script_bytes, script_relpath = _helper_exec_case()
-    evidence = census["exec_evidence"][0]
-    got = {
-        "rules": _rule_ids(
-            validate_census(census, script_bytes, script_relpath)
-        ),
-        "names": sorted(evidence["name_from_calls"].values()),
-        "call_lines": evidence["helper_exec"]["call_lines"],
-        "argument_position": evidence["helper_exec"]["argument_position"],
-    }
-    expected = {
-        "rules": [],
-        "names": ["alpha", "beta"],
-        "call_lines": [16, 20],
-        "argument_position": 1,
-    }
-    return Observation(expected=expected, got=got)
+def _fixture_print_case_control() -> Observation:
+    return _print_fixture(
+        '    *) echo "  the arm: not run here, because $(uname -m) never runs it" ;;',
+        listed=True,
+        regex=r"^  the arm: not run here, because .* never runs it$",
+    )
 
 
-def _fixture_helper_exec_unrelated_control() -> Observation:
-    census, script_bytes, script_relpath = _helper_exec_case()
-    source_lines = script_bytes.decode().splitlines()
-    got = {
-        "rules": _rule_ids(
-            validate_census(census, script_bytes, script_relpath)
-        ),
-        "definition": source_lines[11],
-        "label": source_lines[12],
-        "helper_definition": census["exec_evidence"][0]["helper_exec"][
-            "definition_lines"
-        ],
-    }
-    expected = {
-        "rules": [],
-        "definition": "unrelated_label() {",
-        "label": """  printf '%s\\n' "label: $1" """.rstrip(),
-        "helper_definition": [8, 11],
-    }
-    return Observation(expected=expected, got=got)
+def _fixture_print_case_regex_seed() -> Observation:
+    observation = _print_fixture(
+        '    *) echo "  the arm: not run here, because $(uname -m) never runs it" ;;',
+        listed=True,
+        regex=r"^  the arm: not run here, because .* never runs it ;;$",
+    )
+    return Observation(
+        expected=["C5.4-skip-regex"],
+        got=observation.got,
+        applied=observation.applied,
+    )
+
+
+def _fixture_print_quoted_punct_control() -> Observation:
+    return _print_fixture(
+        '  echo "a ;; b: skipped"',
+        listed=True,
+        regex=r"^a ;; b: skipped$",
+    )
+
+
+def _build_site_fixture(*, operand: bool) -> Observation:
+    census, script_bytes, script_relpath = _census_case("cookie")
+    lines = script_bytes.decode().splitlines()
+    number = _uncited_blank_line(census, lines)
+    source = (
+        '"$IYI" build -o "$WORK/x" "$WORK/$name"'
+        if operand
+        else '"$IYI" build -o "$WORK/$name" "$WORK/x.iyi"'
+    )
+    lines[number - 1] = source
+    census["sites"].append(
+        {
+            "lines": [number],
+            "command": "build",
+            "kind": "canonical-other",
+            "contains": ['"$IYI" build -o'],
+            "variants": [],
+        }
+    )
+    changed_script = ("\n".join(lines) + "\n").encode()
+    census["script_sha256"] = hashlib.sha256(changed_script).hexdigest()
+    got = _copied_validator_rules(
+        census,
+        changed_script,
+        script_relpath,
+        "iyi-o3-build-site-",
+    )
+    expected = ["E1-stray-reference"] if operand else []
+    return Observation(
+        expected=expected,
+        got=got,
+        applied=f"line={number};operand={str(operand).lower()}",
+    )
 
 
 def _historical_census(driver: str) -> dict:
@@ -2322,6 +2658,8 @@ def _historical_census(driver: str) -> dict:
 def _fixture_regression_1f_seed() -> Observation:
     findings: dict[str, list[tuple[str, int, str]]] = {}
     seen: list[str] = []
+    frozen_sha_mismatch: list[str] = []
+    frozen_shas: list[str] = []
     for driver in DRIVERS_29:
         census = _historical_census(driver)
         script_relpath = census.get("script")
@@ -2329,8 +2667,11 @@ def _fixture_regression_1f_seed() -> Observation:
             raise TypeError(
                 f"historical census {driver} has no string script"
             )
-        with open(os.path.join(REPO_ROOT, script_relpath), "rb") as script_file:
-            script_bytes = script_file.read()
+        script_bytes = _git_show_bytes(_O3_HISTORICAL_REF, script_relpath)
+        frozen_sha = hashlib.sha256(script_bytes).hexdigest()
+        frozen_shas.append(f"{driver}:{frozen_sha}")
+        if frozen_sha != census.get("script_sha256"):
+            frozen_sha_mismatch.append(driver)
         violations = validate_census(census, script_bytes, script_relpath)
         findings[driver] = violations
         seen.append(driver)
@@ -2421,12 +2762,21 @@ def _fixture_regression_1f_seed() -> Observation:
         ),
     )
     missing = [label for label, found in required if not found]
-    expected = {"drivers": list(DRIVERS_29), "missing": []}
-    got = {"drivers": seen, "missing": missing}
+    expected = {
+        "drivers": list(DRIVERS_29),
+        "missing": [],
+        "frozen_sha_mismatch": [],
+    }
+    got = {
+        "drivers": seen,
+        "missing": missing,
+        "frozen_sha_mismatch": frozen_sha_mismatch,
+    }
     applied = (
         f"git-show-ref={_O3_HISTORICAL_REF};"
         f"drivers={len(seen)};"
-        f"violations={sum(len(items) for items in findings.values())}"
+        f"violations={sum(len(items) for items in findings.values())};"
+        f"frozen_shas={','.join(frozen_shas)}"
     )
     return Observation(expected=expected, got=got, applied=applied)
 
@@ -2450,26 +2800,20 @@ O3_SEED_IDS = (
     "s2.seed.validator-e1-stray-reference",
     "s2.seed.validator-e1-verdict",
     "s2.seed.validator-e1-exit-line",
-    "s2.seed.validator-helper-schema",
-    "s2.seed.validator-helper-definition",
-    "s2.seed.validator-helper-exec-position",
-    "s2.seed.validator-helper-call-binding",
-    "s2.seed.validator-helper-rebinding",
-    "s2.seed.validator-helper-unlisted-call",
-    "s2.seed.validator-helper-stray-read",
-    "s2.seed.validator-helper-stray-copy",
-    "s2.seed.validator-helper-stray-move",
-    "s2.seed.validator-helper-stray-link",
-    "s2.seed.validator-helper-stray-redirect",
-    "s2.seed.validator-helper-stray-concrete-path",
+    "s2.seed.validator-nested-types",
+    "s2.seed.validator-print-capture-skip",
+    "s2.seed.validator-print-case-arm-regex",
+    "s2.seed.validator-build-site-operand",
     "s2.seed.regression-1f",
 )
 
 O3_CONTROL_IDS = (
     "s2.control.census-all",
     "s2.control.e1-shared-token",
-    "s2.control.validator-helper-binding",
-    "s2.control.validator-helper-unrelated-positional",
+    "s2.control.validator-print-capture",
+    "s2.control.validator-print-case-arm",
+    "s2.control.validator-print-quoted-punct",
+    "s2.control.validator-build-site-aux",
 )
 
 O3_FIXTURES: tuple[Fixture, ...] = (
@@ -2661,112 +3005,24 @@ O3_FIXTURES: tuple[Fixture, ...] = (
         ),
     ),
     Fixture(
-        "s2.seed.validator-helper-schema",
+        "s2.seed.validator-nested-types",
         "seed",
-        partial(
-            _fixture_helper_exec_seed,
-            "schema",
-            "C5.0-schema",
-        ),
+        _fixture_validator_nested_types_seed,
     ),
     Fixture(
-        "s2.seed.validator-helper-definition",
+        "s2.seed.validator-print-capture-skip",
         "seed",
-        partial(
-            _fixture_helper_exec_seed,
-            "definition",
-            "E1-exec-token",
-        ),
+        _fixture_print_capture_seed,
     ),
     Fixture(
-        "s2.seed.validator-helper-exec-position",
+        "s2.seed.validator-print-case-arm-regex",
         "seed",
-        partial(
-            _fixture_helper_exec_seed,
-            "exec-position",
-            "E1-exec-token",
-        ),
+        _fixture_print_case_regex_seed,
     ),
     Fixture(
-        "s2.seed.validator-helper-call-binding",
+        "s2.seed.validator-build-site-operand",
         "seed",
-        partial(
-            _fixture_helper_exec_seed,
-            "call-binding",
-            "E1-exec-token",
-        ),
-    ),
-    Fixture(
-        "s2.seed.validator-helper-rebinding",
-        "seed",
-        partial(
-            _fixture_helper_exec_seed,
-            "rebinding",
-            "E1-exec-token",
-        ),
-    ),
-    Fixture(
-        "s2.seed.validator-helper-unlisted-call",
-        "seed",
-        partial(
-            _fixture_helper_exec_seed,
-            "unlisted-call",
-            "E1-exec-token",
-        ),
-    ),
-    Fixture(
-        "s2.seed.validator-helper-stray-read",
-        "seed",
-        partial(
-            _fixture_helper_exec_seed,
-            "stray-read",
-            "E1-stray-reference",
-        ),
-    ),
-    Fixture(
-        "s2.seed.validator-helper-stray-copy",
-        "seed",
-        partial(
-            _fixture_helper_exec_seed,
-            "stray-copy",
-            "E1-stray-reference",
-        ),
-    ),
-    Fixture(
-        "s2.seed.validator-helper-stray-move",
-        "seed",
-        partial(
-            _fixture_helper_exec_seed,
-            "stray-move",
-            "E1-stray-reference",
-        ),
-    ),
-    Fixture(
-        "s2.seed.validator-helper-stray-link",
-        "seed",
-        partial(
-            _fixture_helper_exec_seed,
-            "stray-link",
-            "E1-stray-reference",
-        ),
-    ),
-    Fixture(
-        "s2.seed.validator-helper-stray-redirect",
-        "seed",
-        partial(
-            _fixture_helper_exec_seed,
-            "stray-redirect",
-            "E1-stray-reference",
-        ),
-    ),
-    Fixture(
-        "s2.seed.validator-helper-stray-concrete-path",
-        "seed",
-        partial(
-            _fixture_helper_exec_seed,
-            "stray-concrete-path",
-            "E1-stray-reference",
-        ),
+        partial(_build_site_fixture, operand=True),
     ),
     Fixture(
         "s2.seed.regression-1f",
@@ -2784,21 +3040,31 @@ O3_FIXTURES: tuple[Fixture, ...] = (
         _fixture_e1_shared_token_control,
     ),
     Fixture(
-        "s2.control.validator-helper-binding",
+        "s2.control.validator-print-capture",
         "control",
-        _fixture_helper_exec_binding_control,
+        _fixture_print_capture_control,
     ),
     Fixture(
-        "s2.control.validator-helper-unrelated-positional",
+        "s2.control.validator-print-case-arm",
         "control",
-        _fixture_helper_exec_unrelated_control,
+        _fixture_print_case_control,
+    ),
+    Fixture(
+        "s2.control.validator-print-quoted-punct",
+        "control",
+        _fixture_print_quoted_punct_control,
+    ),
+    Fixture(
+        "s2.control.validator-build-site-aux",
+        "control",
+        partial(_build_site_fixture, operand=False),
     ),
 )
 
 O3_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
     "o3.C5.0-schema": (
         "s2.seed.validator-schema",
-        "s2.seed.validator-helper-schema",
+        "s2.seed.validator-nested-types",
         "s2.control.census-all",
     ),
     "o3.C5.1-sha": (
@@ -2855,23 +3121,10 @@ O3_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
     ),
     "o3.E1-exec-token": (
         "s2.seed.validator-e1-token",
-        "s2.seed.validator-helper-definition",
-        "s2.seed.validator-helper-exec-position",
-        "s2.seed.validator-helper-call-binding",
-        "s2.seed.validator-helper-rebinding",
-        "s2.seed.validator-helper-unlisted-call",
-        "s2.control.validator-helper-binding",
-        "s2.control.validator-helper-unrelated-positional",
         "s2.control.census-all",
     ),
     "o3.E1-stray-reference": (
         "s2.seed.validator-e1-stray-reference",
-        "s2.seed.validator-helper-stray-read",
-        "s2.seed.validator-helper-stray-copy",
-        "s2.seed.validator-helper-stray-move",
-        "s2.seed.validator-helper-stray-link",
-        "s2.seed.validator-helper-stray-redirect",
-        "s2.seed.validator-helper-stray-concrete-path",
         "s2.control.e1-shared-token",
     ),
     "o3.E1-verdict-mark": (
@@ -2888,23 +3141,21 @@ O3_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
     ),
     "o3.e1-cross-site-subcases": (
         "s2.seed.validator-e1-stray-reference",
+        "s2.seed.validator-build-site-operand",
+        "s2.control.validator-build-site-aux",
         "s2.control.e1-shared-token",
     ),
-    "amendment.e1.helper-exec": (
-        "s2.seed.validator-helper-schema",
-        "s2.seed.validator-helper-definition",
-        "s2.seed.validator-helper-exec-position",
-        "s2.seed.validator-helper-call-binding",
-        "s2.seed.validator-helper-rebinding",
-        "s2.seed.validator-helper-unlisted-call",
-        "s2.seed.validator-helper-stray-read",
-        "s2.seed.validator-helper-stray-copy",
-        "s2.seed.validator-helper-stray-move",
-        "s2.seed.validator-helper-stray-link",
-        "s2.seed.validator-helper-stray-redirect",
-        "s2.seed.validator-helper-stray-concrete-path",
-        "s2.control.validator-helper-binding",
-        "s2.control.validator-helper-unrelated-positional",
+    "o3.r0-all-violations": (
+        "s2.seed.validator-nested-types",
+        "s2.seed.regression-1f",
+        "s2.control.census-all",
+    ),
+    "o3.r1-print-commands": (
+        "s2.seed.validator-print-capture-skip",
+        "s2.seed.validator-print-case-arm-regex",
+        "s2.control.validator-print-capture",
+        "s2.control.validator-print-case-arm",
+        "s2.control.validator-print-quoted-punct",
     ),
 }
 
@@ -3139,25 +3390,35 @@ REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
         "s2.seed.validator-e1-stray-reference",
         "s2.seed.validator-e1-verdict",
         "s2.seed.validator-e1-exit-line",
+        "s2.seed.validator-nested-types",
+        "s2.seed.validator-print-capture-skip",
+        "s2.seed.validator-print-case-arm-regex",
+        "s2.seed.validator-build-site-operand",
         "s2.seed.regression-1f",
         "s2.control.census-all",
         "s2.control.e1-shared-token",
+        "s2.control.validator-print-capture",
+        "s2.control.validator-print-case-arm",
+        "s2.control.validator-print-quoted-punct",
+        "s2.control.validator-build-site-aux",
     ),
-    "amendment.e1.helper-exec": (
-        "s2.seed.validator-helper-schema",
-        "s2.seed.validator-helper-definition",
-        "s2.seed.validator-helper-exec-position",
-        "s2.seed.validator-helper-call-binding",
-        "s2.seed.validator-helper-rebinding",
-        "s2.seed.validator-helper-unlisted-call",
-        "s2.seed.validator-helper-stray-read",
-        "s2.seed.validator-helper-stray-copy",
-        "s2.seed.validator-helper-stray-move",
-        "s2.seed.validator-helper-stray-link",
-        "s2.seed.validator-helper-stray-redirect",
-        "s2.seed.validator-helper-stray-concrete-path",
-        "s2.control.validator-helper-binding",
-        "s2.control.validator-helper-unrelated-positional",
+    "o3.r0-all-violations": (
+        "s2.seed.validator-nested-types",
+        "s2.seed.regression-1f",
+        "s2.control.census-all",
+    ),
+    "o3.r1-print-commands": (
+        "s2.seed.validator-print-capture-skip",
+        "s2.seed.validator-print-case-arm-regex",
+        "s2.control.validator-print-capture",
+        "s2.control.validator-print-case-arm",
+        "s2.control.validator-print-quoted-punct",
+    ),
+    "o3.e1-cross-site-subcases": (
+        "s2.seed.validator-e1-stray-reference",
+        "s2.seed.validator-build-site-operand",
+        "s2.control.validator-build-site-aux",
+        "s2.control.e1-shared-token",
     ),
     "contract.s2.matcher": (
         "s2.seed.matcher-negative-noquestion",
@@ -3801,8 +4062,8 @@ def _run_fixture_suite(
     if scope is not None:
         shared_subcases = (
             " shared_token_subcases="
-            "declared-two-site-control,undeclared-read,"
-            "undeclared-build-self-evidence"
+            "declared-two-site-control,undeclared-read,undeclared-build,"
+            "declared-aux-output-control,non-output-operand-negative"
             if scope == "O3"
             else ""
         )
