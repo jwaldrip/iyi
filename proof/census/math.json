@@ -12,7 +12,7 @@
       "command": "build",
       "kind": "canonical-own",
       "contains": [
-        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_mat"
+        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_math_exercise.iyi\" \\"
       ],
       "variants": []
     },
@@ -24,7 +24,7 @@
       "command": "build",
       "kind": "positive",
       "contains": [
-        "elif IYI_PATH=\"$WORK/software${PSEP}$REPO/src${PSEP}$REPO/sa"
+        "elif IYI_PATH=\"$WORK/software${PSEP}$REPO/src${PSEP}$REPO/samples/iyi\" \"$IYI\" build --release -o \"$WORK/software/program\" \\"
       ],
       "variants": [
         {
@@ -47,13 +47,16 @@
               557,
               558,
               559,
+              560,
               561,
               562,
               563
             ],
             "contains": [
-              "  elif IYI_PATH=\"$WORK/software${PSEP}$REPO/src${P",
-              "         \"$REPO/bench/std_math_exercise.iyi\" > \"$W"
+              "\"$IYI\" build --release -o \"$WORK/software/program\"",
+              "\"$WORK/software/program\" > \"$WORK/software/out\" 2>&1",
+              "grep -q \"ALL CHECKS PASSED\" \"$WORK/software/out\"",
+              "status=1"
             ]
           }
         }
@@ -66,7 +69,7 @@
       "command": "run",
       "kind": "negative",
       "contains": [
-        "elif IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/sam"
+        "elif IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/samples/iyi\" \"$IYI\" run \"$REPO/bench/std_math_exercise.iyi\" -- ${ORACLE:+data $ORACLE} >\"$WORK/mut.out\" 2>&1; then"
       ],
       "variants": [
         {
@@ -84,17 +87,20 @@
           ],
           "verdict": {
             "lines": [
+              598,
               599,
               600,
               601,
               602,
+              603,
               604,
               605,
               606
             ],
             "contains": [
-              "    echo \"  $label: the exercise PASSED on a broke",
-              "    status=1"
+              "echo \"  $label: the exercise PASSED on a broken module\"",
+              "elif grep -q \"ASSERTION FAILED\\|iyi: panic:\" \"$WORK/mut.out\"; then",
+              "status=1"
             ]
           }
         }
@@ -107,71 +113,108 @@
       "line": 485,
       "class": "tool",
       "what": "python3",
-      "regex": "fma\\ against\\ the\\ exact\\ sum:\\ not\\ compared\\ here,\\ because\\ there\\ is\\ no\\ python3\\ to\\ write\\ the\\ cases\\ with",
-      "text": "echo \"fma against the exact sum: not compared here, because there is no python3 to write the cases with\""
+      "regex": "^fma against the exact sum: not compared here, because there is no python3 to write the cases with$",
+      "text": "  echo \"fma against the exact sum: not compared here, because there is no python3 to write the cases with\""
+    },
+    {
+      "line": 487,
+      "class": "tool",
+      "what": "C compiler or python3",
+      "regex": "^exp, exp2, expm1, log, log1p, log2, log10, pow, sinh, cosh and tanh against the oracle: not compared here, because there is no C compiler or no python3 to build and drive the oracle with$",
+      "text": "[ -z \"$ORACLE\" ] && echo \"exp, exp2, expm1, log, log1p, log2, log10, pow, sinh, cosh and tanh against the oracle: not compared here, because there is no C compiler or no python3 to build and drive the oracle with\""
+    },
+    {
+      "line": 488,
+      "class": "tool",
+      "what": "CORE-MATH oracle",
+      "regex": "^erf, erfc, asinh, acosh, atanh, atan, asin, acos, sin, cos, tan, lgamma, tgamma, the Bessel functions, cbrt, hypot and atan2 against the oracle: not compared here, because its CORE-MATH part did not build or run$",
+      "text": "[ -z \"$ORACLE_CM\" ] && echo \"erf, erfc, asinh, acosh, atanh, atan, asin, acos, sin, cos, tan, lgamma, tgamma, the Bessel functions, cbrt, hypot and atan2 against the oracle: not compared here, because its CORE-MATH part did not build or run\""
     },
     {
       "line": 572,
       "class": "tool",
       "what": "python3",
-      "regex": "\\ \\ .*?:\\ skipped,\\ no\\ working\\ python3\\ to\\ make\\ the\\ broken\\ copy\\ with",
-      "text": "echo \"  $label: skipped, no working python3 to make the broken copy with\""
+      "regex": "^  .*: skipped, no working python3 to make the broken copy with$",
+      "text": "    echo \"  $label: skipped, no working python3 to make the broken copy with\""
     },
     {
       "line": 643,
       "class": "tool",
-      "what": "tool",
-      "regex": "\\ \\ the\\ last\\-bit\\ proofs\\ of\\ exp,\\ exp2,\\ expm1,\\ log,\\ log1p,\\ log2,\\ log10,\\ pow,\\ sinh,\\ cosh\\ and\\ tanh:\\ not\\ run,\\ no\\ oracle\\ here",
-      "text": "echo \"  the last-bit proofs of exp, exp2, expm1, log, log1p, log2, log10, pow, sinh, cosh and tanh: not run, no oracle here\""
+      "what": "C compiler or python3 oracle",
+      "regex": "^  the last-bit proofs of exp, exp2, expm1, log, log1p, log2, log10, pow, sinh, cosh and tanh: not run, no oracle here$",
+      "text": "  echo \"  the last-bit proofs of exp, exp2, expm1, log, log1p, log2, log10, pow, sinh, cosh and tanh: not run, no oracle here\""
     },
     {
       "line": 698,
       "class": "platform",
-      "what": "tool",
-      "regex": "\\ \\ the\\ software\\ fma's\\ four\\ proofs:\\ not\\ run\\ here,\\ because\\ .*?\\ fuses\\ with\\ its\\ own\\ instruction\\ and\\ never\\ runs\\ the\\ software\\ arm",
-      "text": "echo \"  the software fma's four proofs: not run here, because $(uname -m) fuses with its own instruction and never runs the software arm\" ;;"
+      "what": "software fma architecture",
+      "regex": "^  the software fma's four proofs: not run here, because .* fuses with its own instruction and never runs the software arm$",
+      "text": "      echo \"  the software fma's four proofs: not run here, because $(uname -m) fuses with its own instruction and never runs the software arm\" ;;"
     },
     {
       "line": 705,
       "class": "platform",
-      "what": "tool",
-      "regex": "\\ \\ vfmadd\\ with\\ its\\ operands\\ in\\ the\\ wrong\\ order:\\ not\\ proven\\ here,\\ because\\ this\\ is\\ not\\ an\\ x86_64\\ Linux\\ with\\ FMA3",
-      "text": "echo \"  vfmadd with its operands in the wrong order: not proven here, because this is not an x86_64 Linux with FMA3\""
+      "what": "Linux x86_64 with FMA3",
+      "regex": "^  vfmadd with its operands in the wrong order: not proven here, because this is not an x86_64 Linux with FMA3$",
+      "text": "    echo \"  vfmadd with its operands in the wrong order: not proven here, because this is not an x86_64 Linux with FMA3\""
     },
     {
       "line": 708,
-      "class": "platform",
-      "what": "python3",
-      "regex": "\\ \\ the\\ fma\\ proofs:\\ not\\ run,\\ no\\ python3\\ to\\ write\\ the\\ cases\\ with",
-      "text": "echo \"  the fma proofs: not run, no python3 to write the cases with\""
+      "class": "tool",
+      "what": "CORE-MATH oracle or python3",
+      "regex": "^  the fma proofs: not run, no python3 to write the cases with$",
+      "text": "  echo \"  the fma proofs: not run, no python3 to write the cases with\""
     }
   ],
   "not_skips": [],
   "pass_sentinel": {
     "line": 727,
-    "regex": "the\\ std/math\\ exercise\\ holds",
-    "text": "echo \"the std/math exercise holds\""
+    "regex": "^the std/math exercise holds$",
+    "text": "  echo \"the std/math exercise holds\""
   },
   "exec_evidence": [
     {
       "site_line": 52,
       "out_template": "{WORK}/{name}",
       "name_from_calls": {
-        "491": "plain",
-        "529": "release"
+        "491": "math-plain",
+        "529": "math-release"
       },
       "exec_lines": [
         59
       ],
       "exec_token": "\"$WORK/$name\"",
       "verdict_lines": [
+        56,
         57,
-        58
+        64,
+        65,
+        494,
+        502,
+        509,
+        517,
+        523,
+        532
       ],
       "failure_marks": [
         "status=1",
-        "return 1",
-        "exit"
+        "return 1"
+      ],
+      "refs_ok": []
+    },
+    {
+      "site_line": 555,
+      "out_template": "{WORK}/software/program",
+      "name_from_calls": {},
+      "exec_lines": [
+        557
+      ],
+      "exec_token": "\"$WORK/software/program\"",
+      "verdict_lines": [
+        563
+      ],
+      "failure_marks": [
+        "status=1"
       ],
       "refs_ok": []
     }

@@ -12,7 +12,7 @@
       "command": "build",
       "kind": "canonical-own",
       "contains": [
-        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_sec"
+        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_secure_dns_exercise.iyi\" \\"
       ],
       "variants": []
     },
@@ -24,15 +24,35 @@
       "command": "build",
       "kind": "negative",
       "contains": [
-        "if ! IYI_PATH=\"$WORK/$dir${PSEP}$REPO/src\" \"$IYI\" build -o \""
+        "if ! IYI_PATH=\"$WORK/$dir${PSEP}$REPO/src\" \"$IYI\" build -o \"$WORK/$dir/program\" \\"
       ],
       "variants": [
         {
           "id": "secure_dns.negative.284",
           "kind": "negative",
-          "first_root": "{WORK}/$dir",
+          "first_root": "{WORK}/{dir}",
           "vars": {
             "dir": {
+              "lines": [
+                305,
+                308,
+                312,
+                320,
+                323,
+                328,
+                330,
+                332,
+                338,
+                341,
+                343,
+                345,
+                349,
+                351,
+                353,
+                356,
+                362,
+                365
+              ],
               "values": [
                 "noname",
                 "noprefix",
@@ -52,35 +72,42 @@
                 "unblocked",
                 "httpsclear",
                 "httpsparse"
-              ],
-              "defined_at": "305-374",
-              "text": "breaks <label> <dir> <phrase> <file> <old> <new> [<file> <old> <new>]"
+              ]
             }
           },
           "sources": [
             "{REPO}/bench/std_secure_dns_exercise.iyi"
           ],
-          "output": "{WORK}/$dir/program",
+          "output": "{WORK}/{dir}/program",
           "darwin": "required",
           "requires": [
-            "python3"
+            "python3",
+            "cryptography"
           ],
           "verdict": {
             "lines": [
               284,
               285,
               286,
+              287,
               288,
+              289,
+              291,
+              292,
+              293,
+              294,
               295,
               296,
               297,
+              298,
               299,
-              300,
               301
             ],
             "contains": [
-              "  if ! IYI_PATH=\"$WORK/$dir${PSEP}$REPO/src\" \"$IYI",
-              "       \"$REPO/bench/std_secure_dns_exercise.iyi\" >"
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: the exercise PASSED on a broken module\"",
+              "elif ! grep -qF -- \"$phrase\" \"$WORK/$dir/out\"; then",
+              "status=1"
             ]
           }
         }
@@ -92,72 +119,89 @@
     {
       "line": 52,
       "class": "tool",
-      "what": "python3",
-      "regex": "skipped:\\ no\\ python3\\ with\\ ssl\\ and\\ cryptography\\ here,\\ so\\ there\\ is\\ no\\ scripted\\ server\\ to\\ ask",
-      "text": "echo \"skipped: no python3 with ssl and cryptography here, so there is no scripted server to ask\""
+      "what": "python3 ssl and cryptography",
+      "regex": "^skipped: no python3 with ssl and cryptography here, so there is no scripted server to ask$",
+      "text": "  echo \"skipped: no python3 with ssl and cryptography here, so there is no scripted server to ask\""
     },
     {
       "line": 146,
       "class": "tool",
       "what": "dig",
-      "regex": "\\ \\ skipped:\\ no\\ dig\\ here,\\ so\\ nothing\\ but\\ the\\ iyi\\ client\\ asks\\ the\\ scripted\\ servers",
-      "text": "echo \"  skipped: no dig here, so nothing but the iyi client asks the scripted servers\""
+      "regex": "^  skipped: no dig here, so nothing but the iyi client asks the scripted servers$",
+      "text": "  echo \"  skipped: no dig here, so nothing but the iyi client asks the scripted servers\""
     },
     {
       "line": 148,
       "class": "tool",
-      "what": "dig",
-      "regex": "\\ \\ skipped:\\ this\\ dig\\ has\\ neither\\ \\+tls\\ nor\\ \\+https\\ \\(\\$\\(dig\\ \\-v\\ 2",
-      "text": "echo \"  skipped: this dig has neither +tls nor +https ($(dig -v 2>&1 | head -1))\""
+      "what": "dig with +tls or +https",
+      "regex": "^  skipped: this dig has neither \\+tls nor \\+https \\(.*\\)$",
+      "text": "  echo \"  skipped: this dig has neither +tls nor +https ($(dig -v 2>&1 | head -1))\""
     },
     {
       "line": 185,
       "class": "tool",
-      "what": "dig",
-      "regex": "\\ \\ HTTPS\\ records\\ skipped:\\ this\\ dig\\ does\\ not\\ know\\ the\\ type\\ \\(\\$\\(dig\\ \\-v\\ 2",
-      "text": "echo \"  HTTPS records skipped: this dig does not know the type ($(dig -v 2>&1 | head -1)): it said \\\"$(printf '%s' \"$type_probe\" | head -1)\\\"\""
+      "what": "dig HTTPS record type",
+      "regex": "^  HTTPS records skipped: this dig does not know the type \\(.*\\): it said \".*\"$",
+      "text": "    echo \"  HTTPS records skipped: this dig does not know the type ($(dig -v 2>&1 | head -1)): it said \\\"$(printf '%s' \"$type_probe\" | head -1)\\\"\""
+    },
+    {
+      "line": 227,
+      "class": "tool",
+      "what": "dig DNS over TLS",
+      "regex": "^  \\+tls skipped: this dig has no DNS over TLS \\(.*\\)$",
+      "text": "  [ \"$HAS_TLS\" = yes ] || echo \"  +tls skipped: this dig has no DNS over TLS ($(dig -v 2>&1 | head -1))\""
     },
     {
       "line": 229,
       "class": "tool",
-      "what": "dig",
-      "regex": "\\ \\ \\+https\\ skipped:\\ this\\ dig\\ has\\ no\\ DNS\\ over\\ HTTPS\\ \\(\\$\\(dig\\ \\-v\\ 2",
-      "text": "echo \"  +https skipped: this dig has no DNS over HTTPS ($(dig -v 2>&1 | head -1))\""
+      "what": "dig DNS over HTTPS",
+      "regex": "^  \\+https skipped: this dig has no DNS over HTTPS \\(.*\\)$",
+      "text": "    echo \"  +https skipped: this dig has no DNS over HTTPS ($(dig -v 2>&1 | head -1))\""
     },
     {
       "line": 231,
       "class": "tool",
-      "what": "dig",
-      "regex": "\\ \\ \\+https\\ skipped:\\ there\\ is\\ no\\ HTTP/2\\ server\\ without\\ the\\ h2\\ package,\\ and\\ dig\\ speaks\\ DNS\\ over\\ HTTPS\\ over\\ HTTP/2\\ alone",
-      "text": "echo \"  +https skipped: there is no HTTP/2 server without the h2 package, and dig speaks DNS over HTTPS over HTTP/2 alone\""
+      "what": "python3 h2",
+      "regex": "^  \\+https skipped: there is no HTTP/2 server without the h2 package, and dig speaks DNS over HTTPS over HTTP/2 alone$",
+      "text": "    echo \"  +https skipped: there is no HTTP/2 server without the h2 package, and dig speaks DNS over HTTPS over HTTP/2 alone\""
     }
   ],
   "not_skips": [],
   "pass_sentinel": {
     "line": 371,
-    "regex": "the\\ std/secure_dns\\ exercise\\ holds",
-    "text": "echo \"the std/secure_dns exercise holds\""
+    "regex": "^the std/secure_dns exercise holds$",
+    "text": "  echo \"the std/secure_dns exercise holds\""
   },
   "exec_evidence": [
     {
       "site_line": 80,
       "out_template": "{WORK}/{name}",
       "name_from_calls": {
-        "108": "plain",
-        "112": "release"
+        "111": "dns-plain",
+        "115": "dns-release"
       },
       "exec_lines": [
         87
       ],
       "exec_token": "\"$WORK/$name\"",
       "verdict_lines": [
+        84,
         85,
-        86
+        92,
+        93,
+        97,
+        98,
+        119,
+        127,
+        171,
+        219,
+        223,
+        246,
+        249
       ],
       "failure_marks": [
         "status=1",
-        "return 1",
-        "exit"
+        "return 1"
       ],
       "refs_ok": []
     }

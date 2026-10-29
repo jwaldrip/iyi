@@ -11,7 +11,7 @@
       "command": "build",
       "kind": "canonical-own",
       "contains": [
-        "if ! \"$IYI\" build -o \"$WORK/fuzz\" \"$REPO/bench/std_fuzz_exer"
+        "if ! \"$IYI\" build -o \"$WORK/fuzz\" \"$REPO/bench/std_fuzz_exercise.iyi\" >\"$WORK/build.log\" 2>&1; then"
       ],
       "variants": []
     },
@@ -22,33 +22,25 @@
       "command": "build",
       "kind": "negative",
       "contains": [
-        "if ! IYI_PATH=\"$WORK/$name${PSEP}$REPO/src${PSEP}$REPO/sampl"
+        "if ! IYI_PATH=\"$WORK/$name${PSEP}$REPO/src${PSEP}$REPO/samples/iyi\" \"$IYI\" build -o \"$WORK/$name.bin\" \"$REPO/bench/std_fuzz_exercise.iyi\" >\"$WORK/$name.out\" 2>&1; then"
       ],
       "variants": [
         {
-          "id": "fuzz.negative.257",
+          "id": "fuzz.negative.undo1",
           "kind": "negative",
-          "first_root": "{WORK}/$name",
-          "vars": {
-            "$name": {
-              "values": [
-                "undo1",
-                "undo2"
-              ],
-              "defined_at": "239",
-              "text": "local name=\"undo$((++proofs))\""
-            }
-          },
+          "first_root": "{WORK}/undo1",
+          "vars": {},
           "sources": [
             "{REPO}/bench/std_fuzz_exercise.iyi"
           ],
-          "output": "{WORK}/$name.bin",
+          "output": "{WORK}/undo1.bin",
           "darwin": "required",
           "requires": [
             "python3"
           ],
           "verdict": {
             "lines": [
+              257,
               258,
               259,
               260,
@@ -60,12 +52,50 @@
               266,
               267,
               268,
-              269,
-              270
+              269
             ],
             "contains": [
-              "    echo \"  the copy with $label did not build\"",
-              "    tail -3 \"$WORK/$name.out\" | sed 's/^/    /'"
+              "echo \"  the copy with $label did not build\"",
+              "echo \"  the regressions PASSED with $label\"",
+              "elif grep -qF -- \"$phrase\" \"$WORK/$name.out\"; then",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "fuzz.negative.undo2",
+          "kind": "negative",
+          "first_root": "{WORK}/undo2",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_fuzz_exercise.iyi"
+          ],
+          "output": "{WORK}/undo2.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              257,
+              258,
+              259,
+              260,
+              261,
+              262,
+              263,
+              264,
+              265,
+              266,
+              267,
+              268,
+              269
+            ],
+            "contains": [
+              "echo \"  the copy with $label did not build\"",
+              "echo \"  the regressions PASSED with $label\"",
+              "elif grep -qF -- \"$phrase\" \"$WORK/$name.out\"; then",
+              "status=1"
             ]
           }
         }
@@ -77,48 +107,54 @@
     {
       "line": 95,
       "class": "tool",
-      "what": "go",
-      "regex": "\\ \\ skipped:\\ no\\ python\\ cryptography\\ here,\\ so\\ the\\ mutated\\ certificates\\ go\\ uncompared",
-      "text": "echo \"  skipped: no python cryptography here, so the mutated certificates go uncompared\""
+      "what": "python3 cryptography",
+      "regex": "^  skipped: no python cryptography here, so the mutated certificates go uncompared$",
+      "text": "  echo \"  skipped: no python cryptography here, so the mutated certificates go uncompared\""
     },
     {
       "line": 161,
       "class": "tool",
-      "what": "go",
-      "regex": "\\ \\ skipped:\\ no\\ python\\ hpack\\ here,\\ so\\ the\\ mutated\\ header\\ blocks\\ go\\ uncompared",
-      "text": "echo \"  skipped: no python hpack here, so the mutated header blocks go uncompared\""
+      "what": "python3 hpack",
+      "regex": "^  skipped: no python hpack here, so the mutated header blocks go uncompared$",
+      "text": "  echo \"  skipped: no python hpack here, so the mutated header blocks go uncompared\""
     },
     {
       "line": 241,
       "class": "tool",
       "what": "python3",
-      "regex": "\\ \\ skipped:\\ no\\ working\\ python3,\\ so\\ .*?\\ is\\ unproven",
-      "text": "echo \"  skipped: no working python3, so $label is unproven\""
+      "regex": "^  skipped: no working python3, so .* is unproven$",
+      "text": "    echo \"  skipped: no working python3, so $label is unproven\""
     }
   ],
   "not_skips": [],
   "pass_sentinel": {
     "line": 285,
-    "regex": "the\\ fuzz\\ exercise\\ holds",
-    "text": "echo \"the fuzz exercise holds\""
+    "regex": "^the fuzz exercise holds$",
+    "text": "  echo \"the fuzz exercise holds\""
   },
   "exec_evidence": [
     {
       "site_line": 69,
-      "out_template": "{WORK}/{name}",
+      "out_template": "{WORK}/fuzz",
       "name_from_calls": {},
       "exec_lines": [
-        73
+        76,
+        97,
+        163
       ],
-      "exec_token": "\"$WORK/$name\"",
+      "exec_token": "\"$WORK/fuzz\"",
       "verdict_lines": [
-        74,
-        75
+        72,
+        82,
+        84,
+        86,
+        89,
+        98,
+        164
       ],
       "failure_marks": [
-        "status=1",
-        "return 1",
-        "exit"
+        "exit 1",
+        "status=1"
       ],
       "refs_ok": []
     }
