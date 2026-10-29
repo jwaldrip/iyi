@@ -1415,6 +1415,13 @@ def _shell_line_tokens(source: str) -> list[str] | None:
                 escaped = False
                 index += 1
                 continue
+            if (
+                char == "\\"
+                and quote is None
+                and index + 1 == len(text)
+            ):
+                text = text[:index]
+                break
             if char == "\\" and quote != "'":
                 escaped = True
                 index += 1
@@ -1422,10 +1429,6 @@ def _shell_line_tokens(source: str) -> list[str] | None:
             if quote == "'":
                 if char == "'":
                     quote = None
-                index += 1
-                continue
-            if char == "'":
-                quote = "'"
                 index += 1
                 continue
             if char == "$" and index + 1 < len(text) and text[index + 1] == "(":
@@ -1440,8 +1443,17 @@ def _shell_line_tokens(source: str) -> list[str] | None:
                     return None
                 index = end
                 continue
+            if quote == '"':
+                if char == '"':
+                    quote = None
+                index += 1
+                continue
+            if char == "'":
+                quote = "'"
+                index += 1
+                continue
             if char == '"':
-                quote = None if quote == '"' else '"'
+                quote = '"'
                 index += 1
                 continue
             if quote is None and (
@@ -1516,10 +1528,6 @@ def _shell_span_bodies(word: str) -> list[str] | None:
                 quote = None
             index += 1
             continue
-        if char == "'":
-            quote = "'"
-            index += 1
-            continue
         if char == "$" and index + 1 < len(word) and word[index + 1] == "(":
             end = _command_substitution_end(word, index)
             if end is None:
@@ -1534,8 +1542,19 @@ def _shell_span_bodies(word: str) -> list[str] | None:
             bodies.append(word[index + 1:end - 1])
             index = end
             continue
+        if quote == '"':
+            if char == '"':
+                quote = None
+            index += 1
+            continue
+        if char == "'":
+            quote = "'"
+            index += 1
+            continue
         if char == '"':
-            quote = None if quote == '"' else '"'
+            quote = '"'
+            index += 1
+            continue
         index += 1
     return None if quote is not None or escaped else bodies
 
