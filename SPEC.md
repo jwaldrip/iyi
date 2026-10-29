@@ -6243,23 +6243,20 @@ Crystal mode (`IYI_OPTS="--crystal"`) always runs fresh with reason `Crystal lib
 Acceptance rows from design section 12: rows 1-22 and 25-50 are automated in `bench/stale_tests.sh` and green. Rows 23-24 are CI-only and wait for master.
 
 **Census as measured.** Measured on macOS arm64 on this machine across 141 programs (27 C2 samples/iyi, 114 C3 bench/std_*_exercise):
-- Runtime reusable on second run: 90 of 141 (63.8%). C2: 24 of 27 (88.9%). C3: 66 of 114 (57.9%).
+- Runtime reusable on second run: 87 of 141 (61.7%). C2: 25 of 27 (92.6%). C3: 62 of 114 (54.4%).
 - Static build-key reusable: 138 of 141 (97.9%). C2: 27 of 27. C3: 111 of 114.
 - Build failures: 0 of 141.
-- First not-reusable reasons by category: requested effect 45, runner 5, opaque program construct 1, internal 0.
-  - All 5 runner reasons are shared writes outside the test's scratch directory: `files.iyi`, `std_html_exercise.iyi`, `std_io_exercise.iyi`, and `std_file_utils_exercise.iyi` write beside themselves or elsewhere; `std_observe_exercise.iyi` records a fake `/test/out.txt` write.
+- First not-reusable reasons by category: requested effect 53, runner 0, opaque program construct 1, internal 0. All 54 not-reusable programs passed.
   - The 1 opaque construct is `pointer_new` in `std_number_format_exercise.iyi`.
-  - Internal reasons: 0.
 
 Top not-reusable reasons:
 
 | Category | Specific Reason | Occurrences |
 |---|---|---|
-| `requested effect` | `clock` | 16 |
+| `requested effect` | `clock` | 17 |
+| `requested effect` | `runtime_timing` | 10 |
+| `requested effect` | `entropy` | 9 |
 | `requested effect` | `network` | 8 |
-| `requested effect` | `entropy` | 8 |
-| `runner` | `shared_write` | 5 |
-| `requested effect` | `runtime_timing` | 4 |
 | `requested effect` | `process` | 4 |
 | `requested effect` | `timer` | 2 |
 | `requested effect` | `dir_stream` | 1 |
@@ -6267,25 +6264,25 @@ Top not-reusable reasons:
 | `requested effect` | `signal` | 1 |
 | `requested effect` | `host_state` | 1 |
 
-**Overhead as measured.** Wall-clock seconds measured with 7 programs running at once from `/tmp/overhead.log`:
+**Overhead as measured.** Wall-clock seconds measured while the census ran up to 8 programs at once:
 
 | Program | Default Build+Run (s) | --fresh Time (s) | --cached Validation (s) | Reached Elements | Trace Bytes | Receipt Bytes | Key Bytes |
 |---|---|---|---|---|---|---|---|
-| hello.iyi | 0.496s | 19.405s | 1.099s | 1028 | 91 B | 4203 B | 4338 B |
-| calc.iyi | 0.561s | 19.625s | 1.118s | 1199 | 91 B | 4201 B | 4535 B |
-| collections.iyi | 0.729s | 19.611s | 1.032s | 1237 | 91 B | 4215 B | 5778 B |
-| format.iyi | 0.653s | 19.626s | 1.096s | 1207 | 91 B | 4299 B | 4545 B |
-| shapes.iyi | 0.548s | 19.408s | 1.125s | 1146 | 91 B | 4205 B | 4341 B |
-| std_int_exercise.iyi | 0.849s | 19.607s | 1.054s | 1321 | 91 B | 4225 B | 6001 B |
-| std_bit_array_exercise.iyi | 2.538s | 19.893s | 1.038s | 1384 | 91 B | 4334 B | 7447 B |
+| hello.iyi | 0.543s | 15.686s | 0.845s | 1610 | 91 B | 7906 B | 7790 B |
+| calc.iyi | 0.608s | 15.721s | 0.883s | 1769 | 91 B | 7902 B | 7787 B |
+| collections.iyi | 0.682s | 15.794s | 0.892s | 1736 | 91 B | 7930 B | 7808 B |
+| format.iyi | 0.672s | 16.022s | 1.021s | 1752 | 91 B | 8098 B | 7997 B |
+| shapes.iyi | 0.547s | 16.179s | 0.883s | 1692 | 91 B | 7910 B | 7793 B |
+| std_int_exercise.iyi | 0.949s | 22.013s | 1.411s | 1800 | 91 B | 8018 B | 7823 B |
+| std_bit_array_exercise.iyi | 1.130s | 19.468s | N/A | 1651 | 0 B | 0 B | 8051 B |
 
-`--fresh` starts from an empty private cache, so it includes compiling the runtime with `-Diyi_observe` (about 19.4 to 19.9 s). A `--cached` hit took 1.03 to 1.13 s, which is slower than the default build-and-run (0.50 to 0.85 s) for every program except `std_bit_array_exercise.iyi` (2.54 s default). Trace size was 91 bytes, receipts about 4.2 KB (4,201 to 4,334 B), key files 4.3 to 7.4 KB (4,338 to 7,447 B), and reached elements 1,028 to 1,384.
+`--fresh` starts from an empty private cache, so it includes compiling the runtime with `-Diyi_observe`. `--cached` is the second run in that cache, validated against the first run's receipt. `std_bit_array_exercise.iyi` was not reusable, so it has no cached validation time or receipt. The normal and preanalysed-prelude consumer runs both hit with exit 0 and no codegen.
 
-No speedup is claimed. On this corpus, a hit costs more than a warm default run for small programs. No warm `--fresh` numbers were measured.
+No speedup is claimed. No warm-cache `--fresh` numbers were measured.
 
 **Completion status (design section 13).** Completion is NOT met and the default stays off:
 - Rows 23-24 and RG6 need master CI.
-- The census still has 5 runner reasons.
+- The census has one opaque program construct that prevents reuse.
 - Consumption and audit on master are unproven.
 - Cross-machine hits and hits across commits wait on RG1 in CI.
 
