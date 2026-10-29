@@ -1059,6 +1059,38 @@ def run_bounded(
 
 Violation = tuple[str, int, str]
 
+DRIVERS_29 = (
+    "acme",
+    "autocert",
+    "cookie",
+    "dns",
+    "fileserver",
+    "http",
+    "router",
+    "secure_dns",
+    "signal",
+    "smtp",
+    "sse",
+    "term",
+    "tls",
+    "websocket",
+    "bzip2",
+    "compress",
+    "hpke",
+    "math",
+    "mlkem",
+    "png",
+    "regex",
+    "shlex",
+    "tar",
+    "xz",
+    "zip",
+    "zstd",
+    "file",
+    "file_utils",
+    "fuzz",
+)
+
 _INVOCATION_RE = re.compile(
     r'(\$IYI|"\$IYI"|\$\{IYI\})(?![A-Za-z0-9_:])'
 )
@@ -1283,6 +1315,7 @@ def _validate_census_schema(
         return
     if not isinstance(census, dict):
         return
+
     scalar_types = {
         "census_version": int,
         "driver": str,
@@ -1303,10 +1336,14 @@ def _validate_census_schema(
                 0,
                 f"census.{key} must be {expected.__name__}",
             )
-    for index, site in enumerate(census.get("sites", [])):
+
+    sites = census.get("sites")
+    for index, site in enumerate(sites if isinstance(sites, list) else []):
         line = (
             site.get("lines", [0])[0]
-            if isinstance(site, dict) and site.get("lines")
+            if isinstance(site, dict)
+            and isinstance(site.get("lines"), list)
+            and site["lines"]
             else 0
         )
         if not _closed_keys(
@@ -1317,23 +1354,31 @@ def _validate_census_schema(
             line,
         ):
             continue
-        if (
-            not isinstance(site["lines"], list)
-            or not site["lines"]
-            or not all(isinstance(item, int) for item in site["lines"])
-            or not isinstance(site["contains"], list)
-            or not all(isinstance(item, str) for item in site["contains"])
-            or not isinstance(site["variants"], list)
-            or site["command"] not in _COMMANDS
-            or site["kind"] not in _SITE_KINDS
-        ):
+        if not isinstance(site, dict):
+            continue
+        site_valid = (
+            isinstance(site["lines"], list)
+            and bool(site["lines"])
+            and all(isinstance(item, int) for item in site["lines"])
+            and isinstance(site["command"], str)
+            and site["command"] in _COMMANDS
+            and isinstance(site["kind"], str)
+            and site["kind"] in _SITE_KINDS
+            and isinstance(site["contains"], list)
+            and all(isinstance(item, str) for item in site["contains"])
+            and isinstance(site["variants"], list)
+        )
+        if not site_valid:
             _violation(
                 violations,
                 "C5.0-schema",
                 line,
                 f"sites[{index}] has invalid field types or enum values",
             )
+            continue
+
         for variant_index, variant in enumerate(site["variants"]):
+            variant_path = f"sites[{index}].variants[{variant_index}]"
             if not _closed_keys(
                 variant,
                 {
@@ -1347,30 +1392,41 @@ def _validate_census_schema(
                     "requires",
                     "verdict",
                 },
-                f"sites[{index}].variants[{variant_index}]",
+                variant_path,
                 violations,
                 line,
             ):
                 continue
-            if (
-                not isinstance(variant["id"], str)
-                or variant["kind"] not in _VARIANT_KINDS
-                or not isinstance(variant["first_root"], str)
-                or not isinstance(variant["vars"], dict)
-                or not isinstance(variant["sources"], list)
-                or not all(isinstance(item, str) for item in variant["sources"])
-                or variant["output"] is not None
-                and not isinstance(variant["output"], str)
-                or variant["darwin"] not in ("required", "platform-excluded")
-                or not isinstance(variant["requires"], list)
-                or not all(isinstance(item, str) for item in variant["requires"])
-            ):
+            if not isinstance(variant, dict):
+                continue
+            variant_valid = (
+                isinstance(variant["id"], str)
+                and isinstance(variant["kind"], str)
+                and variant["kind"] in _VARIANT_KINDS
+                and isinstance(variant["first_root"], str)
+                and isinstance(variant["vars"], dict)
+                and isinstance(variant["sources"], list)
+                and all(isinstance(item, str) for item in variant["sources"])
+                and (
+                    variant["output"] is None
+                    or isinstance(variant["output"], str)
+                )
+                and isinstance(variant["darwin"], str)
+                and variant["darwin"] in ("required", "platform-excluded")
+                and isinstance(variant["requires"], list)
+                and all(isinstance(item, str) for item in variant["requires"])
+                and isinstance(variant["verdict"], dict)
+            )
+            if not variant_valid:
                 _violation(
                     violations,
                     "C5.0-schema",
                     line,
-                    f"variant {variant.get('id', variant_index)!r} has invalid fields",
+                    f"variant {variant.get('id', variant_index)!r} "
+                    "has invalid fields",
                 )
+                continue
+
             for name, variable in variant["vars"].items():
                 if not isinstance(name, str) or not re.fullmatch(
                     r"[A-Za-z_][A-Za-z0-9_]*",
@@ -1402,63 +1458,79 @@ def _validate_census_schema(
                         violations,
                         "C5.0-schema",
                         line,
-                        f"variable {name!r} has invalid keys {sorted(variable)}",
+                        f"variable {name!r} has invalid keys "
+                        f"{sorted(variable)}",
                     )
                     continue
-                if (
-                    not isinstance(variable["lines"], list)
-                    or not variable["lines"]
-                    or not all(
+                variable_valid = (
+                    isinstance(variable["lines"], list)
+                    and bool(variable["lines"])
+                    and all(
                         isinstance(item, int) for item in variable["lines"]
                     )
-                    or value_form
-                    and (
-                        not isinstance(variable["values"], list)
-                        or not variable["values"]
-                        or not all(
+                )
+                if value_form:
+                    variable_valid = (
+                        variable_valid
+                        and isinstance(variable["values"], list)
+                        and bool(variable["values"])
+                        and all(
                             isinstance(item, str)
                             for item in variable["values"]
                         )
                     )
-                    or pattern_form
-                    and (
-                        not isinstance(variable["pattern"], str)
-                        or not isinstance(variable["pattern_reason_line"], int)
+                else:
+                    variable_valid = (
+                        variable_valid
+                        and isinstance(variable["pattern"], str)
+                        and isinstance(
+                            variable["pattern_reason_line"],
+                            int,
+                        )
                     )
-                ):
+                if not variable_valid:
                     _violation(
                         violations,
                         "C5.0-schema",
                         line,
                         f"variable {name!r} has invalid field types",
                     )
-            verdict = variant.get("verdict")
+
+            verdict = variant["verdict"]
             if _closed_keys(
                 verdict,
                 {"lines", "contains"},
-                f"variant {variant.get('id', variant_index)!r}.verdict",
+                f"variant {variant['id']!r}.verdict",
                 violations,
                 line,
             ) and (
                 not isinstance(verdict["lines"], list)
                 or not verdict["lines"]
-                or not all(isinstance(item, int) for item in verdict["lines"])
+                or not all(
+                    isinstance(item, int) for item in verdict["lines"]
+                )
                 or not isinstance(verdict["contains"], list)
                 or not verdict["contains"]
-                or not all(isinstance(item, str) for item in verdict["contains"])
+                or not all(
+                    isinstance(item, str) for item in verdict["contains"]
+                )
             ):
                 _violation(
                     violations,
                     "C5.0-schema",
                     line,
-                    f"variant {variant.get('id', variant_index)!r} verdict is invalid",
+                    f"variant {variant['id']!r} verdict is invalid",
                 )
+
     for key, required in (
         ("non_invocations", {"line", "reason"}),
         ("skips", {"line", "class", "what", "regex", "text"}),
         ("not_skips", {"line", "reason", "text"}),
     ):
-        for index, item in enumerate(census.get(key, [])):
+        entries = census.get(key)
+        for index, item in enumerate(
+            entries if isinstance(entries, list) else []
+        ):
             line = item.get("line", 0) if isinstance(item, dict) else 0
             if not _closed_keys(
                 item,
@@ -1468,6 +1540,8 @@ def _validate_census_schema(
                 line,
             ):
                 continue
+            if not isinstance(item, dict):
+                continue
             if not isinstance(item["line"], int):
                 _violation(
                     violations,
@@ -1475,7 +1549,10 @@ def _validate_census_schema(
                     0,
                     f"{key}[{index}].line must be an integer",
                 )
-            if key == "non_invocations" and not isinstance(item["reason"], str):
+            if key == "non_invocations" and not isinstance(
+                item["reason"],
+                str,
+            ):
                 _violation(
                     violations,
                     "C5.0-schema",
@@ -1483,7 +1560,8 @@ def _validate_census_schema(
                     f"{key}[{index}].reason must be a string",
                 )
             if key == "skips" and (
-                item["class"] not in ("tool", "platform")
+                not isinstance(item["class"], str)
+                or item["class"] not in ("tool", "platform")
                 or not all(
                     isinstance(item[field], str)
                     for field in ("what", "regex", "text")
@@ -1504,24 +1582,30 @@ def _validate_census_schema(
                     line,
                     f"{key}[{index}] has invalid fields",
                 )
+
     sentinel = census.get("pass_sentinel")
     if _closed_keys(
         sentinel,
         {"line", "regex", "text"},
         "pass_sentinel",
         violations,
-    ) and (
-        not isinstance(sentinel["line"], int)
-        or not isinstance(sentinel["regex"], str)
-        or not isinstance(sentinel["text"], str)
     ):
-        _violation(
-            violations,
-            "C5.0-schema",
-            0,
-            "pass_sentinel has invalid fields",
-        )
-    for index, evidence in enumerate(census.get("exec_evidence", [])):
+        if not isinstance(sentinel, dict) or (
+            not isinstance(sentinel["line"], int)
+            or not isinstance(sentinel["regex"], str)
+            or not isinstance(sentinel["text"], str)
+        ):
+            _violation(
+                violations,
+                "C5.0-schema",
+                0,
+                "pass_sentinel has invalid fields",
+            )
+
+    evidences = census.get("exec_evidence")
+    for index, evidence in enumerate(
+        evidences if isinstance(evidences, list) else []
+    ):
         line = (
             evidence.get("site_line", 0)
             if isinstance(evidence, dict)
@@ -1544,48 +1628,56 @@ def _validate_census_schema(
             line,
         ):
             continue
-        if (
-            not isinstance(evidence["site_line"], int)
-            or not isinstance(evidence["out_template"], str)
-            or not isinstance(evidence["name_from_calls"], dict)
-            or not all(
+        if not isinstance(evidence, dict):
+            continue
+        evidence_valid = (
+            isinstance(evidence["site_line"], int)
+            and isinstance(evidence["out_template"], str)
+            and isinstance(evidence["name_from_calls"], dict)
+            and all(
                 isinstance(key, str)
                 and key.isdigit()
                 and isinstance(value, str)
                 for key, value in evidence["name_from_calls"].items()
             )
-            or not isinstance(evidence["exec_lines"], list)
-            or not evidence["exec_lines"]
-            or not all(isinstance(item, int) for item in evidence["exec_lines"])
-            or not isinstance(evidence["exec_token"], str)
-            or not evidence["exec_token"]
-            or not isinstance(evidence["verdict_lines"], list)
-            or not evidence["verdict_lines"]
-            or not all(
+            and isinstance(evidence["exec_lines"], list)
+            and bool(evidence["exec_lines"])
+            and all(
+                isinstance(item, int) for item in evidence["exec_lines"]
+            )
+            and isinstance(evidence["exec_token"], str)
+            and bool(evidence["exec_token"])
+            and isinstance(evidence["verdict_lines"], list)
+            and bool(evidence["verdict_lines"])
+            and all(
                 isinstance(item, int) for item in evidence["verdict_lines"]
             )
-            or not isinstance(evidence["failure_marks"], list)
-            or not evidence["failure_marks"]
-            or not all(
-                isinstance(item, str) and item
+            and isinstance(evidence["failure_marks"], list)
+            and bool(evidence["failure_marks"])
+            and all(
+                isinstance(item, str) and bool(item)
                 for item in evidence["failure_marks"]
             )
-            or not isinstance(evidence["refs_ok"], list)
-        ):
+            and isinstance(evidence["refs_ok"], list)
+        )
+        if not evidence_valid:
             _violation(
                 violations,
                 "C5.0-schema",
                 line,
                 f"exec_evidence[{index}] has invalid fields",
             )
-        for ref_index, reference in enumerate(evidence.get("refs_ok", [])):
+            continue
+        for ref_index, reference in enumerate(evidence["refs_ok"]):
             if not _closed_keys(
                 reference,
                 {"line", "kind"},
                 f"exec_evidence[{index}].refs_ok[{ref_index}]",
                 violations,
                 line,
-            ) or (
+            ):
+                continue
+            if not isinstance(reference, dict) or (
                 not isinstance(reference["line"], int)
                 or reference["kind"] != "cleanup"
             ):
@@ -1593,7 +1685,8 @@ def _validate_census_schema(
                     violations,
                     "C5.0-schema",
                     line,
-                    f"exec_evidence[{index}].refs_ok[{ref_index}] is invalid",
+                    f"exec_evidence[{index}].refs_ok[{ref_index}] "
+                    "is invalid",
                 )
 
 
@@ -1605,7 +1698,28 @@ def validate_census(
     """Return every C5 and E1 violation for one source-grounded census."""
     violations: list[Violation] = []
     _validate_census_schema(census, violations)
+    if violations:
+        return sorted(
+            set(violations),
+            key=lambda item: (item[1], item[0], item[2]),
+        )
     if not isinstance(census, dict):
+        return violations
+    if not isinstance(script_bytes, bytes):
+        _violation(
+            violations,
+            "C5.0-schema",
+            0,
+            "script_bytes must be bytes",
+        )
+        return violations
+    if not isinstance(script_relpath, str):
+        _violation(
+            violations,
+            "C5.0-schema",
+            0,
+            "script_relpath must be a string",
+        )
         return violations
 
     lines = script_bytes.decode("utf-8", errors="replace").splitlines()
@@ -1643,12 +1757,17 @@ def validate_census(
         else []
     )
     claims: dict[int, list[str]] = {}
+    declared_site_lines: set[int] = set()
+    site_owner_line: dict[int, int] = {}
     for index, site in enumerate(sites):
         if not isinstance(site, dict) or not isinstance(site.get("lines"), list):
             continue
+        owner_line = site["lines"][0] if site["lines"] else 0
         for number in site["lines"]:
             if isinstance(number, int):
                 claims.setdefault(number, []).append(f"site[{index}]")
+                declared_site_lines.add(number)
+                site_owner_line[number] = owner_line
     for index, item in enumerate(non_invocations):
         if isinstance(item, dict) and isinstance(item.get("line"), int):
             claims.setdefault(item["line"], []).append(
@@ -1708,7 +1827,11 @@ def validate_census(
                 line,
                 f"kind={kind!r}, variants={len(variants)}",
             )
-        if kind in ("canonical-own", "mixed"):
+        is_mixed_own = kind == "mixed" and (
+            "$EXERCISE" in source
+            or f"std_{driver}_exercise.iyi" in source
+        )
+        if kind == "canonical-own" or is_mixed_own:
             own_sites.add(line)
         if kind == "positive":
             positive_sites.add(line)
@@ -1850,7 +1973,7 @@ def validate_census(
                     f"and {key}[{index}]",
                 )
             listed_skip_lines[number] = f"{key}[{index}]"
-            source = lines[number - 1].strip() if 1 <= number <= len(lines) else ""
+            source = lines[number - 1] if 1 <= number <= len(lines) else ""
             if entry.get("text") != source:
                 _violation(
                     violations,
@@ -1913,7 +2036,7 @@ def validate_census(
     sentinel = census.get("pass_sentinel")
     if isinstance(sentinel, dict) and isinstance(sentinel.get("line"), int):
         number = sentinel["line"]
-        source = lines[number - 1].strip() if 1 <= number <= len(lines) else ""
+        source = lines[number - 1] if 1 <= number <= len(lines) else ""
         if sentinel.get("text") != source:
             _violation(
                 violations,
@@ -1947,12 +2070,15 @@ def validate_census(
         if isinstance(census.get("exec_evidence"), list)
         else []
     )
+    evidences_by_token: dict[str, list[dict]] = {}
     for evidence in evidences:
         if not isinstance(evidence, dict):
             continue
         site_line = evidence.get("site_line")
-        if isinstance(site_line, int):
-            evidence_sites.add(site_line)
+        token = evidence.get("exec_token")
+        if isinstance(token, str):
+            evidences_by_token.setdefault(token, []).append(evidence)
+
         detail = _template_violation(
             evidence.get("out_template"),
             {"name"},
@@ -1965,48 +2091,53 @@ def validate_census(
                 site_line,
                 detail,
             )
-        token = evidence.get("exec_token")
-        exec_lines = evidence.get("exec_lines", [])
-        if isinstance(token, str):
-            for number in exec_lines:
-                source = (
-                    lines[number - 1]
-                    if isinstance(number, int) and 1 <= number <= len(lines)
-                    else ""
-                )
-                if (
-                    not isinstance(number, int)
-                    or number <= site_line
-                    or token not in source
-                ):
-                    _violation(
-                        violations,
-                        "E1-exec-token",
-                        number if isinstance(number, int) else site_line,
-                        f"expected {token!r} after site line {site_line}",
-                    )
-            allowed_refs = {
+
+        site_source = (
+            lines[site_line - 1]
+            if isinstance(site_line, int) and 1 <= site_line <= len(lines)
+            else ""
+        )
+        site_declared = (
+            isinstance(site_line, int) and site_line in declared_site_lines
+        )
+        if (
+            site_declared
+            and isinstance(token, str)
+            and token not in site_source
+        ):
+            _violation(
+                violations,
+                "E1-exec-token",
                 site_line,
-                *(
-                    number
-                    for number in exec_lines
-                    if isinstance(number, int)
-                ),
-                *(
-                    reference.get("line")
-                    for reference in evidence.get("refs_ok", [])
-                    if isinstance(reference, dict)
-                    and isinstance(reference.get("line"), int)
-                ),
-            }
-            for number, source in enumerate(lines, 1):
-                if token in source and number not in allowed_refs:
-                    _violation(
-                        violations,
-                        "E1-stray-reference",
-                        number,
-                        f"unlisted reference to {token!r}",
-                    )
+                f"declared compiler site lacks exact token {token!r}",
+            )
+        if (
+            site_declared
+            and isinstance(token, str)
+            and token in site_source
+        ):
+            evidence_sites.add(site_owner_line[site_line])
+
+        for number in evidence.get("exec_lines", []):
+            source = (
+                lines[number - 1]
+                if isinstance(number, int) and 1 <= number <= len(lines)
+                else ""
+            )
+            if (
+                not isinstance(number, int)
+                or not isinstance(site_line, int)
+                or number <= site_line
+                or not isinstance(token, str)
+                or token not in source
+            ):
+                _violation(
+                    violations,
+                    "E1-exec-token",
+                    number if isinstance(number, int) else site_line,
+                    f"expected {token!r} after site line {site_line}",
+                )
+
         for call_line, name in evidence.get("name_from_calls", {}).items():
             number = int(call_line)
             source = lines[number - 1] if 1 <= number <= len(lines) else ""
@@ -2017,6 +2148,7 @@ def validate_census(
                     number,
                     f"call name {name!r} is absent from cited line",
                 )
+
         failure_marks = evidence.get("failure_marks", [])
         for number in evidence.get("verdict_lines", []):
             source = (
@@ -2031,6 +2163,38 @@ def validate_census(
                     number if isinstance(number, int) else site_line,
                     f"verdict line lacks one of {failure_marks}",
                 )
+
+    for token, token_evidences in evidences_by_token.items():
+        allowed_references = {
+            evidence["site_line"]
+            for evidence in token_evidences
+            if isinstance(evidence.get("site_line"), int)
+            and evidence["site_line"] in declared_site_lines
+            and 1 <= evidence["site_line"] <= len(lines)
+            and token in lines[evidence["site_line"] - 1]
+        }
+        for evidence in token_evidences:
+            allowed_references.update(
+                number
+                for number in evidence.get("exec_lines", [])
+                if isinstance(number, int)
+            )
+            allowed_references.update(
+                reference["line"]
+                for reference in evidence.get("refs_ok", [])
+                if isinstance(reference, dict)
+                and reference.get("kind") == "cleanup"
+                and isinstance(reference.get("line"), int)
+            )
+        for number, source in enumerate(lines, 1):
+            if token in source and number not in allowed_references:
+                _violation(
+                    violations,
+                    "E1-stray-reference",
+                    number,
+                    f"unlisted reference to exact token {token!r}",
+                )
+
     if not own_sites.intersection(evidence_sites):
         _violation(
             violations,
@@ -2045,15 +2209,20 @@ def validate_census(
             number,
             "positive site has no exec evidence",
         )
-    last_nonblank = next(
-        (source.strip() for source in reversed(lines) if source.strip()),
-        "",
+
+    last_nonblank_line, last_nonblank = next(
+        (
+            (number, source)
+            for number, source in reversed(tuple(enumerate(lines, 1)))
+            if source.strip()
+        ),
+        (0, ""),
     )
     if last_nonblank != "exit $status":
         _violation(
             violations,
             "E1-exit-line",
-            len(lines),
+            last_nonblank_line,
             f"last non-blank line is {last_nonblank!r}",
         )
     return sorted(set(violations), key=lambda item: (item[1], item[0], item[2]))

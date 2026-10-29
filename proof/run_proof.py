@@ -31,6 +31,7 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from proof.proofkit import (
+    DRIVERS_29,
     IdentityError,
     LedgerVerificationError,
     base_env,
@@ -44,12 +45,6 @@ from proof.proofkit import (
     write_pin,
 )
 
-CORE_29_DRIVERS = [
-    "acme", "autocert", "cookie", "dns", "fileserver", "http", "router", "secure_dns",
-    "signal", "smtp", "sse", "term", "tls", "websocket",
-    "bzip2", "compress", "hpke", "math", "mlkem", "png", "regex", "shlex", "tar", "xz", "zip", "zstd",
-    "file", "file_utils", "fuzz"
-]
 
 
 def next_attempt_dir(parent_dir: str) -> str:
@@ -118,7 +113,7 @@ def cmd_plan(args):
         args.p,
         args.w,
         args.compiler,
-        CORE_29_DRIVERS,
+        DRIVERS_29,
     )
     print("Observed Corpus Proof Plan")
     print(f"  P Path:    {facts['p_path']}")
@@ -138,7 +133,7 @@ def cmd_pin(args):
         args.p,
         args.w,
         args.compiler,
-        CORE_29_DRIVERS,
+        DRIVERS_29,
     )
     print(f"Pin successfully written to {os.path.join(args.report_dir, 'pin.json')}")
     print(f"  Chain ID:  {pin['chain_id']}")
@@ -371,7 +366,7 @@ def cmd_run3(args):
     # Determine required drivers
     req_file = os.path.join(r3_dir, "required.json")
     if not os.path.isfile(req_file):
-        drivers = list(CORE_29_DRIVERS)
+        drivers = list(DRIVERS_29)
 
         # Add RG2 exclusions if present
         excl_file = os.path.join(r_dir, "run1/exclusions.json")
