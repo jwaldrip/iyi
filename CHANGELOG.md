@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Bench: std/autocert's exercise runs its own builds by the path it built them to.** `bench/std_autocert_exercise.sh` runs its plain and release binaries as `"$WORK/$name"` from a new `run_own <name>`, rather than passing their paths to `local_run`, so each run can be matched to its build in the driver's own text. Arguments, environment, output files, exit status and verdicts are unchanged; `local_run` still runs the artifact consumer and broken copies.
+
 - **Fix (spec): select TCP fixture ports across both address families.** Keep each IPv4 candidate bound while checking an IPv6-only wildcard bind, advancing only when that port is already in use. The dual-stack and refused-connect fixtures use the shared allocator without changing their assertions or timeouts.
 
 - **Fix (bench): separate search roots for import candidate shadowing in stale testing.** In `bench/stale_tests.sh` row 3, place candidate modules under dedicated `earlier` and `later` `IYI_PATH` entries with no project-root copy so the entry directory does not preempt resolver order. Verifies that an earlier search path without a candidate hits as a locator-only change, while a shadowed definition with an altered body misses and is named in the explanation.
