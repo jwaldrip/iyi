@@ -3217,8 +3217,1866 @@ O5_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {}
 # ===== O6: artifact legs (owner U6). Keys "o6.". =====
 
 
-O6_FIXTURES: tuple[Fixture, ...] = ()
-O6_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {}
+_O6_FAKE_COMPILER = r'''#!/usr/bin/env python3
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+
+CONFIG_PATH = os.path.join(os.path.dirname(__file__), "case.json")
+with open(CONFIG_PATH, "r", encoding="utf-8") as stream:
+    config = json.load(stream)
+
+args = sys.argv[1:]
+if "-o" not in args:
+    sys.stderr.write("fake compiler: missing -o\n")
+    raise SystemExit(2)
+output = args[args.index("-o") + 1]
+source = args[-1]
+source_name = os.path.basename(source)
+if "--emit-iyimod" in args:
+    leg = "P"
+elif "--stale-key" in args:
+    key_name = os.path.basename(args[args.index("--stale-key") + 1])
+    leg = {"k1.key": "C1", "k2.key": "C2", "k3.key": "C3"}[key_name]
+else:
+    sys.stderr.write("fake compiler: unknown leg\n")
+    raise SystemExit(2)
+
+def source_leg(section):
+    return config.get(section, {}).get(source_name, {}).get(leg)
+
+sleep_spec = source_leg("build_sleeps")
+if sleep_spec:
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"]
+    )
+    with open(sleep_spec["pid_file"], "w", encoding="utf-8") as stream:
+        stream.write(str(child.pid))
+    time.sleep(float(sleep_spec.get("seconds", 60)))
+
+failure = source_leg("build_failures")
+if failure and not failure.get("after_outputs"):
+    sys.stdout.write(failure.get("stdout", ""))
+    sys.stderr.write(failure.get("stderr", ""))
+    raise SystemExit(int(failure.get("rc", 1)))
+
+if "--emit-iyimod" in args:
+    mods = args[args.index("--emit-iyimod") + 1]
+    os.makedirs(mods, exist_ok=True)
+    with open(os.path.join(mods, "fake.iyimod"), "wb") as stream:
+        stream.write(b"module")
+
+def merge(target, patch):
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(target.get(key), dict):
+            merge(target[key], value)
+        else:
+            target[key] = value
+
+if "--stale-key" in args and leg not in config.get("omit_keys", []):
+    key_path = args[args.index("--stale-key") + 1]
+    document = {
+        "phase": "linked",
+        "portable": {"callpath": "portable-callpath"},
+        "reach": {"checked": True, "mismatch": []},
+        "not_reusable": config.get("default_not_reusable", []),
+    }
+    merge(document, config.get("key_overrides", {}).get(leg, {}))
+    os.makedirs(os.path.dirname(key_path), exist_ok=True)
+    if leg in config.get("malformed_keys", []):
+        with open(key_path, "w", encoding="utf-8") as stream:
+            stream.write("{")
+    elif leg in config.get("nonobject_keys", []):
+        with open(key_path, "w", encoding="utf-8") as stream:
+            json.dump([], stream)
+    else:
+        with open(key_path, "w", encoding="utf-8") as stream:
+            json.dump(document, stream, sort_keys=True)
+
+os.makedirs(os.path.dirname(output), exist_ok=True)
+binary = config.get("effect_bins", {}).get(leg) or config.get("default_binary")
+if binary:
+    shutil.copy2(binary, output)
+    os.chmod(output, 0o755)
+else:
+    program = [
+        "#!" + sys.executable,
+        "import json",
+        "import os",
+        "import subprocess",
+        "import sys",
+        "import time",
+        "CONFIG_PATH = " + repr(CONFIG_PATH),
+        "LEG = " + repr(leg),
+        "SOURCE = " + repr(source_name),
+        "with open(CONFIG_PATH, 'r', encoding='utf-8') as stream:",
+        "    config = json.load(stream)",
+        "trace = os.environ.get('IYI_OBSERVE')",
+        "if trace and LEG not in config.get('trace_empty', []):",
+        "    with open(trace, 'wb') as stream:",
+        "        stream.write(b'trace\\n')",
+        "sleep_spec = config.get('run_sleeps', {}).get(SOURCE, {}).get(LEG)",
+        "if sleep_spec:",
+        "    child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])",
+        "    with open(sleep_spec['pid_file'], 'w', encoding='utf-8') as stream:",
+        "        stream.write(str(child.pid))",
+        "    time.sleep(float(sleep_spec.get('seconds', 60)))",
+        "sandbox_mode = config.get('sandbox_mode')",
+        "forced_exit = None",
+        "if sandbox_mode:",
+        "    sandbox = os.environ.get('IYI_FILE_SANDBOX', os.getcwd())",
+        "    marker = os.path.join(sandbox, 'p-only.marker')",
+        "    before = os.path.exists(marker)",
+        "    if sandbox_mode == 'isolation' and LEG == 'P':",
+        "        with open(marker, 'w', encoding='utf-8') as stream:",
+        "            stream.write('P')",
+        "    if sandbox_mode == 'isolation' and LEG == 'C1' and before:",
+        "        forced_exit = 23",
+        "        sys.stderr.write('sandbox leak\\n')",
+        "    event_log = config.get('sandbox_event_log')",
+        "    if event_log:",
+        "        with open(event_log, 'a', encoding='utf-8') as stream:",
+        "            stream.write(f'{LEG}|{sandbox}|before={int(before)}\\n')",
+        "    stdout_text = sandbox + '\\n'",
+        "else:",
+        "    stdout_text = config.get('run_stdout', {}).get(LEG, 'run-output\\n')",
+        "sys.stdout.write(stdout_text)",
+        "sys.stderr.write(config.get('run_stderr', {}).get(LEG, 'run-error\\n'))",
+        "if forced_exit is not None:",
+        "    raise SystemExit(forced_exit)",
+        "raise SystemExit(int(config.get('run_exits', {}).get(LEG, 0)))",
+    ]
+    with open(output, "w", encoding="utf-8") as stream:
+        stream.write("\n".join(program) + "\n")
+    os.chmod(output, 0o755)
+if leg in config.get("skip_outputs", []) and os.path.exists(output):
+    os.unlink(output)
+
+
+stdout_text = config.get("build_stdout", {}).get(leg, f"build {leg}\n")
+stderr_text = config.get("build_stderr", {}).get(leg, "")
+if leg in config.get("build_effect_output", []):
+    stderr_text += "__iyi_effect_seed\n"
+if failure and failure.get("after_outputs"):
+    stdout_text += failure.get("stdout", "")
+    stderr_text += failure.get("stderr", "")
+sys.stdout.write(stdout_text)
+sys.stderr.write(stderr_text)
+if failure and failure.get("after_outputs"):
+    raise SystemExit(int(failure.get("rc", 1)))
+'''
+
+
+def _o6_write_executable(path: str, source: str) -> str:
+    with open(path, "w", encoding="utf-8") as stream:
+        stream.write(source)
+    os.chmod(path, 0o755)
+    return path
+
+
+def _o6_make_nm(
+    root: str,
+    *,
+    name: str = "pinned-nm",
+    rc_by_path: Mapping[str, int] | None = None,
+) -> tuple[str, str]:
+    log_path = os.path.join(root, f"{name}.jsonl")
+    script_path = os.path.join(root, name)
+    rc_mapping = dict(rc_by_path or {})
+    source = (
+        "#!" + sys.executable + "\n"
+        "import json\n"
+        "import sys\n"
+        f"LOG = {log_path!r}\n"
+        f"RC_BY_PATH = {rc_mapping!r}\n"
+        "with open(LOG, 'a', encoding='utf-8') as stream:\n"
+        "    stream.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        "target = sys.argv[-1] if len(sys.argv) > 1 else ''\n"
+        "for needle, rc in RC_BY_PATH.items():\n"
+        "    if needle in target:\n"
+        "        raise SystemExit(int(rc))\n"
+        "raise SystemExit(0)\n"
+    )
+    return _o6_write_executable(script_path, source), log_path
+
+
+def _o6_make_case(
+    root: str,
+    *,
+    sample_names: tuple[str, ...] = ("case.iyi",),
+    std_names: tuple[str, ...] = (),
+    config: Mapping[str, object] | None = None,
+    nm_rc_by_path: Mapping[str, int] | None = None,
+) -> SimpleNamespace:
+    repo = os.path.join(root, "repo")
+    samples = os.path.join(repo, "samples", "iyi")
+    bench = os.path.join(repo, "bench")
+    os.makedirs(samples, exist_ok=True)
+    os.makedirs(bench, exist_ok=True)
+    os.makedirs(os.path.join(repo, "src"), exist_ok=True)
+    os.makedirs(os.path.join(repo, "lib"), exist_ok=True)
+    shutil.copy2(
+        os.path.join(REPO_ROOT, "bench", "frames_equivalent.py"),
+        os.path.join(bench, "frames_equivalent.py"),
+    )
+
+    sources: dict[str, str] = {}
+    for name in sample_names:
+        path = os.path.join(samples, name)
+        with open(path, "w", encoding="utf-8") as stream:
+            stream.write(f"# sample {name}\n")
+        sources[name] = path
+    for name in std_names:
+        path = os.path.join(bench, name)
+        with open(path, "w", encoding="utf-8") as stream:
+            stream.write(f"# std {name}\n")
+        sources[name] = path
+
+    compiler = _o6_write_executable(
+        os.path.join(root, "fake-compiler"),
+        _O6_FAKE_COMPILER,
+    )
+    with open(os.path.join(root, "case.json"), "w", encoding="utf-8") as stream:
+        json.dump(dict(config or {}), stream, sort_keys=True)
+    nm_bin, nm_log = _o6_make_nm(
+        root,
+        rc_by_path=nm_rc_by_path,
+    )
+    work = os.path.join(root, "work")
+    os.makedirs(work, exist_ok=True)
+    return SimpleNamespace(
+        root=root,
+        repo=repo,
+        compiler=compiler,
+        nm=nm_bin,
+        nm_log=nm_log,
+        work=work,
+        sources=sources,
+    )
+
+
+def _o6_run_row(
+    case: SimpleNamespace,
+    source_name: str = "case.iyi",
+    *,
+    nm_bin: str | None = None,
+) -> dict:
+    return legs_mod.run_row(
+        case.sources[source_name],
+        repo=case.repo,
+        compiler=case.compiler,
+        work_root=case.work,
+        nm_bin=nm_bin or case.nm,
+    )
+
+
+def _o6_codes(row: Mapping[str, object]) -> list[str]:
+    return sorted(
+        {
+            str(value).split(":", 1)[0]
+            for value in row.get("failures", [])
+        }
+    )
+
+
+def _o6_required_output_names() -> tuple[str, ...]:
+    names: list[str] = []
+    for leg in ("P", "C1", "C2", "C3"):
+        names.extend((f"{leg}.build.stdout", f"{leg}.build.stderr"))
+    for leg in ("P", "C1", "C3"):
+        names.extend(
+            (
+                f"{leg}.run.stdout",
+                f"{leg}.run.stderr",
+                f"{leg}.run.exit",
+            )
+        )
+    return tuple(names)
+
+
+def _o6_row_seed(
+    config: Mapping[str, object],
+    expected_codes: tuple[str, ...],
+    applied: str,
+) -> Observation:
+    with tempfile.TemporaryDirectory(prefix="iyi-o6-row-") as root:
+        case = _o6_make_case(root, config=config)
+        row = _o6_run_row(case)
+        got = {
+            "status": row["status"],
+            "codes": _o6_codes(row),
+        }
+    expected = {
+        "status": "FAIL",
+        "codes": sorted(expected_codes),
+    }
+    return Observation(expected=expected, got=got, applied=applied)
+
+
+def _fixture_o6_row_control() -> Observation:
+    not_reusable = [{"category": "control", "reason": "evidence", "site": "x"}]
+    with tempfile.TemporaryDirectory(prefix="iyi-o6-control-") as root:
+        case = _o6_make_case(
+            root,
+            config={"default_not_reusable": not_reusable},
+        )
+        old_scrubbed = os.environ.get("IYI_O6_COVERAGE")
+        os.environ["IYI_O6_COVERAGE"] = "remove-me"
+        try:
+            cleaned = legs_mod.clean_env(case.repo, os.path.join(root, "cache"))
+            row = _o6_run_row(case)
+        finally:
+            if old_scrubbed is None:
+                os.environ.pop("IYI_O6_COVERAGE", None)
+            else:
+                os.environ["IYI_O6_COVERAGE"] = old_scrubbed
+        required = _o6_required_output_names()
+        got = {
+            "status": row["status"],
+            "codes": _o6_codes(row),
+            "callpath": row["callpath"],
+            "not_reusable_count": row["not_reusable_count"],
+            "row_dir_kept": os.path.isdir(row["row_dir"]),
+            "outputs_kept": sorted(
+                name
+                for name in required
+                if os.path.isfile(os.path.join(row["row_dir"], name))
+            ),
+            "scratch_removed": all(
+                not os.path.lexists(os.path.join(row["row_dir"], name))
+                for name in ("bin", "cache_p", "cache_c", "mods", "sandbox")
+            ),
+            "legs": sorted(row["legs"]),
+            "scrubbed_leg_env": "IYI_O6_COVERAGE" not in cleaned,
+            "default_timeout": legs_mod.run_timeout_for("samples/iyi/case.iyi"),
+            "heavy_timeout": legs_mod.run_timeout_for("bench/std_big_exercise.iyi"),
+            "row_keys": sorted(row),
+        }
+    expected = {
+        "status": "PASS",
+        "codes": [],
+        "callpath": "portable-callpath",
+        "not_reusable_count": 1,
+        "row_dir_kept": True,
+        "outputs_kept": sorted(required),
+        "scratch_removed": True,
+        "legs": ["C1", "C2", "C3", "P"],
+        "scrubbed_leg_env": True,
+        "default_timeout": 60,
+        "heavy_timeout": 300,
+        "row_keys": sorted(
+            (
+                "source",
+                "name",
+                "base",
+                "kind",
+                "status",
+                "failures",
+                "stop_condition",
+                "p_exit",
+                "c1_exit",
+                "c3_exit",
+                "callpath",
+                "not_reusable_count",
+                "effect_symbols",
+                "p_nonzero",
+                "preserved_dir",
+                "row_dir",
+                "legs",
+            )
+        ),
+    }
+    return Observation(expected=expected, got=got)
+
+
+def _fixture_o6_callpath_k2_seed() -> Observation:
+    return _o6_row_seed(
+        {"key_overrides": {"C2": {"portable": {"callpath": "different"}}}},
+        ("CALLPATH-PARITY",),
+        "k2.portable.callpath=different",
+    )
+
+
+def _fixture_o6_callpath_empty_seed() -> Observation:
+    return _o6_row_seed(
+        {
+            "key_overrides": {
+                leg: {"portable": {"callpath": ""}}
+                for leg in ("C1", "C2", "C3")
+            }
+        },
+        ("CALLPATH-EMPTY",),
+        "all_three_callpaths=empty",
+    )
+
+
+def _fixture_o6_callpath_mismatch_seed() -> Observation:
+    return _o6_row_seed(
+        {"key_overrides": {"C2": {"reach": {"mismatch": ["seed"]}}}},
+        ("REACH-MISMATCH",),
+        "k2.reach.mismatch=[seed]",
+    )
+
+
+def _fixture_o6_phase_seed() -> Observation:
+    return _o6_row_seed(
+        {"key_overrides": {"C2": {"phase": "checked"}}},
+        ("KEY-PHASE-k2",),
+        "k2.phase=checked",
+    )
+
+
+def _fixture_o6_reach_checked_seed() -> Observation:
+    return _o6_row_seed(
+        {"key_overrides": {"C2": {"reach": {"checked": 1}}}},
+        ("REACH-CHECKED-k2",),
+        "k2.reach.checked=integer_one",
+    )
+
+
+def _fixture_o6_missing_key_seed() -> Observation:
+    return _o6_row_seed(
+        {"omit_keys": ["C2"]},
+        ("KEY-MISSING",),
+        "omitted_key=k2.key",
+    )
+
+
+def _fixture_o6_trace_empty_seed() -> Observation:
+    return _o6_row_seed(
+        {"trace_empty": ["C1"]},
+        ("TRACE-EMPTY-C1",),
+        "suppressed_trace=C1",
+    )
+
+
+def _o6_compile_binary(root: str, name: str, source: str) -> str:
+    cc = shutil.which("cc")
+    if cc is None:
+        raise RuntimeError("cc is required for the S4 symbol fixture")
+    source_path = os.path.join(root, f"{name}.c")
+    binary_path = os.path.join(root, name)
+    with open(source_path, "w", encoding="utf-8") as stream:
+        stream.write(source)
+    completed = subprocess.run(
+        [cc, source_path, "-o", binary_path],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"cc failed ({completed.returncode}): {completed.stderr.strip()}"
+        )
+    return binary_path
+
+
+def _fixture_o6_symbol_seed(leg: str) -> Observation:
+    with tempfile.TemporaryDirectory(prefix=f"iyi-o6-symbol-{leg.lower()}-") as root:
+        clean = _o6_compile_binary(
+            root,
+            "clean",
+            "int main(void) { return 0; }\n",
+        )
+        effect = _o6_compile_binary(
+            root,
+            "effect",
+            "__attribute__((used,noinline)) int __iyi_effect_x(void) { return 0; }\n"
+            "int main(void) { return __iyi_effect_x(); }\n",
+        )
+        case = _o6_make_case(
+            root,
+            config={
+                "default_binary": clean,
+                "effect_bins": {leg: effect},
+            },
+        )
+        nm_bin = shutil.which("nm")
+        if nm_bin is None:
+            raise RuntimeError("nm is required for the S4 symbol fixture")
+        row = _o6_run_row(case, nm_bin=nm_bin)
+        got = {
+            "status": row["status"],
+            "codes": _o6_codes(row),
+            "symbol_seen": any(
+                "___iyi_effect_x" in symbol
+                for symbol in row["effect_symbols"]
+            ),
+            "binary_is_cc_built": os.path.isfile(
+                os.path.join(row["row_dir"], "bin", leg.lower(), "case")
+            ),
+        }
+    expected = {
+        "status": "STOP",
+        "codes": [f"EFFECT-SYMBOL-{leg}"],
+        "symbol_seen": True,
+        "binary_is_cc_built": True,
+    }
+    return Observation(
+        expected=expected,
+        got=got,
+        applied=f"cc_binary_leg={leg};symbol=___iyi_effect_x",
+    )
+
+
+def _fixture_o6_nm_error_seed() -> Observation:
+    with tempfile.TemporaryDirectory(prefix="iyi-o6-nm-error-") as root:
+        case = _o6_make_case(
+            root,
+            nm_rc_by_path={f"{os.sep}bin{os.sep}c2{os.sep}": 7},
+        )
+        row = _o6_run_row(case)
+        got = {
+            "status": row["status"],
+            "codes": _o6_codes(row),
+        }
+    expected = {
+        "status": "FAIL",
+        "codes": ["NM-ERROR-C2"],
+    }
+    return Observation(
+        expected=expected,
+        got=got,
+        applied="pinned_nm_exit=7_for_C2",
+    )
+
+
+def _fixture_o6_build_output_symbol_seed() -> Observation:
+    return _o6_row_seed(
+        {"build_effect_output": ["P"]},
+        ("BUILD-EFFECT-P",),
+        "P.build.stderr_contains=__iyi_effect_seed",
+    )
+
+
+def _o6_pid_is_gone(pid_file: str) -> bool:
+    if not os.path.isfile(pid_file):
+        return False
+    with open(pid_file, "r", encoding="utf-8") as stream:
+        pid = int(stream.read().strip())
+    for _ in range(50):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            return False
+        time.sleep(0.02)
+    return False
+
+
+@contextlib.contextmanager
+def _o6_limits(*, build: int | None = None, run: int | None = None):
+    old_build = legs_mod.BUILD_TIMEOUT
+    old_run = legs_mod.RUN_DEFAULT_TIMEOUT
+    try:
+        if build is not None:
+            legs_mod.BUILD_TIMEOUT = build
+        if run is not None:
+            legs_mod.RUN_DEFAULT_TIMEOUT = run
+        yield
+    finally:
+        legs_mod.BUILD_TIMEOUT = old_build
+        legs_mod.RUN_DEFAULT_TIMEOUT = old_run
+
+
+def _o6_read_report(path: str) -> list[dict]:
+    with open(path, "r", encoding="utf-8") as stream:
+        return [json.loads(line) for line in stream if line.strip()]
+
+
+def _fixture_o6_timeout_seed(phase: str) -> Observation:
+    with tempfile.TemporaryDirectory(prefix=f"iyi-o6-{phase}-timeout-") as root:
+        source_name = f"sleepy_{phase}.iyi"
+        pid_file = os.path.join(root, f"{phase}-grandchild.pid")
+        config: dict[str, object] = {}
+        if phase == "build":
+            config["build_sleeps"] = {
+                source_name: {
+                    "P": {"seconds": 60, "pid_file": pid_file}
+                }
+            }
+            expected_code = "BUILD-TIMEOUT-P"
+        else:
+            config["run_sleeps"] = {
+                source_name: {
+                    "P": {"seconds": 60, "pid_file": pid_file}
+                }
+            }
+            expected_code = "RUN-TIMEOUT-P"
+
+        case = _o6_make_case(
+            root,
+            sample_names=("good.iyi", source_name),
+            config=config,
+        )
+        report = os.path.join(root, "report.jsonl")
+        argv = [
+            "--repo",
+            case.repo,
+            "--compiler",
+            case.compiler,
+            "--work",
+            case.work,
+            "--report",
+            report,
+            "--workers",
+            "2",
+            "--nm",
+            case.nm,
+            "--expect-samples",
+            "2",
+            "--expect-std",
+            "0",
+            "--expect-total",
+            "2",
+        ]
+        with _o6_limits(
+            build=2 if phase == "build" else None,
+            run=2 if phase == "run" else None,
+        ):
+            direct_row = _o6_run_row(case, source_name)
+            returncode = legs_mod.main(argv)
+        rows = _o6_read_report(report)
+        by_name = {os.path.basename(row["source"]): row for row in rows}
+        got = {
+            "returncode": returncode,
+            "direct_status": direct_row["status"],
+            "direct_codes": _o6_codes(direct_row),
+            "order": [os.path.basename(row["source"]) for row in rows],
+            "good_status": by_name["good.iyi"]["status"],
+            "sleepy_status": by_name[source_name]["status"],
+            "sleepy_codes": _o6_codes(by_name[source_name]),
+            "grandchild_gone": _o6_pid_is_gone(pid_file),
+            "jsonl_rows": len(rows),
+        }
+    expected = {
+        "returncode": 1,
+        "direct_status": "FAIL",
+        "direct_codes": [expected_code],
+        "order": ["good.iyi", source_name],
+        "good_status": "PASS",
+        "sleepy_status": "FAIL",
+        "sleepy_codes": [expected_code],
+        "grandchild_gone": True,
+        "jsonl_rows": 2,
+    }
+    return Observation(
+        expected=expected,
+        got=got,
+        applied=f"{phase}_limit=2;source={source_name};grandchild_pid_file=written",
+    )
+
+
+def _o6_compare(
+    root: str,
+    *,
+    name: str = "case",
+    status_a: int = 0,
+    status_b: int = 0,
+    stdout_a: bytes = b"same\n",
+    stderr_a: bytes = b"",
+    stdout_b: bytes = b"same\n",
+    stderr_b: bytes = b"",
+    tag: str = "fixture",
+) -> tuple[bool, str]:
+    row_dir = os.path.join(root, "row")
+    os.makedirs(row_dir, exist_ok=True)
+    return legs_mod.compare_r1(
+        name,
+        status_a,
+        status_b,
+        stdout_a,
+        stderr_a,
+        stdout_b,
+        stderr_b,
+        REPO_ROOT,
+        row_dir,
+        tag,
+    )
+
+
+def _o6_frame_lines() -> tuple[bytes, bytes]:
+    left = (
+        b"0 app 0x0000000000000001 "
+        b"~proc12@/tmp/src/std/foo.iyi:7 + 8\n"
+    )
+    equivalent = (
+        b"0 app 0x00000000000000ff "
+        b"~proc987@/tmp/mods/std/foo.iyimod:7 + 99\n"
+    )
+    return left, equivalent
+
+
+def _fixture_o6_frame_control() -> Observation:
+    with tempfile.TemporaryDirectory(prefix="iyi-o6-frames-") as root:
+        left, equivalent = _o6_frame_lines()
+        address_offset_proc = _o6_compare(
+            root,
+            stderr_a=left,
+            stderr_b=equivalent,
+            tag="address-offset-proc",
+        )
+        exit_only = _o6_compare(
+            root,
+            name="std_big_exercise",
+            status_a=7,
+            status_b=7,
+            stdout_a=b"producer output\n",
+            stderr_a=b"producer error\n",
+            stdout_b=b"consumer changed output\n",
+            stderr_b=b"consumer changed error\n",
+            tag="exit-only",
+        )
+        got = {
+            "address_offset_proc": address_offset_proc[0],
+            "address_offset_proc_reason": address_offset_proc[1],
+            "exit_only_changed_output": exit_only[0],
+            "exit_only_reason": exit_only[1],
+        }
+    expected = {
+        "address_offset_proc": True,
+        "address_offset_proc_reason": "stdout byte-equal and stderr frames equivalent",
+        "exit_only_changed_output": True,
+        "exit_only_reason": "exit-only check passed",
+    }
+    return Observation(expected=expected, got=got)
+
+
+def _fixture_o6_frame_function_seed() -> Observation:
+    with tempfile.TemporaryDirectory(prefix="iyi-o6-frame-function-") as root:
+        left, _ = _o6_frame_lines()
+        right = left.replace(b"~proc12", b"different_function", 1)
+        ok, reason = _o6_compare(root, stderr_a=left, stderr_b=right)
+        got = {"ok": ok, "rule": "rule function" in reason}
+    return Observation(
+        expected={"ok": False, "rule": True},
+        got=got,
+        applied="frame_function=~proc12->different_function",
+    )
+
+
+def _fixture_o6_frame_text_seed(kind: str) -> Observation:
+    with tempfile.TemporaryDirectory(prefix=f"iyi-o6-frame-{kind}-") as root:
+        if kind == "lone-cr":
+            left = b"payload\r\n"
+            right = b"payload\n"
+            applied = "stderr_removed_single_CR"
+        else:
+            left = b"payload abc\n"
+            right = b"payload acb\n"
+            applied = "stderr_moved_byte=b<->c"
+        ok, reason = _o6_compare(root, stderr_a=left, stderr_b=right)
+        got = {"ok": ok, "rule": "rule text" in reason}
+    return Observation(
+        expected={"ok": False, "rule": True},
+        got=got,
+        applied=applied,
+    )
+
+
+def _fixture_o6_exit_code_seed() -> Observation:
+    with tempfile.TemporaryDirectory(prefix="iyi-o6-exit-") as root:
+        ok, reason = _o6_compare(root, status_a=0, status_b=9)
+        got = {"ok": ok, "reason": reason}
+    return Observation(
+        expected={"ok": False, "reason": "exit status mismatch: 0 != 9"},
+        got=got,
+        applied="consumer_exit=9",
+    )
+
+
+def _o6_worker_case(root: str, *, failing: bool) -> tuple[SimpleNamespace, list[dict]]:
+    failures: dict[str, object] = {}
+    if failing:
+        failures = {
+            "alpha.iyi": {
+                "P": {"rc": 11, "stderr": "alpha-only-reason\n"}
+            },
+            "beta.iyi": {
+                "P": {"rc": 12, "stderr": "beta-only-reason\n"}
+            },
+        }
+    case = _o6_make_case(
+        root,
+        sample_names=("alpha.iyi", "beta.iyi"),
+        config={"build_failures": failures},
+    )
+    rows = legs_mod.run_rows(
+        [case.sources["alpha.iyi"], case.sources["beta.iyi"]],
+        repo=case.repo,
+        compiler=case.compiler,
+        work_root=case.work,
+        nm_bin=case.nm,
+        workers=2,
+    )
+    return case, rows
+
+
+def _fixture_o6_worker_reason_seed() -> Observation:
+    with tempfile.TemporaryDirectory(prefix="iyi-o6-workers-") as root:
+        _, rows = _o6_worker_case(root, failing=True)
+        by_name = {os.path.basename(row["source"]): row for row in rows}
+        got = {
+            "alpha_codes": _o6_codes(by_name["alpha.iyi"]),
+            "beta_codes": _o6_codes(by_name["beta.iyi"]),
+            "alpha_has_own_reason": any(
+                "alpha-only-reason" in reason
+                for reason in by_name["alpha.iyi"]["failures"]
+            ),
+            "alpha_has_foreign_reason": any(
+                "beta-only-reason" in reason
+                for reason in by_name["alpha.iyi"]["failures"]
+            ),
+            "beta_has_own_reason": any(
+                "beta-only-reason" in reason
+                for reason in by_name["beta.iyi"]["failures"]
+            ),
+            "beta_has_foreign_reason": any(
+                "alpha-only-reason" in reason
+                for reason in by_name["beta.iyi"]["failures"]
+            ),
+        }
+    expected = {
+        "alpha_codes": ["BUILD-EXIT-P"],
+        "beta_codes": ["BUILD-EXIT-P"],
+        "alpha_has_own_reason": True,
+        "alpha_has_foreign_reason": False,
+        "beta_has_own_reason": True,
+        "beta_has_foreign_reason": False,
+    }
+    return Observation(
+        expected=expected,
+        got=got,
+        applied="parallel_failures=alpha:11,beta:12",
+    )
+
+
+def _fixture_o6_stdout_seed() -> Observation:
+    original = sys.stdout
+    with tempfile.TemporaryDirectory(prefix="iyi-o6-stdout-") as root:
+        _, rows = _o6_worker_case(root, failing=True)
+        got = {
+            "same_object": sys.stdout is original,
+            "row_statuses": [row["status"] for row in rows],
+        }
+    return Observation(
+        expected={"same_object": True, "row_statuses": ["FAIL", "FAIL"]},
+        got=got,
+        applied="parallel_failing_workers=2",
+    )
+
+
+def _fixture_o6_workers_control() -> Observation:
+    original = sys.stdout
+    with tempfile.TemporaryDirectory(prefix="iyi-o6-workers-control-") as root:
+        _, rows = _o6_worker_case(root, failing=False)
+        legs_mod._kill_process_group(2**30, signal.SIGTERM)
+        got = {
+            "same_object": sys.stdout is original,
+            "row_statuses": [row["status"] for row in rows],
+            "codes": [_o6_codes(row) for row in rows],
+            "missing_group_ignored": True,
+        }
+    return Observation(
+        expected={
+            "same_object": True,
+            "row_statuses": ["PASS", "PASS"],
+            "codes": [[], []],
+            "missing_group_ignored": True,
+        },
+        got=got,
+    )
+
+
+def _o6_cli_command(
+    root: str,
+    *,
+    optimized: bool,
+    expected_samples: int,
+    expected_std: int,
+    expected_total: int,
+) -> tuple[list[str], str]:
+    repo = os.path.join(root, "repo")
+    os.makedirs(os.path.join(repo, "samples", "iyi"), exist_ok=True)
+    os.makedirs(os.path.join(repo, "bench"), exist_ok=True)
+    report = os.path.join(root, "report.jsonl")
+    work = os.path.join(root, "work")
+    command = [sys.executable, "-B"]
+    if optimized:
+        command.append("-O")
+    command.extend(
+        [
+            os.path.join(REPO_ROOT, "proof", "artifact_legs.py"),
+            "--repo",
+            repo,
+            "--compiler",
+            sys.executable,
+            "--work",
+            work,
+            "--report",
+            report,
+            "--workers",
+            "1",
+            "--nm",
+            sys.executable,
+            "--expect-samples",
+            str(expected_samples),
+            "--expect-std",
+            str(expected_std),
+            "--expect-total",
+            str(expected_total),
+        ]
+    )
+    return command, report
+
+
+def _fixture_o6_wrong_count_seed() -> Observation:
+    with tempfile.TemporaryDirectory(prefix="iyi-o6-count-seed-") as root:
+        command, report = _o6_cli_command(
+            root,
+            optimized=True,
+            expected_samples=1,
+            expected_std=1,
+            expected_total=2,
+        )
+        env = os.environ.copy()
+        env.pop("PYTHONOPTIMIZE", None)
+        completed = subprocess.run(
+            command,
+            cwd=REPO_ROOT,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        script = os.path.join(REPO_ROOT, "proof", "artifact_legs.py")
+        argv = command[command.index(script) + 1 :]
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+            io.StringIO()
+        ):
+            in_process_returncode = legs_mod.main(argv)
+        rows = _o6_read_report(report) if os.path.isfile(report) else []
+        got = {
+            "returncode": completed.returncode,
+            "in_process_returncode": in_process_returncode,
+            "count_marker": "RUN 2 count mismatch" in completed.stderr,
+            "report_exists": os.path.isfile(report),
+            "report_rows": len(rows),
+        }
+    expected = {
+        "returncode": 1,
+        "in_process_returncode": 1,
+        "count_marker": True,
+        "report_exists": True,
+        "report_rows": 0,
+    }
+    return Observation(
+        expected=expected,
+        got=got,
+        applied="python=-O;actual_counts=0,0,0;expected_counts=1,1,2",
+    )
+
+
+def _fixture_o6_counts_control() -> Observation:
+    with tempfile.TemporaryDirectory(prefix="iyi-o6-count-control-") as root:
+        command, report = _o6_cli_command(
+            root,
+            optimized=False,
+            expected_samples=0,
+            expected_std=0,
+            expected_total=0,
+        )
+        completed = subprocess.run(
+            command,
+            cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        rows = _o6_read_report(report) if os.path.isfile(report) else []
+        got = {
+            "returncode": completed.returncode,
+            "main_summary": "RUN 2 SUMMARY" in completed.stdout,
+            "report_exists": os.path.isfile(report),
+            "report_rows": len(rows),
+        }
+    expected = {
+        "returncode": 0,
+        "main_summary": True,
+        "report_exists": True,
+        "report_rows": 0,
+    }
+    return Observation(expected=expected, got=got)
+
+
+def _fixture_o6_sandbox_seed() -> Observation:
+    with tempfile.TemporaryDirectory(prefix="iyi-o6-sandbox-seed-") as root:
+        event_log = os.path.join(root, "sandbox-events.log")
+        case = _o6_make_case(
+            root,
+            sample_names=(),
+            std_names=("std_sandbox_exercise.iyi",),
+            config={
+                "sandbox_mode": "isolation",
+                "sandbox_event_log": event_log,
+            },
+        )
+        row = _o6_run_row(case, "std_sandbox_exercise.iyi")
+        with open(event_log, "r", encoding="utf-8") as stream:
+            events = [line.strip().split("|") for line in stream if line.strip()]
+        paths = [parts[1] for parts in events]
+        before = {parts[0]: parts[2] for parts in events}
+        got = {
+            "status": row["status"],
+            "codes": _o6_codes(row),
+            "same_path": len(set(paths)) == 1,
+            "p_started_empty": before.get("P") == "before=0",
+            "c1_did_not_see_p_file": before.get("C1") == "before=0",
+            "c3_started_empty": before.get("C3") == "before=0",
+        }
+    expected = {
+        "status": "PASS",
+        "codes": [],
+        "same_path": True,
+        "p_started_empty": True,
+        "c1_did_not_see_p_file": True,
+        "c3_started_empty": True,
+    }
+    return Observation(
+        expected=expected,
+        got=got,
+        applied="P_writes=p-only.marker;C1_checks_same_sandbox_path",
+    )
+
+
+def _fixture_o6_sandbox_control() -> Observation:
+    with tempfile.TemporaryDirectory(prefix="iyi-o6-sandbox-control-") as root:
+        event_log = os.path.join(root, "sandbox-events.log")
+        case = _o6_make_case(
+            root,
+            sample_names=(),
+            std_names=("std_sandbox_exercise.iyi",),
+            config={
+                "sandbox_mode": "path-only",
+                "sandbox_event_log": event_log,
+            },
+        )
+        row = _o6_run_row(case, "std_sandbox_exercise.iyi")
+        run_outputs = []
+        for leg in ("P", "C1", "C3"):
+            with open(
+                os.path.join(row["row_dir"], f"{leg}.run.stdout"),
+                "r",
+                encoding="utf-8",
+            ) as stream:
+                run_outputs.append(stream.read())
+        got = {
+            "status": row["status"],
+            "codes": _o6_codes(row),
+            "same_printed_path": len(set(run_outputs)) == 1,
+            "printed_sandbox": run_outputs[0].strip().endswith(
+                os.path.join("rows", "std_sandbox_exercise", "sandbox")
+            ),
+        }
+    expected = {
+        "status": "PASS",
+        "codes": [],
+        "same_printed_path": True,
+        "printed_sandbox": True,
+    }
+    return Observation(expected=expected, got=got)
+
+
+def _fixture_o6_row_oserror_seed() -> Observation:
+    with tempfile.TemporaryDirectory(prefix="iyi-o6-oserror-") as root:
+        case = _o6_make_case(root)
+        missing = os.path.join(root, "missing-compiler")
+        row = legs_mod.run_row(
+            case.sources["case.iyi"],
+            repo=case.repo,
+            compiler=missing,
+            work_root=case.work,
+            nm_bin=case.nm,
+        )
+        kept = sorted(
+            name
+            for name in _o6_required_output_names()
+            if os.path.isfile(os.path.join(row["row_dir"], name))
+        )
+        got = {
+            "status": row["status"],
+            "codes": _o6_codes(row),
+            "outputs_precreated": kept,
+        }
+    expected = {
+        "status": "FAIL",
+        "codes": ["ROW-OSERROR"],
+        "outputs_precreated": sorted(_o6_required_output_names()),
+    }
+    return Observation(
+        expected=expected,
+        got=got,
+        applied="compiler_path=missing",
+    )
+
+
+def _fixture_o6_row_runtimeerror_seed() -> Observation:
+    old_minimum = legs_mod.DISK_MIN_GB
+    try:
+        legs_mod.DISK_MIN_GB = float(2**60)
+        with tempfile.TemporaryDirectory(prefix="iyi-o6-runtimeerror-") as root:
+            case = _o6_make_case(root)
+            row = _o6_run_row(case)
+            got = {
+                "status": row["status"],
+                "codes": _o6_codes(row),
+                "reason_is_disk": any(
+                    "Disk space below threshold" in reason
+                    for reason in row["failures"]
+                ),
+            }
+    finally:
+        legs_mod.DISK_MIN_GB = old_minimum
+    expected = {
+        "status": "FAIL",
+        "codes": ["ROW-RUNTIMEERROR"],
+        "reason_is_disk": True,
+    }
+    return Observation(
+        expected=expected,
+        got=got,
+        applied="disk_min_gb=2**60",
+    )
+
+
+def _fixture_o6_nm_pinned_seed() -> Observation:
+    with tempfile.TemporaryDirectory(prefix="iyi-o6-nm-pinned-") as root:
+        case = _o6_make_case(root)
+        trap_dir = os.path.join(root, "trap")
+        os.makedirs(trap_dir, exist_ok=True)
+        trap_log = os.path.join(root, "trap.log")
+        trap_source = (
+            "#!" + sys.executable + "\n"
+            f"open({trap_log!r}, 'a', encoding='utf-8').write('called\\n')\n"
+            "raise SystemExit(99)\n"
+        )
+        _o6_write_executable(os.path.join(trap_dir, "nm"), trap_source)
+        report = os.path.join(root, "report.jsonl")
+        argv = [
+            "--repo",
+            case.repo,
+            "--compiler",
+            case.compiler,
+            "--work",
+            case.work,
+            "--report",
+            report,
+            "--workers",
+            "1",
+            "--nm",
+            case.nm,
+            "--expect-samples",
+            "1",
+            "--expect-std",
+            "0",
+            "--expect-total",
+            "1",
+        ]
+        old_path = os.environ.get("PATH")
+        os.environ["PATH"] = trap_dir + os.pathsep + (old_path or "")
+        try:
+            returncode = legs_mod.main(argv)
+        finally:
+            if old_path is None:
+                os.environ.pop("PATH", None)
+            else:
+                os.environ["PATH"] = old_path
+        with open(case.nm_log, "r", encoding="utf-8") as stream:
+            pinned_calls = [json.loads(line) for line in stream if line.strip()]
+        rows = _o6_read_report(report)
+        got = {
+            "returncode": returncode,
+            "row_status": rows[0]["status"],
+            "pinned_calls": len(pinned_calls),
+            "all_u_flag": all(call[0] == "-U" for call in pinned_calls),
+            "path_nm_called": os.path.exists(trap_log),
+        }
+    expected = {
+        "returncode": 0,
+        "row_status": "PASS",
+        "pinned_calls": 3,
+        "all_u_flag": True,
+        "path_nm_called": False,
+    }
+    return Observation(
+        expected=expected,
+        got=got,
+        applied=f"PATH_nm={os.path.join(trap_dir, 'nm')};explicit_nm={case.nm}",
+    )
+
+
+def _fixture_o6_outputs_seed() -> Observation:
+    with tempfile.TemporaryDirectory(prefix="iyi-o6-outputs-") as root:
+        case = _o6_make_case(root)
+        row = _o6_run_row(case)
+        required = _o6_required_output_names()
+        missing = [
+            name
+            for name in required
+            if not os.path.isfile(os.path.join(row["row_dir"], name))
+        ]
+        run_streams = [
+            name
+            for name in required
+            if ".run." in name
+            and os.path.getsize(os.path.join(row["row_dir"], name)) > 0
+        ]
+        got = {
+            "status": row["status"],
+            "missing": missing,
+            "nonempty_run_files": sorted(run_streams),
+            "legs_have_output_paths": all(
+                row["legs"][leg]["build"]["stdout"].endswith(
+                    f"{leg}.build.stdout"
+                )
+                for leg in ("P", "C1", "C2", "C3")
+            ),
+        }
+    expected = {
+        "status": "PASS",
+        "missing": [],
+        "nonempty_run_files": sorted(
+            name for name in required if ".run." in name
+        ),
+        "legs_have_output_paths": True,
+    }
+    return Observation(
+        expected=expected,
+        got=got,
+        applied=f"required_output_files={len(required)}",
+    )
+
+
+def _fixture_o6_not_reusable_seed() -> Observation:
+    top_level = [{"category": "top", "reason": "kept", "site": "x"}]
+    nested = [
+        {"category": "nested", "reason": str(index), "site": "x"}
+        for index in range(3)
+    ]
+    with tempfile.TemporaryDirectory(prefix="iyi-o6-not-reusable-") as root:
+        case = _o6_make_case(
+            root,
+            config={
+                "default_not_reusable": top_level,
+                "key_overrides": {
+                    "C1": {"reach": {"not_reusable": nested}}
+                },
+            },
+        )
+        row = _o6_run_row(case)
+        got = {
+            "status": row["status"],
+            "count": row["not_reusable_count"],
+        }
+    return Observation(
+        expected={"status": "PASS", "count": 1},
+        got=got,
+        applied="top_level_count=1;nested_decoy_count=3",
+    )
+
+
+def _fixture_o6_build_missing_seed() -> Observation:
+    return _o6_row_seed(
+        {"skip_outputs": ["C2"]},
+        ("BUILD-MISSING-C2",),
+        "C2_build_exit=0;C2_binary=removed",
+    )
+
+
+def _fixture_o6_c3_stop_seed() -> Observation:
+    with tempfile.TemporaryDirectory(prefix="iyi-o6-c3-stop-") as root:
+        case = _o6_make_case(
+            root,
+            config={
+                "build_failures": {
+                    "case.iyi": {
+                        "C3": {
+                            "rc": 17,
+                            "stderr": "cannot name it: seeded artifact\n",
+                            "after_outputs": True,
+                        }
+                    }
+                }
+            },
+        )
+        row = _o6_run_row(case)
+        got = {
+            "status": row["status"],
+            "codes": _o6_codes(row),
+            "stop_marker": "cannot name it" in (row["stop_condition"] or ""),
+        }
+    expected = {
+        "status": "STOP",
+        "codes": ["BUILD-EXIT-C3", "C3-CANNOT-NAME"],
+        "stop_marker": True,
+    }
+    return Observation(
+        expected=expected,
+        got=got,
+        applied="C3_exit=17;C3_stderr=cannot_name_it",
+    )
+
+
+def _fixture_o6_key_parse_seed(kind: str) -> Observation:
+    config = (
+        {"malformed_keys": ["C2"]}
+        if kind == "json"
+        else {"nonobject_keys": ["C2"]}
+    )
+    return _o6_row_seed(
+        config,
+        ("KEY-PARSE",),
+        f"k2_key_shape={kind}",
+    )
+
+
+def _fixture_o6_portable_type_seed() -> Observation:
+    return _o6_row_seed(
+        {"key_overrides": {"C2": {"portable": "not-an-object"}}},
+        ("CALLPATH-EMPTY", "CALLPATH-PARITY"),
+        "k2.portable=string",
+    )
+
+
+def _fixture_o6_reach_type_seed() -> Observation:
+    return _o6_row_seed(
+        {"key_overrides": {"C2": {"reach": "not-an-object"}}},
+        ("REACH-CHECKED-k2",),
+        "k2.reach=string",
+    )
+
+
+def _fixture_o6_not_reusable_type_seed() -> Observation:
+    return _o6_row_seed(
+        {"key_overrides": {"C1": {"not_reusable": "not-an-array"}}},
+        ("NOT-REUSABLE-TYPE",),
+        "k1.not_reusable=string",
+    )
+
+
+def _fixture_o6_run_effect_seed() -> Observation:
+    return _o6_row_seed(
+        {"run_stderr": {"C3": "__iyi_effect_seed\n"}},
+        ("RUN-EFFECT-C3",),
+        "C3.run.stderr_contains=__iyi_effect_seed",
+    )
+
+
+def _fixture_o6_row_r1_seed() -> Observation:
+    return _o6_row_seed(
+        {"run_stdout": {"C3": "different-output\n"}},
+        ("R1-C1-C3",),
+        "C3.run.stdout=different-output",
+    )
+
+
+def _fixture_o6_nm_missing_binary_seed() -> Observation:
+    with tempfile.TemporaryDirectory(prefix="iyi-o6-nm-missing-") as root:
+        nm_bin, _ = _o6_make_nm(root)
+        missing = os.path.join(root, "missing-binary")
+        try:
+            legs_mod.check_defined_symbols(missing, nm_bin)
+        except RuntimeError as error:
+            got = {
+                "raised": type(error).__name__,
+                "reason": str(error),
+            }
+        else:
+            got = {"raised": None, "reason": ""}
+    expected = {
+        "raised": "RuntimeError",
+        "reason": f"binary does not exist for symbol scan: {missing}",
+    }
+    return Observation(
+        expected=expected,
+        got=got,
+        applied="binary_path=missing",
+    )
+
+
+def _fixture_o6_frame_harness_seed(kind: str) -> Observation:
+    with tempfile.TemporaryDirectory(prefix=f"iyi-o6-frame-{kind}-") as root:
+        repo = os.path.join(root, "repo")
+        row_dir = os.path.join(root, "row")
+        os.makedirs(os.path.join(repo, "bench"), exist_ok=True)
+        os.makedirs(row_dir, exist_ok=True)
+        if kind == "crash":
+            script = os.path.join(repo, "bench", "frames_equivalent.py")
+            with open(script, "w", encoding="utf-8") as stream:
+                stream.write("import sys\nsys.stderr.write('seeded crash\\n')\nraise SystemExit(2)\n")
+        left, equivalent = _o6_frame_lines()
+        try:
+            legs_mod.compare_r1(
+                "case",
+                0,
+                0,
+                b"same\n",
+                left,
+                b"same\n",
+                equivalent,
+                repo,
+                row_dir,
+                kind,
+            )
+        except RuntimeError as error:
+            got = {
+                "raised": type(error).__name__,
+                "missing_marker": "not found" in str(error),
+                "crash_marker": "crashed (exit 2)" in str(error),
+            }
+        else:
+            got = {
+                "raised": None,
+                "missing_marker": False,
+                "crash_marker": False,
+            }
+    expected = {
+        "raised": "RuntimeError",
+        "missing_marker": kind == "missing",
+        "crash_marker": kind == "crash",
+    }
+    return Observation(
+        expected=expected,
+        got=got,
+        applied=f"frames_equivalent={kind}",
+    )
+
+
+def _fixture_o6_stdout_mismatch_seed() -> Observation:
+    with tempfile.TemporaryDirectory(prefix="iyi-o6-stdout-mismatch-") as root:
+        ok, reason = _o6_compare(
+            root,
+            stdout_a=b"abc\n",
+            stdout_b=b"ab\n",
+        )
+        got = {
+            "ok": ok,
+            "reason": reason,
+        }
+    return Observation(
+        expected={
+            "ok": False,
+            "reason": "stdout mismatch (len 4 != 3)",
+        },
+        got=got,
+        applied="stdout_removed_byte=c",
+    )
+
+
+def _fixture_o6_cli_required_seed() -> Observation:
+    stderr = io.StringIO()
+    with contextlib.redirect_stderr(stderr):
+        returncode = legs_mod.main([])
+    got = {
+        "returncode": returncode,
+        "required_marker": "the following arguments are required" in stderr.getvalue(),
+    }
+    return Observation(
+        expected={"returncode": 2, "required_marker": True},
+        got=got,
+        applied="argv=[]",
+    )
+
+
+def _fixture_o6_cli_workers_seed() -> Observation:
+    with tempfile.TemporaryDirectory(prefix="iyi-o6-cli-workers-") as root:
+        command, _ = _o6_cli_command(
+            root,
+            optimized=False,
+            expected_samples=0,
+            expected_std=0,
+            expected_total=0,
+        )
+        script = os.path.join(REPO_ROOT, "proof", "artifact_legs.py")
+        argv = command[command.index(script) + 1 :]
+        argv[argv.index("--workers") + 1] = "0"
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            returncode = legs_mod.main(argv)
+        got = {
+            "returncode": returncode,
+            "workers_marker": "--workers must be at least 1" in stderr.getvalue(),
+        }
+    return Observation(
+        expected={"returncode": 2, "workers_marker": True},
+        got=got,
+        applied="workers=0",
+    )
+
+
+def _fixture_o6_cli_negative_count_seed() -> Observation:
+    with tempfile.TemporaryDirectory(prefix="iyi-o6-cli-negative-") as root:
+        command, _ = _o6_cli_command(
+            root,
+            optimized=False,
+            expected_samples=0,
+            expected_std=0,
+            expected_total=-1,
+        )
+        script = os.path.join(REPO_ROOT, "proof", "artifact_legs.py")
+        argv = command[command.index(script) + 1 :]
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            returncode = legs_mod.main(argv)
+        got = {
+            "returncode": returncode,
+            "count_marker": "expected counts must be non-negative"
+            in stderr.getvalue(),
+        }
+    return Observation(
+        expected={"returncode": 2, "count_marker": True},
+        got=got,
+        applied="expect_total=-1",
+    )
+
+
+def _fixture_o6_p_nonzero_control() -> Observation:
+    with tempfile.TemporaryDirectory(prefix="iyi-o6-p-nonzero-") as root:
+        case = _o6_make_case(
+            root,
+            sample_names=(),
+            std_names=("std_big_exercise.iyi",),
+            config={
+                "run_exits": {"P": 3, "C1": 3, "C3": 3},
+                "run_stdout": {
+                    "P": "producer\n",
+                    "C1": "consumer-one\n",
+                    "C3": "consumer-three\n",
+                },
+            },
+        )
+        rows = legs_mod.run_rows(
+            [case.sources["std_big_exercise.iyi"]],
+            repo=case.repo,
+            compiler=case.compiler,
+            work_root=case.work,
+            nm_bin=case.nm,
+            workers=1,
+        )
+        row = rows[0]
+        got = {
+            "status": row["status"],
+            "codes": _o6_codes(row),
+            "p_exit": row["p_exit"],
+            "p_nonzero": row["p_nonzero"],
+        }
+    expected = {
+        "status": "PASS",
+        "codes": [],
+        "p_exit": 3,
+        "p_nonzero": True,
+    }
+    return Observation(expected=expected, got=got)
+
+
+O6_FIXTURES: tuple[Fixture, ...] = (
+    Fixture(
+        "s4.seed.row-oserror",
+        "seed",
+        _fixture_o6_row_oserror_seed,
+    ),
+    Fixture(
+        "s4.seed.nm-unpinned",
+        "seed",
+        _fixture_o6_nm_pinned_seed,
+    ),
+    Fixture(
+        "s4.seed.outputs-missing",
+        "seed",
+        _fixture_o6_outputs_seed,
+    ),
+    Fixture(
+        "s4.seed.not-reusable-nested",
+        "seed",
+        _fixture_o6_not_reusable_seed,
+    ),
+    Fixture(
+        "s4.seed.callpath-k2-diff",
+        "seed",
+        _fixture_o6_callpath_k2_seed,
+    ),
+    Fixture(
+        "s4.seed.callpath-empty",
+        "seed",
+        _fixture_o6_callpath_empty_seed,
+    ),
+    Fixture(
+        "s4.seed.callpath-mismatch",
+        "seed",
+        _fixture_o6_callpath_mismatch_seed,
+    ),
+    Fixture(
+        "s4.seed.phase-not-linked",
+        "seed",
+        _fixture_o6_phase_seed,
+    ),
+    Fixture(
+        "s4.seed.reach-not-checked",
+        "seed",
+        _fixture_o6_reach_checked_seed,
+    ),
+    Fixture(
+        "s4.seed.key-file-missing",
+        "seed",
+        _fixture_o6_missing_key_seed,
+    ),
+    Fixture(
+        "s4.seed.trace-empty",
+        "seed",
+        _fixture_o6_trace_empty_seed,
+    ),
+    Fixture(
+        "s4.seed.symbol-c2",
+        "seed",
+        partial(_fixture_o6_symbol_seed, "C2"),
+    ),
+    Fixture(
+        "s4.seed.symbol-c3",
+        "seed",
+        partial(_fixture_o6_symbol_seed, "C3"),
+    ),
+    Fixture(
+        "s4.seed.nm-error",
+        "seed",
+        _fixture_o6_nm_error_seed,
+    ),
+    Fixture(
+        "s4.seed.build-output-symbol",
+        "seed",
+        _fixture_o6_build_output_symbol_seed,
+    ),
+    Fixture(
+        "s4.seed.build-timeout",
+        "seed",
+        partial(_fixture_o6_timeout_seed, "build"),
+    ),
+    Fixture(
+        "s4.seed.run-timeout",
+        "seed",
+        partial(_fixture_o6_timeout_seed, "run"),
+    ),
+    Fixture(
+        "s4.seed.lone-cr",
+        "seed",
+        partial(_fixture_o6_frame_text_seed, "lone-cr"),
+    ),
+    Fixture(
+        "s4.seed.frame-function",
+        "seed",
+        _fixture_o6_frame_function_seed,
+    ),
+    Fixture(
+        "s4.seed.frame-moved-byte",
+        "seed",
+        partial(_fixture_o6_frame_text_seed, "moved-byte"),
+    ),
+    Fixture(
+        "s4.seed.exit-code",
+        "seed",
+        _fixture_o6_exit_code_seed,
+    ),
+    Fixture(
+        "s4.seed.worker-reason-collision",
+        "seed",
+        _fixture_o6_worker_reason_seed,
+    ),
+    Fixture(
+        "s4.seed.stdout-replaced",
+        "seed",
+        _fixture_o6_stdout_seed,
+    ),
+    Fixture(
+        "s4.seed.wrong-count",
+        "seed",
+        _fixture_o6_wrong_count_seed,
+    ),
+    Fixture(
+        "s4.seed.sandbox-leak",
+        "seed",
+        _fixture_o6_sandbox_seed,
+    ),
+    Fixture(
+        "o6.seed.row-runtimeerror",
+        "seed",
+        _fixture_o6_row_runtimeerror_seed,
+    ),
+    Fixture(
+        "o6.seed.build-missing",
+        "seed",
+        _fixture_o6_build_missing_seed,
+    ),
+    Fixture(
+        "o6.seed.c3-cannot-name",
+        "seed",
+        _fixture_o6_c3_stop_seed,
+    ),
+    Fixture(
+        "o6.seed.key-json-malformed",
+        "seed",
+        partial(_fixture_o6_key_parse_seed, "json"),
+    ),
+    Fixture(
+        "o6.seed.key-root-nonobject",
+        "seed",
+        partial(_fixture_o6_key_parse_seed, "nonobject"),
+    ),
+    Fixture(
+        "o6.seed.portable-nonobject",
+        "seed",
+        _fixture_o6_portable_type_seed,
+    ),
+    Fixture(
+        "o6.seed.reach-nonobject",
+        "seed",
+        _fixture_o6_reach_type_seed,
+    ),
+    Fixture(
+        "o6.seed.not-reusable-type",
+        "seed",
+        _fixture_o6_not_reusable_type_seed,
+    ),
+    Fixture(
+        "o6.seed.run-output-symbol",
+        "seed",
+        _fixture_o6_run_effect_seed,
+    ),
+    Fixture(
+        "o6.seed.row-r1-mismatch",
+        "seed",
+        _fixture_o6_row_r1_seed,
+    ),
+    Fixture(
+        "o6.seed.nm-missing-binary",
+        "seed",
+        _fixture_o6_nm_missing_binary_seed,
+    ),
+    Fixture(
+        "o6.seed.frames-missing-tool",
+        "seed",
+        partial(_fixture_o6_frame_harness_seed, "missing"),
+    ),
+    Fixture(
+        "o6.seed.frames-tool-crash",
+        "seed",
+        partial(_fixture_o6_frame_harness_seed, "crash"),
+    ),
+    Fixture(
+        "o6.seed.stdout-length",
+        "seed",
+        _fixture_o6_stdout_mismatch_seed,
+    ),
+    Fixture(
+        "o6.seed.cli-required",
+        "seed",
+        _fixture_o6_cli_required_seed,
+    ),
+    Fixture(
+        "o6.seed.cli-workers",
+        "seed",
+        _fixture_o6_cli_workers_seed,
+    ),
+    Fixture(
+        "o6.seed.cli-negative-count",
+        "seed",
+        _fixture_o6_cli_negative_count_seed,
+    ),
+    Fixture(
+        "s4.control.row",
+        "control",
+        _fixture_o6_row_control,
+    ),
+    Fixture(
+        "s4.control.frames",
+        "control",
+        _fixture_o6_frame_control,
+    ),
+    Fixture(
+        "s4.control.workers",
+        "control",
+        _fixture_o6_workers_control,
+    ),
+    Fixture(
+        "s4.control.counts",
+        "control",
+        _fixture_o6_counts_control,
+    ),
+    Fixture(
+        "s4.control.sandbox",
+        "control",
+        _fixture_o6_sandbox_control,
+    ),
+    Fixture(
+        "o6.control.p-nonzero",
+        "control",
+        _fixture_o6_p_nonzero_control,
+    ),
+)
+O6_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
+    "o6.row-runtimeerror": (
+        "o6.seed.row-runtimeerror",
+        "s4.control.row",
+    ),
+    "o6.cli-main": (
+        "s4.seed.wrong-count",
+        "s4.control.counts",
+    ),
+    "o6.frame-control-subcases": (
+        "s4.seed.frame-function",
+        "s4.control.frames",
+    ),
+    "o6.build-and-stop": (
+        "o6.seed.build-missing",
+        "o6.seed.c3-cannot-name",
+        "s4.control.row",
+    ),
+    "o6.key-shapes": (
+        "o6.seed.key-json-malformed",
+        "o6.seed.key-root-nonobject",
+        "o6.seed.portable-nonobject",
+        "o6.seed.reach-nonobject",
+        "o6.seed.not-reusable-type",
+        "s4.control.row",
+    ),
+    "o6.run-output": (
+        "o6.seed.run-output-symbol",
+        "o6.seed.row-r1-mismatch",
+        "s4.control.row",
+    ),
+    "o6.nm-missing-binary": (
+        "o6.seed.nm-missing-binary",
+        "s4.control.row",
+    ),
+    "o6.frame-harness": (
+        "o6.seed.frames-missing-tool",
+        "o6.seed.frames-tool-crash",
+        "o6.seed.stdout-length",
+        "s4.control.frames",
+    ),
+    "o6.cli-usage": (
+        "o6.seed.cli-required",
+        "o6.seed.cli-workers",
+        "o6.seed.cli-negative-count",
+        "s4.control.counts",
+    ),
+    "o6.p-nonzero": (
+        "s4.seed.exit-code",
+        "o6.control.p-nonzero",
+    ),
+}
 
 
 # ===== O7: stages (owner U7). Keys "o7.". =====
