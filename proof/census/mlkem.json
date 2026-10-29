@@ -5,85 +5,51 @@
   "script_sha256": "7c669c707e3dd5b40689422b27e36282c8d34549a1a963cea09ad7400eeb25ef",
   "sites": [
     {
-      "lines": [
-        61,
-        62
-      ],
+      "lines": [61],
       "command": "build",
       "kind": "canonical-own",
-      "contains": [
-        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_mlk"
-      ],
+      "contains": ["\"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_mlkem_exercise.iyi\""],
       "variants": []
     },
     {
-      "lines": [
-        401
-      ],
+      "lines": [401],
       "command": "run",
       "kind": "canonical-other",
-      "contains": [
-        "if \"$IYI\" run \"$WORK/refuse.iyi\" -- \"$1\" >\"$WORK/refuse.out\""
-      ],
+      "contains": ["\"$IYI\" run \"$WORK/refuse.iyi\" -- \"$1\""],
       "variants": []
     },
     {
-      "lines": [
-        417
-      ],
+      "lines": [417],
       "command": "doc",
       "kind": "unchanged",
-      "contains": [
-        "if \"$IYI\" doc \"$REPO/src/std/mlkem.iyi\" >\"$WORK/doc.txt\" 2>&"
-      ],
+      "contains": ["\"$IYI\" doc \"$REPO/src/std/mlkem.iyi\""],
       "variants": []
     },
     {
-      "lines": [
-        423
-      ],
+      "lines": [423],
       "command": "fmt",
       "kind": "unchanged",
-      "contains": [
-        "if \"$IYI\" fmt --check \"$REPO/src/std/mlkem.iyi\" \"$REPO/bench"
-      ],
+      "contains": ["\"$IYI\" fmt --check \"$REPO/src/std/mlkem.iyi\" \"$REPO/bench/std_mlkem_exercise.iyi\""],
       "variants": []
     },
     {
-      "lines": [
-        452
-      ],
+      "lines": [452],
       "command": "run",
       "kind": "negative",
-      "contains": [
-        "elif IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/sam"
-      ],
+      "contains": ["IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/samples/iyi\" \"$IYI\" run \"$REPO/bench/std_mlkem_exercise.iyi\""],
       "variants": [
         {
           "id": "mlkem.negative.452",
           "kind": "negative",
           "first_root": "{WORK}/patched",
           "vars": {},
-          "sources": [
-            "{REPO}/bench/std_mlkem_exercise.iyi"
-          ],
+          "sources": ["{REPO}/bench/std_mlkem_exercise.iyi"],
           "output": null,
           "darwin": "required",
-          "requires": [
-            "python3"
-          ],
+          "requires": ["python3"],
           "verdict": {
-            "lines": [
-              452,
-              454,
-              455,
-              457,
-              460
-            ],
-            "contains": [
-              "elif IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP",
-              "elif grep -qF \"$2\" \"$WORK/mut.out\"; then\n    echo "
-            ]
+            "lines": [453, 454, 458, 460],
+            "contains": ["the exercise PASSED on $1", "status=1", "failed, but not where it should have"]
           }
         }
       ]
@@ -94,73 +60,63 @@
     {
       "line": 130,
       "class": "tool",
-      "what": "tool",
-      "regex": "\\ \\ the\\ ACVP\\ files\\ could\\ not\\ be\\ fetched\\ \\(.*?\\),\\ so\\ only\\ the\\ vendored\\ subset\\ was\\ checked",
-      "text": "echo \"  the ACVP files could not be fetched ($(tail -1 \"$WORK/curl.log\")), so only the vendored subset was checked\""
+      "what": "curl/network",
+      "regex": "^  the ACVP files could not be fetched \\(.*\\), so only the vendored subset was checked$",
+      "text": "  echo \"  the ACVP files could not be fetched ($(tail -1 \"$WORK/curl.log\")), so only the vendored subset was checked\""
     },
     {
       "line": 186,
       "class": "tool",
-      "what": "go",
-      "regex": "\\ \\ no\\ openssl\\ and\\ python\\ here,\\ so\\ OpenSSL\\ goes\\ unasked",
-      "text": "echo \"  no openssl and python here, so OpenSSL goes unasked\""
+      "what": "openssl and python3",
+      "regex": "^  no openssl and python here, so OpenSSL goes unasked$",
+      "text": "  echo \"  no openssl and python here, so OpenSSL goes unasked\""
     },
     {
       "line": 188,
       "class": "tool",
-      "what": "tool",
-      "regex": "\\ \\ \\$\\(\".*?\"\\ version\\ 2",
-      "text": "echo \"  $(\"$OPENSSL\" version 2>&1 | head -1) has no ML-KEM-768 (OpenSSL has it from 3.5), so OpenSSL goes unasked\""
+      "what": "openssl ML-KEM-768",
+      "regex": "^  .* has no ML-KEM-768 \\(OpenSSL has it from 3\\.5\\), so OpenSSL goes unasked$",
+      "text": "  echo \"  $(\"$OPENSSL\" version 2>&1 | head -1) has no ML-KEM-768 (OpenSSL has it from 3.5), so OpenSSL goes unasked\""
     },
     {
       "line": 312,
       "class": "tool",
-      "what": "tool",
-      "regex": "\\ \\ no\\ python\\ cryptography\\ with\\ ML\\-KEM\\ here\\ \\(\\$\\(\\[\\ \\-n\\ \".*?\"\\ \\]\\ \\&\\&\\ \".*?\"\\ \\-c\\ 'import\\ cryptography",
-      "text": "echo \"  no python cryptography with ML-KEM here ($([ -n \"$PY\" ] && \"$PY\" -c 'import cryptography; print(\"cryptography \" + cryptography.__version__)' 2>/dev/null || echo \"none\")), so it goes unasked\""
-    },
-    {
-      "line": 375,
-      "class": "tool",
-      "what": "tool",
-      "regex": "\\ \\ the\\ timing\\ did\\ not\\ run:\\ .*?",
-      "text": "echo \"  the timing did not run: $(tail -1 \"$WORK/cost.out\")\""
+      "what": "python3 cryptography ML-KEM",
+      "regex": "^  no python cryptography with ML-KEM here \\(.*\\), so it goes unasked$",
+      "text": "  echo \"  no python cryptography with ML-KEM here ($([ -n \"$PY\" ] && \"$PY\" -c 'import cryptography; print(\"cryptography \" + cryptography.__version__)' 2>/dev/null || echo \"none\")), so it goes unasked\""
     },
     {
       "line": 438,
       "class": "tool",
       "what": "python3",
-      "regex": "\\ \\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ .*?\\ proof\\ is\\ unmeasured",
-      "text": "echo \"  no python3 on this machine, so the $1 proof is unmeasured\""
+      "regex": "^  no python3 on this machine, so the .* proof is unmeasured$",
+      "text": "    echo \"  no python3 on this machine, so the $1 proof is unmeasured\""
     }
   ],
-  "not_skips": [],
+  "not_skips": [
+    {
+      "line": 375,
+      "reason": "the timing command failed and the branch sets status=1",
+      "text": "  echo \"  the timing did not run: $(tail -1 \"$WORK/cost.out\")\""
+    }
+  ],
   "pass_sentinel": {
     "line": 508,
-    "regex": "ALL\\ CHECKS\\ PASSED",
-    "text": "echo \"ALL CHECKS PASSED\""
+    "regex": "^ALL CHECKS PASSED$",
+    "text": "  echo \"ALL CHECKS PASSED\""
   },
   "exec_evidence": [
     {
       "site_line": 61,
       "out_template": "{WORK}/{name}",
       "name_from_calls": {
-        "80": "plain",
-        "100": "release"
+        "80": "mlkem-plain",
+        "100": "mlkem-release"
       },
-      "exec_lines": [
-        68
-      ],
+      "exec_lines": [68],
       "exec_token": "\"$WORK/$name\"",
-      "verdict_lines": [
-        66,
-        67
-      ],
-      "failure_marks": [
-        "status=1",
-        "return 1",
-        "exit"
-      ],
+      "verdict_lines": [65, 66, 73, 74, 83, 93, 103],
+      "failure_marks": ["status=1", "return 1"],
       "refs_ok": []
     }
   ]

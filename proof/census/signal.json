@@ -5,88 +5,56 @@
   "script_sha256": "5fb39a00d248357f9eead2fac6e80ee7c426713dd75c3ffaa21436d2a75e5e5d",
   "sites": [
     {
-      "lines": [
-        68
-      ],
+      "lines": [68],
       "command": "build",
-      "kind": "negative",
-      "contains": [
-        "if ! IYI_PATH=\"$path\" \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$E"
-      ],
+      "kind": "mixed",
+      "contains": ["IYI_PATH=\"$path\" \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$EXERCISE\""],
       "variants": [
         {
-          "id": "signal.negative.68",
+          "id": "signal.negative.posix.68",
           "kind": "negative",
-          "first_root": "{WORK}/$name-std",
+          "first_root": "{WORK}/{name}-std",
           "vars": {
-            "path": {
-              "values": [
-                "$IYI_PATH",
-                "$WORK/untaken-std${PSEP}$IYI_PATH",
-                "$WORK/uninstalled-std${PSEP}$IYI_PATH",
-                "$WORK/closeasint-std${PSEP}$IYI_PATH",
-                "$WORK/neverhandled-std${PSEP}$IYI_PATH",
-                "$WORK/undropped-std${PSEP}$IYI_PATH",
-                "$WORK/unignored-std${PSEP}$IYI_PATH",
-                "$WORK/stillignored-std${PSEP}$IYI_PATH"
-              ],
-              "defined_at": "79, 346, 363, 381, 410, 450",
-              "text": "build \"$name\" \"<path>\" [flags...]"
+            "name": {
+              "lines": [346, 363, 424, 429, 431, 437, 440, 450],
+              "values": ["untaken", "uninstalled", "neverhandled", "undropped", "unignored", "stillignored"]
             }
           },
-          "sources": [
-            "$EXERCISE"
-          ],
-          "output": "{WORK}/$name",
+          "sources": ["{REPO}/bench/std_signal_exercise.iyi"],
+          "output": "{WORK}/{name}",
           "darwin": "required",
-          "requires": [
-            "python3"
-          ],
+          "requires": ["python3"],
           "verdict": {
-            "lines": [
-              68,
-              69,
-              71,
-              83,
-              84,
-              85,
-              87,
-              88,
-              89,
-              347,
-              348,
-              349,
-              366,
-              367,
-              368,
-              383,
-              384,
-              385,
-              413,
-              414,
-              415,
-              452,
-              453,
-              456,
-              457
-            ],
-            "contains": [
-              "  if ! IYI_PATH=\"$path\" \"$IYI\" build \"$@\" -o \"$WOR",
-              "    echo \"  $name: build failed\""
-            ]
+            "lines": [348, 349, 368, 369, 414, 415, 417, 419, 455, 457],
+            "contains": ["the exercise PASSED", "status=1"]
+          }
+        },
+        {
+          "id": "signal.negative.windows.68",
+          "kind": "negative",
+          "first_root": "{WORK}/{name}-std",
+          "vars": {
+            "name": {
+              "lines": [381],
+              "values": ["closeasint"]
+            }
+          },
+          "sources": ["{REPO}/bench/std_signal_exercise.iyi"],
+          "output": "{WORK}/{name}",
+          "darwin": "platform-excluded",
+          "requires": ["python3"],
+          "verdict": {
+            "lines": [385, 386, 388, 390],
+            "contains": ["the program took TERM from a close that it read as INT", "status=1"]
           }
         }
       ]
     },
     {
-      "lines": [
-        311
-      ],
+      "lines": [311],
       "command": "build",
       "kind": "canonical-other",
-      "contains": [
-        "if ! \"$IYI\" build -o \"$WORK/waiters\" \"$WORK/waiters.iyi\" >\"$"
-      ],
+      "contains": ["\"$IYI\" build -o \"$WORK/waiters\" \"$WORK/waiters.iyi\""],
       "variants": []
     }
   ],
@@ -95,23 +63,37 @@
     {
       "line": 199,
       "class": "tool",
-      "what": "tool",
-      "regex": "\\ \\ no\\ python\\ on\\ this\\ machine\\ to\\ close\\ the\\ program's\\ console,\\ so\\ TERM\\ from\\ outside\\ is\\ unmeasured",
-      "text": "echo \"  no python on this machine to close the program's console, so TERM from outside is unmeasured\""
+      "what": "python3",
+      "regex": "^  no python on this machine to close the program's console, so TERM from outside is unmeasured$",
+      "text": "  echo \"  no python on this machine to close the program's console, so TERM from outside is unmeasured\""
     },
     {
       "line": 339,
       "class": "tool",
-      "what": "tool",
-      "regex": "\\ \\ no\\ python\\ on\\ this\\ machine,\\ so\\ the\\ broken\\-module\\ proof\\ is\\ unmeasured",
-      "text": "echo \"  no python on this machine, so the broken-module proof is unmeasured\""
+      "what": "python3",
+      "regex": "^  no python on this machine, so the broken-module proof is unmeasured$",
+      "text": "  echo \"  no python on this machine, so the broken-module proof is unmeasured\""
     }
   ],
   "not_skips": [],
   "pass_sentinel": {
     "line": 464,
-    "regex": "the\\ std/signal\\ exercise\\ holds",
-    "text": "echo \"the std/signal exercise holds\""
+    "regex": "^the std/signal exercise holds$",
+    "text": "  echo \"the std/signal exercise holds\""
   },
-  "exec_evidence": []
+  "exec_evidence": [
+    {
+      "site_line": 68,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "96": "signal-plain",
+        "117": "signal-release"
+      },
+      "exec_lines": [80, 123, 411],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [71, 72, 85, 86, 90, 91, 110],
+      "failure_marks": ["status=1", "return 1"],
+      "refs_ok": []
+    }
+  ]
 }
