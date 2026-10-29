@@ -41,15 +41,17 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from proof.proofkit import (
+    DRIVERS_29,
     IdentityError,
     base_env,
     check_identity,
     inspect_pin_inputs,
     probe_atime_observable,
     run_bounded,
+    validate_census,
     write_pin,
 )
-from proof.run_proof import CORE_29_DRIVERS, cmd_plan, fresh_stage_env
+from proof.run_proof import cmd_plan, fresh_stage_env
 
 
 @dataclass(frozen=True)
@@ -283,7 +285,7 @@ def _fixture_no_production_assert_control() -> Observation:
     counts: dict[str, int] = {}
     for py_file in sorted(glob.glob(os.path.join(proof_dir, "*.py"))):
         basename = os.path.basename(py_file)
-        if basename in ("smoke_test.py", "build_census.py"):
+        if basename == "smoke_test.py":
             continue
         with open(py_file, "r", encoding="utf-8") as source_file:
             counts[basename] = _assert_count(source_file.read(), py_file)
@@ -505,7 +507,7 @@ class PinFixture:
             self.p,
             self.w,
             self.compiler,
-            CORE_29_DRIVERS,
+            DRIVERS_29,
         )
 
 
@@ -860,7 +862,7 @@ def _fixture_no_timeout_seed() -> Observation:
                     fixture.p,
                     fixture.w,
                     fixture.compiler,
-                    CORE_29_DRIVERS,
+                    DRIVERS_29,
                 )
             )
         finally:
@@ -1197,6 +1199,1360 @@ def _fixture_gate_env_fresh_control() -> Observation:
     return Observation(expected=expected, got=got)
 
 
+_O3_HISTORICAL_REF = "1f292c3424a8185d05a87d3dc82f73549dfe4878"
+
+
+def _census_case(driver: str) -> tuple[dict, bytes, str]:
+    census_path = os.path.join(REPO_ROOT, "proof", "census", f"{driver}.json")
+    with open(census_path, "r", encoding="utf-8") as census_file:
+        census = json.load(census_file)
+    if not isinstance(census, dict):
+        raise TypeError(f"{driver} census is not an object")
+    script_relpath = census.get("script")
+    if not isinstance(script_relpath, str):
+        raise TypeError(f"{driver} census script is not a string")
+    script_path = os.path.join(REPO_ROOT, script_relpath)
+    with open(script_path, "rb") as script_file:
+        script_bytes = script_file.read()
+    return census, script_bytes, script_relpath
+
+
+def _script_lines(script_bytes: bytes) -> list[str]:
+    return script_bytes.decode("utf-8").splitlines(keepends=True)
+
+
+def _line_text(source_line: str) -> str:
+    if source_line.endswith("\r\n"):
+        return source_line[:-2]
+    if source_line.endswith("\n") or source_line.endswith("\r"):
+        return source_line[:-1]
+    return source_line
+
+
+def _clone_census(census: dict) -> dict:
+    return json.loads(json.dumps(census))
+
+
+def _rule_ids(violations: list[tuple[str, int, str]]) -> list[str]:
+    return sorted({rule_id for rule_id, _line, _detail in violations})
+
+
+def _find_passing_census(
+    purpose: str,
+    predicate: Callable[[dict, list[str]], bool],
+) -> tuple[str, dict, bytes, str]:
+    invalid: dict[str, list[str]] = {}
+    for driver in DRIVERS_29:
+        census, script_bytes, script_relpath = _census_case(driver)
+        violations = validate_census(census, script_bytes, script_relpath)
+        if violations:
+            invalid[driver] = _rule_ids(violations)
+            continue
+        lines = _script_lines(script_bytes)
+        if predicate(census, lines):
+            return driver, census, script_bytes, script_relpath
+    raise RuntimeError(
+        f"no passing census supports {purpose}; invalid={_render(invalid)}"
+    )
+
+
+def _isolated_validator_seed(
+    target_rule: str,
+    purpose: str,
+    predicate: Callable[[dict, list[str]], bool],
+    mutate: Callable[[dict, list[str], str], tuple[str, int]],
+    *,
+    update_sha: bool = True,
+) -> Observation:
+    driver, census, script_bytes, script_relpath = _find_passing_census(
+        purpose,
+        predicate,
+    )
+    with tempfile.TemporaryDirectory(
+        prefix=f"iyi-o3-{driver}-",
+        dir="/tmp",
+    ) as scratch:
+        census_path = os.path.join(scratch, f"{driver}.json")
+        script_path = os.path.join(scratch, os.path.basename(script_relpath))
+        with open(census_path, "w", encoding="utf-8") as census_file:
+            json.dump(census, census_file, indent=2, sort_keys=True)
+            census_file.write("\n")
+        with open(script_path, "wb") as script_file:
+            script_file.write(script_bytes)
+
+        with open(census_path, "r", encoding="utf-8") as census_file:
+            control_census = json.load(census_file)
+        with open(script_path, "rb") as script_file:
+            control_script = script_file.read()
+        control_ids = _rule_ids(
+            validate_census(
+                control_census,
+                control_script,
+                script_relpath,
+            )
+        )
+
+        seed_census = _clone_census(control_census)
+        seed_lines = _script_lines(control_script)
+        census_before = json.dumps(
+            seed_census,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        script_before = b"".join(line.encode() for line in seed_lines)
+        label, applied_count = mutate(seed_census, seed_lines, driver)
+        if applied_count != 1:
+            raise RuntimeError(
+                f"{purpose} applied {applied_count} changes, expected 1"
+            )
+        seed_script = b"".join(line.encode() for line in seed_lines)
+        if update_sha:
+            seed_census["script_sha256"] = hashlib.sha256(
+                seed_script
+            ).hexdigest()
+        census_after = json.dumps(
+            seed_census,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        census_changed = census_after != census_before
+        script_changed = seed_script != script_before
+        if not census_changed and not script_changed:
+            raise RuntimeError(f"{purpose} did not change the copied case")
+
+        with open(census_path, "w", encoding="utf-8") as census_file:
+            json.dump(seed_census, census_file, indent=2, sort_keys=True)
+            census_file.write("\n")
+        with open(script_path, "wb") as script_file:
+            script_file.write(seed_script)
+        with open(census_path, "r", encoding="utf-8") as census_file:
+            applied_census = json.load(census_file)
+        with open(script_path, "rb") as script_file:
+            applied_script = script_file.read()
+        seed_ids = _rule_ids(
+            validate_census(
+                applied_census,
+                applied_script,
+                script_relpath,
+            )
+        )
+
+    expected = {"control": [], "seed": [target_rule]}
+    got = {"control": control_ids, "seed": seed_ids}
+    applied = (
+        f"{label};driver={driver};count={applied_count};"
+        f"census_changed={str(census_changed).lower()};"
+        f"script_changed={str(script_changed).lower()}"
+    )
+    return Observation(expected=expected, got=got, applied=applied)
+
+
+def _combine_seed_observations(
+    cases: tuple[tuple[str, Observation], ...],
+) -> Observation:
+    expected = {name: observation.expected for name, observation in cases}
+    got = {name: observation.got for name, observation in cases}
+    applied = ";".join(
+        f"{name}[{observation.applied}]" for name, observation in cases
+    )
+    return Observation(expected=expected, got=got, applied=applied)
+
+
+def _each_variant(census: dict):
+    for site in census.get("sites", []):
+        for variant in site.get("variants", []):
+            yield site, variant
+
+
+def _site_lines(census: dict) -> set[int]:
+    return {
+        number
+        for site in census.get("sites", [])
+        for number in site.get("lines", [])
+        if isinstance(number, int)
+    }
+
+
+def _non_skip_references(census: dict) -> set[int]:
+    references = set(_site_lines(census))
+    sentinel = census.get("pass_sentinel", {})
+    if isinstance(sentinel.get("line"), int):
+        references.add(sentinel["line"])
+    for _site, variant in _each_variant(census):
+        for variable in variant.get("vars", {}).values():
+            references.update(
+                number
+                for number in variable.get("lines", [])
+                if isinstance(number, int)
+            )
+            reason_line = variable.get("pattern_reason_line")
+            if isinstance(reason_line, int):
+                references.add(reason_line)
+        references.update(
+            number
+            for number in variant.get("verdict", {}).get("lines", [])
+            if isinstance(number, int)
+        )
+    for evidence in census.get("exec_evidence", []):
+        if isinstance(evidence.get("site_line"), int):
+            references.add(evidence["site_line"])
+        references.update(
+            number
+            for number in evidence.get("exec_lines", [])
+            if isinstance(number, int)
+        )
+        references.update(
+            number
+            for number in evidence.get("verdict_lines", [])
+            if isinstance(number, int)
+        )
+        references.update(
+            int(number)
+            for number in evidence.get("name_from_calls", {})
+            if isinstance(number, str) and number.isdigit()
+        )
+        references.update(
+            reference["line"]
+            for reference in evidence.get("refs_ok", [])
+            if isinstance(reference, dict)
+            and isinstance(reference.get("line"), int)
+        )
+    return references
+
+
+def _insert_before_final_exit(
+    lines: list[str],
+    additions: list[str],
+) -> int:
+    nonblank = [
+        index for index, source in enumerate(lines) if source.strip()
+    ]
+    if not nonblank:
+        raise RuntimeError("driver has no non-blank lines")
+    exit_index = nonblank[-1]
+    if _line_text(lines[exit_index]) != "exit $status":
+        raise RuntimeError("driver does not end in exact exit $status")
+    newline = "\r\n" if lines[exit_index].endswith("\r\n") else "\n"
+    lines[exit_index:exit_index] = [
+        addition + newline for addition in additions
+    ]
+    return exit_index + 1
+
+
+def _site_kind_for_line(census: dict, line: int) -> str | None:
+    for site in census.get("sites", []):
+        if line in site.get("lines", []):
+            kind = site.get("kind")
+            return kind if isinstance(kind, str) else None
+    return None
+
+def _has_any_site(census: dict, _lines: list[str]) -> bool:
+    return bool(census.get("sites"))
+
+
+def _has_indented_text(census: dict, _lines: list[str]) -> bool:
+    entries = [
+        *census.get("skips", []),
+        *census.get("not_skips", []),
+        census.get("pass_sentinel", {}),
+    ]
+    return any(
+        isinstance(entry, dict)
+        and isinstance(entry.get("text"), str)
+        and entry["text"].startswith((" ", "\t"))
+        for entry in entries
+    )
+
+
+def _has_contains(census: dict, _lines: list[str]) -> bool:
+    return any(site.get("contains") for site in census.get("sites", []))
+
+
+def _has_variant_verdict(census: dict, _lines: list[str]) -> bool:
+    return any(
+        variant.get("verdict", {}).get("contains")
+        for _site, variant in _each_variant(census)
+    )
+
+
+def _has_enumerated_variable(census: dict, _lines: list[str]) -> bool:
+    return any(
+        variable.get("values")
+        for _site, variant in _each_variant(census)
+        for variable in variant.get("vars", {}).values()
+    )
+
+
+def _has_skip(census: dict, _lines: list[str]) -> bool:
+    return bool(census.get("skips"))
+
+
+def _has_listed_skip(census: dict, _lines: list[str]) -> bool:
+    return bool(census.get("skips") or census.get("not_skips"))
+
+
+def _has_unrenderable_candidate(census: dict, lines: list[str]) -> bool:
+    excluded = _non_skip_references(census)
+    return any(
+        isinstance(entry.get("line"), int)
+        and 1 <= entry["line"] <= len(lines)
+        and entry["line"] not in excluded
+        for entry in census.get("skips", [])
+    )
+
+
+def _has_sentinel(census: dict, _lines: list[str]) -> bool:
+    return isinstance(census.get("pass_sentinel"), dict)
+
+
+def _has_nonvariant_aux_site(census: dict, _lines: list[str]) -> bool:
+    evidence_sites = {
+        evidence.get("site_line")
+        for evidence in census.get("exec_evidence", [])
+    }
+    return any(
+        site.get("kind") in ("canonical-other", "unchanged", "passthrough")
+        and not site.get("variants")
+        and site.get("lines")
+        and site["lines"][0] not in evidence_sites
+        for site in census.get("sites", [])
+    )
+
+
+def _has_variant_template(census: dict, _lines: list[str]) -> bool:
+    return any(True for _site, _variant in _each_variant(census))
+
+
+def _has_unique_positive_evidence(
+    census: dict,
+    _lines: list[str],
+) -> bool:
+    evidences = census.get("exec_evidence", [])
+    token_counts: dict[str, int] = {}
+    for evidence in evidences:
+        token = evidence.get("exec_token")
+        if isinstance(token, str):
+            token_counts[token] = token_counts.get(token, 0) + 1
+    return any(
+        _site_kind_for_line(census, evidence.get("site_line")) == "positive"
+        and token_counts.get(evidence.get("exec_token")) == 1
+        for evidence in evidences
+    )
+
+
+def _has_exec_token_candidate(census: dict, lines: list[str]) -> bool:
+    site_lines = _site_lines(census)
+    for evidence in census.get("exec_evidence", []):
+        token = evidence.get("exec_token")
+        excluded = {
+            *site_lines,
+            *evidence.get("verdict_lines", []),
+            *(
+                int(number)
+                for number in evidence.get("name_from_calls", {})
+                if isinstance(number, str) and number.isdigit()
+            ),
+            *(
+                reference.get("line")
+                for reference in evidence.get("refs_ok", [])
+                if isinstance(reference, dict)
+            ),
+        }
+        for number in evidence.get("exec_lines", []):
+            if (
+                isinstance(token, str)
+                and isinstance(number, int)
+                and 1 <= number <= len(lines)
+                and number not in excluded
+                and lines[number - 1].count(token) == 1
+            ):
+                return True
+    return False
+
+
+def _has_evidence(census: dict, _lines: list[str]) -> bool:
+    return bool(census.get("exec_evidence"))
+
+
+def _has_verdict_mark_candidate(census: dict, lines: list[str]) -> bool:
+    excluded = set(_site_lines(census))
+    for _site, variant in _each_variant(census):
+        excluded.update(variant.get("verdict", {}).get("lines", []))
+    for evidence in census.get("exec_evidence", []):
+        marks = evidence.get("failure_marks", [])
+        for number in evidence.get("verdict_lines", []):
+            if (
+                not isinstance(number, int)
+                or not 1 <= number <= len(lines)
+                or number in excluded
+            ):
+                continue
+            source = lines[number - 1]
+            present = [mark for mark in marks if mark in source]
+            if len(present) == 1 and source.count(present[0]) == 1:
+                return True
+    return False
+
+
+def _has_name_token_evidence(census: dict, _lines: list[str]) -> bool:
+    return any(
+        evidence.get("exec_token") == '"$WORK/$name"'
+        and evidence.get("out_template") == "{WORK}/{name}"
+        for evidence in census.get("exec_evidence", [])
+    )
+
+
+def _mutate_schema_unknown(
+    census: dict,
+    _lines: list[str],
+    _driver: str,
+) -> tuple[str, int]:
+    census["o3_unknown_key"] = True
+    return "schema-unknown-key", 1
+
+
+def _mutate_schema_malformed(
+    census: dict,
+    _lines: list[str],
+    _driver: str,
+) -> tuple[str, int]:
+    census["sites"][0]["variants"] = None
+    return "schema-malformed-variants", 1
+
+
+def _mutate_text_indentation(
+    census: dict,
+    _lines: list[str],
+    _driver: str,
+) -> tuple[str, int]:
+    entries = [
+        *census.get("skips", []),
+        *census.get("not_skips", []),
+        census.get("pass_sentinel", {}),
+    ]
+    for entry in entries:
+        text = entry.get("text")
+        if isinstance(text, str) and text.startswith((" ", "\t")):
+            entry["text"] = text[1:]
+            return f"text-indentation-line-{entry.get('line')}", 1
+    return "text-indentation-not-applied", 0
+
+
+def _mutate_sha(
+    census: dict,
+    _lines: list[str],
+    _driver: str,
+) -> tuple[str, int]:
+    census["script_sha256"] = "0" * 64
+    return "sha-replaced", 1
+
+
+def _mutate_unlisted_invocation(
+    _census: dict,
+    lines: list[str],
+    _driver: str,
+) -> tuple[str, int]:
+    line = _insert_before_final_exit(
+        lines,
+        ['"$IYI" --version >/dev/null'],
+    )
+    return f"unlisted-invocation-line-{line}", 1
+
+
+def _mutate_duplicate_site(
+    census: dict,
+    _lines: list[str],
+    _driver: str,
+) -> tuple[str, int]:
+    line = census["sites"][0]["lines"][0]
+    census["sites"][0]["lines"].append(line)
+    return f"duplicate-site-line-{line}", 1
+
+
+def _mutate_contains(
+    census: dict,
+    _lines: list[str],
+    _driver: str,
+) -> tuple[str, int]:
+    for site in census.get("sites", []):
+        if site.get("contains"):
+            site["contains"][0] = "__O3_MISSING_CONTAINS__"
+            return f"contains-site-{site['lines'][0]}", 1
+    return "contains-not-applied", 0
+
+
+def _mutate_verdict_literal(
+    census: dict,
+    _lines: list[str],
+    _driver: str,
+) -> tuple[str, int]:
+    for site, variant in _each_variant(census):
+        contains = variant.get("verdict", {}).get("contains", [])
+        if contains:
+            contains[0] = "__O3_MISSING_VERDICT_LITERAL__"
+            return (
+                f"verdict-literal-{variant.get('id')}-site-"
+                f"{site['lines'][0]}",
+                1,
+            )
+    return "verdict-literal-not-applied", 0
+
+
+def _mutate_var_range(
+    census: dict,
+    _lines: list[str],
+    _driver: str,
+) -> tuple[str, int]:
+    for _site, variant in _each_variant(census):
+        for name, variable in variant.get("vars", {}).items():
+            values = variable.get("values", [])
+            if values:
+                values[0] = "__O3_VALUE_ABSENT_FROM_SOURCE__"
+                return f"var-range-{variant.get('id')}-{name}", 1
+    return "var-range-not-applied", 0
+
+
+def _mutate_unlisted_skip(
+    census: dict,
+    _lines: list[str],
+    _driver: str,
+) -> tuple[str, int]:
+    for key in ("skips", "not_skips"):
+        if census.get(key):
+            removed = census[key].pop(0)
+            return f"unlisted-skip-{key}-line-{removed['line']}", 1
+    return "unlisted-skip-not-applied", 0
+
+
+def _mutate_skip_regex(
+    census: dict,
+    _lines: list[str],
+    _driver: str,
+) -> tuple[str, int]:
+    entry = census["skips"][0]
+    entry["regex"] = "(?!)"
+    return f"skip-regex-line-{entry['line']}", 1
+
+
+def _mutate_unrenderable(
+    census: dict,
+    lines: list[str],
+    _driver: str,
+) -> tuple[str, int]:
+    excluded = _non_skip_references(census)
+    for entry in census.get("skips", []):
+        number = entry.get("line")
+        if (
+            not isinstance(number, int)
+            or not 1 <= number <= len(lines)
+            or number in excluded
+        ):
+            continue
+        old_line = lines[number - 1]
+        old_text = _line_text(old_line)
+        indent = old_text[: len(old_text) - len(old_text.lstrip())]
+        newline = old_line[len(old_text):]
+        replacement = f'{indent}echo "skip'
+        lines[number - 1] = replacement + newline
+        entry["text"] = replacement
+        return f"unrenderable-line-{number}", 1
+    return "unrenderable-not-applied", 0
+
+
+def _mutate_sentinel(
+    census: dict,
+    _lines: list[str],
+    _driver: str,
+) -> tuple[str, int]:
+    line = census["pass_sentinel"]["line"]
+    census["pass_sentinel"]["regex"] = "(?!)"
+    return f"sentinel-regex-line-{line}", 1
+
+
+def _mutate_kind_variants(
+    census: dict,
+    _lines: list[str],
+    _driver: str,
+) -> tuple[str, int]:
+    evidence_sites = {
+        evidence.get("site_line")
+        for evidence in census.get("exec_evidence", [])
+    }
+    for site in census.get("sites", []):
+        if (
+            site.get("kind") in (
+                "canonical-other",
+                "unchanged",
+                "passthrough",
+            )
+            and not site.get("variants")
+            and site.get("lines")
+            and site["lines"][0] not in evidence_sites
+        ):
+            site["kind"] = "negative"
+            return f"kind-variants-site-{site['lines'][0]}", 1
+    return "kind-variants-not-applied", 0
+
+
+def _mutate_template(
+    census: dict,
+    _lines: list[str],
+    _driver: str,
+) -> tuple[str, int]:
+    for site, variant in _each_variant(census):
+        variant["first_root"] += "$O3"
+        return (
+            f"template-{variant.get('id')}-site-{site['lines'][0]}",
+            1,
+        )
+    return "template-not-applied", 0
+
+
+def _mutate_e1_missing(
+    census: dict,
+    _lines: list[str],
+    _driver: str,
+) -> tuple[str, int]:
+    evidences = census.get("exec_evidence", [])
+    token_counts: dict[str, int] = {}
+    for evidence in evidences:
+        token = evidence.get("exec_token")
+        if isinstance(token, str):
+            token_counts[token] = token_counts.get(token, 0) + 1
+    for index, evidence in enumerate(evidences):
+        if (
+            _site_kind_for_line(census, evidence.get("site_line"))
+            == "positive"
+            and token_counts.get(evidence.get("exec_token")) == 1
+        ):
+            removed = evidences.pop(index)
+            return f"e1-missing-site-{removed['site_line']}", 1
+    return "e1-missing-not-applied", 0
+
+
+def _mutate_e1_token(
+    census: dict,
+    lines: list[str],
+    _driver: str,
+) -> tuple[str, int]:
+    site_lines = _site_lines(census)
+    for evidence in census.get("exec_evidence", []):
+        token = evidence.get("exec_token")
+        excluded = {
+            *site_lines,
+            *evidence.get("verdict_lines", []),
+            *(
+                int(number)
+                for number in evidence.get("name_from_calls", {})
+                if isinstance(number, str) and number.isdigit()
+            ),
+            *(
+                reference.get("line")
+                for reference in evidence.get("refs_ok", [])
+                if isinstance(reference, dict)
+            ),
+        }
+        for number in evidence.get("exec_lines", []):
+            if (
+                isinstance(token, str)
+                and isinstance(number, int)
+                and 1 <= number <= len(lines)
+                and number not in excluded
+                and lines[number - 1].count(token) == 1
+            ):
+                lines[number - 1] = lines[number - 1].replace(
+                    token,
+                    '"/tmp/o3-exec-token-removed"',
+                    1,
+                )
+                return f"e1-token-line-{number}", 1
+    return "e1-token-not-applied", 0
+
+
+def _mutate_e1_stray_read(
+    census: dict,
+    lines: list[str],
+    _driver: str,
+) -> tuple[str, int]:
+    token = census["exec_evidence"][0]["exec_token"]
+    number = _insert_before_final_exit(
+        lines,
+        [f"shasum {token} >/dev/null"],
+    )
+    return f"e1-undeclared-read-line-{number}-token-{token}", 1
+
+
+def _mutate_e1_undeclared_build(
+    census: dict,
+    lines: list[str],
+    driver: str,
+) -> tuple[str, int]:
+    base = next(
+        evidence
+        for evidence in census.get("exec_evidence", [])
+        if evidence.get("exec_token") == '"$WORK/$name"'
+        and evidence.get("out_template") == "{WORK}/{name}"
+    )
+    first_line = _insert_before_final_exit(
+        lines,
+        [
+            "name=o3-self-evidence",
+            (
+                'if ! "$IYI" build -o "$WORK/$name" '
+                f'"$REPO/bench/std_{driver}_exercise.iyi"; '
+                "then status=1; fi"
+            ),
+            '"$WORK/$name" >/dev/null 2>&1',
+            'if [ "$?" -ne 0 ]; then status=1; fi',
+        ],
+    )
+    build_line = first_line + 1
+    exec_line = first_line + 2
+    verdict_line = first_line + 3
+    census["non_invocations"].append(
+        {
+            "line": build_line,
+            "reason": "O3 seed: undeclared compiler site self-referenced by evidence",
+        }
+    )
+    census["exec_evidence"].append(
+        {
+            "site_line": build_line,
+            "out_template": base["out_template"],
+            "name_from_calls": {
+                str(first_line): "o3-self-evidence",
+            },
+            "exec_lines": [exec_line],
+            "exec_token": base["exec_token"],
+            "verdict_lines": [verdict_line],
+            "failure_marks": ["status=1"],
+            "refs_ok": [],
+        }
+    )
+    return f"e1-undeclared-build-line-{build_line}-self-evidenced", 1
+
+
+def _mutate_e1_verdict(
+    census: dict,
+    lines: list[str],
+    _driver: str,
+) -> tuple[str, int]:
+    excluded = set(_site_lines(census))
+    for _site, variant in _each_variant(census):
+        excluded.update(variant.get("verdict", {}).get("lines", []))
+    for evidence in census.get("exec_evidence", []):
+        marks = evidence.get("failure_marks", [])
+        for number in evidence.get("verdict_lines", []):
+            if (
+                not isinstance(number, int)
+                or not 1 <= number <= len(lines)
+                or number in excluded
+            ):
+                continue
+            source = lines[number - 1]
+            present = [mark for mark in marks if mark in source]
+            if len(present) == 1 and source.count(present[0]) == 1:
+                lines[number - 1] = source.replace(
+                    present[0],
+                    "o3_no_failure_mark",
+                    1,
+                )
+                return f"e1-verdict-line-{number}", 1
+    return "e1-verdict-not-applied", 0
+
+
+def _mutate_e1_exit(
+    _census: dict,
+    lines: list[str],
+    _driver: str,
+) -> tuple[str, int]:
+    nonblank = [
+        index for index, source in enumerate(lines) if source.strip()
+    ]
+    if not nonblank:
+        return "e1-exit-not-applied", 0
+    index = nonblank[-1]
+    old_text = _line_text(lines[index])
+    if old_text != "exit $status":
+        return "e1-exit-not-applied", 0
+    newline = lines[index][len(old_text):]
+    lines[index] = "exit 0" + newline
+    return f"e1-exit-line-{index + 1}", 1
+
+def _fixture_validator_schema_seed() -> Observation:
+    return _combine_seed_observations(
+        (
+            (
+                "unknown-key",
+                _isolated_validator_seed(
+                    "C5.0-schema",
+                    "closed top-level schema",
+                    _has_any_site,
+                    _mutate_schema_unknown,
+                ),
+            ),
+            (
+                "malformed-nested-value",
+                _isolated_validator_seed(
+                    "C5.0-schema",
+                    "malformed nested schema",
+                    _has_any_site,
+                    _mutate_schema_malformed,
+                ),
+            ),
+            (
+                "exact-text-indentation",
+                _isolated_validator_seed(
+                    "C5.0-schema",
+                    "byte-exact text indentation",
+                    _has_indented_text,
+                    _mutate_text_indentation,
+                ),
+            ),
+        )
+    )
+
+
+def _fixture_validator_rule_seed(
+    target_rule: str,
+    purpose: str,
+    predicate: Callable[[dict, list[str]], bool],
+    mutate: Callable[[dict, list[str], str], tuple[str, int]],
+    *,
+    update_sha: bool = True,
+) -> Observation:
+    return _isolated_validator_seed(
+        target_rule,
+        purpose,
+        predicate,
+        mutate,
+        update_sha=update_sha,
+    )
+
+
+def _fixture_validator_e1_stray_seed() -> Observation:
+    return _combine_seed_observations(
+        (
+            (
+                "undeclared-read",
+                _isolated_validator_seed(
+                    "E1-stray-reference",
+                    "undeclared read of an exact execution token",
+                    _has_evidence,
+                    _mutate_e1_stray_read,
+                ),
+            ),
+            (
+                "undeclared-build-self-evidence",
+                _isolated_validator_seed(
+                    "E1-stray-reference",
+                    "undeclared compiler build self-legitimized by evidence",
+                    _has_name_token_evidence,
+                    _mutate_e1_undeclared_build,
+                ),
+            ),
+        )
+    )
+
+
+def _fixture_census_all_control() -> Observation:
+    violations_by_driver: dict[str, list[tuple[str, int, str]]] = {}
+    for driver in DRIVERS_29:
+        census, script_bytes, script_relpath = _census_case(driver)
+        violations = validate_census(census, script_bytes, script_relpath)
+        if violations:
+            violations_by_driver[driver] = violations
+            for violation in violations:
+                print(
+                    "O3-CENSUS "
+                    f"driver={driver} violation={_render(violation)}"
+                )
+    expected = {
+        "drivers": list(DRIVERS_29),
+        "violations": {},
+    }
+    got = {
+        "drivers": list(DRIVERS_29),
+        "violations": violations_by_driver,
+    }
+    return Observation(expected=expected, got=got)
+
+
+def _fixture_e1_shared_token_control() -> Observation:
+    census, script_bytes, script_relpath = _census_case("cookie")
+    violations = validate_census(census, script_bytes, script_relpath)
+    token = '"$WORK/$name"'
+    blocks = sorted(
+        (
+            evidence.get("site_line"),
+            list(evidence.get("exec_lines", [])),
+        )
+        for evidence in census.get("exec_evidence", [])
+        if evidence.get("exec_token") == token
+    )
+    expected = {
+        "violations": [],
+        "token": token,
+        "blocks": [(46, [53]), (85, [91])],
+    }
+    got = {
+        "violations": _rule_ids(violations),
+        "token": token,
+        "blocks": blocks,
+    }
+    return Observation(expected=expected, got=got)
+
+
+def _historical_census(driver: str) -> dict:
+    completed = subprocess.run(
+        [
+            "git",
+            "-C",
+            REPO_ROOT,
+            "show",
+            f"{_O3_HISTORICAL_REF}:proof/census/{driver}.json",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"git show failed for {driver}: {completed.stderr.strip()}"
+        )
+    loaded = json.loads(completed.stdout)
+    if not isinstance(loaded, dict):
+        raise TypeError(f"historical census {driver} is not an object")
+    return loaded
+
+
+def _fixture_regression_1f_seed() -> Observation:
+    findings: dict[str, list[tuple[str, int, str]]] = {}
+    seen: list[str] = []
+    for driver in DRIVERS_29:
+        census = _historical_census(driver)
+        script_relpath = census.get("script")
+        if not isinstance(script_relpath, str):
+            raise TypeError(
+                f"historical census {driver} has no string script"
+            )
+        with open(os.path.join(REPO_ROOT, script_relpath), "rb") as script_file:
+            script_bytes = script_file.read()
+        violations = validate_census(census, script_bytes, script_relpath)
+        findings[driver] = violations
+        seen.append(driver)
+        print(f"R1F driver={driver} violations={len(violations)}")
+        for violation in violations:
+            print(
+                f"R1F driver={driver} violation={_render(violation)}"
+            )
+
+    def present(
+        driver: str,
+        rule_id: str,
+        *,
+        line: int | None = None,
+        detail: str | None = None,
+    ) -> bool:
+        return any(
+            got_rule == rule_id
+            and (line is None or got_line == line)
+            and (detail is None or detail in got_detail)
+            for got_rule, got_line, got_detail in findings[driver]
+        )
+
+    required = (
+        ("dns:E1-verdict-mark", present("dns", "E1-verdict-mark")),
+        ("fuzz:E1-exec-token", present("fuzz", "E1-exec-token")),
+        (
+            "autocert:E1-exec-token",
+            present("autocert", "E1-exec-token"),
+        ),
+        ("signal:E1-missing", present("signal", "E1-missing")),
+        ("compress:E1-missing", present("compress", "E1-missing")),
+        ("math:E1-missing", present("math", "E1-missing")),
+        ("tls:E1-missing", present("tls", "E1-missing")),
+        ("file:E1-missing", present("file", "E1-missing")),
+        (
+            "tls:C5.3-var-range",
+            present("tls", "C5.3-var-range"),
+        ),
+        (
+            "dns:noquestion:C5.3-var-range",
+            present("dns", "C5.3-var-range", detail="noquestion"),
+        ),
+        (
+            "dns:notcp:C5.3-var-range",
+            present("dns", "C5.3-var-range", detail="notcp"),
+        ),
+        (
+            "signal:C5.7-template",
+            present("signal", "C5.7-template"),
+        ),
+        (
+            "file_utils:C5.7-template",
+            present("file_utils", "C5.7-template"),
+        ),
+        ("http:C5.7-template", present("http", "C5.7-template")),
+        (
+            "dns:213:C5.4-skip-regex",
+            present("dns", "C5.4-skip-regex", line=213),
+        ),
+        (
+            "dns:218:C5.4-skip-regex",
+            present("dns", "C5.4-skip-regex", line=218),
+        ),
+        (
+            "http:962:C5.4-skip-regex",
+            present("http", "C5.4-skip-regex", line=962),
+        ),
+        (
+            "compress:485:C5.2-duplicate-site",
+            present("compress", "C5.2-duplicate-site", line=485),
+        ),
+        (
+            "png:708:C5.2-duplicate-site",
+            present("png", "C5.2-duplicate-site", line=708),
+        ),
+        (
+            "shlex:354:C5.2-duplicate-site",
+            present("shlex", "C5.2-duplicate-site", line=354),
+        ),
+        (
+            "websocket:1053:C5.2-duplicate-site",
+            present("websocket", "C5.2-duplicate-site", line=1053),
+        ),
+        (
+            "zip:703:C5.2-duplicate-site",
+            present("zip", "C5.2-duplicate-site", line=703),
+        ),
+    )
+    missing = [label for label, found in required if not found]
+    expected = {"drivers": list(DRIVERS_29), "missing": []}
+    got = {"drivers": seen, "missing": missing}
+    applied = (
+        f"git-show-ref={_O3_HISTORICAL_REF};"
+        f"drivers={len(seen)};"
+        f"violations={sum(len(items) for items in findings.values())}"
+    )
+    return Observation(expected=expected, got=got, applied=applied)
+
+
+O3_SEED_IDS = (
+    "s2.seed.validator-schema",
+    "s2.seed.validator-sha",
+    "s2.seed.validator-unlisted-invocation",
+    "s2.seed.validator-duplicate-site",
+    "s2.seed.validator-contains",
+    "s2.seed.validator-verdict",
+    "s2.seed.validator-var-range",
+    "s2.seed.validator-unlisted-skip",
+    "s2.seed.validator-skip-regex",
+    "s2.seed.validator-unrenderable",
+    "s2.seed.validator-sentinel",
+    "s2.seed.validator-kind-variants",
+    "s2.seed.validator-template",
+    "s2.seed.validator-e1-missing",
+    "s2.seed.validator-e1-token",
+    "s2.seed.validator-e1-stray-reference",
+    "s2.seed.validator-e1-verdict",
+    "s2.seed.validator-e1-exit-line",
+    "s2.seed.regression-1f",
+)
+
+O3_CONTROL_IDS = (
+    "s2.control.census-all",
+    "s2.control.e1-shared-token",
+)
+
+O3_FIXTURES: tuple[Fixture, ...] = (
+    Fixture(
+        "s2.seed.validator-schema",
+        "seed",
+        _fixture_validator_schema_seed,
+    ),
+    Fixture(
+        "s2.seed.validator-sha",
+        "seed",
+        partial(
+            _fixture_validator_rule_seed,
+            "C5.1-sha",
+            "script sha",
+            _has_any_site,
+            _mutate_sha,
+            update_sha=False,
+        ),
+    ),
+    Fixture(
+        "s2.seed.validator-unlisted-invocation",
+        "seed",
+        partial(
+            _fixture_validator_rule_seed,
+            "C5.2-unlisted-invocation",
+            "unlisted compiler invocation",
+            _has_any_site,
+            _mutate_unlisted_invocation,
+        ),
+    ),
+    Fixture(
+        "s2.seed.validator-duplicate-site",
+        "seed",
+        partial(
+            _fixture_validator_rule_seed,
+            "C5.2-duplicate-site",
+            "duplicate site claim",
+            _has_any_site,
+            _mutate_duplicate_site,
+        ),
+    ),
+    Fixture(
+        "s2.seed.validator-contains",
+        "seed",
+        partial(
+            _fixture_validator_rule_seed,
+            "C5.3-contains",
+            "site contains literal",
+            _has_contains,
+            _mutate_contains,
+        ),
+    ),
+    Fixture(
+        "s2.seed.validator-verdict",
+        "seed",
+        partial(
+            _fixture_validator_rule_seed,
+            "C5.3-verdict-literal",
+            "variant verdict literal",
+            _has_variant_verdict,
+            _mutate_verdict_literal,
+        ),
+    ),
+    Fixture(
+        "s2.seed.validator-var-range",
+        "seed",
+        partial(
+            _fixture_validator_rule_seed,
+            "C5.3-var-range",
+            "enumerated variable range",
+            _has_enumerated_variable,
+            _mutate_var_range,
+        ),
+    ),
+    Fixture(
+        "s2.seed.validator-unlisted-skip",
+        "seed",
+        partial(
+            _fixture_validator_rule_seed,
+            "C5.4-unlisted-skip-line",
+            "unlisted skip vocabulary line",
+            _has_listed_skip,
+            _mutate_unlisted_skip,
+        ),
+    ),
+    Fixture(
+        "s2.seed.validator-skip-regex",
+        "seed",
+        partial(
+            _fixture_validator_rule_seed,
+            "C5.4-skip-regex",
+            "skip regex mismatch",
+            _has_skip,
+            _mutate_skip_regex,
+        ),
+    ),
+    Fixture(
+        "s2.seed.validator-unrenderable",
+        "seed",
+        partial(
+            _fixture_validator_rule_seed,
+            "C5.4-unrenderable",
+            "unrenderable listed skip",
+            _has_unrenderable_candidate,
+            _mutate_unrenderable,
+        ),
+    ),
+    Fixture(
+        "s2.seed.validator-sentinel",
+        "seed",
+        partial(
+            _fixture_validator_rule_seed,
+            "C5.5-sentinel",
+            "pass sentinel mismatch",
+            _has_sentinel,
+            _mutate_sentinel,
+        ),
+    ),
+    Fixture(
+        "s2.seed.validator-kind-variants",
+        "seed",
+        partial(
+            _fixture_validator_rule_seed,
+            "C5.6-kind-variants",
+            "site kind without variants",
+            _has_nonvariant_aux_site,
+            _mutate_kind_variants,
+        ),
+    ),
+    Fixture(
+        "s2.seed.validator-template",
+        "seed",
+        partial(
+            _fixture_validator_rule_seed,
+            "C5.7-template",
+            "forbidden template shell syntax",
+            _has_variant_template,
+            _mutate_template,
+        ),
+    ),
+    Fixture(
+        "s2.seed.validator-e1-missing",
+        "seed",
+        partial(
+            _fixture_validator_rule_seed,
+            "E1-missing",
+            "positive site missing evidence",
+            _has_unique_positive_evidence,
+            _mutate_e1_missing,
+        ),
+    ),
+    Fixture(
+        "s2.seed.validator-e1-token",
+        "seed",
+        partial(
+            _fixture_validator_rule_seed,
+            "E1-exec-token",
+            "execution line exact token",
+            _has_exec_token_candidate,
+            _mutate_e1_token,
+        ),
+    ),
+    Fixture(
+        "s2.seed.validator-e1-stray-reference",
+        "seed",
+        _fixture_validator_e1_stray_seed,
+    ),
+    Fixture(
+        "s2.seed.validator-e1-verdict",
+        "seed",
+        partial(
+            _fixture_validator_rule_seed,
+            "E1-verdict-mark",
+            "execution verdict failure mark",
+            _has_verdict_mark_candidate,
+            _mutate_e1_verdict,
+        ),
+    ),
+    Fixture(
+        "s2.seed.validator-e1-exit-line",
+        "seed",
+        partial(
+            _fixture_validator_rule_seed,
+            "E1-exit-line",
+            "exact final exit line",
+            _has_any_site,
+            _mutate_e1_exit,
+        ),
+    ),
+    Fixture(
+        "s2.seed.regression-1f",
+        "seed",
+        _fixture_regression_1f_seed,
+    ),
+    Fixture(
+        "s2.control.census-all",
+        "control",
+        _fixture_census_all_control,
+    ),
+    Fixture(
+        "s2.control.e1-shared-token",
+        "control",
+        _fixture_e1_shared_token_control,
+    ),
+)
+
+O3_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
+    "o3.C5.0-schema": (
+        "s2.seed.validator-schema",
+        "s2.control.census-all",
+    ),
+    "o3.C5.1-sha": (
+        "s2.seed.validator-sha",
+        "s2.control.census-all",
+    ),
+    "o3.C5.2-unlisted-invocation": (
+        "s2.seed.validator-unlisted-invocation",
+        "s2.control.census-all",
+    ),
+    "o3.C5.2-duplicate-site": (
+        "s2.seed.validator-duplicate-site",
+        "s2.control.census-all",
+    ),
+    "o3.C5.3-contains": (
+        "s2.seed.validator-contains",
+        "s2.control.census-all",
+    ),
+    "o3.C5.3-verdict-literal": (
+        "s2.seed.validator-verdict",
+        "s2.control.census-all",
+    ),
+    "o3.C5.3-var-range": (
+        "s2.seed.validator-var-range",
+        "s2.control.census-all",
+    ),
+    "o3.C5.4-unlisted-skip-line": (
+        "s2.seed.validator-unlisted-skip",
+        "s2.control.census-all",
+    ),
+    "o3.C5.4-skip-regex": (
+        "s2.seed.validator-skip-regex",
+        "s2.control.census-all",
+    ),
+    "o3.C5.4-unrenderable": (
+        "s2.seed.validator-unrenderable",
+        "s2.control.census-all",
+    ),
+    "o3.C5.5-sentinel": (
+        "s2.seed.validator-sentinel",
+        "s2.control.census-all",
+    ),
+    "o3.C5.6-kind-variants": (
+        "s2.seed.validator-kind-variants",
+        "s2.control.census-all",
+    ),
+    "o3.C5.7-template": (
+        "s2.seed.validator-template",
+        "s2.control.census-all",
+    ),
+    "o3.E1-missing": (
+        "s2.seed.validator-e1-missing",
+        "s2.control.census-all",
+    ),
+    "o3.E1-exec-token": (
+        "s2.seed.validator-e1-token",
+        "s2.control.census-all",
+    ),
+    "o3.E1-stray-reference": (
+        "s2.seed.validator-e1-stray-reference",
+        "s2.control.e1-shared-token",
+    ),
+    "o3.E1-verdict-mark": (
+        "s2.seed.validator-e1-verdict",
+        "s2.control.census-all",
+    ),
+    "o3.E1-exit-line": (
+        "s2.seed.validator-e1-exit-line",
+        "s2.control.census-all",
+    ),
+    "o3.regression-1f": (
+        "s2.seed.regression-1f",
+        "s2.control.census-all",
+    ),
+    "o3.e1-cross-site-subcases": (
+        "s2.seed.validator-e1-stray-reference",
+        "s2.control.e1-shared-token",
+    ),
+}
+
 # This map is intentionally literal. A fixture id names either a seeded failure
 # or its passing control. The audit below refuses missing, unexecuted, unmapped,
 # or ambiguously named fixtures instead of inferring coverage from test names.
@@ -1430,6 +2786,7 @@ REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
         "s2.seed.validator-e1-exit-line",
         "s2.seed.regression-1f",
         "s2.control.census-all",
+        "s2.control.e1-shared-token",
     ),
     "contract.s2.matcher": (
         "s2.seed.matcher-negative-noquestion",
@@ -1671,12 +3028,12 @@ REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
         "amend-b.control.stub-run",
     ),
     "amendment-b.seed.exec-token": (
-        "amend-b.seed.exec-token",
-        "amend-b.control.real-probe",
+        "s2.seed.validator-e1-token",
+        "s2.control.e1-shared-token",
     ),
     "amendment-b.seed.stray-shasum": (
-        "amend-b.seed.stray-shasum",
-        "amend-b.control.real-probe",
+        "s2.seed.validator-e1-stray-reference",
+        "s2.control.e1-shared-token",
     ),
     "amendment-b.seed.probe-unobservable": (
         "amend-b.seed.probe-unobservable",
@@ -1945,6 +3302,7 @@ FIXTURES: tuple[Fixture, ...] = (
         "control",
         _fixture_gate_env_fresh_control,
     ),
+    *O3_FIXTURES,
 )
 
 
@@ -2055,32 +3413,79 @@ def _print_header() -> None:
     print(f"HEADER clean={str(not bool(status.stdout)).lower()}")
 
 
-def main() -> int:
+def _run_fixture_suite(
+    fixtures: tuple[Fixture, ...],
+    review_items: Mapping[str, tuple[str, ...]],
+    *,
+    scope: str | None = None,
+    expected_seed_ids: tuple[str, ...] | None = None,
+    expected_control_ids: tuple[str, ...] | None = None,
+) -> int:
     try:
         _print_header()
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:
         print(f"HARNESS ERROR header={_render(f'{type(error).__name__}: {error}')}")
         return 1
 
+    if scope is not None:
+        shared_subcases = (
+            " shared_token_subcases="
+            "declared-two-site-control,undeclared-read,"
+            "undeclared-build-self-evidence"
+            if scope == "O3"
+            else ""
+        )
+        print(
+            f"SCOPE {scope} "
+            f"seeds_expected={len(expected_seed_ids or ())} "
+            f"controls_expected={len(expected_control_ids or ())}"
+            f"{shared_subcases}"
+        )
+
     registered_kinds: dict[str, str] = {}
     duplicate_registered_ids: set[str] = set()
-    for fixture in FIXTURES:
+    for fixture in fixtures:
         if fixture.fixture_id in registered_kinds:
             duplicate_registered_ids.add(fixture.fixture_id)
         registered_kinds[fixture.fixture_id] = fixture.kind
 
     harness = Harness()
+    if expected_seed_ids is not None:
+        actual_seed_ids = tuple(
+            fixture.fixture_id
+            for fixture in fixtures
+            if fixture.kind == "seed"
+        )
+        if actual_seed_ids != expected_seed_ids:
+            harness.execution_errors.append(
+                "seed inventory mismatch: "
+                f"expected={_render(expected_seed_ids)} "
+                f"got={_render(actual_seed_ids)}"
+            )
+    if expected_control_ids is not None:
+        actual_control_ids = tuple(
+            fixture.fixture_id
+            for fixture in fixtures
+            if fixture.kind == "control"
+        )
+        if actual_control_ids != expected_control_ids:
+            harness.execution_errors.append(
+                "control inventory mismatch: "
+                f"expected={_render(expected_control_ids)} "
+                f"got={_render(actual_control_ids)}"
+            )
+
     if duplicate_registered_ids:
         for fixture_id in sorted(duplicate_registered_ids):
             harness.execution_errors.append(
                 f"duplicate registered fixture: {fixture_id}"
             )
     else:
-        for fixture in FIXTURES:
+        for fixture in fixtures:
             harness.run(fixture)
 
     audit = _coverage_audit(
-        REVIEW_ITEMS,
+        review_items,
         harness.executed_seed_ids,
         harness.executed_control_ids,
         registered_kinds,
@@ -2118,6 +3523,21 @@ def main() -> int:
     )
     print("HARNESS FAIL" if failed else "HARNESS PASS")
     return 1 if failed else 0
+
+
+def run_o3_suite() -> int:
+    """Run only the bounded O3 census validator acceptance inventory."""
+    return _run_fixture_suite(
+        O3_FIXTURES,
+        O3_REVIEW_ITEMS,
+        scope="O3",
+        expected_seed_ids=O3_SEED_IDS,
+        expected_control_ids=O3_CONTROL_IDS,
+    )
+
+
+def main() -> int:
+    return _run_fixture_suite(FIXTURES, REVIEW_ITEMS)
 
 
 if __name__ == "__main__":
