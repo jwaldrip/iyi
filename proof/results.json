@@ -174,5 +174,28 @@
     "log_sha256": "d30e10a119f114e61967de7bca2a851f6630c913ed60bac3d31b10a6b87d56c0",
     "warnings": "The linker reported objects built for macOS 28.0 while linking for macOS 27.0.",
     "protected_binary_identity": "All four compiler binary hashes, sizes, inodes and mtimes matched before and after."
+  },
+  "final_census": {
+    "source_sha": "dce806cd07201196e32cc8d7277334a759af4369",
+    "compiler_sha256": "d480492ba4e5a43fcd90c7a70e0117fd179431b13b68346ffae245a6db87169f",
+    "command": "bash bench/stale_census.sh all",
+    "exit_code": 0,
+    "programs": 141,
+    "c2_programs": 27,
+    "c3_programs": 114,
+    "reuse_hits": 87,
+    "c2_hits": 25,
+    "c3_hits": 62,
+    "nonreusable": 54,
+    "requested_effect": 53,
+    "opaque_construct": 1,
+    "static_reusable": 138,
+    "build_failures": 0,
+    "runner_failures": 0,
+    "internal_failures": 0,
+    "normal_and_warm_hit_codegen_lines": 0,
+    "fresh_scope": "Cold private cache, including runtime compilation, with up to eight concurrent workers; no warm-cache fresh measurement.",
+    "log": "proof/final-census.log",
+    "log_sha256": "57c6011201f234e1cebbef0d927f3ff9793c7d9da42821b85a5c1ca8f01911d8"
   }
 }
