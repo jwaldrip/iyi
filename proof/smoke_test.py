@@ -9496,8 +9496,1251 @@ O6_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
 # ===== O7: stages (owner U7). Keys "o7.". =====
 
 
-O7_FIXTURES: tuple[Fixture, ...] = ()
-O7_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {}
+def _stage_stub_payloads(scenario: str) -> dict[str, bytes]:
+    rg2r_count = 0 if scenario == "rg2r-zero" else 1
+    exclusion = ""
+    if scenario == "sample-exclusion":
+        exclusion = (
+            "  [excluded after calibration] samples/hello.iyi: fixture sample\n"
+        )
+    elif scenario == "std-exclusion":
+        exclusion = (
+            "  [excluded after calibration] "
+            "bench/std_missing_exercise.iyi: fixture std\n"
+        )
+    gate_sleep = ""
+    if scenario == "run1-slow-gate":
+        gate_sleep = "sleep 0.2\n"
+    elif scenario == "d4-stage-interrupt":
+        gate_sleep = (
+            "printf '%s\\n' ready >\"$TMPDIR/interrupt-ready\"\n"
+            "sleep 30\n"
+        )
+    stale_equivalence = (
+        "#!/bin/bash\n"
+        "set -u\n"
+        f"{gate_sleep}"
+        "echo 'RG2 PASSED: fixture'\n"
+        "echo 'RG2a PASSED: fixture'\n"
+        f"echo 'RG2r PASSED: all {rg2r_count} probes'\n"
+        "echo 'RG5 trace half PASSED: fixture'\n"
+        f"{exclusion}"
+        "exit 0\n"
+    )
+    observe_sentinel = (
+        "fixture observe sentinel missing"
+        if scenario == "run1-missing-sentinel"
+        else "OK: bench/std_observe_exercise.sh passed all checks"
+    )
+    std_observe = (
+        "#!/bin/bash\n"
+        f"echo '{observe_sentinel}'\n"
+        "exit 0\n"
+    )
+    rg9_count = 140 if scenario == "rg9-140" else 141
+    stale_rg9 = (
+        "#!/usr/bin/env python3\n"
+        f"print('RG9 PASSED: {rg9_count} corpus programs')\n"
+    )
+    sibling_count = 114 if scenario == "sibling-count-114" else 115
+    sibling_lines = ["-- running sibling: std_stage_exercise.sh"]
+    sibling_lines.extend(
+        f"-- running sibling: std_fixture_{number:03d}_exercise.sh"
+        for number in range(1, sibling_count)
+    )
+    std_exercise = (
+        "#!/bin/bash\n"
+        "echo 'Standard library foundation: traits, cmp, enumerable'\n"
+        "echo 'all 114 exercises answer the same from source and from artifacts'\n"
+        + "".join(f"echo '{line}'\n" for line in sibling_lines)
+        + f"echo '== shard 1 of 1: {sibling_count} of {sibling_count} sibling exercises'\n"
+        "exit 0\n"
+    )
+    stage_driver = (
+        "#!/bin/bash\n"
+        "REPO=$(CDPATH= cd -- \"$(dirname -- \"$0\")/..\" && pwd)\n"
+        "status=0\n"
+        "WORK=\"$(mktemp -d)\"\n"
+        "name=stage-plain\n"
+        "if ! \"$IYI\" build -o \"$WORK/$name\" "
+        "\"$REPO/bench/std_stage_exercise.iyi\"; then\n"
+        "  status=1\n"
+        "elif ! \"$WORK/$name\"; then\n"
+        "  status=1\n"
+        "fi\n"
+        "echo \"the std/stage exercise holds\"\n"
+        "exit $status\n"
+    )
+    stage_driver_bytes = stage_driver.encode()
+    stage_census = {
+        "census_version": 1,
+        "driver": "stage",
+        "script": "bench/std_stage_exercise.sh",
+        "script_sha256": hashlib.sha256(stage_driver_bytes).hexdigest(),
+        "sites": [
+            {
+                "lines": [6],
+                "command": "build",
+                "kind": "canonical-own",
+                "contains": [
+                    'if ! "$IYI" build -o "$WORK/$name" '
+                    '"$REPO/bench/std_stage_exercise.iyi"; then'
+                ],
+                "variants": [],
+            }
+        ],
+        "non_invocations": [],
+        "skips": [],
+        "not_skips": [],
+        "pass_sentinel": {
+            "line": 11,
+            "regex": "^the std/stage exercise holds$",
+            "text": 'echo "the std/stage exercise holds"',
+        },
+        "exec_evidence": [
+            {
+                "site_line": 6,
+                "out_template": "{WORK}/{name}",
+                "name_from_calls": {"5": "stage-plain"},
+                "exec_lines": [8],
+                "exec_token": '"$WORK/$name"',
+                "verdict_lines": [7, 9],
+                "failure_marks": ["status=1"],
+                "refs_ok": [],
+            }
+        ],
+    }
+    artifact_legs = (
+        "#!/usr/bin/env python3\n"
+        "import argparse\n"
+        "import json\n"
+        "parser = argparse.ArgumentParser()\n"
+        "parser.add_argument('--repo', required=True)\n"
+        "parser.add_argument('--compiler', required=True)\n"
+        "parser.add_argument('--work', required=True)\n"
+        "parser.add_argument('--report', required=True)\n"
+        "parser.add_argument('--workers', required=True)\n"
+        "parser.add_argument('--nm', required=True)\n"
+        "parser.add_argument('--expect-samples', type=int, required=True)\n"
+        "parser.add_argument('--expect-std', type=int, required=True)\n"
+        "parser.add_argument('--expect-total', type=int, required=True)\n"
+        "args = parser.parse_args()\n"
+        "rows = []\n"
+        "for index in range(args.expect_samples):\n"
+        "    rows.append({'kind':'sample','base':f'sample_{index}',"
+        "'name':f'samples/iyi/sample_{index}.iyi','status':'PASS',"
+        "'p_nonzero':False})\n"
+        "for index in range(args.expect_std):\n"
+        "    base = 'std_stage_exercise' if index == 0 else "
+        "f'std_fixture_{index:03d}_exercise'\n"
+        "    rows.append({'kind':'std','base':base,"
+        "'name':f'bench/{base}.iyi','status':'PASS',"
+        "'p_nonzero':False})\n"
+        "with open(args.report, 'w', encoding='utf-8') as output:\n"
+        "    for row in rows:\n"
+        "        output.write(json.dumps(row) + '\\n')\n"
+        "raise SystemExit(0 if len(rows) == args.expect_total else 1)\n"
+    )
+    return {
+        "bench/stale_equivalence.sh": stale_equivalence.encode(),
+        "bench/std_observe_exercise.sh": std_observe.encode(),
+        "bench/stale_rg9.py": stale_rg9.encode(),
+        "bench/std_exercise.sh": std_exercise.encode(),
+        "bench/std_stage_exercise.sh": stage_driver_bytes,
+        "bench/std_stage_exercise.iyi": b'puts "stage fixture"\n',
+        "proof/census/stage.json": (
+            json.dumps(stage_census, indent=2, sort_keys=True) + "\n"
+        ).encode(),
+        "proof/artifact_legs.py": artifact_legs.encode(),
+    }
+
+
+def _o7_load_json(path: str):
+    with open(path, "r", encoding="utf-8") as source:
+        return json.load(source)
+
+
+class StageFixture(PinFixture):
+    def __init__(self, scenario: str = "control") -> None:
+        self.scenario = scenario
+        self.drivers = ("stage",)
+        self.stub_difference_count = 0
+        super().__init__()
+    def __enter__(self) -> StageFixture:
+        return self
+
+
+    def _setup(self) -> None:
+        super()._setup()
+        shutil.rmtree(self.w)
+
+        proof_target = os.path.join(self.p, "proof")
+        os.makedirs(proof_target, exist_ok=True)
+        for source in sorted(glob.glob(os.path.join(REPO_ROOT, "proof", "*.py"))):
+            if os.path.basename(source) == "artifact_legs.py":
+                continue
+            shutil.copyfile(
+                source,
+                os.path.join(proof_target, os.path.basename(source)),
+            )
+
+        control_payloads = _stage_stub_payloads("control")
+        payloads = _stage_stub_payloads(self.scenario)
+        self.stub_difference_count = sum(
+            payloads[path] != control_payloads[path] for path in payloads
+        )
+        for relative, content in payloads.items():
+            target = os.path.join(self.p, relative)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, "wb") as output:
+                output.write(content)
+            if relative.endswith((".sh", ".py")):
+                os.chmod(target, 0o755)
+
+        _git(self.p, "add", ".")
+        _git(self.p, "commit", "-m", f"stage fixture {self.scenario}")
+        self.p_sha = _git(self.p, "rev-parse", "HEAD")
+        self.p_commit_time = int(_git(self.p, "log", "-1", "--format=%ct"))
+
+        completed = subprocess.run(
+            ["git", "clone", "--quiet", self.p, self.w],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(f"git clone failed: {completed.stderr.strip()}")
+        _git(self.w, "config", "user.name", "Proof Fixture")
+        _git(self.w, "config", "user.email", "proof-fixture@example.invalid")
+        _git(self.w, "config", "commit.gpgsign", "false")
+        marker = os.path.join(self.w, "proof", "stage-fixture.txt")
+        with open(marker, "w", encoding="utf-8") as output:
+            output.write("stage fixture proof delta\n")
+        _git(self.w, "add", "proof/stage-fixture.txt")
+        _git(self.w, "commit", "-m", "stage fixture proof delta")
+        self.write_compiler(f"iyi fixture [{self.p_sha[:9]}]")
+
+    def pin(self) -> dict:
+        return proofkit_mod.write_pin(
+            self.report,
+            self.p,
+            self.w,
+            self.compiler,
+            self.drivers,
+        )
+
+    def args(self, *, driver: str = "") -> SimpleNamespace:
+        return SimpleNamespace(report_dir=self.report, driver=driver)
+
+    def write_run2_prerequisite(self, *, p_nonzero: bool = False) -> str:
+        attempt = os.path.join(self.report, "run2", "a1")
+        os.makedirs(attempt, exist_ok=True)
+        report = os.path.join(attempt, "run2.jsonl")
+        row = {
+            "kind": "std",
+            "base": (
+                "std_extra_exercise"
+                if p_nonzero
+                else "std_stage_exercise"
+            ),
+            "name": (
+                "bench/std_extra_exercise.iyi"
+                if p_nonzero
+                else "bench/std_stage_exercise.iyi"
+            ),
+            "status": "PASS",
+            "p_nonzero": p_nonzero,
+        }
+        with open(report, "w", encoding="utf-8") as output:
+            output.write(json.dumps(row) + "\n")
+        return report
+
+    def write_prerequisites(
+        self,
+        *,
+        exclusions: list[dict[str, str]] | None = None,
+        p_nonzero: bool = False,
+    ) -> tuple[str, str, str]:
+        run1 = os.path.join(self.report, "run1", "a1")
+        os.makedirs(run1, exist_ok=True)
+        exclusions_path = os.path.join(run1, "exclusions.json")
+        baseline_path = os.path.join(run1, "baseline_skips.json")
+        with open(exclusions_path, "w", encoding="utf-8") as output:
+            json.dump(exclusions or [], output)
+        with open(baseline_path, "w", encoding="utf-8") as output:
+            json.dump([], output)
+        run2_path = self.write_run2_prerequisite(p_nonzero=p_nonzero)
+        return exclusions_path, baseline_path, run2_path
+
+    def write_input_result(
+        self,
+        unit: str,
+        attempt: int,
+        *,
+        checks: dict[str, str],
+        status: str,
+        chain_id: str | None = None,
+    ) -> str:
+        parent = os.path.join(self.report, *unit.split("/"))
+        attempt_dir = os.path.join(parent, f"a{attempt}")
+        os.makedirs(attempt_dir, exist_ok=True)
+        path = os.path.join(attempt_dir, "result.json")
+        record = {
+            "v": 1,
+            "chain_id": chain_id or self.pin_data["chain_id"],
+            "unit": unit,
+            "attempt": attempt,
+            "status": status,
+            "reasons": [] if status == "PASS" else ["fixture failure"],
+            "checks": checks,
+            "started_ns": 1,
+            "ended_ns": 2,
+            "survivors": [],
+        }
+        with open(path, "w", encoding="utf-8") as output:
+            json.dump(record, output, sort_keys=True)
+            output.write("\n")
+        return path
+
+    def prepare_final_inputs(self, *, two_run1_attempts: bool = False) -> None:
+        self.pin_data = self.pin()
+        run1_checks = {
+            name: "PASS" for name in proofkit_mod.REQUIRED_CHECKS["run1"]
+        }
+        run2_checks = {
+            name: "PASS" for name in proofkit_mod.REQUIRED_CHECKS["run2"]
+        }
+        run3_checks = {
+            name: "PASS" for name in proofkit_mod.REQUIRED_CHECKS["run3"]
+        }
+        first_attempt = 9 if two_run1_attempts else 1
+        self.write_input_result(
+            "run1",
+            first_attempt,
+            checks=run1_checks,
+            status="PASS",
+        )
+        if two_run1_attempts:
+            self.write_input_result(
+                "run1",
+                10,
+                checks=run1_checks,
+                status="PASS",
+            )
+        self.write_input_result(
+            "run2",
+            1,
+            checks=run2_checks,
+            status="PASS",
+        )
+        required_dir = os.path.join(self.report, "run3")
+        os.makedirs(required_dir, exist_ok=True)
+        with open(
+            os.path.join(required_dir, "required.json"),
+            "w",
+            encoding="utf-8",
+        ) as output:
+            json.dump(["stage"], output)
+        self.write_input_result(
+            "run3/stage",
+            1,
+            checks=run3_checks,
+            status="PASS",
+        )
+
+
+def _stage_result(report: str, unit: str) -> dict:
+    attempt = stages_mod.latest_attempt_dir(
+        os.path.join(report, *unit.split("/"))
+    )
+    if attempt is None:
+        return {}
+    result = proofkit_mod.load_result(os.path.join(attempt, "result.json"))
+    return result or {}
+
+
+def _scenario_applied(fixture: StageFixture) -> str:
+    if fixture.stub_difference_count != 1:
+        raise RuntimeError(
+            f"scenario {fixture.scenario!r} changed "
+            f"{fixture.stub_difference_count} stub files, expected exactly one"
+        )
+    return (
+        f"scenario={fixture.scenario};stub_files_changed=1;"
+        "bytes_differ=true"
+    )
+
+
+def _run1_seed(
+    scenario: str,
+    check_name: str,
+    expected_check: str,
+    expected_status: str = "FAIL",
+) -> Observation:
+    with StageFixture(scenario) as fixture:
+        fixture.pin()
+        returncode = stages_mod.cmd_run1(fixture.args(), disk_min_gb=0.0)
+        result = _stage_result(fixture.report, "run1")
+        got = {
+            "returncode": returncode,
+            "status": result.get("status"),
+            "check": result.get("checks", {}).get(check_name),
+        }
+        expected = {
+            "returncode": 0 if expected_status == "PASS" else 1,
+            "status": expected_status,
+            "check": expected_check,
+        }
+        return Observation(
+            expected=expected,
+            got=got,
+            applied=_scenario_applied(fixture),
+        )
+
+
+def _fixture_stage_chain_control() -> Observation:
+    with StageFixture() as fixture:
+        fixture.pin_data = fixture.pin()
+        run1_return = stages_mod.cmd_run1(
+            fixture.args(),
+            disk_min_gb=0.0,
+        )
+        run2_return = stages_mod.cmd_run2(
+            fixture.args(),
+            disk_min_gb=0.0,
+        )
+        required_dir = os.path.join(fixture.report, "run3")
+        os.makedirs(required_dir, exist_ok=True)
+        with open(
+            os.path.join(required_dir, "required.json"),
+            "w",
+            encoding="utf-8",
+        ) as output:
+            json.dump(["stage"], output)
+        fixture.write_input_result(
+            "run3/stage",
+            1,
+            checks={
+                name: "PASS"
+                for name in proofkit_mod.REQUIRED_CHECKS["run3"]
+            },
+            status="PASS",
+        )
+        final_return = stages_mod.cmd_final(fixture.args())
+        final = _o7_load_json(os.path.join(fixture.report, "final.json"))
+        got = {
+            "run1": run1_return,
+            "run2": run2_return,
+            "final": final_return,
+            "status": final.get("status"),
+            "earlier_failures": final.get("earlier_failures"),
+        }
+        expected = {
+            "run1": 0,
+            "run2": 0,
+            "final": 0,
+            "status": "PASS",
+            "earlier_failures": [],
+        }
+        return Observation(expected=expected, got=got)
+
+
+def _fixture_run1_control() -> Observation:
+    with StageFixture() as fixture:
+        fixture.pin()
+        returncode = stages_mod.cmd_run1(fixture.args(), disk_min_gb=0.0)
+        result = _stage_result(fixture.report, "run1")
+        got = {
+            "returncode": returncode,
+            "status": result.get("status"),
+            "attempt_files": all(
+                os.path.isfile(
+                    os.path.join(
+                        fixture.report,
+                        "run1",
+                        "a1",
+                        filename,
+                    )
+                )
+                for filename in (
+                    "exclusions.json",
+                    "baseline_skips.json",
+                    "result.json",
+                )
+            ),
+        }
+        expected = {
+            "returncode": 0,
+            "status": "PASS",
+            "attempt_files": True,
+        }
+        return Observation(expected=expected, got=got)
+
+
+def _fixture_run1_slow_gate_seed() -> Observation:
+    return _run1_seed(
+        "run1-slow-gate",
+        "gate-1.1",
+        "PASS",
+        expected_status="PASS",
+    )
+
+
+def _fixture_rg2r_zero_seed() -> Observation:
+    return _run1_seed("rg2r-zero", "rg2r-count", "FAIL")
+
+
+def _fixture_run1_missing_sentinel_seed() -> Observation:
+    return _run1_seed(
+        "run1-missing-sentinel",
+        "gate-1.2",
+        "FAIL",
+    )
+
+
+def _fixture_rg9_140_seed() -> Observation:
+    return _run1_seed("rg9-140", "gate-1.3", "FAIL")
+
+
+def _fixture_sibling_count_114_seed() -> Observation:
+    return _run1_seed("sibling-count-114", "gate-1.4", "FAIL")
+
+
+def _fixture_sample_exclusion_seed() -> Observation:
+    with StageFixture("sample-exclusion") as fixture:
+        fixture.pin()
+        returncode = stages_mod.cmd_run1(fixture.args(), disk_min_gb=0.0)
+        result = _stage_result(fixture.report, "run1")
+        got = {
+            "returncode": returncode,
+            "status": result.get("status"),
+            "check": result.get("checks", {}).get("exclusions"),
+            "reason": any(
+                str(reason).startswith(
+                    "UNEXPLAINED-SAMPLE-EXCLUSION: samples/hello.iyi"
+                )
+                for reason in result.get("reasons", [])
+            ),
+        }
+        expected = {
+            "returncode": 1,
+            "status": "FAIL",
+            "check": "FAIL",
+            "reason": True,
+        }
+        return Observation(
+            expected=expected,
+            got=got,
+            applied=_scenario_applied(fixture),
+        )
+
+
+def _fixture_exclusions_wrong_location_seed() -> Observation:
+    with StageFixture() as fixture:
+        fixture.pin()
+        wrong_path = os.path.join(fixture.report, "run1", "exclusions.json")
+        os.makedirs(os.path.dirname(wrong_path), exist_ok=True)
+        sentinel = b"wrong-location-sentinel\n"
+        with open(wrong_path, "wb") as output:
+            output.write(sentinel)
+        returncode = stages_mod.cmd_run1(fixture.args(), disk_min_gb=0.0)
+        attempt = stages_mod.latest_attempt_dir(
+            os.path.join(fixture.report, "run1")
+        )
+        with open(wrong_path, "rb") as source:
+            unchanged = source.read() == sentinel
+        got = {
+            "returncode": returncode,
+            "wrong_location_untouched": unchanged,
+            "attempt_exclusions": bool(
+                attempt
+                and os.path.isfile(os.path.join(attempt, "exclusions.json"))
+            ),
+            "attempt_baseline": bool(
+                attempt
+                and os.path.isfile(
+                    os.path.join(attempt, "baseline_skips.json")
+                )
+            ),
+        }
+        expected = {
+            "returncode": 0,
+            "wrong_location_untouched": True,
+            "attempt_exclusions": True,
+            "attempt_baseline": True,
+        }
+        return Observation(
+            expected=expected,
+            got=got,
+            applied=(
+                f"created={wrong_path};bytes={len(sentinel)};"
+                f"exists={str(os.path.isfile(wrong_path)).lower()}"
+            ),
+        )
+
+
+def _fixture_std_exclusion_seed() -> Observation:
+    with StageFixture("std-exclusion") as fixture:
+        fixture.pin()
+        stages_mod.cmd_run1(fixture.args(), disk_min_gb=0.0)
+        fixture.write_run2_prerequisite()
+        returncode = stages_mod.cmd_run3(
+            fixture.args(),
+            drivers=fixture.drivers,
+            driver_limit_sec=1.0,
+            grace_sec=0.1,
+            disk_min_gb=0.0,
+        )
+        required = _o7_load_json(
+            os.path.join(fixture.report, "run3", "required.json")
+        )
+        missing = _stage_result(fixture.report, "run3/missing")
+        got = {
+            "returncode": returncode,
+            "required": required,
+            "missing_status": missing.get("status"),
+        }
+        expected = {
+            "returncode": 1,
+            "required": ["stage", "missing"],
+            "missing_status": "CENSUS-MISSING",
+        }
+        return Observation(
+            expected=expected,
+            got=got,
+            applied=_scenario_applied(fixture),
+        )
+
+
+def _fixture_p_nonzero_not_added_seed() -> Observation:
+    with StageFixture() as fixture:
+        fixture.pin()
+        _exclusions, _baseline, run2_path = fixture.write_prerequisites(
+            p_nonzero=True
+        )
+        returncode = stages_mod.cmd_run3(
+            fixture.args(),
+            drivers=fixture.drivers,
+            driver_limit_sec=1.0,
+            grace_sec=0.1,
+            disk_min_gb=0.0,
+        )
+        required = _o7_load_json(
+            os.path.join(fixture.report, "run3", "required.json")
+        )
+        extra = _stage_result(fixture.report, "run3/extra")
+        got = {
+            "returncode": returncode,
+            "required": required,
+            "extra_status": extra.get("status"),
+        }
+        expected = {
+            "returncode": 1,
+            "required": ["stage", "extra"],
+            "extra_status": "CENSUS-MISSING",
+        }
+        return Observation(
+            expected=expected,
+            got=got,
+            applied=(
+                f"run2={run2_path};field=p_nonzero;"
+                "control=false;seed=true;changed_rows=1"
+            ),
+        )
+
+
+def _numbered_prerequisites(
+    fixture: StageFixture,
+    *,
+    remove_latest_baseline: bool,
+) -> tuple[str, str, str]:
+    fixture.write_prerequisites()
+    run1_root = os.path.join(fixture.report, "run1")
+    run2_root = os.path.join(fixture.report, "run2")
+    os.rename(
+        os.path.join(run1_root, "a1"),
+        os.path.join(run1_root, "a9"),
+    )
+    shutil.copytree(
+        os.path.join(run1_root, "a9"),
+        os.path.join(run1_root, "a10"),
+    )
+    os.rename(
+        os.path.join(run2_root, "a1"),
+        os.path.join(run2_root, "a10"),
+    )
+    latest_run1 = os.path.join(run1_root, "a10")
+    exclusions = os.path.join(latest_run1, "exclusions.json")
+    baseline = os.path.join(latest_run1, "baseline_skips.json")
+    run2 = os.path.join(run2_root, "a10", "run2.jsonl")
+    if remove_latest_baseline:
+        os.unlink(baseline)
+    return exclusions, baseline, run2
+
+
+def _fixture_run3_prerequisite_control() -> Observation:
+    with StageFixture() as fixture:
+        fixture.pin()
+        expected_paths = _numbered_prerequisites(
+            fixture,
+            remove_latest_baseline=False,
+        )
+        got = stages_mod._run3_prerequisites(fixture.report)
+        return Observation(expected=expected_paths, got=got)
+
+
+def _fixture_run3_missing_prerequisite_seed() -> Observation:
+    with StageFixture() as fixture:
+        fixture.pin()
+        _exclusions, baseline, _run2 = _numbered_prerequisites(
+            fixture,
+            remove_latest_baseline=True,
+        )
+        returncode = stages_mod.cmd_run3(
+            fixture.args(),
+            drivers=fixture.drivers,
+            disk_min_gb=0.0,
+        )
+        got = {
+            "returncode": returncode,
+            "required_exists": os.path.exists(
+                os.path.join(fixture.report, "run3", "required.json")
+            ),
+        }
+        expected = {"returncode": 2, "required_exists": False}
+        return Observation(
+            expected=expected,
+            got=got,
+            applied=(
+                f"latest_attempt=10;removed={baseline};"
+                f"exists={str(os.path.exists(baseline)).lower()}"
+            ),
+        )
+
+
+def _fixture_required_match_control() -> Observation:
+    with StageFixture() as fixture:
+        fixture.pin()
+        exclusions, _baseline, run2 = fixture.write_prerequisites()
+        got = stages_mod._compute_required_drivers(
+            fixture.drivers,
+            exclusions,
+            run2,
+        )
+        return Observation(expected=["stage"], got=got)
+
+
+def _fixture_required_mismatch_seed() -> Observation:
+    with StageFixture() as fixture:
+        fixture.pin()
+        fixture.write_prerequisites()
+        required_path = os.path.join(
+            fixture.report,
+            "run3",
+            "required.json",
+        )
+        os.makedirs(os.path.dirname(required_path), exist_ok=True)
+        with open(required_path, "w", encoding="utf-8") as output:
+            json.dump(["other"], output)
+        returncode = stages_mod.cmd_run3(
+            fixture.args(),
+            drivers=fixture.drivers,
+            disk_min_gb=0.0,
+        )
+        invalid = _stage_result(fixture.report, "run3/other")
+        with open(required_path, "r", encoding="utf-8") as source:
+            frozen = json.load(source)
+        got = {
+            "returncode": returncode,
+            "status": invalid.get("status"),
+            "frozen": frozen,
+        }
+        expected = {
+            "returncode": 1,
+            "status": "INVALID",
+            "frozen": ["other"],
+        }
+        return Observation(
+            expected=expected,
+            got=got,
+            applied=f"created={required_path};value=['other']",
+        )
+
+
+def _fixture_binary_changed_seed() -> Observation:
+    with StageFixture() as fixture:
+        fixture.pin()
+        fixture.write_prerequisites()
+        before = _file_sha256(fixture.compiler)
+        with open(fixture.compiler, "a", encoding="utf-8") as output:
+            output.write("\n# changed after pin\n")
+        after = _file_sha256(fixture.compiler)
+        returncode = stages_mod.cmd_run3(
+            fixture.args(),
+            drivers=fixture.drivers,
+            disk_min_gb=0.0,
+        )
+        stage = _stage_result(fixture.report, "run3/stage")
+        got = {
+            "returncode": returncode,
+            "status": stage.get("status"),
+            "identity": stage.get("checks", {}).get("identity"),
+        }
+        expected = {
+            "returncode": 1,
+            "status": "INVALID",
+            "identity": "INVALID",
+        }
+        return Observation(
+            expected=expected,
+            got=got,
+            applied=(
+                f"before_sha={before};after_sha={after};"
+                f"bytes_differ={str(before != after).lower()}"
+            ),
+        )
+
+
+def _fixture_route_a_drivers_seed() -> Observation:
+    original = os.environ.pop("ROUTE_A_DRIVERS", None)
+    before = os.environ.get("ROUTE_A_DRIVERS")
+    os.environ["ROUTE_A_DRIVERS"] = "cookie"
+    try:
+        got = stages_mod.main(["plan"])
+    finally:
+        if original is None:
+            os.environ.pop("ROUTE_A_DRIVERS", None)
+        else:
+            os.environ["ROUTE_A_DRIVERS"] = original
+    return Observation(
+        expected=2,
+        got=got,
+        applied=(
+            f"ROUTE_A_DRIVERS={before!r}->'cookie';"
+            f"changed={str(before != 'cookie').lower()};main_called=true"
+        ),
+    )
+
+
+def _fixture_route_a_control() -> Observation:
+    with StageFixture() as fixture:
+        fixture.prepare_final_inputs()
+        got = stages_mod.main(
+            ["final", "--report-dir", fixture.report]
+        )
+        return Observation(expected=0, got=got)
+
+
+def _final_seed(kind: str) -> Observation:
+    with StageFixture() as fixture:
+        fixture.prepare_final_inputs(
+            two_run1_attempts=(kind == "earlier-failure")
+        )
+        applied = ""
+        if kind == "forged-pass":
+            path = os.path.join(
+                fixture.report,
+                "run1",
+                "a1",
+                "result.json",
+            )
+            record = _o7_load_json(path)
+            before = json.dumps(record, sort_keys=True)
+            record["checks"]["gate-1.2"] = "FAIL"
+            with open(path, "w", encoding="utf-8") as output:
+                json.dump(record, output, sort_keys=True)
+            after = json.dumps(record, sort_keys=True)
+            applied = (
+                f"field=checks.gate-1.2;before=PASS;after=FAIL;"
+                f"bytes_differ={str(before != after).lower()}"
+            )
+        elif kind == "missing-result":
+            path = os.path.join(
+                fixture.report,
+                "run2",
+                "a1",
+                "result.json",
+            )
+            os.unlink(path)
+            applied = f"removed={path};exists={str(os.path.exists(path)).lower()}"
+        elif kind == "chain-mismatch":
+            path = os.path.join(
+                fixture.report,
+                "run1",
+                "a1",
+                "result.json",
+            )
+            record = _o7_load_json(path)
+            old_chain = record["chain_id"]
+            record["chain_id"] = "0" * 32
+            with open(path, "w", encoding="utf-8") as output:
+                json.dump(record, output, sort_keys=True)
+            applied = (
+                f"chain={old_chain}->{'0' * 32};"
+                f"changed={str(old_chain != record['chain_id']).lower()}"
+            )
+        elif kind == "earlier-failure":
+            path = os.path.join(
+                fixture.report,
+                "run1",
+                "a9",
+                "result.json",
+            )
+            record = _o7_load_json(path)
+            record["checks"]["gate-1.1"] = "FAIL"
+            record["status"] = "FAIL"
+            record["reasons"] = ["fixture earlier failure"]
+            with open(path, "w", encoding="utf-8") as output:
+                json.dump(record, output, sort_keys=True)
+            applied = f"replaced_one_earlier_result={path};status=FAIL"
+        else:
+            raise ValueError(f"unknown final seed {kind}")
+
+        returncode = stages_mod.cmd_final(fixture.args())
+        final = _o7_load_json(os.path.join(fixture.report, "final.json"))
+        if kind == "earlier-failure":
+            got = {
+                "returncode": returncode,
+                "status": final.get("status"),
+                "latest_attempt": final.get("units", {})
+                .get("run1", {})
+                .get("attempt"),
+                "listed": {
+                    "unit": "run1",
+                    "attempt": 9,
+                    "status": "FAIL",
+                }
+                in final.get("earlier_failures", []),
+            }
+            expected = {
+                "returncode": 0,
+                "status": "PASS",
+                "latest_attempt": 10,
+                "listed": True,
+            }
+        else:
+            reason_fragment = {
+                "forged-pass": "forged status",
+                "missing-result": "missing or unreadable",
+                "chain-mismatch": "chain_id mismatch",
+            }[kind]
+            got = {
+                "returncode": returncode,
+                "status": final.get("status"),
+                "reason": any(
+                    reason_fragment in str(reason)
+                    for reason in final.get("reasons", [])
+                ),
+            }
+            expected = {"returncode": 1, "status": "FAIL", "reason": True}
+        return Observation(expected=expected, got=got, applied=applied)
+
+
+def _fixture_final_forged_pass_seed() -> Observation:
+    return _final_seed("forged-pass")
+
+
+def _fixture_final_missing_result_seed() -> Observation:
+    return _final_seed("missing-result")
+
+
+def _fixture_final_chain_mismatch_seed() -> Observation:
+    return _final_seed("chain-mismatch")
+
+
+def _fixture_final_earlier_failure_seed() -> Observation:
+    return _final_seed("earlier-failure")
+
+
+def _fixture_run_proof_optimize_seed() -> Observation:
+    script = os.path.join(REPO_ROOT, "proof", "run_proof.py")
+    control = [sys.executable, "-B", script, "--help"]
+    command = [sys.executable, "-B", "-O", script, "--help"]
+    env = os.environ.copy()
+    env.pop("PYTHONOPTIMIZE", None)
+    env.pop("ROUTE_A_DRIVERS", None)
+    completed = subprocess.run(
+        command,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    got = {
+        "returncode": completed.returncode,
+        "stderr": completed.stderr.strip(),
+    }
+    expected = {
+        "returncode": 2,
+        "stderr": "run_proof: refusing to run under python -O / PYTHONOPTIMIZE",
+    }
+    return Observation(
+        expected=expected,
+        got=got,
+        applied=(
+            f"control_argv={control!r};seed_argv={command!r};"
+            "inserted_token=-O"
+        ),
+    )
+
+
+def _fixture_run_proof_optimize_control() -> Observation:
+    script = os.path.join(REPO_ROOT, "proof", "run_proof.py")
+    env = os.environ.copy()
+    env.pop("PYTHONOPTIMIZE", None)
+    env.pop("ROUTE_A_DRIVERS", None)
+    completed = subprocess.run(
+        [sys.executable, "-B", script, "--help"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    return Observation(expected=0, got=completed.returncode)
+
+
+def _fixture_d4_stage_interrupt_seed() -> Observation:
+    with StageFixture("d4-stage-interrupt") as fixture:
+        fixture.pin()
+        code = (
+            "import sys;"
+            f"sys.path.insert(0,{REPO_ROOT!r});"
+            "from types import SimpleNamespace;"
+            "import proof.run_proof as stages;"
+            f"args=SimpleNamespace(report_dir={fixture.report!r},driver='');"
+            "raise SystemExit(stages.cmd_run1(args,disk_min_gb=0.0))"
+        )
+        process = subprocess.Popen(
+            [sys.executable, "-B", "-c", code],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        marker = os.path.join(
+            fixture.report,
+            "run1",
+            "a1",
+            "run1_1.tmp",
+            "interrupt-ready",
+        )
+        marker_seen = False
+        for _ in range(500):
+            if os.path.isfile(marker):
+                marker_seen = True
+                break
+            if process.poll() is not None:
+                break
+            time.sleep(0.01)
+        sent = False
+        if marker_seen and process.poll() is None:
+            os.kill(process.pid, signal.SIGTERM)
+            sent = True
+        stdout, stderr = process.communicate(timeout=10)
+        result = _stage_result(fixture.report, "run1")
+        survivor_pids = result.get("survivors", [])
+        got = {
+            "returncode": process.returncode,
+            "status": result.get("status"),
+            "reason": "interrupted by signal 15" in result.get("reasons", []),
+            "survivors_gone": all(
+                not _process_alive(pid) for pid in survivor_pids
+            ),
+        }
+        expected = {
+            "returncode": 1,
+            "status": "FAIL",
+            "reason": True,
+            "survivors_gone": True,
+        }
+        return Observation(
+            expected=expected,
+            got=got,
+            applied=(
+                f"marker_seen={str(marker_seen).lower()};"
+                f"sigterm_sent={str(sent).lower()};"
+                f"stdout_len={len(stdout)};stderr_len={len(stderr)};"
+                f"{_scenario_applied(fixture)}"
+            ),
+        )
+
+
+O7_FIXTURES: tuple[Fixture, ...] = (
+    Fixture(
+        "s5.control.stage-chain",
+        "control",
+        _fixture_stage_chain_control,
+    ),
+    Fixture(
+        "o7.control.run1",
+        "control",
+        _fixture_run1_control,
+    ),
+    Fixture(
+        "s5.seed.run1-slow-gate",
+        "seed",
+        _fixture_run1_slow_gate_seed,
+    ),
+    Fixture(
+        "s5.seed.rg2r-zero",
+        "seed",
+        _fixture_rg2r_zero_seed,
+    ),
+    Fixture(
+        "s5.seed.exclusions-wrong-location",
+        "seed",
+        _fixture_exclusions_wrong_location_seed,
+    ),
+    Fixture(
+        "s5.seed.run1-missing-sentinel",
+        "seed",
+        _fixture_run1_missing_sentinel_seed,
+    ),
+    Fixture(
+        "s5.seed.rg9-140",
+        "seed",
+        _fixture_rg9_140_seed,
+    ),
+    Fixture(
+        "s5.seed.sibling-count-114",
+        "seed",
+        _fixture_sibling_count_114_seed,
+    ),
+    Fixture(
+        "s5.seed.sample-exclusion",
+        "seed",
+        _fixture_sample_exclusion_seed,
+    ),
+    Fixture(
+        "s5.seed.std-exclusion",
+        "seed",
+        _fixture_std_exclusion_seed,
+    ),
+    Fixture(
+        "s5.seed.p-nonzero-not-added",
+        "seed",
+        _fixture_p_nonzero_not_added_seed,
+    ),
+    Fixture(
+        "o7.control.run3-prerequisite",
+        "control",
+        _fixture_run3_prerequisite_control,
+    ),
+    Fixture(
+        "s5.seed.run3-missing-prerequisite",
+        "seed",
+        _fixture_run3_missing_prerequisite_seed,
+    ),
+    Fixture(
+        "o7.control.required-selection",
+        "control",
+        _fixture_required_match_control,
+    ),
+    Fixture(
+        "s5.seed.required-mismatch",
+        "seed",
+        _fixture_required_mismatch_seed,
+    ),
+    Fixture(
+        "s5.seed.binary-changed",
+        "seed",
+        _fixture_binary_changed_seed,
+    ),
+    Fixture(
+        "o7.control.route-a",
+        "control",
+        _fixture_route_a_control,
+    ),
+    Fixture(
+        "s5.seed.route-a-drivers",
+        "seed",
+        _fixture_route_a_drivers_seed,
+    ),
+    Fixture(
+        "s5.seed.final-forged-pass",
+        "seed",
+        _fixture_final_forged_pass_seed,
+    ),
+    Fixture(
+        "s5.seed.final-missing-result",
+        "seed",
+        _fixture_final_missing_result_seed,
+    ),
+    Fixture(
+        "s5.seed.final-chain-mismatch",
+        "seed",
+        _fixture_final_chain_mismatch_seed,
+    ),
+    Fixture(
+        "s5.seed.final-earlier-failure-omitted",
+        "seed",
+        _fixture_final_earlier_failure_seed,
+    ),
+    Fixture(
+        "o7.control.run-proof-optimize",
+        "control",
+        _fixture_run_proof_optimize_control,
+    ),
+    Fixture(
+        "o7.seed.run-proof-optimize-refusal",
+        "seed",
+        _fixture_run_proof_optimize_seed,
+    ),
+    Fixture(
+        "o7.seed.d4-stage-interrupt",
+        "seed",
+        _fixture_d4_stage_interrupt_seed,
+    ),
+)
+
+O7_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
+    "o7.final": (
+        "s5.seed.final-forged-pass",
+        "s5.seed.final-missing-result",
+        "s5.seed.final-chain-mismatch",
+        "s5.seed.final-earlier-failure-omitted",
+        "s5.control.stage-chain",
+    ),
+    "o7.run1-gates": (
+        "s5.seed.run1-slow-gate",
+        "s5.seed.rg2r-zero",
+        "s5.seed.run1-missing-sentinel",
+        "s5.seed.rg9-140",
+        "s5.seed.sibling-count-114",
+        "o7.control.run1",
+    ),
+    "o7.run1-artifacts": (
+        "s5.seed.exclusions-wrong-location",
+        "s5.seed.sample-exclusion",
+        "o7.control.run1",
+    ),
+    "o7.run3-selection": (
+        "s5.seed.std-exclusion",
+        "s5.seed.p-nonzero-not-added",
+        "o7.control.required-selection",
+    ),
+    "o7.run3-setup": (
+        "s5.seed.run3-missing-prerequisite",
+        "s5.seed.required-mismatch",
+        "s5.seed.binary-changed",
+        "o7.control.run3-prerequisite",
+    ),
+    "o7.route-a-refusal": (
+        "s5.seed.route-a-drivers",
+        "o7.control.route-a",
+    ),
+    "o7.optimize-refusal": (
+        "o7.seed.run-proof-optimize-refusal",
+        "o7.control.run-proof-optimize",
+    ),
+    "o7.d4-stage-interrupt": (
+        "o7.seed.d4-stage-interrupt",
+        "o7.control.run1",
+    ),
+}
 
 
 # This map is intentionally literal. A fixture id names either a seeded failure
