@@ -33,15 +33,6 @@ class IdentityError(RuntimeError):
         self.detail = detail
 
 
-class CensusValidationError(RuntimeError):
-    pass
-
-
-class LedgerVerificationError(RuntimeError):
-    def __init__(self, status: str, message: str):
-        super().__init__(f"{status}: {message}")
-        self.status = status
-        self.message = message
 
 
 def sha256_bytes(b: bytes) -> str:
@@ -2757,78 +2748,685 @@ def validate_census(
     return sorted(set(violations), key=lambda item: (item[1], item[0], item[2]))
 
 
-def verify_ledger(ledger_path: str, driver: str, census_data: dict, pin: dict, report_dir: str) -> dict[str, int]:
-    """
-    Contract C7 + Amendment B: Verify Route B driver ledger.
-    """
-    if not os.path.isfile(ledger_path):
-        raise LedgerVerificationError("STALE", f"Ledger file missing: {ledger_path}")
+@dataclass(frozen=True)
+class LedgerVerdict:
+    statuses: frozenset[str]
+    reasons: tuple[str, ...]
 
-    records = []
-    with open(ledger_path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                try:
-                    records.append(json.loads(line))
-                except Exception as ex:
-                    raise LedgerVerificationError("UNFAITHFUL", f"Corrupt ledger line: {ex}")
 
-    if not records:
-        raise LedgerVerificationError("STALE", f"Empty ledger: {ledger_path}")
+def _ledger_add(
+    statuses: set[str],
+    reasons: list[str],
+    status: str,
+    detail: str,
+) -> None:
+    statuses.add(status)
+    reason = f"{status}: {detail}"
+    if reason not in reasons:
+        reasons.append(reason)
 
-    pin_nonce = pin.get("chain_id")
-    target_substr = f"std_{driver}_exercise.iyi"
 
-    found_own_roundtrip = False
-    counts: dict[str, int] = {
-        "roundtrip": 0, "passthrough": 0, "observed-negative": 0, "unchanged": 0
+def _ledger_result(statuses: set[str], reasons: list[str]) -> LedgerVerdict:
+    return LedgerVerdict(frozenset(statuses), tuple(reasons))
+
+
+def _ledger_variant_ids(record: dict) -> tuple[str, ...]:
+    values = record.get("variant_ids")
+    if not isinstance(values, list):
+        return ()
+    return tuple(value for value in values if isinstance(value, str))
+
+
+def _ledger_census_index(
+    census: dict,
+) -> tuple[dict[str, tuple[dict, dict]], dict[int, dict]]:
+    variants: dict[str, tuple[dict, dict]] = {}
+    sites_by_line: dict[int, dict] = {}
+    sites_value = census.get("sites") if isinstance(census, dict) else []
+    site_values = sites_value if isinstance(sites_value, list) else ()
+    sites = tuple(site for site in site_values if isinstance(site, dict))
+    for site in sites:
+        lines = site.get("lines")
+        line_values = lines if isinstance(lines, list) else ()
+        for line in (line for line in line_values if isinstance(line, int)):
+            sites_by_line[line] = site
+        site_variants = site.get("variants")
+        variant_values = site_variants if isinstance(site_variants, list) else ()
+        for variant in (
+            variant
+            for variant in variant_values
+            if isinstance(variant, dict)
+            and isinstance(variant.get("id"), str)
+        ):
+            variants[variant["id"]] = (variant, site)
+    return variants, sites_by_line
+
+
+def _ledger_successful_roundtrip(record: dict) -> bool:
+    producer = record.get("producer")
+    consumer = record.get("consumer")
+    mods_count = producer.get("mods_count") if isinstance(producer, dict) else None
+    return (
+        record.get("phase") == "end"
+        and record.get("mode") == "roundtrip"
+        and isinstance(producer, dict)
+        and producer.get("rc") == 0
+        and isinstance(mods_count, int)
+        and not isinstance(mods_count, bool)
+        and mods_count >= 1
+        and isinstance(consumer, dict)
+        and consumer.get("rc") == 0
+    )
+
+
+def _ledger_is_own(record: dict, *, driver: str, repo: str) -> bool:
+    sources = record.get("sources")
+    expected = os.path.realpath(
+        os.path.join(repo, "bench", f"std_{driver}_exercise.iyi")
+    )
+    valid_sources = isinstance(sources, list) and all(
+        isinstance(source, str) for source in sources
+    )
+    source_values = sources if valid_sources else ()
+    normalized = [os.path.realpath(source) for source in source_values]
+    return (
+        record.get("own") is True
+        and record.get("canonical") is True
+        and normalized == [expected]
+    )
+
+
+def _ledger_binding_values(
+    records: list[dict],
+    variant_id: str,
+    variable: str,
+) -> tuple[object, ...]:
+    values: list[object] = []
+    for record in records:
+        bindings = record.get("bindings")
+        variant_bindings = bindings.get(variant_id) if isinstance(bindings, dict) else None
+        if isinstance(variant_bindings, dict) and variable in variant_bindings:
+            values.append(variant_bindings[variable])
+    return tuple(values)
+
+
+def _ledger_out_regex(
+    template: str,
+    *,
+    work_tmp: str,
+    repo: str,
+    name: str | None,
+) -> re.Pattern[str] | None:
+    parts: list[str] = []
+    cursor = 0
+    for match in re.finditer(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", template):
+        parts.append(re.escape(template[cursor : match.start()]))
+        placeholder = match.group(1)
+        if placeholder == "WORK":
+            parts.append(re.escape(os.path.realpath(work_tmp)) + r"/[^/]+")
+        elif placeholder == "REPO":
+            parts.append(re.escape(os.path.realpath(repo)))
+        elif placeholder == "name" and name is not None:
+            parts.append(re.escape(name))
+        else:
+            return None
+        cursor = match.end()
+    parts.append(re.escape(template[cursor:]))
+    return re.compile("".join(parts))
+
+
+def _ledger_run_executed(record: dict) -> bool:
+    run = record.get("run")
+    argv = run.get("argv") if isinstance(run, dict) else None
+    return (
+        isinstance(run, dict)
+        and isinstance(argv, list)
+        and bool(argv)
+        and record.get("command") == "run"
+        and argv[0] == record.get("out")
+        and isinstance(run.get("rc"), int)
+        and not isinstance(run.get("rc"), bool)
+    )
+
+
+def verify_ledger(
+    ledger_path: str,
+    *,
+    census: dict,
+    driver: str,
+    nonce: str,
+    attempt: int,
+    chain_id: str,
+    work_tmp: str,
+    repo: str,
+    stat_fn: Callable[[str], os.stat_result] = os.stat,
+) -> LedgerVerdict:
+    """Verify one P2 ledger and return every blocking P4 status."""
+    statuses: set[str] = set()
+    reasons: list[str] = []
+
+    try:
+        with open(ledger_path, "r", encoding="utf-8") as ledger_file:
+            raw = ledger_file.read()
+    except (OSError, UnicodeError) as error:
+        _ledger_add(statuses, reasons, "STALE", f"ledger unreadable: {error}")
+        return _ledger_result(statuses, reasons)
+
+    lines = raw.splitlines()
+    if not lines or not lines[0].strip():
+        _ledger_add(statuses, reasons, "STALE", "ledger is empty")
+        return _ledger_result(statuses, reasons)
+
+    try:
+        header = json.loads(lines[0])
+    except (json.JSONDecodeError, UnicodeError) as error:
+        _ledger_add(statuses, reasons, "STALE", "line 1 is not a header")
+        _ledger_add(statuses, reasons, "UNFAITHFUL", f"malformed line 1: {error}")
+        return _ledger_result(statuses, reasons)
+
+    if (
+        not isinstance(header, dict)
+        or header.get("v") != 1
+        or header.get("kind") != "header"
+    ):
+        _ledger_add(statuses, reasons, "STALE", "line 1 is not a v1 header")
+        return _ledger_result(statuses, reasons)
+
+    expected_header = {
+        "nonce": nonce,
+        "driver": driver,
+        "attempt": attempt,
+        "chain_id": chain_id,
     }
+    for field, expected in expected_header.items():
+        if header.get(field) != expected:
+            _ledger_add(
+                statuses,
+                reasons,
+                "STALE",
+                f"header {field} is {header.get(field)!r}, expected {expected!r}",
+            )
+    if "STALE" in statuses:
+        return _ledger_result(statuses, reasons)
 
-    # Track open begin records for UNFAITHFUL detection
-    open_begins = {}
+    records: list[dict] = []
+    for line_number, line in enumerate(lines[1:], 2):
+        if not line.strip():
+            _ledger_add(
+                statuses,
+                reasons,
+                "UNFAITHFUL",
+                f"blank JSONL line {line_number}",
+            )
+            continue
+        try:
+            record = json.loads(line)
+        except (json.JSONDecodeError, UnicodeError) as error:
+            _ledger_add(
+                statuses,
+                reasons,
+                "UNFAITHFUL",
+                f"malformed line {line_number}: {error}",
+            )
+            continue
+        if (
+            not isinstance(record, dict)
+            or record.get("v") != 1
+            or record.get("kind") != "record"
+        ):
+            _ledger_add(
+                statuses,
+                reasons,
+                "UNFAITHFUL",
+                f"line {line_number} is not a v1 record",
+            )
+            continue
+        records.append(record)
 
-    for rec in records:
-        mode = rec.get("mode", "")
-        phase = rec.get("phase", "")
-        counts[mode] = counts.get(mode, 0) + 1
+    variant_index, sites_by_line = _ledger_census_index(census)
+    pair_records: dict[str, dict[str, list[dict]]] = {}
+    end_records: list[tuple[int, dict]] = []
 
-        if rec.get("driver") != driver:
-            raise LedgerVerificationError("STALE", f"Foreign driver in ledger: {rec.get('driver')}")
+    for record_index, record in enumerate(records):
+        label = f"record {record_index + 1}"
+        if (
+            record.get("nonce") != header["nonce"]
+            or record.get("driver") != header["driver"]
+        ):
+            _ledger_add(
+                statuses,
+                reasons,
+                "STALE",
+                f"{label} has a foreign nonce or driver",
+            )
 
-        if phase == "begin":
-            open_begins[rec.get("pid")] = rec
-        elif phase == "end":
-            open_begins.pop(rec.get("pid"), None)
+        phase = record.get("phase")
+        if phase in ("begin", "end"):
+            invocation = record.get("inv")
+            if not isinstance(invocation, str) or not invocation:
+                _ledger_add(
+                    statuses,
+                    reasons,
+                    "UNFAITHFUL",
+                    f"{label} has no invocation id",
+                )
+            else:
+                paired = pair_records.setdefault(
+                    invocation,
+                    {"begin": [], "end": []},
+                )
+                paired[phase].append(record)
+        if phase == "end":
+            end_records.append((record_index, record))
 
-            # Check divergence
-            prod = rec.get("producer") or {}
-            cons = rec.get("consumer") or {}
-            if prod.get("rc") == 0 and cons.get("rc", 0) != 0:
-                raise LedgerVerificationError("DIVERGENCE", f"Producer 0 with consumer {cons.get('rc')}")
-            if cons.get("rc") == 0 and not cons.get("out_written"):
-                raise LedgerVerificationError("DIVERGENCE", "Consumer 0 without writing OUT")
+        if record.get("interrupted") is True:
+            _ledger_add(
+                statuses,
+                reasons,
+                "UNFAITHFUL",
+                f"{label} is marked interrupted",
+            )
+        run = record.get("run")
+        if isinstance(run, dict) and run.get("signal") is not None:
+            _ledger_add(
+                statuses,
+                reasons,
+                "UNFAITHFUL",
+                f"{label} records run signal {run.get('signal')!r}",
+            )
 
-            # Check if this was own roundtrip
-            if any(target_substr in str(s) for s in rec.get("sources", [])):
-                if prod.get("rc") == 0 and cons.get("rc") == 0 and prod.get("mods_count", 0) >= 1 and cons.get("out_sha256"):
-                    found_own_roundtrip = True
+        mode = record.get("mode")
+        variant_kind = record.get("variant_kind")
+        if (
+            phase == "refused"
+            or mode in ("refused", "unclassified")
+            or variant_kind in ("unclassified", "ambiguous")
+        ):
+            _ledger_add(
+                statuses,
+                reasons,
+                "MISCLASSIFIED",
+                f"{label} is refused or unclassified",
+            )
 
-                    # Amendment B E3: Check kernel observable
-                    out_ref = rec.get("out_ref")
-                    if out_ref and os.path.exists(out_ref):
-                        st = os.stat(out_ref)
-                        if st.st_ino != rec.get("out_ino"):
-                            raise LedgerVerificationError("NOT-EXECUTED", f"Inode changed on {out_ref}")
-                        if st.st_atime_ns <= rec.get("out_mtime_ns"):
-                            raise LedgerVerificationError("NOT-EXECUTED", f"atime did not advance past mtime on {out_ref}")
-                        if sha256_file(out_ref) != cons.get("out_sha256"):
-                            raise LedgerVerificationError("OUT-MODIFIED", f"sha256 changed on {out_ref}")
+        if record.get("canonical") is True and mode == "observed-negative":
+            _ledger_add(
+                statuses,
+                reasons,
+                "MISCLASSIFIED",
+                f"{label} runs a canonical call as observed-negative",
+            )
 
-    if open_begins:
-        raise LedgerVerificationError("UNFAITHFUL", f"Unclosed begin records in ledger: {open_begins}")
+        raw_variant_ids = record.get("variant_ids")
+        variant_ids = _ledger_variant_ids(record)
+        if raw_variant_ids is not None and (
+            not isinstance(raw_variant_ids, list)
+            or len(variant_ids) != len(raw_variant_ids)
+        ):
+            _ledger_add(
+                statuses,
+                reasons,
+                "MISCLASSIFIED",
+                f"{label} has malformed variant ids",
+            )
+        if (
+            record.get("canonical") is not True
+            and record.get("command") in ("build", "run")
+            and not variant_ids
+        ):
+            _ledger_add(
+                statuses,
+                reasons,
+                "MISCLASSIFIED",
+                f"{label} is a non-canonical {record.get('command')} without variant ids",
+            )
 
-    if not found_own_roundtrip:
-        raise LedgerVerificationError("NOT-ROUNDTRIPPED", f"No verified roundtrip found for {target_substr}")
+        unknown_ids = [
+            variant_id
+            for variant_id in variant_ids
+            if variant_id not in variant_index
+        ]
+        if unknown_ids:
+            _ledger_add(
+                statuses,
+                reasons,
+                "MISCLASSIFIED",
+                f"{label} has unknown variant ids {unknown_ids!r}",
+            )
+        census_kinds = {
+            variant_index[variant_id][0].get("kind")
+            for variant_id in variant_ids
+            if variant_id in variant_index
+        }
+        if census_kinds and (
+            len(census_kinds) != 1 or variant_kind not in census_kinds
+        ):
+            _ledger_add(
+                statuses,
+                reasons,
+                "MISCLASSIFIED",
+                f"{label} variant kind {variant_kind!r} disagrees with {sorted(str(kind) for kind in census_kinds)!r}",
+            )
+        if "positive" in census_kinds and mode == "observed-negative":
+            _ledger_add(
+                statuses,
+                reasons,
+                "MISCLASSIFIED",
+                f"{label} runs a positive variant as observed-negative",
+            )
+        if "negative" in census_kinds and mode == "roundtrip":
+            _ledger_add(
+                statuses,
+                reasons,
+                "MISCLASSIFIED",
+                f"{label} runs a negative variant as roundtrip",
+            )
 
-    return counts
+        if phase == "end":
+            producer = record.get("producer")
+            consumer = record.get("consumer")
+            producer_rc = producer.get("rc") if isinstance(producer, dict) else None
+            consumer_rc = consumer.get("rc") if isinstance(consumer, dict) else None
+            if producer_rc == 0 and consumer_rc != 0:
+                _ledger_add(
+                    statuses,
+                    reasons,
+                    "DIVERGENCE",
+                    f"{label} producer succeeded and consumer did not",
+                )
+            if (
+                isinstance(consumer, dict)
+                and consumer_rc == 0
+                and consumer.get("out_written") is not True
+            ):
+                _ledger_add(
+                    statuses,
+                    reasons,
+                    "DIVERGENCE",
+                    f"{label} consumer succeeded without writing OUT",
+                )
+
+    for invocation, paired in pair_records.items():
+        begins = paired["begin"]
+        ends = paired["end"]
+        if len(begins) != 1 or len(ends) != 1:
+            _ledger_add(
+                statuses,
+                reasons,
+                "UNFAITHFUL",
+                f"invocation {invocation!r} has {len(begins)} begin and {len(ends)} end records",
+            )
+            continue
+        begin = begins[0]
+        end = ends[0]
+        for field, value in begin.items():
+            if field not in ("phase", "t_ns") and (
+                field not in end or end[field] != value
+            ):
+                _ledger_add(
+                    statuses,
+                    reasons,
+                    "UNFAITHFUL",
+                    f"invocation {invocation!r} changes begin field {field!r}",
+                )
+                break
+
+    own_roundtrip = any(
+        _ledger_is_own(record, driver=driver, repo=repo)
+        and _ledger_successful_roundtrip(record)
+        and bool(record["consumer"].get("out_sha256"))
+        for _, record in end_records
+    )
+    if not own_roundtrip:
+        _ledger_add(
+            statuses,
+            reasons,
+            "NOT-ROUNDTRIPPED",
+            f"no successful own roundtrip for std_{driver}_exercise.iyi",
+        )
+
+    for variant_id, (variant, _) in variant_index.items():
+        if variant.get("darwin") != "required":
+            continue
+        variables = variant.get("vars")
+        variable_items = variables.items() if isinstance(variables, dict) else ()
+        specifications = tuple(
+            (variable, specification)
+            for variable, specification in variable_items
+            if isinstance(specification, dict)
+        )
+        for variable, specification in specifications:
+            observed = _ledger_binding_values(records, variant_id, variable)
+            values = specification.get("values")
+            if isinstance(values, list):
+                for value in values:
+                    if value not in observed:
+                        _ledger_add(
+                            statuses,
+                            reasons,
+                            "NOT-EXERCISED",
+                            f"{variant_id} never binds {variable}={value!r}",
+                        )
+            elif "pattern" in specification and not observed:
+                _ledger_add(
+                    statuses,
+                    reasons,
+                    "NOT-EXERCISED",
+                    f"{variant_id} pattern variable {variable} has no record",
+                )
+
+        if variant.get("kind") == "positive" and not any(
+            variant_id in _ledger_variant_ids(record)
+            and _ledger_successful_roundtrip(record)
+            for _, record in end_records
+        ):
+            _ledger_add(
+                statuses,
+                reasons,
+                "NOT-EXERCISED",
+                f"positive variant {variant_id} has no successful roundtrip",
+            )
+
+    end_by_index = dict(end_records)
+    own_indices = {
+        index
+        for index, record in end_records
+        if record.get("own") is True
+    }
+    positive_indices = {
+        index
+        for index, record in end_records
+        if any(
+            variant_id in variant_index
+            and variant_index[variant_id][0].get("kind") == "positive"
+            for variant_id in _ledger_variant_ids(record)
+        )
+    }
+    scoped_indices = own_indices | positive_indices
+    matched_indices: set[int] = set()
+    evidences_value = census.get("exec_evidence") if isinstance(census, dict) else []
+    evidence_values = evidences_value if isinstance(evidences_value, list) else ()
+    evidence_rows = (
+        (
+            evidence_index,
+            evidence,
+            sites_by_line.get(evidence.get("site_line")),
+        )
+        for evidence_index, evidence in enumerate(evidence_values)
+        if isinstance(evidence, dict)
+        and isinstance(evidence.get("out_template"), str)
+        and isinstance(sites_by_line.get(evidence.get("site_line")), dict)
+    )
+
+    for evidence_index, evidence, site in evidence_rows:
+        site_kind = site.get("kind")
+        site_variants = site.get("variants")
+        site_variant_values = site_variants if isinstance(site_variants, list) else ()
+        site_variant_ids = {
+            variant.get("id")
+            for variant in site_variant_values
+            if isinstance(variant, dict) and variant.get("kind") == "positive"
+        }
+        candidate_indices = {
+            index
+            for index in scoped_indices
+            if (
+                site_kind in ("canonical-own", "mixed")
+                and index in own_indices
+            )
+            or bool(
+                site_variant_ids.intersection(
+                    _ledger_variant_ids(end_by_index[index])
+                )
+            )
+        }
+        template = evidence["out_template"]
+        names = evidence.get("name_from_calls")
+        name_values = names.values() if isinstance(names, dict) else ()
+        expected_names = tuple(
+            name for name in name_values if isinstance(name, str)
+        )
+        labels: tuple[str | None, ...] = (
+            expected_names
+            if "{name}" in template
+            else (None,)
+        )
+        evidence_matches: set[int] = set()
+        for name in labels:
+            pattern = _ledger_out_regex(
+                template,
+                work_tmp=work_tmp,
+                repo=repo,
+                name=name,
+            )
+            matches = {
+                index
+                for index in candidate_indices
+                if pattern is not None
+                and isinstance(end_by_index[index].get("out"), str)
+                and pattern.fullmatch(
+                    os.path.realpath(end_by_index[index]["out"])
+                )
+            }
+            evidence_matches.update(matches)
+            if len(matches) != 1:
+                _ledger_add(
+                    statuses,
+                    reasons,
+                    "NOT-EXECUTED",
+                    f"evidence {evidence_index} name {name!r} occurs {len(matches)} times",
+                )
+        if len(evidence_matches) != len(labels):
+            _ledger_add(
+                statuses,
+                reasons,
+                "NOT-EXECUTED",
+                f"evidence {evidence_index} has {len(evidence_matches)} records, expected {len(labels)}",
+            )
+        for index in evidence_matches:
+            consumer = end_by_index[index].get("consumer")
+            if (
+                not isinstance(consumer, dict)
+                or consumer.get("rc") != 0
+                or not consumer.get("out_sha256")
+            ):
+                _ledger_add(
+                    statuses,
+                    reasons,
+                    "NOT-EXECUTED",
+                    f"evidence {evidence_index} record {index + 1} lacks a successful hashed consumer",
+                )
+        matched_indices.update(evidence_matches)
+
+    for index in sorted(scoped_indices - matched_indices):
+        _ledger_add(
+            statuses,
+            reasons,
+            "NOT-EXECUTED",
+            f"own or positive record {index + 1} matches no execution evidence",
+        )
+
+    stat_targets: list[tuple[int, dict, str]] = []
+    for index in sorted(scoped_indices):
+        record = end_by_index[index]
+        consumer = record.get("consumer")
+        if (
+            not isinstance(consumer, dict)
+            or consumer.get("rc") != 0
+            or not consumer.get("out_sha256")
+            or _ledger_run_executed(record)
+        ):
+            continue
+        out_ref = record.get("out_ref")
+        if not isinstance(out_ref, str) or not out_ref:
+            _ledger_add(
+                statuses,
+                reasons,
+                "NOT-EXECUTED",
+                f"record {index + 1} has no out_ref",
+            )
+            continue
+        stat_targets.append((index, record, out_ref))
+
+    stat_results: list[tuple[int, dict, str, os.stat_result | None]] = []
+    for index, record, out_ref in stat_targets:
+        try:
+            stat_result = stat_fn(out_ref)
+        except Exception as error:
+            _ledger_add(
+                statuses,
+                reasons,
+                "NOT-EXECUTED",
+                f"record {index + 1} out_ref stat failed: {error}",
+            )
+            stat_result = None
+        stat_results.append((index, record, out_ref, stat_result))
+
+    for index, record, out_ref, stat_result in stat_results:
+        if stat_result is None:
+            continue
+        if getattr(stat_result, "st_ino", None) != record.get("out_ino"):
+            _ledger_add(
+                statuses,
+                reasons,
+                "NOT-EXECUTED",
+                f"record {index + 1} out_ref inode changed",
+            )
+        observed_atime = getattr(stat_result, "st_atime_ns", None)
+        recorded_mtime = record.get("out_mtime_ns")
+        if (
+            not isinstance(observed_atime, int)
+            or not isinstance(recorded_mtime, int)
+            or observed_atime <= recorded_mtime
+        ):
+            _ledger_add(
+                statuses,
+                reasons,
+                "NOT-EXECUTED",
+                f"record {index + 1} out_ref atime did not advance",
+            )
+
+    for index, record, out_ref, stat_result in stat_results:
+        if stat_result is None:
+            continue
+        consumer = record.get("consumer")
+        expected_sha = consumer.get("out_sha256") if isinstance(consumer, dict) else None
+        try:
+            observed_sha = sha256_file(out_ref)
+        except Exception as error:
+            _ledger_add(
+                statuses,
+                reasons,
+                "OUT-MODIFIED",
+                f"record {index + 1} out_ref read failed: {error}",
+            )
+            continue
+        if observed_sha != expected_sha:
+            _ledger_add(
+                statuses,
+                reasons,
+                "OUT-MODIFIED",
+                f"record {index + 1} out_ref sha256 changed",
+            )
+
+    return _ledger_result(statuses, reasons)
