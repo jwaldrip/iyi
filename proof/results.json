@@ -197,5 +197,27 @@
     "fresh_scope": "Cold private cache, including runtime compilation, with up to eight concurrent workers; no warm-cache fresh measurement.",
     "log": "proof/final-census.log",
     "log_sha256": "57c6011201f234e1cebbef0d927f3ff9793c7d9da42821b85a5c1ca8f01911d8"
+  },
+  "big_observation_overhead": {
+    "source_sha": "dce806cd07201196e32cc8d7277334a759af4369",
+    "worktree_head": "a48cec9e0722d5da5d1adbf5feb2c382dfe0379e",
+    "compiler_sha256": "d480492ba4e5a43fcd90c7a70e0117fd179431b13b68346ffae245a6db87169f",
+    "build_command": "$IYI build bench/std_big_exercise.iyi -Diyi_observe -o $D/big",
+    "run_commands": ["/usr/bin/time -p $D/big", "IYI_OBSERVE=$D/trace /usr/bin/time -p $D/big"],
+    "environment": "D=$PWD/.build/final-big-overhead-unique; IYI is the integration worktree .build/iyi; IYI_CACHE_DIR and CRYSTAL_CACHE_DIR=$D/cache; TMPDIR=$D; IYI_PATH=$PWD/src:$PWD/samples/iyi; LIBRARY_PATH=/opt/homebrew/opt/bdw-gc/lib; PKG_CONFIG_PATH=/opt/homebrew/opt/openssl@3/lib/pkgconfig; IYI_OPTS, IYI_WARM, IYI_DAEMON_SOCKET, CRYSTAL_DAEMON_SOCKET and initially IYI_OBSERVE unset.",
+    "historical_environment": "Controlled TMPDIR, paths and cache as described; the historical ambient environment is unknown.",
+    "build_exit": 0,
+    "direct_exit": 0,
+    "observed_exit": 0,
+    "direct_real_seconds": 32.26,
+    "observed_real_seconds": 30.61,
+    "observed_over_direct": 0.9488530688,
+    "ratio_ceiling": 1.5,
+    "both_completion_markers": true,
+    "trace": "proof/big-overhead/trace",
+    "trace_sha256": "de95fff41fae8972f9a1671184cb990eb5136bef3971166f00882b9b37df114d",
+    "trace_records": "One clock taint, one runtime_timing taint and a final END status 0, no trailing record.",
+    "compiler_identity": "SHA-256, inode 2521706399, size 50711392 and mtime 1793215419 unchanged before and after.",
+    "logs": "proof/big-overhead/"
   }
 }
