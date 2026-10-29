@@ -1616,8 +1616,8 @@ def _mutate_schema_malformed(
     _lines: list[str],
     _driver: str,
 ) -> tuple[str, int]:
-    census["sites"][0]["variants"] = None
-    return "schema-malformed-variants", 1
+    census["sites"][0]["contains"] = None
+    return "schema-malformed-contains", 1
 
 
 def _mutate_text_indentation(
@@ -2591,10 +2591,32 @@ def _fixture_print_case_regex_seed() -> Observation:
 
 
 def _fixture_print_quoted_punct_control() -> Observation:
-    return _print_fixture(
+    quoted_punctuation = _print_fixture(
         '  echo "a ;; b: skipped"',
         listed=True,
         regex=r"^a ;; b: skipped$",
+    )
+    unquoted_continuation = _print_fixture(
+        '  echo "continuation: skipped" \\',
+        listed=True,
+        regex=r"^continuation: skipped$",
+    )
+    quoted_trailing_backslash = _print_fixture(
+        '  echo "quoted: skipped\\',
+        listed=True,
+        regex=r"^quoted: skipped$",
+    )
+    return Observation(
+        expected={
+            "quoted-punctuation": [],
+            "unquoted-continuation": [],
+            "quoted-trailing-backslash": ["C5.4-unrenderable"],
+        },
+        got={
+            "quoted-punctuation": quoted_punctuation.got,
+            "unquoted-continuation": unquoted_continuation.got,
+            "quoted-trailing-backslash": quoted_trailing_backslash.got,
+        },
     )
 
 
