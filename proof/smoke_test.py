@@ -4390,6 +4390,7 @@ def _o4_evidence_census(
     census = {
         "census_version": 1,
         "driver": fixture.driver,
+        "script": "bench/std_demo_exercise.sh",
         "sites": [
             {
                 "lines": [1],
@@ -8207,7 +8208,63 @@ def _file_touch_skip_fixture(seeded: bool) -> Observation:
     )
 
 
+def _positive_association_edge_fixture(case: str) -> Observation:
+    if case == "output-missing":
+        got = (
+            proofkit_mod._render_positive_output_for_name(
+                {"output": None},
+                "value",
+            )
+            is None
+        )
+    elif case == "binding-missing":
+        got = (
+            proofkit_mod._render_positive_output_for_name(
+                {
+                    "output": "{WORK}/{dir}",
+                    "vars": {},
+                },
+                "value",
+            )
+            is None
+        )
+    elif case == "evidence-template-missing":
+        got = (
+            proofkit_mod._positive_variants_for_evidence_name(
+                {"variants": []},
+                {"out_template": None},
+                "value",
+            )
+            == ()
+        )
+    else:
+        raise ValueError(f"unknown positive association edge {case}")
+    return Observation(
+        expected=True,
+        got=got,
+        applied=f"positive association edge={case}",
+    )
+
+
 O5_FIXTURES: tuple[Fixture, ...] = (
+    Fixture(
+        "o5.seed.association-output-missing",
+        "seed",
+        partial(_positive_association_edge_fixture, "output-missing"),
+    ),
+    Fixture(
+        "o5.seed.association-binding-missing",
+        "seed",
+        partial(_positive_association_edge_fixture, "binding-missing"),
+    ),
+    Fixture(
+        "o5.seed.association-template-missing",
+        "seed",
+        partial(
+            _positive_association_edge_fixture,
+            "evidence-template-missing",
+        ),
+    ),
     Fixture(
         "o5.seed.source-role-own-mutation",
         "seed",
@@ -8630,6 +8687,12 @@ O5_FIXTURES: tuple[Fixture, ...] = (
     ),
 )
 O5_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
+    "o5.positive-association-defensive": (
+        "o5.seed.association-output-missing",
+        "o5.seed.association-binding-missing",
+        "o5.seed.association-template-missing",
+        "o5.control.positive-success",
+    ),
     "o5.file-platform-splits": (
         "o5.seed.file-169-undeclared",
         "o5.control.file-169-split",
@@ -12988,17 +13051,26 @@ def _o7_run3_case(
 def _fixture_run3_import_seed() -> Observation:
     returncode, results, applied = _o7_run3_case("run3-import")
     stage = results["stage"]
+    reasons = stage.get("reasons", [])
     got = {
         "returncode": returncode,
         "status": stage.get("status"),
         "ledger": stage.get("checks", {}).get("ledger"),
         "exit": stage.get("checks", {}).get("exit"),
+        "not_roundtripped_recorded": (
+            "ledger NOT-ROUNDTRIPPED" in reasons
+        ),
+        "not_executed_recorded": (
+            "ledger NOT-EXECUTED" in reasons
+        ),
     }
     expected = {
         "returncode": 1,
-        "status": "NOT-ROUNDTRIPPED",
-        "ledger": "NOT-ROUNDTRIPPED",
+        "status": "NOT-EXECUTED",
+        "ledger": "NOT-EXECUTED",
         "exit": "PASS",
+        "not_roundtripped_recorded": True,
+        "not_executed_recorded": True,
     }
     return Observation(expected=expected, got=got, applied=applied)
 
