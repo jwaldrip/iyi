@@ -1,0 +1,1216 @@
+﻿2026-10-29T07:00:21.8845718Z Current runner version: '2.338.0'
+2026-10-29T07:00:21.8871500Z ##[group]Runner Image Provisioner
+2026-10-29T07:00:21.8872307Z Hosted Compute Agent
+2026-10-29T07:00:21.8872877Z Version: 20261021.618
+2026-10-29T07:00:21.8873491Z Commit: 21505ad2541d5be6135ed84fc33697146cf75b8e
+2026-10-29T07:00:21.8874207Z Build Date: 2026-10-21T00:45:21Z
+2026-10-29T07:00:21.8874850Z Worker ID: {23cc13f6-afa7-4c17-92f8-10e1eac8f634}
+2026-10-29T07:00:21.8875610Z Region: eastus
+2026-10-29T07:00:21.8876483Z Cloud: Azure
+2026-10-29T07:00:21.8877259Z ##[endgroup]
+2026-10-29T07:00:21.8879034Z ##[group]Operating System
+2026-10-29T07:00:21.8879655Z Microsoft Windows Server 2025
+2026-10-29T07:00:21.8880251Z 10.0.26100
+2026-10-29T07:00:21.8881017Z Datacenter
+2026-10-29T07:00:21.8881524Z ##[endgroup]
+2026-10-29T07:00:21.8882143Z ##[group]Runner Image
+2026-10-29T07:00:21.8882846Z Image: windows-2025-vs2026
+2026-10-29T07:00:21.8883430Z Version: 20261021.278.1
+2026-10-29T07:00:21.8885058Z Included Software: https://github.com/actions/runner-images/blob/win25-vs2026/20261021.278/images/windows/Windows2025-VS2026-Readme.md
+2026-10-29T07:00:21.8886779Z Image Release: https://github.com/actions/runner-images/releases/tag/win25-vs2026%2F20261021.278
+2026-10-29T07:00:21.8887791Z ##[endgroup]
+2026-10-29T07:00:21.8888748Z ##[group]GITHUB_TOKEN Permissions
+2026-10-29T07:00:21.8890935Z Metadata: read
+2026-10-29T07:00:21.8891593Z ##[endgroup]
+2026-10-29T07:00:21.8893875Z Secret source: Actions
+2026-10-29T07:00:21.8894778Z Cache mode: write
+2026-10-29T07:00:21.8895448Z Prepare workflow directory
+2026-10-29T07:00:21.9355428Z Prepare all required actions
+2026-10-29T07:00:21.9415897Z Getting action download info
+2026-10-29T07:00:22.1066282Z Download action repository 'actions/checkout@v7' (SHA:3d3c42e5aac5ba805825da76410c181273ba90b1)
+2026-10-29T07:00:22.2627634Z Download action repository 'ilammy/msvc-dev-cmd@v1' (SHA:0b201ec74fa43914dc39ae48a89fd1d8cb592756)
+2026-10-29T07:00:22.5063342Z Download action repository 'crystal-lang/install-crystal@v1' (SHA:19ef8675e43f44f0d38b79f732df7ad4b6b669ed)
+2026-10-29T07:00:27.8302548Z Complete job name: The standard library and the collector, gated on Windows
+2026-10-29T07:00:28.0254774Z ##[group]Run actions/checkout@v7
+2026-10-29T07:00:28.0256127Z with:
+2026-10-29T07:00:28.0256793Z   persist-credentials: false
+2026-10-29T07:00:28.0257624Z   repository: jwaldrip/iyi
+2026-10-29T07:00:28.0265569Z   token: ***
+2026-10-29T07:00:28.0266250Z   ssh-strict: true
+2026-10-29T07:00:28.0266922Z   ssh-user: git
+2026-10-29T07:00:28.0267577Z   clean: true
+2026-10-29T07:00:28.0268277Z   sparse-checkout-cone-mode: true
+2026-10-29T07:00:28.0269119Z   fetch-depth: 1
+2026-10-29T07:00:28.0269780Z   fetch-tags: false
+2026-10-29T07:00:28.0270478Z   show-progress: true
+2026-10-29T07:00:28.0271176Z   lfs: false
+2026-10-29T07:00:28.0271807Z   submodules: false
+2026-10-29T07:00:28.0272518Z   set-safe-directory: true
+2026-10-29T07:00:28.0273325Z   allow-unsafe-pr-checkout: false
+2026-10-29T07:00:28.0274451Z env:
+2026-10-29T07:00:28.0275050Z   GIT_CONFIG_COUNT: 1
+2026-10-29T07:00:28.0275776Z   GIT_CONFIG_KEY_0: safe.directory
+2026-10-29T07:00:28.0276639Z   GIT_CONFIG_VALUE_0: *
+2026-10-29T07:00:28.0277406Z   PYTHONUTF8: 1
+2026-10-29T07:00:28.0278048Z ##[endgroup]
+2026-10-29T07:00:28.1841993Z Syncing repository: jwaldrip/iyi
+2026-10-29T07:00:28.1844286Z ##[group]Getting Git version info
+2026-10-29T07:00:28.1845236Z Working directory is 'D:\a\iyi\iyi'
+2026-10-29T07:00:28.2776182Z [command]"C:\Program Files\Git\bin\git.exe" version
+2026-10-29T07:00:28.7062616Z git version 2.56.0.windows.2
+2026-10-29T07:00:28.7117667Z ##[endgroup]
+2026-10-29T07:00:28.7133848Z Temporarily overriding HOME='D:\a\_temp\a62518a1-6b3d-4980-b3c2-40094c9e5014' before making global git config changes
+2026-10-29T07:00:28.7134920Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-29T07:00:28.7143757Z [command]"C:\Program Files\Git\bin\git.exe" config --global --add safe.directory D:\a\iyi\iyi
+2026-10-29T07:00:28.7857102Z Deleting the contents of 'D:\a\iyi\iyi'
+2026-10-29T07:00:28.7862032Z ##[group]Determining repository object format
+2026-10-29T07:00:28.7864305Z ##[endgroup]
+2026-10-29T07:00:28.7864952Z ##[group]Initializing the repository
+2026-10-29T07:00:28.7872970Z [command]"C:\Program Files\Git\bin\git.exe" init D:\a\iyi\iyi
+2026-10-29T07:00:28.8902015Z Initialized empty Git repository in D:/a/iyi/iyi/.git/
+2026-10-29T07:00:28.8966869Z [command]"C:\Program Files\Git\bin\git.exe" remote add origin https://github.com/jwaldrip/iyi
+2026-10-29T07:00:28.9751326Z ##[endgroup]
+2026-10-29T07:00:28.9752848Z ##[group]Disabling automatic garbage collection
+2026-10-29T07:00:28.9761917Z [command]"C:\Program Files\Git\bin\git.exe" config --local gc.auto 0
+2026-10-29T07:00:29.0168251Z ##[endgroup]
+2026-10-29T07:00:29.0168908Z ##[group]Setting up auth
+2026-10-29T07:00:29.0169544Z Removing SSH command configuration
+2026-10-29T07:00:29.0181695Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp core\.sshCommand
+2026-10-29T07:00:29.0597223Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+2026-10-29T07:00:30.6976520Z Removing HTTP extra header
+2026-10-29T07:00:30.6989343Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-29T07:00:30.7499648Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+2026-10-29T07:00:31.3353568Z Removing includeIf entries pointing to credentials config files
+2026-10-29T07:00:31.3364565Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-29T07:00:31.3758961Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "git config --local --show-origin --name-only --get-regexp remote.origin.url"
+2026-10-29T07:00:31.9297872Z [command]"C:\Program Files\Git\bin\git.exe" config --file D:\a\_temp\git-credentials-4a23df51-04ad-411f-9918-25dca7d775ce.config http.https://github.com/.extraheader "AUTHORIZATION: basic ***"
+2026-10-29T07:00:31.9689679Z [command]"C:\Program Files\Git\bin\git.exe" config --local includeIf.gitdir:D:/a/iyi/iyi/.git.path D:\a\_temp\git-credentials-4a23df51-04ad-411f-9918-25dca7d775ce.config
+2026-10-29T07:00:32.0074753Z [command]"C:\Program Files\Git\bin\git.exe" config --local includeIf.gitdir:D:/a/iyi/iyi/.git/worktrees/*.path D:\a\_temp\git-credentials-4a23df51-04ad-411f-9918-25dca7d775ce.config
+2026-10-29T07:00:32.0530037Z [command]"C:\Program Files\Git\bin\git.exe" config --local includeIf.gitdir:/github/workspace/.git.path /github/runner_temp/git-credentials-4a23df51-04ad-411f-9918-25dca7d775ce.config
+2026-10-29T07:00:32.0931033Z [command]"C:\Program Files\Git\bin\git.exe" config --local includeIf.gitdir:/github/workspace/.git/worktrees/*.path /github/runner_temp/git-credentials-4a23df51-04ad-411f-9918-25dca7d775ce.config
+2026-10-29T07:00:32.1312016Z ##[endgroup]
+2026-10-29T07:00:32.1312685Z ##[group]Fetching the repository
+2026-10-29T07:00:32.1324135Z [command]"C:\Program Files\Git\bin\git.exe" -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +626463375298d357ffcb3223059f4d3adce6fb10:refs/remotes/origin/fix/stale-integration-repair
+2026-10-29T07:00:34.8445303Z From https://github.com/jwaldrip/iyi
+2026-10-29T07:00:34.8446303Z  * [new ref]         626463375298d357ffcb3223059f4d3adce6fb10 -> origin/fix/stale-integration-repair
+2026-10-29T07:00:34.8503419Z [command]"C:\Program Files\Git\bin\git.exe" branch --list --remote origin/fix/stale-integration-repair
+2026-10-29T07:00:34.8959652Z   origin/fix/stale-integration-repair
+2026-10-29T07:00:34.9005054Z [command]"C:\Program Files\Git\bin\git.exe" rev-parse refs/remotes/origin/fix/stale-integration-repair
+2026-10-29T07:00:34.9391328Z 626463375298d357ffcb3223059f4d3adce6fb10
+2026-10-29T07:00:34.9425487Z ##[endgroup]
+2026-10-29T07:00:34.9425926Z ##[group]Determining the checkout info
+2026-10-29T07:00:34.9426823Z ##[endgroup]
+2026-10-29T07:00:34.9435530Z [command]"C:\Program Files\Git\bin\git.exe" sparse-checkout disable
+2026-10-29T07:00:34.9954834Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset-all extensions.worktreeConfig
+2026-10-29T07:00:35.0337217Z ##[group]Checking out the ref
+2026-10-29T07:00:35.0351720Z [command]"C:\Program Files\Git\bin\git.exe" checkout --progress --force -B fix/stale-integration-repair refs/remotes/origin/fix/stale-integration-repair
+2026-10-29T07:00:36.0874356Z Switched to a new branch 'fix/stale-integration-repair'
+2026-10-29T07:00:36.0897399Z branch 'fix/stale-integration-repair' set up to track 'origin/fix/stale-integration-repair'.
+2026-10-29T07:00:36.0961621Z ##[endgroup]
+2026-10-29T07:00:36.1464139Z [command]"C:\Program Files\Git\bin\git.exe" log -1 --format=%H
+2026-10-29T07:00:36.1819354Z 626463375298d357ffcb3223059f4d3adce6fb10
+2026-10-29T07:00:36.1866905Z ##[group]Removing auth
+2026-10-29T07:00:36.1867530Z Removing SSH command configuration
+2026-10-29T07:00:36.1881399Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp core\.sshCommand
+2026-10-29T07:00:36.2301899Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+2026-10-29T07:00:36.8546281Z Removing HTTP extra header
+2026-10-29T07:00:36.8555581Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-29T07:00:36.8944816Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+2026-10-29T07:00:37.4743685Z Removing includeIf entries pointing to credentials config files
+2026-10-29T07:00:37.4755897Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-29T07:00:37.5107323Z includeif.gitdir:D:/a/iyi/iyi/.git.path
+2026-10-29T07:00:37.5109023Z includeif.gitdir:D:/a/iyi/iyi/.git/worktrees/*.path
+2026-10-29T07:00:37.5109587Z includeif.gitdir:/github/workspace/.git.path
+2026-10-29T07:00:37.5110139Z includeif.gitdir:/github/workspace/.git/worktrees/*.path
+2026-10-29T07:00:37.5154468Z [command]"C:\Program Files\Git\bin\git.exe" config --local --get-all includeif.gitdir:D:/a/iyi/iyi/.git.path
+2026-10-29T07:00:37.5502159Z D:\a\_temp\git-credentials-4a23df51-04ad-411f-9918-25dca7d775ce.config
+2026-10-29T07:00:37.5554366Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset includeif.gitdir:D:/a/iyi/iyi/.git.path D\:\\a\\_temp\\git\-credentials\-4a23df51\-04ad\-411f\-9918\-25dca7d775ce\.config
+2026-10-29T07:00:37.5974735Z [command]"C:\Program Files\Git\bin\git.exe" config --local --get-all includeif.gitdir:D:/a/iyi/iyi/.git/worktrees/*.path
+2026-10-29T07:00:37.6325998Z D:\a\_temp\git-credentials-4a23df51-04ad-411f-9918-25dca7d775ce.config
+2026-10-29T07:00:37.6373997Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset includeif.gitdir:D:/a/iyi/iyi/.git/worktrees/*.path D\:\\a\\_temp\\git\-credentials\-4a23df51\-04ad\-411f\-9918\-25dca7d775ce\.config
+2026-10-29T07:00:37.6784888Z [command]"C:\Program Files\Git\bin\git.exe" config --local --get-all includeif.gitdir:/github/workspace/.git.path
+2026-10-29T07:00:37.7126764Z /github/runner_temp/git-credentials-4a23df51-04ad-411f-9918-25dca7d775ce.config
+2026-10-29T07:00:37.7169692Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset includeif.gitdir:/github/workspace/.git.path \/github\/runner_temp\/git\-credentials\-4a23df51\-04ad\-411f\-9918\-25dca7d775ce\.config
+2026-10-29T07:00:37.7552136Z [command]"C:\Program Files\Git\bin\git.exe" config --local --get-all includeif.gitdir:/github/workspace/.git/worktrees/*.path
+2026-10-29T07:00:37.7891223Z /github/runner_temp/git-credentials-4a23df51-04ad-411f-9918-25dca7d775ce.config
+2026-10-29T07:00:37.7935655Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset includeif.gitdir:/github/workspace/.git/worktrees/*.path \/github\/runner_temp\/git\-credentials\-4a23df51\-04ad\-411f\-9918\-25dca7d775ce\.config
+2026-10-29T07:00:37.8328466Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "git config --local --show-origin --name-only --get-regexp remote.origin.url"
+2026-10-29T07:00:38.4102345Z Removing credentials config 'D:\a\_temp\git-credentials-4a23df51-04ad-411f-9918-25dca7d775ce.config'
+2026-10-29T07:00:38.4115961Z ##[endgroup]
+2026-10-29T07:00:38.4536642Z ##[group]Run ilammy/msvc-dev-cmd@v1
+2026-10-29T07:00:38.4536962Z with:
+2026-10-29T07:00:38.4537156Z   arch: x64
+2026-10-29T07:00:38.4537316Z env:
+2026-10-29T07:00:38.4537467Z   GIT_CONFIG_COUNT: 1
+2026-10-29T07:00:38.4537686Z   GIT_CONFIG_KEY_0: safe.directory
+2026-10-29T07:00:38.4537921Z   GIT_CONFIG_VALUE_0: *
+2026-10-29T07:00:38.4538111Z   PYTHONUTF8: 1
+2026-10-29T07:00:38.4538290Z ##[endgroup]
+2026-10-29T07:00:38.9575993Z Found with vswhere: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Auxiliary\Build\vcvarsall.bat
+2026-10-29T07:00:43.8926827Z ##[group]Environment variables
+2026-10-29T07:00:43.8927305Z Setting CommandPromptType
+2026-10-29T07:00:43.8936384Z Setting DevEnvDir
+2026-10-29T07:00:43.8940168Z Setting ExtensionSdkDir
+2026-10-29T07:00:43.8943140Z Setting EXTERNAL_INCLUDE
+2026-10-29T07:00:43.8948685Z Setting Framework40Version
+2026-10-29T07:00:43.8951714Z Setting FrameworkDir
+2026-10-29T07:00:43.8954454Z Setting FrameworkDir64
+2026-10-29T07:00:43.8957547Z Setting FrameworkVersion
+2026-10-29T07:00:43.8960326Z Setting FrameworkVersion64
+2026-10-29T07:00:43.8964352Z Setting FSHARPINSTALLDIR
+2026-10-29T07:00:43.8968379Z Setting HTMLHelpDir
+2026-10-29T07:00:43.8971123Z Setting INCLUDE
+2026-10-29T07:00:43.8974739Z Setting LIB
+2026-10-29T07:00:43.8978008Z Setting LIBPATH
+2026-10-29T07:00:43.8981657Z Setting llvmArm64
+2026-10-29T07:00:43.8984278Z Setting llvmX64
+2026-10-29T07:00:43.8987880Z Setting NETFXSDKDir
+2026-10-29T07:00:43.8991223Z Setting Path
+2026-10-29T07:00:43.8994646Z Setting Platform
+2026-10-29T07:00:43.8997709Z Setting UCRTVersion
+2026-10-29T07:00:43.9000743Z Setting UniversalCRTSdkDir
+2026-10-29T07:00:43.9003291Z Setting use_x64_llvm
+2026-10-29T07:00:43.9005429Z Setting VCIDEInstallDir
+2026-10-29T07:00:43.9007414Z Setting VCINSTALLDIR
+2026-10-29T07:00:43.9009399Z Setting VCPKG_ROOT
+2026-10-29T07:00:43.9011409Z Setting VCToolsInstallDir
+2026-10-29T07:00:43.9013378Z Setting VCToolsRedistDir
+2026-10-29T07:00:43.9015336Z Setting VCToolsVersion
+2026-10-29T07:00:43.9017311Z Setting VisualStudioVersion
+2026-10-29T07:00:43.9019774Z Setting VS180COMNTOOLS
+2026-10-29T07:00:43.9021772Z Setting VSCMD_ARG_app_plat
+2026-10-29T07:00:43.9023721Z Setting VSCMD_ARG_HOST_ARCH
+2026-10-29T07:00:43.9025812Z Setting VSCMD_ARG_TGT_ARCH
+2026-10-29T07:00:43.9028003Z Setting VSCMD_VER
+2026-10-29T07:00:43.9030005Z Setting VSINSTALLDIR
+2026-10-29T07:00:43.9032173Z Setting VSSDK150INSTALL
+2026-10-29T07:00:43.9034158Z Setting VSSDKINSTALL
+2026-10-29T07:00:43.9036126Z Setting WindowsLibPath
+2026-10-29T07:00:43.9038936Z Setting WindowsSdkBinPath
+2026-10-29T07:00:43.9041024Z Setting WindowsSdkDir
+2026-10-29T07:00:43.9043045Z Setting WindowsSDKLibVersion
+2026-10-29T07:00:43.9045021Z Setting WindowsSdkVerBinPath
+2026-10-29T07:00:43.9046970Z Setting WindowsSDKVersion
+2026-10-29T07:00:43.9048980Z Setting WindowsSDK_ExecutablePath_x64
+2026-10-29T07:00:43.9050965Z Setting WindowsSDK_ExecutablePath_x86
+2026-10-29T07:00:43.9052957Z Setting __DOTNET_ADD_64BIT
+2026-10-29T07:00:43.9055110Z Setting __DOTNET_PREFERRED_BITNESS
+2026-10-29T07:00:43.9059431Z Setting __VSCMD_PREINIT_PATH
+2026-10-29T07:00:43.9062453Z ##[endgroup]
+2026-10-29T07:00:43.9063240Z Configured Developer Command Prompt
+2026-10-29T07:00:43.9343932Z ##[group]Run crystal-lang/install-crystal@v1
+2026-10-29T07:00:43.9344389Z with:
+2026-10-29T07:00:43.9364590Z   crystal: 1.21.0
+2026-10-29T07:00:43.9368929Z   token: ***
+2026-10-29T07:00:43.9369225Z env:
+2026-10-29T07:00:43.9369489Z   GIT_CONFIG_COUNT: 1
+2026-10-29T07:00:43.9369823Z   GIT_CONFIG_KEY_0: safe.directory
+2026-10-29T07:00:43.9370232Z   GIT_CONFIG_VALUE_0: *
+2026-10-29T07:00:43.9370555Z   PYTHONUTF8: 1
+2026-10-29T07:00:43.9370885Z   CommandPromptType: Native
+2026-10-29T07:00:43.9371486Z   DevEnvDir: C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\
+2026-10-29T07:00:43.9372414Z   ExtensionSdkDir: C:\Program Files (x86)\Microsoft SDKs\Windows Kits\10\ExtensionSDKs
+2026-10-29T07:00:43.9376299Z   EXTERNAL_INCLUDE: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\include;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\ATLMFC\include;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Auxiliary\VS\include;C:\Program Files (x86)\Windows Kits\10\include\10.0.26100.0\ucrt;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\um;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\shared;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\winrt;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\cppwinrt;C:\Program Files (x86)\Windows Kits\NETFXSDK\4.8.1\include\um
+2026-10-29T07:00:43.9381521Z   Framework40Version: v4.0
+2026-10-29T07:00:43.9381810Z   FrameworkDir: C:\Windows\Microsoft.NET\Framework64\
+2026-10-29T07:00:43.9382162Z   FrameworkDir64: C:\Windows\Microsoft.NET\Framework64\
+2026-10-29T07:00:43.9382458Z   FrameworkVersion: v4.0.30319
+2026-10-29T07:00:43.9382683Z   FrameworkVersion64: v4.0.30319
+2026-10-29T07:00:43.9383189Z   FSHARPINSTALLDIR: C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\CommonExtensions\Microsoft\FSharp\Tools
+2026-10-29T07:00:43.9383785Z   HTMLHelpDir: C:\Program Files (x86)\HTML Help Workshop
+2026-10-29T07:00:43.9386281Z   INCLUDE: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\include;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\ATLMFC\include;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Auxiliary\VS\include;C:\Program Files (x86)\Windows Kits\10\include\10.0.26100.0\ucrt;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\um;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\shared;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\winrt;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\cppwinrt;C:\Program Files (x86)\Windows Kits\NETFXSDK\4.8.1\include\um
+2026-10-29T07:00:43.9389576Z   LIB: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\ATLMFC\lib\x64;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\lib\x64;C:\Program Files (x86)\Windows Kits\NETFXSDK\4.8.1\lib\um\x64;C:\Program Files (x86)\Windows Kits\10\lib\10.0.26100.0\ucrt\x64;C:\Program Files (x86)\Windows Kits\10\\lib\10.0.26100.0\\um\x64
+2026-10-29T07:00:43.9392207Z   LIBPATH: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\ATLMFC\lib\x64;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\lib\x64;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\lib\x86\store\references;C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0;C:\Program Files (x86)\Windows Kits\10\References\10.0.26100.0;C:\Windows\Microsoft.NET\Framework64\v4.0.30319
+2026-10-29T07:00:43.9393952Z   llvmArm64: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\Llvm\ARM64\bin
+2026-10-29T07:00:43.9394493Z   llvmX64: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\Llvm\x64\bin
+2026-10-29T07:00:43.9394959Z   NETFXSDKDir: C:\Program Files (x86)\Windows Kits\NETFXSDK\4.8.1\
+2026-10-29T07:00:43.9425321Z   Path: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\bin\HostX64\x64;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\VC\VCPackages;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\CommonExtensions\Microsoft\TestWindow;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\CommonExtensions\Microsoft\TeamFoundation\Team Explorer;C:\Program Files\Microsoft Visual Studio\18\Enterprise\MSBuild\Current\bin\Roslyn;C:\Program Files (x86)\Microsoft SDKs\Windows\v10.0A\bin\NETFX 4.8.1 Tools\x64\;C:\Program Files (x86)\HTML Help Workshop;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\CommonExtensions\Microsoft\FSharp\Tools;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Team Tools\DiagnosticsHub\Collector;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\Extensions\Microsoft\CodeCoverage.Console;C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\\x64;C:\Program Files (x86)\Windows Kits\10\bin\\x64;C:\Program Files\Microsoft Visual Studio\18\Enterprise\\MSBuild\Current\Bin\amd64;C:\Windows\Microsoft.NET\Framework64\v4.0.30319;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\Tools\;C:\Program Files\MongoDB\Server\7.0\bin;C:\vcpkg;C:\tools\zstd;C:\hostedtoolcache\windows\stack\3.11.1\x64;C:\cabal\bin;C:\\ghcup\bin;C:\mingw64\bin;C:\Program Files\dotnet;C:\Program Files\MySQL\MySQL Server 8.0\bin;C:\Program Files\R\R-4.6.1\bin\x64;C:\SeleniumWebDrivers\GeckoDriver;C:\SeleniumWebDrivers\EdgeDriver\;C:\SeleniumWebDrivers\ChromeDriver;C:\Program Files (x86)\sbt\bin;C:\Program Files (x86)\GitHub CLI;C:\Program Files\Git\bin;C:\Program Files (x86)\pipx_bin;C:\npm\prefix;C:\hostedtoolcache\windows\go\1.24.13\x64\bin;C:\hostedtoolcache\windows\Python\3.12.10\x64\Scripts;C:\hostedtoolcache\windows\Python\3.12.10\x64;C:\hostedtoolcache\windows\Ruby\3.3.12\x64\bin;C:\Program Files\OpenSSL\bin;C:\tools\kotlinc\bin;C:\hostedtoolcache\windows\Java_Temurin-Hotspot_jdk\17.0.20-101\x64\bin;C:\Program Files\ImageMagick-7.1.2-Q16-HDRI;C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin;C:\ProgramData\kind;C:\ProgramData\Chocolatey\bin;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;C:\Program Files\WSL\;C:\Program Files\PowerShell\7\;C:\Program Files\Microsoft\Web Platform Installer\;C:\Program Files\Microsoft SQL Server\170\Tools\Binn\;C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\170\Tools\Binn\;C:\Program Files\dotnet\;C:\Program Files (x86)\Windows Kits\10\Windows Performance Toolkit\;C:\Program Files (x86)\WiX Toolset v3.14\bin;C:\Program Files\Microsoft SQL Server\130\DTS\Binn\;C:\Program Files\Microsoft SQL Server\140\DTS\Binn\;C:\Program Files\Microsoft SQL Server\150\DTS\Binn\;C:\Program Files\Microsoft SQL Server\160\DTS\Binn\;C:\Program Files\Microsoft SQL Server\170\DTS\Binn\;C:\ProgramData\chocolatey\lib\pulumi\tools\Pulumi\bin;C:\Program Files\CMake\bin;C:\Strawberry\c\bin;C:\Strawberry\perl\site\bin;C:\Strawberry\perl\bin;C:\ProgramData\chocolatey\lib\maven\apache-maven-3.9.16\bin;C:\Program Files\Microsoft Service Fabric\bin\Fabric\Fabric.Code;C:\Program Files\Microsoft SDKs\Service Fabric\Tools\ServiceFabricLocalClusterManager;C:\Program Files\LLVM\bin;C:\Program Files (x86)\LLVM\bin;C:\Program Files\nodejs\;C:\Program Files\Git\cmd;C:\Program Files\Git\ucrt64\bin;C:\Program Files\Git\usr\bin;C:\Program Files\GitHub CLI\;c:\tools\php;C:\Program Files\Amazon\AWSCLIV2\;C:\Program Files\Amazon\SessionManagerPlugin\bin\;C:\Program Files\Amazon\AWSSAMCLI\bin\;C:\Program Files\Microsoft SQL Server\130\Tools\Binn\;C:\Program Files\mongosh\;C:\Users\runneradmin\.dotnet\tools;C:\Users\runneradmin\.cargo\bin;C:\Users\runneradmin\AppData\Local\Microsoft\WindowsApps;C:\Program Files (x86)\Microsoft Visual Studio\Installer;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\Llvm\x64\bin;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\VC\Linux\bin\ConnectionManagerExe;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\vcpkg
+2026-10-29T07:00:43.9440856Z   Platform: x64
+2026-10-29T07:00:43.9441054Z   UCRTVersion: 10.0.26100.0
+2026-10-29T07:00:43.9441347Z   UniversalCRTSdkDir: C:\Program Files (x86)\Windows Kits\10\
+2026-10-29T07:00:43.9441663Z   use_x64_llvm: true
+2026-10-29T07:00:43.9442007Z   VCIDEInstallDir: C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\VC\
+2026-10-29T07:00:43.9442512Z   VCINSTALLDIR: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\
+2026-10-29T07:00:43.9442970Z   VCPKG_ROOT: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\vcpkg
+2026-10-29T07:00:43.9443527Z   VCToolsInstallDir: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\
+2026-10-29T07:00:43.9444167Z   VCToolsRedistDir: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Redist\MSVC\14.51.36231\
+2026-10-29T07:00:43.9444611Z   VCToolsVersion: 14.51.36231
+2026-10-29T07:00:43.9444832Z   VisualStudioVersion: 18.0
+2026-10-29T07:00:43.9445191Z   VS180COMNTOOLS: C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\Tools\
+2026-10-29T07:00:43.9445587Z   VSCMD_ARG_app_plat: Desktop
+2026-10-29T07:00:43.9445801Z   VSCMD_ARG_HOST_ARCH: x64
+2026-10-29T07:00:43.9446002Z   VSCMD_ARG_TGT_ARCH: x64
+2026-10-29T07:00:43.9446212Z   VSCMD_VER: 18.11.1
+2026-10-29T07:00:43.9446492Z   VSINSTALLDIR: C:\Program Files\Microsoft Visual Studio\18\Enterprise\
+2026-10-29T07:00:43.9446951Z   VSSDK150INSTALL: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VSSDK
+2026-10-29T07:00:43.9447422Z   VSSDKINSTALL: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VSSDK
+2026-10-29T07:00:43.9448106Z   WindowsLibPath: C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0;C:\Program Files (x86)\Windows Kits\10\References\10.0.26100.0
+2026-10-29T07:00:43.9448766Z   WindowsSdkBinPath: C:\Program Files (x86)\Windows Kits\10\bin\
+2026-10-29T07:00:43.9449135Z   WindowsSdkDir: C:\Program Files (x86)\Windows Kits\10\
+2026-10-29T07:00:43.9449432Z   WindowsSDKLibVersion: 10.0.26100.0\
+2026-10-29T07:00:43.9449791Z   WindowsSdkVerBinPath: C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\
+2026-10-29T07:00:43.9450163Z   WindowsSDKVersion: 10.0.26100.0\
+2026-10-29T07:00:43.9450606Z   WindowsSDK_ExecutablePath_x64: C:\Program Files (x86)\Microsoft SDKs\Windows\v10.0A\bin\NETFX 4.8.1 Tools\x64\
+2026-10-29T07:00:43.9451282Z   WindowsSDK_ExecutablePath_x86: C:\Program Files (x86)\Microsoft SDKs\Windows\v10.0A\bin\NETFX 4.8.1 Tools\
+2026-10-29T07:00:43.9451730Z   __DOTNET_ADD_64BIT: 1
+2026-10-29T07:00:43.9451935Z   __DOTNET_PREFERRED_BITNESS: 64
+2026-10-29T07:00:43.9461245Z   __VSCMD_PREINIT_PATH: C:\Program Files\MongoDB\Server\7.0\bin;C:\vcpkg;C:\tools\zstd;C:\hostedtoolcache\windows\stack\3.11.1\x64;C:\cabal\bin;C:\\ghcup\bin;C:\mingw64\bin;C:\Program Files\dotnet;C:\Program Files\MySQL\MySQL Server 8.0\bin;C:\Program Files\R\R-4.6.1\bin\x64;C:\SeleniumWebDrivers\GeckoDriver;C:\SeleniumWebDrivers\EdgeDriver\;C:\SeleniumWebDrivers\ChromeDriver;C:\Program Files (x86)\sbt\bin;C:\Program Files (x86)\GitHub CLI;C:\Program Files\Git\bin;C:\Program Files (x86)\pipx_bin;C:\npm\prefix;C:\hostedtoolcache\windows\go\1.24.13\x64\bin;C:\hostedtoolcache\windows\Python\3.12.10\x64\Scripts;C:\hostedtoolcache\windows\Python\3.12.10\x64;C:\hostedtoolcache\windows\Ruby\3.3.12\x64\bin;C:\Program Files\OpenSSL\bin;C:\tools\kotlinc\bin;C:\hostedtoolcache\windows\Java_Temurin-Hotspot_jdk\17.0.20-101\x64\bin;C:\Program Files\ImageMagick-7.1.2-Q16-HDRI;C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin;C:\ProgramData\kind;C:\ProgramData\Chocolatey\bin;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;C:\Program Files\WSL\;C:\Program Files\PowerShell\7\;C:\Program Files\Microsoft\Web Platform Installer\;C:\Program Files\Microsoft SQL Server\170\Tools\Binn\;C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\170\Tools\Binn\;C:\Program Files\dotnet\;C:\Program Files (x86)\Windows Kits\10\Windows Performance Toolkit\;C:\Program Files (x86)\WiX Toolset v3.14\bin;C:\Program Files\Microsoft SQL Server\130\DTS\Binn\;C:\Program Files\Microsoft SQL Server\140\DTS\Binn\;C:\Program Files\Microsoft SQL Server\150\DTS\Binn\;C:\Program Files\Microsoft SQL Server\160\DTS\Binn\;C:\Program Files\Microsoft SQL Server\170\DTS\Binn\;C:\ProgramData\chocolatey\lib\pulumi\tools\Pulumi\bin;C:\Program Files\CMake\bin;C:\Strawberry\c\bin;C:\Strawberry\perl\site\bin;C:\Strawberry\perl\bin;C:\ProgramData\chocolatey\lib\maven\apache-maven-3.9.16\bin;C:\Program Files\Microsoft Service Fabric\bin\Fabric\Fabric.Code;C:\Program Files\Microsoft SDKs\Service Fabric\Tools\ServiceFabricLocalClusterManager;C:\Program Files\LLVM\bin;C:\Program Files (x86)\LLVM\bin;C:\Program Files\nodejs\;C:\Program Files\Git\cmd;C:\Program Files\Git\ucrt64\bin;C:\Program Files\Git\usr\bin;C:\Program Files\GitHub CLI\;c:\tools\php;C:\Program Files (x86)\sbt\bin;C:\Program Files\Amazon\AWSCLIV2\;C:\Program Files\Amazon\SessionManagerPlugin\bin\;C:\Program Files\Amazon\AWSSAMCLI\bin\;C:\Program Files\Microsoft SQL Server\130\Tools\Binn\;C:\Program Files\mongosh\;C:\Users\runneradmin\.dotnet\tools;C:\Users\runneradmin\.cargo\bin;C:\Users\runneradmin\AppData\Local\Microsoft\WindowsApps;C:\Program Files (x86)\Microsoft Visual Studio\Installer
+2026-10-29T07:00:43.9470376Z ##[endgroup]
+2026-10-29T07:00:44.4189829Z Getting Crystal release (1.21.0)
+2026-10-29T07:00:44.7224310Z Found Crystal release https://github.com/crystal-lang/crystal/releases/tag/1.21.0
+2026-10-29T07:00:44.7230094Z Downloading Crystal build from https://api.github.com/repos/crystal-lang/crystal/releases/assets/479364214
+2026-10-29T07:00:45.2756325Z Extracting Crystal build
+2026-10-29T07:00:45.4174563Z [command]"C:\Program Files\PowerShell\7\pwsh.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Unrestricted -Command "$ErrorActionPreference = 'Stop' ; try { Add-Type -AssemblyName System.IO.Compression.ZipFile } catch { } ; try { [System.IO.Compression.ZipFile]::ExtractToDirectory('D:\a\_temp\eb0ed8fa-648f-477e-962a-747b6be099e2', 'D:\a\_temp\crystal-1.21.0-true-undefined', $true) } catch { if (($_.Exception.GetType().FullName -eq 'System.Management.Automation.MethodException') -or ($_.Exception.GetType().FullName -eq 'System.Management.Automation.RuntimeException') ){ Expand-Archive -LiteralPath 'D:\a\_temp\eb0ed8fa-648f-477e-962a-747b6be099e2' -DestinationPath 'D:\a\_temp\crystal-1.21.0-true-undefined' -Force } else { throw $_ } } ;"
+2026-10-29T07:00:46.8703139Z Setting up environment for Crystal
+2026-10-29T07:00:46.8708087Z [command]shards --version
+2026-10-29T07:00:46.9072670Z Shards 0.20.0 [b2b98ca] (2025-12-19)
+2026-10-29T07:00:46.9073012Z 
+2026-10-29T07:00:46.9073116Z [command]crystal --version
+2026-10-29T07:00:46.9494171Z Crystal 1.21.0 [57cf7da] (2026-07-16)
+2026-10-29T07:00:46.9494506Z 
+2026-10-29T07:00:46.9494598Z LLVM: 20.1.7
+2026-10-29T07:00:46.9494834Z Default target: x86_64-pc-windows-msvc
+2026-10-29T07:00:46.9495032Z 
+2026-10-29T07:00:46.9831725Z ##[group]Run if (-not (Get-Command make -ErrorAction SilentlyContinue)) {
+2026-10-29T07:00:46.9832343Z [36;1mif (-not (Get-Command make -ErrorAction SilentlyContinue)) {[0m
+2026-10-29T07:00:46.9832748Z [36;1m  choco install make --no-progress -y[0m
+2026-10-29T07:00:46.9833022Z [36;1m}[0m
+2026-10-29T07:00:46.9833250Z [36;1m$lib = (crystal env CRYSTAL_LIBRARY_PATH).Trim()[0m
+2026-10-29T07:00:46.9833600Z [36;1m$llvm = (Get-Content "$lib\llvm_VERSION")[0].Trim()[0m
+2026-10-29T07:00:46.9834045Z [36;1m"CRYSTAL_LIBRARY_PATH=$lib" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV[0m
+2026-10-29T07:00:46.9834557Z [36;1m"LLVM_VERSION=$llvm" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV[0m
+2026-10-29T07:00:47.0379645Z shell: C:\Program Files\PowerShell\7\pwsh.EXE -command ". '{0}'"
+2026-10-29T07:00:47.0380180Z env:
+2026-10-29T07:00:47.0380442Z   GIT_CONFIG_COUNT: 1
+2026-10-29T07:00:47.0380771Z   GIT_CONFIG_KEY_0: safe.directory
+2026-10-29T07:00:47.0381187Z   GIT_CONFIG_VALUE_0: *
+2026-10-29T07:00:47.0381488Z   PYTHONUTF8: 1
+2026-10-29T07:00:47.0381783Z   CommandPromptType: Native
+2026-10-29T07:00:47.0382326Z   DevEnvDir: C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\
+2026-10-29T07:00:47.0383166Z   ExtensionSdkDir: C:\Program Files (x86)\Microsoft SDKs\Windows Kits\10\ExtensionSDKs
+2026-10-29T07:00:47.0387343Z   EXTERNAL_INCLUDE: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\include;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\ATLMFC\include;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Auxiliary\VS\include;C:\Program Files (x86)\Windows Kits\10\include\10.0.26100.0\ucrt;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\um;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\shared;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\winrt;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\cppwinrt;C:\Program Files (x86)\Windows Kits\NETFXSDK\4.8.1\include\um
+2026-10-29T07:00:47.0390092Z   Framework40Version: v4.0
+2026-10-29T07:00:47.0390403Z   FrameworkDir: C:\Windows\Microsoft.NET\Framework64\
+2026-10-29T07:00:47.0390807Z   FrameworkDir64: C:\Windows\Microsoft.NET\Framework64\
+2026-10-29T07:00:47.0391160Z   FrameworkVersion: v4.0.30319
+2026-10-29T07:00:47.0391428Z   FrameworkVersion64: v4.0.30319
+2026-10-29T07:00:47.0392055Z   FSHARPINSTALLDIR: C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\CommonExtensions\Microsoft\FSharp\Tools
+2026-10-29T07:00:47.0392776Z   HTMLHelpDir: C:\Program Files (x86)\HTML Help Workshop
+2026-10-29T07:00:47.0395486Z   INCLUDE: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\include;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\ATLMFC\include;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Auxiliary\VS\include;C:\Program Files (x86)\Windows Kits\10\include\10.0.26100.0\ucrt;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\um;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\shared;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\winrt;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\cppwinrt;C:\Program Files (x86)\Windows Kits\NETFXSDK\4.8.1\include\um
+2026-10-29T07:00:47.0398960Z   LIB: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\ATLMFC\lib\x64;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\lib\x64;C:\Program Files (x86)\Windows Kits\NETFXSDK\4.8.1\lib\um\x64;C:\Program Files (x86)\Windows Kits\10\lib\10.0.26100.0\ucrt\x64;C:\Program Files (x86)\Windows Kits\10\\lib\10.0.26100.0\\um\x64
+2026-10-29T07:00:47.0403543Z   LIBPATH: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\ATLMFC\lib\x64;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\lib\x64;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\lib\x86\store\references;C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0;C:\Program Files (x86)\Windows Kits\10\References\10.0.26100.0;C:\Windows\Microsoft.NET\Framework64\v4.0.30319
+2026-10-29T07:00:47.0405825Z   llvmArm64: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\Llvm\ARM64\bin
+2026-10-29T07:00:47.0406393Z   llvmX64: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\Llvm\x64\bin
+2026-10-29T07:00:47.0406869Z   NETFXSDKDir: C:\Program Files (x86)\Windows Kits\NETFXSDK\4.8.1\
+2026-10-29T07:00:47.0421964Z   Path: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\bin\HostX64\x64;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\VC\VCPackages;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\CommonExtensions\Microsoft\TestWindow;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\CommonExtensions\Microsoft\TeamFoundation\Team Explorer;C:\Program Files\Microsoft Visual Studio\18\Enterprise\MSBuild\Current\bin\Roslyn;C:\Program Files (x86)\Microsoft SDKs\Windows\v10.0A\bin\NETFX 4.8.1 Tools\x64\;C:\Program Files (x86)\HTML Help Workshop;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\CommonExtensions\Microsoft\FSharp\Tools;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Team Tools\DiagnosticsHub\Collector;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\Extensions\Microsoft\CodeCoverage.Console;C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\\x64;C:\Program Files (x86)\Windows Kits\10\bin\\x64;C:\Program Files\Microsoft Visual Studio\18\Enterprise\\MSBuild\Current\Bin\amd64;C:\Windows\Microsoft.NET\Framework64\v4.0.30319;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\Tools\;C:\Program Files\MongoDB\Server\7.0\bin;C:\vcpkg;C:\tools\zstd;C:\hostedtoolcache\windows\stack\3.11.1\x64;C:\cabal\bin;C:\\ghcup\bin;C:\mingw64\bin;C:\Program Files\dotnet;C:\Program Files\MySQL\MySQL Server 8.0\bin;C:\Program Files\R\R-4.6.1\bin\x64;C:\SeleniumWebDrivers\GeckoDriver;C:\SeleniumWebDrivers\EdgeDriver\;C:\SeleniumWebDrivers\ChromeDriver;C:\Program Files (x86)\sbt\bin;C:\Program Files (x86)\GitHub CLI;C:\Program Files\Git\bin;C:\Program Files (x86)\pipx_bin;C:\npm\prefix;C:\hostedtoolcache\windows\go\1.24.13\x64\bin;C:\hostedtoolcache\windows\Python\3.12.10\x64\Scripts;C:\hostedtoolcache\windows\Python\3.12.10\x64;C:\hostedtoolcache\windows\Ruby\3.3.12\x64\bin;C:\Program Files\OpenSSL\bin;C:\tools\kotlinc\bin;C:\hostedtoolcache\windows\Java_Temurin-Hotspot_jdk\17.0.20-101\x64\bin;C:\Program Files\ImageMagick-7.1.2-Q16-HDRI;C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin;C:\ProgramData\kind;C:\ProgramData\Chocolatey\bin;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;C:\Program Files\WSL\;C:\Program Files\PowerShell\7\;C:\Program Files\Microsoft\Web Platform Installer\;C:\Program Files\Microsoft SQL Server\170\Tools\Binn\;C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\170\Tools\Binn\;C:\Program Files\dotnet\;C:\Program Files (x86)\Windows Kits\10\Windows Performance Toolkit\;C:\Program Files (x86)\WiX Toolset v3.14\bin;C:\Program Files\Microsoft SQL Server\130\DTS\Binn\;C:\Program Files\Microsoft SQL Server\140\DTS\Binn\;C:\Program Files\Microsoft SQL Server\150\DTS\Binn\;C:\Program Files\Microsoft SQL Server\160\DTS\Binn\;C:\Program Files\Microsoft SQL Server\170\DTS\Binn\;C:\ProgramData\chocolatey\lib\pulumi\tools\Pulumi\bin;C:\Program Files\CMake\bin;C:\Strawberry\c\bin;C:\Strawberry\perl\site\bin;C:\Strawberry\perl\bin;C:\ProgramData\chocolatey\lib\maven\apache-maven-3.9.16\bin;C:\Program Files\Microsoft Service Fabric\bin\Fabric\Fabric.Code;C:\Program Files\Microsoft SDKs\Service Fabric\Tools\ServiceFabricLocalClusterManager;C:\Program Files\LLVM\bin;C:\Program Files (x86)\LLVM\bin;C:\Program Files\nodejs\;C:\Program Files\Git\cmd;C:\Program Files\Git\ucrt64\bin;C:\Program Files\Git\usr\bin;C:\Program Files\GitHub CLI\;c:\tools\php;C:\Program Files\Amazon\AWSCLIV2\;C:\Program Files\Amazon\SessionManagerPlugin\bin\;C:\Program Files\Amazon\AWSSAMCLI\bin\;C:\Program Files\Microsoft SQL Server\130\Tools\Binn\;C:\Program Files\mongosh\;C:\Users\runneradmin\.dotnet\tools;C:\Users\runneradmin\.cargo\bin;C:\Users\runneradmin\AppData\Local\Microsoft\WindowsApps;C:\Program Files (x86)\Microsoft Visual Studio\Installer;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\Llvm\x64\bin;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\VC\Linux\bin\ConnectionManagerExe;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\vcpkg
+2026-10-29T07:00:47.0437689Z   Platform: x64
+2026-10-29T07:00:47.0437875Z   UCRTVersion: 10.0.26100.0
+2026-10-29T07:00:47.0438164Z   UniversalCRTSdkDir: C:\Program Files (x86)\Windows Kits\10\
+2026-10-29T07:00:47.0438474Z   use_x64_llvm: true
+2026-10-29T07:00:47.0438816Z   VCIDEInstallDir: C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\VC\
+2026-10-29T07:00:47.0439323Z   VCINSTALLDIR: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\
+2026-10-29T07:00:47.0439781Z   VCPKG_ROOT: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\vcpkg
+2026-10-29T07:00:47.0440328Z   VCToolsInstallDir: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\
+2026-10-29T07:00:47.0440965Z   VCToolsRedistDir: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Redist\MSVC\14.51.36231\
+2026-10-29T07:00:47.0441470Z   VCToolsVersion: 14.51.36231
+2026-10-29T07:00:47.0441830Z   VisualStudioVersion: 18.0
+2026-10-29T07:00:47.0442780Z   VS180COMNTOOLS: C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\Tools\
+2026-10-29T07:00:47.0443252Z   VSCMD_ARG_app_plat: Desktop
+2026-10-29T07:00:47.0443475Z   VSCMD_ARG_HOST_ARCH: x64
+2026-10-29T07:00:47.0443672Z   VSCMD_ARG_TGT_ARCH: x64
+2026-10-29T07:00:47.0443863Z   VSCMD_VER: 18.11.1
+2026-10-29T07:00:47.0444151Z   VSINSTALLDIR: C:\Program Files\Microsoft Visual Studio\18\Enterprise\
+2026-10-29T07:00:47.0444620Z   VSSDK150INSTALL: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VSSDK
+2026-10-29T07:00:47.0445088Z   VSSDKINSTALL: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VSSDK
+2026-10-29T07:00:47.0445765Z   WindowsLibPath: C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0;C:\Program Files (x86)\Windows Kits\10\References\10.0.26100.0
+2026-10-29T07:00:47.0446415Z   WindowsSdkBinPath: C:\Program Files (x86)\Windows Kits\10\bin\
+2026-10-29T07:00:47.0446784Z   WindowsSdkDir: C:\Program Files (x86)\Windows Kits\10\
+2026-10-29T07:00:47.0447079Z   WindowsSDKLibVersion: 10.0.26100.0\
+2026-10-29T07:00:47.0447431Z   WindowsSdkVerBinPath: C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\
+2026-10-29T07:00:47.0447811Z   WindowsSDKVersion: 10.0.26100.0\
+2026-10-29T07:00:47.0448246Z   WindowsSDK_ExecutablePath_x64: C:\Program Files (x86)\Microsoft SDKs\Windows\v10.0A\bin\NETFX 4.8.1 Tools\x64\
+2026-10-29T07:00:47.0448910Z   WindowsSDK_ExecutablePath_x86: C:\Program Files (x86)\Microsoft SDKs\Windows\v10.0A\bin\NETFX 4.8.1 Tools\
+2026-10-29T07:00:47.0449355Z   __DOTNET_ADD_64BIT: 1
+2026-10-29T07:00:47.0449555Z   __DOTNET_PREFERRED_BITNESS: 64
+2026-10-29T07:00:47.0458504Z   __VSCMD_PREINIT_PATH: C:\Program Files\MongoDB\Server\7.0\bin;C:\vcpkg;C:\tools\zstd;C:\hostedtoolcache\windows\stack\3.11.1\x64;C:\cabal\bin;C:\\ghcup\bin;C:\mingw64\bin;C:\Program Files\dotnet;C:\Program Files\MySQL\MySQL Server 8.0\bin;C:\Program Files\R\R-4.6.1\bin\x64;C:\SeleniumWebDrivers\GeckoDriver;C:\SeleniumWebDrivers\EdgeDriver\;C:\SeleniumWebDrivers\ChromeDriver;C:\Program Files (x86)\sbt\bin;C:\Program Files (x86)\GitHub CLI;C:\Program Files\Git\bin;C:\Program Files (x86)\pipx_bin;C:\npm\prefix;C:\hostedtoolcache\windows\go\1.24.13\x64\bin;C:\hostedtoolcache\windows\Python\3.12.10\x64\Scripts;C:\hostedtoolcache\windows\Python\3.12.10\x64;C:\hostedtoolcache\windows\Ruby\3.3.12\x64\bin;C:\Program Files\OpenSSL\bin;C:\tools\kotlinc\bin;C:\hostedtoolcache\windows\Java_Temurin-Hotspot_jdk\17.0.20-101\x64\bin;C:\Program Files\ImageMagick-7.1.2-Q16-HDRI;C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin;C:\ProgramData\kind;C:\ProgramData\Chocolatey\bin;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;C:\Program Files\WSL\;C:\Program Files\PowerShell\7\;C:\Program Files\Microsoft\Web Platform Installer\;C:\Program Files\Microsoft SQL Server\170\Tools\Binn\;C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\170\Tools\Binn\;C:\Program Files\dotnet\;C:\Program Files (x86)\Windows Kits\10\Windows Performance Toolkit\;C:\Program Files (x86)\WiX Toolset v3.14\bin;C:\Program Files\Microsoft SQL Server\130\DTS\Binn\;C:\Program Files\Microsoft SQL Server\140\DTS\Binn\;C:\Program Files\Microsoft SQL Server\150\DTS\Binn\;C:\Program Files\Microsoft SQL Server\160\DTS\Binn\;C:\Program Files\Microsoft SQL Server\170\DTS\Binn\;C:\ProgramData\chocolatey\lib\pulumi\tools\Pulumi\bin;C:\Program Files\CMake\bin;C:\Strawberry\c\bin;C:\Strawberry\perl\site\bin;C:\Strawberry\perl\bin;C:\ProgramData\chocolatey\lib\maven\apache-maven-3.9.16\bin;C:\Program Files\Microsoft Service Fabric\bin\Fabric\Fabric.Code;C:\Program Files\Microsoft SDKs\Service Fabric\Tools\ServiceFabricLocalClusterManager;C:\Program Files\LLVM\bin;C:\Program Files (x86)\LLVM\bin;C:\Program Files\nodejs\;C:\Program Files\Git\cmd;C:\Program Files\Git\ucrt64\bin;C:\Program Files\Git\usr\bin;C:\Program Files\GitHub CLI\;c:\tools\php;C:\Program Files (x86)\sbt\bin;C:\Program Files\Amazon\AWSCLIV2\;C:\Program Files\Amazon\SessionManagerPlugin\bin\;C:\Program Files\Amazon\AWSSAMCLI\bin\;C:\Program Files\Microsoft SQL Server\130\Tools\Binn\;C:\Program Files\mongosh\;C:\Users\runneradmin\.dotnet\tools;C:\Users\runneradmin\.cargo\bin;C:\Users\runneradmin\AppData\Local\Microsoft\WindowsApps;C:\Program Files (x86)\Microsoft Visual Studio\Installer
+2026-10-29T07:00:47.0467953Z ##[endgroup]
+2026-10-29T07:00:47.6713355Z ##[group]Run make -f Makefile.win crystal || exit /b 1
+2026-10-29T07:00:47.6713834Z [36;1mmake -f Makefile.win crystal || exit /b 1[0m
+2026-10-29T07:00:47.6714162Z [36;1mmake -f Makefile.win iyi[0m
+2026-10-29T07:00:47.6747107Z shell: C:\Windows\system32\cmd.EXE /D /E:ON /V:OFF /S /C "CALL "{0}""
+2026-10-29T07:00:47.6747472Z env:
+2026-10-29T07:00:47.6747656Z   GIT_CONFIG_COUNT: 1
+2026-10-29T07:00:47.6747874Z   GIT_CONFIG_KEY_0: safe.directory
+2026-10-29T07:00:47.6748130Z   GIT_CONFIG_VALUE_0: *
+2026-10-29T07:00:47.6748330Z   PYTHONUTF8: 1
+2026-10-29T07:00:47.6748529Z   CommandPromptType: Native
+2026-10-29T07:00:47.6748893Z   DevEnvDir: C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\
+2026-10-29T07:00:47.6749455Z   ExtensionSdkDir: C:\Program Files (x86)\Microsoft SDKs\Windows Kits\10\ExtensionSDKs
+2026-10-29T07:00:47.6752021Z   EXTERNAL_INCLUDE: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\include;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\ATLMFC\include;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Auxiliary\VS\include;C:\Program Files (x86)\Windows Kits\10\include\10.0.26100.0\ucrt;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\um;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\shared;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\winrt;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\cppwinrt;C:\Program Files (x86)\Windows Kits\NETFXSDK\4.8.1\include\um
+2026-10-29T07:00:47.6754422Z   Framework40Version: v4.0
+2026-10-29T07:00:47.6754698Z   FrameworkDir: C:\Windows\Microsoft.NET\Framework64\
+2026-10-29T07:00:47.6755051Z   FrameworkDir64: C:\Windows\Microsoft.NET\Framework64\
+2026-10-29T07:00:47.6755360Z   FrameworkVersion: v4.0.30319
+2026-10-29T07:00:47.6755600Z   FrameworkVersion64: v4.0.30319
+2026-10-29T07:00:47.6756150Z   FSHARPINSTALLDIR: C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\CommonExtensions\Microsoft\FSharp\Tools
+2026-10-29T07:00:47.6756776Z   HTMLHelpDir: C:\Program Files (x86)\HTML Help Workshop
+2026-10-29T07:00:47.6759172Z   INCLUDE: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\include;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\ATLMFC\include;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Auxiliary\VS\include;C:\Program Files (x86)\Windows Kits\10\include\10.0.26100.0\ucrt;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\um;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\shared;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\winrt;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\cppwinrt;C:\Program Files (x86)\Windows Kits\NETFXSDK\4.8.1\include\um
+2026-10-29T07:00:47.6763373Z   LIB: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\ATLMFC\lib\x64;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\lib\x64;C:\Program Files (x86)\Windows Kits\NETFXSDK\4.8.1\lib\um\x64;C:\Program Files (x86)\Windows Kits\10\lib\10.0.26100.0\ucrt\x64;C:\Program Files (x86)\Windows Kits\10\\lib\10.0.26100.0\\um\x64
+2026-10-29T07:00:47.6766228Z   LIBPATH: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\ATLMFC\lib\x64;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\lib\x64;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\lib\x86\store\references;C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0;C:\Program Files (x86)\Windows Kits\10\References\10.0.26100.0;C:\Windows\Microsoft.NET\Framework64\v4.0.30319
+2026-10-29T07:00:47.6768118Z   llvmArm64: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\Llvm\ARM64\bin
+2026-10-29T07:00:47.6768695Z   llvmX64: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\Llvm\x64\bin
+2026-10-29T07:00:47.6770680Z   NETFXSDKDir: C:\Program Files (x86)\Windows Kits\NETFXSDK\4.8.1\
+2026-10-29T07:00:47.6787224Z   Path: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\bin\HostX64\x64;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\VC\VCPackages;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\CommonExtensions\Microsoft\TestWindow;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\CommonExtensions\Microsoft\TeamFoundation\Team Explorer;C:\Program Files\Microsoft Visual Studio\18\Enterprise\MSBuild\Current\bin\Roslyn;C:\Program Files (x86)\Microsoft SDKs\Windows\v10.0A\bin\NETFX 4.8.1 Tools\x64\;C:\Program Files (x86)\HTML Help Workshop;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\CommonExtensions\Microsoft\FSharp\Tools;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Team Tools\DiagnosticsHub\Collector;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\Extensions\Microsoft\CodeCoverage.Console;C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\\x64;C:\Program Files (x86)\Windows Kits\10\bin\\x64;C:\Program Files\Microsoft Visual Studio\18\Enterprise\\MSBuild\Current\Bin\amd64;C:\Windows\Microsoft.NET\Framework64\v4.0.30319;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\Tools\;C:\Program Files\MongoDB\Server\7.0\bin;C:\vcpkg;C:\tools\zstd;C:\hostedtoolcache\windows\stack\3.11.1\x64;C:\cabal\bin;C:\\ghcup\bin;C:\mingw64\bin;C:\Program Files\dotnet;C:\Program Files\MySQL\MySQL Server 8.0\bin;C:\Program Files\R\R-4.6.1\bin\x64;C:\SeleniumWebDrivers\GeckoDriver;C:\SeleniumWebDrivers\EdgeDriver\;C:\SeleniumWebDrivers\ChromeDriver;C:\Program Files (x86)\sbt\bin;C:\Program Files (x86)\GitHub CLI;C:\Program Files\Git\bin;C:\Program Files (x86)\pipx_bin;C:\npm\prefix;C:\hostedtoolcache\windows\go\1.24.13\x64\bin;C:\hostedtoolcache\windows\Python\3.12.10\x64\Scripts;C:\hostedtoolcache\windows\Python\3.12.10\x64;C:\hostedtoolcache\windows\Ruby\3.3.12\x64\bin;C:\Program Files\OpenSSL\bin;C:\tools\kotlinc\bin;C:\hostedtoolcache\windows\Java_Temurin-Hotspot_jdk\17.0.20-101\x64\bin;C:\Program Files\ImageMagick-7.1.2-Q16-HDRI;C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin;C:\ProgramData\kind;C:\ProgramData\Chocolatey\bin;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;C:\Program Files\WSL\;C:\Program Files\PowerShell\7\;C:\Program Files\Microsoft\Web Platform Installer\;C:\Program Files\Microsoft SQL Server\170\Tools\Binn\;C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\170\Tools\Binn\;C:\Program Files\dotnet\;C:\Program Files (x86)\Windows Kits\10\Windows Performance Toolkit\;C:\Program Files (x86)\WiX Toolset v3.14\bin;C:\Program Files\Microsoft SQL Server\130\DTS\Binn\;C:\Program Files\Microsoft SQL Server\140\DTS\Binn\;C:\Program Files\Microsoft SQL Server\150\DTS\Binn\;C:\Program Files\Microsoft SQL Server\160\DTS\Binn\;C:\Program Files\Microsoft SQL Server\170\DTS\Binn\;C:\ProgramData\chocolatey\lib\pulumi\tools\Pulumi\bin;C:\Program Files\CMake\bin;C:\Strawberry\c\bin;C:\Strawberry\perl\site\bin;C:\Strawberry\perl\bin;C:\ProgramData\chocolatey\lib\maven\apache-maven-3.9.16\bin;C:\Program Files\Microsoft Service Fabric\bin\Fabric\Fabric.Code;C:\Program Files\Microsoft SDKs\Service Fabric\Tools\ServiceFabricLocalClusterManager;C:\Program Files\LLVM\bin;C:\Program Files (x86)\LLVM\bin;C:\Program Files\nodejs\;C:\Program Files\Git\cmd;C:\Program Files\Git\ucrt64\bin;C:\Program Files\Git\usr\bin;C:\Program Files\GitHub CLI\;c:\tools\php;C:\Program Files\Amazon\AWSCLIV2\;C:\Program Files\Amazon\SessionManagerPlugin\bin\;C:\Program Files\Amazon\AWSSAMCLI\bin\;C:\Program Files\Microsoft SQL Server\130\Tools\Binn\;C:\Program Files\mongosh\;C:\Users\runneradmin\.dotnet\tools;C:\Users\runneradmin\.cargo\bin;C:\Users\runneradmin\AppData\Local\Microsoft\WindowsApps;C:\Program Files (x86)\Microsoft Visual Studio\Installer;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\Llvm\x64\bin;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\VC\Linux\bin\ConnectionManagerExe;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\vcpkg
+2026-10-29T07:00:47.6802458Z   Platform: x64
+2026-10-29T07:00:47.6802653Z   UCRTVersion: 10.0.26100.0
+2026-10-29T07:00:47.6802951Z   UniversalCRTSdkDir: C:\Program Files (x86)\Windows Kits\10\
+2026-10-29T07:00:47.6803267Z   use_x64_llvm: true
+2026-10-29T07:00:47.6803617Z   VCIDEInstallDir: C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\VC\
+2026-10-29T07:00:47.6804127Z   VCINSTALLDIR: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\
+2026-10-29T07:00:47.6804584Z   VCPKG_ROOT: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\vcpkg
+2026-10-29T07:00:47.6805138Z   VCToolsInstallDir: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\
+2026-10-29T07:00:47.6805774Z   VCToolsRedistDir: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Redist\MSVC\14.51.36231\
+2026-10-29T07:00:47.6806225Z   VCToolsVersion: 14.51.36231
+2026-10-29T07:00:47.6806451Z   VisualStudioVersion: 18.0
+2026-10-29T07:00:47.6806811Z   VS180COMNTOOLS: C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\Tools\
+2026-10-29T07:00:47.6807212Z   VSCMD_ARG_app_plat: Desktop
+2026-10-29T07:00:47.6807429Z   VSCMD_ARG_HOST_ARCH: x64
+2026-10-29T07:00:47.6807638Z   VSCMD_ARG_TGT_ARCH: x64
+2026-10-29T07:00:47.6807834Z   VSCMD_VER: 18.11.1
+2026-10-29T07:00:47.6808130Z   VSINSTALLDIR: C:\Program Files\Microsoft Visual Studio\18\Enterprise\
+2026-10-29T07:00:47.6808593Z   VSSDK150INSTALL: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VSSDK
+2026-10-29T07:00:47.6809068Z   VSSDKINSTALL: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VSSDK
+2026-10-29T07:00:47.6809745Z   WindowsLibPath: C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0;C:\Program Files (x86)\Windows Kits\10\References\10.0.26100.0
+2026-10-29T07:00:47.6810395Z   WindowsSdkBinPath: C:\Program Files (x86)\Windows Kits\10\bin\
+2026-10-29T07:00:47.6810766Z   WindowsSdkDir: C:\Program Files (x86)\Windows Kits\10\
+2026-10-29T07:00:47.6811075Z   WindowsSDKLibVersion: 10.0.26100.0\
+2026-10-29T07:00:47.6811437Z   WindowsSdkVerBinPath: C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\
+2026-10-29T07:00:47.6811935Z   WindowsSDKVersion: 10.0.26100.0\
+2026-10-29T07:00:47.6812381Z   WindowsSDK_ExecutablePath_x64: C:\Program Files (x86)\Microsoft SDKs\Windows\v10.0A\bin\NETFX 4.8.1 Tools\x64\
+2026-10-29T07:00:47.6813053Z   WindowsSDK_ExecutablePath_x86: C:\Program Files (x86)\Microsoft SDKs\Windows\v10.0A\bin\NETFX 4.8.1 Tools\
+2026-10-29T07:00:47.6813514Z   __DOTNET_ADD_64BIT: 1
+2026-10-29T07:00:47.6813727Z   __DOTNET_PREFERRED_BITNESS: 64
+2026-10-29T07:00:47.6823102Z   __VSCMD_PREINIT_PATH: C:\Program Files\MongoDB\Server\7.0\bin;C:\vcpkg;C:\tools\zstd;C:\hostedtoolcache\windows\stack\3.11.1\x64;C:\cabal\bin;C:\\ghcup\bin;C:\mingw64\bin;C:\Program Files\dotnet;C:\Program Files\MySQL\MySQL Server 8.0\bin;C:\Program Files\R\R-4.6.1\bin\x64;C:\SeleniumWebDrivers\GeckoDriver;C:\SeleniumWebDrivers\EdgeDriver\;C:\SeleniumWebDrivers\ChromeDriver;C:\Program Files (x86)\sbt\bin;C:\Program Files (x86)\GitHub CLI;C:\Program Files\Git\bin;C:\Program Files (x86)\pipx_bin;C:\npm\prefix;C:\hostedtoolcache\windows\go\1.24.13\x64\bin;C:\hostedtoolcache\windows\Python\3.12.10\x64\Scripts;C:\hostedtoolcache\windows\Python\3.12.10\x64;C:\hostedtoolcache\windows\Ruby\3.3.12\x64\bin;C:\Program Files\OpenSSL\bin;C:\tools\kotlinc\bin;C:\hostedtoolcache\windows\Java_Temurin-Hotspot_jdk\17.0.20-101\x64\bin;C:\Program Files\ImageMagick-7.1.2-Q16-HDRI;C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin;C:\ProgramData\kind;C:\ProgramData\Chocolatey\bin;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;C:\Program Files\WSL\;C:\Program Files\PowerShell\7\;C:\Program Files\Microsoft\Web Platform Installer\;C:\Program Files\Microsoft SQL Server\170\Tools\Binn\;C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\170\Tools\Binn\;C:\Program Files\dotnet\;C:\Program Files (x86)\Windows Kits\10\Windows Performance Toolkit\;C:\Program Files (x86)\WiX Toolset v3.14\bin;C:\Program Files\Microsoft SQL Server\130\DTS\Binn\;C:\Program Files\Microsoft SQL Server\140\DTS\Binn\;C:\Program Files\Microsoft SQL Server\150\DTS\Binn\;C:\Program Files\Microsoft SQL Server\160\DTS\Binn\;C:\Program Files\Microsoft SQL Server\170\DTS\Binn\;C:\ProgramData\chocolatey\lib\pulumi\tools\Pulumi\bin;C:\Program Files\CMake\bin;C:\Strawberry\c\bin;C:\Strawberry\perl\site\bin;C:\Strawberry\perl\bin;C:\ProgramData\chocolatey\lib\maven\apache-maven-3.9.16\bin;C:\Program Files\Microsoft Service Fabric\bin\Fabric\Fabric.Code;C:\Program Files\Microsoft SDKs\Service Fabric\Tools\ServiceFabricLocalClusterManager;C:\Program Files\LLVM\bin;C:\Program Files (x86)\LLVM\bin;C:\Program Files\nodejs\;C:\Program Files\Git\cmd;C:\Program Files\Git\ucrt64\bin;C:\Program Files\Git\usr\bin;C:\Program Files\GitHub CLI\;c:\tools\php;C:\Program Files (x86)\sbt\bin;C:\Program Files\Amazon\AWSCLIV2\;C:\Program Files\Amazon\SessionManagerPlugin\bin\;C:\Program Files\Amazon\AWSSAMCLI\bin\;C:\Program Files\Microsoft SQL Server\130\Tools\Binn\;C:\Program Files\mongosh\;C:\Users\runneradmin\.dotnet\tools;C:\Users\runneradmin\.cargo\bin;C:\Users\runneradmin\AppData\Local\Microsoft\WindowsApps;C:\Program Files (x86)\Microsoft Visual Studio\Installer
+2026-10-29T07:00:47.6832276Z   CRYSTAL_LIBRARY_PATH: D:\a\_temp\crystal-1.21.0-true-undefined\lib
+2026-10-29T07:00:47.6832617Z   LLVM_VERSION: 20.1.7
+2026-10-29T07:00:47.6832860Z ##[endgroup]
+2026-10-29T07:00:49.8169291Z make -s -f Makefile.win rc > ".build\crystal.rc"
+2026-10-29T07:00:50.5655131Z rc.exe /nologo /Fo ".build\crystal.res" ".build\crystal.rc"
+2026-10-29T07:00:51.1335468Z Using externally configured LLVM [version=20.1.7]
+2026-10-29T07:00:51.1481460Z .\bin\crystal build -D strict_multi_assign -D preview_overload_order  -Dwithout_openssl -Dwithout_zlib  -o ".build\crystal-next.exe" src\compiler\crystal.cr --link-flags=/PDBALTPATH:crystal.pdb "--link-flags=D:/a/iyi/iyi/.build/crystal.res"
+2026-10-29T07:02:03.5672002Z del /F /Q ".build\crystal.exe.old-*" 2>NUL & (if exist ".build\crystal.exe" move /Y ".build\crystal.exe" ".build\crystal.exe.old-%RANDOM%%RANDOM%" >NUL) & move /Y ".build\crystal-next.exe" ".build\crystal.exe"
+2026-10-29T07:02:03.5797919Z         1 file(s) moved.
+2026-10-29T07:02:03.5824670Z del /F /Q ".build\crystal.pdb.old-*" 2>NUL & (if exist ".build\crystal.pdb" move /Y ".build\crystal.pdb" ".build\crystal.pdb.old-%RANDOM%%RANDOM%" >NUL) & move /Y ".build\crystal-next.pdb" ".build\crystal.pdb"
+2026-10-29T07:02:03.5945696Z         1 file(s) moved.
+2026-10-29T07:02:04.3186968Z Using externally configured LLVM [version=20.1.7]
+2026-10-29T07:02:04.3342092Z .\bin\crystal build -D strict_multi_assign -D preview_overload_order  -Dwithout_openssl -Dwithout_zlib -Dwithout_iconv  -Dgc_none -o ".build\iyi-next.exe" src\compiler\iyi.cr --link-flags=/PDBALTPATH:iyi.pdb
+2026-10-29T07:02:04.7584607Z Using compiled compiler at .\.build\crystal.exe
+2026-10-29T07:03:57.1814136Z del /F /Q ".build\iyi.exe.old-*" 2>NUL & (if exist ".build\iyi.exe" move /Y ".build\iyi.exe" ".build\iyi.exe.old-%RANDOM%%RANDOM%" >NUL) & move /Y ".build\iyi-next.exe" ".build\iyi.exe"
+2026-10-29T07:03:57.1946936Z         1 file(s) moved.
+2026-10-29T07:03:57.1974327Z del /F /Q ".build\iyi.pdb.old-*" 2>NUL & (if exist ".build\iyi.pdb" move /Y ".build\iyi.pdb" ".build\iyi.pdb.old-%RANDOM%%RANDOM%" >NUL) & move /Y ".build\iyi-next.pdb" ".build\iyi.pdb"
+2026-10-29T07:03:57.2101560Z         1 file(s) moved.
+2026-10-29T07:03:57.2247523Z built .build\iyi.exe
+2026-10-29T07:03:57.2527547Z ##[group]Run failed=""
+2026-10-29T07:03:57.2528048Z [36;1mfailed=""[0m
+2026-10-29T07:03:57.2528443Z [36;1mfor gate in bench/arena_exercise.sh bench/root_exercise.sh \[0m
+2026-10-29T07:03:57.2528972Z [36;1m            bench/mark_exercise.sh bench/sweep_exercise.sh \[0m
+2026-10-29T07:03:57.2529507Z [36;1m            bench/collect_trigger.sh bench/thread_exercise.sh \[0m
+2026-10-29T07:03:57.2530033Z [36;1m            bench/parallel_mark.sh bench/concurrent_mark.sh; do[0m
+2026-10-29T07:03:57.2530568Z [36;1m  bash bench/bounded_gate.sh 15 "$gate" || failed="$failed $gate"[0m
+2026-10-29T07:03:57.2531028Z [36;1mdone[0m
+2026-10-29T07:03:57.2531579Z [36;1m[ -z "$failed" ] || { echo "failed:$failed"; exit 1; }[0m
+2026-10-29T07:03:57.2549237Z shell: C:\Program Files\Git\bin\bash.EXE --noprofile --norc -e -o pipefail {0}
+2026-10-29T07:03:57.2549699Z env:
+2026-10-29T07:03:57.2549933Z   GIT_CONFIG_COUNT: 1
+2026-10-29T07:03:57.2550300Z   GIT_CONFIG_KEY_0: safe.directory
+2026-10-29T07:03:57.2550607Z   GIT_CONFIG_VALUE_0: *
+2026-10-29T07:03:57.2550867Z   PYTHONUTF8: 1
+2026-10-29T07:03:57.2551131Z   CommandPromptType: Native
+2026-10-29T07:03:57.2551854Z   DevEnvDir: C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\
+2026-10-29T07:03:57.2552481Z   ExtensionSdkDir: C:\Program Files (x86)\Microsoft SDKs\Windows Kits\10\ExtensionSDKs
+2026-10-29T07:03:57.2555390Z   EXTERNAL_INCLUDE: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\include;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\ATLMFC\include;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Auxiliary\VS\include;C:\Program Files (x86)\Windows Kits\10\include\10.0.26100.0\ucrt;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\um;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\shared;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\winrt;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\cppwinrt;C:\Program Files (x86)\Windows Kits\NETFXSDK\4.8.1\include\um
+2026-10-29T07:03:57.2558095Z   Framework40Version: v4.0
+2026-10-29T07:03:57.2558440Z   FrameworkDir: C:\Windows\Microsoft.NET\Framework64\
+2026-10-29T07:03:57.2558865Z   FrameworkDir64: C:\Windows\Microsoft.NET\Framework64\
+2026-10-29T07:03:57.2559259Z   FrameworkVersion: v4.0.30319
+2026-10-29T07:03:57.2559548Z   FrameworkVersion64: v4.0.30319
+2026-10-29T07:03:57.2560130Z   FSHARPINSTALLDIR: C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\CommonExtensions\Microsoft\FSharp\Tools
+2026-10-29T07:03:57.2560793Z   HTMLHelpDir: C:\Program Files (x86)\HTML Help Workshop
+2026-10-29T07:03:57.2565295Z   INCLUDE: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\include;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\ATLMFC\include;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Auxiliary\VS\include;C:\Program Files (x86)\Windows Kits\10\include\10.0.26100.0\ucrt;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\um;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\shared;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\winrt;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\cppwinrt;C:\Program Files (x86)\Windows Kits\NETFXSDK\4.8.1\include\um
+2026-10-29T07:03:57.2570788Z   LIB: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\ATLMFC\lib\x64;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\lib\x64;C:\Program Files (x86)\Windows Kits\NETFXSDK\4.8.1\lib\um\x64;C:\Program Files (x86)\Windows Kits\10\lib\10.0.26100.0\ucrt\x64;C:\Program Files (x86)\Windows Kits\10\\lib\10.0.26100.0\\um\x64
+2026-10-29T07:03:57.2578590Z   LIBPATH: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\ATLMFC\lib\x64;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\lib\x64;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\lib\x86\store\references;C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0;C:\Program Files (x86)\Windows Kits\10\References\10.0.26100.0;C:\Windows\Microsoft.NET\Framework64\v4.0.30319
+2026-10-29T07:03:57.2581941Z   llvmArm64: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\Llvm\ARM64\bin
+2026-10-29T07:03:57.2582629Z   llvmX64: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\Llvm\x64\bin
+2026-10-29T07:03:57.2583195Z   NETFXSDKDir: C:\Program Files (x86)\Windows Kits\NETFXSDK\4.8.1\
+2026-10-29T07:03:57.2600129Z   Path: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\bin\HostX64\x64;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\VC\VCPackages;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\CommonExtensions\Microsoft\TestWindow;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\CommonExtensions\Microsoft\TeamFoundation\Team Explorer;C:\Program Files\Microsoft Visual Studio\18\Enterprise\MSBuild\Current\bin\Roslyn;C:\Program Files (x86)\Microsoft SDKs\Windows\v10.0A\bin\NETFX 4.8.1 Tools\x64\;C:\Program Files (x86)\HTML Help Workshop;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\CommonExtensions\Microsoft\FSharp\Tools;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Team Tools\DiagnosticsHub\Collector;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\Extensions\Microsoft\CodeCoverage.Console;C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\\x64;C:\Program Files (x86)\Windows Kits\10\bin\\x64;C:\Program Files\Microsoft Visual Studio\18\Enterprise\\MSBuild\Current\Bin\amd64;C:\Windows\Microsoft.NET\Framework64\v4.0.30319;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\Tools\;C:\Program Files\MongoDB\Server\7.0\bin;C:\vcpkg;C:\tools\zstd;C:\hostedtoolcache\windows\stack\3.11.1\x64;C:\cabal\bin;C:\\ghcup\bin;C:\mingw64\bin;C:\Program Files\dotnet;C:\Program Files\MySQL\MySQL Server 8.0\bin;C:\Program Files\R\R-4.6.1\bin\x64;C:\SeleniumWebDrivers\GeckoDriver;C:\SeleniumWebDrivers\EdgeDriver\;C:\SeleniumWebDrivers\ChromeDriver;C:\Program Files (x86)\sbt\bin;C:\Program Files (x86)\GitHub CLI;C:\Program Files\Git\bin;C:\Program Files (x86)\pipx_bin;C:\npm\prefix;C:\hostedtoolcache\windows\go\1.24.13\x64\bin;C:\hostedtoolcache\windows\Python\3.12.10\x64\Scripts;C:\hostedtoolcache\windows\Python\3.12.10\x64;C:\hostedtoolcache\windows\Ruby\3.3.12\x64\bin;C:\Program Files\OpenSSL\bin;C:\tools\kotlinc\bin;C:\hostedtoolcache\windows\Java_Temurin-Hotspot_jdk\17.0.20-101\x64\bin;C:\Program Files\ImageMagick-7.1.2-Q16-HDRI;C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin;C:\ProgramData\kind;C:\ProgramData\Chocolatey\bin;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;C:\Program Files\WSL\;C:\Program Files\PowerShell\7\;C:\Program Files\Microsoft\Web Platform Installer\;C:\Program Files\Microsoft SQL Server\170\Tools\Binn\;C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\170\Tools\Binn\;C:\Program Files\dotnet\;C:\Program Files (x86)\Windows Kits\10\Windows Performance Toolkit\;C:\Program Files (x86)\WiX Toolset v3.14\bin;C:\Program Files\Microsoft SQL Server\130\DTS\Binn\;C:\Program Files\Microsoft SQL Server\140\DTS\Binn\;C:\Program Files\Microsoft SQL Server\150\DTS\Binn\;C:\Program Files\Microsoft SQL Server\160\DTS\Binn\;C:\Program Files\Microsoft SQL Server\170\DTS\Binn\;C:\ProgramData\chocolatey\lib\pulumi\tools\Pulumi\bin;C:\Program Files\CMake\bin;C:\Strawberry\c\bin;C:\Strawberry\perl\site\bin;C:\Strawberry\perl\bin;C:\ProgramData\chocolatey\lib\maven\apache-maven-3.9.16\bin;C:\Program Files\Microsoft Service Fabric\bin\Fabric\Fabric.Code;C:\Program Files\Microsoft SDKs\Service Fabric\Tools\ServiceFabricLocalClusterManager;C:\Program Files\LLVM\bin;C:\Program Files (x86)\LLVM\bin;C:\Program Files\nodejs\;C:\Program Files\Git\cmd;C:\Program Files\Git\ucrt64\bin;C:\Program Files\Git\usr\bin;C:\Program Files\GitHub CLI\;c:\tools\php;C:\Program Files\Amazon\AWSCLIV2\;C:\Program Files\Amazon\SessionManagerPlugin\bin\;C:\Program Files\Amazon\AWSSAMCLI\bin\;C:\Program Files\Microsoft SQL Server\130\Tools\Binn\;C:\Program Files\mongosh\;C:\Users\runneradmin\.dotnet\tools;C:\Users\runneradmin\.cargo\bin;C:\Users\runneradmin\AppData\Local\Microsoft\WindowsApps;C:\Program Files (x86)\Microsoft Visual Studio\Installer;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\Llvm\x64\bin;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\VC\Linux\bin\ConnectionManagerExe;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\vcpkg
+2026-10-29T07:03:57.2616110Z   Platform: x64
+2026-10-29T07:03:57.2616368Z   UCRTVersion: 10.0.26100.0
+2026-10-29T07:03:57.2616714Z   UniversalCRTSdkDir: C:\Program Files (x86)\Windows Kits\10\
+2026-10-29T07:03:57.2617115Z   use_x64_llvm: true
+2026-10-29T07:03:57.2617526Z   VCIDEInstallDir: C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\VC\
+2026-10-29T07:03:57.2618112Z   VCINSTALLDIR: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\
+2026-10-29T07:03:57.2618638Z   VCPKG_ROOT: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\vcpkg
+2026-10-29T07:03:57.2619253Z   VCToolsInstallDir: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\
+2026-10-29T07:03:57.2619957Z   VCToolsRedistDir: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Redist\MSVC\14.51.36231\
+2026-10-29T07:03:57.2620472Z   VCToolsVersion: 14.51.36231
+2026-10-29T07:03:57.2644254Z   VisualStudioVersion: 18.0
+2026-10-29T07:03:57.2644729Z   VS180COMNTOOLS: C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\Tools\
+2026-10-29T07:03:57.2645355Z   VSCMD_ARG_app_plat: Desktop
+2026-10-29T07:03:57.2645872Z   VSCMD_ARG_HOST_ARCH: x64
+2026-10-29T07:03:57.2646321Z   VSCMD_ARG_TGT_ARCH: x64
+2026-10-29T07:03:57.2646757Z   VSCMD_VER: 18.11.1
+2026-10-29T07:03:57.2647362Z   VSINSTALLDIR: C:\Program Files\Microsoft Visual Studio\18\Enterprise\
+2026-10-29T07:03:57.2648150Z   VSSDK150INSTALL: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VSSDK
+2026-10-29T07:03:57.2648707Z   VSSDKINSTALL: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VSSDK
+2026-10-29T07:03:57.2649461Z   WindowsLibPath: C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0;C:\Program Files (x86)\Windows Kits\10\References\10.0.26100.0
+2026-10-29T07:03:57.2650405Z   WindowsSdkBinPath: C:\Program Files (x86)\Windows Kits\10\bin\
+2026-10-29T07:03:57.2650810Z   WindowsSdkDir: C:\Program Files (x86)\Windows Kits\10\
+2026-10-29T07:03:57.2651745Z   WindowsSDKLibVersion: 10.0.26100.0\
+2026-10-29T07:03:57.2652193Z   WindowsSdkVerBinPath: C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\
+2026-10-29T07:03:57.2652644Z   WindowsSDKVersion: 10.0.26100.0\
+2026-10-29T07:03:57.2653160Z   WindowsSDK_ExecutablePath_x64: C:\Program Files (x86)\Microsoft SDKs\Windows\v10.0A\bin\NETFX 4.8.1 Tools\x64\
+2026-10-29T07:03:57.2653901Z   WindowsSDK_ExecutablePath_x86: C:\Program Files (x86)\Microsoft SDKs\Windows\v10.0A\bin\NETFX 4.8.1 Tools\
+2026-10-29T07:03:57.2654418Z   __DOTNET_ADD_64BIT: 1
+2026-10-29T07:03:57.2654718Z   __DOTNET_PREFERRED_BITNESS: 64
+2026-10-29T07:03:57.2663768Z   __VSCMD_PREINIT_PATH: C:\Program Files\MongoDB\Server\7.0\bin;C:\vcpkg;C:\tools\zstd;C:\hostedtoolcache\windows\stack\3.11.1\x64;C:\cabal\bin;C:\\ghcup\bin;C:\mingw64\bin;C:\Program Files\dotnet;C:\Program Files\MySQL\MySQL Server 8.0\bin;C:\Program Files\R\R-4.6.1\bin\x64;C:\SeleniumWebDrivers\GeckoDriver;C:\SeleniumWebDrivers\EdgeDriver\;C:\SeleniumWebDrivers\ChromeDriver;C:\Program Files (x86)\sbt\bin;C:\Program Files (x86)\GitHub CLI;C:\Program Files\Git\bin;C:\Program Files (x86)\pipx_bin;C:\npm\prefix;C:\hostedtoolcache\windows\go\1.24.13\x64\bin;C:\hostedtoolcache\windows\Python\3.12.10\x64\Scripts;C:\hostedtoolcache\windows\Python\3.12.10\x64;C:\hostedtoolcache\windows\Ruby\3.3.12\x64\bin;C:\Program Files\OpenSSL\bin;C:\tools\kotlinc\bin;C:\hostedtoolcache\windows\Java_Temurin-Hotspot_jdk\17.0.20-101\x64\bin;C:\Program Files\ImageMagick-7.1.2-Q16-HDRI;C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin;C:\ProgramData\kind;C:\ProgramData\Chocolatey\bin;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;C:\Program Files\WSL\;C:\Program Files\PowerShell\7\;C:\Program Files\Microsoft\Web Platform Installer\;C:\Program Files\Microsoft SQL Server\170\Tools\Binn\;C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\170\Tools\Binn\;C:\Program Files\dotnet\;C:\Program Files (x86)\Windows Kits\10\Windows Performance Toolkit\;C:\Program Files (x86)\WiX Toolset v3.14\bin;C:\Program Files\Microsoft SQL Server\130\DTS\Binn\;C:\Program Files\Microsoft SQL Server\140\DTS\Binn\;C:\Program Files\Microsoft SQL Server\150\DTS\Binn\;C:\Program Files\Microsoft SQL Server\160\DTS\Binn\;C:\Program Files\Microsoft SQL Server\170\DTS\Binn\;C:\ProgramData\chocolatey\lib\pulumi\tools\Pulumi\bin;C:\Program Files\CMake\bin;C:\Strawberry\c\bin;C:\Strawberry\perl\site\bin;C:\Strawberry\perl\bin;C:\ProgramData\chocolatey\lib\maven\apache-maven-3.9.16\bin;C:\Program Files\Microsoft Service Fabric\bin\Fabric\Fabric.Code;C:\Program Files\Microsoft SDKs\Service Fabric\Tools\ServiceFabricLocalClusterManager;C:\Program Files\LLVM\bin;C:\Program Files (x86)\LLVM\bin;C:\Program Files\nodejs\;C:\Program Files\Git\cmd;C:\Program Files\Git\ucrt64\bin;C:\Program Files\Git\usr\bin;C:\Program Files\GitHub CLI\;c:\tools\php;C:\Program Files (x86)\sbt\bin;C:\Program Files\Amazon\AWSCLIV2\;C:\Program Files\Amazon\SessionManagerPlugin\bin\;C:\Program Files\Amazon\AWSSAMCLI\bin\;C:\Program Files\Microsoft SQL Server\130\Tools\Binn\;C:\Program Files\mongosh\;C:\Users\runneradmin\.dotnet\tools;C:\Users\runneradmin\.cargo\bin;C:\Users\runneradmin\AppData\Local\Microsoft\WindowsApps;C:\Program Files (x86)\Microsoft Visual Studio\Installer
+2026-10-29T07:03:57.2673408Z   CRYSTAL_LIBRARY_PATH: D:\a\_temp\crystal-1.21.0-true-undefined\lib
+2026-10-29T07:03:57.2673827Z   LLVM_VERSION: 20.1.7
+2026-10-29T07:03:57.2674123Z ##[endgroup]
+2026-10-29T07:04:01.0411908Z == the exercise, -Dgc_none (the opted-out bump pointer)
+2026-10-29T07:04:03.5640111Z   survival: 256 blocks across 8 sizes hold their patterns
+2026-10-29T07:04:03.5640908Z   alignment: every pointer 8-aligned
+2026-10-29T07:04:03.5641962Z   realloc: same-class, cross-class and null all hold their bytes
+2026-10-29T07:04:03.5642923Z   arena checks skipped: this build deselected the collector's allocator; a plain build runs them
+2026-10-29T07:04:03.5643860Z   speed: 75 ns per allocation over 2000000 (sink 352)
+2026-10-29T07:04:03.5644479Z   arena allocator: every check passed
+2026-10-29T07:04:03.5649439Z 
+2026-10-29T07:04:03.5650411Z == the exercise, the default (the collector's arena)
+2026-10-29T07:04:07.6651772Z   survival: 256 blocks across 8 sizes hold their patterns
+2026-10-29T07:04:07.6652904Z   alignment: every pointer 8-aligned
+2026-10-29T07:04:07.6653763Z   alignment: small and large allocations of a multiple of 16 bytes 16-aligned, and grown
+2026-10-29T07:04:07.6654758Z   realloc: same-class, cross-class and null all hold their bytes
+2026-10-29T07:04:07.6655780Z   size classes: 1/15/16/17/40/129/4095/4096/5000 -> 16/16/16/24/40/160/4096/4096/5120, all 8-aligned
+2026-10-29T07:04:07.6656889Z   addressability: live block and its middle resolve to class 104, a stack word answers 0
+2026-10-29T07:04:07.6658476Z   header: a word at P-8 under a headed object and none under a headless one, the bits in the chunk's byte; the size the arena's, live through a realloc
+2026-10-29T07:04:07.6660481Z   clearing: a freed chunk of 0xAA bytes comes back zeroed, directly, through __iyi_malloc64 and __iyi_malloc_atomic64, and in its byte
+2026-10-29T07:04:07.6661871Z   clearing: 4000 blocks of 5000 bytes on 445 cold pages taken up again, every byte zero
+2026-10-29T07:04:07.6662922Z   reuse: 200 allocated, 100 freed out of order, 100 allocated again, every byte intact
+2026-10-29T07:04:07.6664019Z   realloc: class to large, large to larger and large back to class all hold their bytes
+2026-10-29T07:04:07.6664862Z     arena 0: chunk 65536 bytes, 16777216 mapped
+2026-10-29T07:04:07.6665459Z     arena 1: chunk 32768 bytes, 16777216 mapped
+2026-10-29T07:04:07.6666041Z     arena 2: chunk 16384 bytes, 16777216 mapped
+2026-10-29T07:04:07.6666577Z     arena 3: chunk 8192 bytes, 16777216 mapped
+2026-10-29T07:04:07.6667112Z     arena 4: chunk 4096 bytes, 16777216 mapped
+2026-10-29T07:04:07.6667626Z     arena 5: chunk 384 bytes, 16777216 mapped
+2026-10-29T07:04:07.6668177Z     arena 6: chunk 5120 bytes, 16777216 mapped
+2026-10-29T07:04:07.6668772Z     arena 7: chunk 2048 bytes, 16777216 mapped
+2026-10-29T07:04:07.6669348Z     arena 8: chunk 5120 bytes, 16777216 mapped
+2026-10-29T07:04:07.6669888Z     arena 9: chunk 384 bytes, 16777216 mapped
+2026-10-29T07:04:07.6670790Z     arena 10: chunk 192 bytes, 16777216 mapped
+2026-10-29T07:04:07.6671342Z     arena 11: chunk 120 bytes, 16777216 mapped
+2026-10-29T07:04:07.6671881Z     arena 12: chunk 5120 bytes, 16777216 mapped
+2026-10-29T07:04:07.6672752Z     arena 13: chunk 160 bytes, 16777216 mapped
+2026-10-29T07:04:07.6673308Z     arena 14: chunk 163840 bytes, 16777216 mapped
+2026-10-29T07:04:07.6673885Z     arena 15: chunk 81920 bytes, 16777216 mapped
+2026-10-29T07:04:07.6674438Z     arena 16: chunk 8192 bytes, 16777216 mapped
+2026-10-29T07:04:07.6674973Z     arena 17: chunk 224 bytes, 16777216 mapped
+2026-10-29T07:04:07.6675524Z     arena 18: chunk 112 bytes, 16777216 mapped
+2026-10-29T07:04:07.6676099Z     arena 19: chunk 56 bytes, 16777216 mapped
+2026-10-29T07:04:07.6676571Z     arena 20: chunk 80 bytes, 16777216 mapped
+2026-10-29T07:04:07.6677042Z     arena 21: chunk 40 bytes, 16777216 mapped
+2026-10-29T07:04:07.6677535Z     arena 22: chunk 1024 bytes, 16777216 mapped
+2026-10-29T07:04:07.6677956Z     arena 23: chunk 256 bytes, 16777216 mapped
+2026-10-29T07:04:07.6678416Z     arena 24: chunk 128 bytes, 16777216 mapped
+2026-10-29T07:04:07.6678931Z     arena 25: chunk 1280 bytes, 16777216 mapped
+2026-10-29T07:04:07.6679417Z     arena 26: chunk 320 bytes, 16777216 mapped
+2026-10-29T07:04:07.6679892Z     arena 27: chunk 48 bytes, 16777216 mapped
+2026-10-29T07:04:07.6680391Z     arena 28: chunk 64 bytes, 16777216 mapped
+2026-10-29T07:04:07.6680887Z     arena 29: chunk 10240 bytes, 16777216 mapped
+2026-10-29T07:04:07.6681677Z     arena 30: chunk 2048 bytes, 16777216 mapped
+2026-10-29T07:04:07.6682146Z     arena 31: chunk 512 bytes, 16777216 mapped
+2026-10-29T07:04:07.6682662Z     arena 32: chunk 104 bytes, 16777216 mapped
+2026-10-29T07:04:07.6683140Z     arena 33: chunk 24 bytes, 16777216 mapped
+2026-10-29T07:04:07.6683638Z     arena 34: chunk 32 bytes, 16777216 mapped
+2026-10-29T07:04:07.6684087Z     arena 35: chunk 16 bytes, 16777216 mapped
+2026-10-29T07:04:07.6684585Z     arena 36: chunk 4096 bytes, 16777216 mapped
+2026-10-29T07:04:07.6685073Z     arena 37: chunk 72 bytes, 16777216 mapped
+2026-10-29T07:04:07.6685609Z   traversal: 38 arenas and 1 large object walked
+2026-10-29T07:04:07.6686544Z   large: 2 MiB over the top class round trips and unlists on free; bench/arena_large_probe.iyi proves the mapping is gone
+2026-10-29T07:04:07.6687497Z   speed: 64 ns per allocation over 2000000 (sink 576)
+2026-10-29T07:04:07.6688105Z   speed: 121 ns per alloc+free pair over 2000000
+2026-10-29T07:04:07.6688658Z   arena allocator: every check passed
+2026-10-29T07:04:07.6688978Z 
+2026-10-29T07:04:07.6689409Z == the same two, --release
+2026-10-29T07:04:09.5310726Z   survival: 256 blocks across 8 sizes hold their patterns
+2026-10-29T07:04:09.5311470Z   alignment: every pointer 8-aligned
+2026-10-29T07:04:09.5314445Z   realloc: same-class, cross-class and null all hold their bytes
+2026-10-29T07:04:09.5316191Z   arena checks skipped: this build deselected the collector's allocator; a plain build runs them
+2026-10-29T07:04:09.5317127Z   speed: 45 ns per allocation over 2000000 (sink 656)
+2026-10-29T07:04:09.5317724Z   arena allocator: every check passed
+2026-10-29T07:04:14.6834690Z   survival: 256 blocks across 8 sizes hold their patterns
+2026-10-29T07:04:14.6835342Z   alignment: every pointer 8-aligned
+2026-10-29T07:04:14.6836058Z   alignment: small and large allocations of a multiple of 16 bytes 16-aligned, and grown
+2026-10-29T07:04:14.6836842Z   realloc: same-class, cross-class and null all hold their bytes
+2026-10-29T07:04:14.6837693Z   size classes: 1/15/16/17/40/129/4095/4096/5000 -> 16/16/16/24/40/160/4096/4096/5120, all 8-aligned
+2026-10-29T07:04:14.6838825Z   addressability: live block and its middle resolve to class 104, a stack word answers 0
+2026-10-29T07:04:14.6839834Z   header: a word at P-8 under a headed object and none under a headless one, the bits in the chunk's byte; the size the arena's, live through a realloc
+2026-10-29T07:04:14.6841354Z   clearing: a freed chunk of 0xAA bytes comes back zeroed, directly, through __iyi_malloc64 and __iyi_malloc_atomic64, and in its byte
+2026-10-29T07:04:14.6842622Z   clearing: 4000 blocks of 5000 bytes on 445 cold pages taken up again, every byte zero
+2026-10-29T07:04:14.6843614Z   reuse: 200 allocated, 100 freed out of order, 100 allocated again, every byte intact
+2026-10-29T07:04:14.6844642Z   realloc: class to large, large to larger and large back to class all hold their bytes
+2026-10-29T07:04:14.6845603Z     arena 0: chunk 65536 bytes, 16777216 mapped
+2026-10-29T07:04:14.6846268Z     arena 1: chunk 32768 bytes, 16777216 mapped
+2026-10-29T07:04:14.6846817Z     arena 2: chunk 16384 bytes, 16777216 mapped
+2026-10-29T07:04:14.6847373Z     arena 3: chunk 8192 bytes, 16777216 mapped
+2026-10-29T07:04:14.6848318Z     arena 4: chunk 4096 bytes, 16777216 mapped
+2026-10-29T07:04:14.6848908Z     arena 5: chunk 384 bytes, 16777216 mapped
+2026-10-29T07:04:14.6849459Z     arena 6: chunk 5120 bytes, 16777216 mapped
+2026-10-29T07:04:14.6849991Z     arena 7: chunk 2048 bytes, 16777216 mapped
+2026-10-29T07:04:14.6850553Z     arena 8: chunk 5120 bytes, 16777216 mapped
+2026-10-29T07:04:14.6851149Z     arena 9: chunk 384 bytes, 16777216 mapped
+2026-10-29T07:04:14.6851750Z     arena 10: chunk 192 bytes, 16777216 mapped
+2026-10-29T07:04:14.6852319Z     arena 11: chunk 120 bytes, 16777216 mapped
+2026-10-29T07:04:14.6852886Z     arena 12: chunk 5120 bytes, 16777216 mapped
+2026-10-29T07:04:14.6853486Z     arena 13: chunk 160 bytes, 16777216 mapped
+2026-10-29T07:04:14.6854466Z     arena 14: chunk 163840 bytes, 16777216 mapped
+2026-10-29T07:04:14.6855097Z     arena 15: chunk 81920 bytes, 16777216 mapped
+2026-10-29T07:04:14.6855675Z     arena 16: chunk 8192 bytes, 16777216 mapped
+2026-10-29T07:04:14.6856335Z     arena 17: chunk 224 bytes, 16777216 mapped
+2026-10-29T07:04:14.6856946Z     arena 18: chunk 112 bytes, 16777216 mapped
+2026-10-29T07:04:14.6857559Z     arena 19: chunk 56 bytes, 16777216 mapped
+2026-10-29T07:04:14.6858135Z     arena 20: chunk 80 bytes, 16777216 mapped
+2026-10-29T07:04:14.6858700Z     arena 21: chunk 40 bytes, 16777216 mapped
+2026-10-29T07:04:14.6859297Z     arena 22: chunk 1024 bytes, 16777216 mapped
+2026-10-29T07:04:14.6859957Z     arena 23: chunk 256 bytes, 16777216 mapped
+2026-10-29T07:04:14.6860551Z     arena 24: chunk 128 bytes, 16777216 mapped
+2026-10-29T07:04:14.6861154Z     arena 25: chunk 1280 bytes, 16777216 mapped
+2026-10-29T07:04:14.6861644Z     arena 26: chunk 320 bytes, 16777216 mapped
+2026-10-29T07:04:14.6862138Z     arena 27: chunk 48 bytes, 16777216 mapped
+2026-10-29T07:04:14.6862742Z     arena 28: chunk 64 bytes, 16777216 mapped
+2026-10-29T07:04:14.6863392Z     arena 29: chunk 10240 bytes, 16777216 mapped
+2026-10-29T07:04:14.6863987Z     arena 30: chunk 2048 bytes, 16777216 mapped
+2026-10-29T07:04:14.6864560Z     arena 31: chunk 512 bytes, 16777216 mapped
+2026-10-29T07:04:14.6865468Z     arena 32: chunk 104 bytes, 16777216 mapped
+2026-10-29T07:04:14.6865861Z     arena 33: chunk 24 bytes, 16777216 mapped
+2026-10-29T07:04:14.6866294Z     arena 34: chunk 32 bytes, 16777216 mapped
+2026-10-29T07:04:14.6866890Z     arena 35: chunk 16 bytes, 16777216 mapped
+2026-10-29T07:04:14.6867501Z     arena 36: chunk 4096 bytes, 16777216 mapped
+2026-10-29T07:04:14.6867853Z     arena 37: chunk 72 bytes, 16777216 mapped
+2026-10-29T07:04:14.6868762Z   traversal: 38 arenas and 1 large object walked
+2026-10-29T07:04:14.6869599Z   large: 2 MiB over the top class round trips and unlists on free; bench/arena_large_probe.iyi proves the mapping is gone
+2026-10-29T07:04:14.6870268Z   speed: 14 ns per allocation over 2000000 (sink 320)
+2026-10-29T07:04:14.6870956Z   speed: 12 ns per alloc+free pair over 2000000
+2026-10-29T07:04:14.6871587Z   arena allocator: every check passed
+2026-10-29T07:04:14.6871790Z 
+2026-10-29T07:04:14.6871942Z == every arena check reported
+2026-10-29T07:04:14.9695052Z   size classes, addressability, clearing, reuse, traversal, large all reported
+2026-10-29T07:04:14.9695784Z 
+2026-10-29T07:04:14.9695993Z == a freed large object's mapping is gone
+2026-10-29T07:04:16.1435377Z   the read faulted (exit fault): the mapping was released
+2026-10-29T07:04:16.1757050Z 
+2026-10-29T07:04:16.1757862Z == a large object 8 bytes off a 16-byte boundary fails by name
+2026-10-29T07:04:17.9476036Z   caught at "alignment: 1048592 bytes at 8 past 16"
+2026-10-29T07:04:17.9476611Z 
+2026-10-29T07:04:17.9476980Z == a carve that trusts a cold run past a chunk's first page fails by name
+2026-10-29T07:04:19.5536150Z   caught at "clearing: a 5000-byte block carved from a cold run read 170 at byte 4096"
+2026-10-29T07:04:19.5537183Z 
+2026-10-29T07:04:19.5537716Z == the allocation floor, measured against the -Dgc_iyi binary
+2026-10-29T07:04:19.7077701Z   exercise-gc      api-ms-win-crt-heap-l1-1-0.dll api-ms-win-crt-locale-l1-1-0.dll api-ms-win-crt-math-l1-1-0.dll api-ms-win-crt-runtime-l1-1-0.dll api-ms-win-crt-stdio-l1-1-0.dll kernel32.dll vcruntime140.dll
+2026-10-29T07:04:19.7936244Z   exercise-gc-release api-ms-win-crt-heap-l1-1-0.dll api-ms-win-crt-locale-l1-1-0.dll api-ms-win-crt-math-l1-1-0.dll api-ms-win-crt-runtime-l1-1-0.dll api-ms-win-crt-stdio-l1-1-0.dll kernel32.dll vcruntime140.dll
+2026-10-29T07:04:19.7937611Z   nothing new: kernel32 and the C runtime's DLLs
+2026-10-29T07:04:19.7937938Z 
+2026-10-29T07:04:19.7938113Z == the samples, both allocators, same output
+2026-10-29T07:04:22.3031464Z   basics: identical output, exit 0
+2026-10-29T07:04:24.7686485Z   calc: identical output, exit 0
+2026-10-29T07:04:27.7683071Z   collections: identical output, exit 0
+2026-10-29T07:04:30.0502387Z   config: identical output, exit 0
+2026-10-29T07:04:32.2870582Z   derive: identical output, exit 0
+2026-10-29T07:04:34.5484277Z   enums: identical output, exit 0
+2026-10-29T07:04:36.9337227Z   errors: identical output, exit 0
+2026-10-29T07:04:42.0246988Z   files: identical output, exit 0
+2026-10-29T07:04:44.8655995Z   format: identical output, exit 0
+2026-10-29T07:04:47.2129664Z   formatting: identical output, exit 0
+2026-10-29T07:04:49.5376848Z   generics: identical output, exit 0
+2026-10-29T07:04:51.9631097Z   grid: identical output, exit 0
+2026-10-29T07:04:54.2994218Z   hello: identical output, exit 0
+2026-10-29T07:04:57.4380189Z   immutable: identical output, exit 0
+2026-10-29T07:04:59.7080716Z   init_order: identical output, exit 0
+2026-10-29T07:05:02.2315024Z   inventory: identical output, exit 0
+2026-10-29T07:05:04.5078041Z   io: identical output, exit 0
+2026-10-29T07:05:06.7282571Z   modules: identical output, exit 0
+2026-10-29T07:05:08.9901291Z   sessions: identical output, exit 0
+2026-10-29T07:05:11.4296634Z   shapes: identical output, exit 0
+2026-10-29T07:05:16.1030855Z   socket: identical output, exit 0
+2026-10-29T07:05:19.1866930Z   std_iterator: identical output, exit 0
+2026-10-29T07:05:21.7158882Z   std_text: identical output, exit 0
+2026-10-29T07:05:25.3294431Z   std_time: identical output, exit 0
+2026-10-29T07:05:27.7064181Z   visited: identical output, exit 0
+2026-10-29T07:05:30.0946647Z   webapp: identical output, exit 0
+2026-10-29T07:05:32.5916239Z   workers: identical output, exit 0
+2026-10-29T07:05:32.5924689Z 
+2026-10-29T07:05:32.5925226Z == speed, same program, same machine, plain build and --release
+2026-10-29T07:05:32.8777792Z   bump pointer      75 ns per allocation, 45 ns --release
+2026-10-29T07:05:32.8778623Z   size-class arena  64 ns per allocation, 14 ns --release
+2026-10-29T07:05:32.8779600Z   size-class arena  121 ns per alloc+free pair, 12 ns --release
+2026-10-29T07:05:32.8780405Z   A size-class allocator is expected to cost more than a bump pointer on
+2026-10-29T07:05:32.8781181Z   the fast path. The number is reported rather than hidden, and it is the
+2026-10-29T07:05:32.8781886Z   price of a heap that can hand memory back.
+2026-10-29T07:05:35.5400102Z   best of 3: bump 45 ns, arena 13 ns, pair 11 ns
+2026-10-29T07:05:35.5401334Z 
+2026-10-29T07:05:35.5402220Z the arena allocator holds
+2026-10-29T07:05:35.8810668Z == bench/arena_exercise.sh: exit 0 after 95 s
+2026-10-29T07:05:36.2447358Z == the exercise, the default allocator
+2026-10-29T07:05:37.7625819Z     stack bounds: sp 0xfdc6fff270 up to base 0xfdc7000000, 3 KiB in use
+2026-10-29T07:05:37.7626504Z     global range: 0x7ff6b4109000..0x7ff6b4109698, a class variable at 0x7ff6b4109570 inside it
+2026-10-29T07:05:37.7627089Z     stack root: found, from a slot at 0xfdc6fff688
+2026-10-29T07:05:37.7627852Z     register root: found, and neither on the stack nor in a global without the spill
+2026-10-29T07:05:37.7628493Z     global root: found, from a class variable at 0x7ff6b4109570
+2026-10-29T07:05:37.7629550Z     interior pointer: bytes 0, 8 and 63 of a 64-byte chunk and byte 1000 of a 2 MiB one all resolve to the base
+2026-10-29T07:05:37.7631010Z     not a pointer: a small integer, zero, a stack address, a global address, a foreign mapping and a code address are all rejected
+2026-10-29T07:05:37.7632041Z     large walk: a million integers beside 200 large mappings rejected within five times the time beside one
+2026-10-29T07:05:37.7632566Z     arena tail: a word past the fill cursor is rejected
+2026-10-29T07:05:37.7633007Z     freed chunk: a stale word pointing at a freed chunk is rejected
+2026-10-29T07:05:37.7633437Z     freed large: a stale word pointing at a released mapping is rejected
+2026-10-29T07:05:37.7633908Z     many roots: 388 of 388 expected found, 403 distinct bases reported from 1365 roots
+2026-10-29T07:05:37.7634707Z     maps parser: the [stack] end is read, terminated or not, a file without one and a truncated line both answer zero, and the mapping holding the arguments is found named or not
+2026-10-29T07:05:37.7635788Z     fiber root: an address held only on a suspended fiber's stack was found by the walk
+2026-10-29T07:05:37.7636520Z     dead helper: 512 arrays of 64 KB built and dropped, asserted in the optimised build on Windows
+2026-10-29T07:05:37.7636963Z     all root checks passed
+2026-10-29T07:05:37.7834101Z 
+2026-10-29T07:05:37.7834683Z == every check reported
+2026-10-29T07:05:38.0684436Z   bounds, stack, register, global, interior, rejection, large walk, tail, freed, many, the maps parser and the dead helper all reported
+2026-10-29T07:05:38.0685363Z 
+2026-10-29T07:05:38.0685539Z == the same program, opted out with -Dgc_none
+2026-10-29T07:05:38.8760343Z     root discovery needs the collector's allocator (the default on linux-x86_64, linux-aarch64 and darwin); this build deselected it, nothing to exercise here
+2026-10-29T07:05:38.8956027Z 
+2026-10-29T07:05:38.8956820Z == the same program with optimisation on
+2026-10-29T07:05:43.5093272Z     stack bounds: sp 0xb7993ff9c8 up to base 0xb799400000, 1 KiB in use
+2026-10-29T07:05:43.5093974Z     global range: 0x7ff799459000..0x7ff799459518, a class variable at 0x7ff799459400 inside it
+2026-10-29T07:05:43.5094635Z     stack root: found, from a slot at 0xb7993ffa58
+2026-10-29T07:05:43.5095585Z     register root: found, and neither on the stack nor in a global without the spill
+2026-10-29T07:05:43.5096326Z     global root: found, from a class variable at 0x7ff799459400
+2026-10-29T07:05:43.5097278Z     interior pointer: bytes 0, 8 and 63 of a 64-byte chunk and byte 1000 of a 2 MiB one all resolve to the base
+2026-10-29T07:05:43.5098613Z     not a pointer: a small integer, zero, a stack address, a global address, a foreign mapping and a code address are all rejected
+2026-10-29T07:05:43.5099419Z     large walk: a million integers beside 200 large mappings rejected within five times the time beside one
+2026-10-29T07:05:43.5099981Z     arena tail: a word past the fill cursor is rejected
+2026-10-29T07:05:43.5100367Z     freed chunk: a stale word pointing at a freed chunk is rejected
+2026-10-29T07:05:43.5101301Z     freed large: a stale word pointing at a released mapping is rejected
+2026-10-29T07:05:43.5102114Z     many roots: 388 of 388 expected found, 397 distinct bases reported from 402 roots
+2026-10-29T07:05:43.5103045Z     maps parser: the [stack] end is read, terminated or not, a file without one and a truncated line both answer zero, and the mapping holding the arguments is found named or not
+2026-10-29T07:05:43.5103891Z     fiber root: an address held only on a suspended fiber's stack was found by the walk
+2026-10-29T07:05:43.5104597Z     dead helper: 512 arrays of 64 KB a returned helper built were freed by the next collection
+2026-10-29T07:05:43.5105045Z     all root checks passed
+2026-10-29T07:05:43.5289181Z 
+2026-10-29T07:05:43.5289771Z == a collection in a --release build that writes artifacts
+2026-10-29T07:05:51.5608049Z   std_slice_exercise built --release --emit-iyimod collects and ends
+2026-10-29T07:05:51.5608500Z 
+2026-10-29T07:05:51.5609011Z == a helper the top level called once leaves nothing in its frame
+2026-10-29T07:05:55.5613782Z   made 1000 arrays of 80 KB
+2026-10-29T07:05:55.5614191Z   dropped: under 8 MB marked after three collections (true)
+2026-10-29T07:05:55.5620249Z 
+2026-10-29T07:05:55.5620648Z == what root discovery asks the machine for
+2026-10-29T07:05:55.7869758Z   roots-gc       86 names from api-ms-win-crt-heap-l1-1-0.dll api-ms-win-crt-locale-l1-1-0.dll api-ms-win-crt-math-l1-1-0.dll api-ms-win-crt-runtime-l1-1-0.dll api-ms-win-crt-stdio-l1-1-0.dll kernel32.dll vcruntime140.dll
+2026-10-29T07:05:55.9604847Z   roots-release  84 names from api-ms-win-crt-heap-l1-1-0.dll api-ms-win-crt-locale-l1-1-0.dll api-ms-win-crt-math-l1-1-0.dll api-ms-win-crt-runtime-l1-1-0.dll api-ms-win-crt-stdio-l1-1-0.dll kernel32.dll vcruntime140.dll
+2026-10-29T07:05:55.9606006Z 
+2026-10-29T07:05:55.9606498Z == the other platform's code, compiled and audited
+2026-10-29T07:05:57.3135525Z   x86_64-linux-gnu     undefined: __data_start __ehdr_start _end 
+2026-10-29T07:05:58.5024923Z   aarch64-linux-gnu    undefined: __data_start __ehdr_start _end 
+2026-10-29T07:05:58.5128638Z 
+2026-10-29T07:05:58.5129033Z == the checks fail when the mechanism is removed
+2026-10-29T07:05:59.9524977Z   no register spill: exits 1 at "register root: the pointer was in the register and the spill did not find it"
+2026-10-29T07:06:01.3925665Z   narrowed global range: exits 1 at "global root: 0x25a7e157060 was not found by a scan of the globals"
+2026-10-29T07:06:02.9593102Z   no fiber walk: exits 1 at "fiber root: 0x2b96e0ac120 lives only on a suspended fiber's stack and the walk did not find it"
+2026-10-29T07:06:04.4982643Z   the stack named, not held: exits 1 at "maps parser: the mapping holding the arguments ends at 0x1fff001000, not 0x7ffd9b413000"
+2026-10-29T07:06:04.4983568Z 
+2026-10-29T07:06:04.4983826Z == the main stack is found past thousands of task stacks
+2026-10-29T07:06:05.8602992Z   tasks: 3000 parked, a collection after them, and it found the main stack (1)
+2026-10-29T07:06:05.8913840Z 
+2026-10-29T07:06:05.8914845Z Roots: stack, registers and globals are all found, an interior pointer
+2026-10-29T07:06:05.8915753Z resolves to its base, and nothing that is not a live chunk is reported.
+2026-10-29T07:06:06.8115003Z == bench/root_exercise.sh: exit 0 after 30 s
+2026-10-29T07:06:07.1817208Z == the exercise, the default allocator
+2026-10-29T07:06:08.5128931Z   == the exercise, the collector's allocator
+2026-10-29T07:06:08.5130218Z       chain: 400 live objects all black, 406 marked in total
+2026-10-29T07:06:08.5131091Z       garbage: 200 of 200 unreferenced objects stayed white, 0 retained conservatively
+2026-10-29T07:06:08.5133013Z       idempotent: every live object is still black after a second pass, which found 3 still-white objects
+2026-10-29T07:06:08.5134129Z       unmark: the chain's head is white again, so a phase can be run twice
+2026-10-29T07:06:08.5135465Z       cycles: a three-node cycle reachable from a global is fully black, and the walk terminated
+2026-10-29T07:06:08.5139032Z       self-loop and unreachable cycle: 2, 2 and 2 as colours, 0 meaning white
+2026-10-29T07:06:08.5140142Z       interior root: a global holding byte 64 of a 128-byte object marks the object
+2026-10-29T07:06:08.5141324Z       depth: a 20000-object chain is fully marked, so the queue grew and the walk is not the stack
+2026-10-29T07:06:08.5142869Z       precision: type id 46 in the header, 96 pointer-field children black, 64 of 64 integer-held addresses stayed white
+2026-10-29T07:06:08.5143767Z       all mark checks passed
+2026-10-29T07:06:08.5351754Z 
+2026-10-29T07:06:08.5352315Z == every check reported
+2026-10-29T07:06:08.6733673Z   chain, garbage, idempotence, unmark, cycles, interior root and depth all reported
+2026-10-29T07:06:08.6734322Z 
+2026-10-29T07:06:08.6734530Z == the same program with optimisation on
+2026-10-29T07:06:12.5168952Z   == the exercise, the collector's allocator
+2026-10-29T07:06:12.5169636Z       chain: 400 live objects all black, 406 marked in total
+2026-10-29T07:06:12.5170461Z       garbage: 200 of 200 unreferenced objects stayed white, 0 retained conservatively
+2026-10-29T07:06:12.5171741Z       idempotent: every live object is still black after a second pass, which found 2 still-white objects
+2026-10-29T07:06:12.5172798Z       unmark: the chain's head is white again, so a phase can be run twice
+2026-10-29T07:06:12.5173718Z       cycles: a three-node cycle reachable from a global is fully black, and the walk terminated
+2026-10-29T07:06:12.5174658Z       self-loop and unreachable cycle: 2, 2 and 2 as colours, 0 meaning white
+2026-10-29T07:06:12.5175176Z       interior root: a global holding byte 64 of a 128-byte object marks the object
+2026-10-29T07:06:12.5175742Z       depth: a 20000-object chain is fully marked, so the queue grew and the walk is not the stack
+2026-10-29T07:06:12.5176663Z       precision: type id 46 in the header, 96 pointer-field children black, 64 of 64 integer-held addresses stayed white
+2026-10-29T07:06:12.5178024Z       all mark checks passed
+2026-10-29T07:06:12.5370254Z 
+2026-10-29T07:06:12.5371009Z == the same program, opted out with -Dgc_none
+2026-10-29T07:06:13.3211994Z       marking needs the collector's allocator (the default on linux-x86_64, linux-aarch64 and darwin); this build deselected it, nothing to exercise here
+2026-10-29T07:06:13.3218549Z 
+2026-10-29T07:06:13.3219250Z == what marking asks the machine for
+2026-10-29T07:06:13.5616291Z   symbols   (none)
+2026-10-29T07:06:13.5616698Z   libraries (none)
+2026-10-29T07:06:13.6699022Z   nothing beyond what root discovery and the arenas already asked for
+2026-10-29T07:06:13.6699587Z 
+2026-10-29T07:06:13.6699798Z == the checks fail when the mark phase is broken
+2026-10-29T07:06:15.0192177Z   no black shading: exits 1 at "chain: 0x26b56101040 should be black and its colour is 1"
+2026-10-29T07:06:16.3615015Z   the neighbour blackened: exits 1 at "chain: 0x1bc0f101040 should be black and its colour is 1"
+2026-10-29T07:06:17.7039221Z   no pointer follow: exits 1 at "chain: 0x18259101080 should be black and its colour is 0"
+2026-10-29T07:06:19.0816057Z   no layout lookup: exits 1 at "typed fields: 64 of 64 integer-held addresses were retained, so the marker is following integer fields"
+2026-10-29T07:06:19.0817283Z 
+2026-10-29T07:06:19.0817730Z Marking: the live set comes out black, unreachable objects stay white,
+2026-10-29T07:06:19.0818247Z cycles terminate, and the exercise fails when the phase is broken.
+2026-10-29T07:06:19.6104713Z == bench/mark_exercise.sh: exit 0 after 13 s
+2026-10-29T07:06:19.8374553Z == the exercise, the default allocator
+2026-10-29T07:06:21.2118086Z   == the exercise, the collector's allocator
+2026-10-29T07:06:21.2118748Z       reclaimed: 301 chunks swept and 28856 bytes freed, and 264 of 300 new allocations came from addresses the sweep reclaimed
+2026-10-29T07:06:21.2120164Z       warm: 70 pages of dead chunks kept warm, 64 still idle after a second pause, 64 taken up by the refill, 4095 of 4096 allocations on the first batch's addresses, all cleared of the 696320 bytes' worth of 0xAA written, high water moved 0 bytes
+2026-10-29T07:06:21.2122165Z       survivor: a rooted object keeps all 64 bytes through a collection and comes out white for the next one
+2026-10-29T07:06:21.2123188Z       liveness: 400 further allocations never returned the live object's chunk
+2026-10-29T07:06:21.2123768Z       large: a rooted 2 MiB object keeps its first and last byte through a collection and comes out white
+2026-10-29T07:06:21.2124338Z       large, unrooted: 0 bytes freed on the pass after the global was cleared
+2026-10-29T07:06:21.2124868Z       steady: 20 cycles of 200 allocations each left 15 arenas mapped and 27 collections recorded
+2026-10-29T07:06:21.2125489Z       rounding: eight epochs of a budget's worth of 32769-byte requests, and no page of theirs went back cold
+2026-10-29T07:06:21.2126112Z       refault: eight epochs asking twice the budget handed back under a quarter of their excess
+2026-10-29T07:06:21.2126731Z       batch: a carve lists the rest of its page, stamped free and this epoch's, and the next allocation pops it
+2026-10-29T07:06:21.2127196Z       all sweep checks passed
+2026-10-29T07:06:21.2318719Z 
+2026-10-29T07:06:21.2319768Z == every check reported
+2026-10-29T07:06:21.3670966Z   reclaimed, warm, survivor, liveness, large, steady and refault all reported
+2026-10-29T07:06:21.3671625Z 
+2026-10-29T07:06:21.3671820Z == the same program with optimisation on
+2026-10-29T07:06:25.3585951Z   == the exercise, the collector's allocator
+2026-10-29T07:06:25.3587036Z       reclaimed: 301 chunks swept and 28856 bytes freed, and 264 of 300 new allocations came from addresses the sweep reclaimed
+2026-10-29T07:06:25.3589842Z       warm: 71 pages of dead chunks kept warm, 65 still idle after a second pause, 65 taken up by the refill, 4095 of 4096 allocations on the first batch's addresses, all cleared of the 696320 bytes' worth of 0xAA written, high water moved 0 bytes
+2026-10-29T07:06:25.3592312Z       survivor: a rooted object keeps all 64 bytes through a collection and comes out white for the next one
+2026-10-29T07:06:25.3593396Z       liveness: 400 further allocations never returned the live object's chunk
+2026-10-29T07:06:25.3594434Z       large: a rooted 2 MiB object keeps its first and last byte through a collection and comes out white
+2026-10-29T07:06:25.3595478Z       large, unrooted: 0 bytes freed on the pass after the global was cleared
+2026-10-29T07:06:25.3596456Z       steady: 20 cycles of 200 allocations each left 15 arenas mapped and 27 collections recorded
+2026-10-29T07:06:25.3597915Z       rounding: eight epochs of a budget's worth of 32769-byte requests, and no page of theirs went back cold
+2026-10-29T07:06:25.3598648Z       refault: eight epochs asking twice the budget handed back under a quarter of their excess
+2026-10-29T07:06:25.3599509Z       batch: a carve lists the rest of its page, stamped free and this epoch's, and the next allocation pops it
+2026-10-29T07:06:25.3600035Z       all sweep checks passed
+2026-10-29T07:06:25.3785598Z 
+2026-10-29T07:06:25.3786193Z == the same program without the flag
+2026-10-29T07:06:26.2252374Z       sweeping needs the collector's allocator (the default on linux-x86_64, linux-aarch64 and darwin); this build deselected it, nothing to exercise here
+2026-10-29T07:06:26.2258760Z 
+2026-10-29T07:06:26.2259163Z == the checks fail when the sweep is broken
+2026-10-29T07:06:27.5988535Z   sweep frees nothing: exits 1 at "sweep: nothing was reclaimed, so no address came back"
+2026-10-29T07:06:29.0035423Z   sweep frees the live: exits 1 at "sweep: a live object's byte 0 is 64 rather than 90"
+2026-10-29T07:06:30.4709741Z   warm pages never taken up: exits 1 at "warm: 64 pages idle and warm and 0 taken up again, so the refill is not taking them first"
+2026-10-29T07:06:31.8389990Z   warm chunks not cleared: exits 1 at "warm: a chunk from a warm page came back dirty at byte 0"
+2026-10-29T07:06:33.2155500Z   the fast path does not clear: exits 1 at "warm: a chunk from a warm page came back dirty at byte 0"
+2026-10-29T07:06:34.6900135Z   warm pages counted at the full chunk: exits 1 at "rounding: 116 pages of 32769-byte requests handed back in eight steady epochs, each asking a budget's worth"
+2026-10-29T07:06:36.1774074Z   cold reopenings not kept warm: exits 1 at "refault: 6960 pages handed back in eight steady epochs of 3000-byte requests asking twice the budget, where the excess is 1032 pages an epoch"
+2026-10-29T07:06:37.6349568Z   a batch left unstamped: exits 1 at "batch: the chunk after a carved one is not listed free (entry 0)"
+2026-10-29T07:06:39.1801179Z   a batch not listed: exits 1 at "    warm: 200 pages of dead chunks kept warm, 194 still idle after a second pause, 194 taken up by the refill, 64 of 4096 allocations on the first batch's addresses, all cleared of the 696320 bytes' worth of 0xAA written, high water moved 0 bytes"
+2026-10-29T07:06:39.2124928Z   an idle bit trusted past its page: not proven here, because this platform's pages keep idle ones out of the rounding check's slices
+2026-10-29T07:06:39.2125592Z 
+2026-10-29T07:06:39.2125905Z Sweeping: unreachable chunks come back and are handed out again, a live
+2026-10-29T07:06:39.2126532Z object survives intact, and the exercise fails in both directions.
+2026-10-29T07:06:39.8898956Z == bench/sweep_exercise.sh: exit 0 after 20 s
+2026-10-29T07:06:40.2317919Z == the exercise, the default allocator
+2026-10-29T07:06:42.3878962Z   == the trigger, the default allocator
+2026-10-29T07:06:42.3880023Z       quiet: a quarter MiB of churn ran no collection under the 4194304-byte budget
+2026-10-29T07:06:42.3881555Z       scheduler's state: the object its thread-local names lived through the first collection
+2026-10-29T07:06:42.3882739Z       trigger: 64 MiB of churn ran 16 collections by itself, 12 arenas mapped, the rooted survivor intact
+2026-10-29T07:06:42.3884183Z       budget: the same churn ran 7 collections with 4 MiB live where it ran 16 with none, budget now 8424200 bytes
+2026-10-29T07:06:42.3886250Z       scheduler's state: the object its thread-local names lived through 8 collections, rooted by the global list
+2026-10-29T07:06:42.3887710Z       lazy: the allocator began 30 arenas on its own time, the helpers 401 beside it, pauses finished 0 left over, across 34 collections
+2026-10-29T07:06:42.3889337Z       fiber: 2 collections triggered beside a parked fiber, its 80 bytes intact
+2026-10-29T07:06:42.3890256Z       scavenge: 22 arenas at the peak, 4 released to the kernel, 18 still mapped
+2026-10-29T07:06:42.3891125Z       pauses: last 172600 ns, max 56378500 ns, 99246600 ns across 42 collections
+2026-10-29T07:06:42.3892234Z       spare: under a 109120800-byte budget the second epoch's 48 MiB of garbage mapped 0 arenas afresh
+2026-10-29T07:06:42.3893491Z       threads: five hundred short-lived threads' allocation counted, and the next slice ran a collection
+2026-10-29T07:06:42.3894427Z       all trigger checks passed
+2026-10-29T07:06:42.4101298Z 
+2026-10-29T07:06:42.4102159Z == every check reported
+2026-10-29T07:06:42.5515282Z   quiet, trigger, budget, fiber, scavenge, pauses and threads all reported
+2026-10-29T07:06:42.5516241Z 
+2026-10-29T07:06:42.5516519Z == the same program with optimisation on
+2026-10-29T07:06:47.8315590Z   == the trigger, the default allocator
+2026-10-29T07:06:47.8316539Z       quiet: a quarter MiB of churn ran no collection under the 4194304-byte budget
+2026-10-29T07:06:47.8317625Z       scheduler's state: the object its thread-local names lived through the first collection
+2026-10-29T07:06:47.8319166Z       trigger: 64 MiB of churn ran 16 collections by itself, 12 arenas mapped, the rooted survivor intact
+2026-10-29T07:06:47.8320488Z       budget: the same churn ran 7 collections with 4 MiB live where it ran 16 with none, budget now 8423400 bytes
+2026-10-29T07:06:47.8321877Z       scheduler's state: the object its thread-local names lived through 16 collections, rooted by the global list
+2026-10-29T07:06:47.8323283Z       lazy: the allocator began 24 arenas on its own time, the helpers 537 beside it, pauses finished 1 left over, across 42 collections
+2026-10-29T07:06:47.8324500Z       fiber: 2 collections triggered beside a parked fiber, its 80 bytes intact
+2026-10-29T07:06:47.8325443Z       scavenge: 22 arenas at the peak, 4 released to the kernel, 18 still mapped
+2026-10-29T07:06:47.8326322Z       pauses: last 74200 ns, max 13705600 ns, 31045300 ns across 51 collections
+2026-10-29T07:06:47.8327335Z       spare: under a 100700000-byte budget the second epoch's 48 MiB of garbage mapped 1 arenas afresh
+2026-10-29T07:06:47.8328525Z       threads: five hundred short-lived threads' allocation counted, and the next slice ran a collection
+2026-10-29T07:06:47.8329049Z       all trigger checks passed
+2026-10-29T07:06:47.8531631Z 
+2026-10-29T07:06:47.8532618Z == the same program, opted out with -Dgc_none
+2026-10-29T07:06:48.7046091Z       the trigger needs the collector's allocator (the default on linux-x86_64, linux-aarch64 and darwin); this build deselected it, nothing to exercise here
+2026-10-29T07:06:48.7051911Z 
+2026-10-29T07:06:48.7052333Z == the exercise is fast enough to be a gate
+2026-10-29T07:06:49.4977840Z   1s for 132 MiB of churn and its collections
+2026-10-29T07:06:49.4978278Z 
+2026-10-29T07:06:49.4978593Z == the checks fail when the trigger is broken
+2026-10-29T07:06:51.0319502Z   nothing triggers: exits 1 at "trigger: 64 MiB of churn ran no collection, so nothing triggers"
+2026-10-29T07:06:52.9132108Z   budget never grows: exits 1 at "budget: 16 collections against a 4 MiB live set, 16 against none, so the budget is not growing with what survives"
+2026-10-29T07:06:54.7389754Z   mappings never return: exits 1 at "scavenge: 22 arenas at the peak and none went back to the kernel"
+2026-10-29T07:06:56.7113027Z   empty arenas never spared: exits 1 at "spare: the second epoch's garbage mapped 2 arenas afresh, so the first's empty ones went back to the kernel"
+2026-10-29T07:06:58.4879316Z   sweep never lazy: exits 1 at "lazy: 34 collections and the allocator swept 0 arenas, the helpers 0, so the sweep is not lazy"
+2026-10-29T07:06:59.9300192Z   scheduler state unrooted: exits 1 at "scheduler state: marked black, and still not a live chunk after the first collection"
+2026-10-29T07:07:02.1560906Z   an ended thread's slice uncounted: exits 1 at "threads: five hundred threads of a thousand strings each, then a slice here, ran no collection under a 8424800-byte budget"
+2026-10-29T07:07:02.1561812Z 
+2026-10-29T07:07:02.1562065Z Trigger: collections come from allocation pressure alone, the heap
+2026-10-29T07:07:02.1562605Z stays bounded, empty arenas go back to the kernel past what a deep
+2026-10-29T07:07:02.1563047Z budget will fill again, the pauses have
+2026-10-29T07:07:02.1563505Z measured numbers, the budget grows with what survives, a parked
+2026-10-29T07:07:02.1564228Z fiber's reference lives through it, and the checks fail when any
+2026-10-29T07:07:02.1564659Z of it is broken.
+2026-10-29T07:07:02.3180038Z == bench/collect_trigger.sh: exit 0 after 22 s
+2026-10-29T07:07:02.7190609Z == threads under the collector, plain build
+2026-10-29T07:07:06.7784996Z == threads under the collector, release build
+2026-10-29T07:07:13.6598856Z == the plain build, ten more runs, and every one ends well
+2026-10-29T07:07:39.9043154Z   ten of ten
+2026-10-29T07:07:39.9388784Z == dependency floor: threads and their stop add no DLL
+2026-10-29T07:07:40.1392242Z   kernel32 and the C runtime's DLLs, plain and release
+2026-10-29T07:07:40.1785517Z == the numbers, release build (4 cores here)
+2026-10-29T07:07:40.2087573Z   threads: 8 threads, 3920000 allocations, 17 collections; 18 stops parked 130 threads; every live list intact, by checksum and by the sweep's flag
+2026-10-29T07:07:40.2090492Z   speed: 55 ns per allocation with 1 thread, 172 ns with 4, 339 ns with 8 — wall time per allocation per thread, collections included
+2026-10-29T07:07:40.2511945Z == the cores a process may run on are its affinity mask's
+2026-10-29T07:07:41.5970666Z   held to one core it counts 1 and starts no helper; held to two, 2 and one
+2026-10-29T07:07:41.5971535Z == the same, 9 threads, release (past the 4 cores here)
+2026-10-29T07:07:43.0447369Z   threads: 9 threads, 4360000 allocations, 26 collections; 34 stops parked 161 threads; every live list intact, by checksum and by the sweep's flag
+2026-10-29T07:07:43.0693742Z == the runtime lock and the stop with four times the cores' threads
+2026-10-29T07:07:48.9777926Z   lock: 16 threads taking the runtime lock on 4 cores, held to 5 times one thread taking it for all their turns
+2026-10-29T07:07:48.9779553Z   stop: five collections stopped 16 threads that only compute, held to 60 ms a stop
+2026-10-29T07:07:49.0128385Z   the lock and stop failure proofs need 8 cores to show; this machine has 4: unmeasured here
+2026-10-29T07:07:49.0462201Z == held to one core, threads start beside a thread collecting in a loop and one taking the lock in a loop
+2026-10-29T07:07:53.9389389Z   five threads started and joined beside a thread collecting in a loop, held to 10 s
+2026-10-29T07:07:53.9392267Z   five threads started and joined beside a thread taking the runtime lock in a loop, held to 10 s
+2026-10-29T07:07:53.9395754Z == failure proof: without the lock's count and the collection's yield, a run held to one core never ends
+2026-10-29T07:08:29.7083215Z   0 of the two shapes ended within 30 s
+2026-10-29T07:08:29.7084046Z == failure proof: without the thread-root walk a live list is swept
+2026-10-29T07:08:36.5865809Z   exits 1 at "FAIL: thread 0: 1000 live nodes are on a free list after the collection that stopped this thread, so its frames were not scanned"
+2026-10-29T07:08:36.6235811Z == failure proof, again: two hundred runs, and every one ends
+2026-10-29T07:10:00.5971920Z   two hundred of two hundred exit 1
+2026-10-29T07:10:00.5973094Z == failure proof: a finished thread's main fiber left registered is named
+2026-10-29T07:10:03.0027597Z   exits 1 at "registry: 8 fibers of 8 finished threads are still registered, naming stacks that are gone"
+2026-10-29T07:10:03.0028732Z == a task a thread is switching into keeps its objects
+2026-10-29T07:10:12.2337273Z   five runs, no list lost
+2026-10-29T07:10:12.2338291Z == failure proof: a fiber marked running before the switch loses its list
+2026-10-29T07:10:15.5121144Z   run 1 lost a list or died
+2026-10-29T07:10:15.5479121Z == a stop whose suspend lands inside the allocator keeps every list
+2026-10-29T07:10:30.1969700Z   five runs, no list lost
+2026-10-29T07:10:30.1970668Z == failure proof: the allocator's word read before the context, under the same suspends
+2026-10-29T07:10:31.9959411Z   run 1 of up to sixty: "iyi: the program died of a memory fault"
+2026-10-29T07:10:31.9961103Z == threads crossing the first budget together: a hundred runs, and every one ends
+2026-10-29T07:10:42.9449114Z   a hundred of a hundred ended
+2026-10-29T07:10:42.9449852Z == four threads printing at once: every line whole
+2026-10-29T07:10:45.2318462Z   80000 lines from four threads, none merged
+2026-10-29T07:10:45.2319111Z == failure proof: a block capturing a mutable value does not compile
+2026-10-29T07:10:46.0899031Z   refused: the block IyiThread.start runs on another thread captures `items : Array(Int32)`, which is not Share: Array(Int32)'s field @size is assigned in `append` (SPEC.md III.4.4)
+2026-10-29T07:10:46.0900803Z == failure proof: a block calling a method of a self that is not Share does not compile
+2026-10-29T07:10:47.0098075Z   refused: the block IyiThread.start runs on another thread captures `self : Counter`, which is not Share: Counter's field @n is assigned in `bump` (SPEC.md III.4.4)
+2026-10-29T07:10:48.4854866Z   a Share self's method and a class method, called receiverless, still build and print hi ada 42
+2026-10-29T07:10:48.4856092Z == failure proof: a field assigned by a mixin's method or by macro code is not Share
+2026-10-29T07:10:50.9047276Z   refused by its field three ways: a mixin's method, {% if %} and a macro call
+2026-10-29T07:10:50.9048592Z == failure proof: a field given out by pointerof is not Share
+2026-10-29T07:10:51.7693112Z   refused: the block IyiThread.start runs on another thread captures `c : Counter`, which is not Share: Counter's field @n is given out by `pointerof` in `poke` (SPEC.md III.4.4)
+2026-10-29T07:10:51.7695316Z == failure proof: a captured local the thread or its starter assigns does not compile
+2026-10-29T07:10:52.6078163Z   refused: the block IyiThread.start runs on another thread assigns `count`, a local of the code that started the thread, so the two threads share one mutable cell: a data race (SPEC.md III.4.4). Keep the value in an `Atomic`, or behind a `Mutex` (std/mutex)
+2026-10-29T07:10:53.3830663Z   refused: `limit` is assigned here, after the thread has started, and the block IyiThread.start runs on another thread (line 2) captures it, so the thread and the code that started it share one mutable cell: a data race (SPEC.md III.4.4). Capture a local that is assigned once (a block's own locals are new on every call), or keep the value in an `Atomic`, or behind a `Mutex` (std/mutex)
+2026-10-29T07:10:54.9343565Z   and refused the same inside {% if %} and {% for %}
+2026-10-29T07:10:56.5641440Z   a local assigned before the start, and a block's own local, still build and read 60 61 62
+2026-10-29T07:10:56.5642656Z == a String, a struct holding one and a List(String) are captured; a field assigned later is not
+2026-10-29T07:10:58.2316412Z   a String, a struct holding one and a List(String) captured, and read x 1 ada 2
+2026-10-29T07:10:59.0972211Z   refused: the block IyiThread.start runs on another thread captures `tag : Renamed::Tag`, which is not Share: Renamed::Tag's field @name is assigned in `rename` (SPEC.md III.4.4)
+2026-10-29T07:10:59.0973758Z == failure proof: a block naming a constant that is not Share does not compile
+2026-10-29T07:11:00.0004456Z   refused: the block IyiThread.start runs on another thread names the constant `COUNTS : Array(Int32)`, which is not Share: Array(Int32)'s field @size is assigned in `append` (SPEC.md III.4.5)
+2026-10-29T07:11:00.8249094Z   refused: the block IyiThread.start runs on another thread names the constant `C2 : Counter`, which is not Share: Counter's field @n is assigned in `bump` (SPEC.md III.4.5)
+2026-10-29T07:11:02.3280782Z   an Int32, a String and a List(String) constant still build and read hi 3 2
+2026-10-29T07:11:02.3281835Z == failure proof: a block naming a class variable written again, or not Share, does not compile
+2026-10-29T07:11:03.1999704Z   refused: the block IyiThread.start runs on another thread assigns `@@count`, a class variable, so every thread that reaches it shares one mutable cell: a data race (SPEC.md III.4.5). Keep the value in an `Atomic`, or behind a `Mutex` (std/mutex)
+2026-10-29T07:11:03.9887935Z   refused: the block IyiThread.start runs on another thread names the class variable `@@count`, which is written after its initializer (in `bump`), so every thread that reaches it shares one mutable cell: a data race (SPEC.md III.4.5). Keep the value in an `Atomic`, or behind a `Mutex` (std/mutex)
+2026-10-29T07:11:04.7967414Z   refused: the block IyiThread.start runs on another thread names the class variable `@@items : Array(Int32)`, which is not Share: Array(Int32)'s field @size is assigned in `append` (SPEC.md III.4.5)
+2026-10-29T07:11:06.2867488Z   an Int32, a String and a List(String) class variable only their initializers write still build and read x 3 2
+2026-10-29T07:11:06.3187057Z == a program ends while another thread's collections stop it: two hundred runs, and every one ends
+2026-10-29T07:11:33.5018720Z   two hundred of two hundred ended
+2026-10-29T07:11:33.5019573Z == failure proof: a program that ends back in the C runtime hangs under a collection
+2026-10-29T07:11:43.9563059Z bench/thread_exercise.sh: line 1381:  3799 Killed                     timeout -k 1 5 ./ends-in-crt > ends-in-crt.txt 2>&1
+2026-10-29T07:11:45.5214262Z   run 1 never ended, and was released by resuming its threads
+2026-10-29T07:11:45.5572506Z == threads started while two others collect, each start held open 2 ms: three runs, and every one ends well
+2026-10-29T07:11:56.2746835Z   three runs of three seconds, and every thread ran its body
+2026-10-29T07:11:56.2747966Z == failure proof: the handle written after the unlock, the thread already running, under the same 2 ms
+2026-10-29T07:11:57.8439529Z   run 1 of up to ten: "iyi: the program died of a memory fault"
+2026-10-29T07:11:57.8774622Z == threads and tasks grow fresh stacks beside a thread collecting in a loop: three runs, and every one ends
+2026-10-29T07:12:05.5137132Z   three runs of two seconds, and every one ended
+2026-10-29T07:12:05.5137829Z == failure proof: the scan from sp again, guard page and all, and a run dies
+2026-10-29T07:12:07.2168131Z   run 1 of up to five died
+2026-10-29T07:12:07.2170074Z workdir C:/Users/RUNNER~1/AppData/Local/Temp/tmp.C0pFT1w0TY/tmp/tmp.rbtISax85o
+2026-10-29T07:12:07.2171693Z thread exercise: every step held
+2026-10-29T07:12:08.1418027Z == bench/thread_exercise.sh: exit 0 after 306 s
+2026-10-29T07:12:08.6914736Z == the parallel marker, release build
+2026-10-29T07:12:13.0445335Z == the mark, alone and with helpers (4 cores here)
+2026-10-29T07:12:13.0747417Z   tree: 1235273040649668900 over 1048575 nodes
+2026-10-29T07:12:13.0748365Z   permits: a round of three, one taken, closed at one taker, and no permit after the close
+2026-10-29T07:12:13.0749838Z   mark: 22354 us alone, 15818 us with helpers, which blackened 786061 of the last mark's nodes
+2026-10-29T07:12:13.0750790Z   pool: 65536 bytes mapped for the marks' batches, 5008 batches reused
+2026-10-29T07:12:13.0751661Z   stack: the mark of a 300,000-wide object grew a worker's stack 6 times from 8192 entries
+2026-10-29T07:12:13.0752571Z   park: a helper with no work spins 63 us before it parks, for 50 asked
+2026-10-29T07:12:13.0844706Z == failure proof: a marker that never shares its stack is refused
+2026-10-29T07:12:17.5828709Z   exits 1 at "FAIL: the helpers blackened nothing: the mark was one thread and the rest watched"
+2026-10-29T07:12:17.5830071Z == failure proof: a pool that never recycles a batch is refused
+2026-10-29T07:12:22.0483296Z   exits 1 at "FAIL: pool: no batch was handed out twice in eleven marks, so taken batches are not being recycled"
+2026-10-29T07:12:22.0484678Z == failure proof: a stack that will not grow dies by name
+2026-10-29T07:12:26.7349754Z   exits 1 at "iyi: a mark worker's stack overflowed"
+2026-10-29T07:12:26.7680400Z == failure proof: a spin before the park that ignores the clock is refused
+2026-10-29T07:12:31.2776384Z   exits 1 at "FAIL: park: a helper with no work spun 4105 us before it parked, past five times the 50 us it should"
+2026-10-29T07:12:31.2777960Z == failure proof: a round whose close leaves its permits open is refused
+2026-10-29T07:12:35.6116819Z   exits 1 at "FAIL: permits: a helper waking after the round closed took permit 1"
+2026-10-29T07:12:35.6335982Z == a helper a round late is counted, on a copy where every helper is late (five runs)
+2026-10-29T07:12:37.3442667Z   late: 200 collections back to back, each mark with helpers a round late, and every one ended
+2026-10-29T07:12:37.3448985Z == failure proof: a mark's permits opened before its counts are reset never ends
+2026-10-29T07:13:08.8493427Z   still running at 30 s, ended by the bound (exit 124), its last line never printed
+2026-10-29T07:13:08.8496141Z workdir C:/Users/RUNNER~1/AppData/Local/Temp/tmp.1C5K1GWCO7/tmp/tmp.piIPcBUIIz
+2026-10-29T07:13:08.8497318Z parallel mark: every step held
+2026-10-29T07:13:09.3685170Z == bench/parallel_mark.sh: exit 0 after 61 s
+2026-10-29T07:13:09.7822770Z == the mark beside the program, release build
+2026-10-29T07:13:19.0328678Z == the pauses, stopped and beside the program (4 cores here)
+2026-10-29T07:13:19.0653540Z   stray: a barrier run after its mark had ended shaded nothing, and the next mark kept what the holder held
+2026-10-29T07:13:19.0654686Z   small: 8 collections over 578736 live bytes, every one finished in its stop
+2026-10-29T07:13:19.0656072Z   moves: 24 of 24 rounds moved a payload into a black holder under a running mark, 48 collections ran beside the program, every payload intact
+2026-10-29T07:13:19.0657957Z   pause: 4122 us to mark the chain stopped; beside the program the longest first stop was 2904 us, the longest second 148 us, and 0 second stops retreated to mark what they found
+2026-10-29T07:13:19.0659561Z   large: 8 of 8 blocks outgrown under a running mark stayed mapped beside the helpers, and 8 were freed after
+2026-10-29T07:13:19.0660740Z   wake: the program's thread woke the helpers 256 times, 0 of them past 1000 us, the longest 59 us
+2026-10-29T07:13:19.0661841Z   share: with 3 threads of the program's on 4 cores, the mark beside them asked for 1 helpers
+2026-10-29T07:13:19.0811542Z == the machine alone: a thread per core reading the clock, no collector
+2026-10-29T07:13:24.5705650Z   machine: 4 threads reading the clock for a second, the longest gap any saw 24469 us
+2026-10-29T07:13:29.6620611Z == the first collections beside threads computing on every core cost what they cost with no helpers
+2026-10-29T07:13:31.6983917Z   beside 8 threads computing, held to four times the time with no helpers and 100 ms
+2026-10-29T07:13:31.6985007Z == buffers grown by realloc beside the mark keep what they hold, ten runs
+2026-10-29T07:13:52.0372376Z   ten runs of three hundred realloc'd buffers, every leaf intact
+2026-10-29T07:13:52.0373399Z == small chunks freed in bursts across the pauses keep what was kept, ten runs
+2026-10-29T07:14:11.0925906Z   ten runs of 200,000 bursts of frees, every kept chunk intact
+2026-10-29T07:14:11.1255401Z == chunks the last mark kept, freed beside a sweep that waits at each, ten runs
+2026-10-29T07:14:31.1576597Z   ten runs, no free inside the sweep's look at a kept chunk, every chunk intact
+2026-10-29T07:14:31.1577712Z == failure proof: a chunk the sweep has not reached, freed with no lock, is freed inside the sweep's look
+2026-10-29T07:14:33.0383836Z   exits 1 on run 1 at "freed: a chunk the last mark kept was freed while the sweep looked at it"
+2026-10-29T07:14:33.0384998Z == failure proof: a barrier that shades nothing loses the moved payload
+2026-10-29T07:14:38.1613940Z   exits 1 at "FAIL: round 0: the payload's seed is 0 rather than 1000: its chunk was reused, the barrier lost it"
+2026-10-29T07:14:38.1615080Z == failure proof: a barrier that shades after its mark ended loses what the holder held
+2026-10-29T07:14:43.7906296Z   exits 1 at "FAIL: stray: a barrier run after its mark had ended left the holder gray, and the next mark swept the payload it held"
+2026-10-29T07:14:43.7908113Z == failure proof: a large block outgrown under a mark is unmapped beside the helpers
+2026-10-29T07:14:49.4440901Z   exits 1 at "FAIL: large: a block outgrown under a mark was unmapped beside the helpers"
+2026-10-29T07:14:49.4442141Z == failure proof: a small live set given the thousand-object bound goes beside the program
+2026-10-29T07:14:54.4215677Z   exits 1 at "FAIL: small: 8 of 8 collections over 578736 live bytes ran beside the program"
+2026-10-29T07:14:54.4217067Z == marks beside twenty-four connections on twelve workers all end, with every helper and with one
+2026-10-29T07:15:13.5894750Z   with every helper: collections: 45, 45 beside the program, 1 second stops retreated
+2026-10-29T07:15:23.7947084Z   with one helper: collections: 47, 47 beside the program, 0 second stops retreated
+2026-10-29T07:15:23.7948251Z == failure proof: the remainder round's count stored over the assists counted in
+2026-10-29T07:15:33.3798986Z   exits 1 at "iyi: the collector's count of workers marking went below zero: POOL_ACTIVE 18446744073709551615, POOL_HEAD 0, generation 2, permits left 2 and taken 0"
+2026-10-29T07:15:33.3800548Z == failure proof: helper 0 waiting past the next mark leaves it to nobody
+2026-10-29T07:15:45.4235737Z   says "iyi: the collector's mark has run 22 ms and is not over: POOL_ACTIVE 0, POOL_HEAD 0, generation 1, permits left 0 and taken 1, helpers done 1. A mark "
+2026-10-29T07:15:45.4731060Z   exits 1 at "FAIL: stall: collections stood at 1 for 2544 ms - the tasks allocated 796 MiB, then waited 2000 ms for a collection with nothing allocated; marking tr"
+2026-10-29T07:15:45.4732854Z == failure proof: a collection let go after its threads are released leaves their allocation untriggered
+2026-10-29T07:15:57.4838525Z   exits 1 at "FAIL: stall: collections stood at 1 for 2413 ms - the tasks allocated 1048 MiB, then waited 2000 ms for a collection with nothing allocated; marking f"
+2026-10-29T07:15:57.4840531Z == every collection a program's thread finishes is let go before its threads are released
+2026-10-29T07:16:02.3492609Z   bounded: after collection 1, three budgets of 4194304 bytes in slices on a second thread triggered 3 more
+2026-10-29T07:16:02.3494207Z   stopped: after collection 5, three budgets of 4194304 bytes in slices on a second thread triggered 3 more
+2026-10-29T07:16:02.3495566Z   verb: after collection 9, three budgets of 4194304 bytes in slices on a second thread triggered 3 more
+2026-10-29T07:16:02.3509849Z == failure proof: a stopped collection let go after its threads are released leaves their slices untriggered
+2026-10-29T07:16:09.1265452Z   exits 1 at "FAIL: stopped: after collection 5 was counted, a thread's slices came to 12582912 bytes, three budgets of 4194304, and no collection ran - 5 collectio"
+2026-10-29T07:16:09.2046599Z   exits 1 at "FAIL: verb: after collection 6 was counted, a thread's slices came to 12582912 bytes, three budgets of 4194304, and no collection ran - 6 collections "
+2026-10-29T07:16:09.2049348Z == failure proof: a collection that ends in its first stop let go after its threads are released leaves their slices untriggered
+2026-10-29T07:16:14.9646948Z   exits 1 at "FAIL: bounded: after collection 1 was counted, a thread's slices came to 12582912 bytes, three budgets of 4194304, and no collection ran - 1 collectio"
+2026-10-29T07:16:14.9649246Z == failure proof: a free outside the allocator's bracket puts a dropped list back
+2026-10-29T07:16:16.4857206Z   exits 1 within ten runs: a kept chunk lost, or a memory fault
+2026-10-29T07:16:16.4858782Z == failure proof: helpers woken with Windows' wake boost hold the program's thread
+2026-10-29T07:16:29.5685017Z   exits 1 on run 1 at "FAIL: wake: waking the helpers held the program's thread past 1000 us in 17 wakes of 200, the longest 7654 us"
+2026-10-29T07:16:29.5686569Z == failure proof: a mark beside a busy program that asks for every helper is caught
+2026-10-29T07:16:39.0573059Z   exits 1 at "FAIL: share: with 3 threads of the program's on 4 cores, the mark beside them asked for 3 helpers rather than 1"
+2026-10-29T07:16:39.0575850Z   the first-collection wait proof needs 8 cores to show; this machine has 4: unmeasured here
+2026-10-29T07:16:39.0577533Z workdir C:/Users/RUNNER~1/AppData/Local/Temp/tmp.gjKZhEyyk6/tmp/tmp.4hgBcsgvuK
+2026-10-29T07:16:39.0578546Z concurrent mark: every step held
+2026-10-29T07:16:39.9183435Z == bench/concurrent_mark.sh: exit 0 after 210 s
+2026-10-29T07:16:40.0719930Z ##[group]Run bash bench/std_exercise.sh
+2026-10-29T07:16:40.0720528Z [36;1mbash bench/std_exercise.sh[0m
+2026-10-29T07:16:40.0738323Z shell: C:\Program Files\Git\bin\bash.EXE --noprofile --norc -e -o pipefail {0}
+2026-10-29T07:16:40.0738789Z env:
+2026-10-29T07:16:40.0739034Z   GIT_CONFIG_COUNT: 1
+2026-10-29T07:16:40.0739317Z   GIT_CONFIG_KEY_0: safe.directory
+2026-10-29T07:16:40.0739628Z   GIT_CONFIG_VALUE_0: *
+2026-10-29T07:16:40.0739921Z   PYTHONUTF8: 1
+2026-10-29T07:16:40.0740212Z   CommandPromptType: Native
+2026-10-29T07:16:40.0740640Z   DevEnvDir: C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\
+2026-10-29T07:16:40.0741239Z   ExtensionSdkDir: C:\Program Files (x86)\Microsoft SDKs\Windows Kits\10\ExtensionSDKs
+2026-10-29T07:16:40.0743807Z   EXTERNAL_INCLUDE: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\include;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\ATLMFC\include;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Auxiliary\VS\include;C:\Program Files (x86)\Windows Kits\10\include\10.0.26100.0\ucrt;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\um;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\shared;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\winrt;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\cppwinrt;C:\Program Files (x86)\Windows Kits\NETFXSDK\4.8.1\include\um
+2026-10-29T07:16:40.0746146Z   Framework40Version: v4.0
+2026-10-29T07:16:40.0746512Z   FrameworkDir: C:\Windows\Microsoft.NET\Framework64\
+2026-10-29T07:16:40.0746915Z   FrameworkDir64: C:\Windows\Microsoft.NET\Framework64\
+2026-10-29T07:16:40.0747283Z   FrameworkVersion: v4.0.30319
+2026-10-29T07:16:40.0747584Z   FrameworkVersion64: v4.0.30319
+2026-10-29T07:16:40.0748173Z   FSHARPINSTALLDIR: C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\CommonExtensions\Microsoft\FSharp\Tools
+2026-10-29T07:16:40.0749363Z   HTMLHelpDir: C:\Program Files (x86)\HTML Help Workshop
+2026-10-29T07:16:40.0751715Z   INCLUDE: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\include;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\ATLMFC\include;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Auxiliary\VS\include;C:\Program Files (x86)\Windows Kits\10\include\10.0.26100.0\ucrt;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\um;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\shared;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\winrt;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\cppwinrt;C:\Program Files (x86)\Windows Kits\NETFXSDK\4.8.1\include\um
+2026-10-29T07:16:40.0755033Z   LIB: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\ATLMFC\lib\x64;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\lib\x64;C:\Program Files (x86)\Windows Kits\NETFXSDK\4.8.1\lib\um\x64;C:\Program Files (x86)\Windows Kits\10\lib\10.0.26100.0\ucrt\x64;C:\Program Files (x86)\Windows Kits\10\\lib\10.0.26100.0\\um\x64
+2026-10-29T07:16:40.0758041Z   LIBPATH: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\ATLMFC\lib\x64;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\lib\x64;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\lib\x86\store\references;C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0;C:\Program Files (x86)\Windows Kits\10\References\10.0.26100.0;C:\Windows\Microsoft.NET\Framework64\v4.0.30319
+2026-10-29T07:16:40.0759866Z   llvmArm64: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\Llvm\ARM64\bin
+2026-10-29T07:16:40.0760543Z   llvmX64: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\Llvm\x64\bin
+2026-10-29T07:16:40.0761086Z   NETFXSDKDir: C:\Program Files (x86)\Windows Kits\NETFXSDK\4.8.1\
+2026-10-29T07:16:40.0778759Z   Path: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\bin\HostX64\x64;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\VC\VCPackages;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\CommonExtensions\Microsoft\TestWindow;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\CommonExtensions\Microsoft\TeamFoundation\Team Explorer;C:\Program Files\Microsoft Visual Studio\18\Enterprise\MSBuild\Current\bin\Roslyn;C:\Program Files (x86)\Microsoft SDKs\Windows\v10.0A\bin\NETFX 4.8.1 Tools\x64\;C:\Program Files (x86)\HTML Help Workshop;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\CommonExtensions\Microsoft\FSharp\Tools;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Team Tools\DiagnosticsHub\Collector;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\Extensions\Microsoft\CodeCoverage.Console;C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\\x64;C:\Program Files (x86)\Windows Kits\10\bin\\x64;C:\Program Files\Microsoft Visual Studio\18\Enterprise\\MSBuild\Current\Bin\amd64;C:\Windows\Microsoft.NET\Framework64\v4.0.30319;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\Tools\;C:\Program Files\MongoDB\Server\7.0\bin;C:\vcpkg;C:\tools\zstd;C:\hostedtoolcache\windows\stack\3.11.1\x64;C:\cabal\bin;C:\\ghcup\bin;C:\mingw64\bin;C:\Program Files\dotnet;C:\Program Files\MySQL\MySQL Server 8.0\bin;C:\Program Files\R\R-4.6.1\bin\x64;C:\SeleniumWebDrivers\GeckoDriver;C:\SeleniumWebDrivers\EdgeDriver\;C:\SeleniumWebDrivers\ChromeDriver;C:\Program Files (x86)\sbt\bin;C:\Program Files (x86)\GitHub CLI;C:\Program Files\Git\bin;C:\Program Files (x86)\pipx_bin;C:\npm\prefix;C:\hostedtoolcache\windows\go\1.24.13\x64\bin;C:\hostedtoolcache\windows\Python\3.12.10\x64\Scripts;C:\hostedtoolcache\windows\Python\3.12.10\x64;C:\hostedtoolcache\windows\Ruby\3.3.12\x64\bin;C:\Program Files\OpenSSL\bin;C:\tools\kotlinc\bin;C:\hostedtoolcache\windows\Java_Temurin-Hotspot_jdk\17.0.20-101\x64\bin;C:\Program Files\ImageMagick-7.1.2-Q16-HDRI;C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin;C:\ProgramData\kind;C:\ProgramData\Chocolatey\bin;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;C:\Program Files\WSL\;C:\Program Files\PowerShell\7\;C:\Program Files\Microsoft\Web Platform Installer\;C:\Program Files\Microsoft SQL Server\170\Tools\Binn\;C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\170\Tools\Binn\;C:\Program Files\dotnet\;C:\Program Files (x86)\Windows Kits\10\Windows Performance Toolkit\;C:\Program Files (x86)\WiX Toolset v3.14\bin;C:\Program Files\Microsoft SQL Server\130\DTS\Binn\;C:\Program Files\Microsoft SQL Server\140\DTS\Binn\;C:\Program Files\Microsoft SQL Server\150\DTS\Binn\;C:\Program Files\Microsoft SQL Server\160\DTS\Binn\;C:\Program Files\Microsoft SQL Server\170\DTS\Binn\;C:\ProgramData\chocolatey\lib\pulumi\tools\Pulumi\bin;C:\Program Files\CMake\bin;C:\Strawberry\c\bin;C:\Strawberry\perl\site\bin;C:\Strawberry\perl\bin;C:\ProgramData\chocolatey\lib\maven\apache-maven-3.9.16\bin;C:\Program Files\Microsoft Service Fabric\bin\Fabric\Fabric.Code;C:\Program Files\Microsoft SDKs\Service Fabric\Tools\ServiceFabricLocalClusterManager;C:\Program Files\LLVM\bin;C:\Program Files (x86)\LLVM\bin;C:\Program Files\nodejs\;C:\Program Files\Git\cmd;C:\Program Files\Git\ucrt64\bin;C:\Program Files\Git\usr\bin;C:\Program Files\GitHub CLI\;c:\tools\php;C:\Program Files\Amazon\AWSCLIV2\;C:\Program Files\Amazon\SessionManagerPlugin\bin\;C:\Program Files\Amazon\AWSSAMCLI\bin\;C:\Program Files\Microsoft SQL Server\130\Tools\Binn\;C:\Program Files\mongosh\;C:\Users\runneradmin\.dotnet\tools;C:\Users\runneradmin\.cargo\bin;C:\Users\runneradmin\AppData\Local\Microsoft\WindowsApps;C:\Program Files (x86)\Microsoft Visual Studio\Installer;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\Llvm\x64\bin;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja;C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\VC\Linux\bin\ConnectionManagerExe;C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\vcpkg
+2026-10-29T07:16:40.0794287Z   Platform: x64
+2026-10-29T07:16:40.0794547Z   UCRTVersion: 10.0.26100.0
+2026-10-29T07:16:40.0794905Z   UniversalCRTSdkDir: C:\Program Files (x86)\Windows Kits\10\
+2026-10-29T07:16:40.0795283Z   use_x64_llvm: true
+2026-10-29T07:16:40.0795698Z   VCIDEInstallDir: C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\VC\
+2026-10-29T07:16:40.0796273Z   VCINSTALLDIR: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\
+2026-10-29T07:16:40.0796802Z   VCPKG_ROOT: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\vcpkg
+2026-10-29T07:16:40.0797427Z   VCToolsInstallDir: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\
+2026-10-29T07:16:40.0798177Z   VCToolsRedistDir: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Redist\MSVC\14.51.36231\
+2026-10-29T07:16:40.0798695Z   VCToolsVersion: 14.51.36231
+2026-10-29T07:16:40.0798986Z   VisualStudioVersion: 18.0
+2026-10-29T07:16:40.0799409Z   VS180COMNTOOLS: C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\Tools\
+2026-10-29T07:16:40.0799876Z   VSCMD_ARG_app_plat: Desktop
+2026-10-29T07:16:40.0800157Z   VSCMD_ARG_HOST_ARCH: x64
+2026-10-29T07:16:40.0800421Z   VSCMD_ARG_TGT_ARCH: x64
+2026-10-29T07:16:40.0800701Z   VSCMD_VER: 18.11.1
+2026-10-29T07:16:40.0801064Z   VSINSTALLDIR: C:\Program Files\Microsoft Visual Studio\18\Enterprise\
+2026-10-29T07:16:40.0801628Z   VSSDK150INSTALL: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VSSDK
+2026-10-29T07:16:40.0802165Z   VSSDKINSTALL: C:\Program Files\Microsoft Visual Studio\18\Enterprise\VSSDK
+2026-10-29T07:16:40.0802914Z   WindowsLibPath: C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0;C:\Program Files (x86)\Windows Kits\10\References\10.0.26100.0
+2026-10-29T07:16:40.0803631Z   WindowsSdkBinPath: C:\Program Files (x86)\Windows Kits\10\bin\
+2026-10-29T07:16:40.0804069Z   WindowsSdkDir: C:\Program Files (x86)\Windows Kits\10\
+2026-10-29T07:16:40.0804432Z   WindowsSDKLibVersion: 10.0.26100.0\
+2026-10-29T07:16:40.0804854Z   WindowsSdkVerBinPath: C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\
+2026-10-29T07:16:40.0805330Z   WindowsSDKVersion: 10.0.26100.0\
+2026-10-29T07:16:40.0805842Z   WindowsSDK_ExecutablePath_x64: C:\Program Files (x86)\Microsoft SDKs\Windows\v10.0A\bin\NETFX 4.8.1 Tools\x64\
+2026-10-29T07:16:40.0806576Z   WindowsSDK_ExecutablePath_x86: C:\Program Files (x86)\Microsoft SDKs\Windows\v10.0A\bin\NETFX 4.8.1 Tools\
+2026-10-29T07:16:40.0807086Z   __DOTNET_ADD_64BIT: 1
+2026-10-29T07:16:40.0807353Z   __DOTNET_PREFERRED_BITNESS: 64
+2026-10-29T07:16:40.0816995Z   __VSCMD_PREINIT_PATH: C:\Program Files\MongoDB\Server\7.0\bin;C:\vcpkg;C:\tools\zstd;C:\hostedtoolcache\windows\stack\3.11.1\x64;C:\cabal\bin;C:\\ghcup\bin;C:\mingw64\bin;C:\Program Files\dotnet;C:\Program Files\MySQL\MySQL Server 8.0\bin;C:\Program Files\R\R-4.6.1\bin\x64;C:\SeleniumWebDrivers\GeckoDriver;C:\SeleniumWebDrivers\EdgeDriver\;C:\SeleniumWebDrivers\ChromeDriver;C:\Program Files (x86)\sbt\bin;C:\Program Files (x86)\GitHub CLI;C:\Program Files\Git\bin;C:\Program Files (x86)\pipx_bin;C:\npm\prefix;C:\hostedtoolcache\windows\go\1.24.13\x64\bin;C:\hostedtoolcache\windows\Python\3.12.10\x64\Scripts;C:\hostedtoolcache\windows\Python\3.12.10\x64;C:\hostedtoolcache\windows\Ruby\3.3.12\x64\bin;C:\Program Files\OpenSSL\bin;C:\tools\kotlinc\bin;C:\hostedtoolcache\windows\Java_Temurin-Hotspot_jdk\17.0.20-101\x64\bin;C:\Program Files\ImageMagick-7.1.2-Q16-HDRI;C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin;C:\ProgramData\kind;C:\ProgramData\Chocolatey\bin;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;C:\Program Files\WSL\;C:\Program Files\PowerShell\7\;C:\Program Files\Microsoft\Web Platform Installer\;C:\Program Files\Microsoft SQL Server\170\Tools\Binn\;C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\170\Tools\Binn\;C:\Program Files\dotnet\;C:\Program Files (x86)\Windows Kits\10\Windows Performance Toolkit\;C:\Program Files (x86)\WiX Toolset v3.14\bin;C:\Program Files\Microsoft SQL Server\130\DTS\Binn\;C:\Program Files\Microsoft SQL Server\140\DTS\Binn\;C:\Program Files\Microsoft SQL Server\150\DTS\Binn\;C:\Program Files\Microsoft SQL Server\160\DTS\Binn\;C:\Program Files\Microsoft SQL Server\170\DTS\Binn\;C:\ProgramData\chocolatey\lib\pulumi\tools\Pulumi\bin;C:\Program Files\CMake\bin;C:\Strawberry\c\bin;C:\Strawberry\perl\site\bin;C:\Strawberry\perl\bin;C:\ProgramData\chocolatey\lib\maven\apache-maven-3.9.16\bin;C:\Program Files\Microsoft Service Fabric\bin\Fabric\Fabric.Code;C:\Program Files\Microsoft SDKs\Service Fabric\Tools\ServiceFabricLocalClusterManager;C:\Program Files\LLVM\bin;C:\Program Files (x86)\LLVM\bin;C:\Program Files\nodejs\;C:\Program Files\Git\cmd;C:\Program Files\Git\ucrt64\bin;C:\Program Files\Git\usr\bin;C:\Program Files\GitHub CLI\;c:\tools\php;C:\Program Files (x86)\sbt\bin;C:\Program Files\Amazon\AWSCLIV2\;C:\Program Files\Amazon\SessionManagerPlugin\bin\;C:\Program Files\Amazon\AWSSAMCLI\bin\;C:\Program Files\Microsoft SQL Server\130\Tools\Binn\;C:\Program Files\mongosh\;C:\Users\runneradmin\.dotnet\tools;C:\Users\runneradmin\.cargo\bin;C:\Users\runneradmin\AppData\Local\Microsoft\WindowsApps;C:\Program Files (x86)\Microsoft Visual Studio\Installer
+2026-10-29T07:16:40.0826394Z   CRYSTAL_LIBRARY_PATH: D:\a\_temp\crystal-1.21.0-true-undefined\lib
+2026-10-29T07:16:40.0826798Z   LLVM_VERSION: 20.1.7
+2026-10-29T07:16:40.0827066Z   PYTHONUNBUFFERED: 1
+2026-10-29T07:16:40.0827328Z   STD_SIBLINGS: 0
+2026-10-29T07:16:40.0827568Z ##[endgroup]
+2026-10-29T07:16:40.4055393Z == the std exercise, plain build
+2026-10-29T07:16:43.1205632Z   == std/traits: Comparable operators and methods
+2026-10-29T07:16:43.1206394Z   == std/enumerable: all 71 methods
+2026-10-29T07:16:43.1207208Z     each_with_object yields (element, memo): [[3], [1, 4]] collects [3, 1, 4]
+2026-10-29T07:16:43.1207978Z   == std/list: immutable sequence
+2026-10-29T07:16:43.1208490Z   == std/derives: Show trait
+2026-10-29T07:16:43.1209131Z   == std/traits: the arithmetic a comparison and a hash are made of
+2026-10-29T07:16:43.1209922Z   == std/traits: one <=> per type, and it sorts
+2026-10-29T07:16:43.1210298Z   all std checks passed
+2026-10-29T07:16:43.1427615Z 
+2026-10-29T07:16:43.1428954Z == every std section reported
+2026-10-29T07:16:43.2272547Z   traits, cmp, enumerable, list, and derives all reported
+2026-10-29T07:16:43.2273208Z 
+2026-10-29T07:16:43.2273486Z == the same program with optimisation on (--release)
+2026-10-29T07:16:52.2838459Z   == std/traits: Comparable operators and methods
+2026-10-29T07:16:52.2840158Z   == std/enumerable: all 71 methods
+2026-10-29T07:16:52.2844545Z     each_with_object yields (element, memo): [[3], [1, 4]] collects [3, 1, 4]
+2026-10-29T07:16:52.2845319Z   == std/list: immutable sequence
+2026-10-29T07:16:52.2845878Z   == std/derives: Show trait
+2026-10-29T07:16:52.2850036Z   == std/traits: the arithmetic a comparison and a hash are made of
+2026-10-29T07:16:52.2851195Z   == std/traits: one <=> per type, and it sorts
+2026-10-29T07:16:52.2851935Z   all std checks passed
+2026-10-29T07:16:52.3075278Z 
+2026-10-29T07:16:52.3076276Z == proving the checks can fail when foundation is broken
+2026-10-29T07:16:54.8999941Z   Comparable < inverted: exits 1 at "assert failed: Comparable: <"
+2026-10-29T07:16:57.4619531Z   Comparable clamp broken: exits 1 at "assert failed: Comparable: clamp min (20 != 10)"
+2026-10-29T07:16:59.9955276Z   Enumerable present? inverted: exits 1 at "assert failed: enum: present? true"
+2026-10-29T07:17:02.5274790Z   Enumerable minmax inverted: exits 1 at "assert failed: enum: minmax? min"
+2026-10-29T07:17:05.0885351Z   Enumerable each_cons_pair broken: exits 1 at "assert failed: enum: each_cons_pair ('' != '3-1 1-4')"
+2026-10-29T07:17:07.5950869Z   Enumerable to_h corrupted: exits 1 at "assert failed: enum: to_h (0 != 30)"
+2026-10-29T07:17:10.1103065Z   take(0) pulls an element: exits 1 at "assert failed: enum: take pulls no element past the nth ('[1] [2, 3] [4, 5]' != '[] [1, 2] [3, 4]')"
+2026-10-29T07:17:12.6721791Z   Hashable String hash_key is length: exits 1 at "assert failed: Hashable: String hash_key is the string"
+2026-10-29T07:17:15.1885876Z   the tower's hash falls back to the type id: exits 1 at "assert failed: hash: Int8 values differ"
+2026-10-29T07:17:17.7243401Z   Float32 hash falls back to the type id: exits 1 at "assert failed: hash: Float32 values differ"
+2026-10-29T07:17:20.3029123Z   traits without its std/float import: exits 1 at "assert failed: hash: Float32 values differ"
+2026-10-29T07:17:22.9698012Z   an append that copies twice: exits 1 at "assert failed: list: an append copies the list once (1600048 bytes for 100000 Int64s)"
+2026-10-29T07:17:25.5177788Z   a list that keeps the caller's array: exits 1 at "assert failed: list: the caller's array is not the list's (4 != 3)"
+2026-10-29T07:17:28.0526128Z   a list iterator copied into its adaptor: exits 1 at "assert failed: list: an adaptor shares its iterator ('[1, 2] [1, 2, 3, 4]' != '[1, 2] [3, 4]')"
+2026-10-29T07:17:30.5722978Z   a slice iterator copied into its adaptor: exits 1 at "assert failed: slice: an adaptor shares its iterator ('[1, 2] [1, 2, 3, 4]' != '[1, 2] [3, 4]')"
+2026-10-29T07:17:33.0885229Z   each_cons_pair skips the pair after a nil: exits 1 at "assert failed: enum: each_cons_pair after a nil element ('2-nil' != 'nil-2 2-nil nil-3')"
+2026-10-29T07:17:35.6303493Z   chunk_while joins the element after a nil: exits 1 at "assert failed: enum: chunk_while after a nil element (1 != 3)"
+2026-10-29T07:17:38.1556754Z   reduce? restarts at a nil: exits 1 at "assert failed: enum: reduce? from a nil element"
+2026-10-29T07:17:40.6861603Z   max_by refuses a nil answer: exits 1 at "max_by of an empty collection"
+2026-10-29T07:17:43.1907712Z   min_by refuses a nil answer: exits 1 at "min_by of an empty collection"
+2026-10-29T07:17:45.7342970Z   minmax_by refuses a nil answer: exits 1 at "minmax_by of an empty collection"
+2026-10-29T07:17:48.2897143Z   includes? by hash: exits 1 at "assert failed: enum: includes? asks == (no NaN is equal)"
+2026-10-29T07:17:48.2897853Z 
+2026-10-29T07:17:48.2898164Z == one mistake, one sentence, whichever tower answers
+2026-10-29T07:17:49.8131444Z   first of an empty list: exits 1 at "first of an empty collection"
+2026-10-29T07:17:51.4542365Z   a negative count taken: exits 1 at "negative count: -1"
+2026-10-29T07:17:53.0389709Z   a negative count skipped: exits 1 at "negative count: -1"
+2026-10-29T07:17:54.6200209Z   a negative count, lazily: exits 1 at "negative count: -1"
+2026-10-29T07:17:56.3754670Z   a step of nothing: exits 1 at "step size must be positive"
+2026-10-29T07:17:57.9385503Z   a step of nothing, eagerly: exits 1 at "step size must be positive"
+2026-10-29T07:17:59.4903489Z   an index past a list: exits 1 at "index 7 out of range for 3 elements"
+2026-10-29T07:18:01.0637098Z   max_by of an empty list: exits 1 at "max_by of an empty collection"
+2026-10-29T07:18:02.6085402Z   min_by of an empty list: exits 1 at "min_by of an empty collection"
+2026-10-29T07:18:04.2854172Z   minmax_by of an empty list: exits 1 at "minmax_by of an empty collection"
+2026-10-29T07:18:05.9291472Z   groups of nothing: exits 1 at "group size must be positive"
+2026-10-29T07:18:07.5750319Z   a zip with a shorter collection: exits 1 at "index 3 out of range for 3 elements"
+2026-10-29T07:18:07.5750809Z 
+2026-10-29T07:18:07.5750952Z == the library is iyi all the way down
+2026-10-29T07:18:13.2017257Z   every module but socket and time is iyi over the prelude's intrinsics,
+2026-10-29T07:18:13.2017873Z   and those reach the platform and nothing else
+2026-10-29T07:18:13.2018125Z 
+2026-10-29T07:18:13.2018289Z == every module has its own exercise
+2026-10-29T07:18:15.7847254Z   each module under src/std has a bench/std_<name>_exercise.sh
+2026-10-29T07:18:15.7848137Z 
+2026-10-29T07:18:15.7848517Z == every std module compiles alone and writes its artifact
+2026-10-29T07:24:40.1420603Z   every module under src/std writes its artifact
+2026-10-29T07:24:40.1421103Z 
+2026-10-29T07:24:40.1421425Z == every std module exercise runs from artifacts as it runs from source
+2026-10-29T07:43:53.8290728Z   std_process_exercise: runs differently from its artifacts
+2026-10-29T07:43:53.8734270Z     45c45
+2026-10-29T07:43:53.8736918Z     <   found and ran from C:\Users\RUNNER~1\AppData\Local\Temp\tmp.vmGyWqfIum\r1\std_process_exercise\s\iyi ünï dir
+2026-10-29T07:43:53.8737843Z     ---
+2026-10-29T07:43:53.8738820Z     >   found and ran from C:\Users\RUNNER~1\AppData\Local\Temp\tmp.vmGyWqfIum\r1\std_process_exercise\a\iyi ünï dir
+2026-10-29T07:56:43.1703922Z   FAIL: cannot be consumed as artifacts: std_process_exercise
+2026-10-29T07:56:43.1704531Z 
+2026-10-29T07:56:43.1704804Z == a panic std raises names no site from its artifact either
+2026-10-29T07:56:49.7084005Z   both print: iyi: panic: pop of an empty deque
+2026-10-29T07:56:49.7084521Z 
+2026-10-29T07:56:49.7084991Z == and on the platforms this runner is not
+2026-10-29T08:36:48.2735954Z   every exercise reads its own artifacts on darwin, windows, aarch64 and musl
+2026-10-29T08:36:48.2736474Z 
+2026-10-29T08:36:48.2736707Z == every std module together, beside std/bool, on every platform
+2026-10-29T08:37:27.5109826Z   every std module compiles beside every other, std/bool among them, on five targets
+2026-10-29T08:37:27.5110557Z 
+2026-10-29T08:37:27.5110802Z == discovering and running sibling std exercises
+2026-10-29T08:37:27.5111540Z   left to bench/std_siblings.sh (STD_SIBLINGS=0)
+2026-10-29T08:37:27.5111949Z 
+2026-10-29T08:37:27.5112233Z Standard library foundation: something above failed.
+2026-10-29T08:37:33.3702629Z ##[error]Process completed with exit code 1.
+2026-10-29T08:37:33.4033101Z Post job cleanup.
+2026-10-29T08:37:34.1947868Z [command]"C:\Program Files\Git\bin\git.exe" version
+2026-10-29T08:37:34.2793141Z git version 2.56.0.windows.2
+2026-10-29T08:37:34.2891437Z Temporarily overriding HOME='D:\a\_temp\06219f8d-d604-4c88-91ab-e779fda450a6' before making global git config changes
+2026-10-29T08:37:34.2892781Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-29T08:37:34.2905303Z [command]"C:\Program Files\Git\bin\git.exe" config --global --add safe.directory D:\a\iyi\iyi
+2026-10-29T08:37:34.6904112Z Removing SSH command configuration
+2026-10-29T08:37:34.6918489Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp core\.sshCommand
+2026-10-29T08:37:34.7357988Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+2026-10-29T08:37:35.3750118Z Removing HTTP extra header
+2026-10-29T08:37:35.3763899Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-29T08:37:35.4212261Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+2026-10-29T08:37:35.9712937Z Removing includeIf entries pointing to credentials config files
+2026-10-29T08:37:35.9726321Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-29T08:37:36.0116880Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "git config --local --show-origin --name-only --get-regexp remote.origin.url"
+2026-10-29T08:37:36.5987739Z Cleaning up orphan processes
+2026-10-29T08:37:36.7940543Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: ilammy/msvc-dev-cmd@v1. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/

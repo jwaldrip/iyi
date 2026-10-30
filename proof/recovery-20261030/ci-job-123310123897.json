@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "gh",
+    "api",
+    "--allow-escape-sequences",
+    "repos/jwaldrip/iyi/actions/jobs/123310123897/logs"
+  ],
+  "rc": 0,
+  "expected": 0,
+  "pass": true
+}
