@@ -1,0 +1,42 @@
+[
+  {
+    "name": "iyi",
+    "sha256": "f5738660a2bccf39efee9acdf00f2474829969907a623d9e0e33e0f920b4ae74",
+    "size": 50842576,
+    "mtime_ns": 1793376174145234832,
+    "inode": 2624384932,
+    "rc": 0,
+    "stdout": "iyi 0.19.1 (built on Crystal 1.22.0-dev [626463375] (2026-10-29))\n\nThe compiler was not built in release mode.\n",
+    "stderr": ""
+  },
+  {
+    "name": "crystal",
+    "sha256": "001cf890c9491f6e8f0a4d45a59222f4a4868d97e52a45a4134258bd62fa8d8a",
+    "size": 50852120,
+    "mtime_ns": 1793376211944743611,
+    "inode": 2624393241,
+    "rc": 0,
+    "stdout": "Crystal 1.22.0-dev [626463375] (2026-10-29)\n\nThe compiler was not built in release mode.\n\nLLVM: 22.1.8\nDefault target: aarch64-apple-macosx27.0\n",
+    "stderr": ""
+  },
+  {
+    "name": "iyi-daemon",
+    "sha256": "b816b55f94abb4fa55ba3c3d74a5e2c00498d4ba1a986870a61351e20848560f",
+    "size": 50473688,
+    "mtime_ns": 1793376246207261876,
+    "inode": 2624398158,
+    "rc": 0,
+    "stdout": "iyi 0.19.1 (built on Crystal 1.22.0-dev [626463375] (2026-10-29))\n\nThe compiler was not built in release mode.\n",
+    "stderr": ""
+  },
+  {
+    "name": "crystal-daemon",
+    "sha256": "d366b31ac664c8d6aa177bb69612547a73187fbbf16d01b16000e659bd7f8937",
+    "size": 50483136,
+    "mtime_ns": 1793376274425956830,
+    "inode": 2624401443,
+    "rc": 0,
+    "stdout": "Crystal 1.22.0-dev [626463375] (2026-10-29)\n\nThe compiler was not built in release mode.\n\nLLVM: 22.1.8\nDefault target: aarch64-apple-macosx27.0\n",
+    "stderr": ""
+  }
+]

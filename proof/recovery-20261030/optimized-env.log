@@ -1,0 +1,1 @@
+smoke_test.py refuses optimized Python: sys.flags.optimize=1

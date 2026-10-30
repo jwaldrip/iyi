@@ -1,0 +1,85 @@
+{
+  "canary_root": "/private/tmp/iyi-canary-recovered-riqim3eh",
+  "shim_rc": 0,
+  "execution_rc": 0,
+  "end": {
+    "argv": [
+      "build",
+      "-o",
+      "/private/tmp/iyi-canary-recovered-riqim3eh/t/w0/cookie-plain",
+      "/Users/jwaldrip/dev/worktrees/iyi-o3-integration-20261028/bench/std_cookie_exercise.iyi"
+    ],
+    "atime_set_ns": 1793376589813999089,
+    "bindings": {},
+    "canonical": true,
+    "command": "build",
+    "consumer": {
+      "argv": [
+        "/Users/jwaldrip/dev/worktrees/iyi-stale-integration-repair/.build/iyi",
+        "build",
+        "-Diyi_observe",
+        "--use-iyimod",
+        "/private/tmp/iyi-canary-recovered-riqim3eh/s/df5bf3df468c4a3dbe5a8e4dcef10a88/mods",
+        "-o",
+        "/private/tmp/iyi-canary-recovered-riqim3eh/t/w0/cookie-plain",
+        "/Users/jwaldrip/dev/worktrees/iyi-o3-integration-20261028/bench/std_cookie_exercise.iyi"
+      ],
+      "out_sha256": "ca2e460caf5362b316d94fa6bd41b61e5e2cfdedd7d3b5cb0cde012b3d9f65e2",
+      "out_written": true,
+      "rc": 0
+    },
+    "cwd": "/Users/jwaldrip/dev/worktrees/iyi-o3-integration-20261028",
+    "driver": "cookie",
+    "e3_error": null,
+    "env_seen": {
+      "CRYSTAL_OPTS": null,
+      "CRYSTAL_PATH": null,
+      "IYI_CACHE_DIR": "/private/tmp/iyi-canary-recovered-riqim3eh/c",
+      "IYI_OPTS": null,
+      "IYI_PATH": "/Users/jwaldrip/dev/worktrees/iyi-o3-integration-20261028/src:/Users/jwaldrip/dev/worktrees/iyi-o3-integration-20261028/samples/iyi"
+    },
+    "exit": 0,
+    "first_noncanonical_root": null,
+    "interrupted": false,
+    "inv": "df5bf3df468c4a3dbe5a8e4dcef10a88",
+    "kind": "record",
+    "mode": "roundtrip",
+    "nonce": "d6750eec8f01d1199034947a8db30135",
+    "out": "/private/tmp/iyi-canary-recovered-riqim3eh/t/w0/cookie-plain",
+    "out_ino": 2624519337,
+    "out_mtime_ns": 1793376590813999089,
+    "out_ref": "/private/tmp/iyi-canary-recovered-riqim3eh/s/df5bf3df468c4a3dbe5a8e4dcef10a88/out.ref",
+    "own": true,
+    "phase": "end",
+    "pid": 57551,
+    "producer": {
+      "argv": [
+        "/Users/jwaldrip/dev/worktrees/iyi-stale-integration-repair/.build/iyi",
+        "build",
+        "-Diyi_observe",
+        "--emit-iyimod",
+        "/private/tmp/iyi-canary-recovered-riqim3eh/s/df5bf3df468c4a3dbe5a8e4dcef10a88/mods",
+        "-o",
+        "/private/tmp/iyi-canary-recovered-riqim3eh/t/w0/cookie-plain",
+        "/Users/jwaldrip/dev/worktrees/iyi-o3-integration-20261028/bench/std_cookie_exercise.iyi"
+      ],
+      "mods_count": 47,
+      "rc": 0
+    },
+    "reason": "canonical roots",
+    "roots": [
+      "/Users/jwaldrip/dev/worktrees/iyi-o3-integration-20261028/src",
+      "/Users/jwaldrip/dev/worktrees/iyi-o3-integration-20261028/samples/iyi"
+    ],
+    "run": null,
+    "sources": [
+      "/Users/jwaldrip/dev/worktrees/iyi-o3-integration-20261028/bench/std_cookie_exercise.iyi"
+    ],
+    "t_ns": 4644583968958,
+    "v": 1,
+    "variant_ids": [],
+    "variant_kind": null
+  },
+  "before_atime_ns": 1793376589813999089,
+  "after_atime_ns": 1793376592363883862
+}

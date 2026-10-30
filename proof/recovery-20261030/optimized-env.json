@@ -1,0 +1,10 @@
+{
+  "argv": [
+    "/Users/jwaldrip/.cache/iyi-corpus-venv/bin/python3",
+    "-B",
+    "proof/smoke_test.py"
+  ],
+  "rc": 2,
+  "expected": 2,
+  "pass": true
+}
