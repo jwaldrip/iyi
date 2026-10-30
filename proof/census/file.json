@@ -27,21 +27,18 @@
       ],
       "variants": [
         {
-          "id": "file.negative.169",
+          "id": "file.negative.169.required",
           "kind": "negative",
           "first_root": "{WORK}/{dir}",
           "vars": {
             "dir": {
               "lines": [
                 259,
-                260,
                 263,
-                264,
                 266
               ],
               "values": [
-                "predictable",
-                "follows"
+                "predictable"
               ]
             }
           },
@@ -50,6 +47,46 @@
           ],
           "output": null,
           "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              170,
+              171,
+              172,
+              173,
+              174,
+              175,
+              176,
+              177
+            ],
+            "contains": [
+              "    echo \"  $label: the exercise PASSED on a broke",
+              "    status=1"
+            ]
+          }
+        },
+        {
+          "id": "file.negative.169.platform-excluded",
+          "kind": "negative",
+          "first_root": "{WORK}/{dir}",
+          "vars": {
+            "dir": {
+              "lines": [
+                260,
+                264
+              ],
+              "values": [
+                "follows"
+              ]
+            }
+          },
+          "sources": [
+            "{REPO}/bench/std_file_exercise.iyi"
+          ],
+          "output": null,
+          "darwin": "platform-excluded",
           "requires": [
             "python3"
           ],
@@ -125,7 +162,7 @@
       ],
       "variants": [
         {
-          "id": "file.negative.230",
+          "id": "file.negative.230.required",
           "kind": "negative",
           "first_root": "{WORK}/{dir}",
           "vars": {
@@ -135,7 +172,6 @@
                 242,
                 243,
                 244,
-                247,
                 248
               ],
               "values": [
@@ -143,7 +179,6 @@
                 "q_byte",
                 "brace_text",
                 "class_neg",
-                "dir_onto_file",
                 "no_escape"
               ]
             }
@@ -153,6 +188,45 @@
           ],
           "output": null,
           "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              231,
+              232,
+              233,
+              234,
+              235,
+              236,
+              237,
+              238
+            ],
+            "contains": [
+              "    echo \"  $1: the exercise PASSED on a broken mo",
+              "    status=1"
+            ]
+          }
+        },
+        {
+          "id": "file.negative.230.platform-excluded",
+          "kind": "negative",
+          "first_root": "{WORK}/{dir}",
+          "vars": {
+            "dir": {
+              "lines": [
+                247
+              ],
+              "values": [
+                "dir_onto_file"
+              ]
+            }
+          },
+          "sources": [
+            "{REPO}/bench/std_file_exercise.iyi"
+          ],
+          "output": null,
+          "darwin": "platform-excluded",
           "requires": [
             "python3"
           ],
@@ -346,7 +420,7 @@
       ],
       "variants": [
         {
-          "id": "file.negative.428",
+          "id": "file.negative.428.required",
           "kind": "negative",
           "first_root": "{WORK}/{dir}",
           "vars": {
@@ -362,9 +436,7 @@
                 484,
                 489,
                 501,
-                511,
-                540,
-                548
+                540
               ],
               "values": [
                 "lone_cr",
@@ -377,9 +449,7 @@
                 "lock_nowait",
                 "lock_block",
                 "perm_dropped",
-                "append_seek",
-                "touch_unread",
-                "exists_read"
+                "touch_unread"
               ]
             }
           },
@@ -388,6 +458,47 @@
           ],
           "output": null,
           "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              429,
+              430,
+              431,
+              432,
+              433,
+              434,
+              435,
+              436
+            ],
+            "contains": [
+              "    echo \"  $1: the exercise PASSED on a broken mo",
+              "    status=1"
+            ]
+          }
+        },
+        {
+          "id": "file.negative.428.platform-excluded",
+          "kind": "negative",
+          "first_root": "{WORK}/{dir}",
+          "vars": {
+            "dir": {
+              "lines": [
+                511,
+                548
+              ],
+              "values": [
+                "append_seek",
+                "exists_read"
+              ]
+            }
+          },
+          "sources": [
+            "{REPO}/bench/std_file_exercise.iyi"
+          ],
+          "output": null,
+          "darwin": "platform-excluded",
           "requires": [
             "python3"
           ],
@@ -432,18 +543,16 @@
       ],
       "variants": [
         {
-          "id": "file.positive.628",
+          "id": "file.positive.628.required",
           "kind": "positive",
           "first_root": "{WORK}/{dir}",
           "vars": {
             "dir": {
               "lines": [
-                639,
-                643
+                639
               ],
               "values": [
-                "nul_cut",
-                "realpath_through"
+                "nul_cut"
               ]
             }
           },
@@ -452,6 +561,44 @@
           ],
           "output": "{WORK}/{dir}-prog",
           "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              629,
+              630,
+              631,
+              632,
+              633,
+              635,
+              636
+            ],
+            "contains": [
+              "    echo \"  $1: the broken copy did not build\"",
+              "    sed -n '1,10p' \"$WORK/$2-prog.build\""
+            ]
+          }
+        },
+        {
+          "id": "file.positive.628.platform-excluded",
+          "kind": "positive",
+          "first_root": "{WORK}/{dir}",
+          "vars": {
+            "dir": {
+              "lines": [
+                643
+              ],
+              "values": [
+                "realpath_through"
+              ]
+            }
+          },
+          "sources": [
+            "{WORK}/{dir}-prog.iyi"
+          ],
+          "output": "{WORK}/{dir}-prog",
+          "darwin": "platform-excluded",
           "requires": [
             "python3"
           ],
