@@ -8320,6 +8320,7 @@ def _o6_run_row(
     source_name: str = "case.iyi",
     *,
     nm_bin: str | None = None,
+    disk_min_gb: float = 0.0,
 ) -> dict:
     return legs_mod.run_row(
         case.sources[source_name],
@@ -8327,7 +8328,7 @@ def _o6_run_row(
         compiler=case.compiler,
         work_root=case.work,
         nm_bin=nm_bin or case.nm,
-        disk_min_gb=0.0,
+        disk_min_gb=disk_min_gb,
     )
 
 
@@ -9188,22 +9189,17 @@ def _fixture_o6_row_oserror_seed() -> Observation:
 
 
 def _fixture_o6_row_runtimeerror_seed() -> Observation:
-    old_minimum = legs_mod.DISK_MIN_GB
-    try:
-        legs_mod.DISK_MIN_GB = float(2**60)
-        with tempfile.TemporaryDirectory(prefix="iyi-o6-runtimeerror-") as root:
-            case = _o6_make_case(root)
-            row = _o6_run_row(case)
-            got = {
-                "status": row["status"],
-                "codes": _o6_codes(row),
-                "reason_is_disk": any(
-                    "Disk space below threshold" in reason
-                    for reason in row["failures"]
-                ),
-            }
-    finally:
-        legs_mod.DISK_MIN_GB = old_minimum
+    with tempfile.TemporaryDirectory(prefix="iyi-o6-runtimeerror-") as root:
+        case = _o6_make_case(root)
+        row = _o6_run_row(case, disk_min_gb=float(2**60))
+        got = {
+            "status": row["status"],
+            "codes": _o6_codes(row),
+            "reason_is_disk": any(
+                "Disk space below threshold" in reason
+                for reason in row["failures"]
+            ),
+        }
     expected = {
         "status": "FAIL",
         "codes": ["ROW-RUNTIMEERROR"],
@@ -10158,6 +10154,8 @@ def _stage_driver_census(
             "\"$(dirname -- \"$TMPDIR\")/shim.json\""
         )
 
+    if scenario == "driver-nonzero":
+        lines.append("status=7")
     sentinel_text = 'echo "the std/stage exercise holds"'
     if scenario == "missing-sentinel":
         sentinel_text = 'true || echo "the std/stage exercise holds"'
@@ -10273,11 +10271,12 @@ def _stage_stub_payloads(
             "sleep 30\n"
         )
     bash_path = os.path.join(fixture_root, "gate-tools", "bash")
-    gate1_tail = (
-        f"/bin/rm -f {shlex.quote(bash_path)}\n"
-        if scenario == "gate2-oserror"
-        else ""
-    )
+    if scenario == "gate2-oserror":
+        gate1_tail = f"/bin/rm -f {shlex.quote(bash_path)}\n"
+    elif scenario == "gate1-identity":
+        gate1_tail = "touch \"$IYI\"\n"
+    else:
+        gate1_tail = ""
     gate_exit = 7 if scenario == "gate1-fail" else 0
     stale_equivalence = (
         "#!/bin/bash\n"
@@ -10302,11 +10301,12 @@ def _stage_stub_payloads(
         if scenario == "interrupt-gate2"
         else ""
     )
-    observe_tail = (
-        "/bin/mkdir \"$(dirname -- \"$TMPDIR\")/rg9_work\"\n"
-        if scenario == "gate3-oserror"
-        else ""
-    )
+    if scenario == "gate3-oserror":
+        observe_tail = "/bin/mkdir \"$(dirname -- \"$TMPDIR\")/rg9_work\"\n"
+    elif scenario == "gate2-identity":
+        observe_tail = "touch \"$IYI\"\n"
+    else:
+        observe_tail = ""
     std_observe = (
         "#!/bin/bash\n"
         f"{observe_prefix}"
@@ -10329,6 +10329,8 @@ def _stage_stub_payloads(
         )
     elif scenario == "gate4-oserror":
         rg9_tail = f"import os\nos.unlink({bash_path!r})\n"
+    elif scenario == "gate3-identity":
+        rg9_tail = "import os\nos.utime(os.environ['IYI'])\n"
     else:
         rg9_tail = ""
     stale_rg9 = (
@@ -10349,6 +10351,11 @@ def _stage_stub_payloads(
         if scenario == "interrupt-gate4"
         else ""
     )
+    exercise_tail = (
+        "touch \"$IYI\"\n"
+        if scenario == "gate4-identity"
+        else ""
+    )
     std_exercise = (
         "#!/bin/bash\n"
         f"{exercise_prefix}"
@@ -10356,12 +10363,14 @@ def _stage_stub_payloads(
         "echo 'all 114 exercises answer the same from source and from artifacts'\n"
         + "".join(f"echo '{line}'\n" for line in sibling_lines)
         + f"echo '== shard 1 of 1: {sibling_count} of {sibling_count} sibling exercises'\n"
-        "exit 0\n"
+        + exercise_tail
+        + "exit 0\n"
     )
     stage_scenarios = {
         "run3-import",
         "driver-timeout",
         "driver-interrupt",
+        "driver-nonzero",
         "missing-sentinel",
         "stale-ledger",
         "skip-env-blocked",
@@ -13101,6 +13110,7 @@ def _proofkit_more_edge(case: str) -> Observation:
         "identity-no-timeout",
         "identity-no-nm",
         "pin-write-probe",
+        "pin-write-probe-dirty",
         "pin-write-type",
         "pin-write-dirty",
     }:
@@ -13161,6 +13171,7 @@ def _proofkit_more_edge(case: str) -> Observation:
                     os.environ["PATH"] = original_path
             elif case in {
                 "pin-write-probe",
+                "pin-write-probe-dirty",
                 "pin-write-type",
                 "pin-write-dirty",
             }:
@@ -13168,6 +13179,7 @@ def _proofkit_more_edge(case: str) -> Observation:
                     "/tmp",
                     {
                         "pin-write-probe": "iyp-bb000001",
+                        "pin-write-probe-dirty": "iyp-bb000004",
                         "pin-write-type": "iyp-bb000002",
                         "pin-write-dirty": "iyp-bb000003",
                     }[case],
@@ -13187,7 +13199,17 @@ def _proofkit_more_edge(case: str) -> Observation:
                         raise TypeError("fixture stat type failure")
 
                 def failed_stat(_path):
-                    if case == "pin-write-probe":
+                    if case in {
+                        "pin-write-probe",
+                        "pin-write-probe-dirty",
+                    }:
+                        if case == "pin-write-probe-dirty":
+                            with open(
+                                os.path.join(report, "held"),
+                                "w",
+                                encoding="utf-8",
+                            ) as output:
+                                output.write("held")
                         raise OSError("fixture stat failure")
                     return BadStat()
 
@@ -13205,7 +13227,10 @@ def _proofkit_more_edge(case: str) -> Observation:
                         )
                         == (
                             "EXEC-UNOBSERVABLE"
-                            if case == "pin-write-probe"
+                            if case in {
+                                "pin-write-probe",
+                                "pin-write-probe-dirty",
+                            }
                             else "PIN-WRITE"
                         )
                     )
@@ -13311,44 +13336,39 @@ def _proofkit_more_edge(case: str) -> Observation:
                 == "GIT-ERROR"
             )
         elif case == "inspect-diff-error":
-            tool_dir = os.path.join(root, "tools")
-            os.makedirs(tool_dir)
-            _o6_write_executable(
-                os.path.join(tool_dir, "git"),
-                "#!/bin/sh\n"
-                "case \"$*\" in\n"
-                "  *'status --porcelain'*) exit 0 ;;\n"
-                "  *'rev-parse HEAD'*) printf '%064d\\n' 1; exit 0 ;;\n"
-                "  *'show -s --format=%ct HEAD'*) echo 0; exit 0 ;;\n"
-                "  *'merge-base --is-ancestor'*) exit 0 ;;\n"
-                "  *'diff --name-only'*) exit 7 ;;\n"
-                "esac\n"
-                "exit 0\n",
-            )
-            compiler = _o6_write_executable(
-                os.path.join(root, "compiler"),
-                "#!/bin/sh\nexit 0\n",
-            )
-            p_path = os.path.join(root, "p")
-            w_path = os.path.join(root, "w")
-            os.makedirs(p_path)
-            os.makedirs(w_path)
-            original_path = os.environ.get("PATH", "")
-            try:
-                os.environ["PATH"] = tool_dir
-                got = (
-                    reason(
-                        lambda: proofkit_mod.inspect_pin_inputs(
-                            p_path,
-                            w_path,
-                            compiler,
-                            (),
-                        )
-                    )
-                    == "GIT-ERROR"
+            with PinFixture() as fixture:
+                tool_dir = os.path.join(root, "tools")
+                os.makedirs(tool_dir)
+                real_git = shutil.which("git")
+                if not real_git:
+                    raise RuntimeError("git unavailable for diff fixture")
+                _o6_write_executable(
+                    os.path.join(tool_dir, "git"),
+                    "#!/bin/sh\n"
+                    "case \"$*\" in\n"
+                    "  *'diff --name-only'*) exit 7 ;;\n"
+                    "esac\n"
+                    f"exec {shlex.quote(real_git)} \"$@\"\n",
                 )
-            finally:
-                os.environ["PATH"] = original_path
+                original_path = os.environ.get("PATH", "")
+                try:
+                    os.environ["PATH"] = (
+                        tool_dir + os.pathsep + original_path
+                    )
+                    try:
+                        proofkit_mod.inspect_pin_inputs(
+                            fixture.p,
+                            fixture.w,
+                            fixture.compiler,
+                            DRIVERS_29,
+                        )
+                    except proofkit_mod.IdentityError as error:
+                        got = (
+                            error.reason == "GIT-ERROR"
+                            and "diff --name-only" in error.detail
+                        )
+                finally:
+                    os.environ["PATH"] = original_path
         elif case in {
             "report-chain-invalid",
             "report-chain-mismatch",
@@ -13419,6 +13439,132 @@ def _proofkit_more_edge(case: str) -> Observation:
                 time.sleep(0.005)
             proofkit_mod._stop_leader(process, process.pid, 0.01)
             got = process.poll() is not None
+        elif case == "process-leader-survives":
+            class NeverStops:
+                pid = 2_000_000_000
+
+                def wait(self, timeout=None):
+                    raise subprocess.TimeoutExpired("fixture", timeout)
+
+            try:
+                proofkit_mod._stop_leader(
+                    NeverStops(),
+                    NeverStops.pid,
+                    0.0,
+                )
+            except RuntimeError:
+                got = True
+        elif case == "process-zombie-remains":
+            ready = os.path.join(root, "zombie-ready")
+            process = subprocess.Popen(
+                [
+                    "/bin/sh",
+                    "-c",
+                    f"trap '' TERM; : > {shlex.quote(ready)}; "
+                    "exec /bin/sleep 30",
+                ],
+                start_new_session=True,
+            )
+            while not os.path.exists(ready):
+                time.sleep(0.005)
+            try:
+                try:
+                    proofkit_mod._record_and_stop_survivors(
+                        process.pid,
+                        -1,
+                        0.01,
+                        0.01,
+                    )
+                except RuntimeError:
+                    got = True
+            finally:
+                process.wait()
+        elif case == "process-finally-stop":
+            class Running:
+                pid = 2_000_000_000
+
+                def __init__(self):
+                    self.returncode = None
+
+                def poll(self):
+                    return self.returncode
+
+                def wait(self, timeout=None):
+                    self.returncode = 0
+                    return 0
+
+            process = Running()
+            proofkit_mod._stop_leader_if_running(
+                process,
+                process.pid,
+                0.0,
+            )
+            got = process.returncode == 0
+        elif case == "process-residual-zombie":
+            ready = os.path.join(root, "residual-cleanup-ready")
+            process = subprocess.Popen(
+                [
+                    "/bin/sh",
+                    "-c",
+                    f": > {shlex.quote(ready)}; exec /bin/sleep 30",
+                ],
+                start_new_session=True,
+            )
+            while not os.path.exists(ready):
+                time.sleep(0.005)
+            try:
+                got = bool(
+                    proofkit_mod._stop_residual_processes(
+                        process.pid,
+                        0.01,
+                        exclude=-1,
+                    )
+                )
+            finally:
+                process.wait()
+        elif case == "process-parse":
+            got = proofkit_mod._parse_process_group_members(
+                "bad\nx y\n10 20\n",
+                20,
+            ) == (10,)
+        elif case == "process-ps-status":
+            ps = _o6_write_executable(
+                os.path.join(root, "bad-ps"),
+                "#!/bin/sh\nexit 7\n",
+            )
+            try:
+                proofkit_mod._process_group_members(
+                    1,
+                    ps_path=ps,
+                )
+            except RuntimeError:
+                got = True
+        elif case == "run-bounded-sampler-error":
+            times_path = os.path.join(root, "times-dir")
+            os.makedirs(times_path)
+            try:
+                proofkit_mod.run_bounded(
+                    [sys.executable, "-c", "pass"],
+                    root,
+                    os.environ.copy(),
+                    os.path.join(root, "sampler-error.log"),
+                    times_path,
+                    None,
+                    0.01,
+                )
+            except RuntimeError:
+                got = True
+        elif case == "validator-env-unchanged":
+            got = proofkit_mod._environment_callsite_violations(
+                (
+                    "helper() {",
+                    "  \"$IYI\" build source.iyi",
+                    "}",
+                    "IYI_PATH=/patched helper",
+                ),
+                {2},
+                {2: {"kind": "unchanged"}},
+            ) == ()
         elif case.startswith("schema-"):
             census, script_bytes, script_relpath = _census_case("cookie")
             if case == "schema-nonobject":
@@ -13532,6 +13678,14 @@ def _proofkit_more_edge(case: str) -> Observation:
             "parser-template-brace",
             "parser-shlex-error",
             "parser-literal-dollar",
+            "parser-render-command",
+            "parser-backtick-unclosed",
+            "parser-nested-expansion",
+            "parser-nested-command-open",
+            "parser-nested-backtick-open",
+            "parser-unquoted-backtick",
+            "parser-unquoted-backtick-open",
+            "parser-dequote-expansion-open",
         }:
             got = {
                 "parser-command-open": (
@@ -13545,6 +13699,47 @@ def _proofkit_more_edge(case: str) -> Observation:
                 ),
                 "parser-literal-dollar": (
                     proofkit_mod._replace_shell_expansions("$%") == "$%"
+                ),
+                "parser-render-command": (
+                    proofkit_mod._render_print_words(["not-print"]) is None
+                ),
+                "parser-backtick-unclosed": (
+                    proofkit_mod._replace_shell_expansions("`date") is None
+                ),
+                "parser-nested-expansion": (
+                    proofkit_mod._replace_shell_expansions("${a{b}}")
+                    == "IYIVAR"
+                ),
+                "parser-nested-command-open": (
+                    proofkit_mod._command_substitution_end(
+                        '$(echo "$(broken',
+                        0,
+                    )
+                    is None
+                ),
+                "parser-nested-backtick-open": (
+                    proofkit_mod._command_substitution_end(
+                        '$(echo "`broken)',
+                        0,
+                    )
+                    is None
+                ),
+                "parser-unquoted-backtick": (
+                    proofkit_mod._command_substitution_end(
+                        '$(echo `date`)',
+                        0,
+                    )
+                    == len('$(echo `date`)')
+                ),
+                "parser-unquoted-backtick-open": (
+                    proofkit_mod._command_substitution_end(
+                        '$(echo `date)',
+                        0,
+                    )
+                    is None
+                ),
+                "parser-dequote-expansion-open": (
+                    proofkit_mod._dequote_print_word("${value") is None
                 ),
                 "parser-echo-option": (
                     proofkit_mod._render_print_words(
@@ -13805,8 +14000,303 @@ def _runner_isolated_edge(case: str) -> Observation:
     return Observation(expected=True, got=got, applied=applied)
 
 
+def _runner_more_edge(case: str) -> Observation:
+    applied = f"isolated runner edge={case}"
+    got = False
+    if case == "run1-baseline-error":
+        with StageFixture() as fixture:
+            fixture.pin()
+            baseline_root = os.path.join(
+                fixture.scratch,
+                "baseline-root",
+            )
+            census_dir = os.path.join(
+                baseline_root,
+                "proof",
+                "census",
+            )
+            os.makedirs(census_dir)
+            with open(
+                os.path.join(census_dir, "stage.json"),
+                "w",
+                encoding="utf-8",
+            ) as output:
+                json.dump([], output)
+            returncode = stages_mod.cmd_run1(
+                fixture.args(),
+                disk_min_gb=0.0,
+                baseline_w_path=baseline_root,
+            )
+            record = _stage_result(fixture.report, "run1")
+            got = (
+                returncode == 1
+                and record.get("checks", {}).get("baseline-skips") == "FAIL"
+            )
+        return Observation(expected=True, got=got, applied=applied)
+
+    if case in {"run3-setup-error", "run3-execution-error"}:
+        with StageFixture() as fixture:
+            pin = fixture.pin()
+            path = os.path.join(
+                fixture.scratch,
+                "setup-file" if case == "run3-setup-error" else "driver-log",
+            )
+            if case == "run3-setup-error":
+                with open(path, "w", encoding="utf-8") as output:
+                    output.write("not a directory")
+                setup_base = path
+                driver_log_path = None
+            else:
+                os.makedirs(path)
+                setup_base = None
+                driver_log_path = path
+            record = stages_mod._run_one_driver(
+                fixture.report,
+                pin,
+                "stage",
+                set(),
+                driver_limit_sec=30.0,
+                grace_sec=0.1,
+                disk_min_gb=0.0,
+                stat_fn=os.stat,
+                setup_base=setup_base,
+                driver_log_path=driver_log_path,
+            )
+            got = (
+                record.get("status") == "FAIL"
+                and record.get("checks", {}).get("exit") == "FAIL"
+            )
+        return Observation(expected=True, got=got, applied=applied)
+
+    if case in {
+        "run3-census-type",
+        "run3-census-script-type",
+        "run3-census-unreadable",
+    }:
+        with StageFixture() as fixture:
+            pin = fixture.pin()
+            census_path = os.path.join(
+                fixture.w,
+                "proof",
+                "census",
+                "stage.json",
+            )
+            census = _o7_load_json(census_path)
+            with open(census_path, "w", encoding="utf-8") as output:
+                if case == "run3-census-type":
+                    json.dump([], output)
+                elif case == "run3-census-script-type":
+                    census["script"] = None
+                    json.dump(census, output)
+                else:
+                    output.write("{")
+            record = stages_mod._run_one_driver(
+                fixture.report,
+                pin,
+                "stage",
+                set(),
+                driver_limit_sec=30.0,
+                grace_sec=0.1,
+                disk_min_gb=0.0,
+                stat_fn=os.stat,
+            )
+            got = (
+                record.get("status") == "FAIL"
+                and record.get("checks", {}).get("census") == "FAIL"
+            )
+        return Observation(expected=True, got=got, applied=applied)
+
+    if case == "run3-driver-nonzero":
+        with StageFixture("driver-nonzero") as fixture:
+            fixture.pin()
+            fixture.write_prerequisites()
+            returncode = stages_mod.cmd_run3(
+                fixture.args(),
+                drivers=fixture.drivers,
+                driver_limit_sec=30.0,
+                grace_sec=0.1,
+                disk_min_gb=0.0,
+            )
+            record = _stage_result(fixture.report, "run3/stage")
+            got = (
+                returncode == 1
+                and record.get("status") == "FAIL"
+                and record.get("checks", {}).get("exit") == "FAIL"
+            )
+        return Observation(expected=True, got=got, applied=applied)
+
+    if case in {
+        "final-prerequisites-missing",
+        "final-recompute-error",
+    }:
+        with StageFixture() as fixture:
+            fixture.prepare_final_inputs()
+            latest_run1 = stages_mod.latest_attempt_dir(
+                os.path.join(fixture.report, "run1")
+            )
+            if case == "final-prerequisites-missing":
+                os.unlink(
+                    os.path.join(latest_run1, "baseline_skips.json")
+                )
+            else:
+                with open(
+                    os.path.join(latest_run1, "exclusions.json"),
+                    "w",
+                    encoding="utf-8",
+                ) as output:
+                    json.dump({}, output)
+            returncode = stages_mod.cmd_final(
+                fixture.args(),
+                drivers=fixture.drivers,
+            )
+            final = _o7_load_json(
+                os.path.join(fixture.report, "final.json")
+            )
+            fragment = (
+                "are unavailable"
+                if case == "final-prerequisites-missing"
+                else "cannot be recomputed"
+            )
+            got = (
+                returncode == 1
+                and any(
+                    fragment in str(reason)
+                    for reason in final.get("reasons", [])
+                )
+            )
+        return Observation(expected=True, got=got, applied=applied)
+
+    if case in {"all-run1-stop", "all-run2-stop"}:
+        scenario = "run2-stop" if case == "all-run2-stop" else "control"
+        with StageFixture(scenario) as fixture:
+            fixture.pin()
+            returncode = stages_mod.cmd_all(
+                fixture.args(),
+                drivers=fixture.drivers,
+                driver_limit_sec=30.0,
+                grace_sec=0.1,
+                disk_min_gb=(
+                    2**60 if case == "all-run1-stop" else 0.0
+                ),
+            )
+            got = returncode == 1
+        return Observation(expected=True, got=got, applied=applied)
+
+    if case in {
+        "all-run3-refusal",
+        "all-required-missing",
+        "all-required-nonstr",
+        "all-driver-stop",
+    }:
+        with StageFixture() as fixture:
+            fixture.pin()
+            args = fixture.args()
+            required_path: str | None = None
+            if case == "all-run3-refusal":
+                args.driver = "other"
+            elif case == "all-required-missing":
+                required_path = os.path.join(
+                    fixture.scratch,
+                    "missing-required.json",
+                )
+            elif case == "all-required-nonstr":
+                required_path = os.path.join(
+                    fixture.scratch,
+                    "nonstr-required.json",
+                )
+                with open(required_path, "w", encoding="utf-8") as output:
+                    json.dump([7], output)
+            def run_all() -> int:
+                return stages_mod.cmd_all(
+                    args,
+                    drivers=fixture.drivers,
+                    driver_limit_sec=30.0,
+                    grace_sec=0.1,
+                    disk_min_gb=0.0,
+                    required_path=required_path,
+                    run3_disk_min_gb=(
+                        2**60 if case == "all-driver-stop" else None
+                    ),
+                )
+
+            stderr_captured = True
+            if case == "all-run3-refusal":
+                returncode, stderr = _capture_stderr(run_all)
+                stderr_captured = (
+                    "REFUSED driver 'other' is not in required.json"
+                    in stderr
+                )
+            else:
+                returncode = run_all()
+            expected_returncode = {
+                "all-run3-refusal": 2,
+                "all-driver-stop": 1,
+            }.get(case, 0)
+            got = (
+                returncode == expected_returncode
+                and stderr_captured
+            )
+        return Observation(expected=True, got=got, applied=applied)
+
+    with tempfile.TemporaryDirectory(prefix="iyi-runner-more-") as root:
+        checks = {
+            name: "PASS"
+            for name in proofkit_mod.REQUIRED_CHECKS[
+                "run1" if case == "final-recorded-reason" else "run2"
+            ]
+        }
+        checks[next(iter(checks))] = "FAIL"
+        unit = "run1" if case == "final-recorded-reason" else "run2"
+        parent = os.path.join(root, unit, "a1")
+        os.makedirs(parent)
+        record = {
+            "v": 1,
+            "chain_id": "c" * 32,
+            "unit": unit,
+            "attempt": 1,
+            "status": "FAIL",
+            "reasons": (
+                ["fixture recorded reason"]
+                if case == "final-recorded-reason"
+                else []
+            ),
+            "checks": checks,
+            "started_ns": 1,
+            "ended_ns": 2,
+            "survivors": [],
+        }
+        proofkit_mod.write_result(
+            os.path.join(parent, "result.json"),
+            record,
+        )
+        if case in {"final-recorded-reason", "final-status-reason"}:
+            _latest, _earlier, reasons = stages_mod._collect_final_unit(
+                {"chain_id": "c" * 32},
+                os.path.join(root, unit),
+                unit,
+                "run1" if unit == "run1" else "run2",
+            )
+            got = bool(reasons)
+        elif case == "latest-interrupted":
+            record["unit"] = "run3/stage"
+            record["reasons"] = ["interrupted by signal 2"]
+            target = os.path.join(root, "run3", "stage", "a1")
+            os.makedirs(target)
+            proofkit_mod.write_result(
+                os.path.join(target, "result.json"),
+                record,
+            )
+            got = stages_mod._latest_was_interrupted(
+                root,
+                os.path.join("run3", "stage"),
+            )
+        else:
+            raise ValueError(f"unknown runner-more edge {case}")
+    return Observation(expected=True, got=got, applied=applied)
+
+
 def _fixture_run1_gate_oserror(gate: int) -> Observation:
-    scenario = "control" if gate == 1 else f"gate{gate}-oserror"
+    scenario = "control" if gate in (1, 3) else f"gate{gate}-oserror"
     with StageFixture(scenario) as fixture:
         tool_dir = os.path.join(fixture.scratch, "gate-tools")
         os.makedirs(tool_dir)
@@ -13830,6 +14320,14 @@ def _fixture_run1_gate_oserror(gate: int) -> Observation:
         try:
             os.environ["PATH"] = tool_dir
             fixture.pin()
+            rg9_work_path: str | None = None
+            if gate == 3:
+                rg9_work_path = os.path.join(
+                    fixture.scratch,
+                    "rg9-work-collision",
+                )
+                with open(rg9_work_path, "w", encoding="utf-8") as output:
+                    output.write("existing path")
             restorer: threading.Thread | None = None
             if gate == 1:
                 os.unlink(os.path.join(tool_dir, "bash"))
@@ -13853,6 +14351,7 @@ def _fixture_run1_gate_oserror(gate: int) -> Observation:
             returncode = stages_mod.cmd_run1(
                 fixture.args(),
                 disk_min_gb=0.0,
+                rg9_work_path=rg9_work_path,
             )
             if restorer is not None:
                 restorer.join()
@@ -13870,7 +14369,11 @@ def _fixture_run1_gate_oserror(gate: int) -> Observation:
     return Observation(
         expected={"returncode": 1, "status": "FAIL", "reason": True},
         got=got,
-        applied=f"removed gate {gate} executable prerequisite",
+        applied=(
+            "existing rg9_work file path"
+            if gate == 3
+            else f"removed gate {gate} executable prerequisite"
+        ),
     )
 
 
@@ -14025,7 +14528,58 @@ def _fixture_run3_interrupt_edge() -> Observation:
     )
 
 
+def _fixture_run1_post_gate_identity(gate: int) -> Observation:
+    with StageFixture(f"gate{gate}-identity") as fixture:
+        fixture.pin()
+        returncode = stages_mod.cmd_run1(
+            fixture.args(),
+            disk_min_gb=0.0,
+        )
+        record = _stage_result(fixture.report, "run1")
+        got = {
+            "returncode": returncode,
+            "status": record.get("status"),
+            "identity": record.get("checks", {}).get("identity"),
+            "reason": any(
+                "COMPILER-MTIME-CHANGED" in str(reason)
+                for reason in record.get("reasons", [])
+            ),
+        }
+    return Observation(
+        expected={
+            "returncode": 1,
+            "status": "INVALID",
+            "identity": "INVALID",
+            "reason": True,
+        },
+        got=got,
+        applied=f"compiler mtime changed after gate 1.{gate}",
+    )
+
+
 O7_FIXTURES: tuple[Fixture, ...] = (
+    Fixture("o7.seed.rp2-run1-baseline-error", "seed", partial(_runner_more_edge, "run1-baseline-error")),
+    Fixture("o7.seed.rp2-run3-setup-error", "seed", partial(_runner_more_edge, "run3-setup-error")),
+    Fixture("o7.seed.rp2-run3-execution-error", "seed", partial(_runner_more_edge, "run3-execution-error")),
+    Fixture("o7.seed.rp2-run3-census-type", "seed", partial(_runner_more_edge, "run3-census-type")),
+    Fixture("o7.seed.rp2-run3-census-script-type", "seed", partial(_runner_more_edge, "run3-census-script-type")),
+    Fixture("o7.seed.rp2-run3-census-unreadable", "seed", partial(_runner_more_edge, "run3-census-unreadable")),
+    Fixture("o7.seed.rp2-run3-driver-nonzero", "seed", partial(_runner_more_edge, "run3-driver-nonzero")),
+    Fixture("o7.seed.rp2-final-recorded-reason", "seed", partial(_runner_more_edge, "final-recorded-reason")),
+    Fixture("o7.seed.rp2-final-status-reason", "seed", partial(_runner_more_edge, "final-status-reason")),
+    Fixture("o7.seed.rp2-final-prerequisites-missing", "seed", partial(_runner_more_edge, "final-prerequisites-missing")),
+    Fixture("o7.seed.rp2-final-recompute-error", "seed", partial(_runner_more_edge, "final-recompute-error")),
+    Fixture("o7.seed.rp2-latest-interrupted", "seed", partial(_runner_more_edge, "latest-interrupted")),
+    Fixture("o7.seed.rp2-all-run1-stop", "seed", partial(_runner_more_edge, "all-run1-stop")),
+    Fixture("o7.seed.rp2-all-run2-stop", "seed", partial(_runner_more_edge, "all-run2-stop")),
+    Fixture("o7.seed.rp2-all-run3-refusal", "seed", partial(_runner_more_edge, "all-run3-refusal")),
+    Fixture("o7.seed.rp2-all-required-missing", "seed", partial(_runner_more_edge, "all-required-missing")),
+    Fixture("o7.seed.rp2-all-required-nonstr", "seed", partial(_runner_more_edge, "all-required-nonstr")),
+    Fixture("o7.seed.rp2-all-driver-stop", "seed", partial(_runner_more_edge, "all-driver-stop")),
+    Fixture("o7.seed.rp-gate1-post-identity", "seed", partial(_fixture_run1_post_gate_identity, 1)),
+    Fixture("o7.seed.rp-gate2-post-identity", "seed", partial(_fixture_run1_post_gate_identity, 2)),
+    Fixture("o7.seed.rp-gate3-post-identity", "seed", partial(_fixture_run1_post_gate_identity, 3)),
+    Fixture("o7.seed.rp-gate4-post-identity", "seed", partial(_fixture_run1_post_gate_identity, 4)),
     Fixture("o7.seed.rp-run2-interrupt", "seed", _fixture_run2_interrupt_edge),
     Fixture("o7.seed.rp-run3-interrupt", "seed", _fixture_run3_interrupt_edge),
     Fixture("o7.seed.rp-gate1-oserror", "seed", partial(_fixture_run1_gate_oserror, 1)),
@@ -14040,6 +14594,7 @@ O7_FIXTURES: tuple[Fixture, ...] = (
     Fixture("o7.seed.pk2-inspect-git-error", "seed", partial(_proofkit_more_edge, "inspect-git-error")),
     Fixture("o7.seed.pk2-inspect-compiler-missing", "seed", partial(_proofkit_more_edge, "inspect-compiler-missing")),
     Fixture("o7.seed.pk2-pin-write-probe", "seed", partial(_proofkit_more_edge, "pin-write-probe")),
+    Fixture("o7.seed.pk2-pin-write-probe-dirty", "seed", partial(_proofkit_more_edge, "pin-write-probe-dirty")),
     Fixture("o7.seed.pk2-inspect-diff-error", "seed", partial(_proofkit_more_edge, "inspect-diff-error")),
     Fixture("o7.seed.pk2-inspect-compiler-stat", "seed", partial(_proofkit_more_edge, "inspect-compiler-stat")),
     Fixture("o7.seed.pk2-inspect-no-nm", "seed", partial(_proofkit_more_edge, "inspect-no-nm")),
@@ -14052,6 +14607,14 @@ O7_FIXTURES: tuple[Fixture, ...] = (
     Fixture("o7.seed.pk2-schema-sentinel-unrenderable", "seed", partial(_proofkit_more_edge, "schema-sentinel-unrenderable")),
     Fixture("o7.seed.pk2-parser-shlex-error", "seed", partial(_proofkit_more_edge, "parser-shlex-error")),
     Fixture("o7.seed.pk2-parser-literal-dollar", "seed", partial(_proofkit_more_edge, "parser-literal-dollar")),
+    Fixture("o7.seed.pk2-parser-render-command", "seed", partial(_proofkit_more_edge, "parser-render-command")),
+    Fixture("o7.seed.pk2-parser-backtick-unclosed", "seed", partial(_proofkit_more_edge, "parser-backtick-unclosed")),
+    Fixture("o7.seed.pk2-parser-nested-expansion", "seed", partial(_proofkit_more_edge, "parser-nested-expansion")),
+    Fixture("o7.seed.pk2-parser-nested-command-open", "seed", partial(_proofkit_more_edge, "parser-nested-command-open")),
+    Fixture("o7.seed.pk2-parser-nested-backtick-open", "seed", partial(_proofkit_more_edge, "parser-nested-backtick-open")),
+    Fixture("o7.seed.pk2-parser-unquoted-backtick", "seed", partial(_proofkit_more_edge, "parser-unquoted-backtick")),
+    Fixture("o7.seed.pk2-parser-unquoted-backtick-open", "seed", partial(_proofkit_more_edge, "parser-unquoted-backtick-open")),
+    Fixture("o7.seed.pk2-parser-dequote-expansion-open", "seed", partial(_proofkit_more_edge, "parser-dequote-expansion-open")),
     Fixture("o7.seed.pk2-identity-not-descendant", "seed", partial(_proofkit_more_edge, "identity-not-descendant")),
     Fixture("o7.seed.pk2-identity-no-timeout", "seed", partial(_proofkit_more_edge, "identity-no-timeout")),
     Fixture("o7.seed.pk2-identity-no-nm", "seed", partial(_proofkit_more_edge, "identity-no-nm")),
@@ -14060,6 +14623,14 @@ O7_FIXTURES: tuple[Fixture, ...] = (
     Fixture("o7.seed.pk2-report-listdir", "seed", partial(_proofkit_more_edge, "report-listdir")),
     Fixture("o7.seed.pk2-process-wait", "seed", partial(_proofkit_more_edge, "process-wait")),
     Fixture("o7.seed.pk2-process-stop", "seed", partial(_proofkit_more_edge, "process-stop")),
+    Fixture("o7.seed.pk2-process-leader-survives", "seed", partial(_proofkit_more_edge, "process-leader-survives")),
+    Fixture("o7.seed.pk2-process-zombie-remains", "seed", partial(_proofkit_more_edge, "process-zombie-remains")),
+    Fixture("o7.seed.pk2-process-finally-stop", "seed", partial(_proofkit_more_edge, "process-finally-stop")),
+    Fixture("o7.seed.pk2-process-residual-zombie", "seed", partial(_proofkit_more_edge, "process-residual-zombie")),
+    Fixture("o7.seed.pk2-process-parse", "seed", partial(_proofkit_more_edge, "process-parse")),
+    Fixture("o7.seed.pk2-process-ps-status", "seed", partial(_proofkit_more_edge, "process-ps-status")),
+    Fixture("o7.seed.pk2-run-bounded-sampler-error", "seed", partial(_proofkit_more_edge, "run-bounded-sampler-error")),
+    Fixture("o7.seed.pk2-validator-env-unchanged", "seed", partial(_proofkit_more_edge, "validator-env-unchanged")),
     Fixture("o7.seed.pk2-schema-nonobject", "seed", partial(_proofkit_more_edge, "schema-nonobject")),
     Fixture("o7.seed.pk2-schema-bytes", "seed", partial(_proofkit_more_edge, "schema-bytes")),
     Fixture("o7.seed.pk2-schema-path", "seed", partial(_proofkit_more_edge, "schema-path")),
@@ -14593,6 +15164,10 @@ O7_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
     "o7.run1-gate-isolated-edges": (
         "o7.seed.rp-run2-interrupt",
         "o7.seed.rp-run3-interrupt",
+        "o7.seed.rp-gate1-post-identity",
+        "o7.seed.rp-gate2-post-identity",
+        "o7.seed.rp-gate3-post-identity",
+        "o7.seed.rp-gate4-post-identity",
         "o7.seed.rp-gate1-oserror",
         "o7.seed.rp-gate2-oserror",
         "o7.seed.rp-gate3-oserror",
@@ -14608,6 +15183,7 @@ O7_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
         "o7.seed.pk2-inspect-git-error",
         "o7.seed.pk2-inspect-compiler-missing",
         "o7.seed.pk2-pin-write-probe",
+        "o7.seed.pk2-pin-write-probe-dirty",
         "o7.seed.pk2-inspect-diff-error",
         "o7.seed.pk2-inspect-compiler-stat",
         "o7.seed.pk2-inspect-no-nm",
@@ -14620,6 +15196,14 @@ O7_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
         "o7.seed.pk2-schema-sentinel-unrenderable",
         "o7.seed.pk2-parser-shlex-error",
         "o7.seed.pk2-parser-literal-dollar",
+        "o7.seed.pk2-parser-render-command",
+        "o7.seed.pk2-parser-backtick-unclosed",
+        "o7.seed.pk2-parser-nested-expansion",
+        "o7.seed.pk2-parser-nested-command-open",
+        "o7.seed.pk2-parser-nested-backtick-open",
+        "o7.seed.pk2-parser-unquoted-backtick",
+        "o7.seed.pk2-parser-unquoted-backtick-open",
+        "o7.seed.pk2-parser-dequote-expansion-open",
         "o7.seed.pk2-identity-not-descendant",
         "o7.seed.pk2-identity-no-timeout",
         "o7.seed.pk2-identity-no-nm",
@@ -14628,6 +15212,14 @@ O7_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
         "o7.seed.pk2-report-listdir",
         "o7.seed.pk2-process-wait",
         "o7.seed.pk2-process-stop",
+        "o7.seed.pk2-process-leader-survives",
+        "o7.seed.pk2-process-zombie-remains",
+        "o7.seed.pk2-process-finally-stop",
+        "o7.seed.pk2-process-residual-zombie",
+        "o7.seed.pk2-process-parse",
+        "o7.seed.pk2-process-ps-status",
+        "o7.seed.pk2-run-bounded-sampler-error",
+        "o7.seed.pk2-validator-env-unchanged",
         "o7.seed.pk2-schema-nonobject",
         "o7.seed.pk2-schema-bytes",
         "o7.seed.pk2-schema-path",
@@ -14643,6 +15235,24 @@ O7_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
         "s2.control.census-all",
     ),
     "o7.runner-isolated-edges": (
+        "o7.seed.rp2-run1-baseline-error",
+        "o7.seed.rp2-run3-setup-error",
+        "o7.seed.rp2-run3-execution-error",
+        "o7.seed.rp2-run3-census-type",
+        "o7.seed.rp2-run3-census-script-type",
+        "o7.seed.rp2-run3-census-unreadable",
+        "o7.seed.rp2-run3-driver-nonzero",
+        "o7.seed.rp2-final-recorded-reason",
+        "o7.seed.rp2-final-status-reason",
+        "o7.seed.rp2-final-prerequisites-missing",
+        "o7.seed.rp2-final-recompute-error",
+        "o7.seed.rp2-latest-interrupted",
+        "o7.seed.rp2-all-run1-stop",
+        "o7.seed.rp2-all-run2-stop",
+        "o7.seed.rp2-all-run3-refusal",
+        "o7.seed.rp2-all-required-missing",
+        "o7.seed.rp2-all-required-nonstr",
+        "o7.seed.rp2-all-driver-stop",
         "o7.seed.rp-run1-missing-gate1",
         "o7.seed.rp-run1-missing-gate2",
         "o7.seed.rp-run1-missing-gate3",
@@ -16015,16 +16625,16 @@ ALLOWLIST: tuple[tuple[str, int, int, str, str], ...] = (
     ),
     (
         "proof.run_proof",
-        1516,
-        1522,
+        1524,
+        1530,
         "o7.seed.run-proof-optimize-refusal",
         "python -B -O proof/run_proof.py --help enters the nested optimize "
         "guard, prints the exact refusal, and exits 2",
     ),
     (
         "proof.run_proof",
-        1523,
-        1523,
+        1531,
+        1531,
         "o7.control.run-proof-optimize",
         "python -B proof/run_proof.py --help reaches the normal direct-script "
         "main handoff and exits 0",

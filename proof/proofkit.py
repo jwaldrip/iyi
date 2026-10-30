@@ -937,8 +937,23 @@ class _BoundedSignal(BaseException):
         self.signum = signum
 
 
-def _process_group_members(pgid: int, *, exclude: int | None = None) -> tuple[int, ...]:
-    ps_path = "/bin/ps" if os.path.exists("/bin/ps") else "ps"
+def _parse_process_group_members(output: str, pgid: int, exclude: int | None = None) -> tuple[int, ...]:
+    members: list[int] = []
+    for line in output.splitlines():
+        fields = line.split()
+        if len(fields) != 2:
+            continue
+        try:
+            pid, member_pgid = (int(field) for field in fields)
+        except ValueError:
+            continue
+        if member_pgid == pgid and pid != exclude:
+            members.append(pid)
+    return tuple(sorted(set(members)))
+
+
+def _process_group_members(pgid: int, *, exclude: int | None = None, ps_path: str | None = None) -> tuple[int, ...]:
+    ps_path = ps_path or ("/bin/ps" if os.path.exists("/bin/ps") else "ps")
     proc = subprocess.run(
         [ps_path, "-axo", "pid=,pgid="],
         stdin=subprocess.DEVNULL,
@@ -950,18 +965,11 @@ def _process_group_members(pgid: int, *, exclude: int | None = None) -> tuple[in
         raise RuntimeError(
             f"ps failed while inspecting process group {pgid}: {proc.stderr.strip()}"
         )
-    members: list[int] = []
-    for line in proc.stdout.splitlines():
-        fields = line.split()
-        if len(fields) != 2:
-            continue
-        try:
-            pid, member_pgid = (int(field) for field in fields)
-        except ValueError:
-            continue
-        if member_pgid == pgid and pid != exclude:
-            members.append(pid)
-    return tuple(sorted(set(members)))
+    return _parse_process_group_members(
+        proc.stdout,
+        pgid,
+        exclude,
+    )
 
 
 def _signal_process_group(pgid: int, signum: int) -> None:
@@ -994,7 +1002,7 @@ def _stop_leader(proc: subprocess.Popen[bytes], pgid: int, grace_sec: float) -> 
             ) from error
 
 
-def _record_and_stop_survivors(pgid: int, leader_pid: int, grace_sec: float) -> tuple[int, ...]:
+def _record_and_stop_survivors(pgid: int, leader_pid: int, grace_sec: float, kill_grace_sec: float = 5.0) -> tuple[int, ...]:
     survivors = _process_group_members(pgid, exclude=leader_pid)
     if not survivors:
         return ()
@@ -1002,12 +1010,34 @@ def _record_and_stop_survivors(pgid: int, leader_pid: int, grace_sec: float) -> 
     remaining = _wait_for_group_exit(pgid, grace_sec)
     if remaining:
         _signal_process_group(pgid, signal.SIGKILL)
-        remaining = _wait_for_group_exit(pgid, 5.0)
+        remaining = _wait_for_group_exit(pgid, kill_grace_sec)
     if remaining:
         raise RuntimeError(
             f"process group {pgid} retained survivors after SIGKILL: {remaining}"
         )
     return survivors
+
+def _stop_leader_if_running(proc: subprocess.Popen[bytes], pgid: int, grace_sec: float) -> None:
+    if proc.poll() is None:
+        _stop_leader(proc, pgid, grace_sec)
+
+
+def _stop_residual_processes(pgid: int, grace_sec: float = 5.0, exclude: int | None = None) -> list[BaseException]:
+    errors: list[BaseException] = []
+    residual = _process_group_members(
+        pgid,
+        exclude=pgid if exclude is None else exclude,
+    )
+    if residual:
+        _signal_process_group(pgid, signal.SIGKILL)
+        residual = _wait_for_group_exit(pgid, grace_sec)
+        if residual:
+            errors.append(
+                RuntimeError(
+                    f"process group {pgid} retained {residual}"
+                )
+            )
+    return errors
 
 
 def _sample_log_growth(log_path: str, times_path: str, stop: threading.Event, errors: list[BaseException]) -> None:
@@ -1093,18 +1123,8 @@ def run_bounded(cmd: list[str], cwd: str, env: dict[str, str], log: str, times: 
             grace_sec,
         )
     finally:
-        if proc.poll() is None:
-            _stop_leader(proc, proc.pid, grace_sec)
-        residual = _process_group_members(proc.pid, exclude=proc.pid)
-        if residual:
-            _signal_process_group(proc.pid, signal.SIGKILL)
-            residual = _wait_for_group_exit(proc.pid, 5.0)
-            if residual:
-                sampler_errors.append(
-                    RuntimeError(
-                        f"process group {proc.pid} retained {residual}"
-                    )
-                )
+        _stop_leader_if_running(proc, proc.pid, grace_sec)
+        sampler_errors.extend(_stop_residual_processes(proc.pid))
         stop_sampler.set()
         sampler.join()
         for signum, handler in previous_handlers.items():

@@ -358,7 +358,7 @@ def cmd_pin(args, *, drivers: Sequence[str] = DRIVERS_29) -> int:
     return 0
 
 
-def cmd_run1(args, *, std_exercises: int = RUN1_STD_EXERCISES, siblings: int = RUN1_SIBLINGS, corpus: int = RUN1_CORPUS, rg2r_min: int = RG2R_MIN, disk_min_gb: float = DISK_MIN_GB) -> int:
+def cmd_run1(args, *, std_exercises: int = RUN1_STD_EXERCISES, siblings: int = RUN1_SIBLINGS, corpus: int = RUN1_CORPUS, rg2r_min: int = RG2R_MIN, disk_min_gb: float = DISK_MIN_GB, baseline_w_path: str | None = None, rg9_work_path: str | None = None) -> int:
     pin = load_pin(args.report_dir)
     attempt_dir = next_attempt_dir(os.path.join(args.report_dir, "run1"))
     started_ns = time.time_ns()
@@ -485,7 +485,7 @@ def cmd_run1(args, *, std_exercises: int = RUN1_STD_EXERCISES, siblings: int = R
         )
         return 0 if record["status"] == "PASS" else 1
 
-    rg9_work = os.path.join(attempt_dir, "rg9_work")
+    rg9_work = rg9_work_path or os.path.join(attempt_dir, "rg9_work")
     try:
         os.makedirs(rg9_work, exist_ok=False)
         result, output = _run_gate(
@@ -600,7 +600,10 @@ def cmd_run1(args, *, std_exercises: int = RUN1_STD_EXERCISES, siblings: int = R
     _write_json_atomic(os.path.join(attempt_dir, "exclusions.json"), exclusions)
 
     try:
-        baseline = _baseline_skip_hits(w_path, gate_1_4_text)
+        baseline = _baseline_skip_hits(
+            baseline_w_path or w_path,
+            gate_1_4_text,
+        )
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
         baseline = []
         checks["baseline-skips"] = "FAIL"
@@ -865,7 +868,7 @@ def _launcher_text(pin: dict, shim_config_path: str) -> str:
     )
 
 
-def _run_one_driver(report_dir: str, pin: dict, driver: str, baseline: set[tuple[str, str, str, str]], *, driver_limit_sec: float, grace_sec: float, disk_min_gb: float, stat_fn) -> dict:
+def _run_one_driver(report_dir: str, pin: dict, driver: str, baseline: set[tuple[str, str, str, str]], *, driver_limit_sec: float, grace_sec: float, disk_min_gb: float, stat_fn, setup_base: str | None = None, driver_log_path: str | None = None) -> dict:
     attempt_dir = next_attempt_dir(
         os.path.join(report_dir, "run3", driver)
     )
@@ -936,10 +939,11 @@ def _run_one_driver(report_dir: str, pin: dict, driver: str, baseline: set[tuple
         )
 
     try:
-        t_dir = os.path.realpath(os.path.join(attempt_dir, "t"))
-        c_dir = os.path.realpath(os.path.join(attempt_dir, "c"))
-        s_dir = os.path.realpath(os.path.join(attempt_dir, "s"))
-        bin_dir = os.path.realpath(os.path.join(attempt_dir, "bin"))
+        layout_base = setup_base or attempt_dir
+        t_dir = os.path.realpath(os.path.join(layout_base, "t"))
+        c_dir = os.path.realpath(os.path.join(layout_base, "c"))
+        s_dir = os.path.realpath(os.path.join(layout_base, "s"))
+        bin_dir = os.path.realpath(os.path.join(layout_base, "bin"))
         for directory in (t_dir, c_dir, s_dir, bin_dir):
             os.makedirs(directory, exist_ok=False)
         launcher_path = os.path.join(bin_dir, "iyi")
@@ -997,7 +1001,7 @@ def _run_one_driver(report_dir: str, pin: dict, driver: str, baseline: set[tuple
             ["bash", script_relpath],
             cwd=w_path,
             env=env,
-            log_path=os.path.join(attempt_dir, "driver.log"),
+            log_path=driver_log_path or os.path.join(attempt_dir, "driver.log"),
             times_path=os.path.join(attempt_dir, "driver.times"),
             limit_sec=driver_limit_sec,
             grace_sec=grace_sec,
@@ -1410,7 +1414,7 @@ def _latest_was_interrupted(report_dir: str, unit: str) -> bool:
     )
 
 
-def cmd_all(args, *, drivers: Sequence[str] = DRIVERS_29, std_exercises: int = RUN1_STD_EXERCISES, siblings: int = RUN1_SIBLINGS, corpus: int = RUN1_CORPUS, rg2r_min: int = RG2R_MIN, expected_counts: tuple[int, int, int] = RUN2_COUNTS, driver_limit_sec: float = DRIVER_LIMIT_SEC, grace_sec: float = GRACE_SEC, disk_min_gb: float = DISK_MIN_GB, stat_fn=os.stat) -> int:
+def cmd_all(args, *, drivers: Sequence[str] = DRIVERS_29, std_exercises: int = RUN1_STD_EXERCISES, siblings: int = RUN1_SIBLINGS, corpus: int = RUN1_CORPUS, rg2r_min: int = RG2R_MIN, expected_counts: tuple[int, int, int] = RUN2_COUNTS, driver_limit_sec: float = DRIVER_LIMIT_SEC, grace_sec: float = GRACE_SEC, disk_min_gb: float = DISK_MIN_GB, stat_fn=os.stat, required_path: str | None = None, run3_disk_min_gb: float | None = None) -> int:
     cmd_run1(
         args,
         std_exercises=std_exercises,
@@ -1439,12 +1443,16 @@ def cmd_all(args, *, drivers: Sequence[str] = DRIVERS_29, std_exercises: int = R
         drivers=drivers,
         driver_limit_sec=driver_limit_sec,
         grace_sec=grace_sec,
-        disk_min_gb=disk_min_gb,
+        disk_min_gb=(
+            disk_min_gb
+            if run3_disk_min_gb is None
+            else run3_disk_min_gb
+        ),
         stat_fn=stat_fn,
     )
     if run3_return == 2:
         return 2
-    required_path = os.path.join(args.report_dir, "run3", "required.json")
+    required_path = required_path or os.path.join(args.report_dir, "run3", "required.json")
     try:
         required = _load_json(required_path)
     except (OSError, UnicodeError, json.JSONDecodeError):
