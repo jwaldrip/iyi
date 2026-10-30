@@ -26,10 +26,12 @@ non-PASS status, and exit 2 means usage or configuration refusal.
 R has pin.json; run1/a<N>/ and run2/a<N>/; run3/required.json;
 run3/<driver>/a<N>/; and final.json. Every attempt ends with an atomic
 result.json. Attempt numbers are append-only. final uses the numerically
-highest attempt, recomputes its status from required checks, verifies its
-chain, unit, and attempt identity, and lists every earlier failure. A chain
-is bound to the report-directory suffix and pin identity. On Darwin the pin
-records and probes the real platform temp root used by bare mktemp.
+highest attempt, recomputes its status from required checks, re-derives the
+required drivers from the latest Run 1 and Run 2, and requires every Run 3
+attempt to be newer than both. It verifies chain, unit, attempt and pinned
+identity, and lists every earlier failure. A chain is bound to the
+report-directory suffix and pin identity. On Darwin the pin records and
+probes the real platform temp root used by bare mktemp.
 INVALID recovery requires a new pin and report directory.
 """
 
@@ -42,6 +44,7 @@ import re
 import secrets
 import shlex
 import sys
+import tempfile
 import time
 from collections.abc import Sequence
 
@@ -68,6 +71,7 @@ from proof.proofkit import (
     load_result,
     recompute_status,
     run_bounded,
+    probe_atime_observable,
     validate_census,
     verify_ledger,
     write_pin,
@@ -319,6 +323,11 @@ def _baseline_skip_hits(w_path: str, log_text: str) -> list[dict[str, str]]:
 
 def cmd_plan(args, *, drivers: Sequence[str] = DRIVERS_29) -> int:
     facts = inspect_pin_inputs(args.p, args.w, args.compiler, drivers)
+    with tempfile.TemporaryDirectory(
+        prefix="iyi-plan-atime-",
+        dir="/private/tmp",
+    ) as probe_dir:
+        probe = probe_atime_observable(probe_dir)
     print("Observed Corpus Proof Plan")
     print(f"  P Path:    {facts['p_path']}")
     print(f"  W Path:    {facts['w_path']}")
@@ -329,6 +338,11 @@ def cmd_plan(args, *, drivers: Sequence[str] = DRIVERS_29) -> int:
     print(f"  BIN SHA:   {facts['compiler_sha256']}")
     print(f"  Timeout:   {facts['timeout_path']} ({facts['timeout_version']})")
     print(f"  Platform:  {facts['platform_tmp']}")
+    print(
+        "  Probe:     "
+        f"sha256={probe['sha256']} inode={probe['inode']} "
+        f"atime={probe['atime_after_exec_ns']}"
+    )
     print(f"  Censuses:  {len(facts['census_sha256'])} validated")
     return 0
 
@@ -344,7 +358,7 @@ def cmd_pin(args, *, drivers: Sequence[str] = DRIVERS_29) -> int:
     return 0
 
 
-def cmd_run1(args, *, std_exercises: int = RUN1_STD_EXERCISES, siblings: int = RUN1_SIBLINGS, corpus: int = RUN1_CORPUS, rg2r_min: int = RG2R_MIN, disk_min_gb: float = DISK_MIN_GB) -> int:
+def cmd_run1(args, *, std_exercises: int = RUN1_STD_EXERCISES, siblings: int = RUN1_SIBLINGS, corpus: int = RUN1_CORPUS, rg2r_min: int = RG2R_MIN, disk_min_gb: float = DISK_MIN_GB, baseline_w_path: str | None = None, rg9_work_path: str | None = None) -> int:
     pin = load_pin(args.report_dir)
     attempt_dir = next_attempt_dir(os.path.join(args.report_dir, "run1"))
     started_ns = time.time_ns()
@@ -471,7 +485,7 @@ def cmd_run1(args, *, std_exercises: int = RUN1_STD_EXERCISES, siblings: int = R
         )
         return 0 if record["status"] == "PASS" else 1
 
-    rg9_work = os.path.join(attempt_dir, "rg9_work")
+    rg9_work = rg9_work_path or os.path.join(attempt_dir, "rg9_work")
     try:
         os.makedirs(rg9_work, exist_ok=False)
         result, output = _run_gate(
@@ -586,7 +600,10 @@ def cmd_run1(args, *, std_exercises: int = RUN1_STD_EXERCISES, siblings: int = R
     _write_json_atomic(os.path.join(attempt_dir, "exclusions.json"), exclusions)
 
     try:
-        baseline = _baseline_skip_hits(w_path, gate_1_4_text)
+        baseline = _baseline_skip_hits(
+            baseline_w_path or w_path,
+            gate_1_4_text,
+        )
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
         baseline = []
         checks["baseline-skips"] = "FAIL"
@@ -851,7 +868,7 @@ def _launcher_text(pin: dict, shim_config_path: str) -> str:
     )
 
 
-def _run_one_driver(report_dir: str, pin: dict, driver: str, baseline: set[tuple[str, str, str, str]], *, driver_limit_sec: float, grace_sec: float, disk_min_gb: float, stat_fn) -> dict:
+def _run_one_driver(report_dir: str, pin: dict, driver: str, baseline: set[tuple[str, str, str, str]], *, driver_limit_sec: float, grace_sec: float, disk_min_gb: float, stat_fn, setup_base: str | None = None, driver_log_path: str | None = None) -> dict:
     attempt_dir = next_attempt_dir(
         os.path.join(report_dir, "run3", driver)
     )
@@ -922,10 +939,11 @@ def _run_one_driver(report_dir: str, pin: dict, driver: str, baseline: set[tuple
         )
 
     try:
-        t_dir = os.path.realpath(os.path.join(attempt_dir, "t"))
-        c_dir = os.path.realpath(os.path.join(attempt_dir, "c"))
-        s_dir = os.path.realpath(os.path.join(attempt_dir, "s"))
-        bin_dir = os.path.realpath(os.path.join(attempt_dir, "bin"))
+        layout_base = setup_base or attempt_dir
+        t_dir = os.path.realpath(os.path.join(layout_base, "t"))
+        c_dir = os.path.realpath(os.path.join(layout_base, "c"))
+        s_dir = os.path.realpath(os.path.join(layout_base, "s"))
+        bin_dir = os.path.realpath(os.path.join(layout_base, "bin"))
         for directory in (t_dir, c_dir, s_dir, bin_dir):
             os.makedirs(directory, exist_ok=False)
         launcher_path = os.path.join(bin_dir, "iyi")
@@ -983,7 +1001,7 @@ def _run_one_driver(report_dir: str, pin: dict, driver: str, baseline: set[tuple
             ["bash", script_relpath],
             cwd=w_path,
             env=env,
-            log_path=os.path.join(attempt_dir, "driver.log"),
+            log_path=driver_log_path or os.path.join(attempt_dir, "driver.log"),
             times_path=os.path.join(attempt_dir, "driver.times"),
             limit_sec=driver_limit_sec,
             grace_sec=grace_sec,
@@ -1224,7 +1242,7 @@ def _collect_final_unit(pin: dict, parent_dir: str, unit: str, kind: str) -> tup
     return {"attempt": attempt, "status": status}, earlier, reasons
 
 
-def cmd_final(args) -> int:
+def cmd_final(args, *, drivers: Sequence[str] = DRIVERS_29) -> int:
     pin = load_pin(args.report_dir)
     units: dict[str, dict[str, int | str]] = {}
     earlier_failures: list[dict[str, int | str]] = []
@@ -1252,16 +1270,61 @@ def cmd_final(args) -> int:
 
     required_path = os.path.join(args.report_dir, "run3", "required.json")
     try:
-        required = _load_json(required_path)
+        required_value = _load_json(required_path)
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        required = []
+        required_value = []
         reasons.append(f"run3 required.json is missing or unreadable: {error}")
-    if not isinstance(required, list) or not all(
-        isinstance(driver, str) for driver in required
+    if not isinstance(required_value, list) or not all(
+        isinstance(driver, str) for driver in required_value
     ):
         reasons.append("run3 required.json is not a list of drivers")
-        required = []
-    for driver in required:
+        required: list[str] = []
+    else:
+        required = list(required_value)
+
+    prerequisites = _run3_prerequisites(args.report_dir)
+    recomputed_required: list[str] = []
+    if prerequisites is None:
+        reasons.append(
+            "latest run1 exclusions/baseline or run2 rows are unavailable"
+        )
+    else:
+        exclusions_path, _baseline_path, run2_path = prerequisites
+        try:
+            recomputed_required = _compute_required_drivers(
+                drivers,
+                exclusions_path,
+                run2_path,
+            )
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
+            reasons.append(f"run3 required set cannot be recomputed: {error}")
+    if required != recomputed_required:
+        reasons.append(
+            "run3 required.json mismatch: "
+            f"frozen={required!r}, recomputed={recomputed_required!r}"
+        )
+
+    run1_record = _latest_record(args.report_dir, "run1")
+    run2_record = _latest_record(args.report_dir, "run2")
+    prerequisite_ends = (
+        run1_record.get("ended_ns") if isinstance(run1_record, dict) else None,
+        run2_record.get("ended_ns") if isinstance(run2_record, dict) else None,
+    )
+    latest_prerequisite_end = (
+        max(prerequisite_ends)
+        if all(
+            isinstance(value, int) and not isinstance(value, bool)
+            for value in prerequisite_ends
+        )
+        else None
+    )
+    if latest_prerequisite_end is None:
+        reasons.append("latest run1/run2 results have no valid ended_ns")
+
+    drivers_to_check = list(
+        dict.fromkeys([*required, *recomputed_required])
+    )
+    for driver in drivers_to_check:
         unit = f"run3/{driver}"
         latest, earlier, unit_reasons = _collect_final_unit(
             pin,
@@ -1272,6 +1335,23 @@ def cmd_final(args) -> int:
         units[unit] = latest
         earlier_failures.extend(earlier)
         reasons.extend(unit_reasons)
+        record = _latest_record(args.report_dir, unit)
+        started_ns = (
+            record.get("started_ns")
+            if isinstance(record, dict)
+            else None
+        )
+        if (
+            latest_prerequisite_end is not None
+            and (
+                not isinstance(started_ns, int)
+                or isinstance(started_ns, bool)
+                or started_ns <= latest_prerequisite_end
+            )
+        ):
+            reasons.append(
+                f"{unit} latest attempt is not newer than latest run1/run2"
+            )
 
     identity: dict[str, str] = {
         "status": "PASS",
@@ -1334,7 +1414,7 @@ def _latest_was_interrupted(report_dir: str, unit: str) -> bool:
     )
 
 
-def cmd_all(args, *, drivers: Sequence[str] = DRIVERS_29, std_exercises: int = RUN1_STD_EXERCISES, siblings: int = RUN1_SIBLINGS, corpus: int = RUN1_CORPUS, rg2r_min: int = RG2R_MIN, expected_counts: tuple[int, int, int] = RUN2_COUNTS, driver_limit_sec: float = DRIVER_LIMIT_SEC, grace_sec: float = GRACE_SEC, disk_min_gb: float = DISK_MIN_GB, stat_fn=os.stat) -> int:
+def cmd_all(args, *, drivers: Sequence[str] = DRIVERS_29, std_exercises: int = RUN1_STD_EXERCISES, siblings: int = RUN1_SIBLINGS, corpus: int = RUN1_CORPUS, rg2r_min: int = RG2R_MIN, expected_counts: tuple[int, int, int] = RUN2_COUNTS, driver_limit_sec: float = DRIVER_LIMIT_SEC, grace_sec: float = GRACE_SEC, disk_min_gb: float = DISK_MIN_GB, stat_fn=os.stat, required_path: str | None = None, run3_disk_min_gb: float | None = None) -> int:
     cmd_run1(
         args,
         std_exercises=std_exercises,
@@ -1363,12 +1443,16 @@ def cmd_all(args, *, drivers: Sequence[str] = DRIVERS_29, std_exercises: int = R
         drivers=drivers,
         driver_limit_sec=driver_limit_sec,
         grace_sec=grace_sec,
-        disk_min_gb=disk_min_gb,
+        disk_min_gb=(
+            disk_min_gb
+            if run3_disk_min_gb is None
+            else run3_disk_min_gb
+        ),
         stat_fn=stat_fn,
     )
     if run3_return == 2:
         return 2
-    required_path = os.path.join(args.report_dir, "run3", "required.json")
+    required_path = required_path or os.path.join(args.report_dir, "run3", "required.json")
     try:
         required = _load_json(required_path)
     except (OSError, UnicodeError, json.JSONDecodeError):
@@ -1384,7 +1468,7 @@ def cmd_all(args, *, drivers: Sequence[str] = DRIVERS_29, std_exercises: int = R
                 or _latest_was_interrupted(args.report_dir, unit)
             ):
                 return 1
-    return cmd_final(args)
+    return cmd_final(args, drivers=drivers)
 
 
 def _parser() -> argparse.ArgumentParser:

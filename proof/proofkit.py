@@ -23,7 +23,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 
@@ -159,8 +159,7 @@ def base_env(pin: dict | None = None, stage_extra: dict[str, str] | None = None)
 
 def platform_temp_root(pin_env: dict[str, str], *, cwd: str, probe_mktemp: bool) -> str | None:
     """Resolve and optionally prove Amendment E's platform temp root."""
-    if platform.system() != "Darwin":
-        return None
+    if platform.system() != "Darwin": return None
     env_path = pin_env.get("env_path", "")
     getconf = shutil.which("getconf", path=env_path)
     if not getconf:
@@ -938,8 +937,23 @@ class _BoundedSignal(BaseException):
         self.signum = signum
 
 
-def _process_group_members(pgid: int, *, exclude: int | None = None) -> tuple[int, ...]:
-    ps_path = "/bin/ps" if os.path.exists("/bin/ps") else "ps"
+def _parse_process_group_members(output: str, pgid: int, exclude: int | None = None) -> tuple[int, ...]:
+    members: list[int] = []
+    for line in output.splitlines():
+        fields = line.split()
+        if len(fields) != 2:
+            continue
+        try:
+            pid, member_pgid = (int(field) for field in fields)
+        except ValueError:
+            continue
+        if member_pgid == pgid and pid != exclude:
+            members.append(pid)
+    return tuple(sorted(set(members)))
+
+
+def _process_group_members(pgid: int, *, exclude: int | None = None, ps_path: str | None = None) -> tuple[int, ...]:
+    ps_path = ps_path or ("/bin/ps" if os.path.exists("/bin/ps") else "ps")
     proc = subprocess.run(
         [ps_path, "-axo", "pid=,pgid="],
         stdin=subprocess.DEVNULL,
@@ -951,18 +965,11 @@ def _process_group_members(pgid: int, *, exclude: int | None = None) -> tuple[in
         raise RuntimeError(
             f"ps failed while inspecting process group {pgid}: {proc.stderr.strip()}"
         )
-    members: list[int] = []
-    for line in proc.stdout.splitlines():
-        fields = line.split()
-        if len(fields) != 2:
-            continue
-        try:
-            pid, member_pgid = (int(field) for field in fields)
-        except ValueError:
-            continue
-        if member_pgid == pgid and pid != exclude:
-            members.append(pid)
-    return tuple(sorted(set(members)))
+    return _parse_process_group_members(
+        proc.stdout,
+        pgid,
+        exclude,
+    )
 
 
 def _signal_process_group(pgid: int, signum: int) -> None:
@@ -995,7 +1002,7 @@ def _stop_leader(proc: subprocess.Popen[bytes], pgid: int, grace_sec: float) -> 
             ) from error
 
 
-def _record_and_stop_survivors(pgid: int, leader_pid: int, grace_sec: float) -> tuple[int, ...]:
+def _record_and_stop_survivors(pgid: int, leader_pid: int, grace_sec: float, kill_grace_sec: float = 5.0) -> tuple[int, ...]:
     survivors = _process_group_members(pgid, exclude=leader_pid)
     if not survivors:
         return ()
@@ -1003,18 +1010,41 @@ def _record_and_stop_survivors(pgid: int, leader_pid: int, grace_sec: float) -> 
     remaining = _wait_for_group_exit(pgid, grace_sec)
     if remaining:
         _signal_process_group(pgid, signal.SIGKILL)
-        remaining = _wait_for_group_exit(pgid, 5.0)
+        remaining = _wait_for_group_exit(pgid, kill_grace_sec)
     if remaining:
         raise RuntimeError(
             f"process group {pgid} retained survivors after SIGKILL: {remaining}"
         )
     return survivors
 
+def _stop_leader_if_running(proc: subprocess.Popen[bytes], pgid: int, grace_sec: float) -> None:
+    if proc.poll() is None:
+        _stop_leader(proc, pgid, grace_sec)
+
+
+def _stop_residual_processes(pgid: int, grace_sec: float = 5.0, exclude: int | None = None) -> list[BaseException]:
+    errors: list[BaseException] = []
+    residual = _process_group_members(
+        pgid,
+        exclude=pgid if exclude is None else exclude,
+    )
+    if residual:
+        _signal_process_group(pgid, signal.SIGKILL)
+        residual = _wait_for_group_exit(pgid, grace_sec)
+        if residual:
+            errors.append(
+                RuntimeError(
+                    f"process group {pgid} retained {residual}"
+                )
+            )
+    return errors
+
 
 def _sample_log_growth(log_path: str, times_path: str, stop: threading.Event, errors: list[BaseException]) -> None:
     try:
         last_size = os.path.getsize(log_path)
         with open(times_path, "a", encoding="utf-8", buffering=1) as times_file:
+            times_file.write(f"{time.monotonic_ns()} 0\n")
             while not stop.wait(0.05):
                 size = os.path.getsize(log_path)
                 if size > last_size:
@@ -1093,18 +1123,8 @@ def run_bounded(cmd: list[str], cwd: str, env: dict[str, str], log: str, times: 
             grace_sec,
         )
     finally:
-        if proc.poll() is None:
-            _stop_leader(proc, proc.pid, grace_sec)
-        residual = _process_group_members(proc.pid, exclude=proc.pid)
-        if residual:
-            _signal_process_group(proc.pid, signal.SIGKILL)
-            residual = _wait_for_group_exit(proc.pid, 5.0)
-            if residual:
-                sampler_errors.append(
-                    RuntimeError(
-                        f"process group {proc.pid} retained {residual}"
-                    )
-                )
+        _stop_leader_if_running(proc, proc.pid, grace_sec)
+        sampler_errors.extend(_stop_residual_processes(proc.pid))
         stop_sampler.set()
         sampler.join()
         for signum, handler in previous_handlers.items():
@@ -1729,12 +1749,8 @@ def _print_commands(source: str) -> list[list[str]] | None:
     ]
     for token in tokens:
         bodies = _shell_span_bodies(token)
-        if bodies is None:
-            return None
         for body in bodies:
             nested = _print_commands(body)
-            if nested is None:
-                return None
             commands.extend(nested)
     return commands
 
@@ -1800,6 +1816,158 @@ def _declared_build_lines_for_token(sites: list[dict], lines: list[str], token: 
     return declared
 
 
+
+
+_PLATFORM_GUARD_MARKERS = (
+    "uname",
+    "PSEP",
+    "Windows",
+    "/proc",
+    "/dev/shm",
+)
+_TOOL_GUARD_MARKERS = (
+    "command -v",
+    "which ",
+    "type ",
+    " -c ",
+    "import ",
+)
+
+
+def _shell_function_ranges(lines: Sequence[str]) -> tuple[tuple[str, int, int], ...]:
+    ranges: list[tuple[str, int, int]] = []
+    active_name: str | None = None
+    active_start = 0
+    for number, source in enumerate(lines, 1):
+        if active_name is None:
+            match = re.match(
+                r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\{",
+                source,
+            )
+            if match:
+                active_name = match.group(1)
+                active_start = number
+        elif re.match(r"^\s*}\s*$", source):
+            ranges.append((active_name, active_start, number))
+            active_name = None
+            active_start = 0
+    return tuple(ranges)
+
+
+def _derived_guard_variables(lines: Sequence[str]) -> tuple[set[str], set[str]]:
+    platform_variables: set[str] = set()
+    tool_variables: set[str] = set()
+    assignments = tuple(
+        (
+            number,
+            match.group(1),
+            "\n".join(lines[max(0, number - 3) : number]),
+        )
+        for number, source in enumerate(lines, 1)
+        for match in re.finditer(
+            r"(?:^|[;()\s])([A-Z][A-Z0-9_]*)=",
+            source,
+        )
+    )
+    changed = True
+    while changed:
+        changed = False
+        for _number, name, context in assignments:
+            references = set(
+                re.findall(
+                    r"\$(?:\{)?([A-Z][A-Z0-9_]*)",
+                    context,
+                )
+            )
+            if (
+                any(marker in context for marker in _PLATFORM_GUARD_MARKERS)
+                or bool(references.intersection(platform_variables))
+            ) and name not in platform_variables:
+                platform_variables.add(name)
+                changed = True
+            if (
+                any(marker in context for marker in _TOOL_GUARD_MARKERS)
+                or bool(references.intersection(tool_variables))
+            ) and name not in tool_variables:
+                tool_variables.add(name)
+                changed = True
+    return platform_variables, tool_variables
+
+
+def _platform_skip_guarded(lines: Sequence[str], number: int) -> bool:
+    platform_variables, tool_variables = _derived_guard_variables(lines)
+    start = max(0, number - 31)
+    guard_lines = [
+        source
+        for source in lines[start : number - 1]
+        if re.match(
+            r"^\s*(?:if|elif|case)\b|^\s*(?:[^#].*\))\s*$",
+            source,
+        )
+    ]
+    guard = "\n".join(guard_lines)
+    references = set(
+        re.findall(r"\$(?:\{)?([A-Z][A-Z0-9_]*)", guard)
+    )
+    has_platform = (
+        any(marker in guard for marker in _PLATFORM_GUARD_MARKERS)
+        or bool(references.intersection(platform_variables))
+    )
+    has_tool = (
+        any(marker in guard for marker in _TOOL_GUARD_MARKERS)
+        or bool(references.intersection(tool_variables))
+    )
+    return has_platform and not has_tool
+
+
+def _environment_callsite_violations(lines: Sequence[str], invocation_lines: set[int], site_by_line: Mapping[int, dict]) -> tuple[Violation, ...]:
+    violations: list[Violation] = []
+    functions = _shell_function_ranges(lines)
+    for name, first, last in functions:
+        function_invocations = tuple(
+            number
+            for number in sorted(invocation_lines)
+            if first <= number <= last
+        )
+        if not function_invocations:
+            continue
+        environment_calls: list[int] = []
+        for number, source in enumerate(lines, 1):
+            if first <= number <= last or source.lstrip().startswith("#"):
+                continue
+            commands = _shell_commands(source)
+            if not any(
+                command and command[0] == name
+                for command in commands
+            ):
+                continue
+            prefix = "\n".join(lines[max(0, number - 5) : number])
+            if re.search(
+                r"(?:export\s+)?(?:IYI_PATH|CRYSTAL_PATH)\s*=",
+                prefix,
+            ):
+                environment_calls.append(number)
+        if not environment_calls:
+            continue
+        for invocation_line in function_invocations:
+            site = site_by_line.get(invocation_line)
+            if isinstance(site, dict) and site.get("kind") == "unchanged":
+                continue
+            if not isinstance(site, dict) or site.get("kind") not in (
+                "mixed",
+                "negative",
+                "positive",
+            ):
+                violations.append(
+                    (
+                        "C5.6-env-call-variant",
+                        invocation_line,
+                        f"function {name!r} is called with a path override "
+                        f"at lines {environment_calls} but its invocation "
+                        "site is not mixed, negative or positive",
+                    )
+                )
+    return tuple(violations)
 
 
 def _validate_census_schema(census: object, violations: list[Violation]) -> None:
@@ -2248,6 +2416,7 @@ def validate_census(census: object, script_bytes: bytes, script_relpath: str) ->
     claims: dict[int, list[str]] = {}
     declared_site_lines: set[int] = set()
     site_owner_line: dict[int, int] = {}
+    site_by_line: dict[int, dict] = {}
     for index, site in enumerate(sites):
         if not isinstance(site, dict) or not isinstance(site.get("lines"), list):
             continue
@@ -2257,6 +2426,7 @@ def validate_census(census: object, script_bytes: bytes, script_relpath: str) ->
                 claims.setdefault(number, []).append(f"site[{index}]")
                 declared_site_lines.add(number)
                 site_owner_line[number] = owner_line
+                site_by_line[number] = site
     for index, item in enumerate(non_invocations):
         if isinstance(item, dict) and isinstance(item.get("line"), int):
             claims.setdefault(item["line"], []).append(
@@ -2284,6 +2454,13 @@ def validate_census(census: object, script_bytes: bytes, script_relpath: str) ->
                 number,
                 "invocation is not listed in a site or non_invocations",
             )
+    violations.extend(
+        _environment_callsite_violations(
+            lines,
+            invocation_lines,
+            site_by_line,
+        )
+    )
 
     variant_ids: set[str] = set()
     evidence_sites: set[int] = set()
@@ -2499,6 +2676,17 @@ def validate_census(census: object, script_bytes: bytes, script_relpath: str) ->
                     number,
                     f"{key}[{index}].text is not the cited source line",
                 )
+            if (
+                key == "skips"
+                and entry.get("class") == "platform"
+                and not _platform_skip_guarded(lines, number)
+            ):
+                _violation(
+                    violations,
+                    "C5.4-platform-guard",
+                    number,
+                    "platform skip is not guarded only by platform state",
+                )
     for number, source in enumerate(lines, 1):
         print_commands = _print_commands(source)
         if print_commands is None:
@@ -2557,6 +2745,14 @@ def validate_census(census: object, script_bytes: bytes, script_relpath: str) ->
                 f"invalid regex: {error}",
             )
             continue
+        if "IYIVAR" in str(entry.get("regex", "")):
+            _violation(
+                violations,
+                "C5.4-skip-regex",
+                number,
+                "skip regex contains literal IYIVAR instead of a wildcard",
+            )
+            continue
         if not regex.search(rendered):
             _violation(
                 violations,
@@ -2590,17 +2786,26 @@ def validate_census(census: object, script_bytes: bytes, script_relpath: str) ->
                 "pass sentinel has no renderable top-level print",
             )
         else:
-            try:
-                matches = bool(re.search(sentinel.get("regex", ""), rendered))
-            except (re.error, TypeError):
-                matches = False
-            if not matches:
+            sentinel_regex = sentinel.get("regex", "")
+            if "IYIVAR" in str(sentinel_regex):
                 _violation(
                     violations,
                     "C5.5-sentinel",
                     number,
-                    f"{sentinel.get('regex')!r} does not match {rendered!r}",
+                    "sentinel regex contains literal IYIVAR instead of a wildcard",
                 )
+            else:
+                try:
+                    matches = bool(re.search(sentinel_regex, rendered))
+                except (re.error, TypeError):
+                    matches = False
+                if not matches:
+                    _violation(
+                        violations,
+                        "C5.5-sentinel",
+                        number,
+                        f"{sentinel_regex!r} does not match {rendered!r}",
+                    )
 
     evidences = (
         census.get("exec_evidence")
@@ -3093,6 +3298,7 @@ def verify_ledger(ledger_path: str, *, census: dict, driver: str, nonce: str, at
             record.get("canonical") is not True
             and record.get("command") in ("build", "run")
             and not variant_ids
+            and mode != "unchanged"
         ):
             _ledger_add(
                 statuses,
@@ -3208,6 +3414,16 @@ def verify_ledger(ledger_path: str, *, census: dict, driver: str, nonce: str, at
     for variant_id, (variant, _) in variant_index.items():
         if variant.get("darwin") != "required":
             continue
+        if not any(
+            variant_id in _ledger_variant_ids(record)
+            for record in records
+        ):
+            _ledger_add(
+                statuses,
+                reasons,
+                "NOT-EXERCISED",
+                f"required variant {variant_id} has no record",
+            )
         variables = variant.get("vars")
         variable_items = variables.items() if isinstance(variables, dict) else ()
         specifications = tuple(

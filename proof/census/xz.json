@@ -114,14 +114,14 @@
   "skips": [
     {
       "line": 48,
-      "class": "platform",
+      "class": "tool",
       "what": "python3",
       "regex": "no\\ python3\\ on\\ this\\ machine:\\ the\\ lzma\\ oracle\\ cannot\\ be\\ written,\\ so\\ std/xz\\ goes\\ unmeasured",
       "text": "  echo \"no python3 on this machine: the lzma oracle cannot be written, so std/xz goes unmeasured\""
     },
     {
       "line": 52,
-      "class": "platform",
+      "class": "tool",
       "what": "go",
       "regex": "this\\ python\\ has\\ no\\ lzma\\ module:\\ the\\ oracle\\ cannot\\ be\\ written,\\ so\\ std/xz\\ goes\\ unmeasured",
       "text": "  echo \"this python has no lzma module: the oracle cannot be written, so std/xz goes unmeasured\""

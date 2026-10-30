@@ -5049,7 +5049,7 @@
     },
     {
       "line": 962,
-      "class": "platform",
+      "class": "tool",
       "what": "loopback delayed-ACK timing",
       "regex": "^  .*: unmeasured at \\\".*\\\": this .* loopback shows no stall to time, as Linux's delayed ACK does$",
       "text": "      echo \"  $label: unmeasured at \\\"$line\\\": this $(uname -s) loopback shows no stall to time, as Linux's delayed ACK does\""

@@ -21,11 +21,40 @@
         231
       ],
       "command": "build",
-      "kind": "canonical-other",
+      "kind": "mixed",
       "contains": [
         "if ! \"$IYI\" build -o \"$WORK/$name\" \"$WORK/$name.iyi\" > \"$WOR"
       ],
-      "variants": []
+      "variants": [
+        {
+          "id": "regex.negative.231",
+          "kind": "negative",
+          "first_root": "{WORK}/patched",
+          "vars": {},
+          "sources": [
+            "{WORK}/mutated_refusal.iyi"
+          ],
+          "output": "{WORK}/mutated_refusal",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              416,
+              417,
+              418,
+              419,
+              420,
+              422
+            ],
+            "contains": [
+              "the broken module still refused",
+              "status=1"
+            ]
+          }
+        }
+      ]
     },
     {
       "lines": [
@@ -197,7 +226,7 @@
   "skips": [
     {
       "line": 51,
-      "class": "platform",
+      "class": "tool",
       "what": "python3",
       "regex": "std/regex:\\ SKIPPED,\\ not\\ a\\ pass:\\ every\\ check\\ compares\\ against\\ oracle\\ cases\\ drawn\\ by\\ python3,\\ none\\ runs\\ here,\\ so\\ no\\ case\\ was\\ measured",
       "text": "  echo \"std/regex: SKIPPED, not a pass: every check compares against oracle cases drawn by python3, none runs here, so no case was measured\""

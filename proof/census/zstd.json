@@ -80,7 +80,7 @@
   "skips": [
     {
       "line": 43,
-      "class": "platform",
+      "class": "tool",
       "what": "go",
       "regex": "no\\ python\\ with\\ compression\\.zstd\\ \\(3\\.14\\ or\\ later\\)\\ on\\ this\\ machine:\\ the\\ zstd\\ oracle\\ cannot\\ be\\ written,\\ so\\ std/zstd\\ goes\\ unmeasured",
       "text": "  echo \"no python with compression.zstd (3.14 or later) on this machine: the zstd oracle cannot be written, so std/zstd goes unmeasured\""

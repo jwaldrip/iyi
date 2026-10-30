@@ -921,11 +921,14 @@ def _fixture_plan_control() -> Observation:
         report_absent_after = not os.path.exists(fixture.report)
         got = {
             "census_validated": "Censuses:  29 validated" in output.getvalue(),
+            "probe_shown": "Probe:" in output.getvalue()
+            and "atime=" in output.getvalue(),
             "report_absent_before": report_absent_before,
             "report_absent_after": report_absent_after,
         }
     expected = {
         "census_validated": True,
+        "probe_shown": True,
         "report_absent_before": True,
         "report_absent_after": True,
     }
@@ -993,15 +996,31 @@ def _bounded_paths(scratch: str, name: str) -> tuple[str, str]:
     )
 
 
-def _grandchild_command(pid_file: str, *, leader_sleeps: bool) -> list[str]:
-    statements = [
-        "import pathlib, subprocess, sys, time",
-        (
-            "child = subprocess.Popen("
-            "[sys.executable, '-c', 'import time; time.sleep(100)'])"
-        ),
-        f"pathlib.Path({pid_file!r}).write_text(str(child.pid))",
+def _grandchild_command(
+    pid_file: str,
+    *,
+    leader_sleeps: bool,
+    child_ignores_term: bool = False,
+) -> list[str]:
+    child_source = [
+        "import os, pathlib, signal, time",
     ]
+    if child_ignores_term:
+        child_source.append(
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)"
+        )
+    child_source.extend(
+        [
+            f"pathlib.Path({pid_file!r}).write_text(str(os.getpid()))",
+            "time.sleep(100)",
+        ]
+    )
+    statements = [
+        "import subprocess, sys, time",
+        f"subprocess.Popen([sys.executable, '-c', {('; '.join(child_source))!r}])",
+    ]
+    if child_ignores_term:
+        statements.append("time.sleep(0.1)")
     if leader_sleeps:
         statements.append("time.sleep(100)")
     return [sys.executable, "-c", "; ".join(statements)]
@@ -1056,7 +1075,11 @@ def _fixture_log_holder_survivor_seed() -> Observation:
         pid_file = os.path.join(scratch, "child.pid")
         log_path, times_path = _bounded_paths(scratch, "holder")
         result = run_bounded(
-            _grandchild_command(pid_file, leader_sleeps=False),
+            _grandchild_command(
+                pid_file,
+                leader_sleeps=False,
+                child_ignores_term=True,
+            ),
             scratch,
             os.environ.copy(),
             log_path,
@@ -2086,6 +2109,104 @@ def _mutate_e1_exit(
     newline = lines[index][len(old_text):]
     lines[index] = "exit 0" + newline
     return f"e1-exit-line-{index + 1}", 1
+
+def _has_regex_env_call(census: dict, _lines: list[str]) -> bool:
+    return (
+        census.get("driver") == "regex"
+        and any(
+            isinstance(site, dict)
+            and site.get("lines") == [231]
+            and site.get("kind") == "mixed"
+            for site in census.get("sites", [])
+        )
+    )
+
+
+def _mutate_env_call_classification(
+    census: dict,
+    _lines: list[str],
+    _driver: str,
+) -> tuple[str, int]:
+    for site in census.get("sites", []):
+        if isinstance(site, dict) and site.get("lines") == [231]:
+            site["kind"] = "canonical-other"
+            site["variants"] = []
+            return "regex-231-mixed->canonical-other", 1
+    return "regex-231-site-missing", 0
+
+
+def _has_wildcard_skip(census: dict, _lines: list[str]) -> bool:
+    return any(
+        isinstance(entry, dict)
+        and isinstance(entry.get("regex"), str)
+        and ".*?" in entry["regex"]
+        for entry in census.get("skips", [])
+    )
+
+
+def _mutate_skip_to_iyivar(
+    census: dict,
+    _lines: list[str],
+    _driver: str,
+) -> tuple[str, int]:
+    for entry in census.get("skips", []):
+        regex = entry.get("regex") if isinstance(entry, dict) else None
+        if isinstance(regex, str) and ".*?" in regex:
+            entry["regex"] = regex.replace(".*?", "IYIVAR", 1)
+            return f"skip-{entry.get('line')}-wildcard->IYIVAR", 1
+    return "wildcard-skip-missing", 0
+
+
+def _has_tool_guard_skip(census: dict, _lines: list[str]) -> bool:
+    return (
+        census.get("driver") == "regex"
+        and any(
+            isinstance(entry, dict)
+            and entry.get("line") == 51
+            and entry.get("class") == "tool"
+            for entry in census.get("skips", [])
+        )
+    )
+
+
+def _mutate_tool_skip_to_platform(
+    census: dict,
+    _lines: list[str],
+    _driver: str,
+) -> tuple[str, int]:
+    for entry in census.get("skips", []):
+        if isinstance(entry, dict) and entry.get("line") == 51:
+            entry["class"] = "platform"
+            return "regex-51-tool->platform", 1
+    return "regex-51-skip-missing", 0
+
+
+def _fixture_validator_env_call_seed() -> Observation:
+    return _isolated_validator_seed(
+        "C5.6-env-call-variant",
+        "function callsite path override classification",
+        _has_regex_env_call,
+        _mutate_env_call_classification,
+    )
+
+
+def _fixture_validator_iyivar_seed() -> Observation:
+    return _isolated_validator_seed(
+        "C5.4-skip-regex",
+        "skip wildcard cannot be literal IYIVAR",
+        _has_wildcard_skip,
+        _mutate_skip_to_iyivar,
+    )
+
+
+def _fixture_validator_platform_guard_seed() -> Observation:
+    return _isolated_validator_seed(
+        "C5.4-platform-guard",
+        "tool guard cannot be classified as platform",
+        _has_tool_guard_skip,
+        _mutate_tool_skip_to_platform,
+    )
+
 
 def _fixture_validator_schema_seed() -> Observation:
     return _combine_seed_observations(
@@ -6120,7 +6241,38 @@ def _o4_e3_error_seed() -> Observation:
         )
 
 
+def _o4_main_usage_seed() -> Observation:
+    completed = subprocess.run(
+        [sys.executable, "-B", shim_mod.__file__],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    return Observation(
+        expected={
+            "returncode": 125,
+            "stdout": "",
+            "usage": True,
+        },
+        got={
+            "returncode": completed.returncode,
+            "stdout": completed.stdout,
+            "usage": (
+                "usage: roundtrip_shim.py --config PATH -- ARGS..."
+                in completed.stderr
+            ),
+        },
+        applied="subprocess omitted --config and compiler argv",
+    )
+
+
 O4_FIXTURES: tuple[Fixture, ...] = (
+    Fixture(
+        "o4.seed.main-usage-refusal",
+        "seed",
+        _o4_main_usage_seed,
+    ),
     Fixture(
         "s2.seed.matcher-negative-noquestion",
         "seed",
@@ -6400,6 +6552,10 @@ O4_FIXTURES: tuple[Fixture, ...] = (
     ),
 )
 O4_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
+    "o4.main-usage-refusal": (
+        "o4.seed.main-usage-refusal",
+        "s3.control.canonical-build",
+    ),
     "o4.matcher": (
         "s2.seed.matcher-variable-root",
         "s2.seed.matcher-conflicting-kinds",
@@ -6937,6 +7093,34 @@ def _o5_ledger_fixture(case: str) -> Observation:
             )
             expected = ("MISCLASSIFIED",)
             detail = "non-canonical build appended without variant ids"
+        elif case == "unchanged-noncanonical-http":
+            refbreak = os.path.join(work, "refbreak")
+            source = os.path.join(work, "captures.iyi")
+            out = os.path.join(work, "refused")
+            unchanged = _o5_exec_record(
+                nonce="nonce-1",
+                driver="demo",
+                invocation="http-1384-unchanged",
+                mode="unchanged",
+                command="build",
+                canonical=False,
+            )
+            unchanged["argv"] = [
+                "build",
+                "--no-codegen",
+                "-o",
+                out,
+                source,
+            ]
+            unchanged["roots"] = [refbreak]
+            unchanged["first_noncanonical_root"] = refbreak
+            unchanged["sources"] = [source]
+            unchanged["out"] = out
+            records.append(unchanged)
+            detail = (
+                "http:1384 unchanged non-canonical --no-codegen build "
+                "appended without variant ids"
+            )
         elif case == "unknown-variant-id":
             records.append(
                 _o5_exec_record(
@@ -7105,6 +7289,34 @@ def _o5_ledger_fixture(case: str) -> Observation:
             census["exec_evidence"][0]["out_template"] = "{REPO}/own"
             census["exec_evidence"][0]["name_from_calls"] = {}
             detail = "passing static {REPO} execution-evidence template"
+        elif case in (
+            "required-no-vars-missing",
+            "required-no-vars-control",
+        ):
+            variant_id = "demo.negative.no-vars"
+            _o5_add_variant(
+                census,
+                variant_id=variant_id,
+                kind="negative",
+                variables={},
+            )
+            if case == "required-no-vars-control":
+                records.append(
+                    _o5_exec_record(
+                        nonce="nonce-1",
+                        driver="demo",
+                        invocation="negative-no-vars",
+                        mode="observed-negative",
+                        command="build",
+                        canonical=False,
+                        variant_ids=(variant_id,),
+                        variant_kind="negative",
+                    )
+                )
+                detail = "required no-vars variant has one bound record"
+            else:
+                expected = ("NOT-EXERCISED",)
+                detail = "required no-vars variant has no bound record"
         elif case == "value-missing":
             _o5_add_variant(
                 census,
@@ -7577,6 +7789,21 @@ O5_FIXTURES: tuple[Fixture, ...] = (
         partial(_o5_ledger_fixture, "noncanonical-without-ids"),
     ),
     Fixture(
+        "o5.seed.unchanged-noncanonical-http",
+        "seed",
+        partial(_o5_ledger_fixture, "unchanged-noncanonical-http"),
+    ),
+    Fixture(
+        "o5.seed.required-no-vars-missing",
+        "seed",
+        partial(_o5_ledger_fixture, "required-no-vars-missing"),
+    ),
+    Fixture(
+        "o5.control.required-no-vars",
+        "control",
+        partial(_o5_ledger_fixture, "required-no-vars-control"),
+    ),
+    Fixture(
         "o5.seed.canonical-observed-negative",
         "seed",
         partial(_o5_ledger_fixture, "canonical-observed-negative"),
@@ -7763,6 +7990,15 @@ O5_FIXTURES: tuple[Fixture, ...] = (
     ),
 )
 O5_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
+    "o5.amendment-f-unchanged": (
+        "o5.seed.unchanged-noncanonical-http",
+        "o5.seed.noncanonical-without-ids",
+        "s3.control.ledger",
+    ),
+    "o5.required-variant-record": (
+        "o5.seed.required-no-vars-missing",
+        "o5.control.required-no-vars",
+    ),
     "o5.header": (
         "o5.seed.file-missing",
         "o5.seed.file-empty",
@@ -8084,6 +8320,7 @@ def _o6_run_row(
     source_name: str = "case.iyi",
     *,
     nm_bin: str | None = None,
+    disk_min_gb: float = 0.0,
 ) -> dict:
     return legs_mod.run_row(
         case.sources[source_name],
@@ -8091,6 +8328,7 @@ def _o6_run_row(
         compiler=case.compiler,
         work_root=case.work,
         nm_bin=nm_bin or case.nm,
+        disk_min_gb=disk_min_gb,
     )
 
 
@@ -8460,7 +8698,7 @@ def _fixture_o6_timeout_seed(phase: str) -> Observation:
             run=2 if phase == "run" else None,
         ):
             direct_row = _o6_run_row(case, source_name)
-            returncode = legs_mod.main(argv)
+            returncode = legs_mod.main(argv, disk_min_gb=0.0)
         rows = _o6_read_report(report)
         by_name = {os.path.basename(row["source"]): row for row in rows}
         got = {
@@ -8632,6 +8870,7 @@ def _o6_worker_case(root: str, *, failing: bool) -> tuple[SimpleNamespace, list[
         compiler=case.compiler,
         work_root=case.work,
         nm_bin=case.nm,
+        disk_min_gb=0.0,
         workers=2,
     )
     return case, rows
@@ -8779,7 +9018,10 @@ def _fixture_o6_wrong_count_seed() -> Observation:
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
             io.StringIO()
         ):
-            in_process_returncode = legs_mod.main(argv)
+            in_process_returncode = legs_mod.main(
+                argv,
+                disk_min_gb=0.0,
+            )
         rows = _o6_read_report(report) if os.path.isfile(report) else []
         got = {
             "returncode": completed.returncode,
@@ -8922,6 +9164,7 @@ def _fixture_o6_row_oserror_seed() -> Observation:
             compiler=missing,
             work_root=case.work,
             nm_bin=case.nm,
+            disk_min_gb=0.0,
         )
         kept = sorted(
             name
@@ -8946,22 +9189,17 @@ def _fixture_o6_row_oserror_seed() -> Observation:
 
 
 def _fixture_o6_row_runtimeerror_seed() -> Observation:
-    old_minimum = legs_mod.DISK_MIN_GB
-    try:
-        legs_mod.DISK_MIN_GB = float(2**60)
-        with tempfile.TemporaryDirectory(prefix="iyi-o6-runtimeerror-") as root:
-            case = _o6_make_case(root)
-            row = _o6_run_row(case)
-            got = {
-                "status": row["status"],
-                "codes": _o6_codes(row),
-                "reason_is_disk": any(
-                    "Disk space below threshold" in reason
-                    for reason in row["failures"]
-                ),
-            }
-    finally:
-        legs_mod.DISK_MIN_GB = old_minimum
+    with tempfile.TemporaryDirectory(prefix="iyi-o6-runtimeerror-") as root:
+        case = _o6_make_case(root)
+        row = _o6_run_row(case, disk_min_gb=float(2**60))
+        got = {
+            "status": row["status"],
+            "codes": _o6_codes(row),
+            "reason_is_disk": any(
+                "Disk space below threshold" in reason
+                for reason in row["failures"]
+            ),
+        }
     expected = {
         "status": "FAIL",
         "codes": ["ROW-RUNTIMEERROR"],
@@ -9010,7 +9248,7 @@ def _fixture_o6_nm_pinned_seed() -> Observation:
         old_path = os.environ.get("PATH")
         os.environ["PATH"] = trap_dir + os.pathsep + (old_path or "")
         try:
-            returncode = legs_mod.main(argv)
+            returncode = legs_mod.main(argv, disk_min_gb=0.0)
         finally:
             if old_path is None:
                 os.environ.pop("PATH", None)
@@ -9127,7 +9365,11 @@ def _fixture_o6_c3_stop_seed() -> Observation:
                     "case.iyi": {
                         "C3": {
                             "rc": 17,
-                            "stderr": "cannot name it: seeded artifact\n",
+                            "stderr": (
+                                "cannot name it: seeded artifact\n"
+                                + ("x" * 400)
+                                + "\n"
+                            ),
                             "after_outputs": True,
                         }
                     }
@@ -9148,7 +9390,7 @@ def _fixture_o6_c3_stop_seed() -> Observation:
     return Observation(
         expected=expected,
         got=got,
-        applied="C3_exit=17;C3_stderr=cannot_name_it",
+        applied="C3_exit=17;cannot_name_precedes_400_trailing_bytes",
     )
 
 
@@ -9387,6 +9629,7 @@ def _fixture_o6_p_nonzero_control() -> Observation:
             work_root=case.work,
             nm_bin=case.nm,
             workers=1,
+            disk_min_gb=0.0,
         )
         row = rows[0]
         got = {
@@ -9752,10 +9995,23 @@ def _stage_driver_census(
     lines = [
         "#!/bin/bash",
         'REPO=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)',
-        "sleep 30; status=0" if scenario == "driver-timeout" else "status=0",
-        'WORK="$(mktemp -d)"',
-        f"name={name}",
     ]
+    if scenario == "driver-timeout":
+        lines.append("sleep 30")
+    elif scenario == "driver-interrupt":
+        lines.extend(
+            [
+                "printf '%s\\n' ready >\"$TMPDIR/interrupt-ready\"",
+                "sleep 30",
+            ]
+        )
+    lines.extend(
+        [
+            "status=0",
+            'WORK="$(mktemp -d)"',
+            f"name={name}",
+        ]
+    )
     if scenario in ("copy-modified", "move-replaced"):
         lines.extend(
             [
@@ -9874,14 +10130,32 @@ def _stage_driver_census(
         }
     elif scenario in ("skip-partial", "skip-platform"):
         skip_text = 'echo "fixture platform skipped"'
-        lines.append(skip_text)
+        lines.extend(
+            [
+                'if [ -n "$(uname -s)" ]; then',
+                skip_text,
+                "fi",
+            ]
+        )
         skip_entry = {
             "class": "platform",
             "what": "fixture platform",
             "regex": "^fixture platform skipped$",
             "text": skip_text,
         }
+    if scenario == "driver-refused-log":
+        lines.append(
+            'echo "observed-roundtrip-shim: REFUSED fixture refusal"'
+        )
+    if scenario == "post-driver-identity":
+        lines.append(
+            "python3 -c 'import json,os,sys; "
+            "os.utime(json.load(open(sys.argv[1]))[\"real\"])' "
+            "\"$(dirname -- \"$TMPDIR\")/shim.json\""
+        )
 
+    if scenario == "driver-nonzero":
+        lines.append("status=7")
     sentinel_text = 'echo "the std/stage exercise holds"'
     if scenario == "missing-sentinel":
         sentinel_text = 'true || echo "the std/stage exercise holds"'
@@ -9965,7 +10239,10 @@ def _stage_driver_census(
     return script_bytes, census
 
 
-def _stage_stub_payloads(scenario: str) -> dict[str, bytes]:
+def _stage_stub_payloads(
+    scenario: str,
+    fixture_root: str = "",
+) -> dict[str, bytes]:
     rg2r_count = 0 if scenario == "rg2r-zero" else 1
     exclusion = ""
     if scenario == "sample-exclusion":
@@ -9978,6 +10255,13 @@ def _stage_stub_payloads(scenario: str) -> dict[str, bytes]:
             "printf '%s\\n' '  [excluded after calibration] "
             "bench/std_missing_exercise.iyi: fixture std'\n"
         )
+    elif scenario == "final-required-rerun":
+        exclusion = (
+            "if [ -f \"$PWD/../final-required-flip\" ]; then\n"
+            "  printf '%s\\n' '  [excluded after calibration] "
+            "bench/std_extra_exercise.iyi: calibration differed'\n"
+            "fi\n"
+        )
     gate_sleep = ""
     if scenario == "run1-slow-gate":
         gate_sleep = "sleep 0.2\n"
@@ -9986,6 +10270,13 @@ def _stage_stub_payloads(scenario: str) -> dict[str, bytes]:
             "printf '%s\\n' ready >\"$TMPDIR/interrupt-ready\"\n"
             "sleep 30\n"
         )
+    bash_path = os.path.join(fixture_root, "gate-tools", "bash")
+    if scenario == "gate2-oserror":
+        gate1_tail = f"/bin/rm -f {shlex.quote(bash_path)}\n"
+    elif scenario == "gate1-identity":
+        gate1_tail = "touch \"$IYI\"\n"
+    else:
+        gate1_tail = ""
     gate_exit = 7 if scenario == "gate1-fail" else 0
     stale_equivalence = (
         "#!/bin/bash\n"
@@ -9996,6 +10287,7 @@ def _stage_stub_payloads(scenario: str) -> dict[str, bytes]:
         f"echo 'RG2r PASSED: all {rg2r_count} probes'\n"
         "echo 'RG5 trace half PASSED: fixture'\n"
         f"{exclusion}"
+        f"{gate1_tail}"
         f"exit {gate_exit}\n"
     )
     observe_sentinel = (
@@ -10003,15 +10295,49 @@ def _stage_stub_payloads(scenario: str) -> dict[str, bytes]:
         if scenario == "run1-missing-sentinel"
         else "OK: bench/std_observe_exercise.sh passed all checks"
     )
+    observe_prefix = (
+        "printf '%s\\n' ready >\"$TMPDIR/interrupt-ready\"\n"
+        "sleep 30\n"
+        if scenario == "interrupt-gate2"
+        else ""
+    )
+    if scenario == "gate3-oserror":
+        observe_tail = "/bin/mkdir \"$(dirname -- \"$TMPDIR\")/rg9_work\"\n"
+    elif scenario == "gate2-identity":
+        observe_tail = "touch \"$IYI\"\n"
+    else:
+        observe_tail = ""
     std_observe = (
         "#!/bin/bash\n"
+        f"{observe_prefix}"
         f"echo '{observe_sentinel}'\n"
+        f"{observe_tail}"
         "exit 0\n"
     )
     rg9_count = 140 if scenario == "rg9-140" else 141
+    rg9_prefix = (
+        "import os, time\n"
+        "open(os.path.join(os.environ['TMPDIR'], 'interrupt-ready'), 'w').write('ready')\n"
+        "time.sleep(30)\n"
+        if scenario == "interrupt-gate3"
+        else ""
+    )
+    if scenario == "gate2-oserror":
+        rg9_tail = (
+            "import os\n"
+            f"os.symlink('/bin/bash', {bash_path!r})\n"
+        )
+    elif scenario == "gate4-oserror":
+        rg9_tail = f"import os\nos.unlink({bash_path!r})\n"
+    elif scenario == "gate3-identity":
+        rg9_tail = "import os\nos.utime(os.environ['IYI'])\n"
+    else:
+        rg9_tail = ""
     stale_rg9 = (
         "#!/usr/bin/env python3\n"
+        f"{rg9_prefix}"
         f"print('RG9 PASSED: {rg9_count} corpus programs')\n"
+        f"{rg9_tail}"
     )
     sibling_count = 114 if scenario == "sibling-count-114" else 115
     sibling_lines = ["-- running sibling: std_stage_exercise.sh"]
@@ -10019,17 +10345,32 @@ def _stage_stub_payloads(scenario: str) -> dict[str, bytes]:
         f"-- running sibling: std_fixture_{number:03d}_exercise.sh"
         for number in range(1, sibling_count)
     )
+    exercise_prefix = (
+        "printf '%s\\n' ready >\"$TMPDIR/interrupt-ready\"\n"
+        "sleep 30\n"
+        if scenario == "interrupt-gate4"
+        else ""
+    )
+    exercise_tail = (
+        "touch \"$IYI\"\n"
+        if scenario == "gate4-identity"
+        else ""
+    )
     std_exercise = (
         "#!/bin/bash\n"
+        f"{exercise_prefix}"
         "echo 'Standard library foundation: traits, cmp, enumerable'\n"
         "echo 'all 114 exercises answer the same from source and from artifacts'\n"
         + "".join(f"echo '{line}'\n" for line in sibling_lines)
         + f"echo '== shard 1 of 1: {sibling_count} of {sibling_count} sibling exercises'\n"
-        "exit 0\n"
+        + exercise_tail
+        + "exit 0\n"
     )
     stage_scenarios = {
         "run3-import",
         "driver-timeout",
+        "driver-interrupt",
+        "driver-nonzero",
         "missing-sentinel",
         "stale-ledger",
         "skip-env-blocked",
@@ -10040,6 +10381,8 @@ def _stage_stub_payloads(scenario: str) -> dict[str, bytes]:
         "move-replaced",
         "run-form",
         "run-form-not-counted",
+        "driver-refused-log",
+        "post-driver-identity",
     }
     stage_scenario = scenario if scenario in stage_scenarios else "control"
     stage_driver_bytes, stage_census = _stage_driver_census(
@@ -10074,10 +10417,13 @@ def _stage_stub_payloads(scenario: str) -> dict[str, bytes]:
         "#!/usr/bin/env python3\n"
         "import argparse\n"
         "import json\n"
+        "import os\n"
+        "import time\n"
         f"STATUS = {run2_status!r}\n"
         f"DROP_SAMPLE = {run2_drop_sample!r}\n"
         f"WRITE_REPORT = {run2_write_report!r}\n"
         f"RETURN_CODE = {run2_returncode}\n"
+        f"INTERRUPT = {scenario == 'run2-interrupt'!r}\n"
         "parser = argparse.ArgumentParser()\n"
         "parser.add_argument('--repo', required=True)\n"
         "parser.add_argument('--compiler', required=True)\n"
@@ -10089,6 +10435,9 @@ def _stage_stub_payloads(scenario: str) -> dict[str, bytes]:
         "parser.add_argument('--expect-std', type=int, required=True)\n"
         "parser.add_argument('--expect-total', type=int, required=True)\n"
         "args = parser.parse_args()\n"
+        "if INTERRUPT:\n"
+        "    open(os.path.join(os.environ['TMPDIR'], 'interrupt-ready'), 'w').write('ready')\n"
+        "    time.sleep(30)\n"
         "rows = []\n"
         "sample_count = args.expect_samples - (1 if DROP_SAMPLE else 0)\n"
         "for index in range(sample_count):\n"
@@ -10179,8 +10528,14 @@ class StageFixture(PinFixture):
                 os.path.join(proof_target, os.path.basename(source)),
             )
 
-        control_payloads = _stage_stub_payloads("control")
-        payloads = _stage_stub_payloads(self.scenario)
+        control_payloads = _stage_stub_payloads(
+            "control",
+            self.scratch,
+        )
+        payloads = _stage_stub_payloads(
+            self.scenario,
+            self.scratch,
+        )
         shared_paths = set(control_payloads).intersection(payloads)
         self.stub_difference_count = sum(
             payloads[path] != control_payloads[path] for path in shared_paths
@@ -10301,6 +10656,8 @@ class StageFixture(PinFixture):
         checks: dict[str, str],
         status: str,
         chain_id: str | None = None,
+        started_ns: int = 1,
+        ended_ns: int = 2,
     ) -> str:
         parent = os.path.join(self.report, *unit.split("/"))
         attempt_dir = os.path.join(parent, f"a{attempt}")
@@ -10314,8 +10671,8 @@ class StageFixture(PinFixture):
             "status": status,
             "reasons": [] if status == "PASS" else ["fixture failure"],
             "checks": checks,
-            "started_ns": 1,
-            "ended_ns": 2,
+            "started_ns": started_ns,
+            "ended_ns": ended_ns,
             "survivors": [],
         }
         with open(path, "w", encoding="utf-8") as output:
@@ -10340,6 +10697,8 @@ class StageFixture(PinFixture):
             first_attempt,
             checks=run1_checks,
             status="PASS",
+            started_ns=1,
+            ended_ns=2,
         )
         if two_run1_attempts:
             self.write_input_result(
@@ -10347,12 +10706,16 @@ class StageFixture(PinFixture):
                 10,
                 checks=run1_checks,
                 status="PASS",
+                started_ns=3,
+                ended_ns=4,
             )
         self.write_input_result(
             "run2",
             1,
             checks=run2_checks,
             status="PASS",
+            started_ns=5,
+            ended_ns=6,
         )
         required_dir = os.path.join(self.report, "run3")
         os.makedirs(required_dir, exist_ok=True)
@@ -10367,7 +10730,33 @@ class StageFixture(PinFixture):
             1,
             checks=run3_checks,
             status="PASS",
+            started_ns=7,
+            ended_ns=8,
         )
+        latest_run1 = 10 if two_run1_attempts else 1
+        latest_run1_dir = os.path.join(
+            self.report,
+            "run1",
+            f"a{latest_run1}",
+        )
+        with open(
+            os.path.join(latest_run1_dir, "exclusions.json"),
+            "w",
+            encoding="utf-8",
+        ) as output:
+            json.dump([], output)
+        with open(
+            os.path.join(latest_run1_dir, "baseline_skips.json"),
+            "w",
+            encoding="utf-8",
+        ) as output:
+            json.dump([], output)
+        with open(
+            os.path.join(self.report, "run2", "a1", "run2.jsonl"),
+            "w",
+            encoding="utf-8",
+        ):
+            pass
 
 
 def _stage_result(report: str, unit: str) -> dict:
@@ -10438,7 +10827,10 @@ def _fixture_stage_chain_control() -> Observation:
             disk_min_gb=0.0,
         )
         stage = _stage_result(fixture.report, "run3/stage")
-        final_return = stages_mod.cmd_final(fixture.args())
+        final_return = stages_mod.cmd_final(
+            fixture.args(),
+            drivers=fixture.drivers,
+        )
         final = _o7_load_json(os.path.join(fixture.report, "final.json"))
         got = {
             "run1": run1_return,
@@ -10501,12 +10893,43 @@ def _fixture_run1_control() -> Observation:
 
 
 def _fixture_run1_slow_gate_seed() -> Observation:
-    return _run1_seed(
-        "run1-slow-gate",
-        "gate-1.1",
-        "PASS",
-        expected_status="PASS",
+    with StageFixture("run1-slow-gate") as fixture:
+        fixture.pin()
+        returncode = stages_mod.cmd_run1(
+            fixture.args(),
+            disk_min_gb=0.0,
+        )
+        result = _stage_result(fixture.report, "run1")
+        attempt = stages_mod.latest_attempt_dir(
+            os.path.join(fixture.report, "run1")
+        )
+        with open(
+            os.path.join(attempt, "run1_1.times"),
+            "r",
+            encoding="utf-8",
+        ) as source:
+            samples = [line.strip() for line in source if line.strip()]
+        got = {
+            "returncode": returncode,
+            "status": result.get("status"),
+            "gate": result.get("checks", {}).get("gate-1.1"),
+            "initial_zero": bool(samples)
+            and samples[0].split()[-1] == "0",
+            "sample_count_at_least_2": len(samples) >= 2,
+        }
+    return Observation(
+        expected={
+            "returncode": 0,
+            "status": "PASS",
+            "gate": "PASS",
+            "initial_zero": True,
+            "sample_count_at_least_2": True,
+        },
+        got=got,
+        applied=_scenario_applied(fixture),
     )
+
+
 def _fixture_gate1_fail_seed() -> Observation:
     return _run1_seed("gate1-fail", "gate-1.1", "FAIL")
 
@@ -11042,8 +11465,9 @@ def _fixture_route_a_drivers_seed() -> Observation:
 def _fixture_route_a_control() -> Observation:
     with StageFixture() as fixture:
         fixture.prepare_final_inputs()
-        got = stages_mod.main(
-            ["final", "--report-dir", fixture.report]
+        got = stages_mod.cmd_final(
+            fixture.args(),
+            drivers=fixture.drivers,
         )
         return Observation(expected=0, got=got)
 
@@ -11113,7 +11537,10 @@ def _final_seed(kind: str) -> Observation:
         else:
             raise ValueError(f"unknown final seed {kind}")
 
-        returncode = stages_mod.cmd_final(fixture.args())
+        returncode = stages_mod.cmd_final(
+            fixture.args(),
+            drivers=fixture.drivers,
+        )
         final = _o7_load_json(os.path.join(fixture.report, "final.json"))
         if kind == "earlier-failure":
             got = {
@@ -11151,6 +11578,455 @@ def _final_seed(kind: str) -> Observation:
             }
             expected = {"returncode": 1, "status": "FAIL", "reason": True}
         return Observation(expected=expected, got=got, applied=applied)
+
+def _fixture_final_required_rerun_seed() -> Observation:
+    with StageFixture("final-required-rerun") as fixture:
+        fixture.pin()
+        run1 = stages_mod.cmd_run1(
+            fixture.args(),
+            disk_min_gb=0.0,
+        )
+        run2 = stages_mod.cmd_run2(
+            fixture.args(),
+            disk_min_gb=0.0,
+        )
+        run3 = stages_mod.cmd_run3(
+            fixture.args(),
+            drivers=fixture.drivers,
+            driver_limit_sec=1.0,
+            grace_sec=0.1,
+            disk_min_gb=0.0,
+        )
+        control_final = stages_mod.cmd_final(
+            fixture.args(),
+            drivers=fixture.drivers,
+        )
+        control_record = _o7_load_json(
+            os.path.join(fixture.report, "final.json")
+        )
+
+        flip = os.path.join(
+            fixture.scratch,
+            "final-required-flip",
+        )
+        with open(flip, "w", encoding="utf-8") as output:
+            output.write("enabled\n")
+        rerun1 = stages_mod.cmd_run1(
+            fixture.args(),
+            disk_min_gb=0.0,
+        )
+        seeded_final = stages_mod.cmd_final(
+            fixture.args(),
+            drivers=fixture.drivers,
+        )
+        seeded_record = _o7_load_json(
+            os.path.join(fixture.report, "final.json")
+        )
+        got = {
+            "run1": run1,
+            "run2": run2,
+            "run3": run3,
+            "control_rc": control_final,
+            "control_status": control_record.get("status"),
+            "rerun1": rerun1,
+            "seed_rc": seeded_final,
+            "seed_status": seeded_record.get("status"),
+            "required_mismatch": any(
+                "required.json mismatch" in str(reason)
+                for reason in seeded_record.get("reasons", [])
+            ),
+            "freshness": any(
+                "not newer than latest run1/run2" in str(reason)
+                for reason in seeded_record.get("reasons", [])
+            ),
+        }
+    return Observation(
+        expected={
+            "run1": 0,
+            "run2": 0,
+            "run3": 0,
+            "control_rc": 0,
+            "control_status": "PASS",
+            "rerun1": 0,
+            "seed_rc": 1,
+            "seed_status": "FAIL",
+            "required_mismatch": True,
+            "freshness": True,
+        },
+        got=got,
+        applied=(
+            f"created={flip};latest_run1=a2;"
+            "required_before=['stage'];required_after=['stage','extra']"
+        ),
+    )
+
+
+def _fixture_identity_field_guard(case: str, seeded: bool) -> Observation:
+    reasons = {
+        "m01": "PYTHON-CHANGED",
+        "m02": "CENSUS-CHANGED",
+        "m03": "CANONICAL-ROOTS-CHANGED",
+        "m04": "TIMEOUT-CHANGED",
+        "m05": "NM-CHANGED",
+        "m19": "PYTHON-CHANGED",
+    }
+    with PinFixture() as fixture:
+        pin = fixture.pin()
+        checked = json.loads(json.dumps(pin))
+        applied = "control pin unchanged"
+        if seeded:
+            if case == "m01":
+                checked["python_path"] = fixture.compiler
+                applied = "python_path replaced with fixture compiler"
+            elif case == "m02":
+                driver = sorted(checked["census_sha256"])[0]
+                checked["census_sha256"][driver] = "0" * 64
+                applied = f"census_sha256[{driver}] replaced"
+            elif case == "m03":
+                checked["canonical_roots"] = []
+                applied = "canonical_roots cleared"
+            elif case == "m04":
+                checked["timeout_path"] = checked["nm_path"]
+                applied = "timeout_path replaced with nm_path"
+            elif case == "m05":
+                checked["nm_path"] = checked["timeout_path"]
+                applied = "nm_path replaced with timeout_path"
+            elif case == "m19":
+                checked["python_version"] = "fixture-python-version"
+                applied = "python_version replaced"
+            else:
+                raise ValueError(f"unknown identity guard {case}")
+        reason = _identity_reason(
+            lambda: proofkit_mod.check_identity(checked)
+        )
+    return Observation(
+        expected=reasons[case] if seeded else "NO-REFUSAL",
+        got=reason,
+        applied=applied if seeded else "",
+    )
+
+
+def _fixture_run3_disk_guard(seeded: bool) -> Observation:
+    with StageFixture() as fixture:
+        fixture.pin()
+        fixture.write_prerequisites()
+        returncode = stages_mod.cmd_run3(
+            fixture.args(),
+            drivers=fixture.drivers,
+            driver_limit_sec=1.0,
+            grace_sec=0.1,
+            disk_min_gb=(2**60 if seeded else 0.0),
+        )
+        record = _stage_result(fixture.report, "run3/stage")
+        attempt = stages_mod.latest_attempt_dir(
+            os.path.join(fixture.report, "run3", "stage")
+        )
+        got = {
+            "returncode": returncode,
+            "status": record.get("status"),
+            "disk": record.get("checks", {}).get("disk"),
+            "driver_ran": bool(
+                attempt
+                and os.path.exists(os.path.join(attempt, "driver.log"))
+            ),
+        }
+    expected = (
+        {
+            "returncode": 1,
+            "status": "STOP",
+            "disk": "STOP",
+            "driver_ran": False,
+        }
+        if seeded
+        else {
+            "returncode": 0,
+            "status": "PASS",
+            "disk": "PASS",
+            "driver_ran": True,
+        }
+    )
+    return Observation(
+        expected=expected,
+        got=got,
+        applied="disk_min_gb=2**60" if seeded else "",
+    )
+
+
+def _fixture_post_driver_identity_guard(seeded: bool) -> Observation:
+    scenario = "post-driver-identity" if seeded else "control"
+    with StageFixture(scenario) as fixture:
+        fixture.pin()
+        fixture.write_prerequisites()
+        returncode = stages_mod.cmd_run3(
+            fixture.args(),
+            drivers=fixture.drivers,
+            driver_limit_sec=1.0,
+            grace_sec=0.1,
+            disk_min_gb=0.0,
+        )
+        record = _stage_result(fixture.report, "run3/stage")
+        got = {
+            "returncode": returncode,
+            "status": record.get("status"),
+            "identity": record.get("checks", {}).get("identity"),
+            "reason": any(
+                "COMPILER-MTIME-CHANGED" in str(reason)
+                for reason in record.get("reasons", [])
+            ),
+        }
+    expected = (
+        {
+            "returncode": 1,
+            "status": "INVALID",
+            "identity": "INVALID",
+            "reason": True,
+        }
+        if seeded
+        else {
+            "returncode": 0,
+            "status": "PASS",
+            "identity": "PASS",
+            "reason": False,
+        }
+    )
+    return Observation(
+        expected=expected,
+        got=got,
+        applied=(
+            "driver touches compiler mtime after sentinel"
+            if seeded
+            else ""
+        ),
+    )
+
+
+def _fixture_final_identity_guard(seeded: bool) -> Observation:
+    with StageFixture() as fixture:
+        fixture.prepare_final_inputs()
+        original_path = os.environ.get("PATH", "")
+        try:
+            if seeded:
+                os.environ["PATH"] = (
+                    original_path + os.pathsep + fixture.scratch
+                )
+            returncode = stages_mod.cmd_final(
+                fixture.args(),
+                drivers=fixture.drivers,
+            )
+        finally:
+            os.environ["PATH"] = original_path
+        final = _o7_load_json(os.path.join(fixture.report, "final.json"))
+        got = {
+            "returncode": returncode,
+            "status": final.get("status"),
+            "identity": final.get("identity", {}).get("status"),
+        }
+    expected = (
+        {"returncode": 1, "status": "INVALID", "identity": "INVALID"}
+        if seeded
+        else {"returncode": 0, "status": "PASS", "identity": "PASS"}
+    )
+    return Observation(
+        expected=expected,
+        got=got,
+        applied="PATH appended before final" if seeded else "",
+    )
+
+
+def _fixture_final_binding_guard(
+    field: str,
+    seeded: bool,
+) -> Observation:
+    with StageFixture() as fixture:
+        fixture.prepare_final_inputs()
+        path = os.path.join(
+            fixture.report,
+            "run3",
+            "stage",
+            "a1",
+            "result.json",
+        )
+        if seeded:
+            record = _o7_load_json(path)
+            record[field] = "run3/other" if field == "unit" else 2
+            with open(path, "w", encoding="utf-8") as output:
+                json.dump(record, output, sort_keys=True)
+        returncode = stages_mod.cmd_final(
+            fixture.args(),
+            drivers=fixture.drivers,
+        )
+        final = _o7_load_json(os.path.join(fixture.report, "final.json"))
+        fragment = "unit mismatch" if field == "unit" else "attempt mismatch"
+        got = {
+            "returncode": returncode,
+            "status": final.get("status"),
+            "reason": any(
+                fragment in str(reason)
+                for reason in final.get("reasons", [])
+            ),
+        }
+    expected = (
+        {"returncode": 1, "status": "FAIL", "reason": True}
+        if seeded
+        else {"returncode": 0, "status": "PASS", "reason": False}
+    )
+    return Observation(
+        expected=expected,
+        got=got,
+        applied=f"run3 result {field} changed" if seeded else "",
+    )
+
+
+def _fixture_final_required_guard(seeded: bool) -> Observation:
+    with StageFixture() as fixture:
+        fixture.prepare_final_inputs()
+        required_path = os.path.join(
+            fixture.report,
+            "run3",
+            "required.json",
+        )
+        if seeded:
+            with open(required_path, "w", encoding="utf-8") as output:
+                json.dump([], output)
+        returncode = stages_mod.cmd_final(
+            fixture.args(),
+            drivers=fixture.drivers,
+        )
+        final = _o7_load_json(os.path.join(fixture.report, "final.json"))
+        got = {
+            "returncode": returncode,
+            "status": final.get("status"),
+            "reason": any(
+                "required.json mismatch" in str(reason)
+                for reason in final.get("reasons", [])
+            ),
+        }
+    expected = (
+        {"returncode": 1, "status": "FAIL", "reason": True}
+        if seeded
+        else {"returncode": 0, "status": "PASS", "reason": False}
+    )
+    return Observation(
+        expected=expected,
+        got=got,
+        applied="required.json changed from ['stage'] to []" if seeded else "",
+    )
+
+
+def _fixture_run3_refused_guard(seeded: bool) -> Observation:
+    scenario = "driver-refused-log" if seeded else "control"
+    with StageFixture(scenario) as fixture:
+        fixture.pin()
+        fixture.write_prerequisites()
+        returncode = stages_mod.cmd_run3(
+            fixture.args(),
+            drivers=fixture.drivers,
+            driver_limit_sec=30.0,
+            grace_sec=0.1,
+            disk_min_gb=0.0,
+        )
+        record = _stage_result(fixture.report, "run3/stage")
+        got = {
+            "returncode": returncode,
+            "status": record.get("status"),
+            "no_refused": record.get("checks", {}).get("no-refused"),
+        }
+    expected = (
+        {
+            "returncode": 1,
+            "status": "MISCLASSIFIED",
+            "no_refused": "MISCLASSIFIED",
+        }
+        if seeded
+        else {
+            "returncode": 0,
+            "status": "PASS",
+            "no_refused": "PASS",
+        }
+    )
+    return Observation(
+        expected=expected,
+        got=got,
+        applied="driver emits one shim REFUSED line" if seeded else "",
+    )
+
+
+def _fixture_run3_census_guard(seeded: bool) -> Observation:
+    with StageFixture() as fixture:
+        fixture.pin()
+        fixture.write_prerequisites()
+        if seeded:
+            census_path = os.path.join(
+                fixture.w,
+                "proof",
+                "census",
+                "stage.json",
+            )
+            census = _o7_load_json(census_path)
+            census["script_sha256"] = "0" * 64
+            with open(census_path, "w", encoding="utf-8") as output:
+                json.dump(census, output, sort_keys=True)
+        returncode = stages_mod.cmd_run3(
+            fixture.args(),
+            drivers=fixture.drivers,
+            driver_limit_sec=1.0,
+            grace_sec=0.1,
+            disk_min_gb=0.0,
+        )
+        record = _stage_result(fixture.report, "run3/stage")
+        got = {
+            "returncode": returncode,
+            "status": record.get("status"),
+            "census": record.get("checks", {}).get("census"),
+        }
+    expected = (
+        {"returncode": 1, "status": "FAIL", "census": "FAIL"}
+        if seeded
+        else {"returncode": 0, "status": "PASS", "census": "PASS"}
+    )
+    return Observation(
+        expected=expected,
+        got=got,
+        applied="stage census script_sha256 changed" if seeded else "",
+    )
+
+
+def _fixture_baseline_header_guard(seeded: bool) -> Observation:
+    with tempfile.TemporaryDirectory(prefix="iyi-baseline-header-") as root:
+        census_dir = os.path.join(root, "proof", "census")
+        os.makedirs(census_dir)
+        with open(
+            os.path.join(census_dir, "stage.json"),
+            "w",
+            encoding="utf-8",
+        ) as output:
+            json.dump(
+                {
+                    "driver": "stage",
+                    "skips": [
+                        {
+                            "regex": "^fixture platform skipped$",
+                            "class": "platform",
+                            "what": "fixture platform",
+                        }
+                    ],
+                },
+                output,
+            )
+        header = (
+            "-- running sibling std_stage_exercise.sh"
+            if seeded
+            else "-- running sibling: std_stage_exercise.sh"
+        )
+        hits = stages_mod._baseline_skip_hits(
+            root,
+            f"{header}\nfixture platform skipped\n",
+        )
+    return Observation(
+        expected=0 if seeded else 1,
+        got=len(hits),
+        applied="sibling header colon removed" if seeded else "",
+    )
 
 
 def _fixture_final_forged_pass_seed() -> Observation:
@@ -11690,7 +12566,7 @@ def _fixture_pin_command_control() -> Observation:
         )
 
 
-def _fixture_shim_coverage_seed() -> Observation:
+def _fixture_shim_parser_edges_seed() -> Observation:
     invocation = shim_mod.parse_invocation(
         ["run", "fixture.iyi", "--", "alpha"]
     )
@@ -11745,1304 +12621,13 @@ def _fixture_main_identity_refusal_seed() -> Observation:
     )
 
 
-def _exercise_proofkit_storage_identity_edges(root: str) -> set[str]:
-    covered: set[str] = set()
 
-    def expect_reason(
-        label: str,
-        reason: str,
-        call: Callable[[], object],
-    ) -> None:
-        try:
-            call()
-        except proofkit_mod.IdentityError as error:
-            if error.reason == reason:
-                covered.add(label)
 
-    empty_env = _o6_write_executable(
-        os.path.join(root, "empty-env"),
-        "#!/bin/sh\nprintf ':\\n'\n",
-    )
-    roots_w = os.path.join(root, "roots-w")
-    roots_p = os.path.join(root, "roots-p")
-    os.makedirs(roots_w)
-    os.makedirs(roots_p)
-    proofkit_mod.compute_canonical_roots(
-        roots_w,
-        roots_p,
-        empty_env,
-        {"env_path": os.environ.get("PATH", ""), "env_home": root},
-    )
-    covered.add("roots-empty-entry")
 
-    census_root = os.path.join(root, "census-cases")
-    census_dir = os.path.join(census_root, "proof", "census")
-    os.makedirs(census_dir)
-    expect_reason(
-        "validated-census-set-mismatch",
-        "CENSUS-SET",
-        lambda: proofkit_mod._census_shas_and_validate(
-            census_root,
-            ("demo",),
-        ),
-    )
-    with open(
-        os.path.join(census_dir, "demo.json"),
-        "w",
-        encoding="utf-8",
-    ) as output:
-        output.write("{")
-    expect_reason(
-        "validated-census-invalid-json",
-        "CENSUS-INVALID",
-        lambda: proofkit_mod._census_shas_and_validate(
-            census_root,
-            ("demo",),
-        ),
-    )
-    expect_reason(
-        "census-shas-missing-dir",
-        "CENSUS-SET",
-        lambda: proofkit_mod._census_shas(
-            os.path.join(root, "missing-census-root"),
-            ("demo",),
-        ),
-    )
-    os.unlink(os.path.join(census_dir, "demo.json"))
-    expect_reason(
-        "census-shas-set-mismatch",
-        "CENSUS-SET",
-        lambda: proofkit_mod._census_shas(census_root, ("demo",)),
-    )
 
-    mismatch_report = os.path.join("/tmp", "iyp-a1b2c3d4")
-    expect_reason(
-        "report-chain-mismatch",
-        "REPORT-DIR-CHAIN",
-        lambda: proofkit_mod._validated_report_dir(
-            mismatch_report,
-            require_empty=False,
-            chain_id="b" * 32,
-        ),
-    )
-    os.makedirs(mismatch_report, exist_ok=True)
-    original_listdir = proofkit_mod.os.listdir
-    try:
-        proofkit_mod.os.listdir = (
-            lambda _path: (_ for _ in ()).throw(
-                OSError("fixture listdir failure")
-            )
-        )
-        expect_reason(
-            "report-listdir-error",
-            "REPORT-DIR",
-            lambda: proofkit_mod._validated_report_dir(
-                mismatch_report,
-                require_empty=True,
-            ),
-        )
-    finally:
-        proofkit_mod.os.listdir = original_listdir
-        shutil.rmtree(mismatch_report, ignore_errors=True)
 
-    original_inspect = proofkit_mod.inspect_pin_inputs
-    original_probe = proofkit_mod.probe_atime_observable
-    proofkit_mod.inspect_pin_inputs = lambda *_args, **_kwargs: {}
-    try:
-        def pin_probe_identity(_path, stat_fn=os.stat):
-            raise proofkit_mod.IdentityError(
-                "EXEC-UNOBSERVABLE",
-                "fixture identity refusal",
-            )
 
-        def pin_probe_identity_dirty(path, stat_fn=os.stat):
-            with open(
-                os.path.join(path, "held"),
-                "w",
-                encoding="utf-8",
-            ) as output:
-                output.write("held")
-            raise proofkit_mod.IdentityError(
-                "EXEC-UNOBSERVABLE",
-                "fixture identity refusal",
-            )
-
-        def pin_probe_oserror(_path, stat_fn=os.stat):
-            raise OSError("fixture pin write failure")
-
-        def pin_probe_oserror_dirty(path, stat_fn=os.stat):
-            with open(
-                os.path.join(path, "held"),
-                "w",
-                encoding="utf-8",
-            ) as output:
-                output.write("held")
-            raise OSError("fixture pin write failure")
-
-        pin_cases = (
-            (
-                "pin-identity-cleanup",
-                pin_probe_identity,
-                "EXEC-UNOBSERVABLE",
-            ),
-            (
-                "pin-identity-dirty-cleanup",
-                pin_probe_identity_dirty,
-                "EXEC-UNOBSERVABLE",
-            ),
-            ("pin-write-cleanup", pin_probe_oserror, "PIN-WRITE"),
-            (
-                "pin-write-dirty-cleanup",
-                pin_probe_oserror_dirty,
-                "PIN-WRITE",
-            ),
-        )
-        for index, (label, probe, reason) in enumerate(pin_cases, 1):
-            report = os.path.join("/tmp", f"iyp-e0e0e0{index:02x}")
-            shutil.rmtree(report, ignore_errors=True)
-            proofkit_mod.probe_atime_observable = probe
-            expect_reason(
-                label,
-                reason,
-                lambda report=report: proofkit_mod.write_pin(
-                    report,
-                    root,
-                    root,
-                    empty_env,
-                    (),
-                ),
-            )
-            shutil.rmtree(report, ignore_errors=True)
-    finally:
-        proofkit_mod.inspect_pin_inputs = original_inspect
-        proofkit_mod.probe_atime_observable = original_probe
-
-    load_reports: list[str] = []
-    try:
-        invalid_report = os.path.join("/tmp", "iyp-f0f0f001")
-        os.makedirs(invalid_report, exist_ok=True)
-        load_reports.append(invalid_report)
-        with open(
-            os.path.join(invalid_report, "pin.json"),
-            "w",
-            encoding="utf-8",
-        ) as output:
-            output.write("{")
-        expect_reason(
-            "pin-load-invalid-json",
-            "PIN-INVALID",
-            lambda: proofkit_mod.load_pin(invalid_report),
-        )
-
-        chain_report = os.path.join("/tmp", "iyp-f0f0f002")
-        os.makedirs(chain_report, exist_ok=True)
-        load_reports.append(chain_report)
-        with open(
-            os.path.join(chain_report, "pin.json"),
-            "w",
-            encoding="utf-8",
-        ) as output:
-            json.dump({"chain_id": None}, output)
-        expect_reason(
-            "pin-load-chain-type",
-            "CHAIN-ID",
-            lambda: proofkit_mod.load_pin(chain_report),
-        )
-
-        report_mismatch = os.path.join("/tmp", "iyp-f0f0f003")
-        os.makedirs(report_mismatch, exist_ok=True)
-        load_reports.append(report_mismatch)
-        with open(
-            os.path.join(report_mismatch, "pin.json"),
-            "w",
-            encoding="utf-8",
-        ) as output:
-            json.dump(
-                {
-                    "chain_id": "f0f0f003" + "0" * 24,
-                    "report_dir": "/private/tmp/other",
-                },
-                output,
-            )
-        expect_reason(
-            "pin-load-report-mismatch",
-            "REPORT-DIR-CHAIN",
-            lambda: proofkit_mod.load_pin(report_mismatch),
-        )
-    finally:
-        for report in load_reports:
-            shutil.rmtree(report, ignore_errors=True)
-
-    with PinFixture() as fixture:
-        original_git_clean = proofkit_mod.git_clean
-        original_git_diff = proofkit_mod.git_diff_name_only
-        original_sha = proofkit_mod.sha256_file
-        original_which = proofkit_mod.shutil.which
-        original_rev_parse = proofkit_mod.git_rev_parse
-        original_ancestor = proofkit_mod.git_merge_base_is_ancestor
-        original_first_line = proofkit_mod._first_output_line
-        try:
-            proofkit_mod.git_clean = (
-                lambda _path: (_ for _ in ()).throw(
-                    RuntimeError("fixture git status failure")
-                )
-            )
-            expect_reason(
-                "pin-inspect-git-error",
-                "GIT-ERROR",
-                lambda: proofkit_mod.inspect_pin_inputs(
-                    fixture.p,
-                    fixture.w,
-                    fixture.compiler,
-                    DRIVERS_29,
-                ),
-            )
-            proofkit_mod.git_clean = original_git_clean
-
-            proofkit_mod.git_diff_name_only = (
-                lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                    RuntimeError("fixture git diff failure")
-                )
-            )
-            expect_reason(
-                "pin-inspect-diff-error",
-                "GIT-ERROR",
-                lambda: proofkit_mod.inspect_pin_inputs(
-                    fixture.p,
-                    fixture.w,
-                    fixture.compiler,
-                    DRIVERS_29,
-                ),
-            )
-            proofkit_mod.git_diff_name_only = original_git_diff
-
-            expect_reason(
-                "pin-inspect-compiler-missing",
-                "COMPILER-NOT-EXECUTABLE",
-                lambda: proofkit_mod.inspect_pin_inputs(
-                    fixture.p,
-                    fixture.w,
-                    os.path.join(fixture.scratch, "missing-compiler"),
-                    DRIVERS_29,
-                ),
-            )
-
-            proofkit_mod.sha256_file = (
-                lambda _path: (_ for _ in ()).throw(
-                    OSError("fixture compiler read failure")
-                )
-            )
-            expect_reason(
-                "pin-inspect-compiler-stat",
-                "COMPILER-STAT",
-                lambda: proofkit_mod.inspect_pin_inputs(
-                    fixture.p,
-                    fixture.w,
-                    fixture.compiler,
-                    DRIVERS_29,
-                ),
-            )
-            proofkit_mod.sha256_file = original_sha
-
-            proofkit_mod.shutil.which = (
-                lambda name, path=None: (
-                    None
-                    if name == "nm"
-                    else original_which(name, path=path)
-                )
-            )
-            expect_reason(
-                "pin-inspect-no-nm",
-                "NO-NM",
-                lambda: proofkit_mod.inspect_pin_inputs(
-                    fixture.p,
-                    fixture.w,
-                    fixture.compiler,
-                    DRIVERS_29,
-                ),
-            )
-            proofkit_mod.shutil.which = original_which
-
-            pin = fixture.pin()
-            proofkit_mod.git_clean = (
-                lambda path: os.path.realpath(path)
-                != os.path.realpath(fixture.p)
-            )
-            expect_reason(
-                "identity-p-dirty",
-                "P-DIRTY",
-                lambda: proofkit_mod.check_identity(pin),
-            )
-            proofkit_mod.git_clean = (
-                lambda path: os.path.realpath(path)
-                != os.path.realpath(fixture.w)
-            )
-            expect_reason(
-                "identity-w-dirty",
-                "W-DIRTY",
-                lambda: proofkit_mod.check_identity(pin),
-            )
-            proofkit_mod.git_clean = original_git_clean
-
-            proofkit_mod.git_rev_parse = (
-                lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                    RuntimeError("fixture rev-parse failure")
-                )
-            )
-            expect_reason(
-                "identity-git-error",
-                "GIT-ERROR",
-                lambda: proofkit_mod.check_identity(pin),
-            )
-            proofkit_mod.git_rev_parse = original_rev_parse
-
-            proofkit_mod.git_merge_base_is_ancestor = (
-                lambda *_args, **_kwargs: False
-            )
-            expect_reason(
-                "identity-not-descendant",
-                "W-NOT-DESCENDANT",
-                lambda: proofkit_mod.check_identity(pin),
-            )
-            proofkit_mod.git_merge_base_is_ancestor = original_ancestor
-
-            proofkit_mod.git_diff_name_only = (
-                lambda *_args, **_kwargs: ["src/fixture"]
-            )
-            expect_reason(
-                "identity-product-diff",
-                "PRODUCT-DIFF",
-                lambda: proofkit_mod.check_identity(pin),
-            )
-            proofkit_mod.git_diff_name_only = original_git_diff
-
-            proofkit_mod.sha256_file = (
-                lambda _path: (_ for _ in ()).throw(
-                    OSError("fixture identity compiler read failure")
-                )
-            )
-            expect_reason(
-                "identity-compiler-stat",
-                "COMPILER-STAT",
-                lambda: proofkit_mod.check_identity(pin),
-            )
-            proofkit_mod.sha256_file = original_sha
-
-            missing_stamp_pin = dict(pin)
-            missing_stamp_pin["compiler_version_line"] = "no stamp"
-            proofkit_mod._first_output_line = (
-                lambda *_args, **_kwargs: "no stamp"
-            )
-            expect_reason(
-                "identity-stamp-missing",
-                "COMPILER-STAMP-MISSING",
-                lambda: proofkit_mod.check_identity(missing_stamp_pin),
-            )
-            proofkit_mod._first_output_line = original_first_line
-
-            proofkit_mod.shutil.which = (
-                lambda name, path=None: (
-                    None
-                    if name == "timeout"
-                    else original_which(name, path=path)
-                )
-            )
-            expect_reason(
-                "identity-no-timeout",
-                "NO-TIMEOUT",
-                lambda: proofkit_mod.check_identity(pin),
-            )
-            proofkit_mod.shutil.which = (
-                lambda name, path=None: (
-                    None
-                    if name == "nm"
-                    else original_which(name, path=path)
-                )
-            )
-            expect_reason(
-                "identity-no-nm",
-                "NO-NM",
-                lambda: proofkit_mod.check_identity(pin),
-            )
-            proofkit_mod.shutil.which = original_which
-
-            os.unlink(fixture.compiler)
-            expect_reason(
-                "identity-compiler-missing",
-                "COMPILER-NOT-EXECUTABLE",
-                lambda: proofkit_mod.check_identity(pin),
-            )
-        finally:
-            proofkit_mod.git_clean = original_git_clean
-            proofkit_mod.git_diff_name_only = original_git_diff
-            proofkit_mod.sha256_file = original_sha
-            proofkit_mod.shutil.which = original_which
-            proofkit_mod.git_rev_parse = original_rev_parse
-            proofkit_mod.git_merge_base_is_ancestor = original_ancestor
-            proofkit_mod._first_output_line = original_first_line
-
-    return covered
-
-
-def _exercise_proofkit_process_edges(root: str) -> set[str]:
-    covered: set[str] = set()
-    original_run = proofkit_mod.subprocess.run
-    original_popen = proofkit_mod.subprocess.Popen
-    original_killpg = proofkit_mod.os.killpg
-    original_members = proofkit_mod._process_group_members
-    original_wait_group = proofkit_mod._wait_for_group_exit
-    original_signal_group = proofkit_mod._signal_process_group
-    original_sample = proofkit_mod._sample_log_growth
-    original_record = proofkit_mod._record_and_stop_survivors
-    try:
-        proofkit_mod.subprocess.run = lambda *_args, **_kwargs: (
-            SimpleNamespace(
-                returncode=1,
-                stdout="",
-                stderr="fixture ps failure",
-            )
-        )
-        try:
-            proofkit_mod._process_group_members(1)
-        except RuntimeError:
-            covered.add("process-members-status")
-
-        proofkit_mod.subprocess.run = lambda *_args, **_kwargs: (
-            SimpleNamespace(
-                returncode=0,
-                stdout="bad\nx y\n10 20\n",
-                stderr="",
-            )
-        )
-        if proofkit_mod._process_group_members(20) == (10,):
-            covered.add("process-members-malformed")
-
-        proofkit_mod.os.killpg = (
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                ProcessLookupError()
-            )
-        )
-        proofkit_mod._signal_process_group(1, signal.SIGTERM)
-        covered.add("process-signal-missing")
-
-        member_calls = 0
-
-        def members_then_empty(_pgid, exclude=None):
-            nonlocal member_calls
-            member_calls += 1
-            return (1,) if member_calls == 1 else ()
-
-        proofkit_mod._process_group_members = members_then_empty
-        if proofkit_mod._wait_for_group_exit(1, 1.0) == ():
-            covered.add("process-wait-loop")
-
-        class NeverStops:
-            pid = 99
-
-            def wait(self, timeout=None):
-                raise subprocess.TimeoutExpired("fixture", timeout)
-
-        proofkit_mod._signal_process_group = lambda *_args: None
-        try:
-            proofkit_mod._stop_leader(NeverStops(), 99, 0.0)
-        except RuntimeError:
-            covered.add("process-leader-survives")
-
-        proofkit_mod._process_group_members = (
-            lambda _pgid, exclude=None: ()
-        )
-        if proofkit_mod._record_and_stop_survivors(1, 1, 0.0) == ():
-            covered.add("process-no-survivors")
-
-        proofkit_mod._process_group_members = (
-            lambda _pgid, exclude=None: (2,)
-        )
-        proofkit_mod._wait_for_group_exit = (
-            lambda _pgid, _limit: (2,)
-        )
-        try:
-            proofkit_mod._record_and_stop_survivors(1, 1, 0.0)
-        except RuntimeError:
-            covered.add("process-survivors-remain")
-
-        errors: list[BaseException] = []
-        proofkit_mod._sample_log_growth(
-            os.path.join(root, "missing-log"),
-            os.path.join(root, "times"),
-            threading.Event(),
-            errors,
-        )
-        if errors:
-            covered.add("process-sampler-oserror")
-        class UnexpectedWait:
-            pid = 404
-
-            def __init__(self):
-                self.returncode = None
-                self.waits = 0
-
-            def wait(self, timeout=None):
-                self.waits += 1
-                if self.waits == 1:
-                    raise RuntimeError("fixture unexpected wait failure")
-                self.returncode = 0
-                return 0
-
-            def poll(self):
-                return self.returncode
-
-        unexpected = UnexpectedWait()
-        proofkit_mod.subprocess.Popen = (
-            lambda *_args, **_kwargs: unexpected
-        )
-        proofkit_mod._process_group_members = (
-            lambda _pgid, exclude=None: ()
-        )
-        proofkit_mod._signal_process_group = lambda *_args: None
-        try:
-            proofkit_mod.run_bounded(
-                [sys.executable, "-c", "pass"],
-                root,
-                os.environ.copy(),
-                os.path.join(root, "finally-stop.log"),
-                os.path.join(root, "finally-stop.times"),
-                None,
-            )
-        except RuntimeError:
-            covered.add("process-finally-stop-leader")
-        proofkit_mod.subprocess.Popen = original_popen
-
-
-        proofkit_mod._process_group_members = (
-            lambda _pgid, exclude=None: (3,)
-        )
-        proofkit_mod._wait_for_group_exit = (
-            lambda _pgid, _limit: (3,)
-        )
-        proofkit_mod._signal_process_group = lambda *_args: None
-        proofkit_mod._record_and_stop_survivors = (
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                RuntimeError("fixture record failure")
-            )
-        )
-        try:
-            proofkit_mod.run_bounded(
-                [sys.executable, "-c", "pass"],
-                root,
-                os.environ.copy(),
-                os.path.join(root, "residual.log"),
-                os.path.join(root, "residual.times"),
-                None,
-            )
-        except RuntimeError:
-            covered.add("process-finally-residual")
-
-        proofkit_mod._process_group_members = original_members
-        proofkit_mod._wait_for_group_exit = original_wait_group
-        proofkit_mod._signal_process_group = original_signal_group
-        proofkit_mod._record_and_stop_survivors = original_record
-
-        def failing_sample(
-            _log,
-            _times,
-            _stop,
-            errors,
-        ):
-            errors.append(OSError("fixture sampler failure"))
-
-        proofkit_mod._sample_log_growth = failing_sample
-        try:
-            proofkit_mod.run_bounded(
-                [sys.executable, "-c", "pass"],
-                root,
-                os.environ.copy(),
-                os.path.join(root, "sampler.log"),
-                os.path.join(root, "sampler.times"),
-                None,
-            )
-        except RuntimeError:
-            covered.add("process-sampler-errors")
-        proofkit_mod.subprocess.Popen = original_popen
-    finally:
-        proofkit_mod.subprocess.run = original_run
-        proofkit_mod.subprocess.Popen = original_popen
-        proofkit_mod.os.killpg = original_killpg
-        proofkit_mod._process_group_members = original_members
-        proofkit_mod._wait_for_group_exit = original_wait_group
-        proofkit_mod._signal_process_group = original_signal_group
-        proofkit_mod._sample_log_growth = original_sample
-        proofkit_mod._record_and_stop_survivors = original_record
-    return covered
-
-
-def _fixture_proofkit_coverage_seed() -> Observation:
-    covered: set[str] = set()
-    with tempfile.TemporaryDirectory(prefix="iyi-o7-proofkit-") as root:
-        covered.update(_exercise_proofkit_storage_identity_edges(root))
-        covered.update(_exercise_proofkit_process_edges(root))
-        result_path = os.path.join(root, "result.json")
-        record = {
-            "checks": {
-                name: "PASS"
-                for name in proofkit_mod.REQUIRED_CHECKS["run2"]
-            }
-        }
-        proofkit_mod.write_result(result_path, record)
-        if proofkit_mod.load_result(result_path) == record:
-            covered.add("result-roundtrip")
-        with open(result_path, "w", encoding="utf-8") as output:
-            output.write("{")
-        if proofkit_mod.load_result(result_path) is None:
-            covered.add("result-invalid")
-        if proofkit_mod.load_result(os.path.join(root, "missing")) is None:
-            covered.add("result-missing")
-        if proofkit_mod.recompute_status({}, "unknown") == "FAIL":
-            covered.add("status-unknown")
-        if proofkit_mod.recompute_status(
-            {"checks": {"identity": "PASS"}},
-            "run2",
-        ) == "FAIL":
-            covered.add("status-missing")
-        if proofkit_mod.recompute_status(
-            {"checks": {"identity": 7}},
-            "run2",
-        ) == "FAIL":
-            covered.add("status-nonstring")
-
-        try:
-            proofkit_mod.check_disk_space(root, 2**60)
-        except RuntimeError:
-            covered.add("disk-low")
-        try:
-            proofkit_mod.git_cmd(["status"], os.path.join(root, "not-git"))
-        except RuntimeError:
-            covered.add("git-error")
-
-        bad_tool = os.path.join(root, "bad-tool")
-        with open(bad_tool, "w", encoding="utf-8") as output:
-            output.write("#!/bin/sh\nexit 7\n")
-        os.chmod(bad_tool, 0o755)
-        w_path = os.path.join(root, "w")
-        p_path = os.path.join(root, "p")
-        os.makedirs(w_path)
-        os.makedirs(p_path)
-        pin_env = {
-            "env_path": os.environ.get("PATH", ""),
-            "env_home": root,
-        }
-        original_system = proofkit_mod.platform.system
-        original_which = proofkit_mod.shutil.which
-        original_run = proofkit_mod.subprocess.run
-        try:
-            proofkit_mod.platform.system = lambda: "Linux"
-            if (
-                proofkit_mod.platform_temp_root(
-                    pin_env,
-                    cwd=root,
-                    probe_mktemp=True,
-                )
-                is None
-            ):
-                covered.add("platform-linux")
-
-            proofkit_mod.platform.system = lambda: "Darwin"
-            proofkit_mod.shutil.which = lambda *_args, **_kwargs: None
-            try:
-                proofkit_mod.platform_temp_root(
-                    pin_env,
-                    cwd=root,
-                    probe_mktemp=True,
-                )
-            except proofkit_mod.IdentityError as error:
-                if error.reason == "NO-PLATFORM-TMP":
-                    covered.add("platform-getconf-missing")
-
-            proofkit_mod.shutil.which = (
-                lambda *_args, **_kwargs: "/fixture/getconf"
-            )
-
-            def getconf_oserror(*_args, **_kwargs):
-                raise OSError("fixture getconf failure")
-
-            proofkit_mod.subprocess.run = getconf_oserror
-            try:
-                proofkit_mod.platform_temp_root(
-                    pin_env,
-                    cwd=root,
-                    probe_mktemp=True,
-                )
-            except proofkit_mod.IdentityError as error:
-                if error.reason == "NO-PLATFORM-TMP":
-                    covered.add("platform-getconf-oserror")
-
-            proofkit_mod.subprocess.run = lambda *_args, **_kwargs: (
-                SimpleNamespace(
-                    returncode=1,
-                    stdout="",
-                    stderr="fixture getconf status",
-                )
-            )
-            try:
-                proofkit_mod.platform_temp_root(
-                    pin_env,
-                    cwd=root,
-                    probe_mktemp=True,
-                )
-            except proofkit_mod.IdentityError as error:
-                if error.reason == "NO-PLATFORM-TMP":
-                    covered.add("platform-getconf-status")
-
-            missing_root = os.path.join(root, "missing-platform-root")
-            proofkit_mod.subprocess.run = lambda *_args, **_kwargs: (
-                SimpleNamespace(
-                    returncode=0,
-                    stdout=f"{missing_root}\n",
-                    stderr="",
-                )
-            )
-            try:
-                proofkit_mod.platform_temp_root(
-                    pin_env,
-                    cwd=root,
-                    probe_mktemp=True,
-                )
-            except proofkit_mod.IdentityError as error:
-                if error.reason == "NO-PLATFORM-TMP":
-                    covered.add("platform-getconf-nondir")
-
-            def platform_which(name, **_kwargs):
-                return "/fixture/getconf" if name == "getconf" else None
-
-            proofkit_mod.shutil.which = platform_which
-            proofkit_mod.subprocess.run = lambda *_args, **_kwargs: (
-                SimpleNamespace(
-                    returncode=0,
-                    stdout=f"{root}\n",
-                    stderr="",
-                )
-            )
-            try:
-                proofkit_mod.platform_temp_root(
-                    pin_env,
-                    cwd=root,
-                    probe_mktemp=True,
-                )
-            except proofkit_mod.IdentityError as error:
-                if error.reason == "NO-PLATFORM-TMP":
-                    covered.add("platform-mktemp-missing")
-
-            proofkit_mod.shutil.which = (
-                lambda name, **_kwargs: f"/fixture/{name}"
-            )
-            missing_created = os.path.join(root, "missing-created")
-
-            def mktemp_nondir(argv, **_kwargs):
-                if argv[-1] == "DARWIN_USER_TEMP_DIR":
-                    return SimpleNamespace(
-                        returncode=0,
-                        stdout=f"{root}\n",
-                        stderr="",
-                    )
-                return SimpleNamespace(
-                    returncode=0,
-                    stdout=f"{missing_created}\n",
-                    stderr="",
-                )
-
-            proofkit_mod.subprocess.run = mktemp_nondir
-            try:
-                proofkit_mod.platform_temp_root(
-                    pin_env,
-                    cwd=root,
-                    probe_mktemp=True,
-                )
-            except proofkit_mod.IdentityError as error:
-                if error.reason == "PLATFORM-TMP-UNOBSERVABLE":
-                    covered.add("platform-mktemp-nondir")
-
-
-            def mktemp_status(argv, **_kwargs):
-                if argv[-1] == "DARWIN_USER_TEMP_DIR":
-                    return SimpleNamespace(
-                        returncode=0,
-                        stdout=f"{root}\n",
-                        stderr="",
-                    )
-                return SimpleNamespace(
-                    returncode=1,
-                    stdout="",
-                    stderr="fixture mktemp status",
-                )
-
-            proofkit_mod.subprocess.run = mktemp_status
-            try:
-                proofkit_mod.platform_temp_root(
-                    pin_env,
-                    cwd=root,
-                    probe_mktemp=True,
-                )
-            except proofkit_mod.IdentityError as error:
-                if error.reason == "PLATFORM-TMP-UNOBSERVABLE":
-                    covered.add("platform-mktemp-status")
-
-            def mktemp_oserror(argv, **_kwargs):
-                if argv[-1] == "DARWIN_USER_TEMP_DIR":
-                    return SimpleNamespace(
-                        returncode=0,
-                        stdout=f"{root}\n",
-                        stderr="",
-                    )
-                raise OSError("fixture mktemp failure")
-
-            proofkit_mod.subprocess.run = mktemp_oserror
-            try:
-                proofkit_mod.platform_temp_root(
-                    pin_env,
-                    cwd=root,
-                    probe_mktemp=True,
-                )
-            except proofkit_mod.IdentityError as error:
-                if error.reason == "PLATFORM-TMP-UNOBSERVABLE":
-                    covered.add("platform-mktemp-oserror")
-        finally:
-            proofkit_mod.platform.system = original_system
-            proofkit_mod.shutil.which = original_which
-            proofkit_mod.subprocess.run = original_run
-        try:
-            proofkit_mod.compute_canonical_roots(
-                w_path,
-                p_path,
-                bad_tool,
-                {"env_path": os.environ.get("PATH", ""), "env_home": root},
-            )
-        except proofkit_mod.IdentityError as error:
-            if error.reason == "COMPILER-ENV":
-                covered.add("compiler-env")
-        try:
-            proofkit_mod._first_output_line(
-                [bad_tool],
-                cwd=root,
-                env=os.environ.copy(),
-                reason="BAD-OUTPUT",
-            )
-        except proofkit_mod.IdentityError as error:
-            if error.reason == "BAD-OUTPUT":
-                covered.add("first-output")
-        try:
-            proofkit_mod._nm_version_line(
-                bad_tool,
-                cwd=root,
-                env=os.environ.copy(),
-            )
-        except proofkit_mod.IdentityError as error:
-            if error.reason == "NO-NM":
-                covered.add("nm-output")
-        try:
-            proofkit_mod._census_shas_and_validate(
-                os.path.join(root, "no-census"),
-                ("demo",),
-            )
-        except proofkit_mod.IdentityError as error:
-            if error.reason == "CENSUS-SET":
-                covered.add("census-set")
-
-        report = os.path.join(
-            "/tmp",
-            f"iyp-{hashlib.sha256(os.urandom(32)).hexdigest()[:8]}",
-        )
-        try:
-            proofkit_mod._validated_report_dir(
-                report,
-                require_empty=False,
-                chain_id="bad",
-            )
-        except proofkit_mod.IdentityError as error:
-            if error.reason == "CHAIN-ID":
-                covered.add("chain-id")
-        try:
-            proofkit_mod.load_pin(report)
-        except proofkit_mod.IdentityError as error:
-            if error.reason == "PIN-MISSING":
-                covered.add("pin-missing")
-
-        log_path = os.path.join(root, "bounded.log")
-        times_path = os.path.join(root, "bounded.times")
-        try:
-            proofkit_mod.run_bounded(
-                [sys.executable, "-c", "pass"],
-                root,
-                os.environ.copy(),
-                log_path,
-                times_path,
-                0,
-            )
-        except ValueError:
-            covered.add("limit-invalid")
-        try:
-            proofkit_mod.run_bounded(
-                [sys.executable, "-c", "pass"],
-                root,
-                os.environ.copy(),
-                log_path,
-                times_path,
-                None,
-                -1,
-            )
-        except ValueError:
-            covered.add("grace-invalid")
-        for mode in (
-            "atime-retention",
-            "metadata-atime",
-            "execute-failure",
-            "sha-change",
-            "inode-change",
-            "probe-oserror",
-        ):
-            calls = 0
-            initial_mtime = 0
-
-            def probe_stat(path: str):
-                nonlocal calls, initial_mtime
-                calls += 1
-                current = os.stat(path)
-                if calls == 1:
-                    initial_mtime = current.st_mtime_ns
-                    if mode == "probe-oserror":
-                        reference = f"{path}.ref"
-                        os.unlink(path)
-                        os.unlink(reference)
-                        raise OSError("fixture probe removal")
-                if mode == "atime-retention" and calls == 2:
-                    return SimpleNamespace(
-                        st_atime_ns=current.st_mtime_ns,
-                        st_mtime_ns=current.st_mtime_ns,
-                        st_ino=current.st_ino,
-                    )
-                if mode == "metadata-atime" and calls == 3:
-                    return SimpleNamespace(
-                        st_atime_ns=current.st_atime_ns + 1,
-                        st_mtime_ns=current.st_mtime_ns,
-                        st_ino=current.st_ino,
-                    )
-                if mode == "execute-failure" and calls == 3:
-                    with open(path, "w", encoding="utf-8") as output:
-                        output.write("#!/bin/sh\nexit 7\n")
-                    os.chmod(path, 0o755)
-                    return os.stat(path)
-                if mode == "sha-change" and calls == 4:
-                    with open(path, "ab") as output:
-                        output.write(b"x")
-                    return SimpleNamespace(
-                        st_atime_ns=initial_mtime + 1,
-                        st_mtime_ns=initial_mtime,
-                        st_ino=current.st_ino,
-                    )
-                if mode == "inode-change" and calls == 4:
-                    return SimpleNamespace(
-                        st_atime_ns=initial_mtime + 1,
-                        st_mtime_ns=initial_mtime,
-                        st_ino=current.st_ino + 1,
-                    )
-                return current
-
-            try:
-                proofkit_mod.probe_atime_observable(
-                    root,
-                    stat_fn=probe_stat,
-                )
-            except proofkit_mod.IdentityError as error:
-                if error.reason == "EXEC-UNOBSERVABLE":
-                    covered.add(mode)
-
-    expansion_cases = {
-        "backtick": proofkit_mod._replace_shell_expansions("`date`"),
-        "backtick-open": proofkit_mod._replace_shell_expansions("`date"),
-        "trailing-dollar": proofkit_mod._replace_shell_expansions("$"),
-        "open-brace": proofkit_mod._replace_shell_expansions("${value"),
-        "literal-dollar": proofkit_mod._replace_shell_expansions("$%"),
-    }
-    if expansion_cases == {
-        "backtick": "IYIVAR",
-        "backtick-open": None,
-        "trailing-dollar": "$",
-        "open-brace": None,
-        "literal-dollar": "$%",
-    }:
-        covered.add("shell-expansions")
-        covered.add("backtick-open")
-    if proofkit_mod._command_substitution_end("$(echo", 0) is None:
-        covered.add("command-substitution-open")
-    if proofkit_mod._shell_span_bodies('"$(echo"') is None:
-        covered.add("shell-span-open")
-    if proofkit_mod._dequote_print_word("$'x'") is None:
-        covered.add("dequote-dollar")
-    if proofkit_mod._render_print_words(["not-print"]) is None:
-        covered.add("render-command")
-    if proofkit_mod._render_print_words(["printf"]) is None:
-        covered.add("render-empty")
-    if (
-        proofkit_mod._command_substitution_end(
-            '$(echo "$(broken',
-            0,
-        )
-        is None
-    ):
-        covered.add("nested-command-open")
-    nested_closed = '$(echo "$(date)")'
-    if (
-        proofkit_mod._command_substitution_end(nested_closed, 0)
-        == len(nested_closed)
-    ):
-        covered.add("nested-command-closed")
-    backtick_closed = '$(echo "a `date` c")'
-    if (
-        proofkit_mod._command_substitution_end(backtick_closed, 0)
-        == len(backtick_closed)
-    ):
-        covered.add("nested-backtick-closed")
-    if (
-        proofkit_mod._command_substitution_end(
-            '$(echo "`broken)',
-            0,
-        )
-        is None
-    ):
-        covered.add("nested-backtick-open")
-    original_shell_bodies = proofkit_mod._shell_span_bodies
-    try:
-        proofkit_mod._shell_span_bodies = lambda _token: None
-        if proofkit_mod._print_commands("echo ok") is None:
-            covered.add("print-bodies-open")
-        proofkit_mod._shell_span_bodies = lambda _token: ("'",)
-        if proofkit_mod._print_commands("echo ok") is None:
-            covered.add("print-nested-open")
-    finally:
-        proofkit_mod._shell_span_bodies = original_shell_bodies
-    parser_edges = (
-        proofkit_mod._replace_shell_expansions("${a{b}}") == "IYIVAR"
-        and proofkit_mod._command_substitution_end(
-            '$(echo `date`)',
-            0,
-        )
-        == len('$(echo `date`)')
-        and proofkit_mod._command_substitution_end(
-            '$(echo `date)',
-            0,
-        )
-        is None
-        and proofkit_mod._shell_span_bodies("`date") is None
-        and proofkit_mod._dequote_print_word('"$(echo"') is None
-        and proofkit_mod._render_print_words(
-            ["echo", "-n", "ok"]
-        )
-        == "ok"
-        and proofkit_mod._render_print_words(
-            ["printf", "-v", "ok"]
-        )
-        == "ok"
-    )
-    if parser_edges:
-        covered.add("parser-edges")
-    if proofkit_mod._template_violation(
-        "{broken",
-        set(),
-        "fixture",
-    ) == "fixture has malformed placeholder syntax: '{broken'":
-        covered.add("template-brace")
-    if proofkit_mod.validate_census([], b"", "x"):
-        covered.add("census-nonobject")
-    if proofkit_mod.validate_census({}, "not-bytes", "x"):
-        covered.add("census-bytes")
-    if proofkit_mod.validate_census({}, b"", 7):
-        covered.add("census-path")
-    census, script_bytes, script_relpath = _census_case("cookie")
-    malformed_cases: dict[str, dict] = {}
-    site_case = _clone_census(census)
-    site_case["sites"].append(7)
-    malformed_cases["census-site-object"] = site_case
-    variant_case = _clone_census(census)
-    variant_case["sites"][0]["variants"].append(7)
-    malformed_cases["census-variant-object"] = variant_case
-    skip_case = _clone_census(census)
-    skip_case["skips"].append(7)
-    malformed_cases["census-skip-object"] = skip_case
-    evidence_case = _clone_census(census)
-    evidence_case["exec_evidence"].append(7)
-    malformed_cases["census-evidence-object"] = evidence_case
-    duplicate_variant = _clone_census(census)
-    duplicate_variant["sites"][2]["variants"].append(
-        _clone_census(
-            {"value": duplicate_variant["sites"][2]["variants"][0]}
-        )["value"]
-    )
-    malformed_cases["census-variant-duplicate"] = duplicate_variant
-    duplicate_skip = _clone_census(census)
-    duplicate_skip["skips"].append(
-        _clone_census({"value": duplicate_skip["skips"][0]})["value"]
-    )
-    malformed_cases["census-skip-duplicate"] = duplicate_skip
-    for label, malformed in malformed_cases.items():
-        rules = _rule_ids(
-            proofkit_mod.validate_census(
-                malformed,
-                script_bytes,
-                script_relpath,
-            )
-        )
-        if "C5.0-schema" in rules:
-            covered.add(label)
-
-    sentinel_census = _clone_census(census)
-    sentinel_lines = script_bytes.decode("utf-8").splitlines()
-    sentinel_index = sentinel_census["pass_sentinel"]["line"] - 1
-    sentinel_lines[sentinel_index] = "true"
-    sentinel_bytes = ("\n".join(sentinel_lines) + "\n").encode()
-    sentinel_census["pass_sentinel"]["text"] = "true"
-    sentinel_census["script_sha256"] = hashlib.sha256(
-        sentinel_bytes
-    ).hexdigest()
-    if "C5.4-unrenderable" in _rule_ids(
-        proofkit_mod.validate_census(
-            sentinel_census,
-            sentinel_bytes,
-            script_relpath,
-        )
-    ):
-        covered.add("census-sentinel-unrenderable")
-    skip_unrenderable = _clone_census(census)
-    skip_lines = script_bytes.decode("utf-8").splitlines()
-    skip_index = skip_unrenderable["skips"][0]["line"] - 1
-    skip_lines[skip_index] = "true"
-    skip_bytes = ("\n".join(skip_lines) + "\n").encode()
-    skip_unrenderable["skips"][0]["text"] = "true"
-    skip_unrenderable["script_sha256"] = hashlib.sha256(
-        skip_bytes
-    ).hexdigest()
-    if "C5.4-unrenderable" in _rule_ids(
-        proofkit_mod.validate_census(
-            skip_unrenderable,
-            skip_bytes,
-            script_relpath,
-        )
-    ):
-        covered.add("census-skip-unrenderable")
-    if proofkit_mod._ledger_out_regex(
-        "{unknown}",
-        work_tmp="/tmp",
-        repo="/tmp",
-        name=None,
-        platform_tmp=None,
-    ) is None:
-        covered.add("ledger-template")
-
-    expected = {
-        "roots-empty-entry",
-        "validated-census-set-mismatch",
-        "validated-census-invalid-json",
-        "census-shas-missing-dir",
-        "census-shas-set-mismatch",
-        "report-chain-mismatch",
-        "report-listdir-error",
-        "pin-identity-cleanup",
-        "pin-identity-dirty-cleanup",
-        "pin-write-cleanup",
-        "pin-write-dirty-cleanup",
-        "pin-load-invalid-json",
-        "pin-load-chain-type",
-        "pin-load-report-mismatch",
-        "pin-inspect-git-error",
-        "pin-inspect-diff-error",
-        "pin-inspect-compiler-missing",
-        "pin-inspect-compiler-stat",
-        "pin-inspect-no-nm",
-        "identity-git-error",
-        "identity-not-descendant",
-        "identity-p-dirty",
-        "identity-w-dirty",
-        "identity-product-diff",
-        "identity-compiler-stat",
-        "identity-stamp-missing",
-        "identity-no-timeout",
-        "identity-no-nm",
-        "identity-compiler-missing",
-        "process-members-status",
-        "process-members-malformed",
-        "process-signal-missing",
-        "process-wait-loop",
-        "process-leader-survives",
-        "process-no-survivors",
-        "process-survivors-remain",
-        "process-sampler-oserror",
-        "process-finally-residual",
-        "process-finally-stop-leader",
-        "process-sampler-errors",
-        "backtick-open",
-        "atime-retention",
-        "execute-failure",
-        "inode-change",
-        "metadata-atime",
-        "probe-oserror",
-        "sha-change",
-        "chain-id",
-        "census-bytes",
-        "census-nonobject",
-        "census-path",
-        "census-set",
-        "census-site-object",
-        "census-variant-object",
-        "census-skip-object",
-        "census-evidence-object",
-        "census-variant-duplicate",
-        "census-skip-duplicate",
-        "census-sentinel-unrenderable",
-        "command-substitution-open",
-        "compiler-env",
-        "dequote-dollar",
-        "disk-low",
-        "first-output",
-        "git-error",
-        "grace-invalid",
-        "ledger-template",
-        "limit-invalid",
-        "nm-output",
-        "pin-missing",
-        "platform-linux",
-        "platform-getconf-missing",
-        "platform-getconf-oserror",
-        "platform-getconf-status",
-        "platform-getconf-nondir",
-        "platform-mktemp-missing",
-        "platform-mktemp-nondir",
-        "platform-mktemp-status",
-        "platform-mktemp-oserror",
-        "render-command",
-        "render-empty",
-        "nested-command-open",
-        "nested-command-closed",
-        "nested-backtick-closed",
-        "nested-backtick-open",
-        "print-bodies-open",
-        "print-nested-open",
-        "census-skip-unrenderable",
-        "parser-edges",
-        "result-invalid",
-        "result-missing",
-        "result-roundtrip",
-        "shell-expansions",
-        "shell-span-open",
-        "status-missing",
-        "status-nonstring",
-        "status-unknown",
-        "template-brace",
-    }
-    return Observation(
-        expected=sorted(expected),
-        got=sorted(covered),
-        applied="98 isolated proofkit edge inputs",
-    )
-
-
-def _fixture_artifact_kill_seed() -> Observation:
+def _fixture_artifact_session_kill_seed() -> Observation:
     with tempfile.TemporaryDirectory(prefix="iyi-o7-artifact-kill-") as root:
         command = [
             "/bin/sh",
@@ -13074,794 +12659,1279 @@ def _fixture_artifact_kill_seed() -> Observation:
     )
 
 
-def _exercise_runner_run1_edges(root: str) -> set[str]:
-    covered: set[str] = set()
-    baseline_root = os.path.join(root, "baseline")
-    census_dir = os.path.join(baseline_root, "proof", "census")
-    os.makedirs(census_dir)
-    log_text = (
-        "-- running sibling: std_missing_exercise.sh\n"
-        "skip\n"
-    )
-    with open(
-        os.path.join(census_dir, "missing.json"),
-        "w",
-        encoding="utf-8",
-    ) as output:
-        json.dump([], output)
-    try:
-        stages_mod._baseline_skip_hits(baseline_root, log_text)
-    except ValueError:
-        covered.add("baseline-census-type")
-    with open(
-        os.path.join(census_dir, "missing.json"),
-        "w",
-        encoding="utf-8",
-    ) as output:
-        json.dump(
-            {
-                "driver": "missing",
-                "skips": [
-                    {
-                        "regex": "^z$",
-                        "class": "tool",
-                        "what": "z",
-                    },
-                    {
-                        "regex": "^a$",
-                        "class": "tool",
-                        "what": "a",
-                    },
-                ],
-            },
-            output,
-        )
-    sorted_hits = stages_mod._baseline_skip_hits(
-        baseline_root,
-        "-- running sibling: std_missing_exercise.sh\nz\na\n",
-    )
-    if [hit["what"] for hit in sorted_hits] == ["a", "z"]:
-        covered.add("baseline-sort")
 
-    normal_outputs = {
-        "run1_1": (
-            "RG2 PASSED: fixture\n"
-            "RG2a PASSED: fixture\n"
-            "RG2r PASSED: all 1 probes\n"
-            "RG5 trace half PASSED: fixture\n"
-        ).encode(),
-        "run1_2": b"OK: bench/std_observe_exercise.sh passed all checks\n",
-        "run1_3": b"RG9 PASSED: 141 corpus programs\n",
-        "run1_4": (
-            "Standard library foundation: traits, cmp, enumerable\n"
-            "all 114 exercises answer the same from source and from artifacts\n"
-            "== shard 1 of 1: 115 of 115 sibling exercises\n"
-            + "".join(
-                f"-- running sibling: std_fixture_{index}_exercise.sh\n"
-                for index in range(115)
-            )
-        ).encode(),
-    }
 
-    def result(
-        *,
-        returncode: int = 0,
-        interrupted: int | None = None,
-    ) -> SimpleNamespace:
-        return SimpleNamespace(
-            returncode=returncode,
-            timed_out=False,
-            survivors=(),
-            interrupted_signal=interrupted,
-        )
 
-    with StageFixture() as fixture:
-        fixture.pin()
-        original_gate = stages_mod._run_gate
-        original_identity = stages_mod._check_stage_identity
-        original_disk = stages_mod._check_stage_disk
-        original_baseline = stages_mod._baseline_skip_hits
+
+
+
+
+
+def _proofkit_isolated_edge(case: str) -> Observation:
+    applied = f"isolated proofkit edge={case}"
+    got = False
+
+    def reason(call: Callable[[], object]) -> str:
         try:
-            stages_mod._check_stage_disk = lambda *_args, **_kwargs: True
+            call()
+        except proofkit_mod.IdentityError as error:
+            return error.reason
+        return "NO-REFUSAL"
 
-            def run_case(
-                label: str,
-                target: str,
-                behavior: str,
-                fail_identity_at: int | None,
-            ) -> None:
-                identity_calls = 0
-
-                def identity(*_args, **_kwargs):
-                    nonlocal identity_calls
-                    identity_calls += 1
-                    return identity_calls != fail_identity_at
-
-                def gate(
-                    _command,
-                    *,
-                    stage_name,
-                    **_kwargs,
-                ):
-                    if stage_name == target:
-                        if behavior == "error":
-                            raise RuntimeError("fixture gate failure")
-                        if behavior == "interrupted":
-                            return result(interrupted=signal.SIGINT), b""
-                        if behavior == "failure":
-                            return result(returncode=7), b""
-                    return result(), normal_outputs[stage_name]
-
-                stages_mod._check_stage_identity = identity
-                stages_mod._run_gate = gate
-                returncode = stages_mod.cmd_run1(
-                    fixture.args(),
-                    disk_min_gb=0.0,
+    if case in {
+        "identity-p-dirty",
+        "identity-w-dirty",
+        "identity-product-diff",
+        "identity-compiler-missing",
+        "identity-stamp-missing",
+    }:
+        with PinFixture() as fixture:
+            pin = fixture.pin()
+            if case == "identity-p-dirty":
+                with open(
+                    os.path.join(fixture.p, "dirty"),
+                    "w",
+                    encoding="utf-8",
+                ) as output:
+                    output.write("dirty")
+                got = reason(lambda: proofkit_mod.check_identity(pin)) == "P-DIRTY"
+            elif case == "identity-w-dirty":
+                with open(
+                    os.path.join(fixture.w, "dirty"),
+                    "w",
+                    encoding="utf-8",
+                ) as output:
+                    output.write("dirty")
+                got = reason(lambda: proofkit_mod.check_identity(pin)) == "W-DIRTY"
+            elif case == "identity-product-diff":
+                target = os.path.join(fixture.w, "src", "guard.txt")
+                with open(target, "w", encoding="utf-8") as output:
+                    output.write("changed")
+                _git(fixture.w, "add", "src/guard.txt")
+                _git(fixture.w, "commit", "-m", "fixture product change")
+                pin["w_head"] = _git(fixture.w, "rev-parse", "HEAD")
+                got = (
+                    reason(lambda: proofkit_mod.check_identity(pin))
+                    == "PRODUCT-DIFF"
                 )
-                if returncode == 1:
-                    covered.add(label)
-
-            run_case(
-                "run1-gate1-error-identity",
-                "run1_1",
-                "error",
-                2,
-            )
-            run_case(
-                "run1-gate2-interrupted",
-                "run1_2",
-                "interrupted",
-                None,
-            )
-            run_case(
-                "run1-gate2-failure-identity",
-                "run1_2",
-                "failure",
-                3,
-            )
-            run_case(
-                "run1-gate2-error",
-                "run1_2",
-                "error",
-                3,
-            )
-            run_case(
-                "run1-gate3-interrupted",
-                "run1_3",
-                "interrupted",
-                None,
-            )
-            run_case(
-                "run1-gate3-failure-identity",
-                "run1_3",
-                "failure",
-                4,
-            )
-            run_case(
-                "run1-gate3-error",
-                "run1_3",
-                "error",
-                4,
-            )
-            run_case(
-                "run1-gate4-interrupted",
-                "run1_4",
-                "interrupted",
-                None,
-            )
-            run_case(
-                "run1-gate4-failure-identity",
-                "run1_4",
-                "failure",
-                5,
-            )
-            run_case(
-                "run1-gate4-error",
-                "run1_4",
-                "error",
-                5,
-            )
-
-            stages_mod._check_stage_identity = (
-                lambda *_args, **_kwargs: True
-            )
-            stages_mod._run_gate = (
-                lambda _command, *, stage_name, **_kwargs: (
-                    result(),
-                    normal_outputs[stage_name],
+            elif case == "identity-compiler-missing":
+                os.unlink(fixture.compiler)
+                got = (
+                    reason(lambda: proofkit_mod.check_identity(pin))
+                    == "COMPILER-NOT-EXECUTABLE"
                 )
-            )
-            stages_mod._baseline_skip_hits = (
-                lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                    ValueError("fixture baseline failure")
+            else:
+                fixture.write_compiler("fixture version without stamp")
+                compiler_stat = os.stat(fixture.compiler)
+                pin.update(
+                    {
+                        "compiler_sha256": _file_sha256(fixture.compiler),
+                        "compiler_size": compiler_stat.st_size,
+                        "compiler_mtime_ns": compiler_stat.st_mtime_ns,
+                        "compiler_inode": compiler_stat.st_ino,
+                        "compiler_version_line": "fixture version without stamp",
+                    }
                 )
+                got = (
+                    reason(lambda: proofkit_mod.check_identity(pin))
+                    == "COMPILER-STAMP-MISSING"
+                )
+        return Observation(expected=True, got=got, applied=applied)
+
+    with tempfile.TemporaryDirectory(prefix="iyi-proofkit-edge-") as root:
+        if case == "git-error":
+            try:
+                proofkit_mod.git_cmd(["status"], root)
+            except RuntimeError:
+                got = True
+        elif case.startswith("platform-"):
+            tool_dir = os.path.join(root, "tools")
+            platform_root = os.path.join(root, "platform")
+            os.makedirs(tool_dir)
+            os.makedirs(platform_root)
+            getconf = os.path.join(tool_dir, "getconf")
+            mktemp = os.path.join(tool_dir, "mktemp")
+            if case != "platform-getconf-missing":
+                if case == "platform-getconf-oserror":
+                    _o6_write_executable(
+                        getconf,
+                        "#!/no/such/interpreter\n",
+                    )
+                elif case == "platform-getconf-status":
+                    _o6_write_executable(getconf, "#!/bin/sh\nexit 7\n")
+                elif case == "platform-getconf-nondir":
+                    _o6_write_executable(
+                        getconf,
+                        "#!/bin/sh\nprintf '/no/such/platform\\n'\n",
+                    )
+                else:
+                    _o6_write_executable(
+                        getconf,
+                        "#!/bin/sh\n"
+                        f"printf '%s\\n' {shlex.quote(platform_root)}\n",
+                    )
+            if case not in {
+                "platform-getconf-missing",
+                "platform-getconf-oserror",
+                "platform-getconf-status",
+                "platform-getconf-nondir",
+                "platform-mktemp-missing",
+            }:
+                created = os.path.join(platform_root, "created")
+                if case == "platform-mktemp-oserror":
+                    _o6_write_executable(
+                        mktemp,
+                        "#!/no/such/interpreter\n",
+                    )
+                elif case == "platform-mktemp-status":
+                    _o6_write_executable(mktemp, "#!/bin/sh\nexit 7\n")
+                elif case == "platform-mktemp-nondir":
+                    _o6_write_executable(
+                        mktemp,
+                        "#!/bin/sh\n"
+                        f"printf '%s\\n' {shlex.quote(created)}\n",
+                    )
+                else:
+                    _o6_write_executable(
+                        mktemp,
+                        "#!/bin/sh\n"
+                        f"/bin/mkdir {shlex.quote(created)}\n"
+                        f"printf '%s\\n' {shlex.quote(created)}\n",
+                    )
+            expected_reason = (
+                "PLATFORM-TMP-UNOBSERVABLE"
+                if case.startswith("platform-mktemp-")
+                and case != "platform-mktemp-missing"
+                else "NO-PLATFORM-TMP"
             )
-            if (
+            got = (
+                reason(
+                    lambda: proofkit_mod.platform_temp_root(
+                        {
+                            "env_path": tool_dir,
+                            "env_home": root,
+                        },
+                        cwd=root,
+                        probe_mktemp=True,
+                    )
+                )
+                == expected_reason
+            )
+        elif case in {"compiler-env", "roots-empty"}:
+            compiler = _o6_write_executable(
+                os.path.join(root, "compiler"),
+                (
+                    "#!/bin/sh\nexit 7\n"
+                    if case == "compiler-env"
+                    else "#!/bin/sh\nprintf ':\\n'\n"
+                ),
+            )
+            w_path = os.path.join(root, "w")
+            p_path = os.path.join(root, "p")
+            os.makedirs(w_path)
+            os.makedirs(p_path)
+            if case == "compiler-env":
+                got = (
+                    reason(
+                        lambda: proofkit_mod.compute_canonical_roots(
+                            w_path,
+                            p_path,
+                            compiler,
+                            {
+                                "env_path": os.environ.get("PATH", ""),
+                                "env_home": root,
+                            },
+                        )
+                    )
+                    == "COMPILER-ENV"
+                )
+            else:
+                got = (
+                    proofkit_mod.compute_canonical_roots(
+                        w_path,
+                        p_path,
+                        compiler,
+                        {
+                            "env_path": os.environ.get("PATH", ""),
+                            "env_home": root,
+                        },
+                    )
+                    == []
+                )
+        elif case.startswith("probe-"):
+            calls = 0
+            initial_mtime = 0
+
+            def probe_stat(path: str):
+                nonlocal calls, initial_mtime
+                calls += 1
+                current = os.stat(path)
+                if calls == 1:
+                    initial_mtime = current.st_mtime_ns
+                    if case == "probe-oserror":
+                        os.unlink(path)
+                        os.unlink(f"{path}.ref")
+                        raise OSError("fixture probe failure")
+                if case == "probe-atime-retention" and calls == 2:
+                    return SimpleNamespace(
+                        st_atime_ns=current.st_mtime_ns,
+                        st_mtime_ns=current.st_mtime_ns,
+                        st_ino=current.st_ino,
+                    )
+                if case == "probe-exec-failure" and calls == 3:
+                    with open(path, "w", encoding="utf-8") as output:
+                        output.write("#!/bin/sh\nexit 7\n")
+                    os.chmod(path, 0o755)
+                    return os.stat(path)
+                if case == "probe-sha" and calls == 4:
+                    with open(path, "ab") as output:
+                        output.write(b"x")
+                    return SimpleNamespace(
+                        st_atime_ns=initial_mtime + 1,
+                        st_mtime_ns=initial_mtime,
+                        st_ino=current.st_ino,
+                    )
+                if case == "probe-inode" and calls == 4:
+                    return SimpleNamespace(
+                        st_atime_ns=initial_mtime + 1,
+                        st_mtime_ns=initial_mtime,
+                        st_ino=current.st_ino + 1,
+                    )
+                return current
+
+            got = (
+                reason(
+                    lambda: proofkit_mod.probe_atime_observable(
+                        root,
+                        stat_fn=probe_stat,
+                    )
+                )
+                == "EXEC-UNOBSERVABLE"
+            )
+        elif case in {"first-output", "nm-output"}:
+            tool = _o6_write_executable(
+                os.path.join(root, "bad-tool"),
+                "#!/bin/sh\nexit 7\n",
+            )
+            got = (
+                reason(
+                    lambda: (
+                        proofkit_mod._first_output_line(
+                            [tool],
+                            cwd=root,
+                            env=os.environ.copy(),
+                            reason="BAD-OUTPUT",
+                        )
+                        if case == "first-output"
+                        else proofkit_mod._nm_version_line(
+                            tool,
+                            cwd=root,
+                            env=os.environ.copy(),
+                        )
+                    )
+                )
+                == ("BAD-OUTPUT" if case == "first-output" else "NO-NM")
+            )
+        elif case in {
+            "census-set",
+            "census-invalid",
+            "census-shas-set",
+        }:
+            census_root = os.path.join(root, "repo")
+            census_dir = os.path.join(census_root, "proof", "census")
+            os.makedirs(census_dir)
+            if case == "census-invalid":
+                with open(
+                    os.path.join(census_dir, "demo.json"),
+                    "w",
+                    encoding="utf-8",
+                ) as output:
+                    output.write("{")
+                call = lambda: proofkit_mod._census_shas_and_validate(
+                    census_root,
+                    ("demo",),
+                )
+                expected_reason = "CENSUS-INVALID"
+            elif case == "census-shas-set":
+                call = lambda: proofkit_mod._census_shas(
+                    census_root,
+                    ("demo",),
+                )
+                expected_reason = "CENSUS-SET"
+            else:
+                call = lambda: proofkit_mod._census_shas_and_validate(
+                    os.path.join(root, "missing"),
+                    ("demo",),
+                )
+                expected_reason = "CENSUS-SET"
+            got = reason(call) == expected_reason
+        elif case in {
+            "pin-load-invalid",
+            "pin-load-chain",
+            "pin-load-report",
+        }:
+            suffix = {
+                "pin-load-invalid": "aa000001",
+                "pin-load-chain": "aa000002",
+                "pin-load-report": "aa000003",
+            }[case]
+            report = os.path.join("/tmp", f"iyp-{suffix}")
+            shutil.rmtree(report, ignore_errors=True)
+            os.makedirs(report)
+            try:
+                with open(
+                    os.path.join(report, "pin.json"),
+                    "w",
+                    encoding="utf-8",
+                ) as output:
+                    if case == "pin-load-invalid":
+                        output.write("{")
+                    elif case == "pin-load-chain":
+                        json.dump({"chain_id": None}, output)
+                    else:
+                        json.dump(
+                            {
+                                "chain_id": suffix + "0" * 24,
+                                "report_dir": "/private/tmp/other",
+                            },
+                            output,
+                        )
+                got = (
+                    reason(lambda: proofkit_mod.load_pin(report))
+                    == (
+                        "PIN-INVALID"
+                        if case == "pin-load-invalid"
+                        else (
+                            "CHAIN-ID"
+                            if case == "pin-load-chain"
+                            else "REPORT-DIR-CHAIN"
+                        )
+                    )
+                )
+            finally:
+                shutil.rmtree(report, ignore_errors=True)
+        elif case == "signal-missing":
+            proofkit_mod._signal_process_group(
+                2_000_000_000,
+                signal.SIGTERM,
+            )
+            got = True
+        elif case == "sampler-oserror":
+            errors: list[BaseException] = []
+            proofkit_mod._sample_log_growth(
+                os.path.join(root, "missing.log"),
+                os.path.join(root, "times"),
+                threading.Event(),
+                errors,
+            )
+            got = bool(errors)
+        elif case in {"limit-invalid", "grace-invalid"}:
+            try:
+                proofkit_mod.run_bounded(
+                    [sys.executable, "-c", "pass"],
+                    root,
+                    os.environ.copy(),
+                    os.path.join(root, "log"),
+                    os.path.join(root, "times"),
+                    0 if case == "limit-invalid" else None,
+                    -1 if case == "grace-invalid" else 0.0,
+                )
+            except ValueError:
+                got = True
+        elif case in {"status-unknown", "status-missing"}:
+            got = (
+                proofkit_mod.recompute_status(
+                    (
+                        {}
+                        if case == "status-unknown"
+                        else {"checks": {"identity": "PASS"}}
+                    ),
+                    "unknown" if case == "status-unknown" else "run2",
+                )
+                == "FAIL"
+            )
+        elif case.startswith("parser-"):
+            parser_results = {
+                "parser-backtick": (
+                    proofkit_mod._replace_shell_expansions("`date`")
+                    == "IYIVAR"
+                ),
+                "parser-trailing-dollar": (
+                    proofkit_mod._replace_shell_expansions("$") == "$"
+                ),
+                "parser-open-brace": (
+                    proofkit_mod._replace_shell_expansions("${value") is None
+                ),
+                "parser-nested-command": (
+                    proofkit_mod._command_substitution_end(
+                        '$(echo "$(date)")',
+                        0,
+                    )
+                    == len('$(echo "$(date)")')
+                ),
+                "parser-nested-backtick": (
+                    proofkit_mod._command_substitution_end(
+                        '$(echo "a `date` c")',
+                        0,
+                    )
+                    == len('$(echo "a `date` c")')
+                ),
+                "parser-dequote": (
+                    proofkit_mod._dequote_print_word("$'x'") is None
+                ),
+                "parser-render": (
+                    proofkit_mod._render_print_words(["printf"]) is None
+                ),
+            }
+            got = parser_results[case]
+        else:
+            raise ValueError(f"unknown isolated proofkit edge {case}")
+    return Observation(expected=True, got=got, applied=applied)
+
+
+def _proofkit_more_edge(case: str) -> Observation:
+    applied = f"isolated proofkit edge={case}"
+    got = False
+
+    def reason(call: Callable[[], object]) -> str:
+        try:
+            call()
+        except proofkit_mod.IdentityError as error:
+            return error.reason
+        return "NO-REFUSAL"
+
+    if case in {
+        "inspect-compiler-missing",
+        "inspect-compiler-stat",
+        "inspect-no-nm",
+        "identity-git-error",
+        "identity-compiler-stat",
+        "identity-not-descendant",
+        "identity-no-timeout",
+        "identity-no-nm",
+        "pin-write-probe",
+        "pin-write-probe-dirty",
+        "pin-write-type",
+        "pin-write-dirty",
+    }:
+        with PinFixture() as fixture:
+            if case == "inspect-compiler-missing":
+                got = (
+                    reason(
+                        lambda: proofkit_mod.inspect_pin_inputs(
+                            fixture.p,
+                            fixture.w,
+                            os.path.join(fixture.scratch, "missing"),
+                            DRIVERS_29,
+                        )
+                    )
+                    == "COMPILER-NOT-EXECUTABLE"
+                )
+            elif case == "inspect-compiler-stat":
+                compiler = os.path.join(fixture.scratch, "execute-only")
+                with open(compiler, "w", encoding="utf-8") as output:
+                    output.write("#!/bin/sh\nexit 0\n")
+                os.chmod(compiler, 0o100)
+                try:
+                    got = (
+                        reason(
+                            lambda: proofkit_mod.inspect_pin_inputs(
+                                fixture.p,
+                                fixture.w,
+                                compiler,
+                                DRIVERS_29,
+                            )
+                        )
+                        == "COMPILER-STAT"
+                    )
+                finally:
+                    os.chmod(compiler, 0o700)
+            elif case == "inspect-no-nm":
+                tool_dir = os.path.join(fixture.scratch, "inspect-tools")
+                os.makedirs(tool_dir)
+                for tool in ("git", "timeout", "getconf", "mktemp"):
+                    source = shutil.which(tool)
+                    if source:
+                        os.symlink(source, os.path.join(tool_dir, tool))
+                original_path = os.environ.get("PATH", "")
+                try:
+                    os.environ["PATH"] = tool_dir
+                    got = (
+                        reason(
+                            lambda: proofkit_mod.inspect_pin_inputs(
+                                fixture.p,
+                                fixture.w,
+                                fixture.compiler,
+                                DRIVERS_29,
+                            )
+                        )
+                        == "NO-NM"
+                    )
+                finally:
+                    os.environ["PATH"] = original_path
+            elif case in {
+                "pin-write-probe",
+                "pin-write-probe-dirty",
+                "pin-write-type",
+                "pin-write-dirty",
+            }:
+                report = os.path.join(
+                    "/tmp",
+                    {
+                        "pin-write-probe": "iyp-bb000001",
+                        "pin-write-probe-dirty": "iyp-bb000004",
+                        "pin-write-type": "iyp-bb000002",
+                        "pin-write-dirty": "iyp-bb000003",
+                    }[case],
+                )
+                shutil.rmtree(report, ignore_errors=True)
+
+                class BadStat:
+                    @property
+                    def st_mtime_ns(self):
+                        if case == "pin-write-dirty":
+                            with open(
+                                os.path.join(report, "held"),
+                                "w",
+                                encoding="utf-8",
+                            ) as output:
+                                output.write("held")
+                        raise TypeError("fixture stat type failure")
+
+                def failed_stat(_path):
+                    if case in {
+                        "pin-write-probe",
+                        "pin-write-probe-dirty",
+                    }:
+                        if case == "pin-write-probe-dirty":
+                            with open(
+                                os.path.join(report, "held"),
+                                "w",
+                                encoding="utf-8",
+                            ) as output:
+                                output.write("held")
+                        raise OSError("fixture stat failure")
+                    return BadStat()
+
+                try:
+                    got = (
+                        reason(
+                            lambda: proofkit_mod.write_pin(
+                                report,
+                                fixture.p,
+                                fixture.w,
+                                fixture.compiler,
+                                DRIVERS_29,
+                                stat_fn=failed_stat,
+                            )
+                        )
+                        == (
+                            "EXEC-UNOBSERVABLE"
+                            if case in {
+                                "pin-write-probe",
+                                "pin-write-probe-dirty",
+                            }
+                            else "PIN-WRITE"
+                        )
+                    )
+                finally:
+                    shutil.rmtree(report, ignore_errors=True)
+            elif case == "identity-git-error":
+                pin = fixture.pin()
+                os.unlink(os.path.join(fixture.p, ".git", "HEAD"))
+                got = (
+                    reason(lambda: proofkit_mod.check_identity(pin))
+                    == "GIT-ERROR"
+                )
+            elif case == "identity-compiler-stat":
+                pin = fixture.pin()
+                os.chmod(fixture.compiler, 0o100)
+                try:
+                    got = (
+                        reason(lambda: proofkit_mod.check_identity(pin))
+                        == "COMPILER-STAT"
+                    )
+                finally:
+                    os.chmod(fixture.compiler, 0o700)
+            elif case == "identity-not-descendant":
+                pin = fixture.pin()
+                _git(fixture.w, "checkout", "--orphan", "fixture-orphan")
+                _git(
+                    fixture.w,
+                    "commit",
+                    "--allow-empty",
+                    "-m",
+                    "fixture orphan",
+                )
+                pin["w_head"] = _git(fixture.w, "rev-parse", "HEAD")
+                got = (
+                    reason(lambda: proofkit_mod.check_identity(pin))
+                    == "W-NOT-DESCENDANT"
+                )
+            else:
+                tool_dir = os.path.join(fixture.scratch, "identity-tools")
+                os.makedirs(tool_dir)
+                for tool in ("git", "nm", "timeout", "getconf", "mktemp"):
+                    source = shutil.which(tool)
+                    if source:
+                        os.symlink(source, os.path.join(tool_dir, tool))
+                original_path = os.environ.get("PATH", "")
+                try:
+                    os.environ["PATH"] = tool_dir
+                    pin = fixture.pin()
+                    missing = (
+                        "timeout"
+                        if case == "identity-no-timeout"
+                        else "nm"
+                    )
+                    os.unlink(os.path.join(tool_dir, missing))
+                    got = (
+                        reason(lambda: proofkit_mod.check_identity(pin))
+                        == (
+                            "NO-TIMEOUT"
+                            if missing == "timeout"
+                            else "NO-NM"
+                        )
+                    )
+                finally:
+                    os.environ["PATH"] = original_path
+        return Observation(expected=True, got=got, applied=applied)
+
+    with tempfile.TemporaryDirectory(prefix="iyi-proofkit-more-") as root:
+        if case == "census-validate-mismatch":
+            os.makedirs(os.path.join(root, "proof", "census"))
+            got = (
+                reason(
+                    lambda: proofkit_mod._census_shas_and_validate(
+                        root,
+                        ("demo",),
+                    )
+                )
+                == "CENSUS-SET"
+            )
+        elif case == "census-shas-missing":
+            got = (
+                reason(
+                    lambda: proofkit_mod._census_shas(
+                        os.path.join(root, "missing"),
+                        ("demo",),
+                    )
+                )
+                == "CENSUS-SET"
+            )
+        elif case == "inspect-git-error":
+            compiler = _o6_write_executable(
+                os.path.join(root, "compiler"),
+                "#!/bin/sh\nexit 0\n",
+            )
+            got = (
+                reason(
+                    lambda: proofkit_mod.inspect_pin_inputs(
+                        os.path.join(root, "not-p"),
+                        os.path.join(root, "not-w"),
+                        compiler,
+                        (),
+                    )
+                )
+                == "GIT-ERROR"
+            )
+        elif case == "inspect-diff-error":
+            with PinFixture() as fixture:
+                tool_dir = os.path.join(root, "tools")
+                os.makedirs(tool_dir)
+                real_git = shutil.which("git")
+                if not real_git:
+                    raise RuntimeError("git unavailable for diff fixture")
+                _o6_write_executable(
+                    os.path.join(tool_dir, "git"),
+                    "#!/bin/sh\n"
+                    "case \"$*\" in\n"
+                    "  *'diff --name-only'*) exit 7 ;;\n"
+                    "esac\n"
+                    f"exec {shlex.quote(real_git)} \"$@\"\n",
+                )
+                original_path = os.environ.get("PATH", "")
+                try:
+                    os.environ["PATH"] = (
+                        tool_dir + os.pathsep + original_path
+                    )
+                    try:
+                        proofkit_mod.inspect_pin_inputs(
+                            fixture.p,
+                            fixture.w,
+                            fixture.compiler,
+                            DRIVERS_29,
+                        )
+                    except proofkit_mod.IdentityError as error:
+                        got = (
+                            error.reason == "GIT-ERROR"
+                            and "diff --name-only" in error.detail
+                        )
+                finally:
+                    os.environ["PATH"] = original_path
+        elif case in {
+            "report-chain-invalid",
+            "report-chain-mismatch",
+            "report-listdir",
+        }:
+            report = os.path.join("/tmp", "iyp-cc000001")
+            shutil.rmtree(report, ignore_errors=True)
+            if case == "report-listdir":
+                os.makedirs(report)
+                os.chmod(report, 0)
+            try:
+                got = (
+                    reason(
+                        lambda: proofkit_mod._validated_report_dir(
+                            report,
+                            require_empty=(case == "report-listdir"),
+                            chain_id=(
+                                "bad"
+                                if case == "report-chain-invalid"
+                                else (
+                                    "d" * 32
+                                    if case == "report-chain-mismatch"
+                                    else None
+                                )
+                            ),
+                        )
+                    )
+                    == (
+                        "REPORT-DIR"
+                        if case == "report-listdir"
+                        else (
+                            "CHAIN-ID"
+                            if case == "report-chain-invalid"
+                            else "REPORT-DIR-CHAIN"
+                        )
+                    )
+                )
+            finally:
+                if os.path.exists(report):
+                    os.chmod(report, 0o700)
+                    shutil.rmtree(report, ignore_errors=True)
+        elif case == "process-wait":
+            process = subprocess.Popen(
+                ["/bin/sleep", "0.05"],
+                start_new_session=True,
+            )
+            waiter = threading.Thread(target=process.wait)
+            waiter.start()
+            try:
+                got = proofkit_mod._wait_for_group_exit(
+                    process.pid,
+                    1.0,
+                ) == ()
+            finally:
+                waiter.join()
+        elif case == "process-stop":
+            ready = os.path.join(root, "stop-ready")
+            process = subprocess.Popen(
+                [
+                    "/bin/sh",
+                    "-c",
+                    f"trap '' TERM; : > {shlex.quote(ready)}; "
+                    "exec /bin/sleep 30",
+                ],
+                start_new_session=True,
+            )
+            while not os.path.exists(ready):
+                time.sleep(0.005)
+            proofkit_mod._stop_leader(process, process.pid, 0.01)
+            got = process.poll() is not None
+        elif case == "process-leader-survives":
+            class NeverStops:
+                pid = 2_000_000_000
+
+                def wait(self, timeout=None):
+                    raise subprocess.TimeoutExpired("fixture", timeout)
+
+            try:
+                proofkit_mod._stop_leader(
+                    NeverStops(),
+                    NeverStops.pid,
+                    0.0,
+                )
+            except RuntimeError:
+                got = True
+        elif case == "process-zombie-remains":
+            ready = os.path.join(root, "zombie-ready")
+            process = subprocess.Popen(
+                [
+                    "/bin/sh",
+                    "-c",
+                    f"trap '' TERM; : > {shlex.quote(ready)}; "
+                    "exec /bin/sleep 30",
+                ],
+                start_new_session=True,
+            )
+            while not os.path.exists(ready):
+                time.sleep(0.005)
+            try:
+                try:
+                    proofkit_mod._record_and_stop_survivors(
+                        process.pid,
+                        -1,
+                        0.01,
+                        0.01,
+                    )
+                except RuntimeError:
+                    got = True
+            finally:
+                process.wait()
+        elif case == "process-finally-stop":
+            class Running:
+                pid = 2_000_000_000
+
+                def __init__(self):
+                    self.returncode = None
+
+                def poll(self):
+                    return self.returncode
+
+                def wait(self, timeout=None):
+                    self.returncode = 0
+                    return 0
+
+            process = Running()
+            proofkit_mod._stop_leader_if_running(
+                process,
+                process.pid,
+                0.0,
+            )
+            got = process.returncode == 0
+        elif case == "process-residual-zombie":
+            ready = os.path.join(root, "residual-cleanup-ready")
+            process = subprocess.Popen(
+                [
+                    "/bin/sh",
+                    "-c",
+                    f": > {shlex.quote(ready)}; exec /bin/sleep 30",
+                ],
+                start_new_session=True,
+            )
+            while not os.path.exists(ready):
+                time.sleep(0.005)
+            try:
+                got = bool(
+                    proofkit_mod._stop_residual_processes(
+                        process.pid,
+                        0.01,
+                        exclude=-1,
+                    )
+                )
+            finally:
+                process.wait()
+        elif case == "process-parse":
+            got = proofkit_mod._parse_process_group_members(
+                "bad\nx y\n10 20\n",
+                20,
+            ) == (10,)
+        elif case == "process-ps-status":
+            ps = _o6_write_executable(
+                os.path.join(root, "bad-ps"),
+                "#!/bin/sh\nexit 7\n",
+            )
+            try:
+                proofkit_mod._process_group_members(
+                    1,
+                    ps_path=ps,
+                )
+            except RuntimeError:
+                got = True
+        elif case == "run-bounded-sampler-error":
+            times_path = os.path.join(root, "times-dir")
+            os.makedirs(times_path)
+            try:
+                proofkit_mod.run_bounded(
+                    [sys.executable, "-c", "pass"],
+                    root,
+                    os.environ.copy(),
+                    os.path.join(root, "sampler-error.log"),
+                    times_path,
+                    None,
+                    0.01,
+                )
+            except RuntimeError:
+                got = True
+        elif case == "validator-env-unchanged":
+            got = proofkit_mod._environment_callsite_violations(
+                (
+                    "helper() {",
+                    "  \"$IYI\" build source.iyi",
+                    "}",
+                    "IYI_PATH=/patched helper",
+                ),
+                {2},
+                {2: {"kind": "unchanged"}},
+            ) == ()
+        elif case.startswith("schema-"):
+            census, script_bytes, script_relpath = _census_case("cookie")
+            if case == "schema-nonobject":
+                got = bool(
+                    proofkit_mod.validate_census(
+                        [],
+                        script_bytes,
+                        script_relpath,
+                    )
+                )
+            elif case == "schema-bytes":
+                got = bool(
+                    proofkit_mod.validate_census(
+                        census,
+                        "not-bytes",
+                        script_relpath,
+                    )
+                )
+            elif case == "schema-path":
+                got = bool(
+                    proofkit_mod.validate_census(
+                        census,
+                        script_bytes,
+                        7,
+                    )
+                )
+            elif case == "schema-missing-key":
+                mutated = _clone_census(census)
+                mutated.pop("driver")
+                got = "C5.0-schema" in _rule_ids(
+                    proofkit_mod.validate_census(
+                        mutated,
+                        script_bytes,
+                        script_relpath,
+                    )
+                )
+            elif case == "schema-duplicate-variant":
+                mutated = _clone_census(census)
+                target = next(
+                    site
+                    for site in mutated["sites"]
+                    if site.get("variants")
+                )
+                target["variants"].append(
+                    _clone_census({"v": target["variants"][0]})["v"]
+                )
+                got = "C5.0-schema" in _rule_ids(
+                    proofkit_mod.validate_census(
+                        mutated,
+                        script_bytes,
+                        script_relpath,
+                    )
+                )
+            elif case == "schema-duplicate-skip":
+                mutated = _clone_census(census)
+                mutated["skips"].append(
+                    _clone_census({"v": mutated["skips"][0]})["v"]
+                )
+                got = "C5.0-schema" in _rule_ids(
+                    proofkit_mod.validate_census(
+                        mutated,
+                        script_bytes,
+                        script_relpath,
+                    )
+                )
+            elif case == "schema-sentinel-iyivar":
+                mutated = _clone_census(census)
+                mutated["pass_sentinel"]["regex"] = "IYIVAR"
+                got = "C5.5-sentinel" in _rule_ids(
+                    proofkit_mod.validate_census(
+                        mutated,
+                        script_bytes,
+                        script_relpath,
+                    )
+                )
+            elif case in {
+                "schema-skip-unrenderable",
+                "schema-sentinel-unrenderable",
+            }:
+                mutated = _clone_census(census)
+                lines = script_bytes.decode("utf-8").splitlines()
+                target = (
+                    mutated["skips"][0]
+                    if case == "schema-skip-unrenderable"
+                    else mutated["pass_sentinel"]
+                )
+                index = target["line"] - 1
+                lines[index] = "true"
+                changed = ("\n".join(lines) + "\n").encode()
+                target["text"] = "true"
+                mutated["script_sha256"] = hashlib.sha256(
+                    changed
+                ).hexdigest()
+                expected_rule = (
+                    "C5.4-unrenderable"
+                    if case == "schema-skip-unrenderable"
+                    else "C5.4-unrenderable"
+                )
+                got = expected_rule in _rule_ids(
+                    proofkit_mod.validate_census(
+                        mutated,
+                        changed,
+                        script_relpath,
+                    )
+                )
+        elif case in {
+            "parser-command-open",
+            "parser-backtick-open",
+            "parser-echo-option",
+            "parser-printf-option",
+            "parser-template-brace",
+            "parser-shlex-error",
+            "parser-literal-dollar",
+            "parser-render-command",
+            "parser-backtick-unclosed",
+            "parser-nested-expansion",
+            "parser-nested-command-open",
+            "parser-nested-backtick-open",
+            "parser-unquoted-backtick",
+            "parser-unquoted-backtick-open",
+            "parser-dequote-expansion-open",
+        }:
+            got = {
+                "parser-command-open": (
+                    proofkit_mod._shell_span_bodies('"$(echo"') is None
+                ),
+                "parser-backtick-open": (
+                    proofkit_mod._shell_span_bodies("`date") is None
+                ),
+                "parser-shlex-error": (
+                    proofkit_mod._dequote_print_word("'") is None
+                ),
+                "parser-literal-dollar": (
+                    proofkit_mod._replace_shell_expansions("$%") == "$%"
+                ),
+                "parser-render-command": (
+                    proofkit_mod._render_print_words(["not-print"]) is None
+                ),
+                "parser-backtick-unclosed": (
+                    proofkit_mod._replace_shell_expansions("`date") is None
+                ),
+                "parser-nested-expansion": (
+                    proofkit_mod._replace_shell_expansions("${a{b}}")
+                    == "IYIVAR"
+                ),
+                "parser-nested-command-open": (
+                    proofkit_mod._command_substitution_end(
+                        '$(echo "$(broken',
+                        0,
+                    )
+                    is None
+                ),
+                "parser-nested-backtick-open": (
+                    proofkit_mod._command_substitution_end(
+                        '$(echo "`broken)',
+                        0,
+                    )
+                    is None
+                ),
+                "parser-unquoted-backtick": (
+                    proofkit_mod._command_substitution_end(
+                        '$(echo `date`)',
+                        0,
+                    )
+                    == len('$(echo `date`)')
+                ),
+                "parser-unquoted-backtick-open": (
+                    proofkit_mod._command_substitution_end(
+                        '$(echo `date)',
+                        0,
+                    )
+                    is None
+                ),
+                "parser-dequote-expansion-open": (
+                    proofkit_mod._dequote_print_word("${value") is None
+                ),
+                "parser-echo-option": (
+                    proofkit_mod._render_print_words(
+                        ["echo", "-n", "ok"]
+                    )
+                    == "ok"
+                ),
+                "parser-printf-option": (
+                    proofkit_mod._render_print_words(
+                        ["printf", "-v", "ok"]
+                    )
+                    == "ok"
+                ),
+                "parser-template-brace": (
+                    proofkit_mod._template_violation(
+                        "{broken",
+                        set(),
+                        "fixture",
+                    )
+                    is not None
+                ),
+            }[case]
+        else:
+            raise ValueError(f"unknown additional proofkit edge {case}")
+    return Observation(expected=True, got=got, applied=applied)
+
+
+def _runner_isolated_edge(case: str) -> Observation:
+    applied = f"isolated runner edge={case}"
+    got = False
+    if case.startswith("run1-missing-"):
+        relative = {
+            "run1-missing-gate1": "bench/stale_equivalence.sh",
+            "run1-missing-gate2": "bench/std_observe_exercise.sh",
+            "run1-missing-gate3": "bench/stale_rg9.py",
+            "run1-missing-gate4": "bench/std_exercise.sh",
+        }[case]
+        with StageFixture() as fixture:
+            fixture.pin()
+            os.unlink(os.path.join(fixture.w, relative))
+            got = (
                 stages_mod.cmd_run1(
                     fixture.args(),
                     disk_min_gb=0.0,
                 )
                 == 1
-            ):
-                covered.add("run1-baseline-error")
-        finally:
-            stages_mod._run_gate = original_gate
-            stages_mod._check_stage_identity = original_identity
-            stages_mod._check_stage_disk = original_disk
-            stages_mod._baseline_skip_hits = original_baseline
-
-        original_logged = stages_mod.run_logged
-        original_identity = stages_mod._check_stage_identity
-        original_disk = stages_mod._check_stage_disk
-        try:
-            stages_mod._check_stage_identity = (
-                lambda *_args, **_kwargs: True
             )
-            stages_mod._check_stage_disk = lambda *_args, **_kwargs: True
-            stages_mod.run_logged = (
-                lambda *_args, **_kwargs: (
-                    result(interrupted=signal.SIGINT),
-                    b"",
-                )
-            )
-            if (
-                stages_mod.cmd_run2(
-                    fixture.args(),
-                    expected_counts=(1, 1, 2),
-                    disk_min_gb=0.0,
-                )
-                == 1
-            ):
-                covered.add("run2-interrupted")
-        finally:
-            stages_mod.run_logged = original_logged
-            stages_mod._check_stage_identity = original_identity
-            stages_mod._check_stage_disk = original_disk
+        return Observation(expected=True, got=got, applied=applied)
 
-    return covered
-
-
-def _exercise_runner_run3_edges() -> set[str]:
-    covered: set[str] = set()
-
-    def result(
-        *,
-        returncode: int = 0,
-        interrupted: int | None = None,
-    ) -> SimpleNamespace:
-        return SimpleNamespace(
-            returncode=returncode,
-            timed_out=False,
-            survivors=(),
-            interrupted_signal=interrupted,
-        )
-
-    with StageFixture() as fixture:
-        pin = fixture.pin()
-        census_path = os.path.join(
-            fixture.w,
-            "proof",
-            "census",
-            "stage.json",
-        )
-        with open(census_path, "rb") as source:
-            original_census = source.read()
-        census = json.loads(original_census)
-
-        def write_census(value: object, *, raw: bool = False) -> None:
-            with open(census_path, "w", encoding="utf-8") as output:
-                if raw:
-                    output.write(str(value))
-                else:
-                    json.dump(value, output, sort_keys=True)
-
-        for label, value, raw in (
-            ("run3-census-type", [], False),
-            (
-                "run3-census-script-type",
-                {**census, "script": None},
-                False,
-            ),
-            (
-                "run3-census-invalid",
-                {**census, "script_sha256": "0" * 64},
-                False,
-            ),
-            ("run3-census-unreadable", "{", True),
-        ):
-            write_census(value, raw=raw)
-            record = stages_mod._run_one_driver(
-                fixture.report,
-                pin,
-                "stage",
-                set(),
-                driver_limit_sec=1.0,
-                grace_sec=0.0,
-                disk_min_gb=0.0,
-                stat_fn=os.stat,
-            )
-            if record["status"] == "FAIL":
-                covered.add(label)
-        with open(census_path, "wb") as output:
-            output.write(original_census)
-
-        original_identity = stages_mod._check_stage_identity
-        original_disk = stages_mod._check_stage_disk
-        original_atomic = stages_mod._write_json_atomic
-        original_logged = stages_mod.run_logged
-        original_verify = stages_mod.verify_ledger
-        try:
-            def identity_pass(_pin, checks, _reasons):
-                checks["identity"] = "PASS"
-                return True
-
-            def disk_stop(
-                _path,
-                _minimum,
-                checks,
-                reasons,
-                *,
-                check_name,
-                low_status,
-            ):
-                checks[check_name] = low_status
-                reasons.append("fixture disk stop")
-                return False
-
-            def disk_pass(
-                _path,
-                _minimum,
-                checks,
-                _reasons,
-                *,
-                check_name,
-                low_status,
-            ):
-                checks[check_name] = "PASS"
-                return True
-
-            stages_mod._check_stage_identity = identity_pass
-            stages_mod._check_stage_disk = disk_stop
-            record = stages_mod._run_one_driver(
-                fixture.report,
-                pin,
-                "stage",
-                set(),
-                driver_limit_sec=1.0,
-                grace_sec=0.0,
-                disk_min_gb=0.0,
-                stat_fn=os.stat,
-            )
-            if record["status"] == "STOP":
-                covered.add("run3-disk-stop")
-
-            stages_mod._check_stage_disk = disk_pass
-            stages_mod._write_json_atomic = (
-                lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                    OSError("fixture setup failure")
-                )
-            )
-            record = stages_mod._run_one_driver(
-                fixture.report,
-                pin,
-                "stage",
-                set(),
-                driver_limit_sec=1.0,
-                grace_sec=0.0,
-                disk_min_gb=0.0,
-                stat_fn=os.stat,
-            )
-            if record["status"] == "FAIL":
-                covered.add("run3-setup-error")
-            stages_mod._write_json_atomic = original_atomic
-
-            stages_mod.verify_ledger = lambda *_args, **_kwargs: (
-                proofkit_mod.LedgerVerdict(frozenset(), ())
-            )
-
-            def run_execution_case(
-                label: str,
-                *,
-                fake_result: SimpleNamespace | None = None,
-                output: bytes = b"the std/stage exercise holds\n",
-                raises: bool = False,
-            ) -> None:
-                if raises:
-                    stages_mod.run_logged = (
-                        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                            RuntimeError("fixture driver failure")
-                        )
-                    )
-                else:
-                    stages_mod.run_logged = (
-                        lambda *_args, **_kwargs: (
-                            fake_result or result(),
-                            output,
-                        )
-                    )
-                record = stages_mod._run_one_driver(
-                    fixture.report,
-                    pin,
-                    "stage",
-                    set(),
-                    driver_limit_sec=1.0,
-                    grace_sec=0.0,
-                    disk_min_gb=0.0,
-                    stat_fn=os.stat,
-                )
-                if record["status"] != "PASS":
-                    covered.add(label)
-
-            run_execution_case(
-                "run3-driver-interrupted",
-                fake_result=result(interrupted=signal.SIGINT),
-            )
-            run_execution_case(
-                "run3-driver-nonzero",
-                fake_result=result(returncode=7),
-            )
-            run_execution_case(
-                "run3-driver-refused",
-                output=(
-                    b"the std/stage exercise holds\n"
-                    b"observed-roundtrip-shim: REFUSED fixture\n"
-                ),
-            )
-            run_execution_case("run3-driver-error", raises=True)
-        finally:
-            stages_mod._check_stage_identity = original_identity
-            stages_mod._check_stage_disk = original_disk
-            stages_mod._write_json_atomic = original_atomic
-            stages_mod.run_logged = original_logged
-            stages_mod.verify_ledger = original_verify
-
-    with StageFixture() as fixture:
-        fixture.pin()
-        _exclusions, baseline, _run2 = fixture.write_prerequisites()
-        with open(baseline, "w", encoding="utf-8") as output:
-            json.dump({}, output)
-        returncode, _stderr = _capture_stderr(
-            lambda: stages_mod.cmd_run3(
-                fixture.args(),
-                drivers=fixture.drivers,
-                disk_min_gb=0.0,
-            )
-        )
-        if returncode == 2:
-            covered.add("run3-prerequisite-invalid")
-
-    for label, frozen in (
-        ("run3-required-unreadable", "{"),
-        ("run3-required-type", {}),
-    ):
+    if case in {
+        "run3-prerequisite-invalid",
+        "run3-required-unreadable",
+        "run3-required-type",
+        "run3-requested-refusal",
+        "final-required-missing",
+        "final-required-type",
+    }:
         with StageFixture() as fixture:
-            fixture.pin()
-            fixture.write_prerequisites()
-            required_path = os.path.join(
-                fixture.report,
-                "run3",
-                "required.json",
-            )
-            os.makedirs(os.path.dirname(required_path), exist_ok=True)
-            with open(required_path, "w", encoding="utf-8") as output:
-                if isinstance(frozen, str):
-                    output.write(frozen)
+            if case.startswith("run3-"):
+                fixture.pin()
+                _exclusions, baseline, _run2 = fixture.write_prerequisites()
+                args = fixture.args()
+                if case == "run3-prerequisite-invalid":
+                    with open(baseline, "w", encoding="utf-8") as output:
+                        json.dump({}, output)
+                elif case in {
+                    "run3-required-unreadable",
+                    "run3-required-type",
+                }:
+                    required_path = os.path.join(
+                        fixture.report,
+                        "run3",
+                        "required.json",
+                    )
+                    os.makedirs(os.path.dirname(required_path), exist_ok=True)
+                    with open(required_path, "w", encoding="utf-8") as output:
+                        if case == "run3-required-unreadable":
+                            output.write("{")
+                        else:
+                            json.dump({}, output)
                 else:
-                    json.dump(frozen, output)
-            returncode, _stderr = _capture_stderr(
-                lambda: stages_mod.cmd_run3(
-                    fixture.args(),
-                    drivers=fixture.drivers,
-                    disk_min_gb=0.0,
-                )
-            )
-            if returncode == 1:
-                covered.add(label)
-
-    with StageFixture() as fixture:
-        fixture.pin()
-        fixture.write_prerequisites()
-        args = fixture.args()
-        args.driver = "other"
-        returncode, _stderr = _capture_stderr(
-            lambda: stages_mod.cmd_run3(
-                args,
-                drivers=fixture.drivers,
-                disk_min_gb=0.0,
-            )
-        )
-        if returncode == 2:
-            covered.add("run3-requested-refusal")
-
-    with StageFixture() as fixture:
-        fixture.pin()
-        fixture.write_prerequisites()
-        original_one_driver = stages_mod._run_one_driver
-        try:
-            stages_mod._run_one_driver = lambda *_args, **_kwargs: {
-                "status": "FAIL",
-                "reasons": ["interrupted by signal 2"],
-            }
-            if (
-                stages_mod.cmd_run3(
-                    fixture.args(),
-                    drivers=fixture.drivers,
-                    disk_min_gb=0.0,
-                )
-                == 1
-            ):
-                covered.add("run3-interrupted-break")
-        finally:
-            stages_mod._run_one_driver = original_one_driver
-
-    return covered
-
-
-def _exercise_runner_final_all_edges(root: str) -> set[str]:
-    covered: set[str] = set()
-
-    def result_record(
-        *,
-        chain_id: str,
-        unit: str,
-        attempt: int,
-        kind: str,
-        reason: str | None,
-    ) -> dict:
-        checks = {
-            name: "PASS"
-            for name in proofkit_mod.REQUIRED_CHECKS[kind]
-        }
-        checks[next(iter(checks))] = "FAIL"
-        return {
-            "v": 1,
-            "chain_id": chain_id,
-            "unit": unit,
-            "attempt": attempt,
-            "status": "FAIL",
-            "reasons": [] if reason is None else [reason],
-            "checks": checks,
-            "started_ns": 1,
-            "ended_ns": 2,
-            "survivors": [],
-        }
-
-    pin = {"chain_id": "c" * 32}
-    empty_parent = os.path.join(root, "empty-attempts")
-    if stages_mod._collect_final_unit(
-        pin,
-        empty_parent,
-        "run1",
-        "run1",
-    )[0]["status"] == "FAIL":
-        covered.add("final-no-attempts")
-
-    reason_parent = os.path.join(root, "reason-attempts")
-    reason_attempt = os.path.join(reason_parent, "a1")
-    os.makedirs(reason_attempt)
-    proofkit_mod.write_result(
-        os.path.join(reason_attempt, "result.json"),
-        result_record(
-            chain_id=pin["chain_id"],
-            unit="run1",
-            attempt=1,
-            kind="run1",
-            reason="fixture reason",
-        ),
-    )
-    _latest, _earlier, reasons = stages_mod._collect_final_unit(
-        pin,
-        reason_parent,
-        "run1",
-        "run1",
-    )
-    if any("fixture reason" in reason for reason in reasons):
-        covered.add("final-recorded-reasons")
-
-    status_parent = os.path.join(root, "status-attempts")
-    status_attempt = os.path.join(status_parent, "a1")
-    os.makedirs(status_attempt)
-    proofkit_mod.write_result(
-        os.path.join(status_attempt, "result.json"),
-        result_record(
-            chain_id=pin["chain_id"],
-            unit="run2",
-            attempt=1,
-            kind="run2",
-            reason=None,
-        ),
-    )
-    _latest, _earlier, reasons = stages_mod._collect_final_unit(
-        pin,
-        status_parent,
-        "run2",
-        "run2",
-    )
-    if reasons == ["run2 attempt 1 status is FAIL"]:
-        covered.add("final-status-reason")
-
-    interrupt_report = os.path.join(root, "interrupt-report")
-    interrupt_attempt = os.path.join(
-        interrupt_report,
-        "run3",
-        "stage",
-        "a1",
-    )
-    os.makedirs(interrupt_attempt)
-    proofkit_mod.write_result(
-        os.path.join(interrupt_attempt, "result.json"),
-        {
-            **result_record(
-                chain_id=pin["chain_id"],
-                unit="run3/stage",
-                attempt=1,
-                kind="run3",
-                reason="interrupted by signal 2",
-            ),
-        },
-    )
-    if stages_mod._latest_was_interrupted(
-        interrupt_report,
-        os.path.join("run3", "stage"),
-    ):
-        covered.add("latest-interrupted")
-
-    with StageFixture() as fixture:
-        fixture.pin()
-        if stages_mod.cmd_final(fixture.args()) == 1:
-            covered.add("final-required-missing")
-        required_path = os.path.join(
-            fixture.report,
-            "run3",
-            "required.json",
-        )
-        os.makedirs(os.path.dirname(required_path), exist_ok=True)
-        with open(required_path, "w", encoding="utf-8") as output:
-            json.dump({}, output)
-        if stages_mod.cmd_final(fixture.args()) == 1:
-            covered.add("final-required-type")
-        with open(required_path, "w", encoding="utf-8") as output:
-            json.dump([], output)
-        original_identity = stages_mod.check_identity
-        try:
-            stages_mod.check_identity = (
-                lambda _pin: (_ for _ in ()).throw(
-                    proofkit_mod.IdentityError(
-                        "FIXTURE-IDENTITY",
-                        "fixture final identity failure",
+                    args.driver = "other"
+                returncode, stderr = _capture_stderr(
+                    lambda: stages_mod.cmd_run3(
+                        args,
+                        drivers=fixture.drivers,
+                        disk_min_gb=0.0,
                     )
                 )
+                got = (
+                    returncode == (2 if case in {
+                        "run3-prerequisite-invalid",
+                        "run3-requested-refusal",
+                    } else 1)
+                    and bool(stderr)
+                )
+            else:
+                fixture.prepare_final_inputs()
+                required_path = os.path.join(
+                    fixture.report,
+                    "run3",
+                    "required.json",
+                )
+                if case == "final-required-missing":
+                    os.unlink(required_path)
+                else:
+                    with open(required_path, "w", encoding="utf-8") as output:
+                        json.dump({}, output)
+                got = (
+                    stages_mod.cmd_final(
+                        fixture.args(),
+                        drivers=fixture.drivers,
+                    )
+                    == 1
+                )
+        return Observation(expected=True, got=got, applied=applied)
+
+    with tempfile.TemporaryDirectory(prefix="iyi-runner-edge-") as root:
+        if case == "attempts-missing":
+            got = stages_mod._attempt_entries(
+                os.path.join(root, "missing")
+            ) == []
+        elif case == "attempt-invalid":
+            try:
+                stages_mod._attempt_number(os.path.join(root, "invalid"))
+            except ValueError:
+                got = True
+        elif case == "skip-malformed":
+            hits = stages_mod._skip_hits(
+                {
+                    "driver": "stage",
+                    "skips": [
+                        7,
+                        {"regex": 7},
+                        {"regex": "[", "class": "tool", "what": "bad"},
+                        {
+                            "regex": "^hit$",
+                            "class": "platform",
+                            "what": "hit",
+                        },
+                    ],
+                },
+                "hit",
             )
-            if stages_mod.cmd_final(fixture.args()) == 1:
-                covered.add("final-identity-invalid")
-        finally:
-            stages_mod.check_identity = original_identity
-
-    original_run1 = stages_mod.cmd_run1
-    original_run2 = stages_mod.cmd_run2
-    original_run3 = stages_mod.cmd_run3
-    original_final = stages_mod.cmd_final
-    original_status = stages_mod._latest_status
-    original_interrupted = stages_mod._latest_was_interrupted
-    all_root = os.path.join(root, "all")
-    os.makedirs(all_root)
-    args = SimpleNamespace(report_dir=all_root)
-    try:
-        stages_mod.cmd_run1 = lambda *_args, **_kwargs: 1
-        stages_mod.cmd_run2 = lambda *_args, **_kwargs: 0
-        stages_mod.cmd_run3 = lambda *_args, **_kwargs: 0
-        stages_mod.cmd_final = lambda *_args, **_kwargs: 37
-        stages_mod._latest_was_interrupted = (
-            lambda *_args, **_kwargs: False
-        )
-        stages_mod._latest_status = (
-            lambda _report, unit: "STOP" if unit == "run1" else "PASS"
-        )
-        if stages_mod.cmd_all(args, drivers=("stage",)) == 1:
-            covered.add("all-run1-stop")
-
-        stages_mod._latest_status = (
-            lambda _report, unit: "STOP" if unit == "run2" else "PASS"
-        )
-        if stages_mod.cmd_all(args, drivers=("stage",)) == 1:
-            covered.add("all-run2-stop")
-
-        stages_mod._latest_status = lambda *_args, **_kwargs: "PASS"
-        stages_mod.cmd_run3 = lambda *_args, **_kwargs: 2
-        if stages_mod.cmd_all(args, drivers=("stage",)) == 2:
-            covered.add("all-run3-refusal")
-
-        stages_mod.cmd_run3 = lambda *_args, **_kwargs: 1
-        required_path = os.path.join(
-            all_root,
-            "run3",
-            "required.json",
-        )
-        shutil.rmtree(
-            os.path.join(all_root, "run3"),
-            ignore_errors=True,
-        )
-        if stages_mod.cmd_all(args, drivers=("stage",)) == 37:
-            covered.add("all-required-missing")
-
-        os.makedirs(os.path.dirname(required_path), exist_ok=True)
-        with open(required_path, "w", encoding="utf-8") as output:
-            json.dump([7, "stage"], output)
-        stages_mod._latest_status = (
-            lambda _report, unit: (
-                "STOP"
-                if unit == os.path.join("run3", "stage")
-                else "PASS"
-            )
-        )
-        if stages_mod.cmd_all(args, drivers=("stage",)) == 1:
-            covered.add("all-driver-stop")
-    finally:
-        stages_mod.cmd_run1 = original_run1
-        stages_mod.cmd_run2 = original_run2
-        stages_mod.cmd_run3 = original_run3
-        stages_mod.cmd_final = original_final
-        stages_mod._latest_status = original_status
-        stages_mod._latest_was_interrupted = original_interrupted
-
-    return covered
-
-
-def _fixture_runner_coverage_seed() -> Observation:
-    covered: set[str] = set()
-    with tempfile.TemporaryDirectory(prefix="iyi-o7-runner-") as root:
-        covered.update(_exercise_runner_run1_edges(root))
-        covered.update(_exercise_runner_run3_edges())
-        covered.update(_exercise_runner_final_all_edges(root))
-        if stages_mod.latest_attempt_dir(os.path.join(root, "missing")) is None:
-            covered.add("latest-missing")
-        attempts = os.path.join(root, "attempts")
-        os.makedirs(os.path.join(attempts, "a9"))
-        os.makedirs(os.path.join(attempts, "a10"))
-        os.makedirs(os.path.join(attempts, "junk"))
-        latest = stages_mod.latest_attempt_dir(attempts)
-        if latest and os.path.basename(latest) == "a10":
-            covered.add("latest-numeric")
-        next_attempt = stages_mod.next_attempt_dir(attempts)
-        if os.path.basename(next_attempt) == "a11":
-            covered.add("next-attempt")
-        try:
-            stages_mod._attempt_number(os.path.join(root, "invalid"))
-        except ValueError:
-            covered.add("attempt-invalid")
-
-        atomic = os.path.join(root, "atomic.json")
-        stages_mod._write_json_atomic(atomic, {"value": 1})
-        if stages_mod._load_json(atomic) == {"value": 1}:
-            covered.add("atomic-json")
-
-        rows = os.path.join(root, "rows.jsonl")
-        with open(rows, "w", encoding="utf-8") as output:
-            output.write("\n{\"kind\":\"std\"}\n")
-        if stages_mod._read_run2_rows(rows) == [{"kind": "std"}]:
-            covered.add("rows-blank")
-        with open(rows, "w", encoding="utf-8") as output:
-            output.write("{\n")
-        try:
-            stages_mod._read_run2_rows(rows)
-        except ValueError:
-            covered.add("rows-json")
-        with open(rows, "w", encoding="utf-8") as output:
-            output.write("[]\n")
-        try:
-            stages_mod._read_run2_rows(rows)
-        except ValueError:
-            covered.add("rows-object")
-
-        exclusions = os.path.join(root, "exclusions.json")
-        run2 = os.path.join(root, "run2.jsonl")
-        with open(run2, "w", encoding="utf-8") as output:
-            output.write("{}\n")
-        for label, value in (
-            ("exclusions-type", {}),
-            ("exclusions-entry", [7]),
-            ("exclusions-program", [{}]),
-        ):
+            got = len(hits) == 1 and hits[0]["what"] == "hit"
+        elif case == "baseline-census-type":
+            census_dir = os.path.join(root, "proof", "census")
+            os.makedirs(census_dir)
+            with open(
+                os.path.join(census_dir, "stage.json"),
+                "w",
+                encoding="utf-8",
+            ) as output:
+                json.dump([], output)
+            try:
+                stages_mod._baseline_skip_hits(
+                    root,
+                    "-- running sibling: std_stage_exercise.sh\n",
+                )
+            except ValueError:
+                got = True
+        elif case.startswith("rows-"):
+            rows = os.path.join(root, "rows.jsonl")
+            content = {
+                "rows-blank": "\n{\"kind\":\"std\"}\n",
+                "rows-json": "{\n",
+                "rows-object": "[]\n",
+            }[case]
+            with open(rows, "w", encoding="utf-8") as output:
+                output.write(content)
+            if case == "rows-blank":
+                got = stages_mod._read_run2_rows(rows) == [{"kind": "std"}]
+            else:
+                try:
+                    stages_mod._read_run2_rows(rows)
+                except ValueError:
+                    got = True
+        elif case.startswith("required-"):
+            exclusions = os.path.join(root, "exclusions.json")
+            run2 = os.path.join(root, "run2.jsonl")
+            with open(run2, "w", encoding="utf-8") as output:
+                output.write(
+                    '{"p_nonzero":true}\n'
+                    if case == "required-p-nonzero"
+                    else "{}\n"
+                )
+            value = {
+                "required-exclusions-type": {},
+                "required-exclusions-entry": [7],
+                "required-exclusions-program": [{}],
+                "required-p-nonzero": [],
+            }[case]
             with open(exclusions, "w", encoding="utf-8") as output:
                 json.dump(value, output)
             try:
@@ -13871,166 +13941,948 @@ def _fixture_runner_coverage_seed() -> Observation:
                     run2,
                 )
             except ValueError:
-                covered.add(label)
-        with open(exclusions, "w", encoding="utf-8") as output:
-            json.dump([], output)
-        with open(run2, "w", encoding="utf-8") as output:
-            output.write('{"p_nonzero":true}\n')
-        try:
-            stages_mod._compute_required_drivers(
-                ("stage",),
-                exclusions,
-                run2,
-            )
-        except ValueError:
-            covered.add("p-nonzero-name")
-
-        for label, value in (
-            ("baseline-type", {}),
-            ("baseline-entry", [7]),
-        ):
+                got = True
+        elif case.startswith("baseline-"):
+            value = {} if case == "baseline-type" else [7]
             try:
                 stages_mod._baseline_keys(value)
             except ValueError:
-                covered.add(label)
-        hits = stages_mod._skip_hits(
-            {
-                "driver": "stage",
-                "skips": [
-                    7,
-                    {"regex": 7},
-                    {"regex": "[", "class": "tool", "what": "bad"},
-                    {
-                        "regex": "^hit$",
-                        "class": "platform",
-                        "what": "hit",
-                    },
-                ],
-            },
-            "hit",
-        )
-        if len(hits) == 1 and hits[0]["what"] == "hit":
-            covered.add("skip-malformed")
-        if stages_mod._driver_from_program("other.iyi") is None:
-            covered.add("driver-name")
-        if stages_mod._run3_prerequisites(root) is None:
-            covered.add("prerequisites-missing")
-        if stages_mod._validate_record(
-            None,
-            pin={"chain_id": "chain"},
-            unit="run1",
-            attempt=1,
-            kind="run1",
-        )[0] == "FAIL":
-            covered.add("record-missing")
-        malformed = {
-            "v": 0,
-            "chain_id": "other",
-            "unit": "wrong",
-            "attempt": 2,
-            "status": "PASS",
-            "reasons": None,
-            "checks": {},
-            "started_ns": "bad",
-            "ended_ns": "bad",
-            "survivors": None,
-        }
-        status, reasons = stages_mod._validate_record(
-            malformed,
-            pin={"chain_id": "chain"},
-            unit="run1",
-            attempt=1,
-            kind="run1",
-        )
-        if status == "FAIL" and len(reasons) >= 4:
-            covered.add("record-shape")
-        if stages_mod._latest_record(root, "none") is None:
-            covered.add("latest-record")
-        if not stages_mod._latest_was_interrupted(root, "none"):
-            covered.add("latest-interrupt")
-        launcher = stages_mod._launcher_text(
-            {
-                "python_path": "/tmp/python path",
-                "w_path": "/tmp/repo path",
-            },
-            "/tmp/config path",
-        )
-        if "'/tmp/python path'" in launcher and "'/tmp/config path'" in launcher:
-            covered.add("launcher-quoting")
+                got = True
+        elif case == "prerequisites-missing":
+            got = stages_mod._run3_prerequisites(root) is None
+        elif case == "record-missing":
+            got = (
+                stages_mod._validate_record(
+                    None,
+                    pin={"chain_id": "chain"},
+                    unit="run1",
+                    attempt=1,
+                    kind="run1",
+                )[0]
+                == "FAIL"
+            )
+        elif case == "record-shape":
+            status, reasons = stages_mod._validate_record(
+                {
+                    "v": 0,
+                    "chain_id": "other",
+                    "unit": "wrong",
+                    "attempt": 2,
+                    "status": "PASS",
+                    "reasons": None,
+                    "checks": {},
+                    "started_ns": "bad",
+                    "ended_ns": "bad",
+                    "survivors": None,
+                },
+                pin={"chain_id": "chain"},
+                unit="run1",
+                attempt=1,
+                kind="run1",
+            )
+            got = status == "FAIL" and len(reasons) >= 4
+        elif case == "final-no-attempt":
+            got = (
+                stages_mod._collect_final_unit(
+                    {"chain_id": "chain"},
+                    os.path.join(root, "missing"),
+                    "run1",
+                    "run1",
+                )[0]["status"]
+                == "FAIL"
+            )
+        elif case == "latest-missing":
+            got = stages_mod._latest_record(root, "missing") is None
+        elif case == "latest-interrupt-missing":
+            got = not stages_mod._latest_was_interrupted(root, "missing")
+        else:
+            raise ValueError(f"unknown isolated runner edge {case}")
+    return Observation(expected=True, got=got, applied=applied)
 
-    expected = {
-        "baseline-census-type",
-        "baseline-sort",
-        "run1-gate1-error-identity",
-        "run1-gate2-interrupted",
-        "run1-gate2-failure-identity",
-        "run1-gate2-error",
-        "run1-gate3-interrupted",
-        "run1-gate3-failure-identity",
-        "run1-gate3-error",
-        "run1-gate4-interrupted",
-        "run1-gate4-failure-identity",
-        "run1-gate4-error",
-        "run1-baseline-error",
-        "run2-interrupted",
+
+def _runner_more_edge(case: str) -> Observation:
+    applied = f"isolated runner edge={case}"
+    got = False
+    if case == "run1-baseline-error":
+        with StageFixture() as fixture:
+            fixture.pin()
+            baseline_root = os.path.join(
+                fixture.scratch,
+                "baseline-root",
+            )
+            census_dir = os.path.join(
+                baseline_root,
+                "proof",
+                "census",
+            )
+            os.makedirs(census_dir)
+            with open(
+                os.path.join(census_dir, "stage.json"),
+                "w",
+                encoding="utf-8",
+            ) as output:
+                json.dump([], output)
+            returncode = stages_mod.cmd_run1(
+                fixture.args(),
+                disk_min_gb=0.0,
+                baseline_w_path=baseline_root,
+            )
+            record = _stage_result(fixture.report, "run1")
+            got = (
+                returncode == 1
+                and record.get("checks", {}).get("baseline-skips") == "FAIL"
+            )
+        return Observation(expected=True, got=got, applied=applied)
+
+    if case in {"run3-setup-error", "run3-execution-error"}:
+        with StageFixture() as fixture:
+            pin = fixture.pin()
+            path = os.path.join(
+                fixture.scratch,
+                "setup-file" if case == "run3-setup-error" else "driver-log",
+            )
+            if case == "run3-setup-error":
+                with open(path, "w", encoding="utf-8") as output:
+                    output.write("not a directory")
+                setup_base = path
+                driver_log_path = None
+            else:
+                os.makedirs(path)
+                setup_base = None
+                driver_log_path = path
+            record = stages_mod._run_one_driver(
+                fixture.report,
+                pin,
+                "stage",
+                set(),
+                driver_limit_sec=30.0,
+                grace_sec=0.1,
+                disk_min_gb=0.0,
+                stat_fn=os.stat,
+                setup_base=setup_base,
+                driver_log_path=driver_log_path,
+            )
+            got = (
+                record.get("status") == "FAIL"
+                and record.get("checks", {}).get("exit") == "FAIL"
+            )
+        return Observation(expected=True, got=got, applied=applied)
+
+    if case in {
         "run3-census-type",
         "run3-census-script-type",
-        "run3-census-invalid",
         "run3-census-unreadable",
-        "run3-disk-stop",
-        "run3-setup-error",
-        "run3-driver-interrupted",
-        "run3-driver-nonzero",
-        "run3-driver-refused",
-        "run3-driver-error",
-        "run3-prerequisite-invalid",
-        "run3-required-unreadable",
-        "run3-required-type",
-        "run3-requested-refusal",
-        "run3-interrupted-break",
-        "final-no-attempts",
-        "final-recorded-reasons",
-        "final-status-reason",
-        "latest-interrupted",
-        "final-required-missing",
-        "final-required-type",
-        "final-identity-invalid",
-        "all-run1-stop",
-        "all-run2-stop",
+    }:
+        with StageFixture() as fixture:
+            pin = fixture.pin()
+            census_path = os.path.join(
+                fixture.w,
+                "proof",
+                "census",
+                "stage.json",
+            )
+            census = _o7_load_json(census_path)
+            with open(census_path, "w", encoding="utf-8") as output:
+                if case == "run3-census-type":
+                    json.dump([], output)
+                elif case == "run3-census-script-type":
+                    census["script"] = None
+                    json.dump(census, output)
+                else:
+                    output.write("{")
+            record = stages_mod._run_one_driver(
+                fixture.report,
+                pin,
+                "stage",
+                set(),
+                driver_limit_sec=30.0,
+                grace_sec=0.1,
+                disk_min_gb=0.0,
+                stat_fn=os.stat,
+            )
+            got = (
+                record.get("status") == "FAIL"
+                and record.get("checks", {}).get("census") == "FAIL"
+            )
+        return Observation(expected=True, got=got, applied=applied)
+
+    if case == "run3-driver-nonzero":
+        with StageFixture("driver-nonzero") as fixture:
+            fixture.pin()
+            fixture.write_prerequisites()
+            returncode = stages_mod.cmd_run3(
+                fixture.args(),
+                drivers=fixture.drivers,
+                driver_limit_sec=30.0,
+                grace_sec=0.1,
+                disk_min_gb=0.0,
+            )
+            record = _stage_result(fixture.report, "run3/stage")
+            got = (
+                returncode == 1
+                and record.get("status") == "FAIL"
+                and record.get("checks", {}).get("exit") == "FAIL"
+            )
+        return Observation(expected=True, got=got, applied=applied)
+
+    if case in {
+        "final-prerequisites-missing",
+        "final-recompute-error",
+    }:
+        with StageFixture() as fixture:
+            fixture.prepare_final_inputs()
+            latest_run1 = stages_mod.latest_attempt_dir(
+                os.path.join(fixture.report, "run1")
+            )
+            if case == "final-prerequisites-missing":
+                os.unlink(
+                    os.path.join(latest_run1, "baseline_skips.json")
+                )
+            else:
+                with open(
+                    os.path.join(latest_run1, "exclusions.json"),
+                    "w",
+                    encoding="utf-8",
+                ) as output:
+                    json.dump({}, output)
+            returncode = stages_mod.cmd_final(
+                fixture.args(),
+                drivers=fixture.drivers,
+            )
+            final = _o7_load_json(
+                os.path.join(fixture.report, "final.json")
+            )
+            fragment = (
+                "are unavailable"
+                if case == "final-prerequisites-missing"
+                else "cannot be recomputed"
+            )
+            got = (
+                returncode == 1
+                and any(
+                    fragment in str(reason)
+                    for reason in final.get("reasons", [])
+                )
+            )
+        return Observation(expected=True, got=got, applied=applied)
+
+    if case in {"all-run1-stop", "all-run2-stop"}:
+        scenario = "run2-stop" if case == "all-run2-stop" else "control"
+        with StageFixture(scenario) as fixture:
+            fixture.pin()
+            returncode = stages_mod.cmd_all(
+                fixture.args(),
+                drivers=fixture.drivers,
+                driver_limit_sec=30.0,
+                grace_sec=0.1,
+                disk_min_gb=(
+                    2**60 if case == "all-run1-stop" else 0.0
+                ),
+            )
+            got = returncode == 1
+        return Observation(expected=True, got=got, applied=applied)
+
+    if case in {
         "all-run3-refusal",
         "all-required-missing",
+        "all-required-nonstr",
         "all-driver-stop",
-        "atomic-json",
-        "attempt-invalid",
-        "baseline-entry",
-        "baseline-type",
-        "driver-name",
-        "exclusions-entry",
-        "exclusions-program",
-        "exclusions-type",
-        "latest-interrupt",
-        "latest-missing",
-        "latest-numeric",
-        "latest-record",
-        "launcher-quoting",
-        "next-attempt",
-        "p-nonzero-name",
-        "prerequisites-missing",
-        "record-missing",
-        "record-shape",
-        "rows-blank",
-        "rows-json",
-        "rows-object",
-        "skip-malformed",
-    }
+    }:
+        with StageFixture() as fixture:
+            fixture.pin()
+            args = fixture.args()
+            required_path: str | None = None
+            if case == "all-run3-refusal":
+                args.driver = "other"
+            elif case == "all-required-missing":
+                required_path = os.path.join(
+                    fixture.scratch,
+                    "missing-required.json",
+                )
+            elif case == "all-required-nonstr":
+                required_path = os.path.join(
+                    fixture.scratch,
+                    "nonstr-required.json",
+                )
+                with open(required_path, "w", encoding="utf-8") as output:
+                    json.dump([7], output)
+            def run_all() -> int:
+                return stages_mod.cmd_all(
+                    args,
+                    drivers=fixture.drivers,
+                    driver_limit_sec=30.0,
+                    grace_sec=0.1,
+                    disk_min_gb=0.0,
+                    required_path=required_path,
+                    run3_disk_min_gb=(
+                        2**60 if case == "all-driver-stop" else None
+                    ),
+                )
+
+            stderr_captured = True
+            if case == "all-run3-refusal":
+                returncode, stderr = _capture_stderr(run_all)
+                stderr_captured = (
+                    "REFUSED driver 'other' is not in required.json"
+                    in stderr
+                )
+            else:
+                returncode = run_all()
+            expected_returncode = {
+                "all-run3-refusal": 2,
+                "all-driver-stop": 1,
+            }.get(case, 0)
+            got = (
+                returncode == expected_returncode
+                and stderr_captured
+            )
+        return Observation(expected=True, got=got, applied=applied)
+
+    with tempfile.TemporaryDirectory(prefix="iyi-runner-more-") as root:
+        checks = {
+            name: "PASS"
+            for name in proofkit_mod.REQUIRED_CHECKS[
+                "run1" if case == "final-recorded-reason" else "run2"
+            ]
+        }
+        checks[next(iter(checks))] = "FAIL"
+        unit = "run1" if case == "final-recorded-reason" else "run2"
+        parent = os.path.join(root, unit, "a1")
+        os.makedirs(parent)
+        record = {
+            "v": 1,
+            "chain_id": "c" * 32,
+            "unit": unit,
+            "attempt": 1,
+            "status": "FAIL",
+            "reasons": (
+                ["fixture recorded reason"]
+                if case == "final-recorded-reason"
+                else []
+            ),
+            "checks": checks,
+            "started_ns": 1,
+            "ended_ns": 2,
+            "survivors": [],
+        }
+        proofkit_mod.write_result(
+            os.path.join(parent, "result.json"),
+            record,
+        )
+        if case in {"final-recorded-reason", "final-status-reason"}:
+            _latest, _earlier, reasons = stages_mod._collect_final_unit(
+                {"chain_id": "c" * 32},
+                os.path.join(root, unit),
+                unit,
+                "run1" if unit == "run1" else "run2",
+            )
+            got = bool(reasons)
+        elif case == "latest-interrupted":
+            record["unit"] = "run3/stage"
+            record["reasons"] = ["interrupted by signal 2"]
+            target = os.path.join(root, "run3", "stage", "a1")
+            os.makedirs(target)
+            proofkit_mod.write_result(
+                os.path.join(target, "result.json"),
+                record,
+            )
+            got = stages_mod._latest_was_interrupted(
+                root,
+                os.path.join("run3", "stage"),
+            )
+        else:
+            raise ValueError(f"unknown runner-more edge {case}")
+    return Observation(expected=True, got=got, applied=applied)
+
+
+def _fixture_run1_gate_oserror(gate: int) -> Observation:
+    scenario = "control" if gate in (1, 3) else f"gate{gate}-oserror"
+    with StageFixture(scenario) as fixture:
+        tool_dir = os.path.join(fixture.scratch, "gate-tools")
+        os.makedirs(tool_dir)
+        bash_source = ""
+        for tool in (
+            "bash",
+            "git",
+            "nm",
+            "timeout",
+            "getconf",
+            "mktemp",
+            "python3",
+        ):
+            source = shutil.which(tool)
+            if not source:
+                raise RuntimeError(f"{tool} unavailable for gate fixture")
+            if tool == "bash":
+                bash_source = source
+            os.symlink(source, os.path.join(tool_dir, tool))
+        original_path = os.environ.get("PATH", "")
+        try:
+            os.environ["PATH"] = tool_dir
+            fixture.pin()
+            rg9_work_path: str | None = None
+            if gate == 3:
+                rg9_work_path = os.path.join(
+                    fixture.scratch,
+                    "rg9-work-collision",
+                )
+                with open(rg9_work_path, "w", encoding="utf-8") as output:
+                    output.write("existing path")
+            restorer: threading.Thread | None = None
+            if gate == 1:
+                os.unlink(os.path.join(tool_dir, "bash"))
+                def restore_bash() -> None:
+                    gate_log = os.path.join(
+                        fixture.report,
+                        "run1",
+                        "a1",
+                        "run1_1.log",
+                    )
+                    while not os.path.exists(gate_log):
+                        time.sleep(0.001)
+                    time.sleep(0.01)
+                    os.symlink(
+                        bash_source,
+                        os.path.join(tool_dir, "bash"),
+                    )
+
+                restorer = threading.Thread(target=restore_bash)
+                restorer.start()
+            returncode = stages_mod.cmd_run1(
+                fixture.args(),
+                disk_min_gb=0.0,
+                rg9_work_path=rg9_work_path,
+            )
+            if restorer is not None:
+                restorer.join()
+        finally:
+            os.environ["PATH"] = original_path
+        result = _stage_result(fixture.report, "run1")
+        got = {
+            "returncode": returncode,
+            "status": result.get("status"),
+            "reason": any(
+                f"gate 1.{gate} error:" in str(reason)
+                for reason in result.get("reasons", [])
+            ),
+        }
     return Observation(
-        expected=sorted(expected),
-        got=sorted(covered),
-        applied="63 isolated run_proof helper inputs",
+        expected={"returncode": 1, "status": "FAIL", "reason": True},
+        got=got,
+        applied=(
+            "existing rg9_work file path"
+            if gate == 3
+            else f"removed gate {gate} executable prerequisite"
+        ),
+    )
+
+
+def _fixture_run1_gate_interrupt(gate: int) -> Observation:
+    scenario = f"interrupt-gate{gate}"
+    with StageFixture(scenario) as fixture:
+        fixture.pin()
+        marker = os.path.join(
+            fixture.report,
+            "run1",
+            "a1",
+            f"run1_{gate}.tmp",
+            "interrupt-ready",
+        )
+        marker_seen = threading.Event()
+
+        def send_term() -> None:
+            for _ in range(500):
+                if os.path.isfile(marker):
+                    marker_seen.set()
+                    os.kill(os.getpid(), signal.SIGTERM)
+                    return
+                time.sleep(0.01)
+
+        sender = threading.Thread(target=send_term)
+        sender.start()
+        returncode = stages_mod.cmd_run1(
+            fixture.args(),
+            disk_min_gb=0.0,
+        )
+        sender.join()
+        result = _stage_result(fixture.report, "run1")
+        got = {
+            "returncode": returncode,
+            "status": result.get("status"),
+            "reason": f"interrupted by signal {signal.SIGTERM}"
+            in result.get("reasons", []),
+            "marker": marker_seen.is_set(),
+        }
+    return Observation(
+        expected={
+            "returncode": 1,
+            "status": "FAIL",
+            "reason": True,
+            "marker": True,
+        },
+        got=got,
+        applied=f"SIGTERM delivered during gate 1.{gate}",
+    )
+
+
+def _fixture_run2_interrupt_edge() -> Observation:
+    with StageFixture("run2-interrupt") as fixture:
+        fixture.pin()
+        marker = os.path.join(
+            fixture.report,
+            "run2",
+            "a1",
+            "run2.tmp",
+            "interrupt-ready",
+        )
+        seen = threading.Event()
+
+        def send_term() -> None:
+            for _ in range(500):
+                if os.path.isfile(marker):
+                    seen.set()
+                    os.kill(os.getpid(), signal.SIGTERM)
+                    return
+                time.sleep(0.01)
+
+        sender = threading.Thread(target=send_term)
+        sender.start()
+        returncode = stages_mod.cmd_run2(
+            fixture.args(),
+            disk_min_gb=0.0,
+        )
+        sender.join()
+        record = _stage_result(fixture.report, "run2")
+        got = {
+            "returncode": returncode,
+            "status": record.get("status"),
+            "legs": record.get("checks", {}).get("legs"),
+            "reason": f"interrupted by signal {signal.SIGTERM}"
+            in record.get("reasons", []),
+            "marker": seen.is_set(),
+        }
+    return Observation(
+        expected={
+            "returncode": 1,
+            "status": "FAIL",
+            "legs": "FAIL",
+            "reason": True,
+            "marker": True,
+        },
+        got=got,
+        applied="SIGTERM delivered during Run 2 artifact process",
+    )
+
+
+def _fixture_run3_interrupt_edge() -> Observation:
+    with StageFixture("driver-interrupt") as fixture:
+        fixture.pin()
+        fixture.write_prerequisites()
+        marker = os.path.join(
+            fixture.report,
+            "run3",
+            "stage",
+            "a1",
+            "t",
+            "interrupt-ready",
+        )
+        seen = threading.Event()
+
+        def send_term() -> None:
+            for _ in range(500):
+                if os.path.isfile(marker):
+                    seen.set()
+                    os.kill(os.getpid(), signal.SIGTERM)
+                    return
+                time.sleep(0.01)
+
+        sender = threading.Thread(target=send_term)
+        sender.start()
+        returncode = stages_mod.cmd_run3(
+            fixture.args(),
+            drivers=fixture.drivers,
+            driver_limit_sec=30.0,
+            grace_sec=0.1,
+            disk_min_gb=0.0,
+        )
+        sender.join()
+        record = _stage_result(fixture.report, "run3/stage")
+        got = {
+            "returncode": returncode,
+            "status": record.get("status"),
+            "exit": record.get("checks", {}).get("exit"),
+            "reason": f"interrupted by signal {signal.SIGTERM}"
+            in record.get("reasons", []),
+            "marker": seen.is_set(),
+        }
+    return Observation(
+        expected={
+            "returncode": 1,
+            "status": "FAIL",
+            "exit": "FAIL",
+            "reason": True,
+            "marker": True,
+        },
+        got=got,
+        applied="SIGTERM delivered during Run 3 driver",
+    )
+
+
+def _fixture_run1_post_gate_identity(gate: int) -> Observation:
+    with StageFixture(f"gate{gate}-identity") as fixture:
+        fixture.pin()
+        returncode = stages_mod.cmd_run1(
+            fixture.args(),
+            disk_min_gb=0.0,
+        )
+        record = _stage_result(fixture.report, "run1")
+        got = {
+            "returncode": returncode,
+            "status": record.get("status"),
+            "identity": record.get("checks", {}).get("identity"),
+            "reason": any(
+                "COMPILER-MTIME-CHANGED" in str(reason)
+                for reason in record.get("reasons", [])
+            ),
+        }
+    return Observation(
+        expected={
+            "returncode": 1,
+            "status": "INVALID",
+            "identity": "INVALID",
+            "reason": True,
+        },
+        got=got,
+        applied=f"compiler mtime changed after gate 1.{gate}",
     )
 
 
 O7_FIXTURES: tuple[Fixture, ...] = (
+    Fixture("o7.seed.rp2-run1-baseline-error", "seed", partial(_runner_more_edge, "run1-baseline-error")),
+    Fixture("o7.seed.rp2-run3-setup-error", "seed", partial(_runner_more_edge, "run3-setup-error")),
+    Fixture("o7.seed.rp2-run3-execution-error", "seed", partial(_runner_more_edge, "run3-execution-error")),
+    Fixture("o7.seed.rp2-run3-census-type", "seed", partial(_runner_more_edge, "run3-census-type")),
+    Fixture("o7.seed.rp2-run3-census-script-type", "seed", partial(_runner_more_edge, "run3-census-script-type")),
+    Fixture("o7.seed.rp2-run3-census-unreadable", "seed", partial(_runner_more_edge, "run3-census-unreadable")),
+    Fixture("o7.seed.rp2-run3-driver-nonzero", "seed", partial(_runner_more_edge, "run3-driver-nonzero")),
+    Fixture("o7.seed.rp2-final-recorded-reason", "seed", partial(_runner_more_edge, "final-recorded-reason")),
+    Fixture("o7.seed.rp2-final-status-reason", "seed", partial(_runner_more_edge, "final-status-reason")),
+    Fixture("o7.seed.rp2-final-prerequisites-missing", "seed", partial(_runner_more_edge, "final-prerequisites-missing")),
+    Fixture("o7.seed.rp2-final-recompute-error", "seed", partial(_runner_more_edge, "final-recompute-error")),
+    Fixture("o7.seed.rp2-latest-interrupted", "seed", partial(_runner_more_edge, "latest-interrupted")),
+    Fixture("o7.seed.rp2-all-run1-stop", "seed", partial(_runner_more_edge, "all-run1-stop")),
+    Fixture("o7.seed.rp2-all-run2-stop", "seed", partial(_runner_more_edge, "all-run2-stop")),
+    Fixture("o7.seed.rp2-all-run3-refusal", "seed", partial(_runner_more_edge, "all-run3-refusal")),
+    Fixture("o7.seed.rp2-all-required-missing", "seed", partial(_runner_more_edge, "all-required-missing")),
+    Fixture("o7.seed.rp2-all-required-nonstr", "seed", partial(_runner_more_edge, "all-required-nonstr")),
+    Fixture("o7.seed.rp2-all-driver-stop", "seed", partial(_runner_more_edge, "all-driver-stop")),
+    Fixture("o7.seed.rp-gate1-post-identity", "seed", partial(_fixture_run1_post_gate_identity, 1)),
+    Fixture("o7.seed.rp-gate2-post-identity", "seed", partial(_fixture_run1_post_gate_identity, 2)),
+    Fixture("o7.seed.rp-gate3-post-identity", "seed", partial(_fixture_run1_post_gate_identity, 3)),
+    Fixture("o7.seed.rp-gate4-post-identity", "seed", partial(_fixture_run1_post_gate_identity, 4)),
+    Fixture("o7.seed.rp-run2-interrupt", "seed", _fixture_run2_interrupt_edge),
+    Fixture("o7.seed.rp-run3-interrupt", "seed", _fixture_run3_interrupt_edge),
+    Fixture("o7.seed.rp-gate1-oserror", "seed", partial(_fixture_run1_gate_oserror, 1)),
+    Fixture("o7.seed.rp-gate2-oserror", "seed", partial(_fixture_run1_gate_oserror, 2)),
+    Fixture("o7.seed.rp-gate3-oserror", "seed", partial(_fixture_run1_gate_oserror, 3)),
+    Fixture("o7.seed.rp-gate4-oserror", "seed", partial(_fixture_run1_gate_oserror, 4)),
+    Fixture("o7.seed.rp-gate2-interrupt", "seed", partial(_fixture_run1_gate_interrupt, 2)),
+    Fixture("o7.seed.rp-gate3-interrupt", "seed", partial(_fixture_run1_gate_interrupt, 3)),
+    Fixture("o7.seed.rp-gate4-interrupt", "seed", partial(_fixture_run1_gate_interrupt, 4)),
+    Fixture("o7.seed.pk2-census-validate-mismatch", "seed", partial(_proofkit_more_edge, "census-validate-mismatch")),
+    Fixture("o7.seed.pk2-census-shas-missing", "seed", partial(_proofkit_more_edge, "census-shas-missing")),
+    Fixture("o7.seed.pk2-inspect-git-error", "seed", partial(_proofkit_more_edge, "inspect-git-error")),
+    Fixture("o7.seed.pk2-inspect-compiler-missing", "seed", partial(_proofkit_more_edge, "inspect-compiler-missing")),
+    Fixture("o7.seed.pk2-pin-write-probe", "seed", partial(_proofkit_more_edge, "pin-write-probe")),
+    Fixture("o7.seed.pk2-pin-write-probe-dirty", "seed", partial(_proofkit_more_edge, "pin-write-probe-dirty")),
+    Fixture("o7.seed.pk2-inspect-diff-error", "seed", partial(_proofkit_more_edge, "inspect-diff-error")),
+    Fixture("o7.seed.pk2-inspect-compiler-stat", "seed", partial(_proofkit_more_edge, "inspect-compiler-stat")),
+    Fixture("o7.seed.pk2-inspect-no-nm", "seed", partial(_proofkit_more_edge, "inspect-no-nm")),
+    Fixture("o7.seed.pk2-pin-write-type", "seed", partial(_proofkit_more_edge, "pin-write-type")),
+    Fixture("o7.seed.pk2-pin-write-dirty", "seed", partial(_proofkit_more_edge, "pin-write-dirty")),
+    Fixture("o7.seed.pk2-identity-git-error", "seed", partial(_proofkit_more_edge, "identity-git-error")),
+    Fixture("o7.seed.pk2-identity-compiler-stat", "seed", partial(_proofkit_more_edge, "identity-compiler-stat")),
+    Fixture("o7.seed.pk2-schema-missing-key", "seed", partial(_proofkit_more_edge, "schema-missing-key")),
+    Fixture("o7.seed.pk2-schema-skip-unrenderable", "seed", partial(_proofkit_more_edge, "schema-skip-unrenderable")),
+    Fixture("o7.seed.pk2-schema-sentinel-unrenderable", "seed", partial(_proofkit_more_edge, "schema-sentinel-unrenderable")),
+    Fixture("o7.seed.pk2-parser-shlex-error", "seed", partial(_proofkit_more_edge, "parser-shlex-error")),
+    Fixture("o7.seed.pk2-parser-literal-dollar", "seed", partial(_proofkit_more_edge, "parser-literal-dollar")),
+    Fixture("o7.seed.pk2-parser-render-command", "seed", partial(_proofkit_more_edge, "parser-render-command")),
+    Fixture("o7.seed.pk2-parser-backtick-unclosed", "seed", partial(_proofkit_more_edge, "parser-backtick-unclosed")),
+    Fixture("o7.seed.pk2-parser-nested-expansion", "seed", partial(_proofkit_more_edge, "parser-nested-expansion")),
+    Fixture("o7.seed.pk2-parser-nested-command-open", "seed", partial(_proofkit_more_edge, "parser-nested-command-open")),
+    Fixture("o7.seed.pk2-parser-nested-backtick-open", "seed", partial(_proofkit_more_edge, "parser-nested-backtick-open")),
+    Fixture("o7.seed.pk2-parser-unquoted-backtick", "seed", partial(_proofkit_more_edge, "parser-unquoted-backtick")),
+    Fixture("o7.seed.pk2-parser-unquoted-backtick-open", "seed", partial(_proofkit_more_edge, "parser-unquoted-backtick-open")),
+    Fixture("o7.seed.pk2-parser-dequote-expansion-open", "seed", partial(_proofkit_more_edge, "parser-dequote-expansion-open")),
+    Fixture("o7.seed.pk2-identity-not-descendant", "seed", partial(_proofkit_more_edge, "identity-not-descendant")),
+    Fixture("o7.seed.pk2-identity-no-timeout", "seed", partial(_proofkit_more_edge, "identity-no-timeout")),
+    Fixture("o7.seed.pk2-identity-no-nm", "seed", partial(_proofkit_more_edge, "identity-no-nm")),
+    Fixture("o7.seed.pk2-report-chain-invalid", "seed", partial(_proofkit_more_edge, "report-chain-invalid")),
+    Fixture("o7.seed.pk2-report-chain-mismatch", "seed", partial(_proofkit_more_edge, "report-chain-mismatch")),
+    Fixture("o7.seed.pk2-report-listdir", "seed", partial(_proofkit_more_edge, "report-listdir")),
+    Fixture("o7.seed.pk2-process-wait", "seed", partial(_proofkit_more_edge, "process-wait")),
+    Fixture("o7.seed.pk2-process-stop", "seed", partial(_proofkit_more_edge, "process-stop")),
+    Fixture("o7.seed.pk2-process-leader-survives", "seed", partial(_proofkit_more_edge, "process-leader-survives")),
+    Fixture("o7.seed.pk2-process-zombie-remains", "seed", partial(_proofkit_more_edge, "process-zombie-remains")),
+    Fixture("o7.seed.pk2-process-finally-stop", "seed", partial(_proofkit_more_edge, "process-finally-stop")),
+    Fixture("o7.seed.pk2-process-residual-zombie", "seed", partial(_proofkit_more_edge, "process-residual-zombie")),
+    Fixture("o7.seed.pk2-process-parse", "seed", partial(_proofkit_more_edge, "process-parse")),
+    Fixture("o7.seed.pk2-process-ps-status", "seed", partial(_proofkit_more_edge, "process-ps-status")),
+    Fixture("o7.seed.pk2-run-bounded-sampler-error", "seed", partial(_proofkit_more_edge, "run-bounded-sampler-error")),
+    Fixture("o7.seed.pk2-validator-env-unchanged", "seed", partial(_proofkit_more_edge, "validator-env-unchanged")),
+    Fixture("o7.seed.pk2-schema-nonobject", "seed", partial(_proofkit_more_edge, "schema-nonobject")),
+    Fixture("o7.seed.pk2-schema-bytes", "seed", partial(_proofkit_more_edge, "schema-bytes")),
+    Fixture("o7.seed.pk2-schema-path", "seed", partial(_proofkit_more_edge, "schema-path")),
+    Fixture("o7.seed.pk2-schema-duplicate-variant", "seed", partial(_proofkit_more_edge, "schema-duplicate-variant")),
+    Fixture("o7.seed.pk2-schema-duplicate-skip", "seed", partial(_proofkit_more_edge, "schema-duplicate-skip")),
+    Fixture("o7.seed.pk2-schema-sentinel-iyivar", "seed", partial(_proofkit_more_edge, "schema-sentinel-iyivar")),
+    Fixture("o7.seed.pk2-parser-command-open", "seed", partial(_proofkit_more_edge, "parser-command-open")),
+    Fixture("o7.seed.pk2-parser-backtick-open", "seed", partial(_proofkit_more_edge, "parser-backtick-open")),
+    Fixture("o7.seed.pk2-parser-echo-option", "seed", partial(_proofkit_more_edge, "parser-echo-option")),
+    Fixture("o7.seed.pk2-parser-printf-option", "seed", partial(_proofkit_more_edge, "parser-printf-option")),
+    Fixture("o7.seed.pk2-parser-template-brace", "seed", partial(_proofkit_more_edge, "parser-template-brace")),
+    Fixture("o7.seed.rp-run1-missing-gate1", "seed", partial(_runner_isolated_edge, "run1-missing-gate1")),
+    Fixture("o7.seed.rp-run1-missing-gate2", "seed", partial(_runner_isolated_edge, "run1-missing-gate2")),
+    Fixture("o7.seed.rp-run1-missing-gate3", "seed", partial(_runner_isolated_edge, "run1-missing-gate3")),
+    Fixture("o7.seed.rp-run1-missing-gate4", "seed", partial(_runner_isolated_edge, "run1-missing-gate4")),
+    Fixture("o7.seed.rp-run3-prerequisite-invalid", "seed", partial(_runner_isolated_edge, "run3-prerequisite-invalid")),
+    Fixture("o7.seed.rp-run3-required-unreadable", "seed", partial(_runner_isolated_edge, "run3-required-unreadable")),
+    Fixture("o7.seed.rp-run3-required-type", "seed", partial(_runner_isolated_edge, "run3-required-type")),
+    Fixture("o7.seed.rp-run3-requested-refusal", "seed", partial(_runner_isolated_edge, "run3-requested-refusal")),
+    Fixture("o7.seed.rp-final-required-missing", "seed", partial(_runner_isolated_edge, "final-required-missing")),
+    Fixture("o7.seed.rp-final-required-type", "seed", partial(_runner_isolated_edge, "final-required-type")),
+    Fixture("o7.seed.rp-attempts-missing", "seed", partial(_runner_isolated_edge, "attempts-missing")),
+    Fixture("o7.seed.rp-attempt-invalid", "seed", partial(_runner_isolated_edge, "attempt-invalid")),
+    Fixture("o7.seed.rp-skip-malformed", "seed", partial(_runner_isolated_edge, "skip-malformed")),
+    Fixture("o7.seed.rp-baseline-census-type", "seed", partial(_runner_isolated_edge, "baseline-census-type")),
+    Fixture("o7.seed.rp-rows-blank", "seed", partial(_runner_isolated_edge, "rows-blank")),
+    Fixture("o7.seed.rp-rows-json", "seed", partial(_runner_isolated_edge, "rows-json")),
+    Fixture("o7.seed.rp-rows-object", "seed", partial(_runner_isolated_edge, "rows-object")),
+    Fixture("o7.seed.rp-required-exclusions-type", "seed", partial(_runner_isolated_edge, "required-exclusions-type")),
+    Fixture("o7.seed.rp-required-exclusions-entry", "seed", partial(_runner_isolated_edge, "required-exclusions-entry")),
+    Fixture("o7.seed.rp-required-exclusions-program", "seed", partial(_runner_isolated_edge, "required-exclusions-program")),
+    Fixture("o7.seed.rp-required-p-nonzero", "seed", partial(_runner_isolated_edge, "required-p-nonzero")),
+    Fixture("o7.seed.rp-baseline-type", "seed", partial(_runner_isolated_edge, "baseline-type")),
+    Fixture("o7.seed.rp-baseline-entry", "seed", partial(_runner_isolated_edge, "baseline-entry")),
+    Fixture("o7.seed.rp-prerequisites-missing", "seed", partial(_runner_isolated_edge, "prerequisites-missing")),
+    Fixture("o7.seed.rp-record-missing", "seed", partial(_runner_isolated_edge, "record-missing")),
+    Fixture("o7.seed.rp-record-shape", "seed", partial(_runner_isolated_edge, "record-shape")),
+    Fixture("o7.seed.rp-final-no-attempt", "seed", partial(_runner_isolated_edge, "final-no-attempt")),
+    Fixture("o7.seed.rp-latest-missing", "seed", partial(_runner_isolated_edge, "latest-missing")),
+    Fixture("o7.seed.rp-latest-interrupt-missing", "seed", partial(_runner_isolated_edge, "latest-interrupt-missing")),
+    Fixture("o7.seed.pk-git-error", "seed", partial(_proofkit_isolated_edge, "git-error")),
+    Fixture("o7.seed.pk-platform-getconf-missing", "seed", partial(_proofkit_isolated_edge, "platform-getconf-missing")),
+    Fixture("o7.seed.pk-platform-getconf-oserror", "seed", partial(_proofkit_isolated_edge, "platform-getconf-oserror")),
+    Fixture("o7.seed.pk-platform-getconf-status", "seed", partial(_proofkit_isolated_edge, "platform-getconf-status")),
+    Fixture("o7.seed.pk-platform-getconf-nondir", "seed", partial(_proofkit_isolated_edge, "platform-getconf-nondir")),
+    Fixture("o7.seed.pk-platform-mktemp-missing", "seed", partial(_proofkit_isolated_edge, "platform-mktemp-missing")),
+    Fixture("o7.seed.pk-platform-mktemp-oserror", "seed", partial(_proofkit_isolated_edge, "platform-mktemp-oserror")),
+    Fixture("o7.seed.pk-platform-mktemp-status", "seed", partial(_proofkit_isolated_edge, "platform-mktemp-status")),
+    Fixture("o7.seed.pk-platform-mktemp-nondir", "seed", partial(_proofkit_isolated_edge, "platform-mktemp-nondir")),
+    Fixture("o7.seed.pk-compiler-env", "seed", partial(_proofkit_isolated_edge, "compiler-env")),
+    Fixture("o7.seed.pk-roots-empty", "seed", partial(_proofkit_isolated_edge, "roots-empty")),
+    Fixture("o7.seed.pk-probe-atime-retention", "seed", partial(_proofkit_isolated_edge, "probe-atime-retention")),
+    Fixture("o7.seed.pk-probe-exec-failure", "seed", partial(_proofkit_isolated_edge, "probe-exec-failure")),
+    Fixture("o7.seed.pk-probe-sha", "seed", partial(_proofkit_isolated_edge, "probe-sha")),
+    Fixture("o7.seed.pk-probe-inode", "seed", partial(_proofkit_isolated_edge, "probe-inode")),
+    Fixture("o7.seed.pk-probe-oserror", "seed", partial(_proofkit_isolated_edge, "probe-oserror")),
+    Fixture("o7.seed.pk-first-output", "seed", partial(_proofkit_isolated_edge, "first-output")),
+    Fixture("o7.seed.pk-nm-output", "seed", partial(_proofkit_isolated_edge, "nm-output")),
+    Fixture("o7.seed.pk-census-set", "seed", partial(_proofkit_isolated_edge, "census-set")),
+    Fixture("o7.seed.pk-census-invalid", "seed", partial(_proofkit_isolated_edge, "census-invalid")),
+    Fixture("o7.seed.pk-census-shas-set", "seed", partial(_proofkit_isolated_edge, "census-shas-set")),
+    Fixture("o7.seed.pk-pin-load-invalid", "seed", partial(_proofkit_isolated_edge, "pin-load-invalid")),
+    Fixture("o7.seed.pk-pin-load-chain", "seed", partial(_proofkit_isolated_edge, "pin-load-chain")),
+    Fixture("o7.seed.pk-pin-load-report", "seed", partial(_proofkit_isolated_edge, "pin-load-report")),
+    Fixture("o7.seed.pk-identity-p-dirty", "seed", partial(_proofkit_isolated_edge, "identity-p-dirty")),
+    Fixture("o7.seed.pk-identity-w-dirty", "seed", partial(_proofkit_isolated_edge, "identity-w-dirty")),
+    Fixture("o7.seed.pk-identity-product-diff", "seed", partial(_proofkit_isolated_edge, "identity-product-diff")),
+    Fixture("o7.seed.pk-identity-compiler-missing", "seed", partial(_proofkit_isolated_edge, "identity-compiler-missing")),
+    Fixture("o7.seed.pk-identity-stamp-missing", "seed", partial(_proofkit_isolated_edge, "identity-stamp-missing")),
+    Fixture("o7.seed.pk-signal-missing", "seed", partial(_proofkit_isolated_edge, "signal-missing")),
+    Fixture("o7.seed.pk-sampler-oserror", "seed", partial(_proofkit_isolated_edge, "sampler-oserror")),
+    Fixture("o7.seed.pk-limit-invalid", "seed", partial(_proofkit_isolated_edge, "limit-invalid")),
+    Fixture("o7.seed.pk-grace-invalid", "seed", partial(_proofkit_isolated_edge, "grace-invalid")),
+    Fixture("o7.seed.pk-status-unknown", "seed", partial(_proofkit_isolated_edge, "status-unknown")),
+    Fixture("o7.seed.pk-status-missing", "seed", partial(_proofkit_isolated_edge, "status-missing")),
+    Fixture("o7.seed.pk-parser-backtick", "seed", partial(_proofkit_isolated_edge, "parser-backtick")),
+    Fixture("o7.seed.pk-parser-trailing-dollar", "seed", partial(_proofkit_isolated_edge, "parser-trailing-dollar")),
+    Fixture("o7.seed.pk-parser-open-brace", "seed", partial(_proofkit_isolated_edge, "parser-open-brace")),
+    Fixture("o7.seed.pk-parser-nested-command", "seed", partial(_proofkit_isolated_edge, "parser-nested-command")),
+    Fixture("o7.seed.pk-parser-nested-backtick", "seed", partial(_proofkit_isolated_edge, "parser-nested-backtick")),
+    Fixture("o7.seed.pk-parser-dequote", "seed", partial(_proofkit_isolated_edge, "parser-dequote")),
+    Fixture("o7.seed.pk-parser-render", "seed", partial(_proofkit_isolated_edge, "parser-render")),
+    Fixture(
+        "o7.seed.validator-env-call-variant",
+        "seed",
+        _fixture_validator_env_call_seed,
+    ),
+    Fixture(
+        "o7.seed.validator-iyivar",
+        "seed",
+        _fixture_validator_iyivar_seed,
+    ),
+    Fixture(
+        "o7.seed.validator-platform-guard",
+        "seed",
+        _fixture_validator_platform_guard_seed,
+    ),
+    Fixture(
+        "o7.seed.final-required-rerun",
+        "seed",
+        _fixture_final_required_rerun_seed,
+    ),
+    Fixture(
+        "o7.seed.guard-m01-python-realpath",
+        "seed",
+        partial(_fixture_identity_field_guard, "m01", True),
+    ),
+    Fixture(
+        "o7.control.guard-m01-python-realpath",
+        "control",
+        partial(_fixture_identity_field_guard, "m01", False),
+    ),
+    Fixture(
+        "o7.seed.guard-m02-census-changed",
+        "seed",
+        partial(_fixture_identity_field_guard, "m02", True),
+    ),
+    Fixture(
+        "o7.control.guard-m02-census-changed",
+        "control",
+        partial(_fixture_identity_field_guard, "m02", False),
+    ),
+    Fixture(
+        "o7.seed.guard-m03-canonical-roots",
+        "seed",
+        partial(_fixture_identity_field_guard, "m03", True),
+    ),
+    Fixture(
+        "o7.control.guard-m03-canonical-roots",
+        "control",
+        partial(_fixture_identity_field_guard, "m03", False),
+    ),
+    Fixture(
+        "o7.seed.guard-m04-timeout-realpath",
+        "seed",
+        partial(_fixture_identity_field_guard, "m04", True),
+    ),
+    Fixture(
+        "o7.control.guard-m04-timeout-realpath",
+        "control",
+        partial(_fixture_identity_field_guard, "m04", False),
+    ),
+    Fixture(
+        "o7.seed.guard-m05-nm-realpath",
+        "seed",
+        partial(_fixture_identity_field_guard, "m05", True),
+    ),
+    Fixture(
+        "o7.control.guard-m05-nm-realpath",
+        "control",
+        partial(_fixture_identity_field_guard, "m05", False),
+    ),
+    Fixture(
+        "o7.seed.guard-m19-python-version",
+        "seed",
+        partial(_fixture_identity_field_guard, "m19", True),
+    ),
+    Fixture(
+        "o7.control.guard-m19-python-version",
+        "control",
+        partial(_fixture_identity_field_guard, "m19", False),
+    ),
+    Fixture(
+        "o7.seed.guard-m08-run3-disk",
+        "seed",
+        partial(_fixture_run3_disk_guard, True),
+    ),
+    Fixture(
+        "o7.control.guard-m08-run3-disk",
+        "control",
+        partial(_fixture_run3_disk_guard, False),
+    ),
+    Fixture(
+        "o7.seed.guard-m10-post-driver-identity",
+        "seed",
+        partial(_fixture_post_driver_identity_guard, True),
+    ),
+    Fixture(
+        "o7.control.guard-m10-post-driver-identity",
+        "control",
+        partial(_fixture_post_driver_identity_guard, False),
+    ),
+    Fixture(
+        "o7.seed.guard-m11-final-identity",
+        "seed",
+        partial(_fixture_final_identity_guard, True),
+    ),
+    Fixture(
+        "o7.control.guard-m11-final-identity",
+        "control",
+        partial(_fixture_final_identity_guard, False),
+    ),
+    Fixture(
+        "o7.seed.guard-m12-final-unit",
+        "seed",
+        partial(_fixture_final_binding_guard, "unit", True),
+    ),
+    Fixture(
+        "o7.control.guard-m12-final-unit",
+        "control",
+        partial(_fixture_final_binding_guard, "unit", False),
+    ),
+    Fixture(
+        "o7.seed.guard-m13-final-attempt",
+        "seed",
+        partial(_fixture_final_binding_guard, "attempt", True),
+    ),
+    Fixture(
+        "o7.control.guard-m13-final-attempt",
+        "control",
+        partial(_fixture_final_binding_guard, "attempt", False),
+    ),
+    Fixture(
+        "o7.seed.guard-m20-final-required",
+        "seed",
+        partial(_fixture_final_required_guard, True),
+    ),
+    Fixture(
+        "o7.control.guard-m20-final-required",
+        "control",
+        partial(_fixture_final_required_guard, False),
+    ),
+    Fixture(
+        "o7.seed.guard-m07-run3-no-refused",
+        "seed",
+        partial(_fixture_run3_refused_guard, True),
+    ),
+    Fixture(
+        "o7.control.guard-m07-run3-no-refused",
+        "control",
+        partial(_fixture_run3_refused_guard, False),
+    ),
+    Fixture(
+        "o7.seed.guard-m09-run3-census",
+        "seed",
+        partial(_fixture_run3_census_guard, True),
+    ),
+    Fixture(
+        "o7.control.guard-m09-run3-census",
+        "control",
+        partial(_fixture_run3_census_guard, False),
+    ),
+    Fixture(
+        "o7.seed.guard-m14-baseline-header",
+        "seed",
+        partial(_fixture_baseline_header_guard, True),
+    ),
+    Fixture(
+        "o7.control.guard-m14-baseline-header",
+        "control",
+        partial(_fixture_baseline_header_guard, False),
+    ),
     Fixture(
         "s5.control.stage-chain",
         "control",
@@ -14082,24 +14934,14 @@ O7_FIXTURES: tuple[Fixture, ...] = (
         _fixture_pin_command_control,
     ),
     Fixture(
-        "o7.seed.coverage-shim-branches",
+        "o7.seed.shim-parser-edges",
         "seed",
-        _fixture_shim_coverage_seed,
+        _fixture_shim_parser_edges_seed,
     ),
     Fixture(
-        "o7.seed.coverage-proofkit-branches",
+        "o7.seed.artifact-session-kill",
         "seed",
-        _fixture_proofkit_coverage_seed,
-    ),
-    Fixture(
-        "o7.seed.coverage-artifact-kill",
-        "seed",
-        _fixture_artifact_kill_seed,
-    ),
-    Fixture(
-        "o7.seed.coverage-runner-branches",
-        "seed",
-        _fixture_runner_coverage_seed,
+        _fixture_artifact_session_kill_seed,
     ),
     Fixture(
         "o7.seed.main-identity-refusal",
@@ -14319,6 +15161,253 @@ O7_FIXTURES: tuple[Fixture, ...] = (
 )
 
 O7_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
+    "o7.run1-gate-isolated-edges": (
+        "o7.seed.rp-run2-interrupt",
+        "o7.seed.rp-run3-interrupt",
+        "o7.seed.rp-gate1-post-identity",
+        "o7.seed.rp-gate2-post-identity",
+        "o7.seed.rp-gate3-post-identity",
+        "o7.seed.rp-gate4-post-identity",
+        "o7.seed.rp-gate1-oserror",
+        "o7.seed.rp-gate2-oserror",
+        "o7.seed.rp-gate3-oserror",
+        "o7.seed.rp-gate4-oserror",
+        "o7.seed.rp-gate2-interrupt",
+        "o7.seed.rp-gate3-interrupt",
+        "o7.seed.rp-gate4-interrupt",
+        "o7.control.run1",
+    ),
+    "o7.proofkit-more-isolated-edges": (
+        "o7.seed.pk2-census-validate-mismatch",
+        "o7.seed.pk2-census-shas-missing",
+        "o7.seed.pk2-inspect-git-error",
+        "o7.seed.pk2-inspect-compiler-missing",
+        "o7.seed.pk2-pin-write-probe",
+        "o7.seed.pk2-pin-write-probe-dirty",
+        "o7.seed.pk2-inspect-diff-error",
+        "o7.seed.pk2-inspect-compiler-stat",
+        "o7.seed.pk2-inspect-no-nm",
+        "o7.seed.pk2-pin-write-type",
+        "o7.seed.pk2-pin-write-dirty",
+        "o7.seed.pk2-identity-git-error",
+        "o7.seed.pk2-identity-compiler-stat",
+        "o7.seed.pk2-schema-missing-key",
+        "o7.seed.pk2-schema-skip-unrenderable",
+        "o7.seed.pk2-schema-sentinel-unrenderable",
+        "o7.seed.pk2-parser-shlex-error",
+        "o7.seed.pk2-parser-literal-dollar",
+        "o7.seed.pk2-parser-render-command",
+        "o7.seed.pk2-parser-backtick-unclosed",
+        "o7.seed.pk2-parser-nested-expansion",
+        "o7.seed.pk2-parser-nested-command-open",
+        "o7.seed.pk2-parser-nested-backtick-open",
+        "o7.seed.pk2-parser-unquoted-backtick",
+        "o7.seed.pk2-parser-unquoted-backtick-open",
+        "o7.seed.pk2-parser-dequote-expansion-open",
+        "o7.seed.pk2-identity-not-descendant",
+        "o7.seed.pk2-identity-no-timeout",
+        "o7.seed.pk2-identity-no-nm",
+        "o7.seed.pk2-report-chain-invalid",
+        "o7.seed.pk2-report-chain-mismatch",
+        "o7.seed.pk2-report-listdir",
+        "o7.seed.pk2-process-wait",
+        "o7.seed.pk2-process-stop",
+        "o7.seed.pk2-process-leader-survives",
+        "o7.seed.pk2-process-zombie-remains",
+        "o7.seed.pk2-process-finally-stop",
+        "o7.seed.pk2-process-residual-zombie",
+        "o7.seed.pk2-process-parse",
+        "o7.seed.pk2-process-ps-status",
+        "o7.seed.pk2-run-bounded-sampler-error",
+        "o7.seed.pk2-validator-env-unchanged",
+        "o7.seed.pk2-schema-nonobject",
+        "o7.seed.pk2-schema-bytes",
+        "o7.seed.pk2-schema-path",
+        "o7.seed.pk2-schema-duplicate-variant",
+        "o7.seed.pk2-schema-duplicate-skip",
+        "o7.seed.pk2-schema-sentinel-iyivar",
+        "o7.seed.pk2-parser-command-open",
+        "o7.seed.pk2-parser-backtick-open",
+        "o7.seed.pk2-parser-echo-option",
+        "o7.seed.pk2-parser-printf-option",
+        "o7.seed.pk2-parser-template-brace",
+        "s1.control.pin",
+        "s2.control.census-all",
+    ),
+    "o7.runner-isolated-edges": (
+        "o7.seed.rp2-run1-baseline-error",
+        "o7.seed.rp2-run3-setup-error",
+        "o7.seed.rp2-run3-execution-error",
+        "o7.seed.rp2-run3-census-type",
+        "o7.seed.rp2-run3-census-script-type",
+        "o7.seed.rp2-run3-census-unreadable",
+        "o7.seed.rp2-run3-driver-nonzero",
+        "o7.seed.rp2-final-recorded-reason",
+        "o7.seed.rp2-final-status-reason",
+        "o7.seed.rp2-final-prerequisites-missing",
+        "o7.seed.rp2-final-recompute-error",
+        "o7.seed.rp2-latest-interrupted",
+        "o7.seed.rp2-all-run1-stop",
+        "o7.seed.rp2-all-run2-stop",
+        "o7.seed.rp2-all-run3-refusal",
+        "o7.seed.rp2-all-required-missing",
+        "o7.seed.rp2-all-required-nonstr",
+        "o7.seed.rp2-all-driver-stop",
+        "o7.seed.rp-run1-missing-gate1",
+        "o7.seed.rp-run1-missing-gate2",
+        "o7.seed.rp-run1-missing-gate3",
+        "o7.seed.rp-run1-missing-gate4",
+        "o7.seed.rp-run3-prerequisite-invalid",
+        "o7.seed.rp-run3-required-unreadable",
+        "o7.seed.rp-run3-required-type",
+        "o7.seed.rp-run3-requested-refusal",
+        "o7.seed.rp-final-required-missing",
+        "o7.seed.rp-final-required-type",
+        "o7.seed.rp-attempts-missing",
+        "o7.seed.rp-attempt-invalid",
+        "o7.seed.rp-skip-malformed",
+        "o7.seed.rp-baseline-census-type",
+        "o7.seed.rp-rows-blank",
+        "o7.seed.rp-rows-json",
+        "o7.seed.rp-rows-object",
+        "o7.seed.rp-required-exclusions-type",
+        "o7.seed.rp-required-exclusions-entry",
+        "o7.seed.rp-required-exclusions-program",
+        "o7.seed.rp-required-p-nonzero",
+        "o7.seed.rp-baseline-type",
+        "o7.seed.rp-baseline-entry",
+        "o7.seed.rp-prerequisites-missing",
+        "o7.seed.rp-record-missing",
+        "o7.seed.rp-record-shape",
+        "o7.seed.rp-final-no-attempt",
+        "o7.seed.rp-latest-missing",
+        "o7.seed.rp-latest-interrupt-missing",
+        "s1.control.pin",
+        "s5.control.stage-chain",
+    ),
+    "o7.proofkit-isolated-edges": (
+        "o7.seed.pk-git-error",
+        "o7.seed.pk-platform-getconf-missing",
+        "o7.seed.pk-platform-getconf-oserror",
+        "o7.seed.pk-platform-getconf-status",
+        "o7.seed.pk-platform-getconf-nondir",
+        "o7.seed.pk-platform-mktemp-missing",
+        "o7.seed.pk-platform-mktemp-oserror",
+        "o7.seed.pk-platform-mktemp-status",
+        "o7.seed.pk-platform-mktemp-nondir",
+        "o7.seed.pk-compiler-env",
+        "o7.seed.pk-roots-empty",
+        "o7.seed.pk-probe-atime-retention",
+        "o7.seed.pk-probe-exec-failure",
+        "o7.seed.pk-probe-sha",
+        "o7.seed.pk-probe-inode",
+        "o7.seed.pk-probe-oserror",
+        "o7.seed.pk-first-output",
+        "o7.seed.pk-nm-output",
+        "o7.seed.pk-census-set",
+        "o7.seed.pk-census-invalid",
+        "o7.seed.pk-census-shas-set",
+        "o7.seed.pk-pin-load-invalid",
+        "o7.seed.pk-pin-load-chain",
+        "o7.seed.pk-pin-load-report",
+        "o7.seed.pk-identity-p-dirty",
+        "o7.seed.pk-identity-w-dirty",
+        "o7.seed.pk-identity-product-diff",
+        "o7.seed.pk-identity-compiler-missing",
+        "o7.seed.pk-identity-stamp-missing",
+        "o7.seed.pk-signal-missing",
+        "o7.seed.pk-sampler-oserror",
+        "o7.seed.pk-limit-invalid",
+        "o7.seed.pk-grace-invalid",
+        "o7.seed.pk-status-unknown",
+        "o7.seed.pk-status-missing",
+        "o7.seed.pk-parser-backtick",
+        "o7.seed.pk-parser-trailing-dollar",
+        "o7.seed.pk-parser-open-brace",
+        "o7.seed.pk-parser-nested-command",
+        "o7.seed.pk-parser-nested-backtick",
+        "o7.seed.pk-parser-dequote",
+        "o7.seed.pk-parser-render",
+        "s1.control.pin",
+        "amend-b.control.real-probe",
+        "s2.control.census-all",
+    ),
+    "o7.validator-env-call-variant": (
+        "o7.seed.validator-env-call-variant",
+        "s2.control.census-all",
+    ),
+    "o7.validator-iyivar": (
+        "o7.seed.validator-iyivar",
+        "s2.control.census-all",
+    ),
+    "o7.validator-platform-guard": (
+        "o7.seed.validator-platform-guard",
+        "s2.control.census-all",
+    ),
+    "o7.final-required-rerun": (
+        "o7.seed.final-required-rerun",
+        "s5.control.stage-chain",
+    ),
+    "o7.guard-m01-python-realpath": (
+        "o7.seed.guard-m01-python-realpath",
+        "o7.control.guard-m01-python-realpath",
+    ),
+    "o7.guard-m02-census-changed": (
+        "o7.seed.guard-m02-census-changed",
+        "o7.control.guard-m02-census-changed",
+    ),
+    "o7.guard-m03-canonical-roots": (
+        "o7.seed.guard-m03-canonical-roots",
+        "o7.control.guard-m03-canonical-roots",
+    ),
+    "o7.guard-m04-timeout-realpath": (
+        "o7.seed.guard-m04-timeout-realpath",
+        "o7.control.guard-m04-timeout-realpath",
+    ),
+    "o7.guard-m05-nm-realpath": (
+        "o7.seed.guard-m05-nm-realpath",
+        "o7.control.guard-m05-nm-realpath",
+    ),
+    "o7.guard-m19-python-version": (
+        "o7.seed.guard-m19-python-version",
+        "o7.control.guard-m19-python-version",
+    ),
+    "o7.guard-m08-run3-disk": (
+        "o7.seed.guard-m08-run3-disk",
+        "o7.control.guard-m08-run3-disk",
+    ),
+    "o7.guard-m10-post-driver-identity": (
+        "o7.seed.guard-m10-post-driver-identity",
+        "o7.control.guard-m10-post-driver-identity",
+    ),
+    "o7.guard-m11-final-identity": (
+        "o7.seed.guard-m11-final-identity",
+        "o7.control.guard-m11-final-identity",
+    ),
+    "o7.guard-m12-final-unit": (
+        "o7.seed.guard-m12-final-unit",
+        "o7.control.guard-m12-final-unit",
+    ),
+    "o7.guard-m13-final-attempt": (
+        "o7.seed.guard-m13-final-attempt",
+        "o7.control.guard-m13-final-attempt",
+    ),
+    "o7.guard-m20-final-required": (
+        "o7.seed.guard-m20-final-required",
+        "o7.control.guard-m20-final-required",
+    ),
+    "o7.guard-m07-run3-no-refused": (
+        "o7.seed.guard-m07-run3-no-refused",
+        "o7.control.guard-m07-run3-no-refused",
+    ),
+    "o7.guard-m09-run3-census": (
+        "o7.seed.guard-m09-run3-census",
+        "o7.control.guard-m09-run3-census",
+    ),
+    "o7.guard-m14-baseline-header": (
+        "o7.seed.guard-m14-baseline-header",
+        "o7.control.guard-m14-baseline-header",
+    ),
     "o7.amendment-e-work-roots": (
         "o7.seed.matcher-platform-two-level",
         "o7.seed.matcher-t-two-level",
@@ -14340,21 +15429,13 @@ O7_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
         "s1.seed.pin-report-nonempty",
         "o7.control.pin-command",
     ),
-    "o7.coverage-shim-branches": (
-        "o7.seed.coverage-shim-branches",
+    "o7.shim-parser-edges": (
+        "o7.seed.shim-parser-edges",
         "s3.control.run",
     ),
-    "o7.coverage-proofkit-branches": (
-        "o7.seed.coverage-proofkit-branches",
-        "s1.control.pin",
-    ),
-    "o7.coverage-artifact-kill": (
-        "o7.seed.coverage-artifact-kill",
+    "o7.artifact-session-kill": (
+        "o7.seed.artifact-session-kill",
         "s4.control.row",
-    ),
-    "o7.coverage-runner-branches": (
-        "o7.seed.coverage-runner-branches",
-        "s5.control.stage-chain",
     ),
     "o7.final": (
         "s5.seed.final-forged-pass",
@@ -15544,24 +16625,24 @@ ALLOWLIST: tuple[tuple[str, int, int, str, str], ...] = (
     ),
     (
         "proof.run_proof",
-        1440,
-        1446,
+        1524,
+        1530,
         "o7.seed.run-proof-optimize-refusal",
         "python -B -O proof/run_proof.py --help enters the nested optimize "
         "guard, prints the exact refusal, and exits 2",
     ),
     (
         "proof.run_proof",
-        1447,
-        1447,
+        1531,
+        1531,
         "o7.control.run-proof-optimize",
         "python -B proof/run_proof.py --help reaches the normal direct-script "
         "main handoff and exits 0",
     ),
     (
         "proof.artifact_legs",
-        793,
-        794,
+        797,
+        798,
         "s4.control.counts",
         "python -B proof/artifact_legs.py with an empty zero-count corpus "
         "reaches the direct-script main handoff, reports a passing summary, "
