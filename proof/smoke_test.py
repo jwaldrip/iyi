@@ -3699,6 +3699,14 @@ class _O4FixtureEnvironment:
         ):
             with open(path, "w", encoding="utf-8") as target:
                 target.write(content)
+        with open(
+            os.path.join(self.bench, "std_demo_exercise.sh"),
+            "w",
+            encoding="utf-8",
+        ) as target:
+            target.write(
+                '"$IYI" build "$REPO/bench/std_demo_exercise.iyi"\n'
+            )
         self.real = _fake_real_compiler(
             self.fake_dir,
             version_line="iyi fake [0123456789abcdef]",
@@ -3715,6 +3723,7 @@ class _O4FixtureEnvironment:
         self.census = {
             "census_version": 1,
             "driver": self.driver,
+            "script": "bench/std_demo_exercise.sh",
             "sites": [
                 {
                     "lines": [1],
@@ -6620,6 +6629,7 @@ def _o5_census() -> dict:
     return {
         "census_version": 1,
         "driver": "demo",
+        "script": "bench/std_demo_exercise.sh",
         "sites": [
             {
                 "lines": [10],
@@ -6667,6 +6677,13 @@ def _o5_add_variant(
     variables: dict,
     evidence_name: str | None = None,
 ) -> None:
+    effective_variables = json.loads(json.dumps(variables))
+    if (
+        kind == "positive"
+        and evidence_name is not None
+        and "name" not in effective_variables
+    ):
+        effective_variables["name"] = {"values": [evidence_name]}
     site_line = 20 + len(census["sites"])
     site = {
         "lines": [site_line],
@@ -6677,7 +6694,7 @@ def _o5_add_variant(
                 "id": variant_id,
                 "kind": kind,
                 "first_root": "{WORK}/patched",
-                "vars": variables,
+                "vars": effective_variables,
                 "sources": ["{REPO}/bench/std_demo_exercise.iyi"],
                 "output": "{WORK}/{name}",
                 "darwin": "required",
@@ -6695,6 +6712,146 @@ def _o5_add_variant(
                 "name_from_calls": {str(site_line + 1): evidence_name},
             }
         )
+
+def _o5_add_auxiliary_evidence(census: dict) -> None:
+    census["sites"].extend(
+        [
+            {
+                "lines": [30],
+                "command": "build",
+                "kind": "canonical-other",
+                "variants": [],
+            },
+            {
+                "lines": [35],
+                "command": "build",
+                "kind": "mixed",
+                "variants": [
+                    {
+                        "id": "demo.negative.auxiliary",
+                        "kind": "negative",
+                        "first_root": "{WORK}/patched",
+                        "vars": {},
+                        "sources": ["{WORK}/auxiliary.iyi"],
+                        "output": "{WORK}/auxiliary",
+                        "darwin": "platform-excluded",
+                        "requires": ["python3"],
+                        "verdict": {
+                            "lines": [35],
+                            "contains": ["status=1"],
+                        },
+                    }
+                ],
+            },
+        ]
+    )
+    census["exec_evidence"].extend(
+        [
+            {
+                "site_line": 30,
+                "out_template": "{WORK}/{name}",
+                "name_from_calls": {"31": "canonical-helper"},
+            },
+            {
+                "site_line": 35,
+                "out_template": "{WORK}/{name}",
+                "name_from_calls": {"36": "mixed-helper"},
+            },
+        ]
+    )
+
+
+def _o5_add_mixed_own_evidence(census: dict) -> None:
+    census["sites"].append(
+        {
+            "lines": [40],
+            "command": "build",
+            "kind": "mixed",
+            "variants": [
+                {
+                    "id": "demo.negative.mixed-own",
+                    "kind": "negative",
+                    "first_root": "{WORK}/patched",
+                    "vars": {},
+                    "sources": [
+                        "{REPO}/bench/std_demo_exercise.iyi"
+                    ],
+                    "output": "{WORK}/mixed-own-negative",
+                    "darwin": "platform-excluded",
+                    "requires": ["python3"],
+                    "verdict": {
+                        "lines": [40],
+                        "contains": ["status=1"],
+                    },
+                }
+            ],
+        }
+    )
+    census["exec_evidence"].append(
+        {
+            "site_line": 40,
+            "out_template": "{WORK}/{name}",
+            "name_from_calls": {"41": "mixed-own"},
+        }
+    )
+
+
+def _o5_add_split_positive_evidence(census: dict) -> None:
+    census["sites"].append(
+        {
+            "lines": [45],
+            "command": "build",
+            "kind": "positive",
+            "variants": [
+                {
+                    "id": "demo.positive.required",
+                    "kind": "positive",
+                    "first_root": "{WORK}/{dir}",
+                    "vars": {
+                        "dir": {
+                            "values": ["required-positive"],
+                        }
+                    },
+                    "sources": ["{WORK}/{dir}.iyi"],
+                    "output": "{WORK}/{dir}",
+                    "darwin": "required",
+                    "requires": ["python3"],
+                    "verdict": {
+                        "lines": [45],
+                        "contains": ["status=1"],
+                    },
+                },
+                {
+                    "id": "demo.positive.platform-excluded",
+                    "kind": "positive",
+                    "first_root": "{WORK}/{dir}",
+                    "vars": {
+                        "dir": {
+                            "values": ["excluded-positive"],
+                        }
+                    },
+                    "sources": ["{WORK}/{dir}.iyi"],
+                    "output": "{WORK}/{dir}",
+                    "darwin": "platform-excluded",
+                    "requires": ["python3"],
+                    "verdict": {
+                        "lines": [45],
+                        "contains": ["status=1"],
+                    },
+                },
+            ],
+        }
+    )
+    census["exec_evidence"].append(
+        {
+            "site_line": 45,
+            "out_template": "{WORK}/{name}",
+            "name_from_calls": {
+                "46": "required-positive",
+                "47": "excluded-positive",
+            },
+        }
+    )
 
 
 def _o5_pair(
@@ -6774,6 +6931,49 @@ def _o5_pair(
         exit=consumer_rc,
     )
     return [begin, end]
+
+def _o5_positive_build_pair(
+    *,
+    root: str,
+    repo: str,
+    work: str,
+    name: str,
+    variant_id: str,
+    consumer_hashed: bool = True,
+) -> list[dict]:
+    out = os.path.join(work, name)
+    out_ref = os.path.join(root, f"{name}.ref")
+    shutil.copyfile("/usr/bin/true", out)
+    os.chmod(out, 0o755)
+    os.link(out, out_ref)
+    linked = os.stat(out_ref)
+    with open(out, "rb") as executable:
+        digest = hashlib.sha256(executable.read()).hexdigest()
+    atime_set = linked.st_mtime_ns - 1_000_000_000
+    os.utime(
+        out_ref,
+        ns=(linked.st_mtime_ns + 1_000_000_000, linked.st_mtime_ns),
+    )
+    pair = _o5_pair(
+        nonce="nonce-1",
+        driver="demo",
+        invocation=f"positive-{name}",
+        repo=repo,
+        out=out,
+        own=False,
+        canonical=False,
+        variant_ids=(variant_id,),
+        variant_kind="positive",
+        bindings={variant_id: {"dir": name}},
+        run_form=False,
+    )
+    end = pair[1]
+    end["consumer"]["out_sha256"] = digest if consumer_hashed else None
+    end["out_ref"] = out_ref
+    end["out_ino"] = linked.st_ino
+    end["out_mtime_ns"] = linked.st_mtime_ns
+    end["atime_set_ns"] = atime_set
+    return pair
 
 
 def _o5_exec_record(
@@ -6897,6 +7097,25 @@ def _o5_ledger_fixture(case: str) -> Observation:
             "chain_id": "12345678" + "a" * 24,
         }
         census = _o5_census()
+        driver_lines = [""] * 80
+        driver_lines[9] = (
+            '"$IYI" run "$REPO/bench/std_demo_exercise.iyi"'
+        )
+        driver_lines[14] = "status=1"
+        driver_lines[29] = '"$IYI" build helper.iyi'
+        driver_lines[34] = '"$IYI" build auxiliary.iyi'
+        driver_lines[39] = (
+            '"$IYI" build "$REPO/bench/std_demo_exercise.iyi"'
+        )
+        driver_lines[44] = '"$IYI" build positive.iyi'
+        driver_lines[45] = "required-positive"
+        driver_lines[46] = "excluded-positive"
+        with open(
+            os.path.join(repo, "bench", "std_demo_exercise.sh"),
+            "w",
+            encoding="utf-8",
+        ) as output:
+            output.write("\n".join(driver_lines) + "\n")
         records = _o5_pair(
             nonce="nonce-1",
             driver="demo",
@@ -7289,6 +7508,108 @@ def _o5_ledger_fixture(case: str) -> Observation:
             census["exec_evidence"][0]["out_template"] = "{REPO}/own"
             census["exec_evidence"][0]["name_from_calls"] = {}
             detail = "passing static {REPO} execution-evidence template"
+        elif case == "auxiliary-evidence-control":
+            _o5_add_auxiliary_evidence(census)
+            detail = "auxiliary canonical-other and mixed evidence omitted"
+        elif case == "source-unreadable":
+            os.unlink(
+                os.path.join(
+                    repo,
+                    "bench",
+                    "std_demo_exercise.sh",
+                )
+            )
+            expected = ("UNFAITHFUL",)
+            detail = "validated driver source removed before verification"
+        elif case == "source-script-mismatch":
+            census["script"] = "bench/not-the-demo-driver.sh"
+            expected = ("UNFAITHFUL",)
+            detail = "census script association changed"
+        elif case == "mixed-own-missing":
+            _o5_add_mixed_own_evidence(census)
+            expected = ("NOT-EXECUTED",)
+            detail = "source-grounded mixed-own evidence name omitted"
+        elif case in (
+            "positive-missing",
+            "positive-wrong-association",
+            "positive-ambiguous-association",
+            "excluded-positive-absent",
+            "excluded-positive-present",
+            "excluded-positive-unexecuted",
+        ):
+            _o5_add_split_positive_evidence(census)
+            if case == "positive-ambiguous-association":
+                site = census["sites"][-1]
+                site["variants"].append(
+                    {
+                        "id": "demo.positive.ambiguous",
+                        "kind": "positive",
+                        "first_root": "{WORK}/{dir}",
+                        "vars": {
+                            "dir": {
+                                "pattern": "required-.*",
+                            }
+                        },
+                        "sources": ["{WORK}/{dir}.iyi"],
+                        "output": "{WORK}/{dir}",
+                        "darwin": "platform-excluded",
+                        "requires": ["python3"],
+                        "verdict": {
+                            "lines": [45],
+                            "contains": ["status=1"],
+                        },
+                    }
+                )
+            required_id = "demo.positive.required"
+            excluded_id = "demo.positive.platform-excluded"
+            if case != "positive-missing":
+                if case == "positive-wrong-association":
+                    records.extend(
+                        _o5_positive_build_pair(
+                            root=root,
+                            repo=repo,
+                            work=work,
+                            name="required-positive",
+                            variant_id=excluded_id,
+                        )
+                    )
+                else:
+                    records.extend(
+                        _o5_positive_build_pair(
+                            root=root,
+                            repo=repo,
+                            work=work,
+                            name="required-positive",
+                            variant_id=required_id,
+                        )
+                    )
+            if case in (
+                "excluded-positive-present",
+                "excluded-positive-unexecuted",
+            ):
+                records.extend(
+                    _o5_positive_build_pair(
+                        root=root,
+                        repo=repo,
+                        work=work,
+                        name="excluded-positive",
+                        variant_id=excluded_id,
+                        consumer_hashed=(
+                            case != "excluded-positive-unexecuted"
+                        ),
+                    )
+                )
+            if case in (
+                "positive-missing",
+                "positive-wrong-association",
+            ):
+                expected = ("NOT-EXECUTED", "NOT-EXERCISED")
+            elif case in (
+                "positive-ambiguous-association",
+                "excluded-positive-unexecuted",
+            ):
+                expected = ("NOT-EXECUTED",)
+            detail = case.replace("-", " ")
         elif case in (
             "required-no-vars-missing",
             "required-no-vars-control",
@@ -7372,6 +7693,11 @@ def _o5_ledger_fixture(case: str) -> Observation:
                     canonical=False,
                     variant_ids=("demo.positive.no-success",),
                     variant_kind="positive",
+                    bindings={
+                        "demo.positive.no-success": {
+                            "name": "positive",
+                        }
+                    },
                     mods_count=0,
                 )
             )
@@ -7429,6 +7755,11 @@ def _o5_ledger_fixture(case: str) -> Observation:
                     canonical=False,
                     variant_ids=("demo.positive.success",),
                     variant_kind="positive",
+                    bindings={
+                        "demo.positive.success": {
+                            "name": "positive",
+                        }
+                    },
                 )
             )
             detail = "positive variant has a successful hashed roundtrip"
@@ -7478,6 +7809,9 @@ def _o5_ledger_fixture(case: str) -> Observation:
             "e2-repo-template-control",
             "variant-coverage-control",
             "positive-success-control",
+            "auxiliary-evidence-control",
+            "excluded-positive-absent",
+            "excluded-positive-present",
         )
         return Observation(
             expected=expected,
@@ -7497,6 +7831,17 @@ def _o5_e3_fixture(case: str) -> Observation:
         work = os.path.join(work_tmp, "w0")
         os.makedirs(os.path.join(repo, "bench"))
         os.makedirs(work)
+        driver_lines = [""] * 20
+        driver_lines[9] = (
+            '"$IYI" run "$REPO/bench/std_demo_exercise.iyi"'
+        )
+        driver_lines[14] = "status=1"
+        with open(
+            os.path.join(repo, "bench", "std_demo_exercise.sh"),
+            "w",
+            encoding="utf-8",
+        ) as output:
+            output.write("\n".join(driver_lines) + "\n")
         out = os.path.join(work, "own")
         out_ref = os.path.join(root, "own.ref")
         shutil.copyfile("/usr/bin/true", out)
@@ -7677,7 +8022,302 @@ def _deferred_amend_b_fixture(case: str) -> Observation:
     return _o7_amend_b_fixture(case)
 
 
+def _source_role_discriminator_fixture(seeded: bool) -> Observation:
+    shapes = {
+        "compress": 370,
+        "regex": 231,
+        "file": 560,
+    }
+    got: dict[str, bool] = {}
+    for driver, site_line in shapes.items():
+        census, script_bytes, _relpath = _census_case(driver)
+        lines = script_bytes.decode("utf-8").splitlines()
+        site = next(
+            site
+            for site in census["sites"]
+            if site.get("lines", [None])[0] == site_line
+        )
+        if seeded and driver == "regex":
+            lines[site_line - 1] = (
+                '"$IYI" build "$REPO/bench/std_regex_exercise.iyi"'
+            )
+        got[driver] = proofkit_mod._site_is_own_evidence(
+            site,
+            lines,
+            driver,
+        )
+    return Observation(
+        expected={
+            "compress": False,
+            "regex": seeded,
+            "file": False,
+        },
+        got=got,
+        applied=(
+            "regex:231 source changed to exact own exercise"
+            if seeded
+            else ""
+        ),
+    )
+
+
+def _file_split_matcher_fixture(
+    site_line: int,
+    seeded: bool,
+) -> Observation:
+    census, _script, _relpath = _census_case("file")
+    cases = {
+        169: (
+            "run",
+            ("predictable", "file.negative.169.required"),
+            ("follows", "file.negative.169.platform-excluded"),
+        ),
+        230: (
+            "run",
+            ("star_sep", "file.negative.230.required"),
+            (
+                "dir_onto_file",
+                "file.negative.230.platform-excluded",
+            ),
+        ),
+        428: (
+            "run",
+            ("touch_unread", "file.negative.428.required"),
+            (
+                "append_seek",
+                "file.negative.428.platform-excluded",
+            ),
+        ),
+        628: (
+            "build",
+            ("nul_cut", "file.positive.628.required"),
+            (
+                "realpath_through",
+                "file.positive.628.platform-excluded",
+            ),
+        ),
+    }
+    command, required_case, excluded_case = cases[site_line]
+    with tempfile.TemporaryDirectory(
+        prefix=f"iyi-file-match-{site_line}-"
+    ) as root:
+        work_tmp = os.path.join(root, "t")
+        work = os.path.join(work_tmp, "w0")
+        os.makedirs(work)
+
+        def classify(value: str):
+            first_root = os.path.join(work, value)
+            if site_line == 628:
+                sources = [os.path.join(work, f"{value}-prog.iyi")]
+                output = os.path.join(work, f"{value}-prog")
+            else:
+                sources = [
+                    os.path.join(
+                        REPO_ROOT,
+                        "bench",
+                        "std_file_exercise.iyi",
+                    )
+                ]
+                output = None
+            return shim_mod.match_variants(
+                census,
+                command,
+                first_root,
+                sources,
+                output,
+                work_tmp,
+                REPO_ROOT,
+                platform_tmp=None,
+            )
+
+        if seeded:
+            status, ids, _kind, _bindings = classify("undeclared")
+            expected = {"status": "unclassified", "ids": []}
+            got = {"status": status, "ids": ids}
+        else:
+            got = {}
+            expected = {}
+            for label, (value, variant_id) in (
+                ("required", required_case),
+                ("excluded", excluded_case),
+            ):
+                status, ids, kind, _bindings = classify(value)
+                got[label] = {
+                    "status": status,
+                    "ids": ids,
+                    "kind": kind,
+                }
+                expected[label] = {
+                    "status": "matched",
+                    "ids": [variant_id],
+                    "kind": (
+                        "positive" if site_line == 628 else "negative"
+                    ),
+                }
+    return Observation(
+        expected=expected,
+        got=got,
+        applied=(
+            f"site={site_line};value=undeclared"
+            if seeded
+            else ""
+        ),
+    )
+
+
+def _file_touch_skip_fixture(seeded: bool) -> Observation:
+    census, _script, _relpath = _census_case("file")
+    entry = next(
+        skip
+        for skip in census["skips"]
+        if skip.get("line") == 529
+    )
+    baseline = {
+        (
+            "file",
+            str(entry["class"]),
+            str(entry["what"]),
+            str(entry["regex"]),
+        )
+    }
+    log_text = (
+        "  touch and exists? of a file its owner may not read: "
+        "not measured, this user reads it all the same"
+        if seeded
+        else ""
+    )
+    status, reasons = stages_mod._classify_driver_skips(
+        census,
+        log_text,
+        baseline,
+    )
+    return Observation(
+        expected={
+            "status": "ENV-BLOCKED" if seeded else "PASS",
+            "tool_named": seeded,
+        },
+        got={
+            "status": status,
+            "tool_named": any(
+                "tool skip file: tool" in reason
+                for reason in reasons
+            ),
+        },
+        applied="file:529 tool skip emitted" if seeded else "",
+    )
+
+
 O5_FIXTURES: tuple[Fixture, ...] = (
+    Fixture(
+        "o5.seed.source-role-own-mutation",
+        "seed",
+        partial(_source_role_discriminator_fixture, True),
+    ),
+    Fixture(
+        "o5.control.source-role-auxiliary",
+        "control",
+        partial(_source_role_discriminator_fixture, False),
+    ),
+    Fixture(
+        "o5.seed.file-169-undeclared",
+        "seed",
+        partial(_file_split_matcher_fixture, 169, True),
+    ),
+    Fixture(
+        "o5.control.file-169-split",
+        "control",
+        partial(_file_split_matcher_fixture, 169, False),
+    ),
+    Fixture(
+        "o5.seed.file-230-undeclared",
+        "seed",
+        partial(_file_split_matcher_fixture, 230, True),
+    ),
+    Fixture(
+        "o5.control.file-230-split",
+        "control",
+        partial(_file_split_matcher_fixture, 230, False),
+    ),
+    Fixture(
+        "o5.seed.file-428-undeclared",
+        "seed",
+        partial(_file_split_matcher_fixture, 428, True),
+    ),
+    Fixture(
+        "o5.control.file-428-split",
+        "control",
+        partial(_file_split_matcher_fixture, 428, False),
+    ),
+    Fixture(
+        "o5.seed.file-628-undeclared",
+        "seed",
+        partial(_file_split_matcher_fixture, 628, True),
+    ),
+    Fixture(
+        "o5.control.file-628-split",
+        "control",
+        partial(_file_split_matcher_fixture, 628, False),
+    ),
+    Fixture(
+        "o5.seed.file-touch-unread-env-blocked",
+        "seed",
+        partial(_file_touch_skip_fixture, True),
+    ),
+    Fixture(
+        "o5.control.file-touch-unread",
+        "control",
+        partial(_file_touch_skip_fixture, False),
+    ),
+    Fixture(
+        "o5.control.auxiliary-evidence",
+        "control",
+        partial(_o5_ledger_fixture, "auxiliary-evidence-control"),
+    ),
+    Fixture(
+        "o5.seed.source-unreadable",
+        "seed",
+        partial(_o5_ledger_fixture, "source-unreadable"),
+    ),
+    Fixture(
+        "o5.seed.source-script-mismatch",
+        "seed",
+        partial(_o5_ledger_fixture, "source-script-mismatch"),
+    ),
+    Fixture(
+        "o5.seed.mixed-own-missing",
+        "seed",
+        partial(_o5_ledger_fixture, "mixed-own-missing"),
+    ),
+    Fixture(
+        "o5.seed.positive-missing",
+        "seed",
+        partial(_o5_ledger_fixture, "positive-missing"),
+    ),
+    Fixture(
+        "o5.seed.positive-wrong-association",
+        "seed",
+        partial(_o5_ledger_fixture, "positive-wrong-association"),
+    ),
+    Fixture(
+        "o5.seed.positive-ambiguous-association",
+        "seed",
+        partial(_o5_ledger_fixture, "positive-ambiguous-association"),
+    ),
+    Fixture(
+        "o5.control.excluded-positive-absent",
+        "control",
+        partial(_o5_ledger_fixture, "excluded-positive-absent"),
+    ),
+    Fixture(
+        "o5.control.excluded-positive-present",
+        "control",
+        partial(_o5_ledger_fixture, "excluded-positive-present"),
+    ),
+    Fixture(
+        "o5.seed.excluded-positive-unexecuted",
+        "seed",
+        partial(_o5_ledger_fixture, "excluded-positive-unexecuted"),
+    ),
     Fixture(
         "s3.seed.ledger-stale-header",
         "seed",
@@ -7990,6 +8630,39 @@ O5_FIXTURES: tuple[Fixture, ...] = (
     ),
 )
 O5_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
+    "o5.file-platform-splits": (
+        "o5.seed.file-169-undeclared",
+        "o5.control.file-169-split",
+        "o5.seed.file-230-undeclared",
+        "o5.control.file-230-split",
+        "o5.seed.file-428-undeclared",
+        "o5.control.file-428-split",
+        "o5.seed.file-628-undeclared",
+        "o5.control.file-628-split",
+    ),
+    "o5.file-touch-unread-skip": (
+        "o5.seed.file-touch-unread-env-blocked",
+        "o5.control.file-touch-unread",
+    ),
+    "o5.source-evidence-scope": (
+        "o5.seed.source-role-own-mutation",
+        "o5.control.source-role-auxiliary",
+        "o5.seed.source-unreadable",
+        "o5.seed.source-script-mismatch",
+        "o5.seed.mixed-own-missing",
+        "o5.seed.positive-missing",
+        "o5.seed.positive-wrong-association",
+        "o5.seed.positive-ambiguous-association",
+        "o5.seed.e2-name-repeated",
+        "o5.seed.e2-unmatched-own",
+        "o5.control.auxiliary-evidence",
+        "o5.control.positive-success",
+    ),
+    "o5.excluded-positive-evidence": (
+        "o5.seed.excluded-positive-unexecuted",
+        "o5.control.excluded-positive-absent",
+        "o5.control.excluded-positive-present",
+    ),
     "o5.amendment-f-unchanged": (
         "o5.seed.unchanged-noncanonical-http",
         "o5.seed.noncanonical-without-ids",

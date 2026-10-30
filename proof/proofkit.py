@@ -1323,6 +1323,21 @@ def _source_text(lines: list[str], numbers: object) -> str:
         if isinstance(number, int) and 1 <= number <= len(lines)
     )
 
+def _site_is_mixed_own(site: Mapping[str, object], lines: Sequence[str], driver: str) -> bool:
+    site_lines = site.get("lines")
+    source = _source_text(list(lines), site_lines)
+    return site.get("kind") == "mixed" and (
+        "$EXERCISE" in source
+        or f"std_{driver}_exercise.iyi" in source
+    )
+
+
+def _site_is_own_evidence(site: Mapping[str, object], lines: Sequence[str], driver: str) -> bool:
+    return (
+        site.get("kind") == "canonical-own"
+        or _site_is_mixed_own(site, lines, driver)
+    )
+
 
 def _replace_shell_expansions(text: str) -> str | None:
     result: list[str] = []
@@ -2504,11 +2519,7 @@ def validate_census(census: object, script_bytes: bytes, script_relpath: str) ->
                 line,
                 f"kind={kind!r}, variants={len(variants)}",
             )
-        is_mixed_own = kind == "mixed" and (
-            "$EXERCISE" in source
-            or f"std_{driver}_exercise.iyi" in source
-        )
-        if kind == "canonical-own" or is_mixed_own:
+        if _site_is_own_evidence(site, lines, str(driver)):
             own_sites.add(line)
         if kind == "positive":
             positive_sites.add(line)
@@ -3041,6 +3052,71 @@ def _ledger_census_index(census: dict) -> tuple[dict[str, tuple[dict, dict]], di
             variants[variant["id"]] = (variant, site)
     return variants, sites_by_line
 
+def _render_positive_output_for_name(variant: Mapping[str, object], name: str | None) -> str | None:
+    output = variant.get("output")
+    if not isinstance(output, str):
+        return None
+    variables = variant.get("vars")
+    specifications = variables if isinstance(variables, dict) else {}
+    rendered = output
+    for placeholder in _TEMPLATE_FIELD_RE.findall(output):
+        if placeholder in {"WORK", "REPO"}:
+            continue
+        specification = specifications.get(placeholder)
+        if not isinstance(specification, dict) or name is None:
+            return None
+        values = specification.get("values")
+        pattern = specification.get("pattern")
+        accepted = (
+            isinstance(values, list)
+            and name in values
+        ) or (
+            isinstance(pattern, str)
+            and re.fullmatch(pattern, name) is not None
+        )
+        if not accepted:
+            return None
+        rendered = rendered.replace(f"{{{placeholder}}}", name)
+    return rendered
+
+
+def _positive_variants_for_evidence_name(site: Mapping[str, object], evidence: Mapping[str, object], name: str | None) -> tuple[dict, ...]:
+    evidence_template = evidence.get("out_template")
+    if not isinstance(evidence_template, str):
+        return ()
+    expected_output = (
+        evidence_template.replace("{name}", name)
+        if name is not None
+        else evidence_template
+    )
+    variants = site.get("variants")
+    candidates: list[dict] = []
+    for variant in variants if isinstance(variants, list) else ():
+        if (
+            not isinstance(variant, dict)
+            or variant.get("kind") != "positive"
+        ):
+            continue
+        rendered = _render_positive_output_for_name(variant, name)
+        if rendered == expected_output:
+            candidates.append(variant)
+    return tuple(candidates)
+
+
+def _ledger_driver_source_lines(census: Mapping[str, object], driver: str, repo: str) -> tuple[list[str] | None, str | None]:
+    script = census.get("script")
+    expected = f"bench/std_{driver}_exercise.sh"
+    if script != expected:
+        return None, (
+            f"census script {script!r} does not identify {expected!r}"
+        )
+    path = os.path.realpath(os.path.join(repo, expected))
+    try:
+        with open(path, "r", encoding="utf-8") as source:
+            return source.read().splitlines(), None
+    except (OSError, UnicodeError) as error:
+        return None, f"driver source unavailable: {error}"
+
 
 def _ledger_successful_roundtrip(record: dict) -> bool:
     producer = record.get("producer")
@@ -3485,9 +3561,21 @@ def verify_ledger(ledger_path: str, *, census: dict, driver: str, nonce: str, at
         if _ledger_run_executed(end_by_index[index])
     }
     matched_indices: set[int] = set(run_executed_indices)
+    source_lines, source_error = _ledger_driver_source_lines(
+        census,
+        driver,
+        repo,
+    )
+    if source_error is not None:
+        _ledger_add(
+            statuses,
+            reasons,
+            "UNFAITHFUL",
+            source_error,
+        )
     evidences_value = census.get("exec_evidence") if isinstance(census, dict) else []
     evidence_values = evidences_value if isinstance(evidences_value, list) else ()
-    evidence_rows = (
+    evidence_rows = tuple(
         (
             evidence_index,
             evidence,
@@ -3498,32 +3586,27 @@ def verify_ledger(ledger_path: str, *, census: dict, driver: str, nonce: str, at
         and isinstance(evidence.get("out_template"), str)
         and isinstance(sites_by_line.get(evidence.get("site_line")), dict)
     )
-    if not scoped_indices:
-        evidence_rows = ()
-
 
     for evidence_index, evidence, site in evidence_rows:
-        site_kind = site.get("kind")
+        if source_lines is None:
+            continue
+        own_site = _site_is_own_evidence(
+            site,
+            source_lines,
+            driver,
+        )
         site_variants = site.get("variants")
-        site_variant_values = site_variants if isinstance(site_variants, list) else ()
-        site_variant_ids = {
-            variant.get("id")
-            for variant in site_variant_values
-            if isinstance(variant, dict) and variant.get("kind") == "positive"
-        }
-        candidate_indices = {
-            index
-            for index in scoped_indices
-            if (
-                site_kind in ("canonical-own", "mixed")
-                and index in own_indices
+        positive_variants = tuple(
+            variant
+            for variant in (
+                site_variants if isinstance(site_variants, list) else ()
             )
-            or bool(
-                site_variant_ids.intersection(
-                    _ledger_variant_ids(end_by_index[index])
-                )
-            )
-        }
+            if isinstance(variant, dict)
+            and variant.get("kind") == "positive"
+        )
+        if not own_site and not positive_variants:
+            continue
+
         template = evidence["out_template"]
         names = evidence.get("name_from_calls")
         name_values = names.values() if isinstance(names, dict) else ()
@@ -3537,6 +3620,39 @@ def verify_ledger(ledger_path: str, *, census: dict, driver: str, nonce: str, at
         )
         evidence_matches: set[int] = set()
         for name in labels:
+            associated_variants = _positive_variants_for_evidence_name(
+                site,
+                evidence,
+                name,
+            )
+            if positive_variants and len(associated_variants) != 1:
+                _ledger_add(
+                    statuses,
+                    reasons,
+                    "NOT-EXECUTED",
+                    f"evidence {evidence_index} name {name!r} has "
+                    f"{len(associated_variants)} positive variant associations",
+                )
+                if not own_site:
+                    continue
+            associated_ids = {
+                variant.get("id")
+                for variant in associated_variants
+                if isinstance(variant.get("id"), str)
+            }
+            candidate_indices = {
+                index
+                for index in scoped_indices
+                if (
+                    own_site
+                    and index in own_indices
+                )
+                or bool(
+                    associated_ids.intersection(
+                        _ledger_variant_ids(end_by_index[index])
+                    )
+                )
+            }
             pattern = _ledger_out_regex(
                 template,
                 work_tmp=work_tmp,
@@ -3554,20 +3670,20 @@ def verify_ledger(ledger_path: str, *, census: dict, driver: str, nonce: str, at
                 )
             }
             evidence_matches.update(matches)
-            if len(matches) != 1:
+            required = own_site or any(
+                variant.get("darwin") == "required"
+                for variant in associated_variants
+            )
+            if (required and len(matches) != 1) or (
+                not required and len(matches) > 1
+            ):
                 _ledger_add(
                     statuses,
                     reasons,
                     "NOT-EXECUTED",
-                    f"evidence {evidence_index} name {name!r} occurs {len(matches)} times",
+                    f"evidence {evidence_index} name {name!r} occurs "
+                    f"{len(matches)} times",
                 )
-        if len(evidence_matches) != len(labels):
-            _ledger_add(
-                statuses,
-                reasons,
-                "NOT-EXECUTED",
-                f"evidence {evidence_index} has {len(evidence_matches)} records, expected {len(labels)}",
-            )
         for index in evidence_matches:
             consumer = end_by_index[index].get("consumer")
             if (
@@ -3579,7 +3695,8 @@ def verify_ledger(ledger_path: str, *, census: dict, driver: str, nonce: str, at
                     statuses,
                     reasons,
                     "NOT-EXECUTED",
-                    f"evidence {evidence_index} record {index + 1} lacks a successful hashed consumer",
+                    f"evidence {evidence_index} record {index + 1} "
+                    "lacks a successful hashed consumer",
                 )
         matched_indices.update(evidence_matches)
 
