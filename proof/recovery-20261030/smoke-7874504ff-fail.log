@@ -1,0 +1,1233 @@
+HEADER executable="/Users/jwaldrip/.cache/iyi-corpus-venv/bin/python3"
+HEADER version="3.14.6 (main, Jun 10 2026, 10:03:53) [Clang 21.0.0 (clang-2100.0.123.102)]"
+HEADER flags="sys.flags(debug=0, inspect=0, interactive=0, optimize=0, dont_write_bytecode=1, no_user_site=0, no_site=0, ignore_environment=0, verbose=0, bytes_warning=0, quiet=0, hash_randomization=1, isolated=0, dev_mode=False, utf8_mode=0, warn_default_encoding=0, safe_path=False, int_max_str_digits=4300)"
+HEADER head=7874504ff255ee77d4ef3f803038c6dd67298507
+HEADER clean=true
+SEED harness.seed.optimize-refusal expect={"marker":true,"returncode":2} got={"marker":true,"returncode":2} applied="argv=[\"-B\",\"-O\",\"/Users/jwaldrip/dev/worktrees/iyi-audit-deadlines-seams-20261030/proof/smoke_test.py\"];stderr_sha256=66a957944a04d6b80a2aae89c1c19b0b690ce646d47ad09d19d4c1616f07259b"
+CONTROL harness.control.unoptimized PASS
+SEED harness.seed.coverage-gap expect={"items_without_executed_seed":["synthetic.review"],"missing_seed_ids":["synthetic.seed.required"]} got={"items_without_executed_seed":["synthetic.review"],"missing_seed_ids":["synthetic.seed.required"]} applied="executed_seed_ids=[];removed=synthetic.seed.required"
+CONTROL harness.control.coverage-complete PASS
+SEED s1.seed.env-scrub expect={"applied_keys":["CRYSTAL_DAEMON_SOCKET","CRYSTAL_PATH","IYI_DAEMON_SOCKET","IYI_FORK_PROBE","IYI_OPTS","IYI_PATH","PYTHONOPTIMIZE"],"remaining_keys":[]} got={"applied_keys":["CRYSTAL_DAEMON_SOCKET","CRYSTAL_PATH","IYI_DAEMON_SOCKET","IYI_FORK_PROBE","IYI_OPTS","IYI_PATH","PYTHONOPTIMIZE"],"remaining_keys":[]} applied="ambient_keys=CRYSTAL_DAEMON_SOCKET,CRYSTAL_PATH,IYI_DAEMON_SOCKET,IYI_FORK_PROBE,IYI_OPTS,IYI_PATH,PYTHONOPTIMIZE"
+CONTROL s1.control.env-preserve PASS
+SEED s1.seed.ast-detects-assert expect={"assert_count":1,"bytes_differ":true} got={"assert_count":1,"bytes_differ":true} applied="control_sha256=3335ff4ec49478e14cb60fe09352c24248cd72ccea33140db3fac48bbaeac9ab;seed_sha256=2e14d1430669de0f17f72bfa676aa7e48e489756a6cbf5c162a94e1fe18a79a1;bytes_differ=true"
+CONTROL s1.control.no-production-assert PASS
+SEED s1.seed.pin-dirty-w expect={"applied":true,"reason":"W-DIRTY"} got={"applied":true,"reason":"W-DIRTY"} applied="untracked=/tmp/iyi-o2-pin-5o8mlpyj/w/dirty-w;exists=true"
+SEED s1.seed.pin-dirty-p expect={"applied":true,"reason":"P-DIRTY"} got={"applied":true,"reason":"P-DIRTY"} applied="untracked=/tmp/iyi-o2-pin-7pvxe45j/p/dirty-p;exists=true"
+SEED s1.seed.pin-nondescendant expect={"applied":true,"reason":"W-NOT-DESCENDANT"} got={"applied":true,"reason":"W-NOT-DESCENDANT"} applied="ancestor_check_failed=true"
+SEED s1.seed.pin-product-diff expect={"applied":true,"reason":"PRODUCT-DIFF"} got={"applied":true,"reason":"PRODUCT-DIFF"} applied="changed_paths=[\"proof/o2-fixture.txt\",\"src/fixture.txt\"]"
+SEED s1.seed.pin-stale-mtime expect={"applied":true,"reason":"COMPILER-STALE"} got={"applied":true,"reason":"COMPILER-STALE"} applied="mtime_ns=1793404981000000000;p_commit_ns=1793404981000000000"
+SEED s1.seed.pin-missing-stamp expect={"applied":true,"reason":"COMPILER-STAMP-MISSING"} got={"applied":true,"reason":"COMPILER-STAMP-MISSING"} applied="version=\"iyi fixture without stamp\""
+SEED s1.seed.pin-stamp-mismatch expect={"applied":true,"reason":"COMPILER-STAMP-MISMATCH"} got={"applied":true,"reason":"COMPILER-STAMP-MISMATCH"} applied="version=\"iyi fixture [deadbeef0]\""
+SEED s1.seed.pin-report-nonempty expect={"applied":true,"reason":"REPORT-DIR-NOT-EMPTY"} got={"applied":true,"reason":"REPORT-DIR-NOT-EMPTY"} applied="entry=/tmp/iyp-e9a109bc/occupied;exists=true"
+SEED s1.seed.report-dir-name expect={"applied":true,"reason":"REPORT-DIR-NAME"} got={"applied":true,"reason":"REPORT-DIR-NAME"} applied="report_real=/private/tmp/not-iyp-19fe3cef"
+CONTROL s1.control.pin PASS
+SEED s1.seed.identity-p-head expect={"applied":true,"reason":"P-HEAD-CHANGED"} got={"applied":true,"reason":"P-HEAD-CHANGED"} applied="old=46c6737c8f805dbe8c1aa88549f5506e45649af2;new=4bc429a456d4a2acaa6d67d34fe10bb77d65777c"
+SEED s1.seed.identity-w-head expect={"applied":true,"reason":"W-HEAD-CHANGED"} got={"applied":true,"reason":"W-HEAD-CHANGED"} applied="old=5b98fb04074a30c69f641c4e077bb2926a98ea35;new=c4631c1a96a7b5d4dd23413a93f6ba1ddc9f38a5"
+SEED s1.seed.identity-binary-bytes expect={"applied":true,"reason":"COMPILER-SHA-CHANGED"} got={"applied":true,"reason":"COMPILER-SHA-CHANGED"} applied="before_sha=163477d1fbc137a3617ec5c0a7bcdcd8173088b483a78dcfc9d2ac8061ad69d2;after_sha=0e40226061fc3c47f72701797504cb10419addcb16d0dc6ae4f8b8a42b5431a7"
+SEED s1.seed.identity-inode expect={"applied":true,"reason":"COMPILER-INODE-CHANGED"} got={"applied":true,"reason":"COMPILER-INODE-CHANGED"} applied="before_inode=2636933278;after_inode=2636933300"
+SEED s1.seed.identity-mtime expect={"applied":true,"reason":"COMPILER-MTIME-CHANGED"} got={"applied":true,"reason":"COMPILER-MTIME-CHANGED"} applied="before_mtime_ns=1793405007000000000;after_mtime_ns=1793405007000000001"
+SEED s1.seed.identity-path expect={"applied":true,"reason":"PATH-CHANGED"} got={"applied":true,"reason":"PATH-CHANGED"} applied="pinned=\"/Users/jwaldrip/.cache/iyi-corpus-venv/bin:/opt/homebrew/opt/curl/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin\";changed=\"/Users/jwaldrip/.cache/iyi-corpus-venv/bin:/opt/homebrew/opt/curl/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin:/path-mutant\""
+SEED s1.seed.identity-cross-invocation expect={"applied":true,"reason":"COMPILER-SHA-CHANGED"} got={"applied":true,"reason":"COMPILER-SHA-CHANGED"} applied="before_sha=e0225688fbf01fd204ae8f35860cc76161ac86698c95178745aa62f0bb2d0cb7;after_sha=8a2910f907454409a9c0ebd803e25db8e1c14d3bc6dd12a3d6491ae75f9c4562"
+CONTROL s1.control.identity PASS
+SEED s1.seed.timeout-grandchild expect={"applied":true,"child_gone":true,"interrupted_signal":null,"timed_out":true} got={"applied":true,"child_gone":true,"interrupted_signal":null,"timed_out":true} applied="limit_sec=0.2;pid_file=/tmp/iyi-o2-timeout-e8_zpxcc/child.pid;child_pid=39075"
+SEED s1.seed.no-timeout expect={"applied":true,"reason":"NO-TIMEOUT"} got={"applied":true,"reason":"NO-TIMEOUT"} applied="PATH=/tmp/iyi-o2-pin-4l9eydq6/without-timeout;linked=[\"/tmp/iyi-o2-pin-4l9eydq6/without-timeout/git\",\"/tmp/iyi-o2-pin-4l9eydq6/without-timeout/nm\",\"/tmp/iyi-o2-pin-4l9eydq6/without-timeout/getconf\",\"/tmp/iyi-o2-pin-4l9eydq6/without-timeout/mktemp\"];timeout=None"
+SEED s1.seed.log-holder-survivor expect={"applied":true,"child_gone":true,"child_recorded":true,"returncode":0,"survivor_count":1,"timed_out":false} got={"applied":true,"child_gone":true,"child_recorded":true,"returncode":0,"survivor_count":1,"timed_out":false} applied="pid_file=/tmp/iyi-o2-log-holder-n71gti8a/child.pid;child_pid=39160"
+SEED s1.seed.interrupt-survivor expect="fixture completes" got="FileNotFoundError: [Errno 2] No such file or directory: '/tmp/iyi-o2-interrupt-9hpipq54/child.pid'" applied="fixture_exception=FileNotFoundError"
+CONTROL s1.control.bounded PASS
+SEED s1.seed.plan-dirty expect={"applied":true,"reason":"P-DIRTY","stdout_empty":true} got={"applied":true,"reason":"P-DIRTY","stdout_empty":true} applied="untracked=/tmp/iyi-o2-pin-6ougmwwl/p/dirty-p;exists=true"
+SEED s1.seed.plan-stale-compiler expect={"applied":true,"reason":"COMPILER-STALE","stdout_empty":true} got={"applied":true,"reason":"COMPILER-STALE","stdout_empty":true} applied="mtime_ns=1793405026000000000;p_commit_ns=1793405026000000000"
+SEED s1.seed.plan-invalid-census expect={"applied":true,"reason":"CENSUS-INVALID","stdout_empty":true} got={"applied":true,"reason":"CENSUS-INVALID","stdout_empty":true} applied="old_sha=04278d4e0c04a05fb62002f7f66e991a6326bff6a3315fbaeb40ca803b1332cd;new_sha=0000000000000000000000000000000000000000000000000000000000000000;substitutions=1"
+CONTROL s1.control.plan PASS
+SEED amend-b.seed.probe-unobservable expect={"reason":"EXEC-UNOBSERVABLE","seam_called":true} got={"reason":"EXEC-UNOBSERVABLE","seam_called":true} applied="stat_fn_calls=4;forced_atime=mtime-1000000000"
+SEED amend-b.seed.probe-stat-mutates expect={"reason":"EXEC-UNOBSERVABLE","stat_calls":3} got={"reason":"EXEC-UNOBSERVABLE","stat_calls":3} applied="third stat atime advanced by one nanosecond"
+CONTROL amend-b.control.real-probe PASS
+SEED s5.seed.gate-env-reused expect={"applied":true,"reason":"FileExistsError"} got={"applied":true,"reason":"FileExistsError"} applied="TMPDIR=/tmp/iyi-o2-env-seed-7q0pjmrh/attempt/gate.tmp;IYI_CACHE_DIR=/tmp/iyi-o2-env-seed-7q0pjmrh/attempt/gate.cache"
+CONTROL s5.control.gate-env-fresh PASS
+SEED s2.seed.validator-schema expect={"exact-text-indentation":{"control":[],"seed":["C5.0-schema"]},"malformed-nested-value":{"control":[],"seed":["C5.0-schema"]},"unknown-key":{"control":[],"seed":["C5.0-schema"]}} got={"exact-text-indentation":{"control":[],"seed":["C5.0-schema"]},"malformed-nested-value":{"control":[],"seed":["C5.0-schema"]},"unknown-key":{"control":[],"seed":["C5.0-schema"]}} applied="unknown-key[schema-unknown-key;driver=acme;count=1;census_changed=true;script_changed=false];malformed-nested-value[schema-malformed-contains;driver=acme;count=1;census_changed=true;script_changed=false];exact-text-indentation[text-indentation-line-145;driver=acme;count=1;census_changed=true;script_changed=false]"
+SEED s2.seed.validator-sha expect={"control":[],"seed":["C5.1-sha"]} got={"control":[],"seed":["C5.1-sha"]} applied="sha-replaced;driver=acme;count=1;census_changed=true;script_changed=false"
+SEED s2.seed.validator-unlisted-invocation expect={"control":[],"seed":["C5.2-unlisted-invocation"]} got={"control":[],"seed":["C5.2-unlisted-invocation"]} applied="unlisted-invocation-line-523;driver=acme;count=1;census_changed=true;script_changed=true"
+SEED s2.seed.validator-duplicate-site expect={"control":[],"seed":["C5.2-duplicate-site"]} got={"control":[],"seed":["C5.2-duplicate-site"]} applied="duplicate-site-line-70;driver=acme;count=1;census_changed=true;script_changed=false"
+SEED s2.seed.validator-contains expect={"control":[],"seed":["C5.3-contains"]} got={"control":[],"seed":["C5.3-contains"]} applied="contains-site-70;driver=acme;count=1;census_changed=true;script_changed=false"
+SEED s2.seed.validator-verdict expect={"control":[],"seed":["C5.3-verdict-literal"]} got={"control":[],"seed":["C5.3-verdict-literal"]} applied="verdict-literal-acme.negative.465-site-465;driver=acme;count=1;census_changed=true;script_changed=false"
+SEED s2.seed.validator-var-range expect={"control":[],"seed":["C5.3-var-range"]} got={"control":[],"seed":["C5.3-var-range"]} applied="var-range-dns.negative.292-dir;driver=dns;count=1;census_changed=true;script_changed=false"
+SEED s2.seed.validator-unlisted-skip expect={"control":[],"seed":["C5.4-unlisted-skip-line"]} got={"control":[],"seed":["C5.4-unlisted-skip-line"]} applied="unlisted-skip-skips-line-145;driver=acme;count=1;census_changed=true;script_changed=false"
+SEED s2.seed.validator-skip-regex expect={"control":[],"seed":["C5.4-skip-regex"]} got={"control":[],"seed":["C5.4-skip-regex"]} applied="skip-regex-line-145;driver=acme;count=1;census_changed=true;script_changed=false"
+SEED s2.seed.validator-unrenderable expect={"control":[],"seed":["C5.4-unrenderable"]} got={"control":[],"seed":["C5.4-unrenderable"]} applied="unrenderable-line-145;driver=acme;count=1;census_changed=true;script_changed=true"
+SEED s2.seed.validator-sentinel expect={"control":[],"seed":["C5.5-sentinel"]} got={"control":[],"seed":["C5.5-sentinel"]} applied="sentinel-regex-line-519;driver=acme;count=1;census_changed=true;script_changed=false"
+SEED s2.seed.validator-kind-variants expect={"control":[],"seed":["C5.6-kind-variants"]} got={"control":[],"seed":["C5.6-kind-variants"]} applied="kind-variants-site-399;driver=acme;count=1;census_changed=true;script_changed=false"
+SEED s2.seed.validator-template expect={"control":[],"seed":["C5.7-template"]} got={"control":[],"seed":["C5.7-template"]} applied="template-acme.negative.465-site-465;driver=acme;count=1;census_changed=true;script_changed=false"
+SEED s2.seed.validator-e1-missing expect={"control":[],"seed":["E1-missing"]} got={"control":[],"seed":["E1-missing"]} applied="e1-missing-site-795;driver=tls;count=1;census_changed=true;script_changed=false"
+SEED s2.seed.validator-e1-token expect={"control":[],"seed":["E1-exec-token"]} got={"control":[],"seed":["E1-exec-token"]} applied="e1-token-line-77;driver=acme;count=1;census_changed=true;script_changed=true"
+SEED s2.seed.validator-e1-stray-reference expect={"undeclared-build-self-evidence":{"control":[],"seed":["E1-stray-reference"]},"undeclared-read":{"control":[],"seed":["E1-stray-reference"]}} got={"undeclared-build-self-evidence":{"control":[],"seed":["E1-stray-reference"]},"undeclared-read":{"control":[],"seed":["E1-stray-reference"]}} applied="undeclared-read[e1-undeclared-read-line-523-token-\"$WORK/$name\";driver=acme;count=1;census_changed=true;script_changed=true];undeclared-build-self-evidence[e1-undeclared-build-line-523-token-\"$WORK/$name\";driver=acme;count=1;census_changed=true;script_changed=true]"
+SEED s2.seed.validator-e1-verdict expect={"control":[],"seed":["E1-verdict-mark"]} got={"control":[],"seed":["E1-verdict-mark"]} applied="e1-verdict-line-74;driver=acme;count=1;census_changed=true;script_changed=true"
+SEED s2.seed.validator-e1-exit-line expect={"control":[],"seed":["E1-exit-line"]} got={"control":[],"seed":["E1-exit-line"]} applied="e1-exit-line-523;driver=acme;count=1;census_changed=true;script_changed=true"
+SEED s2.seed.validator-nested-types expect={"census_version.type":{"raised":false,"schema":true,"tuples":true},"driver.type":{"raised":false,"schema":true,"tuples":true},"evidence.exec_lines.append":{"raised":false,"schema":true,"tuples":true},"evidence.exec_lines.type":{"raised":false,"schema":true,"tuples":true},"evidence.exec_token.type":{"raised":false,"schema":true,"tuples":true},"evidence.failure_marks.append":{"raised":false,"schema":true,"tuples":true},"evidence.failure_marks.type":{"raised":false,"schema":true,"tuples":true},"evidence.name_from_calls.append":{"raised":false,"schema":true,"tuples":true},"evidence.name_from_calls.type":{"raised":false,"schema":true,"tuples":true},"evidence.out_template.type":{"raised":false,"schema":true,"tuples":true},"evidence.refs_ok.append":{"raised":false,"schema":true,"tuples":true},"evidence.refs_ok.kind.type":{"raised":false,"schema":true,"tuples":true},"evidence.refs_ok.line.type":{"raised":false,"schema":true,"tuples":true},"evidence.refs_ok.type":{"raised":false,"schema":true,"tuples":true},"evidence.site_line.type":{"raised":false,"schema":true,"tuples":true},"evidence.verdict_lines.append":{"raised":false,"schema":true,"tuples":true},"evidence.verdict_lines.type":{"raised":false,"schema":true,"tuples":true},"exec_evidence.append":{"raised":false,"schema":true,"tuples":true},"exec_evidence.type":{"raised":false,"schema":true,"tuples":true},"non_invocations.append":{"raised":false,"schema":true,"tuples":true},"non_invocations.line.type":{"raised":false,"schema":true,"tuples":true},"non_invocations.reason.type":{"raised":false,"schema":true,"tuples":true},"non_invocations.type":{"raised":false,"schema":true,"tuples":true},"not_skips.append":{"raised":false,"schema":true,"tuples":true},"not_skips.line.type":{"raised":false,"schema":true,"tuples":true},"not_skips.reason.type":{"raised":false,"schema":true,"tuples":true},"not_skips.text.type":{"raised":false,"schema":true,"tuples":true},"not_skips.type":{"raised":false,"schema":true,"tuples":true},"pass_sentinel.line.type":{"raised":false,"schema":true,"tuples":true},"pass_sentinel.regex.type":{"raised":false,"schema":true,"tuples":true},"pass_sentinel.text.type":{"raised":false,"schema":true,"tuples":true},"pass_sentinel.type":{"raised":false,"schema":true,"tuples":true},"script.type":{"raised":false,"schema":true,"tuples":true},"script_sha256.type":{"raised":false,"schema":true,"tuples":true},"site.command.type":{"raised":false,"schema":true,"tuples":true},"site.contains.append":{"raised":false,"schema":true,"tuples":true},"site.contains.type":{"raised":false,"schema":true,"tuples":true},"site.kind.type":{"raised":false,"schema":true,"tuples":true},"site.lines.append":{"raised":false,"schema":true,"tuples":true},"site.lines.type":{"raised":false,"schema":true,"tuples":true},"site.variants.append":{"raised":false,"schema":true,"tuples":true},"site.variants.type":{"raised":false,"schema":true,"tuples":true},"sites.append":{"raised":false,"schema":true,"tuples":true},"sites.type":{"raised":false,"schema":true,"tuples":true},"skip.class.type":{"raised":false,"schema":true,"tuples":true},"skip.line.type":{"raised":false,"schema":true,"tuples":true},"skip.regex.type":{"raised":false,"schema":true,"tuples":true},"skip.text.type":{"raised":false,"schema":true,"tuples":true},"skip.what.type":{"raised":false,"schema":true,"tuples":true},"skips.append":{"raised":false,"schema":true,"tuples":true},"skips.type":{"raised":false,"schema":true,"tuples":true},"variant.darwin.type":{"raised":false,"schema":true,"tuples":true},"variant.first_root.type":{"raised":false,"schema":true,"tuples":true},"variant.id.type":{"raised":false,"schema":true,"tuples":true},"variant.kind.type":{"raised":false,"schema":true,"tuples":true},"variant.output.type":{"raised":false,"schema":true,"tuples":true},"variant.requires.append":{"raised":false,"schema":true,"tuples":true},"variant.requires.type":{"raised":false,"schema":true,"tuples":true},"variant.sources.append":{"raised":false,"schema":true,"tuples":true},"variant.sources.type":{"raised":false,"schema":true,"tuples":true},"variant.var.lines.type":{"raised":false,"schema":true,"tuples":true},"variant.var.pattern.type":{"raised":false,"schema":true,"tuples":true},"variant.var.pattern_reason_line.type":{"raised":false,"schema":true,"tuples":true},"variant.var.type":{"raised":false,"schema":true,"tuples":true},"variant.var.values.append":{"raised":false,"schema":true,"tuples":true},"variant.var.values.type":{"raised":false,"schema":true,"tuples":true},"variant.vars.type":{"raised":false,"schema":true,"tuples":true},"variant.verdict.contains.append":{"raised":false,"schema":true,"tuples":true},"variant.verdict.contains.type":{"raised":false,"schema":true,"tuples":true},"variant.verdict.lines.append":{"raised":false,"schema":true,"tuples":true},"variant.verdict.lines.type":{"raised":false,"schema":true,"tuples":true},"variant.verdict.type":{"raised":false,"schema":true,"tuples":true}} got={"census_version.type":{"raised":false,"schema":true,"tuples":true},"driver.type":{"raised":false,"schema":true,"tuples":true},"evidence.exec_lines.append":{"raised":false,"schema":true,"tuples":true},"evidence.exec_lines.type":{"raised":false,"schema":true,"tuples":true},"evidence.exec_token.type":{"raised":false,"schema":true,"tuples":true},"evidence.failure_marks.append":{"raised":false,"schema":true,"tuples":true},"evidence.failure_marks.type":{"raised":false,"schema":true,"tuples":true},"evidence.name_from_calls.append":{"raised":false,"schema":true,"tuples":true},"evidence.name_from_calls.type":{"raised":false,"schema":true,"tuples":true},"evidence.out_template.type":{"raised":false,"schema":true,"tuples":true},"evidence.refs_ok.append":{"raised":false,"schema":true,"tuples":true},"evidence.refs_ok.kind.type":{"raised":false,"schema":true,"tuples":true},"evidence.refs_ok.line.type":{"raised":false,"schema":true,"tuples":true},"evidence.refs_ok.type":{"raised":false,"schema":true,"tuples":true},"evidence.site_line.type":{"raised":false,"schema":true,"tuples":true},"evidence.verdict_lines.append":{"raised":false,"schema":true,"tuples":true},"evidence.verdict_lines.type":{"raised":false,"schema":true,"tuples":true},"exec_evidence.append":{"raised":false,"schema":true,"tuples":true},"exec_evidence.type":{"raised":false,"schema":true,"tuples":true},"non_invocations.append":{"raised":false,"schema":true,"tuples":true},"non_invocations.line.type":{"raised":false,"schema":true,"tuples":true},"non_invocations.reason.type":{"raised":false,"schema":true,"tuples":true},"non_invocations.type":{"raised":false,"schema":true,"tuples":true},"not_skips.append":{"raised":false,"schema":true,"tuples":true},"not_skips.line.type":{"raised":false,"schema":true,"tuples":true},"not_skips.reason.type":{"raised":false,"schema":true,"tuples":true},"not_skips.text.type":{"raised":false,"schema":true,"tuples":true},"not_skips.type":{"raised":false,"schema":true,"tuples":true},"pass_sentinel.line.type":{"raised":false,"schema":true,"tuples":true},"pass_sentinel.regex.type":{"raised":false,"schema":true,"tuples":true},"pass_sentinel.text.type":{"raised":false,"schema":true,"tuples":true},"pass_sentinel.type":{"raised":false,"schema":true,"tuples":true},"script.type":{"raised":false,"schema":true,"tuples":true},"script_sha256.type":{"raised":false,"schema":true,"tuples":true},"site.command.type":{"raised":false,"schema":true,"tuples":true},"site.contains.append":{"raised":false,"schema":true,"tuples":true},"site.contains.type":{"raised":false,"schema":true,"tuples":true},"site.kind.type":{"raised":false,"schema":true,"tuples":true},"site.lines.append":{"raised":false,"schema":true,"tuples":true},"site.lines.type":{"raised":false,"schema":true,"tuples":true},"site.variants.append":{"raised":false,"schema":true,"tuples":true},"site.variants.type":{"raised":false,"schema":true,"tuples":true},"sites.append":{"raised":false,"schema":true,"tuples":true},"sites.type":{"raised":false,"schema":true,"tuples":true},"skip.class.type":{"raised":false,"schema":true,"tuples":true},"skip.line.type":{"raised":false,"schema":true,"tuples":true},"skip.regex.type":{"raised":false,"schema":true,"tuples":true},"skip.text.type":{"raised":false,"schema":true,"tuples":true},"skip.what.type":{"raised":false,"schema":true,"tuples":true},"skips.append":{"raised":false,"schema":true,"tuples":true},"skips.type":{"raised":false,"schema":true,"tuples":true},"variant.darwin.type":{"raised":false,"schema":true,"tuples":true},"variant.first_root.type":{"raised":false,"schema":true,"tuples":true},"variant.id.type":{"raised":false,"schema":true,"tuples":true},"variant.kind.type":{"raised":false,"schema":true,"tuples":true},"variant.output.type":{"raised":false,"schema":true,"tuples":true},"variant.requires.append":{"raised":false,"schema":true,"tuples":true},"variant.requires.type":{"raised":false,"schema":true,"tuples":true},"variant.sources.append":{"raised":false,"schema":true,"tuples":true},"variant.sources.type":{"raised":false,"schema":true,"tuples":true},"variant.var.lines.type":{"raised":false,"schema":true,"tuples":true},"variant.var.pattern.type":{"raised":false,"schema":true,"tuples":true},"variant.var.pattern_reason_line.type":{"raised":false,"schema":true,"tuples":true},"variant.var.type":{"raised":false,"schema":true,"tuples":true},"variant.var.values.append":{"raised":false,"schema":true,"tuples":true},"variant.var.values.type":{"raised":false,"schema":true,"tuples":true},"variant.vars.type":{"raised":false,"schema":true,"tuples":true},"variant.verdict.contains.append":{"raised":false,"schema":true,"tuples":true},"variant.verdict.contains.type":{"raised":false,"schema":true,"tuples":true},"variant.verdict.lines.append":{"raised":false,"schema":true,"tuples":true},"variant.verdict.lines.type":{"raised":false,"schema":true,"tuples":true},"variant.verdict.type":{"raised":false,"schema":true,"tuples":true}} applied="census_version.type:true;driver.type:true;script.type:true;script_sha256.type:true;sites.type:true;sites.append:true;non_invocations.type:true;non_invocations.append:true;non_invocations.line.type:true;non_invocations.reason.type:true;skips.type:true;skips.append:true;skip.line.type:true;skip.class.type:true;skip.what.type:true;skip.regex.type:true;skip.text.type:true;not_skips.type:true;not_skips.append:true;not_skips.line.type:true;not_skips.reason.type:true;not_skips.text.type:true;pass_sentinel.type:true;pass_sentinel.line.type:true;pass_sentinel.regex.type:true;pass_sentinel.text.type:true;exec_evidence.type:true;exec_evidence.append:true;site.lines.type:true;site.lines.append:true;site.command.type:true;site.kind.type:true;site.contains.type:true;site.contains.append:true;site.variants.type:true;site.variants.append:true;variant.id.type:true;variant.kind.type:true;variant.vars.type:true;variant.var.type:true;variant.var.lines.type:true;variant.var.values.type:true;variant.var.values.append:true;variant.sources.type:true;variant.sources.append:true;variant.requires.type:true;variant.requires.append:true;variant.verdict.type:true;variant.verdict.lines.type:true;variant.verdict.lines.append:true;variant.verdict.contains.type:true;variant.verdict.contains.append:true;variant.first_root.type:true;variant.output.type:true;variant.darwin.type:true;evidence.site_line.type:true;evidence.out_template.type:true;evidence.exec_token.type:true;evidence.name_from_calls.type:true;evidence.name_from_calls.append:true;evidence.exec_lines.type:true;evidence.exec_lines.append:true;evidence.verdict_lines.type:true;evidence.verdict_lines.append:true;evidence.failure_marks.type:true;evidence.failure_marks.append:true;evidence.refs_ok.type:true;evidence.refs_ok.append:true;variant.var.pattern.type:true;variant.var.pattern_reason_line.type:true;evidence.refs_ok.line.type:true;evidence.refs_ok.kind.type:true"
+SEED s2.seed.validator-print-capture-skip expect=["C5.4-unlisted-skip-line"] got=["C5.4-unlisted-skip-line"] applied="line=8;listed=false"
+SEED s2.seed.validator-print-case-arm-regex expect=["C5.4-skip-regex"] got=["C5.4-skip-regex"] applied="line=8;listed=true"
+SEED s2.seed.validator-build-site-operand expect=["E1-stray-reference"] got=["E1-stray-reference"] applied="line=6;operand=true"
+R1F driver=acme violations=7
+R1F driver=acme violation=["E1-verdict-mark",76,"verdict line lacks one of ['status=1', 'return 1', 'exit']"]
+R1F driver=acme violation=["C5.0-schema",145,"skips[0].text is not the cited source line"]
+R1F driver=acme violation=["C5.0-schema",275,"skips[1].text is not the cited source line"]
+R1F driver=acme violation=["C5.0-schema",281,"skips[2].text is not the cited source line"]
+R1F driver=acme violation=["C5.0-schema",366,"skips[3].text is not the cited source line"]
+R1F driver=acme violation=["C5.0-schema",451,"skips[4].text is not the cited source line"]
+R1F driver=acme violation=["C5.0-schema",519,"pass_sentinel.text is not the cited source line"]
+R1F driver=autocert violations=13
+R1F driver=autocert violation=["E1-exec-token",89,"expected '\"$WORK/$name\"' after site line 85"]
+R1F driver=autocert violation=["E1-verdict-mark",90,"verdict line lacks one of ['status=1', 'return 1', 'exit']"]
+R1F driver=autocert violation=["E1-verdict-mark",91,"verdict line lacks one of ['status=1', 'return 1', 'exit']"]
+R1F driver=autocert violation=["C5.0-schema",137,"skips[0].text is not the cited source line"]
+R1F driver=autocert violation=["C5.0-schema",174,"skips[1].text is not the cited source line"]
+R1F driver=autocert violation=["C5.0-schema",317,"skips[2].text is not the cited source line"]
+R1F driver=autocert violation=["C5.0-schema",321,"skips[3].text is not the cited source line"]
+R1F driver=autocert violation=["C5.4-platform-guard",321,"platform skip is not guarded only by platform state"]
+R1F driver=autocert violation=["C5.0-schema",325,"skips[4].text is not the cited source line"]
+R1F driver=autocert violation=["C5.4-platform-guard",325,"platform skip is not guarded only by platform state"]
+R1F driver=autocert violation=["C5.0-schema",332,"skips[5].text is not the cited source line"]
+R1F driver=autocert violation=["C5.0-schema",424,"pass_sentinel.text is not the cited source line"]
+R1F driver=autocert violation=["C5.0-schema",424,"skips[6].text is not the cited source line"]
+R1F driver=cookie violations=5
+R1F driver=cookie violation=["E1-verdict-mark",52,"verdict line lacks one of ['status=1', 'return 1', 'exit']"]
+R1F driver=cookie violation=["C5.0-schema",114,"skips[0].text is not the cited source line"]
+R1F driver=cookie violation=["C5.0-schema",151,"skips[1].text is not the cited source line"]
+R1F driver=cookie violation=["C5.0-schema",201,"skips[2].text is not the cited source line"]
+R1F driver=cookie violation=["C5.0-schema",252,"pass_sentinel.text is not the cited source line"]
+R1F driver=dns violations=42
+R1F driver=dns violation=["E1-verdict-mark",74,"verdict line lacks one of ['status=1', 'return 1', 'exit']"]
+R1F driver=dns violation=["C5.3-var-range",104,"call name 'plain' is absent from cited line"]
+R1F driver=dns violation=["C5.3-var-range",108,"call name 'release' is absent from cited line"]
+R1F driver=dns violation=["C5.0-schema",167,"skips[0].text is not the cited source line"]
+R1F driver=dns violation=["C5.0-schema",213,"skips[1].text is not the cited source line"]
+R1F driver=dns violation=["C5.4-skip-regex",213,"'\\\\ \\\\ skipped:\\\\ this\\\\ nsupdate\\\\ does\\\\ not\\\\ know\\\\ the\\\\ HTTPS\\\\ type\\\\ \\\\(.*?\\\\):\\\\ it\\\\ said\\\\ \\\\\\\\\".*?\\\\\\\\\"' does not match '  skipped: this nsupdate does not know the HTTPS type (IYIVAR): it said \"IYIVAR\"'"]
+R1F driver=dns violation=["C5.0-schema",218,"skips[2].text is not the cited source line"]
+R1F driver=dns violation=["C5.4-skip-regex",218,"'\\\\ \\\\ skipped:\\\\ this\\\\ dig\\\\ does\\\\ not\\\\ know\\\\ the\\\\ HTTPS\\\\ type\\\\ \\\\(.*?\\\\):\\\\ it\\\\ said\\\\ \\\\\\\\\".*?\\\\\\\\\"' does not match '  skipped: this dig does not know the HTTPS type (IYIVAR): it said \"IYIVAR\"'"]
+R1F driver=dns violation=["C5.0-schema",292,"variable 'dir' has invalid keys ['defined_at', 'text', 'values']"]
+R1F driver=dns violation=["C5.3-var-range",292,"dns.negative.292.dir value 'aliasbound' is absent from cited lines"]
+R1F driver=dns violation=["C5.3-var-range",292,"dns.negative.292.dir value 'cnamebound' is absent from cited lines"]
+R1F driver=dns violation=["C5.3-var-range",292,"dns.negative.292.dir value 'heatonce' is absent from cited lines"]
+R1F driver=dns violation=["C5.3-var-range",292,"dns.negative.292.dir value 'hefour' is absent from cited lines"]
+R1F driver=dns violation=["C5.3-var-range",292,"dns.negative.292.dir value 'helast' is absent from cited lines"]
+R1F driver=dns violation=["C5.3-var-range",292,"dns.negative.292.dir value 'heleak' is absent from cited lines"]
+R1F driver=dns violation=["C5.3-var-range",292,"dns.negative.292.dir value 'heserial' is absent from cited lines"]
+R1F driver=dns violation=["C5.3-var-range",292,"dns.negative.292.dir value 'hewait' is absent from cited lines"]
+R1F driver=dns violation=["C5.3-var-range",292,"dns.negative.292.dir value 'nobadvers' is absent from cited lines"]
+R1F driver=dns violation=["C5.3-var-range",292,"dns.negative.292.dir value 'nocname' is absent from cited lines"]
+R1F driver=dns violation=["C5.3-var-range",292,"dns.negative.292.dir value 'nohosts' is absent from cited lines"]
+R1F driver=dns violation=["C5.3-var-range",292,"dns.negative.292.dir value 'noid' is absent from cited lines"]
+R1F driver=dns violation=["C5.3-var-range",292,"dns.negative.292.dir value 'noname' is absent from cited lines"]
+R1F driver=dns violation=["C5.3-var-range",292,"dns.negative.292.dir value 'noquestion' is absent from cited lines"]
+R1F driver=dns violation=["C5.3-var-range",292,"dns.negative.292.dir value 'noretry' is absent from cited lines"]
+R1F driver=dns violation=["C5.3-var-range",292,"dns.negative.292.dir value 'notcp' is absent from cited lines"]
+R1F driver=dns violation=["C5.3-var-range",292,"dns.negative.292.dir value 'nxservfail' is absent from cited lines"]
+R1F driver=dns violation=["C5.3-var-range",292,"dns.negative.292.dir value 'pointerfloor' is absent from cited lines"]
+R1F driver=dns violation=["C5.3-var-range",292,"dns.negative.292.dir value 'searchorder' is absent from cited lines"]
+R1F driver=dns violation=["C5.3-var-range",292,"dns.negative.292.dir value 'svcbmandatory' is absent from cited lines"]
+R1F driver=dns violation=["C5.3-var-range",292,"dns.negative.292.dir value 'svcborder' is absent from cited lines"]
+R1F driver=dns violation=["C5.3-var-range",292,"dns.negative.292.dir value 'svcbport' is absent from cited lines"]
+R1F driver=dns violation=["C5.3-var-range",292,"dns.negative.292.dir value 'svcbpriority' is absent from cited lines"]
+R1F driver=dns violation=["C5.3-var-range",292,"dns.negative.292.dir value 'svcbtwice' is absent from cited lines"]
+R1F driver=dns violation=["C5.7-template",292,"dns.negative.292.first_root contains forbidden shell syntax: '{WORK}/$dir'"]
+R1F driver=dns violation=["C5.7-template",292,"dns.negative.292.output contains forbidden shell syntax: '{WORK}/$dir/program'"]
+R1F driver=dns violation=["C5.0-schema",324,"skips[3].text is not the cited source line"]
+R1F driver=dns violation=["C5.0-schema",403,"skips[4].text is not the cited source line"]
+R1F driver=dns violation=["C5.0-schema",410,"skips[5].text is not the cited source line"]
+R1F driver=dns violation=["C5.0-schema",417,"skips[6].text is not the cited source line"]
+R1F driver=dns violation=["C5.0-schema",424,"skips[7].text is not the cited source line"]
+R1F driver=dns violation=["C5.0-schema",437,"skips[8].text is not the cited source line"]
+R1F driver=dns violation=["C5.0-schema",443,"pass_sentinel.text is not the cited source line"]
+R1F driver=fileserver violations=4
+R1F driver=fileserver violation=["E1-verdict-mark",52,"verdict line lacks one of ['status=1', 'return 1', 'exit']"]
+R1F driver=fileserver violation=["C5.0-schema",90,"skips[0].text is not the cited source line"]
+R1F driver=fileserver violation=["C5.0-schema",162,"skips[1].text is not the cited source line"]
+R1F driver=fileserver violation=["C5.0-schema",209,"pass_sentinel.text is not the cited source line"]
+R1F driver=http violations=183
+R1F driver=http violation=["E1-verdict-mark",56,"verdict line lacks one of ['status=1', 'return 1', 'exit']"]
+R1F driver=http violation=["C5.0-schema",201,"skips[0].text is not the cited source line"]
+R1F driver=http violation=["C5.0-schema",301,"skips[1].text is not the cited source line"]
+R1F driver=http violation=["C5.0-schema",364,"skips[2].text is not the cited source line"]
+R1F driver=http violation=["C5.0-schema",529,"skips[3].text is not the cited source line"]
+R1F driver=http violation=["C5.0-schema",895,"skips[4].text is not the cited source line"]
+R1F driver=http violation=["C5.4-unlisted-skip-line",918,"printed text is skip vocabulary: '  no OpenSSL (LibreSSL is not it) with python3 here, or Windows, whose s_server this gate does not drive: s_server goes unasked'"]
+R1F driver=http violation=["C5.4-unlisted-skip-line",919,"printed text is skip vocabulary: \"  no curl here, or Windows, whose curl does not take this gate's root by --cacert: curl goes unasked\""]
+R1F driver=http violation=["C5.4-unlisted-skip-line",920,"printed text is skip vocabulary: \"  no strace that runs here (it is Linux's, and a container may forbid ptrace): the writes go uncounted, and so does the server's flight\""]
+R1F driver=http violation=["C5.0-schema",938,"skips[5].text is not the cited source line"]
+R1F driver=http violation=["C5.0-schema",962,"skips[6].text is not the cited source line"]
+R1F driver=http violation=["C5.4-platform-guard",962,"platform skip is not guarded only by platform state"]
+R1F driver=http violation=["C5.4-skip-regex",962,"'\\\\ \\\\ .*?:\\\\ unmeasured\\\\ at\\\\ \\\\\\\\\".*?\\\\\\\\\":\\\\ this\\\\ .*?\\\\ loopback\\\\ shows\\\\ no\\\\ stall\\\\ to\\\\ time,\\\\ as\\\\ Linux\\'s\\\\ delayed\\\\ ACK\\\\ does' does not match '  IYIVAR: unmeasured at \"IYIVAR\": this IYIVAR loopback shows no stall to time, as Linux\\'s delayed ACK does'"]
+R1F driver=http violation=["C5.0-schema",1078,"skips[7].text is not the cited source line"]
+R1F driver=http violation=["C5.0-schema",1595,"skips[8].text is not the cited source line"]
+R1F driver=http violation=["C5.4-unlisted-skip-line",1613,"printed text is skip vocabulary: '  IYIVAR: s_server goes unasked, and so does the check that no early data is sent'"]
+R1F driver=http violation=["C5.0-schema",1631,"skips[9].text is not the cited source line"]
+R1F driver=http violation=["C5.0-schema",1841,"skips[10].text is not the cited source line"]
+R1F driver=http violation=["C5.0-schema",2333,"skips[11].text is not the cited source line"]
+R1F driver=http violation=["C5.4-platform-guard",2333,"platform skip is not guarded only by platform state"]
+R1F driver=http violation=["C5.0-schema",2352,"skips[12].text is not the cited source line"]
+R1F driver=http violation=["C5.0-schema",2453,"skips[13].text is not the cited source line"]
+R1F driver=http violation=["C5.0-schema",2492,"skips[14].text is not the cited source line"]
+R1F driver=http violation=["C5.0-schema",2543,"skips[15].text is not the cited source line"]
+R1F driver=http violation=["C5.0-schema",2623,"skips[16].text is not the cited source line"]
+R1F driver=http violation=["C5.0-schema",2771,"skips[17].text is not the cited source line"]
+R1F driver=http violation=["C5.0-schema",2980,"skips[18].text is not the cited source line"]
+R1F driver=http violation=["C5.0-schema",3262,"skips[19].text is not the cited source line"]
+R1F driver=http violation=["C5.0-schema",3302,"skips[20].text is not the cited source line"]
+R1F driver=http violation=["C5.0-schema",3357,"skips[21].text is not the cited source line"]
+R1F driver=http violation=["C5.0-schema",3411,"skips[22].text is not the cited source line"]
+R1F driver=http violation=["C5.0-schema",3479,"variant variable name '$P' is invalid"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-1' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-10' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-11' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-12' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-13' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-14' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-15' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-16' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-17' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-18' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-19' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-2' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-20' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-21' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-22' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-23' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-24' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-25' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-26' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-27' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-28' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-29' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-3' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-30' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-31' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-32' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-33' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-34' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-35' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-36' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-37' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-38' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-39' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-4' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-40' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-41' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-42' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-43' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-44' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-45' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-46' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-47' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-48' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-49' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-5' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-50' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-51' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-52' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-53' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-54' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-55' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-56' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-57' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-58' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-59' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-6' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-60' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-61' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-62' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-63' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-64' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-65' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-66' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-67' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-68' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-69' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-7' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-70' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-71' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-72' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-73' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-74' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-75' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-76' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-77' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-78' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-79' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-8' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-80' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-81' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-82' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-83' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-84' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-85' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-86' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-87' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-88' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-89' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-9' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-90' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-91' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-92' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-93' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-94' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-95' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-96' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3479,"http.negative.3479.$P value '$WORK/patched-97' is absent from cited lines"]
+R1F driver=http violation=["C5.7-template",3479,"http.negative.3479.first_root contains forbidden shell syntax: '$P'"]
+R1F driver=http violation=["C5.7-template",3479,"http.negative.3479.output contains forbidden shell syntax: '{WORK}/mut-$n.bin'"]
+R1F driver=http violation=["C5.0-schema",3702,"variant variable name '$name' is invalid"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'close_client_tls' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'close_nodrain' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'close_nohalf' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'close_nolinger' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'close_notify' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'guard_body' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'guard_cap' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'guard_h2' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'guard_head' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'guard_leak' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'h2_conn_window' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'h2_cookies' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'h2_fields' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'h2_first' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'h2_flood' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'h2_frame_size' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'h2_gzip' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'h2_peer_window' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'h2_preface' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'h2_reset_closes' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'h2_stale' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'h2_stream_window' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'h2_upgrade' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'https_clear' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'https_notify' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'https_plain' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'linger_431' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'linger_body' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'linger_h2' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'linger_head' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'mtls_h1' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'mtls_h2' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'mtls_upgrade' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'proxy_connect_bare' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'proxy_inside' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'proxy_no_tunnel' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'proxy_tunnel_key' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'proxy_upgrade_absolute' is absent from cited lines"]
+R1F driver=http violation=["C5.3-var-range",3702,"http.negative.3702.$name value 'proxy_upgrade_direct' is absent from cited lines"]
+R1F driver=http violation=["C5.7-template",3702,"http.negative.3702.first_root contains forbidden shell syntax: '{WORK}/$name'"]
+R1F driver=http violation=["C5.7-template",3702,"http.negative.3702.output contains forbidden shell syntax: '{WORK}/$name.bin'"]
+R1F driver=http violation=["C5.7-template",3702,"http.negative.3702.sources[0] contains forbidden shell syntax: '$program'"]
+R1F driver=http violation=["C5.0-schema",3774,"skips[23].text is not the cited source line"]
+R1F driver=http violation=["C5.0-schema",3799,"skips[24].text is not the cited source line"]
+R1F driver=http violation=["C5.0-schema",3824,"skips[25].text is not the cited source line"]
+R1F driver=http violation=["C5.0-schema",3958,"skips[26].text is not the cited source line"]
+R1F driver=http violation=["C5.0-schema",4019,"skips[27].text is not the cited source line"]
+R1F driver=http violation=["C5.0-schema",4046,"skips[28].text is not the cited source line"]
+R1F driver=http violation=["C5.0-schema",4089,"skips[29].text is not the cited source line"]
+R1F driver=http violation=["C5.0-schema",4116,"skips[30].text is not the cited source line"]
+R1F driver=http violation=["C5.0-schema",4155,"pass_sentinel.text is not the cited source line"]
+R1F driver=router violations=6
+R1F driver=router violation=["E1-verdict-mark",74,"verdict line lacks one of ['status=1', 'return 1', 'exit']"]
+R1F driver=router violation=["C5.0-schema",158,"skips[0].text is not the cited source line"]
+R1F driver=router violation=["C5.0-schema",270,"skips[1].text is not the cited source line"]
+R1F driver=router violation=["C5.0-schema",305,"skips[2].text is not the cited source line"]
+R1F driver=router violation=["C5.0-schema",376,"skips[3].text is not the cited source line"]
+R1F driver=router violation=["C5.0-schema",438,"pass_sentinel.text is not the cited source line"]
+R1F driver=secure_dns violations=34
+R1F driver=secure_dns violation=["C5.0-schema",52,"skips[0].text is not the cited source line"]
+R1F driver=secure_dns violation=["E1-verdict-mark",86,"verdict line lacks one of ['status=1', 'return 1', 'exit']"]
+R1F driver=secure_dns violation=["C5.3-var-range",112,"call name 'release' is absent from cited line"]
+R1F driver=secure_dns violation=["C5.0-schema",146,"skips[1].text is not the cited source line"]
+R1F driver=secure_dns violation=["C5.0-schema",148,"skips[2].text is not the cited source line"]
+R1F driver=secure_dns violation=["C5.4-skip-regex",148,"'\\\\ \\\\ skipped:\\\\ this\\\\ dig\\\\ has\\\\ neither\\\\ \\\\+tls\\\\ nor\\\\ \\\\+https\\\\ \\\\(\\\\$\\\\(dig\\\\ \\\\-v\\\\ 2' does not match '  skipped: this dig has neither +tls nor +https (IYIVAR)'"]
+R1F driver=secure_dns violation=["C5.0-schema",185,"skips[3].text is not the cited source line"]
+R1F driver=secure_dns violation=["C5.4-skip-regex",185,"'\\\\ \\\\ HTTPS\\\\ records\\\\ skipped:\\\\ this\\\\ dig\\\\ does\\\\ not\\\\ know\\\\ the\\\\ type\\\\ \\\\(\\\\$\\\\(dig\\\\ \\\\-v\\\\ 2' does not match '  HTTPS records skipped: this dig does not know the type (IYIVAR): it said \"IYIVAR\"'"]
+R1F driver=secure_dns violation=["C5.4-unlisted-skip-line",227,"printed text is skip vocabulary: '  +tls skipped: this dig has no DNS over TLS (IYIVAR)'"]
+R1F driver=secure_dns violation=["C5.0-schema",229,"skips[4].text is not the cited source line"]
+R1F driver=secure_dns violation=["C5.4-skip-regex",229,"'\\\\ \\\\ \\\\+https\\\\ skipped:\\\\ this\\\\ dig\\\\ has\\\\ no\\\\ DNS\\\\ over\\\\ HTTPS\\\\ \\\\(\\\\$\\\\(dig\\\\ \\\\-v\\\\ 2' does not match '  +https skipped: this dig has no DNS over HTTPS (IYIVAR)'"]
+R1F driver=secure_dns violation=["C5.0-schema",231,"skips[5].text is not the cited source line"]
+R1F driver=secure_dns violation=["C5.0-schema",284,"variable 'dir' has invalid keys ['defined_at', 'text', 'values']"]
+R1F driver=secure_dns violation=["C5.3-var-range",284,"secure_dns.negative.284.dir value 'clientresolver' is absent from cited lines"]
+R1F driver=secure_dns violation=["C5.3-var-range",284,"secure_dns.negative.284.dir value 'clienttls' is absent from cited lines"]
+R1F driver=secure_dns violation=["C5.3-var-range",284,"secure_dns.negative.284.dir value 'doh_id' is absent from cited lines"]
+R1F driver=secure_dns violation=["C5.3-var-range",284,"secure_dns.negative.284.dir value 'httpsclear' is absent from cited lines"]
+R1F driver=secure_dns violation=["C5.3-var-range",284,"secure_dns.negative.284.dir value 'httpsparse' is absent from cited lines"]
+R1F driver=secure_dns violation=["C5.3-var-range",284,"secure_dns.negative.284.dir value 'noid' is absent from cited lines"]
+R1F driver=secure_dns violation=["C5.3-var-range",284,"secure_dns.negative.284.dir value 'noidle' is absent from cited lines"]
+R1F driver=secure_dns violation=["C5.3-var-range",284,"secure_dns.negative.284.dir value 'noname' is absent from cited lines"]
+R1F driver=secure_dns violation=["C5.3-var-range",284,"secure_dns.negative.284.dir value 'noprefix' is absent from cited lines"]
+R1F driver=secure_dns violation=["C5.3-var-range",284,"secure_dns.negative.284.dir value 'noreuse' is absent from cited lines"]
+R1F driver=secure_dns violation=["C5.3-var-range",284,"secure_dns.negative.284.dir value 'nostatus' is absent from cited lines"]
+R1F driver=secure_dns violation=["C5.3-var-range",284,"secure_dns.negative.284.dir value 'notype' is absent from cited lines"]
+R1F driver=secure_dns violation=["C5.3-var-range",284,"secure_dns.negative.284.dir value 'padded' is absent from cited lines"]
+R1F driver=secure_dns violation=["C5.3-var-range",284,"secure_dns.negative.284.dir value 'pastend' is absent from cited lines"]
+R1F driver=secure_dns violation=["C5.3-var-range",284,"secure_dns.negative.284.dir value 'silentplain' is absent from cited lines"]
+R1F driver=secure_dns violation=["C5.3-var-range",284,"secure_dns.negative.284.dir value 'tcstream' is absent from cited lines"]
+R1F driver=secure_dns violation=["C5.3-var-range",284,"secure_dns.negative.284.dir value 'unblocked' is absent from cited lines"]
+R1F driver=secure_dns violation=["C5.3-var-range",284,"secure_dns.negative.284.dir value 'unpadded' is absent from cited lines"]
+R1F driver=secure_dns violation=["C5.7-template",284,"secure_dns.negative.284.first_root contains forbidden shell syntax: '{WORK}/$dir'"]
+R1F driver=secure_dns violation=["C5.7-template",284,"secure_dns.negative.284.output contains forbidden shell syntax: '{WORK}/$dir/program'"]
+R1F driver=secure_dns violation=["C5.0-schema",371,"pass_sentinel.text is not the cited source line"]
+R1F driver=signal violations=16
+R1F driver=signal violation=["E1-missing",0,"no canonical-own or mixed own-exercise site has exec evidence"]
+R1F driver=signal violation=["C5.0-schema",68,"variable 'path' has invalid keys ['defined_at', 'text', 'values']"]
+R1F driver=signal violation=["C5.3-var-range",68,"signal.negative.68.path value '$IYI_PATH' is absent from cited lines"]
+R1F driver=signal violation=["C5.3-var-range",68,"signal.negative.68.path value '$WORK/closeasint-std${PSEP}$IYI_PATH' is absent from cited lines"]
+R1F driver=signal violation=["C5.3-var-range",68,"signal.negative.68.path value '$WORK/neverhandled-std${PSEP}$IYI_PATH' is absent from cited lines"]
+R1F driver=signal violation=["C5.3-var-range",68,"signal.negative.68.path value '$WORK/stillignored-std${PSEP}$IYI_PATH' is absent from cited lines"]
+R1F driver=signal violation=["C5.3-var-range",68,"signal.negative.68.path value '$WORK/undropped-std${PSEP}$IYI_PATH' is absent from cited lines"]
+R1F driver=signal violation=["C5.3-var-range",68,"signal.negative.68.path value '$WORK/unignored-std${PSEP}$IYI_PATH' is absent from cited lines"]
+R1F driver=signal violation=["C5.3-var-range",68,"signal.negative.68.path value '$WORK/uninstalled-std${PSEP}$IYI_PATH' is absent from cited lines"]
+R1F driver=signal violation=["C5.3-var-range",68,"signal.negative.68.path value '$WORK/untaken-std${PSEP}$IYI_PATH' is absent from cited lines"]
+R1F driver=signal violation=["C5.7-template",68,"signal.negative.68.first_root contains forbidden shell syntax: '{WORK}/$name-std'"]
+R1F driver=signal violation=["C5.7-template",68,"signal.negative.68.output contains forbidden shell syntax: '{WORK}/$name'"]
+R1F driver=signal violation=["C5.7-template",68,"signal.negative.68.sources[0] contains forbidden shell syntax: '$EXERCISE'"]
+R1F driver=signal violation=["C5.0-schema",199,"skips[0].text is not the cited source line"]
+R1F driver=signal violation=["C5.0-schema",339,"skips[1].text is not the cited source line"]
+R1F driver=signal violation=["C5.0-schema",464,"pass_sentinel.text is not the cited source line"]
+R1F driver=smtp violations=4
+R1F driver=smtp violation=["E1-verdict-mark",60,"verdict line lacks one of ['status=1', 'return 1', 'exit']"]
+R1F driver=smtp violation=["C5.0-schema",288,"skips[0].text is not the cited source line"]
+R1F driver=smtp violation=["C5.0-schema",399,"skips[1].text is not the cited source line"]
+R1F driver=smtp violation=["C5.0-schema",499,"pass_sentinel.text is not the cited source line"]
+R1F driver=sse violations=6
+R1F driver=sse violation=["E1-verdict-mark",52,"verdict line lacks one of ['status=1', 'return 1', 'exit']"]
+R1F driver=sse violation=["C5.0-schema",182,"skips[0].text is not the cited source line"]
+R1F driver=sse violation=["C5.0-schema",264,"skips[1].text is not the cited source line"]
+R1F driver=sse violation=["C5.0-schema",362,"skips[2].text is not the cited source line"]
+R1F driver=sse violation=["C5.0-schema",479,"skips[3].text is not the cited source line"]
+R1F driver=sse violation=["C5.0-schema",562,"pass_sentinel.text is not the cited source line"]
+R1F driver=term violations=8
+R1F driver=term violation=["E1-verdict-mark",76,"verdict line lacks one of ['status=1', 'return 1', 'exit']"]
+R1F driver=term violation=["C5.0-schema",532,"skips[0].text is not the cited source line"]
+R1F driver=term violation=["C5.0-schema",543,"skips[1].text is not the cited source line"]
+R1F driver=term violation=["C5.0-schema",566,"skips[2].text is not the cited source line"]
+R1F driver=term violation=["C5.4-platform-guard",566,"platform skip is not guarded only by platform state"]
+R1F driver=term violation=["C5.0-schema",623,"skips[3].text is not the cited source line"]
+R1F driver=term violation=["C5.0-schema",627,"skips[4].text is not the cited source line"]
+R1F driver=term violation=["C5.0-schema",717,"pass_sentinel.text is not the cited source line"]
+R1F driver=tls violations=29
+R1F driver=tls violation=["E1-verdict-mark",102,"verdict line lacks one of ['status=1', 'return 1', 'exit']"]
+R1F driver=tls violation=["C5.0-schema",210,"skips[0].text is not the cited source line"]
+R1F driver=tls violation=["C5.4-platform-guard",210,"platform skip is not guarded only by platform state"]
+R1F driver=tls violation=["C5.0-schema",525,"skips[1].text is not the cited source line"]
+R1F driver=tls violation=["C5.0-schema",575,"skips[2].text is not the cited source line"]
+R1F driver=tls violation=["C5.0-schema",645,"skips[3].text is not the cited source line"]
+R1F driver=tls violation=["C5.0-schema",795,"variable 'name' has invalid keys ['defined_at', 'text', 'values']"]
+R1F driver=tls violation=["C5.3-var-range",795,"tls.positive.795.name value 'downgrade' is absent from cited lines"]
+R1F driver=tls violation=["C5.3-var-range",795,"tls.positive.795.name value 'downgrade-unchecked' is absent from cited lines"]
+R1F driver=tls violation=["C5.7-template",795,"tls.positive.795.first_root contains forbidden shell syntax: '{WORK}/$name'"]
+R1F driver=tls violation=["C5.7-template",795,"tls.positive.795.output contains forbidden shell syntax: '{WORK}/$name/tlsx'"]
+R1F driver=tls violation=["E1-missing",795,"positive site has no exec evidence"]
+R1F driver=tls violation=["C5.0-schema",838,"skips[4].text is not the cited source line"]
+R1F driver=tls violation=["C5.0-schema",1268,"skips[5].text is not the cited source line"]
+R1F driver=tls violation=["C5.0-schema",1332,"skips[6].text is not the cited source line"]
+R1F driver=tls violation=["C5.4-platform-guard",1332,"platform skip is not guarded only by platform state"]
+R1F driver=tls violation=["C5.0-schema",1716,"skips[7].text is not the cited source line"]
+R1F driver=tls violation=["C5.0-schema",1797,"skips[8].text is not the cited source line"]
+R1F driver=tls violation=["C5.0-schema",1833,"skips[9].text is not the cited source line"]
+R1F driver=tls violation=["C5.4-platform-guard",1833,"platform skip is not guarded only by platform state"]
+R1F driver=tls violation=["C5.0-schema",2079,"skips[10].text is not the cited source line"]
+R1F driver=tls violation=["C5.0-schema",2197,"skips[11].text is not the cited source line"]
+R1F driver=tls violation=["C5.0-schema",2392,"variable 'W' has invalid keys ['defined_at', 'text', 'values']"]
+R1F driver=tls violation=["C5.3-var-range",2392,"tls.negative.2392.W value '$WORK/mut-$mutations' is absent from cited lines"]
+R1F driver=tls violation=["C5.7-template",2392,"tls.negative.2392.output contains forbidden shell syntax: '$W/tlsx'"]
+R1F driver=tls violation=["C5.0-schema",3168,"skips[12].text is not the cited source line"]
+R1F driver=tls violation=["C5.0-schema",3260,"skips[13].text is not the cited source line"]
+R1F driver=tls violation=["C5.4-platform-guard",3260,"platform skip is not guarded only by platform state"]
+R1F driver=tls violation=["C5.0-schema",3433,"pass_sentinel.text is not the cited source line"]
+R1F driver=websocket violations=16
+R1F driver=websocket violation=["E1-verdict-mark",69,"verdict line lacks one of ['status=1', 'return 1', 'exit']"]
+R1F driver=websocket violation=["C5.0-schema",191,"skips[0].text is not the cited source line"]
+R1F driver=websocket violation=["C5.0-schema",335,"skips[1].text is not the cited source line"]
+R1F driver=websocket violation=["C5.0-schema",337,"skips[2].text is not the cited source line"]
+R1F driver=websocket violation=["C5.0-schema",592,"skips[3].text is not the cited source line"]
+R1F driver=websocket violation=["C5.0-schema",594,"skips[4].text is not the cited source line"]
+R1F driver=websocket violation=["C5.0-schema",640,"skips[5].text is not the cited source line"]
+R1F driver=websocket violation=["C5.0-schema",765,"skips[6].text is not the cited source line"]
+R1F driver=websocket violation=["C5.0-schema",900,"skips[7].text is not the cited source line"]
+R1F driver=websocket violation=["C5.2-duplicate-site",1053,"line claimed by ['site[3]', 'site[4]']"]
+R1F driver=websocket violation=["C5.0-schema",1067,"skips[8].text is not the cited source line"]
+R1F driver=websocket violation=["C5.4-platform-guard",1067,"platform skip is not guarded only by platform state"]
+R1F driver=websocket violation=["C5.0-schema",1077,"skips[9].text is not the cited source line"]
+R1F driver=websocket violation=["C5.0-schema",1113,"skips[10].text is not the cited source line"]
+R1F driver=websocket violation=["C5.7-template",1131,"websocket.negative.1131.output contains forbidden shell syntax: '{WORK}/mut-$mutations'"]
+R1F driver=websocket violation=["C5.0-schema",1239,"pass_sentinel.text is not the cited source line"]
+R1F driver=bzip2 violations=4
+R1F driver=bzip2 violation=["C5.0-schema",56,"skips[0].text is not the cited source line"]
+R1F driver=bzip2 violation=["E1-verdict-mark",123,"verdict line lacks one of ['status=1', 'return 1', 'exit']"]
+R1F driver=bzip2 violation=["C5.7-template",312,"bzip2.negative.312.output contains forbidden shell syntax: '{WORK}/mut-$mutations.bin'"]
+R1F driver=bzip2 violation=["C5.0-schema",371,"pass_sentinel.text is not the cited source line"]
+R1F driver=compress violations=7
+R1F driver=compress violation=["C5.0-schema",62,"skips[0].text is not the cited source line"]
+R1F driver=compress violation=["E1-verdict-mark",164,"verdict line lacks one of ['status=1', 'return 1', 'exit']"]
+R1F driver=compress violation=["E1-missing",464,"positive site has no exec evidence"]
+R1F driver=compress violation=["C5.2-duplicate-site",485,"line claimed by ['site[3]', 'site[4]']"]
+R1F driver=compress violation=["C5.0-schema",492,"skips[1].text is not the cited source line"]
+R1F driver=compress violation=["C5.7-template",546,"compress.negative.546.output contains forbidden shell syntax: '{WORK}/mut-$mutations.bin'"]
+R1F driver=compress violation=["C5.0-schema",601,"pass_sentinel.text is not the cited source line"]
+R1F driver=hpke violations=8
+R1F driver=hpke violation=["E1-verdict-mark",68,"verdict line lacks one of ['status=1', 'return 1', 'exit']"]
+R1F driver=hpke violation=["C5.0-schema",162,"skips[0].text is not the cited source line"]
+R1F driver=hpke violation=["C5.4-platform-guard",162,"platform skip is not guarded only by platform state"]
+R1F driver=hpke violation=["C5.0-schema",188,"skips[1].text is not the cited source line"]
+R1F driver=hpke violation=["C5.0-schema",217,"skips[2].text is not the cited source line"]
+R1F driver=hpke violation=["C5.0-schema",227,"skips[3].text is not the cited source line"]
+R1F driver=hpke violation=["C5.0-schema",321,"skips[4].text is not the cited source line"]
+R1F driver=hpke violation=["C5.0-schema",403,"pass_sentinel.text is not the cited source line"]
+R1F driver=math violations=11
+R1F driver=math violation=["E1-verdict-mark",58,"verdict line lacks one of ['status=1', 'return 1', 'exit']"]
+R1F driver=math violation=["C5.0-schema",485,"skips[0].text is not the cited source line"]
+R1F driver=math violation=["C5.4-unlisted-skip-line",487,"printed text is skip vocabulary: 'exp, exp2, expm1, log, log1p, log2, log10, pow, sinh, cosh and tanh against the oracle: not compared here, because there is no C compiler or no python3 to build and drive the oracle with'"]
+R1F driver=math violation=["C5.4-unlisted-skip-line",488,"printed text is skip vocabulary: 'erf, erfc, asinh, acosh, atanh, atan, asin, acos, sin, cos, tan, lgamma, tgamma, the Bessel functions, cbrt, hypot and atan2 against the oracle: not compared here, because its CORE-MATH part did not build or run'"]
+R1F driver=math violation=["E1-missing",555,"positive site has no exec evidence"]
+R1F driver=math violation=["C5.0-schema",572,"skips[1].text is not the cited source line"]
+R1F driver=math violation=["C5.0-schema",643,"skips[2].text is not the cited source line"]
+R1F driver=math violation=["C5.0-schema",698,"skips[3].text is not the cited source line"]
+R1F driver=math violation=["C5.0-schema",705,"skips[4].text is not the cited source line"]
+R1F driver=math violation=["C5.0-schema",708,"skips[5].text is not the cited source line"]
+R1F driver=math violation=["C5.0-schema",727,"pass_sentinel.text is not the cited source line"]
+R1F driver=mlkem violations=11
+R1F driver=mlkem violation=["E1-verdict-mark",67,"verdict line lacks one of ['status=1', 'return 1', 'exit']"]
+R1F driver=mlkem violation=["C5.0-schema",130,"skips[0].text is not the cited source line"]
+R1F driver=mlkem violation=["C5.0-schema",186,"skips[1].text is not the cited source line"]
+R1F driver=mlkem violation=["C5.0-schema",188,"skips[2].text is not the cited source line"]
+R1F driver=mlkem violation=["C5.4-skip-regex",188,"'\\\\ \\\\ \\\\$\\\\(\".*?\"\\\\ version\\\\ 2' does not match '  IYIVAR has no ML-KEM-768 (OpenSSL has it from 3.5), so OpenSSL goes unasked'"]
+R1F driver=mlkem violation=["C5.0-schema",312,"skips[3].text is not the cited source line"]
+R1F driver=mlkem violation=["C5.4-skip-regex",312,"'\\\\ \\\\ no\\\\ python\\\\ cryptography\\\\ with\\\\ ML\\\\-KEM\\\\ here\\\\ \\\\(\\\\$\\\\(\\\\[\\\\ \\\\-n\\\\ \".*?\"\\\\ \\\\]\\\\ \\\\&\\\\&\\\\ \".*?\"\\\\ \\\\-c\\\\ \\'import\\\\ cryptography' does not match '  no python cryptography with ML-KEM here (IYIVAR), so it goes unasked'"]
+R1F driver=mlkem violation=["C5.0-schema",375,"skips[4].text is not the cited source line"]
+R1F driver=mlkem violation=["C5.0-schema",438,"skips[5].text is not the cited source line"]
+R1F driver=mlkem violation=["C5.3-verdict-literal",452,"mlkem.negative.452 verdict lacks 'elif grep -qF \"$2\" \"$WORK/mut.out\"; then\\n    echo '"]
+R1F driver=mlkem violation=["C5.0-schema",508,"pass_sentinel.text is not the cited source line"]
+R1F driver=png violations=5
+R1F driver=png violation=["E1-verdict-mark",503,"verdict line lacks one of ['status=1', 'return 1', 'exit']"]
+R1F driver=png violation=["C5.2-duplicate-site",708,"line claimed by ['site[1]', 'site[2]']"]
+R1F driver=png violation=["C5.0-schema",715,"skips[0].text is not the cited source line"]
+R1F driver=png violation=["C5.7-template",813,"png.negative.813.output contains forbidden shell syntax: '{WORK}/mut-$mutations.bin'"]
+R1F driver=png violation=["C5.0-schema",876,"pass_sentinel.text is not the cited source line"]
+R1F driver=regex violations=12
+R1F driver=regex violation=["C5.0-schema",51,"skips[0].text is not the cited source line"]
+R1F driver=regex violation=["C5.4-platform-guard",51,"platform skip is not guarded only by platform state"]
+R1F driver=regex violation=["C5.4-unlisted-skip-line",94,"printed text is skip vocabulary: '  the oracle did not run'"]
+R1F driver=regex violation=["C5.4-unlisted-skip-line",168,"printed text is skip vocabulary: '  the groups oracle did not run'"]
+R1F driver=regex violation=["E1-verdict-mark",179,"verdict line lacks one of ['status=1', 'return 1', 'exit']"]
+R1F driver=regex violation=["C5.0-schema",221,"skips[1].text is not the cited source line"]
+R1F driver=regex violation=["C5.6-env-call-variant",231,"function 'refuses' is called with a path override at lines [416] but its invocation site is not mixed, negative or positive"]
+R1F driver=regex violation=["C5.0-schema",398,"skips[2].text is not the cited source line"]
+R1F driver=regex violation=["C5.0-schema",522,"variable 'path' has invalid keys ['defined_at', 'text', 'values']"]
+R1F driver=regex violation=["C5.3-var-range",522,"regex.negative.522.path value '$REPO/src${PSEP}$REPO/samples/iyi' is absent from cited lines"]
+R1F driver=regex violation=["C5.3-var-range",522,"regex.negative.522.path value '$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/samples/iyi' is absent from cited lines"]
+R1F driver=regex violation=["C5.0-schema",602,"pass_sentinel.text is not the cited source line"]
+R1F driver=shlex violations=4
+R1F driver=shlex violation=["E1-verdict-mark",128,"verdict line lacks one of ['status=1', 'return 1', 'exit']"]
+R1F driver=shlex violation=["C5.7-template",275,"shlex.negative.275.output contains forbidden shell syntax: '{WORK}/mut-$mutations.bin'"]
+R1F driver=shlex violation=["C5.2-duplicate-site",354,"line claimed by ['site[6]', 'site[7]']"]
+R1F driver=shlex violation=["C5.0-schema",371,"pass_sentinel.text is not the cited source line"]
+R1F driver=tar violations=3
+R1F driver=tar violation=["E1-verdict-mark",271,"verdict line lacks one of ['status=1', 'return 1', 'exit']"]
+R1F driver=tar violation=["C5.7-template",486,"tar.negative.486.output contains forbidden shell syntax: '{WORK}/mut-$mutations.bin'"]
+R1F driver=tar violation=["C5.0-schema",593,"pass_sentinel.text is not the cited source line"]
+R1F driver=xz violations=7
+R1F driver=xz violation=["C5.0-schema",48,"skips[0].text is not the cited source line"]
+R1F driver=xz violation=["C5.4-platform-guard",48,"platform skip is not guarded only by platform state"]
+R1F driver=xz violation=["C5.0-schema",52,"skips[1].text is not the cited source line"]
+R1F driver=xz violation=["C5.4-platform-guard",52,"platform skip is not guarded only by platform state"]
+R1F driver=xz violation=["E1-verdict-mark",310,"verdict line lacks one of ['status=1', 'return 1', 'exit']"]
+R1F driver=xz violation=["C5.7-template",463,"xz.negative.463.output contains forbidden shell syntax: '{WORK}/mut-$mutations.bin'"]
+R1F driver=xz violation=["C5.0-schema",549,"pass_sentinel.text is not the cited source line"]
+R1F driver=zip violations=4
+R1F driver=zip violation=["E1-verdict-mark",353,"verdict line lacks one of ['status=1', 'return 1', 'exit']"]
+R1F driver=zip violation=["C5.7-template",593,"zip.negative.593.output contains forbidden shell syntax: '{WORK}/mut-$mutations.bin'"]
+R1F driver=zip violation=["C5.2-duplicate-site",703,"line claimed by ['site[6]', 'site[7]']"]
+R1F driver=zip violation=["C5.0-schema",720,"pass_sentinel.text is not the cited source line"]
+R1F driver=zstd violations=5
+R1F driver=zstd violation=["C5.0-schema",43,"skips[0].text is not the cited source line"]
+R1F driver=zstd violation=["C5.4-platform-guard",43,"platform skip is not guarded only by platform state"]
+R1F driver=zstd violation=["E1-verdict-mark",387,"verdict line lacks one of ['status=1', 'return 1', 'exit']"]
+R1F driver=zstd violation=["C5.7-template",506,"zstd.negative.506.output contains forbidden shell syntax: '{WORK}/mut-$mutations.bin'"]
+R1F driver=zstd violation=["C5.0-schema",588,"pass_sentinel.text is not the cited source line"]
+R1F driver=file violations=56
+R1F driver=file violation=["E1-verdict-mark",71,"verdict line lacks one of ['status=1', 'return 1', 'exit']"]
+R1F driver=file violation=["C5.0-schema",143,"skips[0].text is not the cited source line"]
+R1F driver=file violation=["C5.0-schema",169,"variant variable name '$dir' is invalid"]
+R1F driver=file violation=["C5.3-var-range",169,"file.negative.169.$dir value 'follows' is absent from cited lines"]
+R1F driver=file violation=["C5.3-var-range",169,"file.negative.169.$dir value 'predictable' is absent from cited lines"]
+R1F driver=file violation=["C5.7-template",169,"file.negative.169.first_root contains forbidden shell syntax: '{WORK}/$dir'"]
+R1F driver=file violation=["C5.0-schema",184,"skips[1].text is not the cited source line"]
+R1F driver=file violation=["C5.0-schema",216,"skips[2].text is not the cited source line"]
+R1F driver=file violation=["C5.0-schema",230,"variant variable name '$2' is invalid"]
+R1F driver=file violation=["C5.3-var-range",230,"file.negative.230.$2 value 'brace_text' is absent from cited lines"]
+R1F driver=file violation=["C5.3-var-range",230,"file.negative.230.$2 value 'class_neg' is absent from cited lines"]
+R1F driver=file violation=["C5.3-var-range",230,"file.negative.230.$2 value 'dir_onto_file' is absent from cited lines"]
+R1F driver=file violation=["C5.3-var-range",230,"file.negative.230.$2 value 'no_escape' is absent from cited lines"]
+R1F driver=file violation=["C5.3-var-range",230,"file.negative.230.$2 value 'q_byte' is absent from cited lines"]
+R1F driver=file violation=["C5.3-var-range",230,"file.negative.230.$2 value 'star_sep' is absent from cited lines"]
+R1F driver=file violation=["C5.7-template",230,"file.negative.230.first_root contains forbidden shell syntax: '{WORK}/$2'"]
+R1F driver=file violation=["C5.0-schema",257,"skips[3].text is not the cited source line"]
+R1F driver=file violation=["C5.0-schema",270,"skips[4].text is not the cited source line"]
+R1F driver=file violation=["C5.0-schema",293,"skips[5].text is not the cited source line"]
+R1F driver=file violation=["C5.0-schema",336,"skips[6].text is not the cited source line"]
+R1F driver=file violation=["C5.4-platform-guard",336,"platform skip is not guarded only by platform state"]
+R1F driver=file violation=["C5.0-schema",364,"skips[7].text is not the cited source line"]
+R1F driver=file violation=["C5.0-schema",420,"skips[8].text is not the cited source line"]
+R1F driver=file violation=["C5.0-schema",428,"variant variable name '$2' is invalid"]
+R1F driver=file violation=["C5.3-var-range",428,"file.negative.428.$2 value 'aplus_noread' is absent from cited lines"]
+R1F driver=file violation=["C5.3-var-range",428,"file.negative.428.$2 value 'append_seek' is absent from cited lines"]
+R1F driver=file violation=["C5.3-var-range",428,"file.negative.428.$2 value 'exists_read' is absent from cited lines"]
+R1F driver=file violation=["C5.3-var-range",428,"file.negative.428.$2 value 'lock_block' is absent from cited lines"]
+R1F driver=file violation=["C5.3-var-range",428,"file.negative.428.$2 value 'lock_contention' is absent from cited lines"]
+R1F driver=file violation=["C5.3-var-range",428,"file.negative.428.$2 value 'lock_kept' is absent from cited lines"]
+R1F driver=file violation=["C5.3-var-range",428,"file.negative.428.$2 value 'lock_nowait' is absent from cited lines"]
+R1F driver=file violation=["C5.3-var-range",428,"file.negative.428.$2 value 'lone_cr' is absent from cited lines"]
+R1F driver=file violation=["C5.3-var-range",428,"file.negative.428.$2 value 'no_append' is absent from cited lines"]
+R1F driver=file violation=["C5.3-var-range",428,"file.negative.428.$2 value 'perm_dropped' is absent from cited lines"]
+R1F driver=file violation=["C5.3-var-range",428,"file.negative.428.$2 value 'rplus_trunc' is absent from cited lines"]
+R1F driver=file violation=["C5.3-var-range",428,"file.negative.428.$2 value 'touch_unread' is absent from cited lines"]
+R1F driver=file violation=["C5.3-var-range",428,"file.negative.428.$2 value 'wplus_keep' is absent from cited lines"]
+R1F driver=file violation=["C5.7-template",428,"file.negative.428.first_root contains forbidden shell syntax: '{WORK}/$2'"]
+R1F driver=file violation=["C5.4-skip-regex",525,"'printf\\\\ \\'x\\'\\\\ >\\\\ \".*?/unreadable_probe\"' does not match 'x'"]
+R1F driver=file violation=["C5.0-schema",529,"skips[10].text is not the cited source line"]
+R1F driver=file violation=["C5.0-schema",619,"skips[11].text is not the cited source line"]
+R1F driver=file violation=["C5.0-schema",628,"variant variable name '$2' is invalid"]
+R1F driver=file violation=["C5.3-var-range",628,"file.positive.628.$2 value 'nul_cut' is absent from cited lines"]
+R1F driver=file violation=["C5.3-var-range",628,"file.positive.628.$2 value 'realpath_through' is absent from cited lines"]
+R1F driver=file violation=["C5.7-template",628,"file.positive.628.first_root contains forbidden shell syntax: '{WORK}/$2'"]
+R1F driver=file violation=["C5.7-template",628,"file.positive.628.output contains forbidden shell syntax: '{WORK}/$2-prog'"]
+R1F driver=file violation=["C5.7-template",628,"file.positive.628.sources[0] contains forbidden shell syntax: '{WORK}/$2-prog.iyi'"]
+R1F driver=file violation=["E1-missing",628,"positive site has no exec evidence"]
+R1F driver=file violation=["C5.0-schema",662,"skips[12].text is not the cited source line"]
+R1F driver=file violation=["C5.0-schema",708,"skips[13].text is not the cited source line"]
+R1F driver=file violation=["C5.4-platform-guard",708,"platform skip is not guarded only by platform state"]
+R1F driver=file violation=["C5.0-schema",780,"skips[14].text is not the cited source line"]
+R1F driver=file violation=["C5.0-schema",848,"skips[15].text is not the cited source line"]
+R1F driver=file violation=["C5.0-schema",877,"skips[16].text is not the cited source line"]
+R1F driver=file violation=["C5.0-schema",909,"skips[17].text is not the cited source line"]
+R1F driver=file violation=["C5.0-schema",934,"pass_sentinel.text is not the cited source line"]
+R1F driver=file_utils violations=24
+R1F driver=file_utils violation=["E1-verdict-mark",88,"verdict line lacks one of ['status=1', 'return 1', 'exit']"]
+R1F driver=file_utils violation=["C5.0-schema",163,"skips[0].text is not the cited source line"]
+R1F driver=file_utils violation=["C5.0-schema",367,"skips[1].text is not the cited source line"]
+R1F driver=file_utils violation=["C5.0-schema",372,"skips[2].text is not the cited source line"]
+R1F driver=file_utils violation=["C5.4-platform-guard",372,"platform skip is not guarded only by platform state"]
+R1F driver=file_utils violation=["C5.0-schema",410,"skips[3].text is not the cited source line"]
+R1F driver=file_utils violation=["C5.0-schema",428,"variable 'dir' has invalid keys ['defined_at', 'text', 'values']"]
+R1F driver=file_utils violation=["C5.3-var-range",428,"file_utils.negative.428.dir value '$WORK/patched1' is absent from cited lines"]
+R1F driver=file_utils violation=["C5.3-var-range",428,"file_utils.negative.428.dir value '$WORK/patched10' is absent from cited lines"]
+R1F driver=file_utils violation=["C5.3-var-range",428,"file_utils.negative.428.dir value '$WORK/patched11' is absent from cited lines"]
+R1F driver=file_utils violation=["C5.3-var-range",428,"file_utils.negative.428.dir value '$WORK/patched2' is absent from cited lines"]
+R1F driver=file_utils violation=["C5.3-var-range",428,"file_utils.negative.428.dir value '$WORK/patched3' is absent from cited lines"]
+R1F driver=file_utils violation=["C5.3-var-range",428,"file_utils.negative.428.dir value '$WORK/patched4' is absent from cited lines"]
+R1F driver=file_utils violation=["C5.3-var-range",428,"file_utils.negative.428.dir value '$WORK/patched5' is absent from cited lines"]
+R1F driver=file_utils violation=["C5.3-var-range",428,"file_utils.negative.428.dir value '$WORK/patched6' is absent from cited lines"]
+R1F driver=file_utils violation=["C5.3-var-range",428,"file_utils.negative.428.dir value '$WORK/patched7' is absent from cited lines"]
+R1F driver=file_utils violation=["C5.3-var-range",428,"file_utils.negative.428.dir value '$WORK/patched8' is absent from cited lines"]
+R1F driver=file_utils violation=["C5.3-var-range",428,"file_utils.negative.428.dir value '$WORK/patched9' is absent from cited lines"]
+R1F driver=file_utils violation=["C5.7-template",428,"file_utils.negative.428.first_root contains forbidden shell syntax: '$dir'"]
+R1F driver=file_utils violation=["C5.7-template",428,"file_utils.negative.428.output contains forbidden shell syntax: '$dir/program'"]
+R1F driver=file_utils violation=["C5.0-schema",463,"skips[4].text is not the cited source line"]
+R1F driver=file_utils violation=["C5.0-schema",498,"skips[5].text is not the cited source line"]
+R1F driver=file_utils violation=["C5.0-schema",504,"skips[6].text is not the cited source line"]
+R1F driver=file_utils violation=["C5.0-schema",520,"pass_sentinel.text is not the cited source line"]
+R1F driver=fuzz violations=14
+R1F driver=fuzz violation=["E1-exec-token",69,"site line is not a declared build with exact -o '\"$WORK/$name\"'"]
+R1F driver=fuzz violation=["E1-missing",69,"no canonical-own or mixed own-exercise site has exec evidence"]
+R1F driver=fuzz violation=["E1-exec-token",73,"expected '\"$WORK/$name\"' after site line 69"]
+R1F driver=fuzz violation=["E1-verdict-mark",74,"verdict line lacks one of ['status=1', 'return 1', 'exit']"]
+R1F driver=fuzz violation=["E1-verdict-mark",75,"verdict line lacks one of ['status=1', 'return 1', 'exit']"]
+R1F driver=fuzz violation=["C5.0-schema",95,"skips[0].text is not the cited source line"]
+R1F driver=fuzz violation=["C5.0-schema",161,"skips[1].text is not the cited source line"]
+R1F driver=fuzz violation=["C5.0-schema",241,"skips[2].text is not the cited source line"]
+R1F driver=fuzz violation=["C5.0-schema",257,"variant variable name '$name' is invalid"]
+R1F driver=fuzz violation=["C5.3-var-range",257,"fuzz.negative.257.$name value 'undo1' is absent from cited lines"]
+R1F driver=fuzz violation=["C5.3-var-range",257,"fuzz.negative.257.$name value 'undo2' is absent from cited lines"]
+R1F driver=fuzz violation=["C5.7-template",257,"fuzz.negative.257.first_root contains forbidden shell syntax: '{WORK}/$name'"]
+R1F driver=fuzz violation=["C5.7-template",257,"fuzz.negative.257.output contains forbidden shell syntax: '{WORK}/$name.bin'"]
+R1F driver=fuzz violation=["C5.0-schema",285,"pass_sentinel.text is not the cited source line"]
+SEED s2.seed.regression-1f expect={"drivers":["acme","autocert","cookie","dns","fileserver","http","router","secure_dns","signal","smtp","sse","term","tls","websocket","bzip2","compress","hpke","math","mlkem","png","regex","shlex","tar","xz","zip","zstd","file","file_utils","fuzz"],"frozen_sha_mismatch":[],"missing":[]} got={"drivers":["acme","autocert","cookie","dns","fileserver","http","router","secure_dns","signal","smtp","sse","term","tls","websocket","bzip2","compress","hpke","math","mlkem","png","regex","shlex","tar","xz","zip","zstd","file","file_utils","fuzz"],"frozen_sha_mismatch":[],"missing":[]} applied="git-show-ref=1f292c3424a8185d05a87d3dc82f73549dfe4878;drivers=29;violations=548;frozen_shas=acme:c49aba5f311e14bb4571add9305c8ebf120c2483a1f47c12a9183743e61f0e87,autocert:b8ae4a1cb1d7809fc748f31f64479d4144d8b92f16bf30a2a4a54e9775cb57bc,cookie:04278d4e0c04a05fb62002f7f66e991a6326bff6a3315fbaeb40ca803b1332cd,dns:f8043474d2956e23659ad463fb03ff130e14b68aa82ea73cdcc7efb020c79672,fileserver:139f4f3bc4a6972e83082030a6f4c0860ef8977f888895455f78846f7f9799c5,http:16574ff3f49e871146ae059bb0cf763efac6d30da9a4eafea3aba2eadfcefd6d,router:067bec8e64b34f2e5058fa17b81916cc849d79773b813c98e5f890277cf57d8e,secure_dns:ef64095c116dd4d49b8c99e554af05845df37b76ce625fcf3ae32b32af24f7ef,signal:5fb39a00d248357f9eead2fac6e80ee7c426713dd75c3ffaa21436d2a75e5e5d,smtp:6cbc1ad57d7340624cc0087909e324bf776f9313a124f42a6de4ae8fefa28773,sse:d08eadfb384a4480f32e4ef33370385e3e141fd6635a6cd70982e80216c92692,term:eb3cbe0ad09171b3359f2001c749c7c233563efe58907abf688cfe2c5ba1cd7a,tls:531b960001fd6442193548b9ede6580d90553c0b8a54bd4679aeaa772ea97cde,websocket:c866cb64a7b327edb285f393972cdc31c92d8e4238878aa70b84821c47fca12c,bzip2:5cdaea44d8b3d27d4e0b51e6568a00fd1be4b7a2c4d4229599aac6a0535cb306,compress:2534dc7e8f22826a3c379ca78349e526848efaa22ffb6fa9606d26de7cd3a26e,hpke:8bb0bb3a15f77d0c42c0130bfdf54a8312c6d6b32549dfa218f76ed50632fc8c,math:b45cf3a8be719f5a1ee3639edd65d4e9bca20603e433d3902ba9423663da667d,mlkem:7c669c707e3dd5b40689422b27e36282c8d34549a1a963cea09ad7400eeb25ef,png:5efcd5fa34cf2150cb69b1f2d79d7d480e0facd74658e075e18506a4a91be91c,regex:fd36adcb44b5bb37b94f1f03b8806855b8651c8eba1a6768e225c8b7faca0823,shlex:1077e7747645cd445d0fab1ffd25e1808b425e12a209244b08d860498e484651,tar:df592802609922641bbd5c034903739cd07fb873eb774b4d5039cafd2c593ace,xz:87c056c836b6e171b0188451ca3760855e5df1566607d9e244ceb7ac530698a7,zip:e9fff48643f5977fb76d13157df36fe9c72133f3a3f5c75301e7370f3a46e15d,zstd:c033cd7067706bb1fb425dfa80c6c1bb44870e33069a2a0e7c55c6697e437c1f,file:ce307c64f1ccc50726534859fb77e50830d4f6374053df1f412963746113d93d,file_utils:621560380ae5b9b62b8332bb5cf713ed07c2c97f57a0bc7e16dc4f19159caa42,fuzz:2434d65d8da61be928890ad95788130dec20b6003b1b58efe8069c17486bfb0b"
+CONTROL s2.control.census-all PASS
+CONTROL s2.control.e1-shared-token PASS
+CONTROL s2.control.validator-print-capture PASS
+CONTROL s2.control.validator-print-case-arm PASS
+CONTROL s2.control.validator-print-quoted-punct PASS
+CONTROL s2.control.validator-build-site-aux PASS
+SEED o4.seed.main-usage-refusal expect={"returncode":125,"stdout":"","usage":true} got={"returncode":125,"stdout":"","usage":true} applied="subprocess omitted --config and compiler argv"
+SEED s2.seed.matcher-negative-noquestion expect={"bindings":{"negative.one":{"dir":"noquestion"}},"ids":["negative.one"],"kind":"negative","status":"matched"} got={"bindings":{"negative.one":{"dir":"noquestion"}},"ids":["negative.one"],"kind":"negative","status":"matched"} applied="case=negative-noquestion;root=/private/tmp/iyi-o4-ngf29mep/t/driver-work/noquestion;sources=[\"/private/tmp/iyi-o4-ngf29mep/repo/bench/std_demo_exercise.iyi\"]"
+SEED s2.seed.matcher-unknown-dir expect={"bindings":{},"ids":[],"kind":null,"status":"unclassified"} got={"bindings":{},"ids":[],"kind":null,"status":"unclassified"} applied="case=unknown-dir;root=/private/tmp/iyi-o4-rbhjl9ih/t/driver-work/unknown;sources=[\"/private/tmp/iyi-o4-rbhjl9ih/repo/bench/std_demo_exercise.iyi\"]"
+SEED s2.seed.matcher-outside-attempt expect={"bindings":{},"ids":[],"kind":null,"status":"unclassified"} got={"bindings":{},"ids":[],"kind":null,"status":"unclassified"} applied="case=outside-attempt;root=/private/tmp/iyi-o4-k_b_vnu5/outside/noquestion;sources=[\"/private/tmp/iyi-o4-k_b_vnu5/repo/bench/std_demo_exercise.iyi\"]"
+SEED s2.seed.matcher-copied-exercise expect={"bindings":{},"ids":[],"kind":null,"status":"unclassified"} got={"bindings":{},"ids":[],"kind":null,"status":"unclassified"} applied="case=copied-exercise;root=/private/tmp/iyi-o4-12kwbk4g/t/driver-work/noquestion;sources=[\"/private/tmp/iyi-o4-12kwbk4g/copy/std_demo_exercise.iyi\"]"
+SEED s2.seed.matcher-two-same-kind expect={"bindings":{"negative.one":{"dir":"noquestion"},"negative.two":{"dir":"noquestion"}},"ids":["negative.one","negative.two"],"kind":"negative","status":"matched"} got={"bindings":{"negative.one":{"dir":"noquestion"},"negative.two":{"dir":"noquestion"}},"ids":["negative.one","negative.two"],"kind":"negative","status":"matched"} applied="case=two-same-kind;root=/private/tmp/iyi-o4-f4m90xmv/t/driver-work/noquestion;sources=[\"/private/tmp/iyi-o4-f4m90xmv/repo/bench/std_demo_exercise.iyi\"]"
+SEED s2.seed.matcher-conflicting-kinds expect={"bindings":{"negative.one":{"dir":"noquestion"},"positive.two":{"dir":"noquestion"}},"ids":["negative.one","positive.two"],"kind":null,"status":"ambiguous"} got={"bindings":{"negative.one":{"dir":"noquestion"},"positive.two":{"dir":"noquestion"}},"ids":["negative.one","positive.two"],"kind":null,"status":"ambiguous"} applied="case=conflicting-kinds;root=/private/tmp/iyi-o4-2c_hb7gy/t/driver-work/noquestion;sources=[\"/private/tmp/iyi-o4-2c_hb7gy/repo/bench/std_demo_exercise.iyi\"]"
+SEED s2.seed.matcher-variable-root expect={"bindings":{"negative.variable":{"dir":"noquestion","driver":"demo"}},"ids":["negative.variable"],"kind":"negative","status":"matched"} got={"bindings":{"negative.variable":{"dir":"noquestion","driver":"demo"}},"ids":["negative.variable"],"kind":"negative","status":"matched"} applied="case=variable-root;root=/private/tmp/iyi-o4-jpccqcwi/t/driver-work/noquestion;sources=[\"/private/tmp/iyi-o4-jpccqcwi/repo/bench/std_demo_exercise.iyi\"]"
+CONTROL s2.control.matcher-canonical PASS
+SEED s3.seed.canonical-argv-drift expect={"consumer_argv":["build","-Diyi_observe","--use-iyimod","<MODS>","-o","/private/tmp/iyi-o4-gowgyzmb/canonical-out","/private/tmp/iyi-o4-gowgyzmb/repo/bench/std_demo_exercise.iyi"],"consumer_saw_old_out":false,"exact_only_documented_insertions":true,"paired":true,"producer_argv":["build","-Diyi_observe","--emit-iyimod","<MODS>","-o","/private/tmp/iyi-o4-gowgyzmb/canonical-out","/private/tmp/iyi-o4-gowgyzmb/repo/bench/std_demo_exercise.iyi"],"rc":0,"same_mods":true} got={"consumer_argv":["build","-Diyi_observe","--use-iyimod","<MODS>","-o","/private/tmp/iyi-o4-gowgyzmb/canonical-out","/private/tmp/iyi-o4-gowgyzmb/repo/bench/std_demo_exercise.iyi"],"consumer_saw_old_out":false,"exact_only_documented_insertions":true,"paired":true,"producer_argv":["build","-Diyi_observe","--emit-iyimod","<MODS>","-o","/private/tmp/iyi-o4-gowgyzmb/canonical-out","/private/tmp/iyi-o4-gowgyzmb/repo/bench/std_demo_exercise.iyi"],"rc":0,"same_mods":true} applied="canonical argv checked token-for-token around emit/use insertion"
+CONTROL s3.control.canonical-build PASS
+SEED s3.seed.b-prefix-misparsed expect={"command_words":["b","b"],"rc":0} got={"command_words":["b","b"],"rc":0} applied="command_word=b"
+SEED s3.seed.run-temp-path expect={"deleted":true,"name_ok":true,"rc":0,"run_args":[]} got={"deleted":true,"name_ok":true,"rc":0,"run_args":[]} applied="run-case=temp-path;stdin_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+SEED s3.seed.run-argv-or-rc expect={"ledger_rc":3,"ledger_signal":null,"program_args":["alpha","two words"],"rc":3} got={"ledger_rc":3,"ledger_signal":null,"program_args":["alpha","two words"],"rc":3} applied="run-case=argv-or-rc;stdin_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+SEED s3.seed.run-consumer-failure expect={"consumer_rc":72,"program_calls":0,"rc":72,"run":null} got={"consumer_rc":72,"program_calls":0,"rc":72,"run":null} applied="run consumer has FAKE_REAL_FAIL=consumer"
+SEED s3.seed.run-o-executes expect={"out_exists":true,"program_calls":0,"rc":0,"run_record":null} got={"out_exists":true,"program_calls":0,"rc":0,"run_record":null} applied="run-case=run-o;stdin_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+CONTROL s3.control.run PASS
+CONTROL s3.control.run-o PASS
+SEED s3.seed.stdin-to-build expect={"build_stdin":[[0,"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"],[0,"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"]],"program_stdin":[31,"422f39b5c863d8fba67c8c25861146517d947745b8a11788f5a64ef75ad0f72c"],"rc":0} got={"build_stdin":[[0,"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"],[0,"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"]],"program_stdin":[31,"422f39b5c863d8fba67c8c25861146517d947745b8a11788f5a64ef75ad0f72c"],"rc":0} applied="run-case=stdin;stdin_sha256=422f39b5c863d8fba67c8c25861146517d947745b8a11788f5a64ef75ad0f72c"
+CONTROL s3.control.stdin PASS
+SEED s3.seed.producer-failure expect={"consumer_calls":0,"consumer_record":null,"rc":71,"stderr":"fake producer stderr\n","stdout":"fake producer stdout\n"} got={"consumer_calls":0,"consumer_record":null,"rc":71,"stderr":"fake producer stderr\n","stdout":"fake producer stdout\n"} applied="FAKE_REAL_FAIL=producer"
+SEED s3.seed.consumer-failure expect={"control_rc":0,"failure_rc":72,"statuses":["DIVERGENCE"],"stderr_captured":true} got={"control_rc":0,"failure_rc":72,"statuses":["DIVERGENCE"],"stderr_captured":true} applied="second canonical-other consumer has FAKE_REAL_FAIL=consumer"
+SEED s3.seed.zero-modules expect={"death_sentence":null,"rc":0,"run_signal":null,"statuses":["NOT-ROUNDTRIPPED"]} got={"death_sentence":null,"rc":0,"run_signal":null,"statuses":["NOT-ROUNDTRIPPED"]} applied="FAKE_REAL_ZERO_MODS=1"
+SEED s3.seed.passthrough-mutated expect={"argv":["build","-Diyi_observe","--emit-iyimod","/private/tmp/iyi-o4-zvotbqs2/external-mods","-o","/private/tmp/iyi-o4-zvotbqs2/exec-out","/private/tmp/iyi-o4-zvotbqs2/repo/bench/std_demo_exercise.iyi"],"is_plan":true,"mode":"passthrough","unchanged":[{"argv":["doc","/private/tmp/iyi-o4-zvotbqs2/repo/bench/std_demo_exercise.iyi"],"is_plan":true,"mode":"unchanged"},{"argv":["fmt","/private/tmp/iyi-o4-zvotbqs2/repo/bench/std_demo_exercise.iyi"],"is_plan":true,"mode":"unchanged"},{"argv":["env","IYI_PATH"],"is_plan":true,"mode":"unchanged"},{"argv":["build","--no-codegen","/private/tmp/iyi-o4-zvotbqs2/repo/bench/std_demo_exercise.iyi"],"is_plan":true,"mode":"unchanged"}]} got={"argv":["build","-Diyi_observe","--emit-iyimod","/private/tmp/iyi-o4-zvotbqs2/external-mods","-o","/private/tmp/iyi-o4-zvotbqs2/exec-out","/private/tmp/iyi-o4-zvotbqs2/repo/bench/std_demo_exercise.iyi"],"is_plan":true,"mode":"passthrough","unchanged":[{"argv":["doc","/private/tmp/iyi-o4-zvotbqs2/repo/bench/std_demo_exercise.iyi"],"is_plan":true,"mode":"unchanged"},{"argv":["fmt","/private/tmp/iyi-o4-zvotbqs2/repo/bench/std_demo_exercise.iyi"],"is_plan":true,"mode":"unchanged"},{"argv":["env","IYI_PATH"],"is_plan":true,"mode":"unchanged"},{"argv":["build","--no-codegen","/private/tmp/iyi-o4-zvotbqs2/repo/bench/std_demo_exercise.iyi"],"is_plan":true,"mode":"unchanged"}]} applied="exec-mode-case=passthrough"
+CONTROL s3.control.passthrough PASS
+SEED s3.seed.observe-duplicate expect={"argv":["build","-Diyi_observe","-o","/private/tmp/iyi-o4-imi2sk8p/exec-out","/private/tmp/iyi-o4-imi2sk8p/repo/bench/std_demo_exercise.iyi"],"is_plan":true,"mode":"observed-negative"} got={"argv":["build","-Diyi_observe","-o","/private/tmp/iyi-o4-imi2sk8p/exec-out","/private/tmp/iyi-o4-imi2sk8p/repo/bench/std_demo_exercise.iyi"],"is_plan":true,"mode":"observed-negative"} applied="exec-mode-case=observe-duplicate"
+SEED s3.seed.negative-roundtripped expect={"argv":["build","-Diyi_observe","-o","/private/tmp/iyi-o4-xpqnij78/exec-out","/private/tmp/iyi-o4-xpqnij78/repo/bench/std_demo_exercise.iyi"],"is_plan":true,"mode":"observed-negative"} got={"argv":["build","-Diyi_observe","-o","/private/tmp/iyi-o4-xpqnij78/exec-out","/private/tmp/iyi-o4-xpqnij78/repo/bench/std_demo_exercise.iyi"],"is_plan":true,"mode":"observed-negative"} applied="exec-mode-case=negative"
+CONTROL s3.control.observed-negative PASS
+SEED s3.seed.positive-not-roundtripped expect={"consumer_rc":0,"producer_rc":0,"rc":0,"variant_ids":["demo.positive"],"variant_kind":"positive"} got={"consumer_rc":0,"producer_rc":0,"rc":0,"variant_ids":["demo.positive"],"variant_kind":"positive"} applied="IYI_PATH selects census positive root"
+CONTROL s3.control.positive PASS
+SEED s3.seed.unknown-patched-root expect={"compiler_calls":0,"rc":125,"recorded":1,"refused":true} got={"compiler_calls":0,"rc":125,"recorded":1,"refused":true} applied="unknown_root=/private/tmp/iyi-o4-vvo7s1ju/t/driver-work/unknown"
+SEED s3.seed.relative-root-unresolved expect={"canonical":true,"first_noncanonical_root":null,"rc":0} got={"canonical":true,"first_noncanonical_root":null,"rc":0} applied="root-case=relative"
+CONTROL s3.control.empty-root PASS
+CONTROL s3.control.relative-root PASS
+SEED s3.seed.run-signal-death expect={"death_sentence":"iyi: the program was killed by signal 9 (received and didn't handle signal KILL (9))\n","rc":1,"run_signal":9,"statuses":["UNFAITHFUL"]} got={"death_sentence":"iyi: the program was killed by signal 9 (received and didn't handle signal KILL (9))\n","rc":1,"run_signal":9,"statuses":["UNFAITHFUL"]} applied="FAKE_PROGRAM_RC=-9"
+SEED s3.seed.sigterm-not-forwarded expect={"program_started":true,"rc":1,"run_signal":15} got={"program_started":true,"rc":1,"run_signal":15} applied="SIGTERM sent to shim while fake program was sleeping"
+SEED s3.seed.implicit-file expect={"exit":125,"mode":"refused","rc":125,"records":1,"refused_marker":true} got={"exit":125,"mode":"refused","rc":125,"records":1,"refused_marker":true} applied="unsupported-form=implicit-file"
+SEED s3.seed.run-sandbox expect={"exit":125,"mode":"refused","rc":125,"records":1,"refused_marker":true} got={"exit":125,"mode":"refused","rc":125,"records":1,"refused_marker":true} applied="unsupported-form=run-sandbox"
+SEED s3.seed.stdin-filename expect={"exit":125,"mode":"refused","rc":125,"records":1,"refused_marker":true} got={"exit":125,"mode":"refused","rc":125,"records":1,"refused_marker":true} applied="unsupported-form=stdin-filename"
+SEED s3.seed.unknown-option expect={"exit":125,"mode":"refused","rc":125,"records":1,"refused_marker":true} got={"exit":125,"mode":"refused","rc":125,"records":1,"refused_marker":true} applied="unsupported-form=unknown-option"
+SEED s3.seed.cross-compile-roundtripped expect={"argv":["run","--cross-compile","/private/tmp/iyi-o4-lmpd3b38/repo/bench/std_demo_exercise.iyi"],"is_plan":true,"mode":"unchanged"} got={"argv":["run","--cross-compile","/private/tmp/iyi-o4-lmpd3b38/repo/bench/std_demo_exercise.iyi"],"is_plan":true,"mode":"unchanged"} applied="exec-mode-case=cross-compile"
+SEED s3.seed.roots-not-from-real expect={"ambient_has_path":false,"rc":125,"root":"/private/tmp/iyi-o4-k14hffq7/fake/default-root"} got={"ambient_has_path":false,"rc":125,"root":"/private/tmp/iyi-o4-k14hffq7/fake/default-root"} applied="ambient IYI_PATH absent while REAL env returns its default root"
+SEED s3.seed.option-value-as-source expect={"rc":0,"sources":["/private/tmp/iyi-o4-8z6yiatg/repo/bench/std_demo_exercise.iyi"]} got={"rc":0,"sources":["/private/tmp/iyi-o4-8z6yiatg/repo/bench/std_demo_exercise.iyi"]} applied="--prelude value=/private/tmp/iyi-o4-8z6yiatg/prelude.iyi"
+SEED s3.seed.missing-ledger expect={"final_lines":null,"marker":true,"original_lines":null,"rc":125} got={"final_lines":null,"marker":true,"original_lines":null,"rc":125} applied="header-case=missing"
+SEED s3.seed.wrong-nonce expect={"final_lines":1,"marker":true,"original_lines":1,"rc":125} got={"final_lines":1,"marker":true,"original_lines":1,"rc":125} applied="header-case=nonce"
+SEED s3.seed.refusal-not-recorded expect={"exit":125,"mode":"refused","rc":125,"records":1,"refused_marker":true} got={"exit":125,"mode":"refused","rc":125,"records":1,"refused_marker":true} applied="unsupported-form=refusal-recorded"
+CONTROL s3.control.refusal PASS
+SEED s3.seed.parallel-ledger-corruption expect={"json_lines":9,"record_lines":8,"returncodes":[0,0,0,0,0,0,0,0],"unique_invocations":8} got={"json_lines":9,"record_lines":8,"returncodes":[0,0,0,0,0,0,0,0],"unique_invocations":8} applied="parallel_processes=8"
+CONTROL s3.control.parallel-ledger PASS
+SEED amend-a.seed.negative-env-mutated expect={"argv":["build","-Diyi_observe","-o","/private/tmp/iyi-o4-me0vzwpi/amend-negative","/private/tmp/iyi-o4-me0vzwpi/repo/bench/std_demo_exercise.iyi"],"rc":0,"variables":{"FOO":"1","IYI_CACHE_DIR":"/private/tmp/iyi-o4-me0vzwpi/driver-cache","IYI_OPTS":"-Dsmoke","IYI_PATH":"/private/tmp/iyi-o4-me0vzwpi/t/driver-work/negative","TMPDIR":"/private/tmp/iyi-o4-me0vzwpi/driver-tmp"}} got={"argv":["build","-Diyi_observe","-o","/private/tmp/iyi-o4-me0vzwpi/amend-negative","/private/tmp/iyi-o4-me0vzwpi/repo/bench/std_demo_exercise.iyi"],"rc":0,"variables":{"FOO":"1","IYI_CACHE_DIR":"/private/tmp/iyi-o4-me0vzwpi/driver-cache","IYI_OPTS":"-Dsmoke","IYI_PATH":"/private/tmp/iyi-o4-me0vzwpi/t/driver-work/negative","TMPDIR":"/private/tmp/iyi-o4-me0vzwpi/driver-tmp"}} applied="environment-preservation-case=negative"
+CONTROL amend-a.control.negative-env PASS
+SEED amend-a.seed.positive-env-mutated expect={"argv":[["build","-Diyi_observe","--emit-iyimod","<MODS>","-o","/private/tmp/iyi-o4-whoasnr4/amend-positive","/private/tmp/iyi-o4-whoasnr4/repo/bench/std_demo_exercise.iyi"],["build","-Diyi_observe","--use-iyimod","<MODS>","-o","/private/tmp/iyi-o4-whoasnr4/amend-positive","/private/tmp/iyi-o4-whoasnr4/repo/bench/std_demo_exercise.iyi"]],"rc":0,"same_mods":true,"variables":[{"FOO":"1","IYI_CACHE_DIR":"/private/tmp/iyi-o4-whoasnr4/driver-cache","IYI_OPTS":"-Dsmoke","IYI_PATH":"/private/tmp/iyi-o4-whoasnr4/t/driver-work/positive","TMPDIR":"/private/tmp/iyi-o4-whoasnr4/driver-tmp"},{"FOO":"1","IYI_CACHE_DIR":"/private/tmp/iyi-o4-whoasnr4/driver-cache","IYI_OPTS":"-Dsmoke","IYI_PATH":"/private/tmp/iyi-o4-whoasnr4/t/driver-work/positive","TMPDIR":"/private/tmp/iyi-o4-whoasnr4/driver-tmp"}]} got={"argv":[["build","-Diyi_observe","--emit-iyimod","<MODS>","-o","/private/tmp/iyi-o4-whoasnr4/amend-positive","/private/tmp/iyi-o4-whoasnr4/repo/bench/std_demo_exercise.iyi"],["build","-Diyi_observe","--use-iyimod","<MODS>","-o","/private/tmp/iyi-o4-whoasnr4/amend-positive","/private/tmp/iyi-o4-whoasnr4/repo/bench/std_demo_exercise.iyi"]],"rc":0,"same_mods":true,"variables":[{"FOO":"1","IYI_CACHE_DIR":"/private/tmp/iyi-o4-whoasnr4/driver-cache","IYI_OPTS":"-Dsmoke","IYI_PATH":"/private/tmp/iyi-o4-whoasnr4/t/driver-work/positive","TMPDIR":"/private/tmp/iyi-o4-whoasnr4/driver-tmp"},{"FOO":"1","IYI_CACHE_DIR":"/private/tmp/iyi-o4-whoasnr4/driver-cache","IYI_OPTS":"-Dsmoke","IYI_PATH":"/private/tmp/iyi-o4-whoasnr4/t/driver-work/positive","TMPDIR":"/private/tmp/iyi-o4-whoasnr4/driver-tmp"}]} applied="environment-preservation-case=positive"
+CONTROL amend-a.control.positive-env PASS
+SEED amend-a.seed.run-env-mutated expect={"argv":["one","two"],"rc":0,"shim_artifacts":[],"tmpdir":"/private/tmp/iyi-o4-ff60ojff/driver-tmp"} got={"argv":["one","two"],"rc":0,"shim_artifacts":[],"tmpdir":"/private/tmp/iyi-o4-ff60ojff/driver-tmp"} applied="environment-preservation-case=run"
+CONTROL amend-a.control.run-env PASS
+SEED amend-a.seed.opts-scrubbed expect={"argv":["build","-o","/private/tmp/iyi-o4-50kvau2z/amend-opts","/private/tmp/iyi-o4-50kvau2z/repo/bench/std_demo_exercise.iyi"],"mode":"unchanged","opts":"--no-codegen","rc":0} got={"argv":["build","-o","/private/tmp/iyi-o4-50kvau2z/amend-opts","/private/tmp/iyi-o4-50kvau2z/repo/bench/std_demo_exercise.iyi"],"mode":"unchanged","opts":"--no-codegen","rc":0} applied="environment-preservation-case=opts"
+CONTROL amend-a.control.opts-unchanged PASS
+SEED amend-a.seed.drop-cache expect={"bytes_differ":true,"cache_present":false,"rc":0,"replacements":1} got={"bytes_differ":true,"cache_present":false,"rc":0,"replacements":1} applied="control_sha256=9035f5f8cc7926ee66ebc1c4decc0dc5184261b862ca7008df55789fbce811f7;mutant_sha256=8e4110655c251bde553282ca95e7ec03e6af582358292bccf95eed6d6a6c8a7f;replacements=1;mutant_executed=True"
+SEED o4.seed.config-header-refusals expect=["header-attempt","header-chain","header-driver","header-empty","header-json","header-key-shape","header-nonce","header-shape","header-version","key-set","non-string","nonce","nonreal-repo","nonreal-root","not-object","platform-nonreal","platform-type","relative-ledger","roots-item","roots-scalar","run-shim-config","unreadable-json"] got=["header-attempt","header-chain","header-driver","header-empty","header-json","header-key-shape","header-nonce","header-shape","header-version","key-set","non-string","nonce","nonreal-repo","nonreal-root","not-object","platform-nonreal","platform-type","relative-ledger","roots-item","roots-scalar","run-shim-config","unreadable-json"] applied="unreadable-json:021fb596db81e6d02bf3d2586ee3981fe519f275c0ac9ca76bbcf2ebb4097d96;not-object:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945;key-set:8ff653edadf67755fe3bc60168d9d978eceb66f874aa91e621f2328a685271cf;non-string:3a72c6b9cee433e61b6af914e348f12d0c4957098578cdec0699e44409b26204;platform-type:c34a5cabfe6d71210e60383c5c7bbb353b8a7272cb04c8668c0740fec37d900c;platform-nonreal:fad5cf9a31ea9d146ba732292b63a11ca3e7dd07307f77cdacc076762645e42f;roots-scalar:ed49828ffa50c031831ab9961f247f2f189cb8a0bdbef4efe498ee75e4bd3cf8;roots-item:4d412405518aaf3509bec2af9afc0c49412b55f1eaecaaef9e2e00b78375fb4c;nonce:4c3cf95a39dec7a58a193cab8ddd3d9e442a178323cd644b3857eb2acdae4b72;nonreal-repo:4fee4d1a1803b9b1a93138d7ee8784d058ff9aa5b1abf0a879ad1008c13c5a9e;relative-ledger:332f6e9f9d032f12da40da1a8e3bb7ff928c4a3d465a78ea5176c8a674ad8e74;nonreal-root:fdcdc2246e9815264ac7a59fc618f02c0d1df0f016cc4f3e41f9cb0b7834f480;header-empty:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855;header-json:021fb596db81e6d02bf3d2586ee3981fe519f275c0ac9ca76bbcf2ebb4097d96;header-shape:37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570;header-key-shape:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356;header-version:fb5ec90441ac9bc2718dfa8d9895fefd97a4356bd113ec9b0efc81420a1dd76c;header-attempt:f634319a2db130bb9630ed265ec4f5bbd28bdce9ba4139a788773a89c5337933;header-chain:ffec2e0ef293104caf351a18ac08d1109d9fb5db499ced3abf8762a6ec02fbac;header-nonce:675372c5f58689fd75658227c380bb5b45fe1f9533f6e1cdbdc4bd05c80bc6f0;header-driver:fd16c022c98cd5d5f472edbb48ac5682932f2b53e4d367fac7bce52405562874"
+CONTROL o4.control.config-header PASS
+SEED o4.seed.parser-io-refusals expect=["ambient-bare-optional","ambient-build-only","ambient-optional","ambient-positional","ambient-quote","ambient-separator","ambient-stdin","ambient-unknown","attached-output","binary-stream","census-json","census-object","crystal","death-fpe","death-ill","death-int","death-memory","death-unknown","emit-bind-equals","emit-equals","env-exit","env-lines","env-oserror","env-relative","equals-output","missing-value","observe-separated","optional-empty","optional-value","out-empty-cache","out-no-source","out-nonbuild","parse-empty","refusal-write-oserror","relative-path-helper","relative-source-helper","run-build-only","unknown-equals","use-equals"] got=["ambient-bare-optional","ambient-build-only","ambient-optional","ambient-positional","ambient-quote","ambient-separator","ambient-stdin","ambient-unknown","attached-output","binary-stream","census-json","census-object","crystal","death-fpe","death-ill","death-int","death-memory","death-unknown","emit-bind-equals","emit-equals","env-exit","env-lines","env-oserror","env-relative","equals-output","missing-value","observe-separated","optional-empty","optional-value","out-empty-cache","out-no-source","out-nonbuild","parse-empty","refusal-write-oserror","relative-path-helper","relative-source-helper","run-build-only","unknown-equals","use-equals"] applied="missing-value:option requires a value: -o;run-build-only:build-only option on run: --target;unknown-equals:unknown option: --unknown=value;ambient-quote:cannot parse IYI_OPTS;ambient-positional:may not contain positional;ambient-separator:may not contain --;ambient-unknown:unknown option;ambient-build-only:build-only option on run;ambient-stdin:--stdin-filename is unsupported"
+CONTROL o4.control.parser PASS
+SEED o4.seed.matcher-malformed expect=["none-root","output-mismatch","output-missing","pattern-repeat","repeated-work","root-nonstr","site-nondict","source-count","unknown-placeholder","variable-empty","variable-nondict","variable-regex","variant-nondict","variant-shape","wrong-command"] got=["none-root","output-mismatch","output-missing","pattern-repeat","repeated-work","root-nonstr","site-nondict","source-count","unknown-placeholder","variable-empty","variable-nondict","variable-regex","variant-nondict","variant-shape","wrong-command"] applied="malformed matcher cases=none-root,output-mismatch,output-missing,root-nonstr,site-nondict,source-count,unknown-placeholder,variable-empty,variable-nondict,variable-regex,variant-nondict,variant-shape,wrong-command"
+CONTROL o4.control.matcher-pattern PASS
+SEED o4.seed.e3-error expect={"candidate_is_directory":true,"has_e3_error":true,"out_ref":null,"rc":0} got={"candidate_is_directory":true,"has_e3_error":true,"out_ref":null,"rc":0} applied="precreated out.ref directory at /private/tmp/iyi-o4-q_c3wa2q/s/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee/out.ref"
+SEED o4.seed.build-signal-forwarded expect={"consumer":{"child_started":true,"consumer_rc":-15,"interrupted":true,"producer_rc":0,"rc":143},"producer":{"child_started":true,"consumer_rc":null,"interrupted":true,"producer_rc":-15,"rc":143}} got={"consumer":{"child_started":true,"consumer_rc":-15,"interrupted":true,"producer_rc":0,"rc":143},"producer":{"child_started":true,"consumer_rc":null,"interrupted":true,"producer_rc":-15,"rc":143}} applied="SIGTERM forwarded once during producer and once during consumer"
+SEED o5.seed.association-output-missing expect=true got=true applied="positive association edge=output-missing"
+SEED o5.seed.association-binding-missing expect=true got=true applied="positive association edge=binding-missing"
+SEED o5.seed.association-template-missing expect=true got=true applied="positive association edge=evidence-template-missing"
+SEED o5.seed.source-role-own-mutation expect={"compress":false,"file":false,"regex":true} got={"compress":false,"file":false,"regex":true} applied="regex:231 source changed to exact own exercise"
+CONTROL o5.control.source-role-auxiliary PASS
+SEED o5.seed.file-169-undeclared expect={"ids":[],"status":"unclassified"} got={"ids":[],"status":"unclassified"} applied="site=169;value=undeclared"
+CONTROL o5.control.file-169-split PASS
+SEED o5.seed.file-230-undeclared expect={"ids":[],"status":"unclassified"} got={"ids":[],"status":"unclassified"} applied="site=230;value=undeclared"
+CONTROL o5.control.file-230-split PASS
+SEED o5.seed.file-428-undeclared expect={"ids":[],"status":"unclassified"} got={"ids":[],"status":"unclassified"} applied="site=428;value=undeclared"
+CONTROL o5.control.file-428-split PASS
+SEED o5.seed.file-628-undeclared expect={"ids":[],"status":"unclassified"} got={"ids":[],"status":"unclassified"} applied="site=628;value=undeclared"
+CONTROL o5.control.file-628-split PASS
+SEED o5.seed.file-touch-unread-env-blocked expect={"status":"ENV-BLOCKED","tool_named":true} got={"status":"ENV-BLOCKED","tool_named":true} applied="file:529 tool skip emitted"
+CONTROL o5.control.file-touch-unread PASS
+CONTROL o5.control.auxiliary-evidence PASS
+SEED o5.seed.source-unreadable expect=["UNFAITHFUL"] got=["UNFAITHFUL"] applied="serialized_input_changed=false; validated driver source removed before verification"
+SEED o5.seed.source-script-mismatch expect=["UNFAITHFUL"] got=["UNFAITHFUL"] applied="serialized_input_changed=true; census script association changed"
+SEED o5.seed.mixed-own-missing expect=["NOT-EXECUTED"] got=["NOT-EXECUTED"] applied="serialized_input_changed=true; source-grounded mixed-own evidence name omitted"
+SEED o5.seed.positive-missing expect=["NOT-EXECUTED","NOT-EXERCISED"] got=["NOT-EXECUTED","NOT-EXERCISED"] applied="serialized_input_changed=true; positive missing"
+SEED o5.seed.positive-wrong-association expect=["NOT-EXECUTED","NOT-EXERCISED"] got=["NOT-EXECUTED","NOT-EXERCISED"] applied="serialized_input_changed=true; positive wrong association"
+SEED o5.seed.positive-ambiguous-association expect=["NOT-EXECUTED"] got=["NOT-EXECUTED"] applied="serialized_input_changed=true; positive ambiguous association"
+CONTROL o5.control.excluded-positive-absent PASS
+CONTROL o5.control.excluded-positive-present PASS
+SEED o5.seed.excluded-positive-unexecuted expect=["NOT-EXECUTED"] got=["NOT-EXECUTED"] applied="serialized_input_changed=true; excluded positive unexecuted"
+SEED s3.seed.ledger-stale-header expect=["STALE"] got=["STALE"] applied="serialized_input_changed=true; header nonce changed"
+SEED s3.seed.ledger-misclassified expect=["MISCLASSIFIED"] got=["MISCLASSIFIED"] applied="serialized_input_changed=true; canonical exec appended in observed-negative mode"
+SEED s3.seed.ledger-unfaithful expect=["UNFAITHFUL"] got=["UNFAITHFUL"] applied="serialized_input_changed=true; begin record removed"
+SEED s3.seed.ledger-divergence expect=["DIVERGENCE"] got=["DIVERGENCE"] applied="serialized_input_changed=true; canonical-other consumer changed to exit 7"
+SEED o5.seed.consumer-no-out expect=["DIVERGENCE"] got=["DIVERGENCE"] applied="serialized_input_changed=true; canonical-other consumer succeeded without writing OUT"
+SEED s3.seed.ledger-not-roundtripped expect=["NOT-ROUNDTRIPPED"] got=["NOT-ROUNDTRIPPED"] applied="serialized_input_changed=true; own producer mods_count changed from 1 to 0"
+SEED o5.seed.own-source-copy expect=["NOT-ROUNDTRIPPED"] got=["NOT-ROUNDTRIPPED"] applied="serialized_input_changed=true; own source changed to a same-named noncanonical copy"
+SEED s3.seed.ledger-not-exercised expect=["NOT-EXERCISED"] got=["NOT-EXERCISED"] applied="serialized_input_changed=true; required enumerated value added without a record"
+SEED s3.seed.ledger-positive-negative-only expect=["MISCLASSIFIED","NOT-EXECUTED","NOT-EXERCISED"] got=["MISCLASSIFIED","NOT-EXECUTED","NOT-EXERCISED"] applied="serialized_input_changed=true; positive variant represented only by observed-negative exec"
+CONTROL s3.control.ledger PASS
+SEED o5.seed.file-missing expect=["STALE"] got=["STALE"] applied="serialized_input_changed=true; ledger file omitted"
+SEED o5.seed.file-empty expect=["STALE"] got=["STALE"] applied="serialized_input_changed=true; ledger file truncated to zero bytes"
+SEED o5.seed.header-malformed expect=["STALE","UNFAITHFUL"] got=["STALE","UNFAITHFUL"] applied="serialized_input_changed=true; header line replaced by malformed JSON"
+SEED o5.seed.header-missing expect=["STALE"] got=["STALE"] applied="serialized_input_changed=true; header line removed"
+SEED o5.seed.header-attempt expect=["STALE"] got=["STALE"] applied="serialized_input_changed=true; header attempt changed from 1 to 2"
+SEED o5.seed.header-chain expect=["STALE"] got=["STALE"] applied="serialized_input_changed=true; header chain_id changed"
+SEED o5.seed.header-driver expect=["STALE"] got=["STALE"] applied="serialized_input_changed=true; header driver changed"
+SEED o5.seed.record-foreign-nonce expect=["STALE"] got=["STALE"] applied="serialized_input_changed=true; paired records' nonce changed"
+SEED o5.seed.record-foreign-driver expect=["STALE"] got=["STALE"] applied="serialized_input_changed=true; paired records' driver changed"
+SEED o5.seed.refused-record expect=["MISCLASSIFIED"] got=["MISCLASSIFIED"] applied="serialized_input_changed=true; refused record appended"
+SEED o5.seed.unclassified-record expect=["MISCLASSIFIED"] got=["MISCLASSIFIED"] applied="serialized_input_changed=true; unclassified exec record appended"
+SEED o5.seed.noncanonical-without-ids expect=["MISCLASSIFIED"] got=["MISCLASSIFIED"] applied="serialized_input_changed=true; non-canonical build appended without variant ids"
+SEED o5.seed.unchanged-noncanonical-http expect=[] got=[] applied="serialized_input_changed=true; http:1384 unchanged non-canonical --no-codegen build appended without variant ids"
+SEED o5.seed.required-no-vars-missing expect=["NOT-EXERCISED"] got=["NOT-EXERCISED"] applied="serialized_input_changed=true; required no-vars variant has no bound record"
+CONTROL o5.control.required-no-vars PASS
+SEED o5.seed.canonical-observed-negative expect=["MISCLASSIFIED"] got=["MISCLASSIFIED"] applied="serialized_input_changed=true; canonical exec appended in observed-negative mode"
+SEED o5.seed.unknown-variant-id expect=["MISCLASSIFIED"] got=["MISCLASSIFIED"] applied="serialized_input_changed=true; unknown variant id appended"
+SEED o5.seed.malformed-variant-ids expect=["MISCLASSIFIED"] got=["MISCLASSIFIED"] applied="serialized_input_changed=true; variant_ids changed from a list to a string"
+SEED o5.seed.variant-kind-mismatch expect=["MISCLASSIFIED"] got=["MISCLASSIFIED"] applied="serialized_input_changed=true; record variant_kind changed away from census kind"
+SEED o5.seed.negative-roundtrip expect=["MISCLASSIFIED"] got=["MISCLASSIFIED"] applied="serialized_input_changed=true; negative variant appended in roundtrip mode"
+SEED o5.seed.unpaired-end expect=["UNFAITHFUL"] got=["UNFAITHFUL"] applied="serialized_input_changed=true; end record appended without its begin"
+SEED o5.seed.interrupted expect=["UNFAITHFUL"] got=["UNFAITHFUL"] applied="serialized_input_changed=true; exec record marked interrupted"
+SEED o5.seed.run-signal expect=["UNFAITHFUL"] got=["UNFAITHFUL"] applied="serialized_input_changed=true; run signal changed from null to 15"
+SEED o5.seed.malformed-line expect=["UNFAITHFUL"] got=["UNFAITHFUL"] applied="serialized_input_changed=true; one malformed JSON line appended"
+SEED o5.seed.blank-line expect=["UNFAITHFUL"] got=["UNFAITHFUL"] applied="serialized_input_changed=true; blank JSONL line appended"
+SEED o5.seed.invalid-record expect=["UNFAITHFUL"] got=["UNFAITHFUL"] applied="serialized_input_changed=true; non-record JSON object appended"
+SEED o5.seed.missing-inv expect=["UNFAITHFUL"] got=["UNFAITHFUL"] applied="serialized_input_changed=true; end record invocation id removed"
+SEED o5.seed.pair-field-drift expect=["UNFAITHFUL"] got=["UNFAITHFUL"] applied="serialized_input_changed=true; end record cwd changed away from its begin"
+SEED o5.seed.e2-name-repeated expect=["NOT-EXECUTED"] got=["NOT-EXECUTED"] applied="serialized_input_changed=true; second own record reuses the declared output name"
+SEED o5.seed.e2-count-short expect=["NOT-EXECUTED"] got=["NOT-EXECUTED"] applied="serialized_input_changed=true; second declared output name added without a record"
+SEED o5.seed.e2-consumer-unhashed expect=["NOT-EXECUTED","NOT-ROUNDTRIPPED"] got=["NOT-EXECUTED","NOT-ROUNDTRIPPED"] applied="serialized_input_changed=true; own consumer hash changed from a digest to null"
+SEED o5.seed.e2-unmatched-own expect=["NOT-EXECUTED"] got=["NOT-EXECUTED"] applied="serialized_input_changed=true; extra own output does not match execution evidence"
+SEED o5.seed.e2-unknown-placeholder expect=["NOT-EXECUTED"] got=["NOT-EXECUTED"] applied="serialized_input_changed=true; execution evidence name placeholder changed to unknown"
+CONTROL o5.control.e2-repo-template PASS
+SEED o5.seed.e3-ref-missing expect={"control_atime_advanced":null,"stat_calls":0,"statuses":["NOT-EXECUTED"]} got={"control_atime_advanced":null,"stat_calls":0,"statuses":["NOT-EXECUTED"]} applied="seed did not execute; out_ref changed to null; stat_calls=0"
+SEED o5.seed.e3-inode-changed expect={"control_atime_advanced":null,"stat_calls":1,"statuses":["NOT-EXECUTED"]} got={"control_atime_advanced":null,"stat_calls":1,"statuses":["NOT-EXECUTED"]} applied="seed did not execute; inode_changed=True; stat_calls=1"
+SEED o5.seed.e3-atime-not-advanced expect={"control_atime_advanced":null,"stat_calls":1,"statuses":["NOT-EXECUTED"]} got={"control_atime_advanced":null,"stat_calls":1,"statuses":["NOT-EXECUTED"]} applied="seed did not execute; atime remains at the shim-set value; stat_calls=1"
+SEED o5.seed.e3-sha-changed expect={"control_atime_advanced":null,"stat_calls":1,"statuses":["OUT-MODIFIED"]} got={"control_atime_advanced":null,"stat_calls":1,"statuses":["OUT-MODIFIED"]} applied="seed did not execute; stat_fn mutates bytes after stat; stat_calls=1"
+SEED o5.seed.e3-stat-failed expect={"control_atime_advanced":null,"stat_calls":1,"statuses":["NOT-EXECUTED"]} got={"control_atime_advanced":null,"stat_calls":1,"statuses":["NOT-EXECUTED"]} applied="seed did not execute; stat_fn raises after recording its call; stat_calls=1"
+SEED o5.seed.e3-read-failed expect={"control_atime_advanced":null,"stat_calls":1,"statuses":["OUT-MODIFIED"]} got={"control_atime_advanced":null,"stat_calls":1,"statuses":["OUT-MODIFIED"]} applied="seed did not execute; stat_fn removes OUT after stat; stat_calls=1"
+SEED o5.seed.value-missing expect=["NOT-EXERCISED"] got=["NOT-EXERCISED"] applied="serialized_input_changed=true; blue value omitted while red remains covered"
+SEED o5.seed.pattern-var-unexercised expect=["NOT-EXERCISED"] got=["NOT-EXERCISED"] applied="serialized_input_changed=true; required pattern variable added without a record"
+SEED o5.seed.positive-no-success expect=["NOT-EXERCISED"] got=["NOT-EXERCISED"] applied="serialized_input_changed=true; positive producer mods_count changed from 1 to 0"
+CONTROL o5.control.variant-coverage PASS
+CONTROL o5.control.positive-success PASS
+CONTROL o5.control.e2-e3 PASS
+Run 3 stage: NOT-EXECUTED
+SEED amend-b.seed.not-executed expect={"ledger":"NOT-EXECUTED","returncode":1,"status":"NOT-EXECUTED"} got={"ledger":"NOT-EXECUTED","returncode":1,"status":"NOT-EXECUTED"} applied="scenario=not-executed;drivers=('stage',);stub_files_changed=2;removed=none"
+Run 3 stage: OUT-MODIFIED
+SEED amend-b.seed.copy-modified expect={"ledger":"OUT-MODIFIED","returncode":1,"status":"OUT-MODIFIED"} got={"ledger":"OUT-MODIFIED","returncode":1,"status":"OUT-MODIFIED"} applied="scenario=copy-modified;drivers=('stage',);stub_files_changed=2;removed=none"
+Run 3 stage: NOT-EXECUTED
+SEED amend-b.seed.move-replaced expect={"ledger":"NOT-EXECUTED","returncode":1,"status":"NOT-EXECUTED"} got={"ledger":"NOT-EXECUTED","returncode":1,"status":"NOT-EXECUTED"} applied="scenario=move-replaced;drivers=('stage',);stub_files_changed=2;removed=none"
+Run 3 stage: NOT-EXECUTED
+SEED amend-b.seed.run-form-not-counted expect={"ledger":"NOT-EXECUTED","returncode":1,"status":"NOT-EXECUTED"} got={"ledger":"NOT-EXECUTED","returncode":1,"status":"NOT-EXECUTED"} applied="scenario=run-form-not-counted;drivers=('stage',);stub_files_changed=2;removed=none"
+Run 3 stage: PASS
+CONTROL amend-b.control.stub-run PASS
+Run 3 stage: PASS
+CONTROL amend-b.control.run-form PASS
+SEED s4.seed.row-oserror expect={"codes":["ROW-OSERROR"],"outputs_precreated":["C1.build.stderr","C1.build.stdout","C1.run.exit","C1.run.stderr","C1.run.stdout","C2.build.stderr","C2.build.stdout","C3.build.stderr","C3.build.stdout","C3.run.exit","C3.run.stderr","C3.run.stdout","P.build.stderr","P.build.stdout","P.run.exit","P.run.stderr","P.run.stdout"],"status":"FAIL"} got={"codes":["ROW-OSERROR"],"outputs_precreated":["C1.build.stderr","C1.build.stdout","C1.run.exit","C1.run.stderr","C1.run.stdout","C2.build.stderr","C2.build.stdout","C3.build.stderr","C3.build.stdout","C3.run.exit","C3.run.stderr","C3.run.stdout","P.build.stderr","P.build.stdout","P.run.exit","P.run.stderr","P.run.stdout"],"status":"FAIL"} applied="compiler_path=missing"
+Corpus counts: samples=1 expected=1; std=0 expected=0; total=1 expected=1
+  [PASS] samples/iyi/case.iyi
+Report written to /private/var/folders/cx/smp6389s35gds6b_bfywv_8h0000gn/T/iyi-o6-nm-pinned-ztuagzcb/report.jsonl
+RUN 2 SUMMARY: total=1 passed=1 failed=0 stops=0
+SEED s4.seed.nm-unpinned expect={"all_u_flag":true,"path_nm_called":false,"pinned_calls":3,"returncode":0,"row_status":"PASS"} got={"all_u_flag":true,"path_nm_called":false,"pinned_calls":3,"returncode":0,"row_status":"PASS"} applied="PATH_nm=/var/folders/cx/smp6389s35gds6b_bfywv_8h0000gn/T/iyi-o6-nm-pinned-ztuagzcb/trap/nm;explicit_nm=/var/folders/cx/smp6389s35gds6b_bfywv_8h0000gn/T/iyi-o6-nm-pinned-ztuagzcb/pinned-nm"
+SEED s4.seed.outputs-missing expect={"legs_have_output_paths":true,"missing":[],"nonempty_run_files":["C1.run.exit","C1.run.stderr","C1.run.stdout","C3.run.exit","C3.run.stderr","C3.run.stdout","P.run.exit","P.run.stderr","P.run.stdout"],"status":"PASS"} got={"legs_have_output_paths":true,"missing":[],"nonempty_run_files":["C1.run.exit","C1.run.stderr","C1.run.stdout","C3.run.exit","C3.run.stderr","C3.run.stdout","P.run.exit","P.run.stderr","P.run.stdout"],"status":"PASS"} applied="required_output_files=17"
+SEED s4.seed.not-reusable-nested expect={"count":1,"status":"PASS"} got={"count":1,"status":"PASS"} applied="top_level_count=1;nested_decoy_count=3"
+SEED s4.seed.callpath-k2-diff expect={"codes":["CALLPATH-PARITY"],"status":"FAIL"} got={"codes":["CALLPATH-PARITY"],"status":"FAIL"} applied="k2.portable.callpath=different"
+SEED s4.seed.callpath-empty expect={"codes":["CALLPATH-EMPTY"],"status":"FAIL"} got={"codes":["CALLPATH-EMPTY"],"status":"FAIL"} applied="all_three_callpaths=empty"
+SEED s4.seed.callpath-mismatch expect={"codes":["REACH-MISMATCH"],"status":"FAIL"} got={"codes":["REACH-MISMATCH"],"status":"FAIL"} applied="k2.reach.mismatch=[seed]"
+SEED s4.seed.phase-not-linked expect={"codes":["KEY-PHASE-k2"],"status":"FAIL"} got={"codes":["KEY-PHASE-k2"],"status":"FAIL"} applied="k2.phase=checked"
+SEED s4.seed.reach-not-checked expect={"codes":["REACH-CHECKED-k2"],"status":"FAIL"} got={"codes":["REACH-CHECKED-k2"],"status":"FAIL"} applied="k2.reach.checked=integer_one"
+SEED s4.seed.key-file-missing expect={"codes":["KEY-MISSING"],"status":"FAIL"} got={"codes":["KEY-MISSING"],"status":"FAIL"} applied="omitted_key=k2.key"
+SEED s4.seed.trace-empty expect={"codes":["TRACE-EMPTY-C1"],"status":"FAIL"} got={"codes":["TRACE-EMPTY-C1"],"status":"FAIL"} applied="suppressed_trace=C1"
+SEED s4.seed.symbol-c2 expect={"binary_is_cc_built":true,"codes":["EFFECT-SYMBOL-C2"],"status":"STOP","symbol_seen":true} got={"binary_is_cc_built":true,"codes":["EFFECT-SYMBOL-C2"],"status":"STOP","symbol_seen":true} applied="cc_binary_leg=C2;symbol=___iyi_effect_x"
+SEED s4.seed.symbol-c3 expect={"binary_is_cc_built":true,"codes":["EFFECT-SYMBOL-C3"],"status":"STOP","symbol_seen":true} got={"binary_is_cc_built":true,"codes":["EFFECT-SYMBOL-C3"],"status":"STOP","symbol_seen":true} applied="cc_binary_leg=C3;symbol=___iyi_effect_x"
+SEED s4.seed.nm-error expect={"codes":["NM-ERROR-C2"],"status":"FAIL"} got={"codes":["NM-ERROR-C2"],"status":"FAIL"} applied="pinned_nm_exit=7_for_C2"
+SEED s4.seed.build-output-symbol expect={"codes":["BUILD-EFFECT-P"],"status":"FAIL"} got={"codes":["BUILD-EFFECT-P"],"status":"FAIL"} applied="P.build.stderr_contains=__iyi_effect_seed"
+Corpus counts: samples=2 expected=2; std=0 expected=0; total=2 expected=2
+  [PASS] samples/iyi/good.iyi
+  [FAIL] samples/iyi/sleepy_build.iyi -> BUILD-TIMEOUT-P: P build timed out after 2s
+Report written to /private/var/folders/cx/smp6389s35gds6b_bfywv_8h0000gn/T/iyi-o6-build-timeout-0zuyp4tv/report.jsonl
+RUN 2 SUMMARY: total=2 passed=1 failed=1 stops=0
+SEED s4.seed.build-timeout expect={"direct_codes":["BUILD-TIMEOUT-P"],"direct_failures":["BUILD-TIMEOUT-P: P build timed out after 2s"],"direct_grandchild_gone":true,"direct_status":"FAIL","good_status":"PASS","jsonl_rows":2,"order":["good.iyi","sleepy_build.iyi"],"pooled_grandchild_gone":true,"returncode":1,"sleepy_codes":["BUILD-TIMEOUT-P"],"sleepy_failures":["BUILD-TIMEOUT-P: P build timed out after 2s"],"sleepy_status":"FAIL"} got={"direct_codes":["BUILD-TIMEOUT-P"],"direct_failures":["BUILD-TIMEOUT-P: P build timed out after 2s"],"direct_grandchild_gone":true,"direct_status":"FAIL","good_status":"PASS","jsonl_rows":2,"order":["good.iyi","sleepy_build.iyi"],"pooled_grandchild_gone":true,"returncode":1,"sleepy_codes":["BUILD-TIMEOUT-P"],"sleepy_failures":["BUILD-TIMEOUT-P: P build timed out after 2s"],"sleepy_status":"FAIL"} applied="build_limit=2;source=sleepy_build.iyi;grandchild_pid_file=written"
+Corpus counts: samples=2 expected=2; std=0 expected=0; total=2 expected=2
+  [PASS] samples/iyi/good.iyi
+  [FAIL] samples/iyi/sleepy_run.iyi -> RUN-TIMEOUT-P: P run timed out after 2s
+Report written to /private/var/folders/cx/smp6389s35gds6b_bfywv_8h0000gn/T/iyi-o6-run-timeout-0d3i21uv/report.jsonl
+RUN 2 SUMMARY: total=2 passed=1 failed=1 stops=0
+SEED s4.seed.run-timeout expect={"direct_codes":["RUN-TIMEOUT-P"],"direct_failures":["RUN-TIMEOUT-P: P run timed out after 2s"],"direct_grandchild_gone":true,"direct_status":"FAIL","good_status":"PASS","jsonl_rows":2,"order":["good.iyi","sleepy_run.iyi"],"pooled_grandchild_gone":true,"returncode":1,"sleepy_codes":["RUN-TIMEOUT-P"],"sleepy_failures":["RUN-TIMEOUT-P: P run timed out after 2s"],"sleepy_status":"FAIL"} got={"direct_codes":["RUN-TIMEOUT-P"],"direct_failures":["RUN-TIMEOUT-P: P run timed out after 2s"],"direct_grandchild_gone":true,"direct_status":"FAIL","good_status":"PASS","jsonl_rows":2,"order":["good.iyi","sleepy_run.iyi"],"pooled_grandchild_gone":true,"returncode":1,"sleepy_codes":["RUN-TIMEOUT-P"],"sleepy_failures":["RUN-TIMEOUT-P: P run timed out after 2s"],"sleepy_status":"FAIL"} applied="run_limit=2;source=sleepy_run.iyi;grandchild_pid_file=written"
+Corpus counts: samples=1 expected=1; std=1 expected=1; total=2 expected=2
+  [PASS] samples/iyi/good.iyi
+  [FAIL] bench/std_big_exercise.iyi -> RUN-TIMEOUT-P: P run timed out after 2s
+Report written to /private/var/folders/cx/smp6389s35gds6b_bfywv_8h0000gn/T/iyi-o6-heavy-timeout-l8az1iut/report.jsonl
+RUN 2 SUMMARY: total=2 passed=1 failed=1 stops=0
+SEED o6.seed.heavy-run-timeout expect={"direct_codes":["RUN-TIMEOUT-P"],"direct_failures":["RUN-TIMEOUT-P: P run timed out after 2s"],"direct_grandchild_gone":true,"direct_status":"FAIL","good_status":"PASS","heavy_codes":["RUN-TIMEOUT-P"],"heavy_failures":["RUN-TIMEOUT-P: P run timed out after 2s"],"heavy_status":"FAIL","jsonl_rows":2,"order":["good.iyi","std_big_exercise.iyi"],"pooled_grandchild_gone":true,"returncode":1} got={"direct_codes":["RUN-TIMEOUT-P"],"direct_failures":["RUN-TIMEOUT-P: P run timed out after 2s"],"direct_grandchild_gone":true,"direct_status":"FAIL","good_status":"PASS","heavy_codes":["RUN-TIMEOUT-P"],"heavy_failures":["RUN-TIMEOUT-P: P run timed out after 2s"],"heavy_status":"FAIL","jsonl_rows":2,"order":["good.iyi","std_big_exercise.iyi"],"pooled_grandchild_gone":true,"returncode":1} applied="std_big_exercise.iyi P leg sleeps 60s under run_heavy_timeout=2"
+SEED s4.seed.lone-cr expect={"ok":false,"rule":true} got={"ok":false,"rule":true} applied="stderr_removed_single_CR"
+SEED s4.seed.frame-function expect={"ok":false,"rule":true} got={"ok":false,"rule":true} applied="frame_function=~proc12->different_function"
+SEED s4.seed.frame-moved-byte expect={"ok":false,"rule":true} got={"ok":false,"rule":true} applied="stderr_moved_byte=b<->c"
+SEED s4.seed.exit-code expect={"ok":false,"reason":"exit status mismatch: 0 != 9"} got={"ok":false,"reason":"exit status mismatch: 0 != 9"} applied="consumer_exit=9"
+  [FAIL] samples/iyi/alpha.iyi -> BUILD-EXIT-P: P build failed (exit 11): alpha-only-reason
+
+  [FAIL] samples/iyi/beta.iyi -> BUILD-EXIT-P: P build failed (exit 12): beta-only-reason
+
+SEED s4.seed.worker-reason-collision expect={"alpha_codes":["BUILD-EXIT-P"],"alpha_has_foreign_reason":false,"alpha_has_own_reason":true,"beta_codes":["BUILD-EXIT-P"],"beta_has_foreign_reason":false,"beta_has_own_reason":true} got={"alpha_codes":["BUILD-EXIT-P"],"alpha_has_foreign_reason":false,"alpha_has_own_reason":true,"beta_codes":["BUILD-EXIT-P"],"beta_has_foreign_reason":false,"beta_has_own_reason":true} applied="parallel_failures=alpha:11,beta:12"
+  [FAIL] samples/iyi/alpha.iyi -> BUILD-EXIT-P: P build failed (exit 11): alpha-only-reason
+
+  [FAIL] samples/iyi/beta.iyi -> BUILD-EXIT-P: P build failed (exit 12): beta-only-reason
+
+SEED s4.seed.stdout-replaced expect={"row_statuses":["FAIL","FAIL"],"same_object":true} got={"row_statuses":["FAIL","FAIL"],"same_object":true} applied="parallel_failing_workers=2"
+SEED s4.seed.wrong-count expect={"count_marker":true,"in_process_returncode":1,"report_exists":true,"report_rows":0,"returncode":1} got={"count_marker":true,"in_process_returncode":1,"report_exists":true,"report_rows":0,"returncode":1} applied="python=-O;actual_counts=0,0,0;expected_counts=1,1,2"
+SEED s4.seed.sandbox-leak expect={"c1_did_not_see_p_file":true,"c3_started_empty":true,"codes":[],"p_started_empty":true,"same_path":true,"status":"PASS"} got={"c1_did_not_see_p_file":true,"c3_started_empty":true,"codes":[],"p_started_empty":true,"same_path":true,"status":"PASS"} applied="P_writes=p-only.marker;C1_checks_same_sandbox_path"
+SEED o6.seed.row-runtimeerror expect={"codes":["ROW-RUNTIMEERROR"],"reason_is_disk":true,"status":"FAIL"} got={"codes":["ROW-RUNTIMEERROR"],"reason_is_disk":true,"status":"FAIL"} applied="disk_min_gb=2**60"
+SEED o6.seed.build-missing expect={"codes":["BUILD-MISSING-C2"],"status":"FAIL"} got={"codes":["BUILD-MISSING-C2"],"status":"FAIL"} applied="C2_build_exit=0;C2_binary=removed"
+SEED o6.seed.c3-cannot-name expect={"codes":["BUILD-EXIT-C3","C3-CANNOT-NAME"],"status":"STOP","stop_marker":true} got={"codes":["BUILD-EXIT-C3","C3-CANNOT-NAME"],"status":"STOP","stop_marker":true} applied="C3_exit=17;cannot_name_precedes_400_trailing_bytes"
+SEED o6.seed.key-json-malformed expect={"codes":["KEY-PARSE"],"status":"FAIL"} got={"codes":["KEY-PARSE"],"status":"FAIL"} applied="k2_key_shape=json"
+SEED o6.seed.key-root-nonobject expect={"codes":["KEY-PARSE"],"status":"FAIL"} got={"codes":["KEY-PARSE"],"status":"FAIL"} applied="k2_key_shape=nonobject"
+SEED o6.seed.portable-nonobject expect={"codes":["CALLPATH-EMPTY","CALLPATH-PARITY"],"status":"FAIL"} got={"codes":["CALLPATH-EMPTY","CALLPATH-PARITY"],"status":"FAIL"} applied="k2.portable=string"
+SEED o6.seed.reach-nonobject expect={"codes":["REACH-CHECKED-k2"],"status":"FAIL"} got={"codes":["REACH-CHECKED-k2"],"status":"FAIL"} applied="k2.reach=string"
+SEED o6.seed.not-reusable-type expect={"codes":["NOT-REUSABLE-TYPE"],"status":"FAIL"} got={"codes":["NOT-REUSABLE-TYPE"],"status":"FAIL"} applied="k1.not_reusable=string"
+SEED o6.seed.run-output-symbol expect={"codes":["RUN-EFFECT-C3"],"status":"FAIL"} got={"codes":["RUN-EFFECT-C3"],"status":"FAIL"} applied="C3.run.stderr_contains=__iyi_effect_seed"
+SEED o6.seed.row-r1-mismatch expect={"codes":["R1-C1-C3"],"status":"FAIL"} got={"codes":["R1-C1-C3"],"status":"FAIL"} applied="C3.run.stdout=different-output"
+SEED o6.seed.nm-missing-binary expect={"raised":"RuntimeError","reason":"binary does not exist for symbol scan: /var/folders/cx/smp6389s35gds6b_bfywv_8h0000gn/T/iyi-o6-nm-missing-z9tallmu/missing-binary"} got={"raised":"RuntimeError","reason":"binary does not exist for symbol scan: /var/folders/cx/smp6389s35gds6b_bfywv_8h0000gn/T/iyi-o6-nm-missing-z9tallmu/missing-binary"} applied="binary_path=missing"
+SEED o6.seed.frames-missing-tool expect={"crash_marker":false,"missing_marker":true,"raised":"RuntimeError"} got={"crash_marker":false,"missing_marker":true,"raised":"RuntimeError"} applied="frames_equivalent=missing"
+SEED o6.seed.frames-tool-crash expect={"crash_marker":true,"missing_marker":false,"raised":"RuntimeError"} got={"crash_marker":true,"missing_marker":false,"raised":"RuntimeError"} applied="frames_equivalent=crash"
+SEED o6.seed.stdout-length expect={"ok":false,"reason":"stdout mismatch (len 4 != 3)"} got={"ok":false,"reason":"stdout mismatch (len 4 != 3)"} applied="stdout_removed_byte=c"
+SEED o6.seed.cli-required expect={"required_marker":true,"returncode":2} got={"required_marker":true,"returncode":2} applied="argv=[]"
+SEED o6.seed.cli-workers expect={"returncode":2,"workers_marker":true} got={"returncode":2,"workers_marker":true} applied="workers=0"
+SEED o6.seed.cli-negative-count expect={"count_marker":true,"returncode":2} got={"count_marker":true,"returncode":2} applied="expect_total=-1"
+CONTROL s4.control.row PASS
+CONTROL s4.control.frames PASS
+  [PASS] samples/iyi/alpha.iyi
+  [PASS] samples/iyi/beta.iyi
+CONTROL s4.control.workers PASS
+CONTROL s4.control.counts PASS
+CONTROL s4.control.sandbox PASS
+  [PASS] bench/std_big_exercise.iyi (p_nonzero exit=3)
+CONTROL o6.control.p-nonzero PASS
+Corpus counts: samples=1 expected=1; std=1 expected=1; total=2 expected=2
+  [PASS] samples/iyi/good.iyi
+  [PASS] bench/std_big_exercise.iyi
+Report written to /private/var/folders/cx/smp6389s35gds6b_bfywv_8h0000gn/T/iyi-o6-heavy-timeout-ijfaw4c6/report.jsonl
+RUN 2 SUMMARY: total=2 passed=2 failed=0 stops=0
+CONTROL o6.control.heavy-run-timeout PASS
+Run 1 FAIL: /tmp/iyp-76537f1b/run1/a1
+SEED o7.seed.rp2-run1-baseline-error expect=true got=true applied="isolated runner edge=run1-baseline-error"
+SEED o7.seed.rp2-run3-setup-error expect=true got=true applied="isolated runner edge=run3-setup-error"
+SEED o7.seed.rp2-run3-execution-error expect=true got=true applied="isolated runner edge=run3-execution-error"
+SEED o7.seed.rp2-run3-census-type expect=true got=true applied="isolated runner edge=run3-census-type"
+SEED o7.seed.rp2-run3-census-script-type expect=true got=true applied="isolated runner edge=run3-census-script-type"
+SEED o7.seed.rp2-run3-census-unreadable expect=true got=true applied="isolated runner edge=run3-census-unreadable"
+Run 3 stage: FAIL
+SEED o7.seed.rp2-run3-driver-nonzero expect=true got=true applied="isolated runner edge=run3-driver-nonzero"
+SEED o7.seed.rp2-final-recorded-reason expect=true got=true applied="isolated runner edge=final-recorded-reason"
+SEED o7.seed.rp2-final-status-reason expect=true got=true applied="isolated runner edge=final-status-reason"
+Final proof status: FAIL
+SEED o7.seed.rp2-final-prerequisites-missing expect=true got=true applied="isolated runner edge=final-prerequisites-missing"
+Final proof status: FAIL
+SEED o7.seed.rp2-final-recompute-error expect=true got=true applied="isolated runner edge=final-recompute-error"
+SEED o7.seed.rp2-latest-interrupted expect=true got=true applied="isolated runner edge=latest-interrupted"
+SEED o7.seed.rp2-all-run1-stop expect={"final_exists":false,"returncode":1,"run1_status":"STOP","run2_attempted":false,"run3_attempted":false} got={"final_exists":false,"returncode":1,"run1_status":"STOP","run2_attempted":false,"run3_attempted":false} applied="isolated runner edge=all-run1-stop"
+Run 1 PASS: /tmp/iyp-f0056a72/run1/a1
+Run 2 STOP: /tmp/iyp-f0056a72/run2/a1
+SEED o7.seed.rp2-all-run2-stop expect={"final_exists":false,"returncode":1,"run1_status":"PASS","run2_status":"STOP","run3_attempted":false} got={"final_exists":false,"returncode":1,"run1_status":"PASS","run2_status":"STOP","run3_attempted":false} applied="isolated runner edge=all-run2-stop"
+Run 1 PASS: /tmp/iyp-c745cecd/run1/a1
+Run 2 PASS: /tmp/iyp-c745cecd/run2/a1
+SEED o7.seed.rp2-all-run3-refusal expect=true got=true applied="isolated runner edge=all-run3-refusal"
+Run 1 PASS: /tmp/iyp-474a6e80/run1/a1
+Run 2 PASS: /tmp/iyp-474a6e80/run2/a1
+Run 3 stage: PASS
+Final proof status: PASS
+SEED o7.seed.rp2-all-required-missing expect=true got=true applied="isolated runner edge=all-required-missing"
+Run 1 PASS: /tmp/iyp-0b17a6f7/run1/a1
+Run 2 PASS: /tmp/iyp-0b17a6f7/run2/a1
+Run 3 stage: PASS
+Final proof status: PASS
+SEED o7.seed.rp2-all-required-nonstr expect=true got=true applied="isolated runner edge=all-required-nonstr"
+Run 1 PASS: /tmp/iyp-0aef029d/run1/a1
+Run 2 PASS: /tmp/iyp-0aef029d/run2/a1
+Run 3 stage: STOP
+SEED o7.seed.rp2-all-driver-stop expect={"disk":"STOP","driver_log_exists":false,"final_exists":false,"returncode":1,"run1_status":"PASS","run2_status":"PASS","run3_status":"STOP"} got={"disk":"STOP","driver_log_exists":false,"final_exists":false,"returncode":1,"run1_status":"PASS","run2_status":"PASS","run3_status":"STOP"} applied="isolated runner edge=all-driver-stop"
+SEED o7.seed.rp-gate1-post-identity expect={"identity":"INVALID","reason":true,"returncode":1,"status":"INVALID"} got={"identity":"INVALID","reason":true,"returncode":1,"status":"INVALID"} applied="compiler mtime changed after gate 1.1"
+SEED o7.seed.rp-gate2-post-identity expect={"identity":"INVALID","reason":true,"returncode":1,"status":"INVALID"} got={"identity":"INVALID","reason":true,"returncode":1,"status":"INVALID"} applied="compiler mtime changed after gate 1.2"
+SEED o7.seed.rp-gate3-post-identity expect={"identity":"INVALID","reason":true,"returncode":1,"status":"INVALID"} got={"identity":"INVALID","reason":true,"returncode":1,"status":"INVALID"} applied="compiler mtime changed after gate 1.3"
+SEED o7.seed.rp-gate4-post-identity expect={"identity":"INVALID","reason":true,"returncode":1,"status":"INVALID"} got={"identity":"INVALID","reason":true,"returncode":1,"status":"INVALID"} applied="compiler mtime changed after gate 1.4"
+Run 2 FAIL: /tmp/iyp-4e1eebe0/run2/a1
+SEED o7.seed.rp-run2-interrupt expect={"legs":"FAIL","marker":true,"reason":true,"returncode":1,"status":"FAIL"} got={"legs":"FAIL","marker":true,"reason":true,"returncode":1,"status":"FAIL"} applied="SIGTERM delivered during Run 2 artifact process"
+Run 3 stage: FAIL
+SEED o7.seed.rp-run3-interrupt expect={"exit":"FAIL","marker":true,"reason":true,"returncode":1,"status":"FAIL"} got={"exit":"FAIL","marker":true,"reason":true,"returncode":1,"status":"FAIL"} applied="SIGTERM delivered during Run 3 driver"
+Run 1 FAIL: /tmp/iyp-86839f9c/run1/a1
+SEED o7.seed.rp-gate1-oserror expect={"reason":true,"returncode":1,"status":"FAIL"} got={"reason":true,"returncode":1,"status":"FAIL"} applied="removed gate 1 executable prerequisite"
+Run 1 FAIL: /tmp/iyp-1faf976c/run1/a1
+SEED o7.seed.rp-gate2-oserror expect={"reason":true,"returncode":1,"status":"FAIL"} got={"reason":true,"returncode":1,"status":"FAIL"} applied="removed gate 2 executable prerequisite"
+Run 1 FAIL: /tmp/iyp-a9cd666c/run1/a1
+SEED o7.seed.rp-gate3-oserror expect={"reason":true,"returncode":1,"status":"FAIL"} got={"reason":true,"returncode":1,"status":"FAIL"} applied="existing rg9_work file path"
+Run 1 FAIL: /tmp/iyp-f6fe1f4b/run1/a1
+SEED o7.seed.rp-gate4-oserror expect={"reason":true,"returncode":1,"status":"FAIL"} got={"reason":true,"returncode":1,"status":"FAIL"} applied="removed gate 4 executable prerequisite"
+SEED o7.seed.rp-gate2-interrupt expect={"marker":true,"reason":true,"returncode":1,"status":"FAIL"} got={"marker":true,"reason":true,"returncode":1,"status":"FAIL"} applied="SIGTERM delivered during gate 1.2"
+SEED o7.seed.rp-gate3-interrupt expect={"marker":true,"reason":true,"returncode":1,"status":"FAIL"} got={"marker":true,"reason":true,"returncode":1,"status":"FAIL"} applied="SIGTERM delivered during gate 1.3"
+SEED o7.seed.rp-gate4-interrupt expect={"marker":true,"reason":true,"returncode":1,"status":"FAIL"} got={"marker":true,"reason":true,"returncode":1,"status":"FAIL"} applied="SIGTERM delivered during gate 1.4"
+SEED o7.seed.pk2-census-validate-mismatch expect=true got=true applied="isolated proofkit edge=census-validate-mismatch"
+SEED o7.seed.pk2-census-shas-missing expect=true got=true applied="isolated proofkit edge=census-shas-missing"
+SEED o7.seed.pk2-inspect-git-error expect=true got=true applied="isolated proofkit edge=inspect-git-error"
+SEED o7.seed.pk2-inspect-compiler-missing expect=true got=true applied="isolated proofkit edge=inspect-compiler-missing"
+SEED o7.seed.pk2-pin-write-probe expect=true got=true applied="isolated proofkit edge=pin-write-probe"
+SEED o7.seed.pk2-pin-write-probe-dirty expect=true got=true applied="isolated proofkit edge=pin-write-probe-dirty"
+SEED o7.seed.pk2-inspect-diff-error expect=true got=true applied="isolated proofkit edge=inspect-diff-error"
+SEED o7.seed.pk2-inspect-compiler-stat expect=true got=true applied="isolated proofkit edge=inspect-compiler-stat"
+SEED o7.seed.pk2-inspect-no-nm expect=true got=true applied="isolated proofkit edge=inspect-no-nm"
+SEED o7.seed.pk2-pin-write-type expect=true got=true applied="isolated proofkit edge=pin-write-type"
+SEED o7.seed.pk2-pin-write-dirty expect=true got=true applied="isolated proofkit edge=pin-write-dirty"
+SEED o7.seed.pk2-identity-git-error expect=true got=true applied="isolated proofkit edge=identity-git-error"
+SEED o7.seed.pk2-identity-compiler-stat expect=true got=true applied="isolated proofkit edge=identity-compiler-stat"
+SEED o7.seed.pk2-schema-missing-key expect=true got=true applied="isolated proofkit edge=schema-missing-key"
+SEED o7.seed.pk2-schema-skip-unrenderable expect=true got=true applied="isolated proofkit edge=schema-skip-unrenderable"
+SEED o7.seed.pk2-schema-sentinel-unrenderable expect=true got=true applied="isolated proofkit edge=schema-sentinel-unrenderable"
+SEED o7.seed.pk2-parser-shlex-error expect=true got=true applied="isolated proofkit edge=parser-shlex-error"
+SEED o7.seed.pk2-parser-literal-dollar expect=true got=true applied="isolated proofkit edge=parser-literal-dollar"
+SEED o7.seed.pk2-parser-render-command expect=true got=true applied="isolated proofkit edge=parser-render-command"
+SEED o7.seed.pk2-parser-backtick-unclosed expect=true got=true applied="isolated proofkit edge=parser-backtick-unclosed"
+SEED o7.seed.pk2-parser-nested-expansion expect=true got=true applied="isolated proofkit edge=parser-nested-expansion"
+SEED o7.seed.pk2-parser-nested-command-open expect=true got=true applied="isolated proofkit edge=parser-nested-command-open"
+SEED o7.seed.pk2-parser-nested-backtick-open expect=true got=true applied="isolated proofkit edge=parser-nested-backtick-open"
+SEED o7.seed.pk2-parser-unquoted-backtick expect=true got=true applied="isolated proofkit edge=parser-unquoted-backtick"
+SEED o7.seed.pk2-parser-unquoted-backtick-open expect=true got=true applied="isolated proofkit edge=parser-unquoted-backtick-open"
+SEED o7.seed.pk2-parser-dequote-expansion-open expect=true got=true applied="isolated proofkit edge=parser-dequote-expansion-open"
+SEED o7.seed.pk2-identity-not-descendant expect=true got=true applied="isolated proofkit edge=identity-not-descendant"
+SEED o7.seed.pk2-identity-no-timeout expect=true got=true applied="isolated proofkit edge=identity-no-timeout"
+SEED o7.seed.pk2-identity-no-nm expect=true got=true applied="isolated proofkit edge=identity-no-nm"
+SEED o7.seed.pk2-report-chain-invalid expect=true got=true applied="isolated proofkit edge=report-chain-invalid"
+SEED o7.seed.pk2-report-chain-mismatch expect=true got=true applied="isolated proofkit edge=report-chain-mismatch"
+SEED o7.seed.pk2-report-listdir expect=true got=true applied="isolated proofkit edge=report-listdir"
+SEED o7.seed.pk2-process-wait expect=true got=true applied="isolated proofkit edge=process-wait"
+SEED o7.seed.pk2-process-stop expect=true got=true applied="isolated proofkit edge=process-stop"
+SEED o7.seed.pk2-process-leader-survives expect=true got=true applied="isolated proofkit edge=process-leader-survives"
+SEED o7.seed.pk2-process-zombie-remains expect=true got=true applied="isolated proofkit edge=process-zombie-remains"
+SEED o7.seed.pk2-process-finally-stop expect=true got=true applied="isolated proofkit edge=process-finally-stop"
+SEED o7.seed.pk2-process-residual-zombie expect=true got=true applied="isolated proofkit edge=process-residual-zombie"
+SEED o7.seed.pk2-process-parse expect=true got=true applied="isolated proofkit edge=process-parse"
+SEED o7.seed.pk2-process-ps-status expect=true got=true applied="isolated proofkit edge=process-ps-status"
+SEED o7.seed.pk2-run-bounded-sampler-error expect=true got=true applied="isolated proofkit edge=run-bounded-sampler-error"
+SEED o7.seed.pk2-validator-env-unchanged expect=true got=true applied="isolated proofkit edge=validator-env-unchanged"
+SEED o7.seed.pk2-schema-nonobject expect=true got=true applied="isolated proofkit edge=schema-nonobject"
+SEED o7.seed.pk2-schema-bytes expect=true got=true applied="isolated proofkit edge=schema-bytes"
+SEED o7.seed.pk2-schema-path expect=true got=true applied="isolated proofkit edge=schema-path"
+SEED o7.seed.pk2-schema-duplicate-variant expect=true got=true applied="isolated proofkit edge=schema-duplicate-variant"
+SEED o7.seed.pk2-schema-duplicate-skip expect=true got=true applied="isolated proofkit edge=schema-duplicate-skip"
+SEED o7.seed.pk2-schema-sentinel-iyivar expect=true got=true applied="isolated proofkit edge=schema-sentinel-iyivar"
+SEED o7.seed.pk2-parser-command-open expect=true got=true applied="isolated proofkit edge=parser-command-open"
+SEED o7.seed.pk2-parser-backtick-open expect=true got=true applied="isolated proofkit edge=parser-backtick-open"
+SEED o7.seed.pk2-parser-echo-option expect=true got=true applied="isolated proofkit edge=parser-echo-option"
+SEED o7.seed.pk2-parser-printf-option expect=true got=true applied="isolated proofkit edge=parser-printf-option"
+SEED o7.seed.pk2-parser-template-brace expect=true got=true applied="isolated proofkit edge=parser-template-brace"
+SEED o7.seed.rp-run1-missing-gate1 expect=true got=true applied="isolated runner edge=run1-missing-gate1"
+SEED o7.seed.rp-run1-missing-gate2 expect=true got=true applied="isolated runner edge=run1-missing-gate2"
+SEED o7.seed.rp-run1-missing-gate3 expect=true got=true applied="isolated runner edge=run1-missing-gate3"
+SEED o7.seed.rp-run1-missing-gate4 expect=true got=true applied="isolated runner edge=run1-missing-gate4"
+SEED o7.seed.rp-run3-prerequisite-invalid expect=true got=true applied="isolated runner edge=run3-prerequisite-invalid"
+SEED o7.seed.rp-run3-required-unreadable expect=true got=true applied="isolated runner edge=run3-required-unreadable"
+SEED o7.seed.rp-run3-required-type expect=true got=true applied="isolated runner edge=run3-required-type"
+SEED o7.seed.rp-run3-requested-refusal expect=true got=true applied="isolated runner edge=run3-requested-refusal"
+Final proof status: FAIL
+SEED o7.seed.rp-final-required-missing expect=true got=true applied="isolated runner edge=final-required-missing"
+Final proof status: FAIL
+SEED o7.seed.rp-final-required-type expect=true got=true applied="isolated runner edge=final-required-type"
+SEED o7.seed.rp-attempts-missing expect=true got=true applied="isolated runner edge=attempts-missing"
+SEED o7.seed.rp-attempt-invalid expect=true got=true applied="isolated runner edge=attempt-invalid"
+SEED o7.seed.rp-skip-malformed expect=true got=true applied="isolated runner edge=skip-malformed"
+SEED o7.seed.rp-baseline-census-type expect=true got=true applied="isolated runner edge=baseline-census-type"
+SEED o7.seed.rp-rows-blank expect=true got=true applied="isolated runner edge=rows-blank"
+SEED o7.seed.rp-rows-json expect=true got=true applied="isolated runner edge=rows-json"
+SEED o7.seed.rp-rows-object expect=true got=true applied="isolated runner edge=rows-object"
+SEED o7.seed.rp-required-exclusions-type expect=true got=true applied="isolated runner edge=required-exclusions-type"
+SEED o7.seed.rp-required-exclusions-entry expect=true got=true applied="isolated runner edge=required-exclusions-entry"
+SEED o7.seed.rp-required-exclusions-program expect=true got=true applied="isolated runner edge=required-exclusions-program"
+SEED o7.seed.rp-required-p-nonzero expect=true got=true applied="isolated runner edge=required-p-nonzero"
+SEED o7.seed.rp-baseline-type expect=true got=true applied="isolated runner edge=baseline-type"
+SEED o7.seed.rp-baseline-entry expect=true got=true applied="isolated runner edge=baseline-entry"
+SEED o7.seed.rp-prerequisites-missing expect=true got=true applied="isolated runner edge=prerequisites-missing"
+SEED o7.seed.rp-record-missing expect=true got=true applied="isolated runner edge=record-missing"
+SEED o7.seed.rp-record-shape expect=true got=true applied="isolated runner edge=record-shape"
+SEED o7.seed.rp-final-no-attempt expect=true got=true applied="isolated runner edge=final-no-attempt"
+SEED o7.seed.rp-latest-missing expect=true got=true applied="isolated runner edge=latest-missing"
+SEED o7.seed.rp-latest-interrupt-missing expect=true got=true applied="isolated runner edge=latest-interrupt-missing"
+SEED o7.seed.pk-git-error expect=true got=true applied="isolated proofkit edge=git-error"
+SEED o7.seed.pk-platform-getconf-missing expect=true got=true applied="isolated proofkit edge=platform-getconf-missing"
+SEED o7.seed.pk-platform-getconf-oserror expect=true got=true applied="isolated proofkit edge=platform-getconf-oserror"
+SEED o7.seed.pk-platform-getconf-status expect=true got=true applied="isolated proofkit edge=platform-getconf-status"
+SEED o7.seed.pk-platform-getconf-nondir expect=true got=true applied="isolated proofkit edge=platform-getconf-nondir"
+SEED o7.seed.pk-platform-mktemp-missing expect=true got=true applied="isolated proofkit edge=platform-mktemp-missing"
+SEED o7.seed.pk-platform-mktemp-oserror expect=true got=true applied="isolated proofkit edge=platform-mktemp-oserror"
+SEED o7.seed.pk-platform-mktemp-status expect=true got=true applied="isolated proofkit edge=platform-mktemp-status"
+SEED o7.seed.pk-platform-mktemp-nondir expect=true got=true applied="isolated proofkit edge=platform-mktemp-nondir"
+SEED o7.seed.pk-compiler-env expect=true got=true applied="isolated proofkit edge=compiler-env"
+SEED o7.seed.pk-roots-empty expect=true got=true applied="isolated proofkit edge=roots-empty"
+SEED o7.seed.pk-probe-atime-retention expect=true got=true applied="isolated proofkit edge=probe-atime-retention"
+SEED o7.seed.pk-probe-exec-failure expect=true got=true applied="isolated proofkit edge=probe-exec-failure"
+SEED o7.seed.pk-probe-sha expect=true got=true applied="isolated proofkit edge=probe-sha"
+SEED o7.seed.pk-probe-inode expect=true got=true applied="isolated proofkit edge=probe-inode"
+SEED o7.seed.pk-probe-oserror expect=true got=true applied="isolated proofkit edge=probe-oserror"
+SEED o7.seed.pk-first-output expect=true got=true applied="isolated proofkit edge=first-output"
+SEED o7.seed.pk-nm-output expect=true got=true applied="isolated proofkit edge=nm-output"
+SEED o7.seed.pk-census-set expect=true got=true applied="isolated proofkit edge=census-set"
+SEED o7.seed.pk-census-invalid expect=true got=true applied="isolated proofkit edge=census-invalid"
+SEED o7.seed.pk-census-shas-set expect=true got=true applied="isolated proofkit edge=census-shas-set"
+SEED o7.seed.pk-pin-load-invalid expect=true got=true applied="isolated proofkit edge=pin-load-invalid"
+SEED o7.seed.pk-pin-load-chain expect=true got=true applied="isolated proofkit edge=pin-load-chain"
+SEED o7.seed.pk-pin-load-report expect=true got=true applied="isolated proofkit edge=pin-load-report"
+SEED o7.seed.pk-identity-p-dirty expect=true got=true applied="isolated proofkit edge=identity-p-dirty"
+SEED o7.seed.pk-identity-w-dirty expect=true got=true applied="isolated proofkit edge=identity-w-dirty"
+SEED o7.seed.pk-identity-product-diff expect=true got=true applied="isolated proofkit edge=identity-product-diff"
+SEED o7.seed.pk-identity-compiler-missing expect=true got=true applied="isolated proofkit edge=identity-compiler-missing"
+SEED o7.seed.pk-identity-stamp-missing expect=true got=true applied="isolated proofkit edge=identity-stamp-missing"
+SEED o7.seed.pk-signal-missing expect=true got=true applied="isolated proofkit edge=signal-missing"
+SEED o7.seed.pk-sampler-oserror expect=true got=true applied="isolated proofkit edge=sampler-oserror"
+SEED o7.seed.pk-limit-invalid expect=true got=true applied="isolated proofkit edge=limit-invalid"
+SEED o7.seed.pk-grace-invalid expect=true got=true applied="isolated proofkit edge=grace-invalid"
+SEED o7.seed.pk-status-unknown expect=true got=true applied="isolated proofkit edge=status-unknown"
+SEED o7.seed.pk-status-missing expect=true got=true applied="isolated proofkit edge=status-missing"
+SEED o7.seed.pk-parser-backtick expect=true got=true applied="isolated proofkit edge=parser-backtick"
+SEED o7.seed.pk-parser-trailing-dollar expect=true got=true applied="isolated proofkit edge=parser-trailing-dollar"
+SEED o7.seed.pk-parser-open-brace expect=true got=true applied="isolated proofkit edge=parser-open-brace"
+SEED o7.seed.pk-parser-nested-command expect=true got=true applied="isolated proofkit edge=parser-nested-command"
+SEED o7.seed.pk-parser-nested-backtick expect=true got=true applied="isolated proofkit edge=parser-nested-backtick"
+SEED o7.seed.pk-parser-dequote expect=true got=true applied="isolated proofkit edge=parser-dequote"
+SEED o7.seed.pk-parser-render expect=true got=true applied="isolated proofkit edge=parser-render"
+SEED o7.seed.validator-env-call-variant expect={"control":[],"seed":["C5.6-env-call-variant"]} got={"control":[],"seed":["C5.6-env-call-variant"]} applied="regex-231-mixed->canonical-other;driver=regex;count=1;census_changed=true;script_changed=false"
+SEED o7.seed.validator-iyivar expect={"control":[],"seed":["C5.4-skip-regex"]} got={"control":[],"seed":["C5.4-skip-regex"]} applied="skip-399-wildcard->IYIVAR;driver=smtp;count=1;census_changed=true;script_changed=false"
+SEED o7.seed.validator-platform-guard expect={"control":[],"seed":["C5.4-platform-guard"]} got={"control":[],"seed":["C5.4-platform-guard"]} applied="regex-51-tool->platform;driver=regex;count=1;census_changed=true;script_changed=false"
+Run 1 PASS: /tmp/iyp-f3904534/run1/a1
+Run 2 PASS: /tmp/iyp-f3904534/run2/a1
+Run 3 stage: PASS
+Final proof status: PASS
+Run 1 PASS: /tmp/iyp-f3904534/run1/a2
+Final proof status: FAIL
+SEED o7.seed.final-required-rerun expect={"control_rc":0,"control_status":"PASS","freshness":true,"required_mismatch":true,"rerun1":0,"run1":0,"run2":0,"run3":0,"seed_rc":1,"seed_status":"FAIL"} got={"control_rc":0,"control_status":"PASS","freshness":true,"required_mismatch":true,"rerun1":0,"run1":0,"run2":0,"run3":0,"seed_rc":1,"seed_status":"FAIL"} applied="created=/tmp/iyi-o2-pin-774ijnxt/final-required-flip;latest_run1=a2;required_before=['stage'];required_after=['stage','extra']"
+SEED o7.seed.guard-m01-python-realpath expect="PYTHON-CHANGED" got="PYTHON-CHANGED" applied="python_path replaced with fixture compiler"
+CONTROL o7.control.guard-m01-python-realpath PASS
+SEED o7.seed.guard-m02-census-changed expect="CENSUS-CHANGED" got="CENSUS-CHANGED" applied="census_sha256[acme] replaced"
+CONTROL o7.control.guard-m02-census-changed PASS
+SEED o7.seed.guard-m03-canonical-roots expect="CANONICAL-ROOTS-CHANGED" got="CANONICAL-ROOTS-CHANGED" applied="canonical_roots cleared"
+CONTROL o7.control.guard-m03-canonical-roots PASS
+SEED o7.seed.guard-m04-timeout-realpath expect="TIMEOUT-CHANGED" got="TIMEOUT-CHANGED" applied="timeout_path replaced with nm_path"
+CONTROL o7.control.guard-m04-timeout-realpath PASS
+SEED o7.seed.guard-m05-nm-realpath expect="NM-CHANGED" got="NM-CHANGED" applied="nm_path replaced with timeout_path"
+CONTROL o7.control.guard-m05-nm-realpath PASS
+SEED o7.seed.guard-m19-python-version expect="PYTHON-CHANGED" got="PYTHON-CHANGED" applied="python_version replaced"
+CONTROL o7.control.guard-m19-python-version PASS
+Run 3 stage: STOP
+SEED o7.seed.guard-m08-run3-disk expect={"disk":"STOP","driver_ran":false,"returncode":1,"status":"STOP"} got={"disk":"STOP","driver_ran":false,"returncode":1,"status":"STOP"} applied="disk_min_gb=2**60"
+Run 3 stage: PASS
+CONTROL o7.control.guard-m08-run3-disk PASS
+Run 3 stage: INVALID
+SEED o7.seed.guard-m10-post-driver-identity expect={"exit":"PASS","identity":"INVALID","ledger":"PASS","mtime_changed":true,"reason":true,"returncode":1,"sentinel":"PASS","status":"INVALID"} got={"exit":"PASS","identity":"INVALID","ledger":"PASS","mtime_changed":true,"reason":true,"returncode":1,"sentinel":"PASS","status":"INVALID"} applied="driver touches compiler mtime after sentinel"
+Run 3 stage: PASS
+CONTROL o7.control.guard-m10-post-driver-identity PASS
+Final proof status: INVALID
+SEED o7.seed.guard-m11-final-identity expect={"identity":"INVALID","returncode":1,"status":"INVALID"} got={"identity":"INVALID","returncode":1,"status":"INVALID"} applied="PATH appended before final"
+Final proof status: PASS
+CONTROL o7.control.guard-m11-final-identity PASS
+Final proof status: FAIL
+SEED o7.seed.guard-m12-final-unit expect={"reason":true,"returncode":1,"status":"FAIL"} got={"reason":true,"returncode":1,"status":"FAIL"} applied="run3 result unit changed"
+Final proof status: PASS
+CONTROL o7.control.guard-m12-final-unit PASS
+Final proof status: FAIL
+SEED o7.seed.guard-m13-final-attempt expect={"reason":true,"returncode":1,"status":"FAIL"} got={"reason":true,"returncode":1,"status":"FAIL"} applied="run3 result attempt changed"
+Final proof status: PASS
+CONTROL o7.control.guard-m13-final-attempt PASS
+Final proof status: FAIL
+SEED o7.seed.guard-m20-final-required expect={"reason":true,"returncode":1,"status":"FAIL"} got={"reason":true,"returncode":1,"status":"FAIL"} applied="required.json changed from ['stage'] to []"
+Final proof status: PASS
+CONTROL o7.control.guard-m20-final-required PASS
+Run 3 stage: MISCLASSIFIED
+SEED o7.seed.guard-m07-run3-no-refused expect={"no_refused":"MISCLASSIFIED","returncode":1,"status":"MISCLASSIFIED"} got={"no_refused":"MISCLASSIFIED","returncode":1,"status":"MISCLASSIFIED"} applied="driver emits one shim REFUSED line"
+Run 3 stage: PASS
+CONTROL o7.control.guard-m07-run3-no-refused PASS
+Run 3 stage: FAIL
+SEED o7.seed.guard-m09-run3-census expect={"census":"FAIL","returncode":1,"status":"FAIL"} got={"census":"FAIL","returncode":1,"status":"FAIL"} applied="stage census script_sha256 changed"
+Run 3 stage: PASS
+CONTROL o7.control.guard-m09-run3-census PASS
+SEED o7.seed.guard-m14-baseline-header expect=0 got=0 applied="sibling header colon removed"
+CONTROL o7.control.guard-m14-baseline-header PASS
+Run 1 PASS: /tmp/iyp-0ff265f4/run1/a1
+Run 2 PASS: /tmp/iyp-0ff265f4/run2/a1
+Run 3 stage: PASS
+Final proof status: PASS
+CONTROL s5.control.stage-chain PASS
+CONTROL o7.control.matcher-platform-work PASS
+CONTROL o7.control.matcher-t-work PASS
+SEED o7.seed.matcher-platform-two-level expect={"bindings":{},"ids":[],"kind":null,"status":"unclassified"} got={"bindings":{},"ids":[],"kind":null,"status":"unclassified"} applied="case=platform-two-level;root=/private/tmp/iyi-o4-xcqnu4i6/platform-tmp/outer/driver-work/noquestion;sources=[\"/private/tmp/iyi-o4-xcqnu4i6/repo/bench/std_demo_exercise.iyi\"]"
+SEED o7.seed.matcher-t-two-level expect={"bindings":{},"ids":[],"kind":null,"status":"unclassified"} got={"bindings":{},"ids":[],"kind":null,"status":"unclassified"} applied="case=t-two-level;root=/private/tmp/iyi-o4-px6uz8t4/t/outer/driver-work/noquestion;sources=[\"/private/tmp/iyi-o4-px6uz8t4/repo/bench/std_demo_exercise.iyi\"]"
+SEED o7.seed.matcher-outside-both expect={"bindings":{},"ids":[],"kind":null,"status":"unclassified"} got={"bindings":{},"ids":[],"kind":null,"status":"unclassified"} applied="case=outside-attempt;root=/private/tmp/iyi-o4-r3l3utlu/outside/noquestion;sources=[\"/private/tmp/iyi-o4-r3l3utlu/repo/bench/std_demo_exercise.iyi\"]"
+SEED o7.seed.platform-tmp-changed expect={"applied":true,"reason":"PLATFORM-TMP-CHANGED"} got={"applied":true,"reason":"PLATFORM-TMP-CHANGED"} applied="old=/private/var/folders/cx/smp6389s35gds6b_bfywv_8h0000gn/T;new=/private/tmp/iyi-o2-pin-37c9jtyj"
+SEED o7.seed.platform-tmp-probe expect="PLATFORM-TMP-UNOBSERVABLE" got="PLATFORM-TMP-UNOBSERVABLE" applied="getconf=/tmp/iyi-o2-pin-7h_559bs/expected-platform;mktemp-parent=/tmp/iyi-o2-pin-7h_559bs/foreign-platform"
+Run 1 PASS: /tmp/iyp-39a2cf92/run1/a1
+Run 2 PASS: /tmp/iyp-39a2cf92/run2/a1
+Run 3 stage: PASS
+Final proof status: PASS
+CONTROL o7.control.all PASS
+CONTROL o7.control.pin-command PASS
+SEED o7.seed.shim-parser-edges expect={"refusal":"option requires a value: --prelude","run_args":["alpha"],"separator":true,"sources":["fixture.iyi"]} got={"refusal":"option requires a value: --prelude","run_args":["alpha"],"separator":true,"sources":["fixture.iyi"]} applied="separator inserted once; ambient option value removed once"
+SEED o7.seed.artifact-session-kill expect={"returncode":-9,"stderr":"b''","stdout":"b''","timed_out":true} got={"returncode":-9,"stderr":"b''","stdout":"b''","timed_out":true} applied="child ignores SIGTERM; timeout forces SIGKILL"
+SEED o7.seed.main-identity-refusal expect={"pin_missing":true,"returncode":1} got={"pin_missing":true,"returncode":1} applied="report=/tmp/iyp-13f402ff;pin_json=absent"
+Run 1 PASS: /tmp/iyp-f63fba19/run1/a1
+CONTROL o7.control.run1 PASS
+Run 1 PASS: /tmp/iyp-bc27fe32/run1/a1
+SEED s5.seed.run1-slow-gate expect={"gate":"PASS","initial_zero":true,"returncode":0,"sample_count_at_least_2":true,"status":"PASS"} got={"gate":"PASS","initial_zero":true,"returncode":0,"sample_count_at_least_2":true,"status":"PASS"} applied="scenario=run1-slow-gate;stub_files_changed=1;bytes_differ=true"
+Run 1 FAIL: /tmp/iyp-24945eb2/run1/a1
+SEED o7.seed.coverage-run1-gate1-fail expect={"check":"FAIL","returncode":1,"status":"FAIL"} got={"check":"FAIL","returncode":1,"status":"FAIL"} applied="scenario=gate1-fail;stub_files_changed=1;bytes_differ=true"
+SEED o7.seed.coverage-run1-identity expect={"identity":"INVALID","returncode":1,"status":"INVALID"} got={"identity":"INVALID","returncode":1,"status":"INVALID"} applied="compiler bytes changed once after pin"
+SEED o7.seed.coverage-run1-disk expect={"identity":"STOP","returncode":1,"status":"STOP"} got={"identity":"STOP","returncode":1,"status":"STOP"} applied="disk_min_gb raised to 2**60"
+Run 1 FAIL: /tmp/iyp-72208dac/run1/a1
+SEED s5.seed.rg2r-zero expect={"check":"FAIL","returncode":1,"status":"FAIL"} got={"check":"FAIL","returncode":1,"status":"FAIL"} applied="scenario=rg2r-zero;stub_files_changed=1;bytes_differ=true"
+Run 1 PASS: /tmp/iyp-6a85ace0/run1/a1
+SEED s5.seed.exclusions-wrong-location expect={"attempt_baseline":true,"attempt_exclusions":true,"returncode":0,"wrong_location_untouched":true} got={"attempt_baseline":true,"attempt_exclusions":true,"returncode":0,"wrong_location_untouched":true} applied="created=/tmp/iyp-6a85ace0/run1/exclusions.json;bytes=24;exists=true"
+Run 1 FAIL: /tmp/iyp-c7b9c53a/run1/a1
+SEED s5.seed.run1-missing-sentinel expect={"check":"FAIL","returncode":1,"status":"FAIL"} got={"check":"FAIL","returncode":1,"status":"FAIL"} applied="scenario=run1-missing-sentinel;stub_files_changed=1;bytes_differ=true"
+Run 1 FAIL: /tmp/iyp-0deca50a/run1/a1
+SEED s5.seed.rg9-140 expect={"check":"FAIL","returncode":1,"status":"FAIL"} got={"check":"FAIL","returncode":1,"status":"FAIL"} applied="scenario=rg9-140;stub_files_changed=1;bytes_differ=true"
+Run 1 FAIL: /tmp/iyp-cbb06b1b/run1/a1
+SEED s5.seed.sibling-count-114 expect={"check":"FAIL","returncode":1,"status":"FAIL"} got={"check":"FAIL","returncode":1,"status":"FAIL"} applied="scenario=sibling-count-114;stub_files_changed=1;bytes_differ=true"
+Run 1 FAIL: /tmp/iyp-525605cc/run1/a1
+SEED s5.seed.sample-exclusion expect={"check":"FAIL","reason":true,"returncode":1,"status":"FAIL"} got={"check":"FAIL","reason":true,"returncode":1,"status":"FAIL"} applied="scenario=sample-exclusion;stub_files_changed=1;bytes_differ=true"
+Run 1 PASS: /tmp/iyp-5651eaf6/run1/a1
+Run 3 stage: PASS
+Run 3 missing: CENSUS-MISSING
+SEED s5.seed.std-exclusion expect={"missing_status":"CENSUS-MISSING","required":["stage","missing"],"returncode":1,"stage_status":"PASS"} got={"missing_status":"CENSUS-MISSING","required":["stage","missing"],"returncode":1,"stage_status":"PASS"} applied="scenario=std-exclusion;stub_files_changed=1;bytes_differ=true"
+Run 3 stage: PASS
+Run 3 extra: CENSUS-MISSING
+SEED s5.seed.p-nonzero-not-added expect={"extra_status":"CENSUS-MISSING","required":["stage","extra"],"returncode":1,"stage_status":"PASS"} got={"extra_status":"CENSUS-MISSING","required":["stage","extra"],"returncode":1,"stage_status":"PASS"} applied="run2=/tmp/iyp-c96fbc54/run2/a1/run2.jsonl;field=p_nonzero;control=false;seed=true;changed_rows=1"
+SEED o7.seed.coverage-run2-identity expect={"identity":"INVALID","returncode":1,"status":"INVALID"} got={"identity":"INVALID","returncode":1,"status":"INVALID"} applied="compiler bytes changed once after pin"
+SEED o7.seed.coverage-run2-disk expect={"identity":"STOP","returncode":1,"status":"STOP"} got={"identity":"STOP","returncode":1,"status":"STOP"} applied="disk_min_gb raised to 2**60"
+Run 2 STOP: /tmp/iyp-67e75720/run2/a1
+SEED o7.seed.coverage-run2-stop expect={"counts":"PASS","legs":"STOP","returncode":1,"status":"STOP"} got={"counts":"PASS","legs":"STOP","returncode":1,"status":"STOP"} applied="scenario=run2-stop;stub_files_changed=1;bytes_differ=true"
+Run 2 FAIL: /tmp/iyp-5f6a4c19/run2/a1
+SEED o7.seed.coverage-run2-fail expect={"counts":"PASS","legs":"FAIL","returncode":1,"status":"FAIL"} got={"counts":"PASS","legs":"FAIL","returncode":1,"status":"FAIL"} applied="scenario=run2-fail;stub_files_changed=1;bytes_differ=true"
+Run 2 FAIL: /tmp/iyp-e47a8225/run2/a1
+SEED o7.seed.coverage-run2-count expect={"counts":"FAIL","legs":"PASS","returncode":1,"status":"FAIL"} got={"counts":"FAIL","legs":"PASS","returncode":1,"status":"FAIL"} applied="scenario=run2-count;stub_files_changed=1;bytes_differ=true"
+Run 2 FAIL: /tmp/iyp-dc3f3de5/run2/a1
+SEED o7.seed.coverage-run2-missing-report expect={"counts":"FAIL","legs":"FAIL","returncode":1,"status":"FAIL"} got={"counts":"FAIL","legs":"FAIL","returncode":1,"status":"FAIL"} applied="scenario=run2-missing-report;stub_files_changed=1;bytes_differ=true"
+CONTROL o7.control.run3-prerequisite PASS
+SEED s5.seed.run3-missing-prerequisite expect={"required_exists":false,"returncode":2,"stderr_captured":true} got={"required_exists":false,"returncode":2,"stderr_captured":true} applied="latest_attempt=10;removed=/tmp/iyp-57204c77/run1/a10/baseline_skips.json;exists=false"
+CONTROL o7.control.required-selection PASS
+SEED s5.seed.required-mismatch expect={"frozen":["other"],"returncode":1,"status":"INVALID","stderr_captured":true} got={"frozen":["other"],"returncode":1,"status":"INVALID","stderr_captured":true} applied="created=/tmp/iyp-d4f2341c/run3/required.json;value=['other']"
+Run 3 stage: INVALID
+SEED s5.seed.binary-changed expect={"identity":"INVALID","returncode":1,"status":"INVALID"} got={"identity":"INVALID","returncode":1,"status":"INVALID"} applied="before_sha=3228e7050b9633c225785237804f0be3c1c5a1185929d0bb0f47b3a617281b9e;after_sha=27a7bb94ab1bfaacb7b92099958409a67515c16b3d995983b403bdc10eec7070;bytes_differ=true"
+Run 3 stage: NOT-EXECUTED
+SEED s5.seed.run3-import expect={"exit":"PASS","ledger":"NOT-EXECUTED","not_executed_recorded":true,"not_roundtripped_recorded":true,"returncode":1,"status":"NOT-EXECUTED"} got={"exit":"PASS","ledger":"NOT-EXECUTED","not_executed_recorded":true,"not_roundtripped_recorded":true,"returncode":1,"status":"NOT-EXECUTED"} applied="scenario=run3-import;drivers=('stage',);stub_files_changed=2;removed=none"
+Run 3 stage: TIMEOUT
+SEED s5.seed.run3-driver-timeout expect={"exit":"TIMEOUT","returncode":1,"status":"TIMEOUT"} got={"exit":"TIMEOUT","returncode":1,"status":"TIMEOUT"} applied="scenario=driver-timeout;drivers=('stage',);stub_files_changed=2;removed=none"
+Run 3 stage: ENV-BLOCKED
+SEED s5.seed.skip-env-blocked expect={"returncode":1,"skips":"ENV-BLOCKED","status":"ENV-BLOCKED"} got={"returncode":1,"skips":"ENV-BLOCKED","status":"ENV-BLOCKED"} applied="scenario=skip-env-blocked;drivers=('stage',);stub_files_changed=2;removed=none"
+Run 3 stage: PARTIAL
+SEED s5.seed.skip-partial expect={"returncode":1,"skips":"PARTIAL","status":"PARTIAL"} got={"returncode":1,"skips":"PARTIAL","status":"PARTIAL"} applied="scenario=skip-partial;drivers=('stage',);stub_files_changed=2;removed=none"
+Run 3 stage: PASS
+SEED s5.seed.skip-platform expect={"limit_named":true,"returncode":0,"skips":"PASS","status":"PASS"} got={"limit_named":true,"returncode":0,"skips":"PASS","status":"PASS"} applied="scenario=skip-platform;drivers=('stage',);stub_files_changed=2;removed=none"
+Run 3 stage: FAIL
+SEED s5.seed.driver-missing-sentinel expect={"ledger":"PASS","returncode":1,"sentinel":"FAIL","status":"FAIL"} got={"ledger":"PASS","returncode":1,"sentinel":"FAIL","status":"FAIL"} applied="scenario=missing-sentinel;drivers=('stage',);stub_files_changed=2;removed=none"
+Run 3 stage: STALE
+SEED s5.seed.driver-stale-ledger expect={"ledger":"STALE","returncode":1,"status":"STALE"} got={"ledger":"STALE","returncode":1,"status":"STALE"} applied="scenario=stale-ledger;drivers=('stage',);stub_files_changed=2;removed=none"
+Run 3 missing: CENSUS-MISSING
+Run 3 stage: PASS
+SEED s5.seed.census-missing-continues expect={"missing":"CENSUS-MISSING","returncode":1,"stage":"PASS"} got={"missing":"CENSUS-MISSING","returncode":1,"stage":"PASS"} applied="scenario=control;drivers=('missing', 'stage');stub_files_changed=0;removed=none"
+Run 3 missingdriver: FAIL
+Run 3 stage: PASS
+SEED s5.seed.driver-missing-continues expect={"missing":"FAIL","returncode":1,"stage":"PASS"} got={"missing":"FAIL","returncode":1,"stage":"PASS"} applied="scenario=driver-missing;drivers=('missingdriver', 'stage');stub_files_changed=3;removed=/tmp/iyi-o2-pin-vh141xdl/missingdriver-target.sh"
+Final proof status: PASS
+CONTROL o7.control.route-a PASS
+SEED s5.seed.route-a-drivers expect=2 got=2 applied="ROUTE_A_DRIVERS=None->'cookie';changed=true;main_called=true"
+Final proof status: FAIL
+SEED s5.seed.final-forged-pass expect={"reason":true,"returncode":1,"status":"FAIL"} got={"reason":true,"returncode":1,"status":"FAIL"} applied="field=checks.gate-1.2;before=PASS;after=FAIL;bytes_differ=true"
+Final proof status: FAIL
+SEED s5.seed.final-missing-result expect={"reason":true,"returncode":1,"status":"FAIL"} got={"reason":true,"returncode":1,"status":"FAIL"} applied="removed=/tmp/iyp-5b7b48e4/run2/a1/result.json;exists=false"
+Final proof status: FAIL
+SEED s5.seed.final-chain-mismatch expect={"reason":true,"returncode":1,"status":"FAIL"} got={"reason":true,"returncode":1,"status":"FAIL"} applied="chain=1172e26a59ea7444f3a87624acd6836f->00000000000000000000000000000000;changed=true"
+Final proof status: PASS
+SEED s5.seed.final-earlier-failure-omitted expect={"latest_attempt":10,"listed":true,"returncode":0,"status":"PASS"} got={"latest_attempt":10,"listed":true,"returncode":0,"status":"PASS"} applied="replaced_one_earlier_result=/tmp/iyp-e04c2687/run1/a9/result.json;status=FAIL"
+CONTROL o7.control.run-proof-optimize PASS
+SEED o7.seed.run-proof-optimize-refusal expect={"returncode":2,"stderr":"run_proof: refusing to run under python -O / PYTHONOPTIMIZE"} got={"returncode":2,"stderr":"run_proof: refusing to run under python -O / PYTHONOPTIMIZE"} applied="control_argv=['/Users/jwaldrip/.cache/iyi-corpus-venv/bin/python3', '-B', '/Users/jwaldrip/dev/worktrees/iyi-audit-deadlines-seams-20261030/proof/run_proof.py', '--help'];seed_argv=['/Users/jwaldrip/.cache/iyi-corpus-venv/bin/python3', '-B', '-O', '/Users/jwaldrip/dev/worktrees/iyi-audit-deadlines-seams-20261030/proof/run_proof.py', '--help'];inserted_token=-O"
+SEED o7.seed.d4-stage-interrupt expect={"reason":true,"returncode":1,"status":"FAIL","survivors_gone":true} got={"reason":true,"returncode":1,"status":"FAIL","survivors_gone":true} applied="marker_seen=true;sigterm_sent=true;scenario=d4-stage-interrupt;stub_files_changed=1;bytes_differ=true"
+TOTAL seeds_executed=432 seeds_passed=431 seeds_missed=1 seeds_missing=0 controls_executed=84 controls_failed=0 controls_missing=0
+HARNESS FAIL
