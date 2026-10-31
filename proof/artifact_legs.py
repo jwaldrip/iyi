@@ -53,12 +53,7 @@ _BUILD_LEGS = ("P", "C1", "C2", "C3")
 _RUN_LEGS = ("P", "C1", "C3")
 
 
-def run_timeout_for(
-    relpath: str,
-    *,
-    run_default_timeout: float = RUN_DEFAULT_TIMEOUT,
-    run_heavy_timeout: float = RUN_HEAVY_TIMEOUT,
-) -> float:
+def run_timeout_for(relpath: str, *, run_default_timeout: float = RUN_DEFAULT_TIMEOUT, run_heavy_timeout: float = RUN_HEAVY_TIMEOUT) -> float:
     return run_heavy_timeout if relpath in HEAVY else run_default_timeout
 
 
@@ -281,18 +276,7 @@ def _remove_success_scratch(paths: Sequence[str]) -> None:
         shutil.rmtree(path, ignore_errors=True)
 
 
-def _run_row(
-    source: str,
-    *,
-    repo: str,
-    compiler: str,
-    work_root: str,
-    nm_bin: str,
-    build_timeout: float = BUILD_TIMEOUT,
-    run_default_timeout: float = RUN_DEFAULT_TIMEOUT,
-    run_heavy_timeout: float = RUN_HEAVY_TIMEOUT,
-    disk_min_gb: float = DISK_MIN_GB,
-) -> dict:
+def _run_row(source: str, *, repo: str, compiler: str, work_root: str, nm_bin: str, build_timeout: float = BUILD_TIMEOUT, run_default_timeout: float = RUN_DEFAULT_TIMEOUT, run_heavy_timeout: float = RUN_HEAVY_TIMEOUT, disk_min_gb: float = DISK_MIN_GB) -> dict:
     result = _empty_row(source, repo, work_root)
     source_path = result["source"]
     relpath = result["name"]
@@ -669,18 +653,7 @@ def _run_row(
     return result
 
 
-def run_row(
-    source: str,
-    *,
-    repo: str,
-    compiler: str,
-    work_root: str,
-    nm_bin: str,
-    build_timeout: float = BUILD_TIMEOUT,
-    run_default_timeout: float = RUN_DEFAULT_TIMEOUT,
-    run_heavy_timeout: float = RUN_HEAVY_TIMEOUT,
-    disk_min_gb: float = DISK_MIN_GB,
-) -> dict:
+def run_row(source: str, *, repo: str, compiler: str, work_root: str, nm_bin: str, build_timeout: float = BUILD_TIMEOUT, run_default_timeout: float = RUN_DEFAULT_TIMEOUT, run_heavy_timeout: float = RUN_HEAVY_TIMEOUT, disk_min_gb: float = DISK_MIN_GB) -> dict:
     """Run one row, converting only OSError and RuntimeError at the row boundary."""
     result = _empty_row(source, repo, work_root)
     try:
@@ -704,19 +677,7 @@ def run_row(
         return result
 
 
-def run_rows(
-    sources: Sequence[str],
-    *,
-    repo: str,
-    compiler: str,
-    work_root: str,
-    nm_bin: str,
-    workers: int,
-    build_timeout: float = BUILD_TIMEOUT,
-    run_default_timeout: float = RUN_DEFAULT_TIMEOUT,
-    run_heavy_timeout: float = RUN_HEAVY_TIMEOUT,
-    disk_min_gb: float = DISK_MIN_GB,
-) -> list[dict]:
+def run_rows(sources: Sequence[str], *, repo: str, compiler: str, work_root: str, nm_bin: str, workers: int, build_timeout: float = BUILD_TIMEOUT, run_default_timeout: float = RUN_DEFAULT_TIMEOUT, run_heavy_timeout: float = RUN_HEAVY_TIMEOUT, disk_min_gb: float = DISK_MIN_GB) -> list[dict]:
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [
             pool.submit(
@@ -772,14 +733,7 @@ def _argument_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(
-    argv: Sequence[str] | None = None,
-    *,
-    build_timeout: float = BUILD_TIMEOUT,
-    run_default_timeout: float = RUN_DEFAULT_TIMEOUT,
-    run_heavy_timeout: float = RUN_HEAVY_TIMEOUT,
-    disk_min_gb: float = DISK_MIN_GB,
-) -> int:
+def main(argv: Sequence[str] | None = None, *, build_timeout: float = BUILD_TIMEOUT, run_default_timeout: float = RUN_DEFAULT_TIMEOUT, run_heavy_timeout: float = RUN_HEAVY_TIMEOUT, disk_min_gb: float = DISK_MIN_GB) -> int:
     parser = _argument_parser()
     try:
         args = parser.parse_args(argv)

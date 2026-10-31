@@ -18566,8 +18566,8 @@ ALLOWLIST: tuple[tuple[str, int, int, str, str], ...] = (
     ),
     (
         "proof.artifact_legs",
-        857,
-        858,
+        811,
+        812,
         "s4.control.counts",
         "python -B proof/artifact_legs.py with an empty zero-count corpus "
         "reaches the direct-script main handoff, reports a passing summary, "
