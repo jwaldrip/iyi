@@ -1,0 +1,9 @@
+{
+  "archive": "audit-completion-6bbe-e2c.tar.gz",
+  "archive_bytes": 150770,
+  "archive_sha256": "b780563771218201099d0e390652cb08f7ea39d0a4f2373c99b3a6a62271d76c",
+  "members": 119,
+  "all_members_byte_equal_native": true,
+  "exact_and_generic_token_scan_matches": 0,
+  "result": "E2c PASS (rerun after reboot loss; see verification file)"
+}
