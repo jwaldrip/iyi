@@ -1,0 +1,36 @@
+{
+  "kind": "parent-observed-layout-checks",
+  "base": "451420109dfb0bbcdf800e0143c30768c73e3e0b",
+  "candidate": "6bbe1bf2e484bc4ec33aa6d58667c43c096cd3bd",
+  "interpreter": "/Users/jwaldrip/.cache/iyi-corpus-venv/bin/python3",
+  "interpreter_flags": ["-B", "-I"],
+  "checker": "proof/recovery-20261030/annotation-layout/artifact_legs_layout_check.py",
+  "self_test": {
+    "returncode": 0,
+    "verdict": "SELFTEST PASS",
+    "variants": {
+      "repair": [],
+      "unfixed-base": ["C1"],
+      "stale-allowlist": ["C3"],
+      "one-signature-left-wrapped": ["C1"],
+      "semantic-edit": ["C2"],
+      "extra-smoke-edit": ["C4"],
+      "other-module-edit": ["C5"]
+    },
+    "repair_main_guard_span": [811, 812],
+    "repair_line_count": 812,
+    "unfixed_annotation_only_lines": [57, 61, 285, 287, 288, 289, 290, 295, 673, 675, 676, 677, 678, 683, 708, 710, 711, 712, 713, 714, 719, 776, 782]
+  },
+  "actual_candidate": {
+    "returncode": 0,
+    "checks": {"C1": "PASS", "C2": "PASS", "C3": "PASS", "C4": "PASS", "C5": "PASS"},
+    "verdict": "LAYOUT CHECK PASS",
+    "working_tree_porcelain": "",
+    "remote_head": "6bbe1bf2e484bc4ec33aa6d58667c43c096cd3bd"
+  },
+  "source_diff_numstat": {
+    "proof/artifact_legs.py": {"added": 5, "removed": 51},
+    "proof/smoke_test.py": {"added": 2, "removed": 2}
+  },
+  "limitations": "This records compile-only layout and identity checks. It does not claim the new candidate's smoke, coverage, independent review, full corpus or upstream delivery passed."
+}
