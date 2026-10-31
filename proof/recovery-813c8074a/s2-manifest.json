@@ -1,0 +1,9 @@
+{
+  "archive": "audit-813c8074a-s2.tar.gz",
+  "archive_bytes": 695310,
+  "archive_sha256": "76343775cd9b166d19c2b213facb6b43a19006d69cd58c80040c40c19affc2e7",
+  "members": 195,
+  "all_members_byte_equal_native": true,
+  "exact_and_generic_token_scan_matches": 0,
+  "result": "S2 static rederivation at H prime: 864 leaves, 814 equal,23 translated,5 expected deltas,11 exclusions,8 unproven-by-method,3 observations; both greps exit 1; parent verified receipts only"
+}
