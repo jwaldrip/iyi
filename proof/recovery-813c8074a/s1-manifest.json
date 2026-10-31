@@ -1,0 +1,10 @@
+{
+  "archive": "audit-813c8074a-s1.tar.gz",
+  "archive_bytes": 303864,
+  "archive_sha256": "d532da4e747763a81bb330085402c5b501490894ad48abb5fef2d165af42fa9e",
+  "members": 59,
+  "all_members_byte_equal_native": true,
+  "exact_and_generic_token_scan_matches": 0,
+  "symlinks_recorded": 0,
+  "result": "S1 mapping at H prime: 80 rows (covering 102 finding lines) PROVEN, 33 keys PROVEN, 0 UNMAPPED; compare.json ID sets equal, 0 semantic diffs; translation proof 0 span differences"
+}
