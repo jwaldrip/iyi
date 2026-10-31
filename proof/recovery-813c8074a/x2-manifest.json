@@ -1,0 +1,10 @@
+{
+  "archive": "audit-813c8074a-x2.tar.gz",
+  "archive_bytes": 357922,
+  "archive_sha256": "4f089a9d52612b7e2027e7fdfc291db4de6bfc664747927baee1312fca9d0d4f",
+  "members": 821,
+  "all_members_byte_equal_native": true,
+  "exact_and_generic_token_scan_matches": 0,
+  "symlinks_recorded": 3,
+  "result": "X2 all classes at H prime: O3 x2 equal, plan 12 lines, layout C4/C5 FAIL as predicted + delta_shape PASS, refusals x4 rc2 (attempt1 disclosed), registration, manual seeds, fguards, matrix 70+17; parent verified receipts only"
+}
