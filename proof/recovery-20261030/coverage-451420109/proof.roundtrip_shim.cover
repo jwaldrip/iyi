@@ -1,0 +1,1260 @@
+       #!/usr/bin/env python3
+    1: """Importable observed-corpus compiler shim for matching, execution, and ledger proof."""
+       
+    1: from __future__ import annotations
+       
+    1: import dataclasses
+    1: import fcntl
+    1: import glob
+    1: import hashlib
+    1: import json
+    1: import os
+    1: import re
+    1: import shlex
+    1: import shutil
+    1: import signal
+    1: import subprocess
+    1: import sys
+    1: import time
+    1: import uuid
+    1: from collections.abc import Mapping, Sequence
+    1: from typing import NoReturn
+       
+       
+    2: CONFIG_KEYS = frozenset(
+    1:     {
+               "real",
+               "census",
+               "ledger",
+               "nonce",
+               "driver",
+               "work_tmp",
+               "scratch",
+               "repo",
+               "canonical_roots",
+               "platform_tmp",
+           }
+       )
+    1: HEADER_KEYS = frozenset({"v", "kind", "nonce", "driver", "attempt", "chain_id"})
+    1: ENV_SEEN_KEYS = (
+           "IYI_PATH",
+           "CRYSTAL_PATH",
+           "IYI_CACHE_DIR",
+           "IYI_OPTS",
+           "CRYSTAL_OPTS",
+       )
+       
+       
+    3: @dataclasses.dataclass(frozen=True)
+    2: class OptionSpec:
+    1:     arity: int | tuple[int, int]
+    1:     build_only: bool = False
+       
+       
+       # Transcribed from create_compiler in src/compiler/iyi/command.cr:807-1138
+       # and its target and warning option helpers at command.cr:1474-1522.
+   52: OPTION_TABLE: dict[str, OptionSpec] = {
+    1:     "--cross-compile": OptionSpec(0, build_only=True),
+    1:     "-d": OptionSpec(0),
+    1:     "--debug": OptionSpec(0),
+    1:     "--no-debug": OptionSpec(0),
+    1:     "--frame-pointers": OptionSpec(1),
+    1:     "-D": OptionSpec(1),
+    1:     "--define": OptionSpec(1),
+    1:     "--emit": OptionSpec((0, 1)),
+    1:     "--x86-asm-syntax": OptionSpec(1),
+    1:     "-f": OptionSpec(1),
+    1:     "--format": OptionSpec(1),
+    1:     "--error-trace": OptionSpec(0),
+    1:     "-h": OptionSpec(0),
+    1:     "--help": OptionSpec(0),
+    1:     "--ll": OptionSpec(0),
+    1:     "--link-flags": OptionSpec(1),
+    1:     "--mcpu": OptionSpec(1),
+    1:     "--mattr": OptionSpec(1),
+    1:     "--mcmodel": OptionSpec(1),
+    1:     "--warnings": OptionSpec(1),
+    1:     "--error-on-warnings": OptionSpec(0),
+    1:     "--exclude-warnings": OptionSpec(1),
+    1:     "--no-color": OptionSpec(0),
+    1:     "--no-codegen": OptionSpec(0),
+    1:     "-o": OptionSpec(1),
+    1:     "--output": OptionSpec(1),
+    1:     "--prelude": OptionSpec(1),
+    1:     "--crystal": OptionSpec(0),
+    1:     "--iyi-keep": OptionSpec(1),
+    1:     "--emit-bind": OptionSpec(1),
+    1:     "--emit-iyimod": OptionSpec(1),
+    1:     "--use-iyimod": OptionSpec(1),
+    1:     "--release": OptionSpec(0),
+    1:     "-O": OptionSpec(1),
+    1:     "-s": OptionSpec(0),
+    1:     "--stats": OptionSpec(0),
+    1:     "-p": OptionSpec(0),
+    1:     "--progress": OptionSpec(0),
+    1:     "-t": OptionSpec(0),
+    1:     "--time": OptionSpec(0),
+    1:     "--single-module": OptionSpec(0),
+    1:     "--threads": OptionSpec(1),
+    1:     "--target": OptionSpec(1, build_only=True),
+    1:     "--verbose": OptionSpec(0),
+    1:     "--static": OptionSpec(0),
+    1:     "--force": OptionSpec(0, build_only=True),
+    1:     "--stale-key": OptionSpec(1, build_only=True),
+    1:     "--stale-accept": OptionSpec(1, build_only=True),
+    1:     "--stale-block": OptionSpec(1, build_only=True),
+    1:     "--stale-dump-elements": OptionSpec(1, build_only=True),
+    1:     "--stdin-filename": OptionSpec(1),
+       }
+       
+    1: UNCHANGED_EXACT = frozenset({"--crystal", "--no-codegen", "--emit"})
+    1: PASSTHROUGH_EXACT = frozenset({"--emit-iyimod", "--use-iyimod"})
+       
+       
+    2: class ShimError(RuntimeError):
+    1:     """A closed refusal, not a proof-tool crash."""
+       
+       
+    2: class ConfigError(ShimError):
+    1:     pass
+       
+       
+    2: class InvocationError(ShimError):
+    1:     pass
+       
+       
+    3: @dataclasses.dataclass(frozen=True)
+    2: class Invocation:
+    1:     argv: tuple[str, ...]
+    1:     command_word: str
+    1:     command: str
+    1:     compiler_args: tuple[str, ...]
+    1:     run_args: tuple[str, ...]
+    1:     sources: tuple[str, ...]
+    1:     output: str | None
+    1:     has_separator: bool
+       
+       
+    3: @dataclasses.dataclass(frozen=True)
+    2: class CompilerEnvironment:
+    1:     roots: tuple[str, ...]
+    1:     cache_dir: str
+       
+       
+    3: @dataclasses.dataclass(frozen=True)
+    2: class Classification:
+    1:     mode: str
+    1:     canonical: bool
+    1:     first_noncanonical_root: str | None
+    1:     variant_ids: tuple[str, ...]
+    1:     variant_kind: str | None
+    1:     bindings: dict[str, dict[str, str]]
+    1:     status: str
+    1:     reason: str | None
+       
+       
+    3: @dataclasses.dataclass(frozen=True)
+    2: class ExecPlan:
+    1:     real: str
+    1:     argv: tuple[str, ...]
+       
+       
+    3: @dataclasses.dataclass(frozen=True)
+    2: class _ChildResult:
+    1:     rc: int
+    1:     stdout: bytes
+    1:     stderr: bytes
+    1:     interrupted: int | None
+       
+       
+    1: def sha256_file(path: str) -> str:
+   13:     digest = hashlib.sha256()
+   26:     with open(path, "rb") as source:
+   26:         while chunk := source.read(65536):
+   13:             digest.update(chunk)
+   13:     return digest.hexdigest()
+       
+       
+    1: def load_config(path: str) -> dict:
+   55:     try:
+  110:         with open(path, "r", encoding="utf-8") as source:
+   55:             config = json.load(source)
+    2:     except (OSError, UnicodeError, json.JSONDecodeError) as error:
+    2:         raise ConfigError(f"config unreadable: {error}") from error
+   53:     if not isinstance(config, dict):
+    1:         raise ConfigError("config is not an object")
+   52:     keys = frozenset(config)
+   52:     if keys != CONFIG_KEYS:
+    1:         missing = sorted(CONFIG_KEYS - keys)
+    1:         unknown = sorted(keys - CONFIG_KEYS)
+    1:         raise ConfigError(f"config keys differ: missing={missing}, unknown={unknown}")
+  452:     for key in CONFIG_KEYS - {"canonical_roots", "platform_tmp"}:
+  402:         if not isinstance(config[key], str):
+    1:             raise ConfigError(f"config {key} is not a string")
+   50:     platform_tmp = config["platform_tmp"]
+   50:     if platform_tmp is not None and not isinstance(platform_tmp, str):
+    1:         raise ConfigError("config platform_tmp is not a string or null")
+   49:     if isinstance(platform_tmp, str) and os.path.realpath(platform_tmp) != platform_tmp:
+    1:         raise ConfigError("config platform_tmp is not a realpath")
+   48:     roots = config["canonical_roots"]
+  191:     if not isinstance(roots, list) or any(not isinstance(root, str) for root in roots):
+    2:         raise ConfigError("config canonical_roots is not a string list")
+   46:     if re.fullmatch(r"[0-9a-f]{32}", config["nonce"]) is None:
+    1:         raise ConfigError("config nonce is not 32 lowercase hex characters")
+  224:     for key in ("real", "census", "work_tmp", "repo"):
+  180:         if os.path.realpath(config[key]) != config[key]:
+    1:             raise ConfigError(f"config {key} is not a realpath")
+   44:     if not os.path.isabs(config["ledger"]) or not os.path.isabs(config["scratch"]):
+    1:         raise ConfigError("config ledger and scratch must be absolute")
+   88:     normalized_roots = [os.path.realpath(root) for root in roots]
+   43:     if normalized_roots != roots:
+    1:         raise ConfigError("config canonical_roots contains a non-realpath")
+   42:     return config
+       
+       
+    1: def read_header(ledger_path: str, *, nonce: str | None = None, driver: str | None = None) -> dict:
+   51:     try:
+  101:         with open(ledger_path, "r", encoding="utf-8") as source:
+   50:             first = source.readline()
+    1:     except (OSError, UnicodeError) as error:
+    1:         raise ConfigError(f"ledger unavailable: {error}") from error
+   50:     if not first:
+    1:         raise ConfigError("ledger header is missing")
+   49:     try:
+   49:         header = json.loads(first)
+    1:     except json.JSONDecodeError as error:
+    1:         raise ConfigError(f"ledger header is invalid JSON: {error}") from error
+   48:     if not isinstance(header, dict) or frozenset(header) != HEADER_KEYS:
+    2:         raise ConfigError("ledger header shape is invalid")
+   46:     if header.get("v") != 1 or header.get("kind") != "header":
+    1:         raise ConfigError("ledger header version or kind is invalid")
+   45:     if not isinstance(header.get("attempt"), int) or isinstance(header.get("attempt"), bool):
+    1:         raise ConfigError("ledger header attempt is invalid")
+   44:     if not isinstance(header.get("chain_id"), str) or not header["chain_id"]:
+    1:         raise ConfigError("ledger header chain_id is invalid")
+   43:     if nonce is not None and header.get("nonce") != nonce:
+    2:         raise ConfigError("ledger header nonce does not match config")
+   41:     if driver is not None and header.get("driver") != driver:
+    1:         raise ConfigError("ledger header driver does not match config")
+   40:     return header
+       
+       
+    1: def _normalized_command(word: str) -> str:
+   68:     if word and "build".startswith(word):
+   52:         return "build"
+   16:     if word == "run":
+   10:         return "run"
+    6:     return word
+       
+       
+    1: def _arity_bounds(spec: OptionSpec) -> tuple[int, int]:
+   79:     if isinstance(spec.arity, tuple):
+    8:         return spec.arity
+   71:     return spec.arity, spec.arity
+       
+       
+    1: def _option(token: str) -> tuple[str, OptionSpec, str | None] | None:
+   83:     direct = OPTION_TABLE.get(token)
+   83:     if direct is not None:
+   65:         return token, direct, None
+   18:     if token.startswith("--") and "=" in token:
+    8:         name, value = token.split("=", 1)
+    8:         spec = OPTION_TABLE.get(name)
+    8:         if spec is None or _arity_bounds(spec)[1] != 1:
+    1:             return None
+    7:         return name, spec, value
+   10:     if token.startswith("-") and not token.startswith("--"):
+    5:         for name in ("-D", "-o", "-O", "-f"):
+    5:             if token.startswith(name) and token != name:
+    4:                 spec = OPTION_TABLE[name]
+    4:                 return name, spec, token[len(name) :]
+    6:     return None
+       
+       
+    1: def parse_invocation(argv: Sequence[str]) -> Invocation:
+  518:     received = tuple(str(token) for token in argv)
+   63:     if not received:
+    1:         return Invocation((), "", "", (), (), (), None, False)
+   62:     command_word = received[0]
+   62:     command = _normalized_command(command_word)
+   62:     if os.path.isfile(command_word) or command_word.endswith((".iyi", ".cr")):
+    1:         raise InvocationError(f"implicit file form is unsupported: {command_word}")
+   61:     if command not in ("build", "run"):
+    4:         return Invocation(received, command_word, command, received[1:], (), (), None, False)
+       
+   57:     tail = list(received[1:])
+   57:     if "--" in tail:
+    1:         separator = tail.index("--")
+    1:         before = tail[:separator]
+    1:         run_args = tuple(tail[separator + 1 :])
+    1:         has_separator = True
+           else:
+   56:         before = tail
+   56:         run_args = ()
+   56:         has_separator = False
+   57:     if command == "run" and "--sandbox" in before:
+    1:         raise InvocationError("run --sandbox is unsupported")
+       
+   56:     sources: list[str] = []
+   56:     output: str | None = None
+   56:     index = 0
+  141:     while index < len(before):
+   92:         token = before[index]
+   92:         if token.startswith("-") and token != "-":
+   45:             matched = _option(token)
+   45:             if matched is None:
+    4:                 raise InvocationError(f"unknown option: {token}")
+   41:             name, spec, attached = matched
+                   if (
+   41:                 spec.build_only
+    2:                 and command != "build"
+    2:                 and name != "--cross-compile"
+                   ):
+    1:                 raise InvocationError(f"build-only option on run: {name}")
+   40:             if name == "--stdin-filename":
+    1:                 raise InvocationError("--stdin-filename is unsupported")
+   39:             minimum, maximum = _arity_bounds(spec)
+   39:             if maximum == 0:
+    3:                 index += 1
+    3:                 continue
+   36:             if attached is None:
+   29:                 if minimum == 0 and (
+    2:                     index + 1 >= len(before)
+    1:                     or _option(before[index + 1]) is not None
+                       ):
+    1:                     value = ""
+    1:                     index += 1
+                       else:
+   28:                     if index + 1 >= len(before):
+    1:                         raise InvocationError(f"option requires a value: {name}")
+   27:                     value = before[index + 1]
+   27:                     index += 2
+                   else:
+    7:                 value = attached
+    7:                 index += 1
+   35:             if name in ("-o", "--output"):
+   25:                 output = value
+   35:             continue
+   47:         sources.append(token)
+   47:         index += 1
+       
+   98:     return Invocation(
+   49:         argv=received,
+   49:         command_word=command_word,
+   49:         command=command,
+   49:         compiler_args=tuple(before),
+   49:         run_args=run_args,
+   49:         sources=tuple(sources),
+   49:         output=output,
+   49:         has_separator=has_separator,
+           )
+       
+       
+    1: def _tokenize_ambient_options() -> tuple[str, ...]:
+   33:     tokens: list[str] = []
+   97:     for name in ("IYI_OPTS", "CRYSTAL_OPTS"):
+   65:         value = os.environ.get(name)
+   65:         if value is None or value == "":
+   59:             continue
+    6:         try:
+    6:             tokens.extend(shlex.split(value, posix=True))
+    1:         except ValueError as error:
+    1:             raise InvocationError(f"cannot parse {name}: {error}") from error
+   32:     return tuple(tokens)
+       
+    1: def _recognized_option_tokens(tokens: Sequence[str], *, command: str, allow_positionals: bool) -> tuple[str, ...]:
+   75:     recognized: list[str] = []
+   75:     index = 0
+  144:     while index < len(tokens):
+   75:         token = tokens[index]
+   75:         if not token.startswith("-") or token == "-":
+   38:             if not allow_positionals:
+    1:                 raise InvocationError("IYI_OPTS/CRYSTAL_OPTS may not contain positional arguments")
+   37:             index += 1
+   37:             continue
+   37:         if token == "--":
+    1:             raise InvocationError("IYI_OPTS/CRYSTAL_OPTS may not contain --")
+   36:         matched = _option(token)
+   36:         if matched is None:
+    1:             raise InvocationError(f"unknown option: {token}")
+   35:         name, spec, attached = matched
+               if (
+   35:             spec.build_only
+    2:             and command != "build"
+    2:             and name != "--cross-compile"
+               ):
+    1:             raise InvocationError(f"build-only option on run: {name}")
+   34:         if name == "--stdin-filename":
+    1:             raise InvocationError("--stdin-filename is unsupported")
+   33:         recognized.append(token)
+   33:         minimum, maximum = _arity_bounds(spec)
+   33:         if maximum == 1 and attached is None:
+   26:             if minimum == 0 and (
+    2:                 index + 1 >= len(tokens)
+    1:                 or _option(tokens[index + 1]) is not None
+                   ):
+    1:                 index += 1
+                   else:
+   25:                 if index + 1 >= len(tokens):
+    1:                     raise InvocationError(f"option requires a value: {name}")
+   24:                 index += 2
+               else:
+    7:             index += 1
+   69:     return tuple(recognized)
+       
+       
+       
+    1: def compiler_env(real: str, cwd: str) -> CompilerEnvironment:
+   36:     try:
+   72:         completed = subprocess.run(
+   36:             [real, "env", "IYI_PATH", "IYI_CACHE_DIR"],
+   36:             cwd=cwd,
+   36:             stdin=subprocess.DEVNULL,
+   36:             stdout=subprocess.PIPE,
+   36:             stderr=subprocess.PIPE,
+   36:             check=False,
+               )
+    1:     except OSError as error:
+    1:         raise InvocationError(f"compiler env failed: {error}") from error
+   35:     if completed.returncode != 0:
+    1:         detail = completed.stderr.decode("utf-8", errors="replace").strip()
+    2:         raise InvocationError(
+    1:             f"compiler env exited {completed.returncode}: {detail or 'no stderr'}"
+               )
+   34:     lines = completed.stdout.decode("utf-8", errors="replace").splitlines()
+   34:     if len(lines) != 2:
+    1:         raise InvocationError(f"compiler env returned {len(lines)} lines, expected 2")
+   33:     path_value, cache_value = lines
+   33:     roots: list[str] = []
+   66:     for entry in path_value.split(os.pathsep):
+   33:         if entry == "":
+    1:             continue
+   32:         candidate = entry if os.path.isabs(entry) else os.path.join(cwd, entry)
+   32:         roots.append(os.path.realpath(candidate))
+   33:     cache_candidate = cache_value if os.path.isabs(cache_value) else os.path.join(cwd, cache_value)
+   33:     return CompilerEnvironment(tuple(roots), os.path.realpath(cache_candidate))
+       
+       
+    1: def _realpath_from_cwd(path: str, cwd: str) -> str:
+   50:     candidate = path if os.path.isabs(path) else os.path.join(cwd, path)
+   50:     return os.path.realpath(candidate)
+       
+       
+    1: def compute_out(invocation: Invocation, *, cwd: str, cache_dir: str, pid: int | None = None) -> str | None:
+   32:     if invocation.command not in ("build", "run"):
+    1:         return None
+   31:     if invocation.output is not None:
+   19:         return _realpath_from_cwd(invocation.output, cwd)
+   12:     source = invocation.sources[0] if invocation.sources else "a.iyi"
+   12:     stem = os.path.splitext(os.path.basename(source))[0] or "a"
+   12:     if invocation.command == "run":
+    6:         if not cache_dir:
+    1:             raise InvocationError("compiler env returned an empty IYI_CACHE_DIR")
+    5:         runner_pid = os.getpid() if pid is None else pid
+   10:         return os.path.realpath(
+    5:             os.path.join(cache_dir, f"iyi-run-{stem}-{runner_pid}.tmp")
+               )
+    6:     return os.path.realpath(os.path.join(cwd, stem))
+       
+       
+    1: def _template_regex(template: str, *, variables: Mapping[str, object], bound: Mapping[str, str], work_tmp: str, repo: str, platform_tmp: str | None) -> tuple[re.Pattern[str], dict[str, str]]:
+  176:     parts: list[str] = []
+  176:     group_names: dict[str, str] = {}
+  176:     position = 0
+  444:     for placeholder in re.finditer(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", template):
+  271:         parts.append(re.escape(template[position : placeholder.start()]))
+  271:         name = placeholder.group(1)
+  271:         if name == "REPO":
+   24:             parts.append(re.escape(repo))
+  247:         elif name == "WORK":
+  153:             if name in bound:
+    7:                 parts.append(re.escape(bound[name]))
+  146:             elif name in group_names:
+    1:                 parts.append(f"(?P={group_names[name]})")
+                   else:
+  145:                 roots = [os.path.realpath(work_tmp)]
+  145:                 if platform_tmp is not None:
+   36:                     roots.append(os.path.realpath(platform_tmp))
+  435:                 root_body = "|".join(
+  471:                     re.escape(root) for root in dict.fromkeys(roots)
+                       )
+  145:                 group_names[name] = "iyi_work"
+  290:                 parts.append(
+  145:                     f"(?P<iyi_work>(?:{root_body}){re.escape(os.sep)}[^/]+)"
+                       )
+   94:         elif name in variables:
+   93:             if name in bound:
+    7:                 parts.append(re.escape(bound[name]))
+   86:             elif name in group_names:
+    4:                 parts.append(f"(?P={group_names[name]})")
+                   else:
+   82:                 group_name = f"iyi_var_{len(group_names)}"
+   82:                 group_names[name] = group_name
+   82:                 declaration = variables[name]
+   82:                 if not isinstance(declaration, dict):
+    1:                     raise ValueError(f"variable {name} declaration is not an object")
+   81:                 values = declaration.get("values")
+   81:                 pattern = declaration.get("pattern")
+  441:                 if isinstance(values, list) and values and all(
+  360:                     isinstance(value, str) for value in values
+                       ):
+  360:                     body = "|".join(re.escape(value) for value in values)
+    6:                 elif isinstance(pattern, str) and pattern:
+    5:                     body = pattern
+                       else:
+    1:                     raise ValueError(f"variable {name} has no values or pattern")
+   80:                 parts.append(f"(?P<{group_name}>{body})")
+               else:
+    1:             raise ValueError(f"unknown template placeholder {name}")
+  268:         position = placeholder.end()
+  173:     parts.append(re.escape(template[position:]))
+  173:     return re.compile("".join(parts)), group_names
+       
+       
+    1: def _match_template(template: object, actual: str, *, variables: Mapping[str, object], bindings: dict[str, str], work_tmp: str, repo: str, platform_tmp: str | None) -> bool:
+  176:     if not isinstance(template, str):
+    1:         return False
+  175:     try:
+  350:         expression, groups = _template_regex(
+  175:             template,
+  175:             variables=variables,
+  175:             bound=bindings,
+  175:             work_tmp=work_tmp,
+  175:             repo=repo,
+  175:             platform_tmp=platform_tmp,
+               )
+    4:     except (ValueError, re.error):
+    4:         return False
+  171:     matched = expression.fullmatch(os.path.realpath(actual))
+  171:     if matched is None:
+  116:         return False
+  103:     for name, group_name in groups.items():
+   48:         bindings[name] = matched.group(group_name)
+   55:     return True
+       
+       
+    1: def match_variants(census: dict, command: str, first_root: str | None, sources: Sequence[str], output: str | None, work_tmp: str, repo: str, *, platform_tmp: str | None) -> tuple[str, list[str], str | None, dict[str, dict[str, str]]]:
+   46:     if first_root is None:
+    1:         return "unclassified", [], None, {}
+   45:     normalized_work = os.path.realpath(work_tmp)
+   45:     normalized_repo = os.path.realpath(repo)
+   91:     normalized_sources = [os.path.realpath(source) for source in sources]
+   45:     normalized_output = os.path.realpath(output) if output is not None else None
+   45:     matches: list[tuple[str, str, dict[str, str]]] = []
+  354:     for site in census.get("sites", []):
+  309:         if not isinstance(site, dict) or site.get("command") != command:
+  161:             continue
+  296:         for variant in site.get("variants", []):
+  148:             if not isinstance(variant, dict):
+    1:                 continue
+  147:             variant_id = variant.get("id")
+  147:             kind = variant.get("kind")
+  147:             templates = variant.get("sources")
+  147:             variables = variant.get("vars", {})
+                   if (
+  147:                 not isinstance(variant_id, str)
+  146:                 or kind not in ("negative", "positive")
+  146:                 or not isinstance(templates, list)
+  146:                 or not isinstance(variables, dict)
+  146:                 or len(templates) != len(normalized_sources)
+                   ):
+    2:                 continue
+  145:             bindings: dict[str, str] = {}
+  290:             if not _match_template(
+  145:                 variant.get("first_root"),
+  145:                 os.path.realpath(first_root),
+  145:                 variables=variables,
+  145:                 bindings=bindings,
+  145:                 work_tmp=normalized_work,
+  145:                 repo=normalized_repo,
+  145:                 platform_tmp=platform_tmp,
+                   ):
+  119:                 continue
+   26:             matched_all = True
+   51:             for template, actual in zip(templates, normalized_sources):
+   52:                 if not _match_template(
+   26:                     template,
+   26:                     actual,
+   26:                     variables=variables,
+   26:                     bindings=bindings,
+   26:                     work_tmp=normalized_work,
+   26:                     repo=normalized_repo,
+   26:                     platform_tmp=platform_tmp,
+                       ):
+    1:                     matched_all = False
+    1:                     break
+   26:             if not matched_all:
+    1:                 continue
+   25:             output_template = variant.get("output")
+   25:             if output_template is not None:
+   11:                 if normalized_output is None or not _match_template(
+    5:                     output_template,
+    5:                     normalized_output,
+    5:                     variables=variables,
+    5:                     bindings=bindings,
+    5:                     work_tmp=normalized_work,
+    5:                     repo=normalized_repo,
+    5:                     platform_tmp=platform_tmp,
+                       ):
+    2:                     continue
+   46:             declared_bindings = {
+   19:                 name: bindings[name]
+   65:                 for name in variables
+   19:                 if name in bindings
+                   }
+   23:             matches.append((variant_id, kind, declared_bindings))
+   45:     if not matches:
+   24:         return "unclassified", [], None, {}
+   44:     kinds = {kind for _variant_id, kind, _bindings in matches}
+   44:     ids = [variant_id for variant_id, _kind, _bindings in matches]
+   42:     bindings_by_id = {
+   23:         variant_id: variant_bindings
+   65:         for variant_id, _kind, variant_bindings in matches
+           }
+   21:     if len(kinds) != 1:
+    1:         return "ambiguous", ids, None, bindings_by_id
+   20:     return "matched", ids, next(iter(kinds)), bindings_by_id
+       
+       
+    1: def _has_unchanged_trigger(tokens: Sequence[str]) -> bool:
+   57:     for token in tokens:
+   32:         if token in UNCHANGED_EXACT:
+    4:             return True
+   28:         if token.startswith("--emit=") or token.startswith("--emit-bind"):
+    2:             return True
+   26:         if token.startswith("--cross-compile"):
+    1:             return True
+   25:     return False
+       
+       
+    1: def _has_passthrough_trigger(tokens: Sequence[str]) -> bool:
+   97:     return any(
+   70:         token in PASSTHROUGH_EXACT
+   23:         or token.startswith("--emit-iyimod=")
+   23:         or token.startswith("--use-iyimod=")
+   72:         for token in tokens
+           )
+       
+       
+    1: def classify(census: dict, invocation: Invocation, roots: Sequence[str], canonical_roots: Sequence[str], sources: Sequence[str], output: str | None, work_tmp: str, repo: str, *, platform_tmp: str | None, ambient_tokens: Sequence[str] = ()) -> Classification:
+  158:     normalized_roots = tuple(os.path.realpath(root) for root in roots)
+   82:     canonical_set = {os.path.realpath(root) for root in canonical_roots}
+   80:     first_noncanonical = next(
+  112:         (root for root in normalized_roots if root not in canonical_set),
+   40:         None,
+           )
+   40:     canonical = first_noncanonical is None
+   40:     if invocation.command not in ("build", "run"):
+    6:         return Classification(
+    3:             "unchanged", canonical, first_noncanonical, (), None, {}, "unchanged", None
+               )
+  106:     trigger_tokens = (
+   74:         *_recognized_option_tokens(
+   37:             invocation.compiler_args,
+   37:             command=invocation.command,
+   37:             allow_positionals=True,
+               ),
+   74:         *_recognized_option_tokens(
+   37:             ambient_tokens,
+   37:             command=invocation.command,
+   37:             allow_positionals=False,
+               ),
+           )
+   32:     if _has_unchanged_trigger(trigger_tokens):
+   14:         return Classification(
+    7:             "unchanged", canonical, first_noncanonical, (), None, {}, "unchanged", None
+               )
+   25:     if _has_passthrough_trigger(trigger_tokens):
+    4:         return Classification(
+    2:             "passthrough", canonical, first_noncanonical, (), None, {}, "passthrough", None
+               )
+   23:     if canonical:
+   32:         return Classification(
+   16:             "roundtrip", True, None, (), None, {}, "canonical", "canonical roots"
+               )
+   14:     status, variant_ids, kind, bindings = match_variants(
+    7:         census,
+    7:         invocation.command,
+    7:         first_noncanonical,
+    7:         sources,
+    7:         output,
+    7:         work_tmp,
+    7:         repo,
+    7:         platform_tmp=platform_tmp,
+           )
+    7:     if status != "matched":
+    4:         return Classification(
+    2:             "refused",
+    2:             False,
+    2:             first_noncanonical,
+    2:             tuple(variant_ids),
+    2:             kind,
+    2:             bindings,
+    2:             status,
+    2:             f"{status} variant match",
+               )
+    5:     mode = "roundtrip" if kind == "positive" else "observed-negative"
+   10:     return Classification(
+    5:         mode,
+    5:         False,
+    5:         first_noncanonical,
+    5:         tuple(variant_ids),
+    5:         kind,
+    5:         bindings,
+    5:         status,
+    5:         f"matched {kind} variant",
+           )
+       
+       
+    1: def _observe_definitions(tokens: Sequence[str]) -> int:
+   40:     count = 0
+   40:     index = 0
+  153:     while index < len(tokens):
+  113:         token = tokens[index]
+  113:         if token == "-D" or token == "--define":
+    2:             if index + 1 < len(tokens) and tokens[index + 1] == "iyi_observe":
+    2:                 count += 1
+    2:             index += 2
+    2:             continue
+  111:         if token == "-Diyi_observe" or token == "--define=iyi_observe":
+    1:             count += 1
+  111:         index += 1
+   40:     return count
+       
+       
+    1: def _with_observe(invocation: Invocation, *, ambient_tokens: Sequence[str] = ()) -> list[str]:
+    5:     tokens = list(invocation.argv)
+    5:     if _observe_definitions((*invocation.compiler_args, *ambient_tokens)) == 0:
+    3:         tokens.insert(1, "-Diyi_observe")
+    5:     return tokens
+       
+       
+    1: def build_exec_argv(invocation: Invocation, *, ambient_tokens: Sequence[str] = ()) -> list[str]:
+    5:     return _with_observe(invocation, ambient_tokens=ambient_tokens)
+       
+       
+    1: def build_producer_argv(invocation: Invocation, mods: str, output: str, *, ambient_tokens: Sequence[str] = ()) -> list[str]:
+   18:     tokens = [invocation.command_word]
+   18:     if _observe_definitions((*invocation.compiler_args, *ambient_tokens)) == 0:
+   17:         tokens.append("-Diyi_observe")
+   18:     tokens.extend(("--emit-iyimod", mods))
+   18:     tokens.extend(invocation.compiler_args)
+   18:     if invocation.command == "run" and invocation.output is None:
+    3:         tokens.extend(("-o", output))
+   18:     return tokens
+       
+       
+    1: def build_consumer_argv(invocation: Invocation, mods: str, output: str, *, ambient_tokens: Sequence[str] = ()) -> list[str]:
+   17:     tokens = [invocation.command_word]
+   17:     if _observe_definitions((*invocation.compiler_args, *ambient_tokens)) == 0:
+   17:         tokens.append("-Diyi_observe")
+   17:     tokens.extend(("--use-iyimod", mods))
+   17:     tokens.extend(invocation.compiler_args)
+   17:     if invocation.command == "run" and invocation.output is None:
+    3:         tokens.extend(("-o", output))
+   17:     return tokens
+       
+       
+    1: def write_record(ledger_path: str, record: Mapping[str, object]) -> None:
+   58:     encoded = (
+   58:         json.dumps(dict(record), sort_keys=True, separators=(",", ":")) + "\n"
+   58:     ).encode("utf-8")
+   58:     descriptor = os.open(ledger_path, os.O_WRONLY | os.O_APPEND)
+   57:     try:
+   57:         fcntl.flock(descriptor, fcntl.LOCK_EX)
+   57:         os.write(descriptor, encoded)
+           finally:
+   57:         try:
+   57:             fcntl.flock(descriptor, fcntl.LOCK_UN)
+               finally:
+   57:             os.close(descriptor)
+       
+       
+    1: def _source_paths(invocation: Invocation, cwd: str) -> tuple[str, ...]:
+  120:     return tuple(_realpath_from_cwd(source, cwd) for source in invocation.sources)
+       
+       
+    1: def _base_record(config: Mapping[str, object], invocation: Invocation, classification: Classification, roots: Sequence[str], sources: Sequence[str], output: str | None, *, inv: str, phase: str, reason: str | None = None) -> dict[str, object]:
+   41:     driver = str(config["driver"])
+   82:     own_source = os.path.realpath(
+   41:         os.path.join(str(config["repo"]), "bench", f"std_{driver}_exercise.iyi")
+           )
+   41:     own = classification.canonical and list(sources) == [own_source]
+  779:     return {
+   41:         "v": 1,
+   41:         "kind": "record",
+   41:         "nonce": config["nonce"],
+   41:         "driver": driver,
+   41:         "inv": inv,
+   41:         "pid": os.getpid(),
+   41:         "t_ns": time.monotonic_ns(),
+   41:         "phase": phase,
+   41:         "mode": classification.mode,
+   41:         "cwd": os.getcwd(),
+   41:         "argv": list(invocation.argv),
+  246:         "env_seen": {key: os.environ.get(key) for key in ENV_SEEN_KEYS},
+   41:         "command": invocation.command,
+   41:         "roots": list(roots),
+   41:         "canonical": classification.canonical,
+   41:         "first_noncanonical_root": classification.first_noncanonical_root,
+   41:         "variant_ids": list(classification.variant_ids),
+   41:         "variant_kind": classification.variant_kind,
+   41:         "bindings": classification.bindings,
+   41:         "sources": list(sources),
+   41:         "out": output,
+   41:         "own": own,
+   41:         "reason": reason if reason is not None else classification.reason,
+           }
+       
+       
+    1: def _minimal_refusal_classification(reason: str) -> Classification:
+   26:     return Classification(
+   13:         "refused", False, None, (), None, {}, "refused", reason
+           )
+       
+       
+    1: def _print_refusal(reason: str) -> None:
+   18:     sys.stderr.write(f"observed-roundtrip-shim: REFUSED {reason}\n")
+   18:     sys.stderr.flush()
+       
+       
+    1: def _record_refusal(config: Mapping[str, object], invocation: Invocation, reason: str, *, inv: str, roots: Sequence[str] = (), sources: Sequence[str] = (), output: str | None = None, classification: Classification | None = None) -> int:
+   15:     refused = classification or _minimal_refusal_classification(reason)
+   30:     record = _base_record(
+   15:         config,
+   15:         invocation,
+   15:         refused,
+   15:         roots,
+   15:         sources,
+   15:         output,
+   15:         inv=inv,
+   15:         phase="refused",
+   15:         reason=reason,
+           )
+   15:     record["exit"] = 125
+   15:     try:
+   15:         write_record(str(config["ledger"]), record)
+    1:     except OSError:
+    1:         pass
+   15:     _print_refusal(reason)
+   15:     return 125
+       
+       
+    1: def _run_build(argv: Sequence[str], *, capture: bool) -> _ChildResult:
+   32:     stdout = subprocess.PIPE if capture else None
+   32:     stderr = subprocess.PIPE if capture else None
+   64:     process = subprocess.Popen(
+   32:         list(argv),
+   32:         stdin=subprocess.DEVNULL,
+   32:         stdout=stdout,
+   32:         stderr=stderr,
+           )
+   32:     interrupted: list[int | None] = [None]
+   32:     old_handlers: dict[int, object] = {}
+       
+   32:     def forward(number: int, _frame: object) -> None:
+    2:         if interrupted[0] is None:
+    2:             interrupted[0] = number
+    2:         if process.poll() is None:
+    2:             process.send_signal(number)
+       
+   32:     try:
+  128:         for candidate in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+   96:             old_handlers[candidate] = signal.getsignal(candidate)
+   96:             signal.signal(candidate, forward)
+   32:         out, err = process.communicate()
+           finally:
+  128:         for candidate, handler in old_handlers.items():
+   96:             signal.signal(candidate, handler)
+   64:     return _ChildResult(
+   32:         process.returncode,
+   32:         out or b"",
+   32:         err or b"",
+   32:         interrupted[0],
+           )
+       
+       
+    1: def _death_sentence(number: int) -> str:
+   14:     if number in {
+    7:         getattr(signal, "SIGSEGV", -2),
+    7:         getattr(signal, "SIGBUS", -3),
+           }:
+    1:         return (
+    1:             "the program died of a memory fault. Outside `Pointer`, an iyi program "
+                   "cannot reach memory it does not own: if the program uses `Pointer`, "
+                   "that is the place to look, and on a target without iyi's runtime it "
+                   "can also be the stack running out. If neither, it is a bug in iyi's "
+                   "own runtime, and ours to fix: https://github.com/iyilang/iyi/issues"
+               )
+    6:     if number == getattr(signal, "SIGINT", -1):
+    1:         description = "was interrupted"
+    5:     elif number == getattr(signal, "SIGILL", -4):
+    1:         description = "terminated because of an invalid instruction"
+    4:     elif number == getattr(signal, "SIGFPE", -5):
+    1:         description = "terminated because of a floating-point system exception"
+           else:
+    3:         try:
+    3:             name = signal.Signals(number).name.removeprefix("SIG")
+    1:         except ValueError:
+    1:             name = str(number)
+    3:         description = f"received and didn't handle signal {name} ({number})"
+    6:     return f"the program was killed by signal {number} ({description})"
+       
+       
+    1: def _run_program(argv: Sequence[str]) -> tuple[int, int | None]:
+    3:     process = subprocess.Popen(list(argv))
+    3:     old_handlers: dict[int, object] = {
+    3:         signal.SIGINT: signal.getsignal(signal.SIGINT),
+    3:         signal.SIGTERM: signal.getsignal(signal.SIGTERM),
+    3:         signal.SIGHUP: signal.getsignal(signal.SIGHUP),
+           }
+       
+    3:     def forward(number: int, _frame: object) -> None:
+    1:         if process.poll() is None:
+    1:             process.send_signal(number)
+       
+    3:     try:
+    3:         signal.signal(signal.SIGINT, signal.SIG_IGN)
+    3:         signal.signal(signal.SIGTERM, forward)
+    3:         signal.signal(signal.SIGHUP, forward)
+    3:         rc = process.wait()
+           finally:
+   12:         for candidate, handler in old_handlers.items():
+    9:             signal.signal(candidate, handler)
+    3:     if rc >= 0:
+    1:         return rc, None
+    2:     number = -rc
+    2:     sys.stderr.write(f"iyi: {_death_sentence(number)}\n")
+    2:     sys.stderr.flush()
+    2:     return 1, number
+       
+       
+    1: def _write_bytes(stream: object, data: bytes) -> None:
+    3:     binary = getattr(stream, "buffer", None)
+    3:     if binary is not None:
+    1:         binary.write(data)
+    1:         binary.flush()
+           else:
+    2:         stream.write(data.decode("utf-8", errors="replace"))
+    2:         stream.flush()
+       
+       
+    1: def _end_record(begin: Mapping[str, object], *, producer: Mapping[str, object], consumer: Mapping[str, object] | None, run: Mapping[str, object] | None, out_ref: str | None, out_ino: int | None, out_mtime_ns: int | None, atime_set_ns: int | None, e3_error: str | None, interrupted: bool, exit_code: int) -> dict[str, object]:
+   17:     record = dict(begin)
+   34:     record.update(
+   17:         {
+   17:             "t_ns": time.monotonic_ns(),
+   17:             "phase": "end",
+   17:             "producer": dict(producer),
+   17:             "consumer": dict(consumer) if consumer is not None else None,
+   17:             "run": dict(run) if run is not None else None,
+   17:             "out_ref": out_ref,
+   17:             "out_ino": out_ino,
+   17:             "out_mtime_ns": out_mtime_ns,
+   17:             "atime_set_ns": atime_set_ns,
+   17:             "e3_error": e3_error,
+   17:             "interrupted": interrupted,
+   17:             "exit": exit_code,
+               }
+           )
+   17:     return record
+       
+       
+    1: def run_roundtrip(config: Mapping[str, object], invocation: Invocation, classification: Classification, output: str, *, roots: Sequence[str], sources: Sequence[str], ambient_tokens: Sequence[str], inv: str) -> int:
+   17:     invocation_dir = os.path.join(str(config["scratch"]), inv)
+   17:     mods = os.path.join(invocation_dir, "mods")
+   17:     os.makedirs(mods, exist_ok=False)
+   34:     producer_args = [
+   17:         str(config["real"]),
+   34:         *build_producer_argv(
+   17:             invocation,
+   17:             mods,
+   17:             output,
+   17:             ambient_tokens=ambient_tokens,
+               ),
+           ]
+   34:     consumer_args = [
+   17:         str(config["real"]),
+   34:         *build_consumer_argv(
+   17:             invocation,
+   17:             mods,
+   17:             output,
+   17:             ambient_tokens=ambient_tokens,
+               ),
+           ]
+   34:     begin = _base_record(
+   17:         config,
+   17:         invocation,
+   17:         classification,
+   17:         roots,
+   17:         sources,
+   17:         output,
+   17:         inv=inv,
+   17:         phase="begin",
+           )
+   17:     write_record(str(config["ledger"]), begin)
+       
+   17:     producer_result = _run_build(producer_args, capture=True)
+   17:     mods_count = len(glob.glob(os.path.join(mods, "**", "*.iyimod"), recursive=True))
+   17:     producer = {
+   17:         "argv": producer_args,
+   17:         "rc": producer_result.rc,
+   17:         "mods_count": mods_count,
+           }
+   17:     if producer_result.interrupted is not None or producer_result.rc != 0:
+    2:         interrupted = producer_result.interrupted is not None
+    2:         exit_code = (
+    1:             128 + producer_result.interrupted
+    2:             if producer_result.interrupted is not None
+    1:             else producer_result.rc
+               )
+    2:         if not interrupted:
+    1:             _write_bytes(sys.stdout, producer_result.stdout)
+    1:             _write_bytes(sys.stderr, producer_result.stderr)
+    2:         shutil.rmtree(invocation_dir, ignore_errors=True)
+    4:         end = _end_record(
+    2:             begin,
+    2:             producer=producer,
+    2:             consumer=None,
+    2:             run=None,
+    2:             out_ref=None,
+    2:             out_ino=None,
+    2:             out_mtime_ns=None,
+    2:             atime_set_ns=None,
+    2:             e3_error=None,
+    2:             interrupted=interrupted,
+    2:             exit_code=exit_code,
+               )
+    2:         write_record(str(config["ledger"]), end)
+    2:         return exit_code
+       
+   15:     if os.path.lexists(output):
+   15:         os.unlink(output)
+   15:     consumer_result = _run_build(consumer_args, capture=False)
+   15:     out_written = os.path.isfile(output)
+   15:     out_sha = sha256_file(output) if out_written else None
+   15:     consumer = {
+   15:         "argv": consumer_args,
+   15:         "rc": consumer_result.rc,
+   15:         "out_written": out_written,
+   15:         "out_sha256": out_sha,
+           }
+       
+   15:     out_ref: str | None = None
+   15:     out_ino: int | None = None
+   15:     out_mtime_ns: int | None = None
+   15:     atime_set_ns: int | None = None
+   15:     e3_error: str | None = None
+   27:     own_or_positive_build = invocation.command == "build" and (
+   12:         bool(begin["own"]) or classification.variant_kind == "positive"
+           )
+   15:     if consumer_result.rc == 0 and out_written and own_or_positive_build:
+   10:         candidate_ref = os.path.join(invocation_dir, "out.ref")
+   10:         try:
+   10:             os.link(output, candidate_ref)
+    9:             stat = os.stat(output)
+    9:             out_ref = candidate_ref
+    9:             out_ino = stat.st_ino
+    9:             out_mtime_ns = stat.st_mtime_ns
+    9:             atime_set_ns = max(0, out_mtime_ns - 1_000_000_000)
+    9:             os.utime(output, ns=(atime_set_ns, out_mtime_ns))
+    1:         except OSError as error:
+    1:             try:
+    1:                 os.unlink(candidate_ref)
+    1:             except OSError:
+    1:                 pass
+    1:             out_ref = None
+    1:             out_ino = None
+    1:             out_mtime_ns = None
+    1:             atime_set_ns = None
+    1:             e3_error = f"{type(error).__name__}: {error}"
+       
+   15:     run_record: dict[str, object] | None = None
+   15:     run_exit: int | None = None
+   15:     temporary_run_output = invocation.command == "run" and invocation.output is None
+           if (
+   15:         temporary_run_output
+    3:         and consumer_result.rc == 0
+    3:         and consumer_result.interrupted is None
+    3:         and out_written
+           ):
+    3:         run_argv = [output, *invocation.run_args]
+    3:         run_exit, run_signal = _run_program(run_argv)
+    3:         os.unlink(output)
+    3:         run_record = {
+    3:             "argv": run_argv,
+    3:             "rc": run_exit,
+    3:             "signal": run_signal,
+               }
+       
+   15:     interrupted = consumer_result.interrupted is not None
+   15:     if interrupted:
+    1:         exit_code = 128 + int(consumer_result.interrupted)
+   14:     elif consumer_result.rc != 0:
+    1:         exit_code = consumer_result.rc
+   13:     elif run_exit is not None:
+    3:         exit_code = run_exit
+           else:
+   10:         exit_code = consumer_result.rc
+       
+   15:     divergence = producer_result.rc == 0 and consumer_result.rc != 0
+   15:     if not divergence:
+   13:         shutil.rmtree(mods, ignore_errors=True)
+   30:     end = _end_record(
+   15:         begin,
+   15:         producer=producer,
+   15:         consumer=consumer,
+   15:         run=run_record,
+   15:         out_ref=out_ref,
+   15:         out_ino=out_ino,
+   15:         out_mtime_ns=out_mtime_ns,
+   15:         atime_set_ns=atime_set_ns,
+   15:         e3_error=e3_error,
+   15:         interrupted=interrupted,
+   15:         exit_code=exit_code,
+           )
+   15:     write_record(str(config["ledger"]), end)
+   15:     return exit_code
+       
+       
+    1: def _load_census(path: str) -> dict:
+   31:     try:
+   62:         with open(path, "r", encoding="utf-8") as source:
+   31:             census = json.load(source)
+    1:     except (OSError, UnicodeError, json.JSONDecodeError) as error:
+    1:         raise InvocationError(f"census unreadable: {error}") from error
+   30:     if not isinstance(census, dict):
+    1:         raise InvocationError("census is not an object")
+   29:     return census
+       
+       
+    1: def run_shim(config_path: str, argv: Sequence[str]) -> int | ExecPlan:
+   42:     try:
+   42:         config = load_config(config_path)
+    1:     except ConfigError as error:
+    1:         _print_refusal(str(error))
+    1:         return 125
+   41:     try:
+   82:         read_header(
+   41:             config["ledger"],
+   41:             nonce=config["nonce"],
+   41:             driver=config["driver"],
+               )
+    2:     except ConfigError as error:
+    2:         _print_refusal(str(error))
+    2:         return 125
+       
+  334:     received = tuple(str(token) for token in argv)
+   39:     inv = uuid.uuid4().hex
+   39:     try:
+   39:         invocation = parse_invocation(received)
+    6:     except InvocationError as error:
+   12:         fallback = Invocation(
+    6:             received,
+    6:             received[0] if received else "",
+    6:             _normalized_command(received[0]) if received else "",
+    6:             (),
+    6:             (),
+    6:             (),
+    6:             None,
+    6:             False,
+               )
+    6:         return _record_refusal(config, fallback, str(error), inv=inv)
+       
+   33:     try:
+   33:         ambient_tokens = _tokenize_ambient_options()
+   32:         cwd = os.getcwd()
+   32:         environment = compiler_env(config["real"], cwd)
+   32:         if invocation.command in ("build", "run"):
+   29:             sources = _source_paths(invocation, cwd)
+   58:             output = compute_out(
+   29:                 invocation,
+   29:                 cwd=cwd,
+   29:                 cache_dir=environment.cache_dir,
+   29:                 pid=os.getpid(),
+                   )
+   29:             census = _load_census(config["census"])
+               else:
+    3:             sources = ()
+    3:             output = None
+    3:             census = {}
+   64:         classification = classify(
+   32:             census,
+   32:             invocation,
+   32:             environment.roots,
+   32:             config["canonical_roots"],
+   32:             sources,
+   32:             output,
+   32:             config["work_tmp"],
+   32:             config["repo"],
+   32:             platform_tmp=config["platform_tmp"],
+   32:             ambient_tokens=ambient_tokens,
+               )
+    6:     except InvocationError as error:
+    6:         return _record_refusal(config, invocation, str(error), inv=inv)
+       
+   27:     if classification.mode == "refused":
+    4:         return _record_refusal(
+    2:             config,
+    2:             invocation,
+    2:             classification.reason or "unclassified invocation",
+    2:             inv=inv,
+    2:             roots=environment.roots,
+    2:             sources=sources,
+    2:             output=output,
+    2:             classification=classification,
+               )
+       
+   25:     if classification.mode in ("unchanged", "passthrough", "observed-negative"):
+   18:         record = _base_record(
+    9:             config,
+    9:             invocation,
+    9:             classification,
+    9:             environment.roots,
+    9:             sources,
+    9:             output,
+    9:             inv=inv,
+    9:             phase="exec",
+               )
+    9:         record["exit"] = 0
+    9:         write_record(config["ledger"], record)
+    9:         exec_argv = (
+    5:             list(invocation.argv)
+    9:             if classification.mode == "unchanged"
+    4:             else build_exec_argv(invocation, ambient_tokens=ambient_tokens)
+               )
+    9:         return ExecPlan(config["real"], tuple(exec_argv))
+       
+   32:     return run_roundtrip(
+   16:         config,
+   16:         invocation,
+   16:         classification,
+   16:         output,
+   16:         roots=environment.roots,
+   16:         sources=sources,
+   16:         ambient_tokens=ambient_tokens,
+   16:         inv=inv,
+           )
+       
+       
+    1: def _exec_real(plan: ExecPlan) -> NoReturn:
+>>>>>>     os.execv(plan.real, [plan.real, *plan.argv])
+       
+       
+    1: def main(argv: Sequence[str] | None = None) -> int:
+>>>>>>     arguments = list(sys.argv[1:] if argv is None else argv)
+>>>>>>     if len(arguments) < 2 or arguments[0] != "--config":
+>>>>>>         _print_refusal("usage: roundtrip_shim.py --config PATH -- ARGS...")
+>>>>>>         return 125
+>>>>>>     config_path = arguments[1]
+>>>>>>     compiler_argv = arguments[2:]
+>>>>>>     if compiler_argv and compiler_argv[0] == "--":
+>>>>>>         compiler_argv = compiler_argv[1:]
+>>>>>>     outcome = run_shim(config_path, compiler_argv)
+>>>>>>     if isinstance(outcome, ExecPlan):
+>>>>>>         _exec_real(outcome)
+>>>>>>     return outcome
+       
+       
+    1: if __name__ == "__main__":
+>>>>>>     raise SystemExit(main())

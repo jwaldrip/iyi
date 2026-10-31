@@ -1,0 +1,1531 @@
+       #!/usr/bin/env python3
+    1: """Run the observed-corpus proof chain.
+       
+       Commands and arguments:
+         plan --p P --w W --compiler C
+             Validate pin inputs without writing a report.
+         pin --report-dir R --p P --w W --compiler C
+             Create the immutable pin for a new chain.
+         run1 --report-dir R
+             Run gates 1.1 through 1.4, exclusions, and baseline skip capture.
+         run2 --report-dir R
+             Run all artifact legs with the pinned compiler and nm.
+         run3 --report-dir R [--driver DRIVER]
+             Run every required observed driver, or one required driver.
+         final --report-dir R
+             Recompute every latest result and publish final.json.
+         all --report-dir R
+             Run run1, run2, run3, and final in dependency order.
+       
+       Stage statuses are PASS, FAIL, STOP, PARTIAL, ENV-BLOCKED,
+       NOT-ROUNDTRIPPED, MISCLASSIFIED, DIVERGENCE, UNFAITHFUL,
+       NOT-EXERCISED, TIMEOUT, INVALID, CENSUS-MISSING, NOT-EXECUTED,
+       OUT-MODIFIED, and STALE. Exit 0 means PASS, exit 1 means a recorded
+       non-PASS status, and exit 2 means usage or configuration refusal.
+       
+       R has pin.json; run1/a<N>/ and run2/a<N>/; run3/required.json;
+       run3/<driver>/a<N>/; and final.json. Every attempt ends with an atomic
+       result.json. Attempt numbers are append-only. final uses the numerically
+       highest attempt, recomputes its status from required checks, re-derives the
+       required drivers from the latest Run 1 and Run 2, and requires every Run 3
+       attempt to be newer than both. It verifies chain, unit, attempt and pinned
+       identity, and lists every earlier failure. A chain is bound to the
+       report-directory suffix and pin identity. On Darwin the pin records and
+       probes the real platform temp root used by bare mktemp.
+       INVALID recovery requires a new pin and report directory.
+       """
+       
+    1: from __future__ import annotations
+       
+    1: import argparse
+    1: import json
+    1: import os
+    1: import re
+    1: import secrets
+    1: import shlex
+    1: import sys
+    1: import tempfile
+    1: import time
+    1: from collections.abc import Sequence
+       
+       # Ensure the repository root is importable when this file is executed directly.
+    1: REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    1: sys.path.insert(0, REPO_ROOT)
+       
+    1: from proof.proofkit import (
+           DISK_MIN_GB,
+           DRIVER_LIMIT_SEC,
+           DRIVERS_29,
+           GRACE_SEC,
+           RG2R_MIN,
+           RUN1_CORPUS,
+           RUN1_SIBLINGS,
+           RUN1_STD_EXERCISES,
+           RUN2_COUNTS,
+           IdentityError,
+           base_env,
+           check_disk_space,
+           check_identity,
+           inspect_pin_inputs,
+           load_pin,
+           load_result,
+           recompute_status,
+           run_bounded,
+           probe_atime_observable,
+           validate_census,
+           verify_ledger,
+           write_pin,
+           write_result,
+       )
+       
+       
+    1: _FINAL_LIMITS = [
+    1:     "the platform skips",
+           (
+    1:         "under helpers, observed-source binaries run only in the drivers' "
+               "own artifact blocks (acme, autocert, compress, png, regex, shlex, "
+               "tls, websocket, xz, zip) and in negative mutation proofs; every "
+               "other canonical or positive build runs its artifact consumer; RG2 "
+               "proves observed source bare for all 141"
+           ),
+       ]
+       
+       
+    1: def _attempt_entries(parent_dir: str) -> list[tuple[int, str]]:
+  505:     try:
+  505:         names = os.listdir(parent_dir)
+   12:     except FileNotFoundError:
+   12:         return []
+  493:     entries: list[tuple[int, str]] = []
+  897:     for name in names:
+  404:         match = re.fullmatch(r"a([1-9][0-9]*)", name)
+  404:         path = os.path.join(parent_dir, name)
+  404:         if match and os.path.isdir(path):
+  402:             entries.append((int(match.group(1)), path))
+  493:     return sorted(entries)
+       
+       
+    1: def next_attempt_dir(parent_dir: str) -> str:
+  100:     os.makedirs(parent_dir, exist_ok=True)
+  100:     entries = _attempt_entries(parent_dir)
+  100:     attempt = entries[-1][0] + 1 if entries else 1
+  100:     path = os.path.join(parent_dir, f"a{attempt}")
+  100:     os.makedirs(path, exist_ok=False)
+  100:     return path
+       
+       
+    1: def latest_attempt_dir(parent_dir: str) -> str | None:
+  331:     entries = _attempt_entries(parent_dir)
+  331:     return entries[-1][1] if entries else None
+       
+       
+    1: def _attempt_number(path: str) -> int:
+  144:     match = re.fullmatch(r"a([1-9][0-9]*)", os.path.basename(path))
+  144:     if not match:
+    1:         raise ValueError(f"not an attempt directory: {path}")
+  143:     return int(match.group(1))
+       
+       
+    1: def _write_json_atomic(path: str, value: object) -> None:
+  138:     parent = os.path.dirname(os.path.abspath(path))
+  138:     os.makedirs(parent, exist_ok=True)
+  276:     temporary = os.path.join(
+  138:         parent,
+  138:         f".{os.path.basename(path)}.{os.getpid()}.{secrets.token_hex(8)}.tmp",
+           )
+  138:     try:
+  276:         with open(temporary, "x", encoding="utf-8") as output:
+  138:             json.dump(value, output, indent=2, sort_keys=True)
+  138:             output.write("\n")
+  138:             output.flush()
+  138:             os.fsync(output.fileno())
+  138:         os.replace(temporary, path)
+           finally:
+  138:         try:
+  138:             os.unlink(temporary)
+  138:         except FileNotFoundError:
+  138:             pass
+       
+       
+    1: def _load_json(path: str) -> object:
+  402:     with open(path, "r", encoding="utf-8") as source:
+  200:         return json.load(source)
+       
+       
+    1: def read_log(log_path: str) -> bytes:
+  310:     with open(log_path, "rb") as log_file:
+  155:         return log_file.read()
+       
+       
+    1: def fresh_stage_env(pin: dict, attempt_dir: str, stage_name: str, additions: dict[str, str] | None = None) -> dict[str, str]:
+  132:     tmp_dir = os.path.join(attempt_dir, f"{stage_name}.tmp")
+  132:     cache_dir = os.path.join(attempt_dir, f"{stage_name}.cache")
+  132:     os.makedirs(tmp_dir, exist_ok=False)
+  131:     os.makedirs(cache_dir, exist_ok=False)
+  131:     stage_additions = {
+  131:         "TMPDIR": tmp_dir,
+  131:         "IYI_CACHE_DIR": cache_dir,
+           }
+  131:     if additions:
+  115:         stage_additions.update(additions)
+  131:     return base_env(pin, stage_additions)
+       
+       
+    1: def run_logged(cmd: list[str], *, cwd: str, env: dict[str, str], log_path: str, times_path: str, limit_sec: float | None, grace_sec: float = GRACE_SEC):
+  318:     result = run_bounded(
+  159:         cmd,
+  159:         cwd,
+  159:         env,
+  159:         log_path,
+  159:         times_path,
+  159:         limit_sec,
+  159:         grace_sec,
+           )
+  155:     return result, read_log(log_path)
+       
+       
+    1: def _new_result(pin: dict, unit: str, attempt: int, checks: dict[str, str], reasons: list[str], started_ns: int, survivors: Sequence[int]) -> dict:
+  100:     kind = unit.split("/", 1)[0]
+  100:     record = {
+  100:         "v": 1,
+  100:         "chain_id": pin["chain_id"],
+  100:         "unit": unit,
+  100:         "attempt": attempt,
+  100:         "status": "FAIL",
+  100:         "reasons": list(reasons),
+  100:         "checks": dict(checks),
+  100:         "started_ns": started_ns,
+  100:         "ended_ns": time.time_ns(),
+  200:         "survivors": sorted(set(int(pid) for pid in survivors)),
+           }
+  100:     record["status"] = recompute_status(record, kind)
+  100:     return record
+       
+       
+    1: def _finish_attempt(attempt_dir: str, pin: dict, unit: str, checks: dict[str, str], reasons: list[str], started_ns: int, survivors: Sequence[int]) -> dict:
+  200:     record = _new_result(
+  100:         pin,
+  100:         unit,
+  100:         _attempt_number(attempt_dir),
+  100:         checks,
+  100:         reasons,
+  100:         started_ns,
+  100:         survivors,
+           )
+  100:     write_result(os.path.join(attempt_dir, "result.json"), record)
+  100:     return record
+       
+       
+    1: def _check_stage_identity(pin: dict, checks: dict[str, str], reasons: list[str]) -> bool:
+  249:     try:
+  249:         check_identity(pin)
+   12:     except IdentityError as error:
+   12:         checks["identity"] = "INVALID"
+   12:         reasons.append(f"identity {error.reason}: {error.detail}")
+   12:         return False
+  237:     if checks.get("identity") != "INVALID":
+  237:         checks["identity"] = "PASS"
+  237:     return True
+       
+       
+    1: def _check_stage_disk(path: str, minimum_gb: float, checks: dict[str, str], reasons: list[str], *, check_name: str, low_status: str) -> bool:
+   82:     try:
+   82:         check_disk_space(path, minimum_gb)
+    5:     except (OSError, RuntimeError) as error:
+    5:         checks[check_name] = low_status
+    5:         reasons.append(str(error))
+    5:         return False
+   77:     checks[check_name] = "PASS"
+   77:     return True
+       
+       
+    1: def _run_gate(command: list[str], *, pin: dict, attempt_dir: str, stage_name: str, additions: dict[str, str], cwd: str):
+  115:     env = fresh_stage_env(pin, attempt_dir, stage_name, additions)
+  115:     log_path = os.path.join(attempt_dir, f"{stage_name}.log")
+  115:     times_path = os.path.join(attempt_dir, f"{stage_name}.times")
+  115:     return run_logged(command, cwd=cwd, env=env, log_path=log_path, times_path=times_path, limit_sec=None)
+       
+       
+    1: def _exclusions(log_text: str) -> list[dict[str, str]]:
+   48:     pattern = re.compile(
+   24:         r"^  \[excluded after calibration\] (\S+): (.*)$",
+   24:         re.MULTILINE,
+           )
+   48:     return [
+    3:         {"program": match.group(1), "reason": match.group(2)}
+   51:         for match in pattern.finditer(log_text)
+           ]
+       
+       
+    1: def _skip_hits(census: dict, text: str) -> list[dict[str, str]]:
+   56:     lines = text.splitlines()
+   56:     hits: list[dict[str, str]] = []
+   98:     for entry in census.get("skips", []):
+   42:         if not isinstance(entry, dict):
+    1:             continue
+   41:         regex = entry.get("regex")
+   41:         if not isinstance(regex, str):
+    1:             continue
+   40:         try:
+  114:             matched = any(re.search(regex, line) for line in lines)
+    1:         except re.error:
+    1:             matched = False
+   40:         if matched:
+   12:             hits.append(
+    6:                 {
+    6:                     "driver": str(census.get("driver", "")),
+    6:                     "class": str(entry.get("class", "")),
+    6:                     "what": str(entry.get("what", "")),
+    6:                     "regex": regex,
+                       }
+                   )
+   62:     unique = {tuple(sorted(hit.items())): hit for hit in hits}
+  112:     return sorted(
+   56:         unique.values(),
+   62:         key=lambda hit: (
+    6:             hit["driver"],
+    6:             hit["class"],
+    6:             hit["what"],
+    6:             hit["regex"],
+               ),
+           )
+       
+       
+    1: def _baseline_skip_hits(w_path: str, log_text: str) -> list[dict[str, str]]:
+   54:     header = re.compile(
+   27:         r"^-- running sibling: std_([A-Za-z0-9_]+)_exercise\.sh\s*$",
+   27:         re.MULTILINE,
+           )
+   27:     matches = list(header.finditer(log_text))
+   27:     hits: list[dict[str, str]] = []
+ 2557:     for index, match in enumerate(matches):
+ 2532:         driver = match.group(1)
+ 2532:         section_end = matches[index + 1].start() if index + 1 < len(matches) else len(log_text)
+ 2532:         section = log_text[match.end():section_end]
+ 2532:         census_path = os.path.join(w_path, "proof", "census", f"{driver}.json")
+ 2532:         if not os.path.isfile(census_path):
+ 2507:             continue
+   25:         census = _load_json(census_path)
+   25:         if not isinstance(census, dict):
+    2:             raise ValueError(f"census is not an object: {census_path}")
+   23:         hits.extend(_skip_hits(census, section))
+   26:     unique = {tuple(sorted(hit.items())): hit for hit in hits}
+   50:     return sorted(
+   25:         unique.values(),
+   26:         key=lambda hit: (
+    1:             hit["driver"],
+    1:             hit["class"],
+    1:             hit["what"],
+    1:             hit["regex"],
+               ),
+           )
+       
+       
+    1: def cmd_plan(args, *, drivers: Sequence[str] = DRIVERS_29) -> int:
+    4:     facts = inspect_pin_inputs(args.p, args.w, args.compiler, drivers)
+    3:     with tempfile.TemporaryDirectory(
+    1:         prefix="iyi-plan-atime-",
+    1:         dir="/private/tmp",
+    1:     ) as probe_dir:
+    1:         probe = probe_atime_observable(probe_dir)
+    1:     print("Observed Corpus Proof Plan")
+    1:     print(f"  P Path:    {facts['p_path']}")
+    1:     print(f"  W Path:    {facts['w_path']}")
+    1:     print(f"  Compiler:  {facts['compiler_path']}")
+    1:     print(f"  P SHA:     {facts['p_source_sha']}")
+    1:     print(f"  W HEAD:    {facts['w_head']}")
+    1:     print(f"  Version:   {facts['compiler_version_line']}")
+    1:     print(f"  BIN SHA:   {facts['compiler_sha256']}")
+    1:     print(f"  Timeout:   {facts['timeout_path']} ({facts['timeout_version']})")
+    1:     print(f"  Platform:  {facts['platform_tmp']}")
+    2:     print(
+    2:         "  Probe:     "
+    1:         f"sha256={probe['sha256']} inode={probe['inode']} "
+    1:         f"atime={probe['atime_after_exec_ns']}"
+           )
+    1:     print(f"  Censuses:  {len(facts['census_sha256'])} validated")
+    1:     return 0
+       
+       
+    1: def cmd_pin(args, *, drivers: Sequence[str] = DRIVERS_29) -> int:
+    1:     pin = write_pin(args.report_dir, args.p, args.w, args.compiler, drivers)
+    1:     print(f"Pin successfully written to {os.path.join(args.report_dir, 'pin.json')}")
+    1:     print(f"  Chain ID:  {pin['chain_id']}")
+    1:     print(f"  P SHA:     {pin['p_source_sha']}")
+    1:     print(f"  W HEAD:    {pin['w_head']}")
+    1:     print(f"  Compiler:  {pin['compiler_sha256']}")
+    1:     print(f"  Platform:  {pin['platform_tmp']}")
+    1:     return 0
+       
+       
+    1: def cmd_run1(args, *, std_exercises: int = RUN1_STD_EXERCISES, siblings: int = RUN1_SIBLINGS, corpus: int = RUN1_CORPUS, rg2r_min: int = RG2R_MIN, disk_min_gb: float = DISK_MIN_GB, baseline_w_path: str | None = None, rg9_work_path: str | None = None) -> int:
+   39:     pin = load_pin(args.report_dir)
+   39:     attempt_dir = next_attempt_dir(os.path.join(args.report_dir, "run1"))
+   39:     started_ns = time.time_ns()
+   39:     checks: dict[str, str] = {}
+   39:     reasons: list[str] = []
+   39:     survivors: list[int] = []
+   39:     w_path = pin["w_path"]
+   39:     compiler = pin["compiler_path"]
+       
+   39:     if not _check_stage_identity(pin, checks, reasons):
+   10:         record = _finish_attempt(
+    5:             attempt_dir, pin, "run1", checks, reasons, started_ns, survivors
+               )
+    5:         return 0 if record["status"] == "PASS" else 1
+   68:     if not _check_stage_disk(
+   34:         args.report_dir,
+   34:         disk_min_gb,
+   34:         checks,
+   34:         reasons,
+   34:         check_name="identity",
+   34:         low_status="STOP",
+           ):
+    4:         record = _finish_attempt(
+    2:             attempt_dir, pin, "run1", checks, reasons, started_ns, survivors
+               )
+    2:         return 0 if record["status"] == "PASS" else 1
+       
+   32:     gate_1_1_text = ""
+   32:     gate_1_4_text = ""
+       
+   32:     try:
+   64:         result, output = _run_gate(
+   32:             ["bash", "bench/stale_equivalence.sh", "all"],
+   32:             pin=pin,
+   32:             attempt_dir=attempt_dir,
+   32:             stage_name="run1_1",
+   32:             additions={"IYI": compiler},
+   32:             cwd=w_path,
+               )
+   31:         survivors.extend(result.survivors)
+   31:         gate_1_1_text = output.decode("utf-8", errors="replace")
+   31:         if result.interrupted_signal is not None:
+    1:             checks["gate-1.1"] = "FAIL"
+    1:             reasons.append(f"interrupted by signal {result.interrupted_signal}")
+               else:
+   30:             required = (
+                       r"^RG2 PASSED: ",
+                       r"^RG2a PASSED: ",
+                       r"^RG5 trace half PASSED: ",
+                   )
+   60:             missing = [
+   90:                 pattern
+  150:                 for pattern in required
+   90:                 if not re.search(pattern, gate_1_1_text, re.MULTILINE)
+                   ]
+   30:             if result.returncode != 0 or result.timed_out or missing:
+    1:                 checks["gate-1.1"] = "FAIL"
+    2:                 reasons.append(
+    1:                     f"gate 1.1 exit={result.returncode} missing={missing}"
+                       )
+                   else:
+   29:                 checks["gate-1.1"] = "PASS"
+   62:         rg2r = re.search(
+   31:             r"^RG2r PASSED: all ([0-9]+) probes",
+   31:             gate_1_1_text,
+   31:             re.MULTILINE,
+               )
+   31:         if rg2r and int(rg2r.group(1)) >= rg2r_min:
+   29:             checks["rg2r-count"] = "PASS"
+               else:
+    2:             checks["rg2r-count"] = "FAIL"
+    4:             reasons.append(
+    2:                 f"RG2r count is {rg2r.group(1) if rg2r else 'missing'}, expected at least {rg2r_min}"
+                   )
+    1:     except (OSError, RuntimeError, TypeError, ValueError) as error:
+    1:         checks["gate-1.1"] = "FAIL"
+    1:         checks["rg2r-count"] = "FAIL"
+    1:         reasons.append(f"gate 1.1 error: {error}")
+   32:     if not _check_stage_identity(pin, checks, reasons):
+    2:         record = _finish_attempt(
+    1:             attempt_dir, pin, "run1", checks, reasons, started_ns, survivors
+               )
+    1:         return 0 if record["status"] == "PASS" else 1
+   68:     if any(reason.startswith("interrupted by signal ") for reason in reasons):
+    2:         record = _finish_attempt(
+    1:             attempt_dir, pin, "run1", checks, reasons, started_ns, survivors
+               )
+    1:         return 0 if record["status"] == "PASS" else 1
+       
+   30:     try:
+   60:         result, output = _run_gate(
+   30:             ["bash", "bench/std_observe_exercise.sh"],
+   30:             pin=pin,
+   30:             attempt_dir=attempt_dir,
+   30:             stage_name="run1_2",
+   30:             additions={"IYI": compiler},
+   30:             cwd=w_path,
+               )
+   29:         survivors.extend(result.survivors)
+   29:         text = output.decode("utf-8", errors="replace")
+   29:         if result.interrupted_signal is not None:
+    1:             checks["gate-1.2"] = "FAIL"
+    1:             reasons.append(f"interrupted by signal {result.interrupted_signal}")
+               elif (
+   28:             result.returncode == 0
+   28:             and not result.timed_out
+   28:             and "OK: bench/std_observe_exercise.sh passed all checks" in text
+               ):
+   27:             checks["gate-1.2"] = "PASS"
+               else:
+    1:             checks["gate-1.2"] = "FAIL"
+    1:             reasons.append(f"gate 1.2 exit={result.returncode} or sentinel missing")
+    1:     except (OSError, RuntimeError, TypeError, ValueError) as error:
+    1:         checks["gate-1.2"] = "FAIL"
+    1:         reasons.append(f"gate 1.2 error: {error}")
+   30:     if not _check_stage_identity(pin, checks, reasons):
+    2:         record = _finish_attempt(
+    1:             attempt_dir, pin, "run1", checks, reasons, started_ns, survivors
+               )
+    1:         return 0 if record["status"] == "PASS" else 1
+   68:     if any(reason.startswith("interrupted by signal ") for reason in reasons):
+    2:         record = _finish_attempt(
+    1:             attempt_dir, pin, "run1", checks, reasons, started_ns, survivors
+               )
+    1:         return 0 if record["status"] == "PASS" else 1
+       
+   28:     rg9_work = rg9_work_path or os.path.join(attempt_dir, "rg9_work")
+   28:     try:
+   28:         os.makedirs(rg9_work, exist_ok=False)
+   54:         result, output = _run_gate(
+   27:             [
+   27:                 pin["python_path"],
+   27:                 "bench/stale_rg9.py",
+   27:                 "--repo",
+   27:                 w_path,
+   27:                 "--compiler",
+   27:                 compiler,
+   27:                 "--work",
+   27:                 rg9_work,
+                   ],
+   27:             pin=pin,
+   27:             attempt_dir=attempt_dir,
+   27:             stage_name="run1_3",
+   27:             additions={"IYI": compiler},
+   27:             cwd=w_path,
+               )
+   27:         survivors.extend(result.survivors)
+   27:         text = output.decode("utf-8", errors="replace")
+   54:         sentinel = re.search(
+   27:             rf"^RG9 PASSED: {corpus} corpus programs$",
+   27:             text,
+   27:             re.MULTILINE,
+               )
+   27:         if result.interrupted_signal is not None:
+    1:             checks["gate-1.3"] = "FAIL"
+    1:             reasons.append(f"interrupted by signal {result.interrupted_signal}")
+   26:         elif result.returncode == 0 and not result.timed_out and sentinel:
+   25:             checks["gate-1.3"] = "PASS"
+               else:
+    1:             checks["gate-1.3"] = "FAIL"
+    2:             reasons.append(
+    1:                 f"gate 1.3 exit={result.returncode}; expected RG9 count {corpus}"
+                   )
+    1:     except (OSError, RuntimeError, TypeError, ValueError) as error:
+    1:         checks["gate-1.3"] = "FAIL"
+    1:         reasons.append(f"gate 1.3 error: {error}")
+   28:     if not _check_stage_identity(pin, checks, reasons):
+    2:         record = _finish_attempt(
+    1:             attempt_dir, pin, "run1", checks, reasons, started_ns, survivors
+               )
+    1:         return 0 if record["status"] == "PASS" else 1
+   68:     if any(reason.startswith("interrupted by signal ") for reason in reasons):
+    2:         record = _finish_attempt(
+    1:             attempt_dir, pin, "run1", checks, reasons, started_ns, survivors
+               )
+    1:         return 0 if record["status"] == "PASS" else 1
+       
+   26:     try:
+   52:         result, output = _run_gate(
+   26:             ["bash", "bench/std_exercise.sh"],
+   26:             pin=pin,
+   26:             attempt_dir=attempt_dir,
+   26:             stage_name="run1_4",
+   26:             additions={"IYI": compiler, "STD_SIBLINGS": "1"},
+   26:             cwd=w_path,
+               )
+   25:         survivors.extend(result.survivors)
+   25:         gate_1_4_text = output.decode("utf-8", errors="replace")
+   25:         phrases = (
+   25:             "Standard library foundation: traits, cmp, enumerable",
+   25:             f"all {std_exercises} exercises answer the same from source and from artifacts",
+   25:             f"== shard 1 of 1: {siblings} of {siblings} sibling exercises",
+               )
+   50:         header_count = len(
+   25:             re.findall(r"^-- running sibling: ", gate_1_4_text, re.MULTILINE)
+               )
+   25:         if result.interrupted_signal is not None:
+    1:             checks["gate-1.4"] = "FAIL"
+    1:             reasons.append(f"interrupted by signal {result.interrupted_signal}")
+               elif (
+   24:             result.returncode == 0
+   24:             and not result.timed_out
+  190:             and all(phrase in gate_1_4_text for phrase in phrases)
+   23:             and header_count == siblings
+               ):
+   23:             checks["gate-1.4"] = "PASS"
+               else:
+    1:             checks["gate-1.4"] = "FAIL"
+    2:             reasons.append(
+    1:                 f"gate 1.4 exit={result.returncode}; sibling headers={header_count}, expected={siblings}"
+                   )
+    1:     except (OSError, RuntimeError, TypeError, ValueError) as error:
+    1:         checks["gate-1.4"] = "FAIL"
+    1:         reasons.append(f"gate 1.4 error: {error}")
+   26:     if not _check_stage_identity(pin, checks, reasons):
+    2:         record = _finish_attempt(
+    1:             attempt_dir, pin, "run1", checks, reasons, started_ns, survivors
+               )
+    1:         return 0 if record["status"] == "PASS" else 1
+   68:     if any(reason.startswith("interrupted by signal ") for reason in reasons):
+    2:         record = _finish_attempt(
+    1:             attempt_dir, pin, "run1", checks, reasons, started_ns, survivors
+               )
+    1:         return 0 if record["status"] == "PASS" else 1
+       
+   24:     exclusions = _exclusions(gate_1_1_text)
+   48:     sample_exclusions = [
+   51:         entry for entry in exclusions if entry["program"].startswith("samples/")
+           ]
+   24:     if sample_exclusions:
+    1:         checks["exclusions"] = "FAIL"
+    3:         reasons.extend(
+    2:             "UNEXPLAINED-SAMPLE-EXCLUSION: "
+    1:             f"{entry['program']} ({entry['reason']})"
+    3:             for entry in sample_exclusions
+               )
+           else:
+   23:         checks["exclusions"] = "PASS"
+   24:     _write_json_atomic(os.path.join(attempt_dir, "exclusions.json"), exclusions)
+       
+   24:     try:
+   48:         baseline = _baseline_skip_hits(
+   24:             baseline_w_path or w_path,
+   24:             gate_1_4_text,
+               )
+    1:     except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
+    1:         baseline = []
+    1:         checks["baseline-skips"] = "FAIL"
+    1:         reasons.append(f"baseline skip capture failed: {error}")
+           else:
+   23:         checks["baseline-skips"] = "PASS"
+   48:     _write_json_atomic(
+   24:         os.path.join(attempt_dir, "baseline_skips.json"),
+   24:         baseline,
+           )
+       
+   48:     record = _finish_attempt(
+   24:         attempt_dir, pin, "run1", checks, reasons, started_ns, survivors
+           )
+   24:     print(f"Run 1 {record['status']}: {attempt_dir}")
+   24:     return 0 if record["status"] == "PASS" else 1
+       
+       
+    1: def _read_run2_rows(path: str) -> list[dict]:
+   78:     rows: list[dict] = []
+  155:     with open(path, "r", encoding="utf-8") as source:
+ 3497:         for number, line in enumerate(source, 1):
+ 3422:             if not line.strip():
+    1:                 continue
+ 3421:             try:
+ 3421:                 row = json.loads(line)
+    1:             except json.JSONDecodeError as error:
+    1:                 raise ValueError(f"invalid run2 row {number}: {error}") from error
+ 3420:             if not isinstance(row, dict):
+    1:                 raise ValueError(f"run2 row {number} is not an object")
+ 3419:             rows.append(row)
+   75:     return rows
+       
+       
+    1: def cmd_run2(args, *, expected_counts: tuple[int, int, int] = RUN2_COUNTS, disk_min_gb: float = DISK_MIN_GB) -> int:
+   15:     pin = load_pin(args.report_dir)
+   15:     attempt_dir = next_attempt_dir(os.path.join(args.report_dir, "run2"))
+   15:     started_ns = time.time_ns()
+   15:     checks: dict[str, str] = {}
+   15:     reasons: list[str] = []
+   15:     survivors: list[int] = []
+       
+   15:     if not _check_stage_identity(pin, checks, reasons):
+    2:         record = _finish_attempt(
+    1:             attempt_dir, pin, "run2", checks, reasons, started_ns, survivors
+               )
+    1:         return 0 if record["status"] == "PASS" else 1
+   28:     if not _check_stage_disk(
+   14:         args.report_dir,
+   14:         disk_min_gb,
+   14:         checks,
+   14:         reasons,
+   14:         check_name="identity",
+   14:         low_status="STOP",
+           ):
+    2:         record = _finish_attempt(
+    1:             attempt_dir, pin, "run2", checks, reasons, started_ns, survivors
+               )
+    1:         return 0 if record["status"] == "PASS" else 1
+       
+   13:     samples, std, total = expected_counts
+   13:     report_path = os.path.join(attempt_dir, "run2.jsonl")
+   13:     work_root = os.path.join(attempt_dir, "scratch")
+   13:     os.makedirs(work_root, exist_ok=False)
+   13:     env = fresh_stage_env(pin, attempt_dir, "run2")
+   13:     command = [
+   13:         pin["python_path"],
+   13:         "-B",
+   13:         os.path.join(pin["w_path"], "proof", "artifact_legs.py"),
+   13:         "--repo",
+   13:         pin["w_path"],
+   13:         "--compiler",
+   13:         pin["compiler_path"],
+   13:         "--work",
+   13:         work_root,
+   13:         "--report",
+   13:         report_path,
+   13:         "--workers",
+   13:         "2",
+   13:         "--nm",
+   13:         pin["nm_path"],
+   13:         "--expect-samples",
+   13:         str(samples),
+   13:         "--expect-std",
+   13:         str(std),
+   13:         "--expect-total",
+   13:         str(total),
+           ]
+   13:     try:
+   26:         result, _output = run_logged(
+   13:             command,
+   13:             cwd=pin["w_path"],
+   13:             env=env,
+   13:             log_path=os.path.join(attempt_dir, "run2.log"),
+   13:             times_path=os.path.join(attempt_dir, "run2.times"),
+   13:             limit_sec=None,
+               )
+   13:         survivors.extend(result.survivors)
+   13:         if result.interrupted_signal is not None:
+    1:             checks["legs"] = "FAIL"
+    1:             reasons.append(f"interrupted by signal {result.interrupted_signal}")
+               else:
+   12:             rows = _read_run2_rows(report_path)
+ 1561:             statuses = [str(row.get("status", "FAIL")) for row in rows]
+   11:             if "STOP" in statuses:
+    2:                 checks["legs"] = "STOP"
+ 1152:             elif result.returncode == 0 and statuses and all(
+ 1143:                 status == "PASS" for status in statuses
+                   ):
+    8:                 checks["legs"] = "PASS"
+                   else:
+    1:                 checks["legs"] = "FAIL"
+   11:             if checks["legs"] != "PASS":
+    6:                 reasons.append(
+    3:                     f"artifact legs exit={result.returncode}; statuses={statuses}"
+                       )
+ 1572:             sample_count = sum(row.get("kind") == "sample" for row in rows)
+ 1572:             std_count = sum(row.get("kind") == "std" for row in rows)
+   11:             actual = (sample_count, std_count, len(rows))
+   11:             if actual == expected_counts:
+   10:                 checks["counts"] = "PASS"
+                   else:
+    1:                 checks["counts"] = "FAIL"
+    2:                 reasons.append(
+    1:                     f"artifact counts={actual}, expected={expected_counts}"
+                       )
+    1:     except (OSError, RuntimeError, TypeError, ValueError) as error:
+    1:         checks["legs"] = "FAIL"
+    1:         checks["counts"] = "FAIL"
+    1:         reasons.append(f"artifact legs error: {error}")
+       
+   13:     _check_stage_identity(pin, checks, reasons)
+   26:     record = _finish_attempt(
+   13:         attempt_dir, pin, "run2", checks, reasons, started_ns, survivors
+           )
+   13:     print(f"Run 2 {record['status']}: {attempt_dir}")
+   13:     return 0 if record["status"] == "PASS" else 1
+       
+       
+    1: def _driver_from_program(program: str) -> str | None:
+    3:     base = os.path.basename(program)
+    3:     match = re.fullmatch(r"std_(.+)_exercise\.iyi", base)
+    3:     return match.group(1) if match else None
+       
+       
+    1: def _compute_required_drivers(drivers: Sequence[str], exclusions_path: str, run2_path: str) -> list[str]:
+   67:     required = list(dict.fromkeys(drivers))
+   67:     exclusions = _load_json(exclusions_path)
+   67:     if not isinstance(exclusions, list):
+    2:         raise ValueError("exclusions.json is not a list")
+   65:     additions: set[str] = set()
+   67:     for entry in exclusions:
+    4:         if not isinstance(entry, dict):
+    1:             raise ValueError("exclusions.json contains a non-object")
+    3:         program = entry.get("program")
+    3:         if not isinstance(program, str):
+    1:             raise ValueError("exclusion has no string program")
+    2:         if program.startswith("bench/std_"):
+    2:             driver = _driver_from_program(program)
+    2:             if driver:
+    2:                 additions.add(driver)
+ 1930:     for row in _read_run2_rows(run2_path):
+ 1868:         if row.get("p_nonzero") is True:
+    2:             base = row.get("base")
+    2:             name = row.get("name")
+    2:             candidate = base if isinstance(base, str) else name
+    2:             if not isinstance(candidate, str):
+    1:                 raise ValueError("p_nonzero row has no base or name")
+    1:             driver = _driver_from_program(candidate)
+    1:             if driver is None:
+    1:                 driver = re.sub(r"^std_", "", os.path.basename(candidate))
+    1:                 driver = re.sub(r"_exercise(?:\.iyi)?$", "", driver)
+    1:             if driver:
+    1:                 additions.add(driver)
+   65:     for driver in sorted(additions):
+    3:         if driver not in required:
+    3:             required.append(driver)
+   62:     return required
+       
+       
+    1: def _run3_prerequisites(report_dir: str) -> tuple[str, str, str] | None:
+   66:     run1_attempt = latest_attempt_dir(os.path.join(report_dir, "run1"))
+   66:     run2_attempt = latest_attempt_dir(os.path.join(report_dir, "run2"))
+   66:     if run1_attempt is None or run2_attempt is None:
+    1:         return None
+   65:     exclusions = os.path.join(run1_attempt, "exclusions.json")
+   65:     baseline = os.path.join(run1_attempt, "baseline_skips.json")
+   65:     run2 = os.path.join(run2_attempt, "run2.jsonl")
+  512:     if not all(os.path.isfile(path) for path in (exclusions, baseline, run2)):
+    2:         return None
+   63:     return exclusions, baseline, run2
+       
+       
+    1: def _empty_run3_checks(status: str, check_name: str) -> dict[str, str]:
+    3:     return {check_name: status}
+       
+       
+    1: def _record_run3_configuration_failure(report_dir: str, pin: dict, selected: Sequence[str], status: str, reason: str) -> None:
+    6:     for driver in selected:
+    6:         attempt_dir = next_attempt_dir(
+    3:             os.path.join(report_dir, "run3", driver)
+               )
+    6:         _finish_attempt(
+    3:             attempt_dir,
+    3:             pin,
+    3:             f"run3/{driver}",
+    3:             _empty_run3_checks(status, "census"),
+    3:             [reason],
+    3:             time.time_ns(),
+    3:             (),
+               )
+       
+       
+    1: def _baseline_keys(value: object) -> set[tuple[str, str, str, str]]:
+   42:     if not isinstance(value, list):
+    2:         raise ValueError("baseline_skips.json is not a list")
+   40:     keys: set[tuple[str, str, str, str]] = set()
+   42:     for entry in value:
+    3:         if not isinstance(entry, dict):
+    1:             raise ValueError("baseline skip is not an object")
+    4:         keys.add(
+    2:             (
+    2:                 str(entry.get("driver", "")),
+    2:                 str(entry.get("class", "")),
+    2:                 str(entry.get("what", "")),
+    2:                 str(entry.get("regex", "")),
+                   )
+               )
+   39:     return keys
+       
+       
+    1: def _classify_driver_skips(census: dict, log_text: str, baseline: set[tuple[str, str, str, str]]) -> tuple[str, list[str]]:
+   32:     hits = _skip_hits(census, log_text)
+   64:     hit_keys = {
+    4:         (hit["driver"], hit["class"], hit["what"], hit["regex"])
+   68:         for hit in hits
+           }
+   36:     tool_hits = [hit for hit in hits if hit["class"] == "tool"]
+   32:     missing = sorted(hit_keys - baseline)
+   64:     reasons = [
+    4:         f"platform limit {hit['driver']}: {hit['what']}"
+   68:         for hit in hits
+    4:         if hit["class"] == "platform"
+           ]
+   32:     if tool_hits:
+    6:         reasons.extend(
+    6:             f"tool skip {hit['driver']}: {hit['what']}" for hit in tool_hits
+               )
+    2:         return "ENV-BLOCKED", reasons
+   30:     if missing:
+    1:         reasons.append(f"skip hits absent from baseline: {missing}")
+    1:         return "PARTIAL", reasons
+   29:     return "PASS", reasons
+       
+       
+    1: def _launcher_text(pin: dict, shim_config_path: str) -> str:
+   31:     return (
+   62:         "#!/bin/bash\nexec "
+   31:         f"{shlex.quote(pin['python_path'])} -B "
+   31:         f"{shlex.quote(os.path.join(pin['w_path'], 'proof', 'roundtrip_shim.py'))} "
+   31:         f"--config {shlex.quote(shim_config_path)} -- \"$@\"\n"
+           )
+       
+       
+    1: def _run_one_driver(report_dir: str, pin: dict, driver: str, baseline: set[tuple[str, str, str, str]], *, driver_limit_sec: float, grace_sec: float, disk_min_gb: float, stat_fn, setup_base: str | None = None, driver_log_path: str | None = None) -> dict:
+   86:     attempt_dir = next_attempt_dir(
+   43:         os.path.join(report_dir, "run3", driver)
+           )
+   43:     attempt = _attempt_number(attempt_dir)
+   43:     started_ns = time.time_ns()
+   43:     checks: dict[str, str] = {}
+   43:     reasons: list[str] = []
+   43:     survivors: list[int] = []
+   43:     unit = f"run3/{driver}"
+   43:     w_path = pin["w_path"]
+   43:     census_path = os.path.join(w_path, "proof", "census", f"{driver}.json")
+       
+   43:     if not os.path.isfile(census_path):
+    3:         checks["census"] = "CENSUS-MISSING"
+    3:         reasons.append(f"CENSUS-MISSING: {census_path}")
+    6:         return _finish_attempt(
+    3:             attempt_dir, pin, unit, checks, reasons, started_ns, survivors
+               )
+   40:     try:
+   40:         census_value = _load_json(census_path)
+   39:         if not isinstance(census_value, dict):
+    1:             raise ValueError("census is not an object")
+   38:         census = census_value
+   38:         script_relpath = census.get("script")
+   38:         if not isinstance(script_relpath, str):
+    1:             raise ValueError("census script is not a string")
+   37:         driver_script = os.path.join(w_path, script_relpath)
+   37:         if not os.path.isfile(driver_script):
+    1:             checks["census"] = "PASS"
+    1:             checks["exit"] = "FAIL"
+    1:             reasons.append(f"driver script missing: {driver_script}")
+    2:             return _finish_attempt(
+    1:                 attempt_dir, pin, unit, checks, reasons, started_ns, survivors
+                   )
+   72:         with open(driver_script, "rb") as script_file:
+   36:             script_bytes = script_file.read()
+   36:         violations = validate_census(census, script_bytes, script_relpath)
+   36:         if violations:
+    1:             checks["census"] = "FAIL"
+    2:             reasons.append(
+    1:                 f"census invalid: {json.dumps(violations, sort_keys=True)}"
+                   )
+    2:             return _finish_attempt(
+    1:                 attempt_dir, pin, unit, checks, reasons, started_ns, survivors
+                   )
+   35:         checks["census"] = "PASS"
+    3:     except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
+    3:         checks["census"] = "FAIL"
+    3:         reasons.append(f"census error: {error}")
+    6:         return _finish_attempt(
+    3:             attempt_dir, pin, unit, checks, reasons, started_ns, survivors
+               )
+       
+   35:     if not _check_stage_identity(pin, checks, reasons):
+    2:         return _finish_attempt(
+    1:             attempt_dir, pin, unit, checks, reasons, started_ns, survivors
+               )
+   68:     if not _check_stage_disk(
+   34:         report_dir,
+   34:         disk_min_gb,
+   34:         checks,
+   34:         reasons,
+   34:         check_name="disk",
+   34:         low_status="STOP",
+           ):
+    4:         return _finish_attempt(
+    2:             attempt_dir, pin, unit, checks, reasons, started_ns, survivors
+               )
+       
+   32:     try:
+   32:         layout_base = setup_base or attempt_dir
+   32:         t_dir = os.path.realpath(os.path.join(layout_base, "t"))
+   32:         c_dir = os.path.realpath(os.path.join(layout_base, "c"))
+   32:         s_dir = os.path.realpath(os.path.join(layout_base, "s"))
+   32:         bin_dir = os.path.realpath(os.path.join(layout_base, "bin"))
+  156:         for directory in (t_dir, c_dir, s_dir, bin_dir):
+  125:             os.makedirs(directory, exist_ok=False)
+   31:         launcher_path = os.path.join(bin_dir, "iyi")
+   31:         config_path = os.path.join(attempt_dir, "shim.json")
+   31:         ledger_path = os.path.join(attempt_dir, "ledger.jsonl")
+   31:         nonce = secrets.token_hex(16)
+   31:         config = {
+   31:             "real": os.path.realpath(pin["compiler_path"]),
+   31:             "census": os.path.realpath(census_path),
+   31:             "ledger": ledger_path,
+   31:             "nonce": nonce,
+   31:             "driver": driver,
+   31:             "work_tmp": t_dir,
+   31:             "scratch": s_dir,
+   31:             "repo": os.path.realpath(w_path),
+   31:             "canonical_roots": pin["canonical_roots"],
+   31:             "platform_tmp": pin["platform_tmp"],
+               }
+   31:         _write_json_atomic(config_path, config)
+   62:         with open(launcher_path, "x", encoding="utf-8") as launcher:
+   31:             launcher.write(_launcher_text(pin, config_path))
+   31:         os.chmod(launcher_path, 0o755)
+   62:         with open(ledger_path, "x", encoding="utf-8") as ledger:
+   62:             ledger.write(
+   93:                 json.dumps(
+   31:                     {
+   31:                         "v": 1,
+   31:                         "kind": "header",
+   31:                         "nonce": nonce,
+   31:                         "driver": driver,
+   31:                         "attempt": attempt,
+   31:                         "chain_id": pin["chain_id"],
+                           },
+   31:                     separators=(",", ":"),
+   31:                     sort_keys=True,
+                       )
+   31:                 + "\n"
+                   )
+   62:         env = base_env(
+   31:             pin,
+   31:             {
+   31:                 "IYI": launcher_path,
+   31:                 "TMPDIR": t_dir,
+   31:                 "IYI_CACHE_DIR": c_dir,
+                   },
+               )
+    1:     except (OSError, TypeError, ValueError) as error:
+    1:         checks["exit"] = "FAIL"
+    1:         reasons.append(f"driver setup error: {error}")
+    2:         return _finish_attempt(
+    1:             attempt_dir, pin, unit, checks, reasons, started_ns, survivors
+               )
+   31:     try:
+   62:         result, output = run_logged(
+   31:             ["bash", script_relpath],
+   31:             cwd=w_path,
+   31:             env=env,
+   31:             log_path=driver_log_path or os.path.join(attempt_dir, "driver.log"),
+   31:             times_path=os.path.join(attempt_dir, "driver.times"),
+   31:             limit_sec=driver_limit_sec,
+   31:             grace_sec=grace_sec,
+               )
+   30:         survivors.extend(result.survivors)
+   30:         log_text = output.decode("utf-8", errors="replace")
+   30:         if result.interrupted_signal is not None:
+    1:             checks["exit"] = "FAIL"
+    1:             reasons.append(f"interrupted by signal {result.interrupted_signal}")
+   29:         elif result.timed_out:
+    1:             checks["exit"] = "TIMEOUT"
+    1:             reasons.append(f"driver exceeded {driver_limit_sec} seconds")
+   28:         elif result.returncode != 0:
+    1:             checks["exit"] = "FAIL"
+    1:             reasons.append(f"driver exit {result.returncode}")
+               else:
+   27:             checks["exit"] = "PASS"
+       
+   30:         sentinel_regex = census.get("pass_sentinel", {}).get("regex")
+   60:         if isinstance(sentinel_regex, str) and re.search(
+   30:             sentinel_regex, log_text, re.MULTILINE
+               ):
+   27:             checks["sentinel"] = "PASS"
+               else:
+    3:             checks["sentinel"] = "FAIL"
+    3:             reasons.append("driver pass sentinel missing")
+       
+   30:         if "observed-roundtrip-shim: REFUSED" in log_text:
+    1:             checks["no-refused"] = "MISCLASSIFIED"
+    1:             reasons.append("driver log contains a shim REFUSED line")
+               else:
+   29:             checks["no-refused"] = "PASS"
+       
+   60:         skip_status, skip_reasons = _classify_driver_skips(
+   30:             census,
+   30:             log_text,
+   30:             baseline,
+               )
+   30:         checks["skips"] = skip_status
+   30:         reasons.extend(skip_reasons)
+       
+   60:         verdict = verify_ledger(
+   30:             ledger_path,
+   30:             census=census,
+   30:             driver=driver,
+   30:             nonce=nonce,
+   30:             attempt=attempt,
+   30:             chain_id=pin["chain_id"],
+   30:             work_tmp=t_dir,
+   30:             repo=w_path,
+   30:             platform_tmp=pin["platform_tmp"],
+   30:             stat_fn=stat_fn,
+               )
+   30:         statuses = sorted(verdict.statuses)
+   30:         checks["ledger"] = statuses[0] if statuses else "PASS"
+   71:         reasons.extend(f"ledger {status}" for status in statuses)
+   72:         reasons.extend(f"ledger: {reason}" for reason in verdict.reasons)
+    1:     except (OSError, RuntimeError, TypeError, ValueError) as error:
+    1:         checks.setdefault("exit", "FAIL")
+    1:         checks.setdefault("sentinel", "FAIL")
+    1:         checks.setdefault("no-refused", "FAIL")
+    1:         checks.setdefault("skips", "FAIL")
+    1:         checks.setdefault("ledger", "UNFAITHFUL")
+    1:         reasons.append(f"driver execution error: {error}")
+       
+   31:     _check_stage_identity(pin, checks, reasons)
+   62:     return _finish_attempt(
+   31:         attempt_dir, pin, unit, checks, reasons, started_ns, survivors
+           )
+       
+       
+    1: def cmd_run3(args, *, drivers: Sequence[str] = DRIVERS_29, driver_limit_sec: float = DRIVER_LIMIT_SEC, grace_sec: float = GRACE_SEC, disk_min_gb: float = DISK_MIN_GB, stat_fn=os.stat) -> int:
+   41:     pin = load_pin(args.report_dir)
+   41:     requested_driver = getattr(args, "driver", "")
+   41:     prerequisites = _run3_prerequisites(args.report_dir)
+   41:     if prerequisites is None:
+    2:         print(
+    1:             "REFUSED run3 requires latest run1 exclusions.json and "
+                   "baseline_skips.json plus latest run2 run2.jsonl",
+    1:             file=sys.stderr,
+               )
+    1:         return 2
+   40:     exclusions_path, baseline_path, run2_path = prerequisites
+   40:     try:
+   80:         required = _compute_required_drivers(
+   40:             drivers,
+   40:             exclusions_path,
+   40:             run2_path,
+               )
+   40:         baseline = _baseline_keys(_load_json(baseline_path))
+    1:     except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
+    1:         print(f"REFUSED invalid run3 prerequisite: {error}", file=sys.stderr)
+    1:         return 2
+       
+   39:     run3_dir = os.path.join(args.report_dir, "run3")
+   39:     os.makedirs(run3_dir, exist_ok=True)
+   39:     required_path = os.path.join(run3_dir, "required.json")
+   39:     if os.path.exists(required_path):
+    3:         try:
+    3:             frozen = _load_json(required_path)
+    1:         except (OSError, UnicodeError, json.JSONDecodeError) as error:
+    1:             frozen = None
+    1:             mismatch_reason = f"required.json unreadable: {error}"
+               else:
+    2:             mismatch_reason = (
+    2:                 f"required.json mismatch: frozen={frozen!r}, recomputed={required!r}"
+                   )
+    3:         if frozen != required:
+    3:             frozen_drivers = (
+    2:                 [
+    1:                     driver
+    3:                     for driver in frozen
+    1:                     if isinstance(driver, str)
+                       ]
+    3:                 if isinstance(frozen, list)
+    2:                 else []
+                   )
+    3:             selected = frozen_drivers or required
+    6:             _record_run3_configuration_failure(
+    3:                 args.report_dir,
+    3:                 pin,
+    3:                 selected,
+    3:                 "INVALID",
+    3:                 mismatch_reason,
+                   )
+    3:             print(f"Run 3 INVALID: {mismatch_reason}", file=sys.stderr)
+    3:             return 1
+           else:
+   36:         _write_json_atomic(required_path, required)
+       
+   36:     if requested_driver and requested_driver not in required:
+    4:         print(
+    2:             f"REFUSED driver {requested_driver!r} is not in required.json",
+    2:             file=sys.stderr,
+               )
+    2:         return 2
+   34:     selected = [requested_driver] if requested_driver else required
+   34:     failed = False
+   67:     for driver in selected:
+   76:         record = _run_one_driver(
+   38:             args.report_dir,
+   38:             pin,
+   38:             driver,
+   38:             baseline,
+   38:             driver_limit_sec=driver_limit_sec,
+   38:             grace_sec=grace_sec,
+   38:             disk_min_gb=disk_min_gb,
+   38:             stat_fn=stat_fn,
+               )
+   38:         print(f"Run 3 {driver}: {record['status']}")
+   38:         if record["status"] != "PASS":
+   22:             failed = True
+   38:         if record["status"] in ("INVALID", "STOP"):
+    4:             break
+  135:         if any(
+   68:             isinstance(reason, str)
+   34:             and reason.startswith("interrupted by signal ")
+  101:             for reason in record.get("reasons", [])
+               ):
+    1:             break
+   34:     return 1 if failed else 0
+       
+       
+    1: def _validate_record(record: dict | None, *, pin: dict, unit: str, attempt: int, kind: str) -> tuple[str, list[str]]:
+   75:     if record is None:
+    2:         return "FAIL", [f"{unit} attempt {attempt} result is missing or unreadable"]
+   73:     reasons: list[str] = []
+   73:     shape_ok = (
+  361:         record.get("v") == 1
+   72:         and isinstance(record.get("reasons"), list)
+   72:         and isinstance(record.get("checks"), dict)
+   72:         and isinstance(record.get("started_ns"), int)
+   72:         and isinstance(record.get("ended_ns"), int)
+   72:         and isinstance(record.get("survivors"), list)
+           )
+   73:     if not shape_ok:
+    1:         reasons.append(f"{unit} attempt {attempt} has an invalid result shape")
+   73:     if record.get("chain_id") != pin["chain_id"]:
+    2:         reasons.append(f"{unit} attempt {attempt} chain_id mismatch")
+   73:     if record.get("unit") != unit:
+    2:         reasons.append(f"{unit} attempt {attempt} unit mismatch")
+   73:     if record.get("attempt") != attempt:
+    2:         reasons.append(f"{unit} attempt {attempt} path/result attempt mismatch")
+   73:     computed = recompute_status(record, kind)
+   73:     if record.get("status") != computed:
+    4:         reasons.append(
+    4:             f"{unit} attempt {attempt} forged status "
+    2:             f"stored={record.get('status')!r} recomputed={computed!r}"
+               )
+   73:     if reasons:
+    5:         return "FAIL", reasons
+   68:     return computed, []
+       
+       
+    1: def _collect_final_unit(pin: dict, parent_dir: str, unit: str, kind: str) -> tuple[dict[str, int | str], list[dict[str, int | str]], list[str]]:
+   73:     entries = _attempt_entries(parent_dir)
+   73:     if not entries:
+    2:         return (
+    2:             {"attempt": 0, "status": "FAIL"},
+    2:             [],
+    2:             [f"{unit} has no attempt"],
+               )
+   71:     earlier: list[dict[str, int | str]] = []
+   71:     reasons: list[str] = []
+   73:     for attempt, path in entries[:-1]:
+    2:         record = load_result(os.path.join(path, "result.json"))
+    4:         status, _earlier_reasons = _validate_record(
+    2:             record,
+    2:             pin=pin,
+    2:             unit=unit,
+    2:             attempt=attempt,
+    2:             kind=kind,
+               )
+    2:         if status != "PASS":
+    2:             earlier.append(
+    1:                 {"unit": unit, "attempt": attempt, "status": status}
+                   )
+   71:     attempt, path = entries[-1]
+   71:     record = load_result(os.path.join(path, "result.json"))
+  142:     status, invalid_reasons = _validate_record(
+   71:         record,
+   71:         pin=pin,
+   71:         unit=unit,
+   71:         attempt=attempt,
+   71:         kind=kind,
+           )
+   71:     reasons.extend(invalid_reasons)
+   71:     if status != "PASS" and isinstance(record, dict):
+    6:         recorded_reasons = record.get("reasons")
+    6:         if isinstance(recorded_reasons, list):
+   18:             reasons.extend(
+    1:                 f"{unit} attempt {attempt}: {reason}"
+   13:                 for reason in recorded_reasons
+    1:                 if isinstance(reason, str)
+                   )
+   71:     if status != "PASS" and not reasons:
+    1:         reasons.append(f"{unit} attempt {attempt} status is {status}")
+   71:     return {"attempt": attempt, "status": status}, earlier, reasons
+       
+       
+    1: def cmd_final(args, *, drivers: Sequence[str] = DRIVERS_29) -> int:
+   24:     pin = load_pin(args.report_dir)
+   23:     units: dict[str, dict[str, int | str]] = {}
+   23:     earlier_failures: list[dict[str, int | str]] = []
+   23:     reasons: list[str] = []
+       
+   46:     run1, earlier, unit_reasons = _collect_final_unit(
+   23:         pin,
+   23:         os.path.join(args.report_dir, "run1"),
+   23:         "run1",
+   23:         "run1",
+           )
+   23:     units["run1"] = run1
+   23:     earlier_failures.extend(earlier)
+   23:     reasons.extend(unit_reasons)
+       
+   46:     run2, earlier, unit_reasons = _collect_final_unit(
+   23:         pin,
+   23:         os.path.join(args.report_dir, "run2"),
+   23:         "run2",
+   23:         "run2",
+           )
+   23:     units["run2"] = run2
+   23:     earlier_failures.extend(earlier)
+   23:     reasons.extend(unit_reasons)
+       
+   23:     required_path = os.path.join(args.report_dir, "run3", "required.json")
+   23:     try:
+   23:         required_value = _load_json(required_path)
+    1:     except (OSError, UnicodeError, json.JSONDecodeError) as error:
+    1:         required_value = []
+    1:         reasons.append(f"run3 required.json is missing or unreadable: {error}")
+   87:     if not isinstance(required_value, list) or not all(
+   64:         isinstance(driver, str) for driver in required_value
+           ):
+    1:         reasons.append("run3 required.json is not a list of drivers")
+    1:         required: list[str] = []
+           else:
+   22:         required = list(required_value)
+       
+   23:     prerequisites = _run3_prerequisites(args.report_dir)
+   23:     recomputed_required: list[str] = []
+   23:     if prerequisites is None:
+    2:         reasons.append(
+    1:             "latest run1 exclusions/baseline or run2 rows are unavailable"
+               )
+           else:
+   22:         exclusions_path, _baseline_path, run2_path = prerequisites
+   22:         try:
+   44:             recomputed_required = _compute_required_drivers(
+   22:                 drivers,
+   22:                 exclusions_path,
+   22:                 run2_path,
+                   )
+    1:         except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
+    1:             reasons.append(f"run3 required set cannot be recomputed: {error}")
+   23:     if required != recomputed_required:
+   12:         reasons.append(
+   12:             "run3 required.json mismatch: "
+    6:             f"frozen={required!r}, recomputed={recomputed_required!r}"
+               )
+       
+   23:     run1_record = _latest_record(args.report_dir, "run1")
+   23:     run2_record = _latest_record(args.report_dir, "run2")
+   23:     prerequisite_ends = (
+   23:         run1_record.get("ended_ns") if isinstance(run1_record, dict) else None,
+   23:         run2_record.get("ended_ns") if isinstance(run2_record, dict) else None,
+           )
+   23:     latest_prerequisite_end = (
+   22:         max(prerequisite_ends)
+  114:         if all(
+   46:             isinstance(value, int) and not isinstance(value, bool)
+   91:             for value in prerequisite_ends
+               )
+    1:         else None
+           )
+   23:     if latest_prerequisite_end is None:
+    1:         reasons.append("latest run1/run2 results have no valid ended_ns")
+       
+   46:     drivers_to_check = list(
+   23:         dict.fromkeys([*required, *recomputed_required])
+           )
+   47:     for driver in drivers_to_check:
+   24:         unit = f"run3/{driver}"
+   48:         latest, earlier, unit_reasons = _collect_final_unit(
+   24:             pin,
+   24:             os.path.join(args.report_dir, "run3", driver),
+   24:             unit,
+   24:             "run3",
+               )
+   24:         units[unit] = latest
+   24:         earlier_failures.extend(earlier)
+   24:         reasons.extend(unit_reasons)
+   24:         record = _latest_record(args.report_dir, unit)
+   24:         started_ns = (
+   23:             record.get("started_ns")
+   24:             if isinstance(record, dict)
+    1:             else None
+               )
+               if (
+   24:             latest_prerequisite_end is not None
+                   and (
+   23:                 not isinstance(started_ns, int)
+   22:                 or isinstance(started_ns, bool)
+   22:                 or started_ns <= latest_prerequisite_end
+                   )
+               ):
+    4:             reasons.append(
+    2:                 f"{unit} latest attempt is not newer than latest run1/run2"
+                   )
+       
+   23:     identity: dict[str, str] = {
+   23:         "status": "PASS",
+   23:         "p_source_sha": pin["p_source_sha"],
+   23:         "w_head": pin["w_head"],
+   23:         "compiler_sha256": pin["compiler_sha256"],
+           }
+   23:     try:
+   23:         check_identity(pin)
+    1:     except IdentityError as error:
+    1:         identity["status"] = "INVALID"
+    1:         reasons.append(f"identity {error.reason}: {error.detail}")
+       
+   93:     statuses = [entry["status"] for entry in units.values()]
+   23:     if identity["status"] != "PASS":
+    1:         status = "INVALID"
+   99:     elif reasons or not required or any(value != "PASS" for value in statuses):
+   11:         status = "FAIL"
+           else:
+   11:         status = "PASS"
+   23:     final_record = {
+   23:         "v": 1,
+   23:         "chain_id": pin["chain_id"],
+   23:         "status": status,
+   23:         "units": units,
+   46:         "earlier_failures": sorted(
+   23:             earlier_failures,
+   24:             key=lambda entry: (str(entry["unit"]), int(entry["attempt"])),
+               ),
+   23:         "reasons": reasons,
+   23:         "limits": list(_FINAL_LIMITS),
+   23:         "identity": identity,
+           }
+   23:     _write_json_atomic(os.path.join(args.report_dir, "final.json"), final_record)
+   23:     print(f"Final proof status: {status}")
+   23:     return 0 if status == "PASS" else 1
+       
+       
+    1: def _latest_record(report_dir: str, unit: str) -> dict | None:
+  100:     parent = os.path.join(report_dir, unit)
+  100:     attempt = latest_attempt_dir(parent)
+  100:     if attempt is None:
+    3:         return None
+   97:     return load_result(os.path.join(attempt, "result.json"))
+       
+       
+    1: def _latest_status(report_dir: str, unit: str) -> str | None:
+   15:     record = _latest_record(report_dir, unit)
+   15:     return record.get("status") if isinstance(record, dict) else None
+       
+       
+    1: def _latest_was_interrupted(report_dir: str, unit: str) -> bool:
+   14:     record = _latest_record(report_dir, unit)
+   14:     if not isinstance(record, dict):
+    1:         return False
+   39:     return any(
+    2:         isinstance(reason, str)
+    1:         and reason.startswith("interrupted by signal ")
+   26:         for reason in record.get("reasons", [])
+           )
+       
+       
+    1: def cmd_all(args, *, drivers: Sequence[str] = DRIVERS_29, std_exercises: int = RUN1_STD_EXERCISES, siblings: int = RUN1_SIBLINGS, corpus: int = RUN1_CORPUS, rg2r_min: int = RG2R_MIN, expected_counts: tuple[int, int, int] = RUN2_COUNTS, driver_limit_sec: float = DRIVER_LIMIT_SEC, grace_sec: float = GRACE_SEC, disk_min_gb: float = DISK_MIN_GB, stat_fn=os.stat, required_path: str | None = None, run3_disk_min_gb: float | None = None) -> int:
+   14:     cmd_run1(
+    7:         args,
+    7:         std_exercises=std_exercises,
+    7:         siblings=siblings,
+    7:         corpus=corpus,
+    7:         rg2r_min=rg2r_min,
+    7:         disk_min_gb=disk_min_gb,
+           )
+           if (
+    7:         _latest_status(args.report_dir, "run1") in ("STOP", "INVALID")
+    6:         or _latest_was_interrupted(args.report_dir, "run1")
+           ):
+    1:         return 1
+   12:     cmd_run2(
+    6:         args,
+    6:         expected_counts=expected_counts,
+    6:         disk_min_gb=disk_min_gb,
+           )
+           if (
+    6:         _latest_status(args.report_dir, "run2") in ("STOP", "INVALID")
+    5:         or _latest_was_interrupted(args.report_dir, "run2")
+           ):
+    1:         return 1
+   10:     run3_return = cmd_run3(
+    5:         args,
+    5:         drivers=drivers,
+    5:         driver_limit_sec=driver_limit_sec,
+    5:         grace_sec=grace_sec,
+               disk_min_gb=(
+    4:             disk_min_gb
+    5:             if run3_disk_min_gb is None
+    1:             else run3_disk_min_gb
+               ),
+    5:         stat_fn=stat_fn,
+           )
+    5:     if run3_return == 2:
+    1:         return 2
+    4:     required_path = required_path or os.path.join(args.report_dir, "run3", "required.json")
+    4:     try:
+    4:         required = _load_json(required_path)
+    1:     except (OSError, UnicodeError, json.JSONDecodeError):
+    1:         required = []
+    4:     if isinstance(required, list):
+    6:         for driver in required:
+    3:             if not isinstance(driver, str):
+    1:                 continue
+    2:             unit = os.path.join("run3", driver)
+    2:             status = _latest_status(args.report_dir, unit)
+                   if (
+    2:                 status in ("STOP", "INVALID")
+    1:                 or _latest_was_interrupted(args.report_dir, unit)
+                   ):
+    1:                 return 1
+    3:     return cmd_final(args, drivers=drivers)
+       
+       
+    1: def _parser() -> argparse.ArgumentParser:
+    1:     parser = argparse.ArgumentParser(description="Observed Corpus Proof Runner")
+    1:     subparsers = parser.add_subparsers(dest="subcmd", required=True)
+       
+    1:     plan = subparsers.add_parser("plan")
+    1:     plan.add_argument("--p", required=True)
+    1:     plan.add_argument("--w", required=True)
+    1:     plan.add_argument("--compiler", required=True)
+       
+    1:     pin = subparsers.add_parser("pin")
+    1:     pin.add_argument("--report-dir", required=True)
+    1:     pin.add_argument("--p", required=True)
+    1:     pin.add_argument("--w", required=True)
+    1:     pin.add_argument("--compiler", required=True)
+       
+    5:     for command in ("run1", "run2", "final", "all"):
+    4:         stage = subparsers.add_parser(command)
+    4:         stage.add_argument("--report-dir", required=True)
+       
+    1:     run3 = subparsers.add_parser("run3")
+    1:     run3.add_argument("--report-dir", required=True)
+    1:     run3.add_argument("--driver", default="")
+    1:     return parser
+       
+       
+    1: def main(argv: Sequence[str] | None = None) -> int:
+    2:     if os.environ.get("ROUTE_A_DRIVERS"):
+    2:         print(
+    1:             "run_proof: ROUTE_A_DRIVERS is removed and prohibited; all "
+                   "drivers must use Route B",
+    1:             file=sys.stderr,
+               )
+    1:         return 2
+    1:     args = _parser().parse_args(argv)
+    1:     handlers = {
+    1:         "plan": cmd_plan,
+    1:         "pin": cmd_pin,
+    1:         "run1": cmd_run1,
+    1:         "run2": cmd_run2,
+    1:         "run3": cmd_run3,
+    1:         "final": cmd_final,
+    1:         "all": cmd_all,
+           }
+    1:     try:
+    1:         return handlers[args.subcmd](args)
+    1:     except IdentityError as error:
+    1:         print(f"REFUSED {error.reason}: {error.detail}", file=sys.stderr)
+    1:         return 1
+       
+       
+    1: if __name__ == "__main__":
+>>>>>>     if sys.flags.optimize:
+>>>>>>         print(
+>>>>>>             "run_proof: refusing to run under python -O / PYTHONOPTIMIZE",
+>>>>>>             file=sys.stderr,
+               )
+>>>>>>         raise SystemExit(2)
+>>>>>>     raise SystemExit(main())
