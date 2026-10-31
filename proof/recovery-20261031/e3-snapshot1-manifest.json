@@ -1,0 +1,9 @@
+{
+  "archive": "audit-completion-6bbe-e3-snapshot1.tar.gz",
+  "archive_bytes": 80246,
+  "archive_sha256": "cc4b4ce38ade0c72434dacbceb05e4e3a19579cc19ce54374ee80dbac3edcce7",
+  "members": 43,
+  "all_members_byte_equal_native": true,
+  "exact_and_generic_token_scan_matches": 0,
+  "result": "E3 baselines (4 green), driver v3, cancelled g02 attempt1 (INCOMPLETE, not a result)"
+}
