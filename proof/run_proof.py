@@ -321,13 +321,13 @@ def _baseline_skip_hits(w_path: str, log_text: str) -> list[dict[str, str]]:
     )
 
 
-def cmd_plan(args, *, drivers: Sequence[str] = DRIVERS_29) -> int:
+def cmd_plan(args, *, drivers: Sequence[str] = DRIVERS_29, stat_fn=os.stat) -> int:
     facts = inspect_pin_inputs(args.p, args.w, args.compiler, drivers)
     with tempfile.TemporaryDirectory(
         prefix="iyi-plan-atime-",
         dir="/private/tmp",
     ) as probe_dir:
-        probe = probe_atime_observable(probe_dir)
+        probe = probe_atime_observable(probe_dir, stat_fn=stat_fn)
     print("Observed Corpus Proof Plan")
     print(f"  P Path:    {facts['p_path']}")
     print(f"  W Path:    {facts['w_path']}")

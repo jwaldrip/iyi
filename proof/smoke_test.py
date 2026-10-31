@@ -7638,6 +7638,44 @@ def _o5_positive_build_pair(
     return pair
 
 
+def _o5_executed_own_build_pair(
+    *,
+    root: str,
+    repo: str,
+    work: str,
+    name: str,
+    invocation: str,
+) -> list[dict]:
+    out = os.path.join(work, name)
+    out_ref = os.path.join(root, f"{name}.ref")
+    shutil.copyfile("/usr/bin/true", out)
+    os.chmod(out, 0o755)
+    os.link(out, out_ref)
+    linked = os.stat(out_ref)
+    with open(out, "rb") as executable:
+        digest = hashlib.sha256(executable.read()).hexdigest()
+    os.utime(
+        out_ref,
+        ns=(linked.st_mtime_ns + 1_000_000_000, linked.st_mtime_ns),
+    )
+    pair = _o5_pair(
+        nonce="nonce-1",
+        driver="demo",
+        invocation=invocation,
+        repo=repo,
+        out=out,
+        own=True,
+        run_form=False,
+    )
+    end = pair[1]
+    end["consumer"]["out_sha256"] = digest
+    end["out_ref"] = out_ref
+    end["out_ino"] = linked.st_ino
+    end["out_mtime_ns"] = linked.st_mtime_ns
+    end["atime_set_ns"] = linked.st_mtime_ns - 1_000_000_000
+    return pair
+
+
 def _o5_exec_record(
     *,
     nonce: str,
@@ -8146,18 +8184,19 @@ def _o5_ledger_fixture(case: str) -> Observation:
             detail = "own consumer hash changed from a digest to null"
         elif case == "e2-unmatched-own":
             records.extend(
-                _o5_pair(
-                    nonce="nonce-1",
-                    driver="demo",
-                    invocation="own-unmatched",
+                _o5_executed_own_build_pair(
+                    root=root,
                     repo=repo,
-                    out=os.path.join(work, "stray"),
-                    own=True,
-                    run_form=False,
+                    work=work,
+                    name="stray",
+                    invocation="own-unmatched",
                 )
             )
             expected = ("NOT-EXECUTED",)
-            detail = "extra own output does not match execution evidence"
+            detail = (
+                "extra own output, executed with passing E3 evidence, "
+                "does not match execution evidence"
+            )
         elif case == "e2-unknown-placeholder":
             census["exec_evidence"][0]["out_template"] = "{WORK}/{unknown}"
             expected = ("NOT-EXECUTED",)
@@ -13618,7 +13657,9 @@ def _fixture_run3_census_guard(seeded: bool) -> Observation:
     )
 
 
-def _fixture_baseline_header_guard(seeded: bool) -> Observation:
+def _fixture_baseline_header_guard(case: str) -> Observation:
+    if case not in {"malformed", "no-skip", "captured"}:
+        raise ValueError(f"unknown baseline header case {case}")
     with tempfile.TemporaryDirectory(prefix="iyi-baseline-header-") as root:
         census_dir = os.path.join(root, "proof", "census")
         os.makedirs(census_dir)
@@ -13642,17 +13683,34 @@ def _fixture_baseline_header_guard(seeded: bool) -> Observation:
             )
         header = (
             "-- running sibling std_stage_exercise.sh"
-            if seeded
+            if case == "malformed"
             else "-- running sibling: std_stage_exercise.sh"
         )
+        skip_line = "" if case == "no-skip" else "fixture platform skipped\n"
         hits = stages_mod._baseline_skip_hits(
             root,
-            f"{header}\nfixture platform skipped\n",
+            f"{header}\n{skip_line}",
+        )
+    if case == "captured":
+        return Observation(
+            expected=[
+                {
+                    "class": "platform",
+                    "driver": "stage",
+                    "regex": "^fixture platform skipped$",
+                    "what": "fixture platform",
+                }
+            ],
+            got=hits,
+            applied=(
+                "declared platform skip printed under a well-formed "
+                "stage sibling header"
+            ),
         )
     return Observation(
-        expected=0 if seeded else 1,
+        expected=0,
         got=len(hits),
-        applied="sibling header colon removed" if seeded else "",
+        applied="sibling header colon removed" if case == "malformed" else "",
     )
 
 
@@ -15331,7 +15389,7 @@ def _proofkit_more_edge(case: str) -> Observation:
                 )
             elif case == "schema-sentinel-iyivar":
                 mutated = _clone_census(census)
-                mutated["pass_sentinel"]["regex"] = "IYIVAR"
+                mutated["pass_sentinel"]["regex"] = f"(?:{mutated['pass_sentinel']['regex']})|IYIVAR"
                 got = "C5.5-sentinel" in _rule_ids(
                     proofkit_mod.validate_census(
                         mutated,
@@ -16482,6 +16540,128 @@ def _fixture_run1_post_gate_identity(gate: int) -> Observation:
     )
 
 
+def _fixture_plan_probe_guard(seeded: bool) -> Observation:
+    stat_paths: list[str] = []
+
+    def plan_stat(path: str) -> object:
+        stat_paths.append(path)
+        actual = os.stat(path)
+        if not seeded:
+            return actual
+        return SimpleNamespace(
+            st_atime_ns=actual.st_mtime_ns - 1_000_000_000,
+            st_ino=actual.st_ino,
+            st_mtime_ns=actual.st_mtime_ns,
+        )
+
+    output = io.StringIO()
+    with PinFixture() as fixture:
+        try:
+            with contextlib.redirect_stdout(output):
+                stages_mod.cmd_plan(
+                    SimpleNamespace(
+                        p=fixture.p,
+                        w=fixture.w,
+                        compiler=fixture.compiler,
+                    ),
+                    stat_fn=plan_stat,
+                )
+        except IdentityError as error:
+            reason = error.reason
+        else:
+            reason = "NO-REFUSAL"
+    plan_probe_calls = sum(
+        1
+        for path in stat_paths
+        if os.path.dirname(os.path.dirname(path)) == "/private/tmp"
+        and os.path.basename(os.path.dirname(path)).startswith(
+            "iyi-plan-atime-"
+        )
+        and os.path.basename(path).startswith("probe-atime-")
+    )
+    got: dict[str, object] = {
+        "reason": reason,
+        "stdout_empty": output.getvalue() == "",
+    }
+    if not seeded:
+        return Observation(
+            expected={"reason": "NO-REFUSAL", "stdout_empty": False},
+            got=got,
+        )
+    got["applied"] = bool(stat_paths) and plan_probe_calls == len(stat_paths)
+    return Observation(
+        expected={
+            "applied": True,
+            "reason": "EXEC-UNOBSERVABLE",
+            "stdout_empty": True,
+        },
+        got=got,
+        applied=(
+            "stat_fn=frozen-atime(mtime-1000000000);"
+            f"stat_fn_calls={len(stat_paths)};"
+            f"plan_probe_calls={plan_probe_calls}"
+        ),
+    )
+
+
+def _sentinel_iyivar_regex(census: dict, lines: list[str]) -> str | None:
+    sentinel = census.get("pass_sentinel")
+    if not isinstance(sentinel, dict):
+        return None
+    regex = sentinel.get("regex")
+    number = sentinel.get("line")
+    if (
+        not isinstance(regex, str)
+        or ".*" not in regex
+        or not isinstance(number, int)
+        or not 1 <= number <= len(lines)
+    ):
+        return None
+    commands = proofkit_mod._top_level_print_commands(
+        _line_text(lines[number - 1])
+    )
+    rendered = (
+        proofkit_mod._render_print_words(commands[0]) if commands else None
+    )
+    if rendered is None or "IYIVAR" not in rendered:
+        return None
+    literal = regex.replace(".*", "IYIVAR", 1)
+    try:
+        matched = re.search(literal, rendered) is not None
+    except re.error:
+        return None
+    return literal if matched else None
+
+
+def _has_variable_sentinel_wildcard(census: dict, lines: list[str]) -> bool:
+    return _sentinel_iyivar_regex(census, lines) is not None
+
+
+def _mutate_sentinel_to_iyivar(
+    census: dict,
+    lines: list[str],
+    _driver: str,
+) -> tuple[str, int]:
+    literal = _sentinel_iyivar_regex(census, lines)
+    if literal is None:
+        return "sentinel-wildcard-missing", 0
+    census["pass_sentinel"]["regex"] = literal
+    return (
+        f"sentinel-{census['pass_sentinel']['line']}-wildcard->IYIVAR;"
+        "matches_rendered=true",
+        1,
+    )
+
+
+def _fixture_validator_sentinel_iyivar_seed() -> Observation:
+    return _isolated_validator_seed(
+        "C5.5-sentinel",
+        "sentinel wildcard cannot be literal IYIVAR",
+        _has_variable_sentinel_wildcard,
+        _mutate_sentinel_to_iyivar,
+    )
+
+
 O7_FIXTURES: tuple[Fixture, ...] = (
     Fixture("o7.seed.rp2-run1-baseline-error", "seed", partial(_runner_more_edge, "run1-baseline-error")),
     Fixture("o7.seed.rp2-run3-setup-error", "seed", partial(_runner_more_edge, "run3-setup-error")),
@@ -16801,12 +16981,12 @@ O7_FIXTURES: tuple[Fixture, ...] = (
     Fixture(
         "o7.seed.guard-m14-baseline-header",
         "seed",
-        partial(_fixture_baseline_header_guard, True),
+        partial(_fixture_baseline_header_guard, "malformed"),
     ),
     Fixture(
         "o7.control.guard-m14-baseline-header",
         "control",
-        partial(_fixture_baseline_header_guard, False),
+        partial(_fixture_baseline_header_guard, "no-skip"),
     ),
     Fixture(
         "s5.control.stage-chain",
@@ -17083,6 +17263,26 @@ O7_FIXTURES: tuple[Fixture, ...] = (
         "seed",
         _fixture_d4_stage_interrupt_seed,
     ),
+    Fixture(
+        "o7.seed.plan-probe-unobservable",
+        "seed",
+        partial(_fixture_plan_probe_guard, True),
+    ),
+    Fixture(
+        "o7.control.plan-probe-observable",
+        "control",
+        partial(_fixture_plan_probe_guard, False),
+    ),
+    Fixture(
+        "o7.seed.validator-sentinel-iyivar",
+        "seed",
+        _fixture_validator_sentinel_iyivar_seed,
+    ),
+    Fixture(
+        "o7.seed.baseline-skip-captured",
+        "seed",
+        partial(_fixture_baseline_header_guard, "captured"),
+    ),
 )
 
 O7_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
@@ -17331,6 +17531,7 @@ O7_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
     ),
     "o7.guard-m14-baseline-header": (
         "o7.seed.guard-m14-baseline-header",
+        "o7.seed.baseline-skip-captured",
         "o7.control.guard-m14-baseline-header",
     ),
     "o7.amendment-e-work-roots": (
@@ -17428,6 +17629,14 @@ O7_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
     "o7.d4-stage-interrupt": (
         "o7.seed.d4-stage-interrupt",
         "o7.control.run1",
+    ),
+    "o7.plan-probe": (
+        "o7.seed.plan-probe-unobservable",
+        "o7.control.plan-probe-observable",
+    ),
+    "o7.validator-sentinel-iyivar": (
+        "o7.seed.validator-sentinel-iyivar",
+        "s2.control.census-all",
     ),
 }
 
