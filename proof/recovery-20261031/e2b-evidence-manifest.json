@@ -1,0 +1,23 @@
+{
+  "archive": "audit-completion-6bbe-e2b.tar.gz",
+  "archive_bytes": 123714,
+  "archive_sha256": "d864da6592ca7bfe32023bd2ed3988b48cc4f2f732724ec446a9d28636983b45",
+  "members": 110,
+  "all_members_byte_equal_native": true,
+  "exact_and_generic_token_scan_matches": 0,
+  "result": "E2b PASS: both final0 PASS, new run2 attempt PASS, seed-minus-control reasons exactly prescribed three. Both final1 rc1 FAIL; control freshness reason is expected, no required.json mismatch.",
+  "unit_source_relative": "e2/f3-run2",
+  "archive_member_root": "f3-run2",
+  "excluded_owned_directory_links": [
+    {
+      "path": "r2-ctl",
+      "target": "control",
+      "reason": "Unrequested directory aliases; canonical seed/control evidence archived directly. Link remains disclosed as owned residue."
+    },
+    {
+      "path": "r2-seed",
+      "target": "seed",
+      "reason": "Unrequested directory aliases; canonical seed/control evidence archived directly. Link remains disclosed as owned residue."
+    }
+  ]
+}
