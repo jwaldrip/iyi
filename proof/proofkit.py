@@ -1081,31 +1081,33 @@ def run_bounded(cmd: list[str], cwd: str, env: dict[str, str], log: str, times: 
     finally:
         os.close(log_fd)
 
-    stop_sampler = threading.Event()
-    sampler_errors: list[BaseException] = []
-    sampler = threading.Thread(
-        target=_sample_log_growth,
-        args=(log, times, stop_sampler, sampler_errors),
-        name=f"proof-log-sampler-{proc.pid}",
-        daemon=False,
-    )
-    sampler.start()
-
     previous_handlers: dict[int, object] = {}
-    if threading.current_thread() is threading.main_thread():
-        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-            previous_handlers[signum] = signal.getsignal(signum)
-
-            def interrupt_handler(received: int, _frame: object) -> None:
-                raise _BoundedSignal(received)
-
-            signal.signal(signum, interrupt_handler)
-
     timed_out = False
     interrupted_signal: int | None = None
     survivors: tuple[int, ...] = ()
+    stop_sampler = threading.Event()
+    sampler_errors: list[BaseException] = []
+    sampler: threading.Thread | None = None
+    sampler_started = False
     try:
+        sampler = threading.Thread(
+            target=_sample_log_growth,
+            args=(log, times, stop_sampler, sampler_errors),
+            name=f"proof-log-sampler-{proc.pid}",
+            daemon=False,
+        )
+        sampler.start()
+        sampler_started = True
+
         try:
+            if threading.current_thread() is threading.main_thread():
+                def interrupt_handler(received: int, _frame: object) -> None:
+                    raise _BoundedSignal(received)
+
+                for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+                    previous_handlers[signum] = signal.getsignal(signum)
+                    signal.signal(signum, interrupt_handler)
+
             if limit_sec is None:
                 proc.wait()
             else:
@@ -1123,12 +1125,36 @@ def run_bounded(cmd: list[str], cwd: str, env: dict[str, str], log: str, times: 
             grace_sec,
         )
     finally:
-        _stop_leader_if_running(proc, proc.pid, grace_sec)
-        sampler_errors.extend(_stop_residual_processes(proc.pid))
-        stop_sampler.set()
-        sampler.join()
-        for signum, handler in previous_handlers.items():
-            signal.signal(signum, handler)
+        try:
+            _stop_leader_if_running(proc, proc.pid, grace_sec)
+        finally:
+            try:
+                sampler_errors.extend(_stop_residual_processes(proc.pid))
+            finally:
+                try:
+                    stop_sampler.set()
+                    if sampler is not None and sampler_started:
+                        sampler.join()
+                finally:
+                    try:
+                        if signal.SIGHUP in previous_handlers:
+                            signal.signal(
+                                signal.SIGHUP,
+                                previous_handlers[signal.SIGHUP],
+                            )
+                    finally:
+                        try:
+                            if signal.SIGTERM in previous_handlers:
+                                signal.signal(
+                                    signal.SIGTERM,
+                                    previous_handlers[signal.SIGTERM],
+                                )
+                        finally:
+                            if signal.SIGINT in previous_handlers:
+                                signal.signal(
+                                    signal.SIGINT,
+                                    previous_handlers[signal.SIGINT],
+                                )
 
     if sampler_errors:
         raise RuntimeError(

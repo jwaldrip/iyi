@@ -24,7 +24,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from functools import partial
 from types import SimpleNamespace
@@ -989,6 +989,246 @@ def _process_alive(pid: int) -> bool:
     return completed.returncode == 0 and bool(state) and not state.startswith("Z")
 
 
+_FIXTURE_READINESS_TIMEOUT_SEC = 5.0
+_FIXTURE_SENDER_JOIN_TIMEOUT_SEC = 5.0
+
+
+@dataclass
+class _FixtureSignalState:
+    ready: bool = False
+    signal_sent: int = 0
+    sender_joined: bool = False
+    fallback_count: int = 0
+    error: str | None = None
+    accounted: bool = False
+    witness_pid: int | None = None
+
+
+def _wait_fixture_ready(
+    predicate: Callable[[], bool],
+    *,
+    timeout_sec: float,
+    cancelled: threading.Event | None = None,
+) -> bool:
+    deadline = time.monotonic() + max(0.0, timeout_sec)
+    while True:
+        if cancelled is not None and cancelled.is_set():
+            return False
+        if predicate():
+            if cancelled is not None and cancelled.is_set():
+                return False
+            return True
+        if cancelled is not None and cancelled.is_set():
+            return False
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        pause = min(0.01, remaining)
+        if cancelled is None:
+            time.sleep(pause)
+        elif cancelled.wait(pause):
+            return False
+
+
+def _cleanup_owned_fixture_pid(pid: int | None) -> bool:
+    if pid is None or not _process_alive(pid):
+        return True
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return True
+    return _wait_fixture_ready(
+        lambda: not _process_alive(pid),
+        timeout_sec=1.0,
+    )
+
+
+def _cleanup_owned_fixture_group(pgid: int | None) -> bool:
+    if pgid is None:
+        return True
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        return True
+    return _wait_fixture_ready(
+        lambda: not proofkit_mod._process_group_members(pgid),
+        timeout_sec=1.0,
+    )
+
+
+def _cleanup_owned_fixture_process(
+    process: subprocess.Popen[object],
+) -> bool:
+    if process.poll() is None:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    try:
+        process.wait(timeout=1.0)
+    except subprocess.TimeoutExpired:
+        return False
+    return process.poll() is not None
+
+
+def _read_complete_fixture_pid(path: str) -> int | None:
+    if not os.path.isfile(path):
+        return None
+    with open(path, "r", encoding="utf-8") as source:
+        text = source.read()
+    if re.fullmatch(r"[1-9][0-9]*\n?", text) is None:
+        raise ValueError(f"malformed PID witness {path}: {text!r}")
+    return int(text)
+
+
+def _fixture_session_leader_witness(path: str) -> int | None:
+    pid = _read_complete_fixture_pid(path)
+    if pid is None:
+        return None
+    try:
+        pgid = os.getpgid(pid)
+        sid = os.getsid(pid)
+    except ProcessLookupError as error:
+        raise ValueError(f"PID witness {pid} exited before readiness") from error
+    if pgid != pid or sid != pid:
+        raise ValueError(
+            f"PID witness {pid} is not its session leader: "
+            f"pgid={pgid},sid={sid}"
+        )
+    return pid
+
+
+def _fixture_same_group_witness(pid: object) -> int:
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        raise ValueError(f"invalid child PID witness {pid!r}")
+    try:
+        pgid = os.getpgid(pid)
+        sid = os.getsid(pid)
+    except ProcessLookupError as error:
+        raise ValueError(f"child PID witness {pid} exited") from error
+    if pgid != os.getpgrp() or sid != os.getsid(0):
+        raise ValueError(
+            f"child PID witness {pid} escaped owner group/session: "
+            f"pgid={pgid},sid={sid}"
+        )
+    return pid
+
+
+def _fixture_named_handler(
+    handler: object,
+    *,
+    module: str,
+    name: str,
+) -> bool:
+    return (
+        callable(handler)
+        and getattr(handler, "__module__", None) == module
+        and getattr(handler, "__name__", None) == name
+    )
+
+
+@contextlib.contextmanager
+def _fixture_signal_sender(
+    signum: int,
+    *,
+    witness: Callable[[], int | None],
+    handler_ready: Callable[[object], bool],
+    timeout_sec: float = _FIXTURE_READINESS_TIMEOUT_SEC,
+) -> Iterator[_FixtureSignalState]:
+    owner_pid = os.getpid()
+    main_ident = threading.main_thread().ident
+    if threading.get_ident() != main_ident:
+        raise RuntimeError("fixture signal sender requires the main thread")
+
+    state = _FixtureSignalState()
+    cancelled = threading.Event()
+    original_handler = signal.getsignal(signum)
+
+    def fallback_handler(_received: int, _frame: object) -> None:
+        state.fallback_count += 1
+
+    signal.signal(signum, fallback_handler)
+
+    def send_when_ready() -> None:
+        try:
+            def combined_ready() -> bool:
+                candidate = witness()
+                if candidate is None:
+                    return False
+                if not handler_ready(signal.getsignal(signum)):
+                    return False
+                state.witness_pid = candidate
+                return True
+
+            if not _wait_fixture_ready(
+                combined_ready,
+                timeout_sec=timeout_sec,
+                cancelled=cancelled,
+            ):
+                state.error = (
+                    "readiness-cancelled"
+                    if cancelled.is_set()
+                    else "readiness-timeout"
+                )
+                return
+            state.ready = True
+            if cancelled.is_set():
+                state.error = "readiness-cancelled"
+                return
+            candidate = witness()
+            if candidate is None:
+                state.error = "witness-disappeared"
+                return
+            if candidate != state.witness_pid:
+                state.error = "witness-changed"
+                return
+            if not handler_ready(signal.getsignal(signum)):
+                state.error = "production-handler-disappeared"
+                return
+            if cancelled.is_set():
+                state.error = "readiness-cancelled"
+                return
+            os.kill(owner_pid, signum)
+            state.signal_sent += 1
+        except BaseException as error:
+            state.error = f"{type(error).__name__}: {error}"
+
+    sender = threading.Thread(
+        target=send_when_ready,
+        name=f"fixture-signal-{signum}-{owner_pid}",
+        daemon=False,
+    )
+    try:
+        sender.start()
+        try:
+            yield state
+        finally:
+            cancelled.set()
+            sender.join(_FIXTURE_SENDER_JOIN_TIMEOUT_SEC)
+            state.sender_joined = not sender.is_alive()
+            if signal.getsignal(signum) is not fallback_handler:
+                state.error = state.error or "production-handler-not-restored"
+            fatal = (
+                not state.sender_joined
+                or state.fallback_count > 0
+                or (
+                    state.signal_sent > 0
+                    and not state.accounted
+                    and state.fallback_count == 0
+                )
+            )
+            if fatal:
+                print(
+                    "fatal fixture signal fence failure: "
+                    f"signal={signum},state={state}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                os._exit(97)
+    finally:
+        signal.signal(signum, original_handler)
+
+
 def _bounded_paths(scratch: str, name: str) -> tuple[str, str]:
     return (
         os.path.join(scratch, f"{name}.log"),
@@ -996,34 +1236,158 @@ def _bounded_paths(scratch: str, name: str) -> tuple[str, str]:
     )
 
 
+def _grandchild_witness(
+    pid_file: str,
+    readiness_file: str,
+    log_path: str,
+) -> int | None:
+    child_pid = _read_complete_fixture_pid(pid_file)
+    if child_pid is None or not os.path.isfile(readiness_file):
+        return None
+    with open(readiness_file, "r", encoding="utf-8") as source:
+        certificate = json.load(source)
+    if not isinstance(certificate, dict):
+        raise ValueError("grandchild readiness certificate is not an object")
+    integers = {
+        key: certificate.get(key)
+        for key in (
+            "pid",
+            "leader_pid",
+            "pgid",
+            "sid",
+            "stdout_dev",
+            "stdout_ino",
+        )
+    }
+    if any(
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or value <= 0
+        for value in integers.values()
+    ):
+        raise ValueError(
+            f"malformed grandchild readiness certificate: {certificate!r}"
+        )
+    if integers["pid"] != child_pid:
+        raise ValueError(
+            f"grandchild PID mismatch: file={child_pid},"
+            f"certificate={integers['pid']}"
+        )
+    leader_pid = integers["leader_pid"]
+    if integers["pgid"] != leader_pid or integers["sid"] != leader_pid:
+        raise ValueError(
+            f"grandchild {child_pid} escaped leader group/session: "
+            f"leader={leader_pid},pgid={integers['pgid']},"
+            f"sid={integers['sid']}"
+        )
+    log_stat = os.stat(log_path)
+    if (
+        integers["stdout_dev"] != log_stat.st_dev
+        or integers["stdout_ino"] != log_stat.st_ino
+    ):
+        raise ValueError(
+            f"grandchild {child_pid} did not inherit the fixture log"
+        )
+    return child_pid
+
+
+def _await_grandchild_witness(
+    pid_file: str,
+    readiness_file: str,
+    log_path: str,
+) -> tuple[str, int | None]:
+    child_pid: int | None = None
+    malformed: str | None = None
+
+    def inspect() -> bool:
+        nonlocal child_pid, malformed
+        try:
+            child_pid = _grandchild_witness(
+                pid_file,
+                readiness_file,
+                log_path,
+            )
+        except (
+            OSError,
+            UnicodeError,
+            ValueError,
+            TypeError,
+            json.JSONDecodeError,
+        ) as error:
+            malformed = f"{type(error).__name__}: {error}"
+            return True
+        return child_pid is not None
+
+    observed = _wait_fixture_ready(
+        inspect,
+        timeout_sec=_FIXTURE_READINESS_TIMEOUT_SEC,
+    )
+    if malformed is not None:
+        return f"malformed-witness:{malformed}", None
+    if not observed or child_pid is None:
+        return "readiness-timeout", None
+    return "ready", child_pid
+
+
 def _grandchild_command(
     pid_file: str,
+    readiness_file: str,
     *,
     leader_sleeps: bool,
     child_ignores_term: bool = False,
 ) -> list[str]:
-    child_source = [
-        "import os, pathlib, signal, time",
-    ]
-    if child_ignores_term:
-        child_source.append(
-            "signal.signal(signal.SIGTERM, signal.SIG_IGN)"
-        )
-    child_source.extend(
-        [
-            f"pathlib.Path({pid_file!r}).write_text(str(os.getpid()))",
-            "time.sleep(100)",
-        ]
+    term_handler = (
+        "signal.SIG_IGN" if child_ignores_term else "signal.SIG_DFL"
     )
-    statements = [
-        "import subprocess, sys, time",
-        f"subprocess.Popen([sys.executable, '-c', {('; '.join(child_source))!r}])",
+    child_source = "\n".join(
+        (
+            "import json, os, pathlib, signal, time",
+            f"signal.signal(signal.SIGTERM, {term_handler})",
+            "stdout_stat = os.fstat(1)",
+            "certificate = {",
+            "    'pid': os.getpid(),",
+            "    'leader_pid': os.getppid(),",
+            "    'pgid': os.getpgid(0),",
+            "    'sid': os.getsid(0),",
+            "    'stdout_dev': stdout_stat.st_dev,",
+            "    'stdout_ino': stdout_stat.st_ino,",
+            "}",
+            f"ready = pathlib.Path({readiness_file!r})",
+            "ready_tmp = ready.with_name(",
+            "    ready.name + f'.tmp-{os.getpid()}'",
+            ")",
+            "ready_tmp.write_text(",
+            "    json.dumps(certificate, sort_keys=True) + '\\n'",
+            ")",
+            "os.replace(ready_tmp, ready)",
+            "time.sleep(100)",
+        )
+    )
+    leader_lines = [
+        "import os, pathlib, subprocess, sys, time",
+        f"child_source = {child_source!r}",
+        "child = subprocess.Popen([sys.executable, '-c', child_source])",
+        f"pid_path = pathlib.Path({pid_file!r})",
+        "pid_tmp = pid_path.with_name(",
+        "    pid_path.name + f'.tmp-{os.getpid()}'",
+        ")",
+        "pid_tmp.write_text(str(child.pid) + '\\n')",
+        "os.replace(pid_tmp, pid_path)",
     ]
     if child_ignores_term:
-        statements.append("time.sleep(0.1)")
+        leader_lines.extend(
+            (
+                "deadline = time.monotonic() + "
+                f"{_FIXTURE_READINESS_TIMEOUT_SEC!r}",
+                f"while not os.path.isfile({readiness_file!r}):",
+                "    if time.monotonic() >= deadline:",
+                "        raise SystemExit(73)",
+                "    time.sleep(0.01)",
+            )
+        )
     if leader_sleeps:
-        statements.append("time.sleep(100)")
-    return [sys.executable, "-c", "; ".join(statements)]
+        leader_lines.append("time.sleep(100)")
+    return [sys.executable, "-c", "\n".join(leader_lines)]
 
 
 def _fixture_bounded_control() -> Observation:
@@ -1050,12 +1414,95 @@ def _fixture_bounded_control() -> Observation:
                 if line.strip()
             ]
         final_offset = int(samples[-1][1]) if samples else -1
+        with _fixture_signal_sender(
+            signal.SIGTERM,
+            witness=lambda: None,
+            handler_ready=lambda _handler: False,
+            timeout_sec=0.02,
+        ) as no_readiness:
+            _wait_fixture_ready(
+                lambda: no_readiness.error is not None,
+                timeout_sec=_FIXTURE_READINESS_TIMEOUT_SEC,
+            )
+
+        cancellation_marker = os.path.join(
+            scratch,
+            "cancelled-readiness",
+        )
+
+        def cancelled_witness() -> int | None:
+            return os.getpid() if os.path.isfile(cancellation_marker) else None
+
+        with _fixture_signal_sender(
+            signal.SIGTERM,
+            witness=cancelled_witness,
+            handler_ready=lambda _handler: True,
+        ) as cancelled:
+            pass
+        with open(cancellation_marker, "w", encoding="utf-8") as output:
+            output.write("ready\n")
+
+        fatal_continued = os.path.join(scratch, "fatal-continued")
+        fatal_script = "\n".join(
+            (
+                "import os, signal",
+                "from proof.smoke_test import _fixture_signal_sender, _wait_fixture_ready",
+                "with _fixture_signal_sender(",
+                "    signal.SIGTERM,",
+                "    witness=lambda: os.getpid(),",
+                "    handler_ready=lambda _handler: True,",
+                "    timeout_sec=5.0,",
+                ") as state:",
+                "    _wait_fixture_ready(",
+                "        lambda: state.fallback_count > 0,",
+                "        timeout_sec=5.0,",
+                "    )",
+                f"open({fatal_continued!r}, 'w').write('continued')",
+            )
+        )
+        fatal_env = os.environ.copy()
+        fatal_env["PYTHONDONTWRITEBYTECODE"] = "1"
+        fatal = subprocess.run(
+            [sys.executable, "-B", "-c", fatal_script],
+            cwd=REPO_ROOT,
+            env=fatal_env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
         got = {
             "final_offset_matches": final_offset == len(log_bytes),
             "interrupted_signal": result.interrupted_signal,
             "returncode": result.returncode,
             "survivors": list(result.survivors),
             "timed_out": result.timed_out,
+            "no_readiness": {
+                "ready": no_readiness.ready,
+                "accounted": no_readiness.accounted,
+                "signal_sent": no_readiness.signal_sent,
+                "sender_joined": no_readiness.sender_joined,
+                "fallback_count": no_readiness.fallback_count,
+                "error": no_readiness.error,
+            },
+            "cancellation": {
+                "marker_available": os.path.isfile(cancellation_marker),
+                "ready": cancelled.ready,
+                "accounted": cancelled.accounted,
+                "signal_sent": cancelled.signal_sent,
+                "sender_joined": cancelled.sender_joined,
+                "fallback_count": cancelled.fallback_count,
+                "error": cancelled.error,
+            },
+            "fallback_fatal": {
+                "nonzero": fatal.returncode != 0,
+                "returncode": fatal.returncode,
+                "fence_error": (
+                    b"fatal fixture signal fence failure"
+                    in fatal.stderr
+                ),
+                "continued": os.path.exists(fatal_continued),
+            },
         }
     expected = {
         "final_offset_matches": True,
@@ -1063,6 +1510,29 @@ def _fixture_bounded_control() -> Observation:
         "returncode": 0,
         "survivors": [],
         "timed_out": False,
+        "no_readiness": {
+            "ready": False,
+            "accounted": False,
+            "signal_sent": 0,
+            "sender_joined": True,
+            "fallback_count": 0,
+            "error": "readiness-timeout",
+        },
+        "cancellation": {
+            "marker_available": True,
+            "ready": False,
+            "accounted": False,
+            "signal_sent": 0,
+            "sender_joined": True,
+            "fallback_count": 0,
+            "error": "readiness-cancelled",
+        },
+        "fallback_fatal": {
+            "nonzero": True,
+            "returncode": 97,
+            "fence_error": True,
+            "continued": False,
+        },
     }
     return Observation(expected=expected, got=got)
 
@@ -1073,10 +1543,12 @@ def _fixture_log_holder_survivor_seed() -> Observation:
         dir="/tmp",
     ) as scratch:
         pid_file = os.path.join(scratch, "child.pid")
+        readiness_file = os.path.join(scratch, "child.ready.json")
         log_path, times_path = _bounded_paths(scratch, "holder")
         result = run_bounded(
             _grandchild_command(
                 pid_file,
+                readiness_file,
                 leader_sleeps=False,
                 child_ignores_term=True,
             ),
@@ -1087,23 +1559,39 @@ def _fixture_log_holder_survivor_seed() -> Observation:
             2.0,
             0.1,
         )
-        child_pid = _read_pid(pid_file)
-        applied = os.path.isfile(pid_file)
+        witness, child_pid = _await_grandchild_witness(
+            pid_file,
+            readiness_file,
+            log_path,
+        )
+        applied = witness == "ready" and child_pid is not None
         got = {
             "applied": applied,
-            "child_gone": not _process_alive(child_pid),
-            "child_recorded": child_pid in result.survivors,
+            "witness": witness,
+            "child_gone": (
+                not _process_alive(child_pid)
+                if child_pid is not None
+                else None
+            ),
+            "child_recorded": (
+                child_pid in result.survivors
+                if child_pid is not None
+                else False
+            ),
             "returncode": result.returncode,
             "survivor_count": len(result.survivors),
             "timed_out": result.timed_out,
         }
+        got["teardown_clean"] = _cleanup_owned_fixture_pid(child_pid)
     expected = {
         "applied": True,
+        "witness": "ready",
         "child_gone": True,
         "child_recorded": True,
         "returncode": 0,
         "survivor_count": 1,
         "timed_out": False,
+        "teardown_clean": True,
     }
     return Observation(
         expected=expected,
@@ -1118,9 +1606,14 @@ def _fixture_timeout_grandchild_seed() -> Observation:
         dir="/tmp",
     ) as scratch:
         pid_file = os.path.join(scratch, "child.pid")
+        readiness_file = os.path.join(scratch, "child.ready.json")
         log_path, times_path = _bounded_paths(scratch, "timeout")
         result = run_bounded(
-            _grandchild_command(pid_file, leader_sleeps=True),
+            _grandchild_command(
+                pid_file,
+                readiness_file,
+                leader_sleeps=True,
+            ),
             scratch,
             os.environ.copy(),
             log_path,
@@ -1128,19 +1621,33 @@ def _fixture_timeout_grandchild_seed() -> Observation:
             0.2,
             0.1,
         )
-        child_pid = _read_pid(pid_file)
-        applied = os.path.isfile(pid_file)
+        witness, child_pid = _await_grandchild_witness(
+            pid_file,
+            readiness_file,
+            log_path,
+        )
+        if witness == "readiness-timeout":
+            witness = "timeout-without-descendant-witness"
+        applied = witness == "ready" and child_pid is not None
         got = {
             "applied": applied,
-            "child_gone": not _process_alive(child_pid),
+            "witness": witness,
+            "child_gone": (
+                not _process_alive(child_pid)
+                if child_pid is not None
+                else None
+            ),
             "interrupted_signal": result.interrupted_signal,
             "timed_out": result.timed_out,
         }
+        got["teardown_clean"] = _cleanup_owned_fixture_pid(child_pid)
     expected = {
         "applied": True,
+        "witness": "ready",
         "child_gone": True,
         "interrupted_signal": None,
         "timed_out": True,
+        "teardown_clean": True,
     }
     return Observation(
         expected=expected,
@@ -1155,17 +1662,37 @@ def _fixture_interrupt_survivor_seed() -> Observation:
         dir="/tmp",
     ) as scratch:
         pid_file = os.path.join(scratch, "child.pid")
+        readiness_file = os.path.join(scratch, "child.ready.json")
         log_path, times_path = _bounded_paths(scratch, "interrupt")
+        original_handler = signal.getsignal(signal.SIGINT)
 
-        def send_interrupt() -> None:
-            time.sleep(0.2)
-            os.kill(os.getpid(), signal.SIGINT)
+        def child_witness() -> int | None:
+            child_pid = _grandchild_witness(
+                pid_file,
+                readiness_file,
+                log_path,
+            )
+            if child_pid is not None and not _process_alive(child_pid):
+                raise ValueError(
+                    f"grandchild {child_pid} exited before SIGINT readiness"
+                )
+            return child_pid
 
-        sender = threading.Thread(target=send_interrupt, daemon=False)
-        sender.start()
-        try:
+        with _fixture_signal_sender(
+            signal.SIGINT,
+            witness=child_witness,
+            handler_ready=lambda handler: _fixture_named_handler(
+                handler,
+                module=proofkit_mod.__name__,
+                name="interrupt_handler",
+            ),
+        ) as sender:
             result = run_bounded(
-                _grandchild_command(pid_file, leader_sleeps=True),
+                _grandchild_command(
+                    pid_file,
+                    readiness_file,
+                    leader_sleeps=True,
+                ),
                 scratch,
                 os.environ.copy(),
                 log_path,
@@ -1173,23 +1700,49 @@ def _fixture_interrupt_survivor_seed() -> Observation:
                 5.0,
                 0.1,
             )
-        finally:
-            sender.join()
-        child_pid = _read_pid(pid_file)
-        applied = os.path.isfile(pid_file)
+            sender.accounted = (
+                result.interrupted_signal == signal.SIGINT
+            )
+
+        child_pid = sender.witness_pid
+        applied = sender.ready and child_pid is not None
         got = {
             "applied": applied,
-            "child_gone": not _process_alive(child_pid),
+            "ready": sender.ready,
+            "signal_sent": sender.signal_sent,
+            "sender_joined": sender.sender_joined,
+            "fallback_count": sender.fallback_count,
+            "error": sender.error,
+            "accounted": sender.accounted,
+            "handlers_restored": (
+                signal.getsignal(signal.SIGINT) == original_handler
+            ),
+            "child_gone": (
+                not _process_alive(child_pid)
+                if child_pid is not None
+                else None
+            ),
+            "timed_out": result.timed_out,
             "interrupted_signal": result.interrupted_signal,
             "residual_survivors": [
                 pid for pid in result.survivors if _process_alive(pid)
             ],
         }
+        got["teardown_clean"] = _cleanup_owned_fixture_pid(child_pid)
     expected = {
         "applied": True,
+        "ready": True,
+        "signal_sent": 1,
+        "sender_joined": True,
+        "fallback_count": 0,
+        "error": None,
+        "accounted": True,
+        "handlers_restored": True,
         "child_gone": True,
+        "timed_out": False,
         "interrupted_signal": signal.SIGINT,
         "residual_survivors": [],
+        "teardown_clean": True,
     }
     return Observation(
         expected=expected,
@@ -3541,6 +4094,7 @@ append_json(
         "env": dict(os.environ),
         "stdin_len": len(stdin_data),
         "stdin_sha256": hashlib.sha256(stdin_data).hexdigest(),
+        "pid": os.getpid(),
         "out_existed_before": bool(out_before and os.path.exists(out_before)),
     },
 )
@@ -3625,7 +4179,7 @@ program_runtime = r'''import hashlib,json,os,sys,time
 data=sys.stdin.buffer.read()
 path=os.environ.get("FAKE_PROGRAM_LOG")
 if path:
-    payload=(json.dumps({"argv":sys.argv[1:],"cwd":os.getcwd(),"env":dict(os.environ),"stdin_len":len(data),"stdin_sha256":hashlib.sha256(data).hexdigest()},sort_keys=True,separators=(",",":"))+"\n").encode()
+    payload=(json.dumps({"argv":sys.argv[1:],"cwd":os.getcwd(),"env":dict(os.environ),"pid":os.getpid(),"stdin_len":len(data),"stdin_sha256":hashlib.sha256(data).hexdigest()},sort_keys=True,separators=(",",":"))+"\n").encode()
     fd=os.open(path,os.O_WRONLY|os.O_APPEND|os.O_CREAT,0o600)
     try: os.write(fd,payload)
     finally: os.close(fd)
@@ -3890,6 +4444,27 @@ def _o4_read_jsonl(path: str) -> list[dict]:
             if line.strip():
                 records.append(json.loads(line))
     return records
+
+
+def _o4_process_witness(
+    path: str,
+    matches: Callable[[Mapping[str, object]], bool],
+) -> int | None:
+    if not os.path.isfile(path):
+        return None
+    with open(path, "r", encoding="utf-8") as source:
+        payload = source.read()
+    if not payload or not payload.endswith("\n"):
+        return None
+    records = [
+        json.loads(line)
+        for line in payload.splitlines()
+        if line.strip()
+    ]
+    matching = [record for record in records if matches(record)]
+    if not matching:
+        return None
+    return _fixture_same_group_witness(matching[-1].get("pid"))
 
 
 def _o4_phase(records: list[dict], phase: str) -> list[dict]:
@@ -4805,42 +5380,79 @@ def _o4_root_fixture(case: str) -> Observation:
 
 def _o4_sigterm_forwarded_seed() -> Observation:
     with _O4FixtureEnvironment() as fixture:
-        program_started = threading.Event()
+        original_handler = signal.getsignal(signal.SIGTERM)
 
-        def send_term() -> None:
-            for _ in range(500):
-                if (
-                    os.path.isfile(fixture.program_log)
-                    and os.path.getsize(fixture.program_log) > 0
-                ):
-                    program_started.set()
-                    time.sleep(0.05)
-                    os.kill(os.getpid(), signal.SIGTERM)
-                    return
-                time.sleep(0.01)
-
-        sender = threading.Thread(target=send_term)
-        sender.start()
-        stderr = io.StringIO()
-        with _o4_devnull_stdin(), contextlib.redirect_stderr(stderr):
-            result = fixture.run_in_process(
-                ["run", fixture.own_source],
-                environment=fixture.environment(FAKE_PROGRAM_SLEEP="30"),
+        def program_witness() -> int | None:
+            return _o4_process_witness(
+                fixture.program_log,
+                lambda _record: True,
             )
-        sender.join()
-        end = _o4_phase(fixture.records(), "end")
+
+        stderr = io.StringIO()
+        with _fixture_signal_sender(
+            signal.SIGTERM,
+            witness=program_witness,
+            handler_ready=lambda handler: _fixture_named_handler(
+                handler,
+                module=shim_mod.__name__,
+                name="forward",
+            ),
+        ) as sender:
+            with _o4_devnull_stdin(), contextlib.redirect_stderr(stderr):
+                result = fixture.run_in_process(
+                    ["run", fixture.own_source],
+                    environment=fixture.environment(
+                        FAKE_PROGRAM_SLEEP="30"
+                    ),
+                )
+            end = _o4_phase(fixture.records(), "end")
+            run_signal = (
+                (end[-1].get("run") or {}).get("signal")
+                if end
+                else None
+            )
+            sender.accounted = (
+                result == 1 and run_signal == signal.SIGTERM
+            )
+
+        child_pid = sender.witness_pid
         got = {
-            "program_started": program_started.is_set(),
+            "program_started": sender.ready,
             "rc": result,
-            "run_signal": (
-                (end[-1].get("run") or {}).get("signal") if end else None
+            "run_signal": run_signal,
+            "signal_sent": sender.signal_sent,
+            "sender_joined": sender.sender_joined,
+            "fallback_count": sender.fallback_count,
+            "error": sender.error,
+            "accounted": sender.accounted,
+            "handler_restored": (
+                signal.getsignal(signal.SIGTERM) == original_handler
+            ),
+            "child_gone": (
+                not _process_alive(child_pid)
+                if child_pid is not None
+                else None
             ),
         }
+        got["teardown_clean"] = _cleanup_owned_fixture_pid(child_pid)
         return Observation(
-            expected={"program_started": True, "rc": 1, "run_signal": 15},
+            expected={
+                "program_started": True,
+                "rc": 1,
+                "run_signal": signal.SIGTERM,
+                "signal_sent": 1,
+                "sender_joined": True,
+                "fallback_count": 0,
+                "error": None,
+                "accounted": True,
+                "handler_restored": True,
+                "child_gone": True,
+                "teardown_clean": True,
+            },
             got=got,
             applied="SIGTERM sent to shim while fake program was sleeping",
         )
+
 
 def _o4_build_signal_forwarded_seed() -> Observation:
     got: dict[str, object] = {}
@@ -4849,48 +5461,95 @@ def _o4_build_signal_forwarded_seed() -> Observation:
         ("consumer", "--use-iyimod"),
     ):
         with _O4FixtureEnvironment() as fixture:
-            child_started = threading.Event()
+            original_handler = signal.getsignal(signal.SIGTERM)
 
-            def send_term() -> None:
-                for _ in range(500):
-                    if os.path.isfile(fixture.real_log):
-                        with open(fixture.real_log, "r", encoding="utf-8") as source:
-                            if marker in source.read():
-                                child_started.set()
-                                time.sleep(0.05)
-                                os.kill(os.getpid(), signal.SIGTERM)
-                                return
-                    time.sleep(0.01)
-
-            sender = threading.Thread(target=send_term)
-            sender.start()
-            stderr = io.StringIO()
-            with contextlib.redirect_stderr(stderr):
-                result = fixture.run_in_process(
-                    [
-                        "build",
-                        "-o",
-                        os.path.join(fixture.root, f"{phase}-signal-out"),
-                        fixture.own_source,
-                    ],
-                    environment=fixture.environment(
-                        FAKE_REAL_SLEEP=f"{phase}:30"
-                    ),
+            def phase_witness() -> int | None:
+                return _o4_process_witness(
+                    fixture.real_log,
+                    lambda record: marker in record.get("argv", []),
                 )
-            sender.join()
-            end = _o4_phase(fixture.records(), "end")
-            record = end[-1] if end else {}
-            got[phase] = {
-                "child_started": child_started.is_set(),
-                "rc": result,
-                "interrupted": record.get("interrupted"),
-                "producer_rc": (record.get("producer") or {}).get("rc"),
-                "consumer_rc": (
+
+            stderr = io.StringIO()
+            with _fixture_signal_sender(
+                signal.SIGTERM,
+                witness=phase_witness,
+                handler_ready=lambda handler: _fixture_named_handler(
+                    handler,
+                    module=shim_mod.__name__,
+                    name="forward",
+                ),
+            ) as sender:
+                with contextlib.redirect_stderr(stderr):
+                    result = fixture.run_in_process(
+                        [
+                            "build",
+                            "-o",
+                            os.path.join(
+                                fixture.root,
+                                f"{phase}-signal-out",
+                            ),
+                            fixture.own_source,
+                        ],
+                        environment=fixture.environment(
+                            FAKE_REAL_SLEEP=f"{phase}:30"
+                        ),
+                    )
+                end = _o4_phase(fixture.records(), "end")
+                record = end[-1] if end else {}
+                producer_rc = (
+                    record.get("producer") or {}
+                ).get("rc")
+                consumer_rc = (
                     (record.get("consumer") or {}).get("rc")
                     if record.get("consumer") is not None
                     else None
+                )
+                phase_rc = (
+                    producer_rc
+                    if phase == "producer"
+                    else consumer_rc
+                )
+                sender.accounted = (
+                    result == 143
+                    and record.get("interrupted") is True
+                    and phase_rc == -signal.SIGTERM
+                )
+
+            child_pid = sender.witness_pid
+            got[phase] = {
+                "child_started": sender.ready,
+                "rc": result,
+                "interrupted": record.get("interrupted"),
+                "producer_rc": producer_rc,
+                "consumer_rc": consumer_rc,
+                "signal_sent": sender.signal_sent,
+                "sender_joined": sender.sender_joined,
+                "fallback_count": sender.fallback_count,
+                "error": sender.error,
+                "accounted": sender.accounted,
+                "handler_restored": (
+                    signal.getsignal(signal.SIGTERM)
+                    == original_handler
+                ),
+                "child_gone": (
+                    not _process_alive(child_pid)
+                    if child_pid is not None
+                    else None
+                ),
+                "teardown_clean": _cleanup_owned_fixture_pid(
+                    child_pid
                 ),
             }
+    sender_fields = {
+        "signal_sent": 1,
+        "sender_joined": True,
+        "fallback_count": 0,
+        "error": None,
+        "accounted": True,
+        "handler_restored": True,
+        "child_gone": True,
+        "teardown_clean": True,
+    }
     expected = {
         "producer": {
             "child_started": True,
@@ -4898,6 +5557,7 @@ def _o4_build_signal_forwarded_seed() -> Observation:
             "interrupted": True,
             "producer_rc": -15,
             "consumer_rc": None,
+            **sender_fields,
         },
         "consumer": {
             "child_started": True,
@@ -4905,6 +5565,7 @@ def _o4_build_signal_forwarded_seed() -> Observation:
             "interrupted": True,
             "producer_rc": 0,
             "consumer_rc": -15,
+            **sender_fields,
         },
     }
     return Observation(
@@ -9439,6 +10100,8 @@ def _fixture_o6_timeout_seed(phase: str) -> Observation:
                 build_timeout=2,
             )
             direct_grandchild_gone = _o6_pid_is_gone(pid_file)
+            if os.path.isfile(pid_file):
+                os.unlink(pid_file)
             returncode = legs_mod.main(
                 argv,
                 build_timeout=2,
@@ -9451,6 +10114,8 @@ def _fixture_o6_timeout_seed(phase: str) -> Observation:
                 run_default_timeout=2,
             )
             direct_grandchild_gone = _o6_pid_is_gone(pid_file)
+            if os.path.isfile(pid_file):
+                os.unlink(pid_file)
             returncode = legs_mod.main(
                 argv,
                 run_default_timeout=2,
@@ -9546,6 +10211,8 @@ def _fixture_o6_heavy_run_timeout(seeded: bool) -> Observation:
         direct_grandchild_gone = (
             _o6_pid_is_gone(pid_file) if seeded else None
         )
+        if os.path.isfile(pid_file):
+            os.unlink(pid_file)
         returncode = legs_mod.main(
             argv,
             run_default_timeout=60,
@@ -10848,7 +11515,12 @@ _O7_TIMEOUT_DRIVER_LIMIT_SEC = 0.1
 _O7_DRIVER_GRACE_SEC = 0.1
 
 
-def _stage_real_compiler(directory: str, *, version_line: str) -> str:
+def _stage_real_compiler(
+    directory: str,
+    *,
+    version_line: str,
+    gate1_restore: tuple[str, str, str, str] | None = None,
+) -> str:
     fake = _fake_real_compiler(
         os.path.join(directory, "fake"),
         version_line=version_line,
@@ -10861,7 +11533,19 @@ import subprocess
 import sys
 
 REAL = {fake!r}
+GATE1_RESTORE = {gate1_restore!r}
 args = sys.argv[1:]
+if (
+    GATE1_RESTORE is not None
+    and args in (["--version"], ["version"])
+):
+    gate_log, bash_source, bash_link, witness = GATE1_RESTORE
+    if os.path.isfile(gate_log) and not os.path.lexists(bash_link):
+        os.symlink(bash_source, bash_link)
+        witness_tmp = witness + f".tmp-{{os.getpid()}}"
+        with open(witness_tmp, "w", encoding="utf-8") as output:
+            output.write("restored\\n")
+        os.replace(witness_tmp, witness)
 completed = subprocess.run([REAL, *args], check=False)
 if completed.returncode == 0 and args and (
     args[0] == "run" or (args[0] and "build".startswith(args[0]))
@@ -10903,7 +11587,10 @@ def _stage_driver_census(
     elif scenario == "driver-interrupt":
         lines.extend(
             [
-                "printf '%s\\n' ready >\"$TMPDIR/interrupt-ready\"",
+                'marker="$TMPDIR/interrupt-ready"',
+                'tmp="${marker}.tmp.$$"',
+                "printf '%s\\n' \"$$\" >\"$tmp\"",
+                'mv -f "$tmp" "$marker"',
                 "sleep 30",
             ]
         )
@@ -11169,7 +11856,10 @@ def _stage_stub_payloads(
         gate_sleep = "sleep 0.2\n"
     elif scenario == "d4-stage-interrupt":
         gate_sleep = (
-            "printf '%s\\n' ready >\"$TMPDIR/interrupt-ready\"\n"
+            "marker=\"$TMPDIR/interrupt-ready\"\n"
+            "tmp=\"${marker}.tmp.$$\"\n"
+            "printf '%s\\n' \"$$\" >\"$tmp\"\n"
+            "mv -f \"$tmp\" \"$marker\"\n"
             "sleep 30\n"
         )
     bash_path = os.path.join(fixture_root, "gate-tools", "bash")
@@ -11198,7 +11888,10 @@ def _stage_stub_payloads(
         else "OK: bench/std_observe_exercise.sh passed all checks"
     )
     observe_prefix = (
-        "printf '%s\\n' ready >\"$TMPDIR/interrupt-ready\"\n"
+        "marker=\"$TMPDIR/interrupt-ready\"\n"
+        "tmp=\"${marker}.tmp.$$\"\n"
+        "printf '%s\\n' \"$$\" >\"$tmp\"\n"
+        "mv -f \"$tmp\" \"$marker\"\n"
         "sleep 30\n"
         if scenario == "interrupt-gate2"
         else ""
@@ -11219,7 +11912,11 @@ def _stage_stub_payloads(
     rg9_count = 140 if scenario == "rg9-140" else 141
     rg9_prefix = (
         "import os, time\n"
-        "open(os.path.join(os.environ['TMPDIR'], 'interrupt-ready'), 'w').write('ready')\n"
+        "marker = os.path.join(os.environ['TMPDIR'], 'interrupt-ready')\n"
+        "tmp = marker + f'.tmp-{os.getpid()}'\n"
+        "with open(tmp, 'w', encoding='utf-8') as output:\n"
+        "    output.write(str(os.getpid()) + '\\n')\n"
+        "os.replace(tmp, marker)\n"
         "time.sleep(30)\n"
         if scenario == "interrupt-gate3"
         else ""
@@ -11248,7 +11945,10 @@ def _stage_stub_payloads(
         for number in range(1, sibling_count)
     )
     exercise_prefix = (
-        "printf '%s\\n' ready >\"$TMPDIR/interrupt-ready\"\n"
+        "marker=\"$TMPDIR/interrupt-ready\"\n"
+        "tmp=\"${marker}.tmp.$$\"\n"
+        "printf '%s\\n' \"$$\" >\"$tmp\"\n"
+        "mv -f \"$tmp\" \"$marker\"\n"
         "sleep 30\n"
         if scenario == "interrupt-gate4"
         else ""
@@ -11338,7 +12038,11 @@ def _stage_stub_payloads(
         "parser.add_argument('--expect-total', type=int, required=True)\n"
         "args = parser.parse_args()\n"
         "if INTERRUPT:\n"
-        "    open(os.path.join(os.environ['TMPDIR'], 'interrupt-ready'), 'w').write('ready')\n"
+        "    marker = os.path.join(os.environ['TMPDIR'], 'interrupt-ready')\n"
+        "    tmp = marker + f'.tmp-{os.getpid()}'\n"
+        "    with open(tmp, 'w', encoding='utf-8') as output:\n"
+        "        output.write(str(os.getpid()) + '\\n')\n"
+        "    os.replace(tmp, marker)\n"
         "    time.sleep(30)\n"
         "rows = []\n"
         "sample_count = args.expect_samples - (1 if DROP_SAMPLE else 0)\n"
@@ -13027,45 +13731,78 @@ def _fixture_d4_stage_interrupt_seed() -> Observation:
             "run1_1.tmp",
             "interrupt-ready",
         )
-        marker_seen = threading.Event()
+        original_handler = signal.getsignal(signal.SIGTERM)
+        with _fixture_signal_sender(
+            signal.SIGTERM,
+            witness=lambda: _fixture_session_leader_witness(marker),
+            handler_ready=lambda handler: _fixture_named_handler(
+                handler,
+                module=proofkit_mod.__name__,
+                name="interrupt_handler",
+            ),
+        ) as sender:
+            returncode = stages_mod.cmd_run1(
+                fixture.args(),
+                disk_min_gb=0.0,
+            )
+            result = _stage_result(fixture.report, "run1")
+            interrupted = (
+                f"interrupted by signal {signal.SIGTERM}"
+                in result.get("reasons", [])
+            )
+            sender.accounted = (
+                returncode == 1
+                and result.get("status") == "FAIL"
+                and interrupted
+            )
 
-        def send_term() -> None:
-            for _ in range(500):
-                if os.path.isfile(marker):
-                    marker_seen.set()
-                    os.kill(os.getpid(), signal.SIGTERM)
-                    return
-                time.sleep(0.01)
-
-        sender = threading.Thread(target=send_term)
-        sender.start()
-        returncode = stages_mod.cmd_run1(
-            fixture.args(),
-            disk_min_gb=0.0,
-        )
-        sender.join()
-        result = _stage_result(fixture.report, "run1")
         survivor_pids = result.get("survivors", [])
+        witnessed_pid = sender.witness_pid
         got = {
             "returncode": returncode,
             "status": result.get("status"),
-            "reason": "interrupted by signal 15" in result.get("reasons", []),
+            "reason": interrupted,
             "survivors_gone": all(
                 not _process_alive(pid) for pid in survivor_pids
             ),
+            "marker": sender.ready,
+            "signal_sent": sender.signal_sent,
+            "sender_joined": sender.sender_joined,
+            "fallback_count": sender.fallback_count,
+            "error": sender.error,
+            "accounted": sender.accounted,
+            "handler_restored": (
+                signal.getsignal(signal.SIGTERM) == original_handler
+            ),
+            "witnessed_pid_gone": (
+                not _process_alive(witnessed_pid)
+                if witnessed_pid is not None
+                else None
+            ),
         }
+        got["teardown_clean"] = _cleanup_owned_fixture_group(
+            witnessed_pid
+        )
         expected = {
             "returncode": 1,
             "status": "FAIL",
             "reason": True,
             "survivors_gone": True,
+            "marker": True,
+            "signal_sent": 1,
+            "sender_joined": True,
+            "fallback_count": 0,
+            "error": None,
+            "accounted": True,
+            "handler_restored": True,
+            "witnessed_pid_gone": True,
+            "teardown_clean": True,
         }
         return Observation(
             expected=expected,
             got=got,
             applied=(
-                f"marker_seen={str(marker_seen.is_set()).lower()};"
-                "sigterm_sent=true;"
+                "marker_seen=true;sigterm_sent=true;"
                 f"{_scenario_applied(fixture)}"
             ),
         )
@@ -14343,19 +15080,26 @@ def _proofkit_more_edge(case: str) -> Observation:
                     os.chmod(report, 0o700)
                     shutil.rmtree(report, ignore_errors=True)
         elif case == "process-wait":
+            waiter: threading.Thread | None = None
             process = subprocess.Popen(
                 ["/bin/sleep", "0.05"],
                 start_new_session=True,
             )
-            waiter = threading.Thread(target=process.wait)
-            waiter.start()
             try:
-                got = proofkit_mod._wait_for_group_exit(
+                waiter = threading.Thread(target=process.wait)
+                waiter.start()
+                group_exited = proofkit_mod._wait_for_group_exit(
                     process.pid,
                     1.0,
                 ) == ()
+                waiter.join(1.0)
+                waiter_joined = not waiter.is_alive()
+                got = group_exited and waiter_joined
             finally:
-                waiter.join()
+                cleaned = _cleanup_owned_fixture_process(process)
+                if waiter is not None:
+                    waiter.join(1.0)
+            got = got and cleaned
         elif case == "process-stop":
             ready = os.path.join(root, "stop-ready")
             process = subprocess.Popen(
@@ -14367,10 +15111,21 @@ def _proofkit_more_edge(case: str) -> Observation:
                 ],
                 start_new_session=True,
             )
-            while not os.path.exists(ready):
-                time.sleep(0.005)
-            proofkit_mod._stop_leader(process, process.pid, 0.01)
-            got = process.poll() is not None
+            try:
+                ready_seen = _wait_fixture_ready(
+                    lambda: os.path.exists(ready),
+                    timeout_sec=_FIXTURE_READINESS_TIMEOUT_SEC,
+                )
+                if ready_seen:
+                    proofkit_mod._stop_leader(
+                        process,
+                        process.pid,
+                        0.01,
+                    )
+                got = ready_seen and process.poll() is not None
+            finally:
+                cleaned = _cleanup_owned_fixture_process(process)
+            got = got and cleaned
         elif case == "process-leader-survives":
             class NeverStops:
                 pid = 2_000_000_000
@@ -14397,20 +15152,26 @@ def _proofkit_more_edge(case: str) -> Observation:
                 ],
                 start_new_session=True,
             )
-            while not os.path.exists(ready):
-                time.sleep(0.005)
             try:
-                try:
-                    proofkit_mod._record_and_stop_survivors(
-                        process.pid,
-                        -1,
-                        0.01,
-                        0.01,
-                    )
-                except RuntimeError:
-                    got = True
+                ready_seen = _wait_fixture_ready(
+                    lambda: os.path.exists(ready),
+                    timeout_sec=_FIXTURE_READINESS_TIMEOUT_SEC,
+                )
+                caught = False
+                if ready_seen:
+                    try:
+                        proofkit_mod._record_and_stop_survivors(
+                            process.pid,
+                            -1,
+                            0.01,
+                            0.01,
+                        )
+                    except RuntimeError:
+                        caught = True
+                got = ready_seen and caught
             finally:
-                process.wait()
+                cleaned = _cleanup_owned_fixture_process(process)
+            got = got and cleaned
         elif case == "process-finally-stop":
             class Running:
                 pid = 2_000_000_000
@@ -14442,18 +15203,24 @@ def _proofkit_more_edge(case: str) -> Observation:
                 ],
                 start_new_session=True,
             )
-            while not os.path.exists(ready):
-                time.sleep(0.005)
             try:
-                got = bool(
-                    proofkit_mod._stop_residual_processes(
-                        process.pid,
-                        0.01,
-                        exclude=-1,
+                ready_seen = _wait_fixture_ready(
+                    lambda: os.path.exists(ready),
+                    timeout_sec=_FIXTURE_READINESS_TIMEOUT_SEC,
+                )
+                got = (
+                    ready_seen
+                    and bool(
+                        proofkit_mod._stop_residual_processes(
+                            process.pid,
+                            0.01,
+                            exclude=-1,
+                        )
                     )
                 )
             finally:
-                process.wait()
+                cleaned = _cleanup_owned_fixture_process(process)
+            got = got and cleaned
         elif case == "process-parse":
             got = proofkit_mod._parse_process_group_members(
                 "bad\nx y\n10 20\n",
@@ -15327,48 +16094,73 @@ def _fixture_run1_gate_oserror(gate: int) -> Observation:
             if tool == "bash":
                 bash_source = source
             os.symlink(source, os.path.join(tool_dir, tool))
+
+        bash_link = os.path.join(tool_dir, "bash")
+        gate1_log = os.path.join(
+            fixture.report,
+            "run1",
+            "a1",
+            "run1_1.log",
+        )
+        restoration_witness = os.path.join(
+            fixture.scratch,
+            "gate1-bash-restored",
+        )
+        if gate == 1:
+            fixture.compiler = _stage_real_compiler(
+                os.path.join(fixture.scratch, "stage-real"),
+                version_line=f"iyi fixture [{fixture.p_sha[:9]}]",
+                gate1_restore=(
+                    gate1_log,
+                    bash_source,
+                    bash_link,
+                    restoration_witness,
+                ),
+            )
+            compiler_time_ns = (
+                fixture.p_commit_time + 2
+            ) * 1_000_000_000
+            os.utime(
+                fixture.compiler,
+                ns=(compiler_time_ns, compiler_time_ns),
+            )
+
         original_path = os.environ.get("PATH", "")
         try:
             os.environ["PATH"] = tool_dir
             fixture.pin()
+            pinned_compiler = (
+                _file_sha256(fixture.compiler),
+                os.stat(fixture.compiler).st_mtime_ns,
+            )
             rg9_work_path: str | None = None
             if gate == 3:
                 rg9_work_path = os.path.join(
                     fixture.scratch,
                     "rg9-work-collision",
                 )
-                with open(rg9_work_path, "w", encoding="utf-8") as output:
+                with open(
+                    rg9_work_path,
+                    "w",
+                    encoding="utf-8",
+                ) as output:
                     output.write("existing path")
-            restorer: threading.Thread | None = None
             if gate == 1:
-                os.unlink(os.path.join(tool_dir, "bash"))
-                def restore_bash() -> None:
-                    gate_log = os.path.join(
-                        fixture.report,
-                        "run1",
-                        "a1",
-                        "run1_1.log",
-                    )
-                    while not os.path.exists(gate_log):
-                        time.sleep(0.001)
-                    time.sleep(0.01)
-                    os.symlink(
-                        bash_source,
-                        os.path.join(tool_dir, "bash"),
-                    )
-
-                restorer = threading.Thread(target=restore_bash)
-                restorer.start()
+                os.unlink(bash_link)
             returncode = stages_mod.cmd_run1(
                 fixture.args(),
                 disk_min_gb=0.0,
                 rg9_work_path=rg9_work_path,
             )
-            if restorer is not None:
-                restorer.join()
         finally:
             os.environ["PATH"] = original_path
+
         result = _stage_result(fixture.report, "run1")
+        checks = result.get("checks", {})
+        compiler_after = (
+            _file_sha256(fixture.compiler),
+            os.stat(fixture.compiler).st_mtime_ns,
+        )
         got = {
             "returncode": returncode,
             "status": result.get("status"),
@@ -15376,9 +16168,34 @@ def _fixture_run1_gate_oserror(gate: int) -> Observation:
                 f"gate 1.{gate} error:" in str(reason)
                 for reason in result.get("reasons", [])
             ),
+            "restoration_witness": (
+                os.path.isfile(restoration_witness)
+                if gate == 1
+                else True
+            ),
+            "later_gates_passed": (
+                all(
+                    checks.get(f"gate-1.{later}") == "PASS"
+                    for later in (2, 3, 4)
+                )
+                if gate == 1
+                else True
+            ),
+            "compiler_unchanged": (
+                compiler_after == pinned_compiler
+                if gate == 1
+                else True
+            ),
         }
     return Observation(
-        expected={"returncode": 1, "status": "FAIL", "reason": True},
+        expected={
+            "returncode": 1,
+            "status": "FAIL",
+            "reason": True,
+            "restoration_witness": True,
+            "later_gates_passed": True,
+            "compiler_unchanged": True,
+        },
         got=got,
         applied=(
             "existing rg9_work file path"
@@ -15399,37 +16216,68 @@ def _fixture_run1_gate_interrupt(gate: int) -> Observation:
             f"run1_{gate}.tmp",
             "interrupt-ready",
         )
-        marker_seen = threading.Event()
+        original_handler = signal.getsignal(signal.SIGTERM)
+        with _fixture_signal_sender(
+            signal.SIGTERM,
+            witness=lambda: _fixture_session_leader_witness(marker),
+            handler_ready=lambda handler: _fixture_named_handler(
+                handler,
+                module=proofkit_mod.__name__,
+                name="interrupt_handler",
+            ),
+        ) as sender:
+            returncode = stages_mod.cmd_run1(
+                fixture.args(),
+                disk_min_gb=0.0,
+            )
+            result = _stage_result(fixture.report, "run1")
+            interrupted = (
+                f"interrupted by signal {signal.SIGTERM}"
+                in result.get("reasons", [])
+            )
+            sender.accounted = (
+                returncode == 1
+                and result.get("status") == "FAIL"
+                and interrupted
+            )
 
-        def send_term() -> None:
-            for _ in range(500):
-                if os.path.isfile(marker):
-                    marker_seen.set()
-                    os.kill(os.getpid(), signal.SIGTERM)
-                    return
-                time.sleep(0.01)
-
-        sender = threading.Thread(target=send_term)
-        sender.start()
-        returncode = stages_mod.cmd_run1(
-            fixture.args(),
-            disk_min_gb=0.0,
-        )
-        sender.join()
-        result = _stage_result(fixture.report, "run1")
+        witnessed_pid = sender.witness_pid
         got = {
             "returncode": returncode,
             "status": result.get("status"),
-            "reason": f"interrupted by signal {signal.SIGTERM}"
-            in result.get("reasons", []),
-            "marker": marker_seen.is_set(),
+            "reason": interrupted,
+            "marker": sender.ready,
+            "signal_sent": sender.signal_sent,
+            "sender_joined": sender.sender_joined,
+            "fallback_count": sender.fallback_count,
+            "error": sender.error,
+            "accounted": sender.accounted,
+            "handler_restored": (
+                signal.getsignal(signal.SIGTERM) == original_handler
+            ),
+            "witnessed_pid_gone": (
+                not _process_alive(witnessed_pid)
+                if witnessed_pid is not None
+                else None
+            ),
         }
+        got["teardown_clean"] = _cleanup_owned_fixture_group(
+            witnessed_pid
+        )
     return Observation(
         expected={
             "returncode": 1,
             "status": "FAIL",
             "reason": True,
             "marker": True,
+            "signal_sent": 1,
+            "sender_joined": True,
+            "fallback_count": 0,
+            "error": None,
+            "accounted": True,
+            "handler_restored": True,
+            "witnessed_pid_gone": True,
+            "teardown_clean": True,
         },
         got=got,
         applied=f"SIGTERM delivered during gate 1.{gate}",
@@ -15446,32 +16294,57 @@ def _fixture_run2_interrupt_edge() -> Observation:
             "run2.tmp",
             "interrupt-ready",
         )
-        seen = threading.Event()
+        original_handler = signal.getsignal(signal.SIGTERM)
+        with _fixture_signal_sender(
+            signal.SIGTERM,
+            witness=lambda: _fixture_session_leader_witness(marker),
+            handler_ready=lambda handler: _fixture_named_handler(
+                handler,
+                module=proofkit_mod.__name__,
+                name="interrupt_handler",
+            ),
+        ) as sender:
+            returncode = stages_mod.cmd_run2(
+                fixture.args(),
+                disk_min_gb=0.0,
+            )
+            record = _stage_result(fixture.report, "run2")
+            legs = record.get("checks", {}).get("legs")
+            interrupted = (
+                f"interrupted by signal {signal.SIGTERM}"
+                in record.get("reasons", [])
+            )
+            sender.accounted = (
+                returncode == 1
+                and record.get("status") == "FAIL"
+                and legs == "FAIL"
+                and interrupted
+            )
 
-        def send_term() -> None:
-            for _ in range(500):
-                if os.path.isfile(marker):
-                    seen.set()
-                    os.kill(os.getpid(), signal.SIGTERM)
-                    return
-                time.sleep(0.01)
-
-        sender = threading.Thread(target=send_term)
-        sender.start()
-        returncode = stages_mod.cmd_run2(
-            fixture.args(),
-            disk_min_gb=0.0,
-        )
-        sender.join()
-        record = _stage_result(fixture.report, "run2")
+        witnessed_pid = sender.witness_pid
         got = {
             "returncode": returncode,
             "status": record.get("status"),
-            "legs": record.get("checks", {}).get("legs"),
-            "reason": f"interrupted by signal {signal.SIGTERM}"
-            in record.get("reasons", []),
-            "marker": seen.is_set(),
+            "legs": legs,
+            "reason": interrupted,
+            "marker": sender.ready,
+            "signal_sent": sender.signal_sent,
+            "sender_joined": sender.sender_joined,
+            "fallback_count": sender.fallback_count,
+            "error": sender.error,
+            "accounted": sender.accounted,
+            "handler_restored": (
+                signal.getsignal(signal.SIGTERM) == original_handler
+            ),
+            "witnessed_pid_gone": (
+                not _process_alive(witnessed_pid)
+                if witnessed_pid is not None
+                else None
+            ),
         }
+        got["teardown_clean"] = _cleanup_owned_fixture_group(
+            witnessed_pid
+        )
     return Observation(
         expected={
             "returncode": 1,
@@ -15479,6 +16352,14 @@ def _fixture_run2_interrupt_edge() -> Observation:
             "legs": "FAIL",
             "reason": True,
             "marker": True,
+            "signal_sent": 1,
+            "sender_joined": True,
+            "fallback_count": 0,
+            "error": None,
+            "accounted": True,
+            "handler_restored": True,
+            "witnessed_pid_gone": True,
+            "teardown_clean": True,
         },
         got=got,
         applied="SIGTERM delivered during Run 2 artifact process",
@@ -15497,35 +16378,60 @@ def _fixture_run3_interrupt_edge() -> Observation:
             "t",
             "interrupt-ready",
         )
-        seen = threading.Event()
+        original_handler = signal.getsignal(signal.SIGTERM)
+        with _fixture_signal_sender(
+            signal.SIGTERM,
+            witness=lambda: _fixture_session_leader_witness(marker),
+            handler_ready=lambda handler: _fixture_named_handler(
+                handler,
+                module=proofkit_mod.__name__,
+                name="interrupt_handler",
+            ),
+        ) as sender:
+            returncode = stages_mod.cmd_run3(
+                fixture.args(),
+                drivers=fixture.drivers,
+                driver_limit_sec=30.0,
+                grace_sec=_O7_DRIVER_GRACE_SEC,
+                disk_min_gb=0.0,
+            )
+            record = _stage_result(fixture.report, "run3/stage")
+            exit_check = record.get("checks", {}).get("exit")
+            interrupted = (
+                f"interrupted by signal {signal.SIGTERM}"
+                in record.get("reasons", [])
+            )
+            sender.accounted = (
+                returncode == 1
+                and record.get("status") == "FAIL"
+                and exit_check == "FAIL"
+                and interrupted
+            )
 
-        def send_term() -> None:
-            for _ in range(500):
-                if os.path.isfile(marker):
-                    seen.set()
-                    os.kill(os.getpid(), signal.SIGTERM)
-                    return
-                time.sleep(0.01)
-
-        sender = threading.Thread(target=send_term)
-        sender.start()
-        returncode = stages_mod.cmd_run3(
-            fixture.args(),
-            drivers=fixture.drivers,
-            driver_limit_sec=30.0,
-            grace_sec=_O7_DRIVER_GRACE_SEC,
-            disk_min_gb=0.0,
-        )
-        sender.join()
-        record = _stage_result(fixture.report, "run3/stage")
+        witnessed_pid = sender.witness_pid
         got = {
             "returncode": returncode,
             "status": record.get("status"),
-            "exit": record.get("checks", {}).get("exit"),
-            "reason": f"interrupted by signal {signal.SIGTERM}"
-            in record.get("reasons", []),
-            "marker": seen.is_set(),
+            "exit": exit_check,
+            "reason": interrupted,
+            "marker": sender.ready,
+            "signal_sent": sender.signal_sent,
+            "sender_joined": sender.sender_joined,
+            "fallback_count": sender.fallback_count,
+            "error": sender.error,
+            "accounted": sender.accounted,
+            "handler_restored": (
+                signal.getsignal(signal.SIGTERM) == original_handler
+            ),
+            "witnessed_pid_gone": (
+                not _process_alive(witnessed_pid)
+                if witnessed_pid is not None
+                else None
+            ),
         }
+        got["teardown_clean"] = _cleanup_owned_fixture_group(
+            witnessed_pid
+        )
     return Observation(
         expected={
             "returncode": 1,
@@ -15533,6 +16439,14 @@ def _fixture_run3_interrupt_edge() -> Observation:
             "exit": "FAIL",
             "reason": True,
             "marker": True,
+            "signal_sent": 1,
+            "sender_joined": True,
+            "fallback_count": 0,
+            "error": None,
+            "accounted": True,
+            "handler_restored": True,
+            "witnessed_pid_gone": True,
+            "teardown_clean": True,
         },
         got=got,
         applied="SIGTERM delivered during Run 3 driver",
