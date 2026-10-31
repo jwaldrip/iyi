@@ -1,0 +1,32 @@
+[
+  {
+    "argv": [
+      "/Users/jwaldrip/.cache/iyi-corpus-venv/bin/python3",
+      "-B",
+      "/Users/jwaldrip/.omp/agent/sessions/-dev-src-github.com-jwaldrip-iyi/2026-10-23T04-40-48-554Z_01a1670f-c2aa-7496-8dff-8051951bcb5a/local/registration-interval-proof.py",
+      "--source",
+      "/private/tmp/iyi-registration-proof-451420109/proofkit-fixed.py",
+      "--output",
+      "/private/tmp/iyi-registration-proof-451420109",
+      "--case",
+      "fixed"
+    ],
+    "case": "fixed",
+    "rc": 0
+  },
+  {
+    "argv": [
+      "/Users/jwaldrip/.cache/iyi-corpus-venv/bin/python3",
+      "-B",
+      "/Users/jwaldrip/.omp/agent/sessions/-dev-src-github.com-jwaldrip-iyi/2026-10-23T04-40-48-554Z_01a1670f-c2aa-7496-8dff-8051951bcb5a/local/registration-interval-proof.py",
+      "--source",
+      "/private/tmp/iyi-registration-proof-451420109/proofkit-mutant.py",
+      "--output",
+      "/private/tmp/iyi-registration-proof-451420109",
+      "--case",
+      "mutant"
+    ],
+    "case": "mutant",
+    "rc": 0
+  }
+]

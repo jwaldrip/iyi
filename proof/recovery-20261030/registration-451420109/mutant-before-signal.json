@@ -1,0 +1,17 @@
+{
+  "case": "mutant",
+  "escaped": null,
+  "leader_pid": 75361,
+  "observer_fired": true,
+  "observer_line": 1106,
+  "pgid": 75361,
+  "registered_signals": [
+    2
+  ],
+  "registration_line": 1108,
+  "result": null,
+  "sid": 75361,
+  "signal_sent": true,
+  "source_sha256": "c7ad3de09751ffece5808a6dedb1af0103bfbaa4fa127d4fbc2985e99c168a5b",
+  "wait_not_reached": true
+}

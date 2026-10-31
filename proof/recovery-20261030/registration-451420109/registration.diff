@@ -1,0 +1,24 @@
+--- fixed
++++ mutant
+@@ -1099,14 +1099,14 @@
+         sampler.start()
+         sampler_started = True
+ 
++        if threading.current_thread() is threading.main_thread():
++            def interrupt_handler(received: int, _frame: object) -> None:
++                raise _BoundedSignal(received)
++
++            for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
++                previous_handlers[signum] = signal.getsignal(signum)
++                signal.signal(signum, interrupt_handler)
+         try:
+-            if threading.current_thread() is threading.main_thread():
+-                def interrupt_handler(received: int, _frame: object) -> None:
+-                    raise _BoundedSignal(received)
+-
+-                for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+-                    previous_handlers[signum] = signal.getsignal(signum)
+-                    signal.signal(signum, interrupt_handler)
+ 
+             if limit_sec is None:
+                 proc.wait()

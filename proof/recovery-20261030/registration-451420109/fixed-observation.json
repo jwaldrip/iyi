@@ -1,0 +1,25 @@
+{
+  "case": "fixed",
+  "escaped": null,
+  "group_members_before_fixture_teardown": [],
+  "handlers_restored_before_fixture_teardown": true,
+  "leader_pid": 75356,
+  "observer_fired": true,
+  "observer_line": 1107,
+  "pgid": 75356,
+  "registered_signals": [
+    2
+  ],
+  "registration_line": 1109,
+  "result": {
+    "interrupted_signal": 2,
+    "returncode": -15,
+    "survivors": [],
+    "timed_out": false
+  },
+  "sampler_joined_before_fixture_teardown": true,
+  "sid": 75356,
+  "signal_sent": true,
+  "source_sha256": "25aac5d00de62b49aad7e351cc3a10f491e8a882d40be986d0ba76a3d722d9c3",
+  "wait_not_reached": true
+}
