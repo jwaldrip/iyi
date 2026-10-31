@@ -1,0 +1,9 @@
+{
+  "archive": "audit-completion-6bbe-e3-prep.tar.gz",
+  "archive_bytes": 54988,
+  "archive_sha256": "2721278f5855a895488ed4fb9e2fb2a56545180c2d8202b576cbf16c8e6b2baf",
+  "members": 7,
+  "all_members_byte_equal_native": true,
+  "exact_and_generic_token_scan_matches": 0,
+  "result": "E3 driver v2 + static expectations + v0/v1 and diffs (static prep only, no mutants run)"
+}
