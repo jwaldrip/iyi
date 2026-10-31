@@ -1,0 +1,10 @@
+{
+  "archive": "audit-813c8074a-e3-prep.tar.gz",
+  "archive_bytes": 41857,
+  "archive_sha256": "dc22a205f55dbc8b549b31333787eadfbb7915127eb6e9ecf98fc63b9acbf8ce",
+  "members": 7,
+  "all_members_byte_equal_native": true,
+  "exact_and_generic_token_scan_matches": 0,
+  "symlinks_recorded": 0,
+  "result": "E3 v5 driver + v5 static expectations prep at H prime; no mutants run"
+}
