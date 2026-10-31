@@ -1,0 +1,9 @@
+{
+  "archive": "audit-813c8074a-x1.tar.gz",
+  "archive_bytes": 305150,
+  "archive_sha256": "637db9ed05085721b10352e64920f14ca0f12753e1040f6eb0e62a68192d6b10",
+  "members": 90,
+  "all_members_byte_equal_native": true,
+  "exact_and_generic_token_scan_matches": 0,
+  "result": "X1 PASS: 4 targeted mutant subsets match predicted RESULT lines; RV and EV smoke 435/85 HARNESS PASS at H prime; predicted lines and smoke delta verified"
+}
