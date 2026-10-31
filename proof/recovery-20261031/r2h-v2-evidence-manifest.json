@@ -1,0 +1,9 @@
+{
+  "archive": "audit-completion-6bbe-r2h-v2.tar.gz",
+  "archive_bytes": 607032,
+  "archive_sha256": "875c1d0ccd7d30b930b862428acfedb85e9d11fd25ea2e330e87f34ae04fb6f3",
+  "members": 97,
+  "all_members_byte_equal_native": true,
+  "exact_and_generic_token_scan_matches": 0,
+  "result": "R2h v2: 12 receipts rc0, 864 leaves accounted (842 compared equal, 11 labels, 8 unproven-by-method, 3 observations)"
+}
