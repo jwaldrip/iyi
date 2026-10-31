@@ -1,0 +1,9 @@
+{
+  "archive": "audit-813c8074a-s3.tar.gz",
+  "archive_bytes": 38570,
+  "archive_sha256": "102a673c6529515293e7ad23cc28a337c9916a5f356eb8487cb40b80546a7236",
+  "members": 30,
+  "all_members_byte_equal_native": true,
+  "exact_and_generic_token_scan_matches": 0,
+  "result": "S3 citations at H prime: 155 resolve, 155/155 regions identical at H and H prime, no-defect re-bound; parent verified receipts only"
+}
