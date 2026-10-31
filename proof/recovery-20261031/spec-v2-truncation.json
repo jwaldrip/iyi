@@ -1,0 +1,10 @@
+{
+  "superseded_local_pin": "local://audit-completion-6bbe-spec-v2.txt",
+  "superseded_committed_file": "proof/recovery-20261030/audit-completion-6bbe-spec-v2.txt",
+  "defect": "Default300-line read display including truncation footer was pinned instead of complete planner source. MissingE2tail,E3,E4,G1-G10,stoprules.",
+  "full_source": "/Users/jwaldrip/.omp/agent/sessions/-dev-src-github.com-jwaldrip-iyi/2026-10-23T04-40-48-554Z_01a1670f-c2aa-7496-8dff-8051951bcb5a/AuditCompletionPlan6bbe.md",
+  "full_bytes": 27503,
+  "full_splitlines_count": 404,
+  "full_sha256": "dc8939bda6502067a4802ca6583ee3504a5d299aee9b03c73fcc9ac3ebefa786",
+  "planner_prose_sha_typo": "Prose omitted one hex a; actual64-characterSHAverifiednatively,notcopiedfromprose."
+}

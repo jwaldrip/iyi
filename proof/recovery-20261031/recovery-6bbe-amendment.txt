@@ -1,0 +1,92 @@
+AMENDMENT to recovery spec (S1, S3, S4). Planner verified read-only: no builds, tests, deletions, config changes or journal replay.
+
+## Verified facts
+
+- Primary ignored set: 9 paths, list hash 0f82411aee9ddd7a…
+  `.build/.library-path`, `.build/crystal`, `.build/crystal.dwarf`, `.build/iyi`, `.build/iyi.dwarf`, `bench/__pycache__/doc_numbers.cpython-314.pyc`, `files.dwarf`, `hello.dwarf`, `std_process_exercise.dwarf`.
+- E, W2 and P each now hold exactly these 9 files.
+  - Content: sha256 equals the primary for all 9 (e.g. `.build/crystal` 756d3c4b…, `.build/iyi` 323e910c…, `.library-path` 2e4e0b6f…).
+  - mtime: equal to the primary's, preserved by the clone. We forged nothing.
+  - Inodes: new (P `.build/crystal` 2647703659, `.build/iyi` 2647703657 vs primary 18014325 / 18014323). nlink is 1 everywhere, so no hardlinks.
+- This is the same hook that built the original W2. Its path list was 0f82411a… and FSEvents showed cloned `.build` dirs on the originals.
+- After S3 adds the 4 daemon files, P's path list will hash to a4cf227e…. That equality comes from the same mechanism. It is NOT continuity, and the report must say so.
+- Per-worktree config: `extensions.worktreeconfig=true` exists only in global `~/.gitconfig`. Git ignores extensions outside the repo config, so `config --worktree --list` exits 128. That is expected; do not enable anything.
+  - Correct check: `git -C <wt> rev-parse --path-format=absolute --git-path config.worktree`, then `test ! -e`. I verified it absent for all 3 (`.git/worktrees/<name>/config.worktree`).
+
+## S1 amendment (record only, delete nothing)
+
+1. Write `RV2/recovery/restore-copied-ignored.json`. Per tree, per file:
+   - rel_path, size, sha256, inode, nlink, mtime_ns
+   - primary inode, primary mtime_ns, sha_equal_primary
+   - hook stdout ("Cloned from primary via apfs")
+   - path-list sha256, using the `printf '%s\n'` convention
+2. Write `config_worktree_absent` true per tree (check above).
+3. Label the record "restore-time harness clone of the primary's ignored set: inputs, not continuity".
+4. G1c baseline = these measured lists, plus S3's outputs. Never cite equality with 0f82411a / a4cf227e for G1b.
+
+## S3 preconditions (replace the mkdir and cp steps; the hook already placed bootstrap X)
+
+Before building, all of these must hold:
+- P lease 21214 live.
+- P HEAD == P1; porcelain `--untracked-files=all` empty.
+- P ignored list == the 9 above, each sha == primary.
+- `P/.build/crystal`: sha256 756d3c4b00332a52354e530139c837adfb0283df01b59a67a11ca7be8d0f9ab5, size 38309704, nlink 1, inode != 18014325.
+- Every file under `P/.build`: nlink 1, inode != the primary file at the same rel path. If any fails, STOP: an in-place write could reach the primary.
+- `/private/tmp/iyi-p1-rebuild-20261031-cache` does not exist.
+- `llvm-config --version` == 22.1.8.
+
+Dry-run guard: in P, with the exact env, run `make -n iyi crystal iyi-daemon crystal-daemon`. It must list four `./bin/crystal build … -o .build/{iyi,crystal,iyi-daemon,crystal-daemon}` commands. Any "is up to date" means STOP: a stale hook-copied Sep-14 binary would masquerade as M2.
+
+Then run the recorded make with `CRYSTAL_CACHE_DIR=/private/tmp/iyi-p1-rebuild-20261031-cache`.
+- Only owned P-local clones get overwritten in place (`.build/{crystal,iyi,*.dwarf}`, and possibly `.library-path`).
+- Never touch the primary or `/private/tmp/iyi-p1-recovered-build-cache`.
+
+Post-build, all must hold:
+- Each of the 4 binaries has mtime_ns greater than make's start time.
+- Each `--version` stdout is byte-equal to M1's.
+- P porcelain is empty.
+- M2 recorded, with `sha256_equals_m1`.
+
+## S4 fixed analysis
+
+Keep the replay and collection code exactly as given (`sinceWhen=0`, flags 0x10|0x02|0x80, watch `/Users/jwaldrip/dev/worktrees`). Replace everything after `ev.sort(); ids.sort()` with:
+```python
+A = 306898880          # original spec-v2.txt creation, pre-restore
+Z = 364328555          # highest event ID the planner saw before S1; all restore/hook events are later
+SPEC = T["E"] + "/proof/recovery-20261030/audit-completion-6bbe-spec-v2.txt"
+anchor = [(e, f) for e, f, k, p in ev if e == A and p == SPEC]
+assert anchor and anchor[0][1] & 0x100, ("anchor A missing or not Created", anchor)
+EXP = {"P": (356691663, 356734849), "W2": (356691453, 356714120), "E": (356692356, 356758306)}
+r = {"ok": ok, "history_done": st["done"], "anchor_A": [A, hex(anchor[0][1])], "Z": Z, "trees": {}}
+for k in T:
+    orig = [(e, f, p) for e, f, kk, p in ev if kk == k and A < e <= Z]
+    rem = [e for e, f, p in orig if f & 0x200]
+    B, END = (min(rem) if rem else None), (max(e for e, f, p in orig) if orig else None)
+    win = [(e, hex(f), p[len(T[k]):] or "/") for e, f, p in orig if B is not None and e < B]
+    r["trees"][k] = {"removal_start": B, "removal_end": END, "expected": EXP[k],
+        "window_events": win,
+        "all_events_in_window": bisect.bisect_left(ids, B) - bisect.bisect_right(ids, A) if B else None,
+        "post_restore_events": sum(1 for e, f, kk, p in ev if kk == k and e > Z)}   # informational only
+Bmin = min(EXP["P"][0], EXP["W2"][0])
+r["drops_in_window"] = [(e, hex(f), p.decode(errors="replace")) for e, f, p in drops if A < e < Bmin]
+json.dump(r, open(out, "x"), indent=1)
+```
+
+S4 acceptance:
+- history_done true.
+- Anchor at 306898880 on SPEC with a Created flag (observed 0x19100).
+- For each tree, (removal_start, removal_end) == EXP: P 356691663/356734849, W2 356691453/356714120, E 356692356/356758306.
+- P and W2 `window_events` == [].
+- E `window_events` == exactly these five, each 0x19100:
+  - 308486545 `…-bootstrap.tar.gz`
+  - 309648713 `…-r2-initial.tar.gz`
+  - 310989401 `…-r1.tar.gz`
+  - 310989410 `…-r2-methods.tar.gz`
+  - 310989419 `…-method-hash-check.json`
+- `drops_in_window` == [].
+- `all_events_in_window` > 0. The planner measured P 7717774, W2 7717704, E 7718001; informational only.
+- `post_restore_events` are excluded from G1b.
+
+Any mismatch makes span B UNPROVEN, and the conditional human fork in §7 applies.
+
+Unchanged: S2, S5, S6, S7, C0, peer note, G1/G10 text, token gate, leases.

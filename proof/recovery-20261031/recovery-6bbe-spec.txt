@@ -1,0 +1,255 @@
+# Recovery and resumption spec for P, W2 and E (audit 6bbe)
+
+All original source and evidence can be restored at the exact pinned SHAs. The four P1 binaries are gone and have to be rebuilt. No completed gate needs to rerun, and no human decision is needed. One finding changes how G1 closes: the kernel change journal shows no writes to P or W2 from before the E1 preflight until they were deleted. My checks were all read-only: remote refs, the reaper's code and state, the file-system journal history, file scans and git objects.
+
+## 1. Goal
+
+When this is done:
+- P, W2 and E exist again at their pinned SHAs, and each one is held by its own lease process.
+- E1's evidence and the full spec are pushed to E.
+- P has four rebuilt P1 binaries, recorded honestly in a new manifest, M2.
+- The audit resumes at E2 under a G1 that is still fully measured. The original identity span is closed by its snapshots plus the journal. The restored span is closed by its own before and after snapshots.
+
+## 2. Corrections to the brief, with evidence
+
+**a. The pinned spec is truncated.**
+- The local copy (`d9109301…`, 21,796 B) and E's copy (`879c5105…`, 21,797 B) are both the first 300 lines of the planner's output, followed by the literal read-tool line `[Showing lines 1-300 of 404. Use :301 to continue]`. The first 300 lines hash to `8cf2d1eb…` in both.
+- The full output is `~/.omp/agent/sessions/-dev-src-github.com-jwaldrip-iyi/2026-10-23T04-40-48-554Z_01a1670f-c2aa-7496-8dff-8051951bcb5a/AuditCompletionPlan6bbe.md`: 403 lines, 27,503 B, sha256 `dc8939bd6502067a4802ca6583ee3504a5d299aee9b03c73fcc9ac3ebefa786`.
+- Missing from the pin: E2b step 6 and its Expected block, E2c, E2d, E3, E4, Order, §6 G1-G10 and §7 stop rules.
+
+**b. The cause evidence the parent used could not have shown the reaper.**
+- Reaper pid 17533 started at 08:43:10 local (14:43:10Z). It logged `worktrees done: 14 removed or planned` at 09:02:19 and was still running at 10:08.
+- That run writes its per-path removed list only when it finishes. The `last-run.json` the parent read is from the earlier 07:43 run, so it could not contain these paths.
+- The parent's transcript has no lines between 08:22:51Z and 15:01:01Z (lines 9828 to 9829, the `ask` wait).
+- `reap.py:458-461` only scans transcript lines newer than now minus 6 h. At 14:43Z the path-mention guard therefore protected nothing.
+- In the journal, the deletion of the three trees starts within about 900 event IDs of each other (W2 356691453, P 356691663, E 356692356). That matches the reaper's 4-thread artifact deletion at `reap.py:1220-1221`.
+- Cause is the reaper [INFERENCE, strong]. It becomes proven once 17533 writes `last-run.json`.
+
+**c. The original binaries cannot be recovered.**
+- A scan by exact byte size found 0 matches in: `/private/tmp` (662,590 files), `~/dev/worktrees` (20.4M), `~/dev/src` (11.95M), `~/.cache`, `~/Library/Caches`, `/private/var/folders`, `~/Documents/omp-salvage`, `~/.Trash`, `~/tmp`, and `~/.omp/{agent,cache,external-worktrees,run,artifacts,private,tmp}`.
+- `~/.omp/wt` holds no iyi copies.
+- The Data volume has no APFS snapshots, and the Time Machine destination is unavailable.
+- No journal event under P carries the hardlink or last-hardlink flags, so no second link to these files ever existed.
+- Locations not scanned (the rest of `~/Library`, `/Applications`, `/opt`) are implausible. I am not claiming them.
+
+**d. A byte-identical rebuild cannot be achieved. Compare anyway.**
+- `nm -ap` on the primary's compiler shows 1,992 debug-map entries carrying absolute cache paths and object-file timestamps (`0x6aa891d5`). These are embedded in the binary.
+- In the old cache, the `iyi.cr` objects were rewritten up to 1793376245, after `iyi` was linked at 1793376174. The `crystal.cr` objects run up to 1793376274, after `crystal` was linked at 1793376211.
+- So even the old cache cannot reproduce `iyi` or `crystal`. Do not reuse or modify `/private/tmp/iyi-p1-recovered-build-cache`.
+
+**e. The two G1 ignored-file hashes cover path names only, not contents.**
+- `printf '%s\n' <13 paths> | shasum` reproduces `a4cf227e…`, and the 9 W2 paths reproduce `0f82411a…`.
+- Matching them again would mean re-creating leftover files (a `.pyc`, three root `.dwarf` files, and W2's September `.build` copies). That would be fabrication, so the restored span gets its own baseline instead.
+
+**f. The journal closes the window between E1 and the deletion, so neither an E1 rerun nor a human decision is needed.** The FSEvents history replay (read-only, `sinceWhen=0`, file events plus full history) shows:
+- Anchor A = 306898880, the creation of E's `audit-completion-6bbe-spec-v2.txt`. That file was committed at 06:42:02Z, before the 06:46:16Z preflight.
+- P and W2 have 0 events between A and their deletion.
+- There are 0 dropped or must-scan events anywhere in that window, out of 7.72M total events.
+- Positive control: in the same window, E records its 5 archive creations (IDs 308486545, 309648713, 310989401, 310989410, 310989419, flag `0x19100`).
+- P's last event of any kind before deletion is the build that created the old binaries (crystal-daemon at 157888743). The old binaries were untouched until deletion.
+
+**g. `RV2/setup.json` was rewritten at 02:22, after E1.**
+- Its preflight block is content-identical to the copy in bootstrap v1 (verified).
+- Only `files.receipt.py` changed, from v1 `8ae31c…` to v2 `1f6c1647…`. E1 ran under v1.
+- Cite the E1 preflight from the bootstrap v1 member, not from the rewritten file.
+
+**h. `/private/tmp` is not durable.**
+- `com.apple.tmp_cleaner` runs `/usr/libexec/tmp_cleaner` daily at 00:00. It deletes `/tmp` files whose atime, mtime and ctime are all more than 3 days old. A process lease does not stop it.
+- RV, EV, AUD and the old cache become eligible from the Nov 4 00:00 run. RV2 becomes eligible from Nov 5 [INFERENCE from the script's strings].
+- E1's evidence exists only in RV2, so persist it first.
+
+**i. Where the bootstrap compiler came from.**
+- The previous rebuild compiled `iyi` and `crystal` with a `.build/crystal` that was already in P: 38,309,704 B, mtime 1789432281, observed at 14:22:55Z on Oct 30.
+- The primary's `.build/crystal` has the same size and mtime, sha `756d3c4b…`, which equals W2's ignored `.build/crystal`. They are the same compiler [INFERENCE for byte equality with that copy].
+- The exact command used was `make iyi crystal iyi-daemon crystal-daemon` (parent transcript line 8865).
+
+## 3. Shared contracts
+
+**Constants**
+- `PRIMARY=/Users/jwaldrip/dev/src/github.com/jwaldrip/iyi`
+- `P=/Users/jwaldrip/dev/worktrees/iyi-stale-integration-repair`, branch `fix/stale-integration-repair`, `P1=626463375298d357ffcb3223059f4d3adce6fb10`
+- `W2=/Users/jwaldrip/dev/worktrees/iyi-audit-deadlines-seams-20261030`, branch `proof/audit-deadlines-seams-20261030`, `H=6bbe1bf2e484bc4ec33aa6d58667c43c096cd3bd`
+- `E=/Users/jwaldrip/dev/worktrees/iyi-stale-recovery-evidence-20261030`, branch `proof/stale-recovery-evidence-20261030`, `EH=2754418420b7eba8616da6647f4546b3e6a7168c`
+- `git ls-remote origin` showed all three branches at exactly these SHAs. The local branches match.
+- `RV2=/private/tmp/iyi-proof-complete-6bbe1bf2e`. The parent's recovery records go in `RV2/recovery/` and are mirrored to E under `proof/recovery-20261031/`.
+- `M1=/private/tmp/iyi-parent-evidence-3ef29279-recovered/p1-binaries.json` (also in E as `proof/recovery-20261030/p1-binaries.json`).
+- `M2=RV2/recovery/p1-binaries-m2.json`: M1's schema plus `sha256_equals_m1`, `size_equals_m1`, `version_stdout_equals_m1`.
+
+**One writer per worktree.** E: the parent only. P: the S3 worker only. W2: nobody (it is a read-only clone source). The primary is only read (`cp -c` reads it).
+
+**Lease, one per worktree**
+- A named bash service `lease-iyi-{E,W2,P}` with `cwd=<root>` and command `exec 9<.git; exec /bin/sleep 2147483647`. Set mode `persist`.
+- Start it right after `worktree add`, before the worktree's first idle hour passes.
+- It works because `reap.py:751` holds any tree with a process cwd inside it ("process inside", owned, so no artifact cleanup per `reap.py:1181`), and `reap.py:1209-1218` re-checks cwd immediately before removal.
+- Verify with `lsof -n -P -w -a -d cwd -Fn`, the reaper's own query at `reap.py:322`. It must list `n<root>`.
+- Ledger: `RV2/recovery/leases.json` recording name, pid, `ps -o lstart=`, argv, cwd, and the fd 9 target.
+- Release only via `proc://<id>/kill`. Never kill by name, never lock the worktree, never touch the reaper, its lock, or pid 17533.
+- The E2a witness only matches `["sleep","30"]` as a child of the leader, so the lease's sleep cannot be confused with it.
+
+**Token gate before every `git add`.** Scan each file and each tar member, in-process, for the exact token bytes and the patterns `gh[pousr]_[A-Za-z0-9]{36}` and `github_pat_`. Print match counts only. Any hit stops the commit.
+- Never archive `RV2/e1/cov/command.json`. Its mode-600 original stays in RV2 until Jason confirms rotation.
+- Archive the parent's masked copy `command.masked.json` instead. It keeps env values only for the receipt-v2 allowlist (PATH, HOME, TMPDIR, LANG, LC_*, PYTHON*, IYI*, CRYSTAL*, GIT_*) and lists the names of removed keys.
+
+**Spans**
+- A: RV before-run snapshot to E1 preflight.
+- B: E1 preflight to deletion. Closed by the journal.
+- C: restored baseline after the rebuild, to E4.
+
+**G1 replacement text**, which supersedes the single-span wording:
+- G1a Source: W2 at H, clean, with its remote at H; H descends from P1; empty product diff; P at P1 and clean. Must hold at RV-before, the E1 preflight (bootstrap v1), EV `identity-final.json`, the span-C baseline and E4-after.
+- G1b Original span: RV-before equals the E1 preflight on `a4cf227e…`/`0f82411a…` and on M1. J1 (the journal check in S4) shows zero events under P and W2 from A to each tree's removal start, zero drop flags in that window, and the E positive control. The deletion is recorded as an external identity break.
+- G1c Restored span: the span-C baseline equals E4-after on the ignored lists and their hashes, and on M2's sha256, size, mtime_ns and inode. All four binaries' `--version` stdout equals M1's.
+- G1d: unchanged ("every new iyp-* is attributed to a recorded job").
+- G10 "nothing is running" means no audit job process. Only the ledgered lease PIDs may survive, matched by pid, lstart, argv and cwd.
+
+## 4. Slices
+
+Order: S1, then S2, S3 and S4 in parallel, then S5, then S6. C0 and the peer note do not block anything.
+
+**S1: Restore and lease (parent).**
+- `git -C $PRIMARY fetch origin fix/stale-integration-repair proof/audit-deadlines-seams-20261030 proof/stale-recovery-evidence-20261030`
+- Check that `refs/heads/<b>` and `refs/remotes/origin/<b>` both equal the pin. On any mismatch, stop. No force, no reset.
+- For E, then W2, then P: check the path does not exist, then `git -C $PRIMARY worktree add <root> <existing-branch>` (no `-b`). Start the lease immediately.
+- Run all checks with `GIT_OPTIONAL_LOCKS=0`.
+- Acceptance: each HEAD equals its pin; `status --porcelain=v1 --untracked-files=all` is empty; `ls-files --others --ignored --exclude-standard` is empty; `config --worktree --list` is empty; the lease is visible in the cwd snapshot; the ledger is written.
+
+**S2: Persist first (parent, in E).** Add under `proof/recovery-20261031/`:
+- `audit-completion-6bbe-spec-v2-full.md`: the planner's file, byte-for-byte, sha `dc8939bd…`.
+- `spec-v2-truncation.json`: the facts in 2a.
+- `audit-completion-6bbe-e1.tar.gz`:
+  - `setup.json`, `receipt.py` v2, `run_fixtures.py`, `catalog.json`
+  - from `e1/`: `analyze.py`, `cov-clone-status.txt`, `p10.json`, `summary.json`, and `receipts.jsonl` if it passes the token gate
+  - `e1/cov/{start.json,end.json,stdout.log,stderr.log,command.masked.json}`
+  - `e1/cov-out/*.cover`
+- `e1-manifest.json`: per-member sha256, re-read from the tar and compared byte-for-byte with the RV2 files.
+- A note that E1 ran under receipt v1 (`8ae31c…`, in bootstrap v1), and that v2 (`1f6c1647…`) is the wrapper for E2 onward.
+
+Then commit and push. Acceptance: `git ls-remote origin` equals the new commit; `merge-base --is-ancestor $EH <new>` passes; the token gate reported 0.
+
+**S3: Rebuild the binaries as M2 (one worker; P is its only writable tree).**
+- Preconditions: the P lease is live; P is clean at P1 with no ignored files; `llvm-config --version` is `22.1.8`; `/private/tmp/iyi-p1-rebuild-20261031-cache` does not exist.
+- Run `mkdir $P/.build && cp -c $PRIMARY/.build/crystal $P/.build/crystal`. It must hash to `756d3c4b00332a52354e530139c837adfb0283df01b59a67a11ca7be8d0f9ab5` at 38,309,704 B.
+- With cwd P, timeout 3600:
+  ```
+  env -u IYI_PATH -u CRYSTAL_PATH -u IYI_CACHE_DIR -u IYI_OPTS -u CRYSTAL_OPTS -u IYI_WARM -u IYI_DAEMON_SOCKET -u CRYSTAL_DAEMON_SOCKET LIBRARY_PATH=/opt/homebrew/opt/bdw-gc/lib PKG_CONFIG_PATH=/opt/homebrew/opt/openssl@3/lib/pkgconfig CRYSTAL_CACHE_DIR=/private/tmp/iyi-p1-rebuild-20261031-cache make iyi crystal iyi-daemon crystal-daemon
+  ```
+- Save the log as `RV2/recovery/build-m2.log`. Its shape must match E's `build.log`: four commands, each with "Using compiled compiler at .build/crystal".
+- For each binary: stat (inode, size, mtime_ns), then sha256, then `--version`. Record the M1 comparisons.
+- Acceptance: make exits 0; all four `--version` stdouts are byte-equal to M1's (stamp `626463375`, date `2026-10-29`, LLVM 22.1.8, target `aarch64-apple-macosx27.0`); M2 is written; P porcelain is empty.
+- Expected result: `sha256_equals_m1` is false for all four [INFERENCE, see 2d]. Record whatever is observed.
+- Any `--version` mismatch: stop and report. Do not retry with other settings.
+- Non-goals: no tests, no other targets, no source edits, no `touch`, utime or `cp -p`, no old-cache reuse.
+
+**S4: Journal proof J1 (one read-only worker; writes only `RV2/recovery/j1/`).**
+- Write the script below with the eval tool, record its sha256, and run it with `$PY -B -X pycache_prefix=RV2/pyc/j1 RV2/recovery/j1/fsevents_replay.py RV2/recovery/j1/j1.json` and a timeout of at least 2700 s. My identical replay ran 1,240 s.
+- Run it before the journal history can age out.
+```python
+import ctypes as C, sys, time, json, bisect
+out = sys.argv[1]
+CS = C.CDLL("/System/Library/Frameworks/CoreServices.framework/CoreServices")
+CF = C.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+u64, vp = C.c_uint64, C.c_void_p
+CF.CFStringCreateWithCString.restype = vp; CF.CFStringCreateWithCString.argtypes = [vp, C.c_char_p, C.c_uint32]
+CF.CFArrayCreate.restype = vp; CF.CFArrayCreate.argtypes = [vp, C.POINTER(vp), C.c_long, vp]
+CB = C.CFUNCTYPE(None, vp, vp, C.c_size_t, C.POINTER(C.c_char_p), C.POINTER(C.c_uint32), C.POINTER(u64))
+CS.FSEventStreamCreate.restype = vp; CS.FSEventStreamCreate.argtypes = [vp, CB, vp, vp, u64, C.c_double, C.c_uint32]
+CS.FSEventStreamScheduleWithRunLoop.argtypes = [vp, vp, vp]
+CS.FSEventStreamStart.argtypes = [vp]; CS.FSEventStreamStart.restype = C.c_bool
+for n in ("FSEventStreamStop", "FSEventStreamInvalidate", "FSEventStreamRelease"): getattr(CS, n).argtypes = [vp]
+CF.CFRunLoopGetCurrent.restype = vp; CF.CFRunLoopRunInMode.argtypes = [vp, C.c_double, C.c_bool]
+mode = vp.in_dll(CF, "kCFRunLoopDefaultMode"); cbs = C.addressof(C.c_char.in_dll(CF, "kCFTypeArrayCallBacks"))
+ROOT = "/Users/jwaldrip/dev/worktrees"
+T = {"P": ROOT + "/iyi-stale-integration-repair", "W2": ROOT + "/iyi-audit-deadlines-seams-20261030", "E": ROOT + "/iyi-stale-recovery-evidence-20261030"}
+TB = {k: v.encode() for k, v in T.items()}
+ev, ids, drops, st = [], [], [], {"done": False}
+def cb(s, i, n, ps, fl, es):
+    for j in range(n):
+        f, e, p = fl[j], es[j], ps[j]
+        if f & 0x10: st["done"] = True; continue          # HistoryDone
+        ids.append(e)
+        if f & 0x7: drops.append((e, f, p))               # MustScanSubDirs|UserDropped|KernelDropped
+        for k, b in TB.items():
+            if p == b or p.startswith(b + b"/"): ev.append((e, f, k, p.decode(errors="replace"))); break
+cbf = CB(cb)
+arr = CF.CFArrayCreate(None, (vp * 1)(CF.CFStringCreateWithCString(None, ROOT.encode(), 0x08000100)), 1, cbs)
+s = CS.FSEventStreamCreate(None, cbf, None, arr, 0, 0.0, 0x10 | 0x02 | 0x80)  # FileEvents|NoDefer|FullHistory
+CS.FSEventStreamScheduleWithRunLoop(s, CF.CFRunLoopGetCurrent(), mode); ok = CS.FSEventStreamStart(s); t0 = time.time()
+while not st["done"] and time.time() - t0 < 2400: CF.CFRunLoopRunInMode(mode, 1.0, False)
+CS.FSEventStreamStop(s); CS.FSEventStreamInvalidate(s); CS.FSEventStreamRelease(s)
+ev.sort(); ids.sort()
+spec = T["E"] + "/proof/recovery-20261030/audit-completion-6bbe-spec-v2.txt"
+A = max([e for e, f, k, p in ev if p == spec and f & 0x100] or [0])
+r = {"ok": ok, "history_done": st["done"], "events_all": len(ids), "anchor_A": A, "trees": {}}
+for k in T:
+    rem = [e for e, f, kk, p in ev if kk == k and f & 0x200 and e > A]; B = min(rem) if rem else None
+    r["trees"][k] = {"removal_start": B,
+        "window_events": [(e, hex(f), p[len(T[k]):] or "/") for e, f, kk, p in ev if kk == k and A < e and (B is None or e < B)],
+        "all_events_in_window": bisect.bisect_left(ids, B) - bisect.bisect_right(ids, A) if B else None,
+        "last_before_A": [(e, hex(f), p[len(T[k]):] or "/") for e, f, kk, p in ev if kk == k and e <= A][-5:]}
+assert A and r["trees"]["P"]["removal_start"] and r["trees"]["W2"]["removal_start"], r
+Bmin = min(r["trees"]["P"]["removal_start"], r["trees"]["W2"]["removal_start"])
+r["drops_in_window"] = [(e, hex(f), p.decode(errors="replace")) for e, f, p in drops if A < e < Bmin]
+json.dump(r, open(out, "x"), indent=1)
+```
+- Acceptance: `anchor_A` is 306898880; removal starts are P 356691663, W2 356691453, E 356692356; `window_events` is empty for P and W2; E's `window_events` are exactly the 5 creations in 2f; `drops_in_window` is empty; `history_done` is true.
+
+**S5: Span-C baseline (parent, after S3 and S4).**
+- Write `RV2/recovery/identity-restored.json` with the E1 preflight fields, plus P and W2 ignored lists (each entry with rel_path, size, sha256), their path-list sha256 using the `printf '%s\n'` convention, M2, the lease PIDs, free space, `iyp-*` entries, and the target-process scan.
+- Archive into E: M2, `build-m2.log`, `j1/*`, `identity-restored.json`, `leases.json`, and a `cause.json` with the lines quoted in 2b. Push and verify the remote.
+
+**S6: Resume E2 through E4 per `AuditCompletionPlan6bbe.md`, with G1 and G10 as amended above.**
+- E2d uses the verbatim `canaries.py` (`51db1867…`) with the restored P. `inspect_pin_inputs` reads the live binary, so M2 binds automatically.
+- E4 compares the G1a fields against all snapshots, and the ignored lists and binaries against the span-C baseline only. It cites J1 for G1b.
+- Apply the token gate before every archive. One fixture stub writes its whole environment into `FAKE_PROGRAM_LOG` (`smoke_test.py:4182`).
+
+**S7: Release the leases** only after the final E push and Jason's next instruction.
+
+**C0: Confirm the cause (non-blocking).** When pid 17533 exits, read `.removed` in `~/.local/state/disk-hygiene/last-run.json` and record whether the three paths are listed. If they are absent, the cause is another actor, and leases do not protect against manual deletion.
+
+**Peer note (non-blocking).** Tell the DISK session `01a18adb-acdc-723a-9ac2-433b39d57a98` that these paths are in use and must not be removed: P, W2, E, RV2, RV, EV, AUD, both P1 build caches.
+
+## 5. Real identity versus reconstruction
+
+**Proven:**
+- Commit identity of P1, H and EH: remote refs equal the pins, and the restored trees check out those commits clean.
+- M1's sha, size, inode and mtime for spans A and B: measured at RV-before and the E1 preflight. J1 shows no event on P after the old binaries were built.
+- W2 unchanged from its last edit (ID 279347206) until deletion.
+- M2: measured at the span-C baseline, and must be measured equal at E4.
+
+**Never claimed or recreated:**
+- M1's inode or mtime after the deletion.
+- Old residue, or the old path-list hashes for the restored trees.
+- That the new P directory "is" the old P.
+- Byte equality between M1 and M2, unless sha256 is actually equal. Even then it is reported as "content-identical, new inode and mtime".
+- Any `touch`, utime or `cp -p` into `.build` beyond the bootstrap copy (X).
+
+## 6. Bindings that change, and ones that do not
+
+**Change:**
+- G1 and G10 (text above), and E4's comparisons.
+- E2d is bound to M2.
+- After GO, the corpus chain takes a new R and a new pin over M2. The base contract requires this: any change to P, W or the binary means a new chain. Record M2's sha256 values and stamps as P1-specific evidence, under Amendment C's precedent from the Oct 30 rebuild.
+- In any new report, "binaries match manifest" means M2 for span C and M1 for spans A and B only.
+
+**Do not change and need no rerun:**
+- RV smoke and seeds; the parent's smoke (7771), coverage (7777), refusals, O3 and isolated plan; E1 coverage; R1; R2. None of them runs P's binaries: `git grep` of `proof/*.py` at H finds no `.build/`, no worktree paths, no IYI or CRYSTAL env reads, and no `which("iyi")`, and every `--compiler` value is built by a fixture. Their span is closed by the snapshots plus J1.
+- The parent's native C1/C2 and plan results stay labelled M1. Do not re-label them.
+
+## 7. Human decision
+
+None needed. If J1 fails to reproduce (history purged, any event under P or W2, or any drop flag in the window), span B becomes UNPROVEN. Then ask Jason one question: rerun E1 coverage once inside span C (strict, can still reach GO), or keep E1 with G1b UNPROVEN, which means the audit cannot be GO. I would recommend the rerun.
+
+## 8. End-to-end check, and what would prove this spec wrong
+
+**End-to-end check:**
+- E's remote head contains every S2 and S5 file, with member hashes verified.
+- The next reaper run logs `held [process inside] <root>` for all three paths.
+- E4 reports G1a through G1d as PASS.
+
+**What would prove this spec wrong:**
+- J1 values differ from the acceptance in S4.
+- `last-run.json` from pid 17533 does not list the three paths.
+- Any branch moved when fetched.
+- An M2 `--version` stdout differs from M1's.
+- C1 or C2 fails on M2 (§7 stop rule: return to the planner).
+- A reaper run removes or archives a leased path.

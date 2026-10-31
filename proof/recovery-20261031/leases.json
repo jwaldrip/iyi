@@ -1,0 +1,41 @@
+[
+  {
+    "label": "P",
+    "service": "lease-iyi-P",
+    "pid": 21214,
+    "lstart": "Sat Oct 31 10:42:11 2026",
+    "argv": "/bin/sleep 2147483647",
+    "cwd": "/Users/jwaldrip/dev/worktrees/iyi-stale-integration-repair",
+    "fd9_target": [
+      "/Users/jwaldrip/dev/worktrees/iyi-stale-integration-repair/.git"
+    ],
+    "mode": "persist",
+    "purpose": "Activepinnedproofresourceownershipduringexecutionandoperatorwait;no lock/globalreaperchange."
+  },
+  {
+    "label": "W2",
+    "service": "lease-iyi-W2",
+    "pid": 21089,
+    "lstart": "Sat Oct 31 10:41:57 2026",
+    "argv": "/bin/sleep 2147483647",
+    "cwd": "/Users/jwaldrip/dev/worktrees/iyi-audit-deadlines-seams-20261030",
+    "fd9_target": [
+      "/Users/jwaldrip/dev/worktrees/iyi-audit-deadlines-seams-20261030/.git"
+    ],
+    "mode": "persist",
+    "purpose": "Activepinnedproofresourceownershipduringexecutionandoperatorwait;no lock/globalreaperchange."
+  },
+  {
+    "label": "E",
+    "service": "lease-iyi-E",
+    "pid": 20912,
+    "lstart": "Sat Oct 31 10:41:39 2026",
+    "argv": "/bin/sleep 2147483647",
+    "cwd": "/Users/jwaldrip/dev/worktrees/iyi-stale-recovery-evidence-20261030",
+    "fd9_target": [
+      "/Users/jwaldrip/dev/worktrees/iyi-stale-recovery-evidence-20261030/.git"
+    ],
+    "mode": "persist",
+    "purpose": "Activepinnedproofresourceownershipduringexecutionandoperatorwait;no lock/globalreaperchange."
+  }
+]

@@ -1,0 +1,88 @@
+{
+  "pins": {
+    "P": {
+      "head": {
+        "rc": 0,
+        "stdout": "626463375298d357ffcb3223059f4d3adce6fb10\n",
+        "stderr": ""
+      },
+      "porcelain": {
+        "rc": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      "ignored": {
+        "rc": 0,
+        "stdout": ".build/.library-path\n.build/crystal\n.build/crystal.dwarf\n.build/iyi\n.build/iyi.dwarf\nbench/__pycache__/doc_numbers.cpython-314.pyc\nfiles.dwarf\nhello.dwarf\nstd_process_exercise.dwarf\n",
+        "stderr": ""
+      },
+      "worktree_config": {
+        "rc": 128,
+        "stdout": "",
+        "stderr": "fatal: --worktree cannot be used with multiple working trees unless the config\nextension worktreeConfig is enabled. Please read \"CONFIGURATION FILE\"\nsection in \"git help worktree\" for details\n"
+      },
+      "lease_pid": 21214
+    },
+    "W2": {
+      "head": {
+        "rc": 0,
+        "stdout": "6bbe1bf2e484bc4ec33aa6d58667c43c096cd3bd\n",
+        "stderr": ""
+      },
+      "porcelain": {
+        "rc": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      "ignored": {
+        "rc": 0,
+        "stdout": ".build/.library-path\n.build/crystal\n.build/crystal.dwarf\n.build/iyi\n.build/iyi.dwarf\nbench/__pycache__/doc_numbers.cpython-314.pyc\nfiles.dwarf\nhello.dwarf\nstd_process_exercise.dwarf\n",
+        "stderr": ""
+      },
+      "worktree_config": {
+        "rc": 128,
+        "stdout": "",
+        "stderr": "fatal: --worktree cannot be used with multiple working trees unless the config\nextension worktreeConfig is enabled. Please read \"CONFIGURATION FILE\"\nsection in \"git help worktree\" for details\n"
+      },
+      "lease_pid": 21089
+    },
+    "E": {
+      "head": {
+        "rc": 0,
+        "stdout": "2754418420b7eba8616da6647f4546b3e6a7168c\n",
+        "stderr": ""
+      },
+      "porcelain": {
+        "rc": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      "ignored": {
+        "rc": 0,
+        "stdout": ".build/.library-path\n.build/crystal\n.build/crystal.dwarf\n.build/iyi\n.build/iyi.dwarf\nbench/__pycache__/doc_numbers.cpython-314.pyc\nfiles.dwarf\nhello.dwarf\nstd_process_exercise.dwarf\n",
+        "stderr": ""
+      },
+      "worktree_config": {
+        "rc": 128,
+        "stdout": "",
+        "stderr": "fatal: --worktree cannot be used with multiple working trees unless the config\nextension worktreeConfig is enabled. Please read \"CONFIGURATION FILE\"\nsection in \"git help worktree\" for details\n"
+      },
+      "lease_pid": 20912
+    }
+  },
+  "cwd_leases": [
+    {
+      "pid": 20912,
+      "cwd": "/Users/jwaldrip/dev/worktrees/iyi-stale-recovery-evidence-20261030"
+    },
+    {
+      "pid": 21089,
+      "cwd": "/Users/jwaldrip/dev/worktrees/iyi-audit-deadlines-seams-20261030"
+    },
+    {
+      "pid": 21214,
+      "cwd": "/Users/jwaldrip/dev/worktrees/iyi-stale-integration-repair"
+    }
+  ],
+  "note": "Restore-timeAPFSharnessclonecopied9ignoredprimaryfileseach;inputsNOTcontinuity.Worktreeconfigunsupportedrc128(no globalsettingschanges)."
+}

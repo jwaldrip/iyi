@@ -1,0 +1,16 @@
+{
+  "files_checked": [
+    "recovery-6bbe-spec.txt",
+    "recovery-6bbe-amendment.txt",
+    "audit-completion-6bbe-spec-v2-full.md",
+    "spec-v2-truncation.json",
+    "leases.json",
+    "restore-s1-actual.json",
+    "audit-completion-6bbe-e1.tar.gz",
+    "e1-manifest.json"
+  ],
+  "exact_credential_hits": 0,
+  "github_token_pattern_hits": 0,
+  "private_command_omitted": true,
+  "scan_utc": "2026-10-31T16:55:26Z"
+}
