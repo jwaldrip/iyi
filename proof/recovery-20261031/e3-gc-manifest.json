@@ -1,0 +1,9 @@
+{
+  "archive": "audit-completion-6bbe-e3-gc.tar.gz",
+  "archive_bytes": 153179,
+  "archive_sha256": "f740ec75ea96cf12d2030c621cd8d62a5de2b263b75b45f6bb2b461dc864d04c",
+  "members": 117,
+  "all_members_byte_equal_native": true,
+  "exact_and_generic_token_scan_matches": 0,
+  "result": "E3 group GC (8 mutants): g02 and g18 SURVIVED (full suite), others KILLED; attempts 1/2 of g02 retained as construction aborts"
+}
