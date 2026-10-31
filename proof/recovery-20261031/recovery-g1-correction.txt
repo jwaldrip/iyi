@@ -1,0 +1,58 @@
+CORRECTION AMENDMENT (supersedes my earlier span-B claims). I read the specialist report and the R1/R2 scripts. I ran nothing new.
+
+## A. Withdrawn or corrected
+
+1. §2f, §5, §7 and the S4 acceptance. Withdraw these claims: J1 "closes span B", M1 and W2 "Proven/untouched until deletion", "P's last event is the build at 157888743", and "no rerun or human decision needed". After the 06:46:16Z preflight, no identity of the original P/W2 was measured. M1 continuity after the preflight is UNMEASURED and NOT claimed, and nothing completed depends on it. J1 (as run, rc 0, all criteria met) is supporting evidence only: Apple documents FSEvents flags as hints, and a change coalesced into a removal record is invisible. Do not attempt FSEventsGetLastEventIdForDeviceBeforeTime: in my replay it returned 0 for all seven time marks.
+2. G1a source identity across span B comes from the branch reflogs plus content addressing, not J1. proof/audit-deadlines-seams-20261030 last moved 2026-10-31T02:29:28Z to H; fix/stale-integration-repair last moved 2026-10-29T06:58:51Z to P1; neither has a later entry.
+3. Replace my "no IYI or CRYSTAL env reads" sentence with: "H's proof/smoke_test.py reads IYI_PATH, CRYSTAL_PATH, IYI_CACHE_DIR and IYI_OPTS at 4109-4116 and 4170, and sets then restores IYI_O6_COVERAGE at 9788-9797. All of these are inside fake-compiler or fixture code and select report values or scratch paths. None resolves or executes P's binaries." E1 stays valid without J1: fresh clean H clone, no P binary executed.
+4. Full spec SHA, corrected: dc8939bda6502067a4802ca6583ee3504a5d299aee9b03c73fcc9ac3ebefa786. My earlier prose dropped the "a".
+
+New G1b text: "RV-before and E1-preflight agree on M1 and on a4cf227e…/0f82411a… (measured). After the preflight, no identity of the original P/W2 was measured, and M1 continuity is not claimed. Every completed post-preflight result is independent of the original P/W2 state: E1 used a fresh clean H clone and executed no P binary; R1h and R2h were re-derived from a hash-verified H clone. J1 is recorded as supporting evidence only." G1a, G1c, G1d and G10 are unchanged from the prior amendment. E4 and G5/G8/G9/G10 cite R1h/R2h, plus the archived R1/R2 as their equivalent originals.
+
+## B. Parallelism
+
+R1h and R2h are static; they run no fixtures and no native gates. They may run in parallel with each other and with E2b, E2c and E2d. Do not overlap them with E2a's seed or control job, because E2a's 0.1 s witness is timing-sensitive. E2 units stay one at a time. Span C was measured (M2 plus baseline) before E2, so E2 may start now.
+
+## C. Common setup (one worker per task; each owns its clone and output dir)
+
+- Verify each method or generator script against E's archived R1 tar (9639c7ac…) or R2 methods tar (49d50098…) before use. Bytes must equal; R2 also uses supplemental_inventory.json sha256.
+- Clone: `git clone --no-hardlinks --quiet $W2 RV2/c/<u>`, then `git -C RV2/c/<u> checkout --quiet --detach $H`. Assert HEAD == H, and `status --porcelain=v1 --untracked-files=all --ignored` is empty.
+- Hash inputs before reading: every tracked blob id from `git -C RV2/c/<u> ls-files -s` must equal `git ls-tree -r $H`. Also record sha256 of each file you will read.
+- Redirect with exact literal substitution only:
+  - `/Users/jwaldrip/dev/worktrees/iyi-audit-deadlines-seams-20261030` (and its `/proof/smoke_test.py` form) → `/private/tmp/iyi-proof-complete-6bbe1bf2e/c/<u>`
+  - `/private/tmp/iyi-proof-complete-6bbe1bf2e/r1` → `…/r1h`
+  - Save a `diff -u` per script; it may show only those lines.
+- Run every script through `RV2/receipt.py` v2 (1f6c1647…) with cwd = the clone: `$PY -B -X pycache_prefix=RV2/pyc/<u>`, job dirs under `RV2/<u>/jobs/`.
+- Afterwards: clone porcelain (including ignored) still empty, read files re-hash unchanged, then remove only the owned clone.
+- Never write to RV2/r1, RV2/r2 or W2. Token gate before archiving to E.
+
+## D. Task R1h (u = r1h)
+
+1. `mkdir RV2/r1h` (it must not exist).
+2. Copy RV2/r1/inputs/* to RV2/r1h/inputs/ and RV2/r1/compare.json to RV2/r1h/. Bytes must equal E's archived R1 members and inputs_manifest.json. compare.json is reused, not rerun: it comes only from these hash-pinned logs.
+3. Assert sha256(clone/proof/smoke_test.py) == sha256(r1h/inputs/smoke_test.py), the archived H blob a977d90f…, and its blob id == `git rev-parse H:proof/smoke_test.py`.
+4. Redirected copies of `generate_final_r1_artifacts.py` (SMOKE_TEST_PATH line 14; inputs lines 5-8; outputs lines 954 and 1035) and `write_summary_and_report.py` (R1_DIR line 5). Run them in that order.
+
+Acceptance:
+- r1h `semantic_mapping.json` and `review_keys_accounting.json` byte-identical to E's archived R1 members.
+- r1h `summary.json` and `mapping_report.md` byte-identical after reversing only the two literal substitutions. Any other byte difference is a FAIL, reported as such.
+
+## E. Task R2h (u = r2h)
+
+1. `mkdir RV2/r2h`. Make redirected copies (W line only) of the 8 working-tree readers: census_spot_checks, dead_symbol_screen, exec_tokens_all_29, f10_labels, f11_ast_scan, production_limits, registry_holes, trace_profile_hooks.
+   - No rerun of residue_grep.sh: `git grep … $H` searches tree H, which is content-addressed.
+   - No rerun of hygiene_disclosure: it is time-dependent RV-era residue and does not read W2.
+2. New archived runner `RV2/r2h/run_method.py <method> <out.json>`:
+   - installs `sys.addaudithook` to record every `open` event
+   - runs `runpy.run_path(method)`
+   - writes the JSON-serializable globals plus the opened paths with mode "x"
+   - Acceptance: every opened path outside interpreter or pycache paths lies inside the clone, and its `git hash-object` equals the blob for `H:<rel>`.
+3. New archived `RV2/r2h/compare.py`, per method:
+   - Project the recomputed globals onto every data field of the archived `RV2/r2/<check>.json`: items, file/line/code tuples, counts, verdict booleans.
+   - Require equality. List any excluded prose label fields explicitly; none may be silently dropped.
+   - Example: trace_profile_hooks: `[(o["file"],o["line"],o["code"]) for o in occurrences] == trace_matches` and `occurrences_count == len(trace_matches)`.
+4. Readiness citations: extract every file:line or file:start-end citation, and any quoted text, from `readiness_review_prose.txt` and `readiness_fence_review.{json,txt}`. Check each against `git show $H:<file>`: the line exists and the quoted text is present. Write `RV2/r2h/readiness_citations.json`. Review verdicts stay unchanged.
+
+Acceptance: all 8 projections equal and all citations resolve at H. Any mismatch is a FAIL, reported as a possible product defect per §7, not repaired.
+
+No E1 rerun, no fixtures, no native gates, no journal replay. A failed task is reported as a FAIL, never relabelled as [INFERENCE].
