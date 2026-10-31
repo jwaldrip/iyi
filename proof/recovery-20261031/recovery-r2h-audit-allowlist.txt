@@ -1,0 +1,19 @@
+R2h runner allowlist clarification from PinnedWorkspaceRecovery6bbe, 2026-10-31.
+This amends only the impossible literal opened-path condition in correction section E. Every source read still comes from the fresh hash-verified H clone. R1h/R2h wait until E2a's two short-deadline jobs finish.
+
+READS. Allowed classes:
+- method: the exact redirected method script, sha256 recorded, matching its archived original apart from the retained root-literal diff.
+- runner: run_method.py itself, sha256 recorded.
+- stdlib: files under the interpreter's sys.base_prefix or sys.prefix.
+- pycache: the job's own /private/tmp/iyi-proof-complete-6bbe1bf2e/pyc/r2h.
+- clone-source: files under /private/tmp/iyi-proof-complete-6bbe1bf2e/c/r2h. Each file's git hash-object equals H:<rel>. Every source read must be this class. Record directory listing events too, including os.listdir, os.scandir and os.walk.
+Any other read is FAIL, including other RV2 paths, W2, RV, EV, AUD, home files and credential files.
+
+WRITES. Allowed: the method's own out.json, opened x under RV2/r2h/jobs/<job>/; the receipt files receipt.py writes in that job directory; and the job's own pycache. Any other write-mode open is FAIL.
+out.json contains only the method's JSON-serializable result globals and event log. Never serialize os.environ or any env-derived value. Drop modules, functions, classes and names containing environ.
+
+EVENT LOG. Each open or listing records realpath, mode and flags, class (method, runner, stdlib, pycache, clone-source, own-output), and the verified blob id for clone-source reads. Directory listings record their tracked tree identity rather than pretending a directory has a file blob.
+
+W root replacement: replace only the literal /Users/jwaldrip/dev/worktrees/iyi-audit-deadlines-seams-20261030 with /private/tmp/iyi-proof-complete-6bbe1bf2e/c/r2h wherever it occurs and in whatever path form it appears. Keep diff -u. Any other change is FAIL.
+
+No source or fixture changes, no E1 rerun, no fixtures, no native gates, no residue or hygiene rerun. A failed projection or citation is reported as FAIL, not repaired or relabelled.

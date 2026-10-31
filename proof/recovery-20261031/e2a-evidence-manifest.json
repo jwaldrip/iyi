@@ -1,0 +1,11 @@
+{
+  "archive": "audit-completion-6bbe-e2a.tar.gz",
+  "archive_bytes": 16033,
+  "archive_sha256": "ac21e17682e2bb9b6ac50662d4492de8952a256c428d2724878d4d83387356c6",
+  "members": 35,
+  "all_members_byte_equal_native": true,
+  "exact_and_generic_token_scan_matches": 0,
+  "native_verification": "recovery/e2a-parent-native-verification.json",
+  "h": "6bbe1bf2e484bc4ec33aa6d58667c43c096cd3bd",
+  "result": "E2a PASS with seed rc1 TIMEOUT, 77 actual sightings, first 38022000 ns after t0; control rc0 PASS with zero sightings"
+}
