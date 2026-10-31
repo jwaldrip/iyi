@@ -1,0 +1,10 @@
+{
+  "archive": "audit-813c8074a-e2abd.tar.gz",
+  "archive_bytes": 171937,
+  "archive_sha256": "ec27bb6e4b838e58ec72de57425ba85ee9f1477032cfebd59a04892cfdaddcaf",
+  "members": 201,
+  "all_members_byte_equal_native": true,
+  "exact_and_generic_token_scan_matches": 0,
+  "symlinks_recorded": 2,
+  "result": "E2a PASS (rc1 TIMEOUT, sleeper seen 26.5 ms, 99 sightings), E2b PASS exact reasons, E2d canaries PASS rc0 C1/C2 PASS, binaries equal M2; parent verified receipts only"
+}

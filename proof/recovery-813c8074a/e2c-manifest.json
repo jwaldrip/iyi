@@ -1,0 +1,9 @@
+{
+  "archive": "audit-813c8074a-e2c.tar.gz",
+  "archive_bytes": 150357,
+  "archive_sha256": "48093012411cc4a165cfbce10d63ae7e1786f428d72d8d56c9fdc91f94c11bcc",
+  "members": 118,
+  "all_members_byte_equal_native": true,
+  "exact_and_generic_token_scan_matches": 0,
+  "result": "E2c PASS at H prime (h-seed rc1 FAIL [], h-ctl rc0 PASS, m-seed rc0 PASS [], m-ctl rc0 PASS)"
+}
