@@ -1,0 +1,9 @@
+{
+  "archive": "audit-813c8074a-s4.tar.gz",
+  "archive_bytes": 7107,
+  "archive_sha256": "42e6bac60ac7fd613f0b9f967703a69b6ac4bd4e6d738ce771805a6fff548be0",
+  "members": 2,
+  "all_members_byte_equal_native": true,
+  "exact_and_generic_token_scan_matches": 0,
+  "result": "S4 non-weakening/delta review: zero weakening findings, 12 hunks mapped to Changes 1-8, zero forbidden constructs; parent has NOT independently re-derived claims"
+}
