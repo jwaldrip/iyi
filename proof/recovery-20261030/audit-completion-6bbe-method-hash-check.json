@@ -1,0 +1,89 @@
+{
+  "native_verification": [
+    {
+      "rel": "input_h_blobs.json",
+      "bytes": 81249,
+      "recorded_sha256": "fb0e2d3f95094d268060229b75b8302d3ccf1bec9c1bb90ca58a8f681d9e3579",
+      "actual_sha256": "fb0e2d3f95094d268060229b75b8302d3ccf1bec9c1bb90ca58a8f681d9e3579",
+      "matches": true
+    },
+    {
+      "rel": "method_census_spot_checks.py",
+      "bytes": 3569,
+      "recorded_sha256": "613571255a395f3c47559f1a231c214b9637e67803f456282d25abbfce460ee9",
+      "actual_sha256": "613571255a395f3c47559f1a231c214b9637e67803f456282d25abbfce460ee9",
+      "matches": true
+    },
+    {
+      "rel": "method_dead_symbol_screen.py",
+      "bytes": 2629,
+      "recorded_sha256": "05d506d92b906a4954a52fd18f8b21d2fb035927f6daf1582657831622e41815",
+      "actual_sha256": "05d506d92b906a4954a52fd18f8b21d2fb035927f6daf1582657831622e41815",
+      "matches": true
+    },
+    {
+      "rel": "method_exec_tokens_all_29.py",
+      "bytes": 1481,
+      "recorded_sha256": "6ce9714be1940c85945e0763cec90c94f1d5d25db6db55d19aa219883c89fbf5",
+      "actual_sha256": "6ce9714be1940c85945e0763cec90c94f1d5d25db6db55d19aa219883c89fbf5",
+      "matches": true
+    },
+    {
+      "rel": "method_f10_labels.py",
+      "bytes": 1332,
+      "recorded_sha256": "c5a6228b7ef732e2333c78ab48286c3ee07b7f815df7f0d6b5bc45ecbc0a31e7",
+      "actual_sha256": "c5a6228b7ef732e2333c78ab48286c3ee07b7f815df7f0d6b5bc45ecbc0a31e7",
+      "matches": true
+    },
+    {
+      "rel": "method_f11_ast_scan.py",
+      "bytes": 2827,
+      "recorded_sha256": "151b150aef9b22b74b5c74f55e40dab957c59376ba9e73378a2e79861c61e1a0",
+      "actual_sha256": "151b150aef9b22b74b5c74f55e40dab957c59376ba9e73378a2e79861c61e1a0",
+      "matches": true
+    },
+    {
+      "rel": "method_hygiene_disclosure.py",
+      "bytes": 530,
+      "recorded_sha256": "5ed577b69a01158ffbd347317b29c10d45657cb33b893b999669223e1cda9ecd",
+      "actual_sha256": "5ed577b69a01158ffbd347317b29c10d45657cb33b893b999669223e1cda9ecd",
+      "matches": true
+    },
+    {
+      "rel": "method_production_limits.py",
+      "bytes": 925,
+      "recorded_sha256": "eecdfab18ff0426404d9b27320b71c99ef080787a0ae8b4c37e0805ed9697228",
+      "actual_sha256": "eecdfab18ff0426404d9b27320b71c99ef080787a0ae8b4c37e0805ed9697228",
+      "matches": true
+    },
+    {
+      "rel": "method_registry_holes.py",
+      "bytes": 2467,
+      "recorded_sha256": "4454bd0a00cf27c3918146ec6214123f065389de034f5bb0bf15b90fb32130eb",
+      "actual_sha256": "4454bd0a00cf27c3918146ec6214123f065389de034f5bb0bf15b90fb32130eb",
+      "matches": true
+    },
+    {
+      "rel": "method_residue_grep.sh",
+      "bytes": 252,
+      "recorded_sha256": "5adedd527852299803c486ed48f19156fcff7456659d20aeaba859220979806a",
+      "actual_sha256": "5adedd527852299803c486ed48f19156fcff7456659d20aeaba859220979806a",
+      "matches": true
+    },
+    {
+      "rel": "method_trace_profile_hooks.py",
+      "bytes": 628,
+      "recorded_sha256": "a34c6d0773dd9a787d662144f4f53158fd8ece0ef8ddf446674bfef6cccfe1ea",
+      "actual_sha256": "a34c6d0773dd9a787d662144f4f53158fd8ece0ef8ddf446674bfef6cccfe1ea",
+      "matches": true
+    },
+    {
+      "rel": "readiness_review_prose.txt",
+      "bytes": 4255,
+      "recorded_sha256": "5a1e58f9b6e1d04b24b2a1b53149e28134ddad6cc956365f0f089386cc950d1f",
+      "actual_sha256": "5a1e58f9b6e1d04b24b2a1b53149e28134ddad6cc956365f0f089386cc950d1f",
+      "matches": true
+    }
+  ],
+  "note": "Actual on-disk supplementary manifest matches all12 file hashes. SHA256 values in worker prose were incorrect; use native-verified artifact manifest, not prose."
+}
