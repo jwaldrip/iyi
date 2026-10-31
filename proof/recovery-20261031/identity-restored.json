@@ -1,0 +1,315 @@
+{
+  "scope": "MeasuredNEWrestoredspanCbaseline,M2only;NOTM1continuity.OriginalspanBclaimpendingmechanismreview.",
+  "captured_utc": "2026-10-31T17:19:30Z",
+  "p1": "626463375298d357ffcb3223059f4d3adce6fb10",
+  "h": "6bbe1bf2e484bc4ec33aa6d58667c43c096cd3bd",
+  "trees": {
+    "P": {
+      "path": "/Users/jwaldrip/dev/worktrees/iyi-stale-integration-repair",
+      "head": "626463375298d357ffcb3223059f4d3adce6fb10",
+      "porcelain": "",
+      "ignored_files": [
+        {
+          "rel_path": ".build/.library-path",
+          "size": 82,
+          "sha256": "2e4e0b6f89cde7415e7f35295f2b4cdc7d836123edde47e9063e59ae178f1ad7",
+          "inode": 2647703660,
+          "mtime_ns": 1787058200499142528,
+          "nlink": 1
+        },
+        {
+          "rel_path": ".build/crystal",
+          "size": 50855032,
+          "sha256": "899ca96ee708a87876220b4c3ae16edaa9e7fb539cdf524b36ad919b667fe196",
+          "inode": 2647896620,
+          "mtime_ns": 1793465903336266947,
+          "nlink": 1
+        },
+        {
+          "rel_path": ".build/crystal-daemon",
+          "size": 50486016,
+          "sha256": "96a0caa1e8933aa2fd938a31df48253fcb5de67d92ed8ec07c46615977818e5f",
+          "inode": 2647930075,
+          "mtime_ns": 1793466055289032853,
+          "nlink": 1
+        },
+        {
+          "rel_path": ".build/crystal-daemon.dwarf",
+          "size": 19743600,
+          "sha256": "3d42785682695aedd0f4eb9ecaa97ed4854de26c747c0f9d44b31277b2d60daa",
+          "inode": 2647930094,
+          "mtime_ns": 1793466056650857456,
+          "nlink": 1
+        },
+        {
+          "rel_path": ".build/crystal.dwarf",
+          "size": 19779262,
+          "sha256": "77e57c7526eeb2350bd13db953a5b45b838682fe956c520318b0970809b056a2",
+          "inode": 2647703661,
+          "mtime_ns": 1793465904253776679,
+          "nlink": 1
+        },
+        {
+          "rel_path": ".build/iyi",
+          "size": 50845488,
+          "sha256": "b8afdb5f55b03754b8194978e320cbca3c0816661cadcbd3083f0872a64ca418",
+          "inode": 2647885868,
+          "mtime_ns": 1793465861706431758,
+          "nlink": 1
+        },
+        {
+          "rel_path": ".build/iyi-daemon",
+          "size": 50476536,
+          "sha256": "8f34ebd2e4664b4c517410d7f18cff890f3d291691695414de8dcb9848c2c5d7",
+          "inode": 2647922971,
+          "mtime_ns": 1793465987371679130,
+          "nlink": 1
+        },
+        {
+          "rel_path": ".build/iyi-daemon.dwarf",
+          "size": 19744962,
+          "sha256": "b7dde167976e1ebe3928741a87ebd6029d2af4561d7a5934345a216a77c9b2fb",
+          "inode": 2647923087,
+          "mtime_ns": 1793465988891565592,
+          "nlink": 1
+        },
+        {
+          "rel_path": ".build/iyi.dwarf",
+          "size": 19780624,
+          "sha256": "bf9e3f9e9a9952f8dcd23261daa8b0da5361970790a0cb547fa26a37514c9c87",
+          "inode": 2647703658,
+          "mtime_ns": 1793465862793294319,
+          "nlink": 1
+        },
+        {
+          "rel_path": "bench/__pycache__/doc_numbers.cpython-314.pyc",
+          "size": 26211,
+          "sha256": "47a14239abf42f6e2d321c84f2d32602859897e98724ab60e569304964471516",
+          "inode": 2647704140,
+          "mtime_ns": 1792920296906926793,
+          "nlink": 1
+        },
+        {
+          "rel_path": "files.dwarf",
+          "size": 127460,
+          "sha256": "13b46c6c50f9ffbb48b87d28eed7c02443f6970d93ad24b06e779e6f27040a53",
+          "inode": 2647704228,
+          "mtime_ns": 1792927581516860198,
+          "nlink": 1
+        },
+        {
+          "rel_path": "hello.dwarf",
+          "size": 118514,
+          "sha256": "c2936c444bdcf62c3f8febebb944aa07626524919db627ae43e2d54f06baede1",
+          "inode": 2647705062,
+          "mtime_ns": 1792927577086024963,
+          "nlink": 1
+        },
+        {
+          "rel_path": "std_process_exercise.dwarf",
+          "size": 242138,
+          "sha256": "98a47790246f123ccad8064ad36ceb6cf348f7da2b9924777d594be4efa2b138",
+          "inode": 2647704220,
+          "mtime_ns": 1792927588537012059,
+          "nlink": 1
+        }
+      ],
+      "ignored_count": 13,
+      "ignored_path_list_sha256": "a4cf227e541b47cda4ef546aee71374c117c71a85b19198ea9a5e1d0b6e00a4e"
+    },
+    "W2": {
+      "path": "/Users/jwaldrip/dev/worktrees/iyi-audit-deadlines-seams-20261030",
+      "head": "6bbe1bf2e484bc4ec33aa6d58667c43c096cd3bd",
+      "porcelain": "",
+      "ignored_files": [
+        {
+          "rel_path": ".build/.library-path",
+          "size": 82,
+          "sha256": "2e4e0b6f89cde7415e7f35295f2b4cdc7d836123edde47e9063e59ae178f1ad7",
+          "inode": 2647699306,
+          "mtime_ns": 1787058200499142528,
+          "nlink": 1
+        },
+        {
+          "rel_path": ".build/crystal",
+          "size": 38309704,
+          "sha256": "756d3c4b00332a52354e530139c837adfb0283df01b59a67a11ca7be8d0f9ab5",
+          "inode": 2647699305,
+          "mtime_ns": 1789432281893380642,
+          "nlink": 1
+        },
+        {
+          "rel_path": ".build/crystal.dwarf",
+          "size": 14771135,
+          "sha256": "974c6aecde6c29d67a58b17971d6220c8441c183f51601e60c30efc0098be3f4",
+          "inode": 2647699307,
+          "mtime_ns": 1789432282347368240,
+          "nlink": 1
+        },
+        {
+          "rel_path": ".build/iyi",
+          "size": 38303024,
+          "sha256": "323e910c7c8776fcd35e1f04ba8412baeac4428d6b2e22f55d527c21fc899b1c",
+          "inode": 2647699303,
+          "mtime_ns": 1789432281831313968,
+          "nlink": 1
+        },
+        {
+          "rel_path": ".build/iyi.dwarf",
+          "size": 14771921,
+          "sha256": "c3ea0471f994ed54895780045c68fc0f84a8e1d79a55d55ba2e6f7d60446a931",
+          "inode": 2647699304,
+          "mtime_ns": 1789432282305399299,
+          "nlink": 1
+        },
+        {
+          "rel_path": "bench/__pycache__/doc_numbers.cpython-314.pyc",
+          "size": 26211,
+          "sha256": "47a14239abf42f6e2d321c84f2d32602859897e98724ab60e569304964471516",
+          "inode": 2647699787,
+          "mtime_ns": 1792920296906926793,
+          "nlink": 1
+        },
+        {
+          "rel_path": "files.dwarf",
+          "size": 127460,
+          "sha256": "13b46c6c50f9ffbb48b87d28eed7c02443f6970d93ad24b06e779e6f27040a53",
+          "inode": 2647699875,
+          "mtime_ns": 1792927581516860198,
+          "nlink": 1
+        },
+        {
+          "rel_path": "hello.dwarf",
+          "size": 118514,
+          "sha256": "c2936c444bdcf62c3f8febebb944aa07626524919db627ae43e2d54f06baede1",
+          "inode": 2647700709,
+          "mtime_ns": 1792927577086024963,
+          "nlink": 1
+        },
+        {
+          "rel_path": "std_process_exercise.dwarf",
+          "size": 242138,
+          "sha256": "98a47790246f123ccad8064ad36ceb6cf348f7da2b9924777d594be4efa2b138",
+          "inode": 2647699867,
+          "mtime_ns": 1792927588537012059,
+          "nlink": 1
+        }
+      ],
+      "ignored_count": 9,
+      "ignored_path_list_sha256": "0f82411aee9ddd7a4bacf1c35bc741fb404d89e9bce26109ca9580e60583ec69"
+    }
+  },
+  "binaries": [
+    {
+      "name": "iyi",
+      "sha256": "b8afdb5f55b03754b8194978e320cbca3c0816661cadcbd3083f0872a64ca418",
+      "size": 50845488,
+      "inode": 2647885868,
+      "mtime_ns": 1793465861706431758,
+      "version_rc": 0,
+      "version_stdout_matches_m1": true,
+      "version_stderr": ""
+    },
+    {
+      "name": "crystal",
+      "sha256": "899ca96ee708a87876220b4c3ae16edaa9e7fb539cdf524b36ad919b667fe196",
+      "size": 50855032,
+      "inode": 2647896620,
+      "mtime_ns": 1793465903336266947,
+      "version_rc": 0,
+      "version_stdout_matches_m1": true,
+      "version_stderr": ""
+    },
+    {
+      "name": "iyi-daemon",
+      "sha256": "8f34ebd2e4664b4c517410d7f18cff890f3d291691695414de8dcb9848c2c5d7",
+      "size": 50476536,
+      "inode": 2647922971,
+      "mtime_ns": 1793465987371679130,
+      "version_rc": 0,
+      "version_stdout_matches_m1": true,
+      "version_stderr": ""
+    },
+    {
+      "name": "crystal-daemon",
+      "sha256": "96a0caa1e8933aa2fd938a31df48253fcb5de67d92ed8ec07c46615977818e5f",
+      "size": 50486016,
+      "inode": 2647930075,
+      "mtime_ns": 1793466055289032853,
+      "version_rc": 0,
+      "version_stdout_matches_m1": true,
+      "version_stderr": ""
+    }
+  ],
+  "binary_manifest_sha256": "5aa656a45a9503df27e57326497e065c73c883ce5dbba990a562af7a3d923328",
+  "leases": [
+    {
+      "label": "P",
+      "service": "lease-iyi-P",
+      "pid": 21214,
+      "lstart": "Sat Oct 31 10:42:11 2026",
+      "argv": "/bin/sleep 2147483647",
+      "cwd": "/Users/jwaldrip/dev/worktrees/iyi-stale-integration-repair",
+      "fd9_target": [
+        "/Users/jwaldrip/dev/worktrees/iyi-stale-integration-repair/.git"
+      ],
+      "mode": "persist",
+      "purpose": "Activepinnedproofresourceownershipduringexecutionandoperatorwait;no lock/globalreaperchange."
+    },
+    {
+      "label": "W2",
+      "service": "lease-iyi-W2",
+      "pid": 21089,
+      "lstart": "Sat Oct 31 10:41:57 2026",
+      "argv": "/bin/sleep 2147483647",
+      "cwd": "/Users/jwaldrip/dev/worktrees/iyi-audit-deadlines-seams-20261030",
+      "fd9_target": [
+        "/Users/jwaldrip/dev/worktrees/iyi-audit-deadlines-seams-20261030/.git"
+      ],
+      "mode": "persist",
+      "purpose": "Activepinnedproofresourceownershipduringexecutionandoperatorwait;no lock/globalreaperchange."
+    },
+    {
+      "label": "E",
+      "service": "lease-iyi-E",
+      "pid": 20912,
+      "lstart": "Sat Oct 31 10:41:39 2026",
+      "argv": "/bin/sleep 2147483647",
+      "cwd": "/Users/jwaldrip/dev/worktrees/iyi-stale-recovery-evidence-20261030",
+      "fd9_target": [
+        "/Users/jwaldrip/dev/worktrees/iyi-stale-recovery-evidence-20261030/.git"
+      ],
+      "mode": "persist",
+      "purpose": "Activepinnedproofresourceownershipduringexecutionandoperatorwait;no lock/globalreaperchange."
+    }
+  ],
+  "journal_observation_sha256": "16204948c6d4c25550cb5e17144962edfbb6c9911a7ef7215862c244592136f4",
+  "journal_identity_interpretation": "PENDING JournalIdentityClaimReview,notprovenunchangedbytesbyabsencealone",
+  "remote_h": "6bbe1bf2e484bc4ec33aa6d58667c43c096cd3bd",
+  "h_descends_p1": true,
+  "product_diff_outside_proof": "",
+  "iyp_roots": [
+    {
+      "path": "/private/tmp/iyp-72bee0cc",
+      "mtime_ns": 1793424370893959459
+    },
+    {
+      "path": "/private/tmp/iyp-cf541b90",
+      "mtime_ns": 1793388165720123524
+    },
+    {
+      "path": "/private/tmp/iyp-utime-test-81r9mwpb",
+      "mtime_ns": 1793424622649161693
+    },
+    {
+      "path": "/private/tmp/iyp-utime-test-mjq3p4x6",
+      "mtime_ns": 1793424508797744217
+    },
+    {
+      "path": "/private/tmp/iyp-utime-test-zmqxary4",
+      "mtime_ns": 1793424622911312493
+    }
+  ],
+  "free_bytes": 143574589440,
+  "target_processes": []
+}

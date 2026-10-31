@@ -1,0 +1,44 @@
+{
+  "members": {
+    "fsevents_replay_original.py": {
+      "bytes": 3451,
+      "sha256": "b4c3b590066366e92bab08a9b3cab677af91f8092e0eff07f34c104c7760b65b"
+    },
+    "fsevents_replay.py": {
+      "bytes": 3804,
+      "sha256": "be291bf4f8aef43f95af6c0462f0ff288e67cbac6a526caca8ae0d73cad84e32"
+    },
+    "fsevents_replay.diff": {
+      "bytes": 2674,
+      "sha256": "e4b78a3c358542a032e214f47684649966bf138c4b83a343bbe3a621306be1f1"
+    },
+    "source_hashes.json": {
+      "bytes": 546,
+      "sha256": "d119686d8daef00ddd620bd2e821042746f7521ede189a27c3385641f23fe260"
+    },
+    "runner.py": {
+      "bytes": 1530,
+      "sha256": "c27a6331c8dbdb000db180b880b8ba9e0f249f5fe829d49be448a9a5d6b4a367"
+    },
+    "stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "execution_record.json": {
+      "bytes": 792,
+      "sha256": "a3357bf140071e5a5d9dc06ab75b6a79ee3906e39b00de45aebc321315091a90"
+    },
+    "j1.json": {
+      "bytes": 1371,
+      "sha256": "16204948c6d4c25550cb5e17144962edfbb6c9911a7ef7215862c244592136f4"
+    }
+  },
+  "native_criteria_match": true,
+  "interpretation": "ObservedzeroP/W2eventsinthedefinedwindow;strictoriginalbinaryidentityclosureNOTacceptedpendingseparateAPImechanismreview.",
+  "archive_sha256": "dd0eabf65d364e45b92a70afa43df50d2eddd1936a3f731d2b302641edbb7868",
+  "credential_scan_hits": 0
+}
