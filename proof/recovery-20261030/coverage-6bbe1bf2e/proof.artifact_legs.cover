@@ -1,0 +1,812 @@
+       #!/usr/bin/env python3
+    1: """Run and retain the four artifact legs for every observed corpus row."""
+       
+    1: from __future__ import annotations
+       
+    1: import argparse
+    1: import glob
+    1: import json
+    1: import os
+    1: import platform
+    1: import shutil
+    1: import signal
+    1: import subprocess
+    1: import sys
+    1: from concurrent.futures import ThreadPoolExecutor
+    1: from collections.abc import Sequence
+       
+       
+    1: HEAVY = {
+           "bench/std_big_exercise.iyi",
+           "bench/std_bzip2_exercise.iyi",
+           "bench/std_compress_exercise.iyi",
+           "bench/std_csv_exercise.iyi",
+           "bench/std_curve25519_exercise.iyi",
+           "bench/std_digest_exercise.iyi",
+           "bench/std_fuzz_exercise.iyi",
+           "bench/std_gc_exercise.iyi",
+           "bench/std_http_exercise.iyi",
+           "bench/std_mutex_exercise.iyi",
+           "bench/std_password_exercise.iyi",
+           "bench/std_shared_proc_exercise.iyi",
+           "bench/std_tar_exercise.iyi",
+           "bench/std_text_scale_exercise.iyi",
+           "bench/std_toml_exercise.iyi",
+           "bench/std_xml_exercise.iyi",
+           "bench/std_xz_exercise.iyi",
+           "bench/std_zstd_exercise.iyi",
+       }
+       
+    1: EXIT_ONLY_EXERCISES = {
+           "std_big_exercise",
+           "std_gc_exercise",
+           "std_time_exercise",
+           "std_weak_ref_exercise",
+       }
+       
+    1: BUILD_TIMEOUT = 300
+    1: RUN_DEFAULT_TIMEOUT = 60
+    1: RUN_HEAVY_TIMEOUT = 300
+    1: DISK_MIN_GB = 20.0
+       
+    1: _BUILD_LEGS = ("P", "C1", "C2", "C3")
+    1: _RUN_LEGS = ("P", "C1", "C3")
+       
+       
+    1: def run_timeout_for(relpath: str, *, run_default_timeout: float = RUN_DEFAULT_TIMEOUT, run_heavy_timeout: float = RUN_HEAVY_TIMEOUT) -> float:
+   51:     return run_heavy_timeout if relpath in HEAVY else run_default_timeout
+       
+       
+    1: def check_disk_space(path: str, min_gb: float = DISK_MIN_GB) -> None:
+   92:     usage = shutil.disk_usage(path)
+   92:     free_gb = usage.free / (1024**3)
+   92:     if free_gb < min_gb:
+    2:         raise RuntimeError(
+    1:             f"Disk space below threshold: {free_gb:.2f} GB free < {min_gb:.2f} GB"
+               )
+       
+       
+    1: def clean_env(repo: str, cache_dir: str, warm: bool = False, extra: dict[str, str] | None = None) -> dict[str, str]:
+           """Add only the Run 2 leg variables to the already-scrubbed environment."""
+  248:     env = os.environ.copy()
+31752:     for key in tuple(env):
+31504:         if key.startswith("IYI_") or key.startswith("CRYSTAL_"):
+    8:             env.pop(key, None)
+       
+  248:     env["IYI_CACHE_DIR"] = cache_dir
+  248:     env["IYI_PATH"] = f"{repo}/src{os.pathsep}{repo}/samples/iyi"
+  248:     env["IYI_LIBRARY_PATH"] = f"{repo}/lib"
+  248:     env["LIBRARY_PATH"] = "/opt/homebrew/opt/bdw-gc/lib"
+  248:     env["PKG_CONFIG_PATH"] = "/opt/homebrew/opt/openssl@3/lib/pkgconfig"
+       
+  248:     if warm:
+   67:         env["IYI_WARM"] = "1"
+  248:     if extra:
+   66:         env.update(extra)
+  248:     return env
+       
+       
+    1: def _kill_process_group(pgid: int, sig: signal.Signals) -> None:
+    9:     try:
+    9:         os.killpg(pgid, sig)
+    1:     except ProcessLookupError:
+    1:         return
+       
+       
+    1: def run_session_proc(cmd: list[str], cwd: str, env: dict[str, str], timeout_sec: float, stdin_devnull: bool = True) -> tuple[int, bytes, bytes, bool]:
+           """Run one build or program in its own process group."""
+  248:     stdin = subprocess.DEVNULL if stdin_devnull else None
+  496:     proc = subprocess.Popen(
+  248:         cmd,
+  248:         cwd=cwd,
+  248:         env=env,
+  248:         stdin=stdin,
+  248:         stdout=subprocess.PIPE,
+  248:         stderr=subprocess.PIPE,
+  248:         start_new_session=True,
+           )
+  247:     timed_out = False
+  247:     stdout = b""
+  247:     stderr = b""
+  247:     try:
+  247:         stdout, stderr = proc.communicate(timeout=timeout_sec)
+    7:     except subprocess.TimeoutExpired:
+    7:         timed_out = True
+    7:         _kill_process_group(proc.pid, signal.SIGTERM)
+    7:         try:
+    7:             stdout, stderr = proc.communicate(timeout=0.5)
+    1:         except subprocess.TimeoutExpired:
+    1:             _kill_process_group(proc.pid, signal.SIGKILL)
+    1:             stdout, stderr = proc.communicate()
+       
+  247:     returncode = proc.returncode if proc.returncode is not None else -1
+  247:     return returncode, stdout, stderr, timed_out
+       
+       
+    1: def check_defined_symbols(binary_path: str, nm_bin: str) -> list[str]:
+  135:     if not os.path.exists(binary_path):
+    1:         raise RuntimeError(f"binary does not exist for symbol scan: {binary_path}")
+  268:     proc = subprocess.run(
+  134:         [nm_bin, "-U", binary_path],
+  134:         capture_output=True,
+  134:         text=True,
+  134:         check=False,
+           )
+  134:     if proc.returncode != 0:
+    1:         detail = proc.stderr.strip() or proc.stdout.strip()
+    2:         raise RuntimeError(
+    1:             f"{nm_bin} -U failed (exit {proc.returncode}): {detail}"
+               )
+  266:     return [
+   14:         line.strip()
+  280:         for line in proc.stdout.splitlines()
+   14:         if "__iyi_effect_" in line
+           ]
+       
+       
+    1: def _compare_frame_stderr(stderr_a: bytes, stderr_b: bytes, repo_root: str, row_dir: str, tag: str) -> tuple[bool, str]:
+    6:     stderr_file_a = os.path.join(row_dir, f"stderr_{tag}_a.out")
+    6:     stderr_file_b = os.path.join(row_dir, f"stderr_{tag}_b.out")
+   12:     with open(stderr_file_a, "wb") as stream:
+    6:         stream.write(stderr_a)
+   12:     with open(stderr_file_b, "wb") as stream:
+    6:         stream.write(stderr_b)
+       
+    6:     frames_script = os.path.join(repo_root, "bench/frames_equivalent.py")
+    6:     if not os.path.isfile(frames_script):
+    1:         raise RuntimeError(f"frames_equivalent.py not found at {frames_script}")
+       
+   10:     proc = subprocess.run(
+    5:         [sys.executable, frames_script, stderr_file_a, stderr_file_b],
+    5:         capture_output=True,
+    5:         text=True,
+    5:         check=False,
+           )
+    5:     if proc.returncode == 0:
+    1:         return True, "stdout byte-equal and stderr frames equivalent"
+    4:     if proc.returncode == 1:
+    3:         violation = proc.stdout.strip() or proc.stderr.strip()
+    3:         return False, f"stderr frames equivalence failed: {violation}"
+    2:     raise RuntimeError(
+    2:         "frames_equivalent.py crashed "
+    1:         f"(exit {proc.returncode}): {proc.stderr.strip()}"
+           )
+       
+       
+    1: def compare_r1(name: str, status_a: int, status_b: int, stdout_a: bytes, stderr_a: bytes, stdout_b: bytes, stderr_b: bytes, repo_root: str, row_dir: str, tag: str) -> tuple[bool, str]:
+   48:     if status_a != status_b:
+    1:         return False, f"exit status mismatch: {status_a} != {status_b}"
+       
+   47:     if name in EXIT_ONLY_EXERCISES:
+    9:         return True, "exit-only check passed"
+       
+   38:     if stdout_a != stdout_b:
+    2:         difference = f"len {len(stdout_a)} != {len(stdout_b)}" if len(stdout_a) != len(stdout_b) else "differing bytes"
+    2:         return False, f"stdout mismatch ({difference})"
+       
+   36:     if stderr_a == stderr_b:
+   30:         return True, "exact stdout and stderr match"
+       
+    6:     return _compare_frame_stderr(stderr_a, stderr_b, repo_root, row_dir, tag) if platform.system() == "Darwin" else (False, "stderr differs (frames_equivalent CLI only available on Darwin)")
+       
+       
+    1: def _row_identity(source: str, repo: str, work_root: str) -> tuple[str, str, str, bool, str]:
+   94:     source_path = os.path.realpath(source)
+   94:     repo_path = os.path.realpath(repo)
+   94:     relpath = os.path.relpath(source_path, repo_path)
+   94:     raw_base = os.path.basename(source_path)
+   94:     base = raw_base[:-4] if raw_base.endswith(".iyi") else raw_base
+   94:     is_std = relpath.startswith(f"bench{os.sep}")
+   94:     row_dir = os.path.join(work_root, "rows", base)
+   94:     return source_path, relpath, base, is_std, row_dir
+       
+       
+    1: def _empty_row(source: str, repo: str, work_root: str) -> dict:
+  188:     source_path, relpath, base, is_std, row_dir = _row_identity(
+   94:         source, repo, work_root
+           )
+  188:     legs = {
+  752:         leg: {
+  752:             "build": {
+  376:                 "exit": None,
+  376:                 "timed_out": False,
+  376:                 "stdout": _output_path(row_dir, leg, "build", "stdout"),
+  376:                 "stderr": _output_path(row_dir, leg, "build", "stderr"),
+                   },
+  376:             "run": None,
+               }
+  564:         for leg in _BUILD_LEGS
+           }
+ 1692:     return {
+   94:         "source": source_path,
+   94:         "name": relpath,
+   94:         "base": base,
+   94:         "kind": "std" if is_std else "sample",
+   94:         "status": "FAIL",
+   94:         "failures": [],
+   94:         "stop_condition": None,
+   94:         "p_exit": None,
+   94:         "c1_exit": None,
+   94:         "c3_exit": None,
+   94:         "callpath": "",
+   94:         "not_reusable_count": 0,
+   94:         "effect_symbols": [],
+   94:         "p_nonzero": False,
+   94:         "preserved_dir": row_dir,
+   94:         "row_dir": row_dir,
+   94:         "legs": legs,
+           }
+       
+       
+    1: def _output_path(row_dir: str, leg: str, phase: str, stream: str) -> str:
+ 2667:     return os.path.join(row_dir, f"{leg}.{phase}.{stream}")
+       
+       
+    1: def _prepare_row_directory(row_dir: str) -> None:
+   47:     shutil.rmtree(row_dir, ignore_errors=True)
+   47:     os.makedirs(row_dir, exist_ok=True)
+  235:     for leg in _BUILD_LEGS:
+  564:         for stream in ("stdout", "stderr"):
+  752:             with open(_output_path(row_dir, leg, "build", stream), "wb"):
+  376:                 pass
+  188:     for leg in _RUN_LEGS:
+  423:         for stream in ("stdout", "stderr"):
+  564:             with open(_output_path(row_dir, leg, "run", stream), "wb"):
+  282:                 pass
+  282:         with open(_output_path(row_dir, leg, "run", "exit"), "w", encoding="utf-8") as stream:
+  141:             stream.write("NOT-RUN\n")
+       
+       
+    1: def _save_process_output(row_dir: str, leg: str, phase: str, stdout: bytes, stderr: bytes, exit_code: int | None = None) -> None:
+  492:     with open(_output_path(row_dir, leg, phase, "stdout"), "wb") as stream:
+  246:         stream.write(stdout)
+  492:     with open(_output_path(row_dir, leg, phase, "stderr"), "wb") as stream:
+  246:         stream.write(stderr)
+  246:     if phase == "run":
+  198:         with open(
+   66:             _output_path(row_dir, leg, phase, "exit"),
+   66:             "w",
+   66:             encoding="utf-8",
+   66:         ) as stream:
+   66:             stream.write(f"{exit_code}\n")
+       
+       
+    1: def _remove_success_scratch(paths: Sequence[str]) -> None:
+   90:     for path in paths:
+   75:         shutil.rmtree(path, ignore_errors=True)
+       
+       
+    1: def _run_row(source: str, *, repo: str, compiler: str, work_root: str, nm_bin: str, build_timeout: float = BUILD_TIMEOUT, run_default_timeout: float = RUN_DEFAULT_TIMEOUT, run_heavy_timeout: float = RUN_HEAVY_TIMEOUT, disk_min_gb: float = DISK_MIN_GB) -> dict:
+   47:     result = _empty_row(source, repo, work_root)
+   47:     source_path = result["source"]
+   47:     relpath = result["name"]
+   47:     base = result["base"]
+   47:     is_std = result["kind"] == "std"
+   47:     row_dir = result["row_dir"]
+   94:     run_timeout = run_timeout_for(
+   47:         relpath,
+   47:         run_default_timeout=run_default_timeout,
+   47:         run_heavy_timeout=run_heavy_timeout,
+           )
+       
+   47:     _prepare_row_directory(row_dir)
+   47:     check_disk_space(work_root, disk_min_gb)
+       
+   46:     bin_root = os.path.join(row_dir, "bin")
+   46:     cache_p = os.path.join(row_dir, "cache_p")
+   46:     cache_c = os.path.join(row_dir, "cache_c")
+   46:     mods = os.path.join(row_dir, "mods")
+   46:     sandbox = os.path.join(row_dir, "sandbox")
+  230:     for directory in (bin_root, cache_p, cache_c, mods):
+  184:         os.makedirs(directory, exist_ok=True)
+       
+   92:     binaries = {
+  184:         leg: os.path.join(bin_root, leg.lower(), base)
+  276:         for leg in _BUILD_LEGS
+           }
+  230:     for path in binaries.values():
+  184:         os.makedirs(os.path.dirname(path), exist_ok=True)
+       
+   46:     key_paths = {
+   46:         "C1": os.path.join(row_dir, "k1.key"),
+   46:         "C2": os.path.join(row_dir, "k2.key"),
+   46:         "C3": os.path.join(row_dir, "k3.key"),
+           }
+   46:     trace_paths = {
+   46:         "P": os.path.join(row_dir, "P.trace"),
+   46:         "C1": os.path.join(row_dir, "C1.trace"),
+   46:         "C3": os.path.join(row_dir, "C3.trace"),
+           }
+       
+   46:     commands = {
+   92:         "P": [
+   46:             compiler,
+   46:             "build",
+   46:             "-Diyi_observe",
+   46:             "--emit-iyimod",
+   46:             mods,
+   46:             "-o",
+   46:             binaries["P"],
+   46:             source_path,
+               ],
+   92:         "C1": [
+   46:             compiler,
+   46:             "build",
+   46:             "-Diyi_observe",
+   46:             "--use-iyimod",
+   46:             mods,
+   46:             "--stale-key",
+   46:             key_paths["C1"],
+   46:             "-o",
+   46:             binaries["C1"],
+   46:             source_path,
+               ],
+   92:         "C2": [
+   46:             compiler,
+   46:             "build",
+   46:             "-Diyi_observe",
+   46:             "--use-iyimod",
+   46:             mods,
+   46:             "--stale-key",
+   46:             key_paths["C2"],
+   46:             "-o",
+   46:             binaries["C2"],
+   46:             source_path,
+               ],
+   92:         "C3": [
+   46:             compiler,
+   46:             "build",
+   46:             "-Diyi_observe",
+   46:             "--use-iyimod",
+   46:             mods,
+   46:             "--stale-key",
+   46:             key_paths["C3"],
+   46:             "-o",
+   46:             binaries["C3"],
+   46:             source_path,
+               ],
+           }
+       
+   46:     failures: list[str] = []
+   46:     stop_reasons: list[str] = []
+   46:     legs: dict[str, dict] = {}
+   46:     missing_binaries: set[str] = set()
+       
+   46:     def fail(code: str, reason: str) -> None:
+   32:         failures.append(f"{code}: {reason}")
+       
+  226:     for leg in _BUILD_LEGS:
+  181:         warm = leg == "C3"
+  181:         cache = cache_p if leg == "P" else cache_c
+  362:         rc, stdout, stderr, timed_out = run_session_proc(
+  181:             commands[leg],
+  181:             cwd=repo,
+  181:             env=clean_env(repo, cache, warm=warm),
+  181:             timeout_sec=build_timeout,
+               )
+  180:         _save_process_output(row_dir, leg, "build", stdout, stderr)
+  180:         legs[leg] = {
+  360:             "build": {
+  180:                 "argv": commands[leg],
+  180:                 "exit": rc,
+  180:                 "timed_out": timed_out,
+  180:                 "stdout": _output_path(row_dir, leg, "build", "stdout"),
+  180:                 "stderr": _output_path(row_dir, leg, "build", "stderr"),
+                   },
+  180:             "run": None,
+               }
+       
+  180:         if timed_out:
+    4:             fail(
+    2:                 f"BUILD-TIMEOUT-{leg}",
+    2:                 f"{leg} build timed out after {build_timeout}s",
+                   )
+  178:         elif rc != 0:
+    5:             stderr_text = stderr.decode(errors="replace")
+    5:             detail = stderr_text[-300:]
+   10:             fail(
+    5:                 f"BUILD-EXIT-{leg}",
+    5:                 f"{leg} build failed (exit {rc}): {detail}",
+                   )
+    5:             if leg == "C3" and "cannot name it" in stderr_text:
+    2:                 stop_reasons.append(
+    1:                     "C3 warm consumer stderr contains 'cannot name it'"
+                       )
+    2:                 fail(
+    1:                     "C3-CANNOT-NAME",
+    1:                     "C3 warm consumer stderr contains 'cannot name it'",
+                       )
+  173:         elif not os.path.isfile(binaries[leg]):
+    2:             fail(
+    1:                 f"BUILD-MISSING-{leg}",
+    1:                 f"{leg} build exited 0 without binary {binaries[leg]}",
+                   )
+    1:             missing_binaries.add(leg)
+       
+  180:         if b"__iyi_effect_" in stdout or b"__iyi_effect_" in stderr:
+    2:             fail(
+    1:                 f"BUILD-EFFECT-{leg}",
+    1:                 f"{leg} build output names __iyi_effect_",
+                   )
+       
+   45:     key_documents: dict[str, dict] = {}
+   90:     missing_keys = [
+  135:         os.path.basename(path)
+  225:         for path in key_paths.values()
+  135:         if not os.path.isfile(path)
+           ]
+   45:     if missing_keys:
+    2:         fail(
+    1:             "KEY-MISSING",
+    1:             "one or more key files missing: " + ", ".join(sorted(missing_keys)),
+               )
+           else:
+   44:         try:
+  172:             for leg, path in key_paths.items():
+  260:                 with open(path, "r", encoding="utf-8") as stream:
+  130:                     document = json.load(stream)
+  129:                 if not isinstance(document, dict):
+    1:                     raise TypeError(f"{os.path.basename(path)} root is not an object")
+  128:                 key_documents[leg] = document
+    2:         except (OSError, UnicodeError, json.JSONDecodeError, TypeError) as error:
+    2:             fail("KEY-PARSE", f"key parse error: {type(error).__name__}: {error}")
+       
+   45:     callpath = ""
+   45:     not_reusable_count = 0
+   45:     if len(key_documents) == 3:
+  168:         for leg in ("C1", "C2", "C3"):
+  126:             document = key_documents[leg]
+  126:             key_name = {"C1": "k1", "C2": "k2", "C3": "k3"}[leg]
+  126:             if document.get("phase") != "linked":
+    2:                 fail(
+    1:                     f"KEY-PHASE-{key_name}",
+    1:                     f"{key_name} phase is {document.get('phase')!r}, expected 'linked'",
+                       )
+  126:             reach = document.get("reach")
+  126:             if not isinstance(reach, dict) or reach.get("checked") is not True:
+    4:                 fail(
+    2:                     f"REACH-CHECKED-{key_name}",
+    2:                     f"{key_name} reach.checked is not True",
+                       )
+       
+   84:         callpaths = {
+  252:             leg: document.get("portable", {}).get("callpath", "")
+  126:             if isinstance(document.get("portable"), dict)
+    1:             else ""
+  210:             for leg, document in key_documents.items()
+               }
+   42:         callpath = callpaths["C1"]
+  168:         empty_callpaths = [leg for leg, value in callpaths.items() if not value]
+   42:         if empty_callpaths:
+    4:             fail(
+    2:                 "CALLPATH-EMPTY",
+    2:                 "callpath is empty for " + ", ".join(sorted(empty_callpaths)),
+                   )
+   42:         if len(set(callpaths.values())) != 1:
+    4:             fail(
+    2:                 "CALLPATH-PARITY",
+    4:                 "callpath parity mismatch: "
+    6:                 + ", ".join(
+   10:                     f"{leg}={value!r}" for leg, value in callpaths.items()
+                       ),
+                   )
+       
+   42:         mismatches: dict[str, object] = {}
+  168:         for leg, document in key_documents.items():
+  126:             reach = document.get("reach")
+  126:             value = reach.get("mismatch") if isinstance(reach, dict) else None
+  126:             if value:
+    1:                 mismatches[leg] = value
+   42:         if mismatches:
+    2:             fail(
+    1:                 "REACH-MISMATCH",
+    2:                 "reach mismatch non-empty: "
+    3:                 + ", ".join(
+    3:                     f"{leg}={value!r}" for leg, value in mismatches.items()
+                       ),
+                   )
+       
+   42:         not_reusable = key_documents["C1"].get("not_reusable", [])
+   42:         if not isinstance(not_reusable, list):
+    1:             fail("NOT-REUSABLE-TYPE", "k1 not_reusable is not an array")
+               else:
+   41:             not_reusable_count = len(not_reusable)
+       
+   45:     effect_symbols: list[str] = []
+  180:     for leg in ("C1", "C2", "C3"):
+  135:         if leg in missing_binaries:
+    1:             continue
+  134:         try:
+  134:             symbols = check_defined_symbols(binaries[leg], nm_bin)
+    1:         except RuntimeError as error:
+    1:             fail(f"NM-ERROR-{leg}", f"{leg} symbol scan failed: {error}")
+    1:             continue
+  133:         if symbols:
+    4:             tagged = [f"{leg}:{symbol}" for symbol in symbols]
+    2:             effect_symbols.extend(tagged)
+    2:             reason = f"defined __iyi_effect_ symbols found in {leg} binary: {symbols}"
+    2:             fail(f"EFFECT-SYMBOL-{leg}", reason)
+    2:             stop_reasons.append(reason)
+       
+   45:     run_results: dict[str, tuple[int, bytes, bytes, bool]] = {}
+   45:     builds_ok = not failures and not stop_reasons
+       
+   45:     def reset_sandbox() -> str:
+   66:         shutil.rmtree(sandbox, ignore_errors=True)
+   66:         if is_std:
+   21:             os.makedirs(sandbox, exist_ok=True)
+               else:
+   45:             shutil.copytree(os.path.join(repo, "samples", "iyi"), sandbox)
+   66:         return sandbox
+       
+   45:     run_effect_legs: set[str] = set()
+   45:     if builds_ok:
+   88:         for leg in _RUN_LEGS:
+   66:             run_cwd = reset_sandbox()
+   66:             extra = {"IYI_OBSERVE": trace_paths[leg]}
+   66:             if is_std:
+   21:                 extra["IYI_FILE_SANDBOX"] = sandbox
+   66:             cache = cache_p if leg == "P" else cache_c
+  132:             rc, stdout, stderr, timed_out = run_session_proc(
+   66:                 [binaries[leg]],
+   66:                 cwd=run_cwd,
+   66:                 env=clean_env(repo, cache, warm=leg == "C3", extra=extra),
+   66:                 timeout_sec=run_timeout,
+                   )
+  132:             _save_process_output(
+   66:                 row_dir,
+   66:                 leg,
+   66:                 "run",
+   66:                 stdout,
+   66:                 stderr,
+   66:                 exit_code=rc,
+                   )
+   66:             run_results[leg] = (rc, stdout, stderr, timed_out)
+   66:             legs[leg]["run"] = {
+   66:                 "argv": [binaries[leg]],
+   66:                 "cwd": run_cwd,
+   66:                 "exit": rc,
+   66:                 "timed_out": timed_out,
+   66:                 "stdout": _output_path(row_dir, leg, "run", "stdout"),
+   66:                 "stderr": _output_path(row_dir, leg, "run", "stderr"),
+   66:                 "exit_file": _output_path(row_dir, leg, "run", "exit"),
+                   }
+   66:             if timed_out:
+    8:                 fail(
+    4:                     f"RUN-TIMEOUT-{leg}",
+    4:                     f"{leg} run timed out after {run_timeout}s",
+                       )
+   66:             if b"__iyi_effect_" in stdout or b"__iyi_effect_" in stderr:
+    2:                 fail(
+    1:                     f"RUN-EFFECT-{leg}",
+    1:                     f"{leg} run output names __iyi_effect_",
+                       )
+    1:                 run_effect_legs.add(leg)
+       
+   88:         for leg in _RUN_LEGS:
+   66:             trace_path = trace_paths[leg]
+   66:             if not os.path.isfile(trace_path) or os.path.getsize(trace_path) == 0:
+    2:                 fail(
+    1:                     f"TRACE-EMPTY-{leg}",
+    1:                     f"{leg} trace missing or empty ({trace_path})",
+                       )
+       
+   22:         comparisons = (
+                   ("P", "C1", "P-C1", "pc1"),
+                   ("C1", "C3", "C1-C3", "c1c3"),
+               )
+   66:         for left, right, code_tag, file_tag in comparisons:
+   44:             left_result = run_results[left]
+   44:             right_result = run_results[right]
+   44:             if left_result[3] or right_result[3] or left in run_effect_legs or right in run_effect_legs:
+    5:                 continue
+   78:             ok, message = compare_r1(
+   39:                 base,
+   39:                 left_result[0],
+   39:                 right_result[0],
+   39:                 left_result[1],
+   39:                 left_result[2],
+   39:                 right_result[1],
+   39:                 right_result[2],
+   39:                 repo,
+   39:                 row_dir,
+   39:                 file_tag,
+                   )
+   39:             if not ok:
+    1:                 fail(f"R1-{code_tag}", f"R-1 [{code_tag}] {message}")
+       
+   45:     p_result = run_results.get("P")
+   45:     p_exit = p_result[0] if p_result is not None else None
+   45:     c1_result = run_results.get("C1")
+   45:     c3_result = run_results.get("C3")
+   90:     p_nonzero = bool(
+   59:         is_std
+    7:         and p_result is not None
+    7:         and not p_result[3]
+    5:         and p_exit != 0
+           )
+       
+   45:     stop_condition = "; ".join(stop_reasons) if stop_reasons else None
+   45:     status = "STOP" if stop_condition else ("PASS" if not failures else "FAIL")
+   45:     scratch_paths = (bin_root, cache_p, cache_c, mods, sandbox)
+   45:     if status == "PASS":
+   15:         _remove_success_scratch(scratch_paths)
+       
+   45:     check_disk_space(work_root, disk_min_gb)
+       
+   90:     result.update(
+   45:         {
+   45:             "status": status,
+   45:             "failures": failures,
+   45:             "stop_condition": stop_condition,
+   45:             "p_exit": p_exit,
+   45:             "c1_exit": c1_result[0] if c1_result is not None else None,
+   45:             "c3_exit": c3_result[0] if c3_result is not None else None,
+   45:             "callpath": callpath,
+   45:             "not_reusable_count": not_reusable_count,
+   45:             "effect_symbols": effect_symbols,
+   45:             "p_nonzero": p_nonzero,
+   45:             "preserved_dir": row_dir if status != "PASS" else None,
+   45:             "legs": legs,
+               }
+           )
+   45:     return result
+       
+       
+    1: def run_row(source: str, *, repo: str, compiler: str, work_root: str, nm_bin: str, build_timeout: float = BUILD_TIMEOUT, run_default_timeout: float = RUN_DEFAULT_TIMEOUT, run_heavy_timeout: float = RUN_HEAVY_TIMEOUT, disk_min_gb: float = DISK_MIN_GB) -> dict:
+           """Run one row, converting only OSError and RuntimeError at the row boundary."""
+   47:     result = _empty_row(source, repo, work_root)
+   47:     try:
+   94:         return _run_row(
+   47:             source,
+   47:             repo=repo,
+   47:             compiler=compiler,
+   47:             work_root=work_root,
+   47:             nm_bin=nm_bin,
+   47:             build_timeout=build_timeout,
+   47:             run_default_timeout=run_default_timeout,
+   47:             run_heavy_timeout=run_heavy_timeout,
+   47:             disk_min_gb=disk_min_gb,
+               )
+    2:     except (OSError, RuntimeError) as error:
+    2:         category = "OSERROR" if isinstance(error, OSError) else "RUNTIMEERROR"
+    2:         code = f"ROW-{category}"
+    2:         result["failures"] = [f"{code}: {type(error).__name__}: {error}"]
+    2:         result["status"] = "FAIL"
+    2:         result["preserved_dir"] = result["row_dir"]
+    2:         return result
+       
+       
+    1: def run_rows(sources: Sequence[str], *, repo: str, compiler: str, work_root: str, nm_bin: str, workers: int, build_timeout: float = BUILD_TIMEOUT, run_default_timeout: float = RUN_DEFAULT_TIMEOUT, run_heavy_timeout: float = RUN_HEAVY_TIMEOUT, disk_min_gb: float = DISK_MIN_GB) -> list[dict]:
+   20:     with ThreadPoolExecutor(max_workers=workers) as pool:
+   20:         futures = [
+   32:             pool.submit(
+   16:                 run_row,
+   16:                 source,
+   16:                 repo=repo,
+   16:                 compiler=compiler,
+   16:                 work_root=work_root,
+   16:                 nm_bin=nm_bin,
+   16:                 build_timeout=build_timeout,
+   16:                 run_default_timeout=run_default_timeout,
+   16:                 run_heavy_timeout=run_heavy_timeout,
+   16:                 disk_min_gb=disk_min_gb,
+                   )
+   36:             for source in sources
+               ]
+   26:         results = [future.result() for future in futures]
+       
+   26:     for result in results:
+   16:         extra = ""
+   16:         if result["status"] != "PASS":
+    7:             extra = f" -> {'; '.join(result['failures'])}"
+    9:         elif result["p_nonzero"]:
+    1:             extra = f" (p_nonzero exit={result['p_exit']})"
+   16:         status_tag = f"[{result['status']}]"
+   16:         print(f"  {status_tag:6s} {result['name']}{extra}")
+   16:         sys.stdout.flush()
+   10:     return results
+       
+       
+    1: def write_report(report_path: str, rows: Sequence[dict]) -> None:
+    6:     directory = os.path.dirname(report_path)
+    6:     if directory:
+    6:         os.makedirs(directory, exist_ok=True)
+   12:     with open(report_path, "w", encoding="utf-8") as stream:
+   15:         for row in rows:
+    9:             stream.write(json.dumps(row, sort_keys=True) + "\n")
+       
+       
+    1: def _argument_parser() -> argparse.ArgumentParser:
+   18:     parser = argparse.ArgumentParser(
+    9:         description="Run 2: all artifact legs (P, C1, C2, C3)"
+           )
+    9:     parser.add_argument("--repo", required=True)
+    9:     parser.add_argument("--compiler", required=True)
+    9:     parser.add_argument("--work", required=True)
+    9:     parser.add_argument("--report", required=True)
+    9:     parser.add_argument("--workers", required=True, type=int)
+    9:     parser.add_argument("--nm", required=True)
+    9:     parser.add_argument("--expect-samples", required=True, type=int)
+    9:     parser.add_argument("--expect-std", required=True, type=int)
+    9:     parser.add_argument("--expect-total", required=True, type=int)
+    9:     return parser
+       
+       
+    1: def main(argv: Sequence[str] | None = None, *, build_timeout: float = BUILD_TIMEOUT, run_default_timeout: float = RUN_DEFAULT_TIMEOUT, run_heavy_timeout: float = RUN_HEAVY_TIMEOUT, disk_min_gb: float = DISK_MIN_GB) -> int:
+    9:     parser = _argument_parser()
+    9:     try:
+    9:         args = parser.parse_args(argv)
+    1:     except SystemExit as error:
+    1:         return int(error.code)
+       
+    8:     usage_error = "--workers must be at least 1" if args.workers < 1 else ("expected counts must be non-negative" if min(args.expect_samples, args.expect_std, args.expect_total) < 0 else "")
+    8:     if usage_error:
+    2:         print(f"artifact_legs: {usage_error}", file=sys.stderr)
+    2:         return 2
+       
+    6:     repo = os.path.realpath(args.repo)
+    6:     compiler = os.path.realpath(args.compiler)
+    6:     work = os.path.realpath(args.work)
+    6:     report = os.path.realpath(args.report)
+    6:     nm_bin = os.path.realpath(args.nm)
+    6:     os.makedirs(work, exist_ok=True)
+       
+    6:     samples = sorted(glob.glob(os.path.join(repo, "samples", "iyi", "*.iyi")))
+    6:     std = sorted(glob.glob(os.path.join(repo, "bench", "std_*_exercise.iyi")))
+    6:     sources = samples + std
+       
+    6:     count_failures: list[str] = []
+    6:     if len(samples) != args.expect_samples:
+    2:         count_failures.append(
+    1:             f"samples={len(samples)}, expected={args.expect_samples}"
+               )
+    6:     if len(std) != args.expect_std:
+    1:         count_failures.append(f"std={len(std)}, expected={args.expect_std}")
+    6:     if len(sources) != args.expect_total:
+    2:         count_failures.append(
+    1:             f"total={len(sources)}, expected={args.expect_total}"
+               )
+       
+   12:     print(
+   12:         "Corpus counts: "
+    6:         f"samples={len(samples)} expected={args.expect_samples}; "
+    6:         f"std={len(std)} expected={args.expect_std}; "
+    6:         f"total={len(sources)} expected={args.expect_total}"
+           )
+    6:     if count_failures:
+    2:         print(
+    1:             "RUN 2 count mismatch: " + "; ".join(count_failures),
+    1:             file=sys.stderr,
+               )
+       
+   12:     rows = run_rows(
+    6:         sources,
+    6:         repo=repo,
+    6:         compiler=compiler,
+    6:         work_root=work,
+    6:         nm_bin=nm_bin,
+    6:         workers=args.workers,
+    6:         build_timeout=build_timeout,
+    6:         run_default_timeout=run_default_timeout,
+    6:         run_heavy_timeout=run_heavy_timeout,
+    6:         disk_min_gb=disk_min_gb,
+           )
+    6:     write_report(report, rows)
+    6:     print(f"Report written to {report}")
+       
+   21:     passed = sum(row["status"] == "PASS" for row in rows)
+   21:     stops = sum(row["status"] == "STOP" for row in rows)
+    6:     failed = len(rows) - passed - stops
+   12:     print(
+   12:         "RUN 2 SUMMARY: "
+    6:         f"total={len(rows)} passed={passed} failed={failed} stops={stops}"
+           )
+       
+    6:     if count_failures or failed or stops:
+    4:         return 1
+    2:     return 0
+       
+       
+    1: if __name__ == "__main__":
+>>>>>>     raise SystemExit(main())

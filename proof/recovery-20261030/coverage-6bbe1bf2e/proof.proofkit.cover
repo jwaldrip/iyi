@@ -1,0 +1,3820 @@
+    1: """
+       proofkit.py: Core proof toolkit for iyilang/iyi observed corpus proof.
+       Contains shared contracts C2, C3, C5, C7, bounded execution, identity checks,
+       census validation, and ledger verification.
+       
+       Library rule: Every proofkit function takes explicit paths and values.
+       No assert statements in non-test modules.
+       """
+       
+    1: from __future__ import annotations
+       
+    1: import glob
+    1: import hashlib
+    1: import shlex
+    1: import json
+    1: import os
+    1: import re
+    1: import platform
+    1: import secrets
+    1: import shutil
+    1: import signal
+    1: import subprocess
+    1: import sys
+    1: import threading
+    1: import time
+    1: from collections.abc import Callable, Mapping, Sequence
+    1: from dataclasses import dataclass
+       
+       
+    2: class IdentityError(RuntimeError):
+    1:     def __init__(self, reason: str, detail: str):
+   90:         super().__init__(f"{reason}: {detail}")
+   90:         self.reason = reason
+   90:         self.detail = detail
+       
+       
+       
+       
+    1: def sha256_bytes(b: bytes) -> str:
+ 1529:     return hashlib.sha256(b).hexdigest()
+       
+       
+    1: def sha256_file(path: str) -> str:
+ 2678:     h = hashlib.sha256()
+ 5353:     with open(path, "rb") as f:
+ 6126:         while chunk := f.read(65536):
+ 3451:             h.update(chunk)
+ 2675:     return h.hexdigest()
+       
+       
+    1: def check_disk_space(path: str, min_gb: float = 20.0) -> float:
+   82:     usage = shutil.disk_usage(path)
+   82:     free_gb = usage.free / (1024 ** 3)
+   82:     if free_gb < min_gb:
+    5:         raise RuntimeError(f"Disk space below threshold: {free_gb:.2f} GB free < {min_gb} GB on {path}")
+   77:     return free_gb
+       
+       
+    1: def extract_version_stamp(version_output: str) -> str:
+  420:     m = re.search(r"\[([0-9a-f]{7,40})\]", version_output)
+  420:     if not m:
+    2:         raise ValueError(f"Version output does not contain git commit stamp '[...]' : {version_output.strip()}")
+  418:     return m.group(1)
+       
+       
+    1: def git_cmd(args: list[str], cwd: str) -> str:
+ 4822:     proc = subprocess.run(
+ 2411:         ["git", "-C", cwd] + args,
+ 2411:         capture_output=True,
+ 2411:         text=True,
+ 2411:         check=False,
+           )
+ 2411:     if proc.returncode != 0:
+    4:         raise RuntimeError(f"git -C {cwd} {' '.join(args)} failed (exit {proc.returncode}): {proc.stderr.strip()}")
+ 2407:     return proc.stdout.strip()
+       
+       
+    1: def git_clean(cwd: str) -> bool:
+  907:     out = git_cmd(["status", "--porcelain"], cwd)
+  906:     return len(out) == 0
+       
+       
+    1: def git_rev_parse(ref: str, cwd: str) -> str:
+  907:     return git_cmd(["rev-parse", ref], cwd)
+       
+       
+    1: def git_commit_time(ref: str, cwd: str) -> int:
+  153:     out = git_cmd(["log", "-1", "--format=%ct", ref], cwd)
+  153:     return int(out)
+       
+       
+    1: def git_merge_base_is_ancestor(ancestor: str, descendant: str, cwd: str) -> bool:
+  890:     proc = subprocess.run(
+  445:         ["git", "-C", cwd, "merge-base", "--is-ancestor", ancestor, descendant],
+  445:         capture_output=True,
+  445:         check=False,
+           )
+  445:     return proc.returncode == 0
+       
+       
+    1: def git_diff_name_only(a: str, b: str, cwd: str) -> list[str]:
+  443:     out = git_cmd(["diff", "--name-only", a, b], cwd)
+  887:     return [line.strip() for line in out.splitlines() if line.strip()]
+       
+       
+    1: def git_diff_quiet(a: str, b: str, cwd: str, pathspecs: list[str] | None = None) -> bool:
+  441:     cmd = ["git", "-C", cwd, "diff", "--quiet", a, b]
+  441:     if pathspecs:
+  441:         cmd.extend(["--"] + pathspecs)
+  441:     proc = subprocess.run(cmd, capture_output=True, check=False)
+  441:     return proc.returncode == 0
+       
+       
+    1: def base_env(pin: dict | None = None, stage_extra: dict[str, str] | None = None) -> dict[str, str]:
+           """
+           Contract C2 + Amendment A: Clean environment for stage processes started directly by run_proof.
+           Removes:
+             - every key starting with IYI_ or CRYSTAL_
+             - PYTHONOPTIMIZE, PYTHONPATH, PYTHONHOME, PYTHONSTARTUP
+             - ROUTE_A_DRIVERS, STD_SIBLINGS, SIBLING_MINUTES
+           Sets:
+             - LIBRARY_PATH=/opt/homebrew/opt/bdw-gc/lib
+             - PKG_CONFIG_PATH=/opt/homebrew/opt/openssl@3/lib/pkgconfig
+             - PYTHONDONTWRITEBYTECODE=1
+           From pin:
+             - PATH, HOME
+           Stage additions only via stage_extra.
+           """
+ 1579:     env = os.environ.copy()
+       
+201869:     for k in list(env.keys()):
+200290:         if k.startswith("IYI_") or k.startswith("CRYSTAL_"):
+    6:             env.pop(k, None)
+       
+12632:     for k in [
+               "PYTHONOPTIMIZE",
+               "PYTHONPATH",
+               "PYTHONHOME",
+               "PYTHONSTARTUP",
+               "ROUTE_A_DRIVERS",
+               "STD_SIBLINGS",
+               "SIBLING_MINUTES",
+           ]:
+11053:         env.pop(k, None)
+       
+ 1579:     env["LIBRARY_PATH"] = "/opt/homebrew/opt/bdw-gc/lib"
+ 1579:     env["PKG_CONFIG_PATH"] = "/opt/homebrew/opt/openssl@3/lib/pkgconfig"
+ 1579:     env["PYTHONDONTWRITEBYTECODE"] = "1"
+       
+ 1579:     if pin:
+ 1579:         env["PATH"] = pin["env_path"]
+ 1579:         env["HOME"] = pin["env_home"]
+       
+ 1579:     if stage_extra:
+  311:         env.update(stage_extra)
+       
+ 1579:     return env
+       
+       
+    1: def platform_temp_root(pin_env: dict[str, str], *, cwd: str, probe_mktemp: bool) -> str | None:
+           """Resolve and optionally prove Amendment E's platform temp root."""
+  430:     if platform.system() != "Darwin": return None
+  430:     env_path = pin_env.get("env_path", "")
+  430:     getconf = shutil.which("getconf", path=env_path)
+  430:     if not getconf:
+    2:         raise IdentityError(
+    1:             "NO-PLATFORM-TMP",
+    1:             "getconf does not resolve on the pinned PATH",
+               )
+  429:     clean_env = base_env(pin_env)
+  429:     try:
+  858:         completed = subprocess.run(
+  429:             [os.path.realpath(getconf), "DARWIN_USER_TEMP_DIR"],
+  429:             cwd=cwd,
+  429:             env=clean_env,
+  429:             stdin=subprocess.DEVNULL,
+  429:             capture_output=True,
+  429:             text=True,
+  429:             check=False,
+               )
+    1:     except OSError as error:
+    3:         raise IdentityError(
+    1:             "NO-PLATFORM-TMP",
+    1:             f"getconf DARWIN_USER_TEMP_DIR failed: {error}",
+    1:         ) from error
+  428:     lines = completed.stdout.strip().splitlines()
+  428:     if completed.returncode != 0 or len(lines) != 1 or not lines[0]:
+    1:         detail = completed.stderr.strip() or completed.stdout.strip()
+    2:         raise IdentityError(
+    1:             "NO-PLATFORM-TMP",
+    1:             f"getconf DARWIN_USER_TEMP_DIR failed: {detail or 'no output'}",
+               )
+  427:     root = os.path.realpath(lines[0])
+  427:     if not os.path.isdir(root):
+    2:         raise IdentityError(
+    1:             "NO-PLATFORM-TMP",
+    1:             f"getconf returned a non-directory: {root}",
+               )
+  426:     if not probe_mktemp:
+  276:         return root
+       
+  150:     mktemp = shutil.which("mktemp", path=env_path)
+  150:     if not mktemp:
+    2:         raise IdentityError(
+    1:             "NO-PLATFORM-TMP",
+    1:             "mktemp does not resolve on the pinned PATH",
+               )
+  298:     probe_tmp = os.path.realpath(
+  149:         os.path.join("/tmp", f"iyi-platform-tmp-{secrets.token_hex(8)}")
+           )
+  149:     created = ""
+  149:     try:
+  149:         os.makedirs(probe_tmp, exist_ok=False)
+  149:         probe_env = base_env(pin_env, {"TMPDIR": probe_tmp})
+  298:         probe = subprocess.run(
+  149:             [os.path.realpath(mktemp), "-d"],
+  149:             cwd=cwd,
+  149:             env=probe_env,
+  149:             stdin=subprocess.DEVNULL,
+  149:             capture_output=True,
+  149:             text=True,
+  149:             check=False,
+               )
+  148:         outputs = probe.stdout.strip().splitlines()
+  148:         if probe.returncode != 0 or len(outputs) != 1 or not outputs[0]:
+    1:             detail = probe.stderr.strip() or probe.stdout.strip()
+    2:             raise IdentityError(
+    1:                 "PLATFORM-TMP-UNOBSERVABLE",
+    1:                 f"bare mktemp -d failed: {detail or 'no output'}",
+                   )
+  147:         created = os.path.realpath(outputs[0])
+  147:         if not os.path.isdir(created):
+    2:             raise IdentityError(
+    1:                 "PLATFORM-TMP-UNOBSERVABLE",
+    1:                 f"bare mktemp returned a non-directory: {created}",
+                   )
+  146:         parent = os.path.realpath(os.path.dirname(created))
+  146:         if parent != root:
+    2:             raise IdentityError(
+    1:                 "PLATFORM-TMP-UNOBSERVABLE",
+    1:                 f"bare mktemp parent {parent!r} != platform_tmp {root!r}",
+                   )
+    4:     except OSError as error:
+    3:         raise IdentityError(
+    1:             "PLATFORM-TMP-UNOBSERVABLE",
+    1:             f"bare mktemp -d failed: {error}",
+    1:         ) from error
+           finally:
+  149:         if created:
+  147:             shutil.rmtree(created, ignore_errors=True)
+  149:         shutil.rmtree(probe_tmp, ignore_errors=True)
+  145:     return root
+       
+       
+    1: def compute_canonical_roots(w_path: str, p_path: str, compiler_path: str, pin_env: dict[str, str]) -> list[str]:
+  415:     roots: list[str] = []
+ 1245:     for base in (w_path, p_path):
+ 2490:         for relative in ("src", "samples/iyi"):
+ 1660:             candidate = os.path.join(base, relative)
+ 1660:             if os.path.isdir(candidate):
+ 1652:                 roots.append(os.path.realpath(candidate))
+       
+  830:     proc = subprocess.run(
+  415:         [compiler_path, "env", "IYI_PATH"],
+  415:         cwd=w_path,
+  415:         env=base_env(pin_env),
+  415:         stdin=subprocess.DEVNULL,
+  415:         capture_output=True,
+  415:         text=True,
+  415:         check=False,
+           )
+  415:     if proc.returncode != 0:
+    2:         raise IdentityError(
+    1:             "COMPILER-ENV",
+    1:             f"`env IYI_PATH` exited {proc.returncode}: {proc.stderr.strip()}",
+               )
+  829:     for entry in proc.stdout.strip().split(os.pathsep):
+  415:         if not entry:
+    2:             continue
+  413:         resolved = os.path.realpath(os.path.join(w_path, entry))
+  413:         if os.path.isdir(resolved):
+  413:             roots.append(resolved)
+       
+  414:     return list(dict.fromkeys(roots))
+       
+       
+    1: def probe_atime_observable(dir_path: str, stat_fn: Callable[[str], os.stat_result] = os.stat) -> dict[str, int | str]:
+           """Prove that executing an inode on the report volume advances its atime."""
+  148:     probe_id = secrets.token_hex(8)
+  148:     test_exe = os.path.join(dir_path, f"probe-atime-{probe_id}")
+  148:     test_ref = os.path.join(dir_path, f"probe-atime-{probe_id}.ref")
+  148:     try:
+  148:         shutil.copyfile("/usr/bin/true", test_exe)
+  148:         os.chmod(test_exe, 0o755)
+  148:         original_sha = sha256_file(test_exe)
+  148:         os.link(test_exe, test_ref)
+       
+  148:         copied = stat_fn(test_exe)
+  145:         mtime_ns = copied.st_mtime_ns
+  143:         atime_set_ns = mtime_ns - 1_000_000_000
+  143:         os.utime(test_exe, ns=(atime_set_ns, mtime_ns))
+       
+  143:         before_stat = stat_fn(test_ref)
+  143:         after_stat = stat_fn(test_ref)
+  143:         if before_stat.st_atime_ns != atime_set_ns:
+    2:             raise IdentityError(
+    1:                 "EXEC-UNOBSERVABLE",
+    1:                 "the requested pre-exec atime was not retained",
+                   )
+  142:         if after_stat.st_atime_ns != before_stat.st_atime_ns:
+    2:             raise IdentityError(
+    1:                 "EXEC-UNOBSERVABLE",
+    1:                 "a metadata-only stat changed atime",
+                   )
+       
+  282:         executed = subprocess.run(
+  141:             [test_exe],
+  141:             cwd=dir_path,
+  141:             stdin=subprocess.DEVNULL,
+  141:             stdout=subprocess.DEVNULL,
+  141:             stderr=subprocess.DEVNULL,
+  141:             check=False,
+               )
+  141:         if executed.returncode != 0:
+    2:             raise IdentityError(
+    1:                 "EXEC-UNOBSERVABLE",
+    1:                 f"/usr/bin/true copy exited {executed.returncode}",
+                   )
+       
+  140:         after_exec = stat_fn(test_ref)
+  140:         if after_exec.st_atime_ns <= mtime_ns:
+    2:             raise IdentityError(
+    1:                 "EXEC-UNOBSERVABLE",
+    1:                 "execution did not advance atime past mtime",
+                   )
+  139:         final_sha = sha256_file(test_ref)
+  139:         if final_sha != original_sha:
+    2:             raise IdentityError(
+    1:                 "EXEC-UNOBSERVABLE",
+    1:                 f"probe bytes changed: expected {original_sha}, got {final_sha}",
+                   )
+  138:         if after_exec.st_ino != copied.st_ino:
+    2:             raise IdentityError(
+    1:                 "EXEC-UNOBSERVABLE",
+    1:                 "the hard-linked execution probe changed inode",
+                   )
+       
+  137:         return {
+  137:             "sha256": original_sha,
+  137:             "inode": copied.st_ino,
+  137:             "mtime_ns": mtime_ns,
+  137:             "atime_set_ns": atime_set_ns,
+  137:             "atime_after_exec_ns": after_exec.st_atime_ns,
+               }
+   11:     except IdentityError:
+    6:         raise
+    5:     except (OSError, subprocess.SubprocessError) as error:
+    3:         raise IdentityError("EXEC-UNOBSERVABLE", str(error)) from error
+           finally:
+  444:         for path in (test_ref, test_exe):
+  296:             try:
+  296:                 os.remove(path)
+    2:             except FileNotFoundError:
+    2:                 pass
+       
+       
+    1: def _first_output_line(command: list[str], *, cwd: str, env: dict[str, str], reason: str) -> str:
+ 1662:     proc = subprocess.run(
+  831:         command,
+  831:         cwd=cwd,
+  831:         env=env,
+  831:         stdin=subprocess.DEVNULL,
+  831:         capture_output=True,
+  831:         text=True,
+  831:         check=False,
+           )
+  831:     lines = proc.stdout.strip().splitlines()
+  831:     if proc.returncode != 0 or not lines:
+    1:         detail = proc.stderr.strip() or proc.stdout.strip() or "no output"
+    2:         raise IdentityError(
+    1:             reason,
+    1:             f"{' '.join(command)} exited {proc.returncode}: {detail}",
+               )
+  830:     return lines[0]
+       
+    1: def _nm_version_line(nm_path: str, *, cwd: str, env: dict[str, str]) -> str:
+  408:     attempts: list[str] = []
+  410:     for argument in ("--version", "-version"):
+  818:         proc = subprocess.run(
+  409:             [nm_path, argument],
+  409:             cwd=cwd,
+  409:             env=env,
+  409:             stdin=subprocess.DEVNULL,
+  409:             capture_output=True,
+  409:             text=True,
+  409:             check=False,
+               )
+  409:         lines = (proc.stdout.strip() or proc.stderr.strip()).splitlines()
+  409:         if proc.returncode == 0 and lines:
+  407:             return lines[0]
+    4:         attempts.append(
+    4:             f"{argument}: exit={proc.returncode} "
+    2:             f"output={(proc.stdout.strip() or proc.stderr.strip())!r}"
+               )
+    1:     raise IdentityError("NO-NM", "; ".join(attempts))
+       
+       
+    1: def _census_shas_and_validate(w_path: str, drivers: Sequence[str]) -> dict[str, str]:
+  144:     census_dir = os.path.join(w_path, "proof", "census")
+ 1381:     expected_files = {f"{driver}.json" for driver in drivers}
+  144:     try:
+  286:         actual_files = {
+ 1235:             name
+ 1522:             for name in os.listdir(census_dir)
+ 1235:             if name.endswith(".json")
+               }
+    1:     except OSError as error:
+    1:         raise IdentityError("CENSUS-SET", str(error)) from error
+  143:     if actual_files != expected_files:
+    1:         missing = sorted(expected_files - actual_files)
+    1:         extra = sorted(actual_files - expected_files)
+    2:         raise IdentityError(
+    1:             "CENSUS-SET",
+    1:             f"missing={missing}, extra={extra}",
+               )
+       
+  142:     census_shas: dict[str, str] = {}
+ 1349:     for driver in drivers:
+ 1209:         census_path = os.path.join(census_dir, f"{driver}.json")
+ 1209:         try:
+ 2418:             with open(census_path, "r", encoding="utf-8") as census_file:
+ 1209:                 census = json.load(census_file)
+ 1208:             script_relpath = census.get("script", "")
+ 1208:             script_path = os.path.join(w_path, script_relpath)
+ 2416:             with open(script_path, "rb") as script_file:
+ 1208:                 script_bytes = script_file.read()
+ 2416:             violations = validate_census(
+ 1208:                 census,
+ 1208:                 script_bytes,
+ 1208:                 script_relpath,
+                   )
+ 1208:             if violations:
+    2:                 raise IdentityError(
+    1:                     "CENSUS-INVALID",
+    1:                     f"{driver}: {json.dumps(violations)}",
+                       )
+    2:         except IdentityError:
+    1:             raise
+    1:         except (
+    1:             json.JSONDecodeError,
+    1:             OSError,
+    1:             TypeError,
+    1:             ValueError,
+               ) as error:
+    3:             raise IdentityError(
+    1:                 "CENSUS-INVALID",
+    1:                 f"{driver}: {error}",
+    1:             ) from error
+ 1207:         census_shas[driver] = sha256_file(census_path)
+  140:     return census_shas
+    1: def _census_shas(w_path: str, drivers: Sequence[str]) -> dict[str, str]:
+  276:     census_dir = os.path.join(w_path, "proof", "census")
+  974:     expected_files = {f"{driver}.json" for driver in drivers}
+  276:     try:
+  550:         actual_files = {
+  696:             name
+ 1247:             for name in os.listdir(census_dir)
+  696:             if name.endswith(".json")
+               }
+    1:     except OSError as error:
+    1:         raise IdentityError("CENSUS-SET", str(error)) from error
+  275:     if actual_files != expected_files:
+    1:         missing = sorted(expected_files - actual_files)
+    1:         extra = sorted(actual_files - expected_files)
+    2:         raise IdentityError(
+    1:             "CENSUS-SET",
+    1:             f"missing={missing}, extra={extra}",
+               )
+  548:     return {
+  696:         driver: sha256_file(os.path.join(census_dir, f"{driver}.json"))
+ 1244:         for driver in drivers
+           }
+       
+       
+       
+       
+    1: def inspect_pin_inputs(p_path: str, w_path: str, compiler_path: str, drivers: Sequence[str]) -> dict:
+           """Validate every read-only pin precondition and return the pinned facts."""
+  157:     p_real = os.path.realpath(p_path)
+  157:     w_real = os.path.realpath(w_path)
+  157:     c_real = os.path.realpath(compiler_path)
+  157:     env_path = os.environ.get("PATH", "")
+  157:     env_home = os.environ.get("HOME", "")
+  157:     pin_env = {"env_path": env_path, "env_home": env_home}
+       
+  157:     try:
+  157:         if not git_clean(p_real):
+    2:             raise IdentityError("P-DIRTY", p_real)
+  154:         if not git_clean(w_real):
+    1:             raise IdentityError("W-DIRTY", w_real)
+  153:         p_sha = git_rev_parse("HEAD", p_real)
+  153:         p_time = git_commit_time("HEAD", p_real)
+  153:         w_head = git_rev_parse("HEAD", w_real)
+    4:     except IdentityError:
+    3:         raise
+    1:     except (OSError, RuntimeError, ValueError) as error:
+    1:         raise IdentityError("GIT-ERROR", str(error)) from error
+       
+  153:     if not git_merge_base_is_ancestor(p_sha, w_head, w_real):
+    2:         raise IdentityError(
+    1:             "W-NOT-DESCENDANT",
+    1:             f"W HEAD {w_head} does not descend from P {p_sha}",
+               )
+  152:     try:
+  152:         diff_files = git_diff_name_only(p_sha, w_head, w_real)
+  302:         product_quiet = git_diff_quiet(
+  151:             p_sha,
+  151:             w_head,
+  151:             w_real,
+  151:             [".", ":(exclude)proof"],
+               )
+    1:     except (OSError, RuntimeError) as error:
+    1:         raise IdentityError("GIT-ERROR", str(error)) from error
+  304:     product_files = [path for path in diff_files if not path.startswith("proof/")]
+  151:     if product_files or not product_quiet:
+    2:         raise IdentityError(
+    1:             "PRODUCT-DIFF",
+    1:             f"non-proof paths={product_files}",
+               )
+       
+  150:     if not os.path.isfile(c_real) or not os.access(c_real, os.X_OK):
+    2:         raise IdentityError(
+    1:             "COMPILER-NOT-EXECUTABLE",
+    1:             c_real,
+               )
+  149:     try:
+  149:         compiler_stat = os.stat(c_real)
+  149:         compiler_sha = sha256_file(c_real)
+    1:     except OSError as error:
+    1:         raise IdentityError("COMPILER-STAT", str(error)) from error
+  148:     if compiler_stat.st_mtime_ns <= p_time * 1_000_000_000:
+    4:         raise IdentityError(
+    2:             "COMPILER-STALE",
+    2:             f"mtime_ns={compiler_stat.st_mtime_ns}, p_commit_ns={p_time * 1_000_000_000}",
+               )
+       
+  146:     clean_env = base_env(pin_env)
+  292:     platform_tmp = platform_temp_root(
+  146:         pin_env,
+  146:         cwd=w_real,
+  146:         probe_mktemp=True,
+           )
+  290:     version_line = _first_output_line(
+  145:         [c_real, "--version"],
+  145:         cwd=w_real,
+  145:         env=clean_env,
+  145:         reason="COMPILER-VERSION",
+           )
+  145:     try:
+  145:         stamp = extract_version_stamp(version_line)
+    1:     except ValueError as error:
+    1:         raise IdentityError("COMPILER-STAMP-MISSING", str(error)) from error
+  144:     if not p_sha.startswith(stamp):
+    2:         raise IdentityError(
+    1:             "COMPILER-STAMP-MISMATCH",
+    1:             f"stamp={stamp}, p_source_sha={p_sha}",
+               )
+       
+  143:     timeout_path = shutil.which("timeout", path=env_path)
+  143:     if not timeout_path:
+    2:         raise IdentityError(
+    1:             "NO-TIMEOUT",
+    1:             "timeout does not resolve on the pinned PATH",
+               )
+  142:     timeout_real = os.path.realpath(timeout_path)
+  284:     timeout_version = _first_output_line(
+  142:         [timeout_real, "--version"],
+  142:         cwd=w_real,
+  142:         env=clean_env,
+  142:         reason="NO-TIMEOUT",
+           )
+       
+  142:     nm_path = shutil.which("nm", path=env_path)
+  142:     if not nm_path:
+    1:         raise IdentityError("NO-NM", "nm does not resolve on the pinned PATH")
+  141:     nm_real = os.path.realpath(nm_path)
+  282:     nm_version = _nm_version_line(
+  141:         nm_real,
+  141:         cwd=w_real,
+  141:         env=clean_env,
+           )
+       
+  141:     census_shas = _census_shas_and_validate(w_real, drivers)
+  280:     canonical_roots = compute_canonical_roots(
+  140:         w_real,
+  140:         p_real,
+  140:         c_real,
+  140:         pin_env,
+           )
+       
+ 2660:     return {
+  140:         "p_path": p_real,
+  140:         "p_source_sha": p_sha,
+  140:         "p_commit_time": p_time,
+  140:         "w_path": w_real,
+  140:         "w_head": w_head,
+  140:         "compiler_path": c_real,
+  140:         "compiler_sha256": compiler_sha,
+  140:         "compiler_size": compiler_stat.st_size,
+  140:         "compiler_mtime_ns": compiler_stat.st_mtime_ns,
+  140:         "compiler_inode": compiler_stat.st_ino,
+  140:         "compiler_version_line": version_line,
+  140:         "compiler_stamp": stamp,
+  140:         "canonical_roots": canonical_roots,
+  140:         "platform_tmp": platform_tmp,
+  140:         "env_path": env_path,
+  140:         "env_home": env_home,
+  140:         "python_path": os.path.realpath(sys.executable),
+  140:         "python_version": sys.version.splitlines()[0],
+  140:         "nm_path": nm_real,
+  140:         "nm_version": nm_version,
+  140:         "timeout_path": timeout_real,
+  140:         "timeout_version": timeout_version,
+  140:         "census_sha256": census_shas,
+           }
+       
+       
+    1: def _validated_report_dir(report_dir: str, *, require_empty: bool, chain_id: str | None = None) -> str:
+  836:     report_real = os.path.realpath(report_dir)
+  836:     match = re.fullmatch(r"/private/tmp/iyp-([0-9a-f]{8})", report_real)
+  836:     if not match:
+    2:         raise IdentityError(
+    1:             "REPORT-DIR-NAME",
+    1:             f"{report_real} does not match /private/tmp/iyp-<8 lowercase hex>",
+               )
+  835:     if chain_id is not None:
+  564:         if not re.fullmatch(r"[0-9a-f]{32}", chain_id):
+    1:             raise IdentityError("CHAIN-ID", f"invalid chain_id {chain_id!r}")
+  563:         if match.group(1) != chain_id[:8]:
+    2:             raise IdentityError(
+    1:                 "REPORT-DIR-CHAIN",
+    1:                 f"basename suffix {match.group(1)} != chain prefix {chain_id[:8]}",
+                   )
+  833:     if require_empty and os.path.exists(report_real):
+    2:         try:
+    2:             entries = sorted(os.listdir(report_real))
+    1:         except OSError as error:
+    1:             raise IdentityError("REPORT-DIR", str(error)) from error
+    1:         if entries:
+    2:             raise IdentityError(
+    1:                 "REPORT-DIR-NOT-EMPTY",
+    1:                 f"{report_real} holds {entries}",
+                   )
+  831:     return report_real
+       
+       
+    1: def write_pin(report_dir: str, p_path: str, w_path: str, compiler_path: str, drivers: Sequence[str], chain_id: str | None = None, stat_fn: Callable[[str], os.stat_result] = os.stat) -> dict:
+           """Validate C3/D4/D5 and write the immutable pin once."""
+  296:     report_real = _validated_report_dir(
+  148:         report_dir,
+  148:         require_empty=True,
+  148:         chain_id=chain_id,
+           )
+  146:     facts = inspect_pin_inputs(p_path, w_path, compiler_path, drivers)
+  139:     short_chain = os.path.basename(report_real).removeprefix("iyp-")
+  139:     if chain_id is None:
+  139:         chain_id = short_chain + secrets.token_hex(12)
+  278:     report_real = _validated_report_dir(
+  139:         report_real,
+  139:         require_empty=True,
+  139:         chain_id=chain_id,
+           )
+       
+  139:     created_report_dir = not os.path.exists(report_real)
+  139:     try:
+  139:         os.makedirs(report_real, exist_ok=True)
+  139:         probe_atime_observable(report_real, stat_fn=stat_fn)
+  405:         pin_data = {
+  135:             **facts,
+  135:             "report_dir": report_real,
+  135:             "chain_id": chain_id,
+               }
+  135:         pin_file = os.path.join(report_real, "pin.json")
+  270:         with open(pin_file, "x", encoding="utf-8") as output:
+  135:             json.dump(pin_data, output, indent=2, sort_keys=True)
+  135:             output.write("\n")
+  135:         return pin_data
+    4:     except IdentityError:
+    2:         if created_report_dir:
+    2:             try:
+    2:                 os.rmdir(report_real)
+    1:             except OSError:
+    1:                 pass
+    2:         raise
+    2:     except (OSError, TypeError, ValueError) as error:
+    2:         if created_report_dir:
+    2:             try:
+    2:                 os.rmdir(report_real)
+    1:             except OSError:
+    1:                 pass
+    2:         raise IdentityError("PIN-WRITE", str(error)) from error
+       
+       
+    1: def load_pin(report_dir: str) -> dict:
+  123:     report_real = _validated_report_dir(report_dir, require_empty=False)
+  123:     pin_file = os.path.join(report_real, "pin.json")
+  123:     if not os.path.isfile(pin_file):
+    1:         raise IdentityError("PIN-MISSING", pin_file)
+  122:     try:
+  244:         with open(pin_file, "r", encoding="utf-8") as source:
+  122:             pin = json.load(source)
+    1:     except (json.JSONDecodeError, OSError) as error:
+    1:         raise IdentityError("PIN-INVALID", str(error)) from error
+  121:     chain_id = pin.get("chain_id")
+  121:     if not isinstance(chain_id, str):
+    1:         raise IdentityError("CHAIN-ID", "pin has no string chain_id")
+  240:     _validated_report_dir(
+  120:         report_real,
+  120:         require_empty=False,
+  120:         chain_id=chain_id,
+           )
+  120:     if pin.get("report_dir") != report_real:
+    2:         raise IdentityError(
+    1:             "REPORT-DIR-CHAIN",
+    1:             f"pin report_dir={pin.get('report_dir')!r}, actual={report_real!r}",
+               )
+  119:     return pin
+       
+       
+    1: def _require_equal(reason: str, label: str, expected: object, got: object) -> None:
+ 5017:     if got != expected:
+   46:         raise IdentityError(
+   23:             reason,
+   23:             f"{label}: expected {expected!r}, got {got!r}",
+               )
+       
+       
+    1: def check_identity(pin: dict) -> None:
+  303:     p_path = pin["p_path"]
+  303:     w_path = pin["w_path"]
+  303:     compiler_path = pin["compiler_path"]
+       
+  606:     _validated_report_dir(
+  303:         pin["report_dir"],
+  303:         require_empty=False,
+  303:         chain_id=pin["chain_id"],
+           )
+  606:     _require_equal(
+  303:         "PATH-CHANGED",
+  303:         "PATH",
+  303:         pin["env_path"],
+  303:         os.environ.get("PATH", ""),
+           )
+       
+  301:     try:
+  301:         current_p_sha = git_rev_parse("HEAD", p_path)
+  300:         current_w_head = git_rev_parse("HEAD", w_path)
+    1:     except (OSError, RuntimeError) as error:
+    1:         raise IdentityError("GIT-ERROR", str(error)) from error
+  300:     _require_equal("P-HEAD-CHANGED", "P HEAD", pin["p_source_sha"], current_p_sha)
+  299:     if not git_clean(p_path):
+    1:         raise IdentityError("P-DIRTY", p_path)
+  298:     _require_equal("W-HEAD-CHANGED", "W HEAD", pin["w_head"], current_w_head)
+  297:     if not git_clean(w_path):
+    5:         raise IdentityError("W-DIRTY", w_path)
+  292:     if not git_merge_base_is_ancestor(pin["p_source_sha"], current_w_head, w_path):
+    2:         raise IdentityError(
+    1:             "W-NOT-DESCENDANT",
+    1:             f"W HEAD {current_w_head} does not descend from {pin['p_source_sha']}",
+               )
+  582:     product_paths = [
+  292:         path
+ 1165:         for path in git_diff_name_only(
+  291:             pin["p_source_sha"],
+  291:             current_w_head,
+  291:             w_path,
+               )
+  292:         if not path.startswith("proof/")
+           ]
+  581:     if product_paths or not git_diff_quiet(
+  290:         pin["p_source_sha"],
+  290:         current_w_head,
+  290:         w_path,
+  290:         [".", ":(exclude)proof"],
+           ):
+    1:         raise IdentityError("PRODUCT-DIFF", f"non-proof paths={product_paths}")
+       
+  290:     if not os.path.isfile(compiler_path) or not os.access(compiler_path, os.X_OK):
+    1:         raise IdentityError("COMPILER-NOT-EXECUTABLE", compiler_path)
+  289:     try:
+  289:         compiler_stat = os.stat(compiler_path)
+  289:         compiler_sha = sha256_file(compiler_path)
+    1:     except OSError as error:
+    1:         raise IdentityError("COMPILER-STAT", str(error)) from error
+  576:     _require_equal(
+  288:         "COMPILER-SHA-CHANGED",
+  288:         "compiler sha256",
+  288:         pin["compiler_sha256"],
+  288:         compiler_sha,
+           )
+  566:     _require_equal(
+  283:         "COMPILER-SIZE-CHANGED",
+  283:         "compiler size",
+  283:         pin["compiler_size"],
+  283:         compiler_stat.st_size,
+           )
+  566:     _require_equal(
+  283:         "COMPILER-MTIME-CHANGED",
+  283:         "compiler mtime_ns",
+  283:         pin["compiler_mtime_ns"],
+  283:         compiler_stat.st_mtime_ns,
+           )
+  554:     _require_equal(
+  277:         "COMPILER-INODE-CHANGED",
+  277:         "compiler inode",
+  277:         pin["compiler_inode"],
+  277:         compiler_stat.st_ino,
+           )
+       
+  276:     clean_env = base_env(pin)
+  552:     current_platform_tmp = platform_temp_root(
+  276:         pin,
+  276:         cwd=w_path,
+  276:         probe_mktemp=False,
+           )
+  552:     _require_equal(
+  276:         "PLATFORM-TMP-CHANGED",
+  276:         "platform temp root",
+  276:         pin["platform_tmp"],
+  276:         current_platform_tmp,
+           )
+  550:     version_line = _first_output_line(
+  275:         [compiler_path, "--version"],
+  275:         cwd=w_path,
+  275:         env=clean_env,
+  275:         reason="COMPILER-VERSION",
+           )
+  550:     _require_equal(
+  275:         "COMPILER-VERSION-CHANGED",
+  275:         "compiler version line",
+  275:         pin["compiler_version_line"],
+  275:         version_line,
+           )
+  275:     try:
+  275:         stamp = extract_version_stamp(version_line)
+    1:     except ValueError as error:
+    1:         raise IdentityError("COMPILER-STAMP-MISSING", str(error)) from error
+  548:     _require_equal(
+  274:         "COMPILER-STAMP-CHANGED",
+  274:         "compiler stamp",
+  274:         pin["compiler_stamp"],
+  274:         stamp,
+           )
+       
+  548:     current_census_shas = _census_shas(
+  274:         w_path,
+  274:         tuple(sorted(pin["census_sha256"])),
+           )
+  548:     _require_equal(
+  274:         "CENSUS-CHANGED",
+  274:         "census sha256 map",
+  274:         pin["census_sha256"],
+  274:         current_census_shas,
+           )
+  273:     roots = compute_canonical_roots(w_path, p_path, compiler_path, pin)
+  546:     _require_equal(
+  273:         "CANONICAL-ROOTS-CHANGED",
+  273:         "canonical roots",
+  273:         pin["canonical_roots"],
+  273:         roots,
+           )
+       
+  544:     _require_equal(
+  272:         "PYTHON-CHANGED",
+  272:         "python realpath",
+  272:         pin["python_path"],
+  272:         os.path.realpath(sys.executable),
+           )
+  542:     _require_equal(
+  271:         "PYTHON-CHANGED",
+  271:         "python version",
+  271:         pin["python_version"],
+  271:         sys.version.splitlines()[0],
+           )
+       
+  270:     timeout_path = shutil.which("timeout", path=pin["env_path"])
+  270:     if not timeout_path:
+    1:         raise IdentityError("NO-TIMEOUT", "timeout disappeared from pinned PATH")
+  269:     timeout_real = os.path.realpath(timeout_path)
+  538:     _require_equal(
+  269:         "TIMEOUT-CHANGED",
+  269:         "timeout realpath",
+  269:         pin["timeout_path"],
+  269:         timeout_real,
+           )
+  536:     timeout_version = _first_output_line(
+  268:         [timeout_real, "--version"],
+  268:         cwd=w_path,
+  268:         env=clean_env,
+  268:         reason="NO-TIMEOUT",
+           )
+  536:     _require_equal(
+  268:         "TIMEOUT-CHANGED",
+  268:         "timeout version",
+  268:         pin["timeout_version"],
+  268:         timeout_version,
+           )
+       
+  268:     nm_path = shutil.which("nm", path=pin["env_path"])
+  268:     if not nm_path:
+    1:         raise IdentityError("NO-NM", "nm disappeared from pinned PATH")
+  267:     nm_real = os.path.realpath(nm_path)
+  267:     _require_equal("NM-CHANGED", "nm realpath", pin["nm_path"], nm_real)
+  532:     nm_version = _nm_version_line(
+  266:         nm_real,
+  266:         cwd=w_path,
+  266:         env=clean_env,
+           )
+  532:     _require_equal(
+  266:         "NM-CHANGED",
+  266:         "nm version",
+  266:         pin["nm_version"],
+  266:         nm_version,
+           )
+       
+    3: @dataclass(frozen=True)
+    2: class BoundedResult:
+    1:     returncode: int
+    1:     timed_out: bool
+    1:     survivors: tuple[int, ...]
+    1:     interrupted_signal: int | None
+       
+       
+    2: class _BoundedSignal(BaseException):
+    1:     def __init__(self, signum: int):
+    7:         super().__init__(signum)
+    7:         self.signum = signum
+       
+       
+    1: def _parse_process_group_members(output: str, pgid: int, exclude: int | None = None) -> tuple[int, ...]:
+  331:     members: list[int] = []
+397640:     for line in output.splitlines():
+397309:         fields = line.split()
+397309:         if len(fields) != 2:
+    1:             continue
+397308:         try:
+1589230:             pid, member_pgid = (int(field) for field in fields)
+    1:         except ValueError:
+    1:             continue
+397307:         if member_pgid == pgid and pid != exclude:
+   10:             members.append(pid)
+  331:     return tuple(sorted(set(members)))
+       
+       
+    1: def _process_group_members(pgid: int, *, exclude: int | None = None, ps_path: str | None = None) -> tuple[int, ...]:
+  331:     ps_path = ps_path or ("/bin/ps" if os.path.exists("/bin/ps") else "ps")
+  662:     proc = subprocess.run(
+  331:         [ps_path, "-axo", "pid=,pgid="],
+  331:         stdin=subprocess.DEVNULL,
+  331:         capture_output=True,
+  331:         text=True,
+  331:         check=False,
+           )
+  331:     if proc.returncode != 0:
+    2:         raise RuntimeError(
+    1:             f"ps failed while inspecting process group {pgid}: {proc.stderr.strip()}"
+               )
+  660:     return _parse_process_group_members(
+  330:         proc.stdout,
+  330:         pgid,
+  330:         exclude,
+           )
+       
+       
+    1: def _signal_process_group(pgid: int, signum: int) -> None:
+   20:     try:
+   20:         os.killpg(pgid, signum)
+    4:     except ProcessLookupError:
+    4:         pass
+       
+       
+    1: def _wait_for_group_exit(pgid: int, limit_sec: float) -> tuple[int, ...]:
+    6:     deadline = time.monotonic() + max(0.0, limit_sec)
+    8:     while True:
+    8:         members = _process_group_members(pgid)
+    8:         if not members or time.monotonic() >= deadline:
+    6:             return members
+    2:         time.sleep(0.02)
+       
+       
+    1: def _stop_leader(proc: subprocess.Popen[bytes], pgid: int, grace_sec: float) -> None:
+   12:     _signal_process_group(pgid, signal.SIGTERM)
+   12:     try:
+   12:         proc.wait(timeout=grace_sec)
+    2:     except subprocess.TimeoutExpired:
+    2:         _signal_process_group(pgid, signal.SIGKILL)
+    2:         try:
+    2:             proc.wait(timeout=5.0)
+    1:         except subprocess.TimeoutExpired as error:
+    3:             raise RuntimeError(
+    1:                 f"leader {proc.pid} survived SIGKILL"
+    1:             ) from error
+       
+       
+    1: def _record_and_stop_survivors(pgid: int, leader_pid: int, grace_sec: float, kill_grace_sec: float = 5.0) -> tuple[int, ...]:
+  161:     survivors = _process_group_members(pgid, exclude=leader_pid)
+  161:     if not survivors:
+  159:         return ()
+    2:     _signal_process_group(pgid, signal.SIGTERM)
+    2:     remaining = _wait_for_group_exit(pgid, grace_sec)
+    2:     if remaining:
+    2:         _signal_process_group(pgid, signal.SIGKILL)
+    2:         remaining = _wait_for_group_exit(pgid, kill_grace_sec)
+    2:     if remaining:
+    2:         raise RuntimeError(
+    1:             f"process group {pgid} retained survivors after SIGKILL: {remaining}"
+               )
+    1:     return survivors
+       
+    1: def _stop_leader_if_running(proc: subprocess.Popen[bytes], pgid: int, grace_sec: float) -> None:
+  161:     if proc.poll() is None:
+    1:         _stop_leader(proc, pgid, grace_sec)
+       
+       
+    1: def _stop_residual_processes(pgid: int, grace_sec: float = 5.0, exclude: int | None = None) -> list[BaseException]:
+  161:     errors: list[BaseException] = []
+  322:     residual = _process_group_members(
+  161:         pgid,
+  161:         exclude=pgid if exclude is None else exclude,
+           )
+  161:     if residual:
+    1:         _signal_process_group(pgid, signal.SIGKILL)
+    1:         residual = _wait_for_group_exit(pgid, grace_sec)
+    1:         if residual:
+    2:             errors.append(
+    2:                 RuntimeError(
+    1:                     f"process group {pgid} retained {residual}"
+                       )
+                   )
+  161:     return errors
+       
+       
+    1: def _sample_log_growth(log_path: str, times_path: str, stop: threading.Event, errors: list[BaseException]) -> None:
+  161:     try:
+  161:         last_size = os.path.getsize(log_path)
+  319:         with open(times_path, "a", encoding="utf-8", buffering=1) as times_file:
+  159:             times_file.write(f"{time.monotonic_ns()} 0\n")
+  611:             while not stop.wait(0.05):
+  452:                 size = os.path.getsize(log_path)
+  452:                 if size > last_size:
+  136:                     times_file.write(f"{time.monotonic_ns()} {size}\n")
+  136:                     last_size = size
+  159:             final_size = os.path.getsize(log_path)
+  159:             times_file.write(f"{time.monotonic_ns()} {final_size}\n")
+    2:     except (OSError, ValueError) as error:
+    2:         errors.append(error)
+       
+       
+    1: def run_bounded(cmd: list[str], cwd: str, env: dict[str, str], log: str, times: str, limit_sec: float | None, grace_sec: float = 30.0) -> BoundedResult:
+           """Run against a log fd; leader exit, never pipe EOF, decides completion."""
+  166:     if limit_sec is not None and limit_sec <= 0:
+    1:         raise ValueError("limit_sec must be positive or None")
+  165:     if grace_sec < 0:
+    1:         raise ValueError("grace_sec must be non-negative")
+       
+  328:     log_fd = os.open(
+  164:         log,
+  164:         os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+  164:         0o600,
+           )
+  163:     try:
+  326:         proc = subprocess.Popen(
+  163:             cmd,
+  163:             cwd=cwd,
+  163:             env=env,
+  163:             stdin=subprocess.DEVNULL,
+  163:             stdout=log_fd,
+  163:             stderr=log_fd,
+  163:             start_new_session=True,
+               )
+           finally:
+  163:         os.close(log_fd)
+       
+  160:     previous_handlers: dict[int, object] = {}
+  160:     timed_out = False
+  160:     interrupted_signal: int | None = None
+  160:     survivors: tuple[int, ...] = ()
+  160:     stop_sampler = threading.Event()
+  160:     sampler_errors: list[BaseException] = []
+  160:     sampler: threading.Thread | None = None
+  160:     sampler_started = False
+  160:     try:
+  320:         sampler = threading.Thread(
+  160:             target=_sample_log_growth,
+  160:             args=(log, times, stop_sampler, sampler_errors),
+  160:             name=f"proof-log-sampler-{proc.pid}",
+  160:             daemon=False,
+               )
+  160:         sampler.start()
+  160:         sampler_started = True
+       
+  160:         try:
+  160:             if threading.current_thread() is threading.main_thread():
+  160:                 def interrupt_handler(received: int, _frame: object) -> None:
+    7:                     raise _BoundedSignal(received)
+       
+  640:                 for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+  480:                     previous_handlers[signum] = signal.getsignal(signum)
+  480:                     signal.signal(signum, interrupt_handler)
+       
+  160:             if limit_sec is None:
+  127:                 proc.wait()
+                   else:
+   33:                 proc.wait(timeout=limit_sec)
+    9:         except subprocess.TimeoutExpired:
+    2:             timed_out = True
+    2:             _stop_leader(proc, proc.pid, grace_sec)
+    7:         except _BoundedSignal as interrupted:
+    7:             interrupted_signal = interrupted.signum
+    7:             _stop_leader(proc, proc.pid, grace_sec)
+       
+  320:         survivors = _record_and_stop_survivors(
+  160:             proc.pid,
+  160:             proc.pid,
+  160:             grace_sec,
+               )
+           finally:
+  160:         try:
+  160:             _stop_leader_if_running(proc, proc.pid, grace_sec)
+               finally:
+  160:             try:
+  160:                 sampler_errors.extend(_stop_residual_processes(proc.pid))
+                   finally:
+  160:                 try:
+  160:                     stop_sampler.set()
+  160:                     if sampler is not None and sampler_started:
+  160:                         sampler.join()
+                       finally:
+  160:                     try:
+  160:                         if signal.SIGHUP in previous_handlers:
+  320:                             signal.signal(
+  160:                                 signal.SIGHUP,
+  160:                                 previous_handlers[signal.SIGHUP],
+                                   )
+                           finally:
+  160:                         try:
+  160:                             if signal.SIGTERM in previous_handlers:
+  320:                                 signal.signal(
+  160:                                     signal.SIGTERM,
+  160:                                     previous_handlers[signal.SIGTERM],
+                                       )
+                               finally:
+  160:                             if signal.SIGINT in previous_handlers:
+  320:                                 signal.signal(
+  160:                                     signal.SIGINT,
+  160:                                     previous_handlers[signal.SIGINT],
+                                       )
+       
+  160:     if sampler_errors:
+    2:         raise RuntimeError(
+    3:             "; ".join(str(error) for error in sampler_errors)
+               )
+  318:     return BoundedResult(
+  159:         returncode=proc.returncode if proc.returncode is not None else -1,
+  159:         timed_out=timed_out,
+  159:         survivors=survivors,
+  159:         interrupted_signal=interrupted_signal,
+           )
+       
+       
+    1: RUN1_STD_EXERCISES = 114
+    1: RUN1_SIBLINGS = 115
+    1: RUN1_CORPUS = 141
+    1: RG2R_MIN = 1
+    1: RUN2_COUNTS = (27, 114, 141)
+    1: DRIVER_LIMIT_SEC = 2100.0
+    1: GRACE_SEC = 30.0
+    1: DISK_MIN_GB = 20.0
+       
+    1: REQUIRED_CHECKS = {
+    1:     "run1": (
+               "identity",
+               "gate-1.1",
+               "gate-1.2",
+               "gate-1.3",
+               "gate-1.4",
+               "rg2r-count",
+               "exclusions",
+               "baseline-skips",
+           ),
+    1:     "run2": ("identity", "legs", "counts"),
+    1:     "run3": (
+               "census",
+               "identity",
+               "disk",
+               "exit",
+               "sentinel",
+               "no-refused",
+               "skips",
+               "ledger",
+           ),
+       }
+       
+       
+    1: def write_result(path: str, record: dict) -> None:
+           """Atomically publish a stage result as the attempt's final write."""
+  104:     parent = os.path.dirname(os.path.abspath(path))
+  104:     os.makedirs(parent, exist_ok=True)
+  208:     temporary = os.path.join(
+  104:         parent,
+  104:         f".{os.path.basename(path)}.{os.getpid()}.{secrets.token_hex(8)}.tmp",
+           )
+  104:     try:
+  208:         with open(temporary, "x", encoding="utf-8") as output:
+  104:             json.dump(record, output, indent=2, sort_keys=True)
+  104:             output.write("\n")
+  104:             output.flush()
+  104:             os.fsync(output.fileno())
+  104:         os.replace(temporary, path)
+           finally:
+  104:         try:
+  104:             os.unlink(temporary)
+  104:         except FileNotFoundError:
+  104:             pass
+       
+       
+    1: def load_result(path: str) -> dict | None:
+           """Load one stage result, returning None for absent or invalid content."""
+  240:     try:
+  478:         with open(path, "r", encoding="utf-8") as source:
+  238:             record = json.load(source)
+    2:     except (OSError, UnicodeError, json.JSONDecodeError):
+    2:         return None
+  238:     return record if isinstance(record, dict) else None
+       
+       
+    1: def recompute_status(record: dict, kind: str) -> str:
+           """Recompute a result status from the fixed required-check order."""
+  175:     required = REQUIRED_CHECKS.get(kind)
+  175:     checks = record.get("checks")
+  175:     if required is None or not isinstance(checks, dict):
+    1:         return "FAIL"
+ 1017:     for name in required:
+  911:         if name in checks and checks[name] != "PASS":
+   68:             value = checks[name]
+   68:             return value if isinstance(value, str) else "FAIL"
+ 1588:     if any(name not in checks for name in required):
+    2:         return "FAIL"
+  104:     return "PASS"
+       
+       
+       # --- Census & Ledger Verification ---
+       
+    1: Violation = tuple[str, int, str]
+       
+    1: DRIVERS_29 = (
+           "acme",
+           "autocert",
+           "cookie",
+           "dns",
+           "fileserver",
+           "http",
+           "router",
+           "secure_dns",
+           "signal",
+           "smtp",
+           "sse",
+           "term",
+           "tls",
+           "websocket",
+           "bzip2",
+           "compress",
+           "hpke",
+           "math",
+           "mlkem",
+           "png",
+           "regex",
+           "shlex",
+           "tar",
+           "xz",
+           "zip",
+           "zstd",
+           "file",
+           "file_utils",
+           "fuzz",
+       )
+       
+    2: _INVOCATION_RE = re.compile(
+    1:     r'(\$IYI|"\$IYI"|\$\{IYI\})(?![A-Za-z0-9_:])'
+       )
+    2: _SKIP_VOCAB_RE = re.compile(
+    1:     r"(?i)skip|unmeasured|unasked|unread|unproven|uncompared|"
+           r"unverified|unshown|unplaced|not run|not proven|not measured|"
+           r"not compared|not a pass|goes un|go un|could not be fetched|"
+           r"cannot be written"
+       )
+    1: _SITE_KINDS = {
+           "canonical-own",
+           "canonical-other",
+           "unchanged",
+           "passthrough",
+           "negative",
+           "positive",
+           "mixed",
+       }
+    1: _COMMANDS = {"build", "run", "doc", "fmt"}
+    1: _VARIANT_KINDS = {"negative", "positive"}
+    1: _TEMPLATE_FIELD_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+       
+       
+    1: def _violation(violations: list[Violation], rule_id: str, line: int, detail: str) -> None:
+  760:     violations.append((rule_id, line if isinstance(line, int) else 0, detail))
+       
+       
+    1: def _closed_keys(value: object, required: set[str], path: str, violations: list[Violation], line: int = 0) -> bool:
+44489:     if not isinstance(value, dict):
+   18:         _violation(
+    9:             violations,
+    9:             "C5.0-schema",
+    9:             line,
+    9:             f"{path} must be an object",
+               )
+    9:         return False
+44480:     missing = sorted(required - set(value))
+44480:     unknown = sorted(set(value) - required)
+44480:     if missing:
+    2:         _violation(
+    1:             violations,
+    1:             "C5.0-schema",
+    1:             line,
+    1:             f"{path} missing keys {missing}",
+               )
+44480:     if unknown:
+    2:         _violation(
+    1:             violations,
+    1:             "C5.0-schema",
+    1:             line,
+    1:             f"{path} unknown keys {unknown}",
+               )
+44480:     return not missing and not unknown
+       
+       
+    1: def _source_text(lines: list[str], numbers: object) -> str:
+30288:     if not isinstance(numbers, list):
+   16:         return ""
+90816:     return "\n".join(
+328169:         lines[number - 1]
+169935:         for number in numbers
+328169:         if isinstance(number, int) and 1 <= number <= len(lines)
+           )
+       
+    1: def _site_is_mixed_own(site: Mapping[str, object], lines: Sequence[str], driver: str) -> bool:
+ 8776:     site_lines = site.get("lines")
+ 8776:     source = _source_text(list(lines), site_lines)
+ 8912:     return site.get("kind") == "mixed" and (
+  136:         "$EXERCISE" in source
+   93:         or f"std_{driver}_exercise.iyi" in source
+           )
+       
+       
+    1: def _site_is_own_evidence(site: Mapping[str, object], lines: Sequence[str], driver: str) -> bool:
+10365:     return (
+10365:         site.get("kind") == "canonical-own"
+ 8776:         or _site_is_mixed_own(site, lines, driver)
+           )
+       
+       
+    1: def _replace_shell_expansions(text: str) -> str | None:
+95512:     result: list[str] = []
+95512:     index = 0
+4456996:     while index < len(text):
+4361521:         char = text[index]
+4361521:         if char == "`":
+   22:             end = index + 1
+   22:             escaped = False
+  110:             while end < len(text):
+   95:                 if text[end] == "`" and not escaped:
+    7:                     break
+   88:                 escaped = text[end] == "\\" and not escaped
+   88:                 if text[end] != "\\":
+   88:                     escaped = False
+   88:                 end += 1
+   22:             if end >= len(text):
+   15:                 return None
+    7:             result.append("IYIVAR")
+    7:             index = end + 1
+    7:             continue
+4361499:         if char != "$":
+4311523:             result.append(char)
+4311523:             index += 1
+4311523:             continue
+49976:         if index + 1 >= len(text):
+    7:             result.append(char)
+    7:             index += 1
+    7:             continue
+49969:         opener = text[index + 1]
+49969:         if opener in "({":
+10350:             closer = ")" if opener == "(" else "}"
+10350:             depth = 1
+10350:             end = index + 2
+10350:             quote: str | None = None
+10350:             escaped = False
+410137:             while end < len(text):
+410115:                 current = text[end]
+410115:                 if escaped:
+   90:                     escaped = False
+410025:                 elif current == "\\" and quote != "'":
+   90:                     escaped = True
+409935:                 elif quote:
+210548:                     if current == quote:
+18799:                         quote = None
+199387:                 elif current in "'\"":
+18799:                     quote = current
+180588:                 elif current == opener:
+   15:                     depth += 1
+180573:                 elif current == closer:
+10343:                     depth -= 1
+10343:                     if depth == 0:
+10328:                         break
+399787:                 end += 1
+10350:             if depth:
+   22:                 return None
+10328:             result.append("IYIVAR")
+10328:             index = end + 1
+10328:             continue
+39619:         match = re.match(r"\$[A-Za-z_][A-Za-z0-9_]*|\$[0-9@#?*!-]", text[index:])
+39619:         if match:
+39604:             result.append("IYIVAR")
+39604:             index += len(match.group(0))
+39604:             continue
+   15:         result.append(char)
+   15:         index += 1
+95475:     return "".join(result)
+       
+       
+       
+       
+    1: def _template_violation(value: object, allowed_vars: set[str], field: str) -> str | None:
+29985:     if not isinstance(value, str):
+    4:         return f"{field} must be a string"
+359422:     if any(char in value for char in ("$", "`", "*", "?", "[")):
+   35:         return f"{field} contains forbidden shell syntax: {value!r}"
+29946:     placeholders = set(_TEMPLATE_FIELD_RE.findall(value))
+29946:     unknown = placeholders - {"REPO", "WORK"} - allowed_vars
+29946:     if unknown:
+    1:         return f"{field} has undeclared placeholders {sorted(unknown)}"
+29945:     residue = _TEMPLATE_FIELD_RE.sub("", value)
+29945:     if "{" in residue or "}" in residue:
+   15:         return f"{field} has malformed placeholder syntax: {value!r}"
+29930:     return None
+       
+       
+    1: _SHELL_OPERATORS = (
+           ";;&",
+           "&&",
+           "||",
+           ";;",
+           ";&",
+           "<<",
+           ">>",
+           "<&",
+           ">&",
+           "<>",
+           ">|",
+           "(",
+           ")",
+           "{",
+           "}",
+           ";",
+           "|",
+           "&",
+           "<",
+           ">",
+       )
+    1: _SHELL_COMMAND_BOUNDARIES = {
+           ";",
+           "&&",
+           "||",
+           ";;",
+           ";&",
+           ";;&",
+           "|",
+           "&",
+           "(",
+           ")",
+           "{",
+           "}",
+       }
+    1: _SHELL_REDIRECTIONS = {"<", ">", "<<", ">>", "<&", ">&", "<>", ">|"}
+    1: _SHELL_COMMAND_PREFIXES = {
+           "if",
+           "elif",
+           "while",
+           "until",
+           "then",
+           "else",
+           "do",
+           "!",
+           "time",
+           "coproc",
+       }
+       
+       
+       
+       
+    1: def _backtick_span_end(text: str, start: int) -> int | None:
+ 8885:     index = start + 1
+ 8885:     escaped = False
+340745:     while index < len(text):
+340540:         char = text[index]
+340540:         if escaped:
+ 1100:             escaped = False
+339440:         elif char == "\\":
+ 1100:             escaped = True
+338340:         elif char == "`":
+ 8680:             return index + 1
+331860:         index += 1
+  205:     return None
+       
+       
+    1: def _command_substitution_end(text: str, start: int) -> int | None:
+295162:     index = start + 2
+295162:     depth = 1
+295162:     quote: str | None = None
+295162:     escaped = False
+10376860:     while index < len(text):
+10374917:         char = text[index]
+10374917:         if escaped:
+  225:             escaped = False
+  225:             index += 1
+  225:             continue
+10374692:         if char == "\\" and quote != "'":
+  405:             escaped = True
+  405:             index += 1
+  405:             continue
+10374287:         if quote == "'":
+1406173:             if char == "'":
+138091:                 quote = None
+1406173:             index += 1
+1406173:             continue
+8968114:         if quote == '"':
+3638232:             if char == '"':
+296142:                 quote = None
+296142:                 index += 1
+296142:                 continue
+3342090:             if char == "$" and index + 1 < len(text) and text[index + 1] == "(":
+11686:                 end = _command_substitution_end(text, index)
+11686:                 if end is None:
+   15:                     return None
+11671:                 index = end
+11671:                 continue
+3330404:             if char == "`":
+   22:                 end = _backtick_span_end(text, index)
+   22:                 if end is None:
+   15:                     return None
+    7:                 index = end
+    7:                 continue
+3330382:             index += 1
+3330382:             continue
+5329882:         if char == "'":
+138702:             quote = "'"
+138702:             index += 1
+138702:             continue
+5191180:         if char == '"':
+296798:             quote = '"'
+296798:             index += 1
+296798:             continue
+4894382:         if char == "`":
+   30:             end = _backtick_span_end(text, index)
+   30:             if end is None:
+   15:                 return None
+   15:             index = end
+   15:             continue
+4894352:         if char == "(":
+20493:             depth += 1
+4873859:         elif char == ")":
+313667:             depth -= 1
+313667:             if depth == 0:
+293174:                 return index + 1
+4601178:         index += 1
+ 1943:     return None
+       
+       
+    1: def _shell_line_tokens(source: str) -> list[str] | None:
+           """Split one shell line, preserving raw words and substitution spans."""
+5571527:     text = source.rstrip("\r\n")
+5571527:     tokens: list[str] = []
+5571527:     index = 0
+32383989:     while index < len(text):
+57609933:         while index < len(text) and text[index].isspace():
+30458473:             index += 1
+27151460:         if index >= len(text) or text[index] == "#":
+157969:             break
+53986982:         operator = next(
+544908127:             (item for item in _SHELL_OPERATORS if text.startswith(item, index)),
+26993491:             None,
+               )
+26993491:         if operator is not None:
+6102056:             tokens.append(operator)
+6102056:             index += len(operator)
+6102056:             continue
+       
+20891435:         start = index
+20891435:         quote: str | None = None
+20891435:         escaped = False
+226310497:         while index < len(text):
+222525965:             char = text[index]
+222525965:             if escaped:
+389524:                 escaped = False
+389524:                 index += 1
+389524:                 continue
+                   if (
+222136441:                 char == "\\"
+897111:                 and quote is None
+313281:                 and index + 1 == len(text)
+                   ):
+311751:                 text = text[:index]
+311751:                 break
+221824690:             if char == "\\" and quote != "'":
+390460:                 escaped = True
+390460:                 index += 1
+390460:                 continue
+221434230:             if quote == "'":
+31498641:                 if char == "'":
+879294:                     quote = None
+31498641:                 index += 1
+31498641:                 continue
+189935589:             if char == "$" and index + 1 < len(text) and text[index + 1] == "(":
+241634:                 end = _command_substitution_end(text, index)
+241634:                 if end is None:
+ 1913:                     return None
+239721:                 index = end
+239721:                 continue
+189693955:             if char == "`":
+ 7966:                 end = _backtick_span_end(text, index)
+ 7966:                 if end is None:
+  160:                     return None
+ 7806:                 index = end
+ 7806:                 continue
+189685989:             if quote == '"':
+87732076:                 if char == '"':
+4371477:                     quote = None
+87732076:                 index += 1
+87732076:                 continue
+101953913:             if char == "'":
+1035692:                 quote = "'"
+1035692:                 index += 1
+1035692:                 continue
+100918221:             if char == '"':
+4395826:                 quote = '"'
+4395826:                 index += 1
+4395826:                 continue
+96522395:             if quote is None and (
+96522395:                 char.isspace()
+1894450467:                 or any(
+1810649741:                     text.startswith(item, index) for item in _SHELL_OPERATORS
+                       )
+                   ):
+16793079:                 break
+79729316:             index += 1
+20889362:         if quote is not None or escaped:
+178956:             return None
+20710406:         tokens.append(text[start:index])
+31703111:     return [token for token in tokens if token]
+       
+       
+    1: def _shell_commands_from_tokens(tokens: list[str]) -> list[list[str]]:
+5390498:     commands: list[list[str]] = []
+5390498:     current: list[str] = []
+5390498:     skip_redirection_word = False
+       
+5390498:     def finish() -> None:
+               nonlocal current
+10793681:         if current:
+6971049:             commands.append(current)
+6971049:             current = []
+       
+31391360:     for token in tokens:
+26000862:         if token in _SHELL_COMMAND_BOUNDARIES:
+5403183:             finish()
+5403183:             skip_redirection_word = False
+5403183:             continue
+20597679:         if token in _SHELL_REDIRECTIONS:
+604522:             skip_redirection_word = True
+604522:             continue
+19993157:         if skip_redirection_word:
+586558:             skip_redirection_word = False
+586558:             continue
+19406599:         if not current:
+8993924:             if token in _SHELL_COMMAND_PREFIXES or token in {"fi", "done"}:
+1405247:                 continue
+7588677:             if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token):
+617628:                 continue
+17383724:         current.append(token)
+5390498:     finish()
+5390498:     return commands
+       
+       
+    1: def _shell_commands(source: str) -> list[list[str]]:
+           """Return simple commands from one source line as raw shell words."""
+4431518:     tokens = _shell_line_tokens(source)
+4431518:     return _shell_commands_from_tokens(tokens) if tokens is not None else []
+       
+       
+    1: def _shell_span_bodies(word: str) -> list[str] | None:
+4743683:     bodies: list[str] = []
+4743683:     index = 0
+4743683:     quote: str | None = None
+4743683:     escaped = False
+41714403:     while index < len(word):
+36970750:         char = word[index]
+36970750:         if escaped:
+60412:             escaped = False
+60412:             index += 1
+60412:             continue
+36910338:         if char == "\\" and quote != "'":
+60412:             escaped = True
+60412:             index += 1
+60412:             continue
+36849926:         if quote == "'":
+5017173:             if char == "'":
+163867:                 quote = None
+5017173:             index += 1
+5017173:             continue
+31832753:         if char == "$" and index + 1 < len(word) and word[index + 1] == "(":
+41768:             end = _command_substitution_end(word, index)
+41768:             if end is None:
+   15:                 return None
+41753:             bodies.append(word[index + 2:end - 1])
+41753:             index = end
+41753:             continue
+31790985:         if char == "`":
+  867:             end = _backtick_span_end(word, index)
+  867:             if end is None:
+   15:                 return None
+  852:             bodies.append(word[index + 1:end - 1])
+  852:             index = end
+  852:             continue
+31790118:         if quote == '"':
+15854591:             if char == '"':
+804305:                 quote = None
+15854591:             index += 1
+15854591:             continue
+15935527:         if char == "'":
+163867:             quote = "'"
+163867:             index += 1
+163867:             continue
+15771660:         if char == '"':
+804320:             quote = '"'
+804320:             index += 1
+804320:             continue
+14967340:         index += 1
+4743653:     return None if quote is not None or escaped else bodies
+       
+       
+    1: def _unterminated_print_commands(source: str) -> list[list[str]] | None:
+55142:     match = re.search(
+27571:         r"(?:^|[{};)]|\bthen\b|\belse\b|\bdo\b|&&|\|\|)"
+               r"\s*(echo|printf)\b(.*)$",
+27571:         source,
+           )
+27571:     if not match:
+27478:         return None
+   93:     words = [match.group(1)]
+   93:     remainder = match.group(2).strip()
+   93:     if remainder:
+   93:         words.append(remainder)
+   93:     return [words]
+       
+       
+    1: def _top_level_print_commands(source: str) -> list[list[str]] | None:
+10103:     tokens = _shell_line_tokens(source)
+10103:     if tokens is None:
+    2:         return _unterminated_print_commands(source)
+20202:     return [
+20828:         command
+30616:         for command in _shell_commands_from_tokens(tokens)
+20828:         if command and command[0] in ("echo", "printf")
+           ]
+       
+       
+    1: def _print_commands(source: str) -> list[list[str]] | None:
+1129906:     tokens = _shell_line_tokens(source)
+1129906:     if tokens is None:
+27569:         return _unterminated_print_commands(source)
+2204674:     commands = [
+2564536:         command
+3486942:         for command in _shell_commands_from_tokens(tokens)
+2564536:         if command and command[0] in ("echo", "printf")
+           ]
+5845990:     for token in tokens:
+4743653:         bodies = _shell_span_bodies(token)
+4786258:         for body in bodies:
+42605:             nested = _print_commands(body)
+42605:             commands.extend(nested)
+1102337:     return commands
+       
+       
+    1: def _dequote_print_word(word: str) -> str | None:
+95453:     if "$'" in word:
+    7:         return None
+95446:     expanded = _replace_shell_expansions(word)
+95446:     if expanded is None:
+   15:         return None
+95431:     try:
+95431:         values = shlex.split(expanded, posix=True)
+  108:     except ValueError:
+  108:         return None
+95323:     return values[0] if len(values) == 1 else None
+       
+       
+    1: def _render_print_words(words: list[str]) -> str | None:
+107199:     if not words or words[0] not in ("echo", "printf"):
+   15:         return None
+107184:     arguments = list(words[1:])
+107184:     if words[0] == "echo":
+95404:         while arguments and arguments[0] in ("-n", "-e", "-E"):
+   15:             arguments.pop(0)
+95389:         rendered: list[str] = []
+179013:         for word in arguments:
+83628:             value = _dequote_print_word(word)
+83628:             if value is None:
+    4:                 return None
+83624:             rendered.append(value)
+95385:         return " ".join(rendered)
+       
+11810:     while arguments and arguments[0].startswith("-") and arguments[0] != "-":
+   15:         arguments.pop(0)
+11795:     if not arguments:
+    7:         return None
+11788:     format_string = _dequote_print_word(arguments[0])
+11788:     if format_string is None:
+   89:         return None
+11699:     return re.sub(r"%(?:s|d)", "IYIVAR", format_string).replace("\\n", "")
+       
+       
+    1: def _declared_build_lines_for_token(sites: list[dict], lines: list[str], token: str) -> set[int]:
+ 2474:     declared: set[int] = set()
+23099:     for site in sites:
+20625:         if not isinstance(site, dict) or site.get("command") != "build":
+ 5332:             continue
+15293:         site_lines = site.get("lines")
+15293:         if not isinstance(site_lines, list):
+    3:             continue
+32941:         for number in site_lines:
+17651:             if not isinstance(number, int) or not 1 <= number <= len(lines):
+    3:                 continue
+17648:             source = lines[number - 1]
+17648:             if source.count(token) != 1:
+13611:                 continue
+22431:             if any(
+14304:                 words[index] == "-o" and words[index + 1] == token
+ 8178:                 for words in _shell_commands(source)
+14408:                 for index in range(len(words) - 1)
+                   ):
+ 3984:                 declared.add(number)
+ 2474:     return declared
+       
+       
+       
+       
+    1: _PLATFORM_GUARD_MARKERS = (
+           "uname",
+           "PSEP",
+           "Windows",
+           "/proc",
+           "/dev/shm",
+       )
+    1: _TOOL_GUARD_MARKERS = (
+           "command -v",
+           "which ",
+           "type ",
+           " -c ",
+           "import ",
+       )
+       
+       
+    1: def _shell_function_ranges(lines: Sequence[str]) -> tuple[tuple[str, int, int], ...]:
+ 1530:     ranges: list[tuple[str, int, int]] = []
+ 1530:     active_name: str | None = None
+ 1530:     active_start = 0
+1088835:     for number, source in enumerate(lines, 1):
+1087305:         if active_name is None:
+1772050:             match = re.match(
+886025:                 r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\{",
+886025:                 source,
+                   )
+886025:             if match:
+ 8945:                 active_name = match.group(1)
+ 8945:                 active_start = number
+201280:         elif re.match(r"^\s*}\s*$", source):
+ 8945:             ranges.append((active_name, active_start, number))
+ 8945:             active_name = None
+ 8945:             active_start = 0
+ 1530:     return tuple(ranges)
+       
+       
+    1: def _derived_guard_variables(lines: Sequence[str]) -> tuple[set[str], set[str]]:
+  191:     platform_variables: set[str] = set()
+  191:     tool_variables: set[str] = set()
+ 6046:     assignments = tuple(
+ 5473:         (
+ 5473:             number,
+ 5473:             match.group(1),
+ 5473:             "\n".join(lines[max(0, number - 3) : number]),
+               )
+137425:         for number, source in enumerate(lines, 1)
+279559:         for match in re.finditer(
+137043:             r"(?:^|[;()\s])([A-Z][A-Z0-9_]*)=",
+137043:             source,
+               )
+           )
+  191:     changed = True
+  665:     while changed:
+  474:         changed = False
+14160:         for _number, name, context in assignments:
+27372:             references = set(
+27372:                 re.findall(
+13686:                     r"\$(?:\{)?([A-Z][A-Z0-9_]*)",
+13686:                     context,
+                       )
+                   )
+                   if (
+132524:                 any(marker in context for marker in _PLATFORM_GUARD_MARKERS)
+ 9313:                 or bool(references.intersection(platform_variables))
+10188:             ) and name not in platform_variables:
+ 2732:                 platform_variables.add(name)
+ 2732:                 changed = True
+                   if (
+153102:                 any(marker in context for marker in _TOOL_GUARD_MARKERS)
+12142:                 or bool(references.intersection(tool_variables))
+ 4604:             ) and name not in tool_variables:
+ 1413:                 tool_variables.add(name)
+ 1413:                 changed = True
+  191:     return platform_variables, tool_variables
+       
+       
+    1: def _platform_skip_guarded(lines: Sequence[str], number: int) -> bool:
+  191:     platform_variables, tool_variables = _derived_guard_variables(lines)
+  191:     start = max(0, number - 31)
+  382:     guard_lines = [
+ 5654:         source
+ 6036:         for source in lines[start : number - 1]
+11308:         if re.match(
+ 5654:             r"^\s*(?:if|elif|case)\b|^\s*(?:[^#].*\))\s*$",
+ 5654:             source,
+               )
+           ]
+  191:     guard = "\n".join(guard_lines)
+  382:     references = set(
+  191:         re.findall(r"\$(?:\{)?([A-Z][A-Z0-9_]*)", guard)
+           )
+  191:     has_platform = (
+  610:         any(marker in guard for marker in _PLATFORM_GUARD_MARKERS)
+    6:         or bool(references.intersection(platform_variables))
+           )
+  191:     has_tool = (
+ 2182:         any(marker in guard for marker in _TOOL_GUARD_MARKERS)
+  180:         or bool(references.intersection(tool_variables))
+           )
+  191:     return has_platform and not has_tool
+       
+       
+    1: def _environment_callsite_violations(lines: Sequence[str], invocation_lines: set[int], site_by_line: Mapping[int, dict]) -> tuple[Violation, ...]:
+ 1530:     violations: list[Violation] = []
+ 1530:     functions = _shell_function_ranges(lines)
+10475:     for name, first, last in functions:
+31563:         function_invocations = tuple(
+131092:             number
+144254:             for number in sorted(invocation_lines)
+131092:             if first <= number <= last
+               )
+ 8945:         if not function_invocations:
+ 4357:             continue
+ 4588:         environment_calls: list[int] = []
+5248280:         for number, source in enumerate(lines, 1):
+5243692:             if first <= number <= last or source.lstrip().startswith("#"):
+816211:                 continue
+4427481:             commands = _shell_commands(source)
+18913022:             if not any(
+5673769:                 command and command[0] == name
+14485541:                 for command in commands
+                   ):
+4384291:                 continue
+43190:             prefix = "\n".join(lines[max(0, number - 5) : number])
+86380:             if re.search(
+43190:                 r"(?:export\s+)?(?:IYI_PATH|CRYSTAL_PATH)\s*=",
+43190:                 prefix,
+                   ):
+   47:                 environment_calls.append(number)
+ 4588:         if not environment_calls:
+ 4541:             continue
+   94:         for invocation_line in function_invocations:
+   47:             site = site_by_line.get(invocation_line)
+   47:             if isinstance(site, dict) and site.get("kind") == "unchanged":
+    1:                 continue
+   46:             if not isinstance(site, dict) or site.get("kind") not in (
+                       "mixed",
+                       "negative",
+                       "positive",
+                   ):
+    4:                 violations.append(
+    2:                     (
+    2:                         "C5.6-env-call-variant",
+    2:                         invocation_line,
+    4:                         f"function {name!r} is called with a path override "
+    2:                         f"at lines {environment_calls} but its invocation "
+                               "site is not mixed, negative or positive",
+                           )
+                       )
+ 1530:     return tuple(violations)
+       
+       
+    1: def _validate_census_schema(census: object, violations: list[Violation]) -> None:
+ 1532:     top_keys = {
+               "census_version",
+               "driver",
+               "script",
+               "script_sha256",
+               "sites",
+               "non_invocations",
+               "skips",
+               "not_skips",
+               "pass_sentinel",
+               "exec_evidence",
+           }
+ 1532:     _closed_keys(census, top_keys, "census", violations)
+ 1532:     if not isinstance(census, dict):
+    1:         return
+       
+ 1531:     scalar_types = {
+ 1531:         "census_version": int,
+ 1531:         "driver": str,
+ 1531:         "script": str,
+ 1531:         "script_sha256": str,
+ 1531:         "sites": list,
+ 1531:         "non_invocations": list,
+ 1531:         "skips": list,
+ 1531:         "not_skips": list,
+ 1531:         "pass_sentinel": dict,
+ 1531:         "exec_evidence": list,
+           }
+16841:     for key, expected in scalar_types.items():
+15310:         if not isinstance(census.get(key), expected):
+   22:             _violation(
+   11:                 violations,
+   11:                 "C5.0-schema",
+   11:                 0,
+   11:                 f"census.{key} must be {expected.__name__}",
+                   )
+       
+ 1531:     sites = census.get("sites")
+11783:     for index, site in enumerate(sites if isinstance(sites, list) else []):
+10252:         line = (
+10250:             site.get("lines", [0])[0]
+10252:             if isinstance(site, dict)
+10251:             and isinstance(site.get("lines"), list)
+10250:             and site["lines"]
+    2:             else 0
+               )
+20504:         if not _closed_keys(
+10252:             site,
+10252:             {"lines", "command", "kind", "contains", "variants"},
+10252:             f"sites[{index}]",
+10252:             violations,
+10252:             line,
+               ):
+    1:             continue
+10251:         site_valid = (
+92235:             isinstance(site["lines"], list)
+10250:             and bool(site["lines"])
+43638:             and all(isinstance(item, int) for item in site["lines"])
+10249:             and isinstance(site["command"], str)
+10248:             and site["command"] in _COMMANDS
+10248:             and isinstance(site["kind"], str)
+10247:             and site["kind"] in _SITE_KINDS
+10247:             and isinstance(site["contains"], list)
+41158:             and all(isinstance(item, str) for item in site["contains"])
+10244:             and isinstance(site["variants"], list)
+               )
+10251:         if not site_valid:
+   16:             _violation(
+    8:                 violations,
+    8:                 "C5.0-schema",
+    8:                 line,
+    8:                 f"sites[{index}] has invalid field types or enum values",
+                   )
+    8:             continue
+       
+19975:         for variant_index, variant in enumerate(site["variants"]):
+ 9732:             variant_path = f"sites[{index}].variants[{variant_index}]"
+19464:             if not _closed_keys(
+ 9732:                 variant,
+ 9732:                 {
+                           "id",
+                           "kind",
+                           "first_root",
+                           "vars",
+                           "sources",
+                           "output",
+                           "darwin",
+                           "requires",
+                           "verdict",
+                       },
+ 9732:                 variant_path,
+ 9732:                 violations,
+ 9732:                 line,
+                   ):
+    1:                 continue
+ 9731:             variant_valid = (
+116717:                 isinstance(variant["id"], str)
+ 9730:                 and isinstance(variant["kind"], str)
+ 9729:                 and variant["kind"] in _VARIANT_KINDS
+ 9729:                 and isinstance(variant["first_root"], str)
+ 9728:                 and isinstance(variant["vars"], dict)
+ 9727:                 and isinstance(variant["sources"], list)
+38904:                 and all(isinstance(item, str) for item in variant["sources"])
+                       and (
+ 9725:                     variant["output"] is None
+ 8037:                     or isinstance(variant["output"], str)
+                       )
+ 9724:                 and isinstance(variant["darwin"], str)
+ 9723:                 and variant["darwin"] in ("required", "platform-excluded")
+ 9723:                 and isinstance(variant["requires"], list)
+39314:                 and all(isinstance(item, str) for item in variant["requires"])
+ 9721:                 and isinstance(variant["verdict"], dict)
+                   )
+ 9731:             if not variant_valid:
+   22:                 _violation(
+   11:                     violations,
+   11:                     "C5.0-schema",
+   11:                     line,
+   11:                     f"variant {variant.get('id', variant_index)!r} "
+                           "has invalid fields",
+                       )
+   11:                 continue
+       
+11250:             for name, variable in variant["vars"].items():
+ 3060:                 if not isinstance(name, str) or not re.fullmatch(
+ 1530:                     r"[A-Za-z_][A-Za-z0-9_]*",
+ 1530:                     name,
+                       ):
+   14:                     _violation(
+    7:                         violations,
+    7:                         "C5.0-schema",
+    7:                         line,
+    7:                         f"variant variable name {name!r} is invalid",
+                           )
+    7:                     continue
+ 1523:                 if not isinstance(variable, dict):
+    2:                     _violation(
+    1:                         violations,
+    1:                         "C5.0-schema",
+    1:                         line,
+    1:                         f"variable {name!r} must be an object",
+                           )
+    1:                     continue
+ 1522:                 value_form = set(variable) == {"lines", "values"}
+ 1522:                 pattern_form = set(variable) == {
+                           "lines",
+                           "pattern",
+                           "pattern_reason_line",
+                       }
+ 1522:                 if not value_form and not pattern_form:
+   14:                     _violation(
+    7:                         violations,
+    7:                         "C5.0-schema",
+    7:                         line,
+   14:                         f"variable {name!r} has invalid keys "
+    7:                         f"{sorted(variable)}",
+                           )
+    7:                     continue
+ 1515:                 variable_valid = (
+ 3029:                     isinstance(variable["lines"], list)
+ 1514:                     and bool(variable["lines"])
+10216:                     and all(
+ 8702:                         isinstance(item, int) for item in variable["lines"]
+                           )
+                       )
+ 1515:                 if value_form:
+ 1063:                     variable_valid = (
+ 3186:                         variable_valid
+ 1062:                         and isinstance(variable["values"], list)
+ 1061:                         and bool(variable["values"])
+ 7897:                         and all(
+ 4715:                             isinstance(item, str)
+ 6836:                             for item in variable["values"]
+                               )
+                           )
+                       else:
+  452:                     variable_valid = (
+  904:                         variable_valid
+  452:                         and isinstance(variable["pattern"], str)
+  902:                         and isinstance(
+  451:                             variable["pattern_reason_line"],
+  451:                             int,
+                               )
+                           )
+ 1515:                 if not variable_valid:
+   10:                     _violation(
+    5:                         violations,
+    5:                         "C5.0-schema",
+    5:                         line,
+    5:                         f"variable {name!r} has invalid field types",
+                           )
+       
+ 9720:             verdict = variant["verdict"]
+19440:             if _closed_keys(
+ 9720:                 verdict,
+ 9720:                 {"lines", "contains"},
+ 9720:                 f"variant {variant['id']!r}.verdict",
+ 9720:                 violations,
+ 9720:                 line,
+                   ) and (
+ 9720:                 not isinstance(verdict["lines"], list)
+ 9719:                 or not verdict["lines"]
+112115:                 or not all(
+102396:                     isinstance(item, int) for item in verdict["lines"]
+                       )
+ 9718:                 or not isinstance(verdict["contains"], list)
+ 9717:                 or not verdict["contains"]
+58069:                 or not all(
+48352:                     isinstance(item, str) for item in verdict["contains"]
+                       )
+                   ):
+    8:                 _violation(
+    4:                     violations,
+    4:                     "C5.0-schema",
+    4:                     line,
+    4:                     f"variant {variant['id']!r} verdict is invalid",
+                       )
+       
+ 6124:     for key, required in (
+ 1531:         ("non_invocations", {"line", "reason"}),
+ 1531:         ("skips", {"line", "class", "what", "regex", "text"}),
+ 1531:         ("not_skips", {"line", "reason", "text"}),
+           ):
+ 4593:         entries = census.get(key)
+18337:         for index, item in enumerate(
+ 4593:             entries if isinstance(entries, list) else []
+               ):
+ 9151:             line = item.get("line", 0) if isinstance(item, dict) else 0
+18302:             if not _closed_keys(
+ 9151:                 item,
+ 9151:                 required,
+ 9151:                 f"{key}[{index}]",
+ 9151:                 violations,
+ 9151:                 line,
+                   ):
+    3:                 continue
+ 9148:             if not isinstance(item["line"], int):
+    6:                 _violation(
+    3:                     violations,
+    3:                     "C5.0-schema",
+    3:                     0,
+    3:                     f"{key}[{index}].line must be an integer",
+                       )
+ 9217:             if key == "non_invocations" and not isinstance(
+   69:                 item["reason"],
+   69:                 str,
+                   ):
+    2:                 _violation(
+    1:                     violations,
+    1:                     "C5.0-schema",
+    1:                     line,
+    1:                     f"{key}[{index}].reason must be a string",
+                       )
+ 9148:             if key == "skips" and (
+ 8583:                 not isinstance(item["class"], str)
+ 8582:                 or item["class"] not in ("tool", "platform")
+51486:                 or not all(
+25743:                     isinstance(item[field], str)
+42904:                     for field in ("what", "regex", "text")
+                       )
+                   ):
+    8:                 _violation(
+    4:                     violations,
+    4:                     "C5.0-schema",
+    4:                     line,
+    4:                     f"{key}[{index}] has invalid fields",
+                       )
+11129:             if key == "not_skips" and not all(
+ 1981:                 isinstance(item[field], str) for field in ("reason", "text")
+                   ):
+    4:                 _violation(
+    2:                     violations,
+    2:                     "C5.0-schema",
+    2:                     line,
+    2:                     f"{key}[{index}] has invalid fields",
+                       )
+       
+ 1531:     sentinel = census.get("pass_sentinel")
+ 3062:     if _closed_keys(
+ 1531:         sentinel,
+ 1531:         {"line", "regex", "text"},
+ 1531:         "pass_sentinel",
+ 1531:         violations,
+           ):
+ 1530:         if not isinstance(sentinel, dict) or (
+ 1530:             not isinstance(sentinel["line"], int)
+ 1529:             or not isinstance(sentinel["regex"], str)
+ 1528:             or not isinstance(sentinel["text"], str)
+               ):
+    6:             _violation(
+    3:                 violations,
+    3:                 "C5.0-schema",
+    3:                 0,
+    3:                 "pass_sentinel has invalid fields",
+                   )
+       
+ 1531:     evidences = census.get("exec_evidence")
+ 1531:     evidence_keys = {
+               "site_line",
+               "out_template",
+               "name_from_calls",
+               "exec_lines",
+               "exec_token",
+               "verdict_lines",
+               "failure_marks",
+               "refs_ok",
+           }
+ 5542:     for index, evidence in enumerate(
+ 1531:         evidences if isinstance(evidences, list) else []
+           ):
+ 2480:         line = (
+ 2479:             evidence.get("site_line", 0)
+ 2480:             if isinstance(evidence, dict)
+    1:             else 0
+               )
+ 4960:         if not _closed_keys(
+ 2480:             evidence,
+ 2480:             evidence_keys,
+ 2480:             f"exec_evidence[{index}]",
+ 2480:             violations,
+ 2480:             line,
+               ):
+    1:             continue
+ 2479:         evidence_valid = (
+37100:             isinstance(evidence["site_line"], int)
+ 2478:             and isinstance(evidence["out_template"], str)
+ 2477:             and isinstance(evidence["name_from_calls"], dict)
+17859:             and all(
+41726:                 isinstance(key, str)
+10432:                 and key.isdigit()
+10431:                 and isinstance(value, str)
+10431:                 and bool(value)
+15383:                 for key, value in evidence["name_from_calls"].items()
+                   )
+ 2475:             and isinstance(evidence["exec_lines"], list)
+ 2474:             and bool(evidence["exec_lines"])
+10077:             and all(
+ 7603:                 isinstance(item, int) for item in evidence["exec_lines"]
+                   )
+ 2473:             and isinstance(evidence["exec_token"], str)
+ 2472:             and bool(evidence["exec_token"])
+ 2472:             and isinstance(evidence["verdict_lines"], list)
+ 2471:             and bool(evidence["verdict_lines"])
+21210:             and all(
+18739:                 isinstance(item, int) for item in evidence["verdict_lines"]
+                   )
+ 2470:             and isinstance(evidence["failure_marks"], list)
+ 2469:             and bool(evidence["failure_marks"])
+11681:             and all(
+ 4275:                 isinstance(item, str) and bool(item)
+ 9212:                 for item in evidence["failure_marks"]
+                   )
+ 2468:             and isinstance(evidence["refs_ok"], list)
+               )
+ 2479:         if not evidence_valid:
+   24:             _violation(
+   12:                 violations,
+   12:                 "C5.0-schema",
+   12:                 line,
+   12:                 f"exec_evidence[{index}] has invalid fields",
+                   )
+   12:             continue
+       
+ 2558:         for ref_index, reference in enumerate(evidence["refs_ok"]):
+  182:             if not _closed_keys(
+   91:                 reference,
+   91:                 {"line", "kind"},
+   91:                 f"exec_evidence[{index}].refs_ok[{ref_index}]",
+   91:                 violations,
+   91:                 line,
+                   ):
+    1:                 continue
+   90:             if not isinstance(reference, dict) or (
+   90:                 not isinstance(reference["line"], int)
+   89:                 or reference["kind"] != "cleanup"
+                   ):
+    4:                 _violation(
+    2:                     violations,
+    2:                     "C5.0-schema",
+    2:                     line,
+    2:                     f"exec_evidence[{index}].refs_ok[{ref_index}] "
+                           "is invalid",
+                       )
+       
+       
+    1: def validate_census(census: object, script_bytes: bytes, script_relpath: str) -> list[Violation]:
+           """Return every C5 and E1 violation for one source-grounded census."""
+ 1532:     violations: list[Violation] = []
+ 1532:     _validate_census_schema(census, violations)
+ 1532:     if not isinstance(census, dict):
+    1:         return violations
+ 1531:     if not isinstance(script_bytes, bytes):
+    2:         _violation(
+    1:             violations,
+    1:             "C5.0-schema",
+    1:             0,
+    1:             "script_bytes must be bytes",
+               )
+    1:         return violations
+ 1530:     if not isinstance(script_relpath, str):
+    2:         _violation(
+    1:             violations,
+    1:             "C5.0-schema",
+    1:             0,
+    1:             "script_relpath must be a string",
+               )
+    1:         return violations
+       
+ 1529:     lines = script_bytes.decode("utf-8", errors="replace").splitlines()
+ 1529:     driver = census.get("driver")
+ 1529:     expected_script = (
+ 1527:         f"bench/std_{driver}_exercise.sh"
+ 1529:         if isinstance(driver, str)
+    2:         else ""
+           )
+           if (
+ 1529:         census.get("census_version") != 1
+ 1528:         or script_relpath != census.get("script")
+ 1527:         or census.get("script") != expected_script
+           ):
+    8:         _violation(
+    4:             violations,
+    4:             "C5.0-schema",
+    4:             0,
+    8:             f"identity mismatch driver={driver!r}, "
+    4:             f"script={census.get('script')!r}, input={script_relpath!r}",
+               )
+ 1529:     actual_sha = sha256_bytes(script_bytes)
+ 1529:     if census.get("script_sha256") != actual_sha:
+    8:         _violation(
+    4:             violations,
+    4:             "C5.1-sha",
+    4:             0,
+    4:             f"recorded={census.get('script_sha256')!r}, actual={actual_sha}",
+               )
+       
+ 1529:     sites = census.get("sites") if isinstance(census.get("sites"), list) else []
+ 1529:     non_invocations = (
+ 1528:         census.get("non_invocations")
+ 1529:         if isinstance(census.get("non_invocations"), list)
+    1:         else []
+           )
+ 1529:     claims: dict[int, list[str]] = {}
+ 1529:     declared_site_lines: set[int] = set()
+ 1529:     site_owner_line: dict[int, int] = {}
+ 1529:     site_by_line: dict[int, dict] = {}
+11775:     for index, site in enumerate(sites):
+10246:         if not isinstance(site, dict) or not isinstance(site.get("lines"), list):
+    2:             continue
+10244:         owner_line = site["lines"][0] if site["lines"] else 0
+21806:         for number in site["lines"]:
+11562:             if isinstance(number, int):
+11561:                 claims.setdefault(number, []).append(f"site[{index}]")
+11561:                 declared_site_lines.add(number)
+11561:                 site_owner_line[number] = owner_line
+11561:                 site_by_line[number] = site
+ 1599:     for index, item in enumerate(non_invocations):
+   70:         if isinstance(item, dict) and isinstance(item.get("line"), int):
+  136:             claims.setdefault(item["line"], []).append(
+   68:                 f"non_invocations[{index}]"
+                   )
+13152:     for number, owners in sorted(claims.items()):
+11623:         if len(owners) > 1:
+   12:             _violation(
+    6:                 violations,
+    6:                 "C5.2-duplicate-site",
+    6:                 number,
+    6:                 f"line claimed by {owners}",
+                   )
+ 3058:     invocation_lines = {
+2039079:         number
+1090359:         for number, source in enumerate(lines, 1)
+1087301:         if not source.lstrip().startswith("#")
+951778:         and _INVOCATION_RE.search(source)
+           }
+11867:     for number in sorted(invocation_lines):
+10338:         if number not in claims:
+   52:             _violation(
+   26:                 violations,
+   26:                 "C5.2-unlisted-invocation",
+   26:                 number,
+   26:                 "invocation is not listed in a site or non_invocations",
+                   )
+ 3058:     violations.extend(
+ 3058:         _environment_callsite_violations(
+ 1529:             lines,
+ 1529:             invocation_lines,
+ 1529:             site_by_line,
+               )
+           )
+       
+ 1529:     variant_ids: set[str] = set()
+ 1529:     evidence_sites: set[int] = set()
+ 1529:     positive_sites: set[int] = set()
+ 1529:     own_sites: set[int] = set()
+11775:     for index, site in enumerate(sites):
+10246:         if not isinstance(site, dict):
+    1:             continue
+10245:         site_lines = (
+10245:             site.get("lines") if isinstance(site.get("lines"), list) else []
+               )
+10245:         line = (
+10244:             site_lines[0]
+10245:             if site_lines and isinstance(site_lines[0], int)
+    1:             else 0
+               )
+10245:         source = _source_text(lines, site_lines)
+10245:         contains = (
+10243:             site.get("contains")
+10245:             if isinstance(site.get("contains"), list)
+    2:             else []
+               )
+20578:         for literal in contains:
+10333:             if isinstance(literal, str) and literal not in source:
+    4:                 _violation(
+    2:                     violations,
+    2:                     "C5.3-contains",
+    2:                     line,
+    2:                     f"site[{index}] lacks {literal!r}",
+                       )
+10245:         kind = site.get("kind")
+10245:         variants = (
+10244:             site.get("variants")
+10245:             if isinstance(site.get("variants"), list)
+    1:             else []
+               )
+10245:         if (kind in ("negative", "positive", "mixed")) != bool(variants):
+    4:             _violation(
+    2:                 violations,
+    2:                 "C5.6-kind-variants",
+    2:                 line,
+    2:                 f"kind={kind!r}, variants={len(variants)}",
+                   )
+10245:         if _site_is_own_evidence(site, lines, str(driver)):
+ 1530:             own_sites.add(line)
+10245:         if kind == "positive":
+  247:             positive_sites.add(line)
+19975:         for variant in variants:
+ 9730:             if not isinstance(variant, dict):
+    1:                 continue
+ 9729:             variant_id = variant.get("id")
+ 9729:             if isinstance(variant_id, str):
+ 9728:                 if variant_id in variant_ids:
+    2:                     _violation(
+    1:                         violations,
+    1:                         "C5.0-schema",
+    1:                         line,
+    1:                         f"duplicate variant id {variant_id!r}",
+                           )
+ 9728:                 variant_ids.add(variant_id)
+ 9729:             if kind in ("negative", "positive") and variant.get("kind") != kind:
+    2:                 _violation(
+    1:                     violations,
+    1:                     "C5.6-kind-variants",
+    1:                     line,
+    2:                     f"site kind {kind!r} disagrees with "
+    1:                     f"variant {variant.get('kind')!r}",
+                       )
+ 9729:             variables = (
+ 9728:                 variant.get("vars")
+ 9729:                 if isinstance(variant.get("vars"), dict)
+    1:                 else {}
+                   )
+11269:             for name, variable in variables.items():
+ 1540:                 if not isinstance(variable, dict):
+    1:                     continue
+ 1539:                 cited = _source_text(lines, variable.get("lines"))
+ 1539:                 values = (
+ 1086:                     variable.get("values")
+ 1539:                     if isinstance(variable.get("values"), list)
+  453:                     else []
+                       )
+ 6492:                 for value in values:
+ 4953:                     if isinstance(value, str) and value not in cited:
+  458:                         _violation(
+  229:                             violations,
+  229:                             "C5.3-var-range",
+  229:                             line,
+  229:                             f"{variant_id}.{name} value {value!r} "
+                                   "is absent from cited lines",
+                               )
+ 1539:                 if "pattern" in variable:
+  452:                     try:
+  452:                         re.compile(variable["pattern"])
+    1:                     except (re.error, TypeError) as error:
+    2:                         _violation(
+    1:                             violations,
+    1:                             "C5.3-var-range",
+    1:                             line,
+    1:                             f"{variant_id}.{name} pattern is invalid: {error}",
+                               )
+  452:                     reason_line = variable.get("pattern_reason_line")
+  452:                     reason_source = (
+  451:                         lines[reason_line - 1]
+  452:                         if isinstance(reason_line, int)
+  451:                         and 1 <= reason_line <= len(lines)
+    1:                         else ""
+                           )
+  903:                     if not reason_source or not re.search(
+  451:                         r"\$|`|\(\(",
+  451:                         reason_source,
+                           ):
+    2:                         _violation(
+    1:                             violations,
+    1:                             "C5.3-var-range",
+    1:                             line,
+    1:                             f"{variant_id}.{name} reason line does not "
+                                   "show a dynamic value",
+                               )
+ 9729:             allowed_vars = set(variables)
+19458:             for field in ("first_root",):
+19458:                 detail = _template_violation(
+ 9729:                     variant.get(field),
+ 9729:                     allowed_vars,
+ 9729:                     f"{variant_id}.{field}",
+                       )
+ 9729:                 if detail:
+   30:                     _violation(
+   15:                         violations,
+   15:                         "C5.7-template",
+   15:                         line,
+   15:                         detail,
+                           )
+ 9729:             sources = (
+ 9728:                 variant.get("sources")
+ 9729:                 if isinstance(variant.get("sources"), list)
+    1:                 else []
+                   )
+19458:             for source_index, template in enumerate(sources):
+19458:                 detail = _template_violation(
+ 9729:                     template,
+ 9729:                     allowed_vars,
+ 9729:                     f"{variant_id}.sources[{source_index}]",
+                       )
+ 9729:                 if detail:
+    8:                     _violation(
+    4:                         violations,
+    4:                         "C5.7-template",
+    4:                         line,
+    4:                         detail,
+                           )
+ 9729:             if variant.get("output") is not None:
+16074:                 detail = _template_violation(
+ 8037:                     variant.get("output"),
+ 8037:                     allowed_vars,
+ 8037:                     f"{variant_id}.output",
+                       )
+ 8037:                 if detail:
+   40:                     _violation(
+   20:                         violations,
+   20:                         "C5.7-template",
+   20:                         line,
+   20:                         detail,
+                           )
+ 9729:             verdict = variant.get("verdict")
+ 9729:             if isinstance(verdict, dict):
+ 9728:                 verdict_source = _source_text(lines, verdict.get("lines"))
+ 9728:                 verdict_literals = (
+ 9727:                     verdict.get("contains")
+ 9728:                     if isinstance(verdict.get("contains"), list)
+    1:                     else []
+                       )
+38665:                 for literal in verdict_literals:
+                           if (
+28937:                         isinstance(literal, str)
+28936:                         and literal not in verdict_source
+                           ):
+    8:                         _violation(
+    4:                             violations,
+    4:                             "C5.3-verdict-literal",
+    4:                             line,
+    4:                             f"{variant_id} verdict lacks {literal!r}",
+                               )
+       
+ 1529:     listed_skip_lines: dict[int, str] = {}
+ 4587:     for key in ("skips", "not_skips"):
+ 3058:         entries = census.get(key) if isinstance(census.get(key), list) else []
+12133:         for index, entry in enumerate(entries):
+18148:             if not isinstance(entry, dict) or not isinstance(
+ 9073:                 entry.get("line"),
+ 9073:                 int,
+                   ):
+    4:                 continue
+ 9071:             number = entry["line"]
+ 9071:             if number in listed_skip_lines:
+    2:                 _violation(
+    1:                     violations,
+    1:                     "C5.0-schema",
+    1:                     number,
+    2:                     f"skip line listed twice in {listed_skip_lines[number]} "
+    1:                     f"and {key}[{index}]",
+                       )
+ 9071:             listed_skip_lines[number] = f"{key}[{index}]"
+ 9071:             source = lines[number - 1] if 1 <= number <= len(lines) else ""
+ 9071:             if entry.get("text") != source:
+  324:                 _violation(
+  162:                     violations,
+  162:                     "C5.0-schema",
+  162:                     number,
+  162:                     f"{key}[{index}].text is not the cited source line",
+                       )
+                   if (
+ 9071:                 key == "skips"
+ 8576:                 and entry.get("class") == "platform"
+  191:                 and not _platform_skip_guarded(lines, number)
+                   ):
+   38:                 _violation(
+   19:                     violations,
+   19:                     "C5.4-platform-guard",
+   19:                     number,
+   19:                     "platform skip is not guarded only by platform state",
+                       )
+1088830:     for number, source in enumerate(lines, 1):
+1087301:         print_commands = _print_commands(source)
+1087301:         if print_commands is None:
+27478:             continue
+1156869:         for words in print_commands:
+97046:             rendered = _render_print_words(words)
+97046:             if rendered is None:
+   91:                 if _SKIP_VOCAB_RE.search(" ".join(words)):
+    4:                     _violation(
+    2:                         violations,
+    2:                         "C5.4-unrenderable",
+    2:                         number,
+    2:                         "skip-vocabulary print command cannot be rendered",
+                           )
+   91:                 continue
+                   if (
+96955:                 _SKIP_VOCAB_RE.search(rendered)
+ 8899:                 and number not in listed_skip_lines
+                   ):
+   58:                 _violation(
+   29:                     violations,
+   29:                     "C5.4-unlisted-skip-line",
+   29:                     number,
+   29:                     f"printed text is skip vocabulary: {rendered!r}",
+                       )
+       
+ 1529:     skip_entries = (
+ 1529:         census.get("skips") if isinstance(census.get("skips"), list) else []
+           )
+10107:     for entry in skip_entries:
+ 8578:         if not isinstance(entry, dict) or not isinstance(entry.get("line"), int):
+    2:             continue
+ 8576:         number = entry["line"]
+ 8576:         source = lines[number - 1] if 1 <= number <= len(lines) else ""
+ 8576:         top_level = _top_level_print_commands(source)
+ 8576:         rendered = (
+ 8575:             _render_print_words(top_level[0])
+ 8576:             if top_level
+    1:             else None
+               )
+ 8576:         if rendered is None:
+    6:             _violation(
+    3:                 violations,
+    3:                 "C5.4-unrenderable",
+    3:                 number,
+    3:                 "listed skip line has no renderable top-level print",
+                   )
+    3:             continue
+ 8573:         try:
+ 8573:             regex = re.compile(entry.get("regex", ""))
+    1:         except (re.error, TypeError) as error:
+    2:             _violation(
+    1:                 violations,
+    1:                 "C5.4-skip-regex",
+    1:                 number,
+    1:                 f"invalid regex: {error}",
+                   )
+    1:             continue
+ 8572:         if "IYIVAR" in str(entry.get("regex", "")):
+    2:             _violation(
+    1:                 violations,
+    1:                 "C5.4-skip-regex",
+    1:                 number,
+    1:                 "skip regex contains literal IYIVAR instead of a wildcard",
+                   )
+    1:             continue
+ 8571:         if not regex.search(rendered):
+   22:             _violation(
+   11:                 violations,
+   11:                 "C5.4-skip-regex",
+   11:                 number,
+   11:                 f"{entry.get('regex')!r} does not match {rendered!r}",
+                   )
+       
+ 1529:     sentinel = census.get("pass_sentinel")
+ 1529:     if isinstance(sentinel, dict) and isinstance(sentinel.get("line"), int):
+ 1527:         number = sentinel["line"]
+ 1527:         source = lines[number - 1] if 1 <= number <= len(lines) else ""
+ 1527:         if sentinel.get("text") != source:
+   60:             _violation(
+   30:                 violations,
+   30:                 "C5.0-schema",
+   30:                 number,
+   30:                 "pass_sentinel.text is not the cited source line",
+                   )
+ 1527:         top_level = _top_level_print_commands(source)
+ 1527:         rendered = (
+ 1526:             _render_print_words(top_level[0])
+ 1527:             if top_level
+    1:             else None
+               )
+ 1527:         if rendered is None:
+    2:             _violation(
+    1:                 violations,
+    1:                 "C5.4-unrenderable",
+    1:                 number,
+    1:                 "pass sentinel has no renderable top-level print",
+                   )
+               else:
+ 1526:             sentinel_regex = sentinel.get("regex", "")
+ 1526:             if "IYIVAR" in str(sentinel_regex):
+    2:                 _violation(
+    1:                     violations,
+    1:                     "C5.5-sentinel",
+    1:                     number,
+    1:                     "sentinel regex contains literal IYIVAR instead of a wildcard",
+                       )
+                   else:
+ 1525:                 try:
+ 1525:                     matches = bool(re.search(sentinel_regex, rendered))
+    1:                 except (re.error, TypeError):
+    1:                     matches = False
+ 1525:                 if not matches:
+    4:                     _violation(
+    2:                         violations,
+    2:                         "C5.5-sentinel",
+    2:                         number,
+    2:                         f"{sentinel_regex!r} does not match {rendered!r}",
+                           )
+       
+ 1529:     evidences = (
+ 1528:         census.get("exec_evidence")
+ 1529:         if isinstance(census.get("exec_evidence"), list)
+    1:         else []
+           )
+ 1529:     evidences_by_token: dict[str, list[dict]] = {}
+ 1529:     declared_build_lines_by_token: dict[str, set[int]] = {}
+ 4005:     for evidence in evidences:
+ 2476:         if not isinstance(evidence, dict):
+    1:             continue
+ 2475:         site_line = evidence.get("site_line")
+ 2475:         token = evidence.get("exec_token")
+ 2475:         if isinstance(token, str):
+ 2474:             evidences_by_token.setdefault(token, []).append(evidence)
+ 4948:             declared_build_lines_by_token.setdefault(
+ 2474:                 token,
+ 2474:                 _declared_build_lines_for_token(sites, lines, token),
+                   )
+       
+ 4950:         detail = _template_violation(
+ 2475:             evidence.get("out_template"),
+ 2475:             {"name"},
+ 2475:             f"exec_evidence[{site_line}].out_template",
+               )
+ 2475:         if detail:
+    2:             _violation(
+    1:                 violations,
+    1:                 "C5.7-template",
+    1:                 site_line,
+    1:                 detail,
+                   )
+       
+ 2475:         declared_build_lines = (
+ 2474:             declared_build_lines_by_token.get(token, set())
+ 2475:             if isinstance(token, str)
+    1:             else set()
+               )
+ 2475:         if not isinstance(site_line, int) or site_line not in declared_build_lines:
+   16:             _violation(
+    8:                 violations,
+    8:                 "E1-exec-token",
+    8:                 site_line,
+    8:                 f"site line is not a declared build with exact -o {token!r}",
+                   )
+               else:
+ 2467:             evidence_sites.add(site_owner_line[site_line])
+       
+ 2475:         exec_lines = (
+ 2474:             evidence.get("exec_lines")
+ 2475:             if isinstance(evidence.get("exec_lines"), list)
+    1:             else []
+               )
+ 5131:         for number in exec_lines:
+ 2656:             source = (
+ 2655:                 lines[number - 1]
+ 2656:                 if isinstance(number, int) and 1 <= number <= len(lines)
+    1:                 else ""
+                   )
+                   if (
+ 2656:                 not isinstance(number, int)
+ 2655:                 or not isinstance(site_line, int)
+ 2654:                 or number <= site_line
+ 2654:                 or not isinstance(token, str)
+ 2653:                 or token not in source
+                   ):
+   12:                 _violation(
+    6:                     violations,
+    6:                     "E1-exec-token",
+    6:                     number if isinstance(number, int) else site_line,
+    6:                     f"expected {token!r} after site line {site_line}",
+                       )
+       
+ 2475:         name_from_calls = (
+ 2474:             evidence.get("name_from_calls")
+ 2475:             if isinstance(evidence.get("name_from_calls"), dict)
+    1:             else {}
+               )
+12901:         for call_line, name in name_from_calls.items():
+                   if (
+10426:                 not isinstance(call_line, str)
+10426:                 or not call_line.isdigit()
+10425:                 or not isinstance(name, str)
+                   ):
+    1:                 continue
+10425:             number = int(call_line)
+10425:             source = lines[number - 1] if 1 <= number <= len(lines) else ""
+10425:             if name not in source:
+    6:                 _violation(
+    3:                     violations,
+    3:                     "C5.3-var-range",
+    3:                     number,
+    3:                     f"call name {name!r} is absent from cited line",
+                       )
+       
+ 2475:         failure_marks = (
+ 2474:             evidence.get("failure_marks")
+ 2475:             if isinstance(evidence.get("failure_marks"), list)
+    1:             else []
+               )
+ 6762:         valid_marks = [mark for mark in failure_marks if isinstance(mark, str)]
+ 2475:         verdict_lines = (
+ 2474:             evidence.get("verdict_lines")
+ 2475:             if isinstance(evidence.get("verdict_lines"), list)
+    1:             else []
+               )
+16297:         for number in verdict_lines:
+13822:             source = (
+13821:                 lines[number - 1]
+13822:                 if isinstance(number, int) and 1 <= number <= len(lines)
+    1:                 else ""
+                   )
+45738:             if isinstance(number, int) and not any(
+31916:                 mark in source for mark in valid_marks
+                   ):
+   74:                 _violation(
+   37:                     violations,
+   37:                     "E1-verdict-mark",
+   37:                     number,
+   37:                     f"verdict line lacks one of {valid_marks}",
+                       )
+       
+ 3298:     for token, token_evidences in evidences_by_token.items():
+ 3538:         allowed_references = set(
+ 1769:             declared_build_lines_by_token.get(token, set())
+               )
+ 4243:         for evidence in token_evidences:
+ 2474:             exec_lines = (
+ 2473:                 evidence.get("exec_lines")
+ 2474:                 if isinstance(evidence.get("exec_lines"), list)
+    1:                 else []
+                   )
+ 7422:             allowed_references.update(
+ 7603:                 number for number in exec_lines if isinstance(number, int)
+                   )
+ 2474:             refs_ok = (
+ 2473:                 evidence.get("refs_ok")
+ 2474:                 if isinstance(evidence.get("refs_ok"), list)
+    1:                 else []
+                   )
+ 7422:             allowed_references.update(
+  270:                 reference["line"]
+ 5039:                 for reference in refs_ok
+   91:                 if isinstance(reference, dict)
+   90:                 and reference.get("kind") == "cleanup"
+   89:                 and isinstance(reference.get("line"), int)
+                   )
+1396647:         for number, source in enumerate(lines, 1):
+1394878:             if token in source and number not in allowed_references:
+   24:                 _violation(
+   12:                     violations,
+   12:                     "E1-stray-reference",
+   12:                     number,
+   12:                     f"unlisted reference to exact token {token!r}",
+                       )
+       
+ 1529:     if not own_sites.intersection(evidence_sites):
+   18:         _violation(
+    9:             violations,
+    9:             "E1-missing",
+    9:             min(own_sites) if own_sites else 0,
+    9:             "no canonical-own or mixed own-exercise site has exec evidence",
+               )
+ 1535:     for number in sorted(positive_sites - evidence_sites):
+   12:         _violation(
+    6:             violations,
+    6:             "E1-missing",
+    6:             number,
+    6:             "positive site has no exec evidence",
+               )
+       
+ 3058:     last_nonblank_line, last_nonblank = next(
+ 4587:         (
+ 1529:             (number, source)
+ 3058:             for number, source in reversed(tuple(enumerate(lines, 1)))
+ 1529:             if source.strip()
+               ),
+ 1529:         (0, ""),
+           )
+ 1529:     if last_nonblank != "exit $status":
+    2:         _violation(
+    1:             violations,
+    1:             "E1-exit-line",
+    1:             last_nonblank_line,
+    1:             f"last non-blank line is {last_nonblank!r}",
+               )
+ 2288:     return sorted(set(violations), key=lambda item: (item[1], item[0], item[2]))
+       
+       
+    3: @dataclass(frozen=True)
+    2: class LedgerVerdict:
+    1:     statuses: frozenset[str]
+    1:     reasons: tuple[str, ...]
+       
+       
+    1: def _ledger_add(statuses: set[str], reasons: list[str], status: str, detail: str) -> None:
+  101:     statuses.add(status)
+  101:     reason = f"{status}: {detail}"
+  101:     if reason not in reasons:
+  101:         reasons.append(reason)
+       
+       
+    1: def _ledger_result(statuses: set[str], reasons: list[str]) -> LedgerVerdict:
+  114:     return LedgerVerdict(frozenset(statuses), tuple(reasons))
+       
+       
+    1: def _ledger_variant_ids(record: dict) -> tuple[str, ...]:
+  472:     values = record.get("variant_ids")
+  472:     if not isinstance(values, list):
+    1:         return ()
+ 1106:     return tuple(value for value in values if isinstance(value, str))
+       
+       
+    1: def _ledger_census_index(census: dict) -> tuple[dict[str, tuple[dict, dict]], dict[int, dict]]:
+  104:     variants: dict[str, tuple[dict, dict]] = {}
+  104:     sites_by_line: dict[int, dict] = {}
+  104:     sites_value = census.get("sites") if isinstance(census, dict) else []
+  104:     site_values = sites_value if isinstance(sites_value, list) else ()
+  580:     sites = tuple(site for site in site_values if isinstance(site, dict))
+  290:     for site in sites:
+  186:         lines = site.get("lines")
+  186:         line_values = lines if isinstance(lines, list) else ()
+  744:         for line in (line for line in line_values if isinstance(line, int)):
+  186:             sites_by_line[line] = site
+  186:         site_variants = site.get("variants")
+  186:         variant_values = site_variants if isinstance(site_variants, list) else ()
+  642:         for variant in (
+  168:             variant
+  456:             for variant in variant_values
+   84:             if isinstance(variant, dict)
+   84:             and isinstance(variant.get("id"), str)
+               ):
+   84:             variants[variant["id"]] = (variant, site)
+  104:     return variants, sites_by_line
+       
+    1: def _render_positive_output_for_name(variant: Mapping[str, object], name: str | None) -> str | None:
+   31:     output = variant.get("output")
+   31:     if not isinstance(output, str):
+    1:         return None
+   30:     variables = variant.get("vars")
+   30:     specifications = variables if isinstance(variables, dict) else {}
+   30:     rendered = output
+   76:     for placeholder in _TEMPLATE_FIELD_RE.findall(output):
+   60:         if placeholder in {"WORK", "REPO"}:
+   30:             continue
+   30:         specification = specifications.get(placeholder)
+   30:         if not isinstance(specification, dict) or name is None:
+    1:             return None
+   29:         values = specification.get("values")
+   29:         pattern = specification.get("pattern")
+   43:         accepted = (
+   29:             isinstance(values, list)
+   27:             and name in values
+               ) or (
+   14:             isinstance(pattern, str)
+    2:             and re.fullmatch(pattern, name) is not None
+               )
+   29:         if not accepted:
+   13:             return None
+   16:         rendered = rendered.replace(f"{{{placeholder}}}", name)
+   16:     return rendered
+       
+       
+    1: def _positive_variants_for_evidence_name(site: Mapping[str, object], evidence: Mapping[str, object], name: str | None) -> tuple[dict, ...]:
+  120:     evidence_template = evidence.get("out_template")
+  120:     if not isinstance(evidence_template, str):
+    1:         return ()
+  119:     expected_output = (
+  117:         evidence_template.replace("{name}", name)
+  119:         if name is not None
+    2:         else evidence_template
+           )
+  119:     variants = site.get("variants")
+  119:     candidates: list[dict] = []
+  149:     for variant in variants if isinstance(variants, list) else ():
+               if (
+   30:             not isinstance(variant, dict)
+   30:             or variant.get("kind") != "positive"
+               ):
+    1:             continue
+   29:         rendered = _render_positive_output_for_name(variant, name)
+   29:         if rendered == expected_output:
+   16:             candidates.append(variant)
+  119:     return tuple(candidates)
+       
+       
+    1: def _ledger_driver_source_lines(census: Mapping[str, object], driver: str, repo: str) -> tuple[list[str] | None, str | None]:
+  104:     script = census.get("script")
+  104:     expected = f"bench/std_{driver}_exercise.sh"
+  104:     if script != expected:
+    2:         return None, (
+    1:             f"census script {script!r} does not identify {expected!r}"
+               )
+  103:     path = os.path.realpath(os.path.join(repo, expected))
+  103:     try:
+  205:         with open(path, "r", encoding="utf-8") as source:
+  102:             return source.read().splitlines(), None
+    1:     except (OSError, UnicodeError) as error:
+    1:         return None, f"driver source unavailable: {error}"
+       
+       
+    1: def _ledger_successful_roundtrip(record: dict) -> bool:
+  104:     producer = record.get("producer")
+  104:     consumer = record.get("consumer")
+  104:     mods_count = producer.get("mods_count") if isinstance(producer, dict) else None
+  104:     return (
+  829:         record.get("phase") == "end"
+  104:         and record.get("mode") == "roundtrip"
+  104:         and isinstance(producer, dict)
+  104:         and producer.get("rc") == 0
+  104:         and isinstance(mods_count, int)
+  104:         and not isinstance(mods_count, bool)
+  104:         and mods_count >= 1
+  101:         and isinstance(consumer, dict)
+  101:         and consumer.get("rc") == 0
+           )
+       
+       
+    1: def _ledger_is_own(record: dict, *, driver: str, repo: str) -> bool:
+   99:     sources = record.get("sources")
+  198:     expected = os.path.realpath(
+   99:         os.path.join(repo, "bench", f"std_{driver}_exercise.iyi")
+           )
+  396:     valid_sources = isinstance(sources, list) and all(
+  297:         isinstance(source, str) for source in sources
+           )
+   99:     source_values = sources if valid_sources else ()
+  198:     normalized = [os.path.realpath(source) for source in source_values]
+   99:     return (
+  198:         record.get("own") is True
+   99:         and record.get("canonical") is True
+   99:         and normalized == [expected]
+           )
+       
+       
+    1: def _ledger_binding_values(records: list[dict], variant_id: str, variable: str) -> tuple[object, ...]:
+   15:     values: list[object] = []
+   70:     for record in records:
+   55:         bindings = record.get("bindings")
+   55:         variant_bindings = bindings.get(variant_id) if isinstance(bindings, dict) else None
+   55:         if isinstance(variant_bindings, dict) and variable in variant_bindings:
+   18:             values.append(variant_bindings[variable])
+   15:     return tuple(values)
+       
+       
+    1: def _ledger_out_regex(template: str, *, work_tmp: str, repo: str, name: str | None, platform_tmp: str | None) -> re.Pattern[str] | None:
+  118:     parts: list[str] = []
+  118:     cursor = 0
+  352:     for match in re.finditer(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", template):
+  235:         parts.append(re.escape(template[cursor : match.start()]))
+  235:         placeholder = match.group(1)
+  235:         if placeholder == "WORK":
+  117:             roots = [os.path.realpath(work_tmp)]
+  117:             if platform_tmp is not None:
+   46:                 roots.append(os.path.realpath(platform_tmp))
+  351:             root_body = "|".join(
+  397:                 re.escape(root) for root in dict.fromkeys(roots)
+                   )
+  117:             parts.append(f"(?:{root_body}){re.escape(os.sep)}[^/]+")
+  118:         elif placeholder == "REPO":
+    1:             parts.append(re.escape(os.path.realpath(repo)))
+  117:         elif placeholder == "name" and name is not None:
+  116:             parts.append(re.escape(name))
+               else:
+    1:             return None
+  234:         cursor = match.end()
+  117:     parts.append(re.escape(template[cursor:]))
+  117:     return re.compile("".join(parts))
+       
+       
+    1: def _ledger_run_executed(record: dict) -> bool:
+  226:     run = record.get("run")
+  226:     argv = run.get("argv") if isinstance(run, dict) else None
+  226:     return (
+  817:         isinstance(run, dict)
+  119:         and isinstance(argv, list)
+  119:         and bool(argv)
+  119:         and record.get("command") == "run"
+  119:         and argv[0] == record.get("out")
+  115:         and isinstance(run.get("rc"), int)
+  115:         and not isinstance(run.get("rc"), bool)
+           )
+       
+       
+    1: def verify_ledger(ledger_path: str, *, census: dict, driver: str, nonce: str, attempt: int, chain_id: str, work_tmp: str, repo: str, platform_tmp: str | None, stat_fn: Callable[[str], os.stat_result] = os.stat) -> LedgerVerdict:
+           """Verify one P2 ledger and return every blocking P4 status."""
+  114:     statuses: set[str] = set()
+  114:     reasons: list[str] = []
+       
+  114:     try:
+  227:         with open(ledger_path, "r", encoding="utf-8") as ledger_file:
+  113:             raw = ledger_file.read()
+    1:     except (OSError, UnicodeError) as error:
+    1:         _ledger_add(statuses, reasons, "STALE", f"ledger unreadable: {error}")
+    1:         return _ledger_result(statuses, reasons)
+       
+  113:     lines = raw.splitlines()
+  113:     if not lines or not lines[0].strip():
+    1:         _ledger_add(statuses, reasons, "STALE", "ledger is empty")
+    1:         return _ledger_result(statuses, reasons)
+       
+  112:     try:
+  112:         header = json.loads(lines[0])
+    1:     except (json.JSONDecodeError, UnicodeError) as error:
+    1:         _ledger_add(statuses, reasons, "STALE", "line 1 is not a header")
+    1:         _ledger_add(statuses, reasons, "UNFAITHFUL", f"malformed line 1: {error}")
+    1:         return _ledger_result(statuses, reasons)
+       
+           if (
+  111:         not isinstance(header, dict)
+  111:         or header.get("v") != 1
+  111:         or header.get("kind") != "header"
+           ):
+    1:         _ledger_add(statuses, reasons, "STALE", "line 1 is not a v1 header")
+    1:         return _ledger_result(statuses, reasons)
+       
+  110:     expected_header = {
+  110:         "nonce": nonce,
+  110:         "driver": driver,
+  110:         "attempt": attempt,
+  110:         "chain_id": chain_id,
+           }
+  550:     for field, expected in expected_header.items():
+  440:         if header.get(field) != expected:
+   12:             _ledger_add(
+    6:                 statuses,
+    6:                 reasons,
+    6:                 "STALE",
+    6:                 f"header {field} is {header.get(field)!r}, expected {expected!r}",
+                   )
+  110:     if "STALE" in statuses:
+    6:         return _ledger_result(statuses, reasons)
+       
+  104:     records: list[dict] = []
+  358:     for line_number, line in enumerate(lines[1:], 2):
+  254:         if not line.strip():
+    2:             _ledger_add(
+    1:                 statuses,
+    1:                 reasons,
+    1:                 "UNFAITHFUL",
+    1:                 f"blank JSONL line {line_number}",
+                   )
+    1:             continue
+  253:         try:
+  253:             record = json.loads(line)
+    1:         except (json.JSONDecodeError, UnicodeError) as error:
+    2:             _ledger_add(
+    1:                 statuses,
+    1:                 reasons,
+    1:                 "UNFAITHFUL",
+    1:                 f"malformed line {line_number}: {error}",
+                   )
+    1:             continue
+               if (
+  252:             not isinstance(record, dict)
+  252:             or record.get("v") != 1
+  252:             or record.get("kind") != "record"
+               ):
+    2:             _ledger_add(
+    1:                 statuses,
+    1:                 reasons,
+    1:                 "UNFAITHFUL",
+    1:                 f"line {line_number} is not a v1 record",
+                   )
+    1:             continue
+  251:         records.append(record)
+       
+  104:     variant_index, sites_by_line = _ledger_census_index(census)
+  104:     pair_records: dict[str, dict[str, list[dict]]] = {}
+  104:     end_records: list[tuple[int, dict]] = []
+       
+  355:     for record_index, record in enumerate(records):
+  251:         label = f"record {record_index + 1}"
+               if (
+  251:             record.get("nonce") != header["nonce"]
+  249:             or record.get("driver") != header["driver"]
+               ):
+    8:             _ledger_add(
+    4:                 statuses,
+    4:                 reasons,
+    4:                 "STALE",
+    4:                 f"{label} has a foreign nonce or driver",
+                   )
+       
+  251:         phase = record.get("phase")
+  251:         if phase in ("begin", "end"):
+  236:             invocation = record.get("inv")
+  236:             if not isinstance(invocation, str) or not invocation:
+    2:                 _ledger_add(
+    1:                     statuses,
+    1:                     reasons,
+    1:                     "UNFAITHFUL",
+    1:                     f"{label} has no invocation id",
+                       )
+                   else:
+  470:                 paired = pair_records.setdefault(
+  235:                     invocation,
+  235:                     {"begin": [], "end": []},
+                       )
+  235:                 paired[phase].append(record)
+  251:         if phase == "end":
+  119:             end_records.append((record_index, record))
+       
+  251:         if record.get("interrupted") is True:
+    2:             _ledger_add(
+    1:                 statuses,
+    1:                 reasons,
+    1:                 "UNFAITHFUL",
+    1:                 f"{label} is marked interrupted",
+                   )
+  251:         run = record.get("run")
+  251:         if isinstance(run, dict) and run.get("signal") is not None:
+    4:             _ledger_add(
+    2:                 statuses,
+    2:                 reasons,
+    2:                 "UNFAITHFUL",
+    2:                 f"{label} records run signal {run.get('signal')!r}",
+                   )
+       
+  251:         mode = record.get("mode")
+  251:         variant_kind = record.get("variant_kind")
+               if (
+  251:             phase == "refused"
+  250:             or mode in ("refused", "unclassified")
+  249:             or variant_kind in ("unclassified", "ambiguous")
+               ):
+    4:             _ledger_add(
+    2:                 statuses,
+    2:                 reasons,
+    2:                 "MISCLASSIFIED",
+    2:                 f"{label} is refused or unclassified",
+                   )
+       
+  251:         if record.get("canonical") is True and mode == "observed-negative":
+    4:             _ledger_add(
+    2:                 statuses,
+    2:                 reasons,
+    2:                 "MISCLASSIFIED",
+    2:                 f"{label} runs a canonical call as observed-negative",
+                   )
+       
+  251:         raw_variant_ids = record.get("variant_ids")
+  251:         variant_ids = _ledger_variant_ids(record)
+  251:         if raw_variant_ids is not None and (
+  251:             not isinstance(raw_variant_ids, list)
+  250:             or len(variant_ids) != len(raw_variant_ids)
+               ):
+    2:             _ledger_add(
+    1:                 statuses,
+    1:                 reasons,
+    1:                 "MISCLASSIFIED",
+    1:                 f"{label} has malformed variant ids",
+                   )
+               if (
+  251:             record.get("canonical") is not True
+   32:             and record.get("command") in ("build", "run")
+   31:             and not variant_ids
+    4:             and mode != "unchanged"
+               ):
+    6:             _ledger_add(
+    3:                 statuses,
+    3:                 reasons,
+    3:                 "MISCLASSIFIED",
+    3:                 f"{label} is a non-canonical {record.get('command')} without variant ids",
+                   )
+       
+  502:         unknown_ids = [
+   27:             variant_id
+  529:             for variant_id in variant_ids
+   27:             if variant_id not in variant_index
+               ]
+  251:         if unknown_ids:
+    2:             _ledger_add(
+    1:                 statuses,
+    1:                 reasons,
+    1:                 "MISCLASSIFIED",
+    1:                 f"{label} has unknown variant ids {unknown_ids!r}",
+                   )
+  502:         census_kinds = {
+   27:             variant_index[variant_id][0].get("kind")
+  529:             for variant_id in variant_ids
+   27:             if variant_id in variant_index
+               }
+  251:         if census_kinds and (
+   26:             len(census_kinds) != 1 or variant_kind not in census_kinds
+               ):
+    2:             _ledger_add(
+    1:                 statuses,
+    1:                 reasons,
+    1:                 "MISCLASSIFIED",
+    3:                 f"{label} variant kind {variant_kind!r} disagrees with {sorted(str(kind) for kind in census_kinds)!r}",
+                   )
+  251:         if "positive" in census_kinds and mode == "observed-negative":
+    2:             _ledger_add(
+    1:                 statuses,
+    1:                 reasons,
+    1:                 "MISCLASSIFIED",
+    1:                 f"{label} runs a positive variant as observed-negative",
+                   )
+  251:         if "negative" in census_kinds and mode == "roundtrip":
+    4:             _ledger_add(
+    2:                 statuses,
+    2:                 reasons,
+    2:                 "MISCLASSIFIED",
+    2:                 f"{label} runs a negative variant as roundtrip",
+                   )
+       
+  251:         if phase == "end":
+  119:             producer = record.get("producer")
+  119:             consumer = record.get("consumer")
+  119:             producer_rc = producer.get("rc") if isinstance(producer, dict) else None
+  119:             consumer_rc = consumer.get("rc") if isinstance(consumer, dict) else None
+  119:             if producer_rc == 0 and consumer_rc != 0:
+    4:                 _ledger_add(
+    2:                     statuses,
+    2:                     reasons,
+    2:                     "DIVERGENCE",
+    2:                     f"{label} producer succeeded and consumer did not",
+                       )
+                   if (
+  119:                 isinstance(consumer, dict)
+  119:                 and consumer_rc == 0
+  117:                 and consumer.get("out_written") is not True
+                   ):
+    2:                 _ledger_add(
+    1:                     statuses,
+    1:                     reasons,
+    1:                     "DIVERGENCE",
+    1:                     f"{label} consumer succeeded without writing OUT",
+                       )
+       
+  223:     for invocation, paired in pair_records.items():
+  119:         begins = paired["begin"]
+  119:         ends = paired["end"]
+  119:         if len(begins) != 1 or len(ends) != 1:
+    6:             _ledger_add(
+    3:                 statuses,
+    3:                 reasons,
+    3:                 "UNFAITHFUL",
+    3:                 f"invocation {invocation!r} has {len(begins)} begin and {len(ends)} end records",
+                   )
+    3:             continue
+  116:         begin = begins[0]
+  116:         end = ends[0]
+ 2765:         for field, value in begin.items():
+ 2650:             if field not in ("phase", "t_ns") and (
+ 2420:                 field not in end or end[field] != value
+                   ):
+    2:                 _ledger_add(
+    1:                     statuses,
+    1:                     reasons,
+    1:                     "UNFAITHFUL",
+    1:                     f"invocation {invocation!r} changes begin field {field!r}",
+                       )
+    1:                 break
+       
+  316:     own_roundtrip = any(
+  293:         _ledger_is_own(record, driver=driver, repo=repo)
+   98:         and _ledger_successful_roundtrip(record)
+   96:         and bool(record["consumer"].get("out_sha256"))
+  212:         for _, record in end_records
+           )
+  104:     if not own_roundtrip:
+   18:         _ledger_add(
+    9:             statuses,
+    9:             reasons,
+    9:             "NOT-ROUNDTRIPPED",
+    9:             f"no successful own roundtrip for std_{driver}_exercise.iyi",
+               )
+       
+  188:     for variant_id, (variant, _) in variant_index.items():
+   84:         if variant.get("darwin") != "required":
+   67:             continue
+   87:         if not any(
+   48:             variant_id in _ledger_variant_ids(record)
+   70:             for record in records
+               ):
+   10:             _ledger_add(
+    5:                 statuses,
+    5:                 reasons,
+    5:                 "NOT-EXERCISED",
+    5:                 f"required variant {variant_id} has no record",
+                   )
+   17:         variables = variant.get("vars")
+   17:         variable_items = variables.items() if isinstance(variables, dict) else ()
+   66:         specifications = tuple(
+   15:             (variable, specification)
+   49:             for variable, specification in variable_items
+   15:             if isinstance(specification, dict)
+               )
+   32:         for variable, specification in specifications:
+   15:             observed = _ledger_binding_values(records, variant_id, variable)
+   15:             values = specification.get("values")
+   15:             if isinstance(values, list):
+   28:                 for value in values:
+   15:                     if value not in observed:
+   10:                         _ledger_add(
+    5:                             statuses,
+    5:                             reasons,
+    5:                             "NOT-EXERCISED",
+    5:                             f"{variant_id} never binds {variable}={value!r}",
+                               )
+    2:             elif "pattern" in specification and not observed:
+    2:                 _ledger_add(
+    1:                     statuses,
+    1:                     reasons,
+    1:                     "NOT-EXERCISED",
+    1:                     f"{variant_id} pattern variable {variable} has no record",
+                       )
+       
+   46:         if variant.get("kind") == "positive" and not any(
+   22:             variant_id in _ledger_variant_ids(record)
+    6:             and _ledger_successful_roundtrip(record)
+   29:             for _, record in end_records
+               ):
+    8:             _ledger_add(
+    4:                 statuses,
+    4:                 reasons,
+    4:                 "NOT-EXERCISED",
+    4:                 f"positive variant {variant_id} has no successful roundtrip",
+                   )
+       
+  104:     end_by_index = dict(end_records)
+  208:     own_indices = {
+  119:         index
+  327:         for index, record in end_records
+  119:         if record.get("own") is True
+           }
+  208:     positive_indices = {
+  119:         index
+  327:         for index, record in end_records
+  358:         if any(
+   20:             variant_id in variant_index
+   10:             and variant_index[variant_id][0].get("kind") == "positive"
+  239:             for variant_id in _ledger_variant_ids(record)
+               )
+           }
+  104:     scoped_indices = own_indices | positive_indices
+  208:     run_executed_indices = {
+  114:         index
+  322:         for index in scoped_indices
+  114:         if _ledger_run_executed(end_by_index[index])
+           }
+  104:     matched_indices: set[int] = set(run_executed_indices)
+  208:     source_lines, source_error = _ledger_driver_source_lines(
+  104:         census,
+  104:         driver,
+  104:         repo,
+           )
+  104:     if source_error is not None:
+    4:         _ledger_add(
+    2:             statuses,
+    2:             reasons,
+    2:             "UNFAITHFUL",
+    2:             source_error,
+               )
+  104:     evidences_value = census.get("exec_evidence") if isinstance(census, dict) else []
+  104:     evidence_values = evidences_value if isinstance(evidences_value, list) else ()
+  428:     evidence_rows = tuple(
+  464:         (
+  116:             evidence_index,
+  116:             evidence,
+  116:             sites_by_line.get(evidence.get("site_line")),
+               )
+  324:         for evidence_index, evidence in enumerate(evidence_values)
+  116:         if isinstance(evidence, dict)
+  116:         and isinstance(evidence.get("out_template"), str)
+  116:         and isinstance(sites_by_line.get(evidence.get("site_line")), dict)
+           )
+       
+  220:     for evidence_index, evidence, site in evidence_rows:
+  116:         if source_lines is None:
+    2:             continue
+  228:         own_site = _site_is_own_evidence(
+  114:             site,
+  114:             source_lines,
+  114:             driver,
+               )
+  114:         site_variants = site.get("variants")
+  358:         positive_variants = tuple(
+   36:             variant
+   18:             for variant in (
+  246:                 site_variants if isinstance(site_variants, list) else ()
+                   )
+   18:             if isinstance(variant, dict)
+   18:             and variant.get("kind") == "positive"
+               )
+  114:         if not own_site and not positive_variants:
+    2:             continue
+       
+  112:         template = evidence["out_template"]
+  112:         names = evidence.get("name_from_calls")
+  112:         name_values = names.values() if isinstance(names, dict) else ()
+  454:         expected_names = tuple(
+  342:             name for name in name_values if isinstance(name, str)
+               )
+  112:         labels: tuple[str | None, ...] = (
+  110:             expected_names
+  112:             if "{name}" in template
+    2:             else (None,)
+               )
+  112:         evidence_matches: set[int] = set()
+  231:         for name in labels:
+  238:             associated_variants = _positive_variants_for_evidence_name(
+  119:                 site,
+  119:                 evidence,
+  119:                 name,
+                   )
+  119:             if positive_variants and len(associated_variants) != 1:
+    2:                 _ledger_add(
+    1:                     statuses,
+    1:                     reasons,
+    1:                     "NOT-EXECUTED",
+    2:                     f"evidence {evidence_index} name {name!r} has "
+    1:                     f"{len(associated_variants)} positive variant associations",
+                       )
+    1:                 if not own_site:
+    1:                     continue
+  236:             associated_ids = {
+   14:                 variant.get("id")
+  250:                 for variant in associated_variants
+   14:                 if isinstance(variant.get("id"), str)
+                   }
+  236:             candidate_indices = {
+  143:                 index
+  379:                 for index in scoped_indices
+                       if (
+  143:                     own_site
+  114:                     and index in own_indices
+                       )
+   76:                 or bool(
+   76:                     associated_ids.intersection(
+   38:                         _ledger_variant_ids(end_by_index[index])
+                           )
+                       )
+                   }
+  236:             pattern = _ledger_out_regex(
+  118:                 template,
+  118:                 work_tmp=work_tmp,
+  118:                 repo=repo,
+  118:                 name=name,
+  118:                 platform_tmp=platform_tmp,
+                   )
+  236:             matches = {
+  337:                 index
+  349:                 for index in candidate_indices
+  113:                 if pattern is not None
+  112:                 and isinstance(end_by_index[index].get("out"), str)
+  224:                 and pattern.fullmatch(
+  112:                     os.path.realpath(end_by_index[index]["out"])
+                       )
+                   }
+  118:             evidence_matches.update(matches)
+  152:             required = own_site or any(
+   14:                 variant.get("darwin") == "required"
+   34:                 for variant in associated_variants
+                   )
+  118:             if (required and len(matches) != 1) or (
+  106:                 not required and len(matches) > 1
+                   ):
+   24:                 _ledger_add(
+   12:                     statuses,
+   12:                     reasons,
+   12:                     "NOT-EXECUTED",
+   24:                     f"evidence {evidence_index} name {name!r} occurs "
+   12:                     f"{len(matches)} times",
+                       )
+  216:         for index in evidence_matches:
+  104:             consumer = end_by_index[index].get("consumer")
+                   if (
+  104:                 not isinstance(consumer, dict)
+  104:                 or consumer.get("rc") != 0
+  104:                 or not consumer.get("out_sha256")
+                   ):
+    4:                 _ledger_add(
+    2:                     statuses,
+    2:                     reasons,
+    2:                     "NOT-EXECUTED",
+    2:                     f"evidence {evidence_index} record {index + 1} "
+                           "lacks a successful hashed consumer",
+                       )
+  112:         matched_indices.update(evidence_matches)
+       
+  109:     for index in sorted(scoped_indices - matched_indices):
+   10:         _ledger_add(
+    5:             statuses,
+    5:             reasons,
+    5:             "NOT-EXECUTED",
+    5:             f"own or positive record {index + 1} matches no execution evidence",
+               )
+       
+  104:     stat_targets: list[tuple[int, dict, str]] = []
+  218:     for index in sorted(scoped_indices):
+  114:         record = end_by_index[index]
+  114:         consumer = record.get("consumer")
+               if (
+  114:             not isinstance(consumer, dict)
+  114:             or consumer.get("rc") != 0
+  114:             or not consumer.get("out_sha256")
+  112:             or _ledger_run_executed(record)
+               ):
+   59:             continue
+   55:         out_ref = record.get("out_ref")
+   55:         if not isinstance(out_ref, str) or not out_ref:
+    8:             _ledger_add(
+    4:                 statuses,
+    4:                 reasons,
+    4:                 "NOT-EXECUTED",
+    4:                 f"record {index + 1} has no out_ref",
+                   )
+    4:             continue
+   51:         stat_targets.append((index, record, out_ref))
+       
+  104:     stat_results: list[tuple[int, dict, str, os.stat_result | None]] = []
+  155:     for index, record, out_ref in stat_targets:
+   51:         try:
+   51:             stat_result = stat_fn(out_ref)
+    1:         except Exception as error:
+    2:             _ledger_add(
+    1:                 statuses,
+    1:                 reasons,
+    1:                 "NOT-EXECUTED",
+    1:                 f"record {index + 1} out_ref stat failed: {error}",
+                   )
+    1:             stat_result = None
+   51:         stat_results.append((index, record, out_ref, stat_result))
+       
+  155:     for index, record, out_ref, stat_result in stat_results:
+   51:         if stat_result is None:
+    1:             continue
+   50:         if getattr(stat_result, "st_ino", None) != record.get("out_ino"):
+    2:             _ledger_add(
+    1:                 statuses,
+    1:                 reasons,
+    1:                 "NOT-EXECUTED",
+    1:                 f"record {index + 1} out_ref inode changed",
+                   )
+   50:         observed_atime = getattr(stat_result, "st_atime_ns", None)
+   50:         recorded_mtime = record.get("out_mtime_ns")
+               if (
+   50:             not isinstance(observed_atime, int)
+   50:             or not isinstance(recorded_mtime, int)
+   50:             or observed_atime <= recorded_mtime
+               ):
+    6:             _ledger_add(
+    3:                 statuses,
+    3:                 reasons,
+    3:                 "NOT-EXECUTED",
+    3:                 f"record {index + 1} out_ref atime did not advance",
+                   )
+       
+  155:     for index, record, out_ref, stat_result in stat_results:
+   51:         if stat_result is None:
+    1:             continue
+   50:         consumer = record.get("consumer")
+   50:         expected_sha = consumer.get("out_sha256") if isinstance(consumer, dict) else None
+   50:         try:
+   50:             observed_sha = sha256_file(out_ref)
+    1:         except Exception as error:
+    2:             _ledger_add(
+    1:                 statuses,
+    1:                 reasons,
+    1:                 "OUT-MODIFIED",
+    1:                 f"record {index + 1} out_ref read failed: {error}",
+                   )
+    1:             continue
+   49:         if observed_sha != expected_sha:
+    6:             _ledger_add(
+    3:                 statuses,
+    3:                 reasons,
+    3:                 "OUT-MODIFIED",
+    3:                 f"record {index + 1} out_ref sha256 changed",
+                   )
+       
+  104:     return _ledger_result(statuses, reasons)
