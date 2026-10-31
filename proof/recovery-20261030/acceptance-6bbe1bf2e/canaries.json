@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "/Users/jwaldrip/.cache/iyi-corpus-venv/bin/python3",
+    "-B",
+    "/private/tmp/iyi-parent-evidence-6bbe1bf2e/canaries.py",
+    "/Users/jwaldrip/dev/worktrees/iyi-audit-deadlines-seams-20261030",
+    "/Users/jwaldrip/dev/worktrees/iyi-stale-integration-repair",
+    "/private/tmp/iyi-parent-evidence-6bbe1bf2e"
+  ],
+  "rc": 0,
+  "expected": 0,
+  "pass": true
+}

@@ -1,0 +1,50 @@
+{
+  "before": {
+    "P": {
+      "porcelain": "",
+      "ignored_count": 13,
+      "ignored_paths_sha256": "a4cf227e541b47cda4ef546aee71374c117c71a85b19198ea9a5e1d0b6e00a4e"
+    },
+    "W2": {
+      "porcelain": "",
+      "ignored_count": 9,
+      "ignored_paths_sha256": "0f82411aee9ddd7a4bacf1c35bc741fb404d89e9bce26109ca9580e60583ec69"
+    },
+    "iyp_roots": [
+      "iyp-cf541b90"
+    ]
+  },
+  "after": {
+    "P": {
+      "porcelain": "",
+      "ignored_count": 13,
+      "ignored_paths_sha256": "a4cf227e541b47cda4ef546aee71374c117c71a85b19198ea9a5e1d0b6e00a4e"
+    },
+    "W2": {
+      "porcelain": "",
+      "ignored_count": 9,
+      "ignored_paths_sha256": "0f82411aee9ddd7a4bacf1c35bc741fb404d89e9bce26109ca9580e60583ec69"
+    },
+    "iyp_roots": [
+      "iyp-cf541b90"
+    ]
+  },
+  "unchanged": true,
+  "result": {
+    "argv": [
+      "/Users/jwaldrip/.cache/iyi-corpus-venv/bin/python3",
+      "-B",
+      "proof/run_proof.py",
+      "plan",
+      "--p",
+      "/Users/jwaldrip/dev/worktrees/iyi-stale-integration-repair",
+      "--w",
+      "/Users/jwaldrip/dev/worktrees/iyi-audit-deadlines-seams-20261030",
+      "--compiler",
+      "/Users/jwaldrip/dev/worktrees/iyi-stale-integration-repair/.build/iyi"
+    ],
+    "rc": 0,
+    "expected": 0,
+    "pass": true
+  }
+}

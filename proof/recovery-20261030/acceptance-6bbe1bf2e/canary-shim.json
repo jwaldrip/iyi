@@ -1,0 +1,85 @@
+{
+  "canary_root": "/private/tmp/iyi-canary-6bbe1bf2e-v0fpcw62",
+  "shim_rc": 0,
+  "execution_rc": 0,
+  "end": {
+    "argv": [
+      "build",
+      "-o",
+      "/private/tmp/iyi-canary-6bbe1bf2e-v0fpcw62/t/w0/cookie-plain",
+      "/Users/jwaldrip/dev/worktrees/iyi-audit-deadlines-seams-20261030/bench/std_cookie_exercise.iyi"
+    ],
+    "atime_set_ns": 1793418932545305667,
+    "bindings": {},
+    "canonical": true,
+    "command": "build",
+    "consumer": {
+      "argv": [
+        "/Users/jwaldrip/dev/worktrees/iyi-stale-integration-repair/.build/iyi",
+        "build",
+        "-Diyi_observe",
+        "--use-iyimod",
+        "/private/tmp/iyi-canary-6bbe1bf2e-v0fpcw62/s/bc64f9a6cf0b416fb409f70c69cd50ed/mods",
+        "-o",
+        "/private/tmp/iyi-canary-6bbe1bf2e-v0fpcw62/t/w0/cookie-plain",
+        "/Users/jwaldrip/dev/worktrees/iyi-audit-deadlines-seams-20261030/bench/std_cookie_exercise.iyi"
+      ],
+      "out_sha256": "1223f908c444336853def3d6f5ab838be876abf52eab85f9c691059d30efb34f",
+      "out_written": true,
+      "rc": 0
+    },
+    "cwd": "/Users/jwaldrip/dev/worktrees/iyi-audit-deadlines-seams-20261030",
+    "driver": "cookie",
+    "e3_error": null,
+    "env_seen": {
+      "CRYSTAL_OPTS": null,
+      "CRYSTAL_PATH": null,
+      "IYI_CACHE_DIR": "/private/tmp/iyi-canary-6bbe1bf2e-v0fpcw62/c",
+      "IYI_OPTS": null,
+      "IYI_PATH": "/Users/jwaldrip/dev/worktrees/iyi-audit-deadlines-seams-20261030/src:/Users/jwaldrip/dev/worktrees/iyi-audit-deadlines-seams-20261030/samples/iyi"
+    },
+    "exit": 0,
+    "first_noncanonical_root": null,
+    "interrupted": false,
+    "inv": "bc64f9a6cf0b416fb409f70c69cd50ed",
+    "kind": "record",
+    "mode": "roundtrip",
+    "nonce": "602191c0c69a78a90b41a1fc431183e6",
+    "out": "/private/tmp/iyi-canary-6bbe1bf2e-v0fpcw62/t/w0/cookie-plain",
+    "out_ino": 2639566014,
+    "out_mtime_ns": 1793418933545305667,
+    "out_ref": "/private/tmp/iyi-canary-6bbe1bf2e-v0fpcw62/s/bc64f9a6cf0b416fb409f70c69cd50ed/out.ref",
+    "own": true,
+    "phase": "end",
+    "pid": 57324,
+    "producer": {
+      "argv": [
+        "/Users/jwaldrip/dev/worktrees/iyi-stale-integration-repair/.build/iyi",
+        "build",
+        "-Diyi_observe",
+        "--emit-iyimod",
+        "/private/tmp/iyi-canary-6bbe1bf2e-v0fpcw62/s/bc64f9a6cf0b416fb409f70c69cd50ed/mods",
+        "-o",
+        "/private/tmp/iyi-canary-6bbe1bf2e-v0fpcw62/t/w0/cookie-plain",
+        "/Users/jwaldrip/dev/worktrees/iyi-audit-deadlines-seams-20261030/bench/std_cookie_exercise.iyi"
+      ],
+      "mods_count": 47,
+      "rc": 0
+    },
+    "reason": "canonical roots",
+    "roots": [
+      "/Users/jwaldrip/dev/worktrees/iyi-audit-deadlines-seams-20261030/src",
+      "/Users/jwaldrip/dev/worktrees/iyi-audit-deadlines-seams-20261030/samples/iyi"
+    ],
+    "run": null,
+    "sources": [
+      "/Users/jwaldrip/dev/worktrees/iyi-audit-deadlines-seams-20261030/bench/std_cookie_exercise.iyi"
+    ],
+    "t_ns": 37881339890833,
+    "v": 1,
+    "variant_ids": [],
+    "variant_kind": null
+  },
+  "before_atime_ns": 1793418932545305667,
+  "after_atime_ns": 1793418934545399408
+}

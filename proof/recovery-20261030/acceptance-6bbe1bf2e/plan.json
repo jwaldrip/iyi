@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "/Users/jwaldrip/.cache/iyi-corpus-venv/bin/python3",
+    "-B",
+    "proof/run_proof.py",
+    "plan",
+    "--p",
+    "/Users/jwaldrip/dev/worktrees/iyi-stale-integration-repair",
+    "--w",
+    "/Users/jwaldrip/dev/worktrees/iyi-audit-deadlines-seams-20261030",
+    "--compiler",
+    "/Users/jwaldrip/dev/worktrees/iyi-stale-integration-repair/.build/iyi"
+  ],
+  "rc": 0,
+  "expected": 0,
+  "pass": true
+}

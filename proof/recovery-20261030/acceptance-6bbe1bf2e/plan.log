@@ -1,0 +1,12 @@
+Observed Corpus Proof Plan
+  P Path:    /Users/jwaldrip/dev/worktrees/iyi-stale-integration-repair
+  W Path:    /Users/jwaldrip/dev/worktrees/iyi-audit-deadlines-seams-20261030
+  Compiler:  /Users/jwaldrip/dev/worktrees/iyi-stale-integration-repair/.build/iyi
+  P SHA:     626463375298d357ffcb3223059f4d3adce6fb10
+  W HEAD:    6bbe1bf2e484bc4ec33aa6d58667c43c096cd3bd
+  Version:   iyi 0.19.1 (built on Crystal 1.22.0-dev [626463375] (2026-10-29))
+  BIN SHA:   f5738660a2bccf39efee9acdf00f2474829969907a623d9e0e33e0f920b4ae74
+  Timeout:   /opt/homebrew/Cellar/coreutils/9.11/bin/gtimeout (timeout (GNU coreutils) 9.11)
+  Platform:  /private/var/folders/cx/smp6389s35gds6b_bfywv_8h0000gn/T
+  Probe:     sha256=511602b8cf083bdff74d43242b71c27484bd63121c07f3b59575d35676e1f6cb inode=2639562636 atime=1793418840454927093
+  Censuses:  29 validated

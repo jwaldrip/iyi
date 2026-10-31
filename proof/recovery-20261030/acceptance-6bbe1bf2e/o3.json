@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "/Users/jwaldrip/.cache/iyi-corpus-venv/bin/python3",
+    "-B",
+    "-c",
+    "from proof.smoke_test import run_o3_suite; raise SystemExit(run_o3_suite())"
+  ],
+  "rc": 0,
+  "expected": 0,
+  "pass": true
+}
