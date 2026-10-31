@@ -1,0 +1,29 @@
+{
+ "created_utc": "2026-10-31T21:54:53.594866Z",
+ "leases": [
+  {
+   "service": "lease-iyi-W3",
+   "pid": "59434",
+   "cwd_lsof": "/Users/jwaldrip/dev/worktrees/iyi-audit-repair-g02-g18-20261031",
+   "fd9": "p59434 f9 n/Users/jwaldrip/dev/worktrees/iyi-audit-repair-g02-g18-20261031/.git"
+  },
+  {
+   "service": "lease-iyi-W2b",
+   "pid": "59436",
+   "cwd_lsof": "es-seams-20261030",
+   "fd9": "p59436 f9 n/Users/jwaldrip/dev/worktrees/iyi-audit-deadlines-seams-20261030/.git"
+  },
+  {
+   "service": "lease-iyi-Pb",
+   "pid": "59435",
+   "cwd_lsof": "-repair",
+   "fd9": "p59435 f9 n/Users/jwaldrip/dev/worktrees/iyi-stale-integration-repair/.git"
+  },
+  {
+   "service": "lease-iyi-Eb",
+   "pid": "59437",
+   "cwd_lsof": "ce-20261030",
+   "fd9": "p59437 f9 n/Users/jwaldrip/dev/worktrees/iyi-stale-recovery-evidence-20261030/.git"
+  }
+ ]
+}
