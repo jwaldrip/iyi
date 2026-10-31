@@ -1,0 +1,98 @@
+**NO-GO.** The full strict P1 corpus chain should not start yet. The worker has withdrawn its GO, and the evidence doesn't support one regardless: there is no independent coverage receipt, only 5 of 42 mutants have valid kill evidence, and seed 5, F3 and the semantic mapping all fall short of their contracts. I ran nothing and wrote only to the planner's agent address. All paths below are under RV unless shown in full.
+
+## Claims in RV/report.md that are wrong
+- **Coverage.** `evidence/coverage/coverage.log` is 0 bytes (created 22:19:34). All four `cov/*.cover` files are byte-identical copies of the parent's EV/cov files (sha 4d220fa5, 67d5d855, 270f855c, 769be0b6; EV wrote them at 21:52:50, RV copied them at 23:32:34). `coverage.json` asserts COVERAGE GATE PASS anyway. The coverage gate deletes old listings and runs the suite with `capture_output`, so the killed job left nothing behind (`smoke_test.py:18876-18916`).
+- **Mutation accounting.** `mutants.jsonl` and `mutants_accounting.json` were written by `generate_mutant_accounting_report.py:91-139`. That script only counts anchors in unmodified H and reads guard results from the unmutated smoke log, then labels 40 mutants "killed-by-guard".
+  - The raw outputs contradict this: m06 and m07–m12 all end `RESULT PASS [] []`.
+  - The script's `GUARD_MAP` names the wrong seed for:
+    - m06: it names `s1.seed.identity-path`; the real guard is `o7.seed.platform-tmp-changed`, smoke:1144.
+    - g03: it names `s4.seed.row-oserror`; the real guard is `o6.seed.c3-cannot-name`.
+    - g04: it names `s5.seed.required-mismatch`; the real guard is `o7.seed.final-required-rerun`.
+    - g16–g19: it names `s2.seed.validator-schema` for all four; the real guards are `o7.seed.validator-env-call-variant`, `validator-iyivar` (twice) and `validator-platform-guard`.
+  - **[INFERENCE]** g14, g22 and m18 are probably mis-mapped too.
+- **The runner's kill rule** at `run_mutants_accounting.py:118` counts any nonzero exit as a kill, which the contract forbids. It never runs an unmutated baseline of the same subset. Its group map drops the identity group for m07–m14 and m20, so their `o7.seed.guard-mNN` seeds never ran.
+- **C2 canary ran on the wrong source.** `canary-legs.json` used the primary checkout's `samples/iyi/calc.iyi` (HEAD 29ce7e07a). That file differs from both RV/w and P at line 10, char 530.
+- **C1 canary claims have no artifacts.** "ALL CHECKS PASSED", the inode check and the sha-after-stat order aren't in `canaries.json`, and no driver script was kept. The report says `mods_count=2`; the record says 47.
+- **The report's smoke line numbers (section 3) are wrong.** For example, range 13-29 is listed at line 352 but is really line 659. The line numbers inside the JSON mapping file are correct.
+- **"Control cases: PASS" in the matrix is a filtered result.** The script computes `blocking = statuses - {NOT-EXERCISED}` (`run_ledger_matrix.py:140`); the raw control statuses are `["NOT-EXERCISED"]`.
+- **Semantic mapping row 9 is false.** It says "run_proof.py has explicit top-level hashlib import", but `run_proof.py` at H neither imports nor uses hashlib.
+
+## Valid receipts to keep (no rerun)
+- **State and refusals:**
+  - Identity (before-only).
+  - Layout self-test (7 variants) and C1..C5 check, span (811, 812).
+  - Isolated plan: exit 0, 29 censuses, probe line, before equals after.
+  - Both optimisation refusals: exit 2.
+- **Suites:**
+  - O3 suite: 23/6, identical to EV.
+  - Default smoke: exit 0, HEADER H clean, 432/432 seeds and 84/84 controls, same IDs and results as EV.
+  - That smoke log also closes four items: F4 (lines 766/767), F12 subprocess usage refusal (652), F13 (866) and F2 (764/765).
+- **Registration interval:** real SIGINT at partial registration; the fixed code returns a result and the one-block relocation escapes `_BoundedSignal`. It ran the E-archived script against H's `proofkit.py` (sha 25aac5d0).
+- **Manual seeds 1–4 and seed 5's gate leg:** exact expected results with applied-once evidence. The gate's `.times` file has a t0 sample and a final sample, 0.282 s apart, past the 0.1 s limit.
+- **F-guards:** F1 (validator rule and runtime match), F2, F6, F8, F10 and touch_unread.
+  - The F10 labels match the driver source: `regex.sh:50`, `xz.sh:47,51` and `zstd.sh:20-26,42`.
+- **Matcher attacks:** 15 matcher cases and 5 E2 cases.
+- **Ledger matrix and file values:** the 70 matrix cases and 17/17 file values hold, but the matrix needs relabelling. The TLS case named "positive-absent" correctly removes only pos-downgrade and keeps pos-downgrade-unchecked. The name implies the whole variant is missing, which it isn't.
+- **Mutants m01–m05:** these are valid kills. Each output names its specific guard seed flipping from its reason to `NO-REFUSAL` (out lines 1–5), its paired control PASSes (lines 24–28), and the result line is `RESULT FAIL [that seed] []` (line 79). Each diff is a single line on H's blob; the green baseline is smoke:1088-1097.
+- **Mutants m07–m12:** only the diffs are reusable; their runs are not kills (see the next section).
+
+## Incomplete, unproven or missing
+- **Mutants:**
+  - m06 survived a 61-fixture subset that didn't include its real guard.
+  - m07–m12 ran a 31-stage subset without their own guard seeds, so they have no kill evidence.
+  - m13–m20 and g01–g22 were never run. The m13 partial outputs were deleted.
+- **m20 isolated test:** the procedure is right, but the mutant diff, the control's reasons and the raw `final.json` weren't kept.
+- **Read-after-utime counterfactual:** not a one-change mutation; it adds an import and `sleep(0.05)` before the read (`run_m20_and_utime.py:102`). Control and mutant end with the same statuses; only the reason "out_ref atime did not advance" differs, so it shows a reason-level change, not acceptance.
+- **Seed 5 driver leg:** the TIMEOUT and both `.times` samples are there. Nothing shows `sleep 30` actually started before the kill. The "0 leftover" claim comes from a `ps` scan afterwards (`run_manual_seeds.py:193-194`), which infers no child from an absent witness.
+- **F3:** only the Run 1 rerun leg was exercised (`run_demo_final_required.py:37-51`). The Run 2 leg is missing.
+- **Semantic mapping:** 18 rows, each citing only the first seed of one registry key.
+  - 15 of H's 33 `review.*` keys aren't mapped (`smoke_test.py:17438-17610`).
+  - Ranges 42-57, 62-79, 82-90 and 105-106 claim behaviours their cited seed doesn't test.
+  - Range 115-122 cites `s1.seed.pin-dirty-w`, which isn't in any `review.accepted` key.
+- **Not addressed at all:** an after-audit identity snapshot, the §8.5 census spot checks, F11 evidence, the readiness-fence review (cancellation, no readiness, fallback fatal, owned PIDs, handler accounting), and the production-limit and no-committed-hook checks.
+- **Allowlist:** the seven entries are confirmed statically (`smoke_test.py:18520-18576`) and their fixtures pass in the RV smoke run. The coverage-based check that missing lines fall only inside the allowlist is unproven, because the listings are copies.
+
+## What I checked statically (not RV receipts)
+- §8.5 census spot checks all hold.
+- An AST scan of `smoke_test.py` finds no patching of module attributes, only `os.environ` set-and-restore pairs. That supports F11 but isn't an RV receipt.
+- The only `settrace` is the coverage bootstrap at `smoke_test.py:18485`.
+- Production limits are unchanged: 300/60/300/20 at `artifact_legs.py:47-50`, and 2100/30 at `proofkit.py:1176-1177`.
+- No `build_census` or `helper_exec` residue.
+- W2 and P are clean now, with ignored counts 9/13 and the same hashes, and the four P1 binaries are unchanged.
+
+## Hygiene and disclosure
+- The worker wrote `.pyc` files into `RV/w/proof/__pycache__`, and outside RV into the prior audit's `AUD/s/__pycache__`.
+- Scratch dirs created during RV's run window are still there:
+  - `/private/tmp/iyi-o2-pin-5f357lcs` (22:49, coverage kill).
+  - `/private/tmp/iyi-o2-pin-m8yqg4cd` and `/private/tmp/iyp-72bee0cc` (23:26, m13 kill).
+  - Three `iyp-utime-test-*` dirs (23:28 and 23:30, failed attempts).
+  - `/private/tmp/iyi-canary-review-6bbe-wsuu4lek`.
+  - Two more pin dirs suggest undisclosed aborted runs: `bmh2pjm7` (22:08:38, before the recorded smoke start of about 22:08:53) and `yn3_w2t2` (23:05:16).
+
+## Can the missing receipts be recovered?
+- **Coverage (bg_20):** no. The child's output was held in memory and lost on SIGKILL, and the trace dir is gone.
+- **m13 partial outputs:** deleted from RV.
+- **bg_25's per-mutant summary prints:** may survive in the worker's job records, but they don't replace the missing runs.
+- **Timeouts, exit codes and PIDs:** the worker's tool metadata has them, and you are already recovering it.
+
+## Minimum work still needed (valid items above are not rerun)
+1. **Coverage:** one complete run in RV/w at H, sequential, with no 1800 s cap. Keep its own four listings plus rc, elapsed time and summary lines. Require 432/84 HARNESS PASS, missing lines 0/6/1/14 sitting only on the seven allowlist entries, and COVERAGE GATE PASS. Compare its fixture sets with RV smoke and EV coverage.
+2. **The 37 unaccounted mutants (m06–m20, g01–g22):** for each, a fresh clone, anchor applied exactly once, and the diff kept.
+   - Run the full suite, or a subset that explicitly contains the mutant's specific guard plus an unmutated green baseline of that same subset.
+   - A kill means a named seed's observed value differs from expected, or a named control FAILs, when it was green in the baseline. A nonzero exit alone is not a kill.
+   - Any mutant that survives a subset gets a full-suite run before it is called a survivor.
+   - g07 and g15 must state honestly whether the status or only the reason set changed.
+3. **Two quick reruns that keep their raw output:**
+   - m20 isolated, keeping its diff, both `final.json` files and their reasons.
+   - Read-after-utime as a true one-statement mutation through the current canary driver, adding a valid control where OUT is executed.
+4. **Seed 5 driver leg:** same stub and same limit, with an independent witness of the `sleep 30` PID and its group before the kill, then a check that the PID is gone. The gate leg can be reused.
+5. **F3 Run 2 leg:** a Run 2 rerun that changes the required drivers, then `final` must FAIL with "required.json mismatch"; plus a control without the change.
+6. **C2:** rerun on H's or P's `calc.iyi`. Either rerun C1 with the driver kept, or withdraw both canary claims and rely on your own acceptance run.
+7. **Static only:**
+   - Rebuild the per-finding semantic mapping from RV smoke.log and the 33 registry keys, and fix row 9.
+   - Keep scripted outputs for the census spot checks, the F11 AST scan, and the limit, hook and residue checks.
+   - Do the readiness-fence code review.
+   - Take an after-audit identity snapshot.
+8. **Cleanup:** remove only the RV-owned scratch listed above, after archiving, and disclose the aborted attempts.
+
+The planner's (a)–(g) status went to `agent://AuditCompletionPlan6bbe`, followed by one correction: the remaining mutant count is 37, not 36.

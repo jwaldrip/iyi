@@ -1,0 +1,70 @@
+{
+  "candidate": "6bbe1bf2e484bc4ec33aa6d58667c43c096cd3bd",
+  "observed_receipts": [
+    {
+      "source_line": 358,
+      "kind": "tool_result",
+      "timestamp": "2026-10-31T04:19:34.041Z",
+      "toolCallId": "call_117440",
+      "toolName": "bash",
+      "observed_text": "Backgrounded early to handle an incoming message; the command keeps running.\n\nBackgrounded as job bg_20 (killed once it has run 1800s in total; `timeout: 0` disables the deadline); its output is injected into the conversation as a follow-up the moment it finishes. Do NOT poll for it (no `sleep`, `ps`, `pgrep`, `top`, `pidwait`, log tailing): every poll is a wasted turn. Do other work, or end your reply and wait to be woken."
+    },
+    {
+      "source_line": 363,
+      "kind": "tool_result",
+      "timestamp": "2026-10-31T04:49:34.115Z",
+      "toolCallId": "call_78297",
+      "toolName": "wait",
+      "observed_text": "## Completed (1)\n\n### bg_20 [bash] \u2014 failed\nLabel: python3 -c \"\nimport subprocess, os, sys, time, json, pathlib\n\nRV = pathlib.Path('/private/tmp/iyi-proof-review-6bbe1b...\nDelivery: delivered directly to wait.\nError: [Command timed out after 1800 seconds]\nStarting coverage run streaming to /private/tmp/iyi-proof-review-6bbe1bf2e/evidence/coverage/coverage.log at 1793420374.132071...\n\n\nWall time: 1800.06 seconds"
+    },
+    {
+      "source_line": 600,
+      "kind": "execution_start",
+      "timestamp": "2026-10-31T05:06:12.342Z",
+      "toolCallId": "call_168200",
+      "command": "/Users/jwaldrip/.cache/iyi-corpus-venv/bin/python3 -B /private/tmp/iyi-proof-review-6bbe1bf2e/evidence/mutants/run_mutants_accounting.py"
+    },
+    {
+      "source_line": 601,
+      "kind": "tool_result",
+      "timestamp": "2026-10-31T05:07:12.345Z",
+      "toolCallId": "call_168200",
+      "toolName": "bash",
+      "observed_text": "Starting sequential mutation accounting for 42 mutants...\n[1/42] Running m01-python-realpath (groups: ['ident'])...\n\nBackgrounded as job bg_25 (killed once it has run 1200s in total; `timeout: 0` disables the deadline); its output is injected into the conversation as a follow-up the moment it finishes. Do NOT poll for it (no `sleep`, `ps`, `pgrep`, `top`, `pidwait`, log tailing): every poll is a wasted turn. Do other work, or end your reply and wait to be woken."
+    },
+    {
+      "source_line": 607,
+      "kind": "tool_result",
+      "timestamp": "2026-10-31T05:26:12.386Z",
+      "toolCallId": "call_122381",
+      "toolName": "wait",
+      "observed_text": "## Completed (1)\n\n### bg_25 [bash] \u2014 failed\nLabel: /Users/jwaldrip/.cache/iyi-corpus-venv/bin/python3 -B /private/tmp/iyi-proof-review-6bbe1bf2e/evidence/mutants/run_mu...\nDelivery: delivered directly to wait.\nError: [Command timed out after 1200 seconds]\nStarting sequential mutation accounting for 42 mutants...\n[1/42] Running m01-python-realpath (groups: ['ident'])...\n  m01-python-realpath: rc=1 killed=True classification=killed missed_seeds=1 failed_controls=0\n[2/42] Running m02-census-changed (groups: ['ident'])...\n  m02-census-changed: rc=1 killed=True classification=killed missed_seeds=1 failed_controls=0\n[3/42] Running m03-canonical-roots (groups: ['ident'])...\n  m03-canonical-roots: rc=1 killed=True classification=killed missed_seeds=1 failed_controls=0\n[4/42] Running m04-timeout-realpath (groups: ['ident'])...\n  m04-timeout-realpath: rc=1 killed=True classification=killed missed_seeds=1 failed_controls=0\n[5/42] Running m05-nm-realpath (groups: ['ident'])...\n  m05-nm-realpath: rc=1 killed=True classification=killed missed_seeds=1 failed_controls=0\n[6/42] Running m06-platform-tmp-identity (groups: ['ident'])...\n  m06-platform-tmp-identity: rc=0 killed=False classification=unanticipated-survivor missed_seeds=0 failed_controls=0\n[7/42] Running m07-run3-no-refused (groups: ['stage'])...\n  m07-run3-no-refused: rc=0 killed=False classification=unanticipated-survivor missed_seeds=0 failed_controls=0\n[8/42] Running m08-run3-disk (groups: ['stage'])...\n  m08-run3-disk: rc=0 killed=False classification=unanticipated-survivor missed_seeds=0 failed_controls=0\n[9/42] Running m09-run3-census-revalidate (groups: ['stage'])...\n  m09-run3-census-revalidate: rc=0 killed=False classification=unanticipated-survivor missed_seeds=0 failed_controls=0\n[10/42] Running m10-run3-post-driver-identity (groups: ['stage'])...\n  m10-run3-post-driver-identity: rc=0 killed=False classification=unanticipated-survivor missed_seeds=0 failed_controls=0\n[11/42] Running m11-final-identity (groups: ['stage'])...\n  m11-final-identity: rc=0 killed=False classification=unanticipated-survivor missed_seeds=0 failed_controls=0\n[12/42] Running m12-final-unit-mismatch (groups: ['stage'])...\n  m12-final-unit-mismatch: rc=0 killed=False classification=unanticipated-survivor missed_seeds=0 failed_controls=0\n[13/42] Running m13-final-attempt-mismatch (groups: ['stage'])...\n\n\nWall time: 1200.03 seconds"
+    },
+    {
+      "source_line": 356,
+      "kind": "original_tool_call",
+      "timestamp": "2026-10-31T04:19:34.039Z",
+      "toolCallId": "call_117440",
+      "toolName": "bash",
+      "arguments": {
+        "command": "python3 -c \"\nimport subprocess, os, sys, time, json, pathlib\n\nRV = pathlib.Path('/private/tmp/iyi-proof-review-6bbe1bf2e')\nPY = '/Users/jwaldrip/.cache/iyi-corpus-venv/bin/python3'\nW = RV / 'w'\ncov_evidence = RV / 'evidence/coverage'\ncov_dir = cov_evidence / 'cov'\ncov_dir.mkdir(parents=True, exist_ok=True)\ncov_log = cov_evidence / 'coverage.log'\n\nenv = dict(os.environ)\nenv['PATH'] = '/Users/jwaldrip/.cache/iyi-corpus-venv/bin:/opt/homebrew/opt/curl/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin'\nenv['HOME'] = '/Users/jwaldrip'\n\nt0 = time.time()\nprint(f'Starting coverage run streaming to {cov_log} at {t0}...')\nwith open(cov_log, 'w', buffering=1) as out:\n    p = subprocess.run([PY, '-u', '-B', '-X', f'pycache_prefix={RV}/pyc_cov', 'proof/smoke_test.py', '--coverage', str(cov_dir)],\n                       cwd=str(W), env=env, stdout=out, stderr=subprocess.STDOUT)\nt1 = time.time()\nelapsed = t1 - t0\nprint(f'coverage run finished in {elapsed:.1f}s with rc={p.returncode}')\n\nwith open(cov_log) as f:\n    text = f.read()\n\nassert p.returncode == 0, f'coverage run failed with rc={p.returncode}'\nassert 'TOTAL seeds_executed=432 seeds_passed=432 seeds_missed=0 seeds_missing=0 controls_executed=84 controls_failed=0 controls_missing=0' in text\nassert 'HARNESS PASS' in text\nassert 'COVERAGE GATE PASS' in text\n\n# Verify missing counts\nassert 'COVERAGE module=proof.proofkit missing_lines=0' in text\nassert 'COVERAGE module=proof.run_proof missing_lines=6' in text\nassert 'COVERAGE module=proof.artifact_legs missing_lines=1' in text\nassert 'COVERAGE module=proof.roundtrip_shim missing_lines=14' in text\n\n(cov_evidence / 'coverage.json').write_text(json.dumps({\n    'rc': p.returncode,\n    'expected': 0,\n    'seeds_executed': 432,\n    'seeds_passed': 432,\n    'controls_executed': 84,\n    'controls_failed': 0,\n    'elapsed_sec': elapsed,\n    'missing_lines': {\n        'proofkit': 0,\n        'run_proof': 6,\n        'artifact_legs': 1,\n        'roundtrip_shim': 14\n    },\n    'gate_status': 'COVERAGE GATE PASS',\n    'pass': True\n}, indent=2) + '\\n')\nprint('Coverage GATE PASS verified and recorded.')\n\"",
+        "timeout": 1800,
+        "i": "Running coverage suite with streaming log and 1800s timeout"
+      }
+    },
+    {
+      "source_line": 599,
+      "kind": "original_tool_call",
+      "timestamp": "2026-10-31T05:06:12.340Z",
+      "toolCallId": "call_168200",
+      "toolName": "bash",
+      "arguments": {
+        "i": "Running complete sequential mutation accounting",
+        "timeout": 1200,
+        "command": "/Users/jwaldrip/.cache/iyi-corpus-venv/bin/python3 -B /private/tmp/iyi-proof-review-6bbe1bf2e/evidence/mutants/run_mutants_accounting.py"
+      }
+    }
+  ],
+  "parent_post_handoff_process_scan": "NO matching audit/coverage processes",
+  "acceptance": "NO-GO: independent coverage incomplete; remaining30 actual mutations incomplete; reported GO not accepted"
+}
