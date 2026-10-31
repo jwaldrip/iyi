@@ -1,0 +1,9 @@
+{
+  "archive": "audit-completion-6bbe-r2h.tar.gz",
+  "archive_bytes": 471981,
+  "archive_sha256": "48999eb066d6ef7beeeda3b5370f7630104f876b63ef41be3aa2de28059c073b",
+  "members": 86,
+  "all_members_byte_equal_native": true,
+  "exact_and_generic_token_scan_matches": 0,
+  "result": "R2h rerun after reboot loss: all 10 receipts rc0, 8/8 projections PASS, citations v2 no-defect; independent data-integrity review pending"
+}
