@@ -1,0 +1,9 @@
+{
+  "archive": "audit-completion-6bbe-e2d.tar.gz",
+  "archive_bytes": 7423,
+  "archive_sha256": "92fc6ee0c26b5b2bb89bc0ec66fe7c3d5d56a6788de60580767f43e423e17a04",
+  "members": 50,
+  "all_members_byte_equal_native": true,
+  "exact_and_generic_token_scan_matches": 0,
+  "result": "E2d PASS: canaries.py (51db1867) rc0, C1 PASS, C2 status PASS, P binaries equal M2 manifest"
+}
