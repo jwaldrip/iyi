@@ -1,0 +1,75 @@
+{
+  "checks": {
+    "head": {
+      "rc": 0,
+      "stdout": "6bbe1bf2e484bc4ec33aa6d58667c43c096cd3bd\n",
+      "stderr": ""
+    },
+    "porcelain": {
+      "rc": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    "productdiff": {
+      "rc": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    "ancestor": {
+      "rc": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    "remote": {
+      "rc": 0,
+      "stdout": "6bbe1bf2e484bc4ec33aa6d58667c43c096cd3bd\trefs/heads/proof/audit-deadlines-seams-20261030\n",
+      "stderr": ""
+    }
+  },
+  "binaries": [
+    {
+      "name": "iyi",
+      "sha256": "f5738660a2bccf39efee9acdf00f2474829969907a623d9e0e33e0f920b4ae74",
+      "size": 50842576,
+      "mtime_ns": 1793376174145234832,
+      "inode": 2624384932
+    },
+    {
+      "name": "crystal",
+      "sha256": "001cf890c9491f6e8f0a4d45a59222f4a4868d97e52a45a4134258bd62fa8d8a",
+      "size": 50852120,
+      "mtime_ns": 1793376211944743611,
+      "inode": 2624393241
+    },
+    {
+      "name": "iyi-daemon",
+      "sha256": "b816b55f94abb4fa55ba3c3d74a5e2c00498d4ba1a986870a61351e20848560f",
+      "size": 50473688,
+      "mtime_ns": 1793376246207261876,
+      "inode": 2624398158
+    },
+    {
+      "name": "crystal-daemon",
+      "sha256": "d366b31ac664c8d6aa177bb69612547a73187fbbf16d01b16000e659bd7f8937",
+      "size": 50483136,
+      "mtime_ns": 1793376274425956830,
+      "inode": 2624401443
+    }
+  ],
+  "namespace_after_canaries": {
+    "P": {
+      "porcelain": "",
+      "ignored_count": 13,
+      "ignored_paths_sha256": "a4cf227e541b47cda4ef546aee71374c117c71a85b19198ea9a5e1d0b6e00a4e"
+    },
+    "W2": {
+      "porcelain": "",
+      "ignored_count": 9,
+      "ignored_paths_sha256": "0f82411aee9ddd7a4bacf1c35bc741fb404d89e9bce26109ca9580e60583ec69"
+    },
+    "iyp_roots": [
+      "iyp-cf541b90"
+    ]
+  },
+  "matches_isolated_plan_snapshot": true
+}
