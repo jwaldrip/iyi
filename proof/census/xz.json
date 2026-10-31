@@ -122,7 +122,7 @@
     {
       "line": 52,
       "class": "tool",
-      "what": "go",
+      "what": "Python lzma module",
       "regex": "this\\ python\\ has\\ no\\ lzma\\ module:\\ the\\ oracle\\ cannot\\ be\\ written,\\ so\\ std/xz\\ goes\\ unmeasured",
       "text": "  echo \"this python has no lzma module: the oracle cannot be written, so std/xz goes unmeasured\""
     }

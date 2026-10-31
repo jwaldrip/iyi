@@ -9056,6 +9056,9 @@ def _o6_run_row(
     source_name: str = "case.iyi",
     *,
     nm_bin: str | None = None,
+    build_timeout: float = legs_mod.BUILD_TIMEOUT,
+    run_default_timeout: float = legs_mod.RUN_DEFAULT_TIMEOUT,
+    run_heavy_timeout: float = legs_mod.RUN_HEAVY_TIMEOUT,
     disk_min_gb: float = 0.0,
 ) -> dict:
     return legs_mod.run_row(
@@ -9064,6 +9067,9 @@ def _o6_run_row(
         compiler=case.compiler,
         work_root=case.work,
         nm_bin=nm_bin or case.nm,
+        build_timeout=build_timeout,
+        run_default_timeout=run_default_timeout,
+        run_heavy_timeout=run_heavy_timeout,
         disk_min_gb=disk_min_gb,
     )
 
@@ -9148,6 +9154,16 @@ def _fixture_o6_row_control() -> Observation:
             "scrubbed_leg_env": "IYI_O6_COVERAGE" not in cleaned,
             "default_timeout": legs_mod.run_timeout_for("samples/iyi/case.iyi"),
             "heavy_timeout": legs_mod.run_timeout_for("bench/std_big_exercise.iyi"),
+            "supplied_default_timeout": legs_mod.run_timeout_for(
+                "samples/iyi/case.iyi",
+                run_default_timeout=7.0,
+                run_heavy_timeout=11.0,
+            ),
+            "supplied_heavy_timeout": legs_mod.run_timeout_for(
+                "bench/std_big_exercise.iyi",
+                run_default_timeout=7.0,
+                run_heavy_timeout=11.0,
+            ),
             "row_keys": sorted(row),
         }
     expected = {
@@ -9162,6 +9178,8 @@ def _fixture_o6_row_control() -> Observation:
         "scrubbed_leg_env": True,
         "default_timeout": 60,
         "heavy_timeout": 300,
+        "supplied_default_timeout": 7.0,
+        "supplied_heavy_timeout": 11.0,
         "row_keys": sorted(
             (
                 "source",
@@ -9363,21 +9381,6 @@ def _o6_pid_is_gone(pid_file: str) -> bool:
     return False
 
 
-@contextlib.contextmanager
-def _o6_limits(*, build: int | None = None, run: int | None = None):
-    old_build = legs_mod.BUILD_TIMEOUT
-    old_run = legs_mod.RUN_DEFAULT_TIMEOUT
-    try:
-        if build is not None:
-            legs_mod.BUILD_TIMEOUT = build
-        if run is not None:
-            legs_mod.RUN_DEFAULT_TIMEOUT = run
-        yield
-    finally:
-        legs_mod.BUILD_TIMEOUT = old_build
-        legs_mod.RUN_DEFAULT_TIMEOUT = old_run
-
-
 def _o6_read_report(path: str) -> list[dict]:
     with open(path, "r", encoding="utf-8") as stream:
         return [json.loads(line) for line in stream if line.strip()]
@@ -9429,40 +9432,186 @@ def _fixture_o6_timeout_seed(phase: str) -> Observation:
             "--expect-total",
             "2",
         ]
-        with _o6_limits(
-            build=2 if phase == "build" else None,
-            run=2 if phase == "run" else None,
-        ):
-            direct_row = _o6_run_row(case, source_name)
-            returncode = legs_mod.main(argv, disk_min_gb=0.0)
+        if phase == "build":
+            direct_row = _o6_run_row(
+                case,
+                source_name,
+                build_timeout=2,
+            )
+            direct_grandchild_gone = _o6_pid_is_gone(pid_file)
+            returncode = legs_mod.main(
+                argv,
+                build_timeout=2,
+                disk_min_gb=0.0,
+            )
+        else:
+            direct_row = _o6_run_row(
+                case,
+                source_name,
+                run_default_timeout=2,
+            )
+            direct_grandchild_gone = _o6_pid_is_gone(pid_file)
+            returncode = legs_mod.main(
+                argv,
+                run_default_timeout=2,
+                disk_min_gb=0.0,
+            )
         rows = _o6_read_report(report)
         by_name = {os.path.basename(row["source"]): row for row in rows}
+        sleepy_row = by_name[source_name]
+        expected_failure = (
+            f"{expected_code}: P {phase} timed out after 2s"
+        )
         got = {
             "returncode": returncode,
             "direct_status": direct_row["status"],
             "direct_codes": _o6_codes(direct_row),
+            "direct_failures": direct_row["failures"],
+            "direct_grandchild_gone": direct_grandchild_gone,
             "order": [os.path.basename(row["source"]) for row in rows],
             "good_status": by_name["good.iyi"]["status"],
-            "sleepy_status": by_name[source_name]["status"],
-            "sleepy_codes": _o6_codes(by_name[source_name]),
-            "grandchild_gone": _o6_pid_is_gone(pid_file),
+            "sleepy_status": sleepy_row["status"],
+            "sleepy_codes": _o6_codes(sleepy_row),
+            "sleepy_failures": sleepy_row["failures"],
+            "pooled_grandchild_gone": _o6_pid_is_gone(pid_file),
             "jsonl_rows": len(rows),
         }
     expected = {
         "returncode": 1,
         "direct_status": "FAIL",
         "direct_codes": [expected_code],
+        "direct_failures": [expected_failure],
+        "direct_grandchild_gone": True,
         "order": ["good.iyi", source_name],
         "good_status": "PASS",
         "sleepy_status": "FAIL",
         "sleepy_codes": [expected_code],
-        "grandchild_gone": True,
+        "sleepy_failures": [expected_failure],
+        "pooled_grandchild_gone": True,
         "jsonl_rows": 2,
     }
     return Observation(
         expected=expected,
         got=got,
         applied=f"{phase}_limit=2;source={source_name};grandchild_pid_file=written",
+    )
+
+
+def _fixture_o6_heavy_run_timeout(seeded: bool) -> Observation:
+    with tempfile.TemporaryDirectory(
+        prefix="iyi-o6-heavy-timeout-"
+    ) as root:
+        source_name = "std_big_exercise.iyi"
+        pid_file = os.path.join(root, "heavy-grandchild.pid")
+        config: dict[str, object] = {}
+        if seeded:
+            config["run_sleeps"] = {
+                source_name: {
+                    "P": {"seconds": 60, "pid_file": pid_file}
+                }
+            }
+        case = _o6_make_case(
+            root,
+            sample_names=("good.iyi",),
+            std_names=(source_name,),
+            config=config,
+        )
+        report = os.path.join(root, "report.jsonl")
+        argv = [
+            "--repo",
+            case.repo,
+            "--compiler",
+            case.compiler,
+            "--work",
+            case.work,
+            "--report",
+            report,
+            "--workers",
+            "2",
+            "--nm",
+            case.nm,
+            "--expect-samples",
+            "1",
+            "--expect-std",
+            "1",
+            "--expect-total",
+            "2",
+        ]
+        direct_row = _o6_run_row(
+            case,
+            source_name,
+            run_default_timeout=60,
+            run_heavy_timeout=2,
+        )
+        direct_grandchild_gone = (
+            _o6_pid_is_gone(pid_file) if seeded else None
+        )
+        returncode = legs_mod.main(
+            argv,
+            run_default_timeout=60,
+            run_heavy_timeout=2,
+            disk_min_gb=0.0,
+        )
+        rows = _o6_read_report(report)
+        by_name = {os.path.basename(row["source"]): row for row in rows}
+        heavy_row = by_name[source_name]
+        got = {
+            "returncode": returncode,
+            "direct_status": direct_row["status"],
+            "direct_codes": _o6_codes(direct_row),
+            "direct_failures": direct_row["failures"],
+            "direct_grandchild_gone": direct_grandchild_gone,
+            "order": [os.path.basename(row["source"]) for row in rows],
+            "good_status": by_name["good.iyi"]["status"],
+            "heavy_status": heavy_row["status"],
+            "heavy_codes": _o6_codes(heavy_row),
+            "heavy_failures": heavy_row["failures"],
+            "pooled_grandchild_gone": (
+                _o6_pid_is_gone(pid_file) if seeded else None
+            ),
+            "jsonl_rows": len(rows),
+        }
+    timeout_failure = "RUN-TIMEOUT-P: P run timed out after 2s"
+    expected = (
+        {
+            "returncode": 1,
+            "direct_status": "FAIL",
+            "direct_codes": ["RUN-TIMEOUT-P"],
+            "direct_failures": [timeout_failure],
+            "direct_grandchild_gone": True,
+            "order": ["good.iyi", source_name],
+            "good_status": "PASS",
+            "heavy_status": "FAIL",
+            "heavy_codes": ["RUN-TIMEOUT-P"],
+            "heavy_failures": [timeout_failure],
+            "pooled_grandchild_gone": True,
+            "jsonl_rows": 2,
+        }
+        if seeded
+        else {
+            "returncode": 0,
+            "direct_status": "PASS",
+            "direct_codes": [],
+            "direct_failures": [],
+            "direct_grandchild_gone": None,
+            "order": ["good.iyi", source_name],
+            "good_status": "PASS",
+            "heavy_status": "PASS",
+            "heavy_codes": [],
+            "heavy_failures": [],
+            "pooled_grandchild_gone": None,
+            "jsonl_rows": 2,
+        }
+    )
+    return Observation(
+        expected=expected,
+        got=got,
+        applied=(
+            "std_big_exercise.iyi P leg sleeps 60s under "
+            "run_heavy_timeout=2"
+            if seeded
+            else ""
+        ),
     )
 
 
@@ -10470,6 +10619,11 @@ O6_FIXTURES: tuple[Fixture, ...] = (
         partial(_fixture_o6_timeout_seed, "run"),
     ),
     Fixture(
+        "o6.seed.heavy-run-timeout",
+        "seed",
+        partial(_fixture_o6_heavy_run_timeout, True),
+    ),
+    Fixture(
         "s4.seed.lone-cr",
         "seed",
         partial(_fixture_o6_frame_text_seed, "lone-cr"),
@@ -10624,6 +10778,11 @@ O6_FIXTURES: tuple[Fixture, ...] = (
         "control",
         _fixture_o6_p_nonzero_control,
     ),
+    Fixture(
+        "o6.control.heavy-run-timeout",
+        "control",
+        partial(_fixture_o6_heavy_run_timeout, False),
+    ),
 )
 O6_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
     "o6.row-runtimeerror": (
@@ -10676,10 +10835,17 @@ O6_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
         "s4.seed.exit-code",
         "o6.control.p-nonzero",
     ),
+    "o6.heavy-run-timeout": (
+        "o6.seed.heavy-run-timeout",
+        "o6.control.heavy-run-timeout",
+    ),
 }
 
 
 # ===== O7: stages (owner U7). Keys "o7.". =====
+_O7_NORMAL_DRIVER_LIMIT_SEC = 60.0
+_O7_TIMEOUT_DRIVER_LIMIT_SEC = 0.1
+_O7_DRIVER_GRACE_SEC = 0.1
 
 
 def _stage_real_compiler(directory: str, *, version_line: str) -> str:
@@ -11558,8 +11724,8 @@ def _fixture_stage_chain_control() -> Observation:
         run3_return = stages_mod.cmd_run3(
             fixture.args(),
             drivers=fixture.drivers,
-            driver_limit_sec=5.0,
-            grace_sec=0.1,
+            driver_limit_sec=_O7_NORMAL_DRIVER_LIMIT_SEC,
+            grace_sec=_O7_DRIVER_GRACE_SEC,
             disk_min_gb=0.0,
         )
         stage = _stage_result(fixture.report, "run3/stage")
@@ -11825,23 +11991,26 @@ def _fixture_std_exclusion_seed() -> Observation:
         returncode = stages_mod.cmd_run3(
             fixture.args(),
             drivers=fixture.drivers,
-            driver_limit_sec=1.0,
-            grace_sec=0.1,
+            driver_limit_sec=_O7_NORMAL_DRIVER_LIMIT_SEC,
+            grace_sec=_O7_DRIVER_GRACE_SEC,
             disk_min_gb=0.0,
         )
         required = _o7_load_json(
             os.path.join(fixture.report, "run3", "required.json")
         )
         missing = _stage_result(fixture.report, "run3/missing")
+        stage = _stage_result(fixture.report, "run3/stage")
         got = {
             "returncode": returncode,
             "required": required,
             "missing_status": missing.get("status"),
+            "stage_status": stage.get("status"),
         }
         expected = {
             "returncode": 1,
             "required": ["stage", "missing"],
             "missing_status": "CENSUS-MISSING",
+            "stage_status": "PASS",
         }
         return Observation(
             expected=expected,
@@ -11980,23 +12149,26 @@ def _fixture_p_nonzero_not_added_seed() -> Observation:
         returncode = stages_mod.cmd_run3(
             fixture.args(),
             drivers=fixture.drivers,
-            driver_limit_sec=1.0,
-            grace_sec=0.1,
+            driver_limit_sec=_O7_NORMAL_DRIVER_LIMIT_SEC,
+            grace_sec=_O7_DRIVER_GRACE_SEC,
             disk_min_gb=0.0,
         )
         required = _o7_load_json(
             os.path.join(fixture.report, "run3", "required.json")
         )
         extra = _stage_result(fixture.report, "run3/extra")
+        stage = _stage_result(fixture.report, "run3/stage")
         got = {
             "returncode": returncode,
             "required": required,
             "extra_status": extra.get("status"),
+            "stage_status": stage.get("status"),
         }
         expected = {
             "returncode": 1,
             "required": ["stage", "extra"],
             "extra_status": "CENSUS-MISSING",
+            "stage_status": "PASS",
         }
         return Observation(
             expected=expected,
@@ -12329,8 +12501,8 @@ def _fixture_final_required_rerun_seed() -> Observation:
         run3 = stages_mod.cmd_run3(
             fixture.args(),
             drivers=fixture.drivers,
-            driver_limit_sec=1.0,
-            grace_sec=0.1,
+            driver_limit_sec=_O7_NORMAL_DRIVER_LIMIT_SEC,
+            grace_sec=_O7_DRIVER_GRACE_SEC,
             disk_min_gb=0.0,
         )
         control_final = stages_mod.cmd_final(
@@ -12449,8 +12621,8 @@ def _fixture_run3_disk_guard(seeded: bool) -> Observation:
         returncode = stages_mod.cmd_run3(
             fixture.args(),
             drivers=fixture.drivers,
-            driver_limit_sec=1.0,
-            grace_sec=0.1,
+            driver_limit_sec=_O7_NORMAL_DRIVER_LIMIT_SEC,
+            grace_sec=_O7_DRIVER_GRACE_SEC,
             disk_min_gb=(2**60 if seeded else 0.0),
         )
         record = _stage_result(fixture.report, "run3/stage")
@@ -12493,22 +12665,29 @@ def _fixture_post_driver_identity_guard(seeded: bool) -> Observation:
     with StageFixture(scenario) as fixture:
         fixture.pin()
         fixture.write_prerequisites()
+        before_mtime_ns = os.stat(fixture.compiler).st_mtime_ns
         returncode = stages_mod.cmd_run3(
             fixture.args(),
             drivers=fixture.drivers,
-            driver_limit_sec=1.0,
-            grace_sec=0.1,
+            driver_limit_sec=_O7_NORMAL_DRIVER_LIMIT_SEC,
+            grace_sec=_O7_DRIVER_GRACE_SEC,
             disk_min_gb=0.0,
         )
+        after_mtime_ns = os.stat(fixture.compiler).st_mtime_ns
         record = _stage_result(fixture.report, "run3/stage")
+        checks = record.get("checks", {})
         got = {
             "returncode": returncode,
             "status": record.get("status"),
-            "identity": record.get("checks", {}).get("identity"),
+            "identity": checks.get("identity"),
             "reason": any(
                 "COMPILER-MTIME-CHANGED" in str(reason)
                 for reason in record.get("reasons", [])
             ),
+            "exit": checks.get("exit"),
+            "sentinel": checks.get("sentinel"),
+            "ledger": checks.get("ledger"),
+            "mtime_changed": after_mtime_ns != before_mtime_ns,
         }
     expected = (
         {
@@ -12516,6 +12695,10 @@ def _fixture_post_driver_identity_guard(seeded: bool) -> Observation:
             "status": "INVALID",
             "identity": "INVALID",
             "reason": True,
+            "exit": "PASS",
+            "sentinel": "PASS",
+            "ledger": "PASS",
+            "mtime_changed": True,
         }
         if seeded
         else {
@@ -12523,6 +12706,10 @@ def _fixture_post_driver_identity_guard(seeded: bool) -> Observation:
             "status": "PASS",
             "identity": "PASS",
             "reason": False,
+            "exit": "PASS",
+            "sentinel": "PASS",
+            "ledger": "PASS",
+            "mtime_changed": False,
         }
     )
     return Observation(
@@ -12657,8 +12844,8 @@ def _fixture_run3_refused_guard(seeded: bool) -> Observation:
         returncode = stages_mod.cmd_run3(
             fixture.args(),
             drivers=fixture.drivers,
-            driver_limit_sec=30.0,
-            grace_sec=0.1,
+            driver_limit_sec=_O7_NORMAL_DRIVER_LIMIT_SEC,
+            grace_sec=_O7_DRIVER_GRACE_SEC,
             disk_min_gb=0.0,
         )
         record = _stage_result(fixture.report, "run3/stage")
@@ -12705,8 +12892,8 @@ def _fixture_run3_census_guard(seeded: bool) -> Observation:
         returncode = stages_mod.cmd_run3(
             fixture.args(),
             drivers=fixture.drivers,
-            driver_limit_sec=1.0,
-            grace_sec=0.1,
+            driver_limit_sec=_O7_NORMAL_DRIVER_LIMIT_SEC,
+            grace_sec=_O7_DRIVER_GRACE_SEC,
             disk_min_gb=0.0,
         )
         record = _stage_result(fixture.report, "run3/stage")
@@ -12999,7 +13186,7 @@ def _o7_run3_case(
     *,
     drivers: tuple[str, ...] | None = None,
     baseline: list[dict[str, str]] | None = None,
-    limit_sec: float = 5.0,
+    limit_sec: float = _O7_NORMAL_DRIVER_LIMIT_SEC,
     remove_driver_script: bool = False,
 ) -> tuple[int, dict[str, dict], str]:
     with StageFixture(scenario) as fixture:
@@ -13027,7 +13214,7 @@ def _o7_run3_case(
             fixture.args(),
             drivers=selected,
             driver_limit_sec=limit_sec,
-            grace_sec=0.1,
+            grace_sec=_O7_DRIVER_GRACE_SEC,
             disk_min_gb=0.0,
         )
         results = {
@@ -13078,7 +13265,7 @@ def _fixture_run3_import_seed() -> Observation:
 def _fixture_run3_timeout_seed() -> Observation:
     returncode, results, applied = _o7_run3_case(
         "driver-timeout",
-        limit_sec=0.1,
+        limit_sec=_O7_TIMEOUT_DRIVER_LIMIT_SEC,
     )
     stage = results["stage"]
     got = {
@@ -13269,8 +13456,8 @@ def _fixture_all_control() -> Observation:
         returncode = stages_mod.cmd_all(
             fixture.args(),
             drivers=fixture.drivers,
-            driver_limit_sec=5.0,
-            grace_sec=0.1,
+            driver_limit_sec=_O7_NORMAL_DRIVER_LIMIT_SEC,
+            grace_sec=_O7_DRIVER_GRACE_SEC,
             disk_min_gb=0.0,
         )
         final = _o7_load_json(os.path.join(fixture.report, "final.json"))
@@ -14800,8 +14987,8 @@ def _runner_more_edge(case: str) -> Observation:
                 pin,
                 "stage",
                 set(),
-                driver_limit_sec=30.0,
-                grace_sec=0.1,
+                driver_limit_sec=_O7_NORMAL_DRIVER_LIMIT_SEC,
+                grace_sec=_O7_DRIVER_GRACE_SEC,
                 disk_min_gb=0.0,
                 stat_fn=os.stat,
                 setup_base=setup_base,
@@ -14840,8 +15027,8 @@ def _runner_more_edge(case: str) -> Observation:
                 pin,
                 "stage",
                 set(),
-                driver_limit_sec=30.0,
-                grace_sec=0.1,
+                driver_limit_sec=_O7_NORMAL_DRIVER_LIMIT_SEC,
+                grace_sec=_O7_DRIVER_GRACE_SEC,
                 disk_min_gb=0.0,
                 stat_fn=os.stat,
             )
@@ -14858,8 +15045,8 @@ def _runner_more_edge(case: str) -> Observation:
             returncode = stages_mod.cmd_run3(
                 fixture.args(),
                 drivers=fixture.drivers,
-                driver_limit_sec=30.0,
-                grace_sec=0.1,
+                driver_limit_sec=_O7_NORMAL_DRIVER_LIMIT_SEC,
+                grace_sec=_O7_DRIVER_GRACE_SEC,
                 disk_min_gb=0.0,
             )
             record = _stage_result(fixture.report, "run3/stage")
@@ -14918,14 +15105,60 @@ def _runner_more_edge(case: str) -> Observation:
             returncode = stages_mod.cmd_all(
                 fixture.args(),
                 drivers=fixture.drivers,
-                driver_limit_sec=30.0,
-                grace_sec=0.1,
+                driver_limit_sec=_O7_NORMAL_DRIVER_LIMIT_SEC,
+                grace_sec=_O7_DRIVER_GRACE_SEC,
                 disk_min_gb=(
                     2**60 if case == "all-run1-stop" else 0.0
                 ),
             )
-            got = returncode == 1
-        return Observation(expected=True, got=got, applied=applied)
+            run1 = _stage_result(fixture.report, "run1")
+            run2 = _stage_result(fixture.report, "run2")
+            run2_attempted = (
+                stages_mod.latest_attempt_dir(
+                    os.path.join(fixture.report, "run2")
+                )
+                is not None
+            )
+            run3_attempted = (
+                stages_mod.latest_attempt_dir(
+                    os.path.join(fixture.report, "run3", "stage")
+                )
+                is not None
+            )
+            final_exists = os.path.isfile(
+                os.path.join(fixture.report, "final.json")
+            )
+            if case == "all-run1-stop":
+                got = {
+                    "returncode": returncode,
+                    "run1_status": run1.get("status"),
+                    "run2_attempted": run2_attempted,
+                    "run3_attempted": run3_attempted,
+                    "final_exists": final_exists,
+                }
+                expected = {
+                    "returncode": 1,
+                    "run1_status": "STOP",
+                    "run2_attempted": False,
+                    "run3_attempted": False,
+                    "final_exists": False,
+                }
+            else:
+                got = {
+                    "returncode": returncode,
+                    "run1_status": run1.get("status"),
+                    "run2_status": run2.get("status"),
+                    "run3_attempted": run3_attempted,
+                    "final_exists": final_exists,
+                }
+                expected = {
+                    "returncode": 1,
+                    "run1_status": "PASS",
+                    "run2_status": "STOP",
+                    "run3_attempted": False,
+                    "final_exists": False,
+                }
+        return Observation(expected=expected, got=got, applied=applied)
 
     if case in {
         "all-run3-refusal",
@@ -14955,8 +15188,8 @@ def _runner_more_edge(case: str) -> Observation:
                 return stages_mod.cmd_all(
                     args,
                     drivers=fixture.drivers,
-                    driver_limit_sec=30.0,
-                    grace_sec=0.1,
+                    driver_limit_sec=_O7_NORMAL_DRIVER_LIMIT_SEC,
+                    grace_sec=_O7_DRIVER_GRACE_SEC,
                     disk_min_gb=0.0,
                     required_path=required_path,
                     run3_disk_min_gb=(
@@ -14973,15 +15206,48 @@ def _runner_more_edge(case: str) -> Observation:
                 )
             else:
                 returncode = run_all()
-            expected_returncode = {
-                "all-run3-refusal": 2,
-                "all-driver-stop": 1,
-            }.get(case, 0)
-            got = (
-                returncode == expected_returncode
-                and stderr_captured
-            )
-        return Observation(expected=True, got=got, applied=applied)
+            if case == "all-driver-stop":
+                run1 = _stage_result(fixture.report, "run1")
+                run2 = _stage_result(fixture.report, "run2")
+                stage = _stage_result(fixture.report, "run3/stage")
+                attempt = stages_mod.latest_attempt_dir(
+                    os.path.join(fixture.report, "run3", "stage")
+                )
+                got = {
+                    "returncode": returncode,
+                    "run1_status": run1.get("status"),
+                    "run2_status": run2.get("status"),
+                    "run3_status": stage.get("status"),
+                    "disk": stage.get("checks", {}).get("disk"),
+                    "driver_log_exists": bool(
+                        attempt
+                        and os.path.exists(
+                            os.path.join(attempt, "driver.log")
+                        )
+                    ),
+                    "final_exists": os.path.isfile(
+                        os.path.join(fixture.report, "final.json")
+                    ),
+                }
+                expected = {
+                    "returncode": 1,
+                    "run1_status": "PASS",
+                    "run2_status": "PASS",
+                    "run3_status": "STOP",
+                    "disk": "STOP",
+                    "driver_log_exists": False,
+                    "final_exists": False,
+                }
+            else:
+                expected_returncode = {
+                    "all-run3-refusal": 2,
+                }.get(case, 0)
+                got = (
+                    returncode == expected_returncode
+                    and stderr_captured
+                )
+                expected = True
+        return Observation(expected=expected, got=got, applied=applied)
 
     with tempfile.TemporaryDirectory(prefix="iyi-runner-more-") as root:
         checks = {
@@ -15247,7 +15513,7 @@ def _fixture_run3_interrupt_edge() -> Observation:
             fixture.args(),
             drivers=fixture.drivers,
             driver_limit_sec=30.0,
-            grace_sec=0.1,
+            grace_sec=_O7_DRIVER_GRACE_SEC,
             disk_min_gb=0.0,
         )
         sender.join()
@@ -17386,8 +17652,8 @@ ALLOWLIST: tuple[tuple[str, int, int, str, str], ...] = (
     ),
     (
         "proof.artifact_legs",
-        797,
-        798,
+        857,
+        858,
         "s4.control.counts",
         "python -B proof/artifact_legs.py with an empty zero-count corpus "
         "reaches the direct-script main handoff, reports a passing summary, "

@@ -81,7 +81,7 @@
     {
       "line": 43,
       "class": "tool",
-      "what": "go",
+      "what": "Python 3.14+ compression.zstd",
       "regex": "no\\ python\\ with\\ compression\\.zstd\\ \\(3\\.14\\ or\\ later\\)\\ on\\ this\\ machine:\\ the\\ zstd\\ oracle\\ cannot\\ be\\ written,\\ so\\ std/zstd\\ goes\\ unmeasured",
       "text": "  echo \"no python with compression.zstd (3.14 or later) on this machine: the zstd oracle cannot be written, so std/zstd goes unmeasured\""
     }
