@@ -1,0 +1,9 @@
+{
+  "archive": "audit-completion-6bbe-r1h.tar.gz",
+  "archive_bytes": 255760,
+  "archive_sha256": "7f68448996a28677a8be273536029b5674129d0938dbfaa31355098e5bb04ed9",
+  "members": 35,
+  "all_members_byte_equal_native": true,
+  "exact_and_generic_token_scan_matches": 0,
+  "result": "R1h PASS; all four results byte-equal archived originals, generator edits only permitted literal roots, 11 pinned input/compare files verified, both receipts complete rc0."
+}
