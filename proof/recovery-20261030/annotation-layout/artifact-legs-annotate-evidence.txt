@@ -1,0 +1,112 @@
+artifact_legs coverage diagnosis, compile-only evidence (planner, 2026-10-30)
+Candidate W2=/Users/jwaldrip/dev/worktrees/iyi-audit-deadlines-seams-20261030 at H=451420109dfb0bbcdf800e0143c30768c73e3e0b (clean, == origin)
+Interpreter: /Users/jwaldrip/.cache/iyi-corpus-venv/bin/python3 (pyvenv.cfg version = 3.14.6), always -B -I, cwd /private/tmp
+Coverage listings read: /private/tmp/iyi-parent-evidence-451420109/cov/*.cover
+  proof.artifact_legs.cover sha256 2b17be1f033ac69275186274ef3733d56b46f1739a858bcb3bc65549f3933e48
+  == E 700786162:proof/recovery-20261030/coverage-451420109/proof.artifact_legs.cover (same sha256)
+No proof module was imported or executed; no file in W2, P, E or the primary checkout was written.
+
+=== local://annotate_probe.py (H sources vs H listings)
+python 3.14.6 (main, Jun 10 2026, 10:03:53) [Clang 21.0.0 (clang-2100.0.123.102)]
+[artifact_legs] executable=669 annotate_codes=22 annotate_only=[57, 61, 285, 287, 288, 289, 290, 295, 673, 675, 676, 677, 678, 683, 708, 710, 711, 712, 713, 714, 719, 776, 782]
+[artifact_legs] misses=[57, 61, 285, 287, 288, 289, 290, 295, 673, 675, 676, 677, 678, 683, 708, 710, 711, 712, 713, 714, 719, 776, 782, 858]
+[artifact_legs] misses_annotate_only=[57, 61, 285, 287, 288, 289, 290, 295, 673, 675, 676, 677, 678, 683, 708, 710, 711, 712, 713, 714, 719, 776, 782]
+[artifact_legs] misses_not_annotate_only=[858]
+[artifact_legs] annotate_only_but_hit=[]
+[artifact_legs] annotate_only_subset_of_executable=True
+[artifact_legs] annotate_any_count=63
+[proofkit] executable=2947 annotate_codes=80 annotate_only=[]
+[proofkit] misses=[]
+[proofkit] misses_annotate_only=[]
+[proofkit] misses_not_annotate_only=[]
+[proofkit] annotate_only_but_hit=[]
+[proofkit] annotate_only_subset_of_executable=True
+[proofkit] annotate_any_count=80
+[run_proof] executable=1178 annotate_codes=41 annotate_only=[]
+[run_proof] misses=[1525, 1526, 1527, 1528, 1530, 1531]
+[run_proof] misses_annotate_only=[]
+[run_proof] misses_not_annotate_only=[1525, 1526, 1527, 1528, 1530, 1531]
+[run_proof] annotate_only_but_hit=[]
+[run_proof] annotate_only_subset_of_executable=True
+[run_proof] annotate_any_count=41
+[roundtrip_shim] executable=1029 annotate_codes=41 annotate_only=[]
+[roundtrip_shim] misses=[1241, 1245, 1246, 1247, 1248, 1249, 1250, 1251, 1252, 1253, 1254, 1255, 1256, 1260]
+[roundtrip_shim] misses_annotate_only=[]
+[roundtrip_shim] misses_not_annotate_only=[1241, 1245, 1246, 1247, 1248, 1249, 1250, 1251, 1252, 1253, 1254, 1255, 1256, 1260]
+[roundtrip_shim] annotate_only_but_hit=[]
+[roundtrip_shim] annotate_only_subset_of_executable=True
+[roundtrip_shim] annotate_any_count=41
+--- module-scope instructions on lines 56..62
+56 LOAD_CONST 'run_default_timeout' starts_line
+59 LOAD_NAME RUN_DEFAULT_TIMEOUT starts_line
+56 LOAD_CONST 'run_heavy_timeout' starts_line
+60 LOAD_NAME RUN_HEAVY_TIMEOUT starts_line
+56 BUILD_MAP  starts_line
+56 LOAD_CONST <code object __annotate__ at 0x105b0f130, file "/Users/jwaldrip/dev/worktrees/iyi-audit-deadlines-seams-20261030/proof/artifact_legs.py", line 56> 
+56 MAKE_FUNCTION  
+56 LOAD_CONST <code object run_timeout_for at 0x105b4ca80, file "/Users/jwaldrip/dev/worktrees/iyi-audit-deadlines-seams-20261030/proof/artifact_legs.py", line 56> 
+56 MAKE_FUNCTION  
+56 SET_FUNCTION_ATTRIBUTE annotate 
+56 SET_FUNCTION_ATTRIBUTE kwdefaults 
+56 STORE_NAME run_timeout_for 
+--- __annotate__ for def at 56 parents ('<module>',)
+56 RESUME  starts_line
+56 LOAD_FAST_BORROW format 
+56 LOAD_SMALL_INT  
+56 COMPARE_OP > 
+56 POP_JUMP_IF_FALSE to L1 
+56 NOT_TAKEN  
+56 LOAD_COMMON_CONSTANT NotImplementedError 
+56 RAISE_VARARGS  
+56 LOAD_CONST 'relpath' 
+57 LOAD_CONST 'str' starts_line
+56 LOAD_CONST 'run_default_timeout' starts_line
+59 LOAD_CONST 'float' starts_line
+56 LOAD_CONST 'run_heavy_timeout' starts_line
+60 LOAD_CONST 'float' starts_line
+56 LOAD_CONST 'return' starts_line
+61 LOAD_CONST 'float' starts_line
+56 BUILD_MAP  starts_line
+56 RETURN_VALUE  
+
+=== local://annotate_probe2.py (3ef pre-wrap, H, proposed single-line layout built in memory from H)
+[3ef292791] lines=798 executable_linestarts=614 annotate_only=[] main_guard=[797] guard_body='    raise SystemExit(main())' longest=190
+[H-451420109] lines=858 executable_linestarts=668 annotate_only=[57, 61, 285, 287, 288, 289, 290, 295, 673, 675, 676, 677, 678, 683, 708, 710, 711, 712, 713, 714, 719, 776, 782] main_guard=[857] guard_body='    raise SystemExit(main())' longest=190
+[proposed] lines=812 executable_linestarts=627 annotate_only=[] main_guard=[811] guard_body='    raise SystemExit(main())' longest=291
+ast_equal_H_vs_proposed True
+trace_executable_H 669
+proposed_def 56 142 def run_timeout_for(relpath: str, *, run_default_timeout: fl
+proposed_def 279 260 def _run_row(source: str, *, repo: str, compiler: str, work_
+proposed_def 656 259 def run_row(source: str, *, repo: str, compiler: str, work_r
+proposed_def 680 291 def run_rows(sources: Sequence[str], *, repo: str, compiler:
+proposed_def 736 222 def main(argv: Sequence[str] | None = None, *, build_timeout
+
+=== local://artifact_legs_layout_check.py --self-test W2 451420109dfb0bbcdf800e0143c30768c73e3e0b  (exit 0)
+SELFTEST repair expected=[] got=[] ok
+SELFTEST repair guard_span=(811, 812) lines=812
+SELFTEST unfixed-base expected=['C1'] got=['C1'] ok
+SELFTEST unfixed-base C1={'artifact_legs': [57, 61, 285, 287, 288, 289, 290, 295, 673, 675, 676, 677, 678, 683, 708, 710, 711, 712, 713, 714, 719, 776, 782]}
+SELFTEST stale-allowlist expected=['C3'] got=['C3'] ok
+SELFTEST one-signature-left-wrapped expected=['C1'] got=['C1'] ok
+SELFTEST semantic-edit expected=['C2'] got=['C2'] ok
+SELFTEST extra-smoke-edit expected=['C4'] got=['C4'] ok
+SELFTEST other-module-edit expected=['C5'] got=['C5'] ok
+SELFTEST PASS
+
+=== local://artifact_legs_layout_check.py W2 451420109dfb0bbcdf800e0143c30768c73e3e0b HEAD  (HEAD == H, exit 1)
+CHECK C1 FAIL {'artifact_legs': [57, 61, 285, 287, 288, 289, 290, 295, 673, 675, 676, 677, 678, 683, 708, 710, 711, 712, 713, 714, 719, 776, 782]}
+CHECK C2 PASS
+CHECK C3 PASS
+CHECK C4 PASS
+CHECK C5 PASS
+LAYOUT CHECK FAIL base=451420109dfb0bbcdf800e0143c30768c73e3e0b candidate=HEAD
+
+=== Other read-only facts
+- grep 'inspect\.|signature\(|__annotations__|get_annotations|get_type_hints|__annotate__|annotationlib|__kwdefaults__|__defaults__' over proof/: no matches.
+- Wrapped `def f(` signatures (line ends at the open paren) in proofkit.py, run_proof.py, roundtrip_shim.py: none. Longest lines: proofkit 228 (3230), run_proof 441 (1417, cmd_all signature), roundtrip_shim 325 (942), artifact_legs 190 (195).
+- git diff 3ef292791 451420109 -- proof/artifact_legs.py: the five signatures were single-line at 3ef and wrapped one-parameter-per-line by 7874504ff.
+- smoke_test.py references 857/858 only in the ALLOWLIST artifact_legs entry (18569-18570).
+- Prior audit mutants: only b_mutants.py g03 anchors artifact_legs, on body text `if leg == "C3" and "cannot name it" in stderr_text:` (artifact_legs.py:427 at H; unaffected by the layout repair).
+- CI (.github/workflows/iyi.yml) never runs proof/; no Python formatter config in the repo.
+- Coverage log artifact 7739: no `COVERAGE allowlist_error`, `listing_error`, `suite_exit`, `gate_error` or `missing_lines=UNKNOWN` lines; TOTAL 432/432 seeds, 84/84 controls; HARNESS PASS; sole failure = 23 unallowlisted artifact_legs lines.
+- W2 after all probes: porcelain empty, HEAD 451420109dfb0bbcdf800e0143c30768c73e3e0b == origin.
