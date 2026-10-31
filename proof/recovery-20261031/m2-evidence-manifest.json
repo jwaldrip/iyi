@@ -1,0 +1,65 @@
+{
+  "archive": "p1-m2-rebuild-evidence.tar.gz",
+  "archive_sha256": "ee5ed4a8088a7d355dadce82b474baee8d56045b09c2c81496126c124cbcb47d",
+  "members": {
+    "build-m2.log": {
+      "bytes": 1505942,
+      "sha256": "51e81d9d287573cd0c181e8ab13244f428526c2b047472bf325c65aea40a570d"
+    },
+    "p1-binaries-m2.json": {
+      "bytes": 2228,
+      "sha256": "5aa656a45a9503df27e57326497e065c73c883ce5dbba990a562af7a3d923328"
+    },
+    "build-m2-receipts.json": {
+      "bytes": 12813,
+      "sha256": "f826ed1a21da28de6574526d46d69b10584c2c313d96e16370c87c9b398edf2f"
+    },
+    "s3_aux/dry_run.json": {
+      "bytes": 256,
+      "sha256": "a206230ad68e1c18a9642c013883bc64be5bfc5876f7f281ba791d0dab344615"
+    },
+    "s3_aux/dry_run_stderr.txt": {
+      "bytes": 52,
+      "sha256": "2fdd5d456ccd35d6be267a265cecf7cf54b5fe4701a7de3cdbe111c4a66a3c1c"
+    },
+    "s3_aux/dry_run_stdout.txt": {
+      "bytes": 2351,
+      "sha256": "c74f1324073cfcb53953e36130669db90286bed9ec1cf42056e4035db5fa19d5"
+    },
+    "s3_aux/execute_s3_runner.py": {
+      "bytes": 15000,
+      "sha256": "e409d647605b039399c3d31207a775a82c9e11e859ba5a33317db678897619ec"
+    },
+    "s3_aux/m1_comparison.json": {
+      "bytes": 1824,
+      "sha256": "61464da2668c2ffd1a483b2133e27c0851ada321fa423761b665348c81f31d37"
+    },
+    "s3_aux/p_git_status_after.json": {
+      "bytes": 459,
+      "sha256": "27245530db9e1c75f48979442f73af17b147b3f845d4b786ffa24b335b8c6ff6"
+    },
+    "s3_aux/p_git_status_before.json": {
+      "bytes": 339,
+      "sha256": "da91d4bca3b234e39b9ce2cfd354dfab618ae110a47f823b7daccc61688f518e"
+    },
+    "s3_aux/prebuild_ignored_metadata.json": {
+      "bytes": 5157,
+      "sha256": "4977a21734a7a090a00eaa04f98aea1c2ddf8123d4927c4ea6ffa8d9c931cac2"
+    },
+    "s3_aux/preconditions.json": {
+      "bytes": 5946,
+      "sha256": "ba880d57b433f7c0cea7892689ee42c35d59d5813a89cd27d286276e753d7297"
+    },
+    "s3_aux/raw_version_outputs.json": {
+      "bytes": 808,
+      "sha256": "71e1ae7b820acdd3e952f4f7b9d9984357bc264fa6c51641564fcf0e61b7bd98"
+    },
+    "m2-parent-native-verification.json": {
+      "bytes": 1420,
+      "sha256": "d44c0d16a982784fcdc285ea00c28d46121855b0c7cbd1efd78e61c84fc22594"
+    }
+  },
+  "token_gate_exact_hits": 0,
+  "token_gate_pattern_hits": 0,
+  "new_binary_identity_not_m1_continuity": true
+}

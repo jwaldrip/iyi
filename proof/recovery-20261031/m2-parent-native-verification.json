@@ -1,0 +1,48 @@
+{
+  "observed": [
+    {
+      "name": "iyi",
+      "sha256": "b8afdb5f55b03754b8194978e320cbca3c0816661cadcbd3083f0872a64ca418",
+      "size": 50845488,
+      "inode": 2647885868,
+      "mtime_ns": 1793465861706431758,
+      "version_rc": 0,
+      "version_stdout_matches_m1": true,
+      "version_stderr": ""
+    },
+    {
+      "name": "crystal",
+      "sha256": "899ca96ee708a87876220b4c3ae16edaa9e7fb539cdf524b36ad919b667fe196",
+      "size": 50855032,
+      "inode": 2647896620,
+      "mtime_ns": 1793465903336266947,
+      "version_rc": 0,
+      "version_stdout_matches_m1": true,
+      "version_stderr": ""
+    },
+    {
+      "name": "iyi-daemon",
+      "sha256": "8f34ebd2e4664b4c517410d7f18cff890f3d291691695414de8dcb9848c2c5d7",
+      "size": 50476536,
+      "inode": 2647922971,
+      "mtime_ns": 1793465987371679130,
+      "version_rc": 0,
+      "version_stdout_matches_m1": true,
+      "version_stderr": ""
+    },
+    {
+      "name": "crystal-daemon",
+      "sha256": "96a0caa1e8933aa2fd938a31df48253fcb5de67d92ed8ec07c46615977818e5f",
+      "size": 50486016,
+      "inode": 2647930075,
+      "mtime_ns": 1793466055289032853,
+      "version_rc": 0,
+      "version_stdout_matches_m1": true,
+      "version_stderr": ""
+    }
+  ],
+  "build_rc": 0,
+  "build_log_hash_matches": true,
+  "not_continuity": "M2sha/size/inode/mtimeareNEW;M1oldobservationsareNOTrelabeled.",
+  "observed_utc": "2026-10-31T17:05:25Z"
+}
