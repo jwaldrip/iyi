@@ -1,0 +1,15 @@
+{
+  "archive": "audit-completion-6bbe-e3.tar.gz",
+  "archive_bytes": 382985,
+  "archive_sha256": "ec54d9eda047d7d13fae76e18b62e69b64244bd6d772f80881eed4b91fb6fb4d",
+  "members": 435,
+  "all_members_byte_equal_native": true,
+  "exact_and_generic_token_scan_matches": 0,
+  "status_counts": {
+    "SURVIVED": 3,
+    "KILLED": 33,
+    "FAIL": 1,
+    "MASKED": 1
+  },
+  "result": "E3 complete: 38 rows; SURVIVED g02,g13,g18; FAIL m14 (paired control failed); MASKED m20; 33 KILLED; reused m01-m05 KILLED. g02 attempt1/2 retained aborts."
+}
