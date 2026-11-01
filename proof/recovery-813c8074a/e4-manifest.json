@@ -1,0 +1,10 @@
+{
+  "archive": "audit-813c8074a-e4.tar.gz",
+  "archive_bytes": 174550,
+  "archive_sha256": "7c0fe759ff4a9879a0d61be1be098c86a7a53c588fd55f30329937914f104122",
+  "members": 141,
+  "all_members_byte_equal_native": true,
+  "exact_and_generic_token_scan_matches": 0,
+  "symlinks_recorded": 0,
+  "result": "E4 assembly at H prime: G1-G10 table all PASS per worker recomputation; no GO issued; 106 receipts verified; 48 re-bound instruments matched; independent review pending"
+}
