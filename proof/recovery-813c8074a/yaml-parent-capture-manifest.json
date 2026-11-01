@@ -1,0 +1,6 @@
+{
+  "sha256": "e27976f847965d4f9f23120996f358ea48037e7372dc6925d3de8fc12eec642a",
+  "members": 28,
+  "result": "contextual run: foldcopy GNU timeout rc124 at 60.079 sec; explicit owned cache; compilation vs execution and historical cause unknown",
+  "cache_excluded": true
+}
