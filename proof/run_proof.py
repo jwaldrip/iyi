@@ -8,6 +8,8 @@ Commands and arguments:
       Create the immutable pin for a new chain.
   run1 --report-dir R
       Run gates 1.1 through 1.4, exclusions, and baseline skip capture.
+      Gate 1.3 runs bench/stale_rg9.py and requires canonical summary:
+      ^RG9 PASSED: {corpus} corpus programs, plain and observed legs (two processes plus IYI_WARM=1)$
   run2 --report-dir R
       Run all artifact legs with the pinned compiler and nm.
   run3 --report-dir R [--driver DRIVER]
@@ -508,7 +510,7 @@ def cmd_run1(args, *, std_exercises: int = RUN1_STD_EXERCISES, siblings: int = R
         survivors.extend(result.survivors)
         text = output.decode("utf-8", errors="replace")
         sentinel = re.search(
-            rf"^RG9 PASSED: {corpus} corpus programs$",
+            rf"^RG9 PASSED: {corpus} corpus programs, plain and observed legs \(two processes plus IYI_WARM=1\)$",
             text,
             re.MULTILINE,
         )

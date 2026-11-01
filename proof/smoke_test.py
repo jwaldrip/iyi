@@ -11971,10 +11971,26 @@ def _stage_stub_payloads(
         rg9_tail = "import os\nos.utime(os.environ['IYI'])\n"
     else:
         rg9_tail = ""
+    if scenario in ("rg9-bare", "rg9-bare-141"):
+        rg9_summary = f"RG9 PASSED: {rg9_count} corpus programs"
+    elif scenario == "rg9-malformed-suffix":
+        rg9_summary = (
+            f"RG9 PASSED: {rg9_count} corpus programs, plain and observed legs"
+        )
+    elif scenario == "rg9-extended-suffix":
+        rg9_summary = (
+            f"RG9 PASSED: {rg9_count} corpus programs, plain and observed legs "
+            "(two processes plus IYI_WARM=1) extra"
+        )
+    else:
+        rg9_summary = (
+            f"RG9 PASSED: {rg9_count} corpus programs, plain and observed legs "
+            "(two processes plus IYI_WARM=1)"
+        )
     stale_rg9 = (
         "#!/usr/bin/env python3\n"
         f"{rg9_prefix}"
-        f"print('RG9 PASSED: {rg9_count} corpus programs')\n"
+        f"print({rg9_summary!r})\n"
         f"{rg9_tail}"
     )
     sibling_count = 114 if scenario == "sibling-count-114" else 115
@@ -12647,6 +12663,22 @@ def _fixture_run1_missing_sentinel_seed() -> Observation:
 
 def _fixture_rg9_140_seed() -> Observation:
     return _run1_seed("rg9-140", "gate-1.3", "FAIL")
+
+
+def _fixture_rg9_bare_seed() -> Observation:
+    return _run1_seed("rg9-bare", "gate-1.3", "FAIL")
+
+
+def _fixture_rg9_bare_141_seed() -> Observation:
+    return _run1_seed("rg9-bare-141", "gate-1.3", "FAIL")
+
+
+def _fixture_rg9_malformed_suffix_seed() -> Observation:
+    return _run1_seed("rg9-malformed-suffix", "gate-1.3", "FAIL")
+
+
+def _fixture_rg9_extended_suffix_seed() -> Observation:
+    return _run1_seed("rg9-extended-suffix", "gate-1.3", "FAIL")
 
 
 def _fixture_sibling_count_114_seed() -> Observation:
@@ -17099,6 +17131,26 @@ O7_FIXTURES: tuple[Fixture, ...] = (
         _fixture_rg9_140_seed,
     ),
     Fixture(
+        "s5.seed.rg9-bare",
+        "seed",
+        _fixture_rg9_bare_seed,
+    ),
+    Fixture(
+        "s5.seed.rg9-bare-141",
+        "seed",
+        _fixture_rg9_bare_141_seed,
+    ),
+    Fixture(
+        "s5.seed.rg9-malformed-suffix",
+        "seed",
+        _fixture_rg9_malformed_suffix_seed,
+    ),
+    Fixture(
+        "s5.seed.rg9-extended-suffix",
+        "seed",
+        _fixture_rg9_extended_suffix_seed,
+    ),
+    Fixture(
         "s5.seed.sibling-count-114",
         "seed",
         _fixture_sibling_count_114_seed,
@@ -17578,6 +17630,10 @@ O7_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
         "s5.seed.rg2r-zero",
         "s5.seed.run1-missing-sentinel",
         "s5.seed.rg9-140",
+        "s5.seed.rg9-bare",
+        "s5.seed.rg9-bare-141",
+        "s5.seed.rg9-malformed-suffix",
+        "s5.seed.rg9-extended-suffix",
         "s5.seed.sibling-count-114",
         "o7.control.run1",
     ),
@@ -18059,6 +18115,10 @@ REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
         "s5.seed.run1-missing-sentinel",
         "s5.seed.rg2r-zero",
         "s5.seed.rg9-140",
+        "s5.seed.rg9-bare",
+        "s5.seed.rg9-bare-141",
+        "s5.seed.rg9-malformed-suffix",
+        "s5.seed.rg9-extended-suffix",
         "s5.seed.sibling-count-114",
         "s5.control.stage-chain",
     ),
@@ -18759,16 +18819,16 @@ ALLOWLIST: tuple[tuple[str, int, int, str, str], ...] = (
     ),
     (
         "proof.run_proof",
-        1524,
-        1530,
+        1526,
+        1532,
         "o7.seed.run-proof-optimize-refusal",
         "python -B -O proof/run_proof.py --help enters the nested optimize "
         "guard, prints the exact refusal, and exits 2",
     ),
     (
         "proof.run_proof",
-        1531,
-        1531,
+        1533,
+        1533,
         "o7.control.run-proof-optimize",
         "python -B proof/run_proof.py --help reaches the normal direct-script "
         "main handoff and exits 0",
