@@ -1,0 +1,152 @@
+name: Remote YAML Feasibility Checkpoint
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'proof/remote-yaml-feasibility-20261101'
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GIT_CONFIG_COUNT: "1"
+  GIT_CONFIG_KEY_0: safe.directory
+  GIT_CONFIG_VALUE_0: "*"
+  PYTHONUTF8: "1"
+
+jobs:
+  yaml-feasibility:
+    runs-on: macos-14
+    timeout-minutes: 120
+    name: "macOS remote YAML foldcopy feasibility checkpoint (P1)"
+    steps:
+      - name: Checkout repository at branch ref
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Record initial machine architecture, CPU, memory, and disk
+        run: |
+          echo "================================================================================"
+          echo "INITIAL MACHINE FINGERPRINTS"
+          echo "================================================================================"
+          echo "Architecture: $(uname -m)"
+          echo "OS: $(uname -s) $(uname -r) $(uname -v)"
+          echo "CPU Brand: $(sysctl -n machdep.cpu.brand_string 2>/dev/null || true)"
+          echo "Logical CPUs (hw.ncpu): $(sysctl -n hw.ncpu 2>/dev/null || true)"
+          echo "Physical CPUs (hw.physicalcpu): $(sysctl -n hw.physicalcpu 2>/dev/null || true)"
+          echo "Memory (bytes): $(sysctl -n hw.memsize 2>/dev/null || true)"
+          vm_stat || true
+          echo "Initial Disk Usage:"
+          df -h /
+          df -k /
+
+      - name: Install bootstrap toolchain via existing convention
+        run: |
+          brew install crystal coreutils pkgconf
+          echo "$(brew --prefix)/opt/coreutils/libexec/gnubin" >> "$GITHUB_PATH"
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install pyyaml
+
+      - name: Restore static LLVM cache
+        id: llvm-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/llvm-static
+          key: llvm-static-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/build-static-llvm.sh') }}
+          restore-keys: |
+            llvm-static-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Build static LLVM (on cache miss)
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        run: bash scripts/build-static-llvm.sh "$HOME/llvm-static"
+
+      - name: Checkout P1 source and build P1 compiler
+        id: build-p1
+        run: |
+          P1_COMMIT="626463375298d357ffcb3223059f4d3adce6fb10"
+          P1_DIR="$RUNNER_TEMP/p1-source"
+
+          echo "Setting up clean P1 source checkout at $P1_DIR from commit $P1_COMMIT..."
+          git clone "$GITHUB_WORKSPACE" "$P1_DIR"
+          cd "$P1_DIR"
+          git checkout "$P1_COMMIT"
+
+          ACTUAL_P1_SHA=$(git rev-parse HEAD)
+          echo "P1 checkout HEAD: $ACTUAL_P1_SHA"
+          if [ "$ACTUAL_P1_SHA" != "$P1_COMMIT" ]; then
+            echo "ERROR: P1 checkout mismatch! Expected $P1_COMMIT, got $ACTUAL_P1_SHA" >&2
+            exit 1
+          fi
+
+          echo "Building P1 compiler using static LLVM..."
+          make iyi LLVM_CONFIG="$HOME/llvm-static/bin/llvm-config"
+
+          if [ ! -x ".build/iyi" ]; then
+            echo "ERROR: .build/iyi was not generated or is not executable" >&2
+            exit 1
+          fi
+
+          echo "=== P1 Compiler Version ==="
+          .build/iyi --version
+
+          COMPILER_SHA256=$(shasum -a 256 .build/iyi | awk '{print $1}')
+          echo "P1 Compiler SHA-256: $COMPILER_SHA256"
+
+          # Clean build scratch under P1 directory to minimize disk retention
+          find .build -name '*.o' -delete 2>/dev/null || true
+          rm -rf /tmp/llvm-build* 2>/dev/null || true
+
+          cd "$GITHUB_WORKSPACE"
+
+          # Verify available disk space is >= 20 GiB
+          echo "=== Disk Space Check Post-Build ==="
+          df -h /
+          FREE_KB=$(df -k / | awk 'NR==2 {print $4}')
+          FREE_GIB=$(python3 -c "print(round($FREE_KB / (1024 * 1024), 2))")
+          echo "Available disk space: ${FREE_GIB} GiB"
+          python3 -c "
+import sys
+free_gib = $FREE_GIB
+if free_gib < 20.0:
+    print(f'ERROR: Free disk space {free_gib} GiB is less than required 20.0 GiB minimum', file=sys.stderr)
+    sys.exit(1)
+print(f'Disk space check PASSED: {free_gib} GiB >= 20.0 GiB')
+"
+
+          echo "compiler_path=$P1_DIR/.build/iyi" >> "$GITHUB_OUTPUT"
+          echo "compiler_sha256=$COMPILER_SHA256" >> "$GITHUB_OUTPUT"
+
+      - name: Run YAML Feasibility Checkpoint (Two Standalone Attempts)
+        id: run-feasibility
+        run: |
+          python3 proof/remote_yaml_feasibility.py \
+            --repo "$GITHUB_WORKSPACE" \
+            --compiler "${{ steps.build-p1.outputs.compiler_path }}" \
+            --compiler-sha256 "${{ steps.build-p1.outputs.compiler_sha256 }}" \
+            --p1-sha "626463375298d357ffcb3223059f4d3adce6fb10" \
+            --output-dir "$GITHUB_WORKSPACE/remote-yaml-feasibility-artifacts" \
+            --outer-timeout 2100 \
+            --min-disk-gib 20.0
+
+      - name: Upload feasibility receipts and raw evidence
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: remote-yaml-feasibility-evidence
+          path: remote-yaml-feasibility-artifacts/
+          retention-days: 14
+          if-no-files-found: error
