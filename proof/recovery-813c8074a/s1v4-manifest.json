@@ -1,0 +1,10 @@
+{
+  "archive": "audit-813c8074a-s1v4.tar.gz",
+  "archive_bytes": 313513,
+  "archive_sha256": "613e579818f4b1a702763426fff753b43d3237cc41f149a74d9f40ac6946e4ff",
+  "members": 52,
+  "all_members_byte_equal_native": true,
+  "exact_and_generic_token_scan_matches": 0,
+  "symlinks_recorded": 0,
+  "result": "S1v4: rows 9,13,78 re-cited to case-specific lines (7841/7842, 7862-7873/7874); exactly 3 rows differ from v3; 80/80 content check, 80 PROVEN, 33 keys PROVEN, 0 UNMAPPED; v1-v3 superseded and retained"
+}
