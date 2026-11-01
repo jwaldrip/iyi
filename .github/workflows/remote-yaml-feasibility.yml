@@ -67,10 +67,7 @@ jobs:
         with:
           path: ~/llvm-static
           key: llvm-static-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/build-static-llvm.sh') }}
-          restore-keys: |
-            llvm-static-${{ runner.os }}-${{ runner.arch }}-
-
-      - name: Build static LLVM (on cache miss)
+      - name: Build static LLVM (cache miss)
         if: steps.llvm-cache.outputs.cache-hit != 'true'
         run: bash scripts/build-static-llvm.sh "$HOME/llvm-static"
 
@@ -101,14 +98,19 @@ jobs:
           fi
 
           echo "=== P1 Compiler Version ==="
-          .build/iyi --version
+          VERSION_OUTPUT=$(.build/iyi --version)
+          echo "$VERSION_OUTPUT"
+          if ! echo "$VERSION_OUTPUT" | grep -q "626463375"; then
+            echo "ERROR: Compiler version stamp does not contain P1 commit 626463375!" >&2
+            exit 1
+          fi
+          echo "Compiler version stamp VERIFIED: contains 626463375."
 
           COMPILER_SHA256=$(shasum -a 256 .build/iyi | awk '{print $1}')
           echo "P1 Compiler SHA-256: $COMPILER_SHA256"
 
-          # Clean build scratch under P1 directory to minimize disk retention
+          # Clean build scratch under owned P1 directory to minimize disk retention
           find .build -name '*.o' -delete 2>/dev/null || true
-          rm -rf /tmp/llvm-build* 2>/dev/null || true
 
           cd "$GITHUB_WORKSPACE"
 
@@ -118,14 +120,8 @@ jobs:
           FREE_KB=$(df -k / | awk 'NR==2 {print $4}')
           FREE_GIB=$(python3 -c "print(round($FREE_KB / (1024 * 1024), 2))")
           echo "Available disk space: ${FREE_GIB} GiB"
-          python3 -c "
-import sys
-free_gib = $FREE_GIB
-if free_gib < 20.0:
-    print(f'ERROR: Free disk space {free_gib} GiB is less than required 20.0 GiB minimum', file=sys.stderr)
-    sys.exit(1)
-print(f'Disk space check PASSED: {free_gib} GiB >= 20.0 GiB')
-"
+          python3 -c "import sys; free_gib = float('$FREE_GIB'); sys.exit(0 if free_gib >= 20.0 else f'ERROR: Free disk space {free_gib} GiB < 20.0 GiB minimum')"
+          echo "Disk space check PASSED: ${FREE_GIB} GiB >= 20.0 GiB"
 
           echo "compiler_path=$P1_DIR/.build/iyi" >> "$GITHUB_OUTPUT"
           echo "compiler_sha256=$COMPILER_SHA256" >> "$GITHUB_OUTPUT"
@@ -147,6 +143,10 @@ print(f'Disk space check PASSED: {free_gib} GiB >= 20.0 GiB')
         uses: actions/upload-artifact@v5
         with:
           name: remote-yaml-feasibility-evidence
-          path: remote-yaml-feasibility-artifacts/
+          path: |
+            remote-yaml-feasibility-artifacts/**
+            !remote-yaml-feasibility-artifacts/**/.cache/**
+            !remote-yaml-feasibility-artifacts/**/*.bin
+            !remote-yaml-feasibility-artifacts/**/iyi
           retention-days: 14
           if-no-files-found: error

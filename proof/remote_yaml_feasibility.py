@@ -204,20 +204,21 @@ def validate_base_parity(repo_path: str | Path, p1_sha: str = P1_SOURCE_SHA) -> 
     )
     if status_proc.returncode != 0:
         raise DiagnosticValidationError(f"Git status failed on repo: {status_proc.stderr.strip()}")
-    dirty_lines = [
-        line.strip() for line in status_proc.stdout.splitlines() if line.strip()
-    ]
-    # Filter out proof-only, workflow-only, artifact-only, and build-only untracked items
-    allowed_untracked = (
+    dirty_lines = [line.strip() for line in status_proc.stdout.splitlines() if line.strip()]
+    allowed_prefixes = (
         "proof/",
         ".github/",
         "p1-source/",
         "remote-yaml-feasibility-artifacts/",
     )
-    dirty_non_proof = [
-        line for line in dirty_lines
-        if not (len(line) > 3 and any(line[3:].startswith(p) for p in allowed_untracked))
-    ]
+    dirty_non_proof = []
+    for line in dirty_lines:
+        parts = line.split(maxsplit=1)
+        if len(parts) < 2:
+            continue
+        file_path = parts[1].strip()
+        if not any(file_path.startswith(p) for p in allowed_prefixes):
+            dirty_non_proof.append(line)
     if dirty_non_proof:
         raise DiagnosticValidationError(
             f"Repository has dirty non-proof files: {dirty_non_proof}"
@@ -233,7 +234,11 @@ def validate_base_parity(repo_path: str | Path, p1_sha: str = P1_SOURCE_SHA) -> 
     }
 
 
-def validate_compiler(compiler_path: str | Path, expected_sha256: str | None = None) -> dict[str, Any]:
+def validate_compiler(
+    compiler_path: str | Path,
+    expected_sha256: str | None = None,
+    expected_commit_prefix: str = P1_SOURCE_SHA[:9],
+) -> dict[str, Any]:
     """Validate compiler binary existence, executability, version string, and SHA-256."""
     c_path = Path(compiler_path).resolve()
     if not c_path.is_file():
@@ -247,14 +252,22 @@ def validate_compiler(compiler_path: str | Path, expected_sha256: str | None = N
             f"Compiler binary SHA-256 mismatch: expected {expected_sha256}, got {actual_hash}"
         )
 
-    # Run compiler --version
+    # Run compiler --version and verify commit stamp
     ver_proc = subprocess.run([str(c_path), "--version"], capture_output=True, text=True, check=False)
-    version_output = ver_proc.stdout.strip() if ver_proc.returncode == 0 else ""
+    if ver_proc.returncode != 0:
+        raise DiagnosticValidationError(f"Compiler --version failed with exit code {ver_proc.returncode}")
+    version_output = ver_proc.stdout.strip()
+
+    if expected_commit_prefix not in version_output:
+        raise DiagnosticValidationError(
+            f"Compiler version stamp mismatch: expected commit prefix '{expected_commit_prefix}' not found in version output: {version_output}"
+        )
 
     return {
         "compiler_path": str(c_path),
         "compiler_sha256": actual_hash,
         "compiler_version": version_output,
+        "commit_prefix_verified": expected_commit_prefix,
         "verified": True,
     }
 
