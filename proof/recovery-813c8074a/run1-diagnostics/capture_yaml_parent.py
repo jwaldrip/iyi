@@ -145,13 +145,18 @@ def validate_base_parity(repo_path: str | Path, p1_sha: str = P1_SOURCE_SHA) -> 
     )
     if status_proc.returncode != 0:
         raise DiagnosticValidationError(f"Git status failed on repo: {status_proc.stderr.strip()}")
-    dirty_lines = [
-        line.strip() for line in status_proc.stdout.splitlines() if line.strip()
-    ]
-    # Filter out proof-only untracked items if any
-    dirty_non_proof = [
-        line for line in dirty_lines if not (len(line) > 3 and line[3:].startswith("proof/"))
-    ]
+    dirty_non_proof = []
+    for line in status_proc.stdout.splitlines():
+        line_str = line.strip()
+        if not line_str:
+            continue
+        parts = line_str.split(None, 1)
+        if len(parts) == 2:
+            path = parts[1]
+            if not path.startswith("proof/"):
+                dirty_non_proof.append(line_str)
+        else:
+            dirty_non_proof.append(line_str)
     if dirty_non_proof:
         raise DiagnosticValidationError(
             f"Repository has dirty non-proof files: {dirty_non_proof}"
@@ -796,6 +801,9 @@ def execute_capture(
             "observer_returncode": observer_proc.returncode if observer_proc else None,
         },
         "phase_trace": phase_trace_summary,
+        "mach_timebase": phase_trace_summary.get("mach_timebase") if phase_trace_summary else None,
+        "thread_profile": phase_trace_summary.get("profile_window") if phase_trace_summary else None,
+        "preserved_artifacts": phase_trace_summary.get("preserved_artifacts") if phase_trace_summary else None,
         "cache": {
             "resolved_path": str(resolved_cache),
             "is_shared": is_shared,
@@ -869,6 +877,17 @@ def record_diagnostic_differences() -> dict[str, Any]:
             "standalone_shell": "Merged foldcopy.out deleted by EXIT trap; exit status unrecorded; wrong-diagnostic banner",
             "parent_capture": "Inner return code and unfiltered foldcopy.out captured before evaluation; EXIT trap retains WORK",
         },
+        "thread_profiling": {
+            "policy": (
+                "Upon generated PID identity verified for 10 seconds, revalidate executable and start identity; "
+                "take per-thread snapshot, run exactly one /usr/bin/sample <verified-pid> 1 10 -mayDie -file <report>/generated-all-threads.sample.txt "
+                "bounded independently by 20s, take second per-thread snapshot; preserve generated executable and matching DWARF before runner cleanup with hashes"
+            ),
+            "diagnostic_perturbation": (
+                "The installed /usr/share/man/man1/sample.1 documents that this captures all thread stacks "
+                "and briefly suspends the process at sampling intervals. It is a diagnostic perturbation, not zero-overhead timing proof."
+            ),
+        },
     }
 
 
@@ -889,7 +908,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument(
         "--report-dir",
-        required=True,
+        default=None,
         help="Path to report directory for captured evidence and receipts",
     )
     parser.add_argument(
@@ -940,6 +959,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Validate Darwin proc_pidpath on an owned short-lived child and exit",
     )
     parser.add_argument(
+        "--validate-accounting",
+        action="store_true",
+        help="Validate Darwin mach_timebase_info, proc_taskinfo, and thread snapshots on an owned child and exit",
+    )
+    parser.add_argument(
         "--validate-only",
         action="store_true",
         help="Validate parity, hashes, anchor reversal, and syntax without executing shell body",
@@ -957,6 +981,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(receipt, indent=2))
         return 0 if receipt.get("paths_match") else 1
 
+    if args.validate_accounting:
+        try:
+            from passive_phase_trace import validate_accounting
+        except ImportError:
+            sys.path.insert(0, str(Path(__file__).parent.resolve()))
+            from passive_phase_trace import validate_accounting
+        receipt = validate_accounting()
+        print(json.dumps(receipt, indent=2))
+        return 0 if receipt.get("overall_verified") else 1
+
+    if not args.report_dir:
+        parser.error("--report-dir is required when running capture or --validate-only")
     report_dir = Path(args.report_dir).resolve()
     report_dir.mkdir(parents=True, exist_ok=True)
 
