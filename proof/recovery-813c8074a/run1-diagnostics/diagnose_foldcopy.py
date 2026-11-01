@@ -15,6 +15,15 @@ Limitations and Caveats:
       compilation paths and cache keys reflect this isolated repository path.
     - Evidence-only diagnostic: Runs outside the canonical bench scripts and
       does not count as a strict-chain PASS.
+
+Environment Fidelity:
+    - Base environment is resolved directly from H' proofkit.base_env(pin, additions).
+    - Only the exact additions from run1_4 / bench/std_yaml_exercise.sh are applied:
+      control: TMPDIR (owned scratch), IYI_CACHE_DIR (owned scratch),
+               IYI_PATH ($REPO/src:$REPO/samples/iyi)
+      mutant:  TMPDIR (owned scratch), IYI_CACHE_DIR (owned scratch),
+               IYI_PATH ($OVERLAY:$REPO/src:$REPO/samples/iyi)
+    - All scratch and cache directories are owned inside NEW_OWNED_DIR.
 """
 from __future__ import annotations
 
@@ -356,37 +365,28 @@ def create_foldcopy_overlay(repo_path: str | Path, report_dir: str | Path) -> di
     }
 
 
-def make_base_env(pin: dict[str, Any], stage_extra: dict[str, str] | None = None) -> dict[str, str]:
-    """Derive clean base environment according to C2 + Amendment A specification."""
-    env = os.environ.copy()
-
-    for k in list(env.keys()):
-        if k.startswith("IYI_") or k.startswith("CRYSTAL_"):
-            env.pop(k, None)
-
-    for k in [
-        "PYTHONOPTIMIZE",
-        "PYTHONPATH",
-        "PYTHONHOME",
-        "PYTHONSTARTUP",
-        "ROUTE_A_DRIVERS",
-        "STD_SIBLINGS",
-        "SIBLING_MINUTES",
-    ]:
-        env.pop(k, None)
-
-    env["LIBRARY_PATH"] = "/opt/homebrew/opt/bdw-gc/lib"
-    env["PKG_CONFIG_PATH"] = "/opt/homebrew/opt/openssl@3/lib/pkgconfig"
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-
-    if pin:
-        env["PATH"] = pin["env_path"]
-        env["HOME"] = pin["env_home"]
-
-    if stage_extra:
-        env.update(stage_extra)
-
-    return env
+def resolve_proofkit_base_env(repo: Path) -> Any:
+    """Resolve and import base_env from H' proofkit.py without inventing environment settings."""
+    candidates = [
+        repo / "proof" / "proofkit.py",
+        Path(__file__).resolve().parents[2] / "proofkit.py",
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            proof_dir = candidate.parent
+            if str(proof_dir) not in sys.path:
+                sys.path.insert(0, str(proof_dir))
+            try:
+                import proofkit  # type: ignore[import-not-found]
+                if hasattr(proofkit, "base_env"):
+                    return proofkit.base_env
+            except Exception as err:
+                raise DiagnosticValidationError(
+                    f"Failed importing base_env from {candidate}: {err}"
+                ) from err
+    raise DiagnosticValidationError(
+        f"proofkit.py not found in repo proof directory ({repo / 'proof'}) or caller proof directory"
+    )
 
 
 def filter_env_allowlist(env: dict[str, str]) -> dict[str, str]:
@@ -538,11 +538,20 @@ def execute_diagnostic(
     pin_data, pin_file_path = load_pin_data(pin_arg)
     repo = Path(repo_arg).resolve()
     report_dir = Path(report_dir_arg).resolve()
-    report_dir.mkdir(parents=True, exist_ok=True)
+
+    # Enforce contract: NEW_OWNED_DIR must be a fresh non-existent directory
+    if report_dir.exists():
+        raise DiagnosticValidationError(
+            f"report-dir already exists: {report_dir}. NEW_OWNED_DIR must be a new path."
+        )
+    report_dir.mkdir(parents=True, exist_ok=False)
 
     # 1. Pre-validation
     pre_validation = validate_p1_and_compiler(pin_data)
     pre_parity = validate_source_parity(repo, pin_data["p_source_sha"])
+
+    # Resolve H' proofkit.base_env without inventing environment variables
+    base_env_fn = resolve_proofkit_base_env(repo)
 
     # 2. Build owned overlay with foldcopy mutation
     mutation_info = create_foldcopy_overlay(repo, report_dir)
@@ -562,8 +571,8 @@ def execute_diagnostic(
     # 3. Run unmodified control sequentially
     control_tmp = report_dir / "control.tmp"
     control_cache = report_dir / "control.cache"
-    control_tmp.mkdir(parents=True, exist_ok=True)
-    control_cache.mkdir(parents=True, exist_ok=True)
+    control_tmp.mkdir(parents=True, exist_ok=False)
+    control_cache.mkdir(parents=True, exist_ok=False)
 
     control_iyi_path = psep.join([str(repo / "src"), str(repo / "samples" / "iyi")])
     control_env_additions = {
@@ -571,7 +580,7 @@ def execute_diagnostic(
         "IYI_CACHE_DIR": str(control_cache),
         "IYI_PATH": control_iyi_path,
     }
-    control_env = make_base_env(pin_data, control_env_additions)
+    control_env = base_env_fn(pin_data, control_env_additions)
     control_stdout = report_dir / "control.stdout"
     control_stderr = report_dir / "control.stderr"
 
@@ -585,11 +594,92 @@ def execute_diagnostic(
         grace_sec=CLEANUP_GRACE_SEC,
     )
 
-    # 4. Run foldcopy mutant sequentially
+    control_pass = (control_result["returncode"] == 0 and not control_result["timed_out"])
+
+    # If control fails, stop immediately before running mutant
+    if not control_pass:
+        overall_end_ns = time.time_ns()
+        overall_end_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        post_validation = validate_p1_and_compiler(pin_data)
+        post_parity = validate_source_parity(repo, pin_data["p_source_sha"])
+
+        verdict = "CONTROL_FAILED"
+        exit_code = 3
+
+        report_payload = {
+            "v": 1,
+            "diagnostic": "diagnose_foldcopy",
+            "verdict": verdict,
+            "exit_code": exit_code,
+            "started_ns": overall_start_ns,
+            "ended_ns": overall_end_ns,
+            "started_iso": overall_start_iso,
+            "ended_iso": overall_end_iso,
+            "limitations": [
+                "fresh diagnostic caches: uses freshly initialized temporary and cache directories; cannot reconstruct the deleted cache state of the failed Run1 attempt",
+                "relocated source paths: uses the specified isolated source repository; compilation paths and cache keys reflect this isolated repository path",
+                "evidence-only diagnostic: not a strict-chain run or substitute for full corpus verification",
+            ],
+            "environment_fidelity_notes": [
+                "Base environment derived directly via proofkit.base_env(pin, additions) from H'.",
+                "Additions for control: TMPDIR (owned control.tmp), IYI_CACHE_DIR (owned control.cache), IYI_PATH ($REPO/src:$REPO/samples/iyi), matching bench/std_yaml_exercise.sh:47.",
+                "Relocation and scratch differences: TMPDIR and IYI_CACHE_DIR use isolated owned scratch directories inside NEW_OWNED_DIR; source path points to the specified isolated worktree.",
+            ],
+            "pin_file": pin_file_path,
+            "pin_summary": {
+                "chain_id": pin_data.get("chain_id"),
+                "p_source_sha": pin_data.get("p_source_sha"),
+                "compiler_path": pin_data.get("compiler_path"),
+                "compiler_sha256": pin_data.get("compiler_sha256"),
+                "timeout_path": pin_data.get("timeout_path"),
+            },
+            "pre_validation": {
+                "identity": pre_validation,
+                "source_parity": pre_parity,
+            },
+            "post_validation": {
+                "identity": post_validation,
+                "source_parity": post_parity,
+            },
+            "mutation": {
+                "source_file": mutation_info["source_file"],
+                "source_sha256": mutation_info["source_sha256"],
+                "overlay_file": mutation_info["overlay_file"],
+                "overlay_sha256": mutation_info["overlay_sha256"],
+                "diff_path": mutation_info["diff_path"],
+                "diff_sha256": mutation_info["diff_sha256"],
+                "anchor": MUTATION_ANCHOR,
+                "replacement": MUTATION_REPLACEMENT,
+            },
+            "control": control_result,
+            "mutant": None,
+            "evidence_files": {
+                "control_stdout": str(control_stdout),
+                "control_stderr": str(control_stderr),
+                "mutation_diff": str(mutation_info["diff_path"]),
+                "overlay_yaml": str(mutation_info["overlay_file"]),
+            },
+        }
+
+        report_path = report_dir / "report.json"
+        results_path = report_dir / "results.json"
+        report_path.write_text(json.dumps(report_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        results_summary = [
+            {
+                "case": "control",
+                "rc": control_result["returncode"],
+                "timed_out": control_result["timed_out"],
+                "duration_sec": control_result["duration_sec"],
+            }
+        ]
+        results_path.write_text(json.dumps(results_summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        return report_payload, exit_code
+
+    # 4. Control succeeded; proceed to foldcopy mutant sequentially
     mutant_tmp = report_dir / "mutant.tmp"
     mutant_cache = report_dir / "mutant.cache"
-    mutant_tmp.mkdir(parents=True, exist_ok=True)
-    mutant_cache.mkdir(parents=True, exist_ok=True)
+    mutant_tmp.mkdir(parents=True, exist_ok=False)
+    mutant_cache.mkdir(parents=True, exist_ok=False)
 
     overlay_dir = mutation_info["overlay_dir"]
     mutant_iyi_path = psep.join([str(overlay_dir), str(repo / "src"), str(repo / "samples" / "iyi")])
@@ -598,7 +688,7 @@ def execute_diagnostic(
         "IYI_CACHE_DIR": str(mutant_cache),
         "IYI_PATH": mutant_iyi_path,
     }
-    mutant_env = make_base_env(pin_data, mutant_env_additions)
+    mutant_env = base_env_fn(pin_data, mutant_env_additions)
     mutant_stdout = report_dir / "mutant.stdout"
     mutant_stderr = report_dir / "mutant.stderr"
 
@@ -620,17 +710,23 @@ def execute_diagnostic(
     overall_end_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     # Determine mechanical verdict per planner Section 4:
-    # - Control fails: returncode != 0
+    # - Control fails: returncode != 0 (handled above)
+    # - Mutant timed out: gtimeout rc124 or supervisor timeout -> MUTANT_TIMED_OUT (excluded from PASS)
+    # - Mutant interrupted: interrupted by signal -> MUTANT_INTERRUPTED (excluded from PASS)
     # - Mutant exits zero: negative proof failed
-    # - Mutant exits nonzero with required assertion: isolated negative proof holds
+    # - Mutant exits nonzero with required assertion (and not timed out/interrupted): isolated negative proof holds
     # - Mutant exits nonzero without required assertion: retain FAIL, unproven cause
-    control_pass = control_result["returncode"] == 0
     mutant_rc = mutant_result["returncode"]
+    mutant_timed_out = mutant_result["timed_out"]
+    mutant_interrupted = mutant_result["interrupted_signal"] is not None
     mutant_assertion_found = mutant_result["assertion_found"]
 
-    if not control_pass:
-        verdict = "CONTROL_FAILED"
-        exit_code = 3
+    if mutant_timed_out:
+        verdict = "MUTANT_TIMED_OUT"
+        exit_code = 5
+    elif mutant_interrupted:
+        verdict = "MUTANT_INTERRUPTED"
+        exit_code = 5
     elif mutant_rc == 0:
         verdict = "MUTANT_PASSED_NEGATIVE_PROOF_FAILED"
         exit_code = 4
@@ -641,7 +737,7 @@ def execute_diagnostic(
         verdict = "MUTANT_FAILED_WITHOUT_REQUIRED_ASSERTION"
         exit_code = 5
 
-    report_payload: dict[str, Any] = {
+    report_payload = {
         "v": 1,
         "diagnostic": "diagnose_foldcopy",
         "verdict": verdict,
@@ -654,6 +750,12 @@ def execute_diagnostic(
             "fresh diagnostic caches: uses freshly initialized temporary and cache directories; cannot reconstruct the deleted cache state of the failed Run1 attempt",
             "relocated source paths: uses the specified isolated source repository; compilation paths and cache keys reflect this isolated repository path",
             "evidence-only diagnostic: not a strict-chain run or substitute for full corpus verification",
+        ],
+        "environment_fidelity_notes": [
+            "Base environment derived directly via proofkit.base_env(pin, additions) from H'.",
+            "Additions for control: TMPDIR (owned control.tmp), IYI_CACHE_DIR (owned control.cache), IYI_PATH ($REPO/src:$REPO/samples/iyi), matching bench/std_yaml_exercise.sh:47.",
+            "Additions for mutant: TMPDIR (owned mutant.tmp), IYI_CACHE_DIR (owned mutant.cache), IYI_PATH ($OVERLAY:$REPO/src:$REPO/samples/iyi), matching bench/std_yaml_exercise.sh:266.",
+            "Relocation and scratch differences: TMPDIR and IYI_CACHE_DIR use isolated owned scratch directories inside NEW_OWNED_DIR; source and overlay paths point to the specified isolated worktree and owned overlay.",
         ],
         "pin_file": pin_file_path,
         "pin_summary": {
@@ -740,7 +842,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--report-dir",
         required=True,
-        help="Path to new owned report directory for evidence and logs",
+        help="Path to a new, non-existent owned report directory for evidence and logs",
     )
 
     args = parser.parse_args(argv)
@@ -758,22 +860,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"DIAGNOSTIC-ERROR: {error}", file=sys.stderr)
         return 1
 
-    print(
-        json.dumps(
+    summary: dict[str, Any] = {
+        "verdict": report["verdict"],
+        "exit_code": report["exit_code"],
+        "control_rc": report["control"]["returncode"],
+        "control_timed_out": report["control"]["timed_out"],
+        "report_dir": args.report_dir,
+    }
+    if report.get("mutant") is not None:
+        summary.update(
             {
-                "verdict": report["verdict"],
-                "exit_code": report["exit_code"],
-                "control_rc": report["control"]["returncode"],
-                "control_timed_out": report["control"]["timed_out"],
                 "mutant_rc": report["mutant"]["returncode"],
                 "mutant_timed_out": report["mutant"]["timed_out"],
                 "mutant_assertion_found": report["mutant"]["assertion_found"],
-                "report_dir": args.report_dir,
-            },
-            indent=2,
-            sort_keys=True,
+            }
         )
-    )
+    print(json.dumps(summary, indent=2, sort_keys=True))
     return exit_code
 
 
