@@ -1,0 +1,345 @@
+== the std/yaml exercise, plain build
+  == scalars and collections
+    a tab after a block scalar's indentation is text
+    a plain scalar's next line may start with '- ', as text
+    a double- and a single-quoted scalar of 20,000 lines read in under a second
+    integers, floats, null, 1.2 strings, quotes, folded, literal and verbatim tags
+    '?' plain starts, block scalar blank lines and chomping, quoted folding, flow folding, tags over nothing
+  
+  == dump round trip
+    dump reads back as the same Any; entry-like strings and << are quoted
+    a byte order mark, C1 controls and 1.1 line breaks are escaped; '?a' reads back
+  
+  == anchors, aliases, merge
+    alias, merge, explicit key wins either side of <<, properties on a root flow mapping
+    << merges spaced from its ':' and in a one-pair flow mapping
+  
+  == streams and typed keys
+    a root block scalar may start at the first column, and a document marker ends it
+    a core tag on a key: !!str 1 is the string key "1"
+    a 150 by 150 grid of sequences and of mappings has at least 22,000 hashes each
+    parse_all, integer and boolean keys, Any as a Hash key
+  
+  == what the reader refuses
+    duplicate key "a" at line 2, column 1
+    unterminated quoted string at line 1, column 1
+    tab used for indentation at line 1, column 1
+    duplicate key "a" at line 1, column 8
+    unterminated flow sequence at line 1, column 1
+    unknown anchor *nope at line 1, column 1
+    unknown escape '\q' at line 1, column 2
+    escape '\U' wants 8 hexadecimal digits: a backslash in double quotes is '\\', or single-quote the scalar at line 1, column 10
+    an explicit '?' key is not supported at line 1, column 1
+    an explicit '?' key is not supported at line 1, column 1
+    an anchor on a mapping key is not supported at line 1, column 1
+    duplicate key "<<" at line 3, column 3
+    cyclic alias *a at line 1, column 5
+    cyclic alias *a at line 1, column 8
+    control character U+0001 is not allowed at line 1, column 5
+    control character U+007F is not allowed at line 1, column 5
+    control character U+0080 is not allowed at line 1, column 6
+    control character U+009B is not allowed at line 1, column 7
+    noncharacter U+FFFE is not allowed at line 1, column 6
+    bad indentation of a mapping entry at line 3, column 3
+    bad indentation of a mapping entry at line 2, column 2
+    bad indentation of a sequence entry at line 3, column 3
+    bad indentation of a sequence entry at line 3, column 5
+    bad indentation of a mapping entry at line 2, column 1
+    expected '---' after a directive at line 2, column 1
+    !!seq on a mapping at line 1, column 7
+    surrogate code point \uD800 in escape at line 1, column 2
+    a mapping value is not allowed here at line 1, column 7
+    unknown tag !<tag:yaml.org,2002:foo> at line 1, column 1
+    a sequence entry is not allowed here at line 1, column 4
+    a scalar cannot start with ']' at line 1, column 1
+    a scalar cannot start with '}' at line 2, column 3
+    a scalar cannot start with ',' at line 1, column 1
+    unexpected content at line 2, column 3
+    a value was expected at line 1, column 4
+    an explicit '?' key is not supported at line 1, column 2
+    a sequence entry is not allowed here at line 1, column 2
+    a merge value must be a mapping or a sequence of mappings at line 1, column 2
+    a collection cannot be a mapping key at line 1, column 2
+    a second tag at line 1, column 10
+    a second tag at line 1, column 8
+    a second anchor at line 1, column 5
+    alias expansion past 1,000,000 nodes at line 6, column 29
+    nesting deeper than 100 levels at line 1, column 101
+    nesting deeper than 100 levels at line 101, column 14
+    duplicate keys, quotes, tabs, flow, aliases, escapes, explicit keys, cycles,
+    control characters, stray entries, directives, tags, surrogates, alias expansion
+    entries after a key, text after a comment, '#', '?' and '-' starting a flow node
+  
+  == derive yaml_serializable
+    three records of every field kind, nested, read back equal through YAML and through JSON
+    unknown keys passed over, nil fields, merges, quoting of what would read as something else
+    defaults kept for a missing key and for a null their type does not admit
+    Any, Hash(Int32, String), Array(Int32?) and empty collections read and written
+  iyi: panic: YAML for Spot has no key "name"
+    at /Users/jwaldrip/dev/worktrees/iyi-run1-integration-20261101/bench/std_yaml_exercise.iyi:79
+  0   yaml-plain                          0x00000001027596b0 *Bench::StdYamlExercise::Spot#initialize<Std::Yaml::Any>:(String | Nil) + 464
+  1   yaml-plain                          0x00000001027594c8 *Bench::StdYamlExercise::Spot::new<Std::Yaml::Any>:Bench::StdYamlExercise::Spot + 92
+  2   yaml-plain                          0x0000000102721d18 *Std::Yaml::YAML::read_value<Std::Yaml::Any, Bench::StdYamlExercise::Spot.class>:Bench::StdYamlExercise::Spot + 48
+  3   yaml-plain                          0x0000000102721cc4 *Std::Yaml::YAML::from_yaml<String, Bench::StdYamlExercise::Spot.class>:Bench::StdYamlExercise::Spot + 52
+  4   yaml-plain                          0x0000000102759448 *Bench::StdYamlExercise::Spot::from_yaml<String>:Bench::StdYamlExercise::Spot + 36
+  5   yaml-plain                          0x00000001026fb90c ~procProc(String)@bench/std_yaml_exercise.iyi:467 + 24
+  6   yaml-plain                          0x00000001026fb7e0 ~procProc(String)@bench/std_yaml_exercise.iyi:33 + 40
+  7   yaml-plain                          0x00000001026fb878 ~proc2Proc(Nil)@src/iyi/concurrency.iyi:5426 + 92
+  8   yaml-plain                          0x0000000102719770 *IyiScheduler::run_spawned_fiber:NoReturn + 240
+  9   yaml-plain                          0x00000001026f9d74 __iyi_fiber_main + 12
+  10  yaml-plain                          0x00000001026f9d68 __iyi_fiber_main + 0
+  iyi: panic: expected a mapping for Spot, not a sequence
+    at /Users/jwaldrip/dev/worktrees/iyi-run1-integration-20261101/bench/std_yaml_exercise.iyi:79
+  0   yaml-plain                          0x0000000102759550 *Bench::StdYamlExercise::Spot#initialize<Std::Yaml::Any>:(String | Nil) + 112
+  1   yaml-plain                          0x00000001027594c8 *Bench::StdYamlExercise::Spot::new<Std::Yaml::Any>:Bench::StdYamlExercise::Spot + 92
+  2   yaml-plain                          0x0000000102721d18 *Std::Yaml::YAML::read_value<Std::Yaml::Any, Bench::StdYamlExercise::Spot.class>:Bench::StdYamlExercise::Spot + 48
+  3   yaml-plain                          0x0000000102721cc4 *Std::Yaml::YAML::from_yaml<String, Bench::StdYamlExercise::Spot.class>:Bench::StdYamlExercise::Spot + 52
+  4   yaml-plain                          0x0000000102759448 *Bench::StdYamlExercise::Spot::from_yaml<String>:Bench::StdYamlExercise::Spot + 36
+  5   yaml-plain                          0x00000001026fb944 ~procProc(String)@bench/std_yaml_exercise.iyi:468 + 24
+  6   yaml-plain                          0x00000001026fb7e0 ~procProc(String)@bench/std_yaml_exercise.iyi:33 + 40
+  7   yaml-plain                          0x00000001026fb878 ~proc2Proc(Nil)@src/iyi/concurrency.iyi:5426 + 92
+  8   yaml-plain                          0x0000000102719770 *IyiScheduler::run_spawned_fiber:NoReturn + 240
+  9   yaml-plain                          0x00000001026f9d74 __iyi_fiber_main + 12
+  10  yaml-plain                          0x00000001026f9d68 __iyi_fiber_main + 0
+  iyi: panic: expected a float, not null
+  0   yaml-plain                          0x00000001027384e8 *Std::Yaml::Any#as_f:Float64 + 228
+  1   yaml-plain                          0x000000010272180c *Std::Yaml::YAML::read_value<Std::Yaml::Any, Float64.class>:Float64 + 44
+  2   yaml-plain                          0x0000000102759610 *Bench::StdYamlExercise::Spot#initialize<Std::Yaml::Any>:(String | Nil) + 304
+  3   yaml-plain                          0x00000001027594c8 *Bench::StdYamlExercise::Spot::new<Std::Yaml::Any>:Bench::StdYamlExercise::Spot + 92
+  4   yaml-plain                          0x0000000102721d18 *Std::Yaml::YAML::read_value<Std::Yaml::Any, Bench::StdYamlExercise::Spot.class>:Bench::StdYamlExercise::Spot + 48
+  5   yaml-plain                          0x0000000102721cc4 *Std::Yaml::YAML::from_yaml<String, Bench::StdYamlExercise::Spot.class>:Bench::StdYamlExercise::Spot + 52
+  6   yaml-plain                          0x0000000102759448 *Bench::StdYamlExercise::Spot::from_yaml<String>:Bench::StdYamlExercise::Spot + 36
+  7   yaml-plain                          0x00000001026fb97c ~procProc(String)@bench/std_yaml_exercise.iyi:469 + 24
+  8   yaml-plain                          0x00000001026fb7e0 ~procProc(String)@bench/std_yaml_exercise.iyi:33 + 40
+  9   yaml-plain                          0x00000001026fb878 ~proc2Proc(Nil)@src/iyi/concurrency.iyi:5426 + 92
+  10  yaml-plain                          0x0000000102719770 *IyiScheduler::run_spawned_fiber:NoReturn + 240
+  11  yaml-plain                          0x00000001026f9d74 __iyi_fiber_main + 12
+  12  yaml-plain                          0x00000001026f9d68 __iyi_fiber_main + 0
+  iyi: panic: expected a string, not an integer
+  0   yaml-plain                          0x0000000102736a94 *Std::Yaml::Any#as_s:String + 72
+  1   yaml-plain                          0x0000000102721548 *Std::Yaml::YAML::read_value<Std::Yaml::Any, String.class>:String + 44
+  2   yaml-plain                          0x00000001027596cc *Bench::StdYamlExercise::Spot#initialize<Std::Yaml::Any>:(String | Nil) + 492
+  3   yaml-plain                          0x00000001027594c8 *Bench::StdYamlExercise::Spot::new<Std::Yaml::Any>:Bench::StdYamlExercise::Spot + 92
+  4   yaml-plain                          0x0000000102721d18 *Std::Yaml::YAML::read_value<Std::Yaml::Any, Bench::StdYamlExercise::Spot.class>:Bench::StdYamlExercise::Spot + 48
+  5   yaml-plain                          0x0000000102721cc4 *Std::Yaml::YAML::from_yaml<String, Bench::StdYamlExercise::Spot.class>:Bench::StdYamlExercise::Spot + 52
+  6   yaml-plain                          0x0000000102759448 *Bench::StdYamlExercise::Spot::from_yaml<String>:Bench::StdYamlExercise::Spot + 36
+  7   yaml-plain                          0x00000001026fb9b4 ~procProc(String)@bench/std_yaml_exercise.iyi:470 + 24
+  8   yaml-plain                          0x00000001026fb7e0 ~procProc(String)@bench/std_yaml_exercise.iyi:33 + 40
+  9   yaml-plain                          0x00000001026fb878 ~proc2Proc(Nil)@src/iyi/concurrency.iyi:5426 + 92
+  10  yaml-plain                          0x0000000102719770 *IyiScheduler::run_spawned_fiber:NoReturn + 240
+  11  yaml-plain                          0x00000001026f9d74 __iyi_fiber_main + 12
+  12  yaml-plain                          0x00000001026f9d68 __iyi_fiber_main + 0
+  iyi: panic: integer 3000000000 out of Int32 range
+  0   yaml-plain                          0x0000000102721b00 *Std::Yaml::YAML::read_value<Std::Yaml::Any, Int32.class>:Int32 + 120
+  1   yaml-plain                          0x000000010274ac7c *Bench::StdYamlExercise::Inner#initialize<Std::Yaml::Any>:(String | Nil) + 304
+  2   yaml-plain                          0x000000010274ab38 *Bench::StdYamlExercise::Inner::new<Std::Yaml::Any>:Bench::StdYamlExercise::Inner + 80
+  3   yaml-plain                          0x0000000102721a6c *Std::Yaml::YAML::read_value<Std::Yaml::Any, Bench::StdYamlExercise::Inner.class>:Bench::StdYamlExercise::Inner + 48
+  4   yaml-plain                          0x00000001027230d8 *Std::Yaml::YAML::from_yaml<String, Bench::StdYamlExercise::Inner.class>:Bench::StdYamlExercise::Inner + 52
+  5   yaml-plain                          0x000000010274b0c8 *Bench::StdYamlExercise::Inner::from_yaml<String>:Bench::StdYamlExercise::Inner + 36
+  6   yaml-plain                          0x00000001026fb9ec ~procProc(String)@bench/std_yaml_exercise.iyi:471 + 24
+  7   yaml-plain                          0x00000001026fb7e0 ~procProc(String)@bench/std_yaml_exercise.iyi:33 + 40
+  8   yaml-plain                          0x00000001026fb878 ~proc2Proc(Nil)@src/iyi/concurrency.iyi:5426 + 92
+  9   yaml-plain                          0x0000000102719770 *IyiScheduler::run_spawned_fiber:NoReturn + 240
+  10  yaml-plain                          0x00000001026f9d74 __iyi_fiber_main + 12
+  11  yaml-plain                          0x00000001026f9d68 __iyi_fiber_main + 0
+  iyi: panic: expected an integer, not a string
+  0   yaml-plain                          0x0000000102736b3c *Std::Yaml::Any#as_i:Int64 + 72
+  1   yaml-plain                          0x0000000102721ab4 *Std::Yaml::YAML::read_value<Std::Yaml::Any, Int32.class>:Int32 + 44
+  2   yaml-plain                          0x0000000102723238 *Std::Yaml::YAML::read_value<Std::Yaml::Any, Hash(Int32, Int32).class>:Hash(Int32, Int32) + 260
+  3   yaml-plain                          0x0000000102723128 *Std::Yaml::YAML::from_yaml<String, Hash(Int32, Int32).class>:Hash(Int32, Int32) + 52
+  4   yaml-plain                          0x00000001026fba30 ~procProc(String)@bench/std_yaml_exercise.iyi:472 + 40
+  5   yaml-plain                          0x00000001026fb7e0 ~procProc(String)@bench/std_yaml_exercise.iyi:33 + 40
+  6   yaml-plain                          0x00000001026fb878 ~proc2Proc(Nil)@src/iyi/concurrency.iyi:5426 + 92
+  7   yaml-plain                          0x0000000102719770 *IyiScheduler::run_spawned_fiber:NoReturn + 240
+  8   yaml-plain                          0x00000001026f9d74 __iyi_fiber_main + 12
+  9   yaml-plain                          0x00000001026f9d68 __iyi_fiber_main + 0
+  iyi: panic: the UInt64 9223372036854775808 is past 9223372036854775807, the largest integer YAML reads back
+  0   yaml-plain                          0x0000000102720e6c *Std::Yaml::YAML::write_value<UInt64>:Std::Yaml::Any + 72
+  1   yaml-plain                          0x0000000102720e08 *Std::Yaml::YAML::to_any<UInt64>:Std::Yaml::Any + 24
+  2   yaml-plain                          0x00000001027232d8 *Std::Yaml::YAML::to_yaml<UInt64>:String + 24
+  3   yaml-plain                          0x00000001026fba50 ~procProc(String)@bench/std_yaml_exercise.iyi:473 + 16
+  4   yaml-plain                          0x00000001026fb7e0 ~procProc(String)@bench/std_yaml_exercise.iyi:33 + 40
+  5   yaml-plain                          0x00000001026fb878 ~proc2Proc(Nil)@src/iyi/concurrency.iyi:5426 + 92
+  6   yaml-plain                          0x0000000102719770 *IyiScheduler::run_spawned_fiber:NoReturn + 240
+  7   yaml-plain                          0x00000001026f9d74 __iyi_fiber_main + 12
+  8   yaml-plain                          0x00000001026f9d68 __iyi_fiber_main + 0
+  iyi: panic: duplicate key "x" at line 2, column 1
+  0   yaml-plain                          0x0000000102720728 *Std::Yaml::YAML::parse<String>:Std::Yaml::Any + 188
+  1   yaml-plain                          0x0000000102721cac *Std::Yaml::YAML::from_yaml<String, Bench::StdYamlExercise::Spot.class>:Bench::StdYamlExercise::Spot + 28
+  2   yaml-plain                          0x0000000102759448 *Bench::StdYamlExercise::Spot::from_yaml<String>:Bench::StdYamlExercise::Spot + 36
+  3   yaml-plain                          0x00000001026fba70 ~procProc(String)@bench/std_yaml_exercise.iyi:474 + 24
+  4   yaml-plain                          0x00000001026fb7e0 ~procProc(String)@bench/std_yaml_exercise.iyi:33 + 40
+  5   yaml-plain                          0x00000001026fb878 ~proc2Proc(Nil)@src/iyi/concurrency.iyi:5426 + 92
+  6   yaml-plain                          0x0000000102719770 *IyiScheduler::run_spawned_fiber:NoReturn + 240
+  7   yaml-plain                          0x00000001026f9d74 __iyi_fiber_main + 12
+  8   yaml-plain                          0x00000001026f9d68 __iyi_fiber_main + 0
+    a missing key, a sequence, a null, a wrong kind, Int32 and UInt64 ranges and a bad document refused
+  
+  ALL CHECKS PASSED
+
+== every yaml section reported
+  scalars, dump, anchors, streams, refusals and the derive all reported
+
+== the same program with optimisation on (--release)
+
+== Python's yaml reads what to_yaml writes to the data to_json writes
+    3 records, 2 loader(s): all equal
+
+== what the derive refuses, each in its own program
+  YAML for Spot has no key "name"
+  expected a mapping for Spot, not a sequence
+  expected a float, not a string
+  the UInt64 18446744073709551615 is past 9223372036854775807, the largest integer YAML reads back
+
+== proving the checks can fail when a repeated key is accepted
+  a repeated mapping key is caught
+
+== proving the checks can fail when alias expansion is unbounded
+  unbounded alias expansion is caught
+
+== proving the checks can fail when a plain scalar may not start with '?'
+  caught: a plain scalar may start with '?'
+
+== proving the checks can fail when a core tag on a key is refused
+  caught: a core tag on a key is read
+
+== proving the checks can fail when a lone '?' line is refused as a scalar
+  caught: refusal of "? lone
+
+== proving the checks can fail when a second '<<' merges as well
+  caught: accepted "merged:
+
+== proving the checks can fail when '- b' after a key reads as text
+  caught: accepted "a: - b
+
+== proving the checks can fail when a key may start with what a scalar cannot start with
+  caught: accepted "]: 1
+
+== proving the checks can fail when a folded scalar drops its leading empty lines
+  caught: a folded scalar keeps its leading empty lines
+
+== proving the checks can fail when spaces past the indentation make an empty line
+  caught: spaces past the indentation on a blank line are text
+
+== proving the checks can fail when a tab after a block scalar's indentation counts as indentation
+  caught: a tab after a block scalar's indentation is text
+
+== proving the checks can fail when the line after the stream's last line break is kept
+  caught: keep chomping adds no line after the stream's last line break
+
+== proving the checks can fail when folding trims escaped blanks
+  caught: an escaped tab before a folded line break stays
+
+== proving the checks can fail when folding copies a quoted scalar to trim it, not in place
+  the exercise failed, but not at "quoted scalars of 20,000 lines read in under a second":
+
+== proving the checks can fail when an escaped line break folds like a plain one
+  caught: blanks before an escaped line break stay
+
+== proving the checks can fail when a quoted key in a flow sequence needs a blank after ':'
+  caught: a quoted key in a flow sequence takes an adjacent ':'
+
+== proving the checks can fail when a plain scalar in a flow collection stops at its line end
+  caught: a plain scalar folds across lines in a flow collection
+
+== proving the checks can fail when a document's end marked more than once is refused
+  caught: a document's end may be marked more than once
+
+== proving the checks can fail when a root block scalar must be indented
+  caught: a root block scalar may start at the first column
+
+== proving the checks can fail when a scalar tag alone on its line applies to the resolved node below
+  caught: a tag over an empty node tags the empty scalar
+
+== proving the checks can fail when properties over nothing in a flow collection are refused
+  caught: properties over nothing in a flow collection are the empty scalar
+
+== proving the checks can fail when a plain scalar folds on past a comment
+  caught: accepted "a: b # c
+
+== proving the checks can fail when a plain scalar's next line may not start with '- '
+  caught: a plain scalar's next line may start with '- '
+
+== proving the checks can fail when an Int32 never reaches an integer key
+  caught: an Int32 reaches an integer key through []? and dig?
+
+== proving the checks can fail when a '#' starts a flow scalar
+  caught: accepted "[1,#c
+
+== proving the checks can fail when '? a' and '- a' read as text in a flow collection
+  caught: accepted "[? a]
+
+== proving the checks can fail when an alias's levels are not counted against the limit
+  caught: accepted "a0: &a0 x
+
+== proving the checks can fail when the dump writes a byte order mark and C1 controls raw
+  caught: a byte order mark is escaped when dumped
+
+== proving the checks can fail when a C1 control is read as text
+  caught: accepted "c1: b
+
+== proving the checks can fail when a noncharacter is read as text
+  caught: accepted "nc: b
+
+== proving the checks can fail when a UTF-16 stream is refused for its first zero byte
+  caught: a UTF-16 stream is named by its byte order mark
+
+== proving the checks can fail when a block scalar ending the stream gets a line feed it lacks
+  caught: a literal entry ending the stream without a line break keeps no line feed it lacks
+
+== proving the checks can fail when a mapping's hash sums its pairs unmixed
+  caught: a 150 by 150 grid of mappings has at least 22,000 hashes
+
+== proving the checks can fail when a flow '<<' merges only with its ':' adjacent
+  caught: a merge key spaced from its ':' merges
+
+== proving the checks can fail when a one-pair flow mapping keeps '<<' as a key
+  caught: a merge in a one-pair flow mapping merges
+
+== proving the checks can fail when a tab after a continuation line's spaces is refused
+  caught: a tab after a continuation line's indentation separates
+
+== proving the checks can fail when a one-pair flow mapping takes a collection key
+  caught: accepted "[[a]: b]
+
+== proving the checks can fail when a second tag replaces the first
+  caught: accepted "a: !!str !!int 1
+
+== proving the checks can fail when a second anchor in a flow collection replaces the first
+  caught: refusal of "[&a &b 1, *a]
+
+== proving the checks can fail when a missing key reads as null
+  caught: a missing field refused by name
+
+== proving the checks can fail when a null replaces a default its type does not admit
+  caught: a null for a field with a default its type does not admit keeps the default
+
+== proving the checks can fail when a missing key for a nilable field is refused
+  caught: a missing key for a nilable field without a default holds nil
+
+== proving the checks can fail when a derived type read from a sequence is refused as the Any refuses it
+  caught: a sequence refused where a derived type is read
+
+== proving the checks can fail when an integer past Int32 is narrowed
+  caught: an integer past Int32 refused
+
+== proving the checks can fail when a UInt64 past Int64 is written
+  caught: a UInt64 past Int64 refused when written
+
+== proving the checks can fail when a hash's keys are written as text
+  caught: Any, integer keys, nil entries and an empty array written
+
+== proving the checks can fail when a string a 1.1 reader takes for another kind is written plain
+  caught: "yes" and "22:30" are quoted when written
+
+== proving the Python comparison can fail when 1.1 lookalikes are written plain
+  PyYAML read the broken copy's YAML to other data:
+      record 1, SafeLoader: refused, could not determine a constructor for the tag 'tag:yaml.org,2002:value'
+      record 1, CSafeLoader: refused, could not determine a constructor for the tag 'tag:yaml.org,2002:value'
+      record 2, SafeLoader: differs at ['name']
+      record 2, CSafeLoader: differs at ['name']
+      record 3, SafeLoader: differs at ['name']
+      record 3, CSafeLoader: differs at ['name']
+      3 records, 2 loader(s): 6 differ
+
+the std/yaml exercise did not hold
