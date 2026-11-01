@@ -1,0 +1,8 @@
+{
+  "sha256": "48e6f0e5c655c4e7db15d53eb82c81ea9279cc451bafa6d2357a557d4a4c19e3",
+  "members": 56,
+  "run": "https://github.com/jwaldrip/iyi/actions/runs/41356532676",
+  "source": "P1; compiler built in CI",
+  "observed": "both standalone shell attempts rc0; both foldcopy rc1 with expected assertion within unchanged 60 seconds",
+  "scope": "feasibility only, not full strict chain"
+}
