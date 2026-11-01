@@ -20,7 +20,7 @@ env:
 
 jobs:
   yaml-feasibility:
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 120
     name: "macOS remote YAML foldcopy feasibility checkpoint (P1)"
     steps:
