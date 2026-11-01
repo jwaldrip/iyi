@@ -1,0 +1,262 @@
+name: Remote Strict Proof Chain (macOS 15)
+
+# Branch-only, manually triggered macOS-15 GitHub Actions rail for PR147 strict chain.
+# Manual trigger only: no push or PR triggers to avoid unintended execution.
+# Follows PlanQuietCorpusFailures sections 1, 4-8.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Execution mode"
+        required: true
+        type: choice
+        options:
+          - "synthetic-proofs-only"
+          - "strict-chain"
+        default: "synthetic-proofs-only"
+      independent_go:
+        description: "Certification sentinel: set to 'GO' only after independent H'' audit"
+        required: true
+        default: "NO-GO"
+      p_commit:
+        description: "P1 commit SHA"
+        required: true
+        default: "626463375298d357ffcb3223059f4d3adce6fb10"
+      w_commit:
+        description: "Audited W candidate commit SHA (H'')"
+        required: true
+        default: "b932ce0d97775c7061102a13db706f507dc84117"
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GIT_CONFIG_COUNT: "1"
+  GIT_CONFIG_KEY_0: safe.directory
+  GIT_CONFIG_VALUE_0: "*"
+  PYTHONUTF8: "1"
+
+jobs:
+  synthetic-controller-proofs:
+    name: "Controller synthetic failure-path proofs"
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - name: Checkout controller branch
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run fast deterministic controller failure-path test suite
+        run: |
+          echo "================================================================================"
+          echo "Running RemoteStrictController synthetic proofs (isolated scratch)"
+          echo "================================================================================"
+          python3 -B proof/test_remote_strict_controller.py -v
+
+  strict-chain:
+    name: "Sequential strict-chain attempt (macOS 15)"
+    needs: synthetic-controller-proofs
+    if: ${{ github.event.inputs.mode == 'strict-chain' && github.event.inputs.independent_go == 'GO' }}
+    runs-on: macos-15
+    timeout-minutes: 360  # 6-hour GitHub Actions maximum limit
+    steps:
+      - name: Record job start anchor
+        run: |
+          echo "STRICT_JOB_START_TIME=$(python3 -c 'import time; print(time.time())')" >> "$GITHUB_ENV"
+
+      - name: Checkout controller repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Record initial machine fingerprints and environment
+        run: |
+          echo "================================================================================"
+          echo "INITIAL MACHINE FINGERPRINTS"
+          echo "================================================================================"
+          echo "Architecture: $(uname -m)"
+          echo "OS: $(uname -s) $(uname -r) $(uname -v)"
+          echo "CPU Brand: $(sysctl -n machdep.cpu.brand_string 2>/dev/null || true)"
+          echo "Logical CPUs (hw.ncpu): $(sysctl -n hw.ncpu 2>/dev/null || true)"
+          echo "Physical CPUs (hw.physicalcpu): $(sysctl -n hw.physicalcpu 2>/dev/null || true)"
+          echo "Memory (bytes): $(sysctl -n hw.memsize 2>/dev/null || true)"
+          vm_stat || true
+          echo "Initial Disk Usage:"
+          df -h /
+          df -k /
+
+      - name: Install bootstrap toolchain via existing convention
+        run: |
+          brew install crystal coreutils pkgconf
+          echo "$(brew --prefix)/opt/coreutils/libexec/gnubin" >> "$GITHUB_PATH"
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies (including idna==3.11)
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install pyyaml "idna==3.11"
+          python3 -c "import idna; assert idna.__version__ == '3.11', f'idna version mismatch: {idna.__version__}'"
+          echo "idna==3.11 verified"
+
+      - name: Install Node artifact client for incremental upload
+        run: |
+          npm install --no-save @actions/artifact
+
+      - name: Restore static LLVM cache
+        id: llvm-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/llvm-static
+          key: llvm-static-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/build-static-llvm.sh') }}
+
+      - name: Build static LLVM (cache miss)
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        run: bash scripts/build-static-llvm.sh "$HOME/llvm-static"
+
+      - name: Checkout clean P1 source and build P1 compiler
+        id: build-p1
+        run: |
+          P1_COMMIT="${{ github.event.inputs.p_commit }}"
+          P1_DIR="$RUNNER_TEMP/p1-source"
+
+          echo "Setting up clean P1 source checkout at $P1_DIR from $P1_COMMIT..."
+          git clone "$GITHUB_WORKSPACE" "$P1_DIR"
+          cd "$P1_DIR"
+          git checkout "$P1_COMMIT"
+
+          ACTUAL_P1_SHA=$(git rev-parse HEAD)
+          echo "P1 checkout HEAD: $ACTUAL_P1_SHA"
+          if [ "$ACTUAL_P1_SHA" != "$P1_COMMIT" ]; then
+            echo "ERROR: P1 checkout mismatch! Expected $P1_COMMIT, got $ACTUAL_P1_SHA" >&2
+            exit 1
+          fi
+
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "ERROR: P1 checkout is dirty!" >&2
+            exit 1
+          fi
+
+          echo "Building P1 compiler using static LLVM..."
+          make iyi LLVM_CONFIG="$HOME/llvm-static/bin/llvm-config"
+
+          if [ ! -x ".build/iyi" ]; then
+            echo "ERROR: .build/iyi was not generated or is not executable" >&2
+            exit 1
+          fi
+
+          echo "=== P1 Compiler Version ==="
+          VERSION_OUTPUT=$(.build/iyi --version)
+          echo "$VERSION_OUTPUT"
+          if ! echo "$VERSION_OUTPUT" | grep -q "626463375"; then
+            echo "ERROR: Compiler version stamp does not contain P1 commit 626463375!" >&2
+            exit 1
+          fi
+          echo "Compiler version stamp VERIFIED: contains 626463375."
+
+          COMPILER_SHA256=$(shasum -a 256 .build/iyi | awk '{print $1}')
+          echo "P1 Compiler SHA-256: $COMPILER_SHA256"
+
+          # Prune build object files under P1 to maximize available disk space
+          find .build -name '*.o' -delete 2>/dev/null || true
+
+          cd "$GITHUB_WORKSPACE"
+
+          # Verify available disk space is >= 20.0 GiB floor
+          echo "=== Disk Space Check Post-Build ==="
+          df -h /
+          FREE_KB=$(df -k / | awk 'NR==2 {print $4}')
+          FREE_GIB=$(python3 -c "print(round($FREE_KB / (1024 * 1024), 2))")
+          echo "Available disk space: ${FREE_GIB} GiB"
+          python3 -c "import sys; free_gib = float('$FREE_GIB'); sys.exit(0 if free_gib >= 20.0 else f'ERROR: Free disk space {free_gib} GiB < 20.0 GiB minimum')"
+          echo "Disk space check PASSED: ${FREE_GIB} GiB >= 20.0 GiB"
+
+          echo "p1_dir=$P1_DIR" >> "$GITHUB_OUTPUT"
+          echo "compiler_path=$P1_DIR/.build/iyi" >> "$GITHUB_OUTPUT"
+          echo "compiler_sha256=$COMPILER_SHA256" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout clean audited W proof tree
+        id: checkout-w
+        run: |
+          W_COMMIT="${{ github.event.inputs.w_commit }}"
+          W_DIR="$RUNNER_TEMP/w-proof"
+
+          echo "Setting up clean W proof checkout at $W_DIR from $W_COMMIT..."
+          git clone "$GITHUB_WORKSPACE" "$W_DIR"
+          cd "$W_DIR"
+          git checkout "$W_COMMIT"
+
+          ACTUAL_W_SHA=$(git rev-parse HEAD)
+          echo "W checkout HEAD: $ACTUAL_W_SHA"
+          if [ "$ACTUAL_W_SHA" != "$W_COMMIT" ]; then
+            echo "ERROR: W checkout mismatch! Expected $W_COMMIT, got $ACTUAL_W_SHA" >&2
+            exit 1
+          fi
+
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "ERROR: W checkout is dirty!" >&2
+            exit 1
+          fi
+
+          # Verify non-proof product equality between P1 and W
+          echo "Verifying product equality outside proof/ between P1 and W..."
+          NON_PROOF_DIFF=$(git diff --name-only "${{ github.event.inputs.p_commit }}" "$W_COMMIT" -- . ':(exclude)proof')
+          if [ -n "$NON_PROOF_DIFF" ]; then
+            echo "ERROR: Non-proof product diff found between P1 and W:" >&2
+            echo "$NON_PROOF_DIFF" >&2
+            exit 1
+          fi
+          echo "Product equality outside proof/ VERIFIED: zero differences."
+
+          echo "w_dir=$W_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Run Remote Strict Controller
+        id: run-strict-controller
+        run: |
+          echo "================================================================================"
+          echo "LAUNCHING REMOTE STRICT PROOF CONTROLLER"
+          echo "================================================================================"
+          python3 -B proof/remote_strict_controller.py \
+            --p "${{ steps.build-p1.outputs.p1_dir }}" \
+            --w "${{ steps.checkout-w.outputs.w_dir }}" \
+            --compiler "${{ steps.build-p1.outputs.compiler_path }}" \
+            --artifacts-dir "$GITHUB_WORKSPACE/strict-proof-artifacts" \
+            --job-start-time "$STRICT_JOB_START_TIME" \
+            --host-job-limit-sec 21600 \
+            --payload-budget-sec 19800 \
+            --finalization-alloc-sec 1800 \
+            --driver-limit-sec 2100 \
+            --grace-sec 10 \
+            --min-disk-gib 20.0 \
+            --upload-cmd "node proof/upload_artifact.js {archive_path} {unit_name} {attempt}"
+
+      - name: Final upload of proof artifacts and receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: remote-strict-proof-final-evidence
+          path: |
+            strict-proof-artifacts/**
+            /tmp/iyp-*/**
+            !/tmp/iyp-*/**/t/**
+            !/tmp/iyp-*/**/c/**
+            !/tmp/iyp-*/**/s/**
+            !/tmp/iyp-*/**/bin/**
+            !/tmp/iyp-*/**/.cache/**
+            !/tmp/iyp-*/**/*.bin
+          retention-days: 14
+          if-no-files-found: ignore
