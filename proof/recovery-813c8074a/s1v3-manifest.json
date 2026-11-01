@@ -1,0 +1,10 @@
+{
+  "archive": "audit-813c8074a-s1v3.tar.gz",
+  "archive_bytes": 332672,
+  "archive_sha256": "c60625372c22d761630216f22de3ec6e5d1f1b2ef4b73ada1804b1f8bae6ce7d",
+  "members": 61,
+  "all_members_byte_equal_native": true,
+  "exact_and_generic_token_scan_matches": 0,
+  "symlinks_recorded": 0,
+  "result": "S1v3: citations for 33 misdirected rows re-derived from AST call closures; automated content checker 80/80 PASS; 80 rows PROVEN, 33 keys PROVEN, 0 UNMAPPED; compare.json equal; v1,v2 superseded and retained"
+}
