@@ -1,0 +1,5 @@
+{
+  "sha256": "66c52d71a540b6e883ede7eead995551d2119e879e06e2e434e304a2246ef08f",
+  "files": 8,
+  "result": "control rc0; mutant rc1 with required assertion, not timed out; fresh relocated diagnostic, does not establish cause of historical failure"
+}
