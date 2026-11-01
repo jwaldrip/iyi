@@ -1,0 +1,10 @@
+{
+  "archive": "audit-813c8074a-s1v2.tar.gz",
+  "archive_bytes": 329571,
+  "archive_sha256": "62009d90c20f60c62dabace859b210e40e1c5d4c977e6a17c570e3da88ee41c8",
+  "members": 61,
+  "all_members_byte_equal_native": true,
+  "exact_and_generic_token_scan_matches": 0,
+  "symlinks_recorded": 0,
+  "result": "S1v2 mapping correction at H prime: all line literals translated (158 ranges + 2 single lines + 1 summary range); s5.seed.skip-env-blocked/partial now cite 12017/12018; 80 rows PROVEN, 33 keys PROVEN, 0 UNMAPPED; v1 (E32 s1) retained as superseded"
+}
