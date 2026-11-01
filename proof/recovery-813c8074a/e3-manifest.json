@@ -1,0 +1,10 @@
+{
+  "archive": "audit-813c8074a-e3.tar.gz",
+  "archive_bytes": 165699,
+  "archive_sha256": "13ab04dd2638bfe4355c3514d7705a5c165653a8f80186aa21be539ae7b31cbb",
+  "members": 424,
+  "all_members_byte_equal_native": true,
+  "exact_and_generic_token_scan_matches": 0,
+  "symlinks_recorded": 0,
+  "result": "E3 at H prime: 43 rows, 42 KILLED + m20 MASKED (raw E2c verified by driver), 0 SURVIVED/FAIL/INCOMPLETE; baselines 61/28/30/20; parent verified receipts and detector/control fields only"
+}
