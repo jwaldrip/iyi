@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -236,6 +237,21 @@ ANCHOR_2B_REPLACEMENT = """  elif {
       if command -v __iyi_diag_capture >/dev/null 2>&1; then
         __iyi_diag_capture "pre_foldcopy"
       fi
+      python3 -c '
+import json, os, sys, time
+marker = {
+    "parent_bash_pid": int(sys.argv[1]),
+    "bashpid": int(sys.argv[2]),
+    "work": sys.argv[3],
+    "output_path": sys.argv[4],
+    "compiler_path": sys.argv[5],
+    "cache_path": sys.argv[6],
+    "monotonic_ns": time.monotonic_ns(),
+    "time_ns": time.time_ns(),
+}
+with open(os.path.join(sys.argv[7], "foldcopy_start_marker.json"), "w", encoding="utf-8") as f:
+    json.dump(marker, f, indent=2)
+' "$$" "$BASHPID" "$WORK" "$WORK/$name.out" "$IYI" "${IYI_CACHE_DIR:-}" "$CAPTURE_DIR" 2>/dev/null || true
     fi
     __capture_start_ns=$(python3 -c 'import time; print(time.time_ns())' 2>/dev/null || date +%s%N 2>/dev/null || echo 0)
     IYI_PATH="$WORK/patched_$name${PSEP}$REPO/src${PSEP}$REPO/samples/iyi" timeout 60 "$IYI" run "$REPO/bench/std_yaml_exercise.iyi" >"$WORK/$name.out" 2>&1
@@ -244,6 +260,17 @@ ANCHOR_2B_REPLACEMENT = """  elif {
 
     if [ "$name" = foldcopy ] && [ -n "${CAPTURE_DIR:-}" ]; then
       printf "%s\\n" "$__capture_rc" > "$CAPTURE_DIR/foldcopy_rc.txt"
+      python3 -c '
+import json, os, sys, time
+marker = {
+    "raw_returncode": int(sys.argv[1]),
+    "monotonic_ns": time.monotonic_ns(),
+    "time_ns": time.time_ns(),
+    "end_ns": int(sys.argv[2]) if sys.argv[2].isdigit() else 0,
+}
+with open(os.path.join(sys.argv[3], "foldcopy_end_marker.json"), "w", encoding="utf-8") as f:
+    json.dump(marker, f, indent=2)
+' "$__capture_rc" "$__capture_end_ns" "$CAPTURE_DIR" 2>/dev/null || true
       printf "%s\\n" "$__capture_start_ns" > "$CAPTURE_DIR/foldcopy_start_ns.txt"
       printf "%s\\n" "$__capture_end_ns" > "$CAPTURE_DIR/foldcopy_end_ns.txt"
       printf "%s\\n" "$WORK/patched_$name${PSEP}$REPO/src${PSEP}$REPO/samples/iyi" > "$CAPTURE_DIR/foldcopy_iyi_path.txt"
@@ -550,6 +577,7 @@ def execute_capture(
     cache_dir: Path | None = None,
     allow_shared_cache: bool = False,
     outer_timeout_sec: int = DEFAULT_OUTER_TIMEOUT_SEC,
+    cleanup_grace_sec: int = 30,
 ) -> dict[str, Any]:
     """Execute the instrumented YAML shell body and capture complete evidence."""
     # Build execution environment preserving inherited variables
@@ -576,6 +604,41 @@ def execute_capture(
     outer_stdout_path = report_dir / "outer.stdout"
     outer_stderr_path = report_dir / "outer.stderr"
 
+    # Copy passive_phase_trace.py to report_dir for self-contained archive preservation
+    tracer_script_dest = report_dir / "passive_phase_trace.py"
+    source_tracer = Path(__file__).parent / "passive_phase_trace.py"
+    if source_tracer.is_file():
+        shutil.copy2(source_tracer, tracer_script_dest)
+        tracer_to_run = tracer_script_dest
+    else:
+        tracer_to_run = tracer_script_dest
+
+    # Prepare passive observer streams
+    observer_stdout_path = report_dir / "observer.stdout"
+    observer_stderr_path = report_dir / "observer.stderr"
+    observer_proc = None
+    obs_out_f = None
+    obs_err_f = None
+
+    if tracer_to_run.is_file():
+        obs_cmd = [
+            sys.executable,
+            str(tracer_to_run),
+            "--capture-dir",
+            str(report_dir),
+            "--outer-timeout",
+            str(outer_timeout_sec + cleanup_grace_sec),
+        ]
+        obs_out_f = open(observer_stdout_path, "wb")
+        obs_err_f = open(observer_stderr_path, "wb")
+        observer_proc = subprocess.Popen(
+            obs_cmd,
+            cwd=str(repo_path),
+            stdout=obs_out_f,
+            stderr=obs_err_f,
+            start_new_session=True,  # Independent process group
+        )
+
     # Shell invocation preserving original relative $0
     # bash -c BODY bench/std_yaml_exercise.sh
     cmd = ["bash", "-c", instrumented_text, "bench/std_yaml_exercise.sh"]
@@ -592,22 +655,62 @@ def execute_capture(
             env=run_env,
             stdout=out_f,
             stderr=err_f,
+            start_new_session=True,  # Process group aware
         )
         try:
             returncode = proc.wait(timeout=outer_timeout_sec)
         except subprocess.TimeoutExpired:
             timed_out = True
-            proc.kill()
-            try:
-                proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                pass
             returncode = 124
+            pgid = proc.pid
+            # Process-group-aware cleanup: send SIGTERM strictly to own process group
+            if pgid > 1:
+                try:
+                    os.killpg(pgid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+            # 30-second cleanup grace period
+            try:
+                proc.wait(timeout=cleanup_grace_sec)
+            except subprocess.TimeoutExpired:
+                if pgid > 1:
+                    try:
+                        os.killpg(pgid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    pass
+
+    # Stop and join passive observer
+    if observer_proc is not None:
+        try:
+            observer_proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            try:
+                observer_proc.terminate()
+                observer_proc.wait(timeout=5)
+            except (subprocess.TimeoutExpired, ProcessLookupError, OSError):
+                try:
+                    observer_proc.kill()
+                    observer_proc.wait(timeout=2)
+                except Exception:
+                    pass
+        if obs_out_f:
+            try:
+                obs_out_f.close()
+            except Exception:
+                pass
+        if obs_err_f:
+            try:
+                obs_err_f.close()
+            except Exception:
+                pass
 
     end_ns = time.time_ns()
     end_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
     duration_sec = (end_ns - start_ns) / 1e9
-
     # Inspect retained WORK directory
     work_path_file = report_dir / "work_path.txt"
     work_path = work_path_file.read_text(encoding="utf-8").strip() if work_path_file.is_file() else None
@@ -670,6 +773,15 @@ def execute_capture(
     else:
         classification = "FOLDCOPY_NOT_REACHED_OR_CAPTURE_EMPTY"
 
+    # Inspect foldcopy phase trace summary if generated
+    phase_summary_file = report_dir / "foldcopy_phase_summary.json"
+    phase_trace_summary = None
+    if phase_summary_file.is_file():
+        try:
+            phase_trace_summary = json.loads(phase_summary_file.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
     return {
         "execution": {
             "outer_returncode": returncode,
@@ -678,10 +790,12 @@ def execute_capture(
             "ended_iso": end_iso,
             "duration_sec": duration_sec,
             "outer_stdout_path": str(outer_stdout_path),
-            "outer_stdout_bytes": outer_stdout_path.stat().st_size,
+            "outer_stdout_bytes": outer_stdout_path.stat().st_size if outer_stdout_path.is_file() else 0,
             "outer_stderr_path": str(outer_stderr_path),
-            "outer_stderr_bytes": outer_stderr_path.stat().st_size,
+            "outer_stderr_bytes": outer_stderr_path.stat().st_size if outer_stderr_path.is_file() else 0,
+            "observer_returncode": observer_proc.returncode if observer_proc else None,
         },
+        "phase_trace": phase_trace_summary,
         "cache": {
             "resolved_path": str(resolved_cache),
             "is_shared": is_shared,
@@ -734,6 +848,16 @@ def record_diagnostic_differences() -> dict[str, Any]:
             "isolated_diagnostic": "Absolute pinned /opt/homebrew/Cellar/coreutils/9.11/bin/gtimeout",
             "standalone_shell": "Bare timeout resolved dynamically by Bash",
             "parent_capture": "Bare timeout resolved dynamically by Bash; command type, executable path, and SHA-256 recorded",
+        },
+        "phase_tracing": {
+            "isolated_diagnostic": "Separate wall-time measurement of mutant execution via date +%s%N and in-process timer",
+            "standalone_shell": "No phase observation; combined 60s timeout without intermediate timestamps",
+            "parent_capture": "Passive observer started before parent shell, activated between start/end markers; fixed 250ms descendant snapshots (1s after program observed), 100ms output sampling, Darwin libproc proc_pidpath identification, and bounded phase intervals",
+        },
+        "outer_supervision": {
+            "isolated_diagnostic": "Python subprocess.wait with hard kill",
+            "standalone_shell": "Outer timeout -k 30 2100 with shell pipeline",
+            "parent_capture": "Process-group-aware supervision matching timeout -k 30 2100: setsid, 2100s deadline, SIGTERM to group, 30s grace, SIGKILL to group, rc124 on expiry without extra acceptance time",
         },
         "preceding_cases": {
             "isolated_diagnostic": "Pre-validation -> Control (1.96s) -> Mutant (44.06s)",
@@ -805,12 +929,33 @@ def main(argv: Sequence[str] | None = None) -> int:
         help=f"Outer supervisor timeout in seconds (default: {DEFAULT_OUTER_TIMEOUT_SEC})",
     )
     parser.add_argument(
+        "--cleanup-grace",
+        type=int,
+        default=30,
+        help="Cleanup grace period in seconds after outer timeout (default: 30)",
+    )
+    parser.add_argument(
+        "--validate-pidpath",
+        action="store_true",
+        help="Validate Darwin proc_pidpath on an owned short-lived child and exit",
+    )
+    parser.add_argument(
         "--validate-only",
         action="store_true",
         help="Validate parity, hashes, anchor reversal, and syntax without executing shell body",
     )
 
     args = parser.parse_args(argv)
+
+    if args.validate_pidpath:
+        try:
+            from passive_phase_trace import validate_proc_pidpath
+        except ImportError:
+            sys.path.insert(0, str(Path(__file__).parent.resolve()))
+            from passive_phase_trace import validate_proc_pidpath
+        receipt = validate_proc_pidpath()
+        print(json.dumps(receipt, indent=2))
+        return 0 if receipt.get("paths_match") else 1
 
     report_dir = Path(args.report_dir).resolve()
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -857,6 +1002,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             candidate_env["IYI_CACHE_DIR"] = str(cache_dir_arg.resolve())
         resolved_cache, is_shared, cache_source = resolve_cache_directory(candidate_env)
 
+        tracer_source = Path(__file__).parent / "passive_phase_trace.py"
+        tracer_sha256 = sha256_file(tracer_source) if tracer_source.is_file() else None
+        tracer_save_path = report_dir / "passive_phase_trace.py"
+        if tracer_source.is_file() and not tracer_save_path.is_file():
+            shutil.copy2(tracer_source, tracer_save_path)
+
         validation_receipt = {
             "driver": {
                 "path": str(driver_path),
@@ -882,6 +1033,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "instrumented_sha256": sha256_file(inst_save_path),
                 "instrumentation_diff": str(diff_save_path),
                 "instrumentation_diff_sha256": sha256_file(diff_save_path),
+                "passive_phase_trace": str(tracer_save_path) if tracer_save_path.is_file() else None,
+                "passive_phase_trace_sha256": tracer_sha256,
             },
             "diagnostic_differences": record_diagnostic_differences(),
         }
@@ -910,6 +1063,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             cache_dir=cache_dir_arg,
             allow_shared_cache=args.allow_shared_cache,
             outer_timeout_sec=args.outer_timeout,
+            cleanup_grace_sec=args.cleanup_grace,
         )
 
         full_report = {
@@ -922,6 +1076,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         report_path.write_text(json.dumps(full_report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
         receipt_path = report_dir / "receipt.json"
+        phase_trace = exec_results.get("phase_trace") or {}
+        prog_interval = phase_trace.get("generated_program_start_interval") or {}
+        first_runtime_out = phase_trace.get("first_observed_runtime_output") or {}
+        comp_cpu = phase_trace.get("compiler_cpu_before_program_start") or {}
+        prog_cpu = phase_trace.get("program_cpu_observed") or {}
+        telemetry = phase_trace.get("observer_telemetry") or {}
+
         receipt = {
             "verdict": full_report["verdict"],
             "outer_returncode": full_report["execution"]["outer_returncode"],
@@ -929,12 +1090,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             "foldcopy_duration_sec": full_report["foldcopy"]["duration_sec"],
             "assertion_found": full_report["foldcopy"]["assertion_found"],
             "panic_found": full_report["foldcopy"]["panic_found"],
+            "generated_program_observed": prog_interval.get("program_observed", False),
+            "generated_program_start_interval": {
+                "lower_bound_elapsed_sec": prog_interval.get("lower_bound_elapsed_sec"),
+                "upper_bound_elapsed_sec": prog_interval.get("upper_bound_elapsed_sec"),
+                "interval_width_sec": prog_interval.get("interval_width_sec"),
+            },
+            "first_observed_runtime_output_sec": first_runtime_out.get("elapsed_sec"),
+            "compiler_cpu_before_program_start_sec": comp_cpu.get("total_sec"),
+            "program_cpu_observed_sec": prog_cpu.get("total_sec"),
+            "observer_max_sampling_gap_sec": telemetry.get("max_sampling_gap_sec"),
             "work_path": full_report["work"]["work_path"],
             "work_exists": full_report["work"]["work_exists"],
             "report_dir": str(report_dir),
         }
         receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
         print(json.dumps(receipt, indent=2, sort_keys=True))
         return 0
 
