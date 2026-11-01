@@ -1,0 +1,57 @@
+name: Remote Harness Audit Gate (H'')
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'proof/remote-harness-audit-20261101'
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GIT_CONFIG_COUNT: "1"
+  GIT_CONFIG_KEY_0: safe.directory
+  GIT_CONFIG_VALUE_0: "*"
+  PYTHONUTF8: "1"
+
+jobs:
+  harness-audit:
+    runs-on: macos-15
+    timeout-minutes: 60
+    name: "macOS-15 Remote Harness CI Gate and H'' Audit (Plan §2-§3)"
+    steps:
+      - name: Checkout repository at branch ref (Controller C)
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run Remote Harness Audit Rail
+        id: run-audit
+        run: |
+          python3 -B proof/remote_harness_audit.py \
+            --repo "$GITHUB_WORKSPACE" \
+            --w-sha "b932ce0d97775c7061102a13db706f507dc84117" \
+            --hprime-sha "813c8074acb2eed99ffeef78ea49e8c7832e4c01" \
+            --p1-sha "626463375298d357ffcb3223059f4d3adce6fb10" \
+            --output-dir "$GITHUB_WORKSPACE/remote-harness-audit-artifacts" \
+            --work-dir "$RUNNER_TEMP"
+
+      - name: Upload remote harness audit artifacts
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: remote-harness-audit-evidence
+          path: |
+            remote-harness-audit-artifacts/**
+          retention-days: 14
+          if-no-files-found: error
