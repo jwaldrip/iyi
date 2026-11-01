@@ -1,0 +1,10 @@
+{
+  "archive": "audit-813c8074a-e1.tar.gz",
+  "archive_bytes": 174771,
+  "archive_sha256": "ad07fc08044da8f8b9323cd57ddb28ceb8a96ae3c3b5a2bab5c536acaa23c644",
+  "members": 35,
+  "all_members_byte_equal_native": true,
+  "exact_and_generic_token_scan_matches": 0,
+  "symlinks_recorded": 0,
+  "result": "E1 coverage at H prime: rc0 4017.95s, TOTAL 435/85 HARNESS PASS COVERAGE GATE PASS, missing 0/6/1/14 all within 7 allowlist spans and equal to H, 520 fixture ids equal, p10 7 rows none forbidden, p10_verify equal; command.json checked clean of the exact and generic token and archived unmasked (env keys listed)"
+}
