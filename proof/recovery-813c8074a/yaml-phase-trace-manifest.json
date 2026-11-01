@@ -1,0 +1,6 @@
+{
+  "sha256": "922e2707fed86e284a1018b2caa3cc7a2080e6f365d55844a92c547be7016dae",
+  "members": 35,
+  "result": "foldcopy timed out rc124, generated executable observed 1.270-1.676 sec after start, CPU observation 313.41 sec, fixed 60sec deadline; attribution of CPU work unknown",
+  "cache_excluded": true
+}
