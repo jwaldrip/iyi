@@ -1,0 +1,7 @@
+{
+  "archive": "audit-813c8074a-chain-quiet-run1.tar.gz",
+  "sha256": "fb84742491a2cad8d06252cac17f966100e97586eb665f4478b263e41d3e7ffa",
+  "members": 15,
+  "token_scan_matches": 0,
+  "result": "Run1 FAIL: gate-1.3 count and gate-1.4 YAML sibling; gate-1.1 and 1.2 PASS. Scratch/cache excluded."
+}
