@@ -1,0 +1,22 @@
+{
+  "name": "@iyi/strict-supervisor",
+  "version": "1.0.0",
+  "description": "Strict supervisor and artifact persistence manager for remote strict controller",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "ncc build src/index.js -o dist --source-map --license licenses.txt",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "@actions/artifact": "6.3.1",
+    "@actions/core": "^3.0.1"
+  },
+  "devDependencies": {
+    "@vercel/ncc": "^0.38.3"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "license": "MIT"
+}
