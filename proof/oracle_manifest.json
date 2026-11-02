@@ -1,0 +1,145 @@
+{
+  "manifest_version": 1,
+  "description": "Approved oracle manifest and tool capability specifications for iyi native and strict proof chains",
+  "python": {
+    "required_version": ">=3.14.0",
+    "required_modules": [
+      {
+        "name": "compression.zstd",
+        "description": "Python 3.14+ standard library Zstandard compression oracle",
+        "symbols": ["ZstdCompressor", "ZstdDecompressor"],
+        "drivers": ["zstd", "http", "digest"]
+      },
+      {
+        "name": "lzma",
+        "description": "Python standard library LZMA/XZ compression oracle",
+        "symbols": ["LZMACompressor", "LZMADecompressor"],
+        "drivers": ["xz"]
+      },
+      {
+        "name": "bz2",
+        "description": "Python standard library Bzip2 compression oracle",
+        "symbols": ["BZ2Compressor", "BZ2Decompressor"],
+        "drivers": ["bzip2"]
+      },
+      {
+        "name": "zlib",
+        "description": "Python standard library Zlib/Deflate/Gzip compression oracle",
+        "symbols": ["compressobj", "decompressobj", "crc32"],
+        "drivers": ["compress", "png", "http"]
+      },
+      {
+        "name": "ssl",
+        "description": "Python standard library TLS/SSL support",
+        "symbols": ["SSLContext", "create_default_context"],
+        "drivers": ["tls", "secure_dns", "acme", "autocert"]
+      }
+    ],
+    "required_packages": [
+      {
+        "name": "idna",
+        "exact_version": "3.11",
+        "description": "IDNA 2008 reference implementation pinned to version 3.11",
+        "drivers": ["idna"]
+      },
+      {
+        "name": "Pillow",
+        "import_name": "PIL",
+        "description": "Pillow image library for PNG reference decoding/encoding",
+        "drivers": ["png"]
+      },
+      {
+        "name": "cryptography",
+        "import_name": "cryptography",
+        "description": "Python cryptography library for ACME/TLS/DoT/DoH certificate and key handling",
+        "drivers": ["acme", "autocert", "secure_dns", "tls"]
+      },
+      {
+        "name": "pyyaml",
+        "import_name": "yaml",
+        "description": "PyYAML for YAML reference parsing and controller configuration",
+        "drivers": ["yaml"]
+      },
+      {
+        "name": "h2",
+        "import_name": "h2",
+        "description": "Python HTTP/2 protocol stack for DNS over HTTPS (DoH) scripted testing",
+        "drivers": ["secure_dns", "http"]
+      },
+      {
+        "name": "hpack",
+        "import_name": "hpack",
+        "description": "HPACK (HTTP/2 header compression) reference implementation",
+        "drivers": ["secure_dns", "http"]
+      }
+    ]
+  },
+  "system_tools": [
+    {
+      "name": "dig",
+      "binary": "dig",
+      "description": "BIND DNS lookup utility with HTTPS record and secure transport features",
+      "required_features": [
+        "https_record_type",
+        "dns_over_tls",
+        "dns_over_https"
+      ],
+      "drivers": ["dns", "secure_dns"]
+    },
+    {
+      "name": "nsupdate",
+      "binary": "nsupdate",
+      "description": "BIND dynamic DNS update utility with HTTPS record type support",
+      "required_features": [
+        "https_record_type"
+      ],
+      "drivers": ["dns"]
+    },
+    {
+      "name": "curl",
+      "binary": "curl",
+      "description": "cURL with HTTP/2 and ALPN support",
+      "required_features": [
+        "http2",
+        "alpn"
+      ],
+      "drivers": ["http", "tls"]
+    },
+    {
+      "name": "openssl",
+      "binary": "openssl",
+      "description": "OpenSSL CLI for X.509 certificate chain verification",
+      "required_features": [
+        "verify"
+      ],
+      "drivers": ["acme", "autocert", "tls", "x509"]
+    },
+    {
+      "name": "go",
+      "binary": "go",
+      "description": "Go toolchain for building Pebble ACME test server",
+      "required_features": [
+        "build"
+      ],
+      "drivers": ["acme", "autocert"]
+    },
+    {
+      "name": "timeout",
+      "binary": "timeout",
+      "description": "GNU coreutils timeout utility",
+      "drivers": ["dns", "acme", "secure_dns"]
+    },
+    {
+      "name": "crystal",
+      "binary": "crystal",
+      "description": "Bootstrap Crystal compiler for P1",
+      "drivers": ["bootstrap"]
+    },
+    {
+      "name": "pkg-config",
+      "binary": "pkg-config",
+      "description": "Package configuration tool",
+      "drivers": ["bootstrap"]
+    }
+  ]
+}
