@@ -1,34 +1,29 @@
 name: Remote Strict Proof Chain (macOS 15)
 
-# Branch-only, manually triggered macOS-15 GitHub Actions rail for PR147 strict chain.
-# Manual trigger only: no push or PR triggers to avoid unintended execution.
-# Follows PlanQuietCorpusFailures sections 1, 4-8.
+# Branch-only macOS-15 GitHub Actions rail for PR147 strict chain.
+# Validation-only mode runs automatically on push to the integrated repair branch
+# (proof/strict-controller-integration-20261101), or manually via workflow_dispatch.
+# Real strict execution is unconditionally refused nonzero before P1 build until
+# independently authenticated authorization exists.
 
 on:
+  push:
+    branches:
+      - "proof/strict-controller-integration-20261101"
   workflow_dispatch:
     inputs:
       mode:
-        description: "Execution mode"
+        description: "Execution mode: 'validation-only' runs synthetic proofs and supervisor tests. 'strict-chain' is unconditionally refused until independent authorization exists."
         required: true
         type: choice
         options:
-          - "synthetic-proofs-only"
+          - "validation-only"
           - "strict-chain"
-        default: "synthetic-proofs-only"
-      independent_go:
-        description: "Certification sentinel: set to 'GO' only after independent H'' audit"
-        required: true
-        default: "NO-GO"
-      p_commit:
-        description: "P1 commit SHA"
-        required: true
-        default: "626463375298d357ffcb3223059f4d3adce6fb10"
-      w_commit:
-        description: "Audited W candidate commit SHA (H'')"
-        required: true
-        default: "b932ce0d97775c7061102a13db706f507dc84117"
+        default: "validation-only"
 
-permissions: {}
+permissions:
+  contents: read
+  actions: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -39,40 +34,286 @@ env:
   GIT_CONFIG_KEY_0: safe.directory
   GIT_CONFIG_VALUE_0: "*"
   PYTHONUTF8: "1"
+  P_AUTHORIZED_SHA: "626463375298d357ffcb3223059f4d3adce6fb10"
+  W_AUTHORIZED_SHA: "b932ce0d97775c7061102a13db706f507dc84117"
+  DRIVER_LIMIT_SEC: "2100"
+  GRACE_SEC: "30"
+  HOST_JOB_LIMIT_SEC: "21600"
+  PAYLOAD_BUDGET_SEC: "19800"
+  FINALIZATION_ALLOC_SEC: "1800"
+  MIN_DISK_GIB: "20.0"
 
 jobs:
-  synthetic-controller-proofs:
-    name: "Controller synthetic failure-path proofs"
+  validation-proofs:
+    name: "Controller synthetic and validation proofs (macOS 15)"
+    if: ${{ github.event_name == 'push' || github.event.inputs.mode == 'validation-only' }}
     runs-on: macos-15
-    timeout-minutes: 15
+    timeout-minutes: 60
     steps:
-      - name: Checkout controller branch
+      - name: Checkout controller repository
         uses: actions/checkout@v7
         with:
           persist-credentials: false
+          fetch-depth: 0
 
-      - name: Setup Python 3.12
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Run fast deterministic controller failure-path test suite
+      - name: Record initial machine fingerprints and environment
         run: |
           echo "================================================================================"
-          echo "Running RemoteStrictController synthetic proofs (isolated scratch)"
+          echo "INITIAL MACHINE FINGERPRINTS"
+          echo "================================================================================"
+          echo "Architecture: $(uname -m)"
+          echo "OS: $(uname -s) $(uname -r) $(uname -v)"
+          echo "CPU Brand: $(sysctl -n machdep.cpu.brand_string 2>/dev/null || true)"
+          echo "Logical CPUs (hw.ncpu): $(sysctl -n hw.ncpu 2>/dev/null || true)"
+          echo "Physical CPUs (hw.physicalcpu): $(sysctl -n hw.physicalcpu 2>/dev/null || true)"
+          echo "Memory (bytes): $(sysctl -n hw.memsize 2>/dev/null || true)"
+          vm_stat || true
+          echo "Initial Disk Usage:"
+          df -h /
+          df -k /
+
+      - name: Install bootstrap toolchain and DNS utilities
+        run: |
+          brew install crystal coreutils pkgconf bind
+          echo "$(brew --prefix)/opt/coreutils/libexec/gnubin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix bind)/bin" >> "$GITHUB_PATH"
+
+      - name: Setup Python 3.14
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install Python dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install pyyaml "idna==3.11" cryptography pillow h2 hpack
+          python3 -c "import idna; assert idna.__version__ == '3.11', f'idna version mismatch: {idna.__version__}'"
+          echo "idna==3.11 verified"
+
+      - name: Verify approved oracle manifest before pre-pin
+        run: |
+          python3 -B proof/preflight_oracle.py --manifest proof/oracle_manifest.json
+
+      - name: Retrieve actual job start metadata from GitHub API
+        id: job-metadata
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          WORKFLOW_JOB_ID: ${{ github.job }}
+        run: |
+          python3 -B - <<'PY'
+          import json, os, sys, urllib.request
+          from datetime import datetime, timezone
+
+          token = os.environ.get("GITHUB_TOKEN", "")
+          repo = os.environ.get("GITHUB_REPOSITORY", "")
+          run_id = os.environ.get("GITHUB_RUN_ID", "")
+          job_id = os.environ.get("WORKFLOW_JOB_ID", "")
+          runner_name = os.environ.get("RUNNER_NAME", "")
+
+          if not token or not repo or not run_id:
+              sys.exit("ERROR: GITHUB_TOKEN, GITHUB_REPOSITORY, or GITHUB_RUN_ID missing from environment.")
+
+          url = f"https://api.github.com/repos/{repo}/actions/runs/{run_id}/jobs?per_page=100"
+          req = urllib.request.Request(
+              url,
+              headers={
+                  "Authorization": f"Bearer {token}",
+                  "Accept": "application/vnd.github+json",
+                  "User-Agent": "iyi-strict-proof-ci",
+              },
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=30) as resp:
+                  data = json.loads(resp.read().decode("utf-8"))
+          except Exception as exc:
+              sys.exit(f"ERROR: GitHub API query for job metadata failed: {exc}")
+
+          jobs = data.get("jobs", [])
+          matched = None
+          for j in jobs:
+              if runner_name and j.get("runner_name") == runner_name and j.get("status") == "in_progress":
+                  matched = j
+                  break
+          if not matched:
+              for j in jobs:
+                  if j.get("status") == "in_progress":
+                      matched = j
+                      break
+          if not matched and jobs:
+              matched = jobs[0]
+
+          if not matched or not matched.get("started_at"):
+              sys.exit(f"ERROR: Failed to retrieve actual job started_at metadata. Available jobs: {[j.get('name') for j in jobs]}")
+
+          started_at = matched["started_at"]
+          dt = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+          epoch_sec = dt.timestamp()
+
+          print(f"Verified platform job metadata: job_id={matched.get('id')}, name={matched.get('name')}, started_at={started_at} (epoch {epoch_sec})")
+
+          output_file = os.environ.get("GITHUB_OUTPUT")
+          if output_file:
+              with open(output_file, "a", encoding="utf-8") as f:
+                  f.write(f"job_started_at_iso={started_at}\n")
+                  f.write(f"job_started_at_epoch={epoch_sec}\n")
+                  f.write(f"job_id={matched.get('id')}\n")
+
+          env_file = os.environ.get("GITHUB_ENV")
+          if env_file:
+              with open(env_file, "a", encoding="utf-8") as f:
+                  f.write(f"STRICT_JOB_START_ISO={started_at}\n")
+                  f.write(f"STRICT_JOB_START_EPOCH={epoch_sec}\n")
+          PY
+
+      - name: Install and test Node supervisor action
+        run: |
+          npm --prefix .github/actions/strict-supervisor install
+          npm --prefix .github/actions/strict-supervisor test
+          npm --prefix .github/actions/strict-supervisor run build
+
+      - name: Run Python deterministic controller test suite
+        run: |
+          echo "================================================================================"
+          echo "Running RemoteStrictController deterministic contract tests"
           echo "================================================================================"
           python3 -B proof/test_remote_strict_controller.py -v
 
+      - name: Confirm strict mode refusal without independent authenticated authorization
+        run: |
+          echo "================================================================================"
+          echo "Verifying strict mode refusal without independent authorization..."
+          echo "================================================================================"
+          # remote_strict_controller.py in strict mode without authorization MUST exit nonzero
+          python3 -B proof/remote_strict_controller.py \
+            --mode strict \
+            --p "$GITHUB_WORKSPACE" \
+            --w "$GITHUB_WORKSPACE" \
+            --compiler "$GITHUB_WORKSPACE" \
+            --job-start-time "$STRICT_JOB_START_ISO" \
+            --driver-limit-sec 2100 \
+            --grace-sec 30 && {
+              echo "ERROR: Strict mode did not refuse without authorization!" >&2
+              exit 1
+            } || echo "Strict mode refusal VERIFIED (exited nonzero as required)."
+
+      - name: Exercise Strict Supervisor Action (Validation-only)
+        id: supervisor-validation
+        uses: ./.github/actions/strict-supervisor
+        with:
+          mode: 'validation-only'
+          p: ${{ github.workspace }}
+          w: ${{ github.workspace }}
+          compiler: ${{ github.workspace }}/proof/smoke_test.py
+          artifacts_dir: strict-proof-artifacts
+          job_start_time: ${{ steps.job-metadata.outputs.job_started_at_iso }}
+          host_job_limit_sec: '21600'
+          payload_budget_sec: '19800'
+          finalization_alloc_sec: '1800'
+          driver_limit_sec: '2100'
+          grace_sec: '30'
+          min_disk_gib: '20.0'
+          p_sha: ${{ env.P_AUTHORIZED_SHA }}
+          w_sha: ${{ env.W_AUTHORIZED_SHA }}
+          c_sha: ${{ github.sha }}
+
+      - name: Upload validation evidence artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: remote-strict-validation-evidence
+          path: |
+            strict-proof-artifacts/**
+          retention-days: 14
+          if-no-files-found: ignore
+
   strict-chain:
     name: "Sequential strict-chain attempt (macOS 15)"
-    needs: synthetic-controller-proofs
-    if: ${{ github.event.inputs.mode == 'strict-chain' && github.event.inputs.independent_go == 'GO' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'strict-chain' }}
     runs-on: macos-15
     timeout-minutes: 360  # 6-hour GitHub Actions maximum limit
     steps:
-      - name: Record job start anchor
+      - name: Authenticate independent authorization anchor
+        id: check-auth
         run: |
-          echo "STRICT_JOB_START_TIME=$(python3 -c 'import time; print(time.time())')" >> "$GITHUB_ENV"
+          echo "================================================================================" >&2
+          echo "STRICT-CHAIN REFUSAL: Independent authenticated authorization is absent." >&2
+          echo "================================================================================" >&2
+          echo "Real strict execution requires independently authenticated authorization" >&2
+          echo "for the exact (P, W, C) tuple: repository, P SHA, W SHA, C SHA," >&2
+          echo "harness workflow/run/attempt, harness evidence digest, and independent" >&2
+          echo "audit evidence digest with GO." >&2
+          echo "Jason has not selected an authorization anchor, so no independent authorization" >&2
+          echo "anchor (ruleset gate, environment reviewer, or cryptographic signer) exists." >&2
+          echo "Refusing execution nonzero before P1 build, W checkout, or native execution." >&2
+          exit 1
+
+      - name: Retrieve actual job start metadata from GitHub API
+        id: job-metadata
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          WORKFLOW_JOB_ID: ${{ github.job }}
+        run: |
+          python3 -B - <<'PY'
+          import json, os, sys, urllib.request
+          from datetime import datetime, timezone
+
+          token = os.environ.get("GITHUB_TOKEN", "")
+          repo = os.environ.get("GITHUB_REPOSITORY", "")
+          run_id = os.environ.get("GITHUB_RUN_ID", "")
+          job_id = os.environ.get("WORKFLOW_JOB_ID", "")
+          runner_name = os.environ.get("RUNNER_NAME", "")
+
+          if not token or not repo or not run_id:
+              sys.exit("ERROR: GITHUB_TOKEN, GITHUB_REPOSITORY, or GITHUB_RUN_ID missing from environment.")
+
+          url = f"https://api.github.com/repos/{repo}/actions/runs/{run_id}/jobs?per_page=100"
+          req = urllib.request.Request(
+              url,
+              headers={
+                  "Authorization": f"Bearer {token}",
+                  "Accept": "application/vnd.github+json",
+                  "User-Agent": "iyi-strict-proof-ci",
+              },
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=30) as resp:
+                  data = json.loads(resp.read().decode("utf-8"))
+          except Exception as exc:
+              sys.exit(f"ERROR: GitHub API query for job metadata failed: {exc}")
+
+          jobs = data.get("jobs", [])
+          matched = None
+          for j in jobs:
+              if runner_name and j.get("runner_name") == runner_name and j.get("status") == "in_progress":
+                  matched = j
+                  break
+          if not matched:
+              for j in jobs:
+                  if j.get("status") == "in_progress":
+                      matched = j
+                      break
+          if not matched and jobs:
+              matched = jobs[0]
+
+          if not matched or not matched.get("started_at"):
+              sys.exit(f"ERROR: Failed to retrieve actual job started_at metadata.")
+
+          started_at = matched["started_at"]
+          dt = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+          epoch_sec = dt.timestamp()
+
+          print(f"Verified platform job metadata: job_id={matched.get('id')}, name={matched.get('name')}, started_at={started_at}")
+
+          output_file = os.environ.get("GITHUB_OUTPUT")
+          if output_file:
+              with open(output_file, "a", encoding="utf-8") as f:
+                  f.write(f"job_started_at_iso={started_at}\n")
+                  f.write(f"job_started_at_epoch={epoch_sec}\n")
+          PY
 
       - name: Checkout controller repository
         uses: actions/checkout@v7
@@ -96,26 +337,32 @@ jobs:
           df -h /
           df -k /
 
-      - name: Install bootstrap toolchain via existing convention
+      - name: Install bootstrap toolchain and DNS utilities
         run: |
-          brew install crystal coreutils pkgconf
+          brew install crystal coreutils pkgconf bind
           echo "$(brew --prefix)/opt/coreutils/libexec/gnubin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix bind)/bin" >> "$GITHUB_PATH"
 
-      - name: Setup Python 3.12
+      - name: Setup Python 3.14
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.14"
 
-      - name: Install Python dependencies (including idna==3.11)
+      - name: Install Python dependencies
         run: |
           python3 -m pip install --upgrade pip
-          python3 -m pip install pyyaml "idna==3.11"
+          python3 -m pip install pyyaml "idna==3.11" cryptography pillow h2 hpack
           python3 -c "import idna; assert idna.__version__ == '3.11', f'idna version mismatch: {idna.__version__}'"
           echo "idna==3.11 verified"
 
-      - name: Install Node artifact client for incremental upload
+      - name: Verify approved oracle manifest before pre-pin
         run: |
-          npm install --no-save @actions/artifact
+          python3 -B proof/preflight_oracle.py --manifest proof/oracle_manifest.json
+
+      - name: Install and build Node supervisor action
+        run: |
+          npm --prefix .github/actions/strict-supervisor install
+          npm --prefix .github/actions/strict-supervisor run build
 
       - name: Restore static LLVM cache
         id: llvm-cache
@@ -128,21 +375,31 @@ jobs:
         if: steps.llvm-cache.outputs.cache-hit != 'true'
         run: bash scripts/build-static-llvm.sh "$HOME/llvm-static"
 
+      - name: Validate commit SHAs as data in environment
+        run: |
+          python3 -c "
+          import os, re, sys
+          for var in ('P_AUTHORIZED_SHA', 'W_AUTHORIZED_SHA'):
+              val = os.environ.get(var, '')
+              if not re.fullmatch(r'[0-9a-f]{40}', val):
+                  sys.exit(f'ERROR: {var} is not a valid 40-character hex SHA: {val!r}')
+          print(f'Authorized revision SHAs validated: P={os.environ[\"P_AUTHORIZED_SHA\"]}, W={os.environ[\"W_AUTHORIZED_SHA\"]}')
+          "
+
       - name: Checkout clean P1 source and build P1 compiler
         id: build-p1
         run: |
-          P1_COMMIT="${{ github.event.inputs.p_commit }}"
           P1_DIR="$RUNNER_TEMP/p1-source"
 
-          echo "Setting up clean P1 source checkout at $P1_DIR from $P1_COMMIT..."
+          echo "Setting up clean P1 source checkout at $P1_DIR from $P_AUTHORIZED_SHA..."
           git clone "$GITHUB_WORKSPACE" "$P1_DIR"
           cd "$P1_DIR"
-          git checkout "$P1_COMMIT"
+          git checkout --detach "$P_AUTHORIZED_SHA"
 
           ACTUAL_P1_SHA=$(git rev-parse HEAD)
           echo "P1 checkout HEAD: $ACTUAL_P1_SHA"
-          if [ "$ACTUAL_P1_SHA" != "$P1_COMMIT" ]; then
-            echo "ERROR: P1 checkout mismatch! Expected $P1_COMMIT, got $ACTUAL_P1_SHA" >&2
+          if [ "$ACTUAL_P1_SHA" != "$P_AUTHORIZED_SHA" ]; then
+            echo "ERROR: P1 checkout mismatch! Expected $P_AUTHORIZED_SHA, got $ACTUAL_P1_SHA" >&2
             exit 1
           fi
 
@@ -192,18 +449,17 @@ jobs:
       - name: Checkout clean audited W proof tree
         id: checkout-w
         run: |
-          W_COMMIT="${{ github.event.inputs.w_commit }}"
           W_DIR="$RUNNER_TEMP/w-proof"
 
-          echo "Setting up clean W proof checkout at $W_DIR from $W_COMMIT..."
+          echo "Setting up clean W proof checkout at $W_DIR from $W_AUTHORIZED_SHA..."
           git clone "$GITHUB_WORKSPACE" "$W_DIR"
           cd "$W_DIR"
-          git checkout "$W_COMMIT"
+          git checkout --detach "$W_AUTHORIZED_SHA"
 
           ACTUAL_W_SHA=$(git rev-parse HEAD)
           echo "W checkout HEAD: $ACTUAL_W_SHA"
-          if [ "$ACTUAL_W_SHA" != "$W_COMMIT" ]; then
-            echo "ERROR: W checkout mismatch! Expected $W_COMMIT, got $ACTUAL_W_SHA" >&2
+          if [ "$ACTUAL_W_SHA" != "$W_AUTHORIZED_SHA" ]; then
+            echo "ERROR: W checkout mismatch! Expected $W_AUTHORIZED_SHA, got $ACTUAL_W_SHA" >&2
             exit 1
           fi
 
@@ -214,7 +470,7 @@ jobs:
 
           # Verify non-proof product equality between P1 and W
           echo "Verifying product equality outside proof/ between P1 and W..."
-          NON_PROOF_DIFF=$(git diff --name-only "${{ github.event.inputs.p_commit }}" "$W_COMMIT" -- . ':(exclude)proof')
+          NON_PROOF_DIFF=$(git diff --name-only "$P_AUTHORIZED_SHA" "$W_AUTHORIZED_SHA" -- . ':(exclude)proof')
           if [ -n "$NON_PROOF_DIFF" ]; then
             echo "ERROR: Non-proof product diff found between P1 and W:" >&2
             echo "$NON_PROOF_DIFF" >&2
@@ -224,25 +480,25 @@ jobs:
 
           echo "w_dir=$W_DIR" >> "$GITHUB_OUTPUT"
 
-      - name: Run Remote Strict Controller
-        id: run-strict-controller
-        run: |
-          echo "================================================================================"
-          echo "LAUNCHING REMOTE STRICT PROOF CONTROLLER"
-          echo "================================================================================"
-          python3 -B proof/remote_strict_controller.py \
-            --p "${{ steps.build-p1.outputs.p1_dir }}" \
-            --w "${{ steps.checkout-w.outputs.w_dir }}" \
-            --compiler "${{ steps.build-p1.outputs.compiler_path }}" \
-            --artifacts-dir "$GITHUB_WORKSPACE/strict-proof-artifacts" \
-            --job-start-time "$STRICT_JOB_START_TIME" \
-            --host-job-limit-sec 21600 \
-            --payload-budget-sec 19800 \
-            --finalization-alloc-sec 1800 \
-            --driver-limit-sec 2100 \
-            --grace-sec 10 \
-            --min-disk-gib 20.0 \
-            --upload-cmd "node proof/upload_artifact.js {archive_path} {unit_name} {attempt}"
+      - name: Launch Strict Proof Supervisor
+        id: run-strict-supervisor
+        uses: ./.github/actions/strict-supervisor
+        with:
+          p: ${{ steps.build-p1.outputs.p1_dir }}
+          w: ${{ steps.checkout-w.outputs.w_dir }}
+          compiler: ${{ steps.build-p1.outputs.compiler_path }}
+          artifacts_dir: strict-proof-artifacts
+          job_start_time: ${{ steps.job-metadata.outputs.job_started_at_iso }}
+          host_job_limit_sec: ${{ env.HOST_JOB_LIMIT_SEC }}
+          payload_budget_sec: ${{ env.PAYLOAD_BUDGET_SEC }}
+          finalization_alloc_sec: ${{ env.FINALIZATION_ALLOC_SEC }}
+          driver_limit_sec: ${{ env.DRIVER_LIMIT_SEC }}
+          grace_sec: ${{ env.GRACE_SEC }}
+          min_disk_gib: ${{ env.MIN_DISK_GIB }}
+          p_sha: ${{ env.P_AUTHORIZED_SHA }}
+          w_sha: ${{ env.W_AUTHORIZED_SHA }}
+          c_sha: ${{ github.sha }}
+          mode: 'strict'
 
       - name: Final upload of proof artifacts and receipts
         if: always()
@@ -251,12 +507,5 @@ jobs:
           name: remote-strict-proof-final-evidence
           path: |
             strict-proof-artifacts/**
-            /tmp/iyp-*/**
-            !/tmp/iyp-*/**/t/**
-            !/tmp/iyp-*/**/c/**
-            !/tmp/iyp-*/**/s/**
-            !/tmp/iyp-*/**/bin/**
-            !/tmp/iyp-*/**/.cache/**
-            !/tmp/iyp-*/**/*.bin
           retention-days: 14
           if-no-files-found: ignore
