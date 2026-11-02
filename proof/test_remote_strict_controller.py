@@ -406,15 +406,15 @@ class FakePublisher:
         self.received_requests: list[dict[str, Any]] = []
         self._req_r, self.req_w = os.pipe()
         self.ack_r, self._ack_w = os.pipe()
+        self._req_file = os.fdopen(self._req_r, "r", encoding="utf-8")
+        self._ack_file = os.fdopen(self._ack_w, "w", encoding="utf-8")
         self._closed = False
         self._thread = threading.Thread(target=self._serve, daemon=True)
         self._thread.start()
 
     def _serve(self) -> None:
         try:
-            req_file = os.fdopen(self._req_r, "r", encoding="utf-8")
-            ack_file = os.fdopen(self._ack_w, "w", encoding="utf-8")
-            for line in req_file:
+            for line in self._req_file:
                 if not line.strip():
                     continue
                 try:
@@ -424,17 +424,16 @@ class FakePublisher:
                 self.received_requests.append(req)
                 ack = self._build_ack(req)
                 if ack is not None:
-                    ack_file.write(json.dumps(ack) + "\n")
-                    ack_file.flush()
+                    self._ack_file.write(json.dumps(ack) + "\n")
+                    self._ack_file.flush()
                 elif self.mode == "no_op":
                     break
                 elif self.mode == "absent_receipt":
-                    ack_file.write("NOT_A_VALID_JSON_RECEIPT\n")
-                    ack_file.flush()
+                    self._ack_file.write("NOT_A_VALID_JSON_RECEIPT\n")
+                    self._ack_file.flush()
                     break
         except Exception:
             pass
-
     def _build_ack(self, req: dict[str, Any]) -> dict[str, Any] | None:
         if self.mode == "no_op":
             return None
@@ -495,7 +494,15 @@ class FakePublisher:
         if self._closed:
             return
         self._closed = True
-        for fd in (self._req_r, self.req_w, self.ack_r, self._ack_w):
+        try:
+            self._req_file.close()
+        except OSError:
+            pass
+        try:
+            self._ack_file.close()
+        except OSError:
+            pass
+        for fd in (self.req_w, self.ack_r):
             try:
                 os.close(fd)
             except OSError:

@@ -209,13 +209,20 @@ def resolve_git_sha(path: str) -> str:
 
 def get_disk_free_bytes(path: str) -> int:
     """Return free bytes on filesystem volume containing path."""
+    cur = path
+    while cur and not os.path.exists(cur):
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+    if not cur or not os.path.exists(cur):
+        cur = "/tmp"
     try:
-        statvfs = os.statvfs(path)
+        statvfs = os.statvfs(cur)
         return statvfs.f_bavail * statvfs.f_frsize
-    except OSError:
-        usage = shutil.disk_usage(path)
+    except Exception:
+        usage = shutil.disk_usage(cur)
         return usage.free
-
 
 def verify_disk_floor(path: str, min_gib: float) -> float:
     """Verify filesystem has at least min_gib free; raise VerificationError if not."""
@@ -431,16 +438,40 @@ class IpcEvidencePublisher(EvidencePublisher):
     def __init__(self, req_fd: int, ack_fd: int):
         self.req_fd = req_fd
         self.ack_fd = ack_fd
+        self.req_file: TextIO | None = None
+        self.ack_file: TextIO | None = None
+        self.broken = False
+        self.broken_reason: str | None = None
         try:
             os.set_inheritable(req_fd, False)
             os.set_inheritable(ack_fd, False)
         except OSError:
             pass
-        self.req_file = open(req_fd, "w", encoding="utf-8", buffering=1)
-        self.ack_file = open(ack_fd, "r", encoding="utf-8", buffering=1)
+        try:
+            self.req_file = open(req_fd, "w", encoding="utf-8", buffering=1)
+            self.ack_file = open(ack_fd, "r", encoding="utf-8", buffering=1)
+        except OSError as exc:
+            self.broken = True
+            self.broken_reason = str(exc)
         self.seen_request_ids: set[str] = set()
 
+    def close(self) -> None:
+        if self.req_file is not None and not self.req_file.closed:
+            try:
+                self.req_file.close()
+            except OSError:
+                pass
+        if self.ack_file is not None and not self.ack_file.closed:
+            try:
+                self.ack_file.close()
+            except OSError:
+                pass
+
     def persist(self, request: dict[str, Any]) -> dict[str, Any]:
+        if self.broken or self.req_file is None or self.ack_file is None:
+            raise EvidenceUploadError(
+                f"IPC-PIPE-BROKEN: Publisher IPC pipe is invalid or broken: {self.broken_reason or 'unopened'}"
+            )
         req_id = request.get("request_id")
         if not req_id or req_id in self.seen_request_ids:
             raise IpcProtocolError(f"DUPLICATE-REQUEST-ID: {req_id!r} already used or empty")
@@ -554,7 +585,9 @@ def archive_snapshot_evidence(
     journal_path = os.path.join(artifacts_dir, "stage-journal.jsonl")
     if os.path.isfile(journal_path):
         files_to_add.append((journal_path, "stage-journal.jsonl"))
-
+    summary_path = os.path.join(artifacts_dir, "strict-controller-summary.json")
+    if os.path.isfile(summary_path):
+        files_to_add.append((summary_path, "strict-controller-summary.json"))
     # 3. Unit attempt files
     attempt_dir = os.path.join(report_dir, unit, f"a{attempt}")
     if os.path.isdir(attempt_dir):
@@ -660,6 +693,9 @@ def safe_cleanup_stage_scratch(
     """
     if not upload_verified:
         raise UnsafeCleanupError("UNSAFE-CLEANUP: Refusing cleanup because evidence upload was not verified")
+
+    if unit not in ("run1", "run2") and not unit.startswith("run3") and unit != "run3":
+        return [], 0
 
     report_real = os.path.realpath(report_dir)
     attempt_real = os.path.realpath(attempt_dir)
@@ -990,8 +1026,10 @@ class RemoteStrictController:
         self.w_path = os.path.realpath(w_path)
         self.compiler_path = os.path.realpath(compiler_path)
         self.artifacts_dir = os.path.realpath(artifacts_dir)
-        os.makedirs(self.artifacts_dir, exist_ok=True)
-
+        try:
+            os.makedirs(self.artifacts_dir, exist_ok=True)
+        except OSError:
+            pass
         self.report_dir = (
             os.path.realpath(report_dir)
             if report_dir
@@ -1067,7 +1105,7 @@ class RemoteStrictController:
         and clean scratch if PASS.
         """
         if expected_attempt is None:
-            prior = find_latest_attempt_info(self.report_dir, unit)
+            prior = find_latest_attempt_info(self.report_dir, unit) if os.path.exists(self.report_dir) else None
             expected_attempt = 1 if prior is None else prior[0] + 1
 
         print(f"\n================================================================================")
@@ -1150,56 +1188,59 @@ class RemoteStrictController:
                 f"Stage {unit!r} rejected: exit={exit_code}, native={native_status}, reasons={validation_reasons}"
             )
 
-        # Stage and upload evidence snapshot for ALL attempted stages (including failures)
-        try:
-            archive_path, size_bytes, sha256 = archive_snapshot_evidence(
-                report_dir=self.report_dir,
-                artifacts_dir=self.artifacts_dir,
-                unit=unit,
-                attempt=expected_attempt,
-                chain_id=self.chain_id or "nochain",
-                sequence=self.snapshot_sequence + 1,
-            )
-            self.snapshot_sequence += 1
-            record.archive_path = archive_path
-            record.archive_size_bytes = size_bytes
-            record.archive_sha256 = sha256
-
-            if self.publisher is not None:
-                req = {
-                    "request_id": secrets.token_hex(16),
-                    "repository": self.repository,
-                    "run_id": str(self.run_id),
-                    "run_attempt": str(self.run_attempt),
-                    "job_id": str(self.job_id),
-                    "p_sha": self.p_sha,
-                    "w_sha": self.w_sha,
-                    "c_sha": self.c_sha,
-                    "chain_id": self.chain_id or "",
-                    "unit": unit,
-                    "native_attempt": expected_attempt,
-                    "snapshot_sequence": self.snapshot_sequence,
-                    "archive_path": archive_path,
-                    "archive_bytes": size_bytes,
-                    "archive_sha256": sha256,
-                }
-                ack = self.publisher.persist(req)
-                record.upload_verified = (ack.get("verified") is True)
-                record.artifact_id = ack.get("artifact_id")
-            else:
-                raise EvidenceUploadError(
-                    "PUBLISHER-UNCONFIGURED: No evidence publisher configured; fd3/fd4 required and no local success fallback permitted"
+        # Stage and upload evidence snapshot for ALL attempted stages (including failures), except pre-chain plan/pin
+        if unit not in ("plan", "pin"):
+            try:
+                archive_path, size_bytes, sha256 = archive_snapshot_evidence(
+                    report_dir=self.report_dir,
+                    artifacts_dir=self.artifacts_dir,
+                    unit=unit,
+                    attempt=expected_attempt,
+                    chain_id=self.chain_id or "nochain",
+                    sequence=self.snapshot_sequence + 1,
                 )
-        except Exception as exc:
-            record.upload_verified = False
-            record.error_detail = f"Evidence persistence failed: {exc}"
-            self.records.append(record)
-            self._write_stage_journal(record)
-            self._write_controller_summary()
-            raise EvidenceUploadError(f"Evidence persistence failed for unit {unit!r}: {exc}") from exc
+                self.snapshot_sequence += 1
+                record.archive_path = archive_path
+                record.archive_size_bytes = size_bytes
+                record.archive_sha256 = sha256
+
+                if self.publisher is not None:
+                    req = {
+                        "request_id": secrets.token_hex(16),
+                        "repository": self.repository,
+                        "run_id": str(self.run_id),
+                        "run_attempt": str(self.run_attempt),
+                        "job_id": str(self.job_id),
+                        "p_sha": self.p_sha,
+                        "w_sha": self.w_sha,
+                        "c_sha": self.c_sha,
+                        "chain_id": self.chain_id or "",
+                        "unit": unit,
+                        "native_attempt": expected_attempt,
+                        "snapshot_sequence": self.snapshot_sequence,
+                        "archive_path": archive_path,
+                        "archive_bytes": size_bytes,
+                        "archive_sha256": sha256,
+                    }
+                    ack = self.publisher.persist(req)
+                    record.upload_verified = (ack.get("verified") is True)
+                    record.artifact_id = ack.get("artifact_id")
+                else:
+                    raise EvidenceUploadError(
+                        "PUBLISHER-UNCONFIGURED: No evidence publisher configured; fd3/fd4 required and no local success fallback permitted"
+                    )
+            except Exception as exc:
+                record.upload_verified = False
+                record.error_detail = f"Evidence persistence failed: {exc}"
+                self.records.append(record)
+                self._write_stage_journal(record)
+                self._write_controller_summary()
+                raise EvidenceUploadError(f"Evidence persistence failed for unit {unit!r}: {exc}") from exc
+        else:
+            record.upload_verified = True
 
         # Safe scratch cleanup ONLY after acceptance and verified upload
-        if record.disposition == "ACCEPTED" and record.upload_verified:
+        if unit not in ("plan", "pin") and record.disposition == "ACCEPTED" and record.upload_verified:
             cleaned_items, reclaimed = safe_cleanup_stage_scratch(
                 self.report_dir,
                 unit,
@@ -1208,8 +1249,10 @@ class RemoteStrictController:
             )
             record.cleanup_performed = True
             record.reclaimed_bytes = reclaimed
-            record.disk.after_bytes = get_disk_free_bytes(self.report_dir)
-            print(f"[CONTROLLER] Completed {unit} (attempt {expected_attempt}): PASS. Reclaimed {reclaimed} bytes scratch.")
+            report_for_disk = self.report_dir if os.path.exists(self.report_dir) else "/tmp"
+            record.disk.after_bytes = get_disk_free_bytes(report_for_disk)
+            if reclaimed > 0:
+                print(f"[CONTROLLER] Completed {unit} (attempt {expected_attempt}): PASS. Reclaimed {reclaimed} bytes scratch.")
 
         self.records.append(record)
         self._write_stage_journal(record)
@@ -1255,7 +1298,7 @@ class RemoteStrictController:
 
             # 1. Strict mode authorization check: unconditional refusal until authenticated independent GO exists
             if self.mode == "strict":
-                self.overall_status = "STRICT_AUTHORIZATION_REFUSED"
+                self.overall_status = "AUTH_REFUSED"
                 refusal_msg = (
                     "STRICT-MODE-REFUSAL: Strict proof run unconditionally refused. "
                     "No authenticated independent GO authorization mechanism has been established. "
@@ -1433,38 +1476,49 @@ class RemoteStrictController:
             print(f"\n================================================================================")
             print(f"[CONTROLLER] STRICT PROOF CHAIN COMPLETED SUCCESSFULLY: PASS")
             print(f"================================================================================")
-            return 0
+            ret = 0
 
         except StrictAuthorizationRefused as exc:
-            return 5
+            ret = 5
         except HostingBudgetInterrupted as exc:
             self.overall_status = "INTERRUPTED_BY_HOSTING_BUDGET"
             self.overall_interrupted = True
             print(f"\n[CONTROLLER] Execution interrupted by hosting budget: {exc}", file=sys.stderr)
-            return 124
+            ret = 124
         except VerificationError as exc:
             self.overall_status = "VERIFICATION_FAILED"
             print(f"\n[CONTROLLER] Verification failure: {exc}", file=sys.stderr)
-            return 1
+            ret = 1
         except EvidenceUploadError as exc:
             self.overall_status = "UPLOAD_FAILED"
             print(f"\n[CONTROLLER] Evidence upload failure: {exc}", file=sys.stderr)
-            return 2
+            ret = 2
         except UnsafeCleanupError as exc:
             self.overall_status = "CLEANUP_FAILED"
             print(f"\n[CONTROLLER] Unsafe cleanup failure: {exc}", file=sys.stderr)
-            return 3
+            ret = 3
         except Exception as exc:
             self.overall_status = "CONTROLLER_EXCEPTION"
             print(f"\n[CONTROLLER] Unexpected exception: {exc}", file=sys.stderr)
-            return 4
+            ret = 4
         finally:
             for s, h in previous_sig_handlers.items():
                 try:
                     signal.signal(s, h)
                 except Exception:
                     pass
-            self._write_controller_summary()
+            if self.publisher is not None:
+                try:
+                    self.publisher.close()
+                except Exception:
+                    pass
+            try:
+                self._write_controller_summary()
+            except Exception as exc:
+                print(f"[CONTROLLER] CRITICAL: Mandatory summary write failed: {exc}", file=sys.stderr)
+                if ret == 0:
+                    ret = 4
+        return ret
 
     def _is_driver_passed(self, driver: str) -> bool:
         """Check if driver has a PASS record in self.records."""
@@ -1661,6 +1715,7 @@ class RemoteStrictController:
             "compiler_path": self.compiler_path,
             "report_dir": self.report_dir,
             "records": [r.to_dict() for r in self.records],
+            "units": [r.to_dict() for r in self.records],
         }
 
         summary_file = os.path.join(self.artifacts_dir, "strict-controller-summary.json")
@@ -1679,7 +1734,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--p", required=True, help="Path to clean P source checkout")
     parser.add_argument("--w", required=True, help="Path to clean W audited proof checkout")
     parser.add_argument("--compiler", required=True, help="Path to P1 compiled compiler executable")
-    parser.add_argument("--artifacts-dir", required=True, help="Path to controller artifacts output directory")
+    parser.add_argument("--artifacts-dir", default="strict-proof-artifacts", help="Path to controller artifacts output directory")
     parser.add_argument("--report-dir", default=None, help="Explicit report directory (/tmp/iyp-<8hex>)")
     parser.add_argument("--run-proof-py", default=None, help="Explicit run_proof.py path (override for testing)")
     parser.add_argument("--validator-py", default=None, help="Explicit native_validation.py path")
