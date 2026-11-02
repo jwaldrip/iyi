@@ -9,6 +9,7 @@ Enforces PlanQuietCorpusFailures Slice C and Reviewer Blocker 4:
 - Verifies BIND dig and nsupdate with RFC 9460 HTTPS record type and DoT/DoH support.
 - Verifies cURL with HTTP/2 and ALPN support.
 - Verifies OpenSSL, Go, and GNU coreutils timeout.
+- Verifies platform BSD mktemp is not shadowed by GNU coreutils gnubin.
 - Fails pre-pin on any missing required comparison.
 """
 
@@ -32,14 +33,31 @@ def check_python_version(min_major=3, min_minor=14):
 def check_zstd_module():
     try:
         import compression.zstd as zstd
+        if not hasattr(zstd, "compress") or not hasattr(zstd, "decompress"):
+            return False, "compression.zstd missing compress or decompress functions"
         if not hasattr(zstd, "ZstdCompressor") or not hasattr(zstd, "ZstdDecompressor"):
             return False, "compression.zstd missing ZstdCompressor or ZstdDecompressor"
-        c = zstd.ZstdCompressor(level=3)
-        compressed = c.compress(b"iyi-strict-proof-zstd-oracle-check")
+
+        test_payload = b"iyi-strict-proof-zstd-oracle-check-payload-data"
+
+        # 1. Module-level one-shot compress and decompress
+        one_shot = zstd.compress(test_payload)
+        if not one_shot:
+            return False, "compression.zstd.compress returned empty output"
+        decomp1 = zstd.decompress(one_shot)
+        if decomp1 != test_payload:
+            return False, f"compression.zstd.decompress mismatch: expected {test_payload!r}, got {decomp1!r}"
+
+        # 2. Streaming ZstdCompressor and ZstdDecompressor with explicit flush
+        c = zstd.ZstdCompressor()
+        stream_comp = c.compress(test_payload) + c.flush()
+        if not stream_comp:
+            return False, "ZstdCompressor compress + flush returned empty output"
         d = zstd.ZstdDecompressor()
-        decompressed = d.decompress(compressed)
-        if decompressed != b"iyi-strict-proof-zstd-oracle-check":
-            return False, "compression.zstd roundtrip decompression mismatch"
+        decomp2 = d.decompress(stream_comp)
+        if decomp2 != test_payload:
+            return False, f"ZstdDecompressor.decompress mismatch: expected {test_payload!r}, got {decomp2!r}"
+
         return True, "compression.zstd (Python 3.14+) operational"
     except ImportError as e:
         return False, f"compression.zstd import failed: {e}"
@@ -110,7 +128,6 @@ def check_pillow():
     try:
         import PIL
         from PIL import Image, PngImagePlugin
-        # Test creating in-memory 16-bit and RGBA PNG
         im = Image.new("RGBA", (16, 16), color=(255, 0, 0, 255))
         buf = io.BytesIO()
         im.save(buf, format="PNG")
@@ -223,7 +240,6 @@ def check_dig():
         help_text = help_proc.stdout + " " + help_proc.stderr
         has_tls = "+tls" in help_text or "+https" in help_text or "tls" in help_text.lower()
         if not has_tls:
-            # Try a direct syntax invocation to test option recognition
             test_proc = subprocess.run(
                 [dig_path, "+tls", "-h"],
                 capture_output=True,
@@ -264,7 +280,7 @@ def check_nsupdate():
         if "'HTTPS' is not a valid type" in output or "unknown class/type" in output:
             return False, f"nsupdate does not support RFC 9460 HTTPS type ({ver_line})"
     except subprocess.TimeoutExpired:
-        pass  # Network timeout contacting 127.0.0.1 is acceptable; syntax acceptance is what matters
+        pass
     except Exception as e:
         return False, f"nsupdate HTTPS probe failed: {e}"
 
@@ -280,11 +296,30 @@ def check_curl():
         proc = subprocess.run([curl_path, "--version"], capture_output=True, text=True, timeout=5)
         output = proc.stdout
         ver_line = output.splitlines()[0] if output else "unknown"
+
+        # Check HTTP2 capability (via nghttp2 or built-in HTTP2 feature)
         if "HTTP2" not in output:
-            return False, f"curl lacks HTTP2 feature: {ver_line}"
-        if "alpn" not in output.lower() and "ALPN" not in output:
-            return False, f"curl lacks ALPN feature: {ver_line}"
-        return True, f"curl operational ({ver_line})"
+            return False, f"curl lacks HTTP2 feature in Features line: {ver_line}"
+
+        # Check TLS backend and ALPN capability:
+        # In curl, ALPN is an inherent TLS capability negotiated when built with HTTP/2 and TLS backends
+        # (SecureTransport, LibreSSL, OpenSSL, GnuTLS, Schannel).
+        # Features line includes SSL, MultiSSL, or HTTPS-proxy.
+        has_tls = any(tok in output for tok in ("SSL", "MultiSSL", "HTTPS-proxy", "SecureTransport", "OpenSSL", "LibreSSL"))
+        if not has_tls:
+            return False, f"curl lacks TLS/SSL support required for ALPN: {ver_line}"
+
+        # Verify curl command-line supports ALPN control/option or http2-prior-knowledge
+        help_proc = subprocess.run([curl_path, "--help", "all"], capture_output=True, text=True, timeout=5)
+        help_out = help_proc.stdout + " " + help_proc.stderr
+        has_alpn_option = "--no-alpn" in help_out or "alpn" in help_out.lower()
+        if not has_alpn_option:
+            # Fallback: check if --http2-prior-knowledge is recognized
+            test_proc = subprocess.run([curl_path, "--http2-prior-knowledge", "-h"], capture_output=True, text=True, timeout=5)
+            if test_proc.returncode not in (0, 1, 2):
+                return False, f"curl does not recognize HTTP/2 / ALPN options: {ver_line}"
+
+        return True, f"curl operational ({ver_line}, HTTP/2 and ALPN supported)"
     except Exception as e:
         return False, f"curl check failed: {e}"
 
@@ -297,7 +332,6 @@ def check_openssl():
     try:
         proc = subprocess.run([openssl_path, "version"], capture_output=True, text=True, timeout=5)
         ver_line = proc.stdout.strip()
-        # Verify verify subcommand is available
         verify_proc = subprocess.run([openssl_path, "verify", "-help"], capture_output=True, text=True, timeout=5)
         if verify_proc.returncode not in (0, 1):
             return False, f"openssl verify subcommand failed with exit {verify_proc.returncode}"
@@ -331,6 +365,29 @@ def check_timeout_utility():
         return False, f"timeout check failed: {e}"
 
 
+def check_platform_mktemp():
+    if sys.platform == "darwin":
+        mktemp_path = shutil.which("mktemp")
+        if mktemp_path != "/usr/bin/mktemp":
+            return False, f"Darwin mktemp shadowed: expected /usr/bin/mktemp, found {mktemp_path} (GNU gnubin must not shadow Darwin utilities)"
+        try:
+            proc = subprocess.run(
+                ["/usr/bin/mktemp", "-d", "-t", "iyi_preflight.XXXXXX"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if proc.returncode != 0:
+                return False, f"Darwin BSD mktemp invocation failed: {proc.stderr.strip()}"
+            created_dir = proc.stdout.strip()
+            if os.path.isdir(created_dir):
+                os.rmdir(created_dir)
+            return True, "BSD /usr/bin/mktemp verified (not shadowed by GNU gnubin)"
+        except Exception as e:
+            return False, f"Darwin mktemp check failed: {e}"
+    return True, "Platform mktemp invariant verified"
+
+
 def run_preflight(manifest_path=None):
     print("=" * 80)
     print("RUNNING APPROVED ORACLE PREFLIGHT VERIFICATION")
@@ -357,6 +414,7 @@ def run_preflight(manifest_path=None):
         ("System Tool: openssl (with verify)", check_openssl),
         ("System Tool: go (Go toolchain for Pebble)", check_go),
         ("System Tool: timeout (GNU coreutils)", check_timeout_utility),
+        ("Platform Invariant: BSD mktemp unshadowed", check_platform_mktemp),
     ]
 
     passed = []

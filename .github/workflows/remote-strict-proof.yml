@@ -75,8 +75,44 @@ jobs:
       - name: Install bootstrap toolchain and DNS utilities
         run: |
           brew install crystal coreutils pkgconf bind
-          echo "$(brew --prefix)/opt/coreutils/libexec/gnubin" >> "$GITHUB_PATH"
-          echo "$(brew --prefix bind)/bin" >> "$GITHUB_PATH"
+
+          # Expose only timeout via owned symlink; avoid GNU gnubin shadowing Darwin mktemp
+          OWNED_BIN="$RUNNER_TEMP/owned-bin"
+          mkdir -p "$OWNED_BIN"
+          GTIMEOUT_PATH="$(brew --prefix)/bin/gtimeout"
+          if [ -x "$GTIMEOUT_PATH" ]; then
+            ln -sf "$GTIMEOUT_PATH" "$OWNED_BIN/timeout"
+          elif [ -x "$(brew --prefix coreutils)/bin/gtimeout" ]; then
+            ln -sf "$(brew --prefix coreutils)/bin/gtimeout" "$OWNED_BIN/timeout"
+          else
+            echo "ERROR: gtimeout not found in Homebrew prefix" >&2
+            exit 1
+          fi
+          echo "$OWNED_BIN" >> "$GITHUB_PATH"
+
+          # Add bind utilities (dig, nsupdate) to PATH
+          BIND_BIN="$(brew --prefix bind)/bin"
+          if [ -d "$BIND_BIN" ]; then
+            echo "$BIND_BIN" >> "$GITHUB_PATH"
+          fi
+
+      - name: Verify Darwin BSD mktemp invariant
+        run: |
+          MKTEMP_PATH=$(which mktemp)
+          echo "mktemp path: $MKTEMP_PATH"
+          if [ "$MKTEMP_PATH" != "/usr/bin/mktemp" ]; then
+            echo "ERROR: Darwin mktemp shadowed! Expected /usr/bin/mktemp, got $MKTEMP_PATH" >&2
+            exit 1
+          fi
+          TEST_DIR=$(/usr/bin/mktemp -d -t iyi_check.XXXXXX)
+          rm -rf "$TEST_DIR"
+          echo "Darwin BSD /usr/bin/mktemp verified (not shadowed by GNU gnubin)"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
 
       - name: Setup Python 3.14
         uses: actions/setup-python@v5
@@ -340,8 +376,44 @@ jobs:
       - name: Install bootstrap toolchain and DNS utilities
         run: |
           brew install crystal coreutils pkgconf bind
-          echo "$(brew --prefix)/opt/coreutils/libexec/gnubin" >> "$GITHUB_PATH"
-          echo "$(brew --prefix bind)/bin" >> "$GITHUB_PATH"
+
+          # Expose only timeout via owned symlink; avoid GNU gnubin shadowing Darwin mktemp
+          OWNED_BIN="$RUNNER_TEMP/owned-bin"
+          mkdir -p "$OWNED_BIN"
+          GTIMEOUT_PATH="$(brew --prefix)/bin/gtimeout"
+          if [ -x "$GTIMEOUT_PATH" ]; then
+            ln -sf "$GTIMEOUT_PATH" "$OWNED_BIN/timeout"
+          elif [ -x "$(brew --prefix coreutils)/bin/gtimeout" ]; then
+            ln -sf "$(brew --prefix coreutils)/bin/gtimeout" "$OWNED_BIN/timeout"
+          else
+            echo "ERROR: gtimeout not found in Homebrew prefix" >&2
+            exit 1
+          fi
+          echo "$OWNED_BIN" >> "$GITHUB_PATH"
+
+          # Add bind utilities (dig, nsupdate) to PATH
+          BIND_BIN="$(brew --prefix bind)/bin"
+          if [ -d "$BIND_BIN" ]; then
+            echo "$BIND_BIN" >> "$GITHUB_PATH"
+          fi
+
+      - name: Verify Darwin BSD mktemp invariant
+        run: |
+          MKTEMP_PATH=$(which mktemp)
+          echo "mktemp path: $MKTEMP_PATH"
+          if [ "$MKTEMP_PATH" != "/usr/bin/mktemp" ]; then
+            echo "ERROR: Darwin mktemp shadowed! Expected /usr/bin/mktemp, got $MKTEMP_PATH" >&2
+            exit 1
+          fi
+          TEST_DIR=$(/usr/bin/mktemp -d -t iyi_check.XXXXXX)
+          rm -rf "$TEST_DIR"
+          echo "Darwin BSD /usr/bin/mktemp verified (not shadowed by GNU gnubin)"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
 
       - name: Setup Python 3.14
         uses: actions/setup-python@v5
