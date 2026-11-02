@@ -35,6 +35,22 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install runner prerequisites (coreutils)
+        run: |
+          brew install coreutils
+          echo "$(brew --prefix)/opt/coreutils/libexec/gnubin" >> "$GITHUB_PATH"
+
+      - name: Verify tool prerequisites
+        run: |
+          echo "=== Verifying timeout binary ==="
+          which timeout
+          timeout --version
+          if ! timeout --version | grep -qi "coreutils"; then
+            echo "ERROR: timeout does not report GNU coreutils!" >&2
+            exit 1
+          fi
+          echo "timeout binary verified successfully."
+
       - name: Run Remote Harness Audit Rail
         id: run-audit
         run: |

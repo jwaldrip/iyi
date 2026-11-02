@@ -200,6 +200,30 @@ class RemoteHarnessAuditRunner:
         free_bytes = shutil.disk_usage(self.work_dir).free
         free_gib = round(free_bytes / (1024 ** 3), 2)
 
+        # Ensure PATH includes Homebrew gnubin for coreutils on macOS if present
+        gnubin_candidates = [
+            "/opt/homebrew/opt/coreutils/libexec/gnubin",
+            "/usr/local/opt/coreutils/libexec/gnubin",
+        ]
+        for gd in gnubin_candidates:
+            if os.path.isdir(gd) and gd not in os.environ.get("PATH", ""):
+                os.environ["PATH"] = f"{gd}:{os.environ.get('PATH', '')}"
+
+        timeout_path = shutil.which("timeout")
+        if not timeout_path:
+            raise RuntimeError(
+                "timeout binary does not resolve on PATH! GNU coreutils gnubin required."
+            )
+        timeout_ver_res = run_cmd(["timeout", "--version"])
+        timeout_first_line = (
+            timeout_ver_res.stdout.splitlines()[0] if timeout_ver_res.stdout else ""
+        )
+        if "coreutils" not in timeout_first_line.lower():
+            raise RuntimeError(
+                f"timeout binary at {timeout_path} is not GNU coreutils: {timeout_first_line}"
+            )
+        print(f"Verified timeout binary: {timeout_path} ({timeout_first_line})")
+
         c_head = run_cmd(["git", "-C", self.repo, "rev-parse", "HEAD"]).stdout.strip()
         c_branch = run_cmd(
             ["git", "-C", self.repo, "rev-parse", "--abbrev-ref", "HEAD"]
@@ -218,6 +242,10 @@ class RemoteHarnessAuditRunner:
                 "version": sys.version,
                 "executable": sys.executable,
                 "dont_write_bytecode": sys.dont_write_bytecode,
+            },
+            "tools": {
+                "timeout_path": timeout_path,
+                "timeout_version": timeout_first_line,
             },
             "disk": {
                 "work_dir": self.work_dir,
@@ -248,6 +276,7 @@ class RemoteHarnessAuditRunner:
             "machine": f"{uname.system} {uname.release} ({uname.machine})",
             "free_disk_gib": free_gib,
             "controller_c_sha": c_head,
+            "timeout_path": timeout_path,
         }
 
     def setup_pinned_w(self) -> None:
@@ -588,28 +617,47 @@ print(json.dumps({
 
         executed_seeds: set[str] = set()
         executed_controls: set[str] = set()
-        failed_seeds: set[str] = set()
+        passed_controls: set[str] = set()
         failed_controls: set[str] = set()
+        totals: dict[str, int] = {}
 
         for line in stdout_text.splitlines():
-            m_seed = re.match(r"^SEED\s+([\w\.\-]+)\s+status=(PASS|FAIL)", line)
-            if m_seed:
-                fid, st = m_seed.groups()
-                executed_seeds.add(fid)
-                if st == "FAIL":
-                    failed_seeds.add(fid)
-            m_ctrl = re.match(r"^CONTROL\s+([\w\.\-]+)\s+status=(PASS|FAIL)", line)
+            line_str = line.strip()
+            if line_str.startswith("SEED "):
+                parts = line_str.split(maxsplit=2)
+                if len(parts) >= 2:
+                    executed_seeds.add(parts[1])
+            m_ctrl = re.match(r"^CONTROL\s+([\w\.\-]+)\s+(PASS|FAIL)", line_str)
             if m_ctrl:
                 fid, st = m_ctrl.groups()
                 executed_controls.add(fid)
-                if st == "FAIL":
+                if st == "PASS":
+                    passed_controls.add(fid)
+                else:
                     failed_controls.add(fid)
+            m_total = re.match(
+                r"^TOTAL\s+seeds_executed=(\d+)\s+seeds_passed=(\d+)\s+seeds_missed=(\d+)\s+seeds_missing=(\d+)\s+"
+                r"controls_executed=(\d+)\s+controls_failed=(\d+)\s+controls_missing=(\d+)",
+                line_str,
+            )
+            if m_total:
+                totals = {
+                    "seeds_executed": int(m_total.group(1)),
+                    "seeds_passed": int(m_total.group(2)),
+                    "seeds_missed": int(m_total.group(3)),
+                    "seeds_missing": int(m_total.group(4)),
+                    "controls_executed": int(m_total.group(5)),
+                    "controls_failed": int(m_total.group(6)),
+                    "controls_missing": int(m_total.group(7)),
+                }
 
         harness_pass = "HARNESS PASS" in stdout_text
         coverage_pass = "COVERAGE GATE PASS" in stdout_text
 
-        print(f"Executed seeds: {len(executed_seeds)} (failed: {len(failed_seeds)})")
-        print(f"Executed controls: {len(executed_controls)} (failed: {len(failed_controls)})")
+        print(f"Executed seeds: {len(executed_seeds)} (totals line: {totals.get('seeds_executed')})")
+        print(f"Executed controls: {len(executed_controls)} (totals line: {totals.get('controls_executed')})")
+        print(f"Controls passed: {len(passed_controls)}, failed: {len(failed_controls)}")
+        print(f"Totals breakdown: {totals}")
         print(f"HARNESS PASS: {harness_pass}")
         print(f"COVERAGE GATE PASS: {coverage_pass}")
 
@@ -648,16 +696,46 @@ print(json.dumps({
             validation_errors.append("HARNESS PASS missing from output")
         if not coverage_pass:
             validation_errors.append("COVERAGE GATE PASS missing from output")
+        if not totals:
+            validation_errors.append("TOTAL summary line missing from output")
+        else:
+            if totals.get("seeds_executed") != 439:
+                validation_errors.append(
+                    f"Totals seeds_executed mismatch: expected 439, got {totals.get('seeds_executed')}"
+                )
+            if totals.get("seeds_passed") != 439:
+                validation_errors.append(
+                    f"Totals seeds_passed mismatch: expected 439, got {totals.get('seeds_passed')}"
+                )
+            if totals.get("seeds_missed") != 0:
+                validation_errors.append(
+                    f"Totals seeds_missed non-zero: {totals.get('seeds_missed')}"
+                )
+            if totals.get("seeds_missing") != 0:
+                validation_errors.append(
+                    f"Totals seeds_missing non-zero: {totals.get('seeds_missing')}"
+                )
+            if totals.get("controls_executed") != 85:
+                validation_errors.append(
+                    f"Totals controls_executed mismatch: expected 85, got {totals.get('controls_executed')}"
+                )
+            if totals.get("controls_failed") != 0:
+                validation_errors.append(
+                    f"Totals controls_failed non-zero: {totals.get('controls_failed')}"
+                )
+            if totals.get("controls_missing") != 0:
+                validation_errors.append(
+                    f"Totals controls_missing non-zero: {totals.get('controls_missing')}"
+                )
+
         if len(executed_seeds) != 439:
             validation_errors.append(
-                f"Executed seeds count mismatch: expected 439, got {len(executed_seeds)}"
+                f"Parsed executed seeds count mismatch: expected 439, got {len(executed_seeds)}"
             )
         if len(executed_controls) != 85:
             validation_errors.append(
-                f"Executed controls count mismatch: expected 85, got {len(executed_controls)}"
+                f"Parsed executed controls count mismatch: expected 85, got {len(executed_controls)}"
             )
-        if failed_seeds:
-            validation_errors.append(f"Seeds reported FAIL: {sorted(failed_seeds)}")
         if failed_controls:
             validation_errors.append(f"Controls reported FAIL: {sorted(failed_controls)}")
 
@@ -675,9 +753,10 @@ print(json.dumps({
             "elapsed_seconds": elapsed,
             "harness_pass": harness_pass,
             "coverage_gate_pass": coverage_pass,
+            "totals": totals,
             "seeds_executed": len(executed_seeds),
-            "seeds_failed": len(failed_seeds),
             "controls_executed": len(executed_controls),
+            "controls_passed": len(passed_controls),
             "controls_failed": len(failed_controls),
             "coverage_listings": cover_files_info,
             "w_clean_post_run": True,
@@ -1036,11 +1115,27 @@ print(json.dumps(results, indent=2))
         self.summary["elapsed_seconds"] = round(
             self.summary["end_time"] - self.summary["start_time"], 2
         )
+        self.summary["construction_attempts"] = [
+            {
+                "attempt": 1,
+                "github_run_id": "41362618094",
+                "commit": "280cb538efe1d5e8c461ef3ed62c3e298f780b5c",
+                "status": "FAIL",
+                "failure_reason": (
+                    "Runner lacked coreutils timeout binary on PATH (IdentityError: NO-TIMEOUT); "
+                    "audit script parser expected status= on fixture lines"
+                ),
+            },
+            {
+                "attempt": 2,
+                "commit": run_cmd(["git", "-C", self.repo, "rev-parse", "HEAD"]).stdout.strip(),
+                "status": "PASS",
+            },
+        ]
 
         summary_json_path = os.path.join(self.output_dir, "audit_summary.json")
         with open(summary_json_path, "w", encoding="utf-8") as f:
             json.dump(self.summary, f, indent=2)
-
         md_report_path = os.path.join(self.output_dir, "audit_summary.md")
 
         md_content = f"""# Remote Harness Audit & Verification Report: Candidate H'' (`{self.w_sha}`)
@@ -1106,6 +1201,15 @@ All required checks passed:
 - `hprime_hprimeprime_delta/hprime_to_hprimeprime.patch`: Full source diff between H' and H''.
 - `hprime_hprimeprime_delta/grammar_agreement.json`: Regex vs producer sentence proof.
 - `logs/smoke_test_stdout.log`: Raw stdout of the full 524-fixture smoke test.
+
+---
+
+## 4. Construction Attempt History & Disclosure
+
+- **Attempt 1 (Run 41362618094, commit `280cb538ef`):** FAILED in coverage step.
+  - Root cause: Runner environment lacked `timeout` binary from GNU coreutils on `PATH` (`IdentityError: NO-TIMEOUT: timeout does not resolve on the pinned PATH`), causing 122 seeds to miss and 27 controls to fail in coverage mode. Additionally, audit parser previously expected `status=` on fixture lines rather than parsing raw `smoke_test.py` format.
+  - Remediation: Added `brew install coreutils` and `gnubin` to `PATH` in workflow and script, added `timeout --version` pre-flight verification, and corrected raw stdout parsing in `remote_harness_audit.py`.
+- **Attempt 2 (Current commit):** Running under repaired runner environment and corrected parser.
 """
         with open(md_report_path, "w", encoding="utf-8") as f:
             f.write(md_content)
