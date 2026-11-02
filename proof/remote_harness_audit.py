@@ -200,19 +200,70 @@ class RemoteHarnessAuditRunner:
         free_bytes = shutil.disk_usage(self.work_dir).free
         free_gib = round(free_bytes / (1024 ** 3), 2)
 
-        # Ensure PATH includes Homebrew gnubin for coreutils on macOS if present
-        gnubin_candidates = [
-            "/opt/homebrew/opt/coreutils/libexec/gnubin",
-            "/usr/local/opt/coreutils/libexec/gnubin",
+        # Ensure isolated task-owned directory for GNU timeout symlink
+        # NEVER add blanket gnubin, which shadows BSD mktemp with GNU mktemp!
+        gtimeout_candidates = [
+            "/opt/homebrew/bin/gtimeout",
+            "/usr/local/bin/gtimeout",
         ]
-        for gd in gnubin_candidates:
-            if os.path.isdir(gd) and gd not in os.environ.get("PATH", ""):
-                os.environ["PATH"] = f"{gd}:{os.environ.get('PATH', '')}"
+        gtimeout_path = None
+        for cand in gtimeout_candidates:
+            if os.path.isfile(cand) and os.access(cand, os.X_OK):
+                gtimeout_path = cand
+                break
+        if not gtimeout_path:
+            gtimeout_which = shutil.which("gtimeout")
+            if gtimeout_which:
+                gtimeout_path = gtimeout_which
+
+        isolated_bin = os.path.join(self.work_dir, "isolated-bin")
+        os.makedirs(isolated_bin, exist_ok=True)
+        isolated_timeout = os.path.join(isolated_bin, "timeout")
+
+        if gtimeout_path and not os.path.exists(isolated_timeout):
+            try:
+                os.symlink(gtimeout_path, isolated_timeout)
+            except OSError:
+                pass
+
+        if os.path.isdir(isolated_bin) and isolated_bin not in os.environ.get("PATH", ""):
+            os.environ["PATH"] = f"{isolated_bin}:{os.environ.get('PATH', '')}"
+
+        # Verify mktemp is genuine BSD /usr/bin/mktemp
+        mktemp_path = shutil.which("mktemp")
+        if mktemp_path != "/usr/bin/mktemp":
+            raise RuntimeError(
+                f"mktemp does not resolve to system BSD /usr/bin/mktemp! Resolved to: {mktemp_path}"
+            )
+
+        # Verify Darwin temp-root invariant with bare mktemp -d probe
+        getconf_path = shutil.which("getconf")
+        if not getconf_path:
+            raise RuntimeError("getconf does not resolve on PATH!")
+        getconf_res = run_cmd([getconf_path, "DARWIN_USER_TEMP_DIR"])
+        darwin_tmp_raw = getconf_res.stdout.strip()
+        darwin_tmp_real = os.path.realpath(darwin_tmp_raw)
+
+        clean_env = dict(os.environ)
+        clean_env.pop("TMPDIR", None)
+        probe_res = run_cmd([mktemp_path, "-d"], env=clean_env)
+        probe_dir = probe_res.stdout.strip()
+        probe_parent = os.path.realpath(os.path.dirname(probe_dir))
+        try:
+            shutil.rmtree(probe_dir, ignore_errors=True)
+        except OSError:
+            pass
+
+        if probe_parent != darwin_tmp_real:
+            raise RuntimeError(
+                f"Bare mktemp probe parent {probe_parent!r} != Darwin temp {darwin_tmp_real!r}"
+            )
+        print(f"Verified system BSD mktemp: {mktemp_path} (parent {probe_parent} == {darwin_tmp_real})")
 
         timeout_path = shutil.which("timeout")
         if not timeout_path:
             raise RuntimeError(
-                "timeout binary does not resolve on PATH! GNU coreutils gnubin required."
+                "timeout binary does not resolve on PATH! Isolated GNU coreutils gtimeout symlink required."
             )
         timeout_ver_res = run_cmd(["timeout", "--version"])
         timeout_first_line = (
@@ -222,7 +273,7 @@ class RemoteHarnessAuditRunner:
             raise RuntimeError(
                 f"timeout binary at {timeout_path} is not GNU coreutils: {timeout_first_line}"
             )
-        print(f"Verified timeout binary: {timeout_path} ({timeout_first_line})")
+        print(f"Verified isolated timeout binary: {timeout_path} ({timeout_first_line})")
 
         c_head = run_cmd(["git", "-C", self.repo, "rev-parse", "HEAD"]).stdout.strip()
         c_branch = run_cmd(
@@ -244,8 +295,10 @@ class RemoteHarnessAuditRunner:
                 "dont_write_bytecode": sys.dont_write_bytecode,
             },
             "tools": {
+                "mktemp_path": mktemp_path,
                 "timeout_path": timeout_path,
                 "timeout_version": timeout_first_line,
+                "darwin_user_temp_real": darwin_tmp_real,
             },
             "disk": {
                 "work_dir": self.work_dir,
@@ -276,6 +329,7 @@ class RemoteHarnessAuditRunner:
             "machine": f"{uname.system} {uname.release} ({uname.machine})",
             "free_disk_gib": free_gib,
             "controller_c_sha": c_head,
+            "mktemp_path": mktemp_path,
             "timeout_path": timeout_path,
         }
 
@@ -1128,6 +1182,17 @@ print(json.dumps(results, indent=2))
             },
             {
                 "attempt": 2,
+                "github_run_id": "41364838439",
+                "commit": "c1d7dd7299acdd9b464ef401f12a99bf7a0e350d",
+                "status": "FAIL",
+                "failure_reason": (
+                    "Blanket addition of coreutils gnubin to PATH shadowed system BSD /usr/bin/mktemp with GNU mktemp; "
+                    "GNU mktemp bare probe parent resolved to /private/tmp instead of Darwin user temp dir "
+                    "(IdentityError: PLATFORM-TMP-UNOBSERVABLE: bare mktemp parent != platform_tmp)"
+                ),
+            },
+            {
+                "attempt": 3,
                 "commit": run_cmd(["git", "-C", self.repo, "rev-parse", "HEAD"]).stdout.strip(),
                 "status": "PASS",
             },
@@ -1209,7 +1274,10 @@ All required checks passed:
 - **Attempt 1 (Run 41362618094, commit `280cb538ef`):** FAILED in coverage step.
   - Root cause: Runner environment lacked `timeout` binary from GNU coreutils on `PATH` (`IdentityError: NO-TIMEOUT: timeout does not resolve on the pinned PATH`), causing 122 seeds to miss and 27 controls to fail in coverage mode. Additionally, audit parser previously expected `status=` on fixture lines rather than parsing raw `smoke_test.py` format.
   - Remediation: Added `brew install coreutils` and `gnubin` to `PATH` in workflow and script, added `timeout --version` pre-flight verification, and corrected raw stdout parsing in `remote_harness_audit.py`.
-- **Attempt 2 (Current commit):** Running under repaired runner environment and corrected parser.
+- **Attempt 2 (Run 41364838439, commit `c1d7dd7299`):** FAILED in coverage step.
+  - Root cause: Blanket addition of coreutils `gnubin` to `PATH` shadowed genuine BSD `/usr/bin/mktemp` with GNU `mktemp`. GNU `mktemp -d` honors `TMPDIR` and created directory under `/tmp`, causing bare mktemp parent to resolve to `/private/tmp` instead of Darwin user temp dir `/private/var/folders/.../T`, triggering `IdentityError: PLATFORM-TMP-UNOBSERVABLE` (124 seeds missed, 27 controls failed).
+  - Remediation: Removed blanket `gnubin` from `PATH`. Created task-owned directory exposing ONLY GNU `timeout` via symlink pointing to Homebrew `gtimeout`, keeping system `/usr/bin/mktemp` unshadowed. Added pre-flight check proving `command -v mktemp` is genuine BSD `/usr/bin/mktemp` and parent of bare `mktemp -d` agrees with `DARWIN_USER_TEMP_DIR`.
+- **Attempt 3 (Current commit):** Running under repaired runner environment and isolated `timeout` symlink.
 """
         with open(md_report_path, "w", encoding="utf-8") as f:
             f.write(md_content)
