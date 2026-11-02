@@ -1,0 +1,74 @@
+name: 'Strict Proof Supervisor'
+description: 'Node24 supervisor managing IPC, artifact persistence, exact-ID readback verification, and credential isolation for strict controller'
+inputs:
+  p:
+    description: 'Path to clean P source checkout'
+    required: true
+  w:
+    description: 'Path to clean W audited proof checkout'
+    required: true
+  compiler:
+    description: 'Path to compiler binary built from P'
+    required: true
+  artifacts_dir:
+    description: 'Root directory for proof artifacts'
+    required: false
+    default: 'strict-proof-artifacts'
+  job_start_time:
+    description: 'Platform job started_at time in UTC ISO 8601'
+    required: true
+  host_job_limit_sec:
+    description: 'Total host job execution limit in seconds'
+    required: false
+    default: '21600'
+  payload_budget_sec:
+    description: 'Allocated payload budget in seconds'
+    required: false
+    default: '19800'
+  finalization_alloc_sec:
+    description: 'Reserved finalization allowance in seconds'
+    required: false
+    default: '1800'
+  driver_limit_sec:
+    description: 'Per-driver execution budget in seconds'
+    required: false
+    default: '2100'
+  grace_sec:
+    description: 'Clean termination grace period in seconds'
+    required: false
+    default: '30'
+  min_disk_gib:
+    description: 'Minimum free disk space in GiB required to admit stages'
+    required: false
+    default: '20.0'
+  p_sha:
+    description: 'Expected commit SHA of P'
+    required: false
+  w_sha:
+    description: 'Expected commit SHA of W'
+    required: false
+  c_sha:
+    description: 'Expected commit SHA of C'
+    required: false
+  mode:
+    description: 'Controller execution mode: strict or validation-only'
+    required: false
+    default: 'strict'
+  python_path:
+    description: 'Path to python executable'
+    required: false
+    default: 'python3'
+  controller_path:
+    description: 'Path to remote_strict_controller.py'
+    required: false
+    default: 'proof/remote_strict_controller.py'
+
+outputs:
+  outcome:
+    description: 'Outcome of controller run (e.g. PASS, FAIL, REFUSED)'
+  envelope_path:
+    description: 'Path to final envelope JSON'
+
+runs:
+  using: 'node24'
+  main: 'dist/index.js'
