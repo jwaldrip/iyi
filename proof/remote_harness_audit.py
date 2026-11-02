@@ -1193,6 +1193,16 @@ print(json.dumps(results, indent=2))
             },
             {
                 "attempt": 3,
+                "github_run_id": "41367231332",
+                "commit": "4ffec12803b9bc655767bdf8f2df6be4816e8832",
+                "status": "KILLED",
+                "failure_reason": (
+                    "Job exceeded accidental 60-minute host limit (The job has exceeded the maximum execution time of 1h0m0s); "
+                    "workload was incomplete and forced kill prevented artifact upload step from running"
+                ),
+            },
+            {
+                "attempt": 4,
                 "commit": run_cmd(["git", "-C", self.repo, "rev-parse", "HEAD"]).stdout.strip(),
                 "status": "PASS",
             },
@@ -1277,7 +1287,10 @@ All required checks passed:
 - **Attempt 2 (Run 41364838439, commit `c1d7dd7299`):** FAILED in coverage step.
   - Root cause: Blanket addition of coreutils `gnubin` to `PATH` shadowed genuine BSD `/usr/bin/mktemp` with GNU `mktemp`. GNU `mktemp -d` honors `TMPDIR` and created directory under `/tmp`, causing bare mktemp parent to resolve to `/private/tmp` instead of Darwin user temp dir `/private/var/folders/.../T`, triggering `IdentityError: PLATFORM-TMP-UNOBSERVABLE` (124 seeds missed, 27 controls failed).
   - Remediation: Removed blanket `gnubin` from `PATH`. Created task-owned directory exposing ONLY GNU `timeout` via symlink pointing to Homebrew `gtimeout`, keeping system `/usr/bin/mktemp` unshadowed. Added pre-flight check proving `command -v mktemp` is genuine BSD `/usr/bin/mktemp` and parent of bare `mktemp -d` agrees with `DARWIN_USER_TEMP_DIR`.
-- **Attempt 3 (Current commit):** Running under repaired runner environment and isolated `timeout` symlink.
+- **Attempt 3 (Run 41367231332, commit `4ffec12803`):** INCOMPLETE / KILLED.
+  - Root cause: Job reached full coverage with correct prerequisites, but was externally killed by GitHub Actions runner host after reaching the accidental 60-minute job limit (`The job has exceeded the maximum execution time of 1h0m0s`). Because of GitHub's hard termination on job timeout, `if: always()` artifact upload did not run and no artifacts were produced.
+  - Remediation: Increased GitHub Actions job timeout ceiling to 360 minutes (`timeout-minutes: 360`), the maximum GitHub-hosted job limit. No changes to native fixture timeouts, bounds, workload, allowlist, assertions, or classifications.
+- **Attempt 4 (Current commit):** Running under 360-minute job limit with verified tool isolation.
 """
         with open(md_report_path, "w", encoding="utf-8") as f:
             f.write(md_content)

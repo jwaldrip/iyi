@@ -21,7 +21,7 @@ env:
 jobs:
   harness-audit:
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 360
     name: "macOS-15 Remote Harness CI Gate and H'' Audit (Plan §2-§3)"
     steps:
       - name: Checkout repository at branch ref (Controller C)
