@@ -571,16 +571,16 @@ def archive_snapshot_evidence(
 
     files_to_add: list[tuple[str, str]] = []
 
-    # 1. Chain-level files from report_dir root
-    for fn in ("pin.json", "final.json"):
-        p = os.path.join(report_dir, fn)
-        if os.path.isfile(p):
-            files_to_add.append((p, fn))
+    # 1. Chain-level files from report_dir root (only if report_dir exists)
+    if os.path.exists(report_dir):
+        for fn in ("pin.json", "final.json"):
+            p = os.path.join(report_dir, fn)
+            if os.path.isfile(p):
+                files_to_add.append((p, fn))
 
-    req_path = os.path.join(report_dir, "run3", "required.json")
-    if os.path.isfile(req_path):
-        files_to_add.append((req_path, os.path.join("run3", "required.json")))
-
+        req_path = os.path.join(report_dir, "run3", "required.json")
+        if os.path.isfile(req_path):
+            files_to_add.append((req_path, os.path.join("run3", "required.json")))
     # 2. Stage journal and summary if available
     journal_path = os.path.join(artifacts_dir, "stage-journal.jsonl")
     if os.path.isfile(journal_path):
@@ -589,32 +589,38 @@ def archive_snapshot_evidence(
     if os.path.isfile(summary_path):
         files_to_add.append((summary_path, "strict-controller-summary.json"))
     # 3. Unit attempt files
-    attempt_dir = os.path.join(report_dir, unit, f"a{attempt}")
-    if os.path.isdir(attempt_dir):
-        for root, dirs, files in os.walk(attempt_dir):
-            rel_root = os.path.relpath(root, attempt_dir)
-            if rel_root != ".":
-                first_seg = rel_root.split(os.sep)[0]
-                if unit == "run2" and first_seg == "scratch":
-                    # Crucial: preserve Run2 scratch/rows/** ! Skip other scratch
-                    if not (rel_root == "scratch/rows" or rel_root.startswith("scratch/rows" + os.sep)):
+    if os.path.exists(report_dir):
+        attempt_dir = os.path.join(report_dir, unit, f"a{attempt}")
+        if os.path.isdir(attempt_dir):
+            for root, dirs, files in os.walk(attempt_dir):
+                rel_root = os.path.relpath(root, attempt_dir)
+                if rel_root != ".":
+                    first_seg = rel_root.split(os.sep)[0]
+                    if unit == "run2" and first_seg == "scratch":
+                        # Crucial: preserve Run2 scratch/rows/** ! Skip other scratch
+                        if not (rel_root == "scratch/rows" or rel_root.startswith("scratch/rows" + os.sep)):
+                            continue
+                    elif first_seg in ("t", "c", "s", "bin", "scratch", "rg9_work"):
                         continue
-                elif first_seg in ("t", "c", "s", "bin", "scratch", "rg9_work"):
-                    continue
-                if first_seg.endswith(".tmp") or first_seg.endswith(".cache"):
-                    continue
+                    if first_seg.endswith(".tmp") or first_seg.endswith(".cache"):
+                        continue
 
-            for f in files:
-                fp = os.path.join(root, f)
-                rel_to_attempt = os.path.relpath(fp, attempt_dir)
-                arcname = os.path.join(unit, f"a{attempt}", rel_to_attempt)
-                files_to_add.append((fp, arcname))
+                for f in files:
+                    fp = os.path.join(root, f)
+                    rel_to_attempt = os.path.relpath(fp, attempt_dir)
+                    arcname = os.path.join(unit, f"a{attempt}", rel_to_attempt)
+                    files_to_add.append((fp, arcname))
 
     # 4. Controller log for this stage
     log_file = os.path.join(artifacts_dir, "controller-logs", f"{slug}-a{attempt}.log")
     if os.path.isfile(log_file):
         files_to_add.append((log_file, os.path.join("controller-logs", f"{slug}-a{attempt}.log")))
 
+    # 5. For pin snapshot, include available plan evidence
+    if unit == "pin":
+        plan_log = os.path.join(artifacts_dir, "controller-logs", "plan-a1.log")
+        if os.path.isfile(plan_log):
+            files_to_add.append((plan_log, os.path.join("controller-logs", "plan-a1.log")))
     seen_arcnames: set[str] = set()
     unique_files: list[tuple[str, str]] = []
     for abs_path, arcname in files_to_add:
@@ -636,7 +642,8 @@ def archive_snapshot_evidence(
             raise EvidenceUploadError(f"UNSAFE-ARCHIVE: Cannot stat file {abs_path}: {exc}") from exc
 
         real_p = os.path.realpath(abs_path)
-        in_report = (os.path.commonpath([report_real, real_p]) == report_real and real_p != report_real)
+        report_exists = os.path.exists(report_real)
+        in_report = (report_exists and os.path.commonpath([report_real, real_p]) == report_real and real_p != report_real)
         in_artifacts = (os.path.commonpath([artifacts_real, real_p]) == artifacts_real and real_p != artifacts_real)
         if not (in_report or in_artifacts):
             raise EvidenceUploadError(f"UNSAFE-ARCHIVE: Path escape detected: {abs_path} resolves to {real_p}")
@@ -1188,56 +1195,62 @@ class RemoteStrictController:
                 f"Stage {unit!r} rejected: exit={exit_code}, native={native_status}, reasons={validation_reasons}"
             )
 
-        # Stage and upload evidence snapshot for ALL attempted stages (including failures), except pre-chain plan/pin
-        if unit not in ("plan", "pin"):
+        # If pinning, extract chain_id from pin.json if created so archive name and request carry it
+        if unit == "pin" and os.path.isfile(os.path.join(self.report_dir, "pin.json")):
             try:
-                archive_path, size_bytes, sha256 = archive_snapshot_evidence(
-                    report_dir=self.report_dir,
-                    artifacts_dir=self.artifacts_dir,
-                    unit=unit,
-                    attempt=expected_attempt,
-                    chain_id=self.chain_id or "nochain",
-                    sequence=self.snapshot_sequence + 1,
-                )
-                self.snapshot_sequence += 1
-                record.archive_path = archive_path
-                record.archive_size_bytes = size_bytes
-                record.archive_sha256 = sha256
+                with open(os.path.join(self.report_dir, "pin.json"), "r", encoding="utf-8") as f:
+                    pin_data = json.load(f)
+                self.chain_id = pin_data.get("chain_id")
+            except Exception:
+                pass
 
-                if self.publisher is not None:
-                    req = {
-                        "request_id": secrets.token_hex(16),
-                        "repository": self.repository,
-                        "run_id": str(self.run_id),
-                        "run_attempt": str(self.run_attempt),
-                        "job_id": str(self.job_id),
-                        "p_sha": self.p_sha,
-                        "w_sha": self.w_sha,
-                        "c_sha": self.c_sha,
-                        "chain_id": self.chain_id or "",
-                        "unit": unit,
-                        "native_attempt": expected_attempt,
-                        "snapshot_sequence": self.snapshot_sequence,
-                        "archive_path": archive_path,
-                        "archive_bytes": size_bytes,
-                        "archive_sha256": sha256,
-                    }
-                    ack = self.publisher.persist(req)
-                    record.upload_verified = (ack.get("verified") is True)
-                    record.artifact_id = ack.get("artifact_id")
-                else:
-                    raise EvidenceUploadError(
-                        "PUBLISHER-UNCONFIGURED: No evidence publisher configured; fd3/fd4 required and no local success fallback permitted"
-                    )
-            except Exception as exc:
-                record.upload_verified = False
-                record.error_detail = f"Evidence persistence failed: {exc}"
-                self.records.append(record)
-                self._write_stage_journal(record)
-                self._write_controller_summary()
-                raise EvidenceUploadError(f"Evidence persistence failed for unit {unit!r}: {exc}") from exc
-        else:
-            record.upload_verified = True
+        # Stage and upload evidence snapshot for ALL attempted stages (including plan and pin failures)
+        try:
+            archive_path, size_bytes, sha256 = archive_snapshot_evidence(
+                report_dir=self.report_dir,
+                artifacts_dir=self.artifacts_dir,
+                unit=unit,
+                attempt=expected_attempt,
+                chain_id=self.chain_id or "nochain",
+                sequence=self.snapshot_sequence + 1,
+            )
+            self.snapshot_sequence += 1
+            record.archive_path = archive_path
+            record.archive_size_bytes = size_bytes
+            record.archive_sha256 = sha256
+
+            if self.publisher is not None:
+                req = {
+                    "request_id": secrets.token_hex(16),
+                    "repository": self.repository,
+                    "run_id": str(self.run_id),
+                    "run_attempt": str(self.run_attempt),
+                    "job_id": str(self.job_id),
+                    "p_sha": self.p_sha,
+                    "w_sha": self.w_sha,
+                    "c_sha": self.c_sha,
+                    "chain_id": self.chain_id or "",
+                    "unit": unit,
+                    "native_attempt": expected_attempt,
+                    "snapshot_sequence": self.snapshot_sequence,
+                    "archive_path": archive_path,
+                    "archive_bytes": size_bytes,
+                    "archive_sha256": sha256,
+                }
+                ack = self.publisher.persist(req)
+                record.upload_verified = (ack.get("verified") is True)
+                record.artifact_id = ack.get("artifact_id")
+            else:
+                raise EvidenceUploadError(
+                    "PUBLISHER-UNCONFIGURED: No evidence publisher configured; fd3/fd4 required and no local success fallback permitted"
+                )
+        except Exception as exc:
+            record.upload_verified = False
+            record.error_detail = f"Evidence persistence failed: {exc}"
+            self.records.append(record)
+            self._write_stage_journal(record)
+            self._write_controller_summary()
+            raise EvidenceUploadError(f"Evidence persistence failed for unit {unit!r}: {exc}") from exc
 
         # Safe scratch cleanup ONLY after acceptance and verified upload
         if unit not in ("plan", "pin") and record.disposition == "ACCEPTED" and record.upload_verified:

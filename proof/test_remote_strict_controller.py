@@ -400,8 +400,9 @@ class FakePublisher:
     - Validates archive file exists and hashes match
     - Sends NDJSON verification ACKs to ack_fd
     """
-    def __init__(self, mode: str = "success", **overrides: Any):
+    def __init__(self, mode: str = "success", fail_unit: str | None = None, **overrides: Any):
         self.mode = mode
+        self.fail_unit = fail_unit
         self.overrides = overrides
         self.received_requests: list[dict[str, Any]] = []
         self._req_r, self.req_w = os.pipe()
@@ -426,44 +427,35 @@ class FakePublisher:
                 if ack is not None:
                     self._ack_file.write(json.dumps(ack) + "\n")
                     self._ack_file.flush()
-                elif self.mode == "no_op":
-                    break
-                elif self.mode == "absent_receipt":
-                    self._ack_file.write("NOT_A_VALID_JSON_RECEIPT\n")
-                    self._ack_file.flush()
+                else:
                     break
         except Exception:
             pass
+
     def _build_ack(self, req: dict[str, Any]) -> dict[str, Any] | None:
-        if self.mode == "no_op":
+        if self.mode == "success":
+            return self._build_success_ack(req)
+
+        unit = req.get("unit", "")
+        if self.mode == "fail_on_driver":
+            target_driver = self.overrides.get("fail_driver", "cookie")
+            if unit != f"run3/{target_driver}":
+                return self._build_success_ack(req)
+        else:
+            target_fail = self.fail_unit if self.fail_unit is not None else "run1"
+            if unit != target_fail:
+                return self._build_success_ack(req)
+
+        if self.mode in ("no_op", "fail_on_driver"):
             return None
         if self.mode == "timeout":
             time.sleep(10.0)
             return None
         if self.mode == "absent_receipt":
+            self._ack_file.write("NOT_A_VALID_JSON_RECEIPT\n")
+            self._ack_file.flush()
             return None
-
-        seq = req.get("snapshot_sequence", 1)
-        ack = {
-            "request_id": req.get("request_id", f"req-{seq}"),
-            "repository": req.get("repository", "jwaldrip/iyi"),
-            "run_id": req.get("run_id", "41362618094"),
-            "run_attempt": req.get("run_attempt", 1),
-            "job_id": req.get("job_id", "job-1"),
-            "p_sha": req.get("p_sha", "626463375298d357ffcb3223059f4d3adce6fb10"),
-            "w_sha": req.get("w_sha", "b932ce0d97775c7061102a13db706f507dc84117"),
-            "c_sha": req.get("c_sha", "34ae13f8f8d82be5b2c9597a9df79eae5b6f7243"),
-            "chain_id": req.get("chain_id"),
-            "unit": req.get("unit"),
-            "native_attempt": req.get("native_attempt", 1),
-            "snapshot_sequence": seq,
-            "artifact_id": f"art-{seq}",
-            "downloaded_sha256": req.get("archive_sha256"),
-            "downloaded_bytes": req.get("archive_bytes"),
-            "verified": True,
-            "error": None,
-        }
-
+        ack = self._build_success_ack(req)
         if self.mode == "wrong_binding":
             ack["unit"] = "wrong_unit_mismatch"
         elif self.mode == "wrong_request_id":
@@ -489,6 +481,28 @@ class FakePublisher:
                 ack[k] = v
 
         return ack
+
+    def _build_success_ack(self, req: dict[str, Any]) -> dict[str, Any]:
+        seq = req.get("snapshot_sequence", 1)
+        return {
+            "request_id": req.get("request_id", f"req-{seq}"),
+            "repository": req.get("repository", "jwaldrip/iyi"),
+            "run_id": req.get("run_id", "41362618094"),
+            "run_attempt": req.get("run_attempt", 1),
+            "job_id": req.get("job_id", "job-1"),
+            "p_sha": req.get("p_sha", "626463375298d357ffcb3223059f4d3adce6fb10"),
+            "w_sha": req.get("w_sha", "b932ce0d97775c7061102a13db706f507dc84117"),
+            "c_sha": req.get("c_sha", "34ae13f8f8d82be5b2c9597a9df79eae5b6f7243"),
+            "chain_id": req.get("chain_id", ""),
+            "unit": req.get("unit"),
+            "native_attempt": req.get("native_attempt", 1),
+            "snapshot_sequence": seq,
+            "artifact_id": f"art-{seq}",
+            "downloaded_sha256": req.get("archive_sha256"),
+            "downloaded_bytes": req.get("archive_bytes"),
+            "verified": True,
+            "error": None,
+        }
 
     def close(self) -> None:
         if self._closed:
@@ -668,8 +682,31 @@ class TestRemoteStrictController(unittest.TestCase):
         for check in ("identity", "inventory", "ordering", "required"):
             self.assertEqual(final_data["checks"].get(check), "PASS")
 
-        # Verify snapshots were received by publisher
-        self.assertGreater(len(pub.received_requests), 0)
+        # Verify snapshots were received by publisher in proper order
+        req_units = [r["unit"] for r in pub.received_requests]
+        expected_units = ["plan", "pin", "run1", "run2", "run3/acme", "run3/cookie", "final", "terminal"]
+        self.assertEqual(req_units, expected_units)
+
+        # Verify sequences
+        req_seqs = [r["snapshot_sequence"] for r in pub.received_requests]
+        self.assertEqual(req_seqs, list(range(1, len(expected_units) + 1)))
+
+        # Verify plan evidence staged from controller-owned dir without creating R
+        import tarfile
+        plan_req = pub.received_requests[0]
+        self.assertEqual(plan_req["unit"], "plan")
+        with tarfile.open(plan_req["archive_path"], "r") as tf:
+            names = tf.getnames()
+            self.assertTrue(any("plan-a1.log" in n for n in names))
+            self.assertFalse(any("pin.json" in n for n in names))
+
+        # Verify pin evidence staged immediately after pin created R, containing pin.json and plan evidence
+        pin_req = pub.received_requests[1]
+        self.assertEqual(pin_req["unit"], "pin")
+        with tarfile.open(pin_req["archive_path"], "r") as tf:
+            names = tf.getnames()
+            self.assertTrue(any("pin.json" in n for n in names))
+            self.assertTrue(any("plan-a1.log" in n for n in names))
 
     def test_02b_exit_nonzero_stops_immediately_no_cleanup(self):
         """Scenario 2b: Stage exits nonzero -> stops immediately, no scratch cleanup."""
@@ -964,8 +1001,9 @@ class TestRemoteStrictController(unittest.TestCase):
         rc = ctrl.run()
         self.assertNotEqual(rc, 0)
         self.assertEqual(ctrl.overall_status, "UPLOAD_FAILED")
-        self.assertTrue(os.path.exists(os.path.join(self.report_dir, "run1", "a1", "rg9_work")))
-        self.assertFalse(os.path.exists(os.path.join(self.report_dir, "run2")))
+        self.assertFalse(os.path.exists(self.report_dir))
+        self.assertFalse(os.path.exists(os.path.join(self.report_dir, "pin.json")))
+        self.assertFalse(os.path.exists(os.path.join(self.report_dir, "run1")))
 
     def test_07b_publisher_noop_eof(self):
         """Scenario 7b: Publisher EOF without ACK halts, no cleanup, no advance."""
@@ -1047,6 +1085,67 @@ class TestRemoteStrictController(unittest.TestCase):
         self.assertNotEqual(rc, 0)
         self.assertEqual(ctrl.overall_status, "UPLOAD_FAILED")
         self.assertTrue(os.path.exists(os.path.join(self.report_dir, "run1", "a1", "rg9_work")))
+
+    def test_07j_publisher_failure_on_plan_halts_before_pin(self):
+        """Scenario 7j: Publisher failure on plan halts immediately; pin and R are never created."""
+        pub = FakePublisher(mode="error_reply", fail_unit="plan")
+        self.publishers.append(pub)
+        ctrl = self._create_controller(publisher=pub)
+        rc = ctrl.run()
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(ctrl.overall_status, "UPLOAD_FAILED")
+        self.assertFalse(os.path.exists(self.report_dir))
+        self.assertEqual(len(pub.received_requests), 1)
+        self.assertEqual(pub.received_requests[0]["unit"], "plan")
+
+    def test_07k_publisher_failure_on_pin_halts_before_run1(self):
+        """Scenario 7k: Publisher failure on pin halts after pin.json written; never advances to run1."""
+        pub = FakePublisher(mode="error_reply", fail_unit="pin")
+        self.publishers.append(pub)
+        ctrl = self._create_controller(publisher=pub)
+        rc = ctrl.run()
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(ctrl.overall_status, "UPLOAD_FAILED")
+        self.assertTrue(os.path.isfile(os.path.join(self.report_dir, "pin.json")))
+        self.assertFalse(os.path.exists(os.path.join(self.report_dir, "run1")))
+        self.assertEqual(len(pub.received_requests), 2)
+        self.assertEqual([r["unit"] for r in pub.received_requests], ["plan", "pin"])
+
+    def test_07l_plan_failure_persists_evidence_before_nonzero(self):
+        """Scenario 7l: Native plan failure stages and persists available logs before returning nonzero."""
+        cfg = dict(self.default_config)
+        cfg["plan"] = {"exit_code": 1}
+        self._write_config(cfg)
+        pub = FakePublisher(mode="success")
+        self.publishers.append(pub)
+        ctrl = self._create_controller(publisher=pub)
+        rc = ctrl.run()
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(ctrl.overall_status, "VERIFICATION_FAILED")
+        self.assertFalse(os.path.exists(self.report_dir))
+        self.assertEqual(len(pub.received_requests), 1)
+        self.assertEqual(pub.received_requests[0]["unit"], "plan")
+        import tarfile
+        with tarfile.open(pub.received_requests[0]["archive_path"], "r") as tf:
+            self.assertTrue(any("plan-a1.log" in n for n in tf.getnames()))
+
+    def test_07m_pin_failure_persists_evidence_before_nonzero(self):
+        """Scenario 7m: Native pin failure stages and persists available logs before returning nonzero."""
+        cfg = dict(self.default_config)
+        cfg["pin"] = {"exit_code": 1}
+        self._write_config(cfg)
+        pub = FakePublisher(mode="success")
+        self.publishers.append(pub)
+        ctrl = self._create_controller(publisher=pub)
+        rc = ctrl.run()
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(ctrl.overall_status, "VERIFICATION_FAILED")
+        self.assertFalse(os.path.exists(os.path.join(self.report_dir, "run1")))
+        pin_reqs = [r for r in pub.received_requests if r["unit"] == "pin"]
+        self.assertEqual(len(pin_reqs), 1)
+        import tarfile
+        with tarfile.open(pin_reqs[0]["archive_path"], "r") as tf:
+            self.assertTrue(any("pin-a1.log" in n for n in tf.getnames()))
 
     # -------------------------------------------------------------------------
     # 8. Native Result Schema & Status Validation Matrix
