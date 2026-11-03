@@ -114,12 +114,14 @@ test('Workload stdout cannot forge IPC acknowledgments or requests', async () =>
 
   // Override buildChildArgs for testing node -e script
   supervisor.buildChildArgs = () => ['-e', fakeChildScript];
+  supervisor.establishContext = async () => Object.freeze({ invocation_id: 'stdout-test', execution_kind: 'synthetic' });
 
   const result = await supervisor.run();
 
   // Supervisor must exit 0 from child, but total IPC requests processed must be 0!
   // Child stdout text must NEVER be accepted as an IPC request.
   assert.strictEqual(result.exitCode, 0);
+  assert.strictEqual(result.outcome, 'FAIL');
   assert.strictEqual(result.totalRequests, 0);
   assert.strictEqual(supervisor.requests.length, 0);
   assert.strictEqual(supervisor.acks.length, 0);

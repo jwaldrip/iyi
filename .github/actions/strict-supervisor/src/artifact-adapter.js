@@ -15,8 +15,19 @@ import os from 'node:os';
  * Compute SHA256 of a local file
  */
 export function computeFileSha256(filePath) {
-  const fileBuffer = fs.readFileSync(filePath);
-  return crypto.createHash('sha256').update(fileBuffer).digest('hex');
+  const hash = crypto.createHash('sha256');
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    for (;;) {
+      const count = fs.readSync(fd, buffer, 0, buffer.length, null);
+      if (!count) break;
+      hash.update(buffer.subarray(0, count));
+    }
+    return hash.digest('hex');
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 /**
@@ -25,7 +36,7 @@ export function computeFileSha256(filePath) {
 export function formatArtifactName(req) {
   const safeChain = req.chain_id === null ? 'prepin' : String(req.chain_id).slice(0, 16).replace(/[^a-zA-Z0-9_-]/g, '_');
   const safeUnit = String(req.unit).replace(/[^a-zA-Z0-9_-]/g, '_');
-  return `proof-${safeChain}-${safeUnit}-seq${req.snapshot_sequence}-att${req.native_attempt}`;
+  return `proof-${req.invocation_id}-${safeChain}-${safeUnit}-seq${req.snapshot_sequence}-att${req.native_attempt}`;
 }
 
 /**
