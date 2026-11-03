@@ -132,6 +132,10 @@ export class StrictSupervisor {
     let streamFailure = null;
     child.stdio[3].on('error', e => { streamFailure = e; });
     child.stdio[4].on('error', e => { streamFailure = e; });
+    const requestEnd = new Promise(resolve => {
+      child.stdio[3].once('end', resolve);
+      child.stdio[3].once('error', resolve);
+    });
     createIpcReader(child.stdio[3], req => { requestChain = requestChain.then(() => this.handleRequest(req, child.stdio[4])); });
     let crashTimer = null;
     let crashDeadline = null;
@@ -168,6 +172,8 @@ export class StrictSupervisor {
     try {
       ({ code, signal } = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => resolve({code, signal})); }));
       try {
+        await this.ownership.recover();
+        await requestEnd;
         await requestChain;
         await this.ownership.recover();
         if (crashObserved && signal === 'SIGKILL') {
