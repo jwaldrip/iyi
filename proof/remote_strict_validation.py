@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Sequence
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -47,7 +48,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--w", required=True)
     parser.add_argument("--compiler", required=True)
     parser.add_argument("--artifacts-dir", default="strict-proof-artifacts")
-    parser.add_argument("--case", choices=("success", "failed-plan", "failed-pin", "divergence", "cleanup-failure", "ownership-crash"), default="success")
+    parser.add_argument("--case", choices=("success", "failed-plan", "failed-pin", "divergence", "cleanup-failure", "ownership-crash", "ownership-census-outage", "ownership-run1-outage"), default="success")
     parser.add_argument("--case-data-dir", required=True)
     parser.add_argument("--job-start-time")
     parser.add_argument("--host-job-limit-sec", type=float, default=rsc.HOST_JOB_LIMIT_SEC)
@@ -89,15 +90,38 @@ def main(argv: Sequence[str] | None = None) -> int:
         config["run3/" + drivers[0]] = {"exit_code": 11, "status": "FAIL", "reasons": ["synthetic divergence"], "divergence_hex": payload.hex()}
     elif args.case == "cleanup-failure":
         config["run1"] = {"inject_eligible_symlink": True, "symlink_target": data_dir}
-    elif args.case == "ownership-crash":
-        config["plan"] = {
+    elif args.case in ("ownership-crash", "ownership-census-outage", "ownership-run1-outage"):
+        stage = "run1" if args.case == "ownership-run1-outage" else "plan"
+        config[stage] = {
             "spawn_nested": True,
             "sleep": 600,
-            "flush_delay": 1,
+            "flush_delay": 12,
+            "stubborn_grandchild": True,
+            "term_timing_file": os.path.join(data_dir, "term-timing"),
             "completion_marker": os.path.join(data_dir, "ownership-flushed"),
             "ready_file": os.path.join(data_dir, "ownership-ready"),
             "pid_file": os.path.join(data_dir, "ownership-pids"),
         }
+        if args.case == "ownership-run1-outage":
+            config[stage]["scratch_path_file"] = os.path.join(data_dir, "scratch-path")
+    if args.case == "ownership-crash" and args.ipc_req_fd is not None:
+        # Retain the request writer beyond controller death to prove that
+        # recovery does not wait for EOF. This holder never writes to the pipe.
+        holder = os.fork()
+        if holder == 0:
+            try:
+                if args.ipc_ack_fd is not None:
+                    os.close(args.ipc_ack_fd)
+                deadline = time.monotonic() + 120
+                ready = os.path.join(data_dir, "ownership-ready")
+                while not os.path.exists(ready) and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                if os.path.exists(ready):
+                    with open(os.path.join(data_dir, "pipe-holder-ready"), "w", encoding="ascii") as marker:
+                        marker.write(str(os.getpid()))
+                    time.sleep(35)
+            finally:
+                os._exit(0)
     with tempfile.TemporaryDirectory(prefix="strict-val-", dir=data_dir) as temp:
         emitter = os.path.join(temp, "synthetic_run_proof.py")
         emitter_bytes = FAKE_STAGE_EMITTER_SOURCE.encode("utf-8")

@@ -5,6 +5,10 @@ import { once } from 'node:events';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { OwnershipObserver } from '../src/ownership.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { startSentinel } from './sentinel-helper.js';
 
 const python = process.env.PYTHON || 'python3';
 const probe = fileURLToPath(new URL('../src/process_identity.py', import.meta.url));
@@ -42,10 +46,12 @@ function lines(stream) {
 
 test('observer follows a still-identified worker after reparenting', async () => {
   const controller = spawn(python, ['-u', '-c', controllerCode], { stdio: ['pipe', 'pipe', 'inherit'] });
-  const sentinel = spawn(python, ['-c', 'import time; time.sleep(300)'], { stdio: 'ignore' });
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ownership-real-'));
   const next = lines(controller.stdout);
-  const observer = new OwnershipObserver(python, probe);
+  const observer = new OwnershipObserver(python, probe, { tempRoot, graceSec: 0.1 });
+  const sentinel = await startSentinel(python, observer);
   try {
+    await sentinel.challenge();
     const root = Number(await next());
     const worker = Number(await next());
     assert.equal(await next(), 'READY');
@@ -62,10 +68,11 @@ test('observer follows a still-identified worker after reparenting', async () =>
     controller.kill('SIGKILL');
     await once(controller, 'exit');
     await observer.recover();
-    assert.doesNotThrow(() => process.kill(sentinel.pid, 0));
+    await sentinel.challenge();
   } finally {
     controller.kill('SIGKILL');
-    sentinel.kill('SIGKILL');
+    await sentinel.stop();
     observer.close();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 });

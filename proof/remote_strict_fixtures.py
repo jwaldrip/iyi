@@ -227,6 +227,15 @@ def main():
     stage_cfg = config.get(subcmd, {})
     if subcmd == "run3" and driver:
         stage_cfg = config.get(f"run3/{driver}", stage_cfg)
+    if stage_cfg.get("scratch_path_file"):
+        if subcmd != "run1" or not report_dir:
+            raise RuntimeError("scratch fixture requires the run1 report directory")
+        scratch = os.path.join(report_dir, "run1", "a1", "rg9_work")
+        os.makedirs(scratch, exist_ok=True)
+        with open(os.path.join(scratch, "ownership-scratch"), "w", encoding="utf-8") as f:
+            f.write("preserve during ownership uncertainty\\n")
+        with open(stage_cfg["scratch_path_file"], "w", encoding="utf-8") as f:
+            f.write(scratch)
 
     # Signal & sleep simulation
     sleep_sec = float(stage_cfg.get("sleep", 0.0))
@@ -238,9 +247,18 @@ def main():
 
     def term_handler(signum, frame):
         nonlocal interrupted
+        timing_file = stage_cfg.get("term_timing_file")
+        start_ns = time.monotonic_ns()
         interrupted = True
         if flush_delay > 0:
             time.sleep(flush_delay)
+        if timing_file:
+            fd = os.open(timing_file, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            try:
+                os.write(fd, f"{os.getpid()} {start_ns} {time.monotonic_ns()}\\n".encode())
+                os.fsync(fd)
+            finally:
+                os.close(fd)
         if completion_marker:
             with open(completion_marker, "w", encoding="utf-8") as cm:
                 cm.write("completed_term_flush\\n")
@@ -265,6 +283,8 @@ def main():
             gc_pid = os.fork()
             if gc_pid == 0:
                 os.setsid()
+                if stage_cfg.get("stubborn_grandchild"):
+                    signal.signal(signal.SIGTERM, signal.SIG_IGN)
                 my_gc_pid = os.getpid()
                 if pid_file:
                     with open(pid_file, "a", encoding="utf-8") as pf:

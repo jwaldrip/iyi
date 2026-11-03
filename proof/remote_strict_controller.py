@@ -147,6 +147,9 @@ class StageExecutionRecord:
     interruption_reason: str | None = None
     error_detail: str | None = None
     native_validation_reasons: list[str] = dataclasses.field(default_factory=list)
+    ownership_resolved: bool = False
+    ownership_error: str | None = None
+    ownership_result: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -171,6 +174,9 @@ class StageExecutionRecord:
             "interrupted": self.interrupted,
             "interruption_reason": self.interruption_reason,
             "error_detail": self.error_detail,
+            "ownership_resolved": self.ownership_resolved,
+            "ownership_error": self.ownership_error,
+            "ownership_result": self.ownership_result,
             "native_validation_reasons": self.native_validation_reasons,
         }
 
@@ -441,12 +447,6 @@ class IpcEvidencePublisher(EvidencePublisher):
         if not isinstance(ack, dict):
             raise EvidenceUploadError(f"MALFORMED-ACK: ACK is not a dictionary: {ack}")
 
-        if ack.get("error"):
-            raise EvidenceUploadError(f"UPLOAD-FAILED: Node publisher reported error: {ack.get('error')}")
-
-        if ack.get("verified") is not True:
-            raise EvidenceUploadError(f"UNVERIFIED-ACK: Node publisher returned verified={ack.get('verified')!r}")
-
         expected_event = {
             "persistence-request": "persistence-ack",
             "ownership-register": "ownership-register-ack",
@@ -458,7 +458,14 @@ class IpcEvidencePublisher(EvidencePublisher):
             if field not in ("event", "archive_path") and (field not in ack or ack[field] != expected):
                 raise IpcProtocolError(f"ACK-BINDING-MISMATCH: {field}")
         if request["event"] != "persistence-request":
+            if not isinstance(ack.get("verified"), bool):
+                raise IpcProtocolError("OWNERSHIP-ACK-VERIFIED-MISSING")
             return ack
+
+        if ack.get("error"):
+            raise EvidenceUploadError(f"UPLOAD-FAILED: Node publisher reported error: {ack.get('error')}")
+        if ack.get("verified") is not True:
+            raise EvidenceUploadError(f"UNVERIFIED-ACK: Node publisher returned verified={ack.get('verified')!r}")
 
         req_sha = request.get("archive_sha256")
         ack_sha = ack.get("downloaded_sha256")
@@ -754,6 +761,8 @@ class RemoteStrictController:
         self.monotonic_deadline = self.monotonic_anchor + remaining_budget
 
         self.records: list[StageExecutionRecord] = []
+        self.ownership_resolved = True
+        self._stage_ownership = None
         self.chain_id: str | None = None
         self.overall_status = "UNKNOWN"
         self.overall_interrupted = False
@@ -874,6 +883,9 @@ class RemoteStrictController:
 
     def execute_single_stage(self, unit: str, cmd: list[str], expected_attempt: int = 1,
                              requires_pass_result: bool = True) -> StageExecutionRecord:
+        if not self.ownership_resolved:
+            raise VerificationError("OWNERSHIP-UNRESOLVED: refusing another stage or retry")
+        self._stage_ownership = None
         start = time.monotonic_ns()
         count = len(self.records)
         try:
@@ -886,6 +898,10 @@ class RemoteStrictController:
                     native_status="NONE", result_status="UNKNOWN", disposition="CONTROLLER_FAILED",
                     timing=UnitTiming(start, end, (end - start) / 1e9),
                     disk=DiskObservation(0, 0, 0), error_detail=f"{type(exc).__name__}: {exc}",
+                    ownership_resolved=self.ownership_resolved,
+                    ownership_error=(self._stage_ownership.ownership_error if self._stage_ownership
+                                     else "Stage ownership state unavailable" if not self.ownership_resolved else None),
+                    ownership_result=(self._stage_ownership.ownership_result if self._stage_ownership else None),
                 )
                 self.records.append(record)
                 self._write_stage_journal(record)
@@ -902,6 +918,8 @@ class RemoteStrictController:
         Execute one stage attempt, verify results with native validation helper,
         archive snapshot evidence, verify persistence ACK, and prune scratch.
         """
+        if not self.ownership_resolved:
+            raise VerificationError("OWNERSHIP-UNRESOLVED: refusing another stage or retry")
         print(f"\n================================================================================")
         print(f"[CONTROLLER] Launching stage: {unit} (attempt {expected_attempt})")
         print(f"[CONTROLLER] Command: {' '.join(cmd)}")
@@ -915,11 +933,15 @@ class RemoteStrictController:
         def check_interrupted() -> tuple[bool, str | None]:
             return self.overall_interrupted, self.interruption_reason
         with self.evidence_root.open_writer(f"controller-logs/{stage_slug}-a{expected_attempt}.log") as log_file:
+            # An exception after launch cannot establish whether ownership was resolved.
+            self.ownership_resolved = False
             outcome = run_registered_stage(
                 cmd, cwd=self.w_path, env=dict(os.environ), log_file=log_file,
                 unit=unit, attempt=expected_attempt, monotonic_deadline=self.monotonic_deadline,
                 grace_sec=self.grace_sec, register=self._control, is_interrupted=check_interrupted,
             )
+            self._stage_ownership = outcome
+            self.ownership_resolved = outcome.ownership_resolved
         exit_code = outcome.exit_code
         interrupted = outcome.interrupted or outcome.timed_out
         interrupt_reason = self.interruption_reason or ("Hosting deadline reached" if outcome.timed_out else None)
@@ -939,7 +961,11 @@ class RemoteStrictController:
             disk=DiskObservation(before_bytes=disk_before, after_bytes=disk_after, min_observed_bytes=min(disk_before, disk_after)),
             interrupted=interrupted,
             interruption_reason=interrupt_reason,
+            ownership_resolved=outcome.ownership_resolved,
+            ownership_error=outcome.ownership_error,
+            ownership_result=outcome.ownership_result,
         )
+        self._write_stage_journal(record)
 
         attempt_dir = os.path.join(self.report_dir, unit, f"a{expected_attempt}")
         validation_reasons: list[str] = []
@@ -1005,7 +1031,7 @@ class RemoteStrictController:
             except Exception as exc:
                 self.chain_id = None
                 record.disposition = "REJECTED"
-                record.error_detail = f"PIN-UNESTABLISHED: {type(exc).__name__}"
+                record.error_detail = (record.error_detail or "") + f" [PIN-UNESTABLISHED: {type(exc).__name__}]"
 
         # Persist the stage journal before sealing the snapshot. A rejected
         # pre-pin plan never reaches a later stage, so this write is the only
@@ -1042,7 +1068,8 @@ class RemoteStrictController:
             raise EvidenceUploadError(f"Evidence persistence failed for unit {unit!r}: {exc}") from exc
 
         # Safe scratch cleanup ONLY after acceptance and verified upload
-        if unit not in ("plan", "pin") and record.disposition == "ACCEPTED" and record.upload_verified:
+        if (unit not in ("plan", "pin") and record.ownership_resolved
+                and self.ownership_resolved and record.disposition == "ACCEPTED" and record.upload_verified):
             try:
                 cleaned_items, reclaimed = safe_cleanup_stage_scratch(
                     self.report_dir, unit, attempt_dir, upload_verified=True,
@@ -1062,7 +1089,7 @@ class RemoteStrictController:
 
         if interrupted:
             raise HostingBudgetInterrupted(interrupt_reason or "Stage interrupted by hosting budget")
-        if record.disposition != "ACCEPTED":
+        if not self.ownership_resolved or not record.ownership_resolved or record.disposition != "ACCEPTED":
             raise VerificationError(record.error_detail or f"Stage {unit!r} failed verification")
 
         return record
@@ -1255,6 +1282,9 @@ class RemoteStrictController:
             is_valid_final, final_reasons = self._validate_final(required_drivers)
             if not is_valid_final:
                 raise VerificationError(f"FINAL-VERIFICATION-FAILED: {final_reasons}")
+            if not self.ownership_resolved:
+                raise VerificationError("OWNERSHIP-UNRESOLVED: refusing successful completion")
+
 
             self.overall_status = "NATIVE_COMPLETE_PENDING_TERMINAL"
             self._write_controller_summary()
@@ -1299,8 +1329,8 @@ class RemoteStrictController:
                     signal.signal(s, h)
                 except Exception:
                     pass
-            if ret != 0 and self.overall_status in ("VERIFICATION_FAILED", "CLEANUP_FAILED") and self.chain_id and self.receipts and self.publisher is not None:
-                if not any(r.disposition == "OWNERSHIP_UNRESOLVED" for r in self.records):
+            if ret != 0 and self.overall_status in ("VERIFICATION_FAILED", "CLEANUP_FAILED", "INTERRUPTED_BY_HOSTING_BUDGET") and self.chain_id and self.receipts and self.publisher is not None:
+                if self.ownership_resolved:
                     try:
                         self._write_controller_summary()
                         self._upload_terminal_snapshot()
@@ -1325,7 +1355,8 @@ class RemoteStrictController:
     def _is_driver_passed(self, driver: str) -> bool:
         """Check if driver has a PASS record in self.records."""
         unit = f"run3/{driver}"
-        return any((r.unit == unit or r.unit == driver) and r.result_status == "PASS" for r in self.records)
+        return any((r.unit == unit or r.unit == driver) and r.ownership_resolved
+                   and r.result_status == "PASS" for r in self.records)
 
     def _validate_stage_record_with_helper(
         self, unit: str, attempt: int
@@ -1546,6 +1577,7 @@ class RemoteStrictController:
             "mode": self.mode,
             "overall_status": self.overall_status,
             "overall_interrupted": self.overall_interrupted,
+            "ownership_resolved": self.ownership_resolved,
             "interruption_envelope": self.interruption_envelope,
             "chain_id": self.chain_id,
             "invocation_id": self.invocation_id,
