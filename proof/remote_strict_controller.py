@@ -1344,6 +1344,11 @@ class RemoteStrictController:
             except Exception:
                 pass
 
+        # Persist the stage journal before sealing the snapshot. A rejected
+        # pre-pin plan never reaches a later stage, so this write is the only
+        # way the failure archive contains the journal alongside the stage log.
+        self._write_stage_journal(record)
+
         # Stage and upload evidence snapshot for ALL attempted stages (including plan and pin failures)
         try:
             req_chain_id: str | None = None if unit == "plan" else self.chain_id

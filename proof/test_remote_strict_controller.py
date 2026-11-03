@@ -1163,7 +1163,7 @@ class TestRemoteStrictController(unittest.TestCase):
         ctrl = self._create_controller(publisher=pub)
         rc = ctrl.run()
         self.assertNotEqual(rc, 0)
-        self.assertEqual(ctrl.overall_status, "FAIL")
+        self.assertEqual(ctrl.overall_status, "VERIFICATION_FAILED")
 
         # R must NOT exist
         self.assertFalse(os.path.exists(self.report_dir), f"report_dir R ({self.report_dir}) must not be created on plan failure")
