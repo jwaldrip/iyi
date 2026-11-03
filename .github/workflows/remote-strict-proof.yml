@@ -247,6 +247,7 @@ jobs:
           DIST_PATH=".github/actions/strict-supervisor/dist/index.js"
           test -f "$DIST_PATH"
           BUNDLE_SHA=$(shasum -a 256 "$DIST_PATH" | awk '{print $1}')
+          echo "Verified action bundle SHA-256: $BUNDLE_SHA"
           echo "{\"bundle_sha256\": \"$BUNDLE_SHA\"}" > "$RUNNER_TEMP/strict-ci/fingerprints/bundle.json"
           # The following uses: steps must execute the tracked bundle without source dependencies.
           rm -rf .github/actions/strict-supervisor/node_modules
