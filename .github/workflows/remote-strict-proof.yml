@@ -47,6 +47,33 @@ env:
   MIN_DISK_GIB: "20.0"
 
 jobs:
+  bootstrap-supervisor-bundle:
+    name: "Generate supervisor bundle"
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Generate lockfile and distributable
+        working-directory: .github/actions/strict-supervisor
+        run: |
+          npm install --package-lock-only
+          npm ci
+          npm run build
+      - name: Upload generated files
+        uses: actions/upload-artifact@v4
+        with:
+          name: supervisor-bundle-${{ github.sha }}
+          path: |
+            .github/actions/strict-supervisor/package-lock.json
+            .github/actions/strict-supervisor/dist/
+          if-no-files-found: error
+          include-hidden-files: true
+
   validation-proofs:
     name: "Controller synthetic and validation proofs (macOS 15)"
     if: ${{ github.event_name == 'push' || github.event.inputs.mode == 'validation-only' }}
