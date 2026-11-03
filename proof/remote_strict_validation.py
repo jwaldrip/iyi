@@ -17,6 +17,10 @@ import sys
 import tempfile
 from typing import Sequence
 
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
 import proof.remote_strict_controller as rsc
 from proof.remote_strict_fixtures import (
     FAKE_STAGE_EMITTER_SOURCE,

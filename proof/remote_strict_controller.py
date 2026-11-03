@@ -47,6 +47,10 @@ import threading
 import time
 from typing import Any, Callable, Sequence
 
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
 # Default budget constants (seconds)
 HOST_JOB_LIMIT_SEC = 21600.0       # 360 minutes (6 hours)
 PAYLOAD_BUDGET_SEC = 19800.0       # 330 minutes (5.5 hours)

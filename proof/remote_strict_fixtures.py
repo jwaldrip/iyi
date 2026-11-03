@@ -13,8 +13,13 @@ import json
 import os
 import shutil
 import stat
+import sys
 import time
 from typing import Any, Sequence
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
 CANONICAL_MODULES: tuple[str, ...] = ("proofkit.py", "run_proof.py")
 

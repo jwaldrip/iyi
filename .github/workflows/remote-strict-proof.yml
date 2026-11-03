@@ -36,6 +36,7 @@ env:
   GIT_CONFIG_KEY_0: safe.directory
   GIT_CONFIG_VALUE_0: "*"
   PYTHONUTF8: "1"
+  PYTHONPATH: "."
   P_AUTHORIZED_SHA: "626463375298d357ffcb3223059f4d3adce6fb10"
   W_AUTHORIZED_SHA: "b932ce0d97775c7061102a13db706f507dc84117"
   DRIVER_LIMIT_SEC: "2100"
@@ -269,7 +270,7 @@ jobs:
           echo "================================================================================"
 
           # Bounded 600-second suite watchdog with faulthandler diagnostics
-          PYTHONFAULTHANDLER=1 timeout 600s python3 -B -X faulthandler proof/test_remote_strict_controller.py -v 2>&1 | tee strict-proof-artifacts/ci-logs/python-controller-suite.log
+          PYTHONFAULTHANDLER=1 timeout 600s python3 -B -X faulthandler -m proof.test_remote_strict_controller -v 2>&1 | tee strict-proof-artifacts/ci-logs/python-controller-suite.log
 
       - name: Verify exact strict mode refusal without independent authorization
         run: |
@@ -280,7 +281,7 @@ jobs:
           echo "================================================================================"
 
           set +e
-          python3 -B proof/remote_strict_controller.py \
+          python3 -B -m proof.remote_strict_controller \
             --mode strict \
             --p "$GITHUB_WORKSPACE" \
             --w "$GITHUB_WORKSPACE" \
@@ -348,7 +349,7 @@ jobs:
           PIN_FILE="strict-proof-artifacts/supervisor-validation-run/pin.json"
 
           set +e
-          python3 -B proof/native_validation.py \
+          python3 -B -m proof.native_validation \
             --mode record \
             --w "$EMPTY_W" \
             --pin "$PIN_FILE" \
