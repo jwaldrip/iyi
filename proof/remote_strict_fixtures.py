@@ -71,11 +71,11 @@ def generate_pin(
     chain_id: str,
     *,
     report_dir: str,
-    p_source_sha: str = "626463375298d357ffcb3223059f4d3adce6fb10",
-    w_head: str = "b932ce0d97775c7061102a13db706f507dc84117",
-    compiler_sha256: str = "34ae13f8f8d82be5b2c9597a9df79eae5b6f7243",
-    c_sha: str = "34ae13f8f8d82be5b2c9597a9df79eae5b6f7243",
-    compiler_path: str = "/dummy/iyi",
+    p_source_sha: str,
+    w_head: str,
+    compiler_sha256: str,
+    c_sha: str,
+    compiler_path: str,
     created_ns: int | None = None,
 ) -> dict[str, Any]:
     """Emit canonical pin.json structure matching run_proof.py."""
@@ -195,6 +195,8 @@ def generate_final_record(
 
 FAKE_STAGE_EMITTER_SOURCE = """#!/usr/bin/env python3
 import json
+import hashlib
+import subprocess
 import os
 import signal
 import sys
@@ -315,16 +317,19 @@ def main():
         sys.exit(exit_code)
 
     elif subcmd == "pin":
+        if stage_cfg.get("omit_pin"):
+            print("synthetic pin failed before establishment", file=sys.stderr)
+            sys.exit(exit_code or 1)
         if report_dir:
             os.makedirs(report_dir, exist_ok=True)
             pin_data = {
                 "chain_id": config.get("chain_id", "0123456789abcdef0123456789abcdef"),
                 "report_dir": report_dir,
-                "p_source_sha": "626463375298d357ffcb3223059f4d3adce6fb10",
-                "w_head": "b932ce0d97775c7061102a13db706f507dc84117",
-                "c_sha": "34ae13f8f8d82be5b2c9597a9df79eae5b6f7243",
-                "compiler_path": get_arg("--compiler") or "/dummy/iyi",
-                "compiler_sha256": "34ae13f8f8d82be5b2c9597a9df79eae5b6f7243",
+                "p_source_sha": subprocess.check_output(["git", "-C", get_arg("--p"), "rev-parse", "HEAD"], text=True).strip(),
+                "w_head": subprocess.check_output(["git", "-C", get_arg("--w"), "rev-parse", "HEAD"], text=True).strip(),
+                "c_sha": config["c_sha"],
+                "compiler_path": os.path.realpath(get_arg("--compiler")),
+                "compiler_sha256": hashlib.sha256(open(get_arg("--compiler"), "rb").read()).hexdigest(),
                 "created_ns": time.time_ns(),
             }
             with open(os.path.join(report_dir, "pin.json"), "w", encoding="utf-8") as f:
@@ -490,6 +495,11 @@ def main():
                     os.makedirs(p, exist_ok=True)
                     with open(os.path.join(p, "data.txt"), "w", encoding="utf-8") as f:
                         f.write("temp")
+                if "divergence_hex" in stage_cfg:
+                    mods = os.path.join(attempt_dir, "s", "invocation", "mods")
+                    os.makedirs(mods, exist_ok=True)
+                    with open(os.path.join(mods, "divergence.bin"), "wb") as f:
+                        f.write(bytes.fromhex(stage_cfg["divergence_hex"]))
 
                 if not stage_cfg.get("skip_result"):
                     if stage_cfg.get("malformed_result"):
@@ -549,9 +559,9 @@ def main():
             final_status = stage_cfg.get("status", "PASS")
             identity = stage_cfg.get("identity", {
                 "status": "PASS",
-                "p_source_sha": pin_data.get("p_source_sha", "626463375298d357ffcb3223059f4d3adce6fb10"),
-                "w_head": pin_data.get("w_head", "b932ce0d97775c7061102a13db706f507dc84117"),
-                "compiler_sha256": pin_data.get("compiler_sha256", "34ae13f8f8d82be5b2c9597a9df79eae5b6f7243"),
+                "p_source_sha": pin_data["p_source_sha"],
+                "w_head": pin_data["w_head"],
+                "compiler_sha256": pin_data["compiler_sha256"],
             })
 
             final_data = {
