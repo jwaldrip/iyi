@@ -43,7 +43,7 @@ export function validateRequest(req) {
       return { valid: false, error: `Invalid ${field}` };
     }
   }
-  if (!['synthetic', 'strict'].includes(req.execution_kind)) {
+  if (!['synthetic', 'native'].includes(req.execution_kind)) {
     return { valid: false, error: 'Invalid execution kind' };
   }
   if (req.execution_kind === 'synthetic'

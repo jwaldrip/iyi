@@ -104,13 +104,14 @@ export async function runAction() {
       const errDetail = `Controller exited with code ${result.exitCode}` +
         (result.failedVerifications > 0 ? ` (${result.failedVerifications} unverified persistence requests)` : '');
       core.setFailed(errDetail);
-      process.exit(result.exitCode || 1);
+      process.exitCode = result.exitCode || 1;
+      return;
     }
 
     core.info(`Strict supervisor completed successfully: outcome=${result.outcome}`);
   } catch (err) {
     core.setFailed(`Strict supervisor execution failure: ${err.message}`);
-    process.exit(1);
+    process.exitCode = 1;
   }
 }
 

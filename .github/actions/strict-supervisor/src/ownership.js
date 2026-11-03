@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { sanitizeEnvironment } from './env.js';
 
 // This observer cannot prove absence of forks that start and reparent entirely
 // between observations. It never represents a failed observation as quiescence.
@@ -11,6 +12,8 @@ export class OwnershipObserver {
     this.identityScript = identityScript;
     this.directory = fs.mkdtempSync(path.join(os.tmpdir(), 'strict-ownership-'));
     this.fd = fs.openSync(path.join(this.directory, 'ownership.jsonl'), 'ax', 0o600);
+    const dirfd = fs.openSync(this.directory, 'r');
+    try { fs.fsyncSync(dirfd); } finally { fs.closeSync(dirfd); }
     this.stages = new Map();
     this.failure = null;
     this.timer = null;
@@ -20,7 +23,7 @@ export class OwnershipObserver {
     fs.fsyncSync(this.fd);
   }
   census() {
-    const text = execFileSync('/bin/ps', ['-axo', 'pid=,ppid=,stat='], { encoding: 'utf8', timeout: 5000 });
+    const text = execFileSync('/bin/ps', ['-axo', 'pid=,ppid=,stat='], { encoding: 'utf8', timeout: 5000, env: sanitizeEnvironment() });
     const rows = new Map();
     for (const line of text.split('\n')) {
       if (!line.trim()) continue;
@@ -32,7 +35,7 @@ export class OwnershipObserver {
     return rows;
   }
   identity(pid) {
-    const value = execFileSync(this.python, [this.identityScript, String(pid)], { encoding: 'utf8', timeout: 5000 }).trim();
+    const value = execFileSync(this.python, [this.identityScript, String(pid)], { encoding: 'utf8', timeout: 5000, env: sanitizeEnvironment() }).trim();
     if (!/^\d+(?:\.\d{6})?$/.test(value)) throw new Error('invalid process birth identity');
     return value;
   }

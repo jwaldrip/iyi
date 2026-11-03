@@ -7,12 +7,13 @@ import { IMMUTABLE_BINDING_FIELDS, validateRequest, writeIpcAck, createIpcReader
 import { uploadAndVerifyPayload } from './artifact-adapter.js';
 import { OwnershipObserver } from './ownership.js';
 
-const ACTION_SRC = path.resolve('.github/actions/strict-supervisor/src');
+const WORKSPACE_ACTION_SRC = path.resolve('.github/actions/strict-supervisor/src');
+const ACTION_SRC = fs.existsSync(WORKSPACE_ACTION_SRC) ? WORKSPACE_ACTION_SRC : path.resolve('src');
 const CONTEXT_FIELDS = ['invocation_id', 'execution_kind', 'repository', 'run_id', 'run_attempt', 'job_id', 'job_key', 'p_sha', 'w_sha', 'c_sha', 'fixture_sha256'];
 const EMITTER_DIGEST = `import ast,hashlib,sys\nt=ast.parse(open(sys.argv[1],encoding='utf8').read())\nx=[n.value for n in t.body if isinstance(n,ast.Assign) and any(isinstance(a,ast.Name) and a.id=='FAKE_STAGE_EMITTER_SOURCE' for a in n.targets)]\nassert len(x)==1\ns=ast.literal_eval(x[0]); assert isinstance(s,str)\nprint(hashlib.sha256(s.encode('utf8')).hexdigest())`;
 
 function sha(dir) {
-  return execFileSync('git', ['-C', dir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  return execFileSync('git', ['-C', dir, 'rev-parse', 'HEAD'], { encoding: 'utf8', env: sanitizeEnvironment() }).trim();
 }
 
 export class StrictSupervisor {
@@ -58,8 +59,8 @@ export class StrictSupervisor {
     }
     if (matches.length !== 1) throw new Error('job lookup missing or ambiguous');
     if (!matches[0].started_at || matches[0].started_at !== this.jobStartTime) throw new Error('job start does not match platform');
-    const fixture = this.mode === 'validation-only' ? execFileSync(this.pythonPath, ['-c', EMITTER_DIGEST, path.resolve('proof/remote_strict_fixtures.py')], { encoding: 'utf8' }).trim() : null;
-    return Object.freeze({ invocation_id: this.invocationId, execution_kind: this.mode === 'validation-only' ? 'synthetic' : 'strict', repository: env.GITHUB_REPOSITORY, run_id: env.GITHUB_RUN_ID, run_attempt: env.GITHUB_RUN_ATTEMPT, job_id: String(this.jobId), job_key: this.jobKey, p_sha: pSha, w_sha: wSha, c_sha: cSha, fixture_sha256: fixture });
+    const fixture = this.mode === 'validation-only' ? execFileSync(this.pythonPath, ['-c', EMITTER_DIGEST, path.resolve('proof/remote_strict_fixtures.py')], { encoding: 'utf8', env: sanitizeEnvironment(env) }).trim() : null;
+    return Object.freeze({ invocation_id: this.invocationId, execution_kind: this.mode === 'validation-only' ? 'synthetic' : 'native', repository: env.GITHUB_REPOSITORY, run_id: env.GITHUB_RUN_ID, run_attempt: env.GITHUB_RUN_ATTEMPT, job_id: String(this.jobId), job_key: this.jobKey, p_sha: pSha, w_sha: wSha, c_sha: cSha, fixture_sha256: fixture });
   }
   buildChildArgs() {
     const script = this.mode === 'validation-only' ? 'proof/remote_strict_validation.py' : 'proof/remote_strict_controller.py';
@@ -92,7 +93,7 @@ export class StrictSupervisor {
         let receipt;
         try {
           const copy = path.join(dir, path.basename(req.archive_path));
-          execFileSync(this.pythonPath, [path.join(ACTION_SRC, 'seal_copy.py'), this.artifactsDir, req.archive_path, copy, String(req.archive_bytes), req.archive_sha256], { timeout: 30000 });
+          execFileSync(this.pythonPath, [path.join(ACTION_SRC, 'seal_copy.py'), this.artifactsDir, req.archive_path, copy, String(req.archive_bytes), req.archive_sha256], { timeout: 30000, env: sanitizeEnvironment(this.parentEnv) });
           receipt = await uploadAndVerifyPayload({ ...req, archive_path: copy }, await this.resolveArtifactClient());
         } finally { fs.rmSync(dir, { recursive: true, force: true }); }
         const binding = Object.fromEntries(IMMUTABLE_BINDING_FIELDS.map(field => [field, req[field]]));
@@ -133,8 +134,13 @@ export class StrictSupervisor {
     child.stdio[4].on('error', e => { streamFailure = e; });
     createIpcReader(child.stdio[3], req => { requestChain = requestChain.then(() => this.handleRequest(req, child.stdio[4])); });
     let crashTimer = null;
+    let crashDeadline = null;
     let crashObserved = null;
     if (this.mode === 'validation-only' && this.validationCase === 'ownership-crash') {
+      crashDeadline = setTimeout(() => {
+        streamFailure = new Error('synthetic crash readiness not observed');
+        child.kill('SIGKILL');
+      }, 120000);
       crashTimer = setInterval(() => {
         try {
           if (fs.readFileSync(path.join(this.caseDataDir, 'ownership-ready'), 'utf8') !== 'ready\n') return;
@@ -170,6 +176,7 @@ export class StrictSupervisor {
       } catch (e) { this.failedVerifications++; streamFailure = e; }
     } finally {
       clearInterval(crashTimer);
+      clearTimeout(crashDeadline);
       process.removeListener('SIGINT', onInt); process.removeListener('SIGTERM', onTerm);
       this.ownership.close();
     }
@@ -178,7 +185,7 @@ export class StrictSupervisor {
     if (code === 0 && this.failedVerifications === 0) {
       const terminal = this.entries.filter(e => e.request.snapshot_kind === 'terminal-envelope' && e.ack.verified);
       try {
-        const completion = JSON.parse(fs.readFileSync(path.join(this.artifactsDir, 'controller-completion.json'), 'utf8'));
+        const completion = JSON.parse(execFileSync(this.pythonPath, [path.join(ACTION_SRC, 'seal_copy.py'), '--read-completion', this.artifactsDir], { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, timeout: 5000, env: sanitizeEnvironment(this.parentEnv) }));
         if (terminal.length === 1 && completion.overall_status === 'PASS' &&
             completion.invocation_id === this.context.invocation_id &&
             completion.chain_id === terminal[0].request.chain_id &&

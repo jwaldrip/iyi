@@ -15,8 +15,19 @@ import os from 'node:os';
  * Compute SHA256 of a local file
  */
 export function computeFileSha256(filePath) {
-  const fileBuffer = fs.readFileSync(filePath);
-  return crypto.createHash('sha256').update(fileBuffer).digest('hex');
+  const hash = crypto.createHash('sha256');
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    for (;;) {
+      const count = fs.readSync(fd, buffer, 0, buffer.length, null);
+      if (!count) break;
+      hash.update(buffer.subarray(0, count));
+    }
+    return hash.digest('hex');
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 /**
