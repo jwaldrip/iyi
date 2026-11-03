@@ -53,10 +53,13 @@ class FakePublisher:
         mode: str = "success",
         fail_unit: str | None = None,
         overrides: dict[str, Any] | None = None,
+        fail_driver: str | None = None,
     ):
         self.mode = mode
         self.fail_unit = fail_unit
-        self.overrides = overrides or {}
+        self.overrides = dict(overrides or {})
+        if fail_driver is not None:
+            self.overrides["fail_driver"] = fail_driver
         self.received_requests: list[dict[str, Any]] = []
 
         self._req_r, self.req_w = os.pipe()

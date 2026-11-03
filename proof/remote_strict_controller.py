@@ -684,7 +684,7 @@ def archive_snapshot_evidence(
     archive_path = os.path.join(archives_subdir, archive_name)
 
     report_real = os.path.realpath(report_dir)
-    attempt_dir = os.path.join(report_dir, unit, f"a{attempt}") if unit not in ("plan", "pin") else report_dir
+    attempt_dir = os.path.join(report_dir, unit, f"a{attempt}") if unit not in ("plan", "pin", "terminal") else report_dir
     attempt_real = os.path.realpath(attempt_dir)
 
     # Reject symlink report or attempt roots
@@ -717,15 +717,48 @@ def archive_snapshot_evidence(
         files_to_archive.append((log_path, f"controller-logs/{slug}-a{attempt}.log"))
 
     # 3. Unit attempt directory regular files
-    if os.path.isdir(attempt_dir) and unit not in ("plan", "pin"):
+    if os.path.isdir(attempt_dir) and unit not in ("plan", "pin", "terminal"):
         for root, dirs, files in os.walk(attempt_dir, followlinks=False):
+            rel_root = os.path.relpath(root, attempt_dir)
+            if rel_root == ".":
+                # Filter out expendable scratch directories so they are not archived
+                if unit == "run1":
+                    prune_dirs = [d for d in dirs if d in RUN1_SCRATCH_NAMES or d.endswith(".tmp") or d.endswith(".cache")]
+                elif unit == "run2":
+                    prune_dirs = [d for d in dirs if d in ("run2.tmp", "run2.cache") or d.endswith(".tmp") or d.endswith(".cache")]
+                elif unit.startswith("run3") or unit == "run3":
+                    prune_dirs = [d for d in dirs if d in RUN3_SCRATCH_NAMES]
+                else:
+                    prune_dirs = []
+                for pd in prune_dirs:
+                    dirs.remove(pd)
+            elif rel_root == "scratch" and unit == "run2":
+                # For run2, inside attempt_dir/scratch: only keep 'rows'
+                prune_dirs = [d for d in dirs if d != "rows"]
+                for pd in prune_dirs:
+                    dirs.remove(pd)
+
             for d in list(dirs):
                 dir_path = os.path.join(root, d)
                 if os.path.islink(dir_path):
-                    # Check if this symlink is in eligible scratch path
                     raise EvidenceUploadError(f"ARCHIVE-SECURITY-VIOLATION: Symlink directory detected: {dir_path}")
+
             for f in files:
                 file_path = os.path.join(root, f)
+                # At top level of attempt_dir, filter out scratch files/symlinks
+                if rel_root == ".":
+                    is_scratch = False
+                    if unit == "run1" and (f in RUN1_SCRATCH_NAMES or f.endswith(".tmp") or f.endswith(".cache")):
+                        is_scratch = True
+                    elif unit == "run2" and (f in ("run2.tmp", "run2.cache") or f.endswith(".tmp") or f.endswith(".cache")):
+                        is_scratch = True
+                    elif (unit.startswith("run3") or unit == "run3") and f in RUN3_SCRATCH_NAMES:
+                        is_scratch = True
+                    if is_scratch:
+                        continue
+                elif rel_root == "scratch" and unit == "run2":
+                    continue
+
                 if os.path.islink(file_path):
                     raise EvidenceUploadError(f"ARCHIVE-SECURITY-VIOLATION: Symlink file detected: {file_path}")
                 st = os.lstat(file_path)
@@ -733,7 +766,6 @@ def archive_snapshot_evidence(
                     raise EvidenceUploadError(f"ARCHIVE-SECURITY-VIOLATION: Special non-regular file: {file_path}")
                 rel = os.path.relpath(file_path, attempt_dir)
                 files_to_archive.append((file_path, f"attempt/{rel}"))
-
     # Create deterministic tar.gz archive
     hasher = hashlib.sha256()
     size_bytes = 0
@@ -1130,7 +1162,7 @@ class RemoteStrictController:
         # Validate commit SHAs strictly if provided
         for sha_name, sha_val in (("p-sha", self.p_sha), ("w-sha", self.w_sha), ("c-sha", self.c_sha)):
             if sha_val is not None:
-                if not isinstance(sha_val, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", sha_val):
+                if not isinstance(sha_val, str) or not re.fullmatch(r"[0-9a-f]{40}", sha_val):
                     raise VerificationError(f"MALFORMED-COMMIT-SHA: {sha_name} {sha_val!r} is not a valid 40-character hex SHA")
 
         # Anchored monotonic timing
@@ -1719,7 +1751,10 @@ class RemoteStrictController:
             # Contradictory check: helper exited nonzero while outputting valid=True
             if data.get("valid") is True:
                 reasons.append(f"CONTRADICTORY-VALIDATOR-OUTPUT: helper exited {proc.returncode} while claiming valid=True")
-            return raw_rec, raw_status, "FAIL", reasons
+            val_status = data.get("status", "FAIL")
+            if val_status == "PASS":
+                val_status = "FAIL"
+            return raw_rec, raw_status, val_status, reasons
 
         # Returncode 0: require coherent valid PASS
         if not data:
@@ -1818,7 +1853,7 @@ class RemoteStrictController:
         archive_path, size_bytes, sha256 = archive_snapshot_evidence(
             report_dir=self.report_dir,
             artifacts_dir=self.artifacts_dir,
-            unit="final",
+            unit="terminal",
             attempt=1,
             chain_id=self.chain_id or "nochain",
             sequence=self.snapshot_sequence + 1,
@@ -1835,7 +1870,7 @@ class RemoteStrictController:
             "w_sha": self.w_sha,
             "c_sha": self.c_sha,
             "chain_id": self.chain_id or "",
-            "unit": "final",
+            "unit": "terminal",
             "native_attempt": 1,
             "snapshot_sequence": self.snapshot_sequence,
             "archive_path": archive_path,
@@ -1845,7 +1880,10 @@ class RemoteStrictController:
         ack = self.publisher.persist(req)
         if ack.get("verified") is not True:
             raise EvidenceUploadError("Terminal snapshot upload could not be verified by publisher")
-
+        print(
+            f"[CONTROLLER] Verified terminal persistence "
+            f"(seq {self.snapshot_sequence}, artifact_id={ack.get('artifact_id')})"
+        )
     def _write_stage_journal(self, record: StageExecutionRecord) -> None:
         """Append record to mandatory stage-journal.jsonl."""
         journal_file = os.path.join(self.artifacts_dir, "stage-journal.jsonl")
