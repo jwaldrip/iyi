@@ -8,7 +8,7 @@ Strict dispatch is refused before a build or native stage. Jason selected a prot
 
 ## Hosted validation
 
-Run the `Remote Strict Proof Chain (macOS 15)` workflow at the exact C, using `validation-only`. The hosted job installs the locked Node dependencies, rebuilds the tracked bundle and rejects drift, runs the action suite and full remote-strict Python test discovery, and then loads the committed action for five synthetic invocations. No P1 compiler is built and no native corpus stage is launched.
+Run the `Remote Strict Proof Chain (macOS 15)` workflow at the exact C, using `validation-only`. The hosted job installs the locked Node dependencies, rebuilds the tracked bundle and rejects drift, runs the action suite and full remote-strict Python test discovery, and then loads the committed action for five synthetic transaction invocations and a controller-crash recovery invocation. No P1 compiler is built and no native corpus stage is launched.
 
 The hosted commands for the executable checks are:
 
@@ -21,7 +21,7 @@ PYTHONFAULTHANDLER=1 timeout 600s python3 -B -X faulthandler \
   -m unittest discover -s proof -p 'test_remote_strict*.py' -v
 ```
 
-The success case requires 37 checkpoints: plan, pin, Run1, Run2, 31 synthetic drivers, final, and terminal. The four separate failure cases must return nonzero: failed plan (1 checkpoint), failed pin (2), Run3 divergence (6), and Run1 cleanup failure (4). The workflow checks their original action outcomes, downloads the 50 checkpoint artifacts by exact ID, and runs the independent evidence checker on their inner tar payloads. It then exports one sealed tar containing only the five checked reports and requires an exact inventory of 51 artifact IDs. An interrupted or incomplete job is not a pass.
+The success case requires 37 checkpoints: plan, pin, Run1, Run2, 31 synthetic drivers, final, and terminal. The four separate failure cases must return nonzero: failed plan (1 checkpoint), failed pin (2), Run3 divergence (6), and Run1 cleanup failure (4). A sixth case kills the synthetic controller with owned descendants, verifies their recovery and graceful flush, and independently checks an unrelated sentinel survives. It produces no checkpoint artifacts. The workflow checks original action outcomes, downloads the 50 checkpoint artifacts by exact ID, and runs the independent evidence checker on their inner tar payloads and crash recovery. It then exports one sealed tar containing the six checked reports and requires an exact inventory of 51 artifact IDs. An interrupted or incomplete job is not a pass.
 
 During the job, the checker receives the actual P, W, C and synthetic compiler paths, platform job identity, and per-invocation receipt index. It downloads each artifact as `DIR/<artifact_id>.tar`; the divergence case compares bytes with a separately generated fixture outside the source trees. The sealed reports retain the checked bindings, IDs, hashes, sizes, member names, and divergence hashes, not the ephemeral index or fixture file. A later reviewer can download the artifacts by ID and independently check their contents against those retained hashes. The action's ACK alone is not an independent expected-value oracle.
 

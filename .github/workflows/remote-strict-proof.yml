@@ -415,6 +415,115 @@ jobs:
           w_sha: ${{ env.W_AUTHORIZED_SHA }}
           c_sha: ${{ github.sha }}
 
+      - name: Start unrelated ownership sentinel
+        id: sentinel
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/strict-sentinel.py" <<'PY'
+          import json, os, pathlib, secrets, socket, subprocess
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          sock_path = str(root / "strict-sentinel.sock")
+          token = secrets.token_hex(32)
+          server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+          server.bind(sock_path)
+          server.listen(4)
+          start = subprocess.check_output(["ps", "-p", str(os.getpid()), "-o", "lstart="], text=True).strip()
+          (root / "strict-sentinel.json").write_text(json.dumps({"pid": os.getpid(), "start": start, "token": token, "socket": sock_path}))
+          while True:
+              conn, _ = server.accept()
+              with conn:
+                  request = conn.recv(128).decode()
+                  if request == token:
+                      conn.sendall(token.encode())
+                  elif request == token + ":stop":
+                      conn.sendall(token.encode())
+                      break
+          server.close()
+          PY
+          RUNNER_TRACKING_ID= nohup python3 -B "$RUNNER_TEMP/strict-sentinel.py" > "$RUNNER_TEMP/strict-sentinel.log" 2>&1 &
+          for n in $(seq 1 100); do
+            test -s "$RUNNER_TEMP/strict-sentinel.json" && break
+            sleep 0.1
+          done
+          python3 -B - <<'PY'
+          import json, os, pathlib, socket, subprocess
+          data = json.loads((pathlib.Path(os.environ["RUNNER_TEMP"]) / "strict-sentinel.json").read_text())
+          assert data["start"]
+          assert subprocess.check_output(["ps", "-p", str(data["pid"]), "-o", "lstart="], text=True).strip() == data["start"]
+          with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+              s.settimeout(5)
+              s.connect(data["socket"])
+              s.sendall(data["token"].encode())
+              assert s.recv(128).decode() == data["token"]
+          PY
+
+      - name: Synthetic controller crash and ownership recovery
+        id: ownership-crash-case
+        continue-on-error: true
+        uses: ./.github/actions/strict-supervisor
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          mode: validation-only
+          validation_case: ownership-crash
+          invocation_id: synthetic-ownership-crash
+          case_data_dir: ${{ runner.temp }}/strict-case-ownership-crash
+          p: ${{ steps.source-trees.outputs.p_path }}
+          w: ${{ steps.source-trees.outputs.w_path }}
+          compiler: ${{ steps.source-trees.outputs.compiler }}
+          artifacts_dir: ${{ runner.temp }}/strict-artifacts-ownership-crash
+          job_start_time: ${{ steps.job-metadata.outputs.job_started_at_iso }}
+          job_id: ${{ steps.job-metadata.outputs.job_id }}
+          job_key: ${{ steps.job-metadata.outputs.job_key }}
+          p_sha: ${{ env.P_AUTHORIZED_SHA }}
+          w_sha: ${{ env.W_AUTHORIZED_SHA }}
+          c_sha: ${{ github.sha }}
+
+      - name: Verify ownership recovery and unrelated sentinel
+        if: ${{ always() && steps.sentinel.outcome == 'success' }}
+        env:
+          CRASH_INDEX: ${{ steps.ownership-crash-case.outputs.receipt_index_path }}
+          CRASH_OUTCOME: ${{ steps.ownership-crash-case.outcome }}
+        run: |
+          python3 -B - <<'PY'
+          import json, os, pathlib, socket, subprocess, sys
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          data = json.loads((root / "strict-sentinel.json").read_text())
+          try:
+              start = subprocess.check_output(["ps", "-p", str(data["pid"]), "-o", "lstart="], text=True).strip()
+              if start != data["start"]:
+                  sys.exit("Sentinel identity changed")
+              with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                  s.settimeout(5)
+                  s.connect(data["socket"])
+                  s.sendall(data["token"].encode())
+                  if s.recv(128).decode() != data["token"]:
+                      sys.exit("Sentinel did not respond")
+              if os.environ["CRASH_OUTCOME"] != "failure":
+                  sys.exit("Controller crash did not fail")
+              index = json.loads(pathlib.Path(os.environ["CRASH_INDEX"]).read_text())
+              recovery = index["ownership_recovery"]
+              if (index["entries"] or recovery["controller_signal"] != "SIGKILL"
+                      or recovery["recovered"] is not True or len(recovery["observed_pids"]) < 2):
+                  sys.exit("Missing controller crash or ownership recovery evidence")
+              # The fixture's SIGTERM handler must have completed before recovery returned.
+              if (root / "strict-case-ownership-crash" / "ownership-ready").read_text() != "ready\n":
+                  sys.exit("Missing ownership readiness marker")
+              if (root / "strict-case-ownership-crash" / "ownership-flushed").read_text() != "completed_term_flush\n":
+                  sys.exit("Missing native-grace flush marker")
+              report = root / "strict-ownership-report.json"
+              report.write_text(json.dumps({"case": "ownership-crash", "action_outcome": "failure",
+                  "controller_signal": "SIGKILL", "observed_pids": recovery["observed_pids"],
+                  "recovered": True, "grace_flush_observed": True, "sentinel_survived": True}))
+          finally:
+              with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                  s.settimeout(5)
+                  s.connect(data["socket"])
+                  s.sendall((data["token"] + ":stop").encode())
+                  if s.recv(128).decode() != data["token"]:
+                      raise RuntimeError("Sentinel stop handshake failed")
+          PY
+
       - name: Download exact artifact IDs and independently check all cases
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -428,6 +537,7 @@ jobs:
           PIN_INDEX: ${{ steps.failed-pin-case.outputs.receipt_index_path }}
           DIVERGENCE_INDEX: ${{ steps.divergence-case.outputs.receipt_index_path }}
           CLEANUP_INDEX: ${{ steps.cleanup-case.outputs.receipt_index_path }}
+          CRASH_INDEX: ${{ steps.ownership-crash-case.outputs.receipt_index_path }}
           SUCCESS_OUTCOME: ${{ steps.success-case.outcome }}
           PLAN_OUTCOME: ${{ steps.failed-plan-case.outcome }}
           PIN_OUTCOME: ${{ steps.failed-pin-case.outcome }}
@@ -489,12 +599,28 @@ jobs:
               if case == "divergence":
                   command += ["--expected-divergence", str(temp / "strict-case-divergence" / "divergence.bin")]
               subprocess.run(command, check=True)
+          crash_report = reports / "ownership-crash.json"
+          subprocess.run(["python3", "-B", "proof/check_remote_strict_evidence.py",
+              "--index", os.environ["CRASH_INDEX"], "--downloads-dir", str(downloads),
+              "--case", "ownership-crash", "--case-data-dir", str(temp / "strict-case-ownership-crash"),
+              "--p", os.environ["P_PATH"], "--w", os.environ["W_PATH"],
+              "--c", os.environ["GITHUB_WORKSPACE"], "--compiler", os.environ["COMPILER_PATH"],
+              "--repository", os.environ["GITHUB_REPOSITORY"],
+              "--run-id", os.environ["GITHUB_RUN_ID"], "--run-attempt", os.environ["GITHUB_RUN_ATTEMPT"],
+              "--job-id", os.environ["JOB_ID"], "--job-key", os.environ["JOB_KEY"],
+              "--invocation-id", "synthetic-ownership-crash", "--report", str(crash_report)], check=True)
+          crash = json.loads(crash_report.read_text())
+          sentinel = json.loads((temp / "strict-ownership-report.json").read_text())
+          if sentinel.get("sentinel_survived") is not True:
+              sys.exit("Unrelated sentinel survival not established")
+          crash["sentinel_survived"] = True
+          crash_report.write_text(json.dumps(crash))
           if len(seen) != 50:
               sys.exit("Expected exactly 50 distinct incremental artifact IDs")
           (temp / "strict-checked-ids.json").write_text(json.dumps(sorted(seen)), encoding="utf-8")
           export = temp / "strict-verified-evidence.tar"
           with tarfile.open(export, "w") as tar:
-              for case, _, _ in cases:
+              for case in [item[0] for item in cases] + ["ownership-crash"]:
                   report = reports / f"{case}.json"
                   if not report.is_file() or report.is_symlink():
                       sys.exit(f"{case}: checked report missing or unsafe")
