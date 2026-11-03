@@ -52,11 +52,34 @@ def parse_json(data: bytes):
     return json.loads(data.decode("utf-8"))
 
 
+def check_ownership_crash(index: dict, case_data_dir: str | None) -> dict:
+    require(case_data_dir is not None, "missing crash fixture directory")
+    root = Path(case_data_dir)
+    require((root / "ownership-ready").read_text() == "ready\n", "crash fixture not ready")
+    require((root / "ownership-flushed").read_text() == "completed_term_flush\n", "termination flush missing")
+    lines = (root / "ownership-pids").read_text().splitlines()
+    require(len(lines) == 2 and lines[0].startswith("child:") and lines[1].startswith("grandchild:"), "invalid crash fixture PID list")
+    pids = [int(line.split(":", 1)[1]) for line in lines]
+    require(all(pid > 0 for pid in pids) and pids[0] != pids[1], "invalid descendant PIDs")
+    recovery = index["ownership_recovery"]
+    require(index.get("exit_code") is None and index.get("entries") == [], "crash produced an unexpected checkpoint or exit")
+    require(recovery.get("controller_signal") == "SIGKILL" and recovery.get("recovered") is True, "controller recovery missing")
+    require(set(recovery["observed_pids"]) >= set(pids), "fixture descendants not observed")
+    journal = index["ownership_journal"]
+    for pid in pids:
+        observations = [(i, e) for i, e in enumerate(journal) if e.get("event") == "observed" and e.get("pid") == pid and e.get("birth")]
+        require(observations, "descendant identity absent from ownership journal")
+        require(any(e.get("event") == "signaled" and e.get("pid") == pid and e.get("birth") == observed["birth"] and e.get("signal") == "SIGTERM" for i, observed in observations for e in journal[i + 1:]), "descendant not signaled with observed identity")
+    registrations = [(i, e) for i, e in enumerate(journal) if e.get("event") == "registered"]
+    require(any(any(e.get("event") == "resolved" and e.get("pid") == registered.get("pid") and e.get("unit") == registered.get("unit") and e.get("attempt") == registered.get("attempt") for e in journal[i + 1:]) for i, registered in registrations), "ownership registration unresolved")
+    return {"case": "ownership-crash", "invocation_id": index["invocation_id"], "execution_kind": "synthetic", "controller_signal": "SIGKILL", "observed_pids": pids, "termination_flush": True, "recovered": True, "ownership_journal": journal}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--index", required=True)
     parser.add_argument("--downloads-dir", required=True)
-    parser.add_argument("--case", required=True, choices=tuple(COUNTS))
+    parser.add_argument("--case", required=True, choices=(*COUNTS, "ownership-crash"))
     parser.add_argument("--w", required=True, help="actual audited W checkout")
     parser.add_argument("--p", required=True, help="actual P checkout")
     parser.add_argument("--c", required=True, help="actual controller checkout")
@@ -64,9 +87,16 @@ def main() -> int:
     for name in ("repository", "run-id", "run-attempt", "job-id", "job-key", "invocation-id"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--expected-divergence")
+    parser.add_argument("--case-data-dir")
     parser.add_argument("--report")
     args = parser.parse_args()
     index = json.loads(Path(args.index).read_text(encoding="utf-8"))
+    if args.case == "ownership-crash":
+        require(index.get("execution_kind") == "synthetic" and index.get("invocation_id") == args.invocation_id, "crash context mismatch")
+        report = check_ownership_crash(index, args.case_data_dir)
+        if args.report:
+            Path(args.report).write_text(json.dumps(report, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        return 0
     entries = index["entries"]
     require(len(entries) == COUNTS[args.case], "unexpected checkpoint count")
     require(index.get("execution_kind") == "synthetic", "wrong execution kind")
