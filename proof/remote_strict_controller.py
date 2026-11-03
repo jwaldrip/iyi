@@ -800,7 +800,7 @@ class RemoteStrictController:
             raise EvidenceUploadError("PUBLISHER-REQUIRED")
         request = {**event, "protocol_version": 1, "request_id": secrets.token_hex(16),
                    "invocation_id": self.invocation_id}
-        return self.publisher.persist(request)
+        return self.publisher.persist(request, timeout_sec=max(self.publisher_timeout_sec, self.grace_sec + 15.0))
 
     def _persist(self, *, kind: str, unit: str, attempt: int, chain_id: str | None,
                  archive_path: str, size: int, digest: str) -> dict[str, Any]:

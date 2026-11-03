@@ -230,7 +230,9 @@ def seal(report_dir, artifacts_dir, unit, attempt, chain_id, sequence, failed=Fa
                             if first in ('t', 'c', 'bin'): return False
                             if first == 's':
                                 if not failed: return False
-                                if len(sub) >= 3 and sub[2] != 'mods': return False
+                                if len(sub) < 3: return is_dir
+                                if sub[2] != 'mods': return False
+                                if len(sub) == 3: return is_dir
                         return True
                     for rel in report.walk(base, include):
                         report.add_file(tar, rel, 'attempt/' + rel[len(base)+1:], manifest=manifest)
