@@ -9,6 +9,7 @@ according to PlanStrictCIHang and PlanQuietCorpusFailures.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import re
@@ -23,12 +24,16 @@ import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 from typing import Any
 from unittest import mock
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
+PROOF_ROOT = os.path.dirname(os.path.abspath(__file__))
+if PROOF_ROOT not in sys.path:
+    sys.path.insert(0, PROOF_ROOT)
 
 import proof.remote_strict_controller as rsc
 from proof.remote_strict_fixtures import (
@@ -61,6 +66,7 @@ class FakePublisher:
         if fail_driver is not None:
             self.overrides["fail_driver"] = fail_driver
         self.received_requests: list[dict[str, Any]] = []
+        self.ownership_requests: list[dict[str, Any]] = []
 
         self._req_r, self.req_w = os.pipe()
         self.ack_r, self._ack_w = os.pipe()
@@ -105,14 +111,17 @@ class FakePublisher:
                     except json.JSONDecodeError:
                         continue
 
-                    self.received_requests.append(req)
+                    if req.get("event") in ("ownership-register", "ownership-resolve"):
+                        self.ownership_requests.append(req)
+                    else:
+                        self.received_requests.append(req)
                     ack = self._build_ack(req)
 
-                    if self.mode == "silent_pipe":
+                    if self.mode == "silent_pipe" and req.get("event") == "persistence-request":
                         # Read request but never write ACK
                         continue
 
-                    if self.mode == "partial_frame":
+                    if self.mode == "partial_frame" and req.get("event") == "persistence-request":
                         # Write partial frame without newline, then break
                         try:
                             os.write(self._ack_w, b'{"request_id": "' + req.get("request_id", "").encode("utf-8"))
@@ -120,7 +129,7 @@ class FakePublisher:
                             pass
                         return
 
-                    if self.mode == "no_op" or ack is None:
+                    if ack is None:
                         # Close ACK writer without sending reply
                         return
 
@@ -141,94 +150,42 @@ class FakePublisher:
                 pass
 
     def _build_ack(self, req: dict[str, Any]) -> dict[str, Any] | None:
-        unit = req.get("unit", "")
-        req_chain = req.get("chain_id")
-        seq = req.get("snapshot_sequence", 1)
+        event = req.get("event")
+        if event in ("ownership-register", "ownership-resolve"):
+            required = ("protocol_version", "request_id", "invocation_id", "pid", "unit", "native_attempt")
+            if req.get("protocol_version") != 1 or any(k not in req for k in required):
+                return None
+            if event == "ownership-resolve" and "grace_sec" not in req:
+                return None
+            if event == "ownership-resolve":
+                # This fake cannot prove a running stage's descendants are gone.
+                try:
+                    state = os.waitid(os.P_PID, req["pid"], os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                except ChildProcessError:
+                    state = True
+                if not state:
+                    return {**req, "event": event + "-ack", "verified": False}
+            return {**req, "event": event + "-ack", "verified": True}
 
-        # Validate request structure like Node supervisor
-        if "chain_id" not in req:
-            return {
-                "request_id": req.get("request_id", f"req-{seq}"),
-                "repository": req.get("repository", ""),
-                "run_id": req.get("run_id", ""),
-                "run_attempt": req.get("run_attempt", 1),
-                "job_id": req.get("job_id", ""),
-                "p_sha": req.get("p_sha", ""),
-                "w_sha": req.get("w_sha", ""),
-                "c_sha": req.get("c_sha", ""),
-                "chain_id": None,
-                "unit": unit,
-                "native_attempt": req.get("native_attempt", 1),
-                "snapshot_sequence": seq,
-                "artifact_id": None,
-                "downloaded_sha256": None,
-                "downloaded_bytes": None,
-                "verified": False,
-                "error": "Supervisor request validation rejected: Missing required immutable field: chain_id",
-            }
-
-        if unit == "plan":
-            if req_chain is not None:
-                return {
-                    "request_id": req.get("request_id", f"req-{seq}"),
-                    "repository": req.get("repository", ""),
-                    "run_id": req.get("run_id", ""),
-                    "run_attempt": req.get("run_attempt", 1),
-                    "job_id": req.get("job_id", ""),
-                    "p_sha": req.get("p_sha", ""),
-                    "w_sha": req.get("w_sha", ""),
-                    "c_sha": req.get("c_sha", ""),
-                    "chain_id": req_chain,
-                    "unit": unit,
-                    "native_attempt": req.get("native_attempt", 1),
-                    "snapshot_sequence": seq,
-                    "artifact_id": None,
-                    "downloaded_sha256": None,
-                    "downloaded_bytes": None,
-                    "verified": False,
-                    "error": f"Supervisor request validation rejected: Unit 'plan' requires typed chain_id: null (pre-pin), got {req_chain!r}",
-                }
+        required = (
+            "protocol_version", "request_id", "invocation_id", "execution_kind",
+            "repository", "run_id", "run_attempt", "job_id", "job_key",
+            "p_sha", "w_sha", "c_sha", "fixture_sha256", "snapshot_kind",
+            "chain_id", "unit", "native_attempt", "snapshot_sequence",
+            "archive_path", "archive_bytes", "archive_sha256",
+        )
+        if event != "persistence-request" or req.get("protocol_version") != 1 or any(k not in req for k in required):
+            return None
+        kind = req["snapshot_kind"]
+        chain = req["chain_id"]
+        if kind in ("plan", "prechain-failure"):
+            if chain is not None:
+                return None
+        elif kind in ("checkpoint", "terminal-envelope"):
+            if not isinstance(chain, str) or not re.fullmatch(r"[0-9a-f]{32}", chain):
+                return None
         else:
-            if req_chain is None:
-                return {
-                    "request_id": req.get("request_id", f"req-{seq}"),
-                    "repository": req.get("repository", ""),
-                    "run_id": req.get("run_id", ""),
-                    "run_attempt": req.get("run_attempt", 1),
-                    "job_id": req.get("job_id", ""),
-                    "p_sha": req.get("p_sha", ""),
-                    "w_sha": req.get("w_sha", ""),
-                    "c_sha": req.get("c_sha", ""),
-                    "chain_id": None,
-                    "unit": unit,
-                    "native_attempt": req.get("native_attempt", 1),
-                    "snapshot_sequence": seq,
-                    "artifact_id": None,
-                    "downloaded_sha256": None,
-                    "downloaded_bytes": None,
-                    "verified": False,
-                    "error": f"Supervisor request validation rejected: Unit '{unit}' requires valid chain_id (chain_id: null accepted only for unit plan)",
-                }
-            if not isinstance(req_chain, str) or not req_chain.strip() or req_chain in ("nochain", "null"):
-                return {
-                    "request_id": req.get("request_id", f"req-{seq}"),
-                    "repository": req.get("repository", ""),
-                    "run_id": req.get("run_id", ""),
-                    "run_attempt": req.get("run_attempt", 1),
-                    "job_id": req.get("job_id", ""),
-                    "p_sha": req.get("p_sha", ""),
-                    "w_sha": req.get("w_sha", ""),
-                    "c_sha": req.get("c_sha", ""),
-                    "chain_id": req_chain,
-                    "unit": unit,
-                    "native_attempt": req.get("native_attempt", 1),
-                    "snapshot_sequence": seq,
-                    "artifact_id": None,
-                    "downloaded_sha256": None,
-                    "downloaded_bytes": None,
-                    "verified": False,
-                    "error": f"Supervisor request validation rejected: Invalid chain_id: sentinel forge '{req_chain}' is forbidden",
-                }
+            return None
 
         if self.mode == "success":
             return self._build_success_ack(req)
@@ -285,39 +242,18 @@ class FakePublisher:
         return ack
 
     def _build_success_ack(self, req: dict[str, Any]) -> dict[str, Any]:
-        """Inspect sealed archive on disk and compute genuine readback hash and size."""
-        seq = req.get("snapshot_sequence", 1)
-        archive_path = req.get("archive_path", "")
-
-        computed_sha = req.get("archive_sha256")
-        computed_bytes = req.get("archive_bytes")
-
-        # Independent disk readback verification
-        if archive_path and os.path.isfile(archive_path):
-            with open(archive_path, "rb") as f:
-                content = f.read()
-            computed_bytes = len(content)
-            computed_sha = hashlib.sha256(content).hexdigest()
-
-        return {
-            "request_id": req.get("request_id", f"req-{seq}"),
-            "repository": req.get("repository", "jwaldrip/iyi"),
-            "run_id": req.get("run_id", "41362618094"),
-            "run_attempt": req.get("run_attempt", 1),
-            "job_id": req.get("job_id", "job-1"),
-            "p_sha": req.get("p_sha", "626463375298d357ffcb3223059f4d3adce6fb10"),
-            "w_sha": req.get("w_sha", "b932ce0d97775c7061102a13db706f507dc84117"),
-            "c_sha": req.get("c_sha", "34ae13f8f8d82be5b2c9597a9df79eae5b6f7243"),
-            "chain_id": req.get("chain_id"),
-            "unit": req.get("unit"),
-            "native_attempt": req.get("native_attempt", 1),
-            "snapshot_sequence": seq,
-            "artifact_id": f"art-{seq}",
-            "downloaded_sha256": computed_sha,
-            "downloaded_bytes": computed_bytes,
+        """Read actual sealed bytes, independently of the request's claimed digest."""
+        with open(req["archive_path"], "rb") as f:
+            content = f.read()
+        ack = {k: v for k, v in req.items() if k not in ("event", "archive_path")}
+        ack.update({
+            "event": "persistence-ack",
+            "artifact_id": f"art-{req['snapshot_sequence']}",
+            "downloaded_sha256": hashlib.sha256(content).hexdigest(),
+            "downloaded_bytes": len(content),
             "verified": True,
-            "error": None,
-        }
+        })
+        return ack
 
     def close(self) -> None:
         if self._closed:
@@ -359,6 +295,11 @@ class TestRemoteStrictController(unittest.TestCase):
         # Provision canonical modules under W
         canonical_src = os.path.join(os.path.dirname(os.path.abspath(__file__)))
         self.canonical_hashes = provision_canonical_w(self.w_dir, source_proof_dir=canonical_src)
+        self.p_sha = self._init_repo(self.p_dir)
+        self.w_sha = self._init_repo(self.w_dir)
+        self.c_sha = subprocess.check_output(
+            ["git", "-C", REPO_ROOT, "rev-parse", "HEAD"], text=True
+        ).strip()
 
         # Create dummy compiler
         self.compiler_path = os.path.join(self.test_dir, "iyi")
@@ -371,11 +312,13 @@ class TestRemoteStrictController(unittest.TestCase):
         with open(self.run_proof_py, "w", encoding="utf-8") as f:
             f.write(FAKE_STAGE_EMITTER_SOURCE)
         os.chmod(self.run_proof_py, stat.S_IRWXU)
+        self.fixture_sha256 = hashlib.sha256(FAKE_STAGE_EMITTER_SOURCE.encode("utf-8")).hexdigest()
 
         self.config_path = os.path.join(self.test_dir, "config.json")
         self.chain_id = "0123456789abcdef0123456789abcdef"
         self.default_config = {
             "chain_id": self.chain_id,
+            "c_sha": self.c_sha,
             "required_drivers": ["acme", "cookie"],
         }
         self._write_config(self.default_config)
@@ -393,6 +336,17 @@ class TestRemoteStrictController(unittest.TestCase):
         for pub in self.publishers:
             pub.close()
         shutil.rmtree(self.test_dir, ignore_errors=True)
+    @staticmethod
+    def _init_repo(path: str) -> str:
+        subprocess.run(["git", "init", "-q", path], check=True)
+        subprocess.run(["git", "-C", path, "add", "-A"], check=True)
+        subprocess.run(
+            ["git", "-C", path, "-c", "user.name=Fixture", "-c",
+             "user.email=fixture@example.invalid", "commit", "-q", "--allow-empty", "-m", "fixture"],
+            check=True,
+        )
+        return subprocess.check_output(["git", "-C", path, "rev-parse", "HEAD"], text=True).strip()
+
 
     def _write_config(self, cfg: dict[str, Any]):
         with open(self.config_path, "w", encoding="utf-8") as f:
@@ -407,6 +361,16 @@ class TestRemoteStrictController(unittest.TestCase):
             "artifacts_dir": self.artifacts_dir,
             "report_dir": self.report_dir,
             "run_proof_py": self.run_proof_py,
+            "p_sha": self.p_sha,
+            "w_sha": self.w_sha,
+            "c_sha": self.c_sha,
+            "repository": "fixture/iyi",
+            "run_id": "101",
+            "run_attempt": "1",
+            "job_id": "202",
+            "job_key": "strict-fixture",
+            "invocation_id": "fixture-invocation",
+            "fixture_sha256": self.fixture_sha256,
             "min_disk_gib": 0.01,
             "driver_limit_sec": 2100.0,
             "grace_sec": 30.0,
@@ -417,11 +381,40 @@ class TestRemoteStrictController(unittest.TestCase):
         }
 
         if publisher is not None:
-            opts["ipc_req_fd"] = publisher.req_w
-            opts["ipc_ack_fd"] = publisher.ack_r
+            opts["ipc_req_fd"] = os.dup(publisher.req_w)
+            opts["ipc_ack_fd"] = os.dup(publisher.ack_r)
 
         opts.update(kwargs)
         return rsc.RemoteStrictController(**opts)
+
+    def _run_owned_process(self, cmd, *, cwd, env, monotonic_deadline, grace_sec,
+                           is_interrupted, log_file=None):
+        """A test supervisor for a single registered root, never descendants."""
+        from proof.registered_stage import run_registered_stage
+
+        def exchange(req):
+            if req["event"] == "ownership-resolve":
+                try:
+                    os.kill(req["pid"], signal.SIGTERM)
+                    deadline = time.monotonic() + req["grace_sec"]
+                    while time.monotonic() < deadline:
+                        if os.waitid(os.P_PID, req["pid"], os.WEXITED | os.WNOHANG | os.WNOWAIT):
+                            break
+                        time.sleep(0.05)
+                    else:
+                        os.kill(req["pid"], signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            return {**req, "event": req["event"] + "-ack", "verified": True}
+
+        path = log_file or os.path.join(self.artifacts_dir, "owned-process.log")
+        with open(path, "wb") as log:
+            result = run_registered_stage(
+                cmd, cwd=cwd, env=env, log_file=log, unit="run1", attempt=1,
+                monotonic_deadline=monotonic_deadline, grace_sec=grace_sec,
+                register=exchange, is_interrupted=is_interrupted,
+            )
+        return result.exit_code, result.interrupted, result.ownership_error, [], []
 
     # -------------------------------------------------------------------------
     # 1. Compilation & Positive Control
@@ -435,7 +428,8 @@ class TestRemoteStrictController(unittest.TestCase):
         self.assertNotIn("nonlocal", proc.stderr)
 
         # Test pin execution
-        cmd = [sys.executable, self.run_proof_py, "pin", "--report-dir", self.report_dir]
+        cmd = [sys.executable, self.run_proof_py, "pin", "--report-dir", self.report_dir,
+               "--p", self.p_dir, "--w", self.w_dir, "--compiler", self.compiler_path]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=10.0)
         self.assertEqual(proc.returncode, 0, f"Pin failed: {proc.stderr}")
         self.assertTrue(os.path.isfile(os.path.join(self.report_dir, "pin.json")))
@@ -533,6 +527,17 @@ class TestRemoteStrictController(unittest.TestCase):
         # Verify sequences
         req_seqs = [r["snapshot_sequence"] for r in pub.received_requests]
         self.assertEqual(req_seqs, list(range(1, len(expected_units) + 1)))
+        terminal = pub.received_requests[-1]
+        self.assertEqual(terminal["snapshot_kind"], "terminal-envelope")
+        with tarfile.open(terminal["archive_path"]) as archive:
+            members = archive.getnames()
+            summary_name = next(n for n in members if n.endswith("strict-controller-summary.json"))
+            envelope_name = next(n for n in members if n.endswith("terminal-envelope.json"))
+            archived_summary = json.load(archive.extractfile(summary_name))
+            envelope = json.load(archive.extractfile(envelope_name))
+            self.assertEqual(archived_summary["overall_status"], "NATIVE_COMPLETE_PENDING_TERMINAL")
+            self.assertNotIn("terminal_receipt", archived_summary)
+            self.assertNotIn("terminal_receipt", envelope)
 
         # Verify typed chain_id contract: null for pre-pin plan, exact nonempty chain_id for post-pin
         self.assertIsNone(pub.received_requests[0]["chain_id"])
@@ -678,7 +683,13 @@ class TestRemoteStrictController(unittest.TestCase):
     def test_04d_final_inventory_missing_required_driver_rejected(self):
         """Scenario 4d: Independent final-inventory guard rejects missing required driver unit."""
         # Test native final validation directly with missing driver in units
-        pin = generate_pin(self.chain_id, report_dir=self.report_dir)
+        with open(self.compiler_path, "rb") as compiler:
+            compiler_sha = hashlib.sha256(compiler.read()).hexdigest()
+        pin = generate_pin(
+            self.chain_id, report_dir=self.report_dir, p_source_sha=self.p_sha,
+            w_head=self.w_sha, c_sha=self.c_sha, compiler_sha256=compiler_sha,
+            compiler_path=self.compiler_path,
+        )
         required = ["acme", "cookie"]
 
         # Units contains acme but omits cookie
@@ -722,7 +733,7 @@ class TestRemoteStrictController(unittest.TestCase):
         t_start = time.monotonic()
         # Launch using run_bounded_process
         thread = threading.Thread(
-            target=lambda: rsc.run_bounded_process(
+            target=lambda: self._run_owned_process(
                 [sys.executable, "-c", test_script],
                 cwd=self.w_dir,
                 env=dict(os.environ),
@@ -762,7 +773,7 @@ class TestRemoteStrictController(unittest.TestCase):
         res_holder = []
 
         def runner():
-            rc, was_int, reason, reaped, survivors = rsc.run_bounded_process(
+            rc, was_int, reason, reaped, survivors = self._run_owned_process(
                 [sys.executable, "-c", test_script],
                 cwd=self.w_dir,
                 env=dict(os.environ),
@@ -791,120 +802,61 @@ class TestRemoteStrictController(unittest.TestCase):
     # -------------------------------------------------------------------------
     # 6. Nested Process Sessions, Sentinels & PID Identity
     # -------------------------------------------------------------------------
-    def test_06a_nested_separate_session_cleanup_preserves_unrelated_sentinel(self):
-        """Scenario 6a: Child and grandchild in separate sessions are reaped; unrelated sentinel survives."""
-        sentinel = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(60)"],
-            start_new_session=True,
-        )
-        self.spawned_procs.append(sentinel)
+    def test_06a_registration_rejection_never_executes_stage(self):
+        from proof.registered_stage import run_registered_stage
 
-        pid_file = os.path.join(self.test_dir, "nested_pids.txt")
-        ready_file = os.path.join(self.test_dir, "nested_ready.txt")
-        cfg = dict(self.default_config)
-        cfg["run1"] = {
-            "sleep": 10.0,
-            "spawn_nested": True,
-            "pid_file": pid_file,
-            "ready_file": ready_file,
-        }
-        self._write_config(cfg)
+        marker = os.path.join(self.test_dir, "must-not-exec")
+        requests = []
 
+        def reject(req):
+            requests.append(req)
+            return {**req, "event": "ownership-register-ack", "verified": False}
+
+        with open(os.path.join(self.artifacts_dir, "gate.log"), "wb") as log:
+            result = run_registered_stage(
+                [sys.executable, "-c", f"open({marker!r}, 'w').close()"],
+                cwd=self.w_dir, env=dict(os.environ), log_file=log, unit="run1",
+                attempt=1, monotonic_deadline=time.monotonic() + 10, grace_sec=1,
+                register=reject, is_interrupted=lambda: False,
+            )
+        self.assertFalse(result.ownership_resolved)
+        self.assertFalse(os.path.exists(marker))
+        self.assertEqual([r["event"] for r in requests], ["ownership-register"])
+
+    def test_06b_wrong_registration_identity_never_executes_stage(self):
+        from proof.registered_stage import run_registered_stage
+
+        marker = os.path.join(self.test_dir, "wrong-pid-must-not-exec")
+        def wrong_pid(req):
+            return {**req, "event": "ownership-register-ack",
+                    "pid": req["pid"] + 1, "verified": True}
+
+        with open(os.path.join(self.artifacts_dir, "wrong-pid.log"), "wb") as log:
+            result = run_registered_stage(
+                [sys.executable, "-c", f"open({marker!r}, 'w').close()"],
+                cwd=self.w_dir, env=dict(os.environ), log_file=log, unit="run1",
+                attempt=1, monotonic_deadline=time.monotonic() + 10, grace_sec=1,
+                register=wrong_pid, is_interrupted=lambda: False,
+            )
+        self.assertFalse(result.ownership_resolved)
+        self.assertFalse(os.path.exists(marker))
+
+    def test_06c_rejected_ownership_resolution_blocks_advancement(self):
         pub = FakePublisher(mode="success")
         self.publishers.append(pub)
+        original = pub._build_ack
 
-        ctrl = self._create_controller(publisher=pub, payload_budget_sec=0.8, grace_sec=0.5)
-        rc = ctrl.run()
+        def reject_resolution(req):
+            ack = original(req)
+            if req.get("event") == "ownership-resolve" and ack is not None:
+                ack["verified"] = False
+            return ack
 
-        self.assertEqual(rc, 124)
-        self.assertEqual(ctrl.overall_status, "INTERRUPTED_BY_HOSTING_BUDGET")
-
-        # Read nested PIDs
-        self.assertTrue(os.path.isfile(pid_file))
-        with open(pid_file, "r", encoding="utf-8") as pf:
-            lines = [l.strip() for l in pf.readlines() if l.strip()]
-
-        pids = {}
-        for l in lines:
-            role, p = l.split(":", 1)
-            pids[role] = int(p)
-
-        self.assertIn("child", pids)
-        self.assertIn("grandchild", pids)
-
-        # Assert both owned processes exited
-        for role, p in pids.items():
-            alive = True
-            try:
-                os.kill(p, 0)
-            except OSError:
-                alive = False
-            self.assertFalse(alive, f"{role} with PID {p} survived reaping!")
-
-        # Sentinel MUST still be alive!
-        self.assertIsNone(sentinel.poll(), "Unrelated sentinel process was killed!")
-    def test_06b_descendant_tracker_mechanics(self):
-        """Scenario 6b: Real tracker discovers late-created grandchildren and rejects mismatched lstart."""
-        parent_proc = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(10)"],
-            start_new_session=True,
-        )
-        self.spawned_procs.append(parent_proc)
-
-        tracker = rsc.DescendantTracker(parent_proc.pid)
-        self.assertIn(parent_proc.pid, tracker.tracked)
-
-        # 1. Forge a mismatched lstart
-        tracker.tracked[parent_proc.pid] = "Mon Jan 1 00:00:00 1970"
-        reaped = tracker.reap_owned(grace_sec=0.1)
-
-        # Because lstart mismatched, it was NOT signaled!
-        self.assertNotIn(parent_proc.pid, reaped)
-        self.assertIsNone(parent_proc.poll())
-
-        # 2. Test late-created grandchild discovery through subtree traversal
-        ready_gc = os.path.join(self.test_dir, "ready_gc.txt")
-        child_script = (
-            "import os, subprocess, sys, time\n"
-            "time.sleep(0.2)\n"
-            "gc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(10)'])\n"
-            f"with open({ready_gc!r}, 'w') as f: f.write(str(gc.pid))\n"
-            "time.sleep(10)\n"
-        )
-        tree_parent = subprocess.Popen([sys.executable, "-c", child_script], start_new_session=True)
-        self.spawned_procs.append(tree_parent)
-
-        tracker2 = rsc.DescendantTracker(tree_parent.pid)
-        for _ in range(50):
-            if os.path.isfile(ready_gc):
-                break
-            time.sleep(0.1)
-
-        # On next sample, tracker MUST discover the late-created grandchild
-        tracker2._sample()
-        with open(ready_gc, "r") as f:
-            gc_pid = int(f.read().strip())
-        self.assertIn(gc_pid, tracker2.tracked, "Late-created grandchild was not discovered on later sample!")
-
-    def test_06c_hosting_interruption_during_stage(self):
-        """Scenario 6c: Stage runs past payload cutoff -> SIGTERM sent -> interrupted disposition."""
-        cfg = dict(self.default_config)
-        cfg["run1"] = {"sleep": 5.0}
-        self._write_config(cfg)
-
-        pub = FakePublisher(mode="success")
-        self.publishers.append(pub)
-
-        ctrl = self._create_controller(publisher=pub, payload_budget_sec=0.3, grace_sec=0.5)
-        rc = ctrl.run()
-        self.assertEqual(rc, 124)
-        self.assertEqual(ctrl.overall_status, "INTERRUPTED_BY_HOSTING_BUDGET")
-        self.assertTrue(ctrl.overall_interrupted)
-
-        summary_file = os.path.join(self.artifacts_dir, "strict-controller-summary.json")
-        with open(summary_file, encoding="utf-8") as f:
-            summary = json.load(f)
-        self.assertTrue(summary["overall_interrupted"])
+        pub._build_ack = reject_resolution
+        ctrl = self._create_controller(publisher=pub)
+        self.assertNotEqual(ctrl.run(), 0)
+        self.assertFalse(os.path.exists(os.path.join(self.report_dir, "pin.json")))
+        self.assertFalse(os.path.exists(os.path.join(self.report_dir, "run1")))
 
     # -------------------------------------------------------------------------
     # 7. Publisher Rejection Matrix (IPC fd3/fd4)
@@ -981,11 +933,23 @@ class TestRemoteStrictController(unittest.TestCase):
         """Scenario 7h: Delayed valid ACK proves scratch exists before ACK and cleanup after."""
         pub = FakePublisher(mode="delayed_valid", overrides={"ack_delay": 0.4})
         self.publishers.append(pub)
+        observations = []
+        original = pub._build_success_ack
+        def observe_before_ack(req):
+            if req["unit"] == "run1":
+                observations.append((
+                    os.path.isdir(os.path.join(self.report_dir, "run1", "a1", "rg9_work")),
+                    os.path.exists(os.path.join(self.report_dir, "run2")),
+                ))
+            return original(req)
+        pub._build_success_ack = observe_before_ack
 
         ctrl = self._create_controller(publisher=pub, publisher_timeout_sec=5.0)
         rc = ctrl.run()
         self.assertEqual(rc, 0)
         self.assertEqual(ctrl.overall_status, "PASS")
+        self.assertEqual(observations, [(True, False)])
+        self.assertTrue(os.path.exists(os.path.join(self.report_dir, "run2")))
 
         # After ACK release and stage completion, run1 scratch was cleaned
         run1_attempt = os.path.join(self.report_dir, "run1", "a1")
@@ -1056,7 +1020,7 @@ class TestRemoteStrictController(unittest.TestCase):
         pub = FakePublisher(mode="success")
         self.publishers.append(pub)
 
-        ctrl = self._create_controller(publisher=pub, w_path=empty_w)
+        ctrl = self._create_controller(publisher=pub, w_path=empty_w, w_sha=self._init_repo(empty_w))
         rc = ctrl.run()
         self.assertNotEqual(rc, 0)
 
@@ -1293,15 +1257,13 @@ class TestRemoteStrictController(unittest.TestCase):
 
         ctrl = self._create_controller(publisher=pub)
 
-        # Mock open specifically when writing summary file
-        real_open = open
+        real_write = ctrl.evidence_root.write
+        def fail_summary(name, *args, **kwargs):
+            if name == "strict-controller-summary.json":
+                raise PermissionError("Simulated summary write failure")
+            return real_write(name, *args, **kwargs)
 
-        def mock_open_func(file, *args, **kwargs):
-            if "strict-controller-summary.json" in str(file):
-                raise PermissionError("Simulated write permission error on summary file")
-            return real_open(file, *args, **kwargs)
-
-        with mock.patch("builtins.open", side_effect=mock_open_func):
+        with mock.patch.object(ctrl.evidence_root, "write", side_effect=fail_summary):
             rc = ctrl.run()
 
         self.assertEqual(rc, 4)
@@ -1313,14 +1275,13 @@ class TestRemoteStrictController(unittest.TestCase):
 
         ctrl = self._create_controller(publisher=pub)
 
-        real_open = open
+        real_write = ctrl.evidence_root.write
+        def fail_journal(name, *args, **kwargs):
+            if name == "stage-journal.jsonl":
+                raise PermissionError("Simulated journal write failure")
+            return real_write(name, *args, **kwargs)
 
-        def mock_open_journal(file, *args, **kwargs):
-            if "stage-journal.jsonl" in str(file):
-                raise PermissionError("Simulated write permission error on journal file")
-            return real_open(file, *args, **kwargs)
-
-        with mock.patch("builtins.open", side_effect=mock_open_journal):
+        with mock.patch.object(ctrl.evidence_root, "write", side_effect=fail_journal):
             rc = ctrl.run()
 
         self.assertNotEqual(rc, 0)
@@ -1440,8 +1401,9 @@ class TestRemoteStrictController(unittest.TestCase):
         symlink_path = os.path.join(attempt_dir, "leak_symlink")
         os.symlink(external_file, symlink_path)
 
-        with self.assertRaises(rsc.EvidenceUploadError):
-            rsc.archive_snapshot_evidence(
+        from proof.remote_strict_evidence import UnsafeEvidenceError, seal
+        with self.assertRaises(UnsafeEvidenceError):
+            seal(
                 self.report_dir,
                 self.artifacts_dir,
                 "run1",
@@ -1467,22 +1429,15 @@ class TestRemoteStrictController(unittest.TestCase):
     # 11. Monotonic Clock Jumps Do Not Alter Accounting
     # -------------------------------------------------------------------------
     def test_11_wall_clock_jumps_do_not_alter_monotonic_accounting(self):
-        """Scenario 11: Forward and backward wall-clock jumps do not alter monotonic calculations."""
-        pub = FakePublisher(mode="success")
-        self.publishers.append(pub)
-
-        wall_time = [1700000000.0]
-        # Jump forward 7200s, then backward 7200s
-        def fake_wall():
-            wall_time[0] += 7200.0
-            return wall_time[0]
-
-        with mock.patch("time.time", side_effect=fake_wall):
-            ctrl = self._create_controller(publisher=pub)
-            rc = ctrl.run()
-
-        self.assertEqual(rc, 0)
-        self.assertEqual(ctrl.overall_status, "PASS")
+        """Elapsed time includes the initial job age, never subsequent wall jumps."""
+        with mock.patch("time.time", return_value=1100.0), mock.patch("time.monotonic", return_value=500.0):
+            ctrl = self._create_controller(job_start_time=1000.0)
+        with mock.patch("time.time", return_value=9999999.0), mock.patch("time.monotonic", return_value=510.286):
+            self.assertAlmostEqual(ctrl.get_elapsed_from_job_start_sec(), 110.286, places=3)
+            remaining = ctrl.get_remaining_payload_sec()
+        with mock.patch("time.time", return_value=1.0), mock.patch("time.monotonic", return_value=510.286):
+            self.assertAlmostEqual(ctrl.get_elapsed_from_job_start_sec(), 110.286, places=3)
+            self.assertEqual(ctrl.get_remaining_payload_sec(), remaining)
 
     # -------------------------------------------------------------------------
     # 12. Strict Authorization & Malformed SHA Validation Negatives
@@ -1510,12 +1465,126 @@ class TestRemoteStrictController(unittest.TestCase):
         ]
 
         for bad_sha in bad_shas:
-            with self.assertRaises(rsc.VerificationError) as ctx:
-                self._create_controller(p_sha=bad_sha)
-            self.assertIn("MALFORMED-COMMIT-SHA", str(ctx.exception))
+            pub = FakePublisher()
+            self.publishers.append(pub)
+            self._assert_refused_before_stage(publisher=pub, p_sha=bad_sha)
+            self.assertEqual(pub.ownership_requests, [])
 
         injected_marker = os.path.join(self.test_dir, "injected_cmd")
         self.assertFalse(os.path.exists(injected_marker), "Shell injection executed!")
+
+    def _assert_refused_before_stage(self, **kwargs):
+        try:
+            ctrl = self._create_controller(**kwargs)
+            self.assertNotEqual(ctrl.run(), 0)
+        except rsc.ControllerError:
+            pass
+        self.assertFalse(os.path.exists(os.path.join(self.report_dir, "pin.json")))
+        self.assertFalse(os.path.exists(os.path.join(self.report_dir, "run1")))
+
+    def test_12c_absent_publisher_refused_before_stage(self):
+        self._assert_refused_before_stage()
+
+    def test_12d_native_entry_and_missing_emitter_refused(self):
+        pub = FakePublisher()
+        self.publishers.append(pub)
+        for entry in (None, os.path.join(self.w_dir, "proof", "run_proof.py")):
+            with self.subTest(entry=entry):
+                self._assert_refused_before_stage(publisher=pub, run_proof_py=entry)
+        self.assertEqual(pub.ownership_requests, [])
+
+    def test_12e_tampered_or_symlinked_emitter_refused(self):
+        pub = FakePublisher()
+        self.publishers.append(pub)
+        link = os.path.join(self.test_dir, "linked-emitter.py")
+        os.symlink(self.run_proof_py, link)
+        self._assert_refused_before_stage(publisher=pub, run_proof_py=link)
+        with open(self.run_proof_py, "a", encoding="utf-8") as f:
+            f.write("\n# altered\n")
+        self._assert_refused_before_stage(publisher=pub)
+        self.assertEqual(pub.ownership_requests, [])
+
+    def test_12f_actual_revision_mismatch_refused(self):
+        pub = FakePublisher()
+        self.publishers.append(pub)
+        for key in ("p_sha", "w_sha", "c_sha"):
+            with self.subTest(key=key):
+                self._assert_refused_before_stage(publisher=pub, **{key: "f" * 40})
+        self.assertEqual(pub.ownership_requests, [])
+
+    def test_12g_failed_pin_preserves_prechain_evidence(self):
+        cfg = dict(self.default_config)
+        cfg["pin"] = {"omit_pin": True, "exit_code": 7}
+        self._write_config(cfg)
+        pub = FakePublisher()
+        self.publishers.append(pub)
+        ctrl = self._create_controller(publisher=pub)
+        self.assertNotEqual(ctrl.run(), 0)
+        self.assertFalse(os.path.exists(os.path.join(self.report_dir, "pin.json")))
+        self.assertFalse(os.path.exists(os.path.join(self.report_dir, "run1")))
+        pins = [r for r in pub.received_requests if r["unit"] == "pin"]
+        self.assertEqual(len(pins), 1)
+        self.assertEqual(pins[0]["snapshot_kind"], "prechain-failure")
+        self.assertIsNone(pins[0]["chain_id"])
+        with tarfile.open(pins[0]["archive_path"]) as archive:
+            names = archive.getnames()
+            self.assertTrue(any("journal" in n for n in names))
+            self.assertTrue(any("pin" in n and n.endswith(".log") for n in names))
+            self.assertFalse(any(n.endswith("/pin.json") for n in names))
+
+    def test_12h_cleanup_oserror_retains_native_result_and_receipt(self):
+        pub = FakePublisher()
+        self.publishers.append(pub)
+        ctrl = self._create_controller(publisher=pub)
+        with mock.patch.object(rsc, "safe_cleanup_stage_scratch", side_effect=OSError("cleanup failure")):
+            self.assertNotEqual(ctrl.run(), 0)
+        record = next(r for r in ctrl.records if r.unit == "run1")
+        self.assertEqual(record.native_status, "PASS")
+        self.assertEqual(record.disposition, "CLEANUP_FAILED")
+        self.assertTrue(record.upload_verified)
+        self.assertTrue(record.artifact_id)
+        self.assertFalse(os.path.exists(os.path.join(self.report_dir, "run2")))
+        with open(os.path.join(self.artifacts_dir, "strict-controller-summary.json"), encoding="utf-8") as f:
+            summary = json.load(f)
+        for key in ("records", "units"):
+            item = next(r for r in summary[key] if r["unit"] == "run1")
+            self.assertEqual(item["disposition"], "CLEANUP_FAILED")
+            self.assertEqual(item["native_status"], "PASS")
+            self.assertEqual(item["artifact_id"], record.artifact_id)
+
+    def test_12i_terminal_readback_failure_never_exposes_pass(self):
+        pub = FakePublisher(mode="altered_hash", fail_unit="terminal")
+        self.publishers.append(pub)
+        ctrl = self._create_controller(publisher=pub)
+        self.assertNotEqual(ctrl.run(), 0)
+        self.assertNotEqual(ctrl.overall_status, "PASS")
+        self.assertFalse(os.path.exists(os.path.join(self.artifacts_dir, "controller-completion.json")))
+        self.assertEqual(pub.received_requests[-1]["unit"], "terminal")
+
+    def test_12j_checker_rejects_mutated_manifest_member(self):
+        from proof.check_remote_strict_evidence import members
+
+        path = Path(self.test_dir) / "checker.tar"
+        expected = b"preserved original evidence"
+        manifest = json.dumps({
+            "version": 1,
+            "members": [{"path": "controller/log", "bytes": len(expected),
+                         "sha256": hashlib.sha256(expected).hexdigest()}],
+        }).encode()
+
+        def make_archive(content):
+            with tarfile.open(path, "w") as tar:
+                for name, data in (("controller/log", content),
+                                   ("evidence-manifest.json", manifest)):
+                    info = tarfile.TarInfo(name)
+                    info.size = len(data)
+                    tar.addfile(info, io.BytesIO(data))
+
+        make_archive(expected)
+        self.assertEqual(members(path)["controller/log"], expected)
+        make_archive(b"X" + expected[1:])
+        with self.assertRaisesRegex(ValueError, "manifest content mismatch"):
+            members(path)
 
     # -------------------------------------------------------------------------
     # 13. Test Temp Dirs Owned & Cleanup
