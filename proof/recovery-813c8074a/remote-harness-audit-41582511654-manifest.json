@@ -1,0 +1,206 @@
+{
+  "run_url": "https://github.com/jwaldrip/iyi/actions/runs/41582511654",
+  "ci_artifact_name": "remote-harness-audit-evidence",
+  "candidate_w": "b932ce0d97775c7061102a13db706f507dc84117",
+  "hprime_sha": "813c8074acb2eed99ffeef78ea49e8c7832e4c01",
+  "p1_sha": "626463375298d357ffcb3223059f4d3adce6fb10",
+  "controller_c_sha": "4f2e77d605008d91a7020932c6c28524e91adf45",
+  "archive": "remote-harness-audit-41582511654.tar.gz",
+  "archive_sha256": "e105bdf98801b62b60a478072a0c42c441caaecc502f5da43644c045ef672f88",
+  "archive_bytes": 112259,
+  "member_count": 25,
+  "members": [
+    {
+      "name": "remote-harness-audit-evidence/audit_summary.json",
+      "size": 7084,
+      "sha256": "9396701151be37880f74be5e3457fb69f320f18a07a609636897b8f19f233359",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/audit_summary.md",
+      "size": 7750,
+      "sha256": "34aaf6cc432e9742595b51ae3bb8831a9d91eab1be5d012a5ef2af926f962299",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/coverage/coverage_summary.json",
+      "size": 1708,
+      "sha256": "4e4e654703c5cae678438130e5f87381905974c7fdcc293226d17dddd21547d8",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/coverage/proof.artifact_legs.cover",
+      "size": 34154,
+      "sha256": "d2edd49eb894a8ccbbf40c0bd8103c23cb5c6f04a56e19ec05a3e443bc499e87",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/coverage/proof.proofkit.cover",
+      "size": 153667,
+      "sha256": "71e4ed5027f917ae489a28da9763f8e4ff74a8680d87f7a1b98cd5a3ca3d90d3",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/coverage/proof.roundtrip_shim.cover",
+      "size": 53014,
+      "sha256": "640f8c23524e36ca3ff3cdd9cf7a6a444368a869aadb44cde8e056cb070df4e7",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/coverage/proof.run_proof.cover",
+      "size": 66209,
+      "sha256": "01b8aeffeeb6dd63ac64e6e1f2e16618223cb3b5876859f3f5d2d6282d92730f",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/environment/machine_fingerprint.json",
+      "size": 7483,
+      "sha256": "83e0d4bf6b75ac5b5f4d3408886f27986d6b790c322fba880bb1aa2ab676f2ad",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/environment/w_source_hashes.json",
+      "size": 1572,
+      "sha256": "354c09fcf19148557c0ce13468c93b7427967b0eeeb70f46a76f162ca8547500",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/hprime_hprimeprime_delta/grammar_agreement.json",
+      "size": 473,
+      "sha256": "d4dfcdc65ed142e6a81483410ca2aeb5f40819c71a51a245db0962648fe35c4e",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/hprime_hprimeprime_delta/hprime_to_hprimeprime.patch",
+      "size": 5110,
+      "sha256": "78986b9af09aa9322342968c85750c8f93fa001a560fa15ca963a2b50b556138",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/inventory/line_map_verification.json",
+      "size": 228,
+      "sha256": "124ab5b39fe9b5125a67484eb51bfa25aff5084e2d096cda320cf018449f366d",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/inventory/source_derived_inventory.json",
+      "size": 53118,
+      "sha256": "a7faeb83e61659901c6b27e88264b70147346b4e05d29f999a5baf2f42c15fe3",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/logs/smoke_test_stderr.log",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/logs/smoke_test_stdout.log",
+      "size": 190646,
+      "sha256": "47af8a74e705baa1dd332e56094824ecd2b23d8eb73229f4a2c0a311e19aad9a",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/mutation/baseline_execution.json",
+      "size": 94,
+      "sha256": "b8db2c1713369e82a306ad10503c06c50d2773c571836fcf5962c967525d90a5",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/mutation/baseline_raw_stderr.log",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/mutation/baseline_raw_stdout.log",
+      "size": 1289,
+      "sha256": "51ee0f11d337913cd34b11f0e5e9c28836f20e4a02f8d57426781d05b612092d",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/mutation/baseline_targeted_results.json",
+      "size": 1968,
+      "sha256": "f709d43fd4bd1f5f4230de667b19ffe5aca28fa44c80290a5f31ed1a77909387",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/mutation/mutated_execution.json",
+      "size": 93,
+      "sha256": "2e15eb5b842f5b301b9dd8886eb58ef79ead6c8af6eaa2adaaa09b43885bd974",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/mutation/mutated_raw_stderr.log",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/mutation/mutated_raw_stdout.log",
+      "size": 1408,
+      "sha256": "c0485022d24de26f12d789a3517aaddd44d11e9c9f478e29f143c4f631351041",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/mutation/mutated_targeted_results.json",
+      "size": 1971,
+      "sha256": "c652d46f0a030e22c0f3b35027ece560c4ebcc45f5ddef9a79cb85266e783dfa",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/mutation/mutation.patch",
+      "size": 600,
+      "sha256": "480df762d98d6c978937c006829defe4c0a73c436aea0ec09fbd269165e42a1f",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/mutation/restoration_verification.json",
+      "size": 240,
+      "sha256": "1f96c65e3bf0493387156c48c40354f7e228b3fb71505348350d800bfee4d996",
+      "matches_download": true
+    }
+  ],
+  "observed_pass_scope": {
+    "status": "PASS",
+    "seeds": "439/439",
+    "controls": "85/85",
+    "harness": "HARNESS PASS",
+    "coverage_gate": "COVERAGE GATE PASS",
+    "old_parser_mutation": {
+      "intended_failures": [
+        "o7.control.run1",
+        "s5.seed.rg9-bare",
+        "s5.seed.rg9-bare-141"
+      ],
+      "still_rejected": [
+        "s5.seed.rg9-malformed-suffix",
+        "s5.seed.rg9-extended-suffix",
+        "s5.seed.rg9-140"
+      ],
+      "restoration_hash_matches": true
+    }
+  },
+  "credential_scan": {
+    "exact_gh_token_file_matches": 0,
+    "generic_pattern_counts": {
+      "ghp_": 0,
+      "gho_": 0,
+      "ghu_": 0,
+      "ghs_": 0,
+      "ghr_": 0,
+      "github_pat_": 0,
+      "private_key": 0
+    },
+    "archive_byte_pattern_counts": {
+      "ghp_": 0,
+      "gho_": 0,
+      "ghu_": 0,
+      "ghs_": 0,
+      "ghr_": 0,
+      "github_pat_": 0,
+      "private_key": 0
+    },
+    "member_scan": "clean"
+  }
+}
