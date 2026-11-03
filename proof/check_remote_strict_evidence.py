@@ -147,6 +147,8 @@ def main() -> int:
         require(len(found) == 1 and found[0] == expected and len(expected) >= 32, "divergence bytes missing or altered")
         divergence_sha256 = hashlib.sha256(expected).hexdigest()
         require(not any(re.search(r"^attempt/(?:t|c|bin)/", n) for n in archive), "expendable scratch exported")
+        records = [json.loads(line) for line in archive["controller/stage-journal.jsonl"].splitlines()]
+        require(any(r.get("unit") == "run3/" + drivers[0] and r.get("raw_exit_code") == 11 for r in records), "divergence exit missing")
     if args.case == "success":
         terminal = archives[-1]
         summary = parse_json(terminal["controller/strict-controller-summary.json"])
@@ -158,11 +160,20 @@ def main() -> int:
         require(str(entries[-1]["ack"]["artifact_id"]) not in json.dumps(summary) and str(entries[-1]["ack"]["artifact_id"]) not in json.dumps(envelope), "terminal archive contains its own ID")
         required = parse_json(archives[-2]["meta/run3/required.json"])
         require(required == drivers, "required inventory mismatch")
-    if args.case == "cleanup-failure":
+    if args.case in ("divergence", "cleanup-failure"):
         terminal = archives[-1]
         summary = parse_json(terminal["controller/strict-controller-summary.json"])
-        require("CLEANUP_FAILED" in json.dumps(summary), "cleanup failure omitted from summary")
-        require("run1" in json.dumps(summary) and str(entries[-2]["ack"]["artifact_id"]) in json.dumps(summary), "cleanup failure lost attempted unit or receipt")
+        envelope = parse_json(terminal["controller/terminal-envelope.json"])
+        require(envelope["status"] == summary["overall_status"] != "PASS", "failure terminal status mismatch")
+        require(envelope["checkpoint_receipts"] == [entry["ack"] for entry in entries[:-1]], "failure receipt order mismatch")
+        if args.case == "cleanup-failure":
+            require(summary["overall_status"] == "CLEANUP_FAILED", "cleanup failure omitted from summary")
+            for array in ("records", "units"):
+                matches = [r for r in summary[array] if r.get("unit") == "run1"]
+                require(len(matches) == 1, "cleanup failure lost attempted unit")
+                record = matches[0]
+                require(record["raw_exit_code"] == 0 and record["native_status"] == "PASS" and record["disposition"] == "CLEANUP_FAILED", "cleanup failure lost native status")
+                require(record["upload_verified"] is True and str(record["artifact_id"]) == str(entries[-2]["ack"]["artifact_id"]), "cleanup failure lost verified receipt")
     if args.report:
         report = {"case": args.case, "invocation_id": index["invocation_id"], "execution_kind": "synthetic", "exit_code": exit_code, "entries": report_entries}
         if args.case == "divergence":
