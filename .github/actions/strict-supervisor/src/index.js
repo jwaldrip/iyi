@@ -59,7 +59,11 @@ export async function runAction() {
     const cSha = core.getInput('c_sha') || null;
     const mode = core.getInput('mode') || 'strict';
     const pythonPath = core.getInput('python_path') || 'python3';
-    const controllerPath = core.getInput('controller_path') || 'proof/remote_strict_controller.py';
+    const invocationId = core.getInput('invocation_id', { required: true });
+    const jobId = core.getInput('job_id', { required: true });
+    const jobKey = core.getInput('job_key', { required: true });
+    const validationCase = core.getInput('validation_case');
+    const caseDataDir = core.getInput('case_data_dir');
 
     core.info('================================================================================');
     core.info('LAUNCHING STRICT SUPERVISOR (Node24)');
@@ -85,7 +89,7 @@ export async function runAction() {
       cSha,
       mode,
       pythonPath,
-      controllerPath,
+      invocationId, jobId, jobKey, validationCase, caseDataDir,
     });
 
     const result = await supervisor.run();
@@ -93,9 +97,10 @@ export async function runAction() {
     core.setOutput('outcome', result.outcome);
     if (result.envelopePath) {
       core.setOutput('envelope_path', result.envelopePath);
+      core.setOutput('receipt_index_path', result.receiptIndexPath);
     }
 
-    if (result.exitCode !== 0 || result.failedVerifications > 0) {
+    if (result.exitCode !== 0 || result.failedVerifications > 0 || result.outcome !== 'PASS') {
       const errDetail = `Controller exited with code ${result.exitCode}` +
         (result.failedVerifications > 0 ? ` (${result.failedVerifications} unverified persistence requests)` : '');
       core.setFailed(errDetail);

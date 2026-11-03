@@ -58,16 +58,29 @@ inputs:
     description: 'Path to python executable'
     required: false
     default: 'python3'
-  controller_path:
-    description: 'Path to remote_strict_controller.py'
+  invocation_id:
+    description: 'Unique invocation identity'
+    required: true
+  job_id:
+    description: 'Numeric platform job ID'
+    required: true
+  job_key:
+    description: 'Workflow job key'
+    required: true
+  validation_case:
+    description: 'Synthetic validation case'
     required: false
-    default: 'proof/remote_strict_controller.py'
+  case_data_dir:
+    description: 'Synthetic data directory outside source checkouts'
+    required: false
 
 outputs:
   outcome:
     description: 'Outcome of controller run (e.g. PASS, FAIL, REFUSED)'
   envelope_path:
     description: 'Path to final envelope JSON'
+  receipt_index_path:
+    description: 'Ordered independently verifiable artifact receipt index'
 
 runs:
   using: 'node24'
