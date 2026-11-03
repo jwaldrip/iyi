@@ -344,9 +344,30 @@ jobs:
           echo "Running guard-specific negative controls..."
           echo "================================================================================"
 
-          # 1. Negative control: Empty W module origin rejection
+          # 1. Negative control: Empty W module origin rejection.
+          # pin.json is written in the generated report dir, not the artifacts dir.
+          # Resolve it from the supervisor summary so a missing pin cannot mask
+          # the origin guard (exit 4) as a pin-load failure (exit 1).
+          SUMMARY_FILE="strict-proof-artifacts/supervisor-validation-run/strict-controller-summary.json"
+          if [ ! -f "$SUMMARY_FILE" ]; then
+            echo "ERROR: Supervisor summary missing: $SUMMARY_FILE" >&2
+            exit 1
+          fi
+          REPORT_DIR=$(python3 -c "
+          import json, sys
+          with open('$SUMMARY_FILE', 'r') as f:
+              s = json.load(f)
+          report_dir = s.get('report_dir')
+          if not isinstance(report_dir, str) or not report_dir:
+              sys.exit('summary report_dir is missing')
+          print(report_dir)
+          ")
+          PIN_FILE="$REPORT_DIR/pin.json"
+          if [ ! -f "$PIN_FILE" ]; then
+            echo "ERROR: Supervisor pin.json missing at $PIN_FILE" >&2
+            exit 1
+          fi
           EMPTY_W=$(/usr/bin/mktemp -d -t empty_w.XXXXXX)
-          PIN_FILE="strict-proof-artifacts/supervisor-validation-run/pin.json"
 
           set +e
           python3 -B -m proof.native_validation \
