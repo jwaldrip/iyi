@@ -9,111 +9,70 @@
  */
 
 export const IMMUTABLE_BINDING_FIELDS = [
-  'request_id',
-  'repository',
-  'run_id',
-  'run_attempt',
-  'job_id',
-  'p_sha',
-  'w_sha',
-  'c_sha',
-  'chain_id',
-  'unit',
-  'native_attempt',
-  'snapshot_sequence',
+  'protocol_version', 'request_id', 'invocation_id', 'execution_kind',
+  'repository', 'run_id', 'run_attempt', 'job_id', 'job_key',
+  'p_sha', 'w_sha', 'c_sha', 'fixture_sha256', 'snapshot_kind',
+  'chain_id', 'unit', 'native_attempt', 'snapshot_sequence',
+  'archive_bytes', 'archive_sha256',
 ];
 
-const SHA256_HEX_REGEX = /^[0-9a-fA-F]{64}$/;
-const SHA1_HEX_REGEX = /^[0-9a-fA-F]{40}$/;
-const CHAIN_ID_VALID_REGEX = /^[0-9a-zA-Z_-]+$/;
+const SHA256_HEX_REGEX = /^[0-9a-f]{64}$/;
+const SHA1_HEX_REGEX = /^[0-9a-f]{40}$/;
+const CHAIN_ID_VALID_REGEX = /^[0-9a-f]{32}$/;
 
 /**
  * Validate incoming request structure from Python C
  */
 export function validateRequest(req) {
   if (!req || typeof req !== 'object' || Array.isArray(req)) {
-    return { valid: false, error: 'Request must be a non-null JSON object' };
+    return { valid: false, error: 'Request must be an object' };
   }
-
-  // Ensure all immutable binding fields are present
   for (const field of IMMUTABLE_BINDING_FIELDS) {
-    if (!(field in req) || req[field] === undefined) {
-      return { valid: false, error: `Missing required immutable field: ${field}` };
+    if (!Object.hasOwn(req, field)) return { valid: false, error: `Missing ${field}` };
+  }
+  if (req.event !== 'persistence-request' || req.protocol_version !== 1) {
+    return { valid: false, error: 'Invalid event or protocol version' };
+  }
+  for (const field of ['request_id', 'invocation_id', 'repository', 'job_key', 'unit']) {
+    if (typeof req[field] !== 'string' || !req[field].trim()) {
+      return { valid: false, error: `Invalid ${field}` };
     }
   }
-
-  if (typeof req.unit !== 'string' || !req.unit.trim()) {
-    return { valid: false, error: 'Invalid or missing unit' };
-  }
-
-  // Pre-pin plan snapshot requires typed chain_id: null (chain does not exist prior to pin).
-  // Post-pin stages require a valid, nonempty chain_id string.
-  // Sentinel values ('nochain', 'null') or empty/absent values are strictly forbidden.
-  if (req.unit === 'plan') {
-    if (req.chain_id !== null) {
-      return {
-        valid: false,
-        error: `Unit 'plan' requires typed chain_id: null (pre-pin), got ${typeof req.chain_id === 'string' ? `'${req.chain_id}'` : req.chain_id}`,
-      };
-    }
-  } else {
-    if (req.chain_id === null) {
-      return {
-        valid: false,
-        error: `Unit '${req.unit}' requires valid chain_id (chain_id: null accepted only for unit plan)`,
-      };
-    }
-    if (typeof req.chain_id !== 'string' || !req.chain_id.trim()) {
-      return { valid: false, error: 'Missing required immutable field: chain_id' };
-    }
-    if (req.chain_id === 'nochain' || req.chain_id === 'null') {
-      return {
-        valid: false,
-        error: `Invalid chain_id: sentinel forge '${req.chain_id}' is forbidden`,
-      };
-    }
-    if (!CHAIN_ID_VALID_REGEX.test(req.chain_id)) {
-      return {
-        valid: false,
-        error: `Invalid chain_id format for unit '${req.unit}': '${req.chain_id}'`,
-      };
+  for (const field of ['run_id', 'run_attempt', 'job_id']) {
+    if (typeof req[field] !== 'string' || !/^[1-9][0-9]*$/.test(req[field])) {
+      return { valid: false, error: `Invalid ${field}` };
     }
   }
-
-  // Ensure all other immutable binding fields are non-empty and well-formed
-  for (const field of IMMUTABLE_BINDING_FIELDS) {
-    if (field === 'chain_id') continue;
-    if (req[field] === null || req[field] === '') {
-      return { valid: false, error: `Missing required immutable field: ${field}` };
+  if (!['synthetic', 'strict'].includes(req.execution_kind)) {
+    return { valid: false, error: 'Invalid execution kind' };
+  }
+  if (req.execution_kind === 'synthetic'
+      ? typeof req.fixture_sha256 !== 'string' || !SHA256_HEX_REGEX.test(req.fixture_sha256)
+      : req.fixture_sha256 !== null) {
+    return { valid: false, error: 'Invalid fixture digest' };
+  }
+  for (const field of ['p_sha', 'w_sha', 'c_sha']) {
+    if (typeof req[field] !== 'string' || !SHA1_HEX_REGEX.test(req[field])) {
+      return { valid: false, error: `Invalid ${field}` };
     }
   }
-
-  for (const shaField of ['p_sha', 'w_sha', 'c_sha']) {
-    if (typeof req[shaField] !== 'string' || !SHA1_HEX_REGEX.test(req[shaField])) {
-      return { valid: false, error: `Invalid ${shaField}: ${req[shaField]} (must be 40-char hex SHA)` };
-    }
+  if (!['plan', 'prechain-failure', 'checkpoint', 'terminal-envelope'].includes(req.snapshot_kind)) {
+    return { valid: false, error: 'Invalid snapshot kind' };
   }
-
-  if (typeof req.native_attempt !== 'number' || !Number.isInteger(req.native_attempt) || req.native_attempt < 1) {
-    return { valid: false, error: `Invalid native_attempt: ${req.native_attempt} (must be positive integer)` };
+  if (['plan', 'prechain-failure'].includes(req.snapshot_kind)) {
+    if (req.chain_id !== null) return { valid: false, error: 'Prechain snapshot requires null chain' };
+    if (req.snapshot_kind === 'plan' && req.unit !== 'plan') return { valid: false, error: 'Invalid plan unit' };
+    if (req.snapshot_kind === 'prechain-failure' && req.unit !== 'pin') return { valid: false, error: 'Invalid prechain failure unit' };
+  } else if (typeof req.chain_id !== 'string' || !CHAIN_ID_VALID_REGEX.test(req.chain_id)) {
+    return { valid: false, error: 'Invalid established chain identity' };
   }
-
-  if (typeof req.snapshot_sequence !== 'number' || !Number.isInteger(req.snapshot_sequence) || req.snapshot_sequence < 1) {
-    return { valid: false, error: `Invalid snapshot_sequence: ${req.snapshot_sequence} (must be positive integer)` };
+  for (const field of ['native_attempt', 'snapshot_sequence', 'archive_bytes']) {
+    if (!Number.isSafeInteger(req[field]) || req[field] < 1) return { valid: false, error: `Invalid ${field}` };
   }
-
-  if (typeof req.archive_path !== 'string' || !req.archive_path.trim()) {
-    return { valid: false, error: 'Invalid or missing archive_path' };
+  if (typeof req.archive_path !== 'string' || !req.archive_path.trim() ||
+      typeof req.archive_sha256 !== 'string' || !SHA256_HEX_REGEX.test(req.archive_sha256)) {
+    return { valid: false, error: 'Invalid archive' };
   }
-
-  if (typeof req.archive_bytes !== 'number' || req.archive_bytes <= 0 || !Number.isInteger(req.archive_bytes)) {
-    return { valid: false, error: `Invalid archive_bytes: ${req.archive_bytes} (must be positive integer)` };
-  }
-
-  if (typeof req.archive_sha256 !== 'string' || !SHA256_HEX_REGEX.test(req.archive_sha256)) {
-    return { valid: false, error: `Invalid archive_sha256: ${req.archive_sha256} (must be 64-char hex)` };
-  }
-
   return { valid: true };
 }
 

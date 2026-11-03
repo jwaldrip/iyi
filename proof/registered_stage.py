@@ -49,15 +49,12 @@ def run_registered_stage(
         raise ValueError("empty stage command")
     read_fd, write_fd = os.pipe()
     proc = None
-    owned_log = None
     timed_out = False
     interrupted = False
     try:
-        if hasattr(log_file, "fileno"):
-            output = log_file
-        else:
-            owned_log = open(log_file, "ab", buffering=0)
-            output = owned_log
+        if not hasattr(log_file, "fileno"):
+            raise TypeError("log_file must be an already validated open file")
+        output = log_file
         proc = subprocess.Popen(
             [sys.executable, "-c", _GATE, str(read_fd), *cmd],
             cwd=cwd, env=dict(env), stdout=output, stderr=subprocess.STDOUT,
@@ -111,5 +108,3 @@ def run_registered_stage(
             os.close(read_fd)
         if write_fd >= 0:
             os.close(write_fd)
-        if owned_log is not None:
-            owned_log.close()
