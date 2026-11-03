@@ -185,11 +185,20 @@ class OwnedRoot:
             os.close(fd)
 
 
-def seal(report_dir, artifacts_dir, unit, attempt, chain_id, sequence, failed=False, artifacts_root=None):
+def seal(report_dir, artifacts_dir, unit, attempt, chain_id, sequence, failed=False, artifacts_root=None, report_root=None):
     slug = unit.replace('/', '_')
     archive_dir = os.path.join(artifacts_dir, 'incremental-archives')
     report = OwnedRoot(report_dir) if os.path.lexists(report_dir) else None
     artifacts = OwnedRoot(artifacts_dir)
+    if report_root is not None:
+        if report is None:
+            artifacts.close()
+            raise UnsafeEvidenceError('MISSING-REPORT-ROOT')
+        old_report, current_report = os.fstat(report_root.fd), os.fstat(report.fd)
+        if (old_report.st_dev, old_report.st_ino) != (current_report.st_dev, current_report.st_ino):
+            report.close()
+            artifacts.close()
+            raise UnsafeEvidenceError('REPLACED-REPORT-ROOT')
     if artifacts_root is not None:
         old, current = os.fstat(artifacts_root.fd), os.fstat(artifacts.fd)
         if (old.st_dev, old.st_ino) != (current.st_dev, current.st_ino):

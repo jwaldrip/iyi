@@ -773,6 +773,7 @@ class RemoteStrictController:
             )
 
         self.evidence_root = OwnedRoot(self.artifacts_dir, create=True)
+        self.report_root: OwnedRoot | None = None
         logs = OwnedRoot(os.path.join(self.artifacts_dir, "controller-logs"), create=True)
         logs.close()
 
@@ -987,15 +988,15 @@ class RemoteStrictController:
                 f"val_status={val_status}, reasons={validation_reasons}"
             )
 
+        if self.report_root is None and os.path.lexists(self.report_dir):
+            self.report_root = OwnedRoot(self.report_dir)
         if unit == "pin":
             try:
-                root = OwnedRoot(self.report_dir)
-                try:
-                    fd = os.open("pin.json", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=root.fd)
-                    with os.fdopen(fd, "r", encoding="utf-8") as f:
-                        pin_data = json.load(f)
-                finally:
-                    root.close()
+                if self.report_root is None:
+                    raise VerificationError("PIN-ROOT-MISSING")
+                fd = os.open("pin.json", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=self.report_root.fd)
+                with os.fdopen(fd, "r", encoding="utf-8") as f:
+                    pin_data = json.load(f)
                 candidate = pin_data.get("chain_id")
                 if not isinstance(candidate, str) or not re.fullmatch(r"[0-9a-f]{32}", candidate):
                     raise VerificationError("INVALID-CHAIN-ID")
@@ -1020,7 +1021,7 @@ class RemoteStrictController:
             archive_path, size_bytes, sha256 = seal(
                 self.report_dir, self.artifacts_dir, unit, expected_attempt,
                 req_chain_id, self.snapshot_sequence + 1, failed=record.disposition != "ACCEPTED",
-                artifacts_root=self.evidence_root,
+                artifacts_root=self.evidence_root, report_root=self.report_root,
             )
             self.snapshot_sequence += 1
             record.archive_path = archive_path
@@ -1316,6 +1317,9 @@ class RemoteStrictController:
                 print(f"[CONTROLLER] CRITICAL: Mandatory summary write failed: {exc}", file=sys.stderr)
                 if ret == 0:
                     ret = 4
+            if self.report_root is not None:
+                self.report_root.close()
+            self.evidence_root.close()
         return ret
 
     def _is_driver_passed(self, driver: str) -> bool:
@@ -1523,7 +1527,7 @@ class RemoteStrictController:
         self.evidence_root.write("terminal-envelope.json", (json.dumps(envelope, sort_keys=True) + "\n").encode())
         archive_path, size, digest = seal(
             self.report_dir, self.artifacts_dir, "terminal", 1, self.chain_id,
-            self.snapshot_sequence + 1, artifacts_root=self.evidence_root,
+            self.snapshot_sequence + 1, artifacts_root=self.evidence_root, report_root=self.report_root,
         )
         self.snapshot_sequence += 1
         self.terminal_receipt = self._persist(
