@@ -169,97 +169,89 @@ jobs:
           print("Recorded module fingerprints:", json.dumps(manifest, indent=2))
           PY
 
-      - name: Retrieve actual job start metadata from GitHub API
+      - name: Resolve exact current job
         id: job-metadata
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_RUN_ID: ${{ github.run_id }}
-          WORKFLOW_JOB_ID: ${{ github.job }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python3 -B - <<'PY'
           import json, os, sys, urllib.request
-          from datetime import datetime, timezone
+          from datetime import datetime
 
-          token = os.environ.get("GITHUB_TOKEN", "")
-          repo = os.environ.get("GITHUB_REPOSITORY", "")
-          run_id = os.environ.get("GITHUB_RUN_ID", "")
-          job_id = os.environ.get("WORKFLOW_JOB_ID", "")
-          runner_name = os.environ.get("RUNNER_NAME", "")
-
-          if not token or not repo or not run_id:
-              sys.exit("ERROR: GITHUB_TOKEN, GITHUB_REPOSITORY, or GITHUB_RUN_ID missing from environment.")
-
-          url = f"https://api.github.com/repos/{repo}/actions/runs/{run_id}/jobs?per_page=100"
-          req = urllib.request.Request(
-              url,
-              headers={
-                  "Authorization": f"Bearer {token}",
+          repo = os.environ["GITHUB_REPOSITORY"]
+          run = os.environ["GITHUB_RUN_ID"]
+          attempt = os.environ["GITHUB_RUN_ATTEMPT"]
+          key = os.environ["GITHUB_JOB"]
+          runner = os.environ["RUNNER_NAME"]
+          if not run.isdecimal() or not attempt.isdecimal() or key != "validation-proofs" or not runner:
+              sys.exit("Invalid job context")
+          jobs = []
+          page = 1
+          while True:
+              url = (f"https://api.github.com/repos/{repo}/actions/runs/{run}/attempts/"
+                     f"{attempt}/jobs?per_page=100&page={page}")
+              request = urllib.request.Request(url, headers={
+                  "Authorization": "Bearer " + os.environ["GH_TOKEN"],
                   "Accept": "application/vnd.github+json",
                   "User-Agent": "iyi-strict-proof-ci",
-              },
-          )
-          try:
-              with urllib.request.urlopen(req, timeout=30) as resp:
-                  data = json.loads(resp.read().decode("utf-8"))
-          except Exception as exc:
-              sys.exit(f"ERROR: GitHub API query for job metadata failed: {exc}")
-
-          jobs = data.get("jobs", [])
-          matched = None
-          for j in jobs:
-              if runner_name and j.get("runner_name") == runner_name and j.get("status") == "in_progress":
-                  matched = j
+              })
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  batch = json.load(response)["jobs"]
+              jobs.extend(batch)
+              if len(batch) < 100:
                   break
-          if not matched:
-              for j in jobs:
-                  if j.get("status") == "in_progress":
-                      matched = j
-                      break
-          if not matched and jobs:
-              matched = jobs[0]
-
-          if not matched or not matched.get("started_at"):
-              sys.exit(f"ERROR: Failed to retrieve actual job started_at metadata. Available jobs: {[j.get('name') for j in jobs]}")
-
-          started_at = matched["started_at"]
-          dt = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
-          epoch_sec = dt.timestamp()
-
-          print(f"Verified platform job metadata: job_id={matched.get('id')}, name={matched.get('name')}, started_at={started_at} (epoch {epoch_sec})")
-
-          output_file = os.environ.get("GITHUB_OUTPUT")
-          if output_file:
-              with open(output_file, "a", encoding="utf-8") as f:
-                  f.write(f"job_started_at_iso={started_at}\n")
-                  f.write(f"job_started_at_epoch={epoch_sec}\n")
-                  f.write(f"job_id={matched.get('id')}\n")
-
-          env_file = os.environ.get("GITHUB_ENV")
-          if env_file:
-              with open(env_file, "a", encoding="utf-8") as f:
-                  f.write(f"STRICT_JOB_START_ISO={started_at}\n")
-                  f.write(f"STRICT_JOB_START_EPOCH={epoch_sec}\n")
+              page += 1
+          matches = [j for j in jobs if j.get("name") == "Controller synthetic and validation proofs (macOS 15)"
+                     and j.get("runner_name") == runner and j.get("status") == "in_progress"
+                     and str(j.get("run_id")) == run and str(j.get("run_attempt")) == attempt]
+          if len(matches) != 1:
+              sys.exit(f"Expected exactly one current job, found {len(matches)}")
+          job = matches[0]
+          job_id = str(job.get("id", ""))
+          started = job.get("started_at", "")
+          if not job_id.isdecimal() or not started:
+              sys.exit("Missing numeric job ID or start time")
+          epoch = datetime.fromisoformat(started.replace("Z", "+00:00")).timestamp()
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"job_started_at_iso={started}\njob_id={job_id}\njob_key={key}\n")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as out:
+              out.write(f"STRICT_JOB_START_ISO={started}\nSTRICT_JOB_START_EPOCH={epoch}\n")
+          print(f"Matched job {job_id}, attempt {attempt}, key {key}")
           PY
 
-      - name: Install, build, and test Node supervisor action
+      - name: Checkout actual P and W without building
+        id: source-trees
         run: |
-          set -e
-          set -o pipefail
-          echo "Installing supervisor action dependencies..."
-          npm --prefix .github/actions/strict-supervisor install
-          echo "Building supervisor action distributable bundle..."
-          npm --prefix .github/actions/strict-supervisor run build
-          echo "Running supervisor test suite (including distributable tests)..."
-          npm --prefix .github/actions/strict-supervisor test
+          set -euo pipefail
+          for entry in "p:$P_AUTHORIZED_SHA" "w:$W_AUTHORIZED_SHA"; do
+            label="${entry%%:*}"
+            expected="${entry#*:}"
+            path="$RUNNER_TEMP/strict-$label"
+            git clone --quiet --no-checkout "$GITHUB_WORKSPACE" "$path"
+            git -C "$path" checkout --quiet --detach "$expected"
+            test "$(git -C "$path" rev-parse HEAD)" = "$expected"
+            test -z "$(git -C "$path" status --porcelain)"
+            echo "${label}_path=$path" >> "$GITHUB_OUTPUT"
+          done
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          compiler="$RUNNER_TEMP/strict-fake-compiler"
+          printf '#!/bin/sh\nexit 0\n' > "$compiler"
+          chmod 700 "$compiler"
+          echo "compiler=$compiler" >> "$GITHUB_OUTPUT"
 
-          # Record bundle hash
+      - name: Verify frozen supervisor bundle and test
+        run: |
+          set -euo pipefail
+          npm --prefix .github/actions/strict-supervisor ci
+          npm --prefix .github/actions/strict-supervisor run build
+          git diff --exit-code -- .github/actions/strict-supervisor/dist
+          npm --prefix .github/actions/strict-supervisor test
           DIST_PATH=".github/actions/strict-supervisor/dist/index.js"
-          if [ -f "$DIST_PATH" ]; then
-            BUNDLE_SHA=$(shasum -a 256 "$DIST_PATH" | awk '{print $1}')
-            echo "Built action bundle SHA-256: $BUNDLE_SHA"
-            echo "{\"bundle_sha256\": \"$BUNDLE_SHA\"}" > strict-proof-artifacts/fingerprints/bundle.json
-          fi
+          test -f "$DIST_PATH"
+          BUNDLE_SHA=$(shasum -a 256 "$DIST_PATH" | awk '{print $1}')
+          echo "{\"bundle_sha256\": \"$BUNDLE_SHA\"}" > strict-proof-artifacts/fingerprints/bundle.json
+          # The following uses: steps must execute the tracked bundle without source dependencies.
+          rm -rf .github/actions/strict-supervisor/node_modules
 
       - name: Run Python deterministic controller test suite with watchdog
         run: |
@@ -270,7 +262,7 @@ jobs:
           echo "================================================================================"
 
           # Bounded 600-second suite watchdog with faulthandler diagnostics
-          PYTHONFAULTHANDLER=1 timeout 600s python3 -B -X faulthandler -m proof.test_remote_strict_controller -v 2>&1 | tee strict-proof-artifacts/ci-logs/python-controller-suite.log
+          PYTHONFAULTHANDLER=1 timeout 600s python3 -B -X faulthandler -m unittest discover -s proof -p 'test_remote_strict*.py' -v 2>&1 | tee strict-proof-artifacts/ci-logs/python-controller-suite.log
 
       - name: Verify exact strict mode refusal without independent authorization
         run: |
@@ -315,90 +307,242 @@ jobs:
           print('Strict refusal VERIFIED: exit=5, overall_status=AUTH_REFUSED, zero stages launched.')
           "
 
-      - name: Exercise Strict Supervisor Action with Synthetic Validation Wrapper
-        id: supervisor-validation
+      - name: Synthetic capacity success
+        id: success-case
         uses: ./.github/actions/strict-supervisor
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          mode: 'validation-only'
-          p: ${{ github.workspace }}
-          w: ${{ github.workspace }}
-          compiler: ${{ github.workspace }}
-          controller_path: proof/remote_strict_validation.py
-          artifacts_dir: strict-proof-artifacts/supervisor-validation-run
+          mode: validation-only
+          validation_case: success
+          invocation_id: synthetic-success
+          case_data_dir: ${{ runner.temp }}/strict-case-success
+          p: ${{ steps.source-trees.outputs.p_path }}
+          w: ${{ steps.source-trees.outputs.w_path }}
+          compiler: ${{ steps.source-trees.outputs.compiler }}
+          artifacts_dir: ${{ runner.temp }}/strict-artifacts-success
           job_start_time: ${{ steps.job-metadata.outputs.job_started_at_iso }}
-          host_job_limit_sec: '21600'
-          payload_budget_sec: '19800'
-          finalization_alloc_sec: '1800'
-          driver_limit_sec: '2100'
-          grace_sec: '30'
-          min_disk_gib: '20.0'
+          job_id: ${{ steps.job-metadata.outputs.job_id }}
+          job_key: ${{ steps.job-metadata.outputs.job_key }}
           p_sha: ${{ env.P_AUTHORIZED_SHA }}
           w_sha: ${{ env.W_AUTHORIZED_SHA }}
           c_sha: ${{ github.sha }}
 
-      - name: Run guard-specific negative controls
+      - name: Synthetic failed plan
+        id: failed-plan-case
+        continue-on-error: true
+        uses: ./.github/actions/strict-supervisor
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          mode: validation-only
+          validation_case: failed-plan
+          invocation_id: synthetic-failed-plan
+          case_data_dir: ${{ runner.temp }}/strict-case-failed-plan
+          p: ${{ steps.source-trees.outputs.p_path }}
+          w: ${{ steps.source-trees.outputs.w_path }}
+          compiler: ${{ steps.source-trees.outputs.compiler }}
+          artifacts_dir: ${{ runner.temp }}/strict-artifacts-failed-plan
+          job_start_time: ${{ steps.job-metadata.outputs.job_started_at_iso }}
+          job_id: ${{ steps.job-metadata.outputs.job_id }}
+          job_key: ${{ steps.job-metadata.outputs.job_key }}
+          p_sha: ${{ env.P_AUTHORIZED_SHA }}
+          w_sha: ${{ env.W_AUTHORIZED_SHA }}
+          c_sha: ${{ github.sha }}
+
+      - name: Synthetic failed pin
+        id: failed-pin-case
+        continue-on-error: true
+        uses: ./.github/actions/strict-supervisor
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          mode: validation-only
+          validation_case: failed-pin
+          invocation_id: synthetic-failed-pin
+          case_data_dir: ${{ runner.temp }}/strict-case-failed-pin
+          p: ${{ steps.source-trees.outputs.p_path }}
+          w: ${{ steps.source-trees.outputs.w_path }}
+          compiler: ${{ steps.source-trees.outputs.compiler }}
+          artifacts_dir: ${{ runner.temp }}/strict-artifacts-failed-pin
+          job_start_time: ${{ steps.job-metadata.outputs.job_started_at_iso }}
+          job_id: ${{ steps.job-metadata.outputs.job_id }}
+          job_key: ${{ steps.job-metadata.outputs.job_key }}
+          p_sha: ${{ env.P_AUTHORIZED_SHA }}
+          w_sha: ${{ env.W_AUTHORIZED_SHA }}
+          c_sha: ${{ github.sha }}
+
+      - name: Synthetic Run3 divergence
+        id: divergence-case
+        continue-on-error: true
+        uses: ./.github/actions/strict-supervisor
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          mode: validation-only
+          validation_case: divergence
+          invocation_id: synthetic-divergence
+          case_data_dir: ${{ runner.temp }}/strict-case-divergence
+          p: ${{ steps.source-trees.outputs.p_path }}
+          w: ${{ steps.source-trees.outputs.w_path }}
+          compiler: ${{ steps.source-trees.outputs.compiler }}
+          artifacts_dir: ${{ runner.temp }}/strict-artifacts-divergence
+          job_start_time: ${{ steps.job-metadata.outputs.job_started_at_iso }}
+          job_id: ${{ steps.job-metadata.outputs.job_id }}
+          job_key: ${{ steps.job-metadata.outputs.job_key }}
+          p_sha: ${{ env.P_AUTHORIZED_SHA }}
+          w_sha: ${{ env.W_AUTHORIZED_SHA }}
+          c_sha: ${{ github.sha }}
+
+      - name: Synthetic cleanup failure
+        id: cleanup-case
+        continue-on-error: true
+        uses: ./.github/actions/strict-supervisor
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          mode: validation-only
+          validation_case: cleanup-failure
+          invocation_id: synthetic-cleanup-failure
+          case_data_dir: ${{ runner.temp }}/strict-case-cleanup-failure
+          p: ${{ steps.source-trees.outputs.p_path }}
+          w: ${{ steps.source-trees.outputs.w_path }}
+          compiler: ${{ steps.source-trees.outputs.compiler }}
+          artifacts_dir: ${{ runner.temp }}/strict-artifacts-cleanup-failure
+          job_start_time: ${{ steps.job-metadata.outputs.job_started_at_iso }}
+          job_id: ${{ steps.job-metadata.outputs.job_id }}
+          job_key: ${{ steps.job-metadata.outputs.job_key }}
+          p_sha: ${{ env.P_AUTHORIZED_SHA }}
+          w_sha: ${{ env.W_AUTHORIZED_SHA }}
+          c_sha: ${{ github.sha }}
+
+      - name: Download exact artifact IDs and independently check all cases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          W_PATH: ${{ steps.source-trees.outputs.w_path }}
+          P_PATH: ${{ steps.source-trees.outputs.p_path }}
+          COMPILER_PATH: ${{ steps.source-trees.outputs.compiler }}
+          JOB_ID: ${{ steps.job-metadata.outputs.job_id }}
+          JOB_KEY: ${{ steps.job-metadata.outputs.job_key }}
+          SUCCESS_INDEX: ${{ steps.success-case.outputs.receipt_index_path }}
+          PLAN_INDEX: ${{ steps.failed-plan-case.outputs.receipt_index_path }}
+          PIN_INDEX: ${{ steps.failed-pin-case.outputs.receipt_index_path }}
+          DIVERGENCE_INDEX: ${{ steps.divergence-case.outputs.receipt_index_path }}
+          CLEANUP_INDEX: ${{ steps.cleanup-case.outputs.receipt_index_path }}
+          SUCCESS_OUTCOME: ${{ steps.success-case.outcome }}
+          PLAN_OUTCOME: ${{ steps.failed-plan-case.outcome }}
+          PIN_OUTCOME: ${{ steps.failed-pin-case.outcome }}
+          DIVERGENCE_OUTCOME: ${{ steps.divergence-case.outcome }}
+          CLEANUP_OUTCOME: ${{ steps.cleanup-case.outcome }}
         run: |
-          set -e
-          set -o pipefail
-          echo "================================================================================"
-          echo "Running guard-specific negative controls..."
-          echo "================================================================================"
+          set -euo pipefail
+          python3 -B - <<'PY'
+          import io, json, os, pathlib, subprocess, sys, tarfile, urllib.request, zipfile
 
-          # 1. Negative control: Empty W module origin rejection.
-          # pin.json is written in the generated report dir, not the artifacts dir.
-          # Resolve it from the supervisor summary so a missing pin cannot mask
-          # the origin guard (exit 4) as a pin-load failure (exit 1).
-          SUMMARY_FILE="strict-proof-artifacts/supervisor-validation-run/strict-controller-summary.json"
-          if [ ! -f "$SUMMARY_FILE" ]; then
-            echo "ERROR: Supervisor summary missing: $SUMMARY_FILE" >&2
-            exit 1
-          fi
-          REPORT_DIR=$(python3 -c "
-          import json, sys
-          with open('$SUMMARY_FILE', 'r') as f:
-              s = json.load(f)
-          report_dir = s.get('report_dir')
-          if not isinstance(report_dir, str) or not report_dir:
-              sys.exit('summary report_dir is missing')
-          print(report_dir)
-          ")
-          PIN_FILE="$REPORT_DIR/pin.json"
-          if [ ! -f "$PIN_FILE" ]; then
-            echo "ERROR: Supervisor pin.json missing at $PIN_FILE" >&2
-            exit 1
-          fi
-          EMPTY_W=$(/usr/bin/mktemp -d -t empty_w.XXXXXX)
+          temp = pathlib.Path(os.environ["RUNNER_TEMP"])
+          downloads = temp / "strict-exact-downloads"
+          reports = temp / "strict-checked-reports"
+          downloads.mkdir()
+          reports.mkdir()
+          cases = [
+              ("success", "SUCCESS", 37), ("failed-plan", "PLAN", 1),
+              ("failed-pin", "PIN", 2), ("divergence", "DIVERGENCE", 6),
+              ("cleanup-failure", "CLEANUP", 4),
+          ]
+          seen = set()
+          for case, prefix, expected_count in cases:
+              expected_outcome = "success" if case == "success" else "failure"
+              if os.environ[prefix + "_OUTCOME"] != expected_outcome:
+                  sys.exit(f"{case}: unexpected action outcome")
+              index = pathlib.Path(os.environ[prefix + "_INDEX"])
+              with index.open(encoding="utf-8") as f:
+                  envelope = json.load(f)
+              entries = envelope["entries"]
+              if len(entries) != expected_count:
+                  sys.exit(f"{case}: expected {expected_count} artifacts, got {len(entries)}")
+              for entry in entries:
+                  artifact_id = str(entry["ack"]["artifact_id"])
+                  if not artifact_id.isdecimal() or artifact_id in seen:
+                      sys.exit(f"{case}: invalid or duplicate artifact ID")
+                  seen.add(artifact_id)
+                  url = f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/actions/artifacts/{artifact_id}/zip"
+                  req = urllib.request.Request(url, headers={
+                      "Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                      "Accept": "application/vnd.github+json",
+                      "User-Agent": "iyi-strict-independent-readback",
+                  })
+                  with urllib.request.urlopen(req, timeout=60) as response:
+                      payload = response.read()
+                  with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                      files = [item for item in archive.infolist() if not item.is_dir()]
+                      if len(files) != 1 or files[0].file_size > 100_000_000:
+                          sys.exit(f"{case}: invalid downloaded artifact layout")
+                      data = archive.read(files[0])
+                  (downloads / f"{artifact_id}.tar").write_bytes(data)
+              command = ["python3", "-B", "proof/check_remote_strict_evidence.py",
+                         "--index", str(index), "--downloads-dir", str(downloads),
+                         "--case", case, "--p", os.environ["P_PATH"], "--w", os.environ["W_PATH"],
+                         "--c", os.environ["GITHUB_WORKSPACE"], "--compiler", os.environ["COMPILER_PATH"],
+                         "--repository", os.environ["GITHUB_REPOSITORY"],
+                         "--run-id", os.environ["GITHUB_RUN_ID"], "--run-attempt", os.environ["GITHUB_RUN_ATTEMPT"],
+                         "--job-id", os.environ["JOB_ID"], "--job-key", os.environ["JOB_KEY"],
+                         "--invocation-id", "synthetic-" + case, "--report", str(reports / f"{case}.json")]
+              if case == "divergence":
+                  command += ["--expected-divergence", str(temp / "strict-case-divergence" / "divergence.bin")]
+              subprocess.run(command, check=True)
+          if len(seen) != 50:
+              sys.exit("Expected exactly 50 distinct incremental artifact IDs")
+          (temp / "strict-checked-ids.json").write_text(json.dumps(sorted(seen)), encoding="utf-8")
+          export = temp / "strict-verified-evidence.tar"
+          with tarfile.open(export, "w") as tar:
+              for case, _, _ in cases:
+                  report = reports / f"{case}.json"
+                  if not report.is_file() or report.is_symlink():
+                      sys.exit(f"{case}: checked report missing or unsafe")
+                  tar.add(report, arcname=f"{case}.json", recursive=False)
+          PY
 
-          set +e
-          python3 -B -m proof.native_validation \
-            --mode record \
-            --w "$EMPTY_W" \
-            --pin "$PIN_FILE" \
-            --record "$PIN_FILE" \
-            --unit run1 \
-            --attempt 1 \
-            --kind run1 > strict-proof-artifacts/ci-logs/negative-empty-w.log 2>&1
-          NEG_RC=$?
-          set -e
-
-          rm -rf "$EMPTY_W"
-          echo "Empty W rejection exit code: $NEG_RC"
-          if [ "$NEG_RC" -ne 4 ]; then
-            echo "ERROR: Expected exit code 4 (ModuleOriginError), got $NEG_RC" >&2
-            cat strict-proof-artifacts/ci-logs/negative-empty-w.log >&2
-            exit 1
-          fi
-          echo "Empty W module origin negative control PASSED (exited 4 with ModuleOriginError)."
-
-      - name: Upload validation evidence artifacts
-        if: always()
+      - name: Upload checked sealed evidence
+        id: sealed-export
         uses: actions/upload-artifact@v4
         with:
           name: remote-strict-validation-evidence
-          path: |
-            strict-proof-artifacts/**
+          path: ${{ runner.temp }}/strict-verified-evidence.tar
           retention-days: 14
           if-no-files-found: error
+
+      - name: Check exact hosted artifact inventory
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPORT_ID: ${{ steps.sealed-export.outputs.artifact-id }}
+        run: |
+          python3 -B - <<'PY'
+          import json, os, pathlib, sys, urllib.request
+          expected = set(json.loads((pathlib.Path(os.environ["RUNNER_TEMP"]) / "strict-checked-ids.json").read_text()))
+          export = os.environ["EXPORT_ID"]
+          if not export.isdecimal() or export in expected:
+              sys.exit("Missing or duplicate sealed export ID")
+          expected.add(export)
+          ids = []
+          page = 1
+          while True:
+              url = (f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/actions/runs/"
+                     f"{os.environ['GITHUB_RUN_ID']}/artifacts?per_page=100&page={page}")
+              request = urllib.request.Request(url, headers={
+                  "Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                  "Accept": "application/vnd.github+json",
+                  "User-Agent": "iyi-strict-proof-ci",
+              })
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  batch = json.load(response)["artifacts"]
+              ids.extend(str(item["id"]) for item in batch)
+              if len(batch) < 100:
+                  break
+              page += 1
+          if len(ids) != 51 or set(ids) != expected:
+              sys.exit(f"Hosted inventory mismatch: expected 51 exact IDs, got {len(ids)}")
+          print("Verified all 51 exact artifact IDs")
+          PY
 
   strict-chain:
     name: "Sequential strict-chain attempt (macOS 15)"
@@ -416,75 +560,54 @@ jobs:
           echo "for the exact (P, W, C) tuple: repository, P SHA, W SHA, C SHA," >&2
           echo "harness workflow/run/attempt, harness evidence digest, and independent" >&2
           echo "audit evidence digest with GO." >&2
-          echo "Jason has not selected an authorization anchor, so no independent authorization" >&2
-          echo "anchor (ruleset gate, environment reviewer, or cryptographic signer) exists." >&2
+          echo "The protected environment was selected; its manifest-bound verifier is not integrated." >&2
           echo "Refusing execution nonzero before P1 build, W checkout, or native execution." >&2
           exit 1
 
-      - name: Retrieve actual job start metadata from GitHub API
+      - name: Resolve exact current job
         id: job-metadata
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_RUN_ID: ${{ github.run_id }}
-          WORKFLOW_JOB_ID: ${{ github.job }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python3 -B - <<'PY'
           import json, os, sys, urllib.request
-          from datetime import datetime, timezone
-
-          token = os.environ.get("GITHUB_TOKEN", "")
-          repo = os.environ.get("GITHUB_REPOSITORY", "")
-          run_id = os.environ.get("GITHUB_RUN_ID", "")
-          job_id = os.environ.get("WORKFLOW_JOB_ID", "")
-          runner_name = os.environ.get("RUNNER_NAME", "")
-
-          if not token or not repo or not run_id:
-              sys.exit("ERROR: GITHUB_TOKEN, GITHUB_REPOSITORY, or GITHUB_RUN_ID missing from environment.")
-
-          url = f"https://api.github.com/repos/{repo}/actions/runs/{run_id}/jobs?per_page=100"
-          req = urllib.request.Request(
-              url,
-              headers={
-                  "Authorization": f"Bearer {token}",
+          from datetime import datetime
+          repo = os.environ["GITHUB_REPOSITORY"]
+          run = os.environ["GITHUB_RUN_ID"]
+          attempt = os.environ["GITHUB_RUN_ATTEMPT"]
+          key = os.environ["GITHUB_JOB"]
+          runner = os.environ["RUNNER_NAME"]
+          if not run.isdecimal() or not attempt.isdecimal() or key != "strict-chain" or not runner:
+              sys.exit("Invalid job context")
+          jobs = []
+          page = 1
+          while True:
+              url = (f"https://api.github.com/repos/{repo}/actions/runs/{run}/attempts/"
+                     f"{attempt}/jobs?per_page=100&page={page}")
+              req = urllib.request.Request(url, headers={
+                  "Authorization": "Bearer " + os.environ["GH_TOKEN"],
                   "Accept": "application/vnd.github+json",
                   "User-Agent": "iyi-strict-proof-ci",
-              },
-          )
-          try:
-              with urllib.request.urlopen(req, timeout=30) as resp:
-                  data = json.loads(resp.read().decode("utf-8"))
-          except Exception as exc:
-              sys.exit(f"ERROR: GitHub API query for job metadata failed: {exc}")
-
-          jobs = data.get("jobs", [])
-          matched = None
-          for j in jobs:
-              if runner_name and j.get("runner_name") == runner_name and j.get("status") == "in_progress":
-                  matched = j
+              })
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  batch = json.load(response)["jobs"]
+              jobs.extend(batch)
+              if len(batch) < 100:
                   break
-          if not matched:
-              for j in jobs:
-                  if j.get("status") == "in_progress":
-                      matched = j
-                      break
-          if not matched and jobs:
-              matched = jobs[0]
-
-          if not matched or not matched.get("started_at"):
-              sys.exit(f"ERROR: Failed to retrieve actual job started_at metadata.")
-
-          started_at = matched["started_at"]
-          dt = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
-          epoch_sec = dt.timestamp()
-
-          print(f"Verified platform job metadata: job_id={matched.get('id')}, name={matched.get('name')}, started_at={started_at}")
-
-          output_file = os.environ.get("GITHUB_OUTPUT")
-          if output_file:
-              with open(output_file, "a", encoding="utf-8") as f:
-                  f.write(f"job_started_at_iso={started_at}\n")
-                  f.write(f"job_started_at_epoch={epoch_sec}\n")
+              page += 1
+          matches = [j for j in jobs if j.get("name") == "Sequential strict-chain attempt (macOS 15)"
+                     and j.get("runner_name") == runner and j.get("status") == "in_progress"
+                     and str(j.get("run_id")) == run and str(j.get("run_attempt")) == attempt]
+          if len(matches) != 1:
+              sys.exit(f"Expected exactly one current job, found {len(matches)}")
+          job = matches[0]
+          job_id = str(job.get("id", ""))
+          started = job.get("started_at", "")
+          if not job_id.isdecimal() or not started:
+              sys.exit("Missing numeric job ID or start time")
+          epoch = datetime.fromisoformat(started.replace("Z", "+00:00")).timestamp()
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"job_started_at_iso={started}\njob_started_at_epoch={epoch}\njob_id={job_id}\njob_key={key}\n")
           PY
 
       - name: Checkout controller repository
@@ -567,10 +690,8 @@ jobs:
         run: |
           python3 -B proof/preflight_oracle.py --manifest proof/oracle_manifest.json
 
-      - name: Install and build Node supervisor action
-        run: |
-          npm --prefix .github/actions/strict-supervisor install
-          npm --prefix .github/actions/strict-supervisor run build
+      - name: Require frozen Node supervisor bundle
+        run: test -f .github/actions/strict-supervisor/dist/index.js
 
       - name: Restore static LLVM cache
         id: llvm-cache
@@ -691,12 +812,17 @@ jobs:
       - name: Launch Strict Proof Supervisor
         id: run-strict-supervisor
         uses: ./.github/actions/strict-supervisor
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           p: ${{ steps.build-p1.outputs.p1_dir }}
           w: ${{ steps.checkout-w.outputs.w_dir }}
           compiler: ${{ steps.build-p1.outputs.compiler_path }}
           artifacts_dir: strict-proof-artifacts
           job_start_time: ${{ steps.job-metadata.outputs.job_started_at_iso }}
+          job_id: ${{ steps.job-metadata.outputs.job_id }}
+          job_key: ${{ steps.job-metadata.outputs.job_key }}
+          invocation_id: strict-${{ github.run_id }}-${{ github.run_attempt }}
           host_job_limit_sec: ${{ env.HOST_JOB_LIMIT_SEC }}
           payload_budget_sec: ${{ env.PAYLOAD_BUDGET_SEC }}
           finalization_alloc_sec: ${{ env.FINALIZATION_ALLOC_SEC }}
@@ -708,12 +834,3 @@ jobs:
           c_sha: ${{ github.sha }}
           mode: 'strict'
 
-      - name: Final upload of proof artifacts and receipts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: remote-strict-proof-final-evidence
-          path: |
-            strict-proof-artifacts/**
-          retention-days: 14
-          if-no-files-found: ignore
