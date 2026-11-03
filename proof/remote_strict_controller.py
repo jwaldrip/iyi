@@ -51,6 +51,10 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
+from proof.remote_strict_evidence import OwnedRoot, seal
+from proof.registered_stage import run_registered_stage
+from proof.remote_strict_fixtures import FAKE_STAGE_EMITTER_SOURCE
+
 # Default budget constants (seconds)
 HOST_JOB_LIMIT_SEC = 21600.0       # 360 minutes (6 hours)
 PAYLOAD_BUDGET_SEC = 19800.0       # 330 minutes (5.5 hours)
@@ -276,183 +280,6 @@ def check_driver_admission(
     return remaining_sec >= required
 
 
-class DescendantTracker:
-    """
-    Tracks child and descendant processes with their start identities (lstart).
-    Ensures that on interruption or normal exit, all owned descendants across separate
-    sessions are reaped while unrelated sentinels and recycled PIDs remain untouched.
-    """
-
-    def __init__(self, root_pid: int):
-        self.root_pid = root_pid
-        self.tracked: dict[int, str] = {}  # pid -> immutable birth lstart
-        self.signaled: list[int] = []
-        self.survivors: list[int] = []
-        self._sample()
-
-    def _sample(self) -> None:
-        """Sample ps and record any descendants of root_pid or processes in its session/group."""
-        try:
-            ps_bin = "/bin/ps" if os.path.exists("/bin/ps") else "ps"
-            proc = subprocess.run(
-                [ps_bin, "-axo", "pid=,ppid=,pgid=,lstart="],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=5.0,
-            )
-            if proc.returncode != 0:
-                return
-        except Exception:
-            return
-
-        lines = proc.stdout.splitlines()
-        tree: dict[int, list[int]] = {}
-        pgids: dict[int, int] = {}
-        lstarts: dict[int, str] = {}
-
-        for line in lines:
-            parts = line.strip().split(None, 3)
-            if len(parts) < 4:
-                continue
-            try:
-                pid = int(parts[0])
-                ppid = int(parts[1])
-                pgid = int(parts[2])
-                lstart = parts[3].strip()
-            except ValueError:
-                continue
-
-            tree.setdefault(ppid, []).append(pid)
-            pgids[pid] = pgid
-            lstarts[pid] = lstart
-
-        if self.root_pid in lstarts and self.root_pid not in self.tracked:
-            if lstarts[self.root_pid]:
-                self.tracked[self.root_pid] = lstarts[self.root_pid]
-
-        # Recursive descent traversing entire subtree from root_pid
-        # Uses visited set so already-known intermediate children still traverse their own new children/grandchildren!
-        visited: set[int] = {self.root_pid}
-        queue = [self.root_pid]
-        while queue:
-            curr = queue.pop(0)
-            for child in tree.get(curr, []):
-                if child not in visited:
-                    visited.add(child)
-                    if child not in self.tracked and child in lstarts and lstarts[child]:
-                        self.tracked[child] = lstarts[child]
-                    queue.append(child)
-
-        # Include processes sharing root_pid's process group
-        for pid, pg in pgids.items():
-            if pg == self.root_pid and pid not in self.tracked and pid in lstarts and lstarts[pid]:
-                self.tracked[pid] = lstarts[pid]
-
-    def _get_current_procs(self) -> dict[int, str]:
-        """Return dict of current {pid: lstart} from ps."""
-        try:
-            ps_bin = "/bin/ps" if os.path.exists("/bin/ps") else "ps"
-            proc = subprocess.run(
-                [ps_bin, "-axo", "pid=,lstart="],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=5.0,
-            )
-            if proc.returncode != 0:
-                return {}
-            current_procs: dict[int, str] = {}
-            for line in proc.stdout.splitlines():
-                parts = line.strip().split(None, 1)
-                if len(parts) == 2:
-                    try:
-                        p = int(parts[0])
-                        current_procs[p] = parts[1].strip()
-                    except ValueError:
-                        pass
-            return current_procs
-        except Exception:
-            return {}
-
-    def reap_owned(self, grace_sec: float = 5.0) -> list[int]:
-        """
-        Reap all alive owned descendants whose start identity matches.
-        Escalates stubborn descendants to SIGKILL.
-        Updates self.signaled and self.survivors. Returns list of signaled PIDs.
-        """
-        self._sample()
-        if not self.tracked:
-            self.signaled = []
-            self.survivors = []
-            return []
-
-        current_procs = self._get_current_procs()
-        my_pid = os.getpid()
-
-        # Strict identity verification: PID must be present, have nonempty recorded lstart,
-        # and current ps lstart must match recorded birth lstart exactly!
-        target_pids: list[int] = []
-        for pid, recorded_lstart in self.tracked.items():
-            if pid == my_pid or not recorded_lstart:
-                continue
-            if pid in current_procs and current_procs[pid] and current_procs[pid] == recorded_lstart:
-                target_pids.append(pid)
-
-        self.signaled = list(target_pids)
-        if not target_pids:
-            self.survivors = []
-            return []
-
-        # 1. Send SIGTERM to strictly matching identities
-        for pid in target_pids:
-            fresh_procs = self._get_current_procs()
-            if fresh_procs.get(pid) == self.tracked[pid]:
-                try:
-                    os.kill(pid, signal.SIGTERM)
-                except (ProcessLookupError, PermissionError):
-                    pass
-
-        # Wait for grace period
-        deadline = time.monotonic() + max(0.1, grace_sec)
-        while time.monotonic() < deadline:
-            current_procs = self._get_current_procs()
-            still_alive = [p for p in target_pids if current_procs.get(p) == self.tracked[p]]
-            if not still_alive:
-                break
-            time.sleep(0.05)
-
-        # 2. Escalate matching survivors to SIGKILL
-        current_procs = self._get_current_procs()
-        stubborn_survivors = [p for p in target_pids if current_procs.get(p) == self.tracked[p]]
-        if stubborn_survivors:
-            for pid in stubborn_survivors:
-                fresh_procs = self._get_current_procs()
-                if fresh_procs.get(pid) == self.tracked[pid]:
-                    try:
-                        os.kill(pid, signal.SIGKILL)
-                    except (ProcessLookupError, PermissionError):
-                        pass
-
-            kill_deadline = time.monotonic() + 5.0
-            while time.monotonic() < kill_deadline:
-                current_procs = self._get_current_procs()
-                final_survivors = [p for p in stubborn_survivors if current_procs.get(p) == self.tracked[p]]
-                if not final_survivors:
-                    break
-                time.sleep(0.05)
-
-        final_procs = self._get_current_procs()
-        self.survivors = [p for p in target_pids if final_procs.get(p) == self.tracked[p]]
-        return self.signaled
-
-    def _is_pid_alive(self, pid: int) -> bool:
-        """Check if process is alive and matches tracked identity."""
-        procs = self._get_current_procs()
-        expected = self.tracked.get(pid)
-        return bool(expected and procs.get(pid) == expected)
-
-
 class EvidencePublisher:
     """Abstract persistence publisher interface."""
 
@@ -620,38 +447,18 @@ class IpcEvidencePublisher(EvidencePublisher):
         if ack.get("verified") is not True:
             raise EvidenceUploadError(f"UNVERIFIED-ACK: Node publisher returned verified={ack.get('verified')!r}")
 
-        for field in (
-            "request_id",
-            "repository",
-            "run_id",
-            "run_attempt",
-            "job_id",
-            "p_sha",
-            "w_sha",
-            "c_sha",
-            "chain_id",
-            "unit",
-            "native_attempt",
-            "snapshot_sequence",
-        ):
-            if field == "chain_id":
-                req_chain = request.get("chain_id")
-                ack_chain = ack.get("chain_id")
-                if req_chain is None:
-                    if ack_chain is not None:
-                        raise EvidenceUploadError(
-                            f"ACK-BINDING-MISMATCH: field 'chain_id' expected null/None for plan, got {ack_chain!r}"
-                        )
-                else:
-                    if ack_chain != req_chain:
-                        raise EvidenceUploadError(
-                            f"ACK-BINDING-MISMATCH: field 'chain_id' echoed as {ack_chain!r} != expected {req_chain!r}"
-                        )
-            else:
-                if str(ack.get(field)) != str(request.get(field)):
-                    raise EvidenceUploadError(
-                        f"ACK-BINDING-MISMATCH: field {field!r} echoed as {ack.get(field)!r} != expected {request.get(field)!r}"
-                    )
+        expected_event = {
+            "persistence-request": "persistence-ack",
+            "ownership-register": "ownership-register-ack",
+            "ownership-resolve": "ownership-resolve-ack",
+        }.get(request.get("event"))
+        if expected_event is None or ack.get("event") != expected_event:
+            raise IpcProtocolError("ACK-EVENT-MISMATCH")
+        for field, expected in request.items():
+            if field not in ("event", "archive_path") and (field not in ack or ack[field] != expected):
+                raise IpcProtocolError(f"ACK-BINDING-MISMATCH: {field}")
+        if request["event"] != "persistence-request":
+            return ack
 
         req_sha = request.get("archive_sha256")
         ack_sha = ack.get("downloaded_sha256")
@@ -674,135 +481,6 @@ class IpcEvidencePublisher(EvidencePublisher):
         return ack
 
 
-def archive_snapshot_evidence(
-    report_dir: str,
-    artifacts_dir: str,
-    unit: str,
-    attempt: int,
-    chain_id: str | None,
-    sequence: int,
-) -> tuple[str, int, str]:
-    """
-    Create a sealed, regular-file-only tar.gz archive of preserved evidence.
-    Includes chain-level files (pin.json, required.json, final.json), controller journal,
-    logs, and attempt directory regular files (preserving Run2 scratch/rows/**).
-    Rejects symlinks, special files, and path escapes.
-    Returns (archive_path, size_bytes, sha256).
-    """
-    archives_subdir = os.path.join(artifacts_dir, "incremental-archives")
-    os.makedirs(archives_subdir, exist_ok=True)
-
-    slug = unit.replace("/", "_")
-    short_chain = chain_id[:8] if chain_id else "prepin"
-    archive_name = f"evidence-{short_chain}-seq{sequence:03d}-{slug}-a{attempt}.tar.gz"
-    archive_path = os.path.join(archives_subdir, archive_name)
-
-    report_real = os.path.realpath(report_dir)
-    attempt_dir = os.path.join(report_dir, unit, f"a{attempt}") if unit not in ("plan", "pin", "terminal") else report_dir
-    attempt_real = os.path.realpath(attempt_dir)
-
-    # Reject symlink report or attempt roots
-    if os.path.islink(report_dir) or os.path.islink(attempt_dir):
-        raise EvidenceUploadError(f"ARCHIVE-SECURITY-VIOLATION: report or attempt dir is a symlink: {attempt_dir}")
-
-    files_to_archive: list[tuple[str, str]] = []  # (abs_path, arcname)
-
-    # 1. Chain-level metadata files if present in report_dir root
-    for name in ("pin.json", "final.json"):
-        p = os.path.join(report_dir, name)
-        if os.path.isfile(p):
-            if os.path.islink(p):
-                raise EvidenceUploadError(f"ARCHIVE-SECURITY-VIOLATION: Chain metadata {p} is a symlink")
-            files_to_archive.append((p, f"meta/{name}"))
-
-    req_p = os.path.join(report_dir, "run3", "required.json")
-    if os.path.isfile(req_p):
-        if os.path.islink(req_p):
-            raise EvidenceUploadError(f"ARCHIVE-SECURITY-VIOLATION: required.json {req_p} is a symlink")
-        files_to_archive.append((req_p, "meta/run3/required.json"))
-
-    # 2. Controller journal and stage logs if available
-    journal_path = os.path.join(artifacts_dir, "stage-journal.jsonl")
-    if os.path.isfile(journal_path):
-        files_to_archive.append((journal_path, "controller/stage-journal.jsonl"))
-
-    log_path = os.path.join(artifacts_dir, "controller-logs", f"{slug}-a{attempt}.log")
-    if os.path.isfile(log_path):
-        files_to_archive.append((log_path, f"controller-logs/{slug}-a{attempt}.log"))
-
-    # 3. Unit attempt directory regular files
-    if os.path.isdir(attempt_dir) and unit not in ("plan", "pin", "terminal"):
-        for root, dirs, files in os.walk(attempt_dir, followlinks=False):
-            rel_root = os.path.relpath(root, attempt_dir)
-            if rel_root == ".":
-                # Filter out expendable scratch directories so they are not archived
-                if unit == "run1":
-                    prune_dirs = [d for d in dirs if d in RUN1_SCRATCH_NAMES or d.endswith(".tmp") or d.endswith(".cache")]
-                elif unit == "run2":
-                    prune_dirs = [d for d in dirs if d in ("run2.tmp", "run2.cache") or d.endswith(".tmp") or d.endswith(".cache")]
-                elif unit.startswith("run3") or unit == "run3":
-                    prune_dirs = [d for d in dirs if d in RUN3_SCRATCH_NAMES]
-                else:
-                    prune_dirs = []
-                for pd in prune_dirs:
-                    dirs.remove(pd)
-            elif rel_root == "scratch" and unit == "run2":
-                # For run2, inside attempt_dir/scratch: only keep 'rows'
-                prune_dirs = [d for d in dirs if d != "rows"]
-                for pd in prune_dirs:
-                    dirs.remove(pd)
-
-            for d in list(dirs):
-                dir_path = os.path.join(root, d)
-                if os.path.islink(dir_path):
-                    raise EvidenceUploadError(f"ARCHIVE-SECURITY-VIOLATION: Symlink directory detected: {dir_path}")
-
-            for f in files:
-                file_path = os.path.join(root, f)
-                # At top level of attempt_dir, filter out scratch files/symlinks
-                if rel_root == ".":
-                    is_scratch = False
-                    if unit == "run1" and (f in RUN1_SCRATCH_NAMES or f.endswith(".tmp") or f.endswith(".cache")):
-                        is_scratch = True
-                    elif unit == "run2" and (f in ("run2.tmp", "run2.cache") or f.endswith(".tmp") or f.endswith(".cache")):
-                        is_scratch = True
-                    elif (unit.startswith("run3") or unit == "run3") and f in RUN3_SCRATCH_NAMES:
-                        is_scratch = True
-                    if is_scratch:
-                        continue
-                elif rel_root == "scratch" and unit == "run2":
-                    continue
-
-                if os.path.islink(file_path):
-                    raise EvidenceUploadError(f"ARCHIVE-SECURITY-VIOLATION: Symlink file detected: {file_path}")
-                st = os.lstat(file_path)
-                if not stat.S_ISREG(st.st_mode):
-                    raise EvidenceUploadError(f"ARCHIVE-SECURITY-VIOLATION: Special non-regular file: {file_path}")
-                rel = os.path.relpath(file_path, attempt_dir)
-                files_to_archive.append((file_path, f"attempt/{rel}"))
-    # Create deterministic tar.gz archive
-    hasher = hashlib.sha256()
-    size_bytes = 0
-
-    with tarfile.open(archive_path, "w:gz", format=tarfile.PAX_FORMAT) as tar:
-        for abs_p, arcname in sorted(files_to_archive, key=lambda x: x[1]):
-            ti = tar.gettarinfo(abs_p, arcname=arcname)
-            ti.uid = 0
-            ti.gid = 0
-            ti.uname = "root"
-            ti.gname = "root"
-            ti.mtime = 0
-            ti.mode = 0o644
-            with open(abs_p, "rb") as f:
-                tar.addfile(ti, f)
-
-    with open(archive_path, "rb") as f:
-        while chunk := f.read(65536):
-            hasher.update(chunk)
-            size_bytes += len(chunk)
-
-    sha256 = hasher.hexdigest()
-    return archive_path, size_bytes, sha256
 
 
 def safe_cleanup_stage_scratch(
@@ -938,125 +616,6 @@ def _get_dir_size(path: str) -> int:
     return total
 
 
-def run_bounded_process(
-    cmd: list[str],
-    *,
-    cwd: str,
-    env: dict[str, str],
-    monotonic_deadline: float,
-    grace_sec: float = GRACE_SEC,
-    log_file: str | None = None,
-    on_spawn: Callable[[int], None] | None = None,
-    is_interrupted: Callable[[], tuple[bool, str | None]] | None = None,
-) -> tuple[int, bool, str | None, list[int], list[int]]:
-    """
-    Run command in its own session (start_new_session=True).
-    Monitors deadline monotonically and checks external interruption.
-    Signals process group and reaps owned descendants on timeout or signal.
-    Returns (exit_code, was_interrupted, interruption_reason, reaped_pids, surviving_pids).
-    """
-    log_fp = None
-    temp_log_file = None
-    if log_file:
-        os.makedirs(os.path.dirname(os.path.abspath(log_file)), exist_ok=True)
-        log_fp = open(log_file, "w", encoding="utf-8")
-    else:
-        temp_log_file = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False)
-        log_fp = temp_log_file
-
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            cwd=cwd,
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=log_fp,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,  # setsid: proc.pid is session/pg leader
-            close_fds=True,          # close control descriptors for native stages
-        )
-    finally:
-        if log_fp and not log_file:
-            log_fp.close()
-
-    if on_spawn:
-        on_spawn(proc.pid)
-
-    tracker = DescendantTracker(proc.pid)
-    interrupted = False
-    interruption_reason: str | None = None
-
-    try:
-        while True:
-            rc = proc.poll()
-            if rc is not None:
-                # Leader exited normally! Sample and reap any detached descendants left behind
-                tracker._sample()
-                reaped = tracker.reap_owned(grace_sec=min(grace_sec, 5.0))
-                survivors = list(tracker.survivors)
-                return rc, False, None, reaped, survivors
-
-            if is_interrupted:
-                was_int, int_reason = is_interrupted()
-                if was_int:
-                    interrupted = True
-                    interruption_reason = int_reason or "Interrupted by controller signal"
-                    break
-
-            now_mono = time.monotonic()
-            if now_mono >= monotonic_deadline:
-                interrupted = True
-                interruption_reason = (
-                    f"Hosting payload budget cutoff reached (monotonic deadline {monotonic_deadline:.1f})."
-                )
-                break
-
-            tracker._sample()
-            time.sleep(0.05)
-
-        # Interrupted or deadline cutoff path:
-        print(
-            f"\n[CONTROLLER] {interruption_reason}. Signaling process group {proc.pid} with SIGTERM (grace {grace_sec}s)...",
-            file=sys.stderr,
-        )
-        try:
-            os.killpg(proc.pid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
-            pass
-
-        term_deadline = time.monotonic() + grace_sec
-        while time.monotonic() < term_deadline:
-            if proc.poll() is not None:
-                break
-            tracker._sample()
-            time.sleep(0.05)
-
-        if proc.poll() is None:
-            print(
-                f"[CONTROLLER] Process group {proc.pid} did not exit within {grace_sec}s grace. Escalating to SIGKILL...",
-                file=sys.stderr,
-            )
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                pass
-            try:
-                proc.wait(timeout=5.0)
-            except subprocess.TimeoutExpired:
-                pass
-
-        reaped_pids = tracker.reap_owned(grace_sec=5.0)
-        survivors = list(tracker.survivors)
-        return proc.returncode if proc.returncode is not None else -1, True, interruption_reason, reaped_pids, survivors
-    finally:
-        if log_file and log_fp and not log_fp.closed:
-            log_fp.close()
-        if temp_log_file:
-            try:
-                os.remove(temp_log_file.name)
-            except OSError:
-                pass
-
 
 def load_and_verify_stage_result(
     report_dir: str,
@@ -1140,6 +699,9 @@ class RemoteStrictController:
         run_id: str | int | None = None,
         run_attempt: str | int | None = None,
         job_id: str | int | None = None,
+        job_key: str | None = None,
+        invocation_id: str | None = None,
+        fixture_sha256: str | None = None,
         upload_cmd: str | None = None,
         publisher_timeout_sec: float = 30.0,
     ):
@@ -1165,13 +727,18 @@ class RemoteStrictController:
         self.mode = mode
         self.publisher_timeout_sec = float(publisher_timeout_sec)
 
-        self.p_sha = p_sha or resolve_git_sha(self.p_path)
-        self.w_sha = w_sha or resolve_git_sha(self.w_path)
-        self.c_sha = c_sha or resolve_git_sha(os.path.dirname(self.validator_py))
-        self.repository = repository or os.environ.get("GITHUB_REPOSITORY", "unknown/repo")
-        self.run_id = str(run_id or os.environ.get("GITHUB_RUN_ID", "0"))
-        self.run_attempt = str(run_attempt or os.environ.get("GITHUB_RUN_ATTEMPT", "1"))
-        self.job_id = str(job_id or os.environ.get("GITHUB_JOB", "job-1"))
+        self.expected_shas = (p_sha, w_sha, c_sha)
+        self.p_sha = resolve_git_sha(self.p_path)
+        self.w_sha = resolve_git_sha(self.w_path)
+        self.c_sha = resolve_git_sha(REPO_ROOT)
+        self.repository = repository or os.environ.get("GITHUB_REPOSITORY", "")
+        self.run_id = str(run_id or os.environ.get("GITHUB_RUN_ID", ""))
+        self.run_attempt = str(run_attempt or os.environ.get("GITHUB_RUN_ATTEMPT", ""))
+        self.job_id = str(job_id or "")
+        self.job_key = job_key or os.environ.get("GITHUB_JOB", "")
+        self.invocation_id = invocation_id or ""
+        self.fixture_sha256 = fixture_sha256
+        self.execution_kind = "synthetic" if mode == "validation-only" else "native"
 
         # Validate commit SHAs strictly if provided
         for sha_name, sha_val in (("p-sha", self.p_sha), ("w-sha", self.w_sha), ("c-sha", self.c_sha)):
@@ -1182,8 +749,8 @@ class RemoteStrictController:
         # Anchored monotonic timing
         self.monotonic_anchor = time.monotonic()
         now_wall = time.time()
-        elapsed_at_init = max(0.0, now_wall - self.job_start_time)
-        remaining_budget = max(0.0, self.payload_budget_sec - elapsed_at_init)
+        self.elapsed_at_init = max(0.0, now_wall - self.job_start_time)
+        remaining_budget = max(0.0, self.payload_budget_sec - self.elapsed_at_init)
         self.monotonic_deadline = self.monotonic_anchor + remaining_budget
 
         self.records: list[StageExecutionRecord] = []
@@ -1193,6 +760,8 @@ class RemoteStrictController:
         self.interruption_reason: str | None = None
         self.interruption_envelope: dict[str, Any] = {}
         self.snapshot_sequence = 0
+        self.receipts: list[dict[str, Any]] = []
+        self.terminal_receipt: dict[str, Any] | None = None
         self.current_child_pid: int | None = None
 
         self.publisher: EvidencePublisher | None = None
@@ -1203,12 +772,13 @@ class RemoteStrictController:
                 timeout_sec=self.publisher_timeout_sec,
             )
 
-        os.makedirs(self.artifacts_dir, exist_ok=True)
-        os.makedirs(os.path.join(self.artifacts_dir, "controller-logs"), exist_ok=True)
+        self.evidence_root = OwnedRoot(self.artifacts_dir, create=True)
+        logs = OwnedRoot(os.path.join(self.artifacts_dir, "controller-logs"), create=True)
+        logs.close()
 
     def get_elapsed_from_job_start_sec(self) -> float:
         """Monotonic elapsed time since job anchor."""
-        return max(0.0, (time.monotonic() - self.monotonic_anchor) + max(0.0, (time.time() - self.job_start_time)))
+        return max(0.0, self.elapsed_at_init + time.monotonic() - self.monotonic_anchor)
 
     def get_remaining_payload_sec(self) -> float:
         """Monotonic remaining seconds before payload cutoff."""
@@ -1223,13 +793,96 @@ class RemoteStrictController:
             "monotonic_now": time.monotonic(),
             **payload,
         }
-        try:
-            with open(journal_file, "a", encoding="utf-8") as f:
-                f.write(json.dumps(event, sort_keys=True) + "\n")
-        except Exception as exc:
-            print(f"[CONTROLLER] Warning: Failed to record journal event: {exc}", file=sys.stderr)
+        self.evidence_root.write("stage-journal.jsonl", (json.dumps(event, sort_keys=True) + "\n").encode(), append=True)
 
-    def execute_single_stage(
+    def _control(self, event: dict[str, Any]) -> dict[str, Any]:
+        if self.publisher is None:
+            raise EvidenceUploadError("PUBLISHER-REQUIRED")
+        request = {**event, "protocol_version": 1, "request_id": secrets.token_hex(16),
+                   "invocation_id": self.invocation_id}
+        return self.publisher.persist(request)
+
+    def _persist(self, *, kind: str, unit: str, attempt: int, chain_id: str | None,
+                 archive_path: str, size: int, digest: str) -> dict[str, Any]:
+        if self.publisher is None:
+            raise EvidenceUploadError("PUBLISHER-REQUIRED")
+        request = {
+            "event": "persistence-request", "protocol_version": 1,
+            "request_id": secrets.token_hex(16), "invocation_id": self.invocation_id,
+            "execution_kind": self.execution_kind, "repository": self.repository,
+            "run_id": self.run_id, "run_attempt": self.run_attempt,
+            "job_id": self.job_id, "job_key": self.job_key,
+            "p_sha": self.p_sha, "w_sha": self.w_sha, "c_sha": self.c_sha,
+            "fixture_sha256": self.fixture_sha256, "snapshot_kind": kind,
+            "chain_id": chain_id, "unit": unit, "native_attempt": attempt,
+            "snapshot_sequence": self.snapshot_sequence, "archive_path": archive_path,
+            "archive_bytes": size, "archive_sha256": digest,
+        }
+        return self.publisher.persist(request)
+
+    def _preflight(self) -> None:
+        if self.publisher is None or getattr(self.publisher, "broken", False):
+            raise EvidenceUploadError("PUBLISHER-REQUIRED")
+        if self.mode != "validation-only" or not self.run_proof_py:
+            raise VerificationError("SYNTHETIC-EMITTER-REQUIRED")
+        for expected, actual in zip(self.expected_shas, (self.p_sha, self.w_sha, self.c_sha)):
+            if not expected or expected != actual or actual == "0" * 40:
+                raise VerificationError("SOURCE-REVISION-MISMATCH")
+        if not self.repository or not self.job_key or not self.invocation_id:
+            raise VerificationError("PLATFORM-CONTEXT-MISSING")
+        if not all(re.fullmatch(r"[1-9][0-9]*", x) for x in (self.run_id, self.run_attempt, self.job_id)):
+            raise VerificationError("PLATFORM-CONTEXT-INVALID")
+        emitter = os.path.abspath(self.run_proof_py)
+        for source in (self.p_path, self.w_path, REPO_ROOT):
+            if os.path.commonpath((emitter, os.path.abspath(source))) == os.path.abspath(source):
+                raise VerificationError("SYNTHETIC-EMITTER-INSIDE-SOURCE")
+        root = OwnedRoot(os.path.dirname(emitter))
+        try:
+            fd = os.open(os.path.basename(emitter), os.O_RDONLY | os.O_NOFOLLOW, dir_fd=root.fd)
+            try:
+                st = os.fstat(fd)
+                if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+                    raise VerificationError("SYNTHETIC-EMITTER-UNSAFE")
+                with os.fdopen(fd, "rb", closefd=False) as f:
+                    data = f.read()
+                if os.fstat(fd) != st:
+                    raise VerificationError("SYNTHETIC-EMITTER-CHANGED")
+            finally:
+                os.close(fd)
+        finally:
+            root.close()
+        digest = hashlib.sha256(data).hexdigest()
+        if data != FAKE_STAGE_EMITTER_SOURCE.encode() or digest != self.fixture_sha256:
+            raise VerificationError("SYNTHETIC-EMITTER-MISMATCH")
+
+    def _check_pin_identity(self, pin: dict[str, Any]) -> None:
+        with open(self.compiler_path, "rb") as f:
+            digest = hashlib.file_digest(f, "sha256").hexdigest()
+        if (pin.get("p_source_sha") != self.p_sha or pin.get("w_head") != self.w_sha
+                or pin.get("compiler_path") != self.compiler_path
+                or pin.get("compiler_sha256") != digest):
+            raise VerificationError("PIN-IDENTITY-MISMATCH")
+
+    def execute_single_stage(self, unit: str, cmd: list[str], expected_attempt: int = 1,
+                             requires_pass_result: bool = True) -> StageExecutionRecord:
+        start = time.monotonic_ns()
+        count = len(self.records)
+        try:
+            return self._execute_single_stage(unit, cmd, expected_attempt, requires_pass_result)
+        except Exception as exc:
+            if len(self.records) == count:
+                end = time.monotonic_ns()
+                record = StageExecutionRecord(
+                    unit=unit, attempt=expected_attempt, raw_exit_code=-1,
+                    native_status="NONE", result_status="UNKNOWN", disposition="CONTROLLER_FAILED",
+                    timing=UnitTiming(start, end, (end - start) / 1e9),
+                    disk=DiskObservation(0, 0, 0), error_detail=f"{type(exc).__name__}: {exc}",
+                )
+                self.records.append(record)
+                self._write_stage_journal(record)
+            raise
+
+    def _execute_single_stage(
         self,
         unit: str,
         cmd: list[str],
@@ -1249,25 +902,18 @@ class RemoteStrictController:
         start_ns = time.monotonic_ns()
 
         stage_slug = unit.replace("/", "_")
-        log_file = os.path.join(self.artifacts_dir, "controller-logs", f"{stage_slug}-a{expected_attempt}.log")
-
-        def on_spawn(pid: int) -> None:
-            self.current_child_pid = pid
-
+        self._record_journal_event("stage-intent", {"unit": unit, "attempt": expected_attempt})
         def check_interrupted() -> tuple[bool, str | None]:
             return self.overall_interrupted, self.interruption_reason
-
-        exit_code, interrupted, interrupt_reason, reaped, survivors = run_bounded_process(
-            cmd,
-            cwd=self.w_path,
-            env=dict(os.environ),
-            monotonic_deadline=self.monotonic_deadline,
-            grace_sec=self.grace_sec,
-            log_file=log_file,
-            on_spawn=on_spawn,
-            is_interrupted=check_interrupted,
-        )
-        self.current_child_pid = None
+        with self.evidence_root.open_writer(f"controller-logs/{stage_slug}-a{expected_attempt}.log") as log_file:
+            outcome = run_registered_stage(
+                cmd, cwd=self.w_path, env=dict(os.environ), log_file=log_file,
+                unit=unit, attempt=expected_attempt, monotonic_deadline=self.monotonic_deadline,
+                grace_sec=self.grace_sec, register=self._control, is_interrupted=check_interrupted,
+            )
+        exit_code = outcome.exit_code
+        interrupted = outcome.interrupted or outcome.timed_out
+        interrupt_reason = self.interruption_reason or ("Hosting deadline reached" if outcome.timed_out else None)
 
         end_ns = time.monotonic_ns()
         elapsed_sec = (end_ns - start_ns) / 1e9
@@ -1315,15 +961,13 @@ class RemoteStrictController:
         record.native_validation_reasons = validation_reasons
 
         # Determine disposition
-        if interrupted:
+        if not outcome.ownership_resolved:
+            record.disposition = "OWNERSHIP_UNRESOLVED"
+            record.error_detail = outcome.ownership_error or "Ownership unresolved"
+        elif interrupted:
             record.result_status = "INTERRUPTED"
             record.disposition = "INTERRUPTED"
             record.error_detail = interrupt_reason
-        elif survivors:
-            # Surviving detached descendants cannot be accepted as clean PASS
-            record.disposition = "REJECTED"
-            record.result_status = "FAIL"
-            record.error_detail = f"Stage {unit!r} left surviving detached descendants: {survivors}"
         elif exit_code == 0 and val_status == "PASS" and native_valid and not interrupted:
             record.disposition = "ACCEPTED"
             record.result_status = "PASS"
@@ -1335,14 +979,24 @@ class RemoteStrictController:
                 f"val_status={val_status}, reasons={validation_reasons}"
             )
 
-        # If pinning, extract chain_id from pin.json if created so archive name and request carry it
-        if unit == "pin" and os.path.isfile(os.path.join(self.report_dir, "pin.json")):
+        if unit == "pin":
             try:
-                with open(os.path.join(self.report_dir, "pin.json"), "r", encoding="utf-8") as f:
-                    pin_data = json.load(f)
-                self.chain_id = pin_data.get("chain_id")
-            except Exception:
-                pass
+                root = OwnedRoot(self.report_dir)
+                try:
+                    fd = os.open("pin.json", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=root.fd)
+                    with os.fdopen(fd, "r", encoding="utf-8") as f:
+                        pin_data = json.load(f)
+                finally:
+                    root.close()
+                candidate = pin_data.get("chain_id")
+                if not isinstance(candidate, str) or not re.fullmatch(r"[0-9a-f]{32}", candidate):
+                    raise VerificationError("INVALID-CHAIN-ID")
+                self._check_pin_identity(pin_data)
+                self.chain_id = candidate
+            except Exception as exc:
+                self.chain_id = None
+                record.disposition = "REJECTED"
+                record.error_detail = f"PIN-UNESTABLISHED: {type(exc).__name__}"
 
         # Persist the stage journal before sealing the snapshot. A rejected
         # pre-pin plan never reaches a later stage, so this write is the only
@@ -1351,50 +1005,24 @@ class RemoteStrictController:
 
         # Stage and upload evidence snapshot for ALL attempted stages (including plan and pin failures)
         try:
-            req_chain_id: str | None = None if unit == "plan" else self.chain_id
-            if unit != "plan":
-                if not req_chain_id or not isinstance(req_chain_id, str) or not req_chain_id.strip() or req_chain_id in ("nochain", "null"):
-                    raise EvidenceUploadError(
-                        f"Post-pin stage {unit!r} requires valid nonempty chain_id, got {req_chain_id!r}"
-                    )
-            archive_path, size_bytes, sha256 = archive_snapshot_evidence(
-                report_dir=self.report_dir,
-                artifacts_dir=self.artifacts_dir,
-                unit=unit,
-                attempt=expected_attempt,
-                chain_id=req_chain_id,
-                sequence=self.snapshot_sequence + 1,
+            req_chain_id = None if unit == "plan" else self.chain_id
+            kind = "plan" if unit == "plan" else ("prechain-failure" if unit == "pin" and req_chain_id is None else "checkpoint")
+            if kind == "checkpoint" and (not isinstance(req_chain_id, str) or not re.fullmatch(r"[0-9a-f]{32}", req_chain_id)):
+                raise EvidenceUploadError("INVALID-CHAIN-ID")
+            archive_path, size_bytes, sha256 = seal(
+                self.report_dir, self.artifacts_dir, unit, expected_attempt,
+                req_chain_id, self.snapshot_sequence + 1, failed=record.disposition != "ACCEPTED",
             )
             self.snapshot_sequence += 1
             record.archive_path = archive_path
             record.archive_size_bytes = size_bytes
             record.archive_sha256 = sha256
 
-            if self.publisher is not None:
-                req = {
-                    "request_id": secrets.token_hex(16),
-                    "repository": self.repository,
-                    "run_id": str(self.run_id),
-                    "run_attempt": str(self.run_attempt),
-                    "job_id": str(self.job_id),
-                    "p_sha": self.p_sha,
-                    "w_sha": self.w_sha,
-                    "c_sha": self.c_sha,
-                    "chain_id": req_chain_id,
-                    "unit": unit,
-                    "native_attempt": expected_attempt,
-                    "snapshot_sequence": self.snapshot_sequence,
-                    "archive_path": archive_path,
-                    "archive_bytes": size_bytes,
-                    "archive_sha256": sha256,
-                }
-                ack = self.publisher.persist(req)
-                record.artifact_id = ack.get("artifact_id")
-                record.upload_verified = True
-                print(
-                    f"[CONTROLLER] Verified incremental persistence for {unit} "
-                    f"(seq {self.snapshot_sequence}, artifact_id={record.artifact_id})"
-                )
+            ack = self._persist(kind=kind, unit=unit, attempt=expected_attempt, chain_id=req_chain_id,
+                                archive_path=archive_path, size=size_bytes, digest=sha256)
+            self.receipts.append(ack)
+            record.artifact_id = ack["artifact_id"]
+            record.upload_verified = True
         except Exception as exc:
             record.upload_verified = False
             record.error_detail = (record.error_detail or "") + f" [Evidence persistence failed: {exc}]"
@@ -1405,18 +1033,19 @@ class RemoteStrictController:
 
         # Safe scratch cleanup ONLY after acceptance and verified upload
         if unit not in ("plan", "pin") and record.disposition == "ACCEPTED" and record.upload_verified:
-            cleaned_items, reclaimed = safe_cleanup_stage_scratch(
-                self.report_dir,
-                unit,
-                attempt_dir,
-                upload_verified=True,
-            )
-            record.cleanup_performed = True
-            record.reclaimed_bytes = reclaimed
-            report_for_disk = self.report_dir if os.path.exists(self.report_dir) else "/tmp"
-            record.disk.after_bytes = get_disk_free_bytes(report_for_disk)
-            if reclaimed > 0:
-                print(f"[CONTROLLER] Completed {unit} (attempt {expected_attempt}): PASS. Reclaimed {reclaimed} bytes scratch.")
+            try:
+                cleaned_items, reclaimed = safe_cleanup_stage_scratch(
+                    self.report_dir, unit, attempt_dir, upload_verified=True,
+                )
+                record.cleanup_performed = True
+                record.reclaimed_bytes = reclaimed
+                record.disk.after_bytes = get_disk_free_bytes(self.report_dir if os.path.exists(self.report_dir) else "/tmp")
+            except Exception as exc:
+                record.disposition = "CLEANUP_FAILED"
+                record.error_detail = f"Cleanup failed or partially completed: {type(exc).__name__}: {exc}"
+                self.records.append(record)
+                self._write_stage_journal(record)
+                raise UnsafeCleanupError(record.error_detail) from exc
 
         self.records.append(record)
         self._write_stage_journal(record)
@@ -1448,11 +1077,6 @@ class RemoteStrictController:
                     sig_name = signal.Signals(signum).name
                     self.overall_interrupted = True
                     self.interruption_reason = f"Controller received external signal {sig_name}"
-                    if self.current_child_pid is not None:
-                        try:
-                            os.killpg(self.current_child_pid, signal.SIGTERM)
-                        except (ProcessLookupError, PermissionError):
-                            pass
 
                 for s in (signal.SIGINT, signal.SIGTERM):
                     previous_sig_handlers[s] = signal.getsignal(s)
@@ -1473,6 +1097,7 @@ class RemoteStrictController:
                 )
                 self._write_controller_summary()
                 raise StrictAuthorizationRefused(refusal_msg)
+            self._preflight()
 
             # 2. Require disk floor before starting
             verify_disk_floor("/tmp", self.min_disk_gib)
@@ -1509,15 +1134,8 @@ class RemoteStrictController:
             ]
             self.execute_single_stage("pin", cmd_pin, expected_attempt=1, requires_pass_result=False)
 
-            # Read pin.json to extract chain_id
-            pin_file = os.path.join(self.report_dir, "pin.json")
-            if not os.path.isfile(pin_file):
-                raise VerificationError(f"PIN-MISSING: pin.json not found in {self.report_dir}")
-            with open(pin_file, "r", encoding="utf-8") as f:
-                pin_data = json.load(f)
-            self.chain_id = pin_data.get("chain_id")
-            if not self.chain_id or not re.fullmatch(r"[0-9a-f]{32}", self.chain_id):
-                raise VerificationError(f"INVALID-CHAIN-ID: {self.chain_id!r} in pin.json")
+            if not self.chain_id:
+                raise VerificationError("PIN-MISSING")
             print(f"[CONTROLLER] Established chain_id: {self.chain_id}")
 
             # 5. Stage: run1
@@ -1628,10 +1246,15 @@ class RemoteStrictController:
             if not is_valid_final:
                 raise VerificationError(f"FINAL-VERIFICATION-FAILED: {final_reasons}")
 
-            # Upload terminal final snapshot
+            self.overall_status = "NATIVE_COMPLETE_PENDING_TERMINAL"
+            self._write_controller_summary()
             self._upload_terminal_snapshot()
 
             self.overall_status = "PASS"
+            self.evidence_root.write("controller-completion.json", (
+                json.dumps({"overall_status": "PASS", "invocation_id": self.invocation_id,
+                            "chain_id": self.chain_id, "terminal_receipt": self.terminal_receipt},
+                           sort_keys=True) + "\n").encode())
             print(f"\n================================================================================")
             print(f"[CONTROLLER] STRICT PROOF CHAIN COMPLETED SUCCESSFULLY: PASS")
             print(f"================================================================================")
@@ -1666,6 +1289,13 @@ class RemoteStrictController:
                     signal.signal(s, h)
                 except Exception:
                     pass
+            if ret != 0 and self.overall_status in ("VERIFICATION_FAILED", "CLEANUP_FAILED") and self.chain_id and self.receipts and self.publisher is not None:
+                if not any(r.disposition == "OWNERSHIP_UNRESOLVED" for r in self.records):
+                    try:
+                        self._write_controller_summary()
+                        self._upload_terminal_snapshot()
+                    except Exception as exc:
+                        print(f"[CONTROLLER] Failure terminal persistence failed: {exc}", file=sys.stderr)
             if self.publisher is not None:
                 try:
                     self.publisher.close()
@@ -1871,57 +1501,29 @@ class RemoteStrictController:
         return False, reasons
 
     def _upload_terminal_snapshot(self) -> None:
-        """Create and upload terminal sealed snapshot containing final.json and summary."""
-        if self.publisher is None:
-            return
-        if not self.chain_id or not isinstance(self.chain_id, str) or not self.chain_id.strip() or self.chain_id in ("nochain", "null"):
-            raise EvidenceUploadError(
-                f"Terminal snapshot requires valid nonempty chain_id, got {self.chain_id!r}"
-            )
-
-        archive_path, size_bytes, sha256 = archive_snapshot_evidence(
-            report_dir=self.report_dir,
-            artifacts_dir=self.artifacts_dir,
-            unit="terminal",
-            attempt=1,
-            chain_id=self.chain_id,
-            sequence=self.snapshot_sequence + 1,
+        if not self.receipts:
+            raise EvidenceUploadError("CHECKPOINT-REQUIRED")
+        final = self.receipts[-1] if self.receipts[-1].get("unit") == "final" else None
+        if self.overall_status == "NATIVE_COMPLETE_PENDING_TERMINAL" and final is None:
+            raise EvidenceUploadError("FINAL-CHECKPOINT-REQUIRED")
+        envelope = {
+            "status": self.overall_status, "chain_id": self.chain_id,
+            "invocation_id": self.invocation_id, "final_checkpoint": final,
+            "checkpoint_receipts": self.receipts,
+        }
+        self.evidence_root.write("terminal-envelope.json", (json.dumps(envelope, sort_keys=True) + "\n").encode())
+        archive_path, size, digest = seal(
+            self.report_dir, self.artifacts_dir, "terminal", 1, self.chain_id,
+            self.snapshot_sequence + 1,
         )
         self.snapshot_sequence += 1
-
-        req = {
-            "request_id": secrets.token_hex(16),
-            "repository": self.repository,
-            "run_id": str(self.run_id),
-            "run_attempt": str(self.run_attempt),
-            "job_id": str(self.job_id),
-            "p_sha": self.p_sha,
-            "w_sha": self.w_sha,
-            "c_sha": self.c_sha,
-            "chain_id": self.chain_id,
-            "unit": "terminal",
-            "native_attempt": 1,
-            "snapshot_sequence": self.snapshot_sequence,
-            "archive_path": archive_path,
-            "archive_bytes": size_bytes,
-            "archive_sha256": sha256,
-        }
-        ack = self.publisher.persist(req)
-        if ack.get("verified") is not True:
-            raise EvidenceUploadError("Terminal snapshot upload could not be verified by publisher")
-        print(
-            f"[CONTROLLER] Verified terminal persistence "
-            f"(seq {self.snapshot_sequence}, artifact_id={ack.get('artifact_id')})"
+        self.terminal_receipt = self._persist(
+            kind="terminal-envelope", unit="terminal", attempt=1, chain_id=self.chain_id,
+            archive_path=archive_path, size=size, digest=digest,
         )
     def _write_stage_journal(self, record: StageExecutionRecord) -> None:
         """Append record to mandatory stage-journal.jsonl."""
-        journal_file = os.path.join(self.artifacts_dir, "stage-journal.jsonl")
-        try:
-            with open(journal_file, "a", encoding="utf-8") as f:
-                f.write(json.dumps(record.to_dict(), sort_keys=True) + "\n")
-        except Exception as exc:
-            print(f"[CONTROLLER] CRITICAL: Failed to append to journal {journal_file}: {exc}", file=sys.stderr)
-            raise ControllerError(f"Mandatory journal writing failed: {exc}") from exc
+        self.evidence_root.write("stage-journal.jsonl", (json.dumps(record.to_dict(), sort_keys=True) + "\n").encode(), append=True)
 
     def _write_controller_summary(self) -> None:
         """Write mandatory controller execution summary envelope to artifacts directory."""
@@ -1933,6 +1535,8 @@ class RemoteStrictController:
             "overall_interrupted": self.overall_interrupted,
             "interruption_envelope": self.interruption_envelope,
             "chain_id": self.chain_id,
+            "invocation_id": self.invocation_id,
+            "final_checkpoint": self.receipts[-1] if self.receipts and self.receipts[-1].get("unit") == "final" else None,
             "p_sha": self.p_sha,
             "w_sha": self.w_sha,
             "c_sha": self.c_sha,
@@ -1949,15 +1553,7 @@ class RemoteStrictController:
             "units": [r.to_dict() for r in self.records],
         }
 
-        summary_file = os.path.join(self.artifacts_dir, "strict-controller-summary.json")
-        try:
-            with open(summary_file, "w", encoding="utf-8") as f:
-                json.dump(summary, f, indent=2, sort_keys=True)
-                f.write("\n")
-            print(f"[CONTROLLER] Summary report written to: {summary_file}")
-        except Exception as exc:
-            print(f"[CONTROLLER] CRITICAL: Failed to write summary report {summary_file}: {exc}", file=sys.stderr)
-            raise ControllerError(f"Mandatory summary writing failed: {exc}") from exc
+        self.evidence_root.write("strict-controller-summary.json", (json.dumps(summary, indent=2, sort_keys=True) + "\n").encode())
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -1988,6 +1584,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--run-id", default=None, help="GitHub Actions run ID")
     parser.add_argument("--run-attempt", default=None, help="GitHub Actions run attempt")
     parser.add_argument("--job-id", default=None, help="GitHub Actions job ID")
+    parser.add_argument("--job-key", default=None)
+    parser.add_argument("--invocation-id", default=None)
+    parser.add_argument("--fixture-sha256", default=None)
     parser.add_argument("--upload-cmd", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--publisher-timeout-sec", type=float, default=30.0, help="Timeout in seconds for evidence publisher requests")
     args = parser.parse_args(argv)
@@ -2025,6 +1624,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         run_id=args.run_id,
         run_attempt=args.run_attempt,
         job_id=args.job_id,
+        job_key=args.job_key,
+        invocation_id=args.invocation_id,
+        fixture_sha256=args.fixture_sha256,
         upload_cmd=args.upload_cmd,
         publisher_timeout_sec=args.publisher_timeout_sec,
     )
