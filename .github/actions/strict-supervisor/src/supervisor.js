@@ -6,7 +6,7 @@
  * 2. Spawns Python C with dedicated extra file descriptors:
  *    - fd3: Request pipe (child -> supervisor)
  *    - fd4: Ack pipe (supervisor -> child)
- * 3. Handles incremental archive uploads via @actions/artifact 6.3.1.
+ * 3. Handles incremental archive uploads via @actions/artifact 6.3.1 with bounded timeouts.
  * 4. Downloads by exact ID, validates inner payload bytes & SHA-256 before ACK.
  * 5. Disallows stdout protocol control and raw credential exposure.
  */
@@ -68,7 +68,6 @@ export class StrictSupervisor {
       '--w', this.w,
       '--compiler', this.compiler,
       '--artifacts-dir', this.artifactsDir,
-      '--job-start-time', this.jobStartTime,
       '--host-job-limit-sec', String(this.hostJobLimitSec),
       '--payload-budget-sec', String(this.payloadBudgetSec),
       '--finalization-alloc-sec', String(this.finalizationAllocSec),
@@ -79,6 +78,9 @@ export class StrictSupervisor {
       '--ipc-ack-fd', '4',
     ];
 
+    if (this.jobStartTime) {
+      args.push('--job-start-time', String(this.jobStartTime));
+    }
     if (this.pSha) args.push('--p-sha', this.pSha);
     if (this.wSha) args.push('--w-sha', this.wSha);
     if (this.cSha) args.push('--c-sha', this.cSha);
@@ -113,13 +115,21 @@ export class StrictSupervisor {
         error: `Supervisor request validation rejected: ${validation.error}`,
       };
       this.acks.push(negativeAck);
-      await writeIpcAck(ackStream, negativeAck);
+      try {
+        await writeIpcAck(ackStream, negativeAck);
+      } catch (err) {
+        console.error(`Failed to write negative ACK: ${err.message}`);
+      }
       return;
     }
 
     try {
       const client = await this.resolveArtifactClient();
-      const receipt = await uploadAndVerifyPayload(rawReq, client);
+      const uploadPromise = uploadAndVerifyPayload(rawReq, client);
+      const timeoutPromise = new Promise((_, rej) =>
+        setTimeout(() => rej(new Error('uploadAndVerifyPayload timed out after 45s')), 45000)
+      );
+      const receipt = await Promise.race([uploadPromise, timeoutPromise]);
 
       if (!receipt.verified) {
         this.failedVerifications++;
@@ -169,7 +179,11 @@ export class StrictSupervisor {
         error: `Unexpected supervisor error during upload/verify: ${redactSecrets(err.message)}`,
       };
       this.acks.push(errorAck);
-      await writeIpcAck(ackStream, errorAck);
+      try {
+        await writeIpcAck(ackStream, errorAck);
+      } catch (writeErr) {
+        console.error(`Failed to write error ACK: ${writeErr.message}`);
+      }
     }
   }
 
@@ -214,6 +228,13 @@ export class StrictSupervisor {
       const reqStream = child.stdio[3];
       const ackStream = child.stdio[4];
 
+      reqStream.on('error', (err) => {
+        console.error(`IPC reqStream error: ${err.message}`);
+      });
+      ackStream.on('error', (err) => {
+        console.error(`IPC ackStream error: ${err.message}`);
+      });
+
       createIpcReader(reqStream, (req) => {
         requestChain = requestChain.then(() => this.handleRequest(req, ackStream));
       });
@@ -228,11 +249,15 @@ export class StrictSupervisor {
         this.childExitCode = code;
         this.childSignal = signal;
 
-        // Ensure all queued IPC requests have been handled and acknowledged
+        // Bounded queue drain (maximum 15 seconds)
         try {
-          await requestChain;
+          const timeoutPromise = new Promise((_, rej) =>
+            setTimeout(() => rej(new Error('Supervisor request queue drain timed out after 15s')), 15000)
+          );
+          await Promise.race([requestChain, timeoutPromise]);
         } catch (err) {
           console.error(`Error draining supervisor request queue: ${err.message}`);
+          this.failedVerifications++;
         }
 
         try {
@@ -241,14 +266,31 @@ export class StrictSupervisor {
           // Stream already closed
         }
 
-        const envelopePath = path.join(this.artifactsDir, 'controller_envelope.json');
         let outcome = 'FAIL';
         if (code === 0 && this.failedVerifications === 0) {
           outcome = 'PASS';
-        } else if (code === 77) {
+        } else if (code === 5 || code === 77) {
           outcome = 'REFUSED';
         } else if (this.failedVerifications > 0) {
           outcome = 'UNVERIFIED_PERSISTENCE';
+        }
+
+        const envelopePath = path.join(this.artifactsDir, 'controller_envelope.json');
+        if (!fs.existsSync(envelopePath)) {
+          try {
+            fs.mkdirSync(this.artifactsDir, { recursive: true });
+            const fallbackEnvelope = {
+              outcome,
+              exit_code: code,
+              signal,
+              failed_verifications: this.failedVerifications,
+              total_requests: this.requests.length,
+              timestamp_iso: new Date().toISOString(),
+            };
+            fs.writeFileSync(envelopePath, JSON.stringify(fallbackEnvelope, null, 2) + '\n');
+          } catch {
+            // Ignore error writing fallback envelope
+          }
         }
 
         resolve({

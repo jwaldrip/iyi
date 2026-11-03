@@ -101,15 +101,20 @@ export function validateAck(ack, req) {
 }
 
 /**
- * Write newline-delimited JSON ACK to writable stream (fd4)
+ * Write newline-delimited JSON ACK to writable stream (fd4) with bounded timeout
  */
-export function writeIpcAck(writableStream, ackData) {
+export function writeIpcAck(writableStream, ackData, timeoutMs = 5000) {
   const line = JSON.stringify(ackData) + '\n';
   return new Promise((resolve, reject) => {
-    if (writableStream.destroyed) {
-      return reject(new Error('ACK stream is destroyed'));
+    if (!writableStream || writableStream.destroyed) {
+      return reject(new Error('ACK stream is destroyed or unavailable'));
     }
+    const timer = setTimeout(() => {
+      reject(new Error(`writeIpcAck timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+
     writableStream.write(line, 'utf8', (err) => {
+      clearTimeout(timer);
       if (err) reject(err);
       else resolve();
     });
@@ -117,13 +122,18 @@ export function writeIpcAck(writableStream, ackData) {
 }
 
 /**
- * Create NDJSON line reader on readable stream (fd3)
+ * Create NDJSON line reader on readable stream (fd3) with bounded buffer and error handling
  */
 export function createIpcReader(readableStream, onLine) {
   let buffer = '';
+  const MAX_BUFFER_SIZE = 10 * 1024 * 1024; // 10MB safety cap
 
   readableStream.on('data', (chunk) => {
     buffer += chunk.toString('utf8');
+    if (buffer.length > MAX_BUFFER_SIZE) {
+      readableStream.emit('error', new Error('IPC fd3 buffer overflow exceeded 10MB cap'));
+      return;
+    }
     let idx;
     while ((idx = buffer.indexOf('\n')) !== -1) {
       const line = buffer.slice(0, idx).trim();
@@ -149,5 +159,10 @@ export function createIpcReader(readableStream, onLine) {
         readableStream.emit('error', new Error(`Invalid trailing JSON received over IPC fd3: ${err.message}`));
       }
     }
+  });
+
+  readableStream.on('error', (err) => {
+    // Prevent uncaught stream errors from crashing process without supervisor capture
+    console.error(`createIpcReader stream error: ${err.message}`);
   });
 }

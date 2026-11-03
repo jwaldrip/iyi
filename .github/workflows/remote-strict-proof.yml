@@ -2,7 +2,8 @@ name: Remote Strict Proof Chain (macOS 15)
 
 # Branch-only macOS-15 GitHub Actions rail for PR147 strict chain.
 # Validation-only mode runs automatically on push to the integrated repair branch
-# (proof/strict-controller-integration-20261101), or manually via workflow_dispatch.
+# (proof/strict-controller-integration-20261101 or proof/strict-lifecycle-repair-20261102),
+# or manually via workflow_dispatch.
 # Real strict execution is unconditionally refused nonzero before P1 build until
 # independently authenticated authorization exists.
 
@@ -10,6 +11,7 @@ on:
   push:
     branches:
       - "proof/strict-controller-integration-20261101"
+      - "proof/strict-lifecycle-repair-20261102"
   workflow_dispatch:
     inputs:
       mode:
@@ -55,6 +57,11 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+
+      - name: Pre-create CI diagnostic directories
+        run: |
+          mkdir -p strict-proof-artifacts/ci-logs
+          mkdir -p strict-proof-artifacts/fingerprints
 
       - name: Record initial machine fingerprints and environment
         run: |
@@ -130,6 +137,37 @@ jobs:
         run: |
           python3 -B proof/preflight_oracle.py --manifest proof/oracle_manifest.json
 
+      - name: Record canonical modules, tool versions, and repository references
+        run: |
+          set -e
+          set -o pipefail
+          FP_FILE="strict-proof-artifacts/fingerprints/manifest.json"
+          python3 -B - <<'PY'
+          import hashlib, json, os, subprocess
+
+          manifest = {
+              "c_head": subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().strip(),
+              "branch": subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"]).decode().strip(),
+              "python": subprocess.check_output(["python3", "--version"]).decode().strip(),
+              "modules": {},
+          }
+          for mod in (
+              "proof/proofkit.py",
+              "proof/run_proof.py",
+              "proof/remote_strict_controller.py",
+              "proof/native_validation.py",
+              "proof/remote_strict_fixtures.py",
+              "proof/remote_strict_validation.py",
+          ):
+              if os.path.isfile(mod):
+                  with open(mod, "rb") as f:
+                      manifest["modules"][mod] = hashlib.sha256(f.read()).hexdigest()
+
+          with open("strict-proof-artifacts/fingerprints/manifest.json", "w") as f:
+              json.dump(manifest, f, indent=2)
+          print("Recorded module fingerprints:", json.dumps(manifest, indent=2))
+          PY
+
       - name: Retrieve actual job start metadata from GitHub API
         id: job-metadata
         env:
@@ -203,46 +241,89 @@ jobs:
                   f.write(f"STRICT_JOB_START_EPOCH={epoch_sec}\n")
           PY
 
-      - name: Install and test Node supervisor action
+      - name: Install, build, and test Node supervisor action
         run: |
+          set -e
+          set -o pipefail
+          echo "Installing supervisor action dependencies..."
           npm --prefix .github/actions/strict-supervisor install
-          npm --prefix .github/actions/strict-supervisor test
+          echo "Building supervisor action distributable bundle..."
           npm --prefix .github/actions/strict-supervisor run build
+          echo "Running supervisor test suite (including distributable tests)..."
+          npm --prefix .github/actions/strict-supervisor test
 
-      - name: Run Python deterministic controller test suite
-        run: |
-          echo "================================================================================"
-          echo "Running RemoteStrictController deterministic contract tests"
-          echo "================================================================================"
-          python3 -B proof/test_remote_strict_controller.py -v
+          # Record bundle hash
+          DIST_PATH=".github/actions/strict-supervisor/dist/index.js"
+          if [ -f "$DIST_PATH" ]; then
+            BUNDLE_SHA=$(shasum -a 256 "$DIST_PATH" | awk '{print $1}')
+            echo "Built action bundle SHA-256: $BUNDLE_SHA"
+            echo "{\"bundle_sha256\": \"$BUNDLE_SHA\"}" > strict-proof-artifacts/fingerprints/bundle.json
+          fi
 
-      - name: Confirm strict mode refusal without independent authenticated authorization
+      - name: Run Python deterministic controller test suite with watchdog
         run: |
+          set -e
+          set -o pipefail
           echo "================================================================================"
-          echo "Verifying strict mode refusal without independent authorization..."
+          echo "Running RemoteStrictController deterministic contract tests (600s watchdog)"
           echo "================================================================================"
-          # remote_strict_controller.py in strict mode without authorization MUST exit nonzero
+
+          # Bounded 600-second suite watchdog with faulthandler diagnostics
+          PYTHONFAULTHANDLER=1 timeout 600s python3 -B -X faulthandler proof/test_remote_strict_controller.py -v 2>&1 | tee strict-proof-artifacts/ci-logs/python-controller-suite.log
+
+      - name: Verify exact strict mode refusal without independent authorization
+        run: |
+          set -e
+          set -o pipefail
+          echo "================================================================================"
+          echo "Verifying exact strict mode refusal (exit 5, AUTH_REFUSED)..."
+          echo "================================================================================"
+
+          set +e
           python3 -B proof/remote_strict_controller.py \
             --mode strict \
             --p "$GITHUB_WORKSPACE" \
             --w "$GITHUB_WORKSPACE" \
             --compiler "$GITHUB_WORKSPACE" \
             --job-start-time "$STRICT_JOB_START_ISO" \
+            --artifacts-dir strict-proof-artifacts/strict-refusal \
             --driver-limit-sec 2100 \
-            --grace-sec 30 && {
-              echo "ERROR: Strict mode did not refuse without authorization!" >&2
-              exit 1
-            } || echo "Strict mode refusal VERIFIED (exited nonzero as required)."
+            --grace-sec 30 > strict-proof-artifacts/ci-logs/strict-refusal.stdout.log 2> strict-proof-artifacts/ci-logs/strict-refusal.stderr.log
+          RC=$?
+          set -e
 
-      - name: Exercise Strict Supervisor Action (Validation-only)
+          echo "Strict mode exit code: $RC"
+          if [ "$RC" -ne 5 ]; then
+            echo "ERROR: Expected strict refusal exit code 5, got $RC" >&2
+            cat strict-proof-artifacts/ci-logs/strict-refusal.stderr.log >&2
+            exit 1
+          fi
+
+          SUMMARY_FILE="strict-proof-artifacts/strict-refusal/strict-controller-summary.json"
+          if [ ! -f "$SUMMARY_FILE" ]; then
+            echo "ERROR: Summary file missing from strict refusal: $SUMMARY_FILE" >&2
+            exit 1
+          fi
+
+          python3 -c "
+          import json, sys
+          with open('$SUMMARY_FILE', 'r') as f:
+              s = json.load(f)
+          assert s.get('overall_status') == 'AUTH_REFUSED', f'Expected overall_status AUTH_REFUSED, got {s.get(\"overall_status\")}'
+          assert len(s.get('records', [])) == 0, f'Expected 0 stage records launched, got {len(s.get(\"records\"))}'
+          print('Strict refusal VERIFIED: exit=5, overall_status=AUTH_REFUSED, zero stages launched.')
+          "
+
+      - name: Exercise Strict Supervisor Action with Synthetic Validation Wrapper
         id: supervisor-validation
         uses: ./.github/actions/strict-supervisor
         with:
           mode: 'validation-only'
           p: ${{ github.workspace }}
           w: ${{ github.workspace }}
-          compiler: ${{ github.workspace }}/proof/smoke_test.py
-          artifacts_dir: strict-proof-artifacts
+          compiler: ${{ github.workspace }}
+          controller_path: proof/remote_strict_validation.py
+          artifacts_dir: strict-proof-artifacts/supervisor-validation-run
           job_start_time: ${{ steps.job-metadata.outputs.job_started_at_iso }}
           host_job_limit_sec: '21600'
           payload_budget_sec: '19800'
@@ -254,6 +335,39 @@ jobs:
           w_sha: ${{ env.W_AUTHORIZED_SHA }}
           c_sha: ${{ github.sha }}
 
+      - name: Run guard-specific negative controls
+        run: |
+          set -e
+          set -o pipefail
+          echo "================================================================================"
+          echo "Running guard-specific negative controls..."
+          echo "================================================================================"
+
+          # 1. Negative control: Empty W module origin rejection
+          EMPTY_W=$(/usr/bin/mktemp -d -t empty_w.XXXXXX)
+          PIN_FILE="strict-proof-artifacts/supervisor-validation-run/pin.json"
+
+          set +e
+          python3 -B proof/native_validation.py \
+            --mode record \
+            --w "$EMPTY_W" \
+            --pin "$PIN_FILE" \
+            --record "$PIN_FILE" \
+            --unit run1 \
+            --attempt 1 \
+            --kind run1 > strict-proof-artifacts/ci-logs/negative-empty-w.log 2>&1
+          NEG_RC=$?
+          set -e
+
+          rm -rf "$EMPTY_W"
+          echo "Empty W rejection exit code: $NEG_RC"
+          if [ "$NEG_RC" -ne 4 ]; then
+            echo "ERROR: Expected exit code 4 (ModuleOriginError), got $NEG_RC" >&2
+            cat strict-proof-artifacts/ci-logs/negative-empty-w.log >&2
+            exit 1
+          fi
+          echo "Empty W module origin negative control PASSED (exited 4 with ModuleOriginError)."
+
       - name: Upload validation evidence artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -262,7 +376,7 @@ jobs:
           path: |
             strict-proof-artifacts/**
           retention-days: 14
-          if-no-files-found: ignore
+          if-no-files-found: error
 
   strict-chain:
     name: "Sequential strict-chain attempt (macOS 15)"

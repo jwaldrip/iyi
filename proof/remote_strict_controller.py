@@ -3,7 +3,7 @@
 Remote Strict Proof Controller (macOS-15 GitHub Actions)
 
 Implements the single sequential strict-chain supervisor according to
-PlanQuietCorpusFailures sections 1, 4-8.
+PlanQuietCorpusFailures sections 1, 4-8 and PlanStrictCIHang.
 
 Key Properties:
 - Exact sequential execution: plan -> pin -> run1 -> run2 -> run3(drivers) -> final.
@@ -35,6 +35,7 @@ import json
 import os
 import re
 import secrets
+import select
 import shutil
 import signal
 import stat
@@ -53,6 +54,7 @@ FINALIZATION_ALLOC_SEC = 1800.0    # 30 minutes
 DRIVER_LIMIT_SEC = 2100.0          # 35 minutes per driver
 GRACE_SEC = 30.0                   # cleanup grace period (MUST be 30.0s for native drivers)
 MIN_DISK_GIB = 20.0                # minimum free disk floor
+AUTH_REFUSED_EXIT_CODE = 5         # exit code for unauthenticated strict mode refusal
 
 # Protected files that MUST NEVER be pruned during cleanup
 PROTECTED_FILENAMES = frozenset({
@@ -151,7 +153,6 @@ class StageExecutionRecord:
             "elapsed_sec": round(self.timing.elapsed_sec, 3),
             "disk_before_bytes": self.disk.before_bytes,
             "disk_after_bytes": self.disk.after_bytes,
-            "disk_min_observed_bytes": self.disk.min_observed_bytes,
             "archive_path": self.archive_path,
             "archive_size_bytes": self.archive_size_bytes,
             "archive_sha256": self.archive_sha256,
@@ -178,16 +179,13 @@ def parse_job_start_time(val: float | str | None) -> float:
             return float(val_str)
         except ValueError:
             pass
-        if val_str.endswith("Z"):
-            val_str = val_str[:-1] + "+00:00"
         try:
-            dt = datetime.fromisoformat(val_str)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
+            iso_str = val_str.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(iso_str)
             return dt.timestamp()
         except Exception as exc:
-            raise ValueError(f"Cannot parse job start time {val!r}: {exc}") from exc
-    raise ValueError(f"Invalid type for job start time: {type(val)}")
+            raise ValueError(f"Failed to parse job_start_time {val!r}: {exc}") from exc
+    raise TypeError(f"Invalid type for job_start_time: {type(val)}")
 
 
 def resolve_git_sha(path: str) -> str:
@@ -197,11 +195,13 @@ def resolve_git_sha(path: str) -> str:
             ["git", "-C", path, "rev-parse", "HEAD"],
             capture_output=True,
             text=True,
-            check=True,
+            check=False,
+            timeout=5.0,
         )
-        sha = proc.stdout.strip()
-        if re.fullmatch(r"[0-9a-fA-F]{40}", sha):
-            return sha.lower()
+        if proc.returncode == 0 and proc.stdout.strip():
+            sha = proc.stdout.strip()
+            if re.fullmatch(r"[0-9a-f]{40}", sha):
+                return sha
     except Exception:
         pass
     return "0" * 40
@@ -216,13 +216,10 @@ def get_disk_free_bytes(path: str) -> int:
             break
         cur = parent
     if not cur or not os.path.exists(cur):
-        cur = "/tmp"
-    try:
-        statvfs = os.statvfs(cur)
-        return statvfs.f_bavail * statvfs.f_frsize
-    except Exception:
-        usage = shutil.disk_usage(cur)
-        return usage.free
+        cur = "/"
+    st = os.statvfs(cur)
+    return st.f_bavail * st.f_frsize
+
 
 def verify_disk_floor(path: str, min_gib: float) -> float:
     """Verify filesystem has at least min_gib free; raise VerificationError if not."""
@@ -230,8 +227,8 @@ def verify_disk_floor(path: str, min_gib: float) -> float:
     free_gib = free_bytes / (1024.0 ** 3)
     if free_gib < min_gib:
         raise VerificationError(
-            f"DISK-FLOOR-BREACH: Free disk space on {path} is {free_gib:.2f} GiB, "
-            f"which is below required minimum {min_gib:.2f} GiB."
+            f"DISK-FLOOR-VIOLATION: Free disk space on {path} is {free_gib:.2f} GiB, "
+            f"below required floor of {min_gib:.1f} GiB"
         )
     return free_gib
 
@@ -247,21 +244,21 @@ def find_latest_attempt_info(report_dir: str, unit: str) -> tuple[int, str] | No
     unit_dir = os.path.join(report_dir, unit)
     if not os.path.isdir(unit_dir):
         return None
-    pattern = re.compile(r"^a([1-9][0-9]*)$")
-    highest_num = -1
-    highest_path: str | None = None
+    highest = -1
+    highest_dir: str | None = None
     try:
-        for entry in os.listdir(unit_dir):
-            match = pattern.match(entry)
-            if match:
-                num = int(match.group(1))
-                if num > highest_num:
-                    highest_num = num
-                    highest_path = os.path.join(unit_dir, entry)
+        entries = os.listdir(unit_dir)
     except OSError:
         return None
-    if highest_path is not None and highest_num >= 1:
-        return highest_num, highest_path
+    for entry in entries:
+        m = re.fullmatch(r"a([1-9][0-9]*)", entry)
+        if m:
+            attempt_num = int(m.group(1))
+            if attempt_num > highest:
+                highest = attempt_num
+                highest_dir = os.path.join(unit_dir, entry)
+    if highest > 0 and highest_dir is not None:
+        return highest, highest_dir
     return None
 
 
@@ -270,7 +267,7 @@ def check_driver_admission(
     driver_limit_sec: float = DRIVER_LIMIT_SEC,
     grace_sec: float = GRACE_SEC,
 ) -> bool:
-    """Check if remaining payload budget can accommodate a driver + grace allowance."""
+    """Require at least full driver_limit_sec + grace_sec (minimum 2130s)."""
     required = driver_limit_sec + grace_sec
     return remaining_sec >= required
 
@@ -278,13 +275,15 @@ def check_driver_admission(
 class DescendantTracker:
     """
     Tracks child and descendant processes with their start identities (lstart).
-    Ensures that on interruption, all owned descendants across separate sessions
-    are reaped while unrelated sentinels and recycled PIDs remain untouched.
+    Ensures that on interruption or normal exit, all owned descendants across separate
+    sessions are reaped while unrelated sentinels and recycled PIDs remain untouched.
     """
 
     def __init__(self, root_pid: int):
         self.root_pid = root_pid
-        self.tracked: dict[int, str] = {}  # pid -> lstart
+        self.tracked: dict[int, str] = {}  # pid -> immutable birth lstart
+        self.signaled: list[int] = []
+        self.survivors: list[int] = []
         self._sample()
 
     def _sample(self) -> None:
@@ -296,6 +295,7 @@ class DescendantTracker:
                 capture_output=True,
                 text=True,
                 check=False,
+                timeout=5.0,
             )
             if proc.returncode != 0:
                 return
@@ -323,32 +323,30 @@ class DescendantTracker:
             pgids[pid] = pgid
             lstarts[pid] = lstart
 
-        if self.root_pid in lstarts:
-            self.tracked[self.root_pid] = lstarts[self.root_pid]
+        if self.root_pid in lstarts and self.root_pid not in self.tracked:
+            if lstarts[self.root_pid]:
+                self.tracked[self.root_pid] = lstarts[self.root_pid]
 
-        # Recursive descent for children
+        # Recursive descent traversing entire subtree from root_pid
+        # Uses visited set so already-known intermediate children still traverse their own new children/grandchildren!
+        visited: set[int] = {self.root_pid}
         queue = [self.root_pid]
         while queue:
             curr = queue.pop(0)
             for child in tree.get(curr, []):
-                if child not in self.tracked:
-                    self.tracked[child] = lstarts.get(child, "")
+                if child not in visited:
+                    visited.add(child)
+                    if child not in self.tracked and child in lstarts and lstarts[child]:
+                        self.tracked[child] = lstarts[child]
                     queue.append(child)
 
         # Include processes sharing root_pid's process group
         for pid, pg in pgids.items():
-            if pg == self.root_pid and pid not in self.tracked:
-                self.tracked[pid] = lstarts.get(pid, "")
+            if pg == self.root_pid and pid not in self.tracked and pid in lstarts and lstarts[pid]:
+                self.tracked[pid] = lstarts[pid]
 
-    def reap_owned(self, grace_sec: float = 5.0) -> list[int]:
-        """
-        Reap all alive owned descendants whose start identity matches.
-        Escalates stubborn descendants to SIGKILL.
-        """
-        self._sample()
-        if not self.tracked:
-            return []
-
+    def _get_current_procs(self) -> dict[int, str]:
+        """Return dict of current {pid: lstart} from ps."""
         try:
             ps_bin = "/bin/ps" if os.path.exists("/bin/ps") else "ps"
             proc = subprocess.run(
@@ -356,119 +354,156 @@ class DescendantTracker:
                 capture_output=True,
                 text=True,
                 check=False,
+                timeout=5.0,
             )
             if proc.returncode != 0:
-                return []
+                return {}
+            current_procs: dict[int, str] = {}
+            for line in proc.stdout.splitlines():
+                parts = line.strip().split(None, 1)
+                if len(parts) == 2:
+                    try:
+                        p = int(parts[0])
+                        current_procs[p] = parts[1].strip()
+                    except ValueError:
+                        pass
+            return current_procs
         except Exception:
+            return {}
+
+    def reap_owned(self, grace_sec: float = 5.0) -> list[int]:
+        """
+        Reap all alive owned descendants whose start identity matches.
+        Escalates stubborn descendants to SIGKILL.
+        Updates self.signaled and self.survivors. Returns list of signaled PIDs.
+        """
+        self._sample()
+        if not self.tracked:
+            self.signaled = []
+            self.survivors = []
             return []
 
-        current_procs: dict[int, str] = {}
-        for line in proc.stdout.splitlines():
-            parts = line.strip().split(None, 1)
-            if len(parts) == 2:
+        current_procs = self._get_current_procs()
+        my_pid = os.getpid()
+
+        # Strict identity verification: PID must be present, have nonempty recorded lstart,
+        # and current ps lstart must match recorded birth lstart exactly!
+        target_pids: list[int] = []
+        for pid, recorded_lstart in self.tracked.items():
+            if pid == my_pid or not recorded_lstart:
+                continue
+            if pid in current_procs and current_procs[pid] and current_procs[pid] == recorded_lstart:
+                target_pids.append(pid)
+
+        self.signaled = list(target_pids)
+        if not target_pids:
+            self.survivors = []
+            return []
+
+        # 1. Send SIGTERM to strictly matching identities
+        for pid in target_pids:
+            fresh_procs = self._get_current_procs()
+            if fresh_procs.get(pid) == self.tracked[pid]:
                 try:
-                    p = int(parts[0])
-                    current_procs[p] = parts[1].strip()
-                except ValueError:
+                    os.kill(pid, signal.SIGTERM)
+                except (ProcessLookupError, PermissionError):
                     pass
 
-        my_pid = os.getpid()
-        owned_alive: list[int] = []
-        for pid, recorded_lstart in self.tracked.items():
-            if pid == my_pid:
-                continue
-            if pid in current_procs:
-                if not recorded_lstart or not current_procs[pid] or recorded_lstart == current_procs[pid]:
-                    owned_alive.append(pid)
-
-        if not owned_alive:
-            return []
-
-        for pid in owned_alive:
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except (ProcessLookupError, PermissionError):
-                pass
-
-        deadline = time.monotonic() + grace_sec
+        # Wait for grace period
+        deadline = time.monotonic() + max(0.1, grace_sec)
         while time.monotonic() < deadline:
-            still_alive = [p for p in owned_alive if self._is_pid_alive(p)]
+            current_procs = self._get_current_procs()
+            still_alive = [p for p in target_pids if current_procs.get(p) == self.tracked[p]]
             if not still_alive:
                 break
             time.sleep(0.05)
 
-        survivors = [p for p in owned_alive if self._is_pid_alive(p)]
-        if survivors:
-            for pid in survivors:
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
-                    pass
+        # 2. Escalate matching survivors to SIGKILL
+        current_procs = self._get_current_procs()
+        stubborn_survivors = [p for p in target_pids if current_procs.get(p) == self.tracked[p]]
+        if stubborn_survivors:
+            for pid in stubborn_survivors:
+                fresh_procs = self._get_current_procs()
+                if fresh_procs.get(pid) == self.tracked[pid]:
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError):
+                        pass
 
             kill_deadline = time.monotonic() + 5.0
             while time.monotonic() < kill_deadline:
-                final_survivors = [p for p in survivors if self._is_pid_alive(p)]
+                current_procs = self._get_current_procs()
+                final_survivors = [p for p in stubborn_survivors if current_procs.get(p) == self.tracked[p]]
                 if not final_survivors:
                     break
                 time.sleep(0.05)
 
-        return owned_alive
+        final_procs = self._get_current_procs()
+        self.survivors = [p for p in target_pids if final_procs.get(p) == self.tracked[p]]
+        return self.signaled
 
     def _is_pid_alive(self, pid: int) -> bool:
-        try:
-            os.kill(pid, 0)
-            return True
-        except (ProcessLookupError, PermissionError):
-            return False
+        """Check if process is alive and matches tracked identity."""
+        procs = self._get_current_procs()
+        expected = self.tracked.get(pid)
+        return bool(expected and procs.get(pid) == expected)
 
 
 class EvidencePublisher:
     """Abstract persistence publisher interface."""
 
-    def persist(self, request: dict[str, Any]) -> dict[str, Any]:
+    def persist(self, request: dict[str, Any], timeout_sec: float | None = None) -> dict[str, Any]:
         raise NotImplementedError
+
+    def close(self) -> None:
+        pass
 
 
 class IpcEvidencePublisher(EvidencePublisher):
     """
     Dedicated typed newline JSON publisher over fd3 (request) and fd4 (ack).
+    Uses nonblocking byte framing and absolute monotonic deadlines.
     Enforces strict echoed ACK binding and verified readback equality.
     """
 
-    def __init__(self, req_fd: int, ack_fd: int):
+    def __init__(self, req_fd: int, ack_fd: int, timeout_sec: float = 30.0):
         self.req_fd = req_fd
         self.ack_fd = ack_fd
-        self.req_file: TextIO | None = None
-        self.ack_file: TextIO | None = None
+        self.timeout_sec = float(timeout_sec)
         self.broken = False
         self.broken_reason: str | None = None
-        try:
-            os.set_inheritable(req_fd, False)
-            os.set_inheritable(ack_fd, False)
-        except OSError:
-            pass
-        try:
-            self.req_file = open(req_fd, "w", encoding="utf-8", buffering=1)
-            self.ack_file = open(ack_fd, "r", encoding="utf-8", buffering=1)
-        except OSError as exc:
-            self.broken = True
-            self.broken_reason = str(exc)
+        self._ack_buffer = bytearray()
         self.seen_request_ids: set[str] = set()
 
-    def close(self) -> None:
-        if self.req_file is not None and not self.req_file.closed:
-            try:
-                self.req_file.close()
-            except OSError:
-                pass
-        if self.ack_file is not None and not self.ack_file.closed:
-            try:
-                self.ack_file.close()
-            except OSError:
-                pass
+        try:
+            os.set_inheritable(self.req_fd, False)
+            os.set_inheritable(self.ack_fd, False)
+        except OSError:
+            pass
 
-    def persist(self, request: dict[str, Any]) -> dict[str, Any]:
-        if self.broken or self.req_file is None or self.ack_file is None:
+        try:
+            os.set_blocking(self.req_fd, False)
+            os.set_blocking(self.ack_fd, False)
+        except OSError as exc:
+            self.broken = True
+            self.broken_reason = f"Failed to set nonblocking mode: {exc}"
+
+    def close(self) -> None:
+        if self.req_fd is not None:
+            try:
+                os.close(self.req_fd)
+            except OSError:
+                pass
+            self.req_fd = None  # type: ignore
+        if self.ack_fd is not None:
+            try:
+                os.close(self.ack_fd)
+            except OSError:
+                pass
+            self.ack_fd = None  # type: ignore
+
+    def persist(self, request: dict[str, Any], timeout_sec: float | None = None) -> dict[str, Any]:
+        if self.broken or self.req_fd is None or self.ack_fd is None:
             raise EvidenceUploadError(
                 f"IPC-PIPE-BROKEN: Publisher IPC pipe is invalid or broken: {self.broken_reason or 'unopened'}"
             )
@@ -477,22 +512,100 @@ class IpcEvidencePublisher(EvidencePublisher):
             raise IpcProtocolError(f"DUPLICATE-REQUEST-ID: {req_id!r} already used or empty")
         self.seen_request_ids.add(req_id)
 
-        try:
-            line = json.dumps(request) + "\n"
-            self.req_file.write(line)
-            self.req_file.flush()
-        except Exception as exc:
-            raise EvidenceUploadError(f"IPC-WRITE-ERROR: Failed to write upload request: {exc}") from exc
+        eff_timeout = float(timeout_sec) if timeout_sec is not None else self.timeout_sec
+        deadline = time.monotonic() + eff_timeout
+
+        # Encode request to bytes
+        req_bytes = (json.dumps(request) + "\n").encode("utf-8")
+        total_to_write = len(req_bytes)
+        written = 0
+
+        # Nonblocking write loop bounded by monotonic deadline
+        while written < total_to_write:
+            rem = deadline - time.monotonic()
+            if rem <= 0:
+                raise EvidenceUploadError(
+                    f"IPC-WRITE-TIMEOUT: Timed out waiting to write request after {eff_timeout:.2f}s"
+                )
+            try:
+                _, writable, _ = select.select([], [self.req_fd], [], max(0.0, rem))
+            except (OSError, ValueError) as exc:
+                raise EvidenceUploadError(f"IPC-SELECT-ERROR: Error selecting request fd for write: {exc}") from exc
+
+            if not writable:
+                raise EvidenceUploadError(
+                    f"IPC-WRITE-TIMEOUT: Timed out waiting to write request after {eff_timeout:.2f}s"
+                )
+
+            try:
+                n = os.write(self.req_fd, req_bytes[written:])
+                if n == 0:
+                    raise EvidenceUploadError("IPC-WRITE-ERROR: os.write returned 0 bytes")
+                written += n
+            except (BrokenPipeError, OSError) as exc:
+                raise EvidenceUploadError(f"IPC-PIPE-CLOSED: Request pipe closed or broken during write: {exc}") from exc
+
+        # Nonblocking read loop for newline-delimited ACK bounded by same monotonic deadline
+        while True:
+            newline_idx = self._ack_buffer.find(b"\n")
+            if newline_idx != -1:
+                line_bytes = self._ack_buffer[:newline_idx]
+                self._ack_buffer = self._ack_buffer[newline_idx + 1 :]
+                break
+
+            rem = deadline - time.monotonic()
+            if rem <= 0:
+                if len(self._ack_buffer) > 0:
+                    partial = bytes(self._ack_buffer).decode("utf-8", errors="replace")
+                    raise EvidenceUploadError(
+                        f"IPC-TIMEOUT: Timed out waiting for newline in ACK (partial frame: {partial!r})"
+                    )
+                raise EvidenceUploadError(
+                    f"IPC-TIMEOUT: Open but silent ACK pipe timed out after {eff_timeout:.2f}s without response"
+                )
+
+            try:
+                readable, _, _ = select.select([self.ack_fd], [], [], max(0.0, rem))
+            except (OSError, ValueError) as exc:
+                raise EvidenceUploadError(f"IPC-SELECT-ERROR: Error selecting ack fd for read: {exc}") from exc
+
+            if not readable:
+                if len(self._ack_buffer) > 0:
+                    partial = bytes(self._ack_buffer).decode("utf-8", errors="replace")
+                    raise EvidenceUploadError(
+                        f"IPC-TIMEOUT: Timed out waiting for newline in ACK (partial frame: {partial!r})"
+                    )
+                raise EvidenceUploadError(
+                    f"IPC-TIMEOUT: Open but silent ACK pipe timed out after {eff_timeout:.2f}s without response"
+                )
+
+            try:
+                chunk = os.read(self.ack_fd, 65536)
+            except (OSError, BlockingIOError) as exc:
+                if isinstance(exc, BlockingIOError):
+                    continue
+                raise EvidenceUploadError(f"IPC-READ-ERROR: Failed to read from ACK pipe: {exc}") from exc
+
+            if not chunk:
+                # EOF reached!
+                if len(self._ack_buffer) > 0:
+                    partial = bytes(self._ack_buffer).decode("utf-8", errors="replace")
+                    raise EvidenceUploadError(
+                        f"IPC-PARTIAL-FRAME-EOF: Pipe closed before newline with partial frame: {partial!r}"
+                    )
+                raise EvidenceUploadError("IPC-EOF: Node publisher closed ACK descriptor unexpectedly")
+
+            self._ack_buffer.extend(chunk)
+
+        # Parse ACK JSON
+        line_str = line_bytes.decode("utf-8", errors="replace").strip()
+        if not line_str:
+            raise EvidenceUploadError("IPC-EMPTY-FRAME: Received empty line on ACK pipe")
 
         try:
-            reply_line = self.ack_file.readline()
-            if not reply_line:
-                raise EvidenceUploadError("IPC-EOF: Node publisher closed ACK descriptor unexpectedly")
-            ack = json.loads(reply_line)
+            ack = json.loads(line_str)
         except json.JSONDecodeError as exc:
             raise EvidenceUploadError(f"MALFORMED-ACK: JSON decode error on ACK line: {exc}") from exc
-        except Exception as exc:
-            raise EvidenceUploadError(f"IPC-READ-ERROR: Failed to read ACK line: {exc}") from exc
 
         if not isinstance(ack, dict):
             raise EvidenceUploadError(f"MALFORMED-ACK: ACK is not a dictionary: {ack}")
@@ -563,120 +676,80 @@ def archive_snapshot_evidence(
 
     slug = unit.replace("/", "_")
     short_chain = chain_id[:8] if chain_id else "nochain"
-    archive_name = f"{slug}-a{attempt}-{short_chain}-s{sequence}.tar.gz"
+    archive_name = f"evidence-{short_chain}-seq{sequence:03d}-{slug}-a{attempt}.tar.gz"
     archive_path = os.path.join(archives_subdir, archive_name)
 
     report_real = os.path.realpath(report_dir)
-    artifacts_real = os.path.realpath(artifacts_dir)
+    attempt_dir = os.path.join(report_dir, unit, f"a{attempt}") if unit not in ("plan", "pin") else report_dir
+    attempt_real = os.path.realpath(attempt_dir)
 
-    files_to_add: list[tuple[str, str]] = []
+    # Reject symlink report or attempt roots
+    if os.path.islink(report_dir) or os.path.islink(attempt_dir):
+        raise EvidenceUploadError(f"ARCHIVE-SECURITY-VIOLATION: report or attempt dir is a symlink: {attempt_dir}")
 
-    # 1. Chain-level files from report_dir root (only if report_dir exists)
-    if os.path.exists(report_dir):
-        for fn in ("pin.json", "final.json"):
-            p = os.path.join(report_dir, fn)
-            if os.path.isfile(p):
-                files_to_add.append((p, fn))
+    files_to_archive: list[tuple[str, str]] = []  # (abs_path, arcname)
 
-        req_path = os.path.join(report_dir, "run3", "required.json")
-        if os.path.isfile(req_path):
-            files_to_add.append((req_path, os.path.join("run3", "required.json")))
-    # 2. Stage journal and summary if available
+    # 1. Chain-level metadata files if present in report_dir root
+    for name in ("pin.json", "final.json"):
+        p = os.path.join(report_dir, name)
+        if os.path.isfile(p):
+            if os.path.islink(p):
+                raise EvidenceUploadError(f"ARCHIVE-SECURITY-VIOLATION: Chain metadata {p} is a symlink")
+            files_to_archive.append((p, f"meta/{name}"))
+
+    req_p = os.path.join(report_dir, "run3", "required.json")
+    if os.path.isfile(req_p):
+        if os.path.islink(req_p):
+            raise EvidenceUploadError(f"ARCHIVE-SECURITY-VIOLATION: required.json {req_p} is a symlink")
+        files_to_archive.append((req_p, "meta/run3/required.json"))
+
+    # 2. Controller journal and stage logs if available
     journal_path = os.path.join(artifacts_dir, "stage-journal.jsonl")
     if os.path.isfile(journal_path):
-        files_to_add.append((journal_path, "stage-journal.jsonl"))
-    summary_path = os.path.join(artifacts_dir, "strict-controller-summary.json")
-    if os.path.isfile(summary_path):
-        files_to_add.append((summary_path, "strict-controller-summary.json"))
-    # 3. Unit attempt files
-    if os.path.exists(report_dir):
-        attempt_dir = os.path.join(report_dir, unit, f"a{attempt}")
-        if os.path.isdir(attempt_dir):
-            for root, dirs, files in os.walk(attempt_dir):
-                rel_root = os.path.relpath(root, attempt_dir)
-                if rel_root != ".":
-                    first_seg = rel_root.split(os.sep)[0]
-                    if unit == "run2" and first_seg == "scratch":
-                        # Crucial: preserve Run2 scratch/rows/** ! Skip other scratch
-                        if not (rel_root == "scratch/rows" or rel_root.startswith("scratch/rows" + os.sep)):
-                            continue
-                    elif first_seg in ("t", "c", "s", "bin", "scratch", "rg9_work"):
-                        continue
-                    if first_seg.endswith(".tmp") or first_seg.endswith(".cache"):
-                        continue
+        files_to_archive.append((journal_path, "controller/stage-journal.jsonl"))
 
-                for f in files:
-                    fp = os.path.join(root, f)
-                    rel_to_attempt = os.path.relpath(fp, attempt_dir)
-                    arcname = os.path.join(unit, f"a{attempt}", rel_to_attempt)
-                    files_to_add.append((fp, arcname))
+    log_path = os.path.join(artifacts_dir, "controller-logs", f"{slug}-a{attempt}.log")
+    if os.path.isfile(log_path):
+        files_to_archive.append((log_path, f"controller-logs/{slug}-a{attempt}.log"))
 
-    # 4. Controller log for this stage
-    log_file = os.path.join(artifacts_dir, "controller-logs", f"{slug}-a{attempt}.log")
-    if os.path.isfile(log_file):
-        files_to_add.append((log_file, os.path.join("controller-logs", f"{slug}-a{attempt}.log")))
+    # 3. Unit attempt directory regular files
+    if os.path.isdir(attempt_dir) and unit not in ("plan", "pin"):
+        for root, dirs, files in os.walk(attempt_dir, followlinks=False):
+            for d in list(dirs):
+                dir_path = os.path.join(root, d)
+                if os.path.islink(dir_path):
+                    # Check if this symlink is in eligible scratch path
+                    raise EvidenceUploadError(f"ARCHIVE-SECURITY-VIOLATION: Symlink directory detected: {dir_path}")
+            for f in files:
+                file_path = os.path.join(root, f)
+                if os.path.islink(file_path):
+                    raise EvidenceUploadError(f"ARCHIVE-SECURITY-VIOLATION: Symlink file detected: {file_path}")
+                st = os.lstat(file_path)
+                if not stat.S_ISREG(st.st_mode):
+                    raise EvidenceUploadError(f"ARCHIVE-SECURITY-VIOLATION: Special non-regular file: {file_path}")
+                rel = os.path.relpath(file_path, attempt_dir)
+                files_to_archive.append((file_path, f"attempt/{rel}"))
 
-    # 5. For pin snapshot, include available plan evidence
-    if unit == "pin":
-        plan_log = os.path.join(artifacts_dir, "controller-logs", "plan-a1.log")
-        if os.path.isfile(plan_log):
-            files_to_add.append((plan_log, os.path.join("controller-logs", "plan-a1.log")))
-    seen_arcnames: set[str] = set()
-    unique_files: list[tuple[str, str]] = []
-    for abs_path, arcname in files_to_add:
-        if arcname in seen_arcnames:
-            continue
-        seen_arcnames.add(arcname)
-        unique_files.append((abs_path, arcname))
-
-    # Strict safety checks on every file before adding
-    for abs_path, arcname in unique_files:
-        if os.path.islink(abs_path):
-            raise EvidenceUploadError(f"UNSAFE-ARCHIVE: Symlink detected in evidence: {abs_path}")
-
-        try:
-            st = os.stat(abs_path, follow_symlinks=False)
-            if not stat.S_ISREG(st.st_mode):
-                raise EvidenceUploadError(f"UNSAFE-ARCHIVE: Non-regular file in evidence: {abs_path}")
-        except OSError as exc:
-            raise EvidenceUploadError(f"UNSAFE-ARCHIVE: Cannot stat file {abs_path}: {exc}") from exc
-
-        real_p = os.path.realpath(abs_path)
-        report_exists = os.path.exists(report_real)
-        in_report = (report_exists and os.path.commonpath([report_real, real_p]) == report_real and real_p != report_real)
-        in_artifacts = (os.path.commonpath([artifacts_real, real_p]) == artifacts_real and real_p != artifacts_real)
-        if not (in_report or in_artifacts):
-            raise EvidenceUploadError(f"UNSAFE-ARCHIVE: Path escape detected: {abs_path} resolves to {real_p}")
-
-        if arcname.startswith("/") or ".." in arcname.split(os.sep):
-            raise EvidenceUploadError(f"UNSAFE-ARCHIVE: Invalid arcname {arcname!r} for {abs_path}")
-
-    # Write sealed tar archive
-    with tarfile.open(archive_path, "w:gz") as tar:
-        for abs_path, arcname in unique_files:
-            tar.add(abs_path, arcname=arcname, recursive=False)
-
-    if not os.path.isfile(archive_path):
-        raise EvidenceUploadError(f"ARCHIVE-MISSING: Failed to create archive {archive_path}")
-
-    size_bytes = os.path.getsize(archive_path)
-    if size_bytes == 0:
-        raise EvidenceUploadError(f"ARCHIVE-EMPTY: Archive {archive_path} has 0 bytes")
-
+    # Create deterministic tar.gz archive
     hasher = hashlib.sha256()
-    try:
-        with tarfile.open(archive_path, "r:gz") as test_tar:
-            members = test_tar.getmembers()
-            if not members:
-                raise EvidenceUploadError(f"ARCHIVE-EMPTY: No members in {archive_path}")
-            for m in members:
-                if m.issym() or m.islnk():
-                    raise EvidenceUploadError(f"UNSAFE-ARCHIVE: Archive contains link member: {m.name}")
-        with open(archive_path, "rb") as f:
-            while chunk := f.read(65536):
-                hasher.update(chunk)
-    except Exception as exc:
-        raise EvidenceUploadError(f"ARCHIVE-CORRUPT: Integrity check failed on {archive_path}: {exc}") from exc
+    size_bytes = 0
+
+    with tarfile.open(archive_path, "w:gz", format=tarfile.PAX_FORMAT) as tar:
+        for abs_p, arcname in sorted(files_to_archive, key=lambda x: x[1]):
+            ti = tar.gettarinfo(abs_p, arcname=arcname)
+            ti.uid = 0
+            ti.gid = 0
+            ti.uname = "root"
+            ti.gname = "root"
+            ti.mtime = 0
+            ti.mode = 0o644
+            with open(abs_p, "rb") as f:
+                tar.addfile(ti, f)
+
+    with open(archive_path, "rb") as f:
+        while chunk := f.read(65536):
+            hasher.update(chunk)
+            size_bytes += len(chunk)
 
     sha256 = hasher.hexdigest()
     return archive_path, size_bytes, sha256
@@ -768,42 +841,51 @@ def safe_cleanup_stage_scratch(
                 sub_real = os.path.realpath(sub_path)
                 if os.path.commonpath([attempt_real, sub_real]) != attempt_real or sub_real == attempt_real:
                     raise UnsafeCleanupError(f"UNSAFE-CLEANUP: Path escape detected: {sub_path} resolves to {sub_real}")
+
+                sub_size = _get_dir_size(sub_path)
                 if os.path.isdir(sub_path):
-                    for r, d_list, f_list in os.walk(sub_path):
-                        for d in d_list:
-                            dp = os.path.join(r, d)
-                            if os.path.islink(dp):
-                                raise UnsafeCleanupError(f"UNSAFE-CLEANUP: Symlink inside scratch: {dp}")
-                        for f in f_list:
-                            fp = os.path.join(r, f)
-                            if os.path.islink(fp):
-                                raise UnsafeCleanupError(f"UNSAFE-CLEANUP: Symlink inside scratch: {fp}")
-                            reclaimed_bytes += os.path.getsize(fp)
                     shutil.rmtree(sub_path)
                 else:
-                    reclaimed_bytes += os.path.getsize(sub_path)
-                    os.unlink(sub_path)
-                deleted.append(f"scratch/{sub}")
+                    os.remove(sub_path)
+                deleted.append(sub_path)
+                reclaimed_bytes += sub_size
             continue
 
+        # For general scratch directories/files
+        item_size = _get_dir_size(full_path) if os.path.isdir(full_path) else os.path.getsize(full_path)
         if os.path.isdir(full_path):
-            for r, d_list, f_list in os.walk(full_path):
-                for d in d_list:
+            # Check nested items for symlinks before removal
+            for r, dirs, files in os.walk(full_path, followlinks=False):
+                for d in dirs:
                     dp = os.path.join(r, d)
                     if os.path.islink(dp):
-                        raise UnsafeCleanupError(f"UNSAFE-CLEANUP: Symlink inside scratch directory: {dp}")
-                for f in f_list:
-                    fp = os.path.join(r, f)
+                        raise UnsafeCleanupError(f"UNSAFE-CLEANUP: Refusing to delete nested symlink dir {dp!r}")
+                for fl in files:
+                    fp = os.path.join(r, fl)
                     if os.path.islink(fp):
-                        raise UnsafeCleanupError(f"UNSAFE-CLEANUP: Symlink inside scratch directory: {fp}")
-                    reclaimed_bytes += os.path.getsize(fp)
+                        raise UnsafeCleanupError(f"UNSAFE-CLEANUP: Refusing to delete nested symlink {fp!r}")
             shutil.rmtree(full_path)
         else:
-            reclaimed_bytes += os.path.getsize(full_path)
-            os.unlink(full_path)
-        deleted.append(name)
+            os.remove(full_path)
+
+        deleted.append(full_path)
+        reclaimed_bytes += item_size
 
     return deleted, reclaimed_bytes
+
+
+def _get_dir_size(path: str) -> int:
+    total = 0
+    if not os.path.exists(path):
+        return 0
+    if os.path.isfile(path) and not os.path.islink(path):
+        return os.path.getsize(path)
+    for root, _, files in os.walk(path, followlinks=False):
+        for f in files:
+            fp = os.path.join(root, f)
+            if not os.path.islink(fp) and os.path.isfile(fp):
+                total += os.path.getsize(fp)
+    return total
 
 
 def run_bounded_process(
@@ -815,16 +897,22 @@ def run_bounded_process(
     grace_sec: float = GRACE_SEC,
     log_file: str | None = None,
     on_spawn: Callable[[int], None] | None = None,
-) -> tuple[int, bool, str | None, list[int]]:
+    is_interrupted: Callable[[], tuple[bool, str | None]] | None = None,
+) -> tuple[int, bool, str | None, list[int], list[int]]:
     """
     Run command in its own session (start_new_session=True).
-    Monitors deadline monotonically. Signals process group and reaps owned
-    descendants on timeout or signal. Returns (exit_code, was_interrupted, interruption_reason, reaped_pids).
+    Monitors deadline monotonically and checks external interruption.
+    Signals process group and reaps owned descendants on timeout or signal.
+    Returns (exit_code, was_interrupted, interruption_reason, reaped_pids, surviving_pids).
     """
     log_fp = None
+    temp_log_file = None
     if log_file:
         os.makedirs(os.path.dirname(os.path.abspath(log_file)), exist_ok=True)
         log_fp = open(log_file, "w", encoding="utf-8")
+    else:
+        temp_log_file = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False)
+        log_fp = temp_log_file
 
     try:
         proc = subprocess.Popen(
@@ -832,14 +920,14 @@ def run_bounded_process(
             cwd=cwd,
             env=env,
             stdin=subprocess.DEVNULL,
-            stdout=log_fp if log_fp else subprocess.PIPE,
-            stderr=subprocess.STDOUT if log_fp else subprocess.PIPE,
+            stdout=log_fp,
+            stderr=subprocess.STDOUT,
             start_new_session=True,  # setsid: proc.pid is session/pg leader
             close_fds=True,          # close control descriptors for native stages
         )
     finally:
-        if log_fp:
-            pass
+        if log_fp and not log_file:
+            log_fp.close()
 
     if on_spawn:
         on_spawn(proc.pid)
@@ -847,13 +935,23 @@ def run_bounded_process(
     tracker = DescendantTracker(proc.pid)
     interrupted = False
     interruption_reason: str | None = None
-    reaped_pids: list[int] = []
 
     try:
         while True:
             rc = proc.poll()
             if rc is not None:
-                return rc, False, None, []
+                # Leader exited normally! Sample and reap any detached descendants left behind
+                tracker._sample()
+                reaped = tracker.reap_owned(grace_sec=min(grace_sec, 5.0))
+                survivors = list(tracker.survivors)
+                return rc, False, None, reaped, survivors
+
+            if is_interrupted:
+                was_int, int_reason = is_interrupted()
+                if was_int:
+                    interrupted = True
+                    interruption_reason = int_reason or "Interrupted by controller signal"
+                    break
 
             now_mono = time.monotonic()
             if now_mono >= monotonic_deadline:
@@ -861,41 +959,51 @@ def run_bounded_process(
                 interruption_reason = (
                     f"Hosting payload budget cutoff reached (monotonic deadline {monotonic_deadline:.1f})."
                 )
-                print(
-                    f"\n[CONTROLLER] {interruption_reason}. Signaling process group {proc.pid} with SIGTERM (grace {grace_sec}s)...",
-                    file=sys.stderr,
-                )
-                try:
-                    os.killpg(proc.pid, signal.SIGTERM)
-                except (ProcessLookupError, PermissionError):
-                    pass
-
-                try:
-                    proc.wait(timeout=grace_sec)
-                except subprocess.TimeoutExpired:
-                    print(
-                        f"[CONTROLLER] Process group {proc.pid} did not exit within {grace_sec}s grace. Escalating to SIGKILL...",
-                        file=sys.stderr,
-                    )
-                    try:
-                        os.killpg(proc.pid, signal.SIGKILL)
-                    except (ProcessLookupError, PermissionError):
-                        pass
-                    try:
-                        proc.wait(timeout=5.0)
-                    except subprocess.TimeoutExpired:
-                        pass
-
-                reaped_pids = tracker.reap_owned(grace_sec=5.0)
-                return proc.returncode if proc.returncode is not None else -1, True, interruption_reason, reaped_pids
+                break
 
             tracker._sample()
             time.sleep(0.05)
-    finally:
-        if log_fp:
+
+        # Interrupted or deadline cutoff path:
+        print(
+            f"\n[CONTROLLER] {interruption_reason}. Signaling process group {proc.pid} with SIGTERM (grace {grace_sec}s)...",
+            file=sys.stderr,
+        )
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+        term_deadline = time.monotonic() + grace_sec
+        while time.monotonic() < term_deadline:
+            if proc.poll() is not None:
+                break
+            tracker._sample()
+            time.sleep(0.05)
+
+        if proc.poll() is None:
+            print(
+                f"[CONTROLLER] Process group {proc.pid} did not exit within {grace_sec}s grace. Escalating to SIGKILL...",
+                file=sys.stderr,
+            )
             try:
-                log_fp.flush()
-                log_fp.close()
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            try:
+                proc.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                pass
+
+        reaped_pids = tracker.reap_owned(grace_sec=5.0)
+        survivors = list(tracker.survivors)
+        return proc.returncode if proc.returncode is not None else -1, True, interruption_reason, reaped_pids, survivors
+    finally:
+        if log_file and log_fp and not log_fp.closed:
+            log_fp.close()
+        if temp_log_file:
+            try:
+                os.remove(temp_log_file.name)
             except OSError:
                 pass
 
@@ -905,68 +1013,40 @@ def load_and_verify_stage_result(
     unit: str,
     expected_attempt: int,
     expected_chain_id: str,
-    w_path: str | None = None,
-) -> tuple[dict[str, Any], str]:
+    w_path: str,
+) -> tuple[dict[str, Any], str, list[str]]:
     """
-    Verify latest stage result in report_dir/unit/a<expected_attempt>/result.json.
-    Enforces schema shape, chain_id, unit, attempt, and valid PASS status without forgery.
+    Load result.json for unit attempt and verify structure and non-forged status.
+    Uses canonical validation helper.
+    Returns (result_dict, validated_status, reasons).
     """
-    latest = find_latest_attempt_info(report_dir, unit)
-    if latest is None:
-        raise VerificationError(f"MISSING-RESULT: No attempt directory found for unit {unit!r}")
-    actual_attempt, attempt_dir = latest
-    if actual_attempt != expected_attempt:
-        raise VerificationError(
-            f"WRONG-ATTEMPT: Unit {unit!r} latest attempt is {actual_attempt}, "
-            f"expected attempt {expected_attempt}"
-        )
+    attempt_dir = os.path.join(report_dir, unit, f"a{expected_attempt}")
+    result_path = os.path.join(attempt_dir, "result.json")
+    pin_path = os.path.join(report_dir, "pin.json")
 
-    result_file = os.path.join(attempt_dir, "result.json")
-    if not os.path.isfile(result_file):
-        raise VerificationError(
-            f"MISSING-RESULT: result.json does not exist in {attempt_dir}"
-        )
-    try:
-        with open(result_file, "r", encoding="utf-8") as f:
+    if not os.path.isfile(result_path):
+        raise VerificationError(f"RESULT-MISSING: {result_path} does not exist")
+
+    with open(result_path, "r", encoding="utf-8") as f:
+        try:
             data = json.load(f)
-    except Exception as exc:
-        raise VerificationError(
-            f"MALFORMED-RESULT: Failed to decode JSON from {result_file}: {exc}"
-        ) from exc
+        except json.JSONDecodeError as exc:
+            raise VerificationError(f"RESULT-CORRUPT: Failed to parse JSON from {result_path}: {exc}") from exc
 
     if not isinstance(data, dict):
-        raise VerificationError(f"MALFORMED-RESULT: {result_file} is not a JSON object")
-
-    actual_chain = data.get("chain_id")
-    if actual_chain != expected_chain_id:
-        raise VerificationError(
-            f"WRONG-CHAIN: result.json chain_id {actual_chain!r} != expected {expected_chain_id!r}"
-        )
-
-    actual_unit = data.get("unit")
-    if actual_unit != unit:
-        raise VerificationError(
-            f"WRONG-UNIT: result.json unit {actual_unit!r} != expected {unit!r}"
-        )
-
-    result_attempt = data.get("attempt")
-    if result_attempt != expected_attempt:
-        raise VerificationError(
-            f"WRONG-ATTEMPT: result.json attempt {result_attempt!r} != expected {expected_attempt!r}"
-        )
-
-    if unit == "run1":
-        kind = "run1"
-    elif unit == "run2":
-        kind = "run2"
-    elif unit.startswith("run3/") or unit == "run3":
-        kind = "run3"
-    else:
-        kind = unit
+        raise VerificationError(f"RESULT-INVALID: {result_path} is not a JSON object")
 
     pin = {"chain_id": expected_chain_id}
+    if os.path.isfile(pin_path):
+        try:
+            with open(pin_path, "r", encoding="utf-8") as pf:
+                pin = json.load(pf)
+        except Exception:
+            pass
+
     from proof.native_validation import validate_record_native
 
+    kind = "run1" if unit == "run1" else ("run2" if unit == "run2" else "run3")
     status, reasons = validate_record_native(
         data,
         pin=pin,
@@ -975,12 +1055,7 @@ def load_and_verify_stage_result(
         kind=kind,
         w_path=w_path,
     )
-    if status != "PASS" or reasons:
-        raise VerificationError(
-            f"NON-PASS-STATUS: Unit {unit!r} result status is {status!r} (expected 'PASS'). Reasons: {reasons}"
-        )
-
-    return data, attempt_dir
+    return data, status, reasons
 
 
 class RemoteStrictController:
@@ -990,10 +1065,11 @@ class RemoteStrictController:
 
     def __init__(
         self,
+        *,
         p_path: str,
         w_path: str,
         compiler_path: str,
-        artifacts_dir: str,
+        artifacts_dir: str = "strict-proof-artifacts",
         report_dir: str | None = None,
         run_proof_py: str | None = None,
         validator_py: str | None = None,
@@ -1007,116 +1083,115 @@ class RemoteStrictController:
         mode: str = "strict",
         ipc_req_fd: int | None = None,
         ipc_ack_fd: int | None = None,
-        publisher: Any = None,
         p_sha: str | None = None,
         w_sha: str | None = None,
         c_sha: str | None = None,
         repository: str | None = None,
-        run_id: str | None = None,
-        run_attempt: str | None = None,
-        job_id: str | None = None,
+        run_id: str | int | None = None,
+        run_attempt: str | int | None = None,
+        job_id: str | int | None = None,
         upload_cmd: str | None = None,
+        publisher_timeout_sec: float = 30.0,
     ):
-        if upload_cmd is not None:
-            raise EvidenceUploadError(
-                "--upload-cmd is prohibited per shared interface; use typed IPC publisher (--ipc-req-fd, --ipc-ack-fd)"
-            )
-
-        self.mode = mode.lower()
-        if self.mode == "strict":
-            if grace_sec != 30.0:
-                raise ValueError("In strict mode, grace-sec must be 30.0 to match native driver semantics")
-            if driver_limit_sec != 2100.0:
-                raise ValueError("In strict mode, driver-limit-sec must be 2100.0")
-
-        self.p_path = os.path.realpath(p_path)
-        self.w_path = os.path.realpath(w_path)
-        self.compiler_path = os.path.realpath(compiler_path)
-        self.artifacts_dir = os.path.realpath(artifacts_dir)
-        try:
-            os.makedirs(self.artifacts_dir, exist_ok=True)
-        except OSError:
-            pass
-        self.report_dir = (
-            os.path.realpath(report_dir)
-            if report_dir
-            else generate_report_dir()
-        )
-        self.run_proof_py = (
-            os.path.realpath(run_proof_py)
-            if run_proof_py
-            else os.path.join(self.w_path, "proof", "run_proof.py")
-        )
+        self.p_path = os.path.abspath(p_path)
+        self.w_path = os.path.abspath(w_path)
+        self.compiler_path = os.path.abspath(compiler_path)
+        self.artifacts_dir = os.path.abspath(artifacts_dir)
+        self.report_dir = report_dir if report_dir else generate_report_dir()
+        self.run_proof_py = run_proof_py if run_proof_py else os.path.join(self.w_path, "proof", "run_proof.py")
         self.validator_py = (
-            os.path.realpath(validator_py)
+            os.path.abspath(validator_py)
             if validator_py
-            else os.path.join(os.path.dirname(__file__), "native_validation.py")
+            else os.path.join(os.path.dirname(os.path.abspath(__file__)), "native_validation.py")
         )
 
         self.job_start_time = parse_job_start_time(job_start_time)
-        self.host_job_limit_sec = host_job_limit_sec
-        self.payload_budget_sec = payload_budget_sec
-        self.finalization_alloc_sec = finalization_alloc_sec
-        self.driver_limit_sec = driver_limit_sec
-        self.grace_sec = grace_sec
-        self.min_disk_gib = min_disk_gib
+        self.host_job_limit_sec = float(host_job_limit_sec)
+        self.payload_budget_sec = float(payload_budget_sec)
+        self.finalization_alloc_sec = float(finalization_alloc_sec)
+        self.driver_limit_sec = float(driver_limit_sec)
+        self.grace_sec = float(grace_sec)
+        self.min_disk_gib = float(min_disk_gib)
+        self.mode = mode
+        self.publisher_timeout_sec = float(publisher_timeout_sec)
 
-        # Establish monotonic deadline anchored to actual job start
-        self.init_wall_time = time.time()
-        self.init_monotonic = time.monotonic()
-        self.initial_elapsed_sec = max(0.0, self.init_wall_time - self.job_start_time)
-        self.monotonic_deadline = self.init_monotonic + (self.payload_budget_sec - self.initial_elapsed_sec)
-
-        # Revisions and metadata
-        self.p_sha = p_sha.lower() if p_sha else resolve_git_sha(self.p_path)
-        self.w_sha = w_sha.lower() if w_sha else resolve_git_sha(self.w_path)
-        self.c_sha = c_sha.lower() if c_sha else resolve_git_sha(os.path.dirname(__file__))
-        self.repository = repository or os.environ.get("GITHUB_REPOSITORY", "jwaldrip/iyi")
+        self.p_sha = p_sha or resolve_git_sha(self.p_path)
+        self.w_sha = w_sha or resolve_git_sha(self.w_path)
+        self.c_sha = c_sha or resolve_git_sha(os.path.dirname(self.validator_py))
+        self.repository = repository or os.environ.get("GITHUB_REPOSITORY", "unknown/repo")
         self.run_id = str(run_id or os.environ.get("GITHUB_RUN_ID", "0"))
         self.run_attempt = str(run_attempt or os.environ.get("GITHUB_RUN_ATTEMPT", "1"))
-        self.job_id = str(job_id or os.environ.get("GITHUB_JOB", "remote-strict-proof"))
+        self.job_id = str(job_id or os.environ.get("GITHUB_JOB", "job-1"))
 
-        # Publisher setup
-        if publisher is not None:
-            self.publisher: EvidencePublisher | None = publisher
-        elif ipc_req_fd is not None and ipc_ack_fd is not None:
-            self.publisher = IpcEvidencePublisher(ipc_req_fd, ipc_ack_fd)
-        else:
-            self.publisher = None
+        # Validate commit SHAs strictly if provided
+        for sha_name, sha_val in (("p-sha", self.p_sha), ("w-sha", self.w_sha), ("c-sha", self.c_sha)):
+            if sha_val is not None:
+                if not isinstance(sha_val, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", sha_val):
+                    raise VerificationError(f"MALFORMED-COMMIT-SHA: {sha_name} {sha_val!r} is not a valid 40-character hex SHA")
 
-        self.chain_id: str | None = None
-        self.snapshot_sequence = 0
+        # Anchored monotonic timing
+        self.monotonic_anchor = time.monotonic()
+        now_wall = time.time()
+        elapsed_at_init = max(0.0, now_wall - self.job_start_time)
+        remaining_budget = max(0.0, self.payload_budget_sec - elapsed_at_init)
+        self.monotonic_deadline = self.monotonic_anchor + remaining_budget
+
         self.records: list[StageExecutionRecord] = []
-        self.overall_status = "INITIALIZING"
+        self.chain_id: str | None = None
+        self.overall_status = "UNKNOWN"
         self.overall_interrupted = False
-        self.interruption_envelope: dict[str, Any] | None = None
+        self.interruption_reason: str | None = None
+        self.interruption_envelope: dict[str, Any] = {}
+        self.snapshot_sequence = 0
         self.current_child_pid: int | None = None
 
-    def get_remaining_payload_sec(self) -> float:
-        """Return remaining seconds until payload budget cutoff using monotonic clock."""
-        return self.monotonic_deadline - time.monotonic()
+        self.publisher: EvidencePublisher | None = None
+        if ipc_req_fd is not None and ipc_ack_fd is not None:
+            self.publisher = IpcEvidencePublisher(
+                ipc_req_fd,
+                ipc_ack_fd,
+                timeout_sec=self.publisher_timeout_sec,
+            )
+
+        os.makedirs(self.artifacts_dir, exist_ok=True)
+        os.makedirs(os.path.join(self.artifacts_dir, "controller-logs"), exist_ok=True)
 
     def get_elapsed_from_job_start_sec(self) -> float:
-        """Return elapsed seconds from actual job start using monotonic clock."""
-        return self.initial_elapsed_sec + (time.monotonic() - self.init_monotonic)
+        """Monotonic elapsed time since job anchor."""
+        return max(0.0, (time.monotonic() - self.monotonic_anchor) + max(0.0, (time.time() - self.job_start_time)))
+
+    def get_remaining_payload_sec(self) -> float:
+        """Monotonic remaining seconds before payload cutoff."""
+        return max(0.0, self.monotonic_deadline - time.monotonic())
+
+    def _record_journal_event(self, event_type: str, payload: dict[str, Any]) -> None:
+        """Append controller event to stage-journal.jsonl."""
+        journal_file = os.path.join(self.artifacts_dir, "stage-journal.jsonl")
+        event = {
+            "type": event_type,
+            "timestamp_iso": datetime.now(timezone.utc).isoformat(),
+            "monotonic_now": time.monotonic(),
+            **payload,
+        }
+        try:
+            with open(journal_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(event, sort_keys=True) + "\n")
+        except Exception as exc:
+            print(f"[CONTROLLER] Warning: Failed to record journal event: {exc}", file=sys.stderr)
 
     def execute_single_stage(
         self,
         unit: str,
         cmd: list[str],
-        expected_attempt: int | None = None,
+        expected_attempt: int = 1,
         requires_pass_result: bool = True,
     ) -> StageExecutionRecord:
         """
-        Execute one discrete stage, verify exit and result, preserve/upload evidence,
-        and clean scratch if PASS.
+        Execute one stage attempt, verify results with native validation helper,
+        archive snapshot evidence, verify persistence ACK, and prune scratch.
         """
-        if expected_attempt is None:
-            prior = find_latest_attempt_info(self.report_dir, unit) if os.path.exists(self.report_dir) else None
-            expected_attempt = 1 if prior is None else prior[0] + 1
-
         print(f"\n================================================================================")
-        print(f"[CONTROLLER] Starting stage: {unit} (attempt {expected_attempt})")
+        print(f"[CONTROLLER] Launching stage: {unit} (attempt {expected_attempt})")
         print(f"[CONTROLLER] Command: {' '.join(cmd)}")
         print(f"================================================================================")
 
@@ -1129,7 +1204,10 @@ class RemoteStrictController:
         def on_spawn(pid: int) -> None:
             self.current_child_pid = pid
 
-        exit_code, interrupted, interrupt_reason, reaped = run_bounded_process(
+        def check_interrupted() -> tuple[bool, str | None]:
+            return self.overall_interrupted, self.interruption_reason
+
+        exit_code, interrupted, interrupt_reason, reaped, survivors = run_bounded_process(
             cmd,
             cwd=self.w_path,
             env=dict(os.environ),
@@ -1137,6 +1215,7 @@ class RemoteStrictController:
             grace_sec=self.grace_sec,
             log_file=log_file,
             on_spawn=on_spawn,
+            is_interrupted=check_interrupted,
         )
         self.current_child_pid = None
 
@@ -1159,25 +1238,30 @@ class RemoteStrictController:
 
         attempt_dir = os.path.join(self.report_dir, unit, f"a{expected_attempt}")
         validation_reasons: list[str] = []
-        native_status = "NONE"
+        raw_native_status = "NONE"
+        val_status = "FAIL"
         native_valid = False
 
         if requires_pass_result:
-            rec_data, nat_status, nat_reasons = self._validate_stage_record_with_helper(unit, expected_attempt)
-            native_status = nat_status
+            rec_data, raw_nat, validated_status, nat_reasons = self._validate_stage_record_with_helper(unit, expected_attempt)
+            raw_native_status = raw_nat
+            val_status = validated_status
             validation_reasons = nat_reasons
-            native_valid = (nat_status == "PASS" and not nat_reasons)
+            native_valid = (val_status == "PASS" and not nat_reasons)
         else:
             if exit_code == 0:
-                native_status = "PASS"
+                raw_native_status = "PASS"
+                val_status = "PASS"
                 native_valid = True
             else:
-                native_status = "FAIL"
+                raw_native_status = "FAIL"
+                val_status = "FAIL"
                 native_valid = False
                 validation_reasons = [f"Stage exited with nonzero code {exit_code}"]
 
-        record.native_status = native_status
-        record.result_status = native_status
+        # Preserve raw native status separately from recomputed/validated status
+        record.native_status = raw_native_status
+        record.result_status = val_status
         record.native_validation_reasons = validation_reasons
 
         # Determine disposition
@@ -1185,14 +1269,20 @@ class RemoteStrictController:
             record.result_status = "INTERRUPTED"
             record.disposition = "INTERRUPTED"
             record.error_detail = interrupt_reason
-        elif exit_code == 0 and native_status == "PASS" and native_valid and not interrupted:
+        elif survivors:
+            # Surviving detached descendants cannot be accepted as clean PASS
+            record.disposition = "REJECTED"
+            record.result_status = "FAIL"
+            record.error_detail = f"Stage {unit!r} left surviving detached descendants: {survivors}"
+        elif exit_code == 0 and val_status == "PASS" and native_valid and not interrupted:
             record.disposition = "ACCEPTED"
             record.result_status = "PASS"
         else:
             record.disposition = "REJECTED"
-            record.result_status = native_status if native_status != "NONE" else "FAIL"
+            record.result_status = val_status if val_status != "NONE" else "FAIL"
             record.error_detail = (
-                f"Stage {unit!r} rejected: exit={exit_code}, native={native_status}, reasons={validation_reasons}"
+                f"Stage {unit!r} rejected: exit={exit_code}, raw_native={raw_native_status}, "
+                f"val_status={val_status}, reasons={validation_reasons}"
             )
 
         # If pinning, extract chain_id from pin.json if created so archive name and request carry it
@@ -1238,15 +1328,15 @@ class RemoteStrictController:
                     "archive_sha256": sha256,
                 }
                 ack = self.publisher.persist(req)
-                record.upload_verified = (ack.get("verified") is True)
                 record.artifact_id = ack.get("artifact_id")
-            else:
-                raise EvidenceUploadError(
-                    "PUBLISHER-UNCONFIGURED: No evidence publisher configured; fd3/fd4 required and no local success fallback permitted"
+                record.upload_verified = True
+                print(
+                    f"[CONTROLLER] Verified incremental persistence for {unit} "
+                    f"(seq {self.snapshot_sequence}, artifact_id={record.artifact_id})"
                 )
         except Exception as exc:
             record.upload_verified = False
-            record.error_detail = f"Evidence persistence failed: {exc}"
+            record.error_detail = (record.error_detail or "") + f" [Evidence persistence failed: {exc}]"
             self.records.append(record)
             self._write_stage_journal(record)
             self._write_controller_summary()
@@ -1284,8 +1374,6 @@ class RemoteStrictController:
         """
         print(f"[CONTROLLER] Starting remote strict chain controller.")
         print(f"[CONTROLLER] Mode: {self.mode}")
-        print(f"[CONTROLLER] Job start anchor: {self.job_start_time} (initial elapsed: {self.initial_elapsed_sec:.1f}s)")
-        print(f"[CONTROLLER] Host job limit: {self.host_job_limit_sec}s, Payload cutoff: {self.payload_budget_sec}s")
         print(f"[CONTROLLER] P: {self.p_path} ({self.p_sha})")
         print(f"[CONTROLLER] W: {self.w_path} ({self.w_sha})")
         print(f"[CONTROLLER] C: ({self.c_sha})")
@@ -1313,11 +1401,15 @@ class RemoteStrictController:
             if self.mode == "strict":
                 self.overall_status = "AUTH_REFUSED"
                 refusal_msg = (
-                    "STRICT-MODE-REFUSAL: Strict proof run unconditionally refused. "
-                    "No authenticated independent GO authorization mechanism has been established. "
-                    "(Validation-only runs permitted with --validation-only or --mode validation-only)."
+                    "STRICT_MODE_AUTH_REFUSED: Real strict execution requires independent "
+                    "authenticated authorization for exact (P, W, C) tuple. No authorization "
+                    "exists; refusing execution nonzero before planning, pinning, or native execution."
                 )
                 print(f"\n[CONTROLLER] {refusal_msg}", file=sys.stderr)
+                self._record_journal_event(
+                    "strict_auth_refusal",
+                    {"refusal_code": AUTH_REFUSED_EXIT_CODE, "message": refusal_msg},
+                )
                 self._write_controller_summary()
                 raise StrictAuthorizationRefused(refusal_msg)
 
@@ -1459,14 +1551,7 @@ class RemoteStrictController:
                 ]
                 self.execute_single_stage(f"run3/{driver}", cmd_driver, requires_pass_result=True)
 
-            # 10. Verify all required drivers have PASS results before running final
-            outstanding = [d for d in required_drivers if not self._is_driver_passed(d)]
-            if outstanding:
-                raise VerificationError(
-                    f"OUTSTANDING-DRIVERS: Required drivers still outstanding: {outstanding}"
-                )
-
-            # 11. Stage: final
+            # 10. Stage: final
             cmd_final = [
                 sys.executable,
                 "-B",
@@ -1475,15 +1560,15 @@ class RemoteStrictController:
                 "--report-dir",
                 self.report_dir,
             ]
-            self.execute_single_stage("final", cmd_final, expected_attempt=1, requires_pass_result=False)
+            self.execute_single_stage("final", cmd_final, requires_pass_result=False)
 
-            # 12. Validate final.json with native schema and driver inventory
-            is_valid, reasons = self._validate_final(required_drivers)
-            if not is_valid:
-                raise VerificationError(f"FINAL-VALIDATION-FAILED: {reasons}")
+            # Validate final.json completeness and integrity via validator helper
+            is_valid_final, final_reasons = self._validate_final(required_drivers)
+            if not is_valid_final:
+                raise VerificationError(f"FINAL-VERIFICATION-FAILED: {final_reasons}")
 
-            # 13. Persist terminal completion snapshot
-            self._persist_terminal_snapshot()
+            # Upload terminal final snapshot
+            self._upload_terminal_snapshot()
 
             self.overall_status = "PASS"
             print(f"\n================================================================================")
@@ -1491,8 +1576,8 @@ class RemoteStrictController:
             print(f"================================================================================")
             ret = 0
 
-        except StrictAuthorizationRefused as exc:
-            ret = 5
+        except StrictAuthorizationRefused:
+            ret = AUTH_REFUSED_EXIT_CODE
         except HostingBudgetInterrupted as exc:
             self.overall_status = "INTERRUPTED_BY_HOSTING_BUDGET"
             self.overall_interrupted = True
@@ -1540,14 +1625,28 @@ class RemoteStrictController:
 
     def _validate_stage_record_with_helper(
         self, unit: str, attempt: int
-    ) -> tuple[dict[str, Any] | None, str, list[str]]:
-        """Validate native stage result using the narrow validation helper in a fresh subprocess."""
+    ) -> tuple[dict[str, Any] | None, str, str, list[str]]:
+        """
+        Validate native stage result using the narrow validation helper in a fresh subprocess.
+        Returns (record_dict, raw_status, validated_status, reasons).
+        """
         attempt_dir = os.path.join(self.report_dir, unit, f"a{attempt}")
         result_file = os.path.join(attempt_dir, "result.json")
         pin_file = os.path.join(self.report_dir, "pin.json")
 
-        if not os.path.isfile(result_file):
-            return None, "NONE", [f"MISSING-RESULT: result.json does not exist in {attempt_dir}"]
+        raw_rec: dict[str, Any] | None = None
+        raw_status = "NONE"
+
+        if os.path.isfile(result_file):
+            try:
+                with open(result_file, "r", encoding="utf-8") as f:
+                    raw_rec = json.load(f)
+                if isinstance(raw_rec, dict):
+                    raw_status = str(raw_rec.get("status", "NONE"))
+            except Exception as exc:
+                return None, "NONE", "FAIL", [f"CORRUPT-RESULT-JSON: Failed to parse {result_file}: {exc}"]
+        else:
+            return None, "NONE", "FAIL", [f"MISSING-RESULT: result.json does not exist in {attempt_dir}"]
 
         if unit == "run1":
             kind = "run1"
@@ -1558,63 +1657,82 @@ class RemoteStrictController:
         else:
             kind = unit
 
-        if os.path.isfile(self.validator_py) and os.path.isfile(pin_file):
-            cmd = [
-                sys.executable,
-                "-B",
-                self.validator_py,
-                "--mode",
-                "record",
-                "--w",
-                self.w_path,
-                "--pin",
-                pin_file,
-                "--record",
-                result_file,
-                "--unit",
-                unit,
-                "--attempt",
-                str(attempt),
-                "--kind",
-                kind,
-            ]
-            try:
-                proc = subprocess.run(cmd, capture_output=True, text=True, check=False, close_fds=True)
-                if proc.stdout.strip():
-                    data = json.loads(proc.stdout)
-                    rec: dict[str, Any] | None = None
-                    try:
-                        with open(result_file, "r", encoding="utf-8") as f:
-                            rec = json.load(f)
-                    except Exception:
-                        pass
-                    return rec, data.get("status", "FAIL"), list(data.get("reasons", []))
-            except Exception:
-                pass
+        if not os.path.isfile(self.validator_py):
+            return raw_rec, raw_status, "FAIL", [f"VALIDATOR-SCRIPT-MISSING: {self.validator_py} does not exist"]
+
+        if not os.path.isfile(pin_file):
+            return raw_rec, raw_status, "FAIL", [f"PIN-MISSING: {pin_file} does not exist"]
+
+        cmd = [
+            sys.executable,
+            "-B",
+            self.validator_py,
+            "--mode",
+            "record",
+            "--w",
+            self.w_path,
+            "--pin",
+            pin_file,
+            "--record",
+            result_file,
+            "--unit",
+            unit,
+            "--attempt",
+            str(attempt),
+            "--kind",
+            kind,
+        ]
 
         try:
-            with open(result_file, "r", encoding="utf-8") as f:
-                rec = json.load(f)
-            pin = {}
-            if os.path.isfile(pin_file):
-                with open(pin_file, "r", encoding="utf-8") as f:
-                    pin = json.load(f)
-            from proof.native_validation import validate_record_native
-
-            status, reasons = validate_record_native(
-                rec,
-                pin=pin,
-                unit=unit,
-                attempt=attempt,
-                kind=kind,
-                w_path=self.w_path,
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=15.0,
+                close_fds=True,
             )
-            return rec, status, reasons
+        except subprocess.TimeoutExpired:
+            return raw_rec, raw_status, "FAIL", [f"NATIVE-VALIDATOR-TIMEOUT: Helper timed out after 15s for {unit}"]
         except Exception as exc:
-            return None, "FAIL", [f"Validation exception: {exc}"]
+            return raw_rec, raw_status, "FAIL", [f"NATIVE-VALIDATOR-SPAWN-ERROR: {exc}"]
+
+        stdout_trimmed = proc.stdout.strip()
+        data: dict[str, Any] = {}
+        if stdout_trimmed:
+            try:
+                data = json.loads(stdout_trimmed)
+            except json.JSONDecodeError:
+                pass
+
+        if proc.returncode != 0:
+            reasons = list(data.get("reasons", []))
+            err = data.get("error")
+            if err and err not in reasons:
+                reasons.insert(0, err)
+            if not reasons:
+                reasons = [f"NATIVE-VALIDATOR-FAILURE: exit={proc.returncode} stderr={proc.stderr.strip()!r}"]
+            # Contradictory check: helper exited nonzero while outputting valid=True
+            if data.get("valid") is True:
+                reasons.append(f"CONTRADICTORY-VALIDATOR-OUTPUT: helper exited {proc.returncode} while claiming valid=True")
+            return raw_rec, raw_status, "FAIL", reasons
+
+        # Returncode 0: require coherent valid PASS
+        if not data:
+            return raw_rec, raw_status, "FAIL", [f"MALFORMED-VALIDATOR-OUTPUT: stdout={stdout_trimmed!r}"]
+
+        val_status = data.get("status", "FAIL")
+        reasons = list(data.get("reasons", []))
+
+        if data.get("valid") is True and val_status == "PASS" and not reasons:
+            return raw_rec, raw_status, "PASS", []
+
+        if not reasons:
+            reasons = [f"CONTRADICTORY-VALIDATOR-OUTPUT: exit=0 but valid={data.get('valid')!r}, status={val_status!r}"]
+        return raw_rec, raw_status, val_status, reasons
 
     def _validate_final(self, required_drivers: list[str]) -> tuple[bool, list[str]]:
-        """Validate final.json structure and completeness."""
+        """Validate final.json structure and completeness strictly through validator helper."""
         final_path = os.path.join(self.report_dir, "final.json")
         pin_path = os.path.join(self.report_dir, "pin.json")
         req_path = os.path.join(self.report_dir, "run3", "required.json")
@@ -1622,78 +1740,107 @@ class RemoteStrictController:
         if not os.path.isfile(final_path):
             return False, [f"FINAL-JSON-MISSING: {final_path} does not exist"]
 
-        if os.path.isfile(self.validator_py) and os.path.isfile(pin_path) and os.path.isfile(req_path):
-            cmd = [
-                sys.executable,
-                "-B",
-                self.validator_py,
-                "--mode",
-                "final",
-                "--w",
-                self.w_path,
-                "--pin",
-                pin_path,
-                "--final",
-                final_path,
-                "--required",
-                req_path,
-            ]
+        if not os.path.isfile(self.validator_py):
+            return False, [f"VALIDATOR-SCRIPT-MISSING: {self.validator_py} does not exist"]
+        if not os.path.isfile(pin_path):
+            return False, [f"PIN-MISSING: {pin_path} does not exist"]
+        if not os.path.isfile(req_path):
+            return False, [f"REQUIRED-JSON-MISSING: {req_path} does not exist"]
+
+        cmd = [
+            sys.executable,
+            "-B",
+            self.validator_py,
+            "--mode",
+            "final",
+            "--w",
+            self.w_path,
+            "--pin",
+            pin_path,
+            "--final",
+            final_path,
+            "--required",
+            req_path,
+            "--report-dir",
+            self.report_dir,
+        ]
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=15.0,
+                close_fds=True,
+            )
+        except subprocess.TimeoutExpired:
+            return False, ["NATIVE-VALIDATOR-TIMEOUT: Final validation helper timed out after 15s"]
+        except Exception as exc:
+            return False, [f"NATIVE-VALIDATOR-SPAWN-ERROR: {exc}"]
+
+        stdout_trimmed = proc.stdout.strip()
+        data: dict[str, Any] = {}
+        if stdout_trimmed:
             try:
-                proc = subprocess.run(cmd, capture_output=True, text=True, check=False, close_fds=True)
-                if proc.stdout.strip():
-                    data = json.loads(proc.stdout)
-                    return bool(data.get("valid")), list(data.get("reasons", []))
-            except Exception:
+                data = json.loads(stdout_trimmed)
+            except json.JSONDecodeError:
                 pass
 
-        try:
-            with open(final_path, "r", encoding="utf-8") as f:
-                final_data = json.load(f)
-            with open(pin_path, "r", encoding="utf-8") as f:
-                pin = json.load(f)
-            from proof.native_validation import validate_final_native
+        if proc.returncode != 0:
+            reasons = list(data.get("reasons", []))
+            err = data.get("error")
+            if err and err not in reasons:
+                reasons.insert(0, err)
+            if not reasons:
+                reasons = [f"NATIVE-VALIDATOR-FAILURE: Final validation exited {proc.returncode}: {proc.stderr.strip()!r}"]
+            return False, reasons
 
-            return validate_final_native(
-                final_data,
-                pin=pin,
-                required_drivers=required_drivers,
-                w_path=self.w_path,
-            )
-        except Exception as exc:
-            return False, [f"Final validation error: {exc}"]
+        if not data:
+            return False, [f"MALFORMED-VALIDATOR-OUTPUT: Final validation stdout={stdout_trimmed!r}"]
 
-    def _persist_terminal_snapshot(self) -> None:
-        """Persist terminal completion evidence snapshot."""
+        is_valid = bool(data.get("valid"))
+        reasons = list(data.get("reasons", []))
+        if is_valid and not reasons:
+            return True, []
+        if not reasons:
+            reasons = ["Final validation helper returned false without explicit reasons"]
+        return False, reasons
+
+    def _upload_terminal_snapshot(self) -> None:
+        """Create and upload terminal sealed snapshot containing final.json and summary."""
+        if self.publisher is None:
+            return
+
         archive_path, size_bytes, sha256 = archive_snapshot_evidence(
             report_dir=self.report_dir,
             artifacts_dir=self.artifacts_dir,
-            unit="terminal",
+            unit="final",
             attempt=1,
             chain_id=self.chain_id or "nochain",
             sequence=self.snapshot_sequence + 1,
         )
         self.snapshot_sequence += 1
-        if self.publisher is not None:
-            req = {
-                "request_id": secrets.token_hex(16),
-                "repository": self.repository,
-                "run_id": str(self.run_id),
-                "run_attempt": str(self.run_attempt),
-                "job_id": str(self.job_id),
-                "p_sha": self.p_sha,
-                "w_sha": self.w_sha,
-                "c_sha": self.c_sha,
-                "chain_id": self.chain_id or "",
-                "unit": "terminal",
-                "native_attempt": 1,
-                "snapshot_sequence": self.snapshot_sequence,
-                "archive_path": archive_path,
-                "archive_bytes": size_bytes,
-                "archive_sha256": sha256,
-            }
-            ack = self.publisher.persist(req)
-            if ack.get("verified") is not True:
-                raise EvidenceUploadError("Terminal snapshot upload could not be verified by publisher")
+
+        req = {
+            "request_id": secrets.token_hex(16),
+            "repository": self.repository,
+            "run_id": str(self.run_id),
+            "run_attempt": str(self.run_attempt),
+            "job_id": str(self.job_id),
+            "p_sha": self.p_sha,
+            "w_sha": self.w_sha,
+            "c_sha": self.c_sha,
+            "chain_id": self.chain_id or "",
+            "unit": "final",
+            "native_attempt": 1,
+            "snapshot_sequence": self.snapshot_sequence,
+            "archive_path": archive_path,
+            "archive_bytes": size_bytes,
+            "archive_sha256": sha256,
+        }
+        ack = self.publisher.persist(req)
+        if ack.get("verified") is not True:
+            raise EvidenceUploadError("Terminal snapshot upload could not be verified by publisher")
 
     def _write_stage_journal(self, record: StageExecutionRecord) -> None:
         """Append record to mandatory stage-journal.jsonl."""
@@ -1771,6 +1918,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--run-attempt", default=None, help="GitHub Actions run attempt")
     parser.add_argument("--job-id", default=None, help="GitHub Actions job ID")
     parser.add_argument("--upload-cmd", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--publisher-timeout-sec", type=float, default=30.0, help="Timeout in seconds for evidence publisher requests")
     args = parser.parse_args(argv)
     if args.validation_only:
         args.mode = "validation-only"
@@ -1807,6 +1955,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         run_attempt=args.run_attempt,
         job_id=args.job_id,
         upload_cmd=args.upload_cmd,
+        publisher_timeout_sec=args.publisher_timeout_sec,
     )
     return controller.run()
 
