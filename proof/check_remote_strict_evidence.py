@@ -11,8 +11,12 @@ import sys
 import tarfile
 from pathlib import Path, PurePosixPath
 
-from remote_strict_fixtures import FAKE_STAGE_EMITTER_SOURCE
-from remote_strict_validation import canonical_drivers, revision
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from proof.remote_strict_fixtures import FAKE_STAGE_EMITTER_SOURCE
+from proof.remote_strict_validation import canonical_drivers, revision
 
 COUNTS = {"success": 37, "failed-plan": 1, "failed-pin": 2, "divergence": 6, "cleanup-failure": 4}
 BINDING = ("protocol_version", "request_id", "invocation_id", "execution_kind", "repository", "run_id", "run_attempt", "job_id", "job_key", "p_sha", "w_sha", "c_sha", "fixture_sha256", "snapshot_kind", "chain_id", "unit", "native_attempt", "snapshot_sequence", "archive_bytes", "archive_sha256")
