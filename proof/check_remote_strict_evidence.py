@@ -83,6 +83,8 @@ def main() -> int:
     }[args.case]
     require([entry["request"]["unit"] for entry in entries] == expected_units, "checkpoint order or unit mismatch")
     context = None
+    request_ids = set()
+    established_chain = None
     ids = set()
     archives = []
     report_entries = []
@@ -91,6 +93,8 @@ def main() -> int:
         require(request.get("event") == "persistence-request" and ack.get("event") == "persistence-ack", "wrong event type")
         require(all(key in request and key in ack and request[key] == ack[key] for key in BINDING), "receipt binding mismatch")
         require(request["protocol_version"] == 1 and request["snapshot_sequence"] == sequence, "invalid protocol or sequence")
+        require(isinstance(request["request_id"], str) and request["request_id"] and request["request_id"] not in request_ids, "duplicate or empty request ID")
+        request_ids.add(request["request_id"])
         require(request["invocation_id"] == index.get("invocation_id") and request["execution_kind"] == "synthetic", "invocation mismatch")
         current_context = tuple(request.get(k) for k in CONTEXT)
         require(all(current_context) and (context is None or current_context == context), "missing or changed context")
@@ -112,6 +116,9 @@ def main() -> int:
         expected_kind = "plan" if unit == "plan" else "prechain-failure" if args.case == "failed-pin" and unit == "pin" else "terminal-envelope" if unit == "terminal" else "checkpoint"
         require(kind == expected_kind, "snapshot kind mismatch")
         require(chain is None if kind in ("plan", "prechain-failure") else isinstance(chain, str) and re.fullmatch(r"[0-9a-f]{32}", chain) is not None, "invalid chain identity")
+        if chain is not None:
+            require(established_chain is None or established_chain == chain, "chain identity changed")
+            established_chain = chain
         artifact_id = str(ack.get("artifact_id", ""))
         require(artifact_id.isdigit() and artifact_id not in ids and ack.get("verified") is True, "missing or duplicate artifact ID")
         ids.add(artifact_id)
@@ -135,6 +142,7 @@ def main() -> int:
     if args.case == "failed-pin":
         archive = archives[-1]
         require("meta/pin.json" not in archive, "failed pin unexpectedly established")
+        require(parse_json(archive["evidence-manifest.json"]).get("pin_state") == "absent", "missing explicit pin absence declaration")
         require("controller/stage-journal.jsonl" in archive, "failed pin journal absent")
         require(any("pin" in n and n.endswith(".log") and b"synthetic pin failed before establishment" in v for n, v in archive.items()), "failed pin log absent")
         records = [json.loads(line) for line in archive["controller/stage-journal.jsonl"].splitlines()]
