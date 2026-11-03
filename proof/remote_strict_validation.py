@@ -93,6 +93,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         config["plan"] = {
             "spawn_nested": True,
             "sleep": 600,
+            "flush_delay": 1,
+            "completion_marker": os.path.join(data_dir, "ownership-flushed"),
             "ready_file": os.path.join(data_dir, "ownership-ready"),
             "pid_file": os.path.join(data_dir, "ownership-pids"),
         }
