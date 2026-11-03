@@ -5,6 +5,10 @@ import { once } from 'node:events';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { OwnershipObserver } from '../src/ownership.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { startSentinel } from './sentinel-helper.js';
 
 const python = process.env.PYTHON || 'python3';
 const probe = fileURLToPath(new URL('../src/process_identity.py', import.meta.url));
@@ -17,42 +21,50 @@ print(stage.stdout.readline().strip(),flush=True)
 time.sleep(300)
 `;
 
-async function line(reader) {
-  const [value] = await once(reader, 'line');
-  return Number(value);
+function lines(reader) {
+  const queue = [], pending = [];
+  reader.on('line', value => {
+    if (pending.length) pending.shift()(Number(value)); else queue.push(Number(value));
+  });
+  return () => queue.length ? Promise.resolve(queue.shift()) : new Promise(resolve => pending.push(resolve));
 }
 
 test('crashed controller recovery terminates observed separate sessions, not a sentinel', async () => {
   const controller = spawn(python, ['-u', '-c', program], { stdio: ['pipe', 'pipe', 'inherit'] });
-  const sentinel = spawn(python, ['-c', 'import time; time.sleep(300)'], { stdio: 'ignore' });
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ownership-real-'));
   const reader = createInterface({ input: controller.stdout });
-  const observer = new OwnershipObserver(python, probe);
+  const next = lines(reader);
+  const observer = new OwnershipObserver(python, probe, { tempRoot, graceSec: 0.1 });
+  const sentinel = await startSentinel(python, observer);
   let stage, grandchild;
   try {
-    stage = await line(reader);
+    await sentinel.challenge();
+    stage = await next();
     observer.register({ pid: stage, unit: 'run3', native_attempt: 1 }, controller.pid);
     controller.stdin.write('x');
-    grandchild = await line(reader);
+    grandchild = await next();
     observer.observe();
     assert.ok(observer.stages.get(stage).owned.has(grandchild));
     controller.kill('SIGKILL');
     await once(controller, 'exit');
     await observer.recover();
     assert.equal(observer.stages.size, 0);
-    assert.doesNotThrow(() => process.kill(sentinel.pid, 0));
+    await sentinel.challenge();
   } finally {
     reader.close();
     controller.kill('SIGKILL');
-    sentinel.kill('SIGKILL');
+    await sentinel.stop();
     observer.close();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 });
 
 test('census outage leaves ownership unresolved and never signals by guess', async () => {
-  const observer = new OwnershipObserver(python, probe);
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ownership-real-'));
+  const observer = new OwnershipObserver(python, probe, { tempRoot, graceSec: 0.1 });
   try {
     observer.census = () => { throw new Error('injected census outage'); };
     assert.throws(() => observer.register({ pid: 123, unit: 'run1', native_attempt: 1 }, process.pid), /census outage/);
     assert.equal(observer.stages.size, 0);
-  } finally { observer.close(); }
+  } finally { observer.close(); fs.rmSync(tempRoot, { recursive: true, force: true }); }
 });

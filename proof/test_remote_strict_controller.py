@@ -165,7 +165,14 @@ class FakePublisher:
                     state = True
                 if not state:
                     return {**req, "event": event + "-ack", "verified": False}
-            return {**req, "event": event + "-ack", "verified": True}
+            ack = {**req, "event": event + "-ack", "verified": True}
+            if event == "ownership-resolve":
+                ack["ownership_result"] = {
+                    "proof_resolved": True, "taint_reasons": [], "grace_sec": req["grace_sec"],
+                    "recovery": {"terminated": [], "absent": [], "replaced": [],
+                                 "unverifiable": [], "survivors": []},
+                }
+            return ack
 
         required = (
             "protocol_version", "request_id", "invocation_id", "execution_kind",
@@ -405,7 +412,14 @@ class TestRemoteStrictController(unittest.TestCase):
                         os.kill(req["pid"], signal.SIGKILL)
                 except ProcessLookupError:
                     pass
-            return {**req, "event": req["event"] + "-ack", "verified": True}
+            ack = {**req, "event": req["event"] + "-ack", "verified": True}
+            if req["event"] == "ownership-resolve":
+                ack["ownership_result"] = {
+                    "proof_resolved": True, "taint_reasons": [], "grace_sec": req["grace_sec"],
+                    "recovery": {"terminated": [], "absent": [], "replaced": [],
+                                 "unverifiable": [], "survivors": []},
+                }
+            return ack
 
         path = log_file or os.path.join(self.artifacts_dir, "owned-process.log")
         with open(path, "wb") as log:
@@ -601,6 +615,13 @@ class TestRemoteStrictController(unittest.TestCase):
         self.assertEqual(rc, 124)
         self.assertEqual(ctrl.overall_status, "INTERRUPTED_BY_HOSTING_BUDGET")
         self.assertTrue(ctrl.overall_interrupted)
+        terminal = [r for r in pub.received_requests if r["snapshot_kind"] == "terminal-envelope"]
+        self.assertEqual(len(terminal), 1)
+        with tarfile.open(terminal[0]["archive_path"]) as archive:
+            envelope = next(m for m in archive.getmembers() if m.name.endswith("terminal-envelope.json"))
+            self.assertIn(b"INTERRUPTED_BY_HOSTING_BUDGET", archive.extractfile(envelope).read())
+        self.assertTrue(ctrl.ownership_resolved)
+        self.assertNotEqual(ctrl.overall_status, "PASS")
 
         # Prerequisite plan and pin ran, but acme was refused before starting
         acme_attempt = os.path.join(self.report_dir, "run3", "acme", "a1")
@@ -850,6 +871,8 @@ class TestRemoteStrictController(unittest.TestCase):
             ack = original(req)
             if req.get("event") == "ownership-resolve" and ack is not None:
                 ack["verified"] = False
+                ack["ownership_result"]["proof_resolved"] = False
+                ack["ownership_result"]["taint_reasons"] = ["census unavailable"]
             return ack
 
         pub._build_ack = reject_resolution
@@ -857,6 +880,64 @@ class TestRemoteStrictController(unittest.TestCase):
         self.assertNotEqual(ctrl.run(), 0)
         self.assertFalse(os.path.exists(os.path.join(self.report_dir, "pin.json")))
         self.assertFalse(os.path.exists(os.path.join(self.report_dir, "run1")))
+        self.assertFalse(ctrl.ownership_resolved)
+        self.assertFalse(ctrl.records[-1].ownership_resolved)
+        self.assertIn("census unavailable", ctrl.records[-1].ownership_result["taint_reasons"])
+
+    def _assert_ownership_survives_failure(self, failure):
+        target = "pin" if failure == "corrupt_pin" else "run1"
+        pub = FakePublisher(mode="error_reply" if failure == "upload" else "success")
+        self.publishers.append(pub)
+        original_ack = pub._build_ack
+
+        def reject_with_taint(req):
+            ack = original_ack(req)
+            if req.get("event") == "ownership-resolve" and req.get("unit") == target:
+                if failure == "corrupt_pin":
+                    with open(os.path.join(self.report_dir, "pin.json"), "w", encoding="utf-8") as pin:
+                        pin.write("{bad json")
+                ack["verified"] = False
+                ack["ownership_result"]["proof_resolved"] = False
+                ack["ownership_result"]["taint_reasons"] = ["census unavailable"]
+            return ack
+
+        pub._build_ack = reject_with_taint
+        ctrl = self._create_controller(publisher=pub)
+        original_validator = ctrl._validate_stage_record_with_helper
+
+        def validator(unit, attempt):
+            if failure == "validator" and unit == target:
+                raise RuntimeError("injected validator failure")
+            return original_validator(unit, attempt)
+
+        with mock.patch.object(ctrl, "_validate_stage_record_with_helper", side_effect=validator), \
+             mock.patch.object(rsc, "safe_cleanup_stage_scratch", wraps=rsc.safe_cleanup_stage_scratch) as cleanup:
+            self.assertNotEqual(ctrl.run(), 0)
+        self.assertFalse(ctrl.ownership_resolved)
+        record = next(r for r in reversed(ctrl.records) if r.unit == target)
+        self.assertFalse(record.ownership_resolved)
+        self.assertIn("census unavailable", record.ownership_result["taint_reasons"])
+        self.assertFalse(record.cleanup_performed)
+        if target == "run1":
+            self.assertTrue(os.path.isdir(os.path.join(self.report_dir, "run1", "a1", "rg9_work")))
+            self.assertFalse(os.path.exists(os.path.join(self.report_dir, "run2")))
+            self.assertFalse(any(call.args[1] == "run1" for call in cleanup.call_args_list))
+        else:
+            self.assertFalse(os.path.exists(os.path.join(self.report_dir, "run1")))
+        self.assertNotEqual(ctrl.overall_status, "PASS")
+        with open(os.path.join(self.artifacts_dir, "strict-controller-summary.json"), encoding="utf-8") as stream:
+            summary = json.load(stream)
+        self.assertFalse(summary["ownership_resolved"])
+        self.assertNotIn("terminal-envelope", [r["snapshot_kind"] for r in pub.received_requests])
+
+    def test_06d_unresolved_ownership_survives_corrupt_pin(self):
+        self._assert_ownership_survives_failure("corrupt_pin")
+
+    def test_06e_unresolved_ownership_survives_validator_exception(self):
+        self._assert_ownership_survives_failure("validator")
+
+    def test_06f_unresolved_ownership_survives_upload_failure(self):
+        self._assert_ownership_survives_failure("upload")
 
     # -------------------------------------------------------------------------
     # 7. Publisher Rejection Matrix (IPC fd3/fd4)

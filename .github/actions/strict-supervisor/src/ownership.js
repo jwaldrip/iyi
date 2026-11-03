@@ -1,29 +1,70 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { execFileSync } from 'node:child_process';
 import { sanitizeEnvironment } from './env.js';
 
-// This observer cannot prove absence of forks that start and reparent entirely
-// between observations. It never represents a failed observation as quiescence.
+// Polling cannot see a fork and reparent entirely between observations. A
+// point probe followed by kill is also not an atomic identity-bound signal.
 export class OwnershipObserver {
-  constructor(python, identityScript) {
+  constructor(python, identityScript, options = {}) {
     this.python = python;
     this.identityScript = identityScript;
-    this.directory = fs.mkdtempSync(path.join(os.tmpdir(), 'strict-ownership-'));
-    this.fd = fs.openSync(path.join(this.directory, 'ownership.jsonl'), 'ax', 0o600);
-    const dirfd = fs.openSync(this.directory, 'r');
-    try { fs.fsyncSync(dirfd); } finally { fs.closeSync(dirfd); }
+    this.graceSec = options.graceSec ?? 30;
+    this.budgetMs = options.budgetMs ?? 45000;
+    if (!Number.isFinite(this.graceSec) || this.graceSec < 0 || this.graceSec > 30 ||
+        !Number.isFinite(this.budgetMs) || this.budgetMs <= 0) throw new Error('invalid ownership timing');
+    this.onFailure = options.onFailure;
     this.stages = new Map();
+    this.completed = new Map();
+    this.taintReasons = [];
     this.failure = null;
     this.timer = null;
+    this.directory = path.join(options.tempRoot || os.tmpdir(), 'strict-supervisor-ownership');
+    // mkdir is the exclusive host-wide claim. An incomplete claim is quarantine.
+    fs.mkdirSync(this.directory, { mode: 0o700 });
+    const parent = fs.openSync(path.dirname(this.directory), 'r');
+    try { fs.fsyncSync(parent); } finally { fs.closeSync(parent); }
+    this.fd = fs.openSync(path.join(this.directory, 'ownership.jsonl'), 'ax', 0o600);
+    this.record({ event: 'active', context: options.context || {}, grace_sec: this.graceSec });
+    const dirfd = fs.openSync(this.directory, 'r');
+    try { fs.fsyncSync(dirfd); } finally { fs.closeSync(dirfd); }
   }
+
   record(value) {
-    fs.writeSync(this.fd, JSON.stringify(value) + '\n');
+    const data = Buffer.from(JSON.stringify(value) + '\n');
+    let written = 0;
+    while (written < data.length) {
+      const count = fs.writeSync(this.fd, data, written, data.length - written);
+      if (!count) throw new Error('short ownership journal write');
+      written += count;
+    }
     fs.fsyncSync(this.fd);
   }
-  census() {
-    const text = execFileSync('/bin/ps', ['-axo', 'pid=,ppid=,stat='], { encoding: 'utf8', timeout: 5000, env: sanitizeEnvironment() });
+
+  fail(reason) {
+    const text = String(reason);
+    const first = !this.failure;
+    const isNew = !this.taintReasons.includes(text);
+    if (isNew) this.taintReasons.push(text);
+    if (first) this.failure = text;
+    try { if (isNew) this.record({ event: 'unresolved', reason: text }); } catch (e) {
+      const persistence = `ownership persistence failed: ${e.message}`;
+      if (!this.taintReasons.includes(persistence)) this.taintReasons.push(persistence);
+    }
+    if (first && this.onFailure) {
+      try { this.onFailure(text); } catch { /* the durable active record still blocks reuse */ }
+    }
+  }
+
+  persistReport(report) {
+    try { this.record({ event: 'recovery-report', report }); }
+    catch (e) { this.fail(`ownership persistence failed: ${e.message}`); }
+  }
+
+  census(timeout = 5000) {
+    const text = execFileSync('/bin/ps', ['-axo', 'pid=,ppid=,stat='], { encoding: 'utf8', timeout, env: sanitizeEnvironment() });
     const rows = new Map();
     for (const line of text.split('\n')) {
       if (!line.trim()) continue;
@@ -34,96 +75,179 @@ export class OwnershipObserver {
     if (!rows.size) throw new Error('empty process census');
     return rows;
   }
-  identity(pid) {
-    const value = execFileSync(this.python, [this.identityScript, String(pid)], { encoding: 'utf8', timeout: 5000, env: sanitizeEnvironment() }).trim();
-    if (!/^\d+(?:\.\d{6})?$/.test(value)) throw new Error('invalid process birth identity');
-    return value;
+
+  point(pid, timeout = 5000) {
+    try {
+      const text = execFileSync(this.python, [this.identityScript, String(pid)], { encoding: 'utf8', timeout, env: sanitizeEnvironment() });
+      const value = JSON.parse(text);
+      if (value.pid !== pid || !['LIVE', 'ABSENT', 'UNKNOWN'].includes(value.status)) throw new Error('invalid point observation');
+      if (value.status === 'LIVE' && (!/^\d+(?:\.\d{6})?$/.test(value.birth) || !Number.isSafeInteger(value.ppid) || value.ppid < 0 || typeof value.state !== 'string' || !value.state)) throw new Error('invalid live identity');
+      return value;
+    } catch (e) { return { status: 'UNKNOWN', pid, reason: e.message }; }
   }
+
   register(req, controllerPid) {
     if (this.failure) throw new Error(this.failure);
-    if (!Number.isSafeInteger(req.pid) || req.pid <= 1 || this.stages.has(req.pid)) throw new Error('invalid or duplicate stage PID');
-    const rows = this.census();
-    if (rows.get(req.pid) !== controllerPid) throw new Error('gated process is not a direct controller child');
-    const birth = this.identity(req.pid);
-    const stage = { pid: req.pid, unit: req.unit, attempt: req.native_attempt, owned: new Map([[req.pid, birth]]) };
-    this.record({ event: 'registered', pid: req.pid, birth, unit: req.unit, attempt: req.native_attempt });
-    this.stages.set(req.pid, stage);
-    if (!this.timer) this.timer = setInterval(() => {
-      try { this.observe(); } catch (e) {
-        this.failure = `observer failed: ${e.message}`;
-        try { this.record({ event: 'observer-failed', reason: this.failure }); } catch { /* already failed closed */ }
-        clearInterval(this.timer); this.timer = null;
-      }
-    }, 250);
+    try {
+      if (!Number.isSafeInteger(req.pid) || req.pid <= 1 || this.stages.has(req.pid)) throw new Error('invalid or duplicate stage PID');
+      const rows = this.census();
+      const root = this.point(req.pid);
+      if (rows.get(req.pid) !== controllerPid || root.status !== 'LIVE' || root.state === 'Z' || root.ppid !== controllerPid) throw new Error('gated process identity or parent unavailable');
+      const stage = { pid: req.pid, unit: req.unit, attempt: req.native_attempt, graceSec: this.graceSec, owned: new Map(), flight: null };
+      const identity = { pid: req.pid, birth: root.birth, root_pid: req.pid, unit: req.unit, native_attempt: req.native_attempt, termAt: null, killed: false };
+      this.record({ event: 'registered', ...this.entry(identity), grace_sec: stage.graceSec });
+      stage.owned.set(identity.pid, identity);
+      this.stages.set(stage.pid, stage);
+      if (!this.timer) this.timer = setInterval(() => {
+        try { this.observe(); } catch (e) { this.fail(`observer failed: ${e.message}`); }
+      }, 250);
+    } catch (e) { this.fail(`registration failed: ${e.message}`); throw e; }
   }
-  observe() {
-    if (this.failure) throw new Error(this.failure);
-    const rows = this.census();
+
+  entry(identity) {
+    return { pid: identity.pid, birth: identity.birth, root_pid: identity.root_pid, unit: identity.unit, native_attempt: identity.native_attempt };
+  }
+  now() { return performance.now(); }
+  signal(pid, sig) { process.kill(pid, sig); }
+  sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+
+  observe(timeout = 5000) {
+    const deadline = this.now() + timeout;
+    const remaining = () => {
+      const ms = Math.floor(deadline - this.now());
+      if (ms <= 0) throw new Error('observation budget exhausted');
+      return Math.min(5000, ms);
+    };
+    const rows = this.census(remaining());
     for (const stage of this.stages.values()) {
-      // Check identities before following ancestry, including after reparenting.
-      for (const [pid, birth] of stage.owned) {
-        if (rows.has(pid) && this.identity(pid) !== birth) throw new Error(`recycled owned PID ${pid}`);
+      const anchors = new Set();
+      for (const identity of stage.owned.values()) {
+        const current = this.point(identity.pid, remaining());
+        if (current.status === 'UNKNOWN') { this.fail(`identity unavailable: ${identity.pid}`); continue; }
+        if (current.status === 'LIVE' && current.birth !== identity.birth) { this.fail(`recycled owned PID ${identity.pid}`); continue; }
+        if (current.status === 'LIVE' && current.state !== 'Z') anchors.add(identity.pid);
       }
       let changed = true;
       while (changed) {
         changed = false;
         for (const [pid, parent] of rows) {
-          if (stage.owned.has(parent) && !stage.owned.has(pid)) {
-            const birth = this.identity(pid);
-            stage.owned.set(pid, birth);
-            this.record({ event: 'observed', root: stage.pid, pid, parent, birth });
-            changed = true;
+          if (!anchors.has(parent) || stage.owned.has(pid)) continue;
+          const candidate = this.point(pid, remaining());
+          const parentIdentity = stage.owned.get(parent);
+          const currentParent = this.point(parent, remaining());
+          if (candidate.status !== 'LIVE' || candidate.state === 'Z' || candidate.ppid !== parent || currentParent.status !== 'LIVE' || currentParent.state === 'Z' || currentParent.birth !== parentIdentity.birth) {
+            this.fail(`ambiguous ancestry: ${parent} -> ${pid}`); continue;
           }
+          const identity = { pid, birth: candidate.birth, root_pid: stage.pid, unit: stage.unit, native_attempt: stage.attempt, termAt: null, killed: false };
+          try { this.record({ event: 'observed', ...this.entry(identity), parent }); }
+          catch (e) { this.fail(`ownership persistence failed: ${e.message}`); continue; }
+          stage.owned.set(pid, identity);
+          anchors.add(pid);
+          changed = true;
         }
       }
     }
     return rows;
   }
-  async resolve(req) {
-    if (this.failure) throw new Error(this.failure);
-    const stage = this.stages.get(req.pid);
-    if (!stage || stage.unit !== req.unit || stage.attempt !== req.native_attempt) throw new Error('unknown stage');
-    const grace = Number(req.grace_sec);
-    if (!Number.isFinite(grace) || grace < 0 || grace > 30) throw new Error('invalid grace');
-    const signal = (sig) => {
-      const rows = this.observe();
-      for (const [pid, birth] of stage.owned) {
-        if (!rows.has(pid)) continue;
-        if (this.identity(pid) !== birth) throw new Error(`recycled owned PID ${pid}`);
+
+  report(stages, buckets) {
+    return { proof_resolved: !this.failure && buckets.replaced.length === 0 && buckets.unverifiable.length === 0 && buckets.survivors.length === 0,
+      taint_reasons: [...this.taintReasons], grace_sec: stages.length === 1 ? stages[0].graceSec : this.graceSec, recovery: buckets };
+  }
+
+  async stageRecovery(stage) {
+    const deadline = this.now() + this.budgetMs;
+    const buckets = { terminated: [], absent: [], replaced: [], unverifiable: [], survivors: [] };
+    const outcomes = new Map();
+    while (this.now() < deadline) {
+      const remaining = () => Math.max(1, Math.min(5000, Math.floor(deadline - this.now())));
+      try { this.observe(remaining()); } catch (e) { this.fail(`observer failed: ${e.message}`); }
+      for (const identity of stage.owned.values()) {
+        if (outcomes.has(identity.pid) || this.now() >= deadline) continue;
+        let current = this.point(identity.pid, remaining());
+        if (current.status === 'ABSENT' || (current.status === 'LIVE' && current.birth === identity.birth && current.state === 'Z')) {
+          outcomes.set(identity.pid, identity.termAt === null ? 'absent' : 'terminated'); continue;
+        }
+        if (current.status === 'UNKNOWN') { this.fail(`identity unavailable: ${identity.pid}`); outcomes.set(identity.pid, 'unverifiable'); continue; }
+        if (current.birth !== identity.birth) { this.fail(`recycled owned PID ${identity.pid}`); outcomes.set(identity.pid, 'replaced'); continue; }
+        const sig = identity.termAt === null ? 'SIGTERM' : (!identity.killed && this.now() - identity.termAt >= stage.graceSec * 1000 ? 'SIGKILL' : null);
+        if (!sig) continue;
+        current = this.point(identity.pid, remaining());
+        if (current.status === 'ABSENT' || (current.status === 'LIVE' && current.birth === identity.birth && current.state === 'Z')) { outcomes.set(identity.pid, identity.termAt === null ? 'absent' : 'terminated'); continue; }
+        if (current.status === 'UNKNOWN') { this.fail(`identity unavailable before ${sig}: ${identity.pid}`); outcomes.set(identity.pid, 'unverifiable'); continue; }
+        if (current.birth !== identity.birth) { this.fail(`recycled owned PID ${identity.pid}`); outcomes.set(identity.pid, 'replaced'); continue; }
+        if (this.now() >= deadline) continue;
         try {
-          process.kill(pid, sig);
-          this.record({ event: 'signaled', pid, birth, signal: sig });
-        } catch (e) { if (e.code !== 'ESRCH') throw e; }
+          this.signal(identity.pid, sig);
+          const monotonicMs = this.now();
+          if (sig === 'SIGTERM') identity.termAt = monotonicMs; else identity.killed = true;
+          try { this.record({ event: 'signaled', ...this.entry(identity), signal: sig, monotonic_ms: monotonicMs }); }
+          catch (e) { this.fail(`ownership persistence failed: ${e.message}`); }
+        } catch (e) {
+          if (e.code === 'ESRCH') continue;
+          this.fail(`signal ${sig} failed for ${identity.pid}: ${e.message}`);
+          outcomes.set(identity.pid, 'unverifiable');
+        }
       }
-    };
-    signal('SIGTERM');
-    const deadline = Date.now() + grace * 1000;
-    let rows;
-    while (true) {
-      rows = this.observe();
-      if (![...stage.owned.keys()].some(pid => rows.has(pid))) break;
-      if (Date.now() >= deadline) { signal('SIGKILL'); break; }
-      await new Promise(resolve => setTimeout(resolve, 100));
+      if ([...stage.owned.keys()].every(pid => outcomes.has(pid))) break;
+      if (this.now() < deadline) await this.sleep(Math.min(100, Math.max(1, deadline - this.now())));
     }
-    const killDeadline = Date.now() + 5000;
-    while (true) {
-      rows = this.observe();
-      if (![...stage.owned.keys()].some(pid => rows.has(pid))) break;
-      if (Date.now() >= killDeadline) throw new Error('owned processes remain after recovery');
-      await new Promise(resolve => setTimeout(resolve, 100));
+    for (const identity of stage.owned.values()) buckets[outcomes.get(identity.pid) || 'survivors'].push(this.entry(identity));
+    if (buckets.survivors.length) this.fail(`recovery budget exhausted for stage ${stage.pid}`);
+    const report = this.report([stage], buckets);
+    this.persistReport(report);
+    report.proof_resolved = report.proof_resolved && !this.failure;
+    report.taint_reasons = [...this.taintReasons];
+    if (report.proof_resolved) {
+      try { this.record({ event: 'resolved', root_pid: stage.pid, unit: stage.unit, native_attempt: stage.attempt }); }
+      catch (e) { this.fail(`ownership persistence failed: ${e.message}`); report.proof_resolved = false; report.taint_reasons = [...this.taintReasons]; }
+      if (report.proof_resolved) {
+        this.stages.delete(stage.pid);
+        this.completed.set(JSON.stringify([stage.pid, stage.unit, stage.attempt]), report);
+      }
     }
-    this.record({ event: 'resolved', pid: stage.pid, unit: stage.unit, attempt: stage.attempt });
-    this.stages.delete(req.pid);
     if (!this.stages.size && this.timer) { clearInterval(this.timer); this.timer = null; }
+    return report;
   }
+
+  async resolve(req) {
+    if (req.grace_sec !== undefined && Number(req.grace_sec) !== this.graceSec) { this.fail('grace does not match registered configuration'); throw new Error('grace does not match registered configuration'); }
+    const completed = this.completed.get(JSON.stringify([req.pid, req.unit, req.native_attempt]));
+    if (completed) return { ...completed, proof_resolved: !this.failure, taint_reasons: [...this.taintReasons] };
+    const stage = this.stages.get(req.pid);
+    if (!stage || stage.unit !== req.unit || stage.attempt !== req.native_attempt) { this.fail('unknown stage'); throw new Error('unknown stage'); }
+    if (!stage.flight) stage.flight = Promise.resolve().then(() => this.stageRecovery(stage)).catch(e => {
+      this.fail(`recovery failed for stage ${stage.pid}: ${e.message}`);
+      const buckets = { terminated: [], absent: [], replaced: [], unverifiable: [], survivors: [...stage.owned.values()].map(identity => this.entry(identity)) };
+      const result = this.report([stage], buckets);
+      this.persistReport(result);
+      result.taint_reasons = [...this.taintReasons];
+      return result;
+    }).finally(() => { stage.flight = null; });
+    return stage.flight;
+  }
+
   async recover() {
-    if (this.failure) throw new Error(this.failure);
-    for (const stage of [...this.stages.values()]) {
-      await this.resolve({ pid: stage.pid, unit: stage.unit, native_attempt: stage.attempt, grace_sec: 5 });
-    }
+    const stages = [...this.stages.values()];
+    const reports = await Promise.all(stages.map(stage => this.resolve({ pid: stage.pid, unit: stage.unit, native_attempt: stage.attempt })));
+    const buckets = { terminated: [], absent: [], replaced: [], unverifiable: [], survivors: [] };
+    for (const report of reports) for (const key of Object.keys(buckets)) buckets[key].push(...report.recovery[key]);
+    const result = this.report(stages, buckets);
+    this.persistReport(result);
+    result.proof_resolved = result.proof_resolved && !this.failure;
+    result.taint_reasons = [...this.taintReasons];
+    return result;
   }
+
   close() {
     clearInterval(this.timer);
     fs.closeSync(this.fd);
+    if (!this.failure && !this.stages.size) {
+      fs.unlinkSync(path.join(this.directory, 'ownership.jsonl'));
+      fs.rmdirSync(this.directory);
+      const parent = fs.openSync(path.dirname(this.directory), 'r');
+      try { fs.fsyncSync(parent); } finally { fs.closeSync(parent); }
+    }
   }
 }

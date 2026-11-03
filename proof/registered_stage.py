@@ -20,6 +20,7 @@ class StageRunResult:
     interrupted: bool
     ownership_resolved: bool
     ownership_error: str | None
+    ownership_result: dict | None = None
 
 
 _GATE = """import os,sys
@@ -64,20 +65,31 @@ def run_registered_stage(
         read_fd = -1
         request = {"event": "ownership-register", "pid": proc.pid,
                    "unit": unit, "native_attempt": attempt}
+        ack = None
         try:
             ack = register(request)
-            if not isinstance(ack, dict) or ack.get("verified") is not True or any(
+            if not isinstance(ack, dict) or any(
                 ack.get(k) != request[k] for k in ("pid", "unit", "native_attempt")
             ) or ack.get("event") != "ownership-register-ack":
                 raise RuntimeError("registration ACK does not match gated process")
+            if ack.get("verified") is not True or ack.get("error"):
+                raise RuntimeError(f"ownership registration rejected: {ack.get('error') or 'unverified'}")
         except Exception as exc:
             # This is our still-gated direct child, never a guessed descendant.
             os.close(write_fd)
             write_fd = -1
             proc.wait()
             return StageRunResult(proc.returncode, False, False, False,
-                                  f"registration failed: {exc}")
-        os.write(write_fd, b"G")
+                                  f"registration failed: {exc}",
+                                  ack.get("ownership_result") if isinstance(ack, dict) else None)
+        try:
+            os.write(write_fd, b"G")
+        except Exception as exc:
+            os.close(write_fd)
+            write_fd = -1
+            proc.wait()
+            return StageRunResult(proc.returncode, False, False, False,
+                                  f"gate release failed: {exc}", ack.get("ownership_result"))
         os.close(write_fd)
         write_fd = -1
         while proc.poll() is None:
@@ -90,20 +102,28 @@ def run_registered_stage(
         request = {"event": "ownership-resolve", "pid": proc.pid,
                    "unit": unit, "native_attempt": attempt,
                    "grace_sec": grace_sec}
+        ack = None
         try:
             ack = register(request)
-            if not isinstance(ack, dict) or ack.get("verified") is not True or any(
+            if not isinstance(ack, dict) or any(
                 ack.get(k) != request[k] for k in ("pid", "unit", "native_attempt")
             ) or ack.get("event") != "ownership-resolve-ack":
                 raise RuntimeError("ownership resolution ACK does not match stage")
+            result = ack.get("ownership_result")
+            if (not isinstance(result, dict) or not isinstance(result.get("proof_resolved"), bool)
+                    or ack.get("verified") is not result["proof_resolved"]):
+                raise RuntimeError("ownership resolution ACK has invalid proof state")
+            if not result["proof_resolved"] or ack.get("error"):
+                raise RuntimeError(f"ownership resolution rejected: {ack.get('error') or 'unverified'}")
             try:
                 proc.wait(timeout=max(1.0, grace_sec + 5.0))
             except subprocess.TimeoutExpired:
                 raise RuntimeError("registered root remained alive after resolution")
-            return StageRunResult(proc.returncode, timed_out, interrupted, True, None)
+            return StageRunResult(proc.returncode, timed_out, interrupted, True, None, result)
         except Exception as exc:
             return StageRunResult(proc.poll(), timed_out, interrupted, False,
-                                  f"ownership unresolved: {exc}")
+                                  f"ownership unresolved: {exc}",
+                                  ack.get("ownership_result") if isinstance(ack, dict) else None)
     finally:
         if read_fd >= 0:
             os.close(read_fd)
