@@ -47,7 +47,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--w", required=True)
     parser.add_argument("--compiler", required=True)
     parser.add_argument("--artifacts-dir", default="strict-proof-artifacts")
-    parser.add_argument("--case", choices=("success", "failed-plan", "failed-pin", "divergence", "cleanup-failure"), default="success")
+    parser.add_argument("--case", choices=("success", "failed-plan", "failed-pin", "divergence", "cleanup-failure", "ownership-crash"), default="success")
     parser.add_argument("--case-data-dir", required=True)
     parser.add_argument("--job-start-time")
     parser.add_argument("--host-job-limit-sec", type=float, default=rsc.HOST_JOB_LIMIT_SEC)
@@ -89,6 +89,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         config["run3/" + drivers[0]] = {"exit_code": 11, "status": "FAIL", "reasons": ["synthetic divergence"], "divergence_hex": payload.hex()}
     elif args.case == "cleanup-failure":
         config["run1"] = {"inject_eligible_symlink": True, "symlink_target": data_dir}
+    elif args.case == "ownership-crash":
+        config["plan"] = {
+            "spawn_nested": True,
+            "sleep": 600,
+            "ready_file": os.path.join(data_dir, "ownership-ready"),
+            "pid_file": os.path.join(data_dir, "ownership-pids"),
+        }
     with tempfile.TemporaryDirectory(prefix="strict-val-", dir=data_dir) as temp:
         emitter = os.path.join(temp, "synthetic_run_proof.py")
         emitter_bytes = FAKE_STAGE_EMITTER_SOURCE.encode("utf-8")
