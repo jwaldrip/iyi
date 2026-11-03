@@ -173,9 +173,9 @@ def generate_final_record(
 
     identity = {
         "status": identity_status,
-        "p_source_sha": pin.get("p_source_sha", "626463375298d357ffcb3223059f4d3adce6fb10"),
-        "w_head": pin.get("w_head", "b932ce0d97775c7061102a13db706f507dc84117"),
-        "compiler_sha256": pin.get("compiler_sha256", "34ae13f8f8d82be5b2c9597a9df79eae5b6f7243"),
+        "p_source_sha": pin["p_source_sha"],
+        "w_head": pin["w_head"],
+        "compiler_sha256": pin["compiler_sha256"],
     }
 
     return {
