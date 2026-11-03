@@ -41,6 +41,7 @@ class OwnedRoot:
                 os.close(fd)
                 fd = next_fd
             self.fd = fd
+            self.identities = {}
         except BaseException:
             os.close(fd)
             raise
@@ -48,12 +49,22 @@ class OwnedRoot:
     def close(self):
         os.close(self.fd)
 
+    def remember(self, name, fd):
+        st = os.fstat(fd)
+        identity = (st.st_dev, st.st_ino)
+        previous = self.identities.setdefault(name, identity)
+        if previous != identity:
+            raise UnsafeEvidenceError('REPLACED-DIRECTORY ' + name)
+
     def parent(self, name):
         parts = _parts(name)
         fd = os.dup(self.fd)
         try:
+            prefix = []
             for component in parts[:-1]:
                 nxt = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                prefix.append(component)
+                self.remember('/'.join(prefix), nxt)
                 os.close(fd)
                 fd = nxt
             return fd, parts[-1]
@@ -147,6 +158,7 @@ class OwnedRoot:
             os.close(parent)
             return
         os.close(parent)
+        self.remember(name, fd)
         def visit(directory, rel):
             for entry in sorted(os.listdir(directory)):
                 relative = rel + '/' + entry
@@ -155,6 +167,7 @@ class OwnedRoot:
                     continue
                 if stat.S_ISDIR(st.st_mode):
                     child = os.open(entry, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+                    self.remember(relative, child)
                     try:
                         yield from visit(child, relative)
                     finally:
@@ -169,12 +182,25 @@ class OwnedRoot:
             os.close(fd)
 
 
-def seal(report_dir, artifacts_dir, unit, attempt, chain_id, sequence, failed=False):
+def seal(report_dir, artifacts_dir, unit, attempt, chain_id, sequence, failed=False, artifacts_root=None):
     slug = unit.replace('/', '_')
     archive_dir = os.path.join(artifacts_dir, 'incremental-archives')
     report = OwnedRoot(report_dir) if os.path.lexists(report_dir) else None
     artifacts = OwnedRoot(artifacts_dir)
-    archives = OwnedRoot(archive_dir, create=True)
+    if artifacts_root is not None:
+        old, current = os.fstat(artifacts_root.fd), os.fstat(artifacts.fd)
+        if (old.st_dev, old.st_ino) != (current.st_dev, current.st_ino):
+            artifacts.close()
+            if report: report.close()
+            raise UnsafeEvidenceError('REPLACED-ARTIFACT-ROOT')
+    try:
+        os.mkdir('incremental-archives', 0o700, dir_fd=artifacts.fd)
+    except FileExistsError:
+        pass
+    archives = OwnedRoot(archive_dir)
+    expected, actual = os.stat('incremental-archives', dir_fd=artifacts.fd, follow_symlinks=False), os.fstat(archives.fd)
+    if (expected.st_dev, expected.st_ino) != (actual.st_dev, actual.st_ino):
+        raise UnsafeEvidenceError('REPLACED-ARCHIVE-ROOT')
     name = f"evidence-{chain_id[:8] if chain_id else 'prepin'}-seq{sequence:03d}-{slug}-a{attempt}.tar.gz"
     path = os.path.join(archive_dir, name)
     fd = None
@@ -208,7 +234,10 @@ def seal(report_dir, artifacts_dir, unit, attempt, chain_id, sequence, failed=Fa
                         return True
                     for rel in report.walk(base, include):
                         report.add_file(tar, rel, 'attempt/' + rel[len(base)+1:], manifest=manifest)
-                data = json.dumps({'version': 1, 'members': manifest}, sort_keys=True).encode()
+                document = {'version': 1, 'members': manifest}
+                if unit == 'pin' and chain_id is None:
+                    document['pin_state'] = 'present-unestablished' if any(m['path'] == 'meta/pin.json' for m in manifest) else 'absent'
+                data = json.dumps(document, sort_keys=True).encode()
                 info = tarfile.TarInfo('evidence-manifest.json')
                 info.size, info.mode, info.mtime = len(data), 0o644, 0
                 tar.addfile(info, io.BytesIO(data))

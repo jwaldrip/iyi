@@ -828,6 +828,14 @@ class RemoteStrictController:
         for expected, actual in zip(self.expected_shas, (self.p_sha, self.w_sha, self.c_sha)):
             if not expected or expected != actual or actual == "0" * 40:
                 raise VerificationError("SOURCE-REVISION-MISMATCH")
+        for source in (self.p_path, self.w_path, REPO_ROOT):
+            result = subprocess.run(["git", "-C", source, "status", "--porcelain", "--untracked-files=all"],
+                                    capture_output=True, text=True, check=False, timeout=15)
+            if result.returncode or result.stdout:
+                raise VerificationError("SOURCE-CHECKOUT-NOT-CLEAN")
+        expected_validator = os.path.join(REPO_ROOT, "proof", "native_validation.py")
+        if self.validator_py != expected_validator:
+            raise VerificationError("VALIDATOR-PATH-MISMATCH")
         if not self.repository or not self.job_key or not self.invocation_id:
             raise VerificationError("PLATFORM-CONTEXT-MISSING")
         if not all(re.fullmatch(r"[1-9][0-9]*", x) for x in (self.run_id, self.run_attempt, self.job_id)):
@@ -1012,6 +1020,7 @@ class RemoteStrictController:
             archive_path, size_bytes, sha256 = seal(
                 self.report_dir, self.artifacts_dir, unit, expected_attempt,
                 req_chain_id, self.snapshot_sequence + 1, failed=record.disposition != "ACCEPTED",
+                artifacts_root=self.evidence_root,
             )
             self.snapshot_sequence += 1
             record.archive_path = archive_path
@@ -1514,7 +1523,7 @@ class RemoteStrictController:
         self.evidence_root.write("terminal-envelope.json", (json.dumps(envelope, sort_keys=True) + "\n").encode())
         archive_path, size, digest = seal(
             self.report_dir, self.artifacts_dir, "terminal", 1, self.chain_id,
-            self.snapshot_sequence + 1,
+            self.snapshot_sequence + 1, artifacts_root=self.evidence_root,
         )
         self.snapshot_sequence += 1
         self.terminal_receipt = self._persist(
