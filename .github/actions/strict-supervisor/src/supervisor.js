@@ -42,6 +42,9 @@ export class StrictSupervisor {
 
     this.requests = [];
     this.acks = [];
+    this.seenRequestIds = new Set();
+    this.seenSequences = new Set();
+    this.lastSnapshotSequence = 0;
     this.failedVerifications = 0;
     this.childProcess = null;
     this.childExitCode = null;
@@ -104,7 +107,7 @@ export class StrictSupervisor {
         p_sha: rawReq?.p_sha || '',
         w_sha: rawReq?.w_sha || '',
         c_sha: rawReq?.c_sha || '',
-        chain_id: rawReq?.chain_id || '',
+        chain_id: rawReq?.chain_id !== undefined ? rawReq.chain_id : null,
         unit: rawReq?.unit || '',
         native_attempt: rawReq?.native_attempt || 0,
         snapshot_sequence: rawReq?.snapshot_sequence || 0,
@@ -122,6 +125,71 @@ export class StrictSupervisor {
       }
       return;
     }
+
+    // Duplicate / replay prevention
+    if (this.seenRequestIds.has(rawReq.request_id)) {
+      this.failedVerifications++;
+      const dupAck = {
+        request_id: rawReq.request_id,
+        repository: rawReq.repository,
+        run_id: rawReq.run_id,
+        run_attempt: rawReq.run_attempt,
+        job_id: rawReq.job_id,
+        p_sha: rawReq.p_sha,
+        w_sha: rawReq.w_sha,
+        c_sha: rawReq.c_sha,
+        chain_id: rawReq.chain_id,
+        unit: rawReq.unit,
+        native_attempt: rawReq.native_attempt,
+        snapshot_sequence: rawReq.snapshot_sequence,
+        artifact_id: null,
+        downloaded_sha256: null,
+        downloaded_bytes: null,
+        verified: false,
+        error: `Duplicate or replay request rejected: request_id '${rawReq.request_id}' has already been processed`,
+      };
+      this.acks.push(dupAck);
+      try {
+        await writeIpcAck(ackStream, dupAck);
+      } catch (err) {
+        console.error(`Failed to write duplicate ACK: ${err.message}`);
+      }
+      return;
+    }
+
+    if (this.seenSequences.has(rawReq.snapshot_sequence) || rawReq.snapshot_sequence <= this.lastSnapshotSequence) {
+      this.failedVerifications++;
+      const seqAck = {
+        request_id: rawReq.request_id,
+        repository: rawReq.repository,
+        run_id: rawReq.run_id,
+        run_attempt: rawReq.run_attempt,
+        job_id: rawReq.job_id,
+        p_sha: rawReq.p_sha,
+        w_sha: rawReq.w_sha,
+        c_sha: rawReq.c_sha,
+        chain_id: rawReq.chain_id,
+        unit: rawReq.unit,
+        native_attempt: rawReq.native_attempt,
+        snapshot_sequence: rawReq.snapshot_sequence,
+        artifact_id: null,
+        downloaded_sha256: null,
+        downloaded_bytes: null,
+        verified: false,
+        error: `Duplicate or non-increasing snapshot_sequence rejected: sequence ${rawReq.snapshot_sequence} (last seen: ${this.lastSnapshotSequence})`,
+      };
+      this.acks.push(seqAck);
+      try {
+        await writeIpcAck(ackStream, seqAck);
+      } catch (err) {
+        console.error(`Failed to write sequence ACK: ${err.message}`);
+      }
+      return;
+    }
+
+    this.seenRequestIds.add(rawReq.request_id);
+    this.seenSequences.add(rawReq.snapshot_sequence);
+    this.lastSnapshotSequence = rawReq.snapshot_sequence;
 
     try {
       const client = await this.resolveArtifactClient();

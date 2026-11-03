@@ -141,6 +141,95 @@ class FakePublisher:
                 pass
 
     def _build_ack(self, req: dict[str, Any]) -> dict[str, Any] | None:
+        unit = req.get("unit", "")
+        req_chain = req.get("chain_id")
+        seq = req.get("snapshot_sequence", 1)
+
+        # Validate request structure like Node supervisor
+        if "chain_id" not in req:
+            return {
+                "request_id": req.get("request_id", f"req-{seq}"),
+                "repository": req.get("repository", ""),
+                "run_id": req.get("run_id", ""),
+                "run_attempt": req.get("run_attempt", 1),
+                "job_id": req.get("job_id", ""),
+                "p_sha": req.get("p_sha", ""),
+                "w_sha": req.get("w_sha", ""),
+                "c_sha": req.get("c_sha", ""),
+                "chain_id": None,
+                "unit": unit,
+                "native_attempt": req.get("native_attempt", 1),
+                "snapshot_sequence": seq,
+                "artifact_id": None,
+                "downloaded_sha256": None,
+                "downloaded_bytes": None,
+                "verified": False,
+                "error": "Supervisor request validation rejected: Missing required immutable field: chain_id",
+            }
+
+        if unit == "plan":
+            if req_chain is not None:
+                return {
+                    "request_id": req.get("request_id", f"req-{seq}"),
+                    "repository": req.get("repository", ""),
+                    "run_id": req.get("run_id", ""),
+                    "run_attempt": req.get("run_attempt", 1),
+                    "job_id": req.get("job_id", ""),
+                    "p_sha": req.get("p_sha", ""),
+                    "w_sha": req.get("w_sha", ""),
+                    "c_sha": req.get("c_sha", ""),
+                    "chain_id": req_chain,
+                    "unit": unit,
+                    "native_attempt": req.get("native_attempt", 1),
+                    "snapshot_sequence": seq,
+                    "artifact_id": None,
+                    "downloaded_sha256": None,
+                    "downloaded_bytes": None,
+                    "verified": False,
+                    "error": f"Supervisor request validation rejected: Unit 'plan' requires typed chain_id: null (pre-pin), got {req_chain!r}",
+                }
+        else:
+            if req_chain is None:
+                return {
+                    "request_id": req.get("request_id", f"req-{seq}"),
+                    "repository": req.get("repository", ""),
+                    "run_id": req.get("run_id", ""),
+                    "run_attempt": req.get("run_attempt", 1),
+                    "job_id": req.get("job_id", ""),
+                    "p_sha": req.get("p_sha", ""),
+                    "w_sha": req.get("w_sha", ""),
+                    "c_sha": req.get("c_sha", ""),
+                    "chain_id": None,
+                    "unit": unit,
+                    "native_attempt": req.get("native_attempt", 1),
+                    "snapshot_sequence": seq,
+                    "artifact_id": None,
+                    "downloaded_sha256": None,
+                    "downloaded_bytes": None,
+                    "verified": False,
+                    "error": f"Supervisor request validation rejected: Unit '{unit}' requires valid chain_id (chain_id: null accepted only for unit plan)",
+                }
+            if not isinstance(req_chain, str) or not req_chain.strip() or req_chain in ("nochain", "null"):
+                return {
+                    "request_id": req.get("request_id", f"req-{seq}"),
+                    "repository": req.get("repository", ""),
+                    "run_id": req.get("run_id", ""),
+                    "run_attempt": req.get("run_attempt", 1),
+                    "job_id": req.get("job_id", ""),
+                    "p_sha": req.get("p_sha", ""),
+                    "w_sha": req.get("w_sha", ""),
+                    "c_sha": req.get("c_sha", ""),
+                    "chain_id": req_chain,
+                    "unit": unit,
+                    "native_attempt": req.get("native_attempt", 1),
+                    "snapshot_sequence": seq,
+                    "artifact_id": None,
+                    "downloaded_sha256": None,
+                    "downloaded_bytes": None,
+                    "verified": False,
+                    "error": f"Supervisor request validation rejected: Invalid chain_id: sentinel forge '{req_chain}' is forbidden",
+                }
+
         if self.mode == "success":
             return self._build_success_ack(req)
 
@@ -219,7 +308,7 @@ class FakePublisher:
             "p_sha": req.get("p_sha", "626463375298d357ffcb3223059f4d3adce6fb10"),
             "w_sha": req.get("w_sha", "b932ce0d97775c7061102a13db706f507dc84117"),
             "c_sha": req.get("c_sha", "34ae13f8f8d82be5b2c9597a9df79eae5b6f7243"),
-            "chain_id": req.get("chain_id", ""),
+            "chain_id": req.get("chain_id"),
             "unit": req.get("unit"),
             "native_attempt": req.get("native_attempt", 1),
             "snapshot_sequence": seq,
@@ -444,6 +533,15 @@ class TestRemoteStrictController(unittest.TestCase):
         # Verify sequences
         req_seqs = [r["snapshot_sequence"] for r in pub.received_requests]
         self.assertEqual(req_seqs, list(range(1, len(expected_units) + 1)))
+
+        # Verify typed chain_id contract: null for pre-pin plan, exact nonempty chain_id for post-pin
+        self.assertIsNone(pub.received_requests[0]["chain_id"])
+        self.assertEqual(pub.received_requests[0]["unit"], "plan")
+        for r in pub.received_requests[1:]:
+            self.assertEqual(r["chain_id"], self.chain_id)
+            self.assertIsNotNone(r["chain_id"])
+            self.assertNotEqual(r["chain_id"], "")
+            self.assertNotEqual(r["chain_id"], "nochain")
 
     def test_02b_exit_nonzero_stops_immediately_no_cleanup(self):
         """Scenario 2b: Stage exits 1 -> stops immediately, asserts raw exit 1, valid native record, no run2."""
@@ -983,6 +1081,108 @@ class TestRemoteStrictController(unittest.TestCase):
         self.assertNotEqual(rc, 0)
         self.assertEqual(ctrl.overall_status, "VERIFICATION_FAILED")
 
+
+    def test_08e_prepin_plan_null_chain_id_and_postpin_required_chain_id(self):
+        """Scenario 8e: Plan snapshot carries typed chain_id: None; post-pin stages require exact chain_id."""
+        pub = FakePublisher(mode="success")
+        self.publishers.append(pub)
+
+        ctrl = self._create_controller(publisher=pub)
+        rc = ctrl.run()
+        self.assertEqual(rc, 0)
+
+        # Plan request has unit 'plan' and typed None for chain_id
+        plan_reqs = [r for r in pub.received_requests if r.get("unit") == "plan"]
+        self.assertEqual(len(plan_reqs), 1)
+        self.assertIsNone(plan_reqs[0]["chain_id"])
+
+        # Post-pin requests require exact non-empty chain_id
+        post_pin_reqs = [r for r in pub.received_requests if r.get("unit") != "plan"]
+        self.assertGreater(len(post_pin_reqs), 0)
+        for r in post_pin_reqs:
+            self.assertEqual(r["chain_id"], self.chain_id)
+            self.assertIsNotNone(r["chain_id"])
+            self.assertNotEqual(r["chain_id"], "")
+            self.assertNotEqual(r["chain_id"], "nochain")
+
+    def test_08f_prepin_plan_rejects_string_chain_id_ack(self):
+        """Scenario 8f: ACK echoing string chain_id for plan (expected None/null) is rejected."""
+        pub = FakePublisher(mode="success")
+        self.publishers.append(pub)
+
+        # Override _build_success_ack so that plan echoes a forged string chain_id
+        orig_build = pub._build_success_ack
+        def hacked_ack(req):
+            ack = orig_build(req)
+            if req.get("unit") == "plan":
+                ack["chain_id"] = "forged-string-chain"
+            return ack
+        pub._build_success_ack = hacked_ack
+
+        ctrl = self._create_controller(publisher=pub)
+        rc = ctrl.run()
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(ctrl.overall_status, "UPLOAD_FAILED")
+        self.assertTrue(
+            any("ACK-BINDING-MISMATCH" in str(r.error_detail) for r in ctrl.records),
+            f"Expected ACK-BINDING-MISMATCH in records, got: {[r.error_detail for r in ctrl.records]}",
+        )
+
+    def test_08g_postpin_stage_rejects_null_chain_id_ack(self):
+        """Scenario 8g: ACK echoing null/None chain_id for post-pin unit is rejected."""
+        pub = FakePublisher(mode="success")
+        self.publishers.append(pub)
+
+        # Override _build_success_ack so that run1 echoes chain_id: None
+        orig_build = pub._build_success_ack
+        def hacked_ack(req):
+            ack = orig_build(req)
+            if req.get("unit") == "run1":
+                ack["chain_id"] = None
+            return ack
+        pub._build_success_ack = hacked_ack
+
+        ctrl = self._create_controller(publisher=pub)
+        rc = ctrl.run()
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(ctrl.overall_status, "UPLOAD_FAILED")
+        self.assertTrue(
+            any("ACK-BINDING-MISMATCH" in str(r.error_detail) for r in ctrl.records),
+            f"Expected ACK-BINDING-MISMATCH in records, got: {[r.error_detail for r in ctrl.records]}",
+        )
+
+    def test_08i_native_plan_failure_preservation_without_creating_r(self):
+        """Scenario 8i: Plan exit nonzero preserves evidence archive with chain_id: None and NEVER creates R."""
+        cfg = dict(self.default_config)
+        cfg["plan"] = {"exit_code": 1}
+        self._write_config(cfg)
+
+        pub = FakePublisher(mode="success")
+        self.publishers.append(pub)
+
+        ctrl = self._create_controller(publisher=pub)
+        rc = ctrl.run()
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(ctrl.overall_status, "FAIL")
+
+        # R must NOT exist
+        self.assertFalse(os.path.exists(self.report_dir), f"report_dir R ({self.report_dir}) must not be created on plan failure")
+
+        # Snapshot evidence was uploaded for plan with chain_id: None
+        plan_reqs = [r for r in pub.received_requests if r.get("unit") == "plan"]
+        self.assertEqual(len(plan_reqs), 1)
+        self.assertIsNone(plan_reqs[0]["chain_id"])
+        self.assertEqual(plan_reqs[0]["native_attempt"], 1)
+
+        # Archive file exists and contains journal and plan log, but no pin.json
+        archive_path = plan_reqs[0]["archive_path"]
+        self.assertTrue(os.path.isfile(archive_path))
+        with tarfile.open(archive_path, "r") as tf:
+            names = tf.getnames()
+            self.assertTrue(any("plan-a1.log" in n for n in names))
+            self.assertTrue(any("stage-journal.jsonl" in n for n in names))
+            self.assertFalse(any("pin.json" in n for n in names))
+            self.assertFalse(any("result.json" in n for n in names))
     def test_08h_forged_pass_status_halts(self):
         """Scenario 8h: result.json claims status=PASS but check is FAIL -> caught as forged PASS."""
         cfg = dict(self.default_config)

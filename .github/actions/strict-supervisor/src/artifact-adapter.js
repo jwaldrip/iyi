@@ -23,7 +23,7 @@ export function computeFileSha256(filePath) {
  * Format a safe GitHub Actions artifact name from request fields
  */
 export function formatArtifactName(req) {
-  const safeChain = String(req.chain_id).slice(0, 16).replace(/[^a-zA-Z0-9_-]/g, '_');
+  const safeChain = req.chain_id === null ? 'prepin' : String(req.chain_id).slice(0, 16).replace(/[^a-zA-Z0-9_-]/g, '_');
   const safeUnit = String(req.unit).replace(/[^a-zA-Z0-9_-]/g, '_');
   return `proof-${safeChain}-${safeUnit}-seq${req.snapshot_sequence}-att${req.native_attempt}`;
 }

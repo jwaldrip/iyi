@@ -634,10 +634,24 @@ class IpcEvidencePublisher(EvidencePublisher):
             "native_attempt",
             "snapshot_sequence",
         ):
-            if str(ack.get(field)) != str(request.get(field)):
-                raise EvidenceUploadError(
-                    f"ACK-BINDING-MISMATCH: field {field!r} echoed as {ack.get(field)!r} != expected {request.get(field)!r}"
-                )
+            if field == "chain_id":
+                req_chain = request.get("chain_id")
+                ack_chain = ack.get("chain_id")
+                if req_chain is None:
+                    if ack_chain is not None:
+                        raise EvidenceUploadError(
+                            f"ACK-BINDING-MISMATCH: field 'chain_id' expected null/None for plan, got {ack_chain!r}"
+                        )
+                else:
+                    if ack_chain != req_chain:
+                        raise EvidenceUploadError(
+                            f"ACK-BINDING-MISMATCH: field 'chain_id' echoed as {ack_chain!r} != expected {req_chain!r}"
+                        )
+            else:
+                if str(ack.get(field)) != str(request.get(field)):
+                    raise EvidenceUploadError(
+                        f"ACK-BINDING-MISMATCH: field {field!r} echoed as {ack.get(field)!r} != expected {request.get(field)!r}"
+                    )
 
         req_sha = request.get("archive_sha256")
         ack_sha = ack.get("downloaded_sha256")
@@ -665,7 +679,7 @@ def archive_snapshot_evidence(
     artifacts_dir: str,
     unit: str,
     attempt: int,
-    chain_id: str,
+    chain_id: str | None,
     sequence: int,
 ) -> tuple[str, int, str]:
     """
@@ -679,7 +693,7 @@ def archive_snapshot_evidence(
     os.makedirs(archives_subdir, exist_ok=True)
 
     slug = unit.replace("/", "_")
-    short_chain = chain_id[:8] if chain_id else "nochain"
+    short_chain = chain_id[:8] if chain_id else "prepin"
     archive_name = f"evidence-{short_chain}-seq{sequence:03d}-{slug}-a{attempt}.tar.gz"
     archive_path = os.path.join(archives_subdir, archive_name)
 
@@ -1332,12 +1346,18 @@ class RemoteStrictController:
 
         # Stage and upload evidence snapshot for ALL attempted stages (including plan and pin failures)
         try:
+            req_chain_id: str | None = None if unit == "plan" else self.chain_id
+            if unit != "plan":
+                if not req_chain_id or not isinstance(req_chain_id, str) or not req_chain_id.strip() or req_chain_id in ("nochain", "null"):
+                    raise EvidenceUploadError(
+                        f"Post-pin stage {unit!r} requires valid nonempty chain_id, got {req_chain_id!r}"
+                    )
             archive_path, size_bytes, sha256 = archive_snapshot_evidence(
                 report_dir=self.report_dir,
                 artifacts_dir=self.artifacts_dir,
                 unit=unit,
                 attempt=expected_attempt,
-                chain_id=self.chain_id or "nochain",
+                chain_id=req_chain_id,
                 sequence=self.snapshot_sequence + 1,
             )
             self.snapshot_sequence += 1
@@ -1355,7 +1375,7 @@ class RemoteStrictController:
                     "p_sha": self.p_sha,
                     "w_sha": self.w_sha,
                     "c_sha": self.c_sha,
-                    "chain_id": self.chain_id or "",
+                    "chain_id": req_chain_id,
                     "unit": unit,
                     "native_attempt": expected_attempt,
                     "snapshot_sequence": self.snapshot_sequence,
@@ -1849,13 +1869,17 @@ class RemoteStrictController:
         """Create and upload terminal sealed snapshot containing final.json and summary."""
         if self.publisher is None:
             return
+        if not self.chain_id or not isinstance(self.chain_id, str) or not self.chain_id.strip() or self.chain_id in ("nochain", "null"):
+            raise EvidenceUploadError(
+                f"Terminal snapshot requires valid nonempty chain_id, got {self.chain_id!r}"
+            )
 
         archive_path, size_bytes, sha256 = archive_snapshot_evidence(
             report_dir=self.report_dir,
             artifacts_dir=self.artifacts_dir,
             unit="terminal",
             attempt=1,
-            chain_id=self.chain_id or "nochain",
+            chain_id=self.chain_id,
             sequence=self.snapshot_sequence + 1,
         )
         self.snapshot_sequence += 1
@@ -1869,7 +1893,7 @@ class RemoteStrictController:
             "p_sha": self.p_sha,
             "w_sha": self.w_sha,
             "c_sha": self.c_sha,
-            "chain_id": self.chain_id or "",
+            "chain_id": self.chain_id,
             "unit": "terminal",
             "native_attempt": 1,
             "snapshot_sequence": self.snapshot_sequence,
