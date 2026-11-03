@@ -61,8 +61,7 @@ jobs:
 
       - name: Pre-create CI diagnostic directories
         run: |
-          mkdir -p strict-proof-artifacts/ci-logs
-          mkdir -p strict-proof-artifacts/fingerprints
+          mkdir -p "$RUNNER_TEMP/strict-ci/ci-logs" "$RUNNER_TEMP/strict-ci/fingerprints"
 
       - name: Record initial machine fingerprints and environment
         run: |
@@ -142,7 +141,6 @@ jobs:
         run: |
           set -e
           set -o pipefail
-          FP_FILE="strict-proof-artifacts/fingerprints/manifest.json"
           python3 -B - <<'PY'
           import hashlib, json, os, subprocess
 
@@ -164,7 +162,7 @@ jobs:
                   with open(mod, "rb") as f:
                       manifest["modules"][mod] = hashlib.sha256(f.read()).hexdigest()
 
-          with open("strict-proof-artifacts/fingerprints/manifest.json", "w") as f:
+          with open(os.path.join(os.environ["RUNNER_TEMP"], "strict-ci/fingerprints/manifest.json"), "w") as f:
               json.dump(manifest, f, indent=2)
           print("Recorded module fingerprints:", json.dumps(manifest, indent=2))
           PY
@@ -249,7 +247,7 @@ jobs:
           DIST_PATH=".github/actions/strict-supervisor/dist/index.js"
           test -f "$DIST_PATH"
           BUNDLE_SHA=$(shasum -a 256 "$DIST_PATH" | awk '{print $1}')
-          echo "{\"bundle_sha256\": \"$BUNDLE_SHA\"}" > strict-proof-artifacts/fingerprints/bundle.json
+          echo "{\"bundle_sha256\": \"$BUNDLE_SHA\"}" > "$RUNNER_TEMP/strict-ci/fingerprints/bundle.json"
           # The following uses: steps must execute the tracked bundle without source dependencies.
           rm -rf .github/actions/strict-supervisor/node_modules
 
@@ -262,7 +260,7 @@ jobs:
           echo "================================================================================"
 
           # Bounded 600-second suite watchdog with faulthandler diagnostics
-          PYTHONFAULTHANDLER=1 timeout 600s python3 -B -X faulthandler -m unittest discover -s proof -p 'test_remote_strict*.py' -v 2>&1 | tee strict-proof-artifacts/ci-logs/python-controller-suite.log
+          PYTHONFAULTHANDLER=1 timeout 600s python3 -B -X faulthandler -m unittest discover -s proof -p 'test_remote_strict*.py' -v 2>&1 | tee "$RUNNER_TEMP/strict-ci/ci-logs/python-controller-suite.log"
 
       - name: Verify exact strict mode refusal without independent authorization
         run: |
@@ -275,24 +273,24 @@ jobs:
           set +e
           python3 -B -m proof.remote_strict_controller \
             --mode strict \
-            --p "$GITHUB_WORKSPACE" \
-            --w "$GITHUB_WORKSPACE" \
-            --compiler "$GITHUB_WORKSPACE" \
+            --p "${{ steps.source-trees.outputs.p_path }}" \
+            --w "${{ steps.source-trees.outputs.w_path }}" \
+            --compiler "${{ steps.source-trees.outputs.compiler }}" \
             --job-start-time "$STRICT_JOB_START_ISO" \
-            --artifacts-dir strict-proof-artifacts/strict-refusal \
+            --artifacts-dir "$RUNNER_TEMP/strict-ci/strict-refusal" \
             --driver-limit-sec 2100 \
-            --grace-sec 30 > strict-proof-artifacts/ci-logs/strict-refusal.stdout.log 2> strict-proof-artifacts/ci-logs/strict-refusal.stderr.log
+            --grace-sec 30 > "$RUNNER_TEMP/strict-ci/ci-logs/strict-refusal.stdout.log" 2> "$RUNNER_TEMP/strict-ci/ci-logs/strict-refusal.stderr.log"
           RC=$?
           set -e
 
           echo "Strict mode exit code: $RC"
           if [ "$RC" -ne 5 ]; then
             echo "ERROR: Expected strict refusal exit code 5, got $RC" >&2
-            cat strict-proof-artifacts/ci-logs/strict-refusal.stderr.log >&2
+            cat "$RUNNER_TEMP/strict-ci/ci-logs/strict-refusal.stderr.log" >&2
             exit 1
           fi
 
-          SUMMARY_FILE="strict-proof-artifacts/strict-refusal/strict-controller-summary.json"
+          SUMMARY_FILE="$RUNNER_TEMP/strict-ci/strict-refusal/strict-controller-summary.json"
           if [ ! -f "$SUMMARY_FILE" ]; then
             echo "ERROR: Summary file missing from strict refusal: $SUMMARY_FILE" >&2
             exit 1
