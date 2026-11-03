@@ -151,7 +151,10 @@ class OwnedRoot:
             os.close(parent)
 
     def walk(self, name, include):
-        parent, leaf = self.parent(name)
+        try:
+            parent, leaf = self.parent(name)
+        except FileNotFoundError:
+            return
         try:
             fd = os.open(leaf, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
         except FileNotFoundError:
