@@ -39,6 +39,7 @@ export class StrictSupervisor {
     this.requests = [];
     this.acks = [];
     this.ownershipAcks = [];
+    this.lifecycle = [];
     this.entries = [];
     this.seenRequestIds = new Set();
     this.lastSnapshotSequence = 0;
@@ -82,7 +83,7 @@ export class StrictSupervisor {
       '--job-start-time', String(this.jobStartTime), '--host-job-limit-sec', String(this.hostJobLimitSec || '21600'), '--payload-budget-sec', String(this.payloadBudgetSec || '19800'), '--finalization-alloc-sec', String(this.finalizationAllocSec || '1800'), '--driver-limit-sec', String(this.driverLimitSec || '2100'), '--grace-sec', String(this.graceSec ?? '30'), '--min-disk-gib', String(this.minDiskGib || '20.0'), '--ipc-req-fd', '3', '--ipc-ack-fd', '4', '--p-sha', this.context.p_sha, '--w-sha', this.context.w_sha, '--c-sha', this.context.c_sha, '--invocation-id', this.context.invocation_id, '--job-id', this.context.job_id, '--job-key', this.context.job_key];
     args.push('--repository', this.context.repository, '--run-id', this.context.run_id, '--run-attempt', this.context.run_attempt);
     if (this.mode === 'validation-only') {
-      if (!['success', 'failed-plan', 'failed-pin', 'divergence', 'cleanup-failure', 'ownership-crash', 'ownership-census-outage'].includes(this.validationCase) || !this.caseDataDir) throw new Error('invalid validation case');
+      if (!['success', 'failed-plan', 'failed-pin', 'divergence', 'cleanup-failure', 'ownership-crash', 'ownership-census-outage', 'ownership-run1-outage'].includes(this.validationCase) || !this.caseDataDir) throw new Error('invalid validation case');
       args.push('--case', this.validationCase, '--case-data-dir', this.caseDataDir);
     } else args.push('--mode', 'strict');
     return args;
@@ -150,7 +151,7 @@ export class StrictSupervisor {
       this.ownershipRecovery.proof_resolved = false;
       this.ownershipRecovery.taint_reasons = [...this.ownership.taintReasons];
     }
-    const data = JSON.stringify({ invocation_id: this.context.invocation_id, execution_kind: this.context.execution_kind, exit_code: exitCode, controller_signal: this.controllerSignal || null, entries: this.entries, ownership_control_acks: this.ownershipAcks, ownership_ledger: this.ownership?.directory || this.guardRefusal?.ledger || null, ownership_guard_refusal: this.guardRefusal || null, ownership_journal: ownership, ownership_recovery: this.ownershipRecovery || null }, null, 2) + '\n';
+    const data = JSON.stringify({ invocation_id: this.context.invocation_id, execution_kind: this.context.execution_kind, exit_code: exitCode, controller_signal: this.controllerSignal || null, entries: this.entries, ownership_control_acks: this.ownershipAcks, ownership_ledger: this.ownership?.directory || this.guardRefusal?.ledger || null, ownership_guard_refusal: this.guardRefusal || null, ownership_journal: ownership, ownership_recovery: this.ownershipRecovery || null, lifecycle: this.lifecycle }, null, 2) + '\n';
     const fd = fs.openSync(this.indexPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW, 0o600);
     try { fs.writeFileSync(fd, data); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
   }
@@ -171,6 +172,7 @@ export class StrictSupervisor {
     const startRecovery = () => {
       if (!shutdownDeadline) shutdownDeadline = performance.now() + budgetMs;
       if (!recoveryPromise) {
+        this.lifecycle.push({ event: 'recovery-started', monotonic_ms: performance.now() });
         recoveryPromise = Promise.resolve().then(() => this.ownership.recover());
         // Attach a rejection handler immediately, even if the controller has
         // not exited yet. The finalizer still observes the original rejection.
@@ -214,7 +216,7 @@ export class StrictSupervisor {
     child.stdio[3].on('error', onStreamFailure);
     child.stdio[4].on('error', onStreamFailure);
     const requestEnd = new Promise(resolve => {
-      child.stdio[3].once('end', resolve);
+      child.stdio[3].once('end', () => { this.lifecycle.push({ event: 'request-eof', monotonic_ms: performance.now() }); resolve(); });
       child.stdio[3].once('error', resolve);
     });
     createIpcReader(child.stdio[3], req => {
@@ -223,7 +225,7 @@ export class StrictSupervisor {
     let crashTimer = null;
     let crashDeadline = null;
     let crashObserved = null;
-    if (this.mode === 'validation-only' && ['ownership-crash', 'ownership-census-outage'].includes(this.validationCase)) {
+    if (this.mode === 'validation-only' && ['ownership-crash', 'ownership-census-outage', 'ownership-run1-outage'].includes(this.validationCase)) {
       crashDeadline = setTimeout(() => {
         streamFailure = new Error('synthetic crash readiness not observed');
         child.kill('SIGKILL');
@@ -238,7 +240,7 @@ export class StrictSupervisor {
           if (![...this.ownership.stages.values()].some(stage => pids.every(pid => stage.owned.has(pid)))) return;
           crashObserved = pids;
           clearInterval(crashTimer);
-          if (this.validationCase === 'ownership-census-outage') {
+          if (this.validationCase !== 'ownership-crash') {
             this.ownership.census = () => { throw new Error('synthetic permanent census outage'); };
             this.ownership.fail('synthetic permanent census outage');
           } else child.kill('SIGKILL');
@@ -256,8 +258,8 @@ export class StrictSupervisor {
     process.on('SIGINT', onInt); process.on('SIGTERM', onTerm);
     let code = null, signal = null;
     const exited = new Promise(resolve => {
-      child.once('error', error => resolve({ code: null, signal: null, error }));
-      child.once('exit', (code, signal) => resolve({ code, signal }));
+      child.once('error', error => { this.lifecycle.push({ event: 'controller-error', monotonic_ms: performance.now() }); resolve({ code: null, signal: null, error }); });
+      child.once('exit', (code, signal) => { this.lifecycle.push({ event: 'controller-exit', monotonic_ms: performance.now(), code, signal }); resolve({ code, signal }); });
     });
     try {
       // A failed observer starts recovery immediately, without waiting for
