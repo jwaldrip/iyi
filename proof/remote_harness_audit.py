@@ -840,6 +840,125 @@ print(json.dumps({
         }
         return cov_summary
 
+    def verify_targeted_stdout(
+        self, stdout_text: str, is_mutated: bool
+    ) -> dict[str, dict[str, Any]]:
+        parsed: dict[str, dict[str, Any]] = {}
+        ctrl_re = re.compile(r"^CONTROL\s+([\w\.\-]+)\s+(PASS|FAIL)(.*)$")
+        seed_re = re.compile(
+            r"^SEED\s+([\w\.\-]+)\s+expect=(.+?)\s+got=(.+?)\s+applied=(.+)$"
+        )
+
+        for line in stdout_text.splitlines():
+            line_str = line.strip()
+            m_ctrl = ctrl_re.match(line_str)
+            if m_ctrl:
+                fid = m_ctrl.group(1)
+                st = m_ctrl.group(2)
+                rest = m_ctrl.group(3).strip()
+                if fid in TARGETED_FIXTURE_IDS:
+                    if fid in parsed:
+                        raise RuntimeError(f"Duplicate control line in stdout: {fid}")
+                    if st == "PASS":
+                        if rest:
+                            raise RuntimeError(
+                                f"Malformed CONTROL PASS line with extra content: {line_str}"
+                            )
+                        parsed[fid] = {"kind": "control", "status": "PASS"}
+                    else:  # FAIL
+                        m_exp = re.search(r"expect=(.+?)\s+got=(.+)$", rest)
+                        if not m_exp:
+                            raise RuntimeError(
+                                f"Malformed CONTROL FAIL line missing expect/got: {line_str}"
+                            )
+                        try:
+                            exp_val = json.loads(m_exp.group(1))
+                            got_val = json.loads(m_exp.group(2))
+                        except json.JSONDecodeError as err:
+                            raise RuntimeError(
+                                f"CONTROL FAIL line contains malformed JSON: {line_str}\nError: {err}"
+                            )
+                        parsed[fid] = {
+                            "kind": "control",
+                            "status": "FAIL",
+                            "expected": exp_val,
+                            "got": got_val,
+                        }
+
+            m_seed = seed_re.match(line_str)
+            if m_seed:
+                fid = m_seed.group(1)
+                if fid in TARGETED_FIXTURE_IDS:
+                    if fid in parsed:
+                        raise RuntimeError(f"Duplicate seed line in stdout: {fid}")
+                    try:
+                        exp_val = json.loads(m_seed.group(2))
+                        got_val = json.loads(m_seed.group(3))
+                    except json.JSONDecodeError as err:
+                        raise RuntimeError(
+                            f"SEED line contains malformed JSON: {line_str}\nError: {err}"
+                        )
+                    applied_raw = m_seed.group(4).strip()
+                    try:
+                        applied_val = json.loads(applied_raw)
+                    except Exception:
+                        applied_val = applied_raw
+                    if not applied_val or applied_val == "MISSING":
+                        raise RuntimeError(
+                            f"SEED line has missing or invalid applied evidence: {line_str}"
+                        )
+                    parsed[fid] = {
+                        "kind": "seed",
+                        "expected": exp_val,
+                        "got": got_val,
+                        "applied": applied_val,
+                        "passed": bool(exp_val == got_val),
+                    }
+
+        missing = [fid for fid in TARGETED_FIXTURE_IDS if fid not in parsed]
+        if missing:
+            raise RuntimeError(
+                f"Targeted stdout missing output lines for fixtures: {missing}\n"
+                f"--- full stdout ---\n{stdout_text}"
+            )
+
+        if not is_mutated:
+            if parsed["o7.control.run1"].get("status") != "PASS":
+                raise RuntimeError(
+                    f"Baseline stdout line for o7.control.run1 is not PASS: {parsed['o7.control.run1']}"
+                )
+            for fid in TARGETED_FIXTURE_IDS:
+                if fid != "o7.control.run1":
+                    if not parsed[fid].get("passed"):
+                        raise RuntimeError(
+                            f"Baseline stdout line for seed {fid} did not pass: {parsed[fid]}"
+                        )
+        else:
+            if parsed["o7.control.run1"].get("status") != "FAIL":
+                raise RuntimeError(
+                    f"Mutated stdout line for o7.control.run1 did not report FAIL: {parsed['o7.control.run1']}"
+                )
+            for bare_id in ["s5.seed.rg9-bare", "s5.seed.rg9-bare-141"]:
+                if parsed[bare_id].get("passed"):
+                    raise RuntimeError(
+                        f"Mutated stdout line for {bare_id} unexpectedly passed (old parser accepted): {parsed[bare_id]}"
+                    )
+                if parsed[bare_id].get("got", {}).get("status") != "PASS":
+                    raise RuntimeError(
+                        f"Mutated stdout line for {bare_id} did not observe status=PASS: {parsed[bare_id]}"
+                    )
+            for pass_id in [
+                "s5.seed.rg9-140",
+                "s5.seed.rg9-malformed-suffix",
+                "s5.seed.rg9-extended-suffix",
+            ]:
+                if not parsed[pass_id].get("passed"):
+                    raise RuntimeError(
+                        f"Mutated stdout line for {pass_id} failed: {parsed[pass_id]}"
+                    )
+
+        return parsed
+
     def run_verified_old_parser_mutation(self) -> dict[str, Any]:
         print("\n=== Running Verified Old-Parser Mutation in Disposable Clone ===")
         scratch_dir = tempfile.mkdtemp(
@@ -864,6 +983,7 @@ print(json.dumps({
 import json, os, sys
 sys.dont_write_bytecode = True
 REPO_ROOT = os.path.abspath(sys.argv[1])
+OUTPUT_JSON_PATH = os.path.abspath(sys.argv[2])
 sys.path.insert(0, REPO_ROOT)
 from proof import smoke_test as st
 
@@ -876,6 +996,9 @@ targeted_ids = [
     "s5.seed.rg9-140",
 ]
 
+def _render(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
 fixture_map = {f.fixture_id: f for f in st.FIXTURES}
 results = {}
 
@@ -886,6 +1009,30 @@ for fid in targeted_ids:
     fixture = fixture_map[fid]
     try:
         obs = fixture.run()
+        if not isinstance(obs, st.Observation):
+            raise TypeError(
+                f"fixture returned {type(obs).__name__}, not Observation"
+            )
+    except Exception as e:
+        obs = st.Observation(
+            expected="fixture completes",
+            got=f"{type(e).__name__}: {e}",
+            applied=f"fixture_exception={type(e).__name__}",
+        )
+
+    if fixture.kind == "seed":
+        if not obs.applied:
+            obs = st.Observation(
+                expected={
+                    "observation": obs.expected,
+                    "harness": "applied evidence present",
+                },
+                got={
+                    "observation": obs.got,
+                    "harness": "missing applied evidence",
+                },
+                applied="MISSING",
+            )
         passed = bool(obs.got == obs.expected)
         results[fid] = {
             "kind": fixture.kind,
@@ -894,28 +1041,98 @@ for fid in targeted_ids:
             "applied": obs.applied,
             "passed": passed,
         }
-    except Exception as e:
+        print(
+            f"SEED {fixture.fixture_id} "
+            f"expect={_render(obs.expected)} "
+            f"got={_render(obs.got)} "
+            f"applied={_render(obs.applied)}"
+        )
+    elif fixture.kind == "control":
+        passed = bool(obs.got == obs.expected)
         results[fid] = {
             "kind": fixture.kind,
-            "exception": f"{type(e).__name__}: {e}",
-            "passed": False,
+            "expected": obs.expected,
+            "got": obs.got,
+            "applied": getattr(obs, "applied", ""),
+            "passed": passed,
         }
+        if passed:
+            print(f"CONTROL {fixture.fixture_id} PASS")
+        else:
+            print(
+                f"CONTROL {fixture.fixture_id} FAIL "
+                f"expect={_render(obs.expected)} "
+                f"got={_render(obs.got)}"
+            )
 
-print(json.dumps(results, indent=2))
+with open(OUTPUT_JSON_PATH, "w", encoding="utf-8") as f:
+    json.dump(results, f, indent=2)
 """
 
-            print("Executing targeted fixtures on pre-mutation baseline...")
-            baseline_res = run_cmd(
-                [sys.executable, "-B", "-c", targeted_runner_code, scratch_dir]
+            baseline_json_path = os.path.join(
+                self.mutation_dir, "baseline_targeted_results.json"
             )
-            baseline_results = json.loads(baseline_res.stdout)
+            print("Executing targeted fixtures on pre-mutation baseline...")
+            baseline_start = time.time()
+            baseline_res = run_cmd(
+                [
+                    sys.executable,
+                    "-B",
+                    "-c",
+                    targeted_runner_code,
+                    scratch_dir,
+                    baseline_json_path,
+                ],
+                cwd=scratch_dir,
+                check=False,
+            )
+            baseline_elapsed = round(time.time() - baseline_start, 2)
 
             with open(
-                os.path.join(self.mutation_dir, "baseline_targeted_results.json"),
+                os.path.join(self.mutation_dir, "baseline_raw_stdout.log"),
                 "w",
                 encoding="utf-8",
             ) as f:
-                json.dump(baseline_results, f, indent=2)
+                f.write(baseline_res.stdout)
+            with open(
+                os.path.join(self.mutation_dir, "baseline_raw_stderr.log"),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                f.write(baseline_res.stderr)
+
+            baseline_exec_info = {
+                "returncode": baseline_res.returncode,
+                "elapsed_seconds": baseline_elapsed,
+                "stdout_bytes": len(baseline_res.stdout.encode("utf-8")),
+                "stderr_bytes": len(baseline_res.stderr.encode("utf-8")),
+            }
+            with open(
+                os.path.join(self.mutation_dir, "baseline_execution.json"),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                json.dump(baseline_exec_info, f, indent=2)
+
+            if baseline_res.returncode != 0:
+                raise RuntimeError(
+                    f"Baseline targeted runner failed with returncode {baseline_res.returncode}\n"
+                    f"--- stdout ---\n{baseline_res.stdout}\n"
+                    f"--- stderr ---\n{baseline_res.stderr}"
+                )
+
+            if not os.path.isfile(baseline_json_path):
+                raise RuntimeError(
+                    f"Baseline targeted runner did not create JSON output file: {baseline_json_path}"
+                )
+
+            with open(baseline_json_path, "r", encoding="utf-8") as f:
+                baseline_results = json.load(f)
+
+            # Structural line checks on baseline stdout
+            baseline_stdout_parsed = self.verify_targeted_stdout(
+                baseline_res.stdout, is_mutated=False
+            )
 
             for fid in TARGETED_FIXTURE_IDS:
                 if not baseline_results.get(fid, {}).get("passed", False):
@@ -938,6 +1155,8 @@ print(json.dumps(results, indent=2))
 
             diff_res = run_cmd(["git", "-C", scratch_dir, "diff"])
             diff_text = diff_res.stdout
+            if not diff_text.strip():
+                raise RuntimeError("Mutation diff is empty in scratch clone!")
 
             with open(
                 os.path.join(self.mutation_dir, "mutation.patch"),
@@ -968,17 +1187,69 @@ print(json.dumps(results, indent=2))
             print("Applied verified old-parser mutation to proof/run_proof.py.")
 
             print("Executing targeted fixtures in fresh Python process on mutated code...")
-            mutated_res = run_cmd(
-                [sys.executable, "-B", "-c", targeted_runner_code, scratch_dir]
+            mutated_json_path = os.path.join(
+                self.mutation_dir, "mutated_targeted_results.json"
             )
-            mutated_results = json.loads(mutated_res.stdout)
+            mutated_start = time.time()
+            mutated_res = run_cmd(
+                [
+                    sys.executable,
+                    "-B",
+                    "-c",
+                    targeted_runner_code,
+                    scratch_dir,
+                    mutated_json_path,
+                ],
+                cwd=scratch_dir,
+                check=False,
+            )
+            mutated_elapsed = round(time.time() - mutated_start, 2)
 
             with open(
-                os.path.join(self.mutation_dir, "mutated_targeted_results.json"),
+                os.path.join(self.mutation_dir, "mutated_raw_stdout.log"),
                 "w",
                 encoding="utf-8",
             ) as f:
-                json.dump(mutated_results, f, indent=2)
+                f.write(mutated_res.stdout)
+            with open(
+                os.path.join(self.mutation_dir, "mutated_raw_stderr.log"),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                f.write(mutated_res.stderr)
+
+            mutated_exec_info = {
+                "returncode": mutated_res.returncode,
+                "elapsed_seconds": mutated_elapsed,
+                "stdout_bytes": len(mutated_res.stdout.encode("utf-8")),
+                "stderr_bytes": len(mutated_res.stderr.encode("utf-8")),
+            }
+            with open(
+                os.path.join(self.mutation_dir, "mutated_execution.json"),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                json.dump(mutated_exec_info, f, indent=2)
+
+            if mutated_res.returncode != 0:
+                raise RuntimeError(
+                    f"Mutated targeted runner failed with returncode {mutated_res.returncode}\n"
+                    f"--- stdout ---\n{mutated_res.stdout}\n"
+                    f"--- stderr ---\n{mutated_res.stderr}"
+                )
+
+            if not os.path.isfile(mutated_json_path):
+                raise RuntimeError(
+                    f"Mutated targeted runner did not create JSON output file: {mutated_json_path}"
+                )
+
+            with open(mutated_json_path, "r", encoding="utf-8") as f:
+                mutated_results = json.load(f)
+
+            # Structural line checks on mutated stdout
+            mutated_stdout_parsed = self.verify_targeted_stdout(
+                mutated_res.stdout, is_mutated=True
+            )
 
             ctrl_run1 = mutated_results.get("o7.control.run1", {})
             seed_bare = mutated_results.get("s5.seed.rg9-bare", {})
@@ -1080,6 +1351,8 @@ print(json.dumps(results, indent=2))
                 "status": "PASS",
                 "diff_verified": True,
                 "baseline_all_passed": True,
+                "baseline_execution": baseline_exec_info,
+                "mutated_execution": mutated_exec_info,
                 "mutated_signatures": {
                     "o7.control.run1": ctrl_run1,
                     "s5.seed.rg9-bare": seed_bare,
@@ -1087,6 +1360,14 @@ print(json.dumps(results, indent=2))
                     "s5.seed.rg9-malformed-suffix": seed_malformed,
                     "s5.seed.rg9-extended-suffix": seed_extended,
                     "s5.seed.rg9-140": seed_140,
+                },
+                "baseline_stdout_structural_validation": {
+                    "verified_lines_count": len(baseline_stdout_parsed),
+                    "passed": True,
+                },
+                "mutated_stdout_structural_validation": {
+                    "verified_lines_count": len(mutated_stdout_parsed),
+                    "passed": True,
                 },
                 "restoration": restoration_report,
             }
@@ -1100,7 +1381,6 @@ print(json.dumps(results, indent=2))
                 print(f"Disposable scratch directory {scratch_dir} cleaned up.")
             else:
                 print(f"WARNING: Scratch directory {scratch_dir} could not be fully deleted.")
-
     def audit_line_maps_and_citations(self) -> None:
         print("\n=== Auditing Line Maps, Allowlist Spans, and Citations ===")
         run_proof_path = os.path.join(self.w_dir, "proof", "run_proof.py")
@@ -1203,11 +1483,22 @@ print(json.dumps(results, indent=2))
             },
             {
                 "attempt": 4,
+                "github_run_id": "41377702659",
+                "commit": "01343ad2d7243c6530f4705783caa38b1bfe344e",
+                "status": "FAIL",
+                "failure_reason": (
+                    "Old-parser mutation step failed with JSONDecodeError: Expecting value: line 1 column 1 (char 0) "
+                    "at line 911 because baseline_res.stdout contained raw fixture execution logs rather than JSON. "
+                    "Full suite and coverage gate passed all 524/524 fixtures (HARNESS PASS, COVERAGE GATE PASS), "
+                    "but mutation was never executed."
+                ),
+            },
+            {
+                "attempt": 5,
                 "commit": run_cmd(["git", "-C", self.repo, "rev-parse", "HEAD"]).stdout.strip(),
                 "status": "PASS",
             },
         ]
-
         summary_json_path = os.path.join(self.output_dir, "audit_summary.json")
         with open(summary_json_path, "w", encoding="utf-8") as f:
             json.dump(self.summary, f, indent=2)
@@ -1269,8 +1560,14 @@ All required checks passed:
 - `inventory/source_derived_inventory.json`: Full fixture listings and review item mappings.
 - `coverage/coverage_summary.json`: Coverage listing statistics and allowlist verification.
 - `coverage/*.cover`: The four annotated coverage listings.
-- `mutation/baseline_targeted_results.json`: Targeted fixtures pre-mutation.
+- `mutation/baseline_targeted_results.json`: Targeted fixtures pre-mutation structured results.
+- `mutation/baseline_raw_stdout.log`: Raw stdout of pre-mutation targeted fixtures.
+- `mutation/baseline_raw_stderr.log`: Raw stderr of pre-mutation targeted fixtures.
+- `mutation/baseline_execution.json`: Execution metadata for pre-mutation baseline run.
 - `mutation/mutated_targeted_results.json`: Targeted fixtures post-mutation with failure signatures.
+- `mutation/mutated_raw_stdout.log`: Raw stdout of mutated targeted fixtures.
+- `mutation/mutated_raw_stderr.log`: Raw stderr of mutated targeted fixtures.
+- `mutation/mutated_execution.json`: Execution metadata for mutated run.
 - `mutation/mutation.patch`: Exact patch applied in scratch clone.
 - `mutation/restoration_verification.json`: Bit-for-bit restoration receipts.
 - `hprime_hprimeprime_delta/hprime_to_hprimeprime.patch`: Full source diff between H' and H''.
@@ -1290,7 +1587,10 @@ All required checks passed:
 - **Attempt 3 (Run 41367231332, commit `4ffec12803`):** INCOMPLETE / KILLED.
   - Root cause: Job reached full coverage with correct prerequisites, but was externally killed by GitHub Actions runner host after reaching the accidental 60-minute job limit (`The job has exceeded the maximum execution time of 1h0m0s`). Because of GitHub's hard termination on job timeout, `if: always()` artifact upload did not run and no artifacts were produced.
   - Remediation: Increased GitHub Actions job timeout ceiling to 360 minutes (`timeout-minutes: 360`), the maximum GitHub-hosted job limit. No changes to native fixture timeouts, bounds, workload, allowlist, assertions, or classifications.
-- **Attempt 4 (Current commit):** Running under 360-minute job limit with verified tool isolation.
+- **Attempt 4 (Run 41377702659, commit `01343ad2d7`):** FAILED in old-parser mutation step.
+  - Root cause: Full suite and coverage gate passed all 524/524 fixtures (`HARNESS PASS`, `COVERAGE GATE PASS`, 439 seeds / 85 controls), but the subsequent old-parser mutation step failed with `JSONDecodeError: Expecting value: line 1 column 1 (char 0)` at line 911 because `json.loads(baseline_res.stdout)` attempted to parse `baseline_res.stdout`, which contained fixture console logs rather than JSON. Mutation was never executed.
+  - Remediation: Decoupled fixture stdout logging from structured JSON capture. The runner adapter outputs native fixture logs to stdout/stderr while writing structured observation payloads directly to dedicated JSON artifact files. Added raw stream preservation (`baseline_raw_stdout.log`, `baseline_raw_stderr.log`, `mutated_raw_stdout.log`, `mutated_raw_stderr.log`) and strict structural validation for both stdout log lines and JSON payloads.
+- **Attempt 5 (Current commit):** Running under 360-minute job limit with verified tool isolation and decoupled mutation runner output.
 """
         with open(md_report_path, "w", encoding="utf-8") as f:
             f.write(md_content)
