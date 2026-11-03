@@ -174,6 +174,8 @@ def main() -> int:
         envelope = parse_json(terminal["controller/terminal-envelope.json"])
         require(envelope["status"] == summary["overall_status"] != "PASS", "failure terminal status mismatch")
         require(envelope["checkpoint_receipts"] == [entry["ack"] for entry in entries[:-1]], "failure receipt order mismatch")
+        require(envelope["invocation_id"] == index["invocation_id"] and envelope["final_checkpoint"] is None, "invalid failure terminal references")
+        require(str(entries[-1]["ack"]["artifact_id"]) not in json.dumps(summary) and str(entries[-1]["ack"]["artifact_id"]) not in json.dumps(envelope), "failure terminal contains its own ID")
         if args.case == "cleanup-failure":
             require(summary["overall_status"] == "CLEANUP_FAILED", "cleanup failure omitted from summary")
             for array in ("records", "units"):
