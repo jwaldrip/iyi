@@ -65,8 +65,9 @@ export class StrictSupervisor {
     const script = this.mode === 'validation-only' ? 'proof/remote_strict_validation.py' : 'proof/remote_strict_controller.py';
     const args = [script, '--p', this.p, '--w', this.w, '--compiler', this.compiler, '--artifacts-dir', this.artifactsDir,
       '--job-start-time', String(this.jobStartTime), '--host-job-limit-sec', String(this.hostJobLimitSec || '21600'), '--payload-budget-sec', String(this.payloadBudgetSec || '19800'), '--finalization-alloc-sec', String(this.finalizationAllocSec || '1800'), '--driver-limit-sec', String(this.driverLimitSec || '2100'), '--grace-sec', String(this.graceSec || '30'), '--min-disk-gib', String(this.minDiskGib || '20.0'), '--ipc-req-fd', '3', '--ipc-ack-fd', '4', '--p-sha', this.context.p_sha, '--w-sha', this.context.w_sha, '--c-sha', this.context.c_sha, '--invocation-id', this.context.invocation_id, '--job-id', this.context.job_id, '--job-key', this.context.job_key];
+    args.push('--repository', this.context.repository, '--run-id', this.context.run_id, '--run-attempt', this.context.run_attempt);
     if (this.mode === 'validation-only') {
-      if (!['success', 'failed-plan', 'failed-pin', 'divergence', 'cleanup-failure'].includes(this.validationCase) || !this.caseDataDir) throw new Error('invalid validation case');
+      if (!['success', 'failed-plan', 'failed-pin', 'divergence', 'cleanup-failure', 'ownership-crash'].includes(this.validationCase) || !this.caseDataDir) throw new Error('invalid validation case');
       args.push('--case', this.validationCase, '--case-data-dir', this.caseDataDir);
     } else args.push('--mode', 'strict');
     return args;
@@ -77,6 +78,7 @@ export class StrictSupervisor {
       if (!req || req.protocol_version !== 1 || typeof req.request_id !== 'string' || !req.request_id || req.invocation_id !== this.context.invocation_id || this.seenRequestIds.has(req.request_id)) throw new Error('invalid or replayed request');
       this.seenRequestIds.add(req.request_id);
       if (req.event === 'ownership-register' || req.event === 'ownership-resolve') {
+        if (typeof req.unit !== 'string' || !req.unit || !Number.isSafeInteger(req.native_attempt) || req.native_attempt < 1) throw new Error('invalid stage association');
         if (req.event === 'ownership-register') this.ownership.register(req, this.childProcess.pid);
         else await this.ownership.resolve(req);
         ack = { ...req, event: `${req.event}-ack`, verified: true };
@@ -103,12 +105,17 @@ export class StrictSupervisor {
       }
     } catch (err) {
       this.failedVerifications++;
+      if (req?.event === 'ownership-register' || req?.event === 'ownership-resolve') {
+        this.ownership.failure = `ownership control failed: ${redactSecrets(String(err.message))}`;
+        try { this.ownership.record({ event: 'ownership-failed', reason: this.ownership.failure }); } catch { /* fail closed */ }
+      }
       ack = { ...req, event: `${req?.event || 'invalid'}-ack`, verified: false, error: redactSecrets(String(err.message)) };
     }
     await writeIpcAck(ackStream, ack);
   }
   saveIndex(exitCode) {
-    const data = JSON.stringify({ invocation_id: this.context.invocation_id, execution_kind: this.context.execution_kind, exit_code: exitCode, entries: this.entries }, null, 2) + '\n';
+    const ownership = this.ownership ? fs.readFileSync(path.join(this.ownership.directory, 'ownership.jsonl'), 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line)) : [];
+    const data = JSON.stringify({ invocation_id: this.context.invocation_id, execution_kind: this.context.execution_kind, exit_code: exitCode, entries: this.entries, ownership_journal: ownership, ownership_recovery: this.ownershipRecovery || null }, null, 2) + '\n';
     const fd = fs.openSync(this.indexPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW, 0o600);
     try { fs.writeFileSync(fd, data); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
   }
@@ -125,14 +132,44 @@ export class StrictSupervisor {
     child.stdio[3].on('error', e => { streamFailure = e; });
     child.stdio[4].on('error', e => { streamFailure = e; });
     createIpcReader(child.stdio[3], req => { requestChain = requestChain.then(() => this.handleRequest(req, child.stdio[4])); });
+    let crashTimer = null;
+    let crashObserved = null;
+    if (this.mode === 'validation-only' && this.validationCase === 'ownership-crash') {
+      crashTimer = setInterval(() => {
+        try {
+          if (fs.readFileSync(path.join(this.caseDataDir, 'ownership-ready'), 'utf8') !== 'ready\n') return;
+          const match = /^child:([1-9]\d*)\ngrandchild:([1-9]\d*)\n$/.exec(fs.readFileSync(path.join(this.caseDataDir, 'ownership-pids'), 'utf8'));
+          if (!match) throw new Error('invalid crash fixture process list');
+          const pids = [Number(match[1]), Number(match[2])];
+          this.ownership.observe();
+          if (![...this.ownership.stages.values()].some(stage => pids.every(pid => stage.owned.has(pid)))) return;
+          crashObserved = pids;
+          clearInterval(crashTimer);
+          child.kill('SIGKILL');
+        } catch (err) {
+          if (err.code !== 'ENOENT') {
+            streamFailure = err;
+            clearInterval(crashTimer);
+            child.kill('SIGKILL');
+          }
+        }
+      }, 100);
+    }
     const forward = signal => { if (child.exitCode === null) child.kill(signal); };
     const onInt = () => forward('SIGINT'), onTerm = () => forward('SIGTERM');
     process.on('SIGINT', onInt); process.on('SIGTERM', onTerm);
     let code, signal;
     try {
       ({ code, signal } = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => resolve({code, signal})); }));
-      try { await requestChain; await this.ownership.recover(); } catch (e) { this.failedVerifications++; streamFailure = e; }
+      try {
+        await requestChain;
+        await this.ownership.recover();
+        if (crashObserved && signal === 'SIGKILL') {
+          this.ownershipRecovery = { controller_signal: signal, observed_pids: crashObserved, recovered: true };
+        }
+      } catch (e) { this.failedVerifications++; streamFailure = e; }
     } finally {
+      clearInterval(crashTimer);
       process.removeListener('SIGINT', onInt); process.removeListener('SIGTERM', onTerm);
       this.ownership.close();
     }
@@ -142,7 +179,12 @@ export class StrictSupervisor {
       const terminal = this.entries.filter(e => e.request.snapshot_kind === 'terminal-envelope' && e.ack.verified);
       try {
         const completion = JSON.parse(fs.readFileSync(path.join(this.artifactsDir, 'controller-completion.json'), 'utf8'));
-        if (terminal.length === 1 && completion.overall_status === 'PASS' && completion.invocation_id === this.context.invocation_id && JSON.stringify(completion.terminal_receipt) === JSON.stringify(terminal[0].ack)) outcome = 'PASS';
+        if (terminal.length === 1 && completion.overall_status === 'PASS' &&
+            completion.invocation_id === this.context.invocation_id &&
+            completion.chain_id === terminal[0].request.chain_id &&
+            completion.terminal_receipt &&
+            Object.keys(terminal[0].ack).every(key => completion.terminal_receipt[key] === terminal[0].ack[key]) &&
+            Object.keys(completion.terminal_receipt).length === Object.keys(terminal[0].ack).length) outcome = 'PASS';
       } catch { /* missing or invalid completion is failure */ }
     }
     this.saveIndex(code);

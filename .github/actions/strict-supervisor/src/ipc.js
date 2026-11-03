@@ -84,34 +84,10 @@ export function validateAck(ack, req) {
     return { valid: false, reason: 'ACK must be a non-null JSON object' };
   }
 
-  // Verify all immutable binding fields match with strict typed validation
+  if (ack.event !== 'persistence-ack') return { valid: false, reason: 'Invalid ACK event' };
   for (const field of IMMUTABLE_BINDING_FIELDS) {
-    if (!(field in ack) || ack[field] === undefined) {
-      return { valid: false, reason: `Missing binding field in ACK: ${field}` };
-    }
-    if (field === 'chain_id') {
-      if (req.chain_id === null) {
-        if (ack.chain_id !== null) {
-          return {
-            valid: false,
-            reason: `Mismatched binding field chain_id: expected null, got ${ack.chain_id}`,
-          };
-        }
-      } else {
-        if (ack.chain_id !== req.chain_id) {
-          return {
-            valid: false,
-            reason: `Mismatched binding field chain_id: expected ${req.chain_id}, got ${ack.chain_id}`,
-          };
-        }
-      }
-    } else {
-      if (String(ack[field]) !== String(req[field])) {
-        return {
-          valid: false,
-          reason: `Mismatched binding field ${field}: expected ${req[field]}, got ${ack[field]}`,
-        };
-      }
+    if (!Object.hasOwn(ack, field) || ack[field] !== req[field]) {
+      return { valid: false, reason: `Mismatched ACK binding: ${field}` };
     }
   }
 
@@ -126,14 +102,14 @@ export function validateAck(ack, req) {
     return { valid: false, reason: 'ACK missing valid artifact_id' };
   }
 
-  if (Number(ack.downloaded_bytes) !== Number(req.archive_bytes)) {
+  if (ack.downloaded_bytes !== req.archive_bytes) {
     return {
       valid: false,
       reason: `Byte count mismatch: expected ${req.archive_bytes}, got ${ack.downloaded_bytes}`,
     };
   }
 
-  if (String(ack.downloaded_sha256).toLowerCase() !== String(req.archive_sha256).toLowerCase()) {
+  if (ack.downloaded_sha256 !== req.archive_sha256) {
     return {
       valid: false,
       reason: `SHA256 mismatch: expected ${req.archive_sha256}, got ${ack.downloaded_sha256}`,

@@ -81,7 +81,8 @@ def run_registered_stage(
         os.close(write_fd)
         write_fd = -1
         while proc.poll() is None:
-            interrupted = bool(is_interrupted())
+            state = is_interrupted()
+            interrupted = bool(state[0] if isinstance(state, tuple) else state)
             timed_out = time.monotonic() >= monotonic_deadline
             if interrupted or timed_out:
                 break

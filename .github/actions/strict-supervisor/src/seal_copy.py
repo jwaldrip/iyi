@@ -46,6 +46,10 @@ def copy(root, source, target, expected_size, expected_hash):
             raise ValueError('archive changed during copy')
         if count != int(expected_size) or h.hexdigest() != expected_hash:
             raise ValueError('archive digest or byte count mismatch')
+        root_open = os.fstat(rootfd)
+        root_current = os.stat(root, follow_symlinks=False)
+        if (root_open.st_dev, root_open.st_ino) != (root_current.st_dev, root_current.st_ino):
+            raise ValueError('owned root replaced during copy')
         for idx, component in enumerate(parts):
             expected = os.fstat(opened[idx + 1])
             current = os.stat(component, dir_fd=opened[idx], follow_symlinks=False)

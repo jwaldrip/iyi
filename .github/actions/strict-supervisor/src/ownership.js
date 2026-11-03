@@ -87,8 +87,10 @@ export class OwnershipObserver {
       for (const [pid, birth] of stage.owned) {
         if (!rows.has(pid)) continue;
         if (this.identity(pid) !== birth) throw new Error(`recycled owned PID ${pid}`);
-        try { process.kill(pid, sig); }
-        catch (e) { if (e.code !== 'ESRCH') throw e; }
+        try {
+          process.kill(pid, sig);
+          this.record({ event: 'signaled', pid, birth, signal: sig });
+        } catch (e) { if (e.code !== 'ESRCH') throw e; }
       }
     };
     signal('SIGTERM');
