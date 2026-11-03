@@ -49,8 +49,10 @@ env:
 jobs:
   bootstrap-supervisor-bundle:
     name: "Generate supervisor bundle"
-    if: ${{ github.event_name == 'push' }}
+    if: ${{ github.event_name == 'push' || github.event.inputs.mode == 'validation-only' }}
     runs-on: ubuntu-latest
+    outputs:
+      bundle_id: ${{ steps.bundle.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -65,6 +67,7 @@ jobs:
           npm ci
           npm run build
       - name: Upload generated files
+        id: bundle
         uses: actions/upload-artifact@v4
         with:
           name: supervisor-bundle-${{ github.sha }}
@@ -76,6 +79,7 @@ jobs:
 
   validation-proofs:
     name: "Controller synthetic and validation proofs (macOS 15)"
+    needs: bootstrap-supervisor-bundle
     if: ${{ github.event_name == 'push' || github.event.inputs.mode == 'validation-only' }}
     runs-on: macos-15
     timeout-minutes: 60
@@ -442,115 +446,6 @@ jobs:
           w_sha: ${{ env.W_AUTHORIZED_SHA }}
           c_sha: ${{ github.sha }}
 
-      - name: Start unrelated ownership sentinel
-        id: sentinel
-        run: |
-          set -euo pipefail
-          cat > "$RUNNER_TEMP/strict-sentinel.py" <<'PY'
-          import json, os, pathlib, secrets, socket, subprocess
-          root = pathlib.Path(os.environ["RUNNER_TEMP"])
-          sock_path = str(root / "strict-sentinel.sock")
-          token = secrets.token_hex(32)
-          server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-          server.bind(sock_path)
-          server.listen(4)
-          start = subprocess.check_output(["ps", "-p", str(os.getpid()), "-o", "lstart="], text=True).strip()
-          (root / "strict-sentinel.json").write_text(json.dumps({"pid": os.getpid(), "start": start, "token": token, "socket": sock_path}))
-          while True:
-              conn, _ = server.accept()
-              with conn:
-                  request = conn.recv(128).decode()
-                  if request == token:
-                      conn.sendall(token.encode())
-                  elif request == token + ":stop":
-                      conn.sendall(token.encode())
-                      break
-          server.close()
-          PY
-          RUNNER_TRACKING_ID= nohup python3 -B "$RUNNER_TEMP/strict-sentinel.py" > "$RUNNER_TEMP/strict-sentinel.log" 2>&1 &
-          for n in $(seq 1 100); do
-            test -s "$RUNNER_TEMP/strict-sentinel.json" && break
-            sleep 0.1
-          done
-          python3 -B - <<'PY'
-          import json, os, pathlib, socket, subprocess
-          data = json.loads((pathlib.Path(os.environ["RUNNER_TEMP"]) / "strict-sentinel.json").read_text())
-          assert data["start"]
-          assert subprocess.check_output(["ps", "-p", str(data["pid"]), "-o", "lstart="], text=True).strip() == data["start"]
-          with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-              s.settimeout(5)
-              s.connect(data["socket"])
-              s.sendall(data["token"].encode())
-              assert s.recv(128).decode() == data["token"]
-          PY
-
-      - name: Synthetic controller crash and ownership recovery
-        id: ownership-crash-case
-        continue-on-error: true
-        uses: ./.github/actions/strict-supervisor
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          mode: validation-only
-          validation_case: ownership-crash
-          invocation_id: synthetic-ownership-crash
-          case_data_dir: ${{ runner.temp }}/strict-case-ownership-crash
-          p: ${{ steps.source-trees.outputs.p_path }}
-          w: ${{ steps.source-trees.outputs.w_path }}
-          compiler: ${{ steps.source-trees.outputs.compiler }}
-          artifacts_dir: ${{ runner.temp }}/strict-artifacts-ownership-crash
-          job_start_time: ${{ steps.job-metadata.outputs.job_started_at_iso }}
-          job_id: ${{ steps.job-metadata.outputs.job_id }}
-          job_key: ${{ steps.job-metadata.outputs.job_key }}
-          p_sha: ${{ env.P_AUTHORIZED_SHA }}
-          w_sha: ${{ env.W_AUTHORIZED_SHA }}
-          c_sha: ${{ github.sha }}
-
-      - name: Verify ownership recovery and unrelated sentinel
-        if: ${{ always() && steps.sentinel.outcome == 'success' }}
-        env:
-          CRASH_INDEX: ${{ steps.ownership-crash-case.outputs.receipt_index_path }}
-          CRASH_OUTCOME: ${{ steps.ownership-crash-case.outcome }}
-        run: |
-          python3 -B - <<'PY'
-          import json, os, pathlib, socket, subprocess, sys
-          root = pathlib.Path(os.environ["RUNNER_TEMP"])
-          data = json.loads((root / "strict-sentinel.json").read_text())
-          try:
-              start = subprocess.check_output(["ps", "-p", str(data["pid"]), "-o", "lstart="], text=True).strip()
-              if start != data["start"]:
-                  sys.exit("Sentinel identity changed")
-              with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-                  s.settimeout(5)
-                  s.connect(data["socket"])
-                  s.sendall(data["token"].encode())
-                  if s.recv(128).decode() != data["token"]:
-                      sys.exit("Sentinel did not respond")
-              if os.environ["CRASH_OUTCOME"] != "failure":
-                  sys.exit("Controller crash did not fail")
-              index = json.loads(pathlib.Path(os.environ["CRASH_INDEX"]).read_text())
-              recovery = index["ownership_recovery"]
-              if (index["entries"] or recovery["controller_signal"] != "SIGKILL"
-                      or recovery["recovered"] is not True or len(recovery["observed_pids"]) < 2):
-                  sys.exit("Missing controller crash or ownership recovery evidence")
-              # The fixture's SIGTERM handler must have completed before recovery returned.
-              if (root / "strict-case-ownership-crash" / "ownership-ready").read_text() != "ready\n":
-                  sys.exit("Missing ownership readiness marker")
-              if (root / "strict-case-ownership-crash" / "ownership-flushed").read_text() != "completed_term_flush\n":
-                  sys.exit("Missing native-grace flush marker")
-              report = root / "strict-ownership-report.json"
-              report.write_text(json.dumps({"case": "ownership-crash", "action_outcome": "failure",
-                  "controller_signal": "SIGKILL", "observed_pids": recovery["observed_pids"],
-                  "recovered": True, "grace_flush_observed": True, "sentinel_survived": True}))
-          finally:
-              with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-                  s.settimeout(5)
-                  s.connect(data["socket"])
-                  s.sendall((data["token"] + ":stop").encode())
-                  if s.recv(128).decode() != data["token"]:
-                      raise RuntimeError("Sentinel stop handshake failed")
-          PY
-
       - name: Download exact artifact IDs and independently check all cases
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -564,7 +459,6 @@ jobs:
           PIN_INDEX: ${{ steps.failed-pin-case.outputs.receipt_index_path }}
           DIVERGENCE_INDEX: ${{ steps.divergence-case.outputs.receipt_index_path }}
           CLEANUP_INDEX: ${{ steps.cleanup-case.outputs.receipt_index_path }}
-          CRASH_INDEX: ${{ steps.ownership-crash-case.outputs.receipt_index_path }}
           SUCCESS_OUTCOME: ${{ steps.success-case.outcome }}
           PLAN_OUTCOME: ${{ steps.failed-plan-case.outcome }}
           PIN_OUTCOME: ${{ steps.failed-pin-case.outcome }}
@@ -626,28 +520,12 @@ jobs:
               if case == "divergence":
                   command += ["--expected-divergence", str(temp / "strict-case-divergence" / "divergence.bin")]
               subprocess.run(command, check=True)
-          crash_report = reports / "ownership-crash.json"
-          subprocess.run(["python3", "-B", "proof/check_remote_strict_evidence.py",
-              "--index", os.environ["CRASH_INDEX"], "--downloads-dir", str(downloads),
-              "--case", "ownership-crash", "--case-data-dir", str(temp / "strict-case-ownership-crash"),
-              "--p", os.environ["P_PATH"], "--w", os.environ["W_PATH"],
-              "--c", os.environ["GITHUB_WORKSPACE"], "--compiler", os.environ["COMPILER_PATH"],
-              "--repository", os.environ["GITHUB_REPOSITORY"],
-              "--run-id", os.environ["GITHUB_RUN_ID"], "--run-attempt", os.environ["GITHUB_RUN_ATTEMPT"],
-              "--job-id", os.environ["JOB_ID"], "--job-key", os.environ["JOB_KEY"],
-              "--invocation-id", "synthetic-ownership-crash", "--report", str(crash_report)], check=True)
-          crash = json.loads(crash_report.read_text())
-          sentinel = json.loads((temp / "strict-ownership-report.json").read_text())
-          if sentinel.get("sentinel_survived") is not True:
-              sys.exit("Unrelated sentinel survival not established")
-          crash["sentinel_survived"] = True
-          crash_report.write_text(json.dumps(crash))
           if len(seen) != 50:
               sys.exit("Expected exactly 50 distinct incremental artifact IDs")
           (temp / "strict-checked-ids.json").write_text(json.dumps(sorted(seen)), encoding="utf-8")
           export = temp / "strict-verified-evidence.tar"
           with tarfile.open(export, "w") as tar:
-              for case in [item[0] for item in cases] + ["ownership-crash"]:
+              for case in [item[0] for item in cases]:
                   report = reports / f"{case}.json"
                   if not report.is_file() or report.is_symlink():
                       sys.exit(f"{case}: checked report missing or unsafe")
@@ -667,6 +545,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EXPORT_ID: ${{ steps.sealed-export.outputs.artifact-id }}
+          BUNDLE_ID: ${{ needs.bootstrap-supervisor-bundle.outputs.bundle_id }}
         run: |
           python3 -B - <<'PY'
           import json, os, pathlib, sys, urllib.request
@@ -675,6 +554,10 @@ jobs:
           if not export.isdecimal() or export in expected:
               sys.exit("Missing or duplicate sealed export ID")
           expected.add(export)
+          bundle = os.environ["BUNDLE_ID"]
+          if not bundle.isdecimal() or bundle in expected:
+              sys.exit("Missing or duplicate supervisor bundle ID")
+          expected.add(bundle)
           ids = []
           page = 1
           while True:
@@ -691,9 +574,282 @@ jobs:
               if len(batch) < 100:
                   break
               page += 1
-          if len(ids) != 51 or set(ids) != expected:
-              sys.exit(f"Hosted inventory mismatch: expected 51 exact IDs, got {len(ids)}")
-          print("Verified all 51 exact artifact IDs")
+          if len(ids) != 52 or set(ids) != expected:
+              sys.exit(f"Hosted inventory mismatch: expected 52 exact IDs, got {len(ids)}")
+          print("Verified all 52 exact artifact IDs")
+          PY
+
+  ownership-recovery:
+    name: "Ownership recovery (${{ matrix.case }})"
+    needs: validation-proofs
+    if: ${{ github.event_name == 'push' || github.event.inputs.mode == 'validation-only' }}
+    runs-on: macos-15
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [ownership-crash, ownership-census-outage, ownership-run1-outage]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install Python dependencies
+        run: python3 -m pip install pyyaml "idna==3.11" cryptography pillow h2 hpack
+      - name: Resolve job and source trees
+        id: setup
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          for label in p w; do
+            if [ "$label" = p ]; then sha="$P_AUTHORIZED_SHA"; else sha="$W_AUTHORIZED_SHA"; fi
+            git clone --quiet --no-checkout "$GITHUB_WORKSPACE" "$RUNNER_TEMP/strict-$label"
+            git -C "$RUNNER_TEMP/strict-$label" checkout --quiet --detach "$sha"
+          done
+          printf '#!/bin/sh\nexit 0\n' > "$RUNNER_TEMP/strict-fake-compiler"
+          chmod 700 "$RUNNER_TEMP/strict-fake-compiler"
+          python3 -B - <<'PY'
+          import json, os, urllib.request
+          env = os.environ
+          url = f"https://api.github.com/repos/{env['GITHUB_REPOSITORY']}/actions/runs/{env['GITHUB_RUN_ID']}/attempts/{env['GITHUB_RUN_ATTEMPT']}/jobs?per_page=100"
+          req = urllib.request.Request(url, headers={"Authorization": "Bearer " + env["GH_TOKEN"], "Accept": "application/vnd.github+json", "User-Agent": "iyi-strict-proof-ci"})
+          with urllib.request.urlopen(req, timeout=30) as response:
+              jobs = json.load(response)["jobs"]
+          matches = [j for j in jobs if j.get("runner_name") == env["RUNNER_NAME"] and j.get("status") == "in_progress"]
+          if len(matches) != 1:
+              raise SystemExit("Current hosted job missing or ambiguous")
+          job = matches[0]
+          with open(env["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"job_id={job['id']}\njob_key={env['GITHUB_JOB']}\njob_started_at_iso={job['started_at']}\n")
+          PY
+      - name: Start unrelated ownership sentinel
+        id: sentinel
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/strict-sentinel.py" <<'PY'
+          import json, os, pathlib, secrets, socket, subprocess
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          sock_path = str(root / "strict-sentinel.sock")
+          token = secrets.token_hex(32)
+          server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+          server.bind(sock_path)
+          server.listen(4)
+          identity = json.loads(subprocess.check_output([
+              "python3", ".github/actions/strict-supervisor/src/process_identity.py", str(os.getpid())], text=True))
+          if identity.get("status") != "LIVE" or not identity.get("birth"):
+              raise RuntimeError("Sentinel kernel identity unavailable")
+          (root / "strict-sentinel.json").write_text(json.dumps({"pid": os.getpid(), "birth": identity["birth"], "token": token, "socket": sock_path}))
+          while True:
+              conn, _ = server.accept()
+              with conn:
+                  request = conn.recv(128).decode()
+                  if request == token:
+                      conn.sendall(token.encode())
+                  elif request == token + ":stop":
+                      conn.sendall(token.encode())
+                      break
+          server.close()
+          PY
+          RUNNER_TRACKING_ID= nohup python3 -B "$RUNNER_TEMP/strict-sentinel.py" > "$RUNNER_TEMP/strict-sentinel.log" 2>&1 &
+          for n in $(seq 1 100); do
+            test -s "$RUNNER_TEMP/strict-sentinel.json" && break
+            sleep 0.1
+          done
+          python3 -B - <<'PY'
+          import json, os, pathlib, socket, subprocess
+          data = json.loads((pathlib.Path(os.environ["RUNNER_TEMP"]) / "strict-sentinel.json").read_text())
+          identity = json.loads(subprocess.check_output(["python3", ".github/actions/strict-supervisor/src/process_identity.py", str(data["pid"])], text=True))
+          assert identity["status"] == "LIVE" and identity["birth"] == data["birth"]
+          with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+              s.settimeout(5)
+              s.connect(data["socket"])
+              s.sendall(data["token"].encode())
+              assert s.recv(128).decode() == data["token"]
+          PY
+
+      - name: Synthetic controller crash and ownership recovery
+        id: ownership-crash-case
+        continue-on-error: true
+        uses: ./.github/actions/strict-supervisor
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          mode: validation-only
+          validation_case: ${{ matrix.case }}
+          invocation_id: synthetic-${{ matrix.case }}
+          case_data_dir: ${{ runner.temp }}/ownership-case
+          p: ${{ runner.temp }}/strict-p
+          w: ${{ runner.temp }}/strict-w
+          compiler: ${{ runner.temp }}/strict-fake-compiler
+          artifacts_dir: ${{ runner.temp }}/ownership-artifacts
+          job_start_time: ${{ steps.setup.outputs.job_started_at_iso }}
+          job_id: ${{ steps.setup.outputs.job_id }}
+          job_key: ${{ steps.setup.outputs.job_key }}
+          p_sha: ${{ env.P_AUTHORIZED_SHA }}
+          w_sha: ${{ env.W_AUTHORIZED_SHA }}
+          c_sha: ${{ github.sha }}
+
+      - name: Preserve quarantine ledger
+        if: ${{ always() }}
+        env:
+          CRASH_INDEX: ${{ steps.ownership-crash-case.outputs.receipt_index_path }}
+        run: |
+          python3 -B - <<'PY'
+          import json, os, pathlib
+          index = json.loads(pathlib.Path(os.environ["CRASH_INDEX"]).read_text())
+          ledger = pathlib.Path(index["ownership_ledger"]) / "ownership.jsonl"
+          (pathlib.Path(os.environ["RUNNER_TEMP"]) / "ownership-before-retry.jsonl").write_bytes(ledger.read_bytes())
+          PY
+
+      - name: Refuse changed invocation on quarantined host
+        id: retry-case
+        continue-on-error: true
+        uses: ./.github/actions/strict-supervisor
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          mode: validation-only
+          validation_case: success
+          invocation_id: synthetic-restart-attempt
+          case_data_dir: ${{ runner.temp }}/retry-case
+          p: ${{ runner.temp }}/strict-p
+          w: ${{ runner.temp }}/strict-w
+          compiler: ${{ runner.temp }}/strict-fake-compiler
+          artifacts_dir: ${{ runner.temp }}/retry-artifacts
+          job_start_time: ${{ steps.setup.outputs.job_started_at_iso }}
+          job_id: ${{ steps.setup.outputs.job_id }}
+          job_key: ${{ steps.setup.outputs.job_key }}
+          p_sha: ${{ env.P_AUTHORIZED_SHA }}
+          w_sha: ${{ env.W_AUTHORIZED_SHA }}
+          c_sha: ${{ github.sha }}
+
+      - name: Verify ownership recovery and unrelated sentinel
+        if: ${{ always() && steps.sentinel.outcome == 'success' }}
+        env:
+          CRASH_INDEX: ${{ steps.ownership-crash-case.outputs.receipt_index_path }}
+          CRASH_OUTCOME: ${{ steps.ownership-crash-case.outcome }}
+          RETRY_OUTCOME: ${{ steps.retry-case.outcome }}
+          RETRY_INDEX: ${{ steps.retry-case.outputs.receipt_index_path }}
+          CASE: ${{ matrix.case }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          JOB_ID: ${{ steps.setup.outputs.job_id }}
+          JOB_KEY: ${{ steps.setup.outputs.job_key }}
+        run: |
+          python3 -B - <<'PY'
+          import io, json, os, pathlib, socket, tarfile, subprocess, sys, urllib.request, zipfile
+          from proof.check_remote_strict_evidence import check_ownership_failure, check_quarantine_retry
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          data = json.loads((root / "strict-sentinel.json").read_text())
+          try:
+              identity = json.loads(subprocess.check_output(["python3", ".github/actions/strict-supervisor/src/process_identity.py", str(data["pid"])], text=True))
+              if identity.get("status") != "LIVE" or identity.get("birth") != data["birth"]:
+                  sys.exit("Sentinel identity changed or unavailable")
+              with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                  s.settimeout(5)
+                  s.connect(data["socket"])
+                  s.sendall(data["token"].encode())
+                  if s.recv(128).decode() != data["token"]:
+                      sys.exit("Sentinel did not respond")
+              if os.environ["CRASH_OUTCOME"] != "failure" or os.environ["RETRY_OUTCOME"] != "failure":
+                  sys.exit("Expected both action invocations to fail")
+              index = json.loads(pathlib.Path(os.environ["CRASH_INDEX"]).read_text())
+              if index.get("execution_kind") != "synthetic" or index.get("invocation_id") != "synthetic-" + os.environ["CASE"]:
+                  sys.exit("Ownership invocation binding mismatch")
+              context = index["ownership_journal"][0]["context"]
+              expected = {"invocation_id": index["invocation_id"], "execution_kind": "synthetic",
+                  "repository": os.environ["GITHUB_REPOSITORY"], "run_id": os.environ["GITHUB_RUN_ID"],
+                  "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"], "job_id": os.environ["JOB_ID"],
+                  "job_key": os.environ["JOB_KEY"], "p_sha": os.environ["P_AUTHORIZED_SHA"],
+                  "w_sha": os.environ["W_AUTHORIZED_SHA"], "c_sha": os.environ["GITHUB_SHA"]}
+              if any(context.get(key) != value for key, value in expected.items()):
+                  sys.exit("Ownership context does not match current run and source tuple")
+              downloads = root / "ownership-downloads"
+              downloads.mkdir()
+              for entry in index["entries"]:
+                  artifact_id = str(entry["ack"]["artifact_id"])
+                  if not artifact_id.isdecimal() or (downloads / (artifact_id + ".tar")).exists():
+                      sys.exit("Invalid or duplicate prior artifact ID")
+                  url = f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/actions/artifacts/{artifact_id}/zip"
+                  req = urllib.request.Request(url, headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"], "Accept": "application/vnd.github+json", "User-Agent": "iyi-strict-independent-readback"})
+                  with urllib.request.urlopen(req, timeout=60) as response:
+                      payload = response.read()
+                  with zipfile.ZipFile(io.BytesIO(payload)) as zipped:
+                      files = [item for item in zipped.infolist() if not item.is_dir()]
+                      if len(files) != 1 or files[0].file_size > 100_000_000:
+                          sys.exit("Invalid prior artifact layout")
+                      (downloads / (artifact_id + ".tar")).write_bytes(zipped.read(files[0]))
+              report = check_ownership_failure(index, str(root / "ownership-case"), os.environ["CASE"], str(downloads))
+              ledger = pathlib.Path(index["ownership_ledger"]) / "ownership.jsonl"
+              before = (root / "ownership-before-retry.jsonl").read_bytes()
+              retry = json.loads(pathlib.Path(os.environ["RETRY_INDEX"]).read_text())
+              check_quarantine_retry(index, retry, before, ledger.read_bytes())
+              if (root / "retry-case").exists() or (root / "retry-artifacts").exists():
+                  sys.exit("Refused invocation started controller work")
+              report.update({"action_outcome": os.environ["CRASH_OUTCOME"], "retry_action_outcome": os.environ["RETRY_OUTCOME"],
+                  "sentinel_pid": data["pid"], "sentinel_birth": data["birth"], "sentinel_survived": True})
+              report_path = root / "strict-ownership-report.json"
+              report_path.write_text(json.dumps(report, sort_keys=True))
+              with tarfile.open(root / "strict-ownership-evidence.tar", "w") as archive:
+                  archive.add(report_path, arcname="report.json")
+                  archive.add(ledger, arcname="ownership.jsonl")
+                  archive.add(os.environ["CRASH_INDEX"], arcname="receipt-index.json")
+                  archive.add(os.environ["RETRY_INDEX"], arcname="retry-receipt-index.json")
+                  for payload in sorted(downloads.glob("*.tar")):
+                      archive.add(payload, arcname="prior-receipts/" + payload.name)
+          finally:
+              with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                  s.settimeout(5)
+                  s.connect(data["socket"])
+                  s.sendall((data["token"] + ":stop").encode())
+                  if s.recv(128).decode() != data["token"]:
+                      raise RuntimeError("Sentinel stop handshake failed")
+          PY
+
+      - name: Upload isolated ownership evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: remote-strict-${{ matrix.case }}-evidence
+          path: ${{ runner.temp }}/strict-ownership-evidence.tar
+          if-no-files-found: error
+
+  ownership-inventory:
+    name: "Verify complete hosted evidence inventory"
+    needs: [validation-proofs, ownership-recovery, bootstrap-supervisor-bundle]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify all artifact identities
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 -B - <<'PY'
+          import json, os, sys, urllib.request
+          env = os.environ
+          artifacts = []
+          page = 1
+          while True:
+              url = f"https://api.github.com/repos/{env['GITHUB_REPOSITORY']}/actions/runs/{env['GITHUB_RUN_ID']}/artifacts?per_page=100&page={page}"
+              req = urllib.request.Request(url, headers={"Authorization": "Bearer " + env["GH_TOKEN"], "Accept": "application/vnd.github+json", "User-Agent": "iyi-strict-proof-ci"})
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  batch = json.load(response)["artifacts"]
+              artifacts.extend(batch)
+              if len(batch) < 100:
+                  break
+              page += 1
+          names = [item["name"] for item in artifacts]
+          ids = [str(item["id"]) for item in artifacts]
+          expected_fixed = [f"supervisor-bundle-{env['GITHUB_SHA']}", "remote-strict-validation-evidence",
+              "remote-strict-ownership-crash-evidence", "remote-strict-ownership-census-outage-evidence",
+              "remote-strict-ownership-run1-outage-evidence"]
+          counts = {"success": 37, "failed-plan": 1, "failed-pin": 2, "divergence": 6, "cleanup-failure": 4, "ownership-run1-outage": 2}
+          if len(names) != 57 or len(set(names)) != 57 or len(set(ids)) != 57 or any(names.count(name) != 1 for name in expected_fixed):
+              sys.exit("Missing, duplicate, or extra hosted evidence artifacts")
+          for case, count in counts.items():
+              if sum(name.startswith(f"proof-synthetic-{case}-") for name in names) != count:
+                  sys.exit(f"Unexpected artifact count for {case}")
           PY
 
   strict-chain:
