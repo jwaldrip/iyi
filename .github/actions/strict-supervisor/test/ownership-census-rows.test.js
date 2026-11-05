@@ -10,8 +10,8 @@ import { OwnershipObserver } from '../src/ownership.js';
 const python = process.env.PYTHON || 'python3';
 const probe = fileURLToPath(new URL('../src/process_identity.py', import.meta.url));
 
-// PID 0 (kernel_task on Darwin) and PID 1 (launchd, or init on Linux) are listed by every census.
-// Rejecting them made every real census fail, so a valid census must accept them.
+// PID 0 (kernel_task on Darwin) and PID 1 (launchd, or init on Linux) are valid census rows.
+// Darwin's kern.proc census self-check requires PID 1; the observer must accept both.
 
 test('the real batch helper lists PID 1 in its census, and the observer census accepts it', t => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ownership-census-rows-'));
