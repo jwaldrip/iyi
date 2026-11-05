@@ -2,6 +2,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
+import { randomBytes } from 'node:crypto';
 import { sanitizeEnvironment, redactSecrets } from './env.js';
 import { IMMUTABLE_BINDING_FIELDS, validateRequest, writeIpcAck, createIpcReader } from './ipc.js';
 import { uploadAndVerifyPayload } from './artifact-adapter.js';
@@ -29,9 +30,41 @@ async function beforeDeadline(promise, deadline, label) {
   } finally { clearTimeout(timer); }
 }
 
+// Replaces a file atomically. The target is never opened for writing, so a
+// failed write or fsync leaves the prior contents intact. Only the temporary
+// file this call created is removed on failure.
+export function writeFileAtomic(target, data, io = fs) {
+  const dir = path.dirname(target);
+  const temp = path.join(dir, `.${path.basename(target)}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`);
+  const bytes = Buffer.from(data);
+  let fd = null, created = false, renamed = false;
+  try {
+    fd = io.openSync(temp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
+    created = true;
+    let written = 0;
+    while (written < bytes.length) {
+      const count = io.writeSync(fd, bytes, written, bytes.length - written);
+      if (!count) throw new Error('short index write');
+      written += count;
+    }
+    io.fsyncSync(fd);
+    const handle = fd;
+    fd = null;
+    io.closeSync(handle);
+    io.renameSync(temp, target);
+    renamed = true;
+    const dirfd = io.openSync(dir, 'r');
+    try { io.fsyncSync(dirfd); } finally { io.closeSync(dirfd); }
+  } finally {
+    if (fd !== null) { try { io.closeSync(fd); } catch { /* the original failure is the one to report */ } }
+    if (created && !renamed) { try { io.unlinkSync(temp); } catch { /* already gone */ } }
+  }
+}
+
 export class StrictSupervisor {
   constructor(options = {}) {
     Object.assign(this, options);
+    this.fileIo = options.fileIo || fs;
     this.parentEnv = options.parentEnv || process.env;
     this.pythonPath = options.pythonPath || 'python3';
     this.artifactsDir = path.resolve(options.artifactsDir || 'strict-proof-artifacts');
@@ -98,7 +131,7 @@ export class StrictSupervisor {
         if (this.stopping && req.event === 'ownership-register') throw new Error('ownership registration refused during shutdown');
         const result = req.event === 'ownership-register'
           ? await this.ownership.register(req, this.childProcess.pid)
-          : await this.ownership.resolve(req);
+          : await this.ownership.resolve(req, { deadline: this.shutdownDeadline });
         if (req.event === 'ownership-resolve' && (!result || typeof result.proof_resolved !== 'boolean')) throw new Error('invalid ownership resolution result');
         ack = { ...req, event: `${req.event}-ack`, verified: req.event === 'ownership-register' ? !this.ownership.failure : result.proof_resolved };
         if (result) ack.ownership_result = result;
@@ -152,8 +185,7 @@ export class StrictSupervisor {
       this.ownershipRecovery.taint_reasons = [...this.ownership.taintReasons];
     }
     const data = JSON.stringify({ invocation_id: this.context.invocation_id, execution_kind: this.context.execution_kind, exit_code: exitCode, controller_signal: this.controllerSignal || null, entries: this.entries, ownership_control_acks: this.ownershipAcks, ownership_ledger: this.ownership?.directory || this.guardRefusal?.ledger || null, ownership_guard_refusal: this.guardRefusal || null, ownership_journal: ownership, ownership_recovery: this.ownershipRecovery || null, lifecycle: this.lifecycle }, null, 2) + '\n';
-    const fd = fs.openSync(this.indexPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW, 0o600);
-    try { fs.writeFileSync(fd, data); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    writeFileAtomic(this.indexPath, data, this.fileIo);
   }
   async run() {
     this.context = await this.establishContext();
@@ -165,15 +197,17 @@ export class StrictSupervisor {
         (this.mode === 'strict' && graceSec !== 30) ||
         !Number.isFinite(finalizationSec) || finalizationSec <= 0) throw new Error('invalid ownership timing');
     const budgetMs = Math.min(45000, finalizationSec * 1000);
-    let child, recoveryPromise, shutdownDeadline, controllerStopTimer;
+    let child, recoveryPromise, controllerStopTimer;
     let streamFailure = null;
     let notifyFailure;
     const failed = new Promise(resolve => { notifyFailure = resolve; });
+    // The shutdown deadline is set once, by the first recovery start. Every shutdown
+    // wait and the one recovery flight share it.
     const startRecovery = () => {
-      if (!shutdownDeadline) shutdownDeadline = performance.now() + budgetMs;
+      if (!this.shutdownDeadline) this.shutdownDeadline = performance.now() + budgetMs;
       if (!recoveryPromise) {
         this.lifecycle.push({ event: 'recovery-started', monotonic_ms: performance.now() });
-        recoveryPromise = Promise.resolve().then(() => this.ownership.recover());
+        recoveryPromise = Promise.resolve().then(() => this.ownership.recover({ deadline: this.shutdownDeadline }));
         // Attach a rejection handler immediately, even if the controller has
         // not exited yet. The finalizer still observes the original rejection.
         recoveryPromise.catch(() => {});
@@ -266,7 +300,7 @@ export class StrictSupervisor {
       // the controller to request resolution or release its pipe writers.
       let status = await Promise.race([exited, failed.then(() => null)]);
       if (!status) {
-        try { status = await beforeDeadline(exited, shutdownDeadline, 'controller exit'); }
+        try { status = await beforeDeadline(exited, this.shutdownDeadline, 'controller exit'); }
         catch (err) { onStreamFailure(err); status = { code: null, signal: null, error: err }; }
       }
       ({ code, signal } = status);
@@ -275,7 +309,7 @@ export class StrictSupervisor {
       this.stopping = true;
       startRecovery();
       const settle = async (promise, label) => {
-        try { return await beforeDeadline(promise, shutdownDeadline, label); }
+        try { return await beforeDeadline(promise, this.shutdownDeadline, label); }
         catch (err) {
           this.failedVerifications++;
           if (!streamFailure) streamFailure = err;
@@ -283,17 +317,21 @@ export class StrictSupervisor {
           return null;
         }
       };
+      const deadlinePassed = () => performance.now() >= this.shutdownDeadline;
+      // One recovery serves the whole shutdown and shares its deadline. A recovery
+      // still unsettled at that deadline is cancelled before any further wait, so
+      // its late continuation cannot probe or signal. abort() records the outcome.
       let result = await settle(recoveryPromise, 'ownership recovery');
+      if (!result && !deadlinePassed()) {
+        // A rejected recovery gets one more attempt, still inside the shared deadline.
+        result = await settle(this.ownership.recover({ deadline: this.shutdownDeadline }), 'final ownership recovery');
+      }
+      if (!result) result = this.ownership.abort(deadlinePassed() ? 'ownership recovery unresolved at the shutdown deadline' : 'ownership recovery failed');
       await settle(requestEnd, 'controller IPC EOF');
       await settle(requestChain, 'controller request drain');
-      // A rejected recovery must not prevent a further attempt to reclaim
-      // committed identities within the remaining shutdown budget.
-      if (!result) result = await settle(this.ownership.recover(), 'final ownership recovery');
-      this.ownershipRecovery = result || {
-        proof_resolved: false, taint_reasons: ['recovery result unavailable'], grace_sec: graceSec,
-        recovery: { terminated: [], absent: [], replaced: [], unverifiable: [],
-          survivors: [...this.ownership.stages.values()].flatMap(stage => [...stage.owned.values()].map(identity => this.ownership.entry(identity))) },
-      };
+      // A control request can still start a stage recovery after the drain. Cancel and record it too.
+      if (this.ownership.busy()) result = this.ownership.abort('ownership control still in flight at the shutdown deadline');
+      this.ownershipRecovery = result;
       if (this.ownership.failure) {
         this.ownershipRecovery.proof_resolved = false;
         this.ownershipRecovery.taint_reasons = [...this.ownership.taintReasons];
