@@ -776,7 +776,8 @@ jobs:
                       if len(files) != 1 or files[0].file_size > 100_000_000:
                           sys.exit("Invalid prior artifact layout")
                       (downloads / (artifact_id + ".tar")).write_bytes(zipped.read(files[0]))
-              report = check_ownership_failure(index, str(root / "ownership-case"), os.environ["CASE"], str(downloads))
+              fake_compiler = os.path.realpath(os.path.join(os.environ["RUNNER_TEMP"], "strict-fake-compiler"))
+              report = check_ownership_failure(index, str(root / "ownership-case"), os.environ["CASE"], str(downloads), expected, fake_compiler)
               ledger = pathlib.Path(index["ownership_ledger"]) / "ownership.jsonl"
               before = (root / "ownership-before-retry.jsonl").read_bytes()
               retry = json.loads(pathlib.Path(os.environ["RETRY_INDEX"]).read_text())
