@@ -1,0 +1,21 @@
+name: Strict authorization synthetic controls
+
+on:
+  push:
+    branches:
+      - 'proof/strict-approval-binding-20261105'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-controls:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Run authorization candidate controls without native proof
+        run: python3 -B -m unittest proof.test_strict_authorization -v
