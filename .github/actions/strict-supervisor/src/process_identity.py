@@ -43,9 +43,6 @@ def _observe_linux(pid):
     try:
         with open(f'/proc/{pid}/stat', encoding='ascii') as f:
             stat = f.read()
-    except ProcessLookupError:
-        # ESRCH: the process exited between the open and the read. That is absence, not an unknown identity.
-        return {'status': 'ABSENT', 'pid': pid}
     except FileNotFoundError:
         # Missing procfs is not evidence that the target exited.
         with open('/proc/self/stat', encoding='ascii') as probe:
@@ -95,10 +92,10 @@ def observe(pid):
 def census():
     """Every listed process as [pid, ppid, state, birth].
 
-    On Linux the listing and the identity come from one /proc read per process, so a
-    row's birth is the birth of the process it was listed as. On Darwin ps lists the
-    processes; a process that exits between the listing and its identity read keeps a
-    row with a null birth, so a caller that needs its identity treats it as unresolved.
+    On Linux the listing and the identity come from one /proc read per process; a process gone at
+    that read, or unreadable, has no parent edge and makes the census untrusted. On Darwin ps lists
+    the PIDs with their parent edges, and each birth comes from that PID's identity read; a process
+    gone at its read, or unreadable, keeps a null birth and is judged as a candidate by the observer.
     """
     if sys.platform.startswith('linux'):
         rows = []
@@ -107,9 +104,8 @@ def census():
                 continue
             pid = int(name)
             obs = observe(pid)
-            if obs['status'] == 'ABSENT':
-                continue
-            if obs['status'] == 'UNKNOWN':
+            if obs['status'] in ('ABSENT', 'UNKNOWN'):
+                # Gone at its own read, or unreadable: no parent edge is known, so the census cannot be trusted.
                 rows.append([pid, None, None, None])
             else:
                 rows.append([pid, obs['ppid'], obs['state'], obs['birth']])
@@ -125,10 +121,13 @@ def census():
         match = _PS_ROW.match(line)
         if not match:
             raise ValueError('unparseable process census')
-        pid, ppid, state = int(match.group(1)), int(match.group(2)), match.group(3)
+        pid, ps_ppid, ps_state = int(match.group(1)), int(match.group(2)), match.group(3)
+        # Parent and state come from ps. Birth comes from this PID's identity read. A PID whose
+        # identity cannot be read, or that exited before the read, keeps a null birth, so the
+        # observer judges its candidacy and taints the observer rather than dropping it.
         obs = observe(pid)
         birth = obs['birth'] if obs['status'] == 'LIVE' else None
-        rows.append([pid, ppid, 'Z' if state.startswith('Z') else state, birth])
+        rows.append([pid, ps_ppid, 'Z' if ps_state.startswith('Z') else ps_state, birth])
     return rows
 
 
