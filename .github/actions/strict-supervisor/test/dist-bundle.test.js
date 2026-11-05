@@ -24,14 +24,14 @@ test('Built dist/index.js runs in isolation without node_modules', async () => {
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'test-dist-bundle-'));
   try {
     const isolatedDistDir = path.join(tempDir, 'dist');
-    await fs.promises.mkdir(isolatedDistDir, { recursive: true });
+    // The bundle loads sibling files (sourcemap-register.cjs and chunks), so copy the whole directory.
+    await fs.promises.cp(path.join(actionRoot, 'dist'), isolatedDistDir, { recursive: true });
     const isolatedDistFile = path.join(isolatedDistDir, 'index.js');
-    await fs.promises.copyFile(distPath, isolatedDistFile);
 
     // Verify that NO node_modules exists in tempDir
     assert.strictEqual(fs.existsSync(path.join(tempDir, 'node_modules')), false);
 
-    await fs.promises.writeFile(path.join(tempDir, 'package.json'), '{"type":"module"}\n');
+    // Module type comes from the copied dist/package.json, not a hand-written root manifest.
     const result = spawnSync(process.execPath, [isolatedDistFile], {
       cwd: tempDir,
       env: { PATH: process.env.PATH },
