@@ -286,6 +286,11 @@ def check_driver_admission(
     return remaining_sec >= required
 
 
+def _file_identity(st: os.stat_result) -> tuple[int, ...]:
+    """Location and content identity of a regular file. Reading updates st_atime, which is not a change."""
+    return (st.st_dev, st.st_ino, st.st_mode, st.st_nlink, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
 class EvidencePublisher:
     """Abstract persistence publisher interface."""
 
@@ -322,6 +327,10 @@ class IpcEvidencePublisher(EvidencePublisher):
             os.set_blocking(self.req_fd, False)
             os.set_blocking(self.ack_fd, False)
         except OSError as exc:
+            # Unusable descriptors are not ours to close. A stale number closed here can be reused by the
+            # controller's own evidence files, so close() must never touch it.
+            self.req_fd = None  # type: ignore
+            self.ack_fd = None  # type: ignore
             self.broken = True
             self.broken_reason = f"Failed to set nonblocking mode: {exc}"
 
@@ -714,7 +723,9 @@ class RemoteStrictController:
     ):
         self.p_path = os.path.abspath(p_path)
         self.w_path = os.path.abspath(w_path)
-        self.compiler_path = os.path.abspath(compiler_path)
+        # pin.json records the realpath of --compiler (the stage emitter canonicalises it). Compare the
+        # same form: on macOS $TMPDIR lies under the /var -> /private/var alias.
+        self.compiler_path = os.path.realpath(compiler_path)
         self.artifacts_dir = os.path.abspath(artifacts_dir)
         self.report_dir = report_dir if report_dir else generate_report_dir()
         self.run_proof_py = run_proof_py if run_proof_py else os.path.join(self.w_path, "proof", "run_proof.py")
@@ -863,7 +874,7 @@ class RemoteStrictController:
                     raise VerificationError("SYNTHETIC-EMITTER-UNSAFE")
                 with os.fdopen(fd, "rb", closefd=False) as f:
                     data = f.read()
-                if os.fstat(fd) != st:
+                if _file_identity(os.fstat(fd)) != _file_identity(st):
                     raise VerificationError("SYNTHETIC-EMITTER-CHANGED")
             finally:
                 os.close(fd)
