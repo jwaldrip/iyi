@@ -56,7 +56,82 @@ def parse_json(data: bytes):
     return json.loads(data.decode("utf-8"))
 
 
-def check_ownership_failure(index: dict, case_data_dir: str | None, case: str, downloads_dir: str | None = None) -> dict:
+def execution_context(args) -> dict[str, str]:
+    return {
+        "invocation_id": args.invocation_id, "execution_kind": "synthetic",
+        "repository": args.repository, "run_id": args.run_id, "run_attempt": args.run_attempt,
+        "job_id": args.job_id, "job_key": args.job_key,
+        "p_sha": revision(args.p), "w_sha": revision(args.w), "c_sha": revision(args.c),
+        "fixture_sha256": hashlib.sha256(FAKE_STAGE_EMITTER_SOURCE.encode("utf-8")).hexdigest(),
+    }
+
+
+def probe_gone(pid: int) -> bool:
+    """Point-probe a recorded descendant. Only a process that no longer exists counts as gone."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    return False
+
+
+def check_prior_archive(archive: dict[str, bytes], request: dict, expected: dict, compiler: str) -> None:
+    unit = request["unit"]
+    require("controller/stage-journal.jsonl" in archive, "prior receipt journal absent")
+    require(f"controller-logs/{unit.replace('/', '_')}-a{request['native_attempt']}.log" in archive, "prior receipt stage log absent")
+    if unit == "plan":
+        require("meta/pin.json" not in archive, "plan receipt carries a pin")
+        return
+    require("meta/pin.json" in archive, "pin receipt lacks pin.json")
+    pin = parse_json(archive["meta/pin.json"])
+    require(pin.get("chain_id") == request["chain_id"] and pin.get("p_source_sha") == expected["p_sha"] and pin.get("w_head") == expected["w_sha"], "prior pin source or chain mismatch")
+    require(os.path.realpath(str(pin.get("compiler_path", ""))) == os.path.realpath(compiler), "prior pin compiler path mismatch")
+    require(pin.get("compiler_sha256") == hashlib.sha256(Path(compiler).read_bytes()).hexdigest(), "prior pin compiler digest mismatch")
+
+
+def check_ownership_acks(index: dict, journal: list, case: str) -> None:
+    acks = index["ownership_control_acks"]
+    require(isinstance(acks, list) and acks, "ownership control ACKs missing")
+    registered: dict[tuple, int] = {}
+    for event in journal:
+        if event.get("event") == "registered":
+            key = (event.get("unit"), event.get("native_attempt"))
+            require(key not in registered, "duplicate ownership registration")
+            registered[key] = event.get("pid")
+    by_event: dict[str, dict[tuple, dict]] = {"ownership-register-ack": {}, "ownership-resolve-ack": {}}
+    request_ids: set[str] = set()
+    for ack in acks:
+        event = ack.get("event")
+        require(event in by_event, "unexpected ownership ACK event")
+        request_id = ack.get("request_id")
+        require(isinstance(request_id, str) and request_id and request_id not in request_ids, "ownership ACK request ID missing or duplicate")
+        request_ids.add(request_id)
+        require(ack.get("protocol_version") == 1 and ack.get("invocation_id") == index["invocation_id"], "ownership ACK invocation binding mismatch")
+        pid, unit, attempt = ack.get("pid"), ack.get("unit"), ack.get("native_attempt")
+        require(isinstance(pid, int) and not isinstance(pid, bool) and pid > 1, "ownership ACK PID invalid")
+        require(isinstance(unit, str) and isinstance(attempt, int) and not isinstance(attempt, bool) and attempt > 0, "ownership ACK attempt invalid")
+        key = (unit, attempt)
+        require(key in registered and registered[key] == pid, "ownership ACK has no matching journal registration")
+        require(key not in by_event[event], "duplicate ownership ACK for stage")
+        by_event[event][key] = ack
+    controller_killed = index.get("controller_signal") == "SIGKILL"
+    for key in registered:
+        unit = key[0]
+        require(key in by_event["ownership-register-ack"], "registered stage lacks ownership register ACK")
+        resolve = by_event["ownership-resolve-ack"].get(key)
+        if resolve is None:
+            # A SIGKILLed controller cannot send resolve IPC; its durable unresolved event is the record.
+            require(controller_killed, "tainted stage lacks ownership resolve ACK")
+            continue
+        result = resolve.get("ownership_result")
+        require(isinstance(result, dict) and isinstance(resolve.get("verified"), bool) and resolve["verified"] is result.get("proof_resolved"), "ownership ACK contradicts result")
+        if not (case == "ownership-run1-outage" and unit in ("plan", "pin")):
+            require(resolve["verified"] is False and result.get("proof_resolved") is False, "tainted stage received positive ownership resolution")
+
+
+def check_ownership_failure(index: dict, case_data_dir: str | None, case: str, downloads_dir: str | None = None, expected: dict | None = None, compiler: str | None = None) -> dict:
     require(case_data_dir is not None, "missing ownership fixture directory")
     root = Path(case_data_dir)
     require((root / "ownership-ready").read_text() == "ready\n", "ownership fixture not ready")
@@ -71,24 +146,39 @@ def check_ownership_failure(index: dict, case_data_dir: str | None, case: str, d
     entries = index["entries"]
     if case == "ownership-run1-outage":
         require([entry["request"]["unit"] for entry in entries] == ["plan", "pin"], "prior receipts missing or stage advanced")
-        require(downloads_dir is not None, "missing prior receipt downloads")
+        require(downloads_dir is not None and expected is not None and compiler is not None, "missing prior receipt context")
         ids = set()
+        request_ids = set()
         for sequence, entry in enumerate(entries, 1):
             request, ack = entry["request"], entry["ack"]
+            unit = request["unit"]
             require(all(key in request and key in ack and request[key] == ack[key] for key in BINDING), "prior receipt binding mismatch")
             require(request.get("invocation_id") == index["invocation_id"] and request.get("snapshot_sequence") == sequence and ack.get("verified") is True, "invalid prior receipt")
+            require(request.get("execution_kind") == "synthetic" and all(request.get(k) == v for k, v in expected.items()), "prior receipt does not match execution context")
+            request_id = request.get("request_id")
+            require(isinstance(request_id, str) and request_id not in request_ids and ack.get("request_id") == request_id, "prior request ID invalid")
+            request_ids.add(request_id)
+            require(request.get("native_attempt") == 1 and request.get("snapshot_kind") == ("plan" if unit == "plan" else "checkpoint"), "prior receipt snapshot identity invalid")
+            require((request.get("chain_id") is None) == (unit == "plan"), "prior receipt chain identity invalid")
             artifact_id = str(ack.get("artifact_id", ""))
             require(artifact_id.isdecimal() and artifact_id not in ids, "invalid prior artifact ID")
             ids.add(artifact_id)
-            payload = (Path(downloads_dir) / (artifact_id + ".tar")).read_bytes()
+            payload_path = Path(downloads_dir) / (artifact_id + ".tar")
+            payload = payload_path.read_bytes()
             require(len(payload) == request["archive_bytes"] == ack.get("downloaded_bytes") and hashlib.sha256(payload).hexdigest() == request["archive_sha256"] == ack.get("downloaded_sha256"), "prior receipt payload altered")
+            check_prior_archive(members(payload_path), request, expected, compiler)
         scratch = Path((root / "scratch-path").read_text())
         require(scratch.is_absolute() and scratch.parts[-3:] == ("run1", "a1", "rg9_work") and not scratch.is_symlink() and not (scratch / "ownership-scratch").is_symlink() and (scratch / "ownership-scratch").read_text() == "preserve during ownership uncertainty\n", "run1 scratch was not preserved")
     else:
         require(entries == [], "unexpected checkpoint after ownership failure")
     require(recovery.get("proof_resolved") is False and recovery.get("taint_reasons"), "ownership failure was resolved")
     require(recovery.get("grace_sec") == 30, "native grace was not preserved")
-    require(index.get("controller_signal") == "SIGKILL" if case == "ownership-crash" else index.get("controller_signal") is not None or index.get("exit_code") != 0, "unexpected controller outcome")
+    controller_signal, controller_exit = index.get("controller_signal"), index.get("exit_code")
+    if case == "ownership-crash":
+        require(controller_signal == "SIGKILL", "unexpected controller outcome: SIGKILL missing")
+    else:
+        observed_exit = isinstance(controller_exit, int) and not isinstance(controller_exit, bool) and controller_exit != 0
+        require(controller_signal is not None or observed_exit, "unexpected controller outcome: no observed signal or nonzero exit")
     if case == "ownership-crash":
         holder_pid = int((root / "pipe-holder-ready").read_text())
         require(holder_pid > 1 and holder_pid not in pids, "request pipe holder missing")
@@ -103,7 +193,10 @@ def check_ownership_failure(index: dict, case_data_dir: str | None, case: str, d
     require(journal[0].get("context", {}).get("invocation_id") == index["invocation_id"], "ledger invocation mismatch")
     if case in ("ownership-census-outage", "ownership-run1-outage"):
         require(any("synthetic permanent census outage" in str(reason) for reason in recovery["taint_reasons"]), "census outage taint missing")
-    require(any(e.get("event") == "unresolved" for e in journal), "durable unresolved reason missing")
+    unresolved = [event for event in journal if event.get("event") == "unresolved"]
+    require(unresolved, "durable unresolved event missing")
+    if case in ("ownership-census-outage", "ownership-run1-outage"):
+        require(any("synthetic permanent census outage" in json.dumps(event, sort_keys=True) for event in unresolved), "persisted outage reason missing")
     registrations = [(event.get("unit"), event.get("native_attempt")) for event in journal if event.get("event") == "registered"]
     expected_stages = [("plan", 1), ("pin", 1), ("run1", 1)] if case == "ownership-run1-outage" else [("plan", 1)]
     require(registrations == expected_stages, "unexpected stage launch or native retry")
@@ -130,15 +223,14 @@ def check_ownership_failure(index: dict, case_data_dir: str | None, case: str, d
     require(set(outcomes) == {"terminated", "absent", "replaced", "unverifiable", "survivors"}, "invalid recovery buckets")
     require(not outcomes["replaced"] and not outcomes["unverifiable"] and not outcomes["survivors"], "fixture processes not reclaimed")
     require(set(pids) <= {entry["pid"] for entry in outcomes["terminated"]}, "descendant recovery missing")
+    for pid in pids:
+        require(probe_gone(pid), "reported descendant still alive after recovery")
+    for entry in outcomes["terminated"]:
+        require(probe_gone(entry["pid"]), "terminated descendant still alive after recovery")
     for bucket in outcomes.values():
         for entry in bucket:
             require(committed.get(entry["pid"]) == tuple(entry.get(key) for key in ("pid", "birth", "root_pid", "unit", "native_attempt")), "recovery identity not committed")
-    for ack in index["ownership_control_acks"]:
-        if ack.get("event") == "ownership-resolve-ack":
-            result = ack.get("ownership_result", {})
-            require(ack.get("verified") is result.get("proof_resolved") and isinstance(ack.get("verified"), bool), "ownership ACK contradicts result")
-            if ack.get("unit") not in ("plan", "pin") or case != "ownership-run1-outage":
-                require(ack.get("verified") is False, "tainted stage received positive ownership resolution")
+    check_ownership_acks(index, journal, case)
     return {"case": case, "invocation_id": index["invocation_id"], "execution_kind": "synthetic", "controller_signal": index.get("controller_signal"), "observed_pids": pids, "flush_timings": timings, "prior_receipts": entries, "lifecycle": index.get("lifecycle", []), "ownership_recovery": recovery, "ownership_journal": journal}
 
 
@@ -168,7 +260,7 @@ def main() -> int:
     index = json.loads(Path(args.index).read_text(encoding="utf-8"))
     if args.case in ("ownership-crash", "ownership-census-outage", "ownership-run1-outage"):
         require(index.get("execution_kind") == "synthetic" and index.get("invocation_id") == args.invocation_id, "ownership context mismatch")
-        report = check_ownership_failure(index, args.case_data_dir, args.case, args.downloads_dir)
+        report = check_ownership_failure(index, args.case_data_dir, args.case, args.downloads_dir, execution_context(args), args.compiler)
         if args.report:
             Path(args.report).write_text(json.dumps(report, sort_keys=True, indent=2) + "\n", encoding="utf-8")
         return 0
@@ -204,13 +296,7 @@ def main() -> int:
         current_context = tuple(request.get(k) for k in CONTEXT)
         require(all(current_context) and (context is None or current_context == context), "missing or changed context")
         context = current_context
-        expected_context = {
-            "invocation_id": args.invocation_id, "execution_kind": "synthetic",
-            "repository": args.repository, "run_id": args.run_id, "run_attempt": args.run_attempt,
-            "job_id": args.job_id, "job_key": args.job_key,
-            "p_sha": revision(args.p), "w_sha": revision(args.w), "c_sha": revision(args.c),
-            "fixture_sha256": hashlib.sha256(FAKE_STAGE_EMITTER_SOURCE.encode("utf-8")).hexdigest(),
-        }
+        expected_context = execution_context(args)
         require(all(request.get(k) == v for k, v in expected_context.items()), "request does not match actual execution context")
         for key in ("run_id", "run_attempt", "job_id"):
             require(isinstance(request[key], str) and request[key].isdigit(), "invalid platform identifier")
