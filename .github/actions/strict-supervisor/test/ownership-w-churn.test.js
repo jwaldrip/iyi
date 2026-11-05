@@ -15,14 +15,16 @@ const probe = fileURLToPath(new URL('../src/process_identity.py', import.meta.ur
 // All output is JSON lines. The only times claimed as lifetimes are minimum sleeps
 // directly performed by the named process; other process classes carry zero.
 const orphan = `import json,subprocess,time
+started=time.monotonic_ns()
 p=subprocess.Popen(['/bin/sleep','120'])
-print(json.dumps({'kind':'spawn','pid':p.pid,'spawn_ns':time.monotonic_ns(),'lifetime_ns':120000000000,'class':'grandchild'}),flush=True)
+print(json.dumps({'kind':'spawn','pid':p.pid,'spawn_ns':time.monotonic_ns(),'guaranteed_end_ns':started+120000000000,'lifetime_ns':120000000000,'class':'grandchild'}),flush=True)
 time.sleep(1)`;
 const driver = `import json,subprocess,sys,threading,time
 sys.stdin.read(1)
 def launch(args,kind,lifetime=0,**kw):
+ started=time.monotonic_ns()
  p=subprocess.Popen(args,**kw)
- print(json.dumps({'kind':'spawn','pid':p.pid,'spawn_ns':time.monotonic_ns(),'lifetime_ns':lifetime,'class':kind}),flush=True)
+ print(json.dumps({'kind':'spawn','pid':p.pid,'spawn_ns':time.monotonic_ns(),'guaranteed_end_ns':started+lifetime,'lifetime_ns':lifetime,'class':kind}),flush=True)
  return p
 def churn():
  live=[]
@@ -43,7 +45,7 @@ def execs():
  for i in range(20): launch(['/bin/sh','-c','exec /bin/sleep 0.3'],'exec',300000000).wait()
 threads=[threading.Thread(target=f) for f in (churn,chains,servers,psloop,execs)]
 for t in threads: t.start()
-top=launch(['/usr/bin/top','-l','3','-s','1','-n','0'],'top',2000000000,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+top=launch(['/usr/bin/top','-l','3','-s','1','-n','0'],'top',stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 i=launch([sys.executable,'-u','-c',${JSON.stringify(orphan)}],'intermediate',1000000000)
 for t in threads: t.join()
 top.wait(); i.wait()
@@ -75,6 +77,19 @@ test('hosted W workload retains owned identities through churn and orphaning', {
   });
   const next = () => queue.length ? Promise.resolve(queue.shift()) : new Promise(resolve => pending.push(resolve));
   const original = observer.readSnapshot.bind(observer);
+  const edges = { rowOrder: 0, startTime: 0 };
+  const record = observer.record.bind(observer);
+  observer.record = event => {
+    if (event.event === 'observed' && observer.snapshot) {
+      const child = observer.snapshot.rows.get(event.pid);
+      const parent = observer.snapshot.rows.get(event.parent);
+      if (child && parent) {
+        if (child.index < parent.index) edges.rowOrder++;
+        else edges.startTime++;
+      }
+    }
+    return record(event);
+  };
   let last;
   observer.readSnapshot = (...args) => { const snap = original(...args); last = snap; return snap; };
   try {
@@ -105,7 +120,9 @@ test('hosted W workload retains owned identities through churn and orphaning', {
     const intermediate = spawns.find(s => s.class === 'intermediate');
     const grandchild = spawns.find(s => s.class === 'grandchild');
     assert.ok(intermediate && grandchild);
-    assert.ok(journal.findIndex(e => e.event === 'observed' && e.pid === grandchild.pid) < journal.findIndex(e => e.event === 'retired' && e.pid === intermediate.pid));
+    const grandchildObserved = journal.findIndex(e => e.event === 'observed' && e.pid === grandchild.pid);
+    const parentRetired = journal.findIndex(e => e.event === 'retired' && e.pid === intermediate.pid);
+    assert.ok(grandchildObserved >= 0 && parentRetired > grandchildObserved);
     assert.ok(report.recovery.terminated.some(e => e.pid === grandchild.pid));
     assert.ok(journal.some(e => e.event === 'signaled' && e.pid === grandchild.pid && e.signal === 'SIGTERM'));
     const current = observer.point(grandchild.pid, 5000, true);
@@ -126,7 +143,7 @@ test('hosted W workload retains owned identities through churn and orphaning', {
     const maxCall = Math.max(0, ...polls.map(p => p.end_ns - p.start_ns));
     const maxGap = Math.max(0, ...polls.slice(1).map((p, i) => p.start_ns - polls[i].end_ns));
     const unseen = spawns.filter(s => s.class === 'churn' && !observed.some(e => e.pid === s.pid)).length;
-    console.log(`polls=${polls.length} longest_census_ns=${maxCall} longest_gap_ns=${maxGap} churn_unadopted=${unseen}`);
+    console.log(`polls=${polls.length} longest_census_ns=${maxCall} longest_gap_ns=${maxGap} churn_unadopted=${unseen} row_order_edges=${edges.rowOrder} start_time_edges=${edges.startTime}`);
   } finally {
     proc.kill('SIGKILL');
     reader.close();
