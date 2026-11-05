@@ -1221,7 +1221,8 @@ class OwnershipObserver {
       snapshot.censusError = 'process census unavailable: invalid census';
     } else {
       for (const row of reply.census.rows) {
-        if (!Array.isArray(row) || row.length !== 4 || !Number.isSafeInteger(row[0]) || row[0] <= 1) {
+        // Census rows are every listed process, so PID 0 (kernel_task on Darwin) and PID 1 (launchd or init) are valid rows.
+        if (!Array.isArray(row) || row.length !== 4 || !Number.isSafeInteger(row[0]) || row[0] < 0) {
           snapshot.censusError = 'process census unavailable: invalid census row';
           break;
         }
