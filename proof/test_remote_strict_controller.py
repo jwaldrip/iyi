@@ -8,6 +8,7 @@ according to PlanStrictCIHang and PlanQuietCorpusFailures.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import io
 import json
@@ -44,6 +45,7 @@ from proof.remote_strict_fixtures import (
     generate_stage_record,
     provision_canonical_w,
 )
+from proof.remote_strict_evidence import OwnedRoot, UnsafeEvidenceError, seal
 
 
 class FakePublisher:
@@ -1574,7 +1576,17 @@ class TestRemoteStrictController(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.report_dir, "run1")))
 
     def test_12c_absent_publisher_refused_before_stage(self):
-        self._assert_refused_before_stage()
+        """Scenario 12c: with no publisher, _preflight refuses itself; no stage intent, plan, pin, or run1 is ever created."""
+        ctrl = self._create_controller()
+        with self.assertRaises(rsc.EvidenceUploadError) as cm:
+            ctrl._preflight()
+        self.assertEqual(str(cm.exception), "PUBLISHER-REQUIRED")
+        self.assertEqual(ctrl.run(), 2)
+        self.assertEqual(ctrl.overall_status, "UPLOAD_FAILED")
+        self.assertEqual(ctrl.records, [])
+        self.assertNotIn("stage-intent", [e["type"] for e in self._journal_events()])
+        for name in ("plan", "run1", "pin.json"):
+            self.assertFalse(os.path.exists(os.path.join(self.report_dir, name)), name)
 
     def test_12d_native_entry_and_missing_emitter_refused(self):
         pub = FakePublisher()
@@ -1676,6 +1688,246 @@ class TestRemoteStrictController(unittest.TestCase):
         make_archive(b"X" + expected[1:])
         with self.assertRaisesRegex(ValueError, "manifest content mismatch"):
             members(path)
+
+    @contextlib.contextmanager
+    def _no_hang(self, seconds: int = 10):
+        """A refusal must return promptly. A blocked open (FIFO) fails the test instead of hanging CI."""
+        def on_alarm(signum, frame):
+            raise TimeoutError("refusal did not return: a blocking open was not refused")
+        previous = signal.signal(signal.SIGALRM, on_alarm)
+        signal.alarm(seconds)
+        try:
+            yield
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
+
+    def _assert_unsafe(self, expected: str, fn):
+        """The refusal must carry this exact code and label, not any OSError or other failure."""
+        with self.assertRaises(UnsafeEvidenceError) as cm:
+            fn()
+        self.assertEqual(str(cm.exception), expected)
+
+    def _journal_events(self) -> list[dict[str, Any]]:
+        path = os.path.join(self.artifacts_dir, "stage-journal.jsonl")
+        if not os.path.exists(path):
+            return []
+        with open(path, encoding="utf-8") as f:
+            return [json.loads(line) for line in f if line.strip()]
+
+    def test_05c_journal_link_refused_and_target_untouched(self):
+        """Scenario 5c: a link planted at stage-journal.jsonl is refused by the writer and never followed."""
+        ctrl = self._create_controller()
+        ctrl._record_journal_event("before-link", {})
+        self.assertEqual([e["type"] for e in self._journal_events()], ["before-link"])
+        journal = os.path.join(self.artifacts_dir, "stage-journal.jsonl")
+        external = os.path.join(self.test_dir, "external-journal")
+        with open(external, "wb") as f:
+            f.write(b"sentinel")
+        os.unlink(journal)
+        os.symlink(external, journal)
+        self._assert_unsafe("UNSAFE-WRITER stage-journal.jsonl",
+                            lambda: ctrl._record_journal_event("after-link", {}))
+        with open(external, "rb") as f:
+            self.assertEqual(f.read(), b"sentinel")
+
+    def test_05d_log_link_refused_and_target_untouched(self):
+        """Scenario 5d: a link planted at a stage log is refused; the external target is never written."""
+        ctrl = self._create_controller()
+        with ctrl.evidence_root.open_writer("controller-logs/run1-a1.log") as f:
+            f.write(b"ok\n")
+        log = os.path.join(self.artifacts_dir, "controller-logs", "run1-a1.log")
+        external = os.path.join(self.test_dir, "external-log")
+        with open(external, "wb") as f:
+            f.write(b"sentinel")
+        os.unlink(log)
+        os.symlink(external, log)
+        self._assert_unsafe("UNSAFE-WRITER controller-logs/run1-a1.log",
+                            lambda: ctrl.evidence_root.open_writer("controller-logs/run1-a1.log"))
+        with open(external, "rb") as f:
+            self.assertEqual(f.read(), b"sentinel")
+
+    def test_05e_ancestor_link_refused_before_any_write(self):
+        """Scenario 5e: a symlinked directory above a stage log is refused; nothing is created beneath its target."""
+        ctrl = self._create_controller()
+        with ctrl.evidence_root.open_writer("controller-logs/run1-a1.log") as f:
+            f.write(b"ok\n")
+        logs = os.path.join(self.artifacts_dir, "controller-logs")
+        external = os.path.join(self.test_dir, "external-logs")
+        os.makedirs(external)
+        shutil.rmtree(logs)
+        os.symlink(external, logs)
+        self._assert_unsafe("UNSAFE-ANCESTOR controller-logs",
+                            lambda: ctrl.evidence_root.open_writer("controller-logs/run2-a1.log"))
+        self.assertEqual(os.listdir(external), [])
+
+    def test_05f_root_alias_refused_at_construction(self):
+        """Scenario 5f: an alias naming the owned artifacts root is refused when the controller opens it."""
+        self._create_controller()  # positive control: the real root opens
+        alias = os.path.join(self.test_dir, "alias-artifacts")
+        os.symlink(self.artifacts_dir, alias)
+        self._assert_unsafe("UNSAFE-ROOT alias-artifacts",
+                            lambda: self._create_controller(artifacts_dir=alias))
+
+    def test_05g_fifo_member_refused_without_blocking(self):
+        """Scenario 5g: a FIFO in a sealed attempt is refused as UNSAFE-MEMBER by walk, add_file and seal; nothing blocks."""
+        attempt = os.path.join(self.report_dir, "run1", "a1")
+        os.makedirs(attempt)
+        with open(os.path.join(attempt, "ok.txt"), "wb") as f:
+            f.write(b"ok")
+        with self._no_hang():
+            path, _, _ = seal(self.report_dir, self.artifacts_dir, "run1", 1, self.chain_id, 1)
+        self.assertTrue(os.path.isfile(path))  # positive control: the regular member seals
+        os.mkfifo(os.path.join(attempt, "stream.fifo"))
+        with self._no_hang():
+            self._assert_unsafe("UNSAFE-MEMBER run1/a1/stream.fifo",
+                                lambda: seal(self.report_dir, self.artifacts_dir, "run1", 1, self.chain_id, 2))
+        archives = os.path.join(self.artifacts_dir, "incremental-archives")
+        self.assertFalse(any("seq002" in name for name in os.listdir(archives)))
+        root = OwnedRoot(self.report_dir)
+        try:
+            tar = tarfile.open(fileobj=io.BytesIO(), mode="w")
+            with self._no_hang():
+                root.add_file(tar, "run1/a1/ok.txt", "attempt/ok.txt")  # positive control
+                self._assert_unsafe("UNSAFE-MEMBER run1/a1/stream.fifo",
+                                    lambda: list(root.walk("run1/a1", lambda rel, is_dir: True)))
+                os.mkfifo(os.path.join(self.report_dir, "pin.json"))
+                self._assert_unsafe("UNSAFE-MEMBER pin.json",
+                                    lambda: root.add_file(tar, "pin.json", "meta/pin.json", optional=True))
+        finally:
+            root.close()
+
+    def test_05h_file_changing_while_read_refused(self):
+        """Scenario 5h: a member that grows or is replaced while tarfile reads it is refused as UNSTABLE-MEMBER."""
+        base = os.path.join(self.report_dir, "run1", "a1")
+        os.makedirs(base)
+        path = os.path.join(base, "log.txt")
+        root = OwnedRoot(self.report_dir)
+        real_addfile = tarfile.TarFile.addfile
+
+        def grow(tar_self, tarinfo, fileobj=None, *args, **kwargs):
+            result = real_addfile(tar_self, tarinfo, fileobj, *args, **kwargs)
+            with open(path, "ab") as f:
+                f.write(b"def")
+            return result
+
+        def replace(tar_self, tarinfo, fileobj=None, *args, **kwargs):
+            result = real_addfile(tar_self, tarinfo, fileobj, *args, **kwargs)
+            os.replace(path + ".new", path)
+            return result
+
+        try:
+            for change, mutate in (("grow", grow), ("replace", replace)):
+                with self.subTest(change=change):
+                    with open(path, "wb") as f:
+                        f.write(b"abc")
+                    with open(path + ".new", "wb") as f:
+                        f.write(b"xyz")
+                    tar = tarfile.open(fileobj=io.BytesIO(), mode="w")
+                    root.add_file(tar, "run1/a1/log.txt", "attempt/log.txt")  # positive control: unchanged member
+                    with mock.patch.object(tarfile.TarFile, "addfile", mutate):
+                        self._assert_unsafe("UNSTABLE-MEMBER run1/a1/log.txt",
+                                            lambda: root.add_file(tar, "run1/a1/log.txt", "attempt/log.txt"))
+        finally:
+            root.close()
+
+    def test_05i_replacement_during_seal_refused(self):
+        """Scenario 5i: an artifacts or report root replaced after it was opened is refused before any archive is created."""
+        os.makedirs(self.report_dir, exist_ok=True)
+        held = OwnedRoot(self.artifacts_dir)
+        try:
+            os.rename(self.artifacts_dir, self.artifacts_dir + ".moved")
+            os.mkdir(self.artifacts_dir)
+            self._assert_unsafe("REPLACED-ARTIFACT-ROOT",
+                                lambda: seal(self.report_dir, self.artifacts_dir, "plan", 1, None, 1, artifacts_root=held))
+        finally:
+            held.close()
+        self.assertFalse(os.path.exists(os.path.join(self.artifacts_dir, "incremental-archives")))
+        held_report = OwnedRoot(self.report_dir)
+        try:
+            os.rename(self.report_dir, self.report_dir + ".moved")
+            os.mkdir(self.report_dir)
+            self._assert_unsafe("REPLACED-REPORT-ROOT",
+                                lambda: seal(self.report_dir, self.artifacts_dir, "plan", 1, None, 1, report_root=held_report))
+        finally:
+            held_report.close()
+        self.assertFalse(os.path.exists(os.path.join(self.artifacts_dir, "incremental-archives")))
+
+    def test_05j_directory_replaced_between_writes_refused(self):
+        """Scenario 5j: an attempt directory replaced after it was first opened is refused as REPLACED-DIRECTORY."""
+        os.makedirs(self.report_dir, exist_ok=True)
+        root = OwnedRoot(self.report_dir)
+        try:
+            os.makedirs(os.path.join(self.report_dir, "run1", "a1"))
+            root.write("run1/a1/x.txt", b"1")  # positive control: first write
+            attempt = os.path.join(self.report_dir, "run1", "a1")
+            os.rename(attempt, attempt + ".moved")
+            os.mkdir(attempt)
+            self._assert_unsafe("REPLACED-DIRECTORY run1/a1", lambda: root.write("run1/a1/y.txt", b"2"))
+            self.assertFalse(os.path.exists(os.path.join(attempt, "y.txt")))
+        finally:
+            root.close()
+
+    def test_05k_seal_copy_refuses_fifo_without_blocking(self):
+        """Scenario 5k: seal_copy and its completion reader refuse a FIFO promptly; regular files still pass."""
+        script = os.path.join(REPO_ROOT, ".github", "actions", "strict-supervisor", "src", "seal_copy.py")
+        payload = b"archive-bytes"
+        digest = hashlib.sha256(payload).hexdigest()
+        good = os.path.join(self.artifacts_dir, "good.tar")
+        with open(good, "wb") as f:
+            f.write(payload)
+        proc = subprocess.run([sys.executable, script, self.artifacts_dir, good,
+                               os.path.join(self.test_dir, "copy-good.tar"), str(len(payload)), digest],
+                              capture_output=True, text=True, timeout=10)
+        self.assertEqual(proc.returncode, 0, proc.stderr)  # positive control
+        fifo = os.path.join(self.artifacts_dir, "fifo.tar")
+        os.mkfifo(fifo)
+        target = os.path.join(self.test_dir, "copy-fifo.tar")
+        proc = subprocess.run([sys.executable, script, self.artifacts_dir, fifo, target, "0", digest],
+                              capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("archive is not a singly linked regular file", proc.stderr)
+        self.assertFalse(os.path.exists(target))
+        completion = os.path.join(self.artifacts_dir, "controller-completion.json")
+        with open(completion, "wb") as f:
+            f.write(b"{}")
+        proc = subprocess.run([sys.executable, script, "--read-completion", self.artifacts_dir],
+                              capture_output=True, text=True, timeout=10)
+        self.assertEqual((proc.returncode, proc.stdout), (0, "{}"))  # positive control
+        os.unlink(completion)
+        os.mkfifo(completion)
+        proc = subprocess.run([sys.executable, script, "--read-completion", self.artifacts_dir],
+                              capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("invalid completion file", proc.stderr)
+
+    def test_12k_pin_identity_refuses_each_field(self):
+        """Scenario 12k: _check_pin_identity accepts only the exact pin for this run and refuses each drifted, absent, or changed field."""
+        ctrl = self._create_controller()
+        with open(ctrl.compiler_path, "rb") as f:
+            digest = hashlib.sha256(f.read()).hexdigest()
+        good = {"p_source_sha": ctrl.p_sha, "w_head": ctrl.w_sha,
+                "compiler_path": ctrl.compiler_path, "compiler_sha256": digest}
+        ctrl._check_pin_identity(good)  # positive control
+        drifted = {"p_source_sha": "1" * 40, "w_head": "1" * 40,
+                   "compiler_path": ctrl.compiler_path + ".other", "compiler_sha256": "1" * 64}
+        for field, value in drifted.items():
+            for case in ("drift", "absent"):
+                with self.subTest(field=field, case=case):
+                    pin = dict(good)
+                    if case == "drift":
+                        pin[field] = value
+                    else:
+                        del pin[field]
+                    with self.assertRaises(rsc.VerificationError) as cm:
+                        ctrl._check_pin_identity(pin)
+                    self.assertEqual(str(cm.exception), "PIN-IDENTITY-MISMATCH")
+        with open(ctrl.compiler_path, "ab") as f:
+            f.write(b"# changed after pinning\n")
+        with self.assertRaises(rsc.VerificationError) as cm:
+            ctrl._check_pin_identity(good)
+        self.assertEqual(str(cm.exception), "PIN-IDENTITY-MISMATCH")
+
 
     # -------------------------------------------------------------------------
     # 13. Test Temp Dirs Owned & Cleanup

@@ -53,7 +53,8 @@ def copy(root, source, target, expected_size, expected_hash):
     try:
         for component in parts[:-1]:
             opened.append(os.open(component, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY, dir_fd=opened[-1]))
-        filefd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=opened[-1])
+        # O_NONBLOCK: opening a FIFO for reading must not block before the regular-file check refuses it.
+        filefd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=opened[-1])
         opened.append(filefd)
         before = os.fstat(filefd)
         if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
@@ -91,7 +92,7 @@ def read_completion(root):
     rootfd = chain[-1]
     fd = None
     try:
-        fd = os.open('controller-completion.json', os.O_RDONLY | os.O_NOFOLLOW, dir_fd=rootfd)
+        fd = os.open('controller-completion.json', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=rootfd)
         before = os.fstat(fd)
         if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size > 4 * 1024 * 1024:
             raise ValueError('invalid completion file')
