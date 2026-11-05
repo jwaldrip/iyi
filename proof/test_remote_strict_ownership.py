@@ -57,6 +57,16 @@ class OutageOracleTests(unittest.TestCase):
                 with self.assertRaises(ValueError) as caught:
                     check(changed)
                 self.assertNotIn("ownership failure was resolved", str(caught.exception))
+            for position, field, value, message in (
+                (3, "snapshot_kind", "checkpoint", "prior receipt snapshot identity invalid"),
+                (2, "chain_id", "other", "prior receipt chain identity invalid"),
+                (2, "native_attempt", 2, "prior receipt snapshot identity invalid"),
+            ):
+                changed = copy.deepcopy(index)
+                for side in ("request", "ack"):
+                    changed["entries"][position][side][field] = value
+                with self.subTest(field=field), self.assertRaisesRegex(ValueError, message):
+                    check(changed)
             (root / "3.tar").write_bytes(b"tampered")
             with self.assertRaisesRegex(ValueError, "payload altered"):
                 check(index)
@@ -100,6 +110,12 @@ class OutageOracleTests(unittest.TestCase):
             mutate(changed["ownership_control_acks"])
             with self.assertRaises(ValueError):
                 check_ownership_acks(changed, journal, "ownership-run1-outage")
+        changed = copy.deepcopy(index)
+        resolution = changed["ownership_control_acks"][-1]
+        resolution["verified"] = True
+        resolution["ownership_result"]["proof_resolved"] = True
+        with self.assertRaisesRegex(ValueError, "incorrect ownership resolution"):
+            check_ownership_acks(changed, journal, "ownership-run1-outage")
 
     def test_terminal_failure_controls(self):
         entries = [{"request": {"chain_id": None if i == 0 else "chain"}, "ack": {"id": i}} for i in range(4)]
