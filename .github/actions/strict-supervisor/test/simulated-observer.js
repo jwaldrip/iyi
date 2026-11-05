@@ -24,6 +24,14 @@ export function simulatedObserver(t, { graceSec = 1, budgetMs = 5000 } = {}) {
   observer.now = () => clock;
   observer.sleep = async ms => { clock += ms; };
   observer.census = () => new Map([...processes].filter(([, p]) => !p.unknown).map(([pid, p]) => [pid, p.ppid]));
+  // The census row of a PID, from the same map as census(). Its index is the map's order, as the kernel's row order is.
+  observer.censusRow = pid => {
+    const p = processes.get(pid);
+    if (!p || p.unknown) return undefined;
+    return { identity: { status: 'LIVE', pid, birth: p.birth, ppid: p.ppid, state: p.state }, index: [...processes.keys()].indexOf(pid) };
+  };
+  // Every simulated birth precedes the call, so only the row order decides the edge rule.
+  observer.censusStartWallUs = () => Number.MAX_SAFE_INTEGER;
   observer.point = pid => {
     const p = processes.get(pid);
     if (!p) return { status: 'ABSENT', pid };
