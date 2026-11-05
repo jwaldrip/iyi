@@ -11,6 +11,8 @@ import { OwnershipObserver } from './ownership.js';
 const WORKSPACE_ACTION_SRC = path.resolve('.github/actions/strict-supervisor/src');
 const ACTION_SRC = fs.existsSync(WORKSPACE_ACTION_SRC) ? WORKSPACE_ACTION_SRC : path.resolve('src');
 const CONTEXT_FIELDS = ['invocation_id', 'execution_kind', 'repository', 'run_id', 'run_attempt', 'job_id', 'job_key', 'p_sha', 'w_sha', 'c_sha', 'fixture_sha256'];
+// After the supervisor's own SIGKILL, the controller's exit is observed within this window.
+const CONTROLLER_KILL_SETTLE_MS = 5000;
 const EMITTER_DIGEST = `import ast,hashlib,sys\nt=ast.parse(open(sys.argv[1],encoding='utf8').read())\nx=[n.value for n in t.body if isinstance(n,ast.Assign) and any(isinstance(a,ast.Name) and a.id=='FAKE_STAGE_EMITTER_SOURCE' for a in n.targets)]\nassert len(x)==1\ns=ast.literal_eval(x[0]); assert isinstance(s,str)\nprint(hashlib.sha256(s.encode('utf8')).hexdigest())`;
 
 function sha(dir) {
@@ -73,6 +75,7 @@ export class StrictSupervisor {
     this.acks = [];
     this.ownershipAcks = [];
     this.lifecycle = [];
+    this.controllerSignals = [];
     this.entries = [];
     this.seenRequestIds = new Set();
     this.lastSnapshotSequence = 0;
@@ -187,7 +190,7 @@ export class StrictSupervisor {
       this.ownershipRecovery.proof_resolved = false;
       this.ownershipRecovery.taint_reasons = [...this.ownership.taintReasons];
     }
-    const data = JSON.stringify({ invocation_id: this.context.invocation_id, execution_kind: this.context.execution_kind, exit_code: exitCode, controller_signal: this.controllerSignal || null, entries: this.entries, ownership_control_acks: this.ownershipAcks, ownership_ledger: this.ownership?.directory || this.guardRefusal?.ledger || null, ownership_guard_refusal: this.guardRefusal || null, ownership_journal: ownership, ownership_recovery: this.ownershipRecovery || null, lifecycle: this.lifecycle }, null, 2) + '\n';
+    const data = JSON.stringify({ invocation_id: this.context.invocation_id, execution_kind: this.context.execution_kind, exit_code: exitCode, controller_signal: this.controllerSignal || null, controller_signal_sent_by: this.controllerSignal ? (this.controllerSignals.some(s => s.signal === this.controllerSignal) ? 'supervisor' : 'external') : null, controller_signals: this.controllerSignals, entries: this.entries, ownership_control_acks: this.ownershipAcks, ownership_ledger: this.ownership?.directory || this.guardRefusal?.ledger || null, ownership_guard_refusal: this.guardRefusal || null, ownership_journal: ownership, ownership_recovery: this.ownershipRecovery || null, lifecycle: this.lifecycle }, null, 2) + '\n';
     writeFileAtomic(this.indexPath, data, this.fileIo);
   }
   async run() {
@@ -200,12 +203,14 @@ export class StrictSupervisor {
         (this.mode === 'strict' && graceSec !== 30) ||
         !Number.isFinite(finalizationSec) || finalizationSec <= 0) throw new Error('invalid ownership timing');
     const budgetMs = Math.min(45000, finalizationSec * 1000);
-    let child, recoveryPromise, controllerStopTimer;
+    // The shutdown budget must outlast a stage's own grace, or the controller is stopped before any stage gets it.
+    if (budgetMs <= graceSec * 1000) throw new Error('invalid ownership timing');
+    let child, recoveryPromise, controllerKillTimer = null, killArmed = false;
     let streamFailure = null;
     let notifyFailure;
     const failed = new Promise(resolve => { notifyFailure = resolve; });
-    // The shutdown deadline is set once, by the first recovery start. Every shutdown
-    // wait and the one recovery flight share it.
+    // The shutdown deadline is set once, by the first shutdown start (a failure or the recovery start).
+    // Every shutdown wait and the one recovery flight share it.
     const startRecovery = () => {
       if (!this.shutdownDeadline) this.shutdownDeadline = performance.now() + budgetMs;
       if (!recoveryPromise) {
@@ -217,20 +222,36 @@ export class StrictSupervisor {
       }
       return recoveryPromise;
     };
+    // Every signal the supervisor sends the controller goes through here, so the record says who sent it.
+    const alive = () => Boolean(child) && child.exitCode === null && child.signalCode === null;
+    const signalController = (signal, reason) => {
+      if (!alive() || !child.kill(signal)) return false;
+      const sent = { signal, reason, monotonic_ms: performance.now() };
+      this.controllerSignals.push(sent);
+      this.lifecycle.push({ event: 'controller-signal-sent', ...sent });
+      return true;
+    };
+    // Shutdown starts once. Every wait shares the deadline, and the controller is SIGKILLed only when it
+    // passes, so a controller still persisting its unit keeps the whole shutdown budget.
+    const beginShutdown = () => {
+      if (!this.shutdownDeadline) this.shutdownDeadline = performance.now() + budgetMs;
+      if (killArmed || !alive()) return;
+      killArmed = true;
+      controllerKillTimer = setTimeout(() => {
+        controllerKillTimer = null;
+        signalController('SIGKILL', 'shutdown deadline reached before the controller exited');
+      }, Math.max(0, this.shutdownDeadline - performance.now()));
+    };
     const onFailure = reason => {
       this.stopping = true;
       if (!streamFailure) streamFailure = new Error(reason);
-      if (child && child.exitCode === null && child.signalCode === null) {
-        child.kill('SIGTERM');
-        controllerStopTimer ||= setTimeout(() => {
-          if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-        }, Math.min(5000, budgetMs));
-      }
+      if (!this.controllerSignals.some(s => s.signal === 'SIGTERM')) signalController('SIGTERM', `ownership failure: ${reason}`);
+      beginShutdown();
       startRecovery();
       notifyFailure();
     };
     const childArgs = this.buildChildArgs();
-    const tempRoot = fs.realpathSync('/tmp');
+    const tempRoot = this.ownershipTempRoot || fs.realpathSync('/tmp');
     const guardPath = path.join(tempRoot, 'strict-supervisor-ownership');
     try {
       this.ownership = new OwnershipObserver(this.pythonPath, path.join(ACTION_SRC, 'process_identity.py'), {
@@ -265,7 +286,7 @@ export class StrictSupervisor {
     if (this.mode === 'validation-only' && ['ownership-crash', 'ownership-census-outage', 'ownership-run1-outage'].includes(this.validationCase)) {
       crashDeadline = setTimeout(() => {
         streamFailure = new Error('synthetic crash readiness not observed');
-        child.kill('SIGKILL');
+        signalController('SIGKILL', 'synthetic crash readiness not observed');
       }, 120000);
       crashTimer = setInterval(() => {
         try {
@@ -280,7 +301,7 @@ export class StrictSupervisor {
           if (this.validationCase !== 'ownership-crash') {
             this.ownership.census = () => { throw new Error('synthetic permanent census outage'); };
             this.ownership.fail('synthetic permanent census outage');
-          } else child.kill('SIGKILL');
+          } else signalController('SIGKILL', 'synthetic crash fixture');
         } catch (err) {
           if (err.code !== 'ENOENT') {
             streamFailure = err;
@@ -290,7 +311,7 @@ export class StrictSupervisor {
         }
       }, 100);
     }
-    const forward = signal => { if (child.exitCode === null) child.kill(signal); };
+    const forward = signal => { signalController(signal, 'forwarded from the job'); };
     const onInt = () => forward('SIGINT'), onTerm = () => forward('SIGTERM');
     process.on('SIGINT', onInt); process.on('SIGTERM', onTerm);
     let code = null, signal = null;
@@ -303,12 +324,17 @@ export class StrictSupervisor {
       // the controller to request resolution or release its pipe writers.
       let status = await Promise.race([exited, failed.then(() => null)]);
       if (!status) {
-        try { status = await beforeDeadline(exited, this.shutdownDeadline, 'controller exit'); }
-        catch (err) { onStreamFailure(err); status = { code: null, signal: null, error: err }; }
+        // The controller has until the shared deadline to exit by itself, then its SIGKILL, then one settle window.
+        try { status = await beforeDeadline(exited, this.shutdownDeadline + CONTROLLER_KILL_SETTLE_MS, 'controller exit'); }
+        catch (err) { if (!streamFailure) streamFailure = err; status = { code: null, signal: null, error: err }; }
       }
       ({ code, signal } = status);
       this.controllerSignal = signal;
-      if (status.error || signal) this.ownership.fail(`controller ${status.error ? `error: ${status.error.message}` : `terminated by ${signal}`}`);
+      if (status.error) this.ownership.fail(`controller error: ${status.error.message}`);
+      else if (signal) {
+        const sent = this.controllerSignals.find(s => s.signal === signal);
+        this.ownership.fail(sent ? `controller stopped by supervisor ${signal} (${sent.reason})` : `controller terminated by ${signal}`);
+      }
       this.stopping = true;
       startRecovery();
       const settle = async (promise, label) => {
@@ -356,7 +382,7 @@ export class StrictSupervisor {
     } finally {
       clearInterval(crashTimer);
       clearTimeout(crashDeadline);
-      clearTimeout(controllerStopTimer);
+      clearTimeout(controllerKillTimer);
       process.removeListener('SIGINT', onInt); process.removeListener('SIGTERM', onTerm);
       this.ownership.close();
     }
