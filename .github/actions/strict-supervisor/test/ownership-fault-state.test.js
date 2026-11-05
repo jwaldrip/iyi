@@ -22,6 +22,12 @@ function fixture(t, { graceSec = 1, budgetMs = 5000 } = {}) {
     if (outage) throw new Error('injected census outage');
     return new Map([...processes].filter(([, p]) => !p.unknown).map(([pid, p]) => [pid, p.ppid]));
   };
+  observer.censusRow = pid => {
+    const p = processes.get(pid);
+    if (!p || p.unknown) return undefined;
+    return { identity: { status: 'LIVE', pid, birth: p.birth, ppid: p.ppid, state: p.state }, index: [...processes.keys()].indexOf(pid) };
+  };
+  observer.censusStartWallUs = () => Number.MAX_SAFE_INTEGER;
   observer.point = pid => {
     const p = processes.get(pid);
     if (!p) return { status: 'ABSENT', pid };

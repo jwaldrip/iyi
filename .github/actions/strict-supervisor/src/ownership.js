@@ -26,6 +26,15 @@ function observationFromRow([pid, ppid, state, birth]) {
   return normalizeObservation({ status: 'LIVE', pid, birth, ppid, state }, pid);
 }
 
+// A birth as microseconds since the epoch, for ordering. A simulated birth may have no fraction.
+function birthMicros(birth) {
+  const [sec, frac = ''] = String(birth).split('.');
+  return Number(sec) * 1e6 + Number(frac.padEnd(6, '0'));
+}
+
+// A helper-reported integer, or null when it is absent or not a whole non-negative number.
+function wholeNumber(value) { return Number.isSafeInteger(value) && value >= 0 ? value : null; }
+
 // Polling cannot see a fork and reparent entirely between observations. A
 // point probe followed by kill is also not an atomic identity-bound signal.
 export class OwnershipObserver {
@@ -102,7 +111,7 @@ export class OwnershipObserver {
   // One helper call per poll: the census and the identity of each requested PID. When
   // the call fails as a whole, every requested PID is UNKNOWN and the census is an error.
   readSnapshot(pids, timeout) {
-    const snapshot = { census: new Map(), censusError: null, identities: new Map() };
+    const snapshot = { census: new Map(), rows: new Map(), call: { startWallUs: null, startNs: null, endNs: null }, censusError: null, identities: new Map() };
     let reply;
     try {
       reply = JSON.parse(execFileSync(this.python, [this.identityScript, '--batch'], {
@@ -122,7 +131,9 @@ export class OwnershipObserver {
     } else if (!Array.isArray(reply.census.rows)) {
       snapshot.censusError = 'process census unavailable: invalid census';
     } else {
-      for (const row of reply.census.rows) {
+      // The call's own clock readings, from the same reply as the rows. They bound when each row was read.
+      snapshot.call = { startWallUs: wholeNumber(reply.census.call_start_wall_us), startNs: wholeNumber(reply.census.call_start_ns), endNs: wholeNumber(reply.census.call_end_ns) };
+      for (const [index, row] of reply.census.rows.entries()) {
         // Census rows are every listed process, so PID 0 (kernel_task on Darwin) and PID 1 (launchd or init) are valid rows.
         if (!Array.isArray(row) || row.length !== 4 || !Number.isSafeInteger(row[0]) || row[0] < 0) {
           snapshot.censusError = 'process census unavailable: invalid census row';
@@ -135,9 +146,13 @@ export class OwnershipObserver {
           snapshot.censusError = 'process census unavailable: invalid census row';
           break;
         }
-        // A zombie is no census parent or child, but its identity stays readable for point reads.
+        // Each PID names one row in one reply. A repeated PID cannot be bound to one parent edge.
+        if (snapshot.rows.has(pid)) { snapshot.censusError = 'process census unavailable: duplicate census row'; break; }
+        const identity = observationFromRow(row);
+        // A zombie is no census parent or child. Its row still anchors the edge rule, and its identity stays readable.
+        snapshot.rows.set(pid, { identity, index });
         if (!state.startsWith('Z')) snapshot.census.set(pid, ppid);
-        snapshot.identities.set(pid, observationFromRow(row));
+        snapshot.identities.set(pid, identity);
       }
     }
     const observed = new Map(replyOk
@@ -151,6 +166,23 @@ export class OwnershipObserver {
     const snapshot = this.snapshot || this.readSnapshot([], timeout);
     if (snapshot.censusError) throw new Error(snapshot.censusError);
     return snapshot.census;
+  }
+
+  // The poll's census row for a PID, zombies included, from the same reply as census().
+  censusRow(pid) {
+    return this.pollSnapshot().rows.get(pid);
+  }
+
+  // The helper's wall-clock start of the census call in microseconds, or null when it did not say.
+  censusStartWallUs() {
+    return this.pollSnapshot().call.startWallUs;
+  }
+
+  // A row is bound only inside a poll, so every row read comes from one reply.
+  pollSnapshot() {
+    if (!this.snapshot) throw new Error('census read outside a poll');
+    if (this.snapshot.censusError) throw new Error(this.snapshot.censusError);
+    return this.snapshot;
   }
 
   // A read inside a poll is served from the poll's snapshot. A fresh read goes to the helper,
@@ -231,6 +263,29 @@ export class OwnershipObserver {
     return this.withSnapshot(this.activePids(), timeout, () => this.observeNow(timeout, censusTimeout));
   }
 
+  // The edge rule. A census row Y that is not yet owned is adopted only when its owned parent P
+  // (a) has a row in the same reply with P's committed birth, (b) was born before Y in microseconds,
+  // and (c) either lists Y before P or Y was born before the call started. Anything else is ambiguous.
+  // Returns true when Y was adopted.
+  bindChild(stage, pid, parent) {
+    const child = this.censusRow(pid);
+    if (!child || child.identity.status !== 'LIVE') { this.fail(`identity unavailable: ${pid}`); return false; }
+    const ambiguous = () => { this.fail(`ambiguous ancestry: ${parent} -> ${pid}`); return false; };
+    const parentRow = this.censusRow(parent);
+    const parentIdentity = stage.active.get(parent);
+    const candidate = child.identity;
+    if (candidate.state === 'Z' || candidate.ppid !== parent) return ambiguous();
+    if (!parentRow || parentRow.identity.status !== 'LIVE' || parentRow.identity.birth !== parentIdentity.birth) return ambiguous();
+    if (birthMicros(parentIdentity.birth) >= birthMicros(candidate.birth)) return ambiguous();
+    const startUs = this.censusStartWallUs();
+    if (!(child.index < parentRow.index || (startUs !== null && birthMicros(candidate.birth) < startUs))) return ambiguous();
+    const identity = { pid, birth: candidate.birth, root_pid: stage.pid, unit: stage.unit, native_attempt: stage.attempt, termAt: null, killed: false, outcome: null };
+    try { this.record({ event: 'observed', ...this.entry(identity), parent }); }
+    catch (e) { this.fail(`ownership persistence failed: ${e.message}`); return false; }
+    this.adopt(stage, identity);
+    return true;
+  }
+
   // Committed identities are read first, each with its own window. The census comes second,
   // and its outage taints the observer without stopping the identity reads already made.
   observeNow(timeout, censusTimeout) {
@@ -255,19 +310,7 @@ export class OwnershipObserver {
         changed = false;
         for (const [pid, parent] of rows) {
           if (!anchors.has(parent) || stage.active.has(pid)) continue;
-          const candidate = this.point(pid, left());
-          const parentIdentity = stage.active.get(parent);
-          const currentParent = this.point(parent, left());
-          if (candidate.status === 'UNKNOWN') { this.fail(`identity unavailable: ${pid}`); continue; }
-          // A candidate seen in the census whose identity cannot be bound is unresolved, never ignored.
-          if (candidate.status !== 'LIVE' || candidate.state === 'Z' || candidate.ppid !== parent ||
-              currentParent.status !== 'LIVE' || currentParent.state === 'Z' || currentParent.birth !== parentIdentity.birth) {
-            this.fail(`ambiguous ancestry: ${parent} -> ${pid}`); continue;
-          }
-          const identity = { pid, birth: candidate.birth, root_pid: stage.pid, unit: stage.unit, native_attempt: stage.attempt, termAt: null, killed: false, outcome: null };
-          try { this.record({ event: 'observed', ...this.entry(identity), parent }); }
-          catch (e) { this.fail(`ownership persistence failed: ${e.message}`); continue; }
-          this.adopt(stage, identity);
+          if (!this.bindChild(stage, pid, parent)) continue;
           anchors.add(pid);
           changed = true;
         }
