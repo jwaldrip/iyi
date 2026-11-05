@@ -115,7 +115,3 @@ export async function runAction() {
   }
 }
 
-// Auto-run if executed directly as script
-if (import.meta.url === `file://${process.argv[1]}`) {
-  runAction();
-}
