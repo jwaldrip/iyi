@@ -1,8 +1,12 @@
 import copy
+import hashlib
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
 import json
 import unittest
 
-from proof.check_remote_strict_evidence import check_outage_stage, check_outage_terminal, check_ownership_acks
+from proof.check_remote_strict_evidence import BINDING, check_outage_stage, check_outage_terminal, check_ownership_acks, check_ownership_failure
 
 
 def encode(value):
@@ -10,6 +14,53 @@ def encode(value):
 
 
 class OutageOracleTests(unittest.TestCase):
+    def test_receipt_sequence_and_binding(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name, content in (("ownership-ready", "ready\n"), ("ownership-flushed", "completed_term_flush\n"),
+                                  ("ownership-pids", "child:10\ngrandchild:11\n"), ("term-timing", "10 0 12000000000\n")):
+                (root / name).write_text(content)
+            scratch = root / "run1" / "a1" / "rg9_work"
+            scratch.mkdir(parents=True)
+            (scratch / "ownership-scratch").write_text("preserve during ownership uncertainty\n")
+            (root / "scratch-path").write_text(str(scratch))
+            payload = b"receipt"
+            digest = hashlib.sha256(payload).hexdigest()
+            entries = []
+            for number, (unit, kind) in enumerate((("plan", "plan"), ("pin", "checkpoint"), ("run1", "checkpoint"), ("terminal", "terminal-envelope")), 1):
+                request = {key: "context" for key in BINDING}
+                request.update(invocation_id="inv", execution_kind="synthetic", request_id=str(number), unit=unit, native_attempt=1,
+                               snapshot_sequence=number, snapshot_kind=kind, chain_id=None if number == 1 else "chain",
+                               archive_bytes=len(payload), archive_sha256=digest)
+                ack = dict(request, verified=True, artifact_id=str(number), downloaded_bytes=len(payload), downloaded_sha256=digest)
+                entries.append({"request": request, "ack": ack})
+                (root / (str(number) + ".tar")).write_bytes(payload)
+            index = {"invocation_id": "inv", "entries": entries, "ownership_recovery": {}}
+            def check(data):
+                with patch("proof.check_remote_strict_evidence.members", return_value={}), \
+                     patch("proof.check_remote_strict_evidence.check_prior_archive"), \
+                     patch("proof.check_remote_strict_evidence.check_outage_stage"), \
+                     patch("proof.check_remote_strict_evidence.check_outage_terminal"):
+                    check_ownership_failure(data, directory, "ownership-run1-outage", directory, {}, "compiler")
+            with self.assertRaisesRegex(ValueError, "ownership failure was resolved"):
+                check(index)
+            mutations = [
+                lambda e: e.pop(), lambda e: e.reverse(), lambda e: e.append(copy.deepcopy(e[-1])),
+                lambda e: e[3]["request"].update(snapshot_kind="checkpoint"),
+                lambda e: e[2]["request"].update(chain_id="other"),
+                lambda e: e[2]["request"].update(native_attempt=2),
+                lambda e: e[2]["ack"].update(artifact_id="1"),
+            ]
+            for mutate in mutations:
+                changed = copy.deepcopy(index)
+                mutate(changed["entries"])
+                with self.assertRaises(ValueError) as caught:
+                    check(changed)
+                self.assertNotIn("ownership failure was resolved", str(caught.exception))
+            (root / "3.tar").write_bytes(b"tampered")
+            with self.assertRaisesRegex(ValueError, "payload altered"):
+                check(index)
+
     def test_failure_snapshot_and_negative_controls(self):
         record = {"unit": "run1", "attempt": 1, "disposition": "OWNERSHIP_UNRESOLVED", "ownership_resolved": False,
                   "ownership_result": {"proof_resolved": False, "taint_reasons": ["synthetic permanent census outage"]},
