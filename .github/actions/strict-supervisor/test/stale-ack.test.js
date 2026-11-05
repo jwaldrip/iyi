@@ -82,14 +82,29 @@ test('wrong immutable context is rejected before upload', async () => {
   assert.equal(called, false);
 });
 
-const ALTERED_CONTEXT = {
-  invocation_id: 'inv-other', execution_kind: 'native', repository: 'jwaldrip/other', run_id: '1235',
-  run_attempt: '2', job_id: '9999', job_key: 'other-job', p_sha: 'c'.repeat(40), w_sha: 'd'.repeat(40),
-  c_sha: 'e'.repeat(40), fixture_sha256: '1'.repeat(64),
-};
+// Each entry is the minimal change to the request. Every change must remain schema-valid on its own.
+// native requests carry no emitter digest (ipc.js: native requires fixture_sha256 === null), so the
+// execution_kind change carries that required companion. The lone flip is refused by the schema below.
+const ALTERED_CONTEXT = [
+  ['invocation_id', { invocation_id: 'inv-other' }],
+  ['execution_kind', { execution_kind: 'native', fixture_sha256: null }],
+  ['repository', { repository: 'jwaldrip/other' }],
+  ['run_id', { run_id: '1235' }],
+  ['run_attempt', { run_attempt: '2' }],
+  ['job_id', { job_id: '9999' }],
+  ['job_key', { job_key: 'other-job' }],
+  ['p_sha', { p_sha: 'c'.repeat(40) }],
+  ['w_sha', { w_sha: 'd'.repeat(40) }],
+  ['c_sha', { c_sha: 'e'.repeat(40) }],
+  ['fixture_sha256', { fixture_sha256: '1'.repeat(64) }],
+];
+test('a lone execution_kind flip is refused by the schema because a native request carries no digest', () => {
+  assert.deepEqual(validateRequest({ ...request, execution_kind: 'native' }), { valid: false, error: 'Invalid fixture digest' });
+  assert.deepEqual(validateRequest({ ...request, execution_kind: 'native', fixture_sha256: null }), { valid: true });
+});
 test('each immutable context field is checked on its own, and the clean tuple passes the context check', async () => {
-  for (const [field, value] of Object.entries(ALTERED_CONTEXT)) {
-    const altered = { ...request, [field]: value };
+  for (const [field, change] of ALTERED_CONTEXT) {
+    const altered = { ...request, ...change };
     assert.equal(validateRequest(altered).valid, true, `${field} alteration must stay schema-valid`);
     const supervisor = fakeSupervisor(), out = sink();
     let uploads = 0;
