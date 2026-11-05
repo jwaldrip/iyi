@@ -895,7 +895,8 @@ class RemoteStrictController:
                 end = time.monotonic_ns()
                 record = StageExecutionRecord(
                     unit=unit, attempt=expected_attempt, raw_exit_code=-1,
-                    native_status="NONE", result_status="UNKNOWN", disposition="CONTROLLER_FAILED",
+                    native_status="NONE", result_status="UNKNOWN",
+                    disposition="CONTROLLER_FAILED" if self.ownership_resolved else "OWNERSHIP_UNRESOLVED",
                     timing=UnitTiming(start, end, (end - start) / 1e9),
                     disk=DiskObservation(0, 0, 0), error_detail=f"{type(exc).__name__}: {exc}",
                     ownership_resolved=self.ownership_resolved,
@@ -974,7 +975,11 @@ class RemoteStrictController:
         native_valid = False
 
         if requires_pass_result:
-            rec_data, raw_nat, validated_status, nat_reasons = self._validate_stage_record_with_helper(unit, expected_attempt)
+            try:
+                rec_data, raw_nat, validated_status, nat_reasons = self._validate_stage_record_with_helper(unit, expected_attempt)
+            except Exception as exc:
+                self._fail_stage_record(record, exc)
+                raise
             raw_native_status = raw_nat
             val_status = validated_status
             validation_reasons = nat_reasons
@@ -1030,7 +1035,9 @@ class RemoteStrictController:
                 self.chain_id = candidate
             except Exception as exc:
                 self.chain_id = None
-                record.disposition = "REJECTED"
+                # A pin defect never overwrites an unresolved ownership disposition.
+                if record.disposition != "OWNERSHIP_UNRESOLVED":
+                    record.disposition = "REJECTED"
                 record.error_detail = (record.error_detail or "") + f" [PIN-UNESTABLISHED: {type(exc).__name__}]"
 
         # Persist the stage journal before sealing the snapshot. A rejected
@@ -1329,13 +1336,15 @@ class RemoteStrictController:
                     signal.signal(s, h)
                 except Exception:
                     pass
-            if ret != 0 and self.overall_status in ("VERIFICATION_FAILED", "CLEANUP_FAILED", "INTERRUPTED_BY_HOSTING_BUDGET") and self.chain_id and self.receipts and self.publisher is not None:
-                if self.ownership_resolved:
-                    try:
-                        self._write_controller_summary()
-                        self._upload_terminal_snapshot()
-                    except Exception as exc:
-                        print(f"[CONTROLLER] Failure terminal persistence failed: {exc}", file=sys.stderr)
+            if ret != 0 and self.overall_status in ("VERIFICATION_FAILED", "CLEANUP_FAILED", "INTERRUPTED_BY_HOSTING_BUDGET", "CONTROLLER_EXCEPTION") and self.chain_id and self.receipts and self.publisher is not None:
+                # Unresolved-ownership failures upload too. The terminal snapshot seals controller
+                # metadata and the report's top-level meta files only, never attempt directories
+                # that a still-running child may be writing.
+                try:
+                    self._write_controller_summary()
+                    self._upload_terminal_snapshot()
+                except Exception as exc:
+                    print(f"[CONTROLLER] Failure terminal persistence failed: {exc}", file=sys.stderr)
             if self.publisher is not None:
                 try:
                     self.publisher.close()
@@ -1565,6 +1574,19 @@ class RemoteStrictController:
             kind="terminal-envelope", unit="terminal", attempt=1, chain_id=self.chain_id,
             archive_path=archive_path, size=size, digest=digest,
         )
+
+    def _fail_stage_record(self, record: StageExecutionRecord, exc: BaseException) -> None:
+        """Keep a post-launch controller exception on the stage record without losing ownership state."""
+        reason = f"{type(exc).__name__}: {exc}"
+        if not self.ownership_resolved or not record.ownership_resolved:
+            record.disposition = "OWNERSHIP_UNRESOLVED"
+            record.error_detail = f"{record.ownership_error or 'Ownership unresolved'} [controller exception: {reason}]"
+        else:
+            record.disposition = "CONTROLLER_FAILED"
+            record.error_detail = reason
+        self.records.append(record)
+        self._write_stage_journal(record)
+
     def _write_stage_journal(self, record: StageExecutionRecord) -> None:
         """Append record to mandatory stage-journal.jsonl."""
         self.evidence_root.write("stage-journal.jsonl", (json.dumps(record.to_dict(), sort_keys=True) + "\n").encode(), append=True)

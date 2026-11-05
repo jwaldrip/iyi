@@ -916,6 +916,7 @@ class TestRemoteStrictController(unittest.TestCase):
         self.assertFalse(ctrl.ownership_resolved)
         record = next(r for r in reversed(ctrl.records) if r.unit == target)
         self.assertFalse(record.ownership_resolved)
+        self.assertEqual(record.disposition, "OWNERSHIP_UNRESOLVED")
         self.assertIn("census unavailable", record.ownership_result["taint_reasons"])
         self.assertFalse(record.cleanup_performed)
         if target == "run1":
@@ -928,7 +929,16 @@ class TestRemoteStrictController(unittest.TestCase):
         with open(os.path.join(self.artifacts_dir, "strict-controller-summary.json"), encoding="utf-8") as stream:
             summary = json.load(stream)
         self.assertFalse(summary["ownership_resolved"])
-        self.assertNotIn("terminal-envelope", [r["snapshot_kind"] for r in pub.received_requests])
+        kinds = [r["snapshot_kind"] for r in pub.received_requests]
+        if failure == "validator":
+            # Unresolved ownership still uploads the controller-only terminal envelope.
+            self.assertIn("terminal-envelope", kinds)
+            self.assertEqual(ctrl.overall_status, "CONTROLLER_EXCEPTION")
+            self.assertEqual(summary["overall_status"], "CONTROLLER_EXCEPTION")
+            with open(os.path.join(self.artifacts_dir, "terminal-envelope.json"), encoding="utf-8") as stream:
+                self.assertEqual(json.load(stream)["status"], "CONTROLLER_EXCEPTION")
+        else:
+            self.assertNotIn("terminal-envelope", kinds)
 
     def test_06d_unresolved_ownership_survives_corrupt_pin(self):
         self._assert_ownership_survives_failure("corrupt_pin")
