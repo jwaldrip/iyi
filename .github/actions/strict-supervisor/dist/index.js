@@ -968,6 +968,26 @@ function receiptFailure(receipt, req) {
 }
 
 /**
+ * Download by exact artifact ID. The service can answer "No artifacts found" for a
+ * finalized artifact for a short time, so only that error is retried, on the same ID.
+ * Any other error, or a still-missing artifact after the last attempt, fails at once.
+ */
+async function downloadWhenVisible(artifactClient, artifactId, dir, {
+  attempts = 12,
+  delayMs = 5000,
+  sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
+} = {}) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await artifactClient.downloadArtifact(artifactId, { path: dir });
+    } catch (err) {
+      if (attempt >= attempts || !/No artifacts found for ID/.test(String(err?.message))) throw err;
+      await sleep(delayMs);
+    }
+  }
+}
+
+/**
  * Execute upload, exact-ID readback, and payload equality check
  */
 async function uploadAndVerifyPayload(req, artifactClient) {
@@ -1039,9 +1059,7 @@ async function uploadAndVerifyPayload(req, artifactClient) {
   // 3. Download by exact ID into fresh, isolated directory while job is running
   const downloadDir = await external_node_fs_.promises.mkdtemp(external_node_path_.join(external_node_os_.tmpdir(), 'strict-dl-'));
   try {
-    const downloadResponse = await artifactClient.downloadArtifact(artifactId, {
-      path: downloadDir,
-    });
+    const downloadResponse = await downloadWhenVisible(artifactClient, artifactId, downloadDir);
 
     const targetDir = downloadResponse?.downloadPath || downloadDir;
     const expectedFileName = external_node_path_.basename(req.archive_path);
