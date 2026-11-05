@@ -1595,7 +1595,10 @@ class StrictSupervisor {
       if (req?.event === 'ownership-register' || req?.event === 'ownership-resolve') {
         this.ownership.fail(`ownership control failed: ${redactSecrets(String(err.message))}`);
       }
-      ack = { ...req, event: `${req?.event || 'invalid'}-ack`, verified: false, error: redactSecrets(String(err.message)) };
+      // Echo the protocol event the controller expects, so a rejected request
+      // reports its actual error instead of an ACK-EVENT-MISMATCH.
+      const ackEvent = { 'persistence-request': 'persistence-ack', 'ownership-register': 'ownership-register-ack', 'ownership-resolve': 'ownership-resolve-ack' }[req?.event] || 'invalid-ack';
+      ack = { ...req, event: ackEvent, verified: false, error: redactSecrets(String(err.message)) };
     }
     try {
       await writeIpcAck(ackStream, ack);
