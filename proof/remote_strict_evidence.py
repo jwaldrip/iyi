@@ -22,10 +22,13 @@ def _parts(path):
 
 class OwnedRoot:
     def __init__(self, path, *, create=False):
-        # macOS exposes /tmp as /private/tmp. Normalize only that system alias.
+        # macOS exposes top-level system aliases (/tmp -> /private/tmp, /var -> /private/var,
+        # which contains $TMPDIR). Follow only that top-level alias; every component below
+        # the owned root is still opened with O_NOFOLLOW.
         path = os.path.abspath(path)
-        if path == '/tmp' or path.startswith('/tmp/'):
-            path = '/private' + path if os.path.isdir('/private/tmp') else path
+        top = path.strip('/').split('/')[0] if path != '/' else ''
+        if top and os.path.islink('/' + top):
+            path = os.path.realpath('/' + top) + path[len(top) + 1:]
         self.path = path
         fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
         try:
