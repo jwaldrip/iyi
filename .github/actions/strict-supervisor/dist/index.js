@@ -535,11 +535,6 @@ module.exports = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("zlib");
 /************************************************************************/
 var __webpack_exports__ = {};
 
-// EXPORTS
-__nccwpck_require__.d(__webpack_exports__, {
-  C: () => (/* binding */ runAction)
-});
-
 // EXTERNAL MODULE: external "node:fs"
 var external_node_fs_ = __nccwpck_require__(73024);
 ;// CONCATENATED MODULE: external "node:child_process"
@@ -1931,12 +1926,22 @@ async function runAction() {
   }
 }
 
-// Auto-run if executed directly as script
-if (import.meta.url === `file://${process.argv[1]}`) {
-  runAction();
-}
 
-var __webpack_exports__runAction = __webpack_exports__.C;
-export { __webpack_exports__runAction as runAction };
+;// CONCATENATED MODULE: ./src/main.js
+/**
+ * Action entry point. The bundle's main is dist/index.js, built from this file.
+ *
+ * The entry is unconditional. Running a module-level guard such as
+ * `import.meta.url === file://argv[1]` is unreliable across symlinked paths:
+ * when the guard is false the action exits 0 without doing anything.
+ */
+
+
+
+runAction().catch((err) => {
+  console.error(`Strict supervisor fatal error: ${err && err.message ? err.message : err}`);
+  process.exitCode = 1;
+});
+
 
 //# sourceMappingURL=index.js.map
