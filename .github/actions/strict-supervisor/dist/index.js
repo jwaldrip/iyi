@@ -958,6 +958,16 @@ function findFileInDir(dir, targetName) {
 }
 
 /**
+ * Why a persistence receipt does not prove the sealed payload, or null when it does.
+ * A failed receipt keeps the adapter's own error, which names the step that failed.
+ */
+function receiptFailure(receipt, req) {
+  if (!receipt.verified) return receipt.error || 'artifact readback not verified';
+  if (!receipt.artifact_id || receipt.downloaded_sha256 !== req.archive_sha256 || receipt.downloaded_bytes !== req.archive_bytes) return 'artifact readback mismatch';
+  return null;
+}
+
+/**
  * Execute upload, exact-ID readback, and payload equality check
  */
 async function uploadAndVerifyPayload(req, artifactClient) {
@@ -1743,7 +1753,8 @@ class StrictSupervisor {
         } finally { external_node_fs_.rmSync(dir, { recursive: true, force: true }); }
         const binding = Object.fromEntries(IMMUTABLE_BINDING_FIELDS.map(field => [field, req[field]]));
         ack = { ...binding, event: 'persistence-ack', ...receipt };
-        if (!ack.verified || !ack.artifact_id || ack.downloaded_sha256 !== req.archive_sha256 || ack.downloaded_bytes !== req.archive_bytes) throw new Error('artifact readback mismatch');
+        const failure = receiptFailure(ack, req);
+        if (failure) throw new Error(failure);
         this.requests.push(req);
         this.acks.push(ack);
         this.entries.push({ request: req, ack });
