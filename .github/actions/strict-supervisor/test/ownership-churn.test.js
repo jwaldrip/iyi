@@ -61,8 +61,7 @@ test('W-scale churn: children that exit after being identified leave the proof r
     assert.deepEqual(report.taint_reasons, []);
     assert.equal(report.recovery.survivors.length + report.recovery.replaced.length + report.recovery.unverifiable.length, 0);
     assert.equal(report.proof_resolved, true);
-    // The count depends on poll cost, so it is a floor that proves children were identified and retired, not a target.
-    assert.ok(report.recovery.absent.length >= 10, `children identified and retired: ${report.recovery.absent.length}`);
+    assert.ok(report.recovery.absent.length >= 50, `children identified and retired: ${report.recovery.absent.length}`);
     assert.equal(observer.stages.size, 0);
   } finally {
     controller.kill('SIGKILL');

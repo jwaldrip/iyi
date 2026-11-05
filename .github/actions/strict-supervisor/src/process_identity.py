@@ -92,10 +92,10 @@ def observe(pid):
 def census():
     """Every listed process as [pid, ppid, state, birth].
 
-    On Linux the listing and the identity come from one /proc read per process, so a row's
-    birth is the birth of the process it was listed as. On Darwin ps lists the PIDs and each
-    row is decided by that PID's own identity read: a process gone at that read has no row,
-    and an unreadable one keeps ps's parent edge with a null birth.
+    On Linux the listing and the identity come from one /proc read per process; a process gone at
+    that read, or unreadable, has no parent edge and makes the census untrusted. On Darwin ps lists
+    the PIDs with their parent edges, and each birth comes from that PID's identity read; a process
+    gone at its read, or unreadable, keeps a null birth and is judged as a candidate by the observer.
     """
     if sys.platform.startswith('linux'):
         rows = []
@@ -104,9 +104,8 @@ def census():
                 continue
             pid = int(name)
             obs = observe(pid)
-            if obs['status'] == 'ABSENT':
-                continue
-            if obs['status'] == 'UNKNOWN':
+            if obs['status'] in ('ABSENT', 'UNKNOWN'):
+                # Gone at its own read, or unreadable: no parent edge is known, so the census cannot be trusted.
                 rows.append([pid, None, None, None])
             else:
                 rows.append([pid, obs['ppid'], obs['state'], obs['birth']])
@@ -123,17 +122,12 @@ def census():
         if not match:
             raise ValueError('unparseable process census')
         pid, ps_ppid, ps_state = int(match.group(1)), int(match.group(2)), match.group(3)
-        # The identity read decides the row, and its parent and state come from that same read.
-        # A process ps listed but that is gone at its own read has exited: it has no identity
-        # to own, so it gets no row. A process whose identity cannot be read keeps ps's parent
-        # edge, so a census still sees its place in the tree and its candidacy is judged then.
+        # Parent and state come from ps. Birth comes from this PID's identity read. A PID whose
+        # identity cannot be read, or that exited before the read, keeps a null birth, so the
+        # observer judges its candidacy and taints the observer rather than dropping it.
         obs = observe(pid)
-        if obs['status'] == 'ABSENT':
-            continue
-        if obs['status'] == 'LIVE':
-            rows.append([pid, obs['ppid'], obs['state'], obs['birth']])
-        else:
-            rows.append([pid, ps_ppid, 'Z' if ps_state.startswith('Z') else ps_state, None])
+        birth = obs['birth'] if obs['status'] == 'LIVE' else None
+        rows.append([pid, ps_ppid, 'Z' if ps_state.startswith('Z') else ps_state, birth])
     return rows
 
 
