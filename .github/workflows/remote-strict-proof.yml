@@ -839,8 +839,8 @@ jobs:
           expected_fixed = [f"supervisor-bundle-{env['GITHUB_SHA']}", "remote-strict-validation-evidence",
               "remote-strict-ownership-crash-evidence", "remote-strict-ownership-census-outage-evidence",
               "remote-strict-ownership-run1-outage-evidence"]
-          counts = {"success": 37, "failed-plan": 1, "failed-pin": 2, "divergence": 6, "cleanup-failure": 4, "ownership-run1-outage": 2}
-          if len(names) != 57 or len(set(names)) != 57 or len(set(ids)) != 57 or any(names.count(name) != 1 for name in expected_fixed):
+          counts = {"success": 37, "failed-plan": 1, "failed-pin": 2, "divergence": 6, "cleanup-failure": 4, "ownership-run1-outage": 4, "ownership-census-outage": 1}
+          if len(names) != 60 or len(set(names)) != 60 or len(set(ids)) != 60 or any(names.count(name) != 1 for name in expected_fixed):
               sys.exit("Missing, duplicate, or extra hosted evidence artifacts")
           for case, count in counts.items():
               if sum(name.startswith(f"proof-synthetic-{case}-") for name in names) != count:
