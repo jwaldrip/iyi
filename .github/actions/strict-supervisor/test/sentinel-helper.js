@@ -45,6 +45,7 @@ export async function startSentinel(python, observer) {
     socket.end();
   }
   return {
+    pid: child.pid,
     async challenge() {
       await exchange('challenge', 'alive');
       const current = observer.point(child.pid);

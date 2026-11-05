@@ -12,6 +12,7 @@ import { missingRecall } from './recall-check.js';
 
 const python = process.env.PYTHON || 'python3';
 const probe = fileURLToPath(new URL('../src/process_identity.py', import.meta.url));
+const micros = birth => { const [sec, usec] = birth.split('.'); return BigInt(sec) * 1000000n + BigInt(usec); };
 // All output is JSON lines. The only times claimed as lifetimes are minimum sleeps
 // directly performed by the named process; other process classes carry zero.
 const orphan = `import json,subprocess,time
@@ -45,7 +46,7 @@ def execs():
  for i in range(20): launch(['/bin/sh','-c','exec /bin/sleep 0.3'],'exec',300000000).wait()
 threads=[threading.Thread(target=f) for f in (churn,chains,servers,psloop,execs)]
 for t in threads: t.start()
-top=launch(['/usr/bin/top','-l','3','-s','1','-n','0'],'top',stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+top=launch(['/usr/bin/top','-l','3','-s','1','-n','0'],'top',2000000000,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 i=launch([sys.executable,'-u','-c',${JSON.stringify(orphan)}],'intermediate',1000000000)
 for t in threads: t.join()
 top.wait(); i.wait()
@@ -129,13 +130,15 @@ test('hosted W workload retains owned identities through churn and orphaning', {
     const grandchildIdentity = observed.find(e => e.pid === grandchild.pid);
     assert.ok(current.status === 'ABSENT' || (current.status === 'LIVE' && current.birth !== grandchildIdentity.birth));
     const committed = new Map();
+    const excluded = new Set([process.pid, proc.pid, sentinel.pid]);
     for (const e of journal) {
       if (e.event === 'registered' || e.event === 'observed') {
         if (e.event === 'observed') {
           assert.ok(committed.has(e.parent), `parent ${e.parent} committed first`);
-          assert.ok(Number(e.birth) > Number(committed.get(e.parent)), 'child younger than parent');
+          assert.ok(micros(e.birth) > micros(committed.get(e.parent)), 'child younger than parent');
         }
-        assert.ok(e.pid !== process.pid && e.pid !== proc.pid);
+        assert.ok(!excluded.has(e.pid), `excluded identity ${e.pid} was committed`);
+        assert.notEqual(e.parent, process.pid, 'test-runner helpers are never owned');
         committed.set(e.pid, e.birth);
       } else if (e.event === 'signaled') assert.equal(committed.get(e.pid), e.birth);
     }
