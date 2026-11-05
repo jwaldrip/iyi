@@ -1,6 +1,7 @@
 """Descriptor-relative, no-follow evidence access for the remote controller."""
 from __future__ import annotations
 
+import errno
 import hashlib
 import io
 import json
@@ -18,6 +19,16 @@ def _parts(path):
     if not parts or any(p in ('', '.', '..') for p in parts):
         raise UnsafeEvidenceError('INVALID-RELATIVE-NAME')
     return parts
+
+
+def _nofollow(code, label, name, flags, dir_fd, mode=0o600):
+    """Open without following links. A link, or a non-directory where a directory belongs, is a coded refusal rather than a raw OSError."""
+    try:
+        return os.open(name, flags | os.O_NOFOLLOW, mode, dir_fd=dir_fd)
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise UnsafeEvidenceError(f'{code} {label}') from exc
+        raise
 
 
 class OwnedRoot:
@@ -40,7 +51,7 @@ class OwnedRoot:
                         os.mkdir(component, 0o700, dir_fd=fd)
                     except FileExistsError:
                         pass
-                next_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                next_fd = _nofollow('UNSAFE-ROOT', component, component, os.O_RDONLY | os.O_DIRECTORY, dir_fd=fd)
                 os.close(fd)
                 fd = next_fd
             self.fd = fd
@@ -65,7 +76,7 @@ class OwnedRoot:
         try:
             prefix = []
             for component in parts[:-1]:
-                nxt = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                nxt = _nofollow('UNSAFE-ANCESTOR', '/'.join(prefix + [component]), component, os.O_RDONLY | os.O_DIRECTORY, dir_fd=fd)
                 prefix.append(component)
                 self.remember('/'.join(prefix), nxt)
                 os.close(fd)
@@ -78,7 +89,7 @@ class OwnedRoot:
     def open_writer(self, name):
         parent, leaf = self.parent(name)
         try:
-            fd = os.open(leaf, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=parent)
+            fd = _nofollow('UNSAFE-WRITER', name, leaf, os.O_WRONLY | os.O_CREAT, dir_fd=parent)
             try:
                 st = os.fstat(fd)
                 if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
@@ -95,7 +106,7 @@ class OwnedRoot:
         parent, leaf = self.parent(name)
         try:
             flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | (os.O_APPEND if append else 0)
-            fd = os.open(leaf, flags, 0o600, dir_fd=parent)
+            fd = _nofollow('UNSAFE-WRITER', name, leaf, flags, dir_fd=parent)
             try:
                 if not stat.S_ISREG(os.fstat(fd).st_mode) or os.fstat(fd).st_nlink != 1:
                     raise UnsafeEvidenceError('UNSAFE-WRITER ' + name)
@@ -119,7 +130,7 @@ class OwnedRoot:
             raise
         try:
             try:
-                fd = os.open(leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+                fd = _nofollow('UNSAFE-MEMBER', name, leaf, os.O_RDONLY | os.O_NONBLOCK, dir_fd=parent)
             except FileNotFoundError:
                 if optional:
                     return
@@ -159,10 +170,13 @@ class OwnedRoot:
         except FileNotFoundError:
             return
         try:
-            fd = os.open(leaf, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            fd = _nofollow('UNSAFE-MEMBER', name, leaf, os.O_RDONLY | os.O_DIRECTORY, dir_fd=parent)
         except FileNotFoundError:
             os.close(parent)
             return
+        except BaseException:
+            os.close(parent)
+            raise
         os.close(parent)
         self.remember(name, fd)
         def visit(directory, rel):
