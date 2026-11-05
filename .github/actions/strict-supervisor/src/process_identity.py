@@ -153,12 +153,9 @@ def _own_birth():
 
 
 def _observe_darwin(pid):
-    try:
-        raw, _ = _kinfo((_CTL_KERN, _KERN_PROC, _KERN_PROC_PID, pid))
-    except OSError as exc:
-        if exc.errno == errno.ESRCH:
-            return {'status': 'ABSENT', 'pid': pid}
-        raise
+    if pid > 0x7fffffff:
+        raise ValueError('pid exceeds Darwin sysctl integer range')
+    raw, _ = _kinfo((_CTL_KERN, _KERN_PROC, _KERN_PROC_PID, pid))
     rows = _records(raw)
     if not rows:
         # No record at this read: the process has been reaped, or never existed.
