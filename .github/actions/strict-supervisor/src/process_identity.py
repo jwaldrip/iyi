@@ -43,9 +43,6 @@ def _observe_linux(pid):
     try:
         with open(f'/proc/{pid}/stat', encoding='ascii') as f:
             stat = f.read()
-    except ProcessLookupError:
-        # ESRCH: the process exited between the open and the read. That is absence, not an unknown identity.
-        return {'status': 'ABSENT', 'pid': pid}
     except FileNotFoundError:
         # Missing procfs is not evidence that the target exited.
         with open('/proc/self/stat', encoding='ascii') as probe:
@@ -95,10 +92,10 @@ def observe(pid):
 def census():
     """Every listed process as [pid, ppid, state, birth].
 
-    On Linux the listing and the identity come from one /proc read per process, so a
-    row's birth is the birth of the process it was listed as. On Darwin ps lists the
-    processes; a process that exits between the listing and its identity read keeps a
-    row with a null birth, so a caller that needs its identity treats it as unresolved.
+    On Linux the listing and the identity come from one /proc read per process, so a row's
+    birth is the birth of the process it was listed as. On Darwin ps lists the PIDs and each
+    row is decided by that PID's own identity read: a process gone at that read has no row,
+    and an unreadable one keeps ps's parent edge with a null birth.
     """
     if sys.platform.startswith('linux'):
         rows = []
@@ -125,10 +122,18 @@ def census():
         match = _PS_ROW.match(line)
         if not match:
             raise ValueError('unparseable process census')
-        pid, ppid, state = int(match.group(1)), int(match.group(2)), match.group(3)
+        pid, ps_ppid, ps_state = int(match.group(1)), int(match.group(2)), match.group(3)
+        # The identity read decides the row, and its parent and state come from that same read.
+        # A process ps listed but that is gone at its own read has exited: it has no identity
+        # to own, so it gets no row. A process whose identity cannot be read keeps ps's parent
+        # edge, so a census still sees its place in the tree and its candidacy is judged then.
         obs = observe(pid)
-        birth = obs['birth'] if obs['status'] == 'LIVE' else None
-        rows.append([pid, ppid, 'Z' if state.startswith('Z') else state, birth])
+        if obs['status'] == 'ABSENT':
+            continue
+        if obs['status'] == 'LIVE':
+            rows.append([pid, obs['ppid'], obs['state'], obs['birth']])
+        else:
+            rows.append([pid, ps_ppid, 'Z' if ps_state.startswith('Z') else ps_state, None])
     return rows
 
 

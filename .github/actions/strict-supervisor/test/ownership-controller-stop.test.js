@@ -16,7 +16,7 @@ function controllerCode({ invocationId, mode, persistSec, marker }) {
   return [
     'import json, os, signal, sys, time',
     'flag = []',
-    `stubborn = ${JSON.stringify(stubborn)}`,
+    `stubborn = ${stubborn ? 'True' : 'False'}`,
     'if stubborn:',
     '    signal.signal(signal.SIGTERM, signal.SIG_IGN)',
     'else:',
