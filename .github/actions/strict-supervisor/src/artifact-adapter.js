@@ -57,6 +57,16 @@ function findFileInDir(dir, targetName) {
 }
 
 /**
+ * Why a persistence receipt does not prove the sealed payload, or null when it does.
+ * A failed receipt keeps the adapter's own error, which names the step that failed.
+ */
+export function receiptFailure(receipt, req) {
+  if (!receipt.verified) return receipt.error || 'artifact readback not verified';
+  if (!receipt.artifact_id || receipt.downloaded_sha256 !== req.archive_sha256 || receipt.downloaded_bytes !== req.archive_bytes) return 'artifact readback mismatch';
+  return null;
+}
+
+/**
  * Execute upload, exact-ID readback, and payload equality check
  */
 export async function uploadAndVerifyPayload(req, artifactClient) {

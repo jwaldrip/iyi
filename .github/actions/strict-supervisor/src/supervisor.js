@@ -5,7 +5,7 @@ import os from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { sanitizeEnvironment, redactSecrets } from './env.js';
 import { IMMUTABLE_BINDING_FIELDS, validateRequest, writeIpcAck, createIpcReader } from './ipc.js';
-import { uploadAndVerifyPayload } from './artifact-adapter.js';
+import { receiptFailure, uploadAndVerifyPayload } from './artifact-adapter.js';
 import { OwnershipObserver } from './ownership.js';
 
 const WORKSPACE_ACTION_SRC = path.resolve('.github/actions/strict-supervisor/src');
@@ -154,7 +154,8 @@ export class StrictSupervisor {
         } finally { fs.rmSync(dir, { recursive: true, force: true }); }
         const binding = Object.fromEntries(IMMUTABLE_BINDING_FIELDS.map(field => [field, req[field]]));
         ack = { ...binding, event: 'persistence-ack', ...receipt };
-        if (!ack.verified || !ack.artifact_id || ack.downloaded_sha256 !== req.archive_sha256 || ack.downloaded_bytes !== req.archive_bytes) throw new Error('artifact readback mismatch');
+        const failure = receiptFailure(ack, req);
+        if (failure) throw new Error(failure);
         this.requests.push(req);
         this.acks.push(ack);
         this.entries.push({ request: req, ack });
