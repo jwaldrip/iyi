@@ -82,6 +82,30 @@ test('wrong immutable context is rejected before upload', async () => {
   assert.equal(called, false);
 });
 
+const ALTERED_CONTEXT = {
+  invocation_id: 'inv-other', execution_kind: 'native', repository: 'jwaldrip/other', run_id: '1235',
+  run_attempt: '2', job_id: '9999', job_key: 'other-job', p_sha: 'c'.repeat(40), w_sha: 'd'.repeat(40),
+  c_sha: 'e'.repeat(40), fixture_sha256: '1'.repeat(64),
+};
+test('each immutable context field is checked on its own, and the clean tuple passes the context check', async () => {
+  for (const [field, value] of Object.entries(ALTERED_CONTEXT)) {
+    const altered = { ...request, [field]: value };
+    assert.equal(validateRequest(altered).valid, true, `${field} alteration must stay schema-valid`);
+    const supervisor = fakeSupervisor(), out = sink();
+    let uploads = 0;
+    supervisor.resolveArtifactClient = async () => { uploads++; throw new Error('unexpected upload'); };
+    await supervisor.handleRequest(altered, out.stream);
+    assert.equal(out.received[0].verified, false, field);
+    // invocation_id is compared before the context loop, so it refuses as an invalid request.
+    if (field === 'invocation_id') assert.match(out.received[0].error, /^invalid or replayed request$/, field);
+    else assert.equal(out.received[0].error, `context mismatch: ${field}`, field);
+    assert.equal(uploads, 0, field);
+  }
+  const supervisor = fakeSupervisor(), out = sink();
+  await supervisor.handleRequest(request, out.stream);
+  assert.doesNotMatch(out.received[0].error, /context mismatch|invalid or replayed/);
+});
+
 test('missing archive fails, request replay and nonincreasing sequences are rejected', async () => {
   const supervisor = fakeSupervisor(), out = sink();
   await supervisor.handleRequest(request, out.stream);
