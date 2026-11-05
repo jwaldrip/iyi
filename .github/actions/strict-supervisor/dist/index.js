@@ -1104,6 +1104,25 @@ var external_node_perf_hooks_ = __nccwpck_require__(643);
 
 
 const emptyBuckets = () => ({ terminated: [], absent: [], replaced: [], unverifiable: [], survivors: [] });
+const BIRTH = /^\d+(?:\.\d{6})?$/;
+
+// The helper's answer for one PID. Anything it cannot vouch for is UNKNOWN, never absence.
+function normalizeObservation(value, pid) {
+  if (!value || value.pid !== pid || !['LIVE', 'ABSENT', 'UNKNOWN'].includes(value.status)) {
+    return { status: 'UNKNOWN', pid, reason: 'invalid observation' };
+  }
+  if (value.status === 'LIVE' && (!BIRTH.test(String(value.birth)) || !Number.isSafeInteger(value.ppid) ||
+      value.ppid < 0 || typeof value.state !== 'string' || !value.state)) {
+    return { status: 'UNKNOWN', pid, reason: 'invalid live identity' };
+  }
+  return value;
+}
+
+// A census row carries the identity of its process, read by the same helper call that listed it.
+function observationFromRow([pid, ppid, state, birth]) {
+  if (birth === null) return { status: 'UNKNOWN', pid, reason: 'identity unreadable' };
+  return normalizeObservation({ status: 'LIVE', pid, birth, ppid, state }, pid);
+}
 
 // Polling cannot see a fork and reparent entirely between observations. A
 // point probe followed by kill is also not an atomic identity-bound signal.
@@ -1126,6 +1145,8 @@ class OwnershipObserver {
     // Set once when recovery is cancelled. A cancelled observer never probes or signals again.
     this.aborted = null;
     this.closed = false;
+    // The current poll's helper reply. It exists only around synchronous poll code.
+    this.snapshot = null;
     this.directory = external_node_path_.join(options.tempRoot || external_node_os_.tmpdir(), 'strict-supervisor-ownership');
     // mkdir is the exclusive host-wide claim. An incomplete claim is quarantine.
     external_node_fs_.mkdirSync(this.directory, { mode: 0o700 });
@@ -1176,46 +1197,119 @@ class OwnershipObserver {
     catch (e) { this.fail(`ownership persistence failed: ${e.message}`); }
   }
 
-  census(timeout = 5000) {
-    const text = (0,external_node_child_process_namespaceObject.execFileSync)('/bin/ps', ['-axo', 'pid=,ppid=,stat='], { encoding: 'utf8', timeout, env: sanitizeEnvironment() });
-    const rows = new Map();
-    for (const line of text.split('\n')) {
-      if (!line.trim()) continue;
-      const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s*$/.exec(line);
-      if (!match) throw new Error('unparseable process census');
-      if (!match[3].startsWith('Z')) rows.set(Number(match[1]), Number(match[2]));
+  // One helper call per poll: the census and the identity of each requested PID. When
+  // the call fails as a whole, every requested PID is UNKNOWN and the census is an error.
+  readSnapshot(pids, timeout) {
+    const snapshot = { census: new Map(), censusError: null, identities: new Map() };
+    let reply;
+    try {
+      reply = JSON.parse((0,external_node_child_process_namespaceObject.execFileSync)(this.python, [this.identityScript, '--batch'], {
+        input: JSON.stringify({ pids, census: true }), encoding: 'utf8', timeout, env: sanitizeEnvironment(),
+      }));
+    } catch (e) {
+      snapshot.censusError = `process census unavailable: ${e.message}`;
+      for (const pid of pids) snapshot.identities.set(pid, { status: 'UNKNOWN', pid, reason: snapshot.censusError });
+      return snapshot;
     }
-    if (!rows.size) throw new Error('empty process census');
-    return rows;
+    const replyOk = Boolean(reply) && typeof reply === 'object' && Boolean(reply.census) && typeof reply.census === 'object' &&
+      Boolean(reply.identities) && typeof reply.identities === 'object';
+    if (!replyOk) {
+      snapshot.censusError = 'process census unavailable: invalid reply';
+    } else if (reply.census.error) {
+      snapshot.censusError = `process census unavailable: ${reply.census.error}`;
+    } else if (!Array.isArray(reply.census.rows)) {
+      snapshot.censusError = 'process census unavailable: invalid census';
+    } else {
+      for (const row of reply.census.rows) {
+        if (!Array.isArray(row) || row.length !== 4 || !Number.isSafeInteger(row[0]) || row[0] <= 1) {
+          snapshot.censusError = 'process census unavailable: invalid census row';
+          break;
+        }
+        const [pid, ppid, state] = row;
+        // An unreadable process may be a child of an anchor, so the census cannot be trusted.
+        if (ppid === null) { snapshot.censusError = `process census incomplete: unreadable process ${pid}`; break; }
+        if (!Number.isSafeInteger(ppid) || ppid < 0 || typeof state !== 'string' || !state) {
+          snapshot.censusError = 'process census unavailable: invalid census row';
+          break;
+        }
+        // A zombie is no census parent or child, but its identity stays readable for point reads.
+        if (!state.startsWith('Z')) snapshot.census.set(pid, ppid);
+        snapshot.identities.set(pid, observationFromRow(row));
+      }
+    }
+    const observed = new Map(replyOk
+      ? Object.entries(reply.identities).map(([key, value]) => [Number(key), normalizeObservation(value, Number(key))])
+      : []);
+    for (const pid of pids) snapshot.identities.set(pid, observed.get(pid) || { status: 'UNKNOWN', pid, reason: 'identity not observed' });
+    return snapshot;
   }
 
-  point(pid, timeout = 5000) {
+  census(timeout = 5000) {
+    const snapshot = this.snapshot || this.readSnapshot([], timeout);
+    if (snapshot.censusError) throw new Error(snapshot.censusError);
+    return snapshot.census;
+  }
+
+  // A read inside a poll is served from the poll's snapshot. A fresh read goes to the helper,
+  // as the read that decides a signal must.
+  point(pid, timeout = 5000, fresh = false) {
+    const snapshot = this.snapshot;
+    if (!fresh && snapshot && snapshot.identities.has(pid)) return snapshot.identities.get(pid);
+    return this.probeOne(pid, timeout);
+  }
+
+  probeOne(pid, timeout = 5000) {
     try {
       const text = (0,external_node_child_process_namespaceObject.execFileSync)(this.python, [this.identityScript, String(pid)], { encoding: 'utf8', timeout, env: sanitizeEnvironment() });
-      const value = JSON.parse(text);
-      if (value.pid !== pid || !['LIVE', 'ABSENT', 'UNKNOWN'].includes(value.status)) throw new Error('invalid point observation');
-      if (value.status === 'LIVE' && (!/^\d+(?:\.\d{6})?$/.test(value.birth) || !Number.isSafeInteger(value.ppid) || value.ppid < 0 || typeof value.state !== 'string' || !value.state)) throw new Error('invalid live identity');
-      return value;
+      return normalizeObservation(JSON.parse(text), pid);
     } catch (e) { return { status: 'UNKNOWN', pid, reason: e.message }; }
   }
+
+  // Runs one synchronous poll against one helper call. A poll nested inside another shares its snapshot.
+  withSnapshot(pids, timeout, poll) {
+    if (this.snapshot) return poll();
+    this.snapshot = this.readSnapshot(pids, timeout);
+    try { return poll(); } finally { this.snapshot = null; }
+  }
+
+  activePids() { return [...this.stages.values()].flatMap(stage => [...stage.active.keys()]); }
 
   register(req, controllerPid) {
     if (this.failure) throw new Error(this.failure);
     if (!this.live()) throw new Error('ownership observer is finalizing');
     try {
       if (!Number.isSafeInteger(req.pid) || req.pid <= 1 || this.stages.has(req.pid)) throw new Error('invalid or duplicate stage PID');
-      const rows = this.census();
-      const root = this.point(req.pid);
+      const { rows, root } = this.withSnapshot([req.pid], 5000, () => ({ rows: this.census(), root: this.point(req.pid) }));
       if (rows.get(req.pid) !== controllerPid || root.status !== 'LIVE' || root.state === 'Z' || root.ppid !== controllerPid) throw new Error('gated process identity or parent unavailable');
-      const stage = { pid: req.pid, unit: req.unit, attempt: req.native_attempt, graceSec: this.graceSec, owned: new Map(), flight: null, outcomes: new Map() };
-      const identity = { pid: req.pid, birth: root.birth, root_pid: req.pid, unit: req.unit, native_attempt: req.native_attempt, termAt: null, killed: false };
+      const stage = { pid: req.pid, unit: req.unit, attempt: req.native_attempt, graceSec: this.graceSec, owned: new Map(), active: new Map(), records: [], flight: null };
+      const identity = { pid: req.pid, birth: root.birth, root_pid: req.pid, unit: req.unit, native_attempt: req.native_attempt, termAt: null, killed: false, outcome: null };
       this.record({ event: 'registered', ...this.entry(identity), grace_sec: stage.graceSec });
-      stage.owned.set(identity.pid, identity);
+      this.adopt(stage, identity);
       this.stages.set(stage.pid, stage);
       if (!this.timer) this.timer = setInterval(() => {
         try { this.observe(); } catch (e) { this.fail(`observer failed: ${e.message}`); }
       }, 250);
     } catch (e) { this.fail(`registration failed: ${e.message}`); throw e; }
+  }
+
+  // Every identity ever bound to a stage stays in its record. Only the live ones are polled.
+  adopt(stage, identity) {
+    stage.records.push(identity);
+    stage.owned.set(identity.pid, identity);
+    stage.active.set(identity.pid, identity);
+  }
+
+  // Ends an identity's polling with its outcome. The record keeps it, and the journal says so.
+  retire(stage, identity, outcome) {
+    identity.outcome = outcome;
+    if (stage.active.get(identity.pid) === identity) stage.active.delete(identity.pid);
+    try { this.record({ event: 'retired', ...this.entry(identity), outcome }); }
+    catch (e) { this.fail(`ownership persistence failed: ${e.message}`); }
+  }
+
+  // A PID absent, or a zombie with the recorded birth, has exited. A process cannot exit twice.
+  exited(identity, current) {
+    return current.status === 'ABSENT' || (current.status === 'LIVE' && current.birth === identity.birth && current.state === 'Z');
   }
 
   entry(identity) {
@@ -1228,20 +1322,26 @@ class OwnershipObserver {
   }
   sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
-  // Committed identities are probed first, each with its own window. The census
-  // runs second, and its outage taints the observer without stopping the probes.
+  // One poll: one helper call covers every active identity and the census.
   observe(timeout = 5000, censusTimeout = 5000) {
     if (!this.live()) return new Map();
+    return this.withSnapshot(this.activePids(), timeout, () => this.observeNow(timeout, censusTimeout));
+  }
+
+  // Committed identities are read first, each with its own window. The census comes second,
+  // and its outage taints the observer without stopping the identity reads already made.
+  observeNow(timeout, censusTimeout) {
     const deadline = this.now() + timeout;
     const left = () => Math.max(1, Math.min(5000, Math.floor(deadline - this.now())));
     const anchorsByStage = new Map();
     for (const stage of this.stages.values()) {
       const anchors = new Set();
-      for (const identity of stage.owned.values()) {
+      for (const identity of [...stage.active.values()]) {
         const current = this.point(identity.pid, left());
         if (current.status === 'UNKNOWN') { this.fail(`identity unavailable: ${identity.pid}`); continue; }
-        if (current.status === 'LIVE' && current.birth !== identity.birth) { this.fail(`recycled owned PID ${identity.pid}`); continue; }
-        if (current.status === 'LIVE' && current.state !== 'Z') anchors.add(identity.pid);
+        if (this.exited(identity, current)) { this.retire(stage, identity, identity.termAt === null ? 'absent' : 'terminated'); continue; }
+        if (current.birth !== identity.birth) { this.fail(`recycled owned PID ${identity.pid}`); this.retire(stage, identity, 'replaced'); continue; }
+        anchors.add(identity.pid);
       }
       anchorsByStage.set(stage, anchors);
     }
@@ -1251,17 +1351,20 @@ class OwnershipObserver {
       while (changed) {
         changed = false;
         for (const [pid, parent] of rows) {
-          if (!anchors.has(parent) || stage.owned.has(pid)) continue;
+          if (!anchors.has(parent) || stage.active.has(pid)) continue;
           const candidate = this.point(pid, left());
-          const parentIdentity = stage.owned.get(parent);
+          const parentIdentity = stage.active.get(parent);
           const currentParent = this.point(parent, left());
-          if (candidate.status !== 'LIVE' || candidate.state === 'Z' || candidate.ppid !== parent || currentParent.status !== 'LIVE' || currentParent.state === 'Z' || currentParent.birth !== parentIdentity.birth) {
+          if (candidate.status === 'UNKNOWN') { this.fail(`identity unavailable: ${pid}`); continue; }
+          // A candidate seen in the census whose identity cannot be bound is unresolved, never ignored.
+          if (candidate.status !== 'LIVE' || candidate.state === 'Z' || candidate.ppid !== parent ||
+              currentParent.status !== 'LIVE' || currentParent.state === 'Z' || currentParent.birth !== parentIdentity.birth) {
             this.fail(`ambiguous ancestry: ${parent} -> ${pid}`); continue;
           }
-          const identity = { pid, birth: candidate.birth, root_pid: stage.pid, unit: stage.unit, native_attempt: stage.attempt, termAt: null, killed: false };
+          const identity = { pid, birth: candidate.birth, root_pid: stage.pid, unit: stage.unit, native_attempt: stage.attempt, termAt: null, killed: false, outcome: null };
           try { this.record({ event: 'observed', ...this.entry(identity), parent }); }
           catch (e) { this.fail(`ownership persistence failed: ${e.message}`); continue; }
-          stage.owned.set(pid, identity);
+          this.adopt(stage, identity);
           anchors.add(pid);
           changed = true;
         }
@@ -1275,9 +1378,9 @@ class OwnershipObserver {
       taint_reasons: [...this.taintReasons], grace_sec: stages.length === 1 ? stages[0].graceSec : this.graceSec, recovery: buckets };
   }
 
-  // Identities without a recorded outcome are survivors: the stage did not prove them gone.
+  // Every identity in the record is bucketed by its outcome. One without an outcome is still live, so it is a survivor.
   bucketsFor(stage, buckets) {
-    for (const identity of stage.owned.values()) buckets[stage.outcomes.get(identity.pid) || 'survivors'].push(this.entry(identity));
+    for (const identity of stage.records) buckets[identity.outcome || 'survivors'].push(this.entry(identity));
     return buckets;
   }
 
@@ -1293,45 +1396,15 @@ class OwnershipObserver {
   }
 
   async stageRecovery(stage, deadline) {
-    const outcomes = new Map();
-    stage.outcomes = outcomes;
     const remaining = () => Math.max(1, Math.floor(deadline - this.now()));
-    const window = () => Math.min(5000, remaining());
-    while (this.live() && this.now() < deadline) {
-      // Committed identities first. Each probe gets its own window, which a census never shortens.
-      for (const identity of stage.owned.values()) {
-        if (!this.live() || outcomes.has(identity.pid) || this.now() >= deadline) continue;
-        let current = this.point(identity.pid, window());
-        if (current.status === 'ABSENT' || (current.status === 'LIVE' && current.birth === identity.birth && current.state === 'Z')) {
-          outcomes.set(identity.pid, identity.termAt === null ? 'absent' : 'terminated'); continue;
-        }
-        if (current.status === 'UNKNOWN') { this.fail(`identity unavailable: ${identity.pid}`); outcomes.set(identity.pid, 'unverifiable'); continue; }
-        if (current.birth !== identity.birth) { this.fail(`recycled owned PID ${identity.pid}`); outcomes.set(identity.pid, 'replaced'); continue; }
-        const sig = identity.termAt === null ? 'SIGTERM' : (!identity.killed && this.now() - identity.termAt >= stage.graceSec * 1000 ? 'SIGKILL' : null);
-        if (!sig) continue;
-        current = this.point(identity.pid, window());
-        if (current.status === 'ABSENT' || (current.status === 'LIVE' && current.birth === identity.birth && current.state === 'Z')) { outcomes.set(identity.pid, identity.termAt === null ? 'absent' : 'terminated'); continue; }
-        if (current.status === 'UNKNOWN') { this.fail(`identity unavailable before ${sig}: ${identity.pid}`); outcomes.set(identity.pid, 'unverifiable'); continue; }
-        if (current.birth !== identity.birth) { this.fail(`recycled owned PID ${identity.pid}`); outcomes.set(identity.pid, 'replaced'); continue; }
-        if (this.now() >= deadline) continue;
-        try {
-          this.signal(identity.pid, sig);
-          const monotonicMs = this.now();
-          if (sig === 'SIGTERM') identity.termAt = monotonicMs; else identity.killed = true;
-          try { this.record({ event: 'signaled', ...this.entry(identity), signal: sig, monotonic_ms: monotonicMs }); }
-          catch (e) { this.fail(`ownership persistence failed: ${e.message}`); }
-        } catch (e) {
-          if (e.code === 'ESRCH') continue;
-          this.fail(`signal ${sig} failed for ${identity.pid}: ${e.message}`);
-          outcomes.set(identity.pid, 'unverifiable');
-        }
-      }
-      // Census second. It may use at most half of what remains, so the next probe pass keeps a share of the budget.
-      if (this.live() && this.now() < deadline) {
-        try { this.observe(window(), Math.min(5000, Math.max(1, Math.floor(remaining() / 2)))); }
-        catch (e) { this.fail(`observer failed: ${e.message}`); }
-      }
-      if (!this.live() || [...stage.owned.keys()].every(pid => outcomes.has(pid))) break;
+    const probeWindow = () => Math.min(5000, remaining());
+    // A new pass decides afresh whether an unverifiable identity is still unknown.
+    for (const identity of stage.records) if (identity.outcome === 'unverifiable') identity.outcome = null;
+    const decided = new Set();
+    const pending = () => [...stage.active.values()].some(identity => !decided.has(identity));
+    while (this.live() && this.now() < deadline && pending()) {
+      this.withSnapshot(this.activePids(), probeWindow(), () => this.recoveryPass(stage, deadline, decided, probeWindow, remaining));
+      if (!this.live() || !pending()) break;
       if (this.now() < deadline) await this.sleep(Math.min(100, Math.max(1, deadline - this.now())));
     }
     // Cancelled: abort has already recorded the unresolved outcome, so nothing more is written.
@@ -1354,6 +1427,46 @@ class OwnershipObserver {
     return report;
   }
 
+  // One synchronous recovery pass over the stage's live identities, then one census.
+  recoveryPass(stage, deadline, decided, probeWindow, remaining) {
+    for (const identity of [...stage.active.values()]) {
+      if (!this.live() || decided.has(identity) || this.now() >= deadline) continue;
+      let current = this.point(identity.pid, probeWindow());
+      if (this.exited(identity, current)) { this.retire(stage, identity, identity.termAt === null ? 'absent' : 'terminated'); continue; }
+      if (current.status === 'UNKNOWN') { this.fail(`identity unavailable: ${identity.pid}`); this.markUnverifiable(identity, decided); continue; }
+      if (current.birth !== identity.birth) { this.fail(`recycled owned PID ${identity.pid}`); this.retire(stage, identity, 'replaced'); continue; }
+      const sig = identity.termAt === null ? 'SIGTERM' : (!identity.killed && this.now() - identity.termAt >= stage.graceSec * 1000 ? 'SIGKILL' : null);
+      if (!sig) continue;
+      // The read that decides a signal is fresh, never the poll's snapshot.
+      current = this.point(identity.pid, probeWindow(), true);
+      if (this.exited(identity, current)) { this.retire(stage, identity, identity.termAt === null ? 'absent' : 'terminated'); continue; }
+      if (current.status === 'UNKNOWN') { this.fail(`identity unavailable before ${sig}: ${identity.pid}`); this.markUnverifiable(identity, decided); continue; }
+      if (current.birth !== identity.birth) { this.fail(`recycled owned PID ${identity.pid}`); this.retire(stage, identity, 'replaced'); continue; }
+      if (this.now() >= deadline) continue;
+      try {
+        this.signal(identity.pid, sig);
+        const monotonicMs = this.now();
+        if (sig === 'SIGTERM') identity.termAt = monotonicMs; else identity.killed = true;
+        try { this.record({ event: 'signaled', ...this.entry(identity), signal: sig, monotonic_ms: monotonicMs }); }
+        catch (e) { this.fail(`ownership persistence failed: ${e.message}`); }
+      } catch (e) {
+        if (e.code === 'ESRCH') continue;
+        this.fail(`signal ${sig} failed for ${identity.pid}: ${e.message}`);
+        this.markUnverifiable(identity, decided);
+      }
+    }
+    // Census second. It may use at most half of what remains, so the next probe pass keeps a share of the budget.
+    if (this.live() && this.now() < deadline) {
+      try { this.observe(probeWindow(), Math.min(5000, Math.max(1, Math.floor(remaining() / 2)))); }
+      catch (e) { this.fail(`observer failed: ${e.message}`); }
+    }
+  }
+
+  markUnverifiable(identity, decided) {
+    identity.outcome = 'unverifiable';
+    decided.add(identity);
+  }
+
   async resolve(req, { deadline } = {}) {
     if (!this.live()) throw new Error('ownership observer is finalizing');
     if (req.grace_sec !== undefined && Number(req.grace_sec) !== this.graceSec) { this.fail('grace does not match registered configuration'); throw new Error('grace does not match registered configuration'); }
@@ -1366,8 +1479,7 @@ class OwnershipObserver {
       const end = deadline ?? this.now() + this.budgetMs;
       stage.flight = Promise.resolve().then(() => this.stageRecovery(stage, end)).catch(e => {
         this.fail(`recovery failed for stage ${stage.pid}: ${e.message}`);
-        const buckets = { terminated: [], absent: [], replaced: [], unverifiable: [], survivors: [...stage.owned.values()].map(identity => this.entry(identity)) };
-        const result = this.report([stage], buckets);
+        const result = this.report([stage], this.bucketsFor(stage, emptyBuckets()));
         if (this.live()) this.persistReport(result);
         result.taint_reasons = [...this.taintReasons];
         return result;
@@ -1444,6 +1556,8 @@ class OwnershipObserver {
 const WORKSPACE_ACTION_SRC = external_node_path_.resolve('.github/actions/strict-supervisor/src');
 const ACTION_SRC = external_node_fs_.existsSync(WORKSPACE_ACTION_SRC) ? WORKSPACE_ACTION_SRC : external_node_path_.resolve('src');
 const CONTEXT_FIELDS = ['invocation_id', 'execution_kind', 'repository', 'run_id', 'run_attempt', 'job_id', 'job_key', 'p_sha', 'w_sha', 'c_sha', 'fixture_sha256'];
+// After the supervisor's own SIGKILL, the controller's exit is observed within this window.
+const CONTROLLER_KILL_SETTLE_MS = 5000;
 const EMITTER_DIGEST = `import ast,hashlib,sys\nt=ast.parse(open(sys.argv[1],encoding='utf8').read())\nx=[n.value for n in t.body if isinstance(n,ast.Assign) and any(isinstance(a,ast.Name) and a.id=='FAKE_STAGE_EMITTER_SOURCE' for a in n.targets)]\nassert len(x)==1\ns=ast.literal_eval(x[0]); assert isinstance(s,str)\nprint(hashlib.sha256(s.encode('utf8')).hexdigest())`;
 
 function sha(dir) {
@@ -1506,6 +1620,7 @@ class StrictSupervisor {
     this.acks = [];
     this.ownershipAcks = [];
     this.lifecycle = [];
+    this.controllerSignals = [];
     this.entries = [];
     this.seenRequestIds = new Set();
     this.lastSnapshotSequence = 0;
@@ -1620,7 +1735,7 @@ class StrictSupervisor {
       this.ownershipRecovery.proof_resolved = false;
       this.ownershipRecovery.taint_reasons = [...this.ownership.taintReasons];
     }
-    const data = JSON.stringify({ invocation_id: this.context.invocation_id, execution_kind: this.context.execution_kind, exit_code: exitCode, controller_signal: this.controllerSignal || null, entries: this.entries, ownership_control_acks: this.ownershipAcks, ownership_ledger: this.ownership?.directory || this.guardRefusal?.ledger || null, ownership_guard_refusal: this.guardRefusal || null, ownership_journal: ownership, ownership_recovery: this.ownershipRecovery || null, lifecycle: this.lifecycle }, null, 2) + '\n';
+    const data = JSON.stringify({ invocation_id: this.context.invocation_id, execution_kind: this.context.execution_kind, exit_code: exitCode, controller_signal: this.controllerSignal || null, controller_signal_sent_by: this.controllerSignal ? (this.controllerSignals.some(s => s.signal === this.controllerSignal) ? 'supervisor' : 'external') : null, controller_signals: this.controllerSignals, entries: this.entries, ownership_control_acks: this.ownershipAcks, ownership_ledger: this.ownership?.directory || this.guardRefusal?.ledger || null, ownership_guard_refusal: this.guardRefusal || null, ownership_journal: ownership, ownership_recovery: this.ownershipRecovery || null, lifecycle: this.lifecycle }, null, 2) + '\n';
     writeFileAtomic(this.indexPath, data, this.fileIo);
   }
   async run() {
@@ -1633,12 +1748,14 @@ class StrictSupervisor {
         (this.mode === 'strict' && graceSec !== 30) ||
         !Number.isFinite(finalizationSec) || finalizationSec <= 0) throw new Error('invalid ownership timing');
     const budgetMs = Math.min(45000, finalizationSec * 1000);
-    let child, recoveryPromise, controllerStopTimer;
+    // The shutdown budget must outlast a stage's own grace, or the controller is stopped before any stage gets it.
+    if (budgetMs <= graceSec * 1000) throw new Error('invalid ownership timing');
+    let child, recoveryPromise, controllerKillTimer = null, killArmed = false;
     let streamFailure = null;
     let notifyFailure;
     const failed = new Promise(resolve => { notifyFailure = resolve; });
-    // The shutdown deadline is set once, by the first recovery start. Every shutdown
-    // wait and the one recovery flight share it.
+    // The shutdown deadline is set once, by the first shutdown start (a failure or the recovery start).
+    // Every shutdown wait and the one recovery flight share it.
     const startRecovery = () => {
       if (!this.shutdownDeadline) this.shutdownDeadline = performance.now() + budgetMs;
       if (!recoveryPromise) {
@@ -1650,20 +1767,36 @@ class StrictSupervisor {
       }
       return recoveryPromise;
     };
+    // Every signal the supervisor sends the controller goes through here, so the record says who sent it.
+    const alive = () => Boolean(child) && child.exitCode === null && child.signalCode === null;
+    const signalController = (signal, reason) => {
+      if (!alive() || !child.kill(signal)) return false;
+      const sent = { signal, reason, monotonic_ms: performance.now() };
+      this.controllerSignals.push(sent);
+      this.lifecycle.push({ event: 'controller-signal-sent', ...sent });
+      return true;
+    };
+    // Shutdown starts once. Every wait shares the deadline, and the controller is SIGKILLed only when it
+    // passes, so a controller still persisting its unit keeps the whole shutdown budget.
+    const beginShutdown = () => {
+      if (!this.shutdownDeadline) this.shutdownDeadline = performance.now() + budgetMs;
+      if (killArmed || !alive()) return;
+      killArmed = true;
+      controllerKillTimer = setTimeout(() => {
+        controllerKillTimer = null;
+        signalController('SIGKILL', 'shutdown deadline reached before the controller exited');
+      }, Math.max(0, this.shutdownDeadline - performance.now()));
+    };
     const onFailure = reason => {
       this.stopping = true;
       if (!streamFailure) streamFailure = new Error(reason);
-      if (child && child.exitCode === null && child.signalCode === null) {
-        child.kill('SIGTERM');
-        controllerStopTimer ||= setTimeout(() => {
-          if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-        }, Math.min(5000, budgetMs));
-      }
+      if (!this.controllerSignals.some(s => s.signal === 'SIGTERM')) signalController('SIGTERM', `ownership failure: ${reason}`);
+      beginShutdown();
       startRecovery();
       notifyFailure();
     };
     const childArgs = this.buildChildArgs();
-    const tempRoot = external_node_fs_.realpathSync('/tmp');
+    const tempRoot = this.ownershipTempRoot || external_node_fs_.realpathSync('/tmp');
     const guardPath = external_node_path_.join(tempRoot, 'strict-supervisor-ownership');
     try {
       this.ownership = new OwnershipObserver(this.pythonPath, external_node_path_.join(ACTION_SRC, 'process_identity.py'), {
@@ -1698,7 +1831,7 @@ class StrictSupervisor {
     if (this.mode === 'validation-only' && ['ownership-crash', 'ownership-census-outage', 'ownership-run1-outage'].includes(this.validationCase)) {
       crashDeadline = setTimeout(() => {
         streamFailure = new Error('synthetic crash readiness not observed');
-        child.kill('SIGKILL');
+        signalController('SIGKILL', 'synthetic crash readiness not observed');
       }, 120000);
       crashTimer = setInterval(() => {
         try {
@@ -1713,7 +1846,7 @@ class StrictSupervisor {
           if (this.validationCase !== 'ownership-crash') {
             this.ownership.census = () => { throw new Error('synthetic permanent census outage'); };
             this.ownership.fail('synthetic permanent census outage');
-          } else child.kill('SIGKILL');
+          } else signalController('SIGKILL', 'synthetic crash fixture');
         } catch (err) {
           if (err.code !== 'ENOENT') {
             streamFailure = err;
@@ -1723,7 +1856,7 @@ class StrictSupervisor {
         }
       }, 100);
     }
-    const forward = signal => { if (child.exitCode === null) child.kill(signal); };
+    const forward = signal => { signalController(signal, 'forwarded from the job'); };
     const onInt = () => forward('SIGINT'), onTerm = () => forward('SIGTERM');
     process.on('SIGINT', onInt); process.on('SIGTERM', onTerm);
     let code = null, signal = null;
@@ -1736,12 +1869,17 @@ class StrictSupervisor {
       // the controller to request resolution or release its pipe writers.
       let status = await Promise.race([exited, failed.then(() => null)]);
       if (!status) {
-        try { status = await beforeDeadline(exited, this.shutdownDeadline, 'controller exit'); }
-        catch (err) { onStreamFailure(err); status = { code: null, signal: null, error: err }; }
+        // The controller has until the shared deadline to exit by itself, then its SIGKILL, then one settle window.
+        try { status = await beforeDeadline(exited, this.shutdownDeadline + CONTROLLER_KILL_SETTLE_MS, 'controller exit'); }
+        catch (err) { if (!streamFailure) streamFailure = err; status = { code: null, signal: null, error: err }; }
       }
       ({ code, signal } = status);
       this.controllerSignal = signal;
-      if (status.error || signal) this.ownership.fail(`controller ${status.error ? `error: ${status.error.message}` : `terminated by ${signal}`}`);
+      if (status.error) this.ownership.fail(`controller error: ${status.error.message}`);
+      else if (signal) {
+        const sent = this.controllerSignals.find(s => s.signal === signal);
+        this.ownership.fail(sent ? `controller stopped by supervisor ${signal} (${sent.reason})` : `controller terminated by ${signal}`);
+      }
       this.stopping = true;
       startRecovery();
       const settle = async (promise, label) => {
@@ -1789,7 +1927,7 @@ class StrictSupervisor {
     } finally {
       clearInterval(crashTimer);
       clearTimeout(crashDeadline);
-      clearTimeout(controllerStopTimer);
+      clearTimeout(controllerKillTimer);
       process.removeListener('SIGINT', onInt); process.removeListener('SIGTERM', onTerm);
       this.ownership.close();
     }
