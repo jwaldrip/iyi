@@ -48,3 +48,12 @@ jobs:
         run: |
           & "$env:RUNNER_TEMP/probe-build/jit_reservation_probe.exe"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Observe native null-allocation failure
+        shell: pwsh
+        run: |
+          $stderr = "$env:RUNNER_TEMP/allocator-failure.txt"
+          $child = Start-Process "$env:RUNNER_TEMP/probe-build/jit_reservation_probe.exe" -ArgumentList '--fail-allocation' -Wait -PassThru -NoNewWindow -RedirectStandardError $stderr
+          $out = Get-Content -Raw $stderr
+          Write-Host "CHILD_EXIT=$($child.ExitCode)"
+          Write-Host $out
+          if ($child.ExitCode -eq 0 -or $out -notmatch 'INJECTED_NULL_SECTION' -or $out -notmatch 'Unable to allocate section memory') { throw 'Native failure control did not match' }

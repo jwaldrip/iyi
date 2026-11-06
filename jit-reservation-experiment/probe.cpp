@@ -13,6 +13,7 @@
 #include <windows.h>
 
 using namespace llvm;
+static bool fail_allocation = false;
 static void require(bool b, const char *s) {
   if (!b) {
     std::fprintf(stderr, "FAIL %s\n", s);
@@ -76,6 +77,10 @@ struct Manager final : SectionMemoryManager {
   }
   uint8_t *alloc(int group, uintptr_t size, unsigned align, StringRef name) {
     require(base, "reserve callback missing");
+    if (fail_allocation) {
+      std::fprintf(stderr, "INJECTED_NULL_SECTION\n");
+      return nullptr;
+    }
     size_t a = std::max<size_t>(align ? align : 16, 1);
     size_t pos = round_up(cursor[group], a);
     require(pos <= end[group] && size <= end[group] - pos,
@@ -158,7 +163,9 @@ static void run(bool fail) {
   LLVMAddAttributeAtIndex(g, LLVMAttributeFunctionIndex,
                           LLVMCreateEnumAttribute(ctx, uw_kind, 2));
   LLVMPositionBuilderAtEnd(b, LLVMAppendBasicBlockInContext(ctx, g, "entry"));
-  auto v = LLVMBuildLoad2(b, i32, global, "v");
+  auto pointer_call = LLVMBuildCall2(b, LLVMFunctionType(p, nullptr, 0, 0), f,
+                                     nullptr, 0, "pointer");
+  auto v = LLVMBuildLoad2(b, i32, pointer_call, "v");
   auto r = LLVMBuildLoad2(b, i32, readonly, "r");
   LLVMSetVolatile(r, 1);
   LLVMBuildRet(b, LLVMBuildAdd(b, v, r, "sum"));
@@ -199,10 +206,11 @@ static void run(bool fail) {
   LLVMDisposeExecutionEngine(ee);
   LLVMContextDispose(ctx);
 }
-int main() {
+int main(int argc, char **argv) {
   LLVMLinkInMCJIT();
   LLVMInitializeNativeTarget();
   LLVMInitializeNativeAsmPrinter();
+  fail_allocation = argc > 1 && std::string(argv[1]) == "--fail-allocation";
   run(false);
   run(true);
   std::puts("PROBE COMPLETE");
