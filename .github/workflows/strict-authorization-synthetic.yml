@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - 'proof/strict-approval-binding-20261105'
+      - 'proof/strict-approval-policy-fix-20261106'
   workflow_dispatch:
 
 permissions:
