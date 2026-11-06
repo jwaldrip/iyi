@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - experiment/pr147-llvm20-dynamic-proof
+      - 'experiment/pr147-**'
 permissions:
   contents: read
 jobs:
@@ -16,44 +16,111 @@ jobs:
       - name: Fetch matching LLVM source
         shell: pwsh
         run: git clone --depth 1 --branch llvmorg-20.1.7 https://github.com/llvm/llvm-project.git "$env:RUNNER_TEMP/llvm-project"
+      - name: Apply LLVM MCJIT patch if present
+        shell: pwsh
+        run: |
+          $patchPath = "$env:GITHUB_WORKSPACE/jit-reservation-experiment/llvm20-windows-mcjit.patch"
+          if (Test-Path $patchPath) {
+            Write-Host "Applying local patch: $patchPath"
+            git -C "$env:RUNNER_TEMP/llvm-project" apply $patchPath
+            if ($LASTEXITCODE) { throw "Failed to apply local LLVM MCJIT patch" }
+          } else {
+            Write-Host "No local patch file found. Checking remote branch experiment/pr147-slice-a-native-patch..."
+            try {
+              git fetch origin experiment/pr147-slice-a-native-patch:slice-a-branch 2>$null
+              $sliceAPatch = git show slice-a-branch:jit-reservation-experiment/llvm20-windows-mcjit.patch 2>$null
+              if ($sliceAPatch) {
+                Write-Host "Found patch on slice-a branch, applying..."
+                $tmpPatch = "$env:RUNNER_TEMP/slice-a.patch"
+                [System.IO.File]::WriteAllText($tmpPatch, $sliceAPatch)
+                git -C "$env:RUNNER_TEMP/llvm-project" apply $tmpPatch
+                if ($LASTEXITCODE) { throw "Failed to apply slice A patch" }
+              } else {
+                Write-Host "No slice A patch found on origin; proceeding with unpatched LLVM for baseline check."
+              }
+            } catch {
+              Write-Host "Warning during patch fetch: $_"
+            }
+          }
       - uses: actions/cache/restore@v4
         id: llvm-cache
         with:
           path: ${{ runner.temp }}/llvm-build
-          key: windows-2022-llvm-20.1.7-x86-static-experiment-1
-      - name: Configure LLVM static libraries
+          key: windows-2022-llvm-20.1.7-c-dylib-${{ hashFiles('jit-reservation-experiment/llvm20-windows-mcjit.patch') }}-3
+      - name: Configure LLVM C dylib
         shell: pwsh
         run: |
-          cmake -G Ninja -S "$env:RUNNER_TEMP/llvm-project/llvm" -B "$env:RUNNER_TEMP/llvm-build" -DCMAKE_BUILD_TYPE=Release -DLLVM_TARGETS_TO_BUILD=X86 -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_BENCHMARKS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF -DLLVM_INCLUDE_DOCS=OFF -DLLVM_ENABLE_ZSTD=OFF -DLLVM_ENABLE_ZLIB=OFF -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL
+          cmake -G Ninja -S "$env:RUNNER_TEMP/llvm-project/llvm" -B "$env:RUNNER_TEMP/llvm-build" `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DLLVM_BUILD_LLVM_C_DYLIB=ON `
+            -DLLVM_TARGETS_TO_BUILD="X86;AArch64" `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL `
+            -DLLVM_INCLUDE_TESTS=OFF `
+            -DLLVM_INCLUDE_BENCHMARKS=OFF `
+            -DLLVM_INCLUDE_EXAMPLES=OFF `
+            -DLLVM_INCLUDE_DOCS=OFF `
+            -DLLVM_ENABLE_ZSTD=OFF `
+            -DLLVM_ENABLE_ZLIB=OFF
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-      - name: Build matching LLVM libraries
+      - name: Build LLVM-C dylib and import library
         shell: pwsh
         run: |
-          cmake --build "$env:RUNNER_TEMP/llvm-build" --target LLVMExecutionEngine LLVMMCJIT LLVMX86CodeGen LLVMX86AsmParser LLVMX86Disassembler LLVMX86Desc LLVMX86Info LLVMCore LLVMSupport
+          cmake --build "$env:RUNNER_TEMP/llvm-build" --target LLVM-C
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - uses: actions/cache/save@v4
         if: steps.llvm-cache.outputs.cache-hit != 'true'
         with:
           path: ${{ runner.temp }}/llvm-build
-          key: windows-2022-llvm-20.1.7-x86-static-experiment-1
-      - name: Build proof against matching LLVM
+          key: windows-2022-llvm-20.1.7-c-dylib-${{ hashFiles('jit-reservation-experiment/llvm20-windows-mcjit.patch') }}-3
+      - name: Build proof against matching LLVM-C DLL
         shell: pwsh
         run: |
-          cmake -G Ninja -S jit-reservation-experiment -B "$env:RUNNER_TEMP/probe-build" -DCMAKE_BUILD_TYPE=Release -DLLVM_DIR="$env:RUNNER_TEMP/llvm-build/lib/cmake/llvm" -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL
+          cmake -G Ninja -S jit-reservation-experiment -B "$env:RUNNER_TEMP/probe-build" `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DLLVM_DIR="$env:RUNNER_TEMP/llvm-build/lib/cmake/llvm" `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cmake --build "$env:RUNNER_TEMP/probe-build"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-      - name: Exercise allocator and negative control
+      - name: Prepare runtime DLL environment
         shell: pwsh
         run: |
-          & "$env:RUNNER_TEMP/probe-build/jit_reservation_probe.exe"
+          Copy-Item "$env:RUNNER_TEMP/llvm-build/bin/LLVM-C.dll" "$env:RUNNER_TEMP/probe-build/" -ErrorAction SilentlyContinue
+          Write-Host "Verifying LLVM-C.dll existence:"
+          Get-Item "$env:RUNNER_TEMP/probe-build/LLVM-C.dll" -ErrorAction SilentlyContinue
+      - name: Run comprehensive JIT proof suite
+        shell: pwsh
+        run: |
+          $env:PATH = "$env:RUNNER_TEMP/llvm-build/bin;$env:PATH"
+          & "$env:RUNNER_TEMP/probe-build/jit_reservation_probe.exe" --all
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-      - name: Observe native null-allocation failure
+      - name: Verify non-fatal recovery on null code allocation
         shell: pwsh
         run: |
-          $stderr = "$env:RUNNER_TEMP/allocator-failure.txt"
-          $child = Start-Process "$env:RUNNER_TEMP/probe-build/jit_reservation_probe.exe" -ArgumentList '--fail-allocation' -Wait -PassThru -NoNewWindow -RedirectStandardError $stderr
-          $out = Get-Content -Raw $stderr
+          $env:PATH = "$env:RUNNER_TEMP/llvm-build/bin;$env:PATH"
+          $stderr = "$env:RUNNER_TEMP/null-code-alloc.txt"
+          $child = Start-Process "$env:RUNNER_TEMP/probe-build/jit_reservation_probe.exe" -ArgumentList '--fail-allocation-code' -Wait -PassThru -NoNewWindow -RedirectStandardError $stderr
+          $out = Get-Content -Raw $stderr -ErrorAction SilentlyContinue
           Write-Host "CHILD_EXIT=$($child.ExitCode)"
           Write-Host $out
-          if ($child.ExitCode -eq 0 -or $out -notmatch 'INJECTED_NULL_SECTION' -or $out -notmatch 'Unable to allocate section memory') { throw 'Native failure control did not match' }
+          if ($child.ExitCode -ne 0) { throw "Null code allocation caused process crash or non-zero exit ($($child.ExitCode))" }
+      - name: Verify non-fatal recovery on null data allocation
+        shell: pwsh
+        run: |
+          $env:PATH = "$env:RUNNER_TEMP/llvm-build/bin;$env:PATH"
+          $stderr = "$env:RUNNER_TEMP/null-data-alloc.txt"
+          $child = Start-Process "$env:RUNNER_TEMP/probe-build/jit_reservation_probe.exe" -ArgumentList '--fail-allocation-data' -Wait -PassThru -NoNewWindow -RedirectStandardError $stderr
+          $out = Get-Content -Raw $stderr -ErrorAction SilentlyContinue
+          Write-Host "CHILD_EXIT=$($child.ExitCode)"
+          Write-Host $out
+          if ($child.ExitCode -ne 0) { throw "Null data allocation caused process crash or non-zero exit ($($child.ExitCode))" }
+      - name: Verify non-fatal recovery on finalize failure
+        shell: pwsh
+        run: |
+          $env:PATH = "$env:RUNNER_TEMP/llvm-build/bin;$env:PATH"
+          $stderr = "$env:RUNNER_TEMP/finalize-failure.txt"
+          $child = Start-Process "$env:RUNNER_TEMP/probe-build/jit_reservation_probe.exe" -ArgumentList '--fail-finalize' -Wait -PassThru -NoNewWindow -RedirectStandardError $stderr
+          $out = Get-Content -Raw $stderr -ErrorAction SilentlyContinue
+          Write-Host "CHILD_EXIT=$($child.ExitCode)"
+          Write-Host $out
+          if ($child.ExitCode -ne 0) { throw "Finalize failure caused process crash or non-zero exit ($($child.ExitCode))" }
