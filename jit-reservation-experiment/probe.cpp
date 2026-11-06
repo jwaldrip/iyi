@@ -142,15 +142,25 @@ static void run(bool fail) {
   auto global = LLVMAddGlobal(m, i32, "mutable_value");
   LLVMSetInitializer(global, LLVMConstInt(i32, 41, 0));
   LLVMSetLinkage(global, LLVMInternalLinkage);
+  auto readonly = LLVMAddGlobal(m, i32, "readonly_value");
+  LLVMSetInitializer(readonly, LLVMConstInt(i32, 1, 0));
+  LLVMSetGlobalConstant(readonly, 1);
+  LLVMSetLinkage(readonly, LLVMInternalLinkage);
   auto f =
       LLVMAddFunction(m, "get_pointer", LLVMFunctionType(p, nullptr, 0, 0));
   auto b = LLVMCreateBuilderInContext(ctx);
   LLVMPositionBuilderAtEnd(b, LLVMAppendBasicBlockInContext(ctx, f, "entry"));
   LLVMBuildRet(b, global);
   auto g = LLVMAddFunction(m, "evaluate", LLVMFunctionType(i32, nullptr, 0, 0));
+  auto uw_kind = LLVMGetEnumAttributeKindForName("uwtable", 7);
+  require(uw_kind != 0, "uwtable attribute");
+  LLVMAddAttributeAtIndex(g, LLVMAttributeFunctionIndex,
+                          LLVMCreateEnumAttribute(ctx, uw_kind, 2));
   LLVMPositionBuilderAtEnd(b, LLVMAppendBasicBlockInContext(ctx, g, "entry"));
   auto v = LLVMBuildLoad2(b, i32, global, "v");
-  LLVMBuildRet(b, LLVMBuildAdd(b, v, LLVMConstInt(i32, 1, 0), "sum"));
+  auto r = LLVMBuildLoad2(b, i32, readonly, "r");
+  LLVMSetVolatile(r, 1);
+  LLVMBuildRet(b, LLVMBuildAdd(b, v, r, "sum"));
   LLVMDisposeBuilder(b);
   auto *mgr = new Manager(fail);
   LLVMMCJITCompilerOptions opt;
