@@ -129,17 +129,19 @@ def verify_candidate(manifest_bytes, harness_bytes, audit_bytes, observations):
     if not isinstance(env, dict) or str(env.get("id")) != m["environment_id"] or env.get("name") != "strict-proof" or env.get("can_admins_bypass") is not False:
         reject("environment identity or bypass mismatch")
     rules = env.get("protection_rules")
-    if not isinstance(rules, list) or len(rules) != 1:
-        reject("environment requires exactly one reviewer rule")
-    rule = rules[0]
-    if not isinstance(rule, dict) or rule.get("type") != "required_reviewers":
-        reject("missing required reviewer rule")
+    if not isinstance(rules, list) or len(rules) != 2 or any(not isinstance(item, dict) for item in rules):
+        reject("environment requires reviewer and branch policy rules")
+    by_type = {item.get("type"): item for item in rules if isinstance(item.get("type"), str)}
+    if set(by_type) != {"required_reviewers", "branch_policy"}:
+        reject("unexpected environment protection rules")
+    rule = by_type["required_reviewers"]
     reviewers = rule.get("reviewers")
     if not isinstance(reviewers, list) or len(reviewers) != 1 or reviewers[0].get("type") != "User" or str(reviewers[0].get("reviewer", {}).get("id")) != "43164" or rule.get("prevent_self_review") is not False:
         reject("reviewer rule mismatch")
     if env.get("deployment_branch_policy") != {"protected_branches": False, "custom_branch_policies": True}:
         reject("ref policy not explicitly restricted")
-    if observations["selected_branch_policies"] != [m["strict_ref"].removeprefix("refs/heads/")]:
+    policies = observations["selected_branch_policies"]
+    if not isinstance(policies, list) or len(policies) != 1 or not isinstance(policies[0], dict) or policies[0].get("type") != "branch" or policies[0].get("name") != m["strict_ref"].removeprefix("refs/heads/"):
         reject("unexpected branch policy")
     if observations["environment_job_count"] != 1:
         reject("ambiguous environment job")

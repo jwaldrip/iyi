@@ -31,11 +31,12 @@ class AuthorizationCandidateTests(unittest.TestCase):
             "environment": {"id": 22, "name": "strict-proof", "can_admins_bypass": False,
                             "deployment_branch_policy": {"protected_branches": False, "custom_branch_policies": True},
                             "protection_rules": [{"type": "required_reviewers", "prevent_self_review": False,
-                                                  "reviewers": [{"type": "User", "reviewer": {"id": 43164}}]}]},
+                                                  "reviewers": [{"type": "User", "reviewer": {"id": 43164}}]},
+                                                 {"type": "branch_policy"}]},
             "strict_run": self.run_record("21", "20"),
             "harness_run": self.run_record("24", "20"),
             "audit_run": self.run_record("26", "27"),
-            "approvals": [], "environment_job_count": 1, "selected_branch_policies": ["proof/trusted"],
+            "approvals": [], "environment_job_count": 1, "selected_branch_policies": [{"name": "proof/trusted", "type": "branch", "id": 31}],
             "artifact_bindings": {"harness": copy.deepcopy(self.manifest["harness"]), "audit": copy.deepcopy(self.manifest["audit"])},
         }
         self.obs["context"]["workflow_sha"] = self.manifest["c_sha"]
@@ -57,6 +58,10 @@ class AuthorizationCandidateTests(unittest.TestCase):
     def test_valid_candidate_is_not_authority(self):
         self.assertIsNone(self.check())
 
+    def test_protection_rule_order_is_irrelevant(self):
+        self.obs["environment"]["protection_rules"].reverse()
+        self.assertIsNone(self.check())
+
     def test_environment_and_reviewer_negative_controls(self):
         changes = [
             ("bypass enabled", lambda o: o["environment"].update(can_admins_bypass=True)),
@@ -74,7 +79,14 @@ class AuthorizationCandidateTests(unittest.TestCase):
             ("wrong approval environment", lambda o: o["approvals"][0]["environments"][0].update(id=1)),
             ("extra environment job", lambda o: o.update(environment_job_count=2)),
             ("private repo", lambda o: o["repository"].update(private=True)),
-            ("wrong branch policy", lambda o: o.update(selected_branch_policies=["*"])),
+            ("wrong branch policy", lambda o: o["selected_branch_policies"][0].update(name="*")),
+            ("tag policy", lambda o: o["selected_branch_policies"][0].update(type="tag")),
+            ("missing policy type", lambda o: o["selected_branch_policies"][0].pop("type")),
+            ("missing branch rule", lambda o: o["environment"]["protection_rules"].pop()),
+            ("duplicate reviewer rule", lambda o: o["environment"]["protection_rules"].__setitem__(1, copy.deepcopy(o["environment"]["protection_rules"][0]))),
+            ("unknown rule", lambda o: o["environment"]["protection_rules"].append({"type": "wait_timer"})),
+            ("extra policy", lambda o: o["selected_branch_policies"].append({"name": "*", "type": "branch"})),
+            ("protected branches only", lambda o: o["environment"].update(deployment_branch_policy={"protected_branches": True, "custom_branch_policies": False})),
         ]
         baseline = copy.deepcopy(self.obs)
         for label, mutate in changes:
