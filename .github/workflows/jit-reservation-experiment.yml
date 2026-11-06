@@ -16,16 +16,29 @@ jobs:
       - name: Fetch matching LLVM source
         shell: pwsh
         run: git clone --depth 1 --branch llvmorg-20.1.7 https://github.com/llvm/llvm-project.git "$env:RUNNER_TEMP/llvm-project"
+      - uses: actions/cache/restore@v4
+        id: llvm-cache
+        with:
+          path: ${{ runner.temp }}/llvm-build
+          key: windows-2022-llvm-20.1.7-x86-static-experiment-1
       - name: Configure LLVM static libraries
         shell: pwsh
         run: |
           cmake -G Ninja -S "$env:RUNNER_TEMP/llvm-project/llvm" -B "$env:RUNNER_TEMP/llvm-build" -DCMAKE_BUILD_TYPE=Release -DLLVM_TARGETS_TO_BUILD=X86 -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_BENCHMARKS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF -DLLVM_INCLUDE_DOCS=OFF -DLLVM_ENABLE_ZSTD=OFF -DLLVM_ENABLE_ZLIB=OFF -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-      - name: Build proof against matching LLVM
+      - name: Build matching LLVM libraries
         shell: pwsh
         run: |
           cmake --build "$env:RUNNER_TEMP/llvm-build" --target LLVMExecutionEngine LLVMMCJIT LLVMX86CodeGen LLVMX86AsmParser LLVMX86Disassembler LLVMX86Desc LLVMX86Info LLVMCore LLVMSupport
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - uses: actions/cache/save@v4
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        with:
+          path: ${{ runner.temp }}/llvm-build
+          key: windows-2022-llvm-20.1.7-x86-static-experiment-1
+      - name: Build proof against matching LLVM
+        shell: pwsh
+        run: |
           cmake -G Ninja -S jit-reservation-experiment -B "$env:RUNNER_TEMP/probe-build" -DCMAKE_BUILD_TYPE=Release -DLLVM_DIR="$env:RUNNER_TEMP/llvm-build/lib/cmake/llvm" -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cmake --build "$env:RUNNER_TEMP/probe-build"

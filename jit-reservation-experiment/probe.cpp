@@ -9,6 +9,7 @@
 #include <llvm/ExecutionEngine/SectionMemoryManager.h>
 #include <string>
 #include <vector>
+#define NOMINMAX
 #include <windows.h>
 
 using namespace llvm;
