@@ -24,7 +24,7 @@ jobs:
           run-id: 42191988061
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - run: chmod +x .build/crystal && make -o .build/crystal iyi
-      - name: Build instrumented baseline and exact mutation
+      - name: Prepare instrumented baseline and exact mutation
         shell: bash
         run: |
           set -euo pipefail
@@ -44,19 +44,17 @@ jobs:
           Path('/tmp/patched/std/digest.iyi').write_text(source.replace(old, new, 1))
           print('exact mutation match count: 1')
           PYCODE
-          export IYI_PATH="$PWD/src:$PWD/samples/iyi"
-          ./bin/iyi build -o /tmp/adler-healthy /tmp/adler_exercise.iyi
-          IYI_PATH="/tmp/patched:$IYI_PATH" ./bin/iyi build -o /tmp/adler-mutant /tmp/adler_exercise.iyi
       - name: Measure idle and contended populations
         shell: bash
         run: |
           set -euo pipefail
           for load in idle contended; do
             if [ "$load" = contended ]; then yes > /dev/null & load_pid=$!; fi
-            for i in $(seq 1 12); do
+            for i in $(seq 1 8); do
               for variant in healthy mutant; do
                 printf 'POPULATION runner=%s load=%s trial=%s variant=%s ' '${{ matrix.instance }}' "$load" "$i" "$variant"
-                /tmp/adler-$variant | grep '^MEASURE '
+                if [ "$variant" = healthy ]; then export IYI_PATH="$PWD/src:$PWD/samples/iyi"; else export IYI_PATH="/tmp/patched:$PWD/src:$PWD/samples/iyi"; fi
+                ./bin/iyi run /tmp/adler_exercise.iyi | grep '^MEASURE '
               done
             done
             if [ "$load" = contended ]; then kill "$load_pid"; wait "$load_pid" || :; fi
