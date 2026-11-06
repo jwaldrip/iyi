@@ -31,6 +31,11 @@ jobs:
           python3 - <<'PYCODE'
           from pathlib import Path
           s = Path('bench/std_digest_exercise.iyi').read_text()
+          helper = '{% if flag?(:linux) && flag?(:x86_64) %}\n  lib AdlerCpuClock\n    struct Timespec\n      sec : Int64\n      nsec : Int64\n    end\n  end\n\n  def adler_cpu_time_ns : UInt64\n    stamp = uninitialized AdlerCpuClock::Timespec\n    result = uninitialized Int64\n    asm("syscall" : "={rax}"(result)\n                  : "{rax}"(228_i64), "{rdi}"(3_i64), "{rsi}"(pointerof(stamp))\n                  : "rcx", "r11", "memory"\n                  : "volatile")\n    raise "thread CPU clock failed" unless result == 0\n    stamp.sec.to_u64 * 1000000000_u64 + stamp.nsec.to_u64\n  end\n{% end %}\n\n'
+          marker = '# What a checksum costs against a pass that only adds the bytes up:'
+          assert s.count(marker) == 1
+          s = s.replace(marker, helper + marker)
+          s = s.replace('IyiMark.now_ns', 'adler_cpu_time_ns')
           needle = '  assert_true best_crc < best_sum * 6, '
           start = s.index(needle)
           end = s.index('  # Named without its measurements:', start)
