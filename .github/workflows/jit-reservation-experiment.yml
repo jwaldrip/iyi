@@ -1,0 +1,34 @@
+name: Windows LLVM 20 reservation experiment
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  reservation:
+    runs-on: windows-2022
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Fetch matching LLVM source
+        shell: pwsh
+        run: git clone --depth 1 --branch llvmorg-20.1.7 https://github.com/llvm/llvm-project.git "$env:RUNNER_TEMP/llvm-project"
+      - name: Configure LLVM static libraries
+        shell: pwsh
+        run: |
+          cmake -G Ninja -S "$env:RUNNER_TEMP/llvm-project/llvm" -B "$env:RUNNER_TEMP/llvm-build" -DCMAKE_BUILD_TYPE=Release -DLLVM_TARGETS_TO_BUILD=X86 -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_BENCHMARKS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF -DLLVM_INCLUDE_DOCS=OFF -DLLVM_ENABLE_ZSTD=OFF -DLLVM_ENABLE_ZLIB=OFF -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Build proof against matching LLVM
+        shell: pwsh
+        run: |
+          cmake --build "$env:RUNNER_TEMP/llvm-build" --target LLVMExecutionEngine LLVMMCJIT LLVMX86CodeGen LLVMX86AsmParser LLVMX86Disassembler LLVMX86Desc LLVMX86Info LLVMCore LLVMSupport
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cmake -G Ninja -S jit-reservation-experiment -B "$env:RUNNER_TEMP/probe-build" -DCMAKE_BUILD_TYPE=Release -DLLVM_DIR="$env:RUNNER_TEMP/llvm-build/lib/cmake/llvm" -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cmake --build "$env:RUNNER_TEMP/probe-build"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Exercise allocator and negative control
+        shell: pwsh
+        run: |
+          & "$env:RUNNER_TEMP/probe-build/jit_reservation_probe.exe"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
