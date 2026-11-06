@@ -1,0 +1,63 @@
+name: Adler diagnostic populations
+on:
+  push:
+    branches: [diagnostic/adler-populations-7aa894b]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  populations:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    container:
+      image: crystallang/crystal:1.21.0-build
+    strategy:
+      fail-fast: false
+      matrix:
+        instance: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v5
+        with:
+          name: crystal
+          path: .build
+          run-id: 42191988061
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - run: chmod +x .build/crystal && make -o .build/crystal iyi
+      - name: Build instrumented baseline and exact mutation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          s = Path('bench/std_digest_exercise.iyi').read_text()
+          needle = '  assert_true best_crc < best_sum * 6, '
+          start = s.index(needle)
+          end = s.index('  # Named without its measurements:', start)
+          s = s[:start] + '  puts "MEASURE sum=#{best_sum} crc=#{best_crc} adler=#{best_adler}"\n' + s[end:]
+          Path('/tmp/adler_exercise.iyi').write_text(s)
+          source = Path('src/std/digest.iyi').read_text()
+          old = 'a = a + p[i].to_u32\n          b = b + a'
+          new = 'a = (a + p[i].to_u32) % 65521_u32\n          b = (b + a) % 65521_u32'
+          assert source.count(old) == 1, source.count(old)
+          Path('/tmp/patched/std').mkdir(parents=True)
+          Path('/tmp/patched/std/digest.iyi').write_text(source.replace(old, new, 1))
+          print('exact mutation match count: 1')
+          PYCODE
+          export IYI_PATH="$PWD/src:$PWD/samples/iyi"
+          ./bin/iyi build -o /tmp/adler-healthy /tmp/adler_exercise.iyi
+          IYI_PATH="/tmp/patched:$IYI_PATH" ./bin/iyi build -o /tmp/adler-mutant /tmp/adler_exercise.iyi
+      - name: Measure idle and contended populations
+        shell: bash
+        run: |
+          set -euo pipefail
+          for load in idle contended; do
+            if [ "$load" = contended ]; then yes > /dev/null & load_pid=$!; fi
+            for i in $(seq 1 12); do
+              for variant in healthy mutant; do
+                printf 'POPULATION runner=%s load=%s trial=%s variant=%s ' '${{ matrix.instance }}' "$load" "$i" "$variant"
+                /tmp/adler-$variant | grep '^MEASURE '
+              done
+            done
+            if [ "$load" = contended ]; then kill "$load_pid"; wait "$load_pid" || :; fi
+          done
