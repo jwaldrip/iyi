@@ -26,9 +26,11 @@ jobs:
             if ($LASTEXITCODE) { throw "Failed to apply local LLVM MCJIT patch" }
           } else {
             Write-Host "No local patch file found. Checking remote branch experiment/pr147-slice-a-native-patch..."
-            try {
-              git fetch origin experiment/pr147-slice-a-native-patch:slice-a-branch 2>$null
-              $sliceAPatch = git show slice-a-branch:jit-reservation-experiment/llvm20-windows-mcjit.patch 2>$null
+            $branches = git ls-remote --heads origin experiment/pr147-slice-a-native-patch
+            if ($branches) {
+              Write-Host "Remote branch exists, fetching..."
+              git fetch origin experiment/pr147-slice-a-native-patch:slice-a-branch
+              $sliceAPatch = git show slice-a-branch:jit-reservation-experiment/llvm20-windows-mcjit.patch
               if ($sliceAPatch) {
                 Write-Host "Found patch on slice-a branch, applying..."
                 $tmpPatch = "$env:RUNNER_TEMP/slice-a.patch"
@@ -36,12 +38,13 @@ jobs:
                 git -C "$env:RUNNER_TEMP/llvm-project" apply $tmpPatch
                 if ($LASTEXITCODE) { throw "Failed to apply slice A patch" }
               } else {
-                Write-Host "No slice A patch found on origin; proceeding with unpatched LLVM for baseline check."
+                Write-Host "No patch found in slice-a branch yet."
               }
-            } catch {
-              Write-Host "Warning during patch fetch: $_"
+            } else {
+              Write-Host "Remote branch experiment/pr147-slice-a-native-patch not yet pushed; proceeding."
             }
           }
+          $global:LASTEXITCODE = 0
       - uses: actions/cache/restore@v4
         id: llvm-cache
         with:
