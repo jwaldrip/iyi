@@ -493,7 +493,7 @@ index 02178ff5..5072eae6 100644
    ADDITIONAL_HEADER_DIRS
    ${LLVM_MAIN_INCLUDE_DIR}/llvm/ExecutionEngine
 diff --git a/llvm/lib/ExecutionEngine/ExecutionEngineBindings.cpp b/llvm/lib/ExecutionEngine/ExecutionEngineBindings.cpp
-index 700fb03a..1f6d07fa 100644
+index 700fb03..aa20a7a 100644
 --- a/llvm/lib/ExecutionEngine/ExecutionEngineBindings.cpp
 +++ b/llvm/lib/ExecutionEngine/ExecutionEngineBindings.cpp
 @@ -14,6 +14,7 @@
@@ -634,7 +634,7 @@ index 700fb03a..1f6d07fa 100644
    unwrap(EE)->addModule(std::unique_ptr<Module>(unwrap(M)));
  }
  
-@@ -289,21 +292,28 @@ LLVMGetExecutionEngineTargetMachine(LLVMExecutionEngineRef EE) {
+@@ -289,21 +292,31 @@ LLVMGetExecutionEngineTargetMachine(LLVMExecutionEngineRef EE) {
  }
  
  void LLVMAddGlobalMapping(LLVMExecutionEngineRef EE, LLVMValueRef Global,
@@ -648,7 +648,11 @@ index 700fb03a..1f6d07fa 100644
 +  if (unwrap(EE)->hasError())
 +    return nullptr;
  
-   return unwrap(EE)->getPointerToGlobal(unwrap<GlobalValue>(Global));
+-  return unwrap(EE)->getPointerToGlobal(unwrap<GlobalValue>(Global));
++  void *Addr = unwrap(EE)->getPointerToGlobal(unwrap<GlobalValue>(Global));
++  if (unwrap(EE)->hasError())
++    return nullptr;
++  return Addr;
  }
  
 -uint64_t LLVMGetGlobalValueAddress(LLVMExecutionEngineRef EE, const char *Name) {
@@ -665,7 +669,7 @@ index 700fb03a..1f6d07fa 100644
    return unwrap(EE)->getFunctionAddress(Name);
  }
  
-@@ -312,14 +322,17 @@ LLVMBool LLVMExecutionEngineGetErrMsg(LLVMExecutionEngineRef EE,
+@@ -312,14 +325,17 @@ LLVMBool LLVMExecutionEngineGetErrMsg(LLVMExecutionEngineRef EE,
    assert(OutError && "OutError must be non-null");
    auto *ExecEngine = unwrap(EE);
    if (ExecEngine->hasError()) {
@@ -685,7 +689,7 @@ index 700fb03a..1f6d07fa 100644
  
  namespace {
  
-@@ -332,7 +345,7 @@ struct SimpleBindingMMFunctions {
+@@ -332,7 +348,7 @@ struct SimpleBindingMMFunctions {
  
  class SimpleBindingMemoryManager : public RTDyldMemoryManager {
  public:
@@ -694,7 +698,7 @@ index 700fb03a..1f6d07fa 100644
                               void *Opaque);
    ~SimpleBindingMemoryManager() override;
  
-@@ -352,17 +365,14 @@ private:
+@@ -352,17 +368,14 @@ private:
  };
  
  SimpleBindingMemoryManager::SimpleBindingMemoryManager(
@@ -716,7 +720,7 @@ index 700fb03a..1f6d07fa 100644
  }
  
  SimpleBindingMemoryManager::~SimpleBindingMemoryManager() {
-@@ -370,18 +380,19 @@ SimpleBindingMemoryManager::~SimpleBindingMemoryManager() {
+@@ -370,18 +383,19 @@ SimpleBindingMemoryManager::~SimpleBindingMemoryManager() {
  }
  
  uint8_t *SimpleBindingMemoryManager::allocateCodeSection(
@@ -743,7 +747,7 @@ index 700fb03a..1f6d07fa 100644
  }
  
  bool SimpleBindingMemoryManager::finalizeMemory(std::string *ErrMsg) {
-@@ -400,11 +411,11 @@ bool SimpleBindingMemoryManager::finalizeMemory(std::string *ErrMsg) {
+@@ -400,11 +414,11 @@ bool SimpleBindingMemoryManager::finalizeMemory(std::string *ErrMsg) {
  } // anonymous namespace
  
  LLVMMCJITMemoryManagerRef LLVMCreateSimpleMCJITMemoryManager(
@@ -760,7 +764,7 @@ index 700fb03a..1f6d07fa 100644
  
    if (!AllocateCodeSection || !AllocateDataSection || !FinalizeMemory ||
        !Destroy)
-@@ -422,26 +433,84 @@ void LLVMDisposeMCJITMemoryManager(LLVMMCJITMemoryManagerRef MM) {
+@@ -422,26 +436,84 @@ void LLVMDisposeMCJITMemoryManager(LLVMMCJITMemoryManagerRef MM) {
    delete unwrap(MM);
  }
  
@@ -797,7 +801,7 @@ index 700fb03a..1f6d07fa 100644
 + * -------------------------===*/
 +
 +LLVMBool LLVMExtCreateWindowsMCJITCompilerForModule(
-+    LLVMExecutionEngineRef *OutEE, LLVMModuleRef Module, char **OutError) {
++    LLVMExecutionEngineRef *OutEE, LLVMModuleRef M, char **OutError) {
 +  if (!OutEE) {
 +    if (OutError)
 +      *OutError = strdup("OutEE pointer must not be null");
@@ -805,7 +809,7 @@ index 700fb03a..1f6d07fa 100644
 +  }
 +  *OutEE = nullptr;
 +
-+  if (!Module) {
++  if (!M) {
 +    if (OutError)
 +      *OutError = strdup("Module must not be null");
 +    return 1;
@@ -816,7 +820,7 @@ index 700fb03a..1f6d07fa 100644
 +
 +  TargetOptions targetOptions;
 +  targetOptions.EnableFastISel = options.EnableFastISel;
-+  std::unique_ptr<Module> Mod(unwrap(Module));
++  std::unique_ptr<llvm::Module> Mod(unwrap(M));
 +
 +  if (Mod) {
 +    for (auto &F : *Mod) {
@@ -856,7 +860,7 @@ index 700fb03a..1f6d07fa 100644
 +  return "windows-mcjit-dynamic-packed-v1";
 +}
 diff --git a/llvm/lib/ExecutionEngine/MCJIT/MCJIT.cpp b/llvm/lib/ExecutionEngine/MCJIT/MCJIT.cpp
-index 5f3067b2..13675fe7 100644
+index 5f3067b..77b7ed7 100644
 --- a/llvm/lib/ExecutionEngine/MCJIT/MCJIT.cpp
 +++ b/llvm/lib/ExecutionEngine/MCJIT/MCJIT.cpp
 @@ -35,10 +35,9 @@ static struct RegisterJIT {
@@ -934,7 +938,7 @@ index 5f3067b2..13675fe7 100644
    Buffers.push_back(std::move(ObjectToLoad));
    LoadedObjects.push_back(std::move(*LoadedObject));
  
-@@ -241,193 +253,214 @@ void MCJIT::finalizeLoadedModules() {
+@@ -241,24 +253,33 @@ void MCJIT::finalizeLoadedModules() {
    Dyld.resolveRelocations();
  
    // Check for Dyld error.
@@ -952,11 +956,6 @@ index 5f3067b2..13675fe7 100644
  
    // Set page permissions.
 -  MemMgr->finalizeMemory();
--}
--
--// FIXME: Rename this.
--void MCJIT::finalizeObject() {
--  std::lock_guard<sys::Mutex> locked(lock);
 +  std::string MemMgrErr;
 +  if (MemMgr->finalizeMemory(&MemMgrErr)) {
 +    ErrMsg =
@@ -964,353 +963,209 @@ index 5f3067b2..13675fe7 100644
 +    HasFailed = true;
 +    return;
 +  }
++
++  OwnedModules.markAllLoadedModulesAsFinalized();
+ }
+ 
+ // FIXME: Rename this.
+ void MCJIT::finalizeObject() {
+   std::lock_guard<sys::Mutex> locked(lock);
  
 -  // Generate code for module is going to move objects out of the 'added' list,
 -  // so we need to copy that out before using it:
--  SmallVector<Module *, 16> ModsToAdd(OwnedModules.added());
-+  OwnedModules.markAllLoadedModulesAsFinalized();
++  // Generate code for module is going to move objects out of the 'added'
++  // list, so we need to copy that out before using it:
+   SmallVector<Module *, 16> ModsToAdd(OwnedModules.added());
  
--  for (auto *M : ModsToAdd)
--    generateCodeForModule(M);
-+  // FIXME: Rename this.
-+  void MCJIT::finalizeObject() {
-+    std::lock_guard<sys::Mutex> locked(lock);
- 
--  finalizeLoadedModules();
--}
-+    // Generate code for module is going to move objects out of the 'added'
-+    // list, so we need to copy that out before using it:
-+    SmallVector<Module *, 16> ModsToAdd(OwnedModules.added());
- 
--void MCJIT::finalizeModule(Module *M) {
--  std::lock_guard<sys::Mutex> locked(lock);
-+    for (auto *M : ModsToAdd)
-+      generateCodeForModule(M);
+   for (auto *M : ModsToAdd)
+@@ -270,8 +291,10 @@ void MCJIT::finalizeObject() {
+ void MCJIT::finalizeModule(Module *M) {
+   std::lock_guard<sys::Mutex> locked(lock);
  
 -  // This must be a module which has already been added to this MCJIT instance.
 -  assert(OwnedModules.ownsModule(M) && "MCJIT::finalizeModule: Unknown module.");
-+    finalizeLoadedModules();
-+  }
++  // This must be a module which has already been added to this MCJIT
++  // instance.
++  assert(OwnedModules.ownsModule(M) &&
++         "MCJIT::finalizeModule: Unknown module.");
  
--  // If the module hasn't been compiled, just do that.
--  if (!OwnedModules.hasModuleBeenLoaded(M))
--    generateCodeForModule(M);
-+  void MCJIT::finalizeModule(Module * M) {
-+    std::lock_guard<sys::Mutex> locked(lock);
+   // If the module hasn't been compiled, just do that.
+   if (!OwnedModules.hasModuleBeenLoaded(M))
+@@ -282,8 +305,7 @@ void MCJIT::finalizeModule(Module *M) {
  
--  finalizeLoadedModules();
--}
-+    // This must be a module which has already been added to this MCJIT
-+    // instance.
-+    assert(OwnedModules.ownsModule(M) &&
-+           "MCJIT::finalizeModule: Unknown module.");
- 
--JITSymbol MCJIT::findExistingSymbol(const std::string &Name) {
--  if (void *Addr = getPointerToGlobalIfAvailable(Name))
+ JITSymbol MCJIT::findExistingSymbol(const std::string &Name) {
+   if (void *Addr = getPointerToGlobalIfAvailable(Name))
 -    return JITSymbol(static_cast<uint64_t>(
 -                         reinterpret_cast<uintptr_t>(Addr)),
--                     JITSymbolFlags::Exported);
-+    // If the module hasn't been compiled, just do that.
-+    if (!OwnedModules.hasModuleBeenLoaded(M))
-+      generateCodeForModule(M);
++    return JITSymbol(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(Addr)),
+                      JITSymbolFlags::Exported);
  
--  return Dyld.getSymbol(Name);
--}
-+    finalizeLoadedModules();
-+  }
- 
--Module *MCJIT::findModuleForSymbol(const std::string &Name,
--                                   bool CheckFunctionsOnly) {
--  StringRef DemangledName = Name;
--  if (DemangledName[0] == getDataLayout().getGlobalPrefix())
--    DemangledName = DemangledName.substr(1);
-+  JITSymbol MCJIT::findExistingSymbol(const std::string &Name) {
-+    if (void *Addr = getPointerToGlobalIfAvailable(Name))
-+      return JITSymbol(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(Addr)),
-+                       JITSymbolFlags::Exported);
- 
--  std::lock_guard<sys::Mutex> locked(lock);
-+    return Dyld.getSymbol(Name);
-+  }
- 
--  // If it hasn't already been generated, see if it's in one of our modules.
--  for (ModulePtrSet::iterator I = OwnedModules.begin_added(),
--                              E = OwnedModules.end_added();
--       I != E; ++I) {
--    Module *M = *I;
--    Function *F = M->getFunction(DemangledName);
--    if (F && !F->isDeclaration())
--      return M;
--    if (!CheckFunctionsOnly) {
--      GlobalVariable *G = M->getGlobalVariable(DemangledName);
--      if (G && !G->isDeclaration())
-+  Module *MCJIT::findModuleForSymbol(const std::string &Name,
-+                                     bool CheckFunctionsOnly) {
-+    StringRef DemangledName = Name;
-+    if (DemangledName[0] == getDataLayout().getGlobalPrefix())
-+      DemangledName = DemangledName.substr(1);
-+
-+    std::lock_guard<sys::Mutex> locked(lock);
-+
-+    // If it hasn't already been generated, see if it's in one of our modules.
-+    for (ModulePtrSet::iterator I = OwnedModules.begin_added(),
-+                                E = OwnedModules.end_added();
-+         I != E; ++I) {
-+      Module *M = *I;
-+      Function *F = M->getFunction(DemangledName);
-+      if (F && !F->isDeclaration())
+   return Dyld.getSymbol(Name);
+@@ -309,15 +331,15 @@ Module *MCJIT::findModuleForSymbol(const std::string &Name,
+       GlobalVariable *G = M->getGlobalVariable(DemangledName);
+       if (G && !G->isDeclaration())
          return M;
 -      // FIXME: Do we need to worry about global aliases?
-+      if (!CheckFunctionsOnly) {
-+        GlobalVariable *G = M->getGlobalVariable(DemangledName);
-+        if (G && !G->isDeclaration())
-+          return M;
-+        // FIXME: Do we need to worry about global aliases?
-+      }
      }
-+    // We didn't find the symbol in any of our modules.
-+    return nullptr;
    }
 -  // We didn't find the symbol in any of our modules.
--  return nullptr;
--}
+   return nullptr;
+ }
  
--uint64_t MCJIT::getSymbolAddress(const std::string &Name,
--                                 bool CheckFunctionsOnly) {
--  std::string MangledName;
--  {
--    raw_string_ostream MangledNameStream(MangledName);
--    Mangler::getNameWithPrefix(MangledNameStream, Name, getDataLayout());
-+  uint64_t MCJIT::getSymbolAddress(const std::string &Name,
-+                                   bool CheckFunctionsOnly) {
-+    std::string MangledName;
-+    {
-+      raw_string_ostream MangledNameStream(MangledName);
-+      Mangler::getNameWithPrefix(MangledNameStream, Name, getDataLayout());
-+    }
-+    if (auto Sym = findSymbol(MangledName, CheckFunctionsOnly)) {
-+      if (auto AddrOrErr = Sym.getAddress())
-+        return *AddrOrErr;
-+      else
-+        report_fatal_error(AddrOrErr.takeError());
-+    } else if (auto Err = Sym.takeError())
-+      report_fatal_error(Sym.takeError());
+ uint64_t MCJIT::getSymbolAddress(const std::string &Name,
+                                  bool CheckFunctionsOnly) {
++  if (hasError())
 +    return 0;
-   }
--  if (auto Sym = findSymbol(MangledName, CheckFunctionsOnly)) {
--    if (auto AddrOrErr = Sym.getAddress())
--      return *AddrOrErr;
+   std::string MangledName;
+   {
+     raw_string_ostream MangledNameStream(MangledName);
+@@ -326,16 +348,22 @@ uint64_t MCJIT::getSymbolAddress(const std::string &Name,
+   if (auto Sym = findSymbol(MangledName, CheckFunctionsOnly)) {
+     if (auto AddrOrErr = Sym.getAddress())
+       return *AddrOrErr;
 -    else
 -      report_fatal_error(AddrOrErr.takeError());
 -  } else if (auto Err = Sym.takeError())
 -    report_fatal_error(Sym.takeError());
--  return 0;
--}
--
--JITSymbol MCJIT::findSymbol(const std::string &Name,
--                            bool CheckFunctionsOnly) {
--  std::lock_guard<sys::Mutex> locked(lock);
- 
--  // First, check to see if we already have this symbol.
--  if (auto Sym = findExistingSymbol(Name))
--    return Sym;
--
--  for (object::OwningBinary<object::Archive> &OB : Archives) {
--    object::Archive *A = OB.getBinary();
--    // Look for our symbols in each Archive
--    auto OptionalChildOrErr = A->findSym(Name);
--    if (!OptionalChildOrErr)
--      report_fatal_error(OptionalChildOrErr.takeError());
--    auto &OptionalChild = *OptionalChildOrErr;
--    if (OptionalChild) {
--      // FIXME: Support nested archives?
--      Expected<std::unique_ptr<object::Binary>> ChildBinOrErr =
--          OptionalChild->getAsBinary();
--      if (!ChildBinOrErr) {
--        // TODO: Actually report errors helpfully.
--        consumeError(ChildBinOrErr.takeError());
--        continue;
--      }
--      std::unique_ptr<object::Binary> &ChildBin = ChildBinOrErr.get();
--      if (ChildBin->isObject()) {
--        std::unique_ptr<object::ObjectFile> OF(
--            static_cast<object::ObjectFile *>(ChildBin.release()));
--        // This causes the object file to be loaded.
--        addObjectFile(std::move(OF));
--        // The address should be here now.
--        if (auto Sym = findExistingSymbol(Name))
--          return Sym;
-+  JITSymbol MCJIT::findSymbol(const std::string &Name,
-+                              bool CheckFunctionsOnly) {
-+    std::lock_guard<sys::Mutex> locked(lock);
-+
-+    // First, check to see if we already have this symbol.
-+    if (auto Sym = findExistingSymbol(Name))
-+      return Sym;
-+
-+    for (object::OwningBinary<object::Archive> &OB : Archives) {
-+      object::Archive *A = OB.getBinary();
-+      // Look for our symbols in each Archive
-+      auto OptionalChildOrErr = A->findSym(Name);
-+      if (!OptionalChildOrErr)
-+        report_fatal_error(OptionalChildOrErr.takeError());
-+      auto &OptionalChild = *OptionalChildOrErr;
-+      if (OptionalChild) {
-+        // FIXME: Support nested archives?
-+        Expected<std::unique_ptr<object::Binary>> ChildBinOrErr =
-+            OptionalChild->getAsBinary();
-+        if (!ChildBinOrErr) {
-+          // TODO: Actually report errors helpfully.
-+          consumeError(ChildBinOrErr.takeError());
-+          continue;
-+        }
-+        std::unique_ptr<object::Binary> &ChildBin = ChildBinOrErr.get();
-+        if (ChildBin->isObject()) {
-+          std::unique_ptr<object::ObjectFile> OF(
-+              static_cast<object::ObjectFile *>(ChildBin.release()));
-+          // This causes the object file to be loaded.
-+          addObjectFile(std::move(OF));
-+          // The address should be here now.
-+          if (auto Sym = findExistingSymbol(Name))
-+            return Sym;
-+        }
-       }
-     }
--  }
--
--  // If it hasn't already been generated, see if it's in one of our modules.
--  Module *M = findModuleForSymbol(Name, CheckFunctionsOnly);
--  if (M) {
--    generateCodeForModule(M);
- 
--    // Check the RuntimeDyld table again, it should be there now.
--    return findExistingSymbol(Name);
--  }
--
--  // If a LazyFunctionCreator is installed, use it to get/create the function.
--  // FIXME: Should we instead have a LazySymbolCreator callback?
--  if (LazyFunctionCreator) {
--    auto Addr = static_cast<uint64_t>(
--                  reinterpret_cast<uintptr_t>(LazyFunctionCreator(Name)));
--    return JITSymbol(Addr, JITSymbolFlags::Exported);
--  }
-+    // If it hasn't already been generated, see if it's in one of our modules.
-+    Module *M = findModuleForSymbol(Name, CheckFunctionsOnly);
-+    if (M) {
-+      generateCodeForModule(M);
- 
--  return nullptr;
--}
--
--uint64_t MCJIT::getGlobalValueAddress(const std::string &Name) {
--  std::lock_guard<sys::Mutex> locked(lock);
--  uint64_t Result = getSymbolAddress(Name, false);
--  if (Result != 0)
--    finalizeLoadedModules();
--  return Result;
--}
-+      // Check the RuntimeDyld table again, it should be there now.
-+      return findExistingSymbol(Name);
++    else {
++      consumeError(AddrOrErr.takeError());
++      return 0;
 +    }
++  } else if (auto Err = Sym.takeError()) {
++    consumeError(std::move(Err));
++    return 0;
++  }
+   return 0;
+ }
  
--uint64_t MCJIT::getFunctionAddress(const std::string &Name) {
--  std::lock_guard<sys::Mutex> locked(lock);
--  uint64_t Result = getSymbolAddress(Name, true);
--  if (Result != 0)
--    finalizeLoadedModules();
--  return Result;
--}
-+    // If a LazyFunctionCreator is installed, use it to get/create the function.
-+    // FIXME: Should we instead have a LazySymbolCreator callback?
-+    if (LazyFunctionCreator) {
-+      auto Addr = static_cast<uint64_t>(
-+          reinterpret_cast<uintptr_t>(LazyFunctionCreator(Name)));
-+      return JITSymbol(Addr, JITSymbolFlags::Exported);
-+    }
- 
--// Deprecated.  Use getFunctionAddress instead.
--void *MCJIT::getPointerToFunction(Function *F) {
--  std::lock_guard<sys::Mutex> locked(lock);
+ JITSymbol MCJIT::findSymbol(const std::string &Name,
+                             bool CheckFunctionsOnly) {
+   std::lock_guard<sys::Mutex> locked(lock);
++  if (hasError())
 +    return nullptr;
-+  }
  
--  Mangler Mang;
--  SmallString<128> Name;
--  TM->getNameWithPrefix(Name, F, Mang);
-+  uint64_t MCJIT::getGlobalValueAddress(const std::string &Name) {
-+    std::lock_guard<sys::Mutex> locked(lock);
-+    if (hasError())
-+      return 0;
-+    uint64_t Result = getSymbolAddress(Name, false);
-+    if (Result != 0)
-+      finalizeLoadedModules();
-+    if (hasError())
-+      return 0;
-+    return Result;
-+  }
+   // First, check to see if we already have this symbol.
+   if (auto Sym = findExistingSymbol(Name))
+@@ -343,17 +371,14 @@ JITSymbol MCJIT::findSymbol(const std::string &Name,
  
--  if (F->isDeclaration() || F->hasAvailableExternallyLinkage()) {
--    bool AbortOnFailure = !F->hasExternalWeakLinkage();
--    void *Addr = getPointerToNamedFunction(Name, AbortOnFailure);
--    updateGlobalMapping(F, Addr);
--    return Addr;
-+  uint64_t MCJIT::getFunctionAddress(const std::string &Name) {
-+    std::lock_guard<sys::Mutex> locked(lock);
+   for (object::OwningBinary<object::Archive> &OB : Archives) {
+     object::Archive *A = OB.getBinary();
+-    // Look for our symbols in each Archive
+     auto OptionalChildOrErr = A->findSym(Name);
+     if (!OptionalChildOrErr)
+       report_fatal_error(OptionalChildOrErr.takeError());
+     auto &OptionalChild = *OptionalChildOrErr;
+     if (OptionalChild) {
+-      // FIXME: Support nested archives?
+       Expected<std::unique_ptr<object::Binary>> ChildBinOrErr =
+           OptionalChild->getAsBinary();
+       if (!ChildBinOrErr) {
+-        // TODO: Actually report errors helpfully.
+         consumeError(ChildBinOrErr.takeError());
+         continue;
+       }
+@@ -361,9 +386,9 @@ JITSymbol MCJIT::findSymbol(const std::string &Name,
+       if (ChildBin->isObject()) {
+         std::unique_ptr<object::ObjectFile> OF(
+             static_cast<object::ObjectFile *>(ChildBin.release()));
+-        // This causes the object file to be loaded.
+         addObjectFile(std::move(OF));
+-        // The address should be here now.
++        if (hasError())
++          return nullptr;
+         if (auto Sym = findExistingSymbol(Name))
+           return Sym;
+       }
+@@ -374,13 +399,14 @@ JITSymbol MCJIT::findSymbol(const std::string &Name,
+   Module *M = findModuleForSymbol(Name, CheckFunctionsOnly);
+   if (M) {
+     generateCodeForModule(M);
 +    if (hasError())
-+      return 0;
-+    uint64_t Result = getSymbolAddress(Name, true);
-+    if (Result != 0)
-+      finalizeLoadedModules();
-+    if (hasError())
-+      return 0;
-+    return Result;
++      return nullptr;
+ 
+     // Check the RuntimeDyld table again, it should be there now.
+     return findExistingSymbol(Name);
    }
  
--  Module *M = F->getParent();
--  bool HasBeenAddedButNotLoaded = OwnedModules.hasModuleBeenAddedButNotLoaded(M);
-+  // Deprecated.  Use getFunctionAddress instead.
-+  void *MCJIT::getPointerToFunction(Function * F) {
-+    std::lock_guard<sys::Mutex> locked(lock);
-+    if (hasError())
-+      return nullptr;
-+
-+    Mangler Mang;
-+    SmallString<128> Name;
-+    TM->getNameWithPrefix(Name, F, Mang);
-+
-+    if (F->isDeclaration() || F->hasAvailableExternallyLinkage()) {
-+      bool AbortOnFailure = !F->hasExternalWeakLinkage();
-+      void *Addr = getPointerToNamedFunction(Name, AbortOnFailure);
-+      updateGlobalMapping(F, Addr);
-+      return Addr;
-+    }
+   // If a LazyFunctionCreator is installed, use it to get/create the function.
+-  // FIXME: Should we instead have a LazySymbolCreator callback?
+   if (LazyFunctionCreator) {
+     auto Addr = static_cast<uint64_t>(
+                   reinterpret_cast<uintptr_t>(LazyFunctionCreator(Name)));
+@@ -392,23 +418,33 @@ JITSymbol MCJIT::findSymbol(const std::string &Name,
  
--  // Make sure the relevant module has been compiled and loaded.
--  if (HasBeenAddedButNotLoaded)
--    generateCodeForModule(M);
--  else if (!OwnedModules.hasModuleBeenLoaded(M)) {
-+    Module *M = F->getParent();
-+    bool HasBeenAddedButNotLoaded =
-+        OwnedModules.hasModuleBeenAddedButNotLoaded(M);
-+
-+    // Make sure the relevant module has been compiled and loaded.
-+    if (HasBeenAddedButNotLoaded)
-+      generateCodeForModule(M);
-+    if (hasError())
+ uint64_t MCJIT::getGlobalValueAddress(const std::string &Name) {
+   std::lock_guard<sys::Mutex> locked(lock);
++  if (hasError())
++    return 0;
+   uint64_t Result = getSymbolAddress(Name, false);
+   if (Result != 0)
+     finalizeLoadedModules();
++  if (hasError())
++    return 0;
+   return Result;
+ }
+ 
+ uint64_t MCJIT::getFunctionAddress(const std::string &Name) {
+   std::lock_guard<sys::Mutex> locked(lock);
++  if (hasError())
++    return 0;
+   uint64_t Result = getSymbolAddress(Name, true);
+   if (Result != 0)
+     finalizeLoadedModules();
++  if (hasError())
++    return 0;
+   return Result;
+ }
+ 
+ // Deprecated.  Use getFunctionAddress instead.
+ void *MCJIT::getPointerToFunction(Function *F) {
+   std::lock_guard<sys::Mutex> locked(lock);
++  if (hasError())
++    return nullptr;
+ 
+   Mangler Mang;
+   SmallString<128> Name;
+@@ -417,16 +453,21 @@ void *MCJIT::getPointerToFunction(Function *F) {
+   if (F->isDeclaration() || F->hasAvailableExternallyLinkage()) {
+     bool AbortOnFailure = !F->hasExternalWeakLinkage();
+     void *Addr = getPointerToNamedFunction(Name, AbortOnFailure);
++    if (hasError() || !Addr)
 +      return nullptr;
+     updateGlobalMapping(F, Addr);
+     return Addr;
+   }
+ 
+   Module *M = F->getParent();
+-  bool HasBeenAddedButNotLoaded = OwnedModules.hasModuleBeenAddedButNotLoaded(M);
++  bool HasBeenAddedButNotLoaded =
++      OwnedModules.hasModuleBeenAddedButNotLoaded(M);
+ 
+   // Make sure the relevant module has been compiled and loaded.
+   if (HasBeenAddedButNotLoaded)
+     generateCodeForModule(M);
++  if (hasError())
++    return nullptr;
+   else if (!OwnedModules.hasModuleBeenLoaded(M)) {
      // If this function doesn't belong to one of our modules, we're done.
      // FIXME: Asking for the pointer to a function that hasn't been registered,
-     //        and isn't a declaration (which is handled above) should probably
-@@ -439,7 +472,7 @@ void *MCJIT::getPointerToFunction(Function *F) {
-   //
-   // This is the accessor for the target address, so make sure to check the
-   // load address of the symbol, not the local address.
+@@ -435,11 +476,10 @@ void *MCJIT::getPointerToFunction(Function *F) {
+     return nullptr;
+   }
+ 
+-  // FIXME: Should the Dyld be retaining module information? Probably not.
+-  //
+-  // This is the accessor for the target address, so make sure to check the
+-  // load address of the symbol, not the local address.
 -  return (void*)Dyld.getSymbol(Name).getAddress();
++  if (hasError())
++    return nullptr;
++
 +  return (void *)Dyld.getSymbol(Name).getAddress();
  }
  
  void MCJIT::runStaticConstructorsDestructorsInModulePtrSet(
-@@ -470,10 +503,10 @@ Function *MCJIT::FindFunctionNamedInModulePtrSet(StringRef FnName,
+@@ -470,10 +510,10 @@ Function *MCJIT::FindFunctionNamedInModulePtrSet(StringRef FnName,
    return nullptr;
  }
  
@@ -1325,7 +1180,7 @@ index 5f3067b2..13675fe7 100644
    for (; I != E; ++I) {
      GlobalVariable *GV = (*I)->getGlobalVariable(Name, AllowInternal);
      if (GV && !GV->isDeclaration())
-@@ -482,7 +515,6 @@ GlobalVariable *MCJIT::FindGlobalVariableNamedInModulePtrSet(StringRef Name,
+@@ -482,7 +522,6 @@ GlobalVariable *MCJIT::FindGlobalVariableNamedInModulePtrSet(StringRef Name,
    return nullptr;
  }
  
@@ -1333,7 +1188,7 @@ index 5f3067b2..13675fe7 100644
  Function *MCJIT::FindFunctionNamed(StringRef FnName) {
    Function *F = FindFunctionNamedInModulePtrSet(
        FnName, OwnedModules.begin_added(), OwnedModules.end_added());
-@@ -495,23 +527,33 @@ Function *MCJIT::FindFunctionNamed(StringRef FnName) {
+@@ -495,23 +534,33 @@ Function *MCJIT::FindFunctionNamed(StringRef FnName) {
    return F;
  }
  
@@ -1373,7 +1228,7 @@ index 5f3067b2..13675fe7 100644
    assert(FPtr && "Pointer to fn's code was null after getPointerToFunction");
    FunctionType *FTy = F->getFunctionType();
    Type *RetTy = FTy->getReturnType();
-@@ -531,7 +573,7 @@ GenericValue MCJIT::runFunction(Function *F, ArrayRef<GenericValue> ArgValues) {
+@@ -531,7 +580,7 @@ GenericValue MCJIT::runFunction(Function *F, ArrayRef<GenericValue> ArgValues) {
            FTy->getParamType(1)->isPointerTy() &&
            FTy->getParamType(2)->isPointerTy()) {
          int (*PF)(int, char **, const char **) =
@@ -1382,7 +1237,7 @@ index 5f3067b2..13675fe7 100644
  
          // Call the function.
          GenericValue rv;
-@@ -544,7 +586,7 @@ GenericValue MCJIT::runFunction(Function *F, ArrayRef<GenericValue> ArgValues) {
+@@ -544,7 +593,7 @@ GenericValue MCJIT::runFunction(Function *F, ArrayRef<GenericValue> ArgValues) {
      case 2:
        if (FTy->getParamType(0)->isIntegerTy(32) &&
            FTy->getParamType(1)->isPointerTy()) {
@@ -1391,7 +1246,7 @@ index 5f3067b2..13675fe7 100644
  
          // Call the function.
          GenericValue rv;
-@@ -554,10 +596,9 @@ GenericValue MCJIT::runFunction(Function *F, ArrayRef<GenericValue> ArgValues) {
+@@ -554,10 +603,9 @@ GenericValue MCJIT::runFunction(Function *F, ArrayRef<GenericValue> ArgValues) {
        }
        break;
      case 1:
@@ -1404,7 +1259,7 @@ index 5f3067b2..13675fe7 100644
          rv.IntVal = APInt(32, PF(ArgValues[0].IntVal.getZExtValue()));
          return rv;
        }
-@@ -569,19 +610,20 @@ GenericValue MCJIT::runFunction(Function *F, ArrayRef<GenericValue> ArgValues) {
+@@ -569,19 +617,20 @@ GenericValue MCJIT::runFunction(Function *F, ArrayRef<GenericValue> ArgValues) {
    if (ArgValues.empty()) {
      GenericValue rv;
      switch (RetTy->getTypeID()) {
@@ -1431,7 +1286,7 @@ index 5f3067b2..13675fe7 100644
        else
          llvm_unreachable("Integer types > 64 bits not supported");
        return rv;
-@@ -590,17 +632,17 @@ GenericValue MCJIT::runFunction(Function *F, ArrayRef<GenericValue> ArgValues) {
+@@ -590,17 +639,17 @@ GenericValue MCJIT::runFunction(Function *F, ArrayRef<GenericValue> ArgValues) {
        rv.IntVal = APInt(32, ((int (*)())(intptr_t)FPtr)(), true);
        return rv;
      case Type::FloatTyID:
@@ -1452,35 +1307,59 @@ index 5f3067b2..13675fe7 100644
      }
    }
  
-@@ -614,8 +656,7 @@ void *MCJIT::getPointerToNamedFunction(StringRef Name, bool AbortOnFailure) {
+@@ -611,22 +660,32 @@ GenericValue MCJIT::runFunction(Function *F, ArrayRef<GenericValue> ArgValues) {
+ }
+ 
+ void *MCJIT::getPointerToNamedFunction(StringRef Name, bool AbortOnFailure) {
++  if (hasError())
++    return nullptr;
++
    if (!isSymbolSearchingDisabled()) {
      if (auto Sym = Resolver.findSymbol(std::string(Name))) {
        if (auto AddrOrErr = Sym.getAddress())
 -        return reinterpret_cast<void*>(
 -                 static_cast<uintptr_t>(*AddrOrErr));
+-    } else if (auto Err = Sym.takeError())
+-      report_fatal_error(std::move(Err));
 +        return reinterpret_cast<void *>(static_cast<uintptr_t>(*AddrOrErr));
-     } else if (auto Err = Sym.takeError())
-       report_fatal_error(std::move(Err));
++    } else if (auto Err = Sym.takeError()) {
++      ErrMsg = toString(std::move(Err));
++      HasFailed = true;
++      return nullptr;
++    }
    }
-@@ -626,7 +667,7 @@ void *MCJIT::getPointerToNamedFunction(StringRef Name, bool AbortOnFailure) {
+ 
++  if (hasError())
++    return nullptr;
++
+   /// If a LazyFunctionCreator is installed, use it to get/create the function.
+   if (LazyFunctionCreator)
+     if (void *RP = LazyFunctionCreator(std::string(Name)))
        return RP;
  
    if (AbortOnFailure) {
 -    report_fatal_error("Program used external function '"+Name+
++    if (hasError())
++      return nullptr;
 +    report_fatal_error("Program used external function '" + Name +
                         "' which could not be resolved!");
    }
    return nullptr;
-@@ -668,8 +709,7 @@ void MCJIT::notifyFreeingObject(const object::ObjectFile &Obj) {
+@@ -668,9 +727,12 @@ void MCJIT::notifyFreeingObject(const object::ObjectFile &Obj) {
      L->notifyFreeingObject(Key);
  }
  
 -JITSymbol
 -LinkingSymbolResolver::findSymbol(const std::string &Name) {
 +JITSymbol LinkingSymbolResolver::findSymbol(const std::string &Name) {
++  if (ParentEngine.hasError())
++    return nullptr;
    auto Result = ParentEngine.findSymbol(Name, false);
++  if (ParentEngine.hasError())
++    return nullptr;
    if (Result)
      return Result;
+   if (ParentEngine.isSymbolSearchingDisabled())
 diff --git a/llvm/lib/ExecutionEngine/RuntimeDyld/RuntimeDyld.cpp b/llvm/lib/ExecutionEngine/RuntimeDyld/RuntimeDyld.cpp
 index b3798f15..348b9c28 100644
 --- a/llvm/lib/ExecutionEngine/RuntimeDyld/RuntimeDyld.cpp
@@ -1865,26 +1744,36 @@ index b3798f15..348b9c28 100644
    return LoadedObjInfo;
  }
  
-diff --git a/llvm/lib/ExecutionEngine/RuntimeDyld/Targets/RuntimeDyldCOFFX86_64.h b/llvm/lib/ExecutionEngine/RuntimeDyld/Targets/RuntimeDyldCOFFX86_64.h
-index 984a8d76..618eb0f6 100644
 --- a/llvm/lib/ExecutionEngine/RuntimeDyld/Targets/RuntimeDyldCOFFX86_64.h
 +++ b/llvm/lib/ExecutionEngine/RuntimeDyld/Targets/RuntimeDyldCOFFX86_64.h
-@@ -30,6 +30,14 @@ private:
+@@ -30,6 +30,26 @@
    SmallVector<SID, 2> UnregisteredEHFrameSections;
    SmallVector<SID, 2> RegisteredEHFrameSections;
    uint64_t ImageBase;
-+  DenseMap<unsigned, uint64_t> SectionToObjectBase;
++  DenseMap<unsigned, std::shared_ptr<SmallVector<unsigned, 8>>>
++      SectionToObjectSections;
++  DenseMap<unsigned, unsigned> SectionToTextSection;
 +
 +  uint64_t getSectionImageBase(unsigned SectionID) {
-+    auto It = SectionToObjectBase.find(SectionID);
-+    if (It != SectionToObjectBase.end() && It->second != 0)
-+      return It->second;
++    auto It = SectionToObjectSections.find(SectionID);
++    if (It != SectionToObjectSections.end() && It->second) {
++      uint64_t MinAddr = std::numeric_limits<uint64_t>::max();
++      for (unsigned SID : *It->second) {
++        if (SID < Sections.size()) {
++          uint64_t Addr = Sections[SID].getLoadAddress();
++          if (Addr != 0)
++            MinAddr = std::min(MinAddr, Addr);
++        }
++      }
++      if (MinAddr != std::numeric_limits<uint64_t>::max())
++        return MinAddr;
++    }
 +    return getImageBase();
 +  }
  
    // Fake an __ImageBase pointer by returning the section with the lowest adress
    uint64_t getImageBase() {
-@@ -100,25 +108,31 @@ public:
+@@ -100,25 +120,33 @@
        // Delta is the distance from the start of the reloc to the end of the
        // instruction with the reloc.
        uint64_t Delta = 4 + (RE.RelType - COFF::IMAGE_REL_AMD64_REL32);
@@ -1895,7 +1784,8 @@ index 984a8d76..618eb0f6 100644
 -      writeBytesUnaligned(Result, Target, 4);
 +      int64_t Displacement = static_cast<int64_t>(Value) -
 +                             static_cast<int64_t>(FinalAddress + Delta);
-+      int64_t Result = Displacement + static_cast<int64_t>(RE.Addend);
++      int64_t SignedAddend = static_cast<int64_t>(static_cast<int32_t>(RE.Addend));
++      int64_t Result = Displacement + SignedAddend;
 +      if (Result > INT32_MAX || Result < INT32_MIN) {
 +        HasError = true;
 +        ErrorStr =
@@ -1919,7 +1809,8 @@ index 984a8d76..618eb0f6 100644
 +      const uint64_t ObjBase = getSectionImageBase(RE.SectionID);
 +      int64_t Delta =
 +          static_cast<int64_t>(Value) - static_cast<int64_t>(ObjBase);
-+      int64_t Result = static_cast<int64_t>(RE.Addend) + Delta;
++      int64_t SignedAddend = static_cast<int64_t>(static_cast<int32_t>(RE.Addend));
++      int64_t Result = Delta + SignedAddend;
 +      if (Result < 0 || Result > static_cast<int64_t>(UINT32_MAX)) {
 +        HasError = true;
 +        ErrorStr =
@@ -1930,64 +1821,85 @@ index 984a8d76..618eb0f6 100644
        break;
      }
  
-@@ -128,15 +142,19 @@ public:
+@@ -147,12 +175,16 @@
+     }
+   }
+ 
+-  std::tuple<uint64_t, uint64_t, uint64_t>
++  std::tuple<unsigned, uint64_t, uint64_t, uint64_t>
+   generateRelocationStub(unsigned SectionID, StringRef TargetName,
+                          uint64_t Offset, uint64_t RelType, uint64_t Addend,
+                          StubMap &Stubs) {
+     uintptr_t StubOffset;
+-    SectionEntry &Section = Sections[SectionID];
++    unsigned StubSectionID = SectionID;
++    auto TextIt = SectionToTextSection.find(SectionID);
++    if (TextIt != SectionToTextSection.end() && TextIt->second < Sections.size())
++      StubSectionID = TextIt->second;
++    SectionEntry &StubSection = Sections[StubSectionID];
+ 
+     RelocationValueRef OriginalRelValueRef;
+     OriginalRelValueRef.SectionID = SectionID;
+@@ -165,32 +197,29 @@
+       LLVM_DEBUG(dbgs() << " Create a new stub function for "
+                         << TargetName.data() << "\n");
+ 
+-      StubOffset = Section.getStubOffset();
++      StubOffset = StubSection.getStubOffset();
+       Stubs[OriginalRelValueRef] = StubOffset;
+-      createStubFunction(Section.getAddressWithOffset(StubOffset));
+-      Section.advanceStubOffset(getMaxStubSize());
++      createStubFunction(StubSection.getAddressWithOffset(StubOffset));
++      StubSection.advanceStubOffset(getMaxStubSize());
+     } else {
+       LLVM_DEBUG(dbgs() << " Stub function found for " << TargetName.data()
+                         << "\n");
+       StubOffset = Stub->second;
      }
  
-     case COFF::IMAGE_REL_AMD64_SECREL: {
--      assert(static_cast<int64_t>(RE.Addend) <= INT32_MAX && "Relocation overflow");
--      assert(static_cast<int64_t>(RE.Addend) >= INT32_MIN && "Relocation underflow");
-+      assert(static_cast<int64_t>(RE.Addend) <= INT32_MAX &&
-+             "Relocation overflow");
-+      assert(static_cast<int64_t>(RE.Addend) >= INT32_MIN &&
-+             "Relocation underflow");
-       writeBytesUnaligned(RE.Addend, Target, 4);
-       break;
-     }
- 
-     case COFF::IMAGE_REL_AMD64_SECTION: {
--      assert(static_cast<int16_t>(RE.SectionID) <= INT16_MAX && "Relocation overflow");
--      assert(static_cast<int16_t>(RE.SectionID) >= INT16_MIN && "Relocation underflow");
-+      assert(static_cast<int16_t>(RE.SectionID) <= INT16_MAX &&
-+             "Relocation overflow");
-+      assert(static_cast<int16_t>(RE.SectionID) >= INT16_MIN &&
-+             "Relocation underflow");
-       writeBytesUnaligned(RE.SectionID, Target, 2);
-       break;
-     }
-@@ -181,9 +199,10 @@ public:
-     // write32BitOffset(Section.getAddressWithOffset(Offset), 0, StubOffset);
-     // .xdata exception handler's aren't having this though.
- 
+-    // FIXME: If RelType == COFF::IMAGE_REL_AMD64_ADDR32NB we should be able
+-    // to ignore the __ImageBase requirement and just forward to the stub
+-    // directly as an offset of this section:
+-    // write32BitOffset(Section.getAddressWithOffset(Offset), 0, StubOffset);
+-    // .xdata exception handler's aren't having this though.
+-
 -    // Resolve original relocation to stub function.
 -    const RelocationEntry RE(SectionID, Offset, RelType, Addend);
 -    resolveRelocation(RE, Section.getLoadAddressWithOffset(StubOffset));
 +    // Defer original relocation into normal relocation processing.
-+    const RelocationEntry OriginalRE(SectionID, Offset, RelType,
-+                                     StubOffset + Addend);
-+    addRelocationForSection(OriginalRE, SectionID);
++    int64_t SignedAddend = static_cast<int64_t>(static_cast<int32_t>(Addend));
++    const RelocationEntry OriginalRE(
++        SectionID, Offset, RelType,
++        static_cast<uint64_t>(static_cast<int64_t>(StubOffset) + SignedAddend));
++    addRelocationForSection(OriginalRE, StubSectionID);
  
      // adjust relocation info so resolution writes to the stub function
      Addend = 0;
-@@ -194,8 +213,7 @@ public:
+     Offset = StubOffset + 6;
+     RelType = COFF::IMAGE_REL_AMD64_ADDR64;
+ 
+-    return std::make_tuple(Offset, RelType, Addend);
++    return std::make_tuple(StubSectionID, Offset, RelType, Addend);
    }
  
    Expected<object::relocation_iterator>
--  processRelocationRef(unsigned SectionID,
--                       object::relocation_iterator RelI,
-+  processRelocationRef(unsigned SectionID, object::relocation_iterator RelI,
-                        const object::ObjectFile &Obj,
-                        ObjSectionToIDMap &ObjSectionToID,
-                        StubMap &Stubs) override {
-@@ -255,7 +273,7 @@ public:
+@@ -251,11 +280,12 @@
+     case COFF::IMAGE_REL_AMD64_REL32_5:
+     case COFF::IMAGE_REL_AMD64_ADDR32NB: {
+       uint8_t *Displacement = (uint8_t *)ObjTarget;
+-      Addend = readBytesUnaligned(Displacement, 4);
++      Addend = static_cast<uint64_t>(static_cast<int64_t>(
++          static_cast<int32_t>(readBytesUnaligned(Displacement, 4))));
  
        if (IsExtern)
-         std::tie(Offset, RelType, Addend) = generateRelocationStub(
+-        std::tie(Offset, RelType, Addend) = generateRelocationStub(
 -          SectionID, TargetName, Offset, RelType, Addend, Stubs);
++        std::tie(SectionID, Offset, RelType, Addend) = generateRelocationStub(
 +            SectionID, TargetName, Offset, RelType, Addend, Stubs);
  
        break;
      }
-@@ -290,7 +308,9 @@ public:
+@@ -290,7 +320,9 @@
        uint8_t *EHFrameAddr = Sections[EHFrameSID].getAddress();
        uint64_t EHFrameLoadAddr = Sections[EHFrameSID].getLoadAddress();
        size_t EHFrameSize = Sections[EHFrameSID].getSize();
@@ -1998,30 +1910,33 @@ index 984a8d76..618eb0f6 100644
        RegisteredEHFrameSections.push_back(EHFrameSID);
      }
      UnregisteredEHFrameSections.clear();
-@@ -298,6 +318,22 @@ public:
+@@ -298,6 +330,25 @@
  
    Error finalizeLoad(const object::ObjectFile &Obj,
                       ObjSectionToIDMap &SectionMap) override {
-+    uint64_t ObjBase = std::numeric_limits<uint64_t>::max();
++    auto ObjSections = std::make_shared<SmallVector<unsigned, 8>>();
 +    for (const auto &SectionPair : SectionMap) {
-+      unsigned SID = SectionPair.second;
-+      if (SID < Sections.size()) {
-+        uint64_t LoadAddr = Sections[SID].getLoadAddress();
-+        if (LoadAddr != 0)
-+          ObjBase = std::min(ObjBase, LoadAddr);
++      ObjSections->push_back(SectionPair.second);
++    }
++    for (unsigned SID : *ObjSections) {
++      SectionToObjectSections[SID] = ObjSections;
++    }
++
++    unsigned TextSID = SectionMap.empty() ? 0 : SectionMap.begin()->second;
++    for (const auto &SectionPair : SectionMap) {
++      if (SectionPair.first.isText()) {
++        TextSID = SectionPair.second;
++        break;
 +      }
 +    }
-+    if (ObjBase == std::numeric_limits<uint64_t>::max())
-+      ObjBase = getImageBase();
-+
 +    for (const auto &SectionPair : SectionMap) {
-+      SectionToObjectBase[SectionPair.second] = ObjBase;
++      SectionToTextSection[SectionPair.second] = TextSID;
 +    }
 +
      // Look for and record the EH frame section IDs.
      for (const auto &SectionPair : SectionMap) {
        const object::SectionRef &Section = SectionPair.first;
-@@ -305,9 +341,6 @@ public:
+@@ -305,9 +356,6 @@
        if (!NameOrErr)
          return NameOrErr.takeError();
  
@@ -2036,7 +1951,7 @@ new file mode 100644
 index 00000000..e3eed6b5
 --- /dev/null
 +++ b/llvm/lib/ExecutionEngine/WindowsMCJITMemoryManager.cpp
-@@ -0,0 +1,420 @@
+@@ -0,0 +1,445 @@
 +//===- WindowsMCJITMemoryManager.cpp - Memory manager for Windows MCJIT -*- C++
 +//-*-===//
 +//
@@ -2259,9 +2174,10 @@ index 00000000..e3eed6b5
 +    return nullptr;
 +  }
 +
-+  // Commit used pages RW
++  // Commit used pages RW, including any alignment padding since last cursor
++  size_t StartOffset = CurrentReservation->GroupCursors[Group];
 +  uintptr_t CommitStart =
-+      (reinterpret_cast<uintptr_t>(CurrentReservation->Base + Pos)) &
++      (reinterpret_cast<uintptr_t>(CurrentReservation->Base + StartOffset)) &
 +      ~(PageSize - 1);
 +  uintptr_t CommitEnd =
 +      (reinterpret_cast<uintptr_t>(CurrentReservation->Base + Pos + Size +
@@ -2306,6 +2222,48 @@ index 00000000..e3eed6b5
 +}
 +
 +bool WindowsMCJITMemoryManager::finalizeMemory(std::string *ErrMsg) {
++  // Step 1: Validate and sort all pending unwind tables in-place while their
++  // memory is still PAGE_READWRITE. If any record or table is invalid, fail
++  // immediately before modifying any protections.
++  for (auto &Entry : PendingUnwindTables) {
++    if (Entry.Size == 0)
++      continue;
++
++    constexpr size_t RecordSize = sizeof(RUNTIME_FUNCTION);
++    if (Entry.Size % RecordSize != 0) {
++      if (ErrMsg)
++        *ErrMsg = ".pdata section size is not an integral number of "
++                  "RUNTIME_FUNCTION records";
++      return true;
++    }
++
++    size_t Count = Entry.Size / RecordSize;
++    if (Count > std::numeric_limits<DWORD>::max()) {
++      if (ErrMsg)
++        *ErrMsg = ".pdata section record count exceeds 32-bit limit";
++      return true;
++    }
++
++    auto *Records = reinterpret_cast<PRUNTIME_FUNCTION>(Entry.Addr);
++    for (size_t i = 0; i < Count; ++i) {
++      if (Records[i].BeginAddress >= Records[i].EndAddress) {
++        if (ErrMsg)
++          *ErrMsg =
++              "Invalid RUNTIME_FUNCTION record: BeginAddress >= EndAddress";
++        return true;
++      }
++    }
++
++    // Sort records in ascending order by BeginAddress while memory is still
++    // writable
++    std::sort(Records, Records + Count,
++              [](const RUNTIME_FUNCTION &a, const RUNTIME_FUNCTION &b) {
++                return a.BeginAddress < b.BeginAddress;
++              });
++  }
++
++  // Step 2: Ensure complete used group prefixes (including alignment gaps) are
++  // committed, then apply page protections and instruction cache flushes.
 +  for (auto &Res : Reservations) {
 +    if (!Res || Res->Finalized || !Res->Base)
 +      continue;
@@ -2315,6 +2273,17 @@ index 00000000..e3eed6b5
 +    if (CodeUsed > 0) {
 +      size_t AlignedCodeUsed = 0;
 +      checkedRoundUp(CodeUsed, PageSize, AlignedCodeUsed);
++      // Ensure the complete used prefix is committed before calling
++      // VirtualProtect
++      if (!VirtualAlloc(Res->Base + Res->GroupOffsets[0], AlignedCodeUsed,
++                        MEM_COMMIT, PAGE_READWRITE)) {
++        if (ErrMsg)
++          *ErrMsg =
++              "VirtualAlloc MEM_COMMIT failed for code section prefix with OS "
++              "error " +
++              std::to_string(GetLastError());
++        return true;
++      }
 +      DWORD OldProt = 0;
 +      if (!VirtualProtect(Res->Base + Res->GroupOffsets[0], AlignedCodeUsed,
 +                          PAGE_EXECUTE_READ, &OldProt)) {
@@ -2338,6 +2307,16 @@ index 00000000..e3eed6b5
 +    if (ROUsed > 0) {
 +      size_t AlignedROUsed = 0;
 +      checkedRoundUp(ROUsed, PageSize, AlignedROUsed);
++      // Ensure the complete used prefix is committed before calling
++      // VirtualProtect
++      if (!VirtualAlloc(Res->Base + Res->GroupOffsets[1], AlignedROUsed,
++                        MEM_COMMIT, PAGE_READWRITE)) {
++        if (ErrMsg)
++          *ErrMsg = "VirtualAlloc MEM_COMMIT failed for RO data prefix with OS "
++                    "error " +
++                    std::to_string(GetLastError());
++        return true;
++      }
 +      DWORD OldProt = 0;
 +      if (!VirtualProtect(Res->Base + Res->GroupOffsets[1], AlignedROUsed,
 +                          PAGE_READONLY, &OldProt)) {
@@ -2355,58 +2334,14 @@ index 00000000..e3eed6b5
 +  if (SectionMemoryManager::finalizeMemory(ErrMsg))
 +    return true;
 +
-+  // Publish Windows unwind tables after memory protections and cache flushes
-+  // succeed
++  // Step 3: Publish Windows unwind tables with transactional rollback
 +  std::vector<UnwindTableEntry> NewlyRegistered;
 +  for (auto &Entry : PendingUnwindTables) {
 +    if (Entry.Size == 0)
 +      continue;
 +
-+    constexpr size_t RecordSize = sizeof(RUNTIME_FUNCTION);
-+    if (Entry.Size % RecordSize != 0) {
-+      if (ErrMsg)
-+        *ErrMsg = ".pdata section size is not an integral number of "
-+                  "RUNTIME_FUNCTION records";
-+      for (auto &R : NewlyRegistered) {
-+#ifdef _WIN32
-+        RtlDeleteFunctionTable(reinterpret_cast<PRUNTIME_FUNCTION>(R.Addr));
-+#endif
-+      }
-+      return true;
-+    }
-+
-+    size_t Count = Entry.Size / RecordSize;
-+    if (Count > std::numeric_limits<DWORD>::max()) {
-+      if (ErrMsg)
-+        *ErrMsg = ".pdata section record count exceeds 32-bit limit";
-+      for (auto &R : NewlyRegistered) {
-+#ifdef _WIN32
-+        RtlDeleteFunctionTable(reinterpret_cast<PRUNTIME_FUNCTION>(R.Addr));
-+#endif
-+      }
-+      return true;
-+    }
-+
++    size_t Count = Entry.Size / sizeof(RUNTIME_FUNCTION);
 +    auto *Records = reinterpret_cast<PRUNTIME_FUNCTION>(Entry.Addr);
-+    for (size_t i = 0; i < Count; ++i) {
-+      if (Records[i].BeginAddress >= Records[i].EndAddress) {
-+        if (ErrMsg)
-+          *ErrMsg =
-+              "Invalid RUNTIME_FUNCTION record: BeginAddress >= EndAddress";
-+        for (auto &R : NewlyRegistered) {
-+#ifdef _WIN32
-+          RtlDeleteFunctionTable(reinterpret_cast<PRUNTIME_FUNCTION>(R.Addr));
-+#endif
-+        }
-+        return true;
-+      }
-+    }
-+
-+    // Sort records in ascending order by BeginAddress as required by Windows
-+    std::sort(Records, Records + Count,
-+              [](const RUNTIME_FUNCTION &a, const RUNTIME_FUNCTION &b) {
-+                return a.BeginAddress < b.BeginAddress;
-+              });
 +
 +#ifdef _WIN32
 +    BOOLEAN Success = RtlAddFunctionTable(Records, static_cast<DWORD>(Count),
@@ -2417,13 +2352,18 @@ index 00000000..e3eed6b5
 +      for (auto &R : NewlyRegistered) {
 +        RtlDeleteFunctionTable(reinterpret_cast<PRUNTIME_FUNCTION>(R.Addr));
 +      }
++      NewlyRegistered.clear();
 +      return true;
 +    }
 +#endif
 +
 +    Entry.Registered = true;
 +    NewlyRegistered.push_back(Entry);
-+    ActiveUnwindTables.push_back(Entry);
++  }
++
++  // Commit successfully registered tables to ActiveUnwindTables
++  for (auto &R : NewlyRegistered) {
++    ActiveUnwindTables.push_back(R);
 +  }
 +  PendingUnwindTables.clear();
 +

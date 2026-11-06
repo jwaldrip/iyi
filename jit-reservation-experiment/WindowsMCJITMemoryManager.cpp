@@ -220,9 +220,10 @@ uint8_t *WindowsMCJITMemoryManager::allocateFromReservation(
     return nullptr;
   }
 
-  // Commit used pages RW
+  // Commit used pages RW, including any alignment padding since last cursor
+  size_t StartOffset = CurrentReservation->GroupCursors[Group];
   uintptr_t CommitStart =
-      (reinterpret_cast<uintptr_t>(CurrentReservation->Base + Pos)) &
+      (reinterpret_cast<uintptr_t>(CurrentReservation->Base + StartOffset)) &
       ~(PageSize - 1);
   uintptr_t CommitEnd =
       (reinterpret_cast<uintptr_t>(CurrentReservation->Base + Pos + Size +
@@ -267,6 +268,48 @@ uint8_t *WindowsMCJITMemoryManager::allocateDataSection(uintptr_t Size,
 }
 
 bool WindowsMCJITMemoryManager::finalizeMemory(std::string *ErrMsg) {
+  // Step 1: Validate and sort all pending unwind tables in-place while their
+  // memory is still PAGE_READWRITE. If any record or table is invalid, fail
+  // immediately before modifying any protections.
+  for (auto &Entry : PendingUnwindTables) {
+    if (Entry.Size == 0)
+      continue;
+
+    constexpr size_t RecordSize = sizeof(RUNTIME_FUNCTION);
+    if (Entry.Size % RecordSize != 0) {
+      if (ErrMsg)
+        *ErrMsg = ".pdata section size is not an integral number of "
+                  "RUNTIME_FUNCTION records";
+      return true;
+    }
+
+    size_t Count = Entry.Size / RecordSize;
+    if (Count > std::numeric_limits<DWORD>::max()) {
+      if (ErrMsg)
+        *ErrMsg = ".pdata section record count exceeds 32-bit limit";
+      return true;
+    }
+
+    auto *Records = reinterpret_cast<PRUNTIME_FUNCTION>(Entry.Addr);
+    for (size_t i = 0; i < Count; ++i) {
+      if (Records[i].BeginAddress >= Records[i].EndAddress) {
+        if (ErrMsg)
+          *ErrMsg =
+              "Invalid RUNTIME_FUNCTION record: BeginAddress >= EndAddress";
+        return true;
+      }
+    }
+
+    // Sort records in ascending order by BeginAddress while memory is still
+    // writable
+    std::sort(Records, Records + Count,
+              [](const RUNTIME_FUNCTION &a, const RUNTIME_FUNCTION &b) {
+                return a.BeginAddress < b.BeginAddress;
+              });
+  }
+
+  // Step 2: Ensure complete used group prefixes (including alignment gaps) are
+  // committed, then apply page protections and instruction cache flushes.
   for (auto &Res : Reservations) {
     if (!Res || Res->Finalized || !Res->Base)
       continue;
@@ -276,6 +319,17 @@ bool WindowsMCJITMemoryManager::finalizeMemory(std::string *ErrMsg) {
     if (CodeUsed > 0) {
       size_t AlignedCodeUsed = 0;
       checkedRoundUp(CodeUsed, PageSize, AlignedCodeUsed);
+      // Ensure the complete used prefix is committed before calling
+      // VirtualProtect
+      if (!VirtualAlloc(Res->Base + Res->GroupOffsets[0], AlignedCodeUsed,
+                        MEM_COMMIT, PAGE_READWRITE)) {
+        if (ErrMsg)
+          *ErrMsg =
+              "VirtualAlloc MEM_COMMIT failed for code section prefix with OS "
+              "error " +
+              std::to_string(GetLastError());
+        return true;
+      }
       DWORD OldProt = 0;
       if (!VirtualProtect(Res->Base + Res->GroupOffsets[0], AlignedCodeUsed,
                           PAGE_EXECUTE_READ, &OldProt)) {
@@ -299,6 +353,16 @@ bool WindowsMCJITMemoryManager::finalizeMemory(std::string *ErrMsg) {
     if (ROUsed > 0) {
       size_t AlignedROUsed = 0;
       checkedRoundUp(ROUsed, PageSize, AlignedROUsed);
+      // Ensure the complete used prefix is committed before calling
+      // VirtualProtect
+      if (!VirtualAlloc(Res->Base + Res->GroupOffsets[1], AlignedROUsed,
+                        MEM_COMMIT, PAGE_READWRITE)) {
+        if (ErrMsg)
+          *ErrMsg = "VirtualAlloc MEM_COMMIT failed for RO data prefix with OS "
+                    "error " +
+                    std::to_string(GetLastError());
+        return true;
+      }
       DWORD OldProt = 0;
       if (!VirtualProtect(Res->Base + Res->GroupOffsets[1], AlignedROUsed,
                           PAGE_READONLY, &OldProt)) {
@@ -316,58 +380,14 @@ bool WindowsMCJITMemoryManager::finalizeMemory(std::string *ErrMsg) {
   if (SectionMemoryManager::finalizeMemory(ErrMsg))
     return true;
 
-  // Publish Windows unwind tables after memory protections and cache flushes
-  // succeed
+  // Step 3: Publish Windows unwind tables with transactional rollback
   std::vector<UnwindTableEntry> NewlyRegistered;
   for (auto &Entry : PendingUnwindTables) {
     if (Entry.Size == 0)
       continue;
 
-    constexpr size_t RecordSize = sizeof(RUNTIME_FUNCTION);
-    if (Entry.Size % RecordSize != 0) {
-      if (ErrMsg)
-        *ErrMsg = ".pdata section size is not an integral number of "
-                  "RUNTIME_FUNCTION records";
-      for (auto &R : NewlyRegistered) {
-#ifdef _WIN32
-        RtlDeleteFunctionTable(reinterpret_cast<PRUNTIME_FUNCTION>(R.Addr));
-#endif
-      }
-      return true;
-    }
-
-    size_t Count = Entry.Size / RecordSize;
-    if (Count > std::numeric_limits<DWORD>::max()) {
-      if (ErrMsg)
-        *ErrMsg = ".pdata section record count exceeds 32-bit limit";
-      for (auto &R : NewlyRegistered) {
-#ifdef _WIN32
-        RtlDeleteFunctionTable(reinterpret_cast<PRUNTIME_FUNCTION>(R.Addr));
-#endif
-      }
-      return true;
-    }
-
+    size_t Count = Entry.Size / sizeof(RUNTIME_FUNCTION);
     auto *Records = reinterpret_cast<PRUNTIME_FUNCTION>(Entry.Addr);
-    for (size_t i = 0; i < Count; ++i) {
-      if (Records[i].BeginAddress >= Records[i].EndAddress) {
-        if (ErrMsg)
-          *ErrMsg =
-              "Invalid RUNTIME_FUNCTION record: BeginAddress >= EndAddress";
-        for (auto &R : NewlyRegistered) {
-#ifdef _WIN32
-          RtlDeleteFunctionTable(reinterpret_cast<PRUNTIME_FUNCTION>(R.Addr));
-#endif
-        }
-        return true;
-      }
-    }
-
-    // Sort records in ascending order by BeginAddress as required by Windows
-    std::sort(Records, Records + Count,
-              [](const RUNTIME_FUNCTION &a, const RUNTIME_FUNCTION &b) {
-                return a.BeginAddress < b.BeginAddress;
-              });
 
 #ifdef _WIN32
     BOOLEAN Success = RtlAddFunctionTable(Records, static_cast<DWORD>(Count),
@@ -378,13 +398,18 @@ bool WindowsMCJITMemoryManager::finalizeMemory(std::string *ErrMsg) {
       for (auto &R : NewlyRegistered) {
         RtlDeleteFunctionTable(reinterpret_cast<PRUNTIME_FUNCTION>(R.Addr));
       }
+      NewlyRegistered.clear();
       return true;
     }
 #endif
 
     Entry.Registered = true;
     NewlyRegistered.push_back(Entry);
-    ActiveUnwindTables.push_back(Entry);
+  }
+
+  // Commit successfully registered tables to ActiveUnwindTables
+  for (auto &R : NewlyRegistered) {
+    ActiveUnwindTables.push_back(R);
   }
   PendingUnwindTables.clear();
 
