@@ -1,4 +1,4 @@
-name: Adler diagnostic populations
+name: Adler fixed-path proof
 on:
   push:
     branches: [diagnostic/adler-populations-7aa894b]
@@ -6,7 +6,7 @@ permissions:
   contents: read
   actions: read
 jobs:
-  populations:
+  proof:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     container:
@@ -14,9 +14,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        instance: [1, 2, 3, 4]
+        mode: [idle, pinned]
+        instance: [1, 2, 3]
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: 52f0e3dc1870094432d6cebd444983b01b8241ac
       - uses: actions/download-artifact@v5
         with:
           name: crystal
@@ -24,46 +27,15 @@ jobs:
           run-id: 42191988061
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - run: chmod +x .build/crystal && make -o .build/crystal iyi
-      - name: Prepare instrumented baseline and exact mutation
+      - name: Run actual digest gate and all negative controls
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PYCODE'
-          from pathlib import Path
-          s = Path('bench/std_digest_exercise.iyi').read_text()
-          helper = '{% if flag?(:linux) && flag?(:x86_64) %}\n  lib AdlerCpuClock\n    struct Timespec\n      sec : Int64\n      nsec : Int64\n    end\n  end\n\n  def adler_cpu_time_ns : UInt64\n    stamp = uninitialized AdlerCpuClock::Timespec\n    result = uninitialized Int64\n    asm("syscall" : "={rax}"(result)\n                  : "{rax}"(228_i64), "{rdi}"(3_i64), "{rsi}"(pointerof(stamp))\n                  : "rcx", "r11", "memory"\n                  : "volatile")\n    raise "thread CPU clock failed" unless result == 0\n    stamp.sec.to_u64 * 1000000000_u64 + stamp.nsec.to_u64\n  end\n{% end %}\n\n'
-          marker = '# What a checksum costs against a pass that only adds the bytes up:'
-          assert s.count(marker) == 1
-          s = s.replace(marker, helper + marker)
-          s = s.replace('IyiMark.now_ns', 'adler_cpu_time_ns')
-          needle = '  assert_true best_crc < best_sum * 6, '
-          start = s.index(needle)
-          end = s.index('  # Named without its measurements:', start)
-          s = s[:start] + '  puts "MEASURE sum=#{best_sum} crc=#{best_crc} adler=#{best_adler}"\n' + s[end:]
-          Path('/tmp/adler_exercise.iyi').write_text(s)
-          source = Path('src/std/digest.iyi').read_text()
-          old = 'a = a + p[i].to_u32\n        b = b + a'
-          new = 'a = (a + p[i].to_u32) % 65521_u32\n        b = (b + a) % 65521_u32'
-          assert source.count(old) == 1, source.count(old)
-          Path('/tmp/patched/std').mkdir(parents=True)
-          Path('/tmp/patched/std/digest.iyi').write_text(source.replace(old, new, 1))
-          print('exact mutation match count: 1')
-          PYCODE
-      - name: Measure idle and contended populations
-        shell: bash
-        run: |
-          set -euo pipefail
-          for load in idle contended pinned; do
+          if [ '${{ matrix.mode }}' = pinned ]; then
             cpu=$(python3 -c "import os; print(min(os.sched_getaffinity(0)))")
-            runner=()
-            if [ "$load" = pinned ]; then taskset -c "$cpu" yes > /dev/null & load_pid=$!; runner=(taskset -c "$cpu"); fi
-            if [ "$load" = contended ]; then yes > /dev/null & load_pid=$!; fi
-            for i in $(seq 1 8); do
-              for variant in healthy mutant; do
-                printf 'POPULATION runner=%s load=%s trial=%s variant=%s ' '${{ matrix.instance }}' "$load" "$i" "$variant"
-                if [ "$variant" = healthy ]; then export IYI_PATH="$PWD/src:$PWD/samples/iyi"; else export IYI_PATH="/tmp/patched:$PWD/src:$PWD/samples/iyi"; fi
-                "${runner[@]}" ./bin/iyi run /tmp/adler_exercise.iyi | grep '^MEASURE '
-              done
-            done
-            if [ "$load" != idle ]; then kill "$load_pid"; wait "$load_pid" || :; fi
-          done
+            taskset -c "$cpu" yes > /dev/null & load_pid=$!
+            trap 'kill "$load_pid" 2>/dev/null || :' EXIT
+            taskset -c "$cpu" bash bench/std_digest_exercise.sh
+          else
+            bash bench/std_digest_exercise.sh
+          fi
