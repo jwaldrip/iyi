@@ -1,6 +1,9 @@
 name: Windows LLVM 20 reservation experiment
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - experiment/pr147-llvm20-dynamic-proof
 permissions:
   contents: read
 jobs:
