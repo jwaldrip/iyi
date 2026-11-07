@@ -51,6 +51,8 @@ __declspec(dllexport) void probe_native_raise_exception(void);
 
 static void require(bool cond, const char *msg) {
   if (!cond) {
+    std::printf("ASSERTION FAILED: %s\n", msg);
+    std::fflush(stdout);
     std::fprintf(stderr, "ASSERTION FAILED: %s\n", msg);
     std::fflush(stderr);
     std::exit(1);
@@ -1351,13 +1353,15 @@ static void test_production_manager_injected_os_failures() {
     LLVMDisposeMessage(diag);
 
 #ifdef _WIN32
-    // Verify that table 0 was actually registered AND rolled back (deregistered
-    // from OS table)
+    std::printf("ROLLBACK_POINTER_CHECK: pGetFirstRegUnwindAddr=%p\n",
+                (void *)pGetFirstRegUnwindAddr);
+    std::fflush(stdout);
     require(pGetFirstRegUnwindAddr != nullptr,
             "pGetFirstRegUnwindAddr function pointer must be available");
     uint64_t rollback_unwind_addr = pGetFirstRegUnwindAddr();
     std::printf("ROLLBACK_FIRST_TABLE_ADDR: 0x%llx (must not be 0)\n",
                 (unsigned long long)rollback_unwind_addr);
+    std::fflush(stdout);
     require(rollback_unwind_addr != 0,
             "FAIL: First table address was never recorded as registered before "
             "rollback!");
@@ -1365,12 +1369,13 @@ static void test_production_manager_injected_os_failures() {
     DWORD64 imgBase1 = 0;
     PRUNTIME_FUNCTION rf1 = RtlLookupFunctionEntry(
         (DWORD64)rollback_unwind_addr, &imgBase1, nullptr);
-    std::printf("ROLLBACK_LOOKUP_AFTER: rf1=%p (must be nullptr)\n",
-                (void *)rf1);
+    std::printf(
+        "ROLLBACK_LOOKUP_AFTER: rf1=%p imgBase1=0x%llx (must be nullptr)\n",
+        (void *)rf1, (unsigned long long)imgBase1);
+    std::fflush(stdout);
     require(rf1 == nullptr,
             "FAIL: RtlLookupFunctionEntry found table after rollback! "
             "Table 0 was not deregistered!");
-#endif
 
     LLVMDisposeExecutionEngine(ee);
     LLVMContextDispose(ctx);

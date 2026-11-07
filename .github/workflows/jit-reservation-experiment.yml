@@ -99,7 +99,7 @@ jobs:
         shell: pwsh
         run: |
           $env:PATH = "$env:RUNNER_TEMP/llvm-build/bin;$env:PATH"
-          & "$env:RUNNER_TEMP/probe-build/jit_reservation_probe.exe" --all
+          & "$env:RUNNER_TEMP/probe-build/jit_reservation_probe.exe" --all 2>&1
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Verify non-fatal recovery on null code allocation
         shell: pwsh
