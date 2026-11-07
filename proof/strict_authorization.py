@@ -394,16 +394,16 @@ def verify_candidate(
     if not isinstance(producer, dict):
         reject("missing audit producer identity")
     keys(producer, {"type", "run_id", "workflow_id", "job_id", "identity"})
-    if producer["type"] not in TRUSTED_AUDIT_PRODUCER_TYPES:
-        reject("untrusted audit producer type")
-    if not isinstance(producer["identity"], str) or not producer["identity"]:
-        reject("missing audit producer identity string")
     if producer == harness_data["producer"]:
         reject("audit producer must be independent of harness producer")
     if str(producer.get("run_id")) == str(harness_data.get("producer", {}).get("run_id")):
         reject("audit producer run must be independent of harness producer run")
     if str(producer.get("run_id")) == str(harness_data.get("run_id")):
         reject("audit run must be independent of harness run")
+    if producer["type"] not in TRUSTED_AUDIT_PRODUCER_TYPES:
+        reject("untrusted audit producer type")
+    if not isinstance(producer["identity"], str) or not producer["identity"]:
+        reject("missing audit producer identity string")
 
     # Exact equality to independently established trusted context is required.
     keys(
