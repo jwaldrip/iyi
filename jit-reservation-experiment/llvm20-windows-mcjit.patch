@@ -1,5 +1,5 @@
 diff --git a/llvm/include/llvm-c/ExecutionEngine.h b/llvm/include/llvm-c/ExecutionEngine.h
-index c5fc9bdb..ce2a85d8 100644
+index c5fc9bd..f66a0bb 100644
 --- a/llvm/include/llvm-c/ExecutionEngine.h
 +++ b/llvm/include/llvm-c/ExecutionEngine.h
 @@ -72,20 +72,17 @@ void LLVMDisposeGenericValue(LLVMGenericValueRef GenVal);
@@ -120,6 +120,7 @@ index c5fc9bdb..ce2a85d8 100644
 + */
 +const char *LLVMExtGetWindowsMCJITBuildIdentity(void);
 +
++
 +enum LLVMExtWindowsMCJITFaultFlags {
 +  LLVMExtFaultNone = 0,
 +  LLVMExtFaultVirtualProtectCode = 1 << 0,
@@ -133,12 +134,11 @@ index c5fc9bdb..ce2a85d8 100644
 +
 +void LLVMExtMapSectionAddress(LLVMExecutionEngineRef EE,
 +                              const void *LocalAddress, uint64_t TargetAddress);
-+
  /**
   * @}
   */
 diff --git a/llvm/include/llvm/ExecutionEngine/ExecutionEngine.h b/llvm/include/llvm/ExecutionEngine/ExecutionEngine.h
-index ee6084ad..b305ef0a 100644
+index ee6084a..b305ef0 100644
 --- a/llvm/include/llvm/ExecutionEngine/ExecutionEngine.h
 +++ b/llvm/include/llvm/ExecutionEngine/ExecutionEngine.h
 @@ -77,9 +77,7 @@ private:
@@ -362,7 +362,7 @@ index ee6084ad..b305ef0a 100644
    ExecutionEngine *create(TargetMachine *TM);
  };
 diff --git a/llvm/include/llvm/ExecutionEngine/RuntimeDyld.h b/llvm/include/llvm/ExecutionEngine/RuntimeDyld.h
-index 468296ac..90e0df02 100644
+index 468296a..90e0df0 100644
 --- a/llvm/include/llvm/ExecutionEngine/RuntimeDyld.h
 +++ b/llvm/include/llvm/ExecutionEngine/RuntimeDyld.h
 @@ -155,15 +155,24 @@ public:
@@ -398,7 +398,7 @@ index 468296ac..90e0df02 100644
      virtual bool finalizeMemory(std::string *ErrMsg = nullptr) = 0;
 diff --git a/llvm/include/llvm/ExecutionEngine/WindowsMCJITMemoryManager.h b/llvm/include/llvm/ExecutionEngine/WindowsMCJITMemoryManager.h
 new file mode 100644
-index 00000000..3a3c82ee
+index 0000000..e67ba49
 --- /dev/null
 +++ b/llvm/include/llvm/ExecutionEngine/WindowsMCJITMemoryManager.h
 @@ -0,0 +1,105 @@
@@ -508,7 +508,7 @@ index 00000000..3a3c82ee
 +
 +#endif // LLVM_EXECUTIONENGINE_WINDOWSMCJITMEMORYMANAGER_H
 diff --git a/llvm/lib/ExecutionEngine/CMakeLists.txt b/llvm/lib/ExecutionEngine/CMakeLists.txt
-index 02178ff5..5072eae6 100644
+index 02178ff..5072eae 100644
 --- a/llvm/lib/ExecutionEngine/CMakeLists.txt
 +++ b/llvm/lib/ExecutionEngine/CMakeLists.txt
 @@ -6,6 +6,7 @@ add_llvm_component_library(LLVMExecutionEngine
@@ -520,7 +520,7 @@ index 02178ff5..5072eae6 100644
    ADDITIONAL_HEADER_DIRS
    ${LLVM_MAIN_INCLUDE_DIR}/llvm/ExecutionEngine
 diff --git a/llvm/lib/ExecutionEngine/ExecutionEngineBindings.cpp b/llvm/lib/ExecutionEngine/ExecutionEngineBindings.cpp
-index 700fb03..aa20a7a 100644
+index 700fb03..5e1ba51 100644
 --- a/llvm/lib/ExecutionEngine/ExecutionEngineBindings.cpp
 +++ b/llvm/lib/ExecutionEngine/ExecutionEngineBindings.cpp
 @@ -14,6 +14,7 @@
@@ -619,7 +619,7 @@ index 700fb03..aa20a7a 100644
    if (ExecutionEngine *JIT = builder.create()) {
      *OutJIT = wrap(JIT);
      return 0;
-@@ -227,9 +222,13 @@ void LLVMRunStaticDestructors(LLVMExecutionEngineRef EE) {
+@@ -227,9 +222,11 @@ void LLVMRunStaticDestructors(LLVMExecutionEngineRef EE) {
  }
  
  int LLVMRunFunctionAsMain(LLVMExecutionEngineRef EE, LLVMValueRef F,
@@ -627,20 +627,21 @@ index 700fb03..aa20a7a 100644
 -                          const char * const *EnvP) {
 +                          unsigned ArgC, const char *const *ArgV,
 +                          const char *const *EnvP) {
-+  if (unwrap(EE)->hasError())
-+    return -1;
    unwrap(EE)->finalizeObject();
 +  if (unwrap(EE)->hasError())
 +    return -1;
  
    std::vector<std::string> ArgVec(ArgV, ArgV + ArgC);
    return unwrap(EE)->runFunctionAsMain(unwrap<Function>(F), ArgVec, EnvP);
-@@ -239,6 +238,10 @@ LLVMGenericValueRef LLVMRunFunction(LLVMExecutionEngineRef EE, LLVMValueRef F,
+@@ -238,7 +235,13 @@ int LLVMRunFunctionAsMain(LLVMExecutionEngineRef EE, LLVMValueRef F,
+ LLVMGenericValueRef LLVMRunFunction(LLVMExecutionEngineRef EE, LLVMValueRef F,
                                      unsigned NumArgs,
                                      LLVMGenericValueRef *Args) {
 +  if (unwrap(EE)->hasError())
 +    return nullptr;
    unwrap(EE)->finalizeObject();
++  if (unwrap(EE)->hasError())
++    return nullptr;
 +  if (unwrap(EE)->hasError())
 +    return nullptr;
  
@@ -665,7 +666,7 @@ index 700fb03..aa20a7a 100644
    unwrap(EE)->addModule(std::unique_ptr<Module>(unwrap(M)));
  }
  
-@@ -289,21 +296,33 @@ LLVMGetExecutionEngineTargetMachine(LLVMExecutionEngineRef EE) {
+@@ -289,21 +296,31 @@ LLVMGetExecutionEngineTargetMachine(LLVMExecutionEngineRef EE) {
  }
  
  void LLVMAddGlobalMapping(LLVMExecutionEngineRef EE, LLVMValueRef Global,
@@ -675,8 +676,6 @@ index 700fb03..aa20a7a 100644
  }
  
  void *LLVMGetPointerToGlobal(LLVMExecutionEngineRef EE, LLVMValueRef Global) {
-+  if (unwrap(EE)->hasError())
-+    return nullptr;
    unwrap(EE)->finalizeObject();
 +  if (unwrap(EE)->hasError())
 +    return nullptr;
@@ -702,7 +701,7 @@ index 700fb03..aa20a7a 100644
    return unwrap(EE)->getFunctionAddress(Name);
  }
  
-@@ -312,14 +331,17 @@ LLVMBool LLVMExecutionEngineGetErrMsg(LLVMExecutionEngineRef EE,
+@@ -312,14 +329,17 @@ LLVMBool LLVMExecutionEngineGetErrMsg(LLVMExecutionEngineRef EE,
    assert(OutError && "OutError must be non-null");
    auto *ExecEngine = unwrap(EE);
    if (ExecEngine->hasError()) {
@@ -722,7 +721,7 @@ index 700fb03..aa20a7a 100644
  
  namespace {
  
-@@ -332,7 +354,7 @@ struct SimpleBindingMMFunctions {
+@@ -332,7 +352,7 @@ struct SimpleBindingMMFunctions {
  
  class SimpleBindingMemoryManager : public RTDyldMemoryManager {
  public:
@@ -731,7 +730,7 @@ index 700fb03..aa20a7a 100644
                               void *Opaque);
    ~SimpleBindingMemoryManager() override;
  
-@@ -352,17 +374,14 @@ private:
+@@ -352,17 +372,14 @@ private:
  };
  
  SimpleBindingMemoryManager::SimpleBindingMemoryManager(
@@ -753,7 +752,7 @@ index 700fb03..aa20a7a 100644
  }
  
  SimpleBindingMemoryManager::~SimpleBindingMemoryManager() {
-@@ -370,18 +389,19 @@ SimpleBindingMemoryManager::~SimpleBindingMemoryManager() {
+@@ -370,18 +387,19 @@ SimpleBindingMemoryManager::~SimpleBindingMemoryManager() {
  }
  
  uint8_t *SimpleBindingMemoryManager::allocateCodeSection(
@@ -780,7 +779,7 @@ index 700fb03..aa20a7a 100644
  }
  
  bool SimpleBindingMemoryManager::finalizeMemory(std::string *ErrMsg) {
-@@ -400,11 +420,11 @@ bool SimpleBindingMemoryManager::finalizeMemory(std::string *ErrMsg) {
+@@ -400,11 +418,11 @@ bool SimpleBindingMemoryManager::finalizeMemory(std::string *ErrMsg) {
  } // anonymous namespace
  
  LLVMMCJITMemoryManagerRef LLVMCreateSimpleMCJITMemoryManager(
@@ -797,7 +796,7 @@ index 700fb03..aa20a7a 100644
  
    if (!AllocateCodeSection || !AllocateDataSection || !FinalizeMemory ||
        !Destroy)
-@@ -422,26 +442,95 @@ void LLVMDisposeMCJITMemoryManager(LLVMMCJITMemoryManagerRef MM) {
+@@ -422,26 +440,95 @@ void LLVMDisposeMCJITMemoryManager(LLVMMCJITMemoryManagerRef MM) {
    delete unwrap(MM);
  }
  
@@ -904,7 +903,7 @@ index 700fb03..aa20a7a 100644
 +    unwrap(EE)->mapSectionAddress(LocalAddress, TargetAddress);
 +}
 diff --git a/llvm/lib/ExecutionEngine/MCJIT/MCJIT.cpp b/llvm/lib/ExecutionEngine/MCJIT/MCJIT.cpp
-index 5f3067b..77b7ed7 100644
+index 5f3067b..958a031 100644
 --- a/llvm/lib/ExecutionEngine/MCJIT/MCJIT.cpp
 +++ b/llvm/lib/ExecutionEngine/MCJIT/MCJIT.cpp
 @@ -35,10 +35,9 @@ static struct RegisterJIT {
@@ -982,9 +981,7 @@ index 5f3067b..77b7ed7 100644
    Buffers.push_back(std::move(ObjectToLoad));
    LoadedObjects.push_back(std::move(*LoadedObject));
  
-@@ -241,24 +253,37 @@ void MCJIT::finalizeLoadedModules() {
-+  if (HasFailed)
-+    return;
+@@ -241,24 +253,33 @@ void MCJIT::finalizeLoadedModules() {
    Dyld.resolveRelocations();
  
    // Check for Dyld error.
@@ -1016,15 +1013,16 @@ index 5f3067b..77b7ed7 100644
  // FIXME: Rename this.
  void MCJIT::finalizeObject() {
    std::lock_guard<sys::Mutex> locked(lock);
-+  if (HasFailed)
-+    return;
  
-   // Generate code for module is going to move objects out of the 'added'
-   // list, so we need to copy that out before using it:
+-  // Generate code for module is going to move objects out of the 'added' list,
+-  // so we need to copy that out before using it:
++  // Generate code for module is going to move objects out of the 'added'
++  // list, so we need to copy that out before using it:
    SmallVector<Module *, 16> ModsToAdd(OwnedModules.added());
  
    for (auto *M : ModsToAdd)
-@@ -270,8 +295,12 @@ void MCJIT::finalizeObject() {
+@@ -269,9 +290,13 @@ void MCJIT::finalizeObject() {
+ 
  void MCJIT::finalizeModule(Module *M) {
    std::lock_guard<sys::Mutex> locked(lock);
 +  if (HasFailed)
@@ -1039,7 +1037,7 @@ index 5f3067b..77b7ed7 100644
  
    // If the module hasn't been compiled, just do that.
    if (!OwnedModules.hasModuleBeenLoaded(M))
-@@ -282,8 +311,7 @@ void MCJIT::finalizeModule(Module *M) {
+@@ -282,8 +307,7 @@ void MCJIT::finalizeModule(Module *M) {
  
  JITSymbol MCJIT::findExistingSymbol(const std::string &Name) {
    if (void *Addr = getPointerToGlobalIfAvailable(Name))
@@ -1049,7 +1047,7 @@ index 5f3067b..77b7ed7 100644
                       JITSymbolFlags::Exported);
  
    return Dyld.getSymbol(Name);
-@@ -309,15 +337,15 @@ Module *MCJIT::findModuleForSymbol(const std::string &Name,
+@@ -309,15 +333,15 @@ Module *MCJIT::findModuleForSymbol(const std::string &Name,
        GlobalVariable *G = M->getGlobalVariable(DemangledName);
        if (G && !G->isDeclaration())
          return M;
@@ -1067,7 +1065,7 @@ index 5f3067b..77b7ed7 100644
    std::string MangledName;
    {
      raw_string_ostream MangledNameStream(MangledName);
-@@ -326,16 +354,22 @@ uint64_t MCJIT::getSymbolAddress(const std::string &Name,
+@@ -326,16 +350,22 @@ uint64_t MCJIT::getSymbolAddress(const std::string &Name,
    if (auto Sym = findSymbol(MangledName, CheckFunctionsOnly)) {
      if (auto AddrOrErr = Sym.getAddress())
        return *AddrOrErr;
@@ -1094,7 +1092,7 @@ index 5f3067b..77b7ed7 100644
  
    // First, check to see if we already have this symbol.
    if (auto Sym = findExistingSymbol(Name))
-@@ -343,17 +377,14 @@ JITSymbol MCJIT::findSymbol(const std::string &Name,
+@@ -343,17 +373,14 @@ JITSymbol MCJIT::findSymbol(const std::string &Name,
  
    for (object::OwningBinary<object::Archive> &OB : Archives) {
      object::Archive *A = OB.getBinary();
@@ -1112,7 +1110,7 @@ index 5f3067b..77b7ed7 100644
          consumeError(ChildBinOrErr.takeError());
          continue;
        }
-@@ -361,9 +392,9 @@ JITSymbol MCJIT::findSymbol(const std::string &Name,
+@@ -361,9 +388,9 @@ JITSymbol MCJIT::findSymbol(const std::string &Name,
        if (ChildBin->isObject()) {
          std::unique_ptr<object::ObjectFile> OF(
              static_cast<object::ObjectFile *>(ChildBin.release()));
@@ -1124,7 +1122,7 @@ index 5f3067b..77b7ed7 100644
          if (auto Sym = findExistingSymbol(Name))
            return Sym;
        }
-@@ -374,13 +405,14 @@ JITSymbol MCJIT::findSymbol(const std::string &Name,
+@@ -374,13 +401,14 @@ JITSymbol MCJIT::findSymbol(const std::string &Name,
    Module *M = findModuleForSymbol(Name, CheckFunctionsOnly);
    if (M) {
      generateCodeForModule(M);
@@ -1140,7 +1138,7 @@ index 5f3067b..77b7ed7 100644
    if (LazyFunctionCreator) {
      auto Addr = static_cast<uint64_t>(
                    reinterpret_cast<uintptr_t>(LazyFunctionCreator(Name)));
-@@ -392,23 +424,33 @@ JITSymbol MCJIT::findSymbol(const std::string &Name,
+@@ -392,23 +420,33 @@ JITSymbol MCJIT::findSymbol(const std::string &Name,
  
  uint64_t MCJIT::getGlobalValueAddress(const std::string &Name) {
    std::lock_guard<sys::Mutex> locked(lock);
@@ -1174,7 +1172,7 @@ index 5f3067b..77b7ed7 100644
  
    Mangler Mang;
    SmallString<128> Name;
-@@ -417,16 +459,21 @@ void *MCJIT::getPointerToFunction(Function *F) {
+@@ -417,16 +455,21 @@ void *MCJIT::getPointerToFunction(Function *F) {
    if (F->isDeclaration() || F->hasAvailableExternallyLinkage()) {
      bool AbortOnFailure = !F->hasExternalWeakLinkage();
      void *Addr = getPointerToNamedFunction(Name, AbortOnFailure);
@@ -1197,7 +1195,7 @@ index 5f3067b..77b7ed7 100644
    else if (!OwnedModules.hasModuleBeenLoaded(M)) {
      // If this function doesn't belong to one of our modules, we're done.
      // FIXME: Asking for the pointer to a function that hasn't been registered,
-@@ -435,11 +482,10 @@ void *MCJIT::getPointerToFunction(Function *F) {
+@@ -435,11 +478,10 @@ void *MCJIT::getPointerToFunction(Function *F) {
      return nullptr;
    }
  
@@ -1213,7 +1211,7 @@ index 5f3067b..77b7ed7 100644
  }
  
  void MCJIT::runStaticConstructorsDestructorsInModulePtrSet(
-@@ -470,10 +516,10 @@ Function *MCJIT::FindFunctionNamedInModulePtrSet(StringRef FnName,
+@@ -470,10 +512,10 @@ Function *MCJIT::FindFunctionNamedInModulePtrSet(StringRef FnName,
    return nullptr;
  }
  
@@ -1228,7 +1226,7 @@ index 5f3067b..77b7ed7 100644
    for (; I != E; ++I) {
      GlobalVariable *GV = (*I)->getGlobalVariable(Name, AllowInternal);
      if (GV && !GV->isDeclaration())
-@@ -482,7 +528,6 @@ GlobalVariable *MCJIT::FindGlobalVariableNamedInModulePtrSet(StringRef Name,
+@@ -482,7 +524,6 @@ GlobalVariable *MCJIT::FindGlobalVariableNamedInModulePtrSet(StringRef Name,
    return nullptr;
  }
  
@@ -1236,7 +1234,7 @@ index 5f3067b..77b7ed7 100644
  Function *MCJIT::FindFunctionNamed(StringRef FnName) {
    Function *F = FindFunctionNamedInModulePtrSet(
        FnName, OwnedModules.begin_added(), OwnedModules.end_added());
-@@ -495,23 +540,33 @@ Function *MCJIT::FindFunctionNamed(StringRef FnName) {
+@@ -495,23 +536,33 @@ Function *MCJIT::FindFunctionNamed(StringRef FnName) {
    return F;
  }
  
@@ -1276,7 +1274,7 @@ index 5f3067b..77b7ed7 100644
    assert(FPtr && "Pointer to fn's code was null after getPointerToFunction");
    FunctionType *FTy = F->getFunctionType();
    Type *RetTy = FTy->getReturnType();
-@@ -531,7 +586,7 @@ GenericValue MCJIT::runFunction(Function *F, ArrayRef<GenericValue> ArgValues) {
+@@ -531,7 +582,7 @@ GenericValue MCJIT::runFunction(Function *F, ArrayRef<GenericValue> ArgValues) {
            FTy->getParamType(1)->isPointerTy() &&
            FTy->getParamType(2)->isPointerTy()) {
          int (*PF)(int, char **, const char **) =
@@ -1285,7 +1283,7 @@ index 5f3067b..77b7ed7 100644
  
          // Call the function.
          GenericValue rv;
-@@ -544,7 +599,7 @@ GenericValue MCJIT::runFunction(Function *F, ArrayRef<GenericValue> ArgValues) {
+@@ -544,7 +595,7 @@ GenericValue MCJIT::runFunction(Function *F, ArrayRef<GenericValue> ArgValues) {
      case 2:
        if (FTy->getParamType(0)->isIntegerTy(32) &&
            FTy->getParamType(1)->isPointerTy()) {
@@ -1294,7 +1292,7 @@ index 5f3067b..77b7ed7 100644
  
          // Call the function.
          GenericValue rv;
-@@ -554,10 +609,9 @@ GenericValue MCJIT::runFunction(Function *F, ArrayRef<GenericValue> ArgValues) {
+@@ -554,10 +605,9 @@ GenericValue MCJIT::runFunction(Function *F, ArrayRef<GenericValue> ArgValues) {
        }
        break;
      case 1:
@@ -1307,7 +1305,7 @@ index 5f3067b..77b7ed7 100644
          rv.IntVal = APInt(32, PF(ArgValues[0].IntVal.getZExtValue()));
          return rv;
        }
-@@ -569,19 +623,20 @@ GenericValue MCJIT::runFunction(Function *F, ArrayRef<GenericValue> ArgValues) {
+@@ -569,19 +619,20 @@ GenericValue MCJIT::runFunction(Function *F, ArrayRef<GenericValue> ArgValues) {
    if (ArgValues.empty()) {
      GenericValue rv;
      switch (RetTy->getTypeID()) {
@@ -1334,7 +1332,7 @@ index 5f3067b..77b7ed7 100644
        else
          llvm_unreachable("Integer types > 64 bits not supported");
        return rv;
-@@ -590,17 +645,17 @@ GenericValue MCJIT::runFunction(Function *F, ArrayRef<GenericValue> ArgValues) {
+@@ -590,17 +641,17 @@ GenericValue MCJIT::runFunction(Function *F, ArrayRef<GenericValue> ArgValues) {
        rv.IntVal = APInt(32, ((int (*)())(intptr_t)FPtr)(), true);
        return rv;
      case Type::FloatTyID:
@@ -1355,7 +1353,7 @@ index 5f3067b..77b7ed7 100644
      }
    }
  
-@@ -611,22 +666,32 @@ GenericValue MCJIT::runFunction(Function *F, ArrayRef<GenericValue> ArgValues) {
+@@ -611,22 +662,32 @@ GenericValue MCJIT::runFunction(Function *F, ArrayRef<GenericValue> ArgValues) {
  }
  
  void *MCJIT::getPointerToNamedFunction(StringRef Name, bool AbortOnFailure) {
@@ -1393,7 +1391,7 @@ index 5f3067b..77b7ed7 100644
                         "' which could not be resolved!");
    }
    return nullptr;
-@@ -668,9 +733,12 @@ void MCJIT::notifyFreeingObject(const object::ObjectFile &Obj) {
+@@ -668,9 +729,12 @@ void MCJIT::notifyFreeingObject(const object::ObjectFile &Obj) {
      L->notifyFreeingObject(Key);
  }
  
@@ -1409,7 +1407,7 @@ index 5f3067b..77b7ed7 100644
      return Result;
    if (ParentEngine.isSymbolSearchingDisabled())
 diff --git a/llvm/lib/ExecutionEngine/RuntimeDyld/RuntimeDyld.cpp b/llvm/lib/ExecutionEngine/RuntimeDyld/RuntimeDyld.cpp
-index b3798f15..348b9c28 100644
+index b3798f1..0f48186 100644
 --- a/llvm/lib/ExecutionEngine/RuntimeDyld/RuntimeDyld.cpp
 +++ b/llvm/lib/ExecutionEngine/RuntimeDyld/RuntimeDyld.cpp
 @@ -31,9 +31,7 @@ using namespace llvm::object;
@@ -1470,7 +1468,19 @@ index b3798f15..348b9c28 100644
      while (StartPadding--)
        dbgs() << "   ";
    }
-@@ -169,8 +165,7 @@ void RuntimeDyldImpl::mapSectionAddress(const void *LocalAddress,
+@@ -161,7 +157,10 @@ void RuntimeDyldImpl::mapSectionAddress(const void *LocalAddress,
+                                         uint64_t TargetAddress) {
+   std::lock_guard<sys::Mutex> locked(lock);
+   for (unsigned i = 0, e = Sections.size(); i != e; ++i) {
+-    if (Sections[i].getAddress() == LocalAddress) {
++    const uint8_t *Local = static_cast<const uint8_t *>(LocalAddress);
++    if (Sections[i].getAddress() == Local ||
++        (Local >= Sections[i].getAddress() &&
++         Local < (Sections[i].getAddress() + Sections[i].getSize()))) {
+       reassignSectionAddress(i, TargetAddress);
+       return;
+     }
+@@ -169,8 +168,7 @@ void RuntimeDyldImpl::mapSectionAddress(const void *LocalAddress,
    llvm_unreachable("Attempting to remap address of unknown section!");
  }
  
@@ -1480,7 +1490,7 @@ index b3798f15..348b9c28 100644
    Expected<uint64_t> AddressOrErr = Sym.getAddress();
    if (!AddressOrErr)
      return AddressOrErr.takeError();
-@@ -381,8 +376,8 @@ RuntimeDyldImpl::loadObjectImpl(const object::ObjectFile &Obj) {
+@@ -381,8 +379,8 @@ RuntimeDyldImpl::loadObjectImpl(const object::ObjectFile &Obj) {
  
      bool IsCode = RelocatedSection->isText();
      unsigned SectionID = 0;
@@ -1491,7 +1501,7 @@ index b3798f15..348b9c28 100644
        SectionID = *SectionIDOrErr;
      else
        return SectionIDOrErr.takeError();
-@@ -390,7 +385,8 @@ RuntimeDyldImpl::loadObjectImpl(const object::ObjectFile &Obj) {
+@@ -390,7 +388,8 @@ RuntimeDyldImpl::loadObjectImpl(const object::ObjectFile &Obj) {
      LLVM_DEBUG(dbgs() << "\tSectionID: " << SectionID << "\n");
  
      for (; I != E;)
@@ -1501,7 +1511,7 @@ index b3798f15..348b9c28 100644
          I = *IOrErr;
        else
          return IOrErr.takeError();
-@@ -412,7 +408,8 @@ RuntimeDyldImpl::loadObjectImpl(const object::ObjectFile &Obj) {
+@@ -412,7 +411,8 @@ RuntimeDyldImpl::loadObjectImpl(const object::ObjectFile &Obj) {
            continue;
          }
  
@@ -1511,7 +1521,7 @@ index b3798f15..348b9c28 100644
          for (auto &GSTMapEntry : GlobalSymbolTable) {
            StringRef SymbolName = GSTMapEntry.first();
            auto &GSTEntry = GSTMapEntry.second;
-@@ -450,8 +447,9 @@ RuntimeDyldImpl::loadObjectImpl(const object::ObjectFile &Obj) {
+@@ -450,8 +450,9 @@ RuntimeDyldImpl::loadObjectImpl(const object::ObjectFile &Obj) {
    if (auto Err = finalizeLoad(Obj, LocalSections))
      return std::move(Err);
  
@@ -1523,7 +1533,7 @@ index b3798f15..348b9c28 100644
  
    return LocalSections;
  }
-@@ -498,12 +496,9 @@ static bool isReadOnlyData(const SectionRef Section) {
+@@ -498,12 +499,9 @@ static bool isReadOnlyData(const SectionRef Section) {
               (ELF::SHF_WRITE | ELF::SHF_EXECINSTR));
    if (auto *COFFObj = dyn_cast<object::COFFObjectFile>(Obj))
      return ((COFFObj->getCOFFSection(Section)->Characteristics &
@@ -1539,7 +1549,7 @@ index b3798f15..348b9c28 100644
  
    assert(isa<MachOObjectFile>(Obj));
    return false;
-@@ -515,7 +510,7 @@ static bool isZeroInit(const SectionRef Section) {
+@@ -515,7 +513,7 @@ static bool isZeroInit(const SectionRef Section) {
      return ELFSectionRef(Section).getType() == ELF::SHT_NOBITS;
    if (auto *COFFObj = dyn_cast<object::COFFObjectFile>(Obj))
      return COFFObj->getCOFFSection(Section)->Characteristics &
@@ -1548,7 +1558,7 @@ index b3798f15..348b9c28 100644
  
    auto *MachO = cast<MachOObjectFile>(Obj);
    unsigned SectionType = MachO->getSectionType(Section);
-@@ -757,7 +752,8 @@ Error RuntimeDyldImpl::emitCommonSymbols(const ObjectFile &Obj,
+@@ -757,7 +755,8 @@ Error RuntimeDyldImpl::emitCommonSymbols(const ObjectFile &Obj,
    uint8_t *Addr = MemMgr.allocateDataSection(CommonSize, CommonAlign, SectionID,
                                               "<common symbols>", false);
    if (!Addr)
@@ -1558,7 +1568,7 @@ index b3798f15..348b9c28 100644
    uint64_t Offset = 0;
    Sections.push_back(
        SectionEntry("<common symbols>", Addr, CommonSize, CommonSize, 0));
-@@ -800,10 +796,9 @@ Error RuntimeDyldImpl::emitCommonSymbols(const ObjectFile &Obj,
+@@ -800,10 +799,9 @@ Error RuntimeDyldImpl::emitCommonSymbols(const ObjectFile &Obj,
    return Error::success();
  }
  
@@ -1572,7 +1582,7 @@ index b3798f15..348b9c28 100644
    StringRef data;
    Align Alignment = Section.getAlignment();
  
-@@ -839,7 +834,8 @@ RuntimeDyldImpl::emitSection(const ObjectFile &Obj,
+@@ -839,7 +837,8 @@ RuntimeDyldImpl::emitSection(const ObjectFile &Obj,
    // grab a reference to them.
    if (!IsVirtual && !IsZeroInit) {
      // In either case, set the location of the unrelocated section in memory,
@@ -1582,7 +1592,7 @@ index b3798f15..348b9c28 100644
      if (Expected<StringRef> E = Section.getContents())
        data = *E;
      else
-@@ -874,7 +870,7 @@ RuntimeDyldImpl::emitSection(const ObjectFile &Obj,
+@@ -874,7 +873,7 @@ RuntimeDyldImpl::emitSection(const ObjectFile &Obj,
                                          Name, IsReadOnly);
      }
      if (!Addr)
@@ -1591,7 +1601,7 @@ index b3798f15..348b9c28 100644
  
      // Zero-initialize or copy the data from the image
      if (IsZeroInit || IsVirtual)
-@@ -928,8 +924,7 @@ RuntimeDyldImpl::emitSection(const ObjectFile &Obj,
+@@ -928,8 +927,7 @@ RuntimeDyldImpl::emitSection(const ObjectFile &Obj,
  
  Expected<unsigned>
  RuntimeDyldImpl::findOrEmitSection(const ObjectFile &Obj,
@@ -1601,7 +1611,7 @@ index b3798f15..348b9c28 100644
                                     ObjSectionToIDMap &LocalSections) {
  
    unsigned SectionID = 0;
-@@ -978,11 +973,14 @@ uint8_t *RuntimeDyldImpl::createStubFunction(uint8_t *Addr,
+@@ -978,11 +976,14 @@ uint8_t *RuntimeDyldImpl::createStubFunction(uint8_t *Addr,
      // since symbol lookup won't necessarily find a handy, in-range,
      // PLT stub for functions which could be anywhere.
      // Stub can use ip0 (== x16) to calculate address
@@ -1621,7 +1631,7 @@ index b3798f15..348b9c28 100644
  
      return Addr;
    } else if (Arch == Triple::arm || Arch == Triple::armeb) {
-@@ -1048,42 +1046,42 @@ uint8_t *RuntimeDyldImpl::createStubFunction(uint8_t *Addr,
+@@ -1048,42 +1049,42 @@ uint8_t *RuntimeDyldImpl::createStubFunction(uint8_t *Addr,
      // Depending on which version of the ELF ABI is in use, we need to
      // generate one of two variants of the stub.  They both start with
      // the same sequence to load the target address into r12.
@@ -1685,7 +1695,7 @@ index b3798f15..348b9c28 100644
    }
    return Addr;
  }
-@@ -1144,8 +1142,8 @@ void RuntimeDyldImpl::applyExternalSymbolRelocations(
+@@ -1144,8 +1145,8 @@ void RuntimeDyldImpl::applyExternalSymbolRelocations(
          // We found the symbol in our global table.  It was probably in a
          // Module that we loaded previously.
          const auto &SymInfo = Loc->second;
@@ -1696,7 +1706,7 @@ index b3798f15..348b9c28 100644
          Flags = SymInfo.getFlags();
        }
  
-@@ -1159,8 +1157,8 @@ void RuntimeDyldImpl::applyExternalSymbolRelocations(
+@@ -1159,8 +1160,8 @@ void RuntimeDyldImpl::applyExternalSymbolRelocations(
        if (Addr != UINT64_MAX) {
  
          // Tweak the address based on the symbol flags if necessary.
@@ -1707,7 +1717,7 @@ index b3798f15..348b9c28 100644
          Addr = modifyAddressBasedOnFlags(Addr, Flags);
  
          LLVM_DEBUG(dbgs() << "Resolving relocations Name: " << Name << "\t"
-@@ -1285,7 +1283,7 @@ void RuntimeDyldImpl::finalizeAsync(
+@@ -1285,7 +1286,7 @@ void RuntimeDyldImpl::finalizeAsync(
  // RuntimeDyld class implementation
  
  uint64_t RuntimeDyld::LoadedObjectInfo::getSectionLoadAddress(
@@ -1716,7 +1726,7 @@ index b3798f15..348b9c28 100644
  
    auto I = ObjSecToIDMap.find(Sec);
    if (I != ObjSecToIDMap.end())
-@@ -1321,13 +1319,12 @@ RuntimeDyld::RuntimeDyld(RuntimeDyld::MemoryManager &MemMgr,
+@@ -1321,13 +1322,12 @@ RuntimeDyld::RuntimeDyld(RuntimeDyld::MemoryManager &MemMgr,
  
  RuntimeDyld::~RuntimeDyld() = default;
  
@@ -1735,7 +1745,7 @@ index b3798f15..348b9c28 100644
    Dyld->setProcessAllSections(ProcessAllSections);
    Dyld->setNotifyStubEmitted(std::move(NotifyStubEmitted));
    return Dyld;
-@@ -1344,14 +1341,12 @@ createRuntimeDyldELF(Triple::ArchType Arch, RuntimeDyld::MemoryManager &MM,
+@@ -1344,14 +1344,12 @@ createRuntimeDyldELF(Triple::ArchType Arch, RuntimeDyld::MemoryManager &MM,
    return Dyld;
  }
  
@@ -1755,7 +1765,7 @@ index b3798f15..348b9c28 100644
    Dyld->setProcessAllSections(ProcessAllSections);
    Dyld->setNotifyStubEmitted(std::move(NotifyStubEmitted));
    return Dyld;
-@@ -1361,18 +1356,17 @@ std::unique_ptr<RuntimeDyld::LoadedObjectInfo>
+@@ -1361,18 +1359,17 @@ std::unique_ptr<RuntimeDyld::LoadedObjectInfo>
  RuntimeDyld::loadObject(const ObjectFile &Obj) {
    if (!Dyld) {
      if (Obj.isELF())
@@ -1782,7 +1792,7 @@ index b3798f15..348b9c28 100644
      else
        report_fatal_error("Incompatible object format!");
    }
-@@ -1381,7 +1375,8 @@ RuntimeDyld::loadObject(const ObjectFile &Obj) {
+@@ -1381,7 +1378,8 @@ RuntimeDyld::loadObject(const ObjectFile &Obj) {
      report_fatal_error("Incompatible object format!");
  
    auto LoadedObjInfo = Dyld->loadObject(Obj);
@@ -1793,68 +1803,16 @@ index b3798f15..348b9c28 100644
  }
  
 diff --git a/llvm/lib/ExecutionEngine/RuntimeDyld/Targets/RuntimeDyldCOFFX86_64.h b/llvm/lib/ExecutionEngine/RuntimeDyld/Targets/RuntimeDyldCOFFX86_64.h
-index 984a8d76..618eb0f6 100644
+index 984a8d7..b82331f 100644
 --- a/llvm/lib/ExecutionEngine/RuntimeDyld/Targets/RuntimeDyldCOFFX86_64.h
 +++ b/llvm/lib/ExecutionEngine/RuntimeDyld/Targets/RuntimeDyldCOFFX86_64.h
-@@ -30,6 +30,78 @@
+@@ -30,6 +30,26 @@ private:
    SmallVector<SID, 2> UnregisteredEHFrameSections;
    SmallVector<SID, 2> RegisteredEHFrameSections;
    uint64_t ImageBase;
 +  DenseMap<unsigned, std::shared_ptr<SmallVector<unsigned, 8>>>
 +      SectionToObjectSections;
 +  DenseMap<unsigned, unsigned> SectionToTextSection;
-+
-+  Error establishObjectSections(const object::ObjectFile &Obj,
-+                                ObjSectionToIDMap &SectionMap) {
-+    for (const object::SectionRef &Sec : Obj.sections()) {
-+      bool IsCode = Sec.isText();
-+      if (auto SectionIDOrErr = findOrEmitSection(Obj, Sec, IsCode, SectionMap)) {
-+      } else {
-+        return SectionIDOrErr.takeError();
-+      }
-+    }
-+
-+    auto ObjSections = std::make_shared<SmallVector<unsigned, 8>>();
-+    for (const auto &SectionPair : SectionMap) {
-+      ObjSections->push_back(SectionPair.second);
-+    }
-+    for (unsigned SID : *ObjSections) {
-+      SectionToObjectSections[SID] = ObjSections;
-+    }
-+
-+    unsigned TextSID = 0;
-+    bool FoundText = false;
-+    for (const auto &SectionPair : SectionMap) {
-+      if (SectionPair.first.isText()) {
-+        TextSID = SectionPair.second;
-+        FoundText = true;
-+        break;
-+      }
-+    }
-+
-+    if (!FoundText) {
-+      uint64_t StubBufSize = computeMaxStubBufSize(Obj);
-+      if (StubBufSize == 0)
-+        StubBufSize = getMaxStubSize() * 8;
-+      uint8_t *Addr = MemMgr.allocateCodeSection(StubBufSize, 16,
-+                                                 Sections.size(), "<stubs>");
-+      if (!Addr)
-+        return make_error<RuntimeDyldError>(
-+            "Unable to allocate executable stub section memory!");
-+      TextSID = Sections.size();
-+      Sections.push_back(
-+          SectionEntry("<stubs>", Addr, 0, StubBufSize, (uintptr_t)Addr));
-+      ObjSections->push_back(TextSID);
-+      SectionToObjectSections[TextSID] = ObjSections;
-+    }
-+
-+    for (const auto &SectionPair : SectionMap) {
-+      SectionToTextSection[SectionPair.second] = TextSID;
-+    }
-+    SectionToTextSection[TextSID] = TextSID;
-+
-+    return Error::success();
-+  }
 +
 +  uint64_t getSectionImageBase(unsigned SectionID) {
 +    auto It = SectionToObjectSections.find(SectionID);
@@ -1875,7 +1833,7 @@ index 984a8d76..618eb0f6 100644
  
    // Fake an __ImageBase pointer by returning the section with the lowest adress
    uint64_t getImageBase() {
-@@ -100,25 +172,33 @@
+@@ -100,25 +120,33 @@ public:
        // Delta is the distance from the start of the reloc to the end of the
        // instruction with the reloc.
        uint64_t Delta = 4 + (RE.RelType - COFF::IMAGE_REL_AMD64_REL32);
@@ -1886,8 +1844,8 @@ index 984a8d76..618eb0f6 100644
 -      writeBytesUnaligned(Result, Target, 4);
 +      int64_t Displacement = static_cast<int64_t>(Value) -
 +                             static_cast<int64_t>(FinalAddress + Delta);
-+      int64_t Addend = static_cast<int64_t>(RE.Addend);
-+      int64_t Result = Displacement + Addend;
++      int64_t SignedAddend = static_cast<int64_t>(static_cast<int32_t>(RE.Addend));
++      int64_t Result = Displacement + SignedAddend;
 +      if (Result > INT32_MAX || Result < INT32_MIN) {
 +        HasError = true;
 +        ErrorStr =
@@ -1911,8 +1869,8 @@ index 984a8d76..618eb0f6 100644
 +      const uint64_t ObjBase = getSectionImageBase(RE.SectionID);
 +      int64_t Delta =
 +          static_cast<int64_t>(Value) - static_cast<int64_t>(ObjBase);
-+      int64_t Addend = static_cast<int64_t>(RE.Addend);
-+      int64_t Result = Delta + Addend;
++      int64_t SignedAddend = static_cast<int64_t>(static_cast<int32_t>(RE.Addend));
++      int64_t Result = Delta + SignedAddend;
 +      if (Result < 0 || Result > static_cast<int64_t>(UINT32_MAX)) {
 +        HasError = true;
 +        ErrorStr =
@@ -1922,8 +1880,8 @@ index 984a8d76..618eb0f6 100644
 +      writeBytesUnaligned(static_cast<uint32_t>(Result), Target, 4);
        break;
      }
-  
-@@ -147,12 +227,16 @@
+ 
+@@ -147,12 +175,16 @@ public:
      }
    }
  
@@ -1942,7 +1900,7 @@ index 984a8d76..618eb0f6 100644
  
      RelocationValueRef OriginalRelValueRef;
      OriginalRelValueRef.SectionID = SectionID;
-@@ -165,32 +249,29 @@
+@@ -165,32 +197,29 @@ public:
        LLVM_DEBUG(dbgs() << " Create a new stub function for "
                          << TargetName.data() << "\n");
  
@@ -1969,7 +1927,7 @@ index 984a8d76..618eb0f6 100644
 -    const RelocationEntry RE(SectionID, Offset, RelType, Addend);
 -    resolveRelocation(RE, Section.getLoadAddressWithOffset(StubOffset));
 +    // Defer original relocation into normal relocation processing.
-+    int64_t SignedAddend = static_cast<int64_t>(Addend);
++    int64_t SignedAddend = static_cast<int64_t>(static_cast<int32_t>(Addend));
 +    const RelocationEntry OriginalRE(
 +        SectionID, Offset, RelType,
 +        static_cast<uint64_t>(static_cast<int64_t>(StubOffset) + SignedAddend));
@@ -1985,18 +1943,18 @@ index 984a8d76..618eb0f6 100644
    }
  
    Expected<object::relocation_iterator>
-@@ -194,6 +274,10 @@
-   processRelocationRef(unsigned SectionID,
-                        relocation_iterator RelI,
-                        const ObjectFile &Obj,
-                        ObjSectionToIDMap &ObjSectionToIDMap,
+@@ -199,6 +228,10 @@ public:
+                        const object::ObjectFile &Obj,
+                        ObjSectionToIDMap &ObjSectionToID,
                         StubMap &Stubs) override {
 +    if (SectionToTextSection.find(SectionID) == SectionToTextSection.end()) {
-+      if (auto Err = establishObjectSections(Obj, ObjSectionToIDMap))
++      if (auto Err = establishObjectSections(Obj, ObjSectionToID))
 +        return std::move(Err);
 +    }
-     uint64_t RelType = RelI->getType();
-@@ -251,11 +335,12 @@
+     // If possible, find the symbol referred to in the relocation,
+     // and the section that contains it.
+     object::symbol_iterator Symbol = RelI->getSymbol();
+@@ -251,11 +284,12 @@ public:
      case COFF::IMAGE_REL_AMD64_REL32_5:
      case COFF::IMAGE_REL_AMD64_ADDR32NB: {
        uint8_t *Displacement = (uint8_t *)ObjTarget;
@@ -2012,7 +1970,7 @@ index 984a8d76..618eb0f6 100644
  
        break;
      }
-@@ -290,7 +375,9 @@
+@@ -290,7 +324,9 @@ public:
        uint8_t *EHFrameAddr = Sections[EHFrameSID].getAddress();
        uint64_t EHFrameLoadAddr = Sections[EHFrameSID].getLoadAddress();
        size_t EHFrameSize = Sections[EHFrameSID].getSize();
@@ -2023,7 +1981,7 @@ index 984a8d76..618eb0f6 100644
        RegisteredEHFrameSections.push_back(EHFrameSID);
      }
      UnregisteredEHFrameSections.clear();
-@@ -298,6 +385,11 @@
+@@ -298,6 +334,11 @@ public:
  
    Error finalizeLoad(const object::ObjectFile &Obj,
                       ObjSectionToIDMap &SectionMap) override {
@@ -2035,7 +1993,7 @@ index 984a8d76..618eb0f6 100644
      // Look for and record the EH frame section IDs.
      for (const auto &SectionPair : SectionMap) {
        const object::SectionRef &Section = SectionPair.first;
-@@ -305,9 +397,6 @@
+@@ -305,9 +346,6 @@ public:
        if (!NameOrErr)
          return NameOrErr.takeError();
  
@@ -2047,7 +2005,7 @@ index 984a8d76..618eb0f6 100644
      }
 diff --git a/llvm/lib/ExecutionEngine/WindowsMCJITMemoryManager.cpp b/llvm/lib/ExecutionEngine/WindowsMCJITMemoryManager.cpp
 new file mode 100644
-index 00000000..e3eed6b5
+index 0000000..e001676
 --- /dev/null
 +++ b/llvm/lib/ExecutionEngine/WindowsMCJITMemoryManager.cpp
 @@ -0,0 +1,531 @@
