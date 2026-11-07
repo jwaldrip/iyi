@@ -96,9 +96,23 @@ class AuthorizationCandidateTests(unittest.TestCase):
             "harness_run_id": "24",
             "harness_run_attempt": "1",
             "harness_workflow_id": "20",
+            "model_disclosure": {
+                "model_involved": True,
+                "implemented_change": False,
+                "declaration": "Independent agent reviewer audit; cryptographic human approval via GitHub environment deployment approval.",
+            },
+            "report": {
+                "summary": "Independent review of candidate C against P and W",
+                "verdict": "GO",
+                "findings": ["No unauthorized mutations observed", "Harness validation verified"],
+            },
+            "supporting_receipts": [
+                {"receipt_id": "rec-001", "type": "p_w_c_tuple_proof", "status": "VERIFIED"},
+                {"receipt_id": "rec-002", "type": "negative_controls_proof", "status": "VERIFIED"},
+            ],
             "producer": {
-                "type": "reviewer",
-                "identity": "independent-audit-authority",
+                "type": "reviewer-agent",
+                "identity": "independent-security-reviewer-agent",
                 "run_id": "26",
                 "workflow_id": "27",
                 "job_id": "201",
@@ -424,6 +438,88 @@ class AuthorizationCandidateTests(unittest.TestCase):
             with self.assertRaises(AuthorizationError):
                 verify_candidate(canonical(m), self.harness_bytes, bad_audit_bytes, self.obs)
 
+    def test_audit_implemented_change_rejected(self):
+        audit_copy = copy.deepcopy(self.audit_dict)
+        audit_copy["model_disclosure"]["implemented_change"] = True
+        bad_bytes = canonical(audit_copy)
+        m = copy.deepcopy(self.manifest)
+        m["audit"]["sha256"] = digest(bad_bytes)
+        self.obs["approvals"][0]["comment"] = APPROVAL_COMMENT_PREFIX + digest(canonical(m))
+        with self.assertRaises(AuthorizationError) as ctx:
+            verify_candidate(canonical(m), self.harness_bytes, bad_bytes, self.obs)
+        self.assertIn("must not have implemented the change", str(ctx.exception))
+
+    def test_audit_missing_model_disclosure_rejected(self):
+        audit_copy = copy.deepcopy(self.audit_dict)
+        audit_copy["model_disclosure"]["model_involved"] = False
+        bad_bytes = canonical(audit_copy)
+        m = copy.deepcopy(self.manifest)
+        m["audit"]["sha256"] = digest(bad_bytes)
+        self.obs["approvals"][0]["comment"] = APPROVAL_COMMENT_PREFIX + digest(canonical(m))
+        with self.assertRaises(AuthorizationError) as ctx:
+            verify_candidate(canonical(m), self.harness_bytes, bad_bytes, self.obs)
+        self.assertIn("disclose model involvement", str(ctx.exception))
+
+    def test_audit_report_and_supporting_receipts_controls(self):
+        # 1. Missing report
+        audit_copy = copy.deepcopy(self.audit_dict)
+        del audit_copy["report"]
+        bad_bytes = canonical(audit_copy)
+        m = copy.deepcopy(self.manifest)
+        m["audit"]["sha256"] = digest(bad_bytes)
+        self.obs["approvals"][0]["comment"] = APPROVAL_COMMENT_PREFIX + digest(canonical(m))
+        with self.assertRaises(AuthorizationError):
+            verify_candidate(canonical(m), self.harness_bytes, bad_bytes, self.obs)
+
+        # 2. Non-GO report verdict
+        audit_copy = copy.deepcopy(self.audit_dict)
+        audit_copy["report"]["verdict"] = "NO-GO"
+        bad_bytes = canonical(audit_copy)
+        m = copy.deepcopy(self.manifest)
+        m["audit"]["sha256"] = digest(bad_bytes)
+        self.obs["approvals"][0]["comment"] = APPROVAL_COMMENT_PREFIX + digest(canonical(m))
+        with self.assertRaises(AuthorizationError):
+            verify_candidate(canonical(m), self.harness_bytes, bad_bytes, self.obs)
+
+        # 3. Empty supporting receipts
+        audit_copy = copy.deepcopy(self.audit_dict)
+        audit_copy["supporting_receipts"] = []
+        bad_bytes = canonical(audit_copy)
+        m = copy.deepcopy(self.manifest)
+        m["audit"]["sha256"] = digest(bad_bytes)
+        self.obs["approvals"][0]["comment"] = APPROVAL_COMMENT_PREFIX + digest(canonical(m))
+        with self.assertRaises(AuthorizationError):
+            verify_candidate(canonical(m), self.harness_bytes, bad_bytes, self.obs)
+
+    def test_ipc_ack_tampered_digest_rejected(self):
+        valid_ack = {
+            "protocol_version": 1,
+            "event": "authorization-ack",
+            "request_id": "auth-req-1",
+            "invocation_id": "strict-21-1",
+            "verified": True,
+            "manifest_raw": canonical(self.manifest).decode("utf-8"),
+            "manifest_digest": digest(canonical(self.manifest)),
+            "harness_raw": self.harness_bytes.decode("utf-8"),
+            "audit_raw": self.audit_bytes.decode("utf-8"),
+            "p_sha": self.p_sha,
+            "w_sha": self.w_sha,
+            "c_sha": self.c_sha,
+        }
+        # Tampered manifest digest
+        tampered_ack = copy.deepcopy(valid_ack)
+        tampered_ack["manifest_digest"] = "0" * 64
+        with self.assertRaises(AuthorizationError) as ctx:
+            load_verified_authorization_from_ipc(tampered_ack, self.p_sha, self.w_sha, self.c_sha)
+        self.assertIn("manifest digest mismatch", str(ctx.exception))
+
+        # Tampered harness raw bytes
+        tampered_harness_ack = copy.deepcopy(valid_ack)
+        tampered_harness_ack["harness_raw"] = '{"tampered": true}'
+        with self.assertRaises(AuthorizationError) as ctx:
+            load_verified_authorization_from_ipc(tampered_harness_ack, self.p_sha, self.w_sha, self.c_sha)
+        self.assertIn("harness bytes digest mismatch", str(ctx.exception))
+
     def test_ipc_handoff_and_reconstruction(self):
         auth = self.check()
         valid_ack = {
@@ -620,6 +716,7 @@ class AuthenticatedGitHubVerifierLoopbackTests(unittest.TestCase):
         }
         self.harness_bytes = canonical(self.harness_dict)
 
+        # Embedded independent audit evidence (produced by independent reviewer/auditor)
         self.audit_dict = {
             "schema": AUDIT_SCHEMA,
             "verdict": "GO",
@@ -631,9 +728,23 @@ class AuthenticatedGitHubVerifierLoopbackTests(unittest.TestCase):
             "harness_run_id": "24",
             "harness_run_attempt": "1",
             "harness_workflow_id": "20",
+            "model_disclosure": {
+                "model_involved": True,
+                "implemented_change": False,
+                "declaration": "Independent agent reviewer audit; cryptographic human approval via GitHub environment deployment approval.",
+            },
+            "report": {
+                "summary": "Independent review of candidate C against P and W",
+                "verdict": "GO",
+                "findings": ["No unauthorized mutations observed", "Harness validation verified"],
+            },
+            "supporting_receipts": [
+                {"receipt_id": "rec-001", "type": "p_w_c_tuple_proof", "status": "VERIFIED"},
+                {"receipt_id": "rec-002", "type": "negative_controls_proof", "status": "VERIFIED"},
+            ],
             "producer": {
-                "type": "reviewer",
-                "identity": "independent-audit-authority",
+                "type": "reviewer-agent",
+                "identity": "independent-security-reviewer-agent",
                 "run_id": "26",
                 "workflow_id": "27",
                 "job_id": "201",

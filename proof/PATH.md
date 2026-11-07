@@ -2,9 +2,14 @@
 
 ## Identity and authorization
 
-The product revision is `626463375298d357ffcb3223059f4d3adce6fb10` (P1), and the audited native proof revision is `b932ce0d97775c7061102a13db706f507dc84117` (W). C is the exact controller commit running the hosted workflow, not a label substituted for its checkout. The workflow checks out P1 and W separately and checks their actual revisions. Synthetic emitters, compilers, reports, and logs live outside those source trees.
+The product revision is `180f14f91c829b25362a5ed34b20847f3ac2db77` (PR #147 head), and the audited native proof revision is `b932ce0d97775c7061102a13db706f507dc84117` (W). C is the exact controller commit running the hosted workflow, not a label substituted for its checkout. The workflow checks out P and W separately and checks their actual revisions. Synthetic emitters, compilers, reports, and logs live outside those source trees.
 
-Strict dispatch is refused before a build or native stage. Jason selected a protected GitHub environment with himself as reviewer and self-approval permitted; the manifest-bound approval verifier is a separate integration and is not yet in this workflow. A green synthetic run is not authorization. Strict execution requires an authenticated GO bound to the repository, P/W/C, validation workflow, run and attempt, validation evidence digest, and independent audit digest. Any C change requires a new validation and independent review for that C.
+Strict dispatch is unconditionally refused before planning, pinning, building, or native execution. Jason has explicitly selected the audit authority policy:
+  - An independent reviewer agent that did not implement the change generates the audit report and supporting receipts as immutable digest-bound evidence.
+  - Jason's manual deployment approval on GitHub protected environment `strict-proof` (ID `26584191206`, required reviewer `jwaldrip` ID `43164`, `can_admins_bypass: false`, `prevent_self_review: false`, branch policy `proof/strict-lifecycle-repair-20261102`) explicitly attests to the exact manifest digest prefix `iyi-strict-authorization-v1 sha256:<digest>` on attempt 1.
+  - Semantic independence (the review method, evidence, findings, and negative controls verified by an independent reviewer agent) is distinguished from cryptographic human approval (GitHub protected environment approval).
+  - No machine-enforced agent signature or model provenance is claimed or trusted from self-attested data; the platform authenticity resides solely in Jason's authenticated approval of the manifest digest, which cryptographically binds all evidence.
+  - In real execution, without this authenticated deployment approval on environment `strict-proof` and retained independent audit GO artifact, strict mode execution remains strictly and unconditionally refused across all execution layers (workflow step, Node supervisor, and Python controller) with exit code 5.
 
 ## Hosted validation
 

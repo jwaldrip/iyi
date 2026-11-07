@@ -1,24 +1,23 @@
 """Fail-closed authenticated API-backed strict-proof authorization verifier.
 
 This module implements authenticated API-backed environment policy and approval
-verification for strict mode. In real execution, strict execution remains
-refused unless all controls are authentically enforced via GitHub APIs:
-  - Repository ID 1340355933 (jwaldrip/iyi, public)
-  - Pinned Environment ID 26584191206 (strict-proof)
-  - Environment policy: can_admins_bypass: false, prevent_self_review: false
-  - Protection rules: exactly required_reviewers (ID 43164) and branch_policy
-  - Deployment branch policy: exactly proof/strict-lifecycle-repair-20261102 (branch)
-  - Fresh run attempt == 1 (reruns unconditionally refused)
-  - Exactly one approval by reviewer 43164 with exact comment:
-      iyi-strict-authorization-v1 sha256:<manifest_sha256>
-  - Harness evidence verified by content: embedded run_id, run_attempt=1, SHA,
-    verdict PASS, and workflow producer identity
-  - Independent audit evidence verified by content: embedded GO verdict,
-    harness binding, and verified independent producer identity
-  - Replay prevention: strictly running attempt 1, in_progress status,
-    matching workflow_dispatch event, matching pinned path
-  - supervisor and controller consume verified manifest bytes directly
-    via authenticated inherited IPC with no mutable path swap
+verification for strict mode under user-selected audit authority policy:
+  - User policy: An independent reviewer agent that did not implement the change
+    generates the audit report and supporting receipts as immutable digest-bound evidence.
+  - Attestation authority: Jason Waldrip's GitHub protected environment approval
+    on environment 'strict-proof' (ID 26584191206) explicitly attests to the exact
+    evidence manifest digest. No second human is required.
+  - Semantic independence vs cryptographic human approval:
+    Semantic independence (independent reviewer review method, findings, and negative
+    controls) is distinguished from cryptographic human attestation (GitHub environment approval).
+    No machine-enforced agent signature or model provenance is claimed from self-attested data;
+    the platform authenticity resides solely in Jason's manual environment deployment approval
+    attesting the manifest digest that cryptographically binds all evidence.
+  - Fail-closed execution:
+    In real execution, no deployment approval has been issued on GitHub environment
+    strict-proof (ID 26584191206), and no independent audit GO artifact exists.
+    Strict mode execution remains strictly and unconditionally refused across all layers
+    (workflow step, Node supervisor, and Python controller) with exit code 5.
 """
 
 from dataclasses import dataclass
@@ -56,7 +55,7 @@ AUDIT_SCHEMA = "iyi.strict-independent-audit.v1"
 HARNESS_SCHEMA = "iyi.strict-harness-validation.v1"
 HARMLESS_EFFECT_SCHEMA = "iyi.strict-harmless-effect.v1"
 
-TRUSTED_AUDIT_PRODUCER_TYPES = {"reviewer", "independent-auditor", "independent-authority"}
+TRUSTED_AUDIT_PRODUCER_TYPES = {"reviewer-agent", "reviewer", "independent-auditor", "independent-authority"}
 AUTH_REFUSED_EXIT_CODE = 5
 
 
@@ -186,6 +185,23 @@ class VerifiedAuthorization:
             or self.manifest_data.get("c_sha") != self.c_sha
         ):
             reject("manifest data SHA mismatch with authorization tuple")
+        if (
+            self.harness_data.get("p_sha") != self.p_sha
+            or self.harness_data.get("w_sha") != self.w_sha
+            or self.harness_data.get("c_sha") != self.c_sha
+            or self.harness_data.get("verdict") != "PASS"
+        ):
+            reject("harness data SHA mismatch or non-PASS verdict in authorization record")
+        if (
+            self.audit_data.get("p_sha") != self.p_sha
+            or self.audit_data.get("w_sha") != self.w_sha
+            or self.audit_data.get("c_sha") != self.c_sha
+            or self.audit_data.get("verdict") != "GO"
+        ):
+            reject("audit data SHA mismatch or non-GO verdict in authorization record")
+        model_disc = self.audit_data.get("model_disclosure")
+        if not isinstance(model_disc, dict) or model_disc.get("implemented_change") is not False:
+            reject("audit data must disclose that reviewer agent did not implement change")
 
 
     def to_dict(self) -> Dict[str, Any]:
@@ -365,6 +381,9 @@ def verify_candidate(
             "harness_run_id",
             "harness_run_attempt",
             "harness_workflow_id",
+            "model_disclosure",
+            "report",
+            "supporting_receipts",
             "producer",
         },
     )
@@ -388,6 +407,38 @@ def verify_candidate(
         or audit_data["harness_workflow_id"] != m["harness"]["workflow_id"]
     ):
         reject("audit harness run binding mismatch")
+
+    # Enforce model disclosure: must declare model involvement and that reviewer did NOT implement change
+    model_disc = audit_data["model_disclosure"]
+    if not isinstance(model_disc, dict):
+        reject("missing model disclosure in audit artifact")
+    keys(model_disc, {"model_involved", "implemented_change", "declaration"})
+    if model_disc["model_involved"] is not True:
+        reject("audit artifact must disclose model involvement")
+    if model_disc["implemented_change"] is not False:
+        reject("independent audit reviewer agent must not have implemented the change")
+    if not isinstance(model_disc["declaration"], str) or not model_disc["declaration"]:
+        reject("missing model disclosure declaration")
+
+    # Enforce reviewer report structure and GO verdict
+    report = audit_data["report"]
+    if not isinstance(report, dict):
+        reject("missing reviewer report in audit artifact")
+    keys(report, {"summary", "verdict", "findings"})
+    if report["verdict"] != "GO":
+        reject("reviewer report verdict must be GO")
+    if not isinstance(report["summary"], str) or not report["summary"]:
+        reject("missing reviewer report summary")
+    if not isinstance(report["findings"], list) or len(report["findings"]) == 0:
+        reject("reviewer report must include non-empty findings")
+
+    # Enforce supporting receipts in audit evidence
+    receipts = audit_data["supporting_receipts"]
+    if not isinstance(receipts, list) or len(receipts) == 0:
+        reject("audit artifact must contain non-empty supporting receipts")
+    for r in receipts:
+        if not isinstance(r, dict) or not r.get("receipt_id") or not r.get("type"):
+            reject("invalid supporting receipt entry in audit artifact")
 
     # Verify trusted independent producer identity and independence from harness producer
     producer = audit_data["producer"]
@@ -842,7 +893,16 @@ def load_verified_authorization_from_ipc(
         reject("missing audit evidence in authorization IPC ACK")
     audit_bytes = audit_raw.encode("utf-8") if isinstance(audit_raw, str) else audit_raw
 
+    expected_manifest_digest = auth_ack.get("manifest_digest")
+    if expected_manifest_digest and expected_manifest_digest != digest(manifest_bytes):
+        reject("manifest digest mismatch in authorization IPC ACK")
+
     m = parse(manifest_bytes)
+    if digest(harness_bytes) != m.get("harness", {}).get("sha256"):
+        reject("harness bytes digest mismatch with manifest in authorization IPC ACK")
+    if digest(audit_bytes) != m.get("audit", {}).get("sha256"):
+        reject("audit bytes digest mismatch with manifest in authorization IPC ACK")
+
     harness_data = parse(harness_bytes)
     audit_data = parse(audit_bytes)
 
@@ -902,7 +962,9 @@ def check_strict_authorization_or_refuse(
         f"requires an approval by reviewer {PINNED_REVIEWER_ID} ({PINNED_REVIEWER_LOGIN}) with comment containing",
         f"the exact manifest digest prefix '{APPROVAL_COMMENT_PREFIX}<digest>' on attempt 1.",
         "No deployment approval has been issued on GitHub environment strict-proof.",
-        "Missing trust anchor: Retained independent audit GO artifact with trusted independent producer identity (policy decision required by repository owner to establish independent audit authority).",
+        "User-selected audit policy: An independent reviewer agent report and supporting receipts",
+        "must be bound to the manifest, and Jason's protected environment approval must attest that exact digest.",
+        "Missing trust anchor: Retained independent audit GO artifact with model disclosure and supporting receipts.",
         f"Refusing execution nonzero (exit code {AUTH_REFUSED_EXIT_CODE}) before planning, pinning, or native execution.",
     ]
     refusal_msg = "\n".join(refusal_lines)

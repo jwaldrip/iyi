@@ -1045,11 +1045,11 @@ jobs:
           echo "=== P1 Compiler Version ==="
           VERSION_OUTPUT=$(.build/iyi --version)
           echo "$VERSION_OUTPUT"
-          if ! echo "$VERSION_OUTPUT" | grep -q "626463375"; then
-            echo "ERROR: Compiler version stamp does not contain P1 commit 626463375!" >&2
+          if ! echo "$VERSION_OUTPUT" | grep -q "${P_AUTHORIZED_SHA:0:9}"; then
+            echo "ERROR: Compiler version stamp does not contain P1 commit ${P_AUTHORIZED_SHA:0:9}!" >&2
             exit 1
           fi
-          echo "Compiler version stamp VERIFIED: contains 626463375."
+          echo "Compiler version stamp VERIFIED: contains ${P_AUTHORIZED_SHA:0:9}."
 
           COMPILER_SHA256=$(shasum -a 256 .build/iyi | awk '{print $1}')
           echo "P1 Compiler SHA-256: $COMPILER_SHA256"

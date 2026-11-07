@@ -7,6 +7,7 @@ on:
       - 'proof/strict-approval-policy-fix-20261106'
       - 'proof/strict-approval-integration-20261107'
       - 'proof/strict-approval-repair-20261107'
+      - 'proof/strict-selected-audit-attestation-20261107'
   workflow_dispatch:
 
 permissions:
