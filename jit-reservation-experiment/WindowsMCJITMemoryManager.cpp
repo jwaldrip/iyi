@@ -76,9 +76,12 @@ namespace llvm {
 #ifdef LLVM_ENABLE_TEST_HOOKS
 static std::atomic<uint32_t> FaultInjectionFlags{0};
 static std::atomic<uint64_t> LastUnwindProbeAddress{0};
+static std::atomic<uint64_t> FirstRegisteredUnwindAddress{0};
 
 void setWindowsMCJITFaultInjection(uint32_t Flags) {
   FaultInjectionFlags.store(Flags, std::memory_order_relaxed);
+  LastUnwindProbeAddress.store(0, std::memory_order_relaxed);
+  FirstRegisteredUnwindAddress.store(0, std::memory_order_relaxed);
 }
 
 uint32_t getWindowsMCJITFaultInjection() {
@@ -87,6 +90,15 @@ uint32_t getWindowsMCJITFaultInjection() {
 
 uint64_t getWindowsMCJITLastUnwindProbeAddress() {
   return LastUnwindProbeAddress.load(std::memory_order_relaxed);
+}
+
+uint64_t getWindowsMCJITFirstRegisteredUnwindAddress() {
+  return FirstRegisteredUnwindAddress.load(std::memory_order_relaxed);
+}
+
+void resetWindowsMCJITUnwindProbeAddresses() {
+  LastUnwindProbeAddress.store(0, std::memory_order_relaxed);
+  FirstRegisteredUnwindAddress.store(0, std::memory_order_relaxed);
 }
 #endif
 
@@ -530,6 +542,14 @@ bool WindowsMCJITMemoryManager::finalizeMemory(std::string *ErrMsg) {
 
     Entry.Registered = true;
     NewlyRegistered.push_back(Entry);
+#ifdef LLVM_ENABLE_TEST_HOOKS
+    if (FirstRegisteredUnwindAddress.load(std::memory_order_relaxed) == 0 &&
+        Entry.Size >= sizeof(RUNTIME_FUNCTION) && Entry.Addr != nullptr) {
+      const auto *RF = reinterpret_cast<const RUNTIME_FUNCTION *>(Entry.Addr);
+      FirstRegisteredUnwindAddress.store(Entry.ImageBase + RF[0].BeginAddress,
+                                         std::memory_order_relaxed);
+    }
+#endif
     ++RegisteredCount;
   }
 

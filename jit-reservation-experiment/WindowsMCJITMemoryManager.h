@@ -39,10 +39,14 @@ enum WindowsMCJITFaultFlags : uint32_t {
 void setWindowsMCJITFaultInjection(uint32_t Flags);
 uint32_t getWindowsMCJITFaultInjection();
 uint64_t getWindowsMCJITLastUnwindProbeAddress();
+uint64_t getWindowsMCJITFirstRegisteredUnwindAddress();
+void resetWindowsMCJITUnwindProbeAddresses();
 #else
 inline void setWindowsMCJITFaultInjection(uint32_t) {}
 inline uint32_t getWindowsMCJITFaultInjection() { return 0; }
 inline uint64_t getWindowsMCJITLastUnwindProbeAddress() { return 0; }
+inline uint64_t getWindowsMCJITFirstRegisteredUnwindAddress() { return 0; }
+inline void resetWindowsMCJITUnwindProbeAddresses() {}
 #endif
 class WindowsMCJITMemoryManager : public SectionMemoryManager {
 public:

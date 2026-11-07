@@ -29,6 +29,8 @@ const char *LLVMExtGetWindowsMCJITBuildIdentity(void);
 
 void LLVMExtSetWindowsMCJITFaultInjection(uint32_t Flags);
 uint64_t LLVMExtGetWindowsMCJITLastUnwindProbeAddress(void);
+uint64_t LLVMExtGetWindowsMCJITFirstRegisteredUnwindAddress(void);
+void LLVMExtResetWindowsMCJITUnwindProbeAddresses(void);
 
 void LLVMExtMapSectionAddress(LLVMExecutionEngineRef EE,
                               const void *LocalAddress, uint64_t TargetAddress);
@@ -41,6 +43,7 @@ __declspec(dllexport) int probe_custom_personality(void *, void *, void *,
 // Native callbacks for testing stubs and stack unwinding
 __declspec(dllexport) int32_t probe_native_external_add(int32_t a, int32_t b);
 __declspec(dllexport) void probe_native_stack_walk_callback(void);
+__declspec(dllexport) void probe_native_raise_exception(void);
 
 #ifdef __cplusplus
 }
@@ -88,11 +91,20 @@ extern "C" int32_t probe_native_external_add(int32_t a, int32_t b) {
   return a + b;
 }
 
+static bool g_custom_personality_invoked = false;
+
 extern "C" int probe_custom_personality(void *exception_record,
                                         void *establisher_frame,
                                         void *context_record,
                                         void *dispatcher_context) {
-  return 0; // ExceptionContinueSearch
+  g_custom_personality_invoked = true;
+  return 1; // ExceptionContinueSearch
+}
+
+extern "C" void probe_native_raise_exception(void) {
+#ifdef _WIN32
+  RaiseException(0xE0000001, 0, 0, nullptr);
+#endif
 }
 extern "C" void probe_native_stack_walk_callback(void) {
   CONTEXT ctx;
@@ -183,6 +195,15 @@ static void test_production_execution_and_wx_protection() {
                            LLVMAppendBasicBlockInContext(ctx, f_ptr, "entry"));
   LLVMBuildRet(b, mutable_global);
 
+  // Function get_ro_pointer() -> i32*
+  auto f_ro_ptr =
+      LLVMAddFunction(m, "get_ro_pointer", LLVMFunctionType(p, nullptr, 0, 0));
+  auto b_ro = LLVMCreateBuilderInContext(ctx);
+  LLVMPositionBuilderAtEnd(
+      b_ro, LLVMAppendBasicBlockInContext(ctx, f_ro_ptr, "entry"));
+  LLVMBuildRet(b_ro, readonly_global);
+  LLVMDisposeBuilder(b_ro);
+
   // Function evaluate() -> i32: loads mutable and readonly, adds them
   auto f_eval =
       LLVMAddFunction(m, "evaluate", LLVMFunctionType(i32, nullptr, 0, 0));
@@ -244,6 +265,27 @@ static void test_production_execution_and_wx_protection() {
            (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)) == 0,
           "W^X violation: data is executable!");
 
+  // Query readonly data section with VirtualQuery
+  uint64_t ro_ptr_fn_addr = LLVMGetFunctionAddress(ee, "get_ro_pointer");
+  require(ro_ptr_fn_addr != 0, "Failed to resolve get_ro_pointer address");
+  GetPointerFn get_ro_ptr_fn = (GetPointerFn)ro_ptr_fn_addr;
+  const int32_t *ro_ptr = get_ro_ptr_fn();
+  require(ro_ptr != nullptr, "get_ro_pointer returned null");
+  require(*ro_ptr == 1, "Initial readonly value must be 1");
+
+  MEMORY_BASIC_INFORMATION mbi_ro{};
+  require(VirtualQuery(ro_ptr, &mbi_ro, sizeof(mbi_ro)) != 0,
+          "VirtualQuery on readonly data");
+  std::printf(
+      "READONLY_DATA_PROTECTION: got=0x%lx expected=PAGE_READONLY (0x%x)\n",
+      mbi_ro.Protect, PAGE_READONLY);
+  require(mbi_ro.Protect == PAGE_READONLY,
+          "Readonly data must be PAGE_READONLY");
+  require((mbi_ro.Protect &
+           (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE |
+            PAGE_READWRITE)) == 0,
+          "W^X violation: readonly data is writable or executable!");
+
   // Execute evaluate() -> initial result 41 + 1 = 42
   typedef int32_t (*EvalFn)(void);
   EvalFn eval_fn = (EvalFn)eval_addr;
@@ -303,6 +345,25 @@ static void test_windows_unwind_and_real_stack_walk() {
   LLVMBuildRetVoid(b);
   LLVMDisposeBuilder(b);
 
+  // Add thrower function to exercise real SEH exception dispatch through JIT frame
+  auto raise_cb_ty = LLVMFunctionType(void_ty, nullptr, 0, 0);
+  auto raise_cb_decl =
+      LLVMAddFunction(m, "probe_native_raise_exception", raise_cb_ty);
+
+  auto thrower_fn = LLVMAddFunction(m, "jit_unwind_thrower", cb_ty);
+  if (uw_kind != 0)
+    LLVMAddAttributeAtIndex(thrower_fn, LLVMAttributeFunctionIndex,
+                            LLVMCreateEnumAttribute(ctx, uw_kind, 2));
+  LLVMSetPersonalityFn(thrower_fn, pers_fn);
+  auto b_throw = LLVMCreateBuilderInContext(ctx);
+  auto bb_throw = LLVMAppendBasicBlockInContext(ctx, thrower_fn, "entry");
+  LLVMPositionBuilderAtEnd(b_throw, bb_throw);
+  auto alloca_throw = LLVMBuildAlloca(b_throw, i32, "stack_slot_throw");
+  LLVMBuildStore(b_throw, LLVMConstInt(i32, 54321, 0), alloca_throw);
+  LLVMBuildCall2(b_throw, raise_cb_ty, raise_cb_decl, nullptr, 0, "");
+  LLVMBuildRetVoid(b_throw);
+  LLVMDisposeBuilder(b_throw);
+
   LLVMExecutionEngineRef ee = nullptr;
   char *err = nullptr;
   LLVMBool create_err =
@@ -311,6 +372,7 @@ static void test_windows_unwind_and_real_stack_walk() {
 
   // Map external callback
   LLVMAddGlobalMapping(ee, cb_decl, (void *)&probe_native_stack_walk_callback);
+  LLVMAddGlobalMapping(ee, raise_cb_decl, (void *)&probe_native_raise_exception);
   LLVMAddGlobalMapping(ee, pers_fn, (void *)&probe_custom_personality);
 
   uint64_t caller_addr = LLVMGetFunctionAddress(ee, "jit_unwind_caller");
@@ -355,6 +417,23 @@ static void test_windows_unwind_and_real_stack_walk() {
     require((ui->Flags & 0x03) != 0,
             "Expected UNWIND_INFO Flags to indicate active exception handler "
             "(UNW_FLAG_EHANDLER or UNW_FLAG_UHANDLER)");
+    // Read back exception handler target from .xdata
+    unsigned num_codes = (ui->CountOfCodes + 1) & ~1;
+    uint32_t handler_rva =
+        *(const uint32_t *)((const char *)(ui + 1) + num_codes * 2);
+    uint64_t handler_addr = imageBase + handler_rva;
+    std::printf("UNWIND_HANDLER_THUNK: handler_rva=0x%x handler_addr=0x%llx\n",
+                handler_rva, (unsigned long long)handler_addr);
+    require(handler_addr != 0,
+            "Exception handler thunk address must not be 0");
+    MEMORY_BASIC_INFORMATION mbi_handler{};
+    if (VirtualQuery((LPCVOID)handler_addr, &mbi_handler, sizeof(mbi_handler))) {
+      std::printf("HANDLER_THUNK_PAGE: Protect=0x%lx (must be executable)\n",
+                  mbi_handler.Protect);
+      require((mbi_handler.Protect &
+               (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)) != 0,
+              "Exception handler stub must be in executable memory");
+    }
   }
 #endif
 
@@ -368,6 +447,30 @@ static void test_windows_unwind_and_real_stack_walk() {
   require(g_stack_walk_unwound_past_jit,
           "Stack walk did not unwind past JIT frame with RtlVirtualUnwind");
   std::puts("PASS: Real stack walking through JIT frame succeeded");
+
+#ifdef _WIN32
+  // Real SEH Exception Dispatch through JIT Frame
+  uint64_t thrower_addr = LLVMGetFunctionAddress(ee, "jit_unwind_thrower");
+  require(thrower_addr != 0, "Failed to resolve jit_unwind_thrower");
+  g_custom_personality_invoked = false;
+  bool caught_seh = false;
+  __try {
+    typedef void (*JitThrowFn)(void);
+    JitThrowFn jit_throw = (JitThrowFn)thrower_addr;
+    jit_throw();
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    caught_seh = true;
+    std::printf("SEH_DISPATCH: Caught exception unwound past JIT frame, "
+                "personality invoked=%d\n",
+                g_custom_personality_invoked);
+  }
+  require(caught_seh, "Expected SEH exception to be caught in __except block");
+  require(g_custom_personality_invoked,
+          "Expected custom personality routine to be invoked during OS "
+          "exception dispatch through JIT frame!");
+  std::puts("PASS: Real SEH exception dispatched through JIT frame and "
+            "invoked personality handler");
+#endif
 
   // 3. Table deregistration check on dispose
   LLVMDisposeExecutionEngine(ee);
@@ -969,26 +1072,34 @@ static void test_production_manager_injected_os_failures() {
 
   HMODULE hLLVMC = GetModuleHandleA("LLVM-C.dll");
   typedef void (*SetFaultFn)(uint32_t);
+  typedef uint64_t (*GetUnwindAddrFn)(void);
+  typedef uint64_t (*GetFirstRegUnwindAddrFn)(void);
+  typedef void (*ResetUnwindAddrsFn)(void);
   SetFaultFn pSetFault = nullptr;
+  GetUnwindAddrFn pGetUnwindAddr = nullptr;
+  GetFirstRegUnwindAddrFn pGetFirstRegUnwindAddr = nullptr;
+  ResetUnwindAddrsFn pResetUnwindAddrs = nullptr;
   if (hLLVMC) {
     pSetFault = (SetFaultFn)GetProcAddress(
         hLLVMC, "LLVMExtSetWindowsMCJITFaultInjection");
+    pGetUnwindAddr = (GetUnwindAddrFn)GetProcAddress(
+        hLLVMC, "LLVMExtGetWindowsMCJITLastUnwindProbeAddress");
+    pGetFirstRegUnwindAddr = (GetFirstRegUnwindAddrFn)GetProcAddress(
+        hLLVMC, "LLVMExtGetWindowsMCJITFirstRegisteredUnwindAddress");
+    pResetUnwindAddrs = (ResetUnwindAddrsFn)GetProcAddress(
+        hLLVMC, "LLVMExtResetWindowsMCJITUnwindProbeAddresses");
   }
   if (!pSetFault) {
     pSetFault = &LLVMExtSetWindowsMCJITFaultInjection;
   }
-  require(
-      pSetFault != nullptr,
-      "LLVMExtSetWindowsMCJITFaultInjection must be exported by LLVM-C.dll");
-
-  typedef uint64_t (*GetUnwindAddrFn)(void);
-  GetUnwindAddrFn pGetUnwindAddr = nullptr;
-  if (hLLVMC) {
-    pGetUnwindAddr = (GetUnwindAddrFn)GetProcAddress(
-        hLLVMC, "LLVMExtGetWindowsMCJITLastUnwindProbeAddress");
-  }
   if (!pGetUnwindAddr) {
     pGetUnwindAddr = &LLVMExtGetWindowsMCJITLastUnwindProbeAddress;
+  }
+  if (!pGetFirstRegUnwindAddr) {
+    pGetFirstRegUnwindAddr = &LLVMExtGetWindowsMCJITFirstRegisteredUnwindAddress;
+  }
+  if (!pResetUnwindAddrs) {
+    pResetUnwindAddrs = &LLVMExtResetWindowsMCJITUnwindProbeAddresses;
   }
   auto test_fault_case = [&](uint32_t flag, const char *case_name,
                              const char *expected_substr, bool need_ro,
@@ -1051,13 +1162,13 @@ static void test_production_manager_injected_os_failures() {
 #ifdef _WIN32
     if (need_unwind && pGetUnwindAddr) {
       uint64_t probe_unwind_addr = pGetUnwindAddr();
-      if (probe_unwind_addr != 0) {
-        DWORD64 failImgBase = 0;
-        PRUNTIME_FUNCTION failRf = RtlLookupFunctionEntry(
-            (DWORD64)probe_unwind_addr, &failImgBase, nullptr);
-        require(failRf == nullptr,
-                "RtlLookupFunctionEntry found table after failed publication!");
-      }
+      require(probe_unwind_addr != 0,
+              "Expected unwind probe address to be recorded for unwind fault case");
+      DWORD64 failImgBase = 0;
+      PRUNTIME_FUNCTION failRf = RtlLookupFunctionEntry(
+          (DWORD64)probe_unwind_addr, &failImgBase, nullptr);
+      require(failRf == nullptr,
+              "RtlLookupFunctionEntry found table after failed publication!");
     }
 #endif
 
@@ -1087,6 +1198,73 @@ static void test_production_manager_injected_os_failures() {
   {
     std::printf("--- Testing Production OS Fault: RtlAddFunctionTable "
                 "Transactional Rollback ---\n");
+    if (pResetUnwindAddrs)
+      pResetUnwindAddrs();
+
+    // STEP A: Positive control - two tables succeed in one finalize without fault
+    {
+      pSetFault(LLVMExtFaultNone);
+      LLVMContextRef ctx_pos = LLVMContextCreate();
+      LLVMModuleRef m1_pos = LLVMModuleCreateWithNameInContext("pos_m1", ctx_pos);
+      LLVMModuleRef m2_pos = LLVMModuleCreateWithNameInContext("pos_m2", ctx_pos);
+      auto void_ty = LLVMVoidTypeInContext(ctx_pos);
+      auto fn_ty = LLVMFunctionType(void_ty, nullptr, 0, 0);
+      auto uw_kind = LLVMGetEnumAttributeKindForName("uwtable", 7);
+
+      auto f1 = LLVMAddFunction(m1_pos, "pos_fn1", fn_ty);
+      if (uw_kind)
+        LLVMAddAttributeAtIndex(f1, LLVMAttributeFunctionIndex,
+                                LLVMCreateEnumAttribute(ctx_pos, uw_kind, 2));
+      auto b1 = LLVMCreateBuilderInContext(ctx_pos);
+      LLVMPositionBuilderAtEnd(b1, LLVMAppendBasicBlockInContext(ctx_pos, f1, "entry"));
+      LLVMBuildRetVoid(b1);
+      LLVMDisposeBuilder(b1);
+
+      auto f2 = LLVMAddFunction(m2_pos, "pos_fn2", fn_ty);
+      if (uw_kind)
+        LLVMAddAttributeAtIndex(f2, LLVMAttributeFunctionIndex,
+                                LLVMCreateEnumAttribute(ctx_pos, uw_kind, 2));
+      auto b2 = LLVMCreateBuilderInContext(ctx_pos);
+      LLVMPositionBuilderAtEnd(b2, LLVMAppendBasicBlockInContext(ctx_pos, f2, "entry"));
+      LLVMBuildRetVoid(b2);
+      LLVMDisposeBuilder(b2);
+
+      LLVMExecutionEngineRef ee_pos = nullptr;
+      char *err_pos = nullptr;
+      LLVMBool create_err_pos =
+          LLVMExtCreateWindowsMCJITCompilerForModule(&ee_pos, m1_pos, &err_pos);
+      require(!create_err_pos && ee_pos != nullptr,
+              err_pos ? err_pos : "Positive control engine creation failed");
+      LLVMAddModule(ee_pos, m2_pos);
+
+      // LLVMGetPointerToGlobal runs finalizeObject() over all added modules (m1 and m2)
+      void *pos_ptr1 = LLVMGetPointerToGlobal(ee_pos, f1);
+      require(pos_ptr1 != nullptr, "Positive control LLVMGetPointerToGlobal failed");
+      uint64_t pos_addr1 = LLVMGetFunctionAddress(ee_pos, "pos_fn1");
+      uint64_t pos_addr2 = LLVMGetFunctionAddress(ee_pos, "pos_fn2");
+      require(pos_addr1 != 0 && pos_addr2 != 0,
+              "Positive control functions must resolve");
+
+#ifdef _WIN32
+      DWORD64 base1 = 0, base2 = 0;
+      PRUNTIME_FUNCTION rf_pos1 =
+          RtlLookupFunctionEntry((DWORD64)pos_addr1, &base1, nullptr);
+      PRUNTIME_FUNCTION rf_pos2 =
+          RtlLookupFunctionEntry((DWORD64)pos_addr2, &base2, nullptr);
+      require(rf_pos1 != nullptr,
+              "Positive control table 1 must be registered in OS");
+      require(rf_pos2 != nullptr,
+              "Positive control table 2 must be registered in OS");
+      std::printf("POSITIVE_TWO_TABLE_CONTROL: table1=%p table2=%p both found in OS\n",
+                  (void *)rf_pos1, (void *)rf_pos2);
+#endif
+      LLVMDisposeExecutionEngine(ee_pos);
+      LLVMContextDispose(ctx_pos);
+    }
+
+    // STEP B: Transactional rollback on second table failure
+    if (pResetUnwindAddrs)
+      pResetUnwindAddrs();
     pSetFault(LLVMExtFaultRtlAddFunctionTableSecond);
 
     LLVMContextRef ctx = LLVMContextCreate();
@@ -1133,6 +1311,12 @@ static void test_production_manager_injected_os_failures() {
             err ? err : "Failed to create Windows MCJIT engine");
     LLVMAddModule(ee, m2);
 
+    // LLVMGetPointerToGlobal runs finalizeObject() over all added modules (m1 and m2) in a single finalize!
+    void *p1 = LLVMGetPointerToGlobal(ee, fn1);
+    std::printf("ROLLBACK_PTR: p1=%p (must be nullptr)\n", p1);
+    require(p1 == nullptr,
+            "LLVMGetPointerToGlobal must return null on second table finalize failure");
+
     uint64_t addr1 = LLVMGetFunctionAddress(ee, "fault_rollback_fn1");
     std::printf("ROLLBACK_LOOKUP: addr1=0x%llx (must be 0)\n",
                 (unsigned long long)addr1);
@@ -1150,22 +1334,29 @@ static void test_production_manager_injected_os_failures() {
     LLVMDisposeMessage(diag);
 
 #ifdef _WIN32
-    // Verify that table 0 was rolled back and is not registered in OS table
-    if (pGetUnwindAddr) {
-      uint64_t rollback_unwind_addr = pGetUnwindAddr();
-      if (rollback_unwind_addr != 0) {
-        DWORD64 imgBase1 = 0;
-        PRUNTIME_FUNCTION rf1 = RtlLookupFunctionEntry(
-            (DWORD64)rollback_unwind_addr, &imgBase1, nullptr);
-        require(rf1 == nullptr,
-                "FAIL: RtlLookupFunctionEntry found table after rollback! "
-                "Table 0 was not deregistered!");
-      }
-    }
+    // Verify that table 0 was actually registered AND rolled back (deregistered from OS table)
+    require(pGetFirstRegUnwindAddr != nullptr,
+            "pGetFirstRegUnwindAddr function pointer must be available");
+    uint64_t rollback_unwind_addr = pGetFirstRegUnwindAddr();
+    std::printf("ROLLBACK_FIRST_TABLE_ADDR: 0x%llx (must not be 0)\n",
+                (unsigned long long)rollback_unwind_addr);
+    require(rollback_unwind_addr != 0,
+            "FAIL: First table address was never recorded as registered before rollback!");
+
+    DWORD64 imgBase1 = 0;
+    PRUNTIME_FUNCTION rf1 = RtlLookupFunctionEntry(
+        (DWORD64)rollback_unwind_addr, &imgBase1, nullptr);
+    std::printf("ROLLBACK_LOOKUP_AFTER: rf1=%p (must be nullptr)\n", (void *)rf1);
+    require(rf1 == nullptr,
+            "FAIL: RtlLookupFunctionEntry found table after rollback! "
+            "Table 0 was not deregistered!");
 #endif
+
     LLVMDisposeExecutionEngine(ee);
     LLVMContextDispose(ctx);
     pSetFault(LLVMExtFaultNone);
+    if (pResetUnwindAddrs)
+      pResetUnwindAddrs();
     std::puts("PASS: Transactional rollback on RtlAddFunctionTable verified");
   }
 
@@ -1564,6 +1755,45 @@ static void test_encoded_relocations_live_runtime_dyld() {
           "Could not find 48 8D 05 (lea) instruction in dependent_caller");
   std::puts("PASS: Section Remapping & Dependent Relocation Resolution "
             "(without execution)");
+
+  // Negative control: Remapping an unknown/invalid section address must fail immediately
+  // and record an error in the execution engine.
+  LLVMContextRef bad_remap_ctx = LLVMContextCreate();
+  LLVMModuleRef bad_remap_m =
+      LLVMModuleCreateWithNameInContext("bad_remap_mod", bad_remap_ctx);
+  auto bad_fn = LLVMAddFunction(
+      bad_remap_m, "bad_fn",
+      LLVMFunctionType(LLVMVoidTypeInContext(bad_remap_ctx), nullptr, 0, 0));
+  auto bad_b = LLVMCreateBuilderInContext(bad_remap_ctx);
+  LLVMPositionBuilderAtEnd(
+      bad_b, LLVMAppendBasicBlockInContext(bad_remap_ctx, bad_fn, "entry"));
+  LLVMBuildRetVoid(bad_b);
+  LLVMDisposeBuilder(bad_b);
+  LLVMExecutionEngineRef bad_ee = nullptr;
+  char *bad_err = nullptr;
+  LLVMExtCreateWindowsMCJITCompilerForModule(&bad_ee, bad_remap_m, &bad_err);
+  require(bad_ee != nullptr, "Create engine for bad remap test");
+
+  // Attempt to remap an address not belonging to any section
+  pMapSection(bad_ee, (const void *)0xdeadbeefULL, 0x240000000ULL);
+  char *remap_diag = nullptr;
+  LLVMBool remap_has_err = LLVMExecutionEngineGetErrMsg(bad_ee, &remap_diag);
+  std::printf("REMAP_FAILURE_SURFACED: has_err=%d diag='%s'\n", remap_has_err,
+              remap_diag ? remap_diag : "");
+  require(remap_has_err && remap_diag != nullptr,
+          "Failed section remapping must immediately surface error via GetErrMsg");
+  require(std::strstr(remap_diag, "unknown section") != nullptr ||
+          std::strstr(remap_diag, "remap") != nullptr,
+          "Diagnostic must describe section remapping failure");
+  LLVMDisposeMessage(remap_diag);
+
+  uint64_t bad_lookup = LLVMGetFunctionAddress(bad_ee, "bad_fn");
+  require(bad_lookup == 0,
+          "Function address lookup must fail closed immediately following remapping error");
+  LLVMDisposeExecutionEngine(bad_ee);
+  LLVMContextDispose(bad_remap_ctx);
+  std::puts("PASS: Section remapping failure surfaced immediately and failed closed");
+
   LLVMDisposeExecutionEngine(ee);
   LLVMContextDispose(ctx);
   std::puts("PASS: Encoded Relocations & Live RuntimeDyld Processing");
@@ -1720,10 +1950,228 @@ static void test_null_data_allocation_recovery() {
 }
 
 // ---------------------------------------------------------------------------
+// Test Suite 14: Empty .text Section with Named Code Section & Unwind Info (Finding 4)
+// ---------------------------------------------------------------------------
+static void test_empty_text_and_comdat_object() {
+  std::puts("=== TEST: Empty .text Section with Named Code Section & Unwinding ===");
+  LLVMContextRef ctx = LLVMContextCreate();
+  LLVMModuleRef m = LLVMModuleCreateWithNameInContext("empty_text_mod", ctx);
+  auto i32 = LLVMInt32TypeInContext(ctx);
+  auto fn_ty = LLVMFunctionType(i32, nullptr, 0, 0);
+
+  auto fn = LLVMAddFunction(m, "comdat_fn", fn_ty);
+  LLVMSetSection(fn, ".text$named_func");
+  auto uw_kind = LLVMGetEnumAttributeKindForName("uwtable", 7);
+  if (uw_kind)
+    LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex,
+                            LLVMCreateEnumAttribute(ctx, uw_kind, 2));
+
+  auto pers_fn = LLVMAddFunction(m, "probe_custom_personality",
+                                 LLVMFunctionType(i32, nullptr, 0, 1));
+  LLVMSetPersonalityFn(fn, pers_fn);
+
+  auto b = LLVMCreateBuilderInContext(ctx);
+  auto bb = LLVMAppendBasicBlockInContext(ctx, fn, "entry");
+  LLVMPositionBuilderAtEnd(b, bb);
+  auto slot = LLVMBuildAlloca(b, i32, "slot");
+  LLVMBuildStore(b, LLVMConstInt(i32, 999, 0), slot);
+  auto val = LLVMBuildLoad2(b, i32, slot, "val");
+  LLVMBuildRet(b, val);
+  LLVMDisposeBuilder(b);
+
+  LLVMExecutionEngineRef ee = nullptr;
+  char *err = nullptr;
+  LLVMBool create_err = LLVMExtCreateWindowsMCJITCompilerForModule(&ee, m, &err);
+  require(!create_err && ee != nullptr, err ? err : "Engine creation for empty .text mod failed");
+  LLVMAddGlobalMapping(ee, pers_fn, (void *)&probe_custom_personality);
+
+  uint64_t fn_addr = LLVMGetFunctionAddress(ee, "comdat_fn");
+  require(fn_addr != 0, "Failed to resolve comdat_fn with empty .text section");
+
+  typedef int32_t (*IntFn)(void);
+  IntFn func = (IntFn)fn_addr;
+  int32_t res = func();
+  std::printf("EMPTY_TEXT_EXECUTION: comdat_fn() = %d (expected 999)\n", res);
+  require(res == 999, "comdat_fn must return 999");
+
+#ifdef _WIN32
+  DWORD64 base = 0;
+  PRUNTIME_FUNCTION rf = RtlLookupFunctionEntry((DWORD64)fn_addr, &base, nullptr);
+  require(rf != nullptr, "RtlLookupFunctionEntry failed for comdat_fn with empty .text section");
+  std::printf("EMPTY_TEXT_UNWIND: FunctionEntry=%p Base=%llx\n", (void *)rf, (unsigned long long)base);
+#endif
+
+  LLVMDisposeExecutionEngine(ee);
+  LLVMContextDispose(ctx);
+  std::puts("PASS: Empty .text section with named code section and unwind info verified");
+}
+
+// ---------------------------------------------------------------------------
+// Test Suite 15: Code-Free Object in Archive (Finding 3)
+// ---------------------------------------------------------------------------
+#pragma pack(push, 1)
+struct MinimalCoffHeader {
+  uint16_t Machine;              // 0x8664 (AMD64)
+  uint16_t NumberOfSections;     // 1
+  uint32_t TimeDateStamp;        // 0
+  uint32_t PointerToSymbolTable; // 64
+  uint32_t NumberOfSymbols;      // 1
+  uint16_t SizeOfOptionalHeader; // 0
+  uint16_t Characteristics;      // 0
+};
+
+struct MinimalCoffSectionHeader {
+  char Name[8];                  // ".data\0\0\0"
+  uint32_t VirtualSize;          // 0
+  uint32_t VirtualAddress;       // 0
+  uint32_t SizeOfRawData;        // 4
+  uint32_t PointerToRawData;     // 60
+  uint32_t PointerToRelocations; // 0
+  uint32_t PointerToLinenumbers; // 0
+  uint16_t NumberOfRelocations;  // 0
+  uint16_t NumberOfLinenumbers;  // 0
+  uint32_t Characteristics;      // 0xC0000040 (IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE)
+};
+
+struct MinimalCoffSymbol {
+  char ShortName[8];             // "dataval\0"
+  uint32_t Value;                // 0
+  int16_t SectionNumber;         // 1
+  uint16_t Type;                 // 0
+  uint8_t StorageClass;          // 2 (IMAGE_SYM_CLASS_EXTERNAL)
+  uint8_t NumberOfAuxSymbols;    // 0
+};
+#pragma pack(pop)
+
+static void test_code_free_archive_object() {
+  std::puts("=== TEST: Code-Free Object in Archive (Data-Only Sections) ===");
+  MinimalCoffHeader hdr{};
+  hdr.Machine = 0x8664;
+  hdr.NumberOfSections = 1;
+  hdr.TimeDateStamp = 0;
+  hdr.PointerToSymbolTable = 64;
+  hdr.NumberOfSymbols = 1;
+  hdr.SizeOfOptionalHeader = 0;
+  hdr.Characteristics = 0;
+
+  MinimalCoffSectionHeader sec{};
+  std::memcpy(sec.Name, ".data\0\0\0", 8);
+  sec.VirtualSize = 0;
+  sec.VirtualAddress = 0;
+  sec.SizeOfRawData = 4;
+  sec.PointerToRawData = 60;
+  sec.PointerToRelocations = 0;
+  sec.PointerToLinenumbers = 0;
+  sec.NumberOfRelocations = 0;
+  sec.NumberOfLinenumbers = 0;
+  sec.Characteristics = 0xC0000040;
+
+  int32_t raw_data = 777;
+
+  MinimalCoffSymbol sym{};
+  std::memcpy(sym.ShortName, "dataval\0", 8);
+  sym.Value = 0;
+  sym.SectionNumber = 1;
+  sym.Type = 0;
+  sym.StorageClass = 2;
+  sym.NumberOfAuxSymbols = 0;
+
+  uint32_t str_table_size = 4;
+
+  const char *obj_name = "code_free.obj";
+  FILE *f = std::fopen(obj_name, "wb");
+  require(f != nullptr, "Failed to open code_free.obj for writing");
+  std::fwrite(&hdr, sizeof(hdr), 1, f);
+  std::fwrite(&sec, sizeof(sec), 1, f);
+  std::fwrite(&raw_data, sizeof(raw_data), 1, f);
+  std::fwrite(&sym, sizeof(sym), 1, f);
+  std::fwrite(&str_table_size, sizeof(str_table_size), 1, f);
+  std::fclose(f);
+
+  const char *lib_name = "code_free.lib";
+  char cmd[512];
+  std::snprintf(cmd, sizeof(cmd), "llvm-ar.exe rc %s %s", lib_name, obj_name);
+  int ar_rc = std::system(cmd);
+  if (ar_rc != 0) {
+    std::snprintf(cmd, sizeof(cmd), "llvm-ar rc %s %s", lib_name, obj_name);
+    ar_rc = std::system(cmd);
+  }
+  require(ar_rc == 0, "llvm-ar command failed for code_free.lib");
+
+  LLVMContextRef ctx = LLVMContextCreate();
+  LLVMModuleRef m = LLVMModuleCreateWithNameInContext("client_mod", ctx);
+  auto i32 = LLVMInt32TypeInContext(ctx);
+  auto g_decl = LLVMAddGlobal(m, i32, "dataval");
+  LLVMSetLinkage(g_decl, LLVMExternalLinkage);
+
+  LLVMExecutionEngineRef ee = nullptr;
+  char *err = nullptr;
+  LLVMBool create_err = LLVMExtCreateWindowsMCJITCompilerForModule(&ee, m, &err);
+  require(!create_err && ee != nullptr, err ? err : "Engine creation failed");
+
+  char *arch_err = nullptr;
+  LLVMBool arch_ret = LLVMExtAddArchiveFile(ee, lib_name, &arch_err);
+  require(arch_ret == 0, arch_err ? arch_err : "LLVMExtAddArchiveFile failed on code-free archive");
+
+  uint64_t sym_addr = LLVMGetFunctionAddress(ee, "dataval");
+  std::printf("CODE_FREE_DATA_ADDR: 0x%llx\n", (unsigned long long)sym_addr);
+  require(sym_addr != 0, "Symbol in code-free archive member must resolve");
+  int32_t val = *(const int32_t *)sym_addr;
+  std::printf("CODE_FREE_DATA_VAL: %d (expected 777)\n", val);
+  require(val == 777, "Data value from code-free archive member must be 777");
+
+  LLVMDisposeExecutionEngine(ee);
+  LLVMContextDispose(ctx);
+  std::puts("PASS: Code-free object from archive resolved and read without quadratic reallocation");
+}
+
+// ---------------------------------------------------------------------------
+// Test Suite 16: Real Capacity: Split Reservation for Oversized RW Section
+// ---------------------------------------------------------------------------
+static void test_split_reservation_capacity() {
+  std::puts("=== TEST: Real Capacity: Split Reservation for Oversized RW Section ===");
+  LLVMContextRef ctx = LLVMContextCreate();
+  LLVMModuleRef m = LLVMModuleCreateWithNameInContext("oversized_rw_mod", ctx);
+  auto i32 = LLVMInt32TypeInContext(ctx);
+  auto i8 = LLVMInt8TypeInContext(ctx);
+
+  // Large global array: 5 GiB virtual size in BSS (takes 0 bytes of disk)
+  auto sub_arr_ty = LLVMArrayType(i8, 1024 * 1024); // 1 MB
+  auto big_arr_ty = LLVMArrayType(sub_arr_ty, 5120); // 5120 * 1 MB = 5 GiB!
+  auto huge_var = LLVMAddGlobal(m, big_arr_ty, "huge_rw_data");
+  LLVMSetInitializer(huge_var, LLVMGetUndef(big_arr_ty));
+
+  auto fn_ty = LLVMFunctionType(i32, nullptr, 0, 0);
+  auto fn = LLVMAddFunction(m, "access_huge_rw_fn", fn_ty);
+  auto b = LLVMCreateBuilderInContext(ctx);
+  LLVMPositionBuilderAtEnd(b, LLVMAppendBasicBlockInContext(ctx, fn, "entry"));
+  LLVMBuildRet(b, LLVMConstInt(i32, 4242, 0));
+  LLVMDisposeBuilder(b);
+
+  LLVMExecutionEngineRef ee = nullptr;
+  char *err = nullptr;
+  LLVMBool create_err = LLVMExtCreateWindowsMCJITCompilerForModule(&ee, m, &err);
+  require(!create_err && ee != nullptr, err ? err : "Failed to create engine for oversized RW module");
+
+  uint64_t fn_addr = LLVMGetFunctionAddress(ee, "access_huge_rw_fn");
+  require(fn_addr != 0, "Failed to resolve function in oversized RW module");
+
+  typedef int32_t (*IntFn)(void);
+  IntFn func = (IntFn)fn_addr;
+  int32_t res = func();
+  std::printf("SPLIT_RESERVATION_EXEC: access_huge_rw_fn() = %d (expected 4242)\n", res);
+  require(res == 4242, "Function must return 4242");
+
+  LLVMDisposeExecutionEngine(ee);
+  LLVMContextDispose(ctx);
+  std::puts("PASS: Split reservation successfully handled >4GB RW data without cap failure");
+}
+
+// ---------------------------------------------------------------------------
 // Test Suite 10: Allocation Model & Relocation Boundaries Unit Verification
 // ---------------------------------------------------------------------------
 static void test_allocation_model_and_relocation_boundaries() {
-  std::puts("=== TEST: Allocation Model & Relocation Boundaries ===");
+  std::puts("=== [LABELED MODEL ONLY - NOT OS PROOF] Allocation Model & Relocation Boundaries ===");
 
   // 1. Checked dynamic packed allocation reservation calculation
   auto round_up_checked = [](size_t n, size_t a, size_t *out) -> bool {
@@ -1935,6 +2383,9 @@ int main(int argc, char **argv) {
   test_lazy_lookup_failure_on_healthy_engine();
   test_lazy_archive_lookup();
   test_encoded_relocations_live_runtime_dyld();
+  test_empty_text_and_comdat_object();
+  test_code_free_archive_object();
+  test_split_reservation_capacity();
   test_null_code_allocation_recovery();
   test_null_data_allocation_recovery();
   test_null_common_symbol_allocation_recovery();

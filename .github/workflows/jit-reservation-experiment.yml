@@ -141,3 +141,23 @@ jobs:
           Write-Host "CHILD_EXIT=$($child.ExitCode)"
           Write-Host $out
           if ($child.ExitCode -ne 0) { throw "Finalize failure caused process crash or non-zero exit ($($child.ExitCode))" }
+      - name: Verify product compilation with LLVM_ENABLE_TEST_HOOKS=OFF
+        shell: pwsh
+        run: |
+          Write-Host "Reconfiguring with LLVM_ENABLE_TEST_HOOKS=OFF to verify product build..."
+          cmake -S "$env:RUNNER_TEMP/llvm-project/llvm" -B "$env:RUNNER_TEMP/llvm-build" `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DLLVM_BUILD_LLVM_C_DYLIB=ON `
+            -DLLVM_ENABLE_TEST_HOOKS=OFF `
+            -DLLVM_TARGETS_TO_BUILD="X86;AArch64" `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL `
+            -DLLVM_INCLUDE_TESTS=OFF `
+            -DLLVM_INCLUDE_BENCHMARKS=OFF `
+            -DLLVM_INCLUDE_EXAMPLES=OFF `
+            -DLLVM_INCLUDE_DOCS=OFF `
+            -DLLVM_ENABLE_ZSTD=OFF `
+            -DLLVM_ENABLE_ZLIB=OFF
+          if ($LASTEXITCODE) { throw "CMake reconfigure with LLVM_ENABLE_TEST_HOOKS=OFF failed" }
+          cmake --build "$env:RUNNER_TEMP/llvm-build" --target LLVMExecutionEngine
+          if ($LASTEXITCODE) { throw "Product build with LLVM_ENABLE_TEST_HOOKS=OFF failed to compile LLVMExecutionEngine!" }
+          Write-Host "Product build without test hooks verified successfully."
