@@ -1376,6 +1376,7 @@ static void test_production_manager_injected_os_failures() {
     require(rf1 == nullptr,
             "FAIL: RtlLookupFunctionEntry found table after rollback! "
             "Table 0 was not deregistered!");
+#endif
 
     LLVMDisposeExecutionEngine(ee);
     LLVMContextDispose(ctx);
