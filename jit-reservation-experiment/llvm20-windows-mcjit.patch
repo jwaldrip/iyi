@@ -1233,7 +1233,7 @@ index 5f3067b..7f4516d 100644
 +      raw_string_ostream OS(ErrStr);
 +      logAllUnhandledErrors(OptionalChildOrErr.takeError(), OS);
 +      HasFailed = true;
-+      FailReason = ErrStr;
++      ErrMsg = ErrStr;
 +      return nullptr;
 +    }
      auto &OptionalChild = *OptionalChildOrErr;
