@@ -1140,18 +1140,18 @@ class RemoteStrictController:
             # 1. Strict mode authorization check: unconditional refusal until authenticated independent GO exists
             if self.mode == "strict":
                 self.overall_status = "AUTH_REFUSED"
-                refusal_msg = (
-                    "STRICT_MODE_AUTH_REFUSED: Real strict execution requires independent "
-                    "authenticated authorization for exact (P, W, C) tuple. No authorization "
-                    "exists; refusing execution nonzero before planning, pinning, or native execution."
-                )
-                print(f"\n[CONTROLLER] {refusal_msg}", file=sys.stderr)
-                self._record_journal_event(
-                    "strict_auth_refusal",
-                    {"refusal_code": AUTH_REFUSED_EXIT_CODE, "message": refusal_msg},
-                )
-                self._write_controller_summary()
-                raise StrictAuthorizationRefused(refusal_msg)
+                try:
+                    from proof.strict_authorization import check_strict_authorization_or_refuse
+                    check_strict_authorization_or_refuse(self.p_sha, self.w_sha, self.c_sha)
+                except Exception as auth_exc:
+                    refusal_msg = str(auth_exc)
+                    print(f"\n[CONTROLLER] {refusal_msg}", file=sys.stderr)
+                    self._record_journal_event(
+                        "strict_auth_refusal",
+                        {"refusal_code": AUTH_REFUSED_EXIT_CODE, "message": refusal_msg},
+                    )
+                    self._write_controller_summary()
+                    raise StrictAuthorizationRefused(refusal_msg) from auth_exc
             self._preflight()
 
             # 2. Require disk floor before starting

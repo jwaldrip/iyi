@@ -110,6 +110,13 @@ export class StrictSupervisor {
     }
     if (matches.length !== 1) throw new Error('job lookup missing or ambiguous');
     if (!matches[0].started_at || matches[0].started_at !== this.jobStartTime) throw new Error('job start does not match platform');
+    if (this.mode === 'strict') {
+      try {
+        execFileSync(this.pythonPath, ['-c', 'from proof.strict_authorization import check_strict_authorization_or_refuse; check_strict_authorization_or_refuse()'], { encoding: 'utf8', env: sanitizeEnvironment(env) });
+      } catch (authErr) {
+        throw new Error(`Strict execution refused by authorization policy: ${authErr.stderr || authErr.message}`);
+      }
+    }
     const fixture = this.mode === 'validation-only' ? execFileSync(this.pythonPath, ['-c', EMITTER_DIGEST, path.resolve('proof/remote_strict_fixtures.py')], { encoding: 'utf8', env: sanitizeEnvironment(env) }).trim() : null;
     return Object.freeze({ invocation_id: this.invocationId, execution_kind: this.mode === 'validation-only' ? 'synthetic' : 'native', repository: env.GITHUB_REPOSITORY, run_id: env.GITHUB_RUN_ID, run_attempt: env.GITHUB_RUN_ATTEMPT, job_id: String(this.jobId), job_key: this.jobKey, p_sha: pSha, w_sha: wSha, c_sha: cSha, fixture_sha256: fixture });
   }
