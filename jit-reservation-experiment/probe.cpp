@@ -815,10 +815,10 @@ struct CustomFaultManager {
 static uint8_t *custom_alloc_code(void *opaque, uintptr_t size, unsigned align,
                                   unsigned section_id,
                                   const char *section_name) {
-  auto *self = (CustomFaultManager *)opaque;
   if (self->fail_code_alloc) {
-    std::fprintf(stderr, "INJECTED_NULL_CODE_SECTION (section=%s size=%zu)\n",
-                 section_name ? section_name : "", (size_t)size);
+    std::printf("INJECTED_NULL_CODE_SECTION (section=%s size=%zu)\n",
+                section_name ? section_name : "", (size_t)size);
+    std::fflush(stdout);
     return nullptr;
   }
   size_t alloc_size = (size + 4095) & ~4095;
@@ -837,15 +837,15 @@ static uint8_t *custom_alloc_data(void *opaque, uintptr_t size, unsigned align,
   if (self->fail_common_alloc && section_name &&
       (std::strstr(section_name, "common symbols") != nullptr ||
        std::strstr(section_name, "<common") != nullptr)) {
-    std::fprintf(stderr,
-                 "INJECTED_NULL_COMMON_SYMBOLS_SECTION (section=%s size=%zu)\n",
-                 section_name, (size_t)size);
+    std::printf("INJECTED_NULL_COMMON_SYMBOLS_SECTION (section=%s size=%zu)\n",
+                section_name, (size_t)size);
+    std::fflush(stdout);
     return nullptr;
   }
   if (self->fail_data_alloc) {
-    std::fprintf(stderr,
-                 "INJECTED_NULL_DATA_SECTION (section=%s size=%zu ro=%d)\n",
-                 section_name ? section_name : "", (size_t)size, is_readonly);
+    std::printf("INJECTED_NULL_DATA_SECTION (section=%s size=%zu ro=%d)\n",
+                section_name ? section_name : "", (size_t)size, is_readonly);
+    std::fflush(stdout);
     return nullptr;
   }
   size_t alloc_size = (size + 4095) & ~4095;
