@@ -942,6 +942,8 @@ static void test_production_manager_injected_os_failures() {
   if (!pSetFault) {
     pSetFault = &LLVMExtSetWindowsMCJITFaultInjection;
   }
+  require(pSetFault != nullptr,
+          "LLVMExtSetWindowsMCJITFaultInjection must be exported by LLVM-C.dll");
 
   auto test_fault_case = [&](uint32_t flag, const char *case_name,
                              const char *expected_substr, bool need_ro,
@@ -1228,17 +1230,16 @@ static void test_encoded_relocations_live_runtime_dyld() {
     pMapSection = &LLVMExtMapSectionAddress;
   }
 
-  if (pMapSection != nullptr) {
-    uint64_t remapped_target_addr = 0x240000000ULL;
-    pMapSection(ee, (const void *)caller_addr, remapped_target_addr);
-    std::printf("SECTION_REMAPPING: remapped caller_addr %p -> target 0x%llx "
-                "via LLVMExtMapSectionAddress\n",
-                (const void *)caller_addr,
-                (unsigned long long)remapped_target_addr);
-  } else {
-    std::puts("BLOCKED: LLVMExtMapSectionAddress not exported; native section "
-              "remapping blocked at C boundary");
-  }
+  require(pMapSection != nullptr,
+          "LLVMExtMapSectionAddress must be exported by LLVM-C.dll; native "
+          "section remapping unavailable");
+
+  uint64_t remapped_target_addr = 0x240000000ULL;
+  pMapSection(ee, (const void *)callee_addr, remapped_target_addr);
+  std::printf("SECTION_REMAPPING: remapped section base %p -> target 0x%llx "
+              "via LLVMExtMapSectionAddress\n",
+              (const void *)callee_addr,
+              (unsigned long long)remapped_target_addr);
 
   LLVMDisposeExecutionEngine(ee);
   LLVMContextDispose(ctx);
