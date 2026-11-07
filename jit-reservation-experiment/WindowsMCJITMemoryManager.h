@@ -33,6 +33,7 @@ enum WindowsMCJITFaultFlags : uint32_t {
   FaultRtlAddFunctionTable = 1 << 3,
   FaultVirtualAllocCommit = 1 << 4,
   FaultRtlAddFunctionTableSecond = 1 << 5,
+  FaultSkipRollbackDeregister = 1 << 6,
 };
 
 #ifdef LLVM_ENABLE_TEST_HOOKS
@@ -41,12 +42,14 @@ uint32_t getWindowsMCJITFaultInjection();
 uint64_t getWindowsMCJITLastUnwindProbeAddress();
 uint64_t getWindowsMCJITFirstRegisteredUnwindAddress();
 void resetWindowsMCJITUnwindProbeAddresses();
+uint32_t getWindowsMCJITSplitReservationCount();
 #else
 inline void setWindowsMCJITFaultInjection(uint32_t) {}
 inline uint32_t getWindowsMCJITFaultInjection() { return 0; }
 inline uint64_t getWindowsMCJITLastUnwindProbeAddress() { return 0; }
 inline uint64_t getWindowsMCJITFirstRegisteredUnwindAddress() { return 0; }
 inline void resetWindowsMCJITUnwindProbeAddresses() {}
+inline uint32_t getWindowsMCJITSplitReservationCount() { return 0; }
 #endif
 class WindowsMCJITMemoryManager : public SectionMemoryManager {
 public:

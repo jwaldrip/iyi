@@ -77,11 +77,13 @@ namespace llvm {
 static std::atomic<uint32_t> FaultInjectionFlags{0};
 static std::atomic<uint64_t> LastUnwindProbeAddress{0};
 static std::atomic<uint64_t> FirstRegisteredUnwindAddress{0};
+static std::atomic<uint32_t> SplitReservationCount{0};
 
 void setWindowsMCJITFaultInjection(uint32_t Flags) {
   FaultInjectionFlags.store(Flags, std::memory_order_relaxed);
   LastUnwindProbeAddress.store(0, std::memory_order_relaxed);
   FirstRegisteredUnwindAddress.store(0, std::memory_order_relaxed);
+  SplitReservationCount.store(0, std::memory_order_relaxed);
 }
 
 uint32_t getWindowsMCJITFaultInjection() {
@@ -99,6 +101,11 @@ uint64_t getWindowsMCJITFirstRegisteredUnwindAddress() {
 void resetWindowsMCJITUnwindProbeAddresses() {
   LastUnwindProbeAddress.store(0, std::memory_order_relaxed);
   FirstRegisteredUnwindAddress.store(0, std::memory_order_relaxed);
+  SplitReservationCount.store(0, std::memory_order_relaxed);
+}
+
+uint32_t getWindowsMCJITSplitReservationCount() {
+  return SplitReservationCount.load(std::memory_order_relaxed);
 }
 #endif
 
@@ -209,6 +216,9 @@ void WindowsMCJITMemoryManager::reserveAllocationSpace(
       void *BasePtr =
           VirtualAlloc(nullptr, CodeROSpan, MEM_RESERVE, PAGE_NOACCESS);
       if (BasePtr) {
+#ifdef LLVM_ENABLE_TEST_HOOKS
+        SplitReservationCount.fetch_add(1, std::memory_order_relaxed);
+#endif
         auto Res = std::make_unique<PackedReservation>();
         Res->Base = static_cast<uint8_t *>(BasePtr);
         Res->TotalReserved = CodeROSpan;
@@ -514,8 +524,10 @@ bool WindowsMCJITMemoryManager::finalizeMemory(std::string *ErrMsg) {
     if (!Success) {
       if (ErrMsg)
         *ErrMsg = "RtlAddFunctionTable returned error";
-      for (auto &R : NewlyRegistered) {
-        RtlDeleteFunctionTable(reinterpret_cast<PRUNTIME_FUNCTION>(R.Addr));
+      if (!(Faults & FaultSkipRollbackDeregister)) {
+        for (auto &R : NewlyRegistered) {
+          RtlDeleteFunctionTable(reinterpret_cast<PRUNTIME_FUNCTION>(R.Addr));
+        }
       }
       NewlyRegistered.clear();
       PendingUnwindTables.clear();
@@ -528,8 +540,10 @@ bool WindowsMCJITMemoryManager::finalizeMemory(std::string *ErrMsg) {
     if (InjectFault) {
       if (ErrMsg)
         *ErrMsg = "RtlAddFunctionTable returned error";
-      for (auto &R : NewlyRegistered) {
-        RtlDeleteFunctionTable(reinterpret_cast<PRUNTIME_FUNCTION>(R.Addr));
+      if (!(Faults & FaultSkipRollbackDeregister)) {
+        for (auto &R : NewlyRegistered) {
+          RtlDeleteFunctionTable(reinterpret_cast<PRUNTIME_FUNCTION>(R.Addr));
+        }
       }
       NewlyRegistered.clear();
       PendingUnwindTables.clear();

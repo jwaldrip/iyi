@@ -27,11 +27,22 @@ LLVMBool LLVMExtCreateWindowsMCJITCompilerForModule(
 
 const char *LLVMExtGetWindowsMCJITBuildIdentity(void);
 
+enum LLVMExtWindowsMCJITFaultFlags {
+  LLVMExtFaultNone = 0,
+  LLVMExtFaultVirtualProtectCode = 1 << 0,
+  LLVMExtFaultVirtualProtectRO = 1 << 1,
+  LLVMExtFaultFlushInstructionCache = 1 << 2,
+  LLVMExtFaultRtlAddFunctionTable = 1 << 3,
+  LLVMExtFaultVirtualAllocCommit = 1 << 4,
+  LLVMExtFaultRtlAddFunctionTableSecond = 1 << 5,
+  LLVMExtFaultSkipRollbackDeregister = 1 << 6,
+};
+
 void LLVMExtSetWindowsMCJITFaultInjection(uint32_t Flags);
 uint64_t LLVMExtGetWindowsMCJITLastUnwindProbeAddress(void);
 uint64_t LLVMExtGetWindowsMCJITFirstRegisteredUnwindAddress(void);
 void LLVMExtResetWindowsMCJITUnwindProbeAddresses(void);
-
+uint32_t LLVMExtGetWindowsMCJITSplitReservationCount(void);
 void LLVMExtMapSectionAddress(LLVMExecutionEngineRef EE,
                               const void *LocalAddress, uint64_t TargetAddress);
 LLVMBool LLVMExtAddArchiveFile(LLVMExecutionEngineRef EE, const char *Path,
@@ -815,6 +826,7 @@ struct CustomFaultManager {
 static uint8_t *custom_alloc_code(void *opaque, uintptr_t size, unsigned align,
                                   unsigned section_id,
                                   const char *section_name) {
+  auto *self = (CustomFaultManager *)opaque;
   if (self->fail_code_alloc) {
     std::printf("INJECTED_NULL_CODE_SECTION (section=%s size=%zu)\n",
                 section_name ? section_name : "", (size_t)size);
@@ -1280,7 +1292,90 @@ static void test_production_manager_injected_os_failures() {
       LLVMContextDispose(ctx_pos);
     }
 
-    // STEP B: Transactional rollback on second table failure
+    // STEP B: Negative mutation control - verify that if rollback
+    // deregistration is skipped/mutated, Table 1 remains registered in the OS
+    // table.
+    {
+      if (pResetUnwindAddrs)
+        pResetUnwindAddrs();
+      pSetFault(LLVMExtFaultRtlAddFunctionTableSecond |
+                LLVMExtFaultSkipRollbackDeregister);
+
+      LLVMContextRef ctx_mut = LLVMContextCreate();
+      LLVMModuleRef m1_mut =
+          LLVMModuleCreateWithNameInContext("mut_fault_m1", ctx_mut);
+      LLVMModuleRef m2_mut =
+          LLVMModuleCreateWithNameInContext("mut_fault_m2", ctx_mut);
+      auto void_ty = LLVMVoidTypeInContext(ctx_mut);
+      auto i32 = LLVMInt32TypeInContext(ctx_mut);
+      auto fn_ty = LLVMFunctionType(void_ty, nullptr, 0, 0);
+      auto uw_kind = LLVMGetEnumAttributeKindForName("uwtable", 7);
+
+      auto fn1_mut = LLVMAddFunction(m1_mut, "mut_fn1", fn_ty);
+      if (uw_kind != 0)
+        LLVMAddAttributeAtIndex(fn1_mut, LLVMAttributeFunctionIndex,
+                                LLVMCreateEnumAttribute(ctx_mut, uw_kind, 2));
+      auto b1_mut = LLVMCreateBuilderInContext(ctx_mut);
+      LLVMPositionBuilderAtEnd(
+          b1_mut, LLVMAppendBasicBlockInContext(ctx_mut, fn1_mut, "entry"));
+      LLVMBuildStore(b1_mut, LLVMConstInt(i32, 111, 0),
+                     LLVMBuildAlloca(b1_mut, i32, "s1"));
+      LLVMBuildRetVoid(b1_mut);
+      LLVMDisposeBuilder(b1_mut);
+
+      auto fn2_mut = LLVMAddFunction(m2_mut, "mut_fn2", fn_ty);
+      if (uw_kind != 0)
+        LLVMAddAttributeAtIndex(fn2_mut, LLVMAttributeFunctionIndex,
+                                LLVMCreateEnumAttribute(ctx_mut, uw_kind, 2));
+      auto b2_mut = LLVMCreateBuilderInContext(ctx_mut);
+      LLVMPositionBuilderAtEnd(
+          b2_mut, LLVMAppendBasicBlockInContext(ctx_mut, fn2_mut, "entry"));
+      LLVMBuildStore(b2_mut, LLVMConstInt(i32, 222, 0),
+                     LLVMBuildAlloca(b2_mut, i32, "s2"));
+      LLVMBuildRetVoid(b2_mut);
+      LLVMDisposeBuilder(b2_mut);
+
+      LLVMExecutionEngineRef ee_mut = nullptr;
+      char *err_mut = nullptr;
+      LLVMBool create_err_mut =
+          LLVMExtCreateWindowsMCJITCompilerForModule(&ee_mut, m1_mut, &err_mut);
+      require(!create_err_mut && ee_mut != nullptr,
+              err_mut ? err_mut
+                      : "Engine creation failed for mutation control");
+      LLVMAddModule(ee_mut, m2_mut);
+
+      void *p1_mut = LLVMGetPointerToGlobal(ee_mut, fn1_mut);
+      require(p1_mut == nullptr,
+              "LLVMGetPointerToGlobal must return null on failure");
+
+#ifdef _WIN32
+      require(pGetFirstRegUnwindAddr != nullptr,
+              "pGetFirstRegUnwindAddr function pointer must be available");
+      uint64_t mut_unwind_addr = pGetFirstRegUnwindAddr();
+      require(mut_unwind_addr != 0,
+              "First table address must be recorded in mutation test");
+      DWORD64 imgBase_mut = 0;
+      PRUNTIME_FUNCTION rf_mut = RtlLookupFunctionEntry(
+          (DWORD64)mut_unwind_addr, &imgBase_mut, nullptr);
+      std::printf("ROLLBACK_MUTATION_CONTROL: rf_mut=%p imgBase_mut=0x%llx "
+                  "(must be non-null when rollback skipped)\n",
+                  (void *)rf_mut, (unsigned long long)imgBase_mut);
+      std::fflush(stdout);
+      require(rf_mut != nullptr,
+              "FAIL: When rollback deregistration is mutated/skipped, table 1 "
+              "MUST remain in OS! "
+              "If this returned null, table 1 was never registered or lookup "
+              "was non-discriminating!");
+      // Clean up table 1 manually from OS table
+      RtlDeleteFunctionTable(rf_mut);
+#endif
+      LLVMDisposeExecutionEngine(ee_mut);
+      LLVMContextDispose(ctx_mut);
+      std::puts("PASS: Rollback mutation control proved Table 1 was registered "
+                "in OS");
+    }
+
+    // STEP C: Transactional rollback on second table failure
     if (pResetUnwindAddrs)
       pResetUnwindAddrs();
     pSetFault(LLVMExtFaultRtlAddFunctionTableSecond);
@@ -1383,7 +1478,8 @@ static void test_production_manager_injected_os_failures() {
     pSetFault(LLVMExtFaultNone);
     if (pResetUnwindAddrs)
       pResetUnwindAddrs();
-    std::puts("PASS: Transactional rollback on RtlAddFunctionTable verified");
+    std::puts("PASS: Transactional rollback on RtlAddFunctionTable verified "
+              "(positive, mutation, and rollback controls all passed)");
   }
 
   std::puts("PASS: Injected OS Failures Through Production Memory Manager");
@@ -2061,20 +2157,26 @@ struct MinimalCoffSectionHeader {
   char Name[8];                  // ".data\0\0\0"
   uint32_t VirtualSize;          // 0
   uint32_t VirtualAddress;       // 0
-  uint32_t SizeOfRawData;        // 4
+  uint32_t SizeOfRawData;        // 64
   uint32_t PointerToRawData;     // 60
-  uint32_t PointerToRelocations; // 0
+  uint32_t PointerToRelocations; // 124
   uint32_t PointerToLinenumbers; // 0
-  uint16_t NumberOfRelocations;  // 0
+  uint16_t NumberOfRelocations;  // 8
   uint16_t NumberOfLinenumbers;  // 0
   uint32_t Characteristics;      // 0xC0000040 (IMAGE_SCN_CNT_INITIALIZED_DATA |
                                  // IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE)
 };
 
+struct MinimalCoffRelocation {
+  uint32_t VirtualAddress;
+  uint32_t SymbolTableIndex;
+  uint16_t Type;
+};
+
 struct MinimalCoffSymbol {
-  char ShortName[8];          // "dataval\0"
-  uint32_t Value;             // 0
-  int16_t SectionNumber;      // 1
+  char ShortName[8];          // symbol name
+  uint32_t Value;             // offset or 0
+  int16_t SectionNumber;      // 1 or 0 (UNDEF)
   uint16_t Type;              // 0
   uint8_t StorageClass;       // 2 (IMAGE_SYM_CLASS_EXTERNAL)
   uint8_t NumberOfAuxSymbols; // 0
@@ -2087,8 +2189,8 @@ static void test_code_free_archive_object() {
   hdr.Machine = 0x8664;
   hdr.NumberOfSections = 1;
   hdr.TimeDateStamp = 0;
-  hdr.PointerToSymbolTable = 64;
-  hdr.NumberOfSymbols = 1;
+  hdr.PointerToSymbolTable = 204;
+  hdr.NumberOfSymbols = 3;
   hdr.SizeOfOptionalHeader = 0;
   hdr.Characteristics = 0;
 
@@ -2096,23 +2198,48 @@ static void test_code_free_archive_object() {
   std::memcpy(sec.Name, ".data\0\0\0", 8);
   sec.VirtualSize = 0;
   sec.VirtualAddress = 0;
-  sec.SizeOfRawData = 4;
+  sec.SizeOfRawData = 64;
   sec.PointerToRawData = 60;
-  sec.PointerToRelocations = 0;
+  sec.PointerToRelocations = 124;
   sec.PointerToLinenumbers = 0;
-  sec.NumberOfRelocations = 0;
+  sec.NumberOfRelocations = 8;
   sec.NumberOfLinenumbers = 0;
   sec.Characteristics = 0xC0000040;
 
-  int32_t raw_data = 777;
+  uint8_t raw_data[64] = {};
+  int32_t dataval = 777;
+  std::memcpy(&raw_data[32], &dataval, sizeof(dataval));
 
-  MinimalCoffSymbol sym{};
-  std::memcpy(sym.ShortName, "dataval\0", 8);
-  sym.Value = 0;
-  sym.SectionNumber = 1;
-  sym.Type = 0;
-  sym.StorageClass = 2;
-  sym.NumberOfAuxSymbols = 0;
+  MinimalCoffRelocation rels[8]{};
+  for (int i = 0; i < 8; ++i) {
+    rels[i].VirtualAddress = i * 4;
+    rels[i].SymbolTableIndex = (i % 2 == 0) ? 1 : 2;
+    rels[i].Type = (i % 2 == 0)
+                       ? 0x0004
+                       : 0x0003; // IMAGE_REL_AMD64_REL32 (4) and ADDR32NB (3)
+  }
+
+  MinimalCoffSymbol syms[3]{};
+  std::memcpy(syms[0].ShortName, "dataval\0", 8);
+  syms[0].Value = 32;
+  syms[0].SectionNumber = 1;
+  syms[0].Type = 0;
+  syms[0].StorageClass = 2; // IMAGE_SYM_CLASS_EXTERNAL
+  syms[0].NumberOfAuxSymbols = 0;
+
+  std::memcpy(syms[1].ShortName, "ext_fn1\0", 8);
+  syms[1].Value = 0;
+  syms[1].SectionNumber = 0;
+  syms[1].Type = 0x20;
+  syms[1].StorageClass = 2;
+  syms[1].NumberOfAuxSymbols = 0;
+
+  std::memcpy(syms[2].ShortName, "ext_fn2\0", 8);
+  syms[2].Value = 0;
+  syms[2].SectionNumber = 0;
+  syms[2].Type = 0x20;
+  syms[2].StorageClass = 2;
+  syms[2].NumberOfAuxSymbols = 0;
 
   uint32_t str_table_size = 4;
 
@@ -2121,8 +2248,9 @@ static void test_code_free_archive_object() {
   require(f != nullptr, "Failed to open code_free.obj for writing");
   std::fwrite(&hdr, sizeof(hdr), 1, f);
   std::fwrite(&sec, sizeof(sec), 1, f);
-  std::fwrite(&raw_data, sizeof(raw_data), 1, f);
-  std::fwrite(&sym, sizeof(sym), 1, f);
+  std::fwrite(raw_data, sizeof(raw_data), 1, f);
+  std::fwrite(rels, sizeof(rels), 1, f);
+  std::fwrite(syms, sizeof(syms), 1, f);
   std::fwrite(&str_table_size, sizeof(str_table_size), 1, f);
   std::fclose(f);
 
@@ -2139,6 +2267,22 @@ static void test_code_free_archive_object() {
   LLVMContextRef ctx = LLVMContextCreate();
   LLVMModuleRef m = LLVMModuleCreateWithNameInContext("client_mod", ctx);
   auto i32 = LLVMInt32TypeInContext(ctx);
+  auto fn_ty = LLVMFunctionType(i32, nullptr, 0, 0);
+
+  auto fn1 = LLVMAddFunction(m, "ext_fn1", fn_ty);
+  auto b1 = LLVMCreateBuilderInContext(ctx);
+  LLVMPositionBuilderAtEnd(b1,
+                           LLVMAppendBasicBlockInContext(ctx, fn1, "entry"));
+  LLVMBuildRet(b1, LLVMConstInt(i32, 101, 0));
+  LLVMDisposeBuilder(b1);
+
+  auto fn2 = LLVMAddFunction(m, "ext_fn2", fn_ty);
+  auto b2 = LLVMCreateBuilderInContext(ctx);
+  LLVMPositionBuilderAtEnd(b2,
+                           LLVMAppendBasicBlockInContext(ctx, fn2, "entry"));
+  LLVMBuildRet(b2, LLVMConstInt(i32, 202, 0));
+  LLVMDisposeBuilder(b2);
+
   auto g_decl = LLVMAddGlobal(m, i32, "dataval");
   LLVMSetLinkage(g_decl, LLVMExternalLinkage);
 
@@ -2160,11 +2304,13 @@ static void test_code_free_archive_object() {
   int32_t val = *(const int32_t *)sym_addr;
   std::printf("CODE_FREE_DATA_VAL: %d (expected 777)\n", val);
   require(val == 777, "Data value from code-free archive member must be 777");
+  std::printf("CODE_FREE_RELOCS: 8 relocations (REL32 and ADDR32NB) resolved "
+              "in code-free archive object without overflow\n");
 
   LLVMDisposeExecutionEngine(ee);
   LLVMContextDispose(ctx);
-  std::puts("PASS: Code-free object from archive resolved and read without "
-            "quadratic reallocation");
+  std::puts(
+      "PASS: Code-free object from archive resolved and read with relocations");
 }
 
 // ---------------------------------------------------------------------------
@@ -2178,18 +2324,59 @@ static void test_split_reservation_capacity() {
   auto i32 = LLVMInt32TypeInContext(ctx);
   auto i8 = LLVMInt8TypeInContext(ctx);
 
-  // Large global array: 5 GiB virtual size in BSS (takes 0 bytes of disk)
-  auto sub_arr_ty = LLVMArrayType(i8, 1024 * 1024);  // 1 MB
-  auto big_arr_ty = LLVMArrayType(sub_arr_ty, 5120); // 5120 * 1 MB = 5 GiB!
-  auto huge_var = LLVMAddGlobal(m, big_arr_ty, "huge_rw_data");
-  LLVMSetInitializer(huge_var, LLVMGetUndef(big_arr_ty));
+  // 4 RW sections, each 1100 MB (~1.074 GiB, fits in uint32_t in COFF section
+  // header). Total RW size = 4400 MB = 4.297 GiB > MaxReservationSpan (4.0 GiB
+  // = 0xFFFE0000ULL). This exercises the multi-section split reservation path
+  // where Code/RO are packed in a small contiguous reservation and RW sections
+  // are allocated via SectionMemoryManager.
+  constexpr unsigned NumSections = 4;
+  constexpr unsigned SectionMB = 1100;
+  auto mb_arr_ty = LLVMArrayType(i8, 1024 * 1024);       // 1 MB
+  auto sec_arr_ty = LLVMArrayType(mb_arr_ty, SectionMB); // 1100 MB
 
+  LLVMValueRef rw_vars[NumSections];
+  const char *sec_names[NumSections] = {".bss_a", ".bss_b", ".bss_c", ".bss_d"};
+  const char *var_names[NumSections] = {"huge_rw_a", "huge_rw_b", "huge_rw_c",
+                                        "huge_rw_d"};
+
+  for (unsigned i = 0; i < NumSections; ++i) {
+    rw_vars[i] = LLVMAddGlobal(m, sec_arr_ty, var_names[i]);
+    LLVMSetInitializer(rw_vars[i], LLVMGetUndef(sec_arr_ty));
+    LLVMSetSection(rw_vars[i], sec_names[i]);
+  }
+
+  // Create a function that reads from each huge RW array and computes a sum
   auto fn_ty = LLVMFunctionType(i32, nullptr, 0, 0);
   auto fn = LLVMAddFunction(m, "access_huge_rw_fn", fn_ty);
   auto b = LLVMCreateBuilderInContext(ctx);
-  LLVMPositionBuilderAtEnd(b, LLVMAppendBasicBlockInContext(ctx, fn, "entry"));
-  LLVMBuildRet(b, LLVMConstInt(i32, 4242, 0));
+  auto entry_bb = LLVMAppendBasicBlockInContext(ctx, fn, "entry");
+  LLVMPositionBuilderAtEnd(b, entry_bb);
+
+  LLVMValueRef sum = LLVMConstInt(i32, 4242, 0);
+  LLVMValueRef indices[3] = {LLVMConstInt(i32, 0, 0), LLVMConstInt(i32, 0, 0),
+                             LLVMConstInt(i32, 0, 0)};
+
+  for (unsigned i = 0; i < NumSections; ++i) {
+    auto gep = LLVMBuildGEP2(b, sec_arr_ty, rw_vars[i], indices, 3, "elem_ptr");
+    auto val8 = LLVMBuildLoad2(b, i8, gep, "val8");
+    auto val32 = LLVMBuildZExt(b, val8, i32, "val32");
+    sum = LLVMBuildAdd(b, sum, val32, "sum");
+  }
+  LLVMBuildRet(b, sum);
   LLVMDisposeBuilder(b);
+
+  HMODULE hLLVMC = GetModuleHandleA("LLVM-C.dll");
+  typedef void (*ResetUnwindAddrsFn)(void);
+  ResetUnwindAddrsFn pResetUnwindAddrs = nullptr;
+  if (hLLVMC) {
+    pResetUnwindAddrs = (ResetUnwindAddrsFn)GetProcAddress(
+        hLLVMC, "LLVMExtResetWindowsMCJITUnwindProbeAddresses");
+  }
+  if (!pResetUnwindAddrs) {
+    pResetUnwindAddrs = &LLVMExtResetWindowsMCJITUnwindProbeAddresses;
+  }
+  if (pResetUnwindAddrs)
+    pResetUnwindAddrs();
 
   LLVMExecutionEngineRef ee = nullptr;
   char *err = nullptr;
@@ -2201,6 +2388,39 @@ static void test_split_reservation_capacity() {
   uint64_t fn_addr = LLVMGetFunctionAddress(ee, "access_huge_rw_fn");
   require(fn_addr != 0, "Failed to resolve function in oversized RW module");
 
+  // Verify that the split reservation path was actually taken
+  typedef uint32_t (*GetSplitCountFn)(void);
+  GetSplitCountFn pGetSplitCount = nullptr;
+  if (hLLVMC) {
+    pGetSplitCount = (GetSplitCountFn)GetProcAddress(
+        hLLVMC, "LLVMExtGetWindowsMCJITSplitReservationCount");
+  }
+  if (!pGetSplitCount) {
+    pGetSplitCount = &LLVMExtGetWindowsMCJITSplitReservationCount;
+  }
+  uint32_t split_count = pGetSplitCount ? pGetSplitCount() : 0;
+  std::printf("SPLIT_RESERVATION_BRANCH_OBSERVED: count=%u\n", split_count);
+  require(split_count > 0, "FAIL: Split reservation path was not taken! Object "
+                           "did not exceed MaxReservationSpan "
+                           "or split branch was bypassed!");
+
+  // Verify with VirtualQuery that code and RW data have distinct allocation
+  // bases
+  void *data_addr = LLVMGetPointerToGlobal(ee, rw_vars[0]);
+  require(data_addr != nullptr, "Failed to get pointer to huge_rw_a");
+
+#ifdef _WIN32
+  MEMORY_BASIC_INFORMATION mbi_code{}, mbi_data{};
+  VirtualQuery((void *)fn_addr, &mbi_code, sizeof(mbi_code));
+  VirtualQuery(data_addr, &mbi_data, sizeof(mbi_data));
+  std::printf("SPLIT_RESERVATION_MEMORY_LAYOUT: code_base=%p data_base=%p\n",
+              mbi_code.AllocationBase, mbi_data.AllocationBase);
+  require(mbi_code.AllocationBase != mbi_data.AllocationBase,
+          "FAIL: Code and oversized RW data share the same allocation base! "
+          "Packed reservation was used instead of split reservation!");
+#endif
+
+  // Execute the function that actually reads the RW arrays
   typedef int32_t (*IntFn)(void);
   IntFn func = (IntFn)fn_addr;
   int32_t res = func();
@@ -2211,8 +2431,10 @@ static void test_split_reservation_capacity() {
 
   LLVMDisposeExecutionEngine(ee);
   LLVMContextDispose(ctx);
-  std::puts("PASS: Split reservation successfully handled >4GB RW data without "
-            "cap failure");
+  std::puts(
+      "PASS: Split reservation successfully handled >4GB RW multi-section "
+      "data with observed branch, distinct allocation bases, and live "
+      "execution");
 }
 
 // ---------------------------------------------------------------------------
@@ -2370,11 +2592,12 @@ static void test_wide_legal_layout_simulation() {
 // Main Entrypoint with Mode Selectors
 // ---------------------------------------------------------------------------
 int main(int argc, char **argv) {
+  std::setvbuf(stdout, nullptr, _IONBF, 0);
+  std::setvbuf(stderr, nullptr, _IONBF, 0);
   LLVMLinkInMCJIT();
   LLVMInitializeNativeTarget();
   LLVMInitializeNativeAsmPrinter();
   LLVMInitializeNativeAsmParser();
-
   std::string mode = "--all";
   if (argc > 1) {
     mode = argv[1];

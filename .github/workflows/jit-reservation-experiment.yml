@@ -49,7 +49,7 @@ jobs:
         id: llvm-cache
         with:
           path: ${{ runner.temp }}/llvm-build
-          key: windows-2022-llvm-20.1.7-c-dylib-${{ hashFiles('jit-reservation-experiment/llvm20-windows-mcjit.patch') }}-5
+          key: windows-2022-llvm-20.1.7-c-dylib-${{ hashFiles('jit-reservation-experiment/llvm20-windows-mcjit.patch') }}-6
       - name: Configure LLVM C dylib
         shell: pwsh
         run: |
@@ -75,7 +75,7 @@ jobs:
         if: steps.llvm-cache.outputs.cache-hit != 'true'
         with:
           path: ${{ runner.temp }}/llvm-build
-          key: windows-2022-llvm-20.1.7-c-dylib-${{ hashFiles('jit-reservation-experiment/llvm20-windows-mcjit.patch') }}-5
+          key: windows-2022-llvm-20.1.7-c-dylib-${{ hashFiles('jit-reservation-experiment/llvm20-windows-mcjit.patch') }}-6
       - name: Build proof against matching LLVM-C DLL
         shell: pwsh
         run: |
@@ -158,6 +158,16 @@ jobs:
             -DLLVM_ENABLE_ZSTD=OFF `
             -DLLVM_ENABLE_ZLIB=OFF
           if ($LASTEXITCODE) { throw "CMake reconfigure with LLVM_ENABLE_TEST_HOOKS=OFF failed" }
-          cmake --build "$env:RUNNER_TEMP/llvm-build" --target LLVMExecutionEngine
-          if ($LASTEXITCODE) { throw "Product build with LLVM_ENABLE_TEST_HOOKS=OFF failed to compile LLVMExecutionEngine!" }
-          Write-Host "Product build without test hooks verified successfully."
+          cmake --build "$env:RUNNER_TEMP/llvm-build" --target LLVM-C
+          if ($LASTEXITCODE) { throw "Product build with LLVM_ENABLE_TEST_HOOKS=OFF failed to compile LLVM-C!" }
+          Write-Host "Verifying exports of product LLVM-C.dll..."
+          $exports = dumpbin /exports "$env:RUNNER_TEMP/llvm-build/bin/LLVM-C.dll"
+          $faultExports = $exports | Select-String "Fault|UnwindProbe|FirstRegisteredUnwind|SplitReservationCount"
+          if ($faultExports) {
+            throw "Found test hook exports in production LLVM-C.dll: $faultExports"
+          }
+          $prodExport = $exports | Select-String "LLVMExtCreateWindowsMCJITCompilerForModule"
+          if (-not $prodExport) {
+            throw "Expected LLVMExtCreateWindowsMCJITCompilerForModule in product LLVM-C.dll exports"
+          }
+          Write-Host "Product build without test hooks verified successfully: no fault exports in production LLVM-C.dll."

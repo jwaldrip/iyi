@@ -100,7 +100,7 @@ index c5fc9bdb4..d8573a7b5 100644
  
  void LLVMDisposeMCJITMemoryManager(LLVMMCJITMemoryManagerRef MM);
  
-@@ -193,6 +191,41 @@ LLVMJITEventListenerRef LLVMCreateIntelJITEventListener(void);
+@@ -193,6 +191,45 @@ LLVMJITEventListenerRef LLVMCreateIntelJITEventListener(void);
  LLVMJITEventListenerRef LLVMCreateOProfileJITEventListener(void);
  LLVMJITEventListenerRef LLVMCreatePerfJITEventListener(void);
  
@@ -120,6 +120,7 @@ index c5fc9bdb4..d8573a7b5 100644
 + */
 +const char *LLVMExtGetWindowsMCJITBuildIdentity(void);
 +
++#ifdef LLVM_ENABLE_TEST_HOOKS
 +enum LLVMExtWindowsMCJITFaultFlags {
 +  LLVMExtFaultNone = 0,
 +  LLVMExtFaultVirtualProtectCode = 1 << 0,
@@ -128,12 +129,15 @@ index c5fc9bdb4..d8573a7b5 100644
 +  LLVMExtFaultRtlAddFunctionTable = 1 << 3,
 +  LLVMExtFaultVirtualAllocCommit = 1 << 4,
 +  LLVMExtFaultRtlAddFunctionTableSecond = 1 << 5,
++  LLVMExtFaultSkipRollbackDeregister = 1 << 6,
 +};
 +
 +void LLVMExtSetWindowsMCJITFaultInjection(uint32_t Flags);
 +uint64_t LLVMExtGetWindowsMCJITLastUnwindProbeAddress(void);
 +uint64_t LLVMExtGetWindowsMCJITFirstRegisteredUnwindAddress(void);
 +void LLVMExtResetWindowsMCJITUnwindProbeAddresses(void);
++uint32_t LLVMExtGetWindowsMCJITSplitReservationCount(void);
++#endif
 +
 +LLVMBool LLVMExtAddArchiveFile(LLVMExecutionEngineRef EE, const char *Path,
 +                               char **OutError);
@@ -417,7 +421,7 @@ new file mode 100644
 index 000000000..455480ebe
 --- /dev/null
 +++ b/llvm/include/llvm/ExecutionEngine/WindowsMCJITMemoryManager.h
-@@ -0,0 +1,116 @@
+@@ -0,0 +1,119 @@
 +//===- WindowsMCJITMemoryManager.h - Memory manager for Windows MCJIT -*- C++
 +//-*-===//
 +//
@@ -453,6 +457,7 @@ index 000000000..455480ebe
 +  FaultRtlAddFunctionTable = 1 << 3,
 +  FaultVirtualAllocCommit = 1 << 4,
 +  FaultRtlAddFunctionTableSecond = 1 << 5,
++  FaultSkipRollbackDeregister = 1 << 6,
 +};
 +
 +#ifdef LLVM_ENABLE_TEST_HOOKS
@@ -461,12 +466,14 @@ index 000000000..455480ebe
 +uint64_t getWindowsMCJITLastUnwindProbeAddress();
 +uint64_t getWindowsMCJITFirstRegisteredUnwindAddress();
 +void resetWindowsMCJITUnwindProbeAddresses();
++uint32_t getWindowsMCJITSplitReservationCount();
 +#else
 +inline void setWindowsMCJITFaultInjection(uint32_t) {}
 +inline uint32_t getWindowsMCJITFaultInjection() { return 0; }
 +inline uint64_t getWindowsMCJITLastUnwindProbeAddress() { return 0; }
 +inline uint64_t getWindowsMCJITFirstRegisteredUnwindAddress() { return 0; }
 +inline void resetWindowsMCJITUnwindProbeAddresses() {}
++inline uint32_t getWindowsMCJITSplitReservationCount() { return 0; }
 +#endif
 +class WindowsMCJITMemoryManager : public SectionMemoryManager {
 +public:
@@ -972,11 +979,11 @@ index 700fb03ad..5a3947b28 100644
 +void LLVMExtResetWindowsMCJITUnwindProbeAddresses(void) {
 +  llvm::resetWindowsMCJITUnwindProbeAddresses();
 +}
-+#else
-+void LLVMExtSetWindowsMCJITFaultInjection(uint32_t Flags) {}
-+uint64_t LLVMExtGetWindowsMCJITLastUnwindProbeAddress(void) { return 0; }
-+uint64_t LLVMExtGetWindowsMCJITFirstRegisteredUnwindAddress(void) { return 0; }
-+void LLVMExtResetWindowsMCJITUnwindProbeAddresses(void) {}
++
++uint32_t LLVMExtGetWindowsMCJITSplitReservationCount(void) {
++  return llvm::getWindowsMCJITSplitReservationCount();
++}
++#endif
  #endif
 +
 +LLVMBool LLVMExtAddArchiveFile(LLVMExecutionEngineRef EE, const char *Path,
@@ -1570,13 +1577,18 @@ diff --git a/llvm/lib/ExecutionEngine/MCJIT/MCJIT.h b/llvm/lib/ExecutionEngine/M
 index f6c4cdbb8..6a16d7f82 100644
 --- a/llvm/lib/ExecutionEngine/MCJIT/MCJIT.h
 +++ b/llvm/lib/ExecutionEngine/MCJIT/MCJIT.h
-@@ -271,7 +271,14 @@ public:
+@@ -271,7 +271,19 @@ public:
    /// This is the address which will be used for relocation resolution.
    void mapSectionAddress(const void *LocalAddress,
                           uint64_t TargetAddress) override {
 +    std::lock_guard<sys::Mutex> locked(lock);
 +    if (HasFailed)
 +      return;
++    if (LoadedObjects.empty()) {
++      ErrMsg = "Attempting to remap address of unknown section";
++      HasFailed = true;
++      return;
++    }
      Dyld.mapSectionAddress(LocalAddress, TargetAddress);
 +    if (Dyld.hasError()) {
 +      ErrMsg = Dyld.getErrorString().str();
@@ -2055,6 +2067,29 @@ index b3798f15a..348398525 100644
    return LoadedObjInfo;
  }
  
+@@ -1414,15 +1471,18 @@ void RuntimeDyld::reassignSectionAddress
+   Dyld->reassignSectionAddress(SectionID, Addr);
+ }
+ 
+ void RuntimeDyld::mapSectionAddress(const void *LocalAddress,
+                                     uint64_t TargetAddress) {
+-  Dyld->mapSectionAddress(LocalAddress, TargetAddress);
++  if (Dyld)
++    Dyld->mapSectionAddress(LocalAddress, TargetAddress);
+ }
+ 
+-bool RuntimeDyld::hasError() { return Dyld->hasError(); }
++bool RuntimeDyld::hasError() { return Dyld ? Dyld->hasError() : false; }
+ 
+-StringRef RuntimeDyld::getErrorString() { return Dyld->getErrorString(); }
++StringRef RuntimeDyld::getErrorString() {
++  return Dyld ? Dyld->getErrorString() : "";
++}
+ 
+ void RuntimeDyld::finalizeWithMemoryManagerLocking() {
+   bool MemoryFinalizationLocked = MemMgr.FinalizationLocked;
+   MemMgr.FinalizationLocked = true;
+
 diff --git a/llvm/lib/ExecutionEngine/RuntimeDyld/RuntimeDyldImpl.h b/llvm/lib/ExecutionEngine/RuntimeDyld/RuntimeDyldImpl.h
 index 24b03a058..bc5847058 100644
 --- a/llvm/lib/ExecutionEngine/RuntimeDyld/RuntimeDyldImpl.h
@@ -2508,7 +2543,7 @@ new file mode 100644
 index 000000000..9ae1920ae
 --- /dev/null
 +++ b/llvm/lib/ExecutionEngine/WindowsMCJITMemoryManager.cpp
-@@ -0,0 +1,600 @@
+@@ -0,0 +1,614 @@
 +//===- WindowsMCJITMemoryManager.cpp - Memory manager for Windows MCJIT -*- C++
 +//-*-===//
 +//
@@ -2588,11 +2623,13 @@ index 000000000..9ae1920ae
 +static std::atomic<uint32_t> FaultInjectionFlags{0};
 +static std::atomic<uint64_t> LastUnwindProbeAddress{0};
 +static std::atomic<uint64_t> FirstRegisteredUnwindAddress{0};
++static std::atomic<uint32_t> SplitReservationCount{0};
 +
 +void setWindowsMCJITFaultInjection(uint32_t Flags) {
 +  FaultInjectionFlags.store(Flags, std::memory_order_relaxed);
 +  LastUnwindProbeAddress.store(0, std::memory_order_relaxed);
 +  FirstRegisteredUnwindAddress.store(0, std::memory_order_relaxed);
++  SplitReservationCount.store(0, std::memory_order_relaxed);
 +}
 +
 +uint32_t getWindowsMCJITFaultInjection() {
@@ -2610,6 +2647,11 @@ index 000000000..9ae1920ae
 +void resetWindowsMCJITUnwindProbeAddresses() {
 +  LastUnwindProbeAddress.store(0, std::memory_order_relaxed);
 +  FirstRegisteredUnwindAddress.store(0, std::memory_order_relaxed);
++  SplitReservationCount.store(0, std::memory_order_relaxed);
++}
++
++uint32_t getWindowsMCJITSplitReservationCount() {
++  return SplitReservationCount.load(std::memory_order_relaxed);
 +}
 +#endif
 +
@@ -2720,6 +2762,9 @@ index 000000000..9ae1920ae
 +      void *BasePtr =
 +          VirtualAlloc(nullptr, CodeROSpan, MEM_RESERVE, PAGE_NOACCESS);
 +      if (BasePtr) {
++#ifdef LLVM_ENABLE_TEST_HOOKS
++        SplitReservationCount.fetch_add(1, std::memory_order_relaxed);
++#endif
 +        auto Res = std::make_unique<PackedReservation>();
 +        Res->Base = static_cast<uint8_t *>(BasePtr);
 +        Res->TotalReserved = CodeROSpan;
@@ -3025,8 +3070,10 @@ index 000000000..9ae1920ae
 +    if (!Success) {
 +      if (ErrMsg)
 +        *ErrMsg = "RtlAddFunctionTable returned error";
-+      for (auto &R : NewlyRegistered) {
-+        RtlDeleteFunctionTable(reinterpret_cast<PRUNTIME_FUNCTION>(R.Addr));
++      if (!(Faults & FaultSkipRollbackDeregister)) {
++        for (auto &R : NewlyRegistered) {
++          RtlDeleteFunctionTable(reinterpret_cast<PRUNTIME_FUNCTION>(R.Addr));
++        }
 +      }
 +      NewlyRegistered.clear();
 +      PendingUnwindTables.clear();
@@ -3039,8 +3086,10 @@ index 000000000..9ae1920ae
 +    if (InjectFault) {
 +      if (ErrMsg)
 +        *ErrMsg = "RtlAddFunctionTable returned error";
-+      for (auto &R : NewlyRegistered) {
-+        RtlDeleteFunctionTable(reinterpret_cast<PRUNTIME_FUNCTION>(R.Addr));
++      if (!(Faults & FaultSkipRollbackDeregister)) {
++        for (auto &R : NewlyRegistered) {
++          RtlDeleteFunctionTable(reinterpret_cast<PRUNTIME_FUNCTION>(R.Addr));
++        }
 +      }
 +      NewlyRegistered.clear();
 +      PendingUnwindTables.clear();
