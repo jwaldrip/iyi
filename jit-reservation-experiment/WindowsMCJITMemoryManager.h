@@ -25,6 +25,17 @@
 #include <vector>
 
 namespace llvm {
+enum WindowsMCJITFaultFlags : uint32_t {
+  FaultNone = 0,
+  FaultVirtualProtectCode = 1 << 0,
+  FaultVirtualProtectRO = 1 << 1,
+  FaultFlushInstructionCache = 1 << 2,
+  FaultRtlAddFunctionTable = 1 << 3,
+  FaultVirtualAllocCommit = 1 << 4,
+};
+
+void setWindowsMCJITFaultInjection(uint32_t Flags);
+uint32_t getWindowsMCJITFaultInjection();
 
 class WindowsMCJITMemoryManager : public SectionMemoryManager {
 public:
@@ -81,6 +92,8 @@ private:
 
   std::vector<UnwindTableEntry> PendingUnwindTables;
   std::vector<UnwindTableEntry> ActiveUnwindTables;
+  bool FinalizationFailed = false;
+  std::string FinalizationErrMsg;
 
   uint8_t *allocateFromReservation(int Group, uintptr_t Size,
                                    unsigned Alignment, unsigned SectionID,

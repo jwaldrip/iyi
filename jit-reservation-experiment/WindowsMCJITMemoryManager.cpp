@@ -13,6 +13,7 @@
 
 #include "llvm/ExecutionEngine/WindowsMCJITMemoryManager.h"
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <limits>
 
@@ -72,6 +73,15 @@ static inline BOOLEAN RtlDeleteFunctionTable(PRUNTIME_FUNCTION FunctionTable) {
 #endif
 
 namespace llvm {
+static std::atomic<uint32_t> FaultInjectionFlags{0};
+
+void setWindowsMCJITFaultInjection(uint32_t Flags) {
+  FaultInjectionFlags.store(Flags, std::memory_order_relaxed);
+}
+
+uint32_t getWindowsMCJITFaultInjection() {
+  return FaultInjectionFlags.load(std::memory_order_relaxed);
+}
 
 static bool checkedAdd(size_t a, size_t b, size_t &result) {
   if (a > SIZE_MAX - b)
@@ -268,6 +278,16 @@ uint8_t *WindowsMCJITMemoryManager::allocateDataSection(uintptr_t Size,
 }
 
 bool WindowsMCJITMemoryManager::finalizeMemory(std::string *ErrMsg) {
+  if (FinalizationFailed) {
+    if (ErrMsg)
+      *ErrMsg =
+          FinalizationErrMsg.empty()
+              ? "Memory manager is in a permanent failed state after prior "
+                "finalization failure"
+              : FinalizationErrMsg;
+    return true;
+  }
+
   // Step 1: Validate and sort all pending unwind tables in-place while their
   // memory is still PAGE_READWRITE. If any record or table is invalid, fail
   // immediately before modifying any protections.
@@ -280,6 +300,10 @@ bool WindowsMCJITMemoryManager::finalizeMemory(std::string *ErrMsg) {
       if (ErrMsg)
         *ErrMsg = ".pdata section size is not an integral number of "
                   "RUNTIME_FUNCTION records";
+      FinalizationFailed = true;
+      if (ErrMsg)
+        FinalizationErrMsg = *ErrMsg;
+      PendingUnwindTables.clear();
       return true;
     }
 
@@ -287,6 +311,10 @@ bool WindowsMCJITMemoryManager::finalizeMemory(std::string *ErrMsg) {
     if (Count > std::numeric_limits<DWORD>::max()) {
       if (ErrMsg)
         *ErrMsg = ".pdata section record count exceeds 32-bit limit";
+      FinalizationFailed = true;
+      if (ErrMsg)
+        FinalizationErrMsg = *ErrMsg;
+      PendingUnwindTables.clear();
       return true;
     }
 
@@ -296,6 +324,10 @@ bool WindowsMCJITMemoryManager::finalizeMemory(std::string *ErrMsg) {
         if (ErrMsg)
           *ErrMsg =
               "Invalid RUNTIME_FUNCTION record: BeginAddress >= EndAddress";
+        FinalizationFailed = true;
+        if (ErrMsg)
+          FinalizationErrMsg = *ErrMsg;
+        PendingUnwindTables.clear();
         return true;
       }
     }
@@ -310,6 +342,7 @@ bool WindowsMCJITMemoryManager::finalizeMemory(std::string *ErrMsg) {
 
   // Step 2: Ensure complete used group prefixes (including alignment gaps) are
   // committed, then apply page protections and instruction cache flushes.
+  uint32_t Faults = FaultInjectionFlags.load(std::memory_order_relaxed);
   for (auto &Res : Reservations) {
     if (!Res || Res->Finalized || !Res->Base)
       continue;
@@ -321,29 +354,44 @@ bool WindowsMCJITMemoryManager::finalizeMemory(std::string *ErrMsg) {
       checkedRoundUp(CodeUsed, PageSize, AlignedCodeUsed);
       // Ensure the complete used prefix is committed before calling
       // VirtualProtect
-      if (!VirtualAlloc(Res->Base + Res->GroupOffsets[0], AlignedCodeUsed,
+      if ((Faults & FaultVirtualAllocCommit) ||
+          !VirtualAlloc(Res->Base + Res->GroupOffsets[0], AlignedCodeUsed,
                         MEM_COMMIT, PAGE_READWRITE)) {
         if (ErrMsg)
           *ErrMsg =
               "VirtualAlloc MEM_COMMIT failed for code section prefix with OS "
               "error " +
               std::to_string(GetLastError());
+        FinalizationFailed = true;
+        if (ErrMsg)
+          FinalizationErrMsg = *ErrMsg;
+        PendingUnwindTables.clear();
         return true;
       }
       DWORD OldProt = 0;
-      if (!VirtualProtect(Res->Base + Res->GroupOffsets[0], AlignedCodeUsed,
+      if ((Faults & FaultVirtualProtectCode) ||
+          !VirtualProtect(Res->Base + Res->GroupOffsets[0], AlignedCodeUsed,
                           PAGE_EXECUTE_READ, &OldProt)) {
         if (ErrMsg)
           *ErrMsg = "VirtualProtect PAGE_EXECUTE_READ failed with OS error " +
                     std::to_string(GetLastError());
+        FinalizationFailed = true;
+        if (ErrMsg)
+          FinalizationErrMsg = *ErrMsg;
+        PendingUnwindTables.clear();
         return true;
       }
-      if (!FlushInstructionCache(GetCurrentProcess(),
+      if ((Faults & FaultFlushInstructionCache) ||
+          !FlushInstructionCache(GetCurrentProcess(),
                                  Res->Base + Res->GroupOffsets[0],
                                  AlignedCodeUsed)) {
         if (ErrMsg)
           *ErrMsg = "FlushInstructionCache failed with OS error " +
                     std::to_string(GetLastError());
+        FinalizationFailed = true;
+        if (ErrMsg)
+          FinalizationErrMsg = *ErrMsg;
+        PendingUnwindTables.clear();
         return true;
       }
     }
@@ -355,20 +403,30 @@ bool WindowsMCJITMemoryManager::finalizeMemory(std::string *ErrMsg) {
       checkedRoundUp(ROUsed, PageSize, AlignedROUsed);
       // Ensure the complete used prefix is committed before calling
       // VirtualProtect
-      if (!VirtualAlloc(Res->Base + Res->GroupOffsets[1], AlignedROUsed,
+      if ((Faults & FaultVirtualAllocCommit) ||
+          !VirtualAlloc(Res->Base + Res->GroupOffsets[1], AlignedROUsed,
                         MEM_COMMIT, PAGE_READWRITE)) {
         if (ErrMsg)
           *ErrMsg = "VirtualAlloc MEM_COMMIT failed for RO data prefix with OS "
                     "error " +
                     std::to_string(GetLastError());
+        FinalizationFailed = true;
+        if (ErrMsg)
+          FinalizationErrMsg = *ErrMsg;
+        PendingUnwindTables.clear();
         return true;
       }
       DWORD OldProt = 0;
-      if (!VirtualProtect(Res->Base + Res->GroupOffsets[1], AlignedROUsed,
+      if ((Faults & FaultVirtualProtectRO) ||
+          !VirtualProtect(Res->Base + Res->GroupOffsets[1], AlignedROUsed,
                           PAGE_READONLY, &OldProt)) {
         if (ErrMsg)
           *ErrMsg = "VirtualProtect PAGE_READONLY failed with OS error " +
                     std::to_string(GetLastError());
+        FinalizationFailed = true;
+        if (ErrMsg)
+          FinalizationErrMsg = *ErrMsg;
+        PendingUnwindTables.clear();
         return true;
       }
     }
@@ -377,8 +435,13 @@ bool WindowsMCJITMemoryManager::finalizeMemory(std::string *ErrMsg) {
   }
 
   // Also finalize any legacy-allocated sections
-  if (SectionMemoryManager::finalizeMemory(ErrMsg))
+  if (SectionMemoryManager::finalizeMemory(ErrMsg)) {
+    FinalizationFailed = true;
+    if (ErrMsg)
+      FinalizationErrMsg = *ErrMsg;
+    PendingUnwindTables.clear();
     return true;
+  }
 
   // Step 3: Publish Windows unwind tables with transactional rollback
   std::vector<UnwindTableEntry> NewlyRegistered;
@@ -390,8 +453,11 @@ bool WindowsMCJITMemoryManager::finalizeMemory(std::string *ErrMsg) {
     auto *Records = reinterpret_cast<PRUNTIME_FUNCTION>(Entry.Addr);
 
 #ifdef _WIN32
-    BOOLEAN Success = RtlAddFunctionTable(Records, static_cast<DWORD>(Count),
-                                          Entry.ImageBase);
+    BOOLEAN Success =
+        (Faults & FaultRtlAddFunctionTable)
+            ? FALSE
+            : RtlAddFunctionTable(Records, static_cast<DWORD>(Count),
+                                  Entry.ImageBase);
     if (!Success) {
       if (ErrMsg)
         *ErrMsg = "RtlAddFunctionTable returned error";
@@ -399,6 +465,24 @@ bool WindowsMCJITMemoryManager::finalizeMemory(std::string *ErrMsg) {
         RtlDeleteFunctionTable(reinterpret_cast<PRUNTIME_FUNCTION>(R.Addr));
       }
       NewlyRegistered.clear();
+      PendingUnwindTables.clear();
+      FinalizationFailed = true;
+      if (ErrMsg)
+        FinalizationErrMsg = *ErrMsg;
+      return true;
+    }
+#else
+    if (Faults & FaultRtlAddFunctionTable) {
+      if (ErrMsg)
+        *ErrMsg = "RtlAddFunctionTable returned error";
+      for (auto &R : NewlyRegistered) {
+        RtlDeleteFunctionTable(reinterpret_cast<PRUNTIME_FUNCTION>(R.Addr));
+      }
+      NewlyRegistered.clear();
+      PendingUnwindTables.clear();
+      FinalizationFailed = true;
+      if (ErrMsg)
+        FinalizationErrMsg = *ErrMsg;
       return true;
     }
 #endif
@@ -416,17 +500,19 @@ bool WindowsMCJITMemoryManager::finalizeMemory(std::string *ErrMsg) {
   return false;
 }
 
-void WindowsMCJITMemoryManager::registerEHFrames(uint8_t *Addr,
-                                                 uint64_t LoadAddr,
-                                                 size_t Size) {
-  registerCOFFUnwindInfo(Addr, LoadAddr, Size, LoadAddr);
-}
-
 void WindowsMCJITMemoryManager::registerCOFFUnwindInfo(uint8_t *Addr,
                                                        uint64_t LoadAddr,
                                                        size_t Size,
                                                        uint64_t ImageBase) {
+  if (FinalizationFailed)
+    return;
   PendingUnwindTables.push_back({Addr, LoadAddr, Size, ImageBase, false});
+}
+
+void WindowsMCJITMemoryManager::registerEHFrames(uint8_t *Addr,
+                                                 uint64_t LoadAddr,
+                                                 size_t Size) {
+  registerCOFFUnwindInfo(Addr, LoadAddr, Size, LoadAddr);
 }
 
 void WindowsMCJITMemoryManager::deregisterEHFrames() {
