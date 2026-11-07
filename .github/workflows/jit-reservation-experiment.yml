@@ -49,13 +49,14 @@ jobs:
         id: llvm-cache
         with:
           path: ${{ runner.temp }}/llvm-build
-          key: windows-2022-llvm-20.1.7-c-dylib-${{ hashFiles('jit-reservation-experiment/llvm20-windows-mcjit.patch') }}-3
+          key: windows-2022-llvm-20.1.7-c-dylib-${{ hashFiles('jit-reservation-experiment/llvm20-windows-mcjit.patch') }}-4
       - name: Configure LLVM C dylib
         shell: pwsh
         run: |
           cmake -G Ninja -S "$env:RUNNER_TEMP/llvm-project/llvm" -B "$env:RUNNER_TEMP/llvm-build" `
             -DCMAKE_BUILD_TYPE=Release `
             -DLLVM_BUILD_LLVM_C_DYLIB=ON `
+            -DLLVM_ENABLE_TEST_HOOKS=ON `
             -DLLVM_TARGETS_TO_BUILD="X86;AArch64" `
             -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL `
             -DLLVM_INCLUDE_TESTS=OFF `
@@ -68,13 +69,13 @@ jobs:
       - name: Build LLVM-C dylib and import library
         shell: pwsh
         run: |
-          cmake --build "$env:RUNNER_TEMP/llvm-build" --target LLVM-C
+          cmake --build "$env:RUNNER_TEMP/llvm-build" --target LLVM-C llvm-ar
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - uses: actions/cache/save@v4
         if: steps.llvm-cache.outputs.cache-hit != 'true'
         with:
           path: ${{ runner.temp }}/llvm-build
-          key: windows-2022-llvm-20.1.7-c-dylib-${{ hashFiles('jit-reservation-experiment/llvm20-windows-mcjit.patch') }}-3
+          key: windows-2022-llvm-20.1.7-c-dylib-${{ hashFiles('jit-reservation-experiment/llvm20-windows-mcjit.patch') }}-4
       - name: Build proof against matching LLVM-C DLL
         shell: pwsh
         run: |
@@ -89,8 +90,11 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item "$env:RUNNER_TEMP/llvm-build/bin/LLVM-C.dll" "$env:RUNNER_TEMP/probe-build/" -ErrorAction SilentlyContinue
+          Copy-Item "$env:RUNNER_TEMP/llvm-build/bin/llvm-ar.exe" "$env:RUNNER_TEMP/probe-build/" -ErrorAction SilentlyContinue
           Write-Host "Verifying LLVM-C.dll existence:"
           Get-Item "$env:RUNNER_TEMP/probe-build/LLVM-C.dll" -ErrorAction SilentlyContinue
+          Write-Host "Verifying llvm-ar.exe existence:"
+          Get-Item "$env:RUNNER_TEMP/probe-build/llvm-ar.exe" -ErrorAction SilentlyContinue
       - name: Run comprehensive JIT proof suite
         shell: pwsh
         run: |

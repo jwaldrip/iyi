@@ -6,7 +6,7 @@ message(STATUS "Using LLVM ${LLVM_PACKAGE_VERSION} at ${LLVM_DIR}")
 
 add_executable(jit_reservation_probe probe.cpp)
 target_include_directories(jit_reservation_probe SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_definitions(jit_reservation_probe PRIVATE ${LLVM_DEFINITIONS})
+target_compile_definitions(jit_reservation_probe PRIVATE ${LLVM_DEFINITIONS} LLVM_ENABLE_TEST_HOOKS=1)
 target_compile_features(jit_reservation_probe PRIVATE cxx_std_17)
 
 # Locate LLVM-C library (import lib for LLVM-C.dll)

@@ -1,3 +1,4 @@
+#define LLVM_ENABLE_TEST_HOOKS 1
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -26,20 +27,13 @@ LLVMBool LLVMExtCreateWindowsMCJITCompilerForModule(
 
 const char *LLVMExtGetWindowsMCJITBuildIdentity(void);
 
-// Fault injection flags for testing WindowsMCJITMemoryManager OS boundaries
-enum LLVMExtWindowsMCJITFaultFlags {
-  LLVMExtFaultNone = 0,
-  LLVMExtFaultVirtualProtectCode = 1 << 0,
-  LLVMExtFaultVirtualProtectRO = 1 << 1,
-  LLVMExtFaultFlushInstructionCache = 1 << 2,
-  LLVMExtFaultRtlAddFunctionTable = 1 << 3,
-  LLVMExtFaultVirtualAllocCommit = 1 << 4,
-};
-
 void LLVMExtSetWindowsMCJITFaultInjection(uint32_t Flags);
 
 void LLVMExtMapSectionAddress(LLVMExecutionEngineRef EE,
                               const void *LocalAddress, uint64_t TargetAddress);
+LLVMBool LLVMExtAddArchiveFile(LLVMExecutionEngineRef EE, const char *Path,
+                               char **OutError);
+
 // Native callbacks for testing stubs and stack unwinding
 __declspec(dllexport) int32_t probe_native_external_add(int32_t a, int32_t b);
 __declspec(dllexport) void probe_native_stack_walk_callback(void);
@@ -284,6 +278,10 @@ static void test_windows_unwind_and_real_stack_walk() {
   LLVMAddAttributeAtIndex(caller_fn, LLVMAttributeFunctionIndex,
                           LLVMCreateEnumAttribute(ctx, uw_kind, 2));
 
+  auto pers_fn = LLVMAddFunction(m, "__C_specific_handler",
+                                 LLVMFunctionType(i32, nullptr, 0, 1));
+  LLVMSetPersonalityFn(caller_fn, pers_fn);
+
   auto b = LLVMCreateBuilderInContext(ctx);
   auto bb = LLVMAppendBasicBlockInContext(ctx, caller_fn, "entry");
   LLVMPositionBuilderAtEnd(b, bb);
@@ -305,6 +303,14 @@ static void test_windows_unwind_and_real_stack_walk() {
 
   // Map external callback
   LLVMAddGlobalMapping(ee, cb_decl, (void *)&probe_native_stack_walk_callback);
+#ifdef _WIN32
+  HMODULE hNtdll = GetModuleHandleA("ntdll.dll");
+  if (hNtdll) {
+    void *pHandler = (void *)GetProcAddress(hNtdll, "__C_specific_handler");
+    if (pHandler)
+      LLVMAddGlobalMapping(ee, pers_fn, pHandler);
+  }
+#endif
 
   uint64_t caller_addr = LLVMGetFunctionAddress(ee, "jit_unwind_caller");
   require(caller_addr != 0, "Failed to resolve jit_unwind_caller");
@@ -331,6 +337,25 @@ static void test_windows_unwind_and_real_stack_walk() {
   g_expected_jit_fn_addr = caller_addr;
   g_stack_walk_observed_jit_frame = false;
   g_stack_walk_unwound_past_jit = false;
+#ifdef _WIN32
+  if (rf->UnwindData != 0) {
+    typedef struct {
+      unsigned char Version : 3;
+      unsigned char Flags : 5;
+      unsigned char SizeOfProlog;
+      unsigned char CountOfCodes;
+      unsigned char FrameRegister : 4;
+      unsigned char FrameOffset : 4;
+    } WinUnwindHeader;
+    WinUnwindHeader *ui = (WinUnwindHeader *)(imageBase + rf->UnwindData);
+    std::printf("UNWIND_INFO: Version=%u Flags=0x%x CountOfCodes=%u\n",
+                (unsigned)ui->Version, (unsigned)ui->Flags,
+                (unsigned)ui->CountOfCodes);
+    require((ui->Flags & 0x03) != 0,
+            "Expected UNWIND_INFO Flags to indicate active exception handler "
+            "(UNW_FLAG_EHANDLER or UNW_FLAG_UHANDLER)");
+  }
+#endif
 
   typedef void (*JitCallerFn)(void);
   JitCallerFn jit_caller = (JitCallerFn)caller_addr;
@@ -479,9 +504,18 @@ static void test_external_stubs_common_symbols_alignment() {
   auto b = LLVMCreateBuilderInContext(ctx);
   LLVMPositionBuilderAtEnd(
       b, LLVMAppendBasicBlockInContext(ctx, test_fn, "entry"));
-  LLVMValueRef args[] = {LLVMConstInt(i32, 20, 0), LLVMConstInt(i32, 22, 0)};
-  auto add_call =
-      LLVMBuildCall2(b, add_fn_ty, ext_add_decl, args, 2, "call_add");
+  const char *stub_call_asm = "subq $$40, %rsp\n\t"
+                              "movl $$20, %ecx\n\t"
+                              "movl $$22, %edx\n\t"
+                              "call probe_native_external_add\n\t"
+                              "addq $$40, %rsp\n\t"
+                              "ret";
+  LLVMValueRef inline_asm_stub = LLVMConstInlineAsm(
+      LLVMFunctionType(i32, nullptr, 0, 0), stub_call_asm, "={eax}",
+      /*HasSideEffects=*/1,
+      /*IsAlignStack=*/0);
+  auto add_call = LLVMBuildCall2(b, LLVMFunctionType(i32, nullptr, 0, 0),
+                                 inline_asm_stub, nullptr, 0, "call_add");
   LLVMBuildRet(b, add_call);
 
   // Function 2: write to common symbol and read back + 5 (Finding 9)
@@ -942,8 +976,9 @@ static void test_production_manager_injected_os_failures() {
   if (!pSetFault) {
     pSetFault = &LLVMExtSetWindowsMCJITFaultInjection;
   }
-  require(pSetFault != nullptr,
-          "LLVMExtSetWindowsMCJITFaultInjection must be exported by LLVM-C.dll");
+  require(
+      pSetFault != nullptr,
+      "LLVMExtSetWindowsMCJITFaultInjection must be exported by LLVM-C.dll");
 
   auto test_fault_case = [&](uint32_t flag, const char *case_name,
                              const char *expected_substr, bool need_ro,
@@ -1003,6 +1038,15 @@ static void test_production_manager_injected_os_failures() {
     require(std::strstr(diag, expected_substr) != nullptr,
             "Diagnostic message did not contain expected substring");
     LLVMDisposeMessage(diag);
+#ifdef _WIN32
+    if (need_unwind) {
+      DWORD64 failImgBase = 0;
+      PRUNTIME_FUNCTION failRf =
+          RtlLookupFunctionEntry((DWORD64)addr, &failImgBase, nullptr);
+      require(failRf == nullptr,
+              "RtlLookupFunctionEntry found table after failed publication!");
+    }
+#endif
 
     // Sticky error test
     uint64_t sticky_addr = LLVMGetFunctionAddress(ee, "test_fault_fn");
@@ -1023,6 +1067,87 @@ static void test_production_manager_injected_os_failures() {
                   "VirtualProtect", true, false);
   test_fault_case(LLVMExtFaultRtlAddFunctionTable, "RtlAddFunctionTable",
                   "RtlAddFunctionTable", false, true);
+  test_fault_case(LLVMExtFaultVirtualAllocCommit, "VirtualAlloc_Commit",
+                  "VirtualAlloc", false, false);
+
+  // Test transactional rollback when a second table fails registration
+  {
+    std::printf("--- Testing Production OS Fault: RtlAddFunctionTable "
+                "Transactional Rollback ---\n");
+    pSetFault(LLVMExtFaultRtlAddFunctionTableSecond);
+
+    LLVMContextRef ctx = LLVMContextCreate();
+    LLVMModuleRef m =
+        LLVMModuleCreateWithNameInContext("prod_fault_rollback", ctx);
+    auto void_ty = LLVMVoidTypeInContext(ctx);
+    auto i32 = LLVMInt32TypeInContext(ctx);
+    auto fn_ty = LLVMFunctionType(void_ty, nullptr, 0, 0);
+    auto uw_kind = LLVMGetEnumAttributeKindForName("uwtable", 7);
+
+    // Function 1
+    auto fn1 = LLVMAddFunction(m, "fault_rollback_fn1", fn_ty);
+    if (uw_kind != 0)
+      LLVMAddAttributeAtIndex(fn1, LLVMAttributeFunctionIndex,
+                              LLVMCreateEnumAttribute(ctx, uw_kind, 2));
+    auto b1 = LLVMCreateBuilderInContext(ctx);
+    LLVMPositionBuilderAtEnd(b1,
+                             LLVMAppendBasicBlockInContext(ctx, fn1, "entry"));
+    LLVMBuildStore(b1, LLVMConstInt(i32, 111, 0),
+                   LLVMBuildAlloca(b1, i32, "s1"));
+    LLVMBuildRetVoid(b1);
+    LLVMDisposeBuilder(b1);
+
+    // Function 2
+    auto fn2 = LLVMAddFunction(m, "fault_rollback_fn2", fn_ty);
+    if (uw_kind != 0)
+      LLVMAddAttributeAtIndex(fn2, LLVMAttributeFunctionIndex,
+                              LLVMCreateEnumAttribute(ctx, uw_kind, 2));
+    auto b2 = LLVMCreateBuilderInContext(ctx);
+    LLVMPositionBuilderAtEnd(b2,
+                             LLVMAppendBasicBlockInContext(ctx, fn2, "entry"));
+    LLVMBuildStore(b2, LLVMConstInt(i32, 222, 0),
+                   LLVMBuildAlloca(b2, i32, "s2"));
+    LLVMBuildRetVoid(b2);
+    LLVMDisposeBuilder(b2);
+
+    LLVMExecutionEngineRef ee = nullptr;
+    char *err = nullptr;
+    LLVMBool create_err =
+        LLVMExtCreateWindowsMCJITCompilerForModule(&ee, m, &err);
+    require(!create_err && ee != nullptr,
+            err ? err : "Failed to create Windows MCJIT engine");
+
+    uint64_t addr1 = LLVMGetFunctionAddress(ee, "fault_rollback_fn1");
+    std::printf("ROLLBACK_LOOKUP: addr1=0x%llx (must be 0)\n",
+                (unsigned long long)addr1);
+    require(addr1 == 0,
+            "FAIL: Rollback test did not fail closed on second table failure!");
+
+    char *diag = nullptr;
+    LLVMBool has_err = LLVMExecutionEngineGetErrMsg(ee, &diag);
+    std::printf("ROLLBACK_DIAGNOSTIC: has_err=%d msg='%s'\n", has_err,
+                diag ? diag : "");
+    require(has_err && diag != nullptr && std::strlen(diag) > 0,
+            "Expected diagnostic for rollback failure");
+    require(std::strstr(diag, "RtlAddFunctionTable") != nullptr,
+            "Diagnostic message did not mention RtlAddFunctionTable");
+    LLVMDisposeMessage(diag);
+
+#ifdef _WIN32
+    // Verify that neither function is registered in the OS table (Table 0 was
+    // rolled back)
+    DWORD64 imgBase1 = 0;
+    PRUNTIME_FUNCTION rf1 =
+        RtlLookupFunctionEntry((DWORD64)addr1, &imgBase1, nullptr);
+    require(rf1 == nullptr, "FAIL: RtlLookupFunctionEntry found table after "
+                            "rollback! Table 0 was not deregistered!");
+#endif
+
+    LLVMDisposeExecutionEngine(ee);
+    LLVMContextDispose(ctx);
+    pSetFault(LLVMExtFaultNone);
+    std::puts("PASS: Transactional rollback on RtlAddFunctionTable verified");
+  }
 
   std::puts("PASS: Injected OS Failures Through Production Memory Manager");
 }
@@ -1093,18 +1218,18 @@ static void test_lazy_lookup_failure_on_healthy_engine() {
   // Step 3: Trigger lazy compilation/loading via lookup of the
   // declaration/function Engine was healthy until this lookup triggered the
   // failing load
+  // Step 3: Trigger lazy compilation/loading via LLVMGetPointerToGlobal on the
+  // declaration Engine was healthy until this lookup triggered the failing load
+  void *decl_ptr = LLVMGetPointerToGlobal(ee, lazy_decl);
+  require(decl_ptr == nullptr, "FAIL: LLVMGetPointerToGlobal returned non-null "
+                               "for failed lazy declaration!");
+
   uint64_t lazy_addr = LLVMGetFunctionAddress(ee, "lazy_failing_func");
   std::printf("LAZY_LOOKUP_ON_HEALTHY: addr=0x%llx (must be 0)\n",
               (unsigned long long)lazy_addr);
   require(
       lazy_addr == 0,
       "FAIL: Lazy lookup on healthy engine did not return 0 on failing load!");
-
-  // Also verify LLVMGetPointerToGlobal on the declaration returns nullptr
-  void *decl_ptr = LLVMGetPointerToGlobal(ee, lazy_decl);
-  require(decl_ptr == nullptr, "FAIL: LLVMGetPointerToGlobal returned non-null "
-                               "for failed lazy declaration!");
-
   // Step 4: Verify diagnostic was captured and preserved
   char *diag = nullptr;
   LLVMBool has_err = LLVMExecutionEngineGetErrMsg(ee, &diag);
@@ -1131,6 +1256,93 @@ static void test_lazy_lookup_failure_on_healthy_engine() {
 }
 
 // ---------------------------------------------------------------------------
+// Test Suite 11: Lazy Archive Lookup & Resolution (Finding 9)
+// ---------------------------------------------------------------------------
+static void test_lazy_archive_lookup() {
+  std::puts("=== TEST: Lazy Archive Lookup & Resolution ===");
+  LLVMContextRef ctx = LLVMContextCreate();
+  auto i32 = LLVMInt32TypeInContext(ctx);
+  auto fn_ty = LLVMFunctionType(i32, nullptr, 0, 0);
+
+  // 1. Create a module to put in the archive
+  LLVMModuleRef m_arch = LLVMModuleCreateWithNameInContext("arch_mod", ctx);
+  auto arch_fn = LLVMAddFunction(m_arch, "archive_calc_val", fn_ty);
+  auto b = LLVMCreateBuilderInContext(ctx);
+  LLVMPositionBuilderAtEnd(
+      b, LLVMAppendBasicBlockInContext(ctx, arch_fn, "entry"));
+  LLVMBuildRet(b, LLVMConstInt(i32, 31415, 0));
+  LLVMDisposeBuilder(b);
+
+  // 2. Initialize native target and emit object file to disk
+  LLVMTargetRef target = nullptr;
+  char *tm_err = nullptr;
+  const char *triple = LLVMGetDefaultTargetTriple();
+  require(LLVMGetTargetFromTriple(triple, &target, &tm_err) == 0,
+          tm_err ? tm_err : "GetTargetFromTriple failed");
+  LLVMTargetMachineRef tm = LLVMCreateTargetMachine(
+      target, triple, "generic", "", LLVMCodeGenLevelDefault, LLVMRelocDefault,
+      LLVMCodeModelDefault);
+  require(tm != nullptr, "CreateTargetMachine failed");
+
+  const char *obj_path = "archive_member.obj";
+  char *emit_err = nullptr;
+  LLVMBool emit_failed = LLVMTargetMachineEmitToFile(
+      tm, m_arch, const_cast<char *>(obj_path), LLVMObjectFile, &emit_err);
+  require(!emit_failed, emit_err ? emit_err : "Failed to emit object file");
+  LLVMDisposeTargetMachine(tm);
+  LLVMDisposeModule(m_arch);
+
+  // 3. Create archive using llvm-ar
+  const char *lib_path = "test_archive.lib";
+  char cmd[512];
+  std::snprintf(cmd, sizeof(cmd), "llvm-ar.exe rc %s %s", lib_path, obj_path);
+  int ar_rc = std::system(cmd);
+  if (ar_rc != 0) {
+    std::snprintf(cmd, sizeof(cmd), "llvm-ar rc %s %s", lib_path, obj_path);
+    ar_rc = std::system(cmd);
+  }
+  require(ar_rc == 0, "llvm-ar command failed to create archive");
+
+  // 4. Create an MCJIT engine with an initial module
+  LLVMModuleRef m_main = LLVMModuleCreateWithNameInContext("main_mod", ctx);
+  auto main_decl = LLVMAddFunction(m_main, "archive_calc_val", fn_ty);
+  LLVMSetLinkage(main_decl, LLVMExternalLinkage);
+
+  LLVMExecutionEngineRef ee = nullptr;
+  char *err = nullptr;
+  LLVMBool create_err =
+      LLVMExtCreateWindowsMCJITCompilerForModule(&ee, m_main, &err);
+  require(!create_err && ee != nullptr, err ? err : "Engine creation failed");
+
+  // 5. Add archive to engine via LLVMExtAddArchiveFile
+  char *arch_err = nullptr;
+  LLVMBool add_arch_err = LLVMExtAddArchiveFile(ee, lib_path, &arch_err);
+  require(!add_arch_err, arch_err ? arch_err : "LLVMExtAddArchiveFile failed");
+
+  // 6. Resolve archive_calc_val: MCJIT findSymbol searches Archives, loads
+  // archive_member.obj
+  uint64_t arch_addr = LLVMGetFunctionAddress(ee, "archive_calc_val");
+  require(arch_addr != 0, "Failed to resolve archive_calc_val from archive!");
+  std::printf("ARCHIVE_RESOLVED: archive_calc_val at 0x%llx\n",
+              (unsigned long long)arch_addr);
+
+  // Execute function loaded from archive
+  typedef int32_t (*ArchFn)(void);
+  ArchFn fn = (ArchFn)arch_addr;
+  int32_t val = fn();
+  std::printf("ARCHIVE_EXECUTION: returned %d (expected 31415)\n", val);
+  require(val == 31415, "Archive function execution returned unexpected value");
+
+  LLVMDisposeExecutionEngine(ee);
+  LLVMContextDispose(ctx);
+
+  // Clean up temporary files
+  std::remove(obj_path);
+  std::remove(lib_path);
+  std::puts("PASS: Lazy Archive Lookup & Resolution");
+}
+
+// ---------------------------------------------------------------------------
 // Test Suite 11: Encoded Relocations & Live RuntimeDyld Processing (Finding 6)
 // ---------------------------------------------------------------------------
 static void test_encoded_relocations_live_runtime_dyld() {
@@ -1150,19 +1362,24 @@ static void test_encoded_relocations_live_runtime_dyld() {
   auto add10 = LLVMBuildAdd(b, param, LLVMConstInt(i32, 10, 0), "add10");
   LLVMBuildRet(b, add10);
 
-  // 2. Caller function: int32_t caller_entry(int32_t x) { return
-  // callee_target(x); } This generates an x86-64 direct relative call: 'E8 <4
-  // bytes>' with inline addend -4. RuntimeDyld processes IMAGE_REL_AMD64_REL32
-  // by decoding -4, sign-extending it, computing (callee_target - (call_site +
-  // 4)) + (-4), and writing the 32-bit displacement.
-  auto caller_fn =
-      LLVMAddFunction(m, "caller_entry", LLVMFunctionType(i32, &i32, 1, 0));
+  // 2. Caller function using explicit 32-bit PC-relative relocation with
+  // negative addend: lea callee_target-8(%rip), %rax In x86-64 COFF, this
+  // encodes as: 48 8D 05 <disp32> with IMAGE_REL_AMD64_REL32 and an initial
+  // addend of -8 in the displacement field.
+  auto caller_fn = LLVMAddFunction(
+      m, "caller_entry",
+      LLVMFunctionType(LLVMInt64TypeInContext(ctx), nullptr, 0, 0));
   LLVMPositionBuilderAtEnd(
       b, LLVMAppendBasicBlockInContext(ctx, caller_fn, "entry"));
-  auto in_arg = LLVMGetParam(caller_fn, 0);
-  auto call_res = LLVMBuildCall2(b, LLVMFunctionType(i32, &i32, 1, 0),
-                                 callee_fn, &in_arg, 1, "call_res");
-  LLVMBuildRet(b, call_res);
+  LLVMTypeRef i64_ty = LLVMInt64TypeInContext(ctx);
+  LLVMTypeRef asm_fn_ty = LLVMFunctionType(i64_ty, nullptr, 0, 0);
+  LLVMValueRef inline_asm =
+      LLVMConstInlineAsm(asm_fn_ty, "lea callee_target-8(%rip), %rax", "={rax}",
+                         /*HasSideEffects=*/1,
+                         /*IsAlignStack=*/0);
+  auto lea_res =
+      LLVMBuildCall2(b, asm_fn_ty, inline_asm, nullptr, 0, "lea_res");
+  LLVMBuildRet(b, lea_res);
   LLVMDisposeBuilder(b);
 
   LLVMExecutionEngineRef ee = nullptr;
@@ -1181,40 +1398,43 @@ static void test_encoded_relocations_live_runtime_dyld() {
   // Inspect the emitted machine code of caller_entry to verify encoded
   // relocation resolution
   const uint8_t *code_bytes = (const uint8_t *)caller_addr;
-  bool found_rel32_call = false;
-  for (size_t offset = 0; offset < 32; ++offset) {
-    if (code_bytes[offset] == 0xE8) {
+  bool found_rel32_lea = false;
+  for (size_t offset = 0; offset + 7 <= 64; ++offset) {
+    if (code_bytes[offset] == 0x48 && code_bytes[offset + 1] == 0x8D &&
+        code_bytes[offset + 2] == 0x05) {
       int32_t written_disp = 0;
-      std::memcpy(&written_disp, code_bytes + offset + 1, sizeof(int32_t));
-      uint64_t next_ip = caller_addr + offset + 5;
+      std::memcpy(&written_disp, code_bytes + offset + 3, sizeof(int32_t));
+      uint64_t next_ip = caller_addr + offset + 7;
       uint64_t computed_target =
           (uint64_t)((int64_t)next_ip + (int64_t)written_disp);
 
       std::printf(
-          "ENCODED_REL32_INSPECTION: call at offset +%zu, "
+          "ENCODED_REL32_INSPECTION: lea at offset +%zu, "
           "written_disp=0x%x (%d), next_ip=0x%llx -> computed_target=0x%llx "
-          "(callee=0x%llx)\n",
+          "(callee-8=0x%llx)\n",
           offset, written_disp, written_disp, (unsigned long long)next_ip,
-          (unsigned long long)computed_target, (unsigned long long)callee_addr);
+          (unsigned long long)computed_target,
+          (unsigned long long)(callee_addr - 8));
 
-      require(computed_target == callee_addr,
-              "RuntimeDyld resolved REL32 displacement does not reach "
-              "callee_target!");
-      found_rel32_call = true;
+      require(computed_target == callee_addr - 8,
+              "RuntimeDyld resolved REL32 displacement does not match "
+              "callee_target - 8!");
+      found_rel32_lea = true;
       break;
     }
   }
-  require(found_rel32_call,
-          "Could not find 0xE8 call instruction in caller_entry");
+  require(found_rel32_lea,
+          "Could not find 48 8D 05 (lea) instruction in caller_entry");
 
   // Execute through the resolved relocation
-  typedef int32_t (*CallFn)(int32_t);
-  CallFn fn = (CallFn)caller_addr;
-  int32_t exec_result = fn(32);
-  std::printf(
-      "ENCODED_REL32_EXECUTION: caller_entry(32) returned %d (expected 42)\n",
-      exec_result);
-  require(exec_result == 42,
+  typedef uint64_t (*CallerFn)(void);
+  CallerFn fn = (CallerFn)caller_addr;
+  uint64_t exec_result = fn();
+  std::printf("ENCODED_REL32_EXECUTION: caller_entry() returned 0x%llx "
+              "(expected 0x%llx)\n",
+              (unsigned long long)exec_result,
+              (unsigned long long)(callee_addr - 8));
+  require(exec_result == callee_addr - 8,
           "Execution through encoded REL32 relocation failed");
 
   // Test section remapping through RuntimeDyld if LLVMExtMapSectionAddress is
@@ -1229,23 +1449,71 @@ static void test_encoded_relocations_live_runtime_dyld() {
   if (!pMapSection) {
     pMapSection = &LLVMExtMapSectionAddress;
   }
-
   require(pMapSection != nullptr,
-          "LLVMExtMapSectionAddress must be exported by LLVM-C.dll; native "
-          "section remapping unavailable");
+          "LLVMExtMapSectionAddress must be exported by LLVM-C.dll");
 
   uint64_t remapped_target_addr = 0x240000000ULL;
   pMapSection(ee, (const void *)callee_addr, remapped_target_addr);
-  std::printf("SECTION_REMAPPING: remapped section base %p -> target 0x%llx "
+  std::printf("SECTION_REMAPPING: remapped callee_addr %p -> target 0x%llx "
               "via LLVMExtMapSectionAddress\n",
               (const void *)callee_addr,
               (unsigned long long)remapped_target_addr);
-  pMapSection(ee, (const void *)caller_addr, remapped_target_addr);
-  std::printf("SECTION_REMAPPING: remapped caller_addr %p -> target 0x%llx "
-              "via LLVMExtMapSectionAddress\n",
-              (const void *)caller_addr,
-              (unsigned long long)remapped_target_addr);
 
+  // Create dependent module referencing callee_target to verify remapping
+  // effect
+  LLVMModuleRef m_dep = LLVMModuleCreateWithNameInContext("dep_mod", ctx);
+  auto dep_callee_decl = LLVMAddFunction(m_dep, "callee_target",
+                                         LLVMFunctionType(i32, &i32, 1, 0));
+  LLVMSetLinkage(dep_callee_decl, LLVMExternalLinkage);
+
+  auto dep_caller_fn = LLVMAddFunction(m_dep, "dependent_caller", asm_fn_ty);
+  auto b_dep = LLVMCreateBuilderInContext(ctx);
+  LLVMPositionBuilderAtEnd(
+      b_dep, LLVMAppendBasicBlockInContext(ctx, dep_caller_fn, "entry"));
+  LLVMValueRef dep_inline_asm =
+      LLVMConstInlineAsm(asm_fn_ty, "lea callee_target(%rip), %rax", "={rax}",
+                         /*HasSideEffects=*/1,
+                         /*IsAlignStack=*/0);
+  auto dep_lea =
+      LLVMBuildCall2(b_dep, asm_fn_ty, dep_inline_asm, nullptr, 0, "dep_lea");
+  LLVMBuildRet(b_dep, dep_lea);
+  LLVMDisposeBuilder(b_dep);
+
+  LLVMAddModule(ee, m_dep);
+
+  uint64_t dep_caller_addr = LLVMGetFunctionAddress(ee, "dependent_caller");
+  require(dep_caller_addr != 0, "Failed to resolve dependent_caller");
+
+  const uint8_t *dep_bytes = (const uint8_t *)dep_caller_addr;
+  bool found_dep_lea = false;
+  for (size_t offset = 0; offset + 7 <= 64; ++offset) {
+    if (dep_bytes[offset] == 0x48 && dep_bytes[offset + 1] == 0x8D &&
+        dep_bytes[offset + 2] == 0x05) {
+      int32_t written_disp = 0;
+      std::memcpy(&written_disp, dep_bytes + offset + 3, sizeof(int32_t));
+      uint64_t next_ip = dep_caller_addr + offset + 7;
+      uint64_t computed_target =
+          (uint64_t)((int64_t)next_ip + (int64_t)written_disp);
+
+      std::printf(
+          "REMAPPED_RELOCATION_INSPECTION: dep lea at offset +%zu, "
+          "written_disp=0x%x (%d), next_ip=0x%llx -> computed_target=0x%llx "
+          "(expected remapped=0x%llx)\n",
+          offset, written_disp, written_disp, (unsigned long long)next_ip,
+          (unsigned long long)computed_target,
+          (unsigned long long)remapped_target_addr);
+
+      require(computed_target == remapped_target_addr,
+              "Relocation in dependent module did not resolve to remapped "
+              "target address!");
+      found_dep_lea = true;
+      break;
+    }
+  }
+  require(found_dep_lea,
+          "Could not find 48 8D 05 (lea) instruction in dependent_caller");
+  std::puts("PASS: Section Remapping & Dependent Relocation Resolution "
+            "(without execution)");
   LLVMDisposeExecutionEngine(ee);
   LLVMContextDispose(ctx);
   std::puts("PASS: Encoded Relocations & Live RuntimeDyld Processing");
@@ -1614,6 +1882,7 @@ int main(int argc, char **argv) {
   test_fail_closed_cache_flush();
   test_production_manager_injected_os_failures();
   test_lazy_lookup_failure_on_healthy_engine();
+  test_lazy_archive_lookup();
   test_encoded_relocations_live_runtime_dyld();
   test_null_code_allocation_recovery();
   test_null_data_allocation_recovery();

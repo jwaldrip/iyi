@@ -32,11 +32,16 @@ enum WindowsMCJITFaultFlags : uint32_t {
   FaultFlushInstructionCache = 1 << 2,
   FaultRtlAddFunctionTable = 1 << 3,
   FaultVirtualAllocCommit = 1 << 4,
+  FaultRtlAddFunctionTableSecond = 1 << 5,
 };
 
+#ifdef LLVM_ENABLE_TEST_HOOKS
 void setWindowsMCJITFaultInjection(uint32_t Flags);
 uint32_t getWindowsMCJITFaultInjection();
-
+#else
+inline void setWindowsMCJITFaultInjection(uint32_t) {}
+inline uint32_t getWindowsMCJITFaultInjection() { return 0; }
+#endif
 class WindowsMCJITMemoryManager : public SectionMemoryManager {
 public:
   WindowsMCJITMemoryManager();

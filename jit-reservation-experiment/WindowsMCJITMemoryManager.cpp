@@ -73,6 +73,7 @@ static inline BOOLEAN RtlDeleteFunctionTable(PRUNTIME_FUNCTION FunctionTable) {
 #endif
 
 namespace llvm {
+#ifdef LLVM_ENABLE_TEST_HOOKS
 static std::atomic<uint32_t> FaultInjectionFlags{0};
 
 void setWindowsMCJITFaultInjection(uint32_t Flags) {
@@ -82,6 +83,7 @@ void setWindowsMCJITFaultInjection(uint32_t Flags) {
 uint32_t getWindowsMCJITFaultInjection() {
   return FaultInjectionFlags.load(std::memory_order_relaxed);
 }
+#endif
 
 static bool checkedAdd(size_t a, size_t b, size_t &result) {
   if (a > SIZE_MAX - b)
@@ -176,9 +178,10 @@ void WindowsMCJITMemoryManager::reserveAllocationSpace(
   if (!checkedRoundUp(CurrentOffset, AllocGranularity, TotalSpan))
     return;
 
-  // Max signed 32-bit reach for x86-64 intra-object REL32 relocations (2 GiB)
-  constexpr size_t MaxSignedRelativeSpan = 0x7FFF0000ULL;
-  if (TotalSpan > MaxSignedRelativeSpan)
+  // Reservation span ceiling for x86-64 intra-object relocations:
+  // ADDR32NB unsigned 32-bit reach from object base is 4 GiB (0xFFFE0000ULL).
+  constexpr size_t MaxReservationSpan = 0xFFFE0000ULL;
+  if (TotalSpan > MaxReservationSpan)
     return; // Fall back to checked legacy allocation for wide layouts
 
   // Reserve contiguous memory window for this object
@@ -445,6 +448,7 @@ bool WindowsMCJITMemoryManager::finalizeMemory(std::string *ErrMsg) {
 
   // Step 3: Publish Windows unwind tables with transactional rollback
   std::vector<UnwindTableEntry> NewlyRegistered;
+  size_t RegisteredCount = 0;
   for (auto &Entry : PendingUnwindTables) {
     if (Entry.Size == 0)
       continue;
@@ -452,12 +456,15 @@ bool WindowsMCJITMemoryManager::finalizeMemory(std::string *ErrMsg) {
     size_t Count = Entry.Size / sizeof(RUNTIME_FUNCTION);
     auto *Records = reinterpret_cast<PRUNTIME_FUNCTION>(Entry.Addr);
 
+    bool InjectFault =
+        (Faults & FaultRtlAddFunctionTable) ||
+        ((Faults & FaultRtlAddFunctionTableSecond) && (RegisteredCount >= 1));
+
 #ifdef _WIN32
     BOOLEAN Success =
-        (Faults & FaultRtlAddFunctionTable)
-            ? FALSE
-            : RtlAddFunctionTable(Records, static_cast<DWORD>(Count),
-                                  Entry.ImageBase);
+        InjectFault ? FALSE
+                    : RtlAddFunctionTable(Records, static_cast<DWORD>(Count),
+                                          Entry.ImageBase);
     if (!Success) {
       if (ErrMsg)
         *ErrMsg = "RtlAddFunctionTable returned error";
@@ -472,7 +479,7 @@ bool WindowsMCJITMemoryManager::finalizeMemory(std::string *ErrMsg) {
       return true;
     }
 #else
-    if (Faults & FaultRtlAddFunctionTable) {
+    if (InjectFault) {
       if (ErrMsg)
         *ErrMsg = "RtlAddFunctionTable returned error";
       for (auto &R : NewlyRegistered) {
@@ -489,6 +496,7 @@ bool WindowsMCJITMemoryManager::finalizeMemory(std::string *ErrMsg) {
 
     Entry.Registered = true;
     NewlyRegistered.push_back(Entry);
+    ++RegisteredCount;
   }
 
   // Commit successfully registered tables to ActiveUnwindTables
