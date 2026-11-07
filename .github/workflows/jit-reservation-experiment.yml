@@ -117,6 +117,16 @@ jobs:
           Write-Host "CHILD_EXIT=$($child.ExitCode)"
           Write-Host $out
           if ($child.ExitCode -ne 0) { throw "Null data allocation caused process crash or non-zero exit ($($child.ExitCode))" }
+      - name: Verify non-fatal recovery on null common symbols allocation
+        shell: pwsh
+        run: |
+          $env:PATH = "$env:RUNNER_TEMP/llvm-build/bin;$env:PATH"
+          $stderr = "$env:RUNNER_TEMP/null-common-alloc.txt"
+          $child = Start-Process "$env:RUNNER_TEMP/probe-build/jit_reservation_probe.exe" -ArgumentList '--fail-allocation-common' -Wait -PassThru -NoNewWindow -RedirectStandardError $stderr
+          $out = Get-Content -Raw $stderr -ErrorAction SilentlyContinue
+          Write-Host "CHILD_EXIT=$($child.ExitCode)"
+          Write-Host $out
+          if ($child.ExitCode -ne 0) { throw "Null common symbols allocation caused process crash or non-zero exit ($($child.ExitCode))" }
       - name: Verify non-fatal recovery on finalize failure
         shell: pwsh
         run: |
