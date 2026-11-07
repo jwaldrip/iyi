@@ -1140,9 +1140,28 @@ class RemoteStrictController:
             # 1. Strict mode authorization check: unconditional refusal until authenticated independent GO exists
             if self.mode == "strict":
                 self.overall_status = "AUTH_REFUSED"
+                verified_auth = None
+                if self.publisher is not None:
+                    try:
+                        auth_req = {
+                            "protocol_version": 1,
+                            "event": "authorization-request",
+                            "request_id": f"auth-{self.invocation_id}",
+                            "invocation_id": self.invocation_id,
+                            "p_sha": self.p_sha,
+                            "w_sha": self.w_sha,
+                            "c_sha": self.c_sha,
+                        }
+                        auth_ack = self.publisher.request(auth_req)
+                        if auth_ack.get("verified") is True:
+                            from proof.strict_authorization import load_verified_authorization_from_ipc
+                            verified_auth = load_verified_authorization_from_ipc(auth_ack, self.p_sha, self.w_sha, self.c_sha)
+                    except Exception as ipc_exc:
+                        print(f"[CONTROLLER] Authorization IPC error: {ipc_exc}", file=sys.stderr)
+
                 try:
                     from proof.strict_authorization import check_strict_authorization_or_refuse
-                    check_strict_authorization_or_refuse(self.p_sha, self.w_sha, self.c_sha)
+                    check_strict_authorization_or_refuse(self.p_sha, self.w_sha, self.c_sha, verified_auth=verified_auth)
                 except Exception as auth_exc:
                     refusal_msg = str(auth_exc)
                     print(f"\n[CONTROLLER] {refusal_msg}", file=sys.stderr)

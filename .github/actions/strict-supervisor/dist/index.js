@@ -1697,6 +1697,7 @@ class StrictSupervisor {
     this.seenRequestIds = new Set();
     this.lastSnapshotSequence = 0;
     this.failedVerifications = 0;
+    this.verifiedManifest = options.verifiedManifest || null;
   }
   async resolveArtifactClient() {
     if (!this.artifactClient) {
@@ -1727,6 +1728,19 @@ class StrictSupervisor {
     }
     if (matches.length !== 1) throw new Error('job lookup missing or ambiguous');
     if (!matches[0].started_at || matches[0].started_at !== this.jobStartTime) throw new Error('job start does not match platform');
+    if (this.mode === 'strict') {
+      try {
+        (0,external_node_child_process_namespaceObject.execFileSync)(this.pythonPath, [
+          '-c',
+          'import sys; from proof.strict_authorization import check_strict_authorization_or_refuse; check_strict_authorization_or_refuse(sys.argv[1], sys.argv[2], sys.argv[3])',
+          pSha,
+          wSha,
+          cSha,
+        ], { encoding: 'utf8', env: sanitizeEnvironment(env) });
+      } catch (authErr) {
+        throw new Error(`Strict execution refused by authorization policy: ${authErr.stderr || authErr.message}`);
+      }
+    }
     const fixture = this.mode === 'validation-only' ? (0,external_node_child_process_namespaceObject.execFileSync)(this.pythonPath, ['-c', EMITTER_DIGEST, external_node_path_.resolve('proof/remote_strict_fixtures.py')], { encoding: 'utf8', env: sanitizeEnvironment(env) }).trim() : null;
     return Object.freeze({ invocation_id: this.invocationId, execution_kind: this.mode === 'validation-only' ? 'synthetic' : 'native', repository: env.GITHUB_REPOSITORY, run_id: env.GITHUB_RUN_ID, run_attempt: env.GITHUB_RUN_ATTEMPT, job_id: String(this.jobId), job_key: this.jobKey, p_sha: pSha, w_sha: wSha, c_sha: cSha, fixture_sha256: fixture });
   }
@@ -1746,7 +1760,30 @@ class StrictSupervisor {
     try {
       if (!req || req.protocol_version !== 1 || typeof req.request_id !== 'string' || !req.request_id || req.invocation_id !== this.context.invocation_id || this.seenRequestIds.has(req.request_id)) throw new Error('invalid or replayed request');
       this.seenRequestIds.add(req.request_id);
-      if (req.event === 'ownership-register' || req.event === 'ownership-resolve') {
+      if (req.event === 'authorization-request') {
+        if (req.p_sha !== this.context.p_sha || req.w_sha !== this.context.w_sha || req.c_sha !== this.context.c_sha) {
+          throw new Error('authorization request revision mismatch');
+        }
+        if (this.verifiedManifest) {
+          ack = {
+            ...req,
+            event: 'authorization-ack',
+            verified: true,
+            manifest_raw: this.verifiedManifest.raw,
+            manifest_digest: this.verifiedManifest.digest,
+            harness_raw: this.verifiedManifest.harness_raw,
+            audit_raw: this.verifiedManifest.audit_raw,
+          };
+        } else {
+          ack = {
+            ...req,
+            event: 'authorization-ack',
+            verified: false,
+            error: 'STRICT_MODE_AUTH_REFUSED: No deployment approval or independent audit exists for environment strict-proof',
+          };
+          this.failedVerifications++;
+        }
+      } else if (req.event === 'ownership-register' || req.event === 'ownership-resolve') {
         if (typeof req.unit !== 'string' || !req.unit || !Number.isSafeInteger(req.native_attempt) || req.native_attempt < 1) throw new Error('invalid stage association');
         if (this.stopping && req.event === 'ownership-register') throw new Error('ownership registration refused during shutdown');
         const result = req.event === 'ownership-register'
@@ -1785,7 +1822,7 @@ class StrictSupervisor {
       }
       // Echo the protocol event the controller expects, so a rejected request
       // reports its actual error instead of an ACK-EVENT-MISMATCH.
-      const ackEvent = { 'persistence-request': 'persistence-ack', 'ownership-register': 'ownership-register-ack', 'ownership-resolve': 'ownership-resolve-ack' }[req?.event] || 'invalid-ack';
+      const ackEvent = { 'persistence-request': 'persistence-ack', 'ownership-register': 'ownership-register-ack', 'ownership-resolve': 'ownership-resolve-ack', 'authorization-request': 'authorization-ack' }[req?.event] || 'invalid-ack';
       ack = { ...req, event: ackEvent, verified: false, error: redactSecrets(String(err.message)) };
     }
     try {

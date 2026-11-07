@@ -37,7 +37,7 @@ env:
   GIT_CONFIG_VALUE_0: "*"
   PYTHONUTF8: "1"
   PYTHONPATH: "."
-  P_AUTHORIZED_SHA: "626463375298d357ffcb3223059f4d3adce6fb10"
+  P_AUTHORIZED_SHA: "180f14f91c829b25362a5ed34b20847f3ac2db77"
   W_AUTHORIZED_SHA: "b932ce0d97775c7061102a13db706f507dc84117"
   DRIVER_LIMIT_SEC: "2100"
   GRACE_SEC: "30"
@@ -851,21 +851,15 @@ jobs:
     name: "Sequential strict-chain attempt (macOS 15)"
     if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'strict-chain' }}
     runs-on: macos-15
+    environment: strict-proof
     timeout-minutes: 360  # 6-hour GitHub Actions maximum limit
     steps:
       - name: Authenticate independent authorization anchor
         id: check-auth
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "================================================================================" >&2
-          echo "STRICT-CHAIN REFUSAL: Independent authenticated authorization is absent." >&2
-          echo "================================================================================" >&2
-          echo "Real strict execution requires independently authenticated authorization" >&2
-          echo "for the exact (P, W, C) tuple: repository, P SHA, W SHA, C SHA," >&2
-          echo "harness workflow/run/attempt, harness evidence digest, and independent" >&2
-          echo "audit evidence digest with GO." >&2
-          echo "The protected environment was selected; its manifest-bound verifier is not integrated." >&2
-          echo "Refusing execution nonzero before P1 build, W checkout, or native execution." >&2
-          exit 1
+          python3 -B -c "import sys; from proof.strict_authorization import check_strict_authorization_or_refuse; check_strict_authorization_or_refuse('${{ env.P_AUTHORIZED_SHA }}', '${{ env.W_AUTHORIZED_SHA }}', '${{ github.sha }}')"
 
       - name: Resolve exact current job
         id: job-metadata
@@ -914,7 +908,7 @@ jobs:
           PY
 
       - name: Checkout controller repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -972,13 +966,13 @@ jobs:
           echo "Darwin BSD /usr/bin/mktemp verified (not shadowed by GNU gnubin)"
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
         with:
           go-version: stable
           cache: false
 
       - name: Setup Python 3.14
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@0b93645e9fb717ef66e47be571215a8227276183 # v5.3.0
         with:
           python-version: "3.14"
 
@@ -998,7 +992,7 @@ jobs:
 
       - name: Restore static LLVM cache
         id: llvm-cache
-        uses: actions/cache@v4
+        uses: actions/cache@6849a6489940f00c8f30c0f74c0db48476a31f79 # v4.1.2
         with:
           path: ~/llvm-static
           key: llvm-static-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/build-static-llvm.sh') }}
