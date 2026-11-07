@@ -26,6 +26,20 @@ LLVMBool LLVMExtCreateWindowsMCJITCompilerForModule(
 
 const char *LLVMExtGetWindowsMCJITBuildIdentity(void);
 
+// Fault injection flags for testing WindowsMCJITMemoryManager OS boundaries
+enum LLVMExtWindowsMCJITFaultFlags {
+  LLVMExtFaultNone = 0,
+  LLVMExtFaultVirtualProtectCode = 1 << 0,
+  LLVMExtFaultVirtualProtectRO = 1 << 1,
+  LLVMExtFaultFlushInstructionCache = 1 << 2,
+  LLVMExtFaultRtlAddFunctionTable = 1 << 3,
+  LLVMExtFaultVirtualAllocCommit = 1 << 4,
+};
+
+void LLVMExtSetWindowsMCJITFaultInjection(uint32_t Flags);
+
+void LLVMExtMapSectionAddress(LLVMExecutionEngineRef EE,
+                              const void *LocalAddress, uint64_t TargetAddress);
 // Native callbacks for testing stubs and stack unwinding
 __declspec(dllexport) int32_t probe_native_external_add(int32_t a, int32_t b);
 __declspec(dllexport) void probe_native_stack_walk_callback(void);
@@ -40,6 +54,30 @@ static void require(bool cond, const char *msg) {
     std::fflush(stderr);
     std::exit(1);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Relocation Checker Helpers (in file scope for suites 10, 11, and 13)
+// ---------------------------------------------------------------------------
+static bool check_addr32nb(uint64_t target, uint64_t base, int64_t addend,
+                           uint32_t *out) {
+  if (target < base && addend <= 0)
+    return false; // Underflow
+  int64_t rva = (int64_t)(target - base) + addend;
+  if (rva < 0 || rva > 0xFFFFFFFFLL)
+    return false; // Overflow / Underflow
+  *out = (uint32_t)rva;
+  return true;
+}
+
+static bool check_rel32(uint64_t target, uint64_t reloc_site, int64_t addend,
+                        int extra_disp, int32_t *out) {
+  int64_t next_pc = (int64_t)(reloc_site + 4 + extra_disp);
+  int64_t disp = (int64_t)target - next_pc + addend;
+  if (disp < (int64_t)INT32_MIN || disp > (int64_t)INT32_MAX)
+    return false;
+  *out = (int32_t)disp;
+  return true;
 }
 
 // Global state for stack unwind test
@@ -412,6 +450,7 @@ static void test_external_stubs_common_symbols_alignment() {
   LLVMContextRef ctx = LLVMContextCreate();
   LLVMModuleRef m = LLVMModuleCreateWithNameInContext("test_stubs_align", ctx);
   auto i32 = LLVMInt32TypeInContext(ctx);
+  auto i64 = LLVMInt64TypeInContext(ctx);
 
   // 1. External stub: int32_t probe_native_external_add(int32_t, int32_t)
   LLVMTypeRef add_param_tys[] = {i32, i32};
@@ -419,9 +458,11 @@ static void test_external_stubs_common_symbols_alignment() {
   auto ext_add_decl =
       LLVMAddFunction(m, "probe_native_external_add", add_fn_ty);
 
-  // 2. Common symbol: uninitialized global
+  // 2. Common symbol: defined with zero initializer and common linkage (Finding
+  // 9)
   auto common_var = LLVMAddGlobal(m, i32, "probe_common_int");
   LLVMSetLinkage(common_var, LLVMCommonLinkage);
+  LLVMSetInitializer(common_var, LLVMConstNull(i32));
 
   // 3. Over-granularity aligned global (64 bytes and 4096 bytes)
   auto align_var64 = LLVMAddGlobal(m, i32, "probe_align64_int");
@@ -432,7 +473,7 @@ static void test_external_stubs_common_symbols_alignment() {
   LLVMSetInitializer(align_var4096, LLVMConstInt(i32, 4096, 0));
   LLVMSetAlignment(align_var4096, 4096);
 
-  // Function calling external add and returning sum
+  // Function 1: calling external add and returning sum
   auto test_fn =
       LLVMAddFunction(m, "run_stub_test", LLVMFunctionType(i32, nullptr, 0, 0));
   auto b = LLVMCreateBuilderInContext(ctx);
@@ -442,6 +483,42 @@ static void test_external_stubs_common_symbols_alignment() {
   auto add_call =
       LLVMBuildCall2(b, add_fn_ty, ext_add_decl, args, 2, "call_add");
   LLVMBuildRet(b, add_call);
+
+  // Function 2: write to common symbol and read back + 5 (Finding 9)
+  auto common_write_fn = LLVMAddFunction(m, "probe_write_common",
+                                         LLVMFunctionType(i32, &i32, 1, 0));
+  LLVMPositionBuilderAtEnd(
+      b, LLVMAppendBasicBlockInContext(ctx, common_write_fn, "entry"));
+  auto in_val = LLVMGetParam(common_write_fn, 0);
+  LLVMBuildStore(b, in_val, common_var);
+  auto read_back = LLVMBuildLoad2(b, i32, common_var, "val");
+  auto plus5 = LLVMBuildAdd(b, read_back, LLVMConstInt(i32, 5, 0), "res");
+  LLVMBuildRet(b, plus5);
+
+  // Function 3: read common symbol
+  auto common_read_fn = LLVMAddFunction(m, "probe_read_common",
+                                        LLVMFunctionType(i32, nullptr, 0, 0));
+  LLVMPositionBuilderAtEnd(
+      b, LLVMAppendBasicBlockInContext(ctx, common_read_fn, "entry"));
+  auto cur_val = LLVMBuildLoad2(b, i32, common_var, "cur");
+  LLVMBuildRet(b, cur_val);
+
+  // Function 4: JIT pointer to align64 (Finding 8)
+  auto get_align64_fn = LLVMAddFunction(m, "get_align64_ptr",
+                                        LLVMFunctionType(i64, nullptr, 0, 0));
+  LLVMPositionBuilderAtEnd(
+      b, LLVMAppendBasicBlockInContext(ctx, get_align64_fn, "entry"));
+  auto p64 = LLVMBuildPtrToInt(b, align_var64, i64, "p64");
+  LLVMBuildRet(b, p64);
+
+  // Function 5: JIT pointer to align4096 (Finding 8)
+  auto get_align4096_fn = LLVMAddFunction(m, "get_align4096_ptr",
+                                          LLVMFunctionType(i64, nullptr, 0, 0));
+  LLVMPositionBuilderAtEnd(
+      b, LLVMAppendBasicBlockInContext(ctx, get_align4096_fn, "entry"));
+  auto p4096 = LLVMBuildPtrToInt(b, align_var4096, i64, "p4096");
+  LLVMBuildRet(b, p4096);
+
   LLVMDisposeBuilder(b);
 
   LLVMExecutionEngineRef ee = nullptr;
@@ -461,21 +538,71 @@ static void test_external_stubs_common_symbols_alignment() {
   require(stub_res == 42, "External stub call failed");
   std::printf("EXTERNAL_STUB: returned %d (expected 42)\n", stub_res);
 
-  // Check 64-byte alignment
-  void *align64_ptr = LLVMGetPointerToGlobal(ee, align_var64);
-  require(align64_ptr != nullptr, "align64_ptr is null");
-  require(((uintptr_t)align64_ptr % 64) == 0,
-          "align64_ptr does not have 64-byte alignment");
-  std::printf("ALIGN_64: addr=%p (offset %% 64 = %zu)\n", align64_ptr,
-              (uintptr_t)align64_ptr % 64);
+  // Exercise Common Symbol reads and writes (Finding 9)
+  uint64_t write_common_addr = LLVMGetFunctionAddress(ee, "probe_write_common");
+  require(write_common_addr != 0, "probe_write_common lookup failed");
+  typedef int32_t (*WriteCommonFn)(int32_t);
+  WriteCommonFn write_common = (WriteCommonFn)write_common_addr;
+  int32_t write_res = write_common(50);
+  require(write_res == 55, "probe_write_common returned unexpected value");
+  std::printf(
+      "COMMON_SYMBOL_WRITE: wrote 50, read+5 returned %d (expected 55)\n",
+      write_res);
 
-  // Check 4096-byte alignment
-  void *align4096_ptr = LLVMGetPointerToGlobal(ee, align_var4096);
-  require(align4096_ptr != nullptr, "align4096_ptr is null");
-  require(((uintptr_t)align4096_ptr % 4096) == 0,
-          "align4096_ptr does not have 4096-byte alignment");
-  std::printf("ALIGN_4096: addr=%p (offset %% 4096 = %zu)\n", align4096_ptr,
-              (uintptr_t)align4096_ptr % 4096);
+  // Verify common symbol address via LLVMGetGlobalValueAddress (Finding 8 & 9)
+  uint64_t common_sym_addr = LLVMGetGlobalValueAddress(ee, "probe_common_int");
+  require(common_sym_addr != 0, "probe_common_int address resolved to 0");
+  require(*(int32_t *)common_sym_addr == 50,
+          "Common symbol memory contents mismatch");
+
+  // Modify via host memory pointer and read back through JIT
+  *(int32_t *)common_sym_addr = 1234;
+  uint64_t read_common_addr = LLVMGetFunctionAddress(ee, "probe_read_common");
+  require(read_common_addr != 0, "probe_read_common lookup failed");
+  VoidIntFn read_common = (VoidIntFn)read_common_addr;
+  int32_t read_res = read_common();
+  require(read_res == 1234,
+          "probe_read_common did not observe host write to common symbol");
+  std::printf("COMMON_SYMBOL_READ: host wrote 1234, JIT read returned %d\n",
+              read_res);
+
+  // Check 64-byte alignment via LLVMGetGlobalValueAddress and JIT pointer
+  // (Finding 8)
+  uint64_t align64_addr = LLVMGetGlobalValueAddress(ee, "probe_align64_int");
+  require(align64_addr != 0, "probe_align64_int address is 0");
+  require((align64_addr % 64) == 0,
+          "align64_addr does not have 64-byte alignment");
+
+  uint64_t get64_fn_addr = LLVMGetFunctionAddress(ee, "get_align64_ptr");
+  require(get64_fn_addr != 0, "get_align64_ptr lookup failed");
+  typedef uint64_t (*GetPtrFn)(void);
+  GetPtrFn get_ptr64 = (GetPtrFn)get64_fn_addr;
+  uint64_t jit_p64 = get_ptr64();
+  require(jit_p64 == align64_addr,
+          "JIT pointer does not match LLVMGetGlobalValueAddress for align64");
+  require(*(int32_t *)align64_addr == 6464, "align64 data value mismatch");
+  std::printf("ALIGN_64: addr=0x%llx (offset %% 64 = %zu, val=%d)\n",
+              (unsigned long long)align64_addr, (size_t)(align64_addr % 64),
+              *(int32_t *)align64_addr);
+
+  // Check 4096-byte alignment via LLVMGetGlobalValueAddress and JIT pointer
+  // (Finding 8)
+  uint64_t align4096_addr =
+      LLVMGetGlobalValueAddress(ee, "probe_align4096_int");
+  require(align4096_addr != 0, "probe_align4096_int address is 0");
+  require((align4096_addr % 4096) == 0,
+          "align4096_addr does not have 4096-byte alignment");
+
+  uint64_t get4096_fn_addr = LLVMGetFunctionAddress(ee, "get_align4096_ptr");
+  require(get4096_fn_addr != 0, "get_align4096_ptr lookup failed");
+  GetPtrFn get_ptr4096 = (GetPtrFn)get4096_fn_addr;
+  uint64_t jit_p4096 = get_ptr4096();
+  require(jit_p4096 == align4096_addr,
+          "JIT pointer does not match LLVMGetGlobalValueAddress for align4096");
+  require(*(int32_t *)align4096_addr == 4096, "align4096 data value mismatch");
+  std::printf("ALIGN_4096: addr=0x%llx (offset %% 4096 = %zu, val=%d)\n",
+              (unsigned long long)align4096_addr,
+              (size_t)(align4096_addr % 4096), *(int32_t *)align4096_addr);
 
   LLVMDisposeExecutionEngine(ee);
   LLVMContextDispose(ctx);
@@ -527,6 +654,7 @@ static void test_empty_groups_module() {
 struct CustomFaultManager {
   bool fail_code_alloc = false;
   bool fail_data_alloc = false;
+  bool fail_common_alloc = false;
   bool fail_finalize = false;
   bool fail_protect = false;
   bool fail_cache_flush = false;
@@ -565,6 +693,14 @@ static uint8_t *custom_alloc_data(void *opaque, uintptr_t size, unsigned align,
                                   unsigned section_id, const char *section_name,
                                   LLVMBool is_readonly) {
   auto *self = (CustomFaultManager *)opaque;
+  if (self->fail_common_alloc && section_name &&
+      (std::strstr(section_name, "common symbols") != nullptr ||
+       std::strstr(section_name, "<common") != nullptr)) {
+    std::fprintf(stderr,
+                 "INJECTED_NULL_COMMON_SYMBOLS_SECTION (section=%s size=%zu)\n",
+                 section_name, (size_t)size);
+    return nullptr;
+  }
   if (self->fail_data_alloc) {
     std::fprintf(stderr,
                  "INJECTED_NULL_DATA_SECTION (section=%s size=%zu ro=%d)\n",
@@ -591,20 +727,17 @@ static LLVMBool custom_finalize(void *opaque, char **err_msg) {
       *err_msg = _strdup("injected finalize memory failure");
     return 1;
   }
-  if (self->fail_protect) {
-    if (err_msg)
-      *err_msg = _strdup("injected VirtualProtect failure");
-    return 1;
-  }
-  if (self->fail_cache_flush) {
-    if (err_msg)
-      *err_msg = _strdup("injected FlushInstructionCache failure");
-    return 1;
-  }
 
   // Set permissions
   DWORD old;
   for (void *p : self->code_pages) {
+    if (self->fail_protect) {
+      SetLastError(ERROR_ACCESS_DENIED);
+      if (err_msg)
+        *err_msg =
+            _strdup("VirtualProtect PAGE_EXECUTE_READ failed with OS error 5");
+      return 1;
+    }
     if (!VirtualProtect(p, 4096, PAGE_EXECUTE_READ, &old)) {
       if (err_msg)
         *err_msg = _strdup("VirtualProtect failed on code");
@@ -617,6 +750,12 @@ static LLVMBool custom_finalize(void *opaque, char **err_msg) {
         *err_msg = _strdup("VirtualProtect failed on RO");
       return 1;
     }
+  }
+  if (self->fail_cache_flush) {
+    SetLastError(ERROR_INVALID_PARAMETER);
+    if (err_msg)
+      *err_msg = _strdup("FlushInstructionCache failed with OS error 87");
+    return 1;
   }
   if (!FlushInstructionCache(GetCurrentProcess(), nullptr, 0)) {
     if (err_msg)
@@ -786,6 +925,385 @@ static void test_fail_closed_cache_flush() {
 }
 
 // ---------------------------------------------------------------------------
+// Test Suite 9: Injected OS Failures Through Production Memory Manager (Finding
+// 5)
+// ---------------------------------------------------------------------------
+static void test_production_manager_injected_os_failures() {
+  std::puts(
+      "=== TEST: Injected OS Failures Through Production Memory Manager ===");
+
+  HMODULE hLLVMC = GetModuleHandleA("LLVM-C.dll");
+  typedef void (*SetFaultFn)(uint32_t);
+  SetFaultFn pSetFault = nullptr;
+  if (hLLVMC) {
+    pSetFault = (SetFaultFn)GetProcAddress(
+        hLLVMC, "LLVMExtSetWindowsMCJITFaultInjection");
+  }
+  if (!pSetFault) {
+    pSetFault = &LLVMExtSetWindowsMCJITFaultInjection;
+  }
+
+  auto test_fault_case = [&](uint32_t flag, const char *case_name,
+                             const char *expected_substr, bool need_ro,
+                             bool need_unwind) {
+    std::printf("--- Testing Production OS Fault: %s ---\n", case_name);
+    pSetFault(flag);
+
+    LLVMContextRef ctx = LLVMContextCreate();
+    LLVMModuleRef m = LLVMModuleCreateWithNameInContext("prod_fault_mod", ctx);
+    auto i32 = LLVMInt32TypeInContext(ctx);
+
+    if (need_ro) {
+      auto ro_var = LLVMAddGlobal(m, i32, "test_ro_data");
+      LLVMSetInitializer(ro_var, LLVMConstInt(i32, 8888, 0));
+      LLVMSetGlobalConstant(ro_var, 1);
+    }
+
+    auto fn = LLVMAddFunction(m, "test_fault_fn",
+                              LLVMFunctionType(i32, nullptr, 0, 0));
+    if (need_unwind) {
+      auto uw_kind = LLVMGetEnumAttributeKindForName("uwtable", 7);
+      if (uw_kind != 0) {
+        LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex,
+                                LLVMCreateEnumAttribute(ctx, uw_kind, 2));
+      }
+    }
+
+    auto b = LLVMCreateBuilderInContext(ctx);
+    LLVMPositionBuilderAtEnd(b,
+                             LLVMAppendBasicBlockInContext(ctx, fn, "entry"));
+    if (need_unwind) {
+      auto slot = LLVMBuildAlloca(b, i32, "slot");
+      LLVMBuildStore(b, LLVMConstInt(i32, 42, 0), slot);
+    }
+    LLVMBuildRet(b, LLVMConstInt(i32, 10, 0));
+    LLVMDisposeBuilder(b);
+
+    LLVMExecutionEngineRef ee = nullptr;
+    char *err = nullptr;
+    LLVMBool create_err =
+        LLVMExtCreateWindowsMCJITCompilerForModule(&ee, m, &err);
+    require(!create_err && ee != nullptr,
+            err ? err : "Failed to create Windows MCJIT engine");
+
+    uint64_t addr = LLVMGetFunctionAddress(ee, "test_fault_fn");
+    std::printf("%s_LOOKUP: addr=0x%llx (must be 0)\n", case_name,
+                (unsigned long long)addr);
+    require(addr == 0,
+            "FAIL: Production manager OS fault did not fail closed!");
+
+    char *diag = nullptr;
+    LLVMBool has_err = LLVMExecutionEngineGetErrMsg(ee, &diag);
+    std::printf("%s_DIAGNOSTIC: has_err=%d msg='%s'\n", case_name, has_err,
+                diag ? diag : "");
+    require(has_err && diag != nullptr && std::strlen(diag) > 0,
+            "Expected non-empty diagnostic for production OS fault");
+    require(std::strstr(diag, expected_substr) != nullptr,
+            "Diagnostic message did not contain expected substring");
+    LLVMDisposeMessage(diag);
+
+    // Sticky error test
+    uint64_t sticky_addr = LLVMGetFunctionAddress(ee, "test_fault_fn");
+    require(sticky_addr == 0, "Sticky error failed on production engine");
+
+    LLVMDisposeExecutionEngine(ee);
+    LLVMContextDispose(ctx);
+
+    // Clear fault injection
+    pSetFault(LLVMExtFaultNone);
+  };
+
+  test_fault_case(LLVMExtFaultVirtualProtectCode, "VirtualProtect_Code",
+                  "VirtualProtect", false, false);
+  test_fault_case(LLVMExtFaultFlushInstructionCache, "FlushInstructionCache",
+                  "FlushInstructionCache", false, false);
+  test_fault_case(LLVMExtFaultVirtualProtectRO, "VirtualProtect_RO",
+                  "VirtualProtect", true, false);
+  test_fault_case(LLVMExtFaultRtlAddFunctionTable, "RtlAddFunctionTable",
+                  "RtlAddFunctionTable", false, true);
+
+  std::puts("PASS: Injected OS Failures Through Production Memory Manager");
+}
+
+// ---------------------------------------------------------------------------
+// Test Suite 10: Lazy Lookup Failure On Healthy Engine (Finding 7)
+// ---------------------------------------------------------------------------
+static void test_lazy_lookup_failure_on_healthy_engine() {
+  std::puts("=== TEST: Lazy Lookup Failure On Healthy Engine ===");
+  LLVMContextRef ctx = LLVMContextCreate();
+  auto i32 = LLVMInt32TypeInContext(ctx);
+  auto fn_ty = LLVMFunctionType(i32, nullptr, 0, 0);
+
+  // Module 1: healthy function
+  LLVMModuleRef m1 = LLVMModuleCreateWithNameInContext("mod_healthy", ctx);
+  auto healthy_fn = LLVMAddFunction(m1, "healthy_func", fn_ty);
+  auto b = LLVMCreateBuilderInContext(ctx);
+  LLVMPositionBuilderAtEnd(
+      b, LLVMAppendBasicBlockInContext(ctx, healthy_fn, "entry"));
+  LLVMBuildRet(b, LLVMConstInt(i32, 777, 0));
+
+  // Module 1 also declares a function that will be looked up lazily
+  auto lazy_decl = LLVMAddFunction(m1, "lazy_failing_func", fn_ty);
+  LLVMDisposeBuilder(b);
+
+  auto *fm = new CustomFaultManager();
+  // Initially, do NOT fail any allocation so engine is healthy
+  fm->fail_code_alloc = false;
+
+  LLVMMCJITCompilerOptions opt;
+  LLVMInitializeMCJITCompilerOptions(&opt, sizeof(opt));
+  opt.MCJMM = LLVMCreateSimpleMCJITMemoryManager(
+      fm, custom_alloc_code, custom_alloc_data, custom_finalize,
+      custom_destroy);
+
+  LLVMExecutionEngineRef ee = nullptr;
+  char *err = nullptr;
+  require(!LLVMCreateMCJITCompilerForModule(&ee, m1, &opt, sizeof(opt), &err),
+          "Create engine");
+
+  // Step 1: Prove engine is healthy by resolving and executing healthy_func
+  uint64_t healthy_addr = LLVMGetFunctionAddress(ee, "healthy_func");
+  require(healthy_addr != 0, "healthy_func lookup failed on healthy engine");
+  typedef int32_t (*IntVoidFn)(void);
+  IntVoidFn h_fn = (IntVoidFn)healthy_addr;
+  int32_t h_val = h_fn();
+  require(h_val == 777, "healthy_func returned unexpected value");
+  std::printf(
+      "HEALTHY_ENGINE_EXECUTION: healthy_func returned %d (expected 777)\n",
+      h_val);
+
+  // Step 2: Now add Module 2 containing the definition of lazy_failing_func
+  LLVMModuleRef m2 = LLVMModuleCreateWithNameInContext("mod_lazy", ctx);
+  auto lazy_def = LLVMAddFunction(m2, "lazy_failing_func", fn_ty);
+  auto b2 = LLVMCreateBuilderInContext(ctx);
+  LLVMPositionBuilderAtEnd(
+      b2, LLVMAppendBasicBlockInContext(ctx, lazy_def, "entry"));
+  LLVMBuildRet(b2, LLVMConstInt(i32, 999, 0));
+  LLVMDisposeBuilder(b2);
+
+  // Configure fault injection so that code allocation for the new module will
+  // fail
+  fm->fail_code_alloc = true;
+
+  // Add the module lazily
+  LLVMAddModule(ee, m2);
+
+  // Step 3: Trigger lazy compilation/loading via lookup of the
+  // declaration/function Engine was healthy until this lookup triggered the
+  // failing load
+  uint64_t lazy_addr = LLVMGetFunctionAddress(ee, "lazy_failing_func");
+  std::printf("LAZY_LOOKUP_ON_HEALTHY: addr=0x%llx (must be 0)\n",
+              (unsigned long long)lazy_addr);
+  require(
+      lazy_addr == 0,
+      "FAIL: Lazy lookup on healthy engine did not return 0 on failing load!");
+
+  // Also verify LLVMGetPointerToGlobal on the declaration returns nullptr
+  void *decl_ptr = LLVMGetPointerToGlobal(ee, lazy_decl);
+  require(decl_ptr == nullptr, "FAIL: LLVMGetPointerToGlobal returned non-null "
+                               "for failed lazy declaration!");
+
+  // Step 4: Verify diagnostic was captured and preserved
+  char *diag = nullptr;
+  LLVMBool has_err = LLVMExecutionEngineGetErrMsg(ee, &diag);
+  std::printf("LAZY_FAILURE_DIAGNOSTIC: has_err=%d msg='%s'\n", has_err,
+              diag ? diag : "");
+  require(has_err && diag != nullptr && std::strlen(diag) > 0,
+          "Expected non-empty diagnostic message from lazy load failure");
+  LLVMDisposeMessage(diag);
+
+  // Step 5: Verify sticky refusal on the previously healthy function
+  uint64_t post_fail_healthy = LLVMGetFunctionAddress(ee, "healthy_func");
+  require(post_fail_healthy == 0,
+          "FAIL: Error state was not sticky! healthy_func still resolvable "
+          "after lazy failure!");
+
+  auto post_fail_run = LLVMRunFunction(ee, healthy_fn, 0, nullptr);
+  require(
+      post_fail_run == nullptr,
+      "FAIL: Error state was not sticky! healthy_fn ran after lazy failure!");
+
+  LLVMDisposeExecutionEngine(ee);
+  LLVMContextDispose(ctx);
+  std::puts("PASS: Lazy lookup failure on healthy engine verified");
+}
+
+// ---------------------------------------------------------------------------
+// Test Suite 11: Encoded Relocations & Live RuntimeDyld Processing (Finding 6)
+// ---------------------------------------------------------------------------
+static void test_encoded_relocations_live_runtime_dyld() {
+  std::puts("=== TEST: Encoded Relocations & Live RuntimeDyld Processing ===");
+  LLVMContextRef ctx = LLVMContextCreate();
+  LLVMModuleRef m =
+      LLVMModuleCreateWithNameInContext("test_encoded_relocs", ctx);
+  auto i32 = LLVMInt32TypeInContext(ctx);
+
+  // 1. Callee function: int32_t callee_target(int32_t a) { return a + 10; }
+  auto callee_fn =
+      LLVMAddFunction(m, "callee_target", LLVMFunctionType(i32, &i32, 1, 0));
+  auto b = LLVMCreateBuilderInContext(ctx);
+  LLVMPositionBuilderAtEnd(
+      b, LLVMAppendBasicBlockInContext(ctx, callee_fn, "entry"));
+  auto param = LLVMGetParam(callee_fn, 0);
+  auto add10 = LLVMBuildAdd(b, param, LLVMConstInt(i32, 10, 0), "add10");
+  LLVMBuildRet(b, add10);
+
+  // 2. Caller function: int32_t caller_entry(int32_t x) { return
+  // callee_target(x); } This generates an x86-64 direct relative call: 'E8 <4
+  // bytes>' with inline addend -4. RuntimeDyld processes IMAGE_REL_AMD64_REL32
+  // by decoding -4, sign-extending it, computing (callee_target - (call_site +
+  // 4)) + (-4), and writing the 32-bit displacement.
+  auto caller_fn =
+      LLVMAddFunction(m, "caller_entry", LLVMFunctionType(i32, &i32, 1, 0));
+  LLVMPositionBuilderAtEnd(
+      b, LLVMAppendBasicBlockInContext(ctx, caller_fn, "entry"));
+  auto in_arg = LLVMGetParam(caller_fn, 0);
+  auto call_res = LLVMBuildCall2(b, LLVMFunctionType(i32, &i32, 1, 0),
+                                 callee_fn, &in_arg, 1, "call_res");
+  LLVMBuildRet(b, call_res);
+  LLVMDisposeBuilder(b);
+
+  LLVMExecutionEngineRef ee = nullptr;
+  char *err = nullptr;
+  LLVMBool create_err =
+      LLVMExtCreateWindowsMCJITCompilerForModule(&ee, m, &err);
+  require(!create_err && ee != nullptr,
+          err ? err : "Failed to create Windows MCJIT engine");
+
+  // Lookup both functions
+  uint64_t callee_addr = LLVMGetFunctionAddress(ee, "callee_target");
+  uint64_t caller_addr = LLVMGetFunctionAddress(ee, "caller_entry");
+  require(callee_addr != 0, "Failed to resolve callee_target");
+  require(caller_addr != 0, "Failed to resolve caller_entry");
+
+  // Inspect the emitted machine code of caller_entry to verify encoded
+  // relocation resolution
+  const uint8_t *code_bytes = (const uint8_t *)caller_addr;
+  bool found_rel32_call = false;
+  for (size_t offset = 0; offset < 32; ++offset) {
+    if (code_bytes[offset] == 0xE8) {
+      int32_t written_disp = 0;
+      std::memcpy(&written_disp, code_bytes + offset + 1, sizeof(int32_t));
+      uint64_t next_ip = caller_addr + offset + 5;
+      uint64_t computed_target =
+          (uint64_t)((int64_t)next_ip + (int64_t)written_disp);
+
+      std::printf(
+          "ENCODED_REL32_INSPECTION: call at offset +%zu, "
+          "written_disp=0x%x (%d), next_ip=0x%llx -> computed_target=0x%llx "
+          "(callee=0x%llx)\n",
+          offset, written_disp, written_disp, (unsigned long long)next_ip,
+          (unsigned long long)computed_target, (unsigned long long)callee_addr);
+
+      require(computed_target == callee_addr,
+              "RuntimeDyld resolved REL32 displacement does not reach "
+              "callee_target!");
+      found_rel32_call = true;
+      break;
+    }
+  }
+  require(found_rel32_call,
+          "Could not find 0xE8 call instruction in caller_entry");
+
+  // Execute through the resolved relocation
+  typedef int32_t (*CallFn)(int32_t);
+  CallFn fn = (CallFn)caller_addr;
+  int32_t exec_result = fn(32);
+  std::printf(
+      "ENCODED_REL32_EXECUTION: caller_entry(32) returned %d (expected 42)\n",
+      exec_result);
+  require(exec_result == 42,
+          "Execution through encoded REL32 relocation failed");
+
+  // Test section remapping through RuntimeDyld if LLVMExtMapSectionAddress is
+  // available
+  HMODULE hLLVMC = GetModuleHandleA("LLVM-C.dll");
+  typedef void (*MapSectionFn)(LLVMExecutionEngineRef, const void *, uint64_t);
+  MapSectionFn pMapSection = nullptr;
+  if (hLLVMC) {
+    pMapSection =
+        (MapSectionFn)GetProcAddress(hLLVMC, "LLVMExtMapSectionAddress");
+  }
+  if (!pMapSection) {
+    pMapSection = &LLVMExtMapSectionAddress;
+  }
+
+  if (pMapSection != nullptr) {
+    uint64_t remapped_target_addr = 0x240000000ULL;
+    pMapSection(ee, (const void *)caller_addr, remapped_target_addr);
+    std::printf("SECTION_REMAPPING: remapped caller_addr %p -> target 0x%llx "
+                "via LLVMExtMapSectionAddress\n",
+                (const void *)caller_addr,
+                (unsigned long long)remapped_target_addr);
+  } else {
+    std::puts("BLOCKED: LLVMExtMapSectionAddress not exported; native section "
+              "remapping blocked at C boundary");
+  }
+
+  LLVMDisposeExecutionEngine(ee);
+  LLVMContextDispose(ctx);
+  std::puts("PASS: Encoded Relocations & Live RuntimeDyld Processing");
+}
+
+// ---------------------------------------------------------------------------
+// Test Suite 12: Common Symbol Allocation Failure Non-Fatal Recovery (Finding
+// 9)
+// ---------------------------------------------------------------------------
+static void test_null_common_symbol_allocation_recovery() {
+  std::puts(
+      "=== TEST: Common Symbol Allocation Failure Non-Fatal Recovery ===");
+  LLVMContextRef ctx = LLVMContextCreate();
+  LLVMModuleRef m = LLVMModuleCreateWithNameInContext("null_common_mod", ctx);
+  auto i32 = LLVMInt32TypeInContext(ctx);
+
+  auto common_var = LLVMAddGlobal(m, i32, "fail_common_int");
+  LLVMSetLinkage(common_var, LLVMCommonLinkage);
+  LLVMSetInitializer(common_var, LLVMConstNull(i32));
+
+  auto f = LLVMAddFunction(m, "read_common_fail_fn",
+                           LLVMFunctionType(i32, nullptr, 0, 0));
+  auto b = LLVMCreateBuilderInContext(ctx);
+  LLVMPositionBuilderAtEnd(b, LLVMAppendBasicBlockInContext(ctx, f, "entry"));
+  auto val = LLVMBuildLoad2(b, i32, common_var, "val");
+  LLVMBuildRet(b, val);
+  LLVMDisposeBuilder(b);
+
+  auto *fm = new CustomFaultManager();
+  fm->fail_common_alloc = true;
+
+  LLVMMCJITCompilerOptions opt;
+  LLVMInitializeMCJITCompilerOptions(&opt, sizeof(opt));
+  opt.MCJMM = LLVMCreateSimpleMCJITMemoryManager(
+      fm, custom_alloc_code, custom_alloc_data, custom_finalize,
+      custom_destroy);
+
+  LLVMExecutionEngineRef ee = nullptr;
+  char *err = nullptr;
+  require(!LLVMCreateMCJITCompilerForModule(&ee, m, &opt, sizeof(opt), &err),
+          "Create engine");
+
+  uint64_t addr = LLVMGetFunctionAddress(ee, "read_common_fail_fn");
+  std::printf("NULL_COMMON_ALLOC_LOOKUP: addr=0x%llx (expected 0)\n",
+              (unsigned long long)addr);
+  require(addr == 0, "Expected 0 address on null common symbols allocation");
+
+  char *diag = nullptr;
+  LLVMExecutionEngineGetErrMsg(ee, &diag);
+  std::printf("NULL_COMMON_ALLOC_DIAG: '%s'\n", diag ? diag : "");
+  require(diag != nullptr && std::strlen(diag) > 0,
+          "Expected diagnostic for common symbols allocation failure");
+  require(std::strstr(diag, "common symbols") != nullptr ||
+              std::strstr(diag, "common") != nullptr,
+          "Diagnostic must mention common symbols failure");
+  LLVMDisposeMessage(diag);
+
+  LLVMDisposeExecutionEngine(ee);
+  LLVMContextDispose(ctx);
+  std::puts(
+      "PASS: Common symbol allocation failure recovered cleanly without abort");
+}
+
+// ---------------------------------------------------------------------------
 // Test Suite 9: Null Code & Data Allocation Non-Fatal Recovery
 // ---------------------------------------------------------------------------
 static void test_null_code_allocation_recovery() {
@@ -940,19 +1458,8 @@ static void test_allocation_model_and_relocation_boundaries() {
               (unsigned long long)per_object_rva,
               (unsigned long long)broken_global_rva);
 
-  // 3. Relocation Boundary Equations:
-  // ADDR32NB: Value in [0, 0xFFFFFFFF]
-  auto check_addr32nb = [](uint64_t target, uint64_t base, int64_t addend,
-                           uint32_t *out) -> bool {
-    if (target < base && addend <= 0)
-      return false; // Underflow
-    int64_t rva = (int64_t)(target - base) + addend;
-    if (rva < 0 || rva > 0xFFFFFFFFLL)
-      return false; // Overflow / Underflow
-    *out = (uint32_t)rva;
-    return true;
-  };
-
+  // 3. Relocation Boundary Equations (using file-scoped check_addr32nb and
+  // check_rel32)
   uint32_t rva_out = 0;
   require(check_addr32nb(base1 + 0x1000, base1, 0, &rva_out) &&
               rva_out == 0x1000,
@@ -967,16 +1474,7 @@ static void test_allocation_model_and_relocation_boundaries() {
   require(!check_addr32nb(base1 + 0xFFFFFFF0ULL, base1, 0x100, &rva_out),
           "Addend overflow ADDR32NB must fail");
 
-  // REL32: Displacement in [-2^31, 2^31 - 1]
-  auto check_rel32 = [](uint64_t target, uint64_t reloc_site, int64_t addend,
-                        int extra_disp, int32_t *out) -> bool {
-    int64_t next_pc = (int64_t)(reloc_site + 4 + extra_disp);
-    int64_t disp = (int64_t)target - next_pc + addend;
-    if (disp < (int64_t)INT32_MIN || disp > (int64_t)INT32_MAX)
-      return false;
-    *out = (int32_t)disp;
-    return true;
-  };
+  // REL32: Displacement in [-2^31, 2^31 - 1] (using file-scoped check_rel32)
 
   int32_t rel_out = 0;
   require(check_rel32(base1 + 0x2000, base1 + 0x1000, 0, 0, &rel_out),
@@ -1010,8 +1508,8 @@ static void test_allocation_model_and_relocation_boundaries() {
 // Test Suite 11: Wide Legal Layout Simulation (Checked Legacy Fallback)
 // ---------------------------------------------------------------------------
 static void test_wide_legal_layout_simulation() {
-  std::puts("=== TEST: Wide Legal Layout & Contiguous Allocation Fallback "
-            "Simulation ===");
+  std::puts(
+      "=== [LABELED MODEL] Wide Section Displacement & Arithmetic Model ===");
   uint64_t code_base = 0x140000000ULL;
   uint64_t data_base = 0x150000000ULL; // 256 MB away: within 2GB signed reach
 
@@ -1040,6 +1538,9 @@ static void test_wide_legal_layout_simulation() {
   require(check_addr32nb(target_sym, remapped_target, 0, &remapped_rva) &&
               remapped_rva == 0x100,
           "Remapped target address establishes new object base");
+  require(
+      initial_alloc != remapped_target,
+      "Initial allocation and remapped target must represent distinct bases");
 
   std::puts("PASS: Wide legal layout simulation");
 }
@@ -1071,10 +1572,18 @@ int main(int argc, char **argv) {
     return 0;
   }
 
+  if (mode == "--fail-allocation-common") {
+    test_null_common_symbol_allocation_recovery();
+    std::puts("PROBE SUBPROCESS SUCCESS: common symbols allocation recovery "
+              "verified");
+    return 0;
+  }
+
   if (mode == "--fail-finalize") {
     test_fail_closed_finalize_and_sticky_errors();
     test_fail_closed_virtual_protect();
     test_fail_closed_cache_flush();
+    test_production_manager_injected_os_failures();
     std::puts("PROBE SUBPROCESS SUCCESS: finalize/protect/cache failures "
               "recovery verified");
     return 0;
@@ -1097,8 +1606,12 @@ int main(int argc, char **argv) {
   test_fail_closed_finalize_and_sticky_errors();
   test_fail_closed_virtual_protect();
   test_fail_closed_cache_flush();
+  test_production_manager_injected_os_failures();
+  test_lazy_lookup_failure_on_healthy_engine();
+  test_encoded_relocations_live_runtime_dyld();
   test_null_code_allocation_recovery();
   test_null_data_allocation_recovery();
+  test_null_common_symbol_allocation_recovery();
   test_allocation_model_and_relocation_boundaries();
   test_wide_legal_layout_simulation();
 
