@@ -187,8 +187,6 @@ class VerifiedAuthorization:
         ):
             reject("manifest data SHA mismatch with authorization tuple")
 
-    def __setattr__(self, name: str, value: Any) -> None:
-        raise AttributeError(f"VerifiedAuthorization is immutable; cannot modify attribute '{name}'")
 
     def to_dict(self) -> Dict[str, Any]:
         return {
