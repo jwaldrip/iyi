@@ -75,6 +75,7 @@ static inline BOOLEAN RtlDeleteFunctionTable(PRUNTIME_FUNCTION FunctionTable) {
 namespace llvm {
 #ifdef LLVM_ENABLE_TEST_HOOKS
 static std::atomic<uint32_t> FaultInjectionFlags{0};
+static std::atomic<uint64_t> LastUnwindProbeAddress{0};
 
 void setWindowsMCJITFaultInjection(uint32_t Flags) {
   FaultInjectionFlags.store(Flags, std::memory_order_relaxed);
@@ -82,6 +83,10 @@ void setWindowsMCJITFaultInjection(uint32_t Flags) {
 
 uint32_t getWindowsMCJITFaultInjection() {
   return FaultInjectionFlags.load(std::memory_order_relaxed);
+}
+
+uint64_t getWindowsMCJITLastUnwindProbeAddress() {
+  return LastUnwindProbeAddress.load(std::memory_order_relaxed);
 }
 #endif
 
@@ -181,9 +186,38 @@ void WindowsMCJITMemoryManager::reserveAllocationSpace(
   // Reservation span ceiling for x86-64 intra-object relocations:
   // ADDR32NB unsigned 32-bit reach from object base is 4 GiB (0xFFFE0000ULL).
   constexpr size_t MaxReservationSpan = 0xFFFE0000ULL;
-  if (TotalSpan > MaxReservationSpan)
+  if (TotalSpan > MaxReservationSpan) {
+    // If total span exceeds 4 GiB due to large read-write data, but code and
+    // read-only data (including unwind tables) fit within 4 GiB, pack groups 0
+    // and 1 to guarantee proximity of code and unwind metadata, leaving group 2
+    // (RW) for SectionMemoryManager allocation.
+    size_t CodeROSpan = 0;
+    if (Sizes[2] > 0 && checkedRoundUp(Ends[1], AllocGranularity, CodeROSpan) &&
+        CodeROSpan <= MaxReservationSpan) {
+      void *BasePtr =
+          VirtualAlloc(nullptr, CodeROSpan, MEM_RESERVE, PAGE_NOACCESS);
+      if (BasePtr) {
+        auto Res = std::make_unique<PackedReservation>();
+        Res->Base = static_cast<uint8_t *>(BasePtr);
+        Res->TotalReserved = CodeROSpan;
+        for (int i = 0; i < 2; ++i) {
+          Res->GroupOffsets[i] = Offsets[i];
+          Res->GroupSizes[i] = Sizes[i];
+          Res->GroupCursors[i] = Offsets[i];
+          Res->GroupEnds[i] = Ends[i];
+        }
+        Res->GroupOffsets[2] = 0;
+        Res->GroupSizes[2] = 0;
+        Res->GroupCursors[2] = 0;
+        Res->GroupEnds[2] = 0;
+        Res->Finalized = false;
+        CurrentReservation = Res.get();
+        Reservations.push_back(std::move(Res));
+        return;
+      }
+    }
     return; // Fall back to checked legacy allocation for wide layouts
-
+  }
   // Reserve contiguous memory window for this object
   void *BasePtr = VirtualAlloc(nullptr, TotalSpan, MEM_RESERVE, PAGE_NOACCESS);
   if (!BasePtr)
@@ -345,7 +379,7 @@ bool WindowsMCJITMemoryManager::finalizeMemory(std::string *ErrMsg) {
 
   // Step 2: Ensure complete used group prefixes (including alignment gaps) are
   // committed, then apply page protections and instruction cache flushes.
-  uint32_t Faults = FaultInjectionFlags.load(std::memory_order_relaxed);
+  uint32_t Faults = getWindowsMCJITFaultInjection();
   for (auto &Res : Reservations) {
     if (!Res || Res->Finalized || !Res->Base)
       continue;
@@ -514,6 +548,13 @@ void WindowsMCJITMemoryManager::registerCOFFUnwindInfo(uint8_t *Addr,
                                                        uint64_t ImageBase) {
   if (FinalizationFailed)
     return;
+#ifdef LLVM_ENABLE_TEST_HOOKS
+  if (Size >= sizeof(RUNTIME_FUNCTION) && Addr != nullptr) {
+    const auto *RF = reinterpret_cast<const RUNTIME_FUNCTION *>(Addr);
+    LastUnwindProbeAddress.store(ImageBase + RF[0].BeginAddress,
+                                 std::memory_order_relaxed);
+  }
+#endif
   PendingUnwindTables.push_back({Addr, LoadAddr, Size, ImageBase, false});
 }
 

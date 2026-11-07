@@ -38,9 +38,11 @@ enum WindowsMCJITFaultFlags : uint32_t {
 #ifdef LLVM_ENABLE_TEST_HOOKS
 void setWindowsMCJITFaultInjection(uint32_t Flags);
 uint32_t getWindowsMCJITFaultInjection();
+uint64_t getWindowsMCJITLastUnwindProbeAddress();
 #else
 inline void setWindowsMCJITFaultInjection(uint32_t) {}
 inline uint32_t getWindowsMCJITFaultInjection() { return 0; }
+inline uint64_t getWindowsMCJITLastUnwindProbeAddress() { return 0; }
 #endif
 class WindowsMCJITMemoryManager : public SectionMemoryManager {
 public:

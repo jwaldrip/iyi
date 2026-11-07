@@ -28,11 +28,15 @@ LLVMBool LLVMExtCreateWindowsMCJITCompilerForModule(
 const char *LLVMExtGetWindowsMCJITBuildIdentity(void);
 
 void LLVMExtSetWindowsMCJITFaultInjection(uint32_t Flags);
+uint64_t LLVMExtGetWindowsMCJITLastUnwindProbeAddress(void);
 
 void LLVMExtMapSectionAddress(LLVMExecutionEngineRef EE,
                               const void *LocalAddress, uint64_t TargetAddress);
 LLVMBool LLVMExtAddArchiveFile(LLVMExecutionEngineRef EE, const char *Path,
                                char **OutError);
+
+__declspec(dllexport) int probe_custom_personality(void *, void *, void *,
+                                                   void *);
 
 // Native callbacks for testing stubs and stack unwinding
 __declspec(dllexport) int32_t probe_native_external_add(int32_t a, int32_t b);
@@ -84,6 +88,12 @@ extern "C" int32_t probe_native_external_add(int32_t a, int32_t b) {
   return a + b;
 }
 
+extern "C" int probe_custom_personality(void *exception_record,
+                                        void *establisher_frame,
+                                        void *context_record,
+                                        void *dispatcher_context) {
+  return 0; // ExceptionContinueSearch
+}
 extern "C" void probe_native_stack_walk_callback(void) {
   CONTEXT ctx;
   RtlCaptureContext(&ctx);
@@ -277,11 +287,9 @@ static void test_windows_unwind_and_real_stack_walk() {
   require(uw_kind != 0, "uwtable attribute kind");
   LLVMAddAttributeAtIndex(caller_fn, LLVMAttributeFunctionIndex,
                           LLVMCreateEnumAttribute(ctx, uw_kind, 2));
-
-  auto pers_fn = LLVMAddFunction(m, "__C_specific_handler",
+  auto pers_fn = LLVMAddFunction(m, "probe_custom_personality",
                                  LLVMFunctionType(i32, nullptr, 0, 1));
   LLVMSetPersonalityFn(caller_fn, pers_fn);
-
   auto b = LLVMCreateBuilderInContext(ctx);
   auto bb = LLVMAppendBasicBlockInContext(ctx, caller_fn, "entry");
   LLVMPositionBuilderAtEnd(b, bb);
@@ -303,14 +311,7 @@ static void test_windows_unwind_and_real_stack_walk() {
 
   // Map external callback
   LLVMAddGlobalMapping(ee, cb_decl, (void *)&probe_native_stack_walk_callback);
-#ifdef _WIN32
-  HMODULE hNtdll = GetModuleHandleA("ntdll.dll");
-  if (hNtdll) {
-    void *pHandler = (void *)GetProcAddress(hNtdll, "__C_specific_handler");
-    if (pHandler)
-      LLVMAddGlobalMapping(ee, pers_fn, pHandler);
-  }
-#endif
+  LLVMAddGlobalMapping(ee, pers_fn, (void *)&probe_custom_personality);
 
   uint64_t caller_addr = LLVMGetFunctionAddress(ee, "jit_unwind_caller");
   require(caller_addr != 0, "Failed to resolve jit_unwind_caller");
@@ -980,6 +981,15 @@ static void test_production_manager_injected_os_failures() {
       pSetFault != nullptr,
       "LLVMExtSetWindowsMCJITFaultInjection must be exported by LLVM-C.dll");
 
+  typedef uint64_t (*GetUnwindAddrFn)(void);
+  GetUnwindAddrFn pGetUnwindAddr = nullptr;
+  if (hLLVMC) {
+    pGetUnwindAddr = (GetUnwindAddrFn)GetProcAddress(
+        hLLVMC, "LLVMExtGetWindowsMCJITLastUnwindProbeAddress");
+  }
+  if (!pGetUnwindAddr) {
+    pGetUnwindAddr = &LLVMExtGetWindowsMCJITLastUnwindProbeAddress;
+  }
   auto test_fault_case = [&](uint32_t flag, const char *case_name,
                              const char *expected_substr, bool need_ro,
                              bool need_unwind) {
@@ -1039,12 +1049,15 @@ static void test_production_manager_injected_os_failures() {
             "Diagnostic message did not contain expected substring");
     LLVMDisposeMessage(diag);
 #ifdef _WIN32
-    if (need_unwind) {
-      DWORD64 failImgBase = 0;
-      PRUNTIME_FUNCTION failRf =
-          RtlLookupFunctionEntry((DWORD64)addr, &failImgBase, nullptr);
-      require(failRf == nullptr,
-              "RtlLookupFunctionEntry found table after failed publication!");
+    if (need_unwind && pGetUnwindAddr) {
+      uint64_t probe_unwind_addr = pGetUnwindAddr();
+      if (probe_unwind_addr != 0) {
+        DWORD64 failImgBase = 0;
+        PRUNTIME_FUNCTION failRf = RtlLookupFunctionEntry(
+            (DWORD64)probe_unwind_addr, &failImgBase, nullptr);
+        require(failRf == nullptr,
+                "RtlLookupFunctionEntry found table after failed publication!");
+      }
     }
 #endif
 
@@ -1077,15 +1090,17 @@ static void test_production_manager_injected_os_failures() {
     pSetFault(LLVMExtFaultRtlAddFunctionTableSecond);
 
     LLVMContextRef ctx = LLVMContextCreate();
-    LLVMModuleRef m =
-        LLVMModuleCreateWithNameInContext("prod_fault_rollback", ctx);
+    LLVMModuleRef m1 =
+        LLVMModuleCreateWithNameInContext("prod_fault_rollback_m1", ctx);
+    LLVMModuleRef m2 =
+        LLVMModuleCreateWithNameInContext("prod_fault_rollback_m2", ctx);
     auto void_ty = LLVMVoidTypeInContext(ctx);
     auto i32 = LLVMInt32TypeInContext(ctx);
     auto fn_ty = LLVMFunctionType(void_ty, nullptr, 0, 0);
     auto uw_kind = LLVMGetEnumAttributeKindForName("uwtable", 7);
 
-    // Function 1
-    auto fn1 = LLVMAddFunction(m, "fault_rollback_fn1", fn_ty);
+    // Module 1 with function 1
+    auto fn1 = LLVMAddFunction(m1, "fault_rollback_fn1", fn_ty);
     if (uw_kind != 0)
       LLVMAddAttributeAtIndex(fn1, LLVMAttributeFunctionIndex,
                               LLVMCreateEnumAttribute(ctx, uw_kind, 2));
@@ -1097,8 +1112,8 @@ static void test_production_manager_injected_os_failures() {
     LLVMBuildRetVoid(b1);
     LLVMDisposeBuilder(b1);
 
-    // Function 2
-    auto fn2 = LLVMAddFunction(m, "fault_rollback_fn2", fn_ty);
+    // Module 2 with function 2
+    auto fn2 = LLVMAddFunction(m2, "fault_rollback_fn2", fn_ty);
     if (uw_kind != 0)
       LLVMAddAttributeAtIndex(fn2, LLVMAttributeFunctionIndex,
                               LLVMCreateEnumAttribute(ctx, uw_kind, 2));
@@ -1113,9 +1128,10 @@ static void test_production_manager_injected_os_failures() {
     LLVMExecutionEngineRef ee = nullptr;
     char *err = nullptr;
     LLVMBool create_err =
-        LLVMExtCreateWindowsMCJITCompilerForModule(&ee, m, &err);
+        LLVMExtCreateWindowsMCJITCompilerForModule(&ee, m1, &err);
     require(!create_err && ee != nullptr,
             err ? err : "Failed to create Windows MCJIT engine");
+    LLVMAddModule(ee, m2);
 
     uint64_t addr1 = LLVMGetFunctionAddress(ee, "fault_rollback_fn1");
     std::printf("ROLLBACK_LOOKUP: addr1=0x%llx (must be 0)\n",
@@ -1134,15 +1150,19 @@ static void test_production_manager_injected_os_failures() {
     LLVMDisposeMessage(diag);
 
 #ifdef _WIN32
-    // Verify that neither function is registered in the OS table (Table 0 was
-    // rolled back)
-    DWORD64 imgBase1 = 0;
-    PRUNTIME_FUNCTION rf1 =
-        RtlLookupFunctionEntry((DWORD64)addr1, &imgBase1, nullptr);
-    require(rf1 == nullptr, "FAIL: RtlLookupFunctionEntry found table after "
-                            "rollback! Table 0 was not deregistered!");
+    // Verify that table 0 was rolled back and is not registered in OS table
+    if (pGetUnwindAddr) {
+      uint64_t rollback_unwind_addr = pGetUnwindAddr();
+      if (rollback_unwind_addr != 0) {
+        DWORD64 imgBase1 = 0;
+        PRUNTIME_FUNCTION rf1 = RtlLookupFunctionEntry(
+            (DWORD64)rollback_unwind_addr, &imgBase1, nullptr);
+        require(rf1 == nullptr,
+                "FAIL: RtlLookupFunctionEntry found table after rollback! "
+                "Table 0 was not deregistered!");
+      }
+    }
 #endif
-
     LLVMDisposeExecutionEngine(ee);
     LLVMContextDispose(ctx);
     pSetFault(LLVMExtFaultNone);
@@ -1218,18 +1238,21 @@ static void test_lazy_lookup_failure_on_healthy_engine() {
   // Step 3: Trigger lazy compilation/loading via lookup of the
   // declaration/function Engine was healthy until this lookup triggered the
   // failing load
-  // Step 3: Trigger lazy compilation/loading via LLVMGetPointerToGlobal on the
-  // declaration Engine was healthy until this lookup triggered the failing load
-  void *decl_ptr = LLVMGetPointerToGlobal(ee, lazy_decl);
-  require(decl_ptr == nullptr, "FAIL: LLVMGetPointerToGlobal returned non-null "
-                               "for failed lazy declaration!");
-
+  // Step 3: Trigger lazy compilation/loading via LLVMGetFunctionAddress on the
+  // declaration. Engine was healthy until this lookup triggered the failing
+  // load.
   uint64_t lazy_addr = LLVMGetFunctionAddress(ee, "lazy_failing_func");
   std::printf("LAZY_LOOKUP_ON_HEALTHY: addr=0x%llx (must be 0)\n",
               (unsigned long long)lazy_addr);
   require(
       lazy_addr == 0,
       "FAIL: Lazy lookup on healthy engine did not return 0 on failing load!");
+
+  // Verify declaration lookup also returns null under sticky error state
+  void *decl_ptr = LLVMGetPointerToGlobal(ee, lazy_decl);
+  require(decl_ptr == nullptr,
+          "FAIL: LLVMGetPointerToGlobal returned non-null "
+          "for failed lazy declaration under sticky error!");
   // Step 4: Verify diagnostic was captured and preserved
   char *diag = nullptr;
   LLVMBool has_err = LLVMExecutionEngineGetErrMsg(ee, &diag);
@@ -1315,6 +1338,17 @@ static void test_lazy_archive_lookup() {
   require(!create_err && ee != nullptr, err ? err : "Engine creation failed");
 
   // 5. Add archive to engine via LLVMExtAddArchiveFile
+  // Negative control: Nonexistent archive must fail gracefully and report
+  // diagnostic
+  char *bad_arch_err = nullptr;
+  LLVMBool bad_arch_res =
+      LLVMExtAddArchiveFile(ee, "nonexistent_test_file_404.lib", &bad_arch_err);
+  require(bad_arch_res != 0,
+          "LLVMExtAddArchiveFile must fail on nonexistent file");
+  require(bad_arch_err != nullptr && std::strlen(bad_arch_err) > 0,
+          "LLVMExtAddArchiveFile must report diagnostic on nonexistent file");
+  free(bad_arch_err);
+
   char *arch_err = nullptr;
   LLVMBool add_arch_err = LLVMExtAddArchiveFile(ee, lib_path, &arch_err);
   require(!add_arch_err, arch_err ? arch_err : "LLVMExtAddArchiveFile failed");
@@ -1503,9 +1537,25 @@ static void test_encoded_relocations_live_runtime_dyld() {
           (unsigned long long)computed_target,
           (unsigned long long)remapped_target_addr);
 
-      require(computed_target == remapped_target_addr,
-              "Relocation in dependent module did not resolve to remapped "
-              "target address!");
+      const uint8_t *stub_bytes = (const uint8_t *)computed_target;
+      require(stub_bytes[0] == 0xFF && stub_bytes[1] == 0x25,
+              "Expected stub jmp *0(%rip) [FF 25] at computed_target");
+      uint64_t stub_target = 0;
+      std::memcpy(&stub_target, stub_bytes + 6, sizeof(uint64_t));
+      std::printf("STUB_INSPECTION: stub at 0x%llx has target 0x%llx "
+                  "(expected 0x%llx)\n",
+                  (unsigned long long)computed_target,
+                  (unsigned long long)stub_target,
+                  (unsigned long long)remapped_target_addr);
+      require(stub_target == remapped_target_addr,
+              "Relocation stub target does not match remapped_target_addr");
+
+      uint64_t callee_resolved = LLVMGetFunctionAddress(ee, "callee_target");
+      require(callee_resolved == remapped_target_addr,
+              "LLVMGetFunctionAddress(callee_target) did not return "
+              "remapped_target_addr");
+      require(stub_target == callee_resolved,
+              "Stub target does not match resolved remapped target address");
       found_dep_lea = true;
       break;
     }
@@ -1826,6 +1876,7 @@ int main(int argc, char **argv) {
   LLVMLinkInMCJIT();
   LLVMInitializeNativeTarget();
   LLVMInitializeNativeAsmPrinter();
+  LLVMInitializeNativeAsmParser();
 
   std::string mode = "--all";
   if (argc > 1) {

@@ -49,7 +49,7 @@ jobs:
         id: llvm-cache
         with:
           path: ${{ runner.temp }}/llvm-build
-          key: windows-2022-llvm-20.1.7-c-dylib-${{ hashFiles('jit-reservation-experiment/llvm20-windows-mcjit.patch') }}-4
+          key: windows-2022-llvm-20.1.7-c-dylib-${{ hashFiles('jit-reservation-experiment/llvm20-windows-mcjit.patch') }}-5
       - name: Configure LLVM C dylib
         shell: pwsh
         run: |
@@ -75,7 +75,7 @@ jobs:
         if: steps.llvm-cache.outputs.cache-hit != 'true'
         with:
           path: ${{ runner.temp }}/llvm-build
-          key: windows-2022-llvm-20.1.7-c-dylib-${{ hashFiles('jit-reservation-experiment/llvm20-windows-mcjit.patch') }}-4
+          key: windows-2022-llvm-20.1.7-c-dylib-${{ hashFiles('jit-reservation-experiment/llvm20-windows-mcjit.patch') }}-5
       - name: Build proof against matching LLVM-C DLL
         shell: pwsh
         run: |
