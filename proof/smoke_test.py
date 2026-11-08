@@ -11872,24 +11872,6 @@ def _stage_stub_payloads(
     fixture_root: str = "",
 ) -> dict[str, bytes]:
     rg2r_count = 0 if scenario == "rg2r-zero" else 1
-    exclusion = ""
-    if scenario == "sample-exclusion":
-        exclusion = (
-            "printf '%s\\n' '  [excluded after calibration] "
-            "samples/hello.iyi: fixture sample'\n"
-        )
-    elif scenario == "std-exclusion":
-        exclusion = (
-            "printf '%s\\n' '  [excluded after calibration] "
-            "bench/std_missing_exercise.iyi: fixture std'\n"
-        )
-    elif scenario == "final-required-rerun":
-        exclusion = (
-            "if [ -f \"$PWD/../final-required-flip\" ]; then\n"
-            "  printf '%s\\n' '  [excluded after calibration] "
-            "bench/std_extra_exercise.iyi: calibration differed'\n"
-            "fi\n"
-        )
     gate_sleep = ""
     if scenario == "run1-slow-gate":
         gate_sleep = "sleep 0.2\n"
@@ -11909,18 +11891,103 @@ def _stage_stub_payloads(
     else:
         gate1_tail = ""
     gate_exit = 7 if scenario == "gate1-fail" else 0
-    stale_equivalence = (
-        "#!/bin/bash\n"
-        "set -u\n"
-        f"{gate_sleep}"
-        "echo 'RG2 PASSED: fixture'\n"
-        "echo 'RG2a PASSED: fixture'\n"
-        f"echo 'RG2r PASSED: all {rg2r_count} probes'\n"
-        "echo 'RG5 trace half PASSED: fixture'\n"
-        f"{exclusion}"
-        f"{gate1_tail}"
-        f"exit {gate_exit}\n"
-    )
+
+    rg2_summary = "echo 'RG2: 142 evaluated, 142 passed, 0 still excluded with reason, 0 failures'\n"
+    rg2_exclusions = ""
+    rg2_sentinel = "echo 'RG2 PASSED: fixture'\n"
+    rg2a_summary = "echo 'RG2a: 142 evaluated, 142 passed, 0 still excluded with reason, 0 failures'\n"
+    rg2a_exclusions = ""
+    rg2a_sentinel = "echo 'RG2a PASSED: fixture'\n"
+    tail_exclusions = ""
+    pre_sentinel = ""
+    truncated_log = False
+
+    if scenario == "sample-exclusion":
+        rg2_summary = "echo 'RG2: 141 evaluated, 141 passed, 1 still excluded with reason, 0 failures'\n"
+        rg2_exclusions = "echo '  [excluded after calibration] samples/iyi/hello.iyi: fixture sample'\n"
+    elif scenario == "std-exclusion":
+        rg2_summary = "echo 'RG2: 141 evaluated, 141 passed, 1 still excluded with reason, 0 failures'\n"
+        rg2_exclusions = "echo '  [excluded after calibration] bench/std_missing_exercise.iyi: fixture std'\n"
+    elif scenario == "rg2a-std-exclusion":
+        rg2a_summary = "echo 'RG2a: 141 evaluated, 141 passed, 0 still excluded with reason, 0 failures'\n"
+        rg2a_exclusions = "echo '  [excluded after calibration] bench/std_missing_exercise.iyi: fixture std'\n"
+    elif scenario == "rg2-malformed-exclusion":
+        rg2_summary = "echo 'RG2: 141 evaluated, 141 passed, 1 still excluded with reason, 0 failures'\n"
+        rg2_exclusions = "echo '  [excluded after calibration] malformed_line_no_colon'\n"
+    elif scenario == "rg2-truncated-log":
+        truncated_log = True
+    elif scenario == "rg2-invalid-selector":
+        rg2_summary = "echo 'RG2: 141 evaluated, 141 passed, 1 still excluded with reason, 0 failures'\n"
+        rg2_exclusions = "echo '  [excluded after calibration] invalid/selector/name.iyi: fixture reason'\n"
+    elif scenario == "rg2-duplicate-exclusion":
+        rg2_summary = "echo 'RG2: 140 evaluated, 140 passed, 2 still excluded with reason, 0 failures'\n"
+        rg2_exclusions = (
+            "echo '  [excluded after calibration] bench/std_missing_exercise.iyi: fixture reason 1'\n"
+            "echo '  [excluded after calibration] bench/std_missing_exercise.iyi: fixture reason 2'\n"
+        )
+    elif scenario == "rg2-count-omitted":
+        rg2_summary = "echo 'RG2: 141 evaluated, 141 passed, 0 still excluded with reason, 0 failures'\n"
+    elif scenario == "rg2-count-excess":
+        rg2_summary = "echo 'RG2: 143 evaluated, 143 passed, 0 still excluded with reason, 0 failures'\n"
+    elif scenario == "rg2-passed-short":
+        rg2_summary = "echo 'RG2: 142 evaluated, 141 passed, 0 still excluded with reason, 0 failures'\n"
+    elif scenario == "rg2-log-mismatch-missing-line":
+        rg2_summary = "echo 'RG2: 141 evaluated, 141 passed, 1 still excluded with reason, 0 failures'\n"
+    elif scenario == "rg2-log-mismatch-extra-line":
+        rg2_summary = "echo 'RG2: 142 evaluated, 142 passed, 0 still excluded with reason, 0 failures'\n"
+        rg2_exclusions = "echo '  [excluded after calibration] bench/std_missing_exercise.iyi: fixture std'\n"
+    elif scenario == "rg2-summary-missing":
+        rg2_summary = ""
+    elif scenario == "rg2-summary-duplicate":
+        rg2_summary = (
+            "echo 'RG2: 142 evaluated, 142 passed, 0 still excluded with reason, 0 failures'\n"
+            "echo 'RG2: 142 evaluated, 142 passed, 0 still excluded with reason, 0 failures'\n"
+        )
+    elif scenario == "rg2-summary-malformed":
+        rg2_summary = "echo 'RG2: not a valid summary line'\n"
+    elif scenario == "rg2-sentinel-missing":
+        rg2_sentinel = ""
+    elif scenario == "rg2-sentinel-duplicate":
+        rg2_sentinel = (
+            "echo 'RG2 PASSED: fixture'\n"
+            "echo 'RG2 PASSED: fixture'\n"
+        )
+    elif scenario == "rg2-sentinel-order":
+        pre_sentinel = "echo 'RG2 PASSED: fixture'\n"
+        rg2_sentinel = ""
+    elif scenario == "rg2-unattributed-exclusion":
+        tail_exclusions = "echo '  [excluded after calibration] bench/std_missing_exercise.iyi: unattributed'\n"
+
+    if truncated_log:
+        stale_equivalence = (
+            "#!/bin/bash\n"
+            "set -u\n"
+            f"{gate_sleep}"
+            f"{rg2_summary}"
+            f"{rg2_exclusions}"
+            f"{rg2_sentinel}"
+            f"{rg2a_summary}"
+            f"{gate1_tail}"
+            f"exit {gate_exit}\n"
+        )
+    else:
+        stale_equivalence = (
+            "#!/bin/bash\n"
+            "set -u\n"
+            f"{gate_sleep}"
+            f"{pre_sentinel}"
+            f"{rg2_summary}"
+            f"{rg2_exclusions}"
+            f"{rg2_sentinel}"
+            f"{rg2a_summary}"
+            f"{rg2a_exclusions}"
+            f"{rg2a_sentinel}"
+            f"echo 'RG2r PASSED: all {rg2r_count} probes'\n"
+            "echo 'RG5 trace half PASSED: fixture'\n"
+            f"{tail_exclusions}"
+            f"{gate1_tail}"
+            f"exit {gate_exit}\n"
+        )
     observe_sentinel = (
         "fixture observe sentinel missing"
         if scenario == "run1-missing-sentinel"
@@ -12113,12 +12180,15 @@ def _stage_stub_payloads(
         "    rows.append({'kind':'sample','base':f'sample_{index}',"
         "'name':f'samples/iyi/sample_{index}.iyi','status':STATUS,"
         "'p_nonzero':False})\n"
+        "flip_path = os.path.join(os.path.dirname(os.path.realpath(args.repo)), 'final-required-flip')\n"
+        "has_flip = os.path.isfile(flip_path)\n"
         "for index in range(args.expect_std):\n"
         "    base = 'std_stage_exercise' if index == 0 else "
         "f'std_fixture_{index:03d}_exercise'\n"
+        "    p_nonzero = True if (has_flip and index == 1) else False\n"
         "    rows.append({'kind':'std','base':base,"
         "'name':f'bench/{base}.iyi','status':STATUS,"
-        "'p_nonzero':False})\n"
+        "'p_nonzero':p_nonzero})\n"
         "if WRITE_REPORT:\n"
         "    with open(args.report, 'w', encoding='utf-8') as output:\n"
         "        for row in rows:\n"
@@ -12426,6 +12496,29 @@ class StageFixture(PinFixture):
             encoding="utf-8",
         ):
             pass
+        canonical_log = (
+            "RG2: 142 evaluated, 142 passed, 0 still excluded with reason, 0 failures\n"
+            "RG2 PASSED: observed builds match normal runs outside each program’s calibrated mask\n"
+            "RG2a: 142 evaluated, 142 passed, 0 still excluded with reason, 0 failures\n"
+            "RG2a PASSED: programs given one empty-directory argument match no-argument runs outside calibrated mask\n"
+            "RG2r PASSED: all 1 probes\n"
+            "RG5 trace half PASSED: fixture\n"
+        )
+        log_path = os.path.join(latest_run1_dir, "run1_1.log")
+        with open(log_path, "w", encoding="utf-8") as output:
+            output.write(canonical_log)
+        log_sha256 = proofkit_mod.sha256_file(log_path)
+        rg2_summary = stages_mod._rg2_corpus_evidence(
+            canonical_log,
+            log_sha256,
+            corpus=142,
+        )
+        with open(
+            os.path.join(latest_run1_dir, "rg2_summary.json"),
+            "w",
+            encoding="utf-8",
+        ) as output:
+            json.dump(rg2_summary, output)
 
 
 def _stage_result(report: str, unit: str) -> dict:
@@ -12547,6 +12640,7 @@ def _fixture_run1_control() -> Observation:
                     )
                 )
                 for filename in (
+                    "rg2_summary.json",
                     "exclusions.json",
                     "baseline_skips.json",
                     "result.json",
@@ -12701,33 +12795,197 @@ def _fixture_sibling_count_114_seed() -> Observation:
     return _run1_seed("sibling-count-114", "gate-1.4", "FAIL")
 
 
-def _fixture_sample_exclusion_seed() -> Observation:
-    with StageFixture("sample-exclusion") as fixture:
+def _parse_reason_code_and_family(reason: str) -> tuple[str, str | None]:
+    for family in ("RG2", "RG2a"):
+        if reason.startswith(f"RG2-SUMMARY-MISSING: {family}"):
+            return ("SUMMARY-MISSING", family)
+        if reason.startswith(f"RG2-SUMMARY-DUPLICATE: {family}"):
+            return ("SUMMARY-DUPLICATE", family)
+        if reason.startswith(f"RG2-SUMMARY-MALFORMED: {family}"):
+            return ("SUMMARY-MALFORMED", family)
+        if reason.startswith(f"RG2-SENTINEL-MISSING: {family}"):
+            return ("SENTINEL-MISSING", family)
+        if reason.startswith(f"RG2-SENTINEL-DUPLICATE: {family}"):
+            return ("SENTINEL-DUPLICATE", family)
+        if reason.startswith(f"RG2-SENTINEL-ORDER: {family}"):
+            return ("SENTINEL-ORDER", family)
+        if reason.startswith(f"RG2-SECTION-LINE-INVALID: {family}"):
+            return ("SECTION-LINE-INVALID", family)
+        if reason.startswith(f"RG2-EXCLUSION-SELECTOR-INVALID: {family}"):
+            return ("SELECTOR-INVALID", family)
+        if reason.startswith(f"RG2-EXCLUSION-DUPLICATE: {family}"):
+            return ("DUPLICATE", family)
+        if reason.startswith(f"CALIBRATION-EXCLUSION: {family}"):
+            return ("CALIBRATION-EXCLUSION", family)
+        if reason.startswith(f"RG2-EXCLUSION-LOG-MISMATCH: {family}"):
+            return ("LOG-MISMATCH", family)
+        if reason.startswith(f"RG2-COUNT: {family}"):
+            return ("COUNT", family)
+    if reason.startswith("RG2-EXCLUSION-UNATTRIBUTED:"):
+        return ("EXCLUSION-UNATTRIBUTED", None)
+    parts = reason.split(":", 1)
+    return (parts[0], None)
+
+
+def _rg2_seed(
+    scenario: str,
+    expected_codes: set[tuple[str, str | None]],
+) -> Observation:
+    with StageFixture(scenario) as fixture:
         fixture.pin()
         returncode = stages_mod.cmd_run1(fixture.args(), disk_min_gb=0.0)
+        attempt = stages_mod.latest_attempt_dir(
+            os.path.join(fixture.report, "run1")
+        )
+        summary = _o7_load_json(os.path.join(attempt, "rg2_summary.json"))
+        got_codes = {
+            _parse_reason_code_and_family(reason)
+            for reason in summary.get("reasons", [])
+        }
         result = _stage_result(fixture.report, "run1")
         got = {
             "returncode": returncode,
             "status": result.get("status"),
             "check": result.get("checks", {}).get("exclusions"),
-            "reason": any(
-                str(reason).startswith(
-                    "UNEXPLAINED-SAMPLE-EXCLUSION: samples/hello.iyi"
-                )
-                for reason in result.get("reasons", [])
-            ),
+            "codes": got_codes,
         }
         expected = {
             "returncode": 1,
             "status": "FAIL",
             "check": "FAIL",
-            "reason": True,
+            "codes": expected_codes,
         }
         return Observation(
             expected=expected,
             got=got,
             applied=_scenario_applied(fixture),
         )
+
+
+def _fixture_sample_exclusion_seed() -> Observation:
+    return _rg2_seed(
+        "sample-exclusion",
+        {("CALIBRATION-EXCLUSION", "RG2"), ("COUNT", "RG2")},
+    )
+
+
+def _fixture_rg2a_std_exclusion_seed() -> Observation:
+    return _rg2_seed(
+        "rg2a-std-exclusion",
+        {("CALIBRATION-EXCLUSION", "RG2a"), ("COUNT", "RG2a")},
+    )
+
+
+def _fixture_rg2_malformed_exclusion_seed() -> Observation:
+    return _rg2_seed(
+        "rg2-malformed-exclusion",
+        {("SECTION-LINE-INVALID", "RG2"), ("LOG-MISMATCH", "RG2"), ("COUNT", "RG2")},
+    )
+
+
+def _fixture_rg2_truncated_log_seed() -> Observation:
+    return _rg2_seed(
+        "rg2-truncated-log",
+        {("SENTINEL-MISSING", "RG2a")},
+    )
+
+
+def _fixture_rg2_invalid_selector_seed() -> Observation:
+    return _rg2_seed(
+        "rg2-invalid-selector",
+        {("SELECTOR-INVALID", "RG2"), ("COUNT", "RG2")},
+    )
+
+
+def _fixture_rg2_duplicate_exclusion_seed() -> Observation:
+    return _rg2_seed(
+        "rg2-duplicate-exclusion",
+        {("CALIBRATION-EXCLUSION", "RG2"), ("DUPLICATE", "RG2"), ("COUNT", "RG2")},
+    )
+
+
+def _fixture_rg2_count_omitted_seed() -> Observation:
+    return _rg2_seed(
+        "rg2-count-omitted",
+        {("COUNT", "RG2")},
+    )
+
+
+def _fixture_rg2_count_excess_seed() -> Observation:
+    return _rg2_seed(
+        "rg2-count-excess",
+        {("COUNT", "RG2")},
+    )
+
+
+def _fixture_rg2_passed_short_seed() -> Observation:
+    return _rg2_seed(
+        "rg2-passed-short",
+        {("COUNT", "RG2")},
+    )
+
+
+def _fixture_rg2_log_mismatch_missing_line_seed() -> Observation:
+    return _rg2_seed(
+        "rg2-log-mismatch-missing-line",
+        {("LOG-MISMATCH", "RG2"), ("COUNT", "RG2")},
+    )
+
+
+def _fixture_rg2_log_mismatch_extra_line_seed() -> Observation:
+    return _rg2_seed(
+        "rg2-log-mismatch-extra-line",
+        {("CALIBRATION-EXCLUSION", "RG2"), ("LOG-MISMATCH", "RG2")},
+    )
+
+
+def _fixture_rg2_summary_missing_seed() -> Observation:
+    return _rg2_seed(
+        "rg2-summary-missing",
+        {("SUMMARY-MISSING", "RG2")},
+    )
+
+
+def _fixture_rg2_summary_duplicate_seed() -> Observation:
+    return _rg2_seed(
+        "rg2-summary-duplicate",
+        {("SUMMARY-DUPLICATE", "RG2")},
+    )
+
+
+def _fixture_rg2_summary_malformed_seed() -> Observation:
+    return _rg2_seed(
+        "rg2-summary-malformed",
+        {("SUMMARY-MALFORMED", "RG2")},
+    )
+
+
+def _fixture_rg2_sentinel_missing_seed() -> Observation:
+    return _rg2_seed(
+        "rg2-sentinel-missing",
+        {("SENTINEL-MISSING", "RG2")},
+    )
+
+
+def _fixture_rg2_sentinel_duplicate_seed() -> Observation:
+    return _rg2_seed(
+        "rg2-sentinel-duplicate",
+        {("SENTINEL-DUPLICATE", "RG2")},
+    )
+
+
+def _fixture_rg2_sentinel_order_seed() -> Observation:
+    return _rg2_seed(
+        "rg2-sentinel-order",
+        {("SENTINEL-ORDER", "RG2")},
+    )
+
+
+def _fixture_rg2_unattributed_exclusion_seed() -> Observation:
+    return _rg2_seed(
+        "rg2-unattributed-exclusion",
+        {("EXCLUSION-UNATTRIBUTED", None)},
+    )
 
 
 def _fixture_exclusions_wrong_location_seed() -> Observation:
@@ -12777,9 +13035,18 @@ def _fixture_exclusions_wrong_location_seed() -> Observation:
 def _fixture_std_exclusion_seed() -> Observation:
     with StageFixture("std-exclusion") as fixture:
         fixture.pin()
-        stages_mod.cmd_run1(fixture.args(), disk_min_gb=0.0)
+        run1_rc = stages_mod.cmd_run1(fixture.args(), disk_min_gb=0.0)
+        run1_result = _stage_result(fixture.report, "run1")
+        attempt = stages_mod.latest_attempt_dir(
+            os.path.join(fixture.report, "run1")
+        )
+        summary = _o7_load_json(os.path.join(attempt, "rg2_summary.json"))
+        run1_codes = {
+            _parse_reason_code_and_family(reason)
+            for reason in summary.get("reasons", [])
+        }
         fixture.write_run2_prerequisite()
-        returncode = stages_mod.cmd_run3(
+        run3_rc = stages_mod.cmd_run3(
             fixture.args(),
             drivers=fixture.drivers,
             driver_limit_sec=_O7_NORMAL_DRIVER_LIMIT_SEC,
@@ -12789,18 +13056,28 @@ def _fixture_std_exclusion_seed() -> Observation:
         required = _o7_load_json(
             os.path.join(fixture.report, "run3", "required.json")
         )
-        missing = _stage_result(fixture.report, "run3/missing")
+        missing_attempt = stages_mod.latest_attempt_dir(
+            os.path.join(fixture.report, "run3", "missing")
+        )
         stage = _stage_result(fixture.report, "run3/stage")
         got = {
-            "returncode": returncode,
+            "run1_rc": run1_rc,
+            "run1_status": run1_result.get("status"),
+            "run1_check": run1_result.get("checks", {}).get("exclusions"),
+            "run1_codes": run1_codes,
+            "run3_rc": run3_rc,
             "required": required,
-            "missing_status": missing.get("status"),
+            "has_missing_unit": missing_attempt is not None,
             "stage_status": stage.get("status"),
         }
         expected = {
-            "returncode": 1,
-            "required": ["stage", "missing"],
-            "missing_status": "CENSUS-MISSING",
+            "run1_rc": 1,
+            "run1_status": "FAIL",
+            "run1_check": "FAIL",
+            "run1_codes": {("CALIBRATION-EXCLUSION", "RG2"), ("COUNT", "RG2")},
+            "run3_rc": 0,
+            "required": ["stage"],
+            "has_missing_unit": False,
             "stage_status": "PASS",
         }
         return Observation(
@@ -13310,7 +13587,7 @@ def _fixture_final_required_rerun_seed() -> Observation:
         )
         with open(flip, "w", encoding="utf-8") as output:
             output.write("enabled\n")
-        rerun1 = stages_mod.cmd_run1(
+        rerun2 = stages_mod.cmd_run2(
             fixture.args(),
             disk_min_gb=0.0,
         )
@@ -13327,7 +13604,7 @@ def _fixture_final_required_rerun_seed() -> Observation:
             "run3": run3,
             "control_rc": control_final,
             "control_status": control_record.get("status"),
-            "rerun1": rerun1,
+            "rerun2": rerun2,
             "seed_rc": seeded_final,
             "seed_status": seeded_record.get("status"),
             "required_mismatch": any(
@@ -13346,7 +13623,7 @@ def _fixture_final_required_rerun_seed() -> Observation:
             "run3": 0,
             "control_rc": 0,
             "control_status": "PASS",
-            "rerun1": 0,
+            "rerun2": 0,
             "seed_rc": 1,
             "seed_status": "FAIL",
             "required_mismatch": True,
@@ -13354,10 +13631,167 @@ def _fixture_final_required_rerun_seed() -> Observation:
         },
         got=got,
         applied=(
-            f"created={flip};latest_run1=a2;"
-            "required_before=['stage'];required_after=['stage','extra']"
+            f"created={flip};latest_run2=a2;"
+            "required_before=['stage'];required_after=['stage','fixture_001']"
         ),
     )
+
+
+def _fixture_final_rg2_log_tampered_seed() -> Observation:
+    with StageFixture() as fixture:
+        fixture.prepare_final_inputs()
+        latest_run1 = stages_mod.latest_attempt_dir(
+            os.path.join(fixture.report, "run1")
+        )
+        log_path = os.path.join(latest_run1, "run1_1.log")
+        with open(log_path, "a", encoding="utf-8") as output:
+            output.write(
+                "  [excluded after calibration] samples/iyi/hello.iyi: tampered\n"
+            )
+        rc = stages_mod.cmd_final(fixture.args(), drivers=fixture.drivers)
+        record = _o7_load_json(os.path.join(fixture.report, "final.json"))
+        reasons = record.get("reasons", [])
+        got = {
+            "returncode": rc,
+            "status": record.get("status"),
+            "evidence_mismatch": any(
+                str(reason).startswith("RG2-EVIDENCE-MISMATCH:")
+                for reason in reasons
+            ),
+            "corpus_not_proven": any(
+                str(reason).startswith("RG2-CORPUS-NOT-PROVEN:")
+                for reason in reasons
+            ),
+        }
+        expected = {
+            "returncode": 1,
+            "status": "FAIL",
+            "evidence_mismatch": True,
+            "corpus_not_proven": True,
+        }
+        return Observation(
+            expected=expected,
+            got=got,
+            applied="exclusion line appended to run1_1.log after prepare_final_inputs",
+        )
+
+
+def _fixture_final_rg2_summary_tampered_seed() -> Observation:
+    with StageFixture() as fixture:
+        fixture.prepare_final_inputs()
+        latest_run1 = stages_mod.latest_attempt_dir(
+            os.path.join(fixture.report, "run1")
+        )
+        summary_path = os.path.join(latest_run1, "rg2_summary.json")
+        summary = _o7_load_json(summary_path)
+        summary["corpus"] = 999
+        with open(summary_path, "w", encoding="utf-8") as output:
+            json.dump(summary, output)
+        rc = stages_mod.cmd_final(fixture.args(), drivers=fixture.drivers)
+        record = _o7_load_json(os.path.join(fixture.report, "final.json"))
+        reasons = record.get("reasons", [])
+        got = {
+            "returncode": rc,
+            "status": record.get("status"),
+            "evidence_mismatch": any(
+                str(reason).startswith("RG2-EVIDENCE-MISMATCH:")
+                for reason in reasons
+            ),
+        }
+        expected = {
+            "returncode": 1,
+            "status": "FAIL",
+            "evidence_mismatch": True,
+        }
+        return Observation(
+            expected=expected,
+            got=got,
+            applied="corpus modified in rg2_summary.json after prepare_final_inputs",
+        )
+
+
+def _fixture_final_rg2_evidence_missing_seed() -> Observation:
+    with StageFixture() as fixture:
+        fixture.prepare_final_inputs()
+        latest_run1 = stages_mod.latest_attempt_dir(
+            os.path.join(fixture.report, "run1")
+        )
+        log_path = os.path.join(latest_run1, "run1_1.log")
+        os.unlink(log_path)
+        rc = stages_mod.cmd_final(fixture.args(), drivers=fixture.drivers)
+        record = _o7_load_json(os.path.join(fixture.report, "final.json"))
+        reasons = record.get("reasons", [])
+        got = {
+            "returncode": rc,
+            "status": record.get("status"),
+            "evidence_missing": any(
+                str(reason).startswith("RG2-EVIDENCE-MISSING:")
+                for reason in reasons
+            ),
+        }
+        expected = {
+            "returncode": 1,
+            "status": "FAIL",
+            "evidence_missing": True,
+        }
+        return Observation(
+            expected=expected,
+            got=got,
+            applied="deleted run1_1.log after prepare_final_inputs",
+        )
+
+
+def _fixture_rg2_corpus_evidence_control() -> Observation:
+    with StageFixture() as fixture:
+        fixture.pin()
+        run1_rc = stages_mod.cmd_run1(fixture.args(), disk_min_gb=0.0)
+        run1_dir = os.path.join(fixture.report, "run1", "a1")
+        summary = _o7_load_json(os.path.join(run1_dir, "rg2_summary.json"))
+        exclusions = _o7_load_json(os.path.join(run1_dir, "exclusions.json"))
+        fixture.write_run2_prerequisite()
+        run3_rc = stages_mod.cmd_run3(
+            fixture.args(),
+            drivers=fixture.drivers,
+            driver_limit_sec=_O7_NORMAL_DRIVER_LIMIT_SEC,
+            grace_sec=_O7_DRIVER_GRACE_SEC,
+            disk_min_gb=0.0,
+        )
+        final_rc = stages_mod.cmd_final(fixture.args(), drivers=fixture.drivers)
+        final_record = _o7_load_json(os.path.join(fixture.report, "final.json"))
+        rg2_final = final_record.get("rg2", {})
+        got = {
+            "run1_rc": run1_rc,
+            "final_rc": final_rc,
+            "final_status": final_record.get("status"),
+            "summary_status": summary.get("status"),
+            "rg2_summary_counts": (
+                summary.get("families", {}).get("RG2", {}).get("evaluated"),
+                summary.get("families", {}).get("RG2", {}).get("passed"),
+                summary.get("families", {}).get("RG2", {}).get("excluded"),
+                summary.get("families", {}).get("RG2", {}).get("failures"),
+            ),
+            "rg2a_summary_counts": (
+                summary.get("families", {}).get("RG2a", {}).get("evaluated"),
+                summary.get("families", {}).get("RG2a", {}).get("passed"),
+                summary.get("families", {}).get("RG2a", {}).get("excluded"),
+                summary.get("families", {}).get("RG2a", {}).get("failures"),
+            ),
+            "exclusions": exclusions,
+            "final_rg2_status": rg2_final.get("status"),
+            "final_rg2_families": rg2_final.get("families"),
+        }
+        expected = {
+            "run1_rc": 0,
+            "final_rc": 0,
+            "final_status": "PASS",
+            "summary_status": "PASS",
+            "rg2_summary_counts": (142, 142, 0, 0),
+            "rg2a_summary_counts": (142, 142, 0, 0),
+            "exclusions": [],
+            "final_rg2_status": "PASS",
+            "final_rg2_families": summary.get("families"),
+        }
+        return Observation(expected=expected, got=got)
 
 
 def _fixture_identity_field_guard(case: str, seeded: bool) -> Observation:
@@ -17192,6 +17626,111 @@ O7_FIXTURES: tuple[Fixture, ...] = (
         _fixture_std_exclusion_seed,
     ),
     Fixture(
+        "s5.seed.rg2a-std-exclusion",
+        "seed",
+        _fixture_rg2a_std_exclusion_seed,
+    ),
+    Fixture(
+        "s5.seed.rg2-malformed-exclusion",
+        "seed",
+        _fixture_rg2_malformed_exclusion_seed,
+    ),
+    Fixture(
+        "s5.seed.rg2-truncated-log",
+        "seed",
+        _fixture_rg2_truncated_log_seed,
+    ),
+    Fixture(
+        "s5.seed.rg2-invalid-selector",
+        "seed",
+        _fixture_rg2_invalid_selector_seed,
+    ),
+    Fixture(
+        "s5.seed.rg2-duplicate-exclusion",
+        "seed",
+        _fixture_rg2_duplicate_exclusion_seed,
+    ),
+    Fixture(
+        "s5.seed.rg2-count-omitted",
+        "seed",
+        _fixture_rg2_count_omitted_seed,
+    ),
+    Fixture(
+        "s5.seed.rg2-count-excess",
+        "seed",
+        _fixture_rg2_count_excess_seed,
+    ),
+    Fixture(
+        "s5.seed.rg2-passed-short",
+        "seed",
+        _fixture_rg2_passed_short_seed,
+    ),
+    Fixture(
+        "s5.seed.rg2-log-mismatch-missing-line",
+        "seed",
+        _fixture_rg2_log_mismatch_missing_line_seed,
+    ),
+    Fixture(
+        "s5.seed.rg2-log-mismatch-extra-line",
+        "seed",
+        _fixture_rg2_log_mismatch_extra_line_seed,
+    ),
+    Fixture(
+        "s5.seed.rg2-summary-missing",
+        "seed",
+        _fixture_rg2_summary_missing_seed,
+    ),
+    Fixture(
+        "s5.seed.rg2-summary-duplicate",
+        "seed",
+        _fixture_rg2_summary_duplicate_seed,
+    ),
+    Fixture(
+        "s5.seed.rg2-summary-malformed",
+        "seed",
+        _fixture_rg2_summary_malformed_seed,
+    ),
+    Fixture(
+        "s5.seed.rg2-sentinel-missing",
+        "seed",
+        _fixture_rg2_sentinel_missing_seed,
+    ),
+    Fixture(
+        "s5.seed.rg2-sentinel-duplicate",
+        "seed",
+        _fixture_rg2_sentinel_duplicate_seed,
+    ),
+    Fixture(
+        "s5.seed.rg2-sentinel-order",
+        "seed",
+        _fixture_rg2_sentinel_order_seed,
+    ),
+    Fixture(
+        "s5.seed.rg2-unattributed-exclusion",
+        "seed",
+        _fixture_rg2_unattributed_exclusion_seed,
+    ),
+    Fixture(
+        "o7.seed.final-rg2-log-tampered",
+        "seed",
+        _fixture_final_rg2_log_tampered_seed,
+    ),
+    Fixture(
+        "o7.seed.final-rg2-summary-tampered",
+        "seed",
+        _fixture_final_rg2_summary_tampered_seed,
+    ),
+    Fixture(
+        "o7.seed.final-rg2-evidence-missing",
+        "seed",
+        _fixture_final_rg2_evidence_missing_seed,
+    ),
+    Fixture(
+        "s5.control.rg2-corpus-evidence",
+        "control",
+        _fixture_rg2_corpus_evidence_control,
+    ),
+    Fixture(
         "s5.seed.p-nonzero-not-added",
         "seed",
         _fixture_p_nonzero_not_added_seed,
@@ -18155,7 +18694,53 @@ REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
     "contract.s5.exclusions": (
         "s5.seed.std-exclusion",
         "s5.seed.sample-exclusion",
+        "s5.seed.rg2a-std-exclusion",
+        "s5.seed.rg2-malformed-exclusion",
+        "s5.seed.rg2-truncated-log",
+        "s5.seed.rg2-invalid-selector",
+        "s5.seed.rg2-duplicate-exclusion",
+        "s5.seed.rg2-count-omitted",
+        "s5.seed.rg2-count-excess",
+        "s5.seed.rg2-passed-short",
+        "s5.seed.rg2-log-mismatch-missing-line",
+        "s5.seed.rg2-log-mismatch-extra-line",
+        "s5.seed.rg2-summary-missing",
+        "s5.seed.rg2-summary-duplicate",
+        "s5.seed.rg2-summary-malformed",
+        "s5.seed.rg2-sentinel-missing",
+        "s5.seed.rg2-sentinel-duplicate",
+        "s5.seed.rg2-sentinel-order",
+        "s5.seed.rg2-unattributed-exclusion",
         "s5.seed.exclusions-wrong-location",
+        "s5.control.stage-chain",
+        "s5.control.rg2-corpus-evidence",
+    ),
+    "contract.rg2.zero-exclusion-142": (
+        "s5.seed.sample-exclusion",
+        "s5.seed.std-exclusion",
+        "s5.seed.rg2a-std-exclusion",
+        "s5.seed.rg2-malformed-exclusion",
+        "s5.seed.rg2-truncated-log",
+        "s5.seed.rg2-invalid-selector",
+        "s5.seed.rg2-duplicate-exclusion",
+        "s5.seed.rg2-count-omitted",
+        "s5.seed.rg2-count-excess",
+        "s5.seed.rg2-passed-short",
+        "s5.seed.rg2-log-mismatch-missing-line",
+        "s5.seed.rg2-log-mismatch-extra-line",
+        "s5.seed.rg2-summary-missing",
+        "s5.seed.rg2-summary-duplicate",
+        "s5.seed.rg2-summary-malformed",
+        "s5.seed.rg2-sentinel-missing",
+        "s5.seed.rg2-sentinel-duplicate",
+        "s5.seed.rg2-sentinel-order",
+        "s5.seed.rg2-unattributed-exclusion",
+        "s5.control.rg2-corpus-evidence",
+    ),
+    "contract.final.rg2-rederived": (
+        "o7.seed.final-rg2-log-tampered",
+        "o7.seed.final-rg2-summary-tampered",
+        "o7.seed.final-rg2-evidence-missing",
         "s5.control.stage-chain",
     ),
     "contract.s5.run3-selection": (
@@ -18849,16 +19434,16 @@ ALLOWLIST: tuple[tuple[str, int, int, str, str], ...] = (
     ),
     (
         "proof.run_proof",
-        1526,
-        1532,
+        1791,
+        1797,
         "o7.seed.run-proof-optimize-refusal",
         "python -B -O proof/run_proof.py --help enters the nested optimize "
         "guard, prints the exact refusal, and exits 2",
     ),
     (
         "proof.run_proof",
-        1533,
-        1533,
+        1798,
+        1798,
         "o7.control.run-proof-optimize",
         "python -B proof/run_proof.py --help reaches the normal direct-script "
         "main handoff and exits 0",

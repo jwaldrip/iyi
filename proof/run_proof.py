@@ -7,7 +7,7 @@ Commands and arguments:
   pin --report-dir R --p P --w W --compiler C
       Create the immutable pin for a new chain.
   run1 --report-dir R
-      Run gates 1.1 through 1.4, exclusions, and baseline skip capture.
+      Run gates 1.1 through 1.4, RG2/RG2a 142/142/0/0 corpus evidence, exclusions, and baseline skip capture.
       Gate 1.3 runs bench/stale_rg9.py and requires canonical summary:
       ^RG9 PASSED: {corpus} corpus programs, plain and observed legs (two processes plus IYI_WARM=1)$
   run2 --report-dir R
@@ -25,12 +25,12 @@ NOT-EXERCISED, TIMEOUT, INVALID, CENSUS-MISSING, NOT-EXECUTED,
 OUT-MODIFIED, and STALE. Exit 0 means PASS, exit 1 means a recorded
 non-PASS status, and exit 2 means usage or configuration refusal.
 
-R has pin.json; run1/a<N>/ and run2/a<N>/; run3/required.json;
+R has pin.json; run1/a<N>/ (including rg2_summary.json); run2/a<N>/; run3/required.json;
 run3/<driver>/a<N>/; and final.json. Every attempt ends with an atomic
 result.json. Attempt numbers are append-only. final uses the numerically
-highest attempt, recomputes its status from required checks, re-derives the
-required drivers from the latest Run 1 and Run 2, and requires every Run 3
-attempt to be newer than both. It verifies chain, unit, attempt and pinned
+highest attempt, recomputes its status from required checks, recomputes the
+RG2 evidence from the latest run1_1.log, re-derives the required drivers from
+the latest Run 1 and Run 2, and requires every Run 3 attempt to be newer than both. It verifies chain, unit, attempt and pinned
 identity, and lists every earlier failure. A chain is bound to the
 report-directory suffix and pin identity. On Darwin the pin records and
 probes the real platform temp root used by bare mktemp.
@@ -74,6 +74,7 @@ from proof.proofkit import (
     recompute_status,
     run_bounded,
     probe_atime_observable,
+    sha256_file,
     validate_census,
     verify_ledger,
     write_pin,
@@ -81,6 +82,7 @@ from proof.proofkit import (
 )
 
 
+# final publishes PASS only when the recomputed RG2 evidence passes.
 _FINAL_LIMITS = [
     "the platform skips",
     (
@@ -248,15 +250,180 @@ def _run_gate(command: list[str], *, pin: dict, attempt_dir: str, stage_name: st
     return run_logged(command, cwd=cwd, env=env, log_path=log_path, times_path=times_path, limit_sec=None)
 
 
-def _exclusions(log_text: str) -> list[dict[str, str]]:
-    pattern = re.compile(
-        r"^  \[excluded after calibration\] (\S+): (.*)$",
-        re.MULTILINE,
-    )
-    return [
-        {"program": match.group(1), "reason": match.group(2)}
-        for match in pattern.finditer(log_text)
-    ]
+_RG2_SUMMARY_PATTERN = re.compile(
+    r"^(RG2|RG2a): (0|[1-9]\d*) evaluated, (0|[1-9]\d*) passed, "
+    r"(0|[1-9]\d*) still excluded with reason, (0|[1-9]\d*) failures$"
+)
+_RG2_EXCLUSION_PATTERN = re.compile(
+    r"^  \[excluded after calibration\] (\S+): (.+)$"
+)
+_RG2_SELECTOR_PATTERNS = (
+    re.compile(r"^samples/iyi/[A-Za-z0-9_]+\.iyi$"),
+    re.compile(r"^bench/std_[a-z0-9_]+_exercise\.iyi$"),
+)
+
+
+def _is_valid_selector(sel: str) -> bool:
+    return any(pat.fullmatch(sel) for pat in _RG2_SELECTOR_PATTERNS)
+
+
+def _rg2_corpus_evidence(
+    log_text: str,
+    log_sha256: str | None,
+    *,
+    corpus: int,
+) -> dict:
+    lines = log_text.splitlines()
+    reasons: list[str] = []
+    families: dict[str, dict[str, int | None]] = {}
+    exclusions: list[dict[str, str]] = []
+    analyzed_sections: list[tuple[int, int]] = []
+
+    for family in ("RG2", "RG2a"):
+        summary_candidates = [
+            (i, line)
+            for i, line in enumerate(lines, 1)
+            if line.startswith(f"{family}:")
+        ]
+        sentinel_candidates = [
+            (i, line)
+            for i, line in enumerate(lines, 1)
+            if line.startswith(f"{family} PASSED:")
+        ]
+
+        summary_idx: int | None = None
+        counts: tuple[int, int, int, int] | None = None
+        summary_valid = False
+
+        if len(summary_candidates) == 0:
+            reasons.append(f"RG2-SUMMARY-MISSING: {family}")
+        elif len(summary_candidates) > 1:
+            reasons.append(
+                f"RG2-SUMMARY-DUPLICATE: {family} count={len(summary_candidates)}"
+            )
+        else:
+            summary_idx, summary_line = summary_candidates[0]
+            match = _RG2_SUMMARY_PATTERN.fullmatch(summary_line)
+            if not match:
+                reasons.append(f"RG2-SUMMARY-MALFORMED: {family} line={summary_idx}")
+            else:
+                summary_valid = True
+                counts = (
+                    int(match.group(2)),
+                    int(match.group(3)),
+                    int(match.group(4)),
+                    int(match.group(5)),
+                )
+
+        sentinel_idx: int | None = None
+        sentinel_valid = False
+
+        if len(sentinel_candidates) == 0:
+            reasons.append(f"RG2-SENTINEL-MISSING: {family}")
+        elif len(sentinel_candidates) > 1:
+            reasons.append(
+                f"RG2-SENTINEL-DUPLICATE: {family} count={len(sentinel_candidates)}"
+            )
+        else:
+            sentinel_idx, _ = sentinel_candidates[0]
+            if summary_idx is not None and sentinel_idx <= summary_idx:
+                reasons.append(f"RG2-SENTINEL-ORDER: {family}")
+            else:
+                sentinel_valid = True
+
+        section_analyzed = (
+            summary_valid
+            and sentinel_valid
+            and summary_idx is not None
+            and sentinel_idx is not None
+            and sentinel_idx > summary_idx
+        )
+
+        grammatical_lines = 0
+        seen_programs: set[str] = set()
+
+        if section_analyzed:
+            start_line = summary_idx + 1
+            end_line = sentinel_idx - 1
+            analyzed_sections.append((start_line, end_line))
+            for line_no in range(start_line, end_line + 1):
+                line = lines[line_no - 1]
+                match = _RG2_EXCLUSION_PATTERN.fullmatch(line)
+                if not match:
+                    reasons.append(
+                        f"RG2-SECTION-LINE-INVALID: {family} line={line_no}"
+                    )
+                else:
+                    grammatical_lines += 1
+                    prog = match.group(1)
+                    reason_text = match.group(2)
+                    valid_entry = True
+                    if not _is_valid_selector(prog):
+                        reasons.append(
+                            f"RG2-EXCLUSION-SELECTOR-INVALID: {family} {prog}"
+                        )
+                        valid_entry = False
+                    if prog in seen_programs:
+                        reasons.append(
+                            f"RG2-EXCLUSION-DUPLICATE: {family} {prog}"
+                        )
+                        valid_entry = False
+                    seen_programs.add(prog)
+                    if valid_entry:
+                        reasons.append(
+                            f"CALIBRATION-EXCLUSION: {family} {prog} ({reason_text})"
+                        )
+                    exclusions.append(
+                        {
+                            "family": family,
+                            "program": prog,
+                            "reason": reason_text,
+                        }
+                    )
+
+            if counts is not None:
+                evaluated, passed, excluded, failures = counts
+                if excluded != grammatical_lines:
+                    reasons.append(
+                        f"RG2-EXCLUSION-LOG-MISMATCH: {family} "
+                        f"summary={excluded} lines={grammatical_lines}"
+                    )
+                if (evaluated, passed, excluded, failures) != (corpus, corpus, 0, 0):
+                    reasons.append(
+                        f"RG2-COUNT: {family} evaluated={evaluated} "
+                        f"passed={passed} excluded={excluded} "
+                        f"failures={failures} "
+                        f"expected={corpus}/{corpus}/0/0"
+                    )
+
+        families[family] = {
+            "evaluated": counts[0] if counts else None,
+            "passed": counts[1] if counts else None,
+            "excluded": counts[2] if counts else None,
+            "failures": counts[3] if counts else None,
+            "exclusion_lines": grammatical_lines if section_analyzed else None,
+        }
+
+    for line_no, line in enumerate(lines, 1):
+        if "[excluded after calibration]" in line:
+            in_section = any(
+                start <= line_no <= end
+                for start, end in analyzed_sections
+            )
+            if not in_section:
+                reasons.append(f"RG2-EXCLUSION-UNATTRIBUTED: line={line_no}")
+
+    status = "PASS" if not reasons else "FAIL"
+    return {
+        "v": 1,
+        "corpus": corpus,
+        "log": "run1_1.log",
+        "log_sha256": log_sha256,
+        "status": status,
+        "reasons": reasons,
+        "families": families,
+        "exclusions": exclusions,
+    }
 
 
 def _skip_hits(census: dict, text: str) -> list[dict[str, str]]:
@@ -586,20 +753,50 @@ def cmd_run1(args, *, std_exercises: int = RUN1_STD_EXERCISES, siblings: int = R
         )
         return 0 if record["status"] == "PASS" else 1
 
-    exclusions = _exclusions(gate_1_1_text)
-    sample_exclusions = [
-        entry for entry in exclusions if entry["program"].startswith("samples/")
-    ]
-    if sample_exclusions:
+    gate_1_1_path = os.path.join(attempt_dir, "run1_1.log")
+    if not os.path.isfile(gate_1_1_path):
         checks["exclusions"] = "FAIL"
-        reasons.extend(
-            "UNEXPLAINED-SAMPLE-EXCLUSION: "
-            f"{entry['program']} ({entry['reason']})"
-            for entry in sample_exclusions
-        )
+        reasons.append(f"RG2-EVIDENCE-MISSING: {gate_1_1_path}")
+        rg2_evidence = {
+            "v": 1,
+            "corpus": corpus,
+            "log": "run1_1.log",
+            "log_sha256": None,
+            "status": "FAIL",
+            "reasons": [f"RG2-EVIDENCE-MISSING: {gate_1_1_path}"],
+            "families": {
+                family: {
+                    "evaluated": None,
+                    "passed": None,
+                    "excluded": None,
+                    "failures": None,
+                    "exclusion_lines": None,
+                }
+                for family in ("RG2", "RG2a")
+            },
+            "exclusions": [],
+        }
     else:
-        checks["exclusions"] = "PASS"
-    _write_json_atomic(os.path.join(attempt_dir, "exclusions.json"), exclusions)
+        log_sha256 = sha256_file(gate_1_1_path)
+        rg2_evidence = _rg2_corpus_evidence(
+            gate_1_1_text,
+            log_sha256,
+            corpus=corpus,
+        )
+        if rg2_evidence["status"] != "PASS":
+            checks["exclusions"] = "FAIL"
+            reasons.extend(rg2_evidence["reasons"])
+        else:
+            checks["exclusions"] = "PASS"
+
+    _write_json_atomic(
+        os.path.join(attempt_dir, "rg2_summary.json"),
+        rg2_evidence,
+    )
+    _write_json_atomic(
+        os.path.join(attempt_dir, "exclusions.json"),
+        rg2_evidence["exclusions"],
+    )
 
     try:
         baseline = _baseline_skip_hits(
@@ -763,10 +960,7 @@ def _compute_required_drivers(drivers: Sequence[str], exclusions_path: str, run2
         program = entry.get("program")
         if not isinstance(program, str):
             raise ValueError("exclusion has no string program")
-        if program.startswith("bench/std_"):
-            driver = _driver_from_program(program)
-            if driver:
-                additions.add(driver)
+
     for row in _read_run2_rows(run2_path):
         if row.get("p_nonzero") is True:
             base = row.get("base")
@@ -1244,7 +1438,12 @@ def _collect_final_unit(pin: dict, parent_dir: str, unit: str, kind: str) -> tup
     return {"attempt": attempt, "status": status}, earlier, reasons
 
 
-def cmd_final(args, *, drivers: Sequence[str] = DRIVERS_29) -> int:
+def cmd_final(
+    args,
+    *,
+    drivers: Sequence[str] = DRIVERS_29,
+    corpus: int = RUN1_CORPUS,
+) -> int:
     pin = load_pin(args.report_dir)
     units: dict[str, dict[str, int | str]] = {}
     earlier_failures: list[dict[str, int | str]] = []
@@ -1259,6 +1458,71 @@ def cmd_final(args, *, drivers: Sequence[str] = DRIVERS_29) -> int:
     units["run1"] = run1
     earlier_failures.extend(earlier)
     reasons.extend(unit_reasons)
+
+    run1_parent = os.path.join(args.report_dir, "run1")
+    latest_run1_attempt = latest_attempt_dir(run1_parent)
+    rg2_final: dict = {
+        "log_sha256": None,
+        "status": "FAIL",
+        "families": {
+            family: {
+                "evaluated": None,
+                "passed": None,
+                "excluded": None,
+                "failures": None,
+                "exclusion_lines": None,
+            }
+            for family in ("RG2", "RG2a")
+        },
+    }
+    if latest_run1_attempt is None:
+        reasons.append("run1 has no attempts")
+    else:
+        attempt_name = os.path.basename(latest_run1_attempt)
+        log_path = os.path.join(latest_run1_attempt, "run1_1.log")
+        summary_path = os.path.join(latest_run1_attempt, "rg2_summary.json")
+
+        log_missing = not os.path.isfile(log_path)
+        summary_missing = not os.path.isfile(summary_path)
+
+        if log_missing:
+            reasons.append(f"RG2-EVIDENCE-MISSING: {log_path}")
+        if summary_missing:
+            reasons.append(f"RG2-EVIDENCE-MISSING: {summary_path}")
+
+        if not log_missing and not summary_missing:
+            try:
+                with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                    log_text = f.read()
+                log_sha256 = sha256_file(log_path)
+                recomputed = _rg2_corpus_evidence(
+                    log_text,
+                    log_sha256,
+                    corpus=corpus,
+                )
+            except (OSError, RuntimeError) as error:
+                recomputed = None
+                reasons.append(f"RG2 evidence recomputation failed: {error}")
+
+            try:
+                stored_summary = _load_json(summary_path)
+            except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
+                stored_summary = None
+                reasons.append(f"RG2 stored summary unreadable: {error}")
+
+            if recomputed is not None:
+                rg2_final = {
+                    "log_sha256": recomputed.get("log_sha256"),
+                    "status": recomputed.get("status"),
+                    "families": recomputed.get("families"),
+                }
+                if stored_summary is not None and stored_summary != recomputed:
+                    reasons.append(
+                        f"RG2-EVIDENCE-MISMATCH: run1 {attempt_name}"
+                    )
+                if recomputed["status"] != "PASS":
+                    for reason in recomputed["reasons"]:
+                        reasons.append(f"RG2-CORPUS-NOT-PROVEN: {reason}")
 
     run2, earlier, unit_reasons = _collect_final_unit(
         pin,
@@ -1386,6 +1650,7 @@ def cmd_final(args, *, drivers: Sequence[str] = DRIVERS_29) -> int:
         "reasons": reasons,
         "limits": list(_FINAL_LIMITS),
         "identity": identity,
+        "rg2": rg2_final,
     }
     _write_json_atomic(os.path.join(args.report_dir, "final.json"), final_record)
     print(f"Final proof status: {status}")
@@ -1470,7 +1735,7 @@ def cmd_all(args, *, drivers: Sequence[str] = DRIVERS_29, std_exercises: int = R
                 or _latest_was_interrupted(args.report_dir, unit)
             ):
                 return 1
-    return cmd_final(args, drivers=drivers)
+    return cmd_final(args, drivers=drivers, corpus=corpus)
 
 
 def _parser() -> argparse.ArgumentParser:
