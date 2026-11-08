@@ -1,0 +1,112 @@
+name: Remote Harness Audit Gate (H'')
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'proof/remote-harness-audit-pr147-refresh-20261107'
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GIT_CONFIG_COUNT: "1"
+  GIT_CONFIG_KEY_0: safe.directory
+  GIT_CONFIG_VALUE_0: "*"
+  PYTHONUTF8: "1"
+
+jobs:
+  harness-audit:
+    runs-on: macos-15
+    timeout-minutes: 360
+    name: "macOS-15 Remote Harness CI Gate and H'' Audit (Plan §2-§3)"
+    steps:
+      - name: Checkout repository at branch ref (Controller C)
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install runner prerequisites (isolated coreutils gtimeout symlink)
+        run: |
+          brew install coreutils
+          GTIMEOUT_PATH="$(brew --prefix)/bin/gtimeout"
+          if [ ! -x "$GTIMEOUT_PATH" ]; then
+            echo "ERROR: gtimeout not found at $GTIMEOUT_PATH" >&2
+            exit 1
+          fi
+          # Create task-owned directory exposing ONLY timeout pointing to gtimeout
+          # Do NOT expose blanket gnubin, which shadows BSD mktemp with GNU mktemp!
+          TASK_BIN="$RUNNER_TEMP/isolated-bin"
+          mkdir -p "$TASK_BIN"
+          ln -sf "$GTIMEOUT_PATH" "$TASK_BIN/timeout"
+          echo "$TASK_BIN" >> "$GITHUB_PATH"
+
+      - name: Pre-flight verification of mktemp and timeout
+        run: |
+          echo "=== Verifying mktemp binary and Darwin temp-root invariants ==="
+          MKTEMP_PATH=$(command -v mktemp)
+          echo "mktemp resolves to: $MKTEMP_PATH"
+          if [ "$MKTEMP_PATH" != "/usr/bin/mktemp" ]; then
+            echo "ERROR: mktemp is not system BSD /usr/bin/mktemp! Found: $MKTEMP_PATH" >&2
+            exit 1
+          fi
+
+          DARWIN_USER_TEMP=$(getconf DARWIN_USER_TEMP_DIR)
+          DARWIN_USER_TEMP_REAL=$(python3 -c "import os; print(os.path.realpath('$DARWIN_USER_TEMP'))")
+          echo "Darwin getconf user temp realpath: $DARWIN_USER_TEMP_REAL"
+
+          # Probe bare mktemp -d with TMPDIR removed
+          PROBE_DIR=$(env -u TMPDIR /usr/bin/mktemp -d)
+          PROBE_PARENT=$(python3 -c "import os; print(os.path.realpath(os.path.dirname('$PROBE_DIR')))")
+          rmdir "$PROBE_DIR"
+          echo "Probe bare mktemp parent realpath: $PROBE_PARENT"
+
+          if [ "$PROBE_PARENT" != "$DARWIN_USER_TEMP_REAL" ]; then
+            echo "ERROR: Probe bare mktemp parent $PROBE_PARENT != Darwin getconf user temp $DARWIN_USER_TEMP_REAL" >&2
+            exit 1
+          fi
+          echo "mktemp system Darwin invariant verified."
+
+          echo "=== Verifying isolated timeout binary ==="
+          TIMEOUT_PATH=$(command -v timeout)
+          echo "timeout resolves to: $TIMEOUT_PATH"
+          if [ "$TIMEOUT_PATH" != "$RUNNER_TEMP/isolated-bin/timeout" ]; then
+            echo "WARNING: timeout resolved to $TIMEOUT_PATH instead of $RUNNER_TEMP/isolated-bin/timeout"
+          fi
+          timeout --version
+          if ! timeout --version | grep -qi "coreutils"; then
+            echo "ERROR: timeout does not report GNU coreutils!" >&2
+            exit 1
+          fi
+          echo "timeout isolated binary verified successfully."
+
+      - name: Run Remote Harness Audit Rail
+        id: run-audit
+        run: |
+          python3 -B proof/remote_harness_audit.py \
+            --repo "$GITHUB_WORKSPACE" \
+            --w-sha "5a3770e96fb12099c4ce9dc3b21895de07dd4cd8" \
+            --p1-sha "180f14f91c829b25362a5ed34b20847f3ac2db77" \
+            --old-w-sha "b932ce0d97775c7061102a13db706f507dc84117" \
+            --hprime-sha "813c8074acb2eed99ffeef78ea49e8c7832e4c01" \
+            --output-dir "$GITHUB_WORKSPACE/remote-harness-audit-artifacts" \
+            --work-dir "$RUNNER_TEMP"
+
+      - name: Upload remote harness audit artifacts
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: remote-harness-audit-evidence
+          path: |
+            remote-harness-audit-artifacts/**
+          retention-days: 14
+          if-no-files-found: error
