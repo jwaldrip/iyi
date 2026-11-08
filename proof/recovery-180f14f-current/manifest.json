@@ -1,0 +1,245 @@
+{
+  "run_url": "https://github.com/jwaldrip/iyi/actions/runs/42429518284",
+  "ci_run_id": 42429518284,
+  "ci_job_id": 128575084391,
+  "ci_artifact_id": 13600255503,
+  "ci_artifact_name": "remote-harness-audit-evidence",
+  "ci_artifact_sha256": "3eb033b6e255cec4cc137d4c6379b1ca97a4c43712ac5171e57a48cf24fb3862",
+  "ci_artifact_bytes": 121001,
+  "ci_zip_archive": "remote-harness-audit-42429518284.zip",
+  "archive": "remote-harness-audit-42429518284.tar.gz",
+  "archive_sha256": "02f6ebc2a855919fec6297aab79af5298618b4422106bed49e8ba9325b9cb38e",
+  "archive_bytes": 114039,
+  "candidate_w": "5a3770e96fb12099c4ce9dc3b21895de07dd4cd8",
+  "p_sha": "180f14f91c829b25362a5ed34b20847f3ac2db77",
+  "controller_c_sha": "48ffd47caaf45ff9580c35e6f2b0e3c285144bcc",
+  "member_count": 26,
+  "members": [
+    {
+      "name": "remote-harness-audit-evidence/audit_summary.json",
+      "size": 7363,
+      "sha256": "6d11eba8c63bd25995cd17705c17c2e16d48bb626e8b934cd0a6c2980b7f3f18",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/audit_summary.md",
+      "size": 7750,
+      "sha256": "002aeb48f67b384ea4aee3d84c3c6d6ec997a43d54e86cde85744265a76043f7",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/census/census_validation_report.json",
+      "size": 6937,
+      "sha256": "96a3356e67075cb01a44deb34cb4ce3a3ca8090bf472de28a2c2b46244c23f5c",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/coverage/coverage_summary.json",
+      "size": 1708,
+      "sha256": "8dfe9a5833e86fa8a0fec0b785f775d817d560e9f37a86c3a220f520761286aa",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/coverage/proof.artifact_legs.cover",
+      "size": 34154,
+      "sha256": "d2edd49eb894a8ccbbf40c0bd8103c23cb5c6f04a56e19ec05a3e443bc499e87",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/coverage/proof.proofkit.cover",
+      "size": 153680,
+      "sha256": "71344fbc3beab34d02856e80f8439e37b36e4550e3669779b451669a8ba1efec",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/coverage/proof.roundtrip_shim.cover",
+      "size": 53014,
+      "sha256": "c3875e04801287148c838c4b8f2afab80d066a4e3369ec315d61e93091df6735",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/coverage/proof.run_proof.cover",
+      "size": 66209,
+      "sha256": "01b8aeffeeb6dd63ac64e6e1f2e16618223cb3b5876859f3f5d2d6282d92730f",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/environment/machine_fingerprint.json",
+      "size": 7540,
+      "sha256": "08bd0599b7691e5942bb415b2870a91c538fdcddf3bbf00cdda0b0bfa80f53a9",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/environment/w_source_hashes.json",
+      "size": 1572,
+      "sha256": "b4d634dc58c19adae3093d222d2446724fe721b9deee60b31472008129598b7d",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/hprime_hprimeprime_delta/grammar_agreement.json",
+      "size": 473,
+      "sha256": "d4dfcdc65ed142e6a81483410ca2aeb5f40819c71a51a245db0962648fe35c4e",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/hprime_hprimeprime_delta/hprime_to_hprimeprime.patch",
+      "size": 5110,
+      "sha256": "78986b9af09aa9322342968c85750c8f93fa001a560fa15ca963a2b50b556138",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/inventory/line_map_verification.json",
+      "size": 228,
+      "sha256": "124ab5b39fe9b5125a67484eb51bfa25aff5084e2d096cda320cf018449f366d",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/inventory/source_derived_inventory.json",
+      "size": 53118,
+      "sha256": "a7faeb83e61659901c6b27e88264b70147346b4e05d29f999a5baf2f42c15fe3",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/logs/smoke_test_stderr.log",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/logs/smoke_test_stdout.log",
+      "size": 190646,
+      "sha256": "a9e09824a6f5abbf69091c22d9dfd38e4eb5e84a6264bc2a1231dbd84a732fc1",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/mutation/baseline_execution.json",
+      "size": 94,
+      "sha256": "236eb442534dd38a5e409065aa2f011ccacbadaee0f2b42cb5ddba183654b131",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/mutation/baseline_raw_stderr.log",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/mutation/baseline_raw_stdout.log",
+      "size": 1289,
+      "sha256": "214dc119ea015e07b481488dd33e12e236f9fce77ddef1405c359256fcc3b390",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/mutation/baseline_targeted_results.json",
+      "size": 1968,
+      "sha256": "f709d43fd4bd1f5f4230de667b19ffe5aca28fa44c80290a5f31ed1a77909387",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/mutation/mutated_execution.json",
+      "size": 93,
+      "sha256": "bd9e0e907274d8713ad5a54f6c6a144f22c68d801dc042a9efa16b7af349b368",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/mutation/mutated_raw_stderr.log",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/mutation/mutated_raw_stdout.log",
+      "size": 1408,
+      "sha256": "cf2ada3e24024d1ece1b2a3cb94e64d060f6d97a4d1efbd7d44c481d50dab174",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/mutation/mutated_targeted_results.json",
+      "size": 1971,
+      "sha256": "c652d46f0a030e22c0f3b35027ece560c4ebcc45f5ddef9a79cb85266e783dfa",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/mutation/mutation.patch",
+      "size": 600,
+      "sha256": "480df762d98d6c978937c006829defe4c0a73c436aea0ec09fbd269165e42a1f",
+      "matches_download": true
+    },
+    {
+      "name": "remote-harness-audit-evidence/mutation/restoration_verification.json",
+      "size": 240,
+      "sha256": "1f96c65e3bf0493387156c48c40354f7e228b3fb71505348350d800bfee4d996",
+      "matches_download": true
+    }
+  ],
+  "observed_pass_scope": {
+    "status": "PASS (scoped harness audit)",
+    "verdict": "Scoped GO (census adaptation valid; NOT strict-proof GO)",
+    "strict_proof_go": false,
+    "seeds": "439/439",
+    "controls": "85/85",
+    "censuses_validated": "29/29 (0 violations)",
+    "harness": "HARNESS PASS",
+    "coverage_gate": "COVERAGE GATE PASS",
+    "old_parser_mutation": {
+      "intended_failures": [
+        "o7.control.run1",
+        "s5.seed.rg9-bare",
+        "s5.seed.rg9-bare-141"
+      ],
+      "still_rejected": [
+        "s5.seed.rg9-malformed-suffix",
+        "s5.seed.rg9-extended-suffix",
+        "s5.seed.rg9-140"
+      ],
+      "restoration_hash_matches": true,
+      "restoration_hash": "518bf900"
+    }
+  },
+  "audit_scope_and_reviewer_caveats": {
+    "reviewer": "agent://ReviewRefreshedProofCensus",
+    "audit_scope": "Census adaptation 3cdca501 -> 5a3770e9 C5 mapping of four changed P drivers (http, regex, tls, websocket). Hosted receipts bind to W and P.",
+    "verdict_distinction": "Scoped GO for harness census adaptation only; NOT a strict-proof GO.",
+    "nonblocking_caveats": [
+      "proof/census/regex.json:273-280 lists check compiler calls at lines 684 and 749 as non_invocations. These are real compiler calls; shim runs them in unchanged mode and they are exempt from misclassified-record rule, with no runtime effect. Schema command set (build, run, doc, fmt) leaves no other valid encoding. Refresh report justification ('check is not an invocation under C5') is inaccurate.",
+      "regex.negative.726 verdict: proof/census/regex.json:236-245 cites caught line 737 and status line 741, but not 739 ('was not caught') or 727-729 (build failure). Static validation only; regex.negative.522 already exhibits identical citation pattern.",
+      "Refresh report numbers do not match JSON: websocket sentinel is 1240 (no skip at 228); tls sentinel is 3604; http sentinel is 4356. Authoritative ground truth is in JSON census files.",
+      "Summary label: delta_audit.census_unchanged: true in audit summary refers to earlier H' to old-W comparison, not to W."
+    ],
+    "missing_evidence_precluding_strict_go": [
+      "No real driver has run under the shim at P: regex 12-worker program under timeout 120 untested; scratch race reproduction under -Diyi_observe within 5x120s untested; new http and tls stop/close/parallel mutations and traps untested; drivers fit within 2100s bound with added http work untested; unconfirmed whether Run 1 or Run 2 adds drivers lacking a census.",
+      "Commits 3cdca501, 5a3770e9, and 48ffd47c are unsigned (prior W and P are signed; contract S6 specifies signed commits).",
+      "CI artifact retention is limited to 14 days (~2026-11-22); durable evidence preservation on evidence branch required."
+    ]
+  },
+  "credential_scan": {
+    "exact_gh_token_matches": 0,
+    "generic_pattern_counts": {
+      "ghp_": 0,
+      "gho_": 0,
+      "ghu_": 0,
+      "ghs_": 0,
+      "ghr_": 0,
+      "github_pat_": 0,
+      "private_key": 0,
+      "generic_api_key": 0,
+      "bearer_token": 0,
+      "aws_access_key": 0,
+      "aws_secret_key": 0
+    },
+    "archive_byte_pattern_counts": {
+      "ghp_": 0,
+      "gho_": 0,
+      "ghu_": 0,
+      "ghs_": 0,
+      "ghr_": 0,
+      "github_pat_": 0,
+      "private_key": 0,
+      "generic_api_key": 0,
+      "bearer_token": 0,
+      "aws_access_key": 0,
+      "aws_secret_key": 0
+    },
+    "member_scan": "clean"
+  }
+}
