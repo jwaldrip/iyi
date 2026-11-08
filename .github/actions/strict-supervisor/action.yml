@@ -50,6 +50,14 @@ inputs:
   c_sha:
     description: 'Expected commit SHA of C'
     required: false
+  strict_manifest_b64:
+    description: 'Canonical base64-encoded strict authorization manifest'
+    required: false
+    default: ''
+  strict_manifest_sha256:
+    description: 'Expected SHA-256 hex digest of strict authorization manifest'
+    required: false
+    default: ''
   mode:
     description: 'Controller execution mode: strict or validation-only'
     required: false

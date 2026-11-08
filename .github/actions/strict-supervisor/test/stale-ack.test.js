@@ -6,6 +6,7 @@ import { StrictSupervisor } from '../src/supervisor.js';
 const request = {
   event: 'persistence-request', protocol_version: 1, request_id: 'request-1',
   invocation_id: 'inv-1', execution_kind: 'synthetic', fixture_sha256: 'f'.repeat(64),
+  strict_manifest_sha256: null,
   repository: 'jwaldrip/iyi', run_id: '1234', run_attempt: '1', job_id: '5678', job_key: 'validation',
   p_sha: '626463375298d357ffcb3223059f4d3adce6fb10',
   w_sha: 'b932ce0d97775c7061102a13db706f507dc84117',
@@ -64,7 +65,7 @@ test('request shape rejects invalid context, types, hashes, and archive metadata
 
 function fakeSupervisor() {
   const s = new StrictSupervisor({ artifactsDir: '/nonexistent/owned-root' });
-  s.context = Object.freeze(Object.fromEntries(['invocation_id', 'execution_kind', 'repository', 'run_id', 'run_attempt', 'job_id', 'job_key', 'p_sha', 'w_sha', 'c_sha', 'fixture_sha256'].map(k => [k, request[k]])));
+  s.context = Object.freeze(Object.fromEntries(['invocation_id', 'execution_kind', 'repository', 'run_id', 'run_attempt', 'job_id', 'job_key', 'p_sha', 'w_sha', 'c_sha', 'fixture_sha256', 'strict_manifest_sha256'].map(k => [k, request[k]])));
   return s;
 }
 function sink() {
@@ -87,7 +88,7 @@ test('wrong immutable context is rejected before upload', async () => {
 // execution_kind change carries that required companion. The lone flip is refused by the schema below.
 const ALTERED_CONTEXT = [
   ['invocation_id', { invocation_id: 'inv-other' }],
-  ['execution_kind', { execution_kind: 'native', fixture_sha256: null }],
+  ['execution_kind', { execution_kind: 'native', fixture_sha256: null, strict_manifest_sha256: 'a'.repeat(64) }],
   ['repository', { repository: 'jwaldrip/other' }],
   ['run_id', { run_id: '1235' }],
   ['run_attempt', { run_attempt: '2' }],
@@ -97,10 +98,16 @@ const ALTERED_CONTEXT = [
   ['w_sha', { w_sha: 'd'.repeat(40) }],
   ['c_sha', { c_sha: 'e'.repeat(40) }],
   ['fixture_sha256', { fixture_sha256: '1'.repeat(64) }],
+  ['strict_manifest_sha256', { strict_manifest_sha256: 'a'.repeat(64) }],
 ];
-test('a lone execution_kind flip is refused by the schema because a native request carries no digest', () => {
-  assert.deepEqual(validateRequest({ ...request, execution_kind: 'native' }), { valid: false, error: 'Invalid fixture digest' });
-  assert.deepEqual(validateRequest({ ...request, execution_kind: 'native', fixture_sha256: null }), { valid: true });
+test('validateRequest enforces nullability by execution kind', () => {
+  assert.deepEqual(validateRequest({ ...request, strict_manifest_sha256: '1'.repeat(64) }), { valid: false, error: 'Invalid strict manifest digest' });
+  assert.deepEqual(validateRequest({ ...request, strict_manifest_sha256: null }), { valid: true });
+
+  const nativeReq = { ...request, execution_kind: 'native', fixture_sha256: null, strict_manifest_sha256: '1'.repeat(64) };
+  assert.deepEqual(validateRequest(nativeReq), { valid: true });
+  assert.deepEqual(validateRequest({ ...nativeReq, strict_manifest_sha256: null }), { valid: false, error: 'Invalid strict manifest digest' });
+  assert.deepEqual(validateRequest({ ...nativeReq, fixture_sha256: '1'.repeat(64) }), { valid: false, error: 'Invalid fixture digest' });
 });
 test('each immutable context field is checked on its own, and the clean tuple passes the context check', async () => {
   for (const [field, change] of ALTERED_CONTEXT) {
@@ -134,4 +141,16 @@ test('missing archive fails, request replay and nonincreasing sequences are reje
   await supervisor.handleRequest({ ...request, request_id: 'new-2', snapshot_sequence: 2 }, out.stream);
   assert.equal(out.received[3].verified, false);
   assert.match(out.received[3].error, /non-increasing/);
+});
+
+test('an authorization-request gets invalid-ack', async () => {
+  const supervisor = fakeSupervisor(), out = sink();
+  await supervisor.handleRequest({
+    event: 'authorization-request',
+    protocol_version: 1,
+    request_id: 'auth-1',
+    invocation_id: 'inv-1',
+  }, out.stream);
+  assert.equal(out.received[0].event, 'invalid-ack');
+  assert.equal(out.received[0].verified, false);
 });

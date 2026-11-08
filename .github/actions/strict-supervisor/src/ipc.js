@@ -11,7 +11,7 @@
 export const IMMUTABLE_BINDING_FIELDS = [
   'protocol_version', 'request_id', 'invocation_id', 'execution_kind',
   'repository', 'run_id', 'run_attempt', 'job_id', 'job_key',
-  'p_sha', 'w_sha', 'c_sha', 'fixture_sha256', 'snapshot_kind',
+  'p_sha', 'w_sha', 'c_sha', 'fixture_sha256', 'strict_manifest_sha256', 'snapshot_kind',
   'chain_id', 'unit', 'native_attempt', 'snapshot_sequence',
   'archive_bytes', 'archive_sha256',
 ];
@@ -50,6 +50,11 @@ export function validateRequest(req) {
       ? typeof req.fixture_sha256 !== 'string' || !SHA256_HEX_REGEX.test(req.fixture_sha256)
       : req.fixture_sha256 !== null) {
     return { valid: false, error: 'Invalid fixture digest' };
+  }
+  if (req.execution_kind === 'native'
+      ? typeof req.strict_manifest_sha256 !== 'string' || !SHA256_HEX_REGEX.test(req.strict_manifest_sha256)
+      : req.strict_manifest_sha256 !== null) {
+    return { valid: false, error: 'Invalid strict manifest digest' };
   }
   for (const field of ['p_sha', 'w_sha', 'c_sha']) {
     if (typeof req[field] !== 'string' || !SHA1_HEX_REGEX.test(req[field])) {

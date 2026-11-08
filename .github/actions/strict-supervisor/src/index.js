@@ -57,6 +57,8 @@ export async function runAction() {
     const pSha = core.getInput('p_sha') || null;
     const wSha = core.getInput('w_sha') || null;
     const cSha = core.getInput('c_sha') || null;
+    const strictManifestB64 = core.getInput('strict_manifest_b64') || '';
+    const strictManifestSha256 = core.getInput('strict_manifest_sha256') || '';
     const mode = core.getInput('mode') || 'strict';
     const pythonPath = core.getInput('python_path') || 'python3';
     const invocationId = core.getInput('invocation_id', { required: true });
@@ -90,6 +92,7 @@ export async function runAction() {
       mode,
       pythonPath,
       invocationId, jobId, jobKey, validationCase, caseDataDir,
+      strictManifestB64, strictManifestSha256,
     });
 
     const result = await supervisor.run();

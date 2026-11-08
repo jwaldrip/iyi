@@ -19,8 +19,8 @@ from proof.remote_strict_fixtures import FAKE_STAGE_EMITTER_SOURCE
 from proof.remote_strict_validation import canonical_drivers, revision
 
 COUNTS = {"success": 37, "failed-plan": 1, "failed-pin": 2, "divergence": 6, "cleanup-failure": 4}
-BINDING = ("protocol_version", "request_id", "invocation_id", "execution_kind", "repository", "run_id", "run_attempt", "job_id", "job_key", "p_sha", "w_sha", "c_sha", "fixture_sha256", "snapshot_kind", "chain_id", "unit", "native_attempt", "snapshot_sequence", "archive_bytes", "archive_sha256")
-CONTEXT = ("invocation_id", "execution_kind", "repository", "run_id", "run_attempt", "job_id", "job_key", "p_sha", "w_sha", "c_sha", "fixture_sha256")
+BINDING = ("protocol_version", "request_id", "invocation_id", "execution_kind", "repository", "run_id", "run_attempt", "job_id", "job_key", "p_sha", "w_sha", "c_sha", "fixture_sha256", "strict_manifest_sha256", "snapshot_kind", "chain_id", "unit", "native_attempt", "snapshot_sequence", "archive_bytes", "archive_sha256")
+CONTEXT = ("invocation_id", "execution_kind", "repository", "run_id", "run_attempt", "job_id", "job_key", "p_sha", "w_sha", "c_sha", "fixture_sha256", "strict_manifest_sha256")
 
 
 def require(condition: bool, message: str) -> None:
@@ -63,6 +63,7 @@ def execution_context(args) -> dict[str, str]:
         "job_id": args.job_id, "job_key": args.job_key,
         "p_sha": revision(args.p), "w_sha": revision(args.w), "c_sha": revision(args.c),
         "fixture_sha256": hashlib.sha256(FAKE_STAGE_EMITTER_SOURCE.encode("utf-8")).hexdigest(),
+        "strict_manifest_sha256": None,
     }
 
 
@@ -343,6 +344,7 @@ def main() -> int:
         for key in ("p_sha", "w_sha", "c_sha"):
             require(re.fullmatch(r"[0-9a-f]{40}", request[key]) is not None, "invalid revision")
         require(re.fullmatch(r"[0-9a-f]{64}", request["fixture_sha256"]) is not None, "invalid emitter digest")
+        require(request.get("strict_manifest_sha256") is None, "synthetic strict manifest digest must be null")
         unit, kind, chain = request["unit"], request["snapshot_kind"], request["chain_id"]
         expected_kind = "plan" if unit == "plan" else "prechain-failure" if args.case == "failed-pin" and unit == "pin" else "terminal-envelope" if unit == "terminal" else "checkpoint"
         require(kind == expected_kind, "snapshot kind mismatch")

@@ -2,7 +2,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash } from 'node:crypto';
 import { sanitizeEnvironment, redactSecrets } from './env.js';
 import { IMMUTABLE_BINDING_FIELDS, validateRequest, writeIpcAck, createIpcReader } from './ipc.js';
 import { receiptFailure, uploadAndVerifyPayload } from './artifact-adapter.js';
@@ -10,7 +10,7 @@ import { OwnershipObserver } from './ownership.js';
 
 const WORKSPACE_ACTION_SRC = path.resolve('.github/actions/strict-supervisor/src');
 const ACTION_SRC = fs.existsSync(WORKSPACE_ACTION_SRC) ? WORKSPACE_ACTION_SRC : path.resolve('src');
-const CONTEXT_FIELDS = ['invocation_id', 'execution_kind', 'repository', 'run_id', 'run_attempt', 'job_id', 'job_key', 'p_sha', 'w_sha', 'c_sha', 'fixture_sha256'];
+const CONTEXT_FIELDS = ['invocation_id', 'execution_kind', 'repository', 'run_id', 'run_attempt', 'job_id', 'job_key', 'p_sha', 'w_sha', 'c_sha', 'fixture_sha256', 'strict_manifest_sha256'];
 // After the supervisor's own SIGKILL, the controller's exit is observed within this window.
 const CONTROLLER_KILL_SETTLE_MS = 5000;
 const EMITTER_DIGEST = `import ast,hashlib,sys\nt=ast.parse(open(sys.argv[1],encoding='utf8').read())\nx=[n.value for n in t.body if isinstance(n,ast.Assign) and any(isinstance(a,ast.Name) and a.id=='FAKE_STAGE_EMITTER_SOURCE' for a in n.targets)]\nassert len(x)==1\ns=ast.literal_eval(x[0]); assert isinstance(s,str)\nprint(hashlib.sha256(s.encode('utf8')).hexdigest())`;
@@ -80,7 +80,9 @@ export class StrictSupervisor {
     this.seenRequestIds = new Set();
     this.lastSnapshotSequence = 0;
     this.failedVerifications = 0;
-    this.verifiedManifest = options.verifiedManifest || null;
+    this.strictManifestB64 = options.strictManifestB64 ?? options.strict_manifest_b64 ?? '';
+    this.strictManifestSha256 = options.strictManifestSha256 ?? options.strict_manifest_sha256 ?? '';
+    this.manifestBytes = null;
   }
   async resolveArtifactClient() {
     if (!this.artifactClient) {
@@ -112,20 +114,32 @@ export class StrictSupervisor {
     if (matches.length !== 1) throw new Error('job lookup missing or ambiguous');
     if (!matches[0].started_at || matches[0].started_at !== this.jobStartTime) throw new Error('job start does not match platform');
     if (this.mode === 'strict') {
-      try {
-        execFileSync(this.pythonPath, [
-          '-c',
-          'import sys; from proof.strict_authorization import check_strict_authorization_or_refuse; check_strict_authorization_or_refuse(sys.argv[1], sys.argv[2], sys.argv[3])',
-          pSha,
-          wSha,
-          cSha,
-        ], { encoding: 'utf8', env: sanitizeEnvironment(env) });
-      } catch (authErr) {
-        throw new Error(`Strict execution refused by authorization policy: ${authErr.stderr || authErr.message}`);
+      if (!this.strictManifestSha256 || !/^[0-9a-f]{64}$/.test(String(this.strictManifestSha256))) {
+        throw new Error('missing or invalid strict manifest digest');
+      }
+      if (!this.strictManifestB64 || typeof this.strictManifestB64 !== 'string') {
+        throw new Error('missing strict manifest base64');
+      }
+      const manifestBytes = Buffer.from(this.strictManifestB64, 'base64');
+      if (manifestBytes.length < 1 || manifestBytes.length > 65536) {
+        throw new Error('strict manifest byte length out of range (1..65536)');
+      }
+      if (manifestBytes.toString('base64') !== this.strictManifestB64) {
+        throw new Error('non-canonical strict manifest base64');
+      }
+      const computedSha256 = createHash('sha256').update(manifestBytes).digest('hex');
+      if (computedSha256 !== this.strictManifestSha256) {
+        throw new Error('strict manifest digest mismatch');
+      }
+      this.manifestBytes = manifestBytes;
+    } else {
+      if (this.strictManifestB64 || this.strictManifestSha256) {
+        throw new Error('strict manifest inputs are forbidden in validation-only mode');
       }
     }
     const fixture = this.mode === 'validation-only' ? execFileSync(this.pythonPath, ['-c', EMITTER_DIGEST, path.resolve('proof/remote_strict_fixtures.py')], { encoding: 'utf8', env: sanitizeEnvironment(env) }).trim() : null;
-    return Object.freeze({ invocation_id: this.invocationId, execution_kind: this.mode === 'validation-only' ? 'synthetic' : 'native', repository: env.GITHUB_REPOSITORY, run_id: env.GITHUB_RUN_ID, run_attempt: env.GITHUB_RUN_ATTEMPT, job_id: String(this.jobId), job_key: this.jobKey, p_sha: pSha, w_sha: wSha, c_sha: cSha, fixture_sha256: fixture });
+    const strictManifestSha256 = this.mode === 'strict' ? this.strictManifestSha256 : null;
+    return Object.freeze({ invocation_id: this.invocationId, execution_kind: this.mode === 'validation-only' ? 'synthetic' : 'native', repository: env.GITHUB_REPOSITORY, run_id: env.GITHUB_RUN_ID, run_attempt: env.GITHUB_RUN_ATTEMPT, job_id: String(this.jobId), job_key: this.jobKey, p_sha: pSha, w_sha: wSha, c_sha: cSha, fixture_sha256: fixture, strict_manifest_sha256: strictManifestSha256 });
   }
   buildChildArgs() {
     const script = this.mode === 'validation-only' ? 'proof/remote_strict_validation.py' : 'proof/remote_strict_controller.py';
@@ -135,7 +149,10 @@ export class StrictSupervisor {
     if (this.mode === 'validation-only') {
       if (!['success', 'failed-plan', 'failed-pin', 'divergence', 'cleanup-failure', 'ownership-crash', 'ownership-census-outage', 'ownership-run1-outage'].includes(this.validationCase) || !this.caseDataDir) throw new Error('invalid validation case');
       args.push('--case', this.validationCase, '--case-data-dir', this.caseDataDir);
-    } else args.push('--mode', 'strict');
+    } else {
+      args.push('--mode', 'strict');
+      args.push('--strict-manifest-fd', '5', '--strict-manifest-sha256', this.context.strict_manifest_sha256);
+    }
     return args;
   }
   async handleRequest(req, ackStream) {
@@ -143,30 +160,7 @@ export class StrictSupervisor {
     try {
       if (!req || req.protocol_version !== 1 || typeof req.request_id !== 'string' || !req.request_id || req.invocation_id !== this.context.invocation_id || this.seenRequestIds.has(req.request_id)) throw new Error('invalid or replayed request');
       this.seenRequestIds.add(req.request_id);
-      if (req.event === 'authorization-request') {
-        if (req.p_sha !== this.context.p_sha || req.w_sha !== this.context.w_sha || req.c_sha !== this.context.c_sha) {
-          throw new Error('authorization request revision mismatch');
-        }
-        if (this.verifiedManifest) {
-          ack = {
-            ...req,
-            event: 'authorization-ack',
-            verified: true,
-            manifest_raw: this.verifiedManifest.raw,
-            manifest_digest: this.verifiedManifest.digest,
-            harness_raw: this.verifiedManifest.harness_raw,
-            audit_raw: this.verifiedManifest.audit_raw,
-          };
-        } else {
-          ack = {
-            ...req,
-            event: 'authorization-ack',
-            verified: false,
-            error: 'STRICT_MODE_AUTH_REFUSED: No deployment approval or independent audit exists for environment strict-proof',
-          };
-          this.failedVerifications++;
-        }
-      } else if (req.event === 'ownership-register' || req.event === 'ownership-resolve') {
+      if (req.event === 'ownership-register' || req.event === 'ownership-resolve') {
         if (typeof req.unit !== 'string' || !req.unit || !Number.isSafeInteger(req.native_attempt) || req.native_attempt < 1) throw new Error('invalid stage association');
         if (this.stopping && req.event === 'ownership-register') throw new Error('ownership registration refused during shutdown');
         const result = req.event === 'ownership-register'
@@ -205,7 +199,7 @@ export class StrictSupervisor {
       }
       // Echo the protocol event the controller expects, so a rejected request
       // reports its actual error instead of an ACK-EVENT-MISMATCH.
-      const ackEvent = { 'persistence-request': 'persistence-ack', 'ownership-register': 'ownership-register-ack', 'ownership-resolve': 'ownership-resolve-ack', 'authorization-request': 'authorization-ack' }[req?.event] || 'invalid-ack';
+      const ackEvent = { 'persistence-request': 'persistence-ack', 'ownership-register': 'ownership-register-ack', 'ownership-resolve': 'ownership-resolve-ack' }[req?.event] || 'invalid-ack';
       ack = { ...req, event: ackEvent, verified: false, error: redactSecrets(String(err.message)) };
     }
     try {
@@ -302,8 +296,15 @@ export class StrictSupervisor {
       this.saveIndex(null);
       return { exitCode: null, signal: null, outcome: 'REFUSED', envelopePath: this.indexPath, receiptIndexPath: this.indexPath, totalRequests: 0, failedVerifications: this.failedVerifications };
     }
-    child = spawn(this.pythonPath, childArgs, { stdio: ['inherit', 'inherit', 'inherit', 'pipe', 'pipe'], env: sanitizeEnvironment(this.parentEnv) });
+    const stdio = this.mode === 'strict'
+      ? ['inherit', 'inherit', 'inherit', 'pipe', 'pipe', 'pipe']
+      : ['inherit', 'inherit', 'inherit', 'pipe', 'pipe'];
+    child = spawn(this.pythonPath, childArgs, { stdio, env: sanitizeEnvironment(this.parentEnv) });
     this.childProcess = child;
+    if (this.mode === 'strict') {
+      child.stdio[5].on('error', () => {});
+      child.stdio[5].end(this.manifestBytes);
+    }
     let requestChain = Promise.resolve();
     const onStreamFailure = e => {
       if (!streamFailure) streamFailure = e;

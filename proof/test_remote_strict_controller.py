@@ -179,7 +179,7 @@ class FakePublisher:
         required = (
             "protocol_version", "request_id", "invocation_id", "execution_kind",
             "repository", "run_id", "run_attempt", "job_id", "job_key",
-            "p_sha", "w_sha", "c_sha", "fixture_sha256", "snapshot_kind",
+            "p_sha", "w_sha", "c_sha", "fixture_sha256", "strict_manifest_sha256", "snapshot_kind",
             "chain_id", "unit", "native_attempt", "snapshot_sequence",
             "archive_path", "archive_bytes", "archive_sha256",
         )
@@ -533,6 +533,8 @@ class TestRemoteStrictController(unittest.TestCase):
         self.assertIn("run2", final_data["units"])
         self.assertIn("run3/acme", final_data["units"])
         self.assertIn("run3/cookie", final_data["units"])
+        for req in pub.received_requests:
+            self.assertIsNone(req.get("strict_manifest_sha256"))
         self.assertEqual(final_data["identity"]["status"], "PASS")
 
         # Verify snapshots were received by publisher in proper order
@@ -1532,12 +1534,48 @@ class TestRemoteStrictController(unittest.TestCase):
             self.assertAlmostEqual(ctrl.get_elapsed_from_job_start_sec(), 110.286, places=3)
             self.assertEqual(ctrl.get_remaining_payload_sec(), remaining)
 
+    def _create_valid_manifest_pipe(self, overrides=None):
+        m = {
+            "manifest_version": 2,
+            "schema": "https://schema.iyi.dev/strict-authorization-manifest-v2.json",
+            "generated_at": "2026-11-07T00:00:00Z",
+            "attestation_scope": "GitHub records that account 43164 approved environment 26584191206 for this run with this comment.",
+            "repository_id": 26584191206,
+            "c_sha": self.c_sha,
+            "p_sha": self.p_sha,
+            "w_sha": self.w_sha,
+            "h_sha": "0" * 40,
+            "audit_sha256": "0" * 64,
+            "evidence_commit_sha": "0" * 40,
+            "strict_run": {
+                "id": "101",
+                "attempt": "1",
+                "created_at": "2026-11-07T00:00:00Z",
+                "head_sha": self.c_sha,
+                "html_url": "https://github.com/fixture/iyi/actions/runs/101",
+                "path": ".github/workflows/remote-strict-proof.yml",
+            },
+            "approver": {"id": 43164, "login": "jwaldrip"},
+            "approval_comment_expected": "iyi-strict-authorization-v2 sha256:" + "0" * 64,
+        }
+        if overrides:
+            for k, v in overrides.items():
+                if isinstance(v, dict) and isinstance(m.get(k), dict):
+                    m[k].update(v)
+                else:
+                    m[k] = v
+        raw = json.dumps(m, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+        digest = hashlib.sha256(raw).hexdigest()
+        r, w = os.pipe()
+        with os.fdopen(w, "wb") as f:
+            f.write(raw)
+        return r, digest, raw
     # -------------------------------------------------------------------------
     # 12. Strict Authorization & Malformed SHA Validation Negatives
     # -------------------------------------------------------------------------
-    def test_12a_unapproved_strict_launch_refused_before_payload(self):
-        """Scenario 12a: Unapproved strict mode launch is refused with exact exit code 5 and AUTH_REFUSED."""
-        ctrl = self._create_controller(mode="strict")
+    def test_12a_unapproved_strict_launch_no_fd_refused_before_payload(self):
+        """Scenario 12a1: Unapproved strict mode launch without fd is refused with exact exit code 5 and AUTH_REFUSED."""
+        ctrl = self._create_controller(mode="strict", strict_manifest_fd=None)
         rc = ctrl.run()
 
         self.assertEqual(rc, 5)
@@ -1546,6 +1584,53 @@ class TestRemoteStrictController(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.report_dir, "plan")))
         self.assertFalse(os.path.exists(os.path.join(self.report_dir, "pin.json")))
 
+    def test_12a_digest_mismatch_gives_exit_5_and_zero_records(self):
+        """Scenario 12a2: Manifest digest mismatch is refused with exit code 5 and zero records."""
+        r, _, _ = self._create_valid_manifest_pipe()
+        ctrl = self._create_controller(mode="strict", strict_manifest_fd=r, strict_manifest_sha256="0" * 64)
+        rc = ctrl.run()
+        self.assertEqual(rc, 5)
+        self.assertEqual(ctrl.overall_status, "AUTH_REFUSED")
+        self.assertEqual(len(ctrl.records), 0)
+
+    def test_12a_run_id_mismatch_gives_exit_5_and_zero_records(self):
+        """Scenario 12a3: Manifest strict_run.id mismatch is refused with exit code 5 and zero records."""
+        r, digest, _ = self._create_valid_manifest_pipe({"strict_run": {"id": "999999"}})
+        ctrl = self._create_controller(mode="strict", run_id="101", strict_manifest_fd=r, strict_manifest_sha256=digest)
+        rc = ctrl.run()
+        self.assertEqual(rc, 5)
+        self.assertEqual(ctrl.overall_status, "AUTH_REFUSED")
+        self.assertEqual(len(ctrl.records), 0)
+
+    def test_12a_attempt_2_gives_exit_5_and_zero_records(self):
+        """Scenario 12a4: Manifest attempt 2 is refused with exit code 5 and zero records."""
+        r, digest, _ = self._create_valid_manifest_pipe({"strict_run": {"attempt": "2"}})
+        ctrl = self._create_controller(mode="strict", run_attempt="2", strict_manifest_fd=r, strict_manifest_sha256=digest)
+        rc = ctrl.run()
+        self.assertEqual(rc, 5)
+        self.assertEqual(ctrl.overall_status, "AUTH_REFUSED")
+        self.assertEqual(len(ctrl.records), 0)
+
+    def test_12a_p_w_c_mismatch_gives_exit_5_and_zero_records(self):
+        """Scenario 12a5: Manifest P, W, or C mismatch is refused with exit code 5 and zero records."""
+        for override in ({"p_sha": "0" * 40}, {"w_sha": "0" * 40}, {"c_sha": "0" * 40}):
+            r, digest, _ = self._create_valid_manifest_pipe(override)
+            ctrl = self._create_controller(mode="strict", strict_manifest_fd=r, strict_manifest_sha256=digest)
+            rc = ctrl.run()
+            self.assertEqual(rc, 5)
+            self.assertEqual(ctrl.overall_status, "AUTH_REFUSED")
+            self.assertEqual(len(ctrl.records), 0)
+
+    def test_12a_valid_manifest_binds_and_reaches_preflight(self):
+        """Scenario 12a6: Valid strict manifest binds successfully and reaches _preflight."""
+        r, digest, _ = self._create_valid_manifest_pipe()
+        ctrl = self._create_controller(mode="strict", strict_manifest_fd=r, strict_manifest_sha256=digest)
+        with mock.patch.object(ctrl, "_preflight") as mock_preflight:
+            mock_preflight.side_effect = rsc.VerificationError("PREFLIGHT-REACHED")
+            rc = ctrl.run()
+            self.assertTrue(mock_preflight.called)
+            self.assertEqual(ctrl.strict_manifest_sha256, digest)
+            self.assertIsNotNone(ctrl.strict_manifest_binding)
     def test_12b_malformed_sha_and_shell_injection_rejected(self):
         """Scenario 12b: Malformed commit SHAs and shell injections are rejected in production paths."""
         bad_shas = [

@@ -4,7 +4,12 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { StrictSupervisor } from '../src/supervisor.js';
+
+const VALID_MANIFEST_BYTES = Buffer.from(JSON.stringify({ test: 'manifest' }));
+const VALID_MANIFEST_B64 = VALID_MANIFEST_BYTES.toString('base64');
+const VALID_MANIFEST_SHA256 = createHash('sha256').update(VALID_MANIFEST_BYTES).digest('hex');
 
 // establishContext reads revisions with `git -C <dir> rev-parse HEAD`, so P and W are
 // real repositories and C is the checkout these tests run in. The real method runs in
@@ -45,6 +50,7 @@ function supervisor({ env = baseEnv(), ...overrides } = {}) {
   return new StrictSupervisor({
     mode: 'strict', invocationId: 'inv-1', jobId: '5678', jobKey: 'validation', jobStartTime: STARTED,
     p: P_DIR, w: W_DIR, pSha: P_SHA, wSha: W_SHA, cSha: C_SHA, graceSec: '30', driverLimitSec: '2100',
+    strictManifestB64: VALID_MANIFEST_B64, strictManifestSha256: VALID_MANIFEST_SHA256,
     parentEnv: env, ...overrides,
   });
 }
@@ -78,6 +84,7 @@ test('positive control: a complete platform identity resolves the frozen context
     invocation_id: 'inv-1', execution_kind: 'native', repository: 'jwaldrip/iyi', run_id: '1234',
     run_attempt: '1', job_id: '5678', job_key: 'validation', p_sha: P_SHA, w_sha: W_SHA, c_sha: C_SHA,
     fixture_sha256: null,
+    strict_manifest_sha256: VALID_MANIFEST_SHA256,
   });
 });
 
@@ -100,6 +107,12 @@ const preLookupRefusals = [
   ['C drifted from the expected revision', { cSha: '1'.repeat(40) }, REVISION],
   ['a changed strict grace period', { graceSec: '31' }, TIMING],
   ['a changed strict driver limit', { driverLimitSec: '2000' }, TIMING],
+  ['missing strict manifest b64 in strict mode', { strictManifestB64: '' }, /missing strict manifest base64/],
+  ['missing strict manifest digest in strict mode', { strictManifestSha256: '' }, /missing or invalid strict manifest digest/],
+  ['invalid strict manifest digest format', { strictManifestSha256: 'not-64-hex' }, /missing or invalid strict manifest digest/],
+  ['non-canonical base64 in strict mode', { strictManifestB64: 'a==' }, /non-canonical strict manifest base64/],
+  ['strict manifest digest mismatch in strict mode', { strictManifestSha256: '0'.repeat(64) }, /strict manifest digest mismatch/],
+  ['strict manifest inputs present in validation-only mode', { mode: 'validation-only', strictManifestB64: VALID_MANIFEST_B64, strictManifestSha256: VALID_MANIFEST_SHA256 }, /strict manifest inputs are forbidden in validation-only mode/],
 ];
 for (const [name, overrides, pattern] of preLookupRefusals) {
   test(`establishContext refuses ${name} before any job lookup`, async () => {

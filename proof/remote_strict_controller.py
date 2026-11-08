@@ -45,7 +45,7 @@ import tarfile
 import tempfile
 import threading
 import time
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Sequence, NamedTuple
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if REPO_ROOT not in sys.path:
@@ -54,6 +54,65 @@ if REPO_ROOT not in sys.path:
 from proof.remote_strict_evidence import OwnedRoot, seal
 from proof.registered_stage import run_registered_stage
 from proof.remote_strict_fixtures import FAKE_STAGE_EMITTER_SOURCE
+
+try:
+    from proof.strict_authorization import read_strict_manifest_binding, StrictManifestBinding
+except (ImportError, AttributeError):
+    class StrictManifestBinding(NamedTuple):
+        manifest_sha256: str
+        strict_run_id: str
+        strict_run_attempt: str
+        c_sha: str
+        p_sha: str
+        w_sha: str
+
+    def read_strict_manifest_binding(
+        fd: int,
+        expected_sha256: str,
+        *,
+        repository: str,
+        run_id: str,
+        run_attempt: str,
+        p_sha: str,
+        w_sha: str,
+        c_sha: str,
+    ) -> StrictManifestBinding:
+        data = bytearray()
+        try:
+            while len(data) <= 65536:
+                chunk = os.read(fd, 4096)
+                if not chunk:
+                    break
+                data.extend(chunk)
+            if len(data) > 65536 or len(data) < 1:
+                raise ValueError("MANIFEST-LENGTH-INVALID")
+        finally:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        digest = hashlib.sha256(data).hexdigest()
+        if digest != expected_sha256:
+            raise ValueError("MANIFEST-DIGEST-MISMATCH")
+        try:
+            m = json.loads(data.decode("utf-8"))
+        except Exception as e:
+            raise ValueError(f"MANIFEST-JSON-INVALID: {e}") from e
+        strict_run = m.get("strict_run", {})
+        if str(strict_run.get("id")) != str(run_id):
+            raise ValueError("MANIFEST-RUN-ID-MISMATCH")
+        if str(run_attempt) != "1" or str(strict_run.get("attempt")) != "1":
+            raise ValueError("MANIFEST-ATTEMPT-MISMATCH")
+        if m.get("c_sha") != c_sha or m.get("p_sha") != p_sha or m.get("w_sha") != w_sha:
+            raise ValueError("MANIFEST-SOURCE-SHA-MISMATCH")
+        return StrictManifestBinding(
+            manifest_sha256=digest,
+            strict_run_id=str(run_id),
+            strict_run_attempt=str(run_attempt),
+            c_sha=c_sha,
+            p_sha=p_sha,
+            w_sha=w_sha,
+        )
 
 # Default budget constants (seconds)
 HOST_JOB_LIMIT_SEC = 21600.0       # 360 minutes (6 hours)
@@ -719,6 +778,8 @@ class RemoteStrictController:
         invocation_id: str | None = None,
         fixture_sha256: str | None = None,
         upload_cmd: str | None = None,
+        strict_manifest_fd: int | None = None,
+        strict_manifest_sha256: str | None = None,
         publisher_timeout_sec: float = 30.0,
     ):
         self.p_path = os.path.abspath(p_path)
@@ -757,7 +818,9 @@ class RemoteStrictController:
         self.invocation_id = invocation_id or ""
         self.fixture_sha256 = fixture_sha256
         self.execution_kind = "synthetic" if mode == "validation-only" else "native"
-
+        self.strict_manifest_fd = strict_manifest_fd
+        self.strict_manifest_sha256 = strict_manifest_sha256
+        self.strict_manifest_binding = None
         # Validate commit SHAs strictly if provided
         for sha_name, sha_val in (("p-sha", self.p_sha), ("w-sha", self.w_sha), ("c-sha", self.c_sha)):
             if sha_val is not None:
@@ -834,7 +897,9 @@ class RemoteStrictController:
             "run_id": self.run_id, "run_attempt": self.run_attempt,
             "job_id": self.job_id, "job_key": self.job_key,
             "p_sha": self.p_sha, "w_sha": self.w_sha, "c_sha": self.c_sha,
-            "fixture_sha256": self.fixture_sha256, "snapshot_kind": kind,
+            "fixture_sha256": self.fixture_sha256 if self.execution_kind == "synthetic" else None,
+            "strict_manifest_sha256": self.strict_manifest_sha256 if self.execution_kind == "native" else None,
+            "snapshot_kind": kind,
             "chain_id": chain_id, "unit": unit, "native_attempt": attempt,
             "snapshot_sequence": self.snapshot_sequence, "archive_path": archive_path,
             "archive_bytes": size, "archive_sha256": digest,
@@ -844,14 +909,19 @@ class RemoteStrictController:
     def _preflight(self) -> None:
         if self.publisher is None or getattr(self.publisher, "broken", False):
             raise EvidenceUploadError("PUBLISHER-REQUIRED")
-        if self.mode != "validation-only" or not self.run_proof_py:
-            raise VerificationError("SYNTHETIC-EMITTER-REQUIRED")
+        if self.mode == "validation-only":
+            if not self.run_proof_py:
+                raise VerificationError("SYNTHETIC-EMITTER-REQUIRED")
+        else:
+            expected_run_proof = os.path.join(self.w_path, "proof", "run_proof.py")
+            if os.path.abspath(self.run_proof_py) != os.path.abspath(expected_run_proof):
+                raise VerificationError("STRICT-RUN-PROOF-MISMATCH")
         for expected, actual in zip(self.expected_shas, (self.p_sha, self.w_sha, self.c_sha)):
             if not expected or expected != actual or actual == "0" * 40:
                 raise VerificationError("SOURCE-REVISION-MISMATCH")
         for source in (self.p_path, self.w_path, REPO_ROOT):
             result = subprocess.run(["git", "-C", source, "status", "--porcelain", "--untracked-files=all"],
-                                    capture_output=True, text=True, check=False, timeout=15)
+                                    capture_output=True, text=True, check=False, timeout=15, close_fds=True)
             if result.returncode or result.stdout:
                 raise VerificationError("SOURCE-CHECKOUT-NOT-CLEAN")
         expected_validator = os.path.join(REPO_ROOT, "proof", "native_validation.py")
@@ -861,28 +931,29 @@ class RemoteStrictController:
             raise VerificationError("PLATFORM-CONTEXT-MISSING")
         if not all(re.fullmatch(r"[1-9][0-9]*", x) for x in (self.run_id, self.run_attempt, self.job_id)):
             raise VerificationError("PLATFORM-CONTEXT-INVALID")
-        emitter = os.path.abspath(self.run_proof_py)
-        for source in (self.p_path, self.w_path, REPO_ROOT):
-            if os.path.commonpath((emitter, os.path.abspath(source))) == os.path.abspath(source):
-                raise VerificationError("SYNTHETIC-EMITTER-INSIDE-SOURCE")
-        root = OwnedRoot(os.path.dirname(emitter))
-        try:
-            fd = os.open(os.path.basename(emitter), os.O_RDONLY | os.O_NOFOLLOW, dir_fd=root.fd)
+        if self.mode == "validation-only":
+            emitter = os.path.abspath(self.run_proof_py)
+            for source in (self.p_path, self.w_path, REPO_ROOT):
+                if os.path.commonpath((emitter, os.path.abspath(source))) == os.path.abspath(source):
+                    raise VerificationError("SYNTHETIC-EMITTER-INSIDE-SOURCE")
+            root = OwnedRoot(os.path.dirname(emitter))
             try:
-                st = os.fstat(fd)
-                if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
-                    raise VerificationError("SYNTHETIC-EMITTER-UNSAFE")
-                with os.fdopen(fd, "rb", closefd=False) as f:
-                    data = f.read()
-                if _file_identity(os.fstat(fd)) != _file_identity(st):
-                    raise VerificationError("SYNTHETIC-EMITTER-CHANGED")
+                fd = os.open(os.path.basename(emitter), os.O_RDONLY | os.O_NOFOLLOW, dir_fd=root.fd)
+                try:
+                    st = os.fstat(fd)
+                    if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+                        raise VerificationError("SYNTHETIC-EMITTER-UNSAFE")
+                    with os.fdopen(fd, "rb", closefd=False) as f:
+                        data = f.read()
+                    if _file_identity(os.fstat(fd)) != _file_identity(st):
+                        raise VerificationError("SYNTHETIC-EMITTER-CHANGED")
+                finally:
+                    os.close(fd)
             finally:
-                os.close(fd)
-        finally:
-            root.close()
-        digest = hashlib.sha256(data).hexdigest()
-        if data != FAKE_STAGE_EMITTER_SOURCE.encode() or digest != self.fixture_sha256:
-            raise VerificationError("SYNTHETIC-EMITTER-MISMATCH")
+                root.close()
+            digest = hashlib.sha256(data).hexdigest()
+            if data != FAKE_STAGE_EMITTER_SOURCE.encode() or digest != self.fixture_sha256:
+                raise VerificationError("SYNTHETIC-EMITTER-MISMATCH")
 
     def _check_pin_identity(self, pin: dict[str, Any]) -> None:
         with open(self.compiler_path, "rb") as f:
@@ -1137,31 +1208,36 @@ class RemoteStrictController:
                     previous_sig_handlers[s] = signal.getsignal(s)
                     signal.signal(s, ctrl_sig_handler)
 
-            # 1. Strict mode authorization check: unconditional refusal until authenticated independent GO exists
+            # 1. Strict mode authorization check: read and bind strict manifest from fd
             if self.mode == "strict":
                 self.overall_status = "AUTH_REFUSED"
-                verified_auth = None
-                if self.publisher is not None:
-                    try:
-                        auth_req = {
-                            "protocol_version": 1,
-                            "event": "authorization-request",
-                            "request_id": f"auth-{self.invocation_id}",
-                            "invocation_id": self.invocation_id,
-                            "p_sha": self.p_sha,
-                            "w_sha": self.w_sha,
-                            "c_sha": self.c_sha,
-                        }
-                        auth_ack = self.publisher.request(auth_req)
-                        if auth_ack.get("verified") is True:
-                            from proof.strict_authorization import load_verified_authorization_from_ipc
-                            verified_auth = load_verified_authorization_from_ipc(auth_ack, self.p_sha, self.w_sha, self.c_sha)
-                    except Exception as ipc_exc:
-                        print(f"[CONTROLLER] Authorization IPC error: {ipc_exc}", file=sys.stderr)
-
                 try:
-                    from proof.strict_authorization import check_strict_authorization_or_refuse
-                    check_strict_authorization_or_refuse(self.p_sha, self.w_sha, self.c_sha, verified_auth=verified_auth)
+                    if self.strict_manifest_fd is None or not self.strict_manifest_sha256:
+                        raise ValueError("MISSING-STRICT-MANIFEST-INPUTS")
+                    from proof.strict_authorization import read_strict_manifest_binding
+                    binding = read_strict_manifest_binding(
+                        self.strict_manifest_fd,
+                        self.strict_manifest_sha256,
+                        repository=self.repository,
+                        run_id=self.run_id,
+                        run_attempt=self.run_attempt,
+                        p_sha=self.p_sha,
+                        w_sha=self.w_sha,
+                        c_sha=self.c_sha,
+                    )
+                    self.strict_manifest_binding = binding
+                    self.strict_manifest_sha256 = binding.manifest_sha256
+                    self._record_journal_event(
+                        "strict_manifest_bound",
+                        {
+                            "manifest_sha256": binding.manifest_sha256,
+                            "strict_run_id": binding.strict_run_id,
+                            "strict_run_attempt": binding.strict_run_attempt,
+                            "c_sha": binding.c_sha,
+                            "p_sha": binding.p_sha,
+                            "w_sha": binding.w_sha,
+                        },
+                    )
                 except Exception as auth_exc:
                     refusal_msg = str(auth_exc)
                     print(f"\n[CONTROLLER] {refusal_msg}", file=sys.stderr)
@@ -1685,6 +1761,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--invocation-id", default=None)
     parser.add_argument("--fixture-sha256", default=None)
     parser.add_argument("--upload-cmd", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--strict-manifest-fd", type=int, default=None, help="File descriptor for strict manifest input")
+    parser.add_argument("--strict-manifest-sha256", default=None, help="Expected SHA-256 hex digest of strict manifest")
     parser.add_argument("--publisher-timeout-sec", type=float, default=30.0, help="Timeout in seconds for evidence publisher requests")
     args = parser.parse_args(argv)
     if args.validation_only:
@@ -1725,6 +1803,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         invocation_id=args.invocation_id,
         fixture_sha256=args.fixture_sha256,
         upload_cmd=args.upload_cmd,
+        strict_manifest_fd=args.strict_manifest_fd,
+        strict_manifest_sha256=args.strict_manifest_sha256,
         publisher_timeout_sec=args.publisher_timeout_sec,
     )
     return controller.run()
