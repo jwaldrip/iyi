@@ -596,7 +596,7 @@ class RemoteHarnessAuditRunner:
             "verification": {
                 "matches_canonical_produced": matches_canonical,
                 "rejects_bare_sentence": rejects_bare,
-                "rejects_wrong_count": rejects_wrong_count,
+                "rejects_wrong_count": rejects_140 and rejects_141 and rejects_143,
             },
             "status": "PASS",
         }
