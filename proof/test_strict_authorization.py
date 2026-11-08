@@ -43,6 +43,7 @@ from proof.fixtures.github_api import (
     get_compare_wh_fixture,
     get_contents_harness_audit_zip_fixture,
     get_deployment_fixture,
+    get_evidence_branch_fixture,
     get_environment_fixture,
     get_manifest_artifact_fixture,
     get_pull_147_fixture,
@@ -56,6 +57,7 @@ from proof.fixtures.github_api import (
 )
 from proof.strict_authorization import (
     APPROVAL_COMMENT_PREFIX,
+    ATTESTATION_SCOPE,
     ARTIFACT_NAME_MANIFEST,
     ARTIFACT_NAME_RAIL_SUMMARY,
     ARTIFACT_NAME_REHEARSAL_REPORT,
@@ -437,9 +439,9 @@ class CheckIsolationTests(unittest.TestCase):
         job["run_id"] = "100"
         job["head_sha"] = "c" * 40
         job["status"] = "in_progress"
-        job["runner_name"] = "GitHub Actions 1"
+        job["runner_name"] = ""
         with self.assertRaises(AuthorizationError) as ctx:
-            check_job_1(job, "100", JOB_NAME_STRICT, "c" * 40, runner_name=None)
+            check_job_1(job, "100", JOB_NAME_STRICT, "c" * 40, runner_name="GitHub Actions 1")
         self.assertIn("JOB-1", str(ctx.exception))
 
     def test_job_1_runner_name_mismatch(self):

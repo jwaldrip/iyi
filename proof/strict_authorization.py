@@ -969,7 +969,7 @@ def check_har_1_2(run: Dict[str, Any], job: Dict[str, Any]) -> None:
         raise AuthorizationError(f"[HAR-2] harness job conclusion must be 'success', got {job.get('conclusion')}", check_id="HAR-2")
 
 
-def check_har_3(art: Dict[str, Any]) -> str:
+def check_har_3(art: Dict[str, Any]) -> Tuple[str, bool]:
     if str(art.get("id")) != HARNESS_ARTIFACT_ID:
         raise AuthorizationError(f"[HAR-3] harness artifact id mismatch: expected {HARNESS_ARTIFACT_ID}, got {art.get('id')}", check_id="HAR-3")
     if art.get("name") != HARNESS_ARTIFACT_NAME:
@@ -985,12 +985,13 @@ def check_har_3(art: Dict[str, Any]) -> str:
         raise AuthorizationError(f"[HAR-3] harness artifact workflow_run.repository_id mismatch: expected {PINNED_REPOSITORY_ID}, got {wf_run.get('repository_id')}", check_id="HAR-3")
     if art.get("digest") != HARNESS_ARTIFACT_DIGEST:
         raise AuthorizationError(f"[HAR-3] harness artifact digest mismatch: expected {HARNESS_ARTIFACT_DIGEST}, got {art.get('digest')}", check_id="HAR-3")
-    if art.get("expired") is not False:
-        raise AuthorizationError("[HAR-3] harness artifact must not be expired", check_id="HAR-3")
+
     expires_at = art.get("expires_at")
     if not expires_at:
         raise AuthorizationError("[HAR-3] missing expires_at on harness artifact", check_id="HAR-3")
-    return expires_at
+
+    is_expired = bool(art.get("expired", False))
+    return expires_at, is_expired
 
 
 def check_har_4(contents: Dict[str, Any], blob: Dict[str, Any]) -> bytes:
