@@ -1,0 +1,44 @@
+{
+  "id": 128575084399,
+  "name": "deploy",
+  "node_id": "CR_kwDOT-Q1Xc8AAAAWyJoZ0Q",
+  "head_sha": "72c3c7d026369e5f59553d0c6cb208233f545d24",
+  "external_id": "50096711-1723-56ef-97e1-861c3274161d",
+  "url": "https://api.github.com/repos/jwaldrip/iyi/check-runs/97854822865",
+  "html_url": "https://github.com/jwaldrip/iyi/actions/runs/32863996366/job/97854822865",
+  "details_url": "https://github.com/jwaldrip/iyi/actions/runs/42086795082/job/128575084399",
+  "status": "completed",
+  "conclusion": "success",
+  "started_at": "2026-08-25T15:09:48Z",
+  "completed_at": "2026-08-25T15:12:26Z",
+  "output": {
+    "title": null,
+    "summary": null,
+    "text": null,
+    "annotations_count": 1,
+    "annotations_url": "https://api.github.com/repos/jwaldrip/iyi/check-runs/97854822865/annotations"
+  },
+  "check_suite": {
+    "id": 89025327604
+  },
+  "app": {
+    "slug": "github-actions"
+  },
+  "pull_requests": [],
+  "deployment": {
+    "id": 6086087299,
+    "environment": "strict-proof",
+    "original_environment": "strict-proof",
+    "task": "deploy"
+  },
+  "_derived_from": {
+    "base_fixture": "check_run_97854822865.json",
+    "substitutions": [
+      "id",
+      "head_sha",
+      "app",
+      "details_url",
+      "deployment"
+    ]
+  }
+}

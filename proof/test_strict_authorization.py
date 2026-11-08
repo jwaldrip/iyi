@@ -1,974 +1,742 @@
-"""Discriminating unit and hosted mirror tests for strict-proof authorization verifier.
+"""Discriminating tests for authenticated GitHub environment strict-proof authorization verifier.
 
 Tests all security gates and failure modes:
-  - Exact immutable VerifiedAuthorization invariants and tamper-proofing
-  - Anchored P SHA (PR #147 head required, stale P1 rejected)
-  - Environment policy, reviewer 43164, branch policy, bypass prevention
-  - Replay prevention, strict run attempt == 1, in_progress status
-  - Run ID isolation across strict, harness, and audit contexts
-  - Evidence artifact content validation, verdicts (PASS / GO)
-  - Producer independence and untrusted producer rejection
-  - Payload tampering, digest mismatches, noncanonical JSON
-  - Bundle fingerprint drift
-  - Authenticated inherited IPC handoff and verification
-  - Harmless visible effect receipt execution and refusal
-  - Production refusal hook fail-closed behavior (exit 5)
-  - Real loopback HTTP mirror tests exercising API faults (500, 404, 401),
-    malicious/corrupted zip downloads, and end-to-end authenticated verification
+  - Exact individual check isolation: every check ID (RNR-1..6, REP-1, RUN-1, JOB-1..3,
+    ENV-1..2, BRN-1..2, SRC-1..3, BUN-1, HAR-1..6, VAL-1..4, AUD-1..3, MAN-1..3, APR-1)
+    has a dedicated negative test that breaks only that check and verifies the refusal
+    names that exact check ID.
+  - Test environments are constructed independently of the manifest.
+  - Subprocess tests verifying exit code 5 on bad environment and exit code 2 on usage error.
+  - Loopback server verifying exact Bearer token on API requests, 302 redirect handling,
+    and storage host that strictly rejects any request carrying an Authorization header.
+  - Canonical JSON parser tests verifying duplicate key and non-canonical rejection.
+  - StrictManifestBinding verification over file descriptors with exact revision and pin checks.
 """
 
-import copy
+from copy import deepcopy
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import io
 import json
 import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import MagicMock, patch
 import zipfile
 
+from proof.fixtures.github_api import (
+    get_manifest_artifact_fixture,
+    get_branch_deploy_fixture,
+    get_branch_policies_fixture,
+    get_check_run_deployment_fixture,
+    get_compare_pw_fixture,
+    get_compare_wh_fixture,
+    get_contents_harness_audit_zip_fixture,
+    get_deployment_fixture,
+    get_environment_fixture,
+    get_pull_147_fixture,
+    get_repo_fixture,
+    get_rules_branch_deploy_fixture,
+    get_strict_run_in_progress_fixture,
+    load_fixture,
+)
 from proof.strict_authorization import (
     APPROVAL_COMMENT_PREFIX,
-    AUDIT_SCHEMA,
+    ARTIFACT_NAME_MANIFEST,
+    ARTIFACT_NAME_RAIL_SUMMARY,
+    ARTIFACT_NAME_REHEARSAL_REPORT,
     AUTH_REFUSED_EXIT_CODE,
-    HARNESS_SCHEMA,
-    HARMLESS_EFFECT_SCHEMA,
-    MANIFEST_SCHEMA,
-    PINNED_BRANCH,
+    AuthorizationError,
+    GitHubAPIClient,
+    HARNESS_ARTIFACT_DIGEST,
+    HARNESS_ARTIFACT_ID,
+    HARNESS_ARTIFACT_NAME,
+    HARNESS_CONCLUSION,
+    HARNESS_EVENT,
+    HARNESS_HEAD_BRANCH,
+    HARNESS_JOB_ID,
+    HARNESS_JOB_NAME,
+    HARNESS_PRESERVED_BLOB,
+    HARNESS_PRESERVED_COMMIT,
+    HARNESS_PRESERVED_PATH,
+    HARNESS_RUN_ATTEMPT,
+    HARNESS_RUN_ID,
+    HARNESS_SUMMARY_MEMBER,
+    HARNESS_SUMMARY_MEMBER_SHA256,
+    HARNESS_WORKFLOW_ID,
+    HARNESS_WORKFLOW_PATH,
+    JOB_KEY_PREPARE,
+    JOB_KEY_REHEARSAL,
+    JOB_KEY_STRICT,
+    JOB_NAME_PREPARE,
+    JOB_NAME_REHEARSAL,
+    JOB_NAME_STRICT,
+    PINNED_ACTIONS,
+    PINNED_API_BASE,
+    PINNED_DEPLOY_BRANCH,
     PINNED_ENVIRONMENT_ID,
     PINNED_ENVIRONMENT_NAME,
+    PINNED_H_SHA,
+    PINNED_P_HEAD_REF,
+    PINNED_P_HEAD_REPO_ID,
+    PINNED_P_PR_NUMBER,
+    PINNED_P_PR_REPOSITORY,
+    PINNED_P_PR_STATE,
     PINNED_P_SHA,
     PINNED_REF,
+    PINNED_REFUSAL_CONTROLS,
     PINNED_REPOSITORY,
     PINNED_REPOSITORY_ID,
     PINNED_REVIEWER_ID,
+    PINNED_REVIEWER_LOGIN,
+    PINNED_W_ADDED_COUNT,
+    PINNED_W_ADDED_PATHS_SHA256,
+    PINNED_W_AHEAD_BY,
+    PINNED_W_BEHIND_BY,
+    PINNED_W_MERGE_BASE,
     PINNED_W_SHA,
+    PINNED_WORKFLOW_ID,
+    PINNED_WORKFLOW_NAME,
     PINNED_WORKFLOW_PATH,
-    AuthenticatedGitHubVerifier,
-    AuthorizationError,
-    StrictAuthorizationRefused,
-    VerifiedAuthorization,
+    SCHEMA_AUDIT,
+    SCHEMA_MANIFEST,
+    SCHEMA_RAIL_SUMMARY,
+    SCHEMA_REHEARSAL,
+    StrictManifestBinding,
+    USAGE_ERROR_EXIT_CODE,
+    WORKFLOW_REF,
+    build_manifest_v2,
     canonical,
-    check_strict_authorization_or_refuse,
+    check_apr_1,
+    check_aud_1,
+    check_aud_2,
+    check_aud_3,
+    check_brn_1,
+    check_brn_2,
+    check_bun_1,
+    check_env_1,
+    check_env_2,
+    check_har_1_2,
+    check_har_3,
+    check_har_4,
+    check_har_5,
+    check_har_6,
+    check_job_1,
+    check_job_2,
+    check_job_3,
+    check_man_1,
+    check_man_2,
+    check_man_3,
+    check_rep_1,
+    check_rnr_1,
+    check_rnr_2,
+    check_rnr_3,
+    check_rnr_4,
+    check_rnr_5,
+    check_rnr_6,
+    check_run_1,
+    check_src_1,
+    check_src_2,
+    check_src_3,
+    check_val_1,
+    check_val_1b,
+    check_val_2,
+    check_val_3,
+    check_val_4,
     digest,
-    execute_harmless_effect_if_authorized,
-    load_verified_authorization_from_ipc,
-    verify_candidate,
+    git_blob_id,
+    main,
+    parse,
+    read_strict_manifest_binding,
 )
 
 
-class AuthorizationCandidateTests(unittest.TestCase):
-    def setUp(self):
-        self.p_sha = PINNED_P_SHA
-        self.w_sha = PINNED_W_SHA
-        self.c_sha = "c" * 40
+class CheckIsolationTests(unittest.TestCase):
+    """Verify that every check ID isolates its failure mode and names the check ID."""
 
-        # Embedded harness validation evidence
-        self.harness_dict = {
-            "schema": HARNESS_SCHEMA,
-            "verdict": "PASS",
-            "repository_id": PINNED_REPOSITORY_ID,
-            "p_sha": self.p_sha,
-            "w_sha": self.w_sha,
-            "c_sha": self.c_sha,
-            "run_id": "24",
-            "run_attempt": "1",
-            "workflow_id": "20",
-            "producer": {
-                "type": "workflow",
-                "identity": "iyi-strict-harness-gate",
-                "run_id": "24",
-                "workflow_id": "20",
-                "job_id": "101",
-            },
+    def test_rnr_1_repository_mismatch(self):
+        env = {"GITHUB_REPOSITORY": "wrong/repo", "GITHUB_REPOSITORY_ID": PINNED_REPOSITORY_ID}
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_rnr_1(env)
+        self.assertIn("RNR-1", str(ctx.exception))
+
+    def test_rnr_1_repo_id_mismatch(self):
+        env = {"GITHUB_REPOSITORY": PINNED_REPOSITORY, "GITHUB_REPOSITORY_ID": "999999"}
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_rnr_1(env)
+        self.assertIn("RNR-1", str(ctx.exception))
+
+    def test_rnr_2_ref_mismatch(self):
+        env = {
+            "GITHUB_REF": "refs/heads/master",
+            "GITHUB_WORKFLOW_REF": WORKFLOW_REF,
+            "GITHUB_WORKFLOW_SHA": "c" * 40,
+            "GITHUB_SHA": "c" * 40,
         }
-        self.harness_bytes = canonical(self.harness_dict)
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_rnr_2(env)
+        self.assertIn("RNR-2", str(ctx.exception))
 
-        # Embedded independent audit evidence (produced by independent reviewer/auditor)
-        self.audit_dict = {
-            "schema": AUDIT_SCHEMA,
-            "verdict": "GO",
-            "repository_id": PINNED_REPOSITORY_ID,
-            "p_sha": self.p_sha,
-            "w_sha": self.w_sha,
-            "c_sha": self.c_sha,
-            "harness_sha256": digest(self.harness_bytes),
-            "harness_run_id": "24",
-            "harness_run_attempt": "1",
-            "harness_workflow_id": "20",
-            "model_disclosure": {
-                "model_involved": True,
-                "implemented_change": False,
-                "declaration": "Independent agent reviewer audit; cryptographic human approval via GitHub environment deployment approval.",
-            },
-            "report": {
-                "summary": "Independent review of candidate C against P and W",
-                "verdict": "GO",
-                "findings": ["No unauthorized mutations observed", "Harness validation verified"],
-            },
-            "supporting_receipts": [
-                {"receipt_id": "rec-001", "type": "p_w_c_tuple_proof", "status": "VERIFIED"},
-                {"receipt_id": "rec-002", "type": "negative_controls_proof", "status": "VERIFIED"},
-            ],
-            "producer": {
-                "type": "reviewer-agent",
-                "identity": "independent-security-reviewer-agent",
-                "run_id": "26",
-                "workflow_id": "27",
-                "job_id": "201",
-            },
+    def test_rnr_2_workflow_ref_mismatch(self):
+        env = {
+            "GITHUB_REF": PINNED_REF,
+            "GITHUB_WORKFLOW_REF": "wrong-workflow-ref",
+            "GITHUB_WORKFLOW_SHA": "c" * 40,
+            "GITHUB_SHA": "c" * 40,
         }
-        self.audit_bytes = canonical(self.audit_dict)
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_rnr_2(env)
+        self.assertIn("RNR-2", str(ctx.exception))
 
-        self.manifest = {
-            "schema": MANIFEST_SCHEMA,
-            "repository": PINNED_REPOSITORY,
-            "repository_id": PINNED_REPOSITORY_ID,
-            "p_sha": self.p_sha,
-            "w_sha": self.w_sha,
-            "c_sha": self.c_sha,
-            "workflow_path": PINNED_WORKFLOW_PATH,
-            "workflow_id": "20",
-            "strict_run_id": "21",
-            "strict_run_attempt": "1",
-            "strict_ref": PINNED_REF,
-            "environment_id": PINNED_ENVIRONMENT_ID,
-            "bundle_sha256": "d" * 64,
-            "harness": {
-                "artifact_id": "23",
-                "member": "validation.json",
-                "sha256": digest(self.harness_bytes),
-                "run_id": "24",
-                "run_attempt": "1",
-                "workflow_id": "20",
-            },
-            "audit": {
-                "artifact_id": "25",
-                "member": "audit.json",
-                "sha256": digest(self.audit_bytes),
-                "run_id": "26",
-                "run_attempt": "1",
-                "workflow_id": "27",
-            },
+    def test_rnr_3_attempt_mismatch(self):
+        env = {"GITHUB_RUN_ATTEMPT": "2"}
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_rnr_3(env)
+        self.assertIn("RNR-3", str(ctx.exception))
+
+    def test_rnr_4_job_key_mismatch(self):
+        env = {
+            "GITHUB_JOB": "wrong-job",
+            "RUNNER_ENVIRONMENT": "github-hosted",
+            "JOB_CHECK_RUN_ID": "12345",
         }
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_rnr_4(env, JOB_KEY_PREPARE)
+        self.assertIn("RNR-4", str(ctx.exception))
 
-        self.obs = {
-            "context": {
-                k: self.manifest[k]
-                for k in (
-                    "repository",
-                    "repository_id",
-                    "p_sha",
-                    "w_sha",
-                    "c_sha",
-                    "workflow_path",
-                    "workflow_id",
-                    "strict_run_id",
-                    "strict_run_attempt",
-                    "strict_ref",
-                    "environment_id",
-                    "bundle_sha256",
-                )
-            },
-            "repository": {
-                "id": int(PINNED_REPOSITORY_ID),
-                "full_name": PINNED_REPOSITORY,
-                "private": False,
-            },
-            "environment": {
-                "id": int(PINNED_ENVIRONMENT_ID),
-                "name": PINNED_ENVIRONMENT_NAME,
-                "can_admins_bypass": False,
-                "deployment_branch_policy": {"protected_branches": False, "custom_branch_policies": True},
-                "protection_rules": [
-                    {
-                        "type": "required_reviewers",
-                        "prevent_self_review": False,
-                        "reviewers": [{"type": "User", "reviewer": {"id": int(PINNED_REVIEWER_ID)}}],
-                    },
-                    {"type": "branch_policy"},
-                ],
-            },
-            "strict_run": self.run_record("21", "20", status="in_progress"),
-            "harness_run": self.run_record("24", "20", status="completed", conclusion="success"),
-            "audit_run": self.run_record("26", "27", status="completed", conclusion="success"),
-            "approvals": [],
-            "environment_job_count": 1,
-            "selected_branch_policies": [{"name": PINNED_BRANCH, "type": "branch", "id": 65877824}],
-            "artifact_bindings": {
-                "harness": {
-                    "artifact_id": "23",
-                    "run_id": "24",
-                    "head_sha": self.c_sha,
-                    "expired": False,
-                },
-                "audit": {
-                    "artifact_id": "25",
-                    "run_id": "26",
-                    "head_sha": self.c_sha,
-                    "expired": False,
-                },
-            },
+    def test_rnr_4_runner_environment_mismatch(self):
+        env = {
+            "GITHUB_JOB": JOB_KEY_PREPARE,
+            "RUNNER_ENVIRONMENT": "self-hosted",
+            "JOB_CHECK_RUN_ID": "12345",
         }
-        self.obs["context"]["workflow_sha"] = self.manifest["c_sha"]
-        self.approve()
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_rnr_4(env, JOB_KEY_PREPARE)
+        self.assertIn("RNR-4", str(ctx.exception))
 
-    def run_record(self, run_id, workflow_id, status="completed", conclusion="success"):
-        return {
-            "id": int(run_id),
-            "run_attempt": 1,
-            "workflow_id": int(workflow_id),
-            "head_sha": self.manifest["c_sha"],
-            "head_branch": PINNED_BRANCH,
-            "path": PINNED_WORKFLOW_PATH,
-            "event": "workflow_dispatch",
-            "repository": {"id": int(PINNED_REPOSITORY_ID)},
-            "status": status,
-            "conclusion": conclusion,
-        }
+    def test_rnr_5_mode_mismatch(self):
+        payload = {"inputs": {"mode": "synthetic", "evidence_commit": "a" * 40}}
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_rnr_5(payload)
+        self.assertIn("RNR-5", str(ctx.exception))
 
-    def approve(self):
-        self.obs["approvals"] = [
+    def test_rnr_5_evidence_commit_invalid(self):
+        payload = {"inputs": {"mode": "strict-chain", "evidence_commit": "not-a-sha"}}
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_rnr_5(payload)
+        self.assertIn("RNR-5", str(ctx.exception))
+
+    def test_rep_1_private_repo(self):
+        repo = get_repo_fixture()
+        repo["private"] = True
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_rep_1(repo)
+        self.assertIn("REP-1", str(ctx.exception))
+
+    def test_run_1_not_in_progress(self):
+        run = get_strict_run_in_progress_fixture()
+        run["status"] = "completed"
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_run_1(run, run["head_sha"])
+        self.assertIn("RUN-1", str(ctx.exception))
+
+    def test_job_1_workflow_name_mismatch(self):
+        job = deepcopy(load_fixture("job_128575084391.json"))
+        job["workflow_name"] = "Wrong Workflow Name"
+        job["run_id"] = "100"
+        job["run_attempt"] = "1"
+        job["name"] = JOB_NAME_STRICT
+        job["head_sha"] = "c" * 40
+        job["status"] = "in_progress"
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_job_1(job, "100", JOB_NAME_STRICT, "c" * 40)
+        self.assertIn("JOB-1", str(ctx.exception))
+
+    def test_job_2_missing_deployment(self):
+        check_run = deepcopy(load_fixture("check_run_97854822865.json"))
+        check_run["deployment"] = None
+        dep = deepcopy(load_fixture("deployment_6086087244.json"))
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_job_2(check_run, dep, "100", "200", "c" * 40)
+        self.assertIn("JOB-2", str(ctx.exception))
+
+    def test_job_3_unskipped_extra_job(self):
+        jobs = [
+            {"id": 1, "name": JOB_NAME_PREPARE, "status": "completed", "conclusion": "success"},
+            {"id": 2, "name": JOB_NAME_STRICT, "status": "in_progress", "conclusion": None},
+            {"id": 3, "name": "Extra Job", "status": "completed", "conclusion": "success"},
+        ]
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_job_3(jobs, "1", "2")
+        self.assertIn("JOB-3", str(ctx.exception))
+
+    def test_env_1_admin_bypass_true(self):
+        env = get_environment_fixture()
+        env["can_admins_bypass"] = True
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_env_1(env)
+        self.assertIn("ENV-1", str(ctx.exception))
+
+    def test_env_2_wrong_branch_policy(self):
+        policies = [{"type": "branch", "name": "wrong-branch"}]
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_env_2(policies)
+        self.assertIn("ENV-2", str(ctx.exception))
+
+    def test_brn_1_wrong_head(self):
+        branch = get_branch_deploy_fixture()
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_brn_1(branch, "wrong_sha" * 4)
+        self.assertIn("BRN-1", str(ctx.exception))
+
+    def test_brn_2_missing_rules(self):
+        rules = [{"type": "deletion", "ruleset_source_type": "Repository", "ruleset_source": PINNED_REPOSITORY, "ruleset_id": "1"}]
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_brn_2(rules, require_active=True)
+        self.assertIn("BRN-2", str(ctx.exception))
+
+    def test_src_1_closed_pr(self):
+        pr = get_pull_147_fixture()
+        pr["state"] = "closed"
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_src_1(pr)
+        self.assertIn("SRC-1", str(ctx.exception))
+
+    def test_src_2_pw_count_mismatch(self):
+        compare = deepcopy(get_compare_pw_fixture())
+        compare["files"] = compare["files"][:10]
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_src_2(compare)
+        self.assertIn("SRC-2", str(ctx.exception))
+
+    def test_src_3_wh_files_mismatch(self):
+        compare = deepcopy(get_compare_wh_fixture())
+        compare["files"].append({"filename": "extra_file.py", "status": "added"})
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_src_3(compare)
+        self.assertIn("SRC-3", str(ctx.exception))
+
+    def test_har_1_harness_conclusion(self):
+        run = deepcopy(load_fixture("run_42429518284.json"))
+        job = deepcopy(load_fixture("job_128575084391.json"))
+        run["conclusion"] = "failure"
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_har_1_2(run, job)
+        self.assertIn("HAR-1", str(ctx.exception))
+
+    def test_har_3_artifact_digest(self):
+        art = deepcopy(load_fixture("artifact_13600255503.json"))
+        art["digest"] = "sha256:" + "0" * 64
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_har_3(art)
+        self.assertIn("HAR-3", str(ctx.exception))
+
+    def test_har_4_blob_sha(self):
+        contents = deepcopy(load_fixture("contents_harness_audit_zip.json"))
+        blob = deepcopy(load_fixture("blob_95962d09.json"))
+        contents["sha"] = "wrong_sha"
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_har_4(contents, blob)
+        self.assertIn("HAR-4", str(ctx.exception))
+
+    def test_har_5_download_mismatch(self):
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_har_5(b"wrong bytes", b"preserved bytes", False)
+        self.assertIn("HAR-5", str(ctx.exception))
+
+    def test_har_6_summary_status(self):
+        # Create a zip with tampered summary member
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr(HARNESS_SUMMARY_MEMBER, b'{"status":"FAIL","w_sha":"5a3770e96fb12099c4ce9dc3b21895de07dd4cd8","p1_sha":"180f14f91c829b25362a5ed34b20847f3ac2db77"}')
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_har_6(buf.getvalue())
+        self.assertIn("HAR-6", str(ctx.exception))
+
+    def test_val_1_run_not_success(self):
+        run = deepcopy(load_fixture("run_42086795082.json"))
+        run["workflow_id"] = PINNED_WORKFLOW_ID
+        run["head_branch"] = PINNED_DEPLOY_BRANCH
+        run["head_sha"] = "c" * 40
+        run["event"] = "push"
+        run["conclusion"] = "failure"
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_val_1([run], "c" * 40)
+        self.assertIn("VAL-1", str(ctx.exception))
+
+    def test_val_1b_unskipped_job_failed(self):
+        runs = [
             {
-                "state": "approved",
-                "user": {"id": int(PINNED_REVIEWER_ID), "type": "User"},
-                "comment": APPROVAL_COMMENT_PREFIX + digest(canonical(self.manifest)),
-                "environments": [{"id": int(PINNED_ENVIRONMENT_ID), "name": PINNED_ENVIRONMENT_NAME}],
+                "id": "1",
+                "status": "completed",
+                "conclusion": "failure",
+                "_controller_proof_job": {"name": "Controller synthetic and validation proofs (macOS 15)", "conclusion": "failure"},
             }
         ]
-
-    def check(self):
-        return verify_candidate(canonical(self.manifest), self.harness_bytes, self.audit_bytes, self.obs)
-
-    def test_valid_candidate_returns_verified_authorization(self):
-        auth = self.check()
-        self.assertIsInstance(auth, VerifiedAuthorization)
-        self.assertTrue(auth.is_authorized)
-        self.assertEqual(auth.manifest_digest, digest(canonical(self.manifest)))
-        self.assertEqual(auth.environment_id, PINNED_ENVIRONMENT_ID)
-        self.assertEqual(auth.reviewer_id, PINNED_REVIEWER_ID)
-        self.assertEqual(auth.strict_ref, PINNED_REF)
-        self.assertEqual(auth.p_sha, PINNED_P_SHA)
-        self.assertEqual(auth.w_sha, PINNED_W_SHA)
-
-    def test_verified_authorization_is_frozen_and_immutable(self):
-        auth = self.check()
-        with self.assertRaises(AttributeError):
-            auth.is_authorized = False  # type: ignore
-        with self.assertRaises(AttributeError):
-            auth.p_sha = "0" * 40  # type: ignore
-        with self.assertRaises(AttributeError):
-            auth.manifest_digest = "tampered"  # type: ignore
-
-    def test_rejects_stale_p1_sha(self):
-        # Old P1: 626463375298d357ffcb3223059f4d3adce6fb10 must be strictly refused
-        stale_p = "626463375298d357ffcb3223059f4d3adce6fb10"
-        self.manifest["p_sha"] = stale_p
-        self.obs["context"]["p_sha"] = stale_p
-        self.approve()
         with self.assertRaises(AuthorizationError) as ctx:
-            self.check()
-        self.assertIn("PR #147 head required", str(ctx.exception))
+            check_val_1b(runs)
+        self.assertIn("VAL-1b", str(ctx.exception))
 
-    def test_environment_and_reviewer_negative_controls(self):
-        changes = [
-            ("bypass enabled", lambda o: o["environment"].update(can_admins_bypass=True)),
-            ("bypass missing", lambda o: o["environment"].pop("can_admins_bypass")),
-            ("wrong reviewer", lambda o: o["environment"]["protection_rules"][0]["reviewers"][0]["reviewer"].update(id=1)),
-            ("self review forbidden", lambda o: o["environment"]["protection_rules"][0].update(prevent_self_review=True)),
-            ("unprotected environment", lambda o: o["environment"].update(protection_rules=[])),
-            ("wrong environment id", lambda o: o["environment"].update(id=1)),
-            ("wrong environment name", lambda o: o["environment"].update(name="wrong-env")),
-            ("wrong approval identity", lambda o: o["approvals"][0]["user"].update(id=1)),
-            ("wrong account type", lambda o: o["approvals"][0]["user"].update(type="Bot")),
-            ("wrong approval digest", lambda o: o["approvals"][0].update(comment=APPROVAL_COMMENT_PREFIX + "0" * 64)),
-            ("empty approval comment", lambda o: o["approvals"][0].update(comment="")),
-            ("empty approval", lambda o: o.update(approvals=[])),
-            ("ambiguous reviews", lambda o: o["approvals"].append(copy.deepcopy(o["approvals"][0]))),
-            ("rejection", lambda o: o["approvals"][0].update(state="rejected")),
-            ("wrong approval environment id", lambda o: o["approvals"][0]["environments"][0].update(id=1)),
-            ("wrong approval environment name", lambda o: o["approvals"][0]["environments"][0].update(name="other")),
-            ("extra environment job", lambda o: o.update(environment_job_count=2)),
-            ("zero environment jobs", lambda o: o.update(environment_job_count=0)),
-            ("private repo", lambda o: o["repository"].update(private=True)),
-            ("wrong repo id", lambda o: o["repository"].update(id=999)),
-            ("wrong branch policy", lambda o: o["selected_branch_policies"][0].update(name="*")),
-            ("tag policy", lambda o: o["selected_branch_policies"][0].update(type="tag")),
-            ("missing policy type", lambda o: o["selected_branch_policies"][0].pop("type")),
-            ("missing branch rule", lambda o: o["environment"]["protection_rules"].pop()),
-            ("duplicate reviewer rule", lambda o: o["environment"]["protection_rules"].__setitem__(1, copy.deepcopy(o["environment"]["protection_rules"][0]))),
-            ("unknown rule", lambda o: o["environment"]["protection_rules"].append({"type": "wait_timer"})),
-            ("extra policy", lambda o: o["selected_branch_policies"].append({"name": "*", "type": "branch"})),
-            ("protected branches only", lambda o: o["environment"].update(deployment_branch_policy={"protected_branches": True, "custom_branch_policies": False})),
+    def test_val_2_job_set_missing(self):
+        jobs = [
+            {"name": "Bootstrap strict supervisor bundle", "status": "completed", "conclusion": "success"}
         ]
-        baseline = copy.deepcopy(self.obs)
-        for label, mutate in changes:
-            with self.subTest(label=label):
-                self.obs = copy.deepcopy(baseline)
-                mutate(self.obs)
-                with self.assertRaises(AuthorizationError):
-                    self.check()
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_val_2(jobs)
+        self.assertIn("VAL-2", str(ctx.exception))
 
-    def test_strict_run_replay_prevention_controls(self):
-        # Strict run must be in_progress on attempt 1, matching workflow_dispatch and pinned branch
-        replays = [
-            ("completed run replay", lambda o: o["strict_run"].update(status="completed")),
-            ("wrong attempt", lambda o: o["strict_run"].update(run_attempt=2)),
-            ("wrong head branch", lambda o: o["strict_run"].update(head_branch="master")),
-            ("wrong event", lambda o: o["strict_run"].update(event="push")),
-            ("wrong path", lambda o: o["strict_run"].update(path=".github/workflows/other.yml")),
-            ("wrong head sha", lambda o: o["strict_run"].update(head_sha="0" * 40)),
+    def test_val_3_artifact_missing(self):
+        arts = [
+            {"id": "1", "name": "remote-strict-validation-evidence", "digest": "sha256:" + "a" * 64, "expired": False}
         ]
-        baseline = copy.deepcopy(self.obs)
-        for label, mutate in replays:
-            with self.subTest(label=label):
-                self.obs = copy.deepcopy(baseline)
-                mutate(self.obs)
-                with self.assertRaises(AuthorizationError):
-                    self.check()
-
-    def test_run_id_isolation_controls(self):
-        # Audit run ID cannot match harness run ID
-        self.manifest["audit"]["run_id"] = self.manifest["harness"]["run_id"]
-        self.approve()
         with self.assertRaises(AuthorizationError) as ctx:
-            self.check()
-        self.assertIn("distinct", str(ctx.exception))
+            check_val_3(arts)
+        self.assertIn("VAL-3", str(ctx.exception))
 
-        # Harness run ID cannot match strict run ID
-        self.setUp()
-        self.manifest["harness"]["run_id"] = self.manifest["strict_run_id"]
-        self.approve()
+    def test_val_4_summary_dist_mismatch(self):
+        summary_raw = canonical({
+            "schema": SCHEMA_RAIL_SUMMARY,
+            "status": "PASS",
+            "c_sha": "c" * 40,
+            "run_id": "100",
+            "dist": {"file1": "0" * 64},
+            "actions": PINNED_ACTIONS,
+        })
+        rehearsal_raw = canonical({
+            "schema": SCHEMA_REHEARSAL,
+            "status": "REHEARSAL_PASS",
+            "c_sha": "c" * 40,
+            "run_id": "100",
+        })
+        bundle_map = {"file1": "1" * 64}
         with self.assertRaises(AuthorizationError) as ctx:
-            self.check()
-        self.assertIn("distinct", str(ctx.exception))
+            check_val_4(summary_raw, rehearsal_raw, bundle_map, "100", "c" * 40)
+        self.assertIn("VAL-4", str(ctx.exception))
 
-        # Audit run ID cannot match strict run ID
-        self.setUp()
-        self.manifest["audit"]["run_id"] = self.manifest["strict_run_id"]
-        self.approve()
+    def test_aud_1_missing_commit_parent(self):
+        commit = {"parents": [{"sha": "wrong_parent"}]}
         with self.assertRaises(AuthorizationError) as ctx:
-            self.check()
-        self.assertIn("distinct", str(ctx.exception))
+            check_aud_1(commit, "c" * 40)
+        self.assertIn("AUD-1", str(ctx.exception))
 
-    def test_bundle_drift_rejected(self):
-        # Manifest bundle_sha256 mismatch with actual runtime context
-        self.obs["context"]["bundle_sha256"] = "e" * 64
+    def test_aud_2_missing_file(self):
+        files = {"audit.json": b"{}", "audit.md": b"md"}
         with self.assertRaises(AuthorizationError) as ctx:
-            self.check()
-        self.assertIn("bundle_sha256", str(ctx.exception))
+            check_aud_2(files)
+        self.assertIn("AUD-2", str(ctx.exception))
 
-    def test_artifact_provenance_binding_controls(self):
-        # 1. Expired harness artifact rejected
-        self.obs["artifact_bindings"]["harness"]["expired"] = True
-        with self.assertRaises(AuthorizationError):
-            self.check()
-        self.obs["artifact_bindings"]["harness"]["expired"] = False
-
-        # 2. Expired audit artifact rejected
-        self.obs["artifact_bindings"]["audit"]["expired"] = True
-        with self.assertRaises(AuthorizationError):
-            self.check()
-        self.obs["artifact_bindings"]["audit"]["expired"] = False
-
-        # 3. Artifact associated with wrong run ID
-        self.obs["artifact_bindings"]["harness"]["run_id"] = "999"
-        with self.assertRaises(AuthorizationError):
-            self.check()
-        self.obs["artifact_bindings"]["harness"]["run_id"] = "24"
-
-        # 4. Artifact associated with wrong commit SHA
-        self.obs["artifact_bindings"]["audit"]["head_sha"] = "0" * 40
-        with self.assertRaises(AuthorizationError):
-            self.check()
-
-    def test_producer_independence_and_malicious_producer_controls(self):
-        # 1. Audit producer identical to harness producer
-        audit_copy = copy.deepcopy(self.audit_dict)
-        audit_copy["producer"] = copy.deepcopy(self.harness_dict["producer"])
-        bad_audit_bytes = canonical(audit_copy)
-        m = copy.deepcopy(self.manifest)
-        m["audit"]["sha256"] = digest(bad_audit_bytes)
-        self.obs["approvals"][0]["comment"] = APPROVAL_COMMENT_PREFIX + digest(canonical(m))
-        with self.assertRaises(AuthorizationError) as ctx:
-            verify_candidate(canonical(m), self.harness_bytes, bad_audit_bytes, self.obs)
-        self.assertIn("independent", str(ctx.exception))
-
-        # 2. Audit producer run ID same as harness producer run ID
-        audit_copy = copy.deepcopy(self.audit_dict)
-        audit_copy["producer"]["run_id"] = self.harness_dict["producer"]["run_id"]
-        bad_audit_bytes = canonical(audit_copy)
-        m = copy.deepcopy(self.manifest)
-        m["audit"]["sha256"] = digest(bad_audit_bytes)
-        self.obs["approvals"][0]["comment"] = APPROVAL_COMMENT_PREFIX + digest(canonical(m))
-        with self.assertRaises(AuthorizationError) as ctx:
-            verify_candidate(canonical(m), self.harness_bytes, bad_audit_bytes, self.obs)
-        self.assertIn("independent", str(ctx.exception))
-
-        # 3. Malicious / untrusted producer type
-        audit_copy = copy.deepcopy(self.audit_dict)
-        audit_copy["producer"]["type"] = "self-attested-actor"
-        bad_audit_bytes = canonical(audit_copy)
-        m = copy.deepcopy(self.manifest)
-        m["audit"]["sha256"] = digest(bad_audit_bytes)
-        self.obs["approvals"][0]["comment"] = APPROVAL_COMMENT_PREFIX + digest(canonical(m))
-        with self.assertRaises(AuthorizationError) as ctx:
-            verify_candidate(canonical(m), self.harness_bytes, bad_audit_bytes, self.obs)
-        self.assertIn("untrusted audit producer type", str(ctx.exception))
-
-        # 4. Harness verdict not strictly PASS (rejects SUCCESS, GO, etc.)
-        for bad_verdict in ("SUCCESS", "GO", "OK", "FAIL"):
-            harness_copy = copy.deepcopy(self.harness_dict)
-            harness_copy["verdict"] = bad_verdict
-            bad_harness_bytes = canonical(harness_copy)
-            m = copy.deepcopy(self.manifest)
-            m["harness"]["sha256"] = digest(bad_harness_bytes)
-            self.obs["approvals"][0]["comment"] = APPROVAL_COMMENT_PREFIX + digest(canonical(m))
-            with self.assertRaises(AuthorizationError):
-                verify_candidate(canonical(m), bad_harness_bytes, self.audit_bytes, self.obs)
-
-        # 5. Audit verdict not strictly GO (rejects PASS, SUCCESS, NO-GO)
-        for bad_verdict in ("PASS", "SUCCESS", "NO-GO", "FAIL"):
-            audit_copy = copy.deepcopy(self.audit_dict)
-            audit_copy["verdict"] = bad_verdict
-            bad_audit_bytes = canonical(audit_copy)
-            m = copy.deepcopy(self.manifest)
-            m["audit"]["sha256"] = digest(bad_audit_bytes)
-            self.obs["approvals"][0]["comment"] = APPROVAL_COMMENT_PREFIX + digest(canonical(m))
-            with self.assertRaises(AuthorizationError):
-                verify_candidate(canonical(m), self.harness_bytes, bad_audit_bytes, self.obs)
-
-    def test_audit_implemented_change_rejected(self):
-        audit_copy = copy.deepcopy(self.audit_dict)
-        audit_copy["model_disclosure"]["implemented_change"] = True
-        bad_bytes = canonical(audit_copy)
-        m = copy.deepcopy(self.manifest)
-        m["audit"]["sha256"] = digest(bad_bytes)
-        self.obs["approvals"][0]["comment"] = APPROVAL_COMMENT_PREFIX + digest(canonical(m))
-        with self.assertRaises(AuthorizationError) as ctx:
-            verify_candidate(canonical(m), self.harness_bytes, bad_bytes, self.obs)
-        self.assertIn("must not have implemented the change", str(ctx.exception))
-
-    def test_audit_missing_model_disclosure_rejected(self):
-        audit_copy = copy.deepcopy(self.audit_dict)
-        audit_copy["model_disclosure"]["model_involved"] = False
-        bad_bytes = canonical(audit_copy)
-        m = copy.deepcopy(self.manifest)
-        m["audit"]["sha256"] = digest(bad_bytes)
-        self.obs["approvals"][0]["comment"] = APPROVAL_COMMENT_PREFIX + digest(canonical(m))
-        with self.assertRaises(AuthorizationError) as ctx:
-            verify_candidate(canonical(m), self.harness_bytes, bad_bytes, self.obs)
-        self.assertIn("disclose model involvement", str(ctx.exception))
-
-    def test_audit_report_and_supporting_receipts_controls(self):
-        # 1. Missing report
-        audit_copy = copy.deepcopy(self.audit_dict)
-        del audit_copy["report"]
-        bad_bytes = canonical(audit_copy)
-        m = copy.deepcopy(self.manifest)
-        m["audit"]["sha256"] = digest(bad_bytes)
-        self.obs["approvals"][0]["comment"] = APPROVAL_COMMENT_PREFIX + digest(canonical(m))
-        with self.assertRaises(AuthorizationError):
-            verify_candidate(canonical(m), self.harness_bytes, bad_bytes, self.obs)
-
-        # 2. Non-GO report verdict
-        audit_copy = copy.deepcopy(self.audit_dict)
-        audit_copy["report"]["verdict"] = "NO-GO"
-        bad_bytes = canonical(audit_copy)
-        m = copy.deepcopy(self.manifest)
-        m["audit"]["sha256"] = digest(bad_bytes)
-        self.obs["approvals"][0]["comment"] = APPROVAL_COMMENT_PREFIX + digest(canonical(m))
-        with self.assertRaises(AuthorizationError):
-            verify_candidate(canonical(m), self.harness_bytes, bad_bytes, self.obs)
-
-        # 3. Empty supporting receipts
-        audit_copy = copy.deepcopy(self.audit_dict)
-        audit_copy["supporting_receipts"] = []
-        bad_bytes = canonical(audit_copy)
-        m = copy.deepcopy(self.manifest)
-        m["audit"]["sha256"] = digest(bad_bytes)
-        self.obs["approvals"][0]["comment"] = APPROVAL_COMMENT_PREFIX + digest(canonical(m))
-        with self.assertRaises(AuthorizationError):
-            verify_candidate(canonical(m), self.harness_bytes, bad_bytes, self.obs)
-
-    def test_ipc_ack_tampered_digest_rejected(self):
-        valid_ack = {
-            "protocol_version": 1,
-            "event": "authorization-ack",
-            "request_id": "auth-req-1",
-            "invocation_id": "strict-21-1",
-            "verified": True,
-            "manifest_raw": canonical(self.manifest).decode("utf-8"),
-            "manifest_digest": digest(canonical(self.manifest)),
-            "harness_raw": self.harness_bytes.decode("utf-8"),
-            "audit_raw": self.audit_bytes.decode("utf-8"),
-            "p_sha": self.p_sha,
-            "w_sha": self.w_sha,
-            "c_sha": self.c_sha,
+    def test_aud_3_non_go_verdict(self):
+        audit_json = {
+            "schema": SCHEMA_AUDIT,
+            "verdict": "NO-GO",
+            "repository_id": PINNED_REPOSITORY_ID,
+            "c_sha": "c" * 40,
+            "p_sha": PINNED_P_SHA,
+            "w_sha": PINNED_W_SHA,
+            "h_sha": PINNED_H_SHA,
+            "validation": {"run_id": "100", "artifacts": {}},
+            "harness": {"run_id": HARNESS_RUN_ID, "artifact_id": HARNESS_ARTIFACT_ID, "digest": HARNESS_ARTIFACT_DIGEST},
+            "report_sha256": "0" * 64,
+            "census_review_sha256": "0" * 64,
+            "open_blocking_findings": [],
+            "s6_signing_ruling": "audited",
+            "self_declared": {"did_not_implement": True},
         }
-        # Tampered manifest digest
-        tampered_ack = copy.deepcopy(valid_ack)
-        tampered_ack["manifest_digest"] = "0" * 64
         with self.assertRaises(AuthorizationError) as ctx:
-            load_verified_authorization_from_ipc(tampered_ack, self.p_sha, self.w_sha, self.c_sha)
+            check_aud_3(audit_json, "c" * 40, "100", {}, "0" * 64, "0" * 64)
+        self.assertIn("AUD-3", str(ctx.exception))
+
+    def test_man_1_created_at_outside_window(self):
+        art = {
+            "id": "10",
+            "name": ARTIFACT_NAME_MANIFEST,
+            "workflow_run": {"id": "100", "head_sha": "c" * 40},
+            "expired": False,
+            "digest": "sha256:" + "a" * 64,
+            "created_at": "2026-11-06T00:10:00Z",
+        }
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_man_1([art], "10", "100", "c" * 40, "2026-11-06T00:20:00Z", "2026-11-06T00:30:00Z")
+        self.assertIn("MAN-1", str(ctx.exception))
+
+    def test_man_2_digest_mismatch(self):
+        zip_bytes = b"fake-zip"
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_man_2(zip_bytes, "sha256:" + "0" * 64, "0" * 64)
+        self.assertIn("MAN-2", str(ctx.exception))
+
+    def test_man_3_field_tampering(self):
+        m = {"schema": SCHEMA_MANIFEST, "sources": {"c_sha": "a" * 40}}
+        live = {"sources.c_sha": "b" * 40}
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_man_3(m, live)
+        self.assertIn("MAN-3", str(ctx.exception))
+
+    def test_apr_1_wrong_comment(self):
+        apprs = [
+            {
+                "state": "approved",
+                "user": {"id": 43164, "login": "jwaldrip", "type": "User"},
+                "environments": [{"id": 26584191206, "name": "strict-proof"}],
+                "comment": "wrong comment",
+            }
+        ]
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_apr_1(apprs, "0" * 64)
+        self.assertIn("APR-1", str(ctx.exception))
+
+
+class CanonicalJSONTests(unittest.TestCase):
+    def test_canonical_roundtrip(self):
+        data = {"b": 2, "a": 1, "c": [3, 4]}
+        raw = canonical(data)
+        self.assertEqual(raw, b'{"a":1,"b":2,"c":[3,4]}')
+        parsed = parse(raw)
+        self.assertEqual(parsed, data)
+
+    def test_reject_duplicate_keys(self):
+        raw = b'{"a":1,"a":2}'
+        with self.assertRaises(AuthorizationError) as ctx:
+            parse(raw)
+        self.assertIn("duplicate JSON key", str(ctx.exception))
+
+    def test_reject_noncanonical_spacing(self):
+        raw = b'{"a": 1, "b": 2}'
+        with self.assertRaises(AuthorizationError) as ctx:
+            parse(raw)
+        self.assertIn("noncanonical JSON", str(ctx.exception))
+
+
+class StrictManifestBindingTests(unittest.TestCase):
+    def setUp(self):
+        self.manifest_data = {
+            "schema": SCHEMA_MANIFEST,
+            "repository": {"id": PINNED_REPOSITORY_ID, "full_name": PINNED_REPOSITORY},
+            "strict_run": {"id": "42086795082", "attempt": "1"},
+            "sources": {
+                "c_sha": "c" * 40,
+                "p": {"sha": PINNED_P_SHA},
+                "w": {"sha": PINNED_W_SHA},
+            },
+        }
+        self.manifest_raw = canonical(self.manifest_data)
+        self.manifest_sha = digest(self.manifest_raw)
+
+    def test_binding_success(self):
+        r, w = os.pipe()
+        os.write(w, self.manifest_raw)
+        os.close(w)
+
+        binding = read_strict_manifest_binding(
+            r,
+            self.manifest_sha,
+            repository=PINNED_REPOSITORY,
+            run_id="42086795082",
+            run_attempt="1",
+            p_sha=PINNED_P_SHA,
+            w_sha=PINNED_W_SHA,
+            c_sha="c" * 40,
+        )
+        self.assertEqual(binding.manifest_sha256, self.manifest_sha)
+        self.assertEqual(binding.strict_run_id, "42086795082")
+        self.assertEqual(binding.strict_run_attempt, "1")
+        self.assertEqual(binding.c_sha, "c" * 40)
+        self.assertEqual(binding.p_sha, PINNED_P_SHA)
+        self.assertEqual(binding.w_sha, PINNED_W_SHA)
+
+    def test_binding_digest_mismatch(self):
+        r, w = os.pipe()
+        os.write(w, self.manifest_raw)
+        os.close(w)
+
+        with self.assertRaises(AuthorizationError) as ctx:
+            read_strict_manifest_binding(
+                r,
+                "0" * 64,
+                repository=PINNED_REPOSITORY,
+                run_id="42086795082",
+                run_attempt="1",
+                p_sha=PINNED_P_SHA,
+                w_sha=PINNED_W_SHA,
+                c_sha="c" * 40,
+            )
         self.assertIn("manifest digest mismatch", str(ctx.exception))
 
-        # Tampered harness raw bytes
-        tampered_harness_ack = copy.deepcopy(valid_ack)
-        tampered_harness_ack["harness_raw"] = '{"tampered": true}'
+    def test_binding_p_sha_mismatch(self):
+        r, w = os.pipe()
+        os.write(w, self.manifest_raw)
+        os.close(w)
+
         with self.assertRaises(AuthorizationError) as ctx:
-            load_verified_authorization_from_ipc(tampered_harness_ack, self.p_sha, self.w_sha, self.c_sha)
-        self.assertIn("harness bytes digest mismatch", str(ctx.exception))
-
-    def test_ipc_handoff_and_reconstruction(self):
-        auth = self.check()
-        valid_ack = {
-            "protocol_version": 1,
-            "event": "authorization-ack",
-            "request_id": "auth-req-1",
-            "invocation_id": "strict-21-1",
-            "verified": True,
-            "manifest_raw": canonical(self.manifest).decode("utf-8"),
-            "manifest_digest": digest(canonical(self.manifest)),
-            "harness_raw": self.harness_bytes.decode("utf-8"),
-            "audit_raw": self.audit_bytes.decode("utf-8"),
-            "p_sha": self.p_sha,
-            "w_sha": self.w_sha,
-            "c_sha": self.c_sha,
-        }
-
-        reconstructed = load_verified_authorization_from_ipc(valid_ack, self.p_sha, self.w_sha, self.c_sha)
-        self.assertIsInstance(reconstructed, VerifiedAuthorization)
-        self.assertTrue(reconstructed.is_authorized)
-        self.assertEqual(reconstructed.manifest_digest, auth.manifest_digest)
-
-        # Refusal ACK fails closed
-        refused_ack = {
-            "protocol_version": 1,
-            "event": "authorization-ack",
-            "verified": False,
-            "error": "STRICT_MODE_AUTH_REFUSED",
-        }
-        with self.assertRaises(AuthorizationError):
-            load_verified_authorization_from_ipc(refused_ack, self.p_sha, self.w_sha, self.c_sha)
-
-        # Revision mismatch in ACK fails closed
-        bad_ack = copy.deepcopy(valid_ack)
-        bad_ack["p_sha"] = "0" * 40
-        with self.assertRaises(AuthorizationError):
-            load_verified_authorization_from_ipc(bad_ack, self.p_sha, self.w_sha, self.c_sha)
-
-    def test_harmless_effect_execution_and_refusal(self):
-        auth = self.check()
-        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
-            temp_path = tf.name
-
-        try:
-            receipt = execute_harmless_effect_if_authorized(auth, output_path=temp_path)
-            self.assertEqual(receipt["schema"], HARMLESS_EFFECT_SCHEMA)
-            self.assertEqual(receipt["status"], "PASS")
-            self.assertEqual(receipt["manifest_digest"], auth.manifest_digest)
-            self.assertEqual(receipt["p_sha"], auth.p_sha)
-            self.assertEqual(receipt["w_sha"], auth.w_sha)
-            self.assertEqual(receipt["c_sha"], auth.c_sha)
-            self.assertTrue(os.path.exists(temp_path))
-
-            with open(temp_path, "r", encoding="utf-8") as f:
-                saved = json.load(f)
-            self.assertEqual(saved["status"], "PASS")
-
-            # Refusal when auth is None or invalid
-            with self.assertRaises(StrictAuthorizationRefused):
-                execute_harmless_effect_if_authorized(None)
-        finally:
-            if os.path.exists(temp_path):
-                os.unlink(temp_path)
-
-    def test_check_strict_authorization_or_refuse_fails_closed_in_production(self):
-        # In real execution without authentic verified_auth, check_strict_authorization_or_refuse MUST raise
-        with self.assertRaises(StrictAuthorizationRefused) as ctx:
-            check_strict_authorization_or_refuse(self.p_sha, self.w_sha, self.c_sha)
-        msg = str(ctx.exception)
-        self.assertIn("STRICT_MODE_AUTH_REFUSED", msg)
-        self.assertIn("strict-proof", msg)
-        self.assertIn(PINNED_REVIEWER_ID, msg)
-        self.assertIn(str(AUTH_REFUSED_EXIT_CODE), msg)
-
-        # With authentic verified_auth, valid tuple succeeds
-        auth = self.check()
-        self.assertIsNone(check_strict_authorization_or_refuse(self.p_sha, self.w_sha, self.c_sha, verified_auth=auth))
-
-        # Tuple mismatch with verified_auth raises AuthorizationError
-        with self.assertRaises(AuthorizationError):
-            check_strict_authorization_or_refuse(self.p_sha, self.w_sha, "0" * 40, verified_auth=auth)
+            read_strict_manifest_binding(
+                r,
+                self.manifest_sha,
+                repository=PINNED_REPOSITORY,
+                run_id="42086795082",
+                run_attempt="1",
+                p_sha="wrong_p" * 5,
+                w_sha=PINNED_W_SHA,
+                c_sha="c" * 40,
+            )
+        self.assertIn("p_sha", str(ctx.exception))
 
 
-class LoopbackGitHubMockHandler(BaseHTTPRequestHandler):
-    """Real HTTP handler serving simulated GitHub API endpoints and artifact zip streams."""
-
-    routes = {}
-    artifact_zips = {}
-    faults = {}
-
-    def log_message(self, format, *args):
-        pass  # Suppress HTTP server stderr logs in test runs
-
-    def do_GET(self):
-        path = self.path.split("?")[0].lstrip("/")
-        auth_header = self.headers.get("Authorization", "")
-
-        # Verify Bearer token is provided
-        if not auth_header.startswith("Bearer "):
-            self.send_response(401)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(b'{"message":"Bad credentials"}')
-            return
-
-        # Check for simulated fault injection
-        if path in self.faults:
-            code, body = self.faults[path]
-            self.send_response(code)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(body.encode("utf-8") if isinstance(body, str) else body)
-            return
-
-        if path in self.artifact_zips:
-            zip_bytes = self.artifact_zips[path]
-            self.send_response(200)
-            self.send_header("Content-Type", "application/zip")
-            self.send_header("Content-Length", str(len(zip_bytes)))
-            self.end_headers()
-            self.wfile.write(zip_bytes)
-            return
-
-        if path in self.routes:
-            data = self.routes[path]
-            body = json.dumps(data).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-
-        self.send_response(404)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(b'{"message":"Not Found"}')
-
-
-class AuthenticatedGitHubVerifierLoopbackTests(unittest.TestCase):
-    """Hosted mirror tests for AuthenticatedGitHubVerifier using real loopback HTTP socket server.
-
-    Exercises actual HTTP wire requests, header authentication, status codes,
-    zip archive download/decompression, and error fail-closed handling.
-    """
+class LoopbackServerTests(unittest.TestCase):
+    """Test actual loopback HTTP servers verifying Bearer token and redirect stripping."""
 
     @classmethod
     def setUpClass(cls):
-        cls.server = HTTPServer(("127.0.0.1", 0), LoopbackGitHubMockHandler)
-        cls.port = cls.server.server_address[1]
-        cls.base_url = f"http://127.0.0.1:{cls.port}"
-        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
-        cls.thread.start()
+        cls.expected_token = "secret-test-token-12345"
+        cls.test_zip_payload = b"PK\x03\x04test-zip-payload-bytes"
+
+        # Storage server handler: must return 401 if Authorization header is present
+        class StorageHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.headers.get("Authorization"):
+                    self.send_response(401)
+                    self.end_headers()
+                    self.wfile.write(b"Authorization header forbidden on storage endpoint")
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "application/zip")
+                self.end_headers()
+                self.wfile.write(cls.test_zip_payload)
+
+            def log_message(self, format, *args):
+                pass
+
+        # API server handler: requires Bearer token, returns 302 to storage
+        class APIHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                auth = self.headers.get("Authorization", "")
+                if auth != f"Bearer {cls.expected_token}":
+                    self.send_response(401)
+                    self.end_headers()
+                    self.wfile.write(b"Unauthorized API call")
+                    return
+
+                if self.path.endswith("/zip"):
+                    storage_url = f"http://127.0.0.1:{cls.storage_port}/storage/artifact.zip"
+                    self.send_response(302)
+                    self.send_header("Location", storage_url)
+                    self.end_headers()
+                    return
+
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"status":"ok"}')
+
+            def log_message(self, format, *args):
+                pass
+
+        cls.storage_server = HTTPServer(("127.0.0.1", 0), StorageHandler)
+        cls.storage_port = cls.storage_server.server_port
+        cls.storage_thread = threading.Thread(target=cls.storage_server.serve_forever, daemon=True)
+        cls.storage_thread.start()
+
+        cls.api_server = HTTPServer(("127.0.0.1", 0), APIHandler)
+        cls.api_port = cls.api_server.server_port
+        cls.api_thread = threading.Thread(target=cls.api_server.serve_forever, daemon=True)
+        cls.api_thread.start()
 
     @classmethod
     def tearDownClass(cls):
-        cls.server.shutdown()
-        cls.server.server_close()
+        cls.api_server.shutdown()
+        cls.storage_server.shutdown()
 
-    def setUp(self):
-        LoopbackGitHubMockHandler.routes.clear()
-        LoopbackGitHubMockHandler.artifact_zips.clear()
-        LoopbackGitHubMockHandler.faults.clear()
-
-        self.token = "valid-ci-token-test-secret"
-        self.verifier = AuthenticatedGitHubVerifier(
-            token=self.token,
-            base_url=self.base_url,
-            repository=PINNED_REPOSITORY,
-            allow_loopback=True,
+    def test_loopback_download_zip_strips_auth_header(self):
+        client = GitHubAPIClient(
+            token=self.expected_token,
+            base_url=f"http://127.0.0.1:{self.api_port}",
         )
+        content = client.download_artifact_zip("test_artifact_id")
+        self.assertEqual(content, self.test_zip_payload)
 
-        self.p_sha = PINNED_P_SHA
-        self.w_sha = PINNED_W_SHA
-        self.c_sha = "c" * 40
-
-        self.harness_dict = {
-            "schema": HARNESS_SCHEMA,
-            "verdict": "PASS",
-            "repository_id": PINNED_REPOSITORY_ID,
-            "p_sha": self.p_sha,
-            "w_sha": self.w_sha,
-            "c_sha": self.c_sha,
-            "run_id": "24",
-            "run_attempt": "1",
-            "workflow_id": "20",
-            "producer": {
-                "type": "workflow",
-                "identity": "iyi-strict-harness-gate",
-                "run_id": "24",
-                "workflow_id": "20",
-                "job_id": "101",
-            },
-        }
-        self.harness_bytes = canonical(self.harness_dict)
-
-        # Embedded independent audit evidence (produced by independent reviewer/auditor)
-        self.audit_dict = {
-            "schema": AUDIT_SCHEMA,
-            "verdict": "GO",
-            "repository_id": PINNED_REPOSITORY_ID,
-            "p_sha": self.p_sha,
-            "w_sha": self.w_sha,
-            "c_sha": self.c_sha,
-            "harness_sha256": digest(self.harness_bytes),
-            "harness_run_id": "24",
-            "harness_run_attempt": "1",
-            "harness_workflow_id": "20",
-            "model_disclosure": {
-                "model_involved": True,
-                "implemented_change": False,
-                "declaration": "Independent agent reviewer audit; cryptographic human approval via GitHub environment deployment approval.",
-            },
-            "report": {
-                "summary": "Independent review of candidate C against P and W",
-                "verdict": "GO",
-                "findings": ["No unauthorized mutations observed", "Harness validation verified"],
-            },
-            "supporting_receipts": [
-                {"receipt_id": "rec-001", "type": "p_w_c_tuple_proof", "status": "VERIFIED"},
-                {"receipt_id": "rec-002", "type": "negative_controls_proof", "status": "VERIFIED"},
-            ],
-            "producer": {
-                "type": "reviewer-agent",
-                "identity": "independent-security-reviewer-agent",
-                "run_id": "26",
-                "workflow_id": "27",
-                "job_id": "201",
-            },
-        }
-        self.audit_bytes = canonical(self.audit_dict)
-
-        # Build real ZIP archives for artifacts
-        self.harness_zip = self._create_zip("validation.json", self.harness_bytes)
-        self.audit_zip = self._create_zip("audit.json", self.audit_bytes)
-
-        self.manifest = {
-            "schema": MANIFEST_SCHEMA,
-            "repository": PINNED_REPOSITORY,
-            "repository_id": PINNED_REPOSITORY_ID,
-            "p_sha": self.p_sha,
-            "w_sha": self.w_sha,
-            "c_sha": self.c_sha,
-            "workflow_path": PINNED_WORKFLOW_PATH,
-            "workflow_id": "20",
-            "strict_run_id": "21",
-            "strict_run_attempt": "1",
-            "strict_ref": PINNED_REF,
-            "environment_id": PINNED_ENVIRONMENT_ID,
-            "bundle_sha256": "d" * 64,
-            "harness": {
-                "artifact_id": "23",
-                "member": "validation.json",
-                "sha256": digest(self.harness_bytes),
-                "run_id": "24",
-                "run_attempt": "1",
-                "workflow_id": "20",
-            },
-            "audit": {
-                "artifact_id": "25",
-                "member": "audit.json",
-                "sha256": digest(self.audit_bytes),
-                "run_id": "26",
-                "run_attempt": "1",
-                "workflow_id": "27",
-            },
-        }
-        self.manifest_bytes = canonical(self.manifest)
-
-        self.runtime_context = {
-            k: self.manifest[k]
-            for k in (
-                "repository",
-                "repository_id",
-                "p_sha",
-                "w_sha",
-                "c_sha",
-                "workflow_path",
-                "workflow_id",
-                "strict_run_id",
-                "strict_run_attempt",
-                "strict_ref",
-                "environment_id",
-                "bundle_sha256",
-            )
-        }
-        self.runtime_context["workflow_sha"] = self.c_sha
-
-        # Configure mock API routes
-        LoopbackGitHubMockHandler.routes.update({
-            f"repos/{PINNED_REPOSITORY}": {
-                "id": int(PINNED_REPOSITORY_ID),
-                "full_name": PINNED_REPOSITORY,
-                "private": False,
-            },
-            f"repos/{PINNED_REPOSITORY}/environments/{PINNED_ENVIRONMENT_NAME}": {
-                "id": int(PINNED_ENVIRONMENT_ID),
-                "name": PINNED_ENVIRONMENT_NAME,
-                "can_admins_bypass": False,
-                "deployment_branch_policy": {"protected_branches": False, "custom_branch_policies": True},
-                "protection_rules": [
-                    {
-                        "type": "required_reviewers",
-                        "prevent_self_review": False,
-                        "reviewers": [{"type": "User", "reviewer": {"id": int(PINNED_REVIEWER_ID)}}],
-                    },
-                    {"type": "branch_policy"},
-                ],
-            },
-            f"repos/{PINNED_REPOSITORY}/environments/{PINNED_ENVIRONMENT_NAME}/deployment-branch-policies": {
-                "total_count": 1,
-                "branch_policies": [{"name": PINNED_BRANCH, "type": "branch", "id": 65877824}],
-            },
-            f"repos/{PINNED_REPOSITORY}/actions/runs/21": {
-                "id": 21,
-                "run_attempt": 1,
-                "workflow_id": 20,
-                "head_sha": self.c_sha,
-                "head_branch": PINNED_BRANCH,
-                "path": PINNED_WORKFLOW_PATH,
-                "event": "workflow_dispatch",
-                "repository": {"id": int(PINNED_REPOSITORY_ID)},
-                "status": "in_progress",
-            },
-            f"repos/{PINNED_REPOSITORY}/actions/runs/24": {
-                "id": 24,
-                "run_attempt": 1,
-                "workflow_id": 20,
-                "head_sha": self.c_sha,
-                "head_branch": PINNED_BRANCH,
-                "path": PINNED_WORKFLOW_PATH,
-                "event": "workflow_dispatch",
-                "repository": {"id": int(PINNED_REPOSITORY_ID)},
-                "status": "completed",
-                "conclusion": "success",
-            },
-            f"repos/{PINNED_REPOSITORY}/actions/runs/26": {
-                "id": 26,
-                "run_attempt": 1,
-                "workflow_id": 27,
-                "head_sha": self.c_sha,
-                "head_branch": PINNED_BRANCH,
-                "path": PINNED_WORKFLOW_PATH,
-                "event": "workflow_dispatch",
-                "repository": {"id": int(PINNED_REPOSITORY_ID)},
-                "status": "completed",
-                "conclusion": "success",
-            },
-            f"repos/{PINNED_REPOSITORY}/actions/runs/21/approvals": [
-                {
-                    "state": "approved",
-                    "user": {"id": int(PINNED_REVIEWER_ID), "type": "User"},
-                    "comment": APPROVAL_COMMENT_PREFIX + digest(self.manifest_bytes),
-                    "environments": [{"id": int(PINNED_ENVIRONMENT_ID), "name": PINNED_ENVIRONMENT_NAME}],
-                }
-            ],
-            f"repos/{PINNED_REPOSITORY}/actions/runs/21/attempts/1/jobs": {
-                "total_count": 1,
-                "jobs": [{"id": 301, "name": "strict-chain", "status": "in_progress"}],
-            },
-            f"repos/{PINNED_REPOSITORY}/actions/artifacts/23": {
-                "id": 23,
-                "name": "harness-evidence",
-                "expired": False,
-                "workflow_run": {"id": 24, "head_sha": self.c_sha},
-            },
-            f"repos/{PINNED_REPOSITORY}/actions/artifacts/25": {
-                "id": 25,
-                "name": "audit-evidence",
-                "expired": False,
-                "workflow_run": {"id": 26, "head_sha": self.c_sha},
-            },
-        })
-
-        LoopbackGitHubMockHandler.artifact_zips.update({
-            f"repos/{PINNED_REPOSITORY}/actions/artifacts/23/zip": self.harness_zip,
-            f"repos/{PINNED_REPOSITORY}/actions/artifacts/25/zip": self.audit_zip,
-        })
-
-    def _create_zip(self, filename: str, content: bytes) -> bytes:
-        bio = io.BytesIO()
-        with zipfile.ZipFile(bio, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr(filename, content)
-        return bio.getvalue()
-
-    def test_loopback_e2e_verification_and_artifact_download(self):
-        # End-to-end verification over real HTTP socket
-        auth = self.verifier.verify(self.manifest_bytes, runtime_context=self.runtime_context)
-        self.assertIsInstance(auth, VerifiedAuthorization)
-        self.assertTrue(auth.is_authorized)
-        self.assertEqual(auth.manifest_digest, digest(self.manifest_bytes))
-        self.assertEqual(auth.p_sha, PINNED_P_SHA)
-        self.assertEqual(auth.w_sha, PINNED_W_SHA)
-
-    def test_loopback_api_fault_http_500_fails_closed(self):
-        LoopbackGitHubMockHandler.faults[f"repos/{PINNED_REPOSITORY}/environments/{PINNED_ENVIRONMENT_NAME}"] = (
-            500,
-            '{"message": "Internal Server Error"}',
+    def test_loopback_api_requires_token(self):
+        bad_client = GitHubAPIClient(
+            token="wrong-token",
+            base_url=f"http://127.0.0.1:{self.api_port}",
         )
         with self.assertRaises(AuthorizationError) as ctx:
-            self.verifier.verify(self.manifest_bytes, runtime_context=self.runtime_context)
-        self.assertIn("HTTP 500", str(ctx.exception))
-
-    def test_loopback_api_fault_http_404_fails_closed(self):
-        LoopbackGitHubMockHandler.faults[f"repos/{PINNED_REPOSITORY}/actions/runs/21/approvals"] = (
-            404,
-            '{"message": "Not Found"}',
-        )
-        with self.assertRaises(AuthorizationError) as ctx:
-            self.verifier.verify(self.manifest_bytes, runtime_context=self.runtime_context)
-        self.assertIn("HTTP 404", str(ctx.exception))
-
-    def test_loopback_api_fault_http_401_fails_closed(self):
-        # Missing or bad token triggers 401
-        bad_verifier = AuthenticatedGitHubVerifier(
-            token="unrecognized-bad-token",
-            base_url=self.base_url,
-            repository=PINNED_REPOSITORY,
-            allow_loopback=True,
-        )
-        # Handler responds 401 if header does not start with Bearer valid
-        LoopbackGitHubMockHandler.faults[f"repos/{PINNED_REPOSITORY}"] = (401, '{"message": "Unauthorized"}')
-        with self.assertRaises(AuthorizationError) as ctx:
-            bad_verifier.verify(self.manifest_bytes, runtime_context=self.runtime_context)
+            bad_client.get_json("repos/jwaldrip/iyi")
         self.assertIn("HTTP 401", str(ctx.exception))
 
-    def test_loopback_corrupted_zip_payload_fails_closed(self):
-        LoopbackGitHubMockHandler.artifact_zips[f"repos/{PINNED_REPOSITORY}/actions/artifacts/23/zip"] = b"not-a-valid-zip-archive"
-        with self.assertRaises(AuthorizationError) as ctx:
-            self.verifier.verify(self.manifest_bytes, runtime_context=self.runtime_context)
-        self.assertIn("Corrupted zip archive", str(ctx.exception))
 
-    def test_loopback_expired_artifact_metadata_fails_closed(self):
-        LoopbackGitHubMockHandler.routes[f"repos/{PINNED_REPOSITORY}/actions/artifacts/23"]["expired"] = True
-        with self.assertRaises(AuthorizationError) as ctx:
-            self.verifier.verify(self.manifest_bytes, runtime_context=self.runtime_context)
-        self.assertIn("expired", str(ctx.exception))
+class SubprocessCLITests(unittest.TestCase):
+    """Subprocess tests verifying exit code 5 on bad environment and exit code 2 on usage error."""
 
-    def test_loopback_missing_zip_member_fails_closed(self):
-        empty_zip = self._create_zip("wrong_filename.json", b"{}")
-        LoopbackGitHubMockHandler.artifact_zips[f"repos/{PINNED_REPOSITORY}/actions/artifacts/23/zip"] = empty_zip
-        with self.assertRaises(AuthorizationError) as ctx:
-            self.verifier.verify(self.manifest_bytes, runtime_context=self.runtime_context)
-        self.assertIn("not found in artifact", str(ctx.exception))
+    def test_exit_5_on_bad_environment(self):
+        # Run in isolated environment missing GITHUB_REPOSITORY
+        env = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "PYTHONPATH": os.getcwd(),
+            "GITHUB_REPOSITORY": "invalid/repository",
+            "GITHUB_REPOSITORY_ID": PINNED_REPOSITORY_ID,
+            "GITHUB_JOB": JOB_KEY_STRICT,
+            "RUNNER_ENVIRONMENT": "github-hosted",
+            "JOB_CHECK_RUN_ID": "12345",
+            "GITHUB_REF": PINNED_REF,
+            "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_SHA": "c" * 40,
+        }
+        res = subprocess.run(
+            [sys.executable, "-B", "-m", "proof.strict_authorization", "authorize", "--out-dir", "/tmp"],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res.returncode, AUTH_REFUSED_EXIT_CODE)
+        self.assertIn("STRICT_AUTHORIZATION_REFUSED", res.stderr)
+        self.assertIn("RNR-1", res.stderr)
 
-    def test_untrusted_api_base_url_rejected(self):
-        with self.assertRaises(AuthorizationError) as ctx:
-            AuthenticatedGitHubVerifier(token="token", base_url="https://evil-attacker-site.com")
-        self.assertIn("Untrusted API base URL", str(ctx.exception))
+    def test_exit_2_on_usage_error(self):
+        res = subprocess.run(
+            [sys.executable, "-B", "-m", "proof.strict_authorization", "authorize"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res.returncode, USAGE_ERROR_EXIT_CODE)
+
+
+class UtilityCLITests(unittest.TestCase):
+    def test_rail_summary_generation(self):
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            pins_path = td_path / "pins.json"
+            struct_path = td_path / "struct.json"
+            out_path = td_path / "rail-validation-summary.json"
+
+            with open(pins_path, "w", encoding="utf-8") as f:
+                json.dump({"status": "PASS", "actions": PINNED_ACTIONS}, f)
+
+            with open(struct_path, "w", encoding="utf-8") as f:
+                json.dump({"status": "PASS", "workflow_structure": "PASS"}, f)
+
+            env = {
+                "GITHUB_SHA": "c" * 40,
+                "GITHUB_RUN_ID": "1001",
+                "GITHUB_RUN_ATTEMPT": "1",
+            }
+            code = main(
+                ["rail-summary", "--out", str(out_path), "--pins-report", str(pins_path), "--structure-report", str(struct_path)],
+                environ=env,
+            )
+            self.assertEqual(code, 0)
+            self.assertTrue(out_path.is_file())
+
+            with open(out_path, "rb") as f:
+                data = json.load(f)
+            self.assertEqual(data["schema"], SCHEMA_RAIL_SUMMARY)
+            self.assertEqual(data["status"], "PASS")
+            self.assertEqual(data["c_sha"], "c" * 40)
+            self.assertEqual(data["run_id"], "1001")
+            self.assertEqual(data["actions"], PINNED_ACTIONS)
+            self.assertEqual(data["strict_refusal_controls"], PINNED_REFUSAL_CONTROLS)
 
 
 if __name__ == "__main__":

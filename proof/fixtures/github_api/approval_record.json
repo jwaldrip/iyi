@@ -1,0 +1,26 @@
+[
+  {
+    "state": "approved",
+    "user": {
+      "id": 43164,
+      "login": "jwaldrip",
+      "type": "User"
+    },
+    "environments": [
+      {
+        "id": 26584191206,
+        "name": "strict-proof"
+      }
+    ],
+    "comment": "iyi-strict-authorization-v2 sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "_derived_from": {
+      "base_fixture": "approvals_empty.json",
+      "substitutions": [
+        "state",
+        "user",
+        "environments",
+        "comment"
+      ]
+    }
+  }
+]

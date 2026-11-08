@@ -1,0 +1,30 @@
+{
+  "id": 13600255999,
+  "node_id": "MDg6QXJ0aWZhY3QxMzYwMDI1NTUwMw==",
+  "name": "strict-authorization-manifest",
+  "size_in_bytes": 121001,
+  "url": "https://api.github.com/repos/jwaldrip/iyi/actions/artifacts/13600255503",
+  "archive_download_url": "https://api.github.com/repos/jwaldrip/iyi/actions/artifacts/13600255503/zip",
+  "expired": false,
+  "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "created_at": "2026-11-06T00:20:00Z",
+  "updated_at": "2026-11-08T02:02:59Z",
+  "expires_at": "2026-11-22T02:02:58Z",
+  "workflow_run": {
+    "id": 42086795082,
+    "repository_id": 1340355933,
+    "head_sha": "72c3c7d026369e5f59553d0c6cb208233f545d24",
+    "head_branch": "proof/strict-lifecycle-repair-20261102"
+  },
+  "_derived_from": {
+    "base_fixture": "artifact_13600255503.json",
+    "substitutions": [
+      "id",
+      "name",
+      "digest",
+      "expired",
+      "created_at",
+      "workflow_run"
+    ]
+  }
+}

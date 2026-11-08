@@ -1,0 +1,172 @@
+{
+  "schema": "iyi.strict-github-api-fixtures-provenance.v1",
+  "generated_at": "2026-11-07T20:16:00Z",
+  "genuine_fixtures": {
+    "repo_jwaldrip_iyi.json": {
+      "endpoint": "GET /repos/jwaldrip/iyi",
+      "method": "read-only gh api",
+      "sanitized": true
+    },
+    "run_42086795082.json": {
+      "endpoint": "GET /repos/jwaldrip/iyi/actions/runs/42086795082",
+      "method": "read-only gh api",
+      "sanitized": true
+    },
+    "jobs_run_42086795082.json": {
+      "endpoint": "GET /repos/jwaldrip/iyi/actions/runs/42086795082/attempts/1/jobs",
+      "method": "read-only gh api",
+      "sanitized": true
+    },
+    "run_42429518284.json": {
+      "endpoint": "GET /repos/jwaldrip/iyi/actions/runs/42429518284",
+      "method": "read-only gh api",
+      "sanitized": true
+    },
+    "jobs_run_42429518284.json": {
+      "endpoint": "GET /repos/jwaldrip/iyi/actions/runs/42429518284/attempts/1/jobs",
+      "method": "read-only gh api",
+      "sanitized": true
+    },
+    "job_128575084391.json": {
+      "endpoint": "GET /repos/jwaldrip/iyi/actions/jobs/128575084391",
+      "method": "read-only gh api",
+      "sanitized": true
+    },
+    "artifact_13600255503.json": {
+      "endpoint": "GET /repos/jwaldrip/iyi/actions/artifacts/13600255503",
+      "method": "read-only gh api",
+      "sanitized": true
+    },
+    "environment_strict_proof.json": {
+      "endpoint": "GET /repos/jwaldrip/iyi/environments/strict-proof",
+      "method": "read-only gh api",
+      "sanitized": true
+    },
+    "branch_policies_strict_proof.json": {
+      "endpoint": "GET /repos/jwaldrip/iyi/environments/strict-proof/deployment-branch-policies",
+      "method": "read-only gh api",
+      "sanitized": true
+    },
+    "deployment_6086087244.json": {
+      "endpoint": "GET /repos/jwaldrip/iyi/deployments/6086087244",
+      "method": "read-only gh api",
+      "sanitized": true
+    },
+    "deployment_statuses_6086087244.json": {
+      "endpoint": "GET /repos/jwaldrip/iyi/deployments/6086087244/statuses",
+      "method": "read-only gh api",
+      "sanitized": true
+    },
+    "check_run_97854822865.json": {
+      "endpoint": "GET /repos/jwaldrip/iyi/check-runs/97854822865",
+      "method": "read-only gh api",
+      "sanitized": true
+    },
+    "approvals_empty.json": {
+      "endpoint": "GET /repos/jwaldrip/iyi/actions/runs/42086795082/approvals",
+      "method": "read-only gh api",
+      "sanitized": true
+    },
+    "pull_147.json": {
+      "endpoint": "GET /repos/iyilang/iyi/pulls/147",
+      "method": "read-only gh api",
+      "sanitized": true
+    },
+    "compare_p_w.json": {
+      "endpoint": "GET /repos/jwaldrip/iyi/compare/180f14f91c829b25362a5ed34b20847f3ac2db77...5a3770e96fb12099c4ce9dc3b21895de07dd4cd8",
+      "method": "read-only gh api",
+      "sanitized": true
+    },
+    "compare_w_h.json": {
+      "endpoint": "GET /repos/jwaldrip/iyi/compare/5a3770e96fb12099c4ce9dc3b21895de07dd4cd8...48ffd47caaf45ff9580c35e6f2b0e3c285144bcc",
+      "method": "read-only gh api",
+      "sanitized": true
+    },
+    "contents_harness_audit_zip.json": {
+      "endpoint": "GET /repos/jwaldrip/iyi/contents/proof/recovery-180f14f-current/remote-harness-audit-42429518284.zip?ref=83ffe98b6dccd267f8f677ac40e7056535fb0d0b",
+      "method": "read-only gh api",
+      "sanitized": true
+    },
+    "blob_95962d09.json": {
+      "endpoint": "GET /repos/jwaldrip/iyi/git/blobs/95962d09b72f54bb53a334404b381ab630e44ceb",
+      "method": "read-only gh api",
+      "sanitized": true
+    },
+    "branch_deploy.json": {
+      "endpoint": "GET /repos/jwaldrip/iyi/branches/proof/strict-lifecycle-repair-20261102",
+      "method": "read-only gh api",
+      "sanitized": true
+    },
+    "rules_branch_deploy.json": {
+      "endpoint": "GET /repos/jwaldrip/iyi/rules/branches/proof/strict-lifecycle-repair-20261102",
+      "method": "read-only gh api",
+      "sanitized": true
+    }
+  },
+  "derived_fixtures": {
+    "strict_run_in_progress.json": {
+      "base_fixture": "run_42086795082.json",
+      "substitutions": {
+        "status": "in_progress",
+        "conclusion": null,
+        "event": "workflow_dispatch",
+        "head_branch": "proof/strict-lifecycle-repair-20261102",
+        "head_sha": "72c3c7d026369e5f59553d0c6cb208233f545d24",
+        "path": ".github/workflows/remote-strict-proof.yml",
+        "workflow_id": 403985693,
+        "run_attempt": 1
+      }
+    },
+    "approval_record.json": {
+      "base_fixture": "approvals_empty.json",
+      "substitutions": {
+        "record_0": {
+          "state": "approved",
+          "user.id": 43164,
+          "user.login": "jwaldrip",
+          "user.type": "User",
+          "environments": [{"id": 26584191206, "name": "strict-proof"}],
+          "comment": "iyi-strict-authorization-v2 sha256:<D>"
+        }
+      }
+    },
+    "check_run_strict_proof.json": {
+      "base_fixture": "check_run_97854822865.json",
+      "substitutions": {
+        "id": 128575084399,
+        "head_sha": "72c3c7d026369e5f59553d0c6cb208233f545d24",
+        "app.slug": "github-actions",
+        "details_url": "https://github.com/jwaldrip/iyi/actions/runs/42086795082/job/128575084399",
+        "deployment.id": 6086087299,
+        "deployment.environment": "strict-proof",
+        "deployment.original_environment": "strict-proof",
+        "deployment.task": "deploy"
+      }
+    },
+    "deployment_strict_proof.json": {
+      "base_fixture": "deployment_6086087244.json",
+      "substitutions": {
+        "id": 6086087299,
+        "sha": "72c3c7d026369e5f59553d0c6cb208233f545d24",
+        "ref": "proof/strict-lifecycle-repair-20261102",
+        "environment": "strict-proof",
+        "original_environment": "strict-proof",
+        "performed_via_github_app.slug": "github-actions"
+      }
+    },
+    "artifact_strict_manifest.json": {
+      "base_fixture": "artifact_13600255503.json",
+      "substitutions": {
+        "id": 13600255999,
+        "name": "strict-authorization-manifest",
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "expired": false,
+        "created_at": "2026-11-06T00:20:00Z",
+        "workflow_run.id": 42086795082,
+        "workflow_run.repository_id": 1340355933,
+        "workflow_run.head_sha": "72c3c7d026369e5f59553d0c6cb208233f545d24",
+        "workflow_run.head_branch": "proof/strict-lifecycle-repair-20261102"
+      }
+    }
+  }
+}
