@@ -1092,10 +1092,28 @@ class MockGitHubAPIServer:
                         if path.startswith(pfx):
                             resp = val
                             break
-
                 if resp is not None:
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(canonical(resp))
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+
+            def log_message(self, format, *args):
+                pass
+
+        self.storage_server = HTTPServer(("127.0.0.1", 0), StorageHandler)
+        self.storage_port = self.storage_server.server_port
+        self.storage_thread = threading.Thread(target=self.storage_server.serve_forever, daemon=True)
+        self.storage_thread.start()
+
+        self.api_server = HTTPServer(("127.0.0.1", 0), APIHandler)
+        self.api_port = self.api_server.server_port
+        self.api_thread = threading.Thread(target=self.api_server.serve_forever, daemon=True)
+        self.api_thread.start()
+
     def _init_default_data(self):
         c_sha = self.c_sha
         strict_run_id = 50000000001
