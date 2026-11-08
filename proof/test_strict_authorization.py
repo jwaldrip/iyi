@@ -1225,11 +1225,10 @@ class MockGitHubAPIServer:
             "run_attempt": 1,
         }
         env_data = get_environment_fixture()
-        branch_policies = get_branch_policies_fixture()["branch_policies"]
+        branch_policies = check_env_2(get_branch_policies_fixture()["branch_policies"])
         branch_data = get_branch_deploy_fixture()
         branch_data["commit"]["sha"] = c_sha
-        branch_rules = get_rules_branch_deploy_fixture(active=True)
-
+        branch_rules = check_brn_2(get_rules_branch_deploy_fixture(active=True), require_active=True)
         run_info = check_run_1(strict_run, c_sha)
         prep_job_info = check_job_1(prep_job, strict_run_id, JOB_NAME_PREPARE, c_sha, runner_name="GitHub Actions 1")
         val_run = {

@@ -1331,12 +1331,12 @@ def check_man_2(zip_bytes: bytes, expected_digest: str, expected_manifest_sha256
 
     return member_bytes
 
-
 def check_man_3(manifest: Dict[str, Any], expected_manifest: Dict[str, Any]) -> None:
     if manifest.get("schema") != SCHEMA_MANIFEST:
         raise AuthorizationError(f"[MAN-3] manifest schema mismatch: expected {SCHEMA_MANIFEST}, got {manifest.get('schema')}", check_id="MAN-3")
     if canonical(manifest) != canonical(expected_manifest):
-        raise AuthorizationError("[MAN-3] live state does not match prepared manifest", check_id="MAN-3")
+        diffs = [k for k in sorted(set(manifest.keys()) | set(expected_manifest.keys())) if manifest.get(k) != expected_manifest.get(k)]
+        raise AuthorizationError(f"[MAN-3] live state does not match prepared manifest (differing keys: {diffs})", check_id="MAN-3")
 
 
 def check_apr_1(approvals: List[Dict[str, Any]], expected_manifest_sha256: str) -> Dict[str, Any]:
