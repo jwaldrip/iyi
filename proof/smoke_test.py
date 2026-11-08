@@ -13635,6 +13635,7 @@ def _fixture_final_required_rerun_seed() -> Observation:
 
 
 def _fixture_final_rg2_log_tampered_seed() -> Observation:
+    cases = {}
     with StageFixture() as fixture:
         fixture.prepare_final_inputs()
         latest_run1 = stages_mod.latest_attempt_dir(
@@ -13648,7 +13649,7 @@ def _fixture_final_rg2_log_tampered_seed() -> Observation:
         rc = stages_mod.cmd_final(fixture.args(), drivers=fixture.drivers)
         record = _o7_load_json(os.path.join(fixture.report, "final.json"))
         reasons = record.get("reasons", [])
-        got = {
+        cases["tampered_log"] = {
             "returncode": rc,
             "status": record.get("status"),
             "evidence_mismatch": any(
@@ -13660,17 +13661,107 @@ def _fixture_final_rg2_log_tampered_seed() -> Observation:
                 for reason in reasons
             ),
         }
-        expected = {
+
+    with StageFixture() as fixture:
+        fixture.prepare_final_inputs()
+        final_path = os.path.join(fixture.report, "final.json")
+        with open(final_path, "w", encoding="utf-8") as output:
+            json.dump({"status": "PASS", "reasons": []}, output)
+        latest_run1 = stages_mod.latest_attempt_dir(
+            os.path.join(fixture.report, "run1")
+        )
+        log_path = os.path.join(latest_run1, "run1_1.log")
+
+        original_open = getattr(stages_mod, "open", None)
+
+        def failing_open(path, *args, **kwargs):
+            if os.path.abspath(str(path)) == os.path.abspath(log_path):
+                raise OSError("simulated raw log read failure")
+            return open(path, *args, **kwargs)
+
+        stages_mod.open = failing_open
+        try:
+            rc = stages_mod.cmd_final(fixture.args(), drivers=fixture.drivers)
+        finally:
+            if original_open is None:
+                del stages_mod.open
+            else:
+                stages_mod.open = original_open
+
+        record = _o7_load_json(final_path)
+        reasons = record.get("reasons", [])
+        cases["unreadable_log_read"] = {
+            "returncode": rc,
+            "status": record.get("status"),
+            "recomputation_failed": any(
+                str(reason).startswith("RG2 evidence recomputation failed:")
+                for reason in reasons
+            ),
+            "stale_pass_overwritten": record.get("status") == "FAIL",
+        }
+
+    with StageFixture() as fixture:
+        fixture.prepare_final_inputs()
+        final_path = os.path.join(fixture.report, "final.json")
+        with open(final_path, "w", encoding="utf-8") as output:
+            json.dump({"status": "PASS", "reasons": []}, output)
+        latest_run1 = stages_mod.latest_attempt_dir(
+            os.path.join(fixture.report, "run1")
+        )
+        log_path = os.path.join(latest_run1, "run1_1.log")
+
+        original_sha256 = stages_mod.sha256_file
+
+        def failing_sha256(path):
+            if os.path.abspath(str(path)) == os.path.abspath(log_path):
+                raise OSError("simulated raw log hash failure")
+            return original_sha256(path)
+
+        stages_mod.sha256_file = failing_sha256
+        try:
+            rc = stages_mod.cmd_final(fixture.args(), drivers=fixture.drivers)
+        finally:
+            stages_mod.sha256_file = original_sha256
+
+        record = _o7_load_json(final_path)
+        reasons = record.get("reasons", [])
+        cases["unreadable_log_hash"] = {
+            "returncode": rc,
+            "status": record.get("status"),
+            "recomputation_failed": any(
+                str(reason).startswith("RG2 evidence recomputation failed:")
+                for reason in reasons
+            ),
+            "stale_pass_overwritten": record.get("status") == "FAIL",
+        }
+
+    got = cases
+    expected = {
+        "tampered_log": {
             "returncode": 1,
             "status": "FAIL",
             "evidence_mismatch": True,
             "corpus_not_proven": True,
-        }
-        return Observation(
-            expected=expected,
-            got=got,
-            applied="exclusion line appended to run1_1.log after prepare_final_inputs",
-        )
+        },
+        "unreadable_log_read": {
+            "returncode": 1,
+            "status": "FAIL",
+            "recomputation_failed": True,
+            "stale_pass_overwritten": True,
+        },
+        "unreadable_log_hash": {
+            "returncode": 1,
+            "status": "FAIL",
+            "recomputation_failed": True,
+            "stale_pass_overwritten": True,
+        },
+    }
+    return Observation(
+        expected=expected,
+        got=got,
+        applied="tampered, unreadable read, and unreadable hash run1_1.log scenarios tested",
+    )
+
 
 
 def _fixture_final_rg2_summary_tampered_seed() -> Observation:
@@ -19522,16 +19613,16 @@ ALLOWLIST: tuple[tuple[str, int, int, str, str], ...] = (
     ),
     (
         "proof.run_proof",
-        1788,
         1794,
+        1800,
         "o7.seed.run-proof-optimize-refusal",
         "python -B -O proof/run_proof.py --help enters the nested optimize "
         "guard, prints the exact refusal, and exits 2",
     ),
     (
         "proof.run_proof",
-        1795,
-        1795,
+        1801,
+        1801,
         "o7.control.run-proof-optimize",
         "python -B proof/run_proof.py --help reaches the normal direct-script "
         "main handoff and exits 0",

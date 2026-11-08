@@ -1491,14 +1491,19 @@ def cmd_final(
             reasons.append(f"RG2-EVIDENCE-MISSING: {summary_path}")
 
         if not log_missing and not summary_missing:
-            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
-                log_text = f.read()
-            log_sha256 = sha256_file(log_path)
-            recomputed = _rg2_corpus_evidence(
-                log_text,
-                log_sha256,
-                corpus=corpus,
-            )
+            recomputed = None
+            try:
+                with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                    log_text = f.read()
+                log_sha256 = sha256_file(log_path)
+                recomputed = _rg2_corpus_evidence(
+                    log_text,
+                    log_sha256,
+                    corpus=corpus,
+                )
+            except (OSError, RuntimeError) as error:
+                recomputed = None
+                reasons.append(f"RG2 evidence recomputation failed: {error}")
 
             stored_summary_loaded = False
             try:
@@ -1508,18 +1513,19 @@ def cmd_final(
                 stored_summary = None
                 reasons.append(f"RG2 stored summary unreadable: {error}")
 
-            rg2_final = {
-                "log_sha256": recomputed.get("log_sha256"),
-                "status": recomputed.get("status"),
-                "families": recomputed.get("families"),
-            }
-            if stored_summary_loaded and stored_summary != recomputed:
-                reasons.append(
-                    f"RG2-EVIDENCE-MISMATCH: run1 {attempt_name}"
-                )
-            if recomputed["status"] != "PASS":
-                for reason in recomputed["reasons"]:
-                    reasons.append(f"RG2-CORPUS-NOT-PROVEN: {reason}")
+            if recomputed is not None:
+                rg2_final = {
+                    "log_sha256": recomputed.get("log_sha256"),
+                    "status": recomputed.get("status"),
+                    "families": recomputed.get("families"),
+                }
+                if stored_summary_loaded and stored_summary != recomputed:
+                    reasons.append(
+                        f"RG2-EVIDENCE-MISMATCH: run1 {attempt_name}"
+                    )
+                if recomputed["status"] != "PASS":
+                    for reason in recomputed["reasons"]:
+                        reasons.append(f"RG2-CORPUS-NOT-PROVEN: {reason}")
 
     run2, earlier, unit_reasons = _collect_final_unit(
         pin,
