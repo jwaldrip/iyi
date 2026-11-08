@@ -88,7 +88,7 @@ _FINAL_LIMITS = [
         "own artifact blocks (acme, autocert, compress, png, regex, shlex, "
         "tls, websocket, xz, zip) and in negative mutation proofs; every "
         "other canonical or positive build runs its artifact consumer; RG2 "
-        "proves observed source bare for all 141"
+        "proves observed source bare for all 142"
     ),
 ]
 

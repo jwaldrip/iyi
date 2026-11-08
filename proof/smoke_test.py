@@ -11948,7 +11948,15 @@ def _stage_stub_payloads(
         f"{observe_tail}"
         "exit 0\n"
     )
-    rg9_count = 140 if scenario == "rg9-140" else 141
+    rg9_count = (
+        140
+        if scenario == "rg9-140"
+        else (
+            141
+            if scenario == "rg9-141"
+            else (143 if scenario == "rg9-143" else 142)
+        )
+    )
     rg9_prefix = (
         "import os, time\n"
         "marker = os.path.join(os.environ['TMPDIR'], 'interrupt-ready')\n"
@@ -11971,7 +11979,7 @@ def _stage_stub_payloads(
         rg9_tail = "import os\nos.utime(os.environ['IYI'])\n"
     else:
         rg9_tail = ""
-    if scenario in ("rg9-bare", "rg9-bare-141"):
+    if scenario in ("rg9-bare", "rg9-bare-142"):
         rg9_summary = f"RG9 PASSED: {rg9_count} corpus programs"
     elif scenario == "rg9-malformed-suffix":
         rg9_summary = (
@@ -12665,12 +12673,20 @@ def _fixture_rg9_140_seed() -> Observation:
     return _run1_seed("rg9-140", "gate-1.3", "FAIL")
 
 
+def _fixture_rg9_141_seed() -> Observation:
+    return _run1_seed("rg9-141", "gate-1.3", "FAIL")
+
+
+def _fixture_rg9_143_seed() -> Observation:
+    return _run1_seed("rg9-143", "gate-1.3", "FAIL")
+
+
 def _fixture_rg9_bare_seed() -> Observation:
     return _run1_seed("rg9-bare", "gate-1.3", "FAIL")
 
 
-def _fixture_rg9_bare_141_seed() -> Observation:
-    return _run1_seed("rg9-bare-141", "gate-1.3", "FAIL")
+def _fixture_rg9_bare_142_seed() -> Observation:
+    return _run1_seed("rg9-bare-142", "gate-1.3", "FAIL")
 
 
 def _fixture_rg9_malformed_suffix_seed() -> Observation:
@@ -17131,14 +17147,24 @@ O7_FIXTURES: tuple[Fixture, ...] = (
         _fixture_rg9_140_seed,
     ),
     Fixture(
+        "s5.seed.rg9-141",
+        "seed",
+        _fixture_rg9_141_seed,
+    ),
+    Fixture(
+        "s5.seed.rg9-143",
+        "seed",
+        _fixture_rg9_143_seed,
+    ),
+    Fixture(
         "s5.seed.rg9-bare",
         "seed",
         _fixture_rg9_bare_seed,
     ),
     Fixture(
-        "s5.seed.rg9-bare-141",
+        "s5.seed.rg9-bare-142",
         "seed",
-        _fixture_rg9_bare_141_seed,
+        _fixture_rg9_bare_142_seed,
     ),
     Fixture(
         "s5.seed.rg9-malformed-suffix",
@@ -17630,8 +17656,10 @@ O7_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
         "s5.seed.rg2r-zero",
         "s5.seed.run1-missing-sentinel",
         "s5.seed.rg9-140",
+        "s5.seed.rg9-141",
+        "s5.seed.rg9-143",
         "s5.seed.rg9-bare",
-        "s5.seed.rg9-bare-141",
+        "s5.seed.rg9-bare-142",
         "s5.seed.rg9-malformed-suffix",
         "s5.seed.rg9-extended-suffix",
         "s5.seed.sibling-count-114",
@@ -18115,8 +18143,10 @@ REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
         "s5.seed.run1-missing-sentinel",
         "s5.seed.rg2r-zero",
         "s5.seed.rg9-140",
+        "s5.seed.rg9-141",
+        "s5.seed.rg9-143",
         "s5.seed.rg9-bare",
-        "s5.seed.rg9-bare-141",
+        "s5.seed.rg9-bare-142",
         "s5.seed.rg9-malformed-suffix",
         "s5.seed.rg9-extended-suffix",
         "s5.seed.sibling-count-114",
