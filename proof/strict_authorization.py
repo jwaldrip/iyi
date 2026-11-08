@@ -569,12 +569,12 @@ def check_rep_1(repo: Dict[str, Any]) -> Dict[str, Any]:
         "visibility": repo["visibility"],
     }
 
-
 def check_run_1(
     run: Dict[str, Any],
     expected_head_sha: str,
     expected_event: str = "workflow_dispatch",
     expected_branch: Optional[str] = None,
+    allow_completed: bool = False,
 ) -> Dict[str, Any]:
     branch = expected_branch or PINNED_DEPLOY_BRANCH
     if str(run.get("run_attempt")) != "1":
@@ -593,8 +593,12 @@ def check_run_1(
         raise AuthorizationError(f"[RUN-1] head_repository id mismatch in run: {run.get('head_repository', {}).get('id')}", check_id="RUN-1")
     if run.get("event") != expected_event:
         raise AuthorizationError(f"[RUN-1] run event mismatch: expected {expected_event}, got {run.get('event')}", check_id="RUN-1")
-    if run.get("status") not in ("in_progress", "waiting"):
-        raise AuthorizationError(f"[RUN-1] run status must be 'in_progress' or 'waiting', got {run.get('status')}", check_id="RUN-1")
+    allowed_statuses = ("in_progress", "waiting") if not allow_completed else ("in_progress", "waiting", "completed")
+    if run.get("status") not in allowed_statuses:
+        raise AuthorizationError(f"[RUN-1] run status must be in {allowed_statuses}, got {run.get('status')}", check_id="RUN-1")
+
+    actor_id = str(run.get("actor_id") or run.get("actor", {}).get("id", ""))
+    triggering_actor_id = str(run.get("triggering_actor_id") or run.get("triggering_actor", {}).get("id", ""))
 
     return {
         "id": str(run["id"]),
@@ -606,12 +610,10 @@ def check_run_1(
         "head_branch": run["head_branch"],
         "head_sha": run["head_sha"],
         "html_url": run.get("html_url", ""),
-        "actor_id": str(run.get("actor", {}).get("id", "")),
-        "triggering_actor_id": str(run.get("triggering_actor", {}).get("id", "")),
+        "actor_id": actor_id,
+        "triggering_actor_id": triggering_actor_id,
         "created_at": run.get("created_at", ""),
     }
-
-
 def check_job_1(
     job: Dict[str, Any],
     expected_run_id: str,
@@ -1418,8 +1420,8 @@ def build_manifest_v2(
             "head_branch": PINNED_DEPLOY_BRANCH,
             "head_sha": c_sha,
             "html_url": strict_run.get("html_url", ""),
-            "actor_id": str(strict_run.get("actor_id", "")),
-            "triggering_actor_id": str(strict_run.get("triggering_actor_id", "")),
+            "actor_id": str(strict_run.get("actor_id") or strict_run.get("actor", {}).get("id", "")),
+            "triggering_actor_id": str(strict_run.get("triggering_actor_id") or strict_run.get("triggering_actor", {}).get("id", "")),
             "created_at": strict_run.get("created_at", ""),
         },
         "prepare_job": {
@@ -1991,11 +1993,11 @@ def cmd_authorize(args: argparse.Namespace, environ: Dict[str, str], client: Git
         manifest = parse(manifest_bytes)
         record("MAN-2", "PASS", {"manifest_sha256": prepare_manifest_sha})
 
-        # MAN-3: Reconstruct manifest from all live verified values and compare byte-for-byte
+        prep_job_info = check_job_1(prep_job, run_id, JOB_NAME_PREPARE, c_sha, runner_name=prep_job.get("runner_name"))
         expected_live_manifest = build_manifest_v2(
             c_sha=c_sha,
             strict_run=run_info,
-            prepare_job=job_info,
+            prepare_job=prep_job_info,
             inputs=inputs_info,
             environment=env_data,
             branch_policies=branch_policies,
@@ -2190,9 +2192,9 @@ def cmd_rehearse(args: argparse.Namespace, environ: Dict[str, str], client: GitH
     run_data = client.get_json(f"repos/{PINNED_REPOSITORY}/actions/runs/{run_id}")
     event = run_data.get("event")
     if event == "push":
-        check_run_1(run_data, c_sha, expected_event="push", expected_branch=ref_name)
+        check_run_1(run_data, c_sha, expected_event="push", expected_branch=ref_name, allow_completed=True)
     elif event == "workflow_dispatch":
-        check_run_1(run_data, c_sha, expected_event="workflow_dispatch", expected_branch=ref_name)
+        check_run_1(run_data, c_sha, expected_event="workflow_dispatch", expected_branch=ref_name, allow_completed=True)
         event_path = environ.get("GITHUB_EVENT_PATH")
         if event_path and os.path.isfile(event_path):
             with open(event_path, "r", encoding="utf-8") as f:

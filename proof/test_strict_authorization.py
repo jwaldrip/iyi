@@ -1230,17 +1230,34 @@ class MockGitHubAPIServer:
         branch_data["commit"]["sha"] = c_sha
         branch_rules = get_rules_branch_deploy_fixture(active=True)
 
+        run_info = check_run_1(strict_run, c_sha)
+        prep_job_info = check_job_1(prep_job, strict_run_id, JOB_NAME_PREPARE, c_sha, runner_name="GitHub Actions 1")
+        val_run = {
+            "id": val_run_id,
+            "workflow_id": int(PINNED_WORKFLOW_ID),
+            "path": PINNED_WORKFLOW_PATH,
+            "head_branch": PINNED_DEPLOY_BRANCH,
+            "head_sha": c_sha,
+            "event": "push",
+            "status": "completed",
+            "conclusion": "success",
+            "run_attempt": 1,
+            "html_url": f"https://github.com/{PINNED_REPOSITORY}/actions/runs/{val_run_id}",
+            "repository": {"id": int(PINNED_REPOSITORY_ID)},
+            "head_repository": {"id": int(PINNED_REPOSITORY_ID)},
+        }
+
         manifest_dict = build_manifest_v2(
             c_sha=c_sha,
-            strict_run=strict_run,
-            prepare_job=prep_job,
+            strict_run=run_info,
+            prepare_job=prep_job_info,
             inputs={"mode": "strict-chain", "evidence_commit": evidence_commit},
             environment=env_data,
             branch_policies=branch_policies,
             deploy_branch=branch_data,
             branch_rules=branch_rules,
             bundle_map=bundle_map,
-            validation_run={"id": val_run_id},
+            validation_run=val_run,
             validation_artifacts=val_artifacts_map,
             summary_member_sha256=digest(summary_raw),
             rehearsal_member_sha256=digest(rehearsal_raw),
@@ -1259,20 +1276,6 @@ class MockGitHubAPIServer:
         manifest_zip_bytes = mbuf.getvalue()
         self.storage_payloads["13600255999"] = manifest_zip_bytes
         self.manifest_zip_digest = f"sha256:{digest(manifest_zip_bytes)}"
-
-        val_run = {
-            "id": val_run_id,
-            "workflow_id": int(PINNED_WORKFLOW_ID),
-            "path": PINNED_WORKFLOW_PATH,
-            "head_branch": PINNED_DEPLOY_BRANCH,
-            "head_sha": c_sha,
-            "event": "push",
-            "status": "completed",
-            "conclusion": "success",
-            "run_attempt": 1,
-            "repository": {"id": int(PINNED_REPOSITORY_ID)},
-            "head_repository": {"id": int(PINNED_REPOSITORY_ID)},
-        }
 
         # Wire API endpoints
         self.api_responses = {
