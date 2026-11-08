@@ -728,6 +728,97 @@ class TestRemoteStrictController(unittest.TestCase):
         self.assertFalse(is_valid)
         self.assertTrue(any("missing required driver 'cookie'" in r for r in reasons))
 
+    def test_04e_native_validation_module_isolation_and_patch_targets(self):
+        """Scenario 4e: Native validation preserves caller's sys.modules identity and patch targets."""
+        import proof.check_remote_strict_evidence as evidence_mod
+        from proof.check_remote_strict_evidence import check_ownership_failure
+
+        self.assertIn("proof.check_remote_strict_evidence", sys.modules)
+        orig_evidence_mod = sys.modules["proof.check_remote_strict_evidence"]
+        orig_sys_path = list(sys.path)
+
+        with open(self.compiler_path, "rb") as compiler:
+            compiler_sha = hashlib.sha256(compiler.read()).hexdigest()
+        pin = generate_pin(
+            self.chain_id, report_dir=self.report_dir, p_source_sha=self.p_sha,
+            w_head=self.w_sha, c_sha=self.c_sha, compiler_sha256=compiler_sha,
+            compiler_path=self.compiler_path,
+        )
+
+        record = {
+            "v": 1,
+            "chain_id": self.chain_id,
+            "unit": "run1",
+            "attempt": 1,
+            "status": "PASS",
+            "checks": {
+                "identity": "PASS",
+                "gate-1.1": "PASS",
+                "gate-1.2": "PASS",
+                "gate-1.3": "PASS",
+                "gate-1.4": "PASS",
+                "rg2r-count": "PASS",
+                "exclusions": "PASS",
+                "baseline-skips": "PASS",
+            },
+            "started_ns": 1000,
+            "ended_ns": 2000,
+            "reasons": [],
+            "survivors": [],
+        }
+
+        from proof.native_validation import validate_record_native, validate_final_native
+
+        # 1. Exercise validate_record_native and verify caller module identity survives
+        status, reasons = validate_record_native(
+            record,
+            pin=pin,
+            unit="run1",
+            attempt=1,
+            kind="run1",
+            w_path=self.w_dir,
+        )
+        self.assertEqual(status, "PASS")
+        self.assertEqual(reasons, [])
+
+        self.assertIn("proof.check_remote_strict_evidence", sys.modules)
+        self.assertIs(sys.modules["proof.check_remote_strict_evidence"], orig_evidence_mod)
+        self.assertEqual(sys.path, orig_sys_path)
+
+        # 2. Behavioral verification: mock.patch on module path successfully intercepts
+        # calls made through imported symbols and original module references
+        with mock.patch("proof.check_remote_strict_evidence.members", return_value={"mock_entry": True}) as mock_members:
+            self.assertIs(sys.modules["proof.check_remote_strict_evidence"], orig_evidence_mod)
+            self.assertIs(orig_evidence_mod.members, mock_members)
+            self.assertIs(check_ownership_failure.__globals__["members"], mock_members)
+            self.assertEqual(evidence_mod.members("dummy.tar"), {"mock_entry": True})
+
+        # 3. Exercise validate_final_native and verify module identity survives
+        required = ["acme", "cookie"]
+        units = {
+            "run1": {"attempt": 1, "status": "PASS"},
+            "run2": {"attempt": 1, "status": "PASS"},
+            "run3/acme": {"attempt": 1, "status": "PASS"},
+            "run3/cookie": {"attempt": 1, "status": "PASS"},
+        }
+        final_rec = generate_final_record(pin, required, units=units)
+        is_valid, final_reasons = validate_final_native(
+            final_rec,
+            pin=pin,
+            required_drivers=required,
+            w_path=self.w_dir,
+        )
+        self.assertTrue(is_valid, f"Final record rejected: {final_reasons}")
+        self.assertIs(sys.modules["proof.check_remote_strict_evidence"], orig_evidence_mod)
+        self.assertEqual(sys.path, orig_sys_path)
+
+        # 4. Behavioral verification after validate_final_native as well
+        with mock.patch("proof.check_remote_strict_evidence.members", return_value={"mock_final": True}) as mock_members_final:
+            self.assertIs(sys.modules["proof.check_remote_strict_evidence"], orig_evidence_mod)
+            self.assertIs(orig_evidence_mod.members, mock_members_final)
+            self.assertIs(check_ownership_failure.__globals__["members"], mock_members_final)
+            self.assertEqual(evidence_mod.members("dummy.tar"), {"mock_final": True})
+
     # -------------------------------------------------------------------------
     # 5. Handler Grace Period (>10s and <30s)
     # -------------------------------------------------------------------------

@@ -9,6 +9,7 @@ against W, verifying that imported modules originate strictly from W.
 from __future__ import annotations
 
 import argparse
+import functools
 import importlib
 import json
 import os
@@ -27,6 +28,67 @@ class ModuleOriginError(Exception):
     """Raised when imported proof modules do not originate from expected W path."""
 
 
+_ISOLATION_DEPTH = 0
+
+
+def _is_proof_module(name: str) -> bool:
+    return name == "proof" or name.startswith("proof.") or name in ("proofkit", "run_proof")
+
+
+def _preserve_proof_modules(func):
+    """
+    Decorator to save and restore caller's sys.modules entries for proof, proof.*, proofkit,
+    and run_proof, as well as sys.path, ensuring isolation during W module loading.
+    """
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        global _ISOLATION_DEPTH
+        if _ISOLATION_DEPTH > 0:
+            return func(*args, **kwargs)
+
+        _ISOLATION_DEPTH += 1
+        saved_path = list(sys.path)
+        saved_modules = {
+            name: mod
+            for name, mod in sys.modules.items()
+            if _is_proof_module(name)
+        }
+        try:
+            return func(*args, **kwargs)
+        finally:
+            try:
+                for name in list(sys.modules.keys()):
+                    if _is_proof_module(name):
+                        if name in saved_modules:
+                            sys.modules[name] = saved_modules[name]
+                        else:
+                            del sys.modules[name]
+                            if "." in name:
+                                parent, child = name.rsplit(".", 1)
+                                if parent in sys.modules and hasattr(sys.modules[parent], child):
+                                    try:
+                                        delattr(sys.modules[parent], child)
+                                    except (AttributeError, TypeError):
+                                        pass
+
+                for name, mod in saved_modules.items():
+                    sys.modules[name] = mod
+                    if "." in name:
+                        parent, child = name.rsplit(".", 1)
+                        if parent in sys.modules:
+                            try:
+                                setattr(sys.modules[parent], child, mod)
+                            except (AttributeError, TypeError):
+                                pass
+
+                sys.path[:] = saved_path
+            finally:
+                _ISOLATION_DEPTH -= 1
+
+    return wrapper
+
+
+@_preserve_proof_modules
 def verify_module_origins(w_path: str) -> tuple[Any, Any]:
     """
     Import proof.proofkit and proof.run_proof ensuring they originate strictly within w_path/proof.
@@ -141,6 +203,7 @@ def _latest_record(report_dir: str, unit: str) -> dict[str, Any] | None:
     return None
 
 
+@_preserve_proof_modules
 def validate_record_native(
     record: dict[str, Any] | None,
     *,
@@ -209,6 +272,7 @@ def validate_record_native(
     return computed, []
 
 
+@_preserve_proof_modules
 def validate_final_native(
     final_data: dict[str, Any] | None,
     *,
