@@ -11909,7 +11909,7 @@ def _stage_stub_payloads(
         rg2_summary = "echo 'RG2: 141 evaluated, 141 passed, 1 still excluded with reason, 0 failures'\n"
         rg2_exclusions = "echo '  [excluded after calibration] bench/std_missing_exercise.iyi: fixture std'\n"
     elif scenario == "rg2a-std-exclusion":
-        rg2a_summary = "echo 'RG2a: 141 evaluated, 141 passed, 0 still excluded with reason, 0 failures'\n"
+        rg2a_summary = "echo 'RG2a: 141 evaluated, 141 passed, 1 still excluded with reason, 0 failures'\n"
         rg2a_exclusions = "echo '  [excluded after calibration] bench/std_missing_exercise.iyi: fixture std'\n"
     elif scenario == "rg2-malformed-exclusion":
         rg2_summary = "echo 'RG2: 141 evaluated, 141 passed, 1 still excluded with reason, 0 failures'\n"
@@ -12795,34 +12795,31 @@ def _fixture_sibling_count_114_seed() -> Observation:
     return _run1_seed("sibling-count-114", "gate-1.4", "FAIL")
 
 
+_REASON_PREFIX_MAP: dict[str, str] = {
+    "RG2-SUMMARY-MISSING": "SUMMARY-MISSING",
+    "RG2-SUMMARY-DUPLICATE": "SUMMARY-DUPLICATE",
+    "RG2-SUMMARY-MALFORMED": "SUMMARY-MALFORMED",
+    "RG2-SENTINEL-MISSING": "SENTINEL-MISSING",
+    "RG2-SENTINEL-DUPLICATE": "SENTINEL-DUPLICATE",
+    "RG2-SENTINEL-ORDER": "SENTINEL-ORDER",
+    "RG2-SECTION-LINE-INVALID": "SECTION-LINE-INVALID",
+    "RG2-EXCLUSION-SELECTOR-INVALID": "SELECTOR-INVALID",
+    "RG2-EXCLUSION-DUPLICATE": "DUPLICATE",
+    "CALIBRATION-EXCLUSION": "CALIBRATION-EXCLUSION",
+    "RG2-EXCLUSION-LOG-MISMATCH": "LOG-MISMATCH",
+    "RG2-COUNT": "COUNT",
+}
+
+
 def _parse_reason_code_and_family(reason: str) -> tuple[str, str | None]:
-    for family in ("RG2", "RG2a"):
-        if reason.startswith(f"RG2-SUMMARY-MISSING: {family}"):
-            return ("SUMMARY-MISSING", family)
-        if reason.startswith(f"RG2-SUMMARY-DUPLICATE: {family}"):
-            return ("SUMMARY-DUPLICATE", family)
-        if reason.startswith(f"RG2-SUMMARY-MALFORMED: {family}"):
-            return ("SUMMARY-MALFORMED", family)
-        if reason.startswith(f"RG2-SENTINEL-MISSING: {family}"):
-            return ("SENTINEL-MISSING", family)
-        if reason.startswith(f"RG2-SENTINEL-DUPLICATE: {family}"):
-            return ("SENTINEL-DUPLICATE", family)
-        if reason.startswith(f"RG2-SENTINEL-ORDER: {family}"):
-            return ("SENTINEL-ORDER", family)
-        if reason.startswith(f"RG2-SECTION-LINE-INVALID: {family}"):
-            return ("SECTION-LINE-INVALID", family)
-        if reason.startswith(f"RG2-EXCLUSION-SELECTOR-INVALID: {family}"):
-            return ("SELECTOR-INVALID", family)
-        if reason.startswith(f"RG2-EXCLUSION-DUPLICATE: {family}"):
-            return ("DUPLICATE", family)
-        if reason.startswith(f"CALIBRATION-EXCLUSION: {family}"):
-            return ("CALIBRATION-EXCLUSION", family)
-        if reason.startswith(f"RG2-EXCLUSION-LOG-MISMATCH: {family}"):
-            return ("LOG-MISMATCH", family)
-        if reason.startswith(f"RG2-COUNT: {family}"):
-            return ("COUNT", family)
     if reason.startswith("RG2-EXCLUSION-UNATTRIBUTED:"):
         return ("EXCLUSION-UNATTRIBUTED", None)
+    if ": " in reason:
+        prefix, rest = reason.split(": ", 1)
+        if prefix in _REASON_PREFIX_MAP:
+            tokens = rest.split(None, 1)
+            if tokens and tokens[0] in ("RG2", "RG2a"):
+                return (_REASON_PREFIX_MAP[prefix], tokens[0])
     parts = reason.split(":", 1)
     return (parts[0], None)
 
@@ -13677,6 +13674,7 @@ def _fixture_final_rg2_log_tampered_seed() -> Observation:
 
 
 def _fixture_final_rg2_summary_tampered_seed() -> Observation:
+    cases = {}
     with StageFixture() as fixture:
         fixture.prepare_final_inputs()
         latest_run1 = stages_mod.latest_attempt_dir(
@@ -13690,7 +13688,7 @@ def _fixture_final_rg2_summary_tampered_seed() -> Observation:
         rc = stages_mod.cmd_final(fixture.args(), drivers=fixture.drivers)
         record = _o7_load_json(os.path.join(fixture.report, "final.json"))
         reasons = record.get("reasons", [])
-        got = {
+        cases["tampered_corpus"] = {
             "returncode": rc,
             "status": record.get("status"),
             "evidence_mismatch": any(
@@ -13698,19 +13696,74 @@ def _fixture_final_rg2_summary_tampered_seed() -> Observation:
                 for reason in reasons
             ),
         }
-        expected = {
+
+    with StageFixture() as fixture:
+        fixture.prepare_final_inputs()
+        latest_run1 = stages_mod.latest_attempt_dir(
+            os.path.join(fixture.report, "run1")
+        )
+        summary_path = os.path.join(latest_run1, "rg2_summary.json")
+        with open(summary_path, "w", encoding="utf-8") as output:
+            output.write("null\n")
+        rc = stages_mod.cmd_final(fixture.args(), drivers=fixture.drivers)
+        record = _o7_load_json(os.path.join(fixture.report, "final.json"))
+        reasons = record.get("reasons", [])
+        cases["null_summary"] = {
+            "returncode": rc,
+            "status": record.get("status"),
+            "evidence_mismatch": any(
+                str(reason).startswith("RG2-EVIDENCE-MISMATCH:")
+                for reason in reasons
+            ),
+        }
+
+    with StageFixture() as fixture:
+        fixture.prepare_final_inputs()
+        latest_run1 = stages_mod.latest_attempt_dir(
+            os.path.join(fixture.report, "run1")
+        )
+        summary_path = os.path.join(latest_run1, "rg2_summary.json")
+        with open(summary_path, "w", encoding="utf-8") as output:
+            output.write("{unreadable json syntax\n")
+        rc = stages_mod.cmd_final(fixture.args(), drivers=fixture.drivers)
+        record = _o7_load_json(os.path.join(fixture.report, "final.json"))
+        reasons = record.get("reasons", [])
+        cases["unreadable_summary"] = {
+            "returncode": rc,
+            "status": record.get("status"),
+            "summary_unreadable": any(
+                str(reason).startswith("RG2 stored summary unreadable:")
+                for reason in reasons
+            ),
+        }
+
+    got = cases
+    expected = {
+        "tampered_corpus": {
             "returncode": 1,
             "status": "FAIL",
             "evidence_mismatch": True,
-        }
-        return Observation(
-            expected=expected,
-            got=got,
-            applied="corpus modified in rg2_summary.json after prepare_final_inputs",
-        )
+        },
+        "null_summary": {
+            "returncode": 1,
+            "status": "FAIL",
+            "evidence_mismatch": True,
+        },
+        "unreadable_summary": {
+            "returncode": 1,
+            "status": "FAIL",
+            "summary_unreadable": True,
+        },
+    }
+    return Observation(
+        expected=expected,
+        got=got,
+        applied="tampered, null, and unreadable rg2_summary.json scenarios tested",
+    )
 
 
 def _fixture_final_rg2_evidence_missing_seed() -> Observation:
+    cases = {}
     with StageFixture() as fixture:
         fixture.prepare_final_inputs()
         latest_run1 = stages_mod.latest_attempt_dir(
@@ -13721,24 +13774,52 @@ def _fixture_final_rg2_evidence_missing_seed() -> Observation:
         rc = stages_mod.cmd_final(fixture.args(), drivers=fixture.drivers)
         record = _o7_load_json(os.path.join(fixture.report, "final.json"))
         reasons = record.get("reasons", [])
-        got = {
+        cases["missing_log"] = {
             "returncode": rc,
             "status": record.get("status"),
             "evidence_missing": any(
-                str(reason).startswith("RG2-EVIDENCE-MISSING:")
+                str(reason).startswith(f"RG2-EVIDENCE-MISSING: {log_path}")
                 for reason in reasons
             ),
         }
-        expected = {
+
+    with StageFixture() as fixture:
+        fixture.prepare_final_inputs()
+        latest_run1 = stages_mod.latest_attempt_dir(
+            os.path.join(fixture.report, "run1")
+        )
+        summary_path = os.path.join(latest_run1, "rg2_summary.json")
+        os.unlink(summary_path)
+        rc = stages_mod.cmd_final(fixture.args(), drivers=fixture.drivers)
+        record = _o7_load_json(os.path.join(fixture.report, "final.json"))
+        reasons = record.get("reasons", [])
+        cases["missing_summary"] = {
+            "returncode": rc,
+            "status": record.get("status"),
+            "evidence_missing": any(
+                str(reason).startswith(f"RG2-EVIDENCE-MISSING: {summary_path}")
+                for reason in reasons
+            ),
+        }
+
+    got = cases
+    expected = {
+        "missing_log": {
             "returncode": 1,
             "status": "FAIL",
             "evidence_missing": True,
-        }
-        return Observation(
-            expected=expected,
-            got=got,
-            applied="deleted run1_1.log after prepare_final_inputs",
-        )
+        },
+        "missing_summary": {
+            "returncode": 1,
+            "status": "FAIL",
+            "evidence_missing": True,
+        },
+    }
+    return Observation(
+        expected=expected,
+        got=got,
+        applied="distinct missing run1_1.log and missing rg2_summary.json scenarios tested",
+    )
 
 
 def _fixture_rg2_corpus_evidence_control() -> Observation:
@@ -13748,7 +13829,10 @@ def _fixture_rg2_corpus_evidence_control() -> Observation:
         run1_dir = os.path.join(fixture.report, "run1", "a1")
         summary = _o7_load_json(os.path.join(run1_dir, "rg2_summary.json"))
         exclusions = _o7_load_json(os.path.join(run1_dir, "exclusions.json"))
-        fixture.write_run2_prerequisite()
+        run2_rc = stages_mod.cmd_run2(
+            fixture.args(),
+            disk_min_gb=0.0,
+        )
         run3_rc = stages_mod.cmd_run3(
             fixture.args(),
             drivers=fixture.drivers,
@@ -13761,6 +13845,8 @@ def _fixture_rg2_corpus_evidence_control() -> Observation:
         rg2_final = final_record.get("rg2", {})
         got = {
             "run1_rc": run1_rc,
+            "run2_rc": run2_rc,
+            "run3_rc": run3_rc,
             "final_rc": final_rc,
             "final_status": final_record.get("status"),
             "summary_status": summary.get("status"),
@@ -13782,6 +13868,8 @@ def _fixture_rg2_corpus_evidence_control() -> Observation:
         }
         expected = {
             "run1_rc": 0,
+            "run2_rc": 0,
+            "run3_rc": 0,
             "final_rc": 0,
             "final_status": "PASS",
             "summary_status": "PASS",
@@ -19434,16 +19522,16 @@ ALLOWLIST: tuple[tuple[str, int, int, str, str], ...] = (
     ),
     (
         "proof.run_proof",
-        1791,
-        1797,
+        1788,
+        1794,
         "o7.seed.run-proof-optimize-refusal",
         "python -B -O proof/run_proof.py --help enters the nested optimize "
         "guard, prints the exact refusal, and exits 2",
     ),
     (
         "proof.run_proof",
-        1798,
-        1798,
+        1795,
+        1795,
         "o7.control.run-proof-optimize",
         "python -B proof/run_proof.py --help reaches the normal direct-script "
         "main handoff and exits 0",
