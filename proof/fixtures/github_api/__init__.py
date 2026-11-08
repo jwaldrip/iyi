@@ -5,9 +5,10 @@ and explicitly documented derived fixtures for testing strict-proof authorizatio
 """
 
 from copy import deepcopy
+import hashlib
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 FIXTURES_DIR = Path(__file__).resolve().parent
 
@@ -19,6 +20,28 @@ def load_fixture(name: str) -> Any:
         raise FileNotFoundError(f"Fixture not found: {name}")
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def git_blob_id(data: bytes) -> str:
+    """Compute git object SHA-1 for a blob."""
+    header = f"blob {len(data)}\0".encode("utf-8")
+    return hashlib.sha1(header + data).hexdigest()
+
+
+def digest(raw: bytes) -> str:
+    """Return lowercase hex SHA-256 digest."""
+    return hashlib.sha256(raw).hexdigest()
+
+
+def canonical(value: Any) -> bytes:
+    """Serialize value to deterministic canonical UTF-8 JSON without trailing newline."""
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    ).encode("utf-8")
 
 
 def get_repo_fixture() -> Dict[str, Any]:
@@ -57,7 +80,9 @@ def get_branch_deploy_fixture() -> Dict[str, Any]:
     return load_fixture("branch_deploy.json")
 
 
-def get_rules_branch_deploy_fixture() -> List[Dict[str, Any]]:
+def get_rules_branch_deploy_fixture(active: bool = False) -> List[Dict[str, Any]]:
+    if active:
+        return load_fixture("rules_branch_deploy_active.json")
     return load_fixture("rules_branch_deploy.json")
 
 
@@ -229,3 +254,242 @@ def get_manifest_artifact_fixture(
         "substitutions": ["id", "name", "digest", "expired", "created_at", "workflow_run"],
     }
     return base
+
+
+def get_val_jobs_fixture(val_run_id: int, head_sha: str) -> List[Dict[str, Any]]:
+    """Generate exact 7 validation/rehearsal jobs (all success) plus skipped prepare/strict."""
+    jobs = [
+        {
+            "id": 1001,
+            "run_id": val_run_id,
+            "run_attempt": 1,
+            "name": "Generate supervisor bundle",
+            "workflow_name": "Remote Strict Proof Chain (macOS 15)",
+            "head_sha": head_sha,
+            "status": "completed",
+            "conclusion": "success",
+            "runner_name": "GitHub Actions 1",
+            "started_at": "2026-11-06T00:01:00Z",
+            "completed_at": "2026-11-06T00:03:00Z",
+        },
+        {
+            "id": 1002,
+            "run_id": val_run_id,
+            "run_attempt": 1,
+            "name": "Controller synthetic and validation proofs (macOS 15)",
+            "workflow_name": "Remote Strict Proof Chain (macOS 15)",
+            "head_sha": head_sha,
+            "status": "completed",
+            "conclusion": "success",
+            "runner_name": "GitHub Actions 2",
+            "started_at": "2026-11-06T00:03:00Z",
+            "completed_at": "2026-11-06T00:10:00Z",
+        },
+        {
+            "id": 1003,
+            "run_id": val_run_id,
+            "run_attempt": 1,
+            "name": "Ownership recovery (clean-success)",
+            "workflow_name": "Remote Strict Proof Chain (macOS 15)",
+            "head_sha": head_sha,
+            "status": "completed",
+            "conclusion": "success",
+            "runner_name": "GitHub Actions 3",
+            "started_at": "2026-11-06T00:10:00Z",
+            "completed_at": "2026-11-06T00:12:00Z",
+        },
+        {
+            "id": 1004,
+            "run_id": val_run_id,
+            "run_attempt": 1,
+            "name": "Ownership recovery (divergence-retry)",
+            "workflow_name": "Remote Strict Proof Chain (macOS 15)",
+            "head_sha": head_sha,
+            "status": "completed",
+            "conclusion": "success",
+            "runner_name": "GitHub Actions 4",
+            "started_at": "2026-11-06T00:10:00Z",
+            "completed_at": "2026-11-06T00:12:00Z",
+        },
+        {
+            "id": 1005,
+            "run_id": val_run_id,
+            "run_attempt": 1,
+            "name": "Ownership recovery (run1-outage)",
+            "workflow_name": "Remote Strict Proof Chain (macOS 15)",
+            "head_sha": head_sha,
+            "status": "completed",
+            "conclusion": "success",
+            "runner_name": "GitHub Actions 5",
+            "started_at": "2026-11-06T00:10:00Z",
+            "completed_at": "2026-11-06T00:12:00Z",
+        },
+        {
+            "id": 1006,
+            "run_id": val_run_id,
+            "run_attempt": 1,
+            "name": "Verify complete hosted evidence inventory",
+            "workflow_name": "Remote Strict Proof Chain (macOS 15)",
+            "head_sha": head_sha,
+            "status": "completed",
+            "conclusion": "success",
+            "runner_name": "GitHub Actions 6",
+            "started_at": "2026-11-06T00:12:00Z",
+            "completed_at": "2026-11-06T00:14:00Z",
+        },
+        {
+            "id": 1007,
+            "run_id": val_run_id,
+            "run_attempt": 1,
+            "name": "Authorization rehearsal against GitHub API",
+            "workflow_name": "Remote Strict Proof Chain (macOS 15)",
+            "head_sha": head_sha,
+            "status": "completed",
+            "conclusion": "success",
+            "runner_name": "GitHub Actions 7",
+            "started_at": "2026-11-06T00:14:00Z",
+            "completed_at": "2026-11-06T00:16:00Z",
+        },
+        {
+            "id": 1008,
+            "run_id": val_run_id,
+            "run_attempt": 1,
+            "name": "Prepare strict authorization manifest",
+            "workflow_name": "Remote Strict Proof Chain (macOS 15)",
+            "head_sha": head_sha,
+            "status": "completed",
+            "conclusion": "skipped",
+        },
+        {
+            "id": 1009,
+            "run_id": val_run_id,
+            "run_attempt": 1,
+            "name": "Sequential strict-chain attempt (macOS 15)",
+            "workflow_name": "Remote Strict Proof Chain (macOS 15)",
+            "head_sha": head_sha,
+            "status": "completed",
+            "conclusion": "skipped",
+        },
+    ]
+    return jobs
+
+
+def get_val_artifacts_fixture(
+    val_run_id: int,
+    head_sha: str,
+    summary_digest: str,
+    rehearsal_digest: str,
+    bundle_digest: str = "sha256:" + "b" * 64,
+) -> List[Dict[str, Any]]:
+    """Generate exact 62 artifacts for validation run, including the 4 named artifacts."""
+    named = [
+        {
+            "id": 2001,
+            "name": "remote-strict-validation-evidence",
+            "digest": "sha256:" + "a" * 64,
+            "expired": False,
+            "created_at": "2026-11-06T00:15:00Z",
+            "workflow_run": {"id": val_run_id, "head_sha": head_sha},
+        },
+        {
+            "id": 2002,
+            "name": f"supervisor-bundle-{head_sha}",
+            "digest": bundle_digest,
+            "expired": False,
+            "created_at": "2026-11-06T00:15:00Z",
+            "workflow_run": {"id": val_run_id, "head_sha": head_sha},
+        },
+        {
+            "id": 2003,
+            "name": "rail-validation-summary",
+            "digest": summary_digest,
+            "expired": False,
+            "created_at": "2026-11-06T00:15:00Z",
+            "workflow_run": {"id": val_run_id, "head_sha": head_sha},
+        },
+        {
+            "id": 2004,
+            "name": "rail-rehearsal-report",
+            "digest": rehearsal_digest,
+            "expired": False,
+            "created_at": "2026-11-06T00:15:00Z",
+            "workflow_run": {"id": val_run_id, "head_sha": head_sha},
+        },
+    ]
+
+    other = []
+    for i in range(5, 63):
+        other.append({
+            "id": 2000 + i,
+            "name": f"evidence-artifact-{i:02d}",
+            "digest": f"sha256:{digest(f'art-{i}'.encode('utf-8'))}",
+            "expired": False,
+            "created_at": "2026-11-06T00:15:00Z",
+            "workflow_run": {"id": val_run_id, "head_sha": head_sha},
+        })
+
+    return named + other
+
+
+def get_audit_files_fixture(
+    c_sha: str,
+    val_run_id: str,
+    val_artifacts: Dict[str, Dict[str, str]],
+    harness_run_id: str = "42429518284",
+    harness_artifact_id: str = "13600255503",
+    harness_digest: str = "sha256:3eb033b6e255cec4cc137d4c6379b1ca97a4c43712ac5171e57a48cf24fb3862",
+    p_sha: str = "180f14f91c829b25362a5ed34b20847f3ac2db77",
+    w_sha: str = "5a3770e96fb12099c4ce9dc3b21895de07dd4cd8",
+    h_sha: str = "48ffd47caaf45ff9580c35e6f2b0e3c285144bcc",
+    repo_id: str = "1340355933",
+) -> Tuple[Dict[str, Tuple[bytes, str]], Dict[str, Dict[str, str]], Dict[str, Any]]:
+    """Generate genuine audit.json, audit.md, census-review.md with verified blob SHAs."""
+    audit_md_bytes = b"# Independent Security Audit Report\n\nVerified independent review for strict proof.\n"
+    census_review_bytes = b"# Census Review\n\nPreserved census review for refreshed proof.\n"
+
+    audit_md_blob = git_blob_id(audit_md_bytes)
+    census_blob = git_blob_id(census_review_bytes)
+
+    audit_dict = {
+        "schema": "iyi.strict-independent-audit.v2",
+        "verdict": "GO",
+        "repository_id": str(repo_id),
+        "c_sha": c_sha,
+        "p_sha": p_sha,
+        "w_sha": w_sha,
+        "h_sha": h_sha,
+        "validation": {
+            "run_id": str(val_run_id),
+            "artifacts": {k: v["digest"] for k, v in val_artifacts.items()},
+        },
+        "harness": {
+            "run_id": harness_run_id,
+            "artifact_id": harness_artifact_id,
+            "digest": harness_digest,
+        },
+        "report_sha256": digest(audit_md_bytes),
+        "census_review_sha256": digest(census_review_bytes),
+        "open_blocking_findings": [],
+        "s6_signing_ruling": "S6 verified: independent audit ruling GO",
+        "self_declared": {
+            "reviewer": "independent-agent",
+            "model": "anthropic/claude-opus-5-5",
+            "did_not_implement": True,
+        },
+    }
+    audit_json_bytes = canonical(audit_dict)
+    audit_json_blob = git_blob_id(audit_json_bytes)
+
+    files_raw = {
+        "audit.json": (audit_json_bytes, audit_json_blob),
+        "audit.md": (audit_md_bytes, audit_md_blob),
+        "census-review.md": (census_review_bytes, census_blob),
+    }
+
+    files_map = {
+        "audit.json": {"blob": audit_json_blob, "sha256": digest(audit_json_bytes)},
+        "audit.md": {"blob": audit_md_blob, "sha256": digest(audit_md_bytes)},
+        "census-review.md": {"blob": census_blob, "sha256": digest(census_review_bytes)},
+    }
+
+    return files_raw, files_map, audit_dict

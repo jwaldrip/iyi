@@ -1,0 +1,23 @@
+[
+  {
+    "type": "deletion",
+    "ruleset_id": 65877824,
+    "ruleset_source_type": "Repository",
+    "ruleset_source": "jwaldrip/iyi"
+  },
+  {
+    "type": "non_fast_forward",
+    "ruleset_id": 65877824,
+    "ruleset_source_type": "Repository",
+    "ruleset_source": "jwaldrip/iyi"
+  },
+  {
+    "type": "update",
+    "ruleset_id": 65877824,
+    "ruleset_source_type": "Repository",
+    "ruleset_source": "jwaldrip/iyi",
+    "parameters": {
+      "update_allows_fetch_and_merge": false
+    }
+  }
+]

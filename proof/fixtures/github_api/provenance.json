@@ -167,6 +167,11 @@
         "workflow_run.head_sha": "72c3c7d026369e5f59553d0c6cb208233f545d24",
         "workflow_run.head_branch": "proof/strict-lifecycle-repair-20261102"
       }
+    },
+    "rules_branch_deploy_active.json": {
+      "base_fixture": "rules_branch_deploy.json",
+      "description": "Active repository ruleset rules for deploy branch including deletion, non_fast_forward, and update with update_allows_fetch_and_merge: false",
+      "ruleset_id": 65877824
     }
   }
 }
