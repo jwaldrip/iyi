@@ -1305,6 +1305,7 @@ class MockGitHubAPIServer:
             f"repos/{PINNED_REPOSITORY}/environments/{PINNED_ENVIRONMENT_NAME}/deployment-branch-policies": {"branch_policies": branch_policies},
             f"repos/{PINNED_REPOSITORY}/branches/{PINNED_DEPLOY_BRANCH}": branch_data,
             f"repos/{PINNED_REPOSITORY}/rules/branches/{PINNED_DEPLOY_BRANCH}": get_rules_branch_deploy_fixture(active=True),
+            f"repos/{PINNED_P_PR_REPOSITORY}/pulls/{PINNED_P_PR_NUMBER}": get_pull_147_fixture(),
             f"repos/{PINNED_REPOSITORY}/compare/{PINNED_P_SHA}...{PINNED_W_SHA}": get_compare_pw_fixture(),
             f"repos/{PINNED_REPOSITORY}/compare/{PINNED_W_SHA}...{PINNED_H_SHA}": get_compare_wh_fixture(),
             f"repos/{PINNED_REPOSITORY}/actions/runs/{HARNESS_RUN_ID}": load_fixture("run_42429518284.json"),
