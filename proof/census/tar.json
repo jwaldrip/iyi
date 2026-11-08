@@ -1,0 +1,150 @@
+{
+  "census_version": 1,
+  "driver": "tar",
+  "script": "bench/std_tar_exercise.sh",
+  "script_sha256": "df592802609922641bbd5c034903739cd07fb873eb774b4d5039cafd2c593ace",
+  "sites": [
+    {
+      "lines": [
+        265,
+        266
+      ],
+      "command": "build",
+      "kind": "canonical-own",
+      "contains": [
+        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_tar"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        400
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build -o \"$WORK/$name\" \"$WORK/$name.iyi\" > \"$WOR"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        486
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "elif ! IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/s"
+      ],
+      "variants": [
+        {
+          "id": "tar.negative.486",
+          "kind": "negative",
+          "first_root": "{WORK}/patched",
+          "vars": {
+            "mutations": {
+              "lines": [
+                470
+              ],
+              "pattern": "[1-9][0-9]*",
+              "pattern_reason_line": 470
+            }
+          },
+          "sources": [
+            "{REPO}/bench/std_tar_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-{mutations}.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              486,
+              489,
+              490,
+              492,
+              493,
+              498
+            ],
+            "contains": [
+              "elif ! IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PS",
+              "elif \"$WORK/mut-$mutations.bin\" \"$WORK/fixtures\" >"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "non_invocations": [],
+  "skips": [],
+  "not_skips": [],
+  "pass_sentinel": {
+    "line": 593,
+    "regex": "the\\ std/tar\\ exercise\\ holds\\ \\(",
+    "text": "  echo \"the std/tar exercise holds ($mutations breaks caught)\""
+  },
+  "exec_evidence": [
+    {
+      "site_line": 265,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "284": "tar-plain",
+        "382": "tar-release"
+      },
+      "exec_lines": [
+        272
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        269,
+        270,
+        277,
+        278,
+        287,
+        386
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1"
+      ],
+      "refs_ok": []
+    },
+    {
+      "site_line": 400,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "421": "add_after",
+        "425": "finish_twice",
+        "429": "empty_name",
+        "431": "absolute",
+        "433": "nul_name",
+        "435": "no_target",
+        "437": "big_mode",
+        "439": "negative_uid",
+        "441": "negative_size",
+        "443": "short_source",
+        "445": "read_zero",
+        "451": "read_past",
+        "461": "not_tar"
+      },
+      "exec_lines": [
+        406
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        403,
+        404,
+        410,
+        411,
+        416,
+        417
+      ],
+      "failure_marks": [
+        "status=1",
+        "return"
+      ],
+      "refs_ok": []
+    }
+  ]
+}
