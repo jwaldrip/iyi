@@ -61,6 +61,7 @@ from proof.strict_authorization import (
     ARTIFACT_NAME_MANIFEST,
     ARTIFACT_NAME_RAIL_SUMMARY,
     ARTIFACT_NAME_REHEARSAL_REPORT,
+    ARTIFACT_NAME_VERIFICATION,
     AUTH_REFUSED_EXIT_CODE,
     AuthorizationError,
     GitHubAPIClient,
