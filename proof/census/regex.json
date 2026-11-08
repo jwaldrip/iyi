@@ -2,7 +2,7 @@
   "census_version": 1,
   "driver": "regex",
   "script": "bench/std_regex_exercise.sh",
-  "script_sha256": "fd36adcb44b5bb37b94f1f03b8806855b8651c8eba1a6768e225c8b7faca0823",
+  "script_sha256": "638a2017da47dcf53ce2ba56e472abf589873d96aa40c64d95a38e0f2ed3664e",
   "sites": [
     {
       "lines": [
@@ -201,28 +201,84 @@
     },
     {
       "lines": [
-        575
+        674
       ],
-      "command": "run",
+      "command": "build",
       "kind": "canonical-other",
       "contains": [
-        "if \"$IYI\" run \"$WORK/script.iyi\" > \"$WORK/script.out\" 2>&1 &"
+        "if ! \"$IYI\" build -o \"$WORK/shared\" \"$WORK/shared.iyi\" > \"$WORK/shared.build\" 2>&1; then"
       ],
       "variants": []
     },
     {
       "lines": [
-        592
+        726
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "elif ! IYI_PATH=\"$WORK/scratch${PSEP}$REPO/src${PSEP}$REPO/samples/iyi\" \"$IYI\" build -o \"$WORK/shared-scratch\" \"$WORK/shared.iyi\""
+      ],
+      "variants": [
+        {
+          "id": "regex.negative.726",
+          "kind": "negative",
+          "first_root": "{WORK}/scratch",
+          "vars": {},
+          "sources": [
+            "{WORK}/shared.iyi"
+          ],
+          "output": "{WORK}/shared-scratch",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              737,
+              741
+            ],
+            "contains": [
+              "scratch shared across matches is caught:",
+              "status=1"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "lines": [
+        773
       ],
       "command": "run",
       "kind": "canonical-other",
       "contains": [
-        "if \"$IYI\" run \"$WORK/walled.iyi\" > \"$WORK/walled.out\" 2>&1 &"
+        "if \"$IYI\" run \"$WORK/script.iyi\" > \"$WORK/script.out\" 2>&1 && grep -qx \"aa\" \"$WORK/script.out\"; then"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        790
+      ],
+      "command": "run",
+      "kind": "canonical-other",
+      "contains": [
+        "if \"$IYI\" run \"$WORK/walled.iyi\" > \"$WORK/walled.out\" 2>&1 && grep -qx \"3\" \"$WORK/walled.out\"; then"
       ],
       "variants": []
     }
   ],
-  "non_invocations": [],
+  "non_invocations": [
+    {
+      "line": 684,
+      "reason": "compiler check invocation under --error-on-warnings, not build or run"
+    },
+    {
+      "line": 749,
+      "reason": "compiler check invocation on broken setter module, not build or run"
+    }
+  ],
   "skips": [
     {
       "line": 51,
@@ -244,6 +300,13 @@
       "what": "python3",
       "regex": "\\ \\ .*?:\\ skipped,\\ no\\ working\\ python3\\ to\\ make\\ the\\ broken\\ copy\\ with",
       "text": "    echo \"  $label: skipped, no working python3 to make the broken copy with\""
+    },
+    {
+      "line": 692,
+      "class": "tool",
+      "what": "python3",
+      "regex": "\\ \\ skipped\\ the\\ broken\\ copies:\\ no\\ working\\ python3",
+      "text": "  echo \"  skipped the broken copies: no working python3\""
     }
   ],
   "not_skips": [
@@ -259,7 +322,7 @@
     }
   ],
   "pass_sentinel": {
-    "line": 602,
+    "line": 800,
     "regex": "the\\ std/regex\\ exercise\\ holds",
     "text": "  echo \"the std/regex exercise holds\""
   },

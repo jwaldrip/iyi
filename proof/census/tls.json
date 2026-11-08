@@ -2,20 +2,28 @@
   "census_version": 1,
   "driver": "tls",
   "script": "bench/std_tls_exercise.sh",
-  "script_sha256": "531b960001fd6442193548b9ede6580d90553c0b8a54bd4679aeaa772ea97cde",
+  "script_sha256": "00d5416c945e868d9fa5796c51259dab7268c4f6830742df480ad8aeb477fd5d",
   "sites": [
     {
-      "lines": [96],
+      "lines": [
+        145
+      ],
       "command": "build",
       "kind": "canonical-own",
-      "contains": ["\"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_tls_exercise.iyi\""],
+      "contains": [
+        "\"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_tls_exercise.iyi\""
+      ],
       "variants": []
     },
     {
-      "lines": [795],
+      "lines": [
+        932
+      ],
       "command": "build",
       "kind": "positive",
-      "contains": ["IYI_PATH=\"$WORK/$name${PSEP}$REPO/src${PSEP}$REPO/samples/iyi\" \"$IYI\" build -o \"$WORK/$name/tlsx\""],
+      "contains": [
+        "IYI_PATH=\"$WORK/$name${PSEP}$REPO/src${PSEP}$REPO/samples/iyi\" \"$IYI\" build -o \"$WORK/$name/tlsx\""
+      ],
       "variants": [
         {
           "id": "tls.positive.downgrade.795",
@@ -23,75 +31,129 @@
           "first_root": "{WORK}/{name}",
           "vars": {
             "name": {
-              "lines": [806, 814],
-              "values": ["downgrade", "downgrade-unchecked"]
+              "lines": [
+                942,
+                950
+              ],
+              "values": [
+                "downgrade",
+                "downgrade-unchecked"
+              ]
             }
           },
-          "sources": ["{REPO}/bench/std_tls_exercise.iyi"],
+          "sources": [
+            "{REPO}/bench/std_tls_exercise.iyi"
+          ],
           "output": "{WORK}/{name}/tlsx",
           "darwin": "required",
-          "requires": ["python3", "openssl"],
+          "requires": [
+            "python3",
+            "openssl"
+          ],
           "verdict": {
-            "lines": [811, 812, 818, 819],
-            "contains": ["FAIL a ClientHello offering TLS 1.2 alone", "FAIL the sentinel check removed", "status=1"]
+            "lines": [
+              947,
+              948,
+              954,
+              955
+            ],
+            "contains": [
+              "FAIL a ClientHello offering TLS 1.2 alone",
+              "FAIL the sentinel check removed",
+              "status=1"
+            ]
           }
         }
       ]
     },
     {
-      "lines": [2211],
+      "lines": [
+        2337
+      ],
       "command": "run",
       "kind": "canonical-other",
-      "contains": ["TLS_PORT=\"$(cat \"$SERVER_DIR/port\")\" \"$IYI\" run \"$WORK/refuse.iyi\""],
+      "contains": [
+        "TLS_PORT=\"$(cat \"$SERVER_DIR/port\")\" \"$IYI\" run \"$WORK/refuse.iyi\""
+      ],
       "variants": []
     },
     {
-      "lines": [2239],
+      "lines": [
+        2365
+      ],
       "command": "run",
       "kind": "canonical-other",
-      "contains": ["TLS_DIR=\"$SERVER_DIR\" \"$IYI\" run \"$WORK/readzero.iyi\""],
+      "contains": [
+        "TLS_DIR=\"$SERVER_DIR\" \"$IYI\" run \"$WORK/readzero.iyi\""
+      ],
       "variants": []
     },
     {
-      "lines": [2252],
+      "lines": [
+        2378
+      ],
       "command": "doc",
       "kind": "unchanged",
-      "contains": ["\"$IYI\" doc \"$REPO/src/std/tls.iyi\""],
+      "contains": [
+        "\"$IYI\" doc \"$REPO/src/std/tls.iyi\""
+      ],
       "variants": []
     },
     {
-      "lines": [2258],
+      "lines": [
+        2384
+      ],
       "command": "fmt",
       "kind": "unchanged",
-      "contains": ["\"$IYI\" fmt --check \"$REPO/src/std/tls.iyi\" \"$REPO/bench/std_tls_exercise.iyi\""],
+      "contains": [
+        "\"$IYI\" fmt --check \"$REPO/src/std/tls.iyi\" \"$REPO/bench/std_tls_exercise.iyi\""
+      ],
       "variants": []
     },
     {
-      "lines": [2266],
+      "lines": [
+        2392
+      ],
       "command": "build",
       "kind": "unchanged",
-      "contains": ["\"$IYI\" build --no-codegen --target \"$target\" -o \"$WORK/cross\""],
+      "contains": [
+        "\"$IYI\" build --no-codegen --target \"$target\" -o \"$WORK/cross\""
+      ],
       "variants": []
     },
     {
-      "lines": [2278],
+      "lines": [
+        2404
+      ],
       "command": "build",
       "kind": "passthrough",
-      "contains": ["\"$IYI\" build --emit-iyimod mods -o from-source"],
+      "contains": [
+        "\"$IYI\" build --emit-iyimod mods -o from-source"
+      ],
       "variants": []
     },
     {
-      "lines": [2279],
+      "lines": [
+        2405
+      ],
       "command": "build",
       "kind": "passthrough",
-      "contains": ["\"$IYI\" build --use-iyimod mods -o from-artifact"],
+      "contains": [
+        "\"$IYI\" build --use-iyimod mods -o from-artifact"
+      ],
       "variants": []
     },
     {
-      "lines": [2392, 2393],
+      "lines": [
+        2561,
+        2562
+      ],
       "command": "build",
       "kind": "negative",
-      "contains": ["IYI_PATH=\"$W/patched${PSEP}$REPO/src${PSEP}$REPO/samples/iyi\" \"$IYI\" build -o \"$W/tlsx\"", "\"$REPO/bench/std_tls_exercise.iyi\""],
+      "contains": [
+        "IYI_PATH=\"$W/patched${PSEP}$REPO/src${PSEP}$REPO/samples/iyi\" \"$IYI\" build -o \"$W/tlsx\"",
+        "\"$REPO/bench/std_tls_exercise.iyi\""
+      ],
       "variants": [
         {
           "id": "tls.negative.mutations.2392",
@@ -99,18 +161,35 @@
           "first_root": "{WORK}/mut-{n}/patched",
           "vars": {
             "n": {
-              "lines": [2496, 2497],
+              "lines": [
+                2661,
+                2662
+              ],
               "pattern": "[1-9][0-9]*",
-              "pattern_reason_line": 2496
+              "pattern_reason_line": 2661
             }
           },
-          "sources": ["{REPO}/bench/std_tls_exercise.iyi"],
+          "sources": [
+            "{REPO}/bench/std_tls_exercise.iyi"
+          ],
           "output": "{WORK}/mut-{n}/tlsx",
           "darwin": "required",
-          "requires": ["python3"],
+          "requires": [
+            "python3"
+          ],
           "verdict": {
-            "lines": [2394, 2477, 2478, 2484, 2486],
-            "contains": ["the $label copy did not build", "the exercise PASSED on $label", "$label failed, but not where it should have"]
+            "lines": [
+              2563,
+              2642,
+              2643,
+              2649,
+              2651
+            ],
+            "contains": [
+              "the $label copy did not build",
+              "the exercise PASSED on $label",
+              "$label failed, but not where it should have"
+            ]
           }
         }
       ]
@@ -119,98 +198,98 @@
   "non_invocations": [],
   "skips": [
     {
-      "line": 210,
+      "line": 259,
       "class": "tool",
       "what": "openssl and python3",
       "regex": "^  no openssl and python here \\(or Windows, whose s_server this gate does not drive\\), so OpenSSL goes unasked$",
       "text": "  echo \"  no openssl and python here (or Windows, whose s_server this gate does not drive), so OpenSSL goes unasked\""
     },
     {
-      "line": 525,
+      "line": 569,
       "class": "tool",
       "what": "openssl X25519MLKEM768",
       "regex": "^  .* has no X25519MLKEM768 \\(OpenSSL has it from 3\\.5\\), so the client's hybrid goes unasked by it$",
       "text": "    echo \"  $(\"$OPENSSL\" version) has no X25519MLKEM768 (OpenSSL has it from 3.5), so the client's hybrid goes unasked by it\""
     },
     {
-      "line": 575,
+      "line": 620,
       "class": "tool",
       "what": "openssl and python3",
       "regex": "^  no openssl and python here, so TLS 1\\.2 goes unasked$",
       "text": "  echo \"  no openssl and python here, so TLS 1.2 goes unasked\""
     },
     {
-      "line": 645,
+      "line": 688,
       "class": "tool",
       "what": "openssl -no_ems",
       "regex": "^  a server without the extended master secret: this OpenSSL \\(.*\\) cannot serve one, so it goes unasked$",
       "text": "      echo \"  a server without the extended master secret: this OpenSSL ($(\"$OPENSSL\" version | cut -d' ' -f2)) cannot serve one, so it goes unasked\""
     },
     {
-      "line": 838,
+      "line": 974,
       "class": "tool",
       "what": "python3 cryptography",
       "regex": "^  no python cryptography here, so the server goes unasked$",
       "text": "  echo \"  no python cryptography here, so the server goes unasked\""
     },
     {
-      "line": 1268,
+      "line": 1404,
       "class": "tool",
       "what": "openssl X25519MLKEM768",
       "regex": "^  OpenSSL, .*: no X25519MLKEM768 in this OpenSSL \\(it has it from 3\\.5\\), so the server's hybrid goes unasked by s_client$",
       "text": "        echo \"  OpenSSL, $kind: no X25519MLKEM768 in this OpenSSL (it has it from 3.5), so the server's hybrid goes unasked by s_client\""
     },
     {
-      "line": 1332,
+      "line": 1468,
       "class": "tool",
       "what": "openssl s_client",
       "regex": "^  no openssl here \\(or Windows\\), so s_client goes unasked$",
       "text": "      echo \"  no openssl here (or Windows), so s_client goes unasked\""
     },
     {
-      "line": 1716,
+      "line": 1845,
       "class": "tool",
       "what": "openssl -no_ems",
       "regex": "^  OpenSSL, TLS 1\\.2, .*, no extended master secret: this OpenSSL \\(.*\\) cannot leave it out, so it goes unasked$",
       "text": "          echo \"  OpenSSL, TLS 1.2, $kind, no extended master secret: this OpenSSL ($(\"$OPENSSL\" version | cut -d' ' -f2)) cannot leave it out, so it goes unasked\""
     },
     {
-      "line": 1797,
+      "line": 1926,
       "class": "tool",
       "what": "python3 cryptography",
       "regex": "^  no python cryptography here, so the TLS 1\\.2 server goes unasked$",
       "text": "  echo \"  no python cryptography here, so the TLS 1.2 server goes unasked\""
     },
     {
-      "line": 1833,
+      "line": 1962,
       "class": "tool",
       "what": "openssl status_file and python3 cryptography ocsp",
       "regex": "^  no OpenSSL with s_server -status_file, or no python cryptography with x509\\.ocsp, here \\(or Windows\\), so stapling goes unasked$",
       "text": "  echo \"  no OpenSSL with s_server -status_file, or no python cryptography with x509.ocsp, here (or Windows), so stapling goes unasked\""
     },
     {
-      "line": 2079,
+      "line": 2206,
       "class": "tool",
       "what": "go 1.25",
       "regex": "^  no Go 1\\.25 or later here, so Go's ECH client and server go unasked$",
       "text": "  echo \"  no Go 1.25 or later here, so Go's ECH client and server go unasked\""
     },
     {
-      "line": 2197,
+      "line": 2323,
       "class": "tool",
       "what": "python3 scripted server",
       "regex": "^  no scripted server to refuse a handshake, so the sentence goes unshown$",
       "text": "  echo \"  no scripted server to refuse a handshake, so the sentence goes unshown\""
     },
     {
-      "line": 3168,
+      "line": 3333,
       "class": "tool",
       "what": "openssl and python3 downgrade copy",
       "regex": "^  no copy of the client offering TLS 1\\.2 alone here, so the sentinel's proof before it is unmeasured$",
       "text": "  echo \"  no copy of the client offering TLS 1.2 alone here, so the sentinel's proof before it is unmeasured\""
     },
     {
-      "line": 3260,
+      "line": 3425,
       "class": "tool",
       "what": "openssl",
       "regex": "^  no openssl here \\(or Windows\\), so the server's TLS 1\\.2 exporter proof is unmeasured$",
@@ -219,37 +298,60 @@
   ],
   "not_skips": [],
   "pass_sentinel": {
-    "line": 3433,
+    "line": 3604,
     "regex": "^the std/tls exercise holds \\(.* breaks caught\\)$",
     "text": "  echo \"the std/tls exercise holds ($mutations breaks caught)\""
   },
   "exec_evidence": [
     {
-      "site_line": 96,
+      "site_line": 145,
       "out_template": "{WORK}/{name}",
       "name_from_calls": {
-        "115": "tls-plain",
-        "133": "tls-release"
+        "164": "tls-plain",
+        "182": "tls-release"
       },
-      "exec_lines": [103],
+      "exec_lines": [
+        152
+      ],
       "exec_token": "\"$WORK/$name\"",
-      "verdict_lines": [100, 101, 108, 109, 118, 126, 136],
-      "failure_marks": ["status=1", "return 1"],
+      "verdict_lines": [
+        149,
+        150,
+        157,
+        158,
+        167,
+        175,
+        185
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1"
+      ],
       "refs_ok": [
-        {"line": 784, "kind": "cleanup"}
+        {
+          "line": 921,
+          "kind": "cleanup"
+        }
       ]
     },
     {
-      "site_line": 795,
+      "site_line": 932,
       "out_template": "{WORK}/{name}/tlsx",
       "name_from_calls": {
-        "806": "downgrade",
-        "814": "downgrade-unchecked"
+        "942": "downgrade",
+        "950": "downgrade-unchecked"
       },
-      "exec_lines": [802],
+      "exec_lines": [
+        939
+      ],
       "exec_token": "\"$WORK/$name/tlsx\"",
-      "verdict_lines": [812, 819],
-      "failure_marks": ["status=1"],
+      "verdict_lines": [
+        948,
+        955
+      ],
+      "failure_marks": [
+        "status=1"
+      ],
       "refs_ok": []
     }
   ]
