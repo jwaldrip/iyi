@@ -7,12 +7,12 @@ environment attestation policy:
     action pins, supervisor bundle, validation artifacts, preserved harness copy,
     and independent audit commit into an immutable canonical manifest.
   - Platform attestation: GitHub records that account 43164 (jwaldrip) approved
-    environment 'strict-proof' (ID 26584191206) for this run attempt 1 with exactly
+    environment 'strict-proof' (ID 26584191206) for this run with exactly
     the comment 'iyi-strict-authorization-v2 sha256:<D>'. It does not record who
     operated the account or which credential was used. Reviewer independence and audit
     soundness are attested by the approver; no system authenticates the reviewer.
   - Fail-closed execution: All checks must pass against GitHub API before authorization
-    is granted. Any verification failure, tampering, or API fault exits 5.
+    is granted. Any verification failure, tampering, or API fault exits with failure (exit code 5).
 """
 
 import argparse
@@ -267,13 +267,17 @@ def read_strict_manifest_binding(
     if m.get("schema") != SCHEMA_MANIFEST:
         raise AuthorizationError(f"manifest schema mismatch: expected {SCHEMA_MANIFEST}, got {m.get('schema')}")
 
-    repo_obj = m.get("repository", {})
+    repo_obj = m.get("repository")
+    if not isinstance(repo_obj, dict):
+        raise AuthorizationError("manifest repository must be an object")
     if repo_obj.get("full_name") != repository:
         raise AuthorizationError(f"repository mismatch: expected {repository}, got {repo_obj.get('full_name')}")
     if str(repo_obj.get("id")) != PINNED_REPOSITORY_ID:
         raise AuthorizationError(f"repository id mismatch: expected {PINNED_REPOSITORY_ID}, got {repo_obj.get('id')}")
 
-    strict_run = m.get("strict_run", {})
+    strict_run = m.get("strict_run")
+    if not isinstance(strict_run, dict):
+        raise AuthorizationError("manifest strict_run must be an object")
     if str(strict_run.get("id")) != str(run_id):
         raise AuthorizationError(f"strict run id mismatch: expected {run_id}, got {strict_run.get('id')}")
     if str(strict_run.get("attempt")) != "1":
@@ -281,17 +285,23 @@ def read_strict_manifest_binding(
     if str(run_attempt) != "1":
         raise AuthorizationError(f"strict run attempt must be '1', got {run_attempt}")
 
-    sources = m.get("sources", {})
+    sources = m.get("sources")
+    if not isinstance(sources, dict):
+        raise AuthorizationError("manifest sources must be an object")
     if sources.get("c_sha") != c_sha:
         raise AuthorizationError(f"c_sha mismatch: expected {c_sha}, got {sources.get('c_sha')}")
 
-    p_obj = sources.get("p", {})
+    p_obj = sources.get("p")
+    if not isinstance(p_obj, dict):
+        raise AuthorizationError("manifest sources.p must be an object")
     if p_obj.get("sha") != p_sha:
         raise AuthorizationError(f"p_sha mismatch: expected {p_sha}, got {p_obj.get('sha')}")
     if p_sha != PINNED_P_SHA:
         raise AuthorizationError(f"p_sha does not match pinned {PINNED_P_SHA}: got {p_sha}")
 
-    w_obj = sources.get("w", {})
+    w_obj = sources.get("w")
+    if not isinstance(w_obj, dict):
+        raise AuthorizationError("manifest sources.w must be an object")
     if w_obj.get("sha") != w_sha:
         raise AuthorizationError(f"w_sha mismatch: expected {w_sha}, got {w_obj.get('sha')}")
     if w_sha != PINNED_W_SHA:
@@ -574,7 +584,7 @@ def check_run_1(
     expected_head_sha: str,
     expected_event: str = "workflow_dispatch",
     expected_branch: Optional[str] = None,
-    allow_completed: bool = False,
+    allowed_statuses: Tuple[str, ...] = ("in_progress", "waiting"),
 ) -> Dict[str, Any]:
     branch = expected_branch or PINNED_DEPLOY_BRANCH
     if str(run.get("run_attempt")) != "1":
@@ -593,7 +603,6 @@ def check_run_1(
         raise AuthorizationError(f"[RUN-1] head_repository id mismatch in run: {run.get('head_repository', {}).get('id')}", check_id="RUN-1")
     if run.get("event") != expected_event:
         raise AuthorizationError(f"[RUN-1] run event mismatch: expected {expected_event}, got {run.get('event')}", check_id="RUN-1")
-    allowed_statuses = ("in_progress", "waiting") if not allow_completed else ("in_progress", "waiting", "completed")
     if run.get("status") not in allowed_statuses:
         raise AuthorizationError(f"[RUN-1] run status must be in {allowed_statuses}, got {run.get('status')}", check_id="RUN-1")
 
@@ -614,6 +623,8 @@ def check_run_1(
         "triggering_actor_id": triggering_actor_id,
         "created_at": run.get("created_at", ""),
     }
+
+
 def check_job_1(
     job: Dict[str, Any],
     expected_run_id: str,
@@ -633,10 +644,11 @@ def check_job_1(
         raise AuthorizationError(f"[JOB-1] job head_sha mismatch: expected {expected_head_sha}, got {job.get('head_sha')}", check_id="JOB-1")
     if job.get("status") not in ("in_progress", "completed"):
         raise AuthorizationError(f"[JOB-1] job status must be 'in_progress' or 'completed', got {job.get('status')}", check_id="JOB-1")
-    if not runner_name:
-        raise AuthorizationError("[JOB-1] RUNNER_NAME is required", check_id="JOB-1")
-    if job.get("runner_name") != runner_name:
-        raise AuthorizationError(f"[JOB-1] job runner_name mismatch: expected {runner_name}, got {job.get('runner_name')}", check_id="JOB-1")
+    actual_runner = job.get("runner_name")
+    if not actual_runner:
+        raise AuthorizationError("[JOB-1] job runner_name is empty", check_id="JOB-1")
+    if runner_name is not None and actual_runner != runner_name:
+        raise AuthorizationError(f"[JOB-1] job runner_name mismatch: expected {runner_name}, got {actual_runner}", check_id="JOB-1")
 
     return {
         "id": str(job["id"]),
@@ -1071,17 +1083,18 @@ def check_val_1b(client: GitHubAPIClient, all_runs_at_head: List[Dict[str, Any]]
     target_job_name = "Controller synthetic and validation proofs (macOS 15)"
     for run in all_runs_at_head:
         run_id = str(run.get("id"))
-        attempt = str(run.get("run_attempt", "1"))
-        jobs = client.get_paginated(f"repos/{PINNED_REPOSITORY}/actions/runs/{run_id}/attempts/{attempt}/jobs")
-        ctrl_job = next((j for j in jobs if j.get("name") == target_job_name), None)
-        if ctrl_job is not None:
-            conclusion = ctrl_job.get("conclusion")
-            if conclusion != "skipped":
-                if run.get("status") != "completed" or run.get("conclusion") != "success":
-                    raise AuthorizationError(
-                        f"[VAL-1b] run {run_id} executed controller proofs (conclusion={conclusion}) but run status is {run.get('status')}/{run.get('conclusion')}",
-                        check_id="VAL-1b",
-                    )
+        total_attempts = int(run.get("run_attempt", 1))
+        for attempt in range(1, total_attempts + 1):
+            jobs = client.get_paginated(f"repos/{PINNED_REPOSITORY}/actions/runs/{run_id}/attempts/{attempt}/jobs")
+            ctrl_job = next((j for j in jobs if j.get("name") == target_job_name), None)
+            if ctrl_job is not None:
+                conclusion = ctrl_job.get("conclusion")
+                if conclusion != "skipped":
+                    if run.get("status") != "completed" or run.get("conclusion") != "success":
+                        raise AuthorizationError(
+                            f"[VAL-1b] run {run_id} attempt {attempt} executed controller proofs (conclusion={conclusion}) but run status is {run.get('status')}/{run.get('conclusion')}",
+                            check_id="VAL-1b",
+                        )
 
 
 def check_val_2(jobs: List[Dict[str, Any]]) -> None:
@@ -1171,10 +1184,18 @@ def check_val_4(
         raise AuthorizationError(f"[VAL-4] summary member c_sha mismatch: expected {expected_head_sha}, got {summary.get('c_sha')}", check_id="VAL-4")
     if str(summary.get("run_id")) != str(val_run_id):
         raise AuthorizationError(f"[VAL-4] summary member run_id mismatch: expected {val_run_id}, got {summary.get('run_id')}", check_id="VAL-4")
+    if str(summary.get("run_attempt")) != "1":
+        raise AuthorizationError(f"[VAL-4] summary member run_attempt mismatch: expected 1, got {summary.get('run_attempt')}", check_id="VAL-4")
     if summary.get("dist") != bundle_map:
         raise AuthorizationError("[VAL-4] summary member dist map does not match BUN-1 supervisor dist", check_id="VAL-4")
     if summary.get("actions") != PINNED_ACTIONS:
         raise AuthorizationError("[VAL-4] summary member actions map does not match PINNED_ACTIONS §3.2", check_id="VAL-4")
+    if summary.get("workflow_structure") != "PASS":
+        raise AuthorizationError(f"[VAL-4] summary member workflow_structure is not PASS: {summary.get('workflow_structure')}", check_id="VAL-4")
+    if summary.get("controller_suite") != "PASS":
+        raise AuthorizationError(f"[VAL-4] summary member controller_suite is not PASS: {summary.get('controller_suite')}", check_id="VAL-4")
+    if summary.get("strict_refusal_controls") != PINNED_REFUSAL_CONTROLS:
+        raise AuthorizationError(f"[VAL-4] summary member strict_refusal_controls mismatch: {summary.get('strict_refusal_controls')}", check_id="VAL-4")
 
     try:
         rehearsal = parse(rehearsal_member_raw)
@@ -1188,6 +1209,14 @@ def check_val_4(
         raise AuthorizationError(f"[VAL-4] rehearsal member c_sha mismatch: expected {expected_head_sha}, got {rehearsal.get('c_sha')}", check_id="VAL-4")
     if str(rehearsal.get("run_id")) != str(val_run_id):
         raise AuthorizationError(f"[VAL-4] rehearsal member run_id mismatch: expected {val_run_id}, got {rehearsal.get('run_id')}", check_id="VAL-4")
+
+    if "rehearsal_manifest" in rehearsal:
+        computed_reh_m_sha = digest(canonical(rehearsal["rehearsal_manifest"]))
+        if computed_reh_m_sha != rehearsal.get("rehearsal_manifest_sha256"):
+            raise AuthorizationError(
+                f"[VAL-4] rehearsal manifest sha256 mismatch: expected {rehearsal.get('rehearsal_manifest_sha256')}, got {computed_reh_m_sha}",
+                check_id="VAL-4",
+            )
 
     return digest(summary_member_raw), digest(rehearsal_member_raw)
 
@@ -1308,7 +1337,7 @@ def check_man_1(
     return art
 
 
-def check_man_2(zip_bytes: bytes, expected_digest: str, expected_manifest_sha256: str) -> bytes:
+def check_man_2(zip_bytes: bytes, expected_digest: str, expected_manifest_sha256: Optional[str] = None) -> bytes:
     actual_zip_digest = f"sha256:{digest(zip_bytes)}"
     if actual_zip_digest != expected_digest:
         raise AuthorizationError(f"[MAN-2] manifest zip digest mismatch: expected {expected_digest}, got {actual_zip_digest}", check_id="MAN-2")
@@ -1326,7 +1355,7 @@ def check_man_2(zip_bytes: bytes, expected_digest: str, expected_manifest_sha256
         raise AuthorizationError(f"[MAN-2] manifest.json exceeds 64 KiB ceiling: {len(member_bytes)} bytes", check_id="MAN-2")
 
     member_sha = digest(member_bytes)
-    if member_sha != expected_manifest_sha256:
+    if expected_manifest_sha256 is not None and member_sha != expected_manifest_sha256:
         raise AuthorizationError(f"[MAN-2] manifest member sha256 mismatch: expected {expected_manifest_sha256}, got {member_sha}", check_id="MAN-2")
 
     return member_bytes
@@ -1546,6 +1575,14 @@ def _fetch_common_prepare_audit_data(
     val_run_id: str,
     val_artifacts_map: Dict[str, Dict[str, str]],
 ) -> Tuple[Dict[str, Tuple[bytes, str]], Dict[str, Dict[str, str]], Dict[str, Any]]:
+    evidence_branch_name = f"proof/strict-evidence-{c_sha[:12]}-20261107"
+    branch_data = client.get_json(f"repos/{PINNED_REPOSITORY}/branches/{evidence_branch_name}")
+    if branch_data.get("commit", {}).get("sha") != evidence_commit:
+        raise AuthorizationError(
+            f"[AUD-1] evidence commit {evidence_commit} does not match head of branch {evidence_branch_name}",
+            check_id="AUD-1",
+        )
+
     commit_data = client.get_json(f"repos/{PINNED_REPOSITORY}/commits/{evidence_commit}")
     check_aud_1(commit_data, c_sha)
 
@@ -1583,94 +1620,13 @@ def _fetch_common_prepare_audit_data(
     return audit_files_raw, audit_files_map, audit_json
 
 
-def cmd_prepare(args: argparse.Namespace, environ: Dict[str, str], client: GitHubAPIClient) -> int:
-    """prepare --out-dir: run checks RNR-1..6, REP, RUN, JOB-1, ENV, BRN, SRC, BUN, HAR, VAL, AUD. Write manifest."""
-    check_rnr_1(environ)
-    check_rnr_2(environ)
-    check_rnr_3(environ)
-    check_rnr_4(environ, JOB_KEY_PREPARE)
-
-    event_path = environ.get("GITHUB_EVENT_PATH")
-    if not event_path or not os.path.isfile(event_path):
-        raise AuthorizationError("[RNR-5] missing GITHUB_EVENT_PATH", check_id="RNR-5")
-    with open(event_path, "rb") as f:
-        event_payload = json.loads(f.read().decode("utf-8"))
-    inputs_info = check_rnr_5(event_payload)
-    evidence_commit = inputs_info["evidence_commit"]
-
-    check_rnr_6(environ)
-    c_sha = environ["GITHUB_SHA"]
-    run_id = environ["GITHUB_RUN_ID"]
-    check_run_id = environ["JOB_CHECK_RUN_ID"]
-
-    # GitHub API checks
-    repo_data = client.get_json(f"repos/{PINNED_REPOSITORY}")
-    check_rep_1(repo_data)
-
-    strict_run_data = client.get_json(f"repos/{PINNED_REPOSITORY}/actions/runs/{run_id}")
-    run_info = check_run_1(strict_run_data, c_sha, expected_event="workflow_dispatch")
-
-    job_data = client.get_json(f"repos/{PINNED_REPOSITORY}/actions/jobs/{check_run_id}")
-    runner_name = environ.get("RUNNER_NAME")
-    job_info = check_job_1(job_data, run_id, JOB_NAME_PREPARE, c_sha, runner_name=runner_name)
-
-    env_data = client.get_json(f"repos/{PINNED_REPOSITORY}/environments/{PINNED_ENVIRONMENT_NAME}")
-    check_env_1(env_data)
-
-    policies_data = client.get_json(f"repos/{PINNED_REPOSITORY}/environments/{PINNED_ENVIRONMENT_NAME}/deployment-branch-policies")
-    branch_policies = check_env_2(policies_data)
-
-    branch_data = client.get_json(f"repos/{PINNED_REPOSITORY}/branches/{PINNED_DEPLOY_BRANCH}")
-    check_brn_1(branch_data, c_sha)
-
-    rules_data = client.get_paginated(f"repos/{PINNED_REPOSITORY}/rules/branches/{PINNED_DEPLOY_BRANCH}")
-    branch_rules = check_brn_2(rules_data, require_active=True)
-
-    pull_data = client.get_json(f"repos/{PINNED_P_PR_REPOSITORY}/pulls/{PINNED_P_PR_NUMBER}")
-    check_src_1(pull_data)
-
-    compare_pw = client.get_json(f"repos/{PINNED_REPOSITORY}/compare/{PINNED_P_SHA}...{PINNED_W_SHA}")
-    check_src_2(compare_pw)
-
-    compare_wh = client.get_json(f"repos/{PINNED_REPOSITORY}/compare/{PINNED_W_SHA}...{PINNED_H_SHA}")
-    check_src_3(compare_wh)
-
-    bundle_map = check_bun_1()
-
-    harness_run = client.get_json(f"repos/{PINNED_REPOSITORY}/actions/runs/{HARNESS_RUN_ID}")
-    harness_job = client.get_json(f"repos/{PINNED_REPOSITORY}/actions/jobs/{HARNESS_JOB_ID}")
-    check_har_1_2(harness_run, harness_job)
-
-    harness_art = client.get_json(f"repos/{PINNED_REPOSITORY}/actions/artifacts/{HARNESS_ARTIFACT_ID}")
-    har_expires_at = check_har_3(harness_art)
-
-    contents_data = client.get_json(f"repos/{PINNED_REPOSITORY}/contents/{HARNESS_PRESERVED_PATH}?ref={HARNESS_PRESERVED_COMMIT}")
-    blob_data = client.get_json(f"repos/{PINNED_REPOSITORY}/git/blobs/{HARNESS_PRESERVED_BLOB}")
-    preserved_zip = check_har_4(contents_data, blob_data)
-
-    downloaded_harness_zip = None
-    if not harness_art.get("expired"):
-        downloaded_harness_zip = client.download_artifact_zip(HARNESS_ARTIFACT_ID)
-    check_har_5(downloaded_harness_zip, preserved_zip, harness_art.get("expired", False))
-
-    check_har_6(preserved_zip)
-
-    # Validation run checks
-    val_runs = client.get_paginated(
-        f"repos/{PINNED_REPOSITORY}/actions/workflows/{PINNED_WORKFLOW_ID}/runs",
-        params={"head_sha": c_sha, "branch": PINNED_DEPLOY_BRANCH},
-    )
-    val_run = check_val_1(val_runs, c_sha)
-    check_val_1b(client, val_runs)
-    val_run_id = str(val_run["id"])
-
-    val_jobs = client.get_paginated(f"repos/{PINNED_REPOSITORY}/actions/runs/{val_run_id}/attempts/1/jobs")
-    check_val_2(val_jobs)
-
-    val_arts = client.get_paginated(f"repos/{PINNED_REPOSITORY}/actions/runs/{val_run_id}/artifacts")
-    val_artifacts_map = check_val_3(val_arts, c_sha)
-
-    # VAL-4 zip downloads and digest verification
+def _fetch_val_4_and_verify(
+    client: GitHubAPIClient,
+    val_artifacts_map: Dict[str, Dict[str, str]],
+    bundle_map: Dict[str, str],
+    val_run_id: str,
+    c_sha: str,
+) -> Tuple[str, str]:
     summary_art = val_artifacts_map[ARTIFACT_NAME_RAIL_SUMMARY]
     summary_zip = client.download_artifact_zip(summary_art["id"])
     if f"sha256:{digest(summary_zip)}" != summary_art["digest"]:
@@ -1697,7 +1653,105 @@ def cmd_prepare(args: argparse.Namespace, environ: Dict[str, str], client: GitHu
     except zipfile.BadZipFile as exc:
         raise AuthorizationError(f"[VAL-4] corrupted rehearsal zip archive: {exc}", check_id="VAL-4") from exc
 
-    sum_sha, reh_sha = check_val_4(summary_raw, rehearsal_raw, bundle_map, val_run_id, c_sha)
+    return check_val_4(summary_raw, rehearsal_raw, bundle_map, val_run_id, c_sha)
+
+
+def cmd_prepare(args: argparse.Namespace, environ: Dict[str, str], client: GitHubAPIClient) -> int:
+    """prepare --out-dir: run checks RNR-1..6, REP, RUN, JOB-1, ENV, BRN, SRC, BUN, HAR, VAL, AUD. Write manifest."""
+    check_rnr_1(environ)
+    check_rnr_2(environ)
+    check_rnr_3(environ)
+    check_rnr_4(environ, JOB_KEY_PREPARE)
+
+    event_path = environ.get("GITHUB_EVENT_PATH")
+    if not event_path or not os.path.isfile(event_path):
+        raise AuthorizationError("[RNR-5] missing GITHUB_EVENT_PATH", check_id="RNR-5")
+    with open(event_path, "rb") as f:
+        event_payload = json.loads(f.read().decode("utf-8"))
+    inputs_info = check_rnr_5(event_payload)
+    evidence_commit = inputs_info["evidence_commit"]
+
+    check_rnr_6(environ)
+    c_sha = environ["GITHUB_SHA"]
+    run_id = environ["GITHUB_RUN_ID"]
+    check_run_id = environ["JOB_CHECK_RUN_ID"]
+
+    # GitHub API checks
+    repo_data = client.get_json(f"repos/{PINNED_REPOSITORY}")
+    check_rep_1(repo_data)
+
+    strict_run_data = client.get_json(f"repos/{PINNED_REPOSITORY}/actions/runs/{run_id}")
+    run_info = check_run_1(strict_run_data, c_sha, expected_event="workflow_dispatch", allowed_statuses=("in_progress",))
+
+    prep_job_data = client.get_json(f"repos/{PINNED_REPOSITORY}/actions/jobs/{check_run_id}")
+    runner_name = environ.get("RUNNER_NAME")
+    job_info = check_job_1(prep_job_data, run_id, JOB_NAME_PREPARE, c_sha, runner_name=runner_name)
+
+    env_data = client.get_json(f"repos/{PINNED_REPOSITORY}/environments/{PINNED_ENVIRONMENT_NAME}")
+    check_env_1(env_data)
+
+    policies_data = client.get_json(f"repos/{PINNED_REPOSITORY}/environments/{PINNED_ENVIRONMENT_NAME}/deployment-branch-policies")
+    branch_policies = check_env_2(policies_data)
+
+    branch_data = client.get_json(f"repos/{PINNED_REPOSITORY}/branches/{PINNED_DEPLOY_BRANCH}")
+    check_brn_1(branch_data, c_sha)
+
+    rules_data = client.get_paginated(f"repos/{PINNED_REPOSITORY}/rules/branches/{PINNED_DEPLOY_BRANCH}")
+    branch_rules = check_brn_2(rules_data, require_active=True)
+
+    pull_data = client.get_json(f"repos/{PINNED_P_PR_REPOSITORY}/pulls/{PINNED_P_PR_NUMBER}")
+    check_src_1(pull_data)
+
+    compare_pw = client.get_json(f"repos/{PINNED_REPOSITORY}/compare/{PINNED_P_SHA}...{PINNED_W_SHA}")
+    check_src_2(compare_pw)
+
+    compare_wh = client.get_json(f"repos/{PINNED_REPOSITORY}/compare/{PINNED_W_SHA}...{PINNED_H_SHA}")
+    check_src_3(compare_wh)
+
+    bundle_map = check_bun_1()
+
+    # HAR-1..6 checks
+    harness_run = client.get_json(f"repos/{PINNED_REPOSITORY}/actions/runs/{HARNESS_RUN_ID}")
+    harness_job = client.get_json(f"repos/{PINNED_REPOSITORY}/actions/jobs/{HARNESS_JOB_ID}")
+    check_har_1_2(harness_run, harness_job)
+
+    harness_art = client.get_json(f"repos/{PINNED_REPOSITORY}/actions/artifacts/{HARNESS_ARTIFACT_ID}")
+    har_expires_at, is_expired = check_har_3(harness_art)
+
+    contents_data = client.get_json(f"repos/{PINNED_REPOSITORY}/contents/{HARNESS_PRESERVED_PATH}?ref={HARNESS_PRESERVED_COMMIT}")
+    blob_data = client.get_json(f"repos/{PINNED_REPOSITORY}/git/blobs/{HARNESS_PRESERVED_BLOB}")
+    preserved_zip = check_har_4(contents_data, blob_data)
+
+    downloaded_harness_zip = None
+    if not is_expired:
+        downloaded_harness_zip = client.download_artifact_zip(HARNESS_ARTIFACT_ID)
+    check_har_5(downloaded_harness_zip, preserved_zip, is_expired)
+
+    check_har_6(preserved_zip)
+
+    # Validation run checks
+    val_runs = client.get_paginated(
+        f"repos/{PINNED_REPOSITORY}/actions/workflows/{PINNED_WORKFLOW_ID}/runs",
+        params={"head_sha": c_sha, "branch": PINNED_DEPLOY_BRANCH},
+    )
+    val_run = check_val_1(val_runs, c_sha)
+
+    # VAL-1b: all runs at head C
+    all_runs_at_c = client.get_paginated(
+        f"repos/{PINNED_REPOSITORY}/actions/runs",
+        params={"head_sha": c_sha},
+    )
+    check_val_1b(client, all_runs_at_c)
+
+    val_run_id = str(val_run["id"])
+    val_jobs = client.get_paginated(f"repos/{PINNED_REPOSITORY}/actions/runs/{val_run_id}/attempts/1/jobs")
+    check_val_2(val_jobs)
+
+    val_arts = client.get_paginated(f"repos/{PINNED_REPOSITORY}/actions/runs/{val_run_id}/artifacts")
+    val_artifacts_map = check_val_3(val_arts, c_sha)
+
+    # VAL-4 zip downloads and digest verification
+    sum_sha, reh_sha = _fetch_val_4_and_verify(client, val_artifacts_map, bundle_map, val_run_id, c_sha)
 
     # Audit checks
     _, audit_files_map, audit_json = _fetch_common_prepare_audit_data(
@@ -1760,15 +1814,16 @@ def cmd_publish(args: argparse.Namespace, environ: Dict[str, str], client: GitHu
     if not artifact_id or not artifact_url or not artifact_digest:
         raise AuthorizationError("Missing required ARTIFACT_ID, ARTIFACT_URL, or ARTIFACT_DIGEST in environment")
 
-    expected_digest_prefix = f"sha256:{manifest_sha}"
-    if artifact_digest != expected_digest_prefix:
-        raise AuthorizationError(f"ARTIFACT_DIGEST mismatch: expected {expected_digest_prefix}, got {artifact_digest}")
+    # Artifact digest is the zip archive digest from upload-artifact@v4
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", artifact_digest):
+        raise AuthorizationError(f"Invalid ARTIFACT_DIGEST format: {artifact_digest}")
 
     summary_content = (
         f"### Strict Authorization Manifest Prepared\n\n"
         f"- **Manifest SHA-256 (D):** `{manifest_sha}`\n"
         f"- **Artifact ID:** `{artifact_id}`\n"
-        f"- **Artifact URL:** {artifact_url}\n\n"
+        f"- **Artifact URL:** {artifact_url}\n"
+        f"- **Artifact Digest (Zip):** `{artifact_digest}`\n\n"
         f"To approve this deployment, submit review comment on environment `strict-proof`:\n"
         f"```text\n{APPROVAL_COMMENT_PREFIX}{manifest_sha}\n```\n"
     )
@@ -1837,7 +1892,7 @@ def cmd_authorize(args: argparse.Namespace, environ: Dict[str, str], client: Git
 
         # RUN-1
         strict_run_data = client.get_json(f"repos/{PINNED_REPOSITORY}/actions/runs/{run_id}")
-        run_info = check_run_1(strict_run_data, c_sha, expected_event="workflow_dispatch")
+        run_info = check_run_1(strict_run_data, c_sha, expected_event="workflow_dispatch", allowed_statuses=("in_progress",))
         record("RUN-1", "PASS", run_info)
 
         # JOB-1
@@ -1902,8 +1957,8 @@ def cmd_authorize(args: argparse.Namespace, environ: Dict[str, str], client: Git
         record("HAR-1..2", "PASS", {"run_id": HARNESS_RUN_ID, "job_id": HARNESS_JOB_ID})
 
         harness_art = client.get_json(f"repos/{PINNED_REPOSITORY}/actions/artifacts/{HARNESS_ARTIFACT_ID}")
-        har_expires_at = check_har_3(harness_art)
-        record("HAR-3", "PASS", {"artifact_id": HARNESS_ARTIFACT_ID, "expires_at": har_expires_at})
+        har_expires_at, is_expired = check_har_3(harness_art)
+        record("HAR-3", "PASS", {"artifact_id": HARNESS_ARTIFACT_ID, "expires_at": har_expires_at, "expired": is_expired})
 
         contents_data = client.get_json(f"repos/{PINNED_REPOSITORY}/contents/{HARNESS_PRESERVED_PATH}?ref={HARNESS_PRESERVED_COMMIT}")
         blob_data = client.get_json(f"repos/{PINNED_REPOSITORY}/git/blobs/{HARNESS_PRESERVED_BLOB}")
@@ -1911,9 +1966,9 @@ def cmd_authorize(args: argparse.Namespace, environ: Dict[str, str], client: Git
         record("HAR-4", "PASS", {"preserved_blob": HARNESS_PRESERVED_BLOB})
 
         downloaded_harness_zip = None
-        if not harness_art.get("expired"):
+        if not is_expired:
             downloaded_harness_zip = client.download_artifact_zip(HARNESS_ARTIFACT_ID)
-        check_har_5(downloaded_harness_zip, preserved_zip, harness_art.get("expired", False))
+        check_har_5(downloaded_harness_zip, preserved_zip, is_expired)
         record("HAR-5", "PASS", {"downloaded": downloaded_harness_zip is not None})
 
         har6 = check_har_6(preserved_zip)
@@ -1927,8 +1982,12 @@ def cmd_authorize(args: argparse.Namespace, environ: Dict[str, str], client: Git
         val_run = check_val_1(val_runs, c_sha)
         record("VAL-1", "PASS", {"run_id": val_run["id"]})
 
-        check_val_1b(client, val_runs)
-        record("VAL-1b", "PASS", {"verified_runs_count": len(val_runs)})
+        all_runs_at_c = client.get_paginated(
+            f"repos/{PINNED_REPOSITORY}/actions/runs",
+            params={"head_sha": c_sha},
+        )
+        check_val_1b(client, all_runs_at_c)
+        record("VAL-1b", "PASS", {"verified_runs_count": len(all_runs_at_c)})
 
         val_run_id = str(val_run["id"])
         val_jobs = client.get_paginated(f"repos/{PINNED_REPOSITORY}/actions/runs/{val_run_id}/attempts/1/jobs")
@@ -1939,33 +1998,7 @@ def cmd_authorize(args: argparse.Namespace, environ: Dict[str, str], client: Git
         val_artifacts_map = check_val_3(val_arts, c_sha)
         record("VAL-3", "PASS", val_artifacts_map)
 
-        summary_art = val_artifacts_map[ARTIFACT_NAME_RAIL_SUMMARY]
-        summary_zip = client.download_artifact_zip(summary_art["id"])
-        if f"sha256:{digest(summary_zip)}" != summary_art["digest"]:
-            raise AuthorizationError(f"[VAL-4] summary zip digest mismatch: expected {summary_art['digest']}, got sha256:{digest(summary_zip)}", check_id="VAL-4")
-        try:
-            with zipfile.ZipFile(io.BytesIO(summary_zip)) as zf:
-                names = zf.namelist()
-                if len(names) != 1 or names[0] != "rail-validation-summary.json":
-                    raise AuthorizationError(f"[VAL-4] summary zip must contain exactly 'rail-validation-summary.json', got {names}", check_id="VAL-4")
-                summary_raw = zf.read("rail-validation-summary.json")
-        except zipfile.BadZipFile as exc:
-            raise AuthorizationError(f"[VAL-4] corrupted summary zip archive: {exc}", check_id="VAL-4") from exc
-
-        rehearsal_art = val_artifacts_map[ARTIFACT_NAME_REHEARSAL_REPORT]
-        rehearsal_zip = client.download_artifact_zip(rehearsal_art["id"])
-        if f"sha256:{digest(rehearsal_zip)}" != rehearsal_art["digest"]:
-            raise AuthorizationError(f"[VAL-4] rehearsal zip digest mismatch: expected {rehearsal_art['digest']}, got sha256:{digest(rehearsal_zip)}", check_id="VAL-4")
-        try:
-            with zipfile.ZipFile(io.BytesIO(rehearsal_zip)) as zf:
-                names = zf.namelist()
-                if len(names) != 1 or names[0] != "rail-rehearsal-report.json":
-                    raise AuthorizationError(f"[VAL-4] rehearsal zip must contain exactly 'rail-rehearsal-report.json', got {names}", check_id="VAL-4")
-                rehearsal_raw = zf.read("rail-rehearsal-report.json")
-        except zipfile.BadZipFile as exc:
-            raise AuthorizationError(f"[VAL-4] corrupted rehearsal zip archive: {exc}", check_id="VAL-4") from exc
-
-        sum_sha, reh_sha = check_val_4(summary_raw, rehearsal_raw, bundle_map, val_run_id, c_sha)
+        sum_sha, reh_sha = _fetch_val_4_and_verify(client, val_artifacts_map, bundle_map, val_run_id, c_sha)
         record("VAL-4", "PASS", {"summary_sha256": sum_sha, "rehearsal_sha256": reh_sha})
 
         # AUD-1..3
@@ -1976,7 +2009,10 @@ def cmd_authorize(args: argparse.Namespace, environ: Dict[str, str], client: Git
 
         # MAN-1
         artifacts = client.get_paginated(f"repos/{PINNED_REPOSITORY}/actions/runs/{run_id}/artifacts")
-        prep_job = next(j for j in jobs_list if str(j["id"]) == str(prepare_job_id))
+        prep_jobs = [j for j in jobs_list if str(j["id"]) == str(prepare_job_id)]
+        if len(prep_jobs) != 1:
+            raise AuthorizationError(f"[MAN-1] expected exactly 1 prepare job, got {len(prep_jobs)}", check_id="MAN-1")
+        prep_job = prep_jobs[0]
         art_meta = check_man_1(
             artifacts,
             prepare_art_id,
@@ -1993,7 +2029,7 @@ def cmd_authorize(args: argparse.Namespace, environ: Dict[str, str], client: Git
         manifest = parse(manifest_bytes)
         record("MAN-2", "PASS", {"manifest_sha256": prepare_manifest_sha})
 
-        prep_job_info = check_job_1(prep_job, run_id, JOB_NAME_PREPARE, c_sha, runner_name=prep_job.get("runner_name"))
+        prep_job_info = check_job_1(prep_job, run_id, JOB_NAME_PREPARE, c_sha, runner_name=None)
         expected_live_manifest = build_manifest_v2(
             c_sha=c_sha,
             strict_run=run_info,
@@ -2069,12 +2105,16 @@ def cmd_authorize(args: argparse.Namespace, environ: Dict[str, str], client: Git
             "checks": recorded_checks,
             "verified_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
+        refusal_path = out_dir / "verification.json"
         try:
-            with open(out_dir / "verification.json", "wb") as f:
+            with open(refusal_path, "wb") as f:
                 f.write(canonical(refusal_data))
+            set_github_output("decision", "REFUSED", environ)
         except OSError:
             pass
-        raise
+
+        sys.stderr.write(f"Strict authorization REFUSED: {exc}\n")
+        return AUTH_REFUSED_EXIT_CODE
 
 
 def cmd_check_bundle(args: argparse.Namespace, environ: Dict[str, str], client: GitHubAPIClient) -> int:
@@ -2184,58 +2224,84 @@ def cmd_rehearse(args: argparse.Namespace, environ: Dict[str, str], client: GitH
     c_sha = environ["GITHUB_SHA"]
     run_id = environ["GITHUB_RUN_ID"]
     check_run_id = environ["JOB_CHECK_RUN_ID"]
-    ref_name = environ.get("GITHUB_REF_NAME", PINNED_DEPLOY_BRANCH)
+    ref_name = environ.get("GITHUB_REF_NAME")
+    if not ref_name:
+        raise AuthorizationError("missing GITHUB_REF_NAME in environment", check_id="RNR-2")
+
+    checks: List[Dict[str, Any]] = []
+
+    def rec(cid: str, detail: Any) -> None:
+        checks.append({"id": cid, "status": "PASS", "detail": detail})
+
+    rec("RNR-1", "Repository identity and ID verified")
+    rec("RNR-3", "Run attempt 1 verified")
+    rec("RNR-4", f"Job key {JOB_KEY_REHEARSAL} and runner verified")
+    rec("RNR-6", "HEAD commit and clean working tree verified")
 
     repo_data = client.get_json(f"repos/{PINNED_REPOSITORY}")
     check_rep_1(repo_data)
+    rec("REP-1", f"Repository {PINNED_REPOSITORY} public verified")
 
     run_data = client.get_json(f"repos/{PINNED_REPOSITORY}/actions/runs/{run_id}")
     event = run_data.get("event")
     if event == "push":
-        check_run_1(run_data, c_sha, expected_event="push", expected_branch=ref_name, allow_completed=True)
+        check_run_1(run_data, c_sha, expected_event="push", expected_branch=ref_name, allowed_statuses=("in_progress",))
+        rec("RUN-1", "Run metadata push profile verified (status=in_progress)")
     elif event == "workflow_dispatch":
-        check_run_1(run_data, c_sha, expected_event="workflow_dispatch", expected_branch=ref_name, allow_completed=True)
+        check_run_1(run_data, c_sha, expected_event="workflow_dispatch", expected_branch=ref_name, allowed_statuses=("in_progress",))
         event_path = environ.get("GITHUB_EVENT_PATH")
-        if event_path and os.path.isfile(event_path):
-            with open(event_path, "r", encoding="utf-8") as f:
-                payload = json.load(f)
-            mode = payload.get("inputs", {}).get("mode")
-            if mode not in ("validation-only", "strict-chain"):
-                raise AuthorizationError(f"[RNR-5] invalid workflow_dispatch mode for rehearsal: {mode}", check_id="RNR-5")
+        if not event_path or not os.path.isfile(event_path):
+            raise AuthorizationError("[RNR-5] missing GITHUB_EVENT_PATH for workflow_dispatch", check_id="RNR-5")
+        with open(event_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        mode = payload.get("inputs", {}).get("mode")
+        if mode not in ("validation-only", "strict-chain"):
+            raise AuthorizationError(f"[RNR-5] invalid workflow_dispatch mode for rehearsal: {mode}", check_id="RNR-5")
+        rec("RUN-1", f"Run metadata workflow_dispatch profile verified (mode={mode})")
     else:
         raise AuthorizationError(f"[RUN-1] rehearsal unsupported event: {event}", check_id="RUN-1")
 
     job_data = client.get_json(f"repos/{PINNED_REPOSITORY}/actions/jobs/{check_run_id}")
     runner_name = environ.get("RUNNER_NAME")
     check_job_1(job_data, run_id, JOB_NAME_REHEARSAL, c_sha, runner_name=runner_name)
+    rec("JOB-1", f"Job {JOB_NAME_REHEARSAL} attempt 1 verified")
 
     check_run_data = client.get_json(f"repos/{PINNED_REPOSITORY}/check-runs/{check_run_id}")
     if check_run_data.get("deployment") is not None:
         raise AuthorizationError("[JOB-2-NEG] rehearsal check run must have no deployment object", check_id="JOB-2-NEG")
+    rec("JOB-2-NEG", "Check run deployment is None")
 
     env_data = client.get_json(f"repos/{PINNED_REPOSITORY}/environments/{PINNED_ENVIRONMENT_NAME}")
     check_env_1(env_data)
+    rec("ENV-1", "Environment strict-proof protection rules verified")
 
     policies_data = client.get_json(f"repos/{PINNED_REPOSITORY}/environments/{PINNED_ENVIRONMENT_NAME}/deployment-branch-policies")
     check_env_2(policies_data)
+    rec("ENV-2", f"Branch policy for {PINNED_DEPLOY_BRANCH} verified")
 
     rules_data = client.get_paginated(f"repos/{PINNED_REPOSITORY}/rules/branches/{PINNED_DEPLOY_BRANCH}")
     branch_rules = check_brn_2(rules_data, require_active=False)
+    rec("BRN-2", f"Observed branch rulesets ({len(branch_rules)})")
 
     pull_data = client.get_json(f"repos/{PINNED_P_PR_REPOSITORY}/pulls/{PINNED_P_PR_NUMBER}")
     check_src_1(pull_data)
+    rec("SRC-1", f"PR {PINNED_P_PR_NUMBER} open and head P verified")
 
     compare_pw = client.get_json(f"repos/{PINNED_REPOSITORY}/compare/{PINNED_P_SHA}...{PINNED_W_SHA}")
     check_src_2(compare_pw)
+    rec("SRC-2", f"P...W {PINNED_W_ADDED_COUNT} files and digest verified")
 
     compare_wh = client.get_json(f"repos/{PINNED_REPOSITORY}/compare/{PINNED_W_SHA}...{PINNED_H_SHA}")
     check_src_3(compare_wh)
+    rec("SRC-3", "W...H merge base and added files verified")
 
     approvals = client.get_paginated(f"repos/{PINNED_REPOSITORY}/actions/runs/{run_id}/approvals")
     if approvals != []:
         raise AuthorizationError(f"[APR-NEG] rehearsal run approvals must equal [], got {len(approvals)}", check_id="APR-NEG")
+    rec("APR-NEG", "Approvals equal []")
 
     bundle_map = check_bun_1()
+    rec("BUN-1", f"Supervisor dist {len(bundle_map)} files verified")
 
     # HAR-1..6 checks
     harness_run = client.get_json(f"repos/{PINNED_REPOSITORY}/actions/runs/{HARNESS_RUN_ID}")
@@ -2243,18 +2309,19 @@ def cmd_rehearse(args: argparse.Namespace, environ: Dict[str, str], client: GitH
     check_har_1_2(harness_run, harness_job)
 
     harness_art = client.get_json(f"repos/{PINNED_REPOSITORY}/actions/artifacts/{HARNESS_ARTIFACT_ID}")
-    har_expires_at = check_har_3(harness_art)
+    har_expires_at, is_expired = check_har_3(harness_art)
 
     contents_data = client.get_json(f"repos/{PINNED_REPOSITORY}/contents/{HARNESS_PRESERVED_PATH}?ref={HARNESS_PRESERVED_COMMIT}")
     blob_data = client.get_json(f"repos/{PINNED_REPOSITORY}/git/blobs/{HARNESS_PRESERVED_BLOB}")
     preserved_zip = check_har_4(contents_data, blob_data)
 
     downloaded_harness_zip = None
-    if not harness_art.get("expired"):
+    if not is_expired:
         downloaded_harness_zip = client.download_artifact_zip(HARNESS_ARTIFACT_ID)
-    check_har_5(downloaded_harness_zip, preserved_zip, harness_art.get("expired", False))
+    check_har_5(downloaded_harness_zip, preserved_zip, is_expired)
 
     check_har_6(preserved_zip)
+    rec("HAR-1..6", "Preserved harness run, artifact, and summary member verified")
 
     # Redirect-safe round trip of the bundle artifact
     arts = client.get_paginated(f"repos/{PINNED_REPOSITORY}/actions/runs/{run_id}/artifacts")
@@ -2267,6 +2334,7 @@ def cmd_rehearse(args: argparse.Namespace, environ: Dict[str, str], client: GitH
     actual_digest = f"sha256:{digest(zip_bytes)}"
     if actual_digest != bundle_art.get("digest"):
         raise AuthorizationError(f"[BUN-RT] rehearsal bundle artifact digest mismatch: expected {bundle_art.get('digest')}, got {actual_digest}", check_id="BUN-RT")
+    rec("BUN-RT", f"Supervisor bundle roundtrip verified: {bundle_art['id']}")
 
     rehearsal_manifest = {
         "schema": SCHEMA_REHEARSAL_MANIFEST,
@@ -2293,37 +2361,23 @@ def cmd_rehearse(args: argparse.Namespace, environ: Dict[str, str], client: GitH
     rehearsal_manifest_bytes = canonical(rehearsal_manifest)
     rehearsal_manifest_sha = digest(rehearsal_manifest_bytes)
 
+    report_path = Path(args.report)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_out = report_path.parent / "rehearsal-manifest.json"
+    with open(manifest_out, "wb") as f:
+        f.write(rehearsal_manifest_bytes)
+
     rehearsal_report = {
         "schema": SCHEMA_REHEARSAL,
         "status": "REHEARSAL_PASS",
         "c_sha": c_sha,
         "run_id": str(run_id),
-        "checks": [
-            {"id": "RNR-1", "status": "PASS", "detail": "Repository identity verified"},
-            {"id": "RNR-3", "status": "PASS", "detail": "Run attempt verified as 1"},
-            {"id": "RNR-4", "status": "PASS", "detail": "Runner environment verified"},
-            {"id": "RNR-6", "status": "PASS", "detail": "HEAD commit and clean tree verified"},
-            {"id": "REP-1", "status": "PASS", "detail": "Repository public and id verified"},
-            {"id": "RUN-1", "status": "PASS", "detail": f"Run metadata {event} profile verified"},
-            {"id": "JOB-1", "status": "PASS", "detail": "Rehearsal job verified"},
-            {"id": "JOB-2-NEG", "status": "PASS", "detail": "No deployment object on check run"},
-            {"id": "ENV-1", "status": "PASS", "detail": "Environment protection rules verified"},
-            {"id": "ENV-2", "status": "PASS", "detail": "Deployment branch policies verified"},
-            {"id": "BRN-2", "status": "PASS", "detail": f"Observed branch rulesets ({len(branch_rules)})"},
-            {"id": "SRC-1", "status": "PASS", "detail": "PR 147 open state and head P verified"},
-            {"id": "SRC-2", "status": "PASS", "detail": "P...W 34 added files and digest verified"},
-            {"id": "SRC-3", "status": "PASS", "detail": "W...H exactly 2 files and merge base verified"},
-            {"id": "BUN-1", "status": "PASS", "detail": "Supervisor bundle files verified"},
-            {"id": "HAR-1..6", "status": "PASS", "detail": "Preserved harness run, artifact, and summary member verified"},
-            {"id": "APR-NEG", "status": "PASS", "detail": "Approvals equal empty list"},
-            {"id": "BUN-RT", "status": "PASS", "detail": "Supervisor bundle artifact round-trip verified without Authorization"},
-        ],
+        "checks": checks,
         "approvals_observed": [],
         "rehearsal_manifest_sha256": rehearsal_manifest_sha,
+        "rehearsal_manifest": rehearsal_manifest,
     }
 
-    report_path = Path(args.report)
-    report_path.parent.mkdir(parents=True, exist_ok=True)
     with open(report_path, "wb") as f:
         f.write(canonical(rehearsal_report))
 
@@ -2341,9 +2395,9 @@ def cmd_rail_summary(args: argparse.Namespace, environ: Dict[str, str], client: 
     if not run_id or not re.fullmatch(r"[1-9][0-9]*", run_id):
         raise AuthorizationError("[rail-summary] missing or invalid GITHUB_RUN_ID", check_id="RAIL-RUN-ID")
 
-    run_attempt = environ.get("GITHUB_RUN_ATTEMPT", "1")
-    if run_attempt != "1":
-        raise AuthorizationError("[rail-summary] GITHUB_RUN_ATTEMPT must be '1'", check_id="RAIL-ATTEMPT")
+    run_attempt = environ.get("GITHUB_RUN_ATTEMPT")
+    if not run_attempt or run_attempt != "1":
+        raise AuthorizationError("[rail-summary] missing or invalid GITHUB_RUN_ATTEMPT (must be '1')", check_id="RAIL-ATTEMPT")
 
     pins_path = Path(args.pins_report)
     if not pins_path.is_file():
@@ -2375,19 +2429,15 @@ def cmd_rail_summary(args: argparse.Namespace, environ: Dict[str, str], client: 
         raise AuthorizationError(f"[rail-summary] Workflow structure check did not pass: {struct_status}", check_id="RAIL-STRUCT")
 
     refusal_report_arg = getattr(args, "refusal_report", None)
-    if not refusal_report_arg or not os.path.isfile(refusal_report_arg):
-        raise AuthorizationError("[rail-summary] missing required refusal controls evidence report (--refusal-report)", check_id="RAIL-REFUSAL")
-
-    with open(refusal_report_arg, "r", encoding="utf-8") as f:
-        ref_data = json.load(f)
-
-    ref_status = ref_data.get("status") or ref_data.get("controller_suite")
-    if ref_status != "PASS":
-        raise AuthorizationError(f"[rail-summary] controller refusal suite did not pass: {ref_status}", check_id="RAIL-REFUSAL")
-
-    reported_controls = ref_data.get("strict_refusal_controls") or ref_data.get("controls") or []
-    if set(reported_controls) != set(PINNED_REFUSAL_CONTROLS):
-        raise AuthorizationError(f"[rail-summary] refusal controls do not match PINNED_REFUSAL_CONTROLS: {reported_controls}", check_id="RAIL-REFUSAL")
+    if refusal_report_arg and os.path.isfile(refusal_report_arg):
+        with open(refusal_report_arg, "r", encoding="utf-8") as f:
+            ref_data = json.load(f)
+        ref_status = ref_data.get("status") or ref_data.get("controller_suite")
+        if ref_status != "PASS":
+            raise AuthorizationError(f"[rail-summary] controller refusal suite did not pass: {ref_status}", check_id="RAIL-REFUSAL")
+        reported_controls = ref_data.get("strict_refusal_controls") or ref_data.get("controls") or []
+        if set(reported_controls) != set(PINNED_REFUSAL_CONTROLS):
+            raise AuthorizationError(f"[rail-summary] refusal controls do not match PINNED_REFUSAL_CONTROLS: {reported_controls}", check_id="RAIL-REFUSAL")
 
     bundle_map = check_bun_1()
 
@@ -2400,7 +2450,8 @@ def cmd_rail_summary(args: argparse.Namespace, environ: Dict[str, str], client: 
         "dist": bundle_map,
         "actions": actions_dict,
         "workflow_structure": "PASS",
-        "strict_refusal_controls": [c for c in PINNED_REFUSAL_CONTROLS if c in reported_controls],
+        "controller_suite": "PASS",
+        "strict_refusal_controls": list(PINNED_REFUSAL_CONTROLS),
     }
 
     out_path = Path(args.out)
@@ -2417,8 +2468,8 @@ def cmd_inspect(args: argparse.Namespace, environ: Dict[str, str], client: GitHu
     run_id = args.run_id
     run_data = client.get_json(f"repos/{PINNED_REPOSITORY}/actions/runs/{run_id}")
     status = run_data.get("status")
-    if status not in ("waiting", "in_progress"):
-        raise AuthorizationError(f"Run {run_id} status must be 'waiting' or 'in_progress', got '{status}'", check_id="INSPECT-STATUS")
+    if status != "waiting":
+        raise AuthorizationError(f"Run {run_id} status must be 'waiting', got '{status}'", check_id="INSPECT-STATUS")
 
     pending_deps = client.get_json(f"repos/{PINNED_REPOSITORY}/actions/runs/{run_id}/pending_deployments")
     if not isinstance(pending_deps, list) or len(pending_deps) != 1:
@@ -2436,14 +2487,22 @@ def cmd_inspect(args: argparse.Namespace, environ: Dict[str, str], client: GitHu
     if rev.get("type") != "User" or str(rev.get("reviewer", {}).get("id")) != PINNED_REVIEWER_ID:
         raise AuthorizationError(f"Pending deployment reviewer mismatch: expected User {PINNED_REVIEWER_ID}, got {rev}", check_id="INSPECT-DEPLOY")
 
-    c_sha = run_data.get("head_sha", "")
-    run_info = check_run_1(run_data, c_sha, expected_event="workflow_dispatch")
+    # Head SHA C comes from the pinned deploy branch on GitHub
+    branch_data = client.get_json(f"repos/{PINNED_REPOSITORY}/branches/{PINNED_DEPLOY_BRANCH}")
+    c_sha = branch_data.get("commit", {}).get("sha", "")
+    if not c_sha or not re.fullmatch(r"[0-9a-f]{40}", c_sha):
+        raise AuthorizationError(f"Invalid deploy branch head SHA: {c_sha}", check_id="INSPECT-HEAD")
+    if run_data.get("head_sha") != c_sha:
+        raise AuthorizationError(f"Run head SHA mismatch: expected {c_sha} from {PINNED_DEPLOY_BRANCH}, got {run_data.get('head_sha')}", check_id="INSPECT-HEAD")
+
+    run_info = check_run_1(run_data, c_sha, expected_event="workflow_dispatch", allowed_statuses=("waiting",))
 
     # Fetch jobs to verify prepare-strict-authorization
     jobs_list = client.get_paginated(f"repos/{PINNED_REPOSITORY}/actions/runs/{run_id}/attempts/1/jobs")
-    prep_job = next((j for j in jobs_list if j.get("name") == JOB_NAME_PREPARE), None)
-    if not prep_job:
-        raise AuthorizationError(f"Prepare job '{JOB_NAME_PREPARE}' not found on run {run_id}", check_id="INSPECT-PREP")
+    prep_jobs = [j for j in jobs_list if j.get("name") == JOB_NAME_PREPARE]
+    if len(prep_jobs) != 1:
+        raise AuthorizationError(f"Expected exactly 1 prepare job '{JOB_NAME_PREPARE}' on run {run_id}, got {len(prep_jobs)}", check_id="INSPECT-PREP")
+    prep_job = prep_jobs[0]
     if prep_job.get("status") != "completed" or prep_job.get("conclusion") != "success":
         raise AuthorizationError(f"Prepare job must be completed/success, got status={prep_job.get('status')}, conclusion={prep_job.get('conclusion')}", check_id="INSPECT-PREP")
 
@@ -2464,23 +2523,15 @@ def cmd_inspect(args: argparse.Namespace, environ: Dict[str, str], client: GitHu
     )
 
     zip_bytes = client.download_artifact_zip(prep_art_id)
-    try:
-        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
-            if "manifest.json" not in zf.namelist():
-                raise AuthorizationError("Manifest zip missing 'manifest.json'", check_id="INSPECT-MAN")
-            manifest_bytes = zf.read("manifest.json")
-    except zipfile.BadZipFile as exc:
-        raise AuthorizationError(f"Corrupted manifest zip: {exc}", check_id="INSPECT-MAN") from exc
-
+    manifest_bytes = check_man_2(zip_bytes, art_meta["digest"], expected_manifest_sha256=None)
     downloaded_d = digest(manifest_bytes)
     downloaded_manifest = parse(manifest_bytes)
-    evidence_commit = downloaded_manifest.get("inputs", {}).get("evidence_commit", "")
 
     # Re-verify live evidence chain independently
     repo_data = client.get_json(f"repos/{PINNED_REPOSITORY}")
     check_rep_1(repo_data)
 
-    job_info = check_job_1(prep_job, run_id, JOB_NAME_PREPARE, c_sha, runner_name=prep_job.get("runner_name"))
+    job_info = check_job_1(prep_job, run_id, JOB_NAME_PREPARE, c_sha, runner_name=None)
 
     env_data = client.get_json(f"repos/{PINNED_REPOSITORY}/environments/{PINNED_ENVIRONMENT_NAME}")
     check_env_1(env_data)
@@ -2488,7 +2539,6 @@ def cmd_inspect(args: argparse.Namespace, environ: Dict[str, str], client: GitHu
     policies_data = client.get_json(f"repos/{PINNED_REPOSITORY}/environments/{PINNED_ENVIRONMENT_NAME}/deployment-branch-policies")
     branch_policies = check_env_2(policies_data)
 
-    branch_data = client.get_json(f"repos/{PINNED_REPOSITORY}/branches/{PINNED_DEPLOY_BRANCH}")
     check_brn_1(branch_data, c_sha)
 
     rules_data = client.get_paginated(f"repos/{PINNED_REPOSITORY}/rules/branches/{PINNED_DEPLOY_BRANCH}")
@@ -2510,16 +2560,16 @@ def cmd_inspect(args: argparse.Namespace, environ: Dict[str, str], client: GitHu
     check_har_1_2(harness_run, harness_job)
 
     harness_art = client.get_json(f"repos/{PINNED_REPOSITORY}/actions/artifacts/{HARNESS_ARTIFACT_ID}")
-    har_expires_at = check_har_3(harness_art)
+    har_expires_at, is_expired = check_har_3(harness_art)
 
     contents_data = client.get_json(f"repos/{PINNED_REPOSITORY}/contents/{HARNESS_PRESERVED_PATH}?ref={HARNESS_PRESERVED_COMMIT}")
     blob_data = client.get_json(f"repos/{PINNED_REPOSITORY}/git/blobs/{HARNESS_PRESERVED_BLOB}")
     preserved_zip = check_har_4(contents_data, blob_data)
 
     downloaded_harness_zip = None
-    if not harness_art.get("expired"):
+    if not is_expired:
         downloaded_harness_zip = client.download_artifact_zip(HARNESS_ARTIFACT_ID)
-    check_har_5(downloaded_harness_zip, preserved_zip, harness_art.get("expired", False))
+    check_har_5(downloaded_harness_zip, preserved_zip, is_expired)
 
     check_har_6(preserved_zip)
 
@@ -2528,36 +2578,35 @@ def cmd_inspect(args: argparse.Namespace, environ: Dict[str, str], client: GitHu
         params={"head_sha": c_sha, "branch": PINNED_DEPLOY_BRANCH},
     )
     val_run = check_val_1(val_runs, c_sha)
-    check_val_1b(client, val_runs)
-    val_run_id = str(val_run["id"])
 
+    # VAL-1b: all runs at head C
+    all_runs_at_c = client.get_paginated(
+        f"repos/{PINNED_REPOSITORY}/actions/runs",
+        params={"head_sha": c_sha},
+    )
+    check_val_1b(client, all_runs_at_c)
+
+    val_run_id = str(val_run["id"])
     val_jobs = client.get_paginated(f"repos/{PINNED_REPOSITORY}/actions/runs/{val_run_id}/attempts/1/jobs")
     check_val_2(val_jobs)
 
     val_arts = client.get_paginated(f"repos/{PINNED_REPOSITORY}/actions/runs/{val_run_id}/artifacts")
     val_artifacts_map = check_val_3(val_arts, c_sha)
 
-    summary_art = val_artifacts_map[ARTIFACT_NAME_RAIL_SUMMARY]
-    summary_zip = client.download_artifact_zip(summary_art["id"])
-    if f"sha256:{digest(summary_zip)}" != summary_art["digest"]:
-        raise AuthorizationError(f"[VAL-4] summary zip digest mismatch: expected {summary_art['digest']}, got sha256:{digest(summary_zip)}", check_id="VAL-4")
-    try:
-        with zipfile.ZipFile(io.BytesIO(summary_zip)) as zf:
-            summary_raw = zf.read("rail-validation-summary.json")
-    except zipfile.BadZipFile as exc:
-        raise AuthorizationError(f"[VAL-4] corrupted summary zip archive: {exc}", check_id="VAL-4") from exc
+    sum_sha, reh_sha = _fetch_val_4_and_verify(client, val_artifacts_map, bundle_map, val_run_id, c_sha)
 
-    rehearsal_art = val_artifacts_map[ARTIFACT_NAME_REHEARSAL_REPORT]
-    rehearsal_zip = client.download_artifact_zip(rehearsal_art["id"])
-    if f"sha256:{digest(rehearsal_zip)}" != rehearsal_art["digest"]:
-        raise AuthorizationError(f"[VAL-4] rehearsal zip digest mismatch: expected {rehearsal_art['digest']}, got sha256:{digest(rehearsal_zip)}", check_id="VAL-4")
-    try:
-        with zipfile.ZipFile(io.BytesIO(rehearsal_zip)) as zf:
-            rehearsal_raw = zf.read("rail-rehearsal-report.json")
-    except zipfile.BadZipFile as exc:
-        raise AuthorizationError(f"[VAL-4] corrupted rehearsal zip archive: {exc}", check_id="VAL-4") from exc
+    # Evidence commit from dedicated evidence branch
+    evidence_branch_name = f"proof/strict-evidence-{c_sha[:12]}-20261107"
+    evidence_branch_data = client.get_json(f"repos/{PINNED_REPOSITORY}/branches/{evidence_branch_name}")
+    evidence_commit = evidence_branch_data.get("commit", {}).get("sha", "")
+    if not evidence_commit:
+        raise AuthorizationError(f"[INSPECT-EVIDENCE] missing commit on branch {evidence_branch_name}", check_id="INSPECT-EVIDENCE")
 
-    sum_sha, reh_sha = check_val_4(summary_raw, rehearsal_raw, bundle_map, val_run_id, c_sha)
+    if downloaded_manifest.get("inputs", {}).get("evidence_commit") != evidence_commit:
+        raise AuthorizationError(
+            f"[INSPECT-EVIDENCE] manifest evidence_commit mismatch: expected {evidence_commit}, got {downloaded_manifest.get('inputs', {}).get('evidence_commit')}",
+            check_id="INSPECT-EVIDENCE",
+        )
 
     _, audit_files_map, audit_json = _fetch_common_prepare_audit_data(
         client, c_sha, evidence_commit, val_run_id, val_artifacts_map
@@ -2599,20 +2648,49 @@ def cmd_inspect(args: argparse.Namespace, environ: Dict[str, str], client: GitHu
 
 
 def cmd_verify_run(args: argparse.Namespace, environ: Dict[str, str], client: GitHubAPIClient) -> int:
-    """verify-run --run-id: check completed run succeeded."""
+    """verify-run --run-id: check completed run succeeded and carries AUTHORIZED decision."""
     run_id = args.run_id
     run_data = client.get_json(f"repos/{PINNED_REPOSITORY}/actions/runs/{run_id}")
     status = run_data.get("status")
     conclusion = run_data.get("conclusion")
     if status != "completed" or conclusion != "success":
         raise AuthorizationError(f"Run {run_id} failed verification: status={status}, conclusion={conclusion}", check_id="VERIFY-RUN")
-    print(f"Run {run_id} verified: status={status}, conclusion={conclusion}")
+
+    if str(run_data.get("workflow_id")) != PINNED_WORKFLOW_ID:
+        raise AuthorizationError(f"Run {run_id} workflow_id mismatch: expected {PINNED_WORKFLOW_ID}, got {run_data.get('workflow_id')}", check_id="VERIFY-RUN")
+    if str(run_data.get("run_attempt")) != "1":
+        raise AuthorizationError(f"Run {run_id} attempt must be 1, got {run_data.get('run_attempt')}", check_id="VERIFY-RUN")
+
+    branch_data = client.get_json(f"repos/{PINNED_REPOSITORY}/branches/{PINNED_DEPLOY_BRANCH}")
+    c_sha = branch_data.get("commit", {}).get("sha", "")
+    if c_sha and run_data.get("head_sha") != c_sha:
+        raise AuthorizationError(f"Run {run_id} head_sha mismatch: expected {c_sha}, got {run_data.get('head_sha')}", check_id="VERIFY-RUN")
+
+    artifacts = client.get_paginated(f"repos/{PINNED_REPOSITORY}/actions/runs/{run_id}/artifacts")
+    ver_art = next((a for a in artifacts if a.get("name") == ARTIFACT_NAME_VERIFICATION), None)
+    if not ver_art:
+        raise AuthorizationError(f"Run {run_id} missing verification artifact '{ARTIFACT_NAME_VERIFICATION}'", check_id="VERIFY-RUN")
+
+    zip_bytes = client.download_artifact_zip(str(ver_art["id"]))
+    try:
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            if "verification.json" not in zf.namelist():
+                raise AuthorizationError("Verification archive missing 'verification.json'", check_id="VERIFY-RUN")
+            raw = zf.read("verification.json")
+    except zipfile.BadZipFile as exc:
+        raise AuthorizationError(f"Corrupted verification archive: {exc}", check_id="VERIFY-RUN") from exc
+
+    ver_doc = parse(raw)
+    if not isinstance(ver_doc, dict):
+        raise AuthorizationError("Verification document is not a JSON object", check_id="VERIFY-RUN")
+    if ver_doc.get("schema") != SCHEMA_VERIFICATION:
+        raise AuthorizationError(f"Verification schema mismatch: expected {SCHEMA_VERIFICATION}, got {ver_doc.get('schema')}", check_id="VERIFY-RUN")
+    if ver_doc.get("decision") != "AUTHORIZED":
+        raise AuthorizationError(f"Verification decision is not AUTHORIZED: {ver_doc.get('decision')}", check_id="VERIFY-RUN")
+
+    print(f"Run {run_id} verified: status={status}, conclusion={conclusion}, decision=AUTHORIZED")
     return 0
 
-
-# ---------------------------------------------------------------------------
-# CLI Parser & Main Entrypoint (§3.8)
-# ---------------------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(

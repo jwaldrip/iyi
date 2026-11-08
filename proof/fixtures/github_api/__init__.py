@@ -493,3 +493,12 @@ def get_audit_files_fixture(
     }
 
     return files_raw, files_map, audit_dict
+
+def get_evidence_branch_fixture(c_sha: str, evidence_commit: str) -> Dict[str, Any]:
+    branch_name = f"proof/strict-evidence-{c_sha[:12]}-20261107"
+    return {
+        "name": branch_name,
+        "commit": {"sha": evidence_commit},
+        "protected": True,
+    }
+
