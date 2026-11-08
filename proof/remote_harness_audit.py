@@ -538,33 +538,29 @@ class RemoteHarnessAuditRunner:
         if "  [excluded after calibration] %s: %s" not in equiv_src:
             raise RuntimeError("Could not locate exclusion format string in bench/stale_equivalence.sh")
 
-        # Consumer regex patterns in proof/run_proof.py
-        summary_pat_match = re.search(
-            r'_RG2_SUMMARY_PATTERN\s*=\s*re\.compile\(\s*(r"[^"]+")',
-            rp_src,
-        )
-        if not summary_pat_match:
-            # Multi-line string match
-            summary_pat_match = re.search(
-                r'_RG2_SUMMARY_PATTERN\s*=\s*re\.compile\(\s*r"([^"]+)"\s*r"([^"]+)"\s*\)',
-                rp_src,
-            )
-            if summary_pat_match:
-                consumer_summary_pattern_raw = summary_pat_match.group(1) + summary_pat_match.group(2)
-            else:
-                raise RuntimeError("Could not locate _RG2_SUMMARY_PATTERN in proof/run_proof.py")
-        else:
-            consumer_summary_pattern_raw = ast.literal_eval(summary_pat_match.group(1))
+        # Consumer regex patterns in proof/run_proof.py extracted via AST
+        tree = ast.parse(rp_src)
+        consumer_summary_pattern_raw = None
+        consumer_excl_pattern_raw = None
+        for node in tree.body:
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        if target.id == "_RG2_SUMMARY_PATTERN":
+                            arg = node.value.args[0]
+                            if isinstance(arg, ast.Constant):
+                                consumer_summary_pattern_raw = arg.value
+                        elif target.id == "_RG2_EXCLUSION_PATTERN":
+                            arg = node.value.args[0]
+                            if isinstance(arg, ast.Constant):
+                                consumer_excl_pattern_raw = arg.value
+
+        if not consumer_summary_pattern_raw:
+            raise RuntimeError("Could not locate _RG2_SUMMARY_PATTERN in proof/run_proof.py")
+        if not consumer_excl_pattern_raw:
+            raise RuntimeError("Could not locate _RG2_EXCLUSION_PATTERN in proof/run_proof.py")
 
         consumer_summary_re = re.compile(consumer_summary_pattern_raw)
-
-        excl_pat_match = re.search(
-            r'_RG2_EXCLUSION_PATTERN\s*=\s*re\.compile\(\s*(r"[^"]+")',
-            rp_src,
-        )
-        if not excl_pat_match:
-            raise RuntimeError("Could not locate _RG2_EXCLUSION_PATTERN in proof/run_proof.py")
-        consumer_excl_pattern_raw = ast.literal_eval(excl_pat_match.group(1))
         consumer_excl_re = re.compile(consumer_excl_pattern_raw)
 
         # Render format strings as produced by stale_equivalence.sh
