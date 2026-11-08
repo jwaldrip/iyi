@@ -780,7 +780,6 @@ def check_brn_1(branch: Dict[str, Any], expected_head_sha: str) -> Dict[str, Any
         raise AuthorizationError(f"[BRN-1] branch head mismatch: expected {expected_head_sha}, got {head}", check_id="BRN-1")
     return {"name": PINNED_DEPLOY_BRANCH, "head_sha": head}
 
-
 def check_brn_2(rules: List[Dict[str, Any]], require_active: bool = True) -> List[Dict[str, Any]]:
     extracted = []
     types_found = set()
@@ -2399,8 +2398,7 @@ def cmd_rail_summary(args: argparse.Namespace, environ: Dict[str, str], client: 
         "dist": bundle_map,
         "actions": actions_dict,
         "workflow_structure": "PASS",
-        "controller_suite": "PASS",
-        "strict_refusal_controls": sorted(list(set(reported_controls))),
+        "strict_refusal_controls": [c for c in PINNED_REFUSAL_CONTROLS if c in reported_controls],
     }
 
     out_path = Path(args.out)

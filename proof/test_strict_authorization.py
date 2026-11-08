@@ -1096,29 +1096,13 @@ class MockGitHubAPIServer:
                 if resp is not None:
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
-                    self.end_headers()
-                    self.wfile.write(canonical(resp))
-                else:
-                    self.send_response(404)
-                    self.end_headers()
-
-            def log_message(self, format, *args):
-                pass
-
-        self.storage_server = HTTPServer(("127.0.0.1", 0), StorageHandler)
-        self.storage_port = self.storage_server.server_port
-        self.storage_thread = threading.Thread(target=self.storage_server.serve_forever, daemon=True)
-        self.storage_thread.start()
-
-        self.api_server = HTTPServer(("127.0.0.1", 0), APIHandler)
-        self.api_port = self.api_server.server_port
-        self.api_thread = threading.Thread(target=self.api_server.serve_forever, daemon=True)
-        self.api_thread.start()
-
     def _init_default_data(self):
         c_sha = self.c_sha
-        run_id = 42086795082
+        strict_run_id = 50000000001
         val_run_id = 42086795082
+        prep_job_id = 50000000011
+        strict_job_id = 50000000012
+        val_rehearsal_job_id = 1007
         bundle_map = check_bun_1()
 
         # Build summary and rehearsal zips
@@ -1166,7 +1150,6 @@ class MockGitHubAPIServer:
         bundle_zip_dig = f"sha256:{digest(bundle_zip_bytes)}"
 
         # Storage payloads
-        self.storage_payloads["13600255503"] = load_fixture("blob_95962d09.json")["content"].encode("ascii")
         import base64
         harness_zip_bytes = base64.b64decode(load_fixture("blob_95962d09.json")["content"].replace("\n", ""))
         self.storage_payloads["13600255503"] = harness_zip_bytes
@@ -1187,9 +1170,9 @@ class MockGitHubAPIServer:
         files_raw, files_map, audit_dict = get_audit_files_fixture(c_sha, str(val_run_id), val_artifacts_map)
 
         # Reconstructed manifest for prepare/authorize
-        strict_run = get_strict_run_in_progress_fixture(head_sha=c_sha, run_id=run_id)
+        strict_run = get_strict_run_in_progress_fixture(head_sha=c_sha, run_id=strict_run_id)
         prep_job = {
-            "id": 128575084391,
+            "id": prep_job_id,
             "name": JOB_NAME_PREPARE,
             "started_at": "2026-11-06T00:20:00Z",
             "completed_at": "2026-11-06T00:24:00Z",
@@ -1197,9 +1180,31 @@ class MockGitHubAPIServer:
             "status": "completed",
             "conclusion": "success",
             "head_sha": c_sha,
-            "run_id": run_id,
+            "run_id": strict_run_id,
             "run_attempt": 1,
             "workflow_name": PINNED_WORKFLOW_NAME,
+        }
+        strict_job = {
+            "id": strict_job_id,
+            "name": JOB_NAME_STRICT,
+            "status": "in_progress",
+            "conclusion": None,
+            "runner_name": "GitHub Actions 1",
+            "head_sha": c_sha,
+            "run_id": strict_run_id,
+            "run_attempt": 1,
+            "workflow_name": PINNED_WORKFLOW_NAME,
+        }
+        val_rehearsal_job = {
+            "id": val_rehearsal_job_id,
+            "name": JOB_NAME_REHEARSAL,
+            "workflow_name": PINNED_WORKFLOW_NAME,
+            "head_sha": c_sha,
+            "status": "in_progress",
+            "conclusion": None,
+            "runner_name": "GitHub Actions 7",
+            "run_id": val_run_id,
+            "run_attempt": 1,
         }
         env_data = get_environment_fixture()
         branch_policies = get_branch_policies_fixture()["branch_policies"]
@@ -1237,49 +1242,45 @@ class MockGitHubAPIServer:
         self.storage_payloads["13600255999"] = manifest_zip_bytes
         self.manifest_zip_digest = f"sha256:{digest(manifest_zip_bytes)}"
 
+        val_run = {
+            "id": val_run_id,
+            "workflow_id": int(PINNED_WORKFLOW_ID),
+            "path": PINNED_WORKFLOW_PATH,
+            "head_branch": PINNED_DEPLOY_BRANCH,
+            "head_sha": c_sha,
+            "event": "push",
+            "status": "completed",
+            "conclusion": "success",
+            "run_attempt": 1,
+            "repository": {"id": int(PINNED_REPOSITORY_ID)},
+            "head_repository": {"id": int(PINNED_REPOSITORY_ID)},
+        }
+
         # Wire API endpoints
         self.api_responses = {
             f"repos/{PINNED_REPOSITORY}": get_repo_fixture(),
-            f"repos/{PINNED_REPOSITORY}/actions/runs/{run_id}": strict_run,
-            f"repos/{PINNED_REPOSITORY}/actions/runs/{run_id}/attempts/1/jobs": {
+            f"repos/{PINNED_REPOSITORY}/actions/runs/{strict_run_id}": strict_run,
+            f"repos/{PINNED_REPOSITORY}/actions/runs/{val_run_id}": val_run,
+            f"repos/{PINNED_REPOSITORY}/actions/runs/{strict_run_id}/attempts/1/jobs": {
                 "jobs": [
                     prep_job,
+                    strict_job,
                     {
-                        "id": 128575084399,
-                        "name": JOB_NAME_STRICT,
-                        "status": "in_progress",
-                        "conclusion": None,
-                        "runner_name": "GitHub Actions 1",
-                        "head_sha": c_sha,
-                        "run_id": run_id,
-                        "run_attempt": 1,
-                        "workflow_name": PINNED_WORKFLOW_NAME,
-                    },
-                    {
-                        "id": 128575084400,
+                        "id": 50000000013,
                         "name": JOB_NAME_REHEARSAL,
                         "status": "completed",
                         "conclusion": "skipped",
                         "runner_name": "GitHub Actions 1",
                         "head_sha": c_sha,
-                        "run_id": run_id,
+                        "run_id": strict_run_id,
                         "run_attempt": 1,
                         "workflow_name": PINNED_WORKFLOW_NAME,
                     },
                 ]
             },
-            f"repos/{PINNED_REPOSITORY}/actions/jobs/128575084391": prep_job,
-            f"repos/{PINNED_REPOSITORY}/actions/jobs/128575084399": {
-                "id": 128575084399,
-                "name": JOB_NAME_STRICT,
-                "status": "in_progress",
-                "conclusion": None,
-                "runner_name": "GitHub Actions 1",
-                "head_sha": c_sha,
-                "run_id": run_id,
-                "run_attempt": 1,
-                "workflow_name": PINNED_WORKFLOW_NAME,
-            },
+            f"repos/{PINNED_REPOSITORY}/actions/jobs/{prep_job_id}": prep_job,
+            f"repos/{PINNED_REPOSITORY}/actions/jobs/{strict_job_id}": strict_job,
+            f"repos/{PINNED_REPOSITORY}/actions/jobs/{val_rehearsal_job_id}": val_rehearsal_job,
             f"repos/{PINNED_REPOSITORY}/environments/{PINNED_ENVIRONMENT_NAME}": env_data,
             f"repos/{PINNED_REPOSITORY}/environments/{PINNED_ENVIRONMENT_NAME}/deployment-branch-policies": {"branch_policies": branch_policies},
             f"repos/{PINNED_REPOSITORY}/branches/{PINNED_DEPLOY_BRANCH}": branch_data,
@@ -1293,18 +1294,7 @@ class MockGitHubAPIServer:
             f"repos/{PINNED_REPOSITORY}/contents/{HARNESS_PRESERVED_PATH}": load_fixture("contents_harness_audit_zip.json"),
             f"repos/{PINNED_REPOSITORY}/git/blobs/{HARNESS_PRESERVED_BLOB}": load_fixture("blob_95962d09.json"),
             f"repos/{PINNED_REPOSITORY}/actions/workflows/{PINNED_WORKFLOW_ID}/runs": {
-                "workflow_runs": [
-                    {
-                        "id": val_run_id,
-                        "workflow_id": PINNED_WORKFLOW_ID,
-                        "head_branch": PINNED_DEPLOY_BRANCH,
-                        "head_sha": c_sha,
-                        "event": "push",
-                        "status": "completed",
-                        "conclusion": "success",
-                        "run_attempt": 1,
-                    }
-                ]
+                "workflow_runs": [val_run]
             },
             f"repos/{PINNED_REPOSITORY}/actions/runs/{val_run_id}/attempts/1/jobs": {
                 "jobs": get_val_jobs_fixture(val_run_id, c_sha)
@@ -1345,17 +1335,22 @@ class MockGitHubAPIServer:
                 "sha": files_map["census-review.md"]["blob"],
                 "content": base64.b64encode(files_raw["census-review.md"][0]).decode("ascii"),
             },
-            f"repos/{PINNED_REPOSITORY}/check-runs/128575084399": get_check_run_deployment_fixture(
-                128575084399, run_id, c_sha, deployment_id=6086087299
+            f"repos/{PINNED_REPOSITORY}/check-runs/{strict_job_id}": get_check_run_deployment_fixture(
+                strict_job_id, strict_run_id, c_sha, deployment_id=6086087299
             ),
+            f"repos/{PINNED_REPOSITORY}/check-runs/{val_rehearsal_job_id}": {
+                "id": val_rehearsal_job_id,
+                "deployment": None,
+            },
             f"repos/{PINNED_REPOSITORY}/deployments/6086087299": get_deployment_fixture(6086087299, c_sha),
-            f"repos/{PINNED_REPOSITORY}/actions/runs/{run_id}/artifacts": {
+            f"repos/{PINNED_REPOSITORY}/actions/runs/{strict_run_id}/artifacts": {
                 "artifacts": [
-                    get_manifest_artifact_fixture(13600255999, run_id, c_sha, digest(manifest_zip_bytes), created_at="2026-11-06T00:22:00Z")
+                    get_manifest_artifact_fixture(13600255999, strict_run_id, c_sha, digest(manifest_zip_bytes), created_at="2026-11-06T00:22:00Z")
                 ]
             },
-            f"repos/{PINNED_REPOSITORY}/actions/runs/{run_id}/approvals": get_approval_fixture(self.manifest_sha),
-            f"repos/{PINNED_REPOSITORY}/actions/runs/{run_id}/pending_deployments": [
+            f"repos/{PINNED_REPOSITORY}/actions/runs/{strict_run_id}/approvals": get_approval_fixture(self.manifest_sha),
+            f"repos/{PINNED_REPOSITORY}/actions/runs/{val_run_id}/approvals": [],
+            f"repos/{PINNED_REPOSITORY}/actions/runs/{strict_run_id}/pending_deployments": [
                 {
                     "environment": {"id": PINNED_ENVIRONMENT_ID, "name": PINNED_ENVIRONMENT_NAME},
                     "reviewers": [{"type": "User", "reviewer": {"id": PINNED_REVIEWER_ID}}],
@@ -1399,8 +1394,8 @@ class FullLoopbackSubcommandCLITests(unittest.TestCase):
             "GITHUB_WORKFLOW_SHA": self.c_sha,
             "GITHUB_SHA": self.c_sha,
             "GITHUB_RUN_ATTEMPT": "1",
-            "GITHUB_RUN_ID": "42086795082",
-            "JOB_CHECK_RUN_ID": "128575084391",
+            "GITHUB_RUN_ID": "50000000001",
+            "JOB_CHECK_RUN_ID": "50000000011",
             "RUNNER_ENVIRONMENT": "github-hosted",
             "RUNNER_NAME": "GitHub Actions 1",
             "GITHUB_EVENT_PATH": self.event_path,
@@ -1428,8 +1423,8 @@ class FullLoopbackSubcommandCLITests(unittest.TestCase):
     def test_cmd_authorize_positive(self):
         env = dict(self.common_env)
         env["GITHUB_JOB"] = JOB_KEY_STRICT
-        env["JOB_CHECK_RUN_ID"] = "128575084399"
-        env["PREPARE_JOB_ID"] = "128575084391"
+        env["JOB_CHECK_RUN_ID"] = "50000000012"
+        env["PREPARE_JOB_ID"] = "50000000011"
         env["PREPARE_ARTIFACT_ID"] = "13600255999"
         env["PREPARE_MANIFEST_SHA256"] = self.mock_server.manifest_sha
 
@@ -1451,8 +1446,8 @@ class FullLoopbackSubcommandCLITests(unittest.TestCase):
     def test_cmd_authorize_refusal_leaves_durable_verification_record(self):
         env = dict(self.common_env)
         env["GITHUB_JOB"] = JOB_KEY_STRICT
-        env["JOB_CHECK_RUN_ID"] = "128575084399"
-        env["PREPARE_JOB_ID"] = "128575084391"
+        env["JOB_CHECK_RUN_ID"] = "50000000012"
+        env["PREPARE_JOB_ID"] = "50000000011"
         env["PREPARE_ARTIFACT_ID"] = "13600255999"
         env["PREPARE_MANIFEST_SHA256"] = "wrong" * 12 + "0000"
 
@@ -1474,14 +1469,10 @@ class FullLoopbackSubcommandCLITests(unittest.TestCase):
         env = dict(self.common_env)
         env["GITHUB_JOB"] = JOB_KEY_REHEARSAL
         env["GITHUB_EVENT_NAME"] = "push"
+        env["GITHUB_RUN_ID"] = "42086795082"
+        env["JOB_CHECK_RUN_ID"] = "1007"
+        env["RUNNER_NAME"] = "GitHub Actions 7"
         report_file = os.path.join(self.td, "rehearsal_report.json")
-
-        # Mock check-run without deployment
-        self.mock_server.api_responses[f"repos/{PINNED_REPOSITORY}/check-runs/128575084391"] = {
-            "id": 128575084391,
-            "deployment": None,
-        }
-        self.mock_server.api_responses[f"repos/{PINNED_REPOSITORY}/actions/runs/42086795082/approvals"] = []
 
         code = main(
             ["rehearse", "--report", report_file],
@@ -1497,13 +1488,14 @@ class FullLoopbackSubcommandCLITests(unittest.TestCase):
 
     def test_cmd_inspect_positive(self):
         # Update run status to waiting
-        self.mock_server.api_responses[f"repos/{PINNED_REPOSITORY}/actions/runs/42086795082"]["status"] = "waiting"
+        self.mock_server.api_responses[f"repos/{PINNED_REPOSITORY}/actions/runs/50000000001"]["status"] = "waiting"
         code = main(
-            ["inspect", "--run-id", "42086795082"],
+            ["inspect", "--run-id", "50000000001"],
             environ=self.common_env,
             api_factory=self.api_factory,
         )
         self.assertEqual(code, 0)
+        self.mock_server.api_responses[f"repos/{PINNED_REPOSITORY}/actions/runs/50000000001"]["status"] = "in_progress"
 
     def test_cmd_publish_positive(self):
         manifest_file = os.path.join(self.td, "pub_manifest.json")
