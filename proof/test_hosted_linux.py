@@ -465,7 +465,7 @@ class TestEvidenceCollectionAndSanitization(unittest.TestCase):
             self.assertEqual(receipt["driver"], "acme")
             self.assertEqual(receipt["attempt"], 1)
             self.assertEqual(receipt["receipt_status"], "PASS")
-
+            self.assertEqual(receipt["provenance"], "payload-authored-unverified-host-hash")
             # Check that file exists on disk outside payload mounts
             receipt_disk = os.path.join(controller.artifacts_dir, "sealed-receipts", "receipt-run3-acme-a1.json")
             self.assertTrue(os.path.isfile(receipt_disk))

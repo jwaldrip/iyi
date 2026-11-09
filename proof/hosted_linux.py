@@ -1360,6 +1360,7 @@ class SequentialLifecycleController:
             "origin_records_sha256": origin_records_sha256,
             "ledger_sha256": ledger_sha256,
             "receipt_status": receipt_status,
+            "provenance": "payload-authored-unverified-host-hash",
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
 
@@ -1936,6 +1937,19 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"LINEAGE VALIDATION FAILED: {exc}", file=sys.stderr)
         return 1
 
+    # Provenance Capture Transport Gate
+    # A payload-written origin_records.json cannot be certified as host evidence
+    # without an unforgeable capture transport across the process boundary.
+    # Strict execution is halted fail-closed until this transport is resolved.
+    provenance_transport_resolved = False
+    if not provenance_transport_resolved:
+        print(
+            "STRICT-EXECUTION-HALTED: Host controller cannot certify payload-authored "
+            "origin_records.json as host-authenticated evidence without unforgeable capture transport "
+            "across the process boundary. Halting strict execution per security review.",
+            file=sys.stderr,
+        )
+        return AUTH_REFUSED_EXIT_CODE
     # Staging check
     staged_dir = args.inputs_dir or os.path.join(tempfile.gettempdir(), "staged-inputs")
     os.makedirs(staged_dir, exist_ok=True)
