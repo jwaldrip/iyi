@@ -935,6 +935,132 @@ class TestBpfFeasibilityScript(unittest.TestCase):
             self.assertNotEqual(res.returncode, 0)
             self.assertIn(".BTF.ext section too short to contain CO-RE header (expected >= 32)", res.stderr)
 
+    def test_production_integrity_detects_mutated_header_and_outputs(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            header, bpf, host = (root / "gcc-header", root / "program.o", root / "helper")
+            for path, content in ((header, b"head"), (bpf, b"bpf"), (host, b"host")):
+                path.write_bytes(content)
+            def sha(path):
+                return hashlib.sha256(path.read_bytes()).hexdigest()
+            (root / "compiled-headers.json").write_text(json.dumps({
+                str(header): {"size": 4, "sha256": sha(header)}
+            }))
+            (root / "diagnostic-build-record.json").write_text(json.dumps({
+                "outputs": {"bpf_obj": {"path": str(bpf), "sha256": sha(bpf)},
+                            "host_bin": {"path": str(host), "sha256": sha(host)}}
+            }))
+            args = ["bash", str(SCRIPT_PATH), "--validate-build-integrity", str(root), str(bpf), str(host)]
+            result = subprocess.run(args, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            header.write_bytes(b"evil")
+            result = subprocess.run(args, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Header/source tampering", result.stderr)
+            header.write_bytes(b"head")
+            bpf.write_bytes(b"bad")
+            result = subprocess.run(args, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Output tampering", result.stderr)
+            bpf.write_bytes(b"bpf")
+            host.write_bytes(b"evil")
+            result = subprocess.run(args, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Output tampering", result.stderr)
+
+    def test_both_dependency_gates_reject_prefix_sibling(self):
+        readelf = shutil.which("readelf") or shutil.which("llvm-readelf") or "/usr/bin/readelf"
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            prefix = root / "prefix"
+            prefix.mkdir()
+            sibling = root / "prefix-unapproved"
+            sibling.mkdir()
+            header = sibling / "header.h"
+            header.write_text("header")
+            lock = make_dummy_lock(root, {})
+            bpf = build_mock_bpf_elf(root)
+            host = build_mock_host_elf(root)
+            (root / "bpf-compiled-headers.json").write_text(json.dumps({
+                str(REPO_ROOT / "proof/bpf_canary.bpf.c"): {"sha256": "0" * 64, "size": 100}
+            }))
+            escape = lambda p: str(p).replace(" ", r"\ ").replace("$", "$$")
+            for mode, binary, source in (("--validate-bpf-obj", bpf, "bpf_canary.bpf.c"),
+                                         ("--validate-host-elf", host, "bpf_canary_host.c")):
+                dep = root / (source + ".d")
+                dep.write_text(f"out: {escape(REPO_ROOT / 'proof' / source)} {escape(header)}\n")
+                if mode == "--validate-bpf-obj":
+                    args = [str(lock), str(root)]
+                else:
+                    args = [str(root), str(lock)]
+                result = subprocess.run(["bash", str(SCRIPT_PATH), mode, readelf, str(binary), str(dep),
+                                         "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), *args],
+                                        capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("unapproved", result.stderr)
+
+    def test_host_depfile_multiline_dollar_and_negative_forms(self):
+        readelf = shutil.which("readelf") or shutil.which("llvm-readelf") or "/usr/bin/readelf"
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            prefix = root / "prefix"
+            prefix.mkdir()
+            clang = root / "clang $resources"
+            clang.mkdir()
+            header = clang / "header $name.h"
+            header.write_text("header")
+            lock = make_dummy_lock(root, {})
+            host = build_mock_host_elf(root)
+            (root / "bpf-compiled-headers.json").write_text(json.dumps({
+                str(REPO_ROOT / "proof/bpf_canary.bpf.c"): {"sha256": "0" * 64, "size": 100}
+            }))
+            escape = lambda p: str(p).replace(" ", r"\ ").replace("$", "$$")
+            dep = root / "host.d"
+            args = ["bash", str(SCRIPT_PATH), "--validate-host-elf", readelf, str(host), str(dep),
+                    str(clang), str(prefix), str(REPO_ROOT), str(root), str(lock)]
+            dep.write_text(f"host.o: \\\n {escape(REPO_ROOT / 'proof/bpf_canary_host.c')} \\\n {escape(header)}\n")
+            result = subprocess.run(args, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            record = json.loads((root / "compiled-headers.json").read_text())
+            self.assertEqual(record[str(header.resolve())]["sha256"], hashlib.sha256(header.read_bytes()).hexdigest())
+            for contents, message in (("host.o:\n", "target-only"),
+                                      (f"host.o: {escape(REPO_ROOT / 'proof/bpf_canary_host.c')} \\", "Dangling escape")):
+                dep.write_text(contents)
+                result = subprocess.run(args, capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr)
+
+    @unittest.skipUnless(os.environ.get("ImageOS") == "ubuntu24" and
+                         os.environ.get("ImageVersion") == "20261101.360.1",
+                         "requires the reviewed runner image")
+    def test_production_host_gate_with_measured_gcc_headers(self):
+        readelf = shutil.which("readelf") or "/usr/bin/readelf"
+        gcc_root = Path("/usr/lib/gcc/x86_64-linux-gnu/13/include")
+        headers = [gcc_root / name for name in ("stddef.h", "stdbool.h", "stdint.h", "stdarg.h")]
+        measured = json.loads((REPO_ROOT / "proof/bpf_gcc_include_baseline.json").read_text())
+        expected = {item["requested"]: item for item in measured["gcc_include_headers"]["files"]}
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            prefix = root / "prefix"
+            prefix.mkdir()
+            lock = make_dummy_lock(root, {})
+            host = build_mock_host_elf(root)
+            (root / "bpf-compiled-headers.json").write_text(json.dumps({
+                str(REPO_ROOT / "proof/bpf_canary.bpf.c"): {"sha256": "0" * 64, "size": 100}
+            }))
+            escape = lambda p: str(p).replace(" ", r"\ ").replace("$", "$$")
+            dep = root / "host.d"
+            dep.write_text("host.o: " + " ".join(escape(p) for p in
+                           [REPO_ROOT / "proof/bpf_canary_host.c", *headers]) + "\n")
+            result = subprocess.run(["bash", str(SCRIPT_PATH), "--validate-host-elf", readelf,
+                                     str(host), str(dep), "/usr/lib/clang/18", str(prefix),
+                                     str(REPO_ROOT), str(root), str(lock)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            record = json.loads((root / "compiled-headers.json").read_text())
+            for header in headers:
+                item = expected[str(header)]
+                self.assertEqual(record[item["canonical"]], {"size": item["size"], "sha256": item["sha256"]})
+
     def test_production_host_elf_gate_validation(self) -> None:
         """Production --validate-host-elf gate: positive control passes, mutations strictly fail closed."""
         readelf_bin = shutil.which("readelf") or shutil.which("llvm-readelf") or "/usr/bin/readelf"

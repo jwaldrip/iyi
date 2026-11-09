@@ -668,7 +668,7 @@ if expected_bpf_source not in resolved_bpf_dep_paths:
 for tok in dep_paths:
     p = pathlib.Path(tok).resolve()
     p_str = str(p)
-    if not any(p_str.startswith(allowed) for allowed in allowed_prefixes):
+    if not any(p.is_relative_to(pathlib.Path(allowed)) for allowed in allowed_prefixes):
         sys.exit(f"ERROR: BPF object included unapproved header dependency: '{tok}'")
     if not p.is_file():
         sys.exit(f"ERROR: BPF dependency '{p_str}' missing on disk")
@@ -678,7 +678,7 @@ for tok in dep_paths:
         "sha256": actual_hdr_sha,
         "size": len(hdr_bytes)
     }
-    if p_str.startswith(str(prefix_path)):
+    if p.is_relative_to(prefix_path):
         rel_hdr = str(p.relative_to(prefix_path))
         if rel_hdr not in all_locked_headers:
             sys.exit(f"ERROR: BPF object included unapproved header from staged prefix: '{rel_hdr}'")
@@ -908,20 +908,42 @@ resolved_host_dep_paths = [pathlib.Path(tok).resolve() for tok in host_dep_paths
 if expected_host_source not in resolved_host_dep_paths:
     sys.exit("ERROR: Host helper dependency graph missing primary source bpf_canary_host.c")
 
+gcc_gate = None
+gcc_baseline = None
 for tok in host_dep_paths:
-    p = pathlib.Path(tok).resolve()
+    lexical = pathlib.Path(tok)
+    p = lexical.resolve()
     p_str = str(p)
-    if not any(p_str.startswith(allowed) for allowed in allowed_prefixes):
+    gcc_root = pathlib.Path("/usr/lib/gcc/x86_64-linux-gnu/13/include")
+    gcc_entry = None
+    if lexical.is_absolute() and lexical.is_relative_to(gcc_root):
+        if gcc_gate is None:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("bpf_runner_baseline", repo_path / "proof/bpf_runner_baseline.py")
+            if spec is None or spec.loader is None:
+                sys.exit("ERROR: GCC baseline verifier unavailable")
+            gcc_gate = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(gcc_gate)
+            gcc_baseline = gcc_gate.load_gcc_baseline()
+        try:
+            gcc_entry = gcc_gate.check_gcc_dependency(tok, gcc_baseline)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            sys.exit(f"ERROR: GCC dependency verification failed: {exc}")
+    elif p.is_relative_to(gcc_root):
+        sys.exit(f"ERROR: Unrecorded alias for GCC dependency: '{tok}'")
+    elif not any(p.is_relative_to(pathlib.Path(allowed)) for allowed in allowed_prefixes):
         sys.exit(f"ERROR: Host helper included unapproved dependency from untrusted path: '{tok}'")
     if not p.is_file():
         sys.exit(f"ERROR: Host dependency '{p_str}' missing on disk")
     hdr_bytes = p.read_bytes()
     actual_hdr_sha = hashlib.sha256(hdr_bytes).hexdigest()
+    if gcc_entry is not None and (len(hdr_bytes) != gcc_entry["size"] or actual_hdr_sha != gcc_entry["sha256"]):
+        sys.exit(f"ERROR: GCC dependency changed while recording: '{tok}'")
     compiled_source_header_digests[p_str] = {
         "sha256": actual_hdr_sha,
         "size": len(hdr_bytes)
     }
-    if p_str.startswith(str(prefix_path)):
+    if p.is_relative_to(prefix_path):
         rel_hdr = str(p.relative_to(prefix_path))
         if rel_hdr not in all_locked_headers:
             sys.exit(f"ERROR: Host helper included unapproved header from staged prefix: '{rel_hdr}'")
@@ -1011,9 +1033,41 @@ print("BPF terminal diagnostic feasibility report verified successfully (includi
 PY
 }
 
+validate_build_integrity_main() {
+  python3 -I - <<'PY' "$@"
+import hashlib, json, pathlib, sys
+owned = pathlib.Path(sys.argv[1])
+outputs = {"bpf_obj": pathlib.Path(sys.argv[2]), "host_bin": pathlib.Path(sys.argv[3])}
+headers = json.loads((owned / "compiled-headers.json").read_text(encoding="utf-8"))
+if not isinstance(headers, dict) or not headers:
+    sys.exit("ERROR: compiled header record missing or empty")
+for name, expected in headers.items():
+    path = pathlib.Path(name)
+    if not path.is_file():
+        sys.exit(f"ERROR: Compiled header/source '{name}' missing before launch")
+    data = path.read_bytes()
+    if len(data) != expected["size"] or hashlib.sha256(data).hexdigest().lower() != expected["sha256"].lower():
+        sys.exit(f"ERROR: Header/source tampering detected before capability launch for '{name}'")
+record = json.loads((owned / "diagnostic-build-record.json").read_text(encoding="utf-8"))
+for name, path in outputs.items():
+    expected = record["outputs"][name]
+    if str(path) != expected["path"] or not path.is_file():
+        sys.exit(f"ERROR: Output path missing or mismatched: {name}")
+    if hashlib.sha256(path.read_bytes()).hexdigest().lower() != expected["sha256"].lower():
+        sys.exit(f"ERROR: Output tampering detected before capability launch: {name}")
+print("Build integrity verified: headers, sources, and outputs unchanged.")
+PY
+}
+
+
 # Check for sub-actions invoked for direct testing
 if [ $# -gt 0 ]; then
   case "$1" in
+    --validate-build-integrity)
+      shift
+      validate_build_integrity_main "$@"
+      exit 0
+      ;;
     --validate-bpf-obj)
       shift
       validate_bpf_obj_main "$@"
@@ -1277,6 +1331,8 @@ record_file = owned_dir / "diagnostic-build-record.json"
 record_file.write_text(json.dumps(record, indent=2))
 print(f"Recorded diagnostic build record at {record_file}")
 PY
+validate_build_integrity_main "$OWNED_DIR" "$BPF_OBJ" "$HOST_BIN"
+
 
 if [ "$BUILD_ONLY" -eq 1 ]; then
   echo "Build-only mode requested; artifact build and verification complete."
@@ -1299,45 +1355,7 @@ if [ "$VERBOSE" -eq 1 ]; then
   echo "[run_bpf_feasibility] Validating headers and binaries immediately before capability launch..."
 fi
 
-# Pre-capability launch re-verification: verify compiled artifacts and staged headers have not been modified
-python3 -I - <<'PY' "$OWNED_DIR" "$BPF_OBJ" "$HOST_BIN"
-import hashlib, json, os, pathlib, sys
-
-owned_dir = pathlib.Path(sys.argv[1])
-bpf_obj = pathlib.Path(sys.argv[2])
-host_bin = pathlib.Path(sys.argv[3])
-
-headers_record_file = owned_dir / "compiled-headers.json"
-if not headers_record_file.is_file():
-    sys.exit("ERROR: compiled-headers.json record missing before launch")
-
-recorded = json.loads(headers_record_file.read_text(encoding="utf-8"))
-for file_path_str, expected_info in recorded.items():
-    p = pathlib.Path(file_path_str)
-    if not p.is_file():
-        sys.exit(f"ERROR: Compiled header/source '{file_path_str}' missing before launch")
-    actual_bytes = p.read_bytes()
-    actual_sha = hashlib.sha256(actual_bytes).hexdigest()
-    if actual_sha.lower() != expected_info["sha256"].lower():
-        sys.exit(f"ERROR: Header/source tampering detected before capability launch for '{file_path_str}'")
-
-build_record_file = owned_dir / "diagnostic-build-record.json"
-if not build_record_file.is_file():
-    sys.exit("ERROR: diagnostic-build-record.json missing before launch")
-build_rec = json.loads(build_record_file.read_text(encoding="utf-8"))
-
-expected_bpf_sha = build_rec["outputs"]["bpf_obj"]["sha256"]
-actual_bpf_sha = hashlib.sha256(bpf_obj.read_bytes()).hexdigest()
-if actual_bpf_sha.lower() != expected_bpf_sha.lower():
-    sys.exit("ERROR: BPF object tampering detected before capability launch")
-
-expected_host_sha = build_rec["outputs"]["host_bin"]["sha256"]
-actual_host_sha = hashlib.sha256(host_bin.read_bytes()).hexdigest()
-if actual_host_sha.lower() != expected_host_sha.lower():
-    sys.exit("ERROR: Host helper binary tampering detected before capability launch")
-
-print("Pre-capability launch validation: all headers, sources, and binaries verified unchanged.")
-PY
+validate_build_integrity_main "$OWNED_DIR" "$BPF_OBJ" "$HOST_BIN"
 
 if [ "$VERBOSE" -eq 1 ]; then
   echo "[run_bpf_feasibility] Launching restricted foreground helper with /usr/bin/setpriv (UID=$PROBE_UID, GID=$PROBE_GID)..."
