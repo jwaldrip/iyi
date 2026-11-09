@@ -1547,6 +1547,7 @@ class SequentialLifecycleController:
             env_vars=env_vars,
             receipts_dir=receipts_dir,
         )
+        if code != 0:
             self.mark_failure(f"Proof final failed with exit code {code}: {err}")
 
         leaf = os.path.basename(r)
