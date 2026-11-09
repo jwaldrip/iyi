@@ -2,6 +2,12 @@ name: BPF execution hook feasibility diagnostic
 
 on:
   workflow_dispatch:
+    inputs:
+      reviewed_image_version:
+        description: 'Expected reviewed runner image version (exact equality required)'
+        required: true
+        default: '20261101.360.1'
+        type: string
 
 permissions:
   contents: read
@@ -21,10 +27,24 @@ jobs:
         run: |
           echo "ImageOS: ${ImageOS:-UNKNOWN}"
           echo "ImageVersion: ${ImageVersion:-UNKNOWN}"
-          if [ "${ImageOS:-}" != "ubuntu24" ]; then
-            echo "ERROR: Runner ImageOS '${ImageOS:-}' does not match reviewed baseline 'ubuntu24'" >&2
+          expected_os="ubuntu24"
+          expected_version="${{ inputs.reviewed_image_version || '20261101.360.1' }}"
+
+          if [ "${ImageOS:-}" != "$expected_os" ]; then
+            echo "ERROR: Runner ImageOS '${ImageOS:-}' does not match reviewed baseline '$expected_os'" >&2
             exit 1
           fi
+
+          actual_version="${ImageVersion:-}"
+          if [ -z "$actual_version" ] && [ -f /etc/image-id ]; then
+            actual_version="$(cat /etc/image-id)"
+          fi
+
+          if [ "$actual_version" != "$expected_version" ]; then
+            echo "ERROR: Runner image version '$actual_version' does not match reviewed baseline '$expected_version'; image rotation requires independent security review" >&2
+            exit 1
+          fi
+          echo "Verified runner image matches reviewed baseline: $actual_version"
 
       - name: Record diagnostic environment metadata
         run: |
