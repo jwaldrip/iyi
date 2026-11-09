@@ -3,6 +3,7 @@
 import ctypes
 import errno
 import hashlib
+import importlib.util
 import json
 import os
 import pathlib
@@ -275,6 +276,49 @@ def main():
         else:
             info["version"] = {"error": reason, "exit_code": None}
         report["tools"][name] = info
+    # Compare the driver with the existing, source-bound census immediately
+    # before using it to query the include root. No baseline is updated here.
+    baseline_file = pathlib.Path(__file__).resolve().with_name("bpf_runner_baseline.py")
+    spec = importlib.util.spec_from_file_location("bpf_runner_baseline", baseline_file)
+    if spec is None or spec.loader is None:
+        raise ValueError("reviewed runner baseline verifier unavailable")
+    gate = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gate)
+    raw_baseline = gate.BASELINE.read_bytes()
+    if hashlib.sha256(raw_baseline).hexdigest() != gate.CENSUS_SHA256:
+        raise ValueError("reviewed runner baseline digest mismatch")
+    gcc_expected = json.loads(raw_baseline)["tools"]["gcc"]
+    gate.check_path(gcc_expected, True)
+    gcc = report["tools"]["gcc"]
+    gcc_version = gcc.get("version", {})
+    if (safe_to_execute("gcc", gcc) is not None or
+            gcc.get("canonical") != gcc_expected["canonical"] or
+            gcc_version.get("error") is not None or gcc_version.get("exit_code") != 0 or
+            gcc_version.get("output") != gcc_expected["version"]["output"]):
+        raise ValueError("GCC driver differs from reviewed baseline")
+    gcc_root = "/usr/lib/gcc/x86_64-linux-gnu/13/include"
+    gcc_command = bounded_command([gcc["canonical"], "-print-file-name=include"])
+    report["gcc_include_command"] = gcc_command
+    if (gcc_command["exit_code"] != 0 or gcc_command["error"] is not None or
+            gcc_command["output"] != gcc_root + "\n"):
+        raise ValueError("GCC include query did not return the reviewed directory")
+    gcc_info = path_info(gcc_root)
+    if gcc_info.get("canonical") != gcc_root or gcc_info.get("regular") is not False:
+        raise ValueError("GCC include directory identity unavailable")
+    gcc_headers = resource_headers(gcc_root)
+    if not gcc_headers.get("complete") or not gcc_headers.get("files"):
+        raise ValueError("GCC include inventory incomplete or empty")
+    for item in gcc_headers["files"]:
+        if (item.get("error") or item.get("hash_error") or item.get("regular") is not True or
+                not isinstance(item.get("size"), int) or item["size"] < 0 or
+                not isinstance(item.get("sha256"), str) or len(item["sha256"]) != 64 or
+                not item.get("chain") or not item.get("canonical_ancestors")):
+            raise ValueError("GCC header identity incomplete")
+    required = {gcc_root + "/" + name for name in ("stddef.h", "stdbool.h", "stdint.h", "stdarg.h")}
+    if not required.issubset({item["requested"] for item in gcc_headers["files"]}):
+        raise ValueError("GCC include inventory lacks an observed dependency")
+    report["gcc_include"] = gcc_info
+    report["gcc_include_headers"] = gcc_headers
     check_cancelled()
     clang = report["tools"]["clang18"]
     if safe_to_execute("clang18", clang) is None:

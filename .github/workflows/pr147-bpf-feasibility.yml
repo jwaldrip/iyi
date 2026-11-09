@@ -12,6 +12,15 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ github.sha }}
+      - name: Require reviewed runner and tool baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${ImageOS:-}" != "ubuntu24" ] || [ "${ImageVersion:-}" != "20261101.360.1" ]; then
+            echo "ERROR: runner image differs from reviewed baseline" >&2
+            exit 1
+          fi
+          /usr/bin/python3 -I proof/bpf_runner_baseline.py
       - name: Collect bounded runner inventory
         id: census
         shell: bash
