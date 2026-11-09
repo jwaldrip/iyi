@@ -1030,8 +1030,6 @@ class TestOriginRecordsAdversarialHardlink(unittest.TestCase):
         from proof.run_proof import _run_one_driver
         with tempfile.TemporaryDirectory() as report_dir:
             run3_dir = os.path.join(report_dir, "run3", "demo")
-            attempt_dir = os.path.join(run3_dir, "a1")
-            os.makedirs(attempt_dir)
             pin = {
                 "report_dir": report_dir,
                 "chain_id": "0" * 32,
@@ -1101,8 +1099,6 @@ class TestOriginRecordsAdversarialHardlink(unittest.TestCase):
         from proof.run_proof import _run_one_driver
         with tempfile.TemporaryDirectory() as report_dir:
             run3_dir = os.path.join(report_dir, "run3", "demo")
-            attempt_dir = os.path.join(run3_dir, "a1")
-            os.makedirs(attempt_dir)
             pin = {
                 "report_dir": report_dir,
                 "chain_id": "0" * 32,
@@ -1165,6 +1161,7 @@ class TestOriginRecordsAdversarialHardlink(unittest.TestCase):
                     execute_only=True,
                     nonce="trustednonce1234",
                 )
+                attempt_dir = os.path.join(run3_dir, f"a{record['attempt']}")
                 with open(os.path.join(attempt_dir, "shim.json"), "r") as f:
                     shim_cfg = json.load(f)
                 self.assertEqual(shim_cfg.get("nonce"), "trustednonce1234")
