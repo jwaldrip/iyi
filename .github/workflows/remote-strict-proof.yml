@@ -10,6 +10,7 @@ name: Remote Strict Proof Chain (macOS 15)
 on:
   push:
     branches:
+      - "master"
       - "proof/strict-controller-integration-20261101"
       - "proof/strict-lifecycle-repair-20261102"
       - "experiment/pr147-slice-c-workflow"
@@ -23,6 +24,41 @@ on:
           - "validation-only"
           - "strict-chain"
         default: "validation-only"
+      v_run_id:
+        description: "Qualifying validation workflow run ID"
+        required: false
+        type: string
+        default: ""
+      v_artifacts:
+        description: "Validation artifacts JSON string or file path containing artifact records with id, name, and sha256"
+        required: false
+        type: string
+        default: ""
+      review_path:
+        description: "Repository-relative path to independent review file E"
+        required: false
+        type: string
+        default: "proof/review_evidence.json"
+      review_sha256:
+        description: "Exact SHA-256 digest of independent review file E"
+        required: false
+        type: string
+        default: ""
+      review_verdict:
+        description: "Independent review verdict (must be GO)"
+        required: false
+        type: string
+        default: "GO"
+      p_sha:
+        description: "PR147 product commit SHA"
+        required: false
+        type: string
+        default: ""
+      w_sha:
+        description: "Native proof commit SHA"
+        required: false
+        type: string
+        default: ""
 permissions:
   contents: read
   actions: read
@@ -867,39 +903,150 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Validate evidence V and independent review E inputs
+        id: validate-inputs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          V_RUN_ID: ${{ github.event.inputs.v_run_id }}
+          V_ARTIFACTS: ${{ github.event.inputs.v_artifacts }}
+          REVIEW_PATH: ${{ github.event.inputs.review_path || 'proof/review_evidence.json' }}
+          REVIEW_SHA256: ${{ github.event.inputs.review_sha256 }}
+          REVIEW_VERDICT: ${{ github.event.inputs.review_verdict || 'GO' }}
+        run: |
+          python3 -B - <<'PY'
+          import hashlib, json, os, sys, urllib.request
+
+          # 1. Validate V inputs
+          v_run_id = os.environ.get("V_RUN_ID", "").strip()
+          if not v_run_id or not v_run_id.isdigit():
+              sys.exit(f"Validation refused: v_run_id must be a non-empty numeric run ID, got {v_run_id!r}")
+
+          v_art_raw = os.environ.get("V_ARTIFACTS", "").strip()
+          if not v_art_raw:
+              sys.exit("Validation refused: v_artifacts input is required")
+
+          if os.path.exists(v_art_raw):
+              with open(v_art_raw, "r", encoding="utf-8") as f:
+                  v_artifacts = json.load(f)
+          else:
+              try:
+                  v_artifacts = json.loads(v_art_raw)
+              except Exception as exc:
+                  sys.exit(f"Validation refused: v_artifacts is not valid JSON: {exc}")
+
+          if not isinstance(v_artifacts, list) or len(v_artifacts) == 0:
+              sys.exit("Validation refused: v_artifacts must be a non-empty list of artifact records")
+
+          for art in v_artifacts:
+              if not isinstance(art, dict) or "id" not in art or "name" not in art or "sha256" not in art:
+                  sys.exit(f"Validation refused: artifact record must contain id, name, and sha256: {art}")
+              if not str(art["id"]).isdigit():
+                  sys.exit(f"Validation refused: artifact id must be numeric decimal: {art['id']}")
+              if len(art["sha256"]) != 64 or not all(c in "0123456789abcdef" for c in str(art["sha256"]).lower()):
+                  sys.exit(f"Validation refused: artifact sha256 must be 64-hex string: {art['sha256']}")
+
+          # 2. Validate independent review E
+          review_path = os.environ.get("REVIEW_PATH", "proof/review_evidence.json").strip()
+          review_sha = os.environ.get("REVIEW_SHA256", "").strip()
+          review_verdict = os.environ.get("REVIEW_VERDICT", "GO").strip()
+
+          if review_verdict != "GO":
+              sys.exit(f"Validation refused: independent review verdict must be GO, got {review_verdict!r}")
+
+          if not os.path.exists(review_path):
+              sys.exit(f"Validation refused: independent review file not found at {review_path}")
+
+          with open(review_path, "rb") as rf:
+              review_bytes = rf.read()
+
+          computed_review_sha = hashlib.sha256(review_bytes).hexdigest()
+          if review_sha and review_sha.lower() != computed_review_sha.lower():
+              sys.exit(f"Validation refused: review_sha256 mismatch for {review_path}: expected {review_sha}, computed {computed_review_sha}")
+
+          try:
+              review_data = json.loads(review_bytes.decode("utf-8"))
+              if isinstance(review_data, dict):
+                  decl_verdict = review_data.get("verdict") or review_data.get("report", {}).get("verdict")
+                  if decl_verdict and decl_verdict != "GO":
+                      sys.exit(f"Validation refused: review file declares non-GO verdict: {decl_verdict}")
+          except Exception as exc:
+              sys.exit(f"Validation refused: unable to parse review JSON at {review_path}: {exc}")
+
+          # 3. Authenticate V run status and completion via GitHub API
+          token = os.environ.get("GH_TOKEN")
+          repo = os.environ.get("GITHUB_REPOSITORY", "jwaldrip/iyi")
+          if token:
+              url = f"https://api.github.com/repos/{repo}/actions/runs/{v_run_id}"
+              req = urllib.request.Request(url, headers={
+                  "Authorization": f"Bearer {token}",
+                  "Accept": "application/vnd.github+json",
+                  "User-Agent": "iyi-strict-prepare-validator",
+              })
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as resp:
+                      v_run = json.load(resp)
+                  if v_run.get("status") != "completed" or v_run.get("conclusion") != "success":
+                      sys.exit(f"Validation refused: V run {v_run_id} status={v_run.get('status')}, conclusion={v_run.get('conclusion')} (must be completed/success)")
+              except Exception as exc:
+                  sys.exit(f"Validation refused: failed to verify V run {v_run_id} via GitHub API: {exc}")
+
+          print("Successfully validated V evidence and reviewed E before manifest preparation.")
+          PY
+
       - name: Prepare canonical manifest and immutable package
         id: prepare
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          V_RUN_ID: ${{ github.event.inputs.v_run_id }}
+          V_ARTIFACTS: ${{ github.event.inputs.v_artifacts }}
+          REVIEW_PATH: ${{ github.event.inputs.review_path || 'proof/review_evidence.json' }}
+          REVIEW_SHA256: ${{ github.event.inputs.review_sha256 }}
+          REVIEW_VERDICT: ${{ github.event.inputs.review_verdict || 'GO' }}
+          P_SHA: ${{ github.event.inputs.p_sha || env.P_AUTHORIZED_SHA }}
+          W_SHA: ${{ github.event.inputs.w_sha || env.W_AUTHORIZED_SHA }}
         run: |
           mkdir -p "$RUNNER_TEMP/manifest-pkg"
-          python3 -B proof/strict_authorization.py prepare \
-            --manifest "$RUNNER_TEMP/manifest-pkg/manifest.json" \
-            --package "$RUNNER_TEMP/manifest-pkg/manifest.zip" \
-            --p-sha "${{ env.P_AUTHORIZED_SHA }}" \
-            --w-sha "${{ env.W_AUTHORIZED_SHA }}" \
-            --c-sha "${{ github.sha }}" \
-            --s-run-id "${{ github.run_id }}" \
-            --s-run-attempt "${{ github.run_attempt }}" \
-            --workflow-path ".github/workflows/remote-strict-proof.yml" \
-            --backend "local-quiet-darwin" \
+          PREP_ARGS=(
+            prepare
+            --manifest "$RUNNER_TEMP/manifest-pkg/manifest.json"
+            --p-sha "$P_SHA"
+            --w-sha "$W_SHA"
+            --c-sha "${{ github.sha }}"
+            --s-run-id "${{ github.run_id }}"
+            --s-run-attempt "${{ github.run_attempt }}"
+            --workflow-path ".github/workflows/remote-strict-proof.yml"
+            --v-run-id "$V_RUN_ID"
+            --v-artifacts "$V_ARTIFACTS"
+            --review-path "$REVIEW_PATH"
+            --review-verdict "$REVIEW_VERDICT"
+            --backend "local-quiet-darwin"
             --chain-id "iyi-strict-proof-chain-v1"
+            --output-digest "$RUNNER_TEMP/manifest-pkg/digest.txt"
+          )
+          if [ -n "$REVIEW_SHA256" ]; then
+            PREP_ARGS+=(--review-sha256 "$REVIEW_SHA256")
+          fi
 
-          D=$(python3 -B -c "import hashlib, json; manifest = json.load(open('$RUNNER_TEMP/manifest-pkg/manifest.json', 'rb')); manifest_bytes = json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode('utf-8'); print(hashlib.sha256(manifest_bytes).hexdigest())")
+          python3 -B proof/strict_authorization.py "${PREP_ARGS[@]}"
+
+          D=$(cat "$RUNNER_TEMP/manifest-pkg/digest.txt")
+          test -n "$D"
+          COMPUTED_D=$(python3 -B -c "import hashlib; print(hashlib.sha256(open('$RUNNER_TEMP/manifest-pkg/manifest.json', 'rb').read()).hexdigest())")
+          if [ "$D" != "$COMPUTED_D" ]; then
+            echo "ERROR: Manifest digest mismatch: $D vs $COMPUTED_D" >&2
+            exit 1
+          fi
           echo "manifest_digest=$D" >> "$GITHUB_OUTPUT"
-          echo "Prepared manifest digest: $D"
+          echo "Prepared canonical manifest with exact digest D: $D"
 
       - name: Upload immutable manifest package
         id: upload-manifest
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf6581a120002692624f # v4.4.3
         with:
           name: strict-proof-manifest-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/manifest-pkg/manifest.json
-            ${{ runner.temp }}/manifest-pkg/manifest.zip
+          path: ${{ runner.temp }}/manifest-pkg/manifest.json
           if-no-files-found: error
           retention-days: 14
-
   strict-chain:
     name: "Sequential strict-chain gate (strict-proof)"
     needs: prepare-strict-authorization
@@ -919,35 +1066,68 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Download manifest package by exact artifact ID
+      - name: Download manifest package by exact artifact ID and verify archive
         id: download-manifest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARTIFACT_ID: ${{ needs.prepare-strict-authorization.outputs.artifact_id }}
+          EXPECTED_DIGEST: ${{ needs.prepare-strict-authorization.outputs.manifest_digest }}
         run: |
           python3 -B - <<'PY'
-          import os, sys, zipfile
+          import hashlib, io, json, os, sys, zipfile
           from proof.github_artifact import download_artifact_zip
 
           token = os.environ["GH_TOKEN"]
           repo = os.environ["GITHUB_REPOSITORY"]
-          artifact_id = "${{ needs.prepare-strict-authorization.outputs.artifact_id }}"
+          artifact_id = os.environ["ARTIFACT_ID"].strip()
+          expected_d = os.environ["EXPECTED_DIGEST"].strip()
+
+          if not artifact_id or not artifact_id.isdigit():
+              sys.exit(f"Invalid manifest artifact ID from preparation: {artifact_id!r}")
+          if not expected_d or len(expected_d) != 64:
+              sys.exit(f"Invalid expected manifest digest from preparation: {expected_d!r}")
+
           url = f"https://api.github.com/repos/{repo}/actions/artifacts/{artifact_id}/zip"
           dest = os.path.join(os.environ["RUNNER_TEMP"], "manifest-download.zip")
           try:
               data = download_artifact_zip(url, token)
           except Exception as exc:
               sys.exit(f"Failed to download manifest artifact {artifact_id}: {exc}")
+
           with open(dest, "wb") as f:
               f.write(data)
-          print(f"Downloaded manifest artifact {artifact_id} ({len(data)} bytes) to {dest}")
+
+          outer_sha = hashlib.sha256(data).hexdigest()
+          print(f"Downloaded manifest artifact {artifact_id} ({len(data)} bytes, outer SHA-256 {outer_sha})")
 
           unpacked = os.path.join(os.environ["RUNNER_TEMP"], "manifest-unpacked")
           os.makedirs(unpacked, exist_ok=True)
-          with zipfile.ZipFile(dest, "r") as zf:
-              zf.extractall(unpacked)
-          print(f"Unpacked manifest artifact members: {os.listdir(unpacked)}")
-          PY
 
+          try:
+              with zipfile.ZipFile(io.BytesIO(data), "r") as zf:
+                  namelist = zf.namelist()
+                  if len(namelist) != len(set(namelist)):
+                      sys.exit("Duplicate member names found in downloaded manifest artifact archive")
+                  entries = [e for e in zf.infolist() if not e.is_dir()]
+                  if len(entries) != 1 or entries[0].filename != "manifest.json":
+                      sys.exit(f"Archive layout mismatch: expected exactly ['manifest.json'], got {[e.filename for e in entries]}")
+                  manifest_entry = entries[0]
+                  if manifest_entry.file_size > 10_000_000:
+                      sys.exit(f"Manifest member unexpectedly large: {manifest_entry.file_size} bytes")
+                  raw_bytes = zf.read(manifest_entry)
+          except Exception as exc:
+              sys.exit(f"Corrupted or invalid manifest archive: {exc}")
+
+          computed_d = hashlib.sha256(raw_bytes).hexdigest()
+          if computed_d.lower() != expected_d.lower():
+              sys.exit(f"Manifest member digest mismatch: expected D={expected_d}, computed={computed_d}")
+
+          manifest_file = os.path.join(unpacked, "manifest.json")
+          with open(manifest_file, "wb") as f:
+              f.write(raw_bytes)
+
+          print(f"Verified manifest member {manifest_file} with exact digest D={computed_d}")
+          PY
       - name: Verify approval and manifest against authoritative GitHub API
         id: check-auth
         env:
