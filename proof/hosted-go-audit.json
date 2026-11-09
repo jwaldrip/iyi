@@ -33,7 +33,7 @@
     "GOSUMDB": "sum.golang.org",
     "GOTOOLCHAIN": "local",
     "GOWORK": "off",
-    "HOME": "<isolated-scratch>/home",
+    "HOME": "<isolated-scratch>",
     "PATH": "<sanitized-system-path>"
   },
   "go_version": "go1.26.5 darwin/arm64",
