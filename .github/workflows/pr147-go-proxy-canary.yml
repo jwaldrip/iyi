@@ -1,0 +1,42 @@
+name: PR147 cold offline Go proxy canary
+
+on:
+  push:
+    branches:
+      - proof/pr147-go-canary-20261109
+    paths:
+      - .github/workflows/pr147-go-proxy-canary.yml
+
+permissions:
+  contents: read
+
+jobs:
+  offline-go:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Stage and verify pinned input data
+        run: |
+          set -euo pipefail
+          ROOT="$(mktemp -d "$RUNNER_TEMP/iyi-go-canary.XXXXXX")"
+          mkdir "$ROOT/inputs" "$ROOT/scratch"
+          chmod 755 "$ROOT" "$ROOT/inputs"
+          chmod 777 "$ROOT/scratch"
+          python3 -B proof/hosted_inputs.py stage --lock proof/hosted_sources.lock.json --output "$ROOT/inputs"
+          python3 -B proof/hosted_inputs.py verify --lock proof/hosted_sources.lock.json --input "$ROOT/inputs"
+          echo "CANARY_ROOT=$ROOT" >> "$GITHUB_ENV"
+      - name: Build both commands with cold caches and no network
+        run: |
+          set -euo pipefail
+          docker pull golang:1.25-bookworm
+          docker image inspect golang:1.25-bookworm --format 'Image ID: {{.Id}}; repository digests: {{json .RepoDigests}}'
+          cid="$(docker create --network none --read-only --cap-drop ALL --security-opt no-new-privileges --user 65534:65534 --mount "type=bind,src=$CANARY_ROOT/inputs,dst=/inputs,readonly" --mount "type=bind,src=$CANARY_ROOT/scratch,dst=/scratch" --tmpfs /tmp:rw,nosuid,nodev,mode=1777 --env HOME=/scratch --env GOTOOLCHAIN=local --env GOPROXY=file:///inputs/go-proxy --env GONOPROXY=none --env GOPRIVATE= --env GOSUMDB=off --env GONOSUMDB='*' --env GOMODCACHE=/scratch/mod --env GOCACHE=/scratch/cache --env GOBIN=/scratch/bin golang:1.25-bookworm sh -eu -c 'go version; test ! -e "$GOMODCACHE"; test ! -e "$GOCACHE"; go install github.com/letsencrypt/pebble/v2/cmd/pebble@v2.10.1 github.com/letsencrypt/pebble/v2/cmd/pebble-challtestsrv@v2.10.1; go version -m /scratch/bin/pebble; go version -m /scratch/bin/pebble-challtestsrv; test -f "$GOMODCACHE/github.com/letsencrypt/pebble/v2@v2.10.1/test/certs/localhost/cert.pem"; test -f "$GOMODCACHE/github.com/letsencrypt/pebble/v2@v2.10.1/test/certs/localhost/key.pem"; test -f "$GOMODCACHE/github.com/letsencrypt/pebble/v2@v2.10.1/test/certs/pebble.minica.pem"; echo COLD_FILE_PROXY_BUILD_PASS')"
+          cleanup() { docker rm -f "$cid" >/dev/null; }
+          trap cleanup EXIT
+          test "$(docker inspect --format '{{.HostConfig.NetworkMode}}' "$cid")" = none
+          docker start -a "$cid"
+          test "$(docker inspect --format '{{.State.ExitCode}}' "$cid")" = 0
+          test "$(docker inspect --format '{{.State.Running}}' "$cid")" = false

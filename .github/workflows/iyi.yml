@@ -44,6 +44,7 @@ on:
   push:
     branches-ignore:
       - proof/pr147-format-observer-20261109
+      - proof/pr147-go-canary-20261109
   pull_request:
 
 # Git refuses a checkout that another user owns, and in a container job the
