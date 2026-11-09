@@ -40,6 +40,8 @@ from proof.proofkit import (
     verify_ledger,
     check_identity,
     _validated_report_dir,
+    write_origin_records,
+    verify_origin_records,
 )
 from proof.run_proof import fresh_stage_env
 import proof.artifact_legs as artifact_legs
@@ -596,6 +598,99 @@ class TestPrivateTmpInvariance(unittest.TestCase):
                 _validated_report_dir(invalid_dir, require_empty=True)
             self.assertEqual(ctx.exception.reason, "REPORT-DIR-NAME")
 
+
+class TestOriginRecordsAdversarialHardlink(unittest.TestCase):
+    def test_adversarial_unexecuted_hardlink_remains_rejected_after_read(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            attempt_dir = os.path.join(tmpdir, "attempt")
+            os.makedirs(attempt_dir)
+            source_file = os.path.join(tmpdir, "source.bin")
+            with open(source_file, "wb") as f:
+                f.write(b"binary_payload\n")
+            hardlink_ref = os.path.join(tmpdir, "unexec_link.bin")
+            os.link(source_file, hardlink_ref)
+
+            st = os.stat(hardlink_ref)
+            mtime_ns = st.st_mtime_ns
+            os.utime(hardlink_ref, ns=(mtime_ns, mtime_ns))
+
+            stat_target = (0, {"out_ino": st.st_ino, "out_mtime_ns": mtime_ns}, hardlink_ref)
+            stat_result = (0, {"out_ino": st.st_ino, "out_mtime_ns": mtime_ns}, hardlink_ref, os.stat(hardlink_ref))
+
+            ledger_file = os.path.join(attempt_dir, "ledger.jsonl")
+            with open(ledger_file, "w") as f:
+                f.write("{}\n")
+
+            origin_path = write_origin_records(
+                attempt_dir,
+                driver="demo",
+                attempt=1,
+                chain_id="0" * 32,
+                ledger_path=ledger_file,
+                stat_targets=[stat_target],
+                stat_results=[stat_result],
+            )
+            initial_sha = hashlib.sha256(open(origin_path, "rb").read()).hexdigest()
+            receipt = {
+                "schema": "iyi-sealed-origin-receipt-v1",
+                "chain_id": "0" * 32,
+                "attempt": 1,
+                "driver": "demo",
+                "origin_records_sha256": initial_sha,
+                "ledger_sha256": hashlib.sha256(b"{}\n").hexdigest(),
+            }
+
+            # Initial verification fails because atime was not advanced during execution
+            ok, reasons = verify_origin_records(
+                origin_path,
+                driver="demo",
+                attempt=1,
+                chain_id="0" * 32,
+                ledger_path=ledger_file,
+                expected_indices=[0],
+                receipt_data=receipt,
+            )
+            self.assertFalse(ok)
+            self.assertTrue(any("did not advance atime" in r for r in reasons))
+
+            # Adversary / archive collector reads the hardlink file, advancing its atime
+            with open(hardlink_ref, "rb") as f:
+                _ = f.read()
+            os.utime(hardlink_ref, ns=(mtime_ns + 10_000_000, mtime_ns))
+            self.assertGreater(os.stat(hardlink_ref).st_atime_ns, mtime_ns)
+
+            # Re-verification against the immutable origin record REMAINS REJECTED!
+            ok_after, reasons_after = verify_origin_records(
+                origin_path,
+                driver="demo",
+                attempt=1,
+                chain_id="0" * 32,
+                ledger_path=ledger_file,
+                expected_indices=[0],
+                receipt_data=receipt,
+            )
+            self.assertFalse(ok_after)
+            self.assertTrue(any("did not advance atime" in r for r in reasons_after))
+
+            # Tampered origin records (adversary modifying origin_records.json) fails receipt check
+            with open(origin_path, "r", encoding="utf-8") as f:
+                doc = json.load(f)
+            doc["entries"][0]["atime_advanced"] = True
+            doc["overall_status"] = "PASS"
+            with open(origin_path, "w", encoding="utf-8") as f:
+                json.dump(doc, f)
+
+            ok_tampered, reasons_tampered = verify_origin_records(
+                origin_path,
+                driver="demo",
+                attempt=1,
+                chain_id="0" * 32,
+                ledger_path=ledger_file,
+                expected_indices=[0],
+                receipt_data=receipt,
+            )
+            self.assertFalse(ok_tampered)
+            self.assertTrue(any("receipt origin_records_sha256 mismatch" in r for r in reasons_tampered))
 
 if __name__ == "__main__":
     unittest.main()

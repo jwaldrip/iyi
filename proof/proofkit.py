@@ -3435,6 +3435,170 @@ def _ledger_run_executed(record: dict) -> bool:
     )
 
 
+def write_origin_records(
+    attempt_dir: str,
+    *,
+    driver: str,
+    attempt: int,
+    chain_id: str,
+    ledger_path: str,
+    stat_targets: list[tuple[int, dict, str]],
+    stat_results: list[tuple[int, dict, str, os.stat_result | None]],
+) -> str:
+    """
+    Persist immutable pre-read origin records before hashing or archive collection.
+
+    Binds chain_id, attempt, driver, ledger_path, and ledger_sha256.
+    Records per-entry stat values (dev, ino, nlink, mode, size, timestamps)
+    and atime_advanced status.
+    """
+    ledger_real = os.path.realpath(ledger_path)
+    ledger_sha = sha256_file(ledger_real) if os.path.isfile(ledger_real) else ""
+    entries: list[dict] = []
+    all_advanced = True
+
+    for (index, record, out_ref), (_, _, _, stat_result) in zip(stat_targets, stat_results):
+        expected_ino = record.get("out_ino")
+        expected_mtime = record.get("out_mtime_ns")
+        entry = {
+            "index": index,
+            "out_ref": os.path.realpath(out_ref),
+            "expected_ino": expected_ino,
+            "expected_mtime_ns": expected_mtime,
+        }
+        if stat_result is None:
+            entry["stat_error"] = True
+            entry["atime_advanced"] = False
+            all_advanced = False
+        else:
+            obs_ino = getattr(stat_result, "st_ino", None)
+            obs_atime = getattr(stat_result, "st_atime_ns", None)
+            obs_mtime = getattr(stat_result, "st_mtime_ns", None)
+            entry["st_dev"] = getattr(stat_result, "st_dev", 0)
+            entry["st_ino"] = obs_ino
+            entry["st_nlink"] = getattr(stat_result, "st_nlink", 0)
+            entry["st_mode"] = getattr(stat_result, "st_mode", 0)
+            entry["st_size"] = getattr(stat_result, "st_size", 0)
+            entry["st_mtime_ns"] = obs_mtime
+            entry["st_atime_ns"] = obs_atime
+            entry["st_ctime_ns"] = getattr(stat_result, "st_ctime_ns", None)
+            advanced = bool(
+                isinstance(obs_atime, int)
+                and isinstance(expected_mtime, int)
+                and obs_atime > expected_mtime
+                and obs_ino == expected_ino
+            )
+            entry["atime_advanced"] = advanced
+            if not advanced:
+                all_advanced = False
+        entries.append(entry)
+
+    origin_doc = {
+        "v": 1,
+        "kind": "origin_records",
+        "driver": driver,
+        "attempt": attempt,
+        "chain_id": chain_id,
+        "ledger_path": ledger_real,
+        "ledger_sha256": ledger_sha,
+        "timestamp_ns": time.time_ns(),
+        "entries": entries,
+        "overall_status": "PASS" if all_advanced and entries else "NOT-EXECUTED",
+    }
+    origin_path = os.path.join(attempt_dir, "origin_records.json")
+    with open(origin_path, "w", encoding="utf-8") as out_file:
+        json.dump(origin_doc, out_file, indent=2, sort_keys=True)
+        out_file.write("\n")
+    return origin_path
+
+
+def verify_origin_records(
+    origin_records_path: str,
+    *,
+    driver: str,
+    attempt: int,
+    chain_id: str,
+    ledger_path: str,
+    expected_indices: Sequence[int] | None = None,
+    receipt_data: dict | None = None,
+) -> tuple[bool, list[str]]:
+    """
+    Verify persisted origin records against immutable binding and optional host receipt.
+
+    Fails closed if missing, malformed, duplicate/missing entries, or unadvanced atime.
+    """
+    reasons: list[str] = []
+    if not os.path.isfile(origin_records_path):
+        return False, ["origin_records.json missing"]
+
+    try:
+        with open(origin_records_path, "r", encoding="utf-8") as f:
+            doc = json.load(f)
+    except (json.JSONDecodeError, OSError) as err:
+        return False, [f"origin_records.json unreadable: {err}"]
+
+    required_top = {
+        "v", "kind", "driver", "attempt", "chain_id",
+        "ledger_path", "ledger_sha256", "timestamp_ns", "entries", "overall_status",
+    }
+    if not isinstance(doc, dict) or set(doc.keys()) != required_top:
+        return False, ["origin_records.json schema invalid"]
+
+    if doc.get("v") != 1 or doc.get("kind") != "origin_records":
+        return False, ["origin_records.json kind or version invalid"]
+    if doc.get("driver") != driver:
+        return False, [f"driver mismatch: expected {driver}, got {doc.get('driver')}"]
+    if doc.get("attempt") != attempt:
+        return False, [f"attempt mismatch: expected {attempt}, got {doc.get('attempt')}"]
+    if doc.get("chain_id") != chain_id:
+        return False, [f"chain_id mismatch: expected {chain_id}, got {doc.get('chain_id')}"]
+
+    ledger_real = os.path.realpath(ledger_path)
+    if doc.get("ledger_path") != ledger_real:
+        return False, [f"ledger_path mismatch: expected {ledger_real}, got {doc.get('ledger_path')}"]
+    if os.path.isfile(ledger_real) and doc.get("ledger_sha256") != sha256_file(ledger_real):
+        return False, ["ledger_sha256 mismatch against current ledger"]
+
+    if receipt_data is not None:
+        schema = receipt_data.get("schema")
+        if schema not in (None, "iyi-sealed-origin-receipt-v1"):
+            return False, [f"unknown receipt schema: {schema}"]
+        rec_sha = receipt_data.get("origin_records_sha256")
+        actual_sha = sha256_file(origin_records_path)
+        if rec_sha != actual_sha:
+            return False, [f"host receipt origin_records_sha256 mismatch: {rec_sha} != {actual_sha}"]
+        if (
+            receipt_data.get("chain_id") != chain_id
+            or receipt_data.get("attempt") != attempt
+            or receipt_data.get("driver") != driver
+            or (receipt_data.get("ledger_sha256") and receipt_data["ledger_sha256"] != doc.get("ledger_sha256"))
+        ):
+            return False, ["host receipt metadata mismatch"]
+    entries = doc.get("entries")
+    if not isinstance(entries, list):
+        return False, ["entries is not a list"]
+
+    seen_indices = set()
+    for entry_idx, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            return False, [f"entry {entry_idx} is not an object"]
+        idx = entry.get("index")
+        if not isinstance(idx, int) or idx in seen_indices:
+            return False, [f"entry {entry_idx} duplicate or invalid index"]
+        seen_indices.add(idx)
+        if not entry.get("atime_advanced"):
+            reasons.append(f"entry {idx} did not advance atime during execution")
+
+    if expected_indices is not None:
+        if seen_indices != set(expected_indices):
+            missing = sorted(set(expected_indices) - seen_indices)
+            extra = sorted(seen_indices - set(expected_indices))
+            return False, [f"entry index mismatch: missing={missing}, extra={extra}"]
+
+    if reasons:
+        return False, reasons
+    return True, []
+
 def verify_ledger(ledger_path: str, *, census: dict, driver: str, nonce: str, attempt: int, chain_id: str, work_tmp: str, repo: str, platform_tmp: str | None, stat_fn: Callable[[str], os.stat_result] = os.stat, target_platform: str | None = None) -> LedgerVerdict:
     """Verify one P2 ledger and return every blocking P4 status."""
     statuses: set[str] = set()
@@ -4004,6 +4168,24 @@ def verify_ledger(ledger_path: str, *, census: dict, driver: str, nonce: str, at
             )
             stat_result = None
         stat_results.append((index, record, out_ref, stat_result))
+    try:
+        attempt_dir = os.path.dirname(os.path.realpath(ledger_path))
+        write_origin_records(
+            attempt_dir,
+            driver=driver,
+            attempt=attempt,
+            chain_id=chain_id,
+            ledger_path=ledger_path,
+            stat_targets=stat_targets,
+            stat_results=stat_results,
+        )
+    except Exception as error:
+        _ledger_add(
+            statuses,
+            reasons,
+            "UNFAITHFUL",
+            f"failed to capture origin_records: {error}",
+        )
 
     for index, record, out_ref, stat_result in stat_results:
         if stat_result is None:
