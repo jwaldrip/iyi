@@ -271,13 +271,22 @@ if ".BTF" not in sections:
 
 btf_raw = sections[".BTF"]
 if len(btf_raw) < 24:
-    sys.exit("ERROR: .BTF section too short")
+    sys.exit("ERROR: .BTF section too short (expected at least 24-byte header)")
 
 btf_hdr_magic = int.from_bytes(btf_raw[0:2], "little")
 if btf_hdr_magic != 0xEB9F:
     sys.exit(f"ERROR: .BTF magic mismatch: 0x{btf_hdr_magic:04x}")
 
+btf_version = btf_raw[2]
+if btf_version != 1:
+    sys.exit(f"ERROR: .BTF version mismatch: expected 1, got {btf_version}")
+
 btf_hdr_len = int.from_bytes(btf_raw[4:8], "little")
+if btf_hdr_len < 24:
+    sys.exit(f"ERROR: .BTF header length {btf_hdr_len} too small (expected >= 24)")
+if len(btf_raw) < btf_hdr_len:
+    sys.exit(f"ERROR: .BTF section length {len(btf_raw)} smaller than declared hdr_len {btf_hdr_len}")
+
 btf_type_off = int.from_bytes(btf_raw[8:12], "little")
 btf_type_len = int.from_bytes(btf_raw[12:16], "little")
 btf_str_off = int.from_bytes(btf_raw[16:20], "little")
@@ -409,15 +418,21 @@ if ".BTF.ext" not in sections:
 
 btf_ext = sections[".BTF.ext"]
 if len(btf_ext) < 32:
-    sys.exit("ERROR: .BTF.ext section too short to contain CO-RE header")
+    sys.exit("ERROR: .BTF.ext section too short to contain CO-RE header (expected >= 32)")
 
 btf_magic = int.from_bytes(btf_ext[0:2], "little")
 if btf_magic != 0xEB9F:
     sys.exit(f"ERROR: .BTF.ext magic mismatch: expected 0xeb9f, got 0x{btf_magic:04x}")
 
+btf_ext_version = btf_ext[2]
+if btf_ext_version != 1:
+    sys.exit(f"ERROR: .BTF.ext version mismatch: expected 1, got {btf_ext_version}")
+
 hdr_len = int.from_bytes(btf_ext[4:8], "little")
 if hdr_len < 32:
-    sys.exit(f"ERROR: .BTF.ext header length {hdr_len} too small for CO-RE relocations")
+    sys.exit(f"ERROR: .BTF.ext header length {hdr_len} too small for CO-RE relocations (expected >= 32)")
+if len(btf_ext) < hdr_len:
+    sys.exit(f"ERROR: .BTF.ext section length {len(btf_ext)} smaller than declared hdr_len {hdr_len}")
 
 core_relo_off = int.from_bytes(btf_ext[24:28], "little")
 core_relo_len = int.from_bytes(btf_ext[28:32], "little")

@@ -103,7 +103,7 @@ def make_dummy_lock(scratch: Path, archive_hashes: dict[str, str], header_hashes
     return p
 
 
-def build_mock_bpf_elf(scratch: Path, btf_type_len: int = 120, corrupt_relo: str | None = None, filename: str = "mock_canary.bpf.o", scenario: str | None = None) -> Path:
+def build_mock_bpf_elf(scratch: Path, btf_type_len: int = 120, corrupt_relo: str | None = None, filename: str = "mock_canary.bpf.o", scenario: str | None = None, btf_version: int = 1, btf_hdr_len: int = 24, ext_version: int = 1, ext_hdr_len: int = 32, btf_raw_override: bytes | None = None, ext_raw_override: bytes | None = None) -> Path:
     """Build a valid ELF64 little-endian BPF object with real .BTF, .BTF.ext, and .symtab sections."""
     shstrtab, sh_offsets = make_strtab([
         ".shstrtab", "tp_btf/sched_process_exec", ".maps", "license",
@@ -207,8 +207,11 @@ def build_mock_bpf_elf(scratch: Path, btf_type_len: int = 120, corrupt_relo: str
         acc_str = "0:0"
 
     actual_type_len = len(type_data)
-    btf_hdr = struct.pack("<HBBIIII", 0xEB9F, 1, 0, 24, 0, actual_type_len, actual_type_len) + struct.pack("<I", len(btf_strtab))
-    btf_sec_data = btf_hdr + type_data + btf_strtab
+    if btf_raw_override is not None:
+        btf_sec_data = btf_raw_override
+    else:
+        btf_hdr = struct.pack("<HBBIIII", 0xEB9F, btf_version, 0, btf_hdr_len, 0, actual_type_len, actual_type_len) + struct.pack("<I", len(btf_strtab))
+        btf_sec_data = btf_hdr + type_data + btf_strtab
 
     sec_name_off = btf_offsets["tp_btf/sched_process_exec"]
     acc_str_off = btf_offsets[acc_str]
@@ -228,8 +231,11 @@ def build_mock_bpf_elf(scratch: Path, btf_type_len: int = 120, corrupt_relo: str
 
     core_relo_data = struct.pack("<I", 16) + struct.pack("<II", sec_name_off, 10) + relo_records + (b"\xff" if scenario == "trailing_core_bytes" else b"")
     core_relo_len = len(core_relo_data)
-    btf_ext_hdr = struct.pack("<HBBIIIIII", 0xEB9F, 1, 0, 32, 0, 0, 0, 0, 0) + struct.pack("<I", core_relo_len)
-    btf_ext_sec_data = btf_ext_hdr + core_relo_data
+    if ext_raw_override is not None:
+        btf_ext_sec_data = ext_raw_override
+    else:
+        btf_ext_hdr = struct.pack("<HBBIIIIII", 0xEB9F, ext_version, 0, ext_hdr_len, 0, 0, 0, 0, 0) + struct.pack("<I", core_relo_len)
+        btf_ext_sec_data = btf_ext_hdr + core_relo_data
     sections = [
         (b"", 0, 0, 0, 0, 0),
         (shstrtab, sh_offsets[".shstrtab"], 3, 0, 0, 1),
@@ -862,6 +868,72 @@ class TestBpfFeasibilityScript(unittest.TestCase):
             )
             self.assertNotEqual(res.returncode, 0)
             self.assertIn("Dangling or unescaped dollar sign", res.stderr)
+
+            # Mutation 19: .BTF version mismatch fails closed
+            bad_btf_ver = build_mock_bpf_elf(scratch, filename="bad_btf_ver.o", btf_version=0)
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-bpf-obj", readelf_bin, str(bad_btf_ver), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(lock_file), str(scratch)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn(".BTF version mismatch: expected 1, got 0", res.stderr)
+
+            # Mutation 20: .BTF header length too small (< 24) fails closed
+            bad_btf_len = build_mock_bpf_elf(scratch, filename="bad_btf_len.o", btf_hdr_len=16)
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-bpf-obj", readelf_bin, str(bad_btf_len), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(lock_file), str(scratch)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn(".BTF header length 16 too small (expected >= 24)", res.stderr)
+
+            # Mutation 21: .BTF section too short (< 24 bytes) fails closed
+            bad_btf_short = build_mock_bpf_elf(scratch, filename="bad_btf_short.o", btf_raw_override=b"\x9f\xeb\x01\x00\x18\x00\x00\x00")
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-bpf-obj", readelf_bin, str(bad_btf_short), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(lock_file), str(scratch)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn(".BTF section too short (expected at least 24-byte header)", res.stderr)
+
+            # Mutation 22: .BTF.ext version mismatch fails closed
+            bad_ext_ver = build_mock_bpf_elf(scratch, filename="bad_ext_ver.o", ext_version=0)
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-bpf-obj", readelf_bin, str(bad_ext_ver), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(lock_file), str(scratch)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn(".BTF.ext version mismatch: expected 1, got 0", res.stderr)
+
+            # Mutation 23: .BTF.ext header length too small (< 32) fails closed
+            bad_ext_len = build_mock_bpf_elf(scratch, filename="bad_ext_len.o", ext_hdr_len=24)
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-bpf-obj", readelf_bin, str(bad_ext_len), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(lock_file), str(scratch)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn(".BTF.ext header length 24 too small for CO-RE relocations (expected >= 32)", res.stderr)
+
+            # Mutation 24: .BTF.ext section too short (< 32 bytes) fails closed
+            bad_ext_short = build_mock_bpf_elf(scratch, filename="bad_ext_short.o", ext_raw_override=b"\x9f\xeb\x01\x00\x20\x00\x00\x00")
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-bpf-obj", readelf_bin, str(bad_ext_short), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(lock_file), str(scratch)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn(".BTF.ext section too short to contain CO-RE header (expected >= 32)", res.stderr)
 
     def test_production_host_elf_gate_validation(self) -> None:
         """Production --validate-host-elf gate: positive control passes, mutations strictly fail closed."""
