@@ -12,7 +12,7 @@ environment attestation policy:
     operated the account or which credential was used. Reviewer independence and audit
     soundness are attested by the approver; no system authenticates the reviewer.
   - Fail-closed execution: All checks must pass against GitHub API before authorization
-    is granted. Any verification failure, tampering, or API fault exits with failure (exit code 5).
+    is granted. Exit codes: 0 on success; 5 on refusal, verification failure, tampering, or API fault; 2 on usage/argument error.
 """
 
 import argparse
@@ -1085,17 +1085,29 @@ def check_val_1b(client: GitHubAPIClient, all_runs_at_head: List[Dict[str, Any]]
     for run in all_runs_at_head:
         run_id = str(run.get("id"))
         total_attempts = int(run.get("run_attempt", 1))
+        run_status = run.get("status")
+        run_conclusion = run.get("conclusion")
+        has_executed_controller = False
+
         for attempt in range(1, total_attempts + 1):
             jobs = client.get_paginated(f"repos/{PINNED_REPOSITORY}/actions/runs/{run_id}/attempts/{attempt}/jobs")
             ctrl_job = next((j for j in jobs if j.get("name") == target_job_name), None)
             if ctrl_job is not None:
-                conclusion = ctrl_job.get("conclusion")
-                if conclusion != "skipped":
-                    if run.get("status") != "completed" or run.get("conclusion") != "success":
+                ctrl_conclusion = ctrl_job.get("conclusion")
+                ctrl_status = ctrl_job.get("status")
+                if ctrl_conclusion != "skipped":
+                    has_executed_controller = True
+                    if ctrl_status != "completed" or ctrl_conclusion != "success":
                         raise AuthorizationError(
-                            f"[VAL-1b] run {run_id} attempt {attempt} executed controller proofs (conclusion={conclusion}) but run status is {run.get('status')}/{run.get('conclusion')}",
+                            f"[VAL-1b] run {run_id} attempt {attempt} controller job did not complete with success: status={ctrl_status}, conclusion={ctrl_conclusion}",
                             check_id="VAL-1b",
                         )
+        if has_executed_controller:
+            if run_status != "completed" or run_conclusion != "success":
+                raise AuthorizationError(
+                    f"[VAL-1b] run {run_id} executed controller proofs but run status is {run_status}/{run_conclusion}",
+                    check_id="VAL-1b",
+                )
 
 
 def check_val_2(jobs: List[Dict[str, Any]]) -> None:
@@ -1211,13 +1223,22 @@ def check_val_4(
     if str(rehearsal.get("run_id")) != str(val_run_id):
         raise AuthorizationError(f"[VAL-4] rehearsal member run_id mismatch: expected {val_run_id}, got {rehearsal.get('run_id')}", check_id="VAL-4")
 
-    if "rehearsal_manifest" in rehearsal:
-        computed_reh_m_sha = digest(canonical(rehearsal["rehearsal_manifest"]))
-        if computed_reh_m_sha != rehearsal.get("rehearsal_manifest_sha256"):
-            raise AuthorizationError(
-                f"[VAL-4] rehearsal manifest sha256 mismatch: expected {rehearsal.get('rehearsal_manifest_sha256')}, got {computed_reh_m_sha}",
-                check_id="VAL-4",
-            )
+    if "rehearsal_manifest" not in rehearsal or not isinstance(rehearsal["rehearsal_manifest"], dict):
+        raise AuthorizationError("[VAL-4] rehearsal report missing required embedded rehearsal_manifest", check_id="VAL-4")
+
+    reh_m = rehearsal["rehearsal_manifest"]
+    if reh_m.get("schema") != SCHEMA_REHEARSAL_MANIFEST:
+        raise AuthorizationError(
+            f"[VAL-4] rehearsal manifest schema mismatch: expected {SCHEMA_REHEARSAL_MANIFEST}, got {reh_m.get('schema')}",
+            check_id="VAL-4",
+        )
+
+    computed_reh_m_sha = digest(canonical(reh_m))
+    if computed_reh_m_sha != rehearsal.get("rehearsal_manifest_sha256"):
+        raise AuthorizationError(
+            f"[VAL-4] rehearsal manifest sha256 mismatch: expected {rehearsal.get('rehearsal_manifest_sha256')}, got {computed_reh_m_sha}",
+            check_id="VAL-4",
+        )
 
     return digest(summary_member_raw), digest(rehearsal_member_raw)
 
@@ -1253,6 +1274,14 @@ def check_aud_3(
     audit_md_sha256: str,
     census_review_sha256: str,
 ) -> None:
+    expected_keys = {
+        "schema", "verdict", "repository_id", "c_sha", "p_sha", "w_sha", "h_sha",
+        "validation", "harness", "report_sha256", "census_review_sha256",
+        "open_blocking_findings", "s6_signing_ruling", "self_declared",
+    }
+    if set(audit_json.keys()) != expected_keys:
+        raise AuthorizationError(f"[AUD-3] audit.json keys mismatch: expected {expected_keys}, got {set(audit_json.keys())}", check_id="AUD-3")
+
     if audit_json.get("schema") != SCHEMA_AUDIT:
         raise AuthorizationError(f"[AUD-3] audit.json schema mismatch: expected {SCHEMA_AUDIT}, got {audit_json.get('schema')}", check_id="AUD-3")
     if audit_json.get("verdict") != "GO":
@@ -1269,15 +1298,21 @@ def check_aud_3(
         raise AuthorizationError(f"[AUD-3] audit.json h_sha mismatch: expected {PINNED_H_SHA}, got {audit_json.get('h_sha')}", check_id="AUD-3")
 
     val_section = audit_json.get("validation", {})
+    if not isinstance(val_section, dict) or set(val_section.keys()) != {"run_id", "artifacts"}:
+        raise AuthorizationError(f"[AUD-3] audit.json validation section invalid keys: {val_section}", check_id="AUD-3")
     if str(val_section.get("run_id")) != str(val_run_id):
         raise AuthorizationError(f"[AUD-3] audit.json validation.run_id mismatch: expected {val_run_id}, got {val_section.get('run_id')}", check_id="AUD-3")
 
     art_digests = val_section.get("artifacts", {})
+    if not isinstance(art_digests, dict) or set(art_digests.keys()) != set(val_artifacts.keys()):
+        raise AuthorizationError(f"[AUD-3] audit.json validation artifacts keys mismatch: expected {set(val_artifacts.keys())}, got {set(art_digests.keys()) if isinstance(art_digests, dict) else art_digests}", check_id="AUD-3")
     for art_name, art_info in val_artifacts.items():
         if art_digests.get(art_name) != art_info["digest"]:
             raise AuthorizationError(f"[AUD-3] audit.json validation artifact digest mismatch for {art_name}: expected {art_info['digest']}, got {art_digests.get(art_name)}", check_id="AUD-3")
 
     harness_section = audit_json.get("harness", {})
+    if not isinstance(harness_section, dict) or set(harness_section.keys()) != {"run_id", "artifact_id", "digest"}:
+        raise AuthorizationError(f"[AUD-3] audit.json harness section invalid keys: {harness_section}", check_id="AUD-3")
     if str(harness_section.get("run_id")) != HARNESS_RUN_ID:
         raise AuthorizationError(f"[AUD-3] audit.json harness.run_id mismatch: expected {HARNESS_RUN_ID}, got {harness_section.get('run_id')}", check_id="AUD-3")
     if str(harness_section.get("artifact_id")) != HARNESS_ARTIFACT_ID:
@@ -1298,6 +1333,12 @@ def check_aud_3(
         raise AuthorizationError("[AUD-3] audit.json s6_signing_ruling must be a non-empty string", check_id="AUD-3")
 
     self_decl = audit_json.get("self_declared", {})
+    if not isinstance(self_decl, dict) or set(self_decl.keys()) != {"reviewer", "model", "did_not_implement"}:
+        raise AuthorizationError(f"[AUD-3] audit.json self_declared keys mismatch: {self_decl}", check_id="AUD-3")
+    if not isinstance(self_decl.get("reviewer"), str) or not self_decl.get("reviewer", "").strip():
+        raise AuthorizationError("[AUD-3] audit.json self_declared.reviewer must be non-empty string", check_id="AUD-3")
+    if not isinstance(self_decl.get("model"), str) or not self_decl.get("model", "").strip():
+        raise AuthorizationError("[AUD-3] audit.json self_declared.model must be non-empty string", check_id="AUD-3")
     if self_decl.get("did_not_implement") is not True:
         raise AuthorizationError("[AUD-3] audit.json self_declared.did_not_implement must be true", check_id="AUD-3")
 
@@ -1561,8 +1602,6 @@ def set_github_output(name: str, value: str, environ: Dict[str, str]) -> None:
     if output_path:
         with open(output_path, "a", encoding="utf-8") as f:
             f.write(f"{name}={value}\n")
-    else:
-        print(f"::set-output name={name}::{value}")
 
 
 # ---------------------------------------------------------------------------
@@ -1686,6 +1725,8 @@ def cmd_prepare(args: argparse.Namespace, environ: Dict[str, str], client: GitHu
 
     prep_job_data = client.get_json(f"repos/{PINNED_REPOSITORY}/actions/jobs/{check_run_id}")
     runner_name = environ.get("RUNNER_NAME")
+    if not runner_name:
+        raise AuthorizationError("Missing required RUNNER_NAME in environment", check_id="JOB-1")
     job_info = check_job_1(prep_job_data, run_id, JOB_NAME_PREPARE, c_sha, runner_name=runner_name)
 
     env_data = client.get_json(f"repos/{PINNED_REPOSITORY}/environments/{PINNED_ENVIRONMENT_NAME}")
@@ -1798,7 +1839,7 @@ def cmd_publish(args: argparse.Namespace, environ: Dict[str, str], client: GitHu
     """publish --manifest: emit summary notice and verify artifact outputs."""
     manifest_path = Path(args.manifest)
     if not manifest_path.is_file():
-        raise AuthorizationError(f"Manifest file not found: {manifest_path}")
+        raise AuthorizationError(f"Manifest file not found: {manifest_path}", check_id="PUB-MANIFEST")
 
     with open(manifest_path, "rb") as f:
         content = f.read()
@@ -1806,25 +1847,29 @@ def cmd_publish(args: argparse.Namespace, environ: Dict[str, str], client: GitHu
     manifest_sha = digest(content)
     expected_sha = environ.get("MANIFEST_SHA256")
     if not expected_sha or manifest_sha != expected_sha:
-        raise AuthorizationError(f"MANIFEST_SHA256 mismatch: expected {expected_sha}, got {manifest_sha}")
+        raise AuthorizationError(f"MANIFEST_SHA256 mismatch: expected {expected_sha}, got {manifest_sha}", check_id="PUB-SHA")
 
     artifact_id = environ.get("ARTIFACT_ID")
     artifact_url = environ.get("ARTIFACT_URL")
     artifact_digest = environ.get("ARTIFACT_DIGEST")
 
     if not artifact_id or not artifact_url or not artifact_digest:
-        raise AuthorizationError("Missing required ARTIFACT_ID, ARTIFACT_URL, or ARTIFACT_DIGEST in environment")
+        raise AuthorizationError("Missing required ARTIFACT_ID, ARTIFACT_URL, or ARTIFACT_DIGEST in environment", check_id="PUB-ENV")
 
-    # Artifact digest is the zip archive digest from upload-artifact@v4
-    if not re.fullmatch(r"sha256:[0-9a-f]{64}", artifact_digest):
-        raise AuthorizationError(f"Invalid ARTIFACT_DIGEST format: {artifact_digest}")
+    # actions/upload-artifact@cf430e0 outputs bare 64-hex SHA-256 hash or with 'sha256:' prefix
+    m_bare = re.fullmatch(r"[0-9a-f]{64}", artifact_digest)
+    m_prefixed = re.fullmatch(r"sha256:[0-9a-f]{64}", artifact_digest)
+    if not m_bare and not m_prefixed:
+        raise AuthorizationError(f"Invalid ARTIFACT_DIGEST format: {artifact_digest}", check_id="PUB-DIGEST")
+
+    display_digest = f"sha256:{artifact_digest}" if m_bare else artifact_digest
 
     summary_content = (
         f"### Strict Authorization Manifest Prepared\n\n"
         f"- **Manifest SHA-256 (D):** `{manifest_sha}`\n"
         f"- **Artifact ID:** `{artifact_id}`\n"
         f"- **Artifact URL:** {artifact_url}\n"
-        f"- **Artifact Digest (Zip):** `{artifact_digest}`\n\n"
+        f"- **Artifact Digest (Zip):** `{display_digest}`\n\n"
         f"To approve this deployment, submit review comment on environment `strict-proof`:\n"
         f"```text\n{APPROVAL_COMMENT_PREFIX}{manifest_sha}\n```\n"
     )
@@ -1834,8 +1879,8 @@ def cmd_publish(args: argparse.Namespace, environ: Dict[str, str], client: GitHu
         try:
             with open(summary_file, "a", encoding="utf-8") as f:
                 f.write(summary_content)
-        except OSError:
-            pass
+        except OSError as exc:
+            raise AuthorizationError(f"Failed writing GITHUB_STEP_SUMMARY to {summary_file}: {exc}", check_id="PUB-SUMMARY") from exc
 
     print(f"Published manifest artifact {artifact_id} with SHA-256 {manifest_sha}")
     return 0
@@ -1899,6 +1944,8 @@ def cmd_authorize(args: argparse.Namespace, environ: Dict[str, str], client: Git
         # JOB-1
         job_data = client.get_json(f"repos/{PINNED_REPOSITORY}/actions/jobs/{check_run_id}")
         runner_name = environ.get("RUNNER_NAME")
+        if not runner_name:
+            raise AuthorizationError("Missing required RUNNER_NAME in environment", check_id="JOB-1")
         job_info = check_job_1(job_data, run_id, JOB_NAME_STRICT, c_sha, runner_name=runner_name)
         record("JOB-1", "PASS", job_info)
 
@@ -2143,8 +2190,9 @@ def cmd_check_bundle(args: argparse.Namespace, environ: Dict[str, str], client: 
 
 
 def cmd_check_w_tree(args: argparse.Namespace, environ: Dict[str, str], client: GitHubAPIClient) -> int:
-    """check-w-tree --w-dir <path>: verify W checkout added paths and digest."""
-    w_dir = Path(args.w_dir)
+    """check-w-tree [--w-dir <path>]: verify W checkout added paths and digest."""
+    w_dir_str = getattr(args, "w_dir", None) or environ.get("W_DIR", ".")
+    w_dir = Path(w_dir_str)
     if not w_dir.is_dir():
         raise AuthorizationError(f"W directory not found: {w_dir}", check_id="W-DIR")
 
@@ -2245,6 +2293,9 @@ def cmd_rehearse(args: argparse.Namespace, environ: Dict[str, str], client: GitH
 
     run_data = client.get_json(f"repos/{PINNED_REPOSITORY}/actions/runs/{run_id}")
     event = run_data.get("event")
+    env_event = environ.get("GITHUB_EVENT_NAME")
+    if not env_event or env_event != event:
+        raise AuthorizationError(f"[RNR-2] GITHUB_EVENT_NAME '{env_event}' does not match run API event '{event}'", check_id="RNR-2")
     if event == "push":
         check_run_1(run_data, c_sha, expected_event="push", expected_branch=ref_name, allowed_statuses=("in_progress",))
         rec("RUN-1", "Run metadata push profile verified (status=in_progress)")
@@ -2264,6 +2315,8 @@ def cmd_rehearse(args: argparse.Namespace, environ: Dict[str, str], client: GitH
 
     job_data = client.get_json(f"repos/{PINNED_REPOSITORY}/actions/jobs/{check_run_id}")
     runner_name = environ.get("RUNNER_NAME")
+    if not runner_name:
+        raise AuthorizationError("Missing required RUNNER_NAME in environment", check_id="JOB-1")
     check_job_1(job_data, run_id, JOB_NAME_REHEARSAL, c_sha, runner_name=runner_name)
     rec("JOB-1", f"Job {JOB_NAME_REHEARSAL} attempt 1 verified")
 
@@ -2387,7 +2440,7 @@ def cmd_rehearse(args: argparse.Namespace, environ: Dict[str, str], client: GitH
 
 
 def cmd_rail_summary(args: argparse.Namespace, environ: Dict[str, str], client: GitHubAPIClient) -> int:
-    """rail-summary --out <path> --pins-report <path> --structure-report <path> [--refusal-report <path>]"""
+    """rail-summary --out <path> --pins-report <path> --structure-report <path> --refusal-report <path>"""
     c_sha = environ.get("GITHUB_SHA")
     if not c_sha or not re.fullmatch(r"[0-9a-f]{40}", c_sha):
         raise AuthorizationError("[rail-summary] missing or invalid GITHUB_SHA", check_id="RAIL-SHA")
@@ -2430,15 +2483,20 @@ def cmd_rail_summary(args: argparse.Namespace, environ: Dict[str, str], client: 
         raise AuthorizationError(f"[rail-summary] Workflow structure check did not pass: {struct_status}", check_id="RAIL-STRUCT")
 
     refusal_report_arg = getattr(args, "refusal_report", None)
-    if refusal_report_arg and os.path.isfile(refusal_report_arg):
-        with open(refusal_report_arg, "r", encoding="utf-8") as f:
-            ref_data = json.load(f)
-        ref_status = ref_data.get("status") or ref_data.get("controller_suite")
-        if ref_status != "PASS":
-            raise AuthorizationError(f"[rail-summary] controller refusal suite did not pass: {ref_status}", check_id="RAIL-REFUSAL")
-        reported_controls = ref_data.get("strict_refusal_controls") or ref_data.get("controls") or []
-        if set(reported_controls) != set(PINNED_REFUSAL_CONTROLS):
-            raise AuthorizationError(f"[rail-summary] refusal controls do not match PINNED_REFUSAL_CONTROLS: {reported_controls}", check_id="RAIL-REFUSAL")
+    if not refusal_report_arg:
+        raise AuthorizationError("[rail-summary] missing required --refusal-report argument", check_id="RAIL-REFUSAL")
+    if not os.path.isfile(refusal_report_arg):
+        raise AuthorizationError(f"[rail-summary] refusal report file not found: {refusal_report_arg}", check_id="RAIL-REFUSAL")
+
+    with open(refusal_report_arg, "r", encoding="utf-8") as f:
+        ref_data = json.load(f)
+
+    ref_status = ref_data.get("status") or ref_data.get("controller_suite")
+    if ref_status != "PASS":
+        raise AuthorizationError(f"[rail-summary] controller refusal suite did not pass: {ref_status}", check_id="RAIL-REFUSAL")
+    reported_controls = ref_data.get("strict_refusal_controls") or ref_data.get("controls") or []
+    if not isinstance(reported_controls, list) or set(reported_controls) != set(PINNED_REFUSAL_CONTROLS):
+        raise AuthorizationError(f"[rail-summary] refusal controls do not match PINNED_REFUSAL_CONTROLS: {reported_controls}", check_id="RAIL-REFUSAL")
 
     bundle_map = check_bun_1()
 
@@ -2450,9 +2508,9 @@ def cmd_rail_summary(args: argparse.Namespace, environ: Dict[str, str], client: 
         "run_attempt": str(run_attempt),
         "dist": bundle_map,
         "actions": actions_dict,
-        "workflow_structure": "PASS",
-        "controller_suite": "PASS",
-        "strict_refusal_controls": list(PINNED_REFUSAL_CONTROLS),
+        "workflow_structure": struct_status,
+        "controller_suite": ref_status,
+        "strict_refusal_controls": sorted(reported_controls),
     }
 
     out_path = Path(args.out)
@@ -2496,6 +2554,19 @@ def cmd_inspect(args: argparse.Namespace, environ: Dict[str, str], client: GitHu
     if run_data.get("head_sha") != c_sha:
         raise AuthorizationError(f"Run head SHA mismatch: expected {c_sha} from {PINNED_DEPLOY_BRANCH}, got {run_data.get('head_sha')}", check_id="INSPECT-HEAD")
 
+    # Verify local checkout matches C and is clean
+    res = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True)
+    if res.returncode != 0:
+        raise AuthorizationError(f"[INSPECT-HEAD] git rev-parse HEAD failed: {res.stderr}", check_id="INSPECT-HEAD")
+    local_head = res.stdout.strip()
+    if local_head != c_sha:
+        raise AuthorizationError(f"[INSPECT-HEAD] local HEAD mismatch: expected deploy branch C {c_sha}, got {local_head}", check_id="INSPECT-HEAD")
+
+    res = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)
+    if res.returncode != 0:
+        raise AuthorizationError(f"[INSPECT-CLEAN] git status --porcelain failed: {res.stderr}", check_id="INSPECT-CLEAN")
+    if res.stdout.strip():
+        raise AuthorizationError(f"[INSPECT-CLEAN] working tree is dirty; inspect requires a clean clone: {res.stdout.strip()}", check_id="INSPECT-CLEAN")
     run_info = check_run_1(run_data, c_sha, expected_event="workflow_dispatch", allowed_statuses=("waiting",))
 
     # Fetch jobs to verify prepare-strict-authorization
@@ -2598,7 +2669,10 @@ def cmd_inspect(args: argparse.Namespace, environ: Dict[str, str], client: GitHu
 
     # Evidence commit from dedicated evidence branch
     evidence_branch_name = f"proof/strict-evidence-{c_sha[:12]}-20261107"
-    evidence_branch_data = client.get_json(f"repos/{PINNED_REPOSITORY}/branches/{evidence_branch_name}")
+    try:
+        evidence_branch_data = client.get_json(f"repos/{PINNED_REPOSITORY}/branches/{evidence_branch_name}")
+    except Exception as exc:
+        raise AuthorizationError(f"[INSPECT-EVIDENCE] failed fetching evidence branch {evidence_branch_name}: {exc}", check_id="INSPECT-EVIDENCE") from exc
     evidence_commit = evidence_branch_data.get("commit", {}).get("sha", "")
     if not evidence_commit:
         raise AuthorizationError(f"[INSPECT-EVIDENCE] missing commit on branch {evidence_branch_name}", check_id="INSPECT-EVIDENCE")
@@ -2664,7 +2738,9 @@ def cmd_verify_run(args: argparse.Namespace, environ: Dict[str, str], client: Gi
 
     branch_data = client.get_json(f"repos/{PINNED_REPOSITORY}/branches/{PINNED_DEPLOY_BRANCH}")
     c_sha = branch_data.get("commit", {}).get("sha", "")
-    if c_sha and run_data.get("head_sha") != c_sha:
+    if not c_sha or not re.fullmatch(r"[0-9a-f]{40}", c_sha):
+        raise AuthorizationError(f"Deploy branch {PINNED_DEPLOY_BRANCH} head SHA invalid: {c_sha}", check_id="VERIFY-RUN")
+    if run_data.get("head_sha") != c_sha:
         raise AuthorizationError(f"Run {run_id} head_sha mismatch: expected {c_sha}, got {run_data.get('head_sha')}", check_id="VERIFY-RUN")
 
     artifacts = client.get_paginated(f"repos/{PINNED_REPOSITORY}/actions/runs/{run_id}/artifacts")
@@ -2672,12 +2748,30 @@ def cmd_verify_run(args: argparse.Namespace, environ: Dict[str, str], client: Gi
     if not ver_art:
         raise AuthorizationError(f"Run {run_id} missing verification artifact '{ARTIFACT_NAME_VERIFICATION}'", check_id="VERIFY-RUN")
 
+    api_digest = ver_art.get("digest")
+    if not api_digest:
+        raise AuthorizationError(f"Verification artifact {ver_art.get('id')} missing API digest", check_id="VERIFY-RUN")
+
     zip_bytes = client.download_artifact_zip(str(ver_art["id"]))
+    actual_zip_digest = digest(zip_bytes)
+    expected_zip_hex = api_digest[7:] if api_digest.startswith("sha256:") else api_digest
+    if actual_zip_digest != expected_zip_hex:
+        raise AuthorizationError(
+            f"Verification artifact zip digest mismatch: expected {api_digest}, got sha256:{actual_zip_digest}",
+            check_id="VERIFY-RUN",
+        )
+
     try:
         with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
-            if "verification.json" not in zf.namelist():
-                raise AuthorizationError("Verification archive missing 'verification.json'", check_id="VERIFY-RUN")
+            members = set(zf.namelist())
+            expected_members = {"verification.json", "manifest.json"}
+            if members != expected_members:
+                raise AuthorizationError(
+                    f"Verification archive members mismatch: expected {expected_members}, got {members}",
+                    check_id="VERIFY-RUN",
+                )
             raw = zf.read("verification.json")
+            manifest_raw = zf.read("manifest.json")
     except zipfile.BadZipFile as exc:
         raise AuthorizationError(f"Corrupted verification archive: {exc}", check_id="VERIFY-RUN") from exc
 
@@ -2688,6 +2782,32 @@ def cmd_verify_run(args: argparse.Namespace, environ: Dict[str, str], client: Gi
         raise AuthorizationError(f"Verification schema mismatch: expected {SCHEMA_VERIFICATION}, got {ver_doc.get('schema')}", check_id="VERIFY-RUN")
     if ver_doc.get("decision") != "AUTHORIZED":
         raise AuthorizationError(f"Verification decision is not AUTHORIZED: {ver_doc.get('decision')}", check_id="VERIFY-RUN")
+
+    if ver_doc.get("c_sha") != c_sha:
+        raise AuthorizationError(f"Verification document c_sha mismatch: expected {c_sha}, got {ver_doc.get('c_sha')}", check_id="VERIFY-RUN")
+
+    manifest_sha = ver_doc.get("manifest_sha256")
+    if not manifest_sha or not re.fullmatch(r"[0-9a-f]{64}", manifest_sha):
+        raise AuthorizationError(f"Verification document invalid manifest_sha256: {manifest_sha}", check_id="VERIFY-RUN")
+
+    actual_manifest_sha = digest(manifest_raw)
+    if actual_manifest_sha != manifest_sha:
+        raise AuthorizationError(
+            f"Verification archive manifest.json digest mismatch: expected {manifest_sha}, got {actual_manifest_sha}",
+            check_id="VERIFY-RUN",
+        )
+
+    manifest_doc = parse(manifest_raw)
+    if str(manifest_doc.get("strict_run", {}).get("id")) != str(run_id):
+        raise AuthorizationError(
+            f"Manifest strict_run.id mismatch: expected {run_id}, got {manifest_doc.get('strict_run', {}).get('id')}",
+            check_id="VERIFY-RUN",
+        )
+    if manifest_doc.get("sources", {}).get("c_sha") != c_sha:
+        raise AuthorizationError(
+            f"Manifest sources.c_sha mismatch: expected {c_sha}, got {manifest_doc.get('sources', {}).get('c_sha')}",
+            check_id="VERIFY-RUN",
+        )
 
     print(f"Run {run_id} verified: status={status}, conclusion={conclusion}, decision=AUTHORIZED")
     return 0
@@ -2719,7 +2839,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # check-w-tree --w-dir <path>
     p_cwt = subparsers.add_parser("check-w-tree")
-    p_cwt.add_argument("--w-dir", required=True, help="Path to W checkout root")
+    p_cwt.add_argument("--w-dir", default=None, help="Path to W checkout root")
 
     # rehearse --report <path>
     p_reh = subparsers.add_parser("rehearse")
@@ -2730,7 +2850,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_rs.add_argument("--out", required=True, help="Path to write rail-validation-summary.json")
     p_rs.add_argument("--pins-report", required=True, help="Path to pins report JSON")
     p_rs.add_argument("--structure-report", required=True, help="Path to structure report JSON")
-    p_rs.add_argument("--refusal-report", required=False, help="Path to refusal controls report JSON")
+    p_rs.add_argument("--refusal-report", required=True, help="Path to refusal controls report JSON")
 
     # inspect --run-id <id>
     p_insp = subparsers.add_parser("inspect")
