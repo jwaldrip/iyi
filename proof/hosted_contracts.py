@@ -34,6 +34,7 @@ import hashlib
 import json
 import math
 import re
+import stat
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set, Tuple, Union
 
 
@@ -2147,6 +2148,54 @@ def validate_structural_checkpoint_to_context(
             raise ReferenceIntegrityError(
                 f"Checkpoint PASS outcome requires resolved teardown (stopped=True, removed=True, clean_exit=True, unresolved=0), got: {resolved_td}"
             )
+@dataclasses.dataclass(frozen=True)
+class ObserverTransactionIdentity:
+    """Structural key only; this record does not authenticate its source."""
+    launch_id: str
+    supervisor_sequence: int
+
+    def __post_init__(self) -> None:
+        require_ascii_str(self.launch_id, "launch_id", r"[!-~]+")
+        require_int(self.supervisor_sequence, "supervisor_sequence", min_val=1)
+
+
+@dataclasses.dataclass(frozen=True)
+class ObserverTaskIdentity:
+    """Kernel task identity scoped to a single controller launch."""
+    launch_id: str
+    tid: int
+    tgid: int
+    birth_identity: int
+    pid_namespace_inode: int
+    exec_sequence: int
+
+    def __post_init__(self) -> None:
+        require_ascii_str(self.launch_id, "launch_id", r"[!-~]+")
+        for name in ("tid", "tgid", "birth_identity", "pid_namespace_inode", "exec_sequence"):
+            require_int(getattr(self, name), name, min_val=1)
+
+
+@dataclasses.dataclass(frozen=True)
+class ObserverObjectIdentity:
+    """Observed object fields; descriptor custody and mount mapping are separate obligations."""
+    device: int
+    inode: int
+    mount_id: int
+    mount_namespace_inode: int
+    mode: int
+    size: int
+    sha256: str
+
+    def __post_init__(self) -> None:
+        for name in ("inode", "mount_id", "mount_namespace_inode"):
+            require_int(getattr(self, name), name, min_val=1)
+        require_int(self.device, "device", min_val=0)
+        if not stat.S_ISREG(require_int(self.mode, "mode", min_val=0)):
+            raise TypeValidationError("observed object must be a regular file")
+        require_int(self.size, "size", min_val=0)
+        require_sha256(self.sha256, "sha256")
+
+
 def enforce_independent_review_refusal() -> None:
     """Unconditionally refuse execution because independent review attestation is not yet integrated."""
     raise ReviewUnauthenticatedError(
