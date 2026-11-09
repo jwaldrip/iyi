@@ -6,6 +6,8 @@ behavior-preserving C-owned execution mechanism exists.
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 import os
 import re
 import subprocess
@@ -176,6 +178,8 @@ def _blob(repo: str, tree: Mapping[str, str], path: str) -> tuple[SourceBlob, by
     if oid is None or not re.fullmatch(r"[0-9a-f]{40}", oid):
         raise ReferenceIntegrityError("REQUIRED-SOURCE-BLOB-MISSING")
     data = _git(repo, "cat-file", "blob", oid)
+    if hashlib.sha1(b"blob " + str(len(data)).encode("ascii") + b"\0" + data).hexdigest() != oid:
+        raise ReferenceIntegrityError("GIT-BLOB-IDENTITY-MISMATCH")
     return SourceBlob(path, oid, sha256_bytes(data)), data
 
 
@@ -454,9 +458,11 @@ def derive_provisional_driver_censuses(
 
 
 def provisional_manifest_bytes(
-    corpus: ProvisionalCorpus, drivers: tuple[ProvisionalDriverCensus, ...],
+    corpus: ProvisionalCorpus, drivers: tuple[ProvisionalDriverCensus, ...], *,
+    max_census_bytes: int,
 ) -> bytes:
-    """Serialize a provisional source inventory, not an acceptance or receipt."""
+    """Serialize bounded exact census bytes as provisional source, not a receipt."""
+    require_int(max_census_bytes, "max_census_bytes", min_val=1)
     if not isinstance(corpus, ProvisionalCorpus) or not isinstance(drivers, tuple):
         raise TypeValidationError("INVALID-PROVISIONAL-SOURCE-MANIFEST")
     if not drivers or any(not isinstance(driver, ProvisionalDriverCensus) for driver in drivers):
@@ -467,6 +473,18 @@ def provisional_manifest_bytes(
         raise ReferenceIntegrityError("PROVISIONAL-PRODUCT-COMMIT-MISMATCH")
     if len({driver.witness_commit for driver in drivers}) != 1:
         raise ReferenceIntegrityError("PROVISIONAL-WITNESS-COMMIT-MISMATCH")
+    total_census_bytes = 0
+    for driver in drivers:
+        if not isinstance(driver.census_bytes, bytes):
+            raise TypeValidationError("INVALID-CENSUS-BYTES")
+        total_census_bytes += len(driver.census_bytes)
+        if total_census_bytes > max_census_bytes:
+            raise TypeValidationError("PROVISIONAL-CENSUS-BYTES-EXCEEDED")
+        if sha256_bytes(driver.census_bytes) != driver.census.sha256:
+            raise ReferenceIntegrityError("PROVISIONAL-CENSUS-DIGEST-MISMATCH")
+        header = b"blob " + str(len(driver.census_bytes)).encode("ascii") + b"\0"
+        if hashlib.sha1(header + driver.census_bytes).hexdigest() != driver.census.git_blob:
+            raise ReferenceIntegrityError("PROVISIONAL-CENSUS-BLOB-MISMATCH")
     records = []
     for driver in sorted(drivers, key=lambda item: item.driver):
         variant_records = []
@@ -483,6 +501,7 @@ def provisional_manifest_bytes(
             "product_script": asdict(driver.product_script),
             "witness_script": asdict(driver.witness_script),
             "census": asdict(driver.census),
+            "census_bytes_base64": base64.b64encode(driver.census_bytes).decode("ascii"),
             "sites": [asdict(site) for site in driver.sites],
             "variants": variant_records,
             "evidence_sites": [asdict(site) for site in driver.evidence_sites],
