@@ -149,9 +149,40 @@ class BaselineFixtures(unittest.TestCase):
 
     def test_changed_gcc_root_metadata_is_rejected(self):
         supplement = gate.load_gcc_baseline()
-        with patch.object(gate, "check_path", side_effect=ValueError("metadata mismatch: GCC root")):
-            with self.assertRaisesRegex(ValueError, "metadata mismatch: GCC root"):
+        root = supplement["gcc_include"]
+        bad = types.SimpleNamespace(st_uid=0, st_gid=0, st_mode=0o40777)
+        with patch.object(Path, "resolve", return_value=Path(root["canonical"])), \
+             patch.object(Path, "lstat", return_value=bad):
+            with self.assertRaisesRegex(ValueError, "metadata mismatch"):
                 gate.verify_gcc_inventory(supplement)
+
+    def test_real_symlink_escape_and_unrecorded_alias_are_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve() / "include"
+            root.mkdir()
+            outside = root.parent / "outside.h"
+            outside.write_bytes(b"outside")
+            target = root / "measured.h"
+            target.write_bytes(b"target")
+            escape = root / "escape.h"
+            escape.symlink_to(outside)
+            alias = root / "alias.h"
+            alias.symlink_to(target)
+            root_stat = root.stat()
+            root_record = {"requested": str(root), "canonical": str(root), "regular": False,
+                           "uid": root_stat.st_uid, "gid": root_stat.st_gid,
+                           "mode": oct(root_stat.st_mode & 0o7777),
+                           "chain": [], "canonical_ancestors": []}
+            escape_record = {"requested": str(escape), "canonical": str(escape), "regular": True,
+                             "size": len(b"outside"), "sha256": hashlib.sha256(b"outside").hexdigest(),
+                             "uid": root_stat.st_uid, "gid": root_stat.st_gid, "mode": "0o644",
+                             "chain": [], "canonical_ancestors": []}
+            supplement = {"gcc_include": root_record, "gcc_include_headers": {"files": [escape_record]}}
+            with patch.object(gate, "GCC_ROOT", root):
+                with self.assertRaisesRegex(ValueError, "canonical path mismatch"):
+                    gate.check_gcc_dependency(str(escape), supplement)
+                with self.assertRaisesRegex(ValueError, "unrecorded GCC header"):
+                    gate.check_gcc_dependency(str(alias), supplement)
 
 if __name__ == "__main__":
     unittest.main()

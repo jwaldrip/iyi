@@ -988,16 +988,28 @@ class TestBpfFeasibilityScript(unittest.TestCase):
             for mode, binary, source in (("--validate-bpf-obj", bpf, "bpf_canary.bpf.c"),
                                          ("--validate-host-elf", host, "bpf_canary_host.c")):
                 dep = root / (source + ".d")
-                dep.write_text(f"out: {escape(REPO_ROOT / 'proof' / source)} {escape(header)}\n")
                 if mode == "--validate-bpf-obj":
                     args = [str(lock), str(root)]
+                    message = "BPF object included unapproved header dependency"
                 else:
                     args = [str(root), str(lock)]
-                result = subprocess.run(["bash", str(SCRIPT_PATH), mode, readelf, str(binary), str(dep),
-                                         "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), *args],
-                                        capture_output=True, text=True)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("unapproved", result.stderr)
+                    message = "Host helper included unapproved dependency from untrusted path"
+                for rejected in (header, prefix / ".." / sibling.name / header.name):
+                    with self.subTest(mode=mode, path=str(rejected)):
+                        dep.write_text(f"out: {escape(REPO_ROOT / 'proof' / source)} {escape(rejected)}\n")
+                        result = subprocess.run(["bash", str(SCRIPT_PATH), mode, readelf, str(binary), str(dep),
+                                                 "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), *args],
+                                                capture_output=True, text=True)
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn(message, result.stderr)
+                if mode == "--validate-bpf-obj":
+                    gcc_header = Path("/usr/lib/gcc/x86_64-linux-gnu/13/include/stddef.h")
+                    dep.write_text(f"out: {escape(REPO_ROOT / 'proof' / source)} {escape(gcc_header)}\n")
+                    result = subprocess.run(["bash", str(SCRIPT_PATH), mode, readelf, str(binary), str(dep),
+                                             "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), *args],
+                                            capture_output=True, text=True)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("BPF object included unapproved header dependency", result.stderr)
 
     def test_host_depfile_multiline_dollar_and_negative_forms(self):
         readelf = shutil.which("readelf") or shutil.which("llvm-readelf") or "/usr/bin/readelf"
