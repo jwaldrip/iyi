@@ -1394,6 +1394,7 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
     begin
       parser = @program.new_parser(source)
       parser.filename = filename
+      parser.diagnostic_source_file = filename if @program.diagnostic_capture
       parser.wants_doc = @program.wants_doc?
       # Only the package's own files: a std module a package imports is
       # loaded while the package is still on the stack, and is std's.
@@ -1781,6 +1782,7 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
     end
     parser = @program.new_parser(source)
     parser.filename = filename
+    parser.diagnostic_source_file = filename if @program.diagnostic_capture
     parser.wants_doc = @program.wants_doc?
     begin
       parsed_nodes = Prof.span("require: parse") { @program.parse_file(parser, filename, source) }

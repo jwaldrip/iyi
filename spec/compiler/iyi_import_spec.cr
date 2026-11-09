@@ -1,6 +1,30 @@
 require "../spec_helper"
 require "./spec_helper"
 
+# Wait for the actual worker result, so the provenance test cannot silently
+# exercise the walk's fallback parser.
+class Iyi::ParseAhead
+  def wait_for_diagnostic_spec(filename : String) : Nil
+    @mutex.synchronize do
+      entry = @entries[filename]? || raise "source was not queued"
+      @parsed.wait(@mutex) until entry.state.done?
+    end
+  end
+end
+
+private class DiagnosticProcOrigins < Iyi::Visitor
+  getter origins = [] of Iyi::DiagnosticOrigin?
+
+  def visit(node : Iyi::ASTNode)
+    true
+  end
+
+  def visit(node : Iyi::ProcLiteral)
+    @origins << node.diagnostic_origin
+    true
+  end
+end
+
 # iyi: `import`, which resolves against files on disk — SPEC.md R-1.
 #
 # `spec/compiler/semantic/iyi_spec.cr` covers everything that needs only a
@@ -346,6 +370,40 @@ describe "Semantic: iyi import" do
           nodes = ahead.parse(parser, filename, changed)
           nodes.to_s.should contain("other")
           nodes.to_s.should_not contain("pair")
+        ensure
+          ahead.stop
+        end
+      end
+    end
+
+    it "retains exact origins from the parallel worker parser" do
+      source = "module app/left\n\npub def f\n  -> { 1 }\nend\n"
+      with_iyi_modules({"main.iyi" => "module main\nimport app/left\n", "app/left.iyi" => source}) do
+        program = Iyi::Program.new
+        program.filename = File.expand_path("main.iyi")
+        program.diagnostic_capture = true
+        entry = Iyi::Parser.parse(File.read("main.iyi"))
+        ahead = Iyi::ParseAhead.start(program, entry, 2).should_not be_nil
+        begin
+          filename = Iyi.native_path(File.join(Dir.current, "app/left.iyi"))
+          ahead.wait_for_diagnostic_spec(filename)
+          parser = program.new_parser(source)
+          parser.filename = filename
+          parser.diagnostic_source_file = filename
+          worker_nodes = ahead.parse(parser, filename, source)
+          parser.reader.pos.should eq(0)
+
+          serial = program.new_parser(source)
+          serial.filename = filename
+          serial.diagnostic_source_file = filename
+          serial_nodes = serial.parse
+          worker_origins = DiagnosticProcOrigins.new
+          serial_origins = DiagnosticProcOrigins.new
+          worker_nodes.accept(worker_origins)
+          serial_nodes.accept(serial_origins)
+          worker_origins.origins.size.should eq(1)
+          worker_origins.origins.first.should_not be_nil
+          worker_origins.origins.should eq(serial_origins.origins)
         ensure
           ahead.stop
         end

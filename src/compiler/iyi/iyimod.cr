@@ -728,13 +728,26 @@ module Iyi::IyiMod
       end
     end
 
-    def write_macro(io : IO, source : String, prefix : String = "", lines : Bool = true, exported : Bool = false) : Nil
+    def validate_signature(container : String, signature : Signature) : Nil
+      return unless @diagnostic_regions
+      origin = signature.diagnostic_origin || raise ArgumentError.new("signature has no intrinsic origin")
+      key = IyiMod.signature_fragment_key(container, signature)
+      section = @artifact.diagnostic_provenance || raise ArgumentError.new("missing artifact diagnostic section")
+      fragment = section.fragments[key]? || raise ArgumentError.new("missing signature diagnostic fragment")
+      root_offset = (signature.visibility.empty? ? 0 : signature.visibility.bytesize + 1) + (signature.required ? 9 : 0)
+      roots = fragment.anchors.select { |anchor| anchor.offset == root_offset && anchor.kind == "Def" && anchor.role == "keyword" }
+      unless roots.size == 1 && roots.first.origin == origin
+        raise ArgumentError.new("signature diagnostic root does not match its intrinsic origin")
+      end
+    end
+
+    def write_macro(io : IO, source : String, container : String, prefix : String = "", lines : Bool = true, exported : Bool = false) : Nil
       rendered = exported ? IyiMod.exported_macro(source) : source
       unless regions = @diagnostic_regions
         write(io, rendered, NO_POSITIONS, prefix, lines)
         return
       end
-      key = IyiMod.macro_fragment_key(source)
+      key = IyiMod.macro_fragment_key(container, source)
       if rendered == source
         write_carried(io, key, source, NO_POSITIONS, prefix, lines)
         return
@@ -930,8 +943,12 @@ module Iyi::IyiMod
     end
   end
 
-  def self.macro_fragment_key(source : String) : String
-    "macro:#{source}"
+  def self.macro_fragment_key(container : String, source : String) : String
+    "macro:#{container.bytesize}:#{container}#{source}"
+  end
+
+  def self.top_fun_fragment_key(source : String) : String
+    "top-fun:#{source}"
   end
 
   def self.diagnostic_macro_source(a_macro : Macro) : {String, Array(DiagnosticAnchor)}
@@ -1059,7 +1076,7 @@ module Iyi::IyiMod
   # and every dependent stays valid.
   def self.hashes_for(artifact : Artifact, source : String) : Hashes
     interface = IO::Memory.new
-    interface.write encode_exports(artifact, docs: false)
+    interface.write encode_exports(artifact, docs: false, diagnostics: false)
     write_strings interface, artifact.usings
     # The edges by name, because which modules resolve a signature's names is
     # part of what that signature means — not their hashes, which are what a
@@ -1192,7 +1209,12 @@ module Iyi::IyiMod
     # `Pair.new(Dog.new, Dog.new).shown` for a `Dog` that never implemented
     # `Show` and printed `dog,dog`, where the source build refused it.
     free_variable_bounds : Array({String, String}) = [] of {String, String},
-    where_bounds : Array({String, String}) = [] of {String, String}
+    where_bounds : Array({String, String}) = [] of {String, String} do
+    # Diagnostic metadata does not participate in semantic Signature equality.
+    property diagnostic_origin : DiagnosticOrigin? = nil
+    def_equals_and_hash name, receiver, parameters, block_parameter, return_type,
+      free_variables, required, visibility, doc, annotations, free_variable_bounds, where_bounds
+  end
 
   # A type the module declares: `pub struct`, `pub class`, `pub trait` — and,
   # since the object code started travelling, the ones it does not export.
@@ -2747,18 +2769,21 @@ module Iyi::IyiMod
   # Empty for every module that has none, which is every iyi module: iyi has no
   # top level to write a `def` at. This is a `--crystal` shard's shape.
   def self.top_level_declarations(artifact : Artifact, io : IO, diagnostic_regions : Array(DiagnosticRegion)? = nil) : Nil
-    if diagnostic_regions && !artifact.top_level_funs.empty?
-      raise ArgumentError.new("top-level fun provenance has not been transported")
-    end
+    bodies = Bodies.new(artifact, diagnostic_regions: diagnostic_regions)
     # The `fun`s first, and with their bodies: this is the one text outside the
     # module, which is the only scope a `fun` can be declared in. See
     # `Artifact#top_level_funs`.
-    artifact.top_level_funs.each { |source| io << source << '\n' }
-
-    bodies = Bodies.new(artifact, diagnostic_regions: diagnostic_regions)
+    artifact.top_level_funs.each do |source|
+      if bodies.diagnostic?
+        bodies.write_carried io, top_fun_fragment_key(source), source, Bodies::NO_POSITIONS, lines: false
+      else
+        io << source
+      end
+      io << '\n'
+    end
     artifact.top_level.each_with_index do |signature, index|
       io << '\n' if index > 0
-      render_declaration io, signature, bodies, mono_body_key(TOP_LEVEL_CONTAINER, signature)
+      render_declaration io, signature, bodies, mono_body_key(TOP_LEVEL_CONTAINER, signature), TOP_LEVEL_CONTAINER
     end
   end
 
@@ -2846,7 +2871,7 @@ module Iyi::IyiMod
     # said `App::Lib does not export 'inner'`.
     artifact.macro_bodies.each do |source|
       io << '\n'
-      bodies.write_macro(io, source, lines: false, exported: artifact.crystal_library)
+      bodies.write_macro(io, source, DIAGNOSTIC_ROOT_CONTAINER, lines: false, exported: artifact.crystal_library)
       io << '\n'
     end
 
@@ -2857,7 +2882,7 @@ module Iyi::IyiMod
       io << '\n'
       exports.class_vars.each do |class_var|
         class_var.annotations.each { |source| io << source << '\n' }
-        write_class_var io, class_var, bodies
+        write_class_var io, class_var, bodies, DIAGNOSTIC_ROOT_CONTAINER
         io << '\n'
       end
     end
@@ -2867,7 +2892,7 @@ module Iyi::IyiMod
       # A module's own `pub def` that takes a block ships its body, because the
       # consumer is what instantiates it — the block is the consumer's code.
       # The container is the module's own path.
-      render_declaration io, signature, bodies, mono_body_key(artifact.module_name, signature),
+      render_declaration io, signature, bodies, mono_body_key(artifact.module_name, signature), artifact.module_name,
         exported: true
     end
 
@@ -2877,7 +2902,7 @@ module Iyi::IyiMod
     # its body along for the reason every travelling body does.
     exports.carried_functions.each do |signature|
       io << '\n'
-      render_declaration io, signature, bodies, mono_body_key(artifact.module_name, signature)
+      render_declaration io, signature, bodies, mono_body_key(artifact.module_name, signature), artifact.module_name
     end
 
     inheritance_order(exports.types).each do |declaration|
@@ -2893,7 +2918,7 @@ module Iyi::IyiMod
       io << '\n' << render_impl_header(record) << '\n'
       record.assoc_types.each { |(name, answer)| io << "  type " << name << " = " << answer << '\n' }
       record.methods.each do |signature|
-        render_declaration io, signature, bodies, mono_body_key(container, signature), indent: "  "
+        render_declaration io, signature, bodies, mono_body_key(container, signature), container, indent: "  "
       end
       io << "end\n"
     end
@@ -3072,7 +3097,7 @@ module Iyi::IyiMod
       parameters << "**#{double_splat}"
     end
 
-    Signature.new(
+    signature = Signature.new(
       name: a_def.name,
       receiver: a_def.receiver.try(&.to_s) || "",
       parameters: parameters,
@@ -3087,6 +3112,8 @@ module Iyi::IyiMod
       free_variable_bounds: bound_pairs(a_def.free_var_bounds),
       where_bounds: bound_pairs(a_def.where_bounds),
     )
+    signature.diagnostic_origin = a_def.diagnostic_origin
+    signature
   end
 
   # A def's bounds as the `{name, trait}` pairs `Signature` carries, in the
@@ -3412,7 +3439,7 @@ module Iyi::IyiMod
   end
 
   private def self.render_declaration(io : IO, signature : Signature,
-                                      bodies : Bodies, key : String,
+                                      bodies : Bodies, key : String, container : String,
                                       exported = false, indent = "") : Nil
     # The doc comment, where it was written: above the declaration, as
     # comment lines a consumer's parser reattaches. Surface for a reader —
@@ -3422,10 +3449,25 @@ module Iyi::IyiMod
     # written and the only place they mean anything. `@[::Primitive(:binary)]`
     # is what makes the def a machine instruction rather than a promise of a
     # symbol nobody emitted.
-    signature.annotations.each { |source| io << indent << source << '\n' }
+    signature.annotations.each_with_index do |source, index|
+      io << indent
+      if bodies.diagnostic?
+        bodies.write_carried io, signature_annotation_fragment_key(container, signature, index), source, Bodies::NO_POSITIONS, lines: false
+      else
+        io << source
+      end
+      io << '\n'
+    end
     io << indent
     io << "pub " if exported
-    io << render_signature(signature) << '\n'
+    header = render_signature(signature)
+    if bodies.diagnostic?
+      bodies.validate_signature container, signature
+      bodies.write_carried io, signature_fragment_key(container, signature), header, Bodies::NO_POSITIONS, lines: false
+    else
+      io << header
+    end
+    io << '\n'
     # An `abstract def` ends at its signature. Anything else needs the `end`
     # its absent body would have carried.
     return if signature.required
@@ -3443,10 +3485,14 @@ module Iyi::IyiMod
     # empty block-taking def, each listed in `MonoBodies`.
     if body = bodies[key]?
       if body.blank?
-        bodies.validate_empty_carried "mono:#{key}", body
+        bodies.validate_empty_carried signature_body_fragment_key(container, signature), body if bodies.diagnostic?
         io << indent << "  nil\n"
       else
-        bodies.write_carried io, "mono:#{key}", body, bodies.positions(key), indent + "  "
+        if bodies.diagnostic?
+          bodies.write_carried io, signature_body_fragment_key(container, signature), body, bodies.positions(key), indent + "  "
+        else
+          bodies.write io, body, bodies.positions(key), indent + "  "
+        end
       end
     end
 
@@ -3484,13 +3530,15 @@ module Iyi::IyiMod
     value.empty? ? "#{name} : #{type}" : "#{name} : #{type} = #{value}"
   end
 
-  # The key includes the exact text, not a hash or a traversal ordinal.
-  # Equal text for two different class vars is rejected by fragment census.
-  def self.class_var_fragment_key(name : String, value : String) : String
-    "classvar:#{name.bytesize}:#{name}#{value}"
+  # The owner is the artifact's structural declaration path, not the text or
+  # an ordinal. The special root cannot collide with a type declaration.
+  DIAGNOSTIC_ROOT_CONTAINER = "@module"
+
+  def self.class_var_fragment_key(container : String, name : String) : String
+    "classvar:#{container.bytesize}:#{container}#{name}"
   end
 
-  private def self.write_class_var(io : IO, class_var : ClassVarDecl, bodies : Bodies) : Nil
+  private def self.write_class_var(io : IO, class_var : ClassVarDecl, bodies : Bodies, container : String) : Nil
     value = class_var.value
     unless bodies.diagnostic? && !value.empty?
       io << render_class_var(class_var)
@@ -3501,7 +3549,7 @@ module Iyi::IyiMod
       io << " : " << class_var.type
     end
     io << " = "
-    bodies.write_carried(io, class_var_fragment_key(class_var.name, value), value, Bodies::NO_POSITIONS, lines: false)
+    bodies.write_carried(io, class_var_fragment_key(container, class_var.name), value, Bodies::NO_POSITIONS, lines: false)
   end
 
   # The same line for a *dump*, where the annotations go beside it rather than
@@ -3545,6 +3593,7 @@ module Iyi::IyiMod
     return if declaration.kind == "alias" || declaration.kind == "type"
 
     inner = indent + "  "
+    here = path.empty? ? declaration.name : path
 
     # Before anything written in terms of the names they bring, which is
     # everything below. See `TypeDecl#usings`.
@@ -3559,7 +3608,7 @@ module Iyi::IyiMod
     # Before everything the type declares, because a macro is read before it is
     # called and what it is called from is below it.
     declaration.macros.each do |source|
-      bodies.write_macro(io, source, inner)
+      bodies.write_macro(io, source, here, inner)
     end
 
     declaration.assoc_types.each { |name| io << inner << "type " << name << '\n' }
@@ -3585,7 +3634,7 @@ module Iyi::IyiMod
     declaration.class_vars.each do |class_var|
       class_var.annotations.each { |source| io << inner << source << '\n' }
       io << inner
-      write_class_var io, class_var, bodies
+      write_class_var io, class_var, bodies, here
       io << '\n'
     end
 
@@ -3594,7 +3643,6 @@ module Iyi::IyiMod
     # a field would have a type where a value belongs.
     declaration.members.each { |(name, value)| io << inner << name << " = " << value << '\n' }
 
-    here = path.empty? ? declaration.name : path
     inheritance_order(declaration.types).each do |nested|
       render_type_declaration io, nested, bodies, inner, "#{here}::#{nested.name}",
         in_lib: declaration.kind == "lib"
@@ -3612,7 +3660,7 @@ module Iyi::IyiMod
 
     ordinals = mono_body_ordinals(declaration.methods)
     declaration.methods.each_with_index do |signature, index|
-      render_declaration io, signature, bodies, mono_body_key(here, signature, ordinals[index]),
+      render_declaration io, signature, bodies, mono_body_key(here, signature, ordinals[index]), here,
         indent: inner
     end
     io << indent << "end\n"
@@ -4019,6 +4067,164 @@ module Iyi::IyiMod
     end
   end
 
+  def self.signature_fragment_key(container : String, signature : Signature) : String
+    origin = signature.diagnostic_origin || raise ArgumentError.new("signature has no diagnostic origin")
+    raise ArgumentError.new("signature origin is not a definition") unless origin.valid_for_anchor?("Def", "keyword")
+    header = render_signature(signature)
+    encoded_origin = origin.to_json
+    "signature:#{container.bytesize}:#{container}#{header.bytesize}:#{header}#{encoded_origin.bytesize}:#{encoded_origin}"
+  end
+
+  def self.signature_annotation_fragment_key(container : String, signature : Signature, index : Int32) : String
+    signature_key = signature_fragment_key(container, signature)
+    "signature-annotation:#{signature_key.bytesize}:#{signature_key}#{index}"
+  end
+
+  def self.signature_body_fragment_key(container : String, signature : Signature) : String
+    signature_key = signature_fragment_key(container, signature)
+    "signature-body:#{signature_key.bytesize}:#{signature_key}"
+  end
+
+  def self.validate_signature_diagnostics!(artifact : Artifact) : Nil
+    section = artifact.diagnostic_provenance || raise ArgumentError.new("missing artifact diagnostic section")
+    expected = Set(String).new
+    artifact.exports.functions.each { |sig| check_signature_diagnostic(section, artifact, expected, artifact.module_name, sig) }
+    artifact.exports.carried_functions.each { |sig| check_signature_diagnostic(section, artifact, expected, artifact.module_name, sig) }
+    artifact.exports.impls.each do |impl|
+      container = mono_body_container(impl.trait_name, impl.type_name)
+      impl.methods.each { |sig| check_signature_diagnostic(section, artifact, expected, container, sig) }
+    end
+    artifact.exports.types.each { |type| check_type_signature_diagnostics(section, artifact, expected, type) }
+    artifact.reopened.each { |type| check_type_signature_diagnostics(section, artifact, expected, type) }
+    artifact.top_level.each { |sig| check_signature_diagnostic(section, artifact, expected, TOP_LEVEL_CONTAINER, sig) }
+    actual = section.fragments.keys.select do |key|
+      key.starts_with?("signature:") || key.starts_with?("signature-annotation:") || key.starts_with?("signature-body:")
+    end.to_set
+    raise ArgumentError.new("unexpected or missing signature diagnostic fragments") unless actual == expected
+  end
+
+  private def self.check_type_signature_diagnostics(section : DiagnosticSection, artifact : Artifact,
+                                                     expected : Set(String), type : TypeDecl, path : String = "") : Nil
+    here = path.empty? ? type.name : "#{path}::#{type.name}"
+    ordinals = mono_body_ordinals(type.methods)
+    type.methods.each_with_index do |signature, index|
+      check_signature_diagnostic(section, artifact, expected, here, signature, ordinals[index])
+    end
+    type.types.each { |nested| check_type_signature_diagnostics(section, artifact, expected, nested, here) }
+  end
+
+  private def self.check_signature_diagnostic(section : DiagnosticSection, artifact : Artifact, expected : Set(String),
+                                              container : String, signature : Signature, ordinal : Int32 = 0) : Nil
+    origin = signature.diagnostic_origin || raise ArgumentError.new("signature has no intrinsic origin")
+    key = signature_fragment_key(container, signature)
+    raise ArgumentError.new("duplicate signature diagnostic identity") unless expected.add?(key)
+    fragment = section.fragments[key]? || raise ArgumentError.new("missing signature diagnostic fragment")
+    header = render_signature(signature)
+    raise ArgumentError.new("signature diagnostic guard mismatch") unless fragment.text_sha256 == ::Crystal::Digest::SHA256.hexdigest(header)
+    offset = (signature.visibility.empty? ? 0 : signature.visibility.bytesize + 1) + (signature.required ? 9 : 0)
+    roots = fragment.anchors.select { |anchor| anchor.offset == offset && anchor.kind == "Def" && anchor.role == "keyword" }
+    raise ArgumentError.new("signature diagnostic root mismatch") unless roots.size == 1 && roots.first.origin == origin
+    signature.annotations.each_with_index do |annotation, index|
+      annotation_key = signature_annotation_fragment_key(container, signature, index)
+      raise ArgumentError.new("duplicate signature annotation identity") unless expected.add?(annotation_key)
+      annotation_fragment = section.fragments[annotation_key]? || raise ArgumentError.new("missing signature annotation diagnostic")
+      unless annotation_fragment.text_sha256 == ::Crystal::Digest::SHA256.hexdigest(annotation)
+        raise ArgumentError.new("signature annotation guard mismatch")
+      end
+    end
+    if body = artifact.mono_bodies[mono_body_key(container, signature, ordinal)]?
+      body_key = signature_body_fragment_key(container, signature)
+      raise ArgumentError.new("duplicate signature body identity") unless expected.add?(body_key)
+      body_fragment = section.fragments[body_key]? || raise ArgumentError.new("missing signature body diagnostic")
+      raise ArgumentError.new("signature body guard mismatch") unless body_fragment.text_sha256 == ::Crystal::Digest::SHA256.hexdigest(body)
+    end
+  end
+
+  def self.diagnostic_signature_annotations(container : String, a_def : Def, signature : Signature) : Array(DiagnosticFragment)
+    annotations = a_def.all_annotations || [] of Annotation
+    raise ArgumentError.new("signature annotation count differs from source") unless annotations.size == signature.annotations.size
+    annotations.map_with_index do |annotation, index|
+      io = IO::Memory.new
+      anchors = [] of DiagnosticAnchor
+      annotation.to_s(io, diagnostic_anchors: anchors)
+      source = io.to_s
+      raise ArgumentError.new("signature annotation text differs from source") unless source == signature.annotations[index]
+      DiagnosticFragment.new(signature_annotation_fragment_key(container, signature, index),
+        ::Crystal::Digest::SHA256.hexdigest(source), anchors)
+    end
+  end
+
+  # Replays the exact signature renderer while recording each AST anchor
+  # inside parameter defaults, restrictions and bounds. A disagreement with
+  # the authoritative renderer is an error, not a nearest-token guess.
+  def self.diagnostic_signature_fragment(container : String, a_def : Def, signature : Signature) : DiagnosticFragment
+    origin = signature.diagnostic_origin || raise ArgumentError.new("signature has no diagnostic origin")
+    unless origin == a_def.diagnostic_origin && origin.valid_for_anchor?("Def", "keyword")
+      raise ArgumentError.new("signature origin differs from definition")
+    end
+    io = IO::Memory.new
+    anchors = [] of DiagnosticAnchor
+    io << signature.visibility << ' ' unless signature.visibility.empty?
+    io << "abstract " if signature.required
+    anchors << DiagnosticAnchor.new(io.pos.to_i32, "Def", "keyword", a_def.diagnostic_origin)
+    io << "def "
+    if receiver = a_def.receiver
+      receiver.to_s(io, diagnostic_anchors: anchors)
+      io << '.'
+    end
+    io << signature.name
+    unless signature.parameters.empty? && signature.block_parameter.empty?
+      io << '('
+      printed = false
+      a_def.args.each_with_index do |arg, index|
+        io << ", " if printed
+        io << '*' if a_def.splat_index == index
+        arg.to_s(io, diagnostic_anchors: anchors)
+        printed = true
+      end
+      if arg = a_def.double_splat
+        io << ", " if printed
+        io << "**"
+        arg.to_s(io, diagnostic_anchors: anchors)
+        printed = true
+      end
+      if arg = a_def.block_arg
+        io << ", " if printed
+        io << '&'
+        arg.to_s(io, diagnostic_anchors: anchors)
+      end
+      io << ')'
+    end
+    if result = a_def.return_type
+      io << " : "
+      result.to_s(io, diagnostic_anchors: anchors)
+    end
+    unless signature.free_variables.empty?
+      io << " forall "
+      signature.free_variables.each_with_index do |name, index|
+        io << ", " if index > 0
+        io << name
+        if signature.free_variable_bounds.any? { |pair| pair[0] == name }
+          bound = a_def.free_var_bounds.try(&.[name]?) || raise ArgumentError.new("missing free-variable bound AST")
+          io << " : "
+          bound.to_s(io, diagnostic_anchors: anchors)
+        end
+      end
+    end
+    unless signature.where_bounds.empty?
+      io << " where "
+      signature.where_bounds.each_with_index do |(name, _), index|
+        io << ", " if index > 0
+        bound = a_def.where_bounds.try(&.[name]?) || raise ArgumentError.new("missing where-bound AST")
+        io << name << " : "
+        bound.to_s(io, diagnostic_anchors: anchors)
+      end
+    end
+    text = io.to_s
+    raise ArgumentError.new("diagnostic signature rendering differs from carried signature") unless text == render_signature(signature)
+    DiagnosticFragment.new(signature_fragment_key(container, signature), ::Crystal::Digest::SHA256.hexdigest(text), anchors)
+  end
+
   private def self.encode_header(artifact : Artifact) : Bytes
     io = IO::Memory.new
     write_string io, artifact.module_name
@@ -4283,24 +4489,24 @@ module Iyi::IyiMod
     read_strings(IO::Memory.new(payload))
   end
 
-  private def self.encode_reopened(artifact : Artifact) : Bytes
+  private def self.encode_reopened(artifact : Artifact, diagnostics : Bool = false) : Bytes
     io = IO::Memory.new
-    write_type_declarations io, artifact.reopened
+    write_type_declarations io, artifact.reopened, diagnostics: diagnostics
     io.to_slice
   end
 
-  private def self.decode_reopened(payload : Bytes) : Array(TypeDecl)
-    read_type_declarations(IO::Memory.new(payload))
+  private def self.decode_reopened(payload : Bytes, diagnostics : Bool = false) : Array(TypeDecl)
+    read_type_declarations(IO::Memory.new(payload), diagnostics: diagnostics)
   end
 
-  private def self.encode_top_level(artifact : Artifact) : Bytes
+  private def self.encode_top_level(artifact : Artifact, diagnostics : Bool = false) : Bytes
     io = IO::Memory.new
-    write_signatures io, artifact.top_level
+    write_signatures io, artifact.top_level, diagnostics: diagnostics
     io.to_slice
   end
 
-  private def self.decode_top_level(payload : Bytes) : Array(Signature)
-    read_signatures(IO::Memory.new(payload))
+  private def self.decode_top_level(payload : Bytes, diagnostics : Bool = false) : Array(Signature)
+    read_signatures(IO::Memory.new(payload), diagnostics: diagnostics)
   end
 
   private def self.encode_libs(artifact : Artifact) : Bytes
@@ -4439,11 +4645,11 @@ module Iyi::IyiMod
   # *docs* is false on the interface-hash path (IV.3): a doc comment is
   # surface for a reader, not for the type checker, so editing one must
   # not move the hash a dependent's validity hangs on.
-  private def self.encode_exports(artifact : Artifact, docs : Bool = true) : Bytes
+  private def self.encode_exports(artifact : Artifact, docs : Bool = true, diagnostics : Bool = false) : Bytes
     io = IO::Memory.new
-    write_signatures io, artifact.exports.functions, docs
+    write_signatures io, artifact.exports.functions, docs, diagnostics
 
-    write_type_declarations io, artifact.exports.types, docs
+    write_type_declarations io, artifact.exports.types, docs, diagnostics
 
     impls = artifact.exports.impls
     io.write_bytes impls.size.to_u32, FORMAT
@@ -4454,10 +4660,10 @@ module Iyi::IyiMod
       write_strings io, record.free_variables
       write_pairs io, record.free_variable_bounds
       write_pairs io, record.assoc_types
-      write_signatures io, record.methods, docs
+      write_signatures io, record.methods, docs, diagnostics
     end
 
-    write_signatures io, artifact.exports.carried_functions, docs
+    write_signatures io, artifact.exports.carried_functions, docs, diagnostics
 
     write_class_vars io, artifact.exports.class_vars
 
@@ -4467,7 +4673,7 @@ module Iyi::IyiMod
   # Recursive, because a type's declarations are types: the nesting a module
   # wrote is the nesting a consumer has to read back, and iyi cannot reopen a
   # container to add one afterwards.
-  private def self.write_type_declarations(io : IO, types : Array(TypeDecl), docs : Bool = true) : Nil
+  private def self.write_type_declarations(io : IO, types : Array(TypeDecl), docs : Bool = true, diagnostics : Bool = false) : Nil
     io.write_bytes types.size.to_u32, FORMAT
     types.each do |declaration|
       write_string io, declaration.name
@@ -4488,12 +4694,12 @@ module Iyi::IyiMod
       write_string io, (docs ? declaration.doc : "")
       io.write_byte(declaration.extends_self ? 1_u8 : 0_u8)
       write_strings io, declaration.usings
-      write_signatures io, declaration.methods, docs
-      write_type_declarations io, declaration.types, docs
+      write_signatures io, declaration.methods, docs, diagnostics
+      write_type_declarations io, declaration.types, docs, diagnostics
     end
   end
 
-  private def self.read_type_declarations(io : IO) : Array(TypeDecl)
+  private def self.read_type_declarations(io : IO, diagnostics : Bool = false) : Array(TypeDecl)
     Array(TypeDecl).new(io.read_bytes(UInt32, FORMAT)) do
       name = read_string(io)
       kind = read_string(io)
@@ -4513,14 +4719,14 @@ module Iyi::IyiMod
       doc = read_string(io)
       extends_self = io.read_byte == 1_u8
       usings = read_strings(io)
-      methods = read_signatures(io)
+      methods = read_signatures(io, diagnostics)
       TypeDecl.new(name, kind, parameters, assoc_types, supertraits, fields, methods,
-        visibility, read_type_declarations(io), value, macros, members, class_vars,
+        visibility, read_type_declarations(io, diagnostics), value, macros, members, class_vars,
         superclass, includes, funs, annotations, doc, extends_self, usings)
     end
   end
 
-  private def self.write_signatures(io : IO, signatures : Array(Signature), docs : Bool = true) : Nil
+  private def self.write_signatures(io : IO, signatures : Array(Signature), docs : Bool = true, diagnostics : Bool = false) : Nil
     io.write_bytes signatures.size.to_u32, FORMAT
     signatures.each do |signature|
       write_string io, signature.name
@@ -4535,10 +4741,11 @@ module Iyi::IyiMod
       write_strings io, signature.annotations
       write_pairs io, signature.free_variable_bounds
       write_pairs io, signature.where_bounds
+      write_string io, (signature.diagnostic_origin.try(&.to_json) || "") if diagnostics
     end
   end
 
-  private def self.read_signatures(io : IO) : Array(Signature)
+  private def self.read_signatures(io : IO, diagnostics : Bool = false) : Array(Signature)
     Array(Signature).new(io.read_bytes(UInt32, FORMAT)) do
       name = read_string(io)
       receiver = read_string(io)
@@ -4550,16 +4757,25 @@ module Iyi::IyiMod
       doc = read_string(io)
       visibility = read_string(io)
       annotations = read_strings(io)
-      Signature.new(name, receiver, parameters, block_parameter, return_type,
+      signature = Signature.new(name, receiver, parameters, block_parameter, return_type,
         free_variables, required, visibility, doc, annotations, read_pairs(io), read_pairs(io))
+      if diagnostics
+        encoded = DiagnosticOrigins.read_string(io)
+        unless encoded.empty?
+          origin = DiagnosticOrigin.from_json(JSON.parse(encoded))
+          raise ArgumentError.new("noncanonical diagnostic signature origin") unless origin.to_json == encoded
+          signature.diagnostic_origin = origin
+        end
+      end
+      signature
     end
   end
 
-  private def self.decode_exports(payload : Bytes) : Exports
+  private def self.decode_exports(payload : Bytes, diagnostics : Bool = false) : Exports
     io = IO::Memory.new(payload)
-    functions = read_signatures(io)
+    functions = read_signatures(io, diagnostics)
 
-    types = read_type_declarations(io)
+    types = read_type_declarations(io, diagnostics)
 
     impls = Array(ImplRecord).new(io.read_bytes(UInt32, FORMAT)) do
       trait_name = read_string(io)
@@ -4569,10 +4785,10 @@ module Iyi::IyiMod
       free_variable_bounds = read_pairs(io)
       assoc_types = read_pairs(io)
       ImplRecord.new(trait_name, type_name, trait_arguments, free_variables,
-        free_variable_bounds, assoc_types, read_signatures(io))
+        free_variable_bounds, assoc_types, read_signatures(io, diagnostics))
     end
 
-    Exports.new(functions, types, impls, read_signatures(io), read_class_vars(io))
+    Exports.new(functions, types, impls, read_signatures(io, diagnostics), read_class_vars(io))
   end
 
   private def self.write_strings(io : IO, values : Array(String)) : Nil

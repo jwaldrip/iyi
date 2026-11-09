@@ -1014,15 +1014,18 @@ module Iyi
         if program.diagnostic_capture
           diagnostic = IyiMod::DiagnosticSection.new
           program.iyi_mono_body_diagnostics[filename]?.try &.each_value { |fragment| diagnostic.add_fragment(fragment) }
+          program.iyi_signature_diagnostics[filename]?.try &.each_value { |fragment| diagnostic.add_fragment(fragment) }
           if fragment = program.iyi_initialiser_diagnostics[filename]?
             diagnostic.add_fragment(fragment)
           end
-          diagnostic_add_class_vars(program, diagnostic, artifact.exports.class_vars)
-          artifact.exports.types.each { |declaration| diagnostic_add_type_class_vars(program, diagnostic, declaration) }
-          artifact.reopened.each { |declaration| diagnostic_add_type_class_vars(program, diagnostic, declaration) }
-          diagnostic_add_macros(program, diagnostic, artifact.macro_bodies)
-          artifact.exports.types.each { |declaration| diagnostic_add_type_macros(program, diagnostic, declaration) }
-          artifact.reopened.each { |declaration| diagnostic_add_type_macros(program, diagnostic, declaration) }
+          root = program.iyi_module_type(module_name) || raise "missing artifact root owner"
+          root_owner = root.to_s(generic_args: false)
+          diagnostic_add_class_vars(program, diagnostic, artifact.exports.class_vars, root_owner, IyiMod::DIAGNOSTIC_ROOT_CONTAINER)
+          artifact.exports.types.each { |declaration| diagnostic_add_type_class_vars(program, diagnostic, declaration, root_owner) }
+          artifact.reopened.each { |declaration| diagnostic_add_type_class_vars(program, diagnostic, declaration, root_owner) }
+          diagnostic_add_macros(program, diagnostic, artifact.macro_bodies, root_owner, IyiMod::DIAGNOSTIC_ROOT_CONTAINER)
+          artifact.exports.types.each { |declaration| diagnostic_add_type_macros(program, diagnostic, declaration, root_owner) }
+          artifact.reopened.each { |declaration| diagnostic_add_type_macros(program, diagnostic, declaration, root_owner) }
           artifact.diagnostic_provenance = diagnostic
         end
 
@@ -1364,6 +1367,7 @@ module Iyi
           if signatures = type.defs.try &.[]?(name)
             signatures.each do |item|
               signature = IyiMod.signature(item.def)
+              program.record_signature_diagnostic(filename, module_name, signature, item.def)
               functions << signature
               # A module's own `pub def` that takes a block, or has `forall`
               # parameters, is the consumer's to compile for the same reason,
@@ -1397,6 +1401,7 @@ module Iyi
             next if item.def.body.is_a?(Primitive)
 
             signature = IyiMod.signature(item.def, check_block: false)
+            program.record_signature_diagnostic(filename, module_name, signature, item.def)
             carried_functions << signature
             # A widened one too: an exported body that travels calls it at
             # what it holds, and the consumer keys that call on the
@@ -1508,6 +1513,7 @@ module Iyi
               primitive = a_def.body.is_a?(Primitive)
               next if primitive && !iyi_primitive_written?(a_def)
               signature = IyiMod.signature(a_def, check_block: false)
+              program.record_signature_diagnostic(filename, container, signature, a_def)
               methods << signature
               # An instruction has no body to carry — it *is* the body — and
               # the annotation travelling on the signature is what makes the
@@ -2844,6 +2850,7 @@ module Iyi
           next if item.def.iyi_compiler_made?
 
           signature = IyiMod.signature(item.def)
+          program.record_signature_diagnostic(filename, container, signature, item.def)
           methods << signature
           # A block-taking or `forall` def travels whatever type it is on: it
           # is instantiated with the caller's block inside it, or at the
@@ -2967,6 +2974,7 @@ module Iyi
             next if item.def.iyi_compiler_made?
 
             signature = IyiMod.signature(item.def, check_block: false)
+            program.record_signature_diagnostic(filename, container, signature, item.def)
             signatures << signature
             # The same reasons the exported side travels for: a block-taking
             # or `forall` body is the caller's, one whose code answers for
@@ -3180,7 +3188,7 @@ module Iyi
       macros.sort_by!(&.to_s).map do |a_macro|
         if type && type.program.diagnostic_capture
           source, anchors = IyiMod.diagnostic_macro_source(a_macro)
-          type.program.record_macro_diagnostic(type.to_s, source, anchors)
+          type.program.record_macro_diagnostic(type.to_s(generic_args: false), source, anchors)
           source
         else
           IyiMod.macro_source(a_macro)
@@ -3194,8 +3202,7 @@ module Iyi
       key = IyiMod.mono_body_key(container, signature)
       if program.diagnostic_capture
         text, positions, anchors = IyiMod.diagnostic_located_source(a_def.body)
-        fragment = IyiMod::DiagnosticFragment.new("mono:#{key}", ::Crystal::Digest::SHA256.hexdigest(text), anchors)
-        (program.iyi_mono_body_diagnostics[filename] ||= {} of String => IyiMod::DiagnosticFragment)[key] = fragment
+        program.record_mono_body_diagnostic(filename, key, container, signature, text, anchors)
       else
         text, positions = IyiMod.located_source(a_def.body)
       end
@@ -3328,34 +3335,41 @@ module Iyi
     # module that merely reads `@@x` from an included module would otherwise
     # declare a second one of its own.
     private def diagnostic_add_macros(program : Program, section : IyiMod::DiagnosticSection,
-                                      sources : Array(String)) : Nil
+                                      sources : Array(String), owner : String, container : String) : Nil
       sources.each do |source|
-        stored = program.iyi_macro_diagnostics[IyiMod.macro_fragment_key(source)]? ||
-                 raise "missing macro diagnostic fragment"
-        section.add_fragment(stored[1])
+        anchors = program.iyi_macro_diagnostics[{owner, source}]? ||
+                  raise "missing macro diagnostic source for #{owner}"
+        key = IyiMod.macro_fragment_key(container, source)
+        section.add_fragment(IyiMod::DiagnosticFragment.new(key, ::Crystal::Digest::SHA256.hexdigest(source), anchors))
       end
     end
 
     private def diagnostic_add_type_macros(program : Program, section : IyiMod::DiagnosticSection,
-                                           declaration : IyiMod::TypeDecl) : Nil
-      diagnostic_add_macros(program, section, declaration.macros)
-      declaration.types.each { |nested| diagnostic_add_type_macros(program, section, nested) }
+                                           declaration : IyiMod::TypeDecl, root_owner : String, path : String = "") : Nil
+      here = path.empty? ? declaration.name : "#{path}::#{declaration.name}"
+      owner = here.starts_with?("::") ? here.lchop("::") : "#{root_owner}::#{here}"
+      diagnostic_add_macros(program, section, declaration.macros, owner, here)
+      declaration.types.each { |nested| diagnostic_add_type_macros(program, section, nested, root_owner, here) }
     end
 
     private def diagnostic_add_class_vars(program : Program, section : IyiMod::DiagnosticSection,
-                                          variables : Array(IyiMod::ClassVarDecl)) : Nil
+                                          variables : Array(IyiMod::ClassVarDecl), owner : String, container : String) : Nil
       variables.each do |variable|
         next if variable.value.empty?
-        key = IyiMod.class_var_fragment_key(variable.name, variable.value)
-        stored = program.iyi_class_var_diagnostics[key]? || raise "missing class variable diagnostic fragment"
-        section.add_fragment(stored[1])
+        source, anchors = program.iyi_class_var_diagnostics[{owner, variable.name}]? ||
+                          raise "missing class variable diagnostic source for #{owner}::#{variable.name}"
+        raise "class variable diagnostic text changed" unless source == variable.value
+        key = IyiMod.class_var_fragment_key(container, variable.name)
+        section.add_fragment(IyiMod::DiagnosticFragment.new(key, ::Crystal::Digest::SHA256.hexdigest(source), anchors))
       end
     end
 
     private def diagnostic_add_type_class_vars(program : Program, section : IyiMod::DiagnosticSection,
-                                               declaration : IyiMod::TypeDecl) : Nil
-      diagnostic_add_class_vars(program, section, declaration.class_vars)
-      declaration.types.each { |nested| diagnostic_add_type_class_vars(program, section, nested) }
+                                               declaration : IyiMod::TypeDecl, root_owner : String, path : String = "") : Nil
+      here = path.empty? ? declaration.name : "#{path}::#{declaration.name}"
+      owner = here.starts_with?("::") ? here.lchop("::") : "#{root_owner}::#{here}"
+      diagnostic_add_class_vars(program, section, declaration.class_vars, owner, here)
+      declaration.types.each { |nested| diagnostic_add_type_class_vars(program, section, nested, root_owner, here) }
     end
 
     private def collect_iyi_class_vars(type : Type) : Array(IyiMod::ClassVarDecl)
@@ -3366,7 +3380,7 @@ module Iyi
         initialiser = variable.iyi_initialiser_source
         if type.program.diagnostic_capture && !initialiser.empty?
           anchors = variable.iyi_initialiser_anchors || raise "class variable initializer lacks diagnostic anchors"
-          type.program.record_class_var_diagnostic(type.to_s, name, initialiser, anchors)
+          type.program.record_class_var_diagnostic(type.to_s(generic_args: false), name, initialiser, anchors)
         end
         # `@[ThreadLocal]` travels with it: a consumer that declared the
         # variable without it writes to a different global than this module's
@@ -3754,6 +3768,7 @@ module Iyi
     private def parse(program, source : Source)
       parser = program.new_parser(source.code)
       parser.filename = source.filename
+      parser.diagnostic_source_file = source.filename if program.diagnostic_capture && !source.filename.empty?
       parser.wants_doc = program.wants_doc?
       # The entry is a module of the program's own package as much as a
       # file it imports is (`SemanticVisitor#import_file`).

@@ -1626,6 +1626,7 @@ module Iyi
     end
 
     def visit(node : FunDef)
+      diagnostic_anchor(node, "FunDef", "keyword")
       @str << "fun "
       if node.name == node.real_name
         @str << node.name

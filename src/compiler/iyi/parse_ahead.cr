@@ -78,6 +78,7 @@ module Iyi
     # Workers that have not ended yet.
     @running : Int32
     @wants_doc : Bool
+    @diagnostic_capture : Bool
     @mod_table : Array({String, String})
     @module_dir : String?
     @path : IyiPath
@@ -85,6 +86,7 @@ module Iyi
     private def initialize(@program : Program, node : ASTNode, threads : Int32)
       @running = threads
       @wants_doc = program.wants_doc?
+      @diagnostic_capture = program.diagnostic_capture
       @mod_table = program.iyi_mod_table
       @module_dir = program.iyi_module_dir
       # Made here, on the walk's thread: it is built the first time it is asked
@@ -112,9 +114,12 @@ module Iyi
     # *filename*'s nodes, which the walk read as *source* and set *parser*
     # up for: a worker's when it parsed the same thing, else *parser*'s.
     def parse(parser : Parser, filename : String, source : String) : ASTNode
-      if nodes = take(filename, source, parser.iyi_package_name, parser.wants_doc?)
-        Prof.count("parse ahead: taken")
-        return nodes
+      if parser.diagnostic_capture == @diagnostic_capture &&
+         (!@diagnostic_capture || parser.diagnostic_source_unit == "source-file:#{filename}")
+        if nodes = take(filename, source, parser.iyi_package_name, parser.wants_doc?)
+          Prof.count("parse ahead: taken")
+          return nodes
+        end
       end
 
       Prof.count("parse ahead: parsed here")
@@ -185,6 +190,8 @@ module Iyi
           source = File.read(filename)
           parser = Parser.new(source, pool, [Set(String).new], warnings)
           parser.filename = filename
+          parser.diagnostic_capture = @diagnostic_capture
+          parser.diagnostic_source_file = filename if @diagnostic_capture
           parser.wants_doc = @wants_doc
           parser.iyi_package_name = entry.package
           nodes = parser.parse

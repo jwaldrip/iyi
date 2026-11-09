@@ -199,7 +199,18 @@ module Iyi
     # macro expansions must restore their own origins, not claim their path as
     # the source module.
     @diagnostic_module_path : String? = nil
+    getter diagnostic_source_unit : String? = nil
     property diagnostic_capture = false
+
+    # A source file with no iyi module header is its own compilation unit.
+    # This must be set only for an actual parser input, never an artifact or
+    # macro expansion rendering.
+    def diagnostic_source_file=(filename : String)
+      unless !filename.empty? && @input_filename == filename && @input_artifact.nil?
+        raise ArgumentError.new("diagnostic source identity does not match parser input")
+      end
+      @diagnostic_source_unit = "source-file:#{filename}"
+    end
     @diagnostic_regions : Array(DiagnosticRegion)? = nil
     @diagnostic_pending : Hash({Int32, String, String}, DiagnosticOrigin)? = nil
     @diagnostic_expansion : {DiagnosticOrigin, DiagnosticOrigin, String}? = nil
@@ -303,7 +314,7 @@ module Iyi
         return DiagnosticOrigin::Expanded.new(expansion[0], expansion[1], expansion[2], offset, kind, role, spliced)
       end
       return nil unless @diagnostic_capture
-      module_path = @diagnostic_module_path
+      module_path = @diagnostic_module_path || @diagnostic_source_unit
       filename = @input_filename
       return nil unless module_path && filename.is_a?(String) && !filename.empty? && @input_artifact.nil?
       DiagnosticOrigin::Written.new(module_path, filename, offset, kind, role)
@@ -8013,6 +8024,7 @@ module Iyi
 
     def parse_fun_def(top_level, require_body = false)
       location = @token.location
+      origin = diagnostic_anchor("FunDef", "keyword", @token.input_offset)
       doc = @token.doc
 
       with_isolated_var_scope(require_body) do
@@ -8124,6 +8136,7 @@ module Iyi
         fun_def = FunDef.new name, params, return_type, varargs, body, real_name
         fun_def.name_location = name_location
         fun_def.doc = doc
+        fun_def.diagnostic_origin = origin
         fun_def.at(location).at_end(end_location)
       end
     end

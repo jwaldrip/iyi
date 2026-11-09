@@ -847,6 +847,7 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
       a_def.iyi_from_impl = true
       @iyi_impl_defs[a_def] = {node, impl_label}
       signature = IyiMod.signature(a_def)
+      @program.record_signature_diagnostic(file, container, signature, a_def) if file
       impl_methods << signature
 
       # And one more way the machine code ends up somewhere the consumer
@@ -871,8 +872,7 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
         key = IyiMod.mono_body_key(container, signature)
         if @program.diagnostic_capture
           text, positions, anchors = IyiMod.diagnostic_located_source(a_def.body)
-          fragment = IyiMod::DiagnosticFragment.new("mono:#{key}", ::Crystal::Digest::SHA256.hexdigest(text), anchors)
-          (@program.iyi_mono_body_diagnostics[file] ||= {} of String => IyiMod::DiagnosticFragment)[key] = fragment
+          @program.record_mono_body_diagnostic(file, key, container, signature, text, anchors)
         else
           text, positions = IyiMod.located_source(a_def.body)
         end
@@ -1656,6 +1656,12 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
         # `@instance_vars are not yet allowed in metaclasses`.
         @program.iyi_def_bodies[Program.iyi_def_body_key(location, node.name)] ||= node.body.to_s
       end
+    end
+    if @program.diagnostic_capture && (origin = node.diagnostic_origin)
+      io = IO::Memory.new
+      anchors = [] of DiagnosticAnchor
+      node.body.to_s(io, diagnostic_anchors: anchors)
+      @program.record_diagnostic_def_body(origin, io.to_s, anchors)
     end
 
     annotations = read_annotations

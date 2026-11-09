@@ -135,14 +135,18 @@ describe Iyi::DiagnosticOrigin do
   end
 
   it "restores a carried mono body at its exact rendered anchor" do
+    original_def = Iyi::Def.new("f")
+    original_def.diagnostic_origin = Iyi::DiagnosticOrigin::Written.new("app/greeter", "/absent/greeter.iyi", 4, "Def", "keyword")
     sig = signature("f")
+    sig.diagnostic_origin = original_def.diagnostic_origin
     artifact = sample_artifact(exports: [sig])
     key = Iyi::IyiMod.mono_body_key(artifact.module_name, sig)
     text = "-> { 1 }"
     artifact.mono_bodies[key] = text
     origin = Iyi::DiagnosticOrigin::Written.new("app/greeter", "/absent/greeter.iyi", 15, "ProcLiteral", "arrow")
     section = Iyi::IyiMod::DiagnosticSection.new
-    section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new("mono:#{key}",
+    section.add_fragment(Iyi::IyiMod.diagnostic_signature_fragment(artifact.module_name, original_def, sig))
+    section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(Iyi::IyiMod.signature_body_fragment_key(artifact.module_name, sig),
       ::Crystal::Digest::SHA256.hexdigest(text), [Iyi::DiagnosticAnchor.new(0, "ProcLiteral", "arrow", origin)]))
     artifact.diagnostic_provenance = section
     io = IO::Memory.new
@@ -155,8 +159,26 @@ describe Iyi::DiagnosticOrigin do
     parser.iyi = true
     parser.diagnostic_regions = regions
     parser.parse
-    regions.size.should eq(1)
-    regions.first.anchors.first.origin.should eq(origin)
+    regions.size.should eq(2)
+    regions.last.anchors.first.origin.should eq(origin)
+  end
+
+  it "restores a definition and a closure in its parameter default" do
+    literal = Iyi::ProcLiteral.new(Iyi::Def.new("->", [] of Iyi::Arg, Iyi::NumberLiteral.new(1)))
+    proc_origin = Iyi::DiagnosticOrigin::Written.new("app/greeter", "/absent/greeter.iyi", 20, "ProcLiteral", "arrow")
+    literal.diagnostic_origin = proc_origin
+    definition = Iyi::Def.new("f", [Iyi::Arg.new("x", literal)])
+    def_origin = Iyi::DiagnosticOrigin::Written.new("app/greeter", "/absent/greeter.iyi", 4, "Def", "keyword")
+    definition.diagnostic_origin = def_origin
+    sig = Iyi::IyiMod.signature(definition, check_block: false)
+    fragment = Iyi::IyiMod.diagnostic_signature_fragment("app/greeter", definition, sig)
+    header = Iyi::IyiMod.render_signature(sig)
+    region = Iyi::DiagnosticRegion.new(0, header.bytesize, fragment.text_sha256, fragment.anchors)
+    parser = Iyi::Parser.new("#{header}\nend")
+    parser.diagnostic_regions = [region]
+    restored = parser.parse.as(Iyi::Def)
+    restored.diagnostic_origin.should eq(def_origin)
+    restored.args.first.default_value.not_nil!.diagnostic_origin.should eq(proc_origin)
   end
 
   it "restores class-variable initializer anchors without the source file" do
@@ -166,7 +188,7 @@ describe Iyi::DiagnosticOrigin do
     artifact.exports.class_vars << Iyi::IyiMod::ClassVarDecl.new(name, "Proc(Int32)", text)
     origin = Iyi::DiagnosticOrigin::Written.new("app/greeter", "/absent/greeter.iyi", 22, "ProcLiteral", "arrow")
     section = Iyi::IyiMod::DiagnosticSection.new
-    section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(Iyi::IyiMod.class_var_fragment_key(name, text),
+    section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(Iyi::IyiMod.class_var_fragment_key(Iyi::IyiMod::DIAGNOSTIC_ROOT_CONTAINER, name),
       ::Crystal::Digest::SHA256.hexdigest(text), [Iyi::DiagnosticAnchor.new(0, "ProcLiteral", "arrow", origin)]))
     artifact.diagnostic_provenance = section
     io = IO::Memory.new
@@ -193,7 +215,7 @@ describe Iyi::DiagnosticOrigin do
     artifact.crystal_library = true
     artifact.macro_bodies << source
     section = Iyi::IyiMod::DiagnosticSection.new
-    section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(Iyi::IyiMod.macro_fragment_key(source),
+    section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(Iyi::IyiMod.macro_fragment_key(Iyi::IyiMod::DIAGNOSTIC_ROOT_CONTAINER, source),
       ::Crystal::Digest::SHA256.hexdigest(source), anchors))
     artifact.diagnostic_provenance = section
     io = IO::Memory.new
@@ -208,11 +230,58 @@ describe Iyi::DiagnosticOrigin do
     regions.first.anchors.first.origin.should eq(origin)
   end
 
-  it "rejects equal class-variable text from different owners" do
+  it "distinguishes equal class-variable text in different owners" do
     program = Iyi::Program.new
     anchors = [] of Iyi::DiagnosticAnchor
     program.record_class_var_diagnostic("A", "@@x", "1", anchors)
-    expect_raises(Exception) { program.record_class_var_diagnostic("B", "@@x", "1", anchors) }
+    program.record_class_var_diagnostic("B", "@@x", "1", anchors)
+    program.iyi_class_var_diagnostics.size.should eq(2)
+    Iyi::IyiMod.class_var_fragment_key("A", "@@x").should_not eq(Iyi::IyiMod.class_var_fragment_key("B", "@@x"))
+    expect_raises(Exception) { program.record_class_var_diagnostic("A", "@@x", "2", anchors) }
+  end
+
+  it "distinguishes equal macro text in different owners" do
+    program = Iyi::Program.new
+    anchors = [] of Iyi::DiagnosticAnchor
+    source = "macro example\nend"
+    program.record_macro_diagnostic("A", source, anchors)
+    program.record_macro_diagnostic("B", source, anchors)
+    program.iyi_macro_diagnostics.size.should eq(2)
+    Iyi::IyiMod.macro_fragment_key("A", source).should_not eq(Iyi::IyiMod.macro_fragment_key("B", source))
+  end
+
+  it "restores equal macro and class-variable text in distinct type owners" do
+    a = type_declaration("A", "class")
+    b = type_declaration("B", "class")
+    artifact = sample_artifact(types: [a, b])
+    section = Iyi::IyiMod::DiagnosticSection.new
+    expected = [] of Iyi::DiagnosticOrigin
+    [a, b].each_with_index do |decl, index|
+      proc_origin = Iyi::DiagnosticOrigin::Written.new("app/greeter", "/absent/greeter.iyi", 20 + index, "ProcLiteral", "arrow")
+      text = "-> { 1 }"
+      decl.class_vars << Iyi::IyiMod::ClassVarDecl.new("@@x", "Proc(Int32)", text)
+      section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(Iyi::IyiMod.class_var_fragment_key(decl.name, "@@x"),
+        ::Crystal::Digest::SHA256.hexdigest(text), [Iyi::DiagnosticAnchor.new(0, "ProcLiteral", "arrow", proc_origin)]))
+      macro_origin = Iyi::DiagnosticOrigin::Written.new("app/greeter", "/absent/greeter.iyi", 40 + index, "Macro", "keyword")
+      macro_node = Iyi::Macro.new("same")
+      macro_node.diagnostic_origin = macro_origin
+      source, anchors = Iyi::IyiMod.diagnostic_macro_source(macro_node)
+      decl.macros << source
+      section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(Iyi::IyiMod.macro_fragment_key(decl.name, source),
+        ::Crystal::Digest::SHA256.hexdigest(source), anchors))
+      expected << macro_origin << proc_origin
+    end
+    artifact.diagnostic_provenance = section
+    io = IO::Memory.new
+    regions = [] of Iyi::DiagnosticRegion
+    Iyi::IyiMod.declarations(artifact, io, {} of Int32 => Array(Iyi::Lexer::LocPragma), "greeter.iyimod", regions)
+    parser = Iyi::Parser.new(io.to_s)
+    parser.filename = "greeter.iyimod"
+    parser.artifact = "greeter.iyimod"
+    parser.iyi = true
+    parser.diagnostic_regions = regions
+    parser.parse
+    regions.flat_map(&.anchors).map(&.origin).should eq(expected)
   end
 
   it "captures the parser input file rather than a location pragma" do
@@ -228,6 +297,18 @@ describe Iyi::DiagnosticOrigin do
     origin.source_file.should eq("/src/main.iyi")
     origin.source_module.should eq("app/main")
     origin.input_byte_offset.should eq(source.byte_index("->").not_nil!)
+  end
+
+  it "gives a module-less Crystal file its own explicit source-unit identity" do
+    parser = Iyi::Parser.new("-> { 1 }")
+    parser.filename = "/src/library.cr"
+    parser.diagnostic_capture = true
+    parser.diagnostic_source_file = "/src/library.cr"
+    origin = parser.parse.diagnostic_origin.as(Iyi::DiagnosticOrigin::Written)
+    origin.source_module.should eq("source-file:/src/library.cr")
+    origin.source_file.should eq("/src/library.cr")
+    origin.input_byte_offset.should eq(0)
+    expect_raises(ArgumentError) { parser.diagnostic_source_file = "/other.cr" }
   end
 
   it "retains a splice origin within the expansion occurrence" do
@@ -313,6 +394,15 @@ describe Iyi::DiagnosticOrigin do
     definition.diagnostic_specialization_json.should be_nil
     definition.record_diagnostic_specialization(first)
     definition.diagnostic_specialization_json.should be_nil
+  end
+
+  it "keeps diagnostic origin out of semantic signature equality" do
+    first = signature("f")
+    second = signature("f")
+    first.diagnostic_origin = Iyi::DiagnosticOrigin::Written.new("app", "/a.iyi", 1, "Def", "keyword")
+    second.diagnostic_origin = Iyi::DiagnosticOrigin::Written.new("app", "/a.iyi", 2, "Def", "keyword")
+    first.should eq(second)
+    Iyi::IyiMod.signature_fragment_key("app", first).should_not eq(Iyi::IyiMod.signature_fragment_key("app", second))
   end
 
   it "distinguishes concrete and pointer type identities" do

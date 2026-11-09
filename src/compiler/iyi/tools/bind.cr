@@ -153,6 +153,12 @@ module Iyi
     # only the three that take a type: `'DB::Database#query_one' is not
     # expected to be invoked with a block`.
     free_vars : Array(String) = [] of String do
+    property diagnostic_def : Def? = nil
+    property diagnostic_body : {String, Array(DiagnosticAnchor)}? = nil
+    def_equals_and_hash owner, name, verdict, block, untyped, location, params, returns, receiver,
+      written_block, inferred, refused, body, storable, checked, produced, private_def,
+      body_answers, uncompilable, abstract_def, answers_abstract, written, free_vars
+
     # What this method answers, which is not always what the shard wrote.
     #
     # The instantiated answer wins where the two disagree, and the linker is
@@ -370,6 +376,7 @@ module Iyi
     @@unwritable = unwritable_types program
     @@bound_prefix = {} of String => String
     @@mono_bodies = {} of String => String
+    @@diagnostic_bodies = {} of String => {String, Array(DiagnosticAnchor)}
     @@bound_module = {} of String => String
     @@bound_used = Set(String).new
     @@bound = bound_dir ? bound_names(program, bound_dir, io) : Set(String).new
@@ -765,6 +772,7 @@ module Iyi
         free_variables: method.free_vars,
         required: false,
       )
+      signature.diagnostic_origin = method.diagnostic_def.try(&.diagnostic_origin)
       # One declaration per *signature*, which is what tells two methods apart.
       #
       # This was one per name, and a name is what a shard's overloads share.
@@ -819,6 +827,7 @@ module Iyi
                 (signature.receiver.empty? && !extends_self?(program, root))
       if travels && (body = method.body) && !body.empty?
         @@mono_bodies[IyiMod.mono_body_key(iyi_module_name(root), signature)] = travelling_body(body)
+        record_bind_diagnostic_body(iyi_module_name(root), signature, method, body)
       end
     end
 
@@ -851,6 +860,7 @@ module Iyi
         free_variables: method.free_vars,
         required: false,
       )
+      signature.diagnostic_origin = method.diagnostic_def.try(&.diagnostic_origin)
       # With its body, always, and that is what a top level *is*.
       #
       # Every other declaration here names a symbol in this artifact's object
@@ -871,6 +881,7 @@ module Iyi
       next unless top_seen.add?(key)
       top_level << signature
       @@mono_bodies[IyiMod.mono_body_key(IyiMod::TOP_LEVEL_CONTAINER, signature)] = travelling_body(body)
+      record_bind_diagnostic_body(IyiMod::TOP_LEVEL_CONTAINER, signature, method, body)
     end
 
     # And what the shard added to types it does not own.
@@ -983,10 +994,10 @@ module Iyi
 
     if module_root? program, root
       exported = exported.map do |signature|
-        rekey_body(iyi_module_name(root), signature, strip_root(signature, root)) { |body| strip_root body, root }
+        rekey_body(iyi_module_name(root), signature, strip_root(signature, root)) { |body, anchors| strip_root(body, root, anchors) }
       end
       carried_functions = carried_functions.map do |signature|
-        rekey_body(iyi_module_name(root), signature, strip_root(signature, root)) { |body| strip_root body, root }
+        rekey_body(iyi_module_name(root), signature, strip_root(signature, root)) { |body, anchors| strip_root(body, root, anchors) }
       end
       top_exported = top_exported.map do |signature|
         # The *signature* is stripped and the body is not, and that is the one
@@ -994,7 +1005,7 @@ module Iyi
         # module — that is what makes it top-level — so a name inside its body
         # has to be the one the module is known by from out there:
         # `Kemal::Utils` rather than `Utils`, which is nothing at that level.
-        rekey_body(IyiMod::TOP_LEVEL_CONTAINER, signature, strip_root(signature, root)) { |body| body }
+        rekey_body(IyiMod::TOP_LEVEL_CONTAINER, signature, strip_root(signature, root)) { |body, _anchors| body }
       end
       carried_types = carried_types.map { |declaration| strip_root_declaration declaration, root }
       root_class_vars = root_class_vars.map do |class_var|
@@ -1019,13 +1030,13 @@ module Iyi
     # consumer will see it.
     unless @@bound_prefix.empty?
       exported = exported.map do |signature|
-        rekey_body(iyi_module_name(root), signature, map_names(signature)) { |body| map_names body }
+        rekey_body(iyi_module_name(root), signature, map_names(signature)) { |body, anchors| map_names(body, anchors) }
       end
       carried_functions = carried_functions.map do |signature|
-        rekey_body(iyi_module_name(root), signature, map_names(signature)) { |body| map_names body }
+        rekey_body(iyi_module_name(root), signature, map_names(signature)) { |body, anchors| map_names(body, anchors) }
       end
       top_exported = top_exported.map do |signature|
-        rekey_body(IyiMod::TOP_LEVEL_CONTAINER, signature, map_names(signature)) { |body| map_names body }
+        rekey_body(IyiMod::TOP_LEVEL_CONTAINER, signature, map_names(signature)) { |body, anchors| map_names(body, anchors) }
       end
       reopened = reopened.map { |declaration| map_names_declaration declaration }
       carried_types = carried_types.map { |declaration| map_names_declaration declaration }
@@ -1908,7 +1919,7 @@ module Iyi
     anchors = [] of DiagnosticAnchor
     a_macro.to_s(io, diagnostic_anchors: anchors)
     source = io.to_s
-    type.program.record_macro_diagnostic(type.to_s, source, anchors)
+    type.program.record_macro_diagnostic(type.to_s(generic_args: false), source, anchors)
     source
   end
 
@@ -2714,11 +2725,13 @@ module Iyi
   # Every place *needle* appears in *text* on a name boundary, replaced by what
   # *replacement_for* answers. `nil` from the block leaves the occurrence alone.
   private def self.replace_on_boundary(text : String, needle : String,
-                                       trailing_name_ends : Bool, & : -> String) : String
+                                       trailing_name_ends : Bool, anchors : Array(DiagnosticAnchor)? = nil,
+                                       & : -> String) : String
     return text if needle.empty? || !text.includes?(needle)
 
     result = String::Builder.new(text.bytesize)
     index = 0
+    replacements = anchors ? [] of {Int32, Int32, Int32} : nil
     while index < text.bytesize
       if text.byte_index(needle, index) == index && !after_name_byte?(text, index)
         after = index + needle.bytesize
@@ -2726,7 +2739,9 @@ module Iyi
                     after >= text.bytesize ||
                     !identifier_byte?(text.to_unsafe[after])
         if ends_name
-          result << yield
+          replacement = yield
+          result << replacement
+          replacements.try(&.<<({index, after, replacement.bytesize}))
           index = after
           next
         end
@@ -2734,17 +2749,32 @@ module Iyi
       result.write_byte text.to_unsafe[index]
       index += 1
     end
+    if anchors && replacements
+      mapped = anchors.map do |anchor|
+        offset = anchor.offset
+        delta = 0
+        replacements.each do |start_offset, end_offset, length|
+          if offset >= start_offset && offset < end_offset
+            raise "diagnostic anchor falls inside a rewritten name"
+          end
+          delta += length - (end_offset - start_offset) if end_offset <= offset
+        end
+        anchor.copy_with(offset: offset + delta)
+      end
+      anchors.clear
+      anchors.concat(mapped)
+    end
     result.to_s
   end
 
   # `MyLib::Entry` becomes `Entry`, and `MyLibOther::X` is left alone — the
   # prefix has to end at a name boundary or this renames types it never owned.
-  private def self.strip_root(text : String, root : String) : String
-    replace_on_boundary(text, "#{root}::", trailing_name_ends: false) { "" }
+  private def self.strip_root(text : String, root : String, anchors : Array(DiagnosticAnchor)? = nil) : String
+    replace_on_boundary(text, "#{root}::", trailing_name_ends: false, anchors: anchors) { "" }
   end
 
   private def self.strip_root(signature : IyiMod::Signature, root : String) : IyiMod::Signature
-    IyiMod::Signature.new(
+    changed = IyiMod::Signature.new(
       name: signature.name,
       receiver: signature.receiver,
       parameters: signature.parameters.map { |parameter| strip_root parameter, root },
@@ -2753,6 +2783,8 @@ module Iyi
       free_variables: signature.free_variables,
       required: signature.required,
     )
+    changed.diagnostic_origin = signature.diagnostic_origin
+    changed
   end
 
   # *path* is the container half of a body's key — see
@@ -2791,8 +2823,8 @@ module Iyi
       methods: begin
         ordinals = IyiMod.mono_body_ordinals(declaration.methods)
         declaration.methods.map_with_index do |signature, index|
-          rekey_body(path, signature, strip_root(strip_root(signature, inside), root), ordinals[index]) do |body|
-            scoped.call body
+          rekey_body(path, signature, strip_root(strip_root(signature, inside), root), ordinals[index]) do |body, anchors|
+            strip_root(strip_root(body, inside, anchors), root, anchors)
           end
         end
       end,
@@ -2838,6 +2870,22 @@ module Iyi
     body.blank? ? "nil" : body
   end
 
+  private def self.record_bind_diagnostic_body(container : String, signature : IyiMod::Signature,
+                                               method : BindMethod, body : String) : Nil
+    return unless method.diagnostic_def
+    source, anchors = method.diagnostic_body || raise "missing written diagnostic body"
+    raise "bound body differs from its origin's written body" unless source == body
+    emitted = travelling_body(body)
+    raise "cannot map anchors into a synthesized empty body" if emitted != body && !anchors.empty?
+    key = IyiMod.signature_body_fragment_key(container, signature)
+    entry = {emitted, anchors.dup}
+    if previous = @@diagnostic_bodies[key]?
+      raise "ambiguous bound diagnostic body" unless previous == entry
+    else
+      @@diagnostic_bodies[key] = entry
+    end
+  end
+
   # A body is found again by its signature, so rewriting one moves the other.
   #
   # `MonoBodies` is keyed on the container and the signature as written, and a
@@ -2849,7 +2897,7 @@ module Iyi
   private def self.rekey_body(container : String, before : IyiMod::Signature,
                               after : IyiMod::Signature,
                               ordinal : Int32 = 0,
-                              & : String -> String) : IyiMod::Signature
+                              & : String, Array(DiagnosticAnchor)? -> String) : IyiMod::Signature
     old_key = IyiMod.mono_body_key(container, before, ordinal)
     new_key = IyiMod.mono_body_key(container, after, ordinal)
 
@@ -2861,21 +2909,40 @@ module Iyi
     # `SQLite3 does not export SQLite3::TIME_ZONE`. Stripped, it is
     # `TIME_ZONE`, which is what the shard's own file means by it.
     if body = @@mono_bodies.delete(old_key)
-      @@mono_bodies[new_key] = yield body
+      if before.diagnostic_origin
+        old_diagnostic_key = IyiMod.signature_body_fragment_key(container, before)
+        if diagnostic = @@diagnostic_bodies.delete(old_diagnostic_key)
+          source, anchors = diagnostic
+          raise "bound body and diagnostic text disagree" unless source == body
+          transformed = yield body, anchors
+          new_diagnostic_key = IyiMod.signature_body_fragment_key(container, after)
+          entry = {transformed, anchors}
+          if previous = @@diagnostic_bodies[new_diagnostic_key]?
+            raise "ambiguous transformed diagnostic body" unless previous == entry
+          else
+            @@diagnostic_bodies[new_diagnostic_key] = entry
+          end
+          @@mono_bodies[new_key] = transformed
+        else
+          raise "missing bound diagnostic body"
+        end
+      else
+        @@mono_bodies[new_key] = yield body, nil
+      end
     end
     after
   end
 
   # Rewrites every bound name in *text* to what the consumer calls it. The name
   # has to stand alone on both sides: `JSON` is bound, `JSONThing` is not.
-  private def self.map_names(text : String) : String
+  private def self.map_names(text : String, anchors : Array(DiagnosticAnchor)? = nil) : String
     mapped = @@bound_prefix.reduce(text) do |carried, (name, qualified)|
       # Recorded where the name is *met* rather than where the text changed. A
       # class root needs no rewriting — the consumer names its types exactly as
       # it declares them — so `mapped != carried` would have said "this
       # boundary is not depended on" of every one of them, and the import edge
       # that reads off this went missing.
-      replace_on_boundary(carried, name, trailing_name_ends: true) do
+      replace_on_boundary(carried, name, trailing_name_ends: true, anchors: anchors) do
         @@bound_used << @@bound_module[name]
         qualified
       end
@@ -2913,7 +2980,7 @@ module Iyi
   end
 
   private def self.map_names(signature : IyiMod::Signature) : IyiMod::Signature
-    IyiMod::Signature.new(
+    changed = IyiMod::Signature.new(
       name: signature.name,
       receiver: signature.receiver,
       parameters: signature.parameters.map { |parameter| map_names parameter },
@@ -2922,6 +2989,8 @@ module Iyi
       free_variables: signature.free_variables,
       required: signature.required,
     )
+    changed.diagnostic_origin = signature.diagnostic_origin
+    changed
   end
 
   private def self.map_names_declaration(declaration : IyiMod::TypeDecl,
@@ -2935,7 +3004,7 @@ module Iyi
       methods: begin
         ordinals = IyiMod.mono_body_ordinals(declaration.methods)
         declaration.methods.map_with_index do |signature, index|
-          rekey_body(path, signature, map_names(signature), ordinals[index]) { |body| map_names body }
+          rekey_body(path, signature, map_names(signature), ordinals[index]) { |body, anchors| map_names(body, anchors) }
         end
       end,
       types: declaration.types.map { |nested| map_names_declaration nested, "#{path}::#{nested.name}" },
@@ -3222,6 +3291,7 @@ module Iyi
   # The bodies a generic's methods travel as, keyed the way the reader looks
   # them up. Reset per run with everything else this file accumulates.
   @@mono_bodies = {} of String => String
+  @@diagnostic_bodies = {} of String => {String, Array(DiagnosticAnchor)}
 
   # A generic type: its parameters, its fields, and its methods with bodies.
   #
@@ -3301,9 +3371,11 @@ module Iyi
           required: method.abstract_def,
           visibility: method.private_def ? "private" : "",
         )
+        signature.diagnostic_origin = method.diagnostic_def.try(&.diagnostic_origin)
         ordinal = signatures.count { |seen| IyiMod.mono_body_key("", seen) == IyiMod.mono_body_key("", signature) }
         signatures << signature
         @@mono_bodies[IyiMod.mono_body_key(container, signature, ordinal)] = travelling_body(body) unless method.abstract_def
+        record_bind_diagnostic_body(container, signature, method, body) unless method.abstract_def
       end
     end
 
@@ -3536,8 +3608,20 @@ module Iyi
       next unless File.file?(path)
       parser = program.new_parser(File.read(path))
       parser.filename = path
+      parser.diagnostic_source_file = path if program.diagnostic_capture
       flat_expressions(parser.parse).each do |node|
-        funs << node.to_s if node.is_a?(FunDef)
+        if node.is_a?(FunDef)
+          if program.diagnostic_capture
+            output = IO::Memory.new
+            anchors = [] of DiagnosticAnchor
+            node.to_s(output, diagnostic_anchors: anchors)
+            text = output.to_s
+            program.record_top_fun_diagnostic(text, anchors)
+            funs << text
+          else
+            funs << node.to_s
+          end
+        end
       end
     end
     funs
@@ -3553,6 +3637,7 @@ module Iyi
     source = File.read(path)
     parser = program.new_parser(source)
     parser.filename = path
+    parser.diagnostic_source_file = path if program.diagnostic_capture
     nodes = parser.parse
 
     lines = [] of String
@@ -3896,6 +3981,7 @@ module Iyi
           free_variables: method.free_vars,
           required: method.abstract_def,
         )
+        signature.diagnostic_origin = method.diagnostic_def.try(&.diagnostic_origin)
         # The ordinal is the count of identical signatures already written,
         # which is what tells a redefinition from the definition it replaced.
         # See `IyiMod.mono_body_key`.
@@ -3904,6 +3990,7 @@ module Iyi
         if carries_body && body
           key = IyiMod.mono_body_key(name, signature, ordinal)
           @@mono_bodies[key] = travelling_body(body)
+          record_bind_diagnostic_body(name, signature, method, body)
           @@travelling << key
         end
       end
@@ -3978,8 +4065,10 @@ module Iyi
         free_variables: method.free_vars,
         required: false,
       )
+      signature.diagnostic_origin = method.diagnostic_def.try(&.diagnostic_origin)
       added << signature
       @@mono_bodies[IyiMod.mono_body_key(name, signature)] = travelling_body(body)
+      record_bind_diagnostic_body(name, signature, method, body)
     end
 
     added
@@ -4083,7 +4172,12 @@ module Iyi
         # The receiver the far side will read, which is what `already` is keyed
         # on: a `def self.` is matched on the metaclass and carries no receiver
         # of its own.
-        method = method.copy_with(receiver: "self") if on_metaclass && method.receiver.empty?
+        if on_metaclass && method.receiver.empty?
+          original = method
+          method = method.copy_with(receiver: "self")
+          method.diagnostic_def = original.diagnostic_def
+          method.diagnostic_body = original.diagnostic_body
+        end
         next if already.includes?(key.call(method))
         pool << method
       end
@@ -4194,10 +4288,12 @@ module Iyi
           # name R-2 would have had to check.
           visibility: "private",
         )
+        signature.diagnostic_origin = method.diagnostic_def.try(&.diagnostic_origin)
         added << signature
         body = method.body
         if body
           @@mono_bodies[IyiMod.mono_body_key(name, signature)] = travelling_body(body)
+          record_bind_diagnostic_body(name, signature, method, body)
           reach << body
         end
       end
@@ -4258,7 +4354,9 @@ module Iyi
       methods: declaration.methods.map do |signature|
         next signature unless signature.name == "new" && signature.receiver == "self"
         next signature unless signature.return_type == name
-        signature.copy_with(return_type: "self")
+        changed = signature.copy_with(return_type: "self")
+        changed.diagnostic_origin = signature.diagnostic_origin
+        changed
       end,
       types: nested,
     )
@@ -4442,7 +4540,7 @@ module Iyi
                   else
                     variable.iyi_initialiser_anchors || raise "bound class variable initializer lacks diagnostic anchors"
                   end
-        type.program.record_class_var_diagnostic(owner, name, initialiser, anchors)
+        type.program.record_class_var_diagnostic(type.to_s(generic_args: false), name, initialiser, anchors)
       end
       class_vars << IyiMod::ClassVarDecl.new(name, written, initialiser, annotations)
     end
@@ -5061,8 +5159,10 @@ module Iyi
         free_variables: method.free_vars,
         required: false,
       )
+      signature.diagnostic_origin = method.diagnostic_def.try(&.diagnostic_origin)
       methods << signature
       @@mono_bodies[IyiMod.mono_body_key("::#{type}", signature)] = travelling_body(body)
+      record_bind_diagnostic_body("::#{type}", signature, method, body)
     end
 
     return nil if fields.empty? && defaulted.empty? && methods.empty?
@@ -5301,7 +5401,7 @@ module Iyi
       end
     end
 
-    BindMethod.new(
+    method = BindMethod.new(
       owner: owner.to_s,
       name: a_def.name,
       verdict: verdict,
@@ -5402,6 +5502,13 @@ module Iyi
         end
       end || (a_def.block_arity ? "&" : ""),
     )
+    if owner.program.diagnostic_capture
+      method.diagnostic_def = a_def
+      if origin = a_def.diagnostic_origin
+        method.diagnostic_body = owner.program.diagnostic_def_bodies[origin]?
+      end
+    end
+    method
   end
 
   # Whether what this method *is* depends on the caller, so that its body is
