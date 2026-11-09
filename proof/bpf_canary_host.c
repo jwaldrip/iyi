@@ -245,7 +245,10 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format,
   va_end(args_copy);
 
   if (format &&
-      (strstr(format, "relo #") != NULL || strstr(format, "CO-RE") != NULL ||
+      ((strstr(format, "relo #") != NULL &&
+        (strstr(format, "candidate") != NULL ||
+         strstr(format, "applying") != NULL ||
+         strstr(format, "field") != NULL || strstr(format, "CO-RE") != NULL)) ||
        strstr(format, "bpf_core_relo") != NULL)) {
     g_core_relocation_seen = true;
   }
