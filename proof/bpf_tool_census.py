@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import re
 import selectors
 import stat
 import signal
@@ -253,6 +254,14 @@ def main():
         sys.exit("SIGCHLD must have its default disposition")
     if len(sys.argv) != 2:
         sys.exit("usage: bpf_tool_census.py OUTPUT_DIRECTORY")
+    checkout_sha = os.environ.get("GITHUB_SHA", "")
+    run_id = os.environ.get("GITHUB_RUN_ID", "")
+    run_attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "")
+    if re.fullmatch(r"[0-9a-fA-F]{40}", checkout_sha) is None:
+        sys.exit("GITHUB_SHA must be a 40-character hexadecimal commit ID")
+    for name, value in (("GITHUB_RUN_ID", run_id), ("GITHUB_RUN_ATTEMPT", run_attempt)):
+        if re.fullmatch(r"[0-9]+", value) is None or not any(c != "0" for c in value):
+            sys.exit(f"{name} must be a positive ASCII decimal integer")
     root = pathlib.Path(sys.argv[1]).resolve(strict=True)
     runner = pathlib.Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
     st = root.stat()
@@ -260,6 +269,8 @@ def main():
         sys.exit("census output directory must be runner-owned mode 0700 under RUNNER_TEMP")
     uname = os.uname()
     report = {"schema": "iyi-bpf-tool-census-v1", "strict_eligible": False,
+              "checkout_sha": checkout_sha, "run_id": run_id, "run_attempt": run_attempt,
+              "repository": os.environ.get("GITHUB_REPOSITORY"), "ref": os.environ.get("GITHUB_REF"),
               "image_os": os.environ.get("ImageOS"), "image_version": os.environ.get("ImageVersion"),
               "kernel": {"sysname": uname.sysname, "nodename": uname.nodename,
                          "release": uname.release, "version": uname.version,
