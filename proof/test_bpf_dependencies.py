@@ -20,6 +20,7 @@ import gzip
 import io
 import json
 import lzma
+import random
 import os
 import shutil
 import stat
@@ -88,6 +89,7 @@ class TestIndexAuthenticationOrder(unittest.TestCase):
             metadata["size"] = len(index)
             metadata["sha256"] = sha256_bytes(index)
             metadata["uncompressed_size"] = 5
+            metadata["uncompressed_sha256"] = sha256_bytes(b"alpha")
             headers = {"Origin": "Ubuntu", "Label": "Ubuntu", "Suite": "noble",
                        "Codename": "noble", "Version": "24.04", "Architectures": "amd64",
                        "Components": "main", "Date": base["freshness_policy"]["frozen_base_pocket_date"]}
@@ -114,9 +116,11 @@ class TestIndexAuthenticationOrder(unittest.TestCase):
                      patch.object(consumer, "parse_release_headers", return_value=(headers, checksums)), \
                      patch.object(consumer, "decompress_xz_bounded", wraps=decompress_xz_bounded) as decode, \
                      patch.object(consumer, "safe_extract_deb") as extract:
-                    with self.assertRaises(SecurityError):
+                    with self.assertRaises(SecurityError) as failure:
                         run_lock_consumer(str(lock), str(root / f"{mode}-prefix"), str(receipt),
                                           keyring_path=str(keyring))
+                    if mode == "bad_second":
+                        self.assertIn("Malformed XZ stream", str(failure.exception))
                     self.assertEqual(decode.call_count, 1 if mode == "bad_second" else 0)
                     extract.assert_not_called()
                     self.assertFalse(receipt.exists())
@@ -386,8 +390,7 @@ class TestBoundedResourceAllocations(unittest.TestCase):
         cases = (
             first + second[:-1], first + bytes(corrupt),
             first + b"garbage", first + second + b"garbage",
-            first + b"\0", first + b"\0\0", first + b"\0\0\0",
-            first + b"\0\0\0X", first + b"\0" * 4 + b"garbage",
+            first + b"\0" * 4 + b"garbage",
             b"\0" * 4, b"\0" * 4 + first,
             lzma.compress(b"alpha", format=lzma.FORMAT_ALONE),
         )
@@ -395,6 +398,36 @@ class TestBoundedResourceAllocations(unittest.TestCase):
             with self.subTest(encoded=encoded[-16:]):
                 with self.assertRaises(SecurityError):
                     decompress_xz_bounded(encoded, 9)
+        for padding in (b"\0", b"\0\0", b"\0\0\0", b"\0\0\0X"):
+            with self.subTest(padding=padding):
+                with self.assertRaisesRegex(SecurityError, "Invalid XZ stream padding length"):
+                    decompress_xz_bounded(first + padding, 5)
+
+    def test_xz_drains_buffered_large_output_across_input_chunks(self):
+        import proof.bpf_dependencies as consumer
+        large = b"A" * 150000
+        incompressible = random.Random(73).randbytes(100000)
+        encoded = lzma.compress(large) + lzma.compress(incompressible)
+        self.assertGreater(len(encoded), 65536)
+        original = lzma.LZMADecompressor
+        empty_drains = []
+
+        class TrackedDecoder:
+            def __init__(self, *args, **kwargs):
+                self.inner = original(*args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self.inner, name)
+
+            def decompress(self, chunk, **kwargs):
+                if not chunk:
+                    empty_drains.append(True)
+                return self.inner.decompress(chunk, **kwargs)
+
+        with patch.object(consumer.lzma, "LZMADecompressor", TrackedDecoder):
+            self.assertEqual(decompress_xz_bounded(encoded, len(large) + len(incompressible)),
+                             large + incompressible)
+        self.assertTrue(empty_drains, "expected needs_input=False buffered output drain")
 
     def test_xz_file_cumulative_bound_and_exact_length(self):
         first = lzma.compress(b"alpha")
