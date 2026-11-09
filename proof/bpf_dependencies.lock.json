@@ -31,7 +31,6 @@
     "frozen_base_pocket": "noble",
     "frozen_base_pocket_date": "Thu, 25 Apr 2024 15:10:33 UTC",
     "frozen_base_pocket_allow_historical": true,
-    "max_metadata_age_days": null,
     "require_exact_inrelease_hash": true,
     "require_exact_packages_hash": true,
     "require_exact_deb_hash": true
@@ -48,9 +47,11 @@
       "codename": "noble",
       "version": "24.04",
       "packages_xz": {
-        "path": "dists/noble/main/binary-amd64/Packages.xz",
+        "release_entry": "main/binary-amd64/Packages.xz",
+        "url_path": "dists/noble/main/binary-amd64/Packages.xz",
         "sha256": "2a6a199e1031a5c279cb346646d594993f35b1c03dd4a82aaa0323980dd92451",
         "size": 1401160,
+        "uncompressed_release_entry": "main/binary-amd64/Packages",
         "uncompressed_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5",
         "uncompressed_size": 7165069
       }
@@ -66,9 +67,11 @@
       "codename": "noble",
       "version": "24.04",
       "packages_xz": {
-        "path": "dists/noble-updates/main/binary-amd64/Packages.xz",
+        "release_entry": "main/binary-amd64/Packages.xz",
+        "url_path": "dists/noble-updates/main/binary-amd64/Packages.xz",
         "sha256": "da9aea4cb0409f0c4efd71510da8213a473853d6b8ae32a4faa496541a4cb3eb",
         "size": 1408484,
+        "uncompressed_release_entry": "main/binary-amd64/Packages",
         "uncompressed_sha256": "c9d803c2b20f4139619385a61aaca0124f61b264369d394159dc53efaa8f4476",
         "uncompressed_size": 7618808
       }
@@ -84,9 +87,11 @@
       "codename": "noble",
       "version": "24.04",
       "packages_xz": {
-        "path": "dists/noble-security/main/binary-amd64/Packages.xz",
+        "release_entry": "main/binary-amd64/Packages.xz",
+        "url_path": "dists/noble-security/main/binary-amd64/Packages.xz",
         "sha256": "8a57e6660dbd038fdbb996a3acd1eeb9bae43d3c04257d7d6070415b7d5bbbfd",
         "size": 1156512,
+        "uncompressed_release_entry": "main/binary-amd64/Packages",
         "uncompressed_sha256": "318a29cd526ba2d72386fb9041d1dfca5820d8da32ace17318cf7ea71b01dbe9",
         "uncompressed_size": 6294130
       }

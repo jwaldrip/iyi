@@ -3,15 +3,15 @@
 proof/test_bpf_dependencies.py: Focused unit and negative tests for authenticated BPF lock consumer.
 
 Verifies:
-1. Lock file structure and schema validation (missing fields, tampered values, bad URL).
+1. Lock file structure, schema, and exact 4-package closure (rejection of missing/extra packages or missing artifacts).
 2. URL validation and containment (scheme, hostname, query/credentials, path traversal).
-3. GPG signature verification (approved fingerprint, rejection of untrusted keys and signature errors).
-4. Release header and Packages.xz checksum verification.
-5. Decompression safety and bounds (rejection of oversized/bomb payloads).
-6. Packages index parsing and package record validation.
-7. Deb archive preflight inspection (rejection of non-ar, traversal paths, SUID/SGID, escaping links, device nodes).
-8. Safe extraction containment and non-root requirement.
-9. Post-extraction artifact presence and digest verification.
+3. Strict redirect rejection (preventing allowlist bypass).
+4. GPG signature verification (approved fingerprint, rejection of untrusted keys and signature errors).
+5. Release header parsing using pocket-relative entry namespace and index digest verification.
+6. Bounded streaming reads and decompression (preventing decompression bombs / resource exhaustion).
+7. Deb archive preflight inspection (rejection of non-ar, negative sizes, traversal paths, SUID/SGID, escaping links, device nodes, link-graph escapes).
+8. Safe extraction containment, symlink ancestor rejection, RUNNER_TEMP containment, and non-root requirement.
+9. Post-extraction artifact presence, link canonical containment, and exact 4-archive contract.
 """
 
 import io
@@ -37,8 +37,11 @@ from proof.bpf_dependencies import (
     DEFAULT_KEYRING_PATH,
     DEFAULT_KEYRING_SHA256,
     REQUIRED_PACKAGES,
+    REQUIRED_STATIC_ARCHIVES,
     SecurityError,
+    StrictNoRedirectHandler,
     decompress_payload,
+    decompress_xz_bounded,
     fetch_url,
     inspect_and_validate_deb_archive,
     parse_ar_members,
@@ -48,6 +51,7 @@ from proof.bpf_dependencies import (
     safe_extract_deb,
     sha256_bytes,
     sha256_file,
+    validate_prefix_containment,
     validate_url,
     verify_gpg_signature,
 )
@@ -76,6 +80,14 @@ class TestLockStructure(unittest.TestCase):
         packages = lock.get("packages", {})
         self.assertEqual(set(packages.keys()), REQUIRED_PACKAGES)
 
+        # Check that pockets use pocket-relative release_entry and separate url_path
+        pockets = lock.get("metadata_pockets", {})
+        for p_name, p_info in pockets.items():
+            pkg_xz = p_info.get("packages_xz", {})
+            self.assertEqual(pkg_xz.get("release_entry"), "main/binary-amd64/Packages.xz")
+            self.assertEqual(pkg_xz.get("uncompressed_release_entry"), "main/binary-amd64/Packages")
+            self.assertTrue(pkg_xz.get("url_path").startswith(f"dists/{p_name}/"))
+
         for pkg_name in REQUIRED_PACKAGES:
             pkg_info = packages[pkg_name]
             self.assertEqual(pkg_info["package"], pkg_name)
@@ -84,6 +96,7 @@ class TestLockStructure(unittest.TestCase):
             self.assertGreater(pkg_info["size"], 0)
             self.assertEqual(len(pkg_info["sha256"]), 64)
             self.assertTrue(pkg_info["required_artifacts"])
+            self.assertTrue(pkg_info["required_headers"])
             self.assertTrue(pkg_info["exclusion_rationale"])
 
 
@@ -116,6 +129,21 @@ class TestSecurityUrlValidation(unittest.TestCase):
         with self.assertRaises(SecurityError) as ctx:
             validate_url("https://snapshot.ubuntu.com/ubuntu/20261105T000000Z/dists/../../etc/passwd", "20261105T000000Z")
         self.assertIn("traversal", str(ctx.exception).lower())
+
+
+class TestStrictRedirectRejection(unittest.TestCase):
+    def test_redirect_handler_raises_security_error(self):
+        handler = StrictNoRedirectHandler()
+        with self.assertRaises(SecurityError) as ctx:
+            handler.redirect_request(
+                req=MagicMock(),
+                fp=None,
+                code=302,
+                msg="Found",
+                headers={},
+                newurl="https://snapshot.ubuntu.com/redirected"
+            )
+        self.assertIn("HTTP redirect 302", str(ctx.exception))
 
 
 class TestGpgVerification(unittest.TestCase):
@@ -206,13 +234,13 @@ class TestReleaseAndPackagesParsing(unittest.TestCase):
             "Architectures: amd64 arm64\n"
             "Components: main restricted\n"
             "SHA256:\n"
-            " 2a6a199e1031a5c279cb346646d594993f35b1c03dd4a82aaa0323980dd92451 1401160 dists/noble/main/binary-amd64/Packages.xz\n"
+            " 2a6a199e1031a5c279cb346646d594993f35b1c03dd4a82aaa0323980dd92451 1401160 main/binary-amd64/Packages.xz\n"
         )
         headers, sha256_files = parse_release_headers(release_text)
         self.assertEqual(headers.get("Origin"), "Ubuntu")
         self.assertEqual(headers.get("Codename"), "noble")
-        self.assertIn("dists/noble/main/binary-amd64/Packages.xz", sha256_files)
-        sha, sz = sha256_files["dists/noble/main/binary-amd64/Packages.xz"]
+        self.assertIn("main/binary-amd64/Packages.xz", sha256_files)
+        sha, sz = sha256_files["main/binary-amd64/Packages.xz"]
         self.assertEqual(sha, "2a6a199e1031a5c279cb346646d594993f35b1c03dd4a82aaa0323980dd92451")
         self.assertEqual(sz, 1401160)
 
@@ -239,6 +267,25 @@ class TestReleaseAndPackagesParsing(unittest.TestCase):
         self.assertIn("libelf-dev", pkgs)
         self.assertEqual(pkgs["libbpf-dev"]["Version"], "1:1.3.0-2build2")
         self.assertEqual(pkgs["libelf-dev"]["Size"], "68530")
+
+
+class TestBoundedResourceAllocations(unittest.TestCase):
+    def test_xz_decompression_bomb_rejection(self):
+        raw = b"A" * 10000
+        compressed = lzma.compress(raw)
+        with self.assertRaises(SecurityError) as ctx:
+            # Expected bound is smaller than raw output
+            decompress_xz_bounded(compressed, expected_uncompressed_size=100)
+        self.assertIn("exceeded bound", str(ctx.exception).lower())
+
+    def test_ar_parser_negative_size_rejection(self):
+        bad_ar = (
+            b"!<arch>\n"
+            b"test_file       0           0     0     100644  -60       `\n"
+        )
+        with self.assertRaises(SecurityError) as ctx:
+            parse_ar_members(bad_ar)
+        self.assertIn("negative ar member size", str(ctx.exception).lower())
 
 
 class TestDebPreflightAndArchiveValidation(unittest.TestCase):
@@ -273,7 +320,7 @@ class TestDebPreflightAndArchiveValidation(unittest.TestCase):
         out = bytearray(b"!<arch>\n")
 
         def add_ar_member(name, content):
-            header = f"{name:<16}{'0':<12}{'0':<6}{'0':<6}{'100644':<8}{len(content):<10}\x60\x0a"
+            header = f"{name:<16}{'0':<12}{'0':<6}{'0':<6}{'100644':<8}{len(content):<10}`\n"
             out.extend(header.encode("ascii"))
             out.extend(content)
             if len(content) % 2 == 1:
@@ -283,7 +330,6 @@ class TestDebPreflightAndArchiveValidation(unittest.TestCase):
         add_ar_member("control.tar.xz", ctrl_data)
         add_ar_member("data.tar.xz", data_tar)
         return bytes(out)
-
     def test_valid_deb_passes_preflight(self):
         ctrl = "Package: libbpf-dev\nVersion: 1:1.3.0-2build2\nArchitecture: amd64\n"
         members = [
@@ -368,27 +414,45 @@ class TestDebPreflightAndArchiveValidation(unittest.TestCase):
             inspect_and_validate_deb_archive(deb_bytes, "libbpf-dev", "1:1.3.0-2build2", "amd64")
         self.assertIn("Symlink escapes root", str(ctx.exception))
 
+    def test_symlink_graph_escape_fails(self):
+        # Test finding P1: relative links d -> ., d/e -> .. then d/e/file escaping prefix
+        ctrl = "Package: libbpf-dev\nVersion: 1:1.3.0-2build2\nArchitecture: amd64\n"
+        members = [
+            {"name": "d", "type": tarfile.SYMTYPE, "linkname": "."},
+            {"name": "d/e", "type": tarfile.SYMTYPE, "linkname": ".."},
+        ]
+        deb_bytes = self._create_mock_deb(ctrl, members)
+        with self.assertRaises(SecurityError) as ctx:
+            inspect_and_validate_deb_archive(deb_bytes, "libbpf-dev", "1:1.3.0-2build2", "amd64")
+        self.assertIn("Symlink escapes root", str(ctx.exception))
+
 
 class TestExtractionContainment(unittest.TestCase):
     def test_root_user_refusal(self):
         with patch("os.geteuid", return_value=0):
             with self.assertRaises(SecurityError) as ctx:
-                run_lock_consumer(
-                    lock_path="dummy.json",
-                    output_prefix="/tmp/prefix",
-                    receipt_path="/tmp/receipt.json"
-                )
+                validate_prefix_containment("/tmp/prefix")
             self.assertIn("Refusing execution as root", str(ctx.exception))
 
     def test_system_directory_refusal(self):
         for sys_dir in ["/", "/usr", "/etc", "/var", "/bin", "/lib", "/tmp"]:
             with self.assertRaises(SecurityError) as ctx:
-                run_lock_consumer(
-                    lock_path="dummy.json",
-                    output_prefix=sys_dir,
-                    receipt_path="/tmp/receipt.json"
-                )
+                validate_prefix_containment(sys_dir)
             self.assertIn("Refusing system directory", str(ctx.exception))
+
+    def test_symlinked_ancestor_refusal(self):
+        temp_dir = tempfile.mkdtemp(prefix="iyi_test_ancestor_")
+        try:
+            real_parent = os.path.join(temp_dir, "real")
+            os.makedirs(real_parent, mode=0o700)
+            sym_parent = os.path.join(temp_dir, "symlink")
+            os.symlink(real_parent, sym_parent)
+            prefix = os.path.join(sym_parent, "target")
+            with self.assertRaises(SecurityError) as ctx:
+                validate_prefix_containment(prefix)
+            self.assertIn("Ancestor directory is a symlink", str(ctx.exception))
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 class TestSafeExtractDeb(unittest.TestCase):
@@ -398,7 +462,7 @@ class TestSafeExtractDeb(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
-    def test_missing_dpkg_without_internal_flag_fails(self):
+    def test_missing_dpkg_fails_without_fallback(self):
         deb_file = os.path.join(self.temp_dir, "test.deb")
         with open(deb_file, "wb") as f:
             f.write(b"dummy")
@@ -406,10 +470,49 @@ class TestSafeExtractDeb(unittest.TestCase):
             safe_extract_deb(
                 deb_path=deb_file,
                 output_dir=self.temp_dir,
-                dpkg_deb_path="/nonexistent/dpkg-deb",
-                allow_internal_extractor=False
+                dpkg_deb_path="/nonexistent/dpkg-deb"
             )
         self.assertIn("dpkg-deb executable not found", str(ctx.exception))
+
+
+class TestExactContractEnforcement(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp(prefix="iyi_test_contract_")
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_extra_package_in_lock_rejected(self):
+        bad_lock = {
+            "schema_version": "iyi-bpf-dependency-lock-v1",
+            "snapshot": {
+                "snapshot_id": "20261105T000000Z",
+                "base_url": "https://snapshot.ubuntu.com/ubuntu/20261105T000000Z"
+            },
+            "trust_root": {
+                "keyring_default_path": "/nonexistent/keyring.gpg",
+                "keyring_sha256": DEFAULT_KEYRING_SHA256
+            },
+            "packages": {
+                "libbpf-dev": {},
+                "libelf-dev": {},
+                "libzstd-dev": {},
+                "zlib1g-dev": {},
+                "extra-unauthorized-pkg": {}
+            }
+        }
+        lock_file = os.path.join(self.temp_dir, "bad_lock.json")
+        with open(lock_file, "w", encoding="utf-8") as f:
+            json.dump(bad_lock, f)
+
+        with self.assertRaises(SecurityError) as ctx:
+            run_lock_consumer(
+                lock_path=lock_file,
+                output_prefix=os.path.join(self.temp_dir, "prefix"),
+                receipt_path=os.path.join(self.temp_dir, "receipt.json"),
+                check_only=True
+            )
+        self.assertIn("Lock packages must match exact required closure", str(ctx.exception))
 
 
 if __name__ == "__main__":
