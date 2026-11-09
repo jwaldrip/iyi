@@ -7,15 +7,29 @@
  * children from inspecting or hijacking tracer memory or descriptor state via
  * /proc/<tracer_pid>/{mem,fd}.
  *
- * Uses Linux ptrace with PTRACE_O_EXITKILL, PTRACE_O_TRACEEXEC,
- * PTRACE_O_TRACEFORK, PTRACE_O_TRACEVFORK, PTRACE_O_TRACECLONE,
- * PTRACE_O_TRACEEXIT.
+ * Uses Linux ptrace with:
+ *   PTRACE_O_EXITKILL
+ *   PTRACE_O_TRACEEXEC
+ *   PTRACE_O_TRACEFORK
+ *   PTRACE_O_TRACEVFORK
+ *   PTRACE_O_TRACECLONE
+ *   PTRACE_O_TRACEEXIT
+ *   PTRACE_O_TRACESYSGOOD
  *
- * At every successful execve(2)/execveat(2) stop (PTRACE_EVENT_EXEC), inspects
- * /proc/<tracee_pid>/exe to record the physical (st_dev, st_ino) identity,
- * mode, size, and timestamps before user-space code executes. Holds an O_PATH
- * descriptor to guarantee that unlinked temporary binaries remain pinned in the
- * kernel.
+ * Syscall Mediation & Evasion Resistance:
+ *   Intercepts syscalls via PTRACE_SYSCALL.
+ *   Disallows any ptrace(2) calls from untrusted children.
+ *   Inspects clone(2) and clone3(2) arguments; rejects CLONE_UNTRACED
+ * immediately. Fails closed on any unaccounted child exit, ptrace failure, or
+ * unexpected ECHILD.
+ *
+ * Raw Executable Capture (Contract Alignment with OriginTrustPlan & Observer):
+ *   Held O_PATH descriptors close at tracer exit prior to post-teardown
+ * observation. To guarantee that short-lived/unlinked executables (e.g.
+ * temporary run binaries) are preserved without zero-length placeholder
+ * substitutions, the tracer captures the full raw bytes via /proc/<pid>/exe at
+ * exec stop using O_RDONLY | O_NOATIME (preserving target st_atime). Computes
+ * SHA-256 digest and optionally persists raw bytes to --raw-capture-dir.
  *
  * Streams versioned NDJSON protocol ("iyi-exec-witness-v1") exclusively to a
  * private evidence file descriptor or file. Untrusted child receives isolated
@@ -23,6 +37,7 @@
  */
 
 #define _GNU_SOURCE
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
@@ -35,29 +50,42 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/uio.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
+extern int prctl(int option, ...);
+
 #if defined(__linux__)
+#include <elf.h>
 #include <sys/prctl.h>
 #include <sys/ptrace.h>
 #include <sys/syscall.h>
+#include <sys/user.h>
 
 static inline long linux_ptrace(int req, pid_t pid, void *addr, void *data) {
   extern long ptrace(int, ...);
   return ptrace(req, pid, addr, data);
 }
+
+#define STAT_ATIM_SEC(st) ((st).st_atim.tv_sec)
+#define STAT_ATIM_NSEC(st) ((st).st_atim.tv_nsec)
+#define STAT_MTIM_SEC(st) ((st).st_mtim.tv_sec)
+#define STAT_MTIM_NSEC(st) ((st).st_mtim.tv_nsec)
+#define STAT_CTIM_SEC(st) ((st).st_ctim.tv_sec)
+#define STAT_CTIM_NSEC(st) ((st).st_ctim.tv_nsec)
+
 #else
-extern int prctl(int option, ...);
+/* Non-Linux stub definitions for toolchains and editors */
 static inline long linux_ptrace(int req, pid_t pid, void *addr, void *data) {
   (void)req;
   (void)pid;
   (void)addr;
   (void)data;
-  return 0;
+  errno = ENOSYS;
+  return -1;
 }
-#endif
 
 #if defined(__APPLE__) || defined(__darwin__) || defined(__MACH__)
 #define STAT_ATIM_SEC(st) ((st).st_atimespec.tv_sec)
@@ -66,14 +94,6 @@ static inline long linux_ptrace(int req, pid_t pid, void *addr, void *data) {
 #define STAT_MTIM_NSEC(st) ((st).st_mtimespec.tv_nsec)
 #define STAT_CTIM_SEC(st) ((st).st_ctimespec.tv_sec)
 #define STAT_CTIM_NSEC(st) ((st).st_ctimespec.tv_nsec)
-#elif defined(_POSIX_C_SOURCE) && (_POSIX_C_SOURCE >= 200809L) &&              \
-    defined(__linux__)
-#define STAT_ATIM_SEC(st) ((st).st_atim.tv_sec)
-#define STAT_ATIM_NSEC(st) ((st).st_atim.tv_nsec)
-#define STAT_MTIM_SEC(st) ((st).st_mtim.tv_sec)
-#define STAT_MTIM_NSEC(st) ((st).st_mtim.tv_nsec)
-#define STAT_CTIM_SEC(st) ((st).st_ctim.tv_sec)
-#define STAT_CTIM_NSEC(st) ((st).st_ctim.tv_nsec)
 #else
 #define STAT_ATIM_SEC(st) ((st).st_atime)
 #define STAT_ATIM_NSEC(st) (0)
@@ -83,6 +103,8 @@ static inline long linux_ptrace(int req, pid_t pid, void *addr, void *data) {
 #define STAT_CTIM_NSEC(st) (0)
 #endif
 
+#endif
+
 #define PROTOCOL_VERSION "iyi-exec-witness-v1"
 #define MAX_TRACKED_PROCESSES 8192
 #define MAX_HELD_DESCRIPTORS 1024
@@ -90,6 +112,9 @@ static inline long linux_ptrace(int req, pid_t pid, void *addr, void *data) {
 /* Linux constant fallbacks */
 #ifndef O_PATH
 #define O_PATH 010000000
+#endif
+#ifndef O_NOATIME
+#define O_NOATIME 01000000
 #endif
 
 #ifndef __WALL
@@ -103,14 +128,23 @@ static inline long linux_ptrace(int req, pid_t pid, void *addr, void *data) {
 #ifndef PTRACE_TRACEME
 #define PTRACE_TRACEME 0
 #endif
+#ifndef PTRACE_PEEKDATA
+#define PTRACE_PEEKDATA 2
+#endif
 #ifndef PTRACE_CONT
 #define PTRACE_CONT 7
+#endif
+#ifndef PTRACE_SYSCALL
+#define PTRACE_SYSCALL 24
 #endif
 #ifndef PTRACE_SETOPTIONS
 #define PTRACE_SETOPTIONS 0x4200
 #endif
 #ifndef PTRACE_GETEVENTMSG
 #define PTRACE_GETEVENTMSG 0x4201
+#endif
+#ifndef PTRACE_GETREGSET
+#define PTRACE_GETREGSET 0x4204
 #endif
 
 #ifndef PTRACE_O_TRACESYSGOOD
@@ -167,6 +201,130 @@ static inline long linux_ptrace(int req, pid_t pid, void *addr, void *data) {
 #define PR_SET_DUMPABLE 4
 #endif
 
+#ifndef NT_PRSTATUS
+#define NT_PRSTATUS 1
+#endif
+
+#ifndef CLONE_UNTRACED
+#define CLONE_UNTRACED 0x00800000UL
+#endif
+
+/* -------------------------------------------------------------------------
+ * Standard Compact SHA-256 (FIPS 180-4) Implementation
+ * ------------------------------------------------------------------------- */
+typedef struct {
+  uint32_t state[8];
+  uint64_t count;
+  uint8_t buffer[64];
+} SHA256_CTX;
+
+static inline uint32_t rotr32(uint32_t x, uint32_t n) {
+  return (x >> n) | (x << (32 - n));
+}
+
+static void sha256_transform(uint32_t state[8], const uint8_t data[64]) {
+  static const uint32_t K[64] = {
+      0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1,
+      0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+      0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786,
+      0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+      0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147,
+      0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+      0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+      0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+      0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a,
+      0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+      0x90befffa, 0xa4506ceb, 0x0bef9a3f, 0x47b5481d};
+  uint32_t W[64];
+  for (int i = 0; i < 16; i++) {
+    W[i] = ((uint32_t)data[i * 4] << 24) | ((uint32_t)data[i * 4 + 1] << 16) |
+           ((uint32_t)data[i * 4 + 2] << 8) | ((uint32_t)data[i * 4 + 3]);
+  }
+  for (int i = 16; i < 64; i++) {
+    uint32_t s0 =
+        rotr32(W[i - 15], 7) ^ rotr32(W[i - 15], 18) ^ (W[i - 15] >> 3);
+    uint32_t s1 =
+        rotr32(W[i - 2], 17) ^ rotr32(W[i - 2], 19) ^ (W[i - 2] >> 10);
+    W[i] = W[i - 16] + s0 + W[i - 7] + s1;
+  }
+  uint32_t a = state[0], b = state[1], c = state[2], d = state[3];
+  uint32_t e = state[4], f = state[5], g = state[6], h = state[7];
+  for (int i = 0; i < 64; i++) {
+    uint32_t S1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
+    uint32_t ch = (e & f) ^ ((~e) & g);
+    uint32_t temp1 = h + S1 + ch + K[i] + W[i];
+    uint32_t S0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
+    uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+    uint32_t temp2 = S0 + maj;
+    h = g;
+    g = f;
+    f = e;
+    e = d + temp1;
+    d = c;
+    c = b;
+    b = a;
+    a = temp1 + temp2;
+  }
+  state[0] += a;
+  state[1] += b;
+  state[2] += c;
+  state[3] += d;
+  state[4] += e;
+  state[5] += f;
+  state[6] += g;
+  state[7] += h;
+}
+
+static void sha256_init(SHA256_CTX *ctx) {
+  ctx->state[0] = 0x6a09e667;
+  ctx->state[1] = 0xbb67ae85;
+  ctx->state[2] = 0x3c6ef372;
+  ctx->state[3] = 0xa54ff53a;
+  ctx->state[4] = 0x510e527f;
+  ctx->state[5] = 0x9b05688c;
+  ctx->state[6] = 0x1f83d9ab;
+  ctx->state[7] = 0x5be0cd19;
+  ctx->count = 0;
+}
+
+static void sha256_update(SHA256_CTX *ctx, const uint8_t *data, size_t len) {
+  size_t index = (size_t)(ctx->count & 0x3f);
+  ctx->count += len;
+  size_t part_len = 64 - index;
+  size_t i = 0;
+  if (len >= part_len) {
+    memcpy(&ctx->buffer[index], data, part_len);
+    sha256_transform(ctx->state, ctx->buffer);
+    for (i = part_len; i + 63 < len; i += 64) {
+      sha256_transform(ctx->state, &data[i]);
+    }
+    index = 0;
+  }
+  memcpy(&ctx->buffer[index], &data[i], len - i);
+}
+
+static void sha256_final(SHA256_CTX *ctx, uint8_t hash[32]) {
+  uint8_t bits[8];
+  uint64_t total_bits = ctx->count * 8;
+  for (int i = 0; i < 8; i++) {
+    bits[7 - i] = (uint8_t)((total_bits >> (i * 8)) & 0xff);
+  }
+  size_t index = (size_t)(ctx->count & 0x3f);
+  size_t pad_len = (index < 56) ? (56 - index) : (120 - index);
+  static const uint8_t padding[64] = {0x80};
+  sha256_update(ctx, padding, pad_len);
+  sha256_update(ctx, bits, 8);
+  for (int i = 0; i < 8; i++) {
+    hash[i * 4] = (uint8_t)((ctx->state[i] >> 24) & 0xff);
+    hash[i * 4 + 1] = (uint8_t)((ctx->state[i] >> 16) & 0xff);
+    hash[i * 4 + 2] = (uint8_t)((ctx->state[i] >> 8) & 0xff);
+    hash[i * 4 + 3] = (uint8_t)(ctx->state[i] & 0xff);
+  }
+}
+
+/* -------------------------------------------------------------------------
+ * Process & Witness State
+ * ------------------------------------------------------------------------- */
 typedef struct {
   pid_t pid;
   pid_t ppid;
@@ -175,6 +333,7 @@ typedef struct {
   bool is_thread;
   bool active;
   bool exited;
+  bool in_syscall;
   int exit_status;
 } ProcessEntry;
 
@@ -187,6 +346,7 @@ static int g_held_fds[MAX_HELD_DESCRIPTORS];
 static size_t g_held_fd_count = 0;
 
 static int g_evidence_fd = -1;
+static char g_raw_capture_dir[PATH_MAX] = {0};
 static uint64_t g_total_exec_events = 0;
 static uint64_t g_total_processes_spawned = 0;
 static pid_t g_root_pid = -1;
@@ -203,13 +363,112 @@ static uint64_t get_time_ns(void) {
   return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 }
 
+static void kill_all_tracees(void) {
+  if (g_root_pid > 0) {
+    kill(g_root_pid, SIGKILL);
+  }
+  for (size_t i = 0; i < g_process_count; i++) {
+    if (g_processes[i].active && g_processes[i].pid > 0) {
+      kill(g_processes[i].pid, SIGKILL);
+    }
+  }
+}
+
+static bool write_all(int fd, const void *buf, size_t count) {
+  const char *ptr = (const char *)buf;
+  size_t remaining = count;
+  while (remaining > 0) {
+    ssize_t written = write(fd, ptr, remaining);
+    if (written < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      return false;
+    }
+    if (written == 0) {
+      errno = EPIPE;
+      return false;
+    }
+    ptr += (size_t)written;
+    remaining -= (size_t)written;
+  }
+  return true;
+}
+
 static void close_all_non_standard_fds(int keep_fd1, int keep_fd2) {
+  /*
+   * Executed strictly in child process before execve.
+   * Preserves standard fds 0, 1, 2 and explicitly kept fds (keep_fd1,
+   * keep_fd2). Closes all other descriptors to prevent control/evidence channel
+   * theft.
+   */
 #if defined(__linux__) && defined(SYS_close_range)
-  if (syscall(SYS_close_range, 3, (unsigned int)~0U, 0) == 0) {
-    return;
+  int k1 = keep_fd1;
+  int k2 = keep_fd2;
+  if (k1 > k2) {
+    int tmp = k1;
+    k1 = k2;
+    k2 = tmp;
+  }
+
+  if (k1 < 3 && k2 < 3) {
+    if (syscall(SYS_close_range, 3, (unsigned int)~0U, 0) == 0) {
+      return;
+    }
+  } else if (k1 >= 3 && k2 < 3) {
+    bool ok = true;
+    if (k1 > 3) {
+      if (syscall(SYS_close_range, 3, (unsigned int)(k1 - 1), 0) != 0) {
+        ok = false;
+      }
+    }
+    if (syscall(SYS_close_range, (unsigned int)(k1 + 1), (unsigned int)~0U,
+                0) != 0) {
+      ok = false;
+    }
+    if (ok) {
+      return;
+    }
+  } else if (k1 >= 3 && k2 >= 3) {
+    bool ok = true;
+    if (k1 > 3) {
+      if (syscall(SYS_close_range, 3, (unsigned int)(k1 - 1), 0) != 0) {
+        ok = false;
+      }
+    }
+    if (k2 > k1 + 1) {
+      if (syscall(SYS_close_range, (unsigned int)(k1 + 1),
+                  (unsigned int)(k2 - 1), 0) != 0) {
+        ok = false;
+      }
+    }
+    if (syscall(SYS_close_range, (unsigned int)(k2 + 1), (unsigned int)~0U,
+                0) != 0) {
+      ok = false;
+    }
+    if (ok) {
+      return;
+    }
   }
 #endif
-  /* Fallback descriptor cleanup */
+
+  DIR *dir = opendir("/proc/self/fd");
+  if (dir != NULL) {
+    int dfd = dirfd(dir);
+    struct dirent *de;
+    while ((de = readdir(dir)) != NULL) {
+      if (de->d_name[0] == '.') {
+        continue;
+      }
+      int fd = atoi(de->d_name);
+      if (fd >= 3 && fd != dfd && fd != keep_fd1 && fd != keep_fd2) {
+        close(fd);
+      }
+    }
+    closedir(dir);
+    return;
+  }
+
   for (int fd = 3; fd < 4096; fd++) {
     if (fd == keep_fd1 || fd == keep_fd2) {
       continue;
@@ -254,14 +513,20 @@ static void escape_json_string(const char *in, char *out, size_t out_max) {
 }
 
 static void emit_evidence_record(const char *json_line) {
-  if (g_evidence_fd < 0) {
+  if (g_evidence_fd < 0 || g_failed) {
     return;
   }
   size_t len = strlen(json_line);
-  ssize_t written = write(g_evidence_fd, json_line, len);
-  (void)written;
-  written = write(g_evidence_fd, "\n", 1);
-  (void)written;
+  if (!write_all(g_evidence_fd, json_line, len) ||
+      !write_all(g_evidence_fd, "\n", 1)) {
+    int err = errno;
+    g_failed = true;
+    snprintf(g_failure_reason, sizeof(g_failure_reason),
+             "EVIDENCE_WRITE_FAILED_ERRNO_%d", err);
+    fprintf(stderr, "hosted_exec_witness: fatal evidence write failure: %s\n",
+            strerror(err));
+    kill_all_tracees();
+  }
 }
 
 static ProcessEntry *find_process(pid_t pid) {
@@ -279,6 +544,7 @@ static ProcessEntry *add_process(pid_t pid, pid_t ppid, uint64_t parent_seq,
     snprintf(g_failure_reason, sizeof(g_failure_reason),
              "TRACKED_PROCESS_LIMIT_EXCEEDED");
     g_failed = true;
+    kill_all_tracees();
     return NULL;
   }
   uint64_t seq = ++g_seq_counter;
@@ -290,6 +556,7 @@ static ProcessEntry *add_process(pid_t pid, pid_t ppid, uint64_t parent_seq,
   e->is_thread = is_thread;
   e->active = true;
   e->exited = false;
+  e->in_syscall = false;
   e->exit_status = 0;
   g_active_processes++;
   g_total_processes_spawned++;
@@ -340,6 +607,114 @@ static void emit_session_end(void) {
   emit_evidence_record(buf);
 }
 
+static bool check_syscall_entry(pid_t pid, char *err_buf, size_t err_buf_len) {
+#if defined(__linux__) && (defined(__x86_64__) || defined(__aarch64__))
+  struct iovec iov;
+#if defined(__x86_64__)
+  struct user_regs_struct regs;
+  iov.iov_base = &regs;
+  iov.iov_len = sizeof(regs);
+  if (linux_ptrace(PTRACE_GETREGSET, pid, (void *)(intptr_t)NT_PRSTATUS,
+                   &iov) != 0) {
+    snprintf(err_buf, err_buf_len, "PTRACE_GETREGSET_FAILED_%d", errno);
+    return false;
+  }
+  long sys_no = (long)regs.orig_rax;
+  if (sys_no == 101) { /* __NR_ptrace */
+    snprintf(err_buf, err_buf_len, "DISALLOWED_PTRACE_SYSCALL");
+    return false;
+  }
+  if (sys_no == 56) { /* __NR_clone */
+    unsigned long flags = (unsigned long)regs.rdi;
+    if (flags & CLONE_UNTRACED) {
+      snprintf(err_buf, err_buf_len, "CLONE_UNTRACED_ATTEMPT");
+      return false;
+    }
+  }
+  if (sys_no == 435) { /* __NR_clone3 */
+    unsigned long uargs_ptr = (unsigned long)regs.rdi;
+    if (uargs_ptr != 0) {
+      errno = 0;
+      long raw_flags =
+          linux_ptrace(PTRACE_PEEKDATA, pid, (void *)uargs_ptr, NULL);
+      if (errno == 0) {
+        unsigned long flags = (unsigned long)raw_flags;
+        if (flags & CLONE_UNTRACED) {
+          snprintf(err_buf, err_buf_len, "CLONE3_UNTRACED_ATTEMPT");
+          return false;
+        }
+      } else {
+        snprintf(err_buf, err_buf_len, "CLONE3_PEEKDATA_FAILED_%d", errno);
+        return false;
+      }
+    }
+  }
+#elif defined(__aarch64__)
+  struct user_pt_regs regs;
+  iov.iov_base = &regs;
+  iov.iov_len = sizeof(regs);
+  if (linux_ptrace(PTRACE_GETREGSET, pid, (void *)(intptr_t)NT_PRSTATUS,
+                   &iov) != 0) {
+    snprintf(err_buf, err_buf_len, "PTRACE_GETREGSET_FAILED_%d", errno);
+    return false;
+  }
+  long sys_no = (long)regs.regs[8];
+  if (sys_no == 117) { /* __NR_ptrace */
+    snprintf(err_buf, err_buf_len, "DISALLOWED_PTRACE_SYSCALL");
+    return false;
+  }
+  if (sys_no == 220) { /* __NR_clone */
+    unsigned long flags = (unsigned long)regs.regs[0];
+    if (flags & CLONE_UNTRACED) {
+      snprintf(err_buf, err_buf_len, "CLONE_UNTRACED_ATTEMPT");
+      return false;
+    }
+  }
+  if (sys_no == 435) { /* __NR_clone3 */
+    unsigned long uargs_ptr = (unsigned long)regs.regs[0];
+    if (uargs_ptr != 0) {
+      errno = 0;
+      long raw_flags =
+          linux_ptrace(PTRACE_PEEKDATA, pid, (void *)uargs_ptr, NULL);
+      if (errno == 0) {
+        unsigned long flags = (unsigned long)raw_flags;
+        if (flags & CLONE_UNTRACED) {
+          snprintf(err_buf, err_buf_len, "CLONE3_UNTRACED_ATTEMPT");
+          return false;
+        }
+      } else {
+        snprintf(err_buf, err_buf_len, "CLONE3_PEEKDATA_FAILED_%d", errno);
+        return false;
+      }
+    }
+  }
+#endif
+#else
+  (void)pid;
+  (void)err_buf;
+  (void)err_buf_len;
+#endif
+  return true;
+}
+
+static bool resume_tracee(pid_t pid, int sig) {
+  if (linux_ptrace(PTRACE_SYSCALL, pid, NULL, (void *)(intptr_t)sig) < 0) {
+    int err = errno;
+    if (err != ESRCH) {
+      g_failed = true;
+      snprintf(g_failure_reason, sizeof(g_failure_reason),
+               "PTRACE_SYSCALL_FAILED_PID_%d_ERRNO_%d", (int)pid, err);
+      fprintf(
+          stderr,
+          "hosted_exec_witness: ptrace PTRACE_SYSCALL failed on pid %d: %s\n",
+          (int)pid, strerror(err));
+      kill_all_tracees();
+      return false;
+    }
+  }
+  return true;
+}
+
 static void handle_exec_event(pid_t pid) {
   ProcessEntry *proc = find_process(pid);
   uint64_t seq = proc ? proc->seq_id : 0;
@@ -370,6 +745,58 @@ static void handle_exec_event(pid_t pid) {
     if (held_fd >= 0) {
       held_idx = (int)g_held_fd_count;
       g_held_fds[g_held_fd_count++] = held_fd;
+    }
+  }
+
+  /*
+   * Capture raw executable bytes via /proc/<pid>/exe with O_RDONLY | O_NOATIME
+   * (preserving st_atime on the target executable).
+   * Computes SHA-256 digest and optionally saves raw bytes to
+   * g_raw_capture_dir.
+   */
+  char sha256_hex[65] = {0};
+  int64_t actual_bytes_captured = 0;
+  bool capture_ok = false;
+
+  int raw_fd = open(proc_exe, O_RDONLY | O_NOATIME | O_CLOEXEC);
+  if (raw_fd < 0 && (errno == EPERM || errno == EACCES)) {
+    /* Fallback for read-only system images if O_NOATIME is refused */
+    raw_fd = open(proc_exe, O_RDONLY | O_CLOEXEC);
+  }
+
+  if (raw_fd >= 0) {
+    SHA256_CTX sha_ctx;
+    sha256_init(&sha_ctx);
+    uint8_t read_buf[16384];
+    ssize_t bytes_n;
+
+    int save_fd = -1;
+    if (g_raw_capture_dir[0] != '\0') {
+      char save_path[PATH_MAX];
+      snprintf(save_path, sizeof(save_path), "%s/%" PRIu64 "_%" PRIu64 ".bin",
+               g_raw_capture_dir, (uint64_t)st.st_dev, (uint64_t)st.st_ino);
+      save_fd = open(save_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    }
+
+    while ((bytes_n = read(raw_fd, read_buf, sizeof(read_buf))) > 0) {
+      sha256_update(&sha_ctx, read_buf, (size_t)bytes_n);
+      actual_bytes_captured += bytes_n;
+      if (save_fd >= 0) {
+        write_all(save_fd, read_buf, (size_t)bytes_n);
+      }
+    }
+    if (save_fd >= 0) {
+      close(save_fd);
+    }
+    close(raw_fd);
+
+    if (bytes_n >= 0) {
+      uint8_t digest[32];
+      sha256_final(&sha_ctx, digest);
+      for (int i = 0; i < 32; i++) {
+        snprintf(sha256_hex + i * 2, 3, "%02x", digest[i]);
+      }
+      capture_ok = true;
     }
   }
 
@@ -431,19 +858,51 @@ static void handle_exec_event(pid_t pid) {
       ",\"st_dev\":%" PRIu64 ",\"st_ino\":%" PRIu64
       ",\"st_mode\":%u,\"st_size\":%" PRIi64 ",\"st_uid\":%u,\"st_gid\":%u"
       ",\"st_atim_ns\":%" PRIu64 ",\"st_mtim_ns\":%" PRIu64
-      ",\"st_ctim_ns\":%" PRIu64 ",\"held_fd_index\":%d,\"cmdline\":%s}",
+      ",\"st_ctim_ns\":%" PRIu64
+      ",\"held_fd_index\":%d,\"sha256\":\"%s\",\"size_bytes\":%" PRIi64
+      ",\"raw_captured\":%s,\"cmdline\":%s}",
       seq, get_time_ns(), (int)pid, (int)ppid, escaped_path,
       (uint64_t)st.st_dev, (uint64_t)st.st_ino, (unsigned int)st.st_mode,
       (int64_t)st.st_size, (unsigned int)st.st_uid, (unsigned int)st.st_gid,
-      atim_ns, mtim_ns, ctim_ns, held_idx, cmd_json);
+      atim_ns, mtim_ns, ctim_ns, held_idx, sha256_hex[0] ? sha256_hex : "",
+      actual_bytes_captured, capture_ok ? "true" : "false", cmd_json);
 
   emit_evidence_record(buf);
   g_total_exec_events++;
+
+  /* If raw capture directory was requested and capture succeeded, emit
+   * raw_exec_capture record */
+  if (capture_ok && g_raw_capture_dir[0] != '\0') {
+    char cap_buf[1024];
+    char cap_file[128];
+    snprintf(cap_file, sizeof(cap_file), "%" PRIu64 "_%" PRIu64 ".bin",
+             (uint64_t)st.st_dev, (uint64_t)st.st_ino);
+    snprintf(cap_buf, sizeof(cap_buf),
+             "{\"event\":\"raw_exec_capture\",\"seq_id\":%" PRIu64
+             ",\"timestamp_ns\":%" PRIu64 ",\"st_dev\":%" PRIu64
+             ",\"st_ino\":%" PRIu64 ",\"exe_path\":\"%s\""
+             ",\"size_bytes\":%" PRIi64
+             ",\"sha256\":\"%s\",\"captured_file\":\"%s\"}",
+             seq, get_time_ns(), (uint64_t)st.st_dev, (uint64_t)st.st_ino,
+             escaped_path, actual_bytes_captured, sha256_hex, cap_file);
+    emit_evidence_record(cap_buf);
+  }
 }
 
 static void handle_exit_event(pid_t pid) {
   unsigned long raw_status = 0;
-  linux_ptrace(PTRACE_GETEVENTMSG, pid, 0, &raw_status);
+  if (linux_ptrace(PTRACE_GETEVENTMSG, pid, 0, &raw_status) < 0) {
+    int err = errno;
+    g_failed = true;
+    snprintf(g_failure_reason, sizeof(g_failure_reason),
+             "GETEVENTMSG_EXIT_FAILED_PID_%d_ERRNO_%d", (int)pid, err);
+    fprintf(
+        stderr,
+        "hosted_exec_witness: ptrace GETEVENTMSG exit failed on pid %d: %s\n",
+        (int)pid, strerror(err));
+    kill_all_tracees();
+    return;
+  }
 
   ProcessEntry *proc = find_process(pid);
   uint64_t seq = proc ? proc->seq_id : 0;
@@ -459,6 +918,12 @@ static void handle_exit_event(pid_t pid) {
 }
 
 int main(int argc, char **argv) {
+#ifndef __linux__
+  fprintf(stderr, "hosted_exec_witness: Fatal: non-Linux platforms are "
+                  "strictly unsupported.\n");
+  return 255;
+#endif
+
   int evidence_fd = -1;
   const char *evidence_file = NULL;
   const char *launch_binding = "{}";
@@ -469,6 +934,8 @@ int main(int argc, char **argv) {
       evidence_fd = atoi(argv[++i]);
     } else if (strcmp(argv[i], "--evidence-file") == 0 && i + 1 < argc) {
       evidence_file = argv[++i];
+    } else if (strcmp(argv[i], "--raw-capture-dir") == 0 && i + 1 < argc) {
+      strncpy(g_raw_capture_dir, argv[++i], sizeof(g_raw_capture_dir) - 1);
     } else if (strcmp(argv[i], "--launch-binding") == 0 && i + 1 < argc) {
       launch_binding = argv[++i];
     } else if (strcmp(argv[i], "--") == 0) {
@@ -480,7 +947,8 @@ int main(int argc, char **argv) {
   if (cmd_index < 0 || cmd_index >= argc) {
     fprintf(stderr,
             "Usage: %s [--evidence-fd <FD>] [--evidence-file <FILE>] "
-            "[--launch-binding <JSON>] -- <CMD> [ARGS...]\n",
+            "[--raw-capture-dir <DIR>] [--launch-binding <JSON>] -- <CMD> "
+            "[ARGS...]\n",
             argv[0]);
     return 2;
   }
@@ -595,7 +1063,7 @@ int main(int argc, char **argv) {
     snprintf(g_failure_reason, sizeof(g_failure_reason),
              "INITIAL_CHILD_STOP_FAILED");
     g_failed = true;
-    kill(child_pid, SIGKILL);
+    kill_all_tracees();
     emit_session_end();
     return 1;
   }
@@ -613,7 +1081,7 @@ int main(int argc, char **argv) {
             strerror(errno));
     snprintf(g_failure_reason, sizeof(g_failure_reason), "SETOPTIONS_FAILED");
     g_failed = true;
-    kill(child_pid, SIGKILL);
+    kill_all_tracees();
     emit_session_end();
     return 1;
   }
@@ -621,25 +1089,20 @@ int main(int argc, char **argv) {
   /* Register root process */
   add_process(child_pid, getpid(), 0, false, "initial");
 
-  /* Release child by writing to barrier pipe and resuming it */
+  /* Release child by writing to barrier pipe and resuming it via PTRACE_SYSCALL
+   */
   char go_byte = 'G';
   ssize_t w_bar = write(barrier_pipe[1], &go_byte, 1);
   (void)w_bar;
   close(barrier_pipe[1]);
 
-  if (linux_ptrace(PTRACE_CONT, child_pid, NULL, 0) < 0) {
-    fprintf(stderr,
-            "hosted_exec_witness: initial ptrace(PTRACE_CONT) failed: %s\n",
-            strerror(errno));
-    snprintf(g_failure_reason, sizeof(g_failure_reason), "INITIAL_CONT_FAILED");
-    g_failed = true;
-    kill(child_pid, SIGKILL);
+  if (!resume_tracee(child_pid, 0)) {
     emit_session_end();
     return 1;
   }
 
   /* Tracer event loop */
-  while (g_active_processes > 0) {
+  while (g_active_processes > 0 && !g_failed) {
     int wait_status = 0;
     pid_t event_pid = waitpid(-1, &wait_status, __WALL);
     if (event_pid < 0) {
@@ -647,19 +1110,29 @@ int main(int argc, char **argv) {
         continue;
       }
       if (errno == ECHILD) {
-        /* All children have exited */
+        if (g_active_processes > 0) {
+          g_failed = true;
+          snprintf(g_failure_reason, sizeof(g_failure_reason),
+                   "ECHILD_WITH_ACTIVE_TRACEES_%zu", g_active_processes);
+          fprintf(stderr,
+                  "hosted_exec_witness: fatal: ECHILD while %zu active tracees "
+                  "remain unaccounted\n",
+                  g_active_processes);
+          kill_all_tracees();
+        }
         break;
       }
       snprintf(g_failure_reason, sizeof(g_failure_reason), "WAITPID_ERROR_%d",
                errno);
       g_failed = true;
+      kill_all_tracees();
       break;
     }
 
     ProcessEntry *proc = find_process(event_pid);
 
     if (WIFEXITED(wait_status) || WIFSIGNALED(wait_status)) {
-      if (proc) {
+      if (proc != NULL && proc->active) {
         proc->active = false;
         proc->exited = true;
         proc->exit_status = WIFEXITED(wait_status)
@@ -671,8 +1144,15 @@ int main(int argc, char **argv) {
           g_root_exit_code = proc->exit_status;
         }
       } else {
-        /* Unaccounted child exited */
-        g_active_processes--;
+        /* Unaccounted child exited - severe failure! */
+        g_failed = true;
+        snprintf(g_failure_reason, sizeof(g_failure_reason),
+                 "UNACCOUNTED_CHILD_EXIT_PID_%d", (int)event_pid);
+        fprintf(stderr,
+                "hosted_exec_witness: fatal: unaccounted child %d exited\n",
+                (int)event_pid);
+        kill_all_tracees();
+        break;
       }
       continue;
     }
@@ -681,42 +1161,92 @@ int main(int argc, char **argv) {
       int stop_sig = WSTOPSIG(wait_status);
       int event = (unsigned int)wait_status >> 16;
 
+      if (proc == NULL) {
+        /* Stopped child not tracked */
+        g_failed = true;
+        snprintf(g_failure_reason, sizeof(g_failure_reason),
+                 "UNACCOUNTED_STOPPED_CHILD_%d", (int)event_pid);
+        fprintf(stderr,
+                "hosted_exec_witness: fatal: unaccounted stopped child %d "
+                "(sig=%d)\n",
+                (int)event_pid, stop_sig);
+        kill_all_tracees();
+        break;
+      }
+
       if (stop_sig == SIGTRAP) {
         if (event == PTRACE_EVENT_EXEC) {
           handle_exec_event(event_pid);
-          linux_ptrace(PTRACE_CONT, event_pid, NULL, 0);
+          proc->in_syscall = false;
+          resume_tracee(event_pid, 0);
           continue;
         } else if (event == PTRACE_EVENT_FORK || event == PTRACE_EVENT_VFORK ||
                    event == PTRACE_EVENT_CLONE) {
           unsigned long new_child_pid = 0;
-          linux_ptrace(PTRACE_GETEVENTMSG, event_pid, 0, &new_child_pid);
+          if (linux_ptrace(PTRACE_GETEVENTMSG, event_pid, 0, &new_child_pid) <
+              0) {
+            int err = errno;
+            g_failed = true;
+            snprintf(g_failure_reason, sizeof(g_failure_reason),
+                     "GETEVENTMSG_FORK_FAILED_PID_%d_ERRNO_%d", (int)event_pid,
+                     err);
+            fprintf(stderr,
+                    "hosted_exec_witness: ptrace GETEVENTMSG failed on pid %d: "
+                    "%s\n",
+                    (int)event_pid, strerror(err));
+            kill_all_tracees();
+            break;
+          }
           if (new_child_pid > 0) {
             bool is_thread = (event == PTRACE_EVENT_CLONE);
             const char *kind_str = (event == PTRACE_EVENT_FORK)    ? "fork"
                                    : (event == PTRACE_EVENT_VFORK) ? "vfork"
                                                                    : "clone";
-            add_process((pid_t)new_child_pid, event_pid,
-                        proc ? proc->seq_id : 0, is_thread, kind_str);
+            add_process((pid_t)new_child_pid, event_pid, proc->seq_id,
+                        is_thread, kind_str);
           }
-          linux_ptrace(PTRACE_CONT, event_pid, NULL, 0);
+          resume_tracee(event_pid, 0);
           continue;
         } else if (event == PTRACE_EVENT_EXIT) {
           handle_exit_event(event_pid);
-          linux_ptrace(PTRACE_CONT, event_pid, NULL, 0);
+          resume_tracee(event_pid, 0);
           continue;
         } else {
-          /* Generic SIGTRAP (e.g. initial exec trap), continue without signal
-           */
-          linux_ptrace(PTRACE_CONT, event_pid, NULL, 0);
+          /* Generic SIGTRAP, continue */
+          resume_tracee(event_pid, 0);
           continue;
         }
-      } else if (stop_sig == SIGSTOP || stop_sig == (SIGTRAP | 0x80)) {
-        /* Cloned process initial stop or ptrace stop; do not forward SIGSTOP */
-        linux_ptrace(PTRACE_CONT, event_pid, NULL, 0);
+      } else if (stop_sig == SIGSTOP) {
+        /*
+         * Initial stop from fork/clone; do not forward SIGSTOP to tracee.
+         */
+        resume_tracee(event_pid, 0);
+        continue;
+      } else if (stop_sig == (SIGTRAP | 0x80)) {
+        /* Syscall stop from PTRACE_O_TRACESYSGOOD */
+        if (!proc->in_syscall) {
+          /* Syscall entry */
+          proc->in_syscall = true;
+          char violation[128] = {0};
+          if (!check_syscall_entry(event_pid, violation, sizeof(violation))) {
+            g_failed = true;
+            snprintf(g_failure_reason, sizeof(g_failure_reason),
+                     "SYSCALL_VIOLATION_%s", violation);
+            fprintf(stderr,
+                    "hosted_exec_witness: security violation on pid %d: %s\n",
+                    (int)event_pid, violation);
+            kill_all_tracees();
+            break;
+          }
+        } else {
+          /* Syscall exit */
+          proc->in_syscall = false;
+        }
+        resume_tracee(event_pid, 0);
         continue;
       } else {
         /* Genuine signal intended for tracee; forward it */
-        linux_ptrace(PTRACE_CONT, event_pid, NULL, (void *)(intptr_t)stop_sig);
+        resume_tracee(event_pid, stop_sig);
         continue;
       }
     }
@@ -733,5 +1263,5 @@ int main(int argc, char **argv) {
     close(g_evidence_fd);
   }
 
-  return g_root_exit_code;
+  return g_failed ? 1 : g_root_exit_code;
 }

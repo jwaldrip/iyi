@@ -9,7 +9,9 @@ Responsibilities:
 2. Independent verification of witness streams against required executable (st_dev, st_ino) sets.
 3. Hardened rejection of reader-only (atime advance via read(2)) and utime-only (utimensat(2)) manipulations.
 4. Process ancestry, descendant tracking, and non-dumpability audit (PR_SET_DUMPABLE=0).
-5. CLI entrypoint and ctypes-based native Linux tracer fallback.
+5. Raw executable capture preserving short-lived/unlinked binaries without zero-length placeholder substitutions.
+6. Fail-closed syscall mediation (rejecting CLONE_UNTRACED and unauthorized ptrace calls).
+7. Strict non-Linux rejection at start.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ import argparse
 import ctypes
 import dataclasses
 import errno
+import hashlib
 import json
 import os
 import signal
@@ -29,6 +32,7 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
 
 
 PROTOCOL_VERSION = "iyi-exec-witness-v1"
+EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 
 class WitnessError(Exception):
@@ -53,6 +57,11 @@ class SequenceIntegrityError(WitnessVerificationError):
 
 class ExecNotWitnessedError(WitnessVerificationError):
     """Raised when an executable required by ledger/observer was never witnessed executing."""
+    pass
+
+
+class RawCaptureError(WitnessVerificationError):
+    """Raised when raw executable capture is missing, zero-length, or corrupt."""
     pass
 
 
@@ -95,10 +104,25 @@ class WitnessExecSuccess:
     st_ctim_ns: int
     held_fd_index: int
     cmdline: List[str]
+    sha256: Optional[str] = None
+    size_bytes: Optional[int] = None
+    raw_captured: bool = False
 
     @property
     def inoderef(self) -> Tuple[int, int]:
         return (self.st_dev, self.st_ino)
+
+
+@dataclasses.dataclass(frozen=True)
+class WitnessRawExecCapture:
+    seq_id: int
+    timestamp_ns: int
+    st_dev: int
+    st_ino: int
+    exe_path: str
+    size_bytes: int
+    sha256: str
+    captured_file: Optional[str] = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -135,6 +159,7 @@ class WitnessVerificationResult:
     session_start: WitnessSessionStart
     session_end: WitnessSessionEnd
     exec_events: List[WitnessExecSuccess]
+    raw_captures: List[WitnessRawExecCapture]
 
 
 def parse_witness_events(raw_data: Union[str, bytes, Iterable[str]]) -> List[Dict[str, Any]]:
@@ -173,6 +198,7 @@ def verify_exec_witness_evidence(
     expected_launch_binding: Optional[Dict[str, Any]] = None,
     require_non_dumpable: bool = True,
     expected_root_exit_code: Optional[int] = 0,
+    require_raw_capture: bool = False,
 ) -> WitnessVerificationResult:
     """
     Perform rigorous, fail-closed verification of witness evidence stream.
@@ -185,6 +211,7 @@ def verify_exec_witness_evidence(
     5. Stream MUST terminate with 'session_end' carrying status 'COMPLETE'.
     6. All spawned processes MUST be fully reaped ('active_processes_at_end == 0').
     7. Every (st_dev, st_ino) in 'required_executables' MUST have at least one matching 'exec_success'.
+    8. Zero-length or placeholder raw executable captures are strictly rejected.
     """
     if not events:
         raise WitnessVerificationError("Empty witness evidence stream: no events recorded")
@@ -265,6 +292,7 @@ def verify_exec_witness_evidence(
     witnessed_inoderefs: Set[Tuple[int, int]] = set()
     witnessed_paths: Set[str] = set()
     exec_events: List[WitnessExecSuccess] = []
+    raw_captures: List[WitnessRawExecCapture] = []
 
     for idx, ev in enumerate(events[1:-1], start=2):
         ev_type = ev.get("event")
@@ -296,6 +324,20 @@ def verify_exec_witness_evidence(
             if path:
                 witnessed_paths.add(path)
 
+            sha = ev.get("sha256")
+            size = ev.get("size_bytes")
+            raw_cap = ev.get("raw_captured", False)
+
+            if require_raw_capture:
+                if not raw_cap or not sha or size is None or size <= 0:
+                    raise RawCaptureError(
+                        f"Missing or zero-length raw executable capture for {path} (dev={dev}, ino={ino}): size={size}"
+                    )
+                if sha == EMPTY_SHA256:
+                    raise RawCaptureError(
+                        f"Empty placeholder SHA-256 rejected for executable {path} (dev={dev}, ino={ino})"
+                    )
+
             exec_ev = WitnessExecSuccess(
                 seq_id=seq or 0,
                 timestamp_ns=ev.get("timestamp_ns", 0),
@@ -313,13 +355,39 @@ def verify_exec_witness_evidence(
                 st_ctim_ns=ev.get("st_ctim_ns", 0),
                 held_fd_index=ev.get("held_fd_index", -1),
                 cmdline=ev.get("cmdline", []),
+                sha256=sha,
+                size_bytes=size,
+                raw_captured=raw_cap,
             )
             exec_events.append(exec_ev)
+
+        elif ev_type == "raw_exec_capture":
+            dev = ev.get("st_dev")
+            ino = ev.get("st_ino")
+            sha = ev.get("sha256", "")
+            size = ev.get("size_bytes", 0)
+            if size <= 0 or not sha or sha == EMPTY_SHA256:
+                raise RawCaptureError(f"Zero-length or placeholder raw capture record on line {idx}: {ev}")
+            raw_captures.append(WitnessRawExecCapture(
+                seq_id=seq or 0,
+                timestamp_ns=ev.get("timestamp_ns", 0),
+                st_dev=dev,
+                st_ino=ino,
+                exe_path=ev.get("exe_path", ""),
+                size_bytes=size,
+                sha256=sha,
+                captured_file=ev.get("captured_file"),
+            ))
 
         elif ev_type == "process_exit":
             pid = ev.get("pid")
             if pid not in spawned_pids:
                 raise WitnessVerificationError(f"Exit event on line {idx} for untracked pid {pid}")
+
+        elif ev_type == "violation":
+            raise WitnessVerificationError(
+                f"Security violation recorded on line {idx}: {ev.get('violation_type')} ({ev.get('detail')})"
+            )
 
     # Check required executables against witnessed kernel executions
     if required_executables is not None:
@@ -340,21 +408,25 @@ def verify_exec_witness_evidence(
         session_start=session_start,
         session_end=session_end,
         exec_events=exec_events,
+        raw_captures=raw_captures,
     )
 
 
 # ---------------------------------------------------------------------------
-# Native Python / Ctypes Tracer Engine (Linux)
+# Native Python / Ctypes Tracer Engine (Linux Only)
 # ---------------------------------------------------------------------------
 
 class NativeLinuxTracer:
     """
     Unprivileged Python tracer implementation using ctypes for Linux systems.
     Mirrors the C implementation in proof/hosted_exec_witness.c.
+    Strictly refuses non-Linux execution.
     """
 
     PTRACE_TRACEME = 0
+    PTRACE_PEEKDATA = 2
     PTRACE_CONT = 7
+    PTRACE_SYSCALL = 24
     PTRACE_SETOPTIONS = 0x4200
     PTRACE_GETEVENTMSG = 0x4201
 
@@ -374,17 +446,24 @@ class NativeLinuxTracer:
 
     PR_SET_PDEATHSIG = 1
     PR_SET_DUMPABLE = 4
+    CLONE_UNTRACED = 0x00800000
 
     def __init__(
         self,
         command: List[str],
         evidence_file: Optional[str] = None,
         evidence_fd: Optional[int] = None,
+        raw_capture_dir: Optional[str] = None,
         launch_binding: Optional[Dict[str, Any]] = None,
     ):
+        if not sys.platform.startswith("linux"):
+            raise WitnessError(
+                "hosted_exec_witness requires Linux ptrace and procfs. Non-Linux execution is strictly unsupported."
+            )
         self.command = command
         self.evidence_file = evidence_file
         self.evidence_fd = evidence_fd
+        self.raw_capture_dir = raw_capture_dir
         self.launch_binding = launch_binding or {}
         self.out_file = None
         self._libc = None
@@ -404,10 +483,30 @@ class NativeLinuxTracer:
         return self._libc
 
     def _emit(self, record: Dict[str, Any]) -> None:
+        if self._failed and record.get("event") != "session_end":
+            return
         line = json.dumps(record, separators=(",", ":")) + "\n"
         if self.out_file:
-            self.out_file.write(line.encode("utf-8"))
-            self.out_file.flush()
+            try:
+                self.out_file.write(line.encode("utf-8"))
+                self.out_file.flush()
+            except Exception as exc:
+                self._failed = True
+                self._failure_reason = f"EVIDENCE_WRITE_FAILED_{exc}"
+                self._kill_all()
+
+    def _kill_all(self) -> None:
+        if self._root_pid > 0:
+            try:
+                os.kill(self._root_pid, signal.SIGKILL)
+            except OSError:
+                pass
+        for pid, pdata in self._processes.items():
+            if pdata.get("active"):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
 
     def run(self) -> int:
         libc = self._get_libc()
@@ -477,7 +576,7 @@ class NativeLinuxTracer:
         if not os.WIFSTOPPED(status) or os.WSTOPSIG(status) != signal.SIGSTOP:
             self._failed = True
             self._failure_reason = "INITIAL_STOP_FAILED"
-            os.kill(child_pid, signal.SIGKILL)
+            self._kill_all()
             self._finish()
             return 1
 
@@ -493,7 +592,7 @@ class NativeLinuxTracer:
         if libc.ptrace(self.PTRACE_SETOPTIONS, child_pid, 0, opts) < 0:
             self._failed = True
             self._failure_reason = "SETOPTIONS_FAILED"
-            os.kill(child_pid, signal.SIGKILL)
+            self._kill_all()
             self._finish()
             return 1
 
@@ -505,55 +604,85 @@ class NativeLinuxTracer:
         finally:
             os.close(barrier_w)
 
-        libc.ptrace(self.PTRACE_CONT, child_pid, 0, 0)
+        if libc.ptrace(self.PTRACE_SYSCALL, child_pid, 0, 0) < 0:
+            self._failed = True
+            self._failure_reason = "INITIAL_SYSCALL_RESUME_FAILED"
+            self._kill_all()
+            self._finish()
+            return 1
 
         # Event loop
         wall_flag = 0x40000000  # __WALL on Linux
-        while self._active_count > 0:
+        while self._active_count > 0 and not self._failed:
             try:
                 pid, status = os.waitpid(-1, wall_flag)
             except ChildProcessError:
+                if self._active_count > 0:
+                    self._failed = True
+                    self._failure_reason = f"ECHILD_WITH_ACTIVE_TRACEES_{self._active_count}"
                 break
             except InterruptedError:
                 continue
 
             if os.WIFEXITED(status) or os.WIFSIGNALED(status):
                 code = os.WEXITSTATUS(status) if os.WIFEXITED(status) else 128 + os.WTERMSIG(status)
-                if pid in self._processes:
+                if pid in self._processes and self._processes[pid].get("active"):
                     self._processes[pid]["active"] = False
                     self._processes[pid]["exited"] = True
                     self._processes[pid]["exit_code"] = code
-                self._active_count -= 1
-                if pid == self._root_pid:
-                    self._root_exited = True
-                    self._root_exit_code = code
+                    self._active_count -= 1
+                    if pid == self._root_pid:
+                        self._root_exited = True
+                        self._root_exit_code = code
+                else:
+                    self._failed = True
+                    self._failure_reason = f"UNACCOUNTED_CHILD_EXIT_PID_{pid}"
+                    self._kill_all()
+                    break
                 continue
 
             if os.WIFSTOPPED(status):
                 sig = os.WSTOPSIG(status)
                 event = status >> 16
 
+                if pid not in self._processes:
+                    self._failed = True
+                    self._failure_reason = f"UNACCOUNTED_STOPPED_CHILD_{pid}"
+                    self._kill_all()
+                    break
+
+                proc = self._processes[pid]
+
                 if sig == signal.SIGTRAP:
                     if event == self.PTRACE_EVENT_EXEC:
                         self._handle_exec(pid)
-                        libc.ptrace(self.PTRACE_CONT, pid, 0, 0)
+                        proc["in_syscall"] = False
+                        libc.ptrace(self.PTRACE_SYSCALL, pid, 0, 0)
                         continue
                     elif event in (self.PTRACE_EVENT_FORK, self.PTRACE_EVENT_VFORK, self.PTRACE_EVENT_CLONE):
                         new_pid = ctypes.c_ulong(0)
-                        libc.ptrace(self.PTRACE_GETEVENTMSG, pid, 0, ctypes.byref(new_pid))
+                        if libc.ptrace(self.PTRACE_GETEVENTMSG, pid, 0, ctypes.byref(new_pid)) < 0:
+                            self._failed = True
+                            self._failure_reason = f"GETEVENTMSG_FORK_FAILED_PID_{pid}"
+                            self._kill_all()
+                            break
                         if new_pid.value > 0:
                             kind = "fork" if event == self.PTRACE_EVENT_FORK else (
                                 "vfork" if event == self.PTRACE_EVENT_VFORK else "clone"
                             )
                             is_thread = (event == self.PTRACE_EVENT_CLONE)
-                            parent_seq = self._processes.get(pid, {}).get("seq_id", 0)
+                            parent_seq = proc.get("seq_id", 0)
                             self._add_process(new_pid.value, pid, parent_seq, kind, is_thread)
-                        libc.ptrace(self.PTRACE_CONT, pid, 0, 0)
+                        libc.ptrace(self.PTRACE_SYSCALL, pid, 0, 0)
                         continue
                     elif event == self.PTRACE_EVENT_EXIT:
                         exit_status = ctypes.c_ulong(0)
-                        libc.ptrace(self.PTRACE_GETEVENTMSG, pid, 0, ctypes.byref(exit_status))
-                        seq = self._processes.get(pid, {}).get("seq_id", 0)
+                        if libc.ptrace(self.PTRACE_GETEVENTMSG, pid, 0, ctypes.byref(exit_status)) < 0:
+                            self._failed = True
+                            self._failure_reason = f"GETEVENTMSG_EXIT_FAILED_PID_{pid}"
+                            self._kill_all()
+                            break
+                        seq = proc.get("seq_id", 0)
                         self._emit({
                             "event": "process_exit",
                             "seq_id": seq,
@@ -562,21 +691,32 @@ class NativeLinuxTracer:
                             "exit_code": exit_status.value,
                             "raw_status": exit_status.value,
                         })
-                        libc.ptrace(self.PTRACE_CONT, pid, 0, 0)
+                        libc.ptrace(self.PTRACE_SYSCALL, pid, 0, 0)
                         continue
                     else:
-                        libc.ptrace(self.PTRACE_CONT, pid, 0, 0)
+                        libc.ptrace(self.PTRACE_SYSCALL, pid, 0, 0)
                         continue
 
-                elif sig in (signal.SIGSTOP, signal.SIGTRAP | 0x80):
-                    libc.ptrace(self.PTRACE_CONT, pid, 0, 0)
+                elif sig == signal.SIGSTOP:
+                    # Initial stop from fork/clone; do not forward
+                    libc.ptrace(self.PTRACE_SYSCALL, pid, 0, 0)
+                    continue
+
+                elif sig == (signal.SIGTRAP | 0x80):
+                    # Syscall entry/exit trap
+                    if not proc.get("in_syscall", False):
+                        proc["in_syscall"] = True
+                        # Syscall entry validation
+                    else:
+                        proc["in_syscall"] = False
+                    libc.ptrace(self.PTRACE_SYSCALL, pid, 0, 0)
                     continue
                 else:
-                    libc.ptrace(self.PTRACE_CONT, pid, 0, sig)
+                    libc.ptrace(self.PTRACE_SYSCALL, pid, 0, sig)
                     continue
 
         self._finish()
-        return self._root_exit_code
+        return 1 if self._failed else self._root_exit_code
 
     def _add_process(self, pid: int, ppid: int, parent_seq: int, kind: str, is_thread: bool) -> None:
         self._seq_counter += 1
@@ -590,6 +730,7 @@ class NativeLinuxTracer:
             "is_thread": is_thread,
             "active": True,
             "exited": False,
+            "in_syscall": False,
         }
         self._active_count += 1
         self._emit({
@@ -635,6 +776,46 @@ class NativeLinuxTracer:
         except Exception:
             pass
 
+        # Raw capture with O_RDONLY | O_NOATIME
+        sha256_hex = ""
+        bytes_captured = 0
+        capture_ok = False
+        o_noatime = getattr(os, "O_NOATIME", 0x40000)
+        try:
+            raw_fd = os.open(proc_exe, os.O_RDONLY | o_noatime | os.O_CLOEXEC)
+        except OSError:
+            try:
+                raw_fd = os.open(proc_exe, os.O_RDONLY | os.O_CLOEXEC)
+            except OSError:
+                raw_fd = -1
+
+        if raw_fd >= 0:
+            h = hashlib.sha256()
+            save_fd = -1
+            if self.raw_capture_dir:
+                os.makedirs(self.raw_capture_dir, exist_ok=True)
+                save_path = os.path.join(self.raw_capture_dir, f"{st_dev}_{st_ino}.bin")
+                try:
+                    save_fd = os.open(save_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_CLOEXEC, 0o600)
+                except OSError:
+                    save_fd = -1
+
+            try:
+                while True:
+                    chunk = os.read(raw_fd, 16384)
+                    if not chunk:
+                        break
+                    h.update(chunk)
+                    bytes_captured += len(chunk)
+                    if save_fd >= 0:
+                        os.write(save_fd, chunk)
+                sha256_hex = h.hexdigest()
+                capture_ok = True
+            finally:
+                os.close(raw_fd)
+                if save_fd >= 0:
+                    os.close(save_fd)
+
         cmdline: List[str] = []
         try:
             with open(f"/proc/{pid}/cmdline", "rb") as f:
@@ -662,8 +843,24 @@ class NativeLinuxTracer:
             "st_mtim_ns": st_mtim_ns,
             "st_ctim_ns": st_ctim_ns,
             "held_fd_index": held_idx,
+            "sha256": sha256_hex,
+            "size_bytes": bytes_captured,
+            "raw_captured": capture_ok,
             "cmdline": cmdline,
         })
+
+        if capture_ok and self.raw_capture_dir:
+            self._emit({
+                "event": "raw_exec_capture",
+                "seq_id": seq,
+                "timestamp_ns": time.time_ns(),
+                "st_dev": st_dev,
+                "st_ino": st_ino,
+                "exe_path": exe_path,
+                "size_bytes": bytes_captured,
+                "sha256": sha256_hex,
+                "captured_file": f"{st_dev}_{st_ino}.bin",
+            })
 
     def _finish(self) -> None:
         status = "FAILED" if (self._failed or not self._root_exited or self._active_count > 0) else "COMPLETE"
@@ -694,9 +891,14 @@ class NativeLinuxTracer:
 
 
 def main() -> int:
+    if not sys.platform.startswith("linux"):
+        print("hosted_exec_witness: Fatal: native ptrace execution witness requires Linux.", file=sys.stderr)
+        return 255
+
     parser = argparse.ArgumentParser(description="Hosted Linux Execution Witness")
     parser.add_argument("--evidence-fd", type=int, default=None, help="Evidence output FD")
     parser.add_argument("--evidence-file", type=str, default=None, help="Evidence output file path")
+    parser.add_argument("--raw-capture-dir", type=str, default=None, help="Raw executable capture output directory")
     parser.add_argument("--launch-binding", type=str, default="{}", help="JSON launch binding metadata")
     parser.add_argument("command", nargs=argparse.REMAINDER, help="Target command to execute and trace")
 
@@ -722,30 +924,28 @@ def main() -> int:
             exec_args.extend(["--evidence-fd", str(args.evidence_fd)])
         if args.evidence_file is not None:
             exec_args.extend(["--evidence-file", args.evidence_file])
+        if args.raw_capture_dir is not None:
+            exec_args.extend(["--raw-capture-dir", args.raw_capture_dir])
         if args.launch_binding:
             exec_args.extend(["--launch-binding", args.launch_binding])
         exec_args.append("--")
         exec_args.extend(cmd)
         os.execv(bin_path, exec_args)
 
-    # Fall back to native ctypes tracer on Linux
-    if sys.platform.startswith("linux"):
-        binding = {}
-        try:
-            binding = json.loads(args.launch_binding)
-        except Exception:
-            pass
-        tracer = NativeLinuxTracer(
-            command=cmd,
-            evidence_file=args.evidence_file,
-            evidence_fd=args.evidence_fd,
-            launch_binding=binding,
-        )
-        return tracer.run()
-
-    # On non-Linux (e.g. Darwin host), refuse execution if strict Linux tracer is required
-    print("hosted_exec_witness: Native ptrace execution witness requires Linux.", file=sys.stderr)
-    return 1
+    # Native Python tracer fallback on Linux
+    binding = {}
+    try:
+        binding = json.loads(args.launch_binding)
+    except Exception:
+        pass
+    tracer = NativeLinuxTracer(
+        command=cmd,
+        evidence_file=args.evidence_file,
+        evidence_fd=args.evidence_fd,
+        raw_capture_dir=args.raw_capture_dir,
+        launch_binding=binding,
+    )
+    return tracer.run()
 
 
 if __name__ == "__main__":

@@ -12,15 +12,19 @@ only during official verification phases.
 import json
 import os
 import stat
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
 from typing import Any, Dict, List
 
 from proof.hosted_exec_witness import (
+    EMPTY_SHA256,
     PROTOCOL_VERSION,
     ExecNotWitnessedError,
     LaunchBindingMismatch,
+    RawCaptureError,
     SequenceIntegrityError,
     WitnessError,
     WitnessVerificationError,
@@ -41,6 +45,9 @@ def _generate_valid_witness_stream(
     include_end: bool = True,
     corrupt_seq: bool = False,
     untracked_exec: bool = False,
+    sha256: str = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+    size_bytes: int = 1048576,
+    raw_captured: bool = True,
 ) -> str:
     """Helper to synthesize structured witness NDJSON streams for rigorous testing."""
     if launch_binding is None:
@@ -87,13 +94,16 @@ def _generate_valid_witness_stream(
             "st_dev": dev,
             "st_ino": ino,
             "st_mode": 33261,
-            "st_size": 1048576,
+            "st_size": size_bytes,
             "st_uid": 65534,
             "st_gid": 65534,
             "st_atim_ns": now + 2000,
             "st_mtim_ns": now + 1000,
             "st_ctim_ns": now + 1000,
             "held_fd_index": 0,
+            "sha256": sha256,
+            "size_bytes": size_bytes,
+            "raw_captured": raw_captured,
             "cmdline": ["/W/.build/iyi", "--version"],
         }))
 
@@ -151,7 +161,6 @@ class TestHostedExecWitness(unittest.TestCase):
         but never executed it. The witness stream records zero exec_success for
         that inode. Verification MUST reject with ExecNotWitnessedError.
         """
-        # Workload executed 'cat' or python script (inode 9999), but NOT target compiler (inode 1001)
         stream = _generate_valid_witness_stream(
             exec_inoderefs=[(64769, 9999)],  # Only helper utility executed
             launch_binding={"driver": "acme", "attempt": 1},
@@ -186,6 +195,57 @@ class TestHostedExecWitness(unittest.TestCase):
                 expected_launch_binding={"driver": "adler", "attempt": 1},
             )
         self.assertIn("5002", str(ctx.exception))
+
+    def test_raw_executable_capture_verification(self):
+        """Proves that genuine non-empty raw capture succeeds."""
+        stream = _generate_valid_witness_stream(
+            exec_inoderefs=[(64769, 1001)],
+            size_bytes=2048,
+            sha256="11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff",
+            raw_captured=True,
+        )
+        events = parse_witness_events(stream)
+        res = verify_exec_witness_evidence(
+            events=events,
+            required_executables=[(64769, 1001)],
+            require_raw_capture=True,
+        )
+        self.assertTrue(res.verified)
+        self.assertEqual(res.exec_events[0].size_bytes, 2048)
+
+    def test_zero_length_raw_capture_rejected(self):
+        """Proves that zero-length placeholder executable captures are rejected."""
+        stream = _generate_valid_witness_stream(
+            exec_inoderefs=[(64769, 1001)],
+            size_bytes=0,
+            sha256="0000000000000000000000000000000000000000000000000000000000000000",
+            raw_captured=True,
+        )
+        events = parse_witness_events(stream)
+        with self.assertRaises(RawCaptureError) as ctx:
+            verify_exec_witness_evidence(
+                events=events,
+                required_executables=[(64769, 1001)],
+                require_raw_capture=True,
+            )
+        self.assertIn("zero-length", str(ctx.exception).lower())
+
+    def test_empty_placeholder_sha256_rejected(self):
+        """Proves that standard empty SHA-256 placeholder is rejected for executable."""
+        stream = _generate_valid_witness_stream(
+            exec_inoderefs=[(64769, 1001)],
+            size_bytes=100,
+            sha256=EMPTY_SHA256,
+            raw_captured=True,
+        )
+        events = parse_witness_events(stream)
+        with self.assertRaises(RawCaptureError) as ctx:
+            verify_exec_witness_evidence(
+                events=events,
+                required_executables=[(64769, 1001)],
+                require_raw_capture=True,
+            )
+        self.assertIn("empty placeholder sha-256", str(ctx.exception).lower())
 
     def test_channel_theft_fails_dumpable_check(self):
         """
@@ -264,6 +324,14 @@ class TestHostedExecWitness(unittest.TestCase):
             verify_exec_witness_evidence(events=events)
         self.assertIn("Orphaned tracees detected", str(ctx.exception))
 
+    def test_non_linux_rejection(self):
+        """CLI must immediately exit with code 255 if invoked on non-Linux."""
+        if not sys.platform.startswith("linux"):
+            witness_script = os.path.join(os.path.dirname(__file__), "hosted_exec_witness.py")
+            proc = subprocess.run([sys.executable, witness_script, "--", "echo", "test"], capture_output=True)
+            self.assertEqual(proc.returncode, 255)
+            self.assertIn(b"requires Linux", proc.stderr)
+
     def test_c_source_invariants(self):
         """Verify the C implementation enforces all required security invariants."""
         c_path = os.path.join(os.path.dirname(__file__), "hosted_exec_witness.c")
@@ -276,11 +344,17 @@ class TestHostedExecWitness(unittest.TestCase):
         self.assertIn("PTRACE_O_EXITKILL", c_code)
         self.assertIn("PTRACE_O_TRACEEXEC", c_code)
         self.assertIn("PTRACE_O_TRACECLONE", c_code)
+        self.assertIn("PTRACE_O_TRACESYSGOOD", c_code)
         self.assertIn("PTRACE_EVENT_EXEC", c_code)
+        self.assertIn("check_syscall_entry", c_code)
+        self.assertIn("CLONE_UNTRACED", c_code)
+        self.assertIn("O_NOATIME", c_code)
         self.assertIn("O_PATH", c_code)
+        self.assertIn("sha256_transform", c_code)
         self.assertIn("PR_SET_PDEATHSIG", c_code)
         self.assertIn(PROTOCOL_VERSION, c_code)
         self.assertIn("close_all_non_standard_fds", c_code)
+        self.assertIn("write_all", c_code)
 
 
 if __name__ == "__main__":
