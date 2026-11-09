@@ -478,13 +478,23 @@ class ArchiveCollisionInventory:
         elif member_type == "hardlink":
             if not linkname or linkname.startswith("/"):
                 raise SecurityError(f"Prohibited absolute or empty hardlink target: {clean_name} -> {linkname}")
-            resolved_target_parts = self.resolve_canonical(linkname)
-            if resolved_target_parts is None:
-                raise SecurityError(f"Hardlink target escapes root: {clean_name} -> {linkname}")
-            target_canon = "/".join(resolved_target_parts)
-            if target_canon not in self.entries or self.entries[target_canon] != "reg":
+            # Resolve target parent only, require unfollowed leaf previously registered as actual regular file
+            target_parent_raw = os.path.dirname(linkname)
+            target_leaf = os.path.basename(linkname)
+            if target_parent_raw:
+                target_parent_parts = self.resolve_canonical(target_parent_raw)
+                if target_parent_parts is None:
+                    raise SecurityError(f"Hardlink target parent escapes root: {linkname}")
+                target_parent_canon = "/".join(target_parent_parts)
+            else:
+                target_parent_canon = ""
+            target_canon_path = f"{target_parent_canon}/{target_leaf}" if target_parent_canon else target_leaf
+
+            if target_canon_path not in self.entries:
+                raise SecurityError(f"Hardlink target not found: {linkname} ({target_canon_path})")
+            if self.entries[target_canon_path] != "reg":
                 raise SecurityError(
-                    f"Hardlink target must be a known regular file: {linkname} (resolves to {target_canon})"
+                    f"Hardlink target must be a known regular file, but {target_canon_path} is {self.entries[target_canon_path]}"
                 )
             self.entries[canonical_path] = "hardlink"
 

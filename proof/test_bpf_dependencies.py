@@ -540,6 +540,30 @@ class TestDebPreflightAndArchiveValidation(unittest.TestCase):
             inspect_and_validate_deb_archive(deb_bytes, "libbpf-dev", "1:1.3.0-2build2", "amd64", inv)
         self.assertIn("Duplicate or colliding entry", str(ctx.exception))
 
+    def test_hardlink_to_symlink_fails(self):
+        # Auditor test: symlink a/b/link -> ../../safe, hardlink leak -> a/b/link must be rejected
+        ctrl = "Package: libbpf-dev\nVersion: 1:1.3.0-2build2\nArchitecture: amd64\n"
+        members = [
+            {"name": "safe", "content": b"regular file content"},
+            {"name": "a/b/link", "type": tarfile.SYMTYPE, "linkname": "../../safe"},
+            {"name": "leak", "type": tarfile.LNKTYPE, "linkname": "a/b/link"},
+        ]
+        deb_bytes = self._create_mock_deb(ctrl, members)
+        inv = ArchiveCollisionInventory()
+        with self.assertRaises(SecurityError) as ctx:
+            inspect_and_validate_deb_archive(deb_bytes, "libbpf-dev", "1:1.3.0-2build2", "amd64", inv)
+        self.assertIn("must be a known regular file", str(ctx.exception))
+
+    def test_hardlink_to_missing_target_fails(self):
+        ctrl = "Package: libbpf-dev\nVersion: 1:1.3.0-2build2\nArchitecture: amd64\n"
+        members = [
+            {"name": "leak", "type": tarfile.LNKTYPE, "linkname": "nonexistent_file"},
+        ]
+        deb_bytes = self._create_mock_deb(ctrl, members)
+        inv = ArchiveCollisionInventory()
+        with self.assertRaises(SecurityError) as ctx:
+            inspect_and_validate_deb_archive(deb_bytes, "libbpf-dev", "1:1.3.0-2build2", "amd64", inv)
+        self.assertIn("Hardlink target not found", str(ctx.exception))
 
 class TestExtractionContainment(unittest.TestCase):
     def setUp(self):
