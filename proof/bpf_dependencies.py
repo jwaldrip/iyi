@@ -28,6 +28,7 @@ import io
 import json
 import lzma
 import os
+import platform
 import re
 import shutil
 import stat
@@ -59,6 +60,32 @@ ALLOWED_BASE_HOST = "snapshot.ubuntu.com"
 class SecurityError(Exception):
     """Raised when any cryptographic, provenance, or containment check fails."""
     pass
+
+def verify_trusted_system_tool(tool_path: str, tool_name: str, expected_version_pattern: Optional[str] = None) -> str:
+    resolved = shutil.which(tool_path) or tool_path
+    if not (os.path.isfile(resolved) and os.access(resolved, os.X_OK)):
+        raise SecurityError(f"{tool_name} executable not found at '{resolved}'. Nonroot extraction requires {tool_name}.")
+
+    real_path = os.path.realpath(resolved)
+    if platform.system() == "Linux":
+        if not (real_path.startswith("/usr/bin/") or real_path.startswith("/bin/")):
+            raise SecurityError(f"{tool_name} resolved outside trusted system directories (/usr/bin, /bin): '{real_path}'")
+        st = os.stat(real_path)
+        if st.st_uid != 0:
+            raise SecurityError(f"{tool_name} at '{real_path}' is not owned by root (UID {st.st_uid} != 0)")
+        if (st.st_mode & 0o022) != 0:
+            raise SecurityError(f"{tool_name} at '{real_path}' has unsafe permissions (group/world-writable: {oct(st.st_mode)})")
+
+    if expected_version_pattern and os.path.isfile(resolved):
+        try:
+            p = subprocess.run([resolved, "--version"], capture_output=True, text=True, timeout=5)
+            out = p.stdout + p.stderr
+            if p.returncode == 0 and not re.search(expected_version_pattern, out):
+                raise SecurityError(f"{tool_name} version mismatch at '{resolved}': expected pattern '{expected_version_pattern}', got: {out[:200]}")
+        except Exception as e:
+            if isinstance(e, SecurityError):
+                raise
+    return resolved
 
 
 class StrictNoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -776,11 +803,7 @@ def safe_extract_deb(deb_path: str, output_dir: str, dpkg_deb_path: str) -> None
     Extract .deb into output_dir nonroot using /usr/bin/dpkg-deb per PlanBpfOwnedDependencies.
     No fallback internal extractor is permitted.
     """
-    resolved_dpkg = shutil.which(dpkg_deb_path) or dpkg_deb_path
-    if not (os.path.isfile(resolved_dpkg) and os.access(resolved_dpkg, os.X_OK)):
-        raise SecurityError(
-            f"dpkg-deb executable not found at '{resolved_dpkg}'. Nonroot extraction requires dpkg-deb."
-        )
+    resolved_dpkg = verify_trusted_system_tool(dpkg_deb_path, "dpkg-deb", r"Debian dpkg-deb version 1\.")
 
     cmd = [resolved_dpkg, "--extract", deb_path, output_dir]
     p = subprocess.run(cmd, capture_output=True, text=True)
@@ -949,9 +972,7 @@ def run_lock_consumer(
             f"Keyring SHA256 mismatch for {resolved_keyring}: got {actual_keyring_sha}, expected {expected_keyring_sha}"
         )
 
-    resolved_gpgv = shutil.which(gpgv_path) or gpgv_path
-    if not (os.path.isfile(resolved_gpgv) and os.access(resolved_gpgv, os.X_OK)):
-        raise SecurityError(f"gpgv binary not executable at {resolved_gpgv}")
+    resolved_gpgv = verify_trusted_system_tool(gpgv_path, "gpgv", r"gpgv \(GnuPG\)")
 
     # Use RUNNER_TEMP for private scratch
     old_umask = os.umask(0o077)

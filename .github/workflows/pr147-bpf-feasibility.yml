@@ -101,8 +101,14 @@ jobs:
 
       - name: Run BPF feasibility diagnostic via authenticated launcher
         run: |
-          status_file="$RUNNER_TEMP/kernel-feasibility-diag/bpf-feasibility.json"
-          bash proof/run_bpf_feasibility.sh --status "$status_file" --verbose
+          diag_dir="$RUNNER_TEMP/kernel-feasibility-diag"
+          mkdir -p "$diag_dir"
+          owned_scratch="$diag_dir/owned-artifacts"
+          status_file="$diag_dir/bpf-feasibility.json"
+          bash proof/run_bpf_feasibility.sh \
+            --owned-dir "$owned_scratch" \
+            --status "$status_file" \
+            --verbose
 
       - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         if: always()

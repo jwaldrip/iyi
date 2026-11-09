@@ -1141,6 +1141,53 @@ python3 -I "$DEP_SCRIPT" --lock "$LOCK_FILE" --output "$STAGED_PREFIX" --receipt
 # Authoritative pre-compilation manifest validation
 validate_staged_manifest_main "$LOCK_FILE" "$RECEIPT_FILE" "$STAGED_PREFIX"
 
+verify_trusted_system_tool() {
+  local tool_path="$1"
+  local tool_name="$2"
+  local expected_version_grep="$3"
+
+  if [ ! -e "$tool_path" ]; then
+    echo "ERROR: Trusted system tool '$tool_name' does not exist at '$tool_path'" >&2
+    exit 1
+  fi
+  if [ ! -x "$tool_path" ]; then
+    echo "ERROR: Trusted system tool '$tool_name' is not executable at '$tool_path'" >&2
+    exit 1
+  fi
+
+  local real_tool
+  real_tool="$(readlink -f "$tool_path" 2>/dev/null || realpath "$tool_path" 2>/dev/null || echo "$tool_path")"
+
+  if [ "$(uname -s)" = "Linux" ]; then
+    case "$real_tool" in
+      /usr/bin/*|/bin/*) ;;
+      *)
+        echo "ERROR: Trusted system tool '$tool_name' resolved outside /usr/bin or /bin: '$real_tool'" >&2
+        exit 1
+        ;;
+    esac
+
+    python3 -I - <<'PY' "$real_tool" "$tool_name"
+import os, sys
+path = sys.argv[1]
+name = sys.argv[2]
+st = os.stat(path)
+if st.st_uid != 0:
+    sys.exit(f"ERROR: Trusted system tool '{name}' at '{path}' is not owned by root (UID {st.st_uid} != 0)")
+if (st.st_mode & 0o022) != 0:
+    sys.exit(f"ERROR: Trusted system tool '{name}' at '{path}' has unsafe permissions (group/world writable: {oct(st.st_mode)})")
+PY
+  fi
+
+  local ver_output
+  ver_output="$("$tool_path" --version 2>&1 || true)"
+  if ! echo "$ver_output" | grep -E "$expected_version_grep" >/dev/null 2>&1; then
+    echo "ERROR: Trusted system tool '$tool_name' version mismatch: expected '$expected_version_grep', got:" >&2
+    echo "$ver_output" >&2
+    exit 1
+  fi
+}
+
 # 2. Toolchain verification (Section 4)
 CLANG_BIN=""
 for candidate in /usr/bin/clang-18 /usr/bin/clang; do
@@ -1156,6 +1203,7 @@ if [ -z "$CLANG_BIN" ] || [ ! -x "$CLANG_BIN" ]; then
   echo "ERROR: Clang compiler not found; prerequisite failure" >&2
   exit 1
 fi
+verify_trusted_system_tool "$CLANG_BIN" "clang" "(clang version (18\.|[0-9]+\.)|Apple clang)"
 
 CLANG_RESOURCE="$("$CLANG_BIN" -print-resource-dir 2>/dev/null || true)"
 if [ -z "$CLANG_RESOURCE" ] || [ ! -d "$CLANG_RESOURCE/include" ]; then
@@ -1177,6 +1225,7 @@ if [ -z "$GCC_BIN" ] || [ ! -x "$GCC_BIN" ]; then
   echo "ERROR: GCC compiler not found; prerequisite failure" >&2
   exit 1
 fi
+verify_trusted_system_tool "$GCC_BIN" "gcc" "(gcc.*Ubuntu|gcc \(Ubuntu 13\.|gcc \(GCC\) [0-9]+|Free Software Foundation|clang)"
 
 READELF_BIN="$(command -v readelf 2>/dev/null || true)"
 if [ -z "$READELF_BIN" ] && [ -x /usr/bin/readelf ]; then
@@ -1186,6 +1235,7 @@ if [ -z "$READELF_BIN" ]; then
   echo "ERROR: readelf utility not found; prerequisite failure" >&2
   exit 1
 fi
+verify_trusted_system_tool "$READELF_BIN" "readelf" "(GNU readelf|llvm-readelf)"
 
 # 3. Section 4: Exact BPF compilation
 BPF_SRC="$REPO_ROOT/proof/bpf_canary.bpf.c"
@@ -1318,15 +1368,8 @@ if [ "$BUILD_ONLY" -eq 1 ]; then
 fi
 
 # 6. Section 7: Launch only the restricted foreground helper
-if [ ! -x /usr/bin/setpriv ]; then
-  echo "ERROR: Trusted system binary /usr/bin/setpriv missing or not executable (no PATH fallback permitted)" >&2
-  exit 1
-fi
-
-if [ ! -x /usr/bin/sudo ]; then
-  echo "ERROR: Trusted system binary /usr/bin/sudo missing or not executable (no PATH fallback permitted)" >&2
-  exit 1
-fi
+verify_trusted_system_tool "/usr/bin/setpriv" "setpriv" "setpriv from util-linux 2\."
+verify_trusted_system_tool "/usr/bin/sudo" "sudo" "Sudo version"
 
 PROBE_UID="$(id -u)"
 PROBE_GID="$(id -g)"
