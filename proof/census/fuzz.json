@@ -35,6 +35,7 @@
           ],
           "output": "{WORK}/undo1.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -72,6 +73,7 @@
           ],
           "output": "{WORK}/undo2.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],

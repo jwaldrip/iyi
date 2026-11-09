@@ -80,6 +80,7 @@
           ],
           "output": "{WORK}/{dir}/program",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3",
             "cryptography"

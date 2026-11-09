@@ -46,6 +46,7 @@
           "sources": ["{REPO}/bench/std_hpke_exercise.iyi"],
           "output": null,
           "darwin": "required",
+          "linux": "required",
           "requires": ["python3"],
           "verdict": {
             "lines": [336, 337, 341, 343],

@@ -46,6 +46,7 @@
           ],
           "output": "{WORK}/{name}/tlsx",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3",
             "openssl"
@@ -174,6 +175,7 @@
           ],
           "output": "{WORK}/mut-{n}/tlsx",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],

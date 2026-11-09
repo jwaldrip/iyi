@@ -60,6 +60,7 @@
           "sources": ["{REPO}/bench/std_acme_exercise.iyi"],
           "output": null,
           "darwin": "required",
+          "linux": "required",
           "requires": ["python3"],
           "verdict": {
             "lines": [466, 467, 471, 473],

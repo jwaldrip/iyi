@@ -48,6 +48,7 @@
           ],
           "output": "{WORK}/patched/program",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],

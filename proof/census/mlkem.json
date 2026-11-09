@@ -46,6 +46,7 @@
           "sources": ["{REPO}/bench/std_mlkem_exercise.iyi"],
           "output": null,
           "darwin": "required",
+          "linux": "required",
           "requires": ["python3"],
           "verdict": {
             "lines": [453, 454, 458, 460],

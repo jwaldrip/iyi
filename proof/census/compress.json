@@ -48,6 +48,7 @@
           ],
           "output": "{WORK}/small.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -149,6 +150,7 @@
           ],
           "output": "{WORK}/mut-{mutations}.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],

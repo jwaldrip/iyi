@@ -91,6 +91,7 @@
           ],
           "output": "{WORK}/tls_broken",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -138,6 +139,7 @@
           ],
           "output": "{WORK}/tls_clear",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -192,6 +194,7 @@
           ],
           "output": "{WORK}/latency-broken",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -251,6 +254,7 @@
           ],
           "output": "{WORK}/stop-broken",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -304,6 +308,7 @@
           ],
           "output": "{WORK}/parallel-broken",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -402,6 +407,7 @@
           ],
           "output": "{WORK}/resume-broken",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -457,6 +463,7 @@
           ],
           "output": "{WORK}/records-broken",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -566,6 +573,7 @@
           ],
           "output": "{WORK}/mut-1.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -597,6 +605,7 @@
           ],
           "output": "{WORK}/mut-2.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -628,6 +637,7 @@
           ],
           "output": "{WORK}/mut-3.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -659,6 +669,7 @@
           ],
           "output": "{WORK}/mut-4.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -690,6 +701,7 @@
           ],
           "output": "{WORK}/mut-5.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -721,6 +733,7 @@
           ],
           "output": "{WORK}/mut-6.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -752,6 +765,7 @@
           ],
           "output": "{WORK}/mut-7.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -783,6 +797,7 @@
           ],
           "output": "{WORK}/mut-8.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -814,6 +829,7 @@
           ],
           "output": "{WORK}/mut-9.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -845,6 +861,7 @@
           ],
           "output": "{WORK}/mut-10.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -876,6 +893,7 @@
           ],
           "output": "{WORK}/mut-11.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -907,6 +925,7 @@
           ],
           "output": "{WORK}/mut-12.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -938,6 +957,7 @@
           ],
           "output": "{WORK}/mut-13.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -969,6 +989,7 @@
           ],
           "output": "{WORK}/mut-14.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -1000,6 +1021,7 @@
           ],
           "output": "{WORK}/mut-15.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -1031,6 +1053,7 @@
           ],
           "output": "{WORK}/mut-16.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -1062,6 +1085,7 @@
           ],
           "output": "{WORK}/mut-17.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -1093,6 +1117,7 @@
           ],
           "output": "{WORK}/mut-18.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -1124,6 +1149,7 @@
           ],
           "output": "{WORK}/mut-19.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -1155,6 +1181,7 @@
           ],
           "output": "{WORK}/mut-20.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -1186,6 +1213,7 @@
           ],
           "output": "{WORK}/mut-21.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -1217,6 +1245,7 @@
           ],
           "output": "{WORK}/mut-22.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -1248,6 +1277,7 @@
           ],
           "output": "{WORK}/mut-23.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -1279,6 +1309,7 @@
           ],
           "output": "{WORK}/mut-24.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -1310,6 +1341,7 @@
           ],
           "output": "{WORK}/mut-25.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -1341,6 +1373,7 @@
           ],
           "output": "{WORK}/mut-26.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -1372,6 +1405,7 @@
           ],
           "output": "{WORK}/mut-27.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -1403,6 +1437,7 @@
           ],
           "output": "{WORK}/mut-28.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -1434,6 +1469,7 @@
           ],
           "output": "{WORK}/mut-29.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -1465,6 +1501,7 @@
           ],
           "output": "{WORK}/mut-30.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -1496,6 +1533,7 @@
           ],
           "output": "{WORK}/mut-31.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -1527,6 +1565,7 @@
           ],
           "output": "{WORK}/mut-32.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -1558,6 +1597,7 @@
           ],
           "output": "{WORK}/mut-33.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -1589,6 +1629,7 @@
           ],
           "output": "{WORK}/mut-34.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -1620,6 +1661,7 @@
           ],
           "output": "{WORK}/mut-35.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -1651,6 +1693,7 @@
           ],
           "output": "{WORK}/mut-36.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -1682,6 +1725,7 @@
           ],
           "output": "{WORK}/mut-37.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -1713,6 +1757,7 @@
           ],
           "output": "{WORK}/mut-38.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -1744,6 +1789,7 @@
           ],
           "output": "{WORK}/mut-39.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -1775,6 +1821,7 @@
           ],
           "output": "{WORK}/mut-40.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -1806,6 +1853,7 @@
           ],
           "output": "{WORK}/mut-41.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -1837,6 +1885,7 @@
           ],
           "output": "{WORK}/mut-42.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -1868,6 +1917,7 @@
           ],
           "output": "{WORK}/mut-43.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -1899,6 +1949,7 @@
           ],
           "output": "{WORK}/mut-44.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -1930,6 +1981,7 @@
           ],
           "output": "{WORK}/mut-45.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -1961,6 +2013,7 @@
           ],
           "output": "{WORK}/mut-46.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -1992,6 +2045,7 @@
           ],
           "output": "{WORK}/mut-47.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -2023,6 +2077,7 @@
           ],
           "output": "{WORK}/mut-48.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -2054,6 +2109,7 @@
           ],
           "output": "{WORK}/mut-49.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -2085,6 +2141,7 @@
           ],
           "output": "{WORK}/mut-50.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -2116,6 +2173,7 @@
           ],
           "output": "{WORK}/mut-51.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -2147,6 +2205,7 @@
           ],
           "output": "{WORK}/mut-52.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -2178,6 +2237,7 @@
           ],
           "output": "{WORK}/mut-53.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -2209,6 +2269,7 @@
           ],
           "output": "{WORK}/mut-54.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -2240,6 +2301,7 @@
           ],
           "output": "{WORK}/mut-55.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -2271,6 +2333,7 @@
           ],
           "output": "{WORK}/mut-56.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -2302,6 +2365,7 @@
           ],
           "output": "{WORK}/mut-57.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -2333,6 +2397,7 @@
           ],
           "output": "{WORK}/mut-58.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -2364,6 +2429,7 @@
           ],
           "output": "{WORK}/mut-59.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -2395,6 +2461,7 @@
           ],
           "output": "{WORK}/mut-60.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -2426,6 +2493,7 @@
           ],
           "output": "{WORK}/mut-61.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -2457,6 +2525,7 @@
           ],
           "output": "{WORK}/mut-62.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -2488,6 +2557,7 @@
           ],
           "output": "{WORK}/mut-63.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -2519,6 +2589,7 @@
           ],
           "output": "{WORK}/mut-64.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -2550,6 +2621,7 @@
           ],
           "output": "{WORK}/mut-65.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -2581,6 +2653,7 @@
           ],
           "output": "{WORK}/mut-66.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -2612,6 +2685,7 @@
           ],
           "output": "{WORK}/mut-67.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -2643,6 +2717,7 @@
           ],
           "output": "{WORK}/mut-68.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -2674,6 +2749,7 @@
           ],
           "output": "{WORK}/mut-69.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -2705,6 +2781,7 @@
           ],
           "output": "{WORK}/mut-70.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -2736,6 +2813,7 @@
           ],
           "output": "{WORK}/mut-71.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -2767,6 +2845,7 @@
           ],
           "output": "{WORK}/mut-72.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -2798,6 +2877,7 @@
           ],
           "output": "{WORK}/mut-73.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -2829,6 +2909,7 @@
           ],
           "output": "{WORK}/mut-74.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -2860,6 +2941,7 @@
           ],
           "output": "{WORK}/mut-75.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -2891,6 +2973,7 @@
           ],
           "output": "{WORK}/mut-76.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -2922,6 +3005,7 @@
           ],
           "output": "{WORK}/mut-77.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -2953,6 +3037,7 @@
           ],
           "output": "{WORK}/mut-78.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -2984,6 +3069,7 @@
           ],
           "output": "{WORK}/mut-79.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -3015,6 +3101,7 @@
           ],
           "output": "{WORK}/mut-80.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -3046,6 +3133,7 @@
           ],
           "output": "{WORK}/mut-81.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -3077,6 +3165,7 @@
           ],
           "output": "{WORK}/mut-82.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -3108,6 +3197,7 @@
           ],
           "output": "{WORK}/mut-83.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -3139,6 +3229,7 @@
           ],
           "output": "{WORK}/mut-84.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -3170,6 +3261,7 @@
           ],
           "output": "{WORK}/mut-85.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -3201,6 +3293,7 @@
           ],
           "output": "{WORK}/mut-86.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -3232,6 +3325,7 @@
           ],
           "output": "{WORK}/mut-87.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -3263,6 +3357,7 @@
           ],
           "output": "{WORK}/mut-88.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -3294,6 +3389,7 @@
           ],
           "output": "{WORK}/mut-89.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -3325,6 +3421,7 @@
           ],
           "output": "{WORK}/mut-90.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -3356,6 +3453,7 @@
           ],
           "output": "{WORK}/mut-91.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -3387,6 +3485,7 @@
           ],
           "output": "{WORK}/mut-92.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -3418,6 +3517,7 @@
           ],
           "output": "{WORK}/mut-93.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -3449,6 +3549,7 @@
           ],
           "output": "{WORK}/mut-94.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -3480,6 +3581,7 @@
           ],
           "output": "{WORK}/mut-95.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -3511,6 +3613,7 @@
           ],
           "output": "{WORK}/mut-96.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -3542,6 +3645,7 @@
           ],
           "output": "{WORK}/mut-97.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -3585,6 +3689,7 @@
           ],
           "output": "{WORK}/h2_stream_window.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -3622,6 +3727,7 @@
           ],
           "output": "{WORK}/h2_conn_window.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -3659,6 +3765,7 @@
           ],
           "output": "{WORK}/h2_peer_window.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3",
             "node"
@@ -3695,6 +3802,7 @@
           ],
           "output": "{WORK}/h2_preface.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -3732,6 +3840,7 @@
           ],
           "output": "{WORK}/h2_cookies.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -3769,6 +3878,7 @@
           ],
           "output": "{WORK}/h2_upgrade.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -3806,6 +3916,7 @@
           ],
           "output": "{WORK}/h2_reset_closes.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -3843,6 +3954,7 @@
           ],
           "output": "{WORK}/h2_gzip.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -3880,6 +3992,7 @@
           ],
           "output": "{WORK}/h2_fields.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -3918,6 +4031,7 @@
           ],
           "output": "{WORK}/h2_flood.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -3956,6 +4070,7 @@
           ],
           "output": "{WORK}/h2_first.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -3994,6 +4109,7 @@
           ],
           "output": "{WORK}/h2_frame_size.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -4032,6 +4148,7 @@
           ],
           "output": "{WORK}/linger_h2.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -4070,6 +4187,7 @@
           ],
           "output": "{WORK}/linger_head.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -4108,6 +4226,7 @@
           ],
           "output": "{WORK}/linger_431.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -4146,6 +4265,7 @@
           ],
           "output": "{WORK}/linger_body.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -4184,6 +4304,7 @@
           ],
           "output": "{WORK}/close_nolinger.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -4221,6 +4342,7 @@
           ],
           "output": "{WORK}/close_nohalf.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -4258,6 +4380,7 @@
           ],
           "output": "{WORK}/close_nodrain.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -4295,6 +4418,7 @@
           ],
           "output": "{WORK}/close_notify.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -4332,6 +4456,7 @@
           ],
           "output": "{WORK}/close_client_tls.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -4369,6 +4494,7 @@
           ],
           "output": "{WORK}/close_drain_kept.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -4406,6 +4532,7 @@
           ],
           "output": "{WORK}/close_late_continue.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -4443,6 +4570,7 @@
           ],
           "output": "{WORK}/h2_stale.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -4481,6 +4609,7 @@
           ],
           "output": "{WORK}/https_clear.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -4514,6 +4643,7 @@
           ],
           "output": "{WORK}/https_plain.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -4547,6 +4677,7 @@
           ],
           "output": "{WORK}/https_notify.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -4580,6 +4711,7 @@
           ],
           "output": "{WORK}/guard_body.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -4616,6 +4748,7 @@
           ],
           "output": "{WORK}/guard_h2.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -4652,6 +4785,7 @@
           ],
           "output": "{WORK}/guard_cap.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -4688,6 +4822,7 @@
           ],
           "output": "{WORK}/guard_leak.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -4724,6 +4859,7 @@
           ],
           "output": "{WORK}/guard_head.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -4760,6 +4896,7 @@
           ],
           "output": "{WORK}/mtls_h1.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -4793,6 +4930,7 @@
           ],
           "output": "{WORK}/mtls_h2.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -4826,6 +4964,7 @@
           ],
           "output": "{WORK}/mtls_upgrade.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -4859,6 +4998,7 @@
           ],
           "output": "{WORK}/proxy_inside.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -4893,6 +5033,7 @@
           ],
           "output": "{WORK}/proxy_connect_bare.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -4927,6 +5068,7 @@
           ],
           "output": "{WORK}/proxy_no_tunnel.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -4961,6 +5103,7 @@
           ],
           "output": "{WORK}/proxy_tunnel_key.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -4995,6 +5138,7 @@
           ],
           "output": "{WORK}/proxy_upgrade_direct.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -5029,6 +5173,7 @@
           ],
           "output": "{WORK}/proxy_upgrade_absolute.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
