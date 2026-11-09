@@ -1914,10 +1914,12 @@ def derive_expected_stage_timeout_sec(
     resource_policy: ResourcePolicy,
     stage: str,
     valid_run3_drivers: Optional[Sequence[str]] = None,
+    expected_run3_manifest_digest: Optional[str] = None,
 ) -> int:
     """
     Return the approved resource timeout for the given stage name.
-    Rejects unrecognized stages rather than defaulting to driver limit.
+    Strictly validates standard stage names or canonical 'run3-<driver>' names
+    against the subject-bound Run 3 driver inventory.
     """
     stage_map = {
         "build": resource_policy.stage_build_limit_sec,
@@ -1931,9 +1933,34 @@ def derive_expected_stage_timeout_sec(
     if stage in stage_map:
         return stage_map[stage]
 
-    if valid_run3_drivers is not None:
-        if stage in valid_run3_drivers or (stage.startswith("run3_") and stage[5:] in valid_run3_drivers):
-            return resource_policy.driver_limit_sec
+    if stage.startswith("run3-"):
+        driver = stage[5:]
+        if not driver:
+            raise TypeValidationError(f"Empty driver in Run 3 stage: {stage!r}")
+        if valid_run3_drivers is None:
+            raise TypeValidationError(f"Run 3 stage {stage!r} requires valid_run3_drivers to be provided")
+
+        cleaned_drivers = []
+        seen = set()
+        for d in valid_run3_drivers:
+            d_str = require_ascii_str(d, "run3 driver")
+            if d_str in seen:
+                raise DuplicateKeyError(f"Duplicate driver in valid_run3_drivers: {d_str!r}")
+            seen.add(d_str)
+            cleaned_drivers.append(d_str)
+
+        if expected_run3_manifest_digest is not None:
+            computed_digest = compute_manifest_digest(cleaned_drivers)
+            if computed_digest != expected_run3_manifest_digest:
+                raise ReferenceIntegrityError(
+                    f"valid_run3_drivers digest ({computed_digest}) does not match subject "
+                    f"run3_inventory_manifest_digest ({expected_run3_manifest_digest})"
+                )
+
+        if driver not in seen:
+            raise TypeValidationError(f"Driver {driver!r} in stage {stage!r} is not in subject-bound Run 3 inventory")
+
+        return resource_policy.driver_limit_sec
 
     raise TypeValidationError(f"Unrecognized execution stage: {stage!r}")
 
@@ -1944,7 +1971,12 @@ def derive_expected_effective_policy(
     valid_run3_drivers: Optional[Sequence[str]] = None,
 ) -> EffectiveExecutionPolicy:
     """Derive the canonical approved EffectiveExecutionPolicy from subject and stage."""
-    timeout_sec = derive_expected_stage_timeout_sec(subject.resource_policy, stage, valid_run3_drivers)
+    timeout_sec = derive_expected_stage_timeout_sec(
+        subject.resource_policy,
+        stage,
+        valid_run3_drivers=valid_run3_drivers,
+        expected_run3_manifest_digest=subject.qualification_requirements.run3_inventory_manifest_digest,
+    )
     return EffectiveExecutionPolicy(
         stage_timeout_sec=timeout_sec,
         grace_sec=subject.resource_policy.grace_sec,

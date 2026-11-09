@@ -145,7 +145,7 @@ def sample_evidence_policy_dict() -> dict:
     }
 
 
-def sample_qualification_dict() -> dict:
+def sample_qualification_dict(run3_digest: Optional[str] = None) -> dict:
     return {
         "rg2_evaluated": 144,
         "rg2_passed": 144,
@@ -165,13 +165,13 @@ def sample_qualification_dict() -> dict:
         "run2_total_corpus": 144,
         "run2_failures": 0,
         "run2_exclusions": 0,
-        "run3_inventory_manifest_digest": "5" * 64,
+        "run3_inventory_manifest_digest": run3_digest or ("5" * 64),
         "named_frames_required": True,
         "crystal_flag_intact": True,
     }
 
 
-def sample_subject_dict() -> dict:
+def sample_subject_dict(run3_digest: Optional[str] = None) -> dict:
     return {
         "repository": "jwaldrip/iyi",
         "c_sha": "a" * 40,
@@ -194,7 +194,7 @@ def sample_subject_dict() -> dict:
         "w_interface_version": "v1",
         "census_digest": "2" * 64,
         "logical_slot_manifest_digest": "3" * 64,
-        "qualification_requirements": sample_qualification_dict(),
+        "qualification_requirements": sample_qualification_dict(run3_digest),
     }
 
 
@@ -809,7 +809,9 @@ class TestQualificationGroundTruth(unittest.TestCase):
 
 class TestCrossRecordBindingValidators(unittest.TestCase):
     def setUp(self):
-        self.s_dict = sample_subject_dict()
+        self.sample_run3_drivers = tuple(["acme"] + [f"driver_{i:02d}" for i in range(29)])
+        self.sample_run3_digest = compute_manifest_digest(self.sample_run3_drivers)
+        self.s_dict = sample_subject_dict(run3_digest=self.sample_run3_digest)
         self.subject = ExecutionSubject.from_dict(self.s_dict)
         self.subj_digest = self.subject.digest()
         self.v_dict = sample_validation_dict(self.subj_digest)
@@ -1486,6 +1488,15 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
         ctx = ExecutionContext.from_dict(ctx_data)
         bad_pol = sample_effective_policy_dict(self.subject, "run1")
         del bad_pol["pids_limit"]
+        pol_digest = sha256_bytes(canonical_json_bytes(bad_pol))
+        receipt = StructuralLaunchOwnershipReceipt(
+            launch_id="launch-001",
+            execution_context_digest=ctx.digest(),
+            container_id="cont-123",
+            stage="run1",
+            attempt=1,
+            effective_policy_digest=pol_digest,
+        )
         td = TeardownDisposition(
             launch_id="launch-001",
             container_id="cont-123",
@@ -1512,8 +1523,9 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
             "timestamp": "2026-11-09T00:01:00Z",
         }
         desc = CheckpointDescriptor.from_dict(desc_data)
-        with self.assertRaises(ReferenceIntegrityError):
-            validate_structural_checkpoint_to_context(desc, ctx, self.manifest, launch_receipt=None, teardown_disposition=td)
+        with self.assertRaises(ReferenceIntegrityError) as err:
+            validate_structural_checkpoint_to_context(desc, ctx, self.manifest, launch_receipt=receipt, teardown_disposition=td)
+        self.assertIn("malformed, incomplete, or contains unknown keys", str(err.exception))
 
     def test_checkpoint_rejects_unknown_key_in_effective_policy(self):
         ctx_data = {
@@ -1532,6 +1544,15 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
         ctx = ExecutionContext.from_dict(ctx_data)
         bad_pol = sample_effective_policy_dict(self.subject, "run1")
         bad_pol["foreign_typo_key"] = 123
+        pol_digest = sha256_bytes(canonical_json_bytes(bad_pol))
+        receipt = StructuralLaunchOwnershipReceipt(
+            launch_id="launch-001",
+            execution_context_digest=ctx.digest(),
+            container_id="cont-123",
+            stage="run1",
+            attempt=1,
+            effective_policy_digest=pol_digest,
+        )
         td = TeardownDisposition(
             launch_id="launch-001",
             container_id="cont-123",
@@ -1558,8 +1579,9 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
             "timestamp": "2026-11-09T00:01:00Z",
         }
         desc = CheckpointDescriptor.from_dict(desc_data)
-        with self.assertRaises(ReferenceIntegrityError):
-            validate_structural_checkpoint_to_context(desc, ctx, self.manifest, launch_receipt=None, teardown_disposition=td)
+        with self.assertRaises(ReferenceIntegrityError) as err:
+            validate_structural_checkpoint_to_context(desc, ctx, self.manifest, launch_receipt=receipt, teardown_disposition=td)
+        self.assertIn("malformed, incomplete, or contains unknown keys", str(err.exception))
 
     def test_checkpoint_rejects_numeric_bool_type_in_effective_policy(self):
         ctx_data = {
@@ -1578,6 +1600,15 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
         ctx = ExecutionContext.from_dict(ctx_data)
         bad_pol = sample_effective_policy_dict(self.subject, "run1")
         bad_pol["read_only_root"] = 1  # int 1 instead of bool True!
+        pol_digest = sha256_bytes(canonical_json_bytes(bad_pol))
+        receipt = StructuralLaunchOwnershipReceipt(
+            launch_id="launch-001",
+            execution_context_digest=ctx.digest(),
+            container_id="cont-123",
+            stage="run1",
+            attempt=1,
+            effective_policy_digest=pol_digest,
+        )
         td = TeardownDisposition(
             launch_id="launch-001",
             container_id="cont-123",
@@ -1604,8 +1635,9 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
             "timestamp": "2026-11-09T00:01:00Z",
         }
         desc = CheckpointDescriptor.from_dict(desc_data)
-        with self.assertRaises(ReferenceIntegrityError):
-            validate_structural_checkpoint_to_context(desc, ctx, self.manifest, launch_receipt=None, teardown_disposition=td)
+        with self.assertRaises(ReferenceIntegrityError) as err:
+            validate_structural_checkpoint_to_context(desc, ctx, self.manifest, launch_receipt=receipt, teardown_disposition=td)
+        self.assertIn("must be a boolean", str(err.exception))
 
     def test_checkpoint_rejects_unknown_stage(self):
         ctx_data = {
@@ -1648,8 +1680,9 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
             "timestamp": "2026-11-09T00:01:00Z",
         }
         desc = CheckpointDescriptor.from_dict(desc_data)
-        with self.assertRaises(TypeValidationError):
+        with self.assertRaises(TypeValidationError) as err:
             validate_structural_checkpoint_to_context(desc, ctx, self.manifest)
+        self.assertIn("Unrecognized execution stage", str(err.exception))
 
     def test_checkpoint_to_context_rejects_effective_policy_contradicting_approved_subject(self):
         ctx_data = {
@@ -1703,8 +1736,227 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
             "timestamp": "2026-11-09T00:01:00Z",
         }
         desc = CheckpointDescriptor.from_dict(desc_data)
-        with self.assertRaises(ReferenceIntegrityError):
+        with self.assertRaises(ReferenceIntegrityError) as err:
             validate_structural_checkpoint_to_context(desc, ctx, self.manifest, launch_receipt=receipt, teardown_disposition=td)
+        self.assertIn("contradicts approved subject policy", str(err.exception))
+
+    def test_checkpoint_to_context_success_run3_acme(self):
+        ctx_data = {
+            "manifest_digest": self.manifest.digest(),
+            "subject_digest": self.subject.digest(),
+            "repository": self.subject.repository,
+            "run_id": self.subject.run_id,
+            "run_attempt": self.subject.run_attempt,
+            "job_key": self.subject.job_key,
+            "job_id": "999888",
+            "runner_identity": "ubuntu-24.04-runner-01",
+            "job_started_at_iso": "2026-11-09T00:00:00Z",
+            "job_started_at_epoch": 1794182400.0,
+            "platform_response_digests": {"approvals": "c" * 64},
+        }
+        ctx = ExecutionContext.from_dict(ctx_data)
+        pol = derive_expected_effective_policy(self.subject, "run3-acme", self.sample_run3_drivers)
+        receipt = StructuralLaunchOwnershipReceipt(
+            launch_id="launch-001",
+            execution_context_digest=ctx.digest(),
+            container_id="cont-123",
+            stage="run3-acme",
+            attempt=1,
+            effective_policy_digest=pol.digest(),
+        )
+        td = TeardownDisposition(
+            launch_id="launch-001",
+            container_id="cont-123",
+            containers_stopped=True,
+            containers_removed=True,
+            clean_exit=True,
+            unresolved_processes=0,
+        )
+        desc_data = {
+            "manifest_digest": self.manifest.digest(),
+            "subject_digest": self.subject.digest(),
+            "execution_context_digest": ctx.digest(),
+            "launch_id": "launch-001",
+            "stage": "run3-acme",
+            "attempt": 1,
+            "command": ["python3", "-I", "-B", "proof/run_proof.py"],
+            "exit_code": 0,
+            "outcome": "PASS",
+            "chain_id": "chain-123",
+            "compiler_sha256": "d" * 64,
+            "effective_policy": pol.to_dict(),
+            "teardown_disposition": td.to_dict(),
+            "evidence_digests": {"report.tar.gz": "e" * 64},
+            "timestamp": "2026-11-09T00:01:00Z",
+        }
+        desc = CheckpointDescriptor.from_dict(desc_data)
+        validate_structural_checkpoint_to_context(
+            desc, ctx, self.manifest,
+            launch_receipt=receipt,
+            teardown_disposition=td,
+            valid_run3_drivers=self.sample_run3_drivers,
+        )
+
+    def test_checkpoint_rejects_run3_inventory_digest_mismatch(self):
+        ctx_data = {
+            "manifest_digest": self.manifest.digest(),
+            "subject_digest": self.subject.digest(),
+            "repository": self.subject.repository,
+            "run_id": self.subject.run_id,
+            "run_attempt": self.subject.run_attempt,
+            "job_key": self.subject.job_key,
+            "job_id": "999888",
+            "runner_identity": "ubuntu-24.04-runner-01",
+            "job_started_at_iso": "2026-11-09T00:00:00Z",
+            "job_started_at_epoch": 1794182400.0,
+            "platform_response_digests": {"approvals": "c" * 64},
+        }
+        ctx = ExecutionContext.from_dict(ctx_data)
+        wrong_inventory = tuple(["acme"] + [f"foreign_driver_{i:02d}" for i in range(29)])
+        desc_data = {
+            "manifest_digest": self.manifest.digest(),
+            "subject_digest": self.subject.digest(),
+            "execution_context_digest": ctx.digest(),
+            "launch_id": "launch-001",
+            "stage": "run3-acme",
+            "attempt": 1,
+            "command": ["python3", "-I", "-B", "proof/run_proof.py"],
+            "exit_code": 0,
+            "outcome": "PASS",
+            "chain_id": "chain-123",
+            "compiler_sha256": "d" * 64,
+            "effective_policy": sample_effective_policy_dict(self.subject, "run1"),
+            "teardown_disposition": {},
+            "evidence_digests": {"report.tar.gz": "e" * 64},
+            "timestamp": "2026-11-09T00:01:00Z",
+        }
+        desc = CheckpointDescriptor.from_dict(desc_data)
+        with self.assertRaises(ReferenceIntegrityError):
+            validate_structural_checkpoint_to_context(
+                desc, ctx, self.manifest,
+                valid_run3_drivers=wrong_inventory,
+            )
+
+    def test_checkpoint_rejects_run3_inventory_with_duplicates(self):
+        ctx_data = {
+            "manifest_digest": self.manifest.digest(),
+            "subject_digest": self.subject.digest(),
+            "repository": self.subject.repository,
+            "run_id": self.subject.run_id,
+            "run_attempt": self.subject.run_attempt,
+            "job_key": self.subject.job_key,
+            "job_id": "999888",
+            "runner_identity": "ubuntu-24.04-runner-01",
+            "job_started_at_iso": "2026-11-09T00:00:00Z",
+            "job_started_at_epoch": 1794182400.0,
+            "platform_response_digests": {"approvals": "c" * 64},
+        }
+        ctx = ExecutionContext.from_dict(ctx_data)
+        duplicate_inventory = ("acme", "acme") + self.sample_run3_drivers[2:]
+        desc_data = {
+            "manifest_digest": self.manifest.digest(),
+            "subject_digest": self.subject.digest(),
+            "execution_context_digest": ctx.digest(),
+            "launch_id": "launch-001",
+            "stage": "run3-acme",
+            "attempt": 1,
+            "command": ["python3", "-I", "-B", "proof/run_proof.py"],
+            "exit_code": 0,
+            "outcome": "PASS",
+            "chain_id": "chain-123",
+            "compiler_sha256": "d" * 64,
+            "effective_policy": sample_effective_policy_dict(self.subject, "run1"),
+            "teardown_disposition": {},
+            "evidence_digests": {"report.tar.gz": "e" * 64},
+            "timestamp": "2026-11-09T00:01:00Z",
+        }
+        desc = CheckpointDescriptor.from_dict(desc_data)
+        with self.assertRaises(DuplicateKeyError):
+            validate_structural_checkpoint_to_context(
+                desc, ctx, self.manifest,
+                valid_run3_drivers=duplicate_inventory,
+            )
+
+    def test_checkpoint_rejects_unknown_run3_driver(self):
+        ctx_data = {
+            "manifest_digest": self.manifest.digest(),
+            "subject_digest": self.subject.digest(),
+            "repository": self.subject.repository,
+            "run_id": self.subject.run_id,
+            "run_attempt": self.subject.run_attempt,
+            "job_key": self.subject.job_key,
+            "job_id": "999888",
+            "runner_identity": "ubuntu-24.04-runner-01",
+            "job_started_at_iso": "2026-11-09T00:00:00Z",
+            "job_started_at_epoch": 1794182400.0,
+            "platform_response_digests": {"approvals": "c" * 64},
+        }
+        ctx = ExecutionContext.from_dict(ctx_data)
+        desc_data = {
+            "manifest_digest": self.manifest.digest(),
+            "subject_digest": self.subject.digest(),
+            "execution_context_digest": ctx.digest(),
+            "launch_id": "launch-001",
+            "stage": "run3-unknown_driver",  # Driver not in sample_run3_drivers!
+            "attempt": 1,
+            "command": ["python3", "-I", "-B", "proof/run_proof.py"],
+            "exit_code": 0,
+            "outcome": "PASS",
+            "chain_id": "chain-123",
+            "compiler_sha256": "d" * 64,
+            "effective_policy": sample_effective_policy_dict(self.subject, "run1"),
+            "teardown_disposition": {},
+            "evidence_digests": {"report.tar.gz": "e" * 64},
+            "timestamp": "2026-11-09T00:01:00Z",
+        }
+        desc = CheckpointDescriptor.from_dict(desc_data)
+        with self.assertRaises(TypeValidationError) as err:
+            validate_structural_checkpoint_to_context(
+                desc, ctx, self.manifest,
+                valid_run3_drivers=self.sample_run3_drivers,
+            )
+        self.assertIn("not in subject-bound Run 3 inventory", str(err.exception))
+
+    def test_checkpoint_rejects_malformed_run3_prefix(self):
+        ctx_data = {
+            "manifest_digest": self.manifest.digest(),
+            "subject_digest": self.subject.digest(),
+            "repository": self.subject.repository,
+            "run_id": self.subject.run_id,
+            "run_attempt": self.subject.run_attempt,
+            "job_key": self.subject.job_key,
+            "job_id": "999888",
+            "runner_identity": "ubuntu-24.04-runner-01",
+            "job_started_at_iso": "2026-11-09T00:00:00Z",
+            "job_started_at_epoch": 1794182400.0,
+            "platform_response_digests": {"approvals": "c" * 64},
+        }
+        ctx = ExecutionContext.from_dict(ctx_data)
+        for bad_stage in ("run3_acme", "acme", "run3/acme"):
+            desc_data = {
+                "manifest_digest": self.manifest.digest(),
+                "subject_digest": self.subject.digest(),
+                "execution_context_digest": ctx.digest(),
+                "launch_id": "launch-001",
+                "stage": bad_stage,
+                "attempt": 1,
+                "command": ["python3", "-I", "-B", "proof/run_proof.py"],
+                "exit_code": 0,
+                "outcome": "PASS",
+                "chain_id": "chain-123",
+                "compiler_sha256": "d" * 64,
+                "effective_policy": sample_effective_policy_dict(self.subject, "run1"),
+                "teardown_disposition": {},
+                "evidence_digests": {"report.tar.gz": "e" * 64},
+                "timestamp": "2026-11-09T00:01:00Z",
+            }
+            desc = CheckpointDescriptor.from_dict(desc_data)
+            with self.assertRaises(TypeValidationError) as err:
+                validate_structural_checkpoint_to_context(
+                    desc, ctx, self.manifest,
+                    valid_run3_drivers=self.sample_run3_drivers,
+                )
+            self.assertIn("Unrecognized execution stage", str(err.exception))
 
 
 class TestStrictPairsMapAndCheckpointImmutability(unittest.TestCase):
