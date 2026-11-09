@@ -1,0 +1,72 @@
+name: Inspect Linux proof frames
+
+on:
+  push:
+    branches:
+      - proof/pr147-format-observer-20261109
+    paths:
+      - .github/workflows/pr147-linux-frames.yml
+
+permissions:
+  contents: read
+
+jobs:
+  frames:
+    runs-on: ubuntu-24.04
+    container: crystallang/crystal:1.21.0-build
+    timeout-minutes: 30
+    env:
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: '*'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: jwaldrip/iyi
+          ref: 2cab9c2157b374d46b919f1c9779d75b92d03a1b
+          persist-credentials: false
+      - name: Build compiler
+        run: |
+          make crystal
+          make -o .build/crystal iyi
+      - name: Capture actual Linux frames
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/frame-probe"/{normal,observed,artifact,mods}
+          cat > "$RUNNER_TEMP/frame-probe/probe.iyi" <<'IYI'
+          def frame_inner(n : Int32) : Int32
+            raise "frame qualification" if n == 0
+            frame_inner(n - 1) + 1
+          end
+          frame_inner(3)
+          IYI
+          src="$RUNNER_TEMP/frame-probe/probe.iyi"
+          ./bin/iyi build -o "$RUNNER_TEMP/frame-probe/normal/probe" "$src"
+          ./bin/iyi build -Diyi_observe --emit-iyimod "$RUNNER_TEMP/frame-probe/mods" -o "$RUNNER_TEMP/frame-probe/observed/probe" "$src"
+          ./bin/iyi build -Diyi_observe --use-iyimod "$RUNNER_TEMP/frame-probe/mods" -o "$RUNNER_TEMP/frame-probe/artifact/probe" "$src"
+          for mode in normal observed artifact; do
+            set +e
+            IYI_OBSERVE="$RUNNER_TEMP/frame-probe/$mode.trace" "$RUNNER_TEMP/frame-probe/$mode/probe" >"$RUNNER_TEMP/frame-probe/$mode.stdout" 2>"$RUNNER_TEMP/frame-probe/$mode.stderr"
+            code=$?
+            set -e
+            echo "$code" > "$RUNNER_TEMP/frame-probe/$mode.exit"
+            if [ "$code" -ne 1 ]; then
+              echo "Unexpected exit $code for $mode" >&2
+              exit 1
+            fi
+            grep -q 'frame qualification' "$RUNNER_TEMP/frame-probe/$mode.stderr"
+          done
+          set +e
+          python3 bench/frames_equivalent.py "$RUNNER_TEMP/frame-probe/normal.stderr" "$RUNNER_TEMP/frame-probe/artifact.stderr" >"$RUNNER_TEMP/frame-probe/comparison.txt" 2>&1
+          code=$?
+          set -e
+          echo "$code" > "$RUNNER_TEMP/frame-probe/comparison.exit"
+          echo "Linux frame comparator exit: $code"
+          cat "$RUNNER_TEMP/frame-probe/comparison.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-frame-qualification-2cab9c215
+          path: ${{ runner.temp }}/frame-probe/
+          if-no-files-found: warn
