@@ -28,7 +28,7 @@ import io
 import json
 import lzma
 import os
-import platform
+import importlib.util
 import re
 import shutil
 import stat
@@ -61,30 +61,26 @@ class SecurityError(Exception):
     """Raised when any cryptographic, provenance, or containment check fails."""
     pass
 
-def verify_trusted_system_tool(tool_path: str, tool_name: str, expected_version_pattern: Optional[str] = None) -> str:
-    resolved = shutil.which(tool_path) or tool_path
-    if not (os.path.isfile(resolved) and os.access(resolved, os.X_OK)):
-        raise SecurityError(f"{tool_name} executable not found at '{resolved}'. Nonroot extraction requires {tool_name}.")
-
-    real_path = os.path.realpath(resolved)
-    if platform.system() == "Linux":
-        if not (real_path.startswith("/usr/bin/") or real_path.startswith("/bin/")):
-            raise SecurityError(f"{tool_name} resolved outside trusted system directories (/usr/bin, /bin): '{real_path}'")
-        st = os.stat(real_path)
-        if st.st_uid != 0:
-            raise SecurityError(f"{tool_name} at '{real_path}' is not owned by root (UID {st.st_uid} != 0)")
-        if (st.st_mode & 0o022) != 0:
-            raise SecurityError(f"{tool_name} at '{real_path}' has unsafe permissions (group/world-writable: {oct(st.st_mode)})")
-
-    if expected_version_pattern and os.path.isfile(resolved):
-        try:
-            p = subprocess.run([resolved, "--version"], capture_output=True, text=True, timeout=5)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise SecurityError(f"{tool_name} version command failed: {exc}") from exc
-        out = p.stdout + p.stderr
-        if p.returncode != 0 or not re.fullmatch(expected_version_pattern, out):
-            raise SecurityError(f"{tool_name} version mismatch or failure at '{resolved}'")
-    return resolved
+def verify_trusted_system_tool(tool_path: str, tool_name: str) -> str:
+    if not (os.path.isfile(tool_path) and os.access(tool_path, os.X_OK)):
+        raise SecurityError(f"{tool_name} executable not found at '{tool_path}'")
+    try:
+        baseline_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bpf_runner_baseline.py")
+        spec = importlib.util.spec_from_file_location("bpf_runner_baseline", baseline_path)
+        if spec is None or spec.loader is None:
+            raise ValueError("runner baseline verifier unavailable")
+        gate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gate)
+        raw = gate.BASELINE.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != gate.CENSUS_SHA256:
+            raise ValueError("census provenance hash mismatch")
+        entry = json.loads(raw)["tools"][tool_name]
+        if tool_path != entry["requested"]:
+            raise ValueError("tool path differs from reviewed census")
+        gate.check_path(entry, True)
+        return entry["canonical"]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise SecurityError(f"{tool_name} baseline verification failed: {exc}") from exc
 
 
 class StrictNoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -802,7 +798,7 @@ def safe_extract_deb(deb_path: str, output_dir: str, dpkg_deb_path: str) -> None
     Extract .deb into output_dir nonroot using /usr/bin/dpkg-deb per PlanBpfOwnedDependencies.
     No fallback internal extractor is permitted.
     """
-    resolved_dpkg = verify_trusted_system_tool(dpkg_deb_path, "dpkg-deb", r"Debian 'dpkg-deb' package archive backend version 1\.22\.6 \(amd64\)\.\nThis is free software; see the GNU General Public License version 2 or\nlater for copying conditions\. There is NO warranty\.\n")
+    resolved_dpkg = verify_trusted_system_tool(dpkg_deb_path, "dpkg-deb")
 
     cmd = [resolved_dpkg, "--extract", deb_path, output_dir]
     p = subprocess.run(cmd, capture_output=True, text=True)
@@ -971,7 +967,7 @@ def run_lock_consumer(
             f"Keyring SHA256 mismatch for {resolved_keyring}: got {actual_keyring_sha}, expected {expected_keyring_sha}"
         )
 
-    resolved_gpgv = verify_trusted_system_tool(gpgv_path, "gpgv", r"gpgv \(GnuPG\) 2\.4\.4\nlibgcrypt 1\.10\.3\nCopyright \(C\) 2024 g10 Code GmbH\nLicense GNU GPL-3\.0-or-later <https://gnu\.org/licenses/gpl\.html>\nThis is free software: you are free to change and redistribute it\.\nThere is NO WARRANTY, to the extent permitted by law\.\n")
+    resolved_gpgv = verify_trusted_system_tool(gpgv_path, "gpgv")
 
     # Use RUNNER_TEMP for private scratch
     old_umask = os.umask(0o077)

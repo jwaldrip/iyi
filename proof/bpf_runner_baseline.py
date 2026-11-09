@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Fail-closed comparison with the independently preserved runner census."""
+import errno
+import importlib.util
 import hashlib
 import json
 import os
@@ -78,6 +80,13 @@ def verify(baseline, environment, version_runner):
     for name, entry in tools.items():
         check_path(entry, True)
         if name != "sudo":
+            try:
+                os.getxattr(entry["canonical"], "security.capability")
+            except OSError as exc:
+                require(exc.errno == errno.ENODATA, f"file capability status unknown: {name}")
+            else:
+                raise ValueError(f"file capability present: {name}")
+        if name != "sudo":
             compare_version(version_runner(entry["canonical"]), entry["version"])
     check_path(baseline["clang_resource"], False)
     check_path(baseline["clang_resource_include"], False)
@@ -101,22 +110,22 @@ def verify(baseline, environment, version_runner):
         check_path(entry, True)
 
 
-def run_version(path):
-    # Files have already been matched to reviewed hashes and root-owned paths.
-    return subprocess.run([path, "--version"], stdin=subprocess.DEVNULL,
-                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                          env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"}, timeout=5, check=False)
 
 
 def main():
     raw = BASELINE.read_bytes()
     require(hashlib.sha256(raw).hexdigest() == CENSUS_SHA256, "census provenance hash mismatch")
-    verify(json.loads(raw), os.environ, run_version)
+    helper_path = Path(__file__).resolve().with_name("bpf_baseline_process.py")
+    spec = importlib.util.spec_from_file_location("bpf_baseline_process", helper_path)
+    require(spec is not None and spec.loader is not None, "version runner unavailable")
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    verify(json.loads(raw), os.environ, helper.run_version)
     print("Reviewed runner baseline matched; no privileged executable was probed")
 
 
 if __name__ == "__main__":
     try:
         main()
-    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError) as exc:
         sys.exit(f"ERROR: runner baseline prerequisite failed: {exc}")

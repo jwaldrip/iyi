@@ -42,10 +42,14 @@ class BaselineFixtures(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "file identity mismatch"):
                 gate.check_path(entry, True)
 
-    def test_version_timeout_is_not_success(self):
-        with patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("clang", 5)):
+    def test_injected_version_timeout_is_not_success(self):
+        def timeout(_path):
+            raise subprocess.TimeoutExpired("fixture", 5)
+        import errno
+        with patch.object(gate, "check_path"), \
+             patch.object(gate.os, "getxattr", side_effect=OSError(errno.ENODATA, "no data")):
             with self.assertRaises(subprocess.TimeoutExpired):
-                gate.run_version("/fake/clang")
+                gate.verify(self.baseline, {"ImageOS": "ubuntu24", "ImageVersion": "20261101.360.1"}, timeout)
 
 
 if __name__ == "__main__":
