@@ -1086,7 +1086,7 @@ def _launcher_text(pin: dict, shim_config_path: str) -> str:
     )
 
 
-def _run_one_driver(report_dir: str, pin: dict, driver: str, baseline: set[tuple[str, str, str, str]], *, driver_limit_sec: float, grace_sec: float, disk_min_gb: float, stat_fn, setup_base: str | None = None, driver_log_path: str | None = None, execute_only: bool = False) -> dict:
+def _run_one_driver(report_dir: str, pin: dict, driver: str, baseline: set[tuple[str, str, str, str]], *, driver_limit_sec: float, grace_sec: float, disk_min_gb: float, stat_fn, setup_base: str | None = None, driver_log_path: str | None = None, execute_only: bool = False, nonce: str | None = None) -> dict:
     attempt_dir = next_attempt_dir(
         os.path.join(report_dir, "run3", driver)
     )
@@ -1167,7 +1167,7 @@ def _run_one_driver(report_dir: str, pin: dict, driver: str, baseline: set[tuple
         launcher_path = os.path.join(bin_dir, "iyi")
         config_path = os.path.join(attempt_dir, "shim.json")
         ledger_path = os.path.join(attempt_dir, "ledger.jsonl")
-        nonce = secrets.token_hex(16)
+        nonce = nonce or os.environ.get("IYI_PROOF_NONCE") or secrets.token_hex(16)
         config = {
             "real": os.path.realpath(pin["compiler_path"]),
             "census": os.path.realpath(census_path),
@@ -1367,6 +1367,7 @@ def cmd_run3(args, *, drivers: Sequence[str] = DRIVERS_29, driver_limit_sec: flo
     selected = [requested_driver] if requested_driver else required
     failed = False
     execute_only = getattr(args, "execute_only", False)
+    nonce = getattr(args, "nonce", None)
     for driver in selected:
         record = _run_one_driver(
             args.report_dir,
@@ -1378,6 +1379,7 @@ def cmd_run3(args, *, drivers: Sequence[str] = DRIVERS_29, driver_limit_sec: flo
             disk_min_gb=disk_min_gb,
             stat_fn=stat_fn,
             execute_only=execute_only,
+            nonce=nonce,
         )
         print(f"Run 3 {driver}: {record['status']}")
         if record["status"] != "PASS":
@@ -1870,6 +1872,7 @@ def _parser() -> argparse.ArgumentParser:
     run3.add_argument("--report-dir", required=True)
     run3.add_argument("--driver", default="")
     run3.add_argument("--execute-only", action="store_true", default=False)
+    run3.add_argument("--nonce", default=None, help="Trusted pre-generated nonce from controller")
     return parser
 
 
