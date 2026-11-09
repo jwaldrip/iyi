@@ -432,22 +432,52 @@ while relo_idx + 8 <= len(relo_bytes):
             if insn_off % 8 != 0 or insn_off >= prog_sec_len:
                 sys.exit(f"ERROR: Invalid insn_off {insn_off} (not 8-byte aligned or >= {prog_sec_len})")
 
-        # Validate access string
+        # Validate access string grammar (colon-separated non-negative integers)
         access_str = get_btf_string(access_str_off)
-        if not access_str or not access_str[0].isdigit():
-            sys.exit(f"ERROR: Invalid CO-RE access string at offset {access_str_off}: '{access_str}'")
+        if not access_str:
+            sys.exit(f"ERROR: Empty access string at offset {access_str_off}")
+        access_parts = access_str.split(":")
+        if not access_parts or any(not p.isdigit() for p in access_parts):
+            sys.exit(f"ERROR: Invalid CO-RE access string grammar: '{access_str}' (must be colon-separated integers)")
+
+        # Walk type and member graph to prove resolution to genuine required fields
+        curr_type_id = type_id
+        resolved_field_name = None
+        for idx_str in access_parts:
+            member_idx = int(idx_str)
+            while curr_type_id in btf_types and btf_types[curr_type_id]["kind"] in (2, 8, 9, 10, 11):
+                curr_type_id = btf_types[curr_type_id]["size_or_type"]
+
+            if curr_type_id not in btf_types:
+                sys.exit(f"ERROR: Unresolved type ID {curr_type_id} in CO-RE access path '{access_str}'")
+
+            t_def = btf_types[curr_type_id]
+            if t_def["kind"] not in (4, 5):  # STRUCT, UNION
+                sys.exit(f"ERROR: Access path index on non-composite type '{t_def['name']}' (kind {t_def['kind']}) in '{access_str}'")
+
+            members = t_def.get("members", [])
+            if member_idx >= len(members):
+                sys.exit(f"ERROR: Member index {member_idx} out of range for '{t_def['name']}' (len {len(members)}) in '{access_str}'")
+
+            target_member = members[member_idx]
+            resolved_field_name = target_member["name"]
+            curr_type_id = target_member["type"]
+
+        if not resolved_field_name:
+            sys.exit(f"ERROR: Failed to resolve field name for access path '{access_str}'")
 
         # Validate kind (0..9)
         if kind not in range(0, 10):
             sys.exit(f"ERROR: Disallowed CO-RE kind: {kind}")
 
-        total_core_relocs += 1
+        if is_target_sec:
+            total_core_relocs += 1
 
 if not found_target_section:
     sys.exit("ERROR: .BTF.ext lacks relocations for 'tp_btf/sched_process_exec'")
 
 if total_core_relocs < 10:
-    sys.exit(f"ERROR: Expected >= 10 genuine CO-RE relocations, found {total_core_relocs}")
+    sys.exit(f"ERROR: Expected >= 10 genuine CO-RE relocations for tp_btf/sched_process_exec, found {total_core_relocs}")
 
 print(f"Verified genuine .BTF.ext CO-RE relocations: {total_core_relocs} valid records ({core_relo_len} bytes) for tp_btf/sched_process_exec.")
 
@@ -460,26 +490,40 @@ allowed_prefixes = [
     str(repo_path),
 ]
 
-if os.path.exists(bpf_dep):
-    with open(bpf_dep, "r", encoding="utf-8") as f:
-        dep_content = f.read().replace("\\\n", " ")
-    tokens = dep_content.split()
-    for tok in tokens[1:]:
-        if tok.endswith(".o:") or tok.endswith(":"):
-            continue
-        p = pathlib.Path(tok).resolve()
-        p_str = str(p)
-        if not any(p_str.startswith(allowed) for allowed in allowed_prefixes):
-            sys.exit(f"ERROR: BPF object included unapproved header dependency: '{tok}'")
-        if p_str.startswith(str(prefix_path)):
-            rel_hdr = str(p.relative_to(prefix_path))
-            if rel_hdr not in all_locked_headers:
-                sys.exit(f"ERROR: BPF object included unapproved header from staged prefix: '{rel_hdr}'")
-            hdr_bytes = p.read_bytes()
-            actual_hdr_sha = hashlib.sha256(hdr_bytes).hexdigest()
-            expected_hdr_info = all_locked_headers[rel_hdr]
-            if "sha256" in expected_hdr_info and actual_hdr_sha.lower() != expected_hdr_info["sha256"].lower():
-                sys.exit(f"ERROR: BPF object included header '{rel_hdr}' whose SHA256 does not match lock")
+if not os.path.exists(bpf_dep) or os.path.getsize(bpf_dep) == 0:
+    sys.exit("ERROR: BPF dependency file missing or empty")
+
+bpf_compiled_headers = {}
+with open(bpf_dep, "r", encoding="utf-8") as f:
+    dep_content = f.read().replace("\\\n", " ")
+tokens = dep_content.split()
+for tok in tokens[1:]:
+    if tok.endswith(".o:") or tok.endswith(":"):
+        continue
+    p = pathlib.Path(tok).resolve()
+    p_str = str(p)
+    if not any(p_str.startswith(allowed) for allowed in allowed_prefixes):
+        sys.exit(f"ERROR: BPF object included unapproved header dependency: '{tok}'")
+    if not p.is_file():
+        sys.exit(f"ERROR: BPF dependency '{p_str}' missing on disk")
+    hdr_bytes = p.read_bytes()
+    actual_hdr_sha = hashlib.sha256(hdr_bytes).hexdigest()
+    bpf_compiled_headers[p_str] = {
+        "sha256": actual_hdr_sha,
+        "size": len(hdr_bytes)
+    }
+    if p_str.startswith(str(prefix_path)):
+        rel_hdr = str(p.relative_to(prefix_path))
+        if rel_hdr not in all_locked_headers:
+            sys.exit(f"ERROR: BPF object included unapproved header from staged prefix: '{rel_hdr}'")
+        expected_hdr_info = all_locked_headers[rel_hdr]
+        if "sha256" in expected_hdr_info and actual_hdr_sha.lower() != expected_hdr_info["sha256"].lower():
+            sys.exit(f"ERROR: BPF object included header '{rel_hdr}' whose SHA256 does not match lock")
+
+if len(sys.argv) > 8 and sys.argv[8]:
+    (pathlib.Path(sys.argv[8]) / "bpf-compiled-headers.json").write_text(
+        json.dumps(bpf_compiled_headers, indent=2)
+    )
 PY
 }
 
@@ -617,35 +661,42 @@ allowed_prefixes = [
     str(repo_path),
 ]
 
-compiled_source_header_digests = {}
+# Load bpf-compiled-headers.json if present and merge
+bpf_headers_file = pathlib.Path(owned_dir) / "bpf-compiled-headers.json"
+bpf_compiled = {}
+if bpf_headers_file.is_file():
+    bpf_compiled = json.loads(bpf_headers_file.read_text(encoding="utf-8"))
 
-if os.path.exists(host_dep):
-    with open(host_dep, "r", encoding="utf-8") as f:
-        dep_content = f.read().replace("\\\n", " ")
-    tokens = dep_content.split()
-    for tok in tokens[1:]:
-        if tok.endswith(".o:") or tok.endswith(":"):
-            continue
-        p = pathlib.Path(tok).resolve()
-        p_str = str(p)
-        if not any(p_str.startswith(allowed) for allowed in allowed_prefixes):
-            sys.exit(f"ERROR: Host helper included unapproved dependency from untrusted path: '{tok}'")
-        if p.is_file():
-            hdr_bytes = p.read_bytes()
-            actual_hdr_sha = hashlib.sha256(hdr_bytes).hexdigest()
-            compiled_source_header_digests[p_str] = {
-                "sha256": actual_hdr_sha,
-                "size": len(hdr_bytes)
-            }
-            if p_str.startswith(str(prefix_path)):
-                rel_hdr = str(p.relative_to(prefix_path))
-                if rel_hdr not in all_locked_headers:
-                    sys.exit(f"ERROR: Host helper included unapproved header from staged prefix: '{rel_hdr}'")
-                expected_hdr_info = all_locked_headers[rel_hdr]
-                if "sha256" in expected_hdr_info and actual_hdr_sha.lower() != expected_hdr_info["sha256"].lower():
-                    sys.exit(f"ERROR: Host helper included header '{rel_hdr}' whose SHA256 does not match lock")
-        else:
-            sys.exit(f"ERROR: Host dependency '{p_str}' missing on disk during graph validation")
+compiled_source_header_digests = {**bpf_compiled}
+
+if not os.path.exists(host_dep) or os.path.getsize(host_dep) == 0:
+    sys.exit("ERROR: Host helper dependency file missing or empty")
+
+with open(host_dep, "r", encoding="utf-8") as f:
+    dep_content = f.read().replace("\\\n", " ")
+tokens = dep_content.split()
+for tok in tokens[1:]:
+    if tok.endswith(".o:") or tok.endswith(":"):
+        continue
+    p = pathlib.Path(tok).resolve()
+    p_str = str(p)
+    if not any(p_str.startswith(allowed) for allowed in allowed_prefixes):
+        sys.exit(f"ERROR: Host helper included unapproved dependency from untrusted path: '{tok}'")
+    if not p.is_file():
+        sys.exit(f"ERROR: Host dependency '{p_str}' missing on disk")
+    hdr_bytes = p.read_bytes()
+    actual_hdr_sha = hashlib.sha256(hdr_bytes).hexdigest()
+    compiled_source_header_digests[p_str] = {
+        "sha256": actual_hdr_sha,
+        "size": len(hdr_bytes)
+    }
+    if p_str.startswith(str(prefix_path)):
+        rel_hdr = str(p.relative_to(prefix_path))
+        if rel_hdr not in all_locked_headers:
+            sys.exit(f"ERROR: Host helper included unapproved header from staged prefix: '{rel_hdr}'")
+        expected_hdr_info = all_locked_headers[rel_hdr]
+        if "sha256" in expected_hdr_info and actual_hdr_sha.lower() != expected_hdr_info["sha256"].lower():
+            sys.exit(f"ERROR: Host helper included header '{rel_hdr}' whose SHA256 does not match lock")
 
 (pathlib.Path(owned_dir) / "compiled-headers.json").write_text(
     json.dumps(compiled_source_header_digests, indent=2)
@@ -766,12 +817,8 @@ VERBOSE=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --lock)
-      LOCK_FILE="$2"
-      shift 2
-      ;;
-    --dependency-script|--prefix|--receipt)
-      echo "ERROR: Option '$1' is forbidden; exact approved repository consumer proof/bpf_dependencies.py is bound" >&2
+    --lock|--dependency-script|--prefix|--receipt)
+      echo "ERROR: Option '$1' is forbidden; exact approved repository lock and consumer are pinned" >&2
       exit 1
       ;;
     --owned-dir)
@@ -979,7 +1026,7 @@ if [ ! -f "$HOST_BIN" ] || [ ! -x "$HOST_BIN" ]; then
 fi
 
 # 5. Section 5: Unprivileged readelf inspection and fail-closed artifact validation
-validate_bpf_obj_main "$READELF_BIN" "$BPF_OBJ" "$BPF_DEP" "$CLANG_RESOURCE" "$STAGED_PREFIX" "$REPO_ROOT" "$LOCK_FILE"
+validate_bpf_obj_main "$READELF_BIN" "$BPF_OBJ" "$BPF_DEP" "$CLANG_RESOURCE" "$STAGED_PREFIX" "$REPO_ROOT" "$LOCK_FILE" "$OWNED_DIR"
 validate_host_elf_main "$READELF_BIN" "$HOST_BIN" "$HOST_DEP" "$CLANG_RESOURCE" "$STAGED_PREFIX" "$REPO_ROOT" "$OWNED_DIR" "$LOCK_FILE"
 
 # Bind diagnostic build record JSON (Section 5)

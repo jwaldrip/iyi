@@ -352,24 +352,32 @@ static int verify_restricted_privileges(int verbose, struct probe_report *r) {
   uint64_t cap_inh =
       ((uint64_t)data[1].inheritable << 32) | (uint64_t)data[0].inheritable;
 
-  // Query bounding set
+  // Query bounding set (only EINVAL is accepted for end beyond supported cap)
   uint64_t cap_bnd = 0;
   for (int cap = 0; cap <= 63; cap++) {
     int ret = prctl(PR_CAPBSET_READ, cap, 0, 0, 0);
     if (ret < 0) {
-      break;
+      if (errno == EINVAL) {
+        break;
+      }
+      perror("[bpf_canary_host] prctl(PR_CAPBSET_READ) unexpected error");
+      return -1;
     }
     if (ret == 1) {
       cap_bnd |= (1ULL << cap);
     }
   }
 
-  // Query ambient set
+  // Query ambient set (only EINVAL is accepted for end beyond supported cap)
   uint64_t cap_amb = 0;
   for (int cap = 0; cap <= 63; cap++) {
     int ret = prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_IS_SET, cap, 0, 0);
     if (ret < 0) {
-      break;
+      if (errno == EINVAL) {
+        break;
+      }
+      perror("[bpf_canary_host] prctl(PR_CAP_AMBIENT) unexpected error");
+      return -1;
     }
     if (ret == 1) {
       cap_amb |= (1ULL << cap);
