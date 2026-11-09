@@ -1490,17 +1490,29 @@ class ExecutionContext:
 
 @dataclasses.dataclass(frozen=True)
 class TeardownDisposition:
-    """Closed, typed teardown disposition observed during container lifecycle cleanup."""
+    """
+    Closed, typed teardown disposition observed during container lifecycle cleanup,
+    bound to specific launch and container identities.
+    """
+    launch_id: str
+    container_id: str
     containers_stopped: bool
     containers_removed: bool
     clean_exit: bool
     unresolved_processes: int = 0
 
     _ALLOWED_KEYS = {
-        "containers_stopped", "containers_removed", "clean_exit", "unresolved_processes"
+        "launch_id", "container_id", "containers_stopped", "containers_removed",
+        "clean_exit", "unresolved_processes"
     }
 
     def __post_init__(self) -> None:
+        require_ascii_str(self.launch_id, "launch_id")
+        if not self.launch_id:
+            raise TypeValidationError("launch_id cannot be empty")
+        require_ascii_str(self.container_id, "container_id")
+        if not self.container_id:
+            raise TypeValidationError("container_id cannot be empty")
         require_bool(self.containers_stopped, "containers_stopped")
         require_bool(self.containers_removed, "containers_removed")
         require_bool(self.clean_exit, "clean_exit")
@@ -1513,6 +1525,8 @@ class TeardownDisposition:
         if missing:
             raise TypeValidationError(f"TeardownDisposition missing required keys: {sorted(missing)}")
         return cls(
+            launch_id=require_ascii_str(data["launch_id"], "launch_id"),
+            container_id=require_ascii_str(data["container_id"], "container_id"),
             containers_stopped=require_bool(data["containers_stopped"], "containers_stopped"),
             containers_removed=require_bool(data["containers_removed"], "containers_removed"),
             clean_exit=require_bool(data["clean_exit"], "clean_exit"),
@@ -1521,6 +1535,12 @@ class TeardownDisposition:
 
     def to_dict(self) -> Dict[str, Any]:
         return dataclasses.asdict(self)
+
+    def canonical_bytes(self) -> bytes:
+        return canonical_json_bytes(self.to_dict())
+
+    def digest(self) -> str:
+        return sha256_bytes(self.canonical_bytes())
 
     def is_resolved(self) -> bool:
         """A resolved teardown has stopped and removed all containers with clean exit and zero unresolved processes."""
@@ -1533,8 +1553,12 @@ class TeardownDisposition:
 
 
 @dataclasses.dataclass(frozen=True)
-class LaunchOwnershipReceipt:
-    """C-owned authenticated launch and container ownership receipt."""
+class StructuralLaunchOwnershipReceipt:
+    """
+    Structural reference for container launch and ownership observations.
+    Note: A structural receipt does NOT constitute authenticated authority until
+    produced and verified by a C-owned container supervisor session.
+    """
     launch_id: str
     execution_context_digest: str
     container_id: str
@@ -1549,18 +1573,22 @@ class LaunchOwnershipReceipt:
 
     def __post_init__(self) -> None:
         require_ascii_str(self.launch_id, "launch_id")
+        if not self.launch_id:
+            raise TypeValidationError("launch_id cannot be empty")
         require_sha256(self.execution_context_digest, "execution_context_digest")
         require_ascii_str(self.container_id, "container_id")
+        if not self.container_id:
+            raise TypeValidationError("container_id cannot be empty")
         require_ascii_str(self.stage, "stage")
         require_int(self.attempt, "attempt", min_val=1)
         require_sha256(self.effective_policy_digest, "effective_policy_digest")
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> LaunchOwnershipReceipt:
-        require_dict(data, "LaunchOwnershipReceipt", cls._ALLOWED_KEYS)
+    def from_dict(cls, data: Dict[str, Any]) -> StructuralLaunchOwnershipReceipt:
+        require_dict(data, "StructuralLaunchOwnershipReceipt", cls._ALLOWED_KEYS)
         missing = cls._ALLOWED_KEYS - set(data.keys())
         if missing:
-            raise TypeValidationError(f"LaunchOwnershipReceipt missing keys: {sorted(missing)}")
+            raise TypeValidationError(f"StructuralLaunchOwnershipReceipt missing keys: {sorted(missing)}")
         return cls(
             launch_id=require_ascii_str(data["launch_id"], "launch_id"),
             execution_context_digest=require_sha256(data["execution_context_digest"], "execution_context_digest"),
@@ -1578,7 +1606,6 @@ class LaunchOwnershipReceipt:
 
     def digest(self) -> str:
         return sha256_bytes(self.canonical_bytes())
-
 
 @dataclasses.dataclass(frozen=True)
 class CheckpointDescriptor:
@@ -1745,7 +1772,7 @@ def validate_checkpoint_to_context(
     context: ExecutionContext,
     manifest: ProofManifest,
     *,
-    launch_receipt: Optional[LaunchOwnershipReceipt] = None,
+    launch_receipt: Optional[StructuralLaunchOwnershipReceipt] = None,
     teardown_disposition: Optional[TeardownDisposition] = None,
 ) -> None:
     """
@@ -1780,10 +1807,10 @@ def validate_checkpoint_to_context(
             f"CheckpointDescriptor execution_context_digest mismatch: expected {ctx_digest}, got {checkpoint.execution_context_digest}"
         )
 
-    # If launch receipt provided, verify exact launch ownership bindings
+    # Validate launch receipt if provided or required
     if launch_receipt is not None:
-        if not isinstance(launch_receipt, LaunchOwnershipReceipt):
-            raise TypeValidationError(f"Expected LaunchOwnershipReceipt, got {type(launch_receipt).__name__}")
+        if not isinstance(launch_receipt, StructuralLaunchOwnershipReceipt):
+            raise TypeValidationError(f"Expected StructuralLaunchOwnershipReceipt, got {type(launch_receipt).__name__}")
         if launch_receipt.launch_id != checkpoint.launch_id:
             raise ReferenceIntegrityError(
                 f"Checkpoint launch_id ({checkpoint.launch_id}) does not match launch_receipt ({launch_receipt.launch_id})"
@@ -1795,13 +1822,45 @@ def validate_checkpoint_to_context(
         if launch_receipt.attempt != checkpoint.attempt:
             raise ReferenceIntegrityError(f"launch_receipt attempt mismatch: {launch_receipt.attempt} != {checkpoint.attempt}")
 
+        # Enforce effective policy digest comparison
+        checkpoint_policy_digest = sha256_bytes(canonical_json_bytes(dict(checkpoint.effective_policy)))
+        if launch_receipt.effective_policy_digest != checkpoint_policy_digest:
+            raise ReferenceIntegrityError(
+                f"launch_receipt effective_policy_digest ({launch_receipt.effective_policy_digest}) "
+                f"does not match checkpoint effective_policy digest ({checkpoint_policy_digest})"
+            )
+
+    # Validate teardown disposition if provided
+    if teardown_disposition is not None:
+        if not isinstance(teardown_disposition, TeardownDisposition):
+            raise TypeValidationError(f"Expected TeardownDisposition, got {type(teardown_disposition).__name__}")
+        if teardown_disposition.launch_id != checkpoint.launch_id:
+            raise ReferenceIntegrityError(
+                f"TeardownDisposition launch_id ({teardown_disposition.launch_id}) does not match checkpoint ({checkpoint.launch_id})"
+            )
+        if launch_receipt is not None and teardown_disposition.container_id != launch_receipt.container_id:
+            raise ReferenceIntegrityError(
+                f"TeardownDisposition container_id ({teardown_disposition.container_id}) does not match launch_receipt ({launch_receipt.container_id})"
+            )
+        # Ensure checkpoint retained teardown does not contradict supplied disposition
+        if checkpoint.teardown_disposition:
+            checkpoint_td = TeardownDisposition.from_dict(dict(checkpoint.teardown_disposition))
+            if checkpoint_td != teardown_disposition:
+                raise ReferenceIntegrityError(
+                    f"Checkpoint retained teardown_disposition contradicts supplied TeardownDisposition: "
+                    f"{checkpoint_td} != {teardown_disposition}"
+                )
+
     # Enforce outcome and teardown consistency
     if checkpoint.outcome == "PASS":
         if checkpoint.exit_code != 0:
             raise ReferenceIntegrityError(
                 f"Checkpoint PASS outcome inconsistent with non-zero exit_code: {checkpoint.exit_code}"
             )
-        # On PASS, teardown disposition MUST be provided and fully resolved
+        # PASS strictly requires a valid StructuralLaunchOwnershipReceipt
+        if launch_receipt is None:
+            raise ReferenceIntegrityError("Checkpoint PASS requires a valid StructuralLaunchOwnershipReceipt")
+        # PASS strictly requires an explicit, verified, resolved TeardownDisposition
         td_to_check = teardown_disposition
         if td_to_check is None and checkpoint.teardown_disposition:
             try:
