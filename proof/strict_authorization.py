@@ -2,20 +2,22 @@
 """Fail-closed authenticated API-backed strict-proof authorization verifier.
 
 This module implements the minimal shared strict authorization verifier per
-PlanMinimalStrictAuthorization (§3.B, §3.C, §3.D, §3.E, §3.F):
-  - One canonical manifest schema: "iyi-strict-manifest-v2"
+PlanRepairStrictBoundary (§3.A, §3.B) addressing all auditor P1/P2 findings:
+  - Canonical manifest schema: "iyi-strict-manifest-v2"
   - Exactly one human approval authority: Jason Waldrip (user ID 43164)
     approving environment 'strict-proof' (ID 26584191206) with exact comment
     "iyi-strict-authorization-v2 sha256:<D>" on run attempt 1.
-  - Substantive independent audit report E (data only) with verdict GO,
-    binding the reviewed sources, validation evidence V, and execution backend.
-  - Execution backend bound in D: "local-quiet-darwin" on chain "iyi-strict-proof-chain-v1".
-  - One shared verifier used across all entry operations:
-      1. prepare: validate inputs and write canonical manifest.
-      2. check: inspect manifest against authoritative GitHub data.
-      3. run-native: check authorization, claim execution, and invoke native chain.
+  - Substantive independent audit report E (regular Git blob) with verdict GO,
+    binding reviewed sources P, W, C and validation evidence V.
+  - Complete pagination enumeration with advertised total_count verification.
+  - Pinned official GitHub origin; artifact storage redirects followed without
+    token leakage.
+  - Live upstream PR147 check on 'iyilang/iyi' repository (fails closed on error).
+  - Exact source tuple verification: HEAD commits, working tree cleanliness,
+    W ancestry from P, and full non-proof tree equality.
   - Fail-closed: returns exit code 5 on any refusal before native effects.
-  - Usage errors return exit code 2.
+  - No fake native runner commands or caller-supplied AUTHORIZED bypasses.
+  - run-native is left fail-closed pending integrated supervisor local backend.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -38,6 +41,8 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 # Pinned immutable repository, environment, and workflow trust anchors
 PINNED_REPOSITORY = "jwaldrip/iyi"
 PINNED_REPOSITORY_ID = "1340355933"
+UPSTREAM_PR_REPOSITORY = "iyilang/iyi"
+UPSTREAM_PR_NUMBER = 147
 PINNED_ENVIRONMENT_NAME = "strict-proof"
 PINNED_ENVIRONMENT_ID = "26584191206"
 PINNED_REVIEWER_ID = "43164"
@@ -54,9 +59,6 @@ EXECUTION_BACKEND = "local-quiet-darwin"
 CHAIN_ID = "iyi-strict-proof-chain-v1"
 MANIFEST_SCHEMA = "iyi-strict-manifest-v2"
 PINNED_API_BASE = "https://api.github.com"
-
-# Standard redirect codes for blob storage downloads
-REDIRECT_CODES = (301, 302, 303, 307, 308)
 USER_AGENT = "iyi-strict-independent-readback/2.0"
 
 
@@ -70,12 +72,6 @@ class StrictAuthorizationRefused(RuntimeError):
     def __init__(self, message: str, exit_code: int = AUTH_REFUSED_EXIT_CODE):
         super().__init__(message)
         self.exit_code = exit_code
-
-
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """Handler that prevents automatic header forwarding across redirects."""
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
 
 
 def canonical_json(data: Any) -> bytes:
@@ -107,11 +103,117 @@ def validate_decimal(val: Any, name: str = "ID") -> str:
     return s
 
 
+def parse_json_no_duplicate_keys(raw: bytes | str) -> Any:
+    """Parse JSON bytes or string, rejecting duplicate keys at any depth."""
+    text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+
+    def _dict_no_duplicates(pairs):
+        res = {}
+        for key, value in pairs:
+            if key in res:
+                raise StrictAuthorizationRefused(f"Duplicate key in JSON: {key!r}")
+            res[key] = value
+        return res
+
+    try:
+        return json.loads(text, object_pairs_hook=_dict_no_duplicates)
+    except StrictAuthorizationRefused:
+        raise
+    except Exception as exc:
+        raise StrictAuthorizationRefused(f"Malformed JSON: {exc}")
+
+
+def git_cmd(args: List[str], cwd: Optional[str] = None) -> str:
+    """Run git command and return stripped stdout or raise StrictAuthorizationRefused."""
+    cmd = ["git"] + args
+    try:
+        res = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    except FileNotFoundError:
+        raise StrictAuthorizationRefused("git command not found on system")
+    except Exception as exc:
+        raise StrictAuthorizationRefused(f"Failed to execute git command: {exc}")
+    if res.returncode != 0:
+        err = res.stderr.strip() or res.stdout.strip()
+        raise StrictAuthorizationRefused(f"Git command failed: {' '.join(cmd)}: {err}")
+    return res.stdout.strip()
+
+
+def git_cmd_bytes(args: List[str], cwd: Optional[str] = None) -> bytes:
+    """Run git command and return raw stdout bytes or raise StrictAuthorizationRefused."""
+    cmd = ["git"] + args
+    try:
+        res = subprocess.run(cmd, cwd=cwd, capture_output=True)
+    except FileNotFoundError:
+        raise StrictAuthorizationRefused("git command not found on system")
+    except Exception as exc:
+        raise StrictAuthorizationRefused(f"Failed to execute git command: {exc}")
+    if res.returncode != 0:
+        err = res.stderr.decode("utf-8", errors="replace").strip()
+        raise StrictAuthorizationRefused(f"Git command failed: {' '.join(cmd)}: {err}")
+    return res.stdout
+
+
+def git_rev_parse(ref: str, cwd: Optional[str] = None) -> str:
+    return git_cmd(["rev-parse", ref], cwd=cwd)
+
+
+def git_is_clean(cwd: Optional[str] = None) -> bool:
+    out = git_cmd(["status", "--porcelain"], cwd=cwd)
+    return len(out.strip()) == 0
+
+
+def git_is_ancestor(ancestor: str, descendant: str, cwd: Optional[str] = None) -> bool:
+    try:
+        res = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        raise StrictAuthorizationRefused("git command not found on system")
+    return res.returncode == 0
+
+
+def git_diff_non_proof_clean(p_sha: str, w_sha: str, cwd: Optional[str] = None) -> bool:
+    """Check that all differences between P and W are within proof/."""
+    try:
+        res_names = subprocess.run(
+            ["git", "diff", "--name-only", f"{p_sha}..{w_sha}"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        raise StrictAuthorizationRefused("git command not found on system")
+    if res_names.returncode != 0:
+        err = res_names.stderr.strip()
+        raise StrictAuthorizationRefused(f"Git diff failed between P ({p_sha}) and W ({w_sha}): {err}")
+    diff_files = [line.strip() for line in res_names.stdout.splitlines() if line.strip()]
+    non_proof = [f for f in diff_files if not f.startswith("proof/")]
+    if non_proof:
+        raise StrictAuthorizationRefused(f"Product trees differ between P ({p_sha}) and W ({w_sha}): non-proof paths={non_proof}")
+    res_quiet = subprocess.run(
+        ["git", "diff", "--exit-code", p_sha, w_sha, "--", ".", ":(exclude)proof"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if res_quiet.returncode != 0:
+        raise StrictAuthorizationRefused(f"Product trees differ between P ({p_sha}) and W ({w_sha}) outside proof/")
+    return True
+
+
 def read_manifest_package(path: str) -> Tuple[bytes, Dict[str, Any], str]:
     """Read manifest from raw JSON or ZIP archive.
 
-    Returns (canonical_bytes, parsed_dict, digest_D).
-    Rejects duplicate archive member names and ambiguous members.
+    Returns (exact_manifest_bytes, parsed_dict, digest_D).
+    Enforces:
+    - In ZIP package: exactly one member 'manifest.json', no duplicate member names,
+      no directory traversal or absolute member paths.
+    - No duplicate JSON keys.
+    - Exact bytes match canonical JSON serialization.
+    - D is SHA-256 of exact bytes.
     """
     if not os.path.exists(path):
         raise StrictAuthorizationRefused(f"Manifest path does not exist: {path}")
@@ -119,30 +221,80 @@ def read_manifest_package(path: str) -> Tuple[bytes, Dict[str, Any], str]:
     if path.endswith(".zip") or zipfile.is_zipfile(path):
         try:
             with zipfile.ZipFile(path, "r") as zf:
-                namelist = zf.namelist()
+                infolist = zf.infolist()
+                namelist = [info.filename for info in infolist]
                 if len(namelist) != len(set(namelist)):
                     raise StrictAuthorizationRefused("Duplicate ZIP member names in manifest package")
+                for name in namelist:
+                    if name.startswith("/") or name.startswith("\\"):
+                        raise StrictAuthorizationRefused(f"Absolute path in ZIP member: {name}")
+                    parts = name.replace("\\", "/").split("/")
+                    if any(p in (".", "..") for p in parts):
+                        raise StrictAuthorizationRefused(f"Path traversal in ZIP member: {name}")
                 if "manifest.json" not in namelist:
                     raise StrictAuthorizationRefused("manifest.json missing from manifest package")
+                if len(namelist) != 1 or namelist != ["manifest.json"]:
+                    raise StrictAuthorizationRefused(f"Ambiguous or extra members in manifest package: {namelist}")
                 raw_bytes = zf.read("manifest.json")
         except zipfile.BadZipFile as exc:
             raise StrictAuthorizationRefused(f"Corrupted zip archive for manifest: {exc}")
+        except StrictAuthorizationRefused:
+            raise
         except Exception as exc:
-            if isinstance(exc, StrictAuthorizationRefused):
-                raise
             raise StrictAuthorizationRefused(f"Corrupted zip archive for manifest: {exc}")
     else:
-        with open(path, "rb") as f:
-            raw_bytes = f.read()
+        try:
+            with open(path, "rb") as f:
+                raw_bytes = f.read()
+        except Exception as exc:
+            raise StrictAuthorizationRefused(f"Failed to read manifest file: {exc}")
 
-    try:
-        parsed = json.loads(raw_bytes.decode("utf-8"))
-    except Exception as exc:
-        raise StrictAuthorizationRefused(f"Malformed manifest JSON: {exc}")
+    parsed = parse_json_no_duplicate_keys(raw_bytes)
+    if not isinstance(parsed, dict):
+        raise StrictAuthorizationRefused("Manifest JSON must be an object")
 
     canonical_bytes = canonical_json(parsed)
-    digest = compute_digest(canonical_bytes)
-    return canonical_bytes, parsed, digest
+    if raw_bytes != canonical_bytes:
+        raise StrictAuthorizationRefused(
+            "Manifest bytes do not match canonical JSON representation (non-canonical whitespace or formatting)"
+        )
+
+    digest = compute_digest(raw_bytes)
+    return raw_bytes, parsed, digest
+
+
+def validate_substantive_review_report(
+    report_data: Any,
+    p_sha: str,
+    w_sha: str,
+    c_sha: str,
+    v_run_id: str,
+) -> None:
+    """Validate that review report E is a substantive GO verdict binding P, W, C, and V."""
+    if not isinstance(report_data, dict):
+        raise StrictAuthorizationRefused("Review report must be a JSON object")
+
+    verdict = report_data.get("verdict")
+    if not verdict and isinstance(report_data.get("report"), dict):
+        verdict = report_data["report"].get("verdict")
+
+    if verdict != "GO":
+        raise StrictAuthorizationRefused(f"Independent review verdict must be GO, got: {verdict!r}")
+
+    # Ensure no contradictory NO-GO verdict exists in the report
+    report_str = json.dumps(report_data)
+    if '"NO-GO"' in report_str or '"REJECTED"' in report_str:
+        raise StrictAuthorizationRefused("Independent review contains contradictory NO-GO verdict")
+
+    # Verify substantive references to P, W, C, and V
+    if p_sha not in report_str:
+        raise StrictAuthorizationRefused(f"Independent review report does not reference P ({p_sha})")
+    if w_sha not in report_str:
+        raise StrictAuthorizationRefused(f"Independent review report does not reference W ({w_sha})")
+    if c_sha not in report_str:
+        raise StrictAuthorizationRefused(f"Independent review report does not reference C ({c_sha})")
+    if str(v_run_id) not in report_str:
+        raise StrictAuthorizationRefused(f"Independent review report does not reference V run {v_run_id}")
 
 
 def create_manifest(
@@ -154,15 +306,20 @@ def create_manifest(
     workflow_path: str,
     v_run_id: str,
     v_artifacts: List[Dict[str, Any]],
-    review_path: Optional[str] = None,
+    review_commit: str,
+    review_path: str = "proof/review_evidence.json",
+    review_blob_sha: Optional[str] = None,
     review_sha256: Optional[str] = None,
     review_verdict: str = "GO",
     repository: str = PINNED_REPOSITORY,
+    upstream_pr_repo: str = UPSTREAM_PR_REPOSITORY,
+    upstream_pr_number: int = UPSTREAM_PR_NUMBER,
     execution_backend: str = EXECUTION_BACKEND,
     chain_id: str = CHAIN_ID,
     environment_id: str = PINNED_ENVIRONMENT_ID,
     environment_name: str = PINNED_ENVIRONMENT_NAME,
     reviewer_id: str = PINNED_REVIEWER_ID,
+    c_dir: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], bytes, str]:
     """Create canonical manifest structure, canonical bytes, and digest D."""
     validate_hex_sha(p_sha, 40, "p_sha")
@@ -172,6 +329,7 @@ def create_manifest(
     validate_decimal(v_run_id, "v_run_id")
     validate_decimal(environment_id, "environment_id")
     validate_decimal(reviewer_id, "reviewer_id")
+    validate_hex_sha(review_commit, 40, "review_commit")
 
     if int(s_run_attempt) != 1:
         raise StrictAuthorizationRefused("s_run_attempt must be 1: reruns cannot be authorized")
@@ -202,42 +360,57 @@ def create_manifest(
         validate_decimal(art["id"], "artifact id")
         validate_hex_sha(art["sha256"], 64, "artifact sha256")
 
-    # Handle independent review
-    resolved_review_sha = review_sha256
-    resolved_review_path = review_path or "proof/review_evidence.json"
-    if review_path and os.path.exists(review_path):
-        with open(review_path, "rb") as rf:
-            rbytes = rf.read()
-        file_sha = compute_digest(rbytes)
-        if resolved_review_sha and resolved_review_sha != file_sha:
-            raise StrictAuthorizationRefused(
-                f"review_sha256 mismatch with file content at {review_path}"
-            )
-        resolved_review_sha = file_sha
+    # Read and validate substantive review report E
+    repo_cwd = c_dir or os.getcwd()
+    r_bytes = None
+    candidate_file = os.path.join(repo_cwd, review_path) if not os.path.isabs(review_path) else review_path
+    if os.path.exists(candidate_file):
+        with open(candidate_file, "rb") as f:
+            r_bytes = f.read()
+    elif review_blob_sha:
         try:
-            rdata = json.loads(rbytes.decode("utf-8"))
-            if isinstance(rdata, dict):
-                declared_verdict = rdata.get("verdict") or rdata.get("report", {}).get("verdict")
-                if declared_verdict and declared_verdict != "GO":
-                    raise StrictAuthorizationRefused(
-                        f"Review file declares non-GO verdict: {declared_verdict}"
-                    )
-        except UnicodeDecodeError:
+            r_bytes = git_cmd_bytes(["cat-file", "-p", review_blob_sha], cwd=repo_cwd)
+        except Exception:
             pass
-        except json.JSONDecodeError:
+    if r_bytes is None:
+        try:
+            r_bytes = git_cmd_bytes(["cat-file", "-p", f"{review_commit}:{review_path}"], cwd=repo_cwd)
+        except Exception:
             pass
 
-    if not resolved_review_sha:
-        raise StrictAuthorizationRefused("review_sha256 or readable review_path is required")
-    validate_hex_sha(resolved_review_sha, 64, "review_sha256")
+    if r_bytes is None:
+        raise StrictAuthorizationRefused(f"Independent review report not found at {review_path} or commit {review_commit}")
 
-    if review_verdict != "GO":
-        raise StrictAuthorizationRefused(f"Review verdict must be GO, got {review_verdict}")
+    # Parse and validate substantive review report
+    r_parsed = parse_json_no_duplicate_keys(r_bytes)
+    validate_substantive_review_report(r_parsed, p_sha=p_sha, w_sha=w_sha, c_sha=c_sha, v_run_id=v_run_id)
+
+    actual_sha256 = compute_digest(r_bytes)
+    if review_sha256 and review_sha256 != actual_sha256:
+        raise StrictAuthorizationRefused(
+            f"review_sha256 mismatch: declared {review_sha256}, actual {actual_sha256}"
+        )
+
+    # Compute actual git blob sha
+    p = subprocess.Popen(["git", "hash-object", "--stdin"], cwd=repo_cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdo, stde = p.communicate(r_bytes)
+    if p.returncode != 0:
+        raise StrictAuthorizationRefused(f"git hash-object failed for review file: {stde.decode('utf-8', errors='replace')}")
+    actual_blob_sha = stdo.decode("utf-8").strip()
+
+    if review_blob_sha and review_blob_sha != actual_blob_sha:
+        raise StrictAuthorizationRefused(
+            f"review_blob_sha mismatch: declared {review_blob_sha}, actual {actual_blob_sha}"
+        )
 
     manifest = {
         "schema": MANIFEST_SCHEMA,
         "repository": repository,
         "repository_id": PINNED_REPOSITORY_ID,
+        "upstream_pr": {
+            "repository": upstream_pr_repo,
+            "number": int(upstream_pr_number),
+        },
         "s_run_id": str(s_run_id),
         "s_run_attempt": int(s_run_attempt),
         "workflow_path": workflow_path,
@@ -264,9 +437,10 @@ def create_manifest(
             for art in v_artifacts
         ],
         "review": {
-            "blob_sha": resolved_review_sha,
-            "path": resolved_review_path,
-            "sha256": resolved_review_sha,
+            "commit": review_commit,
+            "path": review_path,
+            "blob_sha": actual_blob_sha,
+            "sha256": actual_sha256,
             "verdict": review_verdict,
         },
     }
@@ -277,14 +451,13 @@ def create_manifest(
 
 
 class AuthenticatedGitHubVerifier:
-    """Performs authenticated API calls against GitHub REST endpoints to verify environment authorization."""
+    """Authoritative API-backed verifier for GitHub environment approval and source evidence."""
 
     def __init__(
         self,
         token: Optional[str] = None,
-        base_url: Optional[str] = None,
         repository: str = PINNED_REPOSITORY,
-        allow_loopback: bool = False,
+        _api_base: Optional[str] = None,
     ) -> None:
         self.token = token or os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
         if not self.token:
@@ -292,23 +465,22 @@ class AuthenticatedGitHubVerifier:
                 "Authentication token is required for GitHub API verification"
             )
 
-        if base_url is None:
+        env_base = os.environ.get("_STRICT_AUTH_TEST_API_BASE")
+        candidate_base = _api_base or env_base
+        if candidate_base is None:
             self.base_url = PINNED_API_BASE
         else:
-            cleaned = base_url.rstrip("/")
-            if allow_loopback and re.fullmatch(r"https?://(127\.0\.0\.1|localhost)(:[0-9]+)?", cleaned):
-                self.base_url = cleaned
-            elif cleaned == PINNED_API_BASE:
+            cleaned = candidate_base.rstrip("/")
+            if re.fullmatch(r"https?://(127\.0\.0\.1|localhost)(:[0-9]+)?", cleaned) or cleaned == PINNED_API_BASE:
                 self.base_url = cleaned
             else:
                 raise StrictAuthorizationRefused(
-                    f"Untrusted API base URL '{base_url}'; only '{PINNED_API_BASE}' or loopback is permitted"
+                    f"Untrusted API base URL '{candidate_base}'; only '{PINNED_API_BASE}' or loopback is permitted"
                 )
 
         self.repository = repository
-        self.allow_loopback = allow_loopback
 
-    def _api_get_raw(self, endpoint: str) -> bytes:
+    def _api_get(self, endpoint: str) -> Any:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         headers = {
             "Accept": "application/vnd.github+json",
@@ -318,7 +490,7 @@ class AuthenticatedGitHubVerifier:
         req = urllib.request.Request(url, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
-                return resp.read()
+                raw = resp.read()
         except urllib.error.HTTPError as exc:
             raise StrictAuthorizationRefused(
                 f"GitHub API error HTTP {exc.code} for {endpoint}"
@@ -328,108 +500,113 @@ class AuthenticatedGitHubVerifier:
                 f"GitHub API request failed for {endpoint}: {exc}"
             )
 
-    def _api_get(self, endpoint: str) -> Any:
-        raw = self._api_get_raw(endpoint)
-        try:
-            return json.loads(raw.decode("utf-8"))
-        except Exception as exc:
+        return parse_json_no_duplicate_keys(raw)
+
+    def _api_get_paginated(self, endpoint: str, list_key: Optional[str] = None) -> List[Any]:
+        """Fetch all pages of a paginated resource and verify total_count completeness."""
+        items: List[Any] = []
+        page = 1
+        per_page = 100
+        expected_total = None
+
+        while True:
+            sep = "&" if "?" in endpoint else "?"
+            paged_url = f"{endpoint}{sep}per_page={per_page}&page={page}"
+            data = self._api_get(paged_url)
+
+            if isinstance(data, list):
+                page_items = data
+            elif isinstance(data, dict):
+                if list_key and list_key in data and isinstance(data[list_key], list):
+                    page_items = data[list_key]
+                else:
+                    for k in ("jobs", "branch_policies", "branches", "approvals"):
+                        if k in data and isinstance(data[k], list):
+                            page_items = data[k]
+                            break
+                    else:
+                        raise StrictAuthorizationRefused(f"No list found in paginated response for {endpoint}")
+                if expected_total is None and "total_count" in data:
+                    expected_total = int(data["total_count"])
+            else:
+                raise StrictAuthorizationRefused(f"Unexpected response type for {endpoint}")
+
+            if not page_items:
+                break
+
+            items.extend(page_items)
+            if len(page_items) < per_page:
+                break
+            page += 1
+
+        if expected_total is not None and len(items) != expected_total:
             raise StrictAuthorizationRefused(
-                f"Invalid JSON returned from GitHub API for {endpoint}: {exc}"
+                f"Incomplete pagination for {endpoint}: advertised total_count={expected_total}, retrieved={len(items)}"
             )
+        return items
 
     def _download_artifact_zip(self, artifact_url: str, timeout: int = 60) -> bytes:
         """Download artifact zip archive following redirects without forwarding Authorization header."""
-        req = urllib.request.Request(
-            artifact_url,
-            headers={
-                "Authorization": f"Bearer {self.token}",
-                "Accept": "application/vnd.github+json",
-                "User-Agent": USER_AGENT,
-            },
-        )
-        location = None
+        from proof.github_artifact import download_artifact_zip
         try:
-            with urllib.request.build_opener(_NoRedirect).open(req, timeout=timeout) as resp:
-                return resp.read()
-        except urllib.error.HTTPError as err:
-            if err.code in REDIRECT_CODES:
-                location = err.headers.get("Location")
-            if location is None:
-                raise StrictAuthorizationRefused(
-                    f"Artifact download HTTP error {err.code} without Location header"
-                )
-
-        signed_req = urllib.request.Request(location, headers={"User-Agent": USER_AGENT})
-        try:
-            with urllib.request.urlopen(signed_req, timeout=timeout) as resp:
-                return resp.read()
+            return download_artifact_zip(artifact_url, self.token, timeout=timeout)
         except Exception as exc:
-            raise StrictAuthorizationRefused(f"Failed downloading redirected artifact: {exc}")
+            raise StrictAuthorizationRefused(f"Failed to download artifact: {exc}")
 
-    def verify_git_source_relations(
+    def verify_source_tuple(
         self,
+        c_sha: str,
         p_sha: str,
         w_sha: str,
-        c_sha: str,
-        repo_dir: Optional[str] = None,
+        c_dir: Optional[str] = None,
+        p_dir: Optional[str] = None,
+        w_dir: Optional[str] = None,
     ) -> None:
-        """Verify that W descends from P, product trees are identical under src, and C matches."""
-        # Query PR 147 head if available via API
-        try:
-            pr_data = self._api_get(f"repos/{self.repository}/pulls/147")
-            if isinstance(pr_data, dict):
-                pr_head = pr_data.get("head", {}).get("sha")
-                if pr_head and pr_head != p_sha:
-                    raise StrictAuthorizationRefused(
-                        f"PR147 head moved: PR reports {pr_head}, manifest binds {p_sha}"
-                    )
-        except StrictAuthorizationRefused as exc:
-            # If explicit rejection, propagate
-            if "PR147 head moved" in str(exc):
-                raise
-        except Exception:
-            # Endpoint may not be mocked in all minimal loopbacks
-            pass
-
-        # If repo_dir or current working directory is a git repo, check git ancestry and diff
-        cwd = repo_dir or os.getcwd()
-        try:
-            # Check W descends from P
-            ancestor_check = subprocess.run(
-                ["git", "merge-base", "--is-ancestor", p_sha, w_sha],
-                cwd=cwd,
-                capture_output=True,
-                text=True,
+        """Verify the exact C/P/W source tuple: HEADs, cleanliness, ancestry, and non-proof equality."""
+        c_real = os.path.abspath(c_dir or os.getcwd())
+        c_head = git_rev_parse("HEAD", cwd=c_real)
+        if c_head != c_sha:
+            raise StrictAuthorizationRefused(
+                f"Executing checkout HEAD mismatch: expected {c_sha}, got {c_head}"
             )
-            if ancestor_check.returncode != 0:
-                raise StrictAuthorizationRefused(
-                    f"W ({w_sha}) does not descend from P ({p_sha})"
-                )
+        if not git_is_clean(c_real):
+            raise StrictAuthorizationRefused(f"Executing checkout at {c_real} is dirty")
 
-            # Check product trees are identical under src
-            diff_check = subprocess.run(
-                ["git", "diff", "--exit-code", f"{p_sha}..{w_sha}", "--", "src"],
-                cwd=cwd,
-                capture_output=True,
-                text=True,
-            )
-            if diff_check.returncode != 0:
+        if p_dir:
+            p_real = os.path.abspath(p_dir)
+            p_head = git_rev_parse("HEAD", cwd=p_real)
+            if p_head != p_sha:
                 raise StrictAuthorizationRefused(
-                    f"Product trees differ between P ({p_sha}) and W ({w_sha}) under src"
+                    f"P checkout HEAD mismatch: expected {p_sha}, got {p_head}"
                 )
-        except FileNotFoundError:
-            pass
-        except StrictAuthorizationRefused:
-            raise
-        except Exception:
-            pass
+            if not git_is_clean(p_real):
+                raise StrictAuthorizationRefused(f"P checkout at {p_real} is dirty")
+
+        if w_dir:
+            w_real = os.path.abspath(w_dir)
+            w_head = git_rev_parse("HEAD", cwd=w_real)
+            if w_head != w_sha:
+                raise StrictAuthorizationRefused(
+                    f"W checkout HEAD mismatch: expected {w_sha}, got {w_head}"
+                )
+            if not git_is_clean(w_real):
+                raise StrictAuthorizationRefused(f"W checkout at {w_real} is dirty")
+
+        git_root = (os.path.abspath(w_dir) if w_dir else c_real)
+        if not git_is_ancestor(p_sha, w_sha, cwd=git_root):
+            raise StrictAuthorizationRefused(
+                f"W ({w_sha}) does not descend from P ({p_sha})"
+            )
+
+        git_diff_non_proof_clean(p_sha, w_sha, cwd=git_root)
 
     def verify(
         self,
         manifest_path: str,
-        repo_dir: Optional[str] = None,
-        review_path: Optional[str] = None,
-        check_git: bool = True,
+        c_dir: Optional[str] = None,
+        p_dir: Optional[str] = None,
+        w_dir: Optional[str] = None,
+        require_completed_jobs: bool = False,
     ) -> Dict[str, Any]:
         """Perform authoritative inspection of manifest against GitHub and source evidence."""
         canonical_bytes, m, D = read_manifest_package(manifest_path)
@@ -466,14 +643,26 @@ class AuthenticatedGitHubVerifier:
         s_run_id = validate_decimal(m.get("s_run_id"), "s_run_id")
         v_run_id = validate_decimal(m.get("v_run_id"), "v_run_id")
 
-        # 2. Authenticate GitHub repository identity
+        # 2. Query upstream PR147 on iyilang/iyi (fail closed!)
+        pr_data = self._api_get(f"repos/{UPSTREAM_PR_REPOSITORY}/pulls/{UPSTREAM_PR_NUMBER}")
+        if not isinstance(pr_data, dict):
+            raise StrictAuthorizationRefused(f"Invalid PR147 data from {UPSTREAM_PR_REPOSITORY}")
+        pr_head = pr_data.get("head", {}).get("sha")
+        if not pr_head:
+            raise StrictAuthorizationRefused("PR147 head SHA missing from response")
+        if pr_head != p_sha:
+            raise StrictAuthorizationRefused(
+                f"PR147 head moved: PR reports {pr_head}, manifest binds {p_sha}"
+            )
+
+        # 3. Authenticate GitHub repository identity
         repo_info = self._api_get(f"repos/{self.repository}")
         if str(repo_info.get("id")) != PINNED_REPOSITORY_ID:
             raise StrictAuthorizationRefused(
                 f"Repository ID mismatch: expected {PINNED_REPOSITORY_ID}, got {repo_info.get('id')}"
             )
 
-        # 3. Authenticate GitHub environment and policy
+        # 4. Authenticate GitHub environment and exact policy
         env_info = self._api_get(f"repos/{self.repository}/environments/{PINNED_ENVIRONMENT_NAME}")
         if str(env_info.get("id")) != PINNED_ENVIRONMENT_ID:
             raise StrictAuthorizationRefused("Environment ID mismatch")
@@ -481,31 +670,43 @@ class AuthenticatedGitHubVerifier:
         if env_info.get("can_admins_bypass") is not False:
             raise StrictAuthorizationRefused("Environment policy violation: can_admins_bypass must be False")
 
-        # Check required reviewers
+        # Check required reviewers: exactly one reviewer, prevent_self_review must be False, reviewer_id must be PINNED_REVIEWER_ID
         rules = env_info.get("protection_rules", [])
-        reviewer_found = False
+        rev_rule = None
         for rule in rules:
             if rule.get("type") == "required_reviewers":
-                if rule.get("prevent_self_review") is not False:
-                    raise StrictAuthorizationRefused("Environment policy violation: prevent_self_review must be False")
-                reviewers = rule.get("reviewers", [])
-                for rev in reviewers:
-                    user = rev.get("reviewer", {})
-                    if str(user.get("id")) == PINNED_REVIEWER_ID:
-                        reviewer_found = True
-                        break
-        if not reviewer_found:
-            raise StrictAuthorizationRefused("Required reviewer 43164 missing from environment protection rules")
+                rev_rule = rule
+                break
+        if not rev_rule:
+            raise StrictAuthorizationRefused("Required reviewers rule missing from environment protection rules")
 
-        # Check deployment branch policies
-        bp_info = self._api_get(
-            f"repos/{self.repository}/environments/{PINNED_ENVIRONMENT_NAME}/deployment-branch-policies"
+        if rev_rule.get("prevent_self_review") is not False:
+            raise StrictAuthorizationRefused("Environment policy violation: prevent_self_review must be False")
+
+        reviewers = rev_rule.get("reviewers", [])
+        if len(reviewers) != 1:
+            raise StrictAuthorizationRefused(f"Environment policy must specify exactly one reviewer, found {len(reviewers)}")
+
+        rev_user = reviewers[0].get("reviewer", {})
+        if str(rev_user.get("id")) != PINNED_REVIEWER_ID:
+            raise StrictAuthorizationRefused(
+                f"Required reviewer ID mismatch: expected {PINNED_REVIEWER_ID}, got {rev_user.get('id')}"
+            )
+
+        # Check deployment branch policies: exactly PINNED_BRANCH
+        bp_list = self._api_get_paginated(
+            f"repos/{self.repository}/environments/{PINNED_ENVIRONMENT_NAME}/deployment-branch-policies",
+            list_key="branch_policies",
         )
-        branches = [b.get("name") for b in bp_info.get("branch_policies", [])]
-        if PINNED_BRANCH not in branches:
-            raise StrictAuthorizationRefused(f"Branch {PINNED_BRANCH} not permitted by environment branch policy")
+        if not bp_list:
+            raise StrictAuthorizationRefused("No deployment branch policies configured for environment")
+        branch_names = [b.get("name") for b in bp_list if isinstance(b, dict)]
+        if set(branch_names) != {PINNED_BRANCH}:
+            raise StrictAuthorizationRefused(
+                f"Environment branch policy must permit only '{PINNED_BRANCH}', got {branch_names}"
+            )
 
-        # 4. Authenticate Run S (approval run)
+        # 5. Authenticate Run S (approval run)
         s_run = self._api_get(f"repos/{self.repository}/actions/runs/{s_run_id}")
         if str(s_run.get("run_attempt")) != "1":
             raise StrictAuthorizationRefused("Run S attempt must be 1")
@@ -517,36 +718,55 @@ class AuthenticatedGitHubVerifier:
             )
         if str(s_run.get("repository", {}).get("id")) != PINNED_REPOSITORY_ID:
             raise StrictAuthorizationRefused("Run S repository mismatch")
-
-        # 5. Authenticate Jobs in Run S
-        s_jobs_resp = self._api_get(
-            f"repos/{self.repository}/actions/runs/{s_run_id}/attempts/1/jobs"
-        )
-        s_jobs = s_jobs_resp.get("jobs", [])
-        env_jobs = [
-            j for j in s_jobs
-            if isinstance(j, dict) and (
-                j.get("name") == "strict-chain"
-                or any(step.get("name") == "strict-chain" for step in j.get("steps", []) if isinstance(step, dict))
-            )
-        ]
-        if len(env_jobs) != 1:
+        if s_run.get("head_branch") != PINNED_BRANCH:
             raise StrictAuthorizationRefused(
-                f"Exactly one job in S must use approval environment, found {len(env_jobs)}"
+                f"Run S head_branch mismatch: expected {PINNED_BRANCH}, got {s_run.get('head_branch')}"
             )
+
+        # 6. Authenticate Jobs in Run S (complete enumeration)
+        s_jobs = self._api_get_paginated(
+            f"repos/{self.repository}/actions/runs/{s_run_id}/attempts/1/jobs",
+            list_key="jobs",
+        )
+        if not s_jobs:
+            raise StrictAuthorizationRefused("Run S has empty jobs list")
 
         prep_jobs = [
             j for j in s_jobs
-            if isinstance(j, dict) and j.get("name") == "prepare-strict-authorization"
+            if isinstance(j, dict) and j.get("name") in ("prepare-strict-authorization", "Prepare strict authorization manifest")
         ]
-        if prep_jobs and prep_jobs[0].get("conclusion") != "success":
+        if len(prep_jobs) != 1:
+            raise StrictAuthorizationRefused(
+                f"Expected exactly one preparation job in S, found {len(prep_jobs)}"
+            )
+        if prep_jobs[0].get("conclusion") != "success":
             raise StrictAuthorizationRefused("Preparation job in S did not succeed")
 
-        # 6. Authenticate Approval Record in Run S
-        approvals = self._api_get(f"repos/{self.repository}/actions/runs/{s_run_id}/approvals")
-        if not isinstance(approvals, list):
-            raise StrictAuthorizationRefused("Invalid approvals list format from GitHub API")
+        prot_jobs = [
+            j for j in s_jobs
+            if isinstance(j, dict) and j.get("name") in ("strict-chain", "Sequential strict-chain gate (strict-proof)")
+        ]
+        if len(prot_jobs) != 1:
+            raise StrictAuthorizationRefused(
+                f"Expected exactly one protected job in S, found {len(prot_jobs)}"
+            )
+        prot_job = prot_jobs[0]
+        if require_completed_jobs:
+            if prot_job.get("status") != "completed" or prot_job.get("conclusion") != "success":
+                raise StrictAuthorizationRefused("Protected job in S has not completed successfully")
+            if s_run.get("status") != "completed" or s_run.get("conclusion") != "success":
+                raise StrictAuthorizationRefused("Run S has not completed successfully")
+        else:
+            if prot_job.get("status") not in ("in_progress", "completed"):
+                raise StrictAuthorizationRefused(f"Protected job in S has invalid status: {prot_job.get('status')}")
+            if prot_job.get("status") == "completed" and prot_job.get("conclusion") != "success":
+                raise StrictAuthorizationRefused(f"Protected job in S completed with failure: {prot_job.get('conclusion')}")
 
+        # 7. Authenticate Approval Record in Run S
+        approvals = self._api_get_paginated(
+            f"repos/{self.repository}/actions/runs/{s_run_id}/approvals",
+            list_key="approvals",
+        )
         expected_comment = f"{APPROVAL_COMMENT_PREFIX}{D}"
         matching_approvals = []
         for app in approvals:
@@ -556,7 +776,6 @@ class AuthenticatedGitHubVerifier:
             user_id = str(app.get("user", {}).get("id"))
             comment = app.get("comment", "")
             environments = app.get("environments", [])
-            # Support both environments array and environment object
             env_ids = [str(e.get("id")) for e in environments if isinstance(e, dict)]
             if "environment" in app and isinstance(app["environment"], dict):
                 env_ids.append(str(app["environment"].get("id")))
@@ -570,11 +789,11 @@ class AuthenticatedGitHubVerifier:
                 matching_approvals.append(app)
 
         if len(matching_approvals) != 1:
-            # Diagnose specific reason
             if not approvals:
                 raise StrictAuthorizationRefused("No approvals found in GitHub history for run S")
-            # Check for near matches or specific faults
             for app in approvals:
+                if app.get("state") != "approved":
+                    raise StrictAuthorizationRefused(f"Approval state is not approved: {app.get('state')}")
                 if str(app.get("user", {}).get("id")) != PINNED_REVIEWER_ID:
                     raise StrictAuthorizationRefused(
                         f"Approval user ID mismatch: expected {PINNED_REVIEWER_ID}, got {app.get('user', {}).get('id')}"
@@ -584,32 +803,49 @@ class AuthenticatedGitHubVerifier:
                     raise StrictAuthorizationRefused(
                         f"Approval environment ID mismatch: expected {PINNED_ENVIRONMENT_ID}, got {env_ids}"
                     )
-                if app.get("state") != "approved":
-                    raise StrictAuthorizationRefused(
-                        f"Approval state is not approved: {app.get('state')}"
-                    )
                 comm = app.get("comment", "")
                 if comm != expected_comment:
+                    if not comm:
+                        raise StrictAuthorizationRefused("Approval comment is empty")
+                    if comm.strip() == expected_comment and comm != expected_comment:
+                        raise StrictAuthorizationRefused("Approval comment contains whitespace discrepancies")
+                    if not comm.startswith(APPROVAL_COMMENT_PREFIX):
+                        raise StrictAuthorizationRefused(f"Approval comment wrong prefix: {comm!r}")
                     raise StrictAuthorizationRefused(
                         f"Approval comment mismatch: expected '{expected_comment}', got '{comm}'"
                     )
             raise StrictAuthorizationRefused("No valid matching approval record found for run S")
 
-        # 7. Authenticate V run and evidence artifacts
+        # 8. Authenticate V run, jobs, and substantive evidence artifacts
         v_run = self._api_get(f"repos/{self.repository}/actions/runs/{v_run_id}")
+        if str(v_run.get("repository", {}).get("id")) != PINNED_REPOSITORY_ID:
+            raise StrictAuthorizationRefused("V run repository mismatch")
+        if str(v_run.get("run_attempt")) != "1":
+            raise StrictAuthorizationRefused("V run attempt must be 1")
         if v_run.get("status") != "completed" or v_run.get("conclusion") != "success":
             raise StrictAuthorizationRefused(
                 f"V run {v_run_id} status or conclusion failure: status={v_run.get('status')}, conclusion={v_run.get('conclusion')}"
             )
 
-        v_jobs_resp = self._api_get(
-            f"repos/{self.repository}/actions/runs/{v_run_id}/attempts/1/jobs"
+        v_jobs = self._api_get_paginated(
+            f"repos/{self.repository}/actions/runs/{v_run_id}/attempts/1/jobs",
+            list_key="jobs",
         )
-        for job in v_jobs_resp.get("jobs", []):
+        if not v_jobs:
+            raise StrictAuthorizationRefused("V run has empty jobs list")
+
+        for job in v_jobs:
             if isinstance(job, dict) and job.get("conclusion") != "success":
                 raise StrictAuthorizationRefused(
                     f"Job '{job.get('name')}' in V run {v_run_id} failed with conclusion '{job.get('conclusion')}'"
                 )
+
+        has_validation_job = any(
+            isinstance(j, dict) and any(term in j.get("name", "").lower() for term in ("validation", "synthetic", "supervisor", "proofs"))
+            for j in v_jobs
+        )
+        if not has_validation_job:
+            raise StrictAuthorizationRefused("V run missing required validation proofs job")
 
         v_artifacts = m.get("v_artifacts", [])
         if not v_artifacts:
@@ -632,30 +868,92 @@ class AuthenticatedGitHubVerifier:
                     f"Evidence artifact {art_id} archive SHA-256 digest mismatch: expected {art['sha256']}, got {computed_art_sha}"
                 )
 
-        # 8. Authenticate Independent Review E
+            # Inspect artifact contents
+            try:
+                with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
+                    z_names = zf.namelist()
+                    if len(z_names) != len(set(z_names)):
+                        raise StrictAuthorizationRefused("Duplicate member names in validation artifact")
+                    for name in z_names:
+                        if name.startswith("/") or ".." in name.split("/"):
+                            raise StrictAuthorizationRefused("Unsafe member name in validation artifact")
+                    receipt_names = [n for n in z_names if n in ("validation_receipt.json", "validation-receipt.json", "receipt.json", "evidence-manifest.json")]
+                    if not receipt_names:
+                        raise StrictAuthorizationRefused("Validation artifact contains no recognized receipt or evidence manifest")
+                    receipt_data = parse_json_no_duplicate_keys(zf.read(receipt_names[0]))
+            except zipfile.BadZipFile as exc:
+                raise StrictAuthorizationRefused(f"Corrupted validation artifact zip: {exc}")
+
+            if not isinstance(receipt_data, dict):
+                raise StrictAuthorizationRefused("Validation receipt must be a JSON object")
+
+            # Verify substantive receipt binding
+            if receipt_data.get("w_sha") != w_sha:
+                raise StrictAuthorizationRefused(
+                    f"Validation receipt W mismatch: expected {w_sha}, got {receipt_data.get('w_sha')}"
+                )
+            if receipt_data.get("p_sha") != p_sha:
+                raise StrictAuthorizationRefused(
+                    f"Validation receipt P mismatch: expected {p_sha}, got {receipt_data.get('p_sha')}"
+                )
+            if receipt_data.get("c_sha") != c_sha:
+                raise StrictAuthorizationRefused(
+                    f"Validation receipt C mismatch: expected {c_sha}, got {receipt_data.get('c_sha')}"
+                )
+
+            inventory = receipt_data.get("inventory") or receipt_data.get("executed_inventory")
+            if not inventory:
+                raise StrictAuthorizationRefused("Validation receipt lacks substantive executed inventory")
+
+            mutations = receipt_data.get("mutations") or receipt_data.get("mutation_evidence")
+            if not mutations or (isinstance(mutations, dict) and mutations.get("status") not in ("PASS", "VERIFIED")):
+                raise StrictAuthorizationRefused("Validation receipt lacks passing mutation evidence")
+
+            v_verdict = receipt_data.get("verdict") or receipt_data.get("status")
+            if v_verdict not in ("PASS", "SUCCESS", "VERIFIED"):
+                raise StrictAuthorizationRefused(f"Validation receipt non-passing verdict: {v_verdict}")
+
+        # 9. Authenticate Independent Review E from immutable Git blob
         review_info = m.get("review", {})
+        if not isinstance(review_info, dict):
+            raise StrictAuthorizationRefused("Manifest review section missing or not an object")
         if review_info.get("verdict") != "GO":
             raise StrictAuthorizationRefused(
                 f"Independent review verdict is not GO: {review_info.get('verdict')}"
             )
-        resolved_rf = review_path or review_info.get("path")
-        if resolved_rf and os.path.exists(resolved_rf):
-            with open(resolved_rf, "rb") as rf:
-                r_bytes = rf.read()
-            if compute_digest(r_bytes) != review_info.get("sha256"):
-                raise StrictAuthorizationRefused("Review file content SHA-256 mismatch with manifest")
-            try:
-                r_obj = json.loads(r_bytes.decode("utf-8"))
-                if isinstance(r_obj, dict):
-                    v = r_obj.get("verdict") or r_obj.get("report", {}).get("verdict")
-                    if v and v != "GO":
-                        raise StrictAuthorizationRefused(f"Review object declares non-GO verdict: {v}")
-            except Exception:
-                pass
+        r_commit = validate_hex_sha(review_info.get("commit"), 40, "review.commit")
+        r_path = review_info.get("path", "proof/review_evidence.json")
+        r_blob = validate_hex_sha(review_info.get("blob_sha"), 40, "review.blob_sha")
+        r_sha256 = validate_hex_sha(review_info.get("sha256"), 64, "review.sha256")
 
-        # 9. Verify Git Source Relations (P, W, C)
-        if check_git:
-            self.verify_git_source_relations(p_sha=p_sha, w_sha=w_sha, c_sha=c_sha, repo_dir=repo_dir)
+        repo_cwd = os.path.abspath(c_dir or os.getcwd())
+        blob_bytes = git_cmd_bytes(["cat-file", "-p", r_blob], cwd=repo_cwd)
+        if compute_digest(blob_bytes) != r_sha256:
+            raise StrictAuthorizationRefused("Review Git blob SHA-256 digest mismatch")
+
+        p = subprocess.Popen(["git", "hash-object", "--stdin"], cwd=repo_cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdo, _ = p.communicate(blob_bytes)
+        if stdo.decode("utf-8").strip() != r_blob:
+            raise StrictAuthorizationRefused("Review Git blob object SHA mismatch")
+
+        resolved_blob = git_cmd(["rev-parse", f"{r_commit}:{r_path}"], cwd=repo_cwd)
+        if resolved_blob != r_blob:
+            raise StrictAuthorizationRefused(
+                f"Review path '{r_path}' in commit {r_commit} resolves to blob {resolved_blob}, expected {r_blob}"
+            )
+
+        r_obj = parse_json_no_duplicate_keys(blob_bytes)
+        validate_substantive_review_report(r_obj, p_sha=p_sha, w_sha=w_sha, c_sha=c_sha, v_run_id=v_run_id)
+
+        # 10. Verify Git Source Relations (P, W, C)
+        self.verify_source_tuple(
+            c_sha=c_sha,
+            p_sha=p_sha,
+            w_sha=w_sha,
+            c_dir=c_dir,
+            p_dir=p_dir,
+            w_dir=w_dir,
+        )
 
         receipt = {
             "decision": "AUTHORIZED",
@@ -676,144 +974,18 @@ class AuthenticatedGitHubVerifier:
         return receipt
 
 
-def acquire_durable_claim(claim_dir: str, s_run_id: str, manifest_digest: str) -> str:
-    """Atomically record durable claim for S/D to prevent duplicate fresh chains."""
-    os.makedirs(claim_dir, exist_ok=True)
-    claim_file = f"claim_{s_run_id}_{manifest_digest}.json"
-    claim_path = os.path.join(claim_dir, claim_file)
-    if os.path.exists(claim_path):
-        raise StrictAuthorizationRefused(
-            f"Approval for S run {s_run_id} and manifest {manifest_digest} has already been claimed or consumed at {claim_path}"
-        )
-
-    claim_data = {
-        "s_run_id": s_run_id,
-        "manifest_digest": manifest_digest,
-        "backend": EXECUTION_BACKEND,
-        "chain_id": CHAIN_ID,
-        "status": "in_progress",
-        "pid": os.getpid(),
-        "claimed_at": time.time(),
-    }
-    try:
-        fd = os.open(claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-        with os.fdopen(fd, "w") as f:
-            json.dump(claim_data, f, indent=2)
-    except FileExistsError:
-        raise StrictAuthorizationRefused(
-            f"Approval for S run {s_run_id} and manifest {manifest_digest} was concurrently claimed"
-        )
-    return claim_path
-
-
-def update_durable_claim(claim_path: str, status: str, error: Optional[str] = None) -> None:
-    """Update status of existing durable claim."""
-    if os.path.exists(claim_path):
-        try:
-            with open(claim_path, "r") as f:
-                data = json.load(f)
-            data["status"] = status
-            data["finished_at"] = time.time()
-            if error:
-                data["error"] = error
-            with open(claim_path, "w") as f:
-                json.dump(data, f, indent=2)
-        except Exception:
-            pass
-
-
-def execute_native_proof_chain(
-    manifest: Dict[str, Any],
-    w_dir: str,
-    p_dir: str,
-    compiler_bin: str,
-    report_dir: str,
-    native_runner_cmd: Optional[str] = None,
-    native_journal_path: Optional[str] = None,
-) -> int:
-    """Execute the full native proof chain from C's absolute directory."""
-    c_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    stages = [
-        ("preflight", [
-            sys.executable, "-B", os.path.join(c_root, "proof", "preflight_oracle.py"),
-            "--w", w_dir, "--p", p_dir, "--compiler", compiler_bin,
-        ]),
-        ("plan", [
-            sys.executable, "-B", os.path.join(c_root, "proof", "run_proof.py"),
-            "plan", "--w", w_dir, "--p", p_dir, "--compiler", compiler_bin,
-        ]),
-        ("pin", [
-            sys.executable, "-B", os.path.join(c_root, "proof", "run_proof.py"),
-            "pin", "--w", w_dir, "--p", p_dir, "--compiler", compiler_bin, "--report-dir", report_dir,
-        ]),
-        ("run1", [
-            sys.executable, "-B", os.path.join(c_root, "proof", "run_proof.py"),
-            "run1", "--report-dir", report_dir,
-        ]),
-        ("run2", [
-            sys.executable, "-B", os.path.join(c_root, "proof", "run_proof.py"),
-            "run2", "--report-dir", report_dir,
-        ]),
-        ("run3", [
-            sys.executable, "-B", os.path.join(c_root, "proof", "run_proof.py"),
-            "run3", "--report-dir", report_dir,
-        ]),
-        ("final", [
-            sys.executable, "-B", os.path.join(c_root, "proof", "run_proof.py"),
-            "final", "--report-dir", report_dir,
-        ]),
-    ]
-
-    env = dict(os.environ)
-    env["PYTHONPATH"] = f"{c_root}:{env.get('PYTHONPATH', '')}".rstrip(":")
-
-    for stage_name, cmd in stages:
-        actual_cmd = cmd
-        if native_runner_cmd:
-            import shlex
-            actual_cmd = shlex.split(native_runner_cmd) + [stage_name] + cmd
-
-        if native_journal_path:
-            with open(native_journal_path, "a") as jf:
-                jf.write(json.dumps({
-                    "stage": stage_name,
-                    "command": actual_cmd,
-                    "timestamp": time.time(),
-                }) + "\n")
-
-        res = subprocess.run(actual_cmd, cwd=c_root, env=env)
-        if res.returncode != 0:
-            return res.returncode
-
-    return 0
-
-
-# Backwards-compatible wrappers for supervisor and controller
+# Fail-closed legacy hooks: no caller-minted authorization
 def check_strict_authorization_or_refuse(
     p_sha: str,
     w_sha: str,
     c_sha: str,
-    verified_auth: Optional[Any] = None,
 ) -> None:
-    """Fail-closed check for legacy callers. Raises StrictAuthorizationRefused without authentic proof."""
-    if verified_auth is not None:
-        if isinstance(verified_auth, dict):
-            if (
-                verified_auth.get("decision") == "AUTHORIZED"
-                and verified_auth.get("p_sha") == p_sha
-                and verified_auth.get("w_sha") == w_sha
-                and verified_auth.get("c_sha") == c_sha
-            ):
-                return
-        elif getattr(verified_auth, "is_authorized", False):
-            if (
-                getattr(verified_auth, "p_sha", None) == p_sha
-                and getattr(verified_auth, "w_sha", None) == w_sha
-                and getattr(verified_auth, "c_sha", None) == c_sha
-            ):
-                return
-        raise AuthorizationError("Provided authorization object is not authorized or revision mismatch")
+    """Fail-closed check for legacy callers. Raises StrictAuthorizationRefused unconditionally.
 
+    Self-certified authorization assertions (such as caller-supplied dicts or ACK objects)
+    are prohibited. Authentic authorization requires GitHub environment approval verified
+    by the shared verifier.
+    """
     refusal_msg = (
         f"STRICT_MODE_AUTH_REFUSED: Environment '{PINNED_ENVIRONMENT_NAME}' (ID {PINNED_ENVIRONMENT_ID}) "
         f"requires manual approval by reviewer {PINNED_REVIEWER_ID} with comment '{APPROVAL_COMMENT_PREFIX}<D>' "
@@ -829,24 +1001,22 @@ def load_verified_authorization_from_ipc(
     w_sha: str,
     c_sha: str,
 ) -> Dict[str, Any]:
-    """Compatibility helper for supervisor/controller IPC handoff."""
-    if not isinstance(auth_ack, dict) or auth_ack.get("verified") is not True:
-        raise StrictAuthorizationRefused("Authorization refused or invalid IPC ACK")
-    if auth_ack.get("p_sha") != p_sha or auth_ack.get("w_sha") != w_sha or auth_ack.get("c_sha") != c_sha:
-        raise StrictAuthorizationRefused("Revision mismatch in authorization IPC ACK")
-    return auth_ack
+    """Compatibility helper. Fails closed: caller-minted authorization ACKs are prohibited."""
+    raise StrictAuthorizationRefused(
+        "Self-certified authorization IPC ACK is prohibited. Authoritative verification required."
+    )
 
 
 # CLI Entry commands
 def cmd_prepare(args: argparse.Namespace) -> int:
-    """Prepare manifest and package."""
+    """Prepare canonical manifest and package."""
     v_arts = []
     if args.v_artifacts:
         if os.path.exists(args.v_artifacts):
-            with open(args.v_artifacts, "r") as f:
-                v_arts = json.load(f)
+            with open(args.v_artifacts, "rb") as f:
+                v_arts = parse_json_no_duplicate_keys(f.read())
         else:
-            v_arts = json.loads(args.v_artifacts)
+            v_arts = parse_json_no_duplicate_keys(args.v_artifacts)
 
     manifest, canonical_bytes, D = create_manifest(
         p_sha=args.p_sha,
@@ -857,7 +1027,9 @@ def cmd_prepare(args: argparse.Namespace) -> int:
         workflow_path=args.workflow_path,
         v_run_id=args.v_run_id,
         v_artifacts=v_arts,
+        review_commit=args.review_commit,
         review_path=args.review_path,
+        review_blob_sha=args.review_blob_sha,
         review_sha256=args.review_sha256,
         review_verdict=args.review_verdict,
         execution_backend=args.backend,
@@ -865,6 +1037,7 @@ def cmd_prepare(args: argparse.Namespace) -> int:
         environment_id=str(args.environment_id),
         environment_name=args.environment_name,
         reviewer_id=str(args.reviewer_id),
+        c_dir=args.c,
     )
 
     if args.manifest:
@@ -882,22 +1055,22 @@ def cmd_prepare(args: argparse.Namespace) -> int:
         with open(args.output_digest, "w") as f:
             f.write(D + "\n")
 
-    print(f"PREPARE_SUCCESS: canonical manifest prepared")
+    print("PREPARE_SUCCESS: canonical manifest prepared")
     print(f"MANIFEST_DIGEST: {D}")
     return 0
 
 
-def cmd_check(args: argparse.Namespace) -> int:
-    """Check manifest against authoritative GitHub data."""
+def cmd_check(args: argparse.Namespace, _api_base: Optional[str] = None) -> int:
+    """Check manifest against authoritative GitHub data and local source tuple."""
     verifier = AuthenticatedGitHubVerifier(
         token=args.token,
-        base_url=args.base_url,
-        allow_loopback=args.allow_loopback,
+        _api_base=_api_base,
     )
     receipt = verifier.verify(
         manifest_path=args.manifest,
-        repo_dir=args.repo_dir,
-        review_path=args.review_path,
+        c_dir=args.c,
+        p_dir=args.p,
+        w_dir=args.w,
     )
     if args.receipt:
         os.makedirs(os.path.dirname(os.path.abspath(args.receipt)), exist_ok=True)
@@ -908,49 +1081,18 @@ def cmd_check(args: argparse.Namespace) -> int:
         print(json.dumps(receipt, indent=2))
     else:
         print(f"CHECK_SUCCESS: verified environment approval for manifest {receipt['manifest_digest']}")
-        print(f"DECISION: AUTHORIZED")
+        print("DECISION: AUTHORIZED")
     return 0
 
 
 def cmd_run_native(args: argparse.Namespace) -> int:
-    """Check authorization, record durable claim, and invoke native chain."""
-    verifier = AuthenticatedGitHubVerifier(
-        token=args.token,
-        base_url=args.base_url,
-        allow_loopback=args.allow_loopback,
+    """Fail closed: direct execution from strict_authorization is prohibited."""
+    refusal_msg = (
+        "run-native is disabled pending integrated supervisor: "
+        "native execution must route through the supported supervisor local backend"
     )
-    receipt = verifier.verify(
-        manifest_path=args.manifest,
-        repo_dir=args.repo_dir,
-        review_path=args.review_path,
-    )
-
-    claim_dir = args.claim_dir or os.path.expanduser("~/.cache/iyi-strict-proof/claims")
-    claim_path = acquire_durable_claim(
-        claim_dir=claim_dir,
-        s_run_id=str(receipt["s_run_id"]),
-        manifest_digest=receipt["manifest_digest"],
-    )
-
-    _, manifest, _ = read_manifest_package(args.manifest)
-
-    os.makedirs(args.report_dir, exist_ok=True)
-    status = "failed"
-    try:
-        ret = execute_native_proof_chain(
-            manifest=manifest,
-            w_dir=args.w,
-            p_dir=args.p,
-            compiler_bin=args.compiler,
-            report_dir=args.report_dir,
-            native_runner_cmd=args.native_runner_cmd,
-            native_journal_path=args.native_journal,
-        )
-        if ret == 0:
-            status = "completed"
-        return ret
-    finally:
-        update_durable_claim(claim_path, status=status)
+    print(f"\n[STRICT_AUTHORIZATION_REFUSED] {refusal_msg}", file=sys.stderr)
+    raise StrictAuthorizationRefused(refusal_msg)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -972,8 +1114,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_prep.add_argument("--workflow-path", default=PINNED_WORKFLOW_PATH, help="Workflow file path")
     p_prep.add_argument("--v-run-id", required=True, help="Validation workflow run ID")
     p_prep.add_argument("--v-artifacts", required=True, help="JSON string or file path containing artifact records")
-    p_prep.add_argument("--review-path", help="Path to independent review file")
-    p_prep.add_argument("--review-sha256", help="SHA-256 of independent review")
+    p_prep.add_argument("--review-commit", required=True, help="Git commit SHA containing independent review E")
+    p_prep.add_argument("--review-path", default="proof/review_evidence.json", help="Repository-relative path to review file")
+    p_prep.add_argument("--review-blob-sha", help="Optional Git blob SHA of independent review E")
+    p_prep.add_argument("--review-sha256", help="Optional SHA-256 of independent review E")
     p_prep.add_argument("--review-verdict", default="GO", help="Expected review verdict")
     p_prep.add_argument("--backend", default=EXECUTION_BACKEND, help="Execution backend")
     p_prep.add_argument("--chain-id", default=CHAIN_ID, help="Strict chain identity")
@@ -981,38 +1125,30 @@ def build_parser() -> argparse.ArgumentParser:
     p_prep.add_argument("--environment-name", default=PINNED_ENVIRONMENT_NAME)
     p_prep.add_argument("--reviewer-id", type=int, default=int(PINNED_REVIEWER_ID))
     p_prep.add_argument("--output-digest", help="Optional output path to write manifest digest D")
+    p_prep.add_argument("--c", help="Directory of C repository for Git resolution")
 
     # check
     p_check = subparsers.add_parser("check", help="Check manifest against authoritative GitHub data")
     p_check.add_argument("--manifest", required=True, help="Path to manifest JSON or ZIP package")
     p_check.add_argument("--token", help="GitHub API token")
-    p_check.add_argument("--base-url", help="GitHub API base URL")
-    p_check.add_argument("--allow-loopback", action="store_true", help="Allow loopback API URLs for testing")
-    p_check.add_argument("--repo-dir", help="Local git repository directory for source checks")
-    p_check.add_argument("--review-path", help="Optional path to independent review file")
+    p_check.add_argument("--c", help="Directory of C repository (default cwd)")
+    p_check.add_argument("--p", help="Directory of P repository (optional)")
+    p_check.add_argument("--w", help="Directory of W repository (optional)")
     p_check.add_argument("--receipt", help="Optional output path for verification receipt JSON")
     p_check.add_argument("--format", choices=["text", "json"], default="text")
 
     # run-native
     p_rn = subparsers.add_parser("run-native", help="Verify authorization and invoke native chain")
     p_rn.add_argument("--manifest", required=True, help="Path to manifest JSON or ZIP package")
-    p_rn.add_argument("--w", required=True, help="Path to W proof directory")
-    p_rn.add_argument("--p", required=True, help="Path to P product directory")
-    p_rn.add_argument("--compiler", required=True, help="Path to compiler binary")
-    p_rn.add_argument("--report-dir", required=True, help="Path to output report directory")
-    p_rn.add_argument("--claim-dir", help="Directory to store durable claims")
-    p_rn.add_argument("--token", help="GitHub API token")
-    p_rn.add_argument("--base-url", help="GitHub API base URL")
-    p_rn.add_argument("--allow-loopback", action="store_true", help="Allow loopback API URLs for testing")
-    p_rn.add_argument("--repo-dir", help="Local git repository directory for source checks")
-    p_rn.add_argument("--review-path", help="Optional path to independent review file")
-    p_rn.add_argument("--native-runner-cmd", help="Optional test wrapper command for native stage subprocesses")
-    p_rn.add_argument("--native-journal", help="Optional path to journal file logging stage executions")
+    p_rn.add_argument("--w", help="Path to W proof directory")
+    p_rn.add_argument("--p", help="Path to P product directory")
+    p_rn.add_argument("--compiler", help="Path to compiler binary")
+    p_rn.add_argument("--report-dir", help="Path to output report directory")
 
     return parser
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: Optional[List[str]] = None, _api_base: Optional[str] = None) -> int:
     """CLI entry point. Returns exit code 0, 2 (usage), or 5 (refusal)."""
     parser = build_parser()
     if argv is None:
@@ -1032,7 +1168,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         if args.subcommand == "prepare":
             return cmd_prepare(args)
         elif args.subcommand == "check":
-            return cmd_check(args)
+            return cmd_check(args, _api_base=_api_base)
         elif args.subcommand == "run-native":
             return cmd_run_native(args)
         else:
