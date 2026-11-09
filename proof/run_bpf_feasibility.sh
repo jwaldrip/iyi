@@ -117,13 +117,14 @@ if [ "$VERBOSE" -eq 1 ]; then
 fi
 
 # 1. Dependency staging and verification via shared contract
+if [ ! -f "$LOCK_FILE" ]; then
+  echo "ERROR: Dependency lock '$LOCK_FILE' not found" >&2
+  exit 1
+fi
+
 if [ -z "$STAGED_PREFIX" ]; then
   if [ ! -f "$DEP_SCRIPT" ]; then
     echo "ERROR: Dependency script '$DEP_SCRIPT' not found and no --prefix supplied" >&2
-    exit 1
-  fi
-  if [ ! -f "$LOCK_FILE" ]; then
-    echo "ERROR: Dependency lock '$LOCK_FILE' not found and no --prefix supplied" >&2
     exit 1
   fi
 
@@ -142,52 +143,111 @@ else
       RECEIPT_FILE="$OWNED_DIR/bpf-dependency-receipt.json"
     elif [ -f "$STAGED_PREFIX/../bpf-dependency-receipt.json" ]; then
       RECEIPT_FILE="$STAGED_PREFIX/../bpf-dependency-receipt.json"
+    elif [ -f "$STAGED_PREFIX/bpf-dependency-receipt.json" ]; then
+      RECEIPT_FILE="$STAGED_PREFIX/bpf-dependency-receipt.json"
+    else
+      echo "ERROR: --prefix supplied without --receipt and no receipt found in standard locations" >&2
+      exit 1
     fi
   fi
 fi
 
-# Validate staged prefix and required four dev archives (Fail-closed, never fall back)
-for h in usr/include/bpf/bpf.h usr/include/bpf/libbpf.h usr/include/libelf.h usr/include/zlib.h usr/include/zstd.h; do
-  if [ ! -f "$STAGED_PREFIX/$h" ]; then
-    echo "ERROR: Staged prefix missing required header: $STAGED_PREFIX/$h (fail-closed, no host package fallback)" >&2
-    exit 1
-  fi
-done
+# Independent cryptographic validation of staged dependency files against locked manifest
+# Rejects arbitrary/forged receipts, modified archives, path escapes, and unauthenticated sources
+python3 - <<'PY' "$LOCK_FILE" "$RECEIPT_FILE" "$STAGED_PREFIX"
+import hashlib, json, os, pathlib, sys
 
-for a in libbpf.a libelf.a libz.a libzstd.a; do
-  arch_path="$STAGED_PREFIX/usr/lib/x86_64-linux-gnu/$a"
-  if [ ! -f "$arch_path" ] || [ ! -s "$arch_path" ]; then
-    echo "ERROR: Staged prefix missing required static archive: $arch_path (fail-closed, no host package fallback)" >&2
-    exit 1
-  fi
-done
+lock_path = pathlib.Path(sys.argv[1]).resolve()
+receipt_path = pathlib.Path(sys.argv[2]).resolve()
+prefix_path = pathlib.Path(sys.argv[3]).resolve()
 
-if [ -n "$RECEIPT_FILE" ] && [ -f "$RECEIPT_FILE" ]; then
-  python3 - <<'PY' "$RECEIPT_FILE" "$STAGED_PREFIX"
-import json, pathlib, sys
-receipt_path = pathlib.Path(sys.argv[1]).resolve()
-expected_prefix = pathlib.Path(sys.argv[2]).resolve()
+if not lock_path.is_file():
+    sys.exit(f"ERROR: Lock file '{lock_path}' does not exist")
+if not receipt_path.is_file():
+    sys.exit(f"ERROR: Dependency receipt '{receipt_path}' does not exist")
+if not prefix_path.is_dir():
+    sys.exit(f"ERROR: Staged prefix '{prefix_path}' is not a directory")
+
+# Prevent root / system path targets
+forbidden = [pathlib.Path("/"), pathlib.Path("/usr"), pathlib.Path("/etc"), pathlib.Path("/var"), pathlib.Path("/bin"), pathlib.Path("/lib")]
+if prefix_path in forbidden or prefix_path.parent in [pathlib.Path("/"), pathlib.Path("/usr")]:
+    sys.exit(f"ERROR: Staged prefix '{prefix_path}' is an unsafe or system root")
+
+with open(lock_path, "r", encoding="utf-8") as f:
+    lock_data = f.read()
+    lock = json.loads(lock_data)
+lock_sha = hashlib.sha256(lock_data.encode("utf-8")).hexdigest()
+
 with open(receipt_path, "r", encoding="utf-8") as f:
-    r = json.load(f)
+    receipt = json.load(f)
 
-status = r.get("status")
+# 1. Verify receipt status
+status = receipt.get("status")
 if status not in ("SUCCESS", "VERIFIED"):
     sys.exit(f"ERROR: Dependency receipt status is '{status}', expected SUCCESS or VERIFIED")
 
-receipt_prefix = pathlib.Path(r.get("prefix", "")).resolve()
-if receipt_prefix != expected_prefix:
-    sys.exit(f"ERROR: Receipt prefix mismatch: '{receipt_prefix}' != '{expected_prefix}'")
+# 2. Verify signer fingerprint against lock trust root
+approved_signers = lock.get("trust_root", {}).get("approved_signer_fingerprints", [])
+receipt_signer = receipt.get("signer_fingerprint")
+if not receipt_signer or receipt_signer not in approved_signers:
+    sys.exit(f"ERROR: Receipt signer '{receipt_signer}' not in approved signers: {approved_signers}")
 
-archives = r.get("archives") or r.get("archive_digests") or {}
-required = ["libbpf-dev", "libelf-dev", "zlib1g-dev", "libzstd-dev"]
-missing = [pkg for pkg in required if pkg not in archives]
-if missing:
-    sys.exit(f"ERROR: Dependency receipt missing verified digests for packages: {missing}")
+# 3. Verify receipt prefix matches actual prefix
+receipt_prefix_str = receipt.get("staged_prefix") or receipt.get("prefix")
+if not receipt_prefix_str:
+    sys.exit("ERROR: Receipt missing staged_prefix")
+receipt_prefix = pathlib.Path(receipt_prefix_str).resolve()
+if receipt_prefix != prefix_path:
+    sys.exit(f"ERROR: Receipt prefix '{receipt_prefix}' does not match actual prefix '{prefix_path}'")
+
+# 4. Independent staged file hash and size verification against locked manifest
+packages = lock.get("packages", {})
+required_pkgs = ["libbpf-dev", "libelf-dev", "libzstd-dev", "zlib1g-dev"]
+for pkg in required_pkgs:
+    if pkg not in packages:
+        sys.exit(f"ERROR: Required package '{pkg}' missing from dependency lock")
+    pkg_info = packages[pkg]
+
+    # Check deb digest in receipt
+    rec_pkg = (receipt.get("packages") or {}).get(pkg) or (receipt.get("archives") or {}).get(pkg)
+    if not rec_pkg:
+        sys.exit(f"ERROR: Package '{pkg}' missing from receipt packages summary")
+    rec_deb_sha = rec_pkg.get("deb_sha256") or (rec_pkg if isinstance(rec_pkg, str) else None)
+    if rec_deb_sha and rec_deb_sha.lower() != pkg_info.get("sha256", "").lower():
+        sys.exit(f"ERROR: Receipt deb SHA256 mismatch for '{pkg}': {rec_deb_sha} != {pkg_info.get('sha256')}")
+
+    # Verify all required static archives on disk against lock definition
+    artifacts = pkg_info.get("required_artifacts", [])
+    if not artifacts:
+        sys.exit(f"ERROR: Package '{pkg}' has no required_artifacts in lock")
+    for art in artifacts:
+        rel_path = art["path"]
+        expected_sha = art["sha256"]
+        expected_size = art.get("size")
+
+        full_path = prefix_path / rel_path
+        if not full_path.is_file():
+            sys.exit(f"ERROR: Required staged archive missing: '{rel_path}' (fail-closed, no host fallback)")
+
+        file_bytes = full_path.read_bytes()
+        actual_size = len(file_bytes)
+        actual_sha = hashlib.sha256(file_bytes).hexdigest()
+
+        if expected_size is not None and actual_size != expected_size:
+            sys.exit(f"ERROR: Staged archive '{rel_path}' size mismatch: actual {actual_size} != expected {expected_size}")
+
+        if actual_sha.lower() != expected_sha.lower():
+            sys.exit(f"ERROR: Staged archive '{rel_path}' SHA256 TAMPERING DETECTED!\n  Actual:   {actual_sha}\n  Expected: {expected_sha}")
+
+    # Verify all required headers exist
+    headers = pkg_info.get("required_headers", [])
+    for hdr in headers:
+        hdr_path = prefix_path / hdr
+        if not hdr_path.is_file():
+            sys.exit(f"ERROR: Required header '{hdr}' missing from staged prefix (fail-closed, no host fallback)")
+
+print("Independent verification: all staged archives and headers cryptographically bound to authenticated lock.")
 PY
-else
-  echo "ERROR: Dependency receipt missing or unreadable; cannot prove authenticated archive origin" >&2
-  exit 1
-fi
 
 # 2. Toolchain verification (Section 4)
 CLANG_BIN=""
@@ -341,10 +401,86 @@ bpf_sym = run_readelf("-sW", bpf_obj)
 if "sched_process_exec" not in bpf_sym:
     sys.exit("ERROR: BPF object missing expected program symbol 'sched_process_exec'")
 
-# CO-RE relocation evidence in BPF object
-bpf_rel = run_readelf("-rW", bpf_obj)
-if "rel" not in bpf_rel and "Offset" not in bpf_rel:
-    sys.exit("ERROR: BPF object lacks relocation records")
+# Section 5: Parse real .BTF.ext CO-RE relocation records directly from binary ELF structure
+with open(bpf_obj, "rb") as f:
+    bpf_raw = f.read()
+
+if len(bpf_raw) < 64 or bpf_raw[:4] != b"\x7fELF":
+    sys.exit("ERROR: BPF object is not a valid ELF file")
+
+e_shoff = int.from_bytes(bpf_raw[40:48], "little")
+e_shentsize = int.from_bytes(bpf_raw[58:60], "little")
+e_shnum = int.from_bytes(bpf_raw[60:62], "little")
+e_shstrndx = int.from_bytes(bpf_raw[62:64], "little")
+
+if e_shstrndx >= e_shnum:
+    sys.exit("ERROR: Invalid section string table index in BPF object")
+
+shstr_hdr = bpf_raw[e_shoff + e_shstrndx * e_shentsize : e_shoff + (e_shstrndx + 1) * e_shentsize]
+shstr_offset = int.from_bytes(shstr_hdr[24:32], "little")
+shstr_size = int.from_bytes(shstr_hdr[32:40], "little")
+shstrtab = bpf_raw[shstr_offset : shstr_offset + shstr_size]
+
+sections = {}
+for i in range(e_shnum):
+    sh = bpf_raw[e_shoff + i * e_shentsize : e_shoff + (i + 1) * e_shentsize]
+    name_off = int.from_bytes(sh[0:4], "little")
+    name = shstrtab[name_off:].split(b"\x00", 1)[0].decode("latin1")
+    sh_offset = int.from_bytes(sh[24:32], "little")
+    sh_size = int.from_bytes(sh[32:40], "little")
+    sections[name] = bpf_raw[sh_offset : sh_offset + sh_size]
+
+if ".BTF.ext" not in sections:
+    sys.exit("ERROR: .BTF.ext section missing from BPF object")
+
+btf_ext = sections[".BTF.ext"]
+if len(btf_ext) < 32:
+    sys.exit("ERROR: .BTF.ext section too short to contain CO-RE header")
+
+btf_magic = int.from_bytes(btf_ext[0:2], "little")
+if btf_magic != 0xEB9F:
+    sys.exit(f"ERROR: .BTF.ext magic mismatch: expected 0xeb9f, got 0x{btf_magic:04x}")
+
+hdr_len = int.from_bytes(btf_ext[4:8], "little")
+if hdr_len < 32:
+    sys.exit(f"ERROR: .BTF.ext header length {hdr_len} too small for CO-RE relocations")
+
+core_relo_off = int.from_bytes(btf_ext[24:28], "little")
+core_relo_len = int.from_bytes(btf_ext[28:32], "little")
+
+if core_relo_len == 0:
+    sys.exit("ERROR: .BTF.ext core_relo_len is 0; no real CO-RE relocation records present")
+
+start = hdr_len + core_relo_off
+end = start + core_relo_len
+if end > len(btf_ext):
+    sys.exit(f"ERROR: .BTF.ext core_relo bounds exceed section size ({end} > {len(btf_ext)})")
+
+relo_bytes = btf_ext[start:end]
+if len(relo_bytes) < 4:
+    sys.exit("ERROR: .BTF.ext core_relo data truncated")
+
+rec_size = int.from_bytes(relo_bytes[0:4], "little")
+if rec_size != 16:
+    sys.exit(f"ERROR: .BTF.ext core_relo record size {rec_size} != expected 16 bytes")
+
+# Walk core_relo sections and count total relocation records
+relo_idx = 4
+total_core_relocs = 0
+while relo_idx + 8 <= len(relo_bytes):
+    sec_name_off = int.from_bytes(relo_bytes[relo_idx : relo_idx + 4], "little")
+    num_info = int.from_bytes(relo_bytes[relo_idx + 4 : relo_idx + 8], "little")
+    relo_idx += 8
+    expected_data_len = num_info * rec_size
+    if relo_idx + expected_data_len > len(relo_bytes):
+        sys.exit("ERROR: .BTF.ext core_relo section records exceed bounds")
+    total_core_relocs += num_info
+    relo_idx += expected_data_len
+
+if total_core_relocs == 0:
+    sys.exit("ERROR: .BTF.ext contains 0 CO-RE relocation records")
+
+print(f"Verified real .BTF.ext CO-RE relocations: {total_core_relocs} records ({core_relo_len} bytes)")
 
 # Header dependency check from .d file
 allowed_prefixes = [
@@ -387,13 +523,59 @@ for entry in needed:
     if "libc.so.6" not in entry:
         sys.exit(f"ERROR: Disallowed dynamic dependency in host helper (only libc.so.6 allowed): {entry}")
 
+# Validate program headers directly from binary and readelf
+with open(host_bin, "rb") as f:
+    host_raw = f.read()
+
+if len(host_raw) < 64 or host_raw[:4] != b"\x7fELF":
+    sys.exit("ERROR: Host helper is not a valid ELF file")
+
+e_phoff = int.from_bytes(host_raw[32:40], "little")
+e_phentsize = int.from_bytes(host_raw[54:56], "little")
+e_phnum = int.from_bytes(host_raw[56:58], "little")
+
+PT_INTERP = 3
+PT_GNU_STACK = 0x6474E551
+PF_X = 1
+
+has_gnu_stack = False
+interp_path = None
+
+for i in range(e_phnum):
+    ph = host_raw[e_phoff + i * e_phentsize : e_phoff + (i + 1) * e_phentsize]
+    p_type = int.from_bytes(ph[0:4], "little")
+    p_flags = int.from_bytes(ph[4:8], "little")
+    p_offset = int.from_bytes(ph[8:16], "little")
+    p_filesz = int.from_bytes(ph[32:40], "little")
+
+    if p_type == PT_INTERP:
+        interp_bytes = host_raw[p_offset : p_offset + p_filesz]
+        interp_path = interp_bytes.split(b"\x00", 1)[0].decode("latin1")
+
+    if p_type == PT_GNU_STACK:
+        has_gnu_stack = True
+        if p_flags & PF_X != 0:
+            sys.exit(f"ERROR: Host helper has EXECUTABLE STACK (PT_GNU_STACK p_flags=0x{p_flags:x})")
+
+if not has_gnu_stack:
+    sys.exit("ERROR: Host helper missing PT_GNU_STACK program header")
+
+if interp_path != "/lib64/ld-linux-x86-64.so.2":
+    sys.exit(f"ERROR: Host helper interpreter mismatch: expected '/lib64/ld-linux-x86-64.so.2', got '{interp_path}'")
+
+# Also verify readelf -lW output parsing correctly (Flg is parts[-2], Align is parts[-1])
 host_prog = run_readelf("-lW", host_bin)
-if "/lib64/ld-linux-x86-64.so.2" not in host_prog:
-    sys.exit("ERROR: Host helper interpreter mismatch; expected /lib64/ld-linux-x86-64.so.2")
-if "GNU_STACK" in host_prog:
-    for line in host_prog.splitlines():
-        if "GNU_STACK" in line and "E" in line.split()[-1]:
-            sys.exit("ERROR: Host helper has executable stack (GNU_STACK contains 'E')")
+found_gnu_stack_line = False
+for line in host_prog.splitlines():
+    parts = line.split()
+    if len(parts) >= 7 and parts[0] == "GNU_STACK":
+        found_gnu_stack_line = True
+        flg = parts[-2]
+        if "E" in flg or "X" in flg:
+            sys.exit(f"ERROR: Host helper has executable stack (GNU_STACK flag is '{flg}')")
+
+if not found_gnu_stack_line:
+    sys.exit("ERROR: GNU_STACK segment missing in readelf -lW output")
 
 # Check that dependency functions are statically defined in binary (not UND)
 host_sym = run_readelf("-sW", host_bin)
@@ -409,7 +591,7 @@ for sym in required_symbols:
     if not found:
         sys.exit(f"ERROR: Required static dependency symbol '{sym}' is not defined in host helper")
 
-print("All artifact validation criteria passed (BPF object and statically linked host helper).")
+print("All artifact validation criteria passed (BPF object with verified .BTF.ext CO-RE relocations and statically linked host helper with non-executable stack).")
 PY
 
 # Bind diagnostic build record JSON (Section 5)

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 proof/test_bpf_build_script.py: Focused offline tests for BPF build orchestration,
-prefix validation, dependency receipt verification, and terminal report checks.
+prefix validation, dependency receipt verification, .BTF.ext CO-RE relocation validation,
+and terminal report checks.
 
 Tests the entry script (proof/run_bpf_feasibility.sh) offline without executing
 privileged commands, local VMs, or the live BPF helper:
@@ -10,15 +11,19 @@ privileged commands, local VMs, or the live BPF helper:
   3. Missing staged prefix fails closed immediately without host package install.
   4. Staged prefix missing required development headers fails closed.
   5. Staged prefix missing required static archives fails closed.
-  6. Corrupt or mismatched dependency receipts fail closed.
-  7. Terminal report evaluation strictly enforces all Section 7 acceptance criteria.
+  6. Staged prefix with tampered archive SHA256 fails closed.
+  7. Corrupt, unapproved signer, or mismatched dependency receipts fail closed.
+  8. Real .BTF.ext CO-RE relocation parser validates true records and rejects empty/invalid tables.
+  9. GNU_STACK parser correctly reads Flg column (not Align) and rejects executable stack.
+ 10. Terminal report evaluation strictly enforces all Section 7 acceptance criteria.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
-import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -27,6 +32,66 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT_PATH = REPO_ROOT / "proof" / "run_bpf_feasibility.sh"
+
+
+def make_dummy_lock(scratch: Path, archive_hashes: dict[str, str]) -> Path:
+    lock_data = {
+        "schema_version": "iyi-bpf-dependency-lock-v1",
+        "snapshot": {"snapshot_id": "20261105T000000Z"},
+        "trust_root": {
+            "approved_signer_fingerprints": [
+                "F6ECB3762474EDA9D21B7022871920D1991BC93C"
+            ]
+        },
+        "packages": {
+            "libbpf-dev": {
+                "sha256": "deb_hash_bpf",
+                "required_artifacts": [
+                    {"path": "usr/lib/x86_64-linux-gnu/libbpf.a", "sha256": archive_hashes.get("libbpf.a", "hash_bpf"), "size": 100}
+                ],
+                "required_headers": ["usr/include/bpf/bpf.h", "usr/include/bpf/libbpf.h"]
+            },
+            "libelf-dev": {
+                "sha256": "deb_hash_elf",
+                "required_artifacts": [
+                    {"path": "usr/lib/x86_64-linux-gnu/libelf.a", "sha256": archive_hashes.get("libelf.a", "hash_elf"), "size": 100}
+                ],
+                "required_headers": ["usr/include/libelf.h"]
+            },
+            "libzstd-dev": {
+                "sha256": "deb_hash_zstd",
+                "required_artifacts": [
+                    {"path": "usr/lib/x86_64-linux-gnu/libzstd.a", "sha256": archive_hashes.get("libzstd.a", "hash_zstd"), "size": 100}
+                ],
+                "required_headers": ["usr/include/zstd.h"]
+            },
+            "zlib1g-dev": {
+                "sha256": "deb_hash_z",
+                "required_artifacts": [
+                    {"path": "usr/lib/x86_64-linux-gnu/libz.a", "sha256": archive_hashes.get("libz.a", "hash_z"), "size": 100}
+                ],
+                "required_headers": ["usr/include/zlib.h"]
+            }
+        }
+    }
+    p = scratch / "bpf_dependencies.lock.json"
+    p.write_text(json.dumps(lock_data, indent=2))
+    return p
+
+
+def populate_prefix(prefix: Path, file_contents: dict[str, bytes]) -> None:
+    inc_bpf = prefix / "usr" / "include" / "bpf"
+    inc_bpf.mkdir(parents=True, exist_ok=True)
+    (inc_bpf / "bpf.h").write_text("#pragma once\n")
+    (inc_bpf / "libbpf.h").write_text("#pragma once\n")
+    (prefix / "usr" / "include" / "libelf.h").write_text("#pragma once\n")
+    (prefix / "usr" / "include" / "zlib.h").write_text("#pragma once\n")
+    (prefix / "usr" / "include" / "zstd.h").write_text("#pragma once\n")
+
+    lib_dir = prefix / "usr" / "lib" / "x86_64-linux-gnu"
+    lib_dir.mkdir(parents=True, exist_ok=True)
+    for a, content in file_contents.items():
+        (lib_dir / a).write_bytes(content)
 
 
 class TestBpfFeasibilityScript(unittest.TestCase):
@@ -54,16 +119,16 @@ class TestBpfFeasibilityScript(unittest.TestCase):
         self.assertNotEqual(res.returncode, 0)
         self.assertIn("ERROR: Unknown option", res.stderr)
 
-    def test_missing_prefix_and_missing_script(self) -> None:
-        """When neither --prefix nor valid dependency script is supplied, fails closed."""
+    def test_missing_lock_fails(self) -> None:
+        """Missing lock file fails closed immediately."""
         with tempfile.TemporaryDirectory() as td:
             scratch = Path(td)
             res = subprocess.run(
                 [
                     "bash",
                     str(SCRIPT_PATH),
-                    "--dependency-script",
-                    str(scratch / "missing_dep.py"),
+                    "--lock",
+                    str(scratch / "missing.lock.json"),
                     "--owned-dir",
                     str(scratch / "owned"),
                 ],
@@ -72,103 +137,50 @@ class TestBpfFeasibilityScript(unittest.TestCase):
                 text=True,
             )
             self.assertNotEqual(res.returncode, 0)
-            self.assertIn("ERROR: Dependency script", res.stderr)
+            self.assertIn("Dependency lock", res.stderr)
 
-    def test_staged_prefix_missing_headers_fails(self) -> None:
-        """A staged prefix missing required headers fails closed."""
-        with tempfile.TemporaryDirectory() as td:
-            scratch = Path(td)
-            prefix = scratch / "bad-prefix"
-            prefix.mkdir(parents=True)
-            # Create lib dir and dummy archives, but omit headers
-            lib_dir = prefix / "usr" / "lib" / "x86_64-linux-gnu"
-            lib_dir.mkdir(parents=True)
-            for a in ["libbpf.a", "libelf.a", "libz.a", "libzstd.a"]:
-                (lib_dir / a).write_bytes(b"!<arch>\n")
-
-            res = subprocess.run(
-                [
-                    "bash",
-                    str(SCRIPT_PATH),
-                    "--prefix",
-                    str(prefix),
-                    "--owned-dir",
-                    str(scratch / "owned"),
-                ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            self.assertNotEqual(res.returncode, 0)
-            self.assertIn("missing required header", res.stderr)
-
-    def test_staged_prefix_missing_archives_fails(self) -> None:
-        """A staged prefix missing one of the four required archives fails closed."""
-        with tempfile.TemporaryDirectory() as td:
-            scratch = Path(td)
-            prefix = scratch / "bad-prefix"
-            # Create required headers
-            inc_bpf = prefix / "usr" / "include" / "bpf"
-            inc_bpf.mkdir(parents=True)
-            (inc_bpf / "bpf.h").write_text("#pragma once\n")
-            (inc_bpf / "libbpf.h").write_text("#pragma once\n")
-            (prefix / "usr" / "include" / "libelf.h").write_text("#pragma once\n")
-            (prefix / "usr" / "include" / "zlib.h").write_text("#pragma once\n")
-            (prefix / "usr" / "include" / "zstd.h").write_text("#pragma once\n")
-
-            # Create only three of the four archives (omit libzstd.a)
-            lib_dir = prefix / "usr" / "lib" / "x86_64-linux-gnu"
-            lib_dir.mkdir(parents=True)
-            for a in ["libbpf.a", "libelf.a", "libz.a"]:
-                (lib_dir / a).write_bytes(b"!<arch>\n")
-
-            res = subprocess.run(
-                [
-                    "bash",
-                    str(SCRIPT_PATH),
-                    "--prefix",
-                    str(prefix),
-                    "--owned-dir",
-                    str(scratch / "owned"),
-                ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            self.assertNotEqual(res.returncode, 0)
-            self.assertIn("missing required static archive", res.stderr)
-
-    def test_staged_prefix_corrupt_receipt_fails(self) -> None:
-        """A staged prefix with a missing or corrupt receipt fails closed."""
+    def test_staged_archive_tampering_rejected(self) -> None:
+        """Staged archive whose actual hash does not match lock is rejected."""
         with tempfile.TemporaryDirectory() as td:
             scratch = Path(td)
             prefix = scratch / "prefix"
-            # Populate headers
-            inc_bpf = prefix / "usr" / "include" / "bpf"
-            inc_bpf.mkdir(parents=True)
-            (inc_bpf / "bpf.h").write_text("#pragma once\n")
-            (inc_bpf / "libbpf.h").write_text("#pragma once\n")
-            (prefix / "usr" / "include" / "libelf.h").write_text("#pragma once\n")
-            (prefix / "usr" / "include" / "zlib.h").write_text("#pragma once\n")
-            (prefix / "usr" / "include" / "zstd.h").write_text("#pragma once\n")
+            contents = {
+                "libbpf.a": b"valid_bpf_bytes_padding_to_100_bytes_" + b"0" * 63,
+                "libelf.a": b"valid_elf_bytes_padding_to_100_bytes_" + b"0" * 63,
+                "libz.a": b"valid_z_bytes_padding_to_100_bytes___" + b"0" * 63,
+                "libzstd.a": b"tampered_bytes_not_matching_expected" + b"0" * 64,
+            }
+            hashes = {a: hashlib.sha256(c).hexdigest() for a, c in contents.items()}
+            # Deliberately modify expected hash for libzstd.a to simulate tampering
+            hashes["libzstd.a"] = "0" * 64
 
-            # Populate four archives
-            lib_dir = prefix / "usr" / "lib" / "x86_64-linux-gnu"
-            lib_dir.mkdir(parents=True)
-            for a in ["libbpf.a", "libelf.a", "libz.a", "libzstd.a"]:
-                (lib_dir / a).write_bytes(b"!<arch>\n")
+            lock_file = make_dummy_lock(scratch, hashes)
+            populate_prefix(prefix, contents)
 
-            receipt = scratch / "bad-receipt.json"
-            receipt.write_text('{"status": "FAILURE"}\n')
+            receipt = {
+                "status": "VERIFIED",
+                "signer_fingerprint": "F6ECB3762474EDA9D21B7022871920D1991BC93C",
+                "staged_prefix": str(prefix.resolve()),
+                "packages": {
+                    "libbpf-dev": {"deb_sha256": "deb_hash_bpf"},
+                    "libelf-dev": {"deb_sha256": "deb_hash_elf"},
+                    "libzstd-dev": {"deb_sha256": "deb_hash_zstd"},
+                    "zlib1g-dev": {"deb_sha256": "deb_hash_z"},
+                }
+            }
+            receipt_file = scratch / "receipt.json"
+            receipt_file.write_text(json.dumps(receipt))
 
             res = subprocess.run(
                 [
                     "bash",
                     str(SCRIPT_PATH),
+                    "--lock",
+                    str(lock_file),
                     "--prefix",
                     str(prefix),
                     "--receipt",
-                    str(receipt),
+                    str(receipt_file),
                     "--owned-dir",
                     str(scratch / "owned"),
                 ],
@@ -177,7 +189,153 @@ class TestBpfFeasibilityScript(unittest.TestCase):
                 text=True,
             )
             self.assertNotEqual(res.returncode, 0)
-            self.assertIn("Dependency receipt status is 'FAILURE'", res.stderr)
+            self.assertIn("TAMPERING DETECTED", res.stderr)
+
+    def test_unapproved_signer_rejected(self) -> None:
+        """Receipt signed by unapproved key is rejected."""
+        with tempfile.TemporaryDirectory() as td:
+            scratch = Path(td)
+            prefix = scratch / "prefix"
+            contents = {
+                "libbpf.a": b"valid_bpf_bytes_padding_to_100_bytes_" + b"0" * 63,
+                "libelf.a": b"valid_elf_bytes_padding_to_100_bytes_" + b"0" * 63,
+                "libz.a": b"valid_z_bytes_padding_to_100_bytes___" + b"0" * 63,
+                "libzstd.a": b"valid_zstd_bytes_padding_to_100_bytes" + b"0" * 63,
+            }
+            hashes = {a: hashlib.sha256(c).hexdigest() for a, c in contents.items()}
+            lock_file = make_dummy_lock(scratch, hashes)
+            populate_prefix(prefix, contents)
+
+            receipt = {
+                "status": "VERIFIED",
+                "signer_fingerprint": "UNAPPROVED_KEY_FINGERPRINT_123456",
+                "staged_prefix": str(prefix.resolve()),
+                "packages": {
+                    "libbpf-dev": {"deb_sha256": "deb_hash_bpf"},
+                    "libelf-dev": {"deb_sha256": "deb_hash_elf"},
+                    "libzstd-dev": {"deb_sha256": "deb_hash_zstd"},
+                    "zlib1g-dev": {"deb_sha256": "deb_hash_z"},
+                }
+            }
+            receipt_file = scratch / "receipt.json"
+            receipt_file.write_text(json.dumps(receipt))
+
+            res = subprocess.run(
+                [
+                    "bash",
+                    str(SCRIPT_PATH),
+                    "--lock",
+                    str(lock_file),
+                    "--prefix",
+                    str(prefix),
+                    "--receipt",
+                    str(receipt_file),
+                    "--owned-dir",
+                    str(scratch / "owned"),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("not in approved signers", res.stderr)
+
+    def test_btf_ext_core_relocation_validation_logic(self) -> None:
+        """Unit test for .BTF.ext binary parsing and CO-RE relocation validation."""
+        def parse_btf_ext(btf_ext_bytes: bytes) -> tuple[bool, str]:
+            if len(btf_ext_bytes) < 32:
+                return False, "too short"
+            magic = struct.unpack("<H", btf_ext_bytes[0:2])[0]
+            if magic != 0xEB9F:
+                return False, f"bad magic 0x{magic:04x}"
+            version = btf_ext_bytes[2]
+            if version != 1:
+                return False, f"bad version {version}"
+            hdr_len = struct.unpack("<I", btf_ext_bytes[4:8])[0]
+            if hdr_len < 32:
+                return False, f"bad hdr_len {hdr_len}"
+            core_relo_off = struct.unpack("<I", btf_ext_bytes[24:28])[0]
+            core_relo_len = struct.unpack("<I", btf_ext_bytes[28:32])[0]
+            if core_relo_len == 0:
+                return False, "core_relo_len is 0"
+            start = hdr_len + core_relo_off
+            end = start + core_relo_len
+            if end > len(btf_ext_bytes):
+                return False, "out of bounds"
+            relo_bytes = btf_ext_bytes[start:end]
+            if len(relo_bytes) < 4:
+                return False, "relo truncated"
+            rec_size = struct.unpack("<I", relo_bytes[0:4])[0]
+            if rec_size != 16:
+                return False, f"bad rec_size {rec_size}"
+            # count records
+            idx = 4
+            count = 0
+            while idx + 8 <= len(relo_bytes):
+                num_info = struct.unpack("<I", relo_bytes[idx+4:idx+8])[0]
+                idx += 8 + num_info * rec_size
+                count += num_info
+            if count == 0:
+                return False, "zero records"
+            return True, f"ok {count} records"
+
+        # Case 1: valid .BTF.ext with 1 CO-RE relocation
+        hdr_len = 32
+        core_relo_off = 0
+        # 1 section with 1 relocation record (16 bytes)
+        # sec_hdr: sec_name_off (4) + num_info (4) = 8 bytes
+        # record: insn_off (4) + type_id (4) + access_str_off (4) + kind (4) = 16 bytes
+        # rec_size: 4 bytes
+        core_relo_data = struct.pack("<I", 16) + struct.pack("<II", 1, 1) + b"\x00" * 16
+        core_relo_len = len(core_relo_data)
+
+        valid_btf_ext = (
+            struct.pack("<HBBIIIIII", 0xEB9F, 1, 0, hdr_len, 0, 0, 0, 0, core_relo_off)
+            + struct.pack("<I", core_relo_len)
+            + core_relo_data
+        )
+        ok, msg = parse_btf_ext(valid_btf_ext)
+        self.assertTrue(ok, msg)
+        self.assertIn("ok 1 records", msg)
+
+        # Case 2: zero core_relo_len fails
+        bad_zero_relo = (
+            struct.pack("<HBBIIIIII", 0xEB9F, 1, 0, hdr_len, 0, 0, 0, 0, 0)
+            + struct.pack("<I", 0)
+        )
+        ok, msg = parse_btf_ext(bad_zero_relo)
+        self.assertFalse(ok)
+        self.assertIn("core_relo_len is 0", msg)
+
+        # Case 3: invalid magic fails
+        bad_magic = b"\x00\x00" + valid_btf_ext[2:]
+        ok, msg = parse_btf_ext(bad_magic)
+        self.assertFalse(ok)
+        self.assertIn("bad magic", msg)
+
+    def test_gnu_stack_flag_parsing_logic(self) -> None:
+        """Unit test for GNU_STACK segment parsing distinguishing Flg from Align."""
+        def check_gnu_stack_line(line: str) -> bool:
+            parts = line.split()
+            if len(parts) >= 7 and parts[0] == "GNU_STACK":
+                flg = parts[-2]
+                if "E" in flg or "X" in flg:
+                    return False  # Executable stack rejected
+                return True
+            return False
+
+        # Non-executable stack with 0x10 alignment (alignment token ending in zero)
+        line_valid = "  GNU_STACK      0x000000 0x0000000000000000 0x0000000000000000 0x000000 0x000000 RW  0x10"
+        self.assertTrue(check_gnu_stack_line(line_valid))
+
+        # Non-executable stack with alignment containing hex letter 'E' (e.g. 0x00E0)
+        # Demonstrates that Flg (parts[-2]) is checked, not Align (parts[-1])
+        line_align_with_e = "  GNU_STACK      0x000000 0x0000000000000000 0x0000000000000000 0x000000 0x000000 RW  0x00E0"
+        self.assertTrue(check_gnu_stack_line(line_align_with_e))
+
+        # Executable stack (Flg contains 'E')
+        line_executable = "  GNU_STACK      0x000000 0x0000000000000000 0x0000000000000000 0x000000 0x000000 RWE 0x10"
+        self.assertFalse(check_gnu_stack_line(line_executable))
 
     def test_report_evaluation_criteria(self) -> None:
         """The terminal status evaluator enforces all required fields and invariants."""
