@@ -8,10 +8,10 @@ Verifies:
 3. Strict redirect rejection (preventing allowlist bypass).
 4. GPG signature verification (approved fingerprint, rejection of untrusted keys and signature errors).
 5. Release header parsing using pocket-relative entry namespace and index digest verification.
-6. Bounded streaming reads and decompression (preventing decompression bombs / resource exhaustion).
-7. Deb archive preflight inspection (rejection of non-ar, negative sizes, traversal paths, SUID/SGID, escaping links, device nodes, link-graph escapes).
-8. Safe extraction containment, symlink ancestor rejection, RUNNER_TEMP containment, and non-root requirement.
-9. Post-extraction artifact presence, link canonical containment, and exact 4-archive contract.
+6. Bounded streaming reads and decompression (rejecting decompression bombs, incomplete streams, trailing data).
+7. Deb archive preflight inspection (strict 3-member debian-binary 2.0 container, negative sizes, traversal paths, SUID/SGID, escaping links, device nodes, link-graph escapes).
+8. Safe extraction containment, symlink ancestor rejection, RUNNER_TEMP containment, and unconditional non-root requirement.
+9. Receipt destination containment, non-overlap with prefix/artifacts, and atomic exclusive creation.
 """
 
 import io
@@ -34,11 +34,13 @@ if str(REPO_ROOT) not in sys.path:
 
 from proof.bpf_dependencies import (
     APPROVED_KEY_ID,
+    APPROVED_POCKETS,
     APPROVED_SIGNER_FINGERPRINT,
     DEFAULT_KEYRING_PATH,
     DEFAULT_KEYRING_SHA256,
     REQUIRED_PACKAGES,
     REQUIRED_STATIC_ARCHIVES,
+    ArchiveCollisionInventory,
     SecurityError,
     StrictNoRedirectHandler,
     decompress_payload,
@@ -82,6 +84,7 @@ class TestLockStructure(unittest.TestCase):
         self.assertEqual(set(packages.keys()), REQUIRED_PACKAGES)
 
         pockets = lock.get("metadata_pockets", {})
+        self.assertEqual(set(pockets.keys()), APPROVED_POCKETS)
         for p_name, p_info in pockets.items():
             pkg_xz = p_info.get("packages_xz", {})
             self.assertEqual(pkg_xz.get("release_entry"), "main/binary-amd64/Packages.xz")
@@ -277,14 +280,51 @@ class TestBoundedResourceAllocations(unittest.TestCase):
             decompress_xz_bounded(compressed, expected_uncompressed_size=100)
         self.assertIn("exceeded bound", str(ctx.exception).lower())
 
+    def test_xz_decompression_trailing_data_rejection(self):
+        raw = b"valid xz data"
+        compressed = lzma.compress(raw) + b"trailing garbage"
+        with self.assertRaises(SecurityError) as ctx:
+            decompress_xz_bounded(compressed, expected_uncompressed_size=len(raw))
+        self.assertIn("trailing unconsumed data", str(ctx.exception).lower())
+
+    def test_xz_decompression_incomplete_stream_rejection(self):
+        raw = b"valid xz data"
+        compressed = lzma.compress(raw)
+        with self.assertRaises(SecurityError) as ctx:
+            decompress_xz_bounded(compressed[:len(compressed)//2], expected_uncompressed_size=len(raw))
+        self.assertIn("incomplete xz stream", str(ctx.exception).lower())
+
     def test_ar_parser_negative_size_rejection(self):
         bad_ar = (
             b"!<arch>\n"
-            b"test_file       0           0     0     100644  -60       " + b"`\n"
+            b"test_file       0           0     0     100644  -60       `\n"
         )
         with self.assertRaises(SecurityError) as ctx:
             parse_ar_members(bad_ar)
         self.assertIn("negative ar member size", str(ctx.exception).lower())
+
+    def test_ar_parser_ambiguous_members_rejection(self):
+        bad_ar = (
+            b"!<arch>\n"
+            b"debian-binary   0           0     0     100644  4         `\n2.0\n"
+            b"control.tar.xz  0           0     0     100644  0         `\n"
+            b"data.tar.xz     0           0     0     100644  0         `\n"
+            b"extra.tar.xz    0           0     0     100644  0         `\n"
+        )
+        with self.assertRaises(SecurityError) as ctx:
+            parse_ar_members(bad_ar)
+        self.assertIn("exactly 3 members", str(ctx.exception).lower())
+
+    def test_ar_parser_bad_debian_binary_version_rejection(self):
+        bad_ar = (
+            b"!<arch>\n"
+            b"debian-binary   0           0     0     100644  4         `\n3.0\n"
+            b"control.tar.xz  0           0     0     100644  0         `\n"
+            b"data.tar.xz     0           0     0     100644  0         `\n"
+        )
+        with self.assertRaises(SecurityError) as ctx:
+            parse_ar_members(bad_ar)
+        self.assertIn("debian-binary member must be exactly '2.0\\n'", str(ctx.exception))
 
 
 class TestDebPreflightAndArchiveValidation(unittest.TestCase):
@@ -319,7 +359,7 @@ class TestDebPreflightAndArchiveValidation(unittest.TestCase):
         out = bytearray(b"!<arch>\n")
 
         def add_ar_member(name, content):
-            header = f"{name:<16}{'0':<12}{'0':<6}{'0':<6}{'100644':<8}{len(content):<10}" + "`\n"
+            header = f"{name:<16}{'0':<12}{'0':<6}{'0':<6}{'100644':<8}{len(content):<10}`\n"
             out.extend(header.encode("ascii"))
             out.extend(content)
             if len(content) % 2 == 1:
@@ -329,6 +369,7 @@ class TestDebPreflightAndArchiveValidation(unittest.TestCase):
         add_ar_member("control.tar.xz", ctrl_data)
         add_ar_member("data.tar.xz", data_tar)
         return bytes(out)
+
     def test_valid_deb_passes_preflight(self):
         ctrl = "Package: libbpf-dev\nVersion: 1:1.3.0-2build2\nArchitecture: amd64\n"
         members = [
@@ -336,92 +377,106 @@ class TestDebPreflightAndArchiveValidation(unittest.TestCase):
             {"name": "usr/lib/x86_64-linux-gnu/libbpf.a", "content": b"!<arch>\n"}
         ]
         deb_bytes = self._create_mock_deb(ctrl, members)
-        inspect_and_validate_deb_archive(deb_bytes, "libbpf-dev", "1:1.3.0-2build2", "amd64")
+        inv = ArchiveCollisionInventory()
+        inspect_and_validate_deb_archive(deb_bytes, "libbpf-dev", "1:1.3.0-2build2", "amd64", inv)
 
     def test_missing_ar_magic_fails(self):
+        inv = ArchiveCollisionInventory()
         with self.assertRaises(SecurityError) as ctx:
-            inspect_and_validate_deb_archive(b"not an ar archive", "libbpf-dev", "1:1.3.0", "amd64")
+            inspect_and_validate_deb_archive(b"not an ar archive", "libbpf-dev", "1:1.3.0", "amd64", inv)
         self.assertIn("missing ar magic header", str(ctx.exception))
 
     def test_control_package_mismatch_fails(self):
         ctrl = "Package: evil-pkg\nVersion: 1:1.3.0-2build2\nArchitecture: amd64\n"
         deb_bytes = self._create_mock_deb(ctrl, [])
+        inv = ArchiveCollisionInventory()
         with self.assertRaises(SecurityError) as ctx:
-            inspect_and_validate_deb_archive(deb_bytes, "libbpf-dev", "1:1.3.0-2build2", "amd64")
+            inspect_and_validate_deb_archive(deb_bytes, "libbpf-dev", "1:1.3.0-2build2", "amd64", inv)
         self.assertIn("Package mismatch", str(ctx.exception))
 
     def test_control_version_mismatch_fails(self):
         ctrl = "Package: libbpf-dev\nVersion: 9:9.9.9\nArchitecture: amd64\n"
         deb_bytes = self._create_mock_deb(ctrl, [])
+        inv = ArchiveCollisionInventory()
         with self.assertRaises(SecurityError) as ctx:
-            inspect_and_validate_deb_archive(deb_bytes, "libbpf-dev", "1:1.3.0-2build2", "amd64")
+            inspect_and_validate_deb_archive(deb_bytes, "libbpf-dev", "1:1.3.0-2build2", "amd64", inv)
         self.assertIn("Version mismatch", str(ctx.exception))
 
     def test_absolute_path_in_payload_fails(self):
         ctrl = "Package: libbpf-dev\nVersion: 1:1.3.0-2build2\nArchitecture: amd64\n"
         members = [{"name": "/etc/shadow", "content": b"root::0:0:"}]
         deb_bytes = self._create_mock_deb(ctrl, members)
+        inv = ArchiveCollisionInventory()
         with self.assertRaises(SecurityError) as ctx:
-            inspect_and_validate_deb_archive(deb_bytes, "libbpf-dev", "1:1.3.0-2build2", "amd64")
+            inspect_and_validate_deb_archive(deb_bytes, "libbpf-dev", "1:1.3.0-2build2", "amd64", inv)
         self.assertIn("Absolute path in deb member", str(ctx.exception))
 
     def test_path_traversal_in_payload_fails(self):
         ctrl = "Package: libbpf-dev\nVersion: 1:1.3.0-2build2\nArchitecture: amd64\n"
         members = [{"name": "usr/include/../../../../etc/passwd", "content": b"root:x:0:0:"}]
         deb_bytes = self._create_mock_deb(ctrl, members)
+        inv = ArchiveCollisionInventory()
         with self.assertRaises(SecurityError) as ctx:
-            inspect_and_validate_deb_archive(deb_bytes, "libbpf-dev", "1:1.3.0-2build2", "amd64")
+            inspect_and_validate_deb_archive(deb_bytes, "libbpf-dev", "1:1.3.0-2build2", "amd64", inv)
         self.assertIn("Path traversal detected", str(ctx.exception))
 
     def test_setuid_mode_fails(self):
         ctrl = "Package: libbpf-dev\nVersion: 1:1.3.0-2build2\nArchitecture: amd64\n"
         members = [{"name": "usr/bin/evil", "mode": 0o4755, "content": b"evil"}]
         deb_bytes = self._create_mock_deb(ctrl, members)
+        inv = ArchiveCollisionInventory()
         with self.assertRaises(SecurityError) as ctx:
-            inspect_and_validate_deb_archive(deb_bytes, "libbpf-dev", "1:1.3.0-2build2", "amd64")
+            inspect_and_validate_deb_archive(deb_bytes, "libbpf-dev", "1:1.3.0-2build2", "amd64", inv)
         self.assertIn("Prohibited set-ID mode", str(ctx.exception))
 
     def test_setgid_mode_fails(self):
         ctrl = "Package: libbpf-dev\nVersion: 1:1.3.0-2build2\nArchitecture: amd64\n"
         members = [{"name": "usr/bin/evil", "mode": 0o2755, "content": b"evil"}]
         deb_bytes = self._create_mock_deb(ctrl, members)
+        inv = ArchiveCollisionInventory()
         with self.assertRaises(SecurityError) as ctx:
-            inspect_and_validate_deb_archive(deb_bytes, "libbpf-dev", "1:1.3.0-2build2", "amd64")
+            inspect_and_validate_deb_archive(deb_bytes, "libbpf-dev", "1:1.3.0-2build2", "amd64", inv)
         self.assertIn("Prohibited set-ID mode", str(ctx.exception))
 
     def test_device_node_fails(self):
         ctrl = "Package: libbpf-dev\nVersion: 1:1.3.0-2build2\nArchitecture: amd64\n"
         members = [{"name": "dev/sda", "type": tarfile.BLKTYPE}]
         deb_bytes = self._create_mock_deb(ctrl, members)
+        inv = ArchiveCollisionInventory()
         with self.assertRaises(SecurityError) as ctx:
-            inspect_and_validate_deb_archive(deb_bytes, "libbpf-dev", "1:1.3.0-2build2", "amd64")
+            inspect_and_validate_deb_archive(deb_bytes, "libbpf-dev", "1:1.3.0-2build2", "amd64", inv)
         self.assertIn("Prohibited file type", str(ctx.exception))
 
     def test_absolute_symlink_fails(self):
         ctrl = "Package: libbpf-dev\nVersion: 1:1.3.0-2build2\nArchitecture: amd64\n"
         members = [{"name": "usr/lib/libbpf.so", "type": tarfile.SYMTYPE, "linkname": "/lib/x86_64/libbpf.so"}]
         deb_bytes = self._create_mock_deb(ctrl, members)
+        inv = ArchiveCollisionInventory()
         with self.assertRaises(SecurityError) as ctx:
-            inspect_and_validate_deb_archive(deb_bytes, "libbpf-dev", "1:1.3.0-2build2", "amd64")
+            inspect_and_validate_deb_archive(deb_bytes, "libbpf-dev", "1:1.3.0-2build2", "amd64", inv)
         self.assertIn("Prohibited absolute symlink target", str(ctx.exception))
 
     def test_symlink_escaping_root_fails(self):
         ctrl = "Package: libbpf-dev\nVersion: 1:1.3.0-2build2\nArchitecture: amd64\n"
         members = [{"name": "usr/lib/libbpf.so", "type": tarfile.SYMTYPE, "linkname": "../../../../etc/passwd"}]
         deb_bytes = self._create_mock_deb(ctrl, members)
+        inv = ArchiveCollisionInventory()
         with self.assertRaises(SecurityError) as ctx:
-            inspect_and_validate_deb_archive(deb_bytes, "libbpf-dev", "1:1.3.0-2build2", "amd64")
+            inspect_and_validate_deb_archive(deb_bytes, "libbpf-dev", "1:1.3.0-2build2", "amd64", inv)
         self.assertIn("Symlink escapes root", str(ctx.exception))
 
     def test_symlink_graph_escape_fails(self):
+        # Critical test: relative links a -> ., a/b -> ., b/c -> .. escaping prefix
         ctrl = "Package: libbpf-dev\nVersion: 1:1.3.0-2build2\nArchitecture: amd64\n"
         members = [
-            {"name": "d", "type": tarfile.SYMTYPE, "linkname": "."},
-            {"name": "d/e", "type": tarfile.SYMTYPE, "linkname": ".."},
+            {"name": "a", "type": tarfile.SYMTYPE, "linkname": "."},
+            {"name": "a/b", "type": tarfile.SYMTYPE, "linkname": "."},
+            {"name": "b/c", "type": tarfile.SYMTYPE, "linkname": ".."},
         ]
         deb_bytes = self._create_mock_deb(ctrl, members)
+        inv = ArchiveCollisionInventory()
         with self.assertRaises(SecurityError) as ctx:
-            inspect_and_validate_deb_archive(deb_bytes, "libbpf-dev", "1:1.3.0-2build2", "amd64")
+            inspect_and_validate_deb_archive(deb_bytes, "libbpf-dev", "1:1.3.0-2build2", "amd64", inv)
         self.assertIn("Symlink escapes root", str(ctx.exception))
 
 
@@ -429,7 +484,12 @@ class TestExtractionContainment(unittest.TestCase):
     def test_root_user_refusal(self):
         with patch("os.geteuid", return_value=0):
             with self.assertRaises(SecurityError) as ctx:
-                validate_prefix_containment("/tmp/prefix")
+                run_lock_consumer(
+                    lock_path="dummy.json",
+                    output_prefix="/tmp/prefix",
+                    receipt_path="/tmp/receipt.json",
+                    check_only=True
+                )
             self.assertIn("Refusing execution as root", str(ctx.exception))
 
     def test_system_directory_refusal(self):
@@ -449,6 +509,21 @@ class TestExtractionContainment(unittest.TestCase):
             with self.assertRaises(SecurityError) as ctx:
                 validate_prefix_containment(prefix)
             self.assertIn("Ancestor directory is a symlink", str(ctx.exception))
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_receipt_overlapping_output_prefix_fails(self):
+        temp_dir = os.path.realpath(tempfile.mkdtemp(prefix="iyi_test_receipt_"))
+        try:
+            prefix = os.path.join(temp_dir, "prefix")
+            receipt = os.path.join(prefix, "receipt.json")
+            with self.assertRaises(SecurityError) as ctx:
+                run_lock_consumer(
+                    lock_path="dummy.json",
+                    output_prefix=prefix,
+                    receipt_path=receipt
+                )
+            self.assertIn("Receipt destination path cannot be within output prefix", str(ctx.exception))
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -517,6 +592,48 @@ class TestExactContractEnforcement(unittest.TestCase):
                 check_only=True
             )
         self.assertIn("Lock packages must match exact required closure", str(ctx.exception))
+
+    def test_unapproved_metadata_pocket_rejected_early(self):
+        mock_keyring = os.path.join(self.temp_dir, "mock_keyring.gpg")
+        with open(mock_keyring, "wb") as f:
+            f.write(b"mock keyring data")
+        mock_keyring_sha = sha256_file(mock_keyring)
+
+        bad_lock = {
+            "schema_version": "iyi-bpf-dependency-lock-v1",
+            "snapshot": {
+                "snapshot_id": "20261105T000000Z",
+                "base_url": "https://snapshot.ubuntu.com/ubuntu/20261105T000000Z"
+            },
+            "trust_root": {
+                "keyring_default_path": mock_keyring,
+                "keyring_sha256": mock_keyring_sha
+            },
+            "packages": {
+                "libbpf-dev": {"required_artifacts": [{"path": "usr/lib/x86_64-linux-gnu/libbpf.a"}], "required_headers": ["usr/include/bpf/bpf.h"]},
+                "libelf-dev": {"required_artifacts": [{"path": "usr/lib/x86_64-linux-gnu/libelf.a"}], "required_headers": ["usr/include/libelf.h"]},
+                "libzstd-dev": {"required_artifacts": [{"path": "usr/lib/x86_64-linux-gnu/libzstd.a"}], "required_headers": ["usr/include/zstd.h"]},
+                "zlib1g-dev": {"required_artifacts": [{"path": "usr/lib/x86_64-linux-gnu/libz.a"}], "required_headers": ["usr/include/zlib.h"]}
+            },
+            "metadata_pockets": {
+                "noble": {},
+                "noble-updates": {},
+                "noble-proposed": {}
+            }
+        }
+        lock_file = os.path.join(self.temp_dir, "bad_pockets.json")
+        with open(lock_file, "w", encoding="utf-8") as f:
+            json.dump(bad_lock, f)
+
+        with self.assertRaises(SecurityError) as ctx:
+            run_lock_consumer(
+                lock_path=lock_file,
+                output_prefix=os.path.join(self.temp_dir, "prefix"),
+                receipt_path=os.path.join(self.temp_dir, "receipt.json"),
+                keyring_path=mock_keyring,
+                check_only=True
+            )
+        self.assertIn("metadata_pockets keys must match exact approved set", str(ctx.exception))
 
 
 if __name__ == "__main__":

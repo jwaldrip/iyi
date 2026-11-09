@@ -2,16 +2,18 @@
 """
 bpf_dependencies.py - Authenticated lock consumer for Ubuntu BPF build dependencies.
 
-Implements the authenticated lock verification and safe nonroot extraction described in
+Implements the repository metadata consistency checking and safe nonroot extraction described in
 PlanBpfOwnedDependencies (Sections 2 and 3).
 
-Verifies the cryptographic chain:
+Verifies the cryptographic chain and containment invariants:
   Ubuntu Archive Signing Key (2018) [F6ECB3762474EDA9D21B7022871920D1991BC93C]
-    -> GPG-signed InRelease (noble, noble-updates, noble-security)
-    -> SHA256 / size of Packages.xz index in Release checksums
+    -> GPG-signed InRelease (exact approved set: noble, noble-updates, noble-security)
+    -> SHA256 / size of pocket-relative Packages.xz index in Release checksums
     -> Package records in Packages index (Version, Filename, Size, SHA256, Source, Architecture, Depends)
     -> Exact .deb archive bytes (SHA256, Size)
-    -> Deb archive internal control and payload preflight (no traversal, no setuid/setgid, no escaping links, link graph containment)
+    -> Strict 3-member deb container preflight (debian-binary == 2.0, single control.tar, single data.tar)
+    -> Preflight payload inspection (no trailing streams, no traversal, no SUID/SGID, no device nodes)
+    -> Cross-package canonical link-graph simulation and collision inventory (no link-graph escaping)
     -> Safe nonroot extraction via /usr/bin/dpkg-deb into private scratch prefix (mode 0700)
     -> Verification of exact 4 static archives ({libbpf.a, libelf.a, libz.a, libzstd.a}) and development headers
     -> Publication of verification receipt JSON recording authenticated provenance and digests.
@@ -34,6 +36,7 @@ import tarfile
 import tempfile
 import urllib.parse
 import urllib.request
+import zlib
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -41,6 +44,7 @@ APPROVED_SIGNER_FINGERPRINT = "F6ECB3762474EDA9D21B7022871920D1991BC93C"
 APPROVED_KEY_ID = "871920D1991BC93C"
 DEFAULT_KEYRING_PATH = "/usr/share/keyrings/ubuntu-archive-keyring.gpg"
 DEFAULT_KEYRING_SHA256 = "80a36b0a6de2f69f49d2df75ef473ccde121e9e190b9ea01d20a4f63778d5c31"
+APPROVED_POCKETS = {"noble", "noble-updates", "noble-security"}
 REQUIRED_PACKAGES = {"libbpf-dev", "libelf-dev", "libzstd-dev", "zlib1g-dev"}
 REQUIRED_STATIC_ARCHIVES = {
     "usr/lib/x86_64-linux-gnu/libbpf.a",
@@ -164,7 +168,10 @@ def fetch_url(
 
 
 def decompress_xz_bounded(data: bytes, expected_uncompressed_size: int) -> bytes:
-    """Decompress XZ data chunk by chunk enforcing bounded uncompressed size."""
+    """
+    Decompress XZ data chunk by chunk enforcing bounded uncompressed size.
+    Rejects incomplete streams and trailing unconsumed data.
+    """
     decompressor = lzma.LZMADecompressor()
     out = bytearray()
     chunk_size = 65536
@@ -177,12 +184,9 @@ def decompress_xz_bounded(data: bytes, expected_uncompressed_size: int) -> bytes
                 f"Decompressed XZ output exceeded bound ({len(out)} > {expected_uncompressed_size})"
             )
     if not decompressor.eof:
-        decomp = decompressor.decompress(b"", max_length=expected_uncompressed_size - len(out) + 1)
-        out.extend(decomp)
-        if len(out) > expected_uncompressed_size:
-            raise SecurityError(
-                f"Decompressed XZ output exceeded bound ({len(out)} > {expected_uncompressed_size})"
-            )
+        raise SecurityError("Incomplete XZ stream: decompressor did not reach EOF")
+    if decompressor.unused_data:
+        raise SecurityError("Trailing unconsumed data after XZ stream")
     if len(out) != expected_uncompressed_size:
         raise SecurityError(
             f"Decompressed size mismatch: got {len(out)}, expected {expected_uncompressed_size}"
@@ -191,18 +195,16 @@ def decompress_xz_bounded(data: bytes, expected_uncompressed_size: int) -> bytes
 
 
 def decompress_payload(member_name: str, data: bytes, max_bytes: int = 200 * 1024 * 1024) -> bytes:
-    """Decompress tar payload with strict byte ceiling to prevent decompression bombs."""
+    """
+    Decompress tar payload with strict byte ceiling and trailing data checks
+    to prevent decompression bombs and payload desync.
+    """
     if member_name.endswith(".zst"):
         try:
             import zstandard
             dctx = zstandard.ZstdDecompressor()
-            reader = dctx.stream_reader(io.BytesIO(data))
-            out = bytearray()
-            while chunk := reader.read(65536):
-                out.extend(chunk)
-                if len(out) > max_bytes:
-                    raise SecurityError(f"Decompressed zstd exceeded bound ({len(out)} > {max_bytes} bytes)")
-            return bytes(out)
+            out = dctx.decompress(data, max_output_size=max_bytes)
+            return out
         except ImportError:
             p = subprocess.Popen(
                 ["zstd", "-d", "-c", "-"],
@@ -245,9 +247,12 @@ def decompress_payload(member_name: str, data: bytes, max_bytes: int = 200 * 102
             out.extend(decomp)
             if len(out) > max_bytes:
                 raise SecurityError(f"Decompressed xz exceeded bound ({len(out)} > {max_bytes} bytes)")
+        if not decompressor.eof:
+            raise SecurityError("Incomplete XZ payload: decompressor did not reach EOF")
+        if decompressor.unused_data:
+            raise SecurityError("Trailing unconsumed data after XZ payload")
         return bytes(out)
     elif member_name.endswith(".gz"):
-        import zlib
         d = zlib.decompressobj(16 + zlib.MAX_WBITS)
         out = bytearray()
         stream = io.BytesIO(data)
@@ -258,8 +263,8 @@ def decompress_payload(member_name: str, data: bytes, max_bytes: int = 200 * 102
                 raise SecurityError(f"Decompressed gz exceeded bound ({len(out)} > {max_bytes} bytes)")
         decomp = d.flush()
         out.extend(decomp)
-        if len(out) > max_bytes:
-            raise SecurityError(f"Decompressed gz exceeded bound ({len(out)} > {max_bytes} bytes)")
+        if d.unused_data:
+            raise SecurityError("Trailing unconsumed data after gzip stream")
         return bytes(out)
     else:
         if len(data) > max_bytes:
@@ -268,7 +273,11 @@ def decompress_payload(member_name: str, data: bytes, max_bytes: int = 200 * 102
 
 
 def parse_ar_members(deb_bytes: bytes, max_member_size: int = 50 * 1024 * 1024) -> List[Tuple[str, int, bytes]]:
-    """Parse ar archive members from debian package bytes with strict size bounds."""
+    """
+    Parse ar archive members from debian package bytes with strict size bounds.
+    Requires exactly 3 unambiguous members: debian-binary (2.0\n), control.tar.*, data.tar.*.
+    Rejects trailing bytes or ambiguous containers.
+    """
     if not deb_bytes.startswith(b"!<arch>\n"):
         raise SecurityError("Invalid .deb format: missing ar magic header !<arch>\n")
     pos = 8
@@ -295,7 +304,117 @@ def parse_ar_members(deb_bytes: bytes, max_member_size: int = 50 * 1024 * 1024) 
         if pos % 2 == 1:
             pos += 1
         members.append((name, size, member_data))
+
+    if len(members) != 3:
+        raise SecurityError(
+            f"Debian archive must contain exactly 3 members, got {len(members)}: {[m[0] for m in members]}"
+        )
+    if members[0][0] != "debian-binary" or members[0][2] != b"2.0\n":
+        raise SecurityError("debian-binary member must be exactly '2.0\n'")
+    if not any(members[1][0] == f"control.tar.{ext}" for ext in ("zst", "xz", "gz")):
+        raise SecurityError(f"Member 1 must be control.tar.[zst|xz|gz], got '{members[1][0]}'")
+    if not any(members[2][0] == f"data.tar.{ext}" for ext in ("zst", "xz", "gz")):
+        raise SecurityError(f"Member 2 must be data.tar.[zst|xz|gz], got '{members[2][0]}'")
+    if pos < len(deb_bytes):
+        raise SecurityError(f"Trailing bytes in deb archive: {len(deb_bytes) - pos} bytes unparsed")
+
     return members
+
+
+class ArchiveCollisionInventory:
+    """
+    Tracks canonical directory paths and symlink resolutions across ALL packages.
+    Prevents link-graph escapes, cross-package collisions, and path overwrite attacks.
+    """
+    def __init__(self):
+        self.entries: Dict[str, str] = {}
+        self.symlinks: Dict[str, str] = {}
+        self.files: Dict[str, int] = {}
+
+    def resolve_canonical(self, path_str: str, depth: int = 0) -> Optional[List[str]]:
+        if depth > 40:
+            raise SecurityError(f"Symlink loop or excessive nesting in path: {path_str}")
+        if path_str.startswith("/"):
+            return None
+        cur_parts: List[str] = []
+        for part in path_str.split("/"):
+            if not part or part == ".":
+                continue
+            elif part == "..":
+                if not cur_parts:
+                    return None  # Escapes root!
+                cur_parts.pop()
+            else:
+                cur_parts.append(part)
+                key = "/".join(cur_parts)
+                if key in self.symlinks:
+                    target = self.symlinks[key]
+                    if target.startswith("/"):
+                        return None
+                    parent_parts = cur_parts[:-1]
+                    target_path = "/".join(parent_parts + [target]) if parent_parts else target
+                    resolved = self.resolve_canonical(target_path, depth + 1)
+                    if resolved is None:
+                        return None
+                    cur_parts = list(resolved)
+        return cur_parts
+
+    def register_member(
+        self,
+        clean_name: str,
+        member_type: str,
+        linkname: Optional[str] = None,
+        file_size: int = 0
+    ) -> str:
+        parent_raw = os.path.dirname(clean_name)
+        if parent_raw:
+            parent_canon = self.resolve_canonical(parent_raw)
+            if parent_canon is None:
+                raise SecurityError(f"Path traverses through escaping directory/symlink: {clean_name}")
+        else:
+            parent_canon = []
+
+        leaf = os.path.basename(clean_name)
+        leaf_canon_parts = self.resolve_canonical("/".join(parent_canon + [leaf]) if parent_canon else leaf)
+        if leaf_canon_parts is None:
+            raise SecurityError(f"Member escapes root: {clean_name}")
+        canonical_path = "/".join(leaf_canon_parts)
+
+        if member_type == "symlink":
+            if not linkname:
+                raise SecurityError(f"Symlink missing target: {clean_name}")
+            if linkname.startswith("/"):
+                raise SecurityError(f"Prohibited absolute symlink target in deb member {clean_name} -> {linkname}")
+            target_full = "/".join(parent_canon + [linkname]) if parent_canon else linkname
+            resolved_target = self.resolve_canonical(target_full)
+            if resolved_target is None:
+                raise SecurityError(f"Symlink escapes root: {clean_name} -> {linkname}")
+            if canonical_path in self.entries and self.entries[canonical_path] != "symlink":
+                raise SecurityError(f"Collision: {canonical_path} already exists as {self.entries[canonical_path]}")
+            self.entries[canonical_path] = "symlink"
+            self.symlinks[canonical_path] = linkname
+        elif member_type == "dir":
+            if canonical_path in self.entries and self.entries[canonical_path] != "dir":
+                raise SecurityError(f"Collision: {canonical_path} already exists as {self.entries[canonical_path]}")
+            self.entries[canonical_path] = "dir"
+        elif member_type == "reg":
+            if canonical_path in self.entries and self.entries[canonical_path] != "reg":
+                raise SecurityError(f"Collision: {canonical_path} already exists as {self.entries[canonical_path]}")
+            self.entries[canonical_path] = "reg"
+            self.files[canonical_path] = file_size
+        elif member_type == "hardlink":
+            if not linkname:
+                raise SecurityError(f"Hardlink missing target: {clean_name}")
+            if linkname.startswith("/"):
+                raise SecurityError(f"Prohibited absolute hardlink target in deb member {clean_name} -> {linkname}")
+            resolved_target = self.resolve_canonical(linkname)
+            if resolved_target is None:
+                raise SecurityError(f"Hardlink escapes root: {clean_name} -> {linkname}")
+            if canonical_path in self.entries and self.entries[canonical_path] != "hardlink":
+                raise SecurityError(f"Collision: {canonical_path} already exists as {self.entries[canonical_path]}")
+            self.entries[canonical_path] = "hardlink"
+
+        return canonical_path
 
 
 def verify_gpg_signature(
@@ -418,23 +537,20 @@ def inspect_and_validate_deb_archive(
     deb_bytes: bytes,
     expected_pkg: str,
     expected_ver: str,
-    expected_arch: str
+    expected_arch: str,
+    collision_inventory: ArchiveCollisionInventory
 ) -> None:
     """
     Perform preflight safety scan on .deb before any extraction:
+    - Enforce exactly 3 ar members in order (debian-binary == 2.0\n, control.tar, data.tar).
     - Compare control fields against package record.
     - Inspect every data.tar member: no path traversal, no setuid/setgid, no escaping links, no device nodes.
-    - Track simulated directory and symlink graph to prevent link graph escapes.
+    - Register members in the cross-package canonical collision and link graph inventory.
     """
     members = parse_ar_members(deb_bytes)
-    member_names = {m[0] for m in members}
-    if "debian-binary" not in member_names:
-        raise SecurityError("deb archive missing debian-binary member")
 
     # 1. Inspect control.tar
-    control_member = next((m for m in members if m[0].startswith("control.tar")), None)
-    if not control_member:
-        raise SecurityError("deb archive missing control.tar member")
+    control_member = members[1]
     control_tar_bytes = decompress_payload(control_member[0], control_member[2], max_bytes=10 * 1024 * 1024)
 
     tf_ctrl = tarfile.open(fileobj=io.BytesIO(control_tar_bytes))
@@ -470,40 +586,10 @@ def inspect_and_validate_deb_archive(
             f"Control file Architecture mismatch: got {ctrl_fields.get('Architecture')}, expected {expected_arch}"
         )
 
-    # 2. Inspect data.tar with complete link graph simulation
-    data_member = next((m for m in members if m[0].startswith("data.tar")), None)
-    if not data_member:
-        raise SecurityError("deb archive missing data.tar member")
+    # 2. Inspect data.tar with complete canonical link graph and collision inventory
+    data_member = members[2]
     data_tar_bytes = decompress_payload(data_member[0], data_member[2], max_bytes=200 * 1024 * 1024)
-
     tf_data = tarfile.open(fileobj=io.BytesIO(data_tar_bytes))
-    simulated_symlinks: Dict[str, str] = {}
-
-    def resolve_path_in_graph(path_str: str, depth: int = 0) -> Optional[List[str]]:
-        if depth > 40:
-            raise SecurityError(f"Symlink loop or excessive nesting in path: {path_str}")
-        if path_str.startswith("/"):
-            return None
-        cur_parts: List[str] = []
-        for part in path_str.split("/"):
-            if not part or part == ".":
-                continue
-            elif part == "..":
-                if not cur_parts:
-                    return None
-                cur_parts.pop()
-            else:
-                cur_parts.append(part)
-                cur_key = "/".join(cur_parts)
-                if cur_key in simulated_symlinks:
-                    target = simulated_symlinks[cur_key]
-                    parent_parts = cur_parts[:-1]
-                    target_full = "/".join(parent_parts + [target]) if parent_parts else target
-                    resolved = resolve_path_in_graph(target_full, depth + 1)
-                    if resolved is None:
-                        return None
-                    cur_parts = list(resolved)
-        return cur_parts
 
     for m in tf_data.getmembers():
         raw_name = m.name
@@ -534,34 +620,25 @@ def inspect_and_validate_deb_archive(
         if m.mode & 0o6000 != 0:
             raise SecurityError(f"Prohibited set-ID mode ({oct(m.mode)}) in deb member: {clean}")
 
-        # Resolve parent directory in simulated graph
-        parent_dir = os.path.dirname(clean)
-        if parent_dir:
-            resolved_parent = resolve_path_in_graph(parent_dir)
-            if resolved_parent is None:
-                raise SecurityError(f"Path traverses through escaping directory/symlink: {clean}")
-        else:
-            resolved_parent = []
-
-        # Check symlink target containment
         if m.issym():
-            target = m.linkname
-            if target.startswith("/"):
-                raise SecurityError(f"Prohibited absolute symlink target in deb member {clean} -> {target}")
-            target_full = "/".join(resolved_parent + [target]) if resolved_parent else target
-            resolved_target = resolve_path_in_graph(target_full)
-            if resolved_target is None:
-                raise SecurityError(f"Symlink escapes root: {clean} -> {target}")
-            simulated_symlinks[clean] = target
+            m_type = "symlink"
+            linkname = m.linkname
+        elif m.islnk():
+            m_type = "hardlink"
+            linkname = m.linkname
+        elif m.isdir():
+            m_type = "dir"
+            linkname = None
+        else:
+            m_type = "reg"
+            linkname = None
 
-        # Check hardlink target containment
-        if m.islnk():
-            target = m.linkname
-            if target.startswith("/"):
-                raise SecurityError(f"Prohibited absolute hardlink target in deb member {clean} -> {target}")
-            resolved_target = resolve_path_in_graph(target)
-            if resolved_target is None:
-                raise SecurityError(f"Hardlink escapes root: {clean} -> {target}")
+        collision_inventory.register_member(
+            clean_name=clean,
+            member_type=m_type,
+            linkname=linkname,
+            file_size=m.size
+        )
 
 
 def safe_extract_deb(deb_path: str, output_dir: str, dpkg_deb_path: str) -> None:
@@ -584,15 +661,11 @@ def safe_extract_deb(deb_path: str, output_dir: str, dpkg_deb_path: str) -> None
 def validate_prefix_containment(output_prefix: str) -> str:
     """
     Enforce private job-directory containment per PlanBpfOwnedDependencies §3:
-    - Verify non-root user.
-    - Check all ancestors for symlinks.
+    - Check all ancestors for symlinks without pre-resolving paths.
     - Verify containment beneath RUNNER_TEMP if set.
     - Verify output directory is not an existing non-empty directory.
     - Set mode 0700.
     """
-    if hasattr(os, "geteuid") and os.geteuid() == 0:
-        raise SecurityError("Refusing execution as root. Dependency extraction must run as unprivileged user.")
-
     abs_output = os.path.abspath(output_prefix)
     system_dirs = {"/", "/usr", "/etc", "/var", "/home", "/bin", "/sbin", "/lib", "/lib64", "/tmp"}
     if abs_output in system_dirs:
@@ -601,10 +674,7 @@ def validate_prefix_containment(output_prefix: str) -> str:
     cur = os.path.dirname(abs_output)
     while cur and cur != "/":
         if os.path.islink(cur):
-            if sys.platform == "darwin" and os.path.abspath(cur) in ("/var", "/etc", "/tmp"):
-                pass
-            else:
-                raise SecurityError(f"Ancestor directory is a symlink: {cur}")
+            raise SecurityError(f"Ancestor directory is a symlink: {cur}")
         cur = os.path.dirname(cur)
 
     runner_temp = os.environ.get("RUNNER_TEMP")
@@ -645,26 +715,30 @@ def run_lock_consumer(
     check_only: bool = False
 ) -> Dict[str, Any]:
     """
-    Main orchestrator implementing full cryptographic verification and safe extraction.
+    Main orchestrator implementing cryptographic verification and safe extraction.
     Returns the receipt data structure on success; raises SecurityError on failure.
     """
-    abs_output = validate_prefix_containment(output_prefix) if not check_only else os.path.abspath(output_prefix)
+    # Unconditional non-root guard precedes all execution modes
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        raise SecurityError("Refusing execution as root. Dependency extraction must run as unprivileged user.")
 
-    # Validate receipt destination path (only when not check_only)
+    abs_output = validate_prefix_containment(output_prefix) if not check_only else os.path.abspath(output_prefix)
     abs_receipt = os.path.abspath(receipt_path)
+
     if not check_only:
+        # Non-overlapping destination checks
+        if abs_receipt == abs_output or abs_receipt.startswith(abs_output + "/"):
+            raise SecurityError(f"Receipt destination path cannot be within output prefix: {abs_receipt}")
+
         if os.path.islink(abs_receipt):
             raise SecurityError(f"Receipt destination path is a symlink: {abs_receipt}")
         cur = os.path.dirname(abs_receipt)
         while cur and cur != "/":
             if os.path.islink(cur):
-                if sys.platform == "darwin" and os.path.abspath(cur) in ("/var", "/etc", "/tmp"):
-                    pass
-                else:
-                    raise SecurityError(f"Receipt parent directory ancestor is a symlink: {cur}")
+                raise SecurityError(f"Receipt parent directory ancestor is a symlink: {cur}")
             cur = os.path.dirname(cur)
 
-    # Stage 2: Load and validate lock schema
+    # Stage 2: Load and validate lock schema, exact packages, and approved pockets
     if not os.path.isfile(lock_path):
         raise SecurityError(f"Lock file not found: {lock_path}")
     with open(lock_path, "r", encoding="utf-8") as f:
@@ -688,6 +762,25 @@ def run_lock_consumer(
     if set(packages_meta.keys()) != REQUIRED_PACKAGES:
         raise SecurityError(
             f"Lock packages must match exact required closure {REQUIRED_PACKAGES}, got {set(packages_meta.keys())}"
+        )
+
+    # Validate receipt destination does not overwrite any required artifact
+    if not check_only:
+        for p_info in packages_meta.values():
+            for art in p_info.get("required_artifacts", []):
+                if abs_receipt == os.path.join(abs_output, art["path"]):
+                    raise SecurityError(f"Receipt destination cannot overwrite required artifact: {abs_receipt}")
+            for hdr in p_info.get("required_headers", []):
+                if abs_receipt == os.path.join(abs_output, hdr):
+                    raise SecurityError(f"Receipt destination cannot overwrite required header: {abs_receipt}")
+
+    # Strict approved pockets allowlist enforcement before any I/O
+    pockets_meta = lock.get("metadata_pockets")
+    if not pockets_meta or not isinstance(pockets_meta, dict):
+        raise SecurityError("Lock missing metadata_pockets definition")
+    if set(pockets_meta.keys()) != APPROVED_POCKETS:
+        raise SecurityError(
+            f"metadata_pockets keys must match exact approved set {APPROVED_POCKETS}, got {set(pockets_meta.keys())}"
         )
 
     trust_root = lock.get("trust_root")
@@ -715,12 +808,12 @@ def run_lock_consumer(
 
     try:
         # Stage 3: Authenticate Pockets (InRelease & Packages indices)
-        pockets_meta = lock["metadata_pockets"]
         parsed_pockets: Dict[str, Dict[str, Dict[str, str]]] = {}
         verified_pockets_summary: List[Dict[str, Any]] = []
         freshness = lock.get("freshness_policy", {})
 
-        for pocket_name, pocket_info in pockets_meta.items():
+        for pocket_name in sorted(APPROVED_POCKETS):
+            pocket_info = pockets_meta[pocket_name]
             inrelease_rel_path = pocket_info["inrelease_path"]
             inrelease_url = f"{base_url}/{inrelease_rel_path}"
             validate_url(inrelease_url, snapshot_id)
@@ -824,15 +917,10 @@ def run_lock_consumer(
                 "packages_index_sha256": actual_index_sha
             })
 
-        # Stage 4: Strict Exact 4-Package Contract Validation
-        packages_meta = lock["packages"]
-        if set(packages_meta.keys()) != REQUIRED_PACKAGES:
-            raise SecurityError(
-                f"Lock packages must match exact required closure {REQUIRED_PACKAGES}, got {set(packages_meta.keys())}"
-            )
-
+        # Stage 4: Package Records Validation and Preflight Inspection
         verified_packages_summary: Dict[str, Any] = {}
         staged_deb_files: List[Tuple[str, str, Dict[str, Any]]] = []
+        collision_inventory = ArchiveCollisionInventory()
 
         for pkg_name in sorted(REQUIRED_PACKAGES):
             pkg_info = packages_meta[pkg_name]
@@ -860,7 +948,6 @@ def run_lock_consumer(
             if rec.get("Depends") != pkg_info["depends"]:
                 raise SecurityError(f"Depends mismatch for {pkg_name}: got {rec.get('Depends')}, expected {pkg_info['depends']}")
 
-            # Contract verification: required artifacts and headers must be specified
             req_artifacts = pkg_info.get("required_artifacts")
             if not req_artifacts or not isinstance(req_artifacts, list):
                 raise SecurityError(f"Package {pkg_name} must declare non-empty required_artifacts")
@@ -868,7 +955,6 @@ def run_lock_consumer(
             if not req_headers or not isinstance(req_headers, list):
                 raise SecurityError(f"Package {pkg_name} must declare non-empty required_headers")
 
-            # Stage 5: Fetch .deb archive and perform preflight inspection
             deb_url = f"{base_url}/{pkg_info['filename']}"
             validate_url(deb_url, snapshot_id)
             deb_bytes = fetch_url(
@@ -885,10 +971,10 @@ def run_lock_consumer(
                 deb_bytes=deb_bytes,
                 expected_pkg=pkg_name,
                 expected_ver=pkg_info["version"],
-                expected_arch=pkg_info["architecture"]
+                expected_arch=pkg_info["architecture"],
+                collision_inventory=collision_inventory
             )
 
-            # Save deb to temporary scratch for dpkg-deb extraction
             deb_scratch_path = os.path.join(temp_scratch, os.path.basename(pkg_info["filename"]))
             with open(deb_scratch_path, "wb") as df:
                 df.write(deb_bytes)
@@ -931,7 +1017,6 @@ def run_lock_consumer(
                 if not os.path.isfile(full_art_path):
                     raise SecurityError(f"Required artifact missing after extraction: {rel_art_path}")
 
-                # Verify canonical containment (no escaping symlinks)
                 real_art_path = os.path.realpath(full_art_path)
                 if not real_art_path.startswith(real_output_root + "/") and real_art_path != real_output_root:
                     raise SecurityError(f"Extracted artifact escapes prefix: {rel_art_path} -> {real_art_path}")
@@ -966,7 +1051,7 @@ def run_lock_consumer(
                 f"Staged static archives do not match exact required closure {REQUIRED_STATIC_ARCHIVES}: got {set(staged_archives_summary.keys())}"
             )
 
-        # Stage 8: Publish Receipt (Atomic write via temp file)
+        # Stage 8: Publish Receipt (Atomic write via exclusive temporary file)
         receipt = {
             "receipt_schema": "iyi-bpf-dependency-receipt-v1",
             "status": "VERIFIED",
@@ -990,17 +1075,21 @@ def run_lock_consumer(
 
         receipt_dir = os.path.dirname(abs_receipt)
         os.makedirs(receipt_dir, mode=0o700, exist_ok=True)
-        tmp_receipt = os.path.join(receipt_dir, f".tmp_receipt_{os.getpid()}.json")
-        try:
-            with open(tmp_receipt, "w", encoding="utf-8") as rf:
-                json.dump(receipt, rf, indent=2)
-                rf.write("\n")
-            os.replace(tmp_receipt, abs_receipt)
-        except Exception:
-            if os.path.exists(tmp_receipt):
-                os.unlink(tmp_receipt)
-            raise
 
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            dir=receipt_dir,
+            delete=False,
+            prefix=".receipt_tmp_",
+            encoding="utf-8"
+        ) as tf:
+            tmp_receipt_path = tf.name
+            json.dump(receipt, tf, indent=2)
+            tf.write("\n")
+            tf.flush()
+            os.fsync(tf.fileno())
+
+        os.replace(tmp_receipt_path, abs_receipt)
         return receipt
 
     finally:
@@ -1065,7 +1154,7 @@ def main() -> int:
             dpkg_deb_path=args.dpkg_deb_path,
             check_only=args.check_only
         )
-        print(f"[BPF_DEPENDENCIES_OK] Verified authenticated snapshot {receipt.get('snapshot_id')}")
+        print(f"[BPF_DEPENDENCIES_OK] Verified snapshot metadata {receipt.get('snapshot_id')}")
         if not args.check_only:
             print(f"[BPF_DEPENDENCIES_OK] Staged 4 static archives in prefix: {receipt.get('staged_prefix')}")
             print(f"[BPF_DEPENDENCIES_OK] Wrote provenance receipt to: {args.receipt}")
