@@ -1767,8 +1767,158 @@ def validate_execution_context_to_manifest(context: ExecutionContext, manifest: 
         )
 
 
-def derive_expected_stage_timeout_sec(resource_policy: ResourcePolicy, stage: str) -> int:
-    """Return the approved resource timeout for the given stage name."""
+@dataclasses.dataclass(frozen=True)
+class EffectiveExecutionPolicy:
+    """Canonical, closed, typed effective execution policy derived from approved ExecutionSubject and stage."""
+    stage_timeout_sec: int
+    grace_sec: int
+    host_job_limit_sec: int
+    payload_budget_sec: int
+    finalization_alloc_sec: int
+    min_disk_gib: float
+    uid: int
+    gid: int
+    network: str
+    read_only_root: bool
+    drop_capabilities: str
+    no_new_privileges: bool
+    private_pid_namespace: bool
+    default_confined_seccomp: bool
+    init_process: bool
+    pids_limit: int
+    tmpfs_tmp_size: str
+    tmpfs_dev_shm_size: str
+    max_file_bytes: int
+    max_aggregate_unique_inode_bytes: int
+    max_archive_emitted_bytes: int
+    max_directory_entries: int
+    max_directory_depth: int
+    max_path_bytes: int
+    max_aliases: int
+    max_json_bytes: int
+    max_ledger_line_bytes: int
+    max_ledger_line_count: int
+    max_structured_records: int
+    max_witness_events: int
+    max_held_descriptors: int
+    max_helper_memory_bytes: int
+    collection_deadline_sec: int
+
+    _ALLOWED_KEYS = {
+        "stage_timeout_sec", "grace_sec", "host_job_limit_sec", "payload_budget_sec",
+        "finalization_alloc_sec", "min_disk_gib", "uid", "gid", "network",
+        "read_only_root", "drop_capabilities", "no_new_privileges",
+        "private_pid_namespace", "default_confined_seccomp", "init_process",
+        "pids_limit", "tmpfs_tmp_size", "tmpfs_dev_shm_size", "max_file_bytes",
+        "max_aggregate_unique_inode_bytes", "max_archive_emitted_bytes",
+        "max_directory_entries", "max_directory_depth", "max_path_bytes",
+        "max_aliases", "max_json_bytes", "max_ledger_line_bytes",
+        "max_ledger_line_count", "max_structured_records", "max_witness_events",
+        "max_held_descriptors", "max_helper_memory_bytes", "collection_deadline_sec",
+    }
+
+    def __post_init__(self) -> None:
+        require_int(self.stage_timeout_sec, "stage_timeout_sec", min_val=1)
+        require_int(self.grace_sec, "grace_sec", min_val=1)
+        require_int(self.host_job_limit_sec, "host_job_limit_sec", min_val=1)
+        require_int(self.payload_budget_sec, "payload_budget_sec", min_val=1)
+        require_int(self.finalization_alloc_sec, "finalization_alloc_sec", min_val=1)
+        min_disk = float(require_float(self.min_disk_gib, "min_disk_gib"))
+        if min_disk < 1.0:
+            raise TypeValidationError("min_disk_gib must be >= 1.0")
+        object.__setattr__(self, "min_disk_gib", min_disk)
+        require_int(self.uid, "uid", min_val=1)
+        require_int(self.gid, "gid", min_val=1)
+        require_ascii_str(self.network, "network")
+        require_bool(self.read_only_root, "read_only_root", expected=True)
+        require_ascii_str(self.drop_capabilities, "drop_capabilities")
+        require_bool(self.no_new_privileges, "no_new_privileges", expected=True)
+        require_bool(self.private_pid_namespace, "private_pid_namespace", expected=True)
+        require_bool(self.default_confined_seccomp, "default_confined_seccomp", expected=True)
+        require_bool(self.init_process, "init_process", expected=True)
+        require_int(self.pids_limit, "pids_limit", min_val=16)
+        require_ascii_str(self.tmpfs_tmp_size, "tmpfs_tmp_size")
+        require_ascii_str(self.tmpfs_dev_shm_size, "tmpfs_dev_shm_size")
+        require_int(self.max_file_bytes, "max_file_bytes", min_val=1)
+        require_int(self.max_aggregate_unique_inode_bytes, "max_aggregate_unique_inode_bytes", min_val=1)
+        require_int(self.max_archive_emitted_bytes, "max_archive_emitted_bytes", min_val=1)
+        require_int(self.max_directory_entries, "max_directory_entries", min_val=1)
+        require_int(self.max_directory_depth, "max_directory_depth", min_val=1)
+        require_int(self.max_path_bytes, "max_path_bytes", min_val=1)
+        require_int(self.max_aliases, "max_aliases", min_val=1)
+        require_int(self.max_json_bytes, "max_json_bytes", min_val=1)
+        require_int(self.max_ledger_line_bytes, "max_ledger_line_bytes", min_val=1)
+        require_int(self.max_ledger_line_count, "max_ledger_line_count", min_val=1)
+        require_int(self.max_structured_records, "max_structured_records", min_val=1)
+        require_int(self.max_witness_events, "max_witness_events", min_val=1)
+        require_int(self.max_held_descriptors, "max_held_descriptors", min_val=1)
+        require_int(self.max_helper_memory_bytes, "max_helper_memory_bytes", min_val=1)
+        require_int(self.collection_deadline_sec, "collection_deadline_sec", min_val=1)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> EffectiveExecutionPolicy:
+        require_dict(data, "EffectiveExecutionPolicy", cls._ALLOWED_KEYS)
+        missing = cls._ALLOWED_KEYS - set(data.keys())
+        if missing:
+            raise TypeValidationError(f"EffectiveExecutionPolicy missing keys: {sorted(missing)}")
+        return cls(
+            stage_timeout_sec=require_int(data["stage_timeout_sec"], "stage_timeout_sec", min_val=1),
+            grace_sec=require_int(data["grace_sec"], "grace_sec", min_val=1),
+            host_job_limit_sec=require_int(data["host_job_limit_sec"], "host_job_limit_sec", min_val=1),
+            payload_budget_sec=require_int(data["payload_budget_sec"], "payload_budget_sec", min_val=1),
+            finalization_alloc_sec=require_int(data["finalization_alloc_sec"], "finalization_alloc_sec", min_val=1),
+            min_disk_gib=require_float(data["min_disk_gib"], "min_disk_gib"),
+            uid=require_int(data["uid"], "uid", min_val=1),
+            gid=require_int(data["gid"], "gid", min_val=1),
+            network=require_ascii_str(data["network"], "network"),
+            read_only_root=require_bool(data["read_only_root"], "read_only_root", expected=True),
+            drop_capabilities=require_ascii_str(data["drop_capabilities"], "drop_capabilities"),
+            no_new_privileges=require_bool(data["no_new_privileges"], "no_new_privileges", expected=True),
+            private_pid_namespace=require_bool(data["private_pid_namespace"], "private_pid_namespace", expected=True),
+            default_confined_seccomp=require_bool(data["default_confined_seccomp"], "default_confined_seccomp", expected=True),
+            init_process=require_bool(data["init_process"], "init_process", expected=True),
+            pids_limit=require_int(data["pids_limit"], "pids_limit", min_val=16),
+            tmpfs_tmp_size=require_ascii_str(data["tmpfs_tmp_size"], "tmpfs_tmp_size"),
+            tmpfs_dev_shm_size=require_ascii_str(data["tmpfs_dev_shm_size"], "tmpfs_dev_shm_size"),
+            max_file_bytes=require_int(data["max_file_bytes"], "max_file_bytes", min_val=1),
+            max_aggregate_unique_inode_bytes=require_int(data["max_aggregate_unique_inode_bytes"], "max_aggregate_unique_inode_bytes", min_val=1),
+            max_archive_emitted_bytes=require_int(data["max_archive_emitted_bytes"], "max_archive_emitted_bytes", min_val=1),
+            max_directory_entries=require_int(data["max_directory_entries"], "max_directory_entries", min_val=1),
+            max_directory_depth=require_int(data["max_directory_depth"], "max_directory_depth", min_val=1),
+            max_path_bytes=require_int(data["max_path_bytes"], "max_path_bytes", min_val=1),
+            max_aliases=require_int(data["max_aliases"], "max_aliases", min_val=1),
+            max_json_bytes=require_int(data["max_json_bytes"], "max_json_bytes", min_val=1),
+            max_ledger_line_bytes=require_int(data["max_ledger_line_bytes"], "max_ledger_line_bytes", min_val=1),
+            max_ledger_line_count=require_int(data["max_ledger_line_count"], "max_ledger_line_count", min_val=1),
+            max_structured_records=require_int(data["max_structured_records"], "max_structured_records", min_val=1),
+            max_witness_events=require_int(data["max_witness_events"], "max_witness_events", min_val=1),
+            max_held_descriptors=require_int(data["max_held_descriptors"], "max_held_descriptors", min_val=1),
+            max_helper_memory_bytes=require_int(data["max_helper_memory_bytes"], "max_helper_memory_bytes", min_val=1),
+            collection_deadline_sec=require_int(data["collection_deadline_sec"], "collection_deadline_sec", min_val=1),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return dataclasses.asdict(self)
+
+    def canonical_bytes(self) -> bytes:
+        return canonical_json_bytes(self.to_dict())
+
+    def digest(self) -> str:
+        return sha256_bytes(self.canonical_bytes())
+
+
+STANDARD_STAGES = {"build", "version", "plan", "pin", "run1", "run2", "final"}
+
+
+def derive_expected_stage_timeout_sec(
+    resource_policy: ResourcePolicy,
+    stage: str,
+    valid_run3_drivers: Optional[Sequence[str]] = None,
+) -> int:
+    """
+    Return the approved resource timeout for the given stage name.
+    Rejects unrecognized stages rather than defaulting to driver limit.
+    """
     stage_map = {
         "build": resource_policy.stage_build_limit_sec,
         "version": resource_policy.stage_version_limit_sec,
@@ -1778,29 +1928,58 @@ def derive_expected_stage_timeout_sec(resource_policy: ResourcePolicy, stage: st
         "run2": resource_policy.stage_run2_limit_sec,
         "final": resource_policy.stage_final_limit_sec,
     }
-    return stage_map.get(stage, resource_policy.driver_limit_sec)
+    if stage in stage_map:
+        return stage_map[stage]
+
+    if valid_run3_drivers is not None:
+        if stage in valid_run3_drivers or (stage.startswith("run3_") and stage[5:] in valid_run3_drivers):
+            return resource_policy.driver_limit_sec
+
+    raise TypeValidationError(f"Unrecognized execution stage: {stage!r}")
 
 
-def derive_expected_effective_policy(subject: ExecutionSubject, stage: str) -> Dict[str, Any]:
-    """Derive the canonical approved effective execution policy from subject and stage."""
-    timeout_sec = derive_expected_stage_timeout_sec(subject.resource_policy, stage)
-    return {
-        "timeout": timeout_sec,
-        "timeout_sec": timeout_sec,
-        "grace_sec": subject.resource_policy.grace_sec,
-        "uid": subject.cage_policy.uid,
-        "gid": subject.cage_policy.gid,
-        "network": subject.cage_policy.network,
-        "read_only_root": subject.cage_policy.read_only_root,
-        "drop_capabilities": subject.cage_policy.drop_capabilities,
-        "no_new_privileges": subject.cage_policy.no_new_privileges,
-        "private_pid_namespace": subject.cage_policy.private_pid_namespace,
-        "default_confined_seccomp": subject.cage_policy.default_confined_seccomp,
-        "init_process": subject.cage_policy.init_process,
-        "pids_limit": subject.cage_policy.pids_limit,
-        "tmpfs_tmp_size": subject.cage_policy.tmpfs_tmp_size,
-        "tmpfs_dev_shm_size": subject.cage_policy.tmpfs_dev_shm_size,
-    }
+def derive_expected_effective_policy(
+    subject: ExecutionSubject,
+    stage: str,
+    valid_run3_drivers: Optional[Sequence[str]] = None,
+) -> EffectiveExecutionPolicy:
+    """Derive the canonical approved EffectiveExecutionPolicy from subject and stage."""
+    timeout_sec = derive_expected_stage_timeout_sec(subject.resource_policy, stage, valid_run3_drivers)
+    return EffectiveExecutionPolicy(
+        stage_timeout_sec=timeout_sec,
+        grace_sec=subject.resource_policy.grace_sec,
+        host_job_limit_sec=subject.resource_policy.host_job_limit_sec,
+        payload_budget_sec=subject.resource_policy.payload_budget_sec,
+        finalization_alloc_sec=subject.resource_policy.finalization_alloc_sec,
+        min_disk_gib=subject.resource_policy.min_disk_gib,
+        uid=subject.cage_policy.uid,
+        gid=subject.cage_policy.gid,
+        network=subject.cage_policy.network,
+        read_only_root=subject.cage_policy.read_only_root,
+        drop_capabilities=subject.cage_policy.drop_capabilities,
+        no_new_privileges=subject.cage_policy.no_new_privileges,
+        private_pid_namespace=subject.cage_policy.private_pid_namespace,
+        default_confined_seccomp=subject.cage_policy.default_confined_seccomp,
+        init_process=subject.cage_policy.init_process,
+        pids_limit=subject.cage_policy.pids_limit,
+        tmpfs_tmp_size=subject.cage_policy.tmpfs_tmp_size,
+        tmpfs_dev_shm_size=subject.cage_policy.tmpfs_dev_shm_size,
+        max_file_bytes=subject.evidence_policy.max_file_bytes,
+        max_aggregate_unique_inode_bytes=subject.evidence_policy.max_aggregate_unique_inode_bytes,
+        max_archive_emitted_bytes=subject.evidence_policy.max_archive_emitted_bytes,
+        max_directory_entries=subject.evidence_policy.max_directory_entries,
+        max_directory_depth=subject.evidence_policy.max_directory_depth,
+        max_path_bytes=subject.evidence_policy.max_path_bytes,
+        max_aliases=subject.evidence_policy.max_aliases,
+        max_json_bytes=subject.evidence_policy.max_json_bytes,
+        max_ledger_line_bytes=subject.evidence_policy.max_ledger_line_bytes,
+        max_ledger_line_count=subject.evidence_policy.max_ledger_line_count,
+        max_structured_records=subject.evidence_policy.max_structured_records,
+        max_witness_events=subject.evidence_policy.max_witness_events,
+        max_held_descriptors=subject.evidence_policy.max_held_descriptors,
+        max_helper_memory_bytes=subject.evidence_policy.max_helper_memory_bytes,
+        collection_deadline_sec=subject.evidence_policy.collection_deadline_sec,
+    )
 
 
 def validate_structural_checkpoint_to_context(
@@ -1810,6 +1989,7 @@ def validate_structural_checkpoint_to_context(
     *,
     launch_receipt: Optional[StructuralLaunchOwnershipReceipt] = None,
     teardown_disposition: Optional[TeardownDisposition] = None,
+    valid_run3_drivers: Optional[Sequence[str]] = None,
 ) -> None:
     """
     Structural validation of CheckpointDescriptor against execution context and ProofManifest.
@@ -1846,14 +2026,25 @@ def validate_structural_checkpoint_to_context(
             f"CheckpointDescriptor execution_context_digest mismatch: expected {ctx_digest}, got {checkpoint.execution_context_digest}"
         )
 
-    # Enforce effective policy join against canonical approved subject settings
-    expected_policy = derive_expected_effective_policy(manifest.subject, checkpoint.stage)
-    cp_policy = dict(checkpoint.effective_policy)
-    for k, v in cp_policy.items():
-        if k in expected_policy and v != expected_policy[k]:
-            raise ReferenceIntegrityError(
-                f"Checkpoint effective_policy[{k!r}] ({v}) contradicts approved subject policy ({expected_policy[k]})"
-            )
+    # Derive expected canonical effective execution policy (validating stage)
+    expected_policy = derive_expected_effective_policy(manifest.subject, checkpoint.stage, valid_run3_drivers)
+
+    # Parse checkpoint effective policy through closed, typed schema
+    try:
+        cp_policy_dict = dict(checkpoint.effective_policy)
+        cp_policy = EffectiveExecutionPolicy.from_dict(cp_policy_dict)
+    except (TypeValidationError, UnknownFieldError) as exc:
+        raise ReferenceIntegrityError(f"Checkpoint effective_policy malformed, incomplete, or contains unknown keys: {exc}") from exc
+
+    # Enforce exact typed equality against approved subject policy
+    if cp_policy != expected_policy:
+        diffs = []
+        for k in EffectiveExecutionPolicy._ALLOWED_KEYS:
+            act = getattr(cp_policy, k)
+            exp = getattr(expected_policy, k)
+            if act != exp or type(act) is not type(exp):
+                diffs.append(f"{k}: actual={act} ({type(act).__name__}) != expected={exp} ({type(exp).__name__})")
+        raise ReferenceIntegrityError(f"Checkpoint effective_policy contradicts approved subject policy: {', '.join(diffs)}")
 
     # Validate launch receipt if provided or required
     if launch_receipt is not None:
@@ -1871,11 +2062,11 @@ def validate_structural_checkpoint_to_context(
             raise ReferenceIntegrityError(f"launch_receipt attempt mismatch: {launch_receipt.attempt} != {checkpoint.attempt}")
 
         # Enforce effective policy digest comparison
-        checkpoint_policy_digest = sha256_bytes(canonical_json_bytes(dict(checkpoint.effective_policy)))
-        if launch_receipt.effective_policy_digest != checkpoint_policy_digest:
+        expected_policy_digest = expected_policy.digest()
+        if launch_receipt.effective_policy_digest != expected_policy_digest:
             raise ReferenceIntegrityError(
                 f"launch_receipt effective_policy_digest ({launch_receipt.effective_policy_digest}) "
-                f"does not match checkpoint effective_policy digest ({checkpoint_policy_digest})"
+                f"does not match approved effective_policy digest ({expected_policy_digest})"
             )
 
     # Normalize and validate teardown disposition from explicit argument or checkpoint retained evidence
@@ -1924,10 +2115,6 @@ def validate_structural_checkpoint_to_context(
             raise ReferenceIntegrityError(
                 f"Checkpoint PASS outcome requires resolved teardown (stopped=True, removed=True, clean_exit=True, unresolved=0), got: {resolved_td}"
             )
-
-
-validate_checkpoint_to_context = validate_structural_checkpoint_to_context
-# Refusal Policy Enforcements (Spec 3.1)
 def enforce_independent_review_refusal() -> None:
     """Unconditionally refuse execution because independent review attestation is not yet integrated."""
     raise ReviewUnauthenticatedError(
