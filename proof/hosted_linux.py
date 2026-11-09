@@ -645,6 +645,7 @@ def build_mount_bindings(
 def verify_container_mount_table(
     inspect_data: Dict[str, Any],
     expected_phase: str = "proof",
+    mount_bindings: Optional[List[MountBinding]] = None,
 ) -> None:
     """
     Validate docker inspect Mounts against anti-alias and confinement policy:
@@ -703,6 +704,46 @@ def verify_container_mount_table(
         if m.get("RW", True) is not False:
             raise MountPolicyError("Mount /receipts must be read-only in final phase")
 
+    # Source path identity and anti-alias verification
+    if mount_bindings:
+        sources_seen: Dict[Tuple[int, int], str] = {}
+        for mb in mount_bindings:
+            if mb.host_path:
+                real_expected = os.path.realpath(mb.host_path)
+                m = mount_by_dest.get(mb.container_path)
+                if not m:
+                    raise MountPolicyError(f"Expected mount {mb.container_path} missing in container")
+                real_actual = os.path.realpath(str(m.get("Source", "")))
+                if real_actual != real_expected:
+                    raise MountPolicyError(
+                        f"Mount source mismatch for {mb.container_path}: expected {real_expected}, got {real_actual}"
+                    )
+                try:
+                    st = os.stat(real_actual)
+                    ident = (st.st_dev, st.st_ino)
+                    if ident in sources_seen and (mb.access == "rw" or mount_by_dest[sources_seen[ident]].get("RW")):
+                        raise MountPolicyError(
+                            f"Host mount aliasing detected: {mb.container_path} and {sources_seen[ident]} share inode {ident}"
+                        )
+                    sources_seen[ident] = mb.container_path
+                except OSError:
+                    pass
+
+
+def prepare_writable_roots(runner_temp_dir: str) -> None:
+    """Prepare host bind-mount directories with non-root write access before container launch."""
+    p_build = os.path.join(runner_temp_dir, "p-build")
+    priv_tmp = os.path.join(runner_temp_dir, "private-tmp")
+    scratch = os.path.join(runner_temp_dir, "scratch")
+    home_proof = os.path.join(runner_temp_dir, "home-proof")
+
+    for d in (p_build, priv_tmp, scratch, home_proof):
+        os.makedirs(d, exist_ok=True)
+        os.chmod(d, 0o1777 if ("tmp" in d) else 0o777)
+        try:
+            os.chown(d, CONTAINER_UID, CONTAINER_GID)
+        except (PermissionError, OSError):
+            pass
 def check_disk_floor(path: str, min_gib: float = MIN_DISK_GIB) -> float:
     """Verify filesystem containing path has at least min_gib free; raise error if not."""
     cur = path
@@ -1309,9 +1350,9 @@ class SequentialLifecycleController:
         self.p_dir = os.path.abspath(p_dir)
         self.w_dir = os.path.abspath(w_dir)
         self.inputs_dir = os.path.abspath(inputs_dir)
-        self.artifacts_dir = os.path.abspath(artifacts_dir)
-        self.job_start_time = float(job_start_time)
-        self.payload_budget_sec = float(payload_budget_sec)
+        prepare_writable_roots(self.runner_temp_dir)
+        os.makedirs(self.artifacts_dir, exist_ok=True)
+        os.chmod(self.artifacts_dir, 0o700)
         self.driver_limit_sec = float(driver_limit_sec)
         self.grace_sec = float(grace_sec)
         self.min_disk_gib = float(min_disk_gib)
@@ -1525,7 +1566,7 @@ class SequentialLifecycleController:
                 self.mark_failure(f"docker inspect failed before container start: {inspect_proc.stderr}")
                 return -1, "", inspect_proc.stderr
             inspect_data = json.loads(inspect_proc.stdout)[0]
-            verify_container_mount_table(inspect_data, expected_phase=phase)
+            verify_container_mount_table(inspect_data, expected_phase=phase, mount_bindings=mount_bindings)
 
             # Start container attached
             start_proc = subprocess.run(
@@ -1824,16 +1865,25 @@ class SequentialLifecycleController:
                 final_data = json.load(f)
             if final_data.get("status") != "PASS":
                 self.mark_failure(f"final.json status was not PASS: {final_data.get('status')}")
+            if final_data.get("reasons"):
+                self.mark_failure(f"final.json reported failure reasons: {final_data.get('reasons')}")
+            if final_data.get("earlier_failures"):
+                self.mark_failure(f"final.json reported earlier_failures: {final_data.get('earlier_failures')}")
 
-            # Verify RG2 and RG2a: 142/142 passed, 0 excluded, 0 failures
-            rg2 = final_data.get("rg2", {})
-            if rg2.get("evaluated") != 142 or rg2.get("passed") != 142 or rg2.get("failures") != 0:
-                self.mark_failure(f"RG2 counts mismatch: {rg2}")
+            ident = final_data.get("identity", {})
+            if ident.get("status") != "PASS":
+                self.mark_failure(f"final.json identity status was not PASS: {ident.get('status')}")
 
-            rg2a = final_data.get("rg2a", {})
-            if rg2a.get("evaluated") != 142 or rg2a.get("passed") != 142 or rg2a.get("failures") != 0:
-                self.mark_failure(f"RG2a counts mismatch: {rg2a}")
+            units = final_data.get("units", {})
+            for req_unit in ("run1", "run2"):
+                if req_unit not in units or units[req_unit].get("status") != "PASS":
+                    self.mark_failure(f"final.json missing passing {req_unit} unit")
 
+            # Verify each required driver in units has status PASS
+            for drv in (getattr(self, "_last_required_drivers", None) or DRIVERS_29 if "DRIVERS_29" in globals() else []):
+                u_key = f"run3/{drv}"
+                if u_key not in units or units[u_key].get("status") != "PASS":
+                    self.mark_failure(f"final.json unit {u_key} missing or not PASS")
         except Exception as exc:
             self.mark_failure(f"Failed to verify final.json: {exc}")
 
@@ -1923,6 +1973,7 @@ def cmd_verify_auth(args: argparse.Namespace) -> int:
 def cmd_preflight(args: argparse.Namespace) -> int:
     """Execute preflight container boundary and qualification checks on exact mounts."""
     temp_dir = args.temp_dir or tempfile.gettempdir()
+    prepare_writable_roots(temp_dir)
     p_dir = args.p or os.path.join(temp_dir, "p-preflight")
     w_dir = args.w or os.path.join(temp_dir, "w-preflight")
     inputs_dir = args.inputs_dir or os.path.join(temp_dir, "inputs-preflight")
@@ -1931,9 +1982,8 @@ def cmd_preflight(args: argparse.Namespace) -> int:
     scratch_dir = os.path.join(temp_dir, "scratch")
     home_proof_dir = os.path.join(temp_dir, "home-proof")
 
-    for d in (p_dir, w_dir, inputs_dir, p_build_dir, private_tmp_dir, scratch_dir, home_proof_dir):
+    for d in (p_dir, w_dir, inputs_dir):
         os.makedirs(d, exist_ok=True)
-
     try:
         results = run_preflight_controls(
             image=args.image,
