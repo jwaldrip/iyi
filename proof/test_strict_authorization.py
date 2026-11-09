@@ -3292,46 +3292,92 @@ class BundleAndWTreeTests(unittest.TestCase):
         code = main(["check-bundle", "--manifest", manifest_path, "--expect-sha256", "0" * 64])
         self.assertEqual(code, AUTH_REFUSED_EXIT_CODE)
 
-    def _prepare_w_repo(self, w_dir: str, target_sha: str) -> None:
-        subprocess.run(["git", "clone", "--shared", ".", w_dir], check=True, capture_output=True)
-        res = subprocess.run(["git", "-C", w_dir, "checkout", target_sha], capture_output=True)
-        if res.returncode != 0:
-            subprocess.run(["git", "-C", w_dir, "fetch", "--depth=2", "origin", target_sha], check=True, capture_output=True)
-            subprocess.run(["git", "-C", w_dir, "checkout", target_sha], check=True, capture_output=True)
-        if target_sha == PINNED_W_SHA:
-            res_p = subprocess.run(["git", "-C", w_dir, "cat-file", "-e", PINNED_P_SHA], capture_output=True)
-            if res_p.returncode != 0:
-                subprocess.run(["git", "-C", w_dir, "fetch", "--depth=1", "origin", PINNED_P_SHA], capture_output=True)
+    def _prepare_w_repo(self, w_dir: str):
+        res_cat = subprocess.run(["git", "cat-file", "-e", PINNED_W_SHA], capture_output=True)
+        if res_cat.returncode == 0:
+            subprocess.run(["git", "clone", "--shared", ".", w_dir], check=True, capture_output=True)
+            subprocess.run(["git", "-C", w_dir, "checkout", PINNED_W_SHA], check=True, capture_output=True)
+            return None
+        else:
+            subprocess.run(["git", "init", w_dir], check=True, capture_output=True)
+            subprocess.run(["git", "-C", w_dir, "config", "user.name", "Test"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", w_dir, "config", "user.email", "test@example.com"], check=True, capture_output=True)
+            dummy_file = os.path.join(w_dir, "src", "file.txt")
+            os.makedirs(os.path.dirname(dummy_file), exist_ok=True)
+            with open(dummy_file, "w") as f:
+                f.write("initial")
+            subprocess.run(["git", "-C", w_dir, "add", "."], check=True, capture_output=True)
+            subprocess.run(["git", "-C", w_dir, "commit", "-m", "commit P"], check=True, capture_output=True)
+            p_sha = subprocess.check_output(["git", "-C", w_dir, "rev-parse", "HEAD"]).decode("ascii").strip()
+
+            pw_fixture = get_compare_pw_fixture()
+            census_paths = [f["filename"] for f in pw_fixture["files"]]
+            for p in census_paths:
+                fpath = os.path.join(w_dir, p)
+                os.makedirs(os.path.dirname(fpath), exist_ok=True)
+                with open(fpath, "wb") as f:
+                    f.write(b"content")
+
+            subprocess.run(["git", "-C", w_dir, "add", "proof"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", w_dir, "commit", "-m", "commit W"], check=True, capture_output=True)
+            w_sha = subprocess.check_output(["git", "-C", w_dir, "rev-parse", "HEAD"]).decode("ascii").strip()
+            return (p_sha, w_sha)
 
     def test_check_w_tree_verified(self):
         w_dir = os.path.join(self.td, "real_w_repo")
-        self._prepare_w_repo(w_dir, PINNED_W_SHA)
-        code = main(["check-w-tree", "--w-dir", w_dir])
+        shas = self._prepare_w_repo(w_dir)
+        if shas:
+            with patch("proof.strict_authorization.PINNED_P_SHA", shas[0]), \
+                 patch("proof.strict_authorization.PINNED_W_SHA", shas[1]):
+                code = main(["check-w-tree", "--w-dir", w_dir])
+        else:
+            code = main(["check-w-tree", "--w-dir", w_dir])
         self.assertEqual(code, 0)
 
     def test_check_w_tree_dirty_refuses(self):
         w_dir = os.path.join(self.td, "dirty_w_repo")
-        self._prepare_w_repo(w_dir, PINNED_W_SHA)
+        shas = self._prepare_w_repo(w_dir)
         with open(os.path.join(w_dir, "dirty.txt"), "w") as f:
             f.write("dirty")
-        code = main(["check-w-tree", "--w-dir", w_dir])
+        if shas:
+            with patch("proof.strict_authorization.PINNED_P_SHA", shas[0]), \
+                 patch("proof.strict_authorization.PINNED_W_SHA", shas[1]):
+                code = main(["check-w-tree", "--w-dir", w_dir])
+        else:
+            code = main(["check-w-tree", "--w-dir", w_dir])
         self.assertEqual(code, AUTH_REFUSED_EXIT_CODE)
 
     def test_check_w_tree_wrong_head_refuses(self):
         w_dir = os.path.join(self.td, "wrong_head_w_repo")
-        self._prepare_w_repo(w_dir, PINNED_P_SHA)
-        code = main(["check-w-tree", "--w-dir", w_dir])
+        shas = self._prepare_w_repo(w_dir)
+        if shas:
+            subprocess.run(["git", "-C", w_dir, "checkout", shas[0]], check=True, capture_output=True)
+            with patch("proof.strict_authorization.PINNED_P_SHA", shas[0]), \
+                 patch("proof.strict_authorization.PINNED_W_SHA", shas[1]):
+                code = main(["check-w-tree", "--w-dir", w_dir])
+        else:
+            subprocess.run(["git", "-C", w_dir, "checkout", PINNED_P_SHA], check=True, capture_output=True)
+            code = main(["check-w-tree", "--w-dir", w_dir])
         self.assertEqual(code, AUTH_REFUSED_EXIT_CODE)
 
     def test_check_w_tree_subprocess_exit_0(self):
         w_dir = os.path.join(self.td, "subp_w_repo")
-        self._prepare_w_repo(w_dir, PINNED_W_SHA)
-        res = subprocess.run(
-            [sys.executable, "-B", "-m", "proof.strict_authorization", "check-w-tree", "--w-dir", w_dir],
-            capture_output=True,
-            text=True,
-            env=dict(os.environ, PYTHONPATH="."),
-        )
+        shas = self._prepare_w_repo(w_dir)
+        if shas:
+            py_code = f"import sys, proof.strict_authorization as sa; sa.PINNED_P_SHA='{shas[0]}'; sa.PINNED_W_SHA='{shas[1]}'; sys.exit(sa.main(['check-w-tree', '--w-dir', '{w_dir}']))"
+            res = subprocess.run(
+                [sys.executable, "-B", "-c", py_code],
+                capture_output=True,
+                text=True,
+                env=dict(os.environ, PYTHONPATH="."),
+            )
+        else:
+            res = subprocess.run(
+                [sys.executable, "-B", "-m", "proof.strict_authorization", "check-w-tree", "--w-dir", w_dir],
+                capture_output=True,
+                text=True,
+                env=dict(os.environ, PYTHONPATH="."),
+            )
         self.assertEqual(res.returncode, 0)
 
 if __name__ == "__main__":
