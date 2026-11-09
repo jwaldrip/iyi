@@ -2975,8 +2975,8 @@ module Iyi
     definition.where_bounds.try &.each_value do |bound|
       append_bound_node_anchors(bound, "", 0, anchors)
     end
-    definition.all_annotations.try &.each do |annotation|
-      append_bound_node_anchors(annotation, "", 0, anchors)
+    definition.all_annotations.try &.each do |annotation_node|
+      append_bound_node_anchors(annotation_node, "", 0, anchors)
     end
     key = IyiMod.signature_fragment_key(container, signature)
     entry = {header, anchors}
@@ -4668,7 +4668,9 @@ module Iyi
   private def self.bound_replace_exact_header(before : String, after : String, anchors : Array(DiagnosticAnchor)?) : String
     start = 0
     maximum = Math.min(before.bytesize, after.bytesize)
-    start += 1 while start < maximum && before.to_unsafe[start] == after.to_unsafe[start]
+    while start < maximum && before.to_unsafe[start] == after.to_unsafe[start]
+      start += 1
+    end
     old_end = before.bytesize
     new_end = after.bytesize
     while old_end > start && new_end > start && before.to_unsafe[old_end - 1] == after.to_unsafe[new_end - 1]

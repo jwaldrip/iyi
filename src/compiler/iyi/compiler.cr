@@ -420,6 +420,9 @@ module Iyi
     # the prelude for reasons caching its analysis does not remove.
     private def compile_with_preanalysed_prelude(pre : Preanalysed, sources : Array(Source),
                                                  output_filename : String, & : Program -> Nil) : Result
+      if @emit_frame_provenance || @capture_diagnostic_provenance || @emit_link_input_proof
+        raise CompilerError.new("diagnostic evidence requires a fresh prelude analysis", :USAGE_ERROR)
+      end
       program = pre.program
       @iyi_link_driver_only = true if stale_build?
 
@@ -621,7 +624,7 @@ module Iyi
     OUTSIDE_PRELUDE_ANALYSIS = %w(
       cleanup cross_compile dependency_printer dump_ll emit_base_filename
       emit_bind emit_targets emit_link_input_proof frame_pointers iyi_direct_link iyi_keep
-      iyi_link_driver_only link_flags mattr mcmodel mcpu n_threads no_cleanup
+      iyi_link_driver_only link_flags link_input_proof_linker link_input_proof_snapshot mattr mcmodel mcpu n_threads no_cleanup
       program progress_tracker single_module stale_drop stderr target_machine verbose
       stale_accept stale_block stale_dump_elements stale_key
     )
@@ -651,8 +654,8 @@ module Iyi
     end
 
     IN_BEHAVIOR_KEY = %w(
-      cleanup codegen_target cross_compile crystal_library debug dump_ll
-      emit_bind emit_iyimod emit_targets flags frame_pointers iyi_direct_link
+      capture_diagnostic_provenance cleanup codegen_target cross_compile crystal_library debug dump_ll
+      emit_bind emit_frame_provenance emit_iyimod emit_link_input_proof emit_targets flags frame_pointers iyi_direct_link
       iyi_keep iyi_link_driver_only iyi_prefers_source link_flags mattr mcmodel
       mcpu n_threads no_cleanup no_codegen optimization_mode prelude single_module
       static target_machine wants_doc
@@ -663,9 +666,12 @@ module Iyi
       iyi_project_root program use_iyimod
     )
 
+    # The two link-input fields are per-invocation evidence scratch, reset at
+    # compile entry and never consulted to decide code generation or reuse.
     DISPLAY_ONLY = %w(
       color dependency_printer progress_tracker show_error_trace stale_accept
       stale_block stale_drop stale_dump_elements stale_key stderr stdout verbose warnings
+      link_input_proof_linker link_input_proof_snapshot
     )
 
     def behavior_key : Stale::Digest
@@ -681,6 +687,9 @@ module Iyi
       {% end %}
 
       Stale.d("behavior") do |encoder|
+        encoder.bool(@capture_diagnostic_provenance)
+        encoder.bool(!@emit_frame_provenance.nil?)
+        encoder.bool(!@emit_link_input_proof.nil?)
         encoder.bool(@cleanup)
         encoder.str(@codegen_target.to_s)
         encoder.bool(@cross_compile)
@@ -812,6 +821,9 @@ module Iyi
         if File.exists?(proof_path) || File.symlink?(proof_path)
           raise CompilerError.new("link-input proof path already exists; choose a new path", :USAGE_ERROR)
         end
+        if stale_build? || @stale_drop || @stale_dump_elements || @stale_accept || @stale_block
+          raise CompilerError.new("link-input proof cannot be combined with stale-check options", :USAGE_ERROR)
+        end
         if @no_codegen || @cross_compile || (emit_bind && iyi_keep) || ENV["IYI_FORK_PROBE"]?
           raise CompilerError.new("link-input proof requires an ordinary linked executable", :USAGE_ERROR)
         end
@@ -846,7 +858,7 @@ module Iyi
       # the fork costs 0.2 to 0.3 s of it (SPEC.md IV.1d). A measurement tool
       # rather than a mode — it analyses the prelude in the foreground, so it is
       # always slower overall than an ordinary build.
-      if @emit_frame_provenance.nil? && !@capture_diagnostic_provenance && ENV["IYI_WARM"]? && !Compiler.preanalysed.has_key?(prelude_cache_key)
+      if @emit_frame_provenance.nil? && !@capture_diagnostic_provenance && @emit_link_input_proof.nil? && ENV["IYI_WARM"]? && !Compiler.preanalysed.has_key?(prelude_cache_key)
         warm = Time.instant
         pre = preanalyse_prelude
         Compiler.preanalysed[pre.key] = pre
@@ -857,7 +869,7 @@ module Iyi
         return result
       end
 
-      if @emit_frame_provenance.nil? && !@capture_diagnostic_provenance && (pre = Compiler.preanalysed[prelude_cache_key]?)
+      if @emit_frame_provenance.nil? && !@capture_diagnostic_provenance && @emit_link_input_proof.nil? && (pre = Compiler.preanalysed[prelude_cache_key]?)
         return compile_with_preanalysed_prelude(pre, source, output_filename) { |program| yield program }
       end
       program = new_program(source)
@@ -870,8 +882,7 @@ module Iyi
         program.macro_expansion_error_hook.try &.call(ex.cause)
       end
 
-      if @emit_frame_provenance.nil? && !@capture_diagnostic_provenance && stale_check(program, node, source)
-        raise CompilerError.new("link-input proof cannot use a completed-build shortcut", :FAILURE) if @emit_link_input_proof
+      if @emit_frame_provenance.nil? && !@capture_diagnostic_provenance && @emit_link_input_proof.nil? && stale_check(program, node, source)
         return Result.new(program, node)
       end
 
@@ -5341,6 +5352,7 @@ module Iyi
       @object_name : String?
       @bc_name : String?
       @preempt_flag : String?
+      @diagnostic_capture : Bool
       @plan : ReleasePartition::Plan?
       @proof_functions : Array(ReleasePartition::DiagnosticFunction)? = nil
       @proof_owners : Array(Int32)? = nil
@@ -5585,7 +5597,7 @@ module Iyi
             (by_name[record.actual_llvm_symbol] ||= [] of DiagnosticProvenance::Emission) << record
           end
           defined = Set(String).new
-          mod.functions.each { |fun| defined.add(fun.name) if LibLLVM.is_declaration(fun) == 0 }
+          mod.functions.each { |function| defined.add(function.name) if LibLLVM.is_declaration(function) == 0 }
           candidates = {} of String => Array(DiagnosticProvenance::Emission)
           roles = {} of String => String
           slot = index || 0

@@ -945,7 +945,7 @@ module Iyi
       if existing = diagnostic_regex_occurrences[name]?
         existing[2] << origin unless existing[2].includes?(origin)
       else
-        diagnostic_regex_occurrences[name] = {pattern, options, [origin]}
+        diagnostic_regex_occurrences[name] = {pattern, options, [origin] of DiagnosticOrigin}
       end
     end
 

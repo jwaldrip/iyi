@@ -28,9 +28,9 @@ module Iyi::DiagnosticProvenance
       raise "diagnostic observer metadata already exists" unless LibLLVM.get_named_metadata_num_operands(@mod, METADATA_NAME) == 0
       seen = Set(String).new
       ctx = @mod.context
-      @mod.functions.each do |fun|
-        next if LibLLVM.is_declaration(fun) != 0
-        name = fun.name
+      @mod.functions.each do |function|
+        next if LibLLVM.is_declaration(function) != 0
+        name = function.name
         raise "unnamed or duplicate LLVM definition" if name.empty? || !seen.add?(name)
         records = closures[name]?
         raise "empty closure observation set" if records && records.empty?
@@ -38,7 +38,7 @@ module Iyi::DiagnosticProvenance
         id = @originals.size.to_s
         @originals << records
         id_md = LibLLVM.md_string_in_context2(ctx, id, id.bytesize).as(LibLLVM::MetadataRef)
-        fun_md = LibLLVM.value_as_metadata(fun.to_unsafe)
+        fun_md = LibLLVM.value_as_metadata(function.to_unsafe)
         operands = StaticArray[id_md, fun_md]
         node = LibLLVM.md_node_in_context2(ctx, operands.to_unsafe.as(LibLLVM::ValueRef*), 2).as(LibLLVM::MetadataRef)
         value = LibLLVM.metadata_as_value(ctx, node)
@@ -71,9 +71,9 @@ module Iyi::DiagnosticProvenance
         # unresolved rather than evidence of correspondence.
         next if value.null?
         raise "unsupported diagnostic observer replacement" if LibLLVM.is_a_function(value).null?
-        fun = LLVM::Function.new(value)
-        next if LibLLVM.is_declaration(fun) != 0
-        definition = by_value[value] ||= ObservedDefinition.new(fun.name, fun.linkage.to_s)
+        function = LLVM::Function.new(value)
+        next if LibLLVM.is_declaration(function) != 0
+        definition = by_value[value] ||= ObservedDefinition.new(function.name, function.linkage.to_s)
         if originals = @originals[id]
           definition.emissions.concat(originals)
         else
@@ -81,9 +81,9 @@ module Iyi::DiagnosticProvenance
         end
       end
       raise "diagnostic observer IDs are incomplete" unless found.size == @originals.size
-      @mod.functions.each do |fun|
-        next if LibLLVM.is_declaration(fun) != 0
-        by_value[fun.to_unsafe] ||= ObservedDefinition.new(fun.name, fun.linkage.to_s, unresolved_nonclosure: true)
+      @mod.functions.each do |function|
+        next if LibLLVM.is_declaration(function) != 0
+        by_value[function.to_unsafe] ||= ObservedDefinition.new(function.name, function.linkage.to_s, unresolved_nonclosure: true)
       end
       by_value.values
     end
