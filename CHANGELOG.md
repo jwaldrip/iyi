@@ -2,6 +2,14 @@
 
 ## 0.21.0 — 2026-11-09
 
+The opt-in closure-frame proof now writes schema 4 and reads native symbols
+from Mach-O bytes instead of parsing `nm` output. Names containing newlines
+remain single byte strings. The proof supports thin little-endian 64-bit Mach-O
+on arm64 and x86-64 and rejects unsupported formats and alias semantics. It
+checks correspondence within the compiler-supplied link inputs, not the
+authenticity of compiler history or every relocation. `.iyimod` remains format
+63 with diagnostic schema 3; the link-input proof remains schema 1.
+
 **A spawn has one verb and names its unit, and a plain `spawn` runs in
 parallel where the compiler can prove it safe.** `g.spawn { }`,
 `g.spawn(unit: :new) { }` and `g.spawn(unit: :same) { }` replace

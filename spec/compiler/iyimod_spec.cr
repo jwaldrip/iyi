@@ -3417,6 +3417,17 @@ describe Iyi::IyiMod do
           section = artifact.diagnostic_provenance.not_nil!
           section.validate_objects!(artifact.object_code)
           section.objects.each_value { |object| object.partition.should be_nil }
+          section.objects.values.any? { |object| !object.definitions.empty? }.should be_true
+          Dir.mkdir_p "rewritten/boot"
+          rewritten_path = File.join("rewritten", "boot", "half.iyimod")
+          Iyi::IyiMod.write artifact, rewritten_path
+          rewritten = Iyi::IyiMod.read(rewritten_path, want_object_code: true)
+          rewritten.object_code.should eq(artifact.object_code)
+          rewritten_section = rewritten.diagnostic_provenance.not_nil!
+          rewritten_section.validate_objects!(rewritten.object_code)
+          rewritten_section.objects.should eq(section.objects)
+          rewritten_section.fragments.should eq(section.fragments)
+          rewritten_section.regexes.should eq(section.regexes)
 
           File.delete "boot/half.iyi"
           consumer = create_spec_compiler
@@ -3427,11 +3438,29 @@ describe Iyi::IyiMod do
           consumer.compile source, File.expand_path("from-artifact")
           `./from-artifact`.chomp.should eq("42")
           manifest = JSON.parse(File.read("consumer-frames.json"))
+          manifest["schema"].as_i.should eq(4)
           inputs = manifest["object_inputs"].as_a
           bound_ids = manifest["bindings"].as_a.map { |binding| binding["link_input_id"].as_i }.to_set
           bound = inputs.select { |input| bound_ids.includes?(input["link_input_id"].as_i) }
           bound.any? { |input| input["producer"]["kind"].as_s == "artifact_object" }.should be_true
           bound.any? { |input| input["producer"]["kind"].as_s == "current_unit" }.should be_true
+          File.delete File.join("mods", "boot", "half.iyimod")
+          File.exists?("boot/half.iyi").should be_false
+          File.exists?(File.join("mods", "boot", "half.iyimod")).should be_false
+          rewritten_consumer = create_spec_compiler
+          rewritten_consumer.prelude = "iyi/prelude"
+          rewritten_consumer.release!
+          rewritten_consumer.use_iyimod = "rewritten"
+          rewritten_consumer.emit_frame_provenance = "rewritten-frames.json"
+          rewritten_consumer.compile source, File.expand_path("from-rewritten-artifact")
+          `./from-rewritten-artifact`.chomp.should eq("42")
+          rewritten_manifest = JSON.parse(File.read("rewritten-frames.json"))
+          rewritten_manifest["schema"].as_i.should eq(4)
+          rewritten_inputs = rewritten_manifest["object_inputs"].as_a
+          rewritten_ids = rewritten_manifest["bindings"].as_a.map { |binding| binding["link_input_id"].as_i }.to_set
+          rewritten_bound = rewritten_inputs.select { |input| rewritten_ids.includes?(input["link_input_id"].as_i) }
+          rewritten_bound.any? { |input| input["producer"]["kind"].as_s == "artifact_object" }.should be_true
+          rewritten_bound.any? { |input| input["producer"]["kind"].as_s == "current_unit" }.should be_true
         end
       end
     end

@@ -9548,6 +9548,18 @@ and no symbol defined by two of them. So "this module's own definitions" is a
 set of whole object files rather than a filter inside one, and carrying them is
 copying bytes rather than teaching codegen a second way to lay out a program.
 
+The opt-in closure-frame provenance proof uses frame-manifest schema 4. It
+records the ordered sections and symbol table from the exact object and
+executable bytes, including symbol names as Base64-encoded bytes. It supports
+thin little-endian 64-bit Mach-O on arm64 and x86-64; unsupported containers,
+architectures and unresolved alias semantics fail the proof rather than
+guessing. The independent comparator rereads both sets of bytes and checks
+direct code definitions and competing same-address symbols. Its scope is
+`compiler_supplied_link_inputs`: it does not authenticate fabricated compiler
+history or prove every relocation. This proof does not change ordinary builds
+or `--crystal`. The `.iyimod` format remains 63, its diagnostic section schema
+remains 3, and the separate link-input proof remains schema 1.
+
 A module's units are the module type itself, where its own `pub def`s are
 owned: plus every non-generic type declared under it, recursively.
 `kemal/router` owns five (`Router`, its three nested records, `Context`) and
