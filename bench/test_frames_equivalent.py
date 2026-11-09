@@ -14,15 +14,22 @@ Verifies:
 7. Across-optimization chunking across frame and text boundaries.
 """
 
+import base64
+import copy
+import hashlib
 import io
+import json
 import os
 import sys
+import tempfile
+from unittest.mock import patch
 
 # Ensure bench/ is on sys.path
 BENCH_DIR = os.path.dirname(os.path.abspath(__file__))
 if BENCH_DIR not in sys.path:
     sys.path.insert(0, BENCH_DIR)
 
+import frames_equivalent as frames
 from frames_equivalent import (
     FRAME_RE,
     DARWIN_FRAME_RE,
@@ -469,8 +476,237 @@ def test_captured_darwin_proc_and_collisions():
         assert ret == 1, f"{kind} mutant survived"
 
 
+def test_strict_manifest_synthetic_controls():
+    # These are synthetic unit fixtures, not correspondence for captured logs.
+    def written(kind, role, offset):
+        return {"kind": "Written", "source_identity": {"module": "Example", "file": "example.iyi"},
+                "input_byte_offset": offset, "anchor_kind": kind, "role": role}
+
+    closure = written("ProcLiteral", "arrow", 17)
+    proc = {"kind": "Iyi::ProcInstanceType", "arguments": [], "return": {"kind": "Iyi::IntegerType", "name": "Int32"}}
+    identity = {"origin": closure, "specialization": {"kind": "program_scope", "source_identity": {"module": "Example", "file": "example.iyi"}},
+                "capture_descriptor": {"proc_type": proc, "is_closure": False, "environment": None},
+                "displayed_source_location": {"file": "example.iyi", "line": 9, "column": 3}}
+    observations = {}
+
+    def fixture(name, raw_name):
+        binary = (name + "-binary").encode()
+        obj = (name + "-object").encode()
+        raw = "0000000000000010 (__TEXT,__text) external _" + raw_name + "\n"
+        observations[binary] = raw
+        observations[obj] = raw
+        evidence = {"raw_nm": raw, "symbols": frames.native_symbols(raw)}
+        emission = {"requested_symbol": raw_name, "actual_llvm_symbol": raw_name, "unit_name": "unit", "linkage": "external", **copy.deepcopy(identity)}
+        manifest = {"schema": 3, "object_input_scope": "compiler_supplied_link_inputs",
+                    "executable_sha256": hashlib.sha256(binary).hexdigest(), "executable_symbols": evidence,
+                    "object_inputs": [{"link_input_id": 0, "producer": {"kind": "current_unit", "unit_ordinal": 0},
+                                       "unit_name": "unit", "partition": None, "sha256": hashlib.sha256(obj).hexdigest(),
+                                       "bytes_base64": base64.b64encode(obj).decode(), "native_evidence": copy.deepcopy(evidence)}],
+                    "bindings": [{"link_input_id": 0, "definition": {"emission": emission, "post_partition_llvm_symbol": raw_name,
+                                  "native_object_symbol": "_" + raw_name, "post_partition_linkage": "external", "partition_role": "single"}}]}
+        return binary, manifest
+
+    left_symbol = "~proc3Proc(Int32)^example.iyi:9"
+    right_symbol = "~proc2Proc(Int32)^example.iyi:9"
+    binary_a, manifest_a = fixture("a", left_symbol)
+    binary_b, manifest_b = fixture("b", right_symbol)
+    line_a = ("0   fixture 0x0000000100000001 " + left_symbol + " + 1\n").encode()
+    line_b = ("0   fixture 0x0000000100000002 " + right_symbol + " + 2\n").encode()
+
+    with tempfile.TemporaryDirectory() as directory:
+        executable_a = os.path.join(directory, "a")
+        executable_b = os.path.join(directory, "b")
+        path = os.path.join(directory, "manifest.json")
+        with open(executable_a, "wb") as f: f.write(binary_a)
+        with open(executable_b, "wb") as f: f.write(binary_b)
+
+        def inspect(path):
+            with open(path, "rb") as f: data = f.read()
+            if data not in observations: raise ValueError("unknown fake binary")
+            return observations[data]
+
+        def load(manifest, executable):
+            with open(path, "w", encoding="utf-8") as f: json.dump(manifest, f)
+            return frames.FrameManifest(path, executable)
+
+        def reject(manifest, executable=executable_b):
+            try: load(manifest, executable)
+            except (ValueError, TypeError, KeyError): return
+            raise AssertionError("corrupt manifest accepted")
+
+        with patch.object(frames, "inspect_native", inspect):
+            left, right = load(manifest_a, executable_a), load(manifest_b, executable_b)
+            assert capture_violation(compare_same_opt, [line_a], [line_b], require_frames=True, manifests=(left, right))[0] == 0
+            same_output = os.path.join(directory, "same.out")
+            with open(same_output, "wb") as f: f.write(line_a)
+            missing = os.path.join(directory, "missing.json")
+            argv = ["frames_equivalent.py", "--strict-provenance", "--source-manifest", missing,
+                    "--artifact-manifest", missing, "--source-executable", executable_a,
+                    "--artifact-executable", executable_a, same_output, same_output]
+            with patch.object(sys, "argv", argv), patch.object(sys, "stderr", io.StringIO()):
+                try: frames.main()
+                except SystemExit as exc: assert exc.code != 0
+                else: raise AssertionError("equal output bypassed missing manifests")
+            for mutation in ("origin", "specialization", "capture", "missing-binding", "object", "binary", "schema", "symbol", "location"):
+                altered = copy.deepcopy(manifest_b)
+                record = altered["bindings"][0]["definition"]["emission"]
+                if mutation == "origin": record["origin"]["input_byte_offset"] += 1
+                elif mutation == "specialization": record["specialization"]["source_identity"]["module"] = "Other"
+                elif mutation == "capture": record["capture_descriptor"]["proc_type"]["return"]["name"] = "Int64"
+                elif mutation == "missing-binding": altered["bindings"] = []
+                elif mutation == "object": altered["object_inputs"][0]["bytes_base64"] = base64.b64encode(b"changed").decode()
+                elif mutation == "binary": altered["executable_sha256"] = "0" * 64
+                elif mutation == "schema": altered["schema"] = 2
+                elif mutation == "symbol": altered["bindings"][0]["definition"]["native_object_symbol"] = "_fake"
+                else: record["displayed_source_location"]["line"] = 10
+                if mutation in ("origin", "specialization", "capture", "location"):
+                    other = load(altered, executable_b)
+                    assert capture_violation(compare_same_opt, [line_a], [line_b], manifests=(left, other))[0] == 1, mutation
+                else: reject(altered)
+            forged = copy.deepcopy(manifest_b)
+            obj = forged["object_inputs"][0]
+            obj["bytes_base64"] = base64.b64encode(b"forged object").decode()
+            obj["sha256"] = hashlib.sha256(b"forged object").hexdigest()
+            reject(forged)
+            duplicated = copy.deepcopy(manifest_b)
+            duplicated["bindings"].append(copy.deepcopy(duplicated["bindings"][0]))
+            reject(duplicated)
+            with open(executable_b, "ab") as f: f.write(b"changed")
+            reject(manifest_b)
+            with open(executable_b, "wb") as f: f.write(binary_b)
+            for changed in (line_b.replace(b"fixture", b"other"), line_b.replace(b":9", b":10"),
+                            line_b.replace(b"Int32", b"Int64"), line_b.replace(b"0   ", b"1   ")):
+                assert capture_violation(compare_same_opt, [line_a], [changed], manifests=(left, right))[0] == 1
+            assert capture_violation(compare_same_opt, [b"panic\n", line_a], [b"changed\n", line_b], manifests=(left, right))[0] == 1
+            assert capture_violation(compare_same_opt, [line_a], [], manifests=(left, right))[0] == 1
+            copies = copy.deepcopy(manifest_b)
+            extra = copy.deepcopy(copies["object_inputs"][0])
+            extra["link_input_id"] = 1
+            extra["producer"] = {"kind": "artifact_object", "artifact_identity": "artifact", "object_ordinal": 0}
+            copies["object_inputs"].append(extra)
+            extra_binding = copy.deepcopy(copies["bindings"][0])
+            extra_binding["link_input_id"] = 1
+            copies["bindings"].append(extra_binding)
+            same_identity_copies = load(copies, executable_b)
+            assert capture_violation(compare_same_opt, [line_a], [line_b], manifests=(left, same_identity_copies))[0] == 0
+            missing = copy.deepcopy(copies)
+            missing["bindings"].pop()
+            reject(missing)
+            collision = copy.deepcopy(copies)
+            collision["bindings"][1]["definition"]["emission"]["origin"]["input_byte_offset"] += 1
+            reject(collision)
+            partition_missing = copy.deepcopy(manifest_b)
+            partition_missing["object_inputs"][0]["partition"] = {"index": 0, "count": 2}
+            partition_missing["bindings"][0]["definition"]["partition_role"] = "owner"
+            reject(partition_missing)
+            # Two separate native objects, with a swapped link-input mapping.
+            _, second = fixture("second", left_symbol)
+            combined = copy.deepcopy(manifest_b)
+            combined_binary = b"combined-binary"
+            combined_raw = manifest_b["executable_symbols"]["raw_nm"] + second["executable_symbols"]["raw_nm"].replace("0000000000000010", "0000000000000020")
+            observations[combined_binary] = combined_raw
+            combined["executable_sha256"] = hashlib.sha256(combined_binary).hexdigest()
+            combined["executable_symbols"] = {"raw_nm": combined_raw, "symbols": frames.native_symbols(combined_raw)}
+            imported = copy.deepcopy(second["object_inputs"][0])
+            imported["link_input_id"] = 1
+            imported["producer"] = {"kind": "artifact_object", "artifact_identity": "other-artifact", "object_ordinal": 0}
+            combined["object_inputs"].append(imported)
+            second_binding = copy.deepcopy(second["bindings"][0])
+            second_binding["link_input_id"] = 1
+            combined["bindings"].append(second_binding)
+            with open(executable_b, "wb") as f: f.write(combined_binary)
+            load(combined, executable_b)
+            swapped = copy.deepcopy(combined)
+            swapped["bindings"][0]["link_input_id"], swapped["bindings"][1]["link_input_id"] = 1, 0
+            reject(swapped)
+            with open(executable_b, "wb") as f: f.write(binary_b)
+            folded = copy.deepcopy(manifest_b)
+            folded_binary = b"folded-binary"
+            folded_raw = folded["executable_symbols"]["raw_nm"] + "0000000000000010 (__TEXT,__text) external _unidentified\n"
+            observations[folded_binary] = folded_raw
+            folded["executable_sha256"] = hashlib.sha256(folded_binary).hexdigest()
+            folded["executable_symbols"] = {"raw_nm": folded_raw, "symbols": frames.native_symbols(folded_raw)}
+            with open(executable_b, "wb") as f: f.write(folded_binary)
+            reject(folded)
+            with open(executable_b, "wb") as f: f.write(binary_b)
+            # Equal raw names are not evidence of identity, even under a counter permutation.
+            same_binary, same_manifest = fixture("same", left_symbol)
+            with open(executable_b, "wb") as f: f.write(same_binary)
+            same_manifest["bindings"][0]["definition"]["emission"]["origin"]["input_byte_offset"] += 1
+            other = load(same_manifest, executable_b)
+            assert capture_violation(compare_same_opt, [line_a], [line_a], manifests=(left, other))[0] == 1
+            with open(path, "w", encoding="utf-8") as f: f.write('{"schema":3,"schema":3}')
+            try: frames.FrameManifest(path, executable_b)
+            except ValueError: pass
+            else: raise AssertionError("duplicate JSON key accepted")
+
+    invocation = written("Call", "method", 2)
+    definition = written("Macro", "keyword", 4)
+    emitter = written("MacroDirective", "expression", 6)
+    expanded = {"kind": "Expanded", "invocation_origin": invocation, "macro_definition_origin": definition,
+                "expansion_guard": "sha256:" + "a" * 64, "generated_byte_offset": 8,
+                "anchor_kind": "ProcLiteral", "role": "arrow", "spliced_origin": closure,
+                "emission_parts": [{"start_offset": 8, "end_offset": 10, "emitter_origin": emitter}]}
+    assert frames.checked_origin(expanded) == ("ProcLiteral", "arrow")
+    for change in ("gap", "empty", "wrong-emitter", "v2"):
+        invalid = copy.deepcopy(expanded)
+        if change == "gap": invalid["emission_parts"][0]["start_offset"] = 9
+        elif change == "empty": invalid["emission_parts"] = []
+        elif change == "wrong-emitter": invalid["emission_parts"][0]["emitter_origin"] = closure
+        else: del invalid["emission_parts"]
+        try: frames.checked_origin(invalid)
+        except ValueError: pass
+        else: raise AssertionError("invalid origin accepted: " + change)
+    deep = copy.deepcopy(closure)
+    for _ in range(129):
+        deep = {"kind": "Synthetic", "parent_origin": deep, "synthesis_kind": "defer", "structural_slot": "cleanup"}
+    try: frames.checked_origin(deep)
+    except ValueError: pass
+    else: raise AssertionError("over-deep origin accepted")
+    huge = copy.deepcopy(closure)
+    huge["source_identity"]["file"] = "x" * (8 * 1024 * 1024)
+    try: frames.checked_origin(huge)
+    except ValueError: pass
+    else: raise AssertionError("overlarge origin accepted")
+    class IdentityMap:
+        def __init__(self, value): self.value = value
+        def resolve(self, symbol):
+            return (self.value, identity["specialization"], identity["capture_descriptor"], identity["displayed_source_location"])
+
+    for change in ("directive", "part", "splice"):
+        altered = copy.deepcopy(expanded)
+        if change == "directive": altered["emission_parts"][0]["emitter_origin"]["input_byte_offset"] += 1
+        elif change == "part": altered["emission_parts"][0]["end_offset"] += 1
+        else: altered["spliced_origin"]["input_byte_offset"] += 1
+        frames.checked_origin(altered)
+        assert not frames.compare_functions(left_symbol.encode(), left_symbol.encode(), (IdentityMap(expanded), IdentityMap(altered))), change
+    binding = {"name": "x", "binding_origin": {"kind": "Synthetic", "parent_origin": written("Call", "method", 30),
+               "synthesis_kind": "local_binding", "structural_slot": "assignment"},
+               "scope": {"kind": "program"}, "type": {"kind": "Iyi::IntegerType", "name": "Int32"}, "mutable": True}
+    capture = {"proc_type": proc, "is_closure": True,
+               "environment": {"captured_self_type": None, "bindings": [binding], "parent": None}}
+    record = {"requested_symbol": left_symbol, "actual_llvm_symbol": left_symbol, "unit_name": "unit",
+              "linkage": "external", "origin": closure, "specialization": identity["specialization"],
+              "capture_descriptor": capture, "displayed_source_location": identity["displayed_source_location"]}
+    base_identity = frames.emission_identity(record)
+    class CompleteMap:
+        def __init__(self, value): self.value = value
+        def resolve(self, symbol): return self.value
+
+    shadow = copy.deepcopy(record)
+    shadow["capture_descriptor"]["environment"]["bindings"][0]["binding_origin"]["parent_origin"]["input_byte_offset"] += 1
+    assert not frames.compare_functions(left_symbol.encode(), left_symbol.encode(),
+                                        (CompleteMap(base_identity), CompleteMap(frames.emission_identity(shadow))))
+    unknown = copy.deepcopy(record)
+    unknown["capture_descriptor"]["proc_type"]["return"]["kind"] = "Iyi::UnknownType"
+    try: frames.emission_identity(unknown)
+    except ValueError: pass
+    else: raise AssertionError("unknown capture type accepted")
+
+
 def run_all_tests() -> int:
     tests = [
+        ("test_strict_manifest_synthetic_controls", test_strict_manifest_synthetic_controls),
         ("test_captured_linux_equivalence", test_captured_linux_equivalence),
         ("test_discriminating_mutations_linux", test_discriminating_mutations_linux),
         ("test_explicit_named_frame_proof_rejects_zero_frames", test_explicit_named_frame_proof_rejects_zero_frames),
