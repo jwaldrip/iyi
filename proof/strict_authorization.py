@@ -101,6 +101,7 @@ SCHEMA_AUDIT = "iyi.strict-independent-audit.v2"
 SCHEMA_RAIL_SUMMARY = "iyi.strict-rail-validation-summary.v1"
 SCHEMA_REHEARSAL = "iyi.strict-authorization-rehearsal.v1"
 SCHEMA_REHEARSAL_MANIFEST = "iyi.strict-authorization-rehearsal-manifest.v2"
+SCHEMA_REFUSAL_REPORT = "iyi.strict-refusal-report.v1"
 
 ARTIFACT_NAME_MANIFEST = "strict-authorization-manifest"
 ARTIFACT_NAME_VERIFICATION = "strict-authorization-verification"
@@ -983,7 +984,12 @@ def check_har_3(art: Dict[str, Any]) -> Tuple[str, bool]:
         raise AuthorizationError(f"[HAR-3] harness artifact workflow_run.head_branch mismatch: expected {HARNESS_HEAD_BRANCH}, got {wf_run.get('head_branch')}", check_id="HAR-3")
     if str(wf_run.get("repository_id")) != PINNED_REPOSITORY_ID:
         raise AuthorizationError(f"[HAR-3] harness artifact workflow_run.repository_id mismatch: expected {PINNED_REPOSITORY_ID}, got {wf_run.get('repository_id')}", check_id="HAR-3")
-    if art.get("digest") != HARNESS_ARTIFACT_DIGEST:
+    art_dig = art.get("digest")
+    if not isinstance(art_dig, str):
+        raise AuthorizationError("[HAR-3] harness artifact missing digest", check_id="HAR-3")
+    exp_hex = HARNESS_ARTIFACT_DIGEST[7:] if HARNESS_ARTIFACT_DIGEST.startswith("sha256:") else HARNESS_ARTIFACT_DIGEST
+    act_hex = art_dig[7:] if art_dig.startswith("sha256:") else art_dig
+    if act_hex != exp_hex:
         raise AuthorizationError(f"[HAR-3] harness artifact digest mismatch: expected {HARNESS_ARTIFACT_DIGEST}, got {art.get('digest')}", check_id="HAR-3")
 
     expires_at = art.get("expires_at")
@@ -1167,9 +1173,12 @@ def check_val_3(artifacts: List[Dict[str, Any]], expected_head_sha: str) -> Dict
             if art.get("expired") is True:
                 raise AuthorizationError(f"[VAL-3] artifact '{name}' is expired", check_id="VAL-3")
             dig = art.get("digest")
-            if not isinstance(dig, str) or not dig.startswith("sha256:"):
+            if not isinstance(dig, str):
                 raise AuthorizationError(f"[VAL-3] artifact '{name}' missing sha256 digest", check_id="VAL-3")
-            found[name] = {"id": str(art["id"]), "digest": dig}
+            hex_part = dig[7:] if dig.startswith("sha256:") else dig
+            if not re.fullmatch(r"[0-9a-f]{64}", hex_part):
+                raise AuthorizationError(f"[VAL-3] artifact '{name}' invalid sha256 digest: {dig}", check_id="VAL-3")
+            found[name] = {"id": str(art["id"]), "digest": f"sha256:{hex_part}"}
 
     if set(found.keys()) != expected_names:
         missing = expected_names - set(found.keys())
@@ -1367,8 +1376,11 @@ def check_man_1(
         raise AuthorizationError("[MAN-1] manifest artifact is expired", check_id="MAN-1")
 
     dig = art.get("digest")
-    if not isinstance(dig, str) or not dig.startswith("sha256:"):
+    if not isinstance(dig, str):
         raise AuthorizationError("[MAN-1] manifest artifact missing sha256 digest", check_id="MAN-1")
+    hex_part = dig[7:] if dig.startswith("sha256:") else dig
+    if not re.fullmatch(r"[0-9a-f]{64}", hex_part):
+        raise AuthorizationError(f"[MAN-1] manifest artifact invalid sha256 digest: {dig}", check_id="MAN-1")
 
     created = art.get("created_at", "")
     if not (prepare_started_at and prepare_completed_at and created):
@@ -1380,9 +1392,10 @@ def check_man_1(
 
 
 def check_man_2(zip_bytes: bytes, expected_digest: str, expected_manifest_sha256: Optional[str] = None) -> bytes:
-    actual_zip_digest = f"sha256:{digest(zip_bytes)}"
-    if actual_zip_digest != expected_digest:
-        raise AuthorizationError(f"[MAN-2] manifest zip digest mismatch: expected {expected_digest}, got {actual_zip_digest}", check_id="MAN-2")
+    expected_hex = expected_digest[7:] if expected_digest.startswith("sha256:") else expected_digest
+    actual_hex = digest(zip_bytes)
+    if actual_hex != expected_hex:
+        raise AuthorizationError(f"[MAN-2] manifest zip digest mismatch: expected {expected_digest}, got sha256:{actual_hex}", check_id="MAN-2")
 
     try:
         with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
@@ -2491,13 +2504,56 @@ def cmd_rail_summary(args: argparse.Namespace, environ: Dict[str, str], client: 
     with open(refusal_report_arg, "r", encoding="utf-8") as f:
         ref_data = json.load(f)
 
-    ref_status = ref_data.get("status") or ref_data.get("controller_suite")
+    # Reject contradictory or failing statuses
+    ref_status = ref_data.get("status")
+    ctrl_suite = ref_data.get("controller_suite")
     if ref_status != "PASS":
-        raise AuthorizationError(f"[rail-summary] controller refusal suite did not pass: {ref_status}", check_id="RAIL-REFUSAL")
-    reported_controls = ref_data.get("strict_refusal_controls") or ref_data.get("controls") or []
-    if not isinstance(reported_controls, list) or set(reported_controls) != set(PINNED_REFUSAL_CONTROLS):
-        raise AuthorizationError(f"[rail-summary] refusal controls do not match PINNED_REFUSAL_CONTROLS: {reported_controls}", check_id="RAIL-REFUSAL")
+        raise AuthorizationError(f"[rail-summary] refusal report status is not PASS: {ref_status}", check_id="RAIL-REFUSAL")
+    if ctrl_suite is not None and ctrl_suite != "PASS":
+        raise AuthorizationError(f"[rail-summary] refusal report controller_suite is not PASS: {ctrl_suite}", check_id="RAIL-REFUSAL")
 
+    # Environment binding: C/run/attempt
+    if ref_data.get("c_sha") != c_sha:
+        raise AuthorizationError(f"[rail-summary] refusal report c_sha mismatch: expected {c_sha}, got {ref_data.get('c_sha')}", check_id="RAIL-REFUSAL")
+    if str(ref_data.get("run_id")) != str(run_id):
+        raise AuthorizationError(f"[rail-summary] refusal report run_id mismatch: expected {run_id}, got {ref_data.get('run_id')}", check_id="RAIL-REFUSAL")
+    if str(ref_data.get("run_attempt")) != str(run_attempt):
+        raise AuthorizationError(f"[rail-summary] refusal report run_attempt mismatch: expected {run_attempt}, got {ref_data.get('run_attempt')}", check_id="RAIL-REFUSAL")
+
+    # Validate exact observed per-case run results and diagnostics
+    raw_cases = ref_data.get("cases") or ref_data.get("controls")
+    cases_map: Dict[str, Dict[str, Any]] = {}
+    if isinstance(raw_cases, dict):
+        cases_map = raw_cases
+    elif isinstance(raw_cases, list):
+        for item in raw_cases:
+            if isinstance(item, dict):
+                cname = item.get("name") or item.get("id") or item.get("control")
+                if cname:
+                    cases_map[str(cname)] = item
+
+    reported_control_names = set(cases_map.keys())
+    expected_controls = set(PINNED_REFUSAL_CONTROLS)
+    missing_controls = expected_controls - reported_control_names
+    if missing_controls:
+        raise AuthorizationError(f"[rail-summary] refusal report missing required refusal controls: {sorted(missing_controls)}", check_id="RAIL-REFUSAL")
+    extra_controls = reported_control_names - expected_controls
+    if extra_controls:
+        raise AuthorizationError(f"[rail-summary] refusal report unexpected extra controls: {sorted(extra_controls)}", check_id="RAIL-REFUSAL")
+
+    for cname in PINNED_REFUSAL_CONTROLS:
+        cinfo = cases_map[cname]
+        if not isinstance(cinfo, dict):
+            raise AuthorizationError(f"[rail-summary] refusal control '{cname}' data must be an object", check_id="RAIL-REFUSAL")
+        cstatus = cinfo.get("status")
+        cexit = cinfo.get("exit_code")
+        cdiag = cinfo.get("diagnostic") or cinfo.get("reason") or cinfo.get("failure_reason") or cinfo.get("message")
+        if cstatus not in ("REFUSED", "PASS") and cexit != AUTH_REFUSED_EXIT_CODE:
+            raise AuthorizationError(f"[rail-summary] refusal control '{cname}' did not refuse (status={cstatus}, exit_code={cexit})", check_id="RAIL-REFUSAL")
+        if cexit is not None and cexit != AUTH_REFUSED_EXIT_CODE:
+            raise AuthorizationError(f"[rail-summary] refusal control '{cname}' exit code must be {AUTH_REFUSED_EXIT_CODE}, got {cexit}", check_id="RAIL-REFUSAL")
+        if not isinstance(cdiag, str) or not cdiag.strip():
+            raise AuthorizationError(f"[rail-summary] refusal control '{cname}' missing observed diagnostic/reason", check_id="RAIL-REFUSAL")
     bundle_map = check_bun_1()
 
     summary = {
@@ -2509,8 +2565,8 @@ def cmd_rail_summary(args: argparse.Namespace, environ: Dict[str, str], client: 
         "dist": bundle_map,
         "actions": actions_dict,
         "workflow_structure": struct_status,
-        "controller_suite": ref_status,
-        "strict_refusal_controls": [c for c in PINNED_REFUSAL_CONTROLS if c in reported_controls],
+        "controller_suite": "PASS",
+        "strict_refusal_controls": list(PINNED_REFUSAL_CONTROLS),
     }
 
     out_path = Path(args.out)
@@ -2763,11 +2819,10 @@ def cmd_verify_run(args: argparse.Namespace, environ: Dict[str, str], client: Gi
 
     try:
         with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
-            members = set(zf.namelist())
-            expected_members = {"verification.json", "manifest.json"}
-            if members != expected_members:
+            namelist = zf.namelist()
+            if len(namelist) != 2 or sorted(namelist) != ["manifest.json", "verification.json"]:
                 raise AuthorizationError(
-                    f"Verification archive members mismatch: expected {expected_members}, got {members}",
+                    f"Verification archive must contain exactly ['manifest.json', 'verification.json'] without duplicates, got {namelist}",
                     check_id="VERIFY-RUN",
                 )
             raw = zf.read("verification.json")
@@ -2786,6 +2841,13 @@ def cmd_verify_run(args: argparse.Namespace, environ: Dict[str, str], client: Gi
     if ver_doc.get("c_sha") != c_sha:
         raise AuthorizationError(f"Verification document c_sha mismatch: expected {c_sha}, got {ver_doc.get('c_sha')}", check_id="VERIFY-RUN")
 
+    if str(ver_doc.get("strict_run_id")) != str(run_id):
+        raise AuthorizationError(f"Verification document strict_run_id mismatch: expected {run_id}, got {ver_doc.get('strict_run_id')}", check_id="VERIFY-RUN")
+
+    strict_job_id = ver_doc.get("strict_job_id")
+    if not strict_job_id or not str(strict_job_id).isdigit():
+        raise AuthorizationError(f"Verification document invalid strict_job_id: {strict_job_id}", check_id="VERIFY-RUN")
+
     manifest_sha = ver_doc.get("manifest_sha256")
     if not manifest_sha or not re.fullmatch(r"[0-9a-f]{64}", manifest_sha):
         raise AuthorizationError(f"Verification document invalid manifest_sha256: {manifest_sha}", check_id="VERIFY-RUN")
@@ -2797,17 +2859,108 @@ def cmd_verify_run(args: argparse.Namespace, environ: Dict[str, str], client: Gi
             check_id="VERIFY-RUN",
         )
 
+    # Validate approval record in verification document
+    approval = ver_doc.get("approval")
+    if not isinstance(approval, dict):
+        raise AuthorizationError("Verification document missing approval object", check_id="VERIFY-RUN")
+    if approval.get("state") != "approved":
+        raise AuthorizationError(f"Verification document approval state is not 'approved': {approval.get('state')}", check_id="VERIFY-RUN")
+    if str(approval.get("user_id")) != str(PINNED_REVIEWER_ID):
+        raise AuthorizationError(f"Verification document approval user_id mismatch: expected {PINNED_REVIEWER_ID}, got {approval.get('user_id')}", check_id="VERIFY-RUN")
+    if str(approval.get("environment_id")) != str(PINNED_ENVIRONMENT_ID):
+        raise AuthorizationError(f"Verification document approval environment_id mismatch: expected {PINNED_ENVIRONMENT_ID}, got {approval.get('environment_id')}", check_id="VERIFY-RUN")
+    expected_comment = f"{APPROVAL_COMMENT_PREFIX}{manifest_sha}"
+    if approval.get("comment") != expected_comment:
+        raise AuthorizationError(f"Verification document approval comment mismatch: expected '{expected_comment}', got '{approval.get('comment')}'", check_id="VERIFY-RUN")
+
+    # Validate checks list in verification document
+    checks_list = ver_doc.get("checks")
+    if not isinstance(checks_list, list) or len(checks_list) == 0:
+        raise AuthorizationError("Verification document missing or empty checks list", check_id="VERIFY-RUN")
+    for chk in checks_list:
+        if not isinstance(chk, dict) or not chk.get("id") or chk.get("status") != "PASS":
+            raise AuthorizationError(f"Verification document check entry not PASS: {chk}", check_id="VERIFY-RUN")
+
+    if not ver_doc.get("verified_at"):
+        raise AuthorizationError("Verification document missing verified_at timestamp", check_id="VERIFY-RUN")
+
     manifest_doc = parse(manifest_raw)
-    if str(manifest_doc.get("strict_run", {}).get("id")) != str(run_id):
+    if not isinstance(manifest_doc, dict):
+        raise AuthorizationError("Manifest document is not a JSON object", check_id="VERIFY-RUN")
+    if manifest_doc.get("schema") != SCHEMA_MANIFEST:
+        raise AuthorizationError(f"Manifest schema mismatch: expected {SCHEMA_MANIFEST}, got {manifest_doc.get('schema')}", check_id="VERIFY-RUN")
+
+    # Repository
+    repo_sec = manifest_doc.get("repository")
+    if not isinstance(repo_sec, dict) or str(repo_sec.get("id")) != str(PINNED_REPOSITORY_ID) or repo_sec.get("full_name") != PINNED_REPOSITORY:
+        raise AuthorizationError(f"Manifest repository mismatch: {repo_sec}", check_id="VERIFY-RUN")
+
+    # Strict run
+    strict_run_sec = manifest_doc.get("strict_run")
+    if not isinstance(strict_run_sec, dict):
+        raise AuthorizationError("Manifest missing strict_run object", check_id="VERIFY-RUN")
+    if str(strict_run_sec.get("id")) != str(run_id):
         raise AuthorizationError(
-            f"Manifest strict_run.id mismatch: expected {run_id}, got {manifest_doc.get('strict_run', {}).get('id')}",
+            f"Manifest strict_run.id mismatch: expected {run_id}, got {strict_run_sec.get('id')}",
             check_id="VERIFY-RUN",
         )
-    if manifest_doc.get("sources", {}).get("c_sha") != c_sha:
+    if str(strict_run_sec.get("attempt")) != "1":
+        raise AuthorizationError(f"Manifest strict_run.attempt must be 1, got {strict_run_sec.get('attempt')}", check_id="VERIFY-RUN")
+    if str(strict_run_sec.get("workflow_id")) != str(PINNED_WORKFLOW_ID):
+        raise AuthorizationError(f"Manifest strict_run.workflow_id mismatch: expected {PINNED_WORKFLOW_ID}, got {strict_run_sec.get('workflow_id')}", check_id="VERIFY-RUN")
+    if strict_run_sec.get("head_sha") != c_sha:
+        raise AuthorizationError(f"Manifest strict_run.head_sha mismatch: expected {c_sha}, got {strict_run_sec.get('head_sha')}", check_id="VERIFY-RUN")
+    if strict_run_sec.get("head_branch") != PINNED_DEPLOY_BRANCH:
+        raise AuthorizationError(f"Manifest strict_run.head_branch mismatch: expected {PINNED_DEPLOY_BRANCH}, got {strict_run_sec.get('head_branch')}", check_id="VERIFY-RUN")
+
+    # Prepare job
+    prep_job_sec = manifest_doc.get("prepare_job")
+    if not isinstance(prep_job_sec, dict) or prep_job_sec.get("name") != JOB_NAME_PREPARE or not prep_job_sec.get("id"):
+        raise AuthorizationError(f"Manifest prepare_job mismatch: {prep_job_sec}", check_id="VERIFY-RUN")
+
+    # Inputs
+    inputs_sec = manifest_doc.get("inputs")
+    if not isinstance(inputs_sec, dict) or inputs_sec.get("mode") != "strict-chain" or not inputs_sec.get("evidence_commit"):
+        raise AuthorizationError(f"Manifest inputs mismatch: {inputs_sec}", check_id="VERIFY-RUN")
+
+    # Approval section
+    appr_sec = manifest_doc.get("approval")
+    if not isinstance(appr_sec, dict):
+        raise AuthorizationError("Manifest missing approval object", check_id="VERIFY-RUN")
+    if str(appr_sec.get("environment_id")) != str(PINNED_ENVIRONMENT_ID):
+        raise AuthorizationError(f"Manifest approval environment_id mismatch: expected {PINNED_ENVIRONMENT_ID}, got {appr_sec.get('environment_id')}", check_id="VERIFY-RUN")
+    if str(appr_sec.get("reviewer_user_id")) != str(PINNED_REVIEWER_ID):
+        raise AuthorizationError(f"Manifest approval reviewer_user_id mismatch: expected {PINNED_REVIEWER_ID}, got {appr_sec.get('reviewer_user_id')}", check_id="VERIFY-RUN")
+    if appr_sec.get("reviewer_login") != PINNED_REVIEWER_LOGIN:
+        raise AuthorizationError(f"Manifest approval reviewer_login mismatch: expected {PINNED_REVIEWER_LOGIN}, got {appr_sec.get('reviewer_login')}", check_id="VERIFY-RUN")
+    if appr_sec.get("attestation_scope") != ATTESTATION_SCOPE:
+        raise AuthorizationError("Manifest approval attestation_scope mismatch", check_id="VERIFY-RUN")
+
+    # Sources
+    sources_sec = manifest_doc.get("sources")
+    if not isinstance(sources_sec, dict):
+        raise AuthorizationError("Manifest missing sources object", check_id="VERIFY-RUN")
+    if sources_sec.get("c_sha") != c_sha:
         raise AuthorizationError(
-            f"Manifest sources.c_sha mismatch: expected {c_sha}, got {manifest_doc.get('sources', {}).get('c_sha')}",
+            f"Manifest sources.c_sha mismatch: expected {c_sha}, got {sources_sec.get('c_sha')}",
             check_id="VERIFY-RUN",
         )
+    if not isinstance(sources_sec.get("p"), dict) or sources_sec.get("p", {}).get("sha") != PINNED_P_SHA:
+        raise AuthorizationError(f"Manifest sources.p mismatch: {sources_sec.get('p')}", check_id="VERIFY-RUN")
+    if not isinstance(sources_sec.get("w"), dict) or sources_sec.get("w", {}).get("sha") != PINNED_W_SHA:
+        raise AuthorizationError(f"Manifest sources.w mismatch: {sources_sec.get('w')}", check_id="VERIFY-RUN")
+    if not isinstance(sources_sec.get("h"), dict) or sources_sec.get("h", {}).get("sha") != PINNED_H_SHA:
+        raise AuthorizationError(f"Manifest sources.h mismatch: {sources_sec.get('h')}", check_id="VERIFY-RUN")
+
+    # Environment
+    env_sec = manifest_doc.get("environment")
+    if not isinstance(env_sec, dict) or str(env_sec.get("id")) != str(PINNED_ENVIRONMENT_ID) or env_sec.get("name") != PINNED_ENVIRONMENT_NAME:
+        raise AuthorizationError(f"Manifest environment mismatch: {env_sec}", check_id="VERIFY-RUN")
+
+    # Evidence
+    evidence_sec = manifest_doc.get("evidence")
+    if not isinstance(evidence_sec, dict) or not all(k in evidence_sec for k in ("harness", "validation", "audit")):
+        raise AuthorizationError(f"Manifest evidence section incomplete: {evidence_sec}", check_id="VERIFY-RUN")
 
     print(f"Run {run_id} verified: status={status}, conclusion={conclusion}, decision=AUTHORIZED")
     return 0

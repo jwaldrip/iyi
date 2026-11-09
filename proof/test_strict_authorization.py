@@ -121,6 +121,7 @@ from proof.strict_authorization import (
     SCHEMA_MANIFEST,
     SCHEMA_RAIL_SUMMARY,
     SCHEMA_REHEARSAL,
+    SCHEMA_REFUSAL_REPORT,
     SCHEMA_REHEARSAL_MANIFEST,
     SCHEMA_VERIFICATION,
     StrictManifestBinding,
@@ -480,6 +481,52 @@ class CheckIsolationTests(unittest.TestCase):
         with self.assertRaises(AuthorizationError) as ctx:
             check_job_2(check_run, dep, "42086795082", "128575084399", "c" * 40)
         self.assertIn("JOB-2", str(ctx.exception))
+    def test_job_2_app_slug_mismatch(self):
+        check_run = get_check_run_deployment_fixture(128575084399, 42086795082, "c" * 40, deployment_id=6086087299)
+        check_run["app"]["slug"] = "unauthorized-app"
+        dep = get_deployment_fixture(6086087299, "c" * 40)
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_job_2(check_run, dep, "42086795082", "128575084399", "c" * 40)
+        self.assertIn("JOB-2", str(ctx.exception))
+
+    def test_job_2_head_sha_mismatch(self):
+        check_run = get_check_run_deployment_fixture(128575084399, 42086795082, "c" * 40, deployment_id=6086087299)
+        check_run["head_sha"] = "0" * 40
+        dep = get_deployment_fixture(6086087299, "c" * 40)
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_job_2(check_run, dep, "42086795082", "128575084399", "c" * 40)
+        self.assertIn("JOB-2", str(ctx.exception))
+
+    def test_job_2_details_url_mismatch(self):
+        check_run = get_check_run_deployment_fixture(128575084399, 42086795082, "c" * 40, deployment_id=6086087299)
+        check_run["details_url"] = "https://github.com/other/run/1"
+        dep = get_deployment_fixture(6086087299, "c" * 40)
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_job_2(check_run, dep, "42086795082", "128575084399", "c" * 40)
+        self.assertIn("JOB-2", str(ctx.exception))
+
+    def test_job_2_deployment_app_slug_mismatch(self):
+        check_run = get_check_run_deployment_fixture(128575084399, 42086795082, "c" * 40, deployment_id=6086087299)
+        dep = get_deployment_fixture(6086087299, "c" * 40)
+        dep["performed_via_github_app"] = {"slug": "other-app"}
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_job_2(check_run, dep, "42086795082", "128575084399", "c" * 40)
+        self.assertIn("JOB-2", str(ctx.exception))
+
+    def test_job_2_deployment_sha_mismatch(self):
+        check_run = get_check_run_deployment_fixture(128575084399, 42086795082, "c" * 40, deployment_id=6086087299)
+        dep = get_deployment_fixture(6086087299, "0" * 40)
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_job_2(check_run, dep, "42086795082", "128575084399", "c" * 40)
+        self.assertIn("JOB-2", str(ctx.exception))
+
+    def test_job_2_deployment_ref_mismatch(self):
+        check_run = get_check_run_deployment_fixture(128575084399, 42086795082, "c" * 40, deployment_id=6086087299)
+        dep = get_deployment_fixture(6086087299, "c" * 40)
+        dep["ref"] = "refs/heads/wrong"
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_job_2(check_run, dep, "42086795082", "128575084399", "c" * 40)
+        self.assertIn("JOB-2", str(ctx.exception))
 
     # JOB-3
     def test_job_3_positive(self):
@@ -512,6 +559,19 @@ class CheckIsolationTests(unittest.TestCase):
         with self.assertRaises(AuthorizationError) as ctx:
             check_env_1(env)
         self.assertIn("ENV-1", str(ctx.exception))
+    def test_env_1_custom_branch_policy_false(self):
+        env = get_environment_fixture()
+        env["deployment_branch_policy"] = {"protected_branches": True, "custom_branch_policies": False}
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_env_1(env)
+        self.assertIn("ENV-1", str(ctx.exception))
+
+    def test_env_1_protection_rules_mismatch(self):
+        env = get_environment_fixture()
+        env["protection_rules"] = env["protection_rules"][:1]
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_env_1(env)
+        self.assertIn("ENV-1", str(ctx.exception))
 
     def test_env_2_positive(self):
         policies = get_branch_policies_fixture()
@@ -520,6 +580,20 @@ class CheckIsolationTests(unittest.TestCase):
 
     def test_env_2_wrong_branch_policy(self):
         policies = [{"type": "branch", "name": "wrong-branch"}]
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_env_2(policies)
+        self.assertIn("ENV-2", str(ctx.exception))
+    def test_env_2_policy_type_not_branch(self):
+        policies = [{"type": "tag", "name": PINNED_DEPLOY_BRANCH}]
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_env_2(policies)
+        self.assertIn("ENV-2", str(ctx.exception))
+
+    def test_env_2_multiple_policies_rejected(self):
+        policies = [
+            {"type": "branch", "name": PINNED_DEPLOY_BRANCH},
+            {"type": "branch", "name": "other-branch"},
+        ]
         with self.assertRaises(AuthorizationError) as ctx:
             check_env_2(policies)
         self.assertIn("ENV-2", str(ctx.exception))
@@ -569,6 +643,26 @@ class CheckIsolationTests(unittest.TestCase):
         with self.assertRaises(AuthorizationError) as ctx:
             check_src_1(pr)
         self.assertIn("SRC-1", str(ctx.exception))
+    def test_src_1_head_repo_id_mismatch(self):
+        pr = deepcopy(get_pull_147_fixture())
+        pr["head"]["repo"]["id"] = 9999999
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_src_1(pr)
+        self.assertIn("SRC-1", str(ctx.exception))
+
+    def test_src_1_head_ref_mismatch(self):
+        pr = deepcopy(get_pull_147_fixture())
+        pr["head"]["ref"] = "wrong-ref"
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_src_1(pr)
+        self.assertIn("SRC-1", str(ctx.exception))
+
+    def test_src_1_head_sha_mismatch(self):
+        pr = deepcopy(get_pull_147_fixture())
+        pr["head"]["sha"] = "0" * 40
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_src_1(pr)
+        self.assertIn("SRC-1", str(ctx.exception))
 
     def test_src_2_positive(self):
         compare = get_compare_pw_fixture()
@@ -582,6 +676,26 @@ class CheckIsolationTests(unittest.TestCase):
         with self.assertRaises(AuthorizationError) as ctx:
             check_src_2(compare)
         self.assertIn("SRC-2", str(ctx.exception))
+    def test_src_2_ahead_by_mismatch(self):
+        compare = deepcopy(get_compare_pw_fixture())
+        compare["ahead_by"] = 999
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_src_2(compare)
+        self.assertIn("SRC-2", str(ctx.exception))
+
+    def test_src_2_behind_by_mismatch(self):
+        compare = deepcopy(get_compare_pw_fixture())
+        compare["behind_by"] = 999
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_src_2(compare)
+        self.assertIn("SRC-2", str(ctx.exception))
+
+    def test_src_2_status_not_ahead(self):
+        compare = deepcopy(get_compare_pw_fixture())
+        compare["status"] = "diverged"
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_src_2(compare)
+        self.assertIn("SRC-2", str(ctx.exception))
 
     def test_src_3_positive(self):
         compare = get_compare_wh_fixture()
@@ -591,6 +705,19 @@ class CheckIsolationTests(unittest.TestCase):
     def test_src_3_wh_merge_base_mismatch(self):
         compare = deepcopy(get_compare_wh_fixture())
         compare["merge_base_commit"] = {"sha": "0" * 40}
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_src_3(compare)
+        self.assertIn("SRC-3", str(ctx.exception))
+    def test_src_3_added_paths_mismatch(self):
+        compare = deepcopy(get_compare_wh_fixture())
+        compare["files"][0]["filename"] = "proof/wrong.py"
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_src_3(compare)
+        self.assertIn("SRC-3", str(ctx.exception))
+
+    def test_src_3_file_count_not_two(self):
+        compare = deepcopy(get_compare_wh_fixture())
+        compare["files"] = compare["files"][:1]
         with self.assertRaises(AuthorizationError) as ctx:
             check_src_3(compare)
         self.assertIn("SRC-3", str(ctx.exception))
@@ -635,6 +762,12 @@ class CheckIsolationTests(unittest.TestCase):
         with self.assertRaises(AuthorizationError) as ctx:
             check_har_3(art)
         self.assertIn("HAR-3", str(ctx.exception))
+    def test_har_3_bare_digest_passes(self):
+        art = deepcopy(load_fixture("artifact_13600255503.json"))
+        art["digest"] = HARNESS_ARTIFACT_DIGEST[7:]
+        exp, is_exp = check_har_3(art)
+        self.assertEqual(exp, art["expires_at"])
+        self.assertFalse(is_exp)
 
     def test_har_4_positive(self):
         contents = load_fixture("contents_harness_audit_zip.json")
@@ -765,6 +898,13 @@ class CheckIsolationTests(unittest.TestCase):
         with self.assertRaises(AuthorizationError) as ctx:
             check_val_3(arts, "c" * 40)
         self.assertIn("VAL-3", str(ctx.exception))
+    def test_val_3_bare_digest_passes(self):
+        arts = get_val_artifacts_fixture(42086795082, "c" * 40, "1" * 64, "2" * 64)
+        for a in arts:
+            if a.get("digest", "").startswith("sha256:"):
+                a["digest"] = a["digest"][7:]
+        res = check_val_3(arts, "c" * 40)
+        self.assertIn(f"supervisor-bundle-{'c' * 40}", res)
 
     def _make_rehearsal_report(self, c_sha: str = "c" * 40, run_id: str = "100") -> bytes:
         reh_m = {
@@ -989,6 +1129,11 @@ class CheckIsolationTests(unittest.TestCase):
         with self.assertRaises(AuthorizationError) as ctx:
             check_aud_1(commit, "c" * 40)
         self.assertIn("AUD-1", str(ctx.exception))
+    def test_aud_1_parent_commit_mismatch(self):
+        commit = {"parents": [{"sha": "0" * 40}]}
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_aud_1(commit, "c" * 40)
+        self.assertIn("AUD-1", str(ctx.exception))
 
     def test_aud_2_positive(self):
         files_raw, _, _ = get_audit_files_fixture("c" * 40, "100", {})
@@ -998,6 +1143,19 @@ class CheckIsolationTests(unittest.TestCase):
     def test_aud_2_blob_sha_mismatch(self):
         files_raw, _, _ = get_audit_files_fixture("c" * 40, "100", {})
         files_raw["audit.json"] = (files_raw["audit.json"][0], "wrong_blob_sha")
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_aud_2(files_raw)
+        self.assertIn("AUD-2", str(ctx.exception))
+    def test_aud_2_missing_file_refuses(self):
+        files_raw, _, _ = get_audit_files_fixture("c" * 40, "100", {})
+        del files_raw["census-review.md"]
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_aud_2(files_raw)
+        self.assertIn("AUD-2", str(ctx.exception))
+
+    def test_aud_2_extra_file_refuses(self):
+        files_raw, _, _ = get_audit_files_fixture("c" * 40, "100", {})
+        files_raw["extra.txt"] = (b"extra", "0" * 40)
         with self.assertRaises(AuthorizationError) as ctx:
             check_aud_2(files_raw)
         self.assertIn("AUD-2", str(ctx.exception))
@@ -1026,6 +1184,61 @@ class CheckIsolationTests(unittest.TestCase):
                 files_map["census-review.md"]["sha256"],
             )
         self.assertIn("AUD-3", str(ctx.exception))
+    def test_aud_3_schema_mismatch(self):
+        files_raw, files_map, audit_dict = get_audit_files_fixture("c" * 40, "100", {})
+        audit_dict["schema"] = "wrong.schema"
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_aud_3(audit_dict, "c" * 40, "100", {}, files_map["audit.md"]["sha256"], files_map["census-review.md"]["sha256"])
+        self.assertIn("AUD-3", str(ctx.exception))
+
+    def test_aud_3_repository_mismatch(self):
+        files_raw, files_map, audit_dict = get_audit_files_fixture("c" * 40, "100", {})
+        audit_dict["repository_id"] = "999"
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_aud_3(audit_dict, "c" * 40, "100", {}, files_map["audit.md"]["sha256"], files_map["census-review.md"]["sha256"])
+        self.assertIn("AUD-3", str(ctx.exception))
+
+    def test_aud_3_c_sha_mismatch(self):
+        files_raw, files_map, audit_dict = get_audit_files_fixture("c" * 40, "100", {})
+        audit_dict["c_sha"] = "0" * 40
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_aud_3(audit_dict, "c" * 40, "100", {}, files_map["audit.md"]["sha256"], files_map["census-review.md"]["sha256"])
+        self.assertIn("AUD-3", str(ctx.exception))
+
+    def test_aud_3_p_sha_mismatch(self):
+        files_raw, files_map, audit_dict = get_audit_files_fixture("c" * 40, "100", {})
+        audit_dict["p_sha"] = "0" * 40
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_aud_3(audit_dict, "c" * 40, "100", {}, files_map["audit.md"]["sha256"], files_map["census-review.md"]["sha256"])
+        self.assertIn("AUD-3", str(ctx.exception))
+
+    def test_aud_3_w_sha_mismatch(self):
+        files_raw, files_map, audit_dict = get_audit_files_fixture("c" * 40, "100", {})
+        audit_dict["w_sha"] = "0" * 40
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_aud_3(audit_dict, "c" * 40, "100", {}, files_map["audit.md"]["sha256"], files_map["census-review.md"]["sha256"])
+        self.assertIn("AUD-3", str(ctx.exception))
+
+    def test_aud_3_h_sha_mismatch(self):
+        files_raw, files_map, audit_dict = get_audit_files_fixture("c" * 40, "100", {})
+        audit_dict["h_sha"] = "0" * 40
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_aud_3(audit_dict, "c" * 40, "100", {}, files_map["audit.md"]["sha256"], files_map["census-review.md"]["sha256"])
+        self.assertIn("AUD-3", str(ctx.exception))
+
+    def test_aud_3_validation_run_id_mismatch(self):
+        files_raw, files_map, audit_dict = get_audit_files_fixture("c" * 40, "100", {})
+        audit_dict["validation"]["run_id"] = "999"
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_aud_3(audit_dict, "c" * 40, "100", {}, files_map["audit.md"]["sha256"], files_map["census-review.md"]["sha256"])
+        self.assertIn("AUD-3", str(ctx.exception))
+
+    def test_aud_3_validation_artifact_digest_mismatch(self):
+        files_raw, files_map, audit_dict = get_audit_files_fixture("c" * 40, "100", {"art1": {"digest": "sha256:" + "1" * 64}})
+        audit_dict["validation"]["artifacts"]["art1"] = "sha256:" + "0" * 64
+        with self.assertRaises(AuthorizationError) as ctx:
+            check_aud_3(audit_dict, "c" * 40, "100", {"art1": {"digest": "sha256:" + "1" * 64}}, files_map["audit.md"]["sha256"], files_map["census-review.md"]["sha256"])
+        self.assertIn("AUD-3", str(ctx.exception))
 
     # MAN-1..3
     def test_man_1_positive(self):
@@ -1052,6 +1265,17 @@ class CheckIsolationTests(unittest.TestCase):
         with self.assertRaises(AuthorizationError) as ctx:
             check_man_1([art], "10", "100", "c" * 40, "2026-11-06T00:20:00Z", "2026-11-06T00:30:00Z")
         self.assertIn("MAN-1", str(ctx.exception))
+    def test_man_1_bare_digest_passes(self):
+        art = {
+            "id": "10",
+            "name": ARTIFACT_NAME_MANIFEST,
+            "workflow_run": {"id": "100", "head_sha": "c" * 40},
+            "expired": False,
+            "digest": "a" * 64,
+            "created_at": "2026-11-06T00:25:00Z",
+        }
+        res = check_man_1([art], "10", "100", "c" * 40, "2026-11-06T00:20:00Z", "2026-11-06T00:30:00Z")
+        self.assertEqual(res["id"], "10")
 
     def test_man_1_missing_timestamps(self):
         art = {
@@ -1085,6 +1309,16 @@ class CheckIsolationTests(unittest.TestCase):
         zip_bytes = buf.getvalue()
         zip_dig = f"sha256:{digest(zip_bytes)}"
         res = check_man_2(zip_bytes, zip_dig, expected_manifest_sha256=None)
+        self.assertEqual(res, content)
+    def test_man_2_bare_digest_passes(self):
+        content = b'{"hello":"world"}'
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("manifest.json", content)
+        zip_bytes = buf.getvalue()
+        bare_zip_dig = digest(zip_bytes)
+        member_sha = digest(content)
+        res = check_man_2(zip_bytes, bare_zip_dig, member_sha)
         self.assertEqual(res, content)
 
     def test_man_2_digest_mismatch(self):
@@ -1923,6 +2157,7 @@ class MockGitHubAPIServer:
         )
         manifest_raw = canonical(manifest_dict)
         self.manifest_sha = digest(manifest_raw)
+        self.manifest_dict = manifest_dict
 
         # Manifest zip artifact
         mbuf = io.BytesIO()
@@ -2290,11 +2525,37 @@ class FullLoopbackSubcommandCLITests(unittest.TestCase):
 
         refusal_path = os.path.join(self.td, "refusal.json")
         with open(refusal_path, "w", encoding="utf-8") as f:
-            json.dump({
+            refusal_report_data = {
+                "schema": SCHEMA_REFUSAL_REPORT,
                 "status": "PASS",
                 "controller_suite": "PASS",
-                "strict_refusal_controls": PINNED_REFUSAL_CONTROLS,
-            }, f)
+                "c_sha": self.c_sha,
+                "run_id": "42086795082",
+                "run_attempt": "1",
+                "cases": {
+                    "missing_manifest_fd": {
+                        "status": "REFUSED",
+                        "exit_code": AUTH_REFUSED_EXIT_CODE,
+                        "diagnostic": "missing required manifest fd 5",
+                    },
+                    "manifest_digest_mismatch": {
+                        "status": "REFUSED",
+                        "exit_code": AUTH_REFUSED_EXIT_CODE,
+                        "diagnostic": "manifest digest mismatch: expected sha256:000, got sha256:111",
+                    },
+                    "strict_run_id_mismatch": {
+                        "status": "REFUSED",
+                        "exit_code": AUTH_REFUSED_EXIT_CODE,
+                        "diagnostic": "strict run id mismatch: expected 42086795082, got 999",
+                    },
+                    "invalid_p_sha": {
+                        "status": "REFUSED",
+                        "exit_code": AUTH_REFUSED_EXIT_CODE,
+                        "diagnostic": "invalid P commit SHA: expected 180f14f91c829b25362a5ed34b20847f3ac2db77, got 0000000000000000000000000000000000000000",
+                    },
+                },
+            }
+            json.dump(refusal_report_data, f)
 
         out_path = os.path.join(self.td, "rail_summary.json")
         env = {
@@ -2377,6 +2638,175 @@ class FullLoopbackSubcommandCLITests(unittest.TestCase):
                 "status": "FAIL",
                 "controller_suite": "FAIL",
                 "strict_refusal_controls": PINNED_REFUSAL_CONTROLS,
+            }, f)
+        out_path = os.path.join(self.td, "rail_summary.json")
+        env = {
+            "GITHUB_SHA": self.c_sha,
+            "GITHUB_RUN_ID": "42086795082",
+            "GITHUB_RUN_ATTEMPT": "1",
+        }
+        code = main(
+            ["rail-summary", "--out", out_path, "--pins-report", pins_path, "--structure-report", struct_path, "--refusal-report", refusal_path],
+            environ=env,
+        )
+        self.assertEqual(code, AUTH_REFUSED_EXIT_CODE)
+    def test_cmd_rail_summary_refusal_report_contradictory_status_refuses(self):
+        pins_path = os.path.join(self.td, "pins.json")
+        with open(pins_path, "w", encoding="utf-8") as f:
+            json.dump({"status": "PASS", "actions": PINNED_ACTIONS}, f)
+        struct_path = os.path.join(self.td, "struct.json")
+        with open(struct_path, "w", encoding="utf-8") as f:
+            json.dump({"status": "PASS", "workflow_structure": "PASS"}, f)
+        refusal_path = os.path.join(self.td, "refusal_contradictory.json")
+        with open(refusal_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "status": "PASS",
+                "controller_suite": "FAIL",
+                "c_sha": self.c_sha,
+                "run_id": "42086795082",
+                "run_attempt": "1",
+                "cases": {
+                    "missing_manifest_fd": {"status": "REFUSED", "exit_code": 5, "diagnostic": "err"},
+                    "manifest_digest_mismatch": {"status": "REFUSED", "exit_code": 5, "diagnostic": "err"},
+                    "strict_run_id_mismatch": {"status": "REFUSED", "exit_code": 5, "diagnostic": "err"},
+                    "invalid_p_sha": {"status": "REFUSED", "exit_code": 5, "diagnostic": "err"},
+                },
+            }, f)
+        out_path = os.path.join(self.td, "rail_summary.json")
+        env = {
+            "GITHUB_SHA": self.c_sha,
+            "GITHUB_RUN_ID": "42086795082",
+            "GITHUB_RUN_ATTEMPT": "1",
+        }
+        code = main(
+            ["rail-summary", "--out", out_path, "--pins-report", pins_path, "--structure-report", struct_path, "--refusal-report", refusal_path],
+            environ=env,
+        )
+        self.assertEqual(code, AUTH_REFUSED_EXIT_CODE)
+
+    def test_cmd_rail_summary_refusal_report_missing_case_refuses(self):
+        pins_path = os.path.join(self.td, "pins.json")
+        with open(pins_path, "w", encoding="utf-8") as f:
+            json.dump({"status": "PASS", "actions": PINNED_ACTIONS}, f)
+        struct_path = os.path.join(self.td, "struct.json")
+        with open(struct_path, "w", encoding="utf-8") as f:
+            json.dump({"status": "PASS", "workflow_structure": "PASS"}, f)
+        refusal_path = os.path.join(self.td, "refusal_missing_case.json")
+        with open(refusal_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "status": "PASS",
+                "controller_suite": "PASS",
+                "c_sha": self.c_sha,
+                "run_id": "42086795082",
+                "run_attempt": "1",
+                "cases": {
+                    "missing_manifest_fd": {"status": "REFUSED", "exit_code": 5, "diagnostic": "err"},
+                    "manifest_digest_mismatch": {"status": "REFUSED", "exit_code": 5, "diagnostic": "err"},
+                    "strict_run_id_mismatch": {"status": "REFUSED", "exit_code": 5, "diagnostic": "err"},
+                    # invalid_p_sha missing!
+                },
+            }, f)
+        out_path = os.path.join(self.td, "rail_summary.json")
+        env = {
+            "GITHUB_SHA": self.c_sha,
+            "GITHUB_RUN_ID": "42086795082",
+            "GITHUB_RUN_ATTEMPT": "1",
+        }
+        code = main(
+            ["rail-summary", "--out", out_path, "--pins-report", pins_path, "--structure-report", struct_path, "--refusal-report", refusal_path],
+            environ=env,
+        )
+        self.assertEqual(code, AUTH_REFUSED_EXIT_CODE)
+
+    def test_cmd_rail_summary_refusal_report_c_sha_mismatch_refuses(self):
+        pins_path = os.path.join(self.td, "pins.json")
+        with open(pins_path, "w", encoding="utf-8") as f:
+            json.dump({"status": "PASS", "actions": PINNED_ACTIONS}, f)
+        struct_path = os.path.join(self.td, "struct.json")
+        with open(struct_path, "w", encoding="utf-8") as f:
+            json.dump({"status": "PASS", "workflow_structure": "PASS"}, f)
+        refusal_path = os.path.join(self.td, "refusal_c_sha_mismatch.json")
+        with open(refusal_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "status": "PASS",
+                "controller_suite": "PASS",
+                "c_sha": "0" * 40,
+                "run_id": "42086795082",
+                "run_attempt": "1",
+                "cases": {
+                    "missing_manifest_fd": {"status": "REFUSED", "exit_code": 5, "diagnostic": "err"},
+                    "manifest_digest_mismatch": {"status": "REFUSED", "exit_code": 5, "diagnostic": "err"},
+                    "strict_run_id_mismatch": {"status": "REFUSED", "exit_code": 5, "diagnostic": "err"},
+                    "invalid_p_sha": {"status": "REFUSED", "exit_code": 5, "diagnostic": "err"},
+                },
+            }, f)
+        out_path = os.path.join(self.td, "rail_summary.json")
+        env = {
+            "GITHUB_SHA": self.c_sha,
+            "GITHUB_RUN_ID": "42086795082",
+            "GITHUB_RUN_ATTEMPT": "1",
+        }
+        code = main(
+            ["rail-summary", "--out", out_path, "--pins-report", pins_path, "--structure-report", struct_path, "--refusal-report", refusal_path],
+            environ=env,
+        )
+        self.assertEqual(code, AUTH_REFUSED_EXIT_CODE)
+
+    def test_cmd_rail_summary_refusal_report_unrefused_case_refuses(self):
+        pins_path = os.path.join(self.td, "pins.json")
+        with open(pins_path, "w", encoding="utf-8") as f:
+            json.dump({"status": "PASS", "actions": PINNED_ACTIONS}, f)
+        struct_path = os.path.join(self.td, "struct.json")
+        with open(struct_path, "w", encoding="utf-8") as f:
+            json.dump({"status": "PASS", "workflow_structure": "PASS"}, f)
+        refusal_path = os.path.join(self.td, "refusal_unrefused.json")
+        with open(refusal_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "status": "PASS",
+                "controller_suite": "PASS",
+                "c_sha": self.c_sha,
+                "run_id": "42086795082",
+                "run_attempt": "1",
+                "cases": {
+                    "missing_manifest_fd": {"status": "REFUSED", "exit_code": 5, "diagnostic": "err"},
+                    "manifest_digest_mismatch": {"status": "REFUSED", "exit_code": 5, "diagnostic": "err"},
+                    "strict_run_id_mismatch": {"status": "REFUSED", "exit_code": 5, "diagnostic": "err"},
+                    "invalid_p_sha": {"status": "UNREFUSED", "exit_code": 0, "diagnostic": "succeeded unexpectedly"},
+                },
+            }, f)
+        out_path = os.path.join(self.td, "rail_summary.json")
+        env = {
+            "GITHUB_SHA": self.c_sha,
+            "GITHUB_RUN_ID": "42086795082",
+            "GITHUB_RUN_ATTEMPT": "1",
+        }
+        code = main(
+            ["rail-summary", "--out", out_path, "--pins-report", pins_path, "--structure-report", struct_path, "--refusal-report", refusal_path],
+            environ=env,
+        )
+        self.assertEqual(code, AUTH_REFUSED_EXIT_CODE)
+
+    def test_cmd_rail_summary_refusal_report_missing_diagnostic_refuses(self):
+        pins_path = os.path.join(self.td, "pins.json")
+        with open(pins_path, "w", encoding="utf-8") as f:
+            json.dump({"status": "PASS", "actions": PINNED_ACTIONS}, f)
+        struct_path = os.path.join(self.td, "struct.json")
+        with open(struct_path, "w", encoding="utf-8") as f:
+            json.dump({"status": "PASS", "workflow_structure": "PASS"}, f)
+        refusal_path = os.path.join(self.td, "refusal_no_diag.json")
+        with open(refusal_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "status": "PASS",
+                "controller_suite": "PASS",
+                "c_sha": self.c_sha,
+                "run_id": "42086795082",
+                "run_attempt": "1",
+                "cases": {
+                    "missing_manifest_fd": {"status": "REFUSED", "exit_code": 5, "diagnostic": "err"},
+                    "manifest_digest_mismatch": {"status": "REFUSED", "exit_code": 5, "diagnostic": "err"},
+                    "strict_run_id_mismatch": {"status": "REFUSED", "exit_code": 5, "diagnostic": "err"},
+                    "invalid_p_sha": {"status": "REFUSED", "exit_code": 5, "diagnostic": ""},
+                },
             }, f)
         out_path = os.path.join(self.td, "rail_summary.json")
         env = {
@@ -2837,10 +3267,10 @@ class FullLoopbackSubcommandCLITests(unittest.TestCase):
 
         orig_payload = self.mock_server.storage_payloads["13600255999"]
         mbuf = io.BytesIO()
-        tampered_manifest = {
-            "schema": SCHEMA_MANIFEST,
-            "sources": {"c_sha": "0" * 40},
-        }
+        tampered_manifest = deepcopy(self.mock_server.manifest_dict)
+        # Keep all valid prior fields (inputs.evidence_commit, repository, etc.)
+        # and tamper one field so check_man_3 ([MAN-3]) is specifically reached
+        tampered_manifest["sources"]["c_sha"] = "0" * 40
         with zipfile.ZipFile(mbuf, "w") as zf:
             zf.writestr("manifest.json", canonical(tampered_manifest))
         tampered_zip = mbuf.getvalue()
@@ -2851,8 +3281,10 @@ class FullLoopbackSubcommandCLITests(unittest.TestCase):
         self.mock_server.api_responses[art_ep]["artifacts"][0]["digest"] = f"sha256:{digest(tampered_zip)}"
 
         try:
-            code = main(["inspect", "--run-id", "50000000001"], environ=self.common_env, api_factory=self.api_factory)
-            self.assertEqual(code, AUTH_REFUSED_EXIT_CODE)
+            with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                code = main(["inspect", "--run-id", "50000000001"], environ=self.common_env, api_factory=self.api_factory)
+                self.assertEqual(code, AUTH_REFUSED_EXIT_CODE)
+                self.assertIn("[MAN-3]", mock_err.getvalue())
         finally:
             self.mock_server.api_responses[run_ep]["status"] = orig_status
             self.mock_server.storage_payloads["13600255999"] = orig_payload
@@ -2937,11 +3369,8 @@ class FullLoopbackSubcommandCLITests(unittest.TestCase):
             self.mock_server.api_responses[runs_ep] = orig_runs
 
     def test_verify_run_positive(self):
-        manifest_doc = {
-            "schema": SCHEMA_MANIFEST,
-            "strict_run": {"id": "999"},
-            "sources": {"c_sha": self.c_sha},
-        }
+        manifest_doc = deepcopy(self.mock_server.manifest_dict)
+        manifest_doc["strict_run"]["id"] = "999"
         manifest_raw = canonical(manifest_doc)
         manifest_sha = digest(manifest_raw)
 
@@ -2954,6 +3383,16 @@ class FullLoopbackSubcommandCLITests(unittest.TestCase):
                     "decision": "AUTHORIZED",
                     "c_sha": self.c_sha,
                     "manifest_sha256": manifest_sha,
+                    "strict_run_id": "999",
+                    "strict_job_id": "128575084399",
+                    "approval": {
+                        "state": "approved",
+                        "user_id": str(PINNED_REVIEWER_ID),
+                        "environment_id": str(PINNED_ENVIRONMENT_ID),
+                        "comment": f"{APPROVAL_COMMENT_PREFIX}{manifest_sha}",
+                    },
+                    "checks": [{"id": "REP-1", "status": "PASS"}, {"id": "APR-1", "status": "PASS"}],
+                    "verified_at": "2026-11-06T00:30:00Z",
                 }),
             )
             zf.writestr("manifest.json", manifest_raw)
@@ -2976,6 +3415,259 @@ class FullLoopbackSubcommandCLITests(unittest.TestCase):
         code = main(["verify-run", "--run-id", "999"], api_factory=self.api_factory)
         self.assertEqual(code, 0)
 
+    def test_verify_run_positive_bare_digest(self):
+        manifest_doc = deepcopy(self.mock_server.manifest_dict)
+        manifest_doc["strict_run"]["id"] = "9991"
+        manifest_raw = canonical(manifest_doc)
+        manifest_sha = digest(manifest_raw)
+
+        vbuf = io.BytesIO()
+        with zipfile.ZipFile(vbuf, "w") as zf:
+            zf.writestr(
+                "verification.json",
+                canonical({
+                    "schema": SCHEMA_VERIFICATION,
+                    "decision": "AUTHORIZED",
+                    "c_sha": self.c_sha,
+                    "manifest_sha256": manifest_sha,
+                    "strict_run_id": "9991",
+                    "strict_job_id": "128575084399",
+                    "approval": {
+                        "state": "approved",
+                        "user_id": str(PINNED_REVIEWER_ID),
+                        "environment_id": str(PINNED_ENVIRONMENT_ID),
+                        "comment": f"{APPROVAL_COMMENT_PREFIX}{manifest_sha}",
+                    },
+                    "checks": [{"id": "REP-1", "status": "PASS"}, {"id": "APR-1", "status": "PASS"}],
+                    "verified_at": "2026-11-06T00:30:00Z",
+                }),
+            )
+            zf.writestr("manifest.json", manifest_raw)
+        v_bytes = vbuf.getvalue()
+        bare_zip_dig = digest(v_bytes)
+        self.mock_server.storage_payloads["99991"] = v_bytes
+
+        self.mock_server.api_responses["repos/jwaldrip/iyi/actions/runs/9991"] = {
+            "status": "completed",
+            "conclusion": "success",
+            "workflow_id": int(PINNED_WORKFLOW_ID),
+            "run_attempt": 1,
+            "head_sha": self.c_sha,
+        }
+        self.mock_server.api_responses["repos/jwaldrip/iyi/actions/runs/9991/artifacts"] = {
+            "artifacts": [
+                {"id": 99991, "name": ARTIFACT_NAME_VERIFICATION, "digest": bare_zip_dig}
+            ]
+        }
+        code = main(["verify-run", "--run-id", "9991"], api_factory=self.api_factory)
+        self.assertEqual(code, 0)
+
+    def test_verify_run_duplicate_member_refuses(self):
+        vbuf = io.BytesIO()
+        with zipfile.ZipFile(vbuf, "w") as zf:
+            zf.writestr("verification.json", b'{"test":1}')
+            zf.writestr("manifest.json", b'{"test":2}')
+            zf.writestr("verification.json", b'{"test":3}')
+        v_bytes = vbuf.getvalue()
+        zip_dig = f"sha256:{digest(v_bytes)}"
+        self.mock_server.storage_payloads["99992"] = v_bytes
+
+        self.mock_server.api_responses["repos/jwaldrip/iyi/actions/runs/9992"] = {
+            "status": "completed",
+            "conclusion": "success",
+            "workflow_id": int(PINNED_WORKFLOW_ID),
+            "run_attempt": 1,
+            "head_sha": self.c_sha,
+        }
+        self.mock_server.api_responses["repos/jwaldrip/iyi/actions/runs/9992/artifacts"] = {
+            "artifacts": [
+                {"id": 99992, "name": ARTIFACT_NAME_VERIFICATION, "digest": zip_dig}
+            ]
+        }
+        code = main(["verify-run", "--run-id", "9992"], api_factory=self.api_factory)
+        self.assertEqual(code, AUTH_REFUSED_EXIT_CODE)
+
+    def test_verify_run_missing_strict_run_id_refuses(self):
+        manifest_doc = deepcopy(self.mock_server.manifest_dict)
+        manifest_doc["strict_run"]["id"] = "9993"
+        manifest_raw = canonical(manifest_doc)
+        manifest_sha = digest(manifest_raw)
+
+        vbuf = io.BytesIO()
+        with zipfile.ZipFile(vbuf, "w") as zf:
+            zf.writestr(
+                "verification.json",
+                canonical({
+                    "schema": SCHEMA_VERIFICATION,
+                    "decision": "AUTHORIZED",
+                    "c_sha": self.c_sha,
+                    "manifest_sha256": manifest_sha,
+                    "strict_job_id": "128575084399",
+                    "approval": {
+                        "state": "approved",
+                        "user_id": str(PINNED_REVIEWER_ID),
+                        "environment_id": str(PINNED_ENVIRONMENT_ID),
+                        "comment": f"{APPROVAL_COMMENT_PREFIX}{manifest_sha}",
+                    },
+                    "checks": [{"id": "REP-1", "status": "PASS"}],
+                    "verified_at": "2026-11-06T00:30:00Z",
+                }),
+            )
+            zf.writestr("manifest.json", manifest_raw)
+        v_bytes = vbuf.getvalue()
+        zip_dig = f"sha256:{digest(v_bytes)}"
+        self.mock_server.storage_payloads["99993"] = v_bytes
+
+        self.mock_server.api_responses["repos/jwaldrip/iyi/actions/runs/9993"] = {
+            "status": "completed",
+            "conclusion": "success",
+            "workflow_id": int(PINNED_WORKFLOW_ID),
+            "run_attempt": 1,
+            "head_sha": self.c_sha,
+        }
+        self.mock_server.api_responses["repos/jwaldrip/iyi/actions/runs/9993/artifacts"] = {
+            "artifacts": [
+                {"id": 99993, "name": ARTIFACT_NAME_VERIFICATION, "digest": zip_dig}
+            ]
+        }
+        code = main(["verify-run", "--run-id", "9993"], api_factory=self.api_factory)
+        self.assertEqual(code, AUTH_REFUSED_EXIT_CODE)
+
+    def test_verify_run_missing_approval_refuses(self):
+        manifest_doc = deepcopy(self.mock_server.manifest_dict)
+        manifest_doc["strict_run"]["id"] = "9994"
+        manifest_raw = canonical(manifest_doc)
+        manifest_sha = digest(manifest_raw)
+
+        vbuf = io.BytesIO()
+        with zipfile.ZipFile(vbuf, "w") as zf:
+            zf.writestr(
+                "verification.json",
+                canonical({
+                    "schema": SCHEMA_VERIFICATION,
+                    "decision": "AUTHORIZED",
+                    "c_sha": self.c_sha,
+                    "manifest_sha256": manifest_sha,
+                    "strict_run_id": "9994",
+                    "strict_job_id": "128575084399",
+                    "checks": [{"id": "REP-1", "status": "PASS"}],
+                    "verified_at": "2026-11-06T00:30:00Z",
+                }),
+            )
+            zf.writestr("manifest.json", manifest_raw)
+        v_bytes = vbuf.getvalue()
+        zip_dig = f"sha256:{digest(v_bytes)}"
+        self.mock_server.storage_payloads["99994"] = v_bytes
+
+        self.mock_server.api_responses["repos/jwaldrip/iyi/actions/runs/9994"] = {
+            "status": "completed",
+            "conclusion": "success",
+            "workflow_id": int(PINNED_WORKFLOW_ID),
+            "run_attempt": 1,
+            "head_sha": self.c_sha,
+        }
+        self.mock_server.api_responses["repos/jwaldrip/iyi/actions/runs/9994/artifacts"] = {
+            "artifacts": [
+                {"id": 99994, "name": ARTIFACT_NAME_VERIFICATION, "digest": zip_dig}
+            ]
+        }
+        code = main(["verify-run", "--run-id", "9994"], api_factory=self.api_factory)
+        self.assertEqual(code, AUTH_REFUSED_EXIT_CODE)
+
+    def test_verify_run_missing_manifest_sources_refuses(self):
+        manifest_doc = deepcopy(self.mock_server.manifest_dict)
+        manifest_doc["strict_run"]["id"] = "9995"
+        del manifest_doc["sources"]
+        manifest_raw = canonical(manifest_doc)
+        manifest_sha = digest(manifest_raw)
+
+        vbuf = io.BytesIO()
+        with zipfile.ZipFile(vbuf, "w") as zf:
+            zf.writestr(
+                "verification.json",
+                canonical({
+                    "schema": SCHEMA_VERIFICATION,
+                    "decision": "AUTHORIZED",
+                    "c_sha": self.c_sha,
+                    "manifest_sha256": manifest_sha,
+                    "strict_run_id": "9995",
+                    "strict_job_id": "128575084399",
+                    "approval": {
+                        "state": "approved",
+                        "user_id": str(PINNED_REVIEWER_ID),
+                        "environment_id": str(PINNED_ENVIRONMENT_ID),
+                        "comment": f"{APPROVAL_COMMENT_PREFIX}{manifest_sha}",
+                    },
+                    "checks": [{"id": "REP-1", "status": "PASS"}],
+                    "verified_at": "2026-11-06T00:30:00Z",
+                }),
+            )
+            zf.writestr("manifest.json", manifest_raw)
+        v_bytes = vbuf.getvalue()
+        zip_dig = f"sha256:{digest(v_bytes)}"
+        self.mock_server.storage_payloads["99995"] = v_bytes
+
+        self.mock_server.api_responses["repos/jwaldrip/iyi/actions/runs/9995"] = {
+            "status": "completed",
+            "conclusion": "success",
+            "workflow_id": int(PINNED_WORKFLOW_ID),
+            "run_attempt": 1,
+            "head_sha": self.c_sha,
+        }
+        self.mock_server.api_responses["repos/jwaldrip/iyi/actions/runs/9995/artifacts"] = {
+            "artifacts": [
+                {"id": 99995, "name": ARTIFACT_NAME_VERIFICATION, "digest": zip_dig}
+            ]
+        }
+        code = main(["verify-run", "--run-id", "9995"], api_factory=self.api_factory)
+        self.assertEqual(code, AUTH_REFUSED_EXIT_CODE)
+
+    def test_verify_run_missing_checks_refuses(self):
+        manifest_doc = deepcopy(self.mock_server.manifest_dict)
+        manifest_doc["strict_run"]["id"] = "9996"
+        manifest_raw = canonical(manifest_doc)
+        manifest_sha = digest(manifest_raw)
+
+        vbuf = io.BytesIO()
+        with zipfile.ZipFile(vbuf, "w") as zf:
+            zf.writestr(
+                "verification.json",
+                canonical({
+                    "schema": SCHEMA_VERIFICATION,
+                    "decision": "AUTHORIZED",
+                    "c_sha": self.c_sha,
+                    "manifest_sha256": manifest_sha,
+                    "strict_run_id": "9996",
+                    "strict_job_id": "128575084399",
+                    "approval": {
+                        "state": "approved",
+                        "user_id": str(PINNED_REVIEWER_ID),
+                        "environment_id": str(PINNED_ENVIRONMENT_ID),
+                        "comment": f"{APPROVAL_COMMENT_PREFIX}{manifest_sha}",
+                    },
+                    "checks": [],  # empty checks!
+                    "verified_at": "2026-11-06T00:30:00Z",
+                }),
+            )
+            zf.writestr("manifest.json", manifest_raw)
+        v_bytes = vbuf.getvalue()
+        zip_dig = f"sha256:{digest(v_bytes)}"
+        self.mock_server.storage_payloads["99996"] = v_bytes
+
+        self.mock_server.api_responses["repos/jwaldrip/iyi/actions/runs/9996"] = {
+            "status": "completed",
+            "conclusion": "success",
+            "workflow_id": int(PINNED_WORKFLOW_ID),
+            "run_attempt": 1,
+            "head_sha": self.c_sha,
+        }
+        self.mock_server.api_responses["repos/jwaldrip/iyi/actions/runs/9996/artifacts"] = {
+            "artifacts": [
+                {"id": 99996, "name": ARTIFACT_NAME_VERIFICATION, "digest": zip_dig}
+            ]
+        }
+        code = main(["verify-run", "--run-id", "9996"], api_factory=self.api_factory)
+        self.assertEqual(code, AUTH_REFUSED_EXIT_CODE)
     def test_verify_run_failed_run_refuses(self):
         self.mock_server.api_responses["repos/jwaldrip/iyi/actions/runs/998"] = {
             "status": "completed",
@@ -3234,15 +3926,40 @@ class SubprocessCLITests(unittest.TestCase):
             struct_path = os.path.join(td, "sub_struct.json")
             with open(struct_path, "w", encoding="utf-8") as f:
                 json.dump({"status": "PASS", "workflow_structure": "PASS"}, f)
+            c_sha = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("ascii").strip()
             refusal_path = os.path.join(td, "sub_refusal.json")
             with open(refusal_path, "w", encoding="utf-8") as f:
                 json.dump({
+                    "schema": SCHEMA_REFUSAL_REPORT,
                     "status": "PASS",
                     "controller_suite": "PASS",
-                    "strict_refusal_controls": PINNED_REFUSAL_CONTROLS,
+                    "c_sha": c_sha,
+                    "run_id": "42086795082",
+                    "run_attempt": "1",
+                    "cases": {
+                        "missing_manifest_fd": {
+                            "status": "REFUSED",
+                            "exit_code": AUTH_REFUSED_EXIT_CODE,
+                            "diagnostic": "missing required manifest fd 5",
+                        },
+                        "manifest_digest_mismatch": {
+                            "status": "REFUSED",
+                            "exit_code": AUTH_REFUSED_EXIT_CODE,
+                            "diagnostic": "manifest digest mismatch: expected sha256:000, got sha256:111",
+                        },
+                        "strict_run_id_mismatch": {
+                            "status": "REFUSED",
+                            "exit_code": AUTH_REFUSED_EXIT_CODE,
+                            "diagnostic": "strict run id mismatch: expected 42086795082, got 999",
+                        },
+                        "invalid_p_sha": {
+                            "status": "REFUSED",
+                            "exit_code": AUTH_REFUSED_EXIT_CODE,
+                            "diagnostic": "invalid P commit SHA: expected 180f14f91c829b25362a5ed34b20847f3ac2db77, got 0000000000000000000000000000000000000000",
+                        },
+                    },
                 }, f)
             out_path = os.path.join(td, "sub_rail_summary.json")
-            c_sha = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("ascii").strip()
             env = dict(
                 os.environ,
                 PYTHONPATH=".",
