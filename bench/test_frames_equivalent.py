@@ -572,6 +572,28 @@ def test_macho_reader_controls():
         try: frames.evidence(altered, binary, 1)
         except ValueError: pass
         else: raise AssertionError("invalid evidence integer accepted")
+    # A compact, valid string table can be referenced repeatedly or through
+    # different suffixes. Charge each resulting record, not each unique index.
+    small, small_expected = macho_fixture(1, [(b"x" * 30000, 0x0e, 1, 0, 0x10)])
+    assert frames.macho_summary(small, 1) == small_expected
+    exact, exact_expected = macho_fixture(1, [(b"abc", 0x0e, 1, 0, 0x10)])
+    with patch.object(frames, "NATIVE_EVIDENCE_BUDGET", 256 * 2 + 3 + 4):
+        assert frames.macho_summary(exact, 1) == exact_expected
+    with patch.object(frames, "NATIVE_EVIDENCE_BUDGET", 256 * 2 + 3 + 4 - 1):
+        try: frames.macho_summary(exact, 1)
+        except ValueError as exc: assert str(exc) == "native evidence size limit"
+        else: raise AssertionError("over-budget symbol accepted")
+    for suffixes in (False, True):
+        count = 1000
+        data, _ = macho_fixture(1, [(b"", 0x0e, 1, 0, 0x10)] * count)
+        data = bytearray(data)
+        for i in range(count):
+            struct.pack_into("<I", data, 224 + 16 * i, 1 + (i % 100 if suffixes else 0))
+        data.extend(b"x" * 30000 + b"\0")
+        struct.pack_into("<I", data, 204, 30002)
+        try: frames.macho_summary(bytes(data), 1)
+        except ValueError as exc: assert str(exc) == "native evidence size limit"
+        else: raise AssertionError("amplified symbol names accepted")
 
 
 def test_strict_manifest_synthetic_controls():

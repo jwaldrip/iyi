@@ -358,6 +358,8 @@ def no_duplicate_keys(pairs):
         result[key] = value
     return result
 
+NATIVE_EVIDENCE_BUDGET = 64 * 1024 * 1024
+
 
 def macho_summary(data, expected_type):
     """Read a bounded, thin little-endian 64-bit Mach-O snapshot."""
@@ -370,6 +372,7 @@ def macho_summary(data, expected_type):
     if end > len(data) or ncmds > sizeofcmds // 8:
         raise ValueError("invalid Mach-O command area")
     sections, symtab, pos = [], None, 32
+    budget = NATIVE_EVIDENCE_BUDGET
     for _ in range(ncmds):
         if pos + 8 > end: raise ValueError("truncated load command")
         cmd, size = struct.unpack_from("<II", data, pos)
@@ -382,6 +385,8 @@ def macho_summary(data, expected_type):
             if size < 72: raise ValueError("truncated segment")
             nsects = struct.unpack_from("<I", data, pos + 64)[0]
             if nsects > (size - 72) // 80: raise ValueError("truncated sections")
+            budget -= 256 * nsects
+            if budget < 0: raise ValueError("native evidence size limit")
             for i in range(nsects):
                 p = pos + 72 + 80 * i
                 sect, seg = struct.unpack_from("<16s16s", data, p)
@@ -407,14 +412,23 @@ def macho_summary(data, expected_type):
         return a < b and c < d and a < d and c < b
     if overlap(symoff, symend, 0, end) or overlap(stroff, strend, 0, end) or overlap(symoff, symend, stroff, strend):
         raise ValueError("overlapping Mach-O tables")
+    budget -= 256 * nsyms
+    if budget < 0: raise ValueError("native evidence size limit")
     symbols = []
     for i in range(nsyms):
         strx, typ, sect, desc, value = struct.unpack_from("<IBBHQ", data, symoff + 16 * i)
         if strx:
             if strx >= strsize: raise ValueError("invalid symbol string index")
-            stop = data.find(b"\0", stroff + strx, strend)
-            if stop < 0: raise ValueError("unterminated symbol name")
-            name = data[stroff + strx:stop]
+            start = stroff + strx
+            scan_end = min(strend, start + budget + 1)
+            stop = data.find(b"\0", start, scan_end)
+            if stop < 0:
+                if scan_end < strend: raise ValueError("native evidence size limit")
+                raise ValueError("unterminated symbol name")
+            length = stop - start
+            budget -= length + 4 * ((length + 2) // 3)
+            if budget < 0: raise ValueError("native evidence size limit")
+            name = data[start:stop]
         else:
             name = b""
         if not typ & 0xe0:

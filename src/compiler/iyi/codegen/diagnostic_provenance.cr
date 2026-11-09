@@ -506,6 +506,14 @@ module Iyi::DiagnosticProvenance
     if symbytes > 0 && strbytes > 0 && symstart < strstart + strbytes && strstart < symstart + symbytes
       raise "overlapping Mach-O tables"
     end
+    # Bound the expanded evidence, not just the table: multiple nlists may
+    # legally reference the same string or arbitrary suffixes. The 64 MiB
+    # ceiling matches the compiler protocol message limit. Charge 256 bytes
+    # per serialized record plus each decoded name and its Base64 encoding.
+    budget = 64_u64 * 1024 * 1024
+    records = nsyms.to_u64 + sections.size.to_u64
+    raise "native evidence size limit exceeded" if records > budget // 256
+    budget -= records * 256
     symbols = [] of NativeSymbol
     nsyms.to_u64.times do |i|
       off = symstart + i * 16
@@ -515,9 +523,14 @@ module Iyi::DiagnosticProvenance
         raise "invalid Mach-O string index" if strx >= strings.size
         end_index = strx.to_i
         while end_index < strings.size && strings[end_index] != 0
+          raise "native evidence size limit exceeded" if budget == 0
+          budget -= 1
           end_index += 1
         end
         raise "unterminated Mach-O symbol name" if end_index == strings.size
+        encoded_size = ((end_index - strx.to_i).to_u64 + 2) // 3 * 4
+        raise "native evidence size limit exceeded" if encoded_size > budget
+        budget -= encoded_size
         name = strings[strx.to_i, end_index - strx.to_i]
       end
       type = r.number(off + 4, 1).to_u8

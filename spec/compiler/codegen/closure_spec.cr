@@ -927,11 +927,54 @@ describe "Code gen: closure" do
     expect_raises(Exception, /magic/) { parse.call }
   end
 
+  it "bounds expanded Mach-O names including shared and suffix string indexes" do
+    # One valid string table, referenced repeatedly by valid undefined nlists.
+    # Small names are accepted; long shared names exceed the expanded budget.
+    [32, 32768].each do |name_length|
+      [false, true].each do |suffixes|
+        count = 1024
+        string_start = 56 + count * 16
+        bytes = Bytes.new(string_start + name_length + 2, 0_u8)
+        put = ->(offset : Int32, value : UInt64, width : Int32) do
+          width.times { |i| bytes[offset + i] = ((value >> (8 * i)) & 0xff).to_u8 }
+        end
+        put.call(0, 0xfeedfacf_u64, 4)
+        put.call(4, 0x0100000c_u64, 4)
+        put.call(12, 1_u64, 4)
+        put.call(16, 1_u64, 4)
+        put.call(20, 24_u64, 4)
+        put.call(32, 2_u64, 4)
+        put.call(36, 24_u64, 4)
+        put.call(40, 56_u64, 4)
+        put.call(44, count.to_u64, 4)
+        put.call(48, string_start.to_u64, 4)
+        put.call(52, (name_length + 2).to_u64, 4)
+        bytes[string_start + 1, name_length].fill(0x61_u8)
+        count.times do |i|
+          index = suffixes ? 1 + i % 16 : 1
+          put.call(56 + 16 * i, index.to_u64, 4)
+        end
+        if name_length == 32
+          evidence = Iyi::DiagnosticProvenance.parse_native_evidence(bytes, Iyi::DiagnosticProvenance::NativeKind::Object)
+          evidence.symbols.size.should eq(count)
+          evidence.symbols.first.name_base64.should eq(Base64.strict_encode("a" * 32))
+          if suffixes
+            evidence.symbols[15].name_base64.should eq(Base64.strict_encode("a" * 17))
+          end
+        else
+          expect_raises(Exception, /native evidence size limit exceeded/) do
+            Iyi::DiagnosticProvenance.parse_native_evidence(bytes, Iyi::DiagnosticProvenance::NativeKind::Object)
+          end
+        end
+      end
+    end
+  end
+
   it "observes defined functions but not declarations" do
     llvm_context = LLVM::Context.new
     mod = llvm_context.new_module("diagnostic-observer")
-    mod.functions.add("defined", [] of LLVM::Type, llvm_context.int32) do |fun|
-      fun.basic_blocks.append("entry") { |builder| builder.ret llvm_context.int32.const_int(1) }
+    mod.functions.add("defined", [] of LLVM::Type, llvm_context.int32) do |function|
+      function.basic_blocks.append("entry") { |builder| builder.ret llvm_context.int32.const_int(1) }
     end
     mod.functions.add("declared", [] of LLVM::Type, llvm_context.int32)
     observer = Iyi::DiagnosticProvenance::Observer.new(mod, {} of String => Array(Iyi::DiagnosticProvenance::Emission))
@@ -943,11 +986,11 @@ describe "Code gen: closure" do
   it "retains all identities when LLVM replaces one tracked function with another" do
     llvm_context = LLVM::Context.new
     mod = llvm_context.new_module("diagnostic-observer-replacement")
-    first = mod.functions.add("first", [] of LLVM::Type, llvm_context.int32) do |fun|
-      fun.basic_blocks.append("entry") { |builder| builder.ret llvm_context.int32.const_int(1) }
+    first = mod.functions.add("first", [] of LLVM::Type, llvm_context.int32) do |function|
+      function.basic_blocks.append("entry") { |builder| builder.ret llvm_context.int32.const_int(1) }
     end
-    second = mod.functions.add("second", [] of LLVM::Type, llvm_context.int32) do |fun|
-      fun.basic_blocks.append("entry") { |builder| builder.ret llvm_context.int32.const_int(2) }
+    second = mod.functions.add("second", [] of LLVM::Type, llvm_context.int32) do |function|
+      function.basic_blocks.append("entry") { |builder| builder.ret llvm_context.int32.const_int(2) }
     end
     origin = JSON.parse(%({"kind":"Written","source_identity":{"module":"app/main","file":"main.iyi"},"input_byte_offset":0,"anchor_kind":"ProcLiteral","role":"arrow"}))
     specialization = JSON.parse(%({"kind":"program_scope","source_identity":{"module":"app/main","file":"main.iyi"}}))
@@ -968,11 +1011,11 @@ describe "Code gen: closure" do
   it "marks a closure replaced by a non-closure as unresolved" do
     llvm_context = LLVM::Context.new
     mod = llvm_context.new_module("diagnostic-observer-unresolved")
-    closure = mod.functions.add("closure", [] of LLVM::Type, llvm_context.int32) do |fun|
-      fun.basic_blocks.append("entry") { |builder| builder.ret llvm_context.int32.const_int(1) }
+    closure = mod.functions.add("closure", [] of LLVM::Type, llvm_context.int32) do |function|
+      function.basic_blocks.append("entry") { |builder| builder.ret llvm_context.int32.const_int(1) }
     end
-    other = mod.functions.add("other", [] of LLVM::Type, llvm_context.int32) do |fun|
-      fun.basic_blocks.append("entry") { |builder| builder.ret llvm_context.int32.const_int(2) }
+    other = mod.functions.add("other", [] of LLVM::Type, llvm_context.int32) do |function|
+      function.basic_blocks.append("entry") { |builder| builder.ret llvm_context.int32.const_int(2) }
     end
     origin = JSON.parse(%({"kind":"Written","source_identity":{"module":"app/main","file":"main.iyi"},"input_byte_offset":0,"anchor_kind":"ProcLiteral","role":"arrow"}))
     specialization = JSON.parse(%({"kind":"program_scope","source_identity":{"module":"app/main","file":"main.iyi"}}))
@@ -991,11 +1034,11 @@ describe "Code gen: closure" do
   it "does not claim a deleted LLVM definition survived" do
     llvm_context = LLVM::Context.new
     mod = llvm_context.new_module("diagnostic-observer-deletion")
-    fun = mod.functions.add("removed", [] of LLVM::Type, llvm_context.int32) do |definition|
+    function = mod.functions.add("removed", [] of LLVM::Type, llvm_context.int32) do |definition|
       definition.basic_blocks.append("entry") { |builder| builder.ret llvm_context.int32.const_int(1) }
     end
     observer = Iyi::DiagnosticProvenance::Observer.new(mod, {} of String => Array(Iyi::DiagnosticProvenance::Emission))
-    fun.delete
+    function.delete
     observer.finish.should be_empty
   end
 
