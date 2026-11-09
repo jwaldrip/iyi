@@ -1,0 +1,129 @@
+name: BPF execution hook feasibility diagnostic
+
+on:
+  push:
+    branches:
+      - proof/pr147-kernel-feasibility-20261109
+    paths:
+      - .github/workflows/pr147-bpf-feasibility.yml
+      - proof/bpf_canary*
+
+permissions:
+  contents: read
+
+jobs:
+  feasibility-diagnostics:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: jwaldrip/iyi
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Record diagnostic environment metadata
+        run: |
+          mkdir -p "$RUNNER_TEMP/kernel-feasibility-diag"
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, platform
+
+          log_dir = pathlib.Path(os.environ["RUNNER_TEMP"]) / "kernel-feasibility-diag"
+          runner_temp_path = pathlib.Path(os.environ["RUNNER_TEMP"]).resolve()
+
+          mount_info = "UNKNOWN"
+          mount_opts = "UNKNOWN"
+          proc_mounts = pathlib.Path("/proc/mounts")
+          best_match_mount = None
+          best_match_len = -1
+
+          if proc_mounts.exists():
+              for line in proc_mounts.read_text().splitlines():
+                  parts = line.split()
+                  if len(parts) >= 4:
+                      mnt_path = pathlib.Path(parts[1]).resolve()
+                      try:
+                          runner_temp_path.relative_to(mnt_path)
+                          if len(mnt_path.parts) > best_match_len:
+                              best_match_len = len(mnt_path.parts)
+                              best_match_mount = parts
+                      except ValueError:
+                          continue
+
+          if best_match_mount:
+              mount_info = best_match_mount[0] + " on " + best_match_mount[1] + " (" + best_match_mount[2] + ")"
+              mount_opts = best_match_mount[3]
+
+          btf_path = pathlib.Path("/sys/kernel/btf/vmlinux")
+          btf_digest = "UNKNOWN"
+          if btf_path.exists():
+              try:
+                  btf_digest = hashlib.sha256(btf_path.read_bytes()).hexdigest()
+              except Exception:
+                  btf_digest = "UNKNOWN"
+          meta = {
+              "schema": "iyi-kernel-feasibility-v1",
+              "strict_eligible": False,
+              "run_id": os.environ.get("GITHUB_RUN_ID", "UNKNOWN"),
+              "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", "UNKNOWN"),
+              "checkout_sha": os.environ.get("GITHUB_SHA", "UNKNOWN"),
+              "ref": os.environ.get("GITHUB_REF", "UNKNOWN"),
+              "runner_os": os.environ.get("RUNNER_OS", "UNKNOWN"),
+              "runner_image": os.environ.get("ImageOS", "UNKNOWN"),
+              "uname": platform.uname()._asdict(),
+              "live_btf_digest": btf_digest,
+              "runner_temp_mount": mount_info,
+              "runner_temp_mount_options": mount_opts,
+          }
+          (log_dir / "diagnostic-metadata.json").write_text(json.dumps(meta, indent=2))
+          print("Recorded diagnostic metadata under schema iyi-kernel-feasibility-v1")
+          PY
+
+      - name: Run BPF feasibility probe (coordinated with BPF helper)
+        if: always() && !cancelled()
+        run: |
+          owned="$RUNNER_TEMP/bpf-feasibility-private"
+          mkdir -m 0700 "$owned"
+          status_file="$RUNNER_TEMP/kernel-feasibility-diag/bpf-feasibility.json"
+
+          if [ -f proof/bpf_canary_host.c ] && [ -f proof/bpf_canary.bpf.c ]; then
+            echo "BPF helper present on branch; checking safe prerequisites..."
+            if command -v clang >/dev/null 2>&1 && [ -f /usr/include/bpf/bpf.h ] && [ -x /usr/bin/setpriv ]; then
+              echo "Compiling BPF probe object and host..."
+              TMPDIR="$owned" clang -O2 -g -target bpf -c proof/bpf_canary.bpf.c -o "$owned/bpf_canary.bpf.o"
+              TMPDIR="$owned" gcc -O2 -Wall -Wextra proof/bpf_canary_host.c -lbpf -lelf -lz -o "$owned/bpf_canary_host"
+
+              probe_uid="$(id -u)"
+              probe_gid="$(id -g)"
+
+              sudo -n /usr/bin/setpriv \
+                --reuid="$probe_uid" --regid="$probe_gid" --clear-groups \
+                --bounding-set=-all,+bpf,+perfmon \
+                --inh-caps=-all,+bpf,+perfmon \
+                --ambient-caps=-all,+bpf,+perfmon \
+                --no-new-privs \
+                -- /usr/bin/env -i PATH=/usr/bin:/bin \
+                "$owned/bpf_canary_host" \
+                --probe-only \
+                --bpf-obj "$owned/bpf_canary.bpf.o" \
+                --status "$status_file"
+            else
+              echo "Required BPF build prerequisites (clang, /usr/include/bpf/bpf.h, or setpriv) missing."
+              python3 -c "import json, os, pathlib; p = pathlib.Path(os.environ['RUNNER_TEMP']) / 'kernel-feasibility-diag/bpf-feasibility.json'; p.write_text(json.dumps({'schema': 'iyi-kernel-feasibility-v1', 'strict_eligible': False, 'probe_type': 'bpf', 'result': 'PREREQUISITES_MISSING', 'detail': 'clang, /usr/include/bpf/bpf.h, or setpriv missing on runner; no package installation permitted'}))"
+              exit 1
+            fi
+          else
+            echo "BPF helper source (proof/bpf_canary_host.c) not present on this branch."
+            echo "bpf_canary_host.c not present on verity branch; awaiting BPF agent landing" > "$owned/bpf_status.txt"
+            python3 -c 'import json, os, pathlib; p = pathlib.Path(os.environ["RUNNER_TEMP"]) / "kernel-feasibility-diag/bpf-feasibility.json"; p.write_text(json.dumps({"schema": "iyi-kernel-feasibility-v1", "strict_eligible": False, "probe_type": "bpf", "result": "NOT_PRESENT_ON_BRANCH", "detail": "bpf_canary_host.c not present on verity branch; awaiting BPF agent landing"}))'
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        if: always()
+        with:
+          name: pr147-bpf-feasibility-diagnostic
+          path: |
+            ${{ runner.temp }}/kernel-feasibility-diag/
+            ${{ runner.temp }}/bpf-feasibility-private/
+          if-no-files-found: error
