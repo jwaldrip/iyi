@@ -411,14 +411,21 @@ class TestBpfFeasibilityScript(unittest.TestCase):
 
 
     def test_missing_default_lock_fails(self) -> None:
-        """Missing default lock file fails closed immediately on isolated owned fixture."""
+        """Missing default lock file fails closed immediately on isolated repo fixture."""
         with tempfile.TemporaryDirectory() as td:
-            scratch = Path(td)
-            fresh_owned = scratch / "fresh_owned"
+            t_root = Path(td)
+            fake_repo = t_root / "fake_repo"
+            fake_proof = fake_repo / "proof"
+            fake_proof.mkdir(parents=True)
+            fake_script = fake_proof / "run_bpf_feasibility.sh"
+            shutil.copy2(SCRIPT_PATH, fake_script)
+            fake_script.chmod(0o755)
+
+            fresh_owned = t_root / "fresh_owned"
             res = subprocess.run(
                 [
                     "bash",
-                    str(SCRIPT_PATH),
+                    str(fake_script),
                     "--owned-dir",
                     str(fresh_owned),
                 ],
@@ -429,6 +436,7 @@ class TestBpfFeasibilityScript(unittest.TestCase):
             self.assertNotEqual(res.returncode, 0)
             self.assertIn("Dependency lock", res.stderr)
             self.assertIn("not found", res.stderr)
+            self.assertIn(str(fake_repo), res.stderr)
     def test_production_manifest_gate_full_validation(self) -> None:
         """Production manifest gate: positive control passes, mutations strictly fail closed."""
         with tempfile.TemporaryDirectory() as td:
