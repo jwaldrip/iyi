@@ -38,50 +38,68 @@ jobs:
           with tempfile.TemporaryDirectory(prefix='iyi-host-isolation-') as directory:
               secret = pathlib.Path(directory) / 'fake-secret'
               secret.write_text('owned-canary', encoding='utf-8')
-              listener = socket.socket()
-              listener.bind(('127.0.0.1', 0))
-              listener.listen(1)
-              listener.settimeout(0.25)
-              port = listener.getsockname()[1]
+              os.chmod(directory, 0o755)
+              os.chmod(secret, 0o644)
+              listeners = []
               accepted = []
               stop = threading.Event()
+              threads = []
+              for family, address in ((socket.AF_INET, '127.0.0.1'), (socket.AF_INET6, '::1')):
+                  listener = socket.socket(family)
+                  listener.bind((address, 0))
+                  listener.listen(1)
+                  listener.settimeout(0.25)
+                  listeners.append((listener, address, listener.getsockname()[1]))
 
-              def watch():
-                  while not stop.is_set():
-                      try:
-                          conn, _ = listener.accept()
-                      except socket.timeout:
-                          continue
-                      except OSError:
-                          return
-                      accepted.append(True)
-                      conn.close()
+                  def watch(server):
+                      while not stop.is_set():
+                          try:
+                              conn, _ = server.accept()
+                          except socket.timeout:
+                              continue
+                          except OSError:
+                              return
+                          accepted.append(True)
+                          conn.close()
 
-              thread = threading.Thread(target=watch)
-              thread.start()
+                  thread = threading.Thread(target=watch, args=(listener,))
+                  thread.start()
+                  threads.append(thread)
               try:
-                  control = ['docker', 'run', '--rm', '--network', 'host', '--user', '65534:65534',
-                             image, 'python3', '-I', '-c',
-                             'import socket,sys; s=socket.create_connection(("127.0.0.1",int(sys.argv[1])),3); s.close()',
-                             str(port)]
-                  subprocess.run(control, check=True, timeout=30)
-                  deadline = time.monotonic() + 5
-                  while not accepted and time.monotonic() < deadline:
-                      time.sleep(0.05)
-                  if not accepted:
-                      raise RuntimeError('host-network negative control did not reach the owned listener')
+                  for _, address, port in listeners:
+                      accepted.clear()
+                      control = ['docker', 'run', '--rm', '--network', 'host', '--user', '65534:65534',
+                                 image, 'python3', '-I', '-c',
+                                 'import socket,sys; s=socket.create_connection((sys.argv[1],int(sys.argv[2])),3); s.close()',
+                                 address, str(port)]
+                      subprocess.run(control, check=True, timeout=30)
+                      deadline = time.monotonic() + 5
+                      while not accepted and time.monotonic() < deadline:
+                          time.sleep(0.05)
+                      if not accepted:
+                          raise RuntimeError('host-network control did not reach ' + address)
                   accepted.clear()
+                  control = ['docker', 'run', '--rm', '--network', 'none', '--user', '65534:65534',
+                             '--mount', f'type=bind,src={directory},dst={directory},readonly',
+                             image, 'python3', '-I', '-c',
+                             'import pathlib,sys; assert pathlib.Path(sys.argv[1]).read_text() == \"owned-canary\"',
+                             str(secret)]
+                  subprocess.run(control, check=True, timeout=30)
+                  control = ['docker', 'run', '--rm', '--network', 'none', '--user', '65534:65534',
+                             image, 'python3', '-I', '-c',
+                             'import pathlib; pathlib.Path(\"/var/tmp/iyi-boundary-canary\").write_text(\"writable-control\")']
+                  subprocess.run(control, check=True, timeout=30)
                   child = r'''
           import errno, os, pathlib, socket, sys
-          secret, host_port = sys.argv[1], int(sys.argv[2])
+          secret, host4, host6 = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
           assert not os.path.exists(secret), 'host fake secret leaked'
           assert not os.path.exists('/var/run/docker.sock'), 'Docker socket leaked'
           assert 'IYI_FAKE_SECRET' not in os.environ, 'host environment leaked'
           pathlib.Path('/tmp/owned').write_text('ok')
           try:
-              pathlib.Path('/etc/iyi-boundary-canary').write_text('unexpected')
+              pathlib.Path('/var/tmp/iyi-boundary-canary').write_text('unexpected')
           except OSError as error:
-              assert error.errno in (errno.EACCES, errno.EPERM, errno.EROFS), error
+              assert error.errno == errno.EROFS, error
           else:
               raise AssertionError('read-only root accepted write')
           for family, address in ((socket.AF_INET, '127.0.0.1'), (socket.AF_INET6, '::1')):
@@ -95,35 +113,41 @@ jobs:
               client.sendall(b'owned-loopback')
               assert peer.recv(32) == b'owned-loopback'
               peer.close(); client.close(); server.close()
-          peer = socket.socket()
-          peer.settimeout(3)
-          try:
-              peer.connect(('192.0.2.1', 9))
-          except OSError as error:
-              assert error.errno == errno.ENETUNREACH, error
-          else:
-              raise AssertionError('non-loopback route unexpectedly available')
-          finally:
-              peer.close()
-          peer = socket.socket()
-          peer.settimeout(3)
-          try:
-              peer.connect(('127.0.0.1', host_port))
-          except OSError as error:
-              assert error.errno == errno.ECONNREFUSED, error
-          else:
-              raise AssertionError('host loopback endpoint was reachable')
-          finally:
-              peer.close()
+          for family, address in ((socket.AF_INET, ('192.0.2.1', 9)),
+                                  (socket.AF_INET6, ('2001:db8::1', 9))):
+              peer = socket.socket(family)
+              peer.settimeout(3)
+              try:
+                  peer.connect(address)
+              except OSError as error:
+                  assert error.errno == errno.ENETUNREACH, error
+              else:
+                  raise AssertionError('non-loopback route unexpectedly available')
+              finally:
+                  peer.close()
+          for family, address in ((socket.AF_INET, ('127.0.0.1', host4)),
+                                  (socket.AF_INET6, ('::1', host6))):
+              peer = socket.socket(family)
+              peer.settimeout(3)
+              try:
+                  peer.connect(address)
+              except OSError as error:
+                  assert error.errno == errno.ECONNREFUSED, error
+              else:
+                  raise AssertionError('host loopback endpoint was reachable')
+              finally:
+                  peer.close()
           print('isolated network, filesystem, environment and IPv4/IPv6 loopback: PASS')
           '''
                   env = dict(os.environ, IYI_FAKE_SECRET='owned-canary')
-                  subprocess.run(docker + [str(secret), str(port)], input=child, text=True, env=env, check=True, timeout=120)
+                  subprocess.run(docker + [str(secret), str(listeners[0][2]), str(listeners[1][2])], input=child, text=True, env=env, check=True, timeout=120)
               finally:
                   stop.set()
-                  thread.join(timeout=5)
-                  listener.close()
-              if thread.is_alive() or accepted:
+                  for thread in threads:
+                      thread.join(timeout=5)
+                  for listener, _, _ in listeners:
+                      listener.close()
+              if any(thread.is_alive() for thread in threads) or accepted:
                   raise SystemExit('host loopback endpoint was reached or monitor did not stop')
 
           # Two unrelated containers: stop only the exact workload, then prove the sentinel survives.
@@ -131,34 +155,44 @@ jobs:
           try:
               for label, child in (
                   ('sentinel', 'import time; time.sleep(120)'),
-                  ('workload', 'import os,time; p=os.fork(); os.setsid() if p == 0 else None; time.sleep(120)'),
+                  ('workload', 'import os,time,pathlib\np=os.fork()\nif p == 0:\n os.setsid()\n pathlib.Path("/tmp/ready").write_text(str(os.getpid()) + ":" + str(os.getsid(0)))\ntime.sleep(120)'),
               ):
                   name = 'iyi-isolation-' + label + '-' + uuid.uuid4().hex
                   command = ['docker', 'run', '-d', '--name', name, '--init', '--network', 'none',
                              '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
-                             '--pids-limit', '32', '--user', '65534:65534', image,
-                             'python3', '-c', child]
+                             '--pids-limit', '32', '--user', '65534:65534',
+                             '--tmpfs', '/tmp:rw,nosuid,nodev,size=16m,mode=1777',
+                             image, 'python3', '-c', child]
                   cid = subprocess.check_output(command, text=True).strip()
                   ids.append(cid)
               sentinel, workload = ids
-              deadline = time.monotonic() + 10
-              while True:
-                  top = subprocess.check_output(['docker', 'top', workload, '-eo', 'pid,ppid,args'], text=True)
-                  if top.count('time.sleep(120)') >= 2:
-                      break
-                  if time.monotonic() >= deadline:
-                      raise RuntimeError('detached workload child was not observed')
-                  time.sleep(0.05)
+              ready_script = 'import pathlib,time; p=pathlib.Path("/tmp/ready"); d=time.monotonic()+10\nwhile not p.exists():\n if time.monotonic()>d: raise SystemExit("child did not become ready")\n time.sleep(.05)\nprint(p.read_text())'
+              ready = subprocess.check_output(['docker', 'exec', workload, 'python3', '-I', '-c', ready_script], text=True).strip()
+              ns_pid, ns_session = ready.split(':')
+              if not ns_pid.isdigit() or ns_pid != ns_session:
+                  raise RuntimeError('detached child did not establish its own session: ' + ready)
+              top = subprocess.check_output(['docker', 'top', workload, '-eo', 'pid,ppid,args'], text=True)
               def identity(pid):
                   try:
                       return pathlib.Path('/proc', pid, 'stat').read_text().rsplit(')', 1)[1].split()[19]
                   except FileNotFoundError:
                       return None
 
-              members = [row.split(None, 2)[0] for row in top.splitlines()[1:] if 'time.sleep(120)' in row]
-              births = {pid: identity(pid) for pid in members}
-              if len(births) < 2 or any(value is None for value in births.values()):
-                  raise RuntimeError('could not record workload process identities')
+              members = [row.split(None, 2)[0] for row in top.splitlines()[1:]]
+              matches = []
+              for pid in members:
+                  try:
+                      status = pathlib.Path('/proc', pid, 'status').read_text().splitlines()
+                  except FileNotFoundError:
+                      continue
+                  nsids = [line.split()[1:] for line in status if line.startswith('NSpid:')]
+                  if nsids and nsids[0][-1] == ns_pid:
+                      matches.append(pid)
+              if len(matches) != 1:
+                  raise RuntimeError('could not bind detached child to one host PID: ' + repr(matches))
+              births = {matches[0]: identity(matches[0])}
+              if any(value is None for value in births.values()):
+                  raise RuntimeError('could not record detached child birth identity')
               subprocess.run(['docker', 'stop', '--time', '1', workload], check=True)
               deadline = time.monotonic() + 10
               while any(identity(pid) == birth for pid, birth in births.items()):
@@ -171,5 +205,8 @@ jobs:
               print('exact-container teardown and unrelated sentinel: PASS')
           finally:
               for cid in ids:
-                  subprocess.run(['docker', 'rm', '-f', cid], check=False, stdout=subprocess.DEVNULL)
+                  subprocess.run(['docker', 'rm', '-f', cid], check=True, stdout=subprocess.DEVNULL)
+                  remaining = subprocess.run(['docker', 'inspect', cid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                  if remaining.returncode == 0:
+                      raise RuntimeError('owned container still exists after removal: ' + cid)
           PY
