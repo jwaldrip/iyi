@@ -21,6 +21,13 @@ TOOLS = {
 }
 MAX_OUTPUT = 65536
 MAX_FILE = 256 * 1024 * 1024
+CANCELLED = None
+CANCEL_SIGNALS = {signal.SIGTERM, signal.SIGINT}
+
+
+def check_cancelled():
+    if CANCELLED is not None:
+        raise CensusCancelled(f"received signal {CANCELLED}")
 
 
 def child_no_privileges(parent_pid, previous_mask):
@@ -71,7 +78,8 @@ def safe_to_execute(name, info):
 def bounded_command(args):
     if signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL:
         raise RuntimeError("SIGCHLD must have its default disposition")
-    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
+    check_cancelled()
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, CANCEL_SIGNALS)
     child = None
     sel = None
     output = bytearray()
@@ -88,14 +96,16 @@ def bounded_command(args):
         sel = selectors.DefaultSelector()
         sel.register(child.stdout, selectors.EVENT_READ)
         while sel.get_map():
+            if CANCELLED is not None:
+                reason = "cancelled"
+                break
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 reason = "timeout"
                 break
-            events = sel.select(remaining)
+            events = sel.select(min(remaining, 0.1))
             if not events:
-                reason = "timeout"
-                break
+                continue
             chunk = os.read(child.stdout.fileno(), min(8192, MAX_OUTPUT + 1 - len(output)))
             if not chunk:
                 sel.unregister(child.stdout)
@@ -108,6 +118,9 @@ def bounded_command(args):
             # Observe exit without reaping: the leader PID cannot be reused
             # before the private group has been cleaned up.
             while time.monotonic() < deadline:
+                if CANCELLED is not None:
+                    reason = "cancelled"
+                    break
                 status = os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
                 if status is not None:
                     code = status.si_status if status.si_code == os.CLD_EXITED else -status.si_status
@@ -115,10 +128,10 @@ def bounded_command(args):
                 time.sleep(0.01)
             else:
                 reason = "timeout"
-        return {"exit_code": code, "error": reason,
-                "output": bytes(output[:MAX_OUTPUT]).decode("utf-8", errors="replace")}
+        result = {"exit_code": code, "error": reason,
+                  "output": bytes(output[:MAX_OUTPUT]).decode("utf-8", errors="replace")}
     finally:
-        signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
+        signal.pthread_sigmask(signal.SIG_BLOCK, CANCEL_SIGNALS)
         try:
             if child is not None:
                 try:
@@ -133,6 +146,8 @@ def bounded_command(args):
             if child is not None and child.stdout is not None:
                 child.stdout.close()
             signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+    check_cancelled()
+    return result
 
 
 def path_info(value):
@@ -168,6 +183,7 @@ def path_info(value):
                 with resolved.open("rb") as stream:
                     remaining = MAX_FILE + 1
                     while remaining:
+                        check_cancelled()
                         block = stream.read(min(1024 * 1024, remaining))
                         if not block:
                             break
@@ -193,6 +209,7 @@ def resource_headers(directory):
         def walk_error(exc):
             raise exc
         for base, dirs, files in os.walk(root, followlinks=False, onerror=walk_error):
+            check_cancelled()
             dirs.sort()
             files.sort()
             if any((pathlib.Path(base) / name).is_symlink() for name in dirs):
@@ -201,6 +218,7 @@ def resource_headers(directory):
             if entries > 8192:
                 raise ValueError("resource entry limit exceeded")
             for name in files:
+                check_cancelled()
                 path = pathlib.Path(base) / name
                 resolved = path.resolve(strict=True)
                 if not resolved.is_relative_to(root):
@@ -223,11 +241,13 @@ class CensusCancelled(BaseException):
 
 
 def interrupted(signum, frame):
-    raise CensusCancelled(f"received signal {signum}")
+    global CANCELLED
+    CANCELLED = signum
 
 
 def main():
     signal.signal(signal.SIGTERM, interrupted)
+    signal.signal(signal.SIGINT, interrupted)
     if signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL:
         sys.exit("SIGCHLD must have its default disposition")
     if len(sys.argv) != 2:
@@ -244,6 +264,7 @@ def main():
                          "release": uname.release, "version": uname.version,
                          "machine": uname.machine}, "tools": {}}
     for name, path in TOOLS.items():
+        check_cancelled()
         info = path_info(path)
         reason = safe_to_execute(name, info)
         if reason is None:
@@ -254,6 +275,7 @@ def main():
         else:
             info["version"] = {"error": reason, "exit_code": None}
         report["tools"][name] = info
+    check_cancelled()
     clang = report["tools"]["clang18"]
     if safe_to_execute("clang18", clang) is None:
         try:
@@ -267,7 +289,9 @@ def main():
                     report["clang_resource_headers"] = resource_headers(resource_dir + "/include")
         except (OSError, subprocess.SubprocessError) as exc:
             report["clang_resource_command"] = {"error": str(exc), "exit_code": None}
+    check_cancelled()
     report["header_roots"] = [path_info(p) for p in ("/usr/include", "/usr/include/x86_64-linux-gnu")]
+    check_cancelled()
     with (root / "tool-census.json").open("x", encoding="utf-8") as out:
         json.dump(report, out, indent=2)
         out.write("\n")
