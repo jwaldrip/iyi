@@ -1,7 +1,13 @@
 {
-  "sha256": "96a1779fd3544aed23561fa00ae2e654bc85440240afff69aab96862f79d287b",
+  "sha256": "f7f1e71e538ad1a863d4b5d879f6720e4925b3308990db63213f07ef1c8a5d66",
   "files": 13,
   "run": "https://github.com/jwaldrip/iyi/actions/runs/41364838439",
   "status": "FAIL",
-  "reason": "GNU mktemp shadows Darwin mktemp due to gnubin PATH, producing PLATFORM-TMP-UNOBSERVABLE"
+  "reason": "GNU mktemp shadows Darwin mktemp due to gnubin PATH, producing PLATFORM-TMP-UNOBSERVABLE",
+  "original_sha256": "96a1779fd3544aed23561fa00ae2e654bc85440240afff69aab96862f79d287b",
+  "original_archive": "remote-harness-ci-41364838439.tar.gz",
+  "archive": "remote-harness-ci-41364838439-derivative.tar.gz",
+  "omissions": [
+    "harness-failure/environment/machine_fingerprint.json: environment_variables excluded"
+  ]
 }

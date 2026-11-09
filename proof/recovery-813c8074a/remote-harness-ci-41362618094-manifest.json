@@ -1,7 +1,13 @@
 {
-  "sha256": "ec0d159eb497b1fbcdab167f3a52808367f720f34cc226360466f2627c39705c",
+  "sha256": "094ef64f1f8454d9e5a4b325f666564bbefa942163ca207ae75fa7e40e59fc66",
   "files": 13,
   "run": "https://github.com/jwaldrip/iyi/actions/runs/41362618094",
   "status": "FAIL",
-  "reason": "timeout missing on PATH; initial reporting parser also incorrectly counted zero despite raw fixture lines"
+  "reason": "timeout missing on PATH; initial reporting parser also incorrectly counted zero despite raw fixture lines",
+  "original_sha256": "ec0d159eb497b1fbcdab167f3a52808367f720f34cc226360466f2627c39705c",
+  "original_archive": "remote-harness-ci-41362618094.tar.gz",
+  "archive": "remote-harness-ci-41362618094-derivative.tar.gz",
+  "omissions": [
+    "harness-failure/environment/machine_fingerprint.json: environment_variables excluded"
+  ]
 }

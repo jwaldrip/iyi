@@ -20,15 +20,20 @@
   - Fix 142-program audit count report
 - **CI Run:** `42462457090` (Job `128674478707`, Attempt 1, Push event)
   - Run URL: `https://github.com/jwaldrip/iyi/actions/runs/42462457090`
-- **CI Artifact:**
+- **Original CI Artifact (Retained on GitHub Actions until expiration; removed from Git tip):**
   - ID: `13613220255`
   - Name: `remote-harness-audit-evidence`
   - Digest: `sha256:045f6ea4798b2891c072f0ed9270f2cdadc728cbd9a35cd2460a71755a724a50`
   - Size: 121,205 bytes
-  - Preserved ZIP Archive: `remote-harness-audit-42462457090.zip`
-  - Preserved TAR.GZ Archive: `remote-harness-audit-42462457090.tar.gz` (113641 bytes, sha256 `9533c4ef561456c9a1ab957c881f3b1673808e3440a6c930f89579c1a9a47eaf`)
-  - Preserved Native Log: `remote-harness-audit-42462457090.log` (80198 bytes, sha256 `fb0a47cee3335bb81d13fa6742d4bea3dd8912bada80a64d99f852bce2aea26d`)
-  - Member count: 26 files (100% byte-for-byte verified against API download)
+  - Original ZIP Archive: `remote-harness-audit-42462457090.zip`
+  - Original TAR.GZ Archive: `remote-harness-audit-42462457090.tar.gz` (113,641 bytes, sha256 `9533c4ef561456c9a1ab957c881f3b1673808e3440a6c930f89579c1a9a47eaf`)
+  - Original Native Log: `remote-harness-audit-42462457090.log` (80,198 bytes, sha256 `fb0a47cee3335bb81d13fa6742d4bea3dd8912bada80a64d99f852bce2aea26d`)
+- **Sanitized Derivative Archive & Log (Preserved on Git branch tip):**
+  - Derivative ZIP Archive: `remote-harness-audit-42462457090-derivative.zip` (119,181 bytes, sha256 `898b4a1936b46809167ebb5960285f860936fdc8c126135ef237663b73dc8254`)
+  - Derivative TAR.GZ Archive: `remote-harness-audit-42462457090-derivative.tar.gz` (111,739 bytes, sha256 `a0b85b463e044fbe0472ff07529f125996006eade60767cac94a6c6d24aa37c9`)
+  - Derivative Native Log: `remote-harness-audit-42462457090-derivative.log` (77,408 bytes, sha256 `1637105a77fe52f360af08bc33151d06c06cc1dda3b668c909208886d36f23d9`)
+  - Member count: 26 files (25 non-sensitive proof members 100% byte-for-byte preserved; `environment/machine_fingerprint.json` has `environment_variables` excluded)
+  - Omissions: Raw environment variable dump (117 keys, 104 unredacted) in `machine_fingerprint.json` excluded; 6 raw CI step `env:` blocks in native log omitted. Non-sensitive system keys (`platform`, `python`, `tools`, `disk`, `controller_c`) preserved.
 
 ---
 
@@ -81,5 +86,7 @@ Strict GO is explicitly withheld due to the following requirements:
 - Generic GitHub tokens (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`): 0 matches.
 - Generic API keys (Google, OpenAI, Anthropic, AWS): 0 matches.
 - Private key patterns (`BEGIN ... PRIVATE KEY`): 0 matches.
-- Raw environment disclosure: 0 unredacted secrets (all sensitive variables verified redacted to `[REDACTED]`).
-- Member scan: Clean across all 26 members, archive binaries, and native logs.
+- Environment variable disclosure audit:
+  - Original API artifact: contained raw environment variables in `environment/machine_fingerprint.json` (117 keys, 104 unredacted values, 13 redacted to `[REDACTED]`), and original native runner log contained 6 step `env:` listings. Prior statement claiming `Raw environment disclosure: 0` was inaccurate and has been corrected.
+  - Corrective action: Raw-env containing archives and raw log removed from Git branch tip. Replaced with derivative archives and derivative log excluding `environment_variables` from `machine_fingerprint.json` and step `env:` blocks from the runner log.
+  - Derivative archive & log scan: Clean across all preserved member bytes, derivative archive binaries, and derivative logs (0 credentials, 0 raw environment dumps).

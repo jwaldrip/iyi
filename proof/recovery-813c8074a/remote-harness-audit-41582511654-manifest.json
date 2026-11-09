@@ -5,9 +5,9 @@
   "hprime_sha": "813c8074acb2eed99ffeef78ea49e8c7832e4c01",
   "p1_sha": "626463375298d357ffcb3223059f4d3adce6fb10",
   "controller_c_sha": "4f2e77d605008d91a7020932c6c28524e91adf45",
-  "archive": "remote-harness-audit-41582511654.tar.gz",
-  "archive_sha256": "e105bdf98801b62b60a478072a0c42c441caaecc502f5da43644c045ef672f88",
-  "archive_bytes": 112259,
+  "archive": "remote-harness-audit-41582511654-derivative.tar.gz",
+  "archive_sha256": "c3d312b13dd292adf7a4109e0d2a047d77b98c2c64c24e062353a1e7ddeac87d",
+  "archive_bytes": 110422,
   "member_count": 25,
   "members": [
     {
@@ -54,9 +54,10 @@
     },
     {
       "name": "remote-harness-audit-evidence/environment/machine_fingerprint.json",
-      "size": 7483,
-      "sha256": "83e0d4bf6b75ac5b5f4d3408886f27986d6b790c322fba880bb1aa2ab676f2ad",
-      "matches_download": true
+      "size": 1142,
+      "sha256": "d09cf48b40a0b4415cdc32aef24e29e8db16dbb2317b8198cd6073f9af0d1a6a",
+      "matches_download": false,
+      "omission_note": "sanitized derivative: environment_variables excluded; non-sensitive system keys preserved"
     },
     {
       "name": "remote-harness-audit-evidence/environment/w_source_hashes.json",
@@ -201,6 +202,29 @@
       "github_pat_": 0,
       "private_key": 0
     },
-    "member_scan": "clean"
+    "member_scan": "clean (24 non-sensitive proof members byte-identical; machine_fingerprint environment_variables excluded)",
+    "original_raw_env_disclosure": {
+      "keys_disclosed": 117,
+      "nonredacted_values": 104,
+      "redacted_values": 13,
+      "remediation": "Excluded from derivative archive; raw archive removed from tip"
+    },
+    "derivative_scan": "clean"
+  },
+  "original_artifact": {
+    "run_url": "https://github.com/jwaldrip/iyi/actions/runs/41582511654",
+    "archive": "remote-harness-audit-41582511654.tar.gz",
+    "archive_sha256": "e105bdf98801b62b60a478072a0c42c441caaecc502f5da43644c045ef672f88",
+    "archive_bytes": 112259,
+    "status": "Retained on GitHub Actions until expiration; raw archive removed from Git tip due to raw environment disclosure in machine_fingerprint.json"
+  },
+  "derivative_archive": {
+    "classification": "sanitized_derivative",
+    "archive": "remote-harness-audit-41582511654-derivative.tar.gz",
+    "archive_sha256": "c3d312b13dd292adf7a4109e0d2a047d77b98c2c64c24e062353a1e7ddeac87d",
+    "archive_bytes": 110422,
+    "omissions": [
+      "remote-harness-audit-evidence/environment/machine_fingerprint.json: environment_variables field (117 keys) excluded to prevent raw environment disclosure; platform, python, tools, disk, controller_c preserved"
+    ]
   }
 }

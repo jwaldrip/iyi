@@ -6,13 +6,13 @@
   "ci_artifact_name": "remote-harness-audit-evidence",
   "ci_artifact_sha256": "045f6ea4798b2891c072f0ed9270f2cdadc728cbd9a35cd2460a71755a724a50",
   "ci_artifact_bytes": 121205,
-  "ci_zip_archive": "remote-harness-audit-42462457090.zip",
-  "archive": "remote-harness-audit-42462457090.tar.gz",
-  "archive_sha256": "9533c4ef561456c9a1ab957c881f3b1673808e3440a6c930f89579c1a9a47eaf",
-  "archive_bytes": 113641,
-  "ci_native_log": "remote-harness-audit-42462457090.log",
-  "ci_native_log_sha256": "fb0a47cee3335bb81d13fa6742d4bea3dd8912bada80a64d99f852bce2aea26d",
-  "ci_native_log_bytes": 80198,
+  "ci_zip_archive": "remote-harness-audit-42462457090-derivative.zip",
+  "archive": "remote-harness-audit-42462457090-derivative.tar.gz",
+  "archive_sha256": "a0b85b463e044fbe0472ff07529f125996006eade60767cac94a6c6d24aa37c9",
+  "archive_bytes": 111739,
+  "ci_native_log": "remote-harness-audit-42462457090-derivative.log",
+  "ci_native_log_sha256": "1637105a77fe52f360af08bc33151d06c06cc1dda3b668c909208886d36f23d9",
+  "ci_native_log_bytes": 77408,
   "candidate_w": "4f02007f07ce5a80f6779432c519f4b7a292b0a7",
   "p_sha": "3fd259e72465298f291f385df94d5b837017386e",
   "controller_c_sha": "c83c7b6adb97446f1d85e53fc104120f9f5db24e",
@@ -68,9 +68,10 @@
     },
     {
       "name": "remote-harness-audit-evidence/environment/machine_fingerprint.json",
-      "size": 7550,
-      "sha256": "d9494ca853243d4045ea707f3f0754eadc92c48d22558f4e3cf1624ed0ebb0c6",
-      "matches_download": true
+      "size": 1160,
+      "sha256": "e4249d4a5846fbc7e5fcd2fcb24bed3cc6654d82af8de4e7818430dfe67a218c",
+      "matches_download": false,
+      "omission_note": "sanitized derivative: environment_variables excluded; non-sensitive system keys preserved"
     },
     {
       "name": "remote-harness-audit-evidence/environment/w_source_hashes.json",
@@ -256,7 +257,46 @@
       "generic_api_key": 0,
       "aws_access_key": 0
     },
-    "raw_env_disclosure": 0,
-    "member_scan": "clean"
+    "member_scan": "clean (25 non-sensitive proof members byte-identical; machine_fingerprint environment_variables excluded)",
+    "original_raw_env_disclosure": {
+      "keys_disclosed": 117,
+      "nonredacted_values": 104,
+      "redacted_values": 13,
+      "native_log_env_blocks": 6,
+      "note": "Prior manifest falsely recorded raw_env_disclosure: 0; corrected to document actual disclosure in original artifacts and exclusion from derivatives"
+    },
+    "derivative_scan": "clean"
+  },
+  "original_artifact": {
+    "ci_run_id": 42462457090,
+    "ci_job_id": 128674478707,
+    "ci_artifact_id": 13613220255,
+    "ci_artifact_name": "remote-harness-audit-evidence",
+    "ci_artifact_sha256": "045f6ea4798b2891c072f0ed9270f2cdadc728cbd9a35cd2460a71755a724a50",
+    "ci_artifact_bytes": 121205,
+    "ci_zip_archive": "remote-harness-audit-42462457090.zip",
+    "archive": "remote-harness-audit-42462457090.tar.gz",
+    "archive_sha256": "9533c4ef561456c9a1ab957c881f3b1673808e3440a6c930f89579c1a9a47eaf",
+    "archive_bytes": 113641,
+    "ci_native_log": "remote-harness-audit-42462457090.log",
+    "ci_native_log_sha256": "fb0a47cee3335bb81d13fa6742d4bea3dd8912bada80a64d99f852bce2aea26d",
+    "ci_native_log_bytes": 80198,
+    "status": "Retained on GitHub Actions until expiration (~2026-11-22); raw archive and raw log removed from Git tip due to raw environment disclosure"
+  },
+  "derivative_archive": {
+    "classification": "sanitized_derivative",
+    "ci_zip_archive": "remote-harness-audit-42462457090-derivative.zip",
+    "ci_zip_sha256": "898b4a1936b46809167ebb5960285f860936fdc8c126135ef237663b73dc8254",
+    "ci_zip_bytes": 119181,
+    "archive": "remote-harness-audit-42462457090-derivative.tar.gz",
+    "archive_sha256": "a0b85b463e044fbe0472ff07529f125996006eade60767cac94a6c6d24aa37c9",
+    "archive_bytes": 111739,
+    "ci_native_log": "remote-harness-audit-42462457090-derivative.log",
+    "ci_native_log_sha256": "1637105a77fe52f360af08bc33151d06c06cc1dda3b668c909208886d36f23d9",
+    "ci_native_log_bytes": 77408,
+    "omissions": [
+      "environment/machine_fingerprint.json: environment_variables field (117 keys) excluded to prevent raw environment disclosure; platform, python, tools, disk, controller_c preserved",
+      "remote-harness-audit-42462457090-derivative.log: 6 raw CI step env: blocks omitted"
+    ]
   }
 }

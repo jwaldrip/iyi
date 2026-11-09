@@ -47,11 +47,7 @@
 2026-11-08T08:19:48.1768240Z   submodules: false
 2026-11-08T08:19:48.1768630Z   set-safe-directory: true
 2026-11-08T08:19:48.1769050Z   allow-unsafe-pr-checkout: false
-2026-11-08T08:19:48.1769630Z env:
-2026-11-08T08:19:48.1769980Z   GIT_CONFIG_COUNT: 1
-2026-11-08T08:19:48.1770440Z   GIT_CONFIG_KEY_0: safe.directory
-2026-11-08T08:19:48.1770870Z   GIT_CONFIG_VALUE_0: *
-2026-11-08T08:19:48.1771370Z   PYTHONUTF8: 1
+2026-11-08T08:19:48.1769630Z env: [OMITTED: raw CI step environment variables excluded to prevent environment disclosure]
 2026-11-08T08:19:48.1771730Z ##[endgroup]
 2026-11-08T08:19:48.6928530Z Syncing repository: jwaldrip/iyi
 2026-11-08T08:19:48.6930380Z ##[group]Getting Git version info
@@ -546,11 +542,7 @@
 2026-11-08T08:20:02.9453840Z   update-environment: true
 2026-11-08T08:20:02.9454020Z   allow-prereleases: false
 2026-11-08T08:20:02.9454190Z   freethreaded: false
-2026-11-08T08:20:02.9454340Z env:
-2026-11-08T08:20:02.9454460Z   GIT_CONFIG_COUNT: 1
-2026-11-08T08:20:02.9455020Z   GIT_CONFIG_KEY_0: safe.directory
-2026-11-08T08:20:02.9455220Z   GIT_CONFIG_VALUE_0: *
-2026-11-08T08:20:02.9455370Z   PYTHONUTF8: 1
+2026-11-08T08:20:02.9454340Z env: [OMITTED: raw CI step environment variables excluded to prevent environment disclosure]
 2026-11-08T08:20:02.9455500Z ##[endgroup]
 2026-11-08T08:20:03.2679820Z ##[group]Installed versions
 2026-11-08T08:20:03.2747410Z (node:3841) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
@@ -571,16 +563,7 @@
 2026-11-08T08:20:03.2854520Z [36;1mln -sf "$GTIMEOUT_PATH" "$TASK_BIN/timeout"[0m
 2026-11-08T08:20:03.2854780Z [36;1mecho "$TASK_BIN" >> "$GITHUB_PATH"[0m
 2026-11-08T08:20:03.2915080Z shell: /bin/bash -e {0}
-2026-11-08T08:20:03.2915300Z env:
-2026-11-08T08:20:03.2915470Z   GIT_CONFIG_COUNT: 1
-2026-11-08T08:20:03.2915670Z   GIT_CONFIG_KEY_0: safe.directory
-2026-11-08T08:20:03.2915890Z   GIT_CONFIG_VALUE_0: *
-2026-11-08T08:20:03.2916050Z   PYTHONUTF8: 1
-2026-11-08T08:20:03.2916320Z   pythonLocation: /Users/runner/hostedtoolcache/Python/3.12.10/arm64
-2026-11-08T08:20:03.2916740Z   PKG_CONFIG_PATH: /Users/runner/hostedtoolcache/Python/3.12.10/arm64/lib/pkgconfig
-2026-11-08T08:20:03.2917170Z   Python_ROOT_DIR: /Users/runner/hostedtoolcache/Python/3.12.10/arm64
-2026-11-08T08:20:03.2917900Z   Python2_ROOT_DIR: /Users/runner/hostedtoolcache/Python/3.12.10/arm64
-2026-11-08T08:20:03.2918280Z   Python3_ROOT_DIR: /Users/runner/hostedtoolcache/Python/3.12.10/arm64
+2026-11-08T08:20:03.2915300Z env: [OMITTED: raw CI step environment variables excluded to prevent environment disclosure]
 2026-11-08T08:20:03.2918570Z ##[endgroup]
 2026-11-08T08:20:06.6221250Z [32m==>[0m [1mDownloading bottle manifests[0m
 2026-11-08T08:20:06.6402720Z ✔︎ Bottle Manifest coreutils (9.12_1)
@@ -631,16 +614,7 @@
 2026-11-08T08:20:10.4736280Z [36;1mfi[0m
 2026-11-08T08:20:10.4737230Z [36;1mecho "timeout isolated binary verified successfully."[0m
 2026-11-08T08:20:10.4848110Z shell: /bin/bash -e {0}
-2026-11-08T08:20:10.4848860Z env:
-2026-11-08T08:20:10.4849440Z   GIT_CONFIG_COUNT: 1
-2026-11-08T08:20:10.4850140Z   GIT_CONFIG_KEY_0: safe.directory
-2026-11-08T08:20:10.4850840Z   GIT_CONFIG_VALUE_0: *
-2026-11-08T08:20:10.4851540Z   PYTHONUTF8: 1
-2026-11-08T08:20:10.4852680Z   pythonLocation: /Users/runner/hostedtoolcache/Python/3.12.10/arm64
-2026-11-08T08:20:10.4853890Z   PKG_CONFIG_PATH: /Users/runner/hostedtoolcache/Python/3.12.10/arm64/lib/pkgconfig
-2026-11-08T08:20:10.4855140Z   Python_ROOT_DIR: /Users/runner/hostedtoolcache/Python/3.12.10/arm64
-2026-11-08T08:20:10.4856170Z   Python2_ROOT_DIR: /Users/runner/hostedtoolcache/Python/3.12.10/arm64
-2026-11-08T08:20:10.4857220Z   Python3_ROOT_DIR: /Users/runner/hostedtoolcache/Python/3.12.10/arm64
+2026-11-08T08:20:10.4848860Z env: [OMITTED: raw CI step environment variables excluded to prevent environment disclosure]
 2026-11-08T08:20:10.4858010Z ##[endgroup]
 2026-11-08T08:20:10.5453240Z === Verifying mktemp binary and Darwin temp-root invariants ===
 2026-11-08T08:20:10.5459690Z mktemp resolves to: /usr/bin/mktemp
@@ -667,16 +641,7 @@
 2026-11-08T08:20:10.7775820Z [36;1m  --output-dir "$GITHUB_WORKSPACE/remote-harness-audit-artifacts" \[0m
 2026-11-08T08:20:10.7776710Z [36;1m  --work-dir "$RUNNER_TEMP"[0m
 2026-11-08T08:20:10.7854080Z shell: /bin/bash -e {0}
-2026-11-08T08:20:10.7854390Z env:
-2026-11-08T08:20:10.7854560Z   GIT_CONFIG_COUNT: 1
-2026-11-08T08:20:10.7854890Z   GIT_CONFIG_KEY_0: safe.directory
-2026-11-08T08:20:10.7855300Z   GIT_CONFIG_VALUE_0: *
-2026-11-08T08:20:10.7855540Z   PYTHONUTF8: 1
-2026-11-08T08:20:10.7855900Z   pythonLocation: /Users/runner/hostedtoolcache/Python/3.12.10/arm64
-2026-11-08T08:20:10.7856340Z   PKG_CONFIG_PATH: /Users/runner/hostedtoolcache/Python/3.12.10/arm64/lib/pkgconfig
-2026-11-08T08:20:10.7856870Z   Python_ROOT_DIR: /Users/runner/hostedtoolcache/Python/3.12.10/arm64
-2026-11-08T08:20:10.7857430Z   Python2_ROOT_DIR: /Users/runner/hostedtoolcache/Python/3.12.10/arm64
-2026-11-08T08:20:10.7858000Z   Python3_ROOT_DIR: /Users/runner/hostedtoolcache/Python/3.12.10/arm64
+2026-11-08T08:20:10.7854390Z env: [OMITTED: raw CI step environment variables excluded to prevent environment disclosure]
 2026-11-08T08:20:10.7858300Z ##[endgroup]
 2026-11-08T09:53:58.2049400Z === Recording Environment Fingerprints ===
 2026-11-08T09:53:58.2050720Z Verified system BSD mktemp: /usr/bin/mktemp (parent /private/var/folders/2s/vty41l455yv698g4xkgfv7z00000gn/T == /private/var/folders/2s/vty41l455yv698g4xkgfv7z00000gn/T)
@@ -750,16 +715,7 @@
 2026-11-08T09:53:58.2391080Z   compression-level: 6
 2026-11-08T09:53:58.2391300Z   overwrite: false
 2026-11-08T09:53:58.2391600Z   include-hidden-files: false
-2026-11-08T09:53:58.2391970Z env:
-2026-11-08T09:53:58.2392160Z   GIT_CONFIG_COUNT: 1
-2026-11-08T09:53:58.2392550Z   GIT_CONFIG_KEY_0: safe.directory
-2026-11-08T09:53:58.2392830Z   GIT_CONFIG_VALUE_0: *
-2026-11-08T09:53:58.2393030Z   PYTHONUTF8: 1
-2026-11-08T09:53:58.2393330Z   pythonLocation: /Users/runner/hostedtoolcache/Python/3.12.10/arm64
-2026-11-08T09:53:58.2393860Z   PKG_CONFIG_PATH: /Users/runner/hostedtoolcache/Python/3.12.10/arm64/lib/pkgconfig
-2026-11-08T09:53:58.2394620Z   Python_ROOT_DIR: /Users/runner/hostedtoolcache/Python/3.12.10/arm64
-2026-11-08T09:53:58.2395060Z   Python2_ROOT_DIR: /Users/runner/hostedtoolcache/Python/3.12.10/arm64
-2026-11-08T09:53:58.2395570Z   Python3_ROOT_DIR: /Users/runner/hostedtoolcache/Python/3.12.10/arm64
+2026-11-08T09:53:58.2391970Z env: [OMITTED: raw CI step environment variables excluded to prevent environment disclosure]
 2026-11-08T09:53:58.2395890Z ##[endgroup]
 2026-11-08T09:53:58.6616650Z (node:66629) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
 2026-11-08T09:53:58.6621330Z (Use `node --trace-deprecation ...` to show where the warning was created)

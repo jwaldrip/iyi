@@ -31,14 +31,18 @@
   - Pinned parameters: `--w-sha 5a3770e9` and `--p1-sha 180f14f9`
 - **CI Run:** `42429518284` (Job `128575084391`, Attempt 1, Push event)
   - Run URL: `https://github.com/jwaldrip/iyi/actions/runs/42429518284`
-- **CI Artifact:**
+- **Original CI Artifact (Retained on GitHub Actions until expiration; removed from Git tip):**
   - ID: `13600255503`
   - Name: `remote-harness-audit-evidence`
   - Digest: `sha256:3eb033b6e255cec4cc137d4c6379b1ca97a4c43712ac5171e57a48cf24fb3862`
   - Size: 121,001 bytes
-  - Preserved ZIP Archive: `remote-harness-audit-42429518284.zip`
-  - Preserved TAR.GZ Archive: `remote-harness-audit-42429518284.tar.gz` (114,039 bytes, sha256 `02f6ebc2a855919fec6297aab79af5298618b4422106bed49e8ba9325b9cb38e`)
-  - Member count: 26 files (100% byte-for-byte verified across original `/tmp` and fresh API download)
+  - Original ZIP Archive: `remote-harness-audit-42429518284.zip`
+  - Original TAR.GZ Archive: `remote-harness-audit-42429518284.tar.gz` (114,039 bytes, sha256 `02f6ebc2a855919fec6297aab79af5298618b4422106bed49e8ba9325b9cb38e`)
+- **Sanitized Derivative Archive (Preserved on Git branch tip):**
+  - Derivative ZIP Archive: `remote-harness-audit-42429518284-derivative.zip` (119,002 bytes, sha256 `830dab1b7564e7c325252c47557ff06c0331be056963b1745b9b1998b266523b`)
+  - Derivative TAR.GZ Archive: `remote-harness-audit-42429518284-derivative.tar.gz` (112,192 bytes, sha256 `e4120257fa74b95f08e7b977218cbcc31cb531f5c216f3b4436e83e68f05155a`)
+  - Member count: 26 files (25 non-sensitive proof members 100% byte-for-byte preserved; `environment/machine_fingerprint.json` has `environment_variables` excluded)
+  - Omissions: Raw environment variable dump (117 keys, 104 unredacted) in `machine_fingerprint.json` excluded to prevent raw environment exposure. Non-sensitive system keys (`platform`, `python`, `tools`, `disk`, `controller_c`) preserved.
 
 ---
 
@@ -110,4 +114,7 @@ Strict GO is explicitly withheld due to the following requirements:
 - Generic token patterns (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`): 0 matches.
 - Private key patterns (`BEGIN ... PRIVATE KEY`): 0 matches.
 - AWS credentials / secrets: 0 matches.
-- Raw environment dumps: None (sensitive variables `SSH_AUTH_SOCK` and `GIT_CONFIG_KEY_0` verified redacted to `[REDACTED]`).
+- Environment variable disclosure audit:
+  - Original API artifact: contained raw environment variables in `environment/machine_fingerprint.json` (117 keys, 104 unredacted values, 13 redacted to `[REDACTED]`).
+  - Corrective action: Raw-env containing archives removed from Git branch tip. Replaced with derivative archive excluding `environment_variables` from `machine_fingerprint.json`.
+  - Derivative archive scan: Clean across all preserved member bytes and archive binaries (0 credentials, 0 raw environment dumps).
