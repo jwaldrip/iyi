@@ -12,17 +12,17 @@ on:
     branches:
       - "proof/strict-controller-integration-20261101"
       - "proof/strict-lifecycle-repair-20261102"
+      - "experiment/pr147-slice-c-workflow"
   workflow_dispatch:
     inputs:
       mode:
-        description: "Execution mode: 'validation-only' runs synthetic proofs and supervisor tests. 'strict-chain' is unconditionally refused until independent authorization exists."
+        description: "Execution mode: 'validation-only' runs synthetic proofs and supervisor tests. 'strict-chain' prepares manifest and executes protected strict-proof gate."
         required: true
         type: choice
         options:
           - "validation-only"
           - "strict-chain"
         default: "validation-only"
-
 permissions:
   contents: read
   actions: read
@@ -847,287 +847,121 @@ jobs:
                   sys.exit(f"Unexpected artifact count for {case}")
           PY
 
-  strict-chain:
-    name: "Sequential strict-chain attempt (macOS 15)"
+  prepare-strict-authorization:
+    name: "Prepare strict authorization manifest"
     if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'strict-chain' }}
-    runs-on: macos-15
-    environment: strict-proof
-    timeout-minutes: 360  # 6-hour GitHub Actions maximum limit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      artifact_id: ${{ steps.upload-manifest.outputs.artifact-id }}
+      manifest_digest: ${{ steps.prepare.outputs.manifest_digest }}
     steps:
-      - name: Authenticate independent authorization anchor
-        id: check-auth
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          python3 -B -c "import sys; from proof.strict_authorization import check_strict_authorization_or_refuse; check_strict_authorization_or_refuse('${{ env.P_AUTHORIZED_SHA }}', '${{ env.W_AUTHORIZED_SHA }}', '${{ github.sha }}')"
-
-      - name: Resolve exact current job
-        id: job-metadata
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          python3 -B - <<'PY'
-          import json, os, sys, urllib.request
-          from datetime import datetime
-          repo = os.environ["GITHUB_REPOSITORY"]
-          run = os.environ["GITHUB_RUN_ID"]
-          attempt = os.environ["GITHUB_RUN_ATTEMPT"]
-          key = os.environ["GITHUB_JOB"]
-          runner = os.environ["RUNNER_NAME"]
-          if not run.isdecimal() or not attempt.isdecimal() or key != "strict-chain" or not runner:
-              sys.exit("Invalid job context")
-          jobs = []
-          page = 1
-          while True:
-              url = (f"https://api.github.com/repos/{repo}/actions/runs/{run}/attempts/"
-                     f"{attempt}/jobs?per_page=100&page={page}")
-              req = urllib.request.Request(url, headers={
-                  "Authorization": "Bearer " + os.environ["GH_TOKEN"],
-                  "Accept": "application/vnd.github+json",
-                  "User-Agent": "iyi-strict-proof-ci",
-              })
-              with urllib.request.urlopen(req, timeout=30) as response:
-                  batch = json.load(response)["jobs"]
-              jobs.extend(batch)
-              if len(batch) < 100:
-                  break
-              page += 1
-          matches = [j for j in jobs if j.get("name") == "Sequential strict-chain attempt (macOS 15)"
-                     and j.get("runner_name") == runner and j.get("status") == "in_progress"
-                     and str(j.get("run_id")) == run and str(j.get("run_attempt")) == attempt]
-          if len(matches) != 1:
-              sys.exit(f"Expected exactly one current job, found {len(matches)}")
-          job = matches[0]
-          job_id = str(job.get("id", ""))
-          started = job.get("started_at", "")
-          if not job_id.isdecimal() or not started:
-              sys.exit("Missing numeric job ID or start time")
-          epoch = datetime.fromisoformat(started.replace("Z", "+00:00")).timestamp()
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
-              out.write(f"job_started_at_iso={started}\njob_started_at_epoch={epoch}\njob_id={job_id}\njob_key={key}\n")
-          PY
-
       - name: Checkout controller repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
           fetch-depth: 0
 
-      - name: Record initial machine fingerprints and environment
-        run: |
-          echo "================================================================================"
-          echo "INITIAL MACHINE FINGERPRINTS"
-          echo "================================================================================"
-          echo "Architecture: $(uname -m)"
-          echo "OS: $(uname -s) $(uname -r) $(uname -v)"
-          echo "CPU Brand: $(sysctl -n machdep.cpu.brand_string 2>/dev/null || true)"
-          echo "Logical CPUs (hw.ncpu): $(sysctl -n hw.ncpu 2>/dev/null || true)"
-          echo "Physical CPUs (hw.physicalcpu): $(sysctl -n hw.physicalcpu 2>/dev/null || true)"
-          echo "Memory (bytes): $(sysctl -n hw.memsize 2>/dev/null || true)"
-          vm_stat || true
-          echo "Initial Disk Usage:"
-          df -h /
-          df -k /
-
-      - name: Install bootstrap toolchain and DNS utilities
-        run: |
-          brew install crystal coreutils pkgconf bind
-
-          # Expose only timeout via owned symlink; avoid GNU gnubin shadowing Darwin mktemp
-          OWNED_BIN="$RUNNER_TEMP/owned-bin"
-          mkdir -p "$OWNED_BIN"
-          GTIMEOUT_PATH="$(brew --prefix)/bin/gtimeout"
-          if [ -x "$GTIMEOUT_PATH" ]; then
-            ln -sf "$GTIMEOUT_PATH" "$OWNED_BIN/timeout"
-          elif [ -x "$(brew --prefix coreutils)/bin/gtimeout" ]; then
-            ln -sf "$(brew --prefix coreutils)/bin/gtimeout" "$OWNED_BIN/timeout"
-          else
-            echo "ERROR: gtimeout not found in Homebrew prefix" >&2
-            exit 1
-          fi
-          echo "$OWNED_BIN" >> "$GITHUB_PATH"
-
-          # Add bind utilities (dig, nsupdate) to PATH
-          BIND_BIN="$(brew --prefix bind)/bin"
-          if [ -d "$BIND_BIN" ]; then
-            echo "$BIND_BIN" >> "$GITHUB_PATH"
-          fi
-
-      - name: Verify Darwin BSD mktemp invariant
-        run: |
-          MKTEMP_PATH=$(which mktemp)
-          echo "mktemp path: $MKTEMP_PATH"
-          if [ "$MKTEMP_PATH" != "/usr/bin/mktemp" ]; then
-            echo "ERROR: Darwin mktemp shadowed! Expected /usr/bin/mktemp, got $MKTEMP_PATH" >&2
-            exit 1
-          fi
-          TEST_DIR=$(/usr/bin/mktemp -d -t iyi_check.XXXXXX)
-          rm -rf "$TEST_DIR"
-          echo "Darwin BSD /usr/bin/mktemp verified (not shadowed by GNU gnubin)"
-
-      - name: Setup Go
-        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
-        with:
-          go-version: stable
-          cache: false
-
-      - name: Setup Python 3.14
+      - name: Setup Python
         uses: actions/setup-python@0b93645e9fb717ef66e47be571215a8227276183 # v5.3.0
         with:
-          python-version: "3.14"
+          python-version: "3.12"
 
-      - name: Install Python dependencies
-        run: |
-          python3 -m pip install --upgrade pip
-          python3 -m pip install pyyaml "idna==3.11" cryptography pillow h2 hpack
-          python3 -c "import idna; assert idna.__version__ == '3.11', f'idna version mismatch: {idna.__version__}'"
-          echo "idna==3.11 verified"
-
-      - name: Verify approved oracle manifest before pre-pin
-        run: |
-          python3 -B proof/preflight_oracle.py --manifest proof/oracle_manifest.json
-
-      - name: Require frozen Node supervisor bundle
-        run: test -f .github/actions/strict-supervisor/dist/index.js
-
-      - name: Restore static LLVM cache
-        id: llvm-cache
-        uses: actions/cache@6849a6489940f00c8f30c0f74c0db48476a31f79 # v4.1.2
-        with:
-          path: ~/llvm-static
-          key: llvm-static-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/build-static-llvm.sh') }}
-
-      - name: Build static LLVM (cache miss)
-        if: steps.llvm-cache.outputs.cache-hit != 'true'
-        run: bash scripts/build-static-llvm.sh "$HOME/llvm-static"
-
-      - name: Validate commit SHAs as data in environment
-        run: |
-          python3 -c "
-          import os, re, sys
-          for var in ('P_AUTHORIZED_SHA', 'W_AUTHORIZED_SHA'):
-              val = os.environ.get(var, '')
-              if not re.fullmatch(r'[0-9a-f]{40}', val):
-                  sys.exit(f'ERROR: {var} is not a valid 40-character hex SHA: {val!r}')
-          print(f'Authorized revision SHAs validated: P={os.environ[\"P_AUTHORIZED_SHA\"]}, W={os.environ[\"W_AUTHORIZED_SHA\"]}')
-          "
-
-      - name: Checkout clean P1 source and build P1 compiler
-        id: build-p1
-        run: |
-          P1_DIR="$RUNNER_TEMP/p1-source"
-
-          echo "Setting up clean P1 source checkout at $P1_DIR from $P_AUTHORIZED_SHA..."
-          git clone "$GITHUB_WORKSPACE" "$P1_DIR"
-          cd "$P1_DIR"
-          git checkout --detach "$P_AUTHORIZED_SHA"
-
-          ACTUAL_P1_SHA=$(git rev-parse HEAD)
-          echo "P1 checkout HEAD: $ACTUAL_P1_SHA"
-          if [ "$ACTUAL_P1_SHA" != "$P_AUTHORIZED_SHA" ]; then
-            echo "ERROR: P1 checkout mismatch! Expected $P_AUTHORIZED_SHA, got $ACTUAL_P1_SHA" >&2
-            exit 1
-          fi
-
-          if [ -n "$(git status --porcelain)" ]; then
-            echo "ERROR: P1 checkout is dirty!" >&2
-            exit 1
-          fi
-
-          echo "Building P1 compiler using static LLVM..."
-          make iyi LLVM_CONFIG="$HOME/llvm-static/bin/llvm-config"
-
-          if [ ! -x ".build/iyi" ]; then
-            echo "ERROR: .build/iyi was not generated or is not executable" >&2
-            exit 1
-          fi
-
-          echo "=== P1 Compiler Version ==="
-          VERSION_OUTPUT=$(.build/iyi --version)
-          echo "$VERSION_OUTPUT"
-          if ! echo "$VERSION_OUTPUT" | grep -q "${P_AUTHORIZED_SHA:0:9}"; then
-            echo "ERROR: Compiler version stamp does not contain P1 commit ${P_AUTHORIZED_SHA:0:9}!" >&2
-            exit 1
-          fi
-          echo "Compiler version stamp VERIFIED: contains ${P_AUTHORIZED_SHA:0:9}."
-
-          COMPILER_SHA256=$(shasum -a 256 .build/iyi | awk '{print $1}')
-          echo "P1 Compiler SHA-256: $COMPILER_SHA256"
-
-          # Prune build object files under P1 to maximize available disk space
-          find .build -name '*.o' -delete 2>/dev/null || true
-
-          cd "$GITHUB_WORKSPACE"
-
-          # Verify available disk space is >= 20.0 GiB floor
-          echo "=== Disk Space Check Post-Build ==="
-          df -h /
-          FREE_KB=$(df -k / | awk 'NR==2 {print $4}')
-          FREE_GIB=$(python3 -c "print(round($FREE_KB / (1024 * 1024), 2))")
-          echo "Available disk space: ${FREE_GIB} GiB"
-          python3 -c "import sys; free_gib = float('$FREE_GIB'); sys.exit(0 if free_gib >= 20.0 else f'ERROR: Free disk space {free_gib} GiB < 20.0 GiB minimum')"
-          echo "Disk space check PASSED: ${FREE_GIB} GiB >= 20.0 GiB"
-
-          echo "p1_dir=$P1_DIR" >> "$GITHUB_OUTPUT"
-          echo "compiler_path=$P1_DIR/.build/iyi" >> "$GITHUB_OUTPUT"
-          echo "compiler_sha256=$COMPILER_SHA256" >> "$GITHUB_OUTPUT"
-
-      - name: Checkout clean audited W proof tree
-        id: checkout-w
-        run: |
-          W_DIR="$RUNNER_TEMP/w-proof"
-
-          echo "Setting up clean W proof checkout at $W_DIR from $W_AUTHORIZED_SHA..."
-          git clone "$GITHUB_WORKSPACE" "$W_DIR"
-          cd "$W_DIR"
-          git checkout --detach "$W_AUTHORIZED_SHA"
-
-          ACTUAL_W_SHA=$(git rev-parse HEAD)
-          echo "W checkout HEAD: $ACTUAL_W_SHA"
-          if [ "$ACTUAL_W_SHA" != "$W_AUTHORIZED_SHA" ]; then
-            echo "ERROR: W checkout mismatch! Expected $W_AUTHORIZED_SHA, got $ACTUAL_W_SHA" >&2
-            exit 1
-          fi
-
-          if [ -n "$(git status --porcelain)" ]; then
-            echo "ERROR: W checkout is dirty!" >&2
-            exit 1
-          fi
-
-          # Verify non-proof product equality between P1 and W
-          echo "Verifying product equality outside proof/ between P1 and W..."
-          NON_PROOF_DIFF=$(git diff --name-only "$P_AUTHORIZED_SHA" "$W_AUTHORIZED_SHA" -- . ':(exclude)proof')
-          if [ -n "$NON_PROOF_DIFF" ]; then
-            echo "ERROR: Non-proof product diff found between P1 and W:" >&2
-            echo "$NON_PROOF_DIFF" >&2
-            exit 1
-          fi
-          echo "Product equality outside proof/ VERIFIED: zero differences."
-
-          echo "w_dir=$W_DIR" >> "$GITHUB_OUTPUT"
-
-      - name: Launch Strict Proof Supervisor
-        id: run-strict-supervisor
-        uses: ./.github/actions/strict-supervisor
+      - name: Prepare canonical manifest and immutable package
+        id: prepare
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          p: ${{ steps.build-p1.outputs.p1_dir }}
-          w: ${{ steps.checkout-w.outputs.w_dir }}
-          compiler: ${{ steps.build-p1.outputs.compiler_path }}
-          artifacts_dir: strict-proof-artifacts
-          job_start_time: ${{ steps.job-metadata.outputs.job_started_at_iso }}
-          job_id: ${{ steps.job-metadata.outputs.job_id }}
-          job_key: ${{ steps.job-metadata.outputs.job_key }}
-          invocation_id: strict-${{ github.run_id }}-${{ github.run_attempt }}
-          host_job_limit_sec: ${{ env.HOST_JOB_LIMIT_SEC }}
-          payload_budget_sec: ${{ env.PAYLOAD_BUDGET_SEC }}
-          finalization_alloc_sec: ${{ env.FINALIZATION_ALLOC_SEC }}
-          driver_limit_sec: ${{ env.DRIVER_LIMIT_SEC }}
-          grace_sec: ${{ env.GRACE_SEC }}
-          min_disk_gib: ${{ env.MIN_DISK_GIB }}
-          p_sha: ${{ env.P_AUTHORIZED_SHA }}
-          w_sha: ${{ env.W_AUTHORIZED_SHA }}
-          c_sha: ${{ github.sha }}
-          mode: 'strict'
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/manifest-pkg"
+          python3 -B proof/strict_authorization.py prepare \
+            --manifest "$RUNNER_TEMP/manifest-pkg/manifest.json" \
+            --package "$RUNNER_TEMP/manifest-pkg/manifest.zip" \
+            --p-sha "${{ env.P_AUTHORIZED_SHA }}" \
+            --w-sha "${{ env.W_AUTHORIZED_SHA }}" \
+            --c-sha "${{ github.sha }}" \
+            --s-run-id "${{ github.run_id }}" \
+            --s-run-attempt "${{ github.run_attempt }}" \
+            --workflow-path ".github/workflows/remote-strict-proof.yml" \
+            --backend "local-quiet-darwin" \
+            --chain-id "iyi-strict-proof-chain-v1"
 
+          D=$(python3 -B -c "import hashlib, json; manifest = json.load(open('$RUNNER_TEMP/manifest-pkg/manifest.json', 'rb')); manifest_bytes = json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode('utf-8'); print(hashlib.sha256(manifest_bytes).hexdigest())")
+          echo "manifest_digest=$D" >> "$GITHUB_OUTPUT"
+          echo "Prepared manifest digest: $D"
+
+      - name: Upload immutable manifest package
+        id: upload-manifest
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf6581a120002692624f # v4.4.3
+        with:
+          name: strict-proof-manifest-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/manifest-pkg/manifest.json
+            ${{ runner.temp }}/manifest-pkg/manifest.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  strict-chain:
+    name: "Sequential strict-chain gate (strict-proof)"
+    needs: prepare-strict-authorization
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'strict-chain' }}
+    runs-on: ubuntu-latest
+    environment: strict-proof
+    timeout-minutes: 60
+    steps:
+      - name: Checkout controller repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@0b93645e9fb717ef66e47be571215a8227276183 # v5.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Download manifest package by exact artifact ID
+        id: download-manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 -B - <<'PY'
+          import os, sys, zipfile
+          from proof.github_artifact import download_artifact_zip
+
+          token = os.environ["GH_TOKEN"]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          artifact_id = "${{ needs.prepare-strict-authorization.outputs.artifact_id }}"
+          url = f"https://api.github.com/repos/{repo}/actions/artifacts/{artifact_id}/zip"
+          dest = os.path.join(os.environ["RUNNER_TEMP"], "manifest-download.zip")
+          try:
+              data = download_artifact_zip(url, token)
+          except Exception as exc:
+              sys.exit(f"Failed to download manifest artifact {artifact_id}: {exc}")
+          with open(dest, "wb") as f:
+              f.write(data)
+          print(f"Downloaded manifest artifact {artifact_id} ({len(data)} bytes) to {dest}")
+
+          unpacked = os.path.join(os.environ["RUNNER_TEMP"], "manifest-unpacked")
+          os.makedirs(unpacked, exist_ok=True)
+          with zipfile.ZipFile(dest, "r") as zf:
+              zf.extractall(unpacked)
+          print(f"Unpacked manifest artifact members: {os.listdir(unpacked)}")
+          PY
+
+      - name: Verify approval and manifest against authoritative GitHub API
+        id: check-auth
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/receipt"
+          python3 -B proof/strict_authorization.py check \
+            --manifest "$RUNNER_TEMP/manifest-unpacked/manifest.json" \
+            --receipt "$RUNNER_TEMP/receipt/strict-authorization-receipt.json"
+
+      - name: Upload authorization receipt artifact
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf6581a120002692624f # v4.4.3
+        with:
+          name: strict-authorization-receipt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/receipt/strict-authorization-receipt.json
+          if-no-files-found: error
+          retention-days: 14

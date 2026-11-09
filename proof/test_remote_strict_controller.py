@@ -1928,6 +1928,73 @@ class TestRemoteStrictController(unittest.TestCase):
             ctrl._check_pin_identity(good)
         self.assertEqual(str(cm.exception), "PIN-IDENTITY-MISMATCH")
 
+    def test_12l_strict_authorized_executes_w_chain_and_records_all_stages(self):
+        """Scenario 12l: Authorized strict mode runs the full W sequence and records all stages."""
+        pub = FakePublisher(mode="success")
+        self.publishers.append(pub)
+
+        with mock.patch("proof.strict_authorization.check_strict_authorization_or_refuse", return_value=None):
+            ctrl = self._create_controller(publisher=pub, mode="strict")
+            rc = ctrl.run()
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(ctrl.overall_status, "PASS")
+
+        # Verify all required W stage records exist
+        units = [r.unit for r in ctrl.records]
+        for expected in ("plan", "pin", "run1", "run2", "run3/acme", "run3/cookie", "final", "terminal"):
+            self.assertIn(expected, units)
+
+        summary_file = os.path.join(self.artifacts_dir, "strict-controller-summary.json")
+        self.assertTrue(os.path.isfile(summary_file))
+        with open(summary_file, encoding="utf-8") as f:
+            summary = json.load(f)
+        self.assertEqual(summary["overall_status"], "PASS")
+
+    def test_12m_strict_w_stage_failure_halts_immediately_no_subsequent_stages(self):
+        """Scenario 12m: Stage failure during authorized strict mode halts execution and preserves state."""
+        cfg = dict(self.default_config)
+        cfg["run1"] = {"exit_code": 1}
+        self._write_config(cfg)
+
+        pub = FakePublisher(mode="success")
+        self.publishers.append(pub)
+
+        with mock.patch("proof.strict_authorization.check_strict_authorization_or_refuse", return_value=None):
+            ctrl = self._create_controller(publisher=pub, mode="strict")
+            rc = ctrl.run()
+
+        self.assertNotEqual(rc, 0)
+        self.assertNotEqual(ctrl.overall_status, "PASS")
+
+        units = [r.unit for r in ctrl.records]
+        self.assertIn("plan", units)
+        self.assertIn("pin", units)
+        self.assertIn("run1", units)
+        self.assertNotIn("run2", units)
+        self.assertNotIn("run3/acme", units)
+        self.assertNotIn("final", units)
+
+        run1_record = next(r for r in ctrl.records if r.unit == "run1")
+        self.assertEqual(run1_record.disposition, "REJECTED")
+
+    def test_12n_strict_unauthorized_executes_zero_w_stages(self):
+        """Scenario 12n: Unapproved strict mode raises refusal before W execution and runs zero stages."""
+        pub = FakePublisher(mode="success")
+        self.publishers.append(pub)
+
+        ctrl = self._create_controller(publisher=pub, mode="strict")
+        rc = ctrl.run()
+
+        self.assertEqual(rc, 5)
+        self.assertEqual(ctrl.overall_status, "AUTH_REFUSED")
+        self.assertEqual(len(ctrl.records), 0)
+        self.assertFalse(os.path.exists(os.path.join(self.report_dir, "plan")))
+        self.assertFalse(os.path.exists(os.path.join(self.report_dir, "pin.json")))
+        self.assertFalse(os.path.exists(os.path.join(self.report_dir, "run1")))
+
+        journal_events = self._journal_events()
+        self.assertTrue(any(e.get("type") == "strict_auth_refusal" for e in journal_events))
 
     # -------------------------------------------------------------------------
     # 13. Test Temp Dirs Owned & Cleanup

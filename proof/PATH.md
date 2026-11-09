@@ -4,12 +4,66 @@
 
 The product revision is `180f14f91c829b25362a5ed34b20847f3ac2db77` (PR #147 head), and the audited native proof revision is `b932ce0d97775c7061102a13db706f507dc84117` (W). C is the exact controller commit running the hosted workflow, not a label substituted for its checkout. The workflow checks out P and W separately and checks their actual revisions. Synthetic emitters, compilers, reports, and logs live outside those source trees.
 
-Strict dispatch is unconditionally refused before planning, pinning, building, or native execution. Jason has explicitly selected the audit authority policy:
+Strict dispatch is gated behind a two-job hosted preparation/approval workflow and executed on the selected quiet local Mac. Jason has explicitly selected the audit authority policy:
   - An independent reviewer agent that did not implement the change generates the audit report and supporting receipts as immutable digest-bound evidence.
-  - Jason's manual deployment approval on GitHub protected environment `strict-proof` (ID `26584191206`, required reviewer `jwaldrip` ID `43164`, `can_admins_bypass: false`, `prevent_self_review: false`, branch policy `proof/strict-lifecycle-repair-20261102`) explicitly attests to the exact manifest digest prefix `iyi-strict-authorization-v1 sha256:<digest>` on attempt 1.
+  - Jason's manual deployment approval on GitHub protected environment `strict-proof` (ID `26584191206`, required reviewer `jwaldrip` ID `43164`, `can_admins_bypass: false`, `prevent_self_review: false`, branch policy `proof/strict-lifecycle-repair-20261102`) explicitly attests to the exact manifest digest prefix `iyi-strict-authorization-v2 sha256:<digest>` on attempt 1.
   - Semantic independence (the review method, evidence, findings, and negative controls verified by an independent reviewer agent) is distinguished from cryptographic human approval (GitHub protected environment approval).
   - No machine-enforced agent signature or model provenance is claimed or trusted from self-attested data; the platform authenticity resides solely in Jason's authenticated approval of the manifest digest, which cryptographically binds all evidence.
   - In real execution, without this authenticated deployment approval on environment `strict-proof` and retained independent audit GO artifact, strict mode execution remains strictly and unconditionally refused across all execution layers (workflow step, Node supervisor, and Python controller) with exit code 5.
+
+## Hosted preparation and gate workflow
+
+The hosted workflow `Remote Strict Proof Chain (macOS 15)` (`.github/workflows/remote-strict-proof.yml`) implements a two-job approval run for `strict-chain` mode:
+
+```text
+prepare-strict-authorization
+    |
+    v
+strict-chain
+environment: strict-proof
+```
+
+1. `prepare-strict-authorization`:
+   - Validates reviewed evidence and generates the canonical manifest `manifest.json` and package `manifest.zip`.
+   - Computes manifest digest `D = sha256(canonical_manifest_bytes)`.
+   - Uploads the immutable manifest package artifact `strict-proof-manifest-<run_id>-<run_attempt>`.
+   - Exposes `artifact_id` and `manifest_digest` D via authenticated job outputs.
+
+2. `strict-chain`:
+   - Protected by GitHub environment `strict-proof` (ID `26584191206`).
+   - GitHub holds the job in pending deployment until Jason personally reviews the deployment and submits the exact comment:
+     `iyi-strict-authorization-v2 sha256:<D>`
+   - On release, downloads the exact manifest package artifact by ID via GitHub REST API (token-free redirect following via `proof/github_artifact.py`).
+   - Verifies archive integrity, member non-duplication, and matches manifest digest to D.
+   - Invokes `proof/strict_authorization.py check` to authenticate deployment approval, reviewer ID `43164`, environment ID `26584191206`, attempt 1, matching C/P/W revisions, passing V run, and independent review GO.
+   - Publishes the diagnostic authorization receipt artifact `strict-authorization-receipt-<run_id>-<run_attempt>` and finishes.
+   - No P build or native stage is launched hosted; the backend is explicitly `local-quiet-darwin`.
+
+## Local quiet backend execution
+
+Native strict proof runs locally on the selected quiet Mac using the checked launcher:
+
+```sh
+python3 -B "$C_DIR/proof/strict_authorization.py" run-native \
+  --manifest "$MANIFEST_PATH" \
+  --p "$P_DIR" \
+  --w "$W_DIR" \
+  --compiler "$BIN" \
+  --report-dir "$R"
+```
+
+The checked launcher:
+1. Independently reads and verifies the actual GitHub run, job, deployment, and approval records using the shared checker. It does not trust the hosted receipt's PASS label.
+2. Creates a durable local claim binding `(s_run_id, D)` to prevent double-spending the approval on duplicate chains.
+3. Enforces fail-closed exit code 5 before any native stage if authorization is missing, invalid, or replayed.
+4. Invokes the unchanged native entry points sequentially:
+   - `python3 -B "$W_DIR/proof/run_proof.py" plan --p "$P_DIR" --w "$W_DIR" --compiler "$BIN"`
+   - `python3 -B "$W_DIR/proof/run_proof.py" pin --report-dir "$R" --p "$P_DIR" --w "$W_DIR" --compiler "$BIN"`
+   - `python3 -B "$W_DIR/proof/run_proof.py" run1 --report-dir "$R"`
+   - `python3 -B "$W_DIR/proof/run_proof.py" run2 --report-dir "$R"`
+   - `python3 -B "$W_DIR/proof/run_proof.py" run3 --report-dir "$R"`
+   - `python3 -B "$W_DIR/proof/run_proof.py" final --report-dir "$R"`
+5. Retains process ownership tracking, raw logs, attempt history, and evidence before cleanup.
 
 ## Hosted validation
 

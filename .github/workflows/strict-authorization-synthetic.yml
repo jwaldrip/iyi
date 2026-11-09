@@ -8,6 +8,8 @@ on:
       - 'proof/strict-approval-integration-20261107'
       - 'proof/strict-approval-repair-20261107'
       - 'proof/strict-selected-audit-attestation-20261107'
+      - 'proof/strict-lifecycle-repair-20261102'
+      - 'experiment/pr147-slice-c-workflow'
   workflow_dispatch:
 
 permissions:
