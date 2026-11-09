@@ -79,12 +79,13 @@ def verify_trusted_system_tool(tool_path: str, tool_name: str, expected_version_
     if expected_version_pattern and os.path.isfile(resolved):
         try:
             p = subprocess.run([resolved, "--version"], capture_output=True, text=True, timeout=5)
-            out = p.stdout + p.stderr
-            if p.returncode == 0 and not re.search(expected_version_pattern, out):
-                raise SecurityError(f"{tool_name} version mismatch at '{resolved}': expected pattern '{expected_version_pattern}', got: {out[:200]}")
-        except Exception as e:
-            if isinstance(e, SecurityError):
-                raise
+        except (OSError, subprocess.TimeoutExpired) as e:
+            raise SecurityError(f"{tool_name} version command failed: {e}") from e
+        out = p.stdout + p.stderr
+        if p.returncode != 0:
+            raise SecurityError(f"{tool_name} version command exited {p.returncode}")
+        if not re.search(expected_version_pattern, out):
+            raise SecurityError(f"{tool_name} version mismatch at '{resolved}': expected pattern '{expected_version_pattern}', got: {out[:200]}")
     return resolved
 
 

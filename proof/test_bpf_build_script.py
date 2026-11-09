@@ -443,6 +443,27 @@ class TestBpfFeasibilityScript(unittest.TestCase):
             self.assertIn("Dependency lock", res.stderr)
             self.assertIn("not found", res.stderr)
             self.assertIn(str(fake_repo), res.stderr)
+
+    def test_unreviewed_tool_baseline_stops_before_consumer(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            proof = root / "repo" / "proof"
+            proof.mkdir(parents=True)
+            launcher = proof / "run_bpf_feasibility.sh"
+            shutil.copy2(SCRIPT_PATH, launcher)
+            (proof / "bpf_dependencies.lock.json").write_text("{}")
+            marker = root / "consumer-ran"
+            (proof / "bpf_dependencies.py").write_text(
+                f"from pathlib import Path\nPath({str(marker)!r}).touch()\n"
+            )
+            result = subprocess.run(
+                ["bash", str(launcher), "--owned-dir", str(root / "owned")],
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Reviewed runner tool identity baseline unavailable", result.stderr)
+            self.assertFalse(marker.exists())
+
     def test_production_manifest_gate_full_validation(self) -> None:
         """Production manifest gate: positive control passes, mutations strictly fail closed."""
         with tempfile.TemporaryDirectory() as td:

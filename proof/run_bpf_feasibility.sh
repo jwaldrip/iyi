@@ -1127,6 +1127,12 @@ if [ "$VERBOSE" -eq 1 ]; then
   echo "[run_bpf_feasibility] Repository root: $REPO_ROOT"
   echo "[run_bpf_feasibility] Scratch working directory: $OWNED_DIR"
 fi
+# No reviewed per-tool identity baseline is available for the observed runner.
+# Keep the diagnostic disabled until independently reviewed evidence and checks
+# replace this hold. This is not a runtime override.
+echo "ERROR: Reviewed runner tool identity baseline unavailable; diagnostic held before dependency staging" >&2
+exit 1
+
 
 # 1. Dependency staging and verification via shared contract
 STAGED_PREFIX="$OWNED_DIR/staged-prefix"
