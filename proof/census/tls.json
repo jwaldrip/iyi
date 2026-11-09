@@ -2,7 +2,7 @@
   "census_version": 1,
   "driver": "tls",
   "script": "bench/std_tls_exercise.sh",
-  "script_sha256": "c06e0917ab26dd63a73793e6494866a4d66d1307c1c4256ca8fabdb2aa077e27",
+  "script_sha256": "3d8bb4222c3ef4b48926e2a93c95e64291b9e0a2d99220c0e3b8b0714924b6c9",
   "sites": [
     {
       "lines": [
@@ -146,8 +146,8 @@
     },
     {
       "lines": [
-        2636,
-        2637
+        2638,
+        2639
       ],
       "command": "build",
       "kind": "negative",
@@ -163,11 +163,11 @@
           "vars": {
             "n": {
               "lines": [
-                2736,
-                2737
+                2738,
+                2739
               ],
               "pattern": "[1-9][0-9]*",
-              "pattern_reason_line": 2736
+              "pattern_reason_line": 2738
             }
           },
           "sources": [
@@ -181,11 +181,11 @@
           ],
           "verdict": {
             "lines": [
-              2638,
-              2717,
-              2718,
-              2724,
-              2726
+              2640,
+              2719,
+              2720,
+              2726,
+              2728
             ],
             "contains": [
               "the $label copy did not build",
@@ -284,21 +284,28 @@
       "text": "  echo \"  no scripted server to refuse a handshake, so the sentence goes unshown\""
     },
     {
-      "line": 2555,
-      "class": "tool",
-      "what": "python3",
-      "regex": "^  not Windows, or no python3: the stop there is a signal to the one process, and this is unmeasured$",
-      "text": "  echo \"  not Windows, or no python3: the stop there is a signal to the one process, and this is unmeasured\""
+      "line": 2512,
+      "class": "platform",
+      "what": "windows",
+      "regex": "^  not Windows: the stop there is a signal to the one process, and this is unmeasured$",
+      "text": "  echo \"  not Windows: the stop there is a signal to the one process, and this is unmeasured\""
     },
     {
-      "line": 3408,
+      "line": 2514,
+      "class": "tool",
+      "what": "python3",
+      "regex": "^  no python3 on this machine: the stop on Windows is unmeasured$",
+      "text": "  echo \"  no python3 on this machine: the stop on Windows is unmeasured\""
+    },
+    {
+      "line": 3410,
       "class": "tool",
       "what": "openssl and python3 downgrade copy",
       "regex": "^  no copy of the client offering TLS 1\\.2 alone here, so the sentinel's proof before it is unmeasured$",
       "text": "  echo \"  no copy of the client offering TLS 1.2 alone here, so the sentinel's proof before it is unmeasured\""
     },
     {
-      "line": 3500,
+      "line": 3502,
       "class": "tool",
       "what": "openssl",
       "regex": "^  no openssl here \\(or Windows\\), so the server's TLS 1\\.2 exporter proof is unmeasured$",
@@ -307,7 +314,7 @@
   ],
   "not_skips": [],
   "pass_sentinel": {
-    "line": 3679,
+    "line": 3681,
     "regex": "^the std/tls exercise holds \\(.* breaks caught\\)$",
     "text": "  echo \"the std/tls exercise holds ($mutations breaks caught)\""
   },

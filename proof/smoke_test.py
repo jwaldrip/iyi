@@ -12031,7 +12031,11 @@ def _stage_stub_payloads(
         else (
             141
             if scenario == "rg9-141"
-            else (143 if scenario == "rg9-143" else 144)
+            else (
+                143
+                if scenario == "rg9-143"
+                else (145 if scenario == "rg9-145" else 144)
+            )
         )
     )
     rg9_prefix = (
@@ -12788,6 +12792,10 @@ def _fixture_rg9_141_seed() -> Observation:
 def _fixture_rg9_143_seed() -> Observation:
     return _run1_seed("rg9-143", "gate-1.3", "FAIL")
 
+
+
+def _fixture_rg9_145_seed() -> Observation:
+    return _run1_seed("rg9-145", "gate-1.3", "FAIL")
 
 def _fixture_rg9_bare_seed() -> Observation:
     return _run1_seed("rg9-bare", "gate-1.3", "FAIL")
@@ -17916,6 +17924,11 @@ O7_FIXTURES: tuple[Fixture, ...] = (
         _fixture_rg9_143_seed,
     ),
     Fixture(
+        "s5.seed.rg9-145",
+        "seed",
+        _fixture_rg9_145_seed,
+    ),
+    Fixture(
         "s5.seed.rg9-bare",
         "seed",
         _fixture_rg9_bare_seed,
@@ -18532,6 +18545,7 @@ O7_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
         "s5.seed.rg9-140",
         "s5.seed.rg9-141",
         "s5.seed.rg9-143",
+        "s5.seed.rg9-145",
         "s5.seed.rg9-bare",
         "s5.seed.rg9-bare-142",
         "s5.seed.rg9-malformed-suffix",
@@ -19020,6 +19034,7 @@ REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
         "s5.seed.rg9-140",
         "s5.seed.rg9-141",
         "s5.seed.rg9-143",
+        "s5.seed.rg9-145",
         "s5.seed.rg9-bare",
         "s5.seed.rg9-bare-142",
         "s5.seed.rg9-malformed-suffix",
