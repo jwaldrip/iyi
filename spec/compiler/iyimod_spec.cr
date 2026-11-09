@@ -59,7 +59,8 @@ describe Iyi::DiagnosticOrigin do
     call = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 8, "Call", "method")
     definition = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.iyi", 3, "Macro", "keyword")
     splice = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 20, "Block", "opener")
-    expansion = Iyi::DiagnosticOrigin::Expanded.new(call, definition, "sha256:" + "0" * 64, 17, "Block", "opener", splice)
+    expansion = Iyi::DiagnosticOrigin::Expanded.new(call, definition, "sha256:" + "0" * 64, 17, "Block", "opener",
+      [Iyi::DiagnosticEmissionPart.new(17, 18, nil)], splice)
     origin = Iyi::DiagnosticOrigin::Synthetic.new(expansion, "block_to_proc", "proc")
     node = Iyi::Nop.new
     node.diagnostic_origin = origin
@@ -136,7 +137,8 @@ describe Iyi::DiagnosticOrigin do
     macro_origin = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.cr", 2, "Macro", "keyword")
     origins = [
       Iyi::DiagnosticOrigin::Written.new("app/main", "/src/literals.cr", 4, "Literal", "regex"),
-      Iyi::DiagnosticOrigin::Expanded.new(invocation, macro_origin, "sha256:" + "0" * 64, 8, "Literal", "regex"),
+      Iyi::DiagnosticOrigin::Expanded.new(invocation, macro_origin, "sha256:" + "0" * 64, 8, "Literal", "regex",
+        [Iyi::DiagnosticEmissionPart.new(8, 9, nil)]),
     ] of Iyi::DiagnosticOrigin
     references = origins.map do |origin|
       literal = Iyi::RegexLiteral.new(Iyi::StringLiteral.new("same")).at(location)
@@ -144,6 +146,9 @@ describe Iyi::DiagnosticOrigin do
       expander.expand(literal).as(Iyi::Path)
     end
     references.map(&.diagnostic_origin).should eq(origins)
+    repeated = Iyi::RegexLiteral.new(Iyi::StringLiteral.new("same")).at(location)
+    repeated.diagnostic_origin = origins.first
+    expander.expand(repeated).as(Iyi::Path).diagnostic_origin.should eq(origins.first)
     name = Iyi::Program.regex_const_name("same", Iyi::RegexOptions::None)
     diagnostic = program.diagnostic_regex_record(name)
     diagnostic.initializer_origin.should eq(origins.first)
@@ -154,6 +159,11 @@ describe Iyi::DiagnosticOrigin do
     flags.diagnostic_origin.as(Iyi::DiagnosticOrigin::Synthetic).parent_origin.should eq(origins.first)
     section = Iyi::IyiMod::DiagnosticSection.new
     section.add_regex(diagnostic)
+    expect_raises(ArgumentError) { section.add_regex(diagnostic) }
+    invalid = Iyi::IyiMod::DiagnosticRegex.new(name, "other", 0_u32, origins.first, [origins.first])
+    expect_raises(ArgumentError) { Iyi::IyiMod::DiagnosticSection.new.add_regex(invalid) }
+    reversed = Iyi::IyiMod::DiagnosticRegex.new(name, "same", 0_u32, origins.first, diagnostic.literal_origins.reverse)
+    expect_raises(ArgumentError) { Iyi::IyiMod::DiagnosticSection.new.add_regex(reversed) }
     wire = section.encode
     expect_raises(Exception) { Iyi::IyiMod::DiagnosticSection.decode(wire[0, wire.size - 1]) }
     artifact = sample_artifact
@@ -183,11 +193,19 @@ describe Iyi::DiagnosticOrigin do
       expect_raises(Exception, /conflicting/) do
         consumer.record_regex_occurrence(other_name, "different", 0_u32, origins.first)
       end
+      other_origin = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/literals.cr", 80, "Literal", "regex")
+      expect_raises(Exception, /conflicting/) do
+        consumer.record_regex_occurrence(name, "different", 0_u32, other_origin)
+      end
+      consumer.diagnostic_regex_origin_tuples.has_key?(other_origin).should be_false
       reemitted = sample_artifact
       reemitted.regexes << Iyi::IyiMod::RegexConst.new(name, "same", 0_u32)
       reemitted_section = Iyi::IyiMod::DiagnosticSection.new
       reemitted_section.add_regex(merged)
       reemitted.diagnostic_provenance = reemitted_section
+      first_hashes = Iyi::IyiMod.hashes_for(restored, "unchanged source")
+      second_hashes = Iyi::IyiMod.hashes_for(reemitted, "unchanged source")
+      first_hashes.should eq(second_hashes)
       Iyi::IyiMod.write reemitted, path
       Iyi::IyiMod.read(path).diagnostic_provenance.not_nil!.regexes[name].should eq(merged)
       restored.diagnostic_provenance.not_nil!.regexes.clear
@@ -286,6 +304,8 @@ describe Iyi::DiagnosticOrigin do
       {"/abc/", "regex"},
       {%q("value #{1}"), "interpolation"},
       {"case 1\nwhen 1\n2\nend", "case"},
+      {"a, b = 1, 2", "multiassign"},
+      {"select\nwhen channel.receive\n1\nend", "select"},
     ]
     cases.each do |source, role|
       parser = Iyi::Parser.new(source)
@@ -698,7 +718,8 @@ describe Iyi::DiagnosticOrigin do
   it "distinguishes an inline macro directive and its synthetic definition" do
     directive = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 5, "MacroDirective", "control")
     definition = Iyi::DiagnosticOrigin::Synthetic.new(directive, "inline_macro_definition", "macro")
-    expanded = Iyi::DiagnosticOrigin::Expanded.new(directive, definition, "sha256:" + "0" * 64, 4, "ProcLiteral", "arrow")
+    expanded = Iyi::DiagnosticOrigin::Expanded.new(directive, definition, "sha256:" + "0" * 64, 4, "ProcLiteral", "arrow",
+      [Iyi::DiagnosticEmissionPart.new(4, 6, nil)])
     expanded.valid_for_anchor?("ProcLiteral", "arrow").should be_true
     Iyi::DiagnosticOrigin.from_json(expanded.as_json).should eq(expanded)
   end
@@ -707,7 +728,8 @@ describe Iyi::DiagnosticOrigin do
     invocation = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 5, "Call", "method")
     definition = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.iyi", 9, "Macro", "keyword")
     splice = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 35, "Block", "opener")
-    expanded = Iyi::DiagnosticOrigin::Expanded.new(invocation, definition, "sha256:" + "0" * 64, 4, "Block", "opener", splice)
+    expanded = Iyi::DiagnosticOrigin::Expanded.new(invocation, definition, "sha256:" + "0" * 64, 4, "Block", "opener",
+      [Iyi::DiagnosticEmissionPart.new(4, 5, nil)], splice)
     origin = Iyi::DiagnosticOrigin::Synthetic.new(expanded, "block_to_proc", "proc")
     table = Iyi::IyiMod::DiagnosticOrigins.new
     index = table.intern(origin)

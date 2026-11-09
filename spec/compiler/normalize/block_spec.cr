@@ -1,6 +1,27 @@
 require "../../spec_helper"
 
 describe "Normalize: block" do
+  it "derives distinct unpack assignments from the block and structural path" do
+    parser = Iyi::Parser.new("foo do |(a, (b, c)), (d, e)|\n  1\nend")
+    parser.filename = "/src/block.cr"
+    parser.diagnostic_capture = true
+    parser.diagnostic_source_file = "/src/block.cr"
+    call = parser.parse.as(Iyi::Call)
+    block_origin = call.block.not_nil!.diagnostic_origin.not_nil!
+    program = Iyi::Program.new
+    program.diagnostic_capture = true
+    normalized = program.normalize(call).as(Iyi::Call)
+    assignments = normalized.block.not_nil!.body.as(Iyi::Expressions).expressions.compact_map(&.as?(Iyi::MultiAssign))
+    assignments.size.should eq(3)
+    slots = assignments.map do |assignment|
+      origin = assignment.diagnostic_origin.as(Iyi::DiagnosticOrigin::Synthetic)
+      origin.parent_origin.should eq(block_origin)
+      origin.valid_for_anchor?("Literal", "multiassign").should be_true
+      origin.structural_slot
+    end
+    slots.to_set.should eq(Set{"block_unpack:0", "block_unpack:1", "block_unpack:0:1"})
+  end
+
   it "normalizes unpacking with empty body" do
     assert_normalize <<-CODE, <<-CODE
       foo do |(x, y), z|

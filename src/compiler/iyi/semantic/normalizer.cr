@@ -970,20 +970,20 @@ module Iyi
       return node if unpacks.any? { |index, _| !node.args[index].name.empty? }
 
       extra_expressions = [] of ASTNode
-      next_unpacks = [] of {String, Expressions}
+      next_unpacks = [] of {String, Expressions, Array(Int32)}
 
       unpacks.each do |index, expressions|
         temp_name = program.new_temp_var_name
         node.args[index] = Var.new(temp_name).at(node.args[index])
 
-        extra_expressions << block_unpack_multiassign(temp_name, expressions, next_unpacks)
+        extra_expressions << block_unpack_multiassign(temp_name, expressions, next_unpacks, node.diagnostic_origin, [index])
       end
 
       if next_unpacks
         while next_unpack = next_unpacks.shift?
-          var_name, expressions = next_unpack
+          var_name, expressions, path = next_unpack
 
-          extra_expressions << block_unpack_multiassign(var_name, expressions, next_unpacks)
+          extra_expressions << block_unpack_multiassign(var_name, expressions, next_unpacks, node.diagnostic_origin, path)
         end
       end
 
@@ -1001,8 +1001,9 @@ module Iyi
       node
     end
 
-    private def block_unpack_multiassign(var_name, expressions, next_unpacks)
-      targets = expressions.expressions.map do |exp|
+    private def block_unpack_multiassign(var_name, expressions, next_unpacks,
+                                         block_origin : DiagnosticOrigin?, path : Array(Int32))
+      targets = expressions.expressions.map_with_index do |exp, index|
         case exp
         when Var
           exp
@@ -1013,7 +1014,7 @@ module Iyi
         when Expressions
           next_temp_name = program.new_temp_var_name
 
-          next_unpacks << {next_temp_name, exp}
+          next_unpacks << {next_temp_name, exp, path + [index]}
 
           Var.new(next_temp_name).at(exp)
         else
@@ -1021,7 +1022,14 @@ module Iyi
         end
       end
       values = [Var.new(var_name).at(expressions)] of ASTNode
-      MultiAssign.new(targets, values).at(expressions)
+      assignment = MultiAssign.new(targets, values).at(expressions)
+      if block_origin
+        assignment.diagnostic_origin = DiagnosticOrigin::Synthetic.new(block_origin, "literal_expansion_node",
+          "block_unpack:#{path.join(":")}")
+      elsif program.diagnostic_capture
+        raise "block unpack lacks a diagnostic origin"
+      end
+      assignment
     end
 
     def transform(node : Union)

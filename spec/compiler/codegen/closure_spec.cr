@@ -813,6 +813,15 @@ describe "Code gen: closure" do
     expect_raises(Exception) { Iyi::DiagnosticProvenance.validate_emission!(emission) }
   end
 
+  it "rejects legacy expanded origins without emission parts" do
+    origin = JSON.parse(%({"kind":"Expanded","invocation_origin":{"kind":"Written","source_identity":{"module":"app/main","file":"main.iyi"},"input_byte_offset":0,"anchor_kind":"Call","role":"method"},"macro_definition_origin":{"kind":"Written","source_identity":{"module":"app/main","file":"main.iyi"},"input_byte_offset":1,"anchor_kind":"Macro","role":"keyword"},"expansion_guard":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","generated_byte_offset":0,"anchor_kind":"ProcLiteral","role":"arrow","spliced_origin":null}))
+    specialization = JSON.parse(%({"kind":"program_scope","source_identity":{"module":"app/main","file":"main.iyi"}}))
+    capture = JSON.parse(%({"proc_type":{"kind":"Iyi::ProcInstanceType","arguments":[],"return":{"kind":"Iyi::NilType","name":"Nil"}},"is_closure":false,"environment":null}))
+    location = JSON.parse(%({"file":"main.iyi","line":1,"column":1}))
+    record = Iyi::DiagnosticProvenance::Emission.new("requested", "actual", "unit", "Internal", origin, specialization, capture, location)
+    expect_raises(Exception) { Iyi::DiagnosticProvenance.validate_emission!(record) }
+  end
+
   it "rejects an unproven closure binding scope" do
     origin = JSON.parse(%({"kind":"Written","source_identity":{"module":"app/main","file":"main.iyi"},"input_byte_offset":0,"anchor_kind":"ProcLiteral","role":"arrow"}))
     specialization = JSON.parse(%({"kind":"program_scope","source_identity":{"module":"app/main","file":"main.iyi"}}))
@@ -913,6 +922,16 @@ describe "Code gen: closure" do
     observer = Iyi::DiagnosticProvenance::Observer.new(mod, {} of String => Array(Iyi::DiagnosticProvenance::Emission))
     fun.delete
     observer.finish.should be_empty
+  end
+
+  it "requires the cast's structural anchor for its synthetic error interpolation" do
+    cast = Iyi::DiagnosticOrigin::Written.new("app/main", "main.iyi", 12, "Cast", "keyword")
+    origin = Iyi::DiagnosticOrigin::Synthetic.new(cast, "cast_error_interpolation", "message")
+    origin.valid_for_anchor?("Literal", "interpolation").should be_true
+
+    other = Iyi::DiagnosticOrigin::Written.new("app/main", "main.iyi", 12, "Call", "method")
+    invalid = Iyi::DiagnosticOrigin::Synthetic.new(other, "cast_error_interpolation", "message")
+    invalid.valid_for_anchor?("Literal", "interpolation").should be_false
   end
 
 end

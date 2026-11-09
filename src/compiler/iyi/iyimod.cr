@@ -355,6 +355,7 @@ module Iyi::IyiMod
         intern(origin.invocation_origin)
         intern(origin.macro_definition_origin)
         origin.spliced_origin.try { |spliced| intern(spliced) }
+        origin.emission_parts.each { |part| part.emitter_origin.try { |emitter| intern(emitter) } }
       when DiagnosticOrigin::Synthetic
         intern(origin.parent_origin)
       end
@@ -384,6 +385,12 @@ module Iyi::IyiMod
           DiagnosticOrigins.write_string io, origin.anchor_kind
           DiagnosticOrigins.write_string io, origin.role
           io.write_bytes(origin.spliced_origin.try { |value| @indices[value] } || UInt32::MAX, FORMAT)
+          io.write_bytes origin.emission_parts.size.to_u32, FORMAT
+          origin.emission_parts.each do |part|
+            io.write_bytes part.start_offset.to_u32, FORMAT
+            io.write_bytes part.end_offset.to_u32, FORMAT
+            io.write_bytes(part.emitter_origin.try { |emitter| @indices[emitter] } || UInt32::MAX, FORMAT)
+          end
         when DiagnosticOrigin::Synthetic
           io.write_byte 3_u8
           io.write_bytes @indices[origin.parent_origin], FORMAT
@@ -398,6 +405,9 @@ module Iyi::IyiMod
     def self.read(io : IO) : DiagnosticOrigins
       table = new
       count = io.read_bytes(UInt32, FORMAT)
+      if io.is_a?(IO::Memory) && count.to_u64 > (io.size - io.pos).to_u64
+        raise ArgumentError.new("diagnostic origin count exceeds remaining bytes")
+      end
       count.times do
         origin = case io.read_byte
                  when 1_u8
@@ -412,7 +422,18 @@ module Iyi::IyiMod
                    role = read_string(io)
                    splice_index = io.read_bytes(UInt32, FORMAT)
                    splice = splice_index == UInt32::MAX ? nil : table.parent(splice_index)
-                   DiagnosticOrigin::Expanded.new(invocation, definition, guard, offset, kind, role, splice)
+                   part_count = io.read_bytes(UInt32, FORMAT)
+                   if io.is_a?(IO::Memory) && part_count.to_u64 > ((io.size - io.pos) // 12).to_u64
+                     raise ArgumentError.new("macro emission parts exceed remaining bytes")
+                   end
+                   parts = Array(DiagnosticEmissionPart).new(part_count) do
+                     start_offset = io.read_bytes(UInt32, FORMAT).to_i32
+                     end_offset = io.read_bytes(UInt32, FORMAT).to_i32
+                     emitter_index = io.read_bytes(UInt32, FORMAT)
+                     emitter = emitter_index == UInt32::MAX ? nil : table.parent(emitter_index)
+                     DiagnosticEmissionPart.new(start_offset, end_offset, emitter)
+                   end
+                   DiagnosticOrigin::Expanded.new(invocation, definition, guard, offset, kind, role, parts, splice)
                  when 3_u8
                    parent = table.parent(io.read_bytes(UInt32, FORMAT))
                    DiagnosticOrigin::Synthetic.new(parent, read_string(io), read_string(io))
@@ -459,7 +480,7 @@ module Iyi::IyiMod
   # The section is built and decoded independently of the ordinary source
   # positions. Its caller must also prove complete fragment and object coverage.
   class DiagnosticSection
-    SCHEMA = 2_u32
+    SCHEMA = 3_u32
 
     getter fragments = {} of String => DiagnosticFragment
     getter objects = {} of Int32 => DiagnosticObjectRecords
@@ -477,7 +498,8 @@ module Iyi::IyiMod
       raise ArgumentError.new("noncanonical diagnostic regex name") unless record.name == expected
       origins = record.literal_origins
       raise ArgumentError.new("missing diagnostic regex origins") if origins.empty?
-      raise ArgumentError.new("noncanonical diagnostic regex origin order") unless origins.map(&.to_json) == origins.map(&.to_json).sort.uniq
+      canonical = origins.map(&.to_json)
+      raise ArgumentError.new("noncanonical diagnostic regex origin order") unless canonical == canonical.sort.uniq
       raise ArgumentError.new("missing regex initializer occurrence") unless origins.count(record.initializer_origin) == 1
       raise ArgumentError.new("invalid regex literal origin") unless origins.all? { |origin| origin.valid_for_anchor?("Literal", "regex") }
       @regexes.each_value do |previous|

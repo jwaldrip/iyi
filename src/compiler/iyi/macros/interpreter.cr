@@ -91,6 +91,23 @@ module Iyi
       @last = Nop.new
     end
 
+    def self.diagnostic_new(program : Program, klass : T.class, *args, **kwargs) : T forall T
+      node = klass.new(*args, **kwargs)
+      node.diagnostic_macro_lineage = DiagnosticMacroLineage::Constructed if program.diagnostic_capture
+      node
+    end
+
+    def diagnostic_new(klass : T.class, *args, **kwargs) : T forall T
+      MacroInterpreter.diagnostic_new(@program, klass, *args, **kwargs)
+    end
+
+    def diagnostic_clone_without_location(node : ASTNode) : ASTNode
+      copy = node.clone_without_location
+      copy.diagnostic_origin = node.diagnostic_origin
+      copy.diagnostic_macro_lineage = node.diagnostic_macro_lineage
+      copy
+    end
+
     def define_var(name : String, value : ASTNode) : Nil
       @vars[name] = value
     end
@@ -761,14 +778,14 @@ module Iyi
     def visit(node : TupleLiteral)
       self.interpreted_hook node
 
-      @last = TupleLiteral.map(node.elements) { |element| accept element }
+      @last = diagnostic_new(TupleLiteral, node.elements.map { |element| accept element })
       false
     end
 
     def visit(node : ArrayLiteral)
       self.interpreted_hook node
 
-      @last = ArrayLiteral.map(node.elements) { |element| accept element }
+      @last = diagnostic_new(ArrayLiteral, node.elements.map { |element| accept element })
       false
     end
 
@@ -776,7 +793,7 @@ module Iyi
       self.interpreted_hook node
 
       @last =
-        HashLiteral.new(node.entries.map do |entry|
+        diagnostic_new(HashLiteral, node.entries.map do |entry|
           HashLiteral::Entry.new(accept(entry.key), accept(entry.value))
         end)
       false
@@ -784,7 +801,7 @@ module Iyi
 
     def visit(node : NamedTupleLiteral)
       @last =
-        NamedTupleLiteral.new(node.entries.map do |entry|
+        diagnostic_new(NamedTupleLiteral, node.entries.map do |entry|
           NamedTupleLiteral::Entry.new(entry.key, accept(entry.value))
         end)
       false
@@ -793,7 +810,7 @@ module Iyi
     def visit(node : Nop | NilLiteral | BoolLiteral | NumberLiteral | CharLiteral | StringLiteral | SymbolLiteral | RangeLiteral | RegexLiteral | MacroId | TypeNode | Def)
       self.interpreted_hook node
 
-      @last = node.clone_without_location
+      @last = diagnostic_clone_without_location(node)
       false
     end
 

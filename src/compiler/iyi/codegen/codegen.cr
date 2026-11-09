@@ -2028,7 +2028,13 @@ module Iyi
         pieces << StringLiteral.new(", at #{location.expanded_location}:#{location.line_number}").at(node)
       end
 
-      ex = Call.new(Path.global("TypeCastError").at(node), "new", StringInterpolation.new(pieces).at(node)).at(node)
+      interpolation = StringInterpolation.new(pieces).at(node)
+      if @program.diagnostic_capture
+        origin = node.diagnostic_origin
+        node.raise "cast has no diagnostic origin" unless origin
+        interpolation.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "cast_error_interpolation", "message")
+      end
+      ex = Call.new(Path.global("TypeCastError").at(node), "new", interpolation).at(node)
       call = Call.global("raise", ex).at(node)
       call = @program.normalize(call)
 

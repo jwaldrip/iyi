@@ -934,13 +934,15 @@ module Iyi
     def record_regex_occurrence(name : String, pattern : String, options : UInt32, origin : DiagnosticOrigin) : Nil
       raise "invalid regex literal origin" unless origin.valid_for_anchor?("Literal", "regex")
       tuple = {name, pattern, options}
+      if existing = diagnostic_regex_occurrences[name]?
+        raise "regex name has conflicting contents" unless existing[0] == pattern && existing[1] == options
+      end
       if previous = diagnostic_regex_origin_tuples[origin]?
         raise "regex origin names conflicting constants" unless previous == tuple
       else
         diagnostic_regex_origin_tuples[origin] = tuple
       end
       if existing = diagnostic_regex_occurrences[name]?
-        raise "regex name has conflicting contents" unless existing[0] == pattern && existing[1] == options
         existing[2] << origin unless existing[2].includes?(origin)
       else
         diagnostic_regex_occurrences[name] = {pattern, options, [origin]}

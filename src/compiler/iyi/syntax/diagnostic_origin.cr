@@ -13,11 +13,66 @@ module Iyi
     text_sha256 : String,
     anchors : Array(DiagnosticAnchor)
 
+  enum DiagnosticMacroLineage
+    Unknown
+    Preserved
+    Constructed
+  end
+
+  record DiagnosticEmissionPart, start_offset : Int32, end_offset : Int32, emitter_origin : DiagnosticOrigin?
+
+  enum DiagnosticMacroProducer
+    ConstructedAst
+    EmptyTupleProjection
+    EmptyNamedTupleProjection
+    MacroTemplate
+    MacroId
+    MacroVar
+    MacroVerbatim
+    YieldWrapper
+    SemanticPrinter
+  end
+
+  record DiagnosticMacroAnchor, offset : Int32, kind : String, role : String,
+    emitter_origin : DiagnosticOrigin?, source_origin : DiagnosticOrigin?, producer : DiagnosticMacroProducer?
+
+  record DiagnosticGeneratedText, start_offset : Int32, end_offset : Int32,
+    emitter_origin : DiagnosticOrigin?, producer : DiagnosticMacroProducer
   # Provenance is independent of Location, which remains the source of
   # human-facing positions. These records contain no process-local identity.
   abstract class DiagnosticOrigin
     abstract def to_json(json : JSON::Builder) : Nil
     abstract def valid_for_anchor?(kind : String, role : String) : Bool
+    MAX_DEPTH = 128
+    MAX_UNFOLDED_BYTES = 8_u64 * 1024 * 1024
+    getter graph_depth : Int32 = 0
+    getter graph_bytes : UInt64 = 0_u64
+
+    protected def set_graph_bounds!(own_bytes : UInt64, parents : Array(DiagnosticOrigin)) : Nil
+      depth = 0
+      total = own_bytes
+      parents.each do |parent|
+        depth = Math.max(depth, parent.graph_depth + 1)
+        raise ArgumentError.new("diagnostic origin graph exceeds size limit") if parent.graph_bytes > MAX_UNFOLDED_BYTES - Math.min(total, MAX_UNFOLDED_BYTES)
+        total += parent.graph_bytes
+      end
+      raise ArgumentError.new("diagnostic origin graph exceeds depth limit") if depth > MAX_DEPTH
+      raise ArgumentError.new("diagnostic origin graph exceeds size limit") if total > MAX_UNFOLDED_BYTES
+      @graph_depth = depth
+      @graph_bytes = total
+    end
+
+    def self.json_string_size(text : String) : UInt64
+      size = 2_u64
+      text.each_byte do |byte|
+        size += case byte
+                when 0x22, 0x5c, 0x08, 0x0c, 0x0a, 0x0d, 0x09 then 2_u64
+                when 0x00..0x1f, 0x7f                         then 6_u64
+                else                                                1_u64
+                end
+      end
+      size
+    end
 
     def valid_for_binding? : Bool
       false
@@ -69,10 +124,24 @@ module Iyi
       value
     end
 
+    class DecodeBudget
+      @used = 0_u64
+
+      def consume(bytes : UInt64) : Nil
+        raise ArgumentError.new("diagnostic origin graph exceeds size limit") if bytes > MAX_UNFOLDED_BYTES - @used
+        @used += bytes
+      end
+
+      def text(value : String) : Nil
+        consume(DiagnosticOrigin.json_string_size(value))
+      end
+    end
+
     # The artifact reader must reject a partial or extended record rather than
     # treating it as an equivalent origin.
-    def self.from_json(value : JSON::Any, depth : Int32 = 0) : DiagnosticOrigin
+    def self.from_json(value : JSON::Any, depth : Int32 = 0, budget : DecodeBudget = DecodeBudget.new) : DiagnosticOrigin
       raise ArgumentError.new("diagnostic origin nesting is too deep") if depth > 128
+      budget.consume(1_u64)
       object = value.as_h
       kind = object["kind"].as_s
       case kind
@@ -80,19 +149,36 @@ module Iyi
         expected_keys(object, %w(kind source_identity input_byte_offset anchor_kind role))
         source = object["source_identity"].as_h
         expected_keys(source, %w(module file))
+        budget.text(source["module"].as_s)
+        budget.text(source["file"].as_s)
+        budget.text(object["anchor_kind"].as_s)
+        budget.text(object["role"].as_s)
         Written.new(source["module"].as_s, source["file"].as_s,
           object["input_byte_offset"].as_i, object["anchor_kind"].as_s, object["role"].as_s)
       when "Expanded"
-        expected_keys(object, %w(kind invocation_origin macro_definition_origin expansion_guard generated_byte_offset anchor_kind role spliced_origin))
+        expected_keys(object, %w(kind invocation_origin macro_definition_origin expansion_guard generated_byte_offset anchor_kind role emission_parts spliced_origin))
         splice = object["spliced_origin"]
-        Expanded.new(from_json(object["invocation_origin"], depth + 1),
-          from_json(object["macro_definition_origin"], depth + 1),
+        budget.text(object["expansion_guard"].as_s)
+        budget.text(object["anchor_kind"].as_s)
+        budget.text(object["role"].as_s)
+        budget.consume(object["emission_parts"].as_a.size.to_u64)
+        parts = object["emission_parts"].as_a.map do |part|
+          fields = part.as_h
+          expected_keys(fields, %w(start_offset end_offset emitter_origin))
+          emitter = fields["emitter_origin"]
+          DiagnosticEmissionPart.new(fields["start_offset"].as_i, fields["end_offset"].as_i,
+            emitter.raw.nil? ? nil : from_json(emitter, depth + 1, budget))
+        end
+        Expanded.new(from_json(object["invocation_origin"], depth + 1, budget),
+          from_json(object["macro_definition_origin"], depth + 1, budget),
           object["expansion_guard"].as_s, object["generated_byte_offset"].as_i,
-          object["anchor_kind"].as_s, object["role"].as_s,
-          splice.raw.nil? ? nil : from_json(splice, depth + 1))
+          object["anchor_kind"].as_s, object["role"].as_s, parts,
+          splice.raw.nil? ? nil : from_json(splice, depth + 1, budget))
       when "Synthetic"
         expected_keys(object, %w(kind parent_origin synthesis_kind structural_slot))
-        Synthetic.new(from_json(object["parent_origin"], depth + 1),
+        budget.text(object["synthesis_kind"].as_s)
+        budget.text(object["structural_slot"].as_s)
+        Synthetic.new(from_json(object["parent_origin"], depth + 1, budget),
           object["synthesis_kind"].as_s, object["structural_slot"].as_s)
       else
         raise ArgumentError.new("unknown diagnostic origin kind #{kind}")
@@ -118,6 +204,10 @@ module Iyi
         @input_byte_offset = DiagnosticOrigin.require_offset(input_byte_offset, "input offset")
         @anchor_kind = DiagnosticOrigin.require_text(anchor_kind, "anchor kind")
         @role = DiagnosticOrigin.require_text(role, "role")
+        own = %({"kind":"Written","source_identity":{"module":,"file":},"input_byte_offset":,"anchor_kind":,"role":}).bytesize.to_u64
+        own += DiagnosticOrigin.json_string_size(@source_module) + DiagnosticOrigin.json_string_size(@source_file)
+        own += @input_byte_offset.to_s.bytesize.to_u64 + DiagnosticOrigin.json_string_size(@anchor_kind) + DiagnosticOrigin.json_string_size(@role)
+        set_graph_bounds!(own, [] of DiagnosticOrigin)
       end
 
       def valid_for_anchor?(kind : String, role : String) : Bool
@@ -150,10 +240,30 @@ module Iyi
       getter anchor_kind : String
       getter role : String
       getter spliced_origin : DiagnosticOrigin?
+      @emission_parts : Array(DiagnosticEmissionPart)
+
+      def emission_parts : Array(DiagnosticEmissionPart)
+        @emission_parts.dup
+      end
 
       def initialize(@invocation_origin : DiagnosticOrigin, @macro_definition_origin : DiagnosticOrigin,
                      expansion_guard : String, generated_byte_offset : Int32,
-                     anchor_kind : String, role : String, @spliced_origin : DiagnosticOrigin? = nil)
+                     anchor_kind : String, role : String, emission_parts : Array(DiagnosticEmissionPart),
+                     @spliced_origin : DiagnosticOrigin? = nil)
+        parents = [@invocation_origin, @macro_definition_origin] of DiagnosticOrigin
+        @spliced_origin.try { |origin| parents << origin }
+        emission_parts.each { |part| part.emitter_origin.try { |origin| parents << origin } }
+        own = %({"kind":"Expanded","invocation_origin":,"macro_definition_origin":,"expansion_guard":,"generated_byte_offset":,"anchor_kind":,"role":,"emission_parts":[],"spliced_origin":}).bytesize.to_u64
+        own += DiagnosticOrigin.json_string_size(expansion_guard) + generated_byte_offset.to_s.bytesize.to_u64
+        own += DiagnosticOrigin.json_string_size(anchor_kind) + DiagnosticOrigin.json_string_size(role)
+        own += 4_u64 unless @spliced_origin
+        emission_parts.each_with_index do |part, index|
+          own += 1_u64 if index > 0
+          own += %({"start_offset":,"end_offset":,"emitter_origin":}).bytesize.to_u64
+          own += part.start_offset.to_s.bytesize.to_u64 + part.end_offset.to_s.bytesize.to_u64
+          own += 4_u64 unless part.emitter_origin
+        end
+        set_graph_bounds!(own, parents)
         invocation_valid = @invocation_origin.valid_for_anchor?("Call", "method") ||
                            @invocation_origin.valid_for_anchor?("MacroDirective", "control") ||
                            @invocation_origin.valid_for_anchor?("MacroDirective", "expression")
@@ -168,6 +278,23 @@ module Iyi
         @generated_byte_offset = DiagnosticOrigin.require_offset(generated_byte_offset, "generated offset")
         @anchor_kind = DiagnosticOrigin.require_text(anchor_kind, "anchor kind")
         @role = DiagnosticOrigin.require_text(role, "role")
+        raise ArgumentError.new("missing macro emission parts") if emission_parts.empty?
+        @emission_parts = emission_parts.dup
+        cursor = @generated_byte_offset
+        previous_emitter = nil.as(DiagnosticOrigin?)
+        @emission_parts.each_with_index do |part, index|
+          unless part.start_offset == cursor && part.end_offset > part.start_offset
+            raise ArgumentError.new("invalid macro emission part extent")
+          end
+          emitter = part.emitter_origin
+          if emitter && !emitter.valid_for_anchor?("MacroDirective", "expression") &&
+             !emitter.valid_for_anchor?("MacroDirective", "control")
+            raise ArgumentError.new("invalid macro emission directive")
+          end
+          raise ArgumentError.new("uncoalesced macro emission parts") if index > 0 && emitter == previous_emitter
+          previous_emitter = emitter
+          cursor = part.end_offset
+        end
         if (spliced = @spliced_origin) && !spliced.valid_for_anchor?(@anchor_kind, @role)
           raise ArgumentError.new("spliced diagnostic origin does not match its anchor")
         end
@@ -177,7 +304,8 @@ module Iyi
         @anchor_kind == kind && @role == role
       end
 
-      def_equals_and_hash @invocation_origin, @macro_definition_origin, @expansion_guard, @generated_byte_offset, @anchor_kind, @role, @spliced_origin
+      def_equals_and_hash @invocation_origin, @macro_definition_origin, @expansion_guard, @generated_byte_offset,
+        @anchor_kind, @role, @emission_parts, @spliced_origin
 
       def to_json(json : JSON::Builder) : Nil
         json.object do
@@ -188,6 +316,17 @@ module Iyi
           json.field "generated_byte_offset", @generated_byte_offset
           json.field "anchor_kind", @anchor_kind
           json.field "role", @role
+          json.field "emission_parts" do
+            json.array do
+              @emission_parts.each do |part|
+                json.object do
+                  json.field "start_offset", part.start_offset
+                  json.field "end_offset", part.end_offset
+                  json.field "emitter_origin", part.emitter_origin
+                end
+              end
+            end
+          end
           json.field "spliced_origin", @spliced_origin
         end
       end
@@ -201,9 +340,21 @@ module Iyi
       def initialize(@parent_origin : DiagnosticOrigin, synthesis_kind : String, structural_slot : String)
         @synthesis_kind = DiagnosticOrigin.require_text(synthesis_kind, "synthesis kind")
         @structural_slot = DiagnosticOrigin.require_text(structural_slot, "structural slot")
+        own = %({"kind":"Synthetic","parent_origin":,"synthesis_kind":,"structural_slot":}).bytesize.to_u64
+        own += DiagnosticOrigin.json_string_size(@synthesis_kind) + DiagnosticOrigin.json_string_size(@structural_slot)
+        set_graph_bounds!(own, [@parent_origin] of DiagnosticOrigin)
       end
 
       def valid_for_anchor?(kind : String, role : String) : Bool
+        if kind == "Cast" && role == "keyword" && @synthesis_kind == "select_cast"
+          label, separator, text = @structural_slot.partition(':')
+          index = text.to_i?
+          return label == "arm" && separator == ":" && !index.nil? && index >= 0 && index.to_s == text &&
+                 @parent_origin.valid_for_anchor?("Literal", "select")
+        end
+        if kind == "Literal" && role == "interpolation" && @synthesis_kind == "cast_error_interpolation" && @structural_slot == "message"
+          return @parent_origin.valid_for_anchor?("Cast", "keyword")
+        end
         if kind == "Block" && role == "opener" && @synthesis_kind == "literal_expansion"
           parts = @structural_slot.split(':')
           index = parts[2]?.try(&.to_i?)
@@ -212,6 +363,9 @@ module Iyi
                  @parent_origin.valid_for_anchor?("Literal", "array")
         end
         if kind == "Literal" && @synthesis_kind == "literal_expansion_node"
+          if @structural_slot == "derive:fields" && role == "array"
+            return @parent_origin.valid_for_anchor?("Call", "method")
+          end
           if @structural_slot == "select:multiassign" && role == "multiassign"
             return @parent_origin.valid_for_anchor?("Literal", "select")
           elsif @structural_slot == "select:case" && role == "case"
@@ -220,6 +374,19 @@ module Iyi
             return @parent_origin.valid_for_anchor?("Literal", "regex")
           elsif @structural_slot == "command:interpolation" && role == "interpolation"
             return @parent_origin.valid_for_anchor?("Call", "method")
+          elsif @structural_slot.starts_with?("array:interpolation:") && role == "interpolation"
+            text = @structural_slot.byte_slice("array:interpolation:".bytesize)
+            index = text.to_i?
+            return !index.nil? && index >= 0 && index.to_s == text &&
+                   @parent_origin.valid_for_anchor?("Literal", "array")
+          elsif @structural_slot.starts_with?("block_unpack:") && role == "multiassign"
+            return false unless @parent_origin.valid_for_anchor?("Block", "opener") ||
+                                @parent_origin.valid_for_anchor?("Block", "ampersand")
+            indices = @structural_slot.byte_slice("block_unpack:".bytesize).split(':')
+            return !indices.empty? && indices.all? do |text|
+              index = text.to_i?
+              !index.nil? && index >= 0 && index.to_s == text
+            end
           elsif @structural_slot.starts_with?("multiassign:range:") && role == "range"
             text = @structural_slot.byte_slice("multiassign:range:".bytesize)
             index = text.to_i?

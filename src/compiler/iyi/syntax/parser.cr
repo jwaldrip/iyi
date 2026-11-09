@@ -1618,6 +1618,7 @@ module Iyi
     end
 
     def parse_as(atomic, klass = Cast)
+      origin = diagnostic_anchor("Cast", "keyword", @token.input_offset)
       next_token_skip_space
 
       if @token.type.op_lparen?
@@ -1632,7 +1633,7 @@ module Iyi
         end_location = token_end_location
       end
 
-      klass.new(atomic, type).at_end(end_location)
+      klass.new(atomic, type).at_end(end_location).tap { |node| node.diagnostic_origin = origin }
     end
 
     def parse_as?(atomic)
@@ -1726,6 +1727,12 @@ module Iyi
       end
       if atomic.is_a?(RegexLiteral) && (origin = atomic.diagnostic_origin) && (pattern = atomic.value).is_a?(StringInterpolation)
         pattern.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "literal_expansion_node", "regex:interpolation")
+      end
+      if atomic.is_a?(ArrayLiteral) && (origin = atomic.diagnostic_origin)
+        atomic.elements.each_with_index do |element, index|
+          next unless element.is_a?(StringInterpolation) && !element.diagnostic_origin
+          element.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "literal_expansion_node", "array:interpolation:#{index}")
+        end
       end
       atomic
     end

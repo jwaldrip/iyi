@@ -48,7 +48,14 @@ module Iyi
     property end_location : Location?
 
     # Independent of source locations and never used for semantic decisions.
-    property diagnostic_origin : DiagnosticOrigin?
+    getter diagnostic_origin : DiagnosticOrigin?
+    property diagnostic_macro_lineage : DiagnosticMacroLineage = DiagnosticMacroLineage::Unknown
+
+    def diagnostic_origin=(origin : DiagnosticOrigin?) : DiagnosticOrigin?
+      @diagnostic_origin = origin
+      @diagnostic_macro_lineage = DiagnosticMacroLineage::Preserved if origin
+      origin
+    end
 
     def diagnostic_origin_json : JSON::Any?
       @diagnostic_origin.try(&.as_json)
@@ -92,6 +99,7 @@ module Iyi
       clone.location = location
       clone.end_location = end_location
       clone.diagnostic_origin = diagnostic_origin
+      clone.diagnostic_macro_lineage = diagnostic_macro_lineage
       clone.doc = doc
       clone
     end

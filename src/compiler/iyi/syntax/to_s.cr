@@ -4,9 +4,14 @@ require "./visitor"
 module Iyi
   class ASTNode
     def to_s(io : IO, macro_expansion_pragmas = nil, emit_doc = false, emit_location_pragmas : Bool = false,
-             diagnostic_anchors : Array(DiagnosticAnchor)? = nil) : Nil
+             diagnostic_anchors : Array(DiagnosticAnchor)? = nil,
+             diagnostic_emissions : Array(DiagnosticMacroAnchor)? = nil,
+             diagnostic_generated_text : Array(DiagnosticGeneratedText)? = nil,
+             diagnostic_emitter : DiagnosticOrigin? = nil) : Nil
       visitor = ToSVisitor.new(io, macro_expansion_pragmas: macro_expansion_pragmas, emit_doc: emit_doc,
-        emit_location_pragmas: emit_location_pragmas, diagnostic_anchors: diagnostic_anchors)
+        emit_location_pragmas: emit_location_pragmas, diagnostic_anchors: diagnostic_anchors,
+        diagnostic_emissions: diagnostic_emissions, diagnostic_generated_text: diagnostic_generated_text,
+        diagnostic_emitter: diagnostic_emitter)
       self.accept visitor
     end
   end
@@ -34,7 +39,10 @@ module Iyi
     end
 
     def initialize(@str = IO::Memory.new, @macro_expansion_pragmas = nil, @emit_doc = false, @emit_location_pragmas : Bool = false,
-                   @diagnostic_anchors : Array(DiagnosticAnchor)? = nil)
+                   @diagnostic_anchors : Array(DiagnosticAnchor)? = nil,
+                   @diagnostic_emissions : Array(DiagnosticMacroAnchor)? = nil,
+                   @diagnostic_generated_text : Array(DiagnosticGeneratedText)? = nil,
+                   @diagnostic_emitter : DiagnosticOrigin? = nil)
       @indent = 0
       @inside_macro = 0
     end
@@ -42,6 +50,30 @@ module Iyi
     private def diagnostic_anchor(node : ASTNode, kind : String, role : String) : Nil
       if anchors = @diagnostic_anchors
         anchors << DiagnosticAnchor.new(@str.pos.to_i32, kind, role, node.diagnostic_origin)
+      end
+      if emissions = @diagnostic_emissions
+        case node.diagnostic_macro_lineage
+        when .preserved?
+          origin = node.diagnostic_origin || raise ArgumentError.new("preserved macro node lacks origin")
+          raise ArgumentError.new("preserved macro node origin mismatch") unless origin.valid_for_anchor?(kind, role)
+          emissions << DiagnosticMacroAnchor.new(@str.pos.to_i32, kind, role, @diagnostic_emitter, origin, nil)
+        when .constructed?
+          emissions << DiagnosticMacroAnchor.new(@str.pos.to_i32, kind, role, @diagnostic_emitter, nil, DiagnosticMacroProducer::ConstructedAst)
+        else
+          raise ArgumentError.new("unclassified macro node at #{@str.pos} for #{kind}:#{role}")
+        end
+      end
+    end
+
+    private def diagnostic_raw(node : ASTNode, producer : DiagnosticMacroProducer, &) : Nil
+      if @diagnostic_generated_text && node.diagnostic_macro_lineage.unknown?
+        raise ArgumentError.new("unclassified macro raw-text producer")
+      end
+      start = @str.pos.to_i32 if @diagnostic_generated_text
+      yield
+      if generated = @diagnostic_generated_text
+        finish = @str.pos.to_i32
+        generated << DiagnosticGeneratedText.new(start.not_nil!, finish, @diagnostic_emitter, producer) if finish > start.not_nil!
       end
     end
 
@@ -1812,6 +1844,7 @@ module Iyi
       need_parens = need_parens(node.obj)
       in_parenthesis(need_parens, node.obj)
       @str << '.'
+      diagnostic_anchor(node, "Cast", "keyword")
       @str << keyword
       @str << '('
       node.to.accept self

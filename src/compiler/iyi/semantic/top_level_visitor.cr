@@ -2903,9 +2903,15 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
       collect_derive_fields declaration, fields
     end
 
+    field_list = ArrayLiteral.new(fields)
+    if origin = derive.diagnostic_origin
+      field_list.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "literal_expansion_node", "derive:fields")
+    elsif @program.diagnostic_capture
+      raise "derive field list lacks its invocation origin"
+    end
     NamedTupleLiteral.new([
       NamedTupleLiteral::Entry.new("name", StringLiteral.new(owner.name.names.last)),
-      NamedTupleLiteral::Entry.new("fields", ArrayLiteral.new(fields)),
+      NamedTupleLiteral::Entry.new("fields", field_list),
     ])
   end
 

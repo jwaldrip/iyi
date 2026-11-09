@@ -93,6 +93,78 @@ module Iyi::DiagnosticProvenance
     raise "empty diagnostic identity text" if value.as_s.empty?
   end
 
+  # Bound the entire unfolded value iteratively before any recursive origin
+  # traversal, hashing, or equality. Six bytes per string byte is a safe JSON
+  # escape upper bound; fixed per-value charges cover keys and punctuation.
+  private def self.bound_origin!(value : JSON::Any) : Nil
+    remaining = 8_i64 * 1024 * 1024
+    pending = [value]
+    until pending.empty?
+      item = pending.pop
+      remaining -= 32
+      case raw = item.raw
+      when String
+        remaining -= raw.bytesize.to_i64 * 6
+      when Array
+        remaining -= raw.size.to_i64 * 32
+        raise "diagnostic origin exceeds size limit" if remaining < 0
+        raw.each { |child| pending << child }
+      when Hash
+        remaining -= raw.size.to_i64 * 32
+        raw.each do |key, child|
+          remaining -= key.bytesize.to_i64 * 6
+          raise "diagnostic origin exceeds size limit" if remaining < 0
+          pending << child
+        end
+      end
+      raise "diagnostic origin exceeds size limit" if remaining < 0
+    end
+  end
+
+  # Reject the superseded Expanded wire shape while the shared decoder is
+  # upgraded. The decoder owns semantic and bounded-graph validation.
+  private def self.origin_schema3!(value : JSON::Any, depth : Int32 = 0) : Nil
+    raise "diagnostic origin nesting too deep" if depth > 128
+    object = value.as_h
+    case object["kind"].as_s
+    when "Written"
+      fields(value, %w(kind source_identity input_byte_offset anchor_kind role))
+    when "Synthetic"
+      synthetic = fields(value, %w(kind parent_origin synthesis_kind structural_slot))
+      origin_schema3!(synthetic["parent_origin"], depth + 1)
+    when "Expanded"
+      expansion = fields(value, %w(kind invocation_origin macro_definition_origin expansion_guard generated_byte_offset anchor_kind role emission_parts spliced_origin))
+      origin_schema3!(expansion["invocation_origin"], depth + 1)
+      origin_schema3!(expansion["macro_definition_origin"], depth + 1)
+      unless expansion["spliced_origin"].raw.nil?
+        origin_schema3!(expansion["spliced_origin"], depth + 1)
+      end
+      parts = expansion["emission_parts"].as_a
+      raise "expanded origin has no emission parts" if parts.empty?
+      next_offset = expansion["generated_byte_offset"].as_i64
+      previous_emitter = nil.as(JSON::Any?)
+      parts.each_with_index do |part, index|
+        item = fields(part, %w(start_offset end_offset emitter_origin))
+        start_offset = item["start_offset"].as_i64
+        end_offset = item["end_offset"].as_i64
+        raise "invalid origin emission part range" unless start_offset == next_offset && end_offset > start_offset
+        emitter = item["emitter_origin"]
+        origin_schema3!(emitter, depth + 1) unless emitter.raw.nil?
+        raise "uncoalesced origin emission parts" if index > 0 && previous_emitter == emitter
+        previous_emitter = emitter
+        next_offset = end_offset
+      end
+    else
+      raise "unknown diagnostic origin kind"
+    end
+  end
+
+  private def self.validated_origin(value : JSON::Any) : Iyi::DiagnosticOrigin
+    bound_origin!(value)
+    origin_schema3!(value)
+    Iyi::DiagnosticOrigin.from_json(value)
+  end
+
   private def self.type_identity(value : JSON::Any, depth : Int32) : Nil
     raise "diagnostic identity nesting too deep" if depth > 128
     object = value.as_h
@@ -163,7 +235,7 @@ module Iyi::DiagnosticProvenance
       fields(value, %w(kind))
     when "def", "block"
       scope = fields(value, %w(kind origin specialization))
-      Iyi::DiagnosticOrigin.from_json(scope["origin"])
+      validated_origin(scope["origin"])
       if scope["kind"].as_s == "def"
         specialization_identity(scope["specialization"], depth + 1)
       else
@@ -178,7 +250,7 @@ module Iyi::DiagnosticProvenance
     keys = current_kind.empty? ? %w(name binding_origin scope type mutable) : %w(name binding_origin scope type mutable closured assigned)
     binding = fields(value, keys)
     text(binding["name"])
-    origin = Iyi::DiagnosticOrigin.from_json(binding["binding_origin"])
+    origin = validated_origin(binding["binding_origin"])
     raise "invalid diagnostic binding origin" unless origin.valid_for_binding?
     scope_identity(binding["scope"], depth + 1, current_kind)
     type_identity(binding["type"], depth + 1)
@@ -192,7 +264,7 @@ module Iyi::DiagnosticProvenance
   private def self.block_identity(value : JSON::Any, depth : Int32) : Nil
     raise "diagnostic identity nesting too deep" if depth > 128
     block = fields(value, %w(origin parameter_types return_type enclosing_specialization environment))
-    Iyi::DiagnosticOrigin.from_json(block["origin"])
+    validated_origin(block["origin"])
     block["parameter_types"].as_a.each { |item| type_identity(item, depth + 1) }
     type_identity(block["return_type"], depth + 1)
     unless block["enclosing_specialization"].raw.nil?
@@ -216,7 +288,7 @@ module Iyi::DiagnosticProvenance
     end
     if object["kind"]?.try(&.as_s?) == "proc_scope"
       scope = fields(value, %w(kind origin proc_type enclosing_specialization environment))
-      Iyi::DiagnosticOrigin.from_json(scope["origin"])
+      validated_origin(scope["origin"])
       raise "proc scope type is not a Proc" unless scope["proc_type"].as_h["kind"].as_s == "Iyi::ProcInstanceType"
       type_identity(scope["proc_type"], depth + 1)
       specialization_identity(scope["enclosing_specialization"], depth + 1)
@@ -227,7 +299,7 @@ module Iyi::DiagnosticProvenance
       return
     end
     spec = fields(value, %w(definition_origin dispatch_type defining_owner ordered_argument_types block_parameter_type named_argument_types free_variable_bindings expansion_shape lexical_block_specialization))
-    Iyi::DiagnosticOrigin.from_json(spec["definition_origin"])
+    validated_origin(spec["definition_origin"])
     type_identity(spec["dispatch_type"], depth + 1)
     type_identity(spec["defining_owner"], depth + 1)
     spec["ordered_argument_types"].as_a.each { |item| type_identity(item, depth + 1) }
@@ -264,7 +336,7 @@ module Iyi::DiagnosticProvenance
     if record.requested_symbol.empty? || record.actual_llvm_symbol.empty? || record.unit_name.empty? || record.linkage.empty?
       raise "frame provenance contains an incomplete emission"
     end
-    origin = Iyi::DiagnosticOrigin.from_json(record.origin)
+    origin = validated_origin(record.origin)
     raise "emission origin is not a proc literal" unless origin.valid_for_anchor?("ProcLiteral", "arrow")
     specialization_identity(record.specialization)
     capture = fields(record.capture_descriptor, %w(proc_type is_closure environment))
@@ -370,6 +442,30 @@ module Iyi::DiagnosticProvenance
   def self.write_manifest(path : String, executable : String, bindings : Array(Binding), inputs : Array(ObjectInput)) : Nil
     raise "missing compiler link inputs" if inputs.empty?
     inputs.each_with_index { |input, index| validate_object!(input, index) }
+    current_units = {} of Int64 => Array(ObjectInput)
+    inputs.each do |input|
+      producer = input.producer.as_h
+      next unless producer["kind"].as_s == "current_unit"
+      ordinal = producer["unit_ordinal"].as_i64
+      (current_units[ordinal] ||= [] of ObjectInput) << input
+    end
+    current_units.each_value do |objects|
+      raise "inconsistent current unit names" unless objects.all? { |object| object.unit_name == objects.first.unit_name }
+      if objects.first.partition.raw.nil?
+        raise "duplicate or mixed single-object unit" unless objects.size == 1
+      else
+        first = objects.first.partition.as_h
+        count = first["count"].as_i64
+        indices = Set(Int64).new
+        objects.each do |object|
+          raise "mixed partitioned and single-object unit" if object.partition.raw.nil?
+          partition = object.partition.as_h
+          raise "inconsistent partition count" unless partition["count"].as_i64 == count
+          raise "duplicate partition coordinate" unless indices.add?(partition["index"].as_i64)
+        end
+        raise "incomplete partition coverage" unless indices.size == count
+      end
+    end
     identities = {} of String => {JSON::Any, JSON::Any, JSON::Any, JSON::Any}
     bound_objects = Set({Int32, String}).new
     bindings.each do |binding|
@@ -437,7 +533,7 @@ module Iyi::DiagnosticProvenance
     end
     manifest = JSON.build do |json|
       json.object do
-        json.field "schema", 2
+        json.field "schema", 3
         json.field "object_input_scope", "compiler_supplied_link_inputs"
         json.field "executable_sha256", ::Crystal::Digest::SHA256.hexdigest(before)
         json.field "executable_symbols", evidence

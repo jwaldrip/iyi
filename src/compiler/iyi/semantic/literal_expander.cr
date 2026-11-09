@@ -1001,6 +1001,10 @@ module Iyi
 
           typeof_node = TypeOf.new([condition.value.clone] of ASTNode).at(node)
           cast = Cast.new(Var.new(value_name).at(node), typeof_node).at(node)
+          if @program.diagnostic_capture
+            origin = node.diagnostic_origin || raise "select cast lacks its source origin"
+            cast.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "select_cast", "arm:#{index}")
+          end
           new_assign = Assign.new(condition.target.clone, cast).at(node)
           new_body = Expressions.new([new_assign, a_when.body.clone] of ASTNode)
           case_whens << When.new([NumberLiteral.new(index).at(node)] of ASTNode, new_body)

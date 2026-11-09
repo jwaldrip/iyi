@@ -97,6 +97,12 @@ module Iyi
       end
     end
 
+    record LocDiagnosticEmission, end_offset : Int32, anchors : Array(DiagnosticMacroAnchor),
+      generated_text : Array(DiagnosticGeneratedText) do
+      def run_pragma(lexer)
+      end
+    end
+
     # Warning settings and all detected warnings.
     property warnings : WarningCollection
 
@@ -1222,6 +1228,8 @@ module Iyi
       end
 
       @token
+    ensure
+      @token.input_end = current_pos + @input_offset_base
     end
 
     def token_end_location
@@ -1792,6 +1800,8 @@ module Iyi
       set_token_raw_from_start(start)
 
       @token
+    ensure
+      @token.input_end = current_pos + @input_offset_base
     end
 
     def next_string_token_noescape(delimiter_state)
@@ -2192,6 +2202,8 @@ module Iyi
       set_token_raw_from_start(start)
 
       @token
+    ensure
+      @token.input_end = current_pos + @input_offset_base
     end
 
     def delimiter_state_for_percent_literal
