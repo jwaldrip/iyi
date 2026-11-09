@@ -323,13 +323,14 @@ class TestEvidenceCollectionAndSanitization(unittest.TestCase):
             "  ::debug::indented command\n"
         )
         sanitized = sanitize_workflow_output(raw)
+        # Verify that no line can be parsed as a GitHub Actions workflow command
+        for line in sanitized.splitlines():
+            self.assertFalse(line.lstrip().startswith("::"), f"Line still has workflow command prefix: {line}")
         self.assertNotIn("::set-output", sanitized)
-        self.assertNotIn("::error", sanitized)
-        self.assertIn("..::set-output", sanitized)
-        self.assertIn("..::error", sanitized)
+        self.assertIn("[payload-log]: set-output", sanitized)
+        self.assertIn("[payload-log]: error::malicious error injection", sanitized)
         self.assertIn("Normal output line", sanitized)
         self.assertIn("Another normal line", sanitized)
-
     def test_descriptor_safe_walk_preserves_symlinks_as_metadata(self):
         with tempfile.TemporaryDirectory() as td:
             reg_file = os.path.join(td, "hello.txt")

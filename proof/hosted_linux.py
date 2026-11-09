@@ -154,14 +154,19 @@ def sha256_file(path: str) -> str:
 def sanitize_workflow_output(text: str) -> str:
     """
     Sanitize text to prevent GitHub Actions workflow command injection.
-    Lines starting with '::' are escaped to '..::'.
+    Neutralizes any workflow command prefix (e.g. '::set-output', '::add-path',
+    '::error', '::warning', '::set-env') so lines can never be interpreted
+    by the GitHub Actions runner as workflow commands.
     """
     lines = text.splitlines(keepends=True)
     sanitized: List[str] = []
     for line in lines:
         stripped = line.lstrip()
-        if stripped.startswith("::") or WORKFLOW_COMMAND_RE.match(stripped):
-            sanitized.append("..::" + stripped[2:] + ("\n" if not line.endswith("\n") else ""))
+        leading_ws = line[: len(line) - len(stripped)]
+        if stripped.startswith("::"):
+            rest = stripped[2:]
+            trailing_nl = "\n" if line.endswith("\n") else ""
+            sanitized.append(f"{leading_ws}[payload-log]: {rest.rstrip()}{trailing_nl}")
         else:
             sanitized.append(line)
     return "".join(sanitized)
@@ -763,6 +768,9 @@ class DescriptorSafeEvidenceCollector:
                                 self.fd = fd
                                 self.bytes_read = 0
 
+                            def readable(self) -> bool:
+                                return True
+
                             def readinto(self, b: bytearray) -> int:
                                 data = os.read(self.fd, len(b))
                                 n = len(data)
@@ -770,6 +778,9 @@ class DescriptorSafeEvidenceCollector:
                                 hasher.update(data)
                                 self.bytes_read += n
                                 return n
+
+                            def close(self) -> None:
+                                pass
 
                         reader = io.BufferedReader(FdReader(file_fd))
                         tar.addfile(ti, reader)
