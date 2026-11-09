@@ -1061,15 +1061,17 @@ def run_existing_mounts_discovery(output_path: pathlib.Path, env_info: dict) -> 
                 census["evaluated_candidates"] = evaluated_candidates
 
                 print(f"[DISCOVERY] Executing probe on eligible candidate {label}: {base_raw} on {mount_src} ({fstype}, mnt_id={mnt_id})", flush=True)
-                rc = execute_probe_on_directory_fd(
-                    child_fd,
-                    mnt_id,
-                    target_dir_path,
-                    output_path,
-                    env_info,
-                    census=census,
-                )
-                child_fd = -1  # Closed by execute_probe_on_directory_fd
+                try:
+                    rc = execute_probe_on_directory_fd(
+                        child_fd,
+                        mnt_id,
+                        target_dir_path,
+                        output_path,
+                        env_info,
+                        census=census,
+                    )
+                finally:
+                    os.close(child_fd)
 
                 if rc == 0:
                     # Supported! Complete success.

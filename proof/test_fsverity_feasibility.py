@@ -29,6 +29,7 @@ or shared systems.
 from __future__ import annotations
 
 import errno
+import fcntl
 import hashlib
 import json
 import os
@@ -678,5 +679,198 @@ class TestDirModeAndIoctlErrorClassification(unittest.TestCase):
             self.assertEqual(report["result"], "UNKNOWN_OR_ERROR")
 
 
+
+class TestDescriptorClosureAndMultiCandidateTransitions(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = get_safe_test_tempdir()
+        self.target_dir = pathlib.Path(self.temp_dir.name)
+        self.c1_dir = self.target_dir / "c1"
+        self.c1_dir.mkdir(mode=0o700)
+        self.c2_dir = self.target_dir / "c2"
+        self.c2_dir.mkdir(mode=0o700)
+        self.output_file = self.target_dir / "report.json"
+        self.current_uid = os.getuid()
+        self.current_gid = os.getgid()
+        self.env_info = {"uid": self.current_uid, "euid": self.current_uid, "capabilities": {}, "no_new_privs": 1}
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_child_fd_closed_on_success(self):
+        fake_mountinfo = [
+            {"mnt_id": 1, "parent_id": 0, "major_minor": "8:0", "root": "/", "mount_point": "/", "mount_opts": ["rw"], "fstype": "ext4", "mount_source": "/dev/root", "super_opts": ["rw"]},
+            {"mnt_id": 10, "parent_id": 1, "major_minor": "8:32", "root": "/", "mount_point": str(self.c1_dir), "mount_opts": ["rw"], "fstype": "ext4", "mount_source": "/dev/sda", "super_opts": ["rw"]},
+        ]
+        captured_child_fd = None
+
+        def fake_execute_probe(dir_fd, mnt_id, target_dir_path, output_path, env_info, census=None):
+            nonlocal captured_child_fd
+            captured_child_fd = dir_fd
+            flags = fcntl.fcntl(dir_fd, fcntl.F_GETFD)
+            self.assertIsNotNone(flags)
+            return 0
+
+        with mock.patch("proof.fsverity_feasibility.record_census", return_value={"mountinfo": fake_mountinfo}), \
+             mock.patch("proof.fsverity_feasibility.get_fd_mnt_id", side_effect=[10, 10]), \
+             mock.patch("proof.fsverity_feasibility.get_fd_fs_identity", side_effect=[
+                 (2048, "8:0", 99999, 0xef53),
+                 (2080, "8:32", 12345, 0xef53),
+             ]), \
+             mock.patch("proof.fsverity_feasibility.execute_probe_on_directory_fd", side_effect=fake_execute_probe):
+            with mock.patch.dict(os.environ, {"RUNNER_TEMP": str(self.c1_dir)}, clear=True):
+                rc = ff.run_existing_mounts_discovery(self.output_file, self.env_info)
+                self.assertEqual(rc, 0)
+                self.assertIsNotNone(captured_child_fd)
+                with self.assertRaises(OSError) as ctx:
+                    fcntl.fcntl(captured_child_fd, fcntl.F_GETFD)
+                self.assertEqual(ctx.exception.errno, errno.EBADF)
+
+    def test_child_fd_closed_on_unavailable(self):
+        fake_mountinfo = [
+            {"mnt_id": 1, "parent_id": 0, "major_minor": "8:0", "root": "/", "mount_point": "/", "mount_opts": ["rw"], "fstype": "ext4", "mount_source": "/dev/root", "super_opts": ["rw"]},
+            {"mnt_id": 10, "parent_id": 1, "major_minor": "8:32", "root": "/", "mount_point": str(self.c1_dir), "mount_opts": ["rw"], "fstype": "ext4", "mount_source": "/dev/sda", "super_opts": ["rw"]},
+        ]
+        captured_child_fd = None
+
+        def fake_execute_probe(dir_fd, mnt_id, target_dir_path, output_path, env_info, census=None):
+            nonlocal captured_child_fd
+            captured_child_fd = dir_fd
+            return 2
+
+        with mock.patch("proof.fsverity_feasibility.record_census", return_value={"mountinfo": fake_mountinfo}), \
+             mock.patch("proof.fsverity_feasibility.get_fd_mnt_id", side_effect=[10, 10]), \
+             mock.patch("proof.fsverity_feasibility.get_fd_fs_identity", side_effect=[
+                 (2048, "8:0", 99999, 0xef53),
+                 (2080, "8:32", 12345, 0xef53),
+             ]), \
+             mock.patch("proof.fsverity_feasibility.execute_probe_on_directory_fd", side_effect=fake_execute_probe):
+            with mock.patch.dict(os.environ, {"RUNNER_TEMP": str(self.c1_dir)}, clear=True):
+                rc = ff.run_existing_mounts_discovery(self.output_file, self.env_info)
+                self.assertEqual(rc, 2)
+                self.assertIsNotNone(captured_child_fd)
+                with self.assertRaises(OSError) as ctx:
+                    fcntl.fcntl(captured_child_fd, fcntl.F_GETFD)
+                self.assertEqual(ctx.exception.errno, errno.EBADF)
+
+    def test_child_fd_closed_on_exception(self):
+        fake_mountinfo = [
+            {"mnt_id": 1, "parent_id": 0, "major_minor": "8:0", "root": "/", "mount_point": "/", "mount_opts": ["rw"], "fstype": "ext4", "mount_source": "/dev/root", "super_opts": ["rw"]},
+            {"mnt_id": 10, "parent_id": 1, "major_minor": "8:32", "root": "/", "mount_point": str(self.c1_dir), "mount_opts": ["rw"], "fstype": "ext4", "mount_source": "/dev/sda", "super_opts": ["rw"]},
+        ]
+        captured_child_fd = None
+
+        def fake_execute_probe(dir_fd, mnt_id, target_dir_path, output_path, env_info, census=None):
+            nonlocal captured_child_fd
+            captured_child_fd = dir_fd
+            raise RuntimeError("Simulated unexpected probe failure")
+
+        with mock.patch("proof.fsverity_feasibility.record_census", return_value={"mountinfo": fake_mountinfo}), \
+             mock.patch("proof.fsverity_feasibility.get_fd_mnt_id", side_effect=[10, 10]), \
+             mock.patch("proof.fsverity_feasibility.get_fd_fs_identity", side_effect=[
+                 (2048, "8:0", 99999, 0xef53),
+                 (2080, "8:32", 12345, 0xef53),
+             ]), \
+             mock.patch("proof.fsverity_feasibility.execute_probe_on_directory_fd", side_effect=fake_execute_probe):
+            with mock.patch.dict(os.environ, {"RUNNER_TEMP": str(self.c1_dir)}, clear=True):
+                with self.assertRaises(RuntimeError):
+                    ff.run_existing_mounts_discovery(self.output_file, self.env_info)
+                self.assertIsNotNone(captured_child_fd)
+                with self.assertRaises(OSError) as ctx:
+                    fcntl.fcntl(captured_child_fd, fcntl.F_GETFD)
+                self.assertEqual(ctx.exception.errno, errno.EBADF)
+
+    def test_two_distinct_mounts_2_to_0(self):
+        fake_mountinfo = [
+            {"mnt_id": 1, "parent_id": 0, "major_minor": "8:0", "root": "/", "mount_point": "/", "mount_opts": ["rw"], "fstype": "ext4", "mount_source": "/dev/root", "super_opts": ["rw"]},
+            {"mnt_id": 10, "parent_id": 1, "major_minor": "8:32", "root": "/", "mount_point": str(self.c1_dir), "mount_opts": ["rw"], "fstype": "ext4", "mount_source": "/dev/sda", "super_opts": ["rw"]},
+            {"mnt_id": 20, "parent_id": 1, "major_minor": "8:48", "root": "/", "mount_point": str(self.c2_dir), "mount_opts": ["rw"], "fstype": "ext4", "mount_source": "/dev/sdb", "super_opts": ["rw"]},
+        ]
+        probe_calls = []
+
+        def fake_execute_probe(dir_fd, mnt_id, target_dir_path, output_path, env_info, census=None):
+            probe_calls.append((mnt_id, str(target_dir_path)))
+            if mnt_id == 10:
+                return 2  # Mount 1 returns UNAVAILABLE
+            if mnt_id == 20:
+                return 0  # Mount 2 returns SUPPORTED
+            return 1
+
+        with mock.patch("proof.fsverity_feasibility.record_census", return_value={"mountinfo": fake_mountinfo}), \
+             mock.patch("proof.fsverity_feasibility.get_fd_mnt_id", side_effect=[
+                 10,  # c1 base_fd
+                 10,  # c1 child_fd
+                 20,  # c2 base_fd
+                 20,  # c2 child_fd
+             ]), \
+             mock.patch("proof.fsverity_feasibility.get_fd_fs_identity", side_effect=[
+                 (2048, "8:0", 99999, 0xef53),  # Root /
+                 (2080, "8:32", 11111, 0xef53), # Candidate 1
+                 (2096, "8:48", 22222, 0xef53), # Candidate 2
+             ]), \
+             mock.patch("proof.fsverity_feasibility.execute_probe_on_directory_fd", side_effect=fake_execute_probe):
+            with mock.patch.dict(os.environ, {"RUNNER_TEMP": str(self.c1_dir), "GITHUB_WORKSPACE": str(self.c2_dir)}, clear=True):
+                rc = ff.run_existing_mounts_discovery(self.output_file, self.env_info)
+                self.assertEqual(rc, 0)
+                self.assertEqual(len(probe_calls), 2)
+                self.assertEqual(probe_calls[0][0], 10)
+                self.assertEqual(probe_calls[1][0], 20)
+
+    def test_two_distinct_mounts_2_to_1(self):
+        fake_mountinfo = [
+            {"mnt_id": 1, "parent_id": 0, "major_minor": "8:0", "root": "/", "mount_point": "/", "mount_opts": ["rw"], "fstype": "ext4", "mount_source": "/dev/root", "super_opts": ["rw"]},
+            {"mnt_id": 10, "parent_id": 1, "major_minor": "8:32", "root": "/", "mount_point": str(self.c1_dir), "mount_opts": ["rw"], "fstype": "ext4", "mount_source": "/dev/sda", "super_opts": ["rw"]},
+            {"mnt_id": 20, "parent_id": 1, "major_minor": "8:48", "root": "/", "mount_point": str(self.c2_dir), "mount_opts": ["rw"], "fstype": "ext4", "mount_source": "/dev/sdb", "super_opts": ["rw"]},
+        ]
+        probe_calls = []
+
+        def fake_execute_probe(dir_fd, mnt_id, target_dir_path, output_path, env_info, census=None):
+            probe_calls.append((mnt_id, str(target_dir_path)))
+            if mnt_id == 10:
+                return 2  # Mount 1 returns UNAVAILABLE
+            if mnt_id == 20:
+                return 1  # Mount 2 returns ERROR
+            return 1
+
+        with mock.patch("proof.fsverity_feasibility.record_census", return_value={"mountinfo": fake_mountinfo}), \
+             mock.patch("proof.fsverity_feasibility.get_fd_mnt_id", side_effect=[
+                 10,  # c1 base_fd
+                 10,  # c1 child_fd
+                 20,  # c2 base_fd
+                 20,  # c2 child_fd
+             ]), \
+             mock.patch("proof.fsverity_feasibility.get_fd_fs_identity", side_effect=[
+                 (2048, "8:0", 99999, 0xef53),  # Root /
+                 (2080, "8:32", 11111, 0xef53), # Candidate 1
+                 (2096, "8:48", 22222, 0xef53), # Candidate 2
+             ]), \
+             mock.patch("proof.fsverity_feasibility.execute_probe_on_directory_fd", side_effect=fake_execute_probe):
+            with mock.patch.dict(os.environ, {"RUNNER_TEMP": str(self.c1_dir), "GITHUB_WORKSPACE": str(self.c2_dir)}, clear=True):
+                rc = ff.run_existing_mounts_discovery(self.output_file, self.env_info)
+                self.assertEqual(rc, 1)
+                self.assertEqual(len(probe_calls), 2)
+
+    def test_initial_error_stops_without_evaluating_later_candidates(self):
+        fake_mountinfo = [
+            {"mnt_id": 1, "parent_id": 0, "major_minor": "8:0", "root": "/", "mount_point": "/", "mount_opts": ["rw"], "fstype": "ext4", "mount_source": "/dev/root", "super_opts": ["rw"]},
+            {"mnt_id": 10, "parent_id": 1, "major_minor": "8:32", "root": "/", "mount_point": str(self.c1_dir), "mount_opts": ["rw"], "fstype": "ext4", "mount_source": "/dev/sda", "super_opts": ["rw"]},
+            {"mnt_id": 20, "parent_id": 1, "major_minor": "8:48", "root": "/", "mount_point": str(self.c2_dir), "mount_opts": ["rw"], "fstype": "ext4", "mount_source": "/dev/sdb", "super_opts": ["rw"]},
+        ]
+        probe_calls = []
+
+        def fake_execute_probe(*args, **kwargs):
+            probe_calls.append(args)
+            return 0
+
+        with mock.patch("proof.fsverity_feasibility.record_census", return_value={"mountinfo": fake_mountinfo}), \
+             mock.patch("proof.fsverity_feasibility.get_fd_mnt_id", return_value=None), \
+             mock.patch("proof.fsverity_feasibility.get_fd_fs_identity", return_value=(2048, "8:0", 99999, 0xef53)), \
+             mock.patch("proof.fsverity_feasibility.execute_probe_on_directory_fd", side_effect=fake_execute_probe):
+            with mock.patch.dict(os.environ, {"RUNNER_TEMP": str(self.c1_dir), "GITHUB_WORKSPACE": str(self.c2_dir)}, clear=True):
+                rc = ff.run_existing_mounts_discovery(self.output_file, self.env_info)
+                self.assertEqual(rc, 1)
+                report = json.loads(self.output_file.read_text())
+                self.assertEqual(report["result"], "UNKNOWN_OR_ERROR")
+                self.assertIn("MNT_ID_UNRESOLVED", report["detail"])
+                self.assertEqual(len(probe_calls), 0)
 if __name__ == "__main__":
     unittest.main()
