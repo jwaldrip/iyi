@@ -16,6 +16,7 @@ Verifies:
 
 import io
 import json
+import lzma
 import os
 import shutil
 import stat
@@ -80,7 +81,6 @@ class TestLockStructure(unittest.TestCase):
         packages = lock.get("packages", {})
         self.assertEqual(set(packages.keys()), REQUIRED_PACKAGES)
 
-        # Check that pockets use pocket-relative release_entry and separate url_path
         pockets = lock.get("metadata_pockets", {})
         for p_name, p_info in pockets.items():
             pkg_xz = p_info.get("packages_xz", {})
@@ -128,7 +128,7 @@ class TestSecurityUrlValidation(unittest.TestCase):
     def test_refuse_path_traversal(self):
         with self.assertRaises(SecurityError) as ctx:
             validate_url("https://snapshot.ubuntu.com/ubuntu/20261105T000000Z/dists/../../etc/passwd", "20261105T000000Z")
-        self.assertIn("traversal", str(ctx.exception).lower())
+        self.assertIn("Path traversal detected in URL", str(ctx.exception))
 
 
 class TestStrictRedirectRejection(unittest.TestCase):
@@ -148,7 +148,7 @@ class TestStrictRedirectRejection(unittest.TestCase):
 
 class TestGpgVerification(unittest.TestCase):
     def setUp(self):
-        self.temp_dir = tempfile.mkdtemp(prefix="iyi_test_gpg_")
+        self.temp_dir = os.path.realpath(tempfile.mkdtemp(prefix="iyi_test_gpg_"))
 
     def tearDown(self):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
@@ -274,14 +274,13 @@ class TestBoundedResourceAllocations(unittest.TestCase):
         raw = b"A" * 10000
         compressed = lzma.compress(raw)
         with self.assertRaises(SecurityError) as ctx:
-            # Expected bound is smaller than raw output
             decompress_xz_bounded(compressed, expected_uncompressed_size=100)
         self.assertIn("exceeded bound", str(ctx.exception).lower())
 
     def test_ar_parser_negative_size_rejection(self):
         bad_ar = (
             b"!<arch>\n"
-            b"test_file       0           0     0     100644  -60       `\n"
+            b"test_file       0           0     0     100644  -60       " + b"`\n"
         )
         with self.assertRaises(SecurityError) as ctx:
             parse_ar_members(bad_ar)
@@ -320,7 +319,7 @@ class TestDebPreflightAndArchiveValidation(unittest.TestCase):
         out = bytearray(b"!<arch>\n")
 
         def add_ar_member(name, content):
-            header = f"{name:<16}{'0':<12}{'0':<6}{'0':<6}{'100644':<8}{len(content):<10}`\n"
+            header = f"{name:<16}{'0':<12}{'0':<6}{'0':<6}{'100644':<8}{len(content):<10}" + "`\n"
             out.extend(header.encode("ascii"))
             out.extend(content)
             if len(content) % 2 == 1:
@@ -415,7 +414,6 @@ class TestDebPreflightAndArchiveValidation(unittest.TestCase):
         self.assertIn("Symlink escapes root", str(ctx.exception))
 
     def test_symlink_graph_escape_fails(self):
-        # Test finding P1: relative links d -> ., d/e -> .. then d/e/file escaping prefix
         ctrl = "Package: libbpf-dev\nVersion: 1:1.3.0-2build2\nArchitecture: amd64\n"
         members = [
             {"name": "d", "type": tarfile.SYMTYPE, "linkname": "."},
@@ -441,7 +439,7 @@ class TestExtractionContainment(unittest.TestCase):
             self.assertIn("Refusing system directory", str(ctx.exception))
 
     def test_symlinked_ancestor_refusal(self):
-        temp_dir = tempfile.mkdtemp(prefix="iyi_test_ancestor_")
+        temp_dir = os.path.realpath(tempfile.mkdtemp(prefix="iyi_test_ancestor_"))
         try:
             real_parent = os.path.join(temp_dir, "real")
             os.makedirs(real_parent, mode=0o700)
@@ -457,7 +455,7 @@ class TestExtractionContainment(unittest.TestCase):
 
 class TestSafeExtractDeb(unittest.TestCase):
     def setUp(self):
-        self.temp_dir = tempfile.mkdtemp(prefix="iyi_test_extract_")
+        self.temp_dir = os.path.realpath(tempfile.mkdtemp(prefix="iyi_test_extract_"))
 
     def tearDown(self):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
@@ -477,7 +475,7 @@ class TestSafeExtractDeb(unittest.TestCase):
 
 class TestExactContractEnforcement(unittest.TestCase):
     def setUp(self):
-        self.temp_dir = tempfile.mkdtemp(prefix="iyi_test_contract_")
+        self.temp_dir = os.path.realpath(tempfile.mkdtemp(prefix="iyi_test_contract_"))
 
     def tearDown(self):
         shutil.rmtree(self.temp_dir, ignore_errors=True)

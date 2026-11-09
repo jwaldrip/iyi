@@ -83,20 +83,20 @@ def validate_url(url: str, snapshot_id: str) -> None:
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme != "https":
         raise SecurityError(f"Refusing non-HTTPS URL: {url}")
-    if parsed.netloc != ALLOWED_BASE_HOST:
-        raise SecurityError(f"Refusing untrusted host: {parsed.netloc} (expected {ALLOWED_BASE_HOST})")
-    if parsed.username or parsed.password:
+    if parsed.username or parsed.password or "@" in parsed.netloc:
         raise SecurityError(f"Refusing URL credentials: {url}")
+    if parsed.hostname != ALLOWED_BASE_HOST or parsed.port is not None:
+        raise SecurityError(f"Refusing untrusted host: {parsed.netloc} (expected {ALLOWED_BASE_HOST})")
     if parsed.query or parsed.fragment:
         raise SecurityError(f"Refusing URL with query or fragment: {url}")
     expected_prefix = f"/ubuntu/{snapshot_id}/"
     if not parsed.path.startswith(expected_prefix):
         raise SecurityError(f"URL path does not start with {expected_prefix}: {url}")
+    if "/../" in parsed.path or parsed.path.endswith("/..") or "/./" in parsed.path or parsed.path.endswith("/."):
+        raise SecurityError(f"Path traversal detected in URL: {url}")
     norm_path = os.path.normpath(parsed.path)
     if norm_path != parsed.path:
         raise SecurityError(f"Refusing non-normalized URL path: {parsed.path}")
-    if "/../" in parsed.path or parsed.path.endswith("/.."):
-        raise SecurityError(f"Path traversal detected in URL: {url}")
 
 
 def fetch_url(
@@ -478,7 +478,32 @@ def inspect_and_validate_deb_archive(
 
     tf_data = tarfile.open(fileobj=io.BytesIO(data_tar_bytes))
     simulated_symlinks: Dict[str, str] = {}
-    simulated_dirs: Set[str] = set()
+
+    def resolve_path_in_graph(path_str: str, depth: int = 0) -> Optional[List[str]]:
+        if depth > 40:
+            raise SecurityError(f"Symlink loop or excessive nesting in path: {path_str}")
+        if path_str.startswith("/"):
+            return None
+        cur_parts: List[str] = []
+        for part in path_str.split("/"):
+            if not part or part == ".":
+                continue
+            elif part == "..":
+                if not cur_parts:
+                    return None
+                cur_parts.pop()
+            else:
+                cur_parts.append(part)
+                cur_key = "/".join(cur_parts)
+                if cur_key in simulated_symlinks:
+                    target = simulated_symlinks[cur_key]
+                    parent_parts = cur_parts[:-1]
+                    target_full = "/".join(parent_parts + [target]) if parent_parts else target
+                    resolved = resolve_path_in_graph(target_full, depth + 1)
+                    if resolved is None:
+                        return None
+                    cur_parts = list(resolved)
+        return cur_parts
 
     for m in tf_data.getmembers():
         raw_name = m.name
@@ -509,36 +534,33 @@ def inspect_and_validate_deb_archive(
         if m.mode & 0o6000 != 0:
             raise SecurityError(f"Prohibited set-ID mode ({oct(m.mode)}) in deb member: {clean}")
 
-        # Check directory traversal through simulated symlinks
-        parts = clean.split("/")
-        for i in range(1, len(parts)):
-            prefix_path = "/".join(parts[:i])
-            if prefix_path in simulated_symlinks:
-                target = simulated_symlinks[prefix_path]
-                if target.startswith("..") or target.startswith("/"):
-                    raise SecurityError(f"Path {clean} traverses through escaping symlink {prefix_path} -> {target}")
-
-        if m.isdir():
-            simulated_dirs.add(clean)
+        # Resolve parent directory in simulated graph
+        parent_dir = os.path.dirname(clean)
+        if parent_dir:
+            resolved_parent = resolve_path_in_graph(parent_dir)
+            if resolved_parent is None:
+                raise SecurityError(f"Path traverses through escaping directory/symlink: {clean}")
+        else:
+            resolved_parent = []
 
         # Check symlink target containment
         if m.issym():
             target = m.linkname
             if target.startswith("/"):
                 raise SecurityError(f"Prohibited absolute symlink target in deb member {clean} -> {target}")
-            parent_dir = os.path.dirname(clean)
-            resolved = os.path.normpath(os.path.join(parent_dir, target))
-            if resolved.startswith("..") or resolved == ".." or resolved.startswith("/"):
-                raise SecurityError(f"Symlink escapes root: {clean} -> {target} (resolves to {resolved})")
-            simulated_symlinks[clean] = resolved
+            target_full = "/".join(resolved_parent + [target]) if resolved_parent else target
+            resolved_target = resolve_path_in_graph(target_full)
+            if resolved_target is None:
+                raise SecurityError(f"Symlink escapes root: {clean} -> {target}")
+            simulated_symlinks[clean] = target
 
         # Check hardlink target containment
         if m.islnk():
             target = m.linkname
             if target.startswith("/"):
                 raise SecurityError(f"Prohibited absolute hardlink target in deb member {clean} -> {target}")
-            resolved = os.path.normpath(target)
-            if resolved.startswith("..") or resolved == ".." or resolved.startswith("/"):
+            resolved_target = resolve_path_in_graph(target)
+            if resolved_target is None:
                 raise SecurityError(f"Hardlink escapes root: {clean} -> {target}")
 
 
@@ -576,8 +598,9 @@ def validate_prefix_containment(output_prefix: str) -> str:
     if abs_output in system_dirs:
         raise SecurityError(f"Refusing system directory as output prefix: {abs_output}")
 
-    # Ancestor symlink and ownership check
-    cur = os.path.dirname(abs_output)
+    # Resolve canonical output and check ancestors
+    canonical_output = os.path.realpath(abs_output)
+    cur = os.path.dirname(canonical_output)
     while cur and cur != "/":
         if os.path.islink(cur):
             raise SecurityError(f"Ancestor directory is a symlink: {cur}")
@@ -626,16 +649,17 @@ def run_lock_consumer(
     """
     abs_output = validate_prefix_containment(output_prefix) if not check_only else os.path.abspath(output_prefix)
 
-    # Validate receipt destination path
+    # Validate receipt destination path (only when not check_only)
     abs_receipt = os.path.abspath(receipt_path)
-    if os.path.islink(abs_receipt):
-        raise SecurityError(f"Receipt destination path is a symlink: {abs_receipt}")
-    receipt_parent = os.path.dirname(abs_receipt)
-    cur = receipt_parent
-    while cur and cur != "/":
-        if os.path.islink(cur):
-            raise SecurityError(f"Receipt parent directory ancestor is a symlink: {cur}")
-        cur = os.path.dirname(cur)
+    if not check_only:
+        if os.path.islink(abs_receipt):
+            raise SecurityError(f"Receipt destination path is a symlink: {abs_receipt}")
+        canonical_receipt = os.path.realpath(os.path.dirname(abs_receipt))
+        cur = canonical_receipt
+        while cur and cur != "/":
+            if os.path.islink(cur):
+                raise SecurityError(f"Receipt parent directory ancestor is a symlink: {cur}")
+            cur = os.path.dirname(cur)
 
     # Stage 2: Load and validate lock schema
     if not os.path.isfile(lock_path):
