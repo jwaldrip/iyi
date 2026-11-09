@@ -1,0 +1,185 @@
+name: Prove Observer Safe Cleanup
+
+on:
+  push:
+    branches:
+      - "proof/std-observe-safe-cleanup-*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GIT_CONFIG_COUNT: "1"
+  GIT_CONFIG_KEY_0: safe.directory
+  GIT_CONFIG_VALUE_0: "*"
+  PYTHONUTF8: "1"
+
+jobs:
+  prove-safe-cleanup:
+    name: "Observer safe cleanup proof (exact e4e7)"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    container:
+      image: crystallang/crystal:1.21.0-build
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact product commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          EXPECTED_PRODUCT_SHA="e4e7e5ed543690cafad11d0b5c1452a710b26d54"
+          echo "=== Verifying exact product commit ==="
+          BASE_SHA="$(git rev-parse HEAD~1)"
+          echo "Base commit (HEAD~1): $BASE_SHA"
+          if [ "$BASE_SHA" != "$EXPECTED_PRODUCT_SHA" ]; then
+            echo "ERROR: Base commit is not exact product SHA! Expected $EXPECTED_PRODUCT_SHA, got $BASE_SHA" >&2
+            exit 1
+          fi
+
+          CHANGED_FILES="$(git diff --name-only "$EXPECTED_PRODUCT_SHA" HEAD)"
+          echo "Changed files relative to product commit:"
+          echo "$CHANGED_FILES"
+          if [ "$CHANGED_FILES" != ".github/workflows/proof-std-observe-safe-cleanup.yml" ]; then
+            echo "ERROR: Unexpected files changed between product commit and proof HEAD!" >&2
+            exit 1
+          fi
+
+          echo "Verified: commit is pinned to exact product $EXPECTED_PRODUCT_SHA"
+
+      - name: Build actual iyi per repo CI
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "=== Building compiler (make crystal) ==="
+          make crystal
+          test -x .build/crystal
+
+          echo "=== Building iyi (make -o .build/crystal iyi) ==="
+          make -o .build/crystal iyi
+          test -x .build/iyi
+          test -x bin/iyi
+
+          echo "=== Verifying built iyi ==="
+          ./bin/iyi --version || .build/iyi --version
+          ./bin/iyi run samples/iyi/hello.iyi
+          echo "Built actual iyi successfully per repo CI."
+
+      - name: Positive test (full actual bench/std_observe_exercise.sh preserves caller sentinel)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "=== Positive Test: Full Actual bench/std_observe_exercise.sh ==="
+
+          RUNNER_SCRATCH="$(mktemp -d -t proof_scratch_XXXXXX)"
+          FIXED_CWD="$(mktemp -d "$RUNNER_SCRATCH/fixed_cwd_XXXXXX")"
+          SENTINEL_FIXED="$FIXED_CWD/relative_exercise_target.txt"
+
+          echo "SENTINEL_CALLER_FILE_PRESERVE_TEST_$(date +%s)_$$" > "$SENTINEL_FIXED"
+          test -f "$SENTINEL_FIXED"
+
+          PRE_HASH="$(sha256sum "$SENTINEL_FIXED" | awk '{print $1}')"
+          PRE_BYTES="$(wc -c < "$SENTINEL_FIXED" | tr -d ' ')"
+          echo "Sentinel initialized at: $SENTINEL_FIXED"
+          echo "  Pre-run SHA-256: $PRE_HASH"
+          echo "  Pre-run Bytes:   $PRE_BYTES"
+
+          FIXED_LOG="$RUNNER_SCRATCH/fixed_run.log"
+          echo "Executing bench/std_observe_exercise.sh from caller cwd: $FIXED_CWD"
+          (cd "$FIXED_CWD" && bash "$GITHUB_WORKSPACE/bench/std_observe_exercise.sh") 2>&1 | tee "$FIXED_LOG"
+
+          grep -Fq "== relative file observation does not mark recording failed or omit END" "$FIXED_LOG" || {
+            echo "ERROR: Affected region was not executed in fixed run!" >&2
+            exit 1
+          }
+          grep -Fq "OK: bench/std_observe_exercise.sh passed all checks" "$FIXED_LOG" || {
+            echo "ERROR: bench/std_observe_exercise.sh did not pass all checks!" >&2
+            exit 1
+          }
+
+          if [ ! -f "$SENTINEL_FIXED" ]; then
+            echo "ERROR: Sentinel file in caller cwd was DELETED by fixed script!" >&2
+            exit 1
+          fi
+
+          POST_HASH="$(sha256sum "$SENTINEL_FIXED" | awk '{print $1}')"
+          POST_BYTES="$(wc -c < "$SENTINEL_FIXED" | tr -d ' ')"
+          echo "Sentinel verification after fixed run:"
+          echo "  Post-run SHA-256: $POST_HASH"
+          echo "  Post-run Bytes:   $POST_BYTES"
+
+          if [ "$PRE_HASH" != "$POST_HASH" ]; then
+            echo "ERROR: Sentinel SHA-256 changed! Expected $PRE_HASH, got $POST_HASH" >&2
+            exit 1
+          fi
+          if [ "$PRE_BYTES" != "$POST_BYTES" ]; then
+            echo "ERROR: Sentinel byte count changed! Expected $PRE_BYTES, got $POST_BYTES" >&2
+            exit 1
+          fi
+
+          echo "OBSERVATION_1_PASSED: Sentinel file in caller temp cwd remained intact with exact bytes/hash unchanged."
+
+      - name: Negative control (scratch copy of pre-fix script deletes caller sentinel)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "=== Negative Control: Scratch Copy of Pre-Fix Script ==="
+
+          RUNNER_SCRATCH="$(mktemp -d -t neg_scratch_XXXXXX)"
+          PRE_FIX_REPO="$RUNNER_SCRATCH/pre_fix_repo"
+          mkdir -p "$PRE_FIX_REPO"
+
+          for item in "$GITHUB_WORKSPACE"/* "$GITHUB_WORKSPACE"/.*; do
+            name="$(basename "$item")"
+            if [ "$name" = "." ] || [ "$name" = ".." ] || [ "$name" = ".git" ] || [ "$name" = "bench" ]; then
+              continue
+            fi
+            ln -s "$item" "$PRE_FIX_REPO/$name" 2>/dev/null || true
+          done
+
+          cp -r "$GITHUB_WORKSPACE/bench" "$PRE_FIX_REPO/bench"
+
+          PRE_FIX_COMMIT="e4e7e5ed543690cafad11d0b5c1452a710b26d54~1"
+          git show "${PRE_FIX_COMMIT}:bench/std_observe_exercise.sh" > "$PRE_FIX_REPO/bench/std_observe_exercise.sh"
+          chmod +x "$PRE_FIX_REPO/bench/std_observe_exercise.sh"
+
+          grep -Fq 'rm -f "$REL_TARGET" "relative_exercise_target.txt"' "$PRE_FIX_REPO/bench/std_observe_exercise.sh" || {
+            echo "ERROR: pre-fix script does not contain expected rm line!" >&2
+            exit 1
+          }
+
+          NEG_CWD="$(mktemp -d "$RUNNER_SCRATCH/neg_cwd_XXXXXX")"
+          SENTINEL_NEG="$NEG_CWD/relative_exercise_target.txt"
+          echo "SENTINEL_CALLER_FILE_NEGATIVE_CONTROL_$$" > "$SENTINEL_NEG"
+          test -f "$SENTINEL_NEG"
+          echo "Negative control sentinel initialized at: $SENTINEL_NEG"
+
+          NEG_LOG="$RUNNER_SCRATCH/neg_run.log"
+          echo "Executing pre-fix bench/std_observe_exercise.sh from caller cwd: $NEG_CWD"
+          (cd "$NEG_CWD" && bash "$PRE_FIX_REPO/bench/std_observe_exercise.sh") 2>&1 | tee "$NEG_LOG"
+
+          grep -Fq "== relative file observation does not mark recording failed or omit END" "$NEG_LOG" || {
+            echo "ERROR: Affected region was not executed in negative control run!" >&2
+            exit 1
+          }
+          grep -Fq "OK: bench/std_observe_exercise.sh passed all checks" "$NEG_LOG" || {
+            echo "ERROR: pre-fix bench/std_observe_exercise.sh did not pass all checks!" >&2
+            exit 1
+          }
+
+          if [ -f "$SENTINEL_NEG" ]; then
+            echo "ERROR: Negative control failed! Sentinel was NOT deleted by pre-fix script!" >&2
+            exit 1
+          fi
+
+          echo "OBSERVATION_2_PASSED: Negative control confirmed pre-fix script deleted caller sentinel in cwd."
