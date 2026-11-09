@@ -408,6 +408,21 @@ class TestEvidenceCollectionAndSanitization(unittest.TestCase):
             self.assertEqual(len(digest), 64)
             self.assertTrue(os.path.isfile(archive_path))
 
+    def test_checkpoint_archive_rejects_system_tempdir(self):
+        with tempfile.TemporaryDirectory() as td:
+            archive_path = os.path.join(td, "checkpoint.tar.gz")
+            desc = {"stage": "plan", "status": "PASS", "attempt": 1}
+            with self.assertRaises(EvidenceCollectionError):
+                create_checkpoint_archive(tempfile.gettempdir(), archive_path, desc)
+
+    def test_checkpoint_archive_with_none_checkpoint_dir(self):
+        with tempfile.TemporaryDirectory() as td:
+            archive_path = os.path.join(td, "checkpoint.tar.gz")
+            desc = {"stage": "plan", "status": "PASS", "attempt": 1}
+            digest = create_checkpoint_archive(None, archive_path, desc)
+            self.assertEqual(len(digest), 64)
+            self.assertTrue(os.path.isfile(archive_path))
+
     def test_sealed_origin_receipt(self):
         with tempfile.TemporaryDirectory() as td:
             manifest = validate_manifest_dict(make_valid_manifest_dict(report_path="/private/tmp/iyp-11223344"))

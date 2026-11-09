@@ -3,10 +3,19 @@ name: Linux Strict Proof Chain (Ubuntu 24.04)
 # GitHub-hosted Linux strict proof controller for PR147.
 # Deployment branch policy in environment 'strict-proof' permits only
 # branch 'proof/strict-lifecycle-repair-20261102'.
-# Strict execution is unconditionally refused before P1 build, W checkout,
-# staging mounts, or container launch until independently authenticated
-# authorization exists from Jason Waldrip (user ID 43164) binding the exact
-# canonical manifest digest.
+#
+# Architecture:
+# 1. 'validation-proofs' runs unit/controller tests and preflight simulation
+#    automatically on push to the permitted branch or when mode is 'validation-only'.
+# 2. 'prepare-strict-manifest' (strict-chain mode only) is an unprivileged job
+#    that runs BEFORE the environment gate. It constructs the exact deterministic
+#    canonical manifest, computes the SHA-256 digest, uploads the manifest artifact,
+#    and publishes the exact approval comment in the step summary.
+# 3. 'strict-proof' (strict-chain mode only) is protected by environment 'strict-proof'
+#    (ID 26584191206) requiring Jason Waldrip (user ID 43164) approval. It verifies
+#    the manifest digest against the approval history, verifies lineage, stages
+#    offline inputs, verifies boundary preflight on exact mounts, and executes the
+#    hardened sequential proof lifecycle on a single host runner.
 
 on:
   push:
@@ -34,6 +43,7 @@ on:
         description: "Pinned toolchain image digest (sha256:64-hex, required for strict-chain)"
         required: false
         type: string
+
 permissions:
   contents: read
   actions: read
@@ -59,8 +69,215 @@ env:
   REVIEWER_ID: "43164"
 
 jobs:
+  validation-proofs:
+    name: "Controller Unit & Integration Validation"
+    if: ${{ github.event_name == 'push' || github.event.inputs.mode == 'validation-only' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout controller repository (C)
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Setup Python 3.14
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Run controller validation and unit tests
+        run: |
+          python3 -B -m unittest proof.test_hosted_linux -v
+
+  prepare-strict-manifest:
+    name: "Prepare Strict Proof Manifest"
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'strict-chain' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      manifest_digest: ${{ steps.manifest.outputs.manifest_digest }}
+      p_sha: ${{ steps.manifest.outputs.p_sha }}
+      w_sha: ${{ steps.manifest.outputs.w_sha }}
+      c_sha: ${{ steps.manifest.outputs.c_sha }}
+      image: ${{ steps.manifest.outputs.image }}
+      image_digest: ${{ steps.manifest.outputs.image_digest }}
+      report_path: ${{ steps.manifest.outputs.report_path }}
+    steps:
+      - name: Checkout controller repository (C)
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Setup Python 3.14
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Construct and bind canonical manifest
+        id: manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          P_INPUT_SHA: ${{ github.event.inputs.p_sha }}
+          W_INPUT_SHA: ${{ github.event.inputs.w_sha }}
+          IMAGE_DIGEST_INPUT: ${{ github.event.inputs.image_digest }}
+        run: |
+          python3 -B - <<'PY'
+          import hashlib, json, os, pathlib, re, subprocess, sys
+
+          def fail(msg):
+              print(f"PREPARE-FAIL: {msg}", file=sys.stderr)
+              sys.exit(5)
+
+          p_sha = os.environ.get("P_INPUT_SHA", "").strip()
+          w_sha = os.environ.get("W_INPUT_SHA", "").strip()
+          image_digest = os.environ.get("IMAGE_DIGEST_INPUT", "").strip()
+
+          req_path = pathlib.Path("proof/hosted_request.json")
+          req_data = {}
+          if req_path.is_file():
+              try:
+                  req_data = json.loads(req_path.read_text())
+                  p_sha = p_sha or req_data.get("p_sha", "")
+                  w_sha = w_sha or req_data.get("w_sha", "")
+                  image_digest = image_digest or req_data.get("image_digest", "")
+              except Exception as exc:
+                  fail(f"Invalid hosted_request.json: {exc}")
+
+          for sha_val, label in ((p_sha, "p_sha"), (w_sha, "w_sha")):
+              if not re.fullmatch(r"[0-9a-f]{40}", sha_val):
+                  fail(f"Authorized commit SHA {label} is not finalized or invalid 40-hex string: {sha_val!r}")
+
+          if not image_digest or not re.fullmatch(r"sha256:[0-9a-f]{64}", image_digest):
+              fail(f"Pinned toolchain image digest is required and must match sha256:64-hex: {image_digest!r}")
+
+          c_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          workflow_path = ".github/workflows/pr147-linux-strict.yml"
+          workflow_blob = subprocess.check_output(["git", "hash-object", workflow_path], text=True).strip()
+
+          lock_path = "proof/hosted_sources.lock.json"
+          if not os.path.isfile(lock_path):
+              fail(f"Lock file missing at {lock_path}")
+          lock_bytes = pathlib.Path(lock_path).read_bytes()
+          lock_sha256 = hashlib.sha256(lock_bytes).hexdigest()
+
+          # Compute expected bundle SHA-256 deterministically from the lock file's files table
+          try:
+              lock_json = json.loads(lock_bytes)
+              files_table = lock_json.get("files", {})
+              if not files_table:
+                  fail("Lock file missing or empty files table")
+              inv_lines = []
+              for path in sorted(files_table.keys()):
+                  info = files_table[path]
+                  inv_lines.append(f"{path} {info['sha256']} {info['size']}\n")
+              expected_bundle_sha256 = hashlib.sha256("".join(inv_lines).encode("utf-8")).hexdigest()
+          except Exception as exc:
+              fail(f"Failed to calculate expected bundle SHA-256 from lock: {exc}")
+
+          # Bind independent review from request (verifying actual review artifact, no fabrication)
+          ind_review = req_data.get("independent_review", {})
+          review_commit = ind_review.get("review_commit", "")
+          review_path = ind_review.get("review_path", "")
+          review_sha256 = ind_review.get("review_sha256", "")
+
+          if review_commit and review_path:
+              try:
+                  rev_raw = subprocess.check_output(["git", "show", f"{review_commit}:{review_path}"])
+                  act_rev_sha = hashlib.sha256(rev_raw).hexdigest()
+                  if review_sha256 and act_rev_sha != review_sha256:
+                      fail(f"Review digest mismatch: expected {review_sha256}, got {act_rev_sha}")
+                  review_doc = json.loads(rev_raw)
+                  if review_doc.get("verdict") != "GO":
+                      fail(f"Independent review verdict is not GO: {review_doc.get('verdict')}")
+                  if review_doc.get("product_sha") != p_sha or review_doc.get("proof_sha") != w_sha:
+                      fail("Independent review product/proof SHA mismatch")
+              except Exception as exc:
+                  fail(f"Failed to verify independent review artifact: {exc}")
+          else:
+              fail("Independent review commit and path required in hosted_request.json")
+
+          run_id = str(os.environ["GITHUB_RUN_ID"])
+          run_attempt = int(os.environ["GITHUB_RUN_ATTEMPT"])
+
+          # Deterministic pre-approval report path matching /private/tmp/iyp-<8 lowercase hex>
+          path_seed = f"{run_id}:{run_attempt}:{c_sha[:8]}"
+          report_dir = f"/private/tmp/iyp-{hashlib.sha256(path_seed.encode()).hexdigest()[:8]}"
+
+          manifest = {
+              "schema": "iyi-hosted-linux-proof-v1",
+              "backend": "github-hosted-linux-docker",
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "c_sha": c_sha,
+              "p_sha": p_sha,
+              "w_sha": w_sha,
+              "workflow_path": workflow_path,
+              "workflow_blob": workflow_blob,
+              "run_id": run_id,
+              "run_attempt": run_attempt,
+              "job_id": "0",  # Bound prior to runner assignment; job_key binds execution job
+              "job_key": "strict-proof",
+              "image": "ghcr.io/jwaldrip/iyi-proof-linux",
+              "image_digest": image_digest,
+              "lock_path": lock_path,
+              "lock_sha256": lock_sha256,
+              "expected_bundle_sha256": expected_bundle_sha256,
+              "report_path": report_dir,
+              "environment": os.environ["STRICT_ENV_NAME"],
+              "environment_id": os.environ["STRICT_ENV_ID"],
+              "resource_policy": {
+                  "driver_limit_sec": float(os.environ["DRIVER_LIMIT_SEC"]),
+                  "grace_sec": float(os.environ["GRACE_SEC"]),
+                  "payload_budget_sec": float(os.environ["PAYLOAD_BUDGET_SEC"]),
+                  "host_job_limit_sec": float(os.environ["HOST_JOB_LIMIT_SEC"]),
+                  "min_disk_gib": float(os.environ["MIN_DISK_GIB"]),
+              },
+              "independent_review": ind_review,
+          }
+
+          manifest_bytes = (json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
+          manifest_file = pathlib.Path("manifest.json")
+          manifest_file.write_bytes(manifest_bytes)
+
+          digest = hashlib.sha256(manifest_bytes).hexdigest()
+          comment = f"iyi-strict-linux-authorization-v1 sha256:{digest}"
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"manifest_digest={digest}\n")
+              out.write(f"p_sha={p_sha}\n")
+              out.write(f"w_sha={w_sha}\n")
+              out.write(f"c_sha={c_sha}\n")
+              out.write(f"image=ghcr.io/jwaldrip/iyi-proof-linux\n")
+              out.write(f"image_digest={image_digest}\n")
+              out.write(f"report_path={report_dir}\n")
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as out:
+              out.write("## Strict Linux Proof Authorization Request\n\n")
+              out.write(f"- **P Commit (Product)**: `{p_sha}`\n")
+              out.write(f"- **W Commit (Proof)**: `{w_sha}`\n")
+              out.write(f"- **C Commit (Controller)**: `{c_sha}`\n")
+              out.write(f"- **Toolchain Image Digest**: `{image_digest}`\n")
+              out.write(f"- **Lock SHA-256**: `{lock_sha256}`\n")
+              out.write(f"- **Expected Bundle SHA-256**: `{expected_bundle_sha256}`\n")
+              out.write(f"- **Deterministic Report Path**: `{report_dir}`\n\n")
+              out.write("### Required Environment Approval Comment\n")
+              out.write(f"```\n{comment}\n```\n")
+
+          print(f"Manifest prepared successfully. Digest: sha256:{digest}")
+          PY
+
+      - name: Upload canonical manifest artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: strict-linux-manifest-${{ github.run_id }}-${{ github.run_attempt }}
+          path: manifest.json
+          if-no-files-found: error
+          retention-days: 14
+
   strict-proof:
     name: "Linux Strict Proof Supervisor (Ubuntu 24.04)"
+    needs: prepare-strict-manifest
     runs-on: ubuntu-24.04
     timeout-minutes: 360  # 6-hour maximum GitHub Actions budget
     environment: strict-proof
@@ -90,175 +307,31 @@ jobs:
         with:
           python-version: "3.14"
 
-      - name: Install Python dependencies
-        run: |
-          python3 -m pip install --upgrade pip
-          python3 -m pip install pyyaml "idna==3.11" cryptography pillow h2 hpack zstandard
-          python3 -c "import idna; assert idna.__version__ == '3.11', f'idna mismatch: {idna.__version__}'"
+      - name: Download prepared manifest artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: strict-linux-manifest-${{ github.run_id }}-${{ github.run_attempt }}
 
-      - name: Resolve exact hosted job context
-        id: job-metadata
+      - name: Authenticate independent authorization anchor
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED_DIGEST: ${{ needs.prepare-strict-manifest.outputs.manifest_digest }}
         run: |
           python3 -B - <<'PY'
-          import json, os, sys, urllib.request
-          from datetime import datetime
-          repo = os.environ["GITHUB_REPOSITORY"]
-          run_id = os.environ["GITHUB_RUN_ID"]
-          attempt = os.environ["GITHUB_RUN_ATTEMPT"]
-          key = os.environ["GITHUB_JOB"]
-          runner = os.environ["RUNNER_NAME"]
-
-          url = f"https://api.github.com/repos/{repo}/actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100"
-          req = urllib.request.Request(url, headers={
-              "Authorization": "Bearer " + os.environ["GH_TOKEN"],
-              "Accept": "application/vnd.github+json",
-              "User-Agent": "iyi-linux-strict-controller",
-          })
-          try:
-              with urllib.request.urlopen(req, timeout=30) as resp:
-                  jobs = json.load(resp)["jobs"]
-          except Exception as exc:
-              sys.exit(f"Failed to query job metadata from GitHub API: {exc}")
-
-          matches = [
-              j for j in jobs
-              if j.get("runner_name") == runner and j.get("status") == "in_progress"
-              and str(j.get("run_id")) == run_id and str(j.get("run_attempt")) == attempt
-          ]
-          if len(matches) != 1:
-              sys.exit(f"Expected exactly one matching current job, found {len(matches)}")
-          job = matches[0]
-          job_id = str(job.get("id", ""))
-          started = job.get("started_at", "")
-          if not job_id.isdigit() or not started:
-              sys.exit("Missing valid job ID or start timestamp")
-          epoch = datetime.fromisoformat(started.replace("Z", "+00:00")).timestamp()
-
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
-              out.write(f"job_id={job_id}\njob_key={key}\njob_started_at_iso={started}\njob_started_at_epoch={epoch}\n")
-          PY
-
-      # Validation-only branch: runs test suite and preflight simulation
-      - name: Run controller validation and unit tests (validation-only)
-        if: ${{ github.event_name == 'push' || github.event.inputs.mode == 'validation-only' }}
-        run: |
-          python3 -m unittest proof/test_hosted_linux.py
-
-      # Strict execution branch: unconditionally verifies independent authorization
-      - name: Construct and verify canonical manifest (strict-chain)
-        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'strict-chain' }}
-        id: manifest-check
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          P_INPUT_SHA: ${{ github.event.inputs.p_sha }}
-          W_INPUT_SHA: ${{ github.event.inputs.w_sha }}
-          IMAGE_DIGEST_INPUT: ${{ github.event.inputs.image_digest }}
-          JOB_ID: ${{ steps.job-metadata.outputs.job_id }}
-          JOB_KEY: ${{ steps.job-metadata.outputs.job_key }}
-        run: |
-          python3 -B - <<'PY'
-          import hashlib, json, os, pathlib, re, secrets, subprocess, sys
-
-          def fail(msg):
-              print(f"STRICT-FAIL: {msg}", file=sys.stderr)
-              sys.exit(5)
-
-          p_sha = os.environ.get("P_INPUT_SHA", "").strip()
-          w_sha = os.environ.get("W_INPUT_SHA", "").strip()
-          image_digest = os.environ.get("IMAGE_DIGEST_INPUT", "").strip()
-
-          # If not supplied via inputs, check proof/hosted_request.json
-          req_path = pathlib.Path("proof/hosted_request.json")
-          if req_path.is_file():
-              try:
-                  req_data = json.loads(req_path.read_text())
-                  p_sha = p_sha or req_data.get("p_sha", "")
-                  w_sha = w_sha or req_data.get("w_sha", "")
-                  image_digest = image_digest or req_data.get("image_digest", "")
-              except Exception as exc:
-                  fail(f"Invalid hosted_request.json: {exc}")
-
-          for sha_val, label in ((p_sha, "p_sha"), (w_sha, "w_sha")):
-              if not re.fullmatch(r"[0-9a-f]{40}", sha_val):
-                  fail(f"Authorized commit SHA {label} is not finalized or invalid 40-hex string: {sha_val!r}")
-
-          if not image_digest or not re.fullmatch(r"sha256:[0-9a-f]{64}", image_digest):
-              fail(f"Pinned toolchain image digest is required and must match sha256:64-hex: {image_digest!r}")
-          c_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-          workflow_path = ".github/workflows/pr147-linux-strict.yml"
-          workflow_blob = subprocess.check_output(["git", "hash-object", workflow_path], text=True).strip()
-
-          lock_path = "proof/hosted_sources.lock.json"
-          if not os.path.isfile(lock_path):
-              fail(f"Lock file missing at {lock_path}")
-          lock_sha256 = hashlib.sha256(pathlib.Path(lock_path).read_bytes()).hexdigest()
-
-          # Deterministic report directory matching /private/tmp/iyp-<8 lowercase hex>
-          report_dir = f"/private/tmp/iyp-{secrets.token_hex(4)}"
-
-          manifest = {
-              "schema": "iyi-hosted-linux-proof-v1",
-              "backend": "github-hosted-linux-docker",
-              "repository": os.environ["GITHUB_REPOSITORY"],
-              "c_sha": c_sha,
-              "p_sha": p_sha,
-              "w_sha": w_sha,
-              "workflow_path": workflow_path,
-              "workflow_blob": workflow_blob,
-              "run_id": str(os.environ["GITHUB_RUN_ID"]),
-              "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
-              "job_id": str(os.environ["JOB_ID"]),
-              "job_key": os.environ["JOB_KEY"],
-              "image": "ghcr.io/jwaldrip/iyi-proof-linux:latest",
-              "image_digest": image_digest,
-              "lock_path": lock_path,
-              "lock_sha256": lock_sha256,
-              "expected_bundle_sha256": "0" * 64,  # Replaced by lock or stager
-              "report_path": report_dir,
-              "environment": os.environ["STRICT_ENV_NAME"],
-              "environment_id": os.environ["STRICT_ENV_ID"],
-              "resource_policy": {
-                  "driver_limit_sec": float(os.environ["DRIVER_LIMIT_SEC"]),
-                  "grace_sec": float(os.environ["GRACE_SEC"]),
-                  "payload_budget_sec": float(os.environ["PAYLOAD_BUDGET_SEC"]),
-                  "host_job_limit_sec": float(os.environ["HOST_JOB_LIMIT_SEC"]),
-                  "min_disk_gib": float(os.environ["MIN_DISK_GIB"]),
-              },
-              "independent_review": {
-                  "review_path": "proof/review_linux.json",
-                  "verdict": "GO",
-              },
-          }
-
-          manifest_bytes = (json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
-          manifest_path = pathlib.Path(os.environ["RUNNER_TEMP"]) / "manifest.json"
-          manifest_path.write_bytes(manifest_bytes)
-
-          digest = hashlib.sha256(manifest_bytes).hexdigest()
-          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
-              out.write(f"manifest_digest={digest}\nmanifest_path={manifest_path}\nreport_path={report_dir}\n")
-
-          print(f"Constructed canonical manifest. Digest: sha256:{digest}")
-          PY
-
-      - name: Authenticate independent authorization anchor (strict-chain)
-        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'strict-chain' }}
-        id: check-auth
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          EXPECTED_DIGEST: ${{ steps.manifest-check.outputs.manifest_digest }}
-          MANIFEST_PATH: ${{ steps.manifest-check.outputs.manifest_path }}
-        run: |
-          python3 -B - <<'PY'
-          import json, os, sys, urllib.error, urllib.request
+          import hashlib, json, os, pathlib, sys, urllib.error, urllib.request
 
           repo = os.environ["GITHUB_REPOSITORY"]
           run_id = os.environ["GITHUB_RUN_ID"]
           expected_digest = os.environ["EXPECTED_DIGEST"]
-          expected_comment = f"iyi-strict-linux-authorization-v1 sha256:{expected_digest}"
 
+          # 1. Verify downloaded manifest matches expected digest from prepare job
+          manifest_bytes = pathlib.Path("manifest.json").read_bytes()
+          actual_digest = hashlib.sha256(manifest_bytes).hexdigest()
+          if actual_digest != expected_digest:
+              print(f"FATAL: Manifest artifact digest {actual_digest} does not match prepare digest {expected_digest}", file=sys.stderr)
+              sys.exit(5)
+
+          # 2. Query GitHub approvals API
           url = f"https://api.github.com/repos/{repo}/actions/runs/{run_id}/approvals"
           req = urllib.request.Request(url, headers={
               "Authorization": "Bearer " + os.environ["GH_TOKEN"],
@@ -274,12 +347,10 @@ jobs:
               print("Failing closed: cannot verify independent authorization.", file=sys.stderr)
               sys.exit(5)
 
-          # Verify via proof/hosted_linux.py verify-auth
-          approvals_path = os.path.join(os.environ["RUNNER_TEMP"], "approvals.json")
-          with open(approvals_path, "w", encoding="utf-8") as f:
-              json.dump(approvals, f)
+          approvals_path = pathlib.Path(os.environ["RUNNER_TEMP"]) / "approvals.json"
+          approvals_path.write_text(json.dumps(approvals))
 
-          ret = os.system(f"python3 proof/hosted_linux.py verify-auth --manifest '{os.environ['MANIFEST_PATH']}' --approvals '{approvals_path}'")
+          ret = os.system(f"python3 proof/hosted_linux.py verify-auth --manifest manifest.json --approvals '{approvals_path}'")
           if ret != 0:
               print("CRITICAL: Authorization verification failed or rejected. Halting.", file=sys.stderr)
               sys.exit(5)
@@ -287,8 +358,7 @@ jobs:
           print("Independent authorization verified by Jason Waldrip. Proceeding.")
           PY
 
-      - name: Stage and verify input bundle (strict-chain)
-        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'strict-chain' }}
+      - name: Stage and verify input bundle
         id: stage-inputs
         run: |
           STAGED_DIR="$RUNNER_TEMP/staged-inputs"
@@ -297,12 +367,11 @@ jobs:
           python3 proof/hosted_inputs.py verify --lock proof/hosted_sources.lock.json --input "$STAGED_DIR"
           echo "staged_inputs_dir=$STAGED_DIR" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout clean P and W trees and verify lineage (strict-chain)
-        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'strict-chain' }}
+      - name: Checkout clean P and W trees and verify lineage
         id: checkout-trees
         env:
-          P_SHA: ${{ github.event.inputs.p_sha }}
-          W_SHA: ${{ github.event.inputs.w_sha }}
+          P_SHA: ${{ needs.prepare-strict-manifest.outputs.p_sha }}
+          W_SHA: ${{ needs.prepare-strict-manifest.outputs.w_sha }}
         run: |
           P_DIR="$RUNNER_TEMP/p-source"
           W_DIR="$RUNNER_TEMP/w-proof"
@@ -322,42 +391,41 @@ jobs:
           echo "p_dir=$P_DIR" >> "$GITHUB_OUTPUT"
           echo "w_dir=$W_DIR" >> "$GITHUB_OUTPUT"
 
-      - name: Build pinned toolchain Docker image (strict-chain)
-        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'strict-chain' }}
+      - name: Build pinned toolchain Docker image
         run: |
-          docker build -t ghcr.io/jwaldrip/iyi-proof-linux:latest -f proof/hosted-linux.Dockerfile .
+          IMAGE_TAG="${{ needs.prepare-strict-manifest.outputs.image }}@${{ needs.prepare-strict-manifest.outputs.image_digest }}"
+          docker build -t "$IMAGE_TAG" -f proof/hosted-linux.Dockerfile .
 
-      - name: Run container preflight boundary checks (strict-chain)
-        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'strict-chain' }}
+      - name: Run container preflight boundary checks
         run: |
+          IMAGE_TAG="${{ needs.prepare-strict-manifest.outputs.image }}@${{ needs.prepare-strict-manifest.outputs.image_digest }}"
           python3 -B proof/hosted_linux.py preflight \
-            --image ghcr.io/jwaldrip/iyi-proof-linux:latest \
+            --image "$IMAGE_TAG" \
             --p "${{ steps.checkout-trees.outputs.p_dir }}" \
             --w "${{ steps.checkout-trees.outputs.w_dir }}" \
             --inputs-dir "${{ steps.stage-inputs.outputs.staged_inputs_dir }}" \
             --temp-dir "$RUNNER_TEMP"
 
-      - name: Launch Hosted Linux Strict Proof Controller (strict-chain)
-        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'strict-chain' }}
+      - name: Launch Hosted Linux Strict Proof Controller
         run: |
           ARTIFACTS_DIR="$RUNNER_TEMP/strict-proof-artifacts"
           mkdir -p "$ARTIFACTS_DIR"
 
           python3 -B proof/hosted_linux.py run \
-            --manifest "${{ steps.manifest-check.outputs.manifest_path }}" \
+            --manifest manifest.json \
             --approvals "$RUNNER_TEMP/approvals.json" \
             --p "${{ steps.checkout-trees.outputs.p_dir }}" \
             --w "${{ steps.checkout-trees.outputs.w_dir }}" \
             --inputs-dir "${{ steps.stage-inputs.outputs.staged_inputs_dir }}" \
             --artifacts-dir "$ARTIFACTS_DIR" \
-            --job-start-time "${{ steps.job-metadata.outputs.job_started_at_epoch }}" \
+            --job-start-time "$(date +%s)" \
             --payload-budget-sec "${{ env.PAYLOAD_BUDGET_SEC }}" \
             --driver-limit-sec "${{ env.DRIVER_LIMIT_SEC }}" \
             --grace_sec "${{ env.GRACE_SEC }}" \
             --min-disk-gib "${{ env.MIN_DISK_GIB }}"
 
       - name: Upload strict proof evidence artifacts
-        if: always() && github.event.inputs.mode == 'strict-chain'
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: hosted-linux-strict-evidence-${{ github.run_id }}-${{ github.run_attempt }}

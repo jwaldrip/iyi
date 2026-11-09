@@ -823,7 +823,7 @@ class DescriptorSafeEvidenceCollector:
 
 
 def create_checkpoint_archive(
-    checkpoint_dir: str,
+    checkpoint_dir: Optional[str],
     output_tar_gz: str,
     checkpoint_descriptor: Dict[str, Any],
     skip_raw_executables: bool = False,
@@ -831,14 +831,18 @@ def create_checkpoint_archive(
     """
     Create a sealed incremental .tar.gz checkpoint archive with manifest
     and descriptor, returning the archive SHA-256.
+    Prohibits fallback to host temporary directory.
     """
     manifest_entries: List[Dict[str, Any]] = []
     parent_dir = os.path.dirname(os.path.abspath(output_tar_gz))
     os.makedirs(parent_dir, exist_ok=True)
 
+    if checkpoint_dir and os.path.realpath(checkpoint_dir) == os.path.realpath(tempfile.gettempdir()):
+        raise EvidenceCollectionError("checkpoint_dir cannot be the system temporary directory")
+
     with open(output_tar_gz, "wb") as f_out:
         with tarfile.open(fileobj=f_out, mode="w:gz", format=tarfile.PAX_FORMAT) as tar:
-            if os.path.exists(checkpoint_dir):
+            if checkpoint_dir and os.path.exists(checkpoint_dir):
                 with DescriptorSafeEvidenceCollector(checkpoint_dir, skip_raw_executables=skip_raw_executables) as collector:
                     collector.walk_and_collect(tar, arc_prefix="payload", manifest=manifest_entries)
 
@@ -1201,6 +1205,39 @@ print("preflight boundary check: PASS")
 
     return results
 
+def verify_local_image_digest(image: str, expected_digest: str) -> None:
+    """Verify that local docker image matches the expected sha256 digest."""
+    if not expected_digest or not re.fullmatch(r"sha256:[0-9a-f]{64}", expected_digest):
+        raise PreflightError(f"Invalid expected image digest: {expected_digest!r}")
+
+    target_ref = f"{image.split('@')[0]}@{expected_digest}"
+    proc = subprocess.run(
+        ["docker", "image", "inspect", "--format", "{{json .RepoDigests}}", target_ref],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        proc = subprocess.run(
+            ["docker", "image", "inspect", "--format", "{{json .RepoDigests}}", image],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode != 0:
+            raise PreflightError(f"Failed to inspect local image {image}: {proc.stderr}")
+
+    try:
+        repo_digests = json.loads(proc.stdout)
+    except Exception as exc:
+        raise PreflightError(f"Failed to parse image inspect output: {exc}") from exc
+
+    if not any(expected_digest in str(rd) for rd in (repo_digests or [])):
+        raise PreflightError(
+            f"Image digest mismatch: expected {expected_digest}, found RepoDigests: {repo_digests}"
+        )
+
+
 # Sequential Lifecycle Controller
 class SequentialLifecycleController:
     """
@@ -1253,7 +1290,7 @@ class SequentialLifecycleController:
         self.compiler_sha256: Optional[str] = None
         self.compiler_inode: Optional[int] = None
         self.compiler_size: Optional[int] = None
-
+        self.all_stages_completed: bool = False
     def time_remaining(self) -> float:
         elapsed = time.time() - self.job_start_time
         return max(0.0, self.payload_budget_sec - elapsed)
@@ -1352,7 +1389,7 @@ class SequentialLifecycleController:
             desc.update(extra_info)
 
         archive_sha256 = create_checkpoint_archive(
-            checkpoint_dir=source_dir or tempfile.gettempdir(),
+            checkpoint_dir=source_dir,
             output_tar_gz=archive_path,
             checkpoint_descriptor=desc,
             skip_raw_executables=skip_raw_executables,
@@ -1371,7 +1408,7 @@ class SequentialLifecycleController:
         env_vars: Optional[Dict[str, str]] = None,
         receipts_dir: Optional[str] = None,
     ) -> Tuple[int, str, str]:
-        """Execute a command inside the hardened Docker container cage."""
+        """Execute a command inside the hardened Docker container cage with exact owned container tracking."""
         check_disk_floor(self.private_tmp_dir, self.min_disk_gib)
 
         mount_bindings = build_mount_bindings(
@@ -1386,8 +1423,13 @@ class SequentialLifecycleController:
             receipts_dir=receipts_dir,
         )
 
+        c_name = f"iyi-proof-{uuid.uuid4().hex}"
+        cidfile = os.path.join(self.runner_temp_dir, f"cid-{uuid.uuid4().hex}")
+
         docker_args = [
-            "docker", "run", "--rm",
+            "docker", "run",
+            "--name", c_name,
+            "--cidfile", cidfile,
             "--network", "none",
             "--read-only",
             "--cap-drop", "ALL",
@@ -1413,10 +1455,15 @@ class SequentialLifecycleController:
         for k, v in default_env.items():
             docker_args.extend(["--env", f"{k}={v}"])
 
-        docker_args.append(self.manifest.image)
+        docker_args.append(f"{self.manifest.image.split('@')[0]}@{self.manifest.image_digest}")
         docker_args.extend(command)
 
         deadline = timeout_sec or self.time_remaining()
+        proc_timed_out = False
+        stdout = ""
+        stderr = ""
+        returncode = -1
+
         try:
             proc = subprocess.run(
                 docker_args,
@@ -1425,12 +1472,45 @@ class SequentialLifecycleController:
                 timeout=deadline,
                 check=False,
             )
+            returncode = proc.returncode
             stdout = sanitize_workflow_output(proc.stdout)
             stderr = sanitize_workflow_output(proc.stderr)
-            return proc.returncode, stdout, stderr
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
+            proc_timed_out = True
+            stdout = sanitize_workflow_output(exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or ""))
+            stderr = sanitize_workflow_output(exc.stderr.decode() if isinstance(exc.stderr, bytes) else (exc.stderr or "TIMEOUT"))
+        finally:
+            cid = None
+            if os.path.isfile(cidfile):
+                try:
+                    cid = pathlib.Path(cidfile).read_text().strip()
+                except Exception:
+                    pass
+
+            target_id = cid or c_name
+            subprocess.run(["docker", "stop", "--time", "2", target_id], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["docker", "rm", "-f", target_id], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            check_proc = subprocess.run(
+                ["docker", "inspect", target_id],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if check_proc.returncode == 0:
+                self.mark_failure(f"TEARDOWN-FAILURE: Container {target_id} survived removal")
+                raise TeardownError(f"Container {target_id} survived removal; halting lifecycle")
+
+            if os.path.isfile(cidfile):
+                try:
+                    os.unlink(cidfile)
+                except OSError:
+                    pass
+
+        if proc_timed_out:
             self.mark_failure(f"Command timed out after {deadline}s: {command}")
-            return -1, "", "TIMEOUT"
+            return -1, stdout, "TIMEOUT"
+
+        return returncode, stdout, stderr
 
     def stage_build(self) -> None:
         """Phase 1: Build compiler inside build cage with /P read-only and /P/.build writable."""
@@ -1455,15 +1535,19 @@ class SequentialLifecycleController:
         self.compiler_size = st.st_size
         self.compiler_sha256 = sha256_file(compiler_path)
 
-        # Check version stamp
-        try:
-            ver_proc = subprocess.run([compiler_path, "--version"], capture_output=True, text=True, check=True)
-            version_out = ver_proc.stdout.strip()
-            p_prefix = self.manifest.p_sha[:9]
-            if p_prefix not in version_out:
-                self.mark_failure(f"Compiler version stamp '{version_out}' missing P prefix {p_prefix}")
-        except Exception as exc:
-            self.mark_failure(f"Failed to verify compiler version stamp: {exc}")
+        # Check version stamp inside the confined container, NEVER on the host!
+        ver_code, ver_out, ver_err = self.execute_in_container(
+            ["/P/.build/iyi", "--version"],
+            workdir="/P",
+            phase="build",
+            timeout_sec=60,
+        )
+        if ver_code != 0:
+            self.mark_failure(f"Compiler --version failed inside container with code {ver_code}: {ver_err}")
+        version_out = ver_out.strip()
+        p_prefix = self.manifest.p_sha[:9]
+        if p_prefix not in version_out:
+            self.mark_failure(f"Compiler version stamp '{version_out}' missing P prefix {p_prefix}")
 
         # Seal .build directory (read-only on host)
         for root, dirs, files in os.walk(self.p_build_dir):
@@ -1495,7 +1579,7 @@ class SequentialLifecycleController:
         if code != 0:
             self.mark_failure(f"Proof plan failed with exit code {code}: {err}")
 
-        self.record_checkpoint("plan", "PASS", cmd, code)
+        self.record_checkpoint("plan", "PASS", cmd, code, source_dir=None)
         print("Proof plan PASS")
 
     def stage_pin(self) -> None:
@@ -1528,7 +1612,7 @@ class SequentialLifecycleController:
         except Exception as exc:
             self.mark_failure(f"Failed to read pin.json: {exc}")
 
-        self.record_checkpoint("pin", "PASS", cmd, code, extra_info={"chain_id": self.chain_id})
+        self.record_checkpoint("pin", "PASS", cmd, code, source_dir=host_report_dir, extra_info={"chain_id": self.chain_id})
         print(f"Proof pin PASS (Chain ID: {self.chain_id})")
 
     def stage_run1(self) -> None:
@@ -1553,8 +1637,9 @@ class SequentialLifecycleController:
         except Exception as exc:
             self.mark_failure(f"Failed to read Run 1 result.json: {exc}")
 
+        run1_dir = os.path.join(self.private_tmp_dir, leaf, "run1", "a1")
         self.seal_origin_receipt("run1", attempt=1)
-        self.record_checkpoint("run1", "PASS", cmd, code, skip_raw_executables=True)
+        self.record_checkpoint("run1", "PASS", cmd, code, source_dir=run1_dir, skip_raw_executables=True)
         print("Run 1 PASS")
 
     def stage_run2(self) -> None:
@@ -1579,8 +1664,9 @@ class SequentialLifecycleController:
         except Exception as exc:
             self.mark_failure(f"Failed to read Run 2 result.json: {exc}")
 
+        run2_dir = os.path.join(self.private_tmp_dir, leaf, "run2", "a1")
         self.seal_origin_receipt("run2", attempt=1)
-        self.record_checkpoint("run2", "PASS", cmd, code, skip_raw_executables=True)
+        self.record_checkpoint("run2", "PASS", cmd, code, source_dir=run2_dir, skip_raw_executables=True)
         print("Run 2 PASS")
 
     def stage_run3_drivers(self) -> None:
@@ -1595,8 +1681,9 @@ class SequentialLifecycleController:
         if code != 0:
             self.mark_failure(f"Driver acme failed with exit code {code}: {err}")
 
+        acme_dir = os.path.join(self.private_tmp_dir, leaf, "run3", "acme", "a1")
         self.seal_origin_receipt("run3-acme", attempt=1, driver="acme")
-        self.record_checkpoint("run3-acme", "PASS", cmd_acme, code, skip_raw_executables=True)
+        self.record_checkpoint("run3-acme", "PASS", cmd_acme, code, source_dir=acme_dir, skip_raw_executables=True)
 
         leaf = os.path.basename(r)
         required_file = os.path.join(self.private_tmp_dir, leaf, "run3", "required.json")
@@ -1632,8 +1719,9 @@ class SequentialLifecycleController:
             if code != 0:
                 self.mark_failure(f"Driver {driver} failed with exit code {code}: {err}")
 
+            driver_dir = os.path.join(self.private_tmp_dir, leaf, "run3", driver, "a1")
             self.seal_origin_receipt(f"run3-{driver}", attempt=1, driver=driver)
-            self.record_checkpoint(f"run3-{driver}", "PASS", cmd_d, code, skip_raw_executables=True)
+            self.record_checkpoint(f"run3-{driver}", "PASS", cmd_d, code, source_dir=driver_dir, skip_raw_executables=True)
 
         print("All Run 3 drivers PASS")
 
@@ -1683,13 +1771,18 @@ class SequentialLifecycleController:
         except Exception as exc:
             self.mark_failure(f"Failed to verify final.json: {exc}")
 
-        self.record_checkpoint("final", "PASS", cmd, code)
+        self.record_checkpoint("final", "PASS", cmd, code, source_dir=host_report_dir)
         print("Proof final PASS")
 
     def finalize_terminal_envelope(self) -> str:
         """Phase 8: Write terminal summary and envelope."""
+        is_pass = (
+            getattr(self, "all_stages_completed", False)
+            and not self.sticky_failed
+            and not self.failure_reasons
+        )
         summary = {
-            "status": "FAIL" if self.sticky_failed else "PASS",
+            "status": "PASS" if is_pass else "FAIL",
             "failures": self.failure_reasons,
             "manifest_digest": self.manifest.digest(),
             "chain_id": self.chain_id,
@@ -1698,7 +1791,6 @@ class SequentialLifecycleController:
             "total_sealed_receipts": len(self.sealed_receipts),
             "completed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
-
         summary_path = os.path.join(self.artifacts_dir, "strict-controller-summary.json")
         with open(summary_path, "wb") as f:
             f.write(canonical_json_bytes(summary))
@@ -1725,8 +1817,12 @@ class SequentialLifecycleController:
             self.stage_run2()
             self.stage_run3_drivers()
             self.stage_final()
-        except LifecycleExecutionError as exc:
+            self.all_stages_completed = True
+        except BaseException as exc:
+            self.sticky_failed = True
+            self.failure_reasons.append(f"HALT: {type(exc).__name__}: {exc}")
             print(f"LIFECYCLE-HALT: {exc}", file=sys.stderr)
+            raise
         finally:
             self.finalize_terminal_envelope()
 
