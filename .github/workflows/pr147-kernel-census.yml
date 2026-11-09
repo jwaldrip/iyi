@@ -37,3 +37,24 @@ jobs:
             fi
           done
           echo 'A config or sysfs advertisement does not prove fs-verity on any mounted filesystem.'
+          for tool in clang gcc setpriv pkg-config dpkg-deb; do
+            if command -v "$tool" >/dev/null 2>&1; then
+              printf '%s: ' "$tool"
+              command -v "$tool"
+            else
+              echo "$tool: unavailable"
+            fi
+          done
+          for path in /usr/include/bpf/bpf.h /usr/include/bpf/libbpf.h /usr/include/libelf.h; do
+            if [ -r "$path" ]; then echo "$path: readable"; else echo "$path: missing or unreadable"; fi
+          done
+          if command -v pkg-config >/dev/null 2>&1; then
+            for lib in libbpf libelf; do
+              if pkg-config --exists "$lib"; then
+                printf '%s: ' "$lib"
+                pkg-config --modversion "$lib"
+              else
+                echo "$lib: unavailable to pkg-config"
+              fi
+            done
+          fi
