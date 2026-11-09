@@ -12086,7 +12086,11 @@ def _stage_stub_payloads(
     exercise_tail = (
         "touch \"$IYI\"\n"
         if scenario == "gate4-identity"
-        else ""
+        else (
+            "/bin/rm -f \"$(dirname -- \"$TMPDIR\")/run1_1.log\"\n"
+            if scenario == "run1-gate1-log-missing"
+            else ""
+        )
     )
     std_exercise = (
         "#!/bin/bash\n"
@@ -12793,6 +12797,60 @@ def _fixture_rg9_extended_suffix_seed() -> Observation:
 
 def _fixture_sibling_count_114_seed() -> Observation:
     return _run1_seed("sibling-count-114", "gate-1.4", "FAIL")
+
+
+def _fixture_run1_rg2_log_missing_seed() -> Observation:
+    with StageFixture("run1-gate1-log-missing") as fixture:
+        fixture.pin()
+        returncode = stages_mod.cmd_run1(fixture.args(), disk_min_gb=0.0)
+        result = _stage_result(fixture.report, "run1")
+        attempt = stages_mod.latest_attempt_dir(
+            os.path.join(fixture.report, "run1")
+        )
+        gate_1_1_path = os.path.join(attempt, "run1_1.log")
+        summary_path = os.path.join(attempt, "rg2_summary.json")
+        exclusions_path = os.path.join(attempt, "exclusions.json")
+        summary = _o7_load_json(summary_path) if os.path.isfile(summary_path) else {}
+        exclusions = _o7_load_json(exclusions_path) if os.path.isfile(exclusions_path) else None
+        reasons = result.get("reasons", [])
+        got = {
+            "returncode": returncode,
+            "status": result.get("status"),
+            "exclusions_check": result.get("checks", {}).get("exclusions"),
+            "gate1_check": result.get("checks", {}).get("gate-1.1"),
+            "gate4_check": result.get("checks", {}).get("gate-1.4"),
+            "diagnostic_present": any(
+                str(r).startswith(f"RG2-EVIDENCE-MISSING: {gate_1_1_path}")
+                for r in reasons
+            ),
+            "summary_status": summary.get("status"),
+            "summary_reasons": summary.get("reasons", []),
+            "summary_log_sha256": summary.get("log_sha256"),
+            "exclusions_empty": exclusions == [],
+            "log_file_absent": not os.path.isfile(gate_1_1_path),
+            "no_false_pass": result.get("status") != "PASS",
+        }
+        expected = {
+            "returncode": 1,
+            "status": "FAIL",
+            "exclusions_check": "FAIL",
+            "gate1_check": "PASS",
+            "gate4_check": "PASS",
+            "diagnostic_present": True,
+            "summary_status": "FAIL",
+            "summary_reasons": [f"RG2-EVIDENCE-MISSING: {gate_1_1_path}"],
+            "summary_log_sha256": None,
+            "exclusions_empty": True,
+            "log_file_absent": True,
+            "no_false_pass": True,
+        }
+        return Observation(
+            expected=expected,
+            got=got,
+            applied="run1_1.log unlinked during gate 1.4 before RG2 evidence generation in cmd_run1",
+        )
+
+
 
 
 _REASON_PREFIX_MAP: dict[str, str] = {
@@ -13911,6 +13969,84 @@ def _fixture_final_rg2_evidence_missing_seed() -> Observation:
         got=got,
         applied="distinct missing run1_1.log and missing rg2_summary.json scenarios tested",
     )
+
+
+def _fixture_final_no_run1_attempt_seed() -> Observation:
+    cases = {}
+    with StageFixture() as fixture:
+        fixture.prepare_final_inputs()
+        final_path = os.path.join(fixture.report, "final.json")
+        with open(final_path, "w", encoding="utf-8") as output:
+            json.dump({"status": "PASS", "reasons": []}, output)
+        run1_dir = os.path.join(fixture.report, "run1")
+        shutil.rmtree(run1_dir)
+        rc = stages_mod.cmd_final(fixture.args(), drivers=fixture.drivers)
+        record = _o7_load_json(final_path)
+        reasons = record.get("reasons", [])
+        cases["missing_run1_dir"] = {
+            "returncode": rc,
+            "status": record.get("status"),
+            "no_run1_attempt_reason": any(
+                str(reason) == "run1 has no attempts"
+                for reason in reasons
+            ),
+            "rg2_status": record.get("rg2", {}).get("status"),
+            "rg2_log_sha256": record.get("rg2", {}).get("log_sha256"),
+            "stale_pass_overwritten": record.get("status") == "FAIL",
+            "no_false_pass": record.get("status") != "PASS",
+        }
+
+    with StageFixture() as fixture:
+        fixture.prepare_final_inputs()
+        final_path = os.path.join(fixture.report, "final.json")
+        with open(final_path, "w", encoding="utf-8") as output:
+            json.dump({"status": "PASS", "reasons": []}, output)
+        run1_dir = os.path.join(fixture.report, "run1")
+        shutil.rmtree(run1_dir)
+        os.makedirs(run1_dir, exist_ok=True)
+        rc = stages_mod.cmd_final(fixture.args(), drivers=fixture.drivers)
+        record = _o7_load_json(final_path)
+        reasons = record.get("reasons", [])
+        cases["empty_run1_dir"] = {
+            "returncode": rc,
+            "status": record.get("status"),
+            "no_run1_attempt_reason": any(
+                str(reason) == "run1 has no attempts"
+                for reason in reasons
+            ),
+            "rg2_status": record.get("rg2", {}).get("status"),
+            "rg2_log_sha256": record.get("rg2", {}).get("log_sha256"),
+            "stale_pass_overwritten": record.get("status") == "FAIL",
+            "no_false_pass": record.get("status") != "PASS",
+        }
+
+    got = cases
+    expected = {
+        "missing_run1_dir": {
+            "returncode": 1,
+            "status": "FAIL",
+            "no_run1_attempt_reason": True,
+            "rg2_status": "FAIL",
+            "rg2_log_sha256": None,
+            "stale_pass_overwritten": True,
+            "no_false_pass": True,
+        },
+        "empty_run1_dir": {
+            "returncode": 1,
+            "status": "FAIL",
+            "no_run1_attempt_reason": True,
+            "rg2_status": "FAIL",
+            "rg2_log_sha256": None,
+            "stale_pass_overwritten": True,
+            "no_false_pass": True,
+        },
+    }
+    return Observation(
+        expected=expected,
+        got=got,
+        applied="missing and empty run1 directory scenarios tested before cmd_final",
+    )
+
 
 
 def _fixture_rg2_corpus_evidence_control() -> Observation:
@@ -17905,6 +18041,16 @@ O7_FIXTURES: tuple[Fixture, ...] = (
         _fixture_final_rg2_evidence_missing_seed,
     ),
     Fixture(
+        "o7.seed.run1-rg2-log-missing",
+        "seed",
+        _fixture_run1_rg2_log_missing_seed,
+    ),
+    Fixture(
+        "o7.seed.final-no-run1-attempt",
+        "seed",
+        _fixture_final_no_run1_attempt_seed,
+    ),
+    Fixture(
         "s5.control.rg2-corpus-evidence",
         "control",
         _fixture_rg2_corpus_evidence_control,
@@ -18384,6 +18530,7 @@ O7_REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
         "o7.control.run1",
     ),
     "o7.run1-artifacts": (
+        "o7.seed.run1-rg2-log-missing",
         "s5.seed.exclusions-wrong-location",
         "s5.seed.sample-exclusion",
         "o7.control.run1",
@@ -18890,6 +19037,7 @@ REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
         "s5.seed.rg2-sentinel-duplicate",
         "s5.seed.rg2-sentinel-order",
         "s5.seed.rg2-unattributed-exclusion",
+        "o7.seed.run1-rg2-log-missing",
         "s5.seed.exclusions-wrong-location",
         "s5.control.stage-chain",
         "s5.control.rg2-corpus-evidence",
@@ -18920,6 +19068,7 @@ REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
         "o7.seed.final-rg2-log-tampered",
         "o7.seed.final-rg2-summary-tampered",
         "o7.seed.final-rg2-evidence-missing",
+        "o7.seed.final-no-run1-attempt",
         "s5.control.stage-chain",
     ),
     "contract.s5.run3-selection": (
@@ -18957,6 +19106,7 @@ REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
         "s5.seed.final-forged-pass",
         "s5.seed.final-chain-mismatch",
         "s5.seed.final-earlier-failure-omitted",
+        "o7.seed.final-no-run1-attempt",
         "s5.control.stage-chain",
     ),
     "contract.s5.prerequisites": (
