@@ -152,6 +152,19 @@ def sha256_file(path: str) -> str:
     return h.hexdigest()
 
 
+def compute_inventory_sha256(files_dict: Dict[str, Dict[str, Any]]) -> str:
+    """
+    Compute deterministic SHA-256 over all inventory file hashes and relative paths.
+    Uses canonical format: f"{sha256}  {rel_path}\n" for sorted relative paths.
+    Matches proof/hosted_inputs.py compute_inventory_sha256 exactly.
+    """
+    lines: List[str] = []
+    for rel_path in sorted(files_dict.keys()):
+        file_sha256 = files_dict[rel_path]["sha256"]
+        lines.append(f"{file_sha256}  {rel_path}\n")
+    return hashlib.sha256("".join(lines).encode("utf-8")).hexdigest()
+
+
 def sanitize_workflow_output(text: str) -> str:
     """
     Sanitize text to prevent GitHub Actions workflow command injection.
@@ -468,7 +481,9 @@ def stage_and_verify_inputs(
         if not os.path.isdir(target) or os.path.islink(target):
             raise StagingError(f"Required root input directory missing or symlink: {root_dir}")
 
-    # Walk directory to reject symlinks, hardlinks, or unreadable files
+    # Walk directory to reject symlinks, hardlinks, or unreadable files,
+    # and independently compute inventory hash
+    file_map: Dict[str, Dict[str, Any]] = {}
     for root, dirs, files in os.walk(output_dir, followlinks=False):
         for name in dirs:
             full = os.path.join(root, name)
@@ -483,6 +498,14 @@ def stage_and_verify_inputs(
                 raise StagingError(f"Special non-regular file forbidden in inputs: {full}")
             if st.st_nlink > 1:
                 raise StagingError(f"Hardlink forbidden in inputs: {full} (nlink={st.st_nlink})")
+            rel = os.path.relpath(full, output_dir).replace("\\", "/")
+            file_map[rel] = {"sha256": sha256_file(full), "size": st.st_size}
+
+    computed_inventory = compute_inventory_sha256(file_map)
+    if computed_inventory != inventory_sha256:
+        raise StagingError(
+            f"Staged inputs inventory mismatch: computed {computed_inventory}, stager reported {inventory_sha256}"
+        )
 
     return StagedInputsInfo(
         path=staged_path,

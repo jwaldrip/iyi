@@ -171,7 +171,7 @@ jobs:
               inv_lines = []
               for path in sorted(files_table.keys()):
                   info = files_table[path]
-                  inv_lines.append(f"{path} {info['sha256']} {info['size']}\n")
+                  inv_lines.append(f"{info['sha256']}  {path}\n")
               expected_bundle_sha256 = hashlib.sha256("".join(inv_lines).encode("utf-8")).hexdigest()
           except Exception as exc:
               fail(f"Failed to calculate expected bundle SHA-256 from lock: {exc}")

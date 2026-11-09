@@ -36,6 +36,7 @@ from proof.hosted_linux import (
     build_mount_bindings,
     canonical_json_bytes,
     check_driver_admission,
+    compute_inventory_sha256,
     create_checkpoint_archive,
     sanitize_workflow_output,
     sha256_bytes,
@@ -94,6 +95,15 @@ class TestProofManifest(unittest.TestCase):
         # Determinism
         manifest2 = validate_manifest_dict(data)
         self.assertEqual(manifest2.digest(), digest)
+
+    def test_compute_inventory_sha256_canonical_format(self):
+        files_dict = {
+            "vectors/b.json": {"sha256": "2" * 64, "size": 200},
+            "vectors/a.json": {"sha256": "1" * 64, "size": 100},
+        }
+        expected_raw = f"{'1' * 64}  vectors/a.json\n{'2' * 64}  vectors/b.json\n"
+        expected_hash = hashlib.sha256(expected_raw.encode("utf-8")).hexdigest()
+        self.assertEqual(compute_inventory_sha256(files_dict), expected_hash)
 
     def test_validate_manifest_rejects_missing_keys(self):
         data = make_valid_manifest_dict()
