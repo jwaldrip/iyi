@@ -10,14 +10,13 @@ directly to verify fail-closed gates without running local copies or privileged 
   2. Unknown CLI options exit nonzero with error diagnostics.
   3. Forbidden --lock, --prefix, --receipt, and --dependency-script options are rejected.
   4. Pre-existing owned scratch directory is refused (exclusive context required).
-  5. Missing lock file fails closed immediately.
-  6. Staged manifest validation: positive control on authentic fixture, then negative controls
+  5. Staged manifest validation: positive control on authentic fixture, then negative controls
      for string/non-dict header entry, missing size/digest, and tampered header SHA256.
-  7. Production --validate-bpf-obj gate: tests full type/member graph walking, rejects BTF
-     type_len==0, non-existent type IDs, zeroed records, and grammar violations.
-  8. Production --validate-host-elf gate: tests exact DT_NEEDED {'libc.so.6'} set enforcement
-     (rejecting libc.so.6.extra), and GNU_STACK non-executable stack flags.
-  9. Production --evaluate-report gate: enforces all Section 7 criteria and verified on-disk logs.
+  6. Production --validate-bpf-obj gate: tests full type/member graph walking, positive control passes,
+     rejects BTF type_len==0, non-existent type IDs, zeroed records, and grammar violations.
+  7. Production --validate-host-elf gate: positive control passes, exact DT_NEEDED {'libc.so.6'}
+     enforcement (rejecting libc.so.6.extra), and GNU_STACK non-executable stack flags.
+  8. Production --evaluate-report gate: enforces all Section 7 criteria and verified on-disk logs.
 """
 
 from __future__ import annotations
@@ -25,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import struct
 import subprocess
 import sys
@@ -34,6 +34,15 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT_PATH = REPO_ROOT / "proof" / "run_bpf_feasibility.sh"
+
+
+def make_strtab(names: list[str]) -> tuple[bytes, dict[str, int]]:
+    res = b"\x00"
+    offsets = {}
+    for name in names:
+        offsets[name] = len(res)
+        res += name.encode("latin1") + b"\x00"
+    return res, offsets
 
 
 def make_dummy_lock(scratch: Path, archive_hashes: dict[str, str], header_hashes: dict[str, str] | None = None) -> Path:
@@ -93,34 +102,29 @@ def make_dummy_lock(scratch: Path, archive_hashes: dict[str, str], header_hashes
 
 
 def build_mock_bpf_elf(scratch: Path, btf_type_len: int = 120, corrupt_relo: str | None = None) -> Path:
-    """Build a minimal valid ELF64 little-endian BPF object with real .BTF and .BTF.ext sections."""
-    # Build string table
-    # offset 0: \0
-    # offset 1: tp_btf/sched_process_exec\0
-    # offset 27: file\0
-    # offset 32: f_inode\0
-    # offset 40: 0:0\0
-    strtab = b"\x00tp_btf/sched_process_exec\x00file\x00f_inode\x000:0\x00"
-    
-    # Build BTF type table: struct file (kind 4) with member f_inode (type 2)
-    # struct btf_type: name_off (4), info (4: kind 4, vlen 1), size (4: 64) -> 12 bytes
-    # member: name_off (4: 32), type (4: 2), offset (4: 0) -> 12 bytes
-    # type 2: struct inode (kind 4, vlen 0) -> 12 bytes
-    type_data = b""
-    if btf_type_len > 0:
-        type_1_info = (4 << 24) | 1  # STRUCT, 1 member
-        type_1 = struct.pack("<III", 27, type_1_info, 64) + struct.pack("<III", 32, 2, 0)
-        type_2_info = (4 << 24) | 0  # STRUCT, 0 members
-        type_2 = struct.pack("<III", 32, type_2_info, 64)
-        type_data = type_1 + type_2
+    """Build a valid ELF64 little-endian BPF object with real .BTF, .BTF.ext, and .symtab sections."""
+    shstrtab, sh_offsets = make_strtab([
+        ".shstrtab", "tp_btf/sched_process_exec", ".maps", "license",
+        ".BTF", ".BTF.ext", ".symtab", ".strtab"
+    ])
 
-    actual_type_len = len(type_data) if btf_type_len > 0 else 0
-    btf_hdr = struct.pack("<HBBIIII", 0xEB9F, 1, 0, 24, 0, actual_type_len, actual_type_len) + struct.pack("<I", len(strtab))
-    btf_sec_data = btf_hdr + type_data + strtab
+    strtab, strtab_offsets = make_strtab(["sched_process_exec"])
+    sched_sym_name_off = strtab_offsets["sched_process_exec"]
+    symtab = b"\x00" * 24 + struct.pack("<IBBHQQ", sched_sym_name_off, 0x12, 0, 2, 0, 128)
 
-    # Build .BTF.ext with 10 records for tp_btf/sched_process_exec
-    sec_name_off = 1  # points to tp_btf/sched_process_exec
-    acc_str_off = 40  # points to "0:0"
+    btf_strtab, btf_offsets = make_strtab(["tp_btf/sched_process_exec", "file", "f_inode", "0:0"])
+    type_1_info = (4 << 24) | 1  # STRUCT, 1 member
+    type_1 = struct.pack("<III", btf_offsets["file"], type_1_info, 64) + struct.pack("<III", btf_offsets["f_inode"], 2, 0)
+    type_2_info = (4 << 24) | 0  # STRUCT, 0 members
+    type_2 = struct.pack("<III", btf_offsets["f_inode"], type_2_info, 64)
+    type_data = (type_1 + type_2) if btf_type_len > 0 else b""
+
+    actual_type_len = len(type_data)
+    btf_hdr = struct.pack("<HBBIIII", 0xEB9F, 1, 0, 24, 0, actual_type_len, actual_type_len) + struct.pack("<I", len(btf_strtab))
+    btf_sec_data = btf_hdr + type_data + btf_strtab
+
+    sec_name_off = btf_offsets["tp_btf/sched_process_exec"]
+    acc_str_off = btf_offsets["0:0"]
     relo_records = b""
     for i in range(10):
         insn_off = i * 8
@@ -131,12 +135,7 @@ def build_mock_bpf_elf(scratch: Path, btf_type_len: int = 120, corrupt_relo: str
         elif corrupt_relo == "nonexistent_type" and i == 0:
             relo_records += struct.pack("<IIII", insn_off, 9999, acc_str_off, kind)
         elif corrupt_relo == "bad_grammar" and i == 0:
-            # point to access string with invalid grammar "abc"
-            relo_records += struct.pack("<IIII", insn_off, type_id, 27, kind)
-        elif corrupt_relo == "out_of_range_member" and i == 0:
-            # access index "5" on struct with 1 member
-            # we need a string "5" in strtab
-            relo_records += struct.pack("<IIII", insn_off, type_id, acc_str_off, kind)
+            relo_records += struct.pack("<IIII", insn_off, type_id, btf_offsets["file"], kind)
         else:
             relo_records += struct.pack("<IIII", insn_off, type_id, acc_str_off, kind)
 
@@ -145,21 +144,18 @@ def build_mock_bpf_elf(scratch: Path, btf_type_len: int = 120, corrupt_relo: str
     btf_ext_hdr = struct.pack("<HBBIIIIII", 0xEB9F, 1, 0, 32, 0, 0, 0, 0, 0) + struct.pack("<I", core_relo_len)
     btf_ext_sec_data = btf_ext_hdr + core_relo_data
 
-    # Minimal ELF64 structure
-    prog_bytecode = b"\x95\x00\x00\x00\x00\x00\x00\x00" * 16  # 128 bytes
-    shstrtab = b"\x00.shstrtab\x00tp_btf/sched_process_exec\x00.maps\x00license\x00.BTF\x00.BTF.ext\x00"
-    
     sections = [
-        (b"", 0, 0),
-        (shstrtab, 1, 3),  # SHT_STRTAB
-        (prog_bytecode, 11, 1),  # SHT_PROGBITS tp_btf/sched_process_exec
-        (b"\x00" * 32, 38, 1),  # .maps
-        (b"Dual MIT/GPL\x00", 44, 1),  # license
-        (btf_sec_data, 52, 1),  # .BTF
-        (btf_ext_sec_data, 57, 1),  # .BTF.ext
+        (b"", 0, 0, 0, 0, 0),
+        (shstrtab, sh_offsets[".shstrtab"], 3, 0, 0, 1),
+        (b"\x95\x00\x00\x00\x00\x00\x00\x00" * 16, sh_offsets["tp_btf/sched_process_exec"], 1, 0, 0, 8),
+        (b"\x00" * 32, sh_offsets[".maps"], 1, 0, 0, 4),
+        (b"Dual MIT/GPL\x00", sh_offsets["license"], 1, 0, 0, 1),
+        (btf_sec_data, sh_offsets[".BTF"], 1, 0, 0, 4),
+        (btf_ext_sec_data, sh_offsets[".BTF.ext"], 1, 0, 0, 4),
+        (symtab, sh_offsets[".symtab"], 2, 8, 1, 24),
+        (strtab, sh_offsets[".strtab"], 3, 0, 0, 1),
     ]
-    
-    # Assemble ELF file
+
     e_ehsize = 64
     e_shentsize = 64
     e_shnum = len(sections)
@@ -169,17 +165,17 @@ def build_mock_bpf_elf(scratch: Path, btf_type_len: int = 120, corrupt_relo: str
     current_off = e_ehsize + e_shnum * e_shentsize
     sec_payloads = []
 
-    for content, name_off, s_type in sections:
+    for content, name_off, s_type, sh_link, sh_info, sh_entsize in sections:
         size = len(content)
         off = current_off if size > 0 else 0
-        sh = struct.pack("<IIQQQQIIQQ", name_off, s_type, 6, 0, off, size, 0, 0, 8, 0)
+        align = 8 if s_type in (1, 2) else 1
+        sh = struct.pack("<IIQQQQIIQQ", name_off, s_type, 6, 0, off, size, sh_link, sh_info, align, sh_entsize)
         sec_headers.append(sh)
         if size > 0:
             sec_payloads.append(content)
             current_off += size
 
     e_shoff = e_ehsize
-    # ELF header: magic, class 2 (64), data 1 (little), version 1, osabi 0, pad, type 1 (REL), machine 247 (BPF)
     elf_hdr = (
         b"\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00"
         + struct.pack("<HHIQQQIHHHHHH", 1, 247, 1, 0, 0, e_shoff, 0, e_ehsize, 0, 0, e_shentsize, e_shnum, e_shstrndx)
@@ -187,6 +183,85 @@ def build_mock_bpf_elf(scratch: Path, btf_type_len: int = 120, corrupt_relo: str
 
     out_file = scratch / "mock_canary.bpf.o"
     out_file.write_bytes(elf_hdr + b"".join(sec_headers) + b"".join(sec_payloads))
+    return out_file
+
+
+def build_mock_host_elf(scratch: Path, needed_name: str = "libc.so.6", stack_flags: int = 6) -> Path:
+    """Build a valid ELF64 x86-64 host executable with mock .dynamic, .interp, and defined symbols."""
+    shstrtab, sh_offsets = make_strtab([
+        ".shstrtab", ".interp", ".dynamic", ".dynstr", ".symtab", ".strtab", ".text"
+    ])
+    interp_str = b"/lib64/ld-linux-x86-64.so.2\x00"
+    dynstr, dyn_offsets = make_strtab([needed_name])
+    needed_off = dyn_offsets[needed_name]
+
+    req_syms = ["bpf_object__open_file", "bpf_object__load", "elf_begin", "deflate", "ZSTD_decompress"]
+    strtab, str_offsets = make_strtab(req_syms)
+
+    sym_records = [b"\x00" * 24]
+    for s in req_syms:
+        sym_records.append(struct.pack("<IBBHQQ", str_offsets[s], 0x12, 0, 7, 0x100, 32))
+    symtab = b"".join(sym_records)
+
+    dynamic = (
+        struct.pack("<QQ", 1, needed_off)
+        + struct.pack("<QQ", 5, 0x300)  # DT_STRTAB at vaddr 0x300
+        + struct.pack("<QQ", 10, len(dynstr))
+        + struct.pack("<QQ", 0, 0)
+    )
+
+    sections = [
+        (b"", 0, 0, 0, 0, 0, 0, 0),
+        (shstrtab, sh_offsets[".shstrtab"], 3, 0, 0, 1, 0x600, len(shstrtab)),
+        (interp_str, sh_offsets[".interp"], 1, 0, 0, 1, 0x150, len(interp_str)),
+        (dynamic, sh_offsets[".dynamic"], 6, 4, 0, 16, 0x200, len(dynamic)),
+        (dynstr, sh_offsets[".dynstr"], 3, 0, 0, 1, 0x300, len(dynstr)),
+        (symtab, sh_offsets[".symtab"], 2, 6, 1, 24, 0x400, len(symtab)),
+        (strtab, sh_offsets[".strtab"], 3, 0, 0, 1, 0x500, len(strtab)),
+        (b"\x90" * 64, sh_offsets[".text"], 1, 0, 0, 16, 0x700, 64),
+    ]
+
+    sec_headers = []
+    for content, name_off, s_type, sh_link, sh_info, sh_entsize, off, size in sections:
+        align = 8 if s_type in (1, 2) else 1
+        sh = struct.pack("<IIQQQQIIQQ", name_off, s_type, 6, 0, off, size, sh_link, sh_info, align, sh_entsize)
+        sec_headers.append(sh)
+
+    ph_interp = struct.pack("<IIQQQQQQ", 3, 4, 0x150, 0x150, 0x150, len(interp_str), len(interp_str), 1)
+    ph_load = struct.pack("<IIQQQQQQ", 1, 7, 0, 0, 0, 0x1000, 0x1000, 0x1000)
+    ph_dynamic = struct.pack("<IIQQQQQQ", 2, 6, 0x200, 0x200, 0x200, len(dynamic), len(dynamic), 8)
+    ph_stack = struct.pack("<IIQQQQQQ", 0x6474e551, stack_flags, 0, 0, 0, 0, 0, 0x10)
+
+    phdrs = ph_interp + ph_load + ph_dynamic + ph_stack
+    e_ehsize = 64
+    e_phentsize = 56
+    e_phnum = 4
+    e_shentsize = 64
+    e_shnum = 8
+    e_shstrndx = 1
+
+    e_phoff = 64
+    e_shoff = 0x800
+
+    elf_hdr = (
+        b"\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+        + struct.pack("<HHIQQQIHHHHHH", 2, 62, 1, 0, e_phoff, e_shoff, 0, e_ehsize, e_phentsize, e_phnum, e_shentsize, e_shnum, e_shstrndx)
+    )
+
+    data = bytearray(0x1000)
+    data[:len(elf_hdr)] = elf_hdr
+    data[64:64+len(phdrs)] = phdrs
+    data[0x150:0x150+len(interp_str)] = interp_str
+    data[0x200:0x200+len(dynamic)] = dynamic
+    data[0x300:0x300+len(dynstr)] = dynstr
+    data[0x400:0x400+len(symtab)] = symtab
+    data[0x500:0x500+len(strtab)] = strtab
+    data[0x600:0x600+len(shstrtab)] = shstrtab
+    data[0x700:0x700+64] = b"\x90" * 64
+    data[0x800:0x800+len(sec_headers)*64] = b"".join(sec_headers)
+
+    out_file = scratch / "mock_canary_host"
+    out_file.write_bytes(data)
     return out_file
 
 
@@ -203,6 +278,7 @@ class TestBpfFeasibilityScript(unittest.TestCase):
         self.assertIn("Usage:", res.stdout)
         self.assertIn("--build-only", res.stdout)
         self.assertNotIn("--prefix", res.stdout)
+        self.assertNotIn("--lock", res.stdout)
 
     def test_unknown_flag(self) -> None:
         """Unknown CLI options exit nonzero."""
@@ -335,7 +411,8 @@ class TestBpfFeasibilityScript(unittest.TestCase):
             self.assertIn("missing valid path, size, or sha256", res.stderr)
 
             # Mutation 3: tampered header bytes strictly fail closed
-            (prefix / "usr/include/bpf/bpf.h").write_bytes(b"tampered_header_bytes")
+            # Mutation 3: tampered header bytes (same size, different sha) strictly fail closed
+            (prefix / "usr/include/bpf/bpf.h").write_bytes(b"tampered_header_byte")  # exactly 20 bytes
             res = subprocess.run(
                 ["bash", str(SCRIPT_PATH), "--validate-staged-manifest", str(lock_file), str(receipt_file), str(prefix)],
                 stdout=subprocess.PIPE,
@@ -345,11 +422,19 @@ class TestBpfFeasibilityScript(unittest.TestCase):
             self.assertNotEqual(res.returncode, 0)
             self.assertIn("TAMPERING DETECTED", res.stderr)
 
+            # Mutation 4: size mismatch strictly fails closed
+            (prefix / "usr/include/bpf/bpf.h").write_bytes(b"short_bytes")
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-staged-manifest", str(lock_file), str(receipt_file), str(prefix)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("size mismatch", res.stderr)
     def test_production_bpf_obj_gate_btf_validation(self) -> None:
-        """Production --validate-bpf-obj gate rejects empty BTF types, zeroed CO-RE records, bad types."""
-        readelf_bin = "/usr/bin/readelf"
-        if not os.path.isfile(readelf_bin):
-            readelf_bin = "readelf"
+        """Production --validate-bpf-obj gate: positive control passes, mutations strictly fail closed."""
+        readelf_bin = shutil.which("readelf") or shutil.which("llvm-readelf") or "/usr/bin/readelf"
 
         with tempfile.TemporaryDirectory() as td:
             scratch = Path(td)
@@ -357,7 +442,18 @@ class TestBpfFeasibilityScript(unittest.TestCase):
             prefix = scratch / "prefix"
             prefix.mkdir()
             dep_file = scratch / "bpf.d"
-            dep_file.write_text("mock.o: proof/bpf_canary.bpf.c\n")
+            dep_file.write_text(f"mock.o: {REPO_ROOT}/proof/bpf_canary.bpf.c\n")
+
+            # Positive control: authentic mock BPF ELF passes gate completely
+            valid_bpf = build_mock_bpf_elf(scratch)
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-bpf-obj", readelf_bin, str(valid_bpf), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(lock_file), str(scratch)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertEqual(res.returncode, 0)
+            self.assertIn("Verified genuine .BTF.ext CO-RE relocations", res.stdout)
 
             # Mutation 1: BTF type_len == 0 fails closed
             bad_bpf_1 = build_mock_bpf_elf(scratch, btf_type_len=0)
@@ -391,6 +487,62 @@ class TestBpfFeasibilityScript(unittest.TestCase):
             )
             self.assertNotEqual(res.returncode, 0)
             self.assertIn("non-existent BTF type ID", res.stderr)
+
+            # Mutation 4: invalid access string grammar fails closed
+            bad_bpf_4 = build_mock_bpf_elf(scratch, corrupt_relo="bad_grammar")
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-bpf-obj", readelf_bin, str(bad_bpf_4), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(lock_file), str(scratch)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("Invalid CO-RE access string grammar", res.stderr)
+
+    def test_production_host_elf_gate_validation(self) -> None:
+        """Production --validate-host-elf gate: positive control passes, mutations strictly fail closed."""
+        readelf_bin = shutil.which("readelf") or shutil.which("llvm-readelf") or "/usr/bin/readelf"
+
+        with tempfile.TemporaryDirectory() as td:
+            scratch = Path(td)
+            lock_file = make_dummy_lock(scratch, {})
+            prefix = scratch / "prefix"
+            prefix.mkdir()
+            dep_file = scratch / "host.d"
+            dep_file.write_text(f"mock_host.o: {REPO_ROOT}/proof/bpf_canary_host.c\n")
+
+            # Positive control: authentic mock host binary passes gate completely
+            valid_host = build_mock_host_elf(scratch)
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-host-elf", readelf_bin, str(valid_host), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(scratch), str(lock_file)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertEqual(res.returncode, 0)
+            self.assertIn("Validated Host helper binary", res.stdout)
+
+            # Mutation 1: libc.so.6.extra substring rejected by exact set equality
+            bad_host_1 = build_mock_host_elf(scratch, needed_name="libc.so.6.extra")
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-host-elf", readelf_bin, str(bad_host_1), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(scratch), str(lock_file)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("Disallowed dynamic dependencies in host helper", res.stderr)
+
+            # Mutation 2: executable stack (RWE) rejected
+            bad_host_2 = build_mock_host_elf(scratch, stack_flags=7)
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-host-elf", readelf_bin, str(bad_host_2), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(scratch), str(lock_file)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("EXECUTABLE STACK", res.stderr)
 
     def test_production_report_evaluator_gate(self) -> None:
         """Actual production report evaluator gate enforces Section 7 criteria and log files."""
@@ -487,7 +639,7 @@ class TestBpfFeasibilityScript(unittest.TestCase):
 
             # Mutation 1: missing verifier log file fails
             bad_report = json.loads(json.dumps(valid_report))
-            bad_report["verifier_evidence"]["log_file"] = str(scratch / "missing.log")
+            bad_report["verifier_evidence"]["log_file"] = str(scratch / "nonexistent.log")
             status_path.write_text(json.dumps(bad_report))
             res = subprocess.run(
                 ["bash", str(SCRIPT_PATH), "--evaluate-report", str(status_path)],

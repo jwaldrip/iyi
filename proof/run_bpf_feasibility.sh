@@ -35,7 +35,6 @@ usage() {
 Usage: proof/run_bpf_feasibility.sh [OPTIONS]
 
 Options:
-  --lock <path>             Path to bpf_dependencies.lock.json (default: proof/bpf_dependencies.lock.json)
   --owned-dir <path>        Scratch directory for build artifacts and reports
   --status <path>           Path to write bpf-feasibility.json report
   --build-only              Perform build and artifact validation only; skip setpriv/helper launch
@@ -402,7 +401,8 @@ while relo_idx + 8 <= len(relo_bytes):
     if not sec_name:
         sys.exit(f"ERROR: Invalid sec_name_off {sec_name_off} in .BTF.ext core_relo")
 
-    if sec_name == "tp_btf/sched_process_exec":
+    is_target_sec = (sec_name == "tp_btf/sched_process_exec")
+    if is_target_sec:
         found_target_section = True
 
     if num_info == 0:
@@ -428,7 +428,7 @@ while relo_idx + 8 <= len(relo_bytes):
             sys.exit(f"ERROR: CO-RE relocation references non-existent BTF type ID {type_id} (max {len(btf_types)})")
 
         # Validate insn_off (multiple of 8 bytes in BPF bytecode, within section)
-        if sec_name == "tp_btf/sched_process_exec":
+        if is_target_sec:
             if insn_off % 8 != 0 or insn_off >= prog_sec_len:
                 sys.exit(f"ERROR: Invalid insn_off {insn_off} (not 8-byte aligned or >= {prog_sec_len})")
 
@@ -443,25 +443,48 @@ while relo_idx + 8 <= len(relo_bytes):
         # Walk type and member graph to prove resolution to genuine required fields
         curr_type_id = type_id
         resolved_field_name = None
-        for idx_str in access_parts:
-            member_idx = int(idx_str)
-            while curr_type_id in btf_types and btf_types[curr_type_id]["kind"] in (2, 8, 9, 10, 11):
+
+        # Resolve root type modifiers (TYPEDEF, CONST, VOLATILE, RESTRICT)
+        while curr_type_id in btf_types and btf_types[curr_type_id]["kind"] in (8, 9, 10, 11):
+            curr_type_id = btf_types[curr_type_id]["size_or_type"]
+
+        if curr_type_id not in btf_types:
+            sys.exit(f"ERROR: Unresolved root type ID {curr_type_id} in CO-RE access path '{access_str}'")
+
+        # For field relocations (kinds 0..5), access_parts[0] is root dereference (typically 0)
+        # If root type is PTR, dereference pointer to pointee
+        if btf_types[curr_type_id]["kind"] == 2:  # PTR
+            curr_type_id = btf_types[curr_type_id]["size_or_type"]
+            while curr_type_id in btf_types and btf_types[curr_type_id]["kind"] in (8, 9, 10, 11):
                 curr_type_id = btf_types[curr_type_id]["size_or_type"]
 
-            if curr_type_id not in btf_types:
-                sys.exit(f"ERROR: Unresolved type ID {curr_type_id} in CO-RE access path '{access_str}'")
+        # Walk member indices starting at access_parts[1] if access_parts has > 1 tokens
+        field_indices = access_parts[1:] if len(access_parts) > 1 else []
+        if not field_indices:
+            resolved_field_name = btf_types[curr_type_id].get("name", "")
+        else:
+            for idx_str in field_indices:
+                member_idx = int(idx_str)
+                while curr_type_id in btf_types and btf_types[curr_type_id]["kind"] in (8, 9, 10, 11):
+                    curr_type_id = btf_types[curr_type_id]["size_or_type"]
 
-            t_def = btf_types[curr_type_id]
-            if t_def["kind"] not in (4, 5):  # STRUCT, UNION
-                sys.exit(f"ERROR: Access path index on non-composite type '{t_def['name']}' (kind {t_def['kind']}) in '{access_str}'")
+                if curr_type_id not in btf_types:
+                    sys.exit(f"ERROR: Unresolved type ID {curr_type_id} in CO-RE member walk '{access_str}'")
 
-            members = t_def.get("members", [])
-            if member_idx >= len(members):
-                sys.exit(f"ERROR: Member index {member_idx} out of range for '{t_def['name']}' (len {len(members)}) in '{access_str}'")
-
-            target_member = members[member_idx]
-            resolved_field_name = target_member["name"]
-            curr_type_id = target_member["type"]
+                t_def = btf_types[curr_type_id]
+                if t_def["kind"] in (4, 5):  # STRUCT, UNION
+                    members = t_def.get("members", [])
+                    if member_idx >= len(members):
+                        sys.exit(f"ERROR: Member index {member_idx} out of range for '{t_def['name']}' (len {len(members)}) in '{access_str}'")
+                    target_member = members[member_idx]
+                    resolved_field_name = target_member["name"]
+                    curr_type_id = target_member["type"]
+                elif t_def["kind"] == 3:  # ARRAY
+                    curr_type_id = t_def.get("size_or_type", 0)
+                elif t_def["kind"] == 2:  # PTR
+                    curr_type_id = t_def.get("size_or_type", 0)
+                else:
+                    sys.exit(f"ERROR: Access path index on non-composite type '{t_def['name']}' (kind {t_def['kind']}) in '{access_str}'")
 
         if not resolved_field_name:
             sys.exit(f"ERROR: Failed to resolve field name for access path '{access_str}'")
@@ -472,7 +495,6 @@ while relo_idx + 8 <= len(relo_bytes):
 
         if is_target_sec:
             total_core_relocs += 1
-
 if not found_target_section:
     sys.exit("ERROR: .BTF.ext lacks relocations for 'tp_btf/sched_process_exec'")
 
@@ -493,13 +515,32 @@ allowed_prefixes = [
 if not os.path.exists(bpf_dep) or os.path.getsize(bpf_dep) == 0:
     sys.exit("ERROR: BPF dependency file missing or empty")
 
+def extract_dep_paths(dep_text):
+    content = dep_text.replace("\\\n", " ").replace(r"\ ", "\0")
+    raw_tokens = content.split()
+    tokens = [t.replace("\0", " ") for t in raw_tokens]
+    merged = []
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        combined = tok
+        j = i + 1
+        while j < len(tokens):
+            test_combined = combined + " " + tokens[j]
+            if os.path.exists(test_combined) or any(test_combined.startswith(p) or p.startswith(test_combined) for p in allowed_prefixes):
+                combined = test_combined
+                j += 1
+            else:
+                break
+        merged.append(combined)
+        i = j
+    return [t for t in merged if not (t.endswith(":") or t.endswith(".o:"))]
+
 bpf_compiled_headers = {}
 with open(bpf_dep, "r", encoding="utf-8") as f:
-    dep_content = f.read().replace("\\\n", " ")
-tokens = dep_content.split()
-for tok in tokens[1:]:
-    if tok.endswith(".o:") or tok.endswith(":"):
-        continue
+    dep_paths = extract_dep_paths(f.read())
+
+for tok in dep_paths:
     p = pathlib.Path(tok).resolve()
     p_str = str(p)
     if not any(p_str.startswith(allowed) for allowed in allowed_prefixes):
@@ -519,7 +560,6 @@ for tok in tokens[1:]:
         expected_hdr_info = all_locked_headers[rel_hdr]
         if "sha256" in expected_hdr_info and actual_hdr_sha.lower() != expected_hdr_info["sha256"].lower():
             sys.exit(f"ERROR: BPF object included header '{rel_hdr}' whose SHA256 does not match lock")
-
 if len(sys.argv) > 8 and sys.argv[8]:
     (pathlib.Path(sys.argv[8]) / "bpf-compiled-headers.json").write_text(
         json.dumps(bpf_compiled_headers, indent=2)
@@ -671,13 +711,31 @@ compiled_source_header_digests = {**bpf_compiled}
 
 if not os.path.exists(host_dep) or os.path.getsize(host_dep) == 0:
     sys.exit("ERROR: Host helper dependency file missing or empty")
+def extract_host_dep_paths(dep_text):
+    content = dep_text.replace("\\\n", " ").replace(r"\ ", "\0")
+    raw_tokens = content.split()
+    tokens = [t.replace("\0", " ") for t in raw_tokens]
+    merged = []
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        combined = tok
+        j = i + 1
+        while j < len(tokens):
+            test_combined = combined + " " + tokens[j]
+            if os.path.exists(test_combined) or any(test_combined.startswith(p) or p.startswith(test_combined) for p in allowed_prefixes):
+                combined = test_combined
+                j += 1
+            else:
+                break
+        merged.append(combined)
+        i = j
+    return [t for t in merged if not (t.endswith(":") or t.endswith(".o:"))]
 
 with open(host_dep, "r", encoding="utf-8") as f:
-    dep_content = f.read().replace("\\\n", " ")
-tokens = dep_content.split()
-for tok in tokens[1:]:
-    if tok.endswith(".o:") or tok.endswith(":"):
-        continue
+    host_dep_paths = extract_host_dep_paths(f.read())
+
+for tok in host_dep_paths:
     p = pathlib.Path(tok).resolve()
     p_str = str(p)
     if not any(p_str.startswith(allowed) for allowed in allowed_prefixes):
@@ -697,7 +755,6 @@ for tok in tokens[1:]:
         expected_hdr_info = all_locked_headers[rel_hdr]
         if "sha256" in expected_hdr_info and actual_hdr_sha.lower() != expected_hdr_info["sha256"].lower():
             sys.exit(f"ERROR: Host helper included header '{rel_hdr}' whose SHA256 does not match lock")
-
 (pathlib.Path(owned_dir) / "compiled-headers.json").write_text(
     json.dumps(compiled_source_header_digests, indent=2)
 )
@@ -848,16 +905,6 @@ while [ $# -gt 0 ]; do
       ;;
   esac
 done
-
-if [ ! -f "$LOCK_FILE" ]; then
-  echo "ERROR: Dependency lock '$LOCK_FILE' not found" >&2
-  exit 1
-fi
-if [ ! -f "$DEP_SCRIPT" ]; then
-  echo "ERROR: Dependency script '$DEP_SCRIPT' not found" >&2
-  exit 1
-fi
-
 # Set up fresh, exclusive owned private scratch directory with umask 077 (no mkdir -p reuse, no symlinks)
 if [ -n "${RUNNER_TEMP:-}" ]; then
   if [ -L "$RUNNER_TEMP" ]; then
@@ -888,6 +935,16 @@ if [ -L "$OWNED_DIR" ]; then
 fi
 
 mkdir -m 0700 "$OWNED_DIR/tmp"
+
+if [ ! -f "$LOCK_FILE" ]; then
+  echo "ERROR: Dependency lock '$LOCK_FILE' not found" >&2
+  exit 1
+fi
+if [ ! -f "$DEP_SCRIPT" ]; then
+  echo "ERROR: Dependency script '$DEP_SCRIPT' not found" >&2
+  exit 1
+fi
+
 
 if [ -z "$STATUS_FILE" ]; then
   STATUS_FILE="$OWNED_DIR/bpf-feasibility.json"
