@@ -85,8 +85,8 @@ class LogicalSlot:
     call_line: int                    # e.g. 89
     label: str                        # e.g. "acme-plain"
     kind: str                         # "own" or "positive"
-    variant_id: Optional[str]         # e.g. "compress.positive.464" or None
-    output_template: str              # e.g. "{WORK}/acme-plain"
+    variant_id: Optional[str] = None
+    output_template: str = ""
     compiler_options: Tuple[str, ...] = ()
 
     def to_dict(self) -> Dict[str, Any]:
@@ -115,8 +115,8 @@ class RuntimeBinding:
     out_mtime_ns: int
     atime_set_ns: int
     out_sha256: str
-    hardlink_authenticated: bool = True
-    exec_verified: bool = True
+    hardlink_authenticated: bool
+    exec_verified: bool
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -1052,7 +1052,10 @@ def process_ledger_and_runtime_bindings(
                 checks["no_foreign_references"] = "FAIL"
                 continue
             if special is not None:
-                reasons.append(f"slot {rb.slot_id!r} out_ref is a {special.kind}")
+                if special.kind == "symlink":
+                    reasons.append(f"slot {rb.slot_id!r} out_ref is a symlink")
+                else:
+                    reasons.append(f"slot {rb.slot_id!r} out_ref is a special file ({special.kind})")
                 checks["no_symlink_escapes"] = "FAIL"
                 continue
             if cand is None:
@@ -1236,7 +1239,10 @@ def process_ledger_and_runtime_bindings(
                 checks["no_foreign_references"] = "FAIL"
                 continue
             if special is not None:
-                reasons.append(f"monitored reference {out_ref!r} is a {special.kind}")
+                if special.kind == "symlink":
+                    reasons.append(f"monitored reference {out_ref!r} is a symlink")
+                else:
+                    reasons.append(f"monitored reference {out_ref!r} is a special file ({special.kind})")
                 checks["no_symlink_escapes"] = "FAIL"
                 continue
             if cand is None:
@@ -1267,7 +1273,10 @@ def process_ledger_and_runtime_bindings(
                     reasons.append(f"target {out_target!r} error: {out_err}")
                     checks["no_foreign_references"] = "FAIL"
                 elif out_special is not None:
-                    reasons.append(f"target {out_target!r} is a {out_special.kind}")
+                    if out_special.kind == "symlink":
+                        reasons.append(f"target {out_target!r} is a symlink")
+                    else:
+                        reasons.append(f"target {out_target!r} is a special file ({out_special.kind})")
                     checks["no_symlink_escapes"] = "FAIL"
                 elif out_cand is None:
                     reasons.append(f"target {out_target!r} missing from pre-read census")

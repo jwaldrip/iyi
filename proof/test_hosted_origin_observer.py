@@ -1330,6 +1330,7 @@ class TestHostedOriginObserver(unittest.TestCase):
             call_line=89,
             label="acme-plain",
             kind="own",
+            variant_id=None,
             output_template="{WORK}/acme-plain",
         )
         slot2 = LogicalSlot(
@@ -1339,6 +1340,7 @@ class TestHostedOriginObserver(unittest.TestCase):
             call_line=108,
             label="acme-release",
             kind="own",
+            variant_id=None,
             output_template="{WORK}/acme-release",
         )
         binding = LaunchBinding(
@@ -1363,6 +1365,7 @@ class TestHostedOriginObserver(unittest.TestCase):
             atime_set_ns=st.st_mtime_ns - 1000,
             out_sha256=prog_sha256,
             hardlink_authenticated=True,
+            exec_verified=True,
         )
         rb2 = RuntimeBinding(
             slot_id=slot2.slot_id,
@@ -1376,6 +1379,7 @@ class TestHostedOriginObserver(unittest.TestCase):
             atime_set_ns=st.st_mtime_ns - 1000,
             out_sha256=prog_sha256,
             hardlink_authenticated=True,
+            exec_verified=True,
         )
 
         doc = run_origin_observer(
@@ -1407,6 +1411,7 @@ class TestHostedOriginObserver(unittest.TestCase):
             call_line=89,
             label="acme-plain",
             kind="own",
+            variant_id=None,
             output_template="{WORK}/acme-plain",
         )
         binding = LaunchBinding(
@@ -1430,6 +1435,7 @@ class TestHostedOriginObserver(unittest.TestCase):
             atime_set_ns=st.st_mtime_ns - 1000,
             out_sha256=prog_sha256,
             hardlink_authenticated=False,
+            exec_verified=True,
         )
 
         doc = run_origin_observer(
