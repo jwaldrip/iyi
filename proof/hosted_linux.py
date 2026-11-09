@@ -1030,7 +1030,7 @@ def run_preflight_controls(
         ]
 
         child_probe_script = r'''
-import errno, os, pathlib, platform, socket, stat, sys
+import errno, os, pathlib, platform, pwd, shutil, socket, stat, subprocess, sys, time
 
 secret, host4, host6 = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 assert host4 > 0 and host6 > 0, f"Invalid host ports: {host4}, {host6}"
@@ -1075,20 +1075,23 @@ assert hl_src.stat().st_nlink == 2, "Hardlink count did not increase on /private
 hl_src.unlink()
 hl_dst.unlink()
 
-# Execution atime probe
-atime_probe = pathlib.Path("/private/tmp/atime_probe.sh")
-atime_probe.write_text("#!/bin/sh\nexit 0\n")
-os.chmod(str(atime_probe), 0o755)
-st_before = os.stat(str(atime_probe))
-import time
-time.sleep(0.02)
-subprocess.run([str(atime_probe)], check=True)
-st_after = os.stat(str(atime_probe))
-atime_probe.unlink()
-assert st_after.st_atime_ns >= st_before.st_atime_ns, "Execution did not observe atime"
+# Native executable hardlink atime advance probe
+shutil.copyfile("/bin/true", "/private/tmp/atime_probe_bin")
+os.chmod("/private/tmp/atime_probe_bin", 0o755)
+hl_probe = pathlib.Path("/private/tmp/atime_probe_hl")
+os.link("/private/tmp/atime_probe_bin", str(hl_probe))
+assert hl_probe.stat().st_nlink == 2
+st_before = hl_probe.stat()
+time.sleep(0.05)
+subprocess.run([str(hl_probe)], check=True)
+st_after = hl_probe.stat()
+os.unlink("/private/tmp/atime_probe_bin")
+hl_probe.unlink()
+assert st_after.st_atime_ns > st_before.st_atime_ns, (
+    f"Report filesystem atime did not strictly advance: before={st_before.st_atime_ns}, after={st_after.st_atime_ns}"
+)
 
 # Account lookup for non-root UID 65534
-import pwd
 pw = pwd.getpwuid(65534)
 assert pw.pw_name in ("proof", "nobody"), f"Unexpected username for UID 65534: {pw.pw_name}"
 
@@ -1100,7 +1103,7 @@ assert platform.system() == "Linux", f"OS not Linux: {platform.system()}"
 cpuinfo = pathlib.Path("/proc/cpuinfo").read_text()
 assert "fma" in cpuinfo, "FMA flag missing from /proc/cpuinfo"
 
-# Container local loopback
+# Container local IPv4 and IPv6 TCP loopback
 for family, address in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
     server = socket.socket(family)
     server.bind((address, 0))
@@ -1113,7 +1116,7 @@ for family, address in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1"))
     assert peer.recv(32) == b"owned-loopback"
     peer.close(); client.close(); server.close()
 
-# Container local UDP loopback
+# Container local IPv4 and IPv6 UDP loopback
 for family, address in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
     s_udp = socket.socket(family, socket.SOCK_DGRAM)
     s_udp.bind((address, 0))
@@ -1123,13 +1126,6 @@ for family, address in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1"))
     u_data, _ = s_udp.recvfrom(32)
     assert u_data == b"udp-canary", "UDP loopback data mismatch"
     s_udp.close(); c_udp.close()
-    client = socket.socket(family)
-    client.settimeout(3)
-    client.connect((address, server.getsockname()[1]))
-    peer, _ = server.accept()
-    client.sendall(b"owned-loopback")
-    assert peer.recv(32) == b"owned-loopback"
-    peer.close(); client.close(); server.close()
 
 # Non-loopback connect fails with ENETUNREACH
 for family, address in ((socket.AF_INET, ("192.0.2.1", 9)),
@@ -1477,26 +1473,28 @@ class SequentialLifecycleController:
         c_name = f"iyi-proof-{uuid.uuid4().hex}"
         cidfile = os.path.join(self.runner_temp_dir, f"cid-{uuid.uuid4().hex}")
 
-        docker_args = [
-            "docker", "run",
+        create_args = [
+            "docker", "create",
             "--name", c_name,
             "--cidfile", cidfile,
             "--network", "none",
             "--read-only",
             "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges",
+            "--pids-limit", "128",
             "--init",
             "--user", CONTAINER_USER,
             "--workdir", workdir,
         ]
 
         for mb in mount_bindings:
-            docker_args.append(mb.to_docker_mount_arg())
+            create_args.append(mb.to_docker_mount_arg())
 
         default_env = {
             "HOME": "/home/proof",
             "PATH": "/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin",
             "PYTHONUNBUFFERED": "1",
+            "PYTHONNOUSERSITE": "1",
             "LANG": "C.UTF-8",
             "LC_ALL": "C.UTF-8",
         }
@@ -1504,32 +1502,46 @@ class SequentialLifecycleController:
             default_env.update(env_vars)
 
         for k, v in default_env.items():
-            docker_args.extend(["--env", f"{k}={v}"])
+            create_args.extend(["--env", f"{k}={v}"])
 
-        docker_args.append(f"{self.manifest.image.split('@')[0]}@{self.manifest.image_digest}")
-        docker_args.extend(command)
+        create_args.append(f"{self.manifest.image.split('@')[0]}@{self.manifest.image_digest}")
+        create_args.extend(command)
+
+        create_proc = subprocess.run(create_args, capture_output=True, text=True, check=False)
+        if create_proc.returncode != 0:
+            self.mark_failure(f"docker create failed: {create_proc.stderr}")
+            return -1, "", create_proc.stderr
 
         deadline = min(timeout_sec, self.time_remaining()) if timeout_sec else self.time_remaining()
+        proc_timed_out: bool = False
         stdout = ""
         stderr = ""
         returncode = -1
 
         try:
-            proc = subprocess.run(
-                docker_args,
+            # Inspect container and verify mount table BEFORE starting
+            inspect_proc = subprocess.run(["docker", "inspect", c_name], capture_output=True, text=True, check=False)
+            if inspect_proc.returncode != 0:
+                self.mark_failure(f"docker inspect failed before container start: {inspect_proc.stderr}")
+                return -1, "", inspect_proc.stderr
+            inspect_data = json.loads(inspect_proc.stdout)[0]
+            verify_container_mount_table(inspect_data, expected_phase=phase)
+
+            # Start container attached
+            start_proc = subprocess.run(
+                ["docker", "start", "-a", c_name],
                 capture_output=True,
                 text=True,
                 timeout=deadline,
                 check=False,
             )
-            returncode = proc.returncode
-            stdout = sanitize_workflow_output(proc.stdout)
-            stderr = sanitize_workflow_output(proc.stderr)
+            returncode = start_proc.returncode
+            stdout = sanitize_workflow_output(start_proc.stdout)
+            stderr = sanitize_workflow_output(start_proc.stderr)
         except subprocess.TimeoutExpired as exc:
             proc_timed_out = True
             stdout = sanitize_workflow_output(exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or ""))
             stderr = sanitize_workflow_output(exc.stderr.decode() if isinstance(exc.stderr, bytes) else (exc.stderr or "TIMEOUT"))
-        finally:
             cid = None
             if os.path.isfile(cidfile):
                 try:
@@ -1602,12 +1614,6 @@ class SequentialLifecycleController:
         if p_prefix not in version_out:
             self.mark_failure(f"Compiler version stamp '{version_out}' missing P prefix {p_prefix}")
 
-        # Seal .build directory (read-only on host)
-        for root, dirs, files in os.walk(self.p_build_dir):
-            for d in dirs:
-                os.chmod(os.path.join(root, d), 0o555)
-            for f in files:
-                os.chmod(os.path.join(root, f), 0o555)
 
         self.record_checkpoint(
             stage="build",
@@ -1623,7 +1629,7 @@ class SequentialLifecycleController:
         """Phase 2: Run proof plan."""
         print("=== Step 2: Proof Plan ===")
         cmd = [
-            "python3", "-B", "/W/proof/run_proof.py", "plan",
+            "python3", "-I", "-B", "/W/proof/run_proof.py", "plan",
             "--p", "/P", "--w", "/W",
             "--compiler", "/P/.build/iyi",
             "--inputs-dir", "/inputs",
@@ -1640,7 +1646,7 @@ class SequentialLifecycleController:
         print("=== Step 3: Proof Pin ===")
         r = self.manifest.report_path
         cmd = [
-            "python3", "-B", "/W/proof/run_proof.py", "pin",
+            "python3", "-I", "-B", "/W/proof/run_proof.py", "pin",
             "--report-dir", r,
             "--p", "/P", "--w", "/W",
             "--compiler", "/P/.build/iyi",
@@ -1672,7 +1678,7 @@ class SequentialLifecycleController:
         """Phase 4: Run 1."""
         print("=== Step 4: Run 1 ===")
         r = self.manifest.report_path
-        cmd = ["python3", "-B", "/W/proof/run_proof.py", "run1", "--report-dir", r]
+        cmd = ["python3", "-I", "-B", "/W/proof/run_proof.py", "run1", "--report-dir", r]
         code, out, err = self.execute_in_container(cmd, workdir="/W", phase="proof", timeout_sec=1800)
         if code != 0:
             self.mark_failure(f"Run 1 failed with exit code {code}: {err}")
@@ -1699,7 +1705,7 @@ class SequentialLifecycleController:
         """Phase 5: Run 2."""
         print("=== Step 5: Run 2 ===")
         r = self.manifest.report_path
-        cmd = ["python3", "-B", "/W/proof/run_proof.py", "run2", "--report-dir", r]
+        cmd = ["python3", "-I", "-B", "/W/proof/run_proof.py", "run2", "--report-dir", r]
         code, out, err = self.execute_in_container(cmd, workdir="/W", phase="proof", timeout_sec=3600)
         if code != 0:
             self.mark_failure(f"Run 2 failed with exit code {code}: {err}")
@@ -1730,7 +1736,10 @@ class SequentialLifecycleController:
 
         # Step 6a: Run acme driver to write run3/required.json
         print("Executing initial driver: acme")
-        cmd_acme = ["python3", "-B", "/W/proof/run_proof.py", "run3", "--report-dir", r, "--driver", "acme"]
+        rem = self.time_remaining()
+        if not check_driver_admission(rem, self.driver_limit_sec, self.grace_sec):
+            self.mark_failure(f"Hosting budget interrupted before acme: {rem:.1f}s remaining")
+        cmd_acme = ["python3", "-I", "-B", "/W/proof/run_proof.py", "run3", "--report-dir", r, "--driver", "acme"]
         code, out, err = self.execute_in_container(cmd_acme, workdir="/W", phase="proof", timeout_sec=self.driver_limit_sec)
         if code != 0:
             self.mark_failure(f"Driver acme failed with exit code {code}: {err}")
@@ -1752,7 +1761,11 @@ class SequentialLifecycleController:
 
         if not isinstance(required_drivers, list) or len(required_drivers) < 28:
             self.mark_failure(f"Invalid required drivers list (expected at least 28 drivers): {required_drivers}")
-
+        if len(set(required_drivers)) != len(required_drivers):
+            self.mark_failure(f"Duplicate drivers detected in required.json: {required_drivers}")
+        for drv in required_drivers:
+            if not isinstance(drv, str) or not re.fullmatch(r"^[a-z0-9_]+$", drv):
+                self.mark_failure(f"Invalid driver name in required.json: {drv!r}")
         print(f"Found {len(required_drivers)} required drivers in run3/required.json")
 
         for driver in required_drivers:
@@ -1767,7 +1780,7 @@ class SequentialLifecycleController:
                 )
 
             print(f"Executing driver: {driver} ({rem:.1f}s budget remaining)")
-            cmd_d = ["python3", "-B", "/W/proof/run_proof.py", "run3", "--report-dir", r, "--driver", driver]
+            cmd_d = ["python3", "-I", "-B", "/W/proof/run_proof.py", "run3", "--report-dir", r, "--driver", driver]
             code, out, err = self.execute_in_container(cmd_d, workdir="/W", phase="proof", timeout_sec=self.driver_limit_sec)
             if code != 0:
                 self.mark_failure(f"Driver {driver} failed with exit code {code}: {err}")
@@ -1785,7 +1798,7 @@ class SequentialLifecycleController:
         receipts_dir = os.path.join(self.artifacts_dir, "sealed-receipts")
         os.makedirs(receipts_dir, exist_ok=True)
         cmd = [
-            "python3", "-B", "/W/proof/run_proof.py", "final",
+            "python3", "-I", "-B", "/W/proof/run_proof.py", "final",
             "--report-dir", r,
             "--sealed-receipts-dir", "/receipts",
         ]
