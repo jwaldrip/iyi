@@ -35,6 +35,9 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/frame-probe"/{normal,observed,artifact,mods}
           cat > "$RUNNER_TEMP/frame-probe/probe.iyi" <<'IYI'
+          module probe
+          import std/debug
+
           def frame_inner(n : Int32) : Int32
             raise "frame qualification" if n == 0
             frame_inner(n - 1) + 1
@@ -56,6 +59,12 @@ jobs:
               exit 1
             fi
             grep -q 'frame qualification' "$RUNNER_TEMP/frame-probe/$mode.stderr"
+            count="$(grep -cE '^[0-9]+ +[^ ]*frame_inner[^ ]* at .*probe\.iyi:[0-9]+' "$RUNNER_TEMP/frame-probe/$mode.stderr" || true)"
+            if [ "$count" -lt 2 ]; then
+              echo "Missing named recursive frames for $mode: $count" >&2
+              cat "$RUNNER_TEMP/frame-probe/$mode.stderr" >&2
+              exit 1
+            fi
           done
           set +e
           python3 bench/frames_equivalent.py "$RUNNER_TEMP/frame-probe/normal.stderr" "$RUNNER_TEMP/frame-probe/artifact.stderr" >"$RUNNER_TEMP/frame-probe/comparison.txt" 2>&1
