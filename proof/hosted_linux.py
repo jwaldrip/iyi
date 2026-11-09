@@ -1350,26 +1350,19 @@ class SequentialLifecycleController:
         self.p_dir = os.path.abspath(p_dir)
         self.w_dir = os.path.abspath(w_dir)
         self.inputs_dir = os.path.abspath(inputs_dir)
-        prepare_writable_roots(self.runner_temp_dir)
-        os.makedirs(self.artifacts_dir, exist_ok=True)
-        os.chmod(self.artifacts_dir, 0o700)
         self.driver_limit_sec = float(driver_limit_sec)
         self.grace_sec = float(grace_sec)
         self.min_disk_gib = float(min_disk_gib)
-        self.runner_temp_dir = runner_temp_dir or tempfile.gettempdir()
+        self.runner_temp_dir = os.path.abspath(runner_temp_dir or tempfile.gettempdir())
 
         self.p_build_dir = os.path.join(self.runner_temp_dir, "p-build")
         self.private_tmp_dir = os.path.join(self.runner_temp_dir, "private-tmp")
         self.scratch_dir = os.path.join(self.runner_temp_dir, "scratch")
         self.home_proof_dir = os.path.join(self.runner_temp_dir, "home-proof")
 
-        for d in (self.p_build_dir, self.private_tmp_dir, self.scratch_dir, self.home_proof_dir, self.artifacts_dir):
-            os.makedirs(d, exist_ok=True)
-            os.chmod(d, 0o1777 if ("tmp" in d) else 0o777)
-            try:
-                os.chown(d, CONTAINER_UID, CONTAINER_GID)
-            except (PermissionError, OSError):
-                pass
+        prepare_writable_roots(self.runner_temp_dir)
+        os.makedirs(self.artifacts_dir, exist_ok=True)
+        os.chmod(self.artifacts_dir, 0o700)
         # Sticky failure tracking
         self.sticky_failed: bool = False
         self.failure_reasons: List[str] = []
