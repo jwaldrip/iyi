@@ -1018,5 +1018,76 @@ class TestOriginRecordsAdversarialHardlink(unittest.TestCase):
                 self.assertEqual(unit_info["status"], "FAIL")
                 self.assertTrue(any("did not advance atime" in r for r in reasons))
 
+    def test_run3_execute_only_fails_closed_pending(self):
+        from proof.run_proof import _run_one_driver
+        with tempfile.TemporaryDirectory() as report_dir:
+            run3_dir = os.path.join(report_dir, "run3", "demo")
+            attempt_dir = os.path.join(run3_dir, "a1")
+            os.makedirs(attempt_dir)
+            pin = {
+                "report_dir": report_dir,
+                "chain_id": "0" * 32,
+                "w_path": report_dir,
+                "compiler_path": "/bin/true",
+                "canonical_roots": [],
+                "platform_tmp": None,
+                "python_path": sys.executable,
+                "p_source_sha": "0" * 40,
+                "w_head": "0" * 40,
+                "compiler_sha256": "0" * 64,
+                "compiler_size": 0,
+                "compiler_mtime_ns": 0,
+                "compiler_inode": 0,
+                "compiler_version_line": "iyi 0.1.0 [0000000]",
+                "compiler_stamp": "0000000",
+                "env_path": "/bin",
+                "env_home": "/home",
+                "python_version": "3.10",
+                "timeout_path": "/bin/timeout",
+                "timeout_version": "1.0",
+                "nm_path": "/bin/nm",
+                "nm_version": "1.0",
+                "census_sha256": {"demo": "0" * 64},
+            }
+            census_dir = os.path.join(report_dir, "proof", "census")
+            os.makedirs(census_dir)
+            script_path = os.path.join(report_dir, "bench", "std_demo_exercise.sh")
+            os.makedirs(os.path.dirname(script_path))
+            with open(script_path, "w") as f:
+                f.write("#!/bin/sh\necho PASS\nexit 0\n")
+            os.chmod(script_path, 0o755)
+            census = {
+                "census_version": 1,
+                "driver": "demo",
+                "script": "bench/std_demo_exercise.sh",
+                "script_sha256": "0" * 64,
+                "sites": [],
+                "non_invocations": [],
+                "skips": [],
+                "not_skips": [],
+                "pass_sentinel": {"line": 2, "regex": "^PASS$", "text": "echo PASS"},
+                "exec_evidence": [],
+            }
+            with open(os.path.join(census_dir, "demo.json"), "w") as f:
+                json.dump(census, f)
+
+            with patch("proof.run_proof.validate_census", return_value=[]), \
+                 patch("proof.run_proof._check_stage_identity", return_value=True), \
+                 patch("proof.run_proof.run_logged", return_value=(MagicMock(returncode=0, timed_out=False, survivors=(), interrupted_signal=None), b"PASS\n")):
+                record = _run_one_driver(
+                    report_dir,
+                    pin,
+                    "demo",
+                    baseline=set(),
+                    driver_limit_sec=10.0,
+                    grace_sec=1.0,
+                    disk_min_gb=0.1,
+                    stat_fn=os.stat,
+                    execute_only=True,
+                )
+                self.assertEqual(record["status"], "PENDING")
+                self.assertEqual(record["checks"]["ledger"], "PENDING")
+                self.assertTrue(any("deferred to trusted host observer" in r for r in record["reasons"]))
+
 if __name__ == "__main__":
     unittest.main()

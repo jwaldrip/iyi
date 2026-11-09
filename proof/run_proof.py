@@ -1086,7 +1086,7 @@ def _launcher_text(pin: dict, shim_config_path: str) -> str:
     )
 
 
-def _run_one_driver(report_dir: str, pin: dict, driver: str, baseline: set[tuple[str, str, str, str]], *, driver_limit_sec: float, grace_sec: float, disk_min_gb: float, stat_fn, setup_base: str | None = None, driver_log_path: str | None = None) -> dict:
+def _run_one_driver(report_dir: str, pin: dict, driver: str, baseline: set[tuple[str, str, str, str]], *, driver_limit_sec: float, grace_sec: float, disk_min_gb: float, stat_fn, setup_base: str | None = None, driver_log_path: str | None = None, execute_only: bool = False) -> dict:
     attempt_dir = next_attempt_dir(
         os.path.join(report_dir, "run3", driver)
     )
@@ -1265,22 +1265,26 @@ def _run_one_driver(report_dir: str, pin: dict, driver: str, baseline: set[tuple
         checks["skips"] = skip_status
         reasons.extend(skip_reasons)
 
-        verdict = verify_ledger(
-            ledger_path,
-            census=census,
-            driver=driver,
-            nonce=nonce,
-            attempt=attempt,
-            chain_id=pin["chain_id"],
-            work_tmp=t_dir,
-            repo=w_path,
-            platform_tmp=pin["platform_tmp"],
-            stat_fn=stat_fn,
-        )
-        statuses = sorted(verdict.statuses)
-        checks["ledger"] = statuses[0] if statuses else "PASS"
-        reasons.extend(f"ledger {status}" for status in statuses)
-        reasons.extend(f"ledger: {reason}" for reason in verdict.reasons)
+        if execute_only:
+            checks["ledger"] = "PENDING"
+            reasons.append("execute-only: ledger observation deferred to trusted host observer")
+        else:
+            verdict = verify_ledger(
+                ledger_path,
+                census=census,
+                driver=driver,
+                nonce=nonce,
+                attempt=attempt,
+                chain_id=pin["chain_id"],
+                work_tmp=t_dir,
+                repo=w_path,
+                platform_tmp=pin["platform_tmp"],
+                stat_fn=stat_fn,
+            )
+            statuses = sorted(verdict.statuses)
+            checks["ledger"] = statuses[0] if statuses else "PASS"
+            reasons.extend(f"ledger {status}" for status in statuses)
+            reasons.extend(f"ledger: {reason}" for reason in verdict.reasons)
     except (OSError, RuntimeError, TypeError, ValueError) as error:
         checks.setdefault("exit", "FAIL")
         checks.setdefault("sentinel", "FAIL")
@@ -1362,6 +1366,7 @@ def cmd_run3(args, *, drivers: Sequence[str] = DRIVERS_29, driver_limit_sec: flo
         return 2
     selected = [requested_driver] if requested_driver else required
     failed = False
+    execute_only = getattr(args, "execute_only", False)
     for driver in selected:
         record = _run_one_driver(
             args.report_dir,
@@ -1372,6 +1377,7 @@ def cmd_run3(args, *, drivers: Sequence[str] = DRIVERS_29, driver_limit_sec: flo
             grace_sec=grace_sec,
             disk_min_gb=disk_min_gb,
             stat_fn=stat_fn,
+            execute_only=execute_only,
         )
         print(f"Run 3 {driver}: {record['status']}")
         if record["status"] != "PASS":
@@ -1862,6 +1868,7 @@ def _parser() -> argparse.ArgumentParser:
     run3 = subparsers.add_parser("run3")
     run3.add_argument("--report-dir", required=True)
     run3.add_argument("--driver", default="")
+    run3.add_argument("--execute-only", action="store_true", default=False)
     return parser
 
 
