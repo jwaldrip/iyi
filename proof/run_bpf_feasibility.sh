@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # proof/run_bpf_feasibility.sh: One shared unprivileged build, artifact validation,
-# and restricted launcher entry point for BPF kernel feasibility diagnostics.
+# and build-only entry point for BPF kernel feasibility diagnostics.
 # Implements sections 4, 5, and 7 of agent://PlanBpfOwnedDependencies.
 
 set -euo pipefail
@@ -40,7 +40,7 @@ Options:
   --build-only              Perform build and artifact validation only; skip setpriv/helper launch
   --e3-build-only           Build E3 witness and run synthetic validator tests only
   --skip-launch             Alias for --build-only
-  --verbose                 Enable verbose progress logging
+  --launch-only             Refuse launch: independent execution custody is not established
   -h, --help                Show this help message and exit
 
 Internal production gate sub-actions (for direct test verification):
@@ -1292,6 +1292,10 @@ while [ $# -gt 0 ]; do
       E3_BUILD_ONLY=1
       shift
       ;;
+    --launch-only)
+      echo "ERROR: launch held: protected execution custody and independent terminal collector are not established" >&2
+      exit 1
+      ;;
     --verbose)
       VERBOSE=1
       shift
@@ -1307,13 +1311,21 @@ while [ $# -gt 0 ]; do
       ;;
   esac
 done
+if [ "$BUILD_ONLY" -eq 0 ] && [ "$E3_BUILD_ONLY" -eq 0 ]; then
+  echo "ERROR: explicit --build-only or --e3-build-only is required; launch is held" >&2
+  exit 1
+fi
+if [ "$BUILD_ONLY" -eq 1 ] && [ "$E3_BUILD_ONLY" -eq 1 ]; then
+  echo "ERROR: select exactly one build profile" >&2
+  exit 1
+fi
 if [ "$E3_BUILD_ONLY" -eq 1 ]; then
   for rel in proof/run_bpf_feasibility.sh proof/bpf_dependencies.py \
       proof/bpf_dependencies.lock.json proof/bpf_runner_baseline.py proof/bpf_baseline_process.py \
       proof/bpf_tool_baseline.json proof/bpf_gcc_include_baseline.json \
       proof/test_bpf_dependencies.py proof/test_bpf_runner_baseline.py \
       proof/test_bpf_build_script.py \
-      .github/workflows/pr147-e3-bpf-build.yml; do
+      .github/workflows/pr147-e3-bpf-build.yml .github/workflows/pr147-bpf-feasibility.yml; do
     if ! /usr/bin/git -C "$REPO_ROOT" cat-file -e "HEAD:$rel" ||
        ! /usr/bin/git -C "$REPO_ROOT" diff --quiet HEAD -- "$rel"; then
       echo "ERROR: E3 recipe input differs from checkout: $rel" >&2
@@ -1370,6 +1382,48 @@ if [ "$VERBOSE" -eq 1 ]; then
   echo "[run_bpf_feasibility] Repository root: $REPO_ROOT"
   echo "[run_bpf_feasibility] Scratch working directory: $OWNED_DIR"
 fi
+if [ "$BUILD_ONLY" -eq 1 ]; then
+  python3 -I - "$REPO_ROOT" "$OWNED_DIR" <<'PY'
+import hashlib, json, os, pathlib, subprocess, sys
+root, out = map(pathlib.Path, sys.argv[1:])
+def git(*args):
+    return subprocess.run(["/usr/bin/git", "-C", str(root), *args],
+                          check=True, stdout=subprocess.PIPE).stdout
+revision = git("rev-parse", "HEAD").decode("ascii").strip()
+workflow = ".github/workflows/pr147-bpf-feasibility.yml"
+files = ["proof/run_bpf_feasibility.sh", "proof/bpf_canary_host.c",
+         "proof/bpf_canary.bpf.c", "proof/bpf_canary_types.h",
+         "proof/bpf_canary_kernel_types.h", "proof/bpf_dependencies.py",
+         "proof/bpf_dependencies.lock.json", "proof/bpf_runner_baseline.py",
+         "proof/bpf_baseline_process.py", "proof/bpf_tool_baseline.json",
+         "proof/bpf_gcc_include_baseline.json", "proof/test_bpf_dependencies.py",
+         "proof/test_bpf_runner_baseline.py", "proof/test_bpf_build_script.py", workflow]
+if (root / "proof/vmlinux.h").exists() or (root / "proof/vmlinux.h").is_symlink():
+    sys.exit("ERROR: unapproved proof/vmlinux.h changes canary source selection")
+sources = {}
+for rel in files:
+    path = root / rel
+    if path.is_symlink():
+        sys.exit(f"ERROR: source is a symlink: {rel}")
+    data = path.read_bytes()
+    if data != git("show", f"{revision}:{rel}"):
+        sys.exit(f"ERROR: canary source or recipe differs from checkout: {rel}")
+    sources[rel] = hashlib.sha256(data).hexdigest()
+repository = os.environ.get("GITHUB_REPOSITORY")
+workflow_ref = os.environ.get("GITHUB_WORKFLOW_REF")
+if os.environ.get("GITHUB_ACTIONS") == "true":
+    if (not repository or not workflow_ref or
+            not workflow_ref.startswith(f"{repository}/{workflow}@") or
+            not workflow_ref.split("@", 1)[1] or
+            os.environ.get("GITHUB_WORKFLOW_SHA") != revision or
+            os.environ.get("GITHUB_SHA") != revision):
+        sys.exit("ERROR: registered workflow identity or checkout SHA does not match canary recipe")
+record = {"schema": "iyi-bpf-canary-source-v1", "recipe_sha": revision,
+          "repository": repository, "workflow_path": workflow,
+          "workflow_ref": workflow_ref, "source_sha256": sources}
+(out / "canary-source.json").write_text(json.dumps(record, sort_keys=True, indent=2) + "\n")
+PY
+fi
 # Validate the independently preserved runner census before invoking its tools.
 python3 -I "$REPO_ROOT/proof/bpf_runner_baseline.py"
 
@@ -1400,7 +1454,7 @@ if [ "$E3_BUILD_ONLY" -eq 1 ]; then
   # This profile has a closed source list and exits before the capability path.
   # The caller retains stdout/stderr even if a command fails.
   python3 -I - "$REPO_ROOT" "$OWNED_DIR" <<'PY'
-import hashlib, json, pathlib, subprocess, sys
+import hashlib, json, os, pathlib, subprocess, sys
 root, out = map(pathlib.Path, sys.argv[1:])
 subject = "be6d754aa7f7be709273281ff10fc0a0b68db8e6"
 files = ["e3_bpf_types.h", "e3_bpf_kernel_types.h", "e3_bpf_exec.bpf.c",
@@ -1416,11 +1470,24 @@ for name in files:
     if data != git("show", f"{subject}:{rel}"):
         sys.exit(f"ERROR: E3 subject differs from {subject}: {rel}")
     digests[rel] = hashlib.sha256(data).hexdigest()
-for rel in ("proof/run_bpf_feasibility.sh", ".github/workflows/pr147-e3-bpf-build.yml"):
+for rel in ("proof/run_bpf_feasibility.sh", ".github/workflows/pr147-e3-bpf-build.yml",
+            ".github/workflows/pr147-bpf-feasibility.yml"):
     if (root / rel).read_bytes() != git("show", f"{revision}:{rel}"):
         sys.exit(f"ERROR: build recipe differs from checkout: {rel}")
+workflow_ref = os.environ.get("GITHUB_WORKFLOW_REF")
+repository = os.environ.get("GITHUB_REPOSITORY")
+registered = None
+if os.environ.get("GITHUB_ACTIONS") == "true":
+    for path in (".github/workflows/pr147-e3-bpf-build.yml",
+                 ".github/workflows/pr147-bpf-feasibility.yml"):
+        if repository and workflow_ref and workflow_ref.startswith(f"{repository}/{path}@"):
+            registered = path
+            break
+    if registered is None:
+        sys.exit("ERROR: unknown registered E3 workflow")
 record = {"witness_source_sha": subject, "build_recipe_sha": revision,
-          "source_sha256": digests, "strict_eligible": False,
+          "source_sha256": digests, "registered_workflow_path": registered,
+          "workflow_ref": workflow_ref, "strict_eligible": False,
           "load_attempted": False, "attach_attempted": False,
           "exec_identity_tested": False}
 (out / "e3-subject.json").write_text(json.dumps(record, indent=2) + "\n")
@@ -1589,19 +1656,34 @@ gcc_bin = sys.argv[8]
 readelf_bin = sys.argv[9]
 
 def sha256_file(p):
-    if not os.path.exists(p):
-        return "MISSING"
+    if not os.path.isfile(p):
+        sys.exit(f"ERROR: required build input missing: {p}")
     return hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
 
 compiled_headers_file = owned_dir / "compiled-headers.json"
 compiled_headers = {}
 if compiled_headers_file.is_file():
     compiled_headers = json.loads(compiled_headers_file.read_text(encoding="utf-8"))
+source = json.loads((owned_dir / "canary-source.json").read_text())
+for rel, expected in source["source_sha256"].items():
+    path = repo_root / rel
+    if path.is_symlink() or sha256_file(path) != expected:
+        sys.exit(f"ERROR: canary source changed during build: {rel}")
+if (repo_root / "proof/vmlinux.h").exists() or (repo_root / "proof/vmlinux.h").is_symlink():
+    sys.exit("ERROR: unapproved proof/vmlinux.h appeared during build")
 
 record = {
     "schema": "iyi-bpf-build-record-v1",
     "strict_eligible": False,
-    "source_checkout_sha": os.environ.get("GITHUB_SHA", "LOCAL_DEV"),
+    "exec_identity_tested": False,
+    "load_attempted": False,
+    "attach_attempted": False,
+    "source_checkout_sha": source["recipe_sha"],
+    "source": source,
+    "github_run_id": os.environ.get("GITHUB_RUN_ID"),
+    "github_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+    "image_os": os.environ.get("ImageOS"),
+    "image_version": os.environ.get("ImageVersion"),
     "tools": {
         "clang": {"path": clang_bin, "sha256": sha256_file(clang_bin)},
         "gcc": {"path": gcc_bin, "sha256": sha256_file(gcc_bin)},
@@ -1625,49 +1707,36 @@ record = {
 record_file = owned_dir / "diagnostic-build-record.json"
 record_file.write_text(json.dumps(record, indent=2))
 print(f"Recorded diagnostic build record at {record_file}")
+names = ("bpf_canary_host", "bpf_canary.bpf.o", "bpf_canary_host.d",
+         "bpf_canary.bpf.d", "compiled-headers.json", "bpf-compiled-headers.json",
+         "bpf-dependency-receipt.json", "canary-source.json", "diagnostic-build-record.json")
+artifacts = {name: {"size": (owned_dir / name).stat().st_size,
+                    "sha256": sha256_file(owned_dir / name)} for name in names}
+archives = {}
+for name in ("libbpf.a", "libelf.a", "libz.a", "libzstd.a"):
+    p = owned_dir / "staged-prefix/usr/lib/x86_64-linux-gnu" / name
+    archives[name] = {"size": p.stat().st_size, "sha256": sha256_file(p)}
+fixture_evidence = None
+if os.environ.get("GITHUB_ACTIONS") == "true":
+    fixture_evidence = {}
+    for suite in ("test_bpf_dependencies", "test_bpf_runner_baseline", "test_bpf_build_script"):
+        exit_file = owned_dir.parent / (suite + ".exit")
+        log_file = owned_dir.parent / (suite + ".log")
+        if exit_file.read_text().strip() != "0":
+            sys.exit(f"ERROR: offline fixture failed: {suite}")
+        fixture_evidence[suite] = {
+            "exit_sha256": sha256_file(exit_file), "log_sha256": sha256_file(log_file)}
+manifest = {"schema": "iyi-bpf-canary-build-v1", "source": source,
+            "build": record, "artifacts": artifacts, "static_archives": archives,
+            "offline_fixtures": fixture_evidence,
+            "strict_eligible": False, "exec_identity_tested": False,
+            "load_attempted": False, "attach_attempted": False,
+            "custody": "build-authored; external manifest digest required"}
+(owned_dir / "canary-build-manifest.json").write_text(
+    json.dumps(manifest, sort_keys=True, indent=2) + "\n")
 PY
 validate_build_integrity_main "$OWNED_DIR" "$BPF_OBJ" "$HOST_BIN"
 
 
-if [ "$BUILD_ONLY" -eq 1 ]; then
-  echo "Build-only mode requested; artifact build and verification complete."
-  exit 0
-fi
-
-# 6. Section 7: Launch only the restricted foreground helper
-# Recheck before the restricted helper launch; this never executes sudo.
-python3 -I "$REPO_ROOT/proof/bpf_runner_baseline.py"
-
-PROBE_UID="$(id -u)"
-PROBE_GID="$(id -g)"
-
-if [ "$PROBE_UID" -eq 0 ] || [ "$PROBE_GID" -eq 0 ]; then
-  echo "ERROR: Refusing to launch probe as root UID ($PROBE_UID) or GID ($PROBE_GID)" >&2
-  exit 1
-fi
-
-if [ "$VERBOSE" -eq 1 ]; then
-  echo "[run_bpf_feasibility] Validating headers and binaries immediately before capability launch..."
-fi
-
-validate_build_integrity_main "$OWNED_DIR" "$BPF_OBJ" "$HOST_BIN"
-
-if [ "$VERBOSE" -eq 1 ]; then
-  echo "[run_bpf_feasibility] Launching restricted foreground helper with /usr/bin/setpriv (UID=$PROBE_UID, GID=$PROBE_GID)..."
-fi
-
-# Foreground execution with dropped capabilities; no CAP_SYS_ADMIN
-/usr/bin/sudo -n /usr/bin/setpriv \
-  --reuid="$PROBE_UID" --regid="$PROBE_GID" --clear-groups \
-  --bounding-set=-all,+bpf,+perfmon \
-  --inh-caps=-all,+bpf,+perfmon \
-  --ambient-caps=-all,+bpf,+perfmon \
-  --no-new-privs \
-  -- /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C \
-  "$HOST_BIN" \
-  --probe-only --verbose \
-  --bpf-obj "$BPF_OBJ" \
-  --status "$STATUS_FILE"
-
-# 7. Evaluate terminal report JSON against Section 7 / acceptance criteria
-evaluate_report_main "$STATUS_FILE"
+echo "Build-only mode requested; artifact build and verification complete."
+exit 0

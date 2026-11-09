@@ -568,7 +568,8 @@ class TestBpfFeasibilityScript(unittest.TestCase):
                      "proof/bpf_baseline_process.py", "proof/bpf_tool_baseline.json",
                      "proof/bpf_gcc_include_baseline.json", "proof/test_bpf_dependencies.py",
                      "proof/test_bpf_runner_baseline.py", "proof/test_bpf_build_script.py",
-                     ".github/workflows/pr147-e3-bpf-build.yml"]
+                     ".github/workflows/pr147-e3-bpf-build.yml",
+                     ".github/workflows/pr147-bpf-feasibility.yml"]
             for rel in files:
                 dest = root / rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
@@ -585,6 +586,59 @@ class TestBpfFeasibilityScript(unittest.TestCase):
                                      "--e3-build-only"], capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("recipe input differs from checkout: proof/bpf_baseline_process.py", result.stderr)
+    def test_launch_is_held_without_touching_inputs(self):
+        with tempfile.TemporaryDirectory() as td:
+            missing = str(Path(td) / "missing")
+            for args in ([], ["--owned-dir", missing],
+                         ["--launch-only"], ["--launch-only", "--owned-dir", missing],
+                         ["--launch-only", "--approved-manifest-sha256", "0" * 64]):
+                with self.subTest(args=args):
+                    result = subprocess.run(["bash", str(SCRIPT_PATH), *args],
+                                            capture_output=True, text=True)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("held", result.stderr)
+                    self.assertFalse(Path(missing).exists())
+
+    def test_canary_rejects_source_and_workflow_substitution_before_staging(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "repo"
+            files = ["proof/run_bpf_feasibility.sh", "proof/bpf_canary_host.c",
+                     "proof/bpf_canary.bpf.c", "proof/bpf_canary_types.h",
+                     "proof/bpf_canary_kernel_types.h", "proof/bpf_dependencies.py",
+                     "proof/bpf_dependencies.lock.json", "proof/bpf_runner_baseline.py",
+                     "proof/bpf_baseline_process.py", "proof/bpf_tool_baseline.json",
+                     "proof/bpf_gcc_include_baseline.json", "proof/test_bpf_dependencies.py",
+                     "proof/test_bpf_runner_baseline.py", "proof/test_bpf_build_script.py",
+                     ".github/workflows/pr147-bpf-feasibility.yml"]
+            for rel in files:
+                dest = root / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(REPO_ROOT / rel, dest)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            subprocess.run(["git", "-C", str(root), "add", "--", *files], check=True)
+            subprocess.run(["git", "-C", str(root), "-c", "user.name=fixture",
+                            "-c", "user.email=fixture@example.invalid",
+                            "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
+                            "commit", "-qm", "fixture"], check=True)
+            env = dict(os.environ, GITHUB_ACTIONS="true", GITHUB_REPOSITORY="owner/repo",
+                       GITHUB_WORKFLOW_REF="owner/repo/.github/workflows/other.yml@refs/heads/main")
+            cmd = ["bash", str(root / "proof/run_bpf_feasibility.sh"), "--build-only"]
+            result = subprocess.run(cmd + ["--owned-dir", str(Path(td) / "wrong-workflow")],
+                                    env=env, capture_output=True, text=True)
+            self.assertIn("registered workflow identity or checkout SHA does not match", result.stderr)
+            self.assertNotEqual(result.returncode, 0)
+            source = root / "proof/bpf_canary.bpf.c"
+            source.write_bytes(source.read_bytes() + b"\n/* altered */\n")
+            result = subprocess.run(cmd + ["--owned-dir", str(Path(td) / "changed-source")],
+                                    env=env, capture_output=True, text=True)
+            self.assertIn("canary source or recipe differs from checkout", result.stderr)
+            self.assertNotEqual(result.returncode, 0)
+
+    def test_no_privileged_launcher_remains(self):
+        text = SCRIPT_PATH.read_text()
+        self.assertNotIn("/usr/bin/sudo", text)
+        self.assertNotIn("/usr/bin/setpriv", text)
+
 
     def test_help_flag(self) -> None:
         """--help exits 0 with usage instructions."""
@@ -633,6 +687,7 @@ class TestBpfFeasibilityScript(unittest.TestCase):
                 [
                     "bash",
                     str(SCRIPT_PATH),
+                    "--build-only",
                     "--owned-dir",
                     str(pre_existing),
                 ],
@@ -660,6 +715,7 @@ class TestBpfFeasibilityScript(unittest.TestCase):
                 [
                     "bash",
                     str(fake_script),
+                    "--build-only",
                     "--owned-dir",
                     str(fresh_owned),
                 ],
