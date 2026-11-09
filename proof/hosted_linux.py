@@ -738,9 +738,8 @@ class DescriptorSafeEvidenceCollector:
     and computes SHA-256 digests.
     """
 
-    def __init__(self, root_dir: str, skip_raw_executables: bool = False):
+    def __init__(self, root_dir: str):
         self.root_dir = os.path.abspath(root_dir)
-        self.skip_raw_executables = skip_raw_executables
         try:
             self.root_fd = os.open(self.root_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         except OSError as exc:
@@ -792,22 +791,6 @@ class DescriptorSafeEvidenceCollector:
                         "target": link_target,
                     })
                 elif stat.S_ISREG(st.st_mode):
-                    # If configured to preserve execution atimes, skip reading raw executable binaries
-                    is_executable = bool(st.st_mode & 0o111)
-                    if self.skip_raw_executables and is_executable and ("out_ref" in rel_path or "/bin/" in rel_path):
-                        ti = tarfile.TarInfo(name=arc_name)
-                        ti.size = 0
-                        ti.mode = st.st_mode & 0o777
-                        ti.mtime = 0
-                        tar.addfile(ti, io.BytesIO(b""))
-                        manifest.append({
-                            "path": arc_name,
-                            "type": "executable_reference_skipped",
-                            "size": st.st_size,
-                            "inode": st.st_ino,
-                        })
-                        continue
-
                     # Regular file read
                     file_fd = os.open(entry, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
                     try:
@@ -857,7 +840,6 @@ def create_checkpoint_archive(
     checkpoint_dir: Optional[str],
     output_tar_gz: str,
     checkpoint_descriptor: Dict[str, Any],
-    skip_raw_executables: bool = False,
 ) -> str:
     """
     Create a sealed incremental .tar.gz checkpoint archive with manifest
@@ -874,7 +856,7 @@ def create_checkpoint_archive(
     with open(output_tar_gz, "wb") as f_out:
         with tarfile.open(fileobj=f_out, mode="w:gz", format=tarfile.PAX_FORMAT) as tar:
             if checkpoint_dir and os.path.exists(checkpoint_dir):
-                with DescriptorSafeEvidenceCollector(checkpoint_dir, skip_raw_executables=skip_raw_executables) as collector:
+                with DescriptorSafeEvidenceCollector(checkpoint_dir) as collector:
                     collector.walk_and_collect(tar, arc_prefix="payload", manifest=manifest_entries)
 
             # Add descriptor
@@ -1430,7 +1412,6 @@ class SequentialLifecycleController:
         attempt: int = 1,
         source_dir: Optional[str] = None,
         extra_info: Optional[Dict[str, Any]] = None,
-        skip_raw_executables: bool = False,
     ) -> Dict[str, Any]:
         """Record an immutable checkpoint and archive evidence."""
         archive_name = f"checkpoint-{stage}-a{attempt}.tar.gz"
@@ -1463,7 +1444,6 @@ class SequentialLifecycleController:
             checkpoint_dir=source_dir,
             output_tar_gz=archive_path,
             checkpoint_descriptor=desc,
-            skip_raw_executables=skip_raw_executables,
         )
         desc["archive_sha256"] = archive_sha256
         desc["archive_path"] = archive_path
@@ -1712,7 +1692,7 @@ class SequentialLifecycleController:
 
         run1_dir = os.path.join(self.private_tmp_dir, leaf, "run1", "a1")
         self.seal_origin_receipt("run1", attempt=1)
-        self.record_checkpoint("run1", "PASS", cmd, code, source_dir=run1_dir, skip_raw_executables=True)
+        self.record_checkpoint("run1", "PASS", cmd, code, source_dir=run1_dir)
         print("Run 1 PASS")
 
     def stage_run2(self) -> None:
@@ -1739,7 +1719,7 @@ class SequentialLifecycleController:
 
         run2_dir = os.path.join(self.private_tmp_dir, leaf, "run2", "a1")
         self.seal_origin_receipt("run2", attempt=1)
-        self.record_checkpoint("run2", "PASS", cmd, code, source_dir=run2_dir, skip_raw_executables=True)
+        self.record_checkpoint("run2", "PASS", cmd, code, source_dir=run2_dir)
         print("Run 2 PASS")
 
     def stage_run3_drivers(self) -> None:
@@ -1757,7 +1737,7 @@ class SequentialLifecycleController:
 
         acme_dir = os.path.join(self.private_tmp_dir, leaf, "run3", "acme", "a1")
         self.seal_origin_receipt("run3-acme", attempt=1, driver="acme")
-        self.record_checkpoint("run3-acme", "PASS", cmd_acme, code, source_dir=acme_dir, skip_raw_executables=True)
+        self.record_checkpoint("run3-acme", "PASS", cmd_acme, code, source_dir=acme_dir)
 
         required_file = os.path.join(self.private_tmp_dir, leaf, "run3", "required.json")
         if not os.path.isfile(required_file):
@@ -1794,7 +1774,7 @@ class SequentialLifecycleController:
 
             driver_dir = os.path.join(self.private_tmp_dir, leaf, "run3", driver, "a1")
             self.seal_origin_receipt(f"run3-{driver}", attempt=1, driver=driver)
-            self.record_checkpoint(f"run3-{driver}", "PASS", cmd_d, code, source_dir=driver_dir, skip_raw_executables=True)
+            self.record_checkpoint(f"run3-{driver}", "PASS", cmd_d, code, source_dir=driver_dir)
 
         print("All Run 3 drivers PASS")
 
