@@ -3292,18 +3292,26 @@ class BundleAndWTreeTests(unittest.TestCase):
         code = main(["check-bundle", "--manifest", manifest_path, "--expect-sha256", "0" * 64])
         self.assertEqual(code, AUTH_REFUSED_EXIT_CODE)
 
+    def _prepare_w_repo(self, w_dir: str, target_sha: str) -> None:
+        subprocess.run(["git", "clone", "--shared", ".", w_dir], check=True, capture_output=True)
+        res = subprocess.run(["git", "-C", w_dir, "checkout", target_sha], capture_output=True)
+        if res.returncode != 0:
+            subprocess.run(["git", "-C", w_dir, "fetch", "--depth=2", "origin", target_sha], check=True, capture_output=True)
+            subprocess.run(["git", "-C", w_dir, "checkout", target_sha], check=True, capture_output=True)
+        if target_sha == PINNED_W_SHA:
+            res_p = subprocess.run(["git", "-C", w_dir, "cat-file", "-e", PINNED_P_SHA], capture_output=True)
+            if res_p.returncode != 0:
+                subprocess.run(["git", "-C", w_dir, "fetch", "--depth=1", "origin", PINNED_P_SHA], capture_output=True)
+
     def test_check_w_tree_verified(self):
         w_dir = os.path.join(self.td, "real_w_repo")
-        subprocess.run(["git", "clone", "--shared", ".", w_dir], check=True, capture_output=True)
-        subprocess.run(["git", "-C", w_dir, "checkout", PINNED_W_SHA], check=True, capture_output=True)
-
+        self._prepare_w_repo(w_dir, PINNED_W_SHA)
         code = main(["check-w-tree", "--w-dir", w_dir])
         self.assertEqual(code, 0)
 
     def test_check_w_tree_dirty_refuses(self):
         w_dir = os.path.join(self.td, "dirty_w_repo")
-        subprocess.run(["git", "clone", "--shared", ".", w_dir], check=True, capture_output=True)
-        subprocess.run(["git", "-C", w_dir, "checkout", PINNED_W_SHA], check=True, capture_output=True)
+        self._prepare_w_repo(w_dir, PINNED_W_SHA)
         with open(os.path.join(w_dir, "dirty.txt"), "w") as f:
             f.write("dirty")
         code = main(["check-w-tree", "--w-dir", w_dir])
@@ -3311,15 +3319,13 @@ class BundleAndWTreeTests(unittest.TestCase):
 
     def test_check_w_tree_wrong_head_refuses(self):
         w_dir = os.path.join(self.td, "wrong_head_w_repo")
-        subprocess.run(["git", "clone", "--shared", ".", w_dir], check=True, capture_output=True)
-        subprocess.run(["git", "-C", w_dir, "checkout", PINNED_P_SHA], check=True, capture_output=True)
+        self._prepare_w_repo(w_dir, PINNED_P_SHA)
         code = main(["check-w-tree", "--w-dir", w_dir])
         self.assertEqual(code, AUTH_REFUSED_EXIT_CODE)
 
     def test_check_w_tree_subprocess_exit_0(self):
         w_dir = os.path.join(self.td, "subp_w_repo")
-        subprocess.run(["git", "clone", "--shared", ".", w_dir], check=True, capture_output=True)
-        subprocess.run(["git", "-C", w_dir, "checkout", PINNED_W_SHA], check=True, capture_output=True)
+        self._prepare_w_repo(w_dir, PINNED_W_SHA)
         res = subprocess.run(
             [sys.executable, "-B", "-m", "proof.strict_authorization", "check-w-tree", "--w-dir", w_dir],
             capture_output=True,

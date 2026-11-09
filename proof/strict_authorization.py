@@ -2510,7 +2510,7 @@ def cmd_rail_summary(args: argparse.Namespace, environ: Dict[str, str], client: 
         "actions": actions_dict,
         "workflow_structure": struct_status,
         "controller_suite": ref_status,
-        "strict_refusal_controls": sorted(reported_controls),
+        "strict_refusal_controls": [c for c in PINNED_REFUSAL_CONTROLS if c in reported_controls],
     }
 
     out_path = Path(args.out)
