@@ -79,14 +79,23 @@ def record_privileges() -> tuple[dict, bool, str]:
                     caps[key] = line.split(":", 1)[1].strip()
         env_info["capabilities"] = caps
 
-        for key in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"):
+        for key in ("CapInh", "CapPrm", "CapEff", "CapAmb"):
             val = caps.get(key)
-            if val is not None:
-                try:
-                    if int(val, 16) != 0:
-                        return env_info, False, f"Capability {key} is non-zero (0x{val}); zero capabilities required"
-                except ValueError:
-                    return env_info, False, f"Malformed capability field {key}: {val}"
+            if val is None:
+                return env_info, False, f"Missing capability field {key} in /proc/self/status"
+            try:
+                if int(val, 16) != 0:
+                    return env_info, False, f"Capability {key} is non-zero (0x{val}); zero capabilities required"
+            except ValueError:
+                return env_info, False, f"Malformed capability field {key}: {val}"
+
+        bnd_val = caps.get("CapBnd")
+        if bnd_val is None:
+            return env_info, False, "Missing CapBnd field in /proc/self/status"
+        try:
+            int(bnd_val, 16)
+        except ValueError:
+            return env_info, False, f"Malformed CapBnd field: {bnd_val}"
     else:
         if sys.platform.startswith("linux"):
             return env_info, False, "/proc/self/status unreadable to verify capabilities"
