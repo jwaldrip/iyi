@@ -874,6 +874,59 @@ def process_ledger_and_runtime_bindings(
     specials_by_root_and_rel: Dict[Tuple[int, str], SpecialEntry] = {
         (s.root_index, os.path.normpath(s.rel_path)): s for s in specials
     }
+    # 0. Check Logical Slots <-> Runtime Bindings Exact Equality and Invariants
+    if binding.logical_slots:
+        expected_slot_ids = {s.slot_id for s in binding.logical_slots}
+        bound_slot_ids = {rb.slot_id for rb in runtime_bindings}
+        missing_slots = expected_slot_ids - bound_slot_ids
+        if missing_slots:
+            reasons.append(f"mandatory logical slots unfulfilled in runtime binding: {sorted(missing_slots)!r}")
+            checks["no_missing_references"] = "FAIL"
+        extra_slots = bound_slot_ids - expected_slot_ids
+        if extra_slots:
+            reasons.append(f"unexpected extra slots in runtime binding: {sorted(extra_slots)!r}")
+            checks["no_foreign_references"] = "FAIL"
+    elif not binding.expected_refs:
+        reasons.append("no logical slots or expected references defined")
+        checks["no_missing_references"] = "FAIL"
+
+    # Enforce distinct build transactions, invocations, and inodes across slots
+    seen_slot_inos: Dict[Tuple[int, int], str] = {}
+    seen_slot_txs: Dict[str, str] = {}
+    seen_slot_invs: Dict[str, str] = {}
+    for rb in runtime_bindings:
+        ino_key = (rb.st_dev, rb.st_ino)
+        if ino_key in seen_slot_inos:
+            reasons.append(
+                f"inode reuse attack: slot {seen_slot_inos[ino_key]!r} and {rb.slot_id!r} "
+                f"share physical inode {rb.st_ino}"
+            )
+            checks["no_hardlink_aliases"] = "FAIL"
+        seen_slot_inos[ino_key] = rb.slot_id
+
+        if rb.transaction_id in seen_slot_txs:
+            reasons.append(
+                f"transaction reuse attack: slots {seen_slot_txs[rb.transaction_id]!r} and {rb.slot_id!r} "
+                f"share transaction_id {rb.transaction_id!r}"
+            )
+            checks["no_hardlink_aliases"] = "FAIL"
+        seen_slot_txs[rb.transaction_id] = rb.slot_id
+
+        if rb.inv in seen_slot_invs:
+            reasons.append(
+                f"invocation reuse attack: slots {seen_slot_invs[rb.inv]!r} and {rb.slot_id!r} "
+                f"share invocation {rb.inv!r}"
+            )
+            checks["no_hardlink_aliases"] = "FAIL"
+        seen_slot_invs[rb.inv] = rb.slot_id
+
+        if not rb.hardlink_authenticated:
+            reasons.append(f"slot {rb.slot_id!r} lacks creation-time hardlink authentication")
+            checks["no_hardlink_aliases"] = "FAIL"
+
+        if not rb.exec_verified:
+            reasons.append(f"slot {rb.slot_id!r} lacks kernel witness execution verification")
+            checks["no_missing_references"] = "FAIL"
 
     # 1. Exact ledger-location enforcement: must be in root 0 at exact path
     ledger_norm = os.path.normpath(ledger_relpath)
@@ -987,40 +1040,6 @@ def process_ledger_and_runtime_bindings(
         checks["no_missing_references"] = "FAIL"
 
     # 4. Check Logical Slots <-> Runtime Bindings Exact Equality
-    if binding.logical_slots:
-        expected_slot_ids = {s.slot_id for s in binding.logical_slots}
-        bound_slot_ids = {rb.slot_id for rb in runtime_bindings}
-        missing_slots = expected_slot_ids - bound_slot_ids
-        if missing_slots:
-            reasons.append(f"mandatory logical slots unfulfilled in runtime binding: {sorted(missing_slots)!r}")
-            checks["no_missing_references"] = "FAIL"
-        extra_slots = bound_slot_ids - expected_slot_ids
-        if extra_slots:
-            reasons.append(f"unexpected extra slots in runtime binding: {sorted(extra_slots)!r}")
-            checks["no_foreign_references"] = "FAIL"
-    elif binding.expected_refs:
-        # Legacy/direct expected refs mode
-        expected_ref_set = {os.path.normpath(r) for r in binding.expected_refs}
-    else:
-        reasons.append("no logical slots or expected references defined")
-        checks["no_missing_references"] = "FAIL"
-
-    # Inode uniqueness across runtime bindings (distinct slots must have distinct inodes)
-    seen_slot_inos: Dict[Tuple[int, int], str] = {}
-    for rb in runtime_bindings:
-        ino_key = (rb.st_dev, rb.st_ino)
-        if ino_key in seen_slot_inos:
-            reasons.append(
-                f"inode reuse attack: slot {seen_slot_inos[ino_key]!r} and {rb.slot_id!r} "
-                f"share physical inode {rb.st_ino}"
-            )
-            checks["no_hardlink_aliases"] = "FAIL"
-        seen_slot_inos[ino_key] = rb.slot_id
-
-        if not rb.hardlink_authenticated:
-            reasons.append(f"slot {rb.slot_id!r} lacks creation-time hardlink authentication")
-            checks["no_hardlink_aliases"] = "FAIL"
-
     # Index ledger end records by inv and out_ref
     end_records_by_inv: Dict[str, Dict[str, Any]] = {}
     end_records_by_ref: Dict[str, Dict[str, Any]] = {}

@@ -1381,6 +1381,45 @@ class TestHostedOriginObserver(unittest.TestCase):
             hardlink_authenticated=True,
             exec_verified=True,
         )
+        header = {
+            "v": 1,
+            "kind": "header",
+            "nonce": self.binding.expected_nonce,
+            "driver": "acme",
+            "attempt": 1,
+            "chain_id": self.binding.chain_id,
+        }
+        r1 = {
+            "v": 1,
+            "kind": "record",
+            "nonce": self.binding.expected_nonce,
+            "driver": "acme",
+            "phase": "end",
+            "inv": "inv_1",
+            "command": "build",
+            "out": "t/acme-plain",
+            "out_ref": "t/prog.ref",
+            "out_ino": st.st_ino,
+            "out_mtime_ns": st.st_mtime_ns,
+            "atime_set_ns": st.st_mtime_ns - 1000,
+            "consumer": {"out_sha256": prog_sha256},
+        }
+        r2 = {
+            "v": 1,
+            "kind": "record",
+            "nonce": self.binding.expected_nonce,
+            "driver": "acme",
+            "phase": "end",
+            "inv": "inv_2",
+            "command": "build",
+            "out": "t/acme-release",
+            "out_ref": "t/prog.ref",
+            "out_ino": st.st_ino,
+            "out_mtime_ns": st.st_mtime_ns,
+            "atime_set_ns": st.st_mtime_ns - 1000,
+            "consumer": {"out_sha256": prog_sha256},
+        }
+        self._write_ledger(header, [r1, r2])
 
         doc = run_origin_observer(
             roots=[self.root_dir],
@@ -1437,6 +1476,30 @@ class TestHostedOriginObserver(unittest.TestCase):
             hardlink_authenticated=False,
             exec_verified=True,
         )
+        header = {
+            "v": 1,
+            "kind": "header",
+            "nonce": self.binding.expected_nonce,
+            "driver": "acme",
+            "attempt": 1,
+            "chain_id": self.binding.chain_id,
+        }
+        rec = {
+            "v": 1,
+            "kind": "record",
+            "nonce": self.binding.expected_nonce,
+            "driver": "acme",
+            "phase": "end",
+            "inv": "inv_1",
+            "command": "build",
+            "out": "t/unlinked_out",
+            "out_ref": "t/prog.ref",
+            "out_ino": st.st_ino,
+            "out_mtime_ns": st.st_mtime_ns,
+            "atime_set_ns": st.st_mtime_ns - 1000,
+            "consumer": {"out_sha256": prog_sha256},
+        }
+        self._write_ledger(header, [rec])
 
         doc = run_origin_observer(
             roots=[self.root_dir],
