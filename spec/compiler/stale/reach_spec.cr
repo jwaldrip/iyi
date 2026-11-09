@@ -3,7 +3,108 @@ require "../spec_helper"
 require "compiler/iyi/compiler"
 require "compiler/iyi/stale/reach"
 
+private def compile_class_var_reach(source : Iyi::Compiler::Source, name : String, owners : Array(String)) : Nil
+  with_tempfile("reach_class_var.key") do |key_path|
+    with_tempfile("reach_class_var.bin") do |bin_path|
+      compiler = create_spec_compiler
+      compiler.prelude = "iyi/prelude"
+      compiler.stale_key = key_path
+
+      begin
+        compiler.compile(source, bin_path)
+      rescue ex : Iyi::Error
+        details = String.build do |io|
+          io << ex.message << "\nClassVar diagnostics for " << name << '\n'
+          if program = compiler.program?
+            if reach = program.stale_reach
+              io << "reach mismatch: " << reach.mismatch << '\n'
+              io << "matching elements:\n"
+              reach.elements.each do |element|
+                next unless element.kind.class_var? && element.key.ends_with?("::#{name}")
+                io << "  key=" << element.key << " initializer_class=" << element.node.try(&.class)
+                io << " initializer_type=" << element.node.try(&.type?) << " variable_type=" << element.type << '\n'
+              end
+              io << "comparison set:\n"
+              reach.class_vars.each do |cv|
+                next unless cv.name == name
+                init = cv.initializer.try(&.node)
+                io << "  owner=" << cv.owner << " name=" << cv.name
+                io << " initializer_class=" << init.try(&.class) << " initializer_type=" << init.try(&.type?)
+                io << " variable_type=" << cv.type << '\n'
+              end
+            else
+              io << "reach unavailable\n"
+            end
+            if recorder = program.stale_recorder
+              io << "emitted set:\n"
+              recorder.emitted_class_vars.each do |cv|
+                next unless cv.name == name
+                init = cv.initializer.try(&.node)
+                io << "  owner=" << cv.owner << " name=" << cv.name
+                io << " initializer_class=" << init.try(&.class) << " initializer_type=" << init.try(&.type?)
+                io << " variable_type=" << cv.type << '\n'
+              end
+            else
+              io << "recorder unavailable\n"
+            end
+          else
+            io << "program unavailable\n"
+          end
+        end
+        raise Iyi::Error.new(details)
+      end
+
+      reach = compiler.program.stale_reach.not_nil!
+      owners.each do |owner|
+        reach.elements.any? { |element| element.kind.class_var? && element.key.ends_with?("#{owner}::#{name}") }.should be_true
+      end
+      File.exists?(key_path).should be_true
+      File.read(key_path).should contain(%("mismatch": []))
+    end
+  end
+end
+
 describe "Iyi::Stale S3e: Reach walk, cross-check, drop per EdgeKind (row 42)" do
+  {% unless flag?(:win32) %}
+    it "reaches Signal.wait class variable initializers without a mismatch" do
+      source = Iyi::Compiler::Source.new("reach_signal.iyi", <<-IYI
+        module spec/reach_signal
+        import std/signal::{Signal}
+        group do |g|
+          g.spawn { Signal.wait(Signal::INT); 0 }
+        end
+        IYI
+      )
+      compile_class_var_reach(source, "@@waiting", ["SignalWaiter"])
+    end
+  {% end %}
+
+  it "reaches Atomic class variables with dependent initializers under distinct owners" do
+    source = Iyi::Compiler::Source.new("reach_atomic.iyi", <<-IYI
+      module spec/reach_atomic
+      import std/atomic
+      def reach_seed : UInt64
+        1_u64
+      end
+      class FirstHolder
+        @@waiting = Atomic(UInt64).new(reach_seed)
+        def self.value
+          @@waiting.get
+        end
+      end
+      class SecondHolder
+        @@waiting = Atomic(UInt64).new(0_u64)
+        def self.value
+          @@waiting.get
+        end
+      end
+      puts FirstHolder.value
+      puts SecondHolder.value
+      IYI
+    )
+    compile_class_var_reach(source, "@@waiting", ["FirstHolder", "SecondHolder"])
+  end
+
   it "compiles without error when no edge is dropped" do
     with_tempfile("reach_ok.key") do |key_path|
       with_tempfile("reach_ok.bin") do |bin_path|
