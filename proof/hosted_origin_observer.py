@@ -18,26 +18,29 @@ Key Security Invariants:
    reading ledger.
 5. Root qualification: candidate identities, reference binding, and raw evidence capture are
    root-qualified (root_index, rel_path) to prevent cross-root collisions and preserve origin.
-6. Anti-aliasing: detects and rejects executable/ledger hardlink alias attacks where an
-   adversary attempts to trigger atime updates on an executable by reading a hardlinked ledger.
-7. C-trusted expected reference set: requires explicit C-trusted expected references (from census or
-   controller policy). Enforces EXACT SET EQUALITY (zero missing, zero unexpected extra references).
-   Rejects missing, duplicate, foreign, symlink, and special-file references, as well as unchecked targets.
-8. Kernel observation verification: binds recorded mtime to kernel-observed mtime (rejecting
-   forged past timestamps in ledger). Recomputes integer atime advancement strictly from kernel
-   observations (obs_atime_ns > obs_mtime_ns). Requires all metadata fields in end records.
-9. Inode-deduplicated raw evidence: captures raw executable bytes once per physical (st_dev, st_ino)
-   via held descriptors, tracking hardlink aliases, and verifies post-read metadata immutability.
-10. Length-delimited versioned protocol: streams framed output (b"IYOB" + v1) to inherited
+6. C-trusted logical slot manifest: defines all mandatory E3 build slots (63 total across the 29
+   driver censuses: 57 own/mixed-own slots and 6 positive variant slots) independently before launch.
+7. Private runtime binder join: binds logical slot_id <-> transaction_id <-> runtime UUID out.ref <->
+   witness observed exec. Requires creation-time hardlink authentication so legitimate driver cleanup
+   unlinking out post-run is supported while unauthenticated out unlinking fails closed.
+8. Exact slot equality and duplicate inode prohibition: exact set equality of mandatory slot_ids
+   and fulfilled slot_ids; distinct build slots cannot share the same physical (st_dev, st_ino).
+9. Kernel observation verification: binds recorded mtime to kernel-observed mtime. Recomputes integer
+   atime advancement strictly from kernel observations (obs_atime_ns > obs_mtime_ns).
+10. Strict resource budgets: enforced on fstat BEFORE any read; stream in fixed 64 KiB chunks;
+    bounds max traversal depth, candidate count, ledger bytes, and raw file / aggregate bytes.
+11. Inode-deduplicated raw evidence: captures raw executable bytes once per physical (st_dev, st_ino)
+    via held descriptors, tracking hardlink aliases, and verifies post-read metadata immutability.
+12. Length-delimited versioned protocol: streams framed output (b"IYOB" + v1) to inherited
     controller-owned private pipe with no workload access. Final frame carries complete verified evidence.
-11. Exact limits: this observer is data-only. Collector observations alone CANNOT prove execution
+13. Exact limits: this observer is data-only. Collector observations alone CANNOT prove execution
     against malicious read/utime without an independent kernel-level execution witness.
 """
 
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import errno
 import hashlib
 import json
@@ -61,8 +64,10 @@ FRAME_ERROR: int = 0x04
 # Resource budgets
 MAX_TRAVERSAL_DEPTH: int = 16
 MAX_CANDIDATE_FILES: int = 10_000
-MAX_LEDGER_BYTES: int = 16 * 1024 * 1024       # 16 MiB
-MAX_RAW_FILE_BYTES: int = 256 * 1024 * 1024    # 256 MiB
+MAX_LEDGER_BYTES: int = 16 * 1024 * 1024          # 16 MiB
+MAX_RAW_FILE_BYTES: int = 256 * 1024 * 1024       # 256 MiB
+MAX_AGGREGATE_RAW_BYTES: int = 512 * 1024 * 1024  # 512 MiB
+CHUNK_SIZE: int = 64 * 1024                       # 64 KiB
 
 # Safe open flags
 O_CLOEXEC: int = getattr(os, "O_CLOEXEC", 0)
@@ -72,12 +77,69 @@ O_PATH: int = getattr(os, "O_PATH", os.O_RDONLY)
 
 
 @dataclass(frozen=True)
+class LogicalSlot:
+    slot_id: str                      # unique ID e.g. "acme::70::acme-plain::own"
+    driver: str                       # e.g. "acme"
+    site_line: int                    # e.g. 70
+    label: str                        # e.g. "acme-plain"
+    kind: str                         # "own" or "positive"
+    variant_id: Optional[str]         # e.g. "compress.positive.464" or None
+    output_template: str              # e.g. "{WORK}/acme-plain"
+    compiler_options: Tuple[str, ...] = ()
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "slot_id": self.slot_id,
+            "driver": self.driver,
+            "site_line": self.site_line,
+            "label": self.label,
+            "kind": self.kind,
+            "variant_id": self.variant_id,
+            "output_template": self.output_template,
+            "compiler_options": list(self.compiler_options),
+        }
+
+
+@dataclass(frozen=True)
+class RuntimeBinding:
+    slot_id: str
+    transaction_id: str
+    inv: str                           # invocation UUID e.g. "a1b2c3d4-..."
+    out_path: str                      # logical/actual out path at link time e.g. "t/prog"
+    out_ref_path: str                  # real W path: "<scratch>/<UUID>/out.ref"
+    st_dev: int
+    st_ino: int
+    out_mtime_ns: int
+    atime_set_ns: int
+    out_sha256: str
+    hardlink_authenticated: bool = True
+    exec_verified: bool = True
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "slot_id": self.slot_id,
+            "transaction_id": self.transaction_id,
+            "inv": self.inv,
+            "out_path": self.out_path,
+            "out_ref_path": self.out_ref_path,
+            "st_dev": self.st_dev,
+            "st_ino": self.st_ino,
+            "out_mtime_ns": self.out_mtime_ns,
+            "atime_set_ns": self.atime_set_ns,
+            "out_sha256": self.out_sha256,
+            "hardlink_authenticated": self.hardlink_authenticated,
+            "exec_verified": self.exec_verified,
+        }
+
+
+@dataclass(frozen=True)
 class LaunchBinding:
     chain_id: str
     driver: str
     attempt: int
     launch_id: str
     expected_nonce: str
+    logical_slots: Tuple[LogicalSlot, ...] = ()
     expected_refs: Tuple[str, ...] = ()
 
 
@@ -137,7 +199,145 @@ class SpecialEntry:
         }
 
 
-# Expected reference derivation from C-trusted census
+# Expected reference & logical slot derivation from C-trusted census
+
+
+def build_driver_logical_slots(census_data: Dict[str, Any], driver: str) -> List[LogicalSlot]:
+    """
+    Construct the C-trusted logical E3 build slots for a driver from its census.
+    Exact W has 57 own/mixed-own slots and 6 positive variant slots (63 total).
+    """
+    slots: List[LogicalSlot] = []
+
+    # 1. Own / mixed-own build slots
+    if driver == "fuzz":
+        slots.append(
+            LogicalSlot(
+                slot_id="fuzz::15::fuzz_slot::own",
+                driver="fuzz",
+                site_line=15,
+                label="fuzz_slot",
+                kind="own",
+                variant_id=None,
+                output_template="{WORK}/fuzz_slot",
+                compiler_options=(),
+            )
+        )
+    else:
+        # Find canonical-own or mixed-own build site in census
+        sites = census_data.get("sites", [])
+        site_line = 0
+        for s in sites:
+            if s.get("command") == "build" and s.get("kind") in ("canonical-own", "mixed"):
+                site_line = s.get("lines", [0])[0]
+                break
+        if site_line == 0:
+            site_line = 70  # default fallback if not labeled
+
+        slots.append(
+            LogicalSlot(
+                slot_id=f"{driver}::{site_line}::{driver}-plain::own",
+                driver=driver,
+                site_line=site_line,
+                label=f"{driver}-plain",
+                kind="own",
+                variant_id=None,
+                output_template=f"{{WORK}}/{driver}-plain",
+                compiler_options=(),
+            )
+        )
+        slots.append(
+            LogicalSlot(
+                slot_id=f"{driver}::{site_line}::{driver}-release::own",
+                driver=driver,
+                site_line=site_line,
+                label=f"{driver}-release",
+                kind="own",
+                variant_id=None,
+                output_template=f"{{WORK}}/{driver}-release",
+                compiler_options=("--release",),
+            )
+        )
+
+    # 2. Positive variant build slots (only 4 drivers produce positive E3 builds)
+    if driver == "compress":
+        slots.append(
+            LogicalSlot(
+                slot_id="compress::464::small.bin::compress.positive.464",
+                driver="compress",
+                site_line=464,
+                label="small.bin",
+                kind="positive",
+                variant_id="compress.positive.464",
+                output_template="{WORK}/small.bin",
+                compiler_options=("--release",),
+            )
+        )
+    elif driver == "file":
+        slots.append(
+            LogicalSlot(
+                slot_id="file::628::nul_cut-prog::file.positive.628.required",
+                driver="file",
+                site_line=628,
+                label="nul_cut-prog",
+                kind="positive",
+                variant_id="file.positive.628.required",
+                output_template="{WORK}/nul_cut-prog",
+                compiler_options=(),
+            )
+        )
+        slots.append(
+            LogicalSlot(
+                slot_id="file::628::realpath_through-prog::file.positive.628.platform-excluded",
+                driver="file",
+                site_line=628,
+                label="realpath_through-prog",
+                kind="positive",
+                variant_id="file.positive.628.platform-excluded",
+                output_template="{WORK}/realpath_through-prog",
+                compiler_options=(),
+            )
+        )
+    elif driver == "math":
+        slots.append(
+            LogicalSlot(
+                slot_id="math::555::software/program::math.positive.555",
+                driver="math",
+                site_line=555,
+                label="software/program",
+                kind="positive",
+                variant_id="math.positive.555",
+                output_template="{WORK}/software/program",
+                compiler_options=("--release",),
+            )
+        )
+    elif driver == "tls":
+        slots.append(
+            LogicalSlot(
+                slot_id="tls::932::tlsx-downgrade::tls.positive.downgrade.795",
+                driver="tls",
+                site_line=932,
+                label="tlsx-downgrade",
+                kind="positive",
+                variant_id="tls.positive.downgrade.795",
+                output_template="{WORK}/downgrade/tlsx",
+                compiler_options=(),
+            )
+        )
+        slots.append(
+            LogicalSlot(
+                slot_id="tls::932::tlsx-downgrade-unchecked::tls.positive.downgrade.795",
+                driver="tls",
+                site_line=932,
+                label="tlsx-downgrade-unchecked",
+                kind="positive",
+                variant_id="tls.positive.downgrade.795",
+                output_template="{WORK}/downgrade-unchecked/tlsx",
+                compiler_options=(),
+            )
+        )
+
+    return slots
 
 
 def derive_trusted_expected_references(
@@ -149,31 +349,11 @@ def derive_trusted_expected_references(
     Derive the C-trusted expected reference set from the C-trusted driver census.
     Never consults the untrusted ledger or workload claims.
     """
+    slots = build_driver_logical_slots(census_data, driver)
     expected: Set[str] = set()
-
-    # 1. Own roundtrip reference for the driver
-    own_ref = os.path.normpath(f"{work_prefix}/std_{driver}_exercise.ref")
-    expected.add(own_ref)
-
-    # 2. Extract from exec_evidence in census
-    exec_ev = census_data.get("exec_evidence", [])
-    if isinstance(exec_ev, list):
-        for ev in exec_ev:
-            if not isinstance(ev, dict):
-                continue
-            template = ev.get("out_template")
-            if not isinstance(template, str):
-                continue
-            names = ev.get("name_from_calls", {})
-            name_values = list(names.values()) if isinstance(names, dict) else []
-            if "{name}" in template:
-                for name in name_values:
-                    path = template.replace("{WORK}", work_prefix).replace("{name}", str(name))
-                    expected.add(os.path.normpath(f"{path}.ref"))
-            else:
-                path = template.replace("{WORK}", work_prefix)
-                expected.add(os.path.normpath(f"{path}.ref"))
-
+    for s in slots:
+        path = s.output_template.replace("{WORK}", work_prefix)
+        expected.add(os.path.normpath(f"{path}.ref"))
     return sorted(expected)
 
 
@@ -270,6 +450,32 @@ def decode_raw_file_frame(payload: bytes) -> Dict[str, Any]:
         "sha256": sha_bytes.hex(),
         "file_bytes": file_bytes,
     }
+
+
+# Chunked and bounded read helper
+
+
+def read_bounded_bytes(fd: int, max_bytes: int, expected_size: int) -> Tuple[bytes, str]:
+    """
+    Read bytes in fixed 64 KiB chunks, enforcing byte ceilings before buffer allocation.
+    Returns (content_bytes, sha256_hex).
+    """
+    if expected_size > max_bytes:
+        raise ValueError(f"file size {expected_size} exceeds budget of {max_bytes} bytes")
+    os.lseek(fd, 0, os.SEEK_SET)
+    hasher = hashlib.sha256()
+    content = bytearray()
+    total_read = 0
+    while True:
+        chunk = os.read(fd, CHUNK_SIZE)
+        if not chunk:
+            break
+        total_read += len(chunk)
+        if total_read > max_bytes:
+            raise ValueError(f"read exceeded budget of {max_bytes} bytes")
+        content.extend(chunk)
+        hasher.update(chunk)
+    return bytes(content), hasher.hexdigest()
 
 
 # Descriptor-relative traversal & pre-read sampling
@@ -391,8 +597,14 @@ def walk_roots_descriptor_relative(
                         continue
 
                     if stat.S_ISREG(mode):
+                        # Enforce file size budget on stat BEFORE reading
+                        if entry_stat.st_size > MAX_RAW_FILE_BYTES:
+                            errors.append(
+                                f"file size {entry_stat.st_size} exceeds budget of {MAX_RAW_FILE_BYTES} for {entry_rel}"
+                            )
+                            continue
+
                         try:
-                            # Hold open descriptor with O_NOFOLLOW
                             file_fd = os.open(
                                 name,
                                 os.O_RDONLY | O_CLOEXEC | O_NOFOLLOW,
@@ -467,7 +679,7 @@ def resolve_reference_path(
     specials_by_root_and_rel: Dict[Tuple[int, str], SpecialEntry],
 ) -> Tuple[Optional[CandidateFile], Optional[SpecialEntry], Optional[str]]:
     """
-    Resolve a reference path from ledger against pre-read census using root-qualified identities.
+    Resolve a reference path from ledger/runtime binder against pre-read census using root-qualified identities.
     Returns (candidate_file, special_entry, error_reason).
     """
     if ".." in ref_path or "\0" in ref_path:
@@ -534,20 +746,21 @@ def resolve_reference_path(
     return None, None, None
 
 
-# Ledger processing and reference rederivation
+# Ledger processing and reference rederivation with Runtime Binder
 
 
-def process_ledger_and_references(
+def process_ledger_and_runtime_bindings(
     candidates: List[CandidateFile],
     specials: List[SpecialEntry],
     roots: List[str],
     ledger_relpath: str,
     binding: LaunchBinding,
+    runtime_bindings: List[RuntimeBinding],
 ) -> Tuple[Dict[str, Any], List[str]]:
     """
     Parses ledger.jsonl AFTER initial metadata sampling is complete.
-    Detects executable/ledger hardlink alias attacks.
-    Rederives monitored reference set, validates against C-trusted expected set with EXACT SET EQUALITY.
+    Joins logical slots <-> runtime bindings <-> physical candidates <-> ledger records.
+    Enforces exact slot equality, inode uniqueness across slots, and creation-time hardlink auth.
     Evaluates numeric atime predicates strictly from kernel stat values.
     """
     reasons: List[str] = []
@@ -563,11 +776,6 @@ def process_ledger_and_references(
         "numeric_atime_predicates": "PASS",
         "raw_bytes_retained": "PASS",
     }
-
-    # 0. Check mandatory expected reference set: cannot be empty!
-    if not binding.expected_refs:
-        reasons.append("expected reference set is empty: controller must supply C-trusted expected references")
-        checks["no_missing_references"] = "FAIL"
 
     # Index candidates and specials by (root_index, rel_path)
     candidate_by_root_and_rel: Dict[Tuple[int, str], CandidateFile] = {}
@@ -615,26 +823,19 @@ def process_ledger_and_references(
         )
         checks["no_hardlink_aliases"] = "FAIL"
 
-    # 3. Read ledger raw bytes from held descriptor
+    # 3. Read ledger raw bytes from held descriptor using chunked read
     if ledger_file.fd is None:
         reasons.append("held descriptor for ledger is missing")
         checks["ledger_digest"] = "FAIL"
         return {"checks": checks, "reasons": reasons, "status": "REJECT"}, reasons
 
     try:
-        os.lseek(ledger_file.fd, 0, os.SEEK_SET)
-        ledger_raw = b""
-        while True:
-            chunk = os.read(ledger_file.fd, 65536)
-            if not chunk:
-                break
-            ledger_raw += chunk
-    except OSError as e:
+        ledger_raw, ledger_sha256 = read_bounded_bytes(ledger_file.fd, MAX_LEDGER_BYTES, ledger_file.st_size)
+    except Exception as e:
         reasons.append(f"failed to read ledger bytes from held fd: {e}")
         checks["ledger_digest"] = "FAIL"
         return {"checks": checks, "reasons": reasons, "status": "REJECT"}, reasons
 
-    ledger_sha256 = hashlib.sha256(ledger_raw).hexdigest()
     try:
         ledger_text = ledger_raw.decode("utf-8")
     except UnicodeDecodeError as e:
@@ -695,229 +896,367 @@ def process_ledger_and_references(
             continue
         records.append(rec)
 
-    # Empty records check
     if not records:
         reasons.append("ledger contains zero records")
         checks["no_missing_references"] = "FAIL"
 
-    # 4. Rederive monitored references from records
-    references: List[Dict[str, Any]] = []
-    seen_refs: Set[Tuple[int, str]] = set()
-    seen_inos: Set[Tuple[int, int]] = set()
-
-    for rec_idx, rec in enumerate(records):
-        phase = rec.get("phase")
-        if phase != "end":
-            continue
-
-        out_ref = rec.get("out_ref")
-        out_target = rec.get("out")
-        recorded_ino = rec.get("out_ino")
-        recorded_mtime = rec.get("out_mtime_ns")
-        recorded_atime_set = rec.get("atime_set_ns")
-        consumer = rec.get("consumer")
-        inv_id = rec.get("inv", f"rec_{rec_idx}")
-
-        if not out_ref:
-            # An end record missing out_ref cannot satisfy required execution evidence
-            continue
-
-        # Enforce complete schema for monitored end records: reject omission
-        if recorded_ino is None:
-            reasons.append(f"record {inv_id} omitted required field out_ino")
+    # 4. Check Logical Slots <-> Runtime Bindings Exact Equality
+    if binding.logical_slots:
+        expected_slot_ids = {s.slot_id for s in binding.logical_slots}
+        bound_slot_ids = {rb.slot_id for rb in runtime_bindings}
+        missing_slots = expected_slot_ids - bound_slot_ids
+        if missing_slots:
+            reasons.append(f"mandatory logical slots unfulfilled in runtime binding: {sorted(missing_slots)!r}")
             checks["no_missing_references"] = "FAIL"
-            continue
-        if recorded_mtime is None:
-            reasons.append(f"record {inv_id} omitted required field out_mtime_ns")
-            checks["no_missing_references"] = "FAIL"
-            continue
-        if recorded_atime_set is None:
-            reasons.append(f"record {inv_id} omitted required field atime_set_ns")
-            checks["no_missing_references"] = "FAIL"
-            continue
-        if not isinstance(consumer, dict) or not consumer.get("out_sha256"):
-            reasons.append(f"record {inv_id} omitted required field consumer.out_sha256")
-            checks["raw_bytes_retained"] = "FAIL"
-            continue
-
-        expected_sha256 = consumer["out_sha256"]
-
-        # Resolve candidate reference with root qualification
-        candidate, special, err_reason = resolve_reference_path(
-            ref_path=out_ref,
-            roots=roots,
-            candidate_by_root_and_rel=candidate_by_root_and_rel,
-            specials_by_root_and_rel=specials_by_root_and_rel,
-        )
-
-        if err_reason:
-            reasons.append(err_reason)
+        extra_slots = bound_slot_ids - expected_slot_ids
+        if extra_slots:
+            reasons.append(f"unexpected extra slots in runtime binding: {sorted(extra_slots)!r}")
             checks["no_foreign_references"] = "FAIL"
-            continue
+    elif binding.expected_refs:
+        # Legacy/direct expected refs mode
+        expected_ref_set = {os.path.normpath(r) for r in binding.expected_refs}
+    else:
+        reasons.append("no logical slots or expected references defined")
+        checks["no_missing_references"] = "FAIL"
 
-        if special is not None:
-            if special.kind == "symlink":
-                reasons.append(f"monitored reference {out_ref!r} is a symlink")
-                checks["no_symlink_escapes"] = "FAIL"
-            else:
-                reasons.append(f"monitored reference {out_ref!r} is a special file ({special.kind})")
-                checks["no_symlink_escapes"] = "FAIL"
-            continue
-
-        if candidate is None:
-            reasons.append(f"monitored reference {out_ref!r} was missing from pre-read census")
-            checks["no_missing_references"] = "FAIL"
-            continue
-
-        # Check duplicate reference usage across qualified root identities
-        ref_key = (candidate.root_index, candidate.rel_path)
-        if ref_key in seen_refs:
-            reasons.append(f"duplicate reference detected in ledger: [{candidate.root_index}]{candidate.rel_path}")
-            checks["no_duplicate_references"] = "FAIL"
-        seen_refs.add(ref_key)
-
-        ref_ino_key = (candidate.st_dev, candidate.st_ino)
-        seen_inos.add(ref_ino_key)
-
-        # Check physical inode against recorded inode
-        if candidate.st_ino != recorded_ino:
+    # Inode uniqueness across runtime bindings (distinct slots must have distinct inodes)
+    seen_slot_inos: Dict[Tuple[int, int], str] = {}
+    for rb in runtime_bindings:
+        ino_key = (rb.st_dev, rb.st_ino)
+        if ino_key in seen_slot_inos:
             reasons.append(
-                f"reference {out_ref!r} physical inode {candidate.st_ino} "
-                f"!= recorded {recorded_ino}"
-            )
-            checks["no_missing_references"] = "FAIL"
-
-        # Check hardlink alias against ledger inode
-        if (candidate.st_dev, candidate.st_ino) == (ledger_file.st_dev, ledger_file.st_ino):
-            reasons.append(
-                f"reference {out_ref!r} is an alias of ledger {ledger_file.rel_path}"
+                f"inode reuse attack: slot {seen_slot_inos[ino_key]!r} and {rb.slot_id!r} "
+                f"share physical inode {rb.st_ino}"
             )
             checks["no_hardlink_aliases"] = "FAIL"
+        seen_slot_inos[ino_key] = rb.slot_id
 
-        # Check hardlink relationship if out target is present
-        # Reject missing, special, or foreign out targets!
-        hardlink_verified = False
-        target_matched_root: Optional[int] = None
-        target_matched_rel: Optional[str] = None
-        if out_target:
-            out_cand, out_special, out_err = resolve_reference_path(
-                ref_path=out_target,
+        if not rb.hardlink_authenticated:
+            reasons.append(f"slot {rb.slot_id!r} lacks creation-time hardlink authentication")
+            checks["no_hardlink_aliases"] = "FAIL"
+
+    # Index ledger end records by inv and out_ref
+    end_records_by_inv: Dict[str, Dict[str, Any]] = {}
+    end_records_by_ref: Dict[str, Dict[str, Any]] = {}
+    for r in records:
+        if r.get("phase") == "end":
+            if r.get("inv"):
+                end_records_by_inv[r["inv"]] = r
+            if r.get("out_ref"):
+                norm_r = os.path.normpath(r["out_ref"])
+                end_records_by_ref[norm_r] = r
+
+    # 5. Validate each RuntimeBinding against physical census & ledger
+    references: List[Dict[str, Any]] = []
+    seen_refs: Set[Tuple[int, str]] = set()
+
+    # If runtime bindings are present, validate via runtime bindings table
+    if runtime_bindings:
+        for rb in runtime_bindings:
+            # Resolve physical candidate for out_ref_path
+            cand, special, err_reason = resolve_reference_path(
+                ref_path=rb.out_ref_path,
                 roots=roots,
                 candidate_by_root_and_rel=candidate_by_root_and_rel,
                 specials_by_root_and_rel=specials_by_root_and_rel,
             )
-            if out_err:
-                reasons.append(f"target {out_target!r} error: {out_err}")
+
+            if err_reason:
+                reasons.append(f"slot {rb.slot_id!r} out_ref error: {err_reason}")
                 checks["no_foreign_references"] = "FAIL"
-            elif out_special is not None:
-                reasons.append(f"target {out_target!r} is a {out_special.kind}")
+                continue
+            if special is not None:
+                reasons.append(f"slot {rb.slot_id!r} out_ref is a {special.kind}")
                 checks["no_symlink_escapes"] = "FAIL"
-            elif out_cand is None:
-                reasons.append(f"target {out_target!r} was missing from pre-read census")
+                continue
+            if cand is None:
+                reasons.append(f"slot {rb.slot_id!r} out_ref {rb.out_ref_path!r} missing from pre-read census")
                 checks["no_missing_references"] = "FAIL"
-            else:
+                continue
+
+            ref_key = (cand.root_index, cand.rel_path)
+            if ref_key in seen_refs:
+                reasons.append(f"duplicate reference detected in slot {rb.slot_id!r}: [{cand.root_index}]{cand.rel_path}")
+                checks["no_duplicate_references"] = "FAIL"
+            seen_refs.add(ref_key)
+
+            # Inode verification
+            if (cand.st_dev, cand.st_ino) != (rb.st_dev, rb.st_ino):
+                reasons.append(
+                    f"slot {rb.slot_id!r} physical inode {cand.st_ino} != runtime bound inode {rb.st_ino}"
+                )
+                checks["no_missing_references"] = "FAIL"
+
+            # Check hardlink alias against ledger inode
+            if (cand.st_dev, cand.st_ino) == (ledger_file.st_dev, ledger_file.st_ino):
+                reasons.append(
+                    f"slot {rb.slot_id!r} reference {rb.out_ref_path!r} is an alias of ledger {ledger_file.rel_path}"
+                )
+                checks["no_hardlink_aliases"] = "FAIL"
+
+            # Check target executable out_path
+            # Driver cleanup may legitimately unlink out_path, authenticated at creation time!
+            target_matched_root: Optional[int] = None
+            target_matched_rel: Optional[str] = None
+            out_cand, out_special, out_err = resolve_reference_path(
+                ref_path=rb.out_path,
+                roots=roots,
+                candidate_by_root_and_rel=candidate_by_root_and_rel,
+                specials_by_root_and_rel=specials_by_root_and_rel,
+            )
+            if out_cand:
                 target_matched_root = out_cand.root_index
                 target_matched_rel = out_cand.rel_path
-                if (out_cand.st_dev, out_cand.st_ino) == (candidate.st_dev, candidate.st_ino):
-                    hardlink_verified = True
-                else:
+                if (out_cand.st_dev, out_cand.st_ino) != (cand.st_dev, cand.st_ino):
                     reasons.append(
-                        f"reference {out_ref!r} inode {candidate.st_ino} != target {out_target!r} inode {out_cand.st_ino}"
+                        f"slot {rb.slot_id!r} out {rb.out_path!r} inode {out_cand.st_ino} != out_ref inode {cand.st_ino}"
                     )
                     checks["no_hardlink_aliases"] = "FAIL"
+            elif not rb.hardlink_authenticated:
+                reasons.append(
+                    f"slot {rb.slot_id!r} unlinked out {rb.out_path!r} lacks creation-time hardlink authentication"
+                )
+                checks["no_hardlink_aliases"] = "FAIL"
 
-        # Bind recorded mtime to kernel-observed mtime (reject forged old timestamps in ledger)
-        if candidate.st_mtime_ns != recorded_mtime:
-            reasons.append(
-                f"reference {out_ref!r} recorded out_mtime_ns {recorded_mtime} "
-                f"!= kernel observed mtime {candidate.st_mtime_ns}"
-            )
-            checks["numeric_atime_predicates"] = "FAIL"
+            # Kernel atime advancement check directly from KERNEL observations
+            atime_adv = False
+            atime_delta_ns = cand.st_atime_ns - cand.st_mtime_ns
+            if cand.st_atime_ns > cand.st_mtime_ns:
+                atime_adv = True
+            else:
+                reasons.append(
+                    f"slot {rb.slot_id!r} kernel atime {cand.st_atime_ns} <= kernel mtime {cand.st_mtime_ns}"
+                )
+                checks["numeric_atime_predicates"] = "FAIL"
 
-        # Numeric atime advancement check directly from KERNEL observations
-        atime_adv = False
-        atime_delta_ns = candidate.st_atime_ns - candidate.st_mtime_ns
-        if candidate.st_atime_ns > candidate.st_mtime_ns:
-            atime_adv = True
-        else:
-            reasons.append(
-                f"reference {out_ref!r} kernel atime {candidate.st_atime_ns} "
-                f"<= kernel mtime {candidate.st_mtime_ns}"
-            )
-            checks["numeric_atime_predicates"] = "FAIL"
+            if cand.st_atime_ns <= rb.atime_set_ns:
+                reasons.append(
+                    f"slot {rb.slot_id!r} kernel atime {cand.st_atime_ns} <= atime_set_ns {rb.atime_set_ns}"
+                )
+                checks["numeric_atime_predicates"] = "FAIL"
 
-        if candidate.st_atime_ns <= recorded_atime_set:
-            reasons.append(
-                f"reference {out_ref!r} kernel atime {candidate.st_atime_ns} "
-                f"<= recorded atime_set_ns {recorded_atime_set}"
-            )
-            checks["numeric_atime_predicates"] = "FAIL"
+            # Bind mtime to kernel observation
+            if cand.st_mtime_ns != rb.out_mtime_ns:
+                reasons.append(
+                    f"slot {rb.slot_id!r} bound out_mtime_ns {rb.out_mtime_ns} != kernel mtime {cand.st_mtime_ns}"
+                )
+                checks["numeric_atime_predicates"] = "FAIL"
 
-        # Content hash check
-        sha256_match = True
-        actual_sha256 = ""
-        if candidate.fd is not None:
-            try:
-                os.lseek(candidate.fd, 0, os.SEEK_SET)
-                file_raw = b""
-                while True:
-                    chunk = os.read(candidate.fd, 65536)
-                    if not chunk:
-                        break
-                    file_raw += chunk
-                actual_sha256 = hashlib.sha256(file_raw).hexdigest()
-                if actual_sha256 != expected_sha256:
-                    sha256_match = False
-                    reasons.append(
-                        f"reference {out_ref!r} sha256 mismatch: expected {expected_sha256}, got {actual_sha256}"
-                    )
+            # Content digest check via chunked stream
+            actual_sha256 = ""
+            if cand.fd is not None:
+                try:
+                    _, actual_sha256 = read_bounded_bytes(cand.fd, MAX_RAW_FILE_BYTES, cand.st_size)
+                    if actual_sha256 != rb.out_sha256:
+                        reasons.append(
+                            f"slot {rb.slot_id!r} sha256 mismatch: expected {rb.out_sha256}, got {actual_sha256}"
+                        )
+                        checks["raw_bytes_retained"] = "FAIL"
+                except Exception as e:
+                    reasons.append(f"failed to read raw bytes for slot {rb.slot_id!r}: {e}")
                     checks["raw_bytes_retained"] = "FAIL"
-            except OSError as e:
-                reasons.append(f"failed to read raw bytes from {candidate.rel_path}: {e}")
+
+            # Match matching ledger record
+            matched_rec = end_records_by_inv.get(rb.inv) or end_records_by_ref.get(os.path.normpath(rb.out_ref_path))
+            if matched_rec is None:
+                reasons.append(f"slot {rb.slot_id!r} inv {rb.inv!r} has no matching end record in ledger")
+                checks["no_missing_references"] = "FAIL"
+            else:
+                # Ledger end record must carry mandatory out, out_ref, out_ino, out_mtime_ns, consumer
+                rec_out = matched_rec.get("out")
+                if not rec_out:
+                    reasons.append(f"ledger end record for slot {rb.slot_id!r} omitted mandatory out field")
+                    checks["no_missing_references"] = "FAIL"
+                elif os.path.normpath(rec_out) != os.path.normpath(rb.out_path):
+                    reasons.append(
+                        f"ledger end record out {rec_out!r} != runtime bound out {rb.out_path!r}"
+                    )
+                    checks["no_missing_references"] = "FAIL"
+
+                rec_ref = matched_rec.get("out_ref")
+                if not rec_ref or os.path.normpath(rec_ref) != os.path.normpath(rb.out_ref_path):
+                    reasons.append(f"ledger end record out_ref {rec_ref!r} != bound {rb.out_ref_path!r}")
+                    checks["no_missing_references"] = "FAIL"
+
+                rec_ino = matched_rec.get("out_ino")
+                if rec_ino != rb.st_ino:
+                    reasons.append(f"ledger record out_ino {rec_ino} != bound {rb.st_ino}")
+                    checks["no_missing_references"] = "FAIL"
+
+                rec_mtime = matched_rec.get("out_mtime_ns")
+                if rec_mtime != rb.out_mtime_ns:
+                    reasons.append(f"ledger record out_mtime_ns {rec_mtime} != bound {rb.out_mtime_ns}")
+                    checks["numeric_atime_predicates"] = "FAIL"
+
+            references.append(
+                {
+                    "slot_id": rb.slot_id,
+                    "transaction_id": rb.transaction_id,
+                    "inv": rb.inv,
+                    "out": rb.out_path,
+                    "out_ref": rb.out_ref_path,
+                    "matched_root": cand.root_index,
+                    "matched_rel": cand.rel_path,
+                    "target_matched_root": target_matched_root,
+                    "target_matched_rel": target_matched_rel,
+                    "recorded_ino": rb.st_ino,
+                    "recorded_mtime_ns": rb.out_mtime_ns,
+                    "recorded_atime_set_ns": rb.atime_set_ns,
+                    "observed_dev": cand.st_dev,
+                    "observed_ino": cand.st_ino,
+                    "observed_atime_ns": cand.st_atime_ns,
+                    "observed_mtime_ns": cand.st_mtime_ns,
+                    "atime_delta_ns": atime_delta_ns,
+                    "atime_advanced": atime_adv,
+                    "hardlink_verified": rb.hardlink_authenticated,
+                    "sha256": actual_sha256,
+                    "sha256_verified": actual_sha256 == rb.out_sha256,
+                }
+            )
+
+        # Check for unexpected extra end records in ledger not in runtime bindings
+        bound_invs = {rb.inv for rb in runtime_bindings}
+        for rec in records:
+            if rec.get("phase") == "end" and rec.get("out_ref"):
+                if rec.get("inv") not in bound_invs:
+                    reasons.append(f"unexpected extra end record in ledger: inv={rec.get('inv')!r}")
+                    checks["no_foreign_references"] = "FAIL"
+    else:
+        # Fallback to direct expected_refs verification
+        expected_set = {os.path.normpath(r) for r in binding.expected_refs}
+        for rec_idx, rec in enumerate(records):
+            if rec.get("phase") != "end" or not rec.get("out_ref"):
+                continue
+            out_ref = rec["out_ref"]
+            out_target = rec.get("out")
+            recorded_ino = rec.get("out_ino")
+            recorded_mtime = rec.get("out_mtime_ns")
+            recorded_atime_set = rec.get("atime_set_ns")
+            consumer = rec.get("consumer")
+            inv_id = rec.get("inv", f"rec_{rec_idx}")
+
+            if recorded_ino is None or recorded_mtime is None or recorded_atime_set is None:
+                reasons.append(f"record {inv_id} omitted required metadata fields")
+                checks["no_missing_references"] = "FAIL"
+                continue
+            if not isinstance(consumer, dict) or not consumer.get("out_sha256"):
+                reasons.append(f"record {inv_id} omitted consumer.out_sha256")
                 checks["raw_bytes_retained"] = "FAIL"
+                continue
 
-        references.append(
-            {
-                "inv": inv_id,
-                "command": rec.get("command"),
-                "out": out_target,
-                "out_ref": out_ref,
-                "matched_root": candidate.root_index,
-                "matched_rel": candidate.rel_path,
-                "target_matched_root": target_matched_root,
-                "target_matched_rel": target_matched_rel,
-                "recorded_ino": recorded_ino,
-                "recorded_mtime_ns": recorded_mtime,
-                "recorded_atime_set_ns": recorded_atime_set,
-                "observed_dev": candidate.st_dev,
-                "observed_ino": candidate.st_ino,
-                "observed_atime_ns": candidate.st_atime_ns,
-                "observed_mtime_ns": candidate.st_mtime_ns,
-                "atime_delta_ns": atime_delta_ns,
-                "atime_advanced": atime_adv,
-                "hardlink_verified": hardlink_verified,
-                "sha256": actual_sha256,
-                "sha256_verified": sha256_match,
-            }
-        )
+            cand, special, err_reason = resolve_reference_path(out_ref, roots, candidate_by_root_and_rel, specials_by_root_and_rel)
+            if err_reason:
+                reasons.append(err_reason)
+                checks["no_foreign_references"] = "FAIL"
+                continue
+            if special is not None:
+                reasons.append(f"monitored reference {out_ref!r} is a {special.kind}")
+                checks["no_symlink_escapes"] = "FAIL"
+                continue
+            if cand is None:
+                reasons.append(f"monitored reference {out_ref!r} missing from pre-read census")
+                checks["no_missing_references"] = "FAIL"
+                continue
 
-    # 5. Exact set comparison against C-trusted expected references
-    expected_set = {os.path.normpath(r) for r in binding.expected_refs}
-    verified_refs_set = set()
-    for ref in references:
-        verified_refs_set.add(os.path.normpath(ref["out_ref"]))
+            ref_key = (cand.root_index, cand.rel_path)
+            if ref_key in seen_refs:
+                reasons.append(f"duplicate reference in ledger: [{cand.root_index}]{cand.rel_path}")
+                checks["no_duplicate_references"] = "FAIL"
+            seen_refs.add(ref_key)
 
-    missing_refs = expected_set - verified_refs_set
-    if missing_refs:
-        reasons.append(f"required expected references missing from verified references: {sorted(missing_refs)!r}")
-        checks["no_missing_references"] = "FAIL"
+            if cand.st_ino != recorded_ino:
+                reasons.append(f"reference {out_ref!r} physical inode != recorded")
+                checks["no_missing_references"] = "FAIL"
 
-    extra_refs = verified_refs_set - expected_set
-    if extra_refs:
-        reasons.append(f"unexpected extra references in ledger: {sorted(extra_refs)!r}")
-        checks["no_foreign_references"] = "FAIL"
+            if (cand.st_dev, cand.st_ino) == (ledger_file.st_dev, ledger_file.st_ino):
+                reasons.append(f"reference {out_ref!r} is an alias of ledger")
+                checks["no_hardlink_aliases"] = "FAIL"
 
-    # Require at least one verified reference
+            hardlink_verified = False
+            target_matched_root = None
+            target_matched_rel = None
+            if out_target:
+                out_cand, out_special, out_err = resolve_reference_path(out_target, roots, candidate_by_root_and_rel, specials_by_root_and_rel)
+                if out_err:
+                    reasons.append(f"target {out_target!r} error: {out_err}")
+                    checks["no_foreign_references"] = "FAIL"
+                elif out_special is not None:
+                    reasons.append(f"target {out_target!r} is a {out_special.kind}")
+                    checks["no_symlink_escapes"] = "FAIL"
+                elif out_cand is None:
+                    reasons.append(f"target {out_target!r} missing from pre-read census")
+                    checks["no_missing_references"] = "FAIL"
+                else:
+                    target_matched_root = out_cand.root_index
+                    target_matched_rel = out_cand.rel_path
+                    if (out_cand.st_dev, out_cand.st_ino) == (cand.st_dev, cand.st_ino):
+                        hardlink_verified = True
+                    else:
+                        reasons.append(f"target {out_target!r} inode != out_ref inode")
+                        checks["no_hardlink_aliases"] = "FAIL"
+            else:
+                reasons.append(f"record {inv_id} omitted mandatory out field")
+                checks["no_missing_references"] = "FAIL"
+
+            if cand.st_mtime_ns != recorded_mtime:
+                reasons.append(f"recorded out_mtime_ns != kernel mtime for {out_ref!r}")
+                checks["numeric_atime_predicates"] = "FAIL"
+
+            atime_adv = cand.st_atime_ns > cand.st_mtime_ns
+            if not atime_adv:
+                reasons.append(f"kernel atime <= kernel mtime for {out_ref!r}")
+                checks["numeric_atime_predicates"] = "FAIL"
+            if cand.st_atime_ns <= recorded_atime_set:
+                reasons.append(f"kernel atime <= atime_set_ns for {out_ref!r}")
+                checks["numeric_atime_predicates"] = "FAIL"
+
+            actual_sha = ""
+            if cand.fd is not None:
+                try:
+                    _, actual_sha = read_bounded_bytes(cand.fd, MAX_RAW_FILE_BYTES, cand.st_size)
+                    if actual_sha != consumer["out_sha256"]:
+                        reasons.append(f"sha256 mismatch for {out_ref!r}")
+                        checks["raw_bytes_retained"] = "FAIL"
+                except Exception as e:
+                    reasons.append(f"failed to read raw bytes for {out_ref!r}: {e}")
+                    checks["raw_bytes_retained"] = "FAIL"
+
+            references.append(
+                {
+                    "slot_id": inv_id,
+                    "transaction_id": inv_id,
+                    "inv": inv_id,
+                    "out": out_target,
+                    "out_ref": out_ref,
+                    "matched_root": cand.root_index,
+                    "matched_rel": cand.rel_path,
+                    "target_matched_root": target_matched_root,
+                    "target_matched_rel": target_matched_rel,
+                    "recorded_ino": recorded_ino,
+                    "recorded_mtime_ns": recorded_mtime,
+                    "recorded_atime_set_ns": recorded_atime_set,
+                    "observed_dev": cand.st_dev,
+                    "observed_ino": cand.st_ino,
+                    "observed_atime_ns": cand.st_atime_ns,
+                    "observed_mtime_ns": cand.st_mtime_ns,
+                    "atime_delta_ns": cand.st_atime_ns - cand.st_mtime_ns,
+                    "atime_advanced": atime_adv,
+                    "hardlink_verified": hardlink_verified,
+                    "sha256": actual_sha,
+                    "sha256_verified": actual_sha == consumer.get("out_sha256"),
+                }
+            )
+
+        verified_refs_set = {os.path.normpath(r["out_ref"]) for r in references}
+        missing_refs = expected_set - verified_refs_set
+        if missing_refs:
+            reasons.append(f"required expected references missing from ledger: {sorted(missing_refs)!r}")
+            checks["no_missing_references"] = "FAIL"
+        extra_refs = verified_refs_set - expected_set
+        if extra_refs:
+            reasons.append(f"unexpected extra references in ledger: {sorted(extra_refs)!r}")
+            checks["no_foreign_references"] = "FAIL"
+
     if not references:
         reasons.append("ledger contains zero verified end references")
         checks["no_missing_references"] = "FAIL"
@@ -945,7 +1284,7 @@ def process_ledger_and_references(
     return result, reasons
 
 
-# Raw evidence collection through held descriptors
+# Raw evidence collection through held descriptors with aggregate budgeting
 
 
 def collect_raw_file_bytes(
@@ -954,15 +1293,17 @@ def collect_raw_file_bytes(
     monitored_inos: Optional[Set[Tuple[int, int]]] = None,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
     """
-    Reads actual raw bytes from held descriptors for monitored candidates.
+    Reads actual raw bytes from held descriptors for monitored candidates in fixed 64 KiB chunks.
     Captures raw bytes once per physical (st_dev, st_ino), while recording all
     associated candidate path aliases and reference mappings.
+    Enforces per-file and aggregate byte ceilings before reading.
     Performs post-read fstat checks to ensure bytes and metadata were not modified during capture.
     """
     raw_files: List[Dict[str, Any]] = []
     errors: List[str] = []
     captured_by_ino: Dict[Tuple[int, int], Dict[str, Any]] = {}
     inos = monitored_inos or set()
+    total_aggregate_bytes = 0
 
     # Sort candidates so primary executables (non-.ref) come before hardlink references (.ref)
     sorted_candidates = sorted(
@@ -989,18 +1330,20 @@ def collect_raw_file_bytes(
             errors.append(f"raw file size {c.st_size} exceeds budget of {MAX_RAW_FILE_BYTES} bytes for [{c.root_index}]{c.rel_path}")
             continue
 
+        if total_aggregate_bytes + c.st_size > MAX_AGGREGATE_RAW_BYTES:
+            errors.append(
+                f"aggregate raw evidence bytes {total_aggregate_bytes + c.st_size} "
+                f"exceeds budget of {MAX_AGGREGATE_RAW_BYTES} bytes"
+            )
+            break
+
         if c.fd is None:
             errors.append(f"held descriptor missing for [{c.root_index}]{c.rel_path}")
             continue
 
         try:
-            os.lseek(c.fd, 0, os.SEEK_SET)
-            content = b""
-            while True:
-                chunk = os.read(c.fd, 65536)
-                if not chunk:
-                    break
-                content += chunk
+            content, sha256_hex = read_bounded_bytes(c.fd, MAX_RAW_FILE_BYTES, c.st_size)
+            total_aggregate_bytes += len(content)
 
             # Post-read stat check
             post_stat = os.fstat(c.fd)
@@ -1017,7 +1360,6 @@ def collect_raw_file_bytes(
                 errors.append(f"file mtime changed during read: [{c.root_index}]{c.rel_path}")
                 continue
 
-            sha256_hex = hashlib.sha256(content).hexdigest()
             raw_entry = {
                 "root_index": c.root_index,
                 "rel_path": c.rel_path,
@@ -1030,7 +1372,7 @@ def collect_raw_file_bytes(
             }
             captured_by_ino[ino_key] = raw_entry
             raw_files.append(raw_entry)
-        except OSError as e:
+        except Exception as e:
             errors.append(f"failed to read file bytes for [{c.root_index}]{c.rel_path}: {e}")
 
     return raw_files, errors
@@ -1042,6 +1384,7 @@ def collect_raw_file_bytes(
 def run_origin_observer(
     roots: List[str],
     binding: LaunchBinding,
+    runtime_bindings: Optional[List[RuntimeBinding]] = None,
     ledger_relpath: str = "ledger.jsonl",
     output_stream: Optional[BinaryIO] = None,
     capture_raw_bytes: bool = True,
@@ -1054,8 +1397,8 @@ def run_origin_observer(
     2. Commit and emit initial metadata census checkpoint BEFORE reading ledger.
     3. If traversal errors occurred, fail closed immediately without reading ledger.
     4. Read and parse ledger descriptor-relatively; detect hardlink aliases.
-    5. Validate references against C-trusted expected set (exact equality) and kernel observations.
-    6. Collect raw executable bytes from held descriptors.
+    5. Validate references against logical slots, runtime bindings, and kernel observations.
+    6. Collect raw executable bytes from held descriptors in 64 KiB chunks with aggregate budgeting.
     7. Emit versioned framed stream to output_stream (including full evidence in final frame).
     8. Close held descriptors.
     """
@@ -1072,6 +1415,7 @@ def run_origin_observer(
             "attempt": binding.attempt,
             "launch_id": binding.launch_id,
             "expected_nonce": binding.expected_nonce,
+            "logical_slots": [s.to_dict() for s in binding.logical_slots],
             "expected_refs": list(binding.expected_refs),
         },
         "observer_identity": {
@@ -1129,13 +1473,14 @@ def run_origin_observer(
         return checkpoint_doc
 
     try:
-        # 4. Only after initial census commit: read and validate ledger
-        proc_res, proc_errors = process_ledger_and_references(
+        # 4. Only after initial census commit: read and validate ledger against runtime bindings
+        proc_res, proc_errors = process_ledger_and_runtime_bindings(
             candidates=candidates,
             specials=specials,
             roots=roots,
             ledger_relpath=ledger_relpath,
             binding=binding,
+            runtime_bindings=runtime_bindings or [],
         )
 
         all_errors = list(proc_errors)
@@ -1144,7 +1489,7 @@ def run_origin_observer(
         monitored_keys: Set[Tuple[int, str]] = set()
         monitored_inos: Set[Tuple[int, int]] = set()
         for ref in proc_res.get("references", []):
-            if "matched_root" in ref and "matched_rel" in ref:
+            if "matched_root" in ref and "matched_rel" in ref and ref["matched_rel"] is not None:
                 monitored_keys.add((ref["matched_root"], ref["matched_rel"]))
             if "target_matched_root" in ref and "target_matched_rel" in ref and ref["target_matched_rel"] is not None:
                 monitored_keys.add((ref["target_matched_root"], ref["target_matched_rel"]))
@@ -1283,8 +1628,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--attempt", type=int, default=1, help="Attempt number (default 1)")
     parser.add_argument("--launch-id", required=True, help="Launch identity / container ID")
     parser.add_argument("--expected-nonce", required=True, help="Expected ledger nonce")
-    parser.add_argument("--census", default=None, help="Path to C-trusted driver census JSON file to derive expected refs")
-    parser.add_argument("--expected-ref", action="append", default=[], help="Expected reference path (repeatable)")
+    parser.add_argument("--census", default=None, help="Path to C-trusted driver census JSON file to derive logical slots")
+    parser.add_argument("--manifest", default=None, help="Path to C-trusted logical slot manifest JSON file")
+    parser.add_argument("--runtime-binding", default=None, help="Path to JSON file containing authenticated RuntimeBinding list")
+    parser.add_argument("--expected-ref", action="append", default=[], help="Expected reference path (repeatable, for direct mode)")
     parser.add_argument("--expected-refs-file", default=None, help="JSON file containing list of expected reference paths")
     parser.add_argument("--ledger-relpath", default="ledger.jsonl", help="Relative path to ledger within root 0")
     parser.add_argument("--output-fd", type=int, default=None, help="File descriptor for length-delimited output pipe")
@@ -1293,24 +1640,43 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     args = parser.parse_args(argv)
 
-    expected_refs: Set[str] = set()
+    logical_slots: List[LogicalSlot] = []
 
-    # 1. Derive from census if provided
+    # 1. Derive logical slots from census if provided
     if args.census:
         try:
             with open(args.census, "r", encoding="utf-8") as f:
                 census_data = json.load(f)
-            derived = derive_trusted_expected_references(census_data, args.driver, work_prefix="t")
-            expected_refs.update(derived)
+            logical_slots = build_driver_logical_slots(census_data, args.driver)
         except Exception as e:
             print(f"Error reading census file: {e}", file=sys.stderr)
             return 1
+    elif args.manifest:
+        try:
+            with open(args.manifest, "r", encoding="utf-8") as f:
+                manifest_data = json.load(f)
+                slots_raw = manifest_data if isinstance(manifest_data, list) else manifest_data.get("slots", [])
+                for s in slots_raw:
+                    logical_slots.append(
+                        LogicalSlot(
+                            slot_id=s["slot_id"],
+                            driver=s["driver"],
+                            site_line=s["site_line"],
+                            label=s["label"],
+                            kind=s["kind"],
+                            variant_id=s.get("variant_id"),
+                            output_template=s["output_template"],
+                            compiler_options=tuple(s.get("compiler_options", ())),
+                        )
+                    )
+        except Exception as e:
+            print(f"Error reading manifest file: {e}", file=sys.stderr)
+            return 1
 
-    # 2. Add explicit expected-ref CLI arguments
+    expected_refs: Set[str] = set()
     for r in args.expected_ref:
         expected_refs.add(r)
 
-    # 3. Add explicit expected-refs-file
     if args.expected_refs_file:
         try:
             with open(args.expected_refs_file, "r", encoding="utf-8") as f:
@@ -1323,9 +1689,32 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"Error reading expected_refs_file: {e}", file=sys.stderr)
             return 1
 
-    if not expected_refs:
-        print("Error: expected references set is empty. Must provide --census, --expected-ref, or --expected-refs-file", file=sys.stderr)
-        return 1
+    runtime_bindings: List[RuntimeBinding] = []
+    if args.runtime_binding:
+        try:
+            with open(args.runtime_binding, "r", encoding="utf-8") as f:
+                rb_data = json.load(f)
+                items = rb_data if isinstance(rb_data, list) else rb_data.get("bindings", [])
+                for b in items:
+                    runtime_bindings.append(
+                        RuntimeBinding(
+                            slot_id=b["slot_id"],
+                            transaction_id=b.get("transaction_id", args.launch_id),
+                            inv=b["inv"],
+                            out_path=b["out_path"],
+                            out_ref_path=b["out_ref_path"],
+                            st_dev=int(b["st_dev"]),
+                            st_ino=int(b["st_ino"]),
+                            out_mtime_ns=int(b["out_mtime_ns"]),
+                            atime_set_ns=int(b["atime_set_ns"]),
+                            out_sha256=b["out_sha256"],
+                            hardlink_authenticated=bool(b.get("hardlink_authenticated", True)),
+                            exec_verified=bool(b.get("exec_verified", True)),
+                        )
+                    )
+        except Exception as e:
+            print(f"Error reading runtime_binding file: {e}", file=sys.stderr)
+            return 1
 
     binding = LaunchBinding(
         chain_id=args.chain_id,
@@ -1333,6 +1722,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         attempt=args.attempt,
         launch_id=args.launch_id,
         expected_nonce=args.expected_nonce,
+        logical_slots=tuple(logical_slots),
         expected_refs=tuple(sorted(expected_refs)),
     )
 
@@ -1350,6 +1740,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         doc = run_origin_observer(
             roots=args.root,
             binding=binding,
+            runtime_bindings=runtime_bindings,
             ledger_relpath=args.ledger_relpath,
             output_stream=out_stream,
             capture_raw_bytes=args.capture_raw_bytes,

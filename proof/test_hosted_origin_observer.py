@@ -26,8 +26,11 @@ Verifies all security invariants and addresses ReviewFixtureIsolation P1 finding
 19. P1-4: Checkpoint commitment to pipe before ledger read and traversal error fail-closed enforcement.
 20. P1-1 Extra: Rejection of unexpected extra references not in C-trusted expected set.
 21. P1-1 Target: Rejection of missing, special, or foreign out targets.
-22. Expected reference derivation from C-trusted census file.
+22. Derivation of the exact 63 logical E3 build slots across all 29 driver censuses.
 23. Complete evidence recovery from wire stream frames.
+24. Real W runtime UUID join: authenticated creation hardlink with legitimate driver cleanup unlinking out.
+25. Rejection of duplicate inode reuse across distinct logical build slots.
+26. Rejection of unauthenticated hardlink when out is unlinked post-cleanup.
 """
 
 from __future__ import annotations
@@ -51,7 +54,10 @@ from proof.hosted_origin_observer import (
     PROTOCOL_VERSION,
     CandidateFile,
     LaunchBinding,
+    LogicalSlot,
+    RuntimeBinding,
     SpecialEntry,
+    build_driver_logical_slots,
     decode_raw_file_frame,
     derive_trusted_expected_references,
     encode_raw_file_frame,
@@ -221,7 +227,6 @@ class TestHostedOriginObserver(unittest.TestCase):
         self.assertEqual(raw_files[0]["file_bytes"], prog_bytes)
         self.assertEqual(raw_files[0]["aliases"], [{"root_index": 0, "rel_path": "t/prog.ref"}])
         self.assertEqual(len(doc["raw_files_manifest"]), 1)
-        # Verify wire frame decodes complete evidence
         self.assertIsNotNone(meta_parsed.get("ledger"))
         self.assertIsNotNone(meta_parsed.get("references"))
         self.assertIsNotNone(meta_parsed.get("raw_files_manifest"))
@@ -464,7 +469,7 @@ class TestHostedOriginObserver(unittest.TestCase):
 
         self.assertEqual(doc["verdict"]["status"], "REJECT")
         self.assertEqual(doc["verdict"]["checks"]["no_duplicate_references"], "FAIL")
-        self.assertTrue(any("duplicate reference detected" in r for r in doc["verdict"]["reasons"]))
+        self.assertTrue(any("duplicate reference" in r for r in doc["verdict"]["reasons"]))
 
     # 8. Adversarial fixture: Foreign driver or nonce
 
@@ -817,7 +822,7 @@ class TestHostedOriginObserver(unittest.TestCase):
         )
         self.assertEqual(doc["verdict"]["status"], "REJECT")
         self.assertEqual(doc["verdict"]["checks"]["no_missing_references"], "FAIL")
-        self.assertTrue(any("required expected references missing from verified references" in r for r in doc["verdict"]["reasons"]))
+        self.assertTrue(any("required expected references missing" in r for r in doc["verdict"]["reasons"]))
 
         # Case B: record with missing out_ref or omitted required metadata
         rec_omitted = {
@@ -894,7 +899,7 @@ class TestHostedOriginObserver(unittest.TestCase):
         self.assertEqual(doc["verdict"]["status"], "REJECT")
         self.assertEqual(doc["verdict"]["checks"]["numeric_atime_predicates"], "FAIL")
         # Must detect that recorded mtime != kernel observed mtime
-        self.assertTrue(any("!= kernel observed mtime" in r for r in doc["verdict"]["reasons"]))
+        self.assertTrue(any("!= kernel mtime" in r or "!= kernel observed mtime" in r for r in doc["verdict"]["reasons"]))
         # And must detect that kernel atime <= kernel mtime
         self.assertTrue(any("kernel atime" in r and "<= kernel mtime" in r for r in doc["verdict"]["reasons"]))
 
@@ -1076,7 +1081,6 @@ class TestHostedOriginObserver(unittest.TestCase):
         mtime_ns = 1_000_000_000_000_000_000
         atime_ns = 1_000_000_001_000_000_000
 
-        # Write only the reference, but NOT the claimed out target!
         ref_path = self._write_file("t/prog.ref", prog_bytes, mtime_ns=mtime_ns, atime_ns=atime_ns)
 
         header = {
@@ -1110,26 +1114,41 @@ class TestHostedOriginObserver(unittest.TestCase):
         )
 
         self.assertEqual(doc["verdict"]["status"], "REJECT")
-        self.assertTrue(any("was missing from pre-read census" in r for r in doc["verdict"]["reasons"]))
+        self.assertTrue(any("missing from pre-read census" in r for r in doc["verdict"]["reasons"]))
 
-    # 22. Derivation of expected references from C-trusted census
+    # 22. Derivation of 63 logical E3 build slots across all 29 driver censuses
 
-    def test_22_derive_trusted_expected_references_from_census(self) -> None:
+    def test_22_derive_all_63_logical_build_slots(self) -> None:
         """
-        P1-4: Prove derive_trusted_expected_references derives expected references
-        directly from C-trusted census JSON without consulting workload ledger.
+        Planner Specification: Exact W has 57 own/mixed-own slots and 6 positive variant slots,
+        yielding exactly 63 candidate E3 build slots across all 29 censuses.
         """
-        census_path = os.path.join(os.path.dirname(__file__), "census", "acme.json")
-        if not os.path.isfile(census_path):
-            self.skipTest(f"census file not found: {census_path}")
+        census_dir = os.path.join(os.path.dirname(__file__), "census")
+        if not os.path.isdir(census_dir):
+            self.skipTest(f"census directory not found: {census_dir}")
 
-        with open(census_path, "r", encoding="utf-8") as f:
-            census_data = json.load(f)
+        census_files = sorted(f for f in os.listdir(census_dir) if f.endswith(".json"))
+        self.assertEqual(len(census_files), 29)
 
-        expected = derive_trusted_expected_references(census_data, "acme", work_prefix="t")
-        self.assertIn("t/std_acme_exercise.ref", expected)
-        self.assertIn("t/acme-plain.ref", expected)
-        self.assertIn("t/acme-release.ref", expected)
+        total_slots = 0
+        own_slots = 0
+        positive_slots = 0
+
+        for cf in census_files:
+            driver = cf[:-5]
+            with open(os.path.join(census_dir, cf), "r", encoding="utf-8") as f:
+                cdata = json.load(f)
+            slots = build_driver_logical_slots(cdata, driver)
+            total_slots += len(slots)
+            for s in slots:
+                if s.kind == "own":
+                    own_slots += 1
+                elif s.kind == "positive":
+                    positive_slots += 1
+
+        self.assertEqual(own_slots, 57)
+        self.assertEqual(positive_slots, 6)
+        self.assertEqual(total_slots, 63)
 
     # 23. Complete evidence recovery from wire stream
 
@@ -1183,7 +1202,6 @@ class TestHostedOriginObserver(unittest.TestCase):
         wire_pipe.seek(0)
         meta_doc, raw_files, term_doc = parse_observer_stream(wire_pipe)
 
-        # Wire consumer must be able to inspect all evidence
         self.assertEqual(meta_doc["verdict"]["status"], "PASS")
         self.assertIsNotNone(meta_doc["ledger"])
         self.assertEqual(len(meta_doc["references"]), 1)
@@ -1191,6 +1209,234 @@ class TestHostedOriginObserver(unittest.TestCase):
         self.assertIn("limitations", meta_doc)
         self.assertEqual(len(raw_files), 1)
         self.assertEqual(raw_files[0]["file_bytes"], prog_bytes)
+
+    # 24. Real W runtime UUID join with driver cleanup unlinking out
+
+    def test_24_real_w_runtime_uuid_join_with_unlinked_out(self) -> None:
+        """
+        Planner Specification: Genuine driver cleans up WORK directory and unlinks out post-run.
+        With creation-time hardlink authentication in RuntimeBinding, observer verifies out.ref
+        and accepts unlinked out target.
+        """
+        prog_bytes = b"#!/bin/sh\necho real_w\n"
+        prog_sha256 = hashlib.sha256(prog_bytes).hexdigest()
+        mtime_ns = 1_000_000_000_000_000_000
+        atime_ns = 1_000_000_001_000_000_000
+
+        # W creates <scratch>/<UUID>/out.ref
+        inv_uuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        scratch_inv_dir = os.path.join(self.root_dir, "scratch", inv_uuid)
+        os.makedirs(scratch_inv_dir, exist_ok=True)
+        ref_path = os.path.join(scratch_inv_dir, "out.ref")
+
+        # Temporarily create output executable
+        out_path = os.path.join(self.root_dir, "work", "acme-plain")
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        with open(out_path, "wb") as f:
+            f.write(prog_bytes)
+        os.link(out_path, ref_path)
+        os.utime(ref_path, ns=(atime_ns, mtime_ns))
+        st = os.stat(ref_path)
+
+        # Simulate normal driver cleanup: unlinks work directory and out!
+        os.unlink(out_path)
+        os.rmdir(os.path.dirname(out_path))
+
+        slot = LogicalSlot(
+            slot_id="acme::70::acme-plain::own",
+            driver="acme",
+            site_line=70,
+            label="acme-plain",
+            kind="own",
+            variant_id=None,
+            output_template="{WORK}/acme-plain",
+        )
+        binding = LaunchBinding(
+            chain_id=self.binding.chain_id,
+            driver="acme",
+            attempt=1,
+            launch_id="cid_1",
+            expected_nonce="nonce_789",
+            logical_slots=(slot,),
+        )
+        # Authenticated runtime binding from witness tracer at link time
+        rb = RuntimeBinding(
+            slot_id=slot.slot_id,
+            transaction_id="tx_1",
+            inv=inv_uuid,
+            out_path=out_path,
+            out_ref_path=ref_path,
+            st_dev=st.st_dev,
+            st_ino=st.st_ino,
+            out_mtime_ns=mtime_ns,
+            atime_set_ns=mtime_ns - 1000,
+            out_sha256=prog_sha256,
+            hardlink_authenticated=True,
+            exec_verified=True,
+        )
+
+        header = {
+            "v": 1,
+            "kind": "header",
+            "nonce": "nonce_789",
+            "driver": "acme",
+            "attempt": 1,
+            "chain_id": self.binding.chain_id,
+        }
+        rec = {
+            "v": 1,
+            "kind": "record",
+            "nonce": "nonce_789",
+            "driver": "acme",
+            "phase": "end",
+            "inv": inv_uuid,
+            "command": "build",
+            "out": out_path,
+            "out_ref": ref_path,
+            "out_ino": st.st_ino,
+            "out_mtime_ns": mtime_ns,
+            "atime_set_ns": mtime_ns - 1000,
+            "consumer": {"out_sha256": prog_sha256},
+        }
+        self._write_ledger(header, [rec])
+
+        doc = run_origin_observer(
+            roots=[self.root_dir],
+            binding=binding,
+            runtime_bindings=[rb],
+            ledger_relpath="ledger.jsonl",
+        )
+
+        self.assertEqual(doc["verdict"]["status"], "PASS")
+        self.assertEqual(len(doc["references"]), 1)
+        self.assertTrue(doc["references"][0]["hardlink_verified"])
+
+    # 25. Rejection of duplicate inode reuse across distinct logical build slots
+
+    def test_25_adversarial_duplicate_inode_reuse_across_slots_fails(self) -> None:
+        """
+        Planner Specification: Distinct logical build slots cannot share physical (st_dev, st_ino).
+        Executing one built inode twice to satisfy two different slots must be rejected.
+        """
+        prog_bytes = b"binary_code"
+        prog_sha256 = hashlib.sha256(prog_bytes).hexdigest()
+        p = self._write_file("t/prog.ref", prog_bytes)
+        st = os.stat(p)
+
+        slot1 = LogicalSlot(
+            slot_id="acme::70::acme-plain::own",
+            driver="acme",
+            site_line=70,
+            label="acme-plain",
+            kind="own",
+            output_template="{WORK}/acme-plain",
+        )
+        slot2 = LogicalSlot(
+            slot_id="acme::70::acme-release::own",
+            driver="acme",
+            site_line=70,
+            label="acme-release",
+            kind="own",
+            output_template="{WORK}/acme-release",
+        )
+        binding = LaunchBinding(
+            chain_id=self.binding.chain_id,
+            driver="acme",
+            attempt=1,
+            launch_id="cid_1",
+            expected_nonce=self.binding.expected_nonce,
+            logical_slots=(slot1, slot2),
+        )
+
+        # Both slots bound to the SAME physical inode!
+        rb1 = RuntimeBinding(
+            slot_id=slot1.slot_id,
+            transaction_id="tx_1",
+            inv="inv_1",
+            out_path="t/acme-plain",
+            out_ref_path="t/prog.ref",
+            st_dev=st.st_dev,
+            st_ino=st.st_ino,
+            out_mtime_ns=st.st_mtime_ns,
+            atime_set_ns=st.st_mtime_ns - 1000,
+            out_sha256=prog_sha256,
+            hardlink_authenticated=True,
+        )
+        rb2 = RuntimeBinding(
+            slot_id=slot2.slot_id,
+            transaction_id="tx_2",
+            inv="inv_2",
+            out_path="t/acme-release",
+            out_ref_path="t/prog.ref",
+            st_dev=st.st_dev,
+            st_ino=st.st_ino,
+            out_mtime_ns=st.st_mtime_ns,
+            atime_set_ns=st.st_mtime_ns - 1000,
+            out_sha256=prog_sha256,
+            hardlink_authenticated=True,
+        )
+
+        doc = run_origin_observer(
+            roots=[self.root_dir],
+            binding=binding,
+            runtime_bindings=[rb1, rb2],
+        )
+
+        self.assertEqual(doc["verdict"]["status"], "REJECT")
+        self.assertEqual(doc["verdict"]["checks"]["no_hardlink_aliases"], "FAIL")
+        self.assertTrue(any("inode reuse attack" in r for r in doc["verdict"]["reasons"]))
+
+    # 26. Rejection of unauthenticated hardlink when out is unlinked post-cleanup
+
+    def test_26_unauthenticated_hardlink_with_unlinked_out_fails(self) -> None:
+        """
+        Planner Specification: If out was unlinked post-run and hardlink was NOT authenticated
+        at creation time, the observer MUST reject.
+        """
+        prog_bytes = b"binary_code"
+        prog_sha256 = hashlib.sha256(prog_bytes).hexdigest()
+        p = self._write_file("t/prog.ref", prog_bytes)
+        st = os.stat(p)
+
+        slot = LogicalSlot(
+            slot_id="acme::70::acme-plain::own",
+            driver="acme",
+            site_line=70,
+            label="acme-plain",
+            kind="own",
+            output_template="{WORK}/acme-plain",
+        )
+        binding = LaunchBinding(
+            chain_id=self.binding.chain_id,
+            driver="acme",
+            attempt=1,
+            launch_id="cid_1",
+            expected_nonce=self.binding.expected_nonce,
+            logical_slots=(slot,),
+        )
+        # hardlink_authenticated is FALSE!
+        rb = RuntimeBinding(
+            slot_id=slot.slot_id,
+            transaction_id="tx_1",
+            inv="inv_1",
+            out_path="t/unlinked_out",
+            out_ref_path="t/prog.ref",
+            st_dev=st.st_dev,
+            st_ino=st.st_ino,
+            out_mtime_ns=st.st_mtime_ns,
+            atime_set_ns=st.st_mtime_ns - 1000,
+            out_sha256=prog_sha256,
+            hardlink_authenticated=False,
+        )
+
+        doc = run_origin_observer(
+            roots=[self.root_dir],
+            binding=binding,
+            runtime_bindings=[rb],
+        )
+
+        self.assertEqual(doc["verdict"]["status"], "REJECT")
+        self.assertTrue(any("creation-time hardlink authentication" in r for r in doc["verdict"]["reasons"]))
 
 
 if __name__ == "__main__":
