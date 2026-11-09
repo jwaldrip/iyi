@@ -2,8 +2,9 @@ require "../../spec_helper"
 require "../spec_helper"
 require "compiler/iyi/compiler"
 require "compiler/iyi/stale/reach"
+require "json"
 
-private def compile_class_var_reach(source : Iyi::Compiler::Source, name : String, owners : Array(String)) : Nil
+private def compile_class_var_reach(source : Iyi::Compiler::Source, name : String, owners : Array(String)) : String
   with_tempfile("reach_class_var.key") do |key_path|
     with_tempfile("reach_class_var.bin") do |bin_path|
       compiler = create_spec_compiler
@@ -14,7 +15,7 @@ private def compile_class_var_reach(source : Iyi::Compiler::Source, name : Strin
         compiler.compile(source, bin_path)
       rescue ex : Iyi::Error
         details = String.build do |io|
-          io << ex.message << "\nClassVar diagnostics for " << name << '\n'
+          io << ex.class << ": " << ex.to_s << "\nClassVar diagnostics for " << name << '\n'
           if program = compiler.program?
             if reach = program.stale_reach
               io << "reach mismatch: " << reach.mismatch << '\n'
@@ -51,17 +52,70 @@ private def compile_class_var_reach(source : Iyi::Compiler::Source, name : Strin
             io << "program unavailable\n"
           end
         end
-        raise Iyi::Error.new(details)
+        raise Iyi::Error.new(details, cause: ex)
       end
 
       reach = compiler.program.stale_reach.not_nil!
+      recorder = compiler.program.stale_recorder.not_nil!
       owners.each do |owner|
-        reach.elements.any? { |element| element.kind.class_var? && element.key.ends_with?("#{owner}::#{name}") }.should be_true
+        key = "#{owner}::#{name}"
+        reach.elements.count { |element| element.kind.class_var? && element.key == key }.should eq(1)
+        reach.class_vars.count { |cv| "#{cv.owner}::#{cv.name}" == key }.should eq(1)
+        recorder.emitted_class_vars.count { |cv| "#{cv.owner}::#{cv.name}" == key }.should eq(1)
       end
+      reach.mismatch.should be_empty
       File.exists?(key_path).should be_true
-      File.read(key_path).should contain(%("mismatch": []))
+      key = JSON.parse(File.read(key_path))
+      key["reach"]["checked"].as_bool.should be_true
+      key["reach"]["mismatch"].as_a.should be_empty
+      key["local"]["callpath"].as_s
     end
   end
+end
+
+private def atomic_class_var_source(seed : Int32, unused : Int32 = 1, opaque : Bool = false) : Iyi::Compiler::Source
+  asm = opaque ? %(asm("nop"); ) : ""
+  Iyi::Compiler::Source.new("reach_atomic.iyi", <<-IYI
+    module spec/reach_atomic
+    import std/atomic
+    class SimpleHolder
+      @@waiting = 0_i64
+      def self.value
+        @@waiting
+      end
+    end
+    class FirstHolder
+      def self.reach_leaf : UInt64
+        #{asm}value = #{seed}_u64; value + 1_u64
+      end
+      def self.reach_seed : UInt64
+        value = self.reach_leaf; value + 1_u64
+      end
+      @@waiting = Atomic(UInt64).new(self.reach_seed)
+      def self.value
+        @@waiting.get
+      end
+    end
+    class SecondHolder
+      def self.reach_leaf : UInt64
+        value = 3_u64; value + 1_u64
+      end
+      def self.reach_seed : UInt64
+        value = self.reach_leaf; value + 1_u64
+      end
+      @@waiting = Atomic(UInt64).new(self.reach_seed)
+      def self.value
+        @@waiting.get
+      end
+    end
+    def unused_helper : UInt64
+      value = #{unused}_u64; value + 1_u64
+    end
+    puts SimpleHolder.value
+    puts FirstHolder.value
+    puts SecondHolder.value
+    IYI
+  )
 end
 
 describe "Iyi::Stale S3e: Reach walk, cross-check, drop per EdgeKind (row 42)" do
@@ -75,34 +129,31 @@ describe "Iyi::Stale S3e: Reach walk, cross-check, drop per EdgeKind (row 42)" d
         end
         IYI
       )
-      compile_class_var_reach(source, "@@waiting", ["SignalWaiter"])
+      compile_class_var_reach(source, "@@waiting", ["Std::Signal::SignalWaiter"])
     end
   {% end %}
 
   it "reaches Atomic class variables with dependent initializers under distinct owners" do
-    source = Iyi::Compiler::Source.new("reach_atomic.iyi", <<-IYI
-      module spec/reach_atomic
-      import std/atomic
-      def reach_seed : UInt64
-        1_u64
-      end
-      class FirstHolder
-        @@waiting = Atomic(UInt64).new(reach_seed)
-        def self.value
-          @@waiting.get
+    owners = ["Spec::ReachAtomic::FirstHolder", "Spec::ReachAtomic::SecondHolder"]
+    first = compile_class_var_reach(atomic_class_var_source(1), "@@waiting", owners)
+    changed = compile_class_var_reach(atomic_class_var_source(2), "@@waiting", owners)
+    changed.should_not eq(first)
+  end
+
+  it "rejects a dropped Atomic class variable edge" do
+    with_tempfile("reach_atomic_drop.key") do |key_path|
+      with_tempfile("reach_atomic_drop.bin") do |bin_path|
+        compiler = create_spec_compiler
+        compiler.prelude = "iyi/prelude"
+        compiler.stale_key = key_path
+        compiler.stale_drop = Iyi::Stale::EdgeKind::ClassVar
+
+        error = expect_raises(Iyi::Error, /reach mismatch/) do
+          compiler.compile(atomic_class_var_source(1), bin_path)
         end
+        error.message.to_s.should contain("Spec::ReachAtomic::FirstHolder::@@waiting")
       end
-      class SecondHolder
-        @@waiting = Atomic(UInt64).new(0_u64)
-        def self.value
-          @@waiting.get
-        end
-      end
-      puts FirstHolder.value
-      puts SecondHolder.value
-      IYI
-    )
-    compile_class_var_reach(source, "@@waiting", ["FirstHolder", "SecondHolder"])
+    end
   end
 
   it "compiles without error when no edge is dropped" do
