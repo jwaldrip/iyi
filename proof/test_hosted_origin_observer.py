@@ -121,9 +121,10 @@ class TestHostedOriginObserver(unittest.TestCase):
         self.assertEqual(raw_files[0]["file_bytes"], b"binary_payload")
         self.assertEqual(term_doc["status"], "PASS")
 
-    # 2. Legitimate execution flow
+    # 2. Simulated positive flow with advanced atime (simulated execution, not proof of exec)
 
-    def test_02_normal_legitimate_execution_flow(self) -> None:
+    def test_02_simulated_advanced_atime_flow(self) -> None:
+        """Simulated positive flow with advanced atime (simulated execution via atime advance; note: collector alone cannot verify execution)."""
         prog_bytes = b"#!/bin/sh\necho ok\n"
         prog_sha256 = hashlib.sha256(prog_bytes).hexdigest()
         mtime_ns = 1_000_000_000_000_000_000
@@ -186,9 +187,12 @@ class TestHostedOriginObserver(unittest.TestCase):
         out_pipe.seek(0)
         meta_parsed, raw_files, term_parsed = parse_observer_stream(out_pipe)
         self.assertEqual(term_parsed["status"], "PASS")
+        # Exactly one raw file entry per physical inode; hardlink alias retained in aliases list
         self.assertEqual(len(raw_files), 1)
         self.assertEqual(raw_files[0]["file_bytes"], prog_bytes)
-
+        self.assertIn("t/prog.ref", raw_files[0]["aliases"])
+        self.assertEqual(len(doc["raw_files_manifest"]), 1)
+        self.assertEqual(doc["raw_files_manifest"][0]["aliases"], ["t/prog.ref"])
     # 3. Adversarial fixture: Executable/ledger hardlink alias attack
 
     def test_03_adversarial_hardlink_alias_attack(self) -> None:

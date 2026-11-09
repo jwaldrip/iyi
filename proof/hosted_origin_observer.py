@@ -174,13 +174,16 @@ def encode_raw_file_frame(
     st_ino: int,
     sha256_hex: str,
     file_bytes: bytes,
+    aliases: Optional[List[str]] = None,
 ) -> bytes:
-    """Encode raw file payload for FRAME_RAW_FILE."""
+    """Encode raw file payload for FRAME_RAW_FILE with optional hardlink aliases."""
     path_bytes = rel_path.encode("utf-8")
+    aliases_bytes = json.dumps(aliases or []).encode("utf-8")
     sha_bytes = bytes.fromhex(sha256_hex)
     header = (
-        struct.pack(">H", len(path_bytes))
+        struct.pack(">HH", len(path_bytes), len(aliases_bytes))
         + path_bytes
+        + aliases_bytes
         + struct.pack(">QQ32sI", st_dev, st_ino, sha_bytes, len(file_bytes))
     )
     return header + file_bytes
@@ -188,14 +191,17 @@ def encode_raw_file_frame(
 
 def decode_raw_file_frame(payload: bytes) -> Dict[str, Any]:
     """Decode raw file payload from FRAME_RAW_FILE."""
-    if len(payload) < 2:
-        raise ValueError("Truncated raw file frame payload (no path length)")
-    path_len = struct.unpack(">H", payload[:2])[0]
-    offset = 2
-    if len(payload) < offset + path_len + 8 + 8 + 32 + 4:
+    if len(payload) < 4:
+        raise ValueError("Truncated raw file frame payload (no path/aliases length)")
+    path_len, aliases_len = struct.unpack(">HH", payload[:4])
+    offset = 4
+    if len(payload) < offset + path_len + aliases_len + 8 + 8 + 32 + 4:
         raise ValueError("Truncated raw file frame header")
     rel_path = payload[offset : offset + path_len].decode("utf-8")
     offset += path_len
+    aliases_json = payload[offset : offset + aliases_len].decode("utf-8")
+    aliases: List[str] = json.loads(aliases_json) if aliases_json else []
+    offset += aliases_len
     st_dev, st_ino, sha_bytes, data_len = struct.unpack(">QQ32sI", payload[offset : offset + 52])
     offset += 52
     file_bytes = payload[offset : offset + data_len]
@@ -203,6 +209,7 @@ def decode_raw_file_frame(payload: bytes) -> Dict[str, Any]:
         raise ValueError(f"Raw file data length mismatch: expected {data_len}, got {len(file_bytes)}")
     return {
         "rel_path": rel_path,
+        "aliases": aliases,
         "st_dev": st_dev,
         "st_ino": st_ino,
         "sha256": sha_bytes.hex(),
@@ -732,16 +739,27 @@ def collect_raw_file_bytes(
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
     """
     Reads actual raw bytes from held descriptors for monitored candidates.
+    Captures raw bytes once per physical (st_dev, st_ino), while recording all
+    associated candidate path aliases and reference mappings.
     Performs post-read fstat checks to ensure bytes and metadata were not modified during capture.
     """
     raw_files: List[Dict[str, Any]] = []
     errors: List[str] = []
+    captured_by_ino: Dict[Tuple[int, int], Dict[str, Any]] = {}
 
     for c in candidates:
         norm_path = os.path.normpath(c.rel_path)
         # Capture raw bytes for monitored files or executables
         if norm_path not in monitored_refs and not c.rel_path.endswith(".ref"):
             # Still capture if it is an executable or candidate reference
+            continue
+
+        ino_key = (c.st_dev, c.st_ino)
+        if ino_key in captured_by_ino:
+            # Hardlink alias: retain path in aliases list without duplicating raw bytes
+            entry = captured_by_ino[ino_key]
+            if c.rel_path not in entry["aliases"] and c.rel_path != entry["rel_path"]:
+                entry["aliases"].append(c.rel_path)
             continue
 
         if c.fd is None:
@@ -772,16 +790,17 @@ def collect_raw_file_bytes(
                 continue
 
             sha256_hex = hashlib.sha256(content).hexdigest()
-            raw_files.append(
-                {
-                    "rel_path": c.rel_path,
-                    "st_dev": c.st_dev,
-                    "st_ino": c.st_ino,
-                    "size": len(content),
-                    "sha256": sha256_hex,
-                    "file_bytes": content,
-                }
-            )
+            raw_entry = {
+                "rel_path": c.rel_path,
+                "aliases": [],
+                "st_dev": c.st_dev,
+                "st_ino": c.st_ino,
+                "size": len(content),
+                "sha256": sha256_hex,
+                "file_bytes": content,
+            }
+            captured_by_ino[ino_key] = raw_entry
+            raw_files.append(raw_entry)
         except OSError as e:
             errors.append(f"failed to read file bytes for {c.rel_path}: {e}")
 
@@ -868,6 +887,7 @@ def run_origin_observer(
             "raw_files_manifest": [
                 {
                     "rel_path": rf["rel_path"],
+                    "aliases": rf.get("aliases", []),
                     "st_dev": rf["st_dev"],
                     "st_ino": rf["st_ino"],
                     "size": rf["size"],
@@ -899,6 +919,7 @@ def run_origin_observer(
                     st_ino=rf["st_ino"],
                     sha256_hex=rf["sha256"],
                     file_bytes=rf["file_bytes"],
+                    aliases=rf.get("aliases", []),
                 )
                 write_frame(output_stream, FRAME_RAW_FILE, frame_payload)
 
