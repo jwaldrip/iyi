@@ -918,6 +918,7 @@ class TestOriginRecordsAdversarialHardlink(unittest.TestCase):
         with tempfile.TemporaryDirectory() as report_dir:
             run3_dir = os.path.join(report_dir, "run3", "demo")
             attempt_dir = os.path.join(run3_dir, "a1")
+            os.makedirs(attempt_dir)
             ledger_file = os.path.join(attempt_dir, "ledger.jsonl")
             with open(ledger_file, "w") as f:
                 f.write("{}\n")
