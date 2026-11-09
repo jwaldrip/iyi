@@ -26,6 +26,7 @@ Tests cover:
   - Rejection of non-canonical module prefixes
 - Ancestor symlink traversal:
   - Rejection of nonexistent leaf beneath symlinked ancestor
+  - Rejection of adversarial symlinked ancestor swap during descriptor acquisition
 - Stage rejection of:
   - Symlinked output directories
   - Non-empty destination directories
@@ -62,6 +63,7 @@ from proof.hosted_inputs import (  # noqa: E402
     compute_zip_h1,
     load_and_validate_lock,
     normalize_rel_path,
+    open_directory_descriptor_safely,
     stage_bundle,
     verify_bundle_tree,
 )
@@ -493,6 +495,17 @@ class TestHostedInputsVerifierAndStager(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             check_path_ancestors_no_symlinks(nonexistent_leaf)
         self.assertIn("Symlinked component detected", str(ctx.exception))
+
+    def test_stage_rejects_adversarial_symlink_ancestor_swap(self) -> None:
+        target_dir = self.tmp_path / "real_swap_target"
+        target_dir.mkdir()
+        link_dir = self.tmp_path / "symlink_swap_ancestor"
+        link_dir.symlink_to(target_dir)
+
+        adversarial_out = link_dir / "sub_leaf"
+        with self.assertRaises(ValueError) as ctx:
+            stage_bundle(self.test_lock_path, adversarial_out, offline=True)
+        self.assertTrue("Symlinked component detected" in str(ctx.exception) or "O_NOFOLLOW" in str(ctx.exception))
 
     def test_stage_rejects_symlink_output_dir(self) -> None:
         real_target = self.tmp_path / "real_stage_target"

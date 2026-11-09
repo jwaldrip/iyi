@@ -4,7 +4,8 @@
 Shared contract:
 - stage: validates pinned sources and full Go proxy closure from official upstreams,
   stages them into a new empty directory, and prints JSON to stdout.
-  Performs descriptor-confined staging with openat/mkdirat/replaceat to prevent TOCTOU escapes.
+  Performs descriptor-confined staging starting from trusted root anchor / using
+  descriptor-relative O_NOFOLLOW traversal (openat/mkdirat/replaceat) to prevent TOCTOU escapes.
 - verify: recomputes and matches authorized pinned inventory, rejecting any
   missing, extra, altered, unreadable, hardlinked, or symlinked inputs.
   Recomputes module h1/mod_h1 matching Go CheckZip and dirhash.HashZip semantics,
@@ -108,8 +109,6 @@ def compute_zip_h1(zip_bytes: bytes, expected_prefix: str | None = None) -> str:
                 seen_folded[fold] = (clean_sub, is_dir)
 
     # Sort files lexicographically matching slices.Sort in Go dirhash.Hash1
-    # Note: dirhash.HashZip appends all entries in z.File (including directories)
-    # and opens each with zipOpen, which returns EOF (0 bytes) for directories.
     h = hashlib.sha256()
     for name in sorted(namelist):
         with zf.open(name) as f:
@@ -181,6 +180,70 @@ def check_path_ancestors_no_symlinks(path: Path) -> None:
         if parent == p:
             break
         p = parent
+
+
+def open_directory_descriptor_safely(path: Path, must_be_empty: bool = True) -> int:
+    """Acquire a directory descriptor starting from trusted root anchor / using O_NOFOLLOW.
+
+    Traverses step-by-step from /, creating missing components only if the parent
+    descriptor is verified to be owned by the current user.
+    Prevents pathname race conditions (TOCTOU) and out-of-tree redirection.
+    """
+    norm_path = os.path.normpath(os.path.abspath(str(path)))
+    parts = [p for p in norm_path.split(os.sep) if p]
+
+    anchor_fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    curr_fd = anchor_fd
+
+    for i, part in enumerate(parts):
+        # Handle macOS system root symlinks (/var -> private/var) securely at root level
+        if i == 0 and sys.platform == "darwin":
+            try:
+                target = os.readlink(part, dir_fd=curr_fd)
+                if part in ("var", "tmp", "etc") and target in (f"private/{part}", f"/private/{part}"):
+                    p1_fd = os.open("private", os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0), dir_fd=curr_fd)
+                    os.close(curr_fd)
+                    p2_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0), dir_fd=p1_fd)
+                    os.close(p1_fd)
+                    curr_fd = p2_fd
+                    continue
+            except OSError:
+                pass
+
+        flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            next_fd = os.open(part, flags, dir_fd=curr_fd)
+        except FileNotFoundError:
+            # Component does not exist. Verify parent descriptor is owned by current user!
+            st_parent = os.fstat(curr_fd)
+            if st_parent.st_uid != os.getuid():
+                os.close(curr_fd)
+                raise PermissionError(f"Cannot create directory component {part!r} in unowned parent: uid {st_parent.st_uid} != {os.getuid()}")
+            os.mkdir(part, 0o755, dir_fd=curr_fd)
+            next_fd = os.open(part, flags, dir_fd=curr_fd)
+        except OSError as e:
+            os.close(curr_fd)
+            raise ValueError(f"Failed opening path component {part!r} with O_NOFOLLOW: {e}") from e
+
+        os.close(curr_fd)
+        curr_fd = next_fd
+
+    st_final = os.fstat(curr_fd)
+    if not stat.S_ISDIR(st_final.st_mode):
+        os.close(curr_fd)
+        raise ValueError(f"Path is not a directory: {path}")
+
+    if st_final.st_uid != os.getuid():
+        os.close(curr_fd)
+        raise PermissionError(f"Output directory not owned by current user: {path} (uid {st_final.st_uid} != {os.getuid()})")
+
+    if must_be_empty:
+        existing = os.listdir(curr_fd)
+        if existing:
+            os.close(curr_fd)
+            raise ValueError(f"Output directory exists and is not empty ({len(existing)} entries): {path}")
+
+    return curr_fd
 
 
 # -----------------------------------------------------------------------------
@@ -266,7 +329,6 @@ def verify_bundle_tree(input_dir: Path, lock_data: Dict[str, Any], lock_sha256: 
     - Module h1 / mod_h1 checksum mismatches
     - Inventory SHA-256 mismatch
     """
-    # Reject symlinks on input_dir BEFORE resolution
     if input_dir.is_symlink():
         raise ValueError(f"Input path cannot be a symlink: {input_dir}")
     check_path_ancestors_no_symlinks(input_dir)
@@ -450,38 +512,19 @@ def stage_bundle(
 ) -> Dict[str, Any]:
     """Stage all locked files into output directory and verify the result.
 
-    Employs descriptor-confined traversal and writes (dir_fd with O_NOFOLLOW)
+    Acquires root descriptor from / using descriptor-relative O_NOFOLLOW traversal,
+    and performs all child operations strictly descriptor-relative (dir_fd with O_NOFOLLOW)
     to prevent pathname races or out-of-tree redirection.
     """
-    # Symlink checks on output_dir and all ancestors BEFORE resolution
-    if output_dir.is_symlink():
-        raise ValueError(f"Output path cannot be a symlink: {output_dir}")
     check_path_ancestors_no_symlinks(output_dir)
 
     lock_data, lock_sha256 = load_and_validate_lock(lock_path)
-
-    if output_dir.exists():
-        if not output_dir.is_dir():
-            raise ValueError(f"Output path exists and is not a directory: {output_dir}")
-        existing_entries = os.listdir(output_dir)
-        if existing_entries:
-            raise ValueError(
-                f"Output directory exists and is not empty ({len(existing_entries)} entries): {output_dir}"
-            )
-    else:
-        output_dir.mkdir(parents=True, mode=0o755)
-
-    abs_output = output_dir.resolve()
-    # Ensure current user owns output directory
-    st_out = os.stat(abs_output)
-    if st_out.st_uid != os.getuid():
-        raise ValueError(f"Output directory not owned by current user (uid {st_out.st_uid} != {os.getuid()}): {abs_output}")
-
     files_to_stage = lock_data["files"]
-    print(f"Staging {len(files_to_stage)} files into {abs_output}...", file=sys.stderr)
 
-    # Open root directory descriptor for descriptor-relative confinement
-    root_fd = os.open(str(abs_output), os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
+    # Securely acquire directory descriptor starting from / with O_NOFOLLOW
+    root_fd = open_directory_descriptor_safely(output_dir, must_be_empty=True)
+    abs_output = output_dir.resolve()
+    print(f"Staging {len(files_to_stage)} files into {abs_output} (descriptor-confined)...", file=sys.stderr)
 
     try:
         for rel_path in sorted(files_to_stage.keys()):
