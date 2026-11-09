@@ -327,6 +327,16 @@ jobs:
         run: |
           docker build -t ghcr.io/jwaldrip/iyi-proof-linux:latest -f proof/hosted-linux.Dockerfile .
 
+      - name: Run container preflight boundary checks (strict-chain)
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'strict-chain' }}
+        run: |
+          python3 -B proof/hosted_linux.py preflight \
+            --image ghcr.io/jwaldrip/iyi-proof-linux:latest \
+            --p "${{ steps.checkout-trees.outputs.p_dir }}" \
+            --w "${{ steps.checkout-trees.outputs.w_dir }}" \
+            --inputs-dir "${{ steps.stage-inputs.outputs.staged_inputs_dir }}" \
+            --temp-dir "$RUNNER_TEMP"
+
       - name: Launch Hosted Linux Strict Proof Controller (strict-chain)
         if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'strict-chain' }}
         run: |

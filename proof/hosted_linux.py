@@ -52,6 +52,7 @@ import tarfile
 import tempfile
 import threading
 import time
+import uuid
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 # Configuration Constants
@@ -858,227 +859,337 @@ def create_checkpoint_archive(
 # Preflight Boundary Execution
 def run_preflight_controls(
     image: str,
+    p_dir: str,
+    p_build_dir: str,
+    w_dir: str,
+    inputs_dir: str,
+    private_tmp_dir: str,
+    scratch_dir: str,
+    home_proof_dir: str,
     runner_temp_dir: Optional[str] = None,
+    control_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Execute Plan Section 3E preflight boundary controls:
-    1. Network isolation & host listener unreachability (ECONNREFUSED)
-    2. Non-loopback connect failure (ENETUNREACH)
-    3. Container loopback IPv4/IPv6 TCP and UDP
-    4. Canary file and env isolation
-    5. Read-only root write failure (EROFS)
-    6. Nonzero UID 65534, GID 65534, NoNewPrivs, empty capabilities
-    7. /private/tmp literal resolution and hardlink probe
-    8. /dev/shm separate device
-    9. Host x86_64, Linux, FMA flag
-    10. Exact container teardown and sentinel survival
-    11. Tool feature qualification inside container
+    Execute Plan Section 3E preflight boundary controls reusing reviewed 8ef isolation:
+    1. Positive controls on host listeners and host canaries.
+    2. Negative confinement controls on EXACT container mounts:
+       - Host listener unreachability (ECONNREFUSED)
+       - Non-loopback connect failure (ENETUNREACH)
+       - Container-local loopback IPv4/IPv6 TCP and UDP
+       - Canary secret and host environment isolation
+       - Read-only root and sealed inputs write failure (EROFS)
+       - Nonzero UID 65534, GID 65534, NoNewPrivs, empty capabilities (fail-closed)
+       - /private/tmp literal resolution and hardlink probe
+       - /dev/shm separate device
+       - Host x86_64, Linux, FMA flag (fail-closed)
+    3. Exact container teardown and sentinel survival (tracking host PIDs via /proc and birth identity).
     """
     results: Dict[str, Any] = {}
     temp_dir = runner_temp_dir or tempfile.gettempdir()
 
-    # Create host secret canary
-    canary_dir = os.path.join(temp_dir, f"canary-{secrets.token_hex(4)}")
-    os.makedirs(canary_dir, exist_ok=True)
-    canary_file = os.path.join(canary_dir, "fake-secret")
-    pathlib.Path(canary_file).write_text("owned-canary", encoding="utf-8")
+    # Create host secret canary directory and file
+    directory = tempfile.mkdtemp(prefix="iyi-host-isolation-", dir=temp_dir)
+    secret = pathlib.Path(directory) / "fake-secret"
+    secret.write_text("owned-canary", encoding="utf-8")
+    os.chmod(directory, 0o755)
+    os.chmod(secret, 0o644)
 
-    # Start host listeners for positive and negative controls
+    # Bind host IPv4 and IPv6 listeners; fail closed if either fails
     stop_event = threading.Event()
     listeners: List[Tuple[socket.socket, str, int]] = []
+    accepted: List[bool] = []
     threads: List[threading.Thread] = []
 
-    for fam, addr in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+    for family, address in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
         try:
-            s = socket.socket(fam, socket.SOCK_STREAM)
-            s.bind((addr, 0))
-            s.listen(1)
-            s.settimeout(0.25)
-            port = s.getsockname()[1]
-            listeners.append((s, addr, port))
-
-            def _listener_loop(sock: socket.socket) -> None:
-                while not stop_event.is_set():
-                    try:
-                        conn, _ = sock.accept()
-                        conn.close()
-                    except (socket.timeout, OSError):
-                        continue
-
-            t = threading.Thread(target=_listener_loop, args=(s,), daemon=True)
-            t.start()
-            threads.append(t)
+            listener = socket.socket(family, socket.SOCK_STREAM)
+            listener.bind((address, 0))
+            listener.listen(1)
+            listener.settimeout(0.25)
+            port = listener.getsockname()[1]
+            listeners.append((listener, address, port))
         except Exception as exc:
-            print(f"Warning: Failed to bind host test listener on {addr}: {exc}")
+            for s, _, _ in listeners:
+                s.close()
+            shutil.rmtree(directory, ignore_errors=True)
+            raise PreflightError(f"Failed to bind host listener on {address}: {exc}") from exc
+
+        def watch(server: socket.socket) -> None:
+            while not stop_event.is_set():
+                try:
+                    conn, _ = server.accept()
+                except socket.timeout:
+                    continue
+                except OSError:
+                    return
+                accepted.append(True)
+                conn.close()
+
+        thread = threading.Thread(target=watch, args=(listener,), daemon=True)
+        thread.start()
+        threads.append(thread)
+
+    if len(listeners) != 2:
+        stop_event.set()
+        for s, _, _ in listeners:
+            s.close()
+        shutil.rmtree(directory, ignore_errors=True)
+        raise PreflightError(f"Expected 2 host listeners (IPv4 and IPv6), got {len(listeners)}")
+
+    host4_port = listeners[0][2]
+    host6_port = listeners[1][2]
+    if host4_port <= 0 or host6_port <= 0:
+        stop_event.set()
+        for s, _, _ in listeners:
+            s.close()
+        shutil.rmtree(directory, ignore_errors=True)
+        raise PreflightError(f"Invalid listener port allocation: IPv4={host4_port}, IPv6={host6_port}")
 
     try:
-        # 1. Positive control: Host connects to its own listeners
-        for _, addr, port in listeners:
-            with socket.create_connection((addr, port), timeout=3.0) as conn:
-                pass
+        # Step 1: Positive controls from 8ef
+        for _, address, port in listeners:
+            accepted.clear()
+            control = [
+                "docker", "run", "--rm", "--network", "host", "--user", CONTAINER_USER,
+                image, "python3", "-I", "-c",
+                "import socket,sys; s=socket.create_connection((sys.argv[1],int(sys.argv[2])),3); s.close()",
+                address, str(port)
+            ]
+            subprocess.run(control, check=True, timeout=30)
+            deadline = time.monotonic() + 5
+            while not accepted and time.monotonic() < deadline:
+                time.sleep(0.05)
+            if not accepted:
+                raise PreflightError(f"Host-network positive control did not reach {address}:{port}")
+
         results["host_positive_listener_control"] = "PASS"
 
-        # 2. Container preflight probes
-        probe_code = r'''
-import errno, os, pathlib, platform, socket, stat, subprocess, sys
+        accepted.clear()
+        control_mount = [
+            "docker", "run", "--rm", "--network", "none", "--user", CONTAINER_USER,
+            "--mount", f"type=bind,src={directory},dst={directory},readonly",
+            image, "python3", "-I", "-c",
+            'import pathlib,sys; assert pathlib.Path(sys.argv[1]).read_text() == "owned-canary"',
+            str(secret)
+        ]
+        subprocess.run(control_mount, check=True, timeout=30)
 
-secret_file, host4, host6 = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+        control_write = [
+            "docker", "run", "--rm", "--network", "none", "--user", CONTAINER_USER,
+            "--tmpfs", "/var/tmp:rw,nosuid,nodev,size=16m,mode=1777",
+            image, "python3", "-I", "-c",
+            'import pathlib; pathlib.Path("/var/tmp/iyi-boundary-canary").write_text("writable-control")'
+        ]
+        subprocess.run(control_write, check=True, timeout=30)
+        results["host_positive_canary_controls"] = "PASS"
 
-# Check canary secrets
-assert not os.path.exists(secret_file), "Leaked host canary secret file"
-assert "IYI_CANARY_SECRET" not in os.environ, "Leaked host canary environment variable"
-assert not os.path.exists("/var/run/docker.sock"), "Leaked Docker socket"
+        # Step 2: Negative confinement probes on EXACT final mounts
+        mount_bindings = build_mount_bindings(
+            p_dir=p_dir,
+            p_build_dir=p_build_dir,
+            w_dir=w_dir,
+            inputs_dir=inputs_dir,
+            private_tmp_dir=private_tmp_dir,
+            scratch_dir=scratch_dir,
+            home_proof_dir=home_proof_dir,
+            phase="proof",
+            control_dir=control_dir,
+        )
+        mount_args = [mb.to_docker_mount_arg() for mb in mount_bindings]
 
-# Check UID and privileges
-uid = os.getuid()
-gid = os.getgid()
-assert uid == 65534, f"UID not 65534: {uid}"
-assert gid == 65534, f"GID not 65534: {gid}"
-
-try:
-    status = pathlib.Path("/proc/self/status").read_text()
-    for line in status.splitlines():
-        if line.startswith("NoNewPrivs:"):
-            assert line.split()[1] == "1", "NoNewPrivs not active"
-        elif line.startswith("CapEff:"):
-            assert line.split()[1] == "0000000000000000", f"CapEff not empty: {line}"
-except FileNotFoundError:
-    pass
-
-# Check read-only root
-try:
-    pathlib.Path("/test_ro_canary").write_text("fail")
-    raise AssertionError("Root filesystem unexpectedly writable")
-except OSError as err:
-    assert err.errno == errno.EROFS, f"Expected EROFS, got {err}"
-
-# Check report filesystem hardlinks and paths
-assert not os.path.islink("/private/tmp"), "/private/tmp must be a real path, not a symlink"
-hl_src = "/private/tmp/hl_test"
-hl_dst = "/private/tmp/hl_test_link"
-pathlib.Path(hl_src).write_text("data")
-os.link(hl_src, hl_dst)
-assert os.stat(hl_src).st_nlink == 2, "Hardlink count did not increase on /private/tmp"
-os.unlink(hl_src)
-os.unlink(hl_dst)
-
-# Check distinct /dev/shm
-assert os.stat("/dev/shm").st_dev != os.stat("/private/tmp").st_dev, "/dev/shm must be a distinct filesystem"
-
-# Check container loopback
-for fam, addr in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
-    srv = socket.socket(fam, socket.SOCK_STREAM)
-    srv.bind((addr, 0))
-    srv.listen(1)
-    cli = socket.socket(fam, socket.SOCK_STREAM)
-    cli.connect((addr, srv.getsockname()[1]))
-    peer, _ = srv.accept()
-    cli.sendall(b"loopback-ok")
-    assert peer.recv(32) == b"loopback-ok"
-    peer.close(); cli.close(); srv.close()
-
-# Check non-loopback connect fails with ENETUNREACH
-for fam, target in ((socket.AF_INET, ("192.0.2.1", 9)), (socket.AF_INET6, ("2001:db8::1", 9))):
-    s = socket.socket(fam, socket.SOCK_STREAM)
-    s.settimeout(2.0)
-    try:
-        s.connect(target)
-        raise AssertionError(f"Non-loopback connection to {target} unexpectedly succeeded")
-    except OSError as err:
-        assert err.errno == errno.ENETUNREACH, f"Expected ENETUNREACH, got {err}"
-    finally:
-        s.close()
-
-# Check host listeners fail with ECONNREFUSED
-for fam, addr, p in ((socket.AF_INET, "127.0.0.1", host4), (socket.AF_INET6, "::1", host6)):
-    if p > 0:
-        s = socket.socket(fam, socket.SOCK_STREAM)
-        s.settimeout(2.0)
-        try:
-            s.connect((addr, p))
-            raise AssertionError(f"Host listener on {addr}:{p} was reachable from container")
-        except OSError as err:
-            assert err.errno == errno.ECONNREFUSED, f"Expected ECONNREFUSED, got {err}"
-        finally:
-            s.close()
-
-# Check CPU & FMA flag
-assert platform.machine() == "x86_64", f"Machine not x86_64: {platform.machine()}"
-try:
-    cpuinfo = pathlib.Path("/proc/cpuinfo").read_text()
-    assert "fma" in cpuinfo, "FMA feature missing from /proc/cpuinfo flags"
-except FileNotFoundError:
-    pass
-
-print("CONTAINER-PREFLIGHT-OK")
-'''
-        h4 = listeners[0][2] if len(listeners) > 0 else 0
-        h6 = listeners[1][2] if len(listeners) > 1 else 0
-
-        cont_cmd = [
-            "docker", "run", "--rm",
+        docker_probe_cmd = [
+            "docker", "run", "--rm", "-i",
             "--network", "none",
             "--read-only",
             "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges",
+            "--pids-limit", "128",
             "--user", CONTAINER_USER,
-            "--tmpfs", "/private/tmp:rw,size=64m,mode=1777",
-            "--tmpfs", "/dev/shm:rw,size=64m,mode=1777",
-            "--env", "IYI_CANARY_SECRET=canary_val",
-            image,
-            "python3", "-I", "-c", probe_code,
-            canary_file, str(h4), str(h6),
+            "--init",
+        ] + mount_args + [
+            "--env", "HOME=/home/proof",
+            "--env", "PATH=/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin",
+            image, "python3", "-I", "-"
         ]
 
-        probe_proc = subprocess.run(cont_cmd, capture_output=True, text=True, timeout=60, check=False)
-        if probe_proc.returncode != 0:
-            raise PreflightError(f"Container preflight probe failed: {probe_proc.stderr}")
+        child_probe_script = r'''
+import errno, os, pathlib, platform, socket, stat, sys
+
+secret, host4, host6 = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+assert host4 > 0 and host6 > 0, f"Invalid host ports: {host4}, {host6}"
+
+# Caller secret & env isolation
+assert not os.path.exists(secret), "host fake secret leaked into container"
+assert not os.path.exists("/var/run/docker.sock"), "Docker socket leaked into container"
+assert "IYI_CANARY_SECRET" not in os.environ, "host environment leaked into container"
+
+# UID & privileges
+uid, gid = os.getuid(), os.getgid()
+assert uid == 65534, f"UID not 65534: {uid}"
+assert gid == 65534, f"GID not 65534: {gid}"
+
+status_lines = pathlib.Path("/proc/self/status").read_text().splitlines()
+status_map = dict(line.split(":", 1) for line in status_lines if ":" in line)
+assert status_map.get("NoNewPrivs", "").strip() == "1", "NoNewPrivs not active"
+assert status_map.get("CapEff", "").strip() == "0000000000000000", f"CapEff not empty: {status_map.get('CapEff')}"
+assert status_map.get("CapBnd", "").strip() == "0000000000000000", f"CapBnd not empty: {status_map.get('CapBnd')}"
+
+# Read-only root and sealed inputs
+for ro_path in ("/", "/P", "/W", "/inputs", "/P/.build"):
+    try:
+        pathlib.Path(ro_path, "iyi-canary-test-write").write_text("unexpected")
+        raise AssertionError(f"read-only path {ro_path} accepted write")
+    except OSError as error:
+        assert error.errno == errno.EROFS, f"Expected EROFS on {ro_path}, got {error}"
+
+# Writable mounts check
+for rw_path in ("/private/tmp", "/scratch", "/home/proof", "/tmp", "/dev/shm"):
+    test_file = pathlib.Path(rw_path, "iyi-canary-test-rw")
+    test_file.write_text("ok")
+    test_file.unlink()
+
+# Literal report path & hardlinks
+assert not os.path.islink("/private/tmp"), "/private/tmp must be a real path, not a symlink"
+hl_src = pathlib.Path("/private/tmp/hl_canary_src")
+hl_dst = pathlib.Path("/private/tmp/hl_canary_dst")
+hl_src.write_text("hl-data")
+os.link(str(hl_src), str(hl_dst))
+assert hl_src.stat().st_nlink == 2, "Hardlink count did not increase on /private/tmp"
+hl_src.unlink()
+hl_dst.unlink()
+
+assert os.stat("/dev/shm").st_dev != os.stat("/private/tmp").st_dev, "/dev/shm must be a distinct filesystem"
+
+# CPU & OS flags (fail-closed if missing)
+assert platform.machine() == "x86_64", f"Architecture not x86_64: {platform.machine()}"
+assert platform.system() == "Linux", f"OS not Linux: {platform.system()}"
+cpuinfo = pathlib.Path("/proc/cpuinfo").read_text()
+assert "fma" in cpuinfo, "FMA flag missing from /proc/cpuinfo"
+
+# Container local loopback
+for family, address in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+    server = socket.socket(family)
+    server.bind((address, 0))
+    server.listen(1)
+    client = socket.socket(family)
+    client.settimeout(3)
+    client.connect((address, server.getsockname()[1]))
+    peer, _ = server.accept()
+    client.sendall(b"owned-loopback")
+    assert peer.recv(32) == b"owned-loopback"
+    peer.close(); client.close(); server.close()
+
+# Non-loopback connect fails with ENETUNREACH
+for family, address in ((socket.AF_INET, ("192.0.2.1", 9)),
+                        (socket.AF_INET6, ("2001:db8::1", 9))):
+    peer = socket.socket(family)
+    peer.settimeout(3)
+    try:
+        peer.connect(address)
+        raise AssertionError("non-loopback route unexpectedly available")
+    except OSError as error:
+        assert error.errno == errno.ENETUNREACH, f"Expected ENETUNREACH on {address}, got {error}"
+    finally:
+        peer.close()
+
+# Host listeners fail with ECONNREFUSED
+for family, address, p in ((socket.AF_INET, "127.0.0.1", host4),
+                           (socket.AF_INET6, "::1", host6)):
+    peer = socket.socket(family)
+    peer.settimeout(3)
+    try:
+        peer.connect((address, p))
+        raise AssertionError(f"host loopback endpoint on {address}:{p} was reachable")
+    except OSError as error:
+        assert error.errno == errno.ECONNREFUSED, f"Expected ECONNREFUSED on {address}:{p}, got {error}"
+    finally:
+        peer.close()
+
+print("preflight boundary check: PASS")
+'''
+        # Host environment canary is set on the host process, NOT passed to docker via --env
+        host_env = dict(os.environ, IYI_CANARY_SECRET="owned-canary")
+        probe_res = subprocess.run(
+            docker_probe_cmd + [str(secret), str(host4_port), str(host6_port)],
+            input=child_probe_script,
+            text=True,
+            env=host_env,
+            capture_output=True,
+            timeout=120,
+            check=False,
+        )
+        if probe_res.returncode != 0:
+            raise PreflightError(f"Container preflight probe failed with code {probe_res.returncode}:\n{probe_res.stderr}\n{probe_res.stdout}")
         results["container_confinement_probe"] = "PASS"
 
-        # 3. Teardown sentinel proof
-        sentinel_name = f"iyi-sentinel-{secrets.token_hex(4)}"
-        workload_name = f"iyi-workload-{secrets.token_hex(4)}"
-
-        # Start sentinel
-        subprocess.run([
-            "docker", "run", "-d", "--name", sentinel_name, "--network", "none",
-            "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-            "--user", CONTAINER_USER, image, "python3", "-c", "import time; time.sleep(120)"
-        ], check=True, capture_output=True)
-
+        # Step 3: Exact-container teardown and sentinel survival (exact 8ef implementation)
+        ids = []
         try:
-            # Start workload with detached child
-            workload_script = (
-                "import os, pathlib, time\n"
-                "p = os.fork()\n"
-                "if p == 0:\n"
-                "    os.setsid()\n"
-                "    pathlib.Path('/tmp/ready').write_text(str(os.getpid()))\n"
-                "    time.sleep(120)\n"
-                "time.sleep(120)\n"
-            )
-            subprocess.run([
-                "docker", "run", "-d", "--name", workload_name, "--network", "none",
-                "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-                "--user", CONTAINER_USER, "--tmpfs", "/tmp:rw,size=16m,mode=1777",
-                image, "python3", "-c", workload_script
-            ], check=True, capture_output=True)
+            for label, child in (
+                ("sentinel", "import time; time.sleep(120)"),
+                ("workload", "import os,time,pathlib\np=os.fork()\nif p == 0:\n os.setsid()\n pathlib.Path('/tmp/ready').write_text(str(os.getpid()) + ':' + str(os.getsid(0)))\ntime.sleep(120)"),
+            ):
+                name = f"iyi-isolation-{label}-{uuid.uuid4().hex}"
+                cmd = [
+                    "docker", "run", "-d", "--name", name, "--init", "--network", "none",
+                    "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+                    "--pids-limit", "32", "--user", CONTAINER_USER,
+                    "--tmpfs", "/tmp:rw,nosuid,nodev,size=16m,mode=1777",
+                    image, "python3", "-c", child
+                ]
+                cid = subprocess.check_output(cmd, text=True).strip()
+                ids.append(cid)
 
-            # Wait for ready file
-            time.sleep(1.0)
-            # Stop workload
-            subprocess.run(["docker", "stop", "--time", "1", workload_name], check=True, capture_output=True)
+            sentinel, workload = ids
+            ready_script = 'import pathlib,time; p=pathlib.Path("/tmp/ready"); d=time.monotonic()+10\nwhile not p.exists():\n if time.monotonic()>d: raise SystemExit("child did not become ready")\n time.sleep(.05)\nprint(p.read_text())'
+            ready = subprocess.check_output(["docker", "exec", workload, "python3", "-I", "-c", ready_script], text=True).strip()
+            ns_pid, ns_session = ready.split(":")
+            if not ns_pid.isdigit() or ns_pid != ns_session:
+                raise PreflightError(f"Detached child did not establish its own session: {ready}")
 
-            # Verify sentinel is still running
-            inspect_out = subprocess.check_output(
-                ["docker", "inspect", "-f", "{{.State.Running}}", sentinel_name], text=True
-            ).strip()
-            if inspect_out != "true":
-                raise PreflightError("Sentinel container stopped prematurely during workload teardown")
+            top = subprocess.check_output(["docker", "top", workload, "-eo", "pid,ppid,args"], text=True)
+            def identity(pid: str) -> Optional[str]:
+                try:
+                    return pathlib.Path("/proc", pid, "stat").read_text().rsplit(")", 1)[1].split()[19]
+                except FileNotFoundError:
+                    return None
+
+            members = [row.split(None, 2)[0] for row in top.splitlines()[1:]]
+            matches = []
+            for pid in members:
+                try:
+                    status = pathlib.Path("/proc", pid, "status").read_text().splitlines()
+                except FileNotFoundError:
+                    continue
+                nsids = [line.split()[1:] for line in status if line.startswith("NSpid:")]
+                if nsids and nsids[0][-1] == ns_pid:
+                    matches.append(pid)
+
+            if len(matches) != 1:
+                raise PreflightError(f"Could not bind detached child to one host PID: {matches!r}")
+
+            births = {matches[0]: identity(matches[0])}
+            if any(val is None for val in births.values()):
+                raise PreflightError("Could not record detached child birth identity")
+
+            subprocess.run(["docker", "stop", "--time", "1", workload], check=True)
+            deadline = time.monotonic() + 10
+            while any(identity(pid) == birth for pid, birth in births.items()):
+                if time.monotonic() >= deadline:
+                    raise PreflightError("A workload process survived container stop")
+                time.sleep(0.05)
+
+            states = subprocess.check_output(["docker", "inspect", "-f", "{{.State.Running}}", workload, sentinel], text=True).splitlines()
+            if states != ["false", "true"]:
+                raise PreflightError(f"Workload did not stop or unrelated sentinel stopped: {states!r}")
+
             results["exact_teardown_sentinel_survival"] = "PASS"
         finally:
-            subprocess.run(["docker", "rm", "-f", sentinel_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            subprocess.run(["docker", "rm", "-f", workload_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            for cid in ids:
+                subprocess.run(["docker", "rm", "-f", cid], check=True, stdout=subprocess.DEVNULL)
+                remaining = subprocess.run(["docker", "inspect", cid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if remaining.returncode == 0:
+                    raise PreflightError(f"Owned container still exists after removal: {cid}")
 
     finally:
         stop_event.set()
@@ -1086,10 +1197,9 @@ print("CONTAINER-PREFLIGHT-OK")
             t.join(timeout=1.0)
         for s, _, _ in listeners:
             s.close()
-        shutil.rmtree(canary_dir, ignore_errors=True)
+        shutil.rmtree(directory, ignore_errors=True)
 
     return results
-
 
 # Sequential Lifecycle Controller
 class SequentialLifecycleController:
@@ -1649,11 +1759,30 @@ def cmd_verify_auth(args: argparse.Namespace) -> int:
 
 
 def cmd_preflight(args: argparse.Namespace) -> int:
-    """Execute preflight container boundary and qualification checks."""
+    """Execute preflight container boundary and qualification checks on exact mounts."""
+    temp_dir = args.temp_dir or tempfile.gettempdir()
+    p_dir = args.p or os.path.join(temp_dir, "p-preflight")
+    w_dir = args.w or os.path.join(temp_dir, "w-preflight")
+    inputs_dir = args.inputs_dir or os.path.join(temp_dir, "inputs-preflight")
+    p_build_dir = os.path.join(temp_dir, "p-build")
+    private_tmp_dir = os.path.join(temp_dir, "private-tmp")
+    scratch_dir = os.path.join(temp_dir, "scratch")
+    home_proof_dir = os.path.join(temp_dir, "home-proof")
+
+    for d in (p_dir, w_dir, inputs_dir, p_build_dir, private_tmp_dir, scratch_dir, home_proof_dir):
+        os.makedirs(d, exist_ok=True)
+
     try:
         results = run_preflight_controls(
             image=args.image,
-            runner_temp_dir=args.temp_dir,
+            p_dir=p_dir,
+            p_build_dir=p_build_dir,
+            w_dir=w_dir,
+            inputs_dir=inputs_dir,
+            private_tmp_dir=private_tmp_dir,
+            scratch_dir=scratch_dir,
+            home_proof_dir=home_proof_dir,
+            runner_temp_dir=temp_dir,
         )
         print("Preflight boundary verification PASSED:")
         for check, outcome in results.items():
@@ -1737,6 +1866,9 @@ def build_parser() -> argparse.ArgumentParser:
     # Preflight
     p_pref = subparsers.add_parser("preflight", help="Run container preflight checks")
     p_pref.add_argument("--image", required=True, help="Container image")
+    p_pref.add_argument("--p", help="P source directory")
+    p_pref.add_argument("--w", help="W proof directory")
+    p_pref.add_argument("--inputs-dir", help="Staged inputs directory")
     p_pref.add_argument("--temp-dir", help="Temporary directory for runner")
     p_pref.set_defaults(func=cmd_preflight)
 
