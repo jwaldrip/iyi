@@ -1,171 +1,163 @@
 #!/usr/bin/env python3
-"""Offline controls for candidate consistency and the unavailable custody gate."""
-
+"""Offline producer-contract controls; no BPF, privileges or network."""
 import contextlib
 import copy
+import hashlib
 import io
 import json
+import os
 import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from proof import check_bpf_probe_evidence as check
 
 
-def encoded(value):
-    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+def encode(value):
+    return json.dumps(value, sort_keys=True).encode()
 
 
-def subject():
-    return {"repository": "example/iyi", "workflow": ".github/workflows/canary.yml",
-            "run_id": 123, "attempt": 1, "artifact_id": 456,
-            "recipe_sha": "a" * 40, "source_sha": "b" * 40}
-
-
-def fixture():
-    vlog, rlog = b"processed 10 insns\n", b"CO-RE relocation\n"
-    report = {
-        "status": "PROBE_SUCCESS", "strict_eligible": False, "exec_identity_tested": False,
-        "bpf_load_supported": True, "bpf_attach_supported": True, "hook_identity_verified": True,
-        "link_association_verified": True, "fd_ownership_lifecycle": "detached_and_closed_before_report",
-        "observed_kernel_prog": {"prog_type": 26, "prog_id": 7, "attach_btf_id": 9},
-        "observed_kernel_link": {"link_type": 1, "link_prog_id": 7, "link_tp_name": "sched_process_exec",
-                                 "target_hook_name": "btf_trace_sched_process_exec", "target_hook_kind": "BTF_KIND_TYPEDEF"},
-        "capabilities": {"cap_bpf": True, "cap_perfmon": True, "cap_sys_admin": False, "all_other_caps_clear": True},
-        "process_identity": {"uid": 1000, "gid": 1000}, "memlock": {"automatic_rlim_disabled": True},
-        "verifier_evidence": {"log_valid": True, "log_bytes": len(vlog)},
-        "relocation_evidence": {"core_relocation_retained": True, "libbpf_debug_log_bytes": len(rlog)},
-    }
-    files = {"bpf_canary_host": b"helper", "bpf_canary.bpf.o": b"object", "dependency-receipt.json": b"{}",
-             "loader": b"loader", "report.json": encoded(report), "verifier.log": vlog, "relocation.log": rlog,
-             "terminal.json": encoded({"exit_code": 0, "completed": True, "teardown_complete": True, "interrupted": False})}
-    return files
-
-
-def make_bundle(files, build_subject=None, runtime_subject=None, entries=None):
-    s = subject()
-    build = {"schema": "iyi-bpf-canary-build-v1", "subject": build_subject or s,
-             "files": {name: check.digest(files[name]) for name in check.BUILD_FILES}}
-    build_bytes = encoded(build)
-    runtime = {"schema": "iyi-bpf-canary-runtime-v1", "subject": runtime_subject or s,
-               "build_manifest_sha256": check.digest(build_bytes),
-               "files": {name: check.digest(files[name]) for name in check.RUNTIME_FILES}}
-    runtime_bytes = encoded(runtime)
-    members = {**files, "build-manifest.json": build_bytes, "runtime-manifest.json": runtime_bytes}
-    archive = pack(entries if entries is not None else [(name, content, tarfile.REGTYPE) for name, content in members.items()])
-    expected = {**s, "archive_sha256": check.digest(archive), "build_manifest_sha256": check.digest(build_bytes),
-                "runtime_manifest_sha256": check.digest(runtime_bytes)}
-    return archive, expected, members
-
-
-def pack(entries):
-    out = io.BytesIO()
-    with tarfile.open(fileobj=out, mode="w", format=tarfile.USTAR_FORMAT) as tar:
-        for name, data, kind in entries:
-            item = tarfile.TarInfo(name)
-            item.type = kind
+def pack(members):
+    output = io.BytesIO()
+    with tarfile.open(fileobj=output, mode="w", format=tarfile.USTAR_FORMAT) as archive:
+        for name, data, kind in members:
+            entry = tarfile.TarInfo(name)
+            entry.type = kind
             if kind == tarfile.REGTYPE:
-                item.size = len(data)
-                tar.addfile(item, io.BytesIO(data))
+                entry.size = len(data)
+                archive.addfile(entry, io.BytesIO(data))
             else:
-                item.linkname = "bpf_canary_host"
-                tar.addfile(item)
-    return out.getvalue()
+                entry.linkname = check.OWNED + "bpf_canary_host"
+                archive.addfile(entry)
+    return output.getvalue()
+
+
+def producer_fixture(root):
+    """Execute the producer's manifest-assembly block against local fixture inputs.
+
+    This is not a Linux build or a runtime observation. The block comes from the
+    current script rather than a second, hand-maintained manifest implementation.
+    """
+    script = (Path(__file__).parent / "run_bpf_feasibility.sh").read_text()
+    start = script.index('names = ("bpf_canary_host", "bpf_canary.bpf.o"')
+    end = script.index('\nPY\n', start)
+    assembly = script[start:end]
+    owned = root / "owned"
+    staged = owned / "staged-prefix/usr/lib/x86_64-linux-gnu"
+    staged.mkdir(parents=True)
+    loader = b"separately collected loader bytes"
+    src = {"schema": "iyi-bpf-canary-source-v1", "recipe_sha": "a" * 40,
+           "repository": "example/iyi", "workflow_path": ".github/workflows/pr147-bpf-feasibility.yml",
+           "workflow_ref": "example/iyi/.github/workflows/pr147-bpf-feasibility.yml@refs/heads/main",
+           "source_sha256": {"proof/bpf_canary_host.c": "b" * 64}}
+    for name in check.ARTIFACTS:
+        (owned / name).write_bytes((name + " fixture bytes").encode())
+    for name in check.ARCHIVES:
+        (staged / name).write_bytes((name + " fixture archive").encode())
+    (owned / "canary-source.json").write_bytes(encode(src))
+    flags = {"strict_eligible": False, "exec_identity_tested": False, "load_attempted": False, "attach_attempted": False}
+    record = {"schema": "iyi-bpf-build-record-v1", **flags, "source": src, "source_checkout_sha": src["recipe_sha"],
+              "github_run_id": "123", "github_run_attempt": "1",
+              "outputs": {"host_bin": {"sha256": check.digest((owned / "bpf_canary_host").read_bytes())},
+                          "bpf_obj": {"sha256": check.digest((owned / "bpf_canary.bpf.o").read_bytes())}},
+              "dynamic_dependencies": {"ld_linux": {"path": "/lib64/ld-linux-x86-64.so.2", "sha256": check.digest(loader)}}}
+    (owned / "diagnostic-build-record.json").write_bytes(encode(record))
+    scope = {"owned_dir": owned, "sha256_file": lambda path: hashlib.sha256(Path(path).read_bytes()).hexdigest(),
+             "source": src, "record": record, "os": os, "json": json}
+    with mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}):
+        exec(compile(assembly, "producer-manifest-assembly", "exec"), scope)
+    members = {name: (root / name).read_bytes() for name in check.LIMITS}
+    archive = pack([(n, b, tarfile.REGTYPE) for n, b in members.items()])
+    expected = {"repository": src["repository"], "workflow": src["workflow_path"], "workflow_ref": src["workflow_ref"],
+                "run_id": 123, "attempt": 1, "artifact_id": 456, "recipe_sha": src["recipe_sha"],
+                "source_sha256": src["source_sha256"], "archive_sha256": check.digest(archive),
+                "build_manifest_sha256": check.digest(members[check.MANIFEST]), "loader_sha256": check.digest(loader)}
+    return members, archive, expected, loader
 
 
 class EvidenceControls(unittest.TestCase):
     def setUp(self):
-        self.files = fixture()
-        self.archive, self.expected, self.members = make_bundle(self.files)
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.members, self.archive, self.expected, self.loader = producer_fixture(self.root)
 
-    def reject(self, archive, expected, reason):
+    def reject(self, archive, expected, reason, loader=None):
         with self.assertRaisesRegex(check.EvidenceError, reason):
-            check.validate_candidate(archive, expected)
+            check.validate_candidate(archive, expected, self.loader if loader is None else loader)
 
-    def test_plausible_self_authored_pass_cannot_establish_custody(self):
-        check.validate_candidate(self.archive, self.expected)
-        with tempfile.TemporaryDirectory() as directory:
-            bundle = Path(directory) / "candidate.tar"
-            expectations = Path(directory) / "expectations.json"
-            bundle.write_bytes(self.archive)
-            expectations.write_bytes(encoded(self.expected))
-            output = io.StringIO()
-            with contextlib.redirect_stdout(output):
-                status = check.main(["--archive", str(bundle), "--expectations", str(expectations)])
-            self.assertEqual(status, 2)
-            self.assertEqual(json.loads(output.getvalue())["result"], "CUSTODY_UNAVAILABLE")
+    def test_producer_manifest_reaches_custody_hold_not_success(self):
+        check.validate_candidate(self.archive, self.expected, self.loader)
+        bundle, expectations, loader = (self.root / n for n in ("selected.tar", "expectations.json", "loader"))
+        bundle.write_bytes(self.archive)
+        expectations.write_bytes(encode(self.expected))
+        loader.write_bytes(self.loader)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            status = check.main(["--archive", str(bundle), "--expectations", str(expectations), "--loader", str(loader)])
+        result = json.loads(output.getvalue())
+        self.assertEqual(status, 2)
+        self.assertEqual(result["result"], "CUSTODY_UNAVAILABLE")
+        self.assertIs(result["strict_eligible"], False)
+        self.assertIs(result["exec_identity_tested"], False)
 
-    def test_each_external_subject_is_required(self):
-        for key in check.SUBJECT_KEYS:
+    def test_subjects_and_external_hashes(self):
+        for key, value in (("repository", "other"), ("workflow", "other"), ("workflow_ref", "other"),
+                           ("run_id", 2), ("attempt", 2), ("recipe_sha", "f" * 40),
+                           ("source_sha256", {"other": "f" * 64}), ("archive_sha256", "f" * 64),
+                           ("build_manifest_sha256", "f" * 64), ("loader_sha256", "f" * 64)):
             with self.subTest(key=key):
                 expected = copy.deepcopy(self.expected)
-                expected[key] = (expected[key] + 1 if type(expected[key]) is int else
-                                 ("f" * 40 if key.endswith("sha") else "other"))
-                self.reject(self.archive, expected, "manifest subject mismatch")
+                expected[key] = value
+                self.reject(self.archive, expected, "mismatch|invalid")
+        self.reject(self.archive, self.expected, "loader digest mismatch", loader=b"altered")
 
-    def test_manifest_and_archive_digests_are_external(self):
-        for key in ("archive_sha256", "build_manifest_sha256", "runtime_manifest_sha256"):
-            with self.subTest(key=key):
-                expected = {**self.expected, key: "f" * 64}
-                self.reject(self.archive, expected, "digest mismatch")
+    def test_artifact_id_is_not_proven_by_payload(self):
+        # Different caller-supplied IDs cannot be authenticated by any field in the producer record.
+        other = {**self.expected, "artifact_id": 999}
+        check.validate_candidate(self.archive, other, self.loader)
+        # main always stops at the custody hold, regardless of this unchecked identity.
 
-    def test_each_build_input_and_runtime_output_is_bound(self):
-        for name in check.BUILD_FILES + check.RUNTIME_FILES:
+    def test_each_producer_artifact_and_static_archive_is_bound(self):
+        for name in tuple(check.OWNED + n for n in check.ARTIFACTS) + tuple(check.STAGED + n for n in check.ARCHIVES):
             with self.subTest(name=name):
-                members = {**self.members, name: self.members[name] + b"altered"}
+                suffix = b" " if name.endswith(".json") else b"altered"
+                members = {**self.members, name: self.members[name] + suffix}
                 archive = pack([(n, b, tarfile.REGTYPE) for n, b in members.items()])
-                self.reject(archive, {**self.expected, "archive_sha256": check.digest(archive)}, "digest mismatch")
+                self.reject(archive, {**self.expected, "archive_sha256": check.digest(archive)}, "mismatch")
 
-    def test_traversal_links_duplicate_and_unexpected_are_rejected(self):
-        for name, kind in (("../escape", tarfile.REGTYPE), ("bpf_canary_host", tarfile.SYMTYPE),
-                           ("bpf_canary_host", tarfile.LNKTYPE), ("unknown", tarfile.REGTYPE),
-                           ("bpf_canary_host", tarfile.REGTYPE)):
+    def test_traversal_links_duplicates_and_unknown_members(self):
+        for name, kind in (("../escape", tarfile.REGTYPE), (check.OWNED + "bpf_canary_host", tarfile.SYMTYPE),
+                           (check.OWNED + "bpf_canary_host", tarfile.LNKTYPE), ("unknown", tarfile.REGTYPE),
+                           (check.OWNED + "bpf_canary_host", tarfile.REGTYPE)):
             with self.subTest(name=name, kind=kind):
-                base = [(n, b, tarfile.REGTYPE) for n, b in self.members.items() if n != name]
-                if kind == tarfile.REGTYPE and name == "bpf_canary_host":
-                    base.append((name, b"a", kind))
-                archive = pack(base + [(name, b"x", kind)])
+                entries = [(n, b, tarfile.REGTYPE) for n, b in self.members.items() if n != name]
+                if kind == tarfile.REGTYPE and name in self.members:
+                    entries.append((name, b"a", kind))
+                archive = pack(entries + [(name, b"x", kind)])
                 self.reject(archive, {**self.expected, "archive_sha256": check.digest(archive)},
                             "unexpected archive member|not a regular file|duplicate archive member")
 
-    def test_missing_and_extended_evidence(self):
-        archive = pack([(n, b, tarfile.REGTYPE) for n, b in self.members.items() if n != "terminal.json"])
+    def test_missing_extended_truncated_and_bounds(self):
+        archive = pack([(n, b, tarfile.REGTYPE) for n, b in self.members.items() if n != check.MANIFEST])
         self.reject(archive, {**self.expected, "archive_sha256": check.digest(archive)}, "missing archive member")
-        with tarfile.open(fileobj=io.BytesIO(self.archive), mode="r:") as tar:
-            list(tar)
-            truncated = self.archive[:tar.offset + 512]
-        self.reject(truncated, {**self.expected, "archive_sha256": check.digest(truncated)},
-                    "terminator|invalid|truncated")
-        extended = self.archive + b"untrusted trailing data"
+        extended = self.archive + b"extra"
         self.reject(extended, {**self.expected, "archive_sha256": check.digest(extended)}, "trailing content")
-
-    def test_bounds(self):
+        with tarfile.open(fileobj=io.BytesIO(self.archive), mode="r:") as archive_file:
+            list(archive_file)
+            truncated = self.archive[:archive_file.offset + 512]
+        self.reject(truncated, {**self.expected, "archive_sha256": check.digest(truncated)}, "terminator|invalid|truncated")
         with self.assertRaisesRegex(check.EvidenceError, "size limit"):
             check.read_archive(b"x" * (check.MAX_ARCHIVE + 1))
-        members = {**self.members, "terminal.json": b"x" * (check.LIMITS["terminal.json"] + 1)}
+
+    def test_forged_pass_never_satisfies_build_schema(self):
+        members = {**self.members, check.MANIFEST: b'{"status":"PROBE_SUCCESS","strict_eligible":true}'}
         archive = pack([(n, b, tarfile.REGTYPE) for n, b in members.items()])
-        self.reject(archive, {**self.expected, "archive_sha256": check.digest(archive)}, "size limit")
-
-    def test_terminal_exit_interrupt_and_teardown(self):
-        for change in ({"exit_code": 1}, {"completed": False}, {"interrupted": True}, {"teardown_complete": False}):
-            with self.subTest(change=change):
-                terminal = json.loads(self.files["terminal.json"])
-                terminal.update(change)
-                archive, expected, _ = make_bundle({**self.files, "terminal.json": encoded(terminal)})
-                self.reject(archive, expected, "terminal incomplete")
-
-    def test_no_eligibility_or_identity_promotion(self):
-        for key in ("strict_eligible", "exec_identity_tested"):
-            report = json.loads(self.files["report.json"])
-            report[key] = True
-            archive, expected, _ = make_bundle({**self.files, "report.json": encoded(report)})
-            self.reject(archive, expected, "report eligibility")
-
-    def test_report_and_logs_must_agree(self):
-        for name in ("verifier.log", "relocation.log"):
-            archive, expected, _ = make_bundle({**self.files, name: b"fake log"})
-            self.reject(archive, expected, "report .* log")
+        expected = {**self.expected, "archive_sha256": check.digest(archive),
+                    "build_manifest_sha256": check.digest(members[check.MANIFEST])}
+        self.reject(archive, expected, "build manifest schema")
 
     def test_duplicate_json_keys_rejected(self):
         with self.assertRaisesRegex(check.EvidenceError, "invalid.*JSON"):
