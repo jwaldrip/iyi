@@ -1,119 +1,71 @@
-name: BPF execution hook feasibility diagnostic
+name: PR147 E3 BPF build only
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - 'proof/e3_bpf_*'
+      - 'proof/run_bpf_feasibility.sh'
+      - 'proof/test_bpf_build_script.py'
+      - 'proof/bpf_dependencies*'
+      - 'proof/bpf_baseline_process.py'
+      - 'proof/bpf_runner_baseline.py'
+      - 'proof/bpf_*baseline.json'
+      - '.github/workflows/pr147-e3-bpf-build.yml'
 
 permissions:
   contents: read
 
 jobs:
-  feasibility-diagnostics:
+  e3-build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          repository: jwaldrip/iyi
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
           persist-credentials: false
 
-      - name: Verify runner image version baseline
+      - name: Check reviewed runner image
         run: |
-          EXPECTED_IMAGE_OS="ubuntu24"
-          EXPECTED_IMAGE_VERSION="20261101.360.1"
+          evidence="$RUNNER_TEMP/e3-bpf-evidence"
+          mkdir -m 0700 "$evidence"
+          printf 'ImageOS=%s\nImageVersion=%s\n' "${ImageOS:-}" "${ImageVersion:-}" >"$evidence/image.txt"
+          test "${ImageOS:-}" = ubuntu24
+          test "${ImageVersion:-}" = 20261101.360.1
 
-          actual_os="${ImageOS:-UNKNOWN}"
-          echo "ImageOS: $actual_os"
-          if [ "$actual_os" != "$EXPECTED_IMAGE_OS" ]; then
-            echo "ERROR: Runner ImageOS '$actual_os' does not match reviewed baseline '$EXPECTED_IMAGE_OS'" >&2
-            exit 1
-          fi
-
-          actual_version="${ImageVersion:-}"
-          if [ -z "$actual_version" ] && [ -f /etc/image-id ]; then
-            actual_version="$(cat /etc/image-id)"
-          fi
-          echo "ImageVersion: ${actual_version:-UNKNOWN}"
-
-          if [ "$actual_version" != "$EXPECTED_IMAGE_VERSION" ]; then
-            echo "ERROR: Runner image version '$actual_version' does not match reviewed baseline '$EXPECTED_IMAGE_VERSION'; image rotation requires independent security review" >&2
-            exit 1
-          fi
-          echo "Verified runner image matches reviewed baseline: $actual_version"
-
-      - name: Record diagnostic environment metadata
+      - name: Run offline fixtures and build E3 witness
+        shell: bash
         run: |
-          mkdir -p "$RUNNER_TEMP/kernel-feasibility-diag"
-          python3 - <<'PY'
-          import hashlib, json, os, pathlib, platform
-
-          log_dir = pathlib.Path(os.environ["RUNNER_TEMP"]) / "kernel-feasibility-diag"
-          runner_temp_path = pathlib.Path(os.environ["RUNNER_TEMP"]).resolve()
-
-          mount_info = "UNKNOWN"
-          mount_opts = "UNKNOWN"
-          proc_mounts = pathlib.Path("/proc/mounts")
-          best_match_mount = None
-          best_match_len = -1
-
-          if proc_mounts.exists():
-              for line in proc_mounts.read_text().splitlines():
-                  parts = line.split()
-                  if len(parts) >= 4:
-                      mnt_path = pathlib.Path(parts[1]).resolve()
-                      try:
-                          runner_temp_path.relative_to(mnt_path)
-                          if len(mnt_path.parts) > best_match_len:
-                              best_match_len = len(mnt_path.parts)
-                              best_match_mount = parts
-                      except ValueError:
-                          continue
-
-          if best_match_mount:
-              mount_info = best_match_mount[0] + " on " + best_match_mount[1] + " (" + best_match_mount[2] + ")"
-              mount_opts = best_match_mount[3]
-
-          btf_path = pathlib.Path("/sys/kernel/btf/vmlinux")
-          btf_digest = "UNKNOWN"
-          if btf_path.exists():
-              try:
-                  btf_digest = hashlib.sha256(btf_path.read_bytes()).hexdigest()
-              except Exception:
-                  btf_digest = "UNKNOWN"
-          meta = {
-              "schema": "iyi-kernel-feasibility-v1",
-              "strict_eligible": False,
-              "run_id": os.environ.get("GITHUB_RUN_ID", "UNKNOWN"),
-              "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", "UNKNOWN"),
-              "checkout_sha": os.environ.get("GITHUB_SHA", "UNKNOWN"),
-              "ref": os.environ.get("GITHUB_REF", "UNKNOWN"),
-              "runner_os": os.environ.get("RUNNER_OS", "UNKNOWN"),
-              "runner_image": os.environ.get("ImageOS", "UNKNOWN"),
-              "runner_image_version": os.environ.get("ImageVersion", "UNKNOWN"),
-              "uname": platform.uname()._asdict(),
-              "live_btf_digest": btf_digest,
-              "runner_temp_mount": mount_info,
-              "runner_temp_mount_options": mount_opts,
-          }
-          (log_dir / "diagnostic-metadata.json").write_text(json.dumps(meta, indent=2))
-          print("Recorded diagnostic metadata under schema iyi-kernel-feasibility-v1")
-          PY
-
-      - name: Run BPF feasibility diagnostic via authenticated launcher
-        run: |
-          diag_dir="$RUNNER_TEMP/kernel-feasibility-diag"
-          mkdir -p "$diag_dir"
-          owned_scratch="$diag_dir/owned-artifacts"
-          status_file="$diag_dir/bpf-feasibility.json"
-          bash proof/run_bpf_feasibility.sh \
-            --owned-dir "$owned_scratch" \
-            --status "$status_file" \
-            --verbose
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/e3-bpf-evidence"
+          for suite in test_bpf_dependencies test_bpf_runner_baseline test_bpf_build_script; do
+            if /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C HOME="$HOME" \
+                ImageOS="$ImageOS" ImageVersion="$ImageVersion" \
+                /usr/bin/python3 -B "proof/$suite.py" >"$evidence/$suite.log" 2>&1; then
+              printf '0\n' >"$evidence/$suite.exit"
+            else
+              rc=$?
+              printf '%s\n' "$rc" >"$evidence/$suite.exit"
+              cat "$evidence/$suite.log"
+              exit "$rc"
+            fi
+          done
+          if bash -x proof/run_bpf_feasibility.sh --e3-build-only \
+              --owned-dir "$evidence/owned" >"$evidence/build.log" 2>&1; then
+            printf '0\n' >"$evidence/build.exit"
+          else
+            rc=$?
+            printf '%s\n' "$rc" >"$evidence/build.exit"
+            cat "$evidence/build.log"
+            exit "$rc"
+          fi
+          cat "$evidence/build.log"
 
       - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         if: always()
         with:
-          name: pr147-bpf-feasibility-diagnostic
-          path: |
-            ${{ runner.temp }}/kernel-feasibility-diag/
+          name: pr147-e3-bpf-build-only-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/e3-bpf-evidence/
           if-no-files-found: error
