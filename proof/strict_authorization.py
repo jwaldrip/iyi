@@ -465,8 +465,7 @@ class AuthenticatedGitHubVerifier:
                 "Authentication token is required for GitHub API verification"
             )
 
-        env_base = os.environ.get("_STRICT_AUTH_TEST_API_BASE")
-        candidate_base = _api_base or env_base
+        candidate_base = _api_base
         if candidate_base is None:
             self.base_url = PINNED_API_BASE
         else:

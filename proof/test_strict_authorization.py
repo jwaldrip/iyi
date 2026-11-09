@@ -33,6 +33,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 import urllib.parse
 import zipfile
 from typing import Any, Dict, List, Optional
@@ -945,6 +946,13 @@ class StrictAuthorizationNegativeTests(StrictAuthorizationTestsBase):
         self.assertEqual(code, USAGE_ERROR_EXIT_CODE)
         code = main(["run-native"])
         self.assertEqual(code, USAGE_ERROR_EXIT_CODE)
+
+
+class ProductionAuthorityTests(unittest.TestCase):
+    def test_environment_cannot_select_approval_authority(self) -> None:
+        with patch.dict(os.environ, {"_STRICT_AUTH_TEST_API_BASE": "http://127.0.0.1:12345"}):
+            verifier = AuthenticatedGitHubVerifier(token=VALID_TOKEN)
+        self.assertEqual(verifier.base_url, "https://api.github.com")
 
 
 if __name__ == "__main__":
