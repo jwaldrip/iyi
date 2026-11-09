@@ -11,30 +11,19 @@ on:
           - canary-build
         default: e3-build
         required: true
-  pull_request:
-    paths:
-      - 'proof/e3_bpf_*'
-      - 'proof/run_bpf_feasibility.sh'
-      - 'proof/test_bpf_build_script.py'
-      - 'proof/bpf_dependencies*'
-      - 'proof/bpf_baseline_process.py'
-      - 'proof/bpf_runner_baseline.py'
-      - 'proof/bpf_*baseline.json'
-      - '.github/workflows/pr147-e3-bpf-build.yml'
-      - '.github/workflows/pr147-bpf-feasibility.yml'
 
 permissions:
   contents: read
 
 jobs:
   e3-build:
-    if: github.event_name == 'pull_request' || inputs.profile == 'e3-build'
+    if: inputs.profile == 'e3-build'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
 

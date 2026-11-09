@@ -639,6 +639,13 @@ class TestBpfFeasibilityScript(unittest.TestCase):
         self.assertNotIn("/usr/bin/sudo", text)
         self.assertNotIn("/usr/bin/setpriv", text)
 
+    def test_registered_canary_workflow_is_manual_only(self):
+        workflow = (REPO_ROOT / ".github/workflows/pr147-bpf-feasibility.yml").read_text()
+        triggers = workflow.split("\non:\n", 1)[1].split("\npermissions:\n", 1)[0]
+        events = [line.strip().split(":", 1)[0] for line in triggers.splitlines()
+                  if line.startswith("  ") and not line.startswith("   ") and line.strip()]
+        self.assertEqual(events, ["workflow_dispatch"])
+
 
     def test_help_flag(self) -> None:
         """--help exits 0 with usage instructions."""
