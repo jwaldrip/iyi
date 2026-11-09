@@ -27,11 +27,13 @@ import unittest
 from unittest.mock import patch, MagicMock
 
 from proof.proofkit import (
+    DRIVERS_29,
     IdentityError,
     base_env,
     compute_inputs_bundle_digest,
     inspect_pin_inputs,
     probe_atime_observable,
+    write_pin,
     _process_group_members,
     _validate_census_schema,
     validate_census,
@@ -412,119 +414,51 @@ class TestOfflineInputsBinding(unittest.TestCase):
             self.assertEqual(env.get("IYI_PROOF_INPUTS_DIR"), "/trusted/inputs/dir")
 
     def test_check_identity_fails_on_tampered_inputs_digest(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            manifest_file = os.path.join(tmpdir, "bundle.sha256")
-            payload = os.path.join(tmpdir, "data.txt")
+        from proof.smoke_test import PinFixture
+        with tempfile.TemporaryDirectory(prefix="iyi-inputs-test-") as inputs_dir:
+            payload = os.path.join(inputs_dir, "payload.txt")
             with open(payload, "w") as f:
-                f.write("initial\n")
-            sha = hashlib.sha256(b"initial\n").hexdigest()
-            with open(manifest_file, "w") as f:
-                f.write(f"{sha}  data.txt\n")
-            digest = compute_inputs_bundle_digest(tmpdir)
-            pin = {
-                "report_dir": "/private/tmp/iyp-01234567",
-                "chain_id": "01234567" + "0"*24,
-                "p_path": "/p",
-                "w_path": "/w",
-                "compiler_path": "/c",
-                "compiler_sha256": "sha",
-                "compiler_size": 100,
-                "compiler_mtime_ns": 1000,
-                "compiler_inode": 1,
-                "compiler_version_line": "iyi 0.1.0 [0123456]",
-                "compiler_stamp": "0123456",
-                "canonical_roots": [],
-                "platform_tmp": None,
-                "env_path": "/bin",
-                "env_home": "/home",
-                "python_path": "/bin/python3",
-                "python_version": "3.10",
-                "timeout_path": "/bin/timeout",
-                "timeout_version": "1.0",
-                "nm_path": "/bin/nm",
-                "nm_version": "1.0",
-                "census_sha256": {},
-                "p_source_sha": "0123456",
-                "w_head": "0123456",
-                "inputs_dir": tmpdir,
-                "inputs_digest": digest,
-            }
-            # Tamper the payload file
-            with open(payload, "w") as f:
-                f.write("tampered\n")
+                f.write("clean\n")
+            with PinFixture() as fixture:
+                pin = write_pin(
+                    fixture.report,
+                    fixture.p,
+                    fixture.w,
+                    fixture.compiler,
+                    DRIVERS_29,
+                    inputs_dir=inputs_dir,
+                )
+                # Untampered pin passes check_identity
+                check_identity(pin)
 
-            with patch("proof.proofkit._validated_report_dir"), \
-                 patch("proof.proofkit._require_equal"), \
-                 patch("proof.proofkit.git_rev_parse"), \
-                 patch("proof.proofkit.git_clean"), \
-                 patch("proof.proofkit.git_merge_base_is_ancestor"), \
-                 patch("proof.proofkit.git_diff_name_only"), \
-                 patch("proof.proofkit.git_diff_quiet"), \
-                 patch("os.path.isfile", return_value=True), \
-                 patch("os.access", return_value=True), \
-                 patch("os.stat"), \
-                 patch("proof.proofkit.sha256_file", return_value="sha"), \
-                 patch("proof.proofkit.base_env"), \
-                 patch("proof.proofkit.platform_temp_root"), \
-                 patch("proof.proofkit._first_output_line"), \
-                 patch("proof.proofkit.extract_version_stamp"), \
-                 patch("proof.proofkit._census_shas"), \
-                 patch("proof.proofkit.compute_canonical_roots"), \
-                 patch("shutil.which", return_value="/bin/tool"), \
-                 patch("proof.proofkit._nm_version_line"):
+                # Intentionally mutate payload in real owned inputs directory
+                with open(payload, "w") as f:
+                    f.write("tampered\n")
+
                 with self.assertRaises(IdentityError) as ctx:
                     check_identity(pin)
-                self.assertIn(ctx.exception.reason, ("INPUTS-MANIFEST-MISMATCH", "INPUTS-DIGEST-CHANGED"))
+                self.assertEqual(ctx.exception.reason, "INPUTS-DIGEST-CHANGED")
 
     def test_check_identity_fails_on_missing_inputs_dir(self):
-        missing_dir = "/tmp/does-not-exist-inputs-xyz"
-        pin = {
-            "report_dir": "/private/tmp/iyp-01234567",
-            "chain_id": "01234567" + "0"*24,
-            "p_path": "/p",
-            "w_path": "/w",
-            "compiler_path": "/c",
-            "compiler_sha256": "sha",
-            "compiler_size": 100,
-            "compiler_mtime_ns": 1000,
-            "compiler_inode": 1,
-            "compiler_version_line": "iyi 0.1.0 [0123456]",
-            "compiler_stamp": "0123456",
-            "canonical_roots": [],
-            "platform_tmp": None,
-            "env_path": "/bin",
-            "env_home": "/home",
-            "python_path": "/bin/python3",
-            "python_version": "3.10",
-            "timeout_path": "/bin/timeout",
-            "timeout_version": "1.0",
-            "nm_path": "/bin/nm",
-            "nm_version": "1.0",
-            "census_sha256": {},
-            "p_source_sha": "0123456",
-            "w_head": "0123456",
-            "inputs_dir": missing_dir,
-            "inputs_digest": "0" * 64,
-        }
-        with patch("proof.proofkit._validated_report_dir"), \
-             patch("proof.proofkit._require_equal"), \
-             patch("proof.proofkit.git_rev_parse"), \
-             patch("proof.proofkit.git_clean"), \
-             patch("proof.proofkit.git_merge_base_is_ancestor"), \
-             patch("proof.proofkit.git_diff_name_only"), \
-             patch("proof.proofkit.git_diff_quiet"), \
-             patch("os.path.isfile", return_value=True), \
-             patch("os.access", return_value=True), \
-             patch("os.stat"), \
-             patch("proof.proofkit.sha256_file", return_value="sha"), \
-             patch("proof.proofkit.base_env"), \
-             patch("proof.proofkit.platform_temp_root"), \
-             patch("proof.proofkit._first_output_line"), \
-             patch("proof.proofkit.extract_version_stamp"), \
-             patch("proof.proofkit._census_shas"), \
-             patch("proof.proofkit.compute_canonical_roots"), \
-             patch("shutil.which", return_value="/bin/tool"), \
-             patch("proof.proofkit._nm_version_line"):
+        from proof.smoke_test import PinFixture
+        missing_dir = os.path.join(tempfile.gettempdir(), f"iyi-missing-inputs-{os.urandom(8).hex()}")
+        os.makedirs(missing_dir)
+        with open(os.path.join(missing_dir, "file.txt"), "w") as f:
+            f.write("data\n")
+        with PinFixture() as fixture:
+            pin = write_pin(
+                fixture.report,
+                fixture.p,
+                fixture.w,
+                fixture.compiler,
+                DRIVERS_29,
+                inputs_dir=missing_dir,
+            )
+            check_identity(pin)
+
+            # Remove the directory
+            shutil.rmtree(missing_dir)
+
             with self.assertRaises(IdentityError) as ctx:
                 check_identity(pin)
             self.assertEqual(ctx.exception.reason, "INPUTS-DIR-CHANGED")
