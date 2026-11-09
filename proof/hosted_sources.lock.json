@@ -1,0 +1,364 @@
+{
+  "bundle_description": "Cryptographically authenticated offline test vectors and Pebble v2.10.1 Go module proxy closure for iyi PR147 Linux strict proof",
+  "bundle_root_contract": {
+    "required_entries": [
+      "hpke-vectors.json",
+      "mlkem-keygen.json",
+      "mlkem-encdec.json",
+      "wycheproof-p384.json",
+      "go-proxy"
+    ]
+  },
+  "files": {
+    "go-proxy/github.com/go-jose/go-jose/v4/@v/list": {
+      "sha256": "791f60796a7c2ee8ece263322d731b3b19c7b3e53da0e05cf7d4e72538d9e273",
+      "size": 112,
+      "source_url": "https://proxy.golang.org/github.com/go-jose/go-jose/v4/@v/list"
+    },
+    "go-proxy/github.com/go-jose/go-jose/v4/@v/v4.1.4.info": {
+      "sha256": "f59ee3435959b9a02b8581417e0f9d41e7af42fe297a69cb5f4b62720204a2ec",
+      "size": 191,
+      "source_url": "https://proxy.golang.org/github.com/go-jose/go-jose/v4/@v/v4.1.4.info"
+    },
+    "go-proxy/github.com/go-jose/go-jose/v4/@v/v4.1.4.mod": {
+      "sha256": "e069e6002d29495b8c2dc6cf0d3b56a075ec5be7abb6c2eb1a1c0845cb66b8b3",
+      "size": 48,
+      "source_url": "https://proxy.golang.org/github.com/go-jose/go-jose/v4/@v/v4.1.4.mod"
+    },
+    "go-proxy/github.com/go-jose/go-jose/v4/@v/v4.1.4.zip": {
+      "sha256": "06a37b6668012a2dd109a5f71f6ae15387dc808b35d3cf73f5e406e78a17b027",
+      "size": 370134,
+      "source_url": "https://proxy.golang.org/github.com/go-jose/go-jose/v4/@v/v4.1.4.zip"
+    },
+    "go-proxy/github.com/google/go-cmp/@v/list": {
+      "sha256": "60129e613bb12e4e4ef017bebd3e12c7c8dee4295664270d1b1d53d99e40fcca",
+      "size": 126,
+      "source_url": "https://proxy.golang.org/github.com/google/go-cmp/@v/list"
+    },
+    "go-proxy/github.com/google/go-cmp/@v/v0.6.0.info": {
+      "sha256": "e624a2c1fe53ae5c8cdce4707290e8282c2c89f3143951670eb175957aa9cfa9",
+      "size": 189,
+      "source_url": "https://proxy.golang.org/github.com/google/go-cmp/@v/v0.6.0.info"
+    },
+    "go-proxy/github.com/google/go-cmp/@v/v0.6.0.mod": {
+      "sha256": "e7c7669d4a1dd589ba3e024ba27f43f293db611fe075ce20d7b884370d63febd",
+      "size": 41,
+      "source_url": "https://proxy.golang.org/github.com/google/go-cmp/@v/v0.6.0.mod"
+    },
+    "go-proxy/github.com/google/go-cmp/@v/v0.6.0.zip": {
+      "sha256": "4b4e9bf6c48211080651b491dfb48d68b736c66a305bcf94605606e1ba2eaa4a",
+      "size": 129773,
+      "source_url": "https://proxy.golang.org/github.com/google/go-cmp/@v/v0.6.0.zip"
+    },
+    "go-proxy/github.com/letsencrypt/challtestsrv/@v/list": {
+      "sha256": "8d91ad3142dbf245b70dc0615cedbe91ae90dc084e6827cdea2d87d8edd7cded",
+      "size": 91,
+      "source_url": "https://proxy.golang.org/github.com/letsencrypt/challtestsrv/@v/list"
+    },
+    "go-proxy/github.com/letsencrypt/challtestsrv/@v/v1.4.2.info": {
+      "sha256": "11627446f06a4d1db5b4485c7320055efe4896fa0cae791a07fb0a5366b9a45d",
+      "size": 200,
+      "source_url": "https://proxy.golang.org/github.com/letsencrypt/challtestsrv/@v/v1.4.2.info"
+    },
+    "go-proxy/github.com/letsencrypt/challtestsrv/@v/v1.4.2.mod": {
+      "sha256": "25c80fe145f8c53d41f3e3239e7d7160858684e6d20e353e67cab6788f387f23",
+      "size": 295,
+      "source_url": "https://proxy.golang.org/github.com/letsencrypt/challtestsrv/@v/v1.4.2.mod"
+    },
+    "go-proxy/github.com/letsencrypt/challtestsrv/@v/v1.4.2.zip": {
+      "sha256": "01447f5d74f6fd0c313b09f49ba4997c4a28016ea143bc4b59eabf9ef9c37527",
+      "size": 21923,
+      "source_url": "https://proxy.golang.org/github.com/letsencrypt/challtestsrv/@v/v1.4.2.zip"
+    },
+    "go-proxy/github.com/letsencrypt/pebble/v2/@v/list": {
+      "sha256": "fd3b8550a255bf653ce1267902866d9ed235496c3dd87ec80662b04f8a362a82",
+      "size": 135,
+      "source_url": "https://proxy.golang.org/github.com/letsencrypt/pebble/v2/@v/list"
+    },
+    "go-proxy/github.com/letsencrypt/pebble/v2/@v/v2.10.1.info": {
+      "sha256": "f721f60ab9911d4aed84a23fc32f5cee4d104721b2745a564193563e19893de9",
+      "size": 196,
+      "source_url": "https://proxy.golang.org/github.com/letsencrypt/pebble/v2/@v/v2.10.1.info"
+    },
+    "go-proxy/github.com/letsencrypt/pebble/v2/@v/v2.10.1.mod": {
+      "sha256": "35d549f00b6ef889a436e7982e31116ddb7d0428645708717852483bc9677a88",
+      "size": 402,
+      "source_url": "https://proxy.golang.org/github.com/letsencrypt/pebble/v2/@v/v2.10.1.mod"
+    },
+    "go-proxy/github.com/letsencrypt/pebble/v2/@v/v2.10.1.zip": {
+      "sha256": "e192e248ad0322420af7c769a8e48286c1ebc561b5c9e89f04acc264594f26ca",
+      "size": 106112,
+      "source_url": "https://proxy.golang.org/github.com/letsencrypt/pebble/v2/@v/v2.10.1.zip"
+    },
+    "go-proxy/github.com/miekg/dns/@v/list": {
+      "sha256": "a139f79dacaf6cf6eae9c9963b0103910cc6ae0e9d8aa9f91d4e18de941bc4ca",
+      "size": 692,
+      "source_url": "https://proxy.golang.org/github.com/miekg/dns/@v/list"
+    },
+    "go-proxy/github.com/miekg/dns/@v/v1.1.62.info": {
+      "sha256": "1bdd3749e2c79fc3972824ee4d4b0386277a627138246fab9f72de620e6a65a5",
+      "size": 187,
+      "source_url": "https://proxy.golang.org/github.com/miekg/dns/@v/v1.1.62.info"
+    },
+    "go-proxy/github.com/miekg/dns/@v/v1.1.62.mod": {
+      "sha256": "ace3eb4e78bd5054707b24ac1eae7f7bed7a27b03a6ecc0260b2de9bae903dc2",
+      "size": 202,
+      "source_url": "https://proxy.golang.org/github.com/miekg/dns/@v/v1.1.62.mod"
+    },
+    "go-proxy/github.com/miekg/dns/@v/v1.1.62.zip": {
+      "sha256": "468b7ffd2c69396ba98f1266d43f75251aaf8c6371b059c345611d63f4c5cd62",
+      "size": 255280,
+      "source_url": "https://proxy.golang.org/github.com/miekg/dns/@v/v1.1.62.zip"
+    },
+    "go-proxy/golang.org/x/mod/@v/list": {
+      "sha256": "dd29b09cd382c9e4a00057314fe0da393d5e4efb767afb1aa95cb1538a1de9bc",
+      "size": 359,
+      "source_url": "https://proxy.golang.org/golang.org/x/mod/@v/list"
+    },
+    "go-proxy/golang.org/x/mod/@v/v0.24.0.info": {
+      "sha256": "77090ad1cf67d86b8db873de460fcc5fd8c74929efc05e8c48e0b0f8083f7805",
+      "size": 190,
+      "source_url": "https://proxy.golang.org/golang.org/x/mod/@v/v0.24.0.info"
+    },
+    "go-proxy/golang.org/x/mod/@v/v0.24.0.mod": {
+      "sha256": "1fb8ad2f7201cd79bf178578b35aaead1720cab2b8cfea35b99b25b60839f1ef",
+      "size": 86,
+      "source_url": "https://proxy.golang.org/golang.org/x/mod/@v/v0.24.0.mod"
+    },
+    "go-proxy/golang.org/x/mod/@v/v0.24.0.zip": {
+      "sha256": "1a8ef77bb4d41c1a7d3fa5d0caf2fe599f14eac10f473629e31546f12759b89f",
+      "size": 172143,
+      "source_url": "https://proxy.golang.org/golang.org/x/mod/@v/v0.24.0.zip"
+    },
+    "go-proxy/golang.org/x/net/@v/list": {
+      "sha256": "65308f319e46b12093096e1601595bb3bbce55f10a329ba795336744b3225595",
+      "size": 487,
+      "source_url": "https://proxy.golang.org/golang.org/x/net/@v/list"
+    },
+    "go-proxy/golang.org/x/net/@v/v0.40.0.info": {
+      "sha256": "8a866b2765d5e1fa30afc53124eb0d9674e16d112fe1dc78f5a2a61eed30fecd",
+      "size": 190,
+      "source_url": "https://proxy.golang.org/golang.org/x/net/@v/v0.40.0.info"
+    },
+    "go-proxy/golang.org/x/net/@v/v0.40.0.mod": {
+      "sha256": "3258ec9e17abe2bf1053d0b176d3d50367815237a7701eb373c38152bbd6b9a0",
+      "size": 157,
+      "source_url": "https://proxy.golang.org/golang.org/x/net/@v/v0.40.0.mod"
+    },
+    "go-proxy/golang.org/x/net/@v/v0.40.0.zip": {
+      "sha256": "388e4a624f48990057f1a2a2cc5f3e0f81e41b99dd2036247d98c931c59d44d4",
+      "size": 1910283,
+      "source_url": "https://proxy.golang.org/golang.org/x/net/@v/v0.40.0.zip"
+    },
+    "go-proxy/golang.org/x/sync/@v/list": {
+      "sha256": "1933c0904ed8336d55c51a64160872f889fc2afab118040fafb76362e611b0ec",
+      "size": 183,
+      "source_url": "https://proxy.golang.org/golang.org/x/sync/@v/list"
+    },
+    "go-proxy/golang.org/x/sync/@v/v0.14.0.info": {
+      "sha256": "6516bee444c53b9d3d1d6b2d6ba28cd3651cc803d7c8590dabfb5de8e8b4e77c",
+      "size": 191,
+      "source_url": "https://proxy.golang.org/golang.org/x/sync/@v/v0.14.0.info"
+    },
+    "go-proxy/golang.org/x/sync/@v/v0.14.0.mod": {
+      "sha256": "720b98f1bf033d6b64a454ca8c29cdca6e9265ab7d70db3b834dff49560f1587",
+      "size": 36,
+      "source_url": "https://proxy.golang.org/golang.org/x/sync/@v/v0.14.0.mod"
+    },
+    "go-proxy/golang.org/x/sync/@v/v0.14.0.zip": {
+      "sha256": "8b19a2aa2162ec8fa1cba4762eb06b089ef8d2dbddf4e64ef51334e722b83a7f",
+      "size": 26395,
+      "source_url": "https://proxy.golang.org/golang.org/x/sync/@v/v0.14.0.zip"
+    },
+    "go-proxy/golang.org/x/sys/@v/list": {
+      "sha256": "1822acf92c4179e5441ef2e2de431babc39ae5a82152ce0169e6fb09d2f38741",
+      "size": 383,
+      "source_url": "https://proxy.golang.org/golang.org/x/sys/@v/list"
+    },
+    "go-proxy/golang.org/x/sys/@v/v0.33.0.info": {
+      "sha256": "95843d83fb9d7cdd40e75786f9ad6c60234f0d730eed1c60d1d4a1571fe72aec",
+      "size": 190,
+      "source_url": "https://proxy.golang.org/golang.org/x/sys/@v/v0.33.0.info"
+    },
+    "go-proxy/golang.org/x/sys/@v/v0.33.0.mod": {
+      "sha256": "f67e3e18f4c08e60a7e80726ab36b691fdcea5b81ae1c696ff64caf518bcfe3d",
+      "size": 35,
+      "source_url": "https://proxy.golang.org/golang.org/x/sys/@v/v0.33.0.mod"
+    },
+    "go-proxy/golang.org/x/sys/@v/v0.33.0.zip": {
+      "sha256": "182df79c87135f6dbd0d45656b6527e9221e28899ee44cc6cc7e7a396aedaef9",
+      "size": 1994091,
+      "source_url": "https://proxy.golang.org/golang.org/x/sys/@v/v0.33.0.zip"
+    },
+    "go-proxy/golang.org/x/tools/@v/list": {
+      "sha256": "c60de24fcd93baafb1b2bfb62a374d5d3040080bf2a927f05b8202532f6f2acd",
+      "size": 547,
+      "source_url": "https://proxy.golang.org/golang.org/x/tools/@v/list"
+    },
+    "go-proxy/golang.org/x/tools/@v/v0.33.0.info": {
+      "sha256": "fe2fa87062b1582ead715c20244fbaa63c5f2f41d66e9bb8d9c7c99e587c5b75",
+      "size": 192,
+      "source_url": "https://proxy.golang.org/golang.org/x/tools/@v/v0.33.0.info"
+    },
+    "go-proxy/golang.org/x/tools/@v/v0.33.0.mod": {
+      "sha256": "428571a10aab7586a67da2c9375e8ae480def8d2fa11de8c6fff28a696b9591f",
+      "size": 301,
+      "source_url": "https://proxy.golang.org/golang.org/x/tools/@v/v0.33.0.mod"
+    },
+    "go-proxy/golang.org/x/tools/@v/v0.33.0.zip": {
+      "sha256": "da7a76d9db0956f30dd7f9957eead7aab5aa132dbca78a6d578436f94fdfee84",
+      "size": 3450399,
+      "source_url": "https://proxy.golang.org/golang.org/x/tools/@v/v0.33.0.zip"
+    },
+    "hpke-vectors.json": {
+      "sha256": "61fc662f01996cd06d713dacf5e133167bd309a1f329442d53f1e21a47b3ede6",
+      "size": 5892257,
+      "source_url": "https://raw.githubusercontent.com/cfrg/draft-irtf-cfrg-hpke/5f503c564da00b0687b3de75f1dfbdfc4079ad31/test-vectors.json"
+    },
+    "mlkem-encdec.json": {
+      "sha256": "a556952ce869bb89c3a3196a701dad89647c193a34c86eafb61a9d710d5b810f",
+      "size": 1465634,
+      "source_url": "https://raw.githubusercontent.com/usnistgov/ACVP-Server/975de31eb83d87039ec88934fdc47d8c312b892d/gen-val/json-files/ML-KEM-encapDecap-FIPS203/internalProjection.json"
+    },
+    "mlkem-keygen.json": {
+      "sha256": "d7a62a2c3476957f56dd8d24f9004ea6776ccfe995ffe71a65bb9506dc9c7b1b",
+      "size": 558841,
+      "source_url": "https://raw.githubusercontent.com/usnistgov/ACVP-Server/975de31eb83d87039ec88934fdc47d8c312b892d/gen-val/json-files/ML-KEM-keyGen-FIPS203/internalProjection.json"
+    },
+    "wycheproof-p384.json": {
+      "sha256": "ffa7835fe1de359dff762c8f1272b98acebd5578e2f855d969051ff956c6dca3",
+      "size": 549253,
+      "source_url": "https://raw.githubusercontent.com/C2SP/wycheproof/d17cc89fa5c8f4f4d378b5385ebf75da5d0926c9/testvectors_v1/ecdh_secp384r1_ecpoint_test.json"
+    }
+  },
+  "go_modules": {
+    "github.com/go-jose/go-jose/v4@v4.1.4": {
+      "h1": "h1:moDMcTHmvE6Groj34emNPLs/qtYXRVcd6S7NHbHz3kA=",
+      "mod_h1": "h1:x4oUasVrzR7071A4TnHLGSPpNOm2a21K9Kf04k1rs08=",
+      "module": "github.com/go-jose/go-jose/v4",
+      "sumdb_receipt": "51876581\ngithub.com/go-jose/go-jose/v4 v4.1.4 h1:moDMcTHmvE6Groj34emNPLs/qtYXRVcd6S7NHbHz3kA=\ngithub.com/go-jose/go-jose/v4 v4.1.4/go.mod h1:x4oUasVrzR7071A4TnHLGSPpNOm2a21K9Kf04k1rs08=\n\ngo.sum database tree\n71026434\nT3sXpEDRBsRImGYFDFQx0zr/0FXKS1FuWO3GzrXBjLc=\n\n\u2014 sum.golang.org Az3grvOKLveZ+5blKIoEbTL8R+wUdQPwiXGVq4lQUpTqhJB5cJfRWGd3L6i9a0ro/NfEyIn63a+fFRBawtq5tPZEGQ0=",
+      "version": "v4.1.4"
+    },
+    "github.com/google/go-cmp@v0.6.0": {
+      "h1": "h1:ofyhxvXcZhMsU5ulbFiLKl/XBFqE1GSq7atu8tAmTRI=",
+      "mod_h1": "h1:17dUlkBOakJ0+DkrSSNjCkIjxS6bF9zb3elmeNGIjoY=",
+      "module": "github.com/google/go-cmp",
+      "sumdb_receipt": "19966894\ngithub.com/google/go-cmp v0.6.0 h1:ofyhxvXcZhMsU5ulbFiLKl/XBFqE1GSq7atu8tAmTRI=\ngithub.com/google/go-cmp v0.6.0/go.mod h1:17dUlkBOakJ0+DkrSSNjCkIjxS6bF9zb3elmeNGIjoY=\n\ngo.sum database tree\n71024908\nSp4iykXYLYCFdvVMUQXXCQ7CRZf2rIyex95Z91Uhbpk=\n\n\u2014 sum.golang.org Az3grqtpbaM9+nSB+A+L9334o2CkIjVlncv7+CSRiM/0v+8RzrknsBzmf2YbThSgOF8YrraRXawlevgVknR9LFyYFwY=",
+      "version": "v0.6.0"
+    },
+    "github.com/letsencrypt/challtestsrv@v1.4.2": {
+      "h1": "h1:0ON3ldMhZyWlfVNYYpFuWRTmZNnyfiL9Hh5YzC3JVwU=",
+      "mod_h1": "h1:GhqMqcSoeGpYd5zX5TgwA6er/1MbWzx/o7yuuVya+Wk=",
+      "module": "github.com/letsencrypt/challtestsrv",
+      "sumdb_receipt": "49923386\ngithub.com/letsencrypt/challtestsrv v1.4.2 h1:0ON3ldMhZyWlfVNYYpFuWRTmZNnyfiL9Hh5YzC3JVwU=\ngithub.com/letsencrypt/challtestsrv v1.4.2/go.mod h1:GhqMqcSoeGpYd5zX5TgwA6er/1MbWzx/o7yuuVya+Wk=\n\ngo.sum database tree\n71024210\nzVkrUwfDNkDavhSMvFDdoDu0qxq+MbiYyuqp3wY2Yjw=\n\n\u2014 sum.golang.org Az3grvt6iVi9Wf7Xr3p6soObVLqnb7AwgIUYoawZVeisaejTmTwMMzpupI+16wdaLao2oX9JiAgl2TnHR8KEounRkQM=",
+      "version": "v1.4.2"
+    },
+    "github.com/letsencrypt/pebble/v2@v2.10.1": {
+      "h1": "h1:oKHx3lgN4e5Nno2LKTMrVx+b+NkDptkO9aDireiBDGE=",
+      "mod_h1": "h1:KtYhQ4YTjT5MtoCZ6RTCXlbrrz6cKyXROCuTpIUDJFY=",
+      "module": "github.com/letsencrypt/pebble/v2",
+      "sumdb_receipt": "52722511\ngithub.com/letsencrypt/pebble/v2 v2.10.1 h1:oKHx3lgN4e5Nno2LKTMrVx+b+NkDptkO9aDireiBDGE=\ngithub.com/letsencrypt/pebble/v2 v2.10.1/go.mod h1:KtYhQ4YTjT5MtoCZ6RTCXlbrrz6cKyXROCuTpIUDJFY=\n\ngo.sum database tree\n71024177\nb9QuuTJxUNH2enrHgzTkKRyAcezQeZVT+R4WeRzv3hE=\n\n\u2014 sum.golang.org Az3grnz9DOhnZ+nAgJmlB/PC+6tt//raC9ENyG2+iZoiKOeEMKKjif9Q2SwoHVSq4C/6pWBAjZpdF3Qu9dFTAuW7UQQ=",
+      "version": "v2.10.1"
+    },
+    "github.com/miekg/dns@v1.1.62": {
+      "h1": "h1:cN8OuEF1/x5Rq6Np+h1epln8OiyPWV+lROx9LxcGgIQ=",
+      "mod_h1": "h1:mvDlcItzm+br7MToIKqkglaGhlFMHJ9DTNNWONWXbNQ=",
+      "module": "github.com/miekg/dns",
+      "sumdb_receipt": "29010716\ngithub.com/miekg/dns v1.1.62 h1:cN8OuEF1/x5Rq6Np+h1epln8OiyPWV+lROx9LxcGgIQ=\ngithub.com/miekg/dns v1.1.62/go.mod h1:mvDlcItzm+br7MToIKqkglaGhlFMHJ9DTNNWONWXbNQ=\n\ngo.sum database tree\n71025286\nXbD14B/08MzA239CsgMfGpvmYjJdi8ooemOwffJEEF0=\n\n\u2014 sum.golang.org Az3grlbPkpkuj5j7Zp4MnBDmlJBNy/HFlCrPIVtWpTUfq3rsTjryCQzigXYMYa6qmk1Bzkd9C2A6X0scsq7czVW+5Qc=",
+      "version": "v1.1.62"
+    },
+    "golang.org/x/mod@v0.24.0": {
+      "h1": "h1:ZfthKaKaT4NrhGVZHO1/WDTwGES4De8KtWO0SIbNJMU=",
+      "mod_h1": "h1:IXM97Txy2VM4PJ3gI61r1YEk/gAj6zAHN3AdZt6S9Ww=",
+      "module": "golang.org/x/mod",
+      "sumdb_receipt": "35066140\ngolang.org/x/mod v0.24.0 h1:ZfthKaKaT4NrhGVZHO1/WDTwGES4De8KtWO0SIbNJMU=\ngolang.org/x/mod v0.24.0/go.mod h1:IXM97Txy2VM4PJ3gI61r1YEk/gAj6zAHN3AdZt6S9Ww=\n\ngo.sum database tree\n71027819\nreVy9H0Mj8illwu8ei4HcD7vJ9PjSNhBMKvtveVQK40=\n\n\u2014 sum.golang.org Az3grrsMuBTrvQVXxTspLoFnwJafWDvd5C603I+Nx6d0WqFx3fVP2A2qBD4Xx/vMvrpn+gMnHEa5mWCM0IFBL2Zb1AM=",
+      "version": "v0.24.0"
+    },
+    "golang.org/x/net@v0.40.0": {
+      "h1": "h1:79Xs7wF06Gbdcg4kdCCIQArK11Z1hr5POQ6+fIYHNuY=",
+      "mod_h1": "h1:y0hY0exeL2Pku80/zKK7tpntoX23cqL3Oa6njdgRtds=",
+      "module": "golang.org/x/net",
+      "sumdb_receipt": "36896152\ngolang.org/x/net v0.40.0 h1:79Xs7wF06Gbdcg4kdCCIQArK11Z1hr5POQ6+fIYHNuY=\ngolang.org/x/net v0.40.0/go.mod h1:y0hY0exeL2Pku80/zKK7tpntoX23cqL3Oa6njdgRtds=\n\ngo.sum database tree\n71027352\nQR411RInDZ/lcxsRnDMVX7zzIpSJzKHu7ht446p8LCs=\n\n\u2014 sum.golang.org Az3grh36nm7+sI5qqBmIZSO5izGe/NmcGhGVRIlJfNbTfzaKhC75gFerJ++5vjOZe3zVl5mVaN3biS2dmJnGH+lZBgE=",
+      "version": "v0.40.0"
+    },
+    "golang.org/x/sync@v0.14.0": {
+      "h1": "h1:woo0S4Yywslg6hp4eUFjTVOyKt0RookbpAHG4c1HmhQ=",
+      "mod_h1": "h1:1dzgHSNfp02xaA81J2MS99Qcpr2w7fw1gpm99rleRqA=",
+      "module": "golang.org/x/sync",
+      "sumdb_receipt": "36887472\ngolang.org/x/sync v0.14.0 h1:woo0S4Yywslg6hp4eUFjTVOyKt0RookbpAHG4c1HmhQ=\ngolang.org/x/sync v0.14.0/go.mod h1:1dzgHSNfp02xaA81J2MS99Qcpr2w7fw1gpm99rleRqA=\n\ngo.sum database tree\n71024140\nN7VVGWCqGyepp3VkYCu4S1LeH8Y53Bi8bAbOUkkfbgA=\n\n\u2014 sum.golang.org Az3grjMh3DZqug+srrTQiSk0azjmGildfFAwoA09+JnIXaacuCMpyUELofZgeelTtOZrJeQycDhxh7goin6EnQH2GwM=",
+      "version": "v0.14.0"
+    },
+    "golang.org/x/sys@v0.33.0": {
+      "h1": "h1:q3i8TbbEz+JRD9ywIRlyRAQbM0qF7hu24q3teo2hbuw=",
+      "mod_h1": "h1:BJP2sWEmIv4KK5OTEluFJCKSidICx8ciO85XgH3Ak8k=",
+      "module": "golang.org/x/sys",
+      "sumdb_receipt": "36887357\ngolang.org/x/sys v0.33.0 h1:q3i8TbbEz+JRD9ywIRlyRAQbM0qF7hu24q3teo2hbuw=\ngolang.org/x/sys v0.33.0/go.mod h1:BJP2sWEmIv4KK5OTEluFJCKSidICx8ciO85XgH3Ak8k=\n\ngo.sum database tree\n71023946\nUgdFTfxWmh8EFlpSNRq5VhTvLfl7Xs0Iqlw5HN5Q/6I=\n\n\u2014 sum.golang.org Az3grt9fI19V4ItzBKNKnFDpeiSKUBM3itlDvcAjaLCztjys7taLhLZsNtxfyIBcBR84N0979avULt9ChN5Y/JZLVws=",
+      "version": "v0.33.0"
+    },
+    "golang.org/x/tools@v0.33.0": {
+      "h1": "h1:4qz2S3zmRxbGIhDIAgjxvFutSvH5EfnsYrRBj0UI0bc=",
+      "mod_h1": "h1:CIJMaWEY88juyUfo7UbgPqbC8rU2OqfAV1h2Qp0oMYI=",
+      "module": "golang.org/x/tools",
+      "sumdb_receipt": "36899102\ngolang.org/x/tools v0.33.0 h1:4qz2S3zmRxbGIhDIAgjxvFutSvH5EfnsYrRBj0UI0bc=\ngolang.org/x/tools v0.33.0/go.mod h1:CIJMaWEY88juyUfo7UbgPqbC8rU2OqfAV1h2Qp0oMYI=\n\ngo.sum database tree\n71026748\nITNHoIB5+2abQ0SXeBB5GTcJ4onGSfSV1q+99N3bSAg=\n\n\u2014 sum.golang.org Az3grnqq9nKscdwj+lu3wnfjushRVXy+RJsTXYoNO4Cg5H/4CnTJi9fVNm7dMyXmHQhqhX22YOzQzeFxKf25/alZrAM=",
+      "version": "v0.33.0"
+    }
+  },
+  "inventory_sha256": "6291c01da185683c38572480f51e1e438b8a2b110afff4a1ef01aacce3478f1c",
+  "pebble": {
+    "commands": [
+      "github.com/letsencrypt/pebble/v2/cmd/pebble@v2.10.1",
+      "github.com/letsencrypt/pebble/v2/cmd/pebble-challtestsrv@v2.10.1"
+    ],
+    "root_module": "github.com/letsencrypt/pebble/v2",
+    "test_certs_path": "github.com/letsencrypt/pebble/v2@v2.10.1/test/certs",
+    "version": "v2.10.1"
+  },
+  "schema_version": 1,
+  "vectors": {
+    "hpke-vectors.json": {
+      "description": "CFRG RFC 9180 HPKE test vectors",
+      "destination": "hpke-vectors.json",
+      "logical_name": "hpke",
+      "revision": "5f503c564da00b0687b3de75f1dfbdfc4079ad31",
+      "sha256": "61fc662f01996cd06d713dacf5e133167bd309a1f329442d53f1e21a47b3ede6",
+      "size": 5892257,
+      "upstream_path": "test-vectors.json",
+      "upstream_repo": "cfrg/draft-irtf-cfrg-hpke",
+      "url": "https://raw.githubusercontent.com/cfrg/draft-irtf-cfrg-hpke/5f503c564da00b0687b3de75f1dfbdfc4079ad31/test-vectors.json"
+    },
+    "mlkem-encdec.json": {
+      "description": "NIST ACVP-Server ML-KEM-768 encap/decap test vectors",
+      "destination": "mlkem-encdec.json",
+      "logical_name": "mlkem_encdec",
+      "revision": "975de31eb83d87039ec88934fdc47d8c312b892d",
+      "sha256": "a556952ce869bb89c3a3196a701dad89647c193a34c86eafb61a9d710d5b810f",
+      "size": 1465634,
+      "upstream_path": "gen-val/json-files/ML-KEM-encapDecap-FIPS203/internalProjection.json",
+      "upstream_repo": "usnistgov/ACVP-Server",
+      "url": "https://raw.githubusercontent.com/usnistgov/ACVP-Server/975de31eb83d87039ec88934fdc47d8c312b892d/gen-val/json-files/ML-KEM-encapDecap-FIPS203/internalProjection.json"
+    },
+    "mlkem-keygen.json": {
+      "description": "NIST ACVP-Server ML-KEM-768 key generation test vectors",
+      "destination": "mlkem-keygen.json",
+      "logical_name": "mlkem_keygen",
+      "revision": "975de31eb83d87039ec88934fdc47d8c312b892d",
+      "sha256": "d7a62a2c3476957f56dd8d24f9004ea6776ccfe995ffe71a65bb9506dc9c7b1b",
+      "size": 558841,
+      "upstream_path": "gen-val/json-files/ML-KEM-keyGen-FIPS203/internalProjection.json",
+      "upstream_repo": "usnistgov/ACVP-Server",
+      "url": "https://raw.githubusercontent.com/usnistgov/ACVP-Server/975de31eb83d87039ec88934fdc47d8c312b892d/gen-val/json-files/ML-KEM-keyGen-FIPS203/internalProjection.json"
+    },
+    "wycheproof-p384.json": {
+      "description": "Project Wycheproof ECDH secp384r1 ecpoint test vectors (790 cases)",
+      "destination": "wycheproof-p384.json",
+      "git_blob": "737e3b4f705b6d600c36aecfc7a5b9712f5095b4",
+      "logical_name": "wycheproof_p384",
+      "revision": "d17cc89fa5c8f4f4d378b5385ebf75da5d0926c9",
+      "sha256": "ffa7835fe1de359dff762c8f1272b98acebd5578e2f855d969051ff956c6dca3",
+      "size": 549253,
+      "upstream_path": "testvectors_v1/ecdh_secp384r1_ecpoint_test.json",
+      "upstream_repo": "C2SP/wycheproof",
+      "url": "https://raw.githubusercontent.com/C2SP/wycheproof/d17cc89fa5c8f4f4d378b5385ebf75da5d0926c9/testvectors_v1/ecdh_secp384r1_ecpoint_test.json"
+    }
+  }
+}
