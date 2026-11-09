@@ -42,6 +42,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import re
 import secrets
 import shlex
@@ -1451,22 +1452,48 @@ def _collect_final_unit(pin: dict, parent_dir: str, unit: str, kind: str, *, sea
     )
     reasons.extend(invalid_reasons)
     if kind == "run3":
+        driver = unit.split("/", 1)[1] if "/" in unit else unit
+        ledger_path = os.path.join(path, "ledger.jsonl")
         origin_records_path = os.path.join(path, "origin_records.json")
-        if os.path.isfile(origin_records_path):
-            driver = unit.split("/", 1)[1] if "/" in unit else unit
-            ledger_path = os.path.join(path, "ledger.jsonl")
-            receipt_data = None
-            receipt_candidates = []
-            if sealed_receipts_dir:
-                receipt_candidates.append(os.path.join(sealed_receipts_dir, f"receipt-run3-{driver}-a{attempt}.json"))
-            if os.environ.get("IYI_SEALED_RECEIPTS_DIR"):
-                receipt_candidates.append(os.path.join(os.environ["IYI_SEALED_RECEIPTS_DIR"], f"receipt-run3-{driver}-a{attempt}.json"))
-            report_dir = pin.get("report_dir", "")
-            if report_dir:
-                receipt_candidates.append(os.path.join(report_dir, "sealed-receipts", f"receipt-run3-{driver}-a{attempt}.json"))
-                receipt_candidates.append(os.path.join(os.path.dirname(os.path.realpath(report_dir)), "sealed-receipts", f"receipt-run3-{driver}-a{attempt}.json"))
+        is_linux = platform.system() == "Linux"
 
-            receipt_file = next((rc for rc in receipt_candidates if os.path.isfile(rc)), None)
+        origin_exists = os.path.exists(origin_records_path)
+        origin_is_symlink = os.path.islink(origin_records_path)
+        origin_is_regular = origin_exists and os.path.isfile(origin_records_path) and not origin_is_symlink
+
+        if is_linux:
+            if not origin_exists or not origin_is_regular:
+                detail = "is a forbidden symlink" if origin_is_symlink else ("is not a regular file" if origin_exists else "is missing")
+                reasons.append(f"{unit} attempt {attempt} origin_records.json {detail}")
+                status = "FAIL"
+        elif not is_linux and origin_exists and not origin_is_regular:
+            reasons.append(f"{unit} attempt {attempt} origin_records.json is not a regular file or is a symlink")
+            status = "FAIL"
+
+        if origin_is_regular:
+            receipt_data = None
+            trusted_receipt_dirs = []
+            if sealed_receipts_dir:
+                trusted_receipt_dirs.append(sealed_receipts_dir)
+            if os.environ.get("IYI_SEALED_RECEIPTS_DIR"):
+                trusted_receipt_dirs.append(os.environ["IYI_SEALED_RECEIPTS_DIR"])
+
+            if not is_linux:
+                report_dir = pin.get("report_dir", "")
+                if report_dir:
+                    trusted_receipt_dirs.append(os.path.join(report_dir, "sealed-receipts"))
+
+            receipt_file = None
+            for rdir in trusted_receipt_dirs:
+                cand = os.path.join(rdir, f"receipt-run3-{driver}-a{attempt}.json")
+                if os.path.islink(cand):
+                    reasons.append(f"{unit} attempt {attempt} sealed receipt is a forbidden symlink: {cand}")
+                    status = "UNFAITHFUL"
+                    cand = None
+                elif os.path.isfile(cand):
+                    receipt_file = cand
+                    break
+
             if receipt_file:
                 try:
                     with open(receipt_file, "r", encoding="utf-8") as rf:
@@ -1474,7 +1501,7 @@ def _collect_final_unit(pin: dict, parent_dir: str, unit: str, kind: str, *, sea
                 except Exception as err:
                     reasons.append(f"{unit} attempt {attempt} sealed receipt unreadable: {err}")
                     status = "UNFAITHFUL"
-            elif platform.system() == "Linux":
+            elif is_linux:
                 reasons.append(f"{unit} attempt {attempt} missing required host sealed receipt")
                 status = "UNFAITHFUL"
 
@@ -1490,7 +1517,6 @@ def _collect_final_unit(pin: dict, parent_dir: str, unit: str, kind: str, *, sea
                 status = "FAIL"
                 for r in origin_reasons:
                     reasons.append(f"{unit} attempt {attempt} origin verification failed: {r}")
-
     if status != "PASS" and isinstance(record, dict):
         recorded_reasons = record.get("reasons")
         if isinstance(recorded_reasons, list):

@@ -842,5 +842,181 @@ class TestOriginRecordsAdversarialHardlink(unittest.TestCase):
                 content = f.read()
             self.assertEqual(content, '{"initial":"preexisting"}\n')
 
+    def test_final_acceptance_rejects_missing_origin_records_on_linux(self):
+        from proof.run_proof import _collect_final_unit
+        with tempfile.TemporaryDirectory() as report_dir:
+            run3_dir = os.path.join(report_dir, "run3", "demo")
+            attempt_dir = os.path.join(run3_dir, "a1")
+            os.makedirs(attempt_dir)
+
+            result_file = os.path.join(attempt_dir, "result.json")
+            with open(result_file, "w") as f:
+                json.dump({
+                    "v": 1,
+                    "chain_id": "0" * 32,
+                    "unit": "run3/demo",
+                    "attempt": 1,
+                    "status": "PASS",
+                    "reasons": [],
+                    "checks": {"exit": "PASS", "sentinel": "PASS", "no-refused": "PASS", "skips": "PASS", "ledger": "PASS"},
+                    "started_ns": 1000,
+                    "ended_ns": 2000,
+                    "survivors": [],
+                }, f)
+
+            pin = {"report_dir": report_dir, "chain_id": "0" * 32}
+
+            with patch("platform.system", return_value="Linux"):
+                unit_info, _, reasons = _collect_final_unit(pin, run3_dir, "run3/demo", "run3")
+                self.assertEqual(unit_info["status"], "FAIL")
+                self.assertTrue(any("origin_records.json is missing" in r for r in reasons))
+
+    def test_final_acceptance_rejects_directory_and_symlink_origin_records(self):
+        from proof.run_proof import _collect_final_unit
+        with tempfile.TemporaryDirectory() as report_dir:
+            run3_dir = os.path.join(report_dir, "run3", "demo")
+            attempt_dir = os.path.join(run3_dir, "a1")
+            os.makedirs(attempt_dir)
+
+            result_file = os.path.join(attempt_dir, "result.json")
+            with open(result_file, "w") as f:
+                json.dump({
+                    "v": 1,
+                    "chain_id": "0" * 32,
+                    "unit": "run3/demo",
+                    "attempt": 1,
+                    "status": "PASS",
+                    "reasons": [],
+                    "checks": {"exit": "PASS", "sentinel": "PASS", "no-refused": "PASS", "skips": "PASS", "ledger": "PASS"},
+                    "started_ns": 1000,
+                    "ended_ns": 2000,
+                    "survivors": [],
+                }, f)
+
+            pin = {"report_dir": report_dir, "chain_id": "0" * 32}
+
+            origin_dir = os.path.join(attempt_dir, "origin_records.json")
+            os.makedirs(origin_dir)
+            with patch("platform.system", return_value="Linux"):
+                unit_info, _, reasons = _collect_final_unit(pin, run3_dir, "run3/demo", "run3")
+                self.assertEqual(unit_info["status"], "FAIL")
+                self.assertTrue(any("is not a regular file" in r for r in reasons))
+            os.rmdir(origin_dir)
+
+            dummy_target = os.path.join(report_dir, "dummy.json")
+            with open(dummy_target, "w") as f:
+                f.write("{}\n")
+            os.symlink(dummy_target, origin_dir)
+            with patch("platform.system", return_value="Linux"):
+                unit_info, _, reasons = _collect_final_unit(pin, run3_dir, "run3/demo", "run3")
+                self.assertEqual(unit_info["status"], "FAIL")
+                self.assertTrue(any("is a forbidden symlink" in r for r in reasons))
+
+    def test_final_acceptance_rejects_missing_receipt_on_linux(self):
+        from proof.run_proof import _collect_final_unit
+        with tempfile.TemporaryDirectory() as report_dir:
+            run3_dir = os.path.join(report_dir, "run3", "demo")
+            attempt_dir = os.path.join(run3_dir, "a1")
+            os.makedirs(attempt_dir)
+
+            origin_path = os.path.join(attempt_dir, "origin_records.json")
+            with open(origin_path, "w") as f:
+                json.dump({
+                    "v": 1, "kind": "origin_records", "driver": "demo", "attempt": 1,
+                    "chain_id": "0" * 32, "ledger_path": "/ledger", "ledger_sha256": "0" * 64,
+                    "timestamp_ns": 1000, "entries": [], "overall_status": "PASS",
+                }, f)
+
+            result_file = os.path.join(attempt_dir, "result.json")
+            with open(result_file, "w") as f:
+                json.dump({
+                    "v": 1, "chain_id": "0" * 32, "unit": "run3/demo", "attempt": 1, "status": "PASS",
+                    "reasons": [], "checks": {"exit": "PASS", "sentinel": "PASS", "no-refused": "PASS", "skips": "PASS", "ledger": "PASS"},
+                    "started_ns": 1000, "ended_ns": 2000, "survivors": [],
+                }, f)
+
+            pin = {"report_dir": report_dir, "chain_id": "0" * 32}
+
+            with patch("platform.system", return_value="Linux"):
+                unit_info, _, reasons = _collect_final_unit(pin, run3_dir, "run3/demo", "run3")
+                self.assertEqual(unit_info["status"], "UNFAITHFUL")
+                self.assertTrue(any("missing required host sealed receipt" in r for r in reasons))
+
+    def test_final_acceptance_rejects_payload_forged_report_receipt_on_linux(self):
+        from proof.run_proof import _collect_final_unit
+        with tempfile.TemporaryDirectory() as report_dir:
+            run3_dir = os.path.join(report_dir, "run3", "demo")
+            attempt_dir = os.path.join(run3_dir, "a1")
+            os.makedirs(attempt_dir)
+
+            origin_path = os.path.join(attempt_dir, "origin_records.json")
+            with open(origin_path, "w") as f:
+                json.dump({
+                    "v": 1, "kind": "origin_records", "driver": "demo", "attempt": 1,
+                    "chain_id": "0" * 32, "ledger_path": "/ledger", "ledger_sha256": "0" * 64,
+                    "timestamp_ns": 1000, "entries": [], "overall_status": "PASS",
+                }, f)
+
+            forged_dir = os.path.join(report_dir, "sealed-receipts")
+            os.makedirs(forged_dir)
+            with open(os.path.join(forged_dir, "receipt-run3-demo-a1.json"), "w") as f:
+                json.dump({"schema": "iyi-sealed-origin-receipt-v1", "forged": True}, f)
+
+            result_file = os.path.join(attempt_dir, "result.json")
+            with open(result_file, "w") as f:
+                json.dump({
+                    "v": 1, "chain_id": "0" * 32, "unit": "run3/demo", "attempt": 1, "status": "PASS",
+                    "reasons": [], "checks": {"exit": "PASS", "sentinel": "PASS", "no-refused": "PASS", "skips": "PASS", "ledger": "PASS"},
+                    "started_ns": 1000, "ended_ns": 2000, "survivors": [],
+                }, f)
+
+            pin = {"report_dir": report_dir, "chain_id": "0" * 32}
+
+            with patch("platform.system", return_value="Linux"):
+                unit_info, _, reasons = _collect_final_unit(pin, run3_dir, "run3/demo", "run3")
+                self.assertEqual(unit_info["status"], "UNFAITHFUL")
+                self.assertTrue(any("missing required host sealed receipt" in r for r in reasons))
+
+    def test_final_acceptance_darwin_no_receipt_behavior(self):
+        from proof.run_proof import _collect_final_unit
+        with tempfile.TemporaryDirectory() as report_dir:
+            run3_dir = os.path.join(report_dir, "run3", "demo")
+            attempt_dir = os.path.join(run3_dir, "a1")
+            os.makedirs(attempt_dir)
+
+            ledger_file = os.path.join(attempt_dir, "ledger.jsonl")
+            with open(ledger_file, "w") as f:
+                f.write("{}\n")
+
+            origin_path = os.path.join(attempt_dir, "origin_records.json")
+            with open(origin_path, "w") as f:
+                json.dump({
+                    "v": 1, "kind": "origin_records", "driver": "demo", "attempt": 1,
+                    "chain_id": "0" * 32, "ledger_path": os.path.realpath(ledger_file),
+                    "ledger_sha256": sha256_file(ledger_file),
+                    "timestamp_ns": 1000,
+                    "entries": [
+                        {"index": 0, "out_ref": "/bin", "expected_ino": 1, "expected_mtime_ns": 100,
+                         "st_dev": 1, "st_ino": 1, "st_nlink": 1, "st_mode": 0o755, "st_size": 10,
+                         "st_mtime_ns": 100, "st_atime_ns": 100, "st_ctime_ns": 100, "atime_advanced": False}
+                    ],
+                    "overall_status": "NOT-EXECUTED",
+                }, f)
+
+            result_file = os.path.join(attempt_dir, "result.json")
+            with open(result_file, "w") as f:
+                json.dump({
+                    "v": 1, "chain_id": "0" * 32, "unit": "run3/demo", "attempt": 1, "status": "PASS",
+                    "reasons": [], "checks": {"exit": "PASS", "sentinel": "PASS", "no-refused": "PASS", "skips": "PASS", "ledger": "PASS"},
+                    "started_ns": 1000, "ended_ns": 2000, "survivors": [],
+                }, f)
+
+            pin = {"report_dir": report_dir, "chain_id": "0" * 32}
+
+            with patch("platform.system", return_value="Darwin"):
+                unit_info, _, reasons = _collect_final_unit(pin, run3_dir, "run3/demo", "run3")
+                self.assertEqual(unit_info["status"], "FAIL")
+                self.assertTrue(any("did not advance atime" in r for r in reasons))
+
 if __name__ == "__main__":
     unittest.main()
