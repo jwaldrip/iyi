@@ -206,7 +206,9 @@ def checked_origin(value):
     stack, size = [(value, 0)], 0
     while stack:
         node, depth = stack.pop()
-        if depth > 260: raise ValueError("origin nesting too deep")
+        # Each origin edge contributes at most three JSON container levels
+        # (Expanded -> emission_parts -> part -> emitter_origin).
+        if depth > 3 * 128 + 3: raise ValueError("origin nesting too deep")
         if isinstance(node, dict):
             size += 2 + max(0, len(node) - 1)
             for key, child in node.items():
@@ -463,7 +465,7 @@ class FrameManifest:
                 raise ValueError("incomplete partition set")
         bindings = manifest["bindings"]
         if not isinstance(bindings, list): raise ValueError("missing object bindings")
-        identities, bound = {}, set()
+        identities, requested_names, bound = {}, {}, set()
         for binding in bindings:
             fields(binding, "link_input_id definition")
             index = binding["link_input_id"]
@@ -479,6 +481,7 @@ class FrameManifest:
             if llvm_name.startswith("\x01") or name != "_" + llvm_name: raise ValueError("unsupported native decoration")
             if definition["emission"]["unit_name"] != item["unit_name"]: raise ValueError("binding unit mismatch")
             identity = emission_identity(definition["emission"])
+            requested = definition["emission"]["requested_symbol"].encode("utf-8")
             symbols = item["native_evidence"]["symbols"]
             if not any(s["name"] == name and s["kind"].startswith("__TEXT,__text ") for s in symbols):
                 raise ValueError("binding absent from object")
@@ -486,6 +489,7 @@ class FrameManifest:
             if key in bound: raise ValueError("duplicate object binding")
             bound.add(key)
             if name in identities and identities[name] != identity: raise ValueError("ambiguous native symbol")
+            requested_names.setdefault(name, []).append(requested)
             identities[name] = identity
         linked_text = [s for s in linked if s["kind"].startswith("__TEXT,__text ")]
         linked_names = {s["name"] for s in linked_text}
@@ -502,12 +506,25 @@ class FrameManifest:
                     if int(other["address"], 16) == int(symbol["address"], 16) and identities.get(other["name"]) != identities[symbol["name"]]:
                         raise ValueError("ambiguous folded symbol")
         self.identities = {name: identity for name, identity in identities.items() if name in linked_names}
+        self.requested_names = {name: requested_names[name] for name in self.identities}
 
     def resolve(self, symbol):
         try: name = "_" + symbol.decode("utf-8")
         except UnicodeError as exc: raise ValueError("invalid symbol encoding") from exc
         if name not in self.identities: raise ValueError("closure symbol missing from executable")
-        return self.identities[name]
+        originals = self.requested_names[name]
+        shape = requested_shape(originals[0])
+        if any(requested_shape(item) != shape for item in originals[1:]):
+            raise ValueError("ambiguous original closure spelling")
+        return self.identities[name], originals[0]
+
+
+def requested_shape(symbol):
+    prefix = re.match(rb"^~proc(\d*)Proc\(", symbol)
+    location = proc_location(symbol)
+    if not prefix or location is None: raise ValueError("unsupported original closure linkage")
+    canonical = canonical_function(symbol)
+    return canonical[:prefix.start(1)] + canonical[prefix.end(1):]
 
 
 def compare_functions(left, right, manifests):
@@ -515,18 +532,14 @@ def compare_functions(left, right, manifests):
     a, b = left.startswith((b"~proc", b"~fun_literal")), right.startswith((b"~proc", b"~fun_literal"))
     if not a and not b: return canonical_function(left) == canonical_function(right)
     if not a or not b: return False
-    pa, pb = re.match(rb"^~proc(\d*)Proc\(", left), re.match(rb"^~proc(\d*)Proc\(", right)
-    if not pa or not pb or proc_location(left) is None or proc_location(right) is None:
-        raise ValueError("unsupported closure linkage")
-    identity_a, identity_b = manifests[0].resolve(left), manifests[1].resolve(right)
+    (identity_a, original_a), (identity_b, original_b) = manifests[0].resolve(left), manifests[1].resolve(right)
     if identity_a[:3] != identity_b[:3]: return False
     location_a, location_b = identity_a[3], identity_b[3]
-    la, lb = proc_location(left), proc_location(right)
-    if int(left[la[2]:la[3]]) != location_a["line"] or int(right[lb[2]:lb[3]]) != location_b["line"]:
+    la, lb = proc_location(original_a), proc_location(original_b)
+    if int(original_a[la[2]:la[3]]) != location_a["line"] or int(original_b[lb[2]:lb[3]]) != location_b["line"]:
         raise ValueError("closure line does not match emission")
     if (canonical_file(location_a["file"].encode()), location_a["line"], location_a["column"]) != (canonical_file(location_b["file"].encode()), location_b["line"], location_b["column"]): return False
-    ca, cb = canonical_function(left), canonical_function(right)
-    return ca[:pa.start(1)] + ca[pa.end(1):] == cb[:pb.start(1)] + cb[pb.end(1):]
+    return requested_shape(original_a) == requested_shape(original_b)
 
 
 def report_violation(line_no: int, rule: str, left: bytes, right: bytes):

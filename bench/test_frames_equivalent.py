@@ -636,15 +636,29 @@ def test_strict_manifest_synthetic_controls():
             with open(executable_b, "wb") as f: f.write(folded_binary)
             reject(folded)
             with open(executable_b, "wb") as f: f.write(binary_b)
+            promoted_name = right_symbol + ".iyi.part"
+            promoted_binary, promoted = fixture("promoted", promoted_name)
+            promoted_emission = promoted["bindings"][0]["definition"]["emission"]
+            promoted_emission["requested_symbol"] = right_symbol
+            promoted_emission["actual_llvm_symbol"] = right_symbol
+            with open(executable_b, "wb") as f: f.write(promoted_binary)
+            promoted_map = load(promoted, executable_b)
+            promoted_line = line_b.replace(right_symbol.encode(), promoted_name.encode())
+            assert capture_violation(compare_same_opt, [line_a], [promoted_line], manifests=(left, promoted_map))[0] == 0
+            unknown_line = line_b.replace(right_symbol.encode(), (right_symbol + ".unknown").encode())
+            assert capture_violation(compare_same_opt, [line_a], [unknown_line], manifests=(left, promoted_map))[0] == 1
             # Equal raw names are not evidence of identity, even under a counter permutation.
             same_binary, same_manifest = fixture("same", left_symbol)
             with open(executable_b, "wb") as f: f.write(same_binary)
             same_manifest["bindings"][0]["definition"]["emission"]["origin"]["input_byte_offset"] += 1
             other = load(same_manifest, executable_b)
             assert capture_violation(compare_same_opt, [line_a], [line_a], manifests=(left, other))[0] == 1
-            with open(path, "w", encoding="utf-8") as f: f.write('{"schema":3,"schema":3}')
+            valid_json = json.dumps(same_manifest)
+            duplicated_json = valid_json.replace('"schema": 3', '"schema": 3, "schema": 3', 1)
+            assert duplicated_json != valid_json
+            with open(path, "w", encoding="utf-8") as f: f.write(duplicated_json)
             try: frames.FrameManifest(path, executable_b)
-            except ValueError: pass
+            except ValueError as exc: assert str(exc) == "duplicate JSON key"
             else: raise AssertionError("duplicate JSON key accepted")
 
     invocation = written("Call", "method", 2)
@@ -664,6 +678,13 @@ def test_strict_manifest_synthetic_controls():
         try: frames.checked_origin(invalid)
         except ValueError: pass
         else: raise AssertionError("invalid origin accepted: " + change)
+    nested_emitter = emitter
+    for _ in range(128):
+        nested_emitter = {"kind": "Expanded", "invocation_origin": invocation, "macro_definition_origin": definition,
+                          "expansion_guard": "sha256:" + "a" * 64, "generated_byte_offset": 0,
+                          "anchor_kind": "MacroDirective", "role": "expression", "spliced_origin": None,
+                          "emission_parts": [{"start_offset": 0, "end_offset": 1, "emitter_origin": nested_emitter}]}
+    assert frames.checked_origin(nested_emitter) == ("MacroDirective", "expression")
     deep = copy.deepcopy(closure)
     for _ in range(129):
         deep = {"kind": "Synthetic", "parent_origin": deep, "synthesis_kind": "defer", "structural_slot": "cleanup"}
@@ -678,7 +699,7 @@ def test_strict_manifest_synthetic_controls():
     class IdentityMap:
         def __init__(self, value): self.value = value
         def resolve(self, symbol):
-            return (self.value, identity["specialization"], identity["capture_descriptor"], identity["displayed_source_location"])
+            return ((self.value, identity["specialization"], identity["capture_descriptor"], identity["displayed_source_location"]), symbol)
 
     for change in ("directive", "part", "splice", "occurrence", "nested"):
         altered = copy.deepcopy(expanded)
@@ -704,7 +725,7 @@ def test_strict_manifest_synthetic_controls():
     base_identity = frames.emission_identity(record)
     class CompleteMap:
         def __init__(self, value): self.value = value
-        def resolve(self, symbol): return self.value
+        def resolve(self, symbol): return self.value, symbol
 
     shadow = copy.deepcopy(record)
     shadow["capture_descriptor"]["environment"]["bindings"][0]["binding_origin"]["parent_origin"]["input_byte_offset"] += 1
