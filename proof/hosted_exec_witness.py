@@ -10,8 +10,9 @@ Responsibilities:
 3. Hardened rejection of reader-only (atime advance via read(2)) and utime-only (utimensat(2)) manipulations.
 4. Process ancestry, descendant tracking, and non-dumpability audit (PR_SET_DUMPABLE=0).
 5. Raw executable capture verification: reads retained bytes from disk and recalculates SHA-256.
-6. Zero placeholder tolerance: empty captures or empty-file SHA-256 hashes are strictly rejected.
-7. Unmediated execution refusal: execution strictly requires the compiled C native tracer.
+6. Repeated execution deduplication audit: verifies consistent SHA-256 across repeated runs of same binary.
+7. Zero placeholder tolerance: empty captures or empty-file SHA-256 hashes are strictly rejected.
+8. Unmediated execution refusal: execution strictly requires the compiled C native tracer.
 """
 
 from __future__ import annotations
@@ -103,6 +104,8 @@ class WitnessExecSuccess:
     sha256: Optional[str] = None
     size_bytes: Optional[int] = None
     raw_captured: bool = False
+    system_binary: bool = False
+    deduplicated: bool = False
 
     @property
     def inoderef(self) -> Tuple[int, int]:
@@ -119,6 +122,7 @@ class WitnessRawExecCapture:
     size_bytes: int
     sha256: str
     captured_file: Optional[str] = None
+    deduplicated: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -208,8 +212,9 @@ def verify_exec_witness_evidence(
     5. Stream MUST terminate with 'session_end' carrying status 'COMPLETE'.
     6. All spawned processes MUST be fully reaped ('active_processes_at_end == 0').
     7. Every (st_dev, st_ino) in 'required_executables' MUST have at least one matching 'exec_success'.
-    8. Zero-length or placeholder raw executable captures are strictly rejected.
-    9. If 'raw_capture_dir' is provided, verified raw bytes on disk are independently hashed.
+    8. Repeated executions of the same inoderef must report identical SHA-256 and size.
+    9. Zero-length or placeholder raw executable captures are strictly rejected.
+    10. If 'raw_capture_dir' is provided, verified raw bytes on disk are independently hashed.
     """
     if not events:
         raise WitnessVerificationError("Empty witness evidence stream: no events recorded")
@@ -288,6 +293,7 @@ def verify_exec_witness_evidence(
     expected_seq = 1
     spawned_pids: Dict[int, int] = {}  # pid -> seq_id
     witnessed_inoderefs: Set[Tuple[int, int]] = set()
+    witnessed_inoderef_hashes: Dict[Tuple[int, int], str] = {}
     witnessed_paths: Set[str] = set()
     exec_events: List[WitnessExecSuccess] = []
     raw_captures: List[WitnessRawExecCapture] = []
@@ -318,16 +324,29 @@ def verify_exec_witness_evidence(
             if not isinstance(dev, int) or not isinstance(ino, int):
                 raise WitnessVerificationError(f"Invalid st_dev/st_ino in exec_success on line {idx}: {dev}, {ino}")
 
+            ref = (dev, ino)
             path = ev.get("exe_path", "")
-            witnessed_inoderefs.add((dev, ino))
+            witnessed_inoderefs.add(ref)
             if path:
                 witnessed_paths.add(path)
 
             sha = ev.get("sha256")
             size = ev.get("size_bytes")
             raw_cap = ev.get("raw_captured", False)
+            sys_bin = ev.get("system_binary", False)
+            dedup = ev.get("deduplicated", False)
 
-            if require_raw_capture:
+            # Audit repeated execution consistency
+            if ref in witnessed_inoderef_hashes:
+                prev_sha = witnessed_inoderef_hashes[ref]
+                if sha and sha != prev_sha:
+                    raise WitnessVerificationError(
+                        f"Hash inconsistency on repeated execution of inoderef {ref}: {sha} vs {prev_sha}"
+                    )
+            elif sha:
+                witnessed_inoderef_hashes[ref] = sha
+
+            if require_raw_capture and not sys_bin:
                 if not raw_cap or not sha or size is None or size <= 0:
                     raise RawCaptureError(
                         f"Missing or zero-length raw executable capture for {path} (dev={dev}, ino={ino}): size={size}"
@@ -357,6 +376,8 @@ def verify_exec_witness_evidence(
                 sha256=sha,
                 size_bytes=size,
                 raw_captured=raw_cap,
+                system_binary=sys_bin,
+                deduplicated=dedup,
             )
             exec_events.append(exec_ev)
 
@@ -376,6 +397,7 @@ def verify_exec_witness_evidence(
                 size_bytes=size,
                 sha256=sha,
                 captured_file=ev.get("captured_file"),
+                deduplicated=ev.get("deduplicated", False),
             )
             raw_captures.append(cap)
             raw_captures_by_ref[(dev, ino)] = cap

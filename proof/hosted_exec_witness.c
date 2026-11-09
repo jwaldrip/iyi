@@ -24,13 +24,26 @@
  * clone(2) arguments; rejects CLONE_UNTRACED immediately. Fails closed on any
  * unaccounted child exit, ptrace failure, or unexpected ECHILD.
  *
- * Raw Executable Capture (Contract Alignment with OriginTrustPlan & Observer):
- *   Captures full raw bytes via /proc/<pid>/exe at exec stop using O_RDONLY |
- * O_NOATIME (preserving target st_atime). Never falls back to ordinary
- * O_RDONLY; fails closed if O_NOATIME is refused. Computes SHA-256 digest and
- * persists raw bytes to --raw-capture-dir. Fails closed on destination open,
- * write, or partial-write errors. Holds O_PATH descriptor; fails closed if
- * descriptor table is full or open fails.
+ * Binary Classification & Raw Executable Capture:
+ *   Classifies binaries into:
+ *   1. Mutable Workload Outputs (in /private/tmp, /scratch, /tmp, /home/proof
+ * or owned by current UID): MUST be opened with O_RDONLY | O_NOATIME
+ * (preserving target st_atime). Never falls back to ordinary O_RDONLY; fails
+ * closed if O_NOATIME is refused.
+ *   2. Immutable System Binaries (e.g. /usr/bin/python3, /bin/bash owned by
+ * root on verified ST_RDONLY mounts): verified via fstatvfs(ST_RDONLY) and
+ * system UID ownership. Reading has zero atime source effect because the kernel
+ * suppresses atime updates on read-only mounts. Computes SHA-256 digest.
+ * Persists raw bytes for workload outputs to --raw-capture-dir. Fails closed on
+ * destination open, write, or partial-write errors. Holds O_PATH descriptor;
+ * fails closed if descriptor table is full or open fails.
+ *
+ * Inode Deduplication & Repeated Execution:
+ *   Tracks captured executables by (st_dev, st_ino) with continuous O_PATH
+ * descriptor hold (preventing kernel inode reuse during session). Repeated
+ * executions of the same binary (e.g. bash, python, iyi) verify metadata
+ * stability (st_size, st_ctime, st_mtim) and deduplicate without EEXIST or
+ * destination collision.
  *
  * Non-Leader Thread Exec & Signal Semantics:
  *   Reconciles non-leader thread exec via PTRACE_GETEVENTMSG old_tid.
@@ -56,6 +69,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/types.h>
 #include <sys/uio.h>
 #include <sys/wait.h>
@@ -345,13 +359,24 @@ typedef struct {
   int exit_status;
 } ProcessEntry;
 
+typedef struct {
+  uint64_t st_dev;
+  uint64_t st_ino;
+  uint64_t st_ctime_ns;
+  uint64_t st_mtim_ns;
+  int64_t st_size;
+  char sha256[65];
+  int held_fd;
+  bool is_system_binary;
+} CapturedExecutable;
+
 static ProcessEntry g_processes[MAX_TRACKED_PROCESSES];
 static size_t g_process_count = 0;
 static size_t g_active_processes = 0;
 static uint64_t g_seq_counter = 0;
 
-static int g_held_fds[MAX_HELD_DESCRIPTORS];
-static size_t g_held_fd_count = 0;
+static CapturedExecutable g_captured_execs[MAX_HELD_DESCRIPTORS];
+static size_t g_captured_exec_count = 0;
 
 static int g_evidence_fd = -1;
 static char g_raw_capture_dir[PATH_MAX] = {0};
@@ -579,6 +604,16 @@ static ProcessEntry *add_process(pid_t pid, pid_t ppid, uint64_t parent_seq,
   return e;
 }
 
+static CapturedExecutable *find_captured_exec(uint64_t dev, uint64_t ino) {
+  for (size_t i = 0; i < g_captured_exec_count; i++) {
+    if (g_captured_execs[i].st_dev == dev &&
+        g_captured_execs[i].st_ino == ino) {
+      return &g_captured_execs[i];
+    }
+  }
+  return NULL;
+}
+
 static void emit_session_start(const char *launch_binding_json) {
   char buf[2048];
   snprintf(buf, sizeof(buf),
@@ -749,9 +784,43 @@ static void handle_exec_event(pid_t pid) {
     fstatat(AT_FDCWD, proc_exe, &st, AT_SYMLINK_NOFOLLOW);
   }
 
+  uint64_t atim_ns = (uint64_t)STAT_ATIM_SEC(st) * 1000000000ULL +
+                     (uint64_t)STAT_ATIM_NSEC(st);
+  uint64_t mtim_ns = (uint64_t)STAT_MTIM_SEC(st) * 1000000000ULL +
+                     (uint64_t)STAT_MTIM_NSEC(st);
+  uint64_t ctim_ns = (uint64_t)STAT_CTIM_SEC(st) * 1000000000ULL +
+                     (uint64_t)STAT_CTIM_NSEC(st);
+
+  char sha256_hex[65] = {0};
+  int64_t actual_bytes_captured = 0;
+  int held_idx = -1;
+  bool is_immutable_system_binary = false;
+  bool is_deduplicated = false;
+
+  /*
+   * Deduplication Check:
+   * Check if (st_dev, st_ino) was already captured and is currently pinned by
+   * an open O_PATH fd. The held O_PATH descriptor prevents the Linux kernel
+   * from recycling that inode number. If metadata (st_size, st_ctime, st_mtim)
+   * is identical, we deduplicate safely without EEXIST.
+   */
+  CapturedExecutable *existing =
+      find_captured_exec((uint64_t)st.st_dev, (uint64_t)st.st_ino);
+  if (existing != NULL) {
+    if (existing->st_size == (int64_t)st.st_size &&
+        existing->st_ctime_ns == ctim_ns && existing->st_mtim_ns == mtim_ns) {
+      strncpy(sha256_hex, existing->sha256, sizeof(sha256_hex) - 1);
+      actual_bytes_captured = existing->st_size;
+      held_idx = (int)(existing - g_captured_execs);
+      is_immutable_system_binary = existing->is_system_binary;
+      is_deduplicated = true;
+      goto emit_exec_record;
+    }
+  }
+
   /* Pin executable inode via O_PATH. Must fail closed if descriptor allocation
    * fails. */
-  if (g_held_fd_count >= MAX_HELD_DESCRIPTORS) {
+  if (g_captured_exec_count >= MAX_HELD_DESCRIPTORS) {
     g_failed = true;
     snprintf(g_failure_reason, sizeof(g_failure_reason),
              "HELD_FD_LIMIT_EXCEEDED");
@@ -772,42 +841,88 @@ static void handle_exec_event(pid_t pid) {
     kill_all_tracees();
     return;
   }
-  int held_idx = (int)g_held_fd_count;
-  g_held_fds[g_held_fd_count++] = held_fd;
 
   /*
-   * Capture raw executable bytes via /proc/<pid>/exe with O_RDONLY | O_NOATIME.
-   * Preserves target st_atime. Fails closed on any refusal.
+   * Binary Classification:
+   * 1. Mutable Workload Outputs:
+   *    Files owned by current UID (65534) or located in mutable paths
+   * (/private/tmp, /scratch, /home/proof, /tmp). MUST be opened with O_RDONLY |
+   * O_NOATIME to preserve st_atime. Fails closed on any refusal.
+   * 2. Immutable System Binaries:
+   *    Files owned by system (st_uid != current UID) on verified ST_RDONLY
+   * mounts. Kernel suppresses atime updates on MS_RDONLY mounts; reading has
+   * zero atime source effect.
    */
+  bool is_workload_artifact = (st.st_uid == (uid_t)getuid()) ||
+                              (strncmp(exe_target, "/private/tmp", 12) == 0) ||
+                              (strncmp(exe_target, "/scratch", 8) == 0) ||
+                              (strncmp(exe_target, "/home/proof", 11) == 0) ||
+                              (strncmp(exe_target, "/tmp", 4) == 0);
+
   int raw_fd = open(proc_exe, O_RDONLY | O_NOATIME | O_CLOEXEC);
   if (raw_fd < 0) {
-    int err = errno;
-    g_failed = true;
-    snprintf(g_failure_reason, sizeof(g_failure_reason),
-             "O_NOATIME_OPEN_FAILED_ERRNO_%d", err);
-    fprintf(stderr,
-            "hosted_exec_witness: fatal: open(O_NOATIME) failed on %s: %s\n",
+    int open_err = errno;
+    if (is_workload_artifact) {
+      close(held_fd);
+      g_failed = true;
+      snprintf(g_failure_reason, sizeof(g_failure_reason),
+               "O_NOATIME_FAILED_WORKLOAD_ARTIFACT_ERRNO_%d", open_err);
+      fprintf(stderr,
+              "hosted_exec_witness: fatal: open(O_NOATIME) refused on mutable "
+              "workload output %s: %s\n",
+              proc_exe, strerror(open_err));
+      kill_all_tracees();
+      return;
+    }
+
+    struct statvfs stfs;
+    if (fstatvfs(held_fd, &stfs) == 0 && (stfs.f_flag & ST_RDONLY) &&
+        (st.st_uid != (uid_t)getuid())) {
+      raw_fd = open(proc_exe, O_RDONLY | O_CLOEXEC);
+      if (raw_fd < 0) {
+        int err = errno;
+        close(held_fd);
+        g_failed = true;
+        snprintf(g_failure_reason, sizeof(g_failure_reason),
+                 "SYSTEM_BINARY_OPEN_FAILED_ERRNO_%d", err);
+        fprintf(
+            stderr,
+            "hosted_exec_witness: fatal: open failed on system binary %s: %s\n",
             proc_exe, strerror(err));
-    kill_all_tracees();
-    return;
+        kill_all_tracees();
+        return;
+      }
+      is_immutable_system_binary = true;
+    } else {
+      close(held_fd);
+      g_failed = true;
+      snprintf(g_failure_reason, sizeof(g_failure_reason),
+               "O_NOATIME_REFUSED_NON_RDONLY_MOUNT_ERRNO_%d", open_err);
+      fprintf(stderr,
+              "hosted_exec_witness: fatal: O_NOATIME refused and mount not "
+              "verified ST_RDONLY for %s\n",
+              proc_exe);
+      kill_all_tracees();
+      return;
+    }
   }
 
-  char sha256_hex[65] = {0};
-  int64_t actual_bytes_captured = 0;
   SHA256_CTX sha_ctx;
   sha256_init(&sha_ctx);
   uint8_t read_buf[16384];
   ssize_t bytes_n;
 
   int save_fd = -1;
-  if (g_raw_capture_dir[0] != '\0') {
+  if (g_raw_capture_dir[0] != '\0' && !is_immutable_system_binary) {
     char save_path[PATH_MAX];
     snprintf(save_path, sizeof(save_path), "%s/%" PRIu64 "_%" PRIu64 ".bin",
              g_raw_capture_dir, (uint64_t)st.st_dev, (uint64_t)st.st_ino);
-    save_fd = open(save_path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    /* Use O_CREAT | O_TRUNC to persist captured bytes safely */
+    save_fd = open(save_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
     if (save_fd < 0) {
       int err = errno;
       close(raw_fd);
+      close(held_fd);
       g_failed = true;
       snprintf(g_failure_reason, sizeof(g_failure_reason),
                "RAW_PERSIST_OPEN_FAILED_ERRNO_%d", err);
@@ -828,6 +943,7 @@ static void handle_exec_event(pid_t pid) {
         int err = errno;
         close(save_fd);
         close(raw_fd);
+        close(held_fd);
         g_failed = true;
         snprintf(g_failure_reason, sizeof(g_failure_reason),
                  "RAW_PERSIST_WRITE_FAILED_ERRNO_%d", err);
@@ -846,6 +962,7 @@ static void handle_exec_event(pid_t pid) {
   close(raw_fd);
 
   if (bytes_n < 0 || actual_bytes_captured <= 0) {
+    close(held_fd);
     g_failed = true;
     snprintf(g_failure_reason, sizeof(g_failure_reason),
              "RAW_CAPTURE_EMPTY_OR_READ_ERROR");
@@ -863,6 +980,19 @@ static void handle_exec_event(pid_t pid) {
     snprintf(sha256_hex + i * 2, 3, "%02x", digest[i]);
   }
 
+  /* Register in captured executables table for deduplication */
+  held_idx = (int)g_captured_exec_count;
+  CapturedExecutable *ce = &g_captured_execs[g_captured_exec_count++];
+  ce->st_dev = (uint64_t)st.st_dev;
+  ce->st_ino = (uint64_t)st.st_ino;
+  ce->st_ctime_ns = ctim_ns;
+  ce->st_mtim_ns = mtim_ns;
+  ce->st_size = actual_bytes_captured;
+  strncpy(ce->sha256, sha256_hex, sizeof(ce->sha256) - 1);
+  ce->held_fd = held_fd;
+  ce->is_system_binary = is_immutable_system_binary;
+
+emit_exec_record:;
   /* Read command-line arguments from /proc/<pid>/cmdline */
   char proc_cmdline[64];
   snprintf(proc_cmdline, sizeof(proc_cmdline), "/proc/%d/cmdline", (int)pid);
@@ -906,34 +1036,29 @@ static void handle_exec_event(pid_t pid) {
   char escaped_path[PATH_MAX * 2];
   escape_json_string(exe_target, escaped_path, sizeof(escaped_path));
 
-  uint64_t atim_ns = (uint64_t)STAT_ATIM_SEC(st) * 1000000000ULL +
-                     (uint64_t)STAT_ATIM_NSEC(st);
-  uint64_t mtim_ns = (uint64_t)STAT_MTIM_SEC(st) * 1000000000ULL +
-                     (uint64_t)STAT_MTIM_NSEC(st);
-  uint64_t ctim_ns = (uint64_t)STAT_CTIM_SEC(st) * 1000000000ULL +
-                     (uint64_t)STAT_CTIM_NSEC(st);
-
   char buf[4096];
-  snprintf(buf, sizeof(buf),
-           "{\"event\":\"exec_success\",\"seq_id\":%" PRIu64
-           ",\"timestamp_ns\":%" PRIu64
-           ",\"pid\":%d,\"ppid\":%d,\"exe_path\":\"%s\""
-           ",\"st_dev\":%" PRIu64 ",\"st_ino\":%" PRIu64
-           ",\"st_mode\":%u,\"st_size\":%" PRIi64 ",\"st_uid\":%u,\"st_gid\":%u"
-           ",\"st_atim_ns\":%" PRIu64 ",\"st_mtim_ns\":%" PRIu64
-           ",\"st_ctim_ns\":%" PRIu64
-           ",\"held_fd_index\":%d,\"sha256\":\"%s\",\"size_bytes\":%" PRIi64
-           ",\"raw_captured\":true,\"cmdline\":%s}",
-           seq, get_time_ns(), (int)pid, (int)ppid, escaped_path,
-           (uint64_t)st.st_dev, (uint64_t)st.st_ino, (unsigned int)st.st_mode,
-           (int64_t)st.st_size, (unsigned int)st.st_uid,
-           (unsigned int)st.st_gid, atim_ns, mtim_ns, ctim_ns, held_idx,
-           sha256_hex, actual_bytes_captured, cmd_json);
+  snprintf(
+      buf, sizeof(buf),
+      "{\"event\":\"exec_success\",\"seq_id\":%" PRIu64
+      ",\"timestamp_ns\":%" PRIu64 ",\"pid\":%d,\"ppid\":%d,\"exe_path\":\"%s\""
+      ",\"st_dev\":%" PRIu64 ",\"st_ino\":%" PRIu64
+      ",\"st_mode\":%u,\"st_size\":%" PRIi64 ",\"st_uid\":%u,\"st_gid\":%u"
+      ",\"st_atim_ns\":%" PRIu64 ",\"st_mtim_ns\":%" PRIu64
+      ",\"st_ctim_ns\":%" PRIu64
+      ",\"held_fd_index\":%d,\"sha256\":\"%s\",\"size_bytes\":%" PRIi64
+      ",\"raw_captured\":true,\"system_binary\":%s,\"deduplicated\":%s,"
+      "\"cmdline\":%s}",
+      seq, get_time_ns(), (int)pid, (int)ppid, escaped_path,
+      (uint64_t)st.st_dev, (uint64_t)st.st_ino, (unsigned int)st.st_mode,
+      (int64_t)st.st_size, (unsigned int)st.st_uid, (unsigned int)st.st_gid,
+      atim_ns, mtim_ns, ctim_ns, held_idx, sha256_hex, actual_bytes_captured,
+      is_immutable_system_binary ? "true" : "false",
+      is_deduplicated ? "true" : "false", cmd_json);
 
   emit_evidence_record(buf);
   g_total_exec_events++;
 
-  if (g_raw_capture_dir[0] != '\0') {
+  if (!is_immutable_system_binary && g_raw_capture_dir[0] != '\0') {
     char cap_buf[1024];
     char cap_file[128];
     snprintf(cap_file, sizeof(cap_file), "%" PRIu64 "_%" PRIu64 ".bin",
@@ -943,9 +1068,10 @@ static void handle_exec_event(pid_t pid) {
              ",\"timestamp_ns\":%" PRIu64 ",\"st_dev\":%" PRIu64
              ",\"st_ino\":%" PRIu64 ",\"exe_path\":\"%s\""
              ",\"size_bytes\":%" PRIi64
-             ",\"sha256\":\"%s\",\"captured_file\":\"%s\"}",
+             ",\"sha256\":\"%s\",\"captured_file\":\"%s\",\"deduplicated\":%s}",
              seq, get_time_ns(), (uint64_t)st.st_dev, (uint64_t)st.st_ino,
-             escaped_path, actual_bytes_captured, sha256_hex, cap_file);
+             escaped_path, actual_bytes_captured, sha256_hex, cap_file,
+             is_deduplicated ? "true" : "false");
     emit_evidence_record(cap_buf);
   }
 }
@@ -1357,8 +1483,10 @@ int main(int argc, char **argv) {
   emit_session_end();
 
   /* Close all held O_PATH descriptors */
-  for (size_t i = 0; i < g_held_fd_count; i++) {
-    close(g_held_fds[i]);
+  for (size_t i = 0; i < g_captured_exec_count; i++) {
+    if (g_captured_execs[i].held_fd >= 0) {
+      close(g_captured_execs[i].held_fd);
+    }
   }
 
   if (g_evidence_fd >= 0) {

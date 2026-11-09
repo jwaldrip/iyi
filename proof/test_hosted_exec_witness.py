@@ -3,7 +3,8 @@ proof/test_hosted_exec_witness.py
 
 Focused standalone discriminating test suite for HostedExecWitness.
 Tests the execution witness protocol, verification invariants, disk byte verification,
-and resistance to reader-only, utime-only, channel theft, and untraced clone manipulations.
+repeated execution deduplication, and resistance to reader-only, utime-only,
+channel theft, and untraced clone manipulations.
 
 Per the assignment rules: No tests are run midflight. This file is executed
 only during official verification phases.
@@ -50,6 +51,7 @@ def _generate_valid_witness_stream(
     size_bytes: int = 1048576,
     raw_captured: bool = True,
     include_raw_event: bool = True,
+    system_binary: bool = False,
 ) -> str:
     """Helper to synthesize structured witness NDJSON streams for rigorous testing."""
     if launch_binding is None:
@@ -85,7 +87,12 @@ def _generate_valid_witness_stream(
     }))
 
     # 3. exec_success events
+    seen_refs = set()
     for dev, ino in exec_inoderefs:
+        ref = (dev, ino)
+        dedup = ref in seen_refs
+        seen_refs.add(ref)
+
         lines.append(json.dumps({
             "event": "exec_success",
             "seq_id": seq,
@@ -97,8 +104,8 @@ def _generate_valid_witness_stream(
             "st_ino": ino,
             "st_mode": 33261,
             "st_size": size_bytes,
-            "st_uid": 65534,
-            "st_gid": 65534,
+            "st_uid": 65534 if not system_binary else 0,
+            "st_gid": 65534 if not system_binary else 0,
             "st_atim_ns": now + 2000,
             "st_mtim_ns": now + 1000,
             "st_ctim_ns": now + 1000,
@@ -106,10 +113,12 @@ def _generate_valid_witness_stream(
             "sha256": sha256,
             "size_bytes": size_bytes,
             "raw_captured": raw_captured,
+            "system_binary": system_binary,
+            "deduplicated": dedup,
             "cmdline": ["/W/.build/iyi", "--version"],
         }))
 
-        if include_raw_event:
+        if include_raw_event and not system_binary and not dedup:
             lines.append(json.dumps({
                 "event": "raw_exec_capture",
                 "seq_id": seq,
@@ -120,6 +129,7 @@ def _generate_valid_witness_stream(
                 "size_bytes": size_bytes,
                 "sha256": sha256,
                 "captured_file": f"{dev}_{ino}.bin",
+                "deduplicated": False,
             }))
 
     # 4. process_exit
@@ -309,6 +319,47 @@ class TestHostedExecWitness(unittest.TestCase):
             )
         self.assertIn("placeholder sha-256", str(ctx.exception).lower())
 
+    def test_repeated_exec_same_inode_deduplication(self):
+        """Proves that repeated executions of the same inode with consistent hashes verify cleanly."""
+        payload_bytes = b"\x7fELF\x02\x01\x01\x00_SAME_INODE_PAYLOAD"
+        sha = hashlib.sha256(payload_bytes).hexdigest()
+        size = len(payload_bytes)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file_path = os.path.join(tmpdir, "64769_1001.bin")
+            with open(file_path, "wb") as f:
+                f.write(payload_bytes)
+
+            # Executed 3 times (e.g. compiler invoked repeatedly)
+            stream = _generate_valid_witness_stream(
+                exec_inoderefs=[(64769, 1001), (64769, 1001), (64769, 1001)],
+                sha256=sha,
+                size_bytes=size,
+                raw_captured=True,
+            )
+            events = parse_witness_events(stream)
+            res = verify_exec_witness_evidence(
+                events=events,
+                required_executables=[(64769, 1001)],
+                raw_capture_dir=tmpdir,
+            )
+            self.assertTrue(res.verified)
+            self.assertEqual(res.total_execs, 3)
+
+    def test_repeated_exec_hash_inconsistency_fails(self):
+        """Proves that conflicting hashes on repeated executions of the same inode fail closed."""
+        events = [
+            {"event": "session_start", "protocol": PROTOCOL_VERSION, "tracer_pid": 100, "start_time_ns": 1, "tracer_dumpable": 0, "launch_binding": {}},
+            {"event": "process_spawn", "seq_id": 1, "timestamp_ns": 2, "pid": 101, "ppid": 100, "parent_seq_id": 0, "kind": "initial", "is_thread": False},
+            {"event": "exec_success", "seq_id": 1, "timestamp_ns": 3, "pid": 101, "ppid": 100, "exe_path": "/bin/exe", "st_dev": 1, "st_ino": 2, "st_mode": 33261, "st_size": 10, "st_uid": 65534, "st_gid": 65534, "st_atim_ns": 3, "st_mtim_ns": 1, "st_ctim_ns": 1, "held_fd_index": 0, "sha256": "1111111111111111111111111111111111111111111111111111111111111111", "size_bytes": 10, "raw_captured": True},
+            {"event": "exec_success", "seq_id": 1, "timestamp_ns": 4, "pid": 101, "ppid": 100, "exe_path": "/bin/exe", "st_dev": 1, "st_ino": 2, "st_mode": 33261, "st_size": 10, "st_uid": 65534, "st_gid": 65534, "st_atim_ns": 4, "st_mtim_ns": 1, "st_ctim_ns": 1, "held_fd_index": 0, "sha256": "2222222222222222222222222222222222222222222222222222222222222222", "size_bytes": 10, "raw_captured": True},
+            {"event": "process_exit", "seq_id": 1, "timestamp_ns": 5, "pid": 101, "exit_code": 0, "raw_status": 0},
+            {"event": "session_end", "protocol": PROTOCOL_VERSION, "tracer_pid": 100, "end_time_ns": 6, "status": "COMPLETE", "root_exit_code": 0, "total_processes_spawned": 1, "total_exec_events": 2, "active_processes_at_end": 0},
+        ]
+        with self.assertRaises(WitnessVerificationError) as ctx:
+            verify_exec_witness_evidence(events=events)
+        self.assertIn("hash inconsistency", str(ctx.exception).lower())
+
     def test_channel_theft_fails_dumpable_check(self):
         """
         If tracer dumpability is not 0 (meaning child could inspect /proc/<pid>/fd
@@ -422,6 +473,9 @@ class TestHostedExecWitness(unittest.TestCase):
         self.assertIn("check_syscall_entry", c_code)
         self.assertIn("O_NOATIME", c_code)
         self.assertIn("O_PATH", c_code)
+        self.assertIn("find_captured_exec", c_code)
+        self.assertIn("fstatvfs", c_code)
+        self.assertIn("ST_RDONLY", c_code)
         self.assertIn("sha256_transform", c_code)
         self.assertIn("PR_SET_PDEATHSIG", c_code)
         self.assertIn(PROTOCOL_VERSION, c_code)
