@@ -1239,11 +1239,13 @@ class TestHttpOmissionSkips(unittest.TestCase):
         # Test source drift rejection: modifying a skip line causes validate_census to fail
         lines = self.script_bytes.decode("utf-8").splitlines()
         tampered_lines = list(lines)
-        tampered_lines[352] = 'said = "modified line without skip"'
+        skip = next(item for item in self.census["skips"] if item["text"] == 'said = "zstd unchecked: no compression.zstd in this Python"')
+        skip_line = skip["line"]
+        tampered_lines[skip_line - 1] = 'said = "modified line without skip"'
         tampered_bytes = "\n".join(tampered_lines).encode("utf-8")
         drift_violations = validate_census(self.census, tampered_bytes, self.census["script"], target_platform="linux")
-        self.assertTrue(any(v[0] == "C5.0-schema" and v[1] == 353 and "text is not the cited source line" in v[2] for v in drift_violations))
-        self.assertTrue(any(v[0] == "C5.4-skip-regex" and v[1] == 353 for v in drift_violations))
+        self.assertTrue(any(v[0] == "C5.0-schema" and v[1] == skip_line and "text is not the cited source line" in v[2] for v in drift_violations))
+        self.assertTrue(any(v[0] == "C5.4-skip-regex" and v[1] == skip_line for v in drift_violations))
 
         # Test unlisted skip rejection: adding an unlisted python assignment with skip vocab triggers C5.4-unlisted-skip-line
         tampered_lines2 = list(lines)
