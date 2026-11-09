@@ -12,10 +12,12 @@ directly to verify fail-closed gates without running local copies or privileged 
   4. Pre-existing owned scratch directory is refused (exclusive context required).
   5. Staged manifest validation: positive control on authentic fixture, then negative controls
      for string/non-dict header entry, missing size/digest, and tampered header SHA256.
-  6. Production --validate-bpf-obj gate: tests full type/member graph walking, positive control passes,
-     rejects BTF type_len==0, non-existent type IDs, zeroed records, and grammar violations.
+  6. Production --validate-bpf-obj gate: tests full type/member graph walking, positive control
+     with multiple distinct inputs and escaped spaces, rejects BTF type_len==0, non-existent
+     type IDs, zeroed records, grammar violations, target-only .d, and missing primary source.
   7. Production --validate-host-elf gate: positive control passes, exact DT_NEEDED {'libc.so.6'}
-     enforcement (rejecting libc.so.6.extra), and GNU_STACK non-executable stack flags.
+     enforcement (rejecting libc.so.6.extra), GNU_STACK non-executable stack flags, missing
+     BPF combined record refusal, target-only host .d, and missing primary host source.
   8. Production --evaluate-report gate: enforces all Section 7 criteria and verified on-disk logs.
 """
 
@@ -101,7 +103,7 @@ def make_dummy_lock(scratch: Path, archive_hashes: dict[str, str], header_hashes
     return p
 
 
-def build_mock_bpf_elf(scratch: Path, btf_type_len: int = 120, corrupt_relo: str | None = None) -> Path:
+def build_mock_bpf_elf(scratch: Path, btf_type_len: int = 120, corrupt_relo: str | None = None, filename: str = "mock_canary.bpf.o") -> Path:
     """Build a valid ELF64 little-endian BPF object with real .BTF, .BTF.ext, and .symtab sections."""
     shstrtab, sh_offsets = make_strtab([
         ".shstrtab", "tp_btf/sched_process_exec", ".maps", "license",
@@ -181,12 +183,12 @@ def build_mock_bpf_elf(scratch: Path, btf_type_len: int = 120, corrupt_relo: str
         + struct.pack("<HHIQQQIHHHHHH", 1, 247, 1, 0, 0, e_shoff, 0, e_ehsize, 0, 0, e_shentsize, e_shnum, e_shstrndx)
     )
 
-    out_file = scratch / "mock_canary.bpf.o"
+    out_file = scratch / filename
     out_file.write_bytes(elf_hdr + b"".join(sec_headers) + b"".join(sec_payloads))
     return out_file
 
 
-def build_mock_host_elf(scratch: Path, needed_name: str = "libc.so.6", stack_flags: int = 6) -> Path:
+def build_mock_host_elf(scratch: Path, needed_name: str = "libc.so.6", stack_flags: int = 6, filename: str = "mock_canary_host") -> Path:
     """Build a valid ELF64 x86-64 host executable with mock .dynamic, .interp, and defined symbols."""
     shstrtab, sh_offsets = make_strtab([
         ".shstrtab", ".interp", ".dynamic", ".dynstr", ".symtab", ".strtab", ".text"
@@ -260,7 +262,7 @@ def build_mock_host_elf(scratch: Path, needed_name: str = "libc.so.6", stack_fla
     data[0x700:0x700+64] = b"\x90" * 64
     data[0x800:0x800+len(sec_headers)*64] = b"".join(sec_headers)
 
-    out_file = scratch / "mock_canary_host"
+    out_file = scratch / filename
     out_file.write_bytes(data)
     return out_file
 
@@ -410,8 +412,7 @@ class TestBpfFeasibilityScript(unittest.TestCase):
             self.assertNotEqual(res.returncode, 0)
             self.assertIn("missing valid path, size, or sha256", res.stderr)
 
-            # Mutation 3: tampered header bytes strictly fail closed
-            # Mutation 3: tampered header bytes (same size, different sha) strictly fail closed
+            # Mutation 3: tampered header bytes (same-size mutation: exactly 20 bytes) strictly fails closed on SHA
             (prefix / "usr/include/bpf/bpf.h").write_bytes(b"tampered_header_byte")  # exactly 20 bytes
             res = subprocess.run(
                 ["bash", str(SCRIPT_PATH), "--validate-staged-manifest", str(lock_file), str(receipt_file), str(prefix)],
@@ -432,6 +433,7 @@ class TestBpfFeasibilityScript(unittest.TestCase):
             )
             self.assertNotEqual(res.returncode, 0)
             self.assertIn("size mismatch", res.stderr)
+
     def test_production_bpf_obj_gate_btf_validation(self) -> None:
         """Production --validate-bpf-obj gate: positive control passes, mutations strictly fail closed."""
         readelf_bin = shutil.which("readelf") or shutil.which("llvm-readelf") or "/usr/bin/readelf"
@@ -442,9 +444,11 @@ class TestBpfFeasibilityScript(unittest.TestCase):
             prefix = scratch / "prefix"
             prefix.mkdir()
             dep_file = scratch / "bpf.d"
-            dep_file.write_text(f"mock.o: {REPO_ROOT}/proof/bpf_canary.bpf.c\n")
+            # Dep file with line continuation and escaped space
+            escaped_repo = str(REPO_ROOT).replace(" ", r"\ ")
+            dep_file.write_text(f"mock.o: \\\n  {escaped_repo}/proof/bpf_canary.bpf.c \\\n  {escaped_repo}/proof/bpf_canary_types.h\n")
 
-            # Positive control: authentic mock BPF ELF passes gate completely
+            # Positive control: authentic mock BPF ELF passes gate completely with multiple inputs
             valid_bpf = build_mock_bpf_elf(scratch)
             res = subprocess.run(
                 ["bash", str(SCRIPT_PATH), "--validate-bpf-obj", readelf_bin, str(valid_bpf), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(lock_file), str(scratch)],
@@ -454,9 +458,10 @@ class TestBpfFeasibilityScript(unittest.TestCase):
             )
             self.assertEqual(res.returncode, 0)
             self.assertIn("Verified genuine .BTF.ext CO-RE relocations", res.stdout)
+            self.assertTrue((scratch / "bpf-compiled-headers.json").is_file())
 
             # Mutation 1: BTF type_len == 0 fails closed
-            bad_bpf_1 = build_mock_bpf_elf(scratch, btf_type_len=0)
+            bad_bpf_1 = build_mock_bpf_elf(scratch, btf_type_len=0, filename="bad1.o")
             res = subprocess.run(
                 ["bash", str(SCRIPT_PATH), "--validate-bpf-obj", readelf_bin, str(bad_bpf_1), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(lock_file), str(scratch)],
                 stdout=subprocess.PIPE,
@@ -467,7 +472,7 @@ class TestBpfFeasibilityScript(unittest.TestCase):
             self.assertIn(".BTF type_len is 0", res.stderr)
 
             # Mutation 2: zeroed CO-RE record fails closed
-            bad_bpf_2 = build_mock_bpf_elf(scratch, corrupt_relo="zeroed")
+            bad_bpf_2 = build_mock_bpf_elf(scratch, corrupt_relo="zeroed", filename="bad2.o")
             res = subprocess.run(
                 ["bash", str(SCRIPT_PATH), "--validate-bpf-obj", readelf_bin, str(bad_bpf_2), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(lock_file), str(scratch)],
                 stdout=subprocess.PIPE,
@@ -478,7 +483,7 @@ class TestBpfFeasibilityScript(unittest.TestCase):
             self.assertIn("Zeroed or invalid CO-RE record", res.stderr)
 
             # Mutation 3: non-existent BTF type ID fails closed
-            bad_bpf_3 = build_mock_bpf_elf(scratch, corrupt_relo="nonexistent_type")
+            bad_bpf_3 = build_mock_bpf_elf(scratch, corrupt_relo="nonexistent_type", filename="bad3.o")
             res = subprocess.run(
                 ["bash", str(SCRIPT_PATH), "--validate-bpf-obj", readelf_bin, str(bad_bpf_3), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(lock_file), str(scratch)],
                 stdout=subprocess.PIPE,
@@ -489,7 +494,7 @@ class TestBpfFeasibilityScript(unittest.TestCase):
             self.assertIn("non-existent BTF type ID", res.stderr)
 
             # Mutation 4: invalid access string grammar fails closed
-            bad_bpf_4 = build_mock_bpf_elf(scratch, corrupt_relo="bad_grammar")
+            bad_bpf_4 = build_mock_bpf_elf(scratch, corrupt_relo="bad_grammar", filename="bad4.o")
             res = subprocess.run(
                 ["bash", str(SCRIPT_PATH), "--validate-bpf-obj", readelf_bin, str(bad_bpf_4), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(lock_file), str(scratch)],
                 stdout=subprocess.PIPE,
@@ -498,6 +503,30 @@ class TestBpfFeasibilityScript(unittest.TestCase):
             )
             self.assertNotEqual(res.returncode, 0)
             self.assertIn("Invalid CO-RE access string grammar", res.stderr)
+
+            # Mutation 5: target-only .d file with no prerequisites fails closed
+            dep_target_only = scratch / "target_only.d"
+            dep_target_only.write_text("mock.o:\n")
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-bpf-obj", readelf_bin, str(valid_bpf), str(dep_target_only), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(lock_file), str(scratch)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("contains no prerequisites (target-only)", res.stderr)
+
+            # Mutation 6: missing primary source in .d fails closed
+            dep_no_src = scratch / "no_src.d"
+            dep_no_src.write_text(f"mock.o: {escaped_repo}/proof/bpf_canary_types.h\n")
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-bpf-obj", readelf_bin, str(valid_bpf), str(dep_no_src), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(lock_file), str(scratch)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("missing primary source bpf_canary.bpf.c", res.stderr)
 
     def test_production_host_elf_gate_validation(self) -> None:
         """Production --validate-host-elf gate: positive control passes, mutations strictly fail closed."""
@@ -509,7 +538,13 @@ class TestBpfFeasibilityScript(unittest.TestCase):
             prefix = scratch / "prefix"
             prefix.mkdir()
             dep_file = scratch / "host.d"
-            dep_file.write_text(f"mock_host.o: {REPO_ROOT}/proof/bpf_canary_host.c\n")
+            escaped_repo = str(REPO_ROOT).replace(" ", r"\ ")
+            dep_file.write_text(f"mock_host.o: {escaped_repo}/proof/bpf_canary_host.c\n")
+
+            # Seed bpf-compiled-headers.json in scratch as required by dual graph merge contract
+            (scratch / "bpf-compiled-headers.json").write_text(json.dumps({
+                f"{REPO_ROOT}/proof/bpf_canary.bpf.c": {"sha256": "0" * 64, "size": 100}
+            }))
 
             # Positive control: authentic mock host binary passes gate completely
             valid_host = build_mock_host_elf(scratch)
@@ -521,9 +556,10 @@ class TestBpfFeasibilityScript(unittest.TestCase):
             )
             self.assertEqual(res.returncode, 0)
             self.assertIn("Validated Host helper binary", res.stdout)
+            self.assertTrue((scratch / "compiled-headers.json").is_file())
 
             # Mutation 1: libc.so.6.extra substring rejected by exact set equality
-            bad_host_1 = build_mock_host_elf(scratch, needed_name="libc.so.6.extra")
+            bad_host_1 = build_mock_host_elf(scratch, needed_name="libc.so.6.extra", filename="bad_host_1")
             res = subprocess.run(
                 ["bash", str(SCRIPT_PATH), "--validate-host-elf", readelf_bin, str(bad_host_1), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(scratch), str(lock_file)],
                 stdout=subprocess.PIPE,
@@ -534,7 +570,7 @@ class TestBpfFeasibilityScript(unittest.TestCase):
             self.assertIn("Disallowed dynamic dependencies in host helper", res.stderr)
 
             # Mutation 2: executable stack (RWE) rejected
-            bad_host_2 = build_mock_host_elf(scratch, stack_flags=7)
+            bad_host_2 = build_mock_host_elf(scratch, stack_flags=7, filename="bad_host_2")
             res = subprocess.run(
                 ["bash", str(SCRIPT_PATH), "--validate-host-elf", readelf_bin, str(bad_host_2), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(scratch), str(lock_file)],
                 stdout=subprocess.PIPE,
@@ -543,6 +579,17 @@ class TestBpfFeasibilityScript(unittest.TestCase):
             )
             self.assertNotEqual(res.returncode, 0)
             self.assertIn("EXECUTABLE STACK", res.stderr)
+
+            # Mutation 3: missing BPF combined record fails closed
+            (scratch / "bpf-compiled-headers.json").unlink()
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-host-elf", readelf_bin, str(valid_host), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(scratch), str(lock_file)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("Missing or empty BPF compiled headers record", res.stderr)
 
     def test_production_report_evaluator_gate(self) -> None:
         """Actual production report evaluator gate enforces Section 7 criteria and log files."""
@@ -639,7 +686,7 @@ class TestBpfFeasibilityScript(unittest.TestCase):
 
             # Mutation 1: missing verifier log file fails
             bad_report = json.loads(json.dumps(valid_report))
-            bad_report["verifier_evidence"]["log_file"] = str(scratch / "nonexistent.log")
+            bad_report["verifier_evidence"]["log_file"] = str(scratch / "missing.log")
             status_path.write_text(json.dumps(bad_report))
             res = subprocess.run(
                 ["bash", str(SCRIPT_PATH), "--evaluate-report", str(status_path)],

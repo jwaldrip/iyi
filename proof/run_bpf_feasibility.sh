@@ -515,31 +515,57 @@ allowed_prefixes = [
 if not os.path.exists(bpf_dep) or os.path.getsize(bpf_dep) == 0:
     sys.exit("ERROR: BPF dependency file missing or empty")
 
-def extract_dep_paths(dep_text):
-    content = dep_text.replace("\\\n", " ").replace(r"\ ", "\0")
-    raw_tokens = content.split()
-    tokens = [t.replace("\0", " ") for t in raw_tokens]
-    merged = []
+def parse_make_depfile(dep_text):
+    colon_idx = dep_text.find(":")
+    if colon_idx != -1:
+        dep_text = dep_text[colon_idx + 1:]
+    tokens = []
+    curr_token = []
     i = 0
-    while i < len(tokens):
-        tok = tokens[i]
-        combined = tok
-        j = i + 1
-        while j < len(tokens):
-            test_combined = combined + " " + tokens[j]
-            if os.path.exists(test_combined) or any(test_combined.startswith(p) or p.startswith(test_combined) for p in allowed_prefixes):
-                combined = test_combined
-                j += 1
+    n = len(dep_text)
+    while i < n:
+        c = dep_text[i]
+        if c == "\\":
+            if i + 1 < n:
+                next_c = dep_text[i + 1]
+                if next_c == "\n":
+                    i += 2
+                    continue
+                elif next_c == "\r" and i + 2 < n and dep_text[i + 2] == "\n":
+                    i += 3
+                    continue
+                elif next_c in (" ", "\\", "#", ":"):
+                    curr_token.append(next_c)
+                    i += 2
+                    continue
+                else:
+                    curr_token.append(c)
+                    i += 1
+                    continue
             else:
-                break
-        merged.append(combined)
-        i = j
-    return [t for t in merged if not (t.endswith(":") or t.endswith(".o:"))]
+                i += 1
+                continue
+        elif c.isspace():
+            if curr_token:
+                tokens.append("".join(curr_token))
+                curr_token = []
+            i += 1
+        else:
+            curr_token.append(c)
+            i += 1
+    if curr_token:
+        tokens.append("".join(curr_token))
+    return tokens
 
 bpf_compiled_headers = {}
 with open(bpf_dep, "r", encoding="utf-8") as f:
-    dep_paths = extract_dep_paths(f.read())
+    dep_paths = parse_make_depfile(f.read())
 
+if not dep_paths:
+    sys.exit("ERROR: BPF dependency file contains no prerequisites (target-only)")
+
+if not any(tok.endswith("bpf_canary.bpf.c") or "bpf_canary.bpf.c" in tok for tok in dep_paths):
+    sys.exit("ERROR: BPF object dependency graph missing primary source bpf_canary.bpf.c")
 for tok in dep_paths:
     p = pathlib.Path(tok).resolve()
     p_str = str(p)
@@ -701,39 +727,65 @@ allowed_prefixes = [
     str(repo_path),
 ]
 
-# Load bpf-compiled-headers.json if present and merge
+# Load bpf-compiled-headers.json (must exist and be non-empty)
 bpf_headers_file = pathlib.Path(owned_dir) / "bpf-compiled-headers.json"
-bpf_compiled = {}
-if bpf_headers_file.is_file():
-    bpf_compiled = json.loads(bpf_headers_file.read_text(encoding="utf-8"))
+if not bpf_headers_file.is_file() or os.path.getsize(bpf_headers_file) == 0:
+    sys.exit("ERROR: Missing or empty BPF compiled headers record; cannot merge dual dependency graphs")
 
+bpf_compiled = json.loads(bpf_headers_file.read_text(encoding="utf-8"))
 compiled_source_header_digests = {**bpf_compiled}
-
 if not os.path.exists(host_dep) or os.path.getsize(host_dep) == 0:
     sys.exit("ERROR: Host helper dependency file missing or empty")
-def extract_host_dep_paths(dep_text):
-    content = dep_text.replace("\\\n", " ").replace(r"\ ", "\0")
-    raw_tokens = content.split()
-    tokens = [t.replace("\0", " ") for t in raw_tokens]
-    merged = []
+
+def parse_make_depfile(dep_text):
+    colon_idx = dep_text.find(":")
+    if colon_idx != -1:
+        dep_text = dep_text[colon_idx + 1:]
+    tokens = []
+    curr_token = []
     i = 0
-    while i < len(tokens):
-        tok = tokens[i]
-        combined = tok
-        j = i + 1
-        while j < len(tokens):
-            test_combined = combined + " " + tokens[j]
-            if os.path.exists(test_combined) or any(test_combined.startswith(p) or p.startswith(test_combined) for p in allowed_prefixes):
-                combined = test_combined
-                j += 1
+    n = len(dep_text)
+    while i < n:
+        c = dep_text[i]
+        if c == "\\":
+            if i + 1 < n:
+                next_c = dep_text[i + 1]
+                if next_c == "\n":
+                    i += 2
+                    continue
+                elif next_c == "\r" and i + 2 < n and dep_text[i + 2] == "\n":
+                    i += 3
+                    continue
+                elif next_c in (" ", "\\", "#", ":"):
+                    curr_token.append(next_c)
+                    i += 2
+                    continue
+                else:
+                    curr_token.append(c)
+                    i += 1
+                    continue
             else:
-                break
-        merged.append(combined)
-        i = j
-    return [t for t in merged if not (t.endswith(":") or t.endswith(".o:"))]
+                i += 1
+                continue
+        elif c.isspace():
+            if curr_token:
+                tokens.append("".join(curr_token))
+                curr_token = []
+            i += 1
+        else:
+            curr_token.append(c)
+            i += 1
+    if curr_token:
+        tokens.append("".join(curr_token))
+    return tokens
 
 with open(host_dep, "r", encoding="utf-8") as f:
-    host_dep_paths = extract_host_dep_paths(f.read())
+    host_dep_paths = parse_make_depfile(f.read())
+if not host_dep_paths:
+    sys.exit("ERROR: Host helper dependency file contains no prerequisites (target-only)")
+
+if not any(tok.endswith("bpf_canary_host.c") or "bpf_canary_host.c" in tok for tok in host_dep_paths):
+    sys.exit("ERROR: Host helper dependency graph missing primary source bpf_canary_host.c")
 
 for tok in host_dep_paths:
     p = pathlib.Path(tok).resolve()
