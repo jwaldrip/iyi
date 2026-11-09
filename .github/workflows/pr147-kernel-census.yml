@@ -1,0 +1,39 @@
+name: Read-only kernel support census
+
+on:
+  push:
+    branches: [proof/pr147-kernel-census-20261109]
+    paths: [.github/workflows/pr147-kernel-census.yml]
+
+permissions: {}
+
+jobs:
+  census:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Report kernel support without modifying the runner
+        shell: bash
+        run: |
+          set -eu
+          echo 'schema=iyi-kernel-census-v1 strict_eligible=false'
+          uname -a
+          for path in /sys/fs/ext4/features/verity /proc/config.gz /boot/config-$(uname -r); do
+            if [ -r "$path" ]; then
+              if [ "$path" = /proc/config.gz ]; then
+                if command -v zgrep >/dev/null 2>&1; then
+                  zgrep -E '^CONFIG_FS_VERITY=|^# CONFIG_FS_VERITY is not set' "$path" || true
+                else
+                  echo "$path: zgrep unavailable"
+                fi
+              elif [ "$path" = /sys/fs/ext4/features/verity ]; then
+                printf '%s: ' "$path"
+                cat "$path" || echo 'unreadable'
+              else
+                grep -E '^CONFIG_FS_VERITY=|^# CONFIG_FS_VERITY is not set' "$path" || true
+              fi
+            else
+              echo "$path: missing or unreadable"
+            fi
+          done
+          echo 'A config or sysfs advertisement does not prove fs-verity on any mounted filesystem.'
