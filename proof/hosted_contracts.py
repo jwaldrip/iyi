@@ -1767,7 +1767,43 @@ def validate_execution_context_to_manifest(context: ExecutionContext, manifest: 
         )
 
 
-def validate_checkpoint_to_context(
+def derive_expected_stage_timeout_sec(resource_policy: ResourcePolicy, stage: str) -> int:
+    """Return the approved resource timeout for the given stage name."""
+    stage_map = {
+        "build": resource_policy.stage_build_limit_sec,
+        "version": resource_policy.stage_version_limit_sec,
+        "plan": resource_policy.stage_plan_limit_sec,
+        "pin": resource_policy.stage_pin_limit_sec,
+        "run1": resource_policy.stage_run1_limit_sec,
+        "run2": resource_policy.stage_run2_limit_sec,
+        "final": resource_policy.stage_final_limit_sec,
+    }
+    return stage_map.get(stage, resource_policy.driver_limit_sec)
+
+
+def derive_expected_effective_policy(subject: ExecutionSubject, stage: str) -> Dict[str, Any]:
+    """Derive the canonical approved effective execution policy from subject and stage."""
+    timeout_sec = derive_expected_stage_timeout_sec(subject.resource_policy, stage)
+    return {
+        "timeout": timeout_sec,
+        "timeout_sec": timeout_sec,
+        "grace_sec": subject.resource_policy.grace_sec,
+        "uid": subject.cage_policy.uid,
+        "gid": subject.cage_policy.gid,
+        "network": subject.cage_policy.network,
+        "read_only_root": subject.cage_policy.read_only_root,
+        "drop_capabilities": subject.cage_policy.drop_capabilities,
+        "no_new_privileges": subject.cage_policy.no_new_privileges,
+        "private_pid_namespace": subject.cage_policy.private_pid_namespace,
+        "default_confined_seccomp": subject.cage_policy.default_confined_seccomp,
+        "init_process": subject.cage_policy.init_process,
+        "pids_limit": subject.cage_policy.pids_limit,
+        "tmpfs_tmp_size": subject.cage_policy.tmpfs_tmp_size,
+        "tmpfs_dev_shm_size": subject.cage_policy.tmpfs_dev_shm_size,
+    }
+
+
+def validate_structural_checkpoint_to_context(
     checkpoint: CheckpointDescriptor,
     context: ExecutionContext,
     manifest: ProofManifest,
@@ -1776,8 +1812,11 @@ def validate_checkpoint_to_context(
     teardown_disposition: Optional[TeardownDisposition] = None,
 ) -> None:
     """
-    Validate that CheckpointDescriptor cryptographically binds to manifest and execution context,
-    enforcing C-owned launch ownership, exact approved policy join, and resolved teardown on PASS.
+    Structural validation of CheckpointDescriptor against execution context and ProofManifest.
+    Enforces launch ownership bindings, approved subject effective policy join, and resolved teardown on PASS.
+    Note: Structural validation checks internal cryptographic consistency and parameter equality;
+    it does NOT constitute verified C-owned authority or custody until produced and verified
+    by an authenticated container supervisor session.
     """
     if not isinstance(checkpoint, CheckpointDescriptor):
         raise TypeValidationError(f"Expected CheckpointDescriptor, got {type(checkpoint).__name__}")
@@ -1807,6 +1846,15 @@ def validate_checkpoint_to_context(
             f"CheckpointDescriptor execution_context_digest mismatch: expected {ctx_digest}, got {checkpoint.execution_context_digest}"
         )
 
+    # Enforce effective policy join against canonical approved subject settings
+    expected_policy = derive_expected_effective_policy(manifest.subject, checkpoint.stage)
+    cp_policy = dict(checkpoint.effective_policy)
+    for k, v in cp_policy.items():
+        if k in expected_policy and v != expected_policy[k]:
+            raise ReferenceIntegrityError(
+                f"Checkpoint effective_policy[{k!r}] ({v}) contradicts approved subject policy ({expected_policy[k]})"
+            )
+
     # Validate launch receipt if provided or required
     if launch_receipt is not None:
         if not isinstance(launch_receipt, StructuralLaunchOwnershipReceipt):
@@ -1830,19 +1878,12 @@ def validate_checkpoint_to_context(
                 f"does not match checkpoint effective_policy digest ({checkpoint_policy_digest})"
             )
 
-    # Validate teardown disposition if provided
+    # Normalize and validate teardown disposition from explicit argument or checkpoint retained evidence
+    resolved_td: Optional[TeardownDisposition] = None
     if teardown_disposition is not None:
         if not isinstance(teardown_disposition, TeardownDisposition):
             raise TypeValidationError(f"Expected TeardownDisposition, got {type(teardown_disposition).__name__}")
-        if teardown_disposition.launch_id != checkpoint.launch_id:
-            raise ReferenceIntegrityError(
-                f"TeardownDisposition launch_id ({teardown_disposition.launch_id}) does not match checkpoint ({checkpoint.launch_id})"
-            )
-        if launch_receipt is not None and teardown_disposition.container_id != launch_receipt.container_id:
-            raise ReferenceIntegrityError(
-                f"TeardownDisposition container_id ({teardown_disposition.container_id}) does not match launch_receipt ({launch_receipt.container_id})"
-            )
-        # Ensure checkpoint retained teardown does not contradict supplied disposition
+        resolved_td = teardown_disposition
         if checkpoint.teardown_disposition:
             checkpoint_td = TeardownDisposition.from_dict(dict(checkpoint.teardown_disposition))
             if checkpoint_td != teardown_disposition:
@@ -1850,6 +1891,22 @@ def validate_checkpoint_to_context(
                     f"Checkpoint retained teardown_disposition contradicts supplied TeardownDisposition: "
                     f"{checkpoint_td} != {teardown_disposition}"
                 )
+    elif checkpoint.teardown_disposition:
+        try:
+            resolved_td = TeardownDisposition.from_dict(dict(checkpoint.teardown_disposition))
+        except (TypeValidationError, UnknownFieldError) as exc:
+            raise ReferenceIntegrityError(f"Checkpoint retained teardown_disposition invalid: {exc}") from exc
+
+    # Enforce identity checks on resolved_td irrespective of source
+    if resolved_td is not None:
+        if resolved_td.launch_id != checkpoint.launch_id:
+            raise ReferenceIntegrityError(
+                f"TeardownDisposition launch_id ({resolved_td.launch_id}) does not match checkpoint ({checkpoint.launch_id})"
+            )
+        if launch_receipt is not None and resolved_td.container_id != launch_receipt.container_id:
+            raise ReferenceIntegrityError(
+                f"TeardownDisposition container_id ({resolved_td.container_id}) does not match launch_receipt ({launch_receipt.container_id})"
+            )
 
     # Enforce outcome and teardown consistency
     if checkpoint.outcome == "PASS":
@@ -1861,20 +1918,15 @@ def validate_checkpoint_to_context(
         if launch_receipt is None:
             raise ReferenceIntegrityError("Checkpoint PASS requires a valid StructuralLaunchOwnershipReceipt")
         # PASS strictly requires an explicit, verified, resolved TeardownDisposition
-        td_to_check = teardown_disposition
-        if td_to_check is None and checkpoint.teardown_disposition:
-            try:
-                td_to_check = TeardownDisposition.from_dict(dict(checkpoint.teardown_disposition))
-            except (TypeValidationError, UnknownFieldError) as exc:
-                raise ReferenceIntegrityError(f"Checkpoint PASS has invalid teardown disposition: {exc}") from exc
-
-        if td_to_check is None:
+        if resolved_td is None:
             raise ReferenceIntegrityError("Checkpoint PASS requires resolved TeardownDisposition, but none was provided or found")
-        if not td_to_check.is_resolved():
+        if not resolved_td.is_resolved():
             raise ReferenceIntegrityError(
-                f"Checkpoint PASS outcome requires resolved teardown (stopped=True, removed=True, clean_exit=True, unresolved=0), got: {td_to_check}"
+                f"Checkpoint PASS outcome requires resolved teardown (stopped=True, removed=True, clean_exit=True, unresolved=0), got: {resolved_td}"
             )
 
+
+validate_checkpoint_to_context = validate_structural_checkpoint_to_context
 # Refusal Policy Enforcements (Spec 3.1)
 def enforce_independent_review_refusal() -> None:
     """Unconditionally refuse execution because independent review attestation is not yet integrated."""

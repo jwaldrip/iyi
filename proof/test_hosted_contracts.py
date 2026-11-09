@@ -890,7 +890,7 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
             "platform_response_digests": {"approvals": "c" * 64},
         }
         ctx = ExecutionContext.from_dict(ctx_data)
-        pol_digest = sha256_bytes(canonical_json_bytes({"timeout": 2100}))
+        pol_digest = sha256_bytes(canonical_json_bytes({"timeout": 1800}))
         receipt = StructuralLaunchOwnershipReceipt(
             launch_id="launch-001",
             execution_context_digest=ctx.digest(),
@@ -919,7 +919,7 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
             "outcome": "PASS",
             "chain_id": "chain-123",
             "compiler_sha256": "d" * 64,
-            "effective_policy": {"timeout": 2100},
+            "effective_policy": {"timeout": 1800},
             "teardown_disposition": td.to_dict(),
             "evidence_digests": {"report.tar.gz": "e" * 64},
             "timestamp": "2026-11-09T00:01:00Z",
@@ -976,7 +976,7 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
             "outcome": "PASS",
             "chain_id": "chain-123",
             "compiler_sha256": "d" * 64,
-            "effective_policy": {"timeout": 2100},
+            "effective_policy": {"timeout": 1800},
             "teardown_disposition": td.to_dict(),
             "evidence_digests": {"report.tar.gz": "e" * 64},
             "timestamp": "2026-11-09T00:01:00Z",
@@ -1028,7 +1028,7 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
             "outcome": "PASS",
             "chain_id": "chain-123",
             "compiler_sha256": "d" * 64,
-            "effective_policy": {"timeout": 2100},
+            "effective_policy": {"timeout": 1800},
             "teardown_disposition": td.to_dict(),
             "evidence_digests": {"report.tar.gz": "e" * 64},
             "timestamp": "2026-11-09T00:01:00Z",
@@ -1052,7 +1052,7 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
             "platform_response_digests": {"approvals": "c" * 64},
         }
         ctx = ExecutionContext.from_dict(ctx_data)
-        pol_digest = sha256_bytes(canonical_json_bytes({"timeout": 2100}))
+        pol_digest = sha256_bytes(canonical_json_bytes({"timeout": 1800}))
         receipt = StructuralLaunchOwnershipReceipt(
             launch_id="launch-001",
             execution_context_digest=ctx.digest(),
@@ -1074,7 +1074,7 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
             "outcome": "PASS",
             "chain_id": "chain-123",
             "compiler_sha256": "d" * 64,
-            "effective_policy": {"timeout": 2100},
+            "effective_policy": {"timeout": 1800},
             "teardown_disposition": {
                 "launch_id": "launch-001",
                 "container_id": "cont-123",
@@ -1114,7 +1114,7 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
             "platform_response_digests": {"approvals": "c" * 64},
         }
         ctx = ExecutionContext.from_dict(ctx_data)
-        pol_digest = sha256_bytes(canonical_json_bytes({"timeout": 2100}))
+        pol_digest = sha256_bytes(canonical_json_bytes({"timeout": 1800}))
         receipt = StructuralLaunchOwnershipReceipt(
             launch_id="launch-001",
             execution_context_digest=ctx.digest(),
@@ -1137,8 +1137,8 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
             "outcome": "PASS",
             "chain_id": "chain-123",
             "compiler_sha256": "d" * 64,
-            "effective_policy": {"timeout": 2100},
-            "teardown_disposition": {},
+            "effective_policy": {"timeout": 1800},
+            "teardown_disposition": {"launch_id": "launch-001", "container_id": "cont-123", "containers_stopped": True, "containers_removed": True, "clean_exit": True, "unresolved_processes": 0},
             "evidence_digests": {"report.tar.gz": "e" * 64},
             "timestamp": "2026-11-09T00:01:00Z",
         }
@@ -1173,7 +1173,7 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
             "outcome": "FAIL",
             "chain_id": "chain-123",
             "compiler_sha256": "d" * 64,
-            "effective_policy": {"timeout": 2100},
+            "effective_policy": {"timeout": 1800},
             "teardown_disposition": {
                 "launch_id": "launch-001",
                 "container_id": "cont-123",
@@ -1209,7 +1209,7 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
             container_id="cont-123",
             stage="run1",
             attempt=1,
-            effective_policy_digest=sha256_bytes(canonical_json_bytes({"timeout": 2100})),
+            effective_policy_digest=sha256_bytes(canonical_json_bytes({"timeout": 1800})),
         )
         desc_data = {
             "manifest_digest": self.manifest.digest(),
@@ -1223,7 +1223,7 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
             "outcome": "PASS",
             "chain_id": "chain-123",
             "compiler_sha256": "d" * 64,
-            "effective_policy": {"timeout": 2100},
+            "effective_policy": {"timeout": 1800},
             "teardown_disposition": {},
             "evidence_digests": {"report.tar.gz": "e" * 64},
             "timestamp": "2026-11-09T00:01:00Z",
@@ -1247,7 +1247,7 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
             "platform_response_digests": {"approvals": "c" * 64},
         }
         ctx = ExecutionContext.from_dict(ctx_data)
-        pol_digest = sha256_bytes(canonical_json_bytes({"timeout": 2100}))
+        pol_digest = sha256_bytes(canonical_json_bytes({"timeout": 1800}))
         receipt = StructuralLaunchOwnershipReceipt(
             launch_id="launch-001",
             execution_context_digest=ctx.digest(),
@@ -1276,7 +1276,7 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
             "outcome": "PASS",
             "chain_id": "chain-123",
             "compiler_sha256": "d" * 64,
-            "effective_policy": {"timeout": 2100},
+            "effective_policy": {"timeout": 1800},
             "teardown_disposition": td.to_dict(),
             "evidence_digests": {"report.tar.gz": "e" * 64},
             "timestamp": "2026-11-09T00:01:00Z",
@@ -1300,7 +1300,7 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
             "platform_response_digests": {"approvals": "c" * 64},
         }
         ctx = ExecutionContext.from_dict(ctx_data)
-        pol_digest = sha256_bytes(canonical_json_bytes({"timeout": 2100}))
+        pol_digest = sha256_bytes(canonical_json_bytes({"timeout": 1800}))
         receipt = StructuralLaunchOwnershipReceipt(
             launch_id="launch-002",
             execution_context_digest=ctx.digest(),
@@ -1329,7 +1329,167 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
             "outcome": "PASS",
             "chain_id": "chain-123",
             "compiler_sha256": "d" * 64,
-            "effective_policy": {"timeout": 2100},
+            "effective_policy": {"timeout": 1800},
+            "teardown_disposition": td.to_dict(),
+            "evidence_digests": {"report.tar.gz": "e" * 64},
+            "timestamp": "2026-11-09T00:01:00Z",
+        }
+        desc = CheckpointDescriptor.from_dict(desc_data)
+        with self.assertRaises(ReferenceIntegrityError):
+            validate_checkpoint_to_context(desc, ctx, self.manifest, launch_receipt=receipt, teardown_disposition=td)
+
+    def test_checkpoint_to_context_rejects_fallback_teardown_wrong_launch_id(self):
+        ctx_data = {
+            "manifest_digest": self.manifest.digest(),
+            "subject_digest": self.subject.digest(),
+            "repository": self.subject.repository,
+            "run_id": self.subject.run_id,
+            "run_attempt": self.subject.run_attempt,
+            "job_key": self.subject.job_key,
+            "job_id": "999888",
+            "runner_identity": "ubuntu-24.04-runner-01",
+            "job_started_at_iso": "2026-11-09T00:00:00Z",
+            "job_started_at_epoch": 1794182400.0,
+            "platform_response_digests": {"approvals": "c" * 64},
+        }
+        ctx = ExecutionContext.from_dict(ctx_data)
+        pol_digest = sha256_bytes(canonical_json_bytes({"timeout": 1800}))
+        receipt = StructuralLaunchOwnershipReceipt(
+            launch_id="launch-001",
+            execution_context_digest=ctx.digest(),
+            container_id="cont-123",
+            stage="run1",
+            attempt=1,
+            effective_policy_digest=pol_digest,
+        )
+        # Fallback teardown in checkpoint has wrong launch_id!
+        desc_data = {
+            "manifest_digest": self.manifest.digest(),
+            "subject_digest": self.subject.digest(),
+            "execution_context_digest": ctx.digest(),
+            "launch_id": "launch-001",
+            "stage": "run1",
+            "attempt": 1,
+            "command": ["python3", "-I", "-B", "proof/run_proof.py"],
+            "exit_code": 0,
+            "outcome": "PASS",
+            "chain_id": "chain-123",
+            "compiler_sha256": "d" * 64,
+            "effective_policy": {"timeout": 1800},
+            "teardown_disposition": {
+                "launch_id": "wrong-launch-id",
+                "container_id": "cont-123",
+                "containers_stopped": True,
+                "containers_removed": True,
+                "clean_exit": True,
+                "unresolved_processes": 0,
+            },
+            "evidence_digests": {"report.tar.gz": "e" * 64},
+            "timestamp": "2026-11-09T00:01:00Z",
+        }
+        desc = CheckpointDescriptor.from_dict(desc_data)
+        with self.assertRaises(ReferenceIntegrityError):
+            validate_checkpoint_to_context(desc, ctx, self.manifest, launch_receipt=receipt, teardown_disposition=None)
+
+    def test_checkpoint_to_context_rejects_fallback_teardown_wrong_container_id(self):
+        ctx_data = {
+            "manifest_digest": self.manifest.digest(),
+            "subject_digest": self.subject.digest(),
+            "repository": self.subject.repository,
+            "run_id": self.subject.run_id,
+            "run_attempt": self.subject.run_attempt,
+            "job_key": self.subject.job_key,
+            "job_id": "999888",
+            "runner_identity": "ubuntu-24.04-runner-01",
+            "job_started_at_iso": "2026-11-09T00:00:00Z",
+            "job_started_at_epoch": 1794182400.0,
+            "platform_response_digests": {"approvals": "c" * 64},
+        }
+        ctx = ExecutionContext.from_dict(ctx_data)
+        pol_digest = sha256_bytes(canonical_json_bytes({"timeout": 1800}))
+        receipt = StructuralLaunchOwnershipReceipt(
+            launch_id="launch-001",
+            execution_context_digest=ctx.digest(),
+            container_id="cont-123",
+            stage="run1",
+            attempt=1,
+            effective_policy_digest=pol_digest,
+        )
+        # Fallback teardown in checkpoint has wrong container_id!
+        desc_data = {
+            "manifest_digest": self.manifest.digest(),
+            "subject_digest": self.subject.digest(),
+            "execution_context_digest": ctx.digest(),
+            "launch_id": "launch-001",
+            "stage": "run1",
+            "attempt": 1,
+            "command": ["python3", "-I", "-B", "proof/run_proof.py"],
+            "exit_code": 0,
+            "outcome": "PASS",
+            "chain_id": "chain-123",
+            "compiler_sha256": "d" * 64,
+            "effective_policy": {"timeout": 1800},
+            "teardown_disposition": {
+                "launch_id": "launch-001",
+                "container_id": "wrong-container-id",
+                "containers_stopped": True,
+                "containers_removed": True,
+                "clean_exit": True,
+                "unresolved_processes": 0,
+            },
+            "evidence_digests": {"report.tar.gz": "e" * 64},
+            "timestamp": "2026-11-09T00:01:00Z",
+        }
+        desc = CheckpointDescriptor.from_dict(desc_data)
+        with self.assertRaises(ReferenceIntegrityError):
+            validate_checkpoint_to_context(desc, ctx, self.manifest, launch_receipt=receipt, teardown_disposition=None)
+
+    def test_checkpoint_to_context_rejects_effective_policy_contradicting_approved_subject(self):
+        ctx_data = {
+            "manifest_digest": self.manifest.digest(),
+            "subject_digest": self.subject.digest(),
+            "repository": self.subject.repository,
+            "run_id": self.subject.run_id,
+            "run_attempt": self.subject.run_attempt,
+            "job_key": self.subject.job_key,
+            "job_id": "999888",
+            "runner_identity": "ubuntu-24.04-runner-01",
+            "job_started_at_iso": "2026-11-09T00:00:00Z",
+            "job_started_at_epoch": 1794182400.0,
+            "platform_response_digests": {"approvals": "c" * 64},
+        }
+        ctx = ExecutionContext.from_dict(ctx_data)
+        # Wrong timeout (99999 != 2100 / stage timeout)! Even if receipt digest matches!
+        pol_digest = sha256_bytes(canonical_json_bytes({"timeout": 99999}))
+        receipt = StructuralLaunchOwnershipReceipt(
+            launch_id="launch-001",
+            execution_context_digest=ctx.digest(),
+            container_id="cont-123",
+            stage="run1",
+            attempt=1,
+            effective_policy_digest=pol_digest,
+        )
+        td = TeardownDisposition(
+            launch_id="launch-001",
+            container_id="cont-123",
+            containers_stopped=True,
+            containers_removed=True,
+            clean_exit=True,
+            unresolved_processes=0,
+        )
+        desc_data = {
+            "manifest_digest": self.manifest.digest(),
+            "subject_digest": self.subject.digest(),
+            "execution_context_digest": ctx.digest(),
+            "launch_id": "launch-001",
+            "stage": "run1",
+            "attempt": 1,
+            "command": ["python3", "-I", "-B", "proof/run_proof.py"],
+            "exit_code": 0,
+            "outcome": "PASS",
+            "chain_id": "chain-123",
+            "compiler_sha256": "d" * 64,
+            "effective_policy": {"timeout": 99999},  # Contradicts approved subject policy!
             "teardown_disposition": td.to_dict(),
             "evidence_digests": {"report.tar.gz": "e" * 64},
             "timestamp": "2026-11-09T00:01:00Z",
