@@ -55,15 +55,20 @@ int e3_channel_init(struct e3_channel *c, int fd, pid_t pid, uid_t uid,
       peer.pid != pid || peer.uid != uid || peer.gid != gid)
     return fail();
   int flags = fcntl(fd, F_GETFD);
+  int passcred = 1;
   struct timeval tv = {.tv_sec = timeout_ms / 1000,
                        .tv_usec = (timeout_ms % 1000) * 1000};
   if (flags < 0 || fcntl(fd, F_SETFD, flags | FD_CLOEXEC) ||
+      setsockopt(fd, SOL_SOCKET, SO_PASSCRED, &passcred, sizeof(passcred)) ||
       setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) ||
       setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)))
     return -1;
   c->fd = fd;
   c->next_send = 0;
   c->next_recv = 0;
+  c->peer_pid = pid;
+  c->peer_uid = uid;
+  c->peer_gid = gid;
   return 0;
 }
 void e3_channel_close(struct e3_channel *c) {
@@ -95,10 +100,12 @@ int e3_channel_send(struct e3_channel *c, uint32_t type, const void *payload,
 int e3_channel_receive(struct e3_channel *c, uint32_t *type, void *payload,
                        size_t capacity, size_t *length) {
   unsigned char frame[HEADER + E3_FRAME_MAX];
-  /* Ancillary data is forbidden, but received rights must still be closed. */
+  /* Per-message kernel credentials are required; transferred rights are
+   * forbidden and must still be closed before rejecting the frame. */
   union {
     struct cmsghdr align;
-    unsigned char bytes[CMSG_SPACE(256 * sizeof(int))];
+    unsigned char
+        bytes[CMSG_SPACE(256 * sizeof(int)) + CMSG_SPACE(sizeof(struct ucred))];
   } control;
   struct iovec iov = {.iov_base = frame, .iov_len = sizeof(frame)};
   struct msghdr msg = {.msg_iov = &iov,
@@ -109,10 +116,20 @@ int e3_channel_receive(struct e3_channel *c, uint32_t *type, void *payload,
       c->next_recv == UINT64_MAX)
     return fail();
   ssize_t n = recvmsg(c->fd, &msg, MSG_CMSG_CLOEXEC);
-  int ancillary = 0;
+  int invalid_ancillary = 0, credentials = 0;
   if (n >= 0) {
     for (struct cmsghdr *h = CMSG_FIRSTHDR(&msg); h; h = CMSG_NXTHDR(&msg, h)) {
-      ancillary = 1;
+      if (h->cmsg_level == SOL_SOCKET && h->cmsg_type == SCM_CREDENTIALS &&
+          h->cmsg_len == CMSG_LEN(sizeof(struct ucred))) {
+        struct ucred sender;
+        memcpy(&sender, CMSG_DATA(h), sizeof(sender));
+        credentials++;
+        if (sender.pid != c->peer_pid || sender.uid != c->peer_uid ||
+            sender.gid != c->peer_gid)
+          invalid_ancillary = 1;
+        continue;
+      }
+      invalid_ancillary = 1;
       if (h->cmsg_level == SOL_SOCKET && h->cmsg_type == SCM_RIGHTS &&
           h->cmsg_len >= CMSG_LEN(0)) {
         size_t count = (h->cmsg_len - CMSG_LEN(0)) / sizeof(int);
@@ -123,8 +140,9 @@ int e3_channel_receive(struct e3_channel *c, uint32_t *type, void *payload,
     }
   }
   if (n < (ssize_t)HEADER || (msg.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) ||
-      ancillary || get32(frame) != E3_FRAME_MAGIC || !get32(frame + 4) ||
-      get64(frame + 12) != c->next_recv || get32(frame + 8) > E3_FRAME_MAX ||
+      invalid_ancillary || credentials != 1 || get32(frame) != E3_FRAME_MAGIC ||
+      !get32(frame + 4) || get64(frame + 12) != c->next_recv ||
+      get32(frame + 8) > E3_FRAME_MAX ||
       (size_t)n != HEADER + get32(frame + 8) || get32(frame + 8) > capacity) {
     e3_channel_close(c);
     return fail();
@@ -152,6 +170,10 @@ static int matches(const struct e3_custody *c, const struct stat *s) {
          c->id.inode == (uint64_t)s->st_ino &&
          c->id.size == (uint64_t)s->st_size;
 }
+static int readonly_fd(int fd) {
+  int flags = fcntl(fd, F_GETFL);
+  return flags >= 0 && !(flags & O_PATH) && (flags & O_ACCMODE) == O_RDONLY;
+}
 int e3_custody_bind(struct e3_custody *c, int output, int reference,
                     uint64_t max) {
   struct stat a, b;
@@ -166,8 +188,9 @@ int e3_custody_bind(struct e3_custody *c, int output, int reference,
     close(out);
     return -1;
   }
-  if (object_stat(out, &a, max) || object_stat(ref, &b, max) ||
-      a.st_nlink < 2 || b.st_nlink < 2 || !same(&a, &b)) {
+  if (!readonly_fd(out) || !readonly_fd(ref) || object_stat(out, &a, max) ||
+      object_stat(ref, &b, max) || a.st_nlink < 2 || b.st_nlink < 2 ||
+      !same(&a, &b)) {
     close(out);
     close(ref);
     return fail();

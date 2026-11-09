@@ -15,13 +15,17 @@ struct e3_channel {
   int fd;
   uint64_t next_send;
   uint64_t next_recv;
+  pid_t peer_pid;
+  uid_t peer_uid;
+  gid_t peer_gid;
 };
 
 /* expected_pid is obtained from the C-owned launch, never a payload message.
- * Takes ownership of fd on success only.  The socket must be connected and
- * SOCK_SEQPACKET; inherited socketpair peer-credential semantics must be
- * qualified for the actual launcher before this can authenticate its peer.
- */
+ * Takes ownership of fd on success only. Requires a connected SOCK_SEQPACKET
+ * peer and matching SCM_CREDENTIALS on every received frame. SO_PEERCRED and
+ * per-message credentials alone do not prove exclusive endpoint custody,
+ * launch identity across PID reuse, or same-UID isolation. Those remain
+ * independent, mandatory qualification requirements. */
 int e3_channel_init(struct e3_channel *channel, int fd, pid_t expected_pid,
                     uid_t expected_uid, gid_t expected_gid,
                     unsigned timeout_ms);
