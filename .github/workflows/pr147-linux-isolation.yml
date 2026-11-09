@@ -1,0 +1,175 @@
+name: Qualify hosted Linux isolation
+
+on:
+  push:
+    branches:
+      - proof/pr147-format-observer-20261109
+    paths:
+      - .github/workflows/pr147-linux-isolation.yml
+
+permissions:
+  contents: read
+
+jobs:
+  boundary:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Test isolated container boundary
+        run: |
+          python3 - <<'PY'
+          import contextlib
+          import errno
+          import os
+          import time
+          import pathlib
+          import socket
+          import subprocess
+          import tempfile
+          import threading
+          import uuid
+
+          image = 'python@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b'
+          subprocess.run(['docker', 'pull', image], check=True)
+          docker = ['docker', 'run', '--rm', '-i', '--network', 'none', '--read-only',
+                    '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+                    '--pids-limit', '128', '--user', '65534:65534',
+                    '--tmpfs', '/tmp:rw,nosuid,nodev,size=64m', image, 'python3', '-I', '-']
+          with tempfile.TemporaryDirectory(prefix='iyi-host-isolation-') as directory:
+              secret = pathlib.Path(directory) / 'fake-secret'
+              secret.write_text('owned-canary', encoding='utf-8')
+              listener = socket.socket()
+              listener.bind(('127.0.0.1', 0))
+              listener.listen(1)
+              listener.settimeout(0.25)
+              port = listener.getsockname()[1]
+              accepted = []
+              stop = threading.Event()
+
+              def watch():
+                  while not stop.is_set():
+                      try:
+                          conn, _ = listener.accept()
+                      except socket.timeout:
+                          continue
+                      except OSError:
+                          return
+                      accepted.append(True)
+                      conn.close()
+
+              thread = threading.Thread(target=watch)
+              thread.start()
+              try:
+                  control = ['docker', 'run', '--rm', '--network', 'host', '--user', '65534:65534',
+                             image, 'python3', '-I', '-c',
+                             'import socket,sys; s=socket.create_connection(("127.0.0.1",int(sys.argv[1])),3); s.close()',
+                             str(port)]
+                  subprocess.run(control, check=True, timeout=30)
+                  deadline = time.monotonic() + 5
+                  while not accepted and time.monotonic() < deadline:
+                      time.sleep(0.05)
+                  if not accepted:
+                      raise RuntimeError('host-network negative control did not reach the owned listener')
+                  accepted.clear()
+                  child = r'''
+          import errno, os, pathlib, socket, sys
+          secret, host_port = sys.argv[1], int(sys.argv[2])
+          assert not os.path.exists(secret), 'host fake secret leaked'
+          assert not os.path.exists('/var/run/docker.sock'), 'Docker socket leaked'
+          assert 'IYI_FAKE_SECRET' not in os.environ, 'host environment leaked'
+          pathlib.Path('/tmp/owned').write_text('ok')
+          try:
+              pathlib.Path('/etc/iyi-boundary-canary').write_text('unexpected')
+          except OSError as error:
+              assert error.errno in (errno.EACCES, errno.EPERM, errno.EROFS), error
+          else:
+              raise AssertionError('read-only root accepted write')
+          for family, address in ((socket.AF_INET, '127.0.0.1'), (socket.AF_INET6, '::1')):
+              server = socket.socket(family)
+              server.bind((address, 0))
+              server.listen(1)
+              client = socket.socket(family)
+              client.settimeout(3)
+              client.connect((address, server.getsockname()[1]))
+              peer, _ = server.accept()
+              client.sendall(b'owned-loopback')
+              assert peer.recv(32) == b'owned-loopback'
+              peer.close(); client.close(); server.close()
+          peer = socket.socket()
+          peer.settimeout(3)
+          try:
+              peer.connect(('192.0.2.1', 9))
+          except OSError as error:
+              assert error.errno == errno.ENETUNREACH, error
+          else:
+              raise AssertionError('non-loopback route unexpectedly available')
+          finally:
+              peer.close()
+          peer = socket.socket()
+          peer.settimeout(3)
+          try:
+              peer.connect(('127.0.0.1', host_port))
+          except OSError as error:
+              assert error.errno == errno.ECONNREFUSED, error
+          else:
+              raise AssertionError('host loopback endpoint was reachable')
+          finally:
+              peer.close()
+          print('isolated network, filesystem, environment and IPv4/IPv6 loopback: PASS')
+          '''
+                  env = dict(os.environ, IYI_FAKE_SECRET='owned-canary')
+                  subprocess.run(docker + [str(secret), str(port)], input=child, text=True, env=env, check=True, timeout=120)
+              finally:
+                  stop.set()
+                  thread.join(timeout=5)
+                  listener.close()
+              if thread.is_alive() or accepted:
+                  raise SystemExit('host loopback endpoint was reached or monitor did not stop')
+
+          # Two unrelated containers: stop only the exact workload, then prove the sentinel survives.
+          ids = []
+          try:
+              for label, child in (
+                  ('sentinel', 'import time; time.sleep(120)'),
+                  ('workload', 'import os,time; p=os.fork(); os.setsid() if p == 0 else None; time.sleep(120)'),
+              ):
+                  name = 'iyi-isolation-' + label + '-' + uuid.uuid4().hex
+                  command = ['docker', 'run', '-d', '--name', name, '--init', '--network', 'none',
+                             '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+                             '--pids-limit', '32', '--user', '65534:65534', image,
+                             'python3', '-c', child]
+                  cid = subprocess.check_output(command, text=True).strip()
+                  ids.append(cid)
+              sentinel, workload = ids
+              deadline = time.monotonic() + 10
+              while True:
+                  top = subprocess.check_output(['docker', 'top', workload, '-eo', 'pid,ppid,args'], text=True)
+                  if top.count('time.sleep(120)') >= 2:
+                      break
+                  if time.monotonic() >= deadline:
+                      raise RuntimeError('detached workload child was not observed')
+                  time.sleep(0.05)
+              def identity(pid):
+                  try:
+                      return pathlib.Path('/proc', pid, 'stat').read_text().rsplit(')', 1)[1].split()[19]
+                  except FileNotFoundError:
+                      return None
+
+              members = [row.split(None, 2)[0] for row in top.splitlines()[1:] if 'time.sleep(120)' in row]
+              births = {pid: identity(pid) for pid in members}
+              if len(births) < 2 or any(value is None for value in births.values()):
+                  raise RuntimeError('could not record workload process identities')
+              subprocess.run(['docker', 'stop', '--time', '1', workload], check=True)
+              deadline = time.monotonic() + 10
+              while any(identity(pid) == birth for pid, birth in births.items()):
+                  if time.monotonic() >= deadline:
+                      raise RuntimeError('a workload process survived container stop')
+                  time.sleep(0.05)
+              states = subprocess.check_output(['docker', 'inspect', '-f', '{{.State.Running}}', workload, sentinel], text=True).splitlines()
+              if states != ['false', 'true']:
+                  raise RuntimeError('workload did not stop or unrelated sentinel stopped: ' + repr(states))
+              print('exact-container teardown and unrelated sentinel: PASS')
+          finally:
+              for cid in ids:
+                  subprocess.run(['docker', 'rm', '-f', cid], check=False, stdout=subprocess.DEVNULL)
+          PY
