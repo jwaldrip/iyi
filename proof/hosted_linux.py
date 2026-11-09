@@ -2086,6 +2086,20 @@ def cmd_run(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return AUTH_REFUSED_EXIT_CODE
+
+    # Independent Review Attestation Gate
+    # Unsigned Git-stored JSON does not establish reviewer independence without cryptographic
+    # signature or trusted channel attestation.
+    review_attestation_verified = False
+    if not review_attestation_verified:
+        print(
+            "INDEPENDENT-REVIEW-UNATTESTED: Independent review requires authenticated cryptographic signature "
+            "or trusted channel attestation (identity/key/subject). Unsigned Git JSON alone does not establish "
+            "reviewer independence. Halting strict execution per security audit.",
+            file=sys.stderr,
+        )
+        return AUTH_REFUSED_EXIT_CODE
+
     # Staging check
     staged_dir = args.inputs_dir or os.path.join(tempfile.gettempdir(), "staged-inputs")
     os.makedirs(staged_dir, exist_ok=True)
