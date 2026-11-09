@@ -380,6 +380,7 @@ static size_t g_captured_exec_count = 0;
 
 static int g_evidence_fd = -1;
 static char g_raw_capture_dir[PATH_MAX] = {0};
+static int g_raw_capture_dir_fd = -1;
 static uint64_t g_total_exec_events = 0;
 static uint64_t g_total_processes_spawned = 0;
 static pid_t g_root_pid = -1;
@@ -913,23 +914,32 @@ static void handle_exec_event(pid_t pid) {
   ssize_t bytes_n;
 
   int save_fd = -1;
-  if (g_raw_capture_dir[0] != '\0' && !is_immutable_system_binary) {
-    char save_path[PATH_MAX];
-    snprintf(save_path, sizeof(save_path), "%s/%" PRIu64 "_%" PRIu64 ".bin",
-             g_raw_capture_dir, (uint64_t)st.st_dev, (uint64_t)st.st_ino);
-    /* Use O_CREAT | O_TRUNC to persist captured bytes safely */
-    save_fd = open(save_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+  if (g_raw_capture_dir_fd >= 0 && !is_immutable_system_binary) {
+    char filename[128];
+    snprintf(filename, sizeof(filename), "%" PRIu64 "_%" PRIu64 ".bin",
+             (uint64_t)st.st_dev, (uint64_t)st.st_ino);
+    /*
+     * Strictly use openat with O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC.
+     * O_NOFOLLOW rejects any symlink at the destination with ELOOP.
+     * O_EXCL prevents overwriting existing files and catches unauthorized
+     * pre-created files with EEXIST. Inode deduplication (via
+     * find_captured_exec) guarantees this branch executes strictly once per
+     * distinct inode.
+     */
+    save_fd =
+        openat(g_raw_capture_dir_fd, filename,
+               O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
     if (save_fd < 0) {
       int err = errno;
       close(raw_fd);
       close(held_fd);
       g_failed = true;
       snprintf(g_failure_reason, sizeof(g_failure_reason),
-               "RAW_PERSIST_OPEN_FAILED_ERRNO_%d", err);
+               "RAW_PERSIST_OPENAT_FAILED_ERRNO_%d", err);
       fprintf(stderr,
-              "hosted_exec_witness: fatal: failed to create raw capture file "
-              "%s: %s\n",
-              save_path, strerror(err));
+              "hosted_exec_witness: fatal: openat(O_CREAT|O_EXCL|O_NOFOLLOW) "
+              "failed on %s: %s\n",
+              filename, strerror(err));
       kill_all_tracees();
       return;
     }
@@ -1058,7 +1068,7 @@ emit_exec_record:;
   emit_evidence_record(buf);
   g_total_exec_events++;
 
-  if (!is_immutable_system_binary && g_raw_capture_dir[0] != '\0') {
+  if (!is_immutable_system_binary && g_raw_capture_dir_fd >= 0) {
     char cap_buf[1024];
     char cap_file[128];
     snprintf(cap_file, sizeof(cap_file), "%" PRIu64 "_%" PRIu64 ".bin",
@@ -1148,6 +1158,18 @@ int main(int argc, char **argv) {
   fcntl(evidence_fd, F_SETFD, flags | FD_CLOEXEC);
   g_evidence_fd = evidence_fd;
 
+  if (g_raw_capture_dir[0] != '\0') {
+    int dir_fd = open(g_raw_capture_dir,
+                      O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (dir_fd < 0) {
+      fprintf(stderr,
+              "hosted_exec_witness: fatal: failed to open raw capture "
+              "directory %s (O_DIRECTORY|O_NOFOLLOW): %s\n",
+              g_raw_capture_dir, strerror(errno));
+      return 2;
+    }
+    g_raw_capture_dir_fd = dir_fd;
+  }
   /* Enforce non-dumpable state on parent tracer */
   if (prctl(PR_SET_DUMPABLE, 0) < 0) {
     fprintf(stderr,
@@ -1489,9 +1511,12 @@ int main(int argc, char **argv) {
     }
   }
 
+  if (g_raw_capture_dir_fd >= 0) {
+    close(g_raw_capture_dir_fd);
+  }
+
   if (g_evidence_fd >= 0) {
     close(g_evidence_fd);
   }
-
   return g_failed ? 1 : g_root_exit_code;
 }

@@ -553,13 +553,16 @@ class TestHostedExecWitness(unittest.TestCase):
         self.assertIn("find_captured_exec", c_code)
         self.assertIn("fstatvfs", c_code)
         self.assertIn("ST_RDONLY", c_code)
+        self.assertIn("O_NOFOLLOW", c_code)
+        self.assertIn("O_EXCL", c_code)
+        self.assertIn("openat", c_code)
+        self.assertNotIn("O_TRUNC", c_code)
         self.assertIn("sha256_transform", c_code)
         self.assertIn("PR_SET_PDEATHSIG", c_code)
         self.assertIn(PROTOCOL_VERSION, c_code)
         self.assertIn("close_all_non_standard_fds", c_code)
         self.assertIn("write_all", c_code)
         self.assertIn("DRAIN_CHILD_PIPES", c_code)
-
 
 if __name__ == "__main__":
     unittest.main()
