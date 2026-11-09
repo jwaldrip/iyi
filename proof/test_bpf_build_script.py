@@ -103,7 +103,7 @@ def make_dummy_lock(scratch: Path, archive_hashes: dict[str, str], header_hashes
     return p
 
 
-def build_mock_bpf_elf(scratch: Path, btf_type_len: int = 120, corrupt_relo: str | None = None, filename: str = "mock_canary.bpf.o") -> Path:
+def build_mock_bpf_elf(scratch: Path, btf_type_len: int = 120, corrupt_relo: str | None = None, filename: str = "mock_canary.bpf.o", scenario: str | None = None) -> Path:
     """Build a valid ELF64 little-endian BPF object with real .BTF, .BTF.ext, and .symtab sections."""
     shstrtab, sh_offsets = make_strtab([
         ".shstrtab", "tp_btf/sched_process_exec", ".maps", "license",
@@ -114,24 +114,77 @@ def build_mock_bpf_elf(scratch: Path, btf_type_len: int = 120, corrupt_relo: str
     sched_sym_name_off = strtab_offsets["sched_process_exec"]
     symtab = b"\x00" * 24 + struct.pack("<IBBHQQ", sched_sym_name_off, 0x12, 0, 2, 0, 128)
 
-    btf_strtab, btf_offsets = make_strtab(["tp_btf/sched_process_exec", "file", "f_inode", "0:0"])
-    type_1_info = (4 << 24) | 1  # STRUCT, 1 member
-    type_1 = struct.pack("<III", btf_offsets["file"], type_1_info, 64) + struct.pack("<III", btf_offsets["f_inode"], 2, 0)
-    type_2_info = (4 << 24) | 0  # STRUCT, 0 members
-    type_2 = struct.pack("<III", btf_offsets["f_inode"], type_2_info, 64)
-    type_data = (type_1 + type_2) if btf_type_len > 0 else b""
+    if scenario == "cyclic_typedef":
+        btf_strtab, btf_offsets = make_strtab(["tp_btf/sched_process_exec", "type_a", "type_b", "0:0"])
+        # Type 1: TYPEDEF (kind 8), pointing to Type 2
+        type_1_info = (8 << 24)
+        type_1 = struct.pack("<III", btf_offsets["type_a"], type_1_info, 2)
+        # Type 2: TYPEDEF (kind 8), pointing to Type 1 (CYCLE!)
+        type_2_info = (8 << 24)
+        type_2 = struct.pack("<III", btf_offsets["type_b"], type_2_info, 1)
+        type_data = type_1 + type_2
+        relo_kind = 0
+        acc_str = "0:0"
+    elif scenario in ("valid_array", "oob_array"):
+        btf_strtab, btf_offsets = make_strtab(["tp_btf/sched_process_exec", "my_struct", "arr", "int", "0:0:2", "0:0:7"])
+        # Type 1: STRUCT (kind 4), 1 member (arr, type 3, off 0)
+        type_1_info = (4 << 24) | 1
+        type_1 = struct.pack("<III", btf_offsets["my_struct"], type_1_info, 32) + struct.pack("<III", btf_offsets["arr"], 3, 0)
+        # Type 2: INT (kind 1), size 4
+        type_2_info = (1 << 24)
+        type_2 = struct.pack("<III", btf_offsets["int"], type_2_info, 4) + struct.pack("<I", (1 << 24) | 32)
+        # Type 3: ARRAY (kind 3), elem type 2 (int), idx type 2, nelems 5
+        type_3_info = (3 << 24)
+        type_3 = struct.pack("<III", 0, type_3_info, 0) + struct.pack("<III", 2, 2, 5)
+        type_data = type_1 + type_2 + type_3
+        relo_kind = 0
+        acc_str = "0:0:2" if scenario == "valid_array" else "0:0:7"
+    elif scenario in ("type_size_invalid", "type_size_valid"):
+        btf_strtab, btf_offsets = make_strtab(["tp_btf/sched_process_exec", "my_struct", "f", "0:0", "0"])
+        # Type 1: STRUCT, 1 member
+        type_1_info = (4 << 24) | 1
+        type_1 = struct.pack("<III", btf_offsets["my_struct"], type_1_info, 8) + struct.pack("<III", btf_offsets["f"], 1, 0)
+        type_data = type_1
+        relo_kind = 9  # BPF_CORE_TYPE_SIZE
+        acc_str = "0:0" if scenario == "type_size_invalid" else "0"
+    elif scenario == "rejected_kind":
+        btf_strtab, btf_offsets = make_strtab(["tp_btf/sched_process_exec", "my_struct", "0:0"])
+        type_1_info = (4 << 24) | 0
+        type_1 = struct.pack("<III", btf_offsets["my_struct"], type_1_info, 8)
+        type_data = type_1
+        relo_kind = 13  # Disallowed kind
+        acc_str = "0:0"
+    elif scenario in ("valid_enum", "oob_enum"):
+        btf_strtab, btf_offsets = make_strtab(["tp_btf/sched_process_exec", "my_enum", "ENUM_A", "ENUM_B", "1", "5"])
+        # Type 1: ENUM (kind 6), vlen 2
+        type_1_info = (6 << 24) | 2
+        type_1 = struct.pack("<III", btf_offsets["my_enum"], type_1_info, 4) + \
+                 struct.pack("<Ii", btf_offsets["ENUM_A"], 10) + \
+                 struct.pack("<Ii", btf_offsets["ENUM_B"], 20)
+        type_data = type_1
+        relo_kind = 10  # ENUMVAL_EXISTS
+        acc_str = "1" if scenario == "valid_enum" else "5"
+    else:
+        btf_strtab, btf_offsets = make_strtab(["tp_btf/sched_process_exec", "file", "f_inode", "0:0"])
+        type_1_info = (4 << 24) | 1  # STRUCT, 1 member
+        type_1 = struct.pack("<III", btf_offsets["file"], type_1_info, 64) + struct.pack("<III", btf_offsets["f_inode"], 2, 0)
+        type_2_info = (4 << 24) | 0  # STRUCT, 0 members
+        type_2 = struct.pack("<III", btf_offsets["f_inode"], type_2_info, 64)
+        type_data = (type_1 + type_2) if btf_type_len > 0 else b""
+        relo_kind = 0
+        acc_str = "0:0"
 
     actual_type_len = len(type_data)
     btf_hdr = struct.pack("<HBBIIII", 0xEB9F, 1, 0, 24, 0, actual_type_len, actual_type_len) + struct.pack("<I", len(btf_strtab))
     btf_sec_data = btf_hdr + type_data + btf_strtab
 
     sec_name_off = btf_offsets["tp_btf/sched_process_exec"]
-    acc_str_off = btf_offsets["0:0"]
+    acc_str_off = btf_offsets[acc_str]
     relo_records = b""
     for i in range(10):
         insn_off = i * 8
         type_id = 1
-        kind = 0
+        kind = relo_kind
         if corrupt_relo == "zeroed" and i == 0:
             relo_records += b"\x00" * 16
         elif corrupt_relo == "nonexistent_type" and i == 0:
@@ -145,7 +198,6 @@ def build_mock_bpf_elf(scratch: Path, btf_type_len: int = 120, corrupt_relo: str
     core_relo_len = len(core_relo_data)
     btf_ext_hdr = struct.pack("<HBBIIIIII", 0xEB9F, 1, 0, 32, 0, 0, 0, 0, 0) + struct.pack("<I", core_relo_len)
     btf_ext_sec_data = btf_ext_hdr + core_relo_data
-
     sections = [
         (b"", 0, 0, 0, 0, 0),
         (shstrtab, sh_offsets[".shstrtab"], 3, 0, 0, 1),
@@ -527,6 +579,94 @@ class TestBpfFeasibilityScript(unittest.TestCase):
             )
             self.assertNotEqual(res.returncode, 0)
             self.assertIn("missing primary source bpf_canary.bpf.c", res.stderr)
+
+            # Mutation 7: cyclic typedef detected and fails closed
+            bad_bpf_cyclic = build_mock_bpf_elf(scratch, filename="cyclic.o", scenario="cyclic_typedef")
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-bpf-obj", readelf_bin, str(bad_bpf_cyclic), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(lock_file), str(scratch)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("Cyclic BTF type modifier detected", res.stderr)
+
+            # Positive control 2: valid array traversal passes gate
+            valid_bpf_array = build_mock_bpf_elf(scratch, filename="valid_array.o", scenario="valid_array")
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-bpf-obj", readelf_bin, str(valid_bpf_array), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(lock_file), str(scratch)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertEqual(res.returncode, 0)
+            self.assertIn("Verified genuine .BTF.ext CO-RE relocations", res.stdout)
+
+            # Mutation 8: out-of-bounds array traversal fails closed
+            bad_bpf_oob_array = build_mock_bpf_elf(scratch, filename="oob_array.o", scenario="oob_array")
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-bpf-obj", readelf_bin, str(bad_bpf_oob_array), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(lock_file), str(scratch)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("Array index 7 out of bounds (nelems 5)", res.stderr)
+
+            # Mutation 9: TYPE_SIZE (kind 9) with invalid access string "0:0" fails closed
+            bad_bpf_type_size = build_mock_bpf_elf(scratch, filename="bad_type_size.o", scenario="type_size_invalid")
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-bpf-obj", readelf_bin, str(bad_bpf_type_size), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(lock_file), str(scratch)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("Type-based CO-RE relocation (kind 9) must have access string '0'", res.stderr)
+
+            # Positive control 3: TYPE_SIZE (kind 9) with valid access string "0" passes gate
+            valid_bpf_type_size = build_mock_bpf_elf(scratch, filename="valid_type_size.o", scenario="type_size_valid")
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-bpf-obj", readelf_bin, str(valid_bpf_type_size), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(lock_file), str(scratch)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertEqual(res.returncode, 0)
+            self.assertIn("Verified genuine .BTF.ext CO-RE relocations", res.stdout)
+
+            # Mutation 10: unsupported/rejected relocation kind (13) fails closed
+            bad_bpf_kind = build_mock_bpf_elf(scratch, filename="bad_kind.o", scenario="rejected_kind")
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-bpf-obj", readelf_bin, str(bad_bpf_kind), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(lock_file), str(scratch)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("Disallowed or unknown CO-RE relocation kind: 13", res.stderr)
+
+            # Positive control 4: valid enum value relocation passes gate
+            valid_bpf_enum = build_mock_bpf_elf(scratch, filename="valid_enum.o", scenario="valid_enum")
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-bpf-obj", readelf_bin, str(valid_bpf_enum), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(lock_file), str(scratch)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertEqual(res.returncode, 0)
+            self.assertIn("Verified genuine .BTF.ext CO-RE relocations", res.stdout)
+
+            # Mutation 11: out-of-bounds enum index fails closed
+            bad_bpf_oob_enum = build_mock_bpf_elf(scratch, filename="oob_enum.o", scenario="oob_enum")
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-bpf-obj", readelf_bin, str(bad_bpf_oob_enum), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(lock_file), str(scratch)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("Enum value index 5 out of range (count 2)", res.stderr)
 
     def test_production_host_elf_gate_validation(self) -> None:
         """Production --validate-host-elf gate: positive control passes, mutations strictly fail closed."""

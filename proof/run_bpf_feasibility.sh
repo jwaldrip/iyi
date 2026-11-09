@@ -319,6 +319,7 @@ while t_idx + 12 <= len(type_bytes):
     name = get_btf_string(name_off)
 
     members = []
+    array_info = {}
     if kind in (4, 5):  # STRUCT, UNION
         for _ in range(vlen):
             if t_idx + 12 > len(type_bytes):
@@ -331,8 +332,22 @@ while t_idx + 12 <= len(type_bytes):
     elif kind == 1:  # INT
         t_idx += 4
     elif kind == 3:  # ARRAY
+        if t_idx + 12 > len(type_bytes):
+            sys.exit("ERROR: .BTF array record truncated")
+        arr_elem_type = int.from_bytes(type_bytes[t_idx:t_idx+4], "little")
+        arr_idx_type = int.from_bytes(type_bytes[t_idx+4:t_idx+8], "little")
+        arr_nelems = int.from_bytes(type_bytes[t_idx+8:t_idx+12], "little")
         t_idx += 12
-    elif kind in (6, 13):  # ENUM, FUNC_PROTO
+        array_info = {"type": arr_elem_type, "index_type": arr_idx_type, "nelems": arr_nelems}
+    elif kind == 6:  # ENUM
+        for _ in range(vlen):
+            if t_idx + 8 > len(type_bytes):
+                sys.exit("ERROR: .BTF enum member truncated")
+            e_name_off = int.from_bytes(type_bytes[t_idx:t_idx+4], "little")
+            e_val = int.from_bytes(type_bytes[t_idx+4:t_idx+8], "little", signed=True)
+            t_idx += 8
+            members.append({"name": get_btf_string(e_name_off), "val": e_val})
+    elif kind in (13,):  # FUNC_PROTO
         t_idx += vlen * 8
     elif kind == 14:  # VAR
         t_idx += 4
@@ -343,12 +358,25 @@ while t_idx + 12 <= len(type_bytes):
     elif kind == 19:  # ENUM64
         t_idx += vlen * 12
 
-    btf_types[type_id] = {"name": name, "kind": kind, "size_or_type": size_or_type, "members": members}
+    btf_types[type_id] = {"name": name, "kind": kind, "size_or_type": size_or_type, "members": members, "array_info": array_info}
     type_id += 1
 
 if not btf_types:
     sys.exit("ERROR: .BTF contains 0 parsed types")
 
+MODIFIER_KINDS = {8, 9, 10, 11, 18}  # TYPEDEF, VOLATILE, CONST, RESTRICT, TYPE_TAG
+
+def resolve_type_modifiers(tid, btf_types_map, max_depth=64):
+    visited = set()
+    curr = tid
+    while curr in btf_types_map and btf_types_map[curr]["kind"] in MODIFIER_KINDS and len(visited) < max_depth:
+        if curr in visited:
+            sys.exit(f"ERROR: Cyclic BTF type modifier detected involving type ID {curr}")
+        visited.add(curr)
+        curr = btf_types_map[curr]["size_or_type"]
+    if len(visited) >= max_depth:
+        sys.exit(f"ERROR: Excessive BTF type modifier depth (>= {max_depth}) for type ID {tid}")
+    return curr
 # --- Parse and Validate .BTF.ext CO-RE Relocation Records ---
 if ".BTF.ext" not in sections:
     sys.exit("ERROR: .BTF.ext section missing from BPF object")
@@ -440,59 +468,75 @@ while relo_idx + 8 <= len(relo_bytes):
         if not access_parts or any(not p.isdigit() for p in access_parts):
             sys.exit(f"ERROR: Invalid CO-RE access string grammar: '{access_str}' (must be colon-separated integers)")
 
-        # Walk type and member graph to prove resolution to genuine required fields
-        curr_type_id = type_id
-        resolved_field_name = None
+        # Validate kind per BPF CO-RE specification
+        if kind not in range(0, 13):
+            sys.exit(f"ERROR: Disallowed or unknown CO-RE relocation kind: {kind}")
 
-        # Resolve root type modifiers (TYPEDEF, CONST, VOLATILE, RESTRICT)
-        while curr_type_id in btf_types and btf_types[curr_type_id]["kind"] in (8, 9, 10, 11):
-            curr_type_id = btf_types[curr_type_id]["size_or_type"]
+        # Walk type and member graph to prove resolution to genuine required fields / types
+        curr_type_id = resolve_type_modifiers(type_id, btf_types)
+        resolved_field_name = None
 
         if curr_type_id not in btf_types:
             sys.exit(f"ERROR: Unresolved root type ID {curr_type_id} in CO-RE access path '{access_str}'")
 
-        # For field relocations (kinds 0..5), access_parts[0] is root dereference (typically 0)
-        # If root type is PTR, dereference pointer to pointee
-        if btf_types[curr_type_id]["kind"] == 2:  # PTR
-            curr_type_id = btf_types[curr_type_id]["size_or_type"]
-            while curr_type_id in btf_types and btf_types[curr_type_id]["kind"] in (8, 9, 10, 11):
-                curr_type_id = btf_types[curr_type_id]["size_or_type"]
-
-        # Walk member indices starting at access_parts[1] if access_parts has > 1 tokens
-        field_indices = access_parts[1:] if len(access_parts) > 1 else []
-        if not field_indices:
-            resolved_field_name = btf_types[curr_type_id].get("name", "")
+        if kind in (6, 7, 8, 9, 12):
+            # Type-based relocations: access_str MUST be "0" (no member path)
+            if access_str != "0":
+                sys.exit(f"ERROR: Type-based CO-RE relocation (kind {kind}) must have access string '0', got '{access_str}'")
+            resolved_field_name = btf_types[curr_type_id].get("name") or f"type_{curr_type_id}"
+        elif kind in (10, 11):
+            # Enum value relocations: access_str must be single integer index
+            if len(access_parts) != 1:
+                sys.exit(f"ERROR: Enum value CO-RE relocation (kind {kind}) access string must be single integer, got '{access_str}'")
+            enum_idx = int(access_parts[0])
+            if btf_types[curr_type_id]["kind"] not in (6, 19):
+                sys.exit(f"ERROR: Enum value relocation (kind {kind}) references non-enum type ID {curr_type_id} (kind {btf_types[curr_type_id]['kind']})")
+            enum_members = btf_types[curr_type_id].get("members", [])
+            if enum_idx >= len(enum_members):
+                sys.exit(f"ERROR: Enum value index {enum_idx} out of range (count {len(enum_members)}) in '{access_str}'")
+            resolved_field_name = enum_members[enum_idx]["name"]
         else:
-            for idx_str in field_indices:
-                member_idx = int(idx_str)
-                while curr_type_id in btf_types and btf_types[curr_type_id]["kind"] in (8, 9, 10, 11):
-                    curr_type_id = btf_types[curr_type_id]["size_or_type"]
-
+            # Field-based relocations (kinds 0..5)
+            # If root type is PTR, dereference pointer to pointee
+            if btf_types[curr_type_id]["kind"] == 2:  # PTR
+                curr_type_id = resolve_type_modifiers(btf_types[curr_type_id]["size_or_type"], btf_types)
                 if curr_type_id not in btf_types:
-                    sys.exit(f"ERROR: Unresolved type ID {curr_type_id} in CO-RE member walk '{access_str}'")
+                    sys.exit(f"ERROR: Unresolved pointee type ID {curr_type_id} in CO-RE access path '{access_str}'")
 
-                t_def = btf_types[curr_type_id]
-                if t_def["kind"] in (4, 5):  # STRUCT, UNION
-                    members = t_def.get("members", [])
-                    if member_idx >= len(members):
-                        sys.exit(f"ERROR: Member index {member_idx} out of range for '{t_def['name']}' (len {len(members)}) in '{access_str}'")
-                    target_member = members[member_idx]
-                    resolved_field_name = target_member["name"]
-                    curr_type_id = target_member["type"]
-                elif t_def["kind"] == 3:  # ARRAY
-                    curr_type_id = t_def.get("size_or_type", 0)
-                elif t_def["kind"] == 2:  # PTR
-                    curr_type_id = t_def.get("size_or_type", 0)
-                else:
-                    sys.exit(f"ERROR: Access path index on non-composite type '{t_def['name']}' (kind {t_def['kind']}) in '{access_str}'")
+            field_indices = access_parts[1:] if len(access_parts) > 1 else []
+            if not field_indices:
+                # Whole object field access: resolve to type name
+                resolved_field_name = btf_types[curr_type_id].get("name", f"type_{curr_type_id}")
+            else:
+                for idx_str in field_indices:
+                    member_idx = int(idx_str)
+                    curr_type_id = resolve_type_modifiers(curr_type_id, btf_types)
+                    if curr_type_id not in btf_types:
+                        sys.exit(f"ERROR: Unresolved type ID {curr_type_id} in CO-RE member walk '{access_str}'")
+
+                    t_def = btf_types[curr_type_id]
+                    if t_def["kind"] in (4, 5):  # STRUCT, UNION
+                        members = t_def.get("members", [])
+                        if member_idx >= len(members):
+                            sys.exit(f"ERROR: Member index {member_idx} out of range for '{t_def['name']}' (len {len(members)}) in '{access_str}'")
+                        target_member = members[member_idx]
+                        resolved_field_name = target_member["name"]
+                        curr_type_id = resolve_type_modifiers(target_member["type"], btf_types)
+                    elif t_def["kind"] == 3:  # ARRAY
+                        arr_info = t_def.get("array_info", {})
+                        arr_nelems = arr_info.get("nelems", 0)
+                        if member_idx >= arr_nelems:
+                            sys.exit(f"ERROR: Array index {member_idx} out of bounds (nelems {arr_nelems}) in CO-RE access path '{access_str}'")
+                        resolved_field_name = f"[{member_idx}]"
+                        curr_type_id = resolve_type_modifiers(arr_info.get("type", 0), btf_types)
+                    elif t_def["kind"] == 2:  # PTR
+                        resolved_field_name = f"*{t_def.get('name', 'ptr')}"
+                        curr_type_id = resolve_type_modifiers(t_def.get("size_or_type", 0), btf_types)
+                    else:
+                        sys.exit(f"ERROR: Access path index on non-composite type '{t_def['name']}' (kind {t_def['kind']}) in '{access_str}'")
 
         if not resolved_field_name:
             sys.exit(f"ERROR: Failed to resolve field name for access path '{access_str}'")
-
-        # Validate kind (0..9)
-        if kind not in range(0, 10):
-            sys.exit(f"ERROR: Disallowed CO-RE kind: {kind}")
-
         if is_target_sec:
             total_core_relocs += 1
 if not found_target_section:
