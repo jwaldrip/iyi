@@ -23,8 +23,7 @@ import hashlib
 import json
 import os
 import re
-import subprocess
-import tempfile
+import struct
 import sys
 
 FRAME_RE = re.compile(rb'^(\d+) +(\S+) +0x[0-9a-fA-F]{16} (.*) \+ \d+$')
@@ -360,34 +359,113 @@ def no_duplicate_keys(pairs):
     return result
 
 
-def native_symbols(raw):
-    text_symbols = []
-    for line in raw.splitlines():
-        if not line: continue
-        match = re.fullmatch(r"([0-9a-fA-F]+)\s+\(([^()]*)\)\s+((?:weak\s+)?(?:private\s+)?external|non-external)\s+(.+)", line)
-        if not match or " (was a private external)" in match.group(4):
-            raise ValueError("unsupported native symbol evidence")
-        text_symbols.append({"address": match.group(1), "kind": match.group(2) + " " + match.group(3), "name": match.group(4)})
-    return text_symbols
+def macho_summary(data, expected_type):
+    """Read a bounded, thin little-endian 64-bit Mach-O snapshot."""
+    if len(data) < 32 or data[:4] != b"\xcf\xfa\xed\xfe":
+        raise ValueError("unsupported or truncated Mach-O")
+    _, cpu, subtype, file_type, ncmds, sizeofcmds, _, _ = struct.unpack_from("<8I", data)
+    if cpu not in (0x01000007, 0x0100000c) or file_type != expected_type:
+        raise ValueError("unsupported Mach-O CPU or file type")
+    end = 32 + sizeofcmds
+    if end > len(data) or ncmds > sizeofcmds // 8:
+        raise ValueError("invalid Mach-O command area")
+    sections, symtab, pos = [], None, 32
+    for _ in range(ncmds):
+        if pos + 8 > end: raise ValueError("truncated load command")
+        cmd, size = struct.unpack_from("<II", data, pos)
+        if size < 8 or size % 8 or pos + size > end:
+            raise ValueError("invalid load command size")
+        if cmd == 2:
+            if size != 24 or symtab is not None: raise ValueError("invalid LC_SYMTAB")
+            symtab = struct.unpack_from("<4I", data, pos + 8)
+        elif cmd == 0x19:
+            if size < 72: raise ValueError("truncated segment")
+            nsects = struct.unpack_from("<I", data, pos + 64)[0]
+            if nsects > (size - 72) // 80: raise ValueError("truncated sections")
+            for i in range(nsects):
+                p = pos + 72 + 80 * i
+                sect, seg = struct.unpack_from("<16s16s", data, p)
+                address, length, offset = struct.unpack_from("<QQI", data, p + 32)
+                flags = struct.unpack_from("<I", data, p + 64)[0]
+                if address + length > 0xffffffffffffffff:
+                    raise ValueError("section address overflow")
+                kind = flags & 0xff
+                if kind not in (1, 0xc, 0x12) and (offset > len(data) or length > len(data) - offset):
+                    raise ValueError("section data outside file")
+                sections.append({"index": len(sections) + 1,
+                                 "segment_name_base64": base64.b64encode(seg).decode(),
+                                 "section_name_base64": base64.b64encode(sect).decode(),
+                                 "address": f"{address:016x}", "size": f"{length:016x}",
+                                 "file_offset": offset, "flags": flags})
+        pos += size
+    if pos != end or symtab is None: raise ValueError("invalid Mach-O command count")
+    symoff, nsyms, stroff, strsize = symtab
+    if symoff > len(data) or nsyms > (len(data) - symoff) // 16 or stroff > len(data) or strsize > len(data) - stroff:
+        raise ValueError("symbol table outside file")
+    symend, strend = symoff + nsyms * 16, stroff + strsize
+    def overlap(a, b, c, d):
+        return a < b and c < d and a < d and c < b
+    if overlap(symoff, symend, 0, end) or overlap(stroff, strend, 0, end) or overlap(symoff, symend, stroff, strend):
+        raise ValueError("overlapping Mach-O tables")
+    symbols = []
+    for i in range(nsyms):
+        strx, typ, sect, desc, value = struct.unpack_from("<IBBHQ", data, symoff + 16 * i)
+        if strx:
+            if strx >= strsize: raise ValueError("invalid symbol string index")
+            stop = data.find(b"\0", stroff + strx, strend)
+            if stop < 0: raise ValueError("unterminated symbol name")
+            name = data[stroff + strx:stop]
+        else:
+            name = b""
+        if not typ & 0xe0:
+            base = typ & 0x0e
+            if base == 0x0a: raise ValueError("unsupported indirect symbol")
+            if base not in (0, 2, 0x0c, 0x0e): raise ValueError("unsupported symbol type")
+            if base == 0x0e:
+                if not 1 <= sect <= len(sections): raise ValueError("invalid symbol section")
+                section = sections[sect - 1]
+                start, length = int(section["address"], 16), int(section["size"], 16)
+                if not start <= value <= start + length: raise ValueError("symbol outside section")
+        symbols.append({"index": i, "string_index": strx, "name_base64": base64.b64encode(name).decode(),
+                        "type": typ, "section": sect, "desc": desc, "value": f"{value:016x}"})
+    return {"format": "macho64-le-symtab-v1", "cpu_type": cpu, "cpu_subtype": subtype,
+            "file_type": file_type, "sections": sections, "symbols": symbols}
 
 
-def inspect_native(path):
-    try:
-        result = subprocess.run(["nm", "-m", "-U", path], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        return result.stdout.decode("utf-8")
-    except (OSError, subprocess.CalledProcessError, UnicodeError) as exc:
-        raise ValueError("cannot inspect native symbols") from exc
+def same_json(actual, expected):
+    # Equality alone would accept JSON booleans in integer fields.
+    if type(actual) is not type(expected): return False
+    if isinstance(expected, dict):
+        return actual.keys() == expected.keys() and all(same_json(actual[k], v) for k, v in expected.items())
+    if isinstance(expected, list):
+        return len(actual) == len(expected) and all(same_json(a, b) for a, b in zip(actual, expected))
+    return actual == expected
 
 
-def evidence(value, path):
-    fields(value, "raw_nm symbols")
-    if not isinstance(value["raw_nm"], str) or not isinstance(value["symbols"], list):
-        raise ValueError("invalid symbol evidence")
-    if native_symbols(value["raw_nm"]) != value["symbols"]:
-        raise ValueError("recorded symbol evidence mismatch")
-    if inspect_native(path) != value["raw_nm"]:
-        raise ValueError("native symbol evidence does not match bytes")
-    return value["symbols"]
+def evidence(value, data, file_type):
+    expected = macho_summary(data, file_type)
+    if not same_json(value, expected): raise ValueError("native symbol evidence does not match bytes")
+    return expected
+
+
+def direct_code_symbols(summary):
+    result = []
+    for section in summary["sections"]:
+        flags = section["flags"]
+        if flags & 0x80000400 and not flags & 0x02000000 and flags & 0xff not in (0, 8):
+            raise ValueError("unsupported instruction-bearing section")
+    for symbol in summary["symbols"]:
+        typ = symbol["type"]
+        if typ & 0xe0 or typ & 0x0e != 0x0e: continue
+        section = summary["sections"][symbol["section"] - 1]
+        flags = section["flags"]
+        if not flags & 0x80000400 or flags & 0x02000000: continue
+        if flags & 0xff: continue
+        address, size = int(section["address"], 16), int(section["size"], 16)
+        value = int(symbol["value"], 16)
+        if address <= value < address + size:
+            result.append((base64.b64decode(symbol["name_base64"]), symbol))
+    return result
 
 
 def emission_identity(value):
@@ -413,18 +491,18 @@ class FrameManifest:
         with open(path, encoding="utf-8") as stream:
             manifest = json.load(stream, object_pairs_hook=no_duplicate_keys)
         fields(manifest, "schema object_input_scope executable_sha256 executable_symbols object_inputs bindings")
-        if type(manifest["schema"]) is not int or manifest["schema"] != 3 or manifest["object_input_scope"] != "compiler_supplied_link_inputs":
+        if type(manifest["schema"]) is not int or manifest["schema"] != 4 or manifest["object_input_scope"] != "compiler_supplied_link_inputs":
             raise ValueError("unsupported manifest schema or scope")
         with open(executable, "rb") as stream: binary = stream.read()
         if hashlib.sha256(binary).hexdigest() != manifest["executable_sha256"]:
             raise ValueError("executable digest mismatch")
-        linked = evidence(manifest["executable_symbols"], executable)
+        linked = evidence(manifest["executable_symbols"], binary, 2)
         with open(executable, "rb") as stream:
             if stream.read() != binary: raise ValueError("executable changed while inspecting")
-        if not linked: raise ValueError("empty executable symbols")
+        if not linked["symbols"]: raise ValueError("empty executable symbols")
         inputs = manifest["object_inputs"]
         if not isinstance(inputs, list) or not inputs: raise ValueError("missing link inputs")
-        seen, current_units = set(), {}
+        seen, current_units, object_code = set(), {}, []
         for index, item in enumerate(inputs):
             fields(item, "link_input_id producer unit_name partition sha256 bytes_base64 native_evidence")
             if type(item["link_input_id"]) is not int or item["link_input_id"] != index: raise ValueError("invalid link input ID")
@@ -452,9 +530,9 @@ class FrameManifest:
             except (ValueError, TypeError) as exc: raise ValueError("invalid object encoding") from exc
             if base64.b64encode(data).decode("ascii") != item["bytes_base64"] or hashlib.sha256(data).hexdigest() != item["sha256"]:
                 raise ValueError("object digest mismatch")
-            with tempfile.NamedTemporaryFile() as obj:
-                obj.write(data); obj.flush()
-                evidence(item["native_evidence"], obj.name)
+            object_summary = evidence(item["native_evidence"], data, 1)
+            if object_summary["cpu_type"] != linked["cpu_type"]: raise ValueError("inconsistent Mach-O architecture")
+            object_code.append(direct_code_symbols(object_summary))
         for group in current_units.values():
             if len({name for name, _ in group}) != 1: raise ValueError("unit name collision")
             partitions = [part for _, part in group]
@@ -476,41 +554,46 @@ class FrameManifest:
             role = definition["partition_role"]
             if role not in ("single", "owner", "local_copy") or (item["partition"] is None) != (role == "single"):
                 raise ValueError("invalid partition role")
-            name = definition["native_object_symbol"]
             llvm_name = definition["post_partition_llvm_symbol"]
-            if llvm_name.startswith("\x01") or name != "_" + llvm_name: raise ValueError("unsupported native decoration")
+            if llvm_name.startswith("\x01") or definition["native_object_symbol"] != "_" + llvm_name: raise ValueError("unsupported native decoration")
+            name = definition["native_object_symbol"].encode("utf-8")
             if definition["emission"]["unit_name"] != item["unit_name"]: raise ValueError("binding unit mismatch")
             identity = emission_identity(definition["emission"])
             requested = definition["emission"]["requested_symbol"].encode("utf-8")
-            symbols = item["native_evidence"]["symbols"]
-            if not any(s["name"] == name and s["kind"].startswith("__TEXT,__text ") for s in symbols):
-                raise ValueError("binding absent from object")
+            matches = [s for n, s in object_code[index] if n == name]
+            if len(matches) != 1: raise ValueError("binding absent or ambiguous in object")
+            if matches[0]["desc"] & 0x300: raise ValueError("unsupported resolver or alternate entry")
             key = (index, name)
             if key in bound: raise ValueError("duplicate object binding")
             bound.add(key)
             if name in identities and identities[name] != identity: raise ValueError("ambiguous native symbol")
             requested_names.setdefault(name, []).append(requested)
             identities[name] = identity
-        linked_text = [s for s in linked if s["kind"].startswith("__TEXT,__text ")]
-        linked_names = {s["name"] for s in linked_text}
-        for symbol in linked_text:
-            if symbol["name"].startswith(("_~proc", "_~fun_literal")) and symbol["name"] not in identities:
+        linked_text = direct_code_symbols(linked)
+        linked_by_name, linked_by_address = {}, {}
+        for name, symbol in linked_text:
+            linked_by_name.setdefault(name, []).append(symbol)
+            linked_by_address.setdefault((symbol["section"], symbol["value"]), []).append(name)
+            if name.startswith((b"_~proc", b"_~fun_literal")) and name not in identities:
                 raise ValueError("linked closure lacks provenance")
-        for item in inputs:
-            for symbol in item["native_evidence"]["symbols"]:
-                if symbol["kind"].startswith("__TEXT,__text ") and symbol["name"] in identities and symbol["name"] in linked_names and (item["link_input_id"], symbol["name"]) not in bound:
+        linked_names = set(linked_by_name)
+        for index, symbols in enumerate(object_code):
+            for name, symbol in symbols:
+                if name in identities and (index, name) not in bound:
                     raise ValueError("unbound competing definition")
-        for symbol in linked_text:
-            if symbol["name"] in identities:
-                for other in linked_text:
-                    if int(other["address"], 16) == int(symbol["address"], 16) and identities.get(other["name"]) != identities[symbol["name"]]:
-                        raise ValueError("ambiguous folded symbol")
+        for name, identity in identities.items():
+            matches = linked_by_name.get(name, [])
+            if len(matches) > 1: raise ValueError("ambiguous executable definition")
+            if not matches: continue
+            symbol = matches[0]
+            if symbol["desc"] & 0x300: raise ValueError("unsupported resolver or alternate entry")
+            for other in linked_by_address[(symbol["section"], symbol["value"])]:
+                if identities.get(other) != identity: raise ValueError("ambiguous folded symbol")
         self.identities = {name: identity for name, identity in identities.items() if name in linked_names}
         self.requested_names = {name: requested_names[name] for name in self.identities}
 
     def resolve(self, symbol):
-        try: name = "_" + symbol.decode("utf-8")
-        except UnicodeError as exc: raise ValueError("invalid symbol encoding") from exc
+        name = b"_" + symbol
         if name not in self.identities: raise ValueError("closure symbol missing from executable")
         originals = self.requested_names[name]
         shape = requested_shape(originals[0])

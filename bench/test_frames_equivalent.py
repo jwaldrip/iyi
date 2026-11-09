@@ -19,7 +19,9 @@ import copy
 import hashlib
 import io
 import json
+import contextlib
 import os
+import struct
 import sys
 import tempfile
 from unittest.mock import patch
@@ -476,6 +478,98 @@ def test_captured_darwin_proc_and_collisions():
         assert ret == 1, f"{kind} mutant survived"
 
 
+def macho_fixture(file_type, entries, flags=0x80000400):
+    """Construct bytes and literal expected evidence without the reader."""
+    strings = bytearray(b"\0")
+    records, symbols = bytearray(), []
+    for index, (name, typ, section, desc, value) in enumerate(entries):
+        string_index = len(strings) if name else 0
+        if name: strings.extend(name + b"\0")
+        records.extend(struct.pack("<IBBHQ", string_index, typ, section, desc, value))
+        symbols.append({"index": index, "string_index": string_index, "name_base64": base64.b64encode(name).decode(),
+                        "type": typ, "section": section, "desc": desc, "value": f"{value:016x}"})
+    segment = struct.pack("<II16sQQQQiiII", 0x19, 152, b"", 0x10, 16, 208, 16, 7, 5, 1, 0)
+    section = struct.pack("<16s16sQQIIIIIIII", b"__text", b"__TEXT", 0x10, 16, 208, 0, 0, 0, flags, 0, 0, 0)
+    symoff = 224
+    stroff = symoff + len(records)
+    header = struct.pack("<8I", 0xfeedfacf, 0x0100000c, 0, file_type, 2, 176, 0, 0)
+    binary = header + segment + section + struct.pack("<6I", 2, 24, symoff, len(entries), stroff, len(strings)) + bytes(16) + records + strings
+    evidence = {"format": "macho64-le-symtab-v1", "cpu_type": 0x0100000c, "cpu_subtype": 0,
+                "file_type": file_type, "sections": [{"index": 1,
+                "segment_name_base64": base64.b64encode(b"__TEXT".ljust(16, b"\0")).decode(),
+                "section_name_base64": base64.b64encode(b"__text".ljust(16, b"\0")).decode(),
+                "address": "0000000000000010", "size": "0000000000000010", "file_offset": 208, "flags": flags}],
+                "symbols": symbols}
+    return bytes(binary), evidence
+
+
+def test_macho_reader_controls():
+    names = [b"_a\n0000000000000010 (__TEXT,__text) external _fake\r", b" space [cold func] \xff"]
+    entries = [(names[0], 0x0e, 1, 0x400, 0x10), (names[1], 0x1f, 1, 0x80, 0x11),
+               (b"_common", 0x01, 0, 0, 4), (b"_absolute", 0x03, 0, 0, 3),
+               (b"_debug", 0xe0, 255, 0, 0xffff)]
+    binary, expected = macho_fixture(1, entries)
+    assert frames.macho_summary(binary, 1) == expected
+    assert [name for name, _ in frames.direct_code_symbols(expected)] == names
+    for flags in (0, 0x02000400):
+        data, summary = macho_fixture(1, entries[:1], flags)
+        assert frames.macho_summary(data, 1) == summary
+        assert not frames.direct_code_symbols(summary)
+    data, summary = macho_fixture(1, entries[:1], 0x80000408)
+    assert not frames.direct_code_symbols(frames.macho_summary(data, 1))
+    data, summary = macho_fixture(1, entries[:1], 0x80000409)
+    try: frames.direct_code_symbols(frames.macho_summary(data, 1))
+    except ValueError: pass
+    else: raise AssertionError("unsupported instruction section accepted")
+    for typ, section, value in ((0, 0, 5), (2, 0, 0x10), (0xe0, 1, 0x10), (0x0e, 1, 0x20)):
+        data, summary = macho_fixture(1, [(b"_x", typ, section, 0, value)])
+        assert not frames.direct_code_symbols(frames.macho_summary(data, 1))
+    suffix = bytearray(binary)
+    struct.pack_into("<I", suffix, 240, 2)
+    suffix_summary = frames.macho_summary(bytes(suffix), 1)
+    assert base64.b64decode(suffix_summary["symbols"][1]["name_base64"]) == names[0][1:]
+    empty = bytearray(binary)
+    struct.pack_into("<I", empty, 224, 0)
+    assert frames.macho_summary(bytes(empty), 1)["symbols"][0]["name_base64"] == ""
+    def reject(data):
+        try: frames.macho_summary(bytes(data), 1)
+        except ValueError: return
+        raise AssertionError("malformed Mach-O accepted")
+    reject(binary[:31])
+    for magic in (b"\xfe\xed\xfa\xcf", b"\xce\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca", b"\xca\xfe\xba\xbf", b"!<ar"):
+        reject(magic + binary[4:])
+    for offset, value in ((4, 7), (12, 2), (16, 100), (20, 8), (36, 7), (96, 100),
+                          (184, 3), (188, 16), (192, 0), (196, 0xffffffff),
+                          (200, 0), (204, 0xffffffff), (224, 0xffffffff)):
+        malformed = bytearray(binary)
+        struct.pack_into("<I", malformed, offset, value)
+        reject(malformed)
+    malformed = bytearray(binary)
+    malformed[229] = 2
+    reject(malformed)
+    malformed = bytearray(binary)
+    malformed[228] = 0x0a
+    reject(malformed)
+    malformed = bytearray(binary)
+    malformed[-1] = 1
+    reject(malformed)
+    malformed = bytearray(binary)
+    struct.pack_into("<Q", malformed, 136, 0xfffffffffffffff8)
+    reject(malformed)
+    malformed = bytearray(binary)
+    struct.pack_into("<I", malformed, 152, 0xffffffff)
+    reject(malformed)
+    malformed = bytearray(binary)
+    malformed[228] = 0x06
+    reject(malformed)
+    for bad in (True, -1, 0x100000000):
+        altered = copy.deepcopy(expected)
+        altered["cpu_type"] = bad
+        try: frames.evidence(altered, binary, 1)
+        except ValueError: pass
+        else: raise AssertionError("invalid evidence integer accepted")
+
+
 def test_strict_manifest_synthetic_controls():
     # These are synthetic unit fixtures, not correspondence for captured logs.
     def written(kind, role, offset):
@@ -487,21 +581,16 @@ def test_strict_manifest_synthetic_controls():
     identity = {"origin": closure, "specialization": {"kind": "program_scope", "source_identity": {"module": "Example", "file": "example.iyi"}},
                 "capture_descriptor": {"proc_type": proc, "is_closure": False, "environment": None},
                 "displayed_source_location": {"file": "example.iyi", "line": 9, "column": 3}}
-    observations = {}
-
     def fixture(name, raw_name):
-        binary = (name + "-binary").encode()
-        obj = (name + "-object").encode()
-        raw = "0000000000000010 (__TEXT,__text) external _" + raw_name + "\n"
-        observations[binary] = raw
-        observations[obj] = raw
-        evidence = {"raw_nm": raw, "symbols": frames.native_symbols(raw)}
+        entry = [((b"_" + raw_name.encode()), 0x0f, 1, 0, 0x10)]
+        binary, executable_evidence = macho_fixture(2, entry)
+        obj, object_evidence = macho_fixture(1, entry)
         emission = {"requested_symbol": raw_name, "actual_llvm_symbol": raw_name, "unit_name": "unit", "linkage": "external", **copy.deepcopy(identity)}
-        manifest = {"schema": 3, "object_input_scope": "compiler_supplied_link_inputs",
-                    "executable_sha256": hashlib.sha256(binary).hexdigest(), "executable_symbols": evidence,
+        manifest = {"schema": 4, "object_input_scope": "compiler_supplied_link_inputs",
+                    "executable_sha256": hashlib.sha256(binary).hexdigest(), "executable_symbols": executable_evidence,
                     "object_inputs": [{"link_input_id": 0, "producer": {"kind": "current_unit", "unit_ordinal": 0},
                                        "unit_name": "unit", "partition": None, "sha256": hashlib.sha256(obj).hexdigest(),
-                                       "bytes_base64": base64.b64encode(obj).decode(), "native_evidence": copy.deepcopy(evidence)}],
+                                       "bytes_base64": base64.b64encode(obj).decode(), "native_evidence": object_evidence}],
                     "bindings": [{"link_input_id": 0, "definition": {"emission": emission, "post_partition_llvm_symbol": raw_name,
                                   "native_object_symbol": "_" + raw_name, "post_partition_linkage": "external", "partition_role": "single"}}]}
         return binary, manifest
@@ -520,11 +609,6 @@ def test_strict_manifest_synthetic_controls():
         with open(executable_a, "wb") as f: f.write(binary_a)
         with open(executable_b, "wb") as f: f.write(binary_b)
 
-        def inspect(path):
-            with open(path, "rb") as f: data = f.read()
-            if data not in observations: raise ValueError("unknown fake binary")
-            return observations[data]
-
         def load(manifest, executable):
             with open(path, "w", encoding="utf-8") as f: json.dump(manifest, f)
             return frames.FrameManifest(path, executable)
@@ -534,7 +618,7 @@ def test_strict_manifest_synthetic_controls():
             except (ValueError, TypeError, KeyError): return
             raise AssertionError("corrupt manifest accepted")
 
-        with patch.object(frames, "inspect_native", inspect):
+        with contextlib.nullcontext():
             left, right = load(manifest_a, executable_a), load(manifest_b, executable_b)
             assert capture_violation(compare_same_opt, [line_a], [line_b], require_frames=True, manifests=(left, right))[0] == 0
             same_output = os.path.join(directory, "same.out")
@@ -569,12 +653,37 @@ def test_strict_manifest_synthetic_controls():
             obj["sha256"] = hashlib.sha256(b"forged object").hexdigest()
             reject(forged)
             forged = copy.deepcopy(manifest_b)
-            fake_nm = forged["object_inputs"][0]["native_evidence"]["raw_nm"].replace("external", "non-external", 1)
-            forged["object_inputs"][0]["native_evidence"] = {"raw_nm": fake_nm, "symbols": frames.native_symbols(fake_nm)}
+            forged["object_inputs"][0]["native_evidence"]["symbols"][0]["desc"] = 1
             reject(forged)
             absent = copy.deepcopy(manifest_b)
-            absent["object_inputs"][0]["native_evidence"] = {"raw_nm": "", "symbols": []}
+            absent["object_inputs"][0]["native_evidence"]["symbols"] = []
             reject(absent)
+            for typ, section, desc, value, flags in (
+                    (0, 0, 0, 8, 0x80000400), (2, 0, 0, 0x10, 0x80000400),
+                    (0xe0, 1, 0, 0x10, 0x80000400), (0x0e, 1, 0, 0x20, 0x80000400),
+                    (0x0e, 1, 0, 0x10, 0), (0x0e, 1, 0, 0x10, 0x80000408),
+                    (0x0e, 1, 0x100, 0x10, 0x80000400), (0x0e, 1, 0x200, 0x10, 0x80000400)):
+                changed = copy.deepcopy(manifest_b)
+                data, summary = macho_fixture(1, [(b"_" + right_symbol.encode(), typ, section, desc, value)], flags)
+                item = changed["object_inputs"][0]
+                item["bytes_base64"], item["sha256"], item["native_evidence"] = base64.b64encode(data).decode(), hashlib.sha256(data).hexdigest(), summary
+                reject(changed)
+            changed = copy.deepcopy(manifest_b)
+            data, summary = macho_fixture(1, [(b"_different", 0x0e, 1, 0, 0x10)])
+            item = changed["object_inputs"][0]
+            item["bytes_base64"], item["sha256"], item["native_evidence"] = base64.b64encode(data).decode(), hashlib.sha256(data).hexdigest(), summary
+            reject(changed)
+            for typ, desc in ((0x0e, 0), (0x1f, 0x80), (0x0f, 0x400)):
+                changed = copy.deepcopy(manifest_b)
+                data, summary = macho_fixture(1, [(b"_" + right_symbol.encode(), typ, 1, desc, 0x10)])
+                item = changed["object_inputs"][0]
+                item["bytes_base64"], item["sha256"], item["native_evidence"] = base64.b64encode(data).decode(), hashlib.sha256(data).hexdigest(), summary
+                load(changed, executable_b)
+            changed = copy.deepcopy(manifest_b)
+            data, summary = macho_fixture(1, [(b"_" + right_symbol.encode(), 0x0e, 1, 0, 0x10)] * 2)
+            item = changed["object_inputs"][0]
+            item["bytes_base64"], item["sha256"], item["native_evidence"] = base64.b64encode(data).decode(), hashlib.sha256(data).hexdigest(), summary
+            reject(changed)
             duplicated = copy.deepcopy(manifest_b)
             duplicated["bindings"].append(copy.deepcopy(duplicated["bindings"][0]))
             reject(duplicated)
@@ -609,11 +718,11 @@ def test_strict_manifest_synthetic_controls():
             # Two separate native objects, with a swapped link-input mapping.
             _, second = fixture("second", left_symbol)
             combined = copy.deepcopy(manifest_b)
-            combined_binary = b"combined-binary"
-            combined_raw = manifest_b["executable_symbols"]["raw_nm"] + second["executable_symbols"]["raw_nm"].replace("0000000000000010", "0000000000000020")
-            observations[combined_binary] = combined_raw
+            combined_binary, combined_evidence = macho_fixture(2, [
+                (b"_" + right_symbol.encode(), 0x0f, 1, 0, 0x10),
+                (b"_" + left_symbol.encode(), 0x0f, 1, 0, 0x11)])
             combined["executable_sha256"] = hashlib.sha256(combined_binary).hexdigest()
-            combined["executable_symbols"] = {"raw_nm": combined_raw, "symbols": frames.native_symbols(combined_raw)}
+            combined["executable_symbols"] = combined_evidence
             imported = copy.deepcopy(second["object_inputs"][0])
             imported["link_input_id"] = 1
             imported["producer"] = {"kind": "artifact_object", "artifact_identity": "other-artifact", "object_ordinal": 0}
@@ -628,11 +737,11 @@ def test_strict_manifest_synthetic_controls():
             reject(swapped)
             with open(executable_b, "wb") as f: f.write(binary_b)
             folded = copy.deepcopy(manifest_b)
-            folded_binary = b"folded-binary"
-            folded_raw = folded["executable_symbols"]["raw_nm"] + "0000000000000010 (__TEXT,__text) external _unidentified\n"
-            observations[folded_binary] = folded_raw
+            folded_binary, folded_evidence = macho_fixture(2, [
+                (b"_" + right_symbol.encode(), 0x0f, 1, 0, 0x10),
+                (b"_unidentified", 0x0e, 1, 0, 0x10)])
             folded["executable_sha256"] = hashlib.sha256(folded_binary).hexdigest()
-            folded["executable_symbols"] = {"raw_nm": folded_raw, "symbols": frames.native_symbols(folded_raw)}
+            folded["executable_symbols"] = folded_evidence
             with open(executable_b, "wb") as f: f.write(folded_binary)
             reject(folded)
             with open(executable_b, "wb") as f: f.write(binary_b)
@@ -654,7 +763,7 @@ def test_strict_manifest_synthetic_controls():
             other = load(same_manifest, executable_b)
             assert capture_violation(compare_same_opt, [line_a], [line_a], manifests=(left, other))[0] == 1
             valid_json = json.dumps(same_manifest)
-            duplicated_json = valid_json.replace('"schema": 3', '"schema": 3, "schema": 3', 1)
+            duplicated_json = valid_json.replace('"schema": 4', '"schema": 4, "schema": 4', 1)
             assert duplicated_json != valid_json
             with open(path, "w", encoding="utf-8") as f: f.write(duplicated_json)
             try: frames.FrameManifest(path, executable_b)
@@ -760,6 +869,7 @@ def test_strict_manifest_synthetic_controls():
 
 def run_all_tests() -> int:
     tests = [
+        ("test_macho_reader_controls", test_macho_reader_controls),
         ("test_strict_manifest_synthetic_controls", test_strict_manifest_synthetic_controls),
         ("test_captured_linux_equivalence", test_captured_linux_equivalence),
         ("test_discriminating_mutations_linux", test_discriminating_mutations_linux),
