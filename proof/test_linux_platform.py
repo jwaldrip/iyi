@@ -33,6 +33,7 @@ from proof.proofkit import (
     compute_inputs_bundle_digest,
     inspect_pin_inputs,
     probe_atime_observable,
+    sha256_file,
     write_pin,
     _process_group_members,
     _validate_census_schema,
@@ -630,7 +631,7 @@ class TestOriginRecordsAdversarialHardlink(unittest.TestCase):
                 stat_targets=[stat_target],
                 stat_results=[stat_result],
             )
-            initial_sha = hashlib.sha256(open(origin_path, "rb").read()).hexdigest()
+            initial_sha = sha256_file(origin_path)
             receipt = {
                 "schema": "iyi-sealed-origin-receipt-v1",
                 "chain_id": "0" * 32,
@@ -725,7 +726,7 @@ class TestOriginRecordsAdversarialHardlink(unittest.TestCase):
                 stat_targets=[stat_target],
                 stat_results=[stat_result],
             )
-            initial_sha = hashlib.sha256(open(origin_path, "rb").read()).hexdigest()
+            initial_sha = sha256_file(origin_path)
 
             receipts_dir = os.path.join(report_dir, "sealed-receipts")
             os.makedirs(receipts_dir)
@@ -736,7 +737,7 @@ class TestOriginRecordsAdversarialHardlink(unittest.TestCase):
                 "attempt": 1,
                 "driver": "demo",
                 "origin_records_sha256": initial_sha,
-                "ledger_sha256": hashlib.sha256(open(ledger_file, "rb").read()).hexdigest(),
+                "ledger_sha256": sha256_file(ledger_file),
                 "receipt_status": "NOT-EXECUTED",
             }
             with open(receipt_path, "w") as f:
