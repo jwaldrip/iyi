@@ -1520,7 +1520,8 @@ def _collect_final_unit(pin: dict, parent_dir: str, unit: str, kind: str, *, sea
                 receipt_data=receipt_data,
             )
             if not ok:
-                status = "FAIL"
+                if status != "UNFAITHFUL":
+                    status = "FAIL"
                 for r in origin_reasons:
                     reasons.append(f"{unit} attempt {attempt} origin verification failed: {r}")
     if status != "PASS" and isinstance(record, dict):

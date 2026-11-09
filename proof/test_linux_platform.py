@@ -22,6 +22,7 @@ import os
 import platform
 import re
 import shutil
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
@@ -917,13 +918,16 @@ class TestOriginRecordsAdversarialHardlink(unittest.TestCase):
         with tempfile.TemporaryDirectory() as report_dir:
             run3_dir = os.path.join(report_dir, "run3", "demo")
             attempt_dir = os.path.join(run3_dir, "a1")
-            os.makedirs(attempt_dir)
+            ledger_file = os.path.join(attempt_dir, "ledger.jsonl")
+            with open(ledger_file, "w") as f:
+                f.write("{}\n")
 
             origin_path = os.path.join(attempt_dir, "origin_records.json")
             with open(origin_path, "w") as f:
                 json.dump({
                     "v": 1, "kind": "origin_records", "driver": "demo", "attempt": 1,
-                    "chain_id": "0" * 32, "ledger_path": "/ledger", "ledger_sha256": "0" * 64,
+                    "chain_id": "0" * 32, "ledger_path": os.path.realpath(ledger_file),
+                    "ledger_sha256": sha256_file(ledger_file),
                     "timestamp_ns": 1000, "entries": [], "overall_status": "PASS",
                 }, f)
 
@@ -948,15 +952,18 @@ class TestOriginRecordsAdversarialHardlink(unittest.TestCase):
             run3_dir = os.path.join(report_dir, "run3", "demo")
             attempt_dir = os.path.join(run3_dir, "a1")
             os.makedirs(attempt_dir)
+            ledger_file = os.path.join(attempt_dir, "ledger.jsonl")
+            with open(ledger_file, "w") as f:
+                f.write("{}\n")
 
             origin_path = os.path.join(attempt_dir, "origin_records.json")
             with open(origin_path, "w") as f:
                 json.dump({
                     "v": 1, "kind": "origin_records", "driver": "demo", "attempt": 1,
-                    "chain_id": "0" * 32, "ledger_path": "/ledger", "ledger_sha256": "0" * 64,
+                    "chain_id": "0" * 32, "ledger_path": os.path.realpath(ledger_file),
+                    "ledger_sha256": sha256_file(ledger_file),
                     "timestamp_ns": 1000, "entries": [], "overall_status": "PASS",
                 }, f)
-
             forged_dir = os.path.join(report_dir, "sealed-receipts")
             os.makedirs(forged_dir)
             with open(os.path.join(forged_dir, "receipt-run3-demo-a1.json"), "w") as f:
