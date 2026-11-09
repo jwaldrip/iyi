@@ -1055,6 +1055,22 @@ def _baseline_keys(value: object) -> set[tuple[str, str, str, str]]:
 
 def _classify_driver_skips(census: dict, log_text: str, baseline: set[tuple[str, str, str, str]]) -> tuple[str, list[str]]:
     hits = _skip_hits(census, log_text)
+    driver_name = str(census.get("driver", ""))
+    if driver_name == "http":
+        http_tool_checks = (
+            ("python zstd", r"zstd unchecked: no compression\.zstd in this Python"),
+            ("curl zstd", r"curl --compressed unchecked: its build lists no zstd"),
+        )
+        for what, pattern in http_tool_checks:
+            if re.search(pattern, log_text):
+                hit = {
+                    "driver": "http",
+                    "class": "tool",
+                    "what": what,
+                    "regex": pattern,
+                }
+                if hit not in hits:
+                    hits.append(hit)
     hit_keys = {
         (hit["driver"], hit["class"], hit["what"], hit["regex"])
         for hit in hits

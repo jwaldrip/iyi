@@ -1169,5 +1169,31 @@ class TestOriginRecordsAdversarialHardlink(unittest.TestCase):
                     header = json.loads(f.readline())
                 self.assertEqual(header.get("nonce"), "trustednonce1234")
 
+
+class TestHttpOmissionSkips(unittest.TestCase):
+    def test_http_omission_python_zstd_returns_env_blocked(self):
+        from proof.run_proof import _classify_driver_skips
+        census = {"driver": "http", "skips": []}
+        log_text = "  requests on one connection, a chunked one, a megabyte, gzip whole and streamed, multipart, and stop; zstd unchecked: no compression.zstd in this Python, and by curl --compressed\n"
+        status, reasons = _classify_driver_skips(census, log_text, baseline=set())
+        self.assertEqual(status, "ENV-BLOCKED")
+        self.assertTrue(any("tool skip http: python zstd" in r for r in reasons))
+
+    def test_http_omission_curl_zstd_returns_env_blocked(self):
+        from proof.run_proof import _classify_driver_skips
+        census = {"driver": "http", "skips": []}
+        log_text = "  requests on one connection, a chunked one, a megabyte, gzip whole and streamed, multipart, and stop; zstd whole as Python's compression.zstd reads it; curl --compressed unchecked: its build lists no zstd\n"
+        status, reasons = _classify_driver_skips(census, log_text, baseline=set())
+        self.assertEqual(status, "ENV-BLOCKED")
+        self.assertTrue(any("tool skip http: curl zstd" in r for r in reasons))
+
+    def test_http_ordinary_mode_returns_pass(self):
+        from proof.run_proof import _classify_driver_skips
+        census = {"driver": "http", "skips": []}
+        log_text = "  requests on one connection, a chunked one, a megabyte, gzip whole and streamed, multipart, and stop; zstd whole as Python's compression.zstd reads it, and by curl --compressed\n"
+        status, reasons = _classify_driver_skips(census, log_text, baseline=set())
+        self.assertEqual(status, "PASS")
+        self.assertEqual(reasons, [])
+
 if __name__ == "__main__":
     unittest.main()

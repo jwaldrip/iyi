@@ -1465,7 +1465,7 @@ _SKIP_VOCAB_RE = re.compile(
     r"(?i)skip|unmeasured|unasked|unread|unproven|uncompared|"
     r"unverified|unshown|unplaced|not run|not proven|not measured|"
     r"not compared|not a pass|goes un|go un|could not be fetched|"
-    r"cannot be written"
+    r"cannot be written|unchecked"
 )
 _SITE_KINDS = {
     "canonical-own",
