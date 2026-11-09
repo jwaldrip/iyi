@@ -79,6 +79,8 @@ def record_privileges() -> tuple[dict, bool, str]:
                     caps[key] = line.split(":", 1)[1].strip()
         env_info["capabilities"] = caps
 
+        # Enforce zero effective, permitted, inheritable, and ambient capabilities per planner.
+        # Strictly fail closed if any required capability field is missing or malformed.
         for key in ("CapInh", "CapPrm", "CapEff", "CapAmb"):
             val = caps.get(key)
             if val is None:
@@ -89,6 +91,7 @@ def record_privileges() -> tuple[dict, bool, str]:
             except ValueError:
                 return env_info, False, f"Malformed capability field {key}: {val}"
 
+        # Record CapBnd without requiring it zero, but fail closed if missing or malformed
         bnd_val = caps.get("CapBnd")
         if bnd_val is None:
             return env_info, False, "Missing CapBnd field in /proc/self/status"
@@ -99,7 +102,6 @@ def record_privileges() -> tuple[dict, bool, str]:
     else:
         if sys.platform.startswith("linux"):
             return env_info, False, "/proc/self/status unreadable to verify capabilities"
-
     # Check and establish no_new_privs via prctl
     if sys.platform.startswith("linux"):
         try:
@@ -244,27 +246,78 @@ def main() -> int:
         os.close(fd)
         print("[CONTROL_POSITIVE] Ordinary writing and truncation on fixture succeeded", flush=True)
 
-        # 5. Open the file read-only and retain that descriptor throughout
-        ro_fd = os.open(fixture_path.name, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0), dir_fd=dir_fd)
+        # 5. Open the file read-only with O_NOFOLLOW and retain that descriptor throughout
+        ro_flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+        try:
+            ro_fd = os.open(fixture_path.name, ro_flags, dir_fd=dir_fd)
+        except Exception as e:
+            msg = f"Failed to open fixture read-only with O_NOFOLLOW: {e}"
+            print(f"FAILED: {msg}", flush=True)
+            publish_report(output_path, "UNKNOWN_OR_ERROR", msg, fixture_path, env_info)
+            return 1
 
-        # 6. Record fstat identity and bounded raw SHA-256
+        # 6. Revalidate dev/inode against original created file, type, ownership, nlink, mode,
+        # exact fixed payload length, and bounded read before ioctl
         st_before = os.fstat(ro_fd)
+        if st_before.st_dev != st.st_dev:
+            os.close(ro_fd)
+            msg = f"Reopened fixture device mismatch: {st_before.st_dev} vs original {st.st_dev}"
+            print(f"FAILED: {msg}", flush=True)
+            publish_report(output_path, "UNKNOWN_OR_ERROR", msg, fixture_path, env_info)
+            return 1
+        if st_before.st_ino != st.st_ino:
+            os.close(ro_fd)
+            msg = f"Reopened fixture inode mismatch: {st_before.st_ino} vs original {st.st_ino}"
+            print(f"FAILED: {msg}", flush=True)
+            publish_report(output_path, "UNKNOWN_OR_ERROR", msg, fixture_path, env_info)
+            return 1
+        if not stat.S_ISREG(st_before.st_mode):
+            os.close(ro_fd)
+            msg = f"Reopened fixture is not a regular file (mode=0{st_before.st_mode:o})"
+            print(f"FAILED: {msg}", flush=True)
+            publish_report(output_path, "UNKNOWN_OR_ERROR", msg, fixture_path, env_info)
+            return 1
+        if st_before.st_uid != os.getuid():
+            os.close(ro_fd)
+            msg = f"Reopened fixture uid mismatch: {st_before.st_uid} vs {os.getuid()}"
+            print(f"FAILED: {msg}", flush=True)
+            publish_report(output_path, "UNKNOWN_OR_ERROR", msg, fixture_path, env_info)
+            return 1
+        if st_before.st_nlink != 1:
+            os.close(ro_fd)
+            msg = f"Reopened fixture link count mismatch: {st_before.st_nlink} vs expected 1"
+            print(f"FAILED: {msg}", flush=True)
+            publish_report(output_path, "UNKNOWN_OR_ERROR", msg, fixture_path, env_info)
+            return 1
+        if (st_before.st_mode & 0o777) != 0o600:
+            os.close(ro_fd)
+            msg = f"Reopened fixture mode mismatch: 0{st_before.st_mode & 0o777:o} vs expected 0600"
+            print(f"FAILED: {msg}", flush=True)
+            publish_report(output_path, "UNKNOWN_OR_ERROR", msg, fixture_path, env_info)
+            return 1
+        if st_before.st_size != expected_size:
+            os.close(ro_fd)
+            msg = f"Reopened fixture size mismatch: {st_before.st_size} vs expected {expected_size}"
+            print(f"FAILED: {msg}", flush=True)
+            publish_report(output_path, "UNKNOWN_OR_ERROR", msg, fixture_path, env_info)
+            return 1
+
         initial_dev = st_before.st_dev
         initial_ino = st_before.st_ino
         initial_size = st_before.st_size
 
+        # Bounded read of exact fixed payload length
         os.lseek(ro_fd, 0, os.SEEK_SET)
-        read_content = os.read(ro_fd, initial_size + 4096)
-        if len(read_content) != initial_size or read_content != fixed_payload:
+        read_content = os.read(ro_fd, expected_size + 1)
+        if len(read_content) != expected_size or read_content != fixed_payload:
             os.close(ro_fd)
-            msg = "Read content mismatch against fixed payload before enable"
+            msg = f"Read content mismatch or size out of bounds (got {len(read_content)}, expected {expected_size})"
             print(f"FAILED: {msg}", flush=True)
             publish_report(output_path, "UNKNOWN_OR_ERROR", msg, fixture_path, env_info)
             return 1
 
         raw_sha256 = hashlib.sha256(read_content).hexdigest()
         print(f"[FIXTURE_IDENTITY] dev={initial_dev} ino={initial_ino} size={initial_size} sha256={raw_sha256}", flush=True)
-
         # 7. Call FS_IOC_ENABLE_VERITY with a zero-initialized version-1 argument and SHA-256 parameters
         enable_arg = struct.pack("=IIIIQIIQ11Q", 1, FS_VERITY_HASH_ALG_SHA256, 4096, 0, 0, 0, 0, 0, *([0] * 11))
         try:
