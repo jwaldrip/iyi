@@ -403,6 +403,35 @@ class TestOfflineInputsBinding(unittest.TestCase):
             digest2 = compute_inputs_bundle_digest(tmpdir)
             self.assertNotEqual(digest1, digest2)
 
+    def test_compute_inputs_bundle_digest_rejects_unreadable_nested_dir(self):
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            self.skipTest("root bypasses filesystem permissions")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            nested = os.path.join(tmpdir, "unreadable_dir")
+            os.makedirs(nested)
+            with open(os.path.join(nested, "hidden.txt"), "w") as f:
+                f.write("secret\n")
+            os.chmod(nested, 0o000)
+            try:
+                with self.assertRaises(IdentityError) as ctx:
+                    compute_inputs_bundle_digest(tmpdir)
+                self.assertEqual(ctx.exception.reason, "INPUTS-UNREADABLE")
+            finally:
+                os.chmod(nested, 0o755)
+
+    def test_compute_inputs_bundle_digest_rejects_fifo_special_file(self):
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("mkfifo not supported on this platform")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fifo_path = os.path.join(tmpdir, "test.fifo")
+            try:
+                os.mkfifo(fifo_path)
+            except (OSError, PermissionError):
+                self.skipTest("mkfifo failed")
+            with self.assertRaises(IdentityError) as ctx:
+                compute_inputs_bundle_digest(tmpdir)
+            self.assertEqual(ctx.exception.reason, "INPUTS-SPECIAL-FILE")
+
     def test_fresh_stage_env_reinjects_pinned_inputs_dir(self):
         pin = {
             "env_path": "/bin",

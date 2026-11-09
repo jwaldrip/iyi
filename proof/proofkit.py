@@ -59,6 +59,7 @@ def compute_inputs_bundle_digest(inputs_dir: str) -> str:
       - any non-regular files like sockets, FIFOs, devices (INPUTS-SPECIAL-FILE)
       - path traversal outside inputs root (INPUTS-TRAVERSAL)
       - manifest digest mismatch or unmanifested files when manifest present (INPUTS-MANIFEST-MISMATCH)
+      - any walk/list/stat/read error (INPUTS-UNREADABLE)
 
     Binds every byte, mode, size, and relative path (including all dotfiles/dotdirs).
     """
@@ -68,10 +69,13 @@ def compute_inputs_bundle_digest(inputs_dir: str) -> str:
     if not os.path.isdir(inputs_real):
         raise IdentityError("INPUTS-DIR-INVALID", f"inputs_dir is not a directory: {inputs_dir}")
 
+    def _walk_error(err: OSError) -> None:
+        raise IdentityError("INPUTS-UNREADABLE", f"cannot read directory {err.filename}: {err}")
+
     entries: list[tuple[str, str, int, int, str]] = []
     seen_relpaths: set[str] = set()
 
-    for root, dirnames, filenames in os.walk(inputs_real, followlinks=False):
+    for root, dirnames, filenames in os.walk(inputs_real, followlinks=False, onerror=_walk_error):
         if os.path.islink(root):
             rel_root = os.path.relpath(root, inputs_real)
             raise IdentityError("INPUTS-SYMLINK", f"symbolic link directory forbidden in inputs bundle: {rel_root}")
@@ -81,7 +85,11 @@ def compute_inputs_bundle_digest(inputs_dir: str) -> str:
             if os.path.islink(dpath):
                 rel_d = os.path.relpath(dpath, inputs_real)
                 raise IdentityError("INPUTS-SYMLINK", f"symbolic link directory forbidden in inputs bundle: {rel_d}")
-            st = os.lstat(dpath)
+            try:
+                st = os.lstat(dpath)
+            except OSError as err:
+                rel_d = os.path.relpath(dpath, inputs_real)
+                raise IdentityError("INPUTS-UNREADABLE", f"cannot stat directory {rel_d}: {err}") from err
             if not stat.S_ISDIR(st.st_mode):
                 rel_d = os.path.relpath(dpath, inputs_real)
                 raise IdentityError("INPUTS-SPECIAL-FILE", f"special directory entry forbidden in inputs bundle: {rel_d}")
@@ -97,13 +105,21 @@ def compute_inputs_bundle_digest(inputs_dir: str) -> str:
             if os.path.islink(fpath):
                 raise IdentityError("INPUTS-SYMLINK", f"symbolic link forbidden in inputs bundle: {rel_path}")
 
-            st = os.lstat(fpath)
+            try:
+                st = os.lstat(fpath)
+            except OSError as err:
+                raise IdentityError("INPUTS-UNREADABLE", f"cannot stat file {rel_path}: {err}") from err
+
             if not stat.S_ISREG(st.st_mode):
                 raise IdentityError("INPUTS-SPECIAL-FILE", f"special file forbidden in inputs bundle: {rel_path}")
 
             file_mode = stat.S_IMODE(st.st_mode)
             file_size = st.st_size
-            file_sha = sha256_file(fpath)
+            try:
+                file_sha = sha256_file(fpath)
+            except OSError as err:
+                raise IdentityError("INPUTS-UNREADABLE", f"cannot read file {rel_path}: {err}") from err
+
             entries.append((rel_path, fpath, file_mode, file_size, file_sha))
             seen_relpaths.add(rel_path)
 
@@ -115,8 +131,11 @@ def compute_inputs_bundle_digest(inputs_dir: str) -> str:
 
     for m_entry in found_manifests:
         m_rel, m_abs, _, _, _ = m_entry
-        with open(m_abs, "r", encoding="utf-8", errors="replace") as mf:
-            m_lines = mf.read().splitlines()
+        try:
+            with open(m_abs, "r", encoding="utf-8", errors="replace") as mf:
+                m_lines = mf.read().splitlines()
+        except OSError as err:
+            raise IdentityError("INPUTS-UNREADABLE", f"cannot read manifest {m_rel}: {err}") from err
         manifest_items: dict[str, str] = {}
         for line_no, line in enumerate(m_lines, 1):
             line = line.strip()
