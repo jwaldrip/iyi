@@ -9,7 +9,8 @@ Responsibilities:
 2. Independent verification of witness streams against required executable (st_dev, st_ino) sets.
 3. Hardened rejection of reader-only (atime advance via read(2)) and utime-only (utimensat(2)) manipulations.
 4. Process ancestry, descendant tracking, and non-dumpability audit (PR_SET_DUMPABLE=0).
-5. Raw executable capture verification: reads retained bytes from disk and recalculates SHA-256.
+5. Mandatory raw executable capture verification: requires corresponding capture event, binds claimed
+   hashes/sizes to actual disk bytes, and rejects missing records, zero-length files, symlinks, or path escapes.
 6. Repeated execution deduplication audit: verifies consistent SHA-256 across repeated runs of same binary.
 7. Zero placeholder tolerance: empty captures or empty-file SHA-256 hashes are strictly rejected.
 8. Unmediated execution refusal: execution strictly requires the compiled C native tracer.
@@ -58,7 +59,7 @@ class ExecNotWitnessedError(WitnessVerificationError):
 
 
 class RawCaptureError(WitnessVerificationError):
-    """Raised when raw executable capture is missing, zero-length, or corrupt."""
+    """Raised when raw executable capture is missing, zero-length, corrupt, or inconsistent."""
     pass
 
 
@@ -214,7 +215,9 @@ def verify_exec_witness_evidence(
     7. Every (st_dev, st_ino) in 'required_executables' MUST have at least one matching 'exec_success'.
     8. Repeated executions of the same inoderef must report identical SHA-256 and size.
     9. Zero-length or placeholder raw executable captures are strictly rejected.
-    10. If 'raw_capture_dir' is provided, verified raw bytes on disk are independently hashed.
+    10. If 'raw_capture_dir' is provided, verified raw bytes on disk are independently hashed,
+        mandatory 'raw_exec_capture' records are enforced per required executable, and
+        path/symlink escapes are denied.
     """
     if not events:
         raise WitnessVerificationError("Empty witness evidence stream: no events recorded")
@@ -388,19 +391,32 @@ def verify_exec_witness_evidence(
             size = ev.get("size_bytes", 0)
             if size <= 0 or not sha or sha == EMPTY_SHA256:
                 raise RawCaptureError(f"Zero-length or placeholder raw capture record on line {idx}: {ev}")
-            cap = WitnessRawExecCapture(
-                seq_id=seq or 0,
-                timestamp_ns=ev.get("timestamp_ns", 0),
-                st_dev=dev,
-                st_ino=ino,
-                exe_path=ev.get("exe_path", ""),
-                size_bytes=size,
-                sha256=sha,
-                captured_file=ev.get("captured_file"),
-                deduplicated=ev.get("deduplicated", False),
-            )
-            raw_captures.append(cap)
-            raw_captures_by_ref[(dev, ino)] = cap
+
+            cap_file = ev.get("captured_file")
+            if not cap_file or "/" in cap_file or "\\" in cap_file or ".." in cap_file:
+                raise RawCaptureError(f"Invalid or escaped captured_file name on line {idx}: {cap_file!r}")
+
+            ref = (dev, ino)
+            if ref in raw_captures_by_ref:
+                existing = raw_captures_by_ref[ref]
+                if not ev.get("deduplicated", False) or existing.sha256 != sha or existing.size_bytes != size:
+                    raise RawCaptureError(
+                        f"Inconsistent or unauthorized duplicate raw_exec_capture for {ref} on line {idx}"
+                    )
+            else:
+                cap = WitnessRawExecCapture(
+                    seq_id=seq or 0,
+                    timestamp_ns=ev.get("timestamp_ns", 0),
+                    st_dev=dev,
+                    st_ino=ino,
+                    exe_path=ev.get("exe_path", ""),
+                    size_bytes=size,
+                    sha256=sha,
+                    captured_file=cap_file,
+                    deduplicated=ev.get("deduplicated", False),
+                )
+                raw_captures.append(cap)
+                raw_captures_by_ref[ref] = cap
 
         elif ev_type == "process_exit":
             pid = ev.get("pid")
@@ -415,14 +431,30 @@ def verify_exec_witness_evidence(
     # Check required executables against witnessed kernel executions
     if required_executables is not None:
         for req_dev, req_ino in required_executables:
-            if (req_dev, req_ino) not in witnessed_inoderefs:
+            ref = (req_dev, req_ino)
+            if ref not in witnessed_inoderefs:
                 raise ExecNotWitnessedError(
                     f"Candidate executable inode (dev={req_dev}, ino={req_ino}) was never witnessed executing in kernel"
                 )
 
             # If raw persistence verification is requested, independently verify retained bytes from disk
             if raw_capture_dir:
-                expected_file = os.path.join(raw_capture_dir, f"{req_dev}_{req_ino}.bin")
+                if ref not in raw_captures_by_ref:
+                    raise RawCaptureError(
+                        f"Mandatory raw_exec_capture record missing in witness stream for executable (dev={req_dev}, ino={req_ino})"
+                    )
+
+                cap_rec = raw_captures_by_ref[ref]
+                expected_basename = f"{req_dev}_{req_ino}.bin"
+                if cap_rec.captured_file != expected_basename:
+                    raise RawCaptureError(
+                        f"Invalid or escaped captured_file name: expected {expected_basename!r}, got {cap_rec.captured_file!r}"
+                    )
+
+                expected_file = os.path.join(raw_capture_dir, expected_basename)
+                if os.path.islink(expected_file):
+                    raise RawCaptureError(f"Symlink escape detected in captured file {expected_file}")
+
                 if not os.path.isfile(expected_file):
                     raise RawCaptureError(
                         f"Retained raw executable missing on disk: {expected_file} (dev={req_dev}, ino={req_ino})"
@@ -440,17 +472,26 @@ def verify_exec_witness_evidence(
                 if computed_sha == EMPTY_SHA256:
                     raise RawCaptureError(f"Placeholder SHA-256 rejected for {expected_file}")
 
-                # Verify against raw_capture record
-                if (req_dev, req_ino) in raw_captures_by_ref:
-                    cap_rec = raw_captures_by_ref[(req_dev, req_ino)]
-                    if cap_rec.size_bytes != len(file_bytes):
-                        raise RawCaptureError(
-                            f"Byte size mismatch on disk: expected {cap_rec.size_bytes}, got {len(file_bytes)}"
-                        )
-                    if cap_rec.sha256 != computed_sha:
-                        raise RawCaptureError(
-                            f"SHA-256 digest mismatch on disk: expected {cap_rec.sha256}, got {computed_sha}"
-                        )
+                if cap_rec.size_bytes != len(file_bytes):
+                    raise RawCaptureError(
+                        f"Byte size mismatch on disk: expected {cap_rec.size_bytes}, got {len(file_bytes)}"
+                    )
+                if cap_rec.sha256 != computed_sha:
+                    raise RawCaptureError(
+                        f"SHA-256 digest mismatch on disk: expected {cap_rec.sha256}, got {computed_sha}"
+                    )
+
+                # Ensure all matching exec_success events match the verified raw capture
+                for ev in exec_events:
+                    if (ev.st_dev, ev.st_ino) == ref:
+                        if ev.sha256 and ev.sha256 != computed_sha:
+                            raise RawCaptureError(
+                                f"Exec event claimed SHA-256 {ev.sha256} does not match verified raw disk SHA-256 {computed_sha}"
+                            )
+                        if ev.size_bytes is not None and ev.size_bytes != len(file_bytes):
+                            raise RawCaptureError(
+                                f"Exec event claimed size {ev.size_bytes} does not match verified disk size {len(file_bytes)}"
+                            )
 
     return WitnessVerificationResult(
         verified=True,

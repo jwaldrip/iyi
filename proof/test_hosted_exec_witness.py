@@ -450,7 +450,84 @@ class TestHostedExecWitness(unittest.TestCase):
         witness_script = os.path.join(os.path.dirname(__file__), "hosted_exec_witness.py")
         proc = subprocess.run([sys.executable, witness_script, "--evidence-fd", "3", "--", "echo", "test"], capture_output=True)
         self.assertEqual(proc.returncode, 255)
+    def test_missing_raw_capture_record_fails(self):
+        """If raw_capture_dir has the file but witness stream lacks mandatory raw_exec_capture record, fails closed."""
+        payload_bytes = b"\x7fELF_VALID_BINARY"
+        sha = hashlib.sha256(payload_bytes).hexdigest()
+        size = len(payload_bytes)
 
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file_path = os.path.join(tmpdir, "64769_1001.bin")
+            with open(file_path, "wb") as f:
+                f.write(payload_bytes)
+
+            # stream generated with include_raw_event=False
+            stream = _generate_valid_witness_stream(
+                exec_inoderefs=[(64769, 1001)],
+                sha256=sha,
+                size_bytes=size,
+                include_raw_event=False,
+            )
+            events = parse_witness_events(stream)
+            with self.assertRaises(RawCaptureError) as ctx:
+                verify_exec_witness_evidence(
+                    events=events,
+                    required_executables=[(64769, 1001)],
+                    raw_capture_dir=tmpdir,
+                )
+            self.assertIn("mandatory raw_exec_capture record missing", str(ctx.exception).lower())
+
+    def test_symlink_escape_in_raw_capture_rejected(self):
+        """If captured file on disk is a symlink, fails closed."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            real_file = os.path.join(tmpdir, "real_target.bin")
+            with open(real_file, "wb") as f:
+                f.write(b"REAL_BYTES")
+            symlink_file = os.path.join(tmpdir, "64769_1001.bin")
+            os.symlink(real_file, symlink_file)
+
+            stream = _generate_valid_witness_stream(
+                exec_inoderefs=[(64769, 1001)],
+                sha256=hashlib.sha256(b"REAL_BYTES").hexdigest(),
+                size_bytes=len(b"REAL_BYTES"),
+                include_raw_event=True,
+            )
+            events = parse_witness_events(stream)
+            with self.assertRaises(RawCaptureError) as ctx:
+                verify_exec_witness_evidence(
+                    events=events,
+                    required_executables=[(64769, 1001)],
+                    raw_capture_dir=tmpdir,
+                )
+            self.assertIn("symlink escape detected", str(ctx.exception).lower())
+
+    def test_captured_file_path_traversal_rejected(self):
+        """If captured_file attempts directory traversal, fails closed."""
+        events = [
+            {"event": "session_start", "protocol": PROTOCOL_VERSION, "tracer_pid": 100, "start_time_ns": 1, "tracer_dumpable": 0, "launch_binding": {}},
+            {"event": "process_spawn", "seq_id": 1, "timestamp_ns": 2, "pid": 101, "ppid": 100, "parent_seq_id": 0, "kind": "initial", "is_thread": False},
+            {"event": "exec_success", "seq_id": 1, "timestamp_ns": 3, "pid": 101, "ppid": 100, "exe_path": "/bin/exe", "st_dev": 1, "st_ino": 2, "st_mode": 33261, "st_size": 10, "st_uid": 65534, "st_gid": 65534, "st_atim_ns": 3, "st_mtim_ns": 1, "st_ctim_ns": 1, "held_fd_index": 0, "sha256": "1111111111111111111111111111111111111111111111111111111111111111", "size_bytes": 10, "raw_captured": True},
+            {"event": "raw_exec_capture", "seq_id": 1, "timestamp_ns": 4, "st_dev": 1, "st_ino": 2, "exe_path": "/bin/exe", "size_bytes": 10, "sha256": "1111111111111111111111111111111111111111111111111111111111111111", "captured_file": "../escape.bin"},
+            {"event": "process_exit", "seq_id": 1, "timestamp_ns": 5, "pid": 101, "exit_code": 0, "raw_status": 0},
+            {"event": "session_end", "protocol": PROTOCOL_VERSION, "tracer_pid": 100, "end_time_ns": 6, "status": "COMPLETE", "root_exit_code": 0, "total_processes_spawned": 1, "total_exec_events": 1, "active_processes_at_end": 0},
+        ]
+        with self.assertRaises(RawCaptureError) as ctx:
+            verify_exec_witness_evidence(events=events)
+        self.assertIn("invalid or escaped captured_file", str(ctx.exception).lower())
+
+    def test_inconsistent_duplicate_raw_capture_rejected(self):
+        """Duplicate raw capture records with conflicting attributes fail closed."""
+        events = [
+            {"event": "session_start", "protocol": PROTOCOL_VERSION, "tracer_pid": 100, "start_time_ns": 1, "tracer_dumpable": 0, "launch_binding": {}},
+            {"event": "process_spawn", "seq_id": 1, "timestamp_ns": 2, "pid": 101, "ppid": 100, "parent_seq_id": 0, "kind": "initial", "is_thread": False},
+            {"event": "raw_exec_capture", "seq_id": 1, "timestamp_ns": 3, "st_dev": 1, "st_ino": 2, "exe_path": "/bin/exe", "size_bytes": 10, "sha256": "1111111111111111111111111111111111111111111111111111111111111111", "captured_file": "1_2.bin"},
+            {"event": "raw_exec_capture", "seq_id": 1, "timestamp_ns": 4, "st_dev": 1, "st_ino": 2, "exe_path": "/bin/exe", "size_bytes": 10, "sha256": "2222222222222222222222222222222222222222222222222222222222222222", "captured_file": "1_2.bin"},
+            {"event": "process_exit", "seq_id": 1, "timestamp_ns": 5, "pid": 101, "exit_code": 0, "raw_status": 0},
+            {"event": "session_end", "protocol": PROTOCOL_VERSION, "tracer_pid": 100, "end_time_ns": 6, "status": "COMPLETE", "root_exit_code": 0, "total_processes_spawned": 1, "total_exec_events": 0, "active_processes_at_end": 0},
+        ]
+        with self.assertRaises(RawCaptureError) as ctx:
+            verify_exec_witness_evidence(events=events)
+        self.assertIn("inconsistent or unauthorized duplicate", str(ctx.exception).lower())
     def test_c_source_invariants(self):
         """Verify the C implementation enforces all required security invariants."""
         c_path = os.path.join(os.path.dirname(__file__), "hosted_exec_witness.c")
