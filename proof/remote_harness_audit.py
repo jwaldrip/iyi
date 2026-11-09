@@ -1121,13 +1121,25 @@ TARGETED_IDS = [x.strip() for x in sys.argv[3].split(",") if x.strip()]
 sys.path.insert(0, REPO_ROOT)
 from proof import smoke_test as st
 
-def _json_default(value: object) -> object:
-    if isinstance(value, set):
-        return sorted(value)
+def _normalize(value: object) -> object:
+    if isinstance(value, (set, frozenset)):
+        members = [_normalize(item) for item in value]
+        members.sort(key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")))
+        return {"__audit_type__": type(value).__name__, "items": members}
+    if isinstance(value, tuple):
+        return {"__audit_type__": "tuple", "items": [_normalize(item) for item in value]}
+    if isinstance(value, list):
+        return [_normalize(item) for item in value]
+    if isinstance(value, dict):
+        if not all(isinstance(key, str) for key in value):
+            raise TypeError("Audit object keys must be strings")
+        return {key: _normalize(item) for key, item in value.items()}
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
     raise TypeError(f"Cannot serialize {type(value).__name__}")
 
 def _render(value: object) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=_json_default)
+    return json.dumps(_normalize(value), sort_keys=True, separators=(",", ":"))
 
 fixture_map = {f.fixture_id: f for f in st.FIXTURES}
 results = {}
@@ -1196,7 +1208,7 @@ for fid in TARGETED_IDS:
             )
 
 with open(OUTPUT_JSON_PATH, "w", encoding="utf-8") as f:
-    json.dump(results, f, indent=2, default=_json_default)
+    json.dump(_normalize(results), f, indent=2, sort_keys=True)
 """
 
         try:
