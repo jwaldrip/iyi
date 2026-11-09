@@ -10,10 +10,10 @@ Responsibilities:
 3. Hardened rejection of reader-only (atime advance via read(2)) and utime-only (utimensat(2)) manipulations.
 4. Process ancestry, descendant tracking, and non-dumpability audit (PR_SET_DUMPABLE=0).
 5. Mandatory raw executable capture verification: requires corresponding capture event, binds claimed
-   hashes/sizes to actual disk bytes, and rejects missing records, zero-length files, symlinks, or path escapes.
+   hashes/sizes to actual disk bytes via streaming bounded chunk reads (no massive allocation),
+   and rejects missing records, zero-length files, symlinks, or path escapes.
 6. Repeated execution deduplication audit: verifies consistent SHA-256 across repeated runs of same binary.
-7. Runtime E3 join lifecycle verification: authenticates hardlink creation before driver cleanup,
-   timestamp resets, and consumer completion events.
+7. Observational syscall event verification: link_observation and utimensat_observation.
 8. Enforces inode uniqueness across distinct logical build slots.
 9. Zero placeholder tolerance: empty captures or empty-file SHA-256 hashes are strictly rejected.
 10. Unmediated execution refusal: execution strictly requires the compiled C native tracer.
@@ -35,6 +35,8 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
 
 PROTOCOL_VERSION = "iyi-exec-witness-v1"
 EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+MAX_SINGLE_RAW_BYTES = 100 * 1024 * 1024  # 100 MiB ceiling
+CHUNK_SIZE = 64 * 1024  # 64 KiB bounded read chunk
 
 
 class WitnessError(Exception):
@@ -89,17 +91,31 @@ class WitnessProcessSpawn:
 
 
 @dataclasses.dataclass(frozen=True)
-class WitnessHardlinkAuthenticated:
+class WitnessLinkObservation:
     seq_id: int
     timestamp_ns: int
     pid: int
+    cwd: str
+    old_path: str
+    new_path: str
+    st_dev: int
+    st_ino: int
+    st_nlink: int
+    is_regular: bool = True
+    held_fd_index: int = -1
 
 
 @dataclasses.dataclass(frozen=True)
-class WitnessTimestampResetAuthenticated:
+class WitnessUtimensatObservation:
     seq_id: int
     timestamp_ns: int
     pid: int
+    cwd: str
+    path: str
+    st_dev: int
+    st_ino: int
+    st_atim_ns: int
+    st_mtim_ns: int
 
 
 @dataclasses.dataclass(frozen=True)
@@ -193,8 +209,8 @@ class WitnessVerificationResult:
     session_end: WitnessSessionEnd
     exec_events: List[WitnessExecSuccess]
     raw_captures: List[WitnessRawExecCapture]
-    hardlink_events: List[WitnessHardlinkAuthenticated]
-    timestamp_reset_events: List[WitnessTimestampResetAuthenticated]
+    link_observations: List[WitnessLinkObservation]
+    utimensat_observations: List[WitnessUtimensatObservation]
     consumer_completions: List[WitnessConsumerCompletion]
 
 
@@ -251,9 +267,9 @@ def verify_exec_witness_evidence(
     8. Repeated executions of the same inoderef must report identical SHA-256 and size.
     9. Inode uniqueness across logical slots: distinct required slots cannot share physical inode.
     10. Zero-length or placeholder raw executable captures are strictly rejected.
-    11. If 'raw_capture_dir' is provided, verified raw bytes on disk are independently hashed,
-        mandatory 'raw_exec_capture' records are enforced per required executable, and
-        path/symlink escapes are denied via atomic descriptor-relative access.
+    11. If 'raw_capture_dir' is provided, verified raw bytes on disk are independently hashed via
+        bounded chunk streaming, mandatory 'raw_exec_capture' records are enforced per required executable,
+        and path/symlink/FIFO escapes are denied via atomic descriptor-relative access with O_NONBLOCK.
     """
     if not events:
         raise WitnessVerificationError("Empty witness evidence stream: no events recorded")
@@ -337,8 +353,8 @@ def verify_exec_witness_evidence(
     exec_events: List[WitnessExecSuccess] = []
     raw_captures: List[WitnessRawExecCapture] = []
     raw_captures_by_ref: Dict[Tuple[int, int], WitnessRawExecCapture] = {}
-    hardlink_events: List[WitnessHardlinkAuthenticated] = []
-    timestamp_reset_events: List[WitnessTimestampResetAuthenticated] = []
+    link_observations: List[WitnessLinkObservation] = []
+    utimensat_observations: List[WitnessUtimensatObservation] = []
     consumer_completions: List[WitnessConsumerCompletion] = []
 
     for idx, ev in enumerate(events[1:-1], start=2):
@@ -356,18 +372,32 @@ def verify_exec_witness_evidence(
                 raise WitnessVerificationError(f"Invalid pid on line {idx}: {pid}")
             spawned_pids[pid] = seq
 
-        elif ev_type == "hardlink_authenticated":
-            hardlink_events.append(WitnessHardlinkAuthenticated(
+        elif ev_type == "link_observation":
+            link_observations.append(WitnessLinkObservation(
                 seq_id=seq or 0,
                 timestamp_ns=ev.get("timestamp_ns", 0),
                 pid=ev.get("pid", 0),
+                cwd=ev.get("cwd", ""),
+                old_path=ev.get("old_path", ""),
+                new_path=ev.get("new_path", ""),
+                st_dev=ev.get("st_dev", 0),
+                st_ino=ev.get("st_ino", 0),
+                st_nlink=ev.get("st_nlink", 0),
+                is_regular=ev.get("is_regular", True),
+                held_fd_index=ev.get("held_fd_index", -1),
             ))
 
-        elif ev_type == "timestamp_reset_authenticated":
-            timestamp_reset_events.append(WitnessTimestampResetAuthenticated(
+        elif ev_type == "utimensat_observation":
+            utimensat_observations.append(WitnessUtimensatObservation(
                 seq_id=seq or 0,
                 timestamp_ns=ev.get("timestamp_ns", 0),
                 pid=ev.get("pid", 0),
+                cwd=ev.get("cwd", ""),
+                path=ev.get("path", ""),
+                st_dev=ev.get("st_dev", 0),
+                st_ino=ev.get("st_ino", 0),
+                st_atim_ns=ev.get("st_atim_ns", 0),
+                st_mtim_ns=ev.get("st_mtim_ns", 0),
             ))
 
         elif ev_type == "consumer_completion":
@@ -553,26 +583,37 @@ def verify_exec_witness_evidence(
                             raise RawCaptureError(f"Captured path {expected_basename} is not a regular file")
                         if st.st_size <= 0:
                             raise RawCaptureError(f"Zero-length raw executable on disk rejected: {expected_basename}")
-                        if st.st_size > 100 * 1024 * 1024:
+                        if st.st_size > MAX_SINGLE_RAW_BYTES:
                             raise RawCaptureError(f"Raw executable {expected_basename} exceeds 100 MiB limit: {st.st_size}")
 
-                        file_bytes = os.read(file_fd, st.st_size + 1)
-                        if len(file_bytes) != st.st_size:
+                        # Stream chunks to calculate digest without whole-file massive allocation
+                        h = hashlib.sha256()
+                        bytes_read = 0
+                        while True:
+                            chunk = os.read(file_fd, CHUNK_SIZE)
+                            if not chunk:
+                                break
+                            bytes_read += len(chunk)
+                            if bytes_read > MAX_SINGLE_RAW_BYTES:
+                                raise RawCaptureError(f"Raw executable {expected_basename} exceeds 100 MiB limit: {bytes_read}")
+                            h.update(chunk)
+
+                        if bytes_read != st.st_size:
                             raise RawCaptureError(
-                                f"Size read mismatch on disk for {expected_basename}: fstat={st.st_size}, read={len(file_bytes)}"
+                                f"Size read mismatch on disk for {expected_basename}: fstat={st.st_size}, actual_read={bytes_read}"
                             )
                     finally:
                         os.close(file_fd)
                 finally:
                     os.close(dir_fd)
 
-                computed_sha = hashlib.sha256(file_bytes).hexdigest()
+                computed_sha = h.hexdigest()
                 if computed_sha == EMPTY_SHA256:
                     raise RawCaptureError(f"Placeholder SHA-256 rejected for {expected_basename}")
 
-                if cap_rec.size_bytes != len(file_bytes):
+                if cap_rec.size_bytes != bytes_read:
                     raise RawCaptureError(
-                        f"Byte size mismatch on disk: expected {cap_rec.size_bytes}, got {len(file_bytes)}"
+                        f"Byte size mismatch on disk: expected {cap_rec.size_bytes}, got {bytes_read}"
                     )
                 if cap_rec.sha256 != computed_sha:
                     raise RawCaptureError(
@@ -586,9 +627,9 @@ def verify_exec_witness_evidence(
                             raise RawCaptureError(
                                 f"Exec event claimed SHA-256 {ev.sha256} does not match verified raw disk SHA-256 {computed_sha}"
                             )
-                        if ev.size_bytes is not None and ev.size_bytes != len(file_bytes):
+                        if ev.size_bytes is not None and ev.size_bytes != bytes_read:
                             raise RawCaptureError(
-                                f"Exec event claimed size {ev.size_bytes} does not match verified disk size {len(file_bytes)}"
+                                f"Exec event claimed size {ev.size_bytes} does not match verified disk size {bytes_read}"
                             )
 
     return WitnessVerificationResult(
@@ -603,8 +644,8 @@ def verify_exec_witness_evidence(
         session_end=session_end,
         exec_events=exec_events,
         raw_captures=raw_captures,
-        hardlink_events=hardlink_events,
-        timestamp_reset_events=timestamp_reset_events,
+        link_observations=link_observations,
+        utimensat_observations=utimensat_observations,
         consumer_completions=consumer_completions,
     )
 

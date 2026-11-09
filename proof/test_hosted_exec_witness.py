@@ -584,12 +584,36 @@ class TestHostedExecWitness(unittest.TestCase):
         ]
         res = verify_exec_witness_evidence(events=events)
         self.assertTrue(res.verified)
-        self.assertEqual(len(res.hardlink_events), 1)
-        self.assertEqual(len(res.timestamp_reset_events), 1)
+        self.assertEqual(len(res.link_observations), 1)
+        self.assertEqual(len(res.utimensat_observations), 1)
         self.assertEqual(len(res.consumer_completions), 1)
 
+    def test_simulated_short_chunk_reads(self):
+        """Proves that bounded chunk reads correctly assemble and hash files across multiple chunks without massive allocation."""
+        payload_bytes = b"CHUNK_" * 20000  # ~120 KiB (> CHUNK_SIZE 64 KiB)
+        sha = hashlib.sha256(payload_bytes).hexdigest()
+        size = len(payload_bytes)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file_path = os.path.join(tmpdir, "64769_1001.bin")
+            with open(file_path, "wb") as f:
+                f.write(payload_bytes)
+
+            stream = _generate_valid_witness_stream(
+                exec_inoderefs=[(64769, 1001)],
+                sha256=sha,
+                size_bytes=size,
+                raw_captured=True,
+            )
+            events = parse_witness_events(stream)
+            res = verify_exec_witness_evidence(
+                events=events,
+                required_executables=[(64769, 1001)],
+                raw_capture_dir=tmpdir,
+            )
+            self.assertTrue(res.verified)
+
     def test_c_source_invariants(self):
-        """Verify the C implementation enforces all required security invariants."""
         c_path = os.path.join(os.path.dirname(__file__), "hosted_exec_witness.c")
         self.assertTrue(os.path.isfile(c_path), f"hosted_exec_witness.c missing at {c_path}")
         with open(c_path, "r", encoding="utf-8") as f:

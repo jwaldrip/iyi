@@ -688,10 +688,33 @@ static void emit_link_observation_event(pid_t pid, uint64_t seq,
   struct stat st;
   memset(&st, 0, sizeof(st));
   uint64_t dev = 0, ino = 0, nlink = 0;
+  bool is_regular = false;
+  int held_idx = -1;
+
   if (stat(full_path, &st) == 0) {
     dev = (uint64_t)st.st_dev;
     ino = (uint64_t)st.st_ino;
     nlink = (uint64_t)st.st_nlink;
+    is_regular = S_ISREG(st.st_mode);
+
+    /* Pin the hardlinked inode via O_PATH before driver cleanup unlinks out */
+    if (g_captured_exec_count < MAX_HELD_DESCRIPTORS) {
+      int held_fd = open(full_path, O_PATH | O_CLOEXEC);
+      if (held_fd >= 0) {
+        held_idx = (int)g_captured_exec_count;
+        CapturedExecutable *ce = &g_captured_execs[g_captured_exec_count++];
+        ce->st_dev = dev;
+        ce->st_ino = ino;
+        ce->st_ctime_ns = (uint64_t)STAT_CTIM_SEC(st) * 1000000000ULL +
+                          (uint64_t)STAT_CTIM_NSEC(st);
+        ce->st_mtim_ns = (uint64_t)STAT_MTIM_SEC(st) * 1000000000ULL +
+                         (uint64_t)STAT_MTIM_NSEC(st);
+        ce->st_size = (int64_t)st.st_size;
+        ce->sha256[0] = '\0';
+        ce->held_fd = held_fd;
+        ce->is_system_binary = false;
+      }
+    }
   }
 
   char esc_old[512];
@@ -707,9 +730,9 @@ static void emit_link_observation_event(pid_t pid, uint64_t seq,
            ",\"timestamp_ns\":%" PRIu64
            ",\"pid\":%d,\"cwd\":\"%s\",\"old_path\":\"%s\",\"new_path\":\"%s\""
            ",\"st_dev\":%" PRIu64 ",\"st_ino\":%" PRIu64
-           ",\"st_nlink\":%" PRIu64 "}",
+           ",\"st_nlink\":%" PRIu64 ",\"is_regular\":%s,\"held_fd_index\":%d}",
            seq, get_time_ns(), (int)pid, esc_cwd, esc_old, esc_new, dev, ino,
-           nlink);
+           nlink, is_regular ? "true" : "false", held_idx);
   emit_evidence_record(buf);
 }
 
