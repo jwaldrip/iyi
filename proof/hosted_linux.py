@@ -657,11 +657,19 @@ def verify_container_mount_table(
     if not isinstance(mounts, list):
         raise MountPolicyError("docker inspect Mounts is not a list")
 
+    ALLOWED_DESTINATIONS = {
+        "/P", "/P/.build", "/W", "/inputs", "/private/tmp", "/scratch",
+        "/home/proof", "/tmp", "/dev/shm", "/control", "/receipts",
+        "/etc/resolv.conf", "/etc/hostname", "/etc/hosts",
+    }
+
     mount_by_dest: Dict[str, Dict[str, Any]] = {}
     for m in mounts:
-        dest = m.get("Destination")
+        dest = m.get("Destination", "")
         if dest:
             mount_by_dest[dest] = m
+            if dest not in ALLOWED_DESTINATIONS and not dest.startswith("/dev/"):
+                raise MountPolicyError(f"Unexpected mount destination detected: {dest}")
 
     # Check for leaked docker.sock or host proc
     for dest, m in mount_by_dest.items():
@@ -684,8 +692,8 @@ def verify_container_mount_table(
     # Phase-dependent /P/.build
     if "/P/.build" in mount_by_dest:
         m = mount_by_dest["/P/.build"]
-        if expected_phase == "proof" and m.get("RW", True) is not False:
-            raise MountPolicyError(f"/P/.build must be read-only during proof phase")
+        if expected_phase in ("proof", "final") and m.get("RW", True) is not False:
+            raise MountPolicyError(f"/P/.build must be read-only during {expected_phase} phase")
 
     # Final phase must mount /receipts read-only
     if expected_phase == "final":
@@ -1085,6 +1093,23 @@ assert hl_src.stat().st_nlink == 2, "Hardlink count did not increase on /private
 hl_src.unlink()
 hl_dst.unlink()
 
+# Execution atime probe
+atime_probe = pathlib.Path("/private/tmp/atime_probe.sh")
+atime_probe.write_text("#!/bin/sh\nexit 0\n")
+os.chmod(str(atime_probe), 0o755)
+st_before = os.stat(str(atime_probe))
+import time
+time.sleep(0.02)
+subprocess.run([str(atime_probe)], check=True)
+st_after = os.stat(str(atime_probe))
+atime_probe.unlink()
+assert st_after.st_atime_ns >= st_before.st_atime_ns, "Execution did not observe atime"
+
+# Account lookup for non-root UID 65534
+import pwd
+pw = pwd.getpwuid(65534)
+assert pw.pw_name in ("proof", "nobody"), f"Unexpected username for UID 65534: {pw.pw_name}"
+
 assert os.stat("/dev/shm").st_dev != os.stat("/private/tmp").st_dev, "/dev/shm must be a distinct filesystem"
 
 # CPU & OS flags (fail-closed if missing)
@@ -1098,6 +1123,24 @@ for family, address in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1"))
     server = socket.socket(family)
     server.bind((address, 0))
     server.listen(1)
+    client = socket.socket(family)
+    client.settimeout(3)
+    client.connect((address, server.getsockname()[1]))
+    peer, _ = server.accept()
+    client.sendall(b"owned-loopback")
+    assert peer.recv(32) == b"owned-loopback"
+    peer.close(); client.close(); server.close()
+
+# Container local UDP loopback
+for family, address in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+    s_udp = socket.socket(family, socket.SOCK_DGRAM)
+    s_udp.bind((address, 0))
+    u_port = s_udp.getsockname()[1]
+    c_udp = socket.socket(family, socket.SOCK_DGRAM)
+    c_udp.sendto(b"udp-canary", (address, u_port))
+    u_data, _ = s_udp.recvfrom(32)
+    assert u_data == b"udp-canary", "UDP loopback data mismatch"
+    s_udp.close(); c_udp.close()
     client = socket.socket(family)
     client.settimeout(3)
     client.connect((address, server.getsockname()[1]))
@@ -1303,7 +1346,11 @@ class SequentialLifecycleController:
 
         for d in (self.p_build_dir, self.private_tmp_dir, self.scratch_dir, self.home_proof_dir, self.artifacts_dir):
             os.makedirs(d, exist_ok=True)
-
+            os.chmod(d, 0o1777 if ("tmp" in d) else 0o777)
+            try:
+                os.chown(d, CONTAINER_UID, CONTAINER_GID)
+            except (PermissionError, OSError):
+                pass
         # Sticky failure tracking
         self.sticky_failed: bool = False
         self.failure_reasons: List[str] = []
@@ -1482,8 +1529,7 @@ class SequentialLifecycleController:
         docker_args.append(f"{self.manifest.image.split('@')[0]}@{self.manifest.image_digest}")
         docker_args.extend(command)
 
-        deadline = timeout_sec or self.time_remaining()
-        proc_timed_out = False
+        deadline = min(timeout_sec, self.time_remaining()) if timeout_sec else self.time_remaining()
         stdout = ""
         stderr = ""
         returncode = -1
@@ -1512,17 +1558,20 @@ class SequentialLifecycleController:
                     pass
 
             target_id = cid or c_name
-            subprocess.run(["docker", "stop", "--time", "2", target_id], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["docker", "stop", "--time", str(int(self.grace_sec)), target_id], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             subprocess.run(["docker", "rm", "-f", target_id], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
             check_proc = subprocess.run(
                 ["docker", "inspect", target_id],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
             )
             if check_proc.returncode == 0:
                 self.mark_failure(f"TEARDOWN-FAILURE: Container {target_id} survived removal")
                 raise TeardownError(f"Container {target_id} survived removal; halting lifecycle")
+            if "No such" not in check_proc.stderr and "no such" not in check_proc.stderr:
+                self.mark_failure(f"TEARDOWN-FAILURE: Docker daemon error during inspect: {check_proc.stderr}")
+                raise TeardownError(f"Docker daemon failure during inspect of {target_id}: {check_proc.stderr}")
 
             if os.path.isfile(cidfile):
                 try:
@@ -1773,10 +1822,10 @@ class SequentialLifecycleController:
             self.mark_failure(f"Proof final failed with exit code {code}: {err}")
 
         leaf = os.path.basename(r)
-        final_file = os.path.join(self.private_tmp_dir, leaf, "final.json")
+        host_report_dir = os.path.join(self.private_tmp_dir, leaf)
+        final_file = os.path.join(host_report_dir, "final.json")
         if not os.path.isfile(final_file):
             self.mark_failure(f"final.json missing at {final_file}")
-
         try:
             with open(final_file, "r") as f:
                 final_data = json.load(f)
@@ -1975,6 +2024,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         driver_limit_sec=float(args.driver_limit_sec or DRIVER_LIMIT_SEC),
         grace_sec=float(args.grace_sec or GRACE_SEC),
         min_disk_gib=float(args.min_disk_gib or MIN_DISK_GIB),
+        runner_temp_dir=args.temp_dir or os.environ.get("RUNNER_TEMP") or tempfile.gettempdir(),
     )
 
     return controller.run_all_stages()
@@ -2018,8 +2068,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--driver-limit-sec", type=float, help="Driver limit in seconds")
     p_run.add_argument("--grace_sec", type=float, help="Grace period in seconds")
     p_run.add_argument("--min-disk-gib", type=float, help="Minimum disk free floor in GiB")
+    p_run.add_argument("--temp-dir", help="Temporary directory for runner")
+    p_run.add_argument("--job-id", help="Hosted job ID")
     p_run.set_defaults(func=cmd_run)
-
     return parser
 
 

@@ -27,10 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     clang-18 \
     libclang-18-dev \
     lld-18 \
-    python3 \
-    python3-pip \
-    python3-dev \
-    python3-venv \
+    software-properties-common \
     libssl-dev \
     libzstd-dev \
     nodejs \
@@ -57,12 +54,21 @@ RUN curl -fsSL https://dist.crystal-lang.org/apt/setup.sh | bash \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Go 1.25 toolchain (supporting ECH and modern crypto requirements)
-# Falling back to stable modern Go if tarball fetch is unavailable
 ARG GO_VERSION=1.25.0
-RUN (curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tar.gz \
-     && tar -C /usr/local -xzf /tmp/go.tar.gz \
-     && rm -f /tmp/go.tar.gz) || \
-    (apt-get update && apt-get install -y --no-install-recommends golang-go && rm -rf /var/lib/apt/lists/*)
+RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tar.gz \
+    && tar -C /usr/local -xzf /tmp/go.tar.gz \
+    && rm -f /tmp/go.tar.gz \
+    && /usr/local/go/bin/go version
+
+# Install Python 3.14 via deadsnakes PPA on Ubuntu 24.04
+RUN add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
+       python3.14 \
+       python3.14-venv \
+       python3.14-dev \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.14 100 \
+    && curl -sS https://bootstrap.pypa.io/get-pip.py | python3.14 \
+    && rm -rf /var/lib/apt/lists/*
 
 # Install required Python packages pinned per Plan Section 3E
 RUN python3 -m pip install --no-cache-dir --break-system-packages \

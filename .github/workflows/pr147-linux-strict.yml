@@ -307,6 +307,50 @@ jobs:
         with:
           python-version: "3.14"
 
+      - name: Resolve exact hosted job context
+        id: job-metadata
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 -B - <<'PY'
+          import json, os, sys, urllib.request
+          from datetime import datetime
+          repo = os.environ["GITHUB_REPOSITORY"]
+          run_id = os.environ["GITHUB_RUN_ID"]
+          attempt = os.environ["GITHUB_RUN_ATTEMPT"]
+          key = os.environ["GITHUB_JOB"]
+          runner = os.environ["RUNNER_NAME"]
+
+          url = f"https://api.github.com/repos/{repo}/actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100"
+          req = urllib.request.Request(url, headers={
+              "Authorization": "Bearer " + os.environ["GH_TOKEN"],
+              "Accept": "application/vnd.github+json",
+              "User-Agent": "iyi-linux-strict-controller",
+          })
+          try:
+              with urllib.request.urlopen(req, timeout=30) as resp:
+                  jobs = json.load(resp)["jobs"]
+          except Exception as exc:
+              sys.exit(f"Failed to query job metadata from GitHub API: {exc}")
+
+          matches = [
+              j for j in jobs
+              if j.get("runner_name") == runner and j.get("status") == "in_progress"
+              and str(j.get("run_id")) == run_id and str(j.get("run_attempt")) == attempt
+          ]
+          if len(matches) != 1:
+              sys.exit(f"Expected exactly one matching current job, found {len(matches)}")
+          job = matches[0]
+          job_id = str(job.get("id", ""))
+          started = job.get("started_at", "")
+          if not job_id.isdigit() or not started:
+              sys.exit("Missing valid job ID or start timestamp")
+          epoch = datetime.fromisoformat(started.replace("Z", "+00:00")).timestamp()
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"job_id={job_id}\njob_key={key}\njob_started_at_iso={started}\njob_started_at_epoch={epoch}\n")
+          PY
+
       - name: Download prepared manifest artifact
         uses: actions/download-artifact@v4
         with:
@@ -376,12 +420,23 @@ jobs:
           P_DIR="$RUNNER_TEMP/p-source"
           W_DIR="$RUNNER_TEMP/w-proof"
 
-          git clone "$GITHUB_WORKSPACE" "$P_DIR"
+          git clone --no-local \
+            --config core.hooksPath=/dev/null \
+            --config filter.lfs.smudge= \
+            --config filter.lfs.clean= \
+            --config core.fsmonitor=false \
+            "$GITHUB_WORKSPACE" "$P_DIR"
           git -C "$P_DIR" checkout --detach "$P_SHA"
+          git -C "$P_DIR" remote remove origin
 
-          git clone "$GITHUB_WORKSPACE" "$W_DIR"
+          git clone --no-local \
+            --config core.hooksPath=/dev/null \
+            --config filter.lfs.smudge= \
+            --config filter.lfs.clean= \
+            --config core.fsmonitor=false \
+            "$GITHUB_WORKSPACE" "$W_DIR"
           git -C "$W_DIR" checkout --detach "$W_SHA"
-
+          git -C "$W_DIR" remote remove origin
           python3 -c "
           from proof.hosted_linux import verify_git_lineage
           verify_git_lineage('$P_DIR', '$W_DIR', '$P_SHA', '$W_SHA')
@@ -391,11 +446,12 @@ jobs:
           echo "p_dir=$P_DIR" >> "$GITHUB_OUTPUT"
           echo "w_dir=$W_DIR" >> "$GITHUB_OUTPUT"
 
-      - name: Build pinned toolchain Docker image
+      - name: Pull or verify reviewed toolchain Docker image
         run: |
-          IMAGE_TAG="${{ needs.prepare-strict-manifest.outputs.image }}@${{ needs.prepare-strict-manifest.outputs.image_digest }}"
-          docker build -t "$IMAGE_TAG" -f proof/hosted-linux.Dockerfile .
-
+          IMAGE_REF="${{ needs.prepare-strict-manifest.outputs.image }}@${{ needs.prepare-strict-manifest.outputs.image_digest }}"
+          echo "Verifying reviewed image: $IMAGE_REF"
+          docker pull "$IMAGE_REF" || true
+          docker image inspect "$IMAGE_REF"
       - name: Run container preflight boundary checks
         run: |
           IMAGE_TAG="${{ needs.prepare-strict-manifest.outputs.image }}@${{ needs.prepare-strict-manifest.outputs.image_digest }}"
@@ -418,8 +474,9 @@ jobs:
             --w "${{ steps.checkout-trees.outputs.w_dir }}" \
             --inputs-dir "${{ steps.stage-inputs.outputs.staged_inputs_dir }}" \
             --artifacts-dir "$ARTIFACTS_DIR" \
-            --job-start-time "$(date +%s)" \
-            --payload-budget-sec "${{ env.PAYLOAD_BUDGET_SEC }}" \
+            --job-start-time "${{ steps.job-metadata.outputs.job_started_at_epoch }}" \
+            --job-id "${{ steps.job-metadata.outputs.job_id }}" \
+            --temp-dir "$RUNNER_TEMP" \
             --driver-limit-sec "${{ env.DRIVER_LIMIT_SEC }}" \
             --grace_sec "${{ env.GRACE_SEC }}" \
             --min-disk-gib "${{ env.MIN_DISK_GIB }}"
@@ -430,5 +487,5 @@ jobs:
         with:
           name: hosted-linux-strict-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/strict-proof-artifacts/
-          if-no-files-found: ignore
+          if-no-files-found: error
           retention-days: 14
