@@ -40,7 +40,16 @@ jobs:
               GITHUB_SHA="${{ github.sha }}" \
               ImageOS="$ImageOS" \
               RUNNER_OS="$RUNNER_OS" \
-              /usr/bin/python3 -I -B proof/fsverity_feasibility.py \
+              /usr/bin/python3 -I -B -c 'import errno, os, runpy, sys
+          for item in os.listdir("/proc/self/fd"):
+              if item.isdigit() and int(item) > 2:
+                  try:
+                      os.close(int(item))
+                  except OSError as exc:
+                      if exc.errno != errno.EBADF:
+                          raise
+          sys.argv = sys.argv[1:]
+          runpy.run_path(sys.argv[0], run_name="__main__")' proof/fsverity_feasibility.py \
                 --existing-mounts \
                 --output "$diag/fsverity-feasibility.json"
 
