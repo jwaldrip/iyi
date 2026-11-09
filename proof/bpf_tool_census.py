@@ -23,7 +23,12 @@ MAX_OUTPUT = 65536
 MAX_FILE = 256 * 1024 * 1024
 
 
-def child_no_privileges():
+def child_no_privileges(parent_pid, previous_mask):
+    # Install the death signal before checking the parent to close the race.
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(1, signal.SIGKILL, 0, 0, 0) != 0 or os.getppid() != parent_pid:
+        raise RuntimeError("cannot establish parent-death protection")
+    signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
     # Runs in the owned child before exec, never in the parent.
     if 0 in os.getresuid() or 0 in os.getresgid():
         raise RuntimeError("root real, effective, or saved uid or gid")
@@ -64,15 +69,22 @@ def safe_to_execute(name, info):
 
 
 def bounded_command(args):
-    child = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                             stderr=subprocess.STDOUT, env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"},
-                             start_new_session=True, preexec_fn=child_no_privileges)
+    if signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL:
+        raise RuntimeError("SIGCHLD must have its default disposition")
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
+    child = None
     sel = None
     output = bytearray()
     deadline = time.monotonic() + 5
     reason = None
     code = None
     try:
+        parent_pid = os.getpid()
+        child = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT, env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"},
+                                 start_new_session=True,
+                                 preexec_fn=lambda: child_no_privileges(parent_pid, previous_mask))
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
         sel = selectors.DefaultSelector()
         sel.register(child.stdout, selectors.EVENT_READ)
         while sel.get_map():
@@ -106,19 +118,21 @@ def bounded_command(args):
         return {"exit_code": code, "error": reason,
                 "output": bytes(output[:MAX_OUTPUT]).decode("utf-8", errors="replace")}
     finally:
-        # The leader is deliberately not reaped until after cleanup. Its
-        # session/group was created exclusively for this command.
+        signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
         try:
-            os.killpg(child.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+            if child is not None:
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                finally:
+                    child.wait(timeout=2)
         finally:
-            try:
-                child.wait(timeout=2)
-            finally:
-                if sel is not None:
-                    sel.close()
+            if sel is not None:
+                sel.close()
+            if child is not None and child.stdout is not None:
                 child.stdout.close()
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
 
 
 def path_info(value):
@@ -136,7 +150,14 @@ def path_info(value):
             chain.append(item)
         resolved = path.resolve(strict=True)
         st = resolved.stat()
+        ancestors = []
+        for ancestor in reversed(resolved.parents):
+            parent_stat = ancestor.stat()
+            ancestors.append({"path": str(ancestor), "uid": parent_stat.st_uid,
+                              "gid": parent_stat.st_gid,
+                              "mode": oct(stat.S_IMODE(parent_stat.st_mode))})
         info = {"requested": value, "canonical": str(resolved), "chain": chain,
+                "canonical_ancestors": ancestors,
                 "uid": st.st_uid, "gid": st.st_gid, "mode": oct(stat.S_IMODE(st.st_mode)),
                 "size": st.st_size, "regular": stat.S_ISREG(st.st_mode)}
         if stat.S_ISREG(st.st_mode):
@@ -161,7 +182,54 @@ def path_info(value):
         return {"requested": value, "chain": chain, "error": str(exc)}
 
 
+def resource_headers(directory):
+    result = {"files": [], "complete": False}
+    try:
+        root = pathlib.Path(directory).resolve(strict=True)
+        if not root.is_dir():
+            raise ValueError("resource include is not a directory")
+        total = 0
+        entries = 0
+        def walk_error(exc):
+            raise exc
+        for base, dirs, files in os.walk(root, followlinks=False, onerror=walk_error):
+            dirs.sort()
+            files.sort()
+            if any((pathlib.Path(base) / name).is_symlink() for name in dirs):
+                raise ValueError(f"resource directory symlink not inventoried: {base}")
+            entries += len(dirs) + len(files)
+            if entries > 8192:
+                raise ValueError("resource entry limit exceeded")
+            for name in files:
+                path = pathlib.Path(base) / name
+                resolved = path.resolve(strict=True)
+                if not resolved.is_relative_to(root):
+                    raise ValueError(f"resource header escapes root: {path}")
+                st = resolved.stat()
+                if not stat.S_ISREG(st.st_mode) or st.st_size > 16 * 1024 * 1024:
+                    raise ValueError(f"unsupported resource header: {path}")
+                total += st.st_size
+                if total > 64 * 1024 * 1024:
+                    raise ValueError("resource byte limit exceeded")
+                result["files"].append(path_info(str(path)))
+        result["complete"] = True
+    except (OSError, RuntimeError, ValueError) as exc:
+        result["error"] = str(exc)
+    return result
+
+
+class CensusCancelled(BaseException):
+    pass
+
+
+def interrupted(signum, frame):
+    raise CensusCancelled(f"received signal {signum}")
+
+
 def main():
+    signal.signal(signal.SIGTERM, interrupted)
+    if signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL:
+        sys.exit("SIGCHLD must have its default disposition")
     if len(sys.argv) != 2:
         sys.exit("usage: bpf_tool_census.py OUTPUT_DIRECTORY")
     root = pathlib.Path(sys.argv[1]).resolve(strict=True)
@@ -196,6 +264,7 @@ def main():
                 if resource_dir.startswith("/") and "\n" not in resource_dir:
                     report["clang_resource"] = path_info(resource_dir)
                     report["clang_resource_include"] = path_info(resource_dir + "/include")
+                    report["clang_resource_headers"] = resource_headers(resource_dir + "/include")
         except (OSError, subprocess.SubprocessError) as exc:
             report["clang_resource_command"] = {"error": str(exc), "exit_code": None}
     report["header_roots"] = [path_info(p) for p in ("/usr/include", "/usr/include/x86_64-linux-gnu")]
