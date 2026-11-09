@@ -85,8 +85,8 @@ class LogicalSlot:
     call_line: int                    # e.g. 89
     label: str                        # e.g. "acme-plain"
     kind: str                         # "own" or "positive"
-    variant_id: Optional[str] = None
-    output_template: str = ""
+    variant_id: Optional[str]
+    output_template: str
     compiler_options: Tuple[str, ...] = ()
 
     def to_dict(self) -> Dict[str, Any]:
@@ -1752,12 +1752,16 @@ def main(argv: Optional[List[str]] = None) -> int:
                 manifest_data = json.load(f)
                 slots_raw = manifest_data if isinstance(manifest_data, list) else manifest_data.get("slots", [])
                 for s in slots_raw:
+                    if "call_line" not in s or s["call_line"] is None:
+                        raise ValueError(f"manifest slot {s.get('slot_id')} missing required call_line")
+                    if "output_template" not in s or not s["output_template"]:
+                        raise ValueError(f"manifest slot {s.get('slot_id')} missing required output_template")
                     logical_slots.append(
                         LogicalSlot(
                             slot_id=s["slot_id"],
                             driver=s["driver"],
-                            site_line=s["site_line"],
-                            call_line=s.get("call_line", s["site_line"]),
+                            site_line=int(s["site_line"]),
+                            call_line=int(s["call_line"]),
                             label=s["label"],
                             kind=s["kind"],
                             variant_id=s.get("variant_id"),
