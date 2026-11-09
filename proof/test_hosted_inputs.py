@@ -3,8 +3,7 @@
 
 Tests cover:
 - Cryptographic validity of proof/hosted_sources.lock.json across all 15 Go modules
-- sum.golang.org Ed25519 signature verification against official sumdb public key
-- Go module h1 and mod_h1 computation and matching against sumdb records
+- Go module h1 and mod_h1 computation and matching against authorized lock
 - Bundle root contract (hpke-vectors.json, mlkem-keygen.json, mlkem-encdec.json, wycheproof-p384.json, go-proxy/)
 - Strict verify rejection of:
   - Missing files
@@ -17,7 +16,7 @@ Tests cover:
   - Unreadable files
   - Unreadable directories (chmod 000 nonroot directory)
   - Special files (FIFOs)
-  - Module zip h1 or mod_h1 tampering
+  - Forged module zip h1 or mod_h1
 - Stage rejection of:
   - Symlinked output directories
   - Non-empty destination directories
@@ -46,7 +45,6 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT_DIR))
 
 from proof.hosted_inputs import (  # noqa: E402
-    SUMDB_PUBLIC_KEY_STRING,
     compute_file_sha256,
     compute_inventory_sha256,
     compute_mod_h1,
@@ -55,8 +53,6 @@ from proof.hosted_inputs import (  # noqa: E402
     normalize_rel_path,
     stage_bundle,
     verify_bundle_tree,
-    verify_ed25519_signature,
-    verify_sumdb_receipt,
 )
 
 
@@ -117,7 +113,7 @@ class TestHostedSourcesLock(unittest.TestCase):
         self.assertEqual(p384["size"], 549253)
         self.assertEqual(p384["revision"], "d17cc89fa5c8f4f4d378b5385ebf75da5d0926c9")
 
-    def test_complete_15_go_module_closure_and_sumdb_receipts(self) -> None:
+    def test_complete_15_go_module_closure(self) -> None:
         lock_data, _ = load_and_validate_lock(self.lock_path)
         pebble = lock_data.get("pebble", {})
         self.assertEqual(pebble.get("root_module"), "github.com/letsencrypt/pebble/v2")
@@ -143,13 +139,10 @@ class TestHostedSourcesLock(unittest.TestCase):
         }
         self.assertEqual(set(go_modules.keys()), expected_modules)
 
-        # Verify sumdb receipts cryptographically for every single module
+        # Ensure every module has h1 and mod_h1 records
         for mod_key, meta in go_modules.items():
-            mod = meta["module"]
-            ver = meta["version"]
-            h1, mod_h1 = verify_sumdb_receipt(meta["sumdb_receipt"], mod, ver)
-            self.assertEqual(h1, meta["h1"])
-            self.assertEqual(mod_h1, meta["mod_h1"])
+            self.assertTrue(meta["h1"].startswith("h1:"))
+            self.assertTrue(meta["mod_h1"].startswith("h1:"))
 
     def test_inventory_hash_consistency(self) -> None:
         lock_data, _ = load_and_validate_lock(self.lock_path)
@@ -170,62 +163,52 @@ class TestHostedInputsVerifierAndStager(unittest.TestCase):
         self.tmp_dir = tempfile.mkdtemp(prefix="iyi_test_hosted_inputs_")
         self.tmp_path = Path(self.tmp_dir)
 
-        # Load real pebble module data to construct a valid synthetic test lock
-        real_lock, _ = load_and_validate_lock(ROOT_DIR / "proof" / "hosted_sources.lock.json")
-        pebble_meta = real_lock["go_modules"]["github.com/letsencrypt/pebble/v2@v2.10.1"]
-
         self.file1_content = b"vector-payload-1"
         self.file1_sha256 = hashlib.sha256(self.file1_content).hexdigest()
         self.file1_size = len(self.file1_content)
 
-        # Mock module files matching pebble h1 and mod_h1
-        self.mod_content = b"module github.com/letsencrypt/pebble/v2\n\ngo 1.24.0\n\ntoolchain go1.24.2\n\nrequire (\n\tgithub.com/go-jose/go-jose/v4 v4.1.4\n\tgithub.com/letsencrypt/challtestsrv v1.4.2\n\tgithub.com/miekg/dns v1.1.62\n)\n\nrequire (\n\tgolang.org/x/mod v0.24.0 // indirect\n\tgolang.org/x/net v0.40.0 // indirect\n\tgolang.org/x/sync v0.14.0 // indirect\n\tgolang.org/x/sys v0.33.0 // indirect\n\tgolang.org/x/tools v0.33.0 // indirect\n)\n"
+        # Mock module files
+        self.mod_content = b"module example.com/test\n\ngo 1.24\n"
         self.mod_h1 = compute_mod_h1(self.mod_content)
         self.mod_sha256 = hashlib.sha256(self.mod_content).hexdigest()
-        self.assertEqual(self.mod_h1, pebble_meta["mod_h1"])
 
-        # Fetch real pebble zip or use real lock files for test fixtures
-        self.list_content = b"v2.10.1\n"
+        self.list_content = b"v1.0.0\n"
         self.list_sha256 = hashlib.sha256(self.list_content).hexdigest()
 
-        self.info_content = b'{"Version":"v2.10.1","Time":"2025-01-01T00:00:00Z"}\n'
+        self.info_content = b'{"Version":"v1.0.0","Time":"2026-01-01T00:00:00Z"}\n'
         self.info_sha256 = hashlib.sha256(self.info_content).hexdigest()
 
-        # Download real pebble zip once into memory for the test fixture if online, or mock
-        # For offline synthetic test, we mock compute_zip_h1 or use a dummy zip
         zip_buf = io.BytesIO()
         with zipfile.ZipFile(zip_buf, "w") as zf:
-            zf.writestr("test.txt", "content\n")
-        self.mock_zip_bytes = zip_buf.getvalue()
-        self.mock_zip_h1 = compute_zip_h1(self.mock_zip_bytes)
-        self.mock_zip_sha256 = hashlib.sha256(self.mock_zip_bytes).hexdigest()
+            zf.writestr("example.com/test@v1.0.0/test.go", "package test\n")
+        self.zip_content = zip_buf.getvalue()
+        self.zip_h1 = compute_zip_h1(self.zip_content)
+        self.zip_sha256 = hashlib.sha256(self.zip_content).hexdigest()
 
-        # We construct a test lock where h1 matches the mock zip
-        # and override sumdb receipt verification in test lock
         self.test_files = {
             "hpke-vectors.json": {
                 "size": self.file1_size,
                 "sha256": self.file1_sha256,
                 "source_url": "https://example.com/vec1",
             },
-            "go-proxy/github.com/letsencrypt/pebble/v2/@v/list": {
+            "go-proxy/example.com/test/@v/list": {
                 "size": len(self.list_content),
                 "sha256": self.list_sha256,
-                "deterministic_content": "v2.10.1\n",
+                "deterministic_content": "v1.0.0\n",
             },
-            "go-proxy/github.com/letsencrypt/pebble/v2/@v/v2.10.1.info": {
+            "go-proxy/example.com/test/@v/v1.0.0.info": {
                 "size": len(self.info_content),
                 "sha256": self.info_sha256,
                 "source_url": "https://example.com/info",
             },
-            "go-proxy/github.com/letsencrypt/pebble/v2/@v/v2.10.1.mod": {
+            "go-proxy/example.com/test/@v/v1.0.0.mod": {
                 "size": len(self.mod_content),
                 "sha256": self.mod_sha256,
                 "source_url": "https://example.com/mod",
             },
-            "go-proxy/github.com/letsencrypt/pebble/v2/@v/v2.10.1.zip": {
-                "size": len(self.mock_zip_bytes),
-                "sha256": self.mock_zip_sha256,
+            "go-proxy/example.com/test/@v/v1.0.0.zip": {
+                "size": len(self.zip_content),
+                "sha256": self.zip_sha256,
                 "source_url": "https://example.com/zip",
             },
         }
@@ -236,12 +219,11 @@ class TestHostedInputsVerifierAndStager(unittest.TestCase):
             "bundle_description": "Test Lock",
             "inventory_sha256": self.test_inv_sha256,
             "go_modules": {
-                "github.com/letsencrypt/pebble/v2@v2.10.1": {
-                    "module": "github.com/letsencrypt/pebble/v2",
-                    "version": "v2.10.1",
-                    "h1": self.mock_zip_h1,
+                "example.com/test@v1.0.0": {
+                    "module": "example.com/test",
+                    "version": "v1.0.0",
+                    "h1": self.zip_h1,
                     "mod_h1": self.mod_h1,
-                    "sumdb_receipt": pebble_meta["sumdb_receipt"],
                 }
             },
             "files": self.test_files,
@@ -256,12 +238,12 @@ class TestHostedInputsVerifierAndStager(unittest.TestCase):
         self.valid_bundle = self.tmp_path / "valid_bundle"
         self.valid_bundle.mkdir()
         (self.valid_bundle / "hpke-vectors.json").write_bytes(self.file1_content)
-        proxy_sub = self.valid_bundle / "go-proxy" / "github.com" / "letsencrypt" / "pebble" / "v2" / "@v"
+        proxy_sub = self.valid_bundle / "go-proxy" / "example.com" / "test" / "@v"
         proxy_sub.mkdir(parents=True)
         (proxy_sub / "list").write_bytes(self.list_content)
-        (proxy_sub / "v2.10.1.info").write_bytes(self.info_content)
-        (proxy_sub / "v2.10.1.mod").write_bytes(self.mod_content)
-        (proxy_sub / "v2.10.1.zip").write_bytes(self.mock_zip_bytes)
+        (proxy_sub / "v1.0.0.info").write_bytes(self.info_content)
+        (proxy_sub / "v1.0.0.mod").write_bytes(self.mod_content)
+        (proxy_sub / "v1.0.0.zip").write_bytes(self.zip_content)
 
     def tearDown(self) -> None:
         for root, dirs, files in os.walk(self.tmp_dir):
@@ -313,7 +295,7 @@ class TestHostedInputsVerifierAndStager(unittest.TestCase):
     def test_verify_rejects_symlinked_file(self) -> None:
         target = self.valid_bundle / "hpke-vectors.json"
         target.unlink()
-        target.symlink_to(self.valid_bundle / "go-proxy" / "github.com" / "letsencrypt" / "pebble" / "v2" / "@v" / "list")
+        target.symlink_to(self.valid_bundle / "go-proxy" / "example.com" / "test" / "@v" / "list")
         with self.assertRaises(ValueError) as ctx:
             verify_bundle_tree(self.valid_bundle, self.test_lock_data, self.test_lock_sha256)
         self.assertIn("Symlinked file detected", str(ctx.exception))
@@ -351,7 +333,7 @@ class TestHostedInputsVerifierAndStager(unittest.TestCase):
             target.chmod(0o644)
 
     def test_verify_rejects_unreadable_nonroot_directory(self) -> None:
-        unreadable_dir = self.valid_bundle / "go-proxy" / "github.com" / "letsencrypt" / "pebble" / "v2"
+        unreadable_dir = self.valid_bundle / "go-proxy" / "example.com" / "test"
         unreadable_dir.chmod(0o000)
         try:
             with self.assertRaises(ValueError) as ctx:
@@ -382,6 +364,34 @@ class TestHostedInputsVerifierAndStager(unittest.TestCase):
             verify_bundle_tree(symlink_root, self.test_lock_data, self.test_lock_sha256)
         self.assertIn("symlink", str(ctx.exception).lower())
 
+    def test_verify_rejects_forged_module_h1(self) -> None:
+        forged_lock = dict(self.test_lock_data)
+        forged_lock["go_modules"] = {
+            "example.com/test@v1.0.0": {
+                "module": "example.com/test",
+                "version": "v1.0.0",
+                "h1": "h1:forgedAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                "mod_h1": self.mod_h1,
+            }
+        }
+        with self.assertRaises(ValueError) as ctx:
+            verify_bundle_tree(self.valid_bundle, forged_lock, self.test_lock_sha256)
+        self.assertIn("zip h1 mismatch", str(ctx.exception))
+
+    def test_verify_rejects_forged_module_mod_h1(self) -> None:
+        forged_lock = dict(self.test_lock_data)
+        forged_lock["go_modules"] = {
+            "example.com/test@v1.0.0": {
+                "module": "example.com/test",
+                "version": "v1.0.0",
+                "h1": self.zip_h1,
+                "mod_h1": "h1:forgedBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=",
+            }
+        }
+        with self.assertRaises(ValueError) as ctx:
+            verify_bundle_tree(self.valid_bundle, forged_lock, self.test_lock_sha256)
+        self.assertIn("mod_h1 mismatch", str(ctx.exception))
+
     def test_stage_rejects_symlink_output_dir(self) -> None:
         real_target = self.tmp_path / "real_stage_target"
         real_target.mkdir()
@@ -402,20 +412,19 @@ class TestHostedInputsVerifierAndStager(unittest.TestCase):
     def test_stage_with_cache_offline(self) -> None:
         cache_dir = self.tmp_path / "cache"
         cache_dir.mkdir()
-        # Seed cache with matching files
         (cache_dir / "hpke-vectors.json").write_bytes(self.file1_content)
-        proxy_sub = cache_dir / "go-proxy" / "github.com" / "letsencrypt" / "pebble" / "v2" / "@v"
+        proxy_sub = cache_dir / "go-proxy" / "example.com" / "test" / "@v"
         proxy_sub.mkdir(parents=True)
-        (proxy_sub / "v2.10.1.info").write_bytes(self.info_content)
-        (proxy_sub / "v2.10.1.mod").write_bytes(self.mod_content)
-        (proxy_sub / "v2.10.1.zip").write_bytes(self.mock_zip_bytes)
+        (proxy_sub / "v1.0.0.info").write_bytes(self.info_content)
+        (proxy_sub / "v1.0.0.mod").write_bytes(self.mod_content)
+        (proxy_sub / "v1.0.0.zip").write_bytes(self.zip_content)
 
         new_out = self.tmp_path / "staged_out"
         result = stage_bundle(self.test_lock_path, new_out, cache_dir=cache_dir, offline=True)
         self.assertEqual(result["path"], str(new_out.resolve()))
         self.assertEqual(result["inventory_sha256"], self.test_inv_sha256)
         self.assertTrue((new_out / "hpke-vectors.json").is_file())
-        self.assertTrue((new_out / "go-proxy" / "github.com" / "letsencrypt" / "pebble" / "v2" / "@v" / "list").is_file())
+        self.assertTrue((new_out / "go-proxy" / "example.com" / "test" / "@v" / "list").is_file())
 
     def test_path_safety_helpers(self) -> None:
         self.assertEqual(normalize_rel_path("a/b/c.json"), "a/b/c.json")

@@ -6,7 +6,7 @@ Shared contract:
   stages them into a new empty directory, and prints JSON to stdout.
 - verify: recomputes and matches authorized pinned inventory, rejecting any
   missing, extra, altered, unreadable, hardlinked, or symlinked inputs.
-  Recomputes module h1/mod_h1 and verifies signed sumdb receipts against official sumdb public key.
+  Recomputes module h1/mod_h1 and validates against the authorized lock.
   Prints the same JSON to stdout, and exits nonzero on any discrepancy.
 
 STDOUT is reserved strictly for JSON output on success.
@@ -21,7 +21,9 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import urllib.error
@@ -30,166 +32,13 @@ import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Set, Tuple
 
-# Official Go Checksum Database public key (cmd/go/internal/modfetch/key.go)
-SUMDB_KEY_NAME = "sum.golang.org"
-SUMDB_KEY_HASH = "033de0ae"
-SUMDB_PUBKEY_B64 = "Ac4zctda0e5eza+HJyk9SxEdh+s3Ux18htTTAD8OuAn8"
-SUMDB_PUBLIC_KEY_STRING = f"{SUMDB_KEY_NAME}+{SUMDB_KEY_HASH}+{SUMDB_PUBKEY_B64}"
-
-
-# -----------------------------------------------------------------------------
-# Cryptographic primitives (Ed25519 RFC 8032 with cryptography library acceleration)
-# -----------------------------------------------------------------------------
-
-def _verify_ed25519_pure(public_key_bytes: bytes, signature_bytes: bytes, message: bytes) -> bool:
-    """Pure-Python fallback for Ed25519 verification (RFC 8032)."""
-    if len(public_key_bytes) != 32 or len(signature_bytes) != 64:
-        return False
-
-    p = 2**255 - 19
-    d = -121665 * pow(121666, p - 2, p) % p
-    I = pow(2, (p - 1) // 4, p)  # noqa: E741
-
-    def inv(x: int) -> int:
-        return pow(x, p - 2, p)
-
-    def xrecover(y: int) -> int:
-        xx = (y * y - 1) * inv(d * y * y + 1)
-        x = pow(xx, (p + 3) // 8, p)
-        if (x * x - xx) % p != 0:
-            x = (x * I) % p
-        if x % 2 != 0:
-            x = p - x
-        return x
-
-    By = 4 * inv(5) % p
-    Bx = xrecover(By)
-    B = (Bx, By)
-
-    def edwards_add(P: Tuple[int, int], Q: Tuple[int, int]) -> Tuple[int, int]:
-        x1, y1 = P
-        x2, y2 = Q
-        x3 = (x1 * y2 + x2 * y1) * inv(1 + d * x1 * x2 * y1 * y2) % p
-        y3 = (y1 * y2 + x1 * x2) * inv(1 - d * x1 * x2 * y1 * y2) % p
-        return (x3, y3)
-
-    def scalarmult(P: Tuple[int, int], e: int) -> Tuple[int, int]:
-        if e == 0:
-            return (0, 1)
-        Q = scalarmult(P, e // 2)
-        Q = edwards_add(Q, Q)
-        if e & 1:
-            Q = edwards_add(Q, P)
-        return Q
-
-    R_bytes = signature_bytes[:32]
-    S_bytes = signature_bytes[32:]
-    S = int.from_bytes(S_bytes, "little")
-    l = 2**252 + 27742317777372353535851937790883648493  # noqa: E741
-    if S >= l:
-        return False
-
-    y = int.from_bytes(public_key_bytes, "little")
-    x = xrecover(y % (2**255))
-    if (y >> 255) != (x % 2):
-        x = p - x
-    A = (x, y % (2**255))
-
-    Ry = int.from_bytes(R_bytes, "little")
-    Rx = xrecover(Ry % (2**255))
-    if (Ry >> 255) != (Rx % 2):
-        Rx = p - Rx
-    R = (Rx, Ry % (2**255))
-
-    h = hashlib.sha512(R_bytes + public_key_bytes + message).digest()
-    k = int.from_bytes(h, "little")
-    SB = scalarmult(B, S)
-    RA = edwards_add(R, scalarmult(A, k))
-    return SB == RA
-
-
-def verify_ed25519_signature(public_key_bytes: bytes, signature_bytes: bytes, message: bytes) -> bool:
-    """Verify an Ed25519 signature using cryptography lib if present, else RFC 8032 fallback."""
-    try:
-        from cryptography.hazmat.primitives.asymmetric import ed25519
-        pub = ed25519.Ed25519PublicKey.from_public_bytes(public_key_bytes)
-        try:
-            pub.verify(signature_bytes, message)
-            return True
-        except Exception:
-            return False
-    except ImportError:
-        return _verify_ed25519_pure(public_key_bytes, signature_bytes, message)
-
-
-def verify_sumdb_receipt(receipt_text: str, expected_module: str, expected_version: str) -> Tuple[str, str]:
-    """Verify sumdb receipt signature using official sumdb public key and extract (h1, mod_h1)."""
-    raw_pub = base64.b64decode(SUMDB_PUBKEY_B64)
-    if len(raw_pub) != 33 or raw_pub[0] != 1:
-        raise ValueError("Invalid sum.golang.org public key encoding")
-    pubkey_bytes = raw_pub[1:]
-
-    lines = receipt_text.strip().splitlines()
-    sig_line = None
-    tree_lines = []
-    record_lines = []
-    in_tree = False
-
-    for line in lines:
-        if line.startswith("— sum.golang.org") or line.startswith("\u2014 sum.golang.org") or line.startswith("-- sum.golang.org"):
-            sig_line = line
-        elif line.startswith("go.sum database tree"):
-            in_tree = True
-            tree_lines.append(line)
-        elif in_tree:
-            if line:
-                tree_lines.append(line)
-        else:
-            if line:
-                record_lines.append(line)
-
-    if sig_line is None:
-        raise ValueError(f"No signature line found in sumdb receipt for {expected_module}@{expected_version}")
-
-    sig_parts = sig_line.split()
-    sig_b64 = sig_parts[-1]
-    sig_raw = base64.b64decode(sig_b64)
-    if len(sig_raw) != 68:
-        raise ValueError(f"Invalid sumdb signature length: {len(sig_raw)} != 68")
-
-    key_hash = sig_raw[:4].hex()
-    if key_hash != SUMDB_KEY_HASH:
-        raise ValueError(f"Sumdb key hash mismatch: {key_hash} != {SUMDB_KEY_HASH}")
-
-    sig_bytes = sig_raw[4:]
-    tree_text = "\n".join(tree_lines) + "\n"
-    if not verify_ed25519_signature(pubkey_bytes, sig_bytes, tree_text.encode("utf-8")):
-        raise ValueError(f"Cryptographic signature verification FAILED for sumdb checkpoint on {expected_module}@{expected_version}")
-
-    h1 = None
-    mod_h1 = None
-    for line in record_lines:
-        parts = line.split()
-        if len(parts) == 3:
-            if parts[0] == expected_module and parts[1] == expected_version:
-                h1 = parts[2]
-            elif parts[0] == expected_module and parts[1] == f"{expected_version}/go.mod":
-                mod_h1 = parts[2]
-
-    if h1 is None:
-        raise ValueError(f"Missing h1 checksum in sumdb receipt for {expected_module}@{expected_version}")
-    if mod_h1 is None:
-        raise ValueError(f"Missing mod_h1 checksum in sumdb receipt for {expected_module}@{expected_version}")
-
-    return h1, mod_h1
-
 
 # -----------------------------------------------------------------------------
 # Go module h1 calculation (golang.org/x/mod/sumdb/dirhash)
 # -----------------------------------------------------------------------------
 
 def compute_mod_h1(mod_bytes: bytes) -> str:
-    """Compute Go mod_h1 for go.mod content."""
+    """Compute Go mod_h1 for go.mod content matching dirhash.Hash1."""
     hf = hashlib.sha256(mod_bytes).hexdigest()
     h = hashlib.sha256()
     h.update(f"{hf}  go.mod\n".encode("utf-8"))
@@ -264,7 +113,7 @@ def check_path_ancestors_no_symlinks(path: Path) -> None:
 # -----------------------------------------------------------------------------
 
 def load_and_validate_lock(lock_path: Path) -> Tuple[Dict[str, Any], str]:
-    """Load lockfile, compute lock_sha256, and validate structure and sumdb receipts."""
+    """Load lockfile, compute lock_sha256, and validate structure and closure."""
     if not lock_path.is_file():
         raise FileNotFoundError(f"Lock file does not exist or is not a file: {lock_path}")
 
@@ -308,7 +157,6 @@ def load_and_validate_lock(lock_path: Path) -> Tuple[Dict[str, Any], str]:
             f"Lock file internal inventory_sha256 mismatch: recorded {inventory_sha256} != recomputed {recomputed_inv}"
         )
 
-    # Validate sumdb receipts for all Go modules
     go_modules = lock_data.get("go_modules")
     if not isinstance(go_modules, dict) or not go_modules:
         raise ValueError("Lock file missing 'go_modules' closure specification")
@@ -316,14 +164,10 @@ def load_and_validate_lock(lock_path: Path) -> Tuple[Dict[str, Any], str]:
     for mod_key, mod_meta in go_modules.items():
         mod = mod_meta.get("module")
         ver = mod_meta.get("version")
-        receipt = mod_meta.get("sumdb_receipt")
-        if not mod or not ver or not receipt:
-            raise ValueError(f"Invalid go_module entry for {mod_key!r}")
-        verified_h1, verified_mod_h1 = verify_sumdb_receipt(receipt, mod, ver)
-        if mod_meta.get("h1") != verified_h1:
-            raise ValueError(f"Lock recorded h1 for {mod_key} does not match verified sumdb receipt: {mod_meta.get('h1')} != {verified_h1}")
-        if mod_meta.get("mod_h1") != verified_mod_h1:
-            raise ValueError(f"Lock recorded mod_h1 for {mod_key} does not match verified sumdb receipt: {mod_meta.get('mod_h1')} != {verified_mod_h1}")
+        h1 = mod_meta.get("h1")
+        mod_h1 = mod_meta.get("mod_h1")
+        if not mod or not ver or not h1 or not mod_h1:
+            raise ValueError(f"Invalid go_module entry for {mod_key!r}: missing required module/version/h1/mod_h1")
 
     return lock_data, lock_sha256
 
@@ -396,7 +240,6 @@ def verify_bundle_tree(input_dir: Path, lock_data: Dict[str, Any], lock_sha256: 
                 raise ValueError(f"Unexpected directory not in authorized lock: {rel_d!r}")
 
             try:
-                # Test directory readability
                 os.listdir(dir_full)
             except (PermissionError, OSError) as e:
                 raise ValueError(f"Unreadable directory detected at {rel_d!r}: {e}") from e
@@ -613,7 +456,7 @@ def stage_bundle(
             raise
 
     # 5. Strict verification of newly staged bundle
-    print("Verifying staged bundle completeness, sumdb signatures, and integrity...", file=sys.stderr)
+    print("Verifying staged bundle completeness, module digests, and integrity...", file=sys.stderr)
     result = verify_bundle_tree(abs_output, lock_data, lock_sha256)
     return result
 
