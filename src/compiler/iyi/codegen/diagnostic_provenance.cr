@@ -48,24 +48,69 @@ module Iyi::DiagnosticProvenance
     end
   end
 
+  enum NativeKind
+    Object
+    Executable
+  end
+
+  struct NativeSection
+    include JSON::Serializable
+    getter index : Int32
+    getter segment_name_base64 : String
+    getter section_name_base64 : String
+    getter address : String
+    getter size : String
+    getter file_offset : UInt32
+    getter flags : UInt32
+
+    def initialize(@index, @segment_name_base64, @section_name_base64, @address, @size, @file_offset, @flags)
+    end
+  end
+
   struct NativeSymbol
     include JSON::Serializable
+    getter index : Int32
+    getter string_index : UInt32
+    getter name_base64 : String
+    getter type : UInt8
+    getter section : UInt8
+    getter desc : UInt16
+    getter value : String
 
-    getter name : String
-    getter address : String
-    getter kind : String
+    def initialize(@index, @string_index, @name_base64, @type, @section, @desc, @value)
+    end
 
-    def initialize(@name, @address, @kind)
+    def name : String
+      String.new(Base64.decode(@name_base64))
     end
   end
 
   struct NativeEvidence
     include JSON::Serializable
-
-    getter raw_nm : String
+    getter format : String
+    getter cpu_type : UInt32
+    getter cpu_subtype : UInt32
+    getter file_type : UInt32
+    getter sections : Array(NativeSection)
     getter symbols : Array(NativeSymbol)
 
-    def initialize(@raw_nm, @symbols)
+    def initialize(@cpu_type, @cpu_subtype, @file_type, @sections, @symbols)
+      @format = "macho64-le-symtab-v1"
+    end
+
+    def direct_code?(symbol : NativeSymbol) : Bool
+      return false unless symbol.type & 0xe0 == 0 && symbol.type & 0x0e == 0x0e
+      section = @sections[symbol.section.to_i - 1]? || return false
+      return false unless section.flags & 0xff == 0 && section.flags & 0x02000000 == 0
+      return false if section.flags & 0x80000400 == 0
+      start = section.address.to_u64(16)
+      value = symbol.value.to_u64(16)
+      value >= start && value - start < section.size.to_u64(16)
+    end
+
+    def direct_named(name : String) : Array(NativeSymbol)
+      encoded = Base64.strict_encode(name)
+      @symbols.select { |symbol| symbol.name_base64 == encoded && direct_code?(symbol) }
     end
   end
 
@@ -361,37 +406,148 @@ module Iyi::DiagnosticProvenance
     end
   end
 
-  # Mach-O `nm -m -U`: address, section, visibility, and the entire remaining
-  # symbol name. Unknown output is not guessed or treated as a definition.
-  def self.parse_native_evidence(raw : String) : NativeEvidence
-    symbols = [] of NativeSymbol
-    raw.each_line do |line|
-      line = line.chomp
-      next if line.empty?
-      match = /\A([0-9a-fA-F]+)\s+\(([^()]*)\)\s+((?:weak\s+)?(?:private\s+)?external|non-external)\s+(.+)\z/.match(line)
-      raise "unsupported nm definition: #{line}" unless match
-      address = match[1]
-      address.to_u64(16)
-      name = match[4]
-      raise "unsupported annotated nm symbol: #{name}" if name.includes?(" (was a private external)")
-      symbols << NativeSymbol.new(name, address, "#{match[2]} #{match[3]}")
+  private class MachReader
+    def initialize(@bytes : Bytes)
     end
-    NativeEvidence.new(raw, symbols)
+
+    def span(offset : UInt64, size : UInt64) : Bytes
+      raise "truncated Mach-O" if offset > @bytes.size || size > @bytes.size.to_u64 - offset
+      @bytes[offset.to_i, size.to_i]
+    end
+
+    def number(offset : UInt64, size : Int32) : UInt64
+      result = 0_u64
+      span(offset, size.to_u64).each_with_index { |byte, i| result |= byte.to_u64 << (8 * i) }
+      result
+    end
+
+    def u32(offset : UInt64) : UInt32
+      number(offset, 4).to_u32
+    end
+
+    def u64(offset : UInt64) : UInt64
+      number(offset, 8)
+    end
   end
 
-  def self.native_evidence(path : String) : NativeEvidence
-    output = IO::Memory.new
-    error = IO::Memory.new
-    status = Process.run("nm", ["-m", "-U", path], output: output, error: error)
-    raise "cannot inspect native definitions: #{error}" unless status.success?
-    parse_native_evidence(output.to_s)
+  private def self.hex64(value : UInt64) : String
+    value.to_s(16).rjust(16, '0')
+  end
+
+  def self.target_cpu(triple : String) : UInt32
+    arch = triple.split('-').first
+    case arch
+    when "arm64", "aarch64" then 0x0100000c_u32
+    when "x86_64"           then 0x01000007_u32
+    else                         raise "unsupported frame provenance target architecture: #{arch}"
+    end
+  end
+
+  def self.parse_native_evidence(bytes : Bytes, expected_kind : NativeKind) : NativeEvidence
+    r = MachReader.new(bytes)
+    r.span(0_u64, 32_u64)
+    raise "unsupported Mach-O magic or container" unless r.u32(0_u64) == 0xfeedfacf_u32
+    cpu = r.u32(4_u64)
+    raise "unsupported Mach-O CPU" unless cpu.in?(0x0100000c_u32, 0x01000007_u32)
+    subtype = r.u32(8_u64)
+    file_type = r.u32(12_u64)
+    expected = expected_kind.object? ? 1_u32 : 2_u32
+    raise "unexpected Mach-O file type" unless file_type == expected
+    count = r.u32(16_u64).to_u64
+    command_size = r.u32(20_u64).to_u64
+    r.span(32_u64, command_size)
+    raise "invalid Mach-O command count" if count > command_size // 8
+    command_end = 32_u64 + command_size
+    cursor = 32_u64
+    sections = [] of NativeSection
+    symtab = nil.as(Tuple(UInt32, UInt32, UInt32, UInt32)?)
+    count.times do
+      raise "truncated Mach-O command" if cursor > command_end || command_end - cursor < 8
+      command = r.u32(cursor)
+      size = r.u32(cursor + 4).to_u64
+      raise "invalid Mach-O command size" if size < 8 || size % 8 != 0 || size > command_end - cursor
+      case command
+      when 0x2
+        raise "invalid or duplicate Mach-O symtab" if size != 24 || symtab
+        symtab = {r.u32(cursor + 8), r.u32(cursor + 12), r.u32(cursor + 16), r.u32(cursor + 20)}
+      when 0x19
+        raise "truncated Mach-O segment" if size < 72
+        nsects = r.u32(cursor + 64).to_u64
+        raise "invalid Mach-O section count" if nsects > (size - 72) // 80 || sections.size.to_u64 + nsects > 255
+        nsects.times do |i|
+          off = cursor + 72 + i * 80
+          addr = r.u64(off + 32)
+          length = r.u64(off + 40)
+          raise "Mach-O section address overflow" if length > UInt64::MAX - addr
+          file_offset = r.u32(off + 48)
+          flags = r.u32(off + 64)
+          kind = flags & 0xff
+          unless kind.in?(1_u32, 0xc_u32, 0x12_u32)
+            r.span(file_offset.to_u64, length)
+          end
+          if flags & 0x80000400 != 0 && kind != 0 && kind != 8
+            raise "unsupported instruction-bearing Mach-O section"
+          end
+          sections << NativeSection.new(sections.size + 1, Base64.strict_encode(r.span(off + 16, 16_u64)),
+            Base64.strict_encode(r.span(off, 16_u64)), hex64(addr), hex64(length), file_offset, flags)
+        end
+      end
+      cursor += size
+    end
+    raise "Mach-O command size mismatch" unless cursor == command_end
+    symoff, nsyms, stroff, strsize = symtab || raise "missing Mach-O symtab"
+    symstart = symoff.to_u64
+    symbytes = nsyms.to_u64 * 16
+    strstart = stroff.to_u64
+    strbytes = strsize.to_u64
+    r.span(symstart, symbytes)
+    strings = r.span(strstart, strbytes)
+    raise "Mach-O tables overlap commands" if (symbytes > 0 && symstart < command_end) || (strbytes > 0 && strstart < command_end)
+    if symbytes > 0 && strbytes > 0 && symstart < strstart + strbytes && strstart < symstart + symbytes
+      raise "overlapping Mach-O tables"
+    end
+    symbols = [] of NativeSymbol
+    nsyms.to_u64.times do |i|
+      off = symstart + i * 16
+      strx = r.u32(off)
+      name = Bytes.empty
+      if strx != 0
+        raise "invalid Mach-O string index" if strx >= strings.size
+        end_index = strx.to_i
+        end_index += 1 while end_index < strings.size && strings[end_index] != 0
+        raise "unterminated Mach-O symbol name" if end_index == strings.size
+        name = strings[strx.to_i, end_index - strx.to_i]
+      end
+      type = r.number(off + 4, 1).to_u8
+      section = r.number(off + 5, 1).to_u8
+      desc = r.number(off + 6, 2).to_u16
+      value = r.u64(off + 8)
+      if type & 0xe0 == 0
+        case type & 0x0e
+        when 0x00, 0x02, 0x0c
+        when 0x0a
+          raise "unsupported indirect Mach-O alias"
+        when 0x0e
+          raise "invalid Mach-O section ordinal" if section == 0 || section > sections.size
+          target = sections[section.to_i - 1]
+          start = target.address.to_u64(16)
+          length = target.size.to_u64(16)
+          raise "Mach-O symbol outside section" if value < start || value - start > length
+        else
+          raise "unsupported Mach-O symbol type"
+        end
+      end
+      symbols << NativeSymbol.new(i.to_i, strx, Base64.strict_encode(name), type, section, desc, hex64(value))
+    end
+    NativeEvidence.new(cpu, subtype, file_type, sections, symbols)
   end
 
   # Called by the compiler while holding the lock on the exact link inputs.
   def self.snapshot_object(link_input_id : Int32, producer : JSON::Any, unit_name : String,
-                           partition : JSON::Any, path : String) : ObjectInput
+                           partition : JSON::Any, path : String, cpu : UInt32) : ObjectInput
     before = File.read(path)
-    evidence = native_evidence(path)
+    evidence = parse_native_evidence(before.to_slice, NativeKind::Object)
+    raise "object CPU differs from target" unless evidence.cpu_type == cpu
     raise "link input changed during symbol inspection" unless File.read(path) == before
     ObjectInput.new(link_input_id, producer, unit_name, partition,
       ::Crystal::Digest::SHA256.hexdigest(before), Base64.strict_encode(before), evidence)
@@ -421,15 +577,8 @@ module Iyi::DiagnosticProvenance
     bytes = Base64.decode(input.bytes_base64)
     raise "invalid object encoding" unless Base64.strict_encode(bytes) == input.bytes_base64
     raise "object digest mismatch" unless ::Crystal::Digest::SHA256.hexdigest(bytes) == input.sha256
-    parsed = parse_native_evidence(input.native_evidence.raw_nm).symbols
-    recorded = input.native_evidence.symbols
-    raise "object symbol evidence mismatch" unless parsed.size == recorded.size
-    parsed.each_with_index do |symbol, index|
-      other = recorded[index]
-      unless {symbol.name, symbol.address, symbol.kind} == {other.name, other.address, other.kind}
-        raise "object symbol evidence mismatch"
-      end
-    end
+    parsed = parse_native_evidence(bytes, NativeKind::Object)
+    raise "object symbol evidence mismatch" unless parsed.to_json == input.native_evidence.to_json
   end
 
   # Mach-O's C ABI adds one underscore to an ordinary LLVM global name.
@@ -439,9 +588,12 @@ module Iyi::DiagnosticProvenance
     "_#{llvm_name}"
   end
 
-  def self.write_manifest(path : String, executable : String, bindings : Array(Binding), inputs : Array(ObjectInput)) : Nil
+  def self.write_manifest(path : String, executable : String, bindings : Array(Binding), inputs : Array(ObjectInput), cpu : UInt32) : Nil
     raise "missing compiler link inputs" if inputs.empty?
-    inputs.each_with_index { |input, index| validate_object!(input, index) }
+    inputs.each_with_index do |input, index|
+      validate_object!(input, index)
+      raise "object CPU differs from target" unless input.native_evidence.cpu_type == cpu
+    end
     current_units = {} of Int64 => Array(ObjectInput)
     inputs.each do |input|
       producer = input.producer.as_h
@@ -482,10 +634,10 @@ module Iyi::DiagnosticProvenance
       end
       name = native_name(definition.post_partition_llvm_symbol)
       raise "native object symbol does not match LLVM decoration" unless name == definition.native_object_symbol
-      unless input.native_evidence.symbols.any? { |symbol| symbol.name == name && symbol.kind.starts_with?("__TEXT,__text ") }
-        raise "closure definition is absent from its object: #{name}"
-      end
-      bound_objects.add({id, name})
+      matches = input.native_evidence.direct_named(name)
+      raise "closure definition is absent or ambiguous in its object: #{name}" unless matches.size == 1
+      raise "unsupported resolver or alternate entry" unless matches.first.desc & 0x300 == 0
+      raise "duplicate object binding #{name}" unless bound_objects.add?({id, name})
       emission = definition.emission
       identity = {emission.origin, emission.specialization, emission.capture_descriptor, emission.displayed_source_location}
       if previous = identities[name]?
@@ -496,18 +648,19 @@ module Iyi::DiagnosticProvenance
     end
 
     before = File.read(executable)
-    evidence = native_evidence(executable)
+    evidence = parse_native_evidence(before.to_slice, NativeKind::Executable)
+    raise "executable CPU differs from target" unless evidence.cpu_type == cpu
     raise "executable changed during symbol inspection" unless File.read(executable) == before
     raise "executable symbol table is empty" if evidence.symbols.empty?
     evidence.symbols.each do |symbol|
-      next unless symbol.kind.starts_with?("__TEXT,__text ")
+      next unless evidence.direct_code?(symbol)
       next unless symbol.name.starts_with?("_~proc") || symbol.name.starts_with?("_~fun_literal")
       raise "linked closure has no provenance: #{symbol.name}" unless identities.has_key?(symbol.name)
     end
-    linked_names = evidence.symbols.map(&.name).to_set
+    linked_names = evidence.symbols.select { |symbol| evidence.direct_code?(symbol) }.map(&.name).to_set
     inputs.each do |input|
       input.native_evidence.symbols.each do |symbol|
-        next unless symbol.kind.starts_with?("__TEXT,__text ")
+        next unless input.native_evidence.direct_code?(symbol)
         next unless identities.has_key?(symbol.name) && linked_names.includes?(symbol.name)
         unless bound_objects.includes?({input.link_input_id, symbol.name})
           raise "unidentified competing object definition #{symbol.name}"
@@ -516,15 +669,17 @@ module Iyi::DiagnosticProvenance
     end
     # A different or unidentified text symbol at a closure's final address is
     # an unresolved alias or fold, even when the closure's own name survived.
-    by_address = {} of UInt64 => Array(NativeSymbol)
+    by_address = {} of {UInt8, UInt64} => Array(NativeSymbol)
     evidence.symbols.each do |symbol|
-      next unless symbol.kind.starts_with?("__TEXT,__text ")
-      (by_address[symbol.address.to_u64(16)] ||= [] of NativeSymbol) << symbol
+      next unless evidence.direct_code?(symbol)
+      (by_address[{symbol.section, symbol.value.to_u64(16)}] ||= [] of NativeSymbol) << symbol
     end
     by_address.each_value do |symbols|
       symbols.each do |symbol|
         identity = identities[symbol.name]?
         next unless identity
+        raise "ambiguous executable closure definition" unless evidence.direct_named(symbol.name).size == 1
+        raise "unsupported resolver or alternate entry" unless symbol.desc & 0x300 == 0
         symbols.each do |other|
           next if other.name == symbol.name
           raise "ambiguous folded executable symbol #{other.name}" unless identities[other.name]? == identity
@@ -533,7 +688,7 @@ module Iyi::DiagnosticProvenance
     end
     manifest = JSON.build do |json|
       json.object do
-        json.field "schema", 3
+        json.field "schema", 4
         json.field "object_input_scope", "compiler_supplied_link_inputs"
         json.field "executable_sha256", ::Crystal::Digest::SHA256.hexdigest(before)
         json.field "executable_symbols", evidence

@@ -897,7 +897,7 @@ module Iyi
       fill_bind_artifact program, units
       write_link_input_proof
       if manifest = @emit_frame_provenance
-        DiagnosticProvenance.write_manifest(manifest, output_filename, program.diagnostic_bindings, program.diagnostic_object_inputs)
+        DiagnosticProvenance.write_manifest(manifest, output_filename, program.diagnostic_bindings, program.diagnostic_object_inputs, DiagnosticProvenance.target_cpu(program.codegen_target.to_s))
       end
 
       @progress_tracker.clear
@@ -4686,6 +4686,7 @@ module Iyi
       private def snapshot_diagnostic_inputs(program : Program, units : Array(CompilationUnit),
                                              link_names : Array(String), output_dir : String) : Nil
         raise CompilerError.new("frame provenance currently requires a Darwin target", :FAILURE) unless program.has_flag?("darwin")
+        cpu = DiagnosticProvenance.target_cpu(program.codegen_target.to_s)
         program.diagnostic_object_inputs.clear
         program.diagnostic_bindings.clear
         seen_paths = Set(String).new
@@ -4709,7 +4710,7 @@ module Iyi
                         else
                           JSON.parse("null")
                         end
-            input = DiagnosticProvenance.snapshot_object(cursor, producer, unit_name, partition, path)
+            input = DiagnosticProvenance.snapshot_object(cursor, producer, unit_name, partition, path, cpu)
             program.diagnostic_object_inputs << input
             observed = observations[index] || raise "missing diagnostic object observation"
             roles = roles_by_object[index] || raise "missing diagnostic object roles"
@@ -4721,7 +4722,7 @@ module Iyi
                 raise "optimized closure name changed without proof" unless definition.llvm_symbol == expected
                 raise "unsupported verbatim LLVM symbol" if expected.empty? || expected.starts_with?('\u0001')
                 native = "_#{expected}"
-                unless input.native_evidence.symbols.any? { |symbol| symbol.name == native && symbol.kind.starts_with?("__TEXT,__text ") }
+                unless input.native_evidence.direct_named(native).size == 1
                   raise "closure definition absent from its exact object"
                 end
                 role = roles[emission.actual_llvm_symbol]? || raise "missing closure partition role"
@@ -4750,14 +4751,14 @@ module Iyi
               end
             end)
             partition = record.partition || JSON.parse("null")
-            input = DiagnosticProvenance.snapshot_object(cursor, producer, object.name, partition, path)
+            input = DiagnosticProvenance.snapshot_object(cursor, producer, object.name, partition, path, cpu)
             unless input.sha256 == record.object_sha256 && Base64.decode(input.bytes_base64) == object.code
               raise "imported object bytes differ from artifact"
             end
             program.diagnostic_object_inputs << input
             record.definitions.each do |definition|
               DiagnosticProvenance.validate_definition!(definition)
-              unless input.native_evidence.symbols.any? { |symbol| symbol.name == definition.native_object_symbol && symbol.kind.starts_with?("__TEXT,__text ") }
+              unless input.native_evidence.direct_named(definition.native_object_symbol).size == 1
                 raise "imported closure definition absent from its exact object"
               end
               program.diagnostic_bindings << DiagnosticProvenance::Binding.new(cursor, definition)

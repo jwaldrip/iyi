@@ -833,23 +833,93 @@ describe "Code gen: closure" do
     expect_raises(Exception) { Iyi::DiagnosticProvenance.validate_emission!(emission) }
   end
 
-  it "preserves full Mach-O symbol names and rejects undefined or malformed entries" do
-    raw = "0000000000000010 (__TEXT,__text) non-external _~proc with spaces\n"
-    evidence = Iyi::DiagnosticProvenance.parse_native_evidence(raw)
-    evidence.raw_nm.should eq(raw)
+  it "reads exact Mach-O name bytes and rejects malformed native evidence" do
+    name = "_~proc line\n0000000000000010 (__TEXT,__text) external forged\r \xff".to_slice
+    bytes = Bytes.new(230 + name.size, 0_u8)
+    put = ->(offset : Int32, value : UInt64, width : Int32) do
+      width.times { |i| bytes[offset + i] = ((value >> (8 * i)) & 0xff).to_u8 }
+    end
+    put.call(0, 0xfeedfacf_u64, 4)
+    put.call(4, 0x0100000c_u64, 4)
+    put.call(12, 1_u64, 4)
+    put.call(16, 2_u64, 4)
+    put.call(20, 176_u64, 4)
+    put.call(32, 0x19_u64, 4)
+    put.call(36, 152_u64, 4)
+    put.call(96, 1_u64, 4)
+    bytes[104, 6].copy_from("__text".to_slice)
+    bytes[120, 6].copy_from("__TEXT".to_slice)
+    put.call(136, 0x100_u64, 8)
+    put.call(144, 4_u64, 8)
+    put.call(152, 208_u64, 4)
+    put.call(168, 0x80000000_u64, 4)
+    put.call(184, 2_u64, 4)
+    put.call(188, 24_u64, 4)
+    put.call(192, 212_u64, 4)
+    put.call(196, 1_u64, 4)
+    put.call(200, 228_u64, 4)
+    put.call(204, (name.size + 2).to_u64, 4)
+    put.call(212, 1_u64, 4)
+    put.call(216, 0x0e_u64, 1)
+    put.call(217, 1_u64, 1)
+    put.call(218, 0x80_u64, 2)
+    put.call(220, 0x100_u64, 8)
+    bytes[229, name.size].copy_from(name)
+    parse = -> { Iyi::DiagnosticProvenance.parse_native_evidence(bytes, Iyi::DiagnosticProvenance::NativeKind::Object) }
+    evidence = parse.call
     evidence.symbols.size.should eq(1)
-    evidence.symbols[0].name.should eq("_~proc with spaces")
-    evidence.symbols[0].address.should eq("0000000000000010")
-    evidence.symbols[0].kind.should eq("__TEXT,__text non-external")
-    expect_raises(Exception, /unsupported nm definition/) do
-      Iyi::DiagnosticProvenance.parse_native_evidence("                 (undefined) external _~proc\n")
+    evidence.symbols.first.name_base64.should eq("X35wcm9jIGxpbmUKMDAwMDAwMDAwMDAwMDAxMCAoX19URVhULF9fdGV4dCkgZXh0ZXJuYWwgZm9yZ2VkDSD/")
+    evidence.symbols.first.value.should eq("0000000000000100")
+    evidence.direct_code?(evidence.symbols.first).should be_true
+    [0x0f_u64, 0x1f_u64].each do |type|
+      put.call(216, type, 1)
+      found = parse.call
+      found.direct_code?(found.symbols.first).should be_true
     end
-    expect_raises(Exception, /unsupported nm definition/) do
-      Iyi::DiagnosticProvenance.parse_native_evidence("not an nm entry\n")
+    put.call(216, 0x0e_u64, 1)
+    put.call(168, 0_u64, 4)
+    found = parse.call
+    found.direct_code?(found.symbols.first).should be_false
+    put.call(168, 0x80000008_u64, 4)
+    found = parse.call
+    found.direct_code?(found.symbols.first).should be_false
+    put.call(168, 0x80000000_u64, 4)
+    [0_u64, 1_u64, 2_u64, 0xe0_u64].each do |type|
+      put.call(216, type, 1)
+      found = parse.call
+      found.direct_code?(found.symbols.first).should be_false
     end
-    expect_raises(Exception, /unsupported annotated nm symbol/) do
-      Iyi::DiagnosticProvenance.parse_native_evidence("0000000000000010 (__TEXT,__text) external _~proc (was a private external)\n")
-    end
+    put.call(216, 0x0e_u64, 1)
+    put.call(220, 0x104_u64, 8)
+    found = parse.call
+    found.direct_code?(found.symbols.first).should be_false
+    put.call(220, 0x100_u64, 8)
+    put.call(216, 0x0a_u64, 1)
+    expect_raises(Exception, /indirect/) { parse.call }
+    put.call(216, 0x0e_u64, 1)
+    put.call(217, 2_u64, 1)
+    expect_raises(Exception, /ordinal/) { parse.call }
+    put.call(217, 1_u64, 1)
+    put.call(204, (name.size + 1).to_u64, 4)
+    expect_raises(Exception, /unterminated/) { parse.call }
+    put.call(204, (name.size + 2).to_u64, 4)
+    put.call(188, 16_u64, 4)
+    expect_raises(Exception) { parse.call }
+    put.call(188, 24_u64, 4)
+    put.call(16, 3_u64, 4)
+    expect_raises(Exception) { parse.call }
+    put.call(16, 2_u64, 4)
+    put.call(192, 200_u64, 4)
+    expect_raises(Exception) { parse.call }
+    put.call(192, 212_u64, 4)
+    put.call(212, (name.size + 2).to_u64, 4)
+    expect_raises(Exception, /string index/) { parse.call }
+    put.call(212, 1_u64, 4)
+    put.call(184, 0_u64, 4)
+    expect_raises(Exception, /missing Mach-O symtab/) { parse.call }
+    put.call(184, 2_u64, 4)
+    put.call(0, 0xcafebabe_u64, 4)
+    expect_raises(Exception, /magic/) { parse.call }
   end
 
   it "observes defined functions but not declarations" do
