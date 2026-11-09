@@ -1328,9 +1328,19 @@ module Iyi
       # a name iyi's parser refuses outright: `$global_variables are not
       # supported`.
       getter written : String
+      getter written_anchors : Array(DiagnosticAnchor)?
 
-      def initialize(@name, @value, @meta_vars)
-        @written = @value.to_s
+      def initialize(@name, @value, @meta_vars, diagnostic_capture : Bool = false)
+        if diagnostic_capture
+          io = IO::Memory.new
+          anchors = [] of DiagnosticAnchor
+          @value.to_s(io, diagnostic_anchors: anchors)
+          @written = io.to_s
+          @written_anchors = anchors
+        else
+          @written = @value.to_s
+          @written_anchors = nil
+        end
       end
     end
 
@@ -1357,7 +1367,7 @@ module Iyi
         instance_var.bind_to(value)
       end
 
-      initializer = InstanceVarInitializer.new(name, value, meta_vars)
+      initializer = InstanceVarInitializer.new(name, value, meta_vars, program.diagnostic_capture)
       initializers << initializer
 
       program.after_inference_types << self
@@ -3735,6 +3745,8 @@ module Iyi
     # Empty for a constant nobody wrote — the compiler's own `$Regex:0`, the
     # program's `ARGV_UNSAFE` — which is right: those are not a shard's to carry.
     property iyi_value_source : String = ""
+    property iyi_value_anchors : Array(DiagnosticAnchor)? = nil
+    property iyi_declaration_origin : DiagnosticOrigin? = nil
 
     # iyi: the reason `@[SafeReach("...")]` gives, when the constant has
     # one: the program says every thread may reach it through a call, and

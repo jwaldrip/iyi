@@ -120,6 +120,7 @@ module Iyi
     property? no_codegen = false
 
     property emit_frame_provenance : String? = nil
+    property capture_diagnostic_provenance = false
     property emit_link_input_proof : String? = nil
     record LinkInputProofSnapshot, tool : JSON::Any, units : Array(JSON::Any), inputs : Array(JSON::Any)
     @link_input_proof_snapshot : LinkInputProofSnapshot? = nil
@@ -460,7 +461,7 @@ module Iyi
       program.iyi_prefers_source = @iyi_prefers_source
       program.iyi_wants_object_code = !@no_codegen
       program.iyi_rewrites_artifacts = !@emit_iyimod.nil?
-      program.diagnostic_capture = !@emit_frame_provenance.nil?
+      program.diagnostic_capture = !@emit_frame_provenance.nil? || @capture_diagnostic_provenance
       # An emitting build parses docs whatever the adopted analysis wanted:
       # the artifact's `Docs` travel per module, and modules are parsed per
       # build — the prelude's own docs are nobody's surface.
@@ -610,7 +611,7 @@ module Iyi
 
     # Re-applied by the adopt path above. `new_program` is what would otherwise
     # have set them, and adoption skips it.
-    APPLIED_ON_ADOPT = %w(use_iyimod iyi_prefers_source no_codegen emit_iyimod emit_frame_provenance warnings color stdout show_error_trace iyi_mod_table iyi_file_overrides iyi_project_root iyi_header_root crystal_library)
+    APPLIED_ON_ADOPT = %w(use_iyimod iyi_prefers_source no_codegen emit_iyimod emit_frame_provenance capture_diagnostic_provenance warnings color stdout show_error_trace iyi_mod_table iyi_file_overrides iyi_project_root iyi_header_root crystal_library)
     # Neither, and two of these are judgements rather than facts. `mcpu`,
     # `mattr` and `mcmodel` reach the target machine and the target machine
     # reaches codegen, not analysis — a prelude analysed for one `-mcpu` is the
@@ -798,6 +799,9 @@ module Iyi
       source = [source] unless source.is_a?(Array)
       @link_input_proof_snapshot = nil
       @link_input_proof_linker = nil
+      if @capture_diagnostic_provenance && (!emit_bind || (!@no_codegen && !iyi_keep))
+        raise CompilerError.new("capture-only diagnostics require tool bind or a bind keep build with --emit-bind", :USAGE_ERROR)
+      end
       if proof = @emit_link_input_proof
         proof_path = File.expand_path(proof)
         if proof_path == File.expand_path(output_filename) ||
@@ -826,7 +830,7 @@ module Iyi
         end
       end
       @iyi_link_driver_only = true if stale_build?
-      return prelude_fork_probe(source, output_filename) if @emit_frame_provenance.nil? && ENV["IYI_FORK_PROBE"]?
+      return prelude_fork_probe(source, output_filename) if @emit_frame_provenance.nil? && !@capture_diagnostic_provenance && ENV["IYI_FORK_PROBE"]?
 
       # iyi: `IYI_WARM=1` — analyse the prelude and adopt it, in one process and
       # **without forking**, printing the two halves.
@@ -842,7 +846,7 @@ module Iyi
       # the fork costs 0.2 to 0.3 s of it (SPEC.md IV.1d). A measurement tool
       # rather than a mode — it analyses the prelude in the foreground, so it is
       # always slower overall than an ordinary build.
-      if @emit_frame_provenance.nil? && ENV["IYI_WARM"]? && !Compiler.preanalysed.has_key?(prelude_cache_key)
+      if @emit_frame_provenance.nil? && !@capture_diagnostic_provenance && ENV["IYI_WARM"]? && !Compiler.preanalysed.has_key?(prelude_cache_key)
         warm = Time.instant
         pre = preanalyse_prelude
         Compiler.preanalysed[pre.key] = pre
@@ -853,7 +857,7 @@ module Iyi
         return result
       end
 
-      if @emit_frame_provenance.nil? && (pre = Compiler.preanalysed[prelude_cache_key]?)
+      if @emit_frame_provenance.nil? && !@capture_diagnostic_provenance && (pre = Compiler.preanalysed[prelude_cache_key]?)
         return compile_with_preanalysed_prelude(pre, source, output_filename) { |program| yield program }
       end
       program = new_program(source)
@@ -866,13 +870,9 @@ module Iyi
         program.macro_expansion_error_hook.try &.call(ex.cause)
       end
 
-      if @emit_frame_provenance.nil? && stale_check(program, node, source)
+      if @emit_frame_provenance.nil? && !@capture_diagnostic_provenance && stale_check(program, node, source)
         raise CompilerError.new("link-input proof cannot use a completed-build shortcut", :FAILURE) if @emit_link_input_proof
         return Result.new(program, node)
-      end
-
-      if @emit_frame_provenance && (!@emit_iyimod.nil? || !program.iyi_artifact_hashes.empty?)
-        raise CompilerError.new("frame provenance cannot use or emit an artifact without complete diagnostic transport", :FAILURE)
       end
 
       prepared = prepare_iyimods program
@@ -1166,8 +1166,16 @@ module Iyi
       return unless File.file?(path)
 
       artifact = IyiMod.read path
-      units_by_name = units.to_h { |unit| {unit.original_name, unit} }
-      artifact.object_code = collect_iyi_object_code(names, units_by_name)
+      if program.diagnostic_capture
+        object_code, records = diagnostic_carried_objects(program, names, units)
+        artifact.object_code = object_code
+        section = artifact.diagnostic_provenance || raise "bound artifact has no diagnostic provenance"
+        records.each { |record| section.add_object(record) }
+        section.validate_objects!(object_code)
+      else
+        units_by_name = units.to_h { |unit| {unit.original_name, unit} }
+        artifact.object_code = collect_iyi_object_code(names, units_by_name)
+      end
       artifact.type_ids = collect_iyi_type_ids(program, names, type)
       artifact.constants = collect_iyi_constants(program, names)
       artifact.regexes = collect_iyi_regexes(program, artifact.constants)
@@ -1366,17 +1374,20 @@ module Iyi
           # name rather than on a kind of declaration.
           if signatures = type.defs.try &.[]?(name)
             signatures.each do |item|
-              signature = IyiMod.signature(item.def)
-              program.record_signature_diagnostic(filename, module_name, signature, item.def)
+              iyi_each_previous_def(item.def) do |a_def|
+              signature = IyiMod.signature(a_def)
+              program.record_signature_diagnostic(filename, module_name, signature, a_def)
               functions << signature
               # A module's own `pub def` that takes a block, or has `forall`
               # parameters, is the consumer's to compile for the same reason,
               # and the module name is the container the far side looks it up
               # under.
-              if !item.def.abstract? &&
-                 (IyiMod.caller_instantiated?(item.def) || iyi_widened_parameters?(type, item.def) ||
-                 IyiMod.answer_travels?(item.def))
-                iyi_record_mono_body program, filename, module_name, signature, item.def
+              if !a_def.abstract? &&
+                 (IyiMod.caller_instantiated?(a_def) || iyi_widened_parameters?(type, a_def) ||
+                 IyiMod.answer_travels?(a_def))
+                ordinal = functions.count { |seen| IyiMod.mono_body_key("", seen) == IyiMod.mono_body_key("", signature) } - 1
+                iyi_record_mono_body program, filename, module_name, signature, a_def, ordinal
+              end
               end
             end
           elsif exported_type = type.types?.try &.[]?(name)
@@ -1397,22 +1408,25 @@ module Iyi
         type.defs.try &.each do |name, items|
           next if exported.try &.includes?(name)
           items.each do |item|
-            next if item.def.abstract?
-            next if item.def.body.is_a?(Primitive)
+            iyi_each_previous_def(item.def) do |a_def|
+            next if a_def.abstract?
+            next if a_def.body.is_a?(Primitive)
 
-            signature = IyiMod.signature(item.def, check_block: false)
-            program.record_signature_diagnostic(filename, module_name, signature, item.def)
+            signature = IyiMod.signature(a_def, check_block: false)
+            program.record_signature_diagnostic(filename, module_name, signature, a_def)
             carried_functions << signature
             # A widened one too: an exported body that travels calls it at
             # what it holds, and the consumer keys that call on the
             # declaration (`iyi_widened_parameters?`).
-            if IyiMod.caller_instantiated?(item.def) || iyi_widened_parameters?(type, item.def) ||
-               IyiMod.answer_travels?(item.def)
-              iyi_record_mono_body program, filename, module_name, signature, item.def
+            if IyiMod.caller_instantiated?(a_def) || iyi_widened_parameters?(type, a_def) ||
+               IyiMod.answer_travels?(a_def)
+              ordinal = carried_functions.count { |seen| IyiMod.mono_body_key("", seen) == IyiMod.mono_body_key("", signature) } - 1
+              iyi_record_mono_body program, filename, module_name, signature, a_def, ordinal
+            end
             end
           end
         end
-        carried_functions.sort_by! &.name
+        iyi_stable_sort_signatures!(carried_functions)
 
         # And the ones it does not export, which travel as names and layouts
         # rather than as a surface. See `iyi_carried_types`.
@@ -1500,7 +1514,7 @@ module Iyi
         {type, type.metaclass}.each do |side|
           side.as?(ModuleType).try &.defs.try &.each_value do |items|
             items.each do |item|
-              a_def = item.def
+              iyi_each_previous_def(item.def) do |a_def|
               # `original_filename`, through the macro: the integer tower is
               # written once as `{% for %}` over eleven types, and a def a
               # macro wrote is located in its expansion, not in the file.
@@ -1518,7 +1532,11 @@ module Iyi
               # An instruction has no body to carry — it *is* the body — and
               # the annotation travelling on the signature is what makes the
               # consumer's copy the same instruction.
-              iyi_record_mono_body program, filename, container, signature, a_def unless primitive
+              unless primitive
+                ordinal = methods.count { |seen| IyiMod.mono_body_key("", seen) == IyiMod.mono_body_key("", signature) } - 1
+                iyi_record_mono_body program, filename, container, signature, a_def, ordinal
+              end
+              end
             end
           end
         end
@@ -1558,7 +1576,7 @@ module Iyi
         # doc` had it.
         macros = iyi_macros_on(type, filename)
         next if methods.empty? && included.empty? && fields.empty? && class_vars.empty? && macros.empty?
-        methods.sort_by! &.name
+        iyi_stable_sort_signatures!(methods)
 
         # `Tuple` and `NamedTuple` describe themselves as "tuple" and "named
         # tuple", which are not keywords; reopened, they are structs.
@@ -2169,7 +2187,7 @@ module Iyi
       iyi_collect_type_methods program, filename, name, type,
         travels || iyi_stencilled_module?(program, type, filename), methods
       iyi_collect_type_methods program, filename, name, type.metaclass, travels, methods
-      methods.sort_by! &.name
+      iyi_stable_sort_signatures!(methods)
 
       # A generic trait's type variables are its parameters followed by its
       # associated types, which is how they are stored and not how they are
@@ -2290,7 +2308,7 @@ module Iyi
       methods = [] of IyiMod::Signature
       iyi_collect_type_methods program, filename, container, type, travels, methods
       iyi_collect_type_methods program, filename, container, type.metaclass, travels, methods
-      methods.sort_by! &.name
+      iyi_stable_sort_signatures!(methods)
 
       IyiMod::TypeDecl.new(
         name: name,
@@ -2822,8 +2840,9 @@ module Iyi
         # The distinction is invisible here — an impl works by defining methods
         # on the target — which is why it is marked where it is made.
         items.each do |item|
-          next if item.def.iyi_from_impl?
-          next if item.def.new?
+          iyi_each_previous_def(item.def) do |a_def|
+          next if a_def.iyi_from_impl?
+          next if a_def.new?
 
           # `allocate` is put on every metaclass by the compiler, not by the
           # author, and the consumer's compiler puts one there too. Anything
@@ -2840,17 +2859,17 @@ module Iyi
           # plus, the only `+` left. The annotation travels with the
           # signature, which is what makes the consumer's copy the same
           # instruction rather than a promise of a symbol nobody emitted.
-          next if item.def.body.is_a?(Primitive) && !iyi_primitive_written?(item.def)
+          next if a_def.body.is_a?(Primitive) && !iyi_primitive_written?(a_def)
 
           # And an enum's question methods, for the same reason one line up
           # and a different mechanism: their bodies are ordinary code, so
           # `Primitive` does not catch them, and the consumer's own compiler
           # writes one per member out of the members it reads. See
           # `Def#iyi_compiler_made`.
-          next if item.def.iyi_compiler_made?
+          next if a_def.iyi_compiler_made?
 
-          signature = IyiMod.signature(item.def)
-          program.record_signature_diagnostic(filename, container, signature, item.def)
+          signature = IyiMod.signature(a_def)
+          program.record_signature_diagnostic(filename, container, signature, a_def)
           methods << signature
           # A block-taking or `forall` def travels whatever type it is on: it
           # is instantiated with the caller's block inside it, or at the
@@ -2869,10 +2888,12 @@ module Iyi
           # its own expansion can answer. Kept behind, `type_name` was a header
           # and the consumer's link ended on `Model+^Model#type_name:String`,
           # where the source build printed `Main::User`.
-          if (travels || IyiMod.caller_instantiated?(item.def) || item.def.iyi_open_travel? ||
-             item.def.macro_def? || iyi_widened_parameters?(type, item.def) ||
-             IyiMod.answer_travels?(item.def)) && !item.def.abstract?
-            iyi_record_mono_body program, filename, container, signature, item.def
+          if (travels || IyiMod.caller_instantiated?(a_def) || a_def.iyi_open_travel? ||
+             a_def.macro_def? || iyi_widened_parameters?(type, a_def) ||
+             IyiMod.answer_travels?(a_def)) && !a_def.abstract?
+            ordinal = methods.count { |seen| IyiMod.mono_body_key("", seen) == IyiMod.mono_body_key("", signature) } - 1
+            iyi_record_mono_body program, filename, container, signature, a_def, ordinal
+          end
           end
         end
       end
@@ -2966,15 +2987,16 @@ module Iyi
       {type, type.metaclass}.each do |side|
         side.as?(ModuleType).try &.defs.try &.each_value do |items|
           items.each do |item|
-            next if item.def.new?
+            iyi_each_previous_def(item.def) do |a_def|
+            next if a_def.new?
             # The module's own `@[Primitive]` is not the compiler's — see the
             # exported side.
-            next if item.def.body.is_a?(Primitive) && !iyi_primitive_written?(item.def)
-            next if item.def.abstract?
-            next if item.def.iyi_compiler_made?
+            next if a_def.body.is_a?(Primitive) && !iyi_primitive_written?(a_def)
+            next if a_def.abstract?
+            next if a_def.iyi_compiler_made?
 
-            signature = IyiMod.signature(item.def, check_block: false)
-            program.record_signature_diagnostic(filename, container, signature, item.def)
+            signature = IyiMod.signature(a_def, check_block: false)
+            program.record_signature_diagnostic(filename, container, signature, a_def)
             signatures << signature
             # The same reasons the exported side travels for: a block-taking
             # or `forall` body is the caller's, one whose code answers for
@@ -2986,14 +3008,16 @@ module Iyi
             # module it keeps to itself, and the link ended on
             # `decode_int32<IyiIO+>`.
             if travels || (stencilled && side.same?(type)) ||
-               IyiMod.caller_instantiated?(item.def) || item.def.iyi_open_travel? || item.def.macro_def? ||
-               iyi_widened_parameters?(type, item.def) || IyiMod.answer_travels?(item.def)
-              iyi_record_mono_body program, filename, container, signature, item.def
+               IyiMod.caller_instantiated?(a_def) || a_def.iyi_open_travel? || a_def.macro_def? ||
+               iyi_widened_parameters?(type, a_def) || IyiMod.answer_travels?(a_def)
+              ordinal = signatures.count { |seen| IyiMod.mono_body_key("", seen) == IyiMod.mono_body_key("", signature) } - 1
+              iyi_record_mono_body program, filename, container, signature, a_def, ordinal
+            end
             end
           end
         end
       end
-      signatures.sort_by! &.name
+      iyi_stable_sort_signatures!(signatures)
     end
 
     # iyi: whether the *module* asked for this def's `Primitive` body.
@@ -3196,10 +3220,23 @@ module Iyi
       end
     end
 
+    private def iyi_each_previous_def(definition : Def, &block : Def ->) : Nil
+      if previous = definition.previous
+        iyi_each_previous_def(previous.def, &block)
+      end
+      block.call(definition)
+    end
+
+    private def iyi_stable_sort_signatures!(signatures : Array(IyiMod::Signature)) : Array(IyiMod::Signature)
+      ordered = signatures.map_with_index { |signature, index| {signature, index} }
+      ordered.sort_by! { |entry| {entry[0].name, entry[1]} }
+      signatures.replace(ordered.map { |entry| entry[0] })
+    end
+
     private def iyi_record_mono_body(program : Program, filename : String,
                                      container : String, signature : IyiMod::Signature,
-                                     a_def : Def) : Nil
-      key = IyiMod.mono_body_key(container, signature)
+                                     a_def : Def, ordinal : Int32) : Nil
+      key = IyiMod.mono_body_key(container, signature, ordinal)
       if program.diagnostic_capture
         text, positions, anchors = IyiMod.diagnostic_located_source(a_def.body)
         program.record_mono_body_diagnostic(filename, key, container, signature, text, anchors)
@@ -3247,6 +3284,10 @@ module Iyi
       if type.responds_to?(:instance_vars_initializers)
         type.instance_vars_initializers.try &.each do |initializer|
           defaults[initializer.name] = initializer.written
+          if type.program.diagnostic_capture && !initializer.written.empty?
+            anchors = initializer.written_anchors || raise "field initializer lacks diagnostic anchors"
+            type.program.record_field_diagnostic(type.to_s(generic_args: false), initializer.name, initializer.written, anchors)
+          end
         end
       end
 
@@ -3369,6 +3410,13 @@ module Iyi
       here = path.empty? ? declaration.name : "#{path}::#{declaration.name}"
       owner = here.starts_with?("::") ? here.lchop("::") : "#{root_owner}::#{here}"
       diagnostic_add_class_vars(program, section, declaration.class_vars, owner, here)
+      declaration.fields.each do |name, _, value|
+        next if value.empty?
+        source, anchors = program.iyi_field_diagnostics[{owner, name}]? || raise "missing field diagnostic source for #{owner}::#{name}"
+        raise "field diagnostic text changed" unless source == value
+        key = IyiMod.field_fragment_key(here, name)
+        section.add_fragment(IyiMod::DiagnosticFragment.new(key, ::Crystal::Digest::SHA256.hexdigest(source), anchors))
+      end
       declaration.types.each { |nested| diagnostic_add_type_class_vars(program, section, nested, root_owner, here) }
     end
 
@@ -3710,7 +3758,7 @@ module Iyi
       program.iyi_prefers_source = @iyi_prefers_source
       program.iyi_wants_object_code = !@no_codegen
       program.iyi_rewrites_artifacts = !@emit_iyimod.nil?
-      program.diagnostic_capture = !@emit_frame_provenance.nil?
+      program.diagnostic_capture = !@emit_frame_provenance.nil? || @capture_diagnostic_provenance
       # iyi: the manifest, if the root the entry is answered from has one
       # (III.7, `Compiler.entry_root_of`) — or the table a tool prepared,
       # which wins because the tool resolved the *user's* manifest and the
@@ -3867,6 +3915,9 @@ module Iyi
       # body was `undefined reference to '__iyi_raise_overflow'` at link.
       single_module = @cross_compile || !@emit_targets.none? ||
                       (@single_module && @emit_iyimod.nil? && program.iyi_artifact_objects.empty?)
+      if program.diagnostic_capture && single_module && (@emit_iyimod || (emit_bind && iyi_keep))
+        raise CompilerError.new("diagnostic artifact production requires per-type object units", :USAGE_ERROR)
+      end
       llvm_modules = @progress_tracker.stage("Codegen (crystal)") do
         modules = program.codegen node, debug: debug, frame_pointers: frame_pointers,
           single_module: single_module
@@ -4460,6 +4511,13 @@ module Iyi
       # reaches — and the units are written after the link, so a boundary that
       # had everything it needed got nothing.
       if emit_bind && iyi_keep
+        if @capture_diagnostic_provenance
+          {% unless flag?(:without_llvm) %}
+            snapshot_diagnostic_inputs(program, units, object_names, output_dir)
+          {% else %}
+            raise CompilerError.new("diagnostic capture requires LLVM", :FAILURE)
+          {% end %}
+        end
         @progress_tracker.clear
         return units
       end

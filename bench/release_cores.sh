@@ -222,27 +222,72 @@ if [ "${IYI_RELEASE_PROVENANCE_PROOF:-0}" = 1 ]; then
     echo "observer: cannot create evidence directory or find python3" >&2
     status=1
   else
-    for partitions in 1 4; do
-      proof="$proof_root/partitions-$partitions"
+    fixture="$proof_root/fixture"
+    mkdir -p "$fixture/boot"
+    cat > "$fixture/boot/closure.iyi" <<'IYI'
+module boot/closure
+
+pub def invoke(action : Proc(Nil)) : Nil
+  outer = -> { action.call }
+  outer.call
+end
+IYI
+    cat > "$fixture/main.iyi" <<'IYI'
+module main
+
+import boot/closure
+
+inner = -> { raise "observer closure proof" }
+Boot::Closure.invoke(inner)
+IYI
+    for mode in source-1 source-4 artifact-producer artifact-consumer; do
+      partitions=4
+      [ "$mode" = source-1 ] && partitions=1
+      proof="$proof_root/$mode"
       mkdir -p "$proof"
+      build_args=(--release --force --threads 1)
+      case "$mode" in
+        artifact-producer) build_args+=(--emit-iyimod "$fixture/mods") ;;
+        artifact-consumer)
+          if [ -f "$fixture/boot/closure.iyi" ]; then
+            if ! mv "$fixture/boot/closure.iyi" "$proof_root/producer-source.iyi"; then
+              echo "observer: cannot preserve and remove producer source" >&2
+              status=1
+              continue
+            fi
+          fi
+          if [ -e "$fixture/boot/closure.iyi" ] || [ ! -d "$fixture/mods" ]; then
+            echo "observer: consumer source must be absent and producer artifacts present" >&2
+            status=1
+            continue
+          fi
+          build_args+=(--use-iyimod "$fixture/mods")
+          ;;
+      esac
       for capture in off on; do
+        if [ "$mode" = artifact-producer ]; then
+          rm -rf "$fixture/mods"
+        fi
         args=(--emit-link-input-proof "$proof/$capture.json")
         [ "$capture" = on ] && args+=(--emit-frame-provenance "$proof/frame-provenance.json")
-        if ! env IYI_CACHE_DIR="$proof/cache" IYI_RELEASE_PARTITIONS="$partitions" \
-          "$IYI" build --release --force --threads 1 \
-          "${args[@]}" \
-          -o "$proof/program" "$REPO/samples/iyi/cores.iyi" \
+        if ! (cd "$fixture" && env IYI_CACHE_DIR="$proof/cache" IYI_RELEASE_PARTITIONS="$partitions" \
+          "$IYI" build "${build_args[@]}" "${args[@]}" \
+          -o "$proof/program" "$fixture/main.iyi") \
           > "$proof/$capture.stdout" 2> "$proof/$capture.stderr"; then
-          echo "observer: $partitions partitions capture $capture build failed" >&2
+          echo "observer: $mode capture $capture build failed" >&2
           status=1
           break
         fi
         if [ ! -s "$proof/$capture.json" ] ||
            { [ "$capture" = on ] && [ ! -s "$proof/frame-provenance.json" ]; } ||
            ! cp "$proof/program" "$proof/$capture.program"; then
-          echo "observer: $partitions partitions capture $capture missing evidence" >&2
+          echo "observer: $mode capture $capture missing evidence" >&2
           status=1
           break
+        fi
+        if [ "$capture" = on ] && { [ "$mode" = artifact-producer ] || [ "$mode" = artifact-consumer ]; }; then
+          "$proof/program" > "$proof/runtime.out" 2>&1
+          printf '%s\n' "$?" > "$proof/runtime.status"
         fi
       done
       if [ ! -s "$proof/off.json" ] || [ ! -s "$proof/on.json" ] ||
@@ -251,7 +296,7 @@ if [ "${IYI_RELEASE_PROVENANCE_PROOF:-0}" = 1 ]; then
         status=1
         continue
       fi
-      if ! python3 - "$proof" "$partitions" > "$proof/comparison.out" 2> "$proof/comparison.stderr" <<'PY'
+      if ! python3 - "$proof" "$mode" > "$proof/comparison.out" 2> "$proof/comparison.stderr" <<'PY'
 import base64
 import copy
 import hashlib
@@ -261,7 +306,7 @@ import subprocess
 import sys
 
 root = pathlib.Path(sys.argv[1])
-expected_partitions = int(sys.argv[2])
+mode = sys.argv[2]
 
 def load(name):
     with (root / (name + ".json")).open("rb") as f:
@@ -322,10 +367,25 @@ current = [item for item in off["inputs"] if item["producer"]["kind"] == "curren
 if not current:
     raise ValueError("no locally generated objects")
 partitions = [item["partition"] for item in current]
-if expected_partitions == 4 and not any(part and part["count"] > 1 for part in partitions):
-    raise ValueError("multi-partition build produced no partitioned input")
-if expected_partitions == 1 and any(part and part["count"] > 1 for part in partitions):
-    raise ValueError("single-unit build produced partitioned input")
+if mode == "source-4" and {part["index"] for part in partitions if part and part["count"] == 4} != {0, 1, 2, 3}:
+    raise ValueError("source build did not produce all four partition inputs")
+if mode != "source-4" and any(part is not None for part in partitions):
+    raise ValueError("per-type or single-unit build unexpectedly partitioned")
+if mode == "artifact-producer" and len(current) < 2:
+    raise ValueError("artifact producer did not produce per-type objects")
+if mode == "artifact-consumer" and not any(item["producer"]["kind"] == "artifact_object" for item in off["inputs"]):
+    raise ValueError("consumer did not import a native artifact object")
+with (root / "frame-provenance.json").open("rb") as f:
+    manifest = json.load(f)
+if manifest.get("schema") != 2 or not manifest.get("bindings") or not manifest.get("object_inputs"):
+    raise ValueError("missing schema-2 closure bindings")
+bound_inputs = [manifest["object_inputs"][binding["link_input_id"]] for binding in manifest["bindings"]]
+if mode == "source-4" and not any(item["partition"] and item["partition"]["count"] == 4 for item in bound_inputs):
+    raise ValueError("partitioned build lacks a closure definition in a partition")
+if mode == "artifact-consumer":
+    kinds = {item["producer"]["kind"] for item in bound_inputs}
+    if not {"artifact_object", "current_unit"} <= kinds:
+        raise ValueError("consumer lacks imported and local closure definitions")
 
 for name, proof in (("off", off), ("on", on)):
     directory = root / name
@@ -359,12 +419,82 @@ else:
 print("matched selected plans, ordered object bytes and native symbols; altered object rejected")
 PY
       then
-        echo "observer: $partitions partitions evidence did not match" >&2
+        echo "observer: $mode evidence did not match" >&2
         status=1
       else
-        echo "observer: $partitions partitions matched; altered object rejected"
+        echo "observer: $mode matched; altered object rejected"
       fi
     done
+    producer="$proof_root/artifact-producer"
+    consumer="$proof_root/artifact-consumer"
+    if [ ! -s "$producer/runtime.status" ] || [ ! -s "$consumer/runtime.status" ] ||
+       [ "$(cat "$producer/runtime.status" 2>/dev/null)" = 0 ] ||
+       [ "$(cat "$producer/runtime.status" 2>/dev/null)" != "$(cat "$consumer/runtime.status" 2>/dev/null)" ] ||
+       ! grep -Fq "observer closure proof" "$producer/runtime.out" 2>/dev/null ||
+       ! grep -Fq "observer closure proof" "$consumer/runtime.out" 2>/dev/null; then
+      echo "observer: artifact producer/consumer runtime evidence missing or inconsistent" >&2
+      status=1
+    elif ! python3 "$REPO/bench/frames_equivalent.py" --strict-provenance --require-frames \
+      --source-manifest "$producer/frame-provenance.json" --artifact-manifest "$consumer/frame-provenance.json" \
+      --source-executable "$producer/on.program" --artifact-executable "$consumer/on.program" \
+      "$producer/runtime.out" "$consumer/runtime.out" > "$proof_root/strict.out" 2> "$proof_root/strict.stderr"; then
+      echo "observer: strict artifact frame comparison failed" >&2
+      status=1
+    elif ! python3 - "$consumer" > "$proof_root/mutations.out" 2> "$proof_root/mutations.stderr" <<'PY'
+import copy
+import json
+import pathlib
+import re
+import sys
+
+root = pathlib.Path(sys.argv[1])
+manifest = json.loads((root / "frame-provenance.json").read_text())
+frames = set()
+for line in (root / "runtime.out").read_bytes().splitlines():
+    match = re.fullmatch(rb"\d+ +\S+ +0x[0-9a-fA-F]{16} (.*) \+ \d+", line)
+    if match:
+        frames.add(match.group(1))
+selected = {}
+for index, binding in enumerate(manifest["bindings"]):
+    obj = manifest["object_inputs"][binding["link_input_id"]]
+    name = binding["definition"]["native_object_symbol"]
+    if not name.startswith("_"):
+        raise ValueError("expected Darwin native symbol decoration")
+    if name[1:].encode() in frames:
+        selected.setdefault(obj["producer"]["kind"], index)
+if not {"artifact_object", "current_unit"} <= selected.keys():
+    raise ValueError("observed frames do not include both imported and local closures")
+a, b = selected["artifact_object"], selected["current_unit"]
+swapped = copy.deepcopy(manifest)
+swapped["bindings"][a]["link_input_id"], swapped["bindings"][b]["link_input_id"] = \
+    swapped["bindings"][b]["link_input_id"], swapped["bindings"][a]["link_input_id"]
+(root / "swapped-bindings.json").write_text(json.dumps(swapped))
+changed = copy.deepcopy(manifest)
+first = changed["bindings"][a]["definition"]["emission"]
+other = changed["bindings"][b]["definition"]["emission"]
+if first["origin"] == other["origin"]:
+    raise ValueError("fixture closures do not have distinct origins")
+first["origin"] = other["origin"]
+(root / "changed-identity.json").write_text(json.dumps(changed))
+missing = copy.deepcopy(manifest)
+del missing["bindings"][a]
+(root / "missing-import.json").write_text(json.dumps(missing))
+print("observed imported and local closure frames; created binding and identity mutants")
+PY
+    then
+      echo "observer: cannot establish both observed closure origins" >&2
+      status=1
+    else
+      for mutant in missing-import swapped-bindings changed-identity; do
+        if python3 "$REPO/bench/frames_equivalent.py" --strict-provenance --require-frames \
+          --source-manifest "$producer/frame-provenance.json" --artifact-manifest "$consumer/$mutant.json" \
+          --source-executable "$producer/on.program" --artifact-executable "$consumer/on.program" \
+          "$producer/runtime.out" "$consumer/runtime.out" > "$proof_root/$mutant.out" 2> "$proof_root/$mutant.stderr"; then
+          echo "observer: $mutant was not rejected" >&2
+          status=1
+        fi
+      done
+    fi
     echo "observer evidence: $proof_root"
   fi
 fi

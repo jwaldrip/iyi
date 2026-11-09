@@ -866,6 +866,7 @@ module Iyi
     def parse_op_assign(allow_ops = true, allow_suffix = true)
       doc = @token.doc
       location = @token.location
+      diagnostic_start = @token.input_offset
       start_token = @token
 
       atomic = parse_question_colon
@@ -959,7 +960,9 @@ module Iyi
 
             push_var atomic
 
+            constant_target = atomic.is_a?(Path)
             atomic = Assign.new(atomic, atomic_value).at(location)
+            atomic.diagnostic_origin = diagnostic_anchor("Assign", "constant", diagnostic_start) if constant_target
             atomic.doc = doc
             atomic
           end
@@ -2055,6 +2058,7 @@ module Iyi
     end
 
     def parse_const(global = false, location = @token.location)
+      diagnostic_start = @token.input_offset
       # iyi: `Some(x)`, `Ok(x)`, `Err("bad")` - Rust's wrappers, read as a
       # generic type whose arguments are not types: "unexpected token:
       # \"xs\"", "expecting token ':', not ')'". A type argument starts with
@@ -2070,7 +2074,9 @@ module Iyi
         unless space_after_name
           warnings.add_warning_at(@token.location, "space required before colon in type declaration (run `iyi fmt` to fix this)")
         end
-        parse_type_declaration(type, is_const: true)
+        declaration = parse_type_declaration(type, is_const: true)
+        declaration.diagnostic_origin = diagnostic_anchor("Assign", "constant", diagnostic_start)
+        declaration
       else
         parse_custom_literal type
       end

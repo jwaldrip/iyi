@@ -881,6 +881,7 @@ module Iyi
       # to be in the text (R-2, SPEC.md IV.2).
       target = node.target
       @str << "pub " if target.is_a?(Path) && target.exported?
+      diagnostic_anchor(node, "Assign", "constant") if target.is_a?(Path)
       node.target.accept self
       @str << " = "
 
@@ -1479,6 +1480,7 @@ module Iyi
     end
 
     def visit(node : TypeDeclaration)
+      diagnostic_anchor(node, "Assign", "constant") if node.var.is_a?(Path)
       node.var.accept self
       @str << " : "
       node.declared_type.accept self

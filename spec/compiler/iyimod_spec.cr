@@ -181,6 +181,47 @@ describe Iyi::DiagnosticOrigin do
     restored.args.first.default_value.not_nil!.diagnostic_origin.should eq(proc_origin)
   end
 
+  it "round-trips same-header definitions and their distinct closure origins without source" do
+    first = Iyi::Def.new("f")
+    second = Iyi::Def.new("f")
+    first.diagnostic_origin = Iyi::DiagnosticOrigin::Written.new("app/greeter", "/absent/greeter.iyi", 4, "Def", "keyword")
+    second.diagnostic_origin = Iyi::DiagnosticOrigin::Written.new("app/greeter", "/absent/greeter.iyi", 40, "Def", "keyword")
+    signatures = [Iyi::IyiMod.signature(first), Iyi::IyiMod.signature(second)]
+    artifact = sample_artifact(exports: signatures)
+    section = Iyi::IyiMod::DiagnosticSection.new
+    closures = [
+      Iyi::DiagnosticOrigin::Written.new("app/greeter", "/absent/greeter.iyi", 12, "ProcLiteral", "arrow"),
+      Iyi::DiagnosticOrigin::Written.new("app/greeter", "/absent/greeter.iyi", 48, "ProcLiteral", "arrow"),
+    ]
+    [first, second].each_with_index do |definition, index|
+      sig = signatures[index]
+      text = "-> { #{index + 1} }"
+      artifact.mono_bodies[Iyi::IyiMod.mono_body_key(artifact.module_name, sig, index)] = text
+      section.add_fragment(Iyi::IyiMod.diagnostic_signature_fragment(artifact.module_name, definition, sig))
+      section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(Iyi::IyiMod.signature_body_fragment_key(artifact.module_name, sig),
+        ::Crystal::Digest::SHA256.hexdigest(text), [Iyi::DiagnosticAnchor.new(0, "ProcLiteral", "arrow", closures[index])]))
+    end
+    artifact.diagnostic_provenance = section
+    with_temporary_file do |path|
+      Iyi::IyiMod.write artifact, path
+      restored = Iyi::IyiMod.read(path)
+      restored.exports.functions.map(&.diagnostic_origin).should eq([first.diagnostic_origin, second.diagnostic_origin])
+      io = IO::Memory.new
+      pragmas = {} of Int32 => Array(Iyi::Lexer::LocPragma)
+      regions = [] of Iyi::DiagnosticRegion
+      Iyi::IyiMod.declarations(restored, io, pragmas, path, regions)
+      parser = Iyi::Parser.new(io.to_s)
+      parser.iyi = true
+      parser.diagnostic_regions = regions
+      parser.parse
+      regions.flat_map(&.anchors).select { |anchor| anchor.kind == "ProcLiteral" }.map(&.origin).should eq(closures)
+      Iyi::IyiMod.write restored, path
+      Iyi::IyiMod.read(path).exports.functions.map(&.diagnostic_origin).should eq([first.diagnostic_origin, second.diagnostic_origin])
+      restored.exports.functions.reverse!
+      expect_raises(ArgumentError) { Iyi::IyiMod.write restored, path }
+    end
+  end
+
   it "restores class-variable initializer anchors without the source file" do
     artifact = sample_artifact
     text = "-> { 1 }"
@@ -203,6 +244,31 @@ describe Iyi::DiagnosticOrigin do
     parser.parse
     regions.size.should eq(1)
     regions.first.anchors.first.origin.should eq(origin)
+  end
+
+  it "restores a field initializer closure from the artifact" do
+    text = "-> { 1 }"
+    origin = Iyi::DiagnosticOrigin::Written.new("app/greeter", "/absent/greeter.iyi", 25, "ProcLiteral", "arrow")
+    declaration = type_declaration("Box", "class", fields: [{"@factory", "Proc(Int32)", text}])
+    artifact = sample_artifact(types: [declaration])
+    section = Iyi::IyiMod::DiagnosticSection.new
+    section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(Iyi::IyiMod.field_fragment_key("Box", "@factory"),
+      ::Crystal::Digest::SHA256.hexdigest(text), [Iyi::DiagnosticAnchor.new(0, "ProcLiteral", "arrow", origin)]))
+    artifact.diagnostic_provenance = section
+    with_temporary_file do |path|
+      Iyi::IyiMod.write artifact, path
+      restored = Iyi::IyiMod.read(path)
+      io = IO::Memory.new
+      regions = [] of Iyi::DiagnosticRegion
+      Iyi::IyiMod.declarations(restored, io, {} of Int32 => Array(Iyi::Lexer::LocPragma), path, regions)
+      parser = Iyi::Parser.new(io.to_s)
+      parser.iyi = true
+      parser.diagnostic_regions = regions
+      parser.parse
+      regions.first.anchors.first.origin.should eq(origin)
+      restored.diagnostic_provenance.not_nil!.fragments.delete(Iyi::IyiMod.field_fragment_key("Box", "@factory"))
+      expect_raises(ArgumentError) { Iyi::IyiMod.write restored, path }
+    end
   end
 
   it "maps macro anchors across the bound-shard public marker" do
@@ -282,6 +348,28 @@ describe Iyi::DiagnosticOrigin do
     parser.diagnostic_regions = regions
     parser.parse
     regions.flat_map(&.anchors).map(&.origin).should eq(expected)
+  end
+
+  it "derives accessor origins from the actual constant declaration" do
+    parser = Iyi::Parser.new("VALUE = 1")
+    parser.filename = "/src/constants.cr"
+    parser.diagnostic_capture = true
+    parser.diagnostic_source_file = "/src/constants.cr"
+    assignment = parser.parse.as(Iyi::Assign)
+    origin = assignment.diagnostic_origin.not_nil!
+    origin.valid_for_anchor?("Assign", "constant").should be_true
+    accessor = Iyi::DiagnosticOrigin::Synthetic.new(origin, "constant_accessor", "getter")
+    accessor.valid_for_anchor?("Def", "keyword").should be_true
+    wrong = Iyi::DiagnosticOrigin::Synthetic.new(origin, "constant_accessor", "other")
+    wrong.valid_for_anchor?("Def", "keyword").should be_false
+    text = IO::Memory.new
+    anchors = [] of Iyi::DiagnosticAnchor
+    assignment.to_s(text, diagnostic_anchors: anchors)
+    source = text.to_s
+    region = Iyi::DiagnosticRegion.new(0, source.bytesize, ::Crystal::Digest::SHA256.hexdigest(source), anchors)
+    restored_parser = Iyi::Parser.new(source)
+    restored_parser.diagnostic_regions = [region]
+    restored_parser.parse.as(Iyi::Assign).diagnostic_origin.should eq(origin)
   end
 
   it "captures the parser input file rather than a location pragma" do
@@ -403,6 +491,12 @@ describe Iyi::DiagnosticOrigin do
     second.diagnostic_origin = Iyi::DiagnosticOrigin::Written.new("app", "/a.iyi", 2, "Def", "keyword")
     first.should eq(second)
     Iyi::IyiMod.signature_fragment_key("app", first).should_not eq(Iyi::IyiMod.signature_fragment_key("app", second))
+    first.clone.diagnostic_origin.should eq(first.diagnostic_origin)
+    first.copy_with(return_type: "Int32").diagnostic_origin.should eq(first.diagnostic_origin)
+    first_hashes = Iyi::IyiMod.hashes_for(sample_artifact(exports: [first]), "source")
+    second_hashes = Iyi::IyiMod.hashes_for(sample_artifact(exports: [second]), "source")
+    first_hashes.interface.should eq(second_hashes.interface)
+    first_hashes.implementation.should eq(second_hashes.implementation)
   end
 
   it "distinguishes concrete and pointer type identities" do
@@ -645,6 +739,27 @@ describe Iyi::IyiMod do
     end
   end
 
+  it "round-trips intrinsic signature origins and guarded diagnostic sections" do
+    with_temporary_file do |path|
+      origin = Iyi::DiagnosticOrigin::Written.new("app/greeter", "/src/app/greeter.iyi", 9, "Def", "keyword")
+      method = signature("greet")
+      method.diagnostic_origin = origin
+      artifact = sample_artifact(exports: [method])
+      key = Iyi::IyiMod.signature_fragment_key(artifact.module_name, method)
+      header = Iyi::IyiMod.render_signature(method)
+      section = Iyi::IyiMod::DiagnosticSection.new
+      section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(key, ::Crystal::Digest::SHA256.hexdigest(header),
+        [Iyi::DiagnosticAnchor.new(0, "Def", "keyword", origin)]))
+      artifact.diagnostic_provenance = section
+      Iyi::IyiMod.write artifact, path
+      decoded = Iyi::IyiMod.read(path)
+      decoded.exports.functions.first.diagnostic_origin.should eq(origin)
+      decoded.diagnostic_provenance.not_nil!.fragments[key].anchors.first.origin.should eq(origin)
+      decoded.diagnostic_provenance.not_nil!.fragments.delete(key)
+      expect_raises(ArgumentError) { Iyi::IyiMod.write decoded, path }
+    end
+  end
+
   it "round-trips import edges in order" do
     with_temporary_file do |path|
       Iyi::IyiMod.write sample_artifact(["std/list", "std/enumerable"]), path
@@ -719,6 +834,24 @@ describe Iyi::IyiMod do
     end
   end
 
+  it "rejects duplicate section identities before reading payloads" do
+    with_temporary_file do |path|
+      Iyi::IyiMod.write sample_artifact, path
+      bytes = File.read(path).to_slice.dup
+      bytes[32, 2].copy_from(bytes[16, 2])
+      File.write path, bytes
+      expect_raises(Iyi::IyiMod::Error, /duplicate section/) { Iyi::IyiMod.read(path) }
+    end
+  end
+
+  it "rejects bytes outside the section table" do
+    with_temporary_file do |path|
+      Iyi::IyiMod.write sample_artifact, path
+      File.open(path, "ab") { |file| file.write_byte(0_u8) }
+      expect_raises(Iyi::IyiMod::Error, /trailing section bytes/) { Iyi::IyiMod.read(path) }
+    end
+  end
+
   it "refuses a file too short to hold the magic" do
     with_temporary_file do |path|
       File.write path, "IYI"
@@ -740,6 +873,16 @@ describe Iyi::IyiMod do
       expect_raises(Iyi::IyiMod::Error, /format v99/) do
         Iyi::IyiMod.read(path)
       end
+    end
+  end
+
+  it "rejects format v62 rather than guessing provenance" do
+    with_temporary_file do |path|
+      Iyi::IyiMod.write sample_artifact, path
+      bytes = File.read(path).to_slice.dup
+      Iyi::IyiMod::FORMAT.encode(62_u32, bytes[8, 4])
+      File.write path, bytes
+      expect_raises(Iyi::IyiMod::Error, /format v62/) { Iyi::IyiMod.read(path) }
     end
   end
   # The one a v42 artifact in a cache actually hits: the `Layouts` section
@@ -2814,6 +2957,60 @@ describe Iyi::IyiMod do
       `./from-artifact`.chomp.should eq expected
     end
   end
+
+  {% if flag?(:darwin) %}
+    it "carries per-type release diagnostic objects to a source-absent consumer" do
+      with_tempdir("iyimod_release_diagnostic_objects") do
+        with_env("IYI_RELEASE_PARTITIONS": "4") do
+          Dir.mkdir_p "boot"
+          File.write "boot/half.iyi", <<-IYI
+            module boot/half
+
+            pub def apply(x : Int32) : Int32
+              f = ->(n : Int32) { n + 1 }
+              f.call(x)
+            end
+            IYI
+          File.write "main.iyi", <<-IYI
+            module main
+            import boot/half
+
+            f = ->(n : Int32) { n * 2 }
+            puts f.call(Boot::Half.apply(20))
+            IYI
+          source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+          producer = create_spec_compiler
+          producer.prelude = "iyi/prelude"
+          producer.release!
+          producer.emit_iyimod = "mods"
+          producer.emit_frame_provenance = "producer-frames.json"
+          producer.compile source, File.expand_path("from-source")
+          `./from-source`.chomp.should eq("42")
+          artifact = Iyi::IyiMod.read(File.join("mods", "boot", "half.iyimod"), want_object_code: true)
+          artifact.object_code.should_not be_empty
+          artifact.object_code.map(&.name).should contain("Boot::Half")
+          section = artifact.diagnostic_provenance.not_nil!
+          section.validate_objects!(artifact.object_code)
+          section.objects.each_value { |object| object.partition.should be_nil }
+
+          File.delete "boot/half.iyi"
+          consumer = create_spec_compiler
+          consumer.prelude = "iyi/prelude"
+          consumer.release!
+          consumer.use_iyimod = "mods"
+          consumer.emit_frame_provenance = "consumer-frames.json"
+          consumer.compile source, File.expand_path("from-artifact")
+          `./from-artifact`.chomp.should eq("42")
+          manifest = JSON.parse(File.read("consumer-frames.json"))
+          inputs = manifest["object_inputs"].as_a
+          bound_ids = manifest["bindings"].as_a.map { |binding| binding["link_input_id"].as_i }.to_set
+          bound = inputs.select { |input| bound_ids.includes?(input["link_input_id"].as_i) }
+          bound.any? { |input| input["producer"]["kind"].as_s == "artifact_object" }.should be_true
+          bound.any? { |input| input["producer"]["kind"].as_s == "current_unit" }.should be_true
+        end
+      end
+    end
+  {% end %}
 
   # The same reach without `--release`, where each type is a unit of its own
   # and only two things were missing. A getter's caller has only a header,

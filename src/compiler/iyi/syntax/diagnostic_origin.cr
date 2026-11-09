@@ -204,6 +204,9 @@ module Iyi
       end
 
       def valid_for_anchor?(kind : String, role : String) : Bool
+        if kind == "Def" && role == "keyword" && @synthesis_kind == "constant_accessor" && @structural_slot == "getter"
+          return @parent_origin.valid_for_anchor?("Assign", "constant")
+        end
         if kind == "Macro" && role == "keyword" && @synthesis_kind == "inline_macro_definition" && @structural_slot == "macro"
           return @parent_origin.valid_for_anchor?("MacroDirective", "control") ||
                  @parent_origin.valid_for_anchor?("MacroDirective", "expression")

@@ -98,7 +98,9 @@ module Iyi::IyiMod
   # producer's mark allowed there the consumer has to allow (SPEC.md
   # III.13). A v61 artifact is refused and rebuilt rather than read as a
   # module that handles no raw memory.
-  FORMAT_VERSION = 62_u32
+  # v63 adds intrinsic signature origins and an optional diagnostic provenance
+  # section. Older artifacts must be rebuilt rather than decoded as v63.
+  FORMAT_VERSION = 63_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -528,11 +530,11 @@ module Iyi::IyiMod
         checked.add_object(object)
       end
       table = DiagnosticOrigins.new
-      @fragments.each_value do |fragment|
-        fragment.anchors.each { |anchor| table.intern(anchor.origin.not_nil!) }
+      @fragments.keys.sort!.each do |key|
+        @fragments[key].anchors.each { |anchor| table.intern(anchor.origin.not_nil!) }
       end
-      @objects.each_value do |object|
-        object.definitions.each { |definition| table.intern(DiagnosticOrigin.from_json(definition.emission.origin)) }
+      @objects.keys.sort!.each do |key|
+        @objects[key].definitions.each { |definition| table.intern(DiagnosticOrigin.from_json(definition.emission.origin)) }
       end
       io = IO::Memory.new
       io.write_bytes SCHEMA, FORMAT
@@ -699,8 +701,9 @@ module Iyi::IyiMod
     # *path* is the artifact's own, which a placed node keeps as its
     # `Location#artifact`.
     def initialize(@artifact : Artifact, @pragmas : Hash(Int32, Array(Lexer::LocPragma))? = nil,
-                   @path : String? = nil, @diagnostic_regions : Array(DiagnosticRegion)? = nil)
-      @diagnostic_seen = Set(String).new if @diagnostic_regions
+                   @path : String? = nil, @diagnostic_regions : Array(DiagnosticRegion)? = nil,
+                   diagnostic_seen : Set(String)? = nil)
+      @diagnostic_seen = diagnostic_seen || Set(String).new if @diagnostic_regions
     end
 
     def diagnostic? : Bool
@@ -1214,6 +1217,27 @@ module Iyi::IyiMod
     property diagnostic_origin : DiagnosticOrigin? = nil
     def_equals_and_hash name, receiver, parameters, block_parameter, return_type,
       free_variables, required, visibility, doc, annotations, free_variable_bounds, where_bounds
+  end
+
+  struct Signature
+    def copy_with(name _name = @name, receiver _receiver = @receiver, parameters _parameters = @parameters,
+                  block_parameter _block_parameter = @block_parameter, return_type _return_type = @return_type,
+                  free_variables _free_variables = @free_variables, required _required = @required,
+                  visibility _visibility = @visibility, doc _doc = @doc, annotations _annotations = @annotations,
+                  free_variable_bounds _free_variable_bounds = @free_variable_bounds, where_bounds _where_bounds = @where_bounds)
+      result = Signature.new(_name, _receiver, _parameters, _block_parameter, _return_type, _free_variables,
+        _required, _visibility, _doc, _annotations, _free_variable_bounds, _where_bounds)
+      result.diagnostic_origin = @diagnostic_origin
+      result
+    end
+
+    def clone
+      result = Signature.new(@name.clone, @receiver.clone, @parameters.clone, @block_parameter.clone,
+        @return_type.clone, @free_variables.clone, @required.clone, @visibility.clone, @doc.clone,
+        @annotations.clone, @free_variable_bounds.clone, @where_bounds.clone)
+      result.diagnostic_origin = @diagnostic_origin
+      result
+    end
   end
 
   # A type the module declares: `pub struct`, `pub class`, `pub trait` — and,
@@ -2092,6 +2116,10 @@ module Iyi::IyiMod
   # reader sees either the old file or the new one.
   def self.write(artifact : Artifact, path : String) : Nil
     sections = [] of {Section, Bytes}
+    if diagnostic = artifact.diagnostic_provenance
+      validate_diagnostic_fragments!(artifact)
+      diagnostic.validate_objects!(artifact.object_code)
+    end
     sections << {Section::Header, encode_header(artifact)}
 
     # Second, right behind the header, because a build deciding what to rebuild
@@ -2112,7 +2140,7 @@ module Iyi::IyiMod
       sections << {Section::Inputs, encode_strings(artifact.inputs)}
     end
 
-    sections << {Section::Exports, encode_exports(artifact)}
+    sections << {Section::Exports, encode_exports(artifact, diagnostics: true)}
 
     # After the declarations, for `iyi mod dump` and the next build of this
     # module, which compares its own verdicts with these.
@@ -2191,14 +2219,17 @@ module Iyi::IyiMod
     end
 
     unless artifact.reopened.empty?
-      sections << {Section::Reopened, encode_reopened(artifact)}
+      sections << {Section::Reopened, encode_reopened(artifact, diagnostics: true)}
     end
 
     unless artifact.top_level_funs.empty?
       sections << {Section::TopLevelFuns, encode_strings(artifact.top_level_funs)}
     end
     unless artifact.top_level.empty?
-      sections << {Section::TopLevel, encode_top_level(artifact)}
+      sections << {Section::TopLevel, encode_top_level(artifact, diagnostics: true)}
+    end
+    if diagnostic = artifact.diagnostic_provenance
+      sections << {Section::DiagnosticProvenance, diagnostic.encode}
     end
 
     # Last, and omitted when there is nothing in it. A consumer reading
@@ -2251,8 +2282,10 @@ module Iyi::IyiMod
     end
 
     count = file.read_bytes(UInt32, FORMAT)
+    seen = Set(UInt16).new
     Array({UInt16, UInt32, UInt64}).new(count) do
       kind = file.read_bytes(UInt16, FORMAT)
+      raise Error.new("#{path} contains a duplicate section #{kind}") unless seen.add?(kind)
       file.read_bytes(UInt16, FORMAT) # padding
       {kind, file.read_bytes(UInt32, FORMAT), file.read_bytes(UInt64, FORMAT)}
     end
@@ -2419,6 +2452,7 @@ module Iyi::IyiMod
       spawns = [] of SpawnRecord
       reaches = nil
       positions = {bodies: {} of String => Array(SourcePosition), initialiser: [] of SourcePosition}
+      diagnostic = nil
 
       table.each do |(kind, length, sum)|
         section = Section.from_value?(kind)
@@ -2437,7 +2471,7 @@ module Iyi::IyiMod
         case section
         when Section::Header          then header = decode_header(payload)
         when Section::Imports         then imports = decode_imports(payload)
-        when Section::Exports         then exports = decode_exports(payload)
+        when Section::Exports         then exports = decode_exports(payload, diagnostics: true)
         when Section::ObjectCode      then object_code = decode_object_code(payload)
         when Section::MonoBodies      then mono_bodies = decode_mono_bodies(payload)
         when Section::MacroBodies     then macro_bodies = decode_macro_bodies(payload)
@@ -2449,9 +2483,9 @@ module Iyi::IyiMod
         when Section::MatchTypes      then match_types = decode_match_types(payload)
         when Section::Symbols         then symbols = decode_symbols(payload)
         when Section::Libs            then libs = decode_libs(payload)
-        when Section::TopLevel        then top_level = decode_top_level(payload)
+        when Section::TopLevel        then top_level = decode_top_level(payload, diagnostics: true)
         when Section::TopLevelFuns    then top_level_funs = decode_strings(payload)
-        when Section::Reopened        then reopened = decode_reopened(payload)
+        when Section::Reopened        then reopened = decode_reopened(payload, diagnostics: true)
         when Section::Requires        then requires = decode_requires(payload)
         when Section::Hashes          then hashes = decode_hashes(payload)
         when Section::Layouts         then layouts = decode_layouts(payload)
@@ -2460,11 +2494,15 @@ module Iyi::IyiMod
         when Section::SourcePositions then positions = decode_source_positions(payload)
         when Section::Spawns          then spawns = decode_spawns(payload)
         when Section::Reaches         then reaches = decode_reaches(payload)
+        when Section::DiagnosticProvenance
+          raise ArgumentError.new("duplicate diagnostic provenance section") if diagnostic
+          diagnostic = DiagnosticSection.decode(payload)
         else
           # Written by a later compiler, or a section this one does not need.
           # Skipping is the point of the table.
         end
       end
+      raise Error.new("#{path} has truncated or trailing section bytes") unless file.pos == file.size
 
       unless header
         raise Error.new("#{path} has no header section")
@@ -2481,6 +2519,11 @@ module Iyi::IyiMod
         body_positions: positions[:bodies], initialiser_positions: positions[:initialiser])
       artifact.spawns = spawns
       artifact.reaches = reaches
+      if section = diagnostic
+        artifact.diagnostic_provenance = section
+        validate_diagnostic_fragments!(artifact)
+        section.validate_objects!(object_code) if want_object_code
+      end
       artifact
     end
   rescue ex : Error
@@ -2768,8 +2811,9 @@ module Iyi::IyiMod
   #
   # Empty for every module that has none, which is every iyi module: iyi has no
   # top level to write a `def` at. This is a `--crystal` shard's shape.
-  def self.top_level_declarations(artifact : Artifact, io : IO, diagnostic_regions : Array(DiagnosticRegion)? = nil) : Nil
-    bodies = Bodies.new(artifact, diagnostic_regions: diagnostic_regions)
+  def self.top_level_declarations(artifact : Artifact, io : IO, diagnostic_regions : Array(DiagnosticRegion)? = nil,
+                                  diagnostic_seen : Set(String)? = nil) : Nil
+    bodies = Bodies.new(artifact, diagnostic_regions: diagnostic_regions, diagnostic_seen: diagnostic_seen)
     # The `fun`s first, and with their bodies: this is the one text outside the
     # module, which is the only scope a `fun` can be declared in. See
     # `Artifact#top_level_funs`.
@@ -2781,9 +2825,10 @@ module Iyi::IyiMod
       end
       io << '\n'
     end
+    ordinals = mono_body_ordinals(artifact.top_level)
     artifact.top_level.each_with_index do |signature, index|
       io << '\n' if index > 0
-      render_declaration io, signature, bodies, mono_body_key(TOP_LEVEL_CONTAINER, signature), TOP_LEVEL_CONTAINER
+      render_declaration io, signature, bodies, mono_body_key(TOP_LEVEL_CONTAINER, signature, ordinals[index]), TOP_LEVEL_CONTAINER
     end
   end
 
@@ -2887,12 +2932,13 @@ module Iyi::IyiMod
       end
     end
 
-    exports.functions.each do |signature|
+    function_ordinals = mono_body_ordinals(exports.functions)
+    exports.functions.each_with_index do |signature, index|
       io << '\n'
       # A module's own `pub def` that takes a block ships its body, because the
       # consumer is what instantiates it — the block is the consumer's code.
       # The container is the module's own path.
-      render_declaration io, signature, bodies, mono_body_key(artifact.module_name, signature), artifact.module_name,
+      render_declaration io, signature, bodies, mono_body_key(artifact.module_name, signature, function_ordinals[index]), artifact.module_name,
         exported: true
     end
 
@@ -2900,9 +2946,10 @@ module Iyi::IyiMod
     # `pub`, so the consumer has them and cannot name them. They are here
     # because a body that travels may call one, and a block-taking one brings
     # its body along for the reason every travelling body does.
-    exports.carried_functions.each do |signature|
+    carried_ordinals = mono_body_ordinals(exports.carried_functions)
+    exports.carried_functions.each_with_index do |signature, index|
       io << '\n'
-      render_declaration io, signature, bodies, mono_body_key(artifact.module_name, signature), artifact.module_name
+      render_declaration io, signature, bodies, mono_body_key(artifact.module_name, signature, carried_ordinals[index]), artifact.module_name
     end
 
     inheritance_order(exports.types).each do |declaration|
@@ -2917,8 +2964,9 @@ module Iyi::IyiMod
       container = mono_body_container(record.trait_name, record.type_name)
       io << '\n' << render_impl_header(record) << '\n'
       record.assoc_types.each { |(name, answer)| io << "  type " << name << " = " << answer << '\n' }
-      record.methods.each do |signature|
-        render_declaration io, signature, bodies, mono_body_key(container, signature), container, indent: "  "
+      ordinals = mono_body_ordinals(record.methods)
+      record.methods.each_with_index do |signature, index|
+        render_declaration io, signature, bodies, mono_body_key(container, signature, ordinals[index]), container, indent: "  "
       end
       io << "end\n"
     end
@@ -3538,6 +3586,10 @@ module Iyi::IyiMod
     "classvar:#{container.bytesize}:#{container}#{name}"
   end
 
+  def self.field_fragment_key(container : String, name : String) : String
+    "field:#{container.bytesize}:#{container}#{name}"
+  end
+
   private def self.write_class_var(io : IO, class_var : ClassVarDecl, bodies : Bodies, container : String) : Nil
     value = class_var.value
     unless bodies.diagnostic? && !value.empty?
@@ -3622,7 +3674,10 @@ module Iyi::IyiMod
       # in its `lib`, and written as an instance variable it was
       # `expecting identifier 'end', not '@st_dev'`.
       io << inner << (in_lib ? name.lchop('@') : name) << " : " << type
-      io << " = " << value unless value.empty?
+      unless value.empty?
+        io << " = "
+        bodies.write_carried(io, field_fragment_key(here, name), value, Bodies::NO_POSITIONS, lines: false)
+      end
       io << '\n'
     end
 
@@ -4085,18 +4140,37 @@ module Iyi::IyiMod
     "signature-body:#{signature_key.bytesize}:#{signature_key}"
   end
 
+  def self.validate_diagnostic_fragments!(artifact : Artifact) : Nil
+    validate_signature_diagnostics!(artifact)
+    section = artifact.diagnostic_provenance || raise ArgumentError.new("missing artifact diagnostic section")
+    seen = Set(String).new
+    regions = [] of DiagnosticRegion
+    io = IO::Memory.new
+    write_declarations(artifact, io, Bodies.new(artifact, diagnostic_regions: regions, diagnostic_seen: seen))
+    top_level_declarations(artifact, IO::Memory.new, regions, seen)
+    section.validate_fragment_keys!(seen)
+  end
+
   def self.validate_signature_diagnostics!(artifact : Artifact) : Nil
     section = artifact.diagnostic_provenance || raise ArgumentError.new("missing artifact diagnostic section")
     expected = Set(String).new
-    artifact.exports.functions.each { |sig| check_signature_diagnostic(section, artifact, expected, artifact.module_name, sig) }
-    artifact.exports.carried_functions.each { |sig| check_signature_diagnostic(section, artifact, expected, artifact.module_name, sig) }
+    function_ordinals = mono_body_ordinals(artifact.exports.functions)
+    artifact.exports.functions.each_with_index do |sig, index|
+      check_signature_diagnostic(section, artifact, expected, artifact.module_name, sig, function_ordinals[index])
+    end
+    carried_ordinals = mono_body_ordinals(artifact.exports.carried_functions)
+    artifact.exports.carried_functions.each_with_index do |sig, index|
+      check_signature_diagnostic(section, artifact, expected, artifact.module_name, sig, carried_ordinals[index])
+    end
     artifact.exports.impls.each do |impl|
       container = mono_body_container(impl.trait_name, impl.type_name)
-      impl.methods.each { |sig| check_signature_diagnostic(section, artifact, expected, container, sig) }
+      ordinals = mono_body_ordinals(impl.methods)
+      impl.methods.each_with_index { |sig, index| check_signature_diagnostic(section, artifact, expected, container, sig, ordinals[index]) }
     end
     artifact.exports.types.each { |type| check_type_signature_diagnostics(section, artifact, expected, type) }
     artifact.reopened.each { |type| check_type_signature_diagnostics(section, artifact, expected, type) }
-    artifact.top_level.each { |sig| check_signature_diagnostic(section, artifact, expected, TOP_LEVEL_CONTAINER, sig) }
+    ordinals = mono_body_ordinals(artifact.top_level)
+    artifact.top_level.each_with_index { |sig, index| check_signature_diagnostic(section, artifact, expected, TOP_LEVEL_CONTAINER, sig, ordinals[index]) }
     actual = section.fragments.keys.select do |key|
       key.starts_with?("signature:") || key.starts_with?("signature-annotation:") || key.starts_with?("signature-body:")
     end.to_set
@@ -4496,7 +4570,10 @@ module Iyi::IyiMod
   end
 
   private def self.decode_reopened(payload : Bytes, diagnostics : Bool = false) : Array(TypeDecl)
-    read_type_declarations(IO::Memory.new(payload), diagnostics: diagnostics)
+    io = IO::Memory.new(payload)
+    result = read_type_declarations(io, diagnostics: diagnostics)
+    raise ArgumentError.new("trailing reopened declaration bytes") unless io.pos == io.size
+    result
   end
 
   private def self.encode_top_level(artifact : Artifact, diagnostics : Bool = false) : Bytes
@@ -4506,7 +4583,10 @@ module Iyi::IyiMod
   end
 
   private def self.decode_top_level(payload : Bytes, diagnostics : Bool = false) : Array(Signature)
-    read_signatures(IO::Memory.new(payload), diagnostics: diagnostics)
+    io = IO::Memory.new(payload)
+    result = read_signatures(io, diagnostics: diagnostics)
+    raise ArgumentError.new("trailing top-level signature bytes") unless io.pos == io.size
+    result
   end
 
   private def self.encode_libs(artifact : Artifact) : Bytes
@@ -4788,7 +4868,9 @@ module Iyi::IyiMod
         free_variable_bounds, assoc_types, read_signatures(io, diagnostics))
     end
 
-    Exports.new(functions, types, impls, read_signatures(io, diagnostics), read_class_vars(io))
+    result = Exports.new(functions, types, impls, read_signatures(io, diagnostics), read_class_vars(io))
+    raise ArgumentError.new("trailing export bytes") unless io.pos == io.size
+    result
   end
 
   private def self.write_strings(io : IO, values : Array(String)) : Nil

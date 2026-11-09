@@ -856,4 +856,63 @@ describe "Code gen: closure" do
     observed.first.unresolved_nonclosure?.should be_true
   end
 
+  it "retains all identities when LLVM replaces one tracked function with another" do
+    llvm_context = LLVM::Context.new
+    mod = llvm_context.new_module("diagnostic-observer-replacement")
+    first = mod.functions.add("first", [] of LLVM::Type, llvm_context.int32) do |fun|
+      fun.basic_blocks.append("entry") { |builder| builder.ret llvm_context.int32.const_int(1) }
+    end
+    second = mod.functions.add("second", [] of LLVM::Type, llvm_context.int32) do |fun|
+      fun.basic_blocks.append("entry") { |builder| builder.ret llvm_context.int32.const_int(2) }
+    end
+    origin = JSON.parse(%({"kind":"Written","source_identity":{"module":"app/main","file":"main.iyi"},"input_byte_offset":0,"anchor_kind":"ProcLiteral","role":"arrow"}))
+    specialization = JSON.parse(%({"kind":"program_scope","source_identity":{"module":"app/main","file":"main.iyi"}}))
+    capture = JSON.parse(%({"proc_type":{"kind":"Iyi::ProcInstanceType","arguments":[],"return":{"kind":"Iyi::NilType","name":"Nil"}},"is_closure":false,"environment":null}))
+    location = JSON.parse(%({"file":"main.iyi","line":1,"column":1}))
+    first_record = Iyi::DiagnosticProvenance::Emission.new("first", "first", "unit", "Internal", origin, specialization, capture, location)
+    second_record = Iyi::DiagnosticProvenance::Emission.new("second", "second", "unit", "Internal", origin, specialization, capture, location)
+    observer = Iyi::DiagnosticProvenance::Observer.new(mod, {"first" => [first_record], "second" => [second_record]})
+    LibLLVM.replace_all_uses_with(first, second)
+    first.delete
+    observed = observer.finish
+    observed.size.should eq(1)
+    observed[0].llvm_symbol.should eq("second")
+    observed[0].emissions.map(&.requested_symbol).sort.should eq(["first", "second"])
+    observed[0].unresolved_nonclosure?.should be_false
+  end
+
+  it "marks a closure replaced by a non-closure as unresolved" do
+    llvm_context = LLVM::Context.new
+    mod = llvm_context.new_module("diagnostic-observer-unresolved")
+    closure = mod.functions.add("closure", [] of LLVM::Type, llvm_context.int32) do |fun|
+      fun.basic_blocks.append("entry") { |builder| builder.ret llvm_context.int32.const_int(1) }
+    end
+    other = mod.functions.add("other", [] of LLVM::Type, llvm_context.int32) do |fun|
+      fun.basic_blocks.append("entry") { |builder| builder.ret llvm_context.int32.const_int(2) }
+    end
+    origin = JSON.parse(%({"kind":"Written","source_identity":{"module":"app/main","file":"main.iyi"},"input_byte_offset":0,"anchor_kind":"ProcLiteral","role":"arrow"}))
+    specialization = JSON.parse(%({"kind":"program_scope","source_identity":{"module":"app/main","file":"main.iyi"}}))
+    capture = JSON.parse(%({"proc_type":{"kind":"Iyi::ProcInstanceType","arguments":[],"return":{"kind":"Iyi::NilType","name":"Nil"}},"is_closure":false,"environment":null}))
+    location = JSON.parse(%({"file":"main.iyi","line":1,"column":1}))
+    record = Iyi::DiagnosticProvenance::Emission.new("closure", "closure", "unit", "Internal", origin, specialization, capture, location)
+    observer = Iyi::DiagnosticProvenance::Observer.new(mod, {"closure" => [record]})
+    LibLLVM.replace_all_uses_with(closure, other)
+    closure.delete
+    observed = observer.finish
+    observed.size.should eq(1)
+    observed[0].emissions.size.should eq(1)
+    observed[0].unresolved_nonclosure?.should be_true
+  end
+
+  it "does not claim a deleted LLVM definition survived" do
+    llvm_context = LLVM::Context.new
+    mod = llvm_context.new_module("diagnostic-observer-deletion")
+    fun = mod.functions.add("removed", [] of LLVM::Type, llvm_context.int32) do |definition|
+      definition.basic_blocks.append("entry") { |builder| builder.ret llvm_context.int32.const_int(1) }
+    end
+    observer = Iyi::DiagnosticProvenance::Observer.new(mod, {} of String => Array(Iyi::DiagnosticProvenance::Emission))
+    fun.delete
+    observer.finish.should be_empty
+  end
+
 end

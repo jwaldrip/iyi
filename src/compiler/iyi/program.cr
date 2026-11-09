@@ -789,6 +789,7 @@ module Iyi
     # pass, which runs before any of that, and only while a boundary is being
     # written.
     getter iyi_def_bodies = {} of String => String
+    getter iyi_def_bodies_by_identity = ({} of Def => String).compare_by_identity
     getter(diagnostic_def_bodies) { {} of DiagnosticOrigin => {String, Array(DiagnosticAnchor)} }
 
     def record_diagnostic_def_body(origin : DiagnosticOrigin, source : String, anchors : Array(DiagnosticAnchor)) : Nil
@@ -1035,6 +1036,7 @@ module Iyi
     getter(iyi_mono_body_origins) { {} of String => Hash(String, DiagnosticOrigin) }
     getter(iyi_initialiser_diagnostics) { {} of String => IyiMod::DiagnosticFragment }
     getter(iyi_class_var_diagnostics) { {} of {String, String} => {String, Array(DiagnosticAnchor)} }
+    getter(iyi_field_diagnostics) { {} of {String, String} => {String, Array(DiagnosticAnchor)} }
     getter(iyi_macro_diagnostics) { {} of {String, String} => Array(DiagnosticAnchor) }
     getter(iyi_signature_diagnostics) { {} of String => Hash(String, IyiMod::DiagnosticFragment) }
     getter(iyi_top_fun_diagnostics) { {} of String => Array(DiagnosticAnchor) }
@@ -1050,6 +1052,17 @@ module Iyi
         raise "conflicting class variable diagnostic source" unless previous == value
       else
         iyi_class_var_diagnostics[key] = {source, anchors.dup}
+      end
+    end
+
+    def record_field_diagnostic(owner : String, name : String, source : String,
+                                anchors : Array(DiagnosticAnchor)) : Nil
+      key = {owner, name}
+      value = {source, anchors}
+      if previous = iyi_field_diagnostics[key]?
+        raise "conflicting field diagnostic source" unless previous == value
+      else
+        iyi_field_diagnostics[key] = {source, anchors.dup}
       end
     end
 
