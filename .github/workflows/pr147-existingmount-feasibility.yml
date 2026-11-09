@@ -1,0 +1,52 @@
+name: Existing-mount verity feasibility diagnostic
+
+on:
+  push:
+    branches:
+      - proof/pr147-existingmount-20261109
+    paths:
+      - .github/workflows/pr147-existingmount-feasibility.yml
+      - proof/fsverity_feasibility.py
+
+permissions:
+  contents: read
+
+jobs:
+  fsverity-feasibility:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: jwaldrip/iyi
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Run in-process fs-verity existing-mount diagnostic
+        run: |
+          diag="$RUNNER_TEMP/kernel-feasibility-diag-${{ github.run_id }}-${{ github.run_attempt }}"
+          mkdir -m 0700 "$diag"
+          /usr/bin/setpriv \
+            --inh-caps=-all \
+            --ambient-caps=-all \
+            --no-new-privs \
+            -- /usr/bin/env -i \
+              PATH=/usr/bin:/bin \
+              RUNNER_TEMP="$RUNNER_TEMP" \
+              GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
+              HOME="$HOME" \
+              GITHUB_RUN_ID="${{ github.run_id }}" \
+              GITHUB_RUN_ATTEMPT="${{ github.run_attempt }}" \
+              GITHUB_SHA="${{ github.sha }}" \
+              ImageOS="$ImageOS" \
+              RUNNER_OS="$RUNNER_OS" \
+              /usr/bin/python3 -I -B proof/fsverity_feasibility.py \
+                --existing-mounts \
+                --output "$diag/fsverity-feasibility.json"
+
+      - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        if: always()
+        with:
+          name: pr147-kernel-feasibility-diagnostic
+          path: ${{ runner.temp }}/kernel-feasibility-diag-${{ github.run_id }}-${{ github.run_attempt }}/
+          if-no-files-found: error
