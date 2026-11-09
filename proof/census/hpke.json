@@ -1,0 +1,123 @@
+{
+  "census_version": 1,
+  "driver": "hpke",
+  "script": "bench/std_hpke_exercise.sh",
+  "script_sha256": "8bb0bb3a15f77d0c42c0130bfdf54a8312c6d6b32549dfa218f76ed50632fc8c",
+  "sites": [
+    {
+      "lines": [62],
+      "command": "build",
+      "kind": "canonical-own",
+      "contains": ["\"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_hpke_exercise.iyi\""],
+      "variants": []
+    },
+    {
+      "lines": [274],
+      "command": "run",
+      "kind": "canonical-other",
+      "contains": ["\"$IYI\" run \"$WORK/refuse.iyi\" -- \"$1\""],
+      "variants": []
+    },
+    {
+      "lines": [299],
+      "command": "doc",
+      "kind": "unchanged",
+      "contains": ["\"$IYI\" doc \"$REPO/src/std/hpke.iyi\""],
+      "variants": []
+    },
+    {
+      "lines": [305],
+      "command": "fmt",
+      "kind": "unchanged",
+      "contains": ["\"$IYI\" fmt --check \"$REPO/src/std/hpke.iyi\" \"$REPO/bench/std_hpke_exercise.iyi\""],
+      "variants": []
+    },
+    {
+      "lines": [335],
+      "command": "run",
+      "kind": "negative",
+      "contains": ["IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/samples/iyi\" \"$IYI\" run \"$REPO/bench/std_hpke_exercise.iyi\""],
+      "variants": [
+        {
+          "id": "hpke.negative.335",
+          "kind": "negative",
+          "first_root": "{WORK}/patched",
+          "vars": {},
+          "sources": ["{REPO}/bench/std_hpke_exercise.iyi"],
+          "output": null,
+          "darwin": "required",
+          "requires": ["python3"],
+          "verdict": {
+            "lines": [336, 337, 341, 343],
+            "contains": ["the exercise PASSED on $2", "status=1", "failed, but not where it should have"]
+          }
+        }
+      ]
+    }
+  ],
+  "non_invocations": [],
+  "skips": [
+    {
+      "line": 160,
+      "class": "tool",
+      "what": "curl and python3",
+      "regex": "^  no curl or python here, so only the vendored subset was checked$",
+      "text": "  echo \"  no curl or python here, so only the vendored subset was checked\""
+    },
+    {
+      "line": 162,
+      "class": "tool",
+      "what": "curl/network",
+      "regex": "^  the file could not be fetched \\(.*\\), so only the vendored subset was checked$",
+      "text": "  echo \"  the file could not be fetched ($(tail -1 \"$WORK/curl.log\")), so only the vendored subset was checked\""
+    },
+    {
+      "line": 188,
+      "class": "tool",
+      "what": "python3 cryptography",
+      "regex": "^  no python with cryptography here, so the Python HPKE goes unasked$",
+      "text": "  echo \"  no python with cryptography here, so the Python HPKE goes unasked\""
+    },
+    {
+      "line": 217,
+      "class": "tool",
+      "what": "python3 cryptography",
+      "regex": "^  no python with cryptography here, so it goes unasked$",
+      "text": "  echo \"  no python with cryptography here, so it goes unasked\""
+    },
+    {
+      "line": 321,
+      "class": "tool",
+      "what": "python3",
+      "regex": "^  no python3 on this machine, so the .* proof is unmeasured$",
+      "text": "    echo \"  no python3 on this machine, so the $2 proof is unmeasured\""
+    }
+  ],
+  "not_skips": [
+    {
+      "line": 227,
+      "reason": "the timing command failed and the branch sets status=1",
+      "text": "  echo \"  the timing did not run: $(tail -1 \"$WORK/cost.out\")\""
+    }
+  ],
+  "pass_sentinel": {
+    "line": 403,
+    "regex": "^ALL CHECKS PASSED$",
+    "text": "  echo \"ALL CHECKS PASSED\""
+  },
+  "exec_evidence": [
+    {
+      "site_line": 62,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "81": "hpke-plain",
+        "101": "hpke-release"
+      },
+      "exec_lines": [69],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [66, 67, 74, 75, 84, 94, 104],
+      "failure_marks": ["status=1", "return 1"],
+      "refs_ok": []
+    }
+  ]
+}

@@ -1,0 +1,5374 @@
+{
+  "census_version": 1,
+  "driver": "http",
+  "script": "bench/std_http_exercise.sh",
+  "script_sha256": "220ecf06d32caf3d669dd7ca01161932f9373b93fcee6fb89b47cfcfc17aeb1c",
+  "sites": [
+    {
+      "lines": [
+        128,
+        129
+      ],
+      "command": "build",
+      "kind": "canonical-own",
+      "contains": [
+        "if ! \"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_http_exercise.iyi\""
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        203
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build -o \"$WORK/$name\" \"$WORK/$name.iyi\" > \"$WORK/$name.build\" 2>&1; then"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        286
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if \"$IYI\" build -o \"$WORK/server\" \"$REPO/bench/std_http_server.iyi\" >\"$WORK/server.build.log\" 2>&1; then"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        415
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build -o \"$WORK/reset_client\" \"$WORK/reset_client.iyi\" > \"$WORK/reset_client.build\" 2>&1; then"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        490
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build -o \"$WORK/py_client\" \"$WORK/py_client.iyi\" > \"$WORK/py_client.build\" 2>&1; then"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        778
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build -o \"$WORK/tls_client\" \"$WORK/tls_client.iyi\" > \"$WORK/tls_client.build\" 2>&1; then"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        823
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "if ! IYI_PATH=\"$WORK/tlsbreak${PSEP}$IYI_PATH\" \"$IYI\" build -o \"$WORK/tls_broken\" \"$WORK/tls_client.iyi\""
+      ],
+      "variants": [
+        {
+          "id": "http.negative.729",
+          "kind": "negative",
+          "first_root": "{WORK}/tlsbreak",
+          "vars": {},
+          "sources": [
+            "{WORK}/tls_client.iyi"
+          ],
+          "output": "{WORK}/tls_broken",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              823,
+              824,
+              825,
+              826,
+              830,
+              832,
+              833,
+              834,
+              835,
+              836,
+              837,
+              838
+            ],
+            "contains": [
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: not caught at \\\"$line\\\" (it answered \\\"$got\\\")\"",
+              "status=1"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "lines": [
+        853
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "elif ! IYI_PATH=\"$WORK/clear${PSEP}$IYI_PATH\" \"$IYI\" build -o \"$WORK/tls_clear\" \"$WORK/tls_client.iyi\""
+      ],
+      "variants": [
+        {
+          "id": "http.negative.760",
+          "kind": "negative",
+          "first_root": "{WORK}/clear",
+          "vars": {},
+          "sources": [
+            "{WORK}/tls_client.iyi"
+          ],
+          "output": "{WORK}/tls_clear",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              853,
+              854,
+              855,
+              859,
+              861,
+              862,
+              863,
+              865
+            ],
+            "contains": [
+              "echo \"  the client over the clear-text copy did not build\"",
+              "echo \"  https:// sent in the clear answered the same, so the section does not test TLS\"",
+              "status=1"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "lines": [
+        984
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "elif ! \"$IYI\" build --release -o \"$WORK/latency\" \"$REPO/bench/std_http_latency.iyi\""
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        1042
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "if ! IYI_PATH=\"$WORK/latencybreak${PSEP}$IYI_PATH\" \"$IYI\" build --release -o \"$WORK/latency-broken\" \"$REPO/bench/std_http_latency.iyi\""
+      ],
+      "variants": [
+        {
+          "id": "http.negative.954",
+          "kind": "negative",
+          "first_root": "{WORK}/latencybreak",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_latency.iyi"
+          ],
+          "output": "{WORK}/latency-broken",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              1042,
+              1043,
+              1045,
+              1048,
+              1049,
+              1050,
+              1051,
+              1052,
+              1053,
+              1058,
+              1059,
+              1060
+            ],
+            "contains": [
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: unmeasured at \\\"$line\\\": this $(uname -s) loopback shows no stall to time, as Linux's delayed ACK does\"",
+              "echo \"  $label: not caught at \\\"$line\\\"\"",
+              "status=1"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "lines": [
+        1172
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "elif ! \"$IYI\" build -o \"$WORK/stop\" \"$REPO/bench/std_http_stop.iyi\""
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        1209
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "if ! IYI_PATH=\"$WORK/stopbreak${PSEP}$IYI_PATH\" \"$IYI\" build -o \"$WORK/stop-broken\" \"$REPO/bench/std_http_stop.iyi\""
+      ],
+      "variants": [
+        {
+          "id": "http.negative.1116",
+          "kind": "negative",
+          "first_root": "{WORK}/stopbreak",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_stop.iyi"
+          ],
+          "output": "{WORK}/stop-broken",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              1209,
+              1210,
+              1212,
+              1221,
+              1222,
+              1224,
+              1225
+            ],
+            "contains": [
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: not caught at \\\"$line\\\" (it answered \\\"$got\\\")\"",
+              "status=1"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "lines": [
+        1295
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build -o \"$WORK/parallel\" \"$REPO/bench/std_http_parallel.iyi\""
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        1323
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "if ! IYI_PATH=\"$WORK/parbreak${PSEP}$IYI_PATH\" \"$IYI\" build -o \"$WORK/parallel-broken\" \"$REPO/bench/std_http_parallel.iyi\""
+      ],
+      "variants": [
+        {
+          "id": "http.negative.1213",
+          "kind": "negative",
+          "first_root": "{WORK}/parbreak",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_parallel.iyi"
+          ],
+          "output": "{WORK}/parallel-broken",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              1323,
+              1324,
+              1326,
+              1331,
+              1332,
+              1334,
+              1335,
+              1336
+            ],
+            "contains": [
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: not caught at \\\"$check\\\"\"",
+              "status=1"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "lines": [
+        1484
+      ],
+      "command": "build",
+      "kind": "unchanged",
+      "contains": [
+        "if \"$IYI\" build --no-codegen -o \"$WORK/refused\" \"$WORK/$file\" >\"$WORK/refused.log\" 2>&1; then"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        1498
+      ],
+      "command": "build",
+      "kind": "unchanged",
+      "contains": [
+        "elif IYI_PATH=\"$WORK/refbreak${PSEP}$IYI_PATH\" \"$IYI\" build --no-codegen -o \"$WORK/refused\" \"$WORK/$file\""
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        1510
+      ],
+      "command": "build",
+      "kind": "unchanged",
+      "contains": [
+        "if ! \"$IYI\" build --no-codegen -o \"$WORK/refused\" \"$WORK/$file\" >\"$WORK/taken.log\" 2>&1; then"
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        1519
+      ],
+      "command": "build",
+      "kind": "unchanged",
+      "contains": [
+        "elif IYI_PATH=\"$WORK/refbreak${PSEP}$IYI_PATH\" \"$IYI\" build --no-codegen -o \"$WORK/refused\" \"$WORK/$file\""
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        1708
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "elif ! \"$IYI\" build -o \"$WORK/resume\" \"$REPO/bench/std_http_resume.iyi\""
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        1761
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "if ! IYI_PATH=\"$WORK/resumebreak${PSEP}$IYI_PATH\" \"$IYI\" build -o \"$WORK/resume-broken\" \"$REPO/bench/std_http_resume.iyi\""
+      ],
+      "variants": [
+        {
+          "id": "http.negative.1649",
+          "kind": "negative",
+          "first_root": "{WORK}/resumebreak",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_resume.iyi"
+          ],
+          "output": "{WORK}/resume-broken",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              1761,
+              1762,
+              1764,
+              1769,
+              1770,
+              1776,
+              1777,
+              1779,
+              1780
+            ],
+            "contains": [
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: not caught at \\\"$line\\\" (it answered \\\"$got\\\")\"",
+              "status=1"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "lines": [
+        1821
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build -o \"$WORK/records\" \"$REPO/bench/std_http_https_records.iyi\""
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        1852
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "if ! IYI_PATH=\"$WORK/recordsbreak${PSEP}$IYI_PATH\" \"$IYI\" build -o \"$WORK/records-broken\" \"$REPO/bench/std_http_https_records.iyi\""
+      ],
+      "variants": [
+        {
+          "id": "http.negative.1740",
+          "kind": "negative",
+          "first_root": "{WORK}/recordsbreak",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_https_records.iyi"
+          ],
+          "output": "{WORK}/records-broken",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              1852,
+              1853,
+              1855,
+              1858,
+              1859,
+              1860,
+              1862,
+              1864
+            ],
+            "contains": [
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: not caught at \\\"$line\\\"\"",
+              "status=1"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "lines": [
+        1899
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build -o \"$H2BIN\" \"$REPO/bench/http2_exercise.iyi\""
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        1912
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "if ! \"$IYI\" build --release -o \"$WORK/h2-release\" \"$REPO/bench/http2_exercise.iyi\""
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        3407
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "elif ! \"$IYI\" build -o \"$WORK/proxy_origin\" \"$WORK/proxy_origin.iyi\""
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        3408
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "! \"$IYI\" build -o \"$WORK/proxy_client\" \"$WORK/proxy_client.iyi\""
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        3503
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "! \"$IYI\" build -o \"$WORK/proxy_table\" \"$WORK/proxy_table.iyi\""
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        3534
+      ],
+      "command": "build",
+      "kind": "canonical-other",
+      "contains": [
+        "\"$IYI\" build --release -o \"$WORK/server-release\" \"$REPO/bench/std_http_server.iyi\""
+      ],
+      "variants": []
+    },
+    {
+      "lines": [
+        3623
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "if ! IYI_CACHE_DIR=\"$P/cache\" IYI_PATH=\"$P${PSEP}$REPO/src${PSEP}$REPO/samples/iyi\" timeout 300 \"$IYI\" build -o \"$WORK/mut-$n.bin\" \"$REPO/bench/std_http_exercise.iyi\""
+      ],
+      "variants": [
+        {
+          "id": "http.negative.3479.1",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-1",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-1.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.2",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-2",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-2.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.3",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-3",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-3.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.4",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-4",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-4.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.5",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-5",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-5.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.6",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-6",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-6.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.7",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-7",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-7.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.8",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-8",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-8.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.9",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-9",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-9.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.10",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-10",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-10.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.11",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-11",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-11.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.12",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-12",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-12.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.13",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-13",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-13.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.14",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-14",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-14.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.15",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-15",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-15.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.16",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-16",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-16.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.17",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-17",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-17.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.18",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-18",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-18.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.19",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-19",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-19.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.20",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-20",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-20.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.21",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-21",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-21.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.22",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-22",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-22.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.23",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-23",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-23.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.24",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-24",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-24.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.25",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-25",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-25.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.26",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-26",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-26.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.27",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-27",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-27.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.28",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-28",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-28.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.29",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-29",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-29.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.30",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-30",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-30.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.31",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-31",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-31.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.32",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-32",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-32.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.33",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-33",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-33.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.34",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-34",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-34.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.35",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-35",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-35.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.36",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-36",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-36.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.37",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-37",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-37.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.38",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-38",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-38.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.39",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-39",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-39.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.40",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-40",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-40.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.41",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-41",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-41.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.42",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-42",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-42.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.43",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-43",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-43.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.44",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-44",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-44.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.45",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-45",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-45.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.46",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-46",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-46.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.47",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-47",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-47.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.48",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-48",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-48.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.49",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-49",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-49.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.50",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-50",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-50.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.51",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-51",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-51.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.52",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-52",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-52.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.53",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-53",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-53.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.54",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-54",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-54.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.55",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-55",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-55.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.56",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-56",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-56.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.57",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-57",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-57.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.58",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-58",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-58.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.59",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-59",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-59.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.60",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-60",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-60.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.61",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-61",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-61.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.62",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-62",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-62.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.63",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-63",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-63.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.64",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-64",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-64.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.65",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-65",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-65.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.66",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-66",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-66.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.67",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-67",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-67.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.68",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-68",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-68.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.69",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-69",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-69.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.70",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-70",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-70.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.71",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-71",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-71.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.72",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-72",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-72.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.73",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-73",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-73.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.74",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-74",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-74.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.75",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-75",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-75.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.76",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-76",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-76.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.77",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-77",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-77.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.78",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-78",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-78.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.79",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-79",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-79.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.80",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-80",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-80.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.81",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-81",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-81.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.82",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-82",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-82.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.83",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-83",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-83.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.84",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-84",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-84.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.85",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-85",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-85.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.86",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-86",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-86.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.87",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-87",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-87.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.88",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-88",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-88.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.89",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-89",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-89.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.90",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-90",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-90.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.91",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-91",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-91.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.92",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-92",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-92.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.93",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-93",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-93.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.94",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-94",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-94.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.95",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-95",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-95.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.96",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-96",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-96.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3479.97",
+          "kind": "negative",
+          "first_root": "{WORK}/patched-97",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/std_http_exercise.iyi"
+          ],
+          "output": "{WORK}/mut-97.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3623,
+              3624,
+              3625,
+              3626,
+              3627,
+              3628,
+              3630,
+              3649
+            ],
+            "contains": [
+              "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
+              "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
+              "touch \"$WORK/mutres/failed\""
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "lines": [
+        3846
+      ],
+      "command": "build",
+      "kind": "negative",
+      "contains": [
+        "timeout 300 \"$IYI\" build -o \"$WORK/$name.bin\" \"$program\" >\"$WORK/$name.log\" 2>&1"
+      ],
+      "variants": [
+        {
+          "id": "http.negative.3702.h2_stream_window",
+          "kind": "negative",
+          "first_root": "{WORK}/h2_stream_window",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/h2_stream_window.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3917,
+              3918,
+              3919,
+              3920,
+              3922,
+              3924,
+              3925,
+              3926,
+              3927,
+              3928,
+              3929,
+              3931,
+              3933
+            ],
+            "contains": [
+              "echo \"  $label: skipped, no HTTP/2 exercise or no python3\"",
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: the HTTP/2 exercise PASSED on a broken module\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.h2_conn_window",
+          "kind": "negative",
+          "first_root": "{WORK}/h2_conn_window",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/h2_conn_window.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3917,
+              3918,
+              3919,
+              3920,
+              3922,
+              3924,
+              3925,
+              3926,
+              3927,
+              3928,
+              3929,
+              3931,
+              3933
+            ],
+            "contains": [
+              "echo \"  $label: skipped, no HTTP/2 exercise or no python3\"",
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: the HTTP/2 exercise PASSED on a broken module\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.h2_peer_window",
+          "kind": "negative",
+          "first_root": "{WORK}/h2_peer_window",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/h2_peer_window.bin",
+          "darwin": "required",
+          "requires": [
+            "python3",
+            "node"
+          ],
+          "verdict": {
+            "lines": [
+              3942,
+              3943,
+              3944,
+              3945,
+              3947,
+              3952,
+              3953,
+              3956,
+              3957,
+              3959,
+              3960
+            ],
+            "contains": [
+              "echo \"  $label: skipped, no HTTP/2 server, python3 or node\"",
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: Node's client did not fail on a broken server (exit $code)\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.h2_preface",
+          "kind": "negative",
+          "first_root": "{WORK}/h2_preface",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/h2_preface.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3917,
+              3918,
+              3919,
+              3920,
+              3922,
+              3924,
+              3925,
+              3926,
+              3927,
+              3928,
+              3929,
+              3931,
+              3933
+            ],
+            "contains": [
+              "echo \"  $label: skipped, no HTTP/2 exercise or no python3\"",
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: the HTTP/2 exercise PASSED on a broken module\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.h2_cookies",
+          "kind": "negative",
+          "first_root": "{WORK}/h2_cookies",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/h2_cookies.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3917,
+              3918,
+              3919,
+              3920,
+              3922,
+              3924,
+              3925,
+              3926,
+              3927,
+              3928,
+              3929,
+              3931,
+              3933
+            ],
+            "contains": [
+              "echo \"  $label: skipped, no HTTP/2 exercise or no python3\"",
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: the HTTP/2 exercise PASSED on a broken module\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.h2_upgrade",
+          "kind": "negative",
+          "first_root": "{WORK}/h2_upgrade",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/h2_upgrade.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3917,
+              3918,
+              3919,
+              3920,
+              3922,
+              3924,
+              3925,
+              3926,
+              3927,
+              3928,
+              3929,
+              3931,
+              3933
+            ],
+            "contains": [
+              "echo \"  $label: skipped, no HTTP/2 exercise or no python3\"",
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: the HTTP/2 exercise PASSED on a broken module\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.h2_reset_closes",
+          "kind": "negative",
+          "first_root": "{WORK}/h2_reset_closes",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/h2_reset_closes.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3917,
+              3918,
+              3919,
+              3920,
+              3922,
+              3924,
+              3925,
+              3926,
+              3927,
+              3928,
+              3929,
+              3931,
+              3933
+            ],
+            "contains": [
+              "echo \"  $label: skipped, no HTTP/2 exercise or no python3\"",
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: the HTTP/2 exercise PASSED on a broken module\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.h2_gzip",
+          "kind": "negative",
+          "first_root": "{WORK}/h2_gzip",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/h2_gzip.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3917,
+              3918,
+              3919,
+              3920,
+              3922,
+              3924,
+              3925,
+              3926,
+              3927,
+              3928,
+              3929,
+              3931,
+              3933
+            ],
+            "contains": [
+              "echo \"  $label: skipped, no HTTP/2 exercise or no python3\"",
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: the HTTP/2 exercise PASSED on a broken module\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.h2_fields",
+          "kind": "negative",
+          "first_root": "{WORK}/h2_fields",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/h2_fields.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3967,
+              3968,
+              3969,
+              3970,
+              3972,
+              3981,
+              3984,
+              3985,
+              3991,
+              3992,
+              3993,
+              3994,
+              3996,
+              3997
+            ],
+            "contains": [
+              "echo \"  $label: skipped, no HTTP/2 server, python3 or frames to send it\"",
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: the frames for \\\"$case_name\\\" did not fail on a broken server\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.h2_flood",
+          "kind": "negative",
+          "first_root": "{WORK}/h2_flood",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/h2_flood.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3967,
+              3968,
+              3969,
+              3970,
+              3972,
+              3981,
+              3984,
+              3985,
+              3991,
+              3992,
+              3993,
+              3994,
+              3996,
+              3997
+            ],
+            "contains": [
+              "echo \"  $label: skipped, no HTTP/2 server, python3 or frames to send it\"",
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: the frames for \\\"$case_name\\\" did not fail on a broken server\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.h2_first",
+          "kind": "negative",
+          "first_root": "{WORK}/h2_first",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/h2_first.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3967,
+              3968,
+              3969,
+              3970,
+              3972,
+              3981,
+              3984,
+              3985,
+              3991,
+              3992,
+              3993,
+              3994,
+              3996,
+              3997
+            ],
+            "contains": [
+              "echo \"  $label: skipped, no HTTP/2 server, python3 or frames to send it\"",
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: the frames for \\\"$case_name\\\" did not fail on a broken server\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.h2_frame_size",
+          "kind": "negative",
+          "first_root": "{WORK}/h2_frame_size",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/h2_frame_size.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3967,
+              3968,
+              3969,
+              3970,
+              3972,
+              3981,
+              3984,
+              3985,
+              3991,
+              3992,
+              3993,
+              3994,
+              3996,
+              3997
+            ],
+            "contains": [
+              "echo \"  $label: skipped, no HTTP/2 server, python3 or frames to send it\"",
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: the frames for \\\"$case_name\\\" did not fail on a broken server\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.linger_h2",
+          "kind": "negative",
+          "first_root": "{WORK}/linger_h2",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/linger_h2.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3967,
+              3968,
+              3969,
+              3970,
+              3972,
+              3981,
+              3984,
+              3985,
+              3991,
+              3992,
+              3993,
+              3994,
+              3996,
+              3997
+            ],
+            "contains": [
+              "echo \"  $label: skipped, no HTTP/2 server, python3 or frames to send it\"",
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: the frames for \\\"$case_name\\\" did not fail on a broken server\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.linger_head",
+          "kind": "negative",
+          "first_root": "{WORK}/linger_head",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/linger_head.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3967,
+              3968,
+              3969,
+              3970,
+              3972,
+              3981,
+              3984,
+              3985,
+              3991,
+              3992,
+              3993,
+              3994,
+              3996,
+              3997
+            ],
+            "contains": [
+              "echo \"  $label: skipped, no HTTP/2 server, python3 or frames to send it\"",
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: the frames for \\\"$case_name\\\" did not fail on a broken server\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.linger_431",
+          "kind": "negative",
+          "first_root": "{WORK}/linger_431",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/linger_431.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3967,
+              3968,
+              3969,
+              3970,
+              3972,
+              3981,
+              3984,
+              3985,
+              3991,
+              3992,
+              3993,
+              3994,
+              3996,
+              3997
+            ],
+            "contains": [
+              "echo \"  $label: skipped, no HTTP/2 server, python3 or frames to send it\"",
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: the frames for \\\"$case_name\\\" did not fail on a broken server\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.linger_body",
+          "kind": "negative",
+          "first_root": "{WORK}/linger_body",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/linger_body.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3967,
+              3968,
+              3969,
+              3970,
+              3972,
+              3981,
+              3984,
+              3985,
+              3991,
+              3992,
+              3993,
+              3994,
+              3996,
+              3997
+            ],
+            "contains": [
+              "echo \"  $label: skipped, no HTTP/2 server, python3 or frames to send it\"",
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: the frames for \\\"$case_name\\\" did not fail on a broken server\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.close_nolinger",
+          "kind": "negative",
+          "first_root": "{WORK}/close_nolinger",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/close_nolinger.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              4077,
+              4078,
+              4080,
+              4081,
+              4087,
+              4088,
+              4089,
+              4101,
+              4102,
+              4104,
+              4105,
+              4106,
+              4130
+            ],
+            "contains": [
+              "echo \"  $label: skipped with the close cases\"",
+              "\"  $label: the broken copy did not build\"",
+              "touch \"$WORK/closeres/failed\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.close_nohalf",
+          "kind": "negative",
+          "first_root": "{WORK}/close_nohalf",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/close_nohalf.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              4077,
+              4078,
+              4080,
+              4081,
+              4087,
+              4088,
+              4089,
+              4101,
+              4102,
+              4104,
+              4105,
+              4106,
+              4130
+            ],
+            "contains": [
+              "echo \"  $label: skipped with the close cases\"",
+              "\"  $label: the broken copy did not build\"",
+              "touch \"$WORK/closeres/failed\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.close_nodrain",
+          "kind": "negative",
+          "first_root": "{WORK}/close_nodrain",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/close_nodrain.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              4077,
+              4078,
+              4080,
+              4081,
+              4087,
+              4088,
+              4089,
+              4101,
+              4102,
+              4104,
+              4105,
+              4106,
+              4130
+            ],
+            "contains": [
+              "echo \"  $label: skipped with the close cases\"",
+              "\"  $label: the broken copy did not build\"",
+              "touch \"$WORK/closeres/failed\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.close_notify",
+          "kind": "negative",
+          "first_root": "{WORK}/close_notify",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/close_notify.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              4077,
+              4078,
+              4080,
+              4081,
+              4087,
+              4088,
+              4089,
+              4101,
+              4102,
+              4104,
+              4105,
+              4106,
+              4130
+            ],
+            "contains": [
+              "echo \"  $label: skipped with the close cases\"",
+              "\"  $label: the broken copy did not build\"",
+              "touch \"$WORK/closeres/failed\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.close_client_tls",
+          "kind": "negative",
+          "first_root": "{WORK}/close_client_tls",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/close_client_tls.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              4077,
+              4078,
+              4080,
+              4081,
+              4087,
+              4088,
+              4089,
+              4101,
+              4102,
+              4104,
+              4105,
+              4106,
+              4130
+            ],
+            "contains": [
+              "echo \"  $label: skipped with the close cases\"",
+              "\"  $label: the broken copy did not build\"",
+              "touch \"$WORK/closeres/failed\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.close_drain_kept",
+          "kind": "negative",
+          "first_root": "{WORK}/close_drain_kept",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/close_drain_kept.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              4077,
+              4078,
+              4080,
+              4081,
+              4087,
+              4088,
+              4089,
+              4101,
+              4102,
+              4104,
+              4105,
+              4106,
+              4130
+            ],
+            "contains": [
+              "echo \"  $label: skipped with the close cases\"",
+              "\"  $label: the broken copy did not build\"",
+              "touch \"$WORK/closeres/failed\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.close_late_continue",
+          "kind": "negative",
+          "first_root": "{WORK}/close_late_continue",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/close_late_continue.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              4077,
+              4078,
+              4080,
+              4081,
+              4087,
+              4088,
+              4089,
+              4101,
+              4102,
+              4104,
+              4105,
+              4106,
+              4130
+            ],
+            "contains": [
+              "echo \"  $label: skipped with the close cases\"",
+              "\"  $label: the broken copy did not build\"",
+              "touch \"$WORK/closeres/failed\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.h2_stale",
+          "kind": "negative",
+          "first_root": "{WORK}/h2_stale",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/h2_stale.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              3967,
+              3968,
+              3969,
+              3970,
+              3972,
+              3981,
+              3984,
+              3985,
+              3991,
+              3992,
+              3993,
+              3994,
+              3996,
+              3997
+            ],
+            "contains": [
+              "echo \"  $label: skipped, no HTTP/2 server, python3 or frames to send it\"",
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: the frames for \\\"$case_name\\\" did not fail on a broken server\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.https_clear",
+          "kind": "negative",
+          "first_root": "{WORK}/https_clear",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/https_clear.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              4167,
+              4168,
+              4169,
+              4170,
+              4172,
+              4173,
+              4174,
+              4175,
+              4177
+            ],
+            "contains": [
+              "echo \"  $label: skipped, no HTTPS server to break\"",
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: the HTTPS checks passed on a broken server\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.https_plain",
+          "kind": "negative",
+          "first_root": "{WORK}/https_plain",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/https_plain.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              4167,
+              4168,
+              4169,
+              4170,
+              4172,
+              4173,
+              4174,
+              4175,
+              4177
+            ],
+            "contains": [
+              "echo \"  $label: skipped, no HTTPS server to break\"",
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: the HTTPS checks passed on a broken server\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.https_notify",
+          "kind": "negative",
+          "first_root": "{WORK}/https_notify",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/https_notify.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              4167,
+              4168,
+              4169,
+              4170,
+              4172,
+              4173,
+              4174,
+              4175,
+              4177
+            ],
+            "contains": [
+              "echo \"  $label: skipped, no HTTPS server to break\"",
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: the HTTPS checks passed on a broken server\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.guard_body",
+          "kind": "negative",
+          "first_root": "{WORK}/guard_body",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/guard_body.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              4194,
+              4195,
+              4196,
+              4197,
+              4199,
+              4200,
+              4201,
+              4202,
+              4203,
+              4204,
+              4206,
+              4207
+            ],
+            "contains": [
+              "echo \"  $label: skipped with the slow clients' section\"",
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: the slow clients were cut off by a broken server\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.guard_h2",
+          "kind": "negative",
+          "first_root": "{WORK}/guard_h2",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/guard_h2.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              4194,
+              4195,
+              4196,
+              4197,
+              4199,
+              4200,
+              4201,
+              4202,
+              4203,
+              4204,
+              4206,
+              4207
+            ],
+            "contains": [
+              "echo \"  $label: skipped with the slow clients' section\"",
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: the slow clients were cut off by a broken server\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.guard_cap",
+          "kind": "negative",
+          "first_root": "{WORK}/guard_cap",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/guard_cap.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              4194,
+              4195,
+              4196,
+              4197,
+              4199,
+              4200,
+              4201,
+              4202,
+              4203,
+              4204,
+              4206,
+              4207
+            ],
+            "contains": [
+              "echo \"  $label: skipped with the slow clients' section\"",
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: the slow clients were cut off by a broken server\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.guard_leak",
+          "kind": "negative",
+          "first_root": "{WORK}/guard_leak",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/guard_leak.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              4194,
+              4195,
+              4196,
+              4197,
+              4199,
+              4200,
+              4201,
+              4202,
+              4203,
+              4204,
+              4206,
+              4207
+            ],
+            "contains": [
+              "echo \"  $label: skipped with the slow clients' section\"",
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: the slow clients were cut off by a broken server\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.guard_head",
+          "kind": "negative",
+          "first_root": "{WORK}/guard_head",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/guard_head.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              4194,
+              4195,
+              4196,
+              4197,
+              4199,
+              4200,
+              4201,
+              4202,
+              4203,
+              4204,
+              4206,
+              4207
+            ],
+            "contains": [
+              "echo \"  $label: skipped with the slow clients' section\"",
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: the slow clients were cut off by a broken server\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.mtls_h1",
+          "kind": "negative",
+          "first_root": "{WORK}/mtls_h1",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/mtls_h1.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              4237,
+              4238,
+              4239,
+              4240,
+              4242,
+              4243,
+              4244,
+              4245,
+              4247
+            ],
+            "contains": [
+              "echo \"  $label: skipped, no HTTPS server to break\"",
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: the client-certificate checks passed on a broken copy\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.mtls_h2",
+          "kind": "negative",
+          "first_root": "{WORK}/mtls_h2",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/mtls_h2.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              4237,
+              4238,
+              4239,
+              4240,
+              4242,
+              4243,
+              4244,
+              4245,
+              4247
+            ],
+            "contains": [
+              "echo \"  $label: skipped, no HTTPS server to break\"",
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: the client-certificate checks passed on a broken copy\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.mtls_upgrade",
+          "kind": "negative",
+          "first_root": "{WORK}/mtls_upgrade",
+          "vars": {},
+          "sources": [
+            "{REPO}/bench/http2_exercise.iyi"
+          ],
+          "output": "{WORK}/mtls_upgrade.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              4237,
+              4238,
+              4239,
+              4240,
+              4242,
+              4243,
+              4244,
+              4245,
+              4247
+            ],
+            "contains": [
+              "echo \"  $label: skipped, no HTTPS server to break\"",
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: the client-certificate checks passed on a broken copy\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.proxy_inside",
+          "kind": "negative",
+          "first_root": "{WORK}/proxy_inside",
+          "vars": {},
+          "sources": [
+            "{WORK}/proxy_client.iyi"
+          ],
+          "output": "{WORK}/proxy_inside.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              4264,
+              4265,
+              4266,
+              4268,
+              4269,
+              4271,
+              4274,
+              4275,
+              4276,
+              4278
+            ],
+            "contains": [
+              "echo \"  $label: skipped, no proxy round to break\"",
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: the proxy round passed on a broken client\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.proxy_connect_bare",
+          "kind": "negative",
+          "first_root": "{WORK}/proxy_connect_bare",
+          "vars": {},
+          "sources": [
+            "{WORK}/proxy_client.iyi"
+          ],
+          "output": "{WORK}/proxy_connect_bare.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              4264,
+              4265,
+              4266,
+              4268,
+              4269,
+              4271,
+              4274,
+              4275,
+              4276,
+              4278
+            ],
+            "contains": [
+              "echo \"  $label: skipped, no proxy round to break\"",
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: the proxy round passed on a broken client\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.proxy_no_tunnel",
+          "kind": "negative",
+          "first_root": "{WORK}/proxy_no_tunnel",
+          "vars": {},
+          "sources": [
+            "{WORK}/proxy_client.iyi"
+          ],
+          "output": "{WORK}/proxy_no_tunnel.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              4264,
+              4265,
+              4266,
+              4268,
+              4269,
+              4271,
+              4274,
+              4275,
+              4276,
+              4278
+            ],
+            "contains": [
+              "echo \"  $label: skipped, no proxy round to break\"",
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: the proxy round passed on a broken client\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.proxy_tunnel_key",
+          "kind": "negative",
+          "first_root": "{WORK}/proxy_tunnel_key",
+          "vars": {},
+          "sources": [
+            "{WORK}/proxy_client.iyi"
+          ],
+          "output": "{WORK}/proxy_tunnel_key.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              4264,
+              4265,
+              4266,
+              4268,
+              4269,
+              4271,
+              4274,
+              4275,
+              4276,
+              4278
+            ],
+            "contains": [
+              "echo \"  $label: skipped, no proxy round to break\"",
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: the proxy round passed on a broken client\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.proxy_upgrade_direct",
+          "kind": "negative",
+          "first_root": "{WORK}/proxy_upgrade_direct",
+          "vars": {},
+          "sources": [
+            "{WORK}/proxy_client.iyi"
+          ],
+          "output": "{WORK}/proxy_upgrade_direct.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              4264,
+              4265,
+              4266,
+              4268,
+              4269,
+              4271,
+              4274,
+              4275,
+              4276,
+              4278
+            ],
+            "contains": [
+              "echo \"  $label: skipped, no proxy round to break\"",
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: the proxy round passed on a broken client\"",
+              "status=1"
+            ]
+          }
+        },
+        {
+          "id": "http.negative.3702.proxy_upgrade_absolute",
+          "kind": "negative",
+          "first_root": "{WORK}/proxy_upgrade_absolute",
+          "vars": {},
+          "sources": [
+            "{WORK}/proxy_client.iyi"
+          ],
+          "output": "{WORK}/proxy_upgrade_absolute.bin",
+          "darwin": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              4264,
+              4265,
+              4266,
+              4268,
+              4269,
+              4271,
+              4274,
+              4275,
+              4276,
+              4278
+            ],
+            "contains": [
+              "echo \"  $label: skipped, no proxy round to break\"",
+              "echo \"  $label: the broken copy did not build\"",
+              "echo \"  $label: the proxy round passed on a broken client\"",
+              "status=1"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "non_invocations": [],
+  "skips": [
+    {
+      "line": 296,
+      "class": "tool",
+      "what": "python3",
+      "regex": "^  skipped: no working python3, so its http\\.client was not run against the server$",
+      "text": "    echo \"  skipped: no working python3, so its http.client was not run against the server\""
+    },
+    {
+      "line": 396,
+      "class": "tool",
+      "what": "python3",
+      "regex": "^  skipped: no working python3 to reset the connection with$",
+      "text": "  echo \"  skipped: no working python3 to reset the connection with\""
+    },
+    {
+      "line": 459,
+      "class": "tool",
+      "what": "python3",
+      "regex": "^  skipped: no working python3 to serve with$",
+      "text": "  echo \"  skipped: no working python3 to serve with\""
+    },
+    {
+      "line": 624,
+      "class": "tool",
+      "what": "python3 ssl and cryptography",
+      "regex": "^  skipped: no python3 with ssl and cryptography to serve TLS with$",
+      "text": "  echo \"  skipped: no python3 with ssl and cryptography to serve TLS with\""
+    },
+    {
+      "line": 983,
+      "class": "tool",
+      "what": "python3 ssl and cryptography",
+      "regex": "^  skipped: the https:// section above made no certificates \\(no python3 with ssl and cryptography\\)$",
+      "text": "  echo \"  skipped: the https:// section above made no certificates (no python3 with ssl and cryptography)\""
+    },
+    {
+      "line": 1006,
+      "class": "tool",
+      "what": "OpenSSL 3 and python3",
+      "regex": "^  no OpenSSL \\(LibreSSL is not it\\) with python3 here, or Windows, whose s_server this gate does not drive: s_server goes unasked$",
+      "text": "  [ \"$latency_openssl\" = yes ] || echo \"  no OpenSSL (LibreSSL is not it) with python3 here, or Windows, whose s_server this gate does not drive: s_server goes unasked\""
+    },
+    {
+      "line": 1007,
+      "class": "tool",
+      "what": "curl",
+      "regex": "^  no curl here, or Windows, whose curl does not take this gate's root by --cacert: curl goes unasked$",
+      "text": "  [ \"$latency_curl\" = yes ] || echo \"  no curl here, or Windows, whose curl does not take this gate's root by --cacert: curl goes unasked\""
+    },
+    {
+      "line": 1008,
+      "class": "tool",
+      "what": "strace",
+      "regex": "^  no strace that runs here \\(it is Linux's, and a container may forbid ptrace\\): the writes go uncounted, and so does the server's flight$",
+      "text": "  [ \"$latency_strace\" = yes ] || echo \"  no strace that runs here (it is Linux's, and a container may forbid ptrace): the writes go uncounted, and so does the server's flight\""
+    },
+    {
+      "line": 1026,
+      "class": "tool",
+      "what": "latency comparison prerequisite",
+      "regex": "^  .*: skipped, as the check that names it is$",
+      "text": "      echo \"  $label: skipped, as the check that names it is\""
+    },
+    {
+      "line": 1050,
+      "class": "tool",
+      "what": "loopback delayed-ACK timing",
+      "regex": "^  .*: unmeasured at \\\".*\\\": this .* loopback shows no stall to time, as Linux's delayed ACK does$",
+      "text": "      echo \"  $label: unmeasured at \\\"$line\\\": this $(uname -s) loopback shows no stall to time, as Linux's delayed ACK does\""
+    },
+    {
+      "line": 1171,
+      "class": "tool",
+      "what": "python3 ssl and cryptography",
+      "regex": "^  skipped: the https:// section above made no certificates \\(no python3 with ssl and cryptography\\)$",
+      "text": "  echo \"  skipped: the https:// section above made no certificates (no python3 with ssl and cryptography)\""
+    },
+    {
+      "line": 1707,
+      "class": "tool",
+      "what": "python3 ssl and cryptography",
+      "regex": "^  skipped: the https:// section above made no certificates \\(no python3 with ssl and cryptography\\)$",
+      "text": "  echo \"  skipped: the https:// section above made no certificates (no python3 with ssl and cryptography)\""
+    },
+    {
+      "line": 1725,
+      "class": "tool",
+      "what": "OpenSSL s_server",
+      "regex": "^  .*: s_server goes unasked, and so does the check that no early data is sent$",
+      "text": "    [ \"$resume_openssl\" = yes ] || echo \"  $unasked: s_server goes unasked, and so does the check that no early data is sent\""
+    },
+    {
+      "line": 1743,
+      "class": "tool",
+      "what": "OpenSSL s_server",
+      "regex": "^  .*: skipped, no OpenSSL here to read the ClientHello$",
+      "text": "          echo \"  $label: skipped, no OpenSSL here to read the ClientHello\""
+    },
+    {
+      "line": 1950,
+      "class": "tool",
+      "what": "HTTP/2 server build or python3",
+      "regex": "^  skipped: no server built, or no python3 to write frames with$",
+      "text": "  echo \"  skipped: no server built, or no python3 to write frames with\""
+    },
+    {
+      "line": 2500,
+      "class": "tool",
+      "what": "HTTP/2 server build or python3",
+      "regex": "^  skipped: no server built, or no python3 to be the client$",
+      "text": "  echo \"  skipped: no server built, or no python3 to be the client\""
+    },
+    {
+      "line": 2519,
+      "class": "tool",
+      "what": "python3 cryptography certificates",
+      "regex": "^  over TLS: skipped, no certificates \\(no python3 with cryptography to make them\\)$",
+      "text": "    echo \"  over TLS: skipped, no certificates (no python3 with cryptography to make them)\""
+    },
+    {
+      "line": 2617,
+      "class": "tool",
+      "what": "curl with HTTP/2",
+      "regex": "^  skipped: no curl that speaks HTTP/2$",
+      "text": "  echo \"  skipped: no curl that speaks HTTP/2\""
+    },
+    {
+      "line": 2656,
+      "class": "tool",
+      "what": "node",
+      "regex": "^  skipped: no node to be the client$",
+      "text": "  echo \"  skipped: no node to be the client\""
+    },
+    {
+      "line": 2707,
+      "class": "tool",
+      "what": "node",
+      "regex": "^  skipped: no node to be the server$",
+      "text": "  echo \"  skipped: no node to be the server\""
+    },
+    {
+      "line": 2783,
+      "class": "tool",
+      "what": "TLS certificate",
+      "regex": "^  TLS: skipped: no certificate from the https:// section above$",
+      "text": "    echo \"  TLS: skipped: no certificate from the https:// section above\""
+    },
+    {
+      "line": 2922,
+      "class": "tool",
+      "what": "HTTP/2 exercise or Ed25519 certificate",
+      "regex": "^  skipped: no HTTP/2 exercise or no Ed25519 certificate from the https:// section above$",
+      "text": "  echo \"  skipped: no HTTP/2 exercise or no Ed25519 certificate from the https:// section above\""
+    },
+    {
+      "line": 3127,
+      "class": "tool",
+      "what": "HTTPS server or python3",
+      "regex": "^  skipped: no HTTPS server from the section above, or no python3 to be the slow clients$",
+      "text": "  echo \"  skipped: no HTTPS server from the section above, or no python3 to be the slow clients\""
+    },
+    {
+      "line": 3406,
+      "class": "tool",
+      "what": "python3 or TLS certificate",
+      "regex": "^  skipped: no python3, or no certificate from the https:// section above$",
+      "text": "  echo \"  skipped: no python3, or no certificate from the https:// section above\""
+    },
+    {
+      "line": 3446,
+      "class": "tool",
+      "what": "curl",
+      "regex": "^  curl is not installed; its cross-check skipped$",
+      "text": "    echo \"  curl is not installed; its cross-check skipped\""
+    },
+    {
+      "line": 3501,
+      "class": "tool",
+      "what": "Go toolchain",
+      "regex": "^  NO_PROXY against Go: skipped, no Go toolchain \\(GO=.*\\)$",
+      "text": "  echo \"  NO_PROXY against Go: skipped, no Go toolchain (GO=$GO)\""
+    },
+    {
+      "line": 3555,
+      "class": "tool",
+      "what": "wrk",
+      "regex": "^  wrk is not installed; skipped$",
+      "text": "  echo \"  wrk is not installed; skipped\""
+    },
+    {
+      "line": 3918,
+      "class": "tool",
+      "what": "HTTP/2 exercise or python3",
+      "regex": "^  .*: skipped, no HTTP/2 exercise or no python3$",
+      "text": "    echo \"  $label: skipped, no HTTP/2 exercise or no python3\""
+    },
+    {
+      "line": 3943,
+      "class": "tool",
+      "what": "HTTP/2 server, python3 or node",
+      "regex": "^  .*: skipped, no HTTP/2 server, python3 or node$",
+      "text": "    echo \"  $label: skipped, no HTTP/2 server, python3 or node\""
+    },
+    {
+      "line": 3968,
+      "class": "tool",
+      "what": "HTTP/2 server, python3 or frame fixture",
+      "regex": "^  .*: skipped, no HTTP/2 server, python3 or frames to send it$",
+      "text": "    echo \"  $label: skipped, no HTTP/2 server, python3 or frames to send it\""
+    },
+    {
+      "line": 4102,
+      "class": "tool",
+      "what": "close-case prerequisites",
+      "regex": "^  .*: skipped with the close cases$",
+      "text": "    echo \"  $label: skipped with the close cases\" >\"$WORK/closeres/$close_n\""
+    },
+    {
+      "line": 4168,
+      "class": "tool",
+      "what": "HTTPS server",
+      "regex": "^  .*: skipped, no HTTPS server to break$",
+      "text": "    echo \"  $label: skipped, no HTTPS server to break\""
+    },
+    {
+      "line": 4195,
+      "class": "tool",
+      "what": "slow-client section",
+      "regex": "^  .*: skipped with the slow clients' section$",
+      "text": "    echo \"  $label: skipped with the slow clients' section\""
+    },
+    {
+      "line": 4238,
+      "class": "tool",
+      "what": "HTTPS server",
+      "regex": "^  .*: skipped, no HTTPS server to break$",
+      "text": "    echo \"  $label: skipped, no HTTPS server to break\""
+    },
+    {
+      "line": 4265,
+      "class": "tool",
+      "what": "proxy round",
+      "regex": "^  .*: skipped, no proxy round to break$",
+      "text": "    echo \"  $label: skipped, no proxy round to break\""
+    }
+  ],
+  "not_skips": [],
+  "pass_sentinel": {
+    "line": 4356,
+    "regex": "^the std/http exercise holds$",
+    "text": "  echo \"the std/http exercise holds\""
+  },
+  "exec_evidence": [
+    {
+      "site_line": 128,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "147": "http-plain",
+        "165": "http-release"
+      },
+      "exec_lines": [
+        135
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        132,
+        133,
+        140,
+        141,
+        150,
+        158,
+        168
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1"
+      ],
+      "refs_ok": [
+        {
+          "line": 3834,
+          "kind": "cleanup"
+        }
+      ]
+    },
+    {
+      "site_line": 203,
+      "out_template": "{WORK}/{name}",
+      "name_from_calls": {
+        "225": "method_space",
+        "227": "header_break",
+        "229": "header_own",
+        "231": "header_te",
+        "233": "scheme_ftp",
+        "235": "length_text",
+        "237": "length_large",
+        "239": "chunk_cut",
+        "241": "status_text"
+      },
+      "exec_lines": [
+        209
+      ],
+      "exec_token": "\"$WORK/$name\"",
+      "verdict_lines": [
+        206,
+        213,
+        219
+      ],
+      "failure_marks": [
+        "status=1"
+      ],
+      "refs_ok": []
+    }
+  ]
+}
