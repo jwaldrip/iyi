@@ -12,11 +12,13 @@ privileged commands, local VMs, or the live BPF helper:
   4. Staged prefix missing required development headers fails closed.
   5. Staged prefix missing required static archives fails closed.
   6. Staged prefix with tampered archive SHA256 fails closed.
-  7. Corrupt, unapproved signer, or mismatched dependency receipts fail closed.
-  8. Unapproved header from staged prefix included in dependency graph is rejected.
-  9. Real .BTF.ext CO-RE relocation parser validates true records and rejects empty/invalid tables.
- 10. GNU_STACK parser correctly reads Flg column (not Align) and rejects executable stack.
- 11. Terminal report evaluation strictly enforces all Section 7 acceptance criteria and log files.
+  7. Pre-existing owned scratch directory is refused (requires exclusive context).
+  8. Corrupt, unapproved signer, or mismatched dependency receipts fail closed.
+  9. Unapproved header from staged prefix included in dependency graph is rejected.
+ 10. Real .BTF.ext CO-RE relocation parser validates true records and rejects zeroed/invalid tables.
+ 11. DT_NEEDED parser enforces exact set {'libc.so.6'} and rejects libc.so.6.extra or path entries.
+ 12. GNU_STACK parser correctly reads Flg column (not Align) and rejects executable stack.
+ 13. Terminal report evaluation strictly enforces all Section 7 acceptance criteria and log files.
 """
 
 from __future__ import annotations
@@ -120,6 +122,26 @@ class TestBpfFeasibilityScript(unittest.TestCase):
         self.assertNotEqual(res.returncode, 0)
         self.assertIn("ERROR: Unknown option", res.stderr)
 
+    def test_preexisting_owned_dir_refused(self) -> None:
+        """Pre-existing owned scratch directory is refused (exclusive creation required)."""
+        with tempfile.TemporaryDirectory() as td:
+            scratch = Path(td)
+            pre_existing = scratch / "existing_owned"
+            pre_existing.mkdir()
+            res = subprocess.run(
+                [
+                    "bash",
+                    str(SCRIPT_PATH),
+                    "--owned-dir",
+                    str(pre_existing),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("already exists or is a symlink", res.stderr)
+
     def test_missing_lock_fails(self) -> None:
         """Missing lock file fails closed immediately."""
         with tempfile.TemporaryDirectory() as td:
@@ -130,8 +152,6 @@ class TestBpfFeasibilityScript(unittest.TestCase):
                     str(SCRIPT_PATH),
                     "--lock",
                     str(scratch / "missing.lock.json"),
-                    "--owned-dir",
-                    str(scratch / "owned"),
                 ],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -152,7 +172,6 @@ class TestBpfFeasibilityScript(unittest.TestCase):
                 "libzstd.a": b"tampered_bytes_not_matching_expected" + b"0" * 64,
             }
             hashes = {a: hashlib.sha256(c).hexdigest() for a, c in contents.items()}
-            # Deliberately modify expected hash for libzstd.a to simulate tampering
             hashes["libzstd.a"] = "0" * 64
 
             lock_file = make_dummy_lock(scratch, hashes)
@@ -183,8 +202,6 @@ class TestBpfFeasibilityScript(unittest.TestCase):
                     str(prefix),
                     "--receipt",
                     str(receipt_file),
-                    "--owned-dir",
-                    str(scratch / "owned"),
                 ],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -215,9 +232,9 @@ class TestBpfFeasibilityScript(unittest.TestCase):
                 "staged_prefix": str(prefix.resolve()),
                 "packages": {
                     "libbpf-dev": {"sha256": "deb_hash_bpf"},
-                    "libelf-dev": {"sha256": "deb_hash_elf"},
-                    "libzstd-dev": {"sha256": "deb_hash_zstd"},
-                    "zlib1g-dev": {"sha256": "deb_hash_z"},
+                    "libelf-dev": {"deb_sha256": "deb_hash_elf"},
+                    "libzstd-dev": {"deb_sha256": "deb_hash_zstd"},
+                    "zlib1g-dev": {"deb_sha256": "deb_hash_z"},
                 }
             }
             receipt_file = scratch / "receipt.json"
@@ -233,8 +250,6 @@ class TestBpfFeasibilityScript(unittest.TestCase):
                     str(prefix),
                     "--receipt",
                     str(receipt_file),
-                    "--owned-dir",
-                    str(scratch / "owned"),
                 ],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -255,16 +270,13 @@ class TestBpfFeasibilityScript(unittest.TestCase):
                 for h in p_data["required_headers"]:
                     all_locked_headers.add(h)
 
-            # Create an unapproved header under prefix
             unapproved = prefix / "usr" / "include" / "malicious.h"
             unapproved.parent.mkdir(parents=True, exist_ok=True)
             unapproved.write_text("#define EVIL 1\n")
 
-            # Simulate dependency check
             dep_file = scratch / "test.d"
             dep_file.write_text(f"test.o: {unapproved}\n")
 
-            allowed_prefixes = [str(prefix.resolve())]
             with self.assertRaises(SystemExit) as cm:
                 with open(dep_file) as f:
                     content = f.read().replace("\\\n", " ")
@@ -277,73 +289,139 @@ class TestBpfFeasibilityScript(unittest.TestCase):
                             sys.exit(f"ERROR: unapproved header {rel}")
             self.assertIn("unapproved header", str(cm.exception))
 
+    def test_dt_needed_exact_set_parsing(self) -> None:
+        """DT_NEEDED parsing requires exact set {'libc.so.6'} and rejects additions."""
+        def parse_needed(lines: list[str]) -> tuple[bool, str]:
+            needed_libs = set()
+            for line in lines:
+                if "(NEEDED)" in line and "Shared library:" in line:
+                    if "[" in line and "]" in line:
+                        lib = line.split("[")[1].split("]")[0].strip()
+                        needed_libs.add(lib)
+                    else:
+                        return False, "malformed"
+            if needed_libs != {"libc.so.6"}:
+                return False, f"disallowed: {needed_libs}"
+            return True, "ok"
+
+        # Case 1: exactly libc.so.6
+        valid_lines = [
+            " 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]"
+        ]
+        ok, msg = parse_needed(valid_lines)
+        self.assertTrue(ok, msg)
+
+        # Case 2: libc.so.6.extra substring trick rejected
+        bad_sub = [
+            " 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6.extra]"
+        ]
+        ok, msg = parse_needed(bad_sub)
+        self.assertFalse(ok)
+        self.assertIn("libc.so.6.extra", msg)
+
+        # Case 3: extra library rejected
+        bad_extra = [
+            " 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]",
+            " 0x0000000000000001 (NEEDED)             Shared library: [libbpf.so.1]"
+        ]
+        ok, msg = parse_needed(bad_extra)
+        self.assertFalse(ok)
+        self.assertIn("libbpf.so.1", msg)
+
     def test_btf_ext_core_relocation_validation_logic(self) -> None:
-        """Unit test for .BTF.ext binary parsing and CO-RE relocation validation."""
-        def parse_btf_ext(btf_ext_bytes: bytes) -> tuple[bool, str]:
-            if len(btf_ext_bytes) < 32:
-                return False, "too short"
-            magic = struct.unpack("<H", btf_ext_bytes[0:2])[0]
-            if magic != 0xEB9F:
-                return False, f"bad magic 0x{magic:04x}"
-            version = btf_ext_bytes[2]
-            if version != 1:
-                return False, f"bad version {version}"
-            hdr_len = struct.unpack("<I", btf_ext_bytes[4:8])[0]
-            if hdr_len < 32:
-                return False, f"bad hdr_len {hdr_len}"
-            core_relo_off = struct.unpack("<I", btf_ext_bytes[24:28])[0]
-            core_relo_len = struct.unpack("<I", btf_ext_bytes[28:32])[0]
+        """Unit test for .BTF and .BTF.ext binary parsing and CO-RE relocation record validation."""
+        def validate_btf_and_ext(btf_raw: bytes, btf_ext: bytes, prog_sec_len: int) -> tuple[bool, str]:
+            if len(btf_raw) < 24:
+                return False, "btf too short"
+            btf_hdr_len = struct.unpack("<I", btf_raw[4:8])[0]
+            btf_str_off = struct.unpack("<I", btf_raw[16:20])[0]
+            btf_str_len = struct.unpack("<I", btf_raw[20:24])[0]
+            btf_strtab = btf_raw[btf_hdr_len + btf_str_off : btf_hdr_len + btf_str_off + btf_str_len]
+
+            def get_str(off):
+                if off >= len(btf_strtab):
+                    return None
+                return btf_strtab[off:].split(b"\x00", 1)[0].decode("latin1")
+
+            if len(btf_ext) < 32:
+                return False, "btf_ext too short"
+            core_relo_off = struct.unpack("<I", btf_ext[24:28])[0]
+            core_relo_len = struct.unpack("<I", btf_ext[28:32])[0]
             if core_relo_len == 0:
                 return False, "core_relo_len is 0"
-            start = hdr_len + core_relo_off
-            end = start + core_relo_len
-            if end > len(btf_ext_bytes):
-                return False, "out of bounds"
-            relo_bytes = btf_ext_bytes[start:end]
-            if len(relo_bytes) < 4:
-                return False, "relo truncated"
+            hdr_len = struct.unpack("<I", btf_ext[4:8])[0]
+            relo_bytes = btf_ext[hdr_len + core_relo_off : hdr_len + core_relo_off + core_relo_len]
+
             rec_size = struct.unpack("<I", relo_bytes[0:4])[0]
             if rec_size != 16:
                 return False, f"bad rec_size {rec_size}"
-            # count records
+
             idx = 4
             count = 0
+            found_target = False
             while idx + 8 <= len(relo_bytes):
+                sec_name_off = struct.unpack("<I", relo_bytes[idx:idx+4])[0]
                 num_info = struct.unpack("<I", relo_bytes[idx+4:idx+8])[0]
-                idx += 8 + num_info * rec_size
-                count += num_info
-            if count == 0:
-                return False, "zero records"
+                idx += 8
+                sec_name = get_str(sec_name_off)
+                if sec_name == "tp_btf/sched_process_exec":
+                    found_target = True
+                if num_info == 0:
+                    return False, "zero records in section"
+                for _ in range(num_info):
+                    rec = relo_bytes[idx : idx + 16]
+                    idx += 16
+                    insn_off, type_id, access_str_off, kind = struct.unpack("<IIII", rec)
+                    if type_id == 0 or access_str_off == 0:
+                        return False, "zeroed record"
+                    if insn_off % 8 != 0 or insn_off >= prog_sec_len:
+                        return False, f"bad insn_off {insn_off}"
+                    acc_str = get_str(access_str_off)
+                    if not acc_str or not acc_str[0].isdigit():
+                        return False, f"bad access_str '{acc_str}'"
+                    if kind not in range(0, 10):
+                        return False, f"bad kind {kind}"
+                    count += 1
+
+            if not found_target:
+                return False, "target section not found"
+            if count < 10:
+                return False, f"insufficient relocs: {count} < 10"
             return True, f"ok {count} records"
 
-        hdr_len = 32
-        core_relo_off = 0
-        core_relo_data = struct.pack("<I", 16) + struct.pack("<II", 1, 1) + b"\x00" * 16
+        # Build mock .BTF string table
+        # offset 0: empty
+        # offset 1: "tp_btf/sched_process_exec\0"
+        # offset 27: "0:0\0"
+        strtab = b"\x00tp_btf/sched_process_exec\x000:0\x00"
+        btf_hdr = struct.pack("<HBBIIII", 0xEB9F, 1, 0, 24, 0, 0, 0) + struct.pack("<I", len(strtab))
+        mock_btf = btf_hdr + strtab
+
+        # Build valid .BTF.ext with 10 records for tp_btf/sched_process_exec
+        sec_name_off = 1  # points to tp_btf/sched_process_exec
+        acc_str_off = 27  # points to "0:0"
+        relo_records = b""
+        for i in range(10):
+            insn_off = i * 8
+            type_id = i + 1
+            kind = 0
+            relo_records += struct.pack("<IIII", insn_off, type_id, acc_str_off, kind)
+
+        core_relo_data = struct.pack("<I", 16) + struct.pack("<II", sec_name_off, 10) + relo_records
         core_relo_len = len(core_relo_data)
+        btf_ext_hdr = struct.pack("<HBBIIIIII", 0xEB9F, 1, 0, 32, 0, 0, 0, 0, 0) + struct.pack("<I", core_relo_len)
+        mock_btf_ext = btf_ext_hdr + core_relo_data
 
-        valid_btf_ext = (
-            struct.pack("<HBBIIIIII", 0xEB9F, 1, 0, hdr_len, 0, 0, 0, 0, core_relo_off)
-            + struct.pack("<I", core_relo_len)
-            + core_relo_data
-        )
-        ok, msg = parse_btf_ext(valid_btf_ext)
+        ok, msg = validate_btf_and_ext(mock_btf, mock_btf_ext, 128)
         self.assertTrue(ok, msg)
-        self.assertIn("ok 1 records", msg)
+        self.assertIn("ok 10 records", msg)
 
-        # Case 2: zero core_relo_len fails
-        bad_zero_relo = (
-            struct.pack("<HBBIIIIII", 0xEB9F, 1, 0, hdr_len, 0, 0, 0, 0, 0)
-            + struct.pack("<I", 0)
-        )
-        ok, msg = parse_btf_ext(bad_zero_relo)
+        # Zeroed record must fail
+        bad_relo_data = struct.pack("<I", 16) + struct.pack("<II", sec_name_off, 1) + b"\x00" * 16
+        bad_ext = struct.pack("<HBBIIIIII", 0xEB9F, 1, 0, 32, 0, 0, 0, 0, 0) + struct.pack("<I", len(bad_relo_data)) + bad_relo_data
+        ok, msg = validate_btf_and_ext(mock_btf, bad_ext, 128)
         self.assertFalse(ok)
-        self.assertIn("core_relo_len is 0", msg)
-
-        # Case 3: invalid magic fails
-        bad_magic = b"\x00\x00" + valid_btf_ext[2:]
-        ok, msg = parse_btf_ext(bad_magic)
-        self.assertFalse(ok)
-        self.assertIn("bad magic", msg)
+        self.assertIn("zeroed record", msg)
 
     def test_gnu_stack_flag_parsing_logic(self) -> None:
         """Unit test for GNU_STACK segment parsing distinguishing Flg from Align."""
@@ -352,20 +430,16 @@ class TestBpfFeasibilityScript(unittest.TestCase):
             if len(parts) >= 7 and parts[0] == "GNU_STACK":
                 flg = parts[-2]
                 if "E" in flg or "X" in flg:
-                    return False  # Executable stack rejected
+                    return False
                 return True
             return False
 
-        # Non-executable stack with 0x10 alignment (alignment token ending in zero)
         line_valid = "  GNU_STACK      0x000000 0x0000000000000000 0x0000000000000000 0x000000 0x000000 RW  0x10"
         self.assertTrue(check_gnu_stack_line(line_valid))
 
-        # Non-executable stack with alignment containing hex letter 'E' (e.g. 0x00E0)
-        # Demonstrates that Flg (parts[-2]) is checked, not Align (parts[-1])
         line_align_with_e = "  GNU_STACK      0x000000 0x0000000000000000 0x0000000000000000 0x000000 0x000000 RW  0x00E0"
         self.assertTrue(check_gnu_stack_line(line_align_with_e))
 
-        # Executable stack (Flg contains 'E')
         line_executable = "  GNU_STACK      0x000000 0x0000000000000000 0x0000000000000000 0x000000 0x000000 RWE 0x10"
         self.assertFalse(check_gnu_stack_line(line_executable))
 

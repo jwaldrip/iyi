@@ -77,12 +77,20 @@ while [ $# -gt 0 ]; do
       ;;
   esac
 done
+# Refuse root execution at script entry (including build-only mode)
+if [ "$(id -u)" -eq 0 ] || [ "$(id -g)" -eq 0 ]; then
+  echo "ERROR: Refusing to execute as root UID 0 or GID 0 (including build-only mode)" >&2
+  exit 1
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# Section 4: Clear inherited build variables and package-manager configuration
-unset CPATH C_INCLUDE_PATH LIBRARY_PATH LD_LIBRARY_PATH LD_PRELOAD CFLAGS LDFLAGS PKG_CONFIG_PATH
+# Sanitize environment: clean trusted PATH and isolated Python configuration
+export PATH="/usr/bin:/bin"
+export LC_ALL=C
+unset PYTHONPATH PYTHONHOME PYTHONSTARTUP PYTHONUSERBASE PYTHONOPTIMIZE
+unset CPATH C_INCLUDE_PATH LIBRARY_PATH LD_LIBRARY_PATH LD_PRELOAD LD_AUDIT CFLAGS LDFLAGS PKG_CONFIG_PATH
 
 # Check for unexpected preload configuration
 if [ -f /etc/ld.so.preload ] && [ -s /etc/ld.so.preload ]; then
@@ -90,27 +98,40 @@ if [ -f /etc/ld.so.preload ] && [ -s /etc/ld.so.preload ]; then
   exit 1
 fi
 
-# Set up owned private scratch directory with umask 077
-if [ -z "$OWNED_DIR" ]; then
-  if [ -n "${RUNNER_TEMP:-}" ] && [ -d "$RUNNER_TEMP" ]; then
-    OWNED_DIR="$RUNNER_TEMP/bpf-feasibility-private"
-    mkdir -m 0700 -p "$OWNED_DIR"
-  else
-    OLD_UMASK="$(umask)"
-    umask 077
-    OWNED_DIR="$(mktemp -d "${TMPDIR:-/tmp}/bpf-feasibility.XXXXXX")"
-    umask "$OLD_UMASK"
+# Set up fresh, exclusive owned private scratch directory with umask 077 (no mkdir -p reuse, no symlinks)
+if [ -n "${RUNNER_TEMP:-}" ]; then
+  if [ -L "$RUNNER_TEMP" ]; then
+    echo "ERROR: RUNNER_TEMP is a symlink: $RUNNER_TEMP" >&2
+    exit 1
   fi
+  BASE_TEMP="$RUNNER_TEMP"
 else
-  mkdir -m 0700 -p "$OWNED_DIR"
+  BASE_TEMP="${TMPDIR:-/tmp}"
 fi
 
-mkdir -m 0700 -p "$OWNED_DIR/tmp"
+OLD_UMASK="$(umask)"
+umask 077
+if [ -z "$OWNED_DIR" ]; then
+  OWNED_DIR="$(mktemp -d "$BASE_TEMP/bpf-feasibility.XXXXXX")"
+else
+  if [ -e "$OWNED_DIR" ] || [ -L "$OWNED_DIR" ]; then
+    echo "ERROR: OWNED_DIR '$OWNED_DIR' already exists or is a symlink; fresh exclusive directory required" >&2
+    exit 1
+  fi
+  mkdir -m 0700 "$OWNED_DIR"
+fi
+umask "$OLD_UMASK"
+
+if [ -L "$OWNED_DIR" ]; then
+  echo "ERROR: Owned scratch directory is a symlink: $OWNED_DIR" >&2
+  exit 1
+fi
+
+mkdir -m 0700 "$OWNED_DIR/tmp"
 
 if [ -z "$STATUS_FILE" ]; then
   STATUS_FILE="$OWNED_DIR/bpf-feasibility.json"
 fi
-
 if [ "$VERBOSE" -eq 1 ]; then
   echo "[run_bpf_feasibility] Repository root: $REPO_ROOT"
   echo "[run_bpf_feasibility] Scratch working directory: $OWNED_DIR"
@@ -456,6 +477,32 @@ for i in range(e_shnum):
     sh_size = int.from_bytes(sh[32:40], "little")
     sections[name] = bpf_raw[sh_offset : sh_offset + sh_size]
 
+if ".BTF" not in sections:
+    sys.exit("ERROR: .BTF section missing from BPF object")
+
+btf_raw = sections[".BTF"]
+if len(btf_raw) < 24:
+    sys.exit("ERROR: .BTF section too short")
+
+btf_hdr_magic = int.from_bytes(btf_raw[0:2], "little")
+if btf_hdr_magic != 0xEB9F:
+    sys.exit(f"ERROR: .BTF magic mismatch: 0x{btf_hdr_magic:04x}")
+
+btf_hdr_len = int.from_bytes(btf_raw[4:8], "little")
+btf_str_off = int.from_bytes(btf_raw[16:20], "little")
+btf_str_len = int.from_bytes(btf_raw[20:24], "little")
+
+str_start = btf_hdr_len + btf_str_off
+str_end = str_start + btf_str_len
+if str_end > len(btf_raw):
+    sys.exit("ERROR: .BTF string table extends beyond .BTF section")
+btf_strtab = btf_raw[str_start:str_end]
+
+def get_btf_string(offset):
+    if offset >= len(btf_strtab):
+        return None
+    return btf_strtab[offset:].split(b"\x00", 1)[0].decode("latin1")
+
 if ".BTF.ext" not in sections:
     sys.exit("ERROR: .BTF.ext section missing from BPF object")
 
@@ -490,23 +537,68 @@ rec_size = int.from_bytes(relo_bytes[0:4], "little")
 if rec_size != 16:
     sys.exit(f"ERROR: .BTF.ext core_relo record size {rec_size} != expected 16 bytes")
 
-# Walk core_relo sections and count total relocation records
+prog_sec_len = len(sections.get("tp_btf/sched_process_exec", b""))
+if prog_sec_len == 0:
+    sys.exit("ERROR: Target program section 'tp_btf/sched_process_exec' is empty")
+
+# Validate CO-RE relocation records strictly (reject zeroed, invalid access strings, bad kinds)
 relo_idx = 4
 total_core_relocs = 0
+found_target_section = False
+
 while relo_idx + 8 <= len(relo_bytes):
     sec_name_off = int.from_bytes(relo_bytes[relo_idx : relo_idx + 4], "little")
     num_info = int.from_bytes(relo_bytes[relo_idx + 4 : relo_idx + 8], "little")
     relo_idx += 8
-    expected_data_len = num_info * rec_size
-    if relo_idx + expected_data_len > len(relo_bytes):
-        sys.exit("ERROR: .BTF.ext core_relo section records exceed bounds")
-    total_core_relocs += num_info
-    relo_idx += expected_data_len
 
-if total_core_relocs == 0:
-    sys.exit("ERROR: .BTF.ext contains 0 CO-RE relocation records")
+    sec_name = get_btf_string(sec_name_off)
+    if not sec_name:
+        sys.exit(f"ERROR: Invalid sec_name_off {sec_name_off} in .BTF.ext core_relo")
 
-print(f"Verified real .BTF.ext CO-RE relocations: {total_core_relocs} records ({core_relo_len} bytes)")
+    if sec_name == "tp_btf/sched_process_exec":
+        found_target_section = True
+
+    if num_info == 0:
+        sys.exit(f"ERROR: Section '{sec_name}' has 0 CO-RE relocation records")
+
+    for _ in range(num_info):
+        if relo_idx + 16 > len(relo_bytes):
+            sys.exit("ERROR: .BTF.ext core_relo record truncated")
+        rec = relo_bytes[relo_idx : relo_idx + 16]
+        relo_idx += 16
+
+        insn_off = int.from_bytes(rec[0:4], "little")
+        type_id = int.from_bytes(rec[4:8], "little")
+        access_str_off = int.from_bytes(rec[8:12], "little")
+        kind = int.from_bytes(rec[12:16], "little")
+
+        # Reject zeroed or uninitialized records
+        if type_id == 0 or access_str_off == 0:
+            sys.exit(f"ERROR: Zeroed or invalid CO-RE record detected (type_id={type_id}, access_str_off={access_str_off})")
+
+        # Validate insn_off (multiple of 8 bytes in BPF bytecode, within section)
+        if sec_name == "tp_btf/sched_process_exec":
+            if insn_off % 8 != 0 or insn_off >= prog_sec_len:
+                sys.exit(f"ERROR: Invalid insn_off {insn_off} (not 8-byte aligned or >= {prog_sec_len})")
+
+        # Validate access string
+        access_str = get_btf_string(access_str_off)
+        if not access_str or not access_str[0].isdigit():
+            sys.exit(f"ERROR: Invalid CO-RE access string at offset {access_str_off}: '{access_str}'")
+
+        # Validate kind (0..9)
+        if kind not in range(0, 10):
+            sys.exit(f"ERROR: Disallowed CO-RE kind: {kind}")
+
+        total_core_relocs += 1
+
+if not found_target_section:
+    sys.exit("ERROR: .BTF.ext lacks relocations for 'tp_btf/sched_process_exec'")
+
+if total_core_relocs < 10:
+    sys.exit(f"ERROR: Expected >= 10 genuine CO-RE relocations, found {total_core_relocs}")
+
+print(f"Verified genuine .BTF.ext CO-RE relocations: {total_core_relocs} valid records ({core_relo_len} bytes) for tp_btf/sched_process_exec.")
 
 # Dual dependency graph validation (BPF object and Host helper)
 allowed_prefixes = [
@@ -560,20 +652,20 @@ if "X86-64" not in host_hdr and "x86-64" not in host_hdr:
     sys.exit("ERROR: Host helper machine is not x86-64")
 
 host_dyn = run_readelf("-dW", host_bin)
-needed = []
+needed_libs = set()
 for line in host_dyn.splitlines():
-    if "(NEEDED)" in line or "Shared library:" in line:
-        needed.append(line.strip())
+    if "(NEEDED)" in line and "Shared library:" in line:
+        if "[" in line and "]" in line:
+            lib = line.split("[")[1].split("]")[0].strip()
+            needed_libs.add(lib)
+        else:
+            sys.exit(f"ERROR: Malformed NEEDED entry in host helper: {line}")
     if "RPATH" in line or "RUNPATH" in line:
         sys.exit(f"ERROR: Disallowed RPATH/RUNPATH found in host helper: {line.strip()}")
 
-# Expected DT_NEEDED set: libc.so.6 only
-if not needed:
-    sys.exit("ERROR: Host helper has no DT_NEEDED entries; expected libc.so.6")
-for entry in needed:
-    if "libc.so.6" not in entry:
-        sys.exit(f"ERROR: Disallowed dynamic dependency in host helper (only libc.so.6 allowed): {entry}")
-
+# Expected DT_NEEDED set: libc.so.6 only (exact set equality)
+if needed_libs != {"libc.so.6"}:
+    sys.exit(f"ERROR: Disallowed dynamic dependencies in host helper: {needed_libs}; expected exactly {{'libc.so.6'}}")
 # Validate program headers directly from binary and readelf
 with open(host_bin, "rb") as f:
     host_raw = f.read()
@@ -704,12 +796,13 @@ if [ "$BUILD_ONLY" -eq 1 ]; then
 fi
 
 # 6. Section 7: Launch only the restricted foreground helper
-SETPRIV_BIN="/usr/bin/setpriv"
-if [ ! -x "$SETPRIV_BIN" ]; then
-  SETPRIV_BIN="$(command -v setpriv 2>/dev/null || true)"
+if [ ! -x /usr/bin/setpriv ]; then
+  echo "ERROR: Trusted system binary /usr/bin/setpriv missing or not executable (no PATH fallback permitted)" >&2
+  exit 1
 fi
-if [ -z "$SETPRIV_BIN" ] || [ ! -x "$SETPRIV_BIN" ]; then
-  echo "ERROR: setpriv utility missing; cannot launch restricted foreground observer" >&2
+
+if [ ! -x /usr/bin/sudo ]; then
+  echo "ERROR: Trusted system binary /usr/bin/sudo missing or not executable (no PATH fallback permitted)" >&2
   exit 1
 fi
 
@@ -722,11 +815,11 @@ if [ "$PROBE_UID" -eq 0 ] || [ "$PROBE_GID" -eq 0 ]; then
 fi
 
 if [ "$VERBOSE" -eq 1 ]; then
-  echo "[run_bpf_feasibility] Launching restricted foreground helper with setpriv (UID=$PROBE_UID, GID=$PROBE_GID)..."
+  echo "[run_bpf_feasibility] Launching restricted foreground helper with /usr/bin/setpriv (UID=$PROBE_UID, GID=$PROBE_GID)..."
 fi
 
 # Foreground execution with dropped capabilities; no CAP_SYS_ADMIN
-sudo -n "$SETPRIV_BIN" \
+/usr/bin/sudo -n /usr/bin/setpriv \
   --reuid="$PROBE_UID" --regid="$PROBE_GID" --clear-groups \
   --bounding-set=-all,+bpf,+perfmon \
   --inh-caps=-all,+bpf,+perfmon \
@@ -737,7 +830,6 @@ sudo -n "$SETPRIV_BIN" \
   --probe-only --verbose \
   --bpf-obj "$BPF_OBJ" \
   --status "$STATUS_FILE"
-
 # 7. Evaluate terminal report JSON against Section 7 / acceptance criteria
 python3 - <<'PY' "$STATUS_FILE"
 import json, os, pathlib, sys

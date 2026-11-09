@@ -134,6 +134,7 @@ struct probe_report {
 
   // Section 6: CO-RE relocation evidence
   bool core_relocation_retained;
+  bool debug_log_truncated;
   size_t libbpf_debug_log_bytes;
   const char *libbpf_debug_log_path;
   const char *libbpf_debug_log_content;
@@ -218,6 +219,7 @@ static int safe_write_pid_file(const char *pid_path) {
 static char g_libbpf_debug_log[131072];
 static size_t g_libbpf_debug_log_len = 0;
 static bool g_core_relocation_seen = false;
+static bool g_libbpf_debug_log_truncated = false;
 
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format,
                            va_list args) {
@@ -225,16 +227,20 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format,
   va_list args_copy;
   va_copy(args_copy, args);
 
-  if (g_libbpf_debug_log_len < sizeof(g_libbpf_debug_log) - 1) {
-    int written = vsnprintf(g_libbpf_debug_log + g_libbpf_debug_log_len,
-                            sizeof(g_libbpf_debug_log) - g_libbpf_debug_log_len,
+  size_t avail = sizeof(g_libbpf_debug_log) - g_libbpf_debug_log_len;
+  if (avail > 1) {
+    int written = vsnprintf(g_libbpf_debug_log + g_libbpf_debug_log_len, avail,
                             format, args_copy);
-    if (written > 0) {
-      g_libbpf_debug_log_len += (size_t)written;
-      if (g_libbpf_debug_log_len >= sizeof(g_libbpf_debug_log)) {
-        g_libbpf_debug_log_len = sizeof(g_libbpf_debug_log) - 1;
+    if (written < 0 || (size_t)written >= avail) {
+      g_libbpf_debug_log_truncated = true;
+      if (written > 0) {
+        g_libbpf_debug_log_len += avail - 1;
       }
+    } else {
+      g_libbpf_debug_log_len += (size_t)written;
     }
+  } else {
+    g_libbpf_debug_log_truncated = true;
   }
   va_end(args_copy);
 
@@ -1453,6 +1459,17 @@ int main(int argc, char **argv) {
       write_probe_report(status_path, &rep);
       return 130;
     }
+
+    if (g_libbpf_debug_log_truncated) {
+      fprintf(stderr, "[bpf_canary_host] ERROR: Libbpf debug log buffer "
+                      "overflow/truncated\n");
+      rep.status = "DEBUG_LOG_TRUNCATED";
+      rep.error_message =
+          "Libbpf debug log buffer overflow/truncated; incomplete evidence";
+      write_probe_report(status_path, &rep);
+      return 1;
+    }
+
     if (!rep.core_relocation_retained) {
       fprintf(stderr, "[bpf_canary_host] ERROR: No genuine CO-RE relocation "
                       "diagnostics captured from libbpf\n");
