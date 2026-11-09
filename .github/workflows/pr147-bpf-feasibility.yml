@@ -2,12 +2,6 @@ name: BPF execution hook feasibility diagnostic
 
 on:
   workflow_dispatch:
-    inputs:
-      reviewed_image_version:
-        description: 'Expected reviewed runner image version (exact equality required)'
-        required: true
-        default: '20261101.360.1'
-        type: string
 
 permissions:
   contents: read
@@ -25,13 +19,13 @@ jobs:
 
       - name: Verify runner image version baseline
         run: |
-          echo "ImageOS: ${ImageOS:-UNKNOWN}"
-          echo "ImageVersion: ${ImageVersion:-UNKNOWN}"
-          expected_os="ubuntu24"
-          expected_version="${{ inputs.reviewed_image_version || '20261101.360.1' }}"
+          EXPECTED_IMAGE_OS="ubuntu24"
+          EXPECTED_IMAGE_VERSION="20261101.360.1"
 
-          if [ "${ImageOS:-}" != "$expected_os" ]; then
-            echo "ERROR: Runner ImageOS '${ImageOS:-}' does not match reviewed baseline '$expected_os'" >&2
+          actual_os="${ImageOS:-UNKNOWN}"
+          echo "ImageOS: $actual_os"
+          if [ "$actual_os" != "$EXPECTED_IMAGE_OS" ]; then
+            echo "ERROR: Runner ImageOS '$actual_os' does not match reviewed baseline '$EXPECTED_IMAGE_OS'" >&2
             exit 1
           fi
 
@@ -39,9 +33,10 @@ jobs:
           if [ -z "$actual_version" ] && [ -f /etc/image-id ]; then
             actual_version="$(cat /etc/image-id)"
           fi
+          echo "ImageVersion: ${actual_version:-UNKNOWN}"
 
-          if [ "$actual_version" != "$expected_version" ]; then
-            echo "ERROR: Runner image version '$actual_version' does not match reviewed baseline '$expected_version'; image rotation requires independent security review" >&2
+          if [ "$actual_version" != "$EXPECTED_IMAGE_VERSION" ]; then
+            echo "ERROR: Runner image version '$actual_version' does not match reviewed baseline '$EXPECTED_IMAGE_VERSION'; image rotation requires independent security review" >&2
             exit 1
           fi
           echo "Verified runner image matches reviewed baseline: $actual_version"
