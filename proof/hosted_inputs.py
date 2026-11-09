@@ -21,9 +21,7 @@ import hashlib
 import io
 import json
 import os
-import shutil
 import stat
-import subprocess
 import sys
 import tempfile
 import urllib.error
@@ -45,14 +43,53 @@ def compute_mod_h1(mod_bytes: bytes) -> str:
     return "h1:" + base64.b64encode(h.digest()).decode("ascii")
 
 
-def compute_zip_h1(zip_bytes: bytes) -> str:
-    """Compute Go h1 for module zip archive matching dirhash.HashZip."""
-    zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
+def compute_zip_h1(zip_bytes: bytes, expected_prefix: str | None = None) -> str:
+    """Compute Go h1 for module zip archive matching dirhash.HashZip.
+
+    Faithfully enforces Go module zip invariants:
+    - Rejects any filename containing newline (\n) or carriage return (\r)
+    - Rejects duplicate filenames
+    - Rejects path traversal (..) or absolute paths
+    - Rejects filenames not starting with canonical module prefix (if provided)
+    """
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
+    except Exception as e:
+        raise ValueError(f"Invalid zip archive: {e}") from e
+
+    namelist = zf.namelist()
+    seen: Set[str] = set()
+
+    for name in namelist:
+        if "\n" in name or "\r" in name:
+            raise ValueError(f"Zip entry contains newline characters (dirhash violation): {name!r}")
+        if name in seen:
+            raise ValueError(f"Duplicate zip entry detected: {name!r}")
+        seen.add(name)
+
+        if name.startswith("/") or name.startswith("\\"):
+            raise ValueError(f"Zip entry has absolute path: {name!r}")
+        parts = name.split("/")
+        if ".." in parts:
+            raise ValueError(f"Zip entry has path traversal: {name!r}")
+
+        if expected_prefix is not None:
+            if not name.startswith(expected_prefix):
+                raise ValueError(
+                    f"Zip entry {name!r} does not have expected canonical module prefix {expected_prefix!r}"
+                )
+
+    # Sort files lexicographically matching slices.Sort in Go
     h = hashlib.sha256()
-    for name in sorted(zf.namelist()):
+    for name in sorted(namelist):
+        # Skip directory entries if any
+        if name.endswith("/"):
+            continue
+
         with zf.open(name) as f:
             file_sha = hashlib.sha256(f.read()).hexdigest()
         h.update(f"{file_sha}  {name}\n".encode("utf-8"))
+
     return "h1:" + base64.b64encode(h.digest()).decode("ascii")
 
 
@@ -97,13 +134,25 @@ def normalize_rel_path(path_str: str) -> str:
 
 
 def check_path_ancestors_no_symlinks(path: Path) -> None:
-    """Ensure that path and all of its existing ancestors contain no symlinks."""
-    p = path
+    """Ensure that path itself and all ancestors up to root contain no symlinks.
+
+    Walks all the way to root regardless of whether intermediate components exist.
+    System root mounts (/var, /tmp, /etc on macOS) are permitted, but no user ancestor
+    component may be a symlink.
+    """
+    if path.is_symlink():
+        raise ValueError(f"Path itself cannot be a symlink: {path}")
+
+    system_roots = {Path("/var"), Path("/tmp"), Path("/etc")}
+    p = path.parent
     while True:
         if p.is_symlink():
-            raise ValueError(f"Symlinked component detected in path: {p}")
+            if sys.platform == "darwin" and p in system_roots:
+                pass
+            else:
+                raise ValueError(f"Symlinked component detected in path: {p}")
         parent = p.parent
-        if parent == p or not p.exists():
+        if parent == p:
             break
         p = parent
 
@@ -193,7 +242,7 @@ def verify_bundle_tree(input_dir: Path, lock_data: Dict[str, Any], lock_sha256: 
     """
     # Reject symlinks on input_dir BEFORE resolution
     if input_dir.is_symlink():
-        raise ValueError(f"Input root itself is a symlink: {input_dir}")
+        raise ValueError(f"Input path cannot be a symlink: {input_dir}")
     check_path_ancestors_no_symlinks(input_dir)
 
     if not input_dir.exists():
@@ -322,7 +371,8 @@ def verify_bundle_tree(input_dir: Path, lock_data: Dict[str, Any], lock_sha256: 
         if computed_mod_h1 != expected_mod_h1:
             raise ValueError(f"Module {mod_key} mod_h1 mismatch: computed {computed_mod_h1} != expected {expected_mod_h1}")
 
-        computed_zip_h1 = compute_zip_h1(zip_path.read_bytes())
+        expected_prefix = f"{mod}@{ver}/"
+        computed_zip_h1 = compute_zip_h1(zip_path.read_bytes(), expected_prefix=expected_prefix)
         if computed_zip_h1 != expected_h1:
             raise ValueError(f"Module {mod_key} zip h1 mismatch: computed {computed_zip_h1} != expected {expected_h1}")
 

@@ -17,6 +17,12 @@ Tests cover:
   - Unreadable directories (chmod 000 nonroot directory)
   - Special files (FIFOs)
   - Forged module zip h1 or mod_h1
+- Zip module invariants:
+  - Rejection of newlines in zip entries
+  - Rejection of duplicate entries in zip
+  - Rejection of non-canonical module prefixes
+- Ancestor symlink traversal:
+  - Rejection of nonexistent leaf beneath symlinked ancestor
 - Stage rejection of:
   - Symlinked output directories
   - Non-empty destination directories
@@ -45,6 +51,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT_DIR))
 
 from proof.hosted_inputs import (  # noqa: E402
+    check_path_ancestors_no_symlinks,
     compute_file_sha256,
     compute_inventory_sha256,
     compute_mod_h1,
@@ -139,7 +146,7 @@ class TestHostedSourcesLock(unittest.TestCase):
         }
         self.assertEqual(set(go_modules.keys()), expected_modules)
 
-        # Ensure every module has h1 and mod_h1 records
+        # Ensure every module has valid h1 and mod_h1 records
         for mod_key, meta in go_modules.items():
             self.assertTrue(meta["h1"].startswith("h1:"))
             self.assertTrue(meta["mod_h1"].startswith("h1:"))
@@ -160,7 +167,8 @@ class TestHostedInputsVerifierAndStager(unittest.TestCase):
     """Test verify and stage operations with isolated test fixtures."""
 
     def setUp(self) -> None:
-        self.tmp_dir = tempfile.mkdtemp(prefix="iyi_test_hosted_inputs_")
+        # Canonicalize temporary fixture root to prevent macOS /var symlink confusion
+        self.tmp_dir = str(Path(tempfile.mkdtemp(prefix="iyi_test_hosted_inputs_")).resolve())
         self.tmp_path = Path(self.tmp_dir)
 
         self.file1_content = b"vector-payload-1"
@@ -182,7 +190,7 @@ class TestHostedInputsVerifierAndStager(unittest.TestCase):
         with zipfile.ZipFile(zip_buf, "w") as zf:
             zf.writestr("example.com/test@v1.0.0/test.go", "package test\n")
         self.zip_content = zip_buf.getvalue()
-        self.zip_h1 = compute_zip_h1(self.zip_content)
+        self.zip_h1 = compute_zip_h1(self.zip_content, expected_prefix="example.com/test@v1.0.0/")
         self.zip_sha256 = hashlib.sha256(self.zip_content).hexdigest()
 
         self.test_files = {
@@ -362,7 +370,7 @@ class TestHostedInputsVerifierAndStager(unittest.TestCase):
         symlink_root.symlink_to(self.valid_bundle)
         with self.assertRaises(ValueError) as ctx:
             verify_bundle_tree(symlink_root, self.test_lock_data, self.test_lock_sha256)
-        self.assertIn("symlink", str(ctx.exception).lower())
+        self.assertIn("cannot be a symlink", str(ctx.exception).lower())
 
     def test_verify_rejects_forged_module_h1(self) -> None:
         forged_lock = dict(self.test_lock_data)
@@ -391,6 +399,42 @@ class TestHostedInputsVerifierAndStager(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             verify_bundle_tree(self.valid_bundle, forged_lock, self.test_lock_sha256)
         self.assertIn("mod_h1 mismatch", str(ctx.exception))
+
+    def test_compute_zip_h1_rejects_newline_in_filename(self) -> None:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("example.com/test@v1.0.0/test\nfile.go", "bad")
+        with self.assertRaises(ValueError) as ctx:
+            compute_zip_h1(buf.getvalue(), expected_prefix="example.com/test@v1.0.0/")
+        self.assertIn("newline characters", str(ctx.exception))
+
+    def test_compute_zip_h1_rejects_duplicate_filenames(self) -> None:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("example.com/test@v1.0.0/test.go", "first")
+            zf.writestr("example.com/test@v1.0.0/test.go", "second")
+        with self.assertRaises(ValueError) as ctx:
+            compute_zip_h1(buf.getvalue(), expected_prefix="example.com/test@v1.0.0/")
+        self.assertIn("Duplicate zip entry", str(ctx.exception))
+
+    def test_compute_zip_h1_rejects_non_canonical_prefix(self) -> None:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("wrong.com/bad@v1.0.0/test.go", "wrong")
+        with self.assertRaises(ValueError) as ctx:
+            compute_zip_h1(buf.getvalue(), expected_prefix="example.com/test@v1.0.0/")
+        self.assertIn("canonical module prefix", str(ctx.exception))
+
+    def test_check_path_ancestors_rejects_nonexistent_leaf_with_symlink_ancestor(self) -> None:
+        target_dir = self.tmp_path / "real_ancestor"
+        target_dir.mkdir()
+        link_dir = self.tmp_path / "symlink_ancestor"
+        link_dir.symlink_to(target_dir)
+
+        nonexistent_leaf = link_dir / "nonexistent_sub" / "leaf"
+        with self.assertRaises(ValueError) as ctx:
+            check_path_ancestors_no_symlinks(nonexistent_leaf)
+        self.assertIn("Symlinked component detected", str(ctx.exception))
 
     def test_stage_rejects_symlink_output_dir(self) -> None:
         real_target = self.tmp_path / "real_stage_target"
