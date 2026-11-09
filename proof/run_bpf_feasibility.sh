@@ -599,25 +599,34 @@ def parse_make_depfile(dep_text):
     while i < n:
         c = dep_text[i]
         if c == "\\":
-            if i + 1 < n:
-                next_c = dep_text[i + 1]
-                if next_c == "\n":
-                    i += 2
-                    continue
-                elif next_c == "\r" and i + 2 < n and dep_text[i + 2] == "\n":
-                    i += 3
-                    continue
-                elif next_c in (" ", "\\", "#", ":"):
-                    curr_token.append(next_c)
-                    i += 2
-                    continue
-                else:
-                    curr_token.append(c)
-                    i += 1
-                    continue
+            if i + 1 >= n:
+                sys.exit("ERROR: Dangling escape backslash at end of make dependency file")
+            next_c = dep_text[i + 1]
+            if next_c == "\n":
+                i += 2
+                continue
+            elif next_c == "\r" and i + 2 < n and dep_text[i + 2] == "\n":
+                i += 3
+                continue
+            elif next_c in (" ", "\\", "#", ":"):
+                curr_token.append(next_c)
+                i += 2
+                continue
+            elif next_c == "$":
+                curr_token.append("$")
+                i += 2
+                continue
             else:
+                curr_token.append(c)
                 i += 1
                 continue
+        elif c == "$":
+            if i + 1 < n and dep_text[i + 1] == "$":
+                curr_token.append("$")
+                i += 2
+                continue
+            else:
+                sys.exit("ERROR: Dangling or unescaped dollar sign in make dependency file")
         elif c.isspace():
             if curr_token:
                 tokens.append("".join(curr_token))
@@ -834,25 +843,34 @@ def parse_make_depfile(dep_text):
     while i < n:
         c = dep_text[i]
         if c == "\\":
-            if i + 1 < n:
-                next_c = dep_text[i + 1]
-                if next_c == "\n":
-                    i += 2
-                    continue
-                elif next_c == "\r" and i + 2 < n and dep_text[i + 2] == "\n":
-                    i += 3
-                    continue
-                elif next_c in (" ", "\\", "#", ":"):
-                    curr_token.append(next_c)
-                    i += 2
-                    continue
-                else:
-                    curr_token.append(c)
-                    i += 1
-                    continue
+            if i + 1 >= n:
+                sys.exit("ERROR: Dangling escape backslash at end of make dependency file")
+            next_c = dep_text[i + 1]
+            if next_c == "\n":
+                i += 2
+                continue
+            elif next_c == "\r" and i + 2 < n and dep_text[i + 2] == "\n":
+                i += 3
+                continue
+            elif next_c in (" ", "\\", "#", ":"):
+                curr_token.append(next_c)
+                i += 2
+                continue
+            elif next_c == "$":
+                curr_token.append("$")
+                i += 2
+                continue
             else:
+                curr_token.append(c)
                 i += 1
                 continue
+        elif c == "$":
+            if i + 1 < n and dep_text[i + 1] == "$":
+                curr_token.append("$")
+                i += 2
+                continue
+            else:
+                sys.exit("ERROR: Dangling or unescaped dollar sign in make dependency file")
         elif c.isspace():
             if curr_token:
                 tokens.append("".join(curr_token))

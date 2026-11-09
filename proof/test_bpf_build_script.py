@@ -787,6 +787,74 @@ class TestBpfFeasibilityScript(unittest.TestCase):
             self.assertNotEqual(res.returncode, 0)
             self.assertIn("missing primary source bpf_canary.bpf.c", res.stderr)
 
+            # Positive control 6: multi-input dependency graph with escaped $$ dollar signs and \  spaces
+            prefix_dollar = scratch / "staged$prefix with space"
+            prefix_dollar.mkdir(parents=True, exist_ok=True)
+            bpf_hdr = prefix_dollar / "usr" / "include" / "bpf" / "bpf.h"
+            bpf_hdr.parent.mkdir(parents=True, exist_ok=True)
+            hdr_bytes_bpf = b"b" * 20
+            bpf_hdr.write_bytes(hdr_bytes_bpf)
+            bpf_sha = hashlib.sha256(hdr_bytes_bpf).hexdigest()
+
+            libbpf_hdr = prefix_dollar / "usr" / "include" / "bpf" / "libbpf.h"
+            hdr_bytes_libbpf = b"c" * 20
+            libbpf_hdr.write_bytes(hdr_bytes_libbpf)
+            libbpf_sha = hashlib.sha256(hdr_bytes_libbpf).hexdigest()
+
+            scratch_dollar = scratch / "dollar_lock_dir"
+            scratch_dollar.mkdir(parents=True, exist_ok=True)
+            lock_dollar = make_dummy_lock(scratch_dollar, {}, {
+                "usr/include/bpf/bpf.h": bpf_sha,
+                "usr/include/bpf/libbpf.h": libbpf_sha
+            })
+
+            escaped_bpf_hdr = str(bpf_hdr).replace(" ", r"\ ").replace("$", "$$")
+            escaped_libbpf_hdr = str(libbpf_hdr).replace(" ", r"\ ").replace("$", "$$")
+            dep_multi_dollar = scratch / "multi_dollar.d"
+            dep_multi_dollar.write_text(
+                f"mock.o: \\\n"
+                f"  {escaped_repo}/proof/bpf_canary.bpf.c \\\n"
+                f"  {escaped_repo}/proof/bpf_canary_types.h \\\n"
+                f"  {escaped_bpf_hdr} \\\n"
+                f"  {escaped_libbpf_hdr}\n"
+            )
+
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-bpf-obj", readelf_bin, str(valid_bpf), str(dep_multi_dollar), "/usr/lib/clang/18", str(prefix_dollar), str(REPO_ROOT), str(lock_dollar), str(scratch)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertEqual(res.returncode, 0)
+            self.assertIn("Verified genuine .BTF.ext CO-RE relocations", res.stdout)
+            compiled_hdrs = json.loads((scratch / "bpf-compiled-headers.json").read_text())
+            self.assertIn(str(bpf_hdr.resolve()), compiled_hdrs)
+            self.assertIn(str(libbpf_hdr.resolve()), compiled_hdrs)
+
+            # Mutation 17: negative dangling escape backslash in depfile fails closed
+            dep_dangling_bs = scratch / "dangling_bs.d"
+            dep_dangling_bs.write_text(f"mock.o: {escaped_repo}/proof/bpf_canary.bpf.c \\\n  {escaped_repo}/proof/bpf_canary_types.h \\")
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-bpf-obj", readelf_bin, str(valid_bpf), str(dep_dangling_bs), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(lock_file), str(scratch)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("Dangling escape backslash", res.stderr)
+
+            # Mutation 18: negative dangling/unescaped single dollar in depfile fails closed
+            dep_dangling_dollar = scratch / "dangling_dollar.d"
+            dep_dangling_dollar.write_text(f"mock.o: {escaped_repo}/proof/bpf_canary.bpf.c \\\n  {escaped_repo}/proof/bpf_canary_types.h $")
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-bpf-obj", readelf_bin, str(valid_bpf), str(dep_dangling_dollar), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(lock_file), str(scratch)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("Dangling or unescaped dollar sign", res.stderr)
+
     def test_production_host_elf_gate_validation(self) -> None:
         """Production --validate-host-elf gate: positive control passes, mutations strictly fail closed."""
         readelf_bin = shutil.which("readelf") or shutil.which("llvm-readelf") or "/usr/bin/readelf"
