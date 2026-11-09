@@ -1,119 +1,29 @@
-name: BPF execution hook feasibility diagnostic
-
+name: BPF runner tool census (read only)
 on:
   workflow_dispatch:
-
 permissions:
   contents: read
-
 jobs:
-  feasibility-diagnostics:
+  census:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          repository: jwaldrip/iyi
-          ref: ${{ github.sha }}
           persist-credentials: false
-
-      - name: Verify runner image version baseline
+          ref: ${{ github.sha }}
+      - name: Collect bounded runner inventory
+        id: census
+        shell: bash
         run: |
-          EXPECTED_IMAGE_OS="ubuntu24"
-          EXPECTED_IMAGE_VERSION="20261101.360.1"
-
-          actual_os="${ImageOS:-UNKNOWN}"
-          echo "ImageOS: $actual_os"
-          if [ "$actual_os" != "$EXPECTED_IMAGE_OS" ]; then
-            echo "ERROR: Runner ImageOS '$actual_os' does not match reviewed baseline '$EXPECTED_IMAGE_OS'" >&2
-            exit 1
-          fi
-
-          actual_version="${ImageVersion:-}"
-          if [ -z "$actual_version" ] && [ -f /etc/image-id ]; then
-            actual_version="$(cat /etc/image-id)"
-          fi
-          echo "ImageVersion: ${actual_version:-UNKNOWN}"
-
-          if [ "$actual_version" != "$EXPECTED_IMAGE_VERSION" ]; then
-            echo "ERROR: Runner image version '$actual_version' does not match reviewed baseline '$EXPECTED_IMAGE_VERSION'; image rotation requires independent security review" >&2
-            exit 1
-          fi
-          echo "Verified runner image matches reviewed baseline: $actual_version"
-
-      - name: Record diagnostic environment metadata
-        run: |
-          mkdir -p "$RUNNER_TEMP/kernel-feasibility-diag"
-          python3 - <<'PY'
-          import hashlib, json, os, pathlib, platform
-
-          log_dir = pathlib.Path(os.environ["RUNNER_TEMP"]) / "kernel-feasibility-diag"
-          runner_temp_path = pathlib.Path(os.environ["RUNNER_TEMP"]).resolve()
-
-          mount_info = "UNKNOWN"
-          mount_opts = "UNKNOWN"
-          proc_mounts = pathlib.Path("/proc/mounts")
-          best_match_mount = None
-          best_match_len = -1
-
-          if proc_mounts.exists():
-              for line in proc_mounts.read_text().splitlines():
-                  parts = line.split()
-                  if len(parts) >= 4:
-                      mnt_path = pathlib.Path(parts[1]).resolve()
-                      try:
-                          runner_temp_path.relative_to(mnt_path)
-                          if len(mnt_path.parts) > best_match_len:
-                              best_match_len = len(mnt_path.parts)
-                              best_match_mount = parts
-                      except ValueError:
-                          continue
-
-          if best_match_mount:
-              mount_info = best_match_mount[0] + " on " + best_match_mount[1] + " (" + best_match_mount[2] + ")"
-              mount_opts = best_match_mount[3]
-
-          btf_path = pathlib.Path("/sys/kernel/btf/vmlinux")
-          btf_digest = "UNKNOWN"
-          if btf_path.exists():
-              try:
-                  btf_digest = hashlib.sha256(btf_path.read_bytes()).hexdigest()
-              except Exception:
-                  btf_digest = "UNKNOWN"
-          meta = {
-              "schema": "iyi-kernel-feasibility-v1",
-              "strict_eligible": False,
-              "run_id": os.environ.get("GITHUB_RUN_ID", "UNKNOWN"),
-              "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", "UNKNOWN"),
-              "checkout_sha": os.environ.get("GITHUB_SHA", "UNKNOWN"),
-              "ref": os.environ.get("GITHUB_REF", "UNKNOWN"),
-              "runner_os": os.environ.get("RUNNER_OS", "UNKNOWN"),
-              "runner_image": os.environ.get("ImageOS", "UNKNOWN"),
-              "runner_image_version": os.environ.get("ImageVersion", "UNKNOWN"),
-              "uname": platform.uname()._asdict(),
-              "live_btf_digest": btf_digest,
-              "runner_temp_mount": mount_info,
-              "runner_temp_mount_options": mount_opts,
-          }
-          (log_dir / "diagnostic-metadata.json").write_text(json.dumps(meta, indent=2))
-          print("Recorded diagnostic metadata under schema iyi-kernel-feasibility-v1")
-          PY
-
-      - name: Run BPF feasibility diagnostic via authenticated launcher
-        run: |
-          diag_dir="$RUNNER_TEMP/kernel-feasibility-diag"
-          mkdir -p "$diag_dir"
-          owned_scratch="$diag_dir/owned-artifacts"
-          status_file="$diag_dir/bpf-feasibility.json"
-          bash proof/run_bpf_feasibility.sh \
-            --owned-dir "$owned_scratch" \
-            --status "$status_file" \
-            --verbose
-
+          set -euo pipefail
+          umask 077
+          owned="$(mktemp -d "$RUNNER_TEMP/bpf-tool-census.XXXXXXXX")"
+          echo "directory=$owned" >> "$GITHUB_OUTPUT"
+          /usr/bin/python3 -I proof/bpf_tool_census.py "$owned"
       - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
-        if: always()
+        if: always() && steps.census.outputs.directory != ''
         with:
-          name: pr147-bpf-feasibility-diagnostic
-          path: |
-            ${{ runner.temp }}/kernel-feasibility-diag/
+          name: pr147-bpf-runner-tool-census
+          path: ${{ steps.census.outputs.directory }}/tool-census.json
           if-no-files-found: error

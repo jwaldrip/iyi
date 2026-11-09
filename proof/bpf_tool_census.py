@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Read-only runner inventory, not an approval or a diagnostic launch."""
+import ctypes
+import errno
 import hashlib
 import json
 import os
@@ -7,6 +9,7 @@ import pathlib
 import platform
 import selectors
 import stat
+import signal
 import subprocess
 import sys
 import time
@@ -21,15 +24,58 @@ MAX_OUTPUT = 65536
 MAX_FILE = 256 * 1024 * 1024
 
 
+def child_no_privileges():
+    # Runs in the owned child before exec, never in the parent.
+    if 0 in os.getresuid() or 0 in os.getresgid():
+        raise RuntimeError("root real, effective, or saved uid or gid")
+    status = pathlib.Path("/proc/self/status").read_text()
+    fields = dict(line.split(":", 1) for line in status.splitlines() if ":" in line)
+    for key in ("CapInh", "CapPrm", "CapEff", "CapAmb"):
+        if key not in fields or int(fields[key].strip(), 16) != 0:
+            raise RuntimeError(f"nonzero or missing {key}")
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(38, 1, 0, 0, 0) != 0 or libc.prctl(39, 0, 0, 0, 0) != 1:
+        raise OSError(ctypes.get_errno(), "cannot establish no_new_privs")
+
+
+def safe_to_execute(name, info):
+    if name == "sudo":
+        return "privilege-bearing executable: metadata only"
+    try:
+        if not info.get("regular") or not info.get("canonical"):
+            return "missing regular executable"
+        path = pathlib.Path(info["canonical"])
+        st = path.stat()
+        if st.st_uid != 0 or st.st_mode & (stat.S_IWGRP | stat.S_IWOTH | stat.S_ISUID | stat.S_ISGID):
+            return "unsafe owner, writable mode, or set-id bit"
+        for parent in (path.parent, *path.parent.parents):
+            s = parent.stat()
+            if s.st_uid != 0 or s.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+                return "unsafe canonical ancestor"
+        try:
+            os.getxattr(path, "security.capability")
+        except OSError as exc:
+            if exc.errno != errno.ENODATA:
+                return f"file capability state unknown: {exc}"
+        else:
+            return "file capability present"
+        return None
+    except (OSError, ValueError) as exc:
+        return f"cannot establish tool safety: {exc}"
+
+
 def bounded_command(args):
     child = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                             stderr=subprocess.STDOUT, env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"})
-    sel = selectors.DefaultSelector()
-    sel.register(child.stdout, selectors.EVENT_READ)
+                             stderr=subprocess.STDOUT, env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"},
+                             start_new_session=True, preexec_fn=child_no_privileges)
+    sel = None
     output = bytearray()
     deadline = time.monotonic() + 5
     reason = None
+    code = None
     try:
+        sel = selectors.DefaultSelector()
+        sel.register(child.stdout, selectors.EVENT_READ)
         while sel.get_map():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -48,20 +94,32 @@ def bounded_command(args):
                 reason = "output_limit"
                 break
         if reason is None:
-            try:
-                code = child.wait(timeout=max(0.001, deadline - time.monotonic()))
-            except subprocess.TimeoutExpired:
+            # Observe exit without reaping: the leader PID cannot be reused
+            # before the private group has been cleaned up.
+            while time.monotonic() < deadline:
+                status = os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                if status is not None:
+                    code = status.si_status if status.si_code == os.CLD_EXITED else -status.si_status
+                    break
+                time.sleep(0.01)
+            else:
                 reason = "timeout"
-        if reason is not None:
-            # This process only signals the exact child it spawned, never a group.
-            child.kill()
-            child.wait()
-            code = None
         return {"exit_code": code, "error": reason,
                 "output": bytes(output[:MAX_OUTPUT]).decode("utf-8", errors="replace")}
     finally:
-        sel.close()
-        child.stdout.close()
+        # The leader is deliberately not reaped until after cleanup. Its
+        # session/group was created exclusively for this command.
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        finally:
+            try:
+                child.wait(timeout=2)
+            finally:
+                if sel is not None:
+                    sel.close()
+                child.stdout.close()
 
 
 def path_info(value):
@@ -117,23 +175,26 @@ def main():
               "kernel": platform.uname()._asdict(), "tools": {}}
     for name, path in TOOLS.items():
         info = path_info(path)
-        if info.get("regular"):
+        reason = safe_to_execute(name, info)
+        if reason is None:
             try:
-                info["version"] = bounded_command([path, "--version"])
-            except OSError as exc:
+                info["version"] = bounded_command([info["canonical"], "--version"])
+            except (OSError, subprocess.SubprocessError) as exc:
                 info["version"] = {"error": str(exc), "exit_code": None}
+        else:
+            info["version"] = {"error": reason, "exit_code": None}
         report["tools"][name] = info
     clang = report["tools"]["clang18"]
-    if clang.get("regular"):
+    if safe_to_execute("clang18", clang) is None:
         try:
-            resource = bounded_command([TOOLS["clang18"], "-print-resource-dir"])
+            resource = bounded_command([clang["canonical"], "-print-resource-dir"])
             report["clang_resource_command"] = resource
             if resource["exit_code"] == 0 and resource["error"] is None:
                 resource_dir = resource["output"].strip()
                 if resource_dir.startswith("/") and "\n" not in resource_dir:
                     report["clang_resource"] = path_info(resource_dir)
                     report["clang_resource_include"] = path_info(resource_dir + "/include")
-        except OSError as exc:
+        except (OSError, subprocess.SubprocessError) as exc:
             report["clang_resource_command"] = {"error": str(exc), "exit_code": None}
     report["header_roots"] = [path_info(p) for p in ("/usr/include", "/usr/include/x86_64-linux-gnu")]
     with (root / "tool-census.json").open("x", encoding="utf-8") as out:
