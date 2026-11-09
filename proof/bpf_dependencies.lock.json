@@ -120,13 +120,71 @@
         }
       ],
       "required_headers": [
-        "usr/include/bpf/bpf.h",
-        "usr/include/bpf/libbpf.h",
-        "usr/include/bpf/bpf_core_read.h",
-        "usr/include/bpf/bpf_helpers.h",
-        "usr/include/bpf/bpf_helper_defs.h",
-        "usr/include/bpf/bpf_tracing.h",
-        "usr/include/bpf/btf.h"
+        {
+          "path": "usr/include/bpf/bpf.h",
+          "size": 22939,
+          "sha256": "09fdac5185d030bc606a6bb67933fdf162c5db60a6b6eea7d2e13584378672bb"
+        },
+        {
+          "path": "usr/include/bpf/bpf_core_read.h",
+          "size": 19571,
+          "sha256": "f8693c88554b9377dbddd77efaa40113919b3245fe5a517160492e21f409328f"
+        },
+        {
+          "path": "usr/include/bpf/bpf_endian.h",
+          "size": 3750,
+          "sha256": "64b77c97b089ca06203d0451407844fe93933b4e36e7315a294745fa29d058fb"
+        },
+        {
+          "path": "usr/include/bpf/bpf_helper_defs.h",
+          "size": 173958,
+          "sha256": "67f28552254f09a482dc81f524dcf1132b3a46eb9154495e1d4e1f9d97613dac"
+        },
+        {
+          "path": "usr/include/bpf/bpf_helpers.h",
+          "size": 15129,
+          "sha256": "ae3bcf97e3bab650e62093fa8d14fd6465226ad8e8362bec05e5dc2ced333afb"
+        },
+        {
+          "path": "usr/include/bpf/bpf_tracing.h",
+          "size": 37877,
+          "sha256": "9865b9368764e56df2413961e98715c2817766e5572dc543484ef34cf8789831"
+        },
+        {
+          "path": "usr/include/bpf/btf.h",
+          "size": 18928,
+          "sha256": "e28e5bca81a5d782e27088da750712c747acb9ab1764bd944bf3e7fc15d4b503"
+        },
+        {
+          "path": "usr/include/bpf/libbpf.h",
+          "size": 71915,
+          "sha256": "3064ebc2dc7e93e4463ede5092044f3dc5beafcfcc32617d17c0210dd870ab2b"
+        },
+        {
+          "path": "usr/include/bpf/libbpf_common.h",
+          "size": 3437,
+          "sha256": "d58d7044c3e30f322614da76e3832c5b31e61469d31c29c53ee8abf736664414"
+        },
+        {
+          "path": "usr/include/bpf/libbpf_legacy.h",
+          "size": 5189,
+          "sha256": "4b09b8535b0eb9da94e8eafba8edcb2abc742bb07dd870bd216c3eea955a18d8"
+        },
+        {
+          "path": "usr/include/bpf/libbpf_version.h",
+          "size": 242,
+          "sha256": "a5f1ff4c230240696e4a070ec23fcb5e196dda9620f335caa8a17e35aeb669be"
+        },
+        {
+          "path": "usr/include/bpf/skel_internal.h",
+          "size": 9339,
+          "sha256": "a2f7fa02729c0bab05f5bdcab5b0b46e0ec91387518125d6bf6c4451d536fe6b"
+        },
+        {
+          "path": "usr/include/bpf/usdt.bpf.h",
+          "size": 8610,
+          "sha256": "df28567890af3c0eb7f07b9e589f28ae68ed931dce24be7d890bec2220f7f6d5"
+        }
       ]
     },
     "libelf-dev": {
@@ -151,8 +209,31 @@
         }
       ],
       "required_headers": [
-        "usr/include/libelf.h",
-        "usr/include/gelf.h"
+        {
+          "path": "usr/include/elfutils/elf-knowledge.h",
+          "size": 3927,
+          "sha256": "65bbae885e70c5cfae95a20ae48370f873206951a9678660dab8e72a438ca80b"
+        },
+        {
+          "path": "usr/include/elfutils/version.h",
+          "size": 1274,
+          "sha256": "ccfdebcf441ec9f52db6a9eb80dc1a045bb19e0cf35e01af968722750fd1f960"
+        },
+        {
+          "path": "usr/include/gelf.h",
+          "size": 11406,
+          "sha256": "d6d269d49ab26b43ffad150e88542efbe6cc6f4db4dcf8b900559ad234179f71"
+        },
+        {
+          "path": "usr/include/libelf.h",
+          "size": 20318,
+          "sha256": "cd91b72953cc1a96a2598c6d1ee548924a68f084f8e1807fa9acd70246a6543a"
+        },
+        {
+          "path": "usr/include/nlist.h",
+          "size": 1601,
+          "sha256": "98a8ddd1004034aeff4cc6d18e5df23f55d2869d879735c3b571594a44ba1212"
+        }
       ]
     },
     "libzstd-dev": {
@@ -177,7 +258,21 @@
         }
       ],
       "required_headers": [
-        "usr/include/zstd.h"
+        {
+          "path": "usr/include/zdict.h",
+          "size": 26433,
+          "sha256": "02a34169467501fcc665cccb33f5bd455fdb665e9806851777dc8a6c4d5a75e3"
+        },
+        {
+          "path": "usr/include/zstd.h",
+          "size": 171378,
+          "sha256": "41d0f43747d0dee56f60bd10aed262f193d725b7e11eb9e94aa4ad80183c7da8"
+        },
+        {
+          "path": "usr/include/zstd_errors.h",
+          "size": 4532,
+          "sha256": "36dbd0a595852e10ff5b52992294f610055b8781101f4634036e05cf7d4bb506"
+        }
       ]
     },
     "zlib1g-dev": {
@@ -202,8 +297,16 @@
         }
       ],
       "required_headers": [
-        "usr/include/zlib.h",
-        "usr/include/zconf.h"
+        {
+          "path": "usr/include/zconf.h",
+          "size": 16646,
+          "sha256": "1800d30368be262886ccaa0b4e0a82240f4b7cd65704f480c988f1ccbf74e14e"
+        },
+        {
+          "path": "usr/include/zlib.h",
+          "size": 96778,
+          "sha256": "6f1c7ebe0ac0f0794852b770c20efae041a451f833c91f60f837b599ea81679e"
+        }
       ]
     }
   }

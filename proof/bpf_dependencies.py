@@ -771,7 +771,8 @@ def run_lock_consumer(
                 if abs_receipt == os.path.join(abs_output, art["path"]):
                     raise SecurityError(f"Receipt destination cannot overwrite required artifact: {abs_receipt}")
             for hdr in p_info.get("required_headers", []):
-                if abs_receipt == os.path.join(abs_output, hdr):
+                rel_h = hdr["path"] if isinstance(hdr, dict) else hdr
+                if abs_receipt == os.path.join(abs_output, rel_h):
                     raise SecurityError(f"Receipt destination cannot overwrite required header: {abs_receipt}")
 
     # Strict approved pockets allowlist enforcement before any I/O
@@ -1008,6 +1009,7 @@ def run_lock_consumer(
 
         # Stage 7: Post-extraction Artifact & Prefix Verification with Link Containment
         staged_archives_summary = {}
+        staged_headers_summary = {}
         real_output_root = os.path.realpath(abs_output)
 
         for pkg_name, _, pkg_info in staged_deb_files:
@@ -1038,12 +1040,32 @@ def run_lock_consumer(
                 }
 
             for hdr in pkg_info["required_headers"]:
-                full_hdr_path = os.path.join(abs_output, hdr)
+                rel_hdr_path = hdr["path"] if isinstance(hdr, dict) else hdr
+                expected_hdr_size = hdr.get("size") if isinstance(hdr, dict) else None
+                expected_hdr_sha = hdr.get("sha256") if isinstance(hdr, dict) else None
+
+                full_hdr_path = os.path.join(abs_output, rel_hdr_path)
                 if not os.path.isfile(full_hdr_path):
-                    raise SecurityError(f"Required header missing after extraction: {hdr}")
+                    raise SecurityError(f"Required header missing after extraction: {rel_hdr_path}")
                 real_hdr_path = os.path.realpath(full_hdr_path)
                 if not real_hdr_path.startswith(real_output_root + "/") and real_hdr_path != real_output_root:
-                    raise SecurityError(f"Extracted header escapes prefix: {hdr} -> {real_hdr_path}")
+                    raise SecurityError(f"Extracted header escapes prefix: {rel_hdr_path} -> {real_hdr_path}")
+
+                actual_hdr_size = os.path.getsize(full_hdr_path)
+                actual_hdr_sha = sha256_file(full_hdr_path)
+                if expected_hdr_size is not None and actual_hdr_size != expected_hdr_size:
+                    raise SecurityError(
+                        f"Extracted header size mismatch for {rel_hdr_path}: got {actual_hdr_size}, expected {expected_hdr_size}"
+                    )
+                if expected_hdr_sha is not None and actual_hdr_sha != expected_hdr_sha:
+                    raise SecurityError(
+                        f"Extracted header SHA256 mismatch for {rel_hdr_path}: got {actual_hdr_sha}, expected {expected_hdr_sha}"
+                    )
+                staged_headers_summary[rel_hdr_path] = {
+                    "package": pkg_name,
+                    "size": actual_hdr_size,
+                    "sha256": actual_hdr_sha
+                }
 
         # Verify EXACT four static archives contract
         if set(staged_archives_summary.keys()) != REQUIRED_STATIC_ARCHIVES:
@@ -1070,7 +1092,9 @@ def run_lock_consumer(
             "packages": verified_packages_summary,
             "staged_prefix": abs_output,
             "staged_static_archives": staged_archives_summary,
-            "required_archives_count": len(staged_archives_summary)
+            "staged_headers": staged_headers_summary,
+            "required_archives_count": len(staged_archives_summary),
+            "required_headers_count": len(staged_headers_summary)
         }
 
         receipt_dir = os.path.dirname(abs_receipt)

@@ -100,6 +100,11 @@ class TestLockStructure(unittest.TestCase):
             self.assertEqual(len(pkg_info["sha256"]), 64)
             self.assertTrue(pkg_info["required_artifacts"])
             self.assertTrue(pkg_info["required_headers"])
+            for hdr in pkg_info["required_headers"]:
+                self.assertIsInstance(hdr, dict)
+                self.assertTrue(hdr["path"].startswith("usr/include/"))
+                self.assertGreater(hdr["size"], 0)
+                self.assertEqual(len(hdr["sha256"]), 64)
             self.assertTrue(pkg_info["exclusion_rationale"])
 
 
@@ -610,10 +615,10 @@ class TestExactContractEnforcement(unittest.TestCase):
                 "keyring_sha256": mock_keyring_sha
             },
             "packages": {
-                "libbpf-dev": {"required_artifacts": [{"path": "usr/lib/x86_64-linux-gnu/libbpf.a"}], "required_headers": ["usr/include/bpf/bpf.h"]},
-                "libelf-dev": {"required_artifacts": [{"path": "usr/lib/x86_64-linux-gnu/libelf.a"}], "required_headers": ["usr/include/libelf.h"]},
-                "libzstd-dev": {"required_artifacts": [{"path": "usr/lib/x86_64-linux-gnu/libzstd.a"}], "required_headers": ["usr/include/zstd.h"]},
-                "zlib1g-dev": {"required_artifacts": [{"path": "usr/lib/x86_64-linux-gnu/libz.a"}], "required_headers": ["usr/include/zlib.h"]}
+                "libbpf-dev": {"required_artifacts": [{"path": "usr/lib/x86_64-linux-gnu/libbpf.a"}], "required_headers": [{"path": "usr/include/bpf/bpf.h", "size": 22939, "sha256": "09fdac5185d030bc606a6bb67933fdf162c5db60a6b6eea7d2e13584378672bb"}]},
+                "libelf-dev": {"required_artifacts": [{"path": "usr/lib/x86_64-linux-gnu/libelf.a"}], "required_headers": [{"path": "usr/include/libelf.h", "size": 20318, "sha256": "cd91b72953cc1a96a2598c6d1ee548924a68f084f8e1807fa9acd70246a6543a"}]},
+                "libzstd-dev": {"required_artifacts": [{"path": "usr/lib/x86_64-linux-gnu/libzstd.a"}], "required_headers": [{"path": "usr/include/zstd.h", "size": 171378, "sha256": "41d0f43747d0dee56f60bd10aed262f193d725b7e11eb9e94aa4ad80183c7da8"}]},
+                "zlib1g-dev": {"required_artifacts": [{"path": "usr/lib/x86_64-linux-gnu/libz.a"}], "required_headers": [{"path": "usr/include/zlib.h", "size": 96778, "sha256": "6f1c7ebe0ac0f0794852b770c20efae041a451f833c91f60f837b599ea81679e"}]}
             },
             "metadata_pockets": {
                 "noble": {},
