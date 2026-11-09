@@ -1,0 +1,47 @@
+name: Qualify isolated Linux compiler
+
+on:
+  push:
+    branches:
+      - proof/pr147-format-observer-20261109
+    paths:
+      - .github/workflows/pr147-linux-compiler.yml
+
+permissions:
+  contents: read
+
+jobs:
+  compiler:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: jwaldrip/iyi
+          ref: 2cab9c2157b374d46b919f1c9779d75b92d03a1b
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Build and run without network or credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$(mktemp -d "$RUNNER_TEMP/iyi-isolated-build.XXXXXX")"
+          trap 'rm -rf "$root"' EXIT
+          git clone --quiet --no-local "$GITHUB_WORKSPACE" "$root/src"
+          git -C "$root/src" remote remove origin
+          mkdir "$root/home"
+          image='crystallang/crystal@sha256:34ac3d5dd5098f85790b800c046f2a6d7fc292193a706d7a3f1acc5f004b94c3'
+          docker pull "$image"
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --init \
+            --user "$(id -u):$(id -g)" \
+            --mount "type=bind,src=$root,dst=/work" \
+            --tmpfs /tmp:rw,nosuid,nodev,size=2g \
+            --workdir /work/src --env HOME=/work/home \
+            "$image" bash -euo pipefail -c '
+              test ! -e /var/run/docker.sock
+              make crystal
+              make -o .build/crystal iyi
+              .build/iyi --version
+              ./bin/iyi run samples/iyi/hello.iyi
+            '
