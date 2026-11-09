@@ -18,6 +18,7 @@ import re
 import platform
 import secrets
 import shutil
+import stat
 import signal
 import subprocess
 import sys
@@ -49,20 +50,109 @@ def sha256_file(path: str) -> str:
 
 
 def compute_inputs_bundle_digest(inputs_dir: str) -> str:
-    """Compute deterministic SHA256 digest of offline inputs directory."""
-    manifest_candidates = ("bundle.sha256", "inputs.sha256", "SHA256SUMS", "manifest.json")
-    for candidate in manifest_candidates:
-        cand_path = os.path.join(inputs_dir, candidate)
-        if os.path.isfile(cand_path):
-            return sha256_file(cand_path)
-    hasher = hashlib.sha256()
-    for root, _, files in sorted(os.walk(inputs_dir)):
-        for fname in sorted(files):
-            if fname.startswith("."):
-                continue
+    """
+    Compute deterministic SHA256 digest of offline inputs directory.
+
+    Fails closed with IdentityError on:
+      - non-existent or non-directory path (INPUTS-DIR-INVALID)
+      - any symbolic links in files or directories (INPUTS-SYMLINK)
+      - any non-regular files like sockets, FIFOs, devices (INPUTS-SPECIAL-FILE)
+      - path traversal outside inputs root (INPUTS-TRAVERSAL)
+      - manifest digest mismatch or unmanifested files when manifest present (INPUTS-MANIFEST-MISMATCH)
+
+    Binds every byte, mode, size, and relative path (including all dotfiles/dotdirs).
+    """
+    inputs_real = os.path.realpath(inputs_dir)
+    if not os.path.exists(inputs_real):
+        raise IdentityError("INPUTS-DIR-INVALID", f"inputs_dir does not exist: {inputs_dir}")
+    if not os.path.isdir(inputs_real):
+        raise IdentityError("INPUTS-DIR-INVALID", f"inputs_dir is not a directory: {inputs_dir}")
+
+    entries: list[tuple[str, str, int, int, str]] = []
+    seen_relpaths: set[str] = set()
+
+    for root, dirnames, filenames in os.walk(inputs_real, followlinks=False):
+        if os.path.islink(root):
+            rel_root = os.path.relpath(root, inputs_real)
+            raise IdentityError("INPUTS-SYMLINK", f"symbolic link directory forbidden in inputs bundle: {rel_root}")
+
+        for dname in sorted(dirnames):
+            dpath = os.path.join(root, dname)
+            if os.path.islink(dpath):
+                rel_d = os.path.relpath(dpath, inputs_real)
+                raise IdentityError("INPUTS-SYMLINK", f"symbolic link directory forbidden in inputs bundle: {rel_d}")
+            st = os.lstat(dpath)
+            if not stat.S_ISDIR(st.st_mode):
+                rel_d = os.path.relpath(dpath, inputs_real)
+                raise IdentityError("INPUTS-SPECIAL-FILE", f"special directory entry forbidden in inputs bundle: {rel_d}")
+
+        for fname in sorted(filenames):
             fpath = os.path.join(root, fname)
-            rel = os.path.relpath(fpath, inputs_dir)
-            hasher.update(f"{rel}:{sha256_file(fpath)}\n".encode("utf-8"))
+            rel_path = os.path.relpath(fpath, inputs_real)
+
+            resolved = os.path.realpath(fpath)
+            if resolved != fpath and not resolved.startswith(inputs_real + os.sep):
+                raise IdentityError("INPUTS-TRAVERSAL", f"path escapes inputs bundle root: {rel_path}")
+
+            if os.path.islink(fpath):
+                raise IdentityError("INPUTS-SYMLINK", f"symbolic link forbidden in inputs bundle: {rel_path}")
+
+            st = os.lstat(fpath)
+            if not stat.S_ISREG(st.st_mode):
+                raise IdentityError("INPUTS-SPECIAL-FILE", f"special file forbidden in inputs bundle: {rel_path}")
+
+            file_mode = stat.S_IMODE(st.st_mode)
+            file_size = st.st_size
+            file_sha = sha256_file(fpath)
+            entries.append((rel_path, fpath, file_mode, file_size, file_sha))
+            seen_relpaths.add(rel_path)
+
+    entries.sort(key=lambda e: e[0])
+
+    manifest_files = {"bundle.sha256", "inputs.sha256", "SHA256SUMS"}
+    found_manifests = [e for e in entries if e[0] in manifest_files]
+    file_map = {e[0]: e[4] for e in entries}
+
+    for m_entry in found_manifests:
+        m_rel, m_abs, _, _, _ = m_entry
+        with open(m_abs, "r", encoding="utf-8", errors="replace") as mf:
+            m_lines = mf.read().splitlines()
+        manifest_items: dict[str, str] = {}
+        for line_no, line in enumerate(m_lines, 1):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split(None, 1)
+            if len(parts) != 2:
+                raise IdentityError("INPUTS-MANIFEST-MISMATCH", f"malformed manifest line {line_no} in {m_rel}")
+            expected_sha, target_file = parts[0].strip(), parts[1].strip().lstrip("*").strip()
+            target_rel = os.path.normpath(target_file)
+            if target_rel.startswith("..") or os.path.isabs(target_rel):
+                raise IdentityError("INPUTS-TRAVERSAL", f"manifest references path outside root: {target_file}")
+            manifest_items[target_rel] = expected_sha
+
+        for target_rel, expected_sha in manifest_items.items():
+            if target_rel not in file_map:
+                raise IdentityError("INPUTS-MANIFEST-MISMATCH", f"manifest item missing from bundle: {target_rel}")
+            actual_sha = file_map[target_rel]
+            if actual_sha != expected_sha:
+                raise IdentityError(
+                    "INPUTS-MANIFEST-MISMATCH",
+                    f"manifest hash mismatch for {target_rel}: expected {expected_sha}, got {actual_sha}",
+                )
+
+        for rel_path in file_map:
+            if rel_path not in manifest_files and rel_path not in manifest_items:
+                raise IdentityError(
+                    "INPUTS-MANIFEST-MISMATCH",
+                    f"file {rel_path} in bundle is not listed in manifest {m_rel}",
+                )
+
+    hasher = hashlib.sha256()
+    for rel_path, _, file_mode, file_size, file_sha in entries:
+        entry_record = f"{rel_path}\0{oct(file_mode)}\0{file_size}\0{file_sha}\n"
+        hasher.update(entry_record.encode("utf-8"))
+
     return hasher.hexdigest()
 
 def check_disk_space(path: str, min_gb: float = 20.0) -> float:

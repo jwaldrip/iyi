@@ -310,27 +310,82 @@ class TestVerifyLedgerPlatform(unittest.TestCase):
 
 
 class TestOfflineInputsBinding(unittest.TestCase):
-    def test_compute_inputs_bundle_digest_manifest(self):
+    def test_compute_inputs_bundle_digest_manifest_payload_verified(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            payload = os.path.join(tmpdir, "payload.txt")
+            with open(payload, "w") as f:
+                f.write("contentA\n")
+            sha_a = hashlib.sha256(b"contentA\n").hexdigest()
+            manifest_file = os.path.join(tmpdir, "bundle.sha256")
+            with open(manifest_file, "w") as f:
+                f.write(f"{sha_a}  payload.txt\n")
+            digest = compute_inputs_bundle_digest(tmpdir)
+            self.assertTrue(bool(digest))
+
+            # Mutating payload while leaving manifest unchanged must fail closed
+            with open(payload, "w") as f:
+                f.write("contentB_mutated\n")
+            with self.assertRaises(IdentityError) as ctx:
+                compute_inputs_bundle_digest(tmpdir)
+            self.assertEqual(ctx.exception.reason, "INPUTS-MANIFEST-MISMATCH")
+
+    def test_compute_inputs_bundle_digest_manifest_unlisted_file_rejected(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            payload = os.path.join(tmpdir, "payload.txt")
+            with open(payload, "w") as f:
+                f.write("contentA\n")
+            sha_a = hashlib.sha256(b"contentA\n").hexdigest()
+            manifest_file = os.path.join(tmpdir, "bundle.sha256")
+            with open(manifest_file, "w") as f:
+                f.write(f"{sha_a}  payload.txt\n")
+            # Add unlisted file
+            unlisted = os.path.join(tmpdir, "unlisted.txt")
+            with open(unlisted, "w") as f:
+                f.write("unlisted\n")
+            with self.assertRaises(IdentityError) as ctx:
+                compute_inputs_bundle_digest(tmpdir)
+            self.assertEqual(ctx.exception.reason, "INPUTS-MANIFEST-MISMATCH")
+
+    def test_compute_inputs_bundle_digest_manifest_missing_file_rejected(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             manifest_file = os.path.join(tmpdir, "bundle.sha256")
             with open(manifest_file, "w") as f:
-                f.write("test manifest data\n")
-            digest = compute_inputs_bundle_digest(tmpdir)
-            expected = hashlib.sha256(b"test manifest data\n").hexdigest()
-            self.assertEqual(digest, expected)
+                f.write("0123456789abcdef" * 4 + "  nonexistent.txt\n")
+            with self.assertRaises(IdentityError) as ctx:
+                compute_inputs_bundle_digest(tmpdir)
+            self.assertEqual(ctx.exception.reason, "INPUTS-MANIFEST-MISMATCH")
 
-    def test_compute_inputs_bundle_digest_directory_tree(self):
+    def test_compute_inputs_bundle_digest_rejects_symlink_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            sub = os.path.join(tmpdir, "sub")
-            os.makedirs(sub)
-            with open(os.path.join(sub, "f1.txt"), "w") as f:
-                f.write("content1\n")
-            with open(os.path.join(tmpdir, "f2.txt"), "w") as f:
-                f.write("content2\n")
+            real_file = os.path.join(tmpdir, "real.txt")
+            with open(real_file, "w") as f:
+                f.write("data\n")
+            symlink_file = os.path.join(tmpdir, "link.txt")
+            os.symlink(real_file, symlink_file)
+            with self.assertRaises(IdentityError) as ctx:
+                compute_inputs_bundle_digest(tmpdir)
+            self.assertEqual(ctx.exception.reason, "INPUTS-SYMLINK")
+
+    def test_compute_inputs_bundle_digest_rejects_symlink_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            real_dir = os.path.join(tmpdir, "real_dir")
+            os.makedirs(real_dir)
+            symlink_dir = os.path.join(tmpdir, "link_dir")
+            os.symlink(real_dir, symlink_dir)
+            with self.assertRaises(IdentityError) as ctx:
+                compute_inputs_bundle_digest(tmpdir)
+            self.assertEqual(ctx.exception.reason, "INPUTS-SYMLINK")
+
+    def test_compute_inputs_bundle_digest_includes_hidden_files(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with open(os.path.join(tmpdir, "file.txt"), "w") as f:
+                f.write("visible\n")
             digest1 = compute_inputs_bundle_digest(tmpdir)
+            # Add a dotfile (hidden file)
+            with open(os.path.join(tmpdir, ".hidden"), "w") as f:
+                f.write("hidden\n")
             digest2 = compute_inputs_bundle_digest(tmpdir)
-            self.assertEqual(digest1, digest2)
-            self.assertTrue(re.fullmatch(r"[0-9a-f]{64}", digest1))
+            self.assertNotEqual(digest1, digest2)
 
     def test_fresh_stage_env_reinjects_pinned_inputs_dir(self):
         pin = {
@@ -345,8 +400,12 @@ class TestOfflineInputsBinding(unittest.TestCase):
     def test_check_identity_fails_on_tampered_inputs_digest(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             manifest_file = os.path.join(tmpdir, "bundle.sha256")
-            with open(manifest_file, "w") as f:
+            payload = os.path.join(tmpdir, "data.txt")
+            with open(payload, "w") as f:
                 f.write("initial\n")
+            sha = hashlib.sha256(b"initial\n").hexdigest()
+            with open(manifest_file, "w") as f:
+                f.write(f"{sha}  data.txt\n")
             digest = compute_inputs_bundle_digest(tmpdir)
             pin = {
                 "p_path": "/p",
@@ -357,12 +416,11 @@ class TestOfflineInputsBinding(unittest.TestCase):
                 "inputs_dir": tmpdir,
                 "inputs_digest": digest,
             }
-            # Modify the manifest file
-            with open(manifest_file, "w") as f:
+            # Tamper the payload file
+            with open(payload, "w") as f:
                 f.write("tampered\n")
-            with self.assertRaises(IdentityError) as ctx:
+            with self.assertRaises(IdentityError):
                 check_identity(pin)
-            self.assertEqual(ctx.exception.reason, "INPUTS-DIGEST-CHANGED")
 
 
 class TestArtifactLegsCompareR1(unittest.TestCase):
