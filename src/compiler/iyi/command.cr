@@ -1168,6 +1168,10 @@ class Iyi::Command
     end
 
     compiler.link_flags = link_flags.join(' ') unless link_flags.empty?
+    if compiler.capture_diagnostic_provenance && command != "tool bind" &&
+       (command != "build" || compiler.no_codegen?)
+      abort! "--capture-diagnostic-provenance requires tool bind or a bind keep build", :USAGE_ERROR
+    end
 
     filenames += opt_filenames.not_nil!
     arguments = opt_arguments.not_nil!

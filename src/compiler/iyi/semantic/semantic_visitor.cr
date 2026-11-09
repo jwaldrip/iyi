@@ -1274,15 +1274,36 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
   # has to be able to say what it was made from.
   private def define_iyi_artifact_regexes(artifact : IyiMod::Artifact,
                                           artifact_path : String) : Nil
-    return if artifact.regexes.empty?
-
     # The artifact's own path, for the reason the reads below carry one: a
     # constant's initialiser becomes a call in a function with debug info, and
     # LLVM wants a location for it.
     location = Location.new(artifact_path, 1, 1)
+    diagnostic = if @program.diagnostic_capture
+                   section = artifact.diagnostic_provenance || raise "regex artifact lacks diagnostics"
+                   section.validate_regexes!(artifact.regexes)
+                   section
+                 end
+    return if artifact.regexes.empty?
 
     artifact.regexes.each do |regex|
-      next if @program.types[regex.name]?
+      record = nil.as(IyiMod::DiagnosticRegex?)
+      if section = diagnostic
+        incoming = section.regexes[regex.name]? || raise "missing regex diagnostic record"
+        record = incoming
+        incoming.literal_origins.each do |origin|
+          @program.record_regex_occurrence(regex.name, regex.pattern, regex.options, origin)
+        end
+      end
+      if @program.types[regex.name]?
+        if diagnostic
+          existing = @program.iyi_regex_constants[regex.name]? || raise "existing regex lacks semantic provenance"
+          unless existing[0] == regex.pattern && existing[1].value.to_u32 == regex.options
+            raise "existing regex has conflicting contents"
+          end
+          @program.diagnostic_regex_initializers[regex.name]? || raise "existing regex lacks initializer origin"
+        end
+        next
+      end
 
       options = RegexOptions.new(regex.options.to_i32)
       value =
@@ -1290,18 +1311,16 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
           # An iyi module's literal, rebuilt the way it was built, its flags
           # included: without them `/a/i` read from an artifact would match
           # only `a`.
-          Program.iyi_regex_compile_call(StringLiteral.new(regex.pattern).at(location), options, location)
+          Program.iyi_regex_compile_call(StringLiteral.new(regex.pattern).at(location), options, location,
+            diagnostic_literal_origin: record.try(&.initializer_origin))
         else
-          Call.new(
-            Path.global("Regex").at(location), "new",
-            StringLiteral.new(regex.pattern).at(location),
-            Call.new(Path.global(["Regex", "Options"]).at(location), "new",
-              NumberLiteral.new(options.value.to_s).at(location)).at(location)
-          ).at(location)
+          Program.crystal_regex_compile_call(StringLiteral.new(regex.pattern).at(location), options, location,
+            diagnostic_literal_origin: record.try(&.initializer_origin))
         end
 
       @program.types[regex.name] = Const.new(@program, @program, regex.name, value)
       @program.iyi_regex_constants[regex.name] = {regex.pattern, options}
+      @program.select_regex_initializer(regex.name, record.not_nil!.initializer_origin) if diagnostic
     end
   end
 
@@ -1662,7 +1681,9 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
       path = Path.new(prefix.split("::") + target.names)
       path.exported = target.exported?
       path.at(target.location)
-      statements << Assign.new(path, node.value).at(node.location)
+      assignment = Assign.new(path, node.value).at(node.location)
+      assignment.diagnostic_origin = node.diagnostic_origin if @program.diagnostic_capture
+      statements << assignment
     else
       if expansion = iyi_expansion(node)
         iyi_collect_type_constants expansion, statements, prefix

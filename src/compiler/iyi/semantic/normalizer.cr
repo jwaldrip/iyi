@@ -182,6 +182,10 @@ module Iyi
         cleanup.diagnostic_origin = cleanup_literal.diagnostic_origin
         push = Call.global("__iyi_defer_push", cleanup_literal).at(deferred)
         pop = Call.new(nil, "__iyi_defer_pop_run", global: true).at(deferred)
+        if origin = deferred.diagnostic_origin
+          push.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "defer_runtime", "push")
+          pop.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "defer_runtime", "pop")
+        end
         disarm = Assign.new(live.clone, BoolLiteral.new(false).at(deferred)).at(deferred)
         ordinary_exit = [disarm, pop] of ASTNode
         ordinary_exit << Assign.new(live.clone, BoolLiteral.new(true).at(deferred)).at(deferred) if outer
@@ -323,7 +327,11 @@ module Iyi
       end
 
       group_var = Var.new(group_param.name).at(node)
-      rewritten << Call.new(group_var.clone, "join").at(node) unless propagated
+      unless propagated
+        join = Call.new(group_var.clone, "join").at(node)
+        join.diagnostic_origin = group_call_origin(node, "join")
+        rewritten << join
+      end
 
       values = [] of ASTNode
       tuple = [] of ASTNode
@@ -331,7 +339,9 @@ module Iyi
         value = Var.new(program.new_temp_var_name).at(node)
         values << value
         tuple << value.clone if slots[index]
-        rewritten << Assign.new(value.clone, Call.new(handle.clone, "value").at(node)).at(node)
+        read_value = Call.new(handle.clone, "value").at(node)
+        read_value.diagnostic_origin = group_call_origin(node, "value:#{index}") if node.diagnostic_origin
+        rewritten << Assign.new(value.clone, read_value).at(node)
       end
 
       extraction = TupleLiteral.new(tuple).at(node).as(ASTNode)
@@ -342,11 +352,20 @@ module Iyi
 
       if handles.size > 1
         first = Var.new(program.new_temp_var_name).at(node)
-        rewritten << Assign.new(first.clone, Call.new(group_var.clone, "first_failure").at(node)).at(node)
-        handles.zip(values).reverse_each do |handle, value|
+        first_failure = Call.new(group_var.clone, "first_failure").at(node)
+        first_failure.diagnostic_origin = group_call_origin(node, "first_failure")
+        rewritten << Assign.new(first.clone, first_failure).at(node)
+        handles.size.times do |offset|
+          index = handles.size - 1 - offset
+          handle = handles[index]
+          value = values[index]
           is_error = IsA.new(value.clone, Path.global("Error").at(node)).at(node)
-          fiber_id = Call.new(Call.new(handle.clone, "fiber").at(node), "object_id").at(node)
+          fiber = Call.new(handle.clone, "fiber").at(node)
+          fiber.diagnostic_origin = group_call_origin(node, "fiber:#{index}") if node.diagnostic_origin
+          fiber_id = Call.new(fiber, "object_id").at(node)
+          fiber_id.diagnostic_origin = group_call_origin(node, "object_id:#{index}") if node.diagnostic_origin
           stopped_the_group = Call.new(fiber_id, "==", first.clone).at(node)
+          stopped_the_group.diagnostic_origin = group_call_origin(node, "compare:#{index}") if node.diagnostic_origin
           extraction = If.new(And.new(is_error, stopped_the_group).at(node), value.clone, extraction).at(node)
         end
       end
@@ -357,6 +376,10 @@ module Iyi
       # this returns into normalizes the new body instead of reasking.
       node.iyi_group = false
       node
+    end
+
+    private def group_call_origin(node : Call, slot : String) : DiagnosticOrigin?
+      node.diagnostic_origin.try { |origin| DiagnosticOrigin::Synthetic.new(origin, "group_lowering", slot) }
     end
 
     # The statement's own spawn, when the statement is exactly a direct one:
@@ -470,10 +493,12 @@ module Iyi
           transform_many node.args
           left = obj
           right = Call.new(middle.clone, node.name, node.args).at(middle)
+          right.diagnostic_origin = node.diagnostic_origin
         else
           temp_var = program.new_temp_var
           temp_assign = Assign.new(temp_var.clone, middle).at(middle)
           left = Call.new(obj.obj, obj.name, temp_assign).at(obj.obj)
+          left.diagnostic_origin = obj.diagnostic_origin
           right = Call.new(temp_var.clone, node.name, node.args).at(node)
         end
         node = And.new(left, right).at(left)
@@ -641,7 +666,15 @@ module Iyi
         if default = node.default
           default.transform(self)
         else
-          Call.global("raise", Call.new(temp_var.clone, "message").at(node)).at(node)
+          message = Call.new(temp_var.clone, "message").at(node)
+          if origin = node.diagnostic_origin
+            message.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "recover_panic", "message")
+          end
+          panic = Call.global("raise", message).at(node)
+          if origin = node.diagnostic_origin
+            panic.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "recover_panic", "raise")
+          end
+          panic
         end
 
       value = If.new(check, recovery, temp_var.clone).at(node)
@@ -699,6 +732,10 @@ module Iyi
       end
     end
 
+    private def compound_call_origin(node : OpAssign, slot : String) : DiagnosticOrigin?
+      node.diagnostic_origin.try { |origin| DiagnosticOrigin::Synthetic.new(origin, "compound_assignment", slot) }
+    end
+
     def transform_op_assign_call(node, target)
       obj = target.obj.not_nil!
 
@@ -722,6 +759,7 @@ module Iyi
 
       # (2) = tmp.exp
       call = Call.new(tmp.clone, target.name).at(node)
+      call.diagnostic_origin = compound_call_origin(node, "getter")
       call.name_location = node.name_location
 
       case node.op
@@ -730,6 +768,7 @@ module Iyi
         #
         # (3) = tmp.exp=(b)
         right = Call.new(tmp.clone, "#{target.name}=", node.value).at(node)
+        right.diagnostic_origin = compound_call_origin(node, "setter")
         right.name_location = node.name_location
 
         # (4) = (2) || (3)
@@ -739,6 +778,7 @@ module Iyi
         #
         # (3) = tmp.exp=(b)
         right = Call.new(tmp.clone, "#{target.name}=", node.value).at(node)
+        right.diagnostic_origin = compound_call_origin(node, "setter")
         right.name_location = node.name_location
 
         # (4) = (2) && (3)
@@ -750,6 +790,7 @@ module Iyi
 
         # (4) = tmp.exp=((3))
         call = Call.new(tmp.clone, "#{target.name}=", call).at(node)
+        call.diagnostic_origin = compound_call_origin(node, "setter")
         call.name_location = node.name_location
       end
 
@@ -804,6 +845,7 @@ module Iyi
         #
         # (2) = tmp[tmp1, tmp2, ...]?
         call = Call.new(tmp.clone, "[]?", tmp_args).at(node)
+        call.diagnostic_origin = compound_call_origin(node, "getter")
         call.name_location = node.name_location
 
         # (3) = tmp[tmp1, tmp2, ...] = b
@@ -811,6 +853,7 @@ module Iyi
         tmp_args.each { |arg| args << arg.clone }
         args << node.value
         right = Call.new(tmp.clone, "[]=", args).at(node)
+        right.diagnostic_origin = compound_call_origin(node, "setter")
         right.name_location = node.name_location
 
         # (3) = (2) || (4)
@@ -820,6 +863,7 @@ module Iyi
         #
         # (2) = tmp[tmp1, tmp2, ...]?
         call = Call.new(tmp.clone, "[]?", tmp_args).at(node)
+        call.diagnostic_origin = compound_call_origin(node, "getter")
         call.name_location = node.name_location
 
         # (3) = tmp[tmp1, tmp2, ...] = b
@@ -827,6 +871,7 @@ module Iyi
         tmp_args.each { |arg| args << arg.clone }
         args << node.value
         right = Call.new(tmp.clone, "[]=", args).at(node)
+        right.diagnostic_origin = compound_call_origin(node, "setter")
         right.name_location = node.name_location
 
         # (3) = (2) && (4)
@@ -834,6 +879,7 @@ module Iyi
       else
         # (2) = tmp[tmp1, tmp2, ...]
         call = Call.new(tmp.clone, "[]", tmp_args).at(node)
+        call.diagnostic_origin = compound_call_origin(node, "getter")
         call.name_location = node.name_location
 
         # (3) = (2) + b
@@ -845,6 +891,7 @@ module Iyi
         tmp_args.each { |arg| args << arg.clone }
         args << call
         call = Call.new(tmp.clone, "[]=", args).at(node)
+        call.diagnostic_origin = compound_call_origin(node, "setter")
         call.name_location = node.name_location
       end
 

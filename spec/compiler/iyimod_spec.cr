@@ -1,5 +1,12 @@
 require "../spec_helper"
 require "./spec_helper"
+require "../support/env"
+
+class Iyi::SemanticVisitor
+  def import_regex_fixture(artifact : Iyi::IyiMod::Artifact, path : String) : Nil
+    define_iyi_artifact_regexes(artifact, path)
+  end
+end
 
 describe "diagnostic token input offsets" do
   it "tracks byte offsets through skipped comments and lookahead" do
@@ -78,6 +85,222 @@ describe Iyi::DiagnosticOrigin do
     anchor.role.should eq("arrow")
     anchor.origin.should eq(origin)
     io.to_s.byte_slice(anchor.offset, 2).should eq("->")
+  end
+
+  it "carries an operator invocation at the operator token" do
+    parser = Iyi::Parser.new("1 + 2")
+    parser.filename = "/src/math.cr"
+    parser.diagnostic_capture = true
+    parser.diagnostic_source_file = "/src/math.cr"
+    call = parser.parse.as(Iyi::Call)
+    origin = call.diagnostic_origin.as(Iyi::DiagnosticOrigin::Written)
+    origin.input_byte_offset.should eq(2)
+    io = IO::Memory.new
+    anchors = [] of Iyi::DiagnosticAnchor
+    call.to_s(io, diagnostic_anchors: anchors)
+    text = io.to_s
+    anchors.size.should eq(1)
+    text.byte_slice(anchors.first.offset, 1).should eq("+")
+    restored = Iyi::Parser.new(text)
+    restored.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, text.bytesize,
+      ::Crystal::Digest::SHA256.hexdigest(text), anchors)]
+    restored.parse.as(Iyi::Call).diagnostic_origin.should eq(origin)
+  end
+
+  it "derives a compound operator call from its written assignment token" do
+    parser = Iyi::Parser.new("@x += 1")
+    parser.filename = "/src/math.cr"
+    parser.diagnostic_capture = true
+    parser.diagnostic_source_file = "/src/math.cr"
+    assignment = parser.parse.as(Iyi::OpAssign)
+    origin = assignment.diagnostic_origin.as(Iyi::DiagnosticOrigin::Written)
+    origin.input_byte_offset.should eq(3)
+    io = IO::Memory.new
+    anchors = [] of Iyi::DiagnosticAnchor
+    assignment.to_s(io, diagnostic_anchors: anchors)
+    text = io.to_s
+    restored = Iyi::Parser.new(text)
+    restored.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, text.bytesize,
+      ::Crystal::Digest::SHA256.hexdigest(text), anchors)]
+    restored.parse.as(Iyi::OpAssign).diagnostic_origin.should eq(origin)
+    lowered = Iyi::Program.new.normalize(assignment).as(Iyi::Assign)
+    lowered.value.as(Iyi::Call).diagnostic_origin.should eq(origin)
+  end
+
+  it "retains every interned regex occurrence and the actual initializer origin" do
+    program = Iyi::Program.new
+    program.diagnostic_capture = true
+    expander = Iyi::LiteralExpander.new(program)
+    location = Iyi::Location.new("/src/literals.cr", 10, 4)
+    invocation = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/literals.cr", 20, "Call", "method")
+    macro_origin = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.cr", 2, "Macro", "keyword")
+    origins = [
+      Iyi::DiagnosticOrigin::Written.new("app/main", "/src/literals.cr", 4, "Literal", "regex"),
+      Iyi::DiagnosticOrigin::Expanded.new(invocation, macro_origin, "sha256:" + "0" * 64, 8, "Literal", "regex"),
+    ] of Iyi::DiagnosticOrigin
+    references = origins.map do |origin|
+      literal = Iyi::RegexLiteral.new(Iyi::StringLiteral.new("same")).at(location)
+      literal.diagnostic_origin = origin
+      expander.expand(literal).as(Iyi::Path)
+    end
+    references.map(&.diagnostic_origin).should eq(origins)
+    name = Iyi::Program.regex_const_name("same", Iyi::RegexOptions::None)
+    diagnostic = program.diagnostic_regex_record(name)
+    diagnostic.initializer_origin.should eq(origins.first)
+    diagnostic.literal_origins.should eq(origins.sort_by(&.to_json))
+    factory = program.types[name].as(Iyi::Const).value.as(Iyi::Call)
+    factory.diagnostic_origin.as(Iyi::DiagnosticOrigin::Synthetic).parent_origin.should eq(origins.first)
+    flags = factory.args.last.as(Iyi::Call)
+    flags.diagnostic_origin.as(Iyi::DiagnosticOrigin::Synthetic).parent_origin.should eq(origins.first)
+    section = Iyi::IyiMod::DiagnosticSection.new
+    section.add_regex(diagnostic)
+    wire = section.encode
+    expect_raises(Exception) { Iyi::IyiMod::DiagnosticSection.decode(wire[0, wire.size - 1]) }
+    artifact = sample_artifact
+    artifact.regexes << Iyi::IyiMod::RegexConst.new(name, "same", 0_u32)
+    artifact.diagnostic_provenance = section
+    with_temporary_file do |path|
+      Iyi::IyiMod.write artifact, path
+      restored = Iyi::IyiMod.read(path)
+      restored.diagnostic_provenance.not_nil!.regexes[name].should eq(diagnostic)
+      consumer = Iyi::Program.new
+      consumer.diagnostic_capture = true
+      visitor = Iyi::SemanticVisitor.new(consumer)
+      visitor.import_regex_fixture(restored, "/absent/first.iyimod")
+      selected = consumer.types[name].as(Iyi::Const)
+      selected.value.as(Iyi::Call).diagnostic_origin.as(Iyi::DiagnosticOrigin::Synthetic).parent_origin.should eq(origins.first)
+      second_section = Iyi::IyiMod::DiagnosticSection.new
+      second_section.add_regex(Iyi::IyiMod::DiagnosticRegex.new(name, "same", 0_u32, origins.last, [origins.last]))
+      second = sample_artifact
+      second.regexes << Iyi::IyiMod::RegexConst.new(name, "same", 0_u32)
+      second.diagnostic_provenance = second_section
+      visitor.import_regex_fixture(second, "/absent/second.iyimod")
+      consumer.types[name].same?(selected).should be_true
+      merged = consumer.diagnostic_regex_record(name)
+      merged.initializer_origin.should eq(origins.first)
+      merged.literal_origins.should eq(origins.sort_by(&.to_json))
+      other_name = Iyi::Program.regex_const_name("different", Iyi::RegexOptions::None)
+      expect_raises(Exception, /conflicting/) do
+        consumer.record_regex_occurrence(other_name, "different", 0_u32, origins.first)
+      end
+      reemitted = sample_artifact
+      reemitted.regexes << Iyi::IyiMod::RegexConst.new(name, "same", 0_u32)
+      reemitted_section = Iyi::IyiMod::DiagnosticSection.new
+      reemitted_section.add_regex(merged)
+      reemitted.diagnostic_provenance = reemitted_section
+      Iyi::IyiMod.write reemitted, path
+      Iyi::IyiMod.read(path).diagnostic_provenance.not_nil!.regexes[name].should eq(merged)
+      restored.diagnostic_provenance.not_nil!.regexes.clear
+      expect_raises(ArgumentError) { Iyi::IyiMod.write restored, path }
+    end
+  end
+
+  it "attributes native regex factory calls to the recorded initializer" do
+    origin = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 3, "Literal", "regex")
+    location = Iyi::Location.new("/absent/app.iyimod", 1, 1)
+    plain = Iyi::Program.iyi_regex_compile_call(Iyi::StringLiteral.new("x"), Iyi::RegexOptions::None, location,
+      diagnostic_literal_origin: origin)
+    plain.args.size.should eq(1)
+    plain.diagnostic_origin.as(Iyi::DiagnosticOrigin::Synthetic).parent_origin.should eq(origin)
+    flagged = Iyi::Program.iyi_regex_compile_call(Iyi::StringLiteral.new("x"), Iyi::RegexOptions::IGNORE_CASE, location,
+      diagnostic_literal_origin: origin)
+    flagged.args.size.should eq(2)
+    flagged.diagnostic_origin.as(Iyi::DiagnosticOrigin::Synthetic).parent_origin.should eq(origin)
+    flagged.args.last.as(Iyi::Call).diagnostic_origin.as(Iyi::DiagnosticOrigin::Synthetic).parent_origin.should eq(origin)
+  end
+
+  it "distinguishes structured group lowering slots" do
+    parent = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 5, "Call", "method")
+    first = Iyi::DiagnosticOrigin::Synthetic.new(parent, "group_lowering", "value:0")
+    second = Iyi::DiagnosticOrigin::Synthetic.new(parent, "group_lowering", "value:1")
+    malformed = Iyi::DiagnosticOrigin::Synthetic.new(parent, "group_lowering", "value:01")
+    first.valid_for_anchor?("Call", "method").should be_true
+    second.valid_for_anchor?("Call", "method").should be_true
+    first.should_not eq(second)
+    malformed.valid_for_anchor?("Call", "method").should be_false
+  end
+
+  it "keeps synthetic literal calls distinct at identical displayed locations" do
+    program = Iyi::Program.new
+    program.diagnostic_capture = true
+    expander = Iyi::LiteralExpander.new(program)
+    location = Iyi::Location.new("/src/main.iyi", 10, 4)
+    origins = [
+      Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 20, "Literal", "array"),
+      Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 30, "Literal", "array"),
+    ]
+    calls = origins.map do |origin|
+      literal = Iyi::ArrayLiteral.new([Iyi::NumberLiteral.new(1)] of Iyi::ASTNode).at(location)
+      literal.diagnostic_origin = origin
+      expansion = expander.expand(literal).as(Iyi::Expressions)
+      constructor = expansion.expressions.first.as(Iyi::Assign).value.as(Iyi::Call)
+      buffer = expansion.expressions[1].as(Iyi::Assign).value.as(Iyi::Call)
+      store = expansion.expressions[2].as(Iyi::Call)
+      constructor.diagnostic_origin.should_not eq(buffer.diagnostic_origin)
+      constructor.diagnostic_origin.should_not eq(store.diagnostic_origin)
+      buffer.diagnostic_origin.should_not eq(store.diagnostic_origin)
+      constructor.diagnostic_origin.not_nil!
+    end
+    calls[0].should_not eq(calls[1])
+    calls.each { |origin| origin.valid_for_anchor?("Call", "method").should be_true }
+    calls[0].as(Iyi::DiagnosticOrigin::Synthetic).parent_origin.should eq(origins[0])
+    calls[1].as(Iyi::DiagnosticOrigin::Synthetic).parent_origin.should eq(origins[1])
+  end
+
+  it "distinguishes range and interpolation calls at one displayed location" do
+    program = Iyi::Program.new
+    program.diagnostic_capture = true
+    expander = Iyi::LiteralExpander.new(program)
+    location = Iyi::Location.new("/src/main.iyi", 10, 4)
+    range = Iyi::RangeLiteral.new(Iyi::NumberLiteral.new(1), Iyi::NumberLiteral.new(2), false).at(location)
+    range.diagnostic_origin = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 20, "Literal", "range")
+    interpolation = Iyi::StringInterpolation.new([Iyi::StringLiteral.new("x"), Iyi::NumberLiteral.new(2)] of Iyi::ASTNode).at(location)
+    interpolation.diagnostic_origin = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 30, "Literal", "interpolation")
+    range_origin = expander.expand(range).as(Iyi::Call).diagnostic_origin.not_nil!
+    interpolation_origin = expander.expand(interpolation).as(Iyi::Call).diagnostic_origin.not_nil!
+    range_origin.valid_for_anchor?("Call", "method").should be_true
+    interpolation_origin.valid_for_anchor?("Call", "method").should be_true
+    range_origin.should_not eq(interpolation_origin)
+  end
+
+  it "separates hash construction and entry stores at the same location" do
+    program = Iyi::Program.new
+    program.diagnostic_capture = true
+    parent = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 14, "Literal", "hash")
+    entries = [Iyi::HashLiteral::Entry.new(Iyi::NumberLiteral.new(1), Iyi::NumberLiteral.new(2))]
+    literal = Iyi::HashLiteral.new(entries).at(Iyi::Location.new("/src/main.iyi", 10, 4))
+    literal.diagnostic_origin = parent
+    expressions = Iyi::LiteralExpander.new(program).expand(literal).as(Iyi::Expressions).expressions
+    constructor = expressions[0].as(Iyi::Assign).value.as(Iyi::Call).diagnostic_origin.not_nil!
+    store = expressions[1].as(Iyi::Call).diagnostic_origin.not_nil!
+    constructor.should_not eq(store)
+    constructor.valid_for_anchor?("Call", "method").should be_true
+    store.valid_for_anchor?("Call", "method").should be_true
+  end
+
+  it "restores source anchors for carried literal forms" do
+    cases = [
+      {"[1]", "array"},
+      {"{1 => 2}", "hash"},
+      {"1..2", "range"},
+      {"/abc/", "regex"},
+      {%q("value #{1}"), "interpolation"},
+      {"case 1\nwhen 1\n2\nend", "case"},
+    ]
+    cases.each do |source, role|
+      parser = Iyi::Parser.new(source)
+      parser.filename = "/src/literals.cr"
+      parser.diagnostic_capture = true
+      parser.diagnostic_source_file = "/src/literals.cr"
+      node = parser.parse
+      origin = node.diagnostic_origin.not_nil!
+      origin.valid_for_anchor?("Literal", role).should be_true
+      text, _, anchors = Iyi::IyiMod.diagnostic_located_source(node)
+      restored = Iyi::Parser.new(text)
+      restored.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, text.bytesize,
+        ::Crystal::Digest::SHA256.hexdigest(text), anchors)]
+      restored.parse.diagnostic_origin.should eq(origin)
+    end
   end
 
   it "records a shorthand block even though the printer bypasses its visitor" do
@@ -182,8 +405,17 @@ describe Iyi::DiagnosticOrigin do
   end
 
   it "round-trips same-header definitions and their distinct closure origins without source" do
-    first = Iyi::Def.new("f")
-    second = Iyi::Def.new("f")
+    defaults = [
+      Iyi::DiagnosticOrigin::Written.new("app/greeter", "/absent/greeter.iyi", 8, "ProcLiteral", "arrow"),
+      Iyi::DiagnosticOrigin::Written.new("app/greeter", "/absent/greeter.iyi", 44, "ProcLiteral", "arrow"),
+    ]
+    literals = defaults.map do |origin|
+      literal = Iyi::ProcLiteral.new(Iyi::Def.new("->", [] of Iyi::Arg, Iyi::NumberLiteral.new(1)))
+      literal.diagnostic_origin = origin
+      literal
+    end
+    first = Iyi::Def.new("f", [Iyi::Arg.new("x", literals[0])])
+    second = Iyi::Def.new("f", [Iyi::Arg.new("x", literals[1])])
     first.diagnostic_origin = Iyi::DiagnosticOrigin::Written.new("app/greeter", "/absent/greeter.iyi", 4, "Def", "keyword")
     second.diagnostic_origin = Iyi::DiagnosticOrigin::Written.new("app/greeter", "/absent/greeter.iyi", 40, "Def", "keyword")
     signatures = [Iyi::IyiMod.signature(first), Iyi::IyiMod.signature(second)]
@@ -213,10 +445,35 @@ describe Iyi::DiagnosticOrigin do
       parser = Iyi::Parser.new(io.to_s)
       parser.iyi = true
       parser.diagnostic_regions = regions
-      parser.parse
-      regions.flat_map(&.anchors).select { |anchor| anchor.kind == "ProcLiteral" }.map(&.origin).should eq(closures)
-      Iyi::IyiMod.write restored, path
-      Iyi::IyiMod.read(path).exports.functions.map(&.diagnostic_origin).should eq([first.diagnostic_origin, second.diagnostic_origin])
+      parsed = parser.parse.as(Iyi::Expressions)
+      module_node = parsed.expressions.last.as(Iyi::ModuleDef)
+      definitions = module_node.body.as(Iyi::Expressions).expressions.compact_map(&.as?(Iyi::Def))
+      definitions.size.should eq(2)
+      definitions.map(&.diagnostic_origin).should eq([first.diagnostic_origin, second.diagnostic_origin])
+      definitions.map { |definition| definition.args.first.default_value.not_nil!.diagnostic_origin }.should eq(defaults)
+      definitions.map { |definition| definition.body.as(Iyi::ProcLiteral).diagnostic_origin }.should eq(closures)
+      emitted_signatures = definitions.map { |definition| Iyi::IyiMod.signature(definition) }
+      reemitted = sample_artifact(exports: emitted_signatures)
+      reemitted_section = Iyi::IyiMod::DiagnosticSection.new
+      definitions.each_with_index do |definition, index|
+        sig = emitted_signatures[index]
+        text, positions, anchors = Iyi::IyiMod.diagnostic_located_source(definition.body)
+        body_key = Iyi::IyiMod.mono_body_key(reemitted.module_name, sig, index)
+        reemitted.mono_bodies[body_key] = text
+        reemitted.body_positions[body_key] = positions
+        reemitted_section.add_fragment(Iyi::IyiMod.diagnostic_signature_fragment(reemitted.module_name, definition, sig))
+        reemitted_section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(
+          Iyi::IyiMod.signature_body_fragment_key(reemitted.module_name, sig),
+          ::Crystal::Digest::SHA256.hexdigest(text), anchors))
+      end
+      reemitted.diagnostic_provenance = reemitted_section
+      Iyi::IyiMod.write reemitted, path
+      reread = Iyi::IyiMod.read(path)
+      reread.exports.functions.map(&.diagnostic_origin).should eq([first.diagnostic_origin, second.diagnostic_origin])
+      reread.exports.functions.each_with_index do |sig, index|
+        fragment = reread.diagnostic_provenance.not_nil!.fragments[Iyi::IyiMod.signature_body_fragment_key(reread.module_name, sig)]
+        fragment.anchors.find { |anchor| anchor.kind == "ProcLiteral" }.not_nil!.origin.should eq(closures[index])
+      end
       restored.exports.functions.reverse!
       expect_raises(ArgumentError) { Iyi::IyiMod.write restored, path }
     end
@@ -370,6 +627,30 @@ describe Iyi::DiagnosticOrigin do
     restored_parser = Iyi::Parser.new(source)
     restored_parser.diagnostic_regions = [region]
     restored_parser.parse.as(Iyi::Assign).diagnostic_origin.should eq(origin)
+  end
+
+  it "restores typed global constant origins at the leading scope token" do
+    parser = Iyi::Parser.new("::VALUE : Int32 = 1")
+    parser.filename = "/src/constants.cr"
+    parser.diagnostic_capture = true
+    parser.diagnostic_source_file = "/src/constants.cr"
+    declaration = parser.parse.as(Iyi::TypeDeclaration)
+    origin = declaration.diagnostic_origin.not_nil!
+    origin.as(Iyi::DiagnosticOrigin::Written).input_byte_offset.should eq(0)
+    text = IO::Memory.new
+    anchors = [] of Iyi::DiagnosticAnchor
+    declaration.to_s(text, diagnostic_anchors: anchors)
+    source = text.to_s
+    parser = Iyi::Parser.new(source)
+    parser.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, source.bytesize,
+      ::Crystal::Digest::SHA256.hexdigest(source), anchors)]
+    parser.parse.as(Iyi::TypeDeclaration).diagnostic_origin.should eq(origin)
+  end
+
+  it "rejects source capture without a stable parser input identity" do
+    parser = Iyi::Parser.new("-> { 1 }")
+    parser.diagnostic_capture = true
+    expect_raises(ArgumentError, /stable file identity/) { parser.parse }
   end
 
   it "captures the parser input file rather than a location pragma" do
@@ -2966,8 +3247,12 @@ describe Iyi::IyiMod do
           File.write "boot/half.iyi", <<-IYI
             module boot/half
 
+            pub class Values
+              pub OFFSET = 1
+            end
+
             pub def apply(x : Int32) : Int32
-              f = ->(n : Int32) { n + 1 }
+              f = ->(n : Int32) { n + Values::OFFSET }
               f.call(x)
             end
             IYI

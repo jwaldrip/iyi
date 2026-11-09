@@ -1170,6 +1170,7 @@ module Iyi
         object_code, records = diagnostic_carried_objects(program, names, units)
         artifact.object_code = object_code
         section = artifact.diagnostic_provenance || raise "bound artifact has no diagnostic provenance"
+        section.objects.clear
         records.each { |record| section.add_object(record) }
         section.validate_objects!(object_code)
       else
@@ -1179,6 +1180,12 @@ module Iyi
       artifact.type_ids = collect_iyi_type_ids(program, names, type)
       artifact.constants = collect_iyi_constants(program, names)
       artifact.regexes = collect_iyi_regexes(program, artifact.constants)
+      if program.diagnostic_capture
+        section = artifact.diagnostic_provenance || raise "missing bound regex diagnostics"
+        section.regexes.clear
+        artifact.regexes.each { |regex| section.add_regex(program.diagnostic_regex_record(regex.name)) }
+        section.validate_regexes!(artifact.regexes)
+      end
       artifact.class_vars = collect_iyi_unit_class_vars(program, names)
       artifact.match_types = collect_iyi_match_types(program, names)
       artifact.symbol_literals = collect_iyi_symbol_literals(program, names)
@@ -1328,6 +1335,11 @@ module Iyi
         artifact.type_ids = collect_iyi_type_ids(program, unit_names, program.iyi_module_type(artifact.module_name))
         artifact.constants = collect_iyi_constants(program, unit_names)
         artifact.regexes = collect_iyi_regexes(program, artifact.constants)
+        if program.diagnostic_capture
+          section = artifact.diagnostic_provenance || raise "missing regex diagnostics"
+          artifact.regexes.each { |regex| section.add_regex(program.diagnostic_regex_record(regex.name)) }
+          section.validate_regexes!(artifact.regexes)
+        end
         artifact.class_vars = collect_iyi_unit_class_vars(program, unit_names)
         artifact.match_types = collect_iyi_match_types(program, unit_names)
         artifact.symbol_literals = collect_iyi_symbol_literals(program, unit_names)

@@ -134,6 +134,7 @@ module Iyi
     end
 
     def visit(node : StringInterpolation)
+      diagnostic_anchor(node, "Literal", "interpolation")
       @str << '"'
       visit_interpolation node, &.inspect_unquoted
       @str << '"'
@@ -169,6 +170,7 @@ module Iyi
     end
 
     def visit(node : ArrayLiteral)
+      diagnostic_anchor(node, "Literal", "array")
       name = node.name
       if name
         name.accept self
@@ -193,6 +195,7 @@ module Iyi
     end
 
     def visit(node : HashLiteral)
+      diagnostic_anchor(node, "Literal", "hash")
       if name = node.name
         name.accept self
         @str << ' '
@@ -513,11 +516,15 @@ module Iyi
     def visit(node : Recover)
       node.exp.accept self
       if default = node.default
-        @str << ".or("
+        @str << '.'
+        diagnostic_anchor(node, "Call", "method")
+        @str << "or("
         default.accept self
         @str << ')'
       else
-        @str << ".or_panic"
+        @str << '.'
+        diagnostic_anchor(node, "Call", "method")
+        @str << "or_panic"
       end
       false
     end
@@ -583,6 +590,7 @@ module Iyi
     UNARY_OPERATORS = {"+", "-", "~", "&+", "&-"}
 
     def visit_call(node, ignore_obj = false)
+      diagnostic_anchor(node, "Call", "method") if node.name == "`"
       if node.name == "`"
         visit_backtick(node.args[0])
         return false
@@ -620,6 +628,7 @@ module Iyi
 
       if node_obj && node.name.in?("[]", "[]?") && !block
         in_parenthesis(need_parens, node_obj)
+        diagnostic_anchor(node, "Call", "method")
 
         @str << "["
         visit_args(node)
@@ -638,6 +647,7 @@ module Iyi
         end
       elsif node_obj && node.name == "[]=" && !node.args.empty? && !block
         in_parenthesis(need_parens, node_obj)
+        diagnostic_anchor(node, "Call", "method")
 
         @str << "["
         visit_args(node, exclude_last: true)
@@ -652,6 +662,7 @@ module Iyi
         @str << "] = "
         accept_as_expression node.args.last
       elsif node_obj && node.name.in?(UNARY_OPERATORS) && node.args.empty? && !node.named_args && !node.block_arg && !block && !short_block_call
+        diagnostic_anchor(node, "Call", "method")
         @str << node.name
         in_parenthesis(need_parens, node_obj)
       elsif node_obj && !Lexer.ident?(node.name) && node.name != "~" && node.args.size == 1 && !node.named_args && !node.block_arg && !block && !short_block_call
@@ -659,6 +670,7 @@ module Iyi
 
         arg = node.args[0]
         @str << ' '
+        diagnostic_anchor(node, "Call", "method")
         @str << node.name
         @str << ' '
         in_parenthesis(need_parens(arg), arg)
@@ -678,12 +690,12 @@ module Iyi
           @str << '.'
         end
         if Lexer.setter?(node.name)
-          diagnostic_anchor(node, "Call", "method") if Lexer.ident?(node.name.rchop)
+          diagnostic_anchor(node, "Call", "method")
           @str << node.name.rchop
           @str << " = "
           node.args.join(@str, ", ") { |arg| accept_as_expression arg }
         else
-          diagnostic_anchor(node, "Call", "method") if Lexer.ident?(node.name)
+          diagnostic_anchor(node, "Call", "method")
           @str << node.name
           in_parenthesis(node.has_parentheses? || !node.args.empty? || node.block_arg || node.named_args || short_block_call) do
             visit_args(node)
@@ -892,12 +904,15 @@ module Iyi
 
     def visit(node : OpAssign)
       node.target.accept self
-      @str << ' ' << node.op << '=' << ' '
+      @str << ' '
+      diagnostic_anchor(node, "Call", "method")
+      @str << node.op << '=' << ' '
       accept_as_expression node.value
       false
     end
 
     def visit(node : MultiAssign)
+      diagnostic_anchor(node, "Literal", "multiassign")
       node.targets.join(@str, ", ", &.accept self)
       @str << " = "
       node.values.join(@str, ", ") { |value| accept_as_expression value }
@@ -1417,6 +1432,7 @@ module Iyi
     end
 
     def visit(node : RegexLiteral)
+      diagnostic_anchor(node, "Literal", "regex")
       if (exp = node.value).is_a?(StringLiteral) && exp.value.empty?
         # // is not always an empty regex, sometimes is an operator
         # so it's safer to emit empty regex as %r()
@@ -1712,6 +1728,7 @@ module Iyi
         need_parens = need_parens(node.from)
         in_parenthesis(need_parens, node.from)
       end
+      diagnostic_anchor(node, "Literal", "range")
 
       if node.exclusive?
         @str << "..."
@@ -1818,6 +1835,7 @@ module Iyi
     end
 
     def visit(node : Case)
+      diagnostic_anchor(node, "Literal", "case")
       @str << "case"
       if cond = node.cond
         @str << ' '
@@ -1851,6 +1869,7 @@ module Iyi
     end
 
     def visit(node : Select)
+      diagnostic_anchor(node, "Literal", "select")
       @str << "select"
       newline
       node.whens.each do |a_when|

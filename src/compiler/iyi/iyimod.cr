@@ -300,6 +300,8 @@ module Iyi::IyiMod
   # enum, because the enum belongs to the compiler that wrote this and the file
   # outlives it. `Regex::Options.new` on the far side turns it back.
   record RegexConst, name : String, pattern : String, options : UInt32
+  record DiagnosticRegex, name : String, pattern : String, options : UInt32,
+    initializer_origin : DiagnosticOrigin, literal_origins : Array(DiagnosticOrigin)
 
   # A class variable a module's object code refers to: `Owner::@@name`, and how.
   #
@@ -461,6 +463,51 @@ module Iyi::IyiMod
 
     getter fragments = {} of String => DiagnosticFragment
     getter objects = {} of Int32 => DiagnosticObjectRecords
+    getter regexes = {} of String => DiagnosticRegex
+
+    def add_regex(record : DiagnosticRegex) : Nil
+      raise ArgumentError.new("duplicate diagnostic regex name") if @regexes.has_key?(record.name)
+      raise ArgumentError.new("invalid diagnostic regex text") unless record.name.valid_encoding? && record.pattern.valid_encoding?
+      options = RegexOptions.new(record.options.to_i32)
+      expected = if record.name.starts_with?(Program::IYI_REGEX_CONST_PREFIX)
+                   Program.iyi_regex_const_name(record.pattern, options)
+                 else
+                   Program.regex_const_name(record.pattern, options)
+                 end
+      raise ArgumentError.new("noncanonical diagnostic regex name") unless record.name == expected
+      origins = record.literal_origins
+      raise ArgumentError.new("missing diagnostic regex origins") if origins.empty?
+      raise ArgumentError.new("noncanonical diagnostic regex origin order") unless origins.map(&.to_json) == origins.map(&.to_json).sort.uniq
+      raise ArgumentError.new("missing regex initializer occurrence") unless origins.count(record.initializer_origin) == 1
+      raise ArgumentError.new("invalid regex literal origin") unless origins.all? { |origin| origin.valid_for_anchor?("Literal", "regex") }
+      @regexes.each_value do |previous|
+        if previous.literal_origins.any? { |origin| origins.includes?(origin) }
+          raise ArgumentError.new("regex origin names conflicting constants")
+        end
+      end
+      @regexes[record.name] = record
+    end
+
+    def validate_regexes!(actual : Array(RegexConst)) : Nil
+      seen_names = Set(String).new
+      seen_origins = {} of DiagnosticOrigin => {String, String, UInt32}
+      actual.each do |regex|
+        raise ArgumentError.new("duplicate regex constant") unless seen_names.add?(regex.name)
+        record = @regexes[regex.name]? || raise ArgumentError.new("missing regex diagnostics")
+        unless {record.name, record.pattern, record.options} == {regex.name, regex.pattern, regex.options}
+          raise ArgumentError.new("regex diagnostic content mismatch")
+        end
+        record.literal_origins.each do |origin|
+          semantic = {regex.name, regex.pattern, regex.options}
+          if previous = seen_origins[origin]?
+            raise ArgumentError.new("regex origin names conflicting constants") unless previous == semantic
+          else
+            seen_origins[origin] = semantic
+          end
+        end
+      end
+      raise ArgumentError.new("unmatched regex diagnostics") unless actual.size == @regexes.size
+    end
 
     def add_fragment(fragment : DiagnosticFragment) : Nil
       raise ArgumentError.new("duplicate diagnostic fragment") if @fragments.has_key?(fragment.key)
@@ -529,12 +576,21 @@ module Iyi::IyiMod
         raise ArgumentError.new("diagnostic object key changed") unless key == object.ordinal
         checked.add_object(object)
       end
+      @regexes.each do |key, record|
+        raise ArgumentError.new("diagnostic regex key changed") unless key == record.name
+        checked.add_regex(record)
+      end
       table = DiagnosticOrigins.new
       @fragments.keys.sort!.each do |key|
         @fragments[key].anchors.each { |anchor| table.intern(anchor.origin.not_nil!) }
       end
       @objects.keys.sort!.each do |key|
         @objects[key].definitions.each { |definition| table.intern(DiagnosticOrigin.from_json(definition.emission.origin)) }
+      end
+      @regexes.keys.sort!.each do |key|
+        record = @regexes[key]
+        table.intern(record.initializer_origin)
+        record.literal_origins.each { |origin| table.intern(origin) }
       end
       io = IO::Memory.new
       io.write_bytes SCHEMA, FORMAT
@@ -564,6 +620,16 @@ module Iyi::IyiMod
           io.write_bytes table.intern(DiagnosticOrigin.from_json(definition.emission.origin)), FORMAT
           DiagnosticOrigins.write_string(io, definition.to_json)
         end
+      end
+      io.write_bytes @regexes.size.to_u32, FORMAT
+      @regexes.keys.sort!.each do |key|
+        record = @regexes[key]
+        DiagnosticOrigins.write_string(io, record.name)
+        DiagnosticOrigins.write_string(io, record.pattern)
+        io.write_bytes record.options, FORMAT
+        io.write_bytes table.intern(record.initializer_origin), FORMAT
+        io.write_bytes record.literal_origins.size.to_u32, FORMAT
+        record.literal_origins.each { |origin| io.write_bytes table.intern(origin), FORMAT }
       end
       io.to_slice
     end
@@ -600,6 +666,17 @@ module Iyi::IyiMod
           definition
         end
         result.add_object(DiagnosticObjectRecords.new(ordinal, unit, digest, partition, definitions))
+      end
+      previous_name = nil.as(String?)
+      read_count(io, 20).times do
+        name = DiagnosticOrigins.read_string(io)
+        raise ArgumentError.new("noncanonical diagnostic regex order") if previous_name && previous_name >= name
+        previous_name = name
+        pattern = DiagnosticOrigins.read_string(io)
+        options = io.read_bytes(UInt32, FORMAT)
+        initializer = table.parent(io.read_bytes(UInt32, FORMAT))
+        origins = Array(DiagnosticOrigin).new(read_count(io, 4)) { table.parent(io.read_bytes(UInt32, FORMAT)) }
+        result.add_regex(DiagnosticRegex.new(name, pattern, options, initializer, origins))
       end
       raise ArgumentError.new("trailing diagnostic section bytes") unless io.pos == io.size
       result
@@ -2119,6 +2196,7 @@ module Iyi::IyiMod
     if diagnostic = artifact.diagnostic_provenance
       validate_diagnostic_fragments!(artifact)
       diagnostic.validate_objects!(artifact.object_code)
+      diagnostic.validate_regexes!(artifact.regexes)
     end
     sections << {Section::Header, encode_header(artifact)}
 
@@ -2523,6 +2601,7 @@ module Iyi::IyiMod
         artifact.diagnostic_provenance = section
         validate_diagnostic_fragments!(artifact)
         section.validate_objects!(object_code) if want_object_code
+        section.validate_regexes!(artifact.regexes)
       end
       artifact
     end

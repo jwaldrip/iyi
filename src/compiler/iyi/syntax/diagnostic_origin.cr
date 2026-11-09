@@ -204,6 +204,83 @@ module Iyi
       end
 
       def valid_for_anchor?(kind : String, role : String) : Bool
+        if kind == "Block" && role == "opener" && @synthesis_kind == "literal_expansion"
+          parts = @structural_slot.split(':')
+          index = parts[2]?.try(&.to_i?)
+          return parts.size == 3 && parts[0] == "array" && parts[1] == "block" &&
+                 !index.nil? && index >= 0 && index.to_s == parts[2] &&
+                 @parent_origin.valid_for_anchor?("Literal", "array")
+        end
+        if kind == "Literal" && @synthesis_kind == "literal_expansion_node"
+          if @structural_slot == "select:multiassign" && role == "multiassign"
+            return @parent_origin.valid_for_anchor?("Literal", "select")
+          elsif @structural_slot == "select:case" && role == "case"
+            return @parent_origin.valid_for_anchor?("Literal", "select")
+          elsif @structural_slot == "regex:interpolation" && role == "interpolation"
+            return @parent_origin.valid_for_anchor?("Literal", "regex")
+          elsif @structural_slot == "command:interpolation" && role == "interpolation"
+            return @parent_origin.valid_for_anchor?("Call", "method")
+          elsif @structural_slot.starts_with?("multiassign:range:") && role == "range"
+            text = @structural_slot.byte_slice("multiassign:range:".bytesize)
+            index = text.to_i?
+            return !index.nil? && index >= 0 && index.to_s == text &&
+                   @parent_origin.valid_for_anchor?("Literal", "multiassign")
+          end
+          return false
+        end
+        if kind == "Call" && role == "method" && @synthesis_kind == "literal_expansion"
+          parts = @structural_slot.split(':')
+          return false unless parts.size >= 2 && @parent_origin.valid_for_anchor?("Literal", parts[0])
+          if parts.size == 2
+            return case parts[0]
+                   when "array"         then {"constructor", "buffer"}.includes?(parts[1])
+                   when "hash", "range" then parts[1] == "constructor"
+                   when "regex"         then {"constructor", "options", "compile"}.includes?(parts[1])
+                   when "interpolation" then parts[1] == "call"
+                   when "select"        then {"select", "invalid"}.includes?(parts[1])
+                   when "multiassign"   then {"size", "compare", "error", "raise"}.includes?(parts[1])
+                   else                      false
+                   end
+          end
+          if parts.size == 5 && parts[0] == "case" && parts[1] == "compare"
+            return parts[2..4].all? do |text|
+              index = text.to_i?
+              !index.nil? && index >= 0 && index.to_s == text
+            end
+          end
+          return false unless parts.size == 3
+          index = parts[2].to_i?
+          return false unless index && index >= 0 && index.to_s == parts[2]
+          return case parts[0]
+                 when "array"       then {"concat", "append", "store", "element_type", "each", "each_body"}.includes?(parts[1])
+                 when "hash"        then parts[1] == "store"
+                 when "multiassign" then parts[1] == "index"
+                 else                    false
+                 end
+        end
+        if kind == "Call" && role == "method" && @synthesis_kind == "proc_pointer_invoke" && @structural_slot == "call"
+          return @parent_origin.valid_for_anchor?("ProcPointer", "arrow")
+        end
+        if kind == "Call" && role == "method" && @synthesis_kind == "recover_panic" &&
+           (@structural_slot == "message" || @structural_slot == "raise")
+          return @parent_origin.valid_for_anchor?("Call", "method")
+        end
+        if kind == "Call" && role == "method" && @synthesis_kind == "group_lowering"
+          return false unless @parent_origin.valid_for_anchor?("Call", "method")
+          return true if @structural_slot == "join" || @structural_slot == "first_failure"
+          label, separator, text = @structural_slot.partition(':')
+          index = text.to_i?
+          return separator == ":" && {"value", "fiber", "object_id", "compare"}.includes?(label) &&
+                 !index.nil? && index >= 0 && index.to_s == text
+        end
+        if kind == "Call" && role == "method" && @synthesis_kind == "defer_runtime" &&
+           (@structural_slot == "push" || @structural_slot == "pop")
+          return @parent_origin.valid_for_anchor?("Defer", "keyword")
+        end
+        if kind == "Call" && role == "method" && @synthesis_kind == "compound_assignment" &&
+           (@structural_slot == "getter" || @structural_slot == "setter")
+          return @parent_origin.valid_for_anchor?("Call", "method")
+        end
         if kind == "Def" && role == "keyword" && @synthesis_kind == "constant_accessor" && @structural_slot == "getter"
           return @parent_origin.valid_for_anchor?("Assign", "constant")
         end

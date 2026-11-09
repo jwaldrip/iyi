@@ -927,6 +927,41 @@ module Iyi
     # a second artifact naming the same pattern share the constant rather than
     # define it twice.
     getter iyi_regex_constants = {} of String => {String, RegexOptions}
+    getter(diagnostic_regex_occurrences) { {} of String => {String, UInt32, Array(DiagnosticOrigin)} }
+    getter(diagnostic_regex_initializers) { {} of String => DiagnosticOrigin }
+    getter(diagnostic_regex_origin_tuples) { {} of DiagnosticOrigin => {String, String, UInt32} }
+
+    def record_regex_occurrence(name : String, pattern : String, options : UInt32, origin : DiagnosticOrigin) : Nil
+      raise "invalid regex literal origin" unless origin.valid_for_anchor?("Literal", "regex")
+      tuple = {name, pattern, options}
+      if previous = diagnostic_regex_origin_tuples[origin]?
+        raise "regex origin names conflicting constants" unless previous == tuple
+      else
+        diagnostic_regex_origin_tuples[origin] = tuple
+      end
+      if existing = diagnostic_regex_occurrences[name]?
+        raise "regex name has conflicting contents" unless existing[0] == pattern && existing[1] == options
+        existing[2] << origin unless existing[2].includes?(origin)
+      else
+        diagnostic_regex_occurrences[name] = {pattern, options, [origin]}
+      end
+    end
+
+    def select_regex_initializer(name : String, origin : DiagnosticOrigin) : Nil
+      occurrence = diagnostic_regex_occurrences[name]? || raise "regex initializer has no occurrence"
+      raise "regex initializer is not an occurrence" unless occurrence[2].includes?(origin)
+      if previous = diagnostic_regex_initializers[name]?
+        raise "regex initializer selection changed" unless previous == origin
+      else
+        diagnostic_regex_initializers[name] = origin
+      end
+    end
+
+    def diagnostic_regex_record(name : String) : IyiMod::DiagnosticRegex
+      pattern, options, origins = diagnostic_regex_occurrences[name]? || raise "missing regex occurrences"
+      selected = diagnostic_regex_initializers[name]? || raise "missing regex initializer selection"
+      IyiMod::DiagnosticRegex.new(name, pattern, options, selected, origins.sort_by(&.to_json))
+    end
 
     # The name a regex literal's constant gets: `$Regex:` and a digest of what
     # it was written as.
@@ -982,12 +1017,36 @@ module Iyi
     # numbers are the other library's on both sides, which is what lets them
     # pass through unchanged. *at* is the node or location every part is
     # placed at.
-    def self.iyi_regex_compile_call(value : ASTNode, options : RegexOptions, at) : Call
+    def self.iyi_regex_compile_call(value : ASTNode, options : RegexOptions, at,
+                                    diagnostic_literal_origin : DiagnosticOrigin? = nil) : Call
       regex = Path.global(["Std", "Regex", "Regex"]).at(at)
-      return Call.new(regex, "compile", value).at(at) if options.value == 0
+      origin = diagnostic_literal_origin
+      if origin && !origin.valid_for_anchor?("Literal", "regex")
+        raise "invalid regex factory origin"
+      end
+      if options.value == 0
+        call = Call.new(regex, "compile", value).at(at)
+        call.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "literal_expansion", "regex:compile") if origin
+        return call
+      end
       flags = Call.new(Path.global(["Std", "Regex", "Regex", "Options"]).at(at), "new",
         NumberLiteral.new(options.value.to_s).at(at)).at(at)
-      Call.new(regex, "compile", value, flags).at(at)
+      flags.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "literal_expansion", "regex:options") if origin
+      call = Call.new(regex, "compile", value, flags).at(at)
+      call.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "literal_expansion", "regex:compile") if origin
+      call
+    end
+
+    def self.crystal_regex_compile_call(value : ASTNode, options : RegexOptions, at,
+                                        diagnostic_literal_origin : DiagnosticOrigin? = nil) : Call
+      origin = diagnostic_literal_origin
+      raise "invalid regex factory origin" if origin && !origin.valid_for_anchor?("Literal", "regex")
+      flags = Call.new(Path.global(["Regex", "Options"]).at(at), "new",
+        NumberLiteral.new(options.value.to_s).at(at)).at(at)
+      flags.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "literal_expansion", "regex:options") if origin
+      call = Call.new(Path.global("Regex").at(at), "new", value, flags).at(at)
+      call.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "literal_expansion", "regex:constructor") if origin
+      call
     end
 
     # iyi: the imports' names each file's module unit writes, by absolute

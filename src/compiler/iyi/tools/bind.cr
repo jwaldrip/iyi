@@ -2993,7 +2993,8 @@ module Iyi
     anchors = [] of DiagnosticAnchor
     node.to_s(io, diagnostic_anchors: anchors)
     return if anchors.empty?
-    bound_replace_exact_header(io.to_s, target, anchors) unless io.to_s == target
+    source = io.to_s
+    bound_replace_exact_header(source, target, anchors) unless source == target
     anchors.each { |anchor| into << anchor.copy_with(offset: anchor.offset + offset) }
   end
 
