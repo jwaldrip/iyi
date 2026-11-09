@@ -734,6 +734,8 @@ def process_ledger_and_references(
 
         # Check hardlink relationship if out target is present
         hardlink_verified = False
+        target_matched_root: Optional[int] = None
+        target_matched_rel: Optional[str] = None
         if out_target:
             out_cand, out_special, out_err = resolve_reference_path(
                 ref_path=out_target,
@@ -742,6 +744,8 @@ def process_ledger_and_references(
                 specials_by_root_and_rel=specials_by_root_and_rel,
             )
             if out_cand:
+                target_matched_root = out_cand.root_index
+                target_matched_rel = out_cand.rel_path
                 if (out_cand.st_dev, out_cand.st_ino) == (candidate.st_dev, candidate.st_ino):
                     hardlink_verified = True
                 else:
@@ -749,8 +753,6 @@ def process_ledger_and_references(
                         f"reference {out_ref!r} inode {candidate.st_ino} != target {out_target!r} inode {out_cand.st_ino}"
                     )
                     checks["no_hardlink_aliases"] = "FAIL"
-
-        # Bind recorded mtime to kernel-observed mtime (reject forged old timestamps in ledger)
         if candidate.st_mtime_ns != recorded_mtime:
             reasons.append(
                 f"reference {out_ref!r} recorded out_mtime_ns {recorded_mtime} "
@@ -819,6 +821,8 @@ def process_ledger_and_references(
                 "out_ref": out_ref,
                 "matched_root": candidate.root_index,
                 "matched_rel": candidate.rel_path,
+                "target_matched_root": target_matched_root,
+                "target_matched_rel": target_matched_rel,
                 "recorded_ino": recorded_ino,
                 "recorded_mtime_ns": recorded_mtime,
                 "recorded_atime_set_ns": recorded_atime_set,
@@ -870,6 +874,7 @@ def process_ledger_and_references(
 def collect_raw_file_bytes(
     candidates: List[CandidateFile],
     monitored_keys: Set[Tuple[int, str]],
+    monitored_inos: Optional[Set[Tuple[int, int]]] = None,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
     """
     Reads actual raw bytes from held descriptors for monitored candidates.
@@ -880,23 +885,27 @@ def collect_raw_file_bytes(
     raw_files: List[Dict[str, Any]] = []
     errors: List[str] = []
     captured_by_ino: Dict[Tuple[int, int], Dict[str, Any]] = {}
+    inos = monitored_inos or set()
 
-    for c in candidates:
+    # Sort candidates so primary executables (non-.ref) come before hardlink references (.ref)
+    sorted_candidates = sorted(
+        candidates,
+        key=lambda c: (1 if c.rel_path.endswith(".ref") else 0, c.seq)
+    )
+
+    for c in sorted_candidates:
         norm_path = os.path.normpath(c.rel_path)
         c_key = (c.root_index, norm_path)
-        if c_key not in monitored_keys and not c.rel_path.endswith(".ref"):
+        ino_key = (c.st_dev, c.st_ino)
+
+        if c_key not in monitored_keys and ino_key not in inos and not c.rel_path.endswith(".ref"):
             continue
 
-        ino_key = (c.st_dev, c.st_ino)
         if ino_key in captured_by_ino:
             entry = captured_by_ino[ino_key]
             alias_entry = {"root_index": c.root_index, "rel_path": c.rel_path}
             if alias_entry not in entry["aliases"] and (c.root_index, c.rel_path) != (entry["root_index"], entry["rel_path"]):
                 entry["aliases"].append(alias_entry)
-            continue
-
-        if c.fd is None:
-            errors.append(f"held descriptor missing for [{c.root_index}]{c.rel_path}")
             continue
 
         try:
@@ -1048,17 +1057,21 @@ def run_origin_observer(
 
         # Monitored references to capture
         monitored_keys: Set[Tuple[int, str]] = set()
+        monitored_inos: Set[Tuple[int, int]] = set()
         for ref in proc_res.get("references", []):
             if "matched_root" in ref and "matched_rel" in ref:
                 monitored_keys.add((ref["matched_root"], ref["matched_rel"]))
+            if "target_matched_root" in ref and "target_matched_rel" in ref and ref["target_matched_rel"] is not None:
+                monitored_keys.add((ref["target_matched_root"], ref["target_matched_rel"]))
+            if "observed_dev" in ref and "observed_ino" in ref:
+                monitored_inos.add((ref["observed_dev"], ref["observed_ino"]))
 
         raw_files: List[Dict[str, Any]] = []
         if capture_raw_bytes and proc_res.get("status") == "PASS":
-            raw_files, raw_errors = collect_raw_file_bytes(candidates, monitored_keys)
+            raw_files, raw_errors = collect_raw_file_bytes(candidates, monitored_keys, monitored_inos)
             all_errors.extend(raw_errors)
 
         final_status = "PASS" if not all_errors and proc_res.get("status") == "PASS" else "REJECT"
-
         checkpoint_doc["ledger"] = proc_res.get("ledger")
         checkpoint_doc["references"] = proc_res.get("references", [])
         checkpoint_doc["raw_files_manifest"] = [
