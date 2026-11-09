@@ -60,6 +60,15 @@ class IncompleteFrameError(BoundedEvidenceError):
     """Raised when a record or ledger line has an incomplete frame."""
     pass
 
+class UnqualifiedEvidenceRuntimeError(BoundedEvidenceError):
+    """The evidence collector has no qualified runtime and ownership profile."""
+
+
+def _require_qualified_runtime() -> None:
+    # There is no qualified allocation/compression profile or complete owned
+    # collection implementation yet. Refuse before any input or output opens.
+    raise UnqualifiedEvidenceRuntimeError("EVIDENCE-RUNTIME-UNQUALIFIED")
+
 
 @dataclass(frozen=True)
 class EvidenceLimits:
@@ -207,21 +216,25 @@ class EvidenceLimits:
         )
 
 
-@dataclass(frozen=True)
+@dataclass
 class InodeAnchor:
     first_path: str
+    fd: int
     st_dev: int
     st_ino: int
     st_size: int
     st_mode: int | None = None
     st_mtime_ns: int | None = None
     st_ctime_ns: int | None = None
+    st_nlink: int | None = None
+    sha256: str | None = None
 
 
 class EvidenceBudget:
     """Invocation-wide accounting against explicit EvidenceLimits."""
 
     def __init__(self, limits: EvidenceLimits):
+        _require_qualified_runtime()
         if not isinstance(limits, EvidenceLimits):
             raise TypeError(f"limits must be an EvidenceLimits instance, got {type(limits)!r}")
         self.limits = limits
@@ -242,98 +255,84 @@ class EvidenceBudget:
 
         # Mapping of (st_dev, st_ino) -> InodeAnchor for unique-inode vs alias accounting and baseline verification
         self.seen_inodes: dict[tuple[int, int], InodeAnchor] = {}
+        self._closed = False
+
+    def __enter__(self) -> EvidenceBudget:
+        if self._closed:
+            raise BoundedEvidenceError("BUDGET-CLOSED")
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        for anchor in self.seen_inodes.values():
+            os.close(anchor.fd)
+            self.held_descriptors -= 1
+        self.seen_inodes.clear()
 
     def check_deadline(self) -> None:
+        if self._closed:
+            raise BoundedEvidenceError("BUDGET-CLOSED")
         now = time.monotonic()
-        if now > self.limits.deadline:
-            raise EvidenceDeadlineExceededError(
-                f"COLLECTION-DEADLINE-EXCEEDED: now {now:.3f} > deadline {self.limits.deadline:.3f}"
-            )
+        if now >= self.limits.deadline:
+            raise EvidenceDeadlineExceededError("COLLECTION-DEADLINE-EXCEEDED")
 
-    def charge_file(
-        self,
-        dev_or_stat: int | os.stat_result,
-        ino: int = 0,
-        size: int = 0,
-        path: str = "",
-        *,
-        mode: int | None = None,
-        mtime_ns: int | None = None,
-        ctime_ns: int | None = None,
-    ) -> bool:
-        """Charges file size against limits and validates alias baseline integrity.
-
-        Returns True if the inode was already seen (an alias/hardlink),
-        False if it is a new unique inode.
-        """
+    def admit_file(self, fd: int, *, path: str) -> bool:
+        """Pin a regular inode for this budget's lifetime; metadata is provisional."""
         self.check_deadline()
-        if isinstance(dev_or_stat, os.stat_result):
-            dev = dev_or_stat.st_dev
-            ino = dev_or_stat.st_ino
-            size = dev_or_stat.st_size
-            mode = dev_or_stat.st_mode
-            mtime_ns = dev_or_stat.st_mtime_ns
-            ctime_ns = dev_or_stat.st_ctime_ns
-        else:
-            dev = dev_or_stat
-
-        if size > self.limits.max_file_bytes:
-            raise EvidenceLimitExceededError(
-                f"FILE-SIZE-EXCEEDED: {path} size {size} > max {self.limits.max_file_bytes}"
-            )
-        key = (dev, ino)
-        if key in self.seen_inodes:
-            anchor = self.seen_inodes[key]
-            # Validate alias baseline integrity against anchor
-            if size != anchor.st_size:
-                raise UnstableEvidenceError(
-                    f"ALIAS-BASELINE-MISMATCH: {path} size {size} != anchor {anchor.first_path} size {anchor.st_size}"
-                )
-            if mode is not None and anchor.st_mode is not None:
-                if stat.S_IFMT(mode) != stat.S_IFMT(anchor.st_mode) or mode != anchor.st_mode:
-                    raise UnstableEvidenceError(
-                        f"ALIAS-BASELINE-MISMATCH: {path} mode {oct(mode)} != anchor {anchor.first_path} mode {oct(anchor.st_mode)}"
-                    )
-            if mtime_ns is not None and anchor.st_mtime_ns is not None and mtime_ns != anchor.st_mtime_ns:
-                raise UnstableEvidenceError(
-                    f"ALIAS-BASELINE-MISMATCH: {path} mtime differs from anchor {anchor.first_path}"
-                )
-            if ctime_ns is not None and anchor.st_ctime_ns is not None and ctime_ns != anchor.st_ctime_ns:
-                raise UnstableEvidenceError(
-                    f"ALIAS-BASELINE-MISMATCH: {path} ctime differs from anchor {anchor.first_path}"
-                )
-
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise UnsafeEvidenceError("SPECIAL-OR-NON-REGULAR-FILE")
+        if before.st_size > self.limits.max_file_bytes:
+            raise EvidenceLimitExceededError("FILE-SIZE-EXCEEDED")
+        key = (before.st_dev, before.st_ino)
+        baseline = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mode, s.st_mtime_ns, s.st_ctime_ns, s.st_nlink)
+        anchor = self.seen_inodes.get(key)
+        if anchor is not None:
+            expected = (anchor.st_dev, anchor.st_ino, anchor.st_size, anchor.st_mode, anchor.st_mtime_ns, anchor.st_ctime_ns, anchor.st_nlink)
+            if baseline(before) != expected or baseline(os.fstat(anchor.fd)) != expected:
+                raise UnstableEvidenceError("ALIAS-BASELINE-MISMATCH")
+            if self.total_aliases + 1 > self.limits.max_aliases:
+                raise EvidenceLimitExceededError("ALIASES-EXCEEDED")
             self.total_aliases += 1
-            if self.total_aliases > self.limits.max_aliases:
-                raise EvidenceLimitExceededError(
-                    f"ALIASES-EXCEEDED: total aliases {self.total_aliases} > max {self.limits.max_aliases}"
-                )
             return True
-        else:
-            new_total = self.total_unique_inode_bytes + size
-            if new_total > self.limits.max_unique_inode_bytes:
-                raise EvidenceLimitExceededError(
-                    f"UNIQUE-INODE-BYTES-EXCEEDED: {new_total} > max {self.limits.max_unique_inode_bytes}"
-                )
-            self.total_unique_inode_bytes = new_total
-            self.seen_inodes[key] = InodeAnchor(
-                first_path=path,
-                st_dev=dev,
-                st_ino=ino,
-                st_size=size,
-                st_mode=mode,
-                st_mtime_ns=mtime_ns,
-                ctime_ns=ctime_ns,
-            )
-            return False
-
-    def charge_alias(self, path: str, key: tuple[int, int]) -> None:
+        if self.total_unique_inode_bytes + before.st_size > self.limits.max_unique_inode_bytes:
+            raise EvidenceLimitExceededError("UNIQUE-INODE-BYTES-EXCEEDED")
+        self.acquire_descriptor()
+        try:
+            pinned = os.dup(fd)
+        except BaseException:
+            self.release_descriptor()
+            raise
+        try:
+            if baseline(os.fstat(pinned)) != baseline(before):
+                raise UnstableEvidenceError("INODE-CHANGED-DURING-ADMISSION")
+            anchor = InodeAnchor(path, pinned, before.st_dev, before.st_ino, before.st_size,
+                                 before.st_mode, before.st_mtime_ns, before.st_ctime_ns, before.st_nlink)
+            self.seen_inodes[key] = anchor
+            self.total_unique_inode_bytes += before.st_size
+        except BaseException:
+            os.close(pinned)
+            self.release_descriptor()
+            raise
+        return False
+    def finish_file(self, fd: int, digest: str) -> None:
+        """Bind a fully consumed file to its pinned inode's first digest."""
         self.check_deadline()
-        self.total_aliases += 1
-        if self.total_aliases > self.limits.max_aliases:
-            raise EvidenceLimitExceededError(
-                f"ALIASES-EXCEEDED: total aliases {self.total_aliases} > max {self.limits.max_aliases}"
-            )
+        st = os.fstat(fd)
+        anchor = self.seen_inodes[(st.st_dev, st.st_ino)]
+        held = os.fstat(anchor.fd)
+        expected = (anchor.st_dev, anchor.st_ino, anchor.st_size, anchor.st_mode, anchor.st_mtime_ns, anchor.st_ctime_ns, anchor.st_nlink)
+        identity = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mode, s.st_mtime_ns, s.st_ctime_ns, s.st_nlink)
+        if identity(st) != expected or identity(held) != expected:
+            raise UnstableEvidenceError("INODE-BASELINE-CHANGED")
+        if anchor.sha256 is not None and anchor.sha256 != digest:
+            raise UnstableEvidenceError("INODE-CONTENT-CHANGED")
+        anchor.sha256 = digest
 
     def charge_entry(self, path: str) -> None:
         self.check_deadline()
@@ -342,23 +341,21 @@ class EvidenceBudget:
             raise EvidenceLimitExceededError(
                 f"PATH-BYTES-EXCEEDED: {path!r} ({path_bytes} bytes) > max {self.limits.max_path_bytes}"
             )
+        if self.total_entries + 1 > self.limits.max_entries:
+            raise EvidenceLimitExceededError("ENTRIES-EXCEEDED")
         self.total_entries += 1
-        if self.total_entries > self.limits.max_entries:
-            raise EvidenceLimitExceededError(
-                f"ENTRIES-EXCEEDED: total entries {self.total_entries} > max {self.limits.max_entries}"
-            )
 
     def charge_directory_depth(self, depth: int) -> None:
         self.check_deadline()
+        if depth > self.limits.max_directory_depth:
+            raise EvidenceLimitExceededError("DIRECTORY-DEPTH-EXCEEDED")
         if depth > self.max_observed_depth:
             self.max_observed_depth = depth
-        if depth > self.limits.max_directory_depth:
-            raise EvidenceLimitExceededError(
-                f"DIRECTORY-DEPTH-EXCEEDED: depth {depth} > max {self.limits.max_directory_depth}"
-            )
 
     def charge_emitted_bytes(self, count: int) -> None:
         self.check_deadline()
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise ValueError("INVALID-EMITTED-BYTES-CHARGE")
         new_total = self.total_emitted_bytes + count
         if new_total > self.limits.max_emitted_bytes:
             raise EvidenceLimitExceededError(
@@ -368,6 +365,8 @@ class EvidenceBudget:
 
     def charge_json_bytes(self, count: int) -> None:
         self.check_deadline()
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise ValueError("INVALID-JSON-BYTES-CHARGE")
         new_total = self.total_json_bytes + count
         if new_total > self.limits.max_json_bytes:
             raise EvidenceLimitExceededError(
@@ -382,15 +381,15 @@ class EvidenceBudget:
             raise EvidenceLimitExceededError(
                 f"LEDGER-LINE-BYTES-EXCEEDED: line size {n} > max {self.limits.max_ledger_line_bytes}"
             )
+        if self.total_ledger_lines + 1 > self.limits.max_ledger_lines:
+            raise EvidenceLimitExceededError("LEDGER-LINES-EXCEEDED")
         self.total_ledger_line_bytes += n
         self.total_ledger_lines += 1
-        if self.total_ledger_lines > self.limits.max_ledger_lines:
-            raise EvidenceLimitExceededError(
-                f"LEDGER-LINES-EXCEEDED: line count {self.total_ledger_lines} > max {self.limits.max_ledger_lines}"
-            )
 
     def charge_structured_records(self, count: int = 1) -> None:
         self.check_deadline()
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise ValueError("INVALID-STRUCTURED-RECORDS-CHARGE")
         new_total = self.total_structured_records + count
         if new_total > self.limits.max_structured_records:
             raise EvidenceLimitExceededError(
@@ -400,6 +399,8 @@ class EvidenceBudget:
 
     def charge_witness_events(self, count: int = 1) -> None:
         self.check_deadline()
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise ValueError("INVALID-WITNESS-EVENTS-CHARGE")
         new_total = self.total_witness_events + count
         if new_total > self.limits.max_witness_events:
             raise EvidenceLimitExceededError(
@@ -409,33 +410,36 @@ class EvidenceBudget:
 
     def acquire_descriptor(self) -> None:
         self.check_deadline()
-        self.held_descriptors += 1
-        if self.held_descriptors > self.peak_held_descriptors:
-            self.peak_held_descriptors = self.held_descriptors
-        if self.held_descriptors > self.limits.max_held_descriptors:
+        new_total = self.held_descriptors + 1
+        if new_total > self.limits.max_held_descriptors:
             raise EvidenceLimitExceededError(
-                f"HELD-DESCRIPTORS-EXCEEDED: held {self.held_descriptors} > max {self.limits.max_held_descriptors}"
+                f"HELD-DESCRIPTORS-EXCEEDED: held {new_total} > max {self.limits.max_held_descriptors}"
             )
+        self.held_descriptors = new_total
+        self.peak_held_descriptors = max(self.peak_held_descriptors, new_total)
 
     def release_descriptor(self) -> None:
-        if self.held_descriptors > 0:
-            self.held_descriptors -= 1
+        if self.held_descriptors <= 0:
+            raise RuntimeError("DESCRIPTOR-ACCOUNTING-UNDERFLOW")
+        self.held_descriptors -= 1
 
     def charge_helper_memory(self, bytes_count: int) -> None:
         self.check_deadline()
-        self.helper_memory_bytes += bytes_count
-        if self.helper_memory_bytes > self.peak_helper_memory_bytes:
-            self.peak_helper_memory_bytes = self.helper_memory_bytes
-        if self.helper_memory_bytes > self.limits.max_helper_memory_bytes:
+        if isinstance(bytes_count, bool) or not isinstance(bytes_count, int) or bytes_count < 0:
+            raise ValueError("INVALID-HELPER-MEMORY-CHARGE")
+        new_total = self.helper_memory_bytes + bytes_count
+        if new_total > self.limits.max_helper_memory_bytes:
             raise EvidenceLimitExceededError(
-                f"HELPER-MEMORY-EXCEEDED: memory {self.helper_memory_bytes} > max {self.limits.max_helper_memory_bytes}"
+                f"HELPER-MEMORY-EXCEEDED: memory {new_total} > max {self.limits.max_helper_memory_bytes}"
             )
+        self.helper_memory_bytes = new_total
+        self.peak_helper_memory_bytes = max(self.peak_helper_memory_bytes, new_total)
 
     def release_helper_memory(self, bytes_count: int) -> None:
-        if self.helper_memory_bytes >= bytes_count:
-            self.helper_memory_bytes -= bytes_count
-        else:
-            self.helper_memory_bytes = 0
+        if (isinstance(bytes_count, bool) or not isinstance(bytes_count, int)
+                or bytes_count < 0 or bytes_count > self.helper_memory_bytes):
+            raise RuntimeError("HELPER-MEMORY-ACCOUNTING-UNDERFLOW")
+        self.helper_memory_bytes -= bytes_count
 
 
 def _parts(path: str) -> list[str]:
@@ -456,21 +460,17 @@ def _nofollow(
     mode: int = 0o600,
     budget: EvidenceBudget | None = None,
 ) -> int:
-    """Open without following links. Closes descriptor immediately if budget rejects to prevent FD leaks."""
+    """Reserve a descriptor before opening without following links."""
+    if budget is not None:
+        budget.acquire_descriptor()
     try:
-        fd = os.open(name, flags | os.O_NOFOLLOW, mode, dir_fd=dir_fd)
-    except OSError as exc:
-        if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+        return os.open(name, flags | os.O_NOFOLLOW, mode, dir_fd=dir_fd)
+    except BaseException as exc:
+        if budget is not None:
+            budget.release_descriptor()
+        if isinstance(exc, OSError) and exc.errno in (errno.ELOOP, errno.ENOTDIR):
             raise UnsafeEvidenceError(f"{code} {label}: link or non-directory") from exc
         raise
-
-    if budget is not None:
-        try:
-            budget.acquire_descriptor()
-        except BaseException:
-            os.close(fd)
-            raise
-    return fd
 
 
 def _close_tracked(budget: EvidenceBudget | None, fd: int | None) -> None:
@@ -486,12 +486,12 @@ def _parse_float(val: str) -> float:
     """Parses JSON float and rejects non-finite values (such as float overflow from 1e10000)."""
     f = float(val)
     if not math.isfinite(f):
-        raise BoundedEvidenceError(f"NON-FINITE-JSON-NUMBER: float overflow {val!r}")
+        raise BoundedEvidenceError("NON-FINITE-JSON-NUMBER")
     return f
 
 
 def _reject_constant(val: str) -> None:
-    raise BoundedEvidenceError(f"NON-FINITE-JSON-NUMBER: {val}")
+    raise BoundedEvidenceError("NON-FINITE-JSON-NUMBER")
 
 
 def _verify_file_stability(
@@ -520,6 +520,7 @@ class OwnedRoot:
     """Safe, descriptor-relative directory handle with no-follow path traversal."""
 
     def __init__(self, path: str | os.PathLike[str], *, budget: EvidenceBudget | None = None, create: bool = False):
+        _require_qualified_runtime()
         path_str = os.path.abspath(os.fspath(path))
         top = path_str.strip("/").split("/")[0] if path_str != "/" else ""
         if top and os.path.islink("/" + top):
@@ -528,13 +529,14 @@ class OwnedRoot:
         self.budget = budget
         self.identities: dict[str, tuple[int, int]] = {}
 
-        fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
         if self.budget is not None:
-            try:
-                self.budget.acquire_descriptor()
-            except BaseException:
-                os.close(fd)
-                raise
+            self.budget.acquire_descriptor()
+        try:
+            fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+        except BaseException:
+            if self.budget is not None:
+                self.budget.release_descriptor()
+            raise
         try:
             for component in path_str.strip("/").split("/"):
                 if not component:
@@ -585,13 +587,14 @@ class OwnedRoot:
             self.budget.charge_directory_depth(len(parts) - 1)
             self.budget.charge_entry(name)
 
-        fd = os.dup(self.fd)
         if self.budget is not None:
-            try:
-                self.budget.acquire_descriptor()
-            except BaseException:
-                os.close(fd)
-                raise
+            self.budget.acquire_descriptor()
+        try:
+            fd = os.dup(self.fd)
+        except BaseException:
+            if self.budget is not None:
+                self.budget.release_descriptor()
+            raise
         try:
             prefix: list[str] = []
             for component in parts[:-1]:
@@ -599,8 +602,12 @@ class OwnedRoot:
                 nxt = _nofollow(
                     "UNSAFE-ANCESTOR", rel, component, os.O_RDONLY | os.O_DIRECTORY, dir_fd=fd, budget=self.budget
                 )
-                prefix.append(component)
-                self.remember(rel, nxt)
+                try:
+                    prefix.append(component)
+                    self.remember(rel, nxt)
+                except BaseException:
+                    _close_tracked(self.budget, nxt)
+                    raise
                 if self.budget is not None:
                     self.budget.release_descriptor()
                 os.close(fd)
@@ -625,15 +632,20 @@ class OwnedRoot:
             finally:
                 _close_tracked(self.budget, parent_fd)
         else:
-            fd = os.dup(self.fd)
             if self.budget is not None:
-                try:
-                    self.budget.acquire_descriptor()
-                except BaseException:
-                    os.close(fd)
-                    raise
+                self.budget.acquire_descriptor()
+            try:
+                fd = os.dup(self.fd)
+            except BaseException:
+                if self.budget is not None:
+                    self.budget.release_descriptor()
+                raise
 
-        self.remember(name, fd)
+        try:
+            self.remember(name, fd)
+        except BaseException:
+            _close_tracked(self.budget, fd)
+            raise
 
         def visit(directory: int, rel: str, depth: int) -> Iterator[str]:
             if self.budget is not None:
@@ -642,13 +654,14 @@ class OwnedRoot:
 
             # Bound directory enumeration before sorting to avoid unbounded memory allocation.
             raw_entries: list[str] = []
-            dup_fd = os.dup(directory)
             if self.budget is not None:
-                try:
-                    self.budget.acquire_descriptor()
-                except BaseException:
-                    os.close(dup_fd)
-                    raise
+                self.budget.acquire_descriptor()
+            try:
+                dup_fd = os.dup(directory)
+            except BaseException:
+                if self.budget is not None:
+                    self.budget.release_descriptor()
+                raise
 
             try:
                 with os.scandir(dup_fd) as it:
@@ -676,8 +689,8 @@ class OwnedRoot:
                     child = _nofollow(
                         "UNSAFE-MEMBER", relative, entry_name, os.O_RDONLY | os.O_DIRECTORY, dir_fd=directory, budget=self.budget
                     )
-                    self.remember(relative, child)
                     try:
+                        self.remember(relative, child)
                         yield from visit(child, relative, depth + 1)
                     finally:
                         _close_tracked(self.budget, child)
@@ -687,7 +700,7 @@ class OwnedRoot:
                     raise UnsafeEvidenceError(f"UNSAFE-MEMBER: {relative} (non-regular file or symlink mode {oct(st.st_mode)})")
 
         try:
-            yield from visit(fd, name, 0)
+            yield from visit(fd, name, len(_parts(name)) if name else 0)
         finally:
             _close_tracked(self.budget, fd)
 
@@ -700,6 +713,8 @@ class BoundedEvidenceReader:
             raise TypeError(f"budget must be an EvidenceBudget instance, got {type(budget)!r}")
         self.budget = budget
         if isinstance(root, OwnedRoot):
+            if root.budget is not budget:
+                raise ValueError("root must use the supplied invocation budget")
             self.root = root
             self._owns_root = False
         else:
@@ -720,12 +735,14 @@ class BoundedEvidenceReader:
         self.budget.check_deadline()
         try:
             parent_fd, leaf = self.root.parent(name)
-        except (FileNotFoundError, UnsafeEvidenceError):
+        except FileNotFoundError:
             return False
         try:
             st = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
-            return stat.S_ISREG(st.st_mode)
-        except OSError:
+            if not stat.S_ISREG(st.st_mode):
+                raise UnsafeEvidenceError("UNSAFE-OPTIONAL-MEMBER")
+            return True
+        except FileNotFoundError:
             return False
         finally:
             _close_tracked(self.budget, parent_fd)
@@ -756,7 +773,7 @@ class BoundedEvidenceReader:
                     raise EvidenceLimitExceededError(
                         f"FILE-SIZE-EXCEEDED: {name} size {before.st_size} > {self.budget.limits.max_file_bytes}"
                     )
-                self.budget.charge_file(before, path=name)
+                self.budget.admit_file(fd, path=name)
                 self.budget.charge_helper_memory(before.st_size)
                 try:
                     chunks: list[bytes] = []
@@ -790,6 +807,7 @@ class BoundedEvidenceReader:
                     after = os.fstat(fd)
                     current = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
                     _verify_file_stability(name, before, after, current, len(result))
+                    self.budget.finish_file(fd, hashlib.sha256(result).hexdigest())
                     return result
                 finally:
                     self.budget.release_helper_memory(before.st_size)
@@ -866,11 +884,12 @@ class BoundedEvidenceReader:
                     raise EvidenceLimitExceededError(
                         f"FILE-SIZE-EXCEEDED: {name} size {before.st_size} > {self.budget.limits.max_file_bytes}"
                     )
-                self.budget.charge_file(before, path=name)
+                self.budget.admit_file(fd, path=name)
 
                 lines: list[str] = []
                 bytes_read = 0
                 buffer = bytearray()
+                hasher = hashlib.sha256()
                 chunk_size = min(65536, max(4096, self.budget.limits.max_file_bytes))
 
                 while True:
@@ -881,6 +900,7 @@ class BoundedEvidenceReader:
                     bytes_read += len(data)
                     if bytes_read > before.st_size:
                         raise UnstableEvidenceError(f"UNSTABLE-MEMBER: {name} file grew during read")
+                    hasher.update(data)
                     buffer.extend(data)
                     while b"\n" in buffer:
                         idx = buffer.index(b"\n")
@@ -902,6 +922,7 @@ class BoundedEvidenceReader:
                 after = os.fstat(fd)
                 current = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
                 _verify_file_stability(name, before, after, current, bytes_read)
+                self.budget.finish_file(fd, hasher.hexdigest())
                 return lines
             finally:
                 _close_tracked(self.budget, fd)
@@ -939,6 +960,8 @@ class BoundedEvidenceReader:
 
     def read_streamed_log(self, name: str, *, chunk_size: int = 65536) -> Iterator[bytes]:
         """Streams log bytes in bounded chunks with post-stream stability validation."""
+        if isinstance(chunk_size, bool) or not isinstance(chunk_size, int) or chunk_size <= 0:
+            raise ValueError("invalid chunk size")
         self.budget.check_deadline()
         self.budget.charge_entry(name)
         parent_fd, leaf = self.root.parent(name)
@@ -952,9 +975,10 @@ class BoundedEvidenceReader:
                     raise EvidenceLimitExceededError(
                         f"FILE-SIZE-EXCEEDED: {name} size {before.st_size} > {self.budget.limits.max_file_bytes}"
                     )
-                self.budget.charge_file(before, path=name)
+                self.budget.admit_file(fd, path=name)
 
                 bytes_read = 0
+                hasher = hashlib.sha256()
                 step = min(chunk_size, max(4096, self.budget.limits.max_file_bytes))
                 while True:
                     self.budget.check_deadline()
@@ -964,6 +988,7 @@ class BoundedEvidenceReader:
                     bytes_read += len(data)
                     if bytes_read > before.st_size:
                         raise UnstableEvidenceError(f"UNSTABLE-MEMBER: {name} file grew during streaming")
+                    hasher.update(data)
                     yield data
 
                 if bytes_read != before.st_size:
@@ -973,6 +998,7 @@ class BoundedEvidenceReader:
                 after = os.fstat(fd)
                 current = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
                 _verify_file_stability(name, before, after, current, bytes_read)
+                self.budget.finish_file(fd, hasher.hexdigest())
             finally:
                 _close_tracked(self.budget, fd)
         finally:
@@ -1056,7 +1082,10 @@ def create_checkpoint_archive(
             self.budget.charge_emitted_bytes(n)
             written = 0
             while written < n:
+                self.budget.check_deadline()
                 w = os.write(self.fd, b[written:])
+                if w <= 0:
+                    raise BoundedEvidenceError("ARCHIVE-WRITE-NO-PROGRESS")
                 written += w
             self.count += n
             return n
@@ -1107,6 +1136,8 @@ def create_checkpoint_archive(
                         raise BoundedEvidenceError(f"DUPLICATE-ARCHIVE-MEMBER: {m_arcname}")
                     seen_arcnames.add(m_arcname)
 
+                    if not isinstance(m_root, OwnedRoot) or m_root.budget is not budget:
+                        raise ValueError("archive root must use the supplied invocation budget")
                     try:
                         parent_fd, leaf = m_root.parent(m_name)
                     except FileNotFoundError:
@@ -1134,8 +1165,8 @@ def create_checkpoint_archive(
                             inode_key = (before.st_dev, before.st_ino)
                             is_archive_alias = inode_key in archive_seen_inodes
 
+                            budget.admit_file(fd, path=m_arcname)
                             if not is_archive_alias:
-                                budget.charge_file(before, path=m_arcname)
                                 info = tarfile.TarInfo(m_arcname)
                                 info.type = tarfile.REGTYPE
                                 info.size = before.st_size
@@ -1174,7 +1205,19 @@ def create_checkpoint_archive(
                                 })
                             else:
                                 local_anchor = archive_seen_inodes[inode_key]
-                                budget.charge_alias(m_arcname, inode_key)
+                                alias_hasher = hashlib.sha256()
+                                alias_count = 0
+                                while alias_count < before.st_size:
+                                    budget.check_deadline()
+                                    chunk = os.read(fd, min(65536, before.st_size - alias_count))
+                                    if not chunk:
+                                        raise UnstableEvidenceError("ALIAS-SHORT-READ")
+                                    alias_count += len(chunk)
+                                    alias_hasher.update(chunk)
+                                digest = alias_hasher.hexdigest()
+                                if digest != local_anchor.sha256:
+                                    raise UnstableEvidenceError("ALIAS-CONTENT-CHANGED")
+                                os.lseek(fd, 0, os.SEEK_SET)
 
                                 if store_hardlinks_as_links and local_anchor.first_arcname:
                                     info = tarfile.TarInfo(m_arcname)
@@ -1222,6 +1265,7 @@ def create_checkpoint_archive(
                             after = os.fstat(fd)
                             current = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
                             _verify_file_stability(m_name, before, after, current, before.st_size)
+                            budget.finish_file(fd, digest)
                         finally:
                             _close_tracked(budget, fd)
                     finally:
@@ -1288,11 +1332,8 @@ def create_checkpoint_archive(
         if target_fd is not None:
             _close_tracked(budget, target_fd)
             target_fd = None
-        # Descriptor-relative unlink of incomplete target using held parent directory
-        try:
-            os.unlink(leaf_name, dir_fd=parent_root.fd)
-        except OSError:
-            pass
+        # Do not unlink by name: a concurrent replacement could make the name
+        # refer to a different file. The caller must handle incomplete output.
         raise
     finally:
         parent_root.close()

@@ -34,6 +34,7 @@ from proof.hosted_evidence import (
     MissingEvidenceError,
     OwnedRoot,
     UnsafeEvidenceError,
+    UnqualifiedEvidenceRuntimeError,
     UnstableEvidenceError,
     create_checkpoint_archive,
 )
@@ -146,80 +147,90 @@ class EvidenceLimitsTests(unittest.TestCase):
             )
 
 
+class UnqualifiedRuntimeTests(unittest.TestCase):
+    def test_refuses_before_input_filesystem_access(self):
+        limits = make_test_limits()
+        with patch("proof.hosted_evidence.os.open") as opened, \
+             patch("proof.hosted_evidence.os.path.islink") as inspected:
+            with self.assertRaises(UnqualifiedEvidenceRuntimeError):
+                EvidenceBudget(limits)
+            with self.assertRaises(UnqualifiedEvidenceRuntimeError):
+                OwnedRoot("/unqualified-input")
+            opened.assert_not_called()
+            inspected.assert_not_called()
+
+
 class EvidenceBudgetAccountingTests(unittest.TestCase):
-    def test_unique_inode_vs_alias_accounting(self):
+    def test_inode_anchor_lifetime_and_aliases(self):
         with tempfile.TemporaryDirectory() as td:
-            p1 = os.path.join(td, "orig.txt")
-            p2 = os.path.join(td, "alias.txt")
-            with open(p1, "wb") as f:
-                f.write(b"1234567890")
-            os.link(p1, p2)
+            original = os.path.join(td, "original")
+            alias = os.path.join(td, "alias")
+            with open(original, "wb") as f:
+                f.write(b"abcdefghij")
+            os.link(original, alias)
+            budget = EvidenceBudget(make_test_limits(max_unique_inode_bytes=10, max_aliases=1))
+            fd = os.open(original, os.O_RDONLY)
+            alias_fd = os.open(alias, os.O_RDONLY)
+            try:
+                self.assertFalse(budget.admit_file(fd, path="original"))
+                anchor_fd = next(iter(budget.seen_inodes.values())).fd
+                self.assertTrue(budget.admit_file(alias_fd, path="alias"))
+                self.assertEqual(budget.total_unique_inode_bytes, 10)
+                os.fstat(anchor_fd)
+                with self.assertRaises(EvidenceLimitExceededError):
+                    budget.admit_file(alias_fd, path="extra")
+                budget.close()
+                with self.assertRaises(OSError):
+                    os.fstat(anchor_fd)
+            finally:
+                budget.close()
+                os.close(fd)
+                os.close(alias_fd)
 
-            limits = make_test_limits(
-                max_unique_inode_bytes=15,
-                max_aliases=5,
-            )
-            budget = EvidenceBudget(limits)
+    def test_changed_inode_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "file")
+            with open(path, "wb") as f:
+                f.write(b"original")
+            with EvidenceBudget(make_test_limits()) as budget:
+                fd = os.open(path, os.O_RDONLY)
+                try:
+                    budget.admit_file(fd, path="file")
+                    with open(path, "ab") as f:
+                        f.write(b"changed")
+                    with self.assertRaises(UnstableEvidenceError):
+                        budget.admit_file(fd, path="file")
+                finally:
+                    os.close(fd)
 
-            st1 = os.stat(p1)
-            is_alias1 = budget.charge_file(st1, path="orig.txt")
-            self.assertFalse(is_alias1)
-            self.assertEqual(budget.total_unique_inode_bytes, 10)
-            self.assertEqual(budget.total_aliases, 0)
-
-            st2 = os.stat(p2)
-            is_alias2 = budget.charge_file(st2, path="alias.txt")
-            self.assertTrue(is_alias2)
-            self.assertEqual(budget.total_unique_inode_bytes, 10)
-            self.assertEqual(budget.total_aliases, 1)
-
-    def test_alias_baseline_mismatch_rejected(self):
-        limits = make_test_limits(max_unique_inode_bytes=1000)
-        budget = EvidenceBudget(limits)
-        # Register anchor
-        budget.charge_file(1, 100, 50, "orig.txt", mode=0o100644, mtime_ns=1000, ctime_ns=2000)
-
-        # Alias with mismatched size
-        with self.assertRaises(UnstableEvidenceError) as ctx:
-            budget.charge_file(1, 100, 60, "forged.txt", mode=0o100644, mtime_ns=1000, ctime_ns=2000)
-        self.assertIn("ALIAS-BASELINE-MISMATCH", str(ctx.exception))
-
-        # Alias with mismatched mode
-        with self.assertRaises(UnstableEvidenceError) as ctx:
-            budget.charge_file(1, 100, 50, "forged_mode.txt", mode=0o100777, mtime_ns=1000, ctime_ns=2000)
-        self.assertIn("ALIAS-BASELINE-MISMATCH", str(ctx.exception))
-
-        # Alias with mismatched mtime
-        with self.assertRaises(UnstableEvidenceError) as ctx:
-            budget.charge_file(1, 100, 50, "forged_time.txt", mode=0o100644, mtime_ns=9999, ctime_ns=2000)
-        self.assertIn("ALIAS-BASELINE-MISMATCH", str(ctx.exception))
+    def test_link_count_change_after_admission_is_rejected(self):
+        with tempfile.TemporaryDirectory() as td, EvidenceBudget(make_test_limits()) as budget:
+            path = os.path.join(td, "file")
+            with open(path, "wb") as f:
+                f.write(b"data")
+            fd = os.open(path, os.O_RDONLY)
+            try:
+                budget.admit_file(fd, path="file")
+                os.link(path, os.path.join(td, "new-link"))
+                with self.assertRaises(UnstableEvidenceError):
+                    budget.admit_file(fd, path="file")
+            finally:
+                os.close(fd)
 
     def test_unique_inode_exhaustion(self):
-        limits = make_test_limits(max_unique_inode_bytes=50)
-        budget = EvidenceBudget(limits)
-        budget.charge_file(1, 101, 30, "file1.txt")
-        self.assertEqual(budget.total_unique_inode_bytes, 30)
-
-        with self.assertRaises(EvidenceLimitExceededError) as ctx:
-            budget.charge_file(1, 102, 30, "file2.txt")
-        self.assertIn("UNIQUE-INODE-BYTES-EXCEEDED", str(ctx.exception))
-
-    def test_alias_flood_rejection(self):
-        limits = make_test_limits(
-            max_unique_inode_bytes=1000,
-            max_aliases=3,
-        )
-        budget = EvidenceBudget(limits)
-        budget.charge_file(1, 101, 50, "file.txt")
-
-        self.assertTrue(budget.charge_file(1, 101, 50, "link1.txt"))
-        self.assertTrue(budget.charge_file(1, 101, 50, "link2.txt"))
-        self.assertTrue(budget.charge_file(1, 101, 50, "link3.txt"))
-        self.assertEqual(budget.total_aliases, 3)
-
-        with self.assertRaises(EvidenceLimitExceededError) as ctx:
-            budget.charge_file(1, 101, 50, "link4.txt")
-        self.assertIn("ALIASES-EXCEEDED", str(ctx.exception))
+        with tempfile.TemporaryDirectory() as td, EvidenceBudget(make_test_limits(max_unique_inode_bytes=5)) as budget:
+            paths = [os.path.join(td, str(i)) for i in range(2)]
+            for path in paths:
+                with open(path, "wb") as f:
+                    f.write(b"123")
+            fds = [os.open(path, os.O_RDONLY) for path in paths]
+            try:
+                budget.admit_file(fds[0], path="first")
+                with self.assertRaises(EvidenceLimitExceededError):
+                    budget.admit_file(fds[1], path="second")
+            finally:
+                for fd in fds:
+                    os.close(fd)
 
     def test_entries_and_path_bounds(self):
         limits = make_test_limits(max_entries=2, max_path_bytes=10)
@@ -331,6 +342,42 @@ class EvidenceBudgetAccountingTests(unittest.TestCase):
         with self.assertRaises(EvidenceDeadlineExceededError):
             budget.check_deadline()
 
+    def test_denied_admissions_leave_counters_unchanged(self):
+        budget = EvidenceBudget(make_test_limits(
+            max_entries=1, max_directory_depth=1, max_ledger_lines=1,
+        ))
+        budget.charge_entry("one")
+        budget.charge_directory_depth(1)
+        budget.charge_ledger_line(b"one")
+        with self.assertRaises(EvidenceLimitExceededError):
+            budget.charge_entry("two")
+        with self.assertRaises(EvidenceLimitExceededError):
+            budget.charge_directory_depth(2)
+        with self.assertRaises(EvidenceLimitExceededError):
+            budget.charge_ledger_line(b"two")
+        self.assertEqual(budget.total_entries, 1)
+        self.assertEqual(budget.max_observed_depth, 1)
+        self.assertEqual((budget.total_ledger_lines, budget.total_ledger_line_bytes), (1, 3))
+
+    def test_accounting_underflow_is_not_silently_clamped(self):
+        budget = EvidenceBudget(make_test_limits())
+        with self.assertRaises(RuntimeError):
+            budget.release_descriptor()
+        with self.assertRaises(RuntimeError):
+            budget.release_helper_memory(1)
+        with self.assertRaises(ValueError):
+            budget.charge_helper_memory(-1)
+        self.assertEqual(budget.helper_memory_bytes, 0)
+
+    def test_cumulative_charges_reject_negative_and_boolean_counts(self):
+        budget = EvidenceBudget(make_test_limits())
+        for method in (budget.charge_emitted_bytes, budget.charge_json_bytes,
+                       budget.charge_structured_records, budget.charge_witness_events):
+            for invalid in (-1, True):
+                with self.subTest(method=method.__name__, invalid=invalid):
+                    with self.assertRaises(ValueError):
+                        method(invalid)
+
 
 class BoundedEvidenceReaderTests(unittest.TestCase):
     def test_read_regular_file(self):
@@ -347,6 +394,19 @@ class BoundedEvidenceReaderTests(unittest.TestCase):
                 self.assertFalse(reader.has_member("nonexistent.txt"))
                 st = reader.stat_member("hello.txt")
                 self.assertTrue(stat.S_ISREG(st.st_mode))
+
+    def test_optional_member_does_not_hide_unsafe_or_denied_paths(self):
+        with tempfile.TemporaryDirectory() as td, EvidenceBudget(make_test_limits()) as budget:
+            os.symlink("missing", os.path.join(td, "link"))
+            with BoundedEvidenceReader(td, budget) as reader:
+                self.assertFalse(reader.has_member("missing"))
+                with self.assertRaises(UnsafeEvidenceError):
+                    reader.has_member("link")
+                with self.assertRaises(UnsafeEvidenceError):
+                    reader.has_member("../escape")
+                with patch("proof.hosted_evidence.os.stat", side_effect=PermissionError("denied")):
+                    with self.assertRaises(PermissionError):
+                        reader.has_member("denied")
 
     def test_symlink_file_rejected(self):
         with tempfile.TemporaryDirectory() as td:
