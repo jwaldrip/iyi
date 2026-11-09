@@ -264,7 +264,7 @@ def build_driver_logical_slots(census_data: Dict[str, Any], driver: str) -> List
                         )
                     )
             else:
-                label = template.split("/")[-1]
+                label = template.replace("{WORK}/", "")
                 slot_id = f"{driver}::{sline}::{sline}::{label}::own"
                 slots.append(
                     LogicalSlot(
@@ -302,7 +302,7 @@ def build_driver_logical_slots(census_data: Dict[str, Any], driver: str) -> List
                         )
                     )
             else:
-                label = template.split("/")[-1]
+                label = template.replace("{WORK}/", "")
                 var_id = variants[0] if variants else None
                 options = ("--release",) if driver in ("compress", "math") else ()
                 slot_id = f"{driver}::{sline}::{sline}::{label}::{var_id}"
