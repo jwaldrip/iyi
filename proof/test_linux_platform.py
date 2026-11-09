@@ -135,7 +135,7 @@ class TestCensusSchemaPlatform(unittest.TestCase):
             "output": None,
             "darwin": darwin,
             "requires": [],
-            "verdict": {},
+            "verdict": {"lines": [10], "contains": ["OK"]},
         }
         if linux is not None:
             v["linux"] = linux
@@ -160,7 +160,7 @@ class TestCensusSchemaPlatform(unittest.TestCase):
             "non_invocations": [],
             "skips": [],
             "not_skips": [],
-            "pass_sentinel": {"line": 100, "token": "PASS"},
+            "pass_sentinel": {"line": 100, "regex": "^PASS$", "text": "PASS"},
             "exec_evidence": [],
         }
 
@@ -174,7 +174,7 @@ class TestCensusSchemaPlatform(unittest.TestCase):
         census = self._make_census([self._make_variant(darwin="required", linux="required", windows="required")])
         violations = []
         _validate_census_schema(census, violations)
-        self.assertTrue(any(v[0] == "C5.0-schema" and "closed keys" in v[2] for v in violations))
+        self.assertTrue(any(v[0] == "C5.0-schema" and "unknown keys" in v[2] for v in violations))
 
     def test_darwin_old_census_without_linux_supported_on_darwin(self):
         census = self._make_census([self._make_variant(darwin="required", linux=None)])
@@ -186,7 +186,7 @@ class TestCensusSchemaPlatform(unittest.TestCase):
         census = self._make_census([self._make_variant(darwin="required", linux=None)])
         violations = []
         _validate_census_schema(census, violations, target_platform="linux")
-        self.assertTrue(any(v[0] == "C5.0-schema" and "invalid fields" in v[2] for v in violations))
+        self.assertTrue(any(v[0] == "C5.0-schema" and ("missing keys" in v[2] or "invalid fields" in v[2]) for v in violations))
 
     def test_linux_accepts_valid_dual_platform_census(self):
         census = self._make_census([
@@ -226,8 +226,12 @@ class TestVerifyLedgerPlatform(unittest.TestCase):
                     {
                         "lines": [10],
                         "variants": [
-                            {"id": "v_unclass", "kind": "positive", "darwin": "required"}
-                            # Missing 'linux' field!
+                            {
+                                "id": "v_unclass",
+                                "kind": "positive",
+                                "darwin": "required",
+                                "verdict": {"lines": [10], "contains": ["OK"]},
+                            }
                         ],
                     }
                 ],
@@ -257,8 +261,13 @@ class TestVerifyLedgerPlatform(unittest.TestCase):
                     {
                         "lines": [10],
                         "variants": [
-                            # On Linux this is platform-excluded: should NOT trigger NOT-EXERCISED
-                            {"id": "v_darwin_only", "kind": "positive", "darwin": "required", "linux": "platform-excluded"},
+                            {
+                                "id": "v_darwin_only",
+                                "kind": "positive",
+                                "darwin": "required",
+                                "linux": "platform-excluded",
+                                "verdict": {"lines": [10], "contains": ["OK"]},
+                            }
                         ],
                     }
                 ],
@@ -288,8 +297,13 @@ class TestVerifyLedgerPlatform(unittest.TestCase):
                     {
                         "lines": [10],
                         "variants": [
-                            # On Darwin this is required: missing record must trigger NOT-EXERCISED
-                            {"id": "v_darwin_req", "kind": "positive", "darwin": "required", "linux": "platform-excluded"},
+                            {
+                                "id": "v_darwin_req",
+                                "kind": "positive",
+                                "darwin": "required",
+                                "linux": "platform-excluded",
+                                "verdict": {"lines": [10], "contains": ["OK"]},
+                            }
                         ],
                     }
                 ],
@@ -408,19 +422,112 @@ class TestOfflineInputsBinding(unittest.TestCase):
                 f.write(f"{sha}  data.txt\n")
             digest = compute_inputs_bundle_digest(tmpdir)
             pin = {
+                "report_dir": "/private/tmp/iyp-01234567",
+                "chain_id": "01234567" + "0"*24,
                 "p_path": "/p",
                 "w_path": "/w",
                 "compiler_path": "/c",
-                "report_dir": "/private/tmp/iyp-01234567",
-                "chain_id": "01234567" + "0"*24,
+                "compiler_sha256": "sha",
+                "compiler_size": 100,
+                "compiler_mtime_ns": 1000,
+                "compiler_inode": 1,
+                "compiler_version_line": "iyi 0.1.0 [0123456]",
+                "compiler_stamp": "0123456",
+                "canonical_roots": [],
+                "platform_tmp": None,
+                "env_path": "/bin",
+                "env_home": "/home",
+                "python_path": "/bin/python3",
+                "python_version": "3.10",
+                "timeout_path": "/bin/timeout",
+                "timeout_version": "1.0",
+                "nm_path": "/bin/nm",
+                "nm_version": "1.0",
+                "census_sha256": {},
+                "p_source_sha": "0123456",
+                "w_head": "0123456",
                 "inputs_dir": tmpdir,
                 "inputs_digest": digest,
             }
             # Tamper the payload file
             with open(payload, "w") as f:
                 f.write("tampered\n")
-            with self.assertRaises(IdentityError):
+
+            with patch("proof.proofkit._validated_report_dir"), \
+                 patch("proof.proofkit._require_equal"), \
+                 patch("proof.proofkit.git_rev_parse"), \
+                 patch("proof.proofkit.git_clean"), \
+                 patch("proof.proofkit.git_merge_base_is_ancestor"), \
+                 patch("proof.proofkit.git_diff_name_only"), \
+                 patch("proof.proofkit.git_diff_quiet"), \
+                 patch("os.path.isfile", return_value=True), \
+                 patch("os.access", return_value=True), \
+                 patch("os.stat"), \
+                 patch("proof.proofkit.sha256_file", return_value="sha"), \
+                 patch("proof.proofkit.base_env"), \
+                 patch("proof.proofkit.platform_temp_root"), \
+                 patch("proof.proofkit._first_output_line"), \
+                 patch("proof.proofkit.extract_version_stamp"), \
+                 patch("proof.proofkit._census_shas"), \
+                 patch("proof.proofkit.compute_canonical_roots"), \
+                 patch("shutil.which", return_value="/bin/tool"), \
+                 patch("proof.proofkit._nm_version_line"):
+                with self.assertRaises(IdentityError) as ctx:
+                    check_identity(pin)
+                self.assertIn(ctx.exception.reason, ("INPUTS-MANIFEST-MISMATCH", "INPUTS-DIGEST-CHANGED"))
+
+    def test_check_identity_fails_on_missing_inputs_dir(self):
+        missing_dir = "/tmp/does-not-exist-inputs-xyz"
+        pin = {
+            "report_dir": "/private/tmp/iyp-01234567",
+            "chain_id": "01234567" + "0"*24,
+            "p_path": "/p",
+            "w_path": "/w",
+            "compiler_path": "/c",
+            "compiler_sha256": "sha",
+            "compiler_size": 100,
+            "compiler_mtime_ns": 1000,
+            "compiler_inode": 1,
+            "compiler_version_line": "iyi 0.1.0 [0123456]",
+            "compiler_stamp": "0123456",
+            "canonical_roots": [],
+            "platform_tmp": None,
+            "env_path": "/bin",
+            "env_home": "/home",
+            "python_path": "/bin/python3",
+            "python_version": "3.10",
+            "timeout_path": "/bin/timeout",
+            "timeout_version": "1.0",
+            "nm_path": "/bin/nm",
+            "nm_version": "1.0",
+            "census_sha256": {},
+            "p_source_sha": "0123456",
+            "w_head": "0123456",
+            "inputs_dir": missing_dir,
+            "inputs_digest": "0" * 64,
+        }
+        with patch("proof.proofkit._validated_report_dir"), \
+             patch("proof.proofkit._require_equal"), \
+             patch("proof.proofkit.git_rev_parse"), \
+             patch("proof.proofkit.git_clean"), \
+             patch("proof.proofkit.git_merge_base_is_ancestor"), \
+             patch("proof.proofkit.git_diff_name_only"), \
+             patch("proof.proofkit.git_diff_quiet"), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.access", return_value=True), \
+             patch("os.stat"), \
+             patch("proof.proofkit.sha256_file", return_value="sha"), \
+             patch("proof.proofkit.base_env"), \
+             patch("proof.proofkit.platform_temp_root"), \
+             patch("proof.proofkit._first_output_line"), \
+             patch("proof.proofkit.extract_version_stamp"), \
+             patch("proof.proofkit._census_shas"), \
+             patch("proof.proofkit.compute_canonical_roots"), \
+             patch("shutil.which", return_value="/bin/tool"), \
+             patch("proof.proofkit._nm_version_line"):
+            with self.assertRaises(IdentityError) as ctx:
                 check_identity(pin)
+            self.assertEqual(ctx.exception.reason, "INPUTS-DIR-CHANGED")
 
 
 class TestArtifactLegsCompareR1(unittest.TestCase):

@@ -1459,7 +1459,7 @@ def _violation(violations: list[Violation], rule_id: str, line: int, detail: str
     violations.append((rule_id, line if isinstance(line, int) else 0, detail))
 
 
-def _closed_keys(value: object, required: set[str], path: str, violations: list[Violation], line: int = 0) -> bool:
+def _closed_keys(value: object, required: set[str], path: str, violations: list[Violation], line: int = 0, *, optional: set[str] | None = None) -> bool:
     if not isinstance(value, dict):
         _violation(
             violations,
@@ -1469,7 +1469,8 @@ def _closed_keys(value: object, required: set[str], path: str, violations: list[
         )
         return False
     missing = sorted(required - set(value))
-    unknown = sorted(set(value) - required)
+    allowed = required | (optional or set())
+    unknown = sorted(set(value) - allowed)
     if missing:
         _violation(
             violations,
@@ -2234,25 +2235,37 @@ def _validate_census_schema(census: object, violations: list[Violation], *, targ
             )
             continue
 
+        is_linux = (
+            (target_platform.lower() == "linux")
+            if target_platform is not None
+            else (platform.system() == "Linux")
+        )
+        variant_base_keys = {
+            "id",
+            "kind",
+            "first_root",
+            "vars",
+            "sources",
+            "output",
+            "requires",
+            "verdict",
+        }
+        if is_linux:
+            variant_required_keys = variant_base_keys | {"darwin", "linux"}
+            variant_optional_keys: set[str] = set()
+        else:
+            variant_required_keys = variant_base_keys | {"darwin"}
+            variant_optional_keys = {"linux"}
+
         for variant_index, variant in enumerate(site["variants"]):
             variant_path = f"sites[{index}].variants[{variant_index}]"
             if not _closed_keys(
                 variant,
-                {
-                    "id",
-                    "kind",
-                    "first_root",
-                    "vars",
-                    "sources",
-                    "output",
-                    "darwin",
-                    "linux",
-                    "requires",
-                    "verdict",
-                },
+                variant_required_keys,
                 variant_path,
                 violations,
                 line,
+                optional=variant_optional_keys,
             ):
                 continue
             is_linux = (
