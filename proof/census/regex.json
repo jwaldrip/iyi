@@ -36,6 +36,7 @@
           ],
           "output": "{WORK}/mutated_refusal",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -142,6 +143,7 @@
           ],
           "output": null,
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -182,6 +184,7 @@
           ],
           "output": "{WORK}/linear",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -230,6 +233,7 @@
           ],
           "output": "{WORK}/shared-scratch",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],

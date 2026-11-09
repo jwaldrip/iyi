@@ -23,6 +23,7 @@
           "sources": ["{REPO}/bench/std_signal_exercise.iyi"],
           "output": "{WORK}/{name}",
           "darwin": "required",
+          "linux": "required",
           "requires": ["python3"],
           "verdict": {
             "lines": [348, 349, 368, 369, 414, 415, 417, 419, 455, 457],
@@ -42,6 +43,7 @@
           "sources": ["{REPO}/bench/std_signal_exercise.iyi"],
           "output": "{WORK}/{name}",
           "darwin": "platform-excluded",
+          "linux": "platform-excluded",
           "requires": ["python3"],
           "verdict": {
             "lines": [385, 386, 388, 390],

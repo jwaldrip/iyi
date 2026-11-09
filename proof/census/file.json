@@ -47,6 +47,7 @@
           ],
           "output": null,
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -87,6 +88,7 @@
           ],
           "output": null,
           "darwin": "platform-excluded",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -129,6 +131,7 @@
           ],
           "output": null,
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -188,6 +191,7 @@
           ],
           "output": null,
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -227,6 +231,7 @@
           ],
           "output": null,
           "darwin": "platform-excluded",
+          "linux": "platform-excluded",
           "requires": [
             "python3"
           ],
@@ -269,6 +274,7 @@
           ],
           "output": null,
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -307,6 +313,7 @@
           ],
           "output": null,
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -345,6 +352,7 @@
           ],
           "output": null,
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -387,6 +395,7 @@
           ],
           "output": null,
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -458,6 +467,7 @@
           ],
           "output": null,
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -499,6 +509,7 @@
           ],
           "output": null,
           "darwin": "platform-excluded",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -561,6 +572,7 @@
           ],
           "output": "{WORK}/{dir}-prog",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -599,6 +611,7 @@
           ],
           "output": "{WORK}/{dir}-prog",
           "darwin": "platform-excluded",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -651,6 +664,7 @@
           ],
           "output": "{WORK}/fifo_wait-prog",
           "darwin": "platform-excluded",
+          "linux": "required",
           "requires": [
             "python3"
           ],

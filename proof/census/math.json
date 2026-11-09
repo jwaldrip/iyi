@@ -37,6 +37,7 @@
           ],
           "output": "{WORK}/software/program",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
@@ -82,6 +83,7 @@
           ],
           "output": null,
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],

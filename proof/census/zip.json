@@ -55,6 +55,7 @@
           ],
           "output": "{WORK}/mut-{mutations}.bin",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],

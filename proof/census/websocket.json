@@ -46,6 +46,7 @@
           ],
           "output": "{WORK}/ws-bare",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3",
             "cryptography"
@@ -151,6 +152,7 @@
           ],
           "output": "{WORK}/mut-{mutations}",
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],

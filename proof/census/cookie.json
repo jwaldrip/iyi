@@ -47,6 +47,7 @@
           ],
           "output": null,
           "darwin": "required",
+          "linux": "required",
           "requires": [
             "python3"
           ],
