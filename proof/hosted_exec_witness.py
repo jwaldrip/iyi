@@ -451,27 +451,44 @@ def verify_exec_witness_evidence(
                         f"Invalid or escaped captured_file name: expected {expected_basename!r}, got {cap_rec.captured_file!r}"
                     )
 
-                expected_file = os.path.join(raw_capture_dir, expected_basename)
-                if os.path.islink(expected_file):
-                    raise RawCaptureError(f"Symlink escape detected in captured file {expected_file}")
+                o_nofollow = getattr(os, "O_NOFOLLOW", 0)
+                try:
+                    dir_fd = os.open(raw_capture_dir, os.O_RDONLY | os.O_DIRECTORY | o_nofollow)
+                except OSError as exc:
+                    raise RawCaptureError(f"Failed to open raw_capture_dir securely: {exc}")
 
-                if not os.path.isfile(expected_file):
-                    raise RawCaptureError(
-                        f"Retained raw executable missing on disk: {expected_file} (dev={req_dev}, ino={req_ino})"
-                    )
+                try:
+                    try:
+                        file_fd = os.open(expected_basename, os.O_RDONLY | o_nofollow, dir_fd=dir_fd)
+                    except OSError as exc:
+                        if exc.errno == errno.ELOOP:
+                            raise RawCaptureError(f"Symlink escape detected in captured file {expected_basename}")
+                        if exc.errno == errno.ENOENT:
+                            raise RawCaptureError(
+                                f"Retained raw executable missing on disk: {expected_basename} (dev={req_dev}, ino={req_ino})"
+                            )
+                        raise RawCaptureError(f"Failed to open retained raw executable {expected_basename}: {exc}")
 
-                with open(expected_file, "rb") as f:
-                    file_bytes = f.read()
+                    try:
+                        st = os.fstat(file_fd)
+                        if not stat.S_ISREG(st.st_mode):
+                            raise RawCaptureError(f"Captured path {expected_basename} is not a regular file")
+                        if st.st_size <= 0:
+                            raise RawCaptureError(f"Zero-length raw executable on disk rejected: {expected_basename}")
 
-                if len(file_bytes) == 0:
-                    raise RawCaptureError(
-                        f"Zero-length raw executable on disk rejected: {expected_file}"
-                    )
+                        file_bytes = os.read(file_fd, st.st_size + 1)
+                        if len(file_bytes) != st.st_size:
+                            raise RawCaptureError(
+                                f"Size read mismatch on disk for {expected_basename}: fstat={st.st_size}, read={len(file_bytes)}"
+                            )
+                    finally:
+                        os.close(file_fd)
+                finally:
+                    os.close(dir_fd)
 
                 computed_sha = hashlib.sha256(file_bytes).hexdigest()
                 if computed_sha == EMPTY_SHA256:
-                    raise RawCaptureError(f"Placeholder SHA-256 rejected for {expected_file}")
-
+                    raise RawCaptureError(f"Placeholder SHA-256 rejected for {expected_basename}")
                 if cap_rec.size_bytes != len(file_bytes):
                     raise RawCaptureError(
                         f"Byte size mismatch on disk: expected {cap_rec.size_bytes}, got {len(file_bytes)}"

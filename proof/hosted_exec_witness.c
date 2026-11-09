@@ -713,134 +713,76 @@ static int inspect_syscall_stop(pid_t pid, char *err_buf, size_t err_buf_len) {
   struct ptrace_syscall_info_compat info;
   memset(&info, 0, sizeof(info));
 
-  if (linux_ptrace(PTRACE_GET_SYSCALL_INFO, pid, (void *)(intptr_t)sizeof(info),
-                   &info) == 0) {
-    if (info.op == PTRACE_SYSCALL_INFO_EXIT) {
-      return 2; /* Syscall exit */
-    }
-    if (info.op == PTRACE_SYSCALL_INFO_ENTRY) {
-      /* Verify native audit architecture */
+  long ret = linux_ptrace(PTRACE_GET_SYSCALL_INFO, pid,
+                          (void *)(intptr_t)sizeof(info), &info);
+  if (ret <= 0) {
+    int err = errno;
+    snprintf(err_buf, err_buf_len, "PTRACE_GET_SYSCALL_INFO_FAILED_%d", err);
+    return -1;
+  }
+
+  if (info.op == PTRACE_SYSCALL_INFO_EXIT) {
+    return 2; /* Syscall exit */
+  }
+  if (info.op == PTRACE_SYSCALL_INFO_ENTRY) {
+    /* Verify native audit architecture */
 #if defined(__x86_64__)
-      if (info.arch != AUDIT_ARCH_X86_64) {
-        snprintf(err_buf, err_buf_len, "COMPAT_SYSCALL_ARCH_DISALLOWED_0x%x",
-                 info.arch);
+    if (info.arch != AUDIT_ARCH_X86_64) {
+      snprintf(err_buf, err_buf_len, "COMPAT_SYSCALL_ARCH_DISALLOWED_0x%x",
+               info.arch);
+      return -1;
+    }
+    /* x32 ABI shares AUDIT_ARCH_X86_64 but sets bit 30 (0x40000000) in syscall
+     * number */
+    if (info.entry.nr & 0x40000000ULL) {
+      snprintf(err_buf, err_buf_len, "COMPAT_X32_SYSCALL_DISALLOWED");
+      return -1;
+    }
+    uint64_t nr = info.entry.nr;
+    if (nr == 101) { /* __NR_ptrace */
+      snprintf(err_buf, err_buf_len, "DISALLOWED_PTRACE_SYSCALL");
+      return -1;
+    }
+    if (nr == 435) { /* __NR_clone3: outright rejected */
+      snprintf(err_buf, err_buf_len, "DISALLOWED_CLONE3_SYSCALL");
+      return -1;
+    }
+    if (nr == 56) { /* __NR_clone */
+      uint64_t flags = info.entry.args[0];
+      if (flags & CLONE_UNTRACED) {
+        snprintf(err_buf, err_buf_len, "CLONE_UNTRACED_ATTEMPT");
         return -1;
       }
-      uint64_t nr = info.entry.nr;
-      if (nr == 101) { /* __NR_ptrace */
-        snprintf(err_buf, err_buf_len, "DISALLOWED_PTRACE_SYSCALL");
-        return -1;
-      }
-      if (nr == 435) { /* __NR_clone3: outright rejected */
-        snprintf(err_buf, err_buf_len, "DISALLOWED_CLONE3_SYSCALL");
-        return -1;
-      }
-      if (nr == 56) { /* __NR_clone */
-        uint64_t flags = info.entry.args[0];
-        if (flags & CLONE_UNTRACED) {
-          snprintf(err_buf, err_buf_len, "CLONE_UNTRACED_ATTEMPT");
-          return -1;
-        }
-      }
+    }
 #elif defined(__aarch64__)
-      if (info.arch != AUDIT_ARCH_AARCH64) {
-        snprintf(err_buf, err_buf_len, "COMPAT_SYSCALL_ARCH_DISALLOWED_0x%x",
-                 info.arch);
+    if (info.arch != AUDIT_ARCH_AARCH64) {
+      snprintf(err_buf, err_buf_len, "COMPAT_SYSCALL_ARCH_DISALLOWED_0x%x",
+               info.arch);
+      return -1;
+    }
+    uint64_t nr = info.entry.nr;
+    if (nr == 117) { /* __NR_ptrace */
+      snprintf(err_buf, err_buf_len, "DISALLOWED_PTRACE_SYSCALL");
+      return -1;
+    }
+    if (nr == 435) { /* __NR_clone3 */
+      snprintf(err_buf, err_buf_len, "DISALLOWED_CLONE3_SYSCALL");
+      return -1;
+    }
+    if (nr == 220) { /* __NR_clone */
+      uint64_t flags = info.entry.args[0];
+      if (flags & CLONE_UNTRACED) {
+        snprintf(err_buf, err_buf_len, "CLONE_UNTRACED_ATTEMPT");
         return -1;
       }
-      uint64_t nr = info.entry.nr;
-      if (nr == 117) { /* __NR_ptrace */
-        snprintf(err_buf, err_buf_len, "DISALLOWED_PTRACE_SYSCALL");
-        return -1;
-      }
-      if (nr == 435) { /* __NR_clone3 */
-        snprintf(err_buf, err_buf_len, "DISALLOWED_CLONE3_SYSCALL");
-        return -1;
-      }
-      if (nr == 220) { /* __NR_clone */
-        uint64_t flags = info.entry.args[0];
-        if (flags & CLONE_UNTRACED) {
-          snprintf(err_buf, err_buf_len, "CLONE_UNTRACED_ATTEMPT");
-          return -1;
-        }
-      }
+    }
 #else
-      snprintf(err_buf, err_buf_len, "UNSUPPORTED_HOST_ARCH");
-      return -1;
+    snprintf(err_buf, err_buf_len, "UNSUPPORTED_HOST_ARCH");
+    return -1;
 #endif
-      return 1; /* Syscall entry successfully validated */
-    }
-    return 0; /* Other syscall info op */
+    return 1; /* Syscall entry successfully validated */
   }
-
-  /* Fallback for pre-5.3 kernels: register inspection */
-  struct iovec iov;
-#if defined(__x86_64__)
-  struct user_regs_struct regs;
-  iov.iov_base = &regs;
-  iov.iov_len = sizeof(regs);
-  if (linux_ptrace(PTRACE_GETREGSET, pid, (void *)(intptr_t)NT_PRSTATUS,
-                   &iov) != 0) {
-    snprintf(err_buf, err_buf_len, "PTRACE_GETREGSET_FAILED_%d", errno);
-    return -1;
-  }
-  if (regs.cs == 0x23) {
-    snprintf(err_buf, err_buf_len, "COMPAT_IA32_SYSCALL_DISALLOWED");
-    return -1;
-  }
-  if (regs.orig_rax & 0x40000000UL) {
-    snprintf(err_buf, err_buf_len, "COMPAT_X32_SYSCALL_DISALLOWED");
-    return -1;
-  }
-  long sys_no = (long)regs.orig_rax;
-  if (sys_no == 101) {
-    snprintf(err_buf, err_buf_len, "DISALLOWED_PTRACE_SYSCALL");
-    return -1;
-  }
-  if (sys_no == 435) {
-    snprintf(err_buf, err_buf_len, "DISALLOWED_CLONE3_SYSCALL");
-    return -1;
-  }
-  if (sys_no == 56) {
-    unsigned long flags = (unsigned long)regs.rdi;
-    if (flags & CLONE_UNTRACED) {
-      snprintf(err_buf, err_buf_len, "CLONE_UNTRACED_ATTEMPT");
-      return -1;
-    }
-  }
-  return 1;
-#elif defined(__aarch64__)
-  struct user_pt_regs regs;
-  iov.iov_base = &regs;
-  iov.iov_len = sizeof(regs);
-  if (linux_ptrace(PTRACE_GETREGSET, pid, (void *)(intptr_t)NT_PRSTATUS,
-                   &iov) != 0) {
-    snprintf(err_buf, err_buf_len, "PTRACE_GETREGSET_FAILED_%d", errno);
-    return -1;
-  }
-  if (regs.pstate & 0x10) {
-    snprintf(err_buf, err_buf_len, "COMPAT_AARCH32_SYSCALL_DISALLOWED");
-    return -1;
-  }
-  long sys_no = (long)regs.regs[8];
-  if (sys_no == 117) {
-    snprintf(err_buf, err_buf_len, "DISALLOWED_PTRACE_SYSCALL");
-    return -1;
-  }
-  if (sys_no == 435) {
-    snprintf(err_buf, err_buf_len, "DISALLOWED_CLONE3_SYSCALL");
-    return -1;
-  }
-  if (sys_no == 220) {
-    unsigned long flags = (unsigned long)regs.regs[0];
-    if (flags & CLONE_UNTRACED) {
-      snprintf(err_buf, err_buf_len, "CLONE_UNTRACED_ATTEMPT");
-      return -1;
-    }
-  }
-  return 1;
-#endif
-
+  return 0; /* Other syscall info op */
 #else
   (void)pid;
   snprintf(err_buf, err_buf_len, "NON_LINUX_UNSUPPORTED");
@@ -921,20 +863,21 @@ static void handle_exec_event(pid_t pid) {
 
   /*
    * Deduplication Check:
-   * Check if (st_dev, st_ino) was already captured and is currently pinned by
-   * an open O_PATH fd. The held O_PATH descriptor prevents the Linux kernel
-   * from recycling that inode number. If metadata (st_size, st_ctime, st_mtim)
-   * is identical, we deduplicate safely without EEXIST.
+   * Only immutable proven sources on verified ST_RDONLY mounts can deduplicate
+   * via metadata stability (size/ctime/mtime), because read-only mounts prevent
+   * mutation. Mutable workload outputs are ALWAYS re-hashed on every exec stop
+   * to eliminate timestamp-granularity collisions on coarse-grained
+   * filesystems.
    */
   CapturedExecutable *existing =
       find_captured_exec((uint64_t)st.st_dev, (uint64_t)st.st_ino);
-  if (existing != NULL) {
+  if (existing != NULL && existing->is_system_binary) {
     if (existing->st_size == (int64_t)st.st_size &&
         existing->st_ctime_ns == ctim_ns && existing->st_mtim_ns == mtim_ns) {
       strncpy(sha256_hex, existing->sha256, sizeof(sha256_hex) - 1);
       actual_bytes_captured = existing->st_size;
       held_idx = (int)(existing - g_captured_execs);
-      is_immutable_system_binary = existing->is_system_binary;
+      is_immutable_system_binary = true;
       is_deduplicated = true;
       goto emit_exec_record;
     }
@@ -942,26 +885,32 @@ static void handle_exec_event(pid_t pid) {
 
   /* Pin executable inode via O_PATH. Must fail closed if descriptor allocation
    * fails. */
-  if (g_captured_exec_count >= MAX_HELD_DESCRIPTORS) {
-    g_failed = true;
-    snprintf(g_failure_reason, sizeof(g_failure_reason),
-             "HELD_FD_LIMIT_EXCEEDED");
-    fprintf(stderr, "hosted_exec_witness: fatal: held descriptor table full\n");
-    kill_all_tracees();
-    return;
-  }
+  int held_fd = -1;
+  if (existing != NULL) {
+    held_fd = existing->held_fd;
+  } else {
+    if (g_captured_exec_count >= MAX_HELD_DESCRIPTORS) {
+      g_failed = true;
+      snprintf(g_failure_reason, sizeof(g_failure_reason),
+               "HELD_FD_LIMIT_EXCEEDED");
+      fprintf(stderr,
+              "hosted_exec_witness: fatal: held descriptor table full\n");
+      kill_all_tracees();
+      return;
+    }
 
-  int held_fd = open(proc_exe, O_PATH | O_CLOEXEC);
-  if (held_fd < 0) {
-    int err = errno;
-    g_failed = true;
-    snprintf(g_failure_reason, sizeof(g_failure_reason),
-             "HELD_FD_OPEN_FAILED_ERRNO_%d", err);
-    fprintf(stderr,
-            "hosted_exec_witness: fatal: open(O_PATH) failed on %s: %s\n",
-            proc_exe, strerror(err));
-    kill_all_tracees();
-    return;
+    held_fd = open(proc_exe, O_PATH | O_CLOEXEC);
+    if (held_fd < 0) {
+      int err = errno;
+      g_failed = true;
+      snprintf(g_failure_reason, sizeof(g_failure_reason),
+               "HELD_FD_OPEN_FAILED_ERRNO_%d", err);
+      fprintf(stderr,
+              "hosted_exec_witness: fatal: open(O_PATH) failed on %s: %s\n",
+              proc_exe, strerror(err));
+      kill_all_tracees();
+      return;
+    }
   }
 
   /*
@@ -1035,7 +984,7 @@ static void handle_exec_event(pid_t pid) {
   ssize_t bytes_n;
 
   int save_fd = -1;
-  if (g_raw_capture_dir_fd >= 0 && !is_immutable_system_binary) {
+  if (g_raw_capture_dir_fd >= 0 && existing == NULL) {
     char filename[128];
     snprintf(filename, sizeof(filename), "%" PRIu64 "_%" PRIu64 ".bin",
              (uint64_t)st.st_dev, (uint64_t)st.st_ino);
@@ -1111,7 +1060,27 @@ static void handle_exec_event(pid_t pid) {
     snprintf(sha256_hex + i * 2, 3, "%02x", digest[i]);
   }
 
-  /* Register in captured executables table for deduplication */
+  if (existing != NULL) {
+    if (strcmp(sha256_hex, existing->sha256) == 0) {
+      /* Byte-for-byte verified match on repeated execution */
+      actual_bytes_captured = existing->st_size;
+      held_idx = (int)(existing - g_captured_execs);
+      is_immutable_system_binary = existing->is_system_binary;
+      is_deduplicated = true;
+      goto emit_exec_record;
+    } else {
+      /* Mutable workload binary changed between executions: update hash */
+      strncpy(existing->sha256, sha256_hex, sizeof(existing->sha256) - 1);
+      existing->st_size = actual_bytes_captured;
+      existing->st_ctime_ns = ctim_ns;
+      existing->st_mtim_ns = mtim_ns;
+      held_idx = (int)(existing - g_captured_execs);
+      is_immutable_system_binary = existing->is_system_binary;
+      goto emit_exec_record;
+    }
+  }
+
+  /* Register new entry in captured executables table */
   held_idx = (int)g_captured_exec_count;
   CapturedExecutable *ce = &g_captured_execs[g_captured_exec_count++];
   ce->st_dev = (uint64_t)st.st_dev;
@@ -1122,7 +1091,6 @@ static void handle_exec_event(pid_t pid) {
   strncpy(ce->sha256, sha256_hex, sizeof(ce->sha256) - 1);
   ce->held_fd = held_fd;
   ce->is_system_binary = is_immutable_system_binary;
-
 emit_exec_record:;
   /* Read command-line arguments from /proc/<pid>/cmdline */
   char proc_cmdline[64];
@@ -1189,7 +1157,7 @@ emit_exec_record:;
   emit_evidence_record(buf);
   g_total_exec_events++;
 
-  if (!is_immutable_system_binary && g_raw_capture_dir_fd >= 0) {
+  if (g_raw_capture_dir_fd >= 0) {
     char cap_buf[1024];
     char cap_file[128];
     snprintf(cap_file, sizeof(cap_file), "%" PRIu64 "_%" PRIu64 ".bin",

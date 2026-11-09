@@ -557,6 +557,7 @@ class TestHostedExecWitness(unittest.TestCase):
         self.assertIn("inspect_syscall_stop", c_code)
         self.assertIn("PTRACE_GET_SYSCALL_INFO", c_code)
         self.assertIn("AUDIT_ARCH_X86_64", c_code)
+        self.assertIn("COMPAT_X32_SYSCALL_DISALLOWED", c_code)
         self.assertIn("initial_stop_pending", c_code)
         self.assertIn("WNOHANG", c_code)
         self.assertIn("poll", c_code)
