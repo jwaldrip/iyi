@@ -1697,6 +1697,7 @@ class SequentialLifecycleController:
         """Phase 6: Run 3 Drivers."""
         print("=== Step 6: Run 3 Drivers ===")
         r = self.manifest.report_path
+        leaf = os.path.basename(r)
 
         # Step 6a: Run acme driver to write run3/required.json
         print("Executing initial driver: acme")
@@ -1709,7 +1710,6 @@ class SequentialLifecycleController:
         self.seal_origin_receipt("run3-acme", attempt=1, driver="acme")
         self.record_checkpoint("run3-acme", "PASS", cmd_acme, code, source_dir=acme_dir, skip_raw_executables=True)
 
-        leaf = os.path.basename(r)
         required_file = os.path.join(self.private_tmp_dir, leaf, "run3", "required.json")
         if not os.path.isfile(required_file):
             self.mark_failure(f"run3/required.json missing at {required_file}")
