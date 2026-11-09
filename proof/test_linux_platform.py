@@ -1149,7 +1149,7 @@ class TestOriginRecordsAdversarialHardlink(unittest.TestCase):
             with patch("proof.run_proof.validate_census", return_value=[]), \
                  patch("proof.run_proof._check_stage_identity", return_value=True), \
                  patch("proof.run_proof.run_logged", return_value=(MagicMock(returncode=0, timed_out=False, survivors=(), interrupted_signal=None), b"PASS\n")):
-                _run_one_driver(
+                record = _run_one_driver(
                     report_dir,
                     pin,
                     "demo",
