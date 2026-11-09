@@ -705,14 +705,33 @@ describe Iyi::DiagnosticOrigin do
     invocation = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 5, "Call", "method")
     definition = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.iyi", 9, "Macro", "keyword")
     original = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 35, "ProcLiteral", "arrow")
-    anchor = Iyi::DiagnosticAnchor.new(0, "ProcLiteral", "arrow", original)
-    pragmas = {0 => [Iyi::Lexer::LocDiagnosticSplice.new(text.bytesize, [anchor])] of Iyi::Lexer::LocPragma}
+    anchor = Iyi::DiagnosticMacroAnchor.new(0, "ProcLiteral", "arrow", definition, original, nil)
+    emission = Iyi::Lexer::LocDiagnosticEmission.new(text.bytesize, [anchor], [] of Iyi::DiagnosticGeneratedText)
+    pragmas = {0 => [emission] of Iyi::Lexer::LocPragma}
     parser = Iyi::Parser.new(text)
     parser.diagnostic_expansion(invocation, definition, "sha256:#{::Crystal::Digest::SHA256.hexdigest(text)}", pragmas)
     expanded = parser.parse.diagnostic_origin.as(Iyi::DiagnosticOrigin::Expanded)
     expanded.generated_byte_offset.should eq(0)
     expanded.spliced_origin.should eq(original)
     expanded.invocation_origin.should eq(invocation)
+  end
+
+  it "uses the actual arrow token extent for generated macro text and rejects missing coverage" do
+    text = "-> { 1 }"
+    invocation = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 5, "Call", "method")
+    definition = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.iyi", 9, "Macro", "keyword")
+    generated = Iyi::DiagnosticGeneratedText.new(0, text.bytesize, definition, Iyi::DiagnosticMacroProducer::MacroId)
+    emission = Iyi::Lexer::LocDiagnosticEmission.new(text.bytesize, [] of Iyi::DiagnosticMacroAnchor, [generated])
+    parser = Iyi::Parser.new(text)
+    parser.diagnostic_expansion(invocation, definition, "sha256:#{::Crystal::Digest::SHA256.hexdigest(text)}",
+      {0 => [emission] of Iyi::Lexer::LocPragma})
+    origin = parser.parse.diagnostic_origin.as(Iyi::DiagnosticOrigin::Expanded)
+    origin.emission_parts.should eq([Iyi::DiagnosticEmissionPart.new(0, 2, definition)])
+    origin.spliced_origin.should be_nil
+
+    missing = Iyi::Parser.new(text)
+    missing.diagnostic_expansion(invocation, definition, "sha256:#{::Crystal::Digest::SHA256.hexdigest(text)}", nil)
+    expect_raises(ArgumentError) { missing.parse }
   end
 
   it "distinguishes an inline macro directive and its synthetic definition" do

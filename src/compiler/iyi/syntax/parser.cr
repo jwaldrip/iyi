@@ -214,8 +214,9 @@ module Iyi
     @diagnostic_regions : Array(DiagnosticRegion)? = nil
     @diagnostic_pending : Hash({Int32, String, String}, DiagnosticOrigin)? = nil
     @diagnostic_expansion : {DiagnosticOrigin, DiagnosticOrigin, String}? = nil
-    @diagnostic_spans : Array({Int32, Int32})? = nil
-    @diagnostic_splice_pending : Hash({Int32, String, String}, DiagnosticOrigin)? = nil
+    @diagnostic_emitted_anchors : Hash({Int32, String, String}, DiagnosticMacroAnchor)? = nil
+    @diagnostic_generated_ranges : Array(DiagnosticGeneratedText)? = nil
+    @last_macro_control_offset : Int32? = nil
 
     def diagnostic_expansion(invocation : DiagnosticOrigin, definition : DiagnosticOrigin,
                              guard : String, pragmas : Hash(Int32, Array(Lexer::LocPragma))?)
@@ -224,34 +225,41 @@ module Iyi
         raise ArgumentError.new("diagnostic macro expansion guard mismatch")
       end
       @diagnostic_expansion = {invocation, definition, guard}
-      spans = @diagnostic_spans = [] of {Int32, Int32}
-      pending = @diagnostic_splice_pending = {} of {Int32, String, String} => DiagnosticOrigin
+      @diagnostic_token_ends = {} of Int32 => Int32
+      emitted = @diagnostic_emitted_anchors = {} of {Int32, String, String} => DiagnosticMacroAnchor
+      generated_ranges = @diagnostic_generated_ranges = [] of DiagnosticGeneratedText
       return unless pragmas
       pragmas.each do |start, list|
         list.each do |entry|
-          next unless entry.is_a?(Lexer::LocDiagnosticSplice)
-          finish = entry.end_offset
-          if start < 0 || finish < start || finish > string.bytesize + @input_offset_base
-            raise ArgumentError.new("invalid diagnostic macro splice")
-          end
-          spans << {start, finish}
-          entry.anchors.each do |anchor|
-            unless anchor.offset >= start && anchor.offset < finish
-              raise ArgumentError.new("macro splice anchor outside interpolation")
+          case entry
+          when Lexer::LocDiagnosticEmission
+            finish = entry.end_offset
+            if start < 0 || finish < start || finish > string.bytesize + @input_offset_base
+              raise ArgumentError.new("invalid diagnostic macro emission extent")
             end
-            origin = anchor.origin || raise ArgumentError.new("macro splice has no original anchor")
-            unless origin.valid_for_anchor?(anchor.kind, anchor.role)
-              raise ArgumentError.new("macro splice anchor kind or role mismatch")
+            entry.anchors.each do |anchor|
+              unless anchor.offset >= start && anchor.offset < finish
+                raise ArgumentError.new("macro emission anchor outside emission bounds")
+              end
+              if (source = anchor.source_origin) && !source.valid_for_anchor?(anchor.kind, anchor.role)
+                raise ArgumentError.new("macro splice anchor kind or role mismatch")
+              end
+              key = {anchor.offset, anchor.kind, anchor.role}
+              raise ArgumentError.new("duplicate macro emission anchor") if emitted.has_key?(key)
+              emitted[key] = anchor
             end
-            key = {anchor.offset, anchor.kind, anchor.role}
-            raise ArgumentError.new("duplicate macro splice anchor") if pending.has_key?(key)
-            pending[key] = origin
+            entry.generated_text.each do |gen|
+              if gen.start_offset < start || gen.end_offset > finish || gen.end_offset <= gen.start_offset
+                raise ArgumentError.new("invalid macro generated text extent")
+              end
+              generated_ranges << gen
+            end
           end
         end
       end
-      spans.sort_by!(&.[0])
-      spans.each_cons_pair do |left, right|
-        raise ArgumentError.new("overlapping diagnostic macro splices") if left[1] > right[0]
+      generated_ranges.sort_by!(&.start_offset)
+      generated_ranges.each_cons_pair do |left, right|
+        raise ArgumentError.new("overlapping diagnostic macro generated ranges") if left.end_offset > right.start_offset
       end
     end
 
@@ -293,12 +301,12 @@ module Iyi
       if pending = @diagnostic_pending
         raise ArgumentError.new("unconsumed diagnostic provenance anchors") unless pending.empty?
       end
-      if pending = @diagnostic_splice_pending
-        raise ArgumentError.new("unconsumed diagnostic macro splice anchors") unless pending.empty?
+      if emitted = @diagnostic_emitted_anchors
+        raise ArgumentError.new("unconsumed diagnostic macro emitted anchors") unless emitted.empty?
       end
     end
 
-    private def diagnostic_anchor(kind : String, role : String, offset : Int32) : DiagnosticOrigin?
+    private def diagnostic_anchor(kind : String, role : String, offset : Int32, token_end : Int32? = nil) : DiagnosticOrigin?
       if regions = @diagnostic_regions
         if regions.any? { |region| offset >= region.start_offset && offset < region.end_offset }
           return @diagnostic_pending.not_nil!.delete({offset, kind, role}) ||
@@ -306,12 +314,46 @@ module Iyi
         end
       end
       if expansion = @diagnostic_expansion
-        spliced = nil
-        if @diagnostic_spans.not_nil!.any? { |span| offset >= span[0] && offset < span[1] }
-          spliced = @diagnostic_splice_pending.not_nil!.delete({offset, kind, role}) ||
-                    raise ArgumentError.new("missing diagnostic macro splice anchor")
+        end_pos = token_end || @diagnostic_token_ends.try(&.[offset]?)
+        unless end_pos && end_pos > offset
+          raise ArgumentError.new("missing or ambiguous diagnostic token extent at byte #{offset} for #{kind}:#{role}")
         end
-        return DiagnosticOrigin::Expanded.new(expansion[0], expansion[1], expansion[2], offset, kind, role, spliced)
+        key = {offset, kind, role}
+        if emitted = @diagnostic_emitted_anchors.try(&.delete(key))
+          part = DiagnosticEmissionPart.new(offset, end_pos, emitted.emitter_origin)
+          return DiagnosticOrigin::Expanded.new(
+            expansion[0], expansion[1], expansion[2],
+            offset, kind, role, [part], emitted.source_origin
+          )
+        elsif ranges = @diagnostic_generated_ranges
+          cursor = offset
+          raw_parts = [] of DiagnosticEmissionPart
+          while cursor < end_pos
+            covering = ranges.find { |range| range.start_offset <= cursor && range.end_offset > cursor }
+            unless covering
+              raise ArgumentError.new("unauthorized macro anchor at byte #{offset} for #{kind}:#{role}")
+            end
+            chunk_end = Math.min(end_pos, covering.end_offset)
+            raw_parts << DiagnosticEmissionPart.new(cursor, chunk_end, covering.emitter_origin)
+            cursor = chunk_end
+          end
+          parts = [] of DiagnosticEmissionPart
+          raw_parts.each do |p|
+            if last = parts.last?
+              if last.emitter_origin == p.emitter_origin && last.end_offset == p.start_offset
+                parts[parts.size - 1] = DiagnosticEmissionPart.new(last.start_offset, p.end_offset, last.emitter_origin)
+                next
+              end
+            end
+            parts << p
+          end
+          return DiagnosticOrigin::Expanded.new(
+            expansion[0], expansion[1], expansion[2],
+            offset, kind, role, parts, nil
+          )
+        else
+          raise ArgumentError.new("missing diagnostic macro expansion context for #{kind}:#{role}")
+        end
       end
       return nil unless @diagnostic_capture
       return nil unless @input_artifact.nil?
@@ -5074,6 +5116,7 @@ module Iyi
             pieces << macro_control
             skip_whitespace = check_macro_skip_whitespace
           else
+            @last_macro_control_offset = offset
             return new_macro_expressions(pieces), nil
           end
         when .macro_var?
@@ -5337,8 +5380,9 @@ module Iyi
       when Keyword::ELSIF
         unexpected_token if is_unless
         start_loc = @token.location
+        elsif_offset = @last_macro_control_offset || @token.input_offset
         a_else = parse_macro_if(start_location, macro_state, false).at(start_loc)
-
+        a_else.diagnostic_origin = diagnostic_anchor("MacroDirective", "control", elsif_offset)
         if check_end
           check_ident :end
           next_token_skip_space

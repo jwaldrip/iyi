@@ -65,10 +65,7 @@ module Iyi
       end
     end
 
-    private def diagnostic_raw(node : ASTNode, producer : DiagnosticMacroProducer, &) : Nil
-      if @diagnostic_generated_text && node.diagnostic_macro_lineage.unknown?
-        raise ArgumentError.new("unclassified macro raw-text producer")
-      end
+    protected def diagnostic_raw(node : ASTNode, producer : DiagnosticMacroProducer, &) : Nil
       start = @str.pos.to_i32 if @diagnostic_generated_text
       yield
       if generated = @diagnostic_generated_text
@@ -261,7 +258,14 @@ module Iyi
     def visit(node : NamedTupleLiteral)
       # short-circuit to handle empty named tuple context
       if node.entries.empty?
+        start = @str.pos.to_i32
+        if emissions = @diagnostic_emissions
+          emissions << DiagnosticMacroAnchor.new(start + 13, "Call", "method", @diagnostic_emitter, nil, DiagnosticMacroProducer::EmptyNamedTupleProjection)
+        end
         @str << "::NamedTuple.new"
+        if generated = @diagnostic_generated_text
+          generated << DiagnosticGeneratedText.new(start, @str.pos.to_i32, @diagnostic_emitter, DiagnosticMacroProducer::EmptyNamedTupleProjection)
+        end
         return false
       end
 
@@ -906,6 +910,7 @@ module Iyi
       when StringLiteral
         @str << exp.value.inspect_unquoted.gsub('`', "\\`")
       when StringInterpolation
+        diagnostic_anchor(exp, "Literal", "interpolation")
         visit_interpolation exp, &.inspect_unquoted.gsub('`', "\\`")
       else
         # This branch can be reached after the literal expander has expanded
@@ -1245,6 +1250,7 @@ module Iyi
     end
 
     def visit(node : MacroVerbatim)
+      diagnostic_anchor(node, "MacroDirective", "control")
       @str << "{% verbatim do %}"
 
       with_indent do
@@ -1476,6 +1482,7 @@ module Iyi
           @str << '\\' if exp.value[0]?.try &.ascii_whitespace?
           append_regex_source exp.value, @str
         when StringInterpolation
+          diagnostic_anchor(exp, "Literal", "interpolation")
           @str << '\\' if exp.expressions.first?.as?(StringLiteral).try &.value[0]?.try &.ascii_whitespace?
           visit_interpolation(exp) { |s| append_regex_source s, @str }
         else
@@ -1513,7 +1520,14 @@ module Iyi
     def visit(node : TupleLiteral)
       first = node.elements.first?
       unless first
+        start = @str.pos.to_i32
+        if emissions = @diagnostic_emissions
+          emissions << DiagnosticMacroAnchor.new(start + 8, "Call", "method", @diagnostic_emitter, nil, DiagnosticMacroProducer::EmptyTupleProjection)
+        end
         @str << "::Tuple.new"
+        if generated = @diagnostic_generated_text
+          generated << DiagnosticGeneratedText.new(start, @str.pos.to_i32, @diagnostic_emitter, DiagnosticMacroProducer::EmptyTupleProjection)
+        end
         return false
       end
 

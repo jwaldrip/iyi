@@ -32,6 +32,21 @@ module Iyi
     @stacked_artifact : String? = nil
     @token_end_location : Location?
     @string_pool : StringPool
+    @diagnostic_token_ends : Hash(Int32, Int32)? = nil
+
+    private def diagnostic_record_token_end : Nil
+      if ends = @diagnostic_token_ends
+        start = @token.input_offset
+        finish = @token.input_end
+        if finish > start
+          if previous = ends[start]?
+            ends[start] = -1 if previous != finish
+          else
+            ends[start] = finish
+          end
+        end
+      end
+    end
 
     # This is an interface for storing data associated to a heredoc
     module HeredocItem
@@ -57,7 +72,7 @@ module Iyi
     # are the ones it cannot see.
     property macro_literal_breaks : Set(Int32)? = nil
 
-    alias LocPragma = LocSetPragma | LocPushPragma | LocPopPragma | LocOriginPragma | LocDiagnosticSplice
+    alias LocPragma = LocSetPragma | LocPushPragma | LocPopPragma | LocOriginPragma | LocDiagnosticEmission
 
     # iyi: *artifact* is `Location#artifact` for what follows.
     record LocSetPragma,
@@ -90,12 +105,6 @@ module Iyi
       end
     end
 
-    # Provenance attached to an interpolation is consumed before reparsing;
-    # it does not alter the location stack.
-    record LocDiagnosticSplice, end_offset : Int32, anchors : Array(DiagnosticAnchor) do
-      def run_pragma(lexer)
-      end
-    end
 
     record LocDiagnosticEmission, end_offset : Int32, anchors : Array(DiagnosticMacroAnchor),
       generated_text : Array(DiagnosticGeneratedText) do
@@ -1230,6 +1239,7 @@ module Iyi
       @token
     ensure
       @token.input_end = current_pos + @input_offset_base
+      diagnostic_record_token_end
     end
 
     def token_end_location
@@ -1802,6 +1812,7 @@ module Iyi
       @token
     ensure
       @token.input_end = current_pos + @input_offset_base
+      diagnostic_record_token_end
     end
 
     def next_string_token_noescape(delimiter_state)
@@ -2204,6 +2215,7 @@ module Iyi
       @token
     ensure
       @token.input_end = current_pos + @input_offset_base
+      diagnostic_record_token_end
     end
 
     def delimiter_state_for_percent_literal

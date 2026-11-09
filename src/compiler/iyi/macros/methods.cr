@@ -405,6 +405,10 @@ module Iyi
   end
 
   class ASTNode
+    private def macro_node(interpreter : Iyi::MacroInterpreter, klass : T.class, *args, **kwargs) : T forall T
+      interpreter.diagnostic_new(klass, *args, **kwargs)
+    end
+
     def to_macro_id
       to_s
     end
@@ -433,20 +437,20 @@ module Iyi
     def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "id"
-        interpret_check_args { MacroId.new(to_macro_id) }
+        interpret_check_args { macro_node(interpreter, MacroId, to_macro_id) }
       when "stringify"
-        interpret_check_args { stringify }
+        interpret_check_args { macro_node(interpreter, StringLiteral, to_s) }
       when "symbolize"
-        interpret_check_args { symbolize }
+        interpret_check_args { macro_node(interpreter, SymbolLiteral, to_s) }
       when "class_name"
-        interpret_check_args { class_name }
+        interpret_check_args { macro_node(interpreter, StringLiteral, class_desc) }
       when "doc"
         interpret_check_args do
-          StringLiteral.new self.doc || ""
+          macro_node(interpreter, StringLiteral, self.doc || "")
         end
       when "doc_comment"
         interpret_check_args do
-          MacroId.new (self.doc || "").gsub("\n", "\n# ")
+          macro_node(interpreter, MacroId, (self.doc || "").gsub("\n", "\n# "))
         end
       when "raise"
         macro_raise self, args, interpreter, Iyi::MacroRaiseException
@@ -455,35 +459,35 @@ module Iyi
       when "filename"
         interpret_check_args do
           filename = location.try &.original_filename
-          filename ? StringLiteral.new(filename) : NilLiteral.new
+          filename ? macro_node(interpreter, StringLiteral, filename) : macro_node(interpreter, NilLiteral)
         end
       when "line_number"
         interpret_check_args do
           line_number = location.try &.expanded_location.try &.line_number
-          line_number ? NumberLiteral.new(line_number) : NilLiteral.new
+          line_number ? macro_node(interpreter, NumberLiteral, line_number) : macro_node(interpreter, NilLiteral)
         end
       when "column_number"
         interpret_check_args do
           column_number = location.try &.expanded_location.try &.column_number
-          column_number ? NumberLiteral.new(column_number) : NilLiteral.new
+          column_number ? macro_node(interpreter, NumberLiteral, column_number) : macro_node(interpreter, NilLiteral)
         end
       when "end_line_number"
         interpret_check_args do
           line_number = end_location.try &.expanded_location.try &.line_number
-          line_number ? NumberLiteral.new(line_number) : NilLiteral.new
+          line_number ? macro_node(interpreter, NumberLiteral, line_number) : macro_node(interpreter, NilLiteral)
         end
       when "end_column_number"
         interpret_check_args do
           column_number = end_location.try &.expanded_location.try &.column_number
-          column_number ? NumberLiteral.new(column_number) : NilLiteral.new
+          column_number ? macro_node(interpreter, NumberLiteral, column_number) : macro_node(interpreter, NilLiteral)
         end
       when "=="
         interpret_check_args do |arg|
-          BoolLiteral.new(self == arg)
+          macro_node(interpreter, BoolLiteral, self == arg)
         end
       when "!="
         interpret_check_args do |arg|
-          BoolLiteral.new(self != arg)
+          macro_node(interpreter, BoolLiteral, self != arg)
         end
       when "!"
         interpret_check_args { BoolLiteral.new(!truthy?) }
@@ -1094,15 +1098,15 @@ module Iyi
       when "empty?"
         interpret_check_args { BoolLiteral.new(entries.empty?) }
       when "keys"
-        interpret_check_args { ArrayLiteral.map entries, &.key }
+        interpret_check_args { interpreter.diagnostic_new(ArrayLiteral, entries.map(&.key)) }
       when "size"
         interpret_check_args { NumberLiteral.new(entries.size) }
       when "to_a"
         interpret_check_args do
-          ArrayLiteral.map(entries) { |entry| TupleLiteral.new([entry.key, entry.value] of ASTNode) }
+          interpreter.diagnostic_new(ArrayLiteral, entries.map { |entry| interpreter.diagnostic_new(TupleLiteral, [entry.key, entry.value] of ASTNode).as(ASTNode) })
         end
       when "values"
-        interpret_check_args { ArrayLiteral.map entries, &.value }
+        interpret_check_args { interpreter.diagnostic_new(ArrayLiteral, entries.map(&.value)) }
       when "each"
         interpret_check_args(uses_block: true) do
           block_arg_key = block.args[0]?
@@ -1129,11 +1133,11 @@ module Iyi
             interpreter.not_interpreted_hook block.body, use_significant_node: true
           end
 
-          ArrayLiteral.map(entries) do |entry|
+          interpreter.diagnostic_new(ArrayLiteral, entries.map do |entry|
             interpreter.define_var(block_arg_key.name, entry.key) if block_arg_key
             interpreter.define_var(block_arg_value.name, entry.value) if block_arg_value
-            interpreter.accept block.body
-          end
+            interpreter.accept(block.body).as(ASTNode)
+          end)
         end
       when "double_splat"
         interpret_check_args(min_count: 0) do |arg|
@@ -1197,14 +1201,14 @@ module Iyi
               interpreter.define_var(block_arg_value.name, entry.value) if block_arg_value
               interpreter.accept(block.body).truthy?
             end
-            HashLiteral.new(filtered)
+            interpreter.diagnostic_new(HashLiteral, filtered)
           end
         else
           if args.empty?
             wrong_number_of_arguments "macro 'HashLiteral#select'", args.size, "1+"
           end
           filtered = entries.select { |entry| args.any? &.==(entry.key) }
-          HashLiteral.new(filtered)
+          interpreter.diagnostic_new(HashLiteral, filtered)
         end
       when "reject"
         if block
@@ -1221,14 +1225,14 @@ module Iyi
               interpreter.define_var(block_arg_value.name, entry.value) if block_arg_value
               interpreter.accept(block.body).truthy?
             end
-            HashLiteral.new(filtered)
+            interpreter.diagnostic_new(HashLiteral, filtered)
           end
         else
           if args.empty?
             wrong_number_of_arguments "macro 'HashLiteral#reject'", args.size, "1+"
           end
           filtered = entries.reject { |entry| args.any? &.==(entry.key) }
-          HashLiteral.new(filtered)
+          interpreter.diagnostic_new(HashLiteral, filtered)
         end
       else
         super
@@ -1248,15 +1252,15 @@ module Iyi
       when "empty?"
         interpret_check_args { BoolLiteral.new(entries.empty?) }
       when "keys"
-        interpret_check_args { ArrayLiteral.map(entries) { |entry| MacroId.new(entry.key) } }
+        interpret_check_args { interpreter.diagnostic_new(ArrayLiteral, entries.map { |entry| interpreter.diagnostic_new(MacroId, entry.key).as(ASTNode) }) }
       when "size"
         interpret_check_args { NumberLiteral.new(entries.size) }
       when "to_a"
         interpret_check_args do
-          ArrayLiteral.map(entries) { |entry| TupleLiteral.new([MacroId.new(entry.key), entry.value] of ASTNode) }
+          interpreter.diagnostic_new(ArrayLiteral, entries.map { |entry| interpreter.diagnostic_new(TupleLiteral, [interpreter.diagnostic_new(MacroId, entry.key), entry.value] of ASTNode).as(ASTNode) })
         end
       when "values"
-        interpret_check_args { ArrayLiteral.map entries, &.value }
+        interpret_check_args { interpreter.diagnostic_new(ArrayLiteral, entries.map(&.value)) }
       when "each"
         interpret_check_args(uses_block: true) do
           block_arg_key = block.args[0]?
@@ -1283,11 +1287,11 @@ module Iyi
             interpreter.not_interpreted_hook block.body, use_significant_node: true
           end
 
-          ArrayLiteral.map(entries) do |entry|
-            interpreter.define_var(block_arg_key.name, MacroId.new(entry.key)) if block_arg_key
+          interpreter.diagnostic_new(ArrayLiteral, entries.map do |entry|
+            interpreter.define_var(block_arg_key.name, interpreter.diagnostic_new(MacroId, entry.key)) if block_arg_key
             interpreter.define_var(block_arg_value.name, entry.value) if block_arg_value
-            interpreter.accept block.body
-          end
+            interpreter.accept(block.body).as(ASTNode)
+          end)
         end
       when "double_splat"
         interpret_check_args(min_count: 0) do |arg|
@@ -3352,10 +3356,10 @@ private def interpret_array_or_tuple_method(object, klass, method, args, named_a
         interpreter.not_interpreted_hook block.body, use_significant_node: true
       end
 
-      klass.map(object.elements) do |elem|
+      interpreter.diagnostic_new(klass, object.elements.map do |elem|
         interpreter.define_var(block_arg.name, elem) if block_arg
-        interpreter.accept block.body
-      end
+        interpreter.accept(block.body).as(Iyi::ASTNode)
+      end)
     end
   when "map_with_index"
     interpret_check_args(node: object, uses_block: true) do
@@ -3366,11 +3370,11 @@ private def interpret_array_or_tuple_method(object, klass, method, args, named_a
         interpreter.not_interpreted_hook block.body, use_significant_node: true
       end
 
-      klass.map_with_index(object.elements) do |elem, idx|
+      interpreter.diagnostic_new(klass, object.elements.map_with_index do |elem, idx|
         interpreter.define_var(block_arg.name, elem) if block_arg
         interpreter.define_var(index_arg.name, Iyi::NumberLiteral.new idx) if index_arg
-        interpreter.accept block.body
-      end
+        interpreter.accept(block.body).as(Iyi::ASTNode)
+      end)
     end
   when "select"
     interpret_check_args(node: object, uses_block: true) do
@@ -3404,15 +3408,15 @@ private def interpret_array_or_tuple_method(object, klass, method, args, named_a
       end
     end
   when "shuffle"
-    interpret_check_args(node: object) { klass.new(object.elements.shuffle) }
+    interpret_check_args(node: object) { interpreter.diagnostic_new(klass, object.elements.shuffle) }
   when "sort"
-    interpret_check_args(node: object) { klass.new(object.elements.sort { |x, y| x.interpret_compare(y) }) }
+    interpret_check_args(node: object) { interpreter.diagnostic_new(klass, object.elements.sort { |x, y| x.interpret_compare(y) }) }
   when "sort_by"
     interpret_check_args(node: object, uses_block: true) do
       sort_by(object, klass, block, interpreter)
     end
   when "uniq"
-    interpret_check_args(node: object) { klass.new(object.elements.uniq) }
+    interpret_check_args(node: object) { interpreter.diagnostic_new(klass, object.elements.uniq) }
   when "[]"
     interpret_check_args(node: object, min_count: 1) do |from, to|
       if to
@@ -3430,7 +3434,7 @@ private def interpret_array_or_tuple_method(object, klass, method, args, named_a
         from = from.to_number.to_i
         to = to.to_number.to_i
         values = object.elements[from, to]?
-        values ? klass.new(values) : Iyi::NilLiteral.new
+        values ? interpreter.diagnostic_new(klass, values) : Iyi::NilLiteral.new
       else
         case arg = from
         when Iyi::NumberLiteral
@@ -3439,7 +3443,7 @@ private def interpret_array_or_tuple_method(object, klass, method, args, named_a
         when Iyi::RangeLiteral
           range = arg.interpret_to_nilable_range(interpreter)
           values = object.elements[range]?
-          values ? klass.new(values) : Iyi::NilLiteral.new
+          values ? interpreter.diagnostic_new(klass, values) : Iyi::NilLiteral.new
         else
           arg.raise "argument to [] must be a number or range, not #{arg.class_desc}:\n\n#{arg}"
         end
@@ -3479,7 +3483,7 @@ private def interpret_array_or_tuple_method(object, klass, method, args, named_a
       else
         arg.raise "argument to `#{klass}#+` must be a tuple or array, not #{arg.class_desc}:\n\n#{arg}"
       end
-      klass.new(object.elements + other_elements)
+      interpreter.diagnostic_new(klass, object.elements + other_elements)
     end
   when "-"
     interpret_check_args(node: object) do |arg|
@@ -3489,7 +3493,7 @@ private def interpret_array_or_tuple_method(object, klass, method, args, named_a
       else
         arg.raise "argument to `#{klass}#-` must be a tuple or array, not #{arg.class_desc}:\n\n#{arg}"
       end
-      klass.new(object.elements - other_elements)
+      interpreter.diagnostic_new(klass, object.elements - other_elements)
     end
   when "*"
     interpret_check_args(node: object) do |arg|
@@ -3503,7 +3507,7 @@ private def interpret_array_or_tuple_method(object, klass, method, args, named_a
         arg.raise "argument to `#{klass}#*` must be an integer"
       end
 
-      klass.new(object.elements * num)
+      interpreter.diagnostic_new(klass, object.elements * num)
     end
   else
     nil
@@ -3695,7 +3699,7 @@ private def filter(object, klass, block, interpreter, keep = true)
     interpreter.not_interpreted_hook block.body, use_significant_node: true
   end
 
-  klass.new(object.elements.select do |elem|
+  interpreter.diagnostic_new(klass, object.elements.select do |elem|
     interpreter.define_var(block_arg.name, elem) if block_arg
     block_result = interpreter.accept(block.body).truthy?
     keep ? block_result : !block_result
@@ -3745,7 +3749,7 @@ private def sort_by(object, klass, block, interpreter)
     interpreter.not_interpreted_hook block.body, use_significant_node: true
   end
 
-  klass.new(object.elements.sort_by do |elem|
+  interpreter.diagnostic_new(klass, object.elements.sort_by do |elem|
     block_arg.try { |arg| interpreter.define_var(arg.name, elem) }
     result = interpreter.accept(block.body)
     InterpretCompareWrapper.new(result)

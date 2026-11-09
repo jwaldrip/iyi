@@ -172,10 +172,10 @@ class Iyi::Program
     virtual.line_origins = line_origins_of(generated_source, macro_expansion_pragmas)
     parser.filename = virtual
     if @program.diagnostic_capture
-      if (invocation = node.diagnostic_origin) && (definition = the_macro.diagnostic_origin)
-        guard = "sha256:#{::Crystal::Digest::SHA256.hexdigest(generated_source)}"
-        parser.diagnostic_expansion(invocation, definition, guard, macro_expansion_pragmas)
-      end
+      invocation = node.diagnostic_origin || raise ArgumentError.new("macro invocation lacks diagnostic origin")
+      definition = the_macro.diagnostic_origin || raise ArgumentError.new("macro definition lacks diagnostic origin")
+      guard = "sha256:#{::Crystal::Digest::SHA256.hexdigest(generated_source)}"
+      parser.diagnostic_expansion(invocation, definition, guard, macro_expansion_pragmas)
     end
     # iyi: an expansion inside code read from an artifact ends at the
     # artifact, which is no `.iyi`, so `raw!` was read as a call to a method
