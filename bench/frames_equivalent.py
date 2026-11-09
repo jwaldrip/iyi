@@ -423,9 +423,6 @@ def macho_summary(data, expected_type):
             if base not in (0, 2, 0x0c, 0x0e): raise ValueError("unsupported symbol type")
             if base == 0x0e:
                 if not 1 <= sect <= len(sections): raise ValueError("invalid symbol section")
-                section = sections[sect - 1]
-                start, length = int(section["address"], 16), int(section["size"], 16)
-                if not start <= value <= start + length: raise ValueError("symbol outside section")
         symbols.append({"index": i, "string_index": strx, "name_base64": base64.b64encode(name).decode(),
                         "type": typ, "section": sect, "desc": desc, "value": f"{value:016x}"})
     return {"format": "macho64-le-symtab-v1", "cpu_type": cpu, "cpu_subtype": subtype,

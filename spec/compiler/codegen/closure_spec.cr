@@ -890,9 +890,14 @@ describe "Code gen: closure" do
       found.direct_code?(found.symbols.first).should be_false
     end
     put.call(216, 0x0e_u64, 1)
-    put.call(220, 0x104_u64, 8)
-    found = parse.call
-    found.direct_code?(found.symbols.first).should be_false
+    # Linker-defined header symbols can carry a section ordinal even when
+    # their address is outside the section. Neither side nor the end is code.
+    [0xff_u64, 0x104_u64, 0x105_u64].each do |address|
+      put.call(220, address, 8)
+      found = parse.call
+      found.symbols.first.value.should eq(address.to_s(16).rjust(16, '0'))
+      found.direct_code?(found.symbols.first).should be_false
+    end
     put.call(220, 0x100_u64, 8)
     put.call(216, 0x0a_u64, 1)
     expect_raises(Exception, /indirect/) { parse.call }

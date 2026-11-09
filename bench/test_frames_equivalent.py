@@ -524,6 +524,10 @@ def test_macho_reader_controls():
     for typ, section, value in ((0, 0, 5), (2, 0, 0x10), (0xe0, 1, 0x10), (0x0e, 1, 0x20)):
         data, summary = macho_fixture(1, [(b"_x", typ, section, 0, value)])
         assert not frames.direct_code_symbols(frames.macho_summary(data, 1))
+    header_symbol = (b"__mh_execute_header", 0x0f, 1, 0x10, 0)
+    data, summary = macho_fixture(2, [header_symbol, (b"_code", 0x0f, 1, 0, 0x10)])
+    assert frames.macho_summary(data, 2) == summary
+    assert [name for name, _ in frames.direct_code_symbols(summary)] == [b"_code"]
     suffix = bytearray(binary)
     struct.pack_into("<I", suffix, 240, 2)
     suffix_summary = frames.macho_summary(bytes(suffix), 1)
@@ -661,6 +665,7 @@ def test_strict_manifest_synthetic_controls():
             for typ, section, desc, value, flags in (
                     (0, 0, 0, 8, 0x80000400), (2, 0, 0, 0x10, 0x80000400),
                     (0xe0, 1, 0, 0x10, 0x80000400), (0x0e, 1, 0, 0x20, 0x80000400),
+                    (0x0e, 1, 0, 0, 0x80000400), (0x0e, 1, 0, 0x21, 0x80000400),
                     (0x0e, 1, 0, 0x10, 0), (0x0e, 1, 0, 0x10, 0x80000408),
                     (0x0e, 1, 0x100, 0x10, 0x80000400), (0x0e, 1, 0x200, 0x10, 0x80000400)):
                 changed = copy.deepcopy(manifest_b)

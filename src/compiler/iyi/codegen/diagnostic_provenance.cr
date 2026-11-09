@@ -514,7 +514,9 @@ module Iyi::DiagnosticProvenance
       if strx != 0
         raise "invalid Mach-O string index" if strx >= strings.size
         end_index = strx.to_i
-        end_index += 1 while end_index < strings.size && strings[end_index] != 0
+        while end_index < strings.size && strings[end_index] != 0
+          end_index += 1
+        end
         raise "unterminated Mach-O symbol name" if end_index == strings.size
         name = strings[strx.to_i, end_index - strx.to_i]
       end
@@ -529,10 +531,6 @@ module Iyi::DiagnosticProvenance
           raise "unsupported indirect Mach-O alias"
         when 0x0e
           raise "invalid Mach-O section ordinal" if section == 0 || section > sections.size
-          target = sections[section.to_i - 1]
-          start = target.address.to_u64(16)
-          length = target.size.to_u64(16)
-          raise "Mach-O symbol outside section" if value < start || value - start > length
         else
           raise "unsupported Mach-O symbol type"
         end
