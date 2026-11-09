@@ -228,12 +228,17 @@ class DeclaredEvidenceCall:
     """Static census claim with no authority to identify a runtime invocation."""
     evidence_index: int
     site_line: int
+    site_kind: str
+    build_source: str
     call_line: int
     name: str
     call_source: str
     output_template: str
     exec_lines: tuple[int, ...]
     exec_token: str
+    candidate_variant_ids: tuple[str, ...]
+    variant_mapping: str = "unresolved"
+    control_flow_cardinality: str = "unresolved"
 
 
 @dataclass(frozen=True)
@@ -244,6 +249,20 @@ class DeclaredEvidenceSite:
     exec_lines: tuple[int, ...]
     exec_token: str
     named_call_count: int
+
+
+@dataclass(frozen=True)
+class DeclaredDirectEvidence:
+    """Literal build and execution sites, without a runtime cardinality claim."""
+    evidence_index: int
+    site_line: int
+    site_kind: str
+    variant_id: str | None
+    output_template: str
+    build_source: str
+    exec_lines: tuple[int, ...]
+    exec_sources: tuple[str, ...]
+    control_flow_cardinality: str = "unresolved"
 
 
 @dataclass(frozen=True)
@@ -273,6 +292,7 @@ class ProvisionalDriverCensus:
     variants: tuple[DeclaredVariant, ...]
     evidence_sites: tuple[DeclaredEvidenceSite, ...]
     evidence_calls: tuple[DeclaredEvidenceCall, ...]
+    direct_evidence: tuple[DeclaredDirectEvidence, ...]
     unexpanded_evidence_indices: tuple[int, ...]
     product_script_matches_witness: bool
     source_callsite_attribution: str = "unavailable"
@@ -340,6 +360,7 @@ def derive_provisional_driver_censuses(
         declared_lines = {line for site in sites for line in site.lines}
         seen_lines: set[int] = set()
         calls: list[DeclaredEvidenceCall] = []
+        direct: list[DeclaredDirectEvidence] = []
         evidence_sites: list[DeclaredEvidenceSite] = []
         unexpanded: list[int] = []
         for index, item in enumerate(evidence):
@@ -367,7 +388,32 @@ def derive_provisional_driver_censuses(
                 index, site_line, output, tuple(exec_lines), token, len(call_map),
             ))
             if not call_map:
-                unexpanded.append(index)
+                site = next(site for site in sites if site_line in site.lines)
+                site_text = "\n".join(lines[number - 1] for number in site.lines)
+                literal = re.fullmatch(r'\{WORK\}/([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)', output)
+                valid_path = literal is not None and all(
+                    component not in (".", "..") for component in literal.group(1).split("/")
+                )
+                expected_token = f'"$WORK/{literal.group(1)}"' if valid_path else None
+                matching_variants = [
+                    variant for variant in variants
+                    if variant.site_line == site.lines[0] and variant.output == output
+                    and variant.kind == "positive"
+                    and parse_strict_json(variant.full_claim_json)["vars"] == {}
+                ]
+                is_own = site.kind == "canonical-own" and not site.variants
+                is_positive = site.kind == "positive" and len(matching_variants) == 1
+                if (valid_path and token == expected_token and site.command == "build"
+                        and re.search(r'(?:^|\s)-o\s+' + re.escape(token) + r'(?=\s|\\|$)', site_text)
+                        and (is_own or is_positive)):
+                    direct.append(DeclaredDirectEvidence(
+                        index, site_line, site.kind,
+                        matching_variants[0].variant_id if is_positive else None,
+                        output, site_text, tuple(exec_lines),
+                        tuple(lines[line - 1] for line in exec_lines),
+                    ))
+                else:
+                    unexpanded.append(index)
             for call, name in call_map.items():
                 if not isinstance(call, str) or not re.fullmatch(r"[1-9][0-9]*", call):
                     raise TypeValidationError("INVALID-DECLARED-CALL-LINE")
@@ -375,13 +421,33 @@ def derive_provisional_driver_censuses(
                 if (call_line > len(lines) or not isinstance(name, str) or not name
                         or name not in lines[call_line - 1]):
                     raise ReferenceIntegrityError("DECLARED-CALL-TEXT-MISMATCH")
+                named_site = next(site for site in sites if site_line in site.lines)
+                build_source = "\n".join(lines[number - 1] for number in named_site.lines)
+                wanted_output = output.replace("{name}", name)
+                candidates: list[str] = []
+                for variant in variants:
+                    if variant.site_line != named_site.lines[0] or variant.kind != "positive":
+                        continue
+                    claim = parse_strict_json(variant.full_claim_json)
+                    variables = claim["vars"]
+                    rendered = variant.output
+                    if not isinstance(rendered, str):
+                        continue
+                    if "{name}" in rendered:
+                        spec = variables.get("name")
+                        if (not isinstance(spec, dict) or not isinstance(spec.get("values"), list)
+                                or name not in spec["values"]):
+                            continue
+                        rendered = rendered.replace("{name}", name)
+                    if rendered == wanted_output and not re.search(r"\{(?!WORK\}|REPO\})", rendered):
+                        candidates.append(variant.variant_id)
                 calls.append(DeclaredEvidenceCall(
-                    index, site_line, call_line, name, lines[call_line - 1],
-                    output, tuple(exec_lines), token,
+                    index, site_line, named_site.kind, build_source, call_line, name,
+                    lines[call_line - 1], output, tuple(exec_lines), token, tuple(candidates),
                 ))
         results.append(ProvisionalDriverCensus(
             driver, product_commit, witness_commit, p_script, w_script, census_ref, census_bytes,
-            sites, tuple(variants), tuple(evidence_sites), tuple(calls),
+            sites, tuple(variants), tuple(evidence_sites), tuple(calls), tuple(direct),
             tuple(unexpanded), p_script.sha256 == w_script.sha256,
         ))
     return tuple(results)
@@ -421,6 +487,7 @@ def provisional_manifest_bytes(
             "variants": variant_records,
             "evidence_sites": [asdict(site) for site in driver.evidence_sites],
             "evidence_calls": [asdict(call) for call in driver.evidence_calls],
+            "direct_evidence": [asdict(item) for item in driver.direct_evidence],
             "unexpanded_evidence_indices": driver.unexpanded_evidence_indices,
             "product_script_matches_witness": driver.product_script_matches_witness,
             "source_callsite_attribution": driver.source_callsite_attribution,
