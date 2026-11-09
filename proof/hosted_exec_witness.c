@@ -448,6 +448,7 @@ typedef struct {
   char sha256[65];
   int held_fd;
   bool is_system_binary;
+  bool bytes_persisted;
 } CapturedExecutable;
 
 static ProcessEntry g_processes[MAX_TRACKED_PROCESSES];
@@ -1086,12 +1087,21 @@ static void handle_exec_event(pid_t pid) {
   } else {
     snprintf(cwd_target, sizeof(cwd_target), "unknown");
   }
-
   struct stat st;
   memset(&st, 0, sizeof(st));
   if (stat(proc_exe, &st) != 0) {
     fstatat(AT_FDCWD, proc_exe, &st, AT_SYMLINK_NOFOLLOW);
   }
+
+  /*
+   * Initialize workload classification before any deduplication checks or
+   * jumps.
+   */
+  bool is_workload_artifact = (st.st_uid == (uid_t)getuid()) ||
+                              (strncmp(exe_target, "/private/tmp", 12) == 0) ||
+                              (strncmp(exe_target, "/scratch", 8) == 0) ||
+                              (strncmp(exe_target, "/home/proof", 11) == 0) ||
+                              (strncmp(exe_target, "/tmp", 4) == 0);
 
   uint64_t atim_ns = (uint64_t)STAT_ATIM_SEC(st) * 1000000000ULL +
                      (uint64_t)STAT_ATIM_NSEC(st);
@@ -1110,13 +1120,14 @@ static void handle_exec_event(pid_t pid) {
    * Deduplication Check:
    * Only immutable proven sources on verified ST_RDONLY mounts can deduplicate
    * via metadata stability (size/ctime/mtime), because read-only mounts prevent
-   * mutation. Mutable workload outputs are ALWAYS re-hashed on every exec stop
-   * to eliminate timestamp-granularity collisions on coarse-grained
-   * filesystems.
+   * mutation, AND only if raw bytes were previously persisted.
+   * Mutable workload outputs are ALWAYS re-hashed on every exec stop to
+   * eliminate timestamp-granularity collisions on coarse-grained filesystems.
    */
   CapturedExecutable *existing =
       find_captured_exec((uint64_t)st.st_dev, (uint64_t)st.st_ino);
-  if (existing != NULL && existing->is_system_binary) {
+  if (existing != NULL && existing->bytes_persisted &&
+      existing->is_system_binary) {
     if (existing->st_size == (int64_t)st.st_size &&
         existing->st_ctime_ns == ctim_ns && existing->st_mtim_ns == mtim_ns) {
       strncpy(sha256_hex, existing->sha256, sizeof(sha256_hex) - 1);
@@ -1128,10 +1139,36 @@ static void handle_exec_event(pid_t pid) {
     }
   }
 
+  /* Preflight single-file and aggregate budgets before reading bytes or
+   * creating files */
+  if ((uint64_t)st.st_size > MAX_SINGLE_RAW_BYTES) {
+    g_failed = true;
+    snprintf(g_failure_reason, sizeof(g_failure_reason),
+             "PREFLIGHT_SINGLE_RAW_BUDGET_EXCEEDED");
+    fprintf(stderr,
+            "hosted_exec_witness: fatal: binary exceeds 100 MiB limit: %" PRIi64
+            "\n",
+            (int64_t)st.st_size);
+    kill_all_tracees();
+    return;
+  }
+  if (existing == NULL || !existing->bytes_persisted) {
+    if (g_aggregate_raw_bytes + (uint64_t)st.st_size >
+        MAX_AGGREGATE_RAW_BYTES) {
+      g_failed = true;
+      snprintf(g_failure_reason, sizeof(g_failure_reason),
+               "PREFLIGHT_AGGREGATE_RAW_BUDGET_EXCEEDED");
+      fprintf(stderr, "hosted_exec_witness: fatal: aggregate raw capture "
+                      "budget would be exceeded\n");
+      kill_all_tracees();
+      return;
+    }
+  }
+
   /* Pin executable inode via O_PATH. Must fail closed if descriptor allocation
    * fails. */
   int held_fd = -1;
-  if (existing != NULL) {
+  if (existing != NULL && existing->held_fd >= 0) {
     held_fd = existing->held_fd;
   } else {
     if (g_captured_exec_count >= MAX_HELD_DESCRIPTORS) {
@@ -1157,23 +1194,6 @@ static void handle_exec_event(pid_t pid) {
       return;
     }
   }
-
-  /*
-   * Binary Classification:
-   * 1. Mutable Workload Outputs:
-   *    Files owned by current UID (65534) or located in mutable paths
-   * (/private/tmp, /scratch, /home/proof, /tmp). MUST be opened with O_RDONLY |
-   * O_NOATIME to preserve st_atime. Fails closed on any refusal.
-   * 2. Immutable System Binaries:
-   *    Files owned by system (st_uid != current UID) on verified ST_RDONLY
-   * mounts. Kernel suppresses atime updates on MS_RDONLY mounts; reading has
-   * zero atime source effect.
-   */
-  bool is_workload_artifact = (st.st_uid == (uid_t)getuid()) ||
-                              (strncmp(exe_target, "/private/tmp", 12) == 0) ||
-                              (strncmp(exe_target, "/scratch", 8) == 0) ||
-                              (strncmp(exe_target, "/home/proof", 11) == 0) ||
-                              (strncmp(exe_target, "/tmp", 4) == 0);
 
   int raw_fd = open(proc_exe, O_RDONLY | O_NOATIME | O_CLOEXEC);
   if (raw_fd < 0) {
@@ -1232,18 +1252,11 @@ static void handle_exec_event(pid_t pid) {
   ssize_t bytes_n;
 
   int save_fd = -1;
-  if (g_raw_capture_dir_fd >= 0 && existing == NULL) {
+  if (g_raw_capture_dir_fd >= 0 &&
+      (existing == NULL || !existing->bytes_persisted)) {
     char filename[128];
     snprintf(filename, sizeof(filename), "%" PRIu64 "_%" PRIu64 ".bin",
              (uint64_t)st.st_dev, (uint64_t)st.st_ino);
-    /*
-     * Strictly use openat with O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC via
-     * trusted dir fd. O_NOFOLLOW rejects any symlink at the destination with
-     * ELOOP. O_EXCL prevents overwriting existing files and catches
-     * unauthorized pre-created files with EEXIST. Inode deduplication (via
-     * find_captured_exec) guarantees this branch executes strictly once per
-     * distinct inode.
-     */
     save_fd =
         openat(g_raw_capture_dir_fd, filename,
                O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
@@ -1265,6 +1278,19 @@ static void handle_exec_event(pid_t pid) {
   }
 
   while ((bytes_n = read(raw_fd, read_buf, sizeof(read_buf))) > 0) {
+    if (actual_bytes_captured + (int64_t)bytes_n >
+        (int64_t)MAX_SINGLE_RAW_BYTES) {
+      if (save_fd >= 0)
+        close(save_fd);
+      close(raw_fd);
+      if (existing == NULL)
+        close(held_fd);
+      g_failed = true;
+      snprintf(g_failure_reason, sizeof(g_failure_reason),
+               "INCREMENTAL_SINGLE_RAW_BUDGET_EXCEEDED");
+      kill_all_tracees();
+      return;
+    }
     sha256_update(&sha_ctx, read_buf, (size_t)bytes_n);
     actual_bytes_captured += bytes_n;
     if (save_fd >= 0) {
@@ -1277,10 +1303,6 @@ static void handle_exec_event(pid_t pid) {
         g_failed = true;
         snprintf(g_failure_reason, sizeof(g_failure_reason),
                  "RAW_PERSIST_WRITE_FAILED_ERRNO_%d", err);
-        fprintf(
-            stderr,
-            "hosted_exec_witness: fatal: raw persistence write failed: %s\n",
-            strerror(err));
         kill_all_tracees();
         return;
       }
@@ -1305,38 +1327,6 @@ static void handle_exec_event(pid_t pid) {
     return;
   }
 
-  /* Enforce raw byte budgets */
-  if ((uint64_t)actual_bytes_captured > MAX_SINGLE_RAW_BYTES) {
-    if (existing == NULL)
-      close(held_fd);
-    g_failed = true;
-    snprintf(g_failure_reason, sizeof(g_failure_reason),
-             "SINGLE_RAW_BUDGET_EXCEEDED");
-    fprintf(
-        stderr,
-        "hosted_exec_witness: fatal: binary exceeds single raw budget (%" PRIu64
-        " bytes)\n",
-        (uint64_t)actual_bytes_captured);
-    kill_all_tracees();
-    return;
-  }
-
-  if (existing == NULL) {
-    g_aggregate_raw_bytes += (uint64_t)actual_bytes_captured;
-    if (g_aggregate_raw_bytes > MAX_AGGREGATE_RAW_BYTES) {
-      close(held_fd);
-      g_failed = true;
-      snprintf(g_failure_reason, sizeof(g_failure_reason),
-               "AGGREGATE_RAW_BUDGET_EXCEEDED");
-      fprintf(stderr,
-              "hosted_exec_witness: fatal: aggregate raw capture budget "
-              "exceeded (%" PRIu64 " bytes)\n",
-              g_aggregate_raw_bytes);
-      kill_all_tracees();
-      return;
-    }
-  }
-
   uint8_t digest[32];
   sha256_final(&sha_ctx, digest);
   for (int i = 0; i < 32; i++) {
@@ -1344,26 +1334,27 @@ static void handle_exec_event(pid_t pid) {
   }
 
   if (existing != NULL) {
-    if (strcmp(sha256_hex, existing->sha256) == 0) {
-      /* Byte-for-byte verified match on repeated execution */
-      actual_bytes_captured = existing->st_size;
+    if (existing->bytes_persisted &&
+        strcmp(sha256_hex, existing->sha256) == 0) {
+      is_deduplicated = true;
       held_idx = (int)(existing - g_captured_execs);
       is_immutable_system_binary = existing->is_system_binary;
-      is_deduplicated = true;
       goto emit_exec_record;
     } else {
-      /* Mutable workload binary changed between executions: update hash */
       strncpy(existing->sha256, sha256_hex, sizeof(existing->sha256) - 1);
       existing->st_size = actual_bytes_captured;
       existing->st_ctime_ns = ctim_ns;
       existing->st_mtim_ns = mtim_ns;
+      if (save_fd >= 0) {
+        existing->bytes_persisted = true;
+        g_aggregate_raw_bytes += (uint64_t)actual_bytes_captured;
+      }
       held_idx = (int)(existing - g_captured_execs);
       is_immutable_system_binary = existing->is_system_binary;
       goto emit_exec_record;
     }
   }
 
-  /* Register new entry in captured executables table */
   held_idx = (int)g_captured_exec_count;
   CapturedExecutable *ce = &g_captured_execs[g_captured_exec_count++];
   ce->st_dev = (uint64_t)st.st_dev;
@@ -1374,6 +1365,10 @@ static void handle_exec_event(pid_t pid) {
   strncpy(ce->sha256, sha256_hex, sizeof(ce->sha256) - 1);
   ce->held_fd = held_fd;
   ce->is_system_binary = is_immutable_system_binary;
+  ce->bytes_persisted = (save_fd >= 0);
+  if (save_fd >= 0) {
+    g_aggregate_raw_bytes += (uint64_t)actual_bytes_captured;
+  }
 
 emit_exec_record:;
   /* Classify process role: producer vs consumer vs tool */

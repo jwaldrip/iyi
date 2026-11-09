@@ -552,6 +552,7 @@ class TestHostedExecWitness(unittest.TestCase):
             events = parse_witness_events(stream)
             with self.assertRaises(RawCaptureError) as ctx:
                 verify_exec_witness_evidence(
+                    events=events,
                     required_executables=[(64769, 1001)],
                     raw_capture_dir=tmpdir,
                 )
