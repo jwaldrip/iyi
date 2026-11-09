@@ -31,6 +31,7 @@ Key Properties:
 from __future__ import annotations
 
 import argparse
+import atexit
 import dataclasses
 import datetime
 import errno
@@ -70,6 +71,36 @@ FINALIZATION_ALLOC_SEC: float = 1800.0    # 30 minutes
 DRIVER_LIMIT_SEC: float = 2100.0          # 35 minutes per driver
 GRACE_SEC: float = 30.0                   # cleanup grace period
 MIN_DISK_GIB: float = 20.0                # minimum free disk floor
+
+DRIVERS_29: Tuple[str, ...] = (
+    "acme", "autocert", "cookie", "dns", "fileserver", "http",
+    "router", "secure_dns", "signal", "smtp", "sse", "term",
+    "tls", "websocket", "bzip2", "compress", "hpke", "math",
+    "mlkem", "png", "regex", "shlex", "tar", "xz",
+    "zip", "zstd", "file", "file_utils", "fuzz",
+)
+
+_ACTIVE_CONTAINERS: Set[str] = set()
+
+def _cleanup_active_containers() -> None:
+    for cid in list(_ACTIVE_CONTAINERS):
+        try:
+            subprocess.run(["docker", "stop", "--time", "30", cid], timeout=35, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["docker", "rm", "-f", cid], timeout=30, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+        _ACTIVE_CONTAINERS.discard(cid)
+
+def _sig_handler(signum: int, frame: Any) -> None:
+    _cleanup_active_containers()
+    sys.exit(128 + signum)
+
+try:
+    signal.signal(signal.SIGTERM, _sig_handler)
+    signal.signal(signal.SIGINT, _sig_handler)
+    atexit.register(_cleanup_active_containers)
+except (ValueError, OSError):
+    pass
 
 CONTAINER_USER: str = "65534:65534"
 CONTAINER_UID: int = 65534
@@ -1804,6 +1835,10 @@ class SequentialLifecycleController:
             if not isinstance(drv, str) or not re.fullmatch(r"^[a-z0-9_]+$", drv):
                 self.mark_failure(f"Invalid driver name in required.json: {drv!r}")
         print(f"Found {len(required_drivers)} required drivers in run3/required.json")
+        self._last_required_drivers = list(required_drivers)
+        missing_canonical = set(DRIVERS_29) - set(required_drivers)
+        if missing_canonical:
+            self.mark_failure(f"required.json missing canonical drivers: {sorted(missing_canonical)}")
 
         for driver in required_drivers:
             if driver == "acme":
@@ -1876,10 +1911,11 @@ class SequentialLifecycleController:
                     self.mark_failure(f"final.json missing passing {req_unit} unit")
 
             # Verify each required driver in units has status PASS
-            for drv in (getattr(self, "_last_required_drivers", None) or DRIVERS_29 if "DRIVERS_29" in globals() else []):
+            drivers_to_check = set(DRIVERS_29) | set(getattr(self, "_last_required_drivers", []))
+            for drv in sorted(drivers_to_check):
                 u_key = f"run3/{drv}"
                 if u_key not in units or units[u_key].get("status") != "PASS":
-                    self.mark_failure(f"final.json unit {u_key} missing or not PASS")
+                    self.mark_failure(f"final.json unit {u_key} missing or not PASS: {units.get(u_key)}")
         except Exception as exc:
             self.mark_failure(f"Failed to verify final.json: {exc}")
 
