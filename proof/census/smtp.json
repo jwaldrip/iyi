@@ -2,12 +2,12 @@
   "census_version": 1,
   "driver": "smtp",
   "script": "bench/std_smtp_exercise.sh",
-  "script_sha256": "6cbc1ad57d7340624cc0087909e324bf776f9313a124f42a6de4ae8fefa28773",
+  "script_sha256": "671800a32d3f5435633de430aa94e08c32218ca5eda287e60666bd8c203746a0",
   "sites": [
     {
       "lines": [
-        54,
-        55
+        55,
+        56
       ],
       "command": "build",
       "kind": "canonical-own",
@@ -18,7 +18,7 @@
     },
     {
       "lines": [
-        370
+        371
       ],
       "command": "run",
       "kind": "canonical-other",
@@ -29,7 +29,7 @@
     },
     {
       "lines": [
-        417
+        418
       ],
       "command": "build",
       "kind": "negative",
@@ -53,15 +53,15 @@
           ],
           "verdict": {
             "lines": [
-              417,
               418,
               419,
-              426,
+              420,
               427,
               428,
               429,
               430,
-              434
+              431,
+              435
             ],
             "contains": [
               "    if ! IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${",
@@ -73,7 +73,7 @@
     },
     {
       "lines": [
-        424
+        425
       ],
       "command": "run",
       "kind": "negative",
@@ -97,13 +97,13 @@
           ],
           "verdict": {
             "lines": [
-              424,
-              426,
+              425,
               427,
               428,
               429,
               430,
-              434
+              431,
+              435
             ],
             "contains": [
               "    IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}",
@@ -117,14 +117,14 @@
   "non_invocations": [],
   "skips": [
     {
-      "line": 288,
+      "line": 289,
       "class": "tool",
       "what": "python3",
       "regex": "\\ \\ skipped:\\ no\\ python3\\ with\\ ssl\\ and\\ cryptography\\ to\\ serve\\ SMTP\\ with",
       "text": "  echo \"  skipped: no python3 with ssl and cryptography to serve SMTP with\""
     },
     {
-      "line": 399,
+      "line": 400,
       "class": "tool",
       "what": "python3",
       "regex": "\\ \\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ .*?\\ proof\\ is\\ unmeasured",
@@ -133,29 +133,29 @@
   ],
   "not_skips": [],
   "pass_sentinel": {
-    "line": 499,
+    "line": 500,
     "regex": "the\\ std/smtp\\ exercise\\ holds",
     "text": "  echo \"the std/smtp exercise holds\""
   },
   "exec_evidence": [
     {
-      "site_line": 54,
+      "site_line": 55,
       "out_template": "{WORK}/{name}",
       "name_from_calls": {
-        "73": "smtp-plain",
-        "91": "smtp-release"
+        "74": "smtp-plain",
+        "92": "smtp-release"
       },
       "exec_lines": [
-        61
+        62
       ],
       "exec_token": "\"$WORK/$name\"",
       "verdict_lines": [
-        58,
         59,
-        66,
+        60,
         67,
-        76,
-        94
+        68,
+        77,
+        95
       ],
       "failure_marks": [
         "status=1",

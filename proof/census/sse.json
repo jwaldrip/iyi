@@ -2,12 +2,12 @@
   "census_version": 1,
   "driver": "sse",
   "script": "bench/std_sse_exercise.sh",
-  "script_sha256": "d08eadfb384a4480f32e4ef33370385e3e141fd6635a6cd70982e80216c92692",
+  "script_sha256": "e43276f0992a8bfbaf70aad1af54901244b6be973a298184a2f5b6c43a103ecb",
   "sites": [
     {
       "lines": [
-        46,
-        47
+        47,
+        48
       ],
       "command": "build",
       "kind": "canonical-own",
@@ -18,7 +18,7 @@
     },
     {
       "lines": [
-        85
+        86
       ],
       "command": "build",
       "kind": "canonical-other",
@@ -29,7 +29,7 @@
     },
     {
       "lines": [
-        493
+        494
       ],
       "command": "run",
       "kind": "negative",
@@ -53,14 +53,14 @@
           ],
           "verdict": {
             "lines": [
-              493,
               494,
               495,
               496,
               497,
               498,
               499,
-              501
+              500,
+              502
             ],
             "contains": [
               "  elif IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PS",
@@ -74,28 +74,28 @@
   "non_invocations": [],
   "skips": [
     {
-      "line": 182,
+      "line": 183,
       "class": "tool",
       "what": "python3",
       "regex": "\\ \\ skipped:\\ no\\ working\\ python3",
       "text": "  echo \"  skipped: no working python3\""
     },
     {
-      "line": 264,
+      "line": 265,
       "class": "tool",
       "what": "python3",
       "regex": "\\ \\ skipped:\\ no\\ working\\ python3",
       "text": "  echo \"  skipped: no working python3\""
     },
     {
-      "line": 362,
+      "line": 363,
       "class": "tool",
       "what": "python3",
       "regex": "\\ \\ skipped:\\ no\\ working\\ python3",
       "text": "  echo \"  skipped: no working python3\""
     },
     {
-      "line": 479,
+      "line": 480,
       "class": "tool",
       "what": "python3",
       "regex": "\\ \\ no\\ python3\\ on\\ this\\ machine,\\ so\\ the\\ .*?\\ proof\\ is\\ unmeasured",
@@ -104,29 +104,29 @@
   ],
   "not_skips": [],
   "pass_sentinel": {
-    "line": 562,
+    "line": 563,
     "regex": "the\\ std/sse\\ exercise\\ holds",
     "text": "  echo \"the std/sse exercise holds\""
   },
   "exec_evidence": [
     {
-      "site_line": 46,
+      "site_line": 47,
       "out_template": "{WORK}/{name}",
       "name_from_calls": {
-        "65": "sse-plain",
-        "73": "sse-release"
+        "66": "sse-plain",
+        "74": "sse-release"
       },
       "exec_lines": [
-        53
+        54
       ],
       "exec_token": "\"$WORK/$name\"",
       "verdict_lines": [
-        50,
         51,
-        58,
+        52,
         59,
-        68,
-        76
+        60,
+        69,
+        77
       ],
       "failure_marks": [
         "status=1",
@@ -135,29 +135,29 @@
       "refs_ok": []
     },
     {
-      "site_line": 85,
+      "site_line": 86,
       "out_template": "{WORK}/{name}",
       "name_from_calls": {
-        "104": "event_break",
-        "106": "id_cr",
-        "108": "id_nul",
-        "110": "retry_negative",
-        "112": "data_bytes",
-        "114": "comment_bytes",
-        "116": "stream_type",
-        "118": "open_header",
-        "120": "open_id",
-        "122": "open_reconnects"
+        "105": "event_break",
+        "107": "id_cr",
+        "109": "id_nul",
+        "111": "retry_negative",
+        "113": "data_bytes",
+        "115": "comment_bytes",
+        "117": "stream_type",
+        "119": "open_header",
+        "121": "open_id",
+        "123": "open_reconnects"
       },
       "exec_lines": [
-        91
+        92
       ],
       "exec_token": "\"$WORK/$name\"",
       "verdict_lines": [
-        88,
         89,
-        95,
-        99
+        90,
+        96,
+        100
       ],
       "failure_marks": [
         "status=1",

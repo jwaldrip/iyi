@@ -2,7 +2,7 @@
   "census_version": 1,
   "driver": "compress",
   "script": "bench/std_compress_exercise.sh",
-  "script_sha256": "2534dc7e8f22826a3c379ca78349e526848efaa22ffb6fa9606d26de7cd3a26e",
+  "script_sha256": "456db0f591c3f0d494527c137f93dd569cec329b725c7c080df62c9b4bd3ab2d",
   "sites": [
     {
       "lines": [

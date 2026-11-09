@@ -2,7 +2,7 @@
   "census_version": 1,
   "driver": "file",
   "script": "bench/std_file_exercise.sh",
-  "script_sha256": "ce307c64f1ccc50726534859fb77e50830d4f6374053df1f412963746113d93d",
+  "script_sha256": "be216276e510e103173575d8ae6963e7c968151890fb9d65bf40fcd3374aeddc",
   "sites": [
     {
       "lines": [

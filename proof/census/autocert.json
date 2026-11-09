@@ -2,11 +2,11 @@
   "census_version": 1,
   "driver": "autocert",
   "script": "bench/std_autocert_exercise.sh",
-  "script_sha256": "35e6193f720a44cd2acf848a957585f3626de3ccce881dec2808909615e203f6",
+  "script_sha256": "ed79899287e5902d2593d6429f2ad9672597128d97c1ed8fc73f9434d5c09bff",
   "sites": [
     {
       "lines": [
-        117
+        120
       ],
       "command": "build",
       "kind": "canonical-own",
@@ -17,7 +17,7 @@
     },
     {
       "lines": [
-        299
+        302
       ],
       "command": "doc",
       "kind": "unchanged",
@@ -28,7 +28,7 @@
     },
     {
       "lines": [
-        305
+        308
       ],
       "command": "fmt",
       "kind": "unchanged",
@@ -39,7 +39,7 @@
     },
     {
       "lines": [
-        313
+        316
       ],
       "command": "build",
       "kind": "unchanged",
@@ -50,7 +50,7 @@
     },
     {
       "lines": [
-        325
+        328
       ],
       "command": "build",
       "kind": "passthrough",
@@ -61,7 +61,7 @@
     },
     {
       "lines": [
-        326
+        329
       ],
       "command": "build",
       "kind": "passthrough",
@@ -72,14 +72,13 @@
     },
     {
       "lines": [
-        397,
-        398
+        407,
+        408
       ],
       "command": "build",
       "kind": "negative",
       "contains": [
-        "if ! IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/samples/iyi\" \"$IYI\" build -o \"$WORK/mutant\"",
-        "\"$REPO/bench/std_autocert_exercise.iyi\" >\"$WORK/mutant.build.log\" 2>&1; then"
+        "\"$program\" >\"$WORK/mutant.build.log\" 2>&1; then"
       ],
       "variants": [
         {
@@ -98,15 +97,12 @@
           ],
           "verdict": {
             "lines": [
-              399,
-              400,
-              414,
-              415,
-              417,
-              418,
-              419,
-              422,
-              424
+              409,
+              410,
+              425,
+              427,
+              432,
+              434
             ],
             "contains": [
               "echo \"  the $label copy did not build:",
@@ -122,70 +118,70 @@
   "non_invocations": [],
   "skips": [
     {
-      "line": 176,
+      "line": 179,
       "class": "tool",
       "what": "python ssl and cryptography",
       "regex": "^  no python with ssl and cryptography here, so the cache's files go unread by it$",
       "text": "  echo \"  no python with ssl and cryptography here, so the cache's files go unread by it\""
     },
     {
-      "line": 184,
+      "line": 187,
       "class": "tool",
       "what": "python ssl and cryptography",
       "regex": "^  no python with ssl and cryptography here, so no handshake is made$",
       "text": "  echo \"  no python with ssl and cryptography here, so no handshake is made\""
     },
     {
-      "line": 211,
+      "line": 214,
       "class": "tool",
       "what": "go and python cryptography",
       "regex": "^  no Go here \\(or no python with cryptography to drive it\\), so Pebble is not built and nothing is ordered$",
       "text": "    echo \"  no Go here (or no python with cryptography to drive it), so Pebble is not built and nothing is ordered\""
     },
     {
-      "line": 219,
+      "line": 222,
       "class": "tool",
       "what": "go and python cryptography",
       "regex": "^  no Go here \\(or no python with cryptography to drive it\\), so Pebble is not built and nothing is ordered$",
       "text": "    echo \"  no Go here (or no python with cryptography to drive it), so Pebble is not built and nothing is ordered\""
     },
     {
-      "line": 221,
+      "line": 224,
       "class": "tool",
       "what": "go and Pebble network",
       "regex": "^  Pebble could not be fetched or built here \\(no network\\?\\), so nothing is ordered(:.*)?$",
       "text": "    echo \"  Pebble could not be fetched or built here (no network?), so nothing is ordered: $(tail -1 \"$WORK/go-install.log\")\""
     },
     {
-      "line": 357,
+      "line": 361,
       "class": "tool",
       "what": "python3",
       "regex": "^  .+ proof is unmeasured$",
       "text": "    echo \"  no python here, so the $label proof is unmeasured\""
     },
     {
-      "line": 361,
+      "line": 365,
       "class": "tool",
       "what": "POSIX modes and python cryptography",
       "regex": "^  .+: unmeasured here, as its check is POSIX's modes read by Python's cryptography$",
       "text": "    echo \"  $label: unmeasured here, as its check is POSIX's modes read by Python's cryptography\""
     },
     {
-      "line": 365,
+      "line": 369,
       "class": "tool",
       "what": "python ssl and cryptography",
       "regex": "^  .+: unmeasured here, as its check is Python's ssl and cryptography$",
       "text": "    echo \"  $label: unmeasured here, as its check is Python's ssl and cryptography\""
     },
     {
-      "line": 376,
+      "line": 380,
       "class": "tool",
       "what": "Pebble",
       "regex": "^  .+: unmeasured here, as its check orders from Pebble and Pebble is not running$",
       "text": "          echo \"  $label: unmeasured here, as its check orders from Pebble and Pebble is not running\""
     },
     {
-      "line": 469,
+      "line": 481,
       "class": "tool",
       "what": "mutation proof prerequisites",
       "regex": "^the std/autocert exercise holds \\(.+ of .+ breaks caught, the rest unmeasured here as said above\\)$",
@@ -194,32 +190,32 @@
   ],
   "not_skips": [
     {
-      "line": 373,
+      "line": 377,
       "reason": "missing Pebble in proof mode is an error and the branch sets status=1",
       "text": "          echo \"  FAIL: $label cannot be verified because Pebble is not running in proof mode\" >&2"
     }
   ],
   "pass_sentinel": {
-    "line": 467,
+    "line": 479,
     "regex": "^the std/autocert exercise holds \\(",
     "text": "    echo \"the std/autocert exercise holds ($caught breaks caught)\""
   },
   "exec_evidence": [
     {
-      "site_line": 117,
+      "site_line": 120,
       "out_template": "{WORK}/{name}",
       "name_from_calls": {
-        "139": "autocert-plain",
-        "163": "autocert-release"
+        "142": "autocert-plain",
+        "166": "autocert-release"
       },
       "exec_lines": [
-        135
+        138
       ],
       "exec_token": "\"$WORK/$name\"",
       "verdict_lines": [
-        145,
-        156,
-        169
+        148,
+        159,
+        172
       ],
       "failure_marks": [
         "status=1"

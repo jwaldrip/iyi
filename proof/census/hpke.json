@@ -2,7 +2,7 @@
   "census_version": 1,
   "driver": "hpke",
   "script": "bench/std_hpke_exercise.sh",
-  "script_sha256": "e3421048d6251cf2d5e1a4b00734ba5564afc7c3fd4b5214d41e3c990614083b",
+  "script_sha256": "72ecbbfc1dc5b81742131315fe3c308edc92627bb2042f1653d4dfdc281410e7",
   "sites": [
     {
       "lines": [
@@ -135,7 +135,7 @@
     }
   ],
   "pass_sentinel": {
-    "line": 456,
+    "line": 458,
     "regex": "^ALL CHECKS PASSED$",
     "text": "  echo \"ALL CHECKS PASSED\""
   },

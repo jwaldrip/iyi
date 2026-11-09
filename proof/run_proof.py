@@ -7,7 +7,7 @@ Commands and arguments:
   pin --report-dir R --p P --w W --compiler C
       Create the immutable pin for a new chain.
   run1 --report-dir R
-      Run gates 1.1 through 1.4, RG2/RG2a 142/142/0/0 corpus evidence, exclusions, and baseline skip capture.
+      Run gates 1.1 through 1.4, RG2/RG2a 144/144/0/0 corpus evidence, exclusions, and baseline skip capture.
       Gate 1.3 runs bench/stale_rg9.py and requires canonical summary:
       ^RG9 PASSED: {corpus} corpus programs, plain and observed legs (two processes plus IYI_WARM=1)$
   run2 --report-dir R
@@ -92,7 +92,7 @@ _FINAL_LIMITS = [
         "own artifact blocks (acme, autocert, compress, png, regex, shlex, "
         "tls, websocket, xz, zip) and in negative mutation proofs; every "
         "other canonical or positive build runs its artifact consumer; RG2 "
-        "proves observed source bare for all 142"
+        "proves observed source bare for all 144"
     ),
 ]
 

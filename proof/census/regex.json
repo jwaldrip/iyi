@@ -2,7 +2,7 @@
   "census_version": 1,
   "driver": "regex",
   "script": "bench/std_regex_exercise.sh",
-  "script_sha256": "638a2017da47dcf53ce2ba56e472abf589873d96aa40c64d95a38e0f2ed3664e",
+  "script_sha256": "97ebf261cf088d098a1b65530bbd5579a69de54db49373364e352bd19c738892",
   "sites": [
     {
       "lines": [

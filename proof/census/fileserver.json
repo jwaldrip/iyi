@@ -2,12 +2,12 @@
   "census_version": 1,
   "driver": "fileserver",
   "script": "bench/std_fileserver_exercise.sh",
-  "script_sha256": "139f4f3bc4a6972e83082030a6f4c0860ef8977f888895455f78846f7f9799c5",
+  "script_sha256": "541c3a511d70dbd78d6a737be67dc359d16745f9a787a488a43d9377d87ecb12",
   "sites": [
     {
       "lines": [
-        46,
-        47
+        47,
+        48
       ],
       "command": "build",
       "kind": "canonical-own",
@@ -18,7 +18,7 @@
     },
     {
       "lines": [
-        176
+        177
       ],
       "command": "run",
       "kind": "negative",
@@ -42,7 +42,6 @@
           ],
           "verdict": {
             "lines": [
-              176,
               177,
               178,
               179,
@@ -50,7 +49,8 @@
               181,
               182,
               183,
-              184
+              184,
+              185
             ],
             "contains": [
               "echo \"  the exercise PASSED on $1\"",
@@ -65,14 +65,14 @@
   "non_invocations": [],
   "skips": [
     {
-      "line": 90,
+      "line": 91,
       "class": "tool",
       "what": "python3",
       "regex": "^  skipped: no working python3$",
       "text": "  echo \"  skipped: no working python3\""
     },
     {
-      "line": 162,
+      "line": 163,
       "class": "tool",
       "what": "python3",
       "regex": "^  no python3 on this machine, so the .* proof is unmeasured$",
@@ -81,29 +81,29 @@
   ],
   "not_skips": [],
   "pass_sentinel": {
-    "line": 209,
+    "line": 210,
     "regex": "^the std/fileserver exercise holds$",
     "text": "  echo \"the std/fileserver exercise holds\""
   },
   "exec_evidence": [
     {
-      "site_line": 46,
+      "site_line": 47,
       "out_template": "{WORK}/{name}",
       "name_from_calls": {
-        "65": "files-plain",
-        "73": "files-release"
+        "66": "files-plain",
+        "74": "files-release"
       },
       "exec_lines": [
-        53
+        54
       ],
       "exec_token": "\"$WORK/$name\"",
       "verdict_lines": [
-        50,
         51,
-        58,
+        52,
         59,
-        68,
-        76
+        60,
+        69,
+        77
       ],
       "failure_marks": [
         "status=1",

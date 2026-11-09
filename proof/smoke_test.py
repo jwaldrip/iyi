@@ -11902,10 +11902,10 @@ def _stage_stub_payloads(
         gate1_tail = ""
     gate_exit = 7 if scenario == "gate1-fail" else 0
 
-    rg2_summary = "echo 'RG2: 142 evaluated, 142 passed, 0 still excluded with reason, 0 failures'\n"
+    rg2_summary = "echo 'RG2: 144 evaluated, 144 passed, 0 still excluded with reason, 0 failures'\n"
     rg2_exclusions = ""
     rg2_sentinel = "echo 'RG2 PASSED: fixture'\n"
-    rg2a_summary = "echo 'RG2a: 142 evaluated, 142 passed, 0 still excluded with reason, 0 failures'\n"
+    rg2a_summary = "echo 'RG2a: 144 evaluated, 144 passed, 0 still excluded with reason, 0 failures'\n"
     rg2a_exclusions = ""
     rg2a_sentinel = "echo 'RG2a PASSED: fixture'\n"
     tail_exclusions = ""
@@ -11940,18 +11940,18 @@ def _stage_stub_payloads(
     elif scenario == "rg2-count-excess":
         rg2_summary = "echo 'RG2: 143 evaluated, 143 passed, 0 still excluded with reason, 0 failures'\n"
     elif scenario == "rg2-passed-short":
-        rg2_summary = "echo 'RG2: 142 evaluated, 141 passed, 0 still excluded with reason, 0 failures'\n"
+        rg2_summary = "echo 'RG2: 144 evaluated, 143 passed, 0 still excluded with reason, 0 failures'\n"
     elif scenario == "rg2-log-mismatch-missing-line":
         rg2_summary = "echo 'RG2: 141 evaluated, 141 passed, 1 still excluded with reason, 0 failures'\n"
     elif scenario == "rg2-log-mismatch-extra-line":
-        rg2_summary = "echo 'RG2: 142 evaluated, 142 passed, 0 still excluded with reason, 0 failures'\n"
+        rg2_summary = "echo 'RG2: 144 evaluated, 144 passed, 0 still excluded with reason, 0 failures'\n"
         rg2_exclusions = "echo '  [excluded after calibration] bench/std_missing_exercise.iyi: fixture std'\n"
     elif scenario == "rg2-summary-missing":
         rg2_summary = ""
     elif scenario == "rg2-summary-duplicate":
         rg2_summary = (
-            "echo 'RG2: 142 evaluated, 142 passed, 0 still excluded with reason, 0 failures'\n"
-            "echo 'RG2: 142 evaluated, 142 passed, 0 still excluded with reason, 0 failures'\n"
+            "echo 'RG2: 144 evaluated, 144 passed, 0 still excluded with reason, 0 failures'\n"
+            "echo 'RG2: 144 evaluated, 144 passed, 0 still excluded with reason, 0 failures'\n"
         )
     elif scenario == "rg2-summary-malformed":
         rg2_summary = "echo 'RG2: not a valid summary line'\n"
@@ -12031,7 +12031,7 @@ def _stage_stub_payloads(
         else (
             141
             if scenario == "rg9-141"
-            else (143 if scenario == "rg9-143" else 142)
+            else (143 if scenario == "rg9-143" else 144)
         )
     )
     rg9_prefix = (
@@ -12057,7 +12057,7 @@ def _stage_stub_payloads(
     else:
         rg9_tail = ""
     if scenario in ("rg9-bare", "rg9-bare-142"):
-        rg9_summary = f"RG9 PASSED: {rg9_count} corpus programs"
+        rg9_summary = f"RG9 PASSED: {142 if scenario == 'rg9-bare-142' else rg9_count} corpus programs"
     elif scenario == "rg9-malformed-suffix":
         rg9_summary = (
             f"RG9 PASSED: {rg9_count} corpus programs, plain and observed legs"
@@ -12078,7 +12078,7 @@ def _stage_stub_payloads(
         f"print({rg9_summary!r})\n"
         f"{rg9_tail}"
     )
-    sibling_count = 114 if scenario == "sibling-count-114" else 115
+    sibling_count = 114 if scenario == "sibling-count-114" else 117
     sibling_lines = ["-- running sibling: std_stage_exercise.sh"]
     sibling_lines.extend(
         f"-- running sibling: std_fixture_{number:03d}_exercise.sh"
@@ -12106,7 +12106,7 @@ def _stage_stub_payloads(
         "#!/bin/bash\n"
         f"{exercise_prefix}"
         "echo 'Standard library foundation: traits, cmp, enumerable'\n"
-        "echo 'all 114 exercises answer the same from source and from artifacts'\n"
+        "echo 'all 116 exercises answer the same from source and from artifacts'\n"
         + "".join(f"echo '{line}'\n" for line in sibling_lines)
         + f"echo '== shard 1 of 1: {sibling_count} of {sibling_count} sibling exercises'\n"
         + exercise_tail
@@ -12511,9 +12511,9 @@ class StageFixture(PinFixture):
         ):
             pass
         canonical_log = (
-            "RG2: 142 evaluated, 142 passed, 0 still excluded with reason, 0 failures\n"
+            "RG2: 144 evaluated, 144 passed, 0 still excluded with reason, 0 failures\n"
             "RG2 PASSED: observed builds match normal runs outside each program’s calibrated mask\n"
-            "RG2a: 142 evaluated, 142 passed, 0 still excluded with reason, 0 failures\n"
+            "RG2a: 144 evaluated, 144 passed, 0 still excluded with reason, 0 failures\n"
             "RG2a PASSED: programs given one empty-directory argument match no-argument runs outside calibrated mask\n"
             "RG2r PASSED: all 1 probes\n"
             "RG5 trace half PASSED: fixture\n"
@@ -12525,7 +12525,7 @@ class StageFixture(PinFixture):
         rg2_summary = stages_mod._rg2_corpus_evidence(
             canonical_log,
             log_sha256,
-            corpus=142,
+            corpus=144,
         )
         with open(
             os.path.join(latest_run1_dir, "rg2_summary.json"),
@@ -14110,8 +14110,8 @@ def _fixture_rg2_corpus_evidence_control() -> Observation:
             "final_rc": 0,
             "final_status": "PASS",
             "summary_status": "PASS",
-            "rg2_summary_counts": (142, 142, 0, 0),
-            "rg2a_summary_counts": (142, 142, 0, 0),
+            "rg2_summary_counts": (144, 144, 0, 0),
+            "rg2a_summary_counts": (144, 144, 0, 0),
             "exclusions": [],
             "final_rg2_status": "PASS",
             "final_rg2_families": summary.get("families"),
@@ -19053,6 +19053,26 @@ REVIEW_ITEMS: dict[str, tuple[str, ...]] = {
         "s5.control.rg2-corpus-evidence",
     ),
     "contract.rg2.zero-exclusion-142": (
+        "s5.seed.sample-exclusion",
+        "s5.seed.std-exclusion",
+        "s5.seed.rg2a-std-exclusion",
+        "s5.seed.rg2-malformed-exclusion",
+        "s5.seed.rg2-truncated-log",
+        "s5.seed.rg2-invalid-selector",
+        "s5.seed.rg2-duplicate-exclusion",
+        "s5.seed.rg2-count-omitted",
+        "s5.seed.rg2-count-excess",
+        "s5.seed.rg2-passed-short",
+        "s5.seed.rg2-log-mismatch-missing-line",
+        "s5.seed.rg2-log-mismatch-extra-line",
+        "s5.seed.rg2-summary-missing",
+        "s5.seed.rg2-summary-duplicate",
+        "s5.seed.rg2-summary-malformed",
+        "s5.seed.rg2-sentinel-missing",
+        "s5.seed.rg2-sentinel-duplicate",
+        "s5.seed.rg2-tail-exclusions",
+    ),
+    "contract.rg2.zero-exclusion-144": (
         "s5.seed.sample-exclusion",
         "s5.seed.std-exclusion",
         "s5.seed.rg2a-std-exclusion",

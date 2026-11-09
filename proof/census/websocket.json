@@ -2,11 +2,11 @@
   "census_version": 1,
   "driver": "websocket",
   "script": "bench/std_websocket_exercise.sh",
-  "script_sha256": "1fa53ce5bea350474fbd9be5449099e56f722a26c51bcb7c9a539514e3b1675e",
+  "script_sha256": "5647ce9679d198bad4b88162acfcca490927d9249515f28ab968df36d0b5e518",
   "sites": [
     {
       "lines": [
-        71
+        72
       ],
       "command": "build",
       "kind": "canonical-own",
@@ -17,7 +17,7 @@
     },
     {
       "lines": [
-        128
+        129
       ],
       "command": "build",
       "kind": "canonical-other",
@@ -28,7 +28,7 @@
     },
     {
       "lines": [
-        1056
+        1057
       ],
       "command": "build",
       "kind": "negative",
@@ -53,10 +53,10 @@
           ],
           "verdict": {
             "lines": [
-              1057,
-              1059,
-              1065,
-              1066
+              1058,
+              1060,
+              1066,
+              1067
             ],
             "contains": [
               "the bare-socket copy did not compile",
@@ -69,7 +69,7 @@
     },
     {
       "lines": [
-        1081
+        1082
       ],
       "command": "build",
       "kind": "passthrough",
@@ -80,7 +80,7 @@
     },
     {
       "lines": [
-        1082
+        1083
       ],
       "command": "build",
       "kind": "passthrough",
@@ -91,7 +91,7 @@
     },
     {
       "lines": [
-        1111
+        1112
       ],
       "command": "build",
       "kind": "unchanged",
@@ -102,7 +102,7 @@
     },
     {
       "lines": [
-        1117
+        1118
       ],
       "command": "doc",
       "kind": "unchanged",
@@ -113,7 +113,7 @@
     },
     {
       "lines": [
-        1123
+        1124
       ],
       "command": "fmt",
       "kind": "unchanged",
@@ -124,7 +124,7 @@
     },
     {
       "lines": [
-        1160
+        1161
       ],
       "command": "build",
       "kind": "negative",
@@ -139,12 +139,12 @@
           "vars": {
             "mutations": {
               "lines": [
-                1139,
-                1160,
-                1164
+                1140,
+                1161,
+                1165
               ],
               "pattern": "[1-9][0-9]*",
-              "pattern_reason_line": 1139
+              "pattern_reason_line": 1140
             }
           },
           "sources": [
@@ -158,12 +158,12 @@
           ],
           "verdict": {
             "lines": [
-              1161,
-              1163,
-              1165,
+              1162,
+              1164,
               1166,
-              1170,
-              1174
+              1167,
+              1171,
+              1175
             ],
             "contains": [
               "the $label copy did not compile",
@@ -178,63 +178,63 @@
   "non_invocations": [],
   "skips": [
     {
-      "line": 199,
+      "line": 200,
       "class": "tool",
       "what": "python3",
       "regex": "^  skipped: no working python3, so no Python client was run against the server$",
       "text": "  echo \"  skipped: no working python3, so no Python client was run against the server\""
     },
     {
-      "line": 343,
+      "line": 344,
       "class": "tool",
       "what": "server",
       "regex": "^  skipped: no server$",
       "text": "  echo \"  skipped: no server\""
     },
     {
-      "line": 345,
+      "line": 346,
       "class": "tool",
       "what": "node 22 WebSocket",
       "regex": "^  skipped: no node with a WebSocket client \\(Node 22 and later have one\\)$",
       "text": "  echo \"  skipped: no node with a WebSocket client (Node 22 and later have one)\""
     },
     {
-      "line": 616,
+      "line": 617,
       "class": "tool",
       "what": "server",
       "regex": "^  skipped: no server$",
       "text": "  echo \"  skipped: no server\""
     },
     {
-      "line": 618,
+      "line": 619,
       "class": "tool",
       "what": "python3",
       "regex": "^  skipped: no working python3$",
       "text": "  echo \"  skipped: no working python3\""
     },
     {
-      "line": 665,
+      "line": 666,
       "class": "tool",
       "what": "python3",
       "regex": "^  skipped: no working python3 to serve the client$",
       "text": "  echo \"  skipped: no working python3 to serve the client\""
     },
     {
-      "line": 792,
+      "line": 793,
       "class": "tool",
       "what": "python3",
       "regex": "^  skipped: no working python3 to serve the client$",
       "text": "  echo \"  skipped: no working python3 to serve the client\""
     },
     {
-      "line": 929,
+      "line": 930,
       "class": "tool",
       "what": "python3 cryptography",
       "regex": "^  skipped: no python cryptography to make a certificate with$",
       "text": "  echo \"  skipped: no python cryptography to make a certificate with\""
     },
     {
-      "line": 1142,
+      "line": 1143,
       "class": "tool",
       "what": "python3",
       "regex": "^  no python3 on this machine, so the .* proof is unmeasured$",
@@ -243,41 +243,41 @@
   ],
   "not_skips": [
     {
-      "line": 1096,
+      "line": 1097,
       "reason": "artifact equivalence failure sets status=1",
       "text": "    echo \"  FAIL: the exercise does not run the same from its artifacts\""
     },
     {
-      "line": 1106,
+      "line": 1107,
       "reason": "artifact build or execution failure sets status=1",
       "text": "  echo \"  FAIL: the exercise does not run the same from its artifacts\""
     }
   ],
   "pass_sentinel": {
-    "line": 1268,
+    "line": 1269,
     "regex": "^the std/websocket exercise holds$",
     "text": "  echo \"the std/websocket exercise holds\""
   },
   "exec_evidence": [
     {
-      "site_line": 71,
+      "site_line": 72,
       "out_template": "{WORK}/{name}",
       "name_from_calls": {
-        "92": "ws-plain",
-        "114": "ws-release"
+        "93": "ws-plain",
+        "115": "ws-release"
       },
       "exec_lines": [
-        78
+        79
       ],
       "exec_token": "\"$WORK/$name\"",
       "verdict_lines": [
-        75,
         76,
-        85,
+        77,
         86,
-        95,
-        107,
-        117
+        87,
+        96,
+        108,
+        118
       ],
       "failure_marks": [
         "status=1",
@@ -286,25 +286,25 @@
       "refs_ok": []
     },
     {
-      "site_line": 128,
+      "site_line": 129,
       "out_template": "{WORK}/{name}",
       "name_from_calls": {
-        "149": "text_bytes",
-        "151": "ping_long",
-        "153": "close_1006",
-        "155": "close_5000",
-        "157": "reason_long",
-        "159": "own_upgrade",
-        "161": "limit_negative"
+        "150": "text_bytes",
+        "152": "ping_long",
+        "154": "close_1006",
+        "156": "close_5000",
+        "158": "reason_long",
+        "160": "own_upgrade",
+        "162": "limit_negative"
       },
       "exec_lines": [
-        134
+        135
       ],
       "exec_token": "\"$WORK/$name\"",
       "verdict_lines": [
-        131,
-        138,
-        144
+        132,
+        139,
+        145
       ],
       "failure_marks": [
         "status=1"

@@ -2,11 +2,11 @@
   "census_version": 1,
   "driver": "acme",
   "script": "bench/std_acme_exercise.sh",
-  "script_sha256": "01eebfba7e1f34a294fbdfabfdc9552f8c1a01e45434d7d4f63e2922fb461922",
+  "script_sha256": "07e86b8eb3d564a9b67826f7da89813a3775c986ea65199eb45c26bab5f9a7dc",
   "sites": [
     {
       "lines": [
-        102
+        103
       ],
       "command": "build",
       "kind": "canonical-own",
@@ -17,7 +17,7 @@
     },
     {
       "lines": [
-        434
+        435
       ],
       "command": "doc",
       "kind": "unchanged",
@@ -28,7 +28,7 @@
     },
     {
       "lines": [
-        440
+        441
       ],
       "command": "fmt",
       "kind": "unchanged",
@@ -39,7 +39,7 @@
     },
     {
       "lines": [
-        448
+        449
       ],
       "command": "build",
       "kind": "unchanged",
@@ -50,7 +50,7 @@
     },
     {
       "lines": [
-        460
+        461
       ],
       "command": "build",
       "kind": "passthrough",
@@ -61,7 +61,7 @@
     },
     {
       "lines": [
-        461
+        462
       ],
       "command": "build",
       "kind": "passthrough",
@@ -72,7 +72,7 @@
     },
     {
       "lines": [
-        500
+        501
       ],
       "command": "run",
       "kind": "negative",
@@ -96,10 +96,10 @@
           ],
           "verdict": {
             "lines": [
-              501,
               502,
-              506,
-              508
+              503,
+              507,
+              509
             ],
             "contains": [
               "the exercise PASSED on $2",
@@ -114,42 +114,42 @@
   "non_invocations": [],
   "skips": [
     {
-      "line": 177,
+      "line": 178,
       "class": "tool",
       "what": "python3 cryptography",
       "regex": "^  no python cryptography here, so the requests and signatures go unread by it$",
       "text": "  echo \"  no python cryptography here, so the requests and signatures go unread by it\""
     },
     {
-      "line": 311,
+      "line": 312,
       "class": "tool",
       "what": "go and python3",
       "regex": "^  no Go here \\(or no python to drive it\\), so Pebble is not built and the orders go unplaced$",
       "text": "    echo \"  no Go here (or no python to drive it), so Pebble is not built and the orders go unplaced\""
     },
     {
-      "line": 319,
+      "line": 320,
       "class": "tool",
       "what": "go and python3",
       "regex": "^  no Go here \\(or no python to drive it\\), so Pebble is not built and the orders go unplaced$",
       "text": "    echo \"  no Go here (or no python to drive it), so Pebble is not built and the orders go unplaced\""
     },
     {
-      "line": 321,
+      "line": 322,
       "class": "tool",
       "what": "go/Pebble network",
       "regex": "^  Pebble could not be fetched or built here \\(no network\\?\\), so the orders go unplaced(:.*)?$",
       "text": "    echo \"  Pebble could not be fetched or built here (no network?), so the orders go unplaced: $(tail -1 \"$WORK/go-install.log\")\""
     },
     {
-      "line": 400,
+      "line": 401,
       "class": "tool",
       "what": "openssl",
       "regex": "^  no openssl here, so the chains go unverified by it$",
       "text": "            echo \"  no openssl here, so the chains go unverified by it\""
     },
     {
-      "line": 486,
+      "line": 487,
       "class": "tool",
       "what": "python3",
       "regex": "^  no python3 on this machine, so the .* proof is unmeasured$",
@@ -158,30 +158,30 @@
   ],
   "not_skips": [],
   "pass_sentinel": {
-    "line": 554,
+    "line": 555,
     "regex": "^the std/acme exercise holds \\(.* breaks caught\\)$",
     "text": "  echo \"the std/acme exercise holds ($mutations breaks caught)\""
   },
   "exec_evidence": [
     {
-      "site_line": 102,
+      "site_line": 103,
       "out_template": "{WORK}/{name}",
       "name_from_calls": {
-        "121": "acme-plain",
-        "140": "acme-release"
+        "122": "acme-plain",
+        "141": "acme-release"
       },
       "exec_lines": [
-        109
+        110
       ],
       "exec_token": "\"$WORK/$name\"",
       "verdict_lines": [
-        106,
         107,
-        114,
+        108,
         115,
-        124,
-        133,
-        143
+        116,
+        125,
+        134,
+        144
       ],
       "failure_marks": [
         "status=1",

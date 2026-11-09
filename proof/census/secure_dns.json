@@ -2,12 +2,12 @@
   "census_version": 1,
   "driver": "secure_dns",
   "script": "bench/std_secure_dns_exercise.sh",
-  "script_sha256": "ef64095c116dd4d49b8c99e554af05845df37b76ce625fcf3ae32b32af24f7ef",
+  "script_sha256": "2c2d7e28b5117e59671735834b89182a3b170dd818ee8e59db35adac3e2356b0",
   "sites": [
     {
       "lines": [
-        80,
-        81
+        81,
+        82
       ],
       "command": "build",
       "kind": "canonical-own",
@@ -18,8 +18,8 @@
     },
     {
       "lines": [
-        284,
-        285
+        285,
+        286
       ],
       "command": "build",
       "kind": "negative",
@@ -34,24 +34,24 @@
           "vars": {
             "dir": {
               "lines": [
-                305,
-                308,
-                312,
-                320,
-                323,
-                328,
-                330,
-                332,
-                338,
-                341,
-                343,
-                345,
-                349,
-                351,
-                353,
-                356,
-                362,
-                365
+                306,
+                309,
+                313,
+                321,
+                324,
+                329,
+                331,
+                333,
+                339,
+                342,
+                344,
+                346,
+                350,
+                352,
+                354,
+                357,
+                363,
+                366
               ],
               "values": [
                 "noname",
@@ -87,13 +87,12 @@
           ],
           "verdict": {
             "lines": [
-              284,
               285,
               286,
               287,
               288,
               289,
-              291,
+              290,
               292,
               293,
               294,
@@ -102,7 +101,8 @@
               297,
               298,
               299,
-              301
+              300,
+              302
             ],
             "contains": [
               "echo \"  $label: the broken copy did not build\"",
@@ -118,49 +118,49 @@
   "non_invocations": [],
   "skips": [
     {
-      "line": 52,
+      "line": 53,
       "class": "tool",
       "what": "python3 ssl and cryptography",
       "regex": "^skipped: no python3 with ssl and cryptography here, so there is no scripted server to ask$",
       "text": "  echo \"skipped: no python3 with ssl and cryptography here, so there is no scripted server to ask\""
     },
     {
-      "line": 146,
+      "line": 147,
       "class": "tool",
       "what": "dig",
       "regex": "^  skipped: no dig here, so nothing but the iyi client asks the scripted servers$",
       "text": "  echo \"  skipped: no dig here, so nothing but the iyi client asks the scripted servers\""
     },
     {
-      "line": 148,
+      "line": 149,
       "class": "tool",
       "what": "dig with +tls or +https",
       "regex": "^  skipped: this dig has neither \\+tls nor \\+https \\(.*\\)$",
       "text": "  echo \"  skipped: this dig has neither +tls nor +https ($(dig -v 2>&1 | head -1))\""
     },
     {
-      "line": 185,
+      "line": 186,
       "class": "tool",
       "what": "dig HTTPS record type",
       "regex": "^  HTTPS records skipped: this dig does not know the type \\(.*\\): it said \".*\"$",
       "text": "    echo \"  HTTPS records skipped: this dig does not know the type ($(dig -v 2>&1 | head -1)): it said \\\"$(printf '%s' \"$type_probe\" | head -1)\\\"\""
     },
     {
-      "line": 227,
+      "line": 228,
       "class": "tool",
       "what": "dig DNS over TLS",
       "regex": "^  \\+tls skipped: this dig has no DNS over TLS \\(.*\\)$",
       "text": "  [ \"$HAS_TLS\" = yes ] || echo \"  +tls skipped: this dig has no DNS over TLS ($(dig -v 2>&1 | head -1))\""
     },
     {
-      "line": 229,
+      "line": 230,
       "class": "tool",
       "what": "dig DNS over HTTPS",
       "regex": "^  \\+https skipped: this dig has no DNS over HTTPS \\(.*\\)$",
       "text": "    echo \"  +https skipped: this dig has no DNS over HTTPS ($(dig -v 2>&1 | head -1))\""
     },
     {
-      "line": 231,
+      "line": 232,
       "class": "tool",
       "what": "python3 h2",
       "regex": "^  \\+https skipped: there is no HTTP/2 server without the h2 package, and dig speaks DNS over HTTPS over HTTP/2 alone$",
@@ -169,36 +169,36 @@
   ],
   "not_skips": [],
   "pass_sentinel": {
-    "line": 371,
+    "line": 372,
     "regex": "^the std/secure_dns exercise holds$",
     "text": "  echo \"the std/secure_dns exercise holds\""
   },
   "exec_evidence": [
     {
-      "site_line": 80,
+      "site_line": 81,
       "out_template": "{WORK}/{name}",
       "name_from_calls": {
-        "111": "dns-plain",
-        "115": "dns-release"
+        "112": "dns-plain",
+        "116": "dns-release"
       },
       "exec_lines": [
-        87
+        88
       ],
       "exec_token": "\"$WORK/$name\"",
       "verdict_lines": [
-        84,
         85,
-        92,
+        86,
         93,
-        97,
+        94,
         98,
-        119,
-        127,
-        171,
-        219,
-        223,
-        246,
-        249
+        99,
+        120,
+        128,
+        172,
+        220,
+        224,
+        247,
+        250
       ],
       "failure_marks": [
         "status=1",

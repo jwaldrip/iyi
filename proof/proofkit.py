@@ -1342,11 +1342,11 @@ def run_bounded(cmd: list[str], cwd: str, env: dict[str, str], log: str, times: 
     )
 
 
-RUN1_STD_EXERCISES = 114
-RUN1_SIBLINGS = 115
-RUN1_CORPUS = 142
+RUN1_STD_EXERCISES = 116
+RUN1_SIBLINGS = 117
+RUN1_CORPUS = 144
 RG2R_MIN = 1
-RUN2_COUNTS = (28, 114, 142)
+RUN2_COUNTS = (28, 116, 144)
 DRIVER_LIMIT_SEC = 2100.0
 GRACE_SEC = 30.0
 DISK_MIN_GB = 20.0
