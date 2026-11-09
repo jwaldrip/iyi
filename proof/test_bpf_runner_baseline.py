@@ -47,7 +47,7 @@ class BaselineFixtures(unittest.TestCase):
             raise subprocess.TimeoutExpired("fixture", 5)
         import errno
         with patch.object(gate, "check_path"), \
-             patch.object(gate.os, "getxattr", side_effect=OSError(errno.ENODATA, "no data")):
+             patch.object(gate.os, "getxattr", side_effect=OSError(errno.ENODATA, "no data"), create=True):
             with self.assertRaises(subprocess.TimeoutExpired):
                 gate.verify(self.baseline, {"ImageOS": "ubuntu24", "ImageVersion": "20261101.360.1"}, timeout)
 
