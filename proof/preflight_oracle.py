@@ -266,8 +266,9 @@ def check_nsupdate():
     except Exception as e:
         return False, f"nsupdate -V failed: {e}"
 
-    # Probe HTTPS record type recognition in nsupdate
-    probe_input = "server 127.0.0.1 5353\nzone test.\nupdate add probe.test. 60 IN HTTPS 1 .\nsend\n"
+    # Parse an update without issuing `send`: a fixed loopback port might
+    # belong to someone else's DNS service.
+    probe_input = "zone test.\nupdate add probe.test. 60 IN HTTPS 1 .\n"
     try:
         probe_proc = subprocess.run(
             [nsupdate_path],
@@ -277,10 +278,10 @@ def check_nsupdate():
             timeout=5,
         )
         output = probe_proc.stdout + " " + probe_proc.stderr
-        if "'HTTPS' is not a valid type" in output or "unknown class/type" in output:
-            return False, f"nsupdate does not support RFC 9460 HTTPS type ({ver_line})"
+        if probe_proc.returncode != 0:
+            return False, f"nsupdate HTTPS type probe failed ({ver_line}): {output.strip()}"
     except subprocess.TimeoutExpired:
-        pass
+        return False, "nsupdate HTTPS type probe timed out"
     except Exception as e:
         return False, f"nsupdate HTTPS probe failed: {e}"
 
