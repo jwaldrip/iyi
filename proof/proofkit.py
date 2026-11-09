@@ -48,6 +48,23 @@ def sha256_file(path: str) -> str:
     return h.hexdigest()
 
 
+def compute_inputs_bundle_digest(inputs_dir: str) -> str:
+    """Compute deterministic SHA256 digest of offline inputs directory."""
+    manifest_candidates = ("bundle.sha256", "inputs.sha256", "SHA256SUMS", "manifest.json")
+    for candidate in manifest_candidates:
+        cand_path = os.path.join(inputs_dir, candidate)
+        if os.path.isfile(cand_path):
+            return sha256_file(cand_path)
+    hasher = hashlib.sha256()
+    for root, _, files in sorted(os.walk(inputs_dir)):
+        for fname in sorted(files):
+            if fname.startswith("."):
+                continue
+            fpath = os.path.join(root, fname)
+            rel = os.path.relpath(fpath, inputs_dir)
+            hasher.update(f"{rel}:{sha256_file(fpath)}\n".encode("utf-8"))
+    return hasher.hexdigest()
+
 def check_disk_space(path: str, min_gb: float = 20.0) -> float:
     usage = shutil.disk_usage(path)
     free_gb = usage.free / (1024 ** 3)
@@ -143,8 +160,9 @@ def base_env(pin: dict | None = None, stage_extra: dict[str, str] | None = None)
     ]:
         env.pop(k, None)
 
-    env["LIBRARY_PATH"] = "/opt/homebrew/opt/bdw-gc/lib"
-    env["PKG_CONFIG_PATH"] = "/opt/homebrew/opt/openssl@3/lib/pkgconfig"
+    if platform.system() == "Darwin":
+        env["LIBRARY_PATH"] = "/opt/homebrew/opt/bdw-gc/lib"
+        env["PKG_CONFIG_PATH"] = "/opt/homebrew/opt/openssl@3/lib/pkgconfig"
     env["PYTHONDONTWRITEBYTECODE"] = "1"
 
     if pin:
@@ -289,8 +307,14 @@ def probe_atime_observable(dir_path: str, stat_fn: Callable[[str], os.stat_resul
     probe_id = secrets.token_hex(8)
     test_exe = os.path.join(dir_path, f"probe-atime-{probe_id}")
     test_ref = os.path.join(dir_path, f"probe-atime-{probe_id}.ref")
+    true_bin = "/usr/bin/true" if os.path.exists("/usr/bin/true") else (shutil.which("true") or "/bin/true")
+    if not os.path.exists(true_bin):
+        raise IdentityError(
+            "EXEC-UNOBSERVABLE",
+            "neither /usr/bin/true nor /bin/true exists",
+        )
     try:
-        shutil.copyfile("/usr/bin/true", test_exe)
+        shutil.copyfile(true_bin, test_exe)
         os.chmod(test_exe, 0o755)
         original_sha = sha256_file(test_exe)
         os.link(test_exe, test_ref)
@@ -324,7 +348,7 @@ def probe_atime_observable(dir_path: str, stat_fn: Callable[[str], os.stat_resul
         if executed.returncode != 0:
             raise IdentityError(
                 "EXEC-UNOBSERVABLE",
-                f"/usr/bin/true copy exited {executed.returncode}",
+                f"{true_bin} copy exited {executed.returncode}",
             )
 
         after_exec = stat_fn(test_ref)
@@ -405,7 +429,7 @@ def _nm_version_line(nm_path: str, *, cwd: str, env: dict[str, str]) -> str:
     raise IdentityError("NO-NM", "; ".join(attempts))
 
 
-def _census_shas_and_validate(w_path: str, drivers: Sequence[str]) -> dict[str, str]:
+def _census_shas_and_validate(w_path: str, drivers: Sequence[str], *, target_platform: str | None = None) -> dict[str, str]:
     census_dir = os.path.join(w_path, "proof", "census")
     expected_files = {f"{driver}.json" for driver in drivers}
     try:
@@ -438,6 +462,7 @@ def _census_shas_and_validate(w_path: str, drivers: Sequence[str]) -> dict[str, 
                 census,
                 script_bytes,
                 script_relpath,
+                target_platform=target_platform,
             )
             if violations:
                 raise IdentityError(
@@ -484,7 +509,7 @@ def _census_shas(w_path: str, drivers: Sequence[str]) -> dict[str, str]:
 
 
 
-def inspect_pin_inputs(p_path: str, w_path: str, compiler_path: str, drivers: Sequence[str]) -> dict:
+def inspect_pin_inputs(p_path: str, w_path: str, compiler_path: str, drivers: Sequence[str], *, inputs_dir: str | None = None) -> dict:
     """Validate every read-only pin precondition and return the pinned facts."""
     p_real = os.path.realpath(p_path)
     w_real = os.path.realpath(w_path)
@@ -492,6 +517,19 @@ def inspect_pin_inputs(p_path: str, w_path: str, compiler_path: str, drivers: Se
     env_path = os.environ.get("PATH", "")
     env_home = os.environ.get("HOME", "")
     pin_env = {"env_path": env_path, "env_home": env_home}
+    inputs_dir_env = inputs_dir or os.environ.get("IYI_PROOF_INPUTS_DIR")
+    if inputs_dir_env:
+        inputs_real = os.path.realpath(inputs_dir_env)
+        if not os.path.isdir(inputs_real):
+            raise IdentityError(
+                "INPUTS-DIR-INVALID",
+                f"IYI_PROOF_INPUTS_DIR does not exist or is not a directory: {inputs_real}",
+            )
+        inputs_digest = compute_inputs_bundle_digest(inputs_real)
+    else:
+        inputs_real = None
+        inputs_digest = None
+
 
     try:
         if not git_clean(p_real):
@@ -613,6 +651,8 @@ def inspect_pin_inputs(p_path: str, w_path: str, compiler_path: str, drivers: Se
         "compiler_stamp": stamp,
         "canonical_roots": canonical_roots,
         "platform_tmp": platform_tmp,
+        "inputs_dir": inputs_real,
+        "inputs_digest": inputs_digest,
         "env_path": env_path,
         "env_home": env_home,
         "python_path": os.path.realpath(sys.executable),
@@ -654,14 +694,14 @@ def _validated_report_dir(report_dir: str, *, require_empty: bool, chain_id: str
     return report_real
 
 
-def write_pin(report_dir: str, p_path: str, w_path: str, compiler_path: str, drivers: Sequence[str], chain_id: str | None = None, stat_fn: Callable[[str], os.stat_result] = os.stat) -> dict:
+def write_pin(report_dir: str, p_path: str, w_path: str, compiler_path: str, drivers: Sequence[str], chain_id: str | None = None, stat_fn: Callable[[str], os.stat_result] = os.stat, *, inputs_dir: str | None = None) -> dict:
     """Validate C3/D4/D5 and write the immutable pin once."""
     report_real = _validated_report_dir(
         report_dir,
         require_empty=True,
         chain_id=chain_id,
     )
-    facts = inspect_pin_inputs(p_path, w_path, compiler_path, drivers)
+    facts = inspect_pin_inputs(p_path, w_path, compiler_path, drivers, inputs_dir=inputs_dir)
     short_chain = os.path.basename(report_real).removeprefix("iyp-")
     if chain_id is None:
         chain_id = short_chain + secrets.token_hex(12)
@@ -923,6 +963,22 @@ def check_identity(pin: dict) -> None:
         nm_version,
     )
 
+    expected_inputs_dir = pin.get("inputs_dir")
+    expected_inputs_digest = pin.get("inputs_digest")
+    if expected_inputs_dir is not None:
+        if not os.path.isdir(expected_inputs_dir):
+            raise IdentityError(
+                "INPUTS-DIR-CHANGED",
+                f"pinned inputs_dir does not exist or is not a directory: {expected_inputs_dir}",
+            )
+        current_inputs_digest = compute_inputs_bundle_digest(expected_inputs_dir)
+        _require_equal(
+            "INPUTS-DIGEST-CHANGED",
+            "inputs bundle digest",
+            expected_inputs_digest,
+            current_inputs_digest,
+        )
+
 @dataclass(frozen=True)
 class BoundedResult:
     returncode: int
@@ -954,8 +1010,9 @@ def _parse_process_group_members(output: str, pgid: int, exclude: int | None = N
 
 def _process_group_members(pgid: int, *, exclude: int | None = None, ps_path: str | None = None) -> tuple[int, ...]:
     ps_path = ps_path or ("/bin/ps" if os.path.exists("/bin/ps") else "ps")
+    ps_args = ["-axo", "pid=,pgid="] if platform.system() == "Darwin" else ["-eo", "pid=,pgid="]
     proc = subprocess.run(
-        [ps_path, "-axo", "pid=,pgid="],
+        [ps_path] + ps_args,
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
@@ -2011,7 +2068,7 @@ def _environment_callsite_violations(lines: Sequence[str], invocation_lines: set
     return tuple(violations)
 
 
-def _validate_census_schema(census: object, violations: list[Violation]) -> None:
+def _validate_census_schema(census: object, violations: list[Violation], *, target_platform: str | None = None) -> None:
     top_keys = {
         "census_version",
         "driver",
@@ -2099,6 +2156,7 @@ def _validate_census_schema(census: object, violations: list[Violation]) -> None
                     "sources",
                     "output",
                     "darwin",
+                    "linux",
                     "requires",
                     "verdict",
                 },
@@ -2107,6 +2165,28 @@ def _validate_census_schema(census: object, violations: list[Violation]) -> None
                 line,
             ):
                 continue
+            is_linux = (
+                (target_platform.lower() == "linux")
+                if target_platform is not None
+                else (platform.system() == "Linux")
+            )
+            darwin_status = variant.get("darwin")
+            linux_status = variant.get("linux")
+            darwin_ok = (
+                isinstance(darwin_status, str)
+                and darwin_status in ("required", "platform-excluded")
+            )
+            linux_ok = (
+                isinstance(linux_status, str)
+                and linux_status in ("required", "platform-excluded")
+            )
+            if is_linux:
+                platform_fields_valid = linux_ok and darwin_ok
+            else:
+                platform_fields_valid = darwin_ok and (
+                    linux_status is None or linux_ok
+                )
+
             variant_valid = (
                 isinstance(variant["id"], str)
                 and isinstance(variant["kind"], str)
@@ -2119,8 +2199,7 @@ def _validate_census_schema(census: object, violations: list[Violation]) -> None
                     variant["output"] is None
                     or isinstance(variant["output"], str)
                 )
-                and isinstance(variant["darwin"], str)
-                and variant["darwin"] in ("required", "platform-excluded")
+                and platform_fields_valid
                 and isinstance(variant["requires"], list)
                 and all(isinstance(item, str) for item in variant["requires"])
                 and isinstance(variant["verdict"], dict)
@@ -2397,10 +2476,10 @@ def _validate_census_schema(census: object, violations: list[Violation]) -> None
                 )
 
 
-def validate_census(census: object, script_bytes: bytes, script_relpath: str) -> list[Violation]:
+def validate_census(census: object, script_bytes: bytes, script_relpath: str, *, target_platform: str | None = None) -> list[Violation]:
     """Return every C5 and E1 violation for one source-grounded census."""
     violations: list[Violation] = []
-    _validate_census_schema(census, violations)
+    _validate_census_schema(census, violations, target_platform=target_platform)
     if not isinstance(census, dict):
         return violations
     if not isinstance(script_bytes, bytes):
@@ -3227,11 +3306,13 @@ def _ledger_run_executed(record: dict) -> bool:
     )
 
 
-def verify_ledger(ledger_path: str, *, census: dict, driver: str, nonce: str, attempt: int, chain_id: str, work_tmp: str, repo: str, platform_tmp: str | None, stat_fn: Callable[[str], os.stat_result] = os.stat) -> LedgerVerdict:
+def verify_ledger(ledger_path: str, *, census: dict, driver: str, nonce: str, attempt: int, chain_id: str, work_tmp: str, repo: str, platform_tmp: str | None, stat_fn: Callable[[str], os.stat_result] = os.stat, target_platform: str | None = None) -> LedgerVerdict:
     """Verify one P2 ledger and return every blocking P4 status."""
     statuses: set[str] = set()
     reasons: list[str] = []
-
+    active_platform = (
+        target_platform or ("linux" if platform.system() == "Linux" else "darwin")
+    ).lower()
     try:
         with open(ledger_path, "r", encoding="utf-8") as ledger_file:
             raw = ledger_file.read()
@@ -3514,8 +3595,20 @@ def verify_ledger(ledger_path: str, *, census: dict, driver: str, nonce: str, at
         )
 
     for variant_id, (variant, _) in variant_index.items():
-        if variant.get("darwin") != "required":
-            continue
+        if active_platform == "linux":
+            if "linux" not in variant:
+                _ledger_add(
+                    statuses,
+                    reasons,
+                    "SCHEMA-UNCLASSIFIED",
+                    f"variant {variant_id} lacks explicit linux classification",
+                )
+                continue
+            if variant["linux"] != "required":
+                continue
+        else:
+            if variant.get("darwin") != "required":
+                continue
         if not any(
             variant_id in _ledger_variant_ids(record)
             for record in records
@@ -3696,10 +3789,23 @@ def verify_ledger(ledger_path: str, *, census: dict, driver: str, nonce: str, at
                 )
             }
             evidence_matches.update(matches)
-            required = own_site or any(
-                variant.get("darwin") == "required"
-                for variant in associated_variants
-            )
+            if active_platform == "linux":
+                if any("linux" not in v for v in associated_variants):
+                    _ledger_add(
+                        statuses,
+                        reasons,
+                        "SCHEMA-UNCLASSIFIED",
+                        f"associated variant for evidence {evidence_index} lacks explicit linux classification",
+                    )
+                required = own_site or any(
+                    v.get("linux") == "required"
+                    for v in associated_variants
+                )
+            else:
+                required = own_site or any(
+                    v.get("darwin") == "required"
+                    for v in associated_variants
+                )
             if (required and len(matches) != 1) or (
                 not required and len(matches) > 1
             ):

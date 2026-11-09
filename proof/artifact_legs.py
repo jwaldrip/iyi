@@ -187,7 +187,7 @@ def compare_r1(name: str, status_a: int, status_b: int, stdout_a: bytes, stderr_
     if stderr_a == stderr_b:
         return True, "exact stdout and stderr match"
 
-    return _compare_frame_stderr(stderr_a, stderr_b, repo_root, row_dir, tag) if platform.system() == "Darwin" else (False, "stderr differs (frames_equivalent CLI only available on Darwin)")
+    return _compare_frame_stderr(stderr_a, stderr_b, repo_root, row_dir, tag) if platform.system() in ("Darwin", "Linux") else (False, f"stderr differs (frames_equivalent CLI only available on Darwin and Linux, not {platform.system()})")
 
 
 def _row_identity(source: str, repo: str, work_root: str) -> tuple[str, str, str, bool, str]:

@@ -170,6 +170,9 @@ def fresh_stage_env(pin: dict, attempt_dir: str, stage_name: str, additions: dic
         "TMPDIR": tmp_dir,
         "IYI_CACHE_DIR": cache_dir,
     }
+    inputs_dir = pin.get("inputs_dir")
+    if inputs_dir:
+        stage_additions["IYI_PROOF_INPUTS_DIR"] = inputs_dir
     if additions:
         stage_additions.update(additions)
     return base_env(pin, stage_additions)
@@ -491,7 +494,13 @@ def _baseline_skip_hits(w_path: str, log_text: str) -> list[dict[str, str]]:
 
 
 def cmd_plan(args, *, drivers: Sequence[str] = DRIVERS_29, stat_fn=os.stat) -> int:
-    facts = inspect_pin_inputs(args.p, args.w, args.compiler, drivers)
+    facts = inspect_pin_inputs(
+        args.p,
+        args.w,
+        args.compiler,
+        drivers,
+        inputs_dir=getattr(args, "inputs_dir", None),
+    )
     with tempfile.TemporaryDirectory(
         prefix="iyi-plan-atime-",
         dir="/private/tmp",
@@ -507,6 +516,8 @@ def cmd_plan(args, *, drivers: Sequence[str] = DRIVERS_29, stat_fn=os.stat) -> i
     print(f"  BIN SHA:   {facts['compiler_sha256']}")
     print(f"  Timeout:   {facts['timeout_path']} ({facts['timeout_version']})")
     print(f"  Platform:  {facts['platform_tmp']}")
+    if facts.get("inputs_dir"):
+        print(f"  Inputs:    {facts['inputs_dir']} ({facts['inputs_digest'][:12]}...)")
     print(
         "  Probe:     "
         f"sha256={probe['sha256']} inode={probe['inode']} "
@@ -517,13 +528,22 @@ def cmd_plan(args, *, drivers: Sequence[str] = DRIVERS_29, stat_fn=os.stat) -> i
 
 
 def cmd_pin(args, *, drivers: Sequence[str] = DRIVERS_29) -> int:
-    pin = write_pin(args.report_dir, args.p, args.w, args.compiler, drivers)
+    pin = write_pin(
+        args.report_dir,
+        args.p,
+        args.w,
+        args.compiler,
+        drivers,
+        inputs_dir=getattr(args, "inputs_dir", None),
+    )
     print(f"Pin successfully written to {os.path.join(args.report_dir, 'pin.json')}")
     print(f"  Chain ID:  {pin['chain_id']}")
     print(f"  P SHA:     {pin['p_source_sha']}")
     print(f"  W HEAD:    {pin['w_head']}")
     print(f"  Compiler:  {pin['compiler_sha256']}")
     print(f"  Platform:  {pin['platform_tmp']}")
+    if pin.get("inputs_dir"):
+        print(f"  Inputs:    {pin['inputs_dir']} ({pin['inputs_digest'][:12]}...)")
     return 0
 
 
@@ -1178,13 +1198,17 @@ def _run_one_driver(report_dir: str, pin: dict, driver: str, baseline: set[tuple
                 )
                 + "\n"
             )
+        stage_env = {
+            "IYI": launcher_path,
+            "TMPDIR": t_dir,
+            "IYI_CACHE_DIR": c_dir,
+        }
+        inputs_dir = pin.get("inputs_dir")
+        if inputs_dir:
+            stage_env["IYI_PROOF_INPUTS_DIR"] = inputs_dir
         env = base_env(
             pin,
-            {
-                "IYI": launcher_path,
-                "TMPDIR": t_dir,
-                "IYI_CACHE_DIR": c_dir,
-            },
+            stage_env,
         )
     except (OSError, TypeError, ValueError) as error:
         checks["exit"] = "FAIL"
@@ -1749,13 +1773,14 @@ def _parser() -> argparse.ArgumentParser:
     plan.add_argument("--p", required=True)
     plan.add_argument("--w", required=True)
     plan.add_argument("--compiler", required=True)
+    plan.add_argument("--inputs-dir", default=None)
 
     pin = subparsers.add_parser("pin")
     pin.add_argument("--report-dir", required=True)
     pin.add_argument("--p", required=True)
     pin.add_argument("--w", required=True)
     pin.add_argument("--compiler", required=True)
-
+    pin.add_argument("--inputs-dir", default=None)
     for command in ("run1", "run2", "final", "all"):
         stage = subparsers.add_parser(command)
         stage.add_argument("--report-dir", required=True)
