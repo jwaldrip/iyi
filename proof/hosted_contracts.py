@@ -437,6 +437,12 @@ class ResourcePolicy:
     def to_dict(self) -> Dict[str, Any]:
         return dataclasses.asdict(self)
 
+    def canonical_bytes(self) -> bytes:
+        return canonical_json_bytes(self.to_dict())
+
+    def digest(self) -> str:
+        return sha256_bytes(self.canonical_bytes())
+
 PRODUCTION_RESOURCE_DRIVER_LIMIT_SEC = 2100
 PRODUCTION_RESOURCE_GRACE_SEC = 30
 PRODUCTION_RESOURCE_HOST_JOB_LIMIT_SEC = 21600
@@ -555,6 +561,12 @@ class CagePolicy:
     def to_dict(self) -> Dict[str, Any]:
         return dataclasses.asdict(self)
 
+    def canonical_bytes(self) -> bytes:
+        return canonical_json_bytes(self.to_dict())
+
+    def digest(self) -> str:
+        return sha256_bytes(self.canonical_bytes())
+
 PRODUCTION_CAGE_UID = 65534
 PRODUCTION_CAGE_GID = 65534
 PRODUCTION_CAGE_NETWORK = "none"
@@ -668,6 +680,12 @@ class EvidencePolicy:
     def to_dict(self) -> Dict[str, Any]:
         return dataclasses.asdict(self)
 
+    def canonical_bytes(self) -> bytes:
+        return canonical_json_bytes(self.to_dict())
+
+    def digest(self) -> str:
+        return sha256_bytes(self.canonical_bytes())
+
 
 @dataclasses.dataclass(frozen=True)
 class QualificationRequirements:
@@ -780,6 +798,12 @@ class QualificationRequirements:
     def to_dict(self) -> Dict[str, Any]:
         return dataclasses.asdict(self)
 
+    def canonical_bytes(self) -> bytes:
+        return canonical_json_bytes(self.to_dict())
+
+    def digest(self) -> str:
+        return sha256_bytes(self.canonical_bytes())
+
 def compute_manifest_digest(identities: Sequence[str]) -> str:
     """
     Compute canonical SHA-256 digest over a sequence of string identities.
@@ -797,125 +821,150 @@ def compute_manifest_digest(identities: Sequence[str]) -> str:
     return sha256_bytes(canonical_json_bytes(sorted(cleaned)))
 
 
+@dataclasses.dataclass(frozen=True)
+class SourceGroundingAuthority:
+    """
+    Independently verified source grounding authority derived from pinned C baseline,
+    final P product, and final W proof sources.
+    """
+    baseline_commit: str
+    expected_142_selectors: Tuple[str, ...]
+    expected_2_additions: Tuple[str, ...]
+    expected_117_siblings: Tuple[str, ...]
+    expected_run3_inventory: Tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        require_sha1_or_commit(self.baseline_commit, "baseline_commit")
+        if not isinstance(self.expected_142_selectors, tuple) or len(self.expected_142_selectors) != 142:
+            raise TypeValidationError(f"expected_142_selectors must be a tuple of 142 strings, got {len(self.expected_142_selectors) if isinstance(self.expected_142_selectors, tuple) else type(self.expected_142_selectors).__name__}")
+        if len(set(self.expected_142_selectors)) != 142:
+            raise DuplicateKeyError("Duplicate in expected_142_selectors")
+
+        if not isinstance(self.expected_2_additions, tuple) or len(self.expected_2_additions) != 2:
+            raise TypeValidationError(f"expected_2_additions must be a tuple of 2 strings, got {len(self.expected_2_additions) if isinstance(self.expected_2_additions, tuple) else type(self.expected_2_additions).__name__}")
+        if len(set(self.expected_2_additions)) != 2:
+            raise DuplicateKeyError("Duplicate in expected_2_additions")
+
+        if not set(self.expected_142_selectors).isdisjoint(set(self.expected_2_additions)):
+            raise ReferenceIntegrityError("expected_142_selectors and expected_2_additions overlap")
+
+        if not isinstance(self.expected_117_siblings, tuple) or len(self.expected_117_siblings) != 117:
+            raise TypeValidationError(f"expected_117_siblings must be a tuple of 117 strings, got {len(self.expected_117_siblings) if isinstance(self.expected_117_siblings, tuple) else type(self.expected_117_siblings).__name__}")
+        if len(set(self.expected_117_siblings)) != 117:
+            raise DuplicateKeyError("Duplicate in expected_117_siblings")
+
+        if not isinstance(self.expected_run3_inventory, tuple) or len(self.expected_run3_inventory) < 29:
+            raise TypeValidationError(f"expected_run3_inventory must be a tuple of >=29 strings, got {len(self.expected_run3_inventory) if isinstance(self.expected_run3_inventory, tuple) else type(self.expected_run3_inventory).__name__}")
+        if len(set(self.expected_run3_inventory)) != len(self.expected_run3_inventory):
+            raise DuplicateKeyError("Duplicate in expected_run3_inventory")
+
+    @property
+    def expected_142_digest(self) -> str:
+        return compute_manifest_digest(self.expected_142_selectors)
+
+    @property
+    def expected_2_additions_digest(self) -> str:
+        return compute_manifest_digest(self.expected_2_additions)
+
+    @property
+    def expected_144_corpus_digest(self) -> str:
+        return compute_manifest_digest(sorted(self.expected_142_selectors + self.expected_2_additions))
+
+    @property
+    def expected_117_siblings_digest(self) -> str:
+        return compute_manifest_digest(self.expected_117_siblings)
+
+    @property
+    def expected_run3_inventory_digest(self) -> str:
+        return compute_manifest_digest(self.expected_run3_inventory)
+
+
 def validate_qualification_ground_truth(
     qual: QualificationRequirements,
     *,
-    original_142_selectors: Sequence[str],
-    additions_2_selectors: Sequence[str],
-    complete_144_corpus: Sequence[str],
-    siblings_117_manifest: Sequence[str],
-    run3_inventory_manifest: Sequence[str],
+    authority: SourceGroundingAuthority,
+    candidate_original_142_selectors: Optional[Sequence[str]] = None,
+    candidate_additions_2_selectors: Optional[Sequence[str]] = None,
+    candidate_complete_144_corpus: Optional[Sequence[str]] = None,
+    candidate_siblings_117_manifest: Optional[Sequence[str]] = None,
+    candidate_run3_inventory_manifest: Optional[Sequence[str]] = None,
 ) -> None:
     """
-    Validate that QualificationRequirements digests match actual source-grounded
-    identities, verifying exact counts, disjoint union, and digest integrity.
+    Validate that QualificationRequirements digests match independently verified
+    source grounding authority, and optionally verify that candidate runtime manifests
+    match exact expected source-derived identities.
     """
     if not isinstance(qual, QualificationRequirements):
         raise TypeValidationError(f"Expected QualificationRequirements, got {type(qual).__name__}")
+    if not isinstance(authority, SourceGroundingAuthority):
+        raise TypeValidationError(f"Expected SourceGroundingAuthority, got {type(authority).__name__}")
 
-    orig_set: Set[str] = set()
-    for s in original_142_selectors:
-        val = require_ascii_str(s, "original_142_selector")
-        if val in orig_set:
-            raise DuplicateKeyError(f"Duplicate in original 142 selectors: {val}")
-        orig_set.add(val)
-    if len(orig_set) != 142:
-        raise TypeValidationError(f"Expected exactly 142 original selectors, got {len(orig_set)}")
-
-    add_set: Set[str] = set()
-    for s in additions_2_selectors:
-        val = require_ascii_str(s, "additions_2_selector")
-        if val in add_set:
-            raise DuplicateKeyError(f"Duplicate in 2 additions selectors: {val}")
-        add_set.add(val)
-    if len(add_set) != 2:
-        raise TypeValidationError(f"Expected exactly 2 additions, got {len(add_set)}")
-
-    if not orig_set.isdisjoint(add_set):
-        overlap = orig_set & add_set
-        raise ReferenceIntegrityError(f"Original 142 and additions are not disjoint; overlap: {sorted(overlap)}")
-
-    corpus_set: Set[str] = set()
-    for s in complete_144_corpus:
-        val = require_ascii_str(s, "complete_144_corpus_item")
-        if val in corpus_set:
-            raise DuplicateKeyError(f"Duplicate in 144 corpus: {val}")
-        corpus_set.add(val)
-    if len(corpus_set) != 144:
-        raise TypeValidationError(f"Expected exactly 144 corpus items, got {len(corpus_set)}")
-
-    if (orig_set | add_set) != corpus_set:
-        diff_missing = corpus_set - (orig_set | add_set)
-        diff_extra = (orig_set | add_set) - corpus_set
+    # Verify digests in qual match authority
+    if qual.selectors_142_digest != authority.expected_142_digest:
         raise ReferenceIntegrityError(
-            f"Corpus 144 must equal original 142 union 2 additions. Missing: {sorted(diff_missing)}, Extra: {sorted(diff_extra)}"
+            f"selectors_142_digest mismatch: qual has {qual.selectors_142_digest}, authority has {authority.expected_142_digest}"
+        )
+    if qual.additions_2_digest != authority.expected_2_additions_digest:
+        raise ReferenceIntegrityError(
+            f"additions_2_digest mismatch: qual has {qual.additions_2_digest}, authority has {authority.expected_2_additions_digest}"
+        )
+    if qual.corpus_144_selectors_digest != authority.expected_144_corpus_digest:
+        raise ReferenceIntegrityError(
+            f"corpus_144_selectors_digest mismatch: qual has {qual.corpus_144_selectors_digest}, authority has {authority.expected_144_corpus_digest}"
+        )
+    if qual.siblings_117_manifest_digest != authority.expected_117_siblings_digest:
+        raise ReferenceIntegrityError(
+            f"siblings_117_manifest_digest mismatch: qual has {qual.siblings_117_manifest_digest}, authority has {authority.expected_117_siblings_digest}"
+        )
+    if qual.run3_inventory_manifest_digest != authority.expected_run3_inventory_digest:
+        raise ReferenceIntegrityError(
+            f"run3_inventory_manifest_digest mismatch: qual has {qual.run3_inventory_manifest_digest}, authority has {authority.expected_run3_inventory_digest}"
         )
 
-    sibs_set: Set[str] = set()
-    for s in siblings_117_manifest:
-        val = require_ascii_str(s, "sibling_117_item")
-        if val in sibs_set:
-            raise DuplicateKeyError(f"Duplicate in sibling 117 manifest: {val}")
-        sibs_set.add(val)
-    if len(sibs_set) != 117:
-        raise TypeValidationError(f"Expected exactly 117 sibling identities, got {len(sibs_set)}")
+    # If candidate lists provided, verify exact identity equality against authority
+    if candidate_original_142_selectors is not None:
+        cand_set = set(candidate_original_142_selectors)
+        exp_set = set(authority.expected_142_selectors)
+        if cand_set != exp_set:
+            raise ReferenceIntegrityError(f"Candidate original selectors do not match expected authority: diff={cand_set ^ exp_set}")
 
-    run3_set: Set[str] = set()
-    for s in run3_inventory_manifest:
-        val = require_ascii_str(s, "run3_inventory_item")
-        if val in run3_set:
-            raise DuplicateKeyError(f"Duplicate in Run 3 inventory: {val}")
-        run3_set.add(val)
-    if len(run3_set) < 29:
-        raise TypeValidationError(f"Expected at least 29 Run 3 inventory items, got {len(run3_set)}")
+    if candidate_additions_2_selectors is not None:
+        cand_set = set(candidate_additions_2_selectors)
+        exp_set = set(authority.expected_2_additions)
+        if cand_set != exp_set:
+            raise ReferenceIntegrityError(f"Candidate additions do not match expected authority: diff={cand_set ^ exp_set}")
 
-    orig_digest = compute_manifest_digest(list(orig_set))
-    if orig_digest != qual.selectors_142_digest:
-        raise ReferenceIntegrityError(
-            f"selectors_142_digest mismatch: expected {qual.selectors_142_digest}, computed {orig_digest}"
-        )
+    if candidate_complete_144_corpus is not None:
+        cand_set = set(candidate_complete_144_corpus)
+        exp_set = set(authority.expected_142_selectors) | set(authority.expected_2_additions)
+        if cand_set != exp_set:
+            raise ReferenceIntegrityError(f"Candidate corpus do not match expected authority: diff={cand_set ^ exp_set}")
 
-    add_digest = compute_manifest_digest(list(add_set))
-    if add_digest != qual.additions_2_digest:
-        raise ReferenceIntegrityError(
-            f"additions_2_digest mismatch: expected {qual.additions_2_digest}, computed {add_digest}"
-        )
+    if candidate_siblings_117_manifest is not None:
+        cand_set = set(candidate_siblings_117_manifest)
+        exp_set = set(authority.expected_117_siblings)
+        if cand_set != exp_set:
+            raise ReferenceIntegrityError(f"Candidate siblings do not match expected authority: diff={cand_set ^ exp_set}")
 
-    corpus_digest = compute_manifest_digest(list(corpus_set))
-    if corpus_digest != qual.corpus_144_selectors_digest:
-        raise ReferenceIntegrityError(
-            f"corpus_144_selectors_digest mismatch: expected {qual.corpus_144_selectors_digest}, computed {corpus_digest}"
-        )
-
-    sibs_digest = compute_manifest_digest(list(sibs_set))
-    if sibs_digest != qual.siblings_117_manifest_digest:
-        raise ReferenceIntegrityError(
-            f"siblings_117_manifest_digest mismatch: expected {qual.siblings_117_manifest_digest}, computed {sibs_digest}"
-        )
-
-    run3_digest = compute_manifest_digest(list(run3_set))
-    if run3_digest != qual.run3_inventory_manifest_digest:
-        raise ReferenceIntegrityError(
-            f"run3_inventory_manifest_digest mismatch: expected {qual.run3_inventory_manifest_digest}, computed {run3_digest}"
-        )
+    if candidate_run3_inventory_manifest is not None:
+        cand_set = set(candidate_run3_inventory_manifest)
+        exp_set = set(authority.expected_run3_inventory)
+        if cand_set != exp_set:
+            missing = exp_set - cand_set
+            extra = cand_set - exp_set
+            raise ReferenceIntegrityError(
+                f"Candidate Run 3 inventory does not match expected derived set. Missing: {sorted(missing)}, Extra: {sorted(extra)}"
+            )
 
 
 def build_grounded_qualification_requirements(
-    *,
-    original_142_selectors: Sequence[str],
-    additions_2_selectors: Sequence[str],
-    complete_144_corpus: Sequence[str],
-    siblings_117_manifest: Sequence[str],
-    run3_inventory_manifest: Sequence[str],
+    authority: SourceGroundingAuthority,
 ) -> QualificationRequirements:
-    """Construct QualificationRequirements bound to validated ground-truth manifests."""
-    orig_digest = compute_manifest_digest(original_142_selectors)
-    add_digest = compute_manifest_digest(additions_2_selectors)
-    corpus_digest = compute_manifest_digest(complete_144_corpus)
-    sibs_digest = compute_manifest_digest(siblings_117_manifest)
-    run3_digest = compute_manifest_digest(run3_inventory_manifest)
+    """Construct QualificationRequirements bound to validated SourceGroundingAuthority."""
+    if not isinstance(authority, SourceGroundingAuthority):
+        raise TypeValidationError(f"Expected SourceGroundingAuthority, got {type(authority).__name__}")
 
-    qual = QualificationRequirements(
+    return QualificationRequirements(
         rg2_evaluated=144,
         rg2_passed=144,
         rg2_exclusions=0,
@@ -924,29 +973,20 @@ def build_grounded_qualification_requirements(
         rg2a_passed=144,
         rg2a_exclusions=0,
         rg2a_failures=0,
-        selectors_142_digest=orig_digest,
-        additions_2_digest=add_digest,
-        corpus_144_selectors_digest=corpus_digest,
+        selectors_142_digest=authority.expected_142_digest,
+        additions_2_digest=authority.expected_2_additions_digest,
+        corpus_144_selectors_digest=authority.expected_144_corpus_digest,
         rg9_programs_total=144,
-        siblings_117_manifest_digest=sibs_digest,
+        siblings_117_manifest_digest=authority.expected_117_siblings_digest,
         run2_samples=28,
         run2_std_exercises=116,
         run2_total_corpus=144,
         run2_failures=0,
         run2_exclusions=0,
-        run3_inventory_manifest_digest=run3_digest,
+        run3_inventory_manifest_digest=authority.expected_run3_inventory_digest,
         named_frames_required=True,
         crystal_flag_intact=True,
     )
-    validate_qualification_ground_truth(
-        qual,
-        original_142_selectors=original_142_selectors,
-        additions_2_selectors=additions_2_selectors,
-        complete_144_corpus=complete_144_corpus,
-        siblings_117_manifest=siblings_117_manifest,
-        run3_inventory_manifest=run3_inventory_manifest,
-    )
-    return qual
 
 
 # Primary Immutable Data Models
@@ -1178,6 +1218,14 @@ def validate_validation_ref_to_subject(validation_ref: ValidationRef, subject: E
         raise ValidationReferenceMismatch(
             f"ValidationRef workflow mismatch: subject has {subject.workflow_path!r}, validation has {validation_ref.validation_workflow!r}"
         )
+    if validation_ref.run_id != subject.run_id:
+        raise ValidationReferenceMismatch(
+            f"ValidationRef run_id mismatch: subject has {subject.run_id!r}, validation has {validation_ref.run_id!r}"
+        )
+    if validation_ref.run_attempt != subject.run_attempt:
+        raise ValidationReferenceMismatch(
+            f"ValidationRef run_attempt mismatch: subject has {subject.run_attempt}, validation has {validation_ref.run_attempt}"
+        )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1270,6 +1318,7 @@ class ProofManifest:
 
         # Cryptographic referential integrity verification across joined records
         validate_validation_ref_to_subject(self.validation, self.subject)
+        subj_digest = self.subject.digest()
 
         if self.review.subject_digest != subj_digest:
             raise ReviewReferenceMismatch(
@@ -1431,7 +1480,9 @@ class CheckpointDescriptor:
         require_sha256(self.manifest_digest, "manifest_digest")
         require_sha256(self.subject_digest, "subject_digest")
         require_sha256(self.execution_context_digest, "execution_context_digest")
-        object.__setattr__(self, "launch_id", require_positive_ascii_id(self.launch_id, "launch_id"))
+        require_ascii_str(self.launch_id, "launch_id")
+        if not self.launch_id:
+            raise TypeValidationError("launch_id cannot be empty")
         require_ascii_str(self.stage, "stage")
         require_int(self.attempt, "attempt", min_val=1)
         if not isinstance(self.command, tuple) or not all(isinstance(c, str) for c in self.command):
@@ -1569,6 +1620,8 @@ def validate_checkpoint_to_context(
         raise TypeValidationError(f"Expected ExecutionContext, got {type(context).__name__}")
     if not isinstance(manifest, ProofManifest):
         raise TypeValidationError(f"Expected ProofManifest, got {type(manifest).__name__}")
+    # Compose execution context validation
+    validate_execution_context_to_manifest(context, manifest)
 
     man_digest = manifest.digest()
     if checkpoint.manifest_digest != man_digest:
@@ -1588,6 +1641,20 @@ def validate_checkpoint_to_context(
             f"CheckpointDescriptor execution_context_digest mismatch: expected {ctx_digest}, got {checkpoint.execution_context_digest}"
         )
 
+    # Enforce outcome, exit code, and teardown consistency
+    teardown_dict = dict(checkpoint.teardown_disposition)
+    if checkpoint.outcome == "PASS":
+        if checkpoint.exit_code != 0:
+            raise ReferenceIntegrityError(
+                f"Checkpoint PASS outcome inconsistent with non-zero exit_code: {checkpoint.exit_code}"
+            )
+        if "removed" in teardown_dict and teardown_dict["removed"] is False:
+            raise ReferenceIntegrityError("Checkpoint PASS outcome inconsistent with unremoved container (removed=False)")
+        if "stopped" in teardown_dict and teardown_dict["stopped"] is False:
+            raise ReferenceIntegrityError("Checkpoint PASS outcome inconsistent with unstopped container (stopped=False)")
+    elif checkpoint.outcome in ("FAIL", "TIMEOUT", "INVALID", "STOP"):
+        if checkpoint.outcome == "FAIL" and checkpoint.exit_code == 0:
+            raise ReferenceIntegrityError("Checkpoint FAIL outcome inconsistent with exit_code 0")
 
 # Refusal Policy Enforcements (Spec 3.1)
 def enforce_independent_review_refusal() -> None:
