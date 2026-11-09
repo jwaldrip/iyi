@@ -692,5 +692,102 @@ class TestOriginRecordsAdversarialHardlink(unittest.TestCase):
             self.assertFalse(ok_tampered)
             self.assertTrue(any("receipt origin_records_sha256 mismatch" in r for r in reasons_tampered))
 
+    def test_real_run3_archive_read_final_transition(self):
+        from proof.run_proof import _collect_final_unit
+        with tempfile.TemporaryDirectory() as report_dir:
+            run3_dir = os.path.join(report_dir, "run3", "demo")
+            attempt_dir = os.path.join(run3_dir, "a1")
+            os.makedirs(attempt_dir)
+
+            source_file = os.path.join(report_dir, "source.bin")
+            with open(source_file, "wb") as f:
+                f.write(b"payload\n")
+            hardlink_ref = os.path.join(report_dir, "unexec.bin")
+            os.link(source_file, hardlink_ref)
+
+            st = os.stat(hardlink_ref)
+            mtime_ns = st.st_mtime_ns
+            os.utime(hardlink_ref, ns=(mtime_ns, mtime_ns))
+
+            ledger_file = os.path.join(attempt_dir, "ledger.jsonl")
+            with open(ledger_file, "w") as f:
+                f.write('{"v":1,"kind":"header","driver":"demo","attempt":1,"chain_id":"00000000000000000000000000000000"}\n')
+
+            stat_target = (0, {"out_ino": st.st_ino, "out_mtime_ns": mtime_ns}, hardlink_ref)
+            stat_result = (0, {"out_ino": st.st_ino, "out_mtime_ns": mtime_ns}, hardlink_ref, os.stat(hardlink_ref))
+
+            origin_path = write_origin_records(
+                attempt_dir,
+                driver="demo",
+                attempt=1,
+                chain_id="0" * 32,
+                ledger_path=ledger_file,
+                stat_targets=[stat_target],
+                stat_results=[stat_result],
+            )
+            initial_sha = hashlib.sha256(open(origin_path, "rb").read()).hexdigest()
+
+            receipts_dir = os.path.join(report_dir, "sealed-receipts")
+            os.makedirs(receipts_dir)
+            receipt_path = os.path.join(receipts_dir, "receipt-run3-demo-a1.json")
+            receipt = {
+                "schema": "iyi-sealed-origin-receipt-v1",
+                "chain_id": "0" * 32,
+                "attempt": 1,
+                "driver": "demo",
+                "origin_records_sha256": initial_sha,
+                "ledger_sha256": hashlib.sha256(open(ledger_file, "rb").read()).hexdigest(),
+                "receipt_status": "NOT-EXECUTED",
+            }
+            with open(receipt_path, "w") as f:
+                json.dump(receipt, f)
+
+            result_file = os.path.join(attempt_dir, "result.json")
+            with open(result_file, "w") as f:
+                json.dump({
+                    "v": 1,
+                    "chain_id": "0" * 32,
+                    "unit": "run3/demo",
+                    "attempt": 1,
+                    "status": "PASS",
+                    "reasons": [],
+                    "checks": {"exit": "PASS", "sentinel": "PASS", "no-refused": "PASS", "skips": "PASS", "ledger": "PASS"},
+                    "started_ns": 1000,
+                    "ended_ns": 2000,
+                    "survivors": [],
+                }, f)
+
+            pin = {
+                "report_dir": report_dir,
+                "chain_id": "0" * 32,
+            }
+
+            unit_info, earlier, reasons = _collect_final_unit(
+                pin,
+                run3_dir,
+                "run3/demo",
+                "run3",
+                sealed_receipts_dir=receipts_dir,
+            )
+            self.assertEqual(unit_info["status"], "FAIL")
+            self.assertTrue(any("did not advance atime" in r for r in reasons))
+
+            # Simulate archive collector reading the hardlink payload (advancing atime on disk)
+            with open(hardlink_ref, "rb") as f:
+                _ = f.read()
+            os.utime(hardlink_ref, ns=(mtime_ns + 50_000_000, mtime_ns))
+            self.assertGreater(os.stat(hardlink_ref).st_atime_ns, mtime_ns)
+
+            # Re-collecting final unit after archive read REMAINS FAIL!
+            unit_info_after, _, reasons_after = _collect_final_unit(
+                pin,
+                run3_dir,
+                "run3/demo",
+                "run3",
+                sealed_receipts_dir=receipts_dir,
+            )
+            self.assertEqual(unit_info_after["status"], "FAIL")
+            self.assertTrue(any("did not advance atime" in r for r in reasons_after))
+
 if __name__ == "__main__":
     unittest.main()

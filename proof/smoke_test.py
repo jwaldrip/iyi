@@ -19773,16 +19773,16 @@ ALLOWLIST: tuple[tuple[str, int, int, str, str], ...] = (
     ),
     (
         "proof.run_proof",
-        1819,
-        1825,
+        1867,
+        1873,
         "o7.seed.run-proof-optimize-refusal",
         "python -B -O proof/run_proof.py --help enters the nested optimize "
         "guard, prints the exact refusal, and exits 2",
     ),
     (
         "proof.run_proof",
-        1826,
-        1826,
+        1874,
+        1874,
         "o7.control.run-proof-optimize",
         "python -B proof/run_proof.py --help reaches the normal direct-script "
         "main handoff and exits 0",

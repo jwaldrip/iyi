@@ -77,6 +77,7 @@ from proof.proofkit import (
     sha256_file,
     validate_census,
     verify_ledger,
+    verify_origin_records,
     write_pin,
     write_result,
 )
@@ -1416,7 +1417,7 @@ def _validate_record(record: dict | None, *, pin: dict, unit: str, attempt: int,
     return computed, []
 
 
-def _collect_final_unit(pin: dict, parent_dir: str, unit: str, kind: str) -> tuple[dict[str, int | str], list[dict[str, int | str]], list[str]]:
+def _collect_final_unit(pin: dict, parent_dir: str, unit: str, kind: str, *, sealed_receipts_dir: str | None = None) -> tuple[dict[str, int | str], list[dict[str, int | str]], list[str]]:
     entries = _attempt_entries(parent_dir)
     if not entries:
         return (
@@ -1449,6 +1450,47 @@ def _collect_final_unit(pin: dict, parent_dir: str, unit: str, kind: str) -> tup
         kind=kind,
     )
     reasons.extend(invalid_reasons)
+    if kind == "run3":
+        origin_records_path = os.path.join(path, "origin_records.json")
+        if os.path.isfile(origin_records_path):
+            driver = unit.split("/", 1)[1] if "/" in unit else unit
+            ledger_path = os.path.join(path, "ledger.jsonl")
+            receipt_data = None
+            receipt_candidates = []
+            if sealed_receipts_dir:
+                receipt_candidates.append(os.path.join(sealed_receipts_dir, f"receipt-run3-{driver}-a{attempt}.json"))
+            if os.environ.get("IYI_SEALED_RECEIPTS_DIR"):
+                receipt_candidates.append(os.path.join(os.environ["IYI_SEALED_RECEIPTS_DIR"], f"receipt-run3-{driver}-a{attempt}.json"))
+            report_dir = pin.get("report_dir", "")
+            if report_dir:
+                receipt_candidates.append(os.path.join(report_dir, "sealed-receipts", f"receipt-run3-{driver}-a{attempt}.json"))
+                receipt_candidates.append(os.path.join(os.path.dirname(os.path.realpath(report_dir)), "sealed-receipts", f"receipt-run3-{driver}-a{attempt}.json"))
+
+            receipt_file = next((rc for rc in receipt_candidates if os.path.isfile(rc)), None)
+            if receipt_file:
+                try:
+                    with open(receipt_file, "r", encoding="utf-8") as rf:
+                        receipt_data = json.load(rf)
+                except Exception as err:
+                    reasons.append(f"{unit} attempt {attempt} sealed receipt unreadable: {err}")
+                    status = "UNFAITHFUL"
+            elif platform.system() == "Linux":
+                reasons.append(f"{unit} attempt {attempt} missing required host sealed receipt")
+                status = "UNFAITHFUL"
+
+            ok, origin_reasons = verify_origin_records(
+                origin_records_path,
+                driver=driver,
+                attempt=attempt,
+                chain_id=pin.get("chain_id", ""),
+                ledger_path=ledger_path,
+                receipt_data=receipt_data,
+            )
+            if not ok:
+                status = "FAIL"
+                for r in origin_reasons:
+                    reasons.append(f"{unit} attempt {attempt} origin verification failed: {r}")
+
     if status != "PASS" and isinstance(record, dict):
         recorded_reasons = record.get("reasons")
         if isinstance(recorded_reasons, list):
@@ -1624,6 +1666,7 @@ def cmd_final(
             os.path.join(args.report_dir, "run3", driver),
             unit,
             "run3",
+            sealed_receipts_dir=getattr(args, "sealed_receipts_dir", None),
         )
         units[unit] = latest
         earlier_failures.extend(earlier)
@@ -1781,9 +1824,14 @@ def _parser() -> argparse.ArgumentParser:
     pin.add_argument("--w", required=True)
     pin.add_argument("--compiler", required=True)
     pin.add_argument("--inputs-dir", default=None)
-    for command in ("run1", "run2", "final", "all"):
+    for command in ("run1", "run2"):
         stage = subparsers.add_parser(command)
         stage.add_argument("--report-dir", required=True)
+
+    for command in ("final", "all"):
+        stage = subparsers.add_parser(command)
+        stage.add_argument("--report-dir", required=True)
+        stage.add_argument("--sealed-receipts-dir", default=None)
 
     run3 = subparsers.add_parser("run3")
     run3.add_argument("--report-dir", required=True)

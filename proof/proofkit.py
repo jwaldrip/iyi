@@ -3506,9 +3506,22 @@ def write_origin_records(
         "overall_status": "PASS" if all_advanced and entries else "NOT-EXECUTED",
     }
     origin_path = os.path.join(attempt_dir, "origin_records.json")
-    with open(origin_path, "w", encoding="utf-8") as out_file:
+    if os.path.exists(origin_path):
+        return origin_path
+    tmp_path = os.path.join(attempt_dir, f".origin_records_{secrets.token_hex(8)}.tmp")
+    with open(tmp_path, "x", encoding="utf-8") as out_file:
         json.dump(origin_doc, out_file, indent=2, sort_keys=True)
         out_file.write("\n")
+    try:
+        os.replace(tmp_path, origin_path)
+    except OSError:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+        if not os.path.exists(origin_path):
+            raise
     return origin_path
 
 
