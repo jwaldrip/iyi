@@ -7,13 +7,16 @@ Verifies:
 2. URL validation and containment (scheme, hostname, query/credentials, path traversal).
 3. Strict redirect rejection (preventing allowlist bypass).
 4. GPG signature verification (approved fingerprint, rejection of untrusted keys and signature errors).
-5. Release header parsing using pocket-relative entry namespace and index digest verification.
-6. Bounded streaming reads and decompression (rejecting decompression bombs, incomplete streams, trailing data).
-7. Deb archive preflight inspection (strict 3-member debian-binary 2.0 container, negative sizes, traversal paths, SUID/SGID, escaping links, device nodes, link-graph escapes).
-8. Safe extraction containment, symlink ancestor rejection, RUNNER_TEMP containment, and unconditional non-root requirement.
-9. Receipt destination containment, non-overlap with prefix/artifacts, and atomic exclusive creation.
+5. Release header parsing using pocket-relative entry namespace, RFC 4880 cleartext extraction, and index digest verification.
+6. Bounded streaming reads and decompression (rejecting decompression bombs, incomplete streams, trailing data/frames for xz, gz, zstd).
+7. Deb archive preflight inspection (strict 3-member debian-binary 2.0 container, negative sizes, traversal paths, SUID/SGID, escaping links, device nodes).
+8. ArchiveCollisionInventory canonical link graph (unfollowed leaf, redefinition rejection, implicit dir tracking, hardlink regular target validation).
+9. Safe extraction containment, symlink ancestor rejection, fresh uncreated prefix, RUNNER_TEMP requirement, and unconditional non-root requirement.
+10. Strict header object schema enforcement (rejecting string-only or missing size/sha256 headers).
+11. Receipt destination containment, non-overlap with prefix/artifacts, and atomic exclusive creation.
 """
 
+import gzip
 import io
 import json
 import lzma
@@ -45,7 +48,9 @@ from proof.bpf_dependencies import (
     StrictNoRedirectHandler,
     decompress_payload,
     decompress_xz_bounded,
+    extract_clearsigned_text,
     fetch_url,
+    get_zstd_frame_size,
     inspect_and_validate_deb_archive,
     parse_ar_members,
     parse_packages_index,
@@ -157,8 +162,14 @@ class TestStrictRedirectRejection(unittest.TestCase):
 class TestGpgVerification(unittest.TestCase):
     def setUp(self):
         self.temp_dir = os.path.realpath(tempfile.mkdtemp(prefix="iyi_test_gpg_"))
+        self.orig_runner_temp = os.environ.get("RUNNER_TEMP")
+        os.environ["RUNNER_TEMP"] = self.temp_dir
 
     def tearDown(self):
+        if self.orig_runner_temp is not None:
+            os.environ["RUNNER_TEMP"] = self.orig_runner_temp
+        else:
+            os.environ.pop("RUNNER_TEMP", None)
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_keyring_missing(self):
@@ -231,6 +242,24 @@ class TestGpgVerification(unittest.TestCase):
 
 
 class TestReleaseAndPackagesParsing(unittest.TestCase):
+    def test_extract_clearsigned_text(self):
+        clearsigned = (
+            "-----BEGIN PGP SIGNED MESSAGE-----\n"
+            "Hash: SHA512\n"
+            "\n"
+            "Origin: Ubuntu\n"
+            "Label: Ubuntu\n"
+            "Suite: noble\n"
+            "- - escaped line\n"
+            "-----BEGIN PGP SIGNATURE-----\n"
+            "dummy sig\n"
+            "-----END PGP SIGNATURE-----\n"
+        )
+        extracted = extract_clearsigned_text(clearsigned.encode("utf-8"))
+        self.assertIn("Origin: Ubuntu", extracted)
+        self.assertIn("- escaped line", extracted)
+        self.assertNotIn("-----BEGIN PGP", extracted)
+
     def test_parse_release_headers(self):
         release_text = (
             "Origin: Ubuntu\n"
@@ -299,10 +328,24 @@ class TestBoundedResourceAllocations(unittest.TestCase):
             decompress_xz_bounded(compressed[:len(compressed)//2], expected_uncompressed_size=len(raw))
         self.assertIn("incomplete xz stream", str(ctx.exception).lower())
 
+    def test_gzip_incomplete_stream_rejection(self):
+        raw = b"valid gzip data"
+        compressed = gzip.compress(raw)
+        with self.assertRaises(SecurityError) as ctx:
+            decompress_payload("data.tar.gz", compressed[:len(compressed)//2])
+        self.assertIn("incomplete gzip stream", str(ctx.exception).lower())
+
+    def test_gzip_trailing_data_rejection(self):
+        raw = b"valid gzip data"
+        compressed = gzip.compress(raw) + b"trailing bytes"
+        with self.assertRaises(SecurityError) as ctx:
+            decompress_payload("data.tar.gz", compressed)
+        self.assertIn("trailing unconsumed data", str(ctx.exception).lower())
+
     def test_ar_parser_negative_size_rejection(self):
         bad_ar = (
             b"!<arch>\n"
-            b"test_file       0           0     0     100644  -60       `\n"
+            b"test_file       0           0     0     100644  -60       " + b"`\n"
         )
         with self.assertRaises(SecurityError) as ctx:
             parse_ar_members(bad_ar)
@@ -311,10 +354,10 @@ class TestBoundedResourceAllocations(unittest.TestCase):
     def test_ar_parser_ambiguous_members_rejection(self):
         bad_ar = (
             b"!<arch>\n"
-            b"debian-binary   0           0     0     100644  4         `\n2.0\n"
-            b"control.tar.xz  0           0     0     100644  0         `\n"
-            b"data.tar.xz     0           0     0     100644  0         `\n"
-            b"extra.tar.xz    0           0     0     100644  0         `\n"
+            b"debian-binary   0           0     0     100644  4         " + b"`\n2.0\n"
+            b"control.tar.xz  0           0     0     100644  0         " + b"`\n"
+            b"data.tar.xz     0           0     0     100644  0         " + b"`\n"
+            b"extra.tar.xz    0           0     0     100644  0         " + b"`\n"
         )
         with self.assertRaises(SecurityError) as ctx:
             parse_ar_members(bad_ar)
@@ -323,9 +366,9 @@ class TestBoundedResourceAllocations(unittest.TestCase):
     def test_ar_parser_bad_debian_binary_version_rejection(self):
         bad_ar = (
             b"!<arch>\n"
-            b"debian-binary   0           0     0     100644  4         `\n3.0\n"
-            b"control.tar.xz  0           0     0     100644  0         `\n"
-            b"data.tar.xz     0           0     0     100644  0         `\n"
+            b"debian-binary   0           0     0     100644  4         " + b"`\n3.0\n"
+            b"control.tar.xz  0           0     0     100644  0         " + b"`\n"
+            b"data.tar.xz     0           0     0     100644  0         " + b"`\n"
         )
         with self.assertRaises(SecurityError) as ctx:
             parse_ar_members(bad_ar)
@@ -364,7 +407,7 @@ class TestDebPreflightAndArchiveValidation(unittest.TestCase):
         out = bytearray(b"!<arch>\n")
 
         def add_ar_member(name, content):
-            header = f"{name:<16}{'0':<12}{'0':<6}{'0':<6}{'100644':<8}{len(content):<10}`\n"
+            header = f"{name:<16}{'0':<12}{'0':<6}{'0':<6}{'100644':<8}{len(content):<10}" + "`\n"
             out.extend(header.encode("ascii"))
             out.extend(content)
             if len(content) % 2 == 1:
@@ -459,7 +502,7 @@ class TestDebPreflightAndArchiveValidation(unittest.TestCase):
         inv = ArchiveCollisionInventory()
         with self.assertRaises(SecurityError) as ctx:
             inspect_and_validate_deb_archive(deb_bytes, "libbpf-dev", "1:1.3.0-2build2", "amd64", inv)
-        self.assertIn("Prohibited absolute symlink target", str(ctx.exception))
+        self.assertIn("Prohibited absolute", str(ctx.exception))
 
     def test_symlink_escaping_root_fails(self):
         ctrl = "Package: libbpf-dev\nVersion: 1:1.3.0-2build2\nArchitecture: amd64\n"
@@ -484,15 +527,40 @@ class TestDebPreflightAndArchiveValidation(unittest.TestCase):
             inspect_and_validate_deb_archive(deb_bytes, "libbpf-dev", "1:1.3.0-2build2", "amd64", inv)
         self.assertIn("Symlink escapes root", str(ctx.exception))
 
+    def test_symlink_redefinition_collision_fails(self):
+        # Critical test: redefinition of existing leaf (s -> deep/path, then s -> .)
+        ctrl = "Package: libbpf-dev\nVersion: 1:1.3.0-2build2\nArchitecture: amd64\n"
+        members = [
+            {"name": "s", "type": tarfile.SYMTYPE, "linkname": "deep/path"},
+            {"name": "s", "type": tarfile.SYMTYPE, "linkname": "."},
+        ]
+        deb_bytes = self._create_mock_deb(ctrl, members)
+        inv = ArchiveCollisionInventory()
+        with self.assertRaises(SecurityError) as ctx:
+            inspect_and_validate_deb_archive(deb_bytes, "libbpf-dev", "1:1.3.0-2build2", "amd64", inv)
+        self.assertIn("Duplicate or colliding entry", str(ctx.exception))
+
 
 class TestExtractionContainment(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = os.path.realpath(tempfile.mkdtemp(prefix="iyi_test_contain_"))
+        self.orig_runner_temp = os.environ.get("RUNNER_TEMP")
+        os.environ["RUNNER_TEMP"] = self.temp_dir
+
+    def tearDown(self):
+        if self.orig_runner_temp is not None:
+            os.environ["RUNNER_TEMP"] = self.orig_runner_temp
+        else:
+            os.environ.pop("RUNNER_TEMP", None)
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
     def test_root_user_refusal(self):
         with patch("os.geteuid", return_value=0):
             with self.assertRaises(SecurityError) as ctx:
                 run_lock_consumer(
                     lock_path="dummy.json",
-                    output_prefix="/tmp/prefix",
-                    receipt_path="/tmp/receipt.json",
+                    output_prefix=os.path.join(self.temp_dir, "fresh_prefix"),
+                    receipt_path=os.path.join(self.temp_dir, "receipt.json"),
                     check_only=True
                 )
             self.assertIn("Refusing execution as root", str(ctx.exception))
@@ -504,40 +572,52 @@ class TestExtractionContainment(unittest.TestCase):
             self.assertIn("Refusing system directory", str(ctx.exception))
 
     def test_symlinked_ancestor_refusal(self):
-        temp_dir = os.path.realpath(tempfile.mkdtemp(prefix="iyi_test_ancestor_"))
-        try:
-            real_parent = os.path.join(temp_dir, "real")
-            os.makedirs(real_parent, mode=0o700)
-            sym_parent = os.path.join(temp_dir, "symlink")
-            os.symlink(real_parent, sym_parent)
-            prefix = os.path.join(sym_parent, "target")
-            with self.assertRaises(SecurityError) as ctx:
-                validate_prefix_containment(prefix)
-            self.assertIn("Ancestor directory is a symlink", str(ctx.exception))
-        finally:
-            shutil.rmtree(temp_dir, ignore_errors=True)
+        real_parent = os.path.join(self.temp_dir, "real")
+        os.makedirs(real_parent, mode=0o700)
+        sym_parent = os.path.join(self.temp_dir, "symlink")
+        os.symlink(real_parent, sym_parent)
+        prefix = os.path.join(sym_parent, "fresh_target")
+        with self.assertRaises(SecurityError) as ctx:
+            validate_prefix_containment(prefix)
+        self.assertIn("Ancestor directory is a symlink", str(ctx.exception))
+
+    def test_existing_prefix_refused(self):
+        # Acceptance: prefix must NOT already exist
+        existing = os.path.join(self.temp_dir, "existing_empty")
+        os.makedirs(existing, mode=0o700)
+        with self.assertRaises(SecurityError) as ctx:
+            validate_prefix_containment(existing)
+        self.assertIn("already exists", str(ctx.exception).lower())
+
+    def test_missing_runner_temp_refused(self):
+        os.environ.pop("RUNNER_TEMP", None)
+        with self.assertRaises(SecurityError) as ctx:
+            validate_prefix_containment(os.path.join(self.temp_dir, "fresh"))
+        self.assertIn("RUNNER_TEMP environment variable is required", str(ctx.exception))
 
     def test_receipt_overlapping_output_prefix_fails(self):
-        temp_dir = os.path.realpath(tempfile.mkdtemp(prefix="iyi_test_receipt_"))
-        try:
-            prefix = os.path.join(temp_dir, "prefix")
-            receipt = os.path.join(prefix, "receipt.json")
-            with self.assertRaises(SecurityError) as ctx:
-                run_lock_consumer(
-                    lock_path="dummy.json",
-                    output_prefix=prefix,
-                    receipt_path=receipt
-                )
-            self.assertIn("Receipt destination path cannot be within output prefix", str(ctx.exception))
-        finally:
-            shutil.rmtree(temp_dir, ignore_errors=True)
+        prefix = os.path.join(self.temp_dir, "prefix")
+        receipt = os.path.join(prefix, "receipt.json")
+        with self.assertRaises(SecurityError) as ctx:
+            run_lock_consumer(
+                lock_path="dummy.json",
+                output_prefix=prefix,
+                receipt_path=receipt
+            )
+        self.assertIn("Receipt destination path cannot be within output prefix", str(ctx.exception))
 
 
 class TestSafeExtractDeb(unittest.TestCase):
     def setUp(self):
         self.temp_dir = os.path.realpath(tempfile.mkdtemp(prefix="iyi_test_extract_"))
+        self.orig_runner_temp = os.environ.get("RUNNER_TEMP")
+        os.environ["RUNNER_TEMP"] = self.temp_dir
 
     def tearDown(self):
+        if self.orig_runner_temp is not None:
+            os.environ["RUNNER_TEMP"] = self.orig_runner_temp
+        else:
+            os.environ.pop("RUNNER_TEMP", None)
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_missing_dpkg_fails_without_fallback(self):
@@ -556,8 +636,14 @@ class TestSafeExtractDeb(unittest.TestCase):
 class TestExactContractEnforcement(unittest.TestCase):
     def setUp(self):
         self.temp_dir = os.path.realpath(tempfile.mkdtemp(prefix="iyi_test_contract_"))
+        self.orig_runner_temp = os.environ.get("RUNNER_TEMP")
+        os.environ["RUNNER_TEMP"] = self.temp_dir
 
     def tearDown(self):
+        if self.orig_runner_temp is not None:
+            os.environ["RUNNER_TEMP"] = self.orig_runner_temp
+        else:
+            os.environ.pop("RUNNER_TEMP", None)
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_extra_package_in_lock_rejected(self):
@@ -591,7 +677,7 @@ class TestExactContractEnforcement(unittest.TestCase):
         with self.assertRaises(SecurityError) as ctx:
             run_lock_consumer(
                 lock_path=lock_file,
-                output_prefix=os.path.join(self.temp_dir, "prefix"),
+                output_prefix=os.path.join(self.temp_dir, "fresh_prefix"),
                 receipt_path=os.path.join(self.temp_dir, "receipt.json"),
                 keyring_path=mock_keyring,
                 check_only=True
@@ -615,10 +701,10 @@ class TestExactContractEnforcement(unittest.TestCase):
                 "keyring_sha256": mock_keyring_sha
             },
             "packages": {
-                "libbpf-dev": {"required_artifacts": [{"path": "usr/lib/x86_64-linux-gnu/libbpf.a"}], "required_headers": [{"path": "usr/include/bpf/bpf.h", "size": 22939, "sha256": "09fdac5185d030bc606a6bb67933fdf162c5db60a6b6eea7d2e13584378672bb"}]},
-                "libelf-dev": {"required_artifacts": [{"path": "usr/lib/x86_64-linux-gnu/libelf.a"}], "required_headers": [{"path": "usr/include/libelf.h", "size": 20318, "sha256": "cd91b72953cc1a96a2598c6d1ee548924a68f084f8e1807fa9acd70246a6543a"}]},
-                "libzstd-dev": {"required_artifacts": [{"path": "usr/lib/x86_64-linux-gnu/libzstd.a"}], "required_headers": [{"path": "usr/include/zstd.h", "size": 171378, "sha256": "41d0f43747d0dee56f60bd10aed262f193d725b7e11eb9e94aa4ad80183c7da8"}]},
-                "zlib1g-dev": {"required_artifacts": [{"path": "usr/lib/x86_64-linux-gnu/libz.a"}], "required_headers": [{"path": "usr/include/zlib.h", "size": 96778, "sha256": "6f1c7ebe0ac0f0794852b770c20efae041a451f833c91f60f837b599ea81679e"}]}
+                "libbpf-dev": {"required_artifacts": [{"path": "usr/lib/x86_64-linux-gnu/libbpf.a", "size": 1, "sha256": "0"*64}], "required_headers": [{"path": "usr/include/bpf/bpf.h", "size": 22939, "sha256": "09fdac5185d030bc606a6bb67933fdf162c5db60a6b6eea7d2e13584378672bb"}]},
+                "libelf-dev": {"required_artifacts": [{"path": "usr/lib/x86_64-linux-gnu/libelf.a", "size": 1, "sha256": "0"*64}], "required_headers": [{"path": "usr/include/libelf.h", "size": 20318, "sha256": "cd91b72953cc1a96a2598c6d1ee548924a68f084f8e1807fa9acd70246a6543a"}]},
+                "libzstd-dev": {"required_artifacts": [{"path": "usr/lib/x86_64-linux-gnu/libzstd.a", "size": 1, "sha256": "0"*64}], "required_headers": [{"path": "usr/include/zstd.h", "size": 171378, "sha256": "41d0f43747d0dee56f60bd10aed262f193d725b7e11eb9e94aa4ad80183c7da8"}]},
+                "zlib1g-dev": {"required_artifacts": [{"path": "usr/lib/x86_64-linux-gnu/libz.a", "size": 1, "sha256": "0"*64}], "required_headers": [{"path": "usr/include/zlib.h", "size": 96778, "sha256": "6f1c7ebe0ac0f0794852b770c20efae041a451f833c91f60f837b599ea81679e"}]}
             },
             "metadata_pockets": {
                 "noble": {},
@@ -633,12 +719,54 @@ class TestExactContractEnforcement(unittest.TestCase):
         with self.assertRaises(SecurityError) as ctx:
             run_lock_consumer(
                 lock_path=lock_file,
-                output_prefix=os.path.join(self.temp_dir, "prefix"),
+                output_prefix=os.path.join(self.temp_dir, "fresh_prefix"),
                 receipt_path=os.path.join(self.temp_dir, "receipt.json"),
                 keyring_path=mock_keyring,
                 check_only=True
             )
         self.assertIn("metadata_pockets keys must match exact approved set", str(ctx.exception))
+
+    def test_header_non_object_schema_rejected(self):
+        mock_keyring = os.path.join(self.temp_dir, "mock_keyring.gpg")
+        with open(mock_keyring, "wb") as f:
+            f.write(b"mock keyring data")
+        mock_keyring_sha = sha256_file(mock_keyring)
+
+        bad_lock = {
+            "schema_version": "iyi-bpf-dependency-lock-v1",
+            "snapshot": {
+                "snapshot_id": "20261105T000000Z",
+                "base_url": "https://snapshot.ubuntu.com/ubuntu/20261105T000000Z"
+            },
+            "trust_root": {
+                "keyring_default_path": mock_keyring,
+                "keyring_sha256": mock_keyring_sha
+            },
+            "packages": {
+                "libbpf-dev": {"required_artifacts": [{"path": "usr/lib/x86_64-linux-gnu/libbpf.a", "size": 1, "sha256": "0"*64}], "required_headers": ["usr/include/bpf/bpf.h"]},  # String instead of object!
+                "libelf-dev": {"required_artifacts": [{"path": "usr/lib/x86_64-linux-gnu/libelf.a", "size": 1, "sha256": "0"*64}], "required_headers": [{"path": "usr/include/libelf.h", "size": 20318, "sha256": "cd91b72953cc1a96a2598c6d1ee548924a68f084f8e1807fa9acd70246a6543a"}]},
+                "libzstd-dev": {"required_artifacts": [{"path": "usr/lib/x86_64-linux-gnu/libzstd.a", "size": 1, "sha256": "0"*64}], "required_headers": [{"path": "usr/include/zstd.h", "size": 171378, "sha256": "41d0f43747d0dee56f60bd10aed262f193d725b7e11eb9e94aa4ad80183c7da8"}]},
+                "zlib1g-dev": {"required_artifacts": [{"path": "usr/lib/x86_64-linux-gnu/libz.a", "size": 1, "sha256": "0"*64}], "required_headers": [{"path": "usr/include/zlib.h", "size": 96778, "sha256": "6f1c7ebe0ac0f0794852b770c20efae041a451f833c91f60f837b599ea81679e"}]}
+            },
+            "metadata_pockets": {
+                "noble": {},
+                "noble-updates": {},
+                "noble-security": {}
+            }
+        }
+        lock_file = os.path.join(self.temp_dir, "bad_headers.json")
+        with open(lock_file, "w", encoding="utf-8") as f:
+            json.dump(bad_lock, f)
+
+        with self.assertRaises(SecurityError) as ctx:
+            run_lock_consumer(
+                lock_path=lock_file,
+                output_prefix=os.path.join(self.temp_dir, "fresh_prefix"),
+                receipt_path=os.path.join(self.temp_dir, "receipt.json"),
+                keyring_path=mock_keyring,
+                check_only=False
+            )
+        self.assertIn("required_headers has invalid schema", str(ctx.exception))
 
 
 if __name__ == "__main__":

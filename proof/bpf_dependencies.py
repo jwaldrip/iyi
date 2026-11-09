@@ -8,14 +8,15 @@ PlanBpfOwnedDependencies (Sections 2 and 3).
 Verifies the cryptographic chain and containment invariants:
   Ubuntu Archive Signing Key (2018) [F6ECB3762474EDA9D21B7022871920D1991BC93C]
     -> GPG-signed InRelease (exact approved set: noble, noble-updates, noble-security)
+    -> RFC 4880 cleartext extraction from verified InRelease
     -> SHA256 / size of pocket-relative Packages.xz index in Release checksums
     -> Package records in Packages index (Version, Filename, Size, SHA256, Source, Architecture, Depends)
     -> Exact .deb archive bytes (SHA256, Size)
-    -> Strict 3-member deb container preflight (debian-binary == 2.0, single control.tar, single data.tar)
-    -> Preflight payload inspection (no trailing streams, no traversal, no SUID/SGID, no device nodes)
-    -> Cross-package canonical link-graph simulation and collision inventory (no link-graph escaping)
-    -> Safe nonroot extraction via /usr/bin/dpkg-deb into private scratch prefix (mode 0700)
-    -> Verification of exact 4 static archives ({libbpf.a, libelf.a, libz.a, libzstd.a}) and development headers
+    -> Strict 3-member deb container preflight (debian-binary == 2.0\n, single control.tar, single data.tar)
+    -> Preflight payload inspection (bounded decompression, no trailing streams, no traversal, no SUID/SGID, no device nodes)
+    -> Cross-package canonical link-graph simulation and collision inventory (resolved-parent + unfollowed leaf, no link-graph escaping)
+    -> Safe nonroot extraction via /usr/bin/dpkg-deb into fresh private scratch prefix beneath RUNNER_TEMP (mode 0700)
+    -> Verification of exact 4 static archives ({libbpf.a, libelf.a, libz.a, libzstd.a}) and 23 development headers with strict object schemas
     -> Publication of verification receipt JSON recording authenticated provenance and digests.
 
 Fails closed on any discrepancy, missing prerequisite, unapproved signer, or extraction safety violation.
@@ -194,17 +195,79 @@ def decompress_xz_bounded(data: bytes, expected_uncompressed_size: int) -> bytes
     return bytes(out)
 
 
+def get_zstd_frame_size(data: bytes) -> int:
+    """Parse exact byte length of a single RFC 8878 Zstandard frame."""
+    if len(data) < 4:
+        raise SecurityError("Truncated zstd data (less than 4 bytes)")
+    magic = int.from_bytes(data[:4], "little")
+    if magic != 0xFD2FB528:
+        raise SecurityError(f"Invalid zstd frame magic: {hex(magic)}")
+    pos = 4
+    if pos >= len(data):
+        raise SecurityError("Truncated zstd frame header")
+    fhd = data[pos]
+    pos += 1
+    dict_flag = fhd & 3
+    checksum_flag = (fhd >> 2) & 1
+    single_seg = (fhd >> 5) & 1
+    fcs_flag = (fhd >> 6) & 3
+
+    if not single_seg:
+        pos += 1
+    if dict_flag == 1: pos += 1
+    elif dict_flag == 2: pos += 2
+    elif dict_flag == 3: pos += 4
+
+    if fcs_flag == 0 and single_seg: pos += 1
+    elif fcs_flag == 1: pos += 2
+    elif fcs_flag == 2: pos += 4
+    elif fcs_flag == 3: pos += 8
+
+    while True:
+        if pos + 3 > len(data):
+            raise SecurityError("Truncated zstd block header")
+        bh = int.from_bytes(data[pos:pos+3], "little")
+        pos += 3
+        last_block = bh & 1
+        block_type = (bh >> 1) & 3
+        block_size = (bh >> 3) & 0x1FFFFF
+        if block_type == 1:
+            pos += 1
+        elif block_type in (0, 2):
+            pos += block_size
+        else:
+            raise SecurityError("Reserved zstd block type")
+        if pos > len(data):
+            raise SecurityError("Truncated zstd block content")
+        if last_block:
+            break
+
+    if checksum_flag:
+        pos += 4
+    if pos > len(data):
+        raise SecurityError("Truncated zstd checksum")
+    return pos
+
+
 def decompress_payload(member_name: str, data: bytes, max_bytes: int = 200 * 1024 * 1024) -> bytes:
     """
-    Decompress tar payload with strict byte ceiling and trailing data checks
+    Decompress tar payload with strict byte ceiling and trailing data/frame checks
     to prevent decompression bombs and payload desync.
     """
     if member_name.endswith(".zst"):
+        frame_size = get_zstd_frame_size(data)
+        if frame_size != len(data):
+            raise SecurityError(f"Trailing unconsumed data after zstd frame ({len(data) - frame_size} bytes)")
         try:
             import zstandard
             dctx = zstandard.ZstdDecompressor()
-            out = dctx.decompress(data, max_output_size=max_bytes)
-            return out
+            reader = dctx.stream_reader(io.BytesIO(data), read_across_frames=False)
+            out = bytearray()
+            while chunk := reader.read(65536):
+                out.extend(chunk)
+                if len(out) > max_bytes:
+                    raise SecurityError(f"Decompressed zstd exceeded bound ({len(out)} > {max_bytes} bytes)")
+            return bytes(out)
         except ImportError:
             p = subprocess.Popen(
                 ["zstd", "-d", "-c", "-"],
@@ -263,6 +326,8 @@ def decompress_payload(member_name: str, data: bytes, max_bytes: int = 200 * 102
                 raise SecurityError(f"Decompressed gz exceeded bound ({len(out)} > {max_bytes} bytes)")
         decomp = d.flush()
         out.extend(decomp)
+        if not d.eof:
+            raise SecurityError("Incomplete gzip stream: decompressor did not reach EOF")
         if d.unused_data:
             raise SecurityError("Trailing unconsumed data after gzip stream")
         return bytes(out)
@@ -324,7 +389,8 @@ def parse_ar_members(deb_bytes: bytes, max_member_size: int = 50 * 1024 * 1024) 
 class ArchiveCollisionInventory:
     """
     Tracks canonical directory paths and symlink resolutions across ALL packages.
-    Prevents link-graph escapes, cross-package collisions, and path overwrite attacks.
+    Enforces resolved-parent + unfollowed leaf, rejects duplicate non-directory entries,
+    tracks implicit directories, and requires hardlinks to target known regular files.
     """
     def __init__(self):
         self.entries: Dict[str, str] = {}
@@ -342,7 +408,7 @@ class ArchiveCollisionInventory:
                 continue
             elif part == "..":
                 if not cur_parts:
-                    return None  # Escapes root!
+                    return None
                 cur_parts.pop()
             else:
                 cur_parts.append(part)
@@ -368,53 +434,107 @@ class ArchiveCollisionInventory:
     ) -> str:
         parent_raw = os.path.dirname(clean_name)
         if parent_raw:
-            parent_canon = self.resolve_canonical(parent_raw)
-            if parent_canon is None:
+            parent_canon_parts = self.resolve_canonical(parent_raw)
+            if parent_canon_parts is None:
                 raise SecurityError(f"Path traverses through escaping directory/symlink: {clean_name}")
+            parent_canon = "/".join(parent_canon_parts)
         else:
-            parent_canon = []
+            parent_canon_parts = []
+            parent_canon = ""
+
+        # Track implicit directories along parent_canon_parts
+        for i in range(1, len(parent_canon_parts) + 1):
+            d_path = "/".join(parent_canon_parts[:i])
+            if d_path in self.entries and self.entries[d_path] != "dir":
+                raise SecurityError(f"Implicit directory {d_path} collides with non-directory {self.entries[d_path]}")
+            self.entries.setdefault(d_path, "dir")
 
         leaf = os.path.basename(clean_name)
-        leaf_canon_parts = self.resolve_canonical("/".join(parent_canon + [leaf]) if parent_canon else leaf)
-        if leaf_canon_parts is None:
-            raise SecurityError(f"Member escapes root: {clean_name}")
-        canonical_path = "/".join(leaf_canon_parts)
+        canonical_path = f"{parent_canon}/{leaf}" if parent_canon else leaf
+
+        # Check duplicate non-directory entries
+        if canonical_path in self.entries:
+            if self.entries[canonical_path] == "dir" and member_type == "dir":
+                pass
+            else:
+                raise SecurityError(
+                    f"Duplicate or colliding entry for path: {canonical_path} (existing={self.entries[canonical_path]}, new={member_type})"
+                )
 
         if member_type == "symlink":
-            if not linkname:
-                raise SecurityError(f"Symlink missing target: {clean_name}")
-            if linkname.startswith("/"):
-                raise SecurityError(f"Prohibited absolute symlink target in deb member {clean_name} -> {linkname}")
-            target_full = "/".join(parent_canon + [linkname]) if parent_canon else linkname
-            resolved_target = self.resolve_canonical(target_full)
+            if not linkname or linkname.startswith("/"):
+                raise SecurityError(f"Prohibited absolute or empty symlink target: {clean_name} -> {linkname}")
+            target_path = "/".join(parent_canon_parts + [linkname]) if parent_canon_parts else linkname
+            resolved_target = self.resolve_canonical(target_path)
             if resolved_target is None:
                 raise SecurityError(f"Symlink escapes root: {clean_name} -> {linkname}")
-            if canonical_path in self.entries and self.entries[canonical_path] != "symlink":
-                raise SecurityError(f"Collision: {canonical_path} already exists as {self.entries[canonical_path]}")
             self.entries[canonical_path] = "symlink"
             self.symlinks[canonical_path] = linkname
         elif member_type == "dir":
-            if canonical_path in self.entries and self.entries[canonical_path] != "dir":
-                raise SecurityError(f"Collision: {canonical_path} already exists as {self.entries[canonical_path]}")
             self.entries[canonical_path] = "dir"
         elif member_type == "reg":
-            if canonical_path in self.entries and self.entries[canonical_path] != "reg":
-                raise SecurityError(f"Collision: {canonical_path} already exists as {self.entries[canonical_path]}")
             self.entries[canonical_path] = "reg"
             self.files[canonical_path] = file_size
         elif member_type == "hardlink":
-            if not linkname:
-                raise SecurityError(f"Hardlink missing target: {clean_name}")
-            if linkname.startswith("/"):
-                raise SecurityError(f"Prohibited absolute hardlink target in deb member {clean_name} -> {linkname}")
-            resolved_target = self.resolve_canonical(linkname)
-            if resolved_target is None:
-                raise SecurityError(f"Hardlink escapes root: {clean_name} -> {linkname}")
-            if canonical_path in self.entries and self.entries[canonical_path] != "hardlink":
-                raise SecurityError(f"Collision: {canonical_path} already exists as {self.entries[canonical_path]}")
+            if not linkname or linkname.startswith("/"):
+                raise SecurityError(f"Prohibited absolute or empty hardlink target: {clean_name} -> {linkname}")
+            resolved_target_parts = self.resolve_canonical(linkname)
+            if resolved_target_parts is None:
+                raise SecurityError(f"Hardlink target escapes root: {clean_name} -> {linkname}")
+            target_canon = "/".join(resolved_target_parts)
+            if target_canon not in self.entries or self.entries[target_canon] != "reg":
+                raise SecurityError(
+                    f"Hardlink target must be a known regular file: {linkname} (resolves to {target_canon})"
+                )
             self.entries[canonical_path] = "hardlink"
 
         return canonical_path
+
+
+def extract_clearsigned_text(inrelease_bytes: bytes) -> str:
+    """
+    Extract the signed cleartext payload from an InRelease clearsigned OpenPGP message (RFC 4880 §7).
+    Must only be called AFTER gpgv has validated the signature and VALIDSIG has been verified.
+    """
+    text = inrelease_bytes.decode("utf-8", errors="replace")
+    lines = text.splitlines()
+
+    start_idx = -1
+    for i, line in enumerate(lines):
+        if line.strip() == "-----BEGIN PGP SIGNED MESSAGE-----":
+            start_idx = i
+            break
+    if start_idx == -1:
+        raise SecurityError("InRelease missing '-----BEGIN PGP SIGNED MESSAGE-----' header")
+
+    content_start = -1
+    for i in range(start_idx + 1, len(lines)):
+        if lines[i].strip() == "":
+            content_start = i + 1
+            break
+        if lines[i].strip().startswith("-----BEGIN PGP SIGNATURE-----"):
+            raise SecurityError("InRelease malformed: signature encountered before message body")
+
+    if content_start == -1:
+        raise SecurityError("InRelease missing header-body separator in signed message")
+
+    sig_start = -1
+    for i in range(content_start, len(lines)):
+        if lines[i].strip() == "-----BEGIN PGP SIGNATURE-----":
+            sig_start = i
+            break
+
+    if sig_start == -1:
+        raise SecurityError("InRelease missing '-----BEGIN PGP SIGNATURE-----' footer")
+
+    body_lines = []
+    for line in lines[content_start:sig_start]:
+        if line.startswith("- "):
+            body_lines.append(line[2:])
+        else:
+            body_lines.append(line)
+
+    return "\n".join(body_lines)
 
 
 def verify_gpg_signature(
@@ -661,11 +781,19 @@ def safe_extract_deb(deb_path: str, output_dir: str, dpkg_deb_path: str) -> None
 def validate_prefix_containment(output_prefix: str) -> str:
     """
     Enforce private job-directory containment per PlanBpfOwnedDependencies §3:
+    - Verifies RUNNER_TEMP is set.
     - Check all ancestors for symlinks without pre-resolving paths.
-    - Verify containment beneath RUNNER_TEMP if set.
-    - Verify output directory is not an existing non-empty directory.
+    - Output prefix must NOT already exist (must be freshly created by consumer).
+    - Output prefix must be strictly contained beneath RUNNER_TEMP.
     - Set mode 0700.
     """
+    runner_temp = os.environ.get("RUNNER_TEMP")
+    if not runner_temp:
+        raise SecurityError("RUNNER_TEMP environment variable is required")
+    real_runner_temp = os.path.realpath(runner_temp)
+    if not os.path.isdir(real_runner_temp):
+        raise SecurityError(f"RUNNER_TEMP directory does not exist: {runner_temp}")
+
     abs_output = os.path.abspath(output_prefix)
     system_dirs = {"/", "/usr", "/etc", "/var", "/home", "/bin", "/sbin", "/lib", "/lib64", "/tmp"}
     if abs_output in system_dirs:
@@ -677,24 +805,19 @@ def validate_prefix_containment(output_prefix: str) -> str:
             raise SecurityError(f"Ancestor directory is a symlink: {cur}")
         cur = os.path.dirname(cur)
 
-    runner_temp = os.environ.get("RUNNER_TEMP")
-    if runner_temp:
-        real_runner_temp = os.path.realpath(runner_temp)
-        real_output = os.path.realpath(abs_output)
-        if not real_output.startswith(real_runner_temp + "/") and real_output != real_runner_temp:
-            raise SecurityError(f"Output prefix {abs_output} is not contained within RUNNER_TEMP ({runner_temp})")
+    real_output = os.path.realpath(abs_output)
+    if not (real_output.startswith(real_runner_temp + "/") or real_output == real_runner_temp):
+        raise SecurityError(f"Output prefix {abs_output} is not contained within RUNNER_TEMP ({runner_temp})")
 
+    # Reject existing prefix: must be freshly created!
     if os.path.exists(abs_output):
-        if os.path.islink(abs_output):
-            raise SecurityError(f"Output prefix is a symlink: {abs_output}")
-        if os.listdir(abs_output):
-            raise SecurityError(f"Output prefix directory already exists and is not empty: {abs_output}")
-    else:
-        old_umask = os.umask(0o077)
-        try:
-            os.makedirs(abs_output, mode=0o700, exist_ok=True)
-        finally:
-            os.umask(old_umask)
+        raise SecurityError(f"Output prefix already exists: {abs_output}. Output prefix must be freshly created.")
+
+    old_umask = os.umask(0o077)
+    try:
+        os.makedirs(abs_output, mode=0o700, exist_ok=False)
+    finally:
+        os.umask(old_umask)
 
     os.chmod(abs_output, 0o700)
     st_out = os.stat(abs_output)
@@ -722,6 +845,13 @@ def run_lock_consumer(
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         raise SecurityError("Refusing execution as root. Dependency extraction must run as unprivileged user.")
 
+    runner_temp = os.environ.get("RUNNER_TEMP")
+    if not runner_temp:
+        raise SecurityError("RUNNER_TEMP environment variable is required")
+    real_runner_temp = os.path.realpath(runner_temp)
+    if not os.path.isdir(real_runner_temp):
+        raise SecurityError(f"RUNNER_TEMP directory does not exist: {runner_temp}")
+
     abs_output = validate_prefix_containment(output_prefix) if not check_only else os.path.abspath(output_prefix)
     abs_receipt = os.path.abspath(receipt_path)
 
@@ -730,6 +860,10 @@ def run_lock_consumer(
         if abs_receipt == abs_output or abs_receipt.startswith(abs_output + "/"):
             raise SecurityError(f"Receipt destination path cannot be within output prefix: {abs_receipt}")
 
+        real_receipt = os.path.realpath(abs_receipt)
+        if not (real_receipt.startswith(real_runner_temp + "/") or real_receipt == real_runner_temp):
+            raise SecurityError(f"Receipt destination ({abs_receipt}) is not contained within RUNNER_TEMP ({runner_temp})")
+
         if os.path.islink(abs_receipt):
             raise SecurityError(f"Receipt destination path is a symlink: {abs_receipt}")
         cur = os.path.dirname(abs_receipt)
@@ -737,6 +871,11 @@ def run_lock_consumer(
             if os.path.islink(cur):
                 raise SecurityError(f"Receipt parent directory ancestor is a symlink: {cur}")
             cur = os.path.dirname(cur)
+
+    if cache_dir:
+        real_cache = os.path.realpath(cache_dir)
+        if not (real_cache.startswith(real_runner_temp + "/") or real_cache == real_runner_temp):
+            raise SecurityError(f"Cache directory ({cache_dir}) is not contained within RUNNER_TEMP ({runner_temp})")
 
     # Stage 2: Load and validate lock schema, exact packages, and approved pockets
     if not os.path.isfile(lock_path):
@@ -768,11 +907,14 @@ def run_lock_consumer(
     if not check_only:
         for p_info in packages_meta.values():
             for art in p_info.get("required_artifacts", []):
+                if not isinstance(art, dict) or not art.get("path") or not art.get("size") or not art.get("sha256"):
+                    raise SecurityError("Lock package required_artifacts has invalid schema")
                 if abs_receipt == os.path.join(abs_output, art["path"]):
                     raise SecurityError(f"Receipt destination cannot overwrite required artifact: {abs_receipt}")
             for hdr in p_info.get("required_headers", []):
-                rel_h = hdr["path"] if isinstance(hdr, dict) else hdr
-                if abs_receipt == os.path.join(abs_output, rel_h):
+                if not isinstance(hdr, dict) or not hdr.get("path") or not hdr.get("size") or not hdr.get("sha256"):
+                    raise SecurityError("Lock package required_headers has invalid schema")
+                if abs_receipt == os.path.join(abs_output, hdr["path"]):
                     raise SecurityError(f"Receipt destination cannot overwrite required header: {abs_receipt}")
 
     # Strict approved pockets allowlist enforcement before any I/O
@@ -801,10 +943,9 @@ def run_lock_consumer(
     if not (os.path.isfile(resolved_gpgv) and os.access(resolved_gpgv, os.X_OK)):
         raise SecurityError(f"gpgv binary not executable at {resolved_gpgv}")
 
-    # Use RUNNER_TEMP for private scratch if available
-    base_scratch_dir = os.environ.get("RUNNER_TEMP") or tempfile.gettempdir()
+    # Use RUNNER_TEMP for private scratch
     old_umask = os.umask(0o077)
-    temp_scratch = tempfile.mkdtemp(prefix="iyi_bpf_lock_", dir=base_scratch_dir)
+    temp_scratch = tempfile.mkdtemp(prefix="iyi_bpf_lock_", dir=real_runner_temp)
     os.umask(old_umask)
 
     try:
@@ -844,8 +985,13 @@ def run_lock_consumer(
                 temp_dir=temp_scratch
             )
 
-            with open(output_release, "r", encoding="utf-8", errors="replace") as rf:
-                release_text = rf.read()
+            # Extract release cleartext (RFC 4880 verified message body)
+            if os.path.isfile(output_release) and os.path.getsize(output_release) > 0:
+                with open(output_release, "r", encoding="utf-8", errors="replace") as rf:
+                    release_text = rf.read()
+            else:
+                release_text = extract_clearsigned_text(inrelease_bytes)
+
             headers, sha256_files = parse_release_headers(release_text)
 
             # Header assertions
@@ -1040,9 +1186,17 @@ def run_lock_consumer(
                 }
 
             for hdr in pkg_info["required_headers"]:
-                rel_hdr_path = hdr["path"] if isinstance(hdr, dict) else hdr
-                expected_hdr_size = hdr.get("size") if isinstance(hdr, dict) else None
-                expected_hdr_sha = hdr.get("sha256") if isinstance(hdr, dict) else None
+                if not isinstance(hdr, dict):
+                    raise SecurityError(f"Header in {pkg_name} must be a dict object")
+                rel_hdr_path = hdr.get("path")
+                expected_hdr_size = hdr.get("size")
+                expected_hdr_sha = hdr.get("sha256")
+                if not rel_hdr_path or not isinstance(rel_hdr_path, str):
+                    raise SecurityError(f"Header in {pkg_name} missing valid 'path'")
+                if expected_hdr_size is None or not isinstance(expected_hdr_size, int) or expected_hdr_size <= 0:
+                    raise SecurityError(f"Header {rel_hdr_path} in {pkg_name} missing valid positive 'size'")
+                if not expected_hdr_sha or not isinstance(expected_hdr_sha, str) or len(expected_hdr_sha) != 64:
+                    raise SecurityError(f"Header {rel_hdr_path} in {pkg_name} missing valid 64-char 'sha256'")
 
                 full_hdr_path = os.path.join(abs_output, rel_hdr_path)
                 if not os.path.isfile(full_hdr_path):
@@ -1052,12 +1206,12 @@ def run_lock_consumer(
                     raise SecurityError(f"Extracted header escapes prefix: {rel_hdr_path} -> {real_hdr_path}")
 
                 actual_hdr_size = os.path.getsize(full_hdr_path)
-                actual_hdr_sha = sha256_file(full_hdr_path)
-                if expected_hdr_size is not None and actual_hdr_size != expected_hdr_size:
+                if actual_hdr_size != expected_hdr_size:
                     raise SecurityError(
                         f"Extracted header size mismatch for {rel_hdr_path}: got {actual_hdr_size}, expected {expected_hdr_size}"
                     )
-                if expected_hdr_sha is not None and actual_hdr_sha != expected_hdr_sha:
+                actual_hdr_sha = sha256_file(full_hdr_path)
+                if actual_hdr_sha != expected_hdr_sha:
                     raise SecurityError(
                         f"Extracted header SHA256 mismatch for {rel_hdr_path}: got {actual_hdr_sha}, expected {expected_hdr_sha}"
                     )
