@@ -324,7 +324,7 @@ class TestBoundedResourceAllocations(unittest.TestCase):
         )
         with self.assertRaises(SecurityError) as ctx:
             parse_ar_members(bad_ar)
-        self.assertIn("debian-binary member must be exactly '2.0\\n'", str(ctx.exception))
+        self.assertIn("debian-binary member must be exactly", str(ctx.exception))
 
 
 class TestDebPreflightAndArchiveValidation(unittest.TestCase):

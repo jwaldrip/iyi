@@ -310,7 +310,7 @@ def parse_ar_members(deb_bytes: bytes, max_member_size: int = 50 * 1024 * 1024) 
             f"Debian archive must contain exactly 3 members, got {len(members)}: {[m[0] for m in members]}"
         )
     if members[0][0] != "debian-binary" or members[0][2] != b"2.0\n":
-        raise SecurityError("debian-binary member must be exactly '2.0\n'")
+        raise SecurityError(r"debian-binary member must be exactly '2.0\n'")
     if not any(members[1][0] == f"control.tar.{ext}" for ext in ("zst", "xz", "gz")):
         raise SecurityError(f"Member 1 must be control.tar.[zst|xz|gz], got '{members[1][0]}'")
     if not any(members[2][0] == f"data.tar.{ext}" for ext in ("zst", "xz", "gz")):
