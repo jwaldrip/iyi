@@ -1812,6 +1812,23 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
             "platform_response_digests": {"approvals": "c" * 64},
         }
         ctx = ExecutionContext.from_dict(ctx_data)
+        pol = derive_expected_effective_policy(self.subject, "run3-acme", self.sample_run3_drivers)
+        receipt = StructuralLaunchOwnershipReceipt(
+            launch_id="launch-001",
+            execution_context_digest=ctx.digest(),
+            container_id="cont-123",
+            stage="run3-acme",
+            attempt=1,
+            effective_policy_digest=pol.digest(),
+        )
+        td = TeardownDisposition(
+            launch_id="launch-001",
+            container_id="cont-123",
+            containers_stopped=True,
+            containers_removed=True,
+            clean_exit=True,
+            unresolved_processes=0,
+        )
         wrong_inventory = tuple(["acme"] + [f"foreign_driver_{i:02d}" for i in range(29)])
         desc_data = {
             "manifest_digest": self.manifest.digest(),
@@ -1825,17 +1842,29 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
             "outcome": "PASS",
             "chain_id": "chain-123",
             "compiler_sha256": "d" * 64,
-            "effective_policy": sample_effective_policy_dict(self.subject, "run1"),
-            "teardown_disposition": {},
+            "effective_policy": pol.to_dict(),
+            "teardown_disposition": td.to_dict(),
             "evidence_digests": {"report.tar.gz": "e" * 64},
             "timestamp": "2026-11-09T00:01:00Z",
         }
         desc = CheckpointDescriptor.from_dict(desc_data)
-        with self.assertRaises(ReferenceIntegrityError):
+        with self.assertRaises(ReferenceIntegrityError) as err:
             validate_structural_checkpoint_to_context(
                 desc, ctx, self.manifest,
+                launch_receipt=receipt,
+                teardown_disposition=td,
                 valid_run3_drivers=wrong_inventory,
             )
+        self.assertIn("valid_run3_drivers digest", str(err.exception))
+        self.assertIn("does not match subject run3_inventory_manifest_digest", str(err.exception))
+
+        # Mutation proof: identical checkpoint, receipt, and teardown pass when valid_run3_drivers matches subject digest
+        validate_structural_checkpoint_to_context(
+            desc, ctx, self.manifest,
+            launch_receipt=receipt,
+            teardown_disposition=td,
+            valid_run3_drivers=self.sample_run3_drivers,
+        )
 
     def test_checkpoint_rejects_run3_inventory_with_duplicates(self):
         ctx_data = {
@@ -1852,6 +1881,23 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
             "platform_response_digests": {"approvals": "c" * 64},
         }
         ctx = ExecutionContext.from_dict(ctx_data)
+        pol = derive_expected_effective_policy(self.subject, "run3-acme", self.sample_run3_drivers)
+        receipt = StructuralLaunchOwnershipReceipt(
+            launch_id="launch-001",
+            execution_context_digest=ctx.digest(),
+            container_id="cont-123",
+            stage="run3-acme",
+            attempt=1,
+            effective_policy_digest=pol.digest(),
+        )
+        td = TeardownDisposition(
+            launch_id="launch-001",
+            container_id="cont-123",
+            containers_stopped=True,
+            containers_removed=True,
+            clean_exit=True,
+            unresolved_processes=0,
+        )
         duplicate_inventory = ("acme", "acme") + self.sample_run3_drivers[2:]
         desc_data = {
             "manifest_digest": self.manifest.digest(),
@@ -1865,17 +1911,20 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
             "outcome": "PASS",
             "chain_id": "chain-123",
             "compiler_sha256": "d" * 64,
-            "effective_policy": sample_effective_policy_dict(self.subject, "run1"),
-            "teardown_disposition": {},
+            "effective_policy": pol.to_dict(),
+            "teardown_disposition": td.to_dict(),
             "evidence_digests": {"report.tar.gz": "e" * 64},
             "timestamp": "2026-11-09T00:01:00Z",
         }
         desc = CheckpointDescriptor.from_dict(desc_data)
-        with self.assertRaises(DuplicateKeyError):
+        with self.assertRaises(DuplicateKeyError) as err:
             validate_structural_checkpoint_to_context(
                 desc, ctx, self.manifest,
+                launch_receipt=receipt,
+                teardown_disposition=td,
                 valid_run3_drivers=duplicate_inventory,
             )
+        self.assertIn("Duplicate driver in valid_run3_drivers", str(err.exception))
 
     def test_checkpoint_rejects_unknown_run3_driver(self):
         ctx_data = {
@@ -1892,6 +1941,23 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
             "platform_response_digests": {"approvals": "c" * 64},
         }
         ctx = ExecutionContext.from_dict(ctx_data)
+        pol_dict = sample_effective_policy_dict(self.subject, "run1")
+        receipt = StructuralLaunchOwnershipReceipt(
+            launch_id="launch-001",
+            execution_context_digest=ctx.digest(),
+            container_id="cont-123",
+            stage="run3-unknown_driver",
+            attempt=1,
+            effective_policy_digest=sha256_bytes(canonical_json_bytes(pol_dict)),
+        )
+        td = TeardownDisposition(
+            launch_id="launch-001",
+            container_id="cont-123",
+            containers_stopped=True,
+            containers_removed=True,
+            clean_exit=True,
+            unresolved_processes=0,
+        )
         desc_data = {
             "manifest_digest": self.manifest.digest(),
             "subject_digest": self.subject.digest(),
@@ -1904,8 +1970,8 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
             "outcome": "PASS",
             "chain_id": "chain-123",
             "compiler_sha256": "d" * 64,
-            "effective_policy": sample_effective_policy_dict(self.subject, "run1"),
-            "teardown_disposition": {},
+            "effective_policy": pol_dict,
+            "teardown_disposition": td.to_dict(),
             "evidence_digests": {"report.tar.gz": "e" * 64},
             "timestamp": "2026-11-09T00:01:00Z",
         }
@@ -1913,6 +1979,8 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
         with self.assertRaises(TypeValidationError) as err:
             validate_structural_checkpoint_to_context(
                 desc, ctx, self.manifest,
+                launch_receipt=receipt,
+                teardown_disposition=td,
                 valid_run3_drivers=self.sample_run3_drivers,
             )
         self.assertIn("not in subject-bound Run 3 inventory", str(err.exception))
@@ -1932,7 +2000,24 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
             "platform_response_digests": {"approvals": "c" * 64},
         }
         ctx = ExecutionContext.from_dict(ctx_data)
+        pol_dict = sample_effective_policy_dict(self.subject, "run1")
         for bad_stage in ("run3_acme", "acme", "run3/acme"):
+            receipt = StructuralLaunchOwnershipReceipt(
+                launch_id="launch-001",
+                execution_context_digest=ctx.digest(),
+                container_id="cont-123",
+                stage=bad_stage,
+                attempt=1,
+                effective_policy_digest=sha256_bytes(canonical_json_bytes(pol_dict)),
+            )
+            td = TeardownDisposition(
+                launch_id="launch-001",
+                container_id="cont-123",
+                containers_stopped=True,
+                containers_removed=True,
+                clean_exit=True,
+                unresolved_processes=0,
+            )
             desc_data = {
                 "manifest_digest": self.manifest.digest(),
                 "subject_digest": self.subject.digest(),
@@ -1945,8 +2030,8 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
                 "outcome": "PASS",
                 "chain_id": "chain-123",
                 "compiler_sha256": "d" * 64,
-                "effective_policy": sample_effective_policy_dict(self.subject, "run1"),
-                "teardown_disposition": {},
+                "effective_policy": pol_dict,
+                "teardown_disposition": td.to_dict(),
                 "evidence_digests": {"report.tar.gz": "e" * 64},
                 "timestamp": "2026-11-09T00:01:00Z",
             }
@@ -1954,10 +2039,11 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
             with self.assertRaises(TypeValidationError) as err:
                 validate_structural_checkpoint_to_context(
                     desc, ctx, self.manifest,
+                    launch_receipt=receipt,
+                    teardown_disposition=td,
                     valid_run3_drivers=self.sample_run3_drivers,
                 )
             self.assertIn("Unrecognized execution stage", str(err.exception))
-
 
 class TestStrictPairsMapAndCheckpointImmutability(unittest.TestCase):
     def test_validate_strict_pairs_map_rejects_duplicates(self):
