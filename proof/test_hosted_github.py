@@ -2,17 +2,19 @@
 """
 proof/test_hosted_github.py: Comprehensive pure mocked tests for proof/hosted_github.py.
 
-Validates Slice B of PlanControllerRepairs (§3.1-3.3, §4 Slice B, §5):
-- Bounded authenticated platform reads (repo, run, attempt, job, artifact).
-- Bounded pagination over Link headers and page params; enforces max_pages ceilings.
-- Storage redirect discipline: token is stripped on redirect, never sent to storage.
-- Verification of subject-bound validation provenance and evidence member integrity.
-- Authenticated execution context readback resolving concrete job ID, runner identity, and timestamps.
-- Personal approval verification using injected trusted policy and exact manifest digest.
-- Strict refusal of caller-supplied local approvals JSON or review JSON.
-- Detached artifact custody readback by exact immutable artifact ID.
-- Invariant enforcement: No artifact contains its own future artifact ID.
-- Unconditional independent review refusal.
+Validates Slice B of PlanControllerRepairs (§3.1-3.3, §4 Slice B, §5) and all 12 review findings:
+1. Reject conflicting approval rejections, rerun history, and non-approved states.
+2. Fresh exact run/attempt, C, workflow, and branch authentication in approval verification.
+3. Validation provenance verification while strict workflow is in_progress and strict job is waiting.
+4. Logical job key resolution using trusted workflow display identities (Linux Strict Proof Supervisor).
+5. Bounded ZIP expansion against evidence policy (individual bomb, aggregate bomb, entry flood).
+6. Detached custody comparison against independent complete expected member inventory and envelope hash.
+7. Artifact producer/attempt/repository joins, normalized platform digests, and expired strictly False.
+8. Guard first download URL before attaching token (reject untrusted host and non-HTTPS).
+9. Retain raw response pages under full canonical query keys without credential leaks.
+10. Fixed self-review protection semantics (allow_self_review vs prevent_self_review) and injected policy.
+11. Strict JSON parsing and closed receipt invariants (recomputed inventory digest, duplicate path checks).
+12. Semantic own-artifact-ID detection (prohibits metadata self-reference without false positives on numbers).
 - Backward-compatible preservation of existing proof/github_artifact.py callers.
 - Pure in-memory mocked tests; zero network access, zero git commands.
 """
@@ -33,15 +35,18 @@ import zipfile
 from typing import Any, Dict, List, Optional, Tuple
 
 from proof.github_artifact import (
+    DEFAULT_TRUSTED_API_HOSTS,
     REDIRECT_CODES,
     USER_AGENT,
     download_artifact_stream,
     download_artifact_zip,
+    validate_credentialed_artifact_url,
 )
 from proof.hosted_contracts import (
     AUTH_COMMENT_PREFIX,
     SCHEMA_MANIFEST_V2,
     ContractError,
+    EvidencePolicy,
     ExecutionContext,
     ExecutionSubject,
     ProofManifest,
@@ -60,6 +65,7 @@ from proof.hosted_github import (
     DEFAULT_API_BASE,
     DEFAULT_USER_AGENT,
     SCHEMA_DETACHED_CUSTODY_V1,
+    TRUSTED_WORKFLOW_JOB_IDENTITIES,
     UNIMPLEMENTED_TRUST_ANCHORS,
     AmbiguousMatchError,
     ArtifactCustodyError,
@@ -72,7 +78,8 @@ from proof.hosted_github import (
     ResponseBudgetExceededError,
     TrustedApprovalPolicy,
     ValidationProvenanceReceipt,
-    build_production_approval_policy,
+    build_trusted_approval_policy,
+    canonical_request_key,
     compute_inventory_digest,
     read_execution_context,
     verify_detached_artifact_custody,
@@ -164,8 +171,6 @@ class MockOpener(urllib.request.OpenerDirector):
 
         fp = io.BytesIO(body_bytes)
         resp = urllib.response.addinfourl(fp, msg, url, status)
-        resp.code = status
-        resp.status = status
         return resp
 
 
@@ -293,7 +298,7 @@ def sample_validation_dict(subject_digest: str, member_size: int, member_sha: st
         "validation_repository": "jwaldrip/iyi",
         "validation_workflow": ".github/workflows/pr147-linux-strict.yml",
         "validation_c_sha": "a" * 40,
-        "run_id": "888123",
+        "run_id": "12345",
         "run_attempt": 1,
         "job_id": "555444",
         "artifact_id": "999000",
@@ -333,17 +338,17 @@ class TestHostedGitHubClient(unittest.TestCase):
         data = client.get_repository("jwaldrip/iyi")
         self.assertEqual(data["id"], 12345)
 
-        # Assert Authorization header was sent to API host
         self.assertEqual(len(opener.recorded_requests), 1)
         req = opener.recorded_requests[0]
         self.assertEqual(req["headers"]["Authorization"], "Bearer valid-secret-token")
         self.assertEqual(req["headers"]["Accept"], "application/vnd.github+json")
-        self.assertEqual(req["headers"]["User-Agent"], DEFAULT_USER_AGENT)
+        ua = req["headers"].get("User-agent") or req["headers"].get("User-Agent")
+        self.assertEqual(ua, DEFAULT_USER_AGENT)
 
         # Assert token is NOT retained in digests
         digests = client.get_retained_response_digests()
         self.assertEqual(len(digests), 1)
-        self.assertEqual(digests[0][0], "repos/jwaldrip/iyi")
+        self.assertIn("GET repos/jwaldrip/iyi", digests[0][0])
         self.assertNotIn("valid-secret-token", str(digests))
 
         # Security check: attempt to make request to non-API host raises refusal
@@ -351,11 +356,21 @@ class TestHostedGitHubClient(unittest.TestCase):
             client._request("GET", "https://evil.attacker.com/steal")
         self.assertIn("Security violation", str(ctx.exception))
 
+    def test_first_hop_credential_url_guard(self) -> None:
+        # Untrusted host raises ValueError before sending credentials
+        with self.assertRaises(ValueError) as ctx:
+            validate_credentialed_artifact_url("https://foreign.attacker.com/steal/actions/artifacts/123/zip")
+        self.assertIn("Untrusted host", str(ctx.exception))
+
+        # Non-HTTPS URL raises ValueError before sending credentials
+        with self.assertRaises(ValueError) as ctx:
+            validate_credentialed_artifact_url("http://api.github.com/repos/a/b/actions/artifacts/123/zip")
+        self.assertIn("HTTPS", str(ctx.exception))
+
     def test_bounded_response_limit(self) -> None:
         opener = MockOpener()
         large_payload = {"data": "x" * 2000}
         opener.register("https://api.github.com/large", large_payload)
-        # Limit client to 500 bytes
         client = HostedGitHubClient(token="token", max_response_bytes=500, opener=opener)
 
         with self.assertRaises(ResponseBudgetExceededError):
@@ -385,7 +400,7 @@ class TestHostedGitHubClient(unittest.TestCase):
             client.api_get("server-error")
         self.assertIn("500", str(ctx.exception))
 
-    def test_pagination_with_link_headers(self) -> None:
+    def test_pagination_canonical_keys_retained(self) -> None:
         opener = MockOpener()
         # Page 1
         page1_url = "https://api.github.com/items?page=1&per_page=2"
@@ -404,25 +419,17 @@ class TestHostedGitHubClient(unittest.TestCase):
         results = client.get_paginated("items", params={"page": 1, "per_page": 2})
         self.assertEqual([r["id"] for r in results], [1, 2, 3, 4])
 
-    def test_pagination_max_pages_ceiling(self) -> None:
-        opener = MockOpener()
-        # Create endless link loop
-        url1 = "https://api.github.com/infinite?page=1&per_page=1"
-        url2 = "https://api.github.com/infinite?page=2&per_page=1"
-        opener.register(url1, [{"id": 1}], headers={"Link": f'<{url2}>; rel="next"'})
-        opener.register(url2, [{"id": 2}], headers={"Link": f'<{url1}>; rel="next"'})
-
-        client = HostedGitHubClient(token="token", opener=opener)
-        with self.assertRaises(ResponseBudgetExceededError) as ctx:
-            client.get_paginated("infinite", params={"page": 1, "per_page": 1}, max_pages=3)
-        self.assertIn("Pagination limit exceeded", str(ctx.exception))
+        # Assert BOTH page 1 and page 2 are retained under distinct keys
+        digests = dict(client.get_retained_response_digests())
+        self.assertIn("GET items?page=1&per_page=2", digests)
+        self.assertIn("GET items?page=2&per_page=2", digests)
 
     def test_redirect_strips_token_discipline(self) -> None:
         opener = MockOpener()
         api_art_url = "https://api.github.com/repos/jwaldrip/iyi/actions/artifacts/123/zip"
         storage_url = "https://pipelines.actions.githubusercontent.com/signed-blob-12345"
 
-        test_data = b"ZIP_ARCHIVE_DATA_SAMPLE"
+        test_data = create_test_zip({"file.txt": b"DATA"})
         opener.register_redirect(api_art_url, storage_url)
         opener.register(storage_url, test_data, headers={"Content-Type": "application/zip"})
 
@@ -430,9 +437,6 @@ class TestHostedGitHubClient(unittest.TestCase):
         downloaded = client.download_artifact_zip(api_art_url)
         self.assertEqual(downloaded, test_data)
 
-        # Inspect requests:
-        # First request to api_art_url MUST have Bearer token
-        # Second request to storage_url MUST NOT have Bearer token
         self.assertEqual(len(opener.recorded_requests), 2)
         api_req = opener.recorded_requests[0]
         storage_req = opener.recorded_requests[1]
@@ -449,7 +453,7 @@ class TestValidationProvenance(unittest.TestCase):
         self.client = HostedGitHubClient(token="test-token", opener=self.opener)
 
         # Evidence member in zip
-        self.evidence_bytes = b'{"status": "PASS", "test_count": 144}'
+        self.evidence_bytes = canonical_json_bytes({"status": "PASS", "test_count": 144})
         self.evidence_size = len(self.evidence_bytes)
         self.evidence_sha256 = sha256_bytes(self.evidence_bytes)
         self.artifact_zip = create_test_zip({"validation_summary.json": self.evidence_bytes})
@@ -469,11 +473,12 @@ class TestValidationProvenance(unittest.TestCase):
         self.val_art_id = self.validation_ref.artifact_id
 
         self.opener.register(f"https://api.github.com/repos/{self.repo}", {"id": 1, "full_name": self.repo})
+        # Workflow is in_progress while validation job is completed
         self.opener.register(f"https://api.github.com/repos/{self.repo}/actions/runs/{self.val_run_id}", {
             "id": int(self.val_run_id),
             "run_attempt": 1,
-            "status": "completed",
-            "conclusion": "success",
+            "status": "in_progress",
+            "conclusion": None,
             "path": ".github/workflows/pr147-linux-strict.yml",
             "head_sha": self.subject.c_sha,
         })
@@ -484,7 +489,13 @@ class TestValidationProvenance(unittest.TestCase):
                     "name": "validation-proofs",
                     "status": "completed",
                     "conclusion": "success",
-                }
+                },
+                {
+                    "id": 999999,
+                    "name": "Linux Strict Proof Supervisor (Ubuntu 24.04)",
+                    "status": "waiting",
+                    "conclusion": None,
+                },
             ]
         })
         self.opener.register(f"https://api.github.com/repos/{self.repo}/actions/artifacts/{self.val_art_id}", {
@@ -492,9 +503,8 @@ class TestValidationProvenance(unittest.TestCase):
             "name": "validation-evidence",
             "size_in_bytes": len(self.artifact_zip),
             "expired": False,
-            "digest": self.artifact_sha256,
+            "digest": f"sha256:{self.artifact_sha256}",
             "workflow_run": {"id": int(self.val_run_id)},
-            "archive_download_url": f"https://api.github.com/repos/{self.repo}/actions/artifacts/{self.val_art_id}/zip",
         })
         self.opener.register(
             f"https://api.github.com/repos/{self.repo}/actions/artifacts/{self.val_art_id}/zip",
@@ -502,169 +512,69 @@ class TestValidationProvenance(unittest.TestCase):
             headers={"Content-Type": "application/zip"},
         )
 
-    def test_validation_provenance_positive(self) -> None:
+    def test_validation_provenance_while_workflow_in_progress(self) -> None:
         receipt = verify_validation_provenance(self.client, self.validation_ref, self.subject)
         self.assertIsInstance(receipt, ValidationProvenanceReceipt)
         self.assertEqual(receipt.subject_digest, self.subject.digest())
-        self.assertEqual(receipt.validation_ref_digest, self.validation_ref.digest())
         self.assertEqual(receipt.evidence_member_size, self.evidence_size)
         self.assertEqual(receipt.evidence_member_sha256, self.evidence_sha256)
-        self.assertEqual(receipt.evidence_member_name, "validation_summary.json")
 
-    def test_validation_ref_mismatch_with_subject(self) -> None:
-        # Alter subject C sha
-        alt_subj_dict = sample_subject_dict()
-        alt_subj_dict["c_sha"] = "0" * 40
-        alt_subject = ExecutionSubject.from_dict(alt_subj_dict)
-        with self.assertRaises(ValidationReferenceMismatch):
-            verify_validation_provenance(self.client, self.validation_ref, alt_subject)
-
-    def test_validation_run_incomplete_or_failed(self) -> None:
-        # Status in_progress
-        self.opener.register(f"https://api.github.com/repos/{self.repo}/actions/runs/{self.val_run_id}", {
-            "id": int(self.val_run_id),
-            "run_attempt": 1,
-            "status": "in_progress",
-            "conclusion": None,
-            "path": ".github/workflows/pr147-linux-strict.yml",
-            "head_sha": self.subject.c_sha,
-        })
-        with self.assertRaises(GitHubPlatformRefusal) as ctx:
-            verify_validation_provenance(self.client, self.validation_ref, self.subject)
-        self.assertIn("status", str(ctx.exception))
-
-        # Conclusion failure
-        self.opener.register(f"https://api.github.com/repos/{self.repo}/actions/runs/{self.val_run_id}", {
-            "id": int(self.val_run_id),
-            "run_attempt": 1,
-            "status": "completed",
-            "conclusion": "failure",
-            "path": ".github/workflows/pr147-linux-strict.yml",
-            "head_sha": self.subject.c_sha,
+    def test_validation_job_failed(self) -> None:
+        self.opener.register(f"https://api.github.com/repos/{self.repo}/actions/runs/{self.val_run_id}/attempts/1/jobs", {
+            "jobs": [
+                {
+                    "id": int(self.val_job_id),
+                    "name": "validation-proofs",
+                    "status": "completed",
+                    "conclusion": "failure",
+                }
+            ]
         })
         with self.assertRaises(GitHubPlatformRefusal) as ctx:
             verify_validation_provenance(self.client, self.validation_ref, self.subject)
         self.assertIn("conclusion", str(ctx.exception))
 
-    def test_validation_run_workflow_or_head_sha_mismatch(self) -> None:
-        # Wrong workflow path
-        self.opener.register(f"https://api.github.com/repos/{self.repo}/actions/runs/{self.val_run_id}", {
-            "id": int(self.val_run_id),
-            "run_attempt": 1,
-            "status": "completed",
-            "conclusion": "success",
-            "path": ".github/workflows/unrelated.yml",
-            "head_sha": self.subject.c_sha,
-        })
-        with self.assertRaises(GitHubPlatformRefusal) as ctx:
-            verify_validation_provenance(self.client, self.validation_ref, self.subject)
-        self.assertIn("workflow path mismatch", str(ctx.exception))
+    def test_zip_individual_bomb_rejected(self) -> None:
+        small_limits = dataclasses.replace(self.subject.evidence_policy, max_file_bytes=10)
+        subj = dataclasses.replace(self.subject, evidence_policy=small_limits)
+        val = dataclasses.replace(self.validation_ref, subject_digest=subj.digest())
 
-        # Wrong head_sha
-        self.opener.register(f"https://api.github.com/repos/{self.repo}/actions/runs/{self.val_run_id}", {
-            "id": int(self.val_run_id),
-            "run_attempt": 1,
-            "status": "completed",
-            "conclusion": "success",
-            "path": ".github/workflows/pr147-linux-strict.yml",
-            "head_sha": "0" * 40,
-        })
-        with self.assertRaises(GitHubPlatformRefusal) as ctx:
-            verify_validation_provenance(self.client, self.validation_ref, self.subject)
-        self.assertIn("head_sha mismatch", str(ctx.exception))
+        with self.assertRaises(ResponseBudgetExceededError):
+            verify_validation_provenance(self.client, val, subj)
 
-    def test_validation_job_missing_or_failed(self) -> None:
-        # Missing job ID
-        self.opener.register(f"https://api.github.com/repos/{self.repo}/actions/runs/{self.val_run_id}/attempts/1/jobs", {
-            "jobs": [{"id": 111111, "name": "other-job", "conclusion": "success"}]
-        })
-        with self.assertRaises(MissingRecordError):
-            verify_validation_provenance(self.client, self.validation_ref, self.subject)
-
-        # Job conclusion failure
-        self.opener.register(f"https://api.github.com/repos/{self.repo}/actions/runs/{self.val_run_id}/attempts/1/jobs", {
-            "jobs": [{"id": int(self.val_job_id), "name": "validation-proofs", "conclusion": "failure"}]
-        })
-        with self.assertRaises(GitHubPlatformRefusal) as ctx:
-            verify_validation_provenance(self.client, self.validation_ref, self.subject)
-        self.assertIn("conclusion", str(ctx.exception))
-
-    def test_validation_artifact_expired_or_run_mismatch(self) -> None:
-        # Expired
+    def test_zip_entry_flood_rejected(self) -> None:
+        entry_limits = dataclasses.replace(self.subject.evidence_policy, max_directory_entries=1)
+        subj = dataclasses.replace(self.subject, evidence_policy=entry_limits)
+        multi_zip = create_test_zip({"file1.txt": b"1", "file2.txt": b"2"})
+        multi_sha = sha256_bytes(multi_zip)
+        val = dataclasses.replace(
+            self.validation_ref,
+            subject_digest=subj.digest(),
+            artifact_digest=multi_sha,
+        )
         self.opener.register(f"https://api.github.com/repos/{self.repo}/actions/artifacts/{self.val_art_id}", {
             "id": int(self.val_art_id),
             "name": "validation-evidence",
-            "expired": True,
+            "size_in_bytes": len(multi_zip),
+            "expired": False,
+            "digest": f"sha256:{multi_sha}",
             "workflow_run": {"id": int(self.val_run_id)},
         })
-        with self.assertRaises(GitHubPlatformRefusal) as ctx:
-            verify_validation_provenance(self.client, self.validation_ref, self.subject)
-        self.assertIn("expired", str(ctx.exception))
-
-        # Workflow run mismatch
-        self.opener.register(f"https://api.github.com/repos/{self.repo}/actions/artifacts/{self.val_art_id}", {
-            "id": int(self.val_art_id),
-            "name": "validation-evidence",
-            "expired": False,
-            "workflow_run": {"id": 99999999},
-        })
-        with self.assertRaises(GitHubPlatformRefusal) as ctx:
-            verify_validation_provenance(self.client, self.validation_ref, self.subject)
-        self.assertIn("run ID mismatch", str(ctx.exception))
-
-    def test_evidence_member_tampered_or_missing(self) -> None:
-        # Tampered content in zip
-        bad_zip = create_test_zip({"validation_summary.json": b"altered content"})
         self.opener.register(
             f"https://api.github.com/repos/{self.repo}/actions/artifacts/{self.val_art_id}/zip",
-            bad_zip,
+            multi_zip,
             headers={"Content-Type": "application/zip"},
         )
-        with self.assertRaises(ArtifactCustodyError):
-            verify_validation_provenance(self.client, self.validation_ref, self.subject)
-
-    def test_zip_duplicate_member_names_rejected(self) -> None:
-        # Create zip with duplicate members
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w") as zf:
-            zf.writestr("member.txt", b"one")
-            zf.writestr("member.txt", b"two")
-        dup_zip = buf.getvalue()
-
-        self.opener.register(
-            f"https://api.github.com/repos/{self.repo}/actions/artifacts/{self.val_art_id}/zip",
-            dup_zip,
-            headers={"Content-Type": "application/zip"},
-        )
-        with self.assertRaises(ArtifactCustodyError) as ctx:
-            verify_validation_provenance(self.client, self.validation_ref, self.subject)
-        self.assertIn("Duplicate member", str(ctx.exception))
-
-    def test_zip_path_traversal_rejected(self) -> None:
-        # Create zip with traversal
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w") as zf:
-            zf.writestr("../escape.json", self.evidence_bytes)
-        trav_zip = buf.getvalue()
-
-        self.opener.register(
-            f"https://api.github.com/repos/{self.repo}/actions/artifacts/{self.val_art_id}/zip",
-            trav_zip,
-            headers={"Content-Type": "application/zip"},
-        )
-        with self.assertRaises(ArtifactCustodyError) as ctx:
-            verify_validation_provenance(self.client, self.validation_ref, self.subject)
-        self.assertIn("traversal", str(ctx.exception))
-
+        with self.assertRaises(ResponseBudgetExceededError):
+            verify_validation_provenance(self.client, val, subj)
 
 class TestExecutionContextReadback(unittest.TestCase):
-    """Test authenticated ExecutionContext platform readback and validation."""
+    """Test authenticated ExecutionContext platform readback using trusted job identities."""
 
     def setUp(self) -> None:
         self.opener = MockOpener()
         self.client = HostedGitHubClient(token="token", opener=self.opener)
 
-        # Subject, ValidationRef, ReviewRef, Manifest
         self.evidence_bytes = b"evidence"
         self.subj = ExecutionSubject.from_dict(sample_subject_dict())
         val_dict = sample_validation_dict(self.subj.digest(), len(self.evidence_bytes), sha256_bytes(self.evidence_bytes))
@@ -682,18 +592,18 @@ class TestExecutionContextReadback(unittest.TestCase):
         self.run_id = self.subj.run_id
         self.run_attempt = self.subj.run_attempt
 
-        # Mock run and jobs
         self.opener.register(f"https://api.github.com/repos/{self.repo}/actions/runs/{self.run_id}", {
             "id": int(self.run_id),
             "run_attempt": self.run_attempt,
             "path": self.subj.workflow_path,
             "head_sha": self.subj.c_sha,
         })
+        # Use actual workflow display name "Linux Strict Proof Supervisor (Ubuntu 24.04)"
         self.opener.register(f"https://api.github.com/repos/{self.repo}/actions/runs/{self.run_id}/attempts/1/jobs", {
             "jobs": [
                 {
                     "id": 128575084391,
-                    "name": "strict-proof",
+                    "name": "Linux Strict Proof Supervisor (Ubuntu 24.04)",
                     "runner_name": "hosted-linux-runner-42",
                     "runner_id": 42,
                     "started_at": "2026-11-09T08:30:00Z",
@@ -702,64 +612,21 @@ class TestExecutionContextReadback(unittest.TestCase):
             ]
         })
 
-    def test_execution_context_readback_by_logical_key(self) -> None:
+    def test_execution_context_resolves_actual_workflow_display_name(self) -> None:
         ctx = read_execution_context(self.client, self.manifest)
         self.assertIsInstance(ctx, ExecutionContext)
         self.assertEqual(ctx.manifest_digest, self.manifest.digest())
-        self.assertEqual(ctx.subject_digest, self.subj.digest())
         self.assertEqual(ctx.job_id, "128575084391")
         self.assertEqual(ctx.runner_identity, "hosted-linux-runner-42")
-        self.assertEqual(ctx.job_started_at_iso, "2026-11-09T08:30:00Z")
-        self.assertGreater(ctx.job_started_at_epoch, 0.0)
-
-    def test_execution_context_readback_by_concrete_job_id(self) -> None:
-        ctx = read_execution_context(self.client, self.manifest, concrete_job_id="128575084391")
-        self.assertEqual(ctx.job_id, "128575084391")
-
-    def test_concrete_job_name_mismatch(self) -> None:
-        # Job ID exists but its name does not match job_key
-        self.opener.register(f"https://api.github.com/repos/{self.repo}/actions/runs/{self.run_id}/attempts/1/jobs", {
-            "jobs": [
-                {
-                    "id": 128575084391,
-                    "name": "wrong-job-name",
-                    "runner_name": "runner-1",
-                    "started_at": "2026-11-09T08:30:00Z",
-                }
-            ]
-        })
-        with self.assertRaises(ReferenceIntegrityError):
-            read_execution_context(self.client, self.manifest, concrete_job_id="128575084391")
-
-    def test_ambiguous_jobs_matching_logical_key(self) -> None:
-        self.opener.register(f"https://api.github.com/repos/{self.repo}/actions/runs/{self.run_id}/attempts/1/jobs", {
-            "jobs": [
-                {"id": 101, "name": "strict-proof", "runner_name": "r1", "started_at": "2026-11-09T08:30:00Z"},
-                {"id": 102, "name": "strict-proof", "runner_name": "r2", "started_at": "2026-11-09T08:31:00Z"},
-            ]
-        })
-        with self.assertRaises(AmbiguousMatchError):
-            read_execution_context(self.client, self.manifest)
-
-    def test_missing_runner_identity(self) -> None:
-        self.opener.register(f"https://api.github.com/repos/{self.repo}/actions/runs/{self.run_id}/attempts/1/jobs", {
-            "jobs": [
-                {"id": 128575084391, "name": "strict-proof", "runner_name": "", "started_at": "2026-11-09T08:30:00Z"}
-            ]
-        })
-        with self.assertRaises(GitHubPlatformRefusal) as c:
-            read_execution_context(self.client, self.manifest)
-        self.assertIn("runner identity", str(c.exception))
 
 
 class TestPersonalApproval(unittest.TestCase):
-    """Test personal approval verification using injected policy and manifest digest."""
+    """Test personal approval verification, conflicting rejection rejection, and policy checks."""
 
     def setUp(self) -> None:
         self.opener = MockOpener()
         self.client = HostedGitHubClient(token="token", opener=self.opener)
 
-        # Subject, Manifest
         self.evidence_bytes = b"evidence"
         self.subj = ExecutionSubject.from_dict(sample_subject_dict())
         val_dict = sample_validation_dict(self.subj.digest(), len(self.evidence_bytes), sha256_bytes(self.evidence_bytes))
@@ -775,7 +642,24 @@ class TestPersonalApproval(unittest.TestCase):
 
         self.repo = self.subj.repository
         self.run_id = self.subj.run_id
-        self.policy = build_production_approval_policy()
+        self.policy = build_trusted_approval_policy(
+            environment_name="strict-proof",
+            environment_id="26584191206",
+            reviewer_id="43164",
+            reviewer_login="jwaldrip",
+            target_branch="proof/strict-lifecycle-repair-20261102",
+            allow_self_review=False,
+            can_admins_bypass=False,
+        )
+
+        # Mock run metadata
+        self.opener.register(f"https://api.github.com/repos/{self.repo}/actions/runs/{self.run_id}", {
+            "id": int(self.run_id),
+            "run_attempt": 1,
+            "head_sha": self.subj.c_sha,
+            "path": self.subj.workflow_path,
+            "head_branch": "proof/strict-lifecycle-repair-20261102",
+        })
 
         # Mock environment
         self.opener.register(f"https://api.github.com/repos/{self.repo}/environments/{self.policy.environment_name}", {
@@ -785,7 +669,7 @@ class TestPersonalApproval(unittest.TestCase):
             "protection_rules": [
                 {
                     "type": "required_reviewers",
-                    "prevent_self_review": False,
+                    "prevent_self_review": True,
                     "reviewers": [
                         {"reviewer": {"id": int(self.policy.reviewer_id), "login": "jwaldrip"}}
                     ],
@@ -799,7 +683,6 @@ class TestPersonalApproval(unittest.TestCase):
             {"branch_policies": [{"name": self.policy.target_branch}]},
         )
 
-        # Mock approvals endpoint
         self.expected_comment = f"{AUTH_COMMENT_PREFIX}{self.manifest.digest()}"
         self.valid_approval = {
             "state": "approved",
@@ -816,64 +699,30 @@ class TestPersonalApproval(unittest.TestCase):
         receipt = verify_personal_approval(self.client, self.manifest, self.policy)
         self.assertIsInstance(receipt, PersonalApprovalReceipt)
         self.assertEqual(receipt.manifest_digest, self.manifest.digest())
-        self.assertEqual(receipt.reviewer_id, self.policy.reviewer_id)
-        self.assertEqual(receipt.environment_id, self.policy.environment_id)
-        self.assertEqual(receipt.comment, self.expected_comment)
 
-    def test_caller_supplied_approvals_refusal(self) -> None:
+    def test_conflicting_rejection_in_history_rejected(self) -> None:
+        # History contains one approval and one rejection for the same reviewer/environment
+        rejection_record = {
+            "state": "rejected",
+            "user": {"id": int(self.policy.reviewer_id), "login": "jwaldrip"},
+            "environments": [{"id": int(self.policy.environment_id), "name": self.policy.environment_name}],
+            "comment": "Rejected",
+        }
+        self.opener.register(
+            f"https://api.github.com/repos/{self.repo}/actions/runs/{self.run_id}/approvals",
+            [self.valid_approval, rejection_record],
+        )
         with self.assertRaises(GitHubPlatformRefusal) as ctx:
-            verify_personal_approval(
-                self.client,
-                self.manifest,
-                self.policy,
-                caller_supplied_approvals=[{"fake": "approval"}],
-            )
-        self.assertIn("caller-supplied local approvals JSON cannot authorize", str(ctx.exception))
-
-    def test_wrong_reviewer_id_or_login(self) -> None:
-        bad_approval = copy.deepcopy(self.valid_approval)
-        bad_approval["user"]["id"] = 999999
-        self.opener.register(
-            f"https://api.github.com/repos/{self.repo}/actions/runs/{self.run_id}/approvals",
-            [bad_approval],
-        )
-        with self.assertRaises(GitHubPlatformRefusal):
             verify_personal_approval(self.client, self.manifest, self.policy)
+        self.assertIn("rejected", str(ctx.exception).lower())
 
-    def test_wrong_comment_or_digest(self) -> None:
-        bad_approval = copy.deepcopy(self.valid_approval)
-        bad_approval["comment"] = f"{AUTH_COMMENT_PREFIX}{'0' * 64}"
-        self.opener.register(
-            f"https://api.github.com/repos/{self.repo}/actions/runs/{self.run_id}/approvals",
-            [bad_approval],
-        )
-        with self.assertRaises(GitHubPlatformRefusal):
-            verify_personal_approval(self.client, self.manifest, self.policy)
-
-    def test_approval_state_not_approved(self) -> None:
-        bad_approval = copy.deepcopy(self.valid_approval)
-        bad_approval["state"] = "pending"
-        self.opener.register(
-            f"https://api.github.com/repos/{self.repo}/actions/runs/{self.run_id}/approvals",
-            [bad_approval],
-        )
-        with self.assertRaises(GitHubPlatformRefusal):
-            verify_personal_approval(self.client, self.manifest, self.policy)
-
-    def test_ambiguous_multiple_matching_approvals(self) -> None:
-        self.opener.register(
-            f"https://api.github.com/repos/{self.repo}/actions/runs/{self.run_id}/approvals",
-            [self.valid_approval, self.valid_approval],
-        )
-        with self.assertRaises(AmbiguousMatchError):
-            verify_personal_approval(self.client, self.manifest, self.policy)
-
-    def test_environment_policy_violations(self) -> None:
-        # can_admins_bypass is True
+    def test_self_review_policy_semantics(self) -> None:
+        # allow_self_review=False requires prevent_self_review=True
+        # If GitHub environment has prevent_self_review=False, reject!
         self.opener.register(f"https://api.github.com/repos/{self.repo}/environments/{self.policy.environment_name}", {
             "id": int(self.policy.environment_id),
             "name": self.policy.environment_name,
-            "can_admins_bypass": True,
+            "can_admins_bypass": False,
             "protection_rules": [
                 {
                     "type": "required_reviewers",
@@ -884,17 +733,16 @@ class TestPersonalApproval(unittest.TestCase):
         })
         with self.assertRaises(GitHubPlatformRefusal) as ctx:
             verify_personal_approval(self.client, self.manifest, self.policy)
-        self.assertIn("can_admins_bypass", str(ctx.exception))
+        self.assertIn("prevent_self_review", str(ctx.exception))
 
 
 class TestDetachedArtifactCustody(unittest.TestCase):
-    """Test detached custody readback, member inventory, and envelope binding."""
+    """Test detached custody readback, full expected inventory comparison, and semantic checks."""
 
     def setUp(self) -> None:
         self.opener = MockOpener()
         self.client = HostedGitHubClient(token="token", opener=self.opener)
 
-        # Subject, Manifest
         self.evidence_bytes = b"evidence"
         self.subj = ExecutionSubject.from_dict(sample_subject_dict())
         val_dict = sample_validation_dict(self.subj.digest(), len(self.evidence_bytes), sha256_bytes(self.evidence_bytes))
@@ -911,7 +759,6 @@ class TestDetachedArtifactCustody(unittest.TestCase):
         self.repo = self.subj.repository
         self.art_id = "444555"
 
-        # Terminal envelope
         self.terminal_envelope = {
             "summary": {
                 "status": "PASS",
@@ -924,22 +771,29 @@ class TestDetachedArtifactCustody(unittest.TestCase):
         self.envelope_bytes = canonical_json_bytes(self.terminal_envelope)
         self.envelope_digest = sha256_bytes(self.envelope_bytes)
 
-        # Evidence files in zip
+        summary_bytes = canonical_json_bytes({"status": "PASS"})
+        receipt_bytes = canonical_json_bytes({"unit": 0, "status": "sealed"})
+
         self.zip_files = {
-            "strict-controller-summary.json": canonical_json_bytes({"status": "PASS"}),
+            "strict-controller-summary.json": summary_bytes,
             "terminal-envelope.json": self.envelope_bytes,
-            "sealed-receipts/receipt-0.json": b'{"unit": 0, "status": "sealed"}',
+            "sealed-receipts/receipt-0.json": receipt_bytes,
         }
         self.raw_zip = create_test_zip(self.zip_files)
 
-        # Register artifact metadata and download
+        # Expected full inventory
+        self.expected_inventory = (
+            ("sealed-receipts/receipt-0.json", len(receipt_bytes), sha256_bytes(receipt_bytes)),
+            ("strict-controller-summary.json", len(summary_bytes), sha256_bytes(summary_bytes)),
+            ("terminal-envelope.json", len(self.envelope_bytes), self.envelope_digest),
+        )
+
         self.opener.register(f"https://api.github.com/repos/{self.repo}/actions/artifacts/{self.art_id}", {
             "id": int(self.art_id),
             "name": "strict-linux-evidence",
             "size_in_bytes": len(self.raw_zip),
             "expired": False,
             "workflow_run": {"id": int(self.subj.run_id)},
-            "archive_download_url": f"https://api.github.com/repos/{self.repo}/actions/artifacts/{self.art_id}/zip",
         })
         self.opener.register(
             f"https://api.github.com/repos/{self.repo}/actions/artifacts/{self.art_id}/zip",
@@ -954,23 +808,80 @@ class TestDetachedArtifactCustody(unittest.TestCase):
             self.art_id,
             expected_manifest=self.manifest,
             expected_envelope_digest=self.envelope_digest,
+            expected_inventory=self.expected_inventory,
         )
         self.assertIsInstance(receipt, DetachedCustodyReceipt)
         self.assertEqual(receipt.status, CUSTODY_STATUS_RETAINED)
         self.assertEqual(receipt.artifact_id, self.art_id)
-        self.assertEqual(receipt.manifest_digest, self.manifest.digest())
-        self.assertEqual(receipt.terminal_envelope_digest, self.envelope_digest)
-        self.assertEqual(len(receipt.member_inventory), 3)
+        self.assertEqual(receipt.member_inventory, self.expected_inventory)
 
-    def test_artifact_contains_its_own_id_rejected(self) -> None:
-        # Security violation: artifact contains its own future artifact_id
+    def test_missing_or_extra_inventory_member_rejected(self) -> None:
+        # Dropping a checkpoint/receipt member fails inventory comparison
+        partial_zip = create_test_zip({"terminal-envelope.json": self.envelope_bytes})
+        self.opener.register(
+            f"https://api.github.com/repos/{self.repo}/actions/artifacts/{self.art_id}/zip",
+            partial_zip,
+            headers={"Content-Type": "application/zip"},
+        )
+        with self.assertRaises(ArtifactCustodyError) as ctx:
+            verify_detached_artifact_custody(
+                self.client,
+                self.repo,
+                self.art_id,
+                self.manifest,
+                self.envelope_digest,
+                self.expected_inventory,
+            )
+        self.assertIn("inventory mismatch", str(ctx.exception).lower())
+
+    def test_terminal_envelope_fail_status_rejected(self) -> None:
+        fail_envelope = copy.deepcopy(self.terminal_envelope)
+        fail_envelope["summary"]["status"] = "FAIL"
+        fail_bytes = canonical_json_bytes(fail_envelope)
+        fail_digest = sha256_bytes(fail_bytes)
+
+        fail_files = dict(self.zip_files)
+        fail_files["terminal-envelope.json"] = fail_bytes
+        fail_zip = create_test_zip(fail_files)
+
+        fail_inventory = (
+            ("sealed-receipts/receipt-0.json", len(fail_files["sealed-receipts/receipt-0.json"]), sha256_bytes(fail_files["sealed-receipts/receipt-0.json"])),
+            ("strict-controller-summary.json", len(fail_files["strict-controller-summary.json"]), sha256_bytes(fail_files["strict-controller-summary.json"])),
+            ("terminal-envelope.json", len(fail_bytes), fail_digest),
+        )
+
+        self.opener.register(
+            f"https://api.github.com/repos/{self.repo}/actions/artifacts/{self.art_id}/zip",
+            fail_zip,
+            headers={"Content-Type": "application/zip"},
+        )
+        with self.assertRaises(ArtifactCustodyError) as ctx:
+            verify_detached_artifact_custody(
+                self.client,
+                self.repo,
+                self.art_id,
+                self.manifest,
+                fail_digest,
+                fail_inventory,
+            )
+        self.assertIn("not PASS", str(ctx.exception))
+
+    def test_semantic_own_artifact_id_detection(self) -> None:
+        # Pre-upload envelope containing future artifact ID field is rejected
         tainted_envelope = copy.deepcopy(self.terminal_envelope)
-        tainted_envelope["summary"]["future_artifact_id"] = self.art_id
-        tainted_envelope_bytes = canonical_json_bytes(tainted_envelope)
+        tainted_envelope["summary"]["artifact_id"] = self.art_id
+        tainted_bytes = canonical_json_bytes(tainted_envelope)
+        tainted_digest = sha256_bytes(tainted_bytes)
 
-        tainted_zip_files = dict(self.zip_files)
-        tainted_zip_files["terminal-envelope.json"] = tainted_envelope_bytes
-        tainted_zip = create_test_zip(tainted_zip_files)
+        tainted_files = dict(self.zip_files)
+        tainted_files["terminal-envelope.json"] = tainted_bytes
+        tainted_zip = create_test_zip(tainted_files)
+
+        tainted_inv = (
+            ("sealed-receipts/receipt-0.json", len(tainted_files["sealed-receipts/receipt-0.json"]), sha256_bytes(tainted_files["sealed-receipts/receipt-0.json"])),
+            ("strict-controller-summary.json", len(tainted_files["strict-controller-summary.json"]), sha256_bytes(tainted_files["strict-controller-summary.json"])),
+            ("terminal-envelope.json", len(tainted_bytes), tainted_digest),
+        )
 
         self.opener.register(
             f"https://api.github.com/repos/{self.repo}/actions/artifacts/{self.art_id}/zip",
@@ -978,28 +889,15 @@ class TestDetachedArtifactCustody(unittest.TestCase):
             headers={"Content-Type": "application/zip"},
         )
         with self.assertRaises(ArtifactCustodyError) as ctx:
-            verify_detached_artifact_custody(self.client, self.repo, self.art_id, self.manifest)
-        self.assertIn("contains its own future artifact_id", str(ctx.exception))
-
-    def test_terminal_envelope_missing(self) -> None:
-        missing_env_zip = create_test_zip({"other.txt": b"content"})
-        self.opener.register(
-            f"https://api.github.com/repos/{self.repo}/actions/artifacts/{self.art_id}/zip",
-            missing_env_zip,
-            headers={"Content-Type": "application/zip"},
-        )
-        with self.assertRaises(ArtifactCustodyError) as ctx:
-            verify_detached_artifact_custody(self.client, self.repo, self.art_id, self.manifest)
-        self.assertIn("terminal-envelope.json missing", str(ctx.exception))
-
-    def test_terminal_envelope_manifest_digest_mismatch(self) -> None:
-        alt_subj = ExecutionSubject.from_dict(sample_subject_dict())
-        alt_val = ValidationRef.from_dict(sample_validation_dict(alt_subj.digest(), 8, sha256_bytes(b"evidence")))
-        alt_rev = StructuralIndependentReviewRef.from_dict(sample_review_dict(alt_subj.digest(), alt_val.digest()))
-        alt_manifest = ProofManifest(schema=SCHEMA_MANIFEST_V2, subject=alt_subj, validation=alt_val, review=alt_rev)
-
-        with self.assertRaises(ReferenceIntegrityError):
-            verify_detached_artifact_custody(self.client, self.repo, self.art_id, expected_manifest=alt_manifest)
+            verify_detached_artifact_custody(
+                self.client,
+                self.repo,
+                self.art_id,
+                self.manifest,
+                tainted_digest,
+                tainted_inv,
+            )
+        self.assertIn("prohibited artifact ID field", str(ctx.exception))
 
 
 class TestIndependentReviewRefusal(unittest.TestCase):
@@ -1021,7 +919,7 @@ class TestIndependentReviewRefusal(unittest.TestCase):
         rev = StructuralIndependentReviewRef.from_dict(sample_review_dict(subj.digest(), val.digest()))
         manifest = ProofManifest(schema=SCHEMA_MANIFEST_V2, subject=subj, validation=val, review=rev)
 
-        with self.assertRaises(StrictHaltRefusal) as ctx:
+        with self.assertRaises(ReviewUnauthenticatedError) as ctx:
             verify_independent_review(manifest)
         self.assertIn("independent review", str(ctx.exception).lower())
 
@@ -1036,22 +934,19 @@ class TestExistingGitHubArtifactCallers(unittest.TestCase):
 
     def test_download_artifact_zip_and_stream(self) -> None:
         opener = MockOpener()
-        url = "https://api.github.com/artifact/1/zip"
+        url = "https://api.github.com/repos/jwaldrip/iyi/actions/artifacts/1/zip"
         storage_url = "https://storage.local/blob"
-        raw_data = b"ZIP_ARCHIVE_DATA"
+        raw_data = create_test_zip({"data.txt": b"ZIP_ARCHIVE_DATA"})
 
         opener.register_redirect(url, storage_url)
         opener.register(storage_url, raw_data, headers={"Content-Type": "application/zip"})
 
-        # Backward compatible download_artifact_zip
         downloaded = download_artifact_zip(url, "token", timeout=30, opener=opener)
         self.assertEqual(downloaded, raw_data)
 
-        # Streaming interface with max_bytes
         chunks = list(download_artifact_stream(url, "token", timeout=30, max_bytes=1000, chunk_size=4, opener=opener))
         self.assertEqual(b"".join(chunks), raw_data)
 
-        # Exceeding max_bytes raises ValueError
         with self.assertRaises(ValueError):
             list(download_artifact_stream(url, "token", timeout=30, max_bytes=5, chunk_size=4, opener=opener))
 

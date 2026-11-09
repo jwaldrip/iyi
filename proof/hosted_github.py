@@ -6,15 +6,17 @@ Implements Slice B of PlanControllerRepairs (§3.1-3.3, §4 Slice B, §5):
 - Bounded authenticated platform reads for exact repository, run, attempt, job, and artifact.
 - Bounded pagination traversing Link headers and page parameters with max_pages ceilings.
 - Token-free storage redirect handling reusing proof/github_artifact.py discipline.
-- Retains raw platform response bodies and SHA-256 digests without saving credentials.
-- Subject-bound validation provenance verification.
+- Retains raw platform response bodies and SHA-256 digests under full canonical request keys
+  (method + path + sorted query) without saving credentials or signed URLs.
+- Subject-bound validation provenance verification without requiring whole-workflow completion.
 - Authenticated execution context readback resolving concrete positive job ID, runner identity,
-  and platform job start timestamp.
-- Personal approval verification using injected trusted approval policy and exact manifest digest.
+  and platform job start timestamp using trusted workflow job display identities.
+- Personal approval verification using injected trusted approval policy, fresh run/attempt/branch
+  authentication, and exact manifest digest; strictly rejects conflicting rejections or reruns.
 - Strict refusal of caller-supplied local approval or review JSON.
 - Detached artifact custody readback by exact immutable artifact ID, establishing completed
-  retention and binding approved subject, terminal envelope, member inventory, and digests.
-- Enforces that no artifact contains its own future artifact ID.
+  retention and comparing against independent complete expected member inventory and envelope hash.
+- Semantic placement check enforcing that no pre-upload artifact contains its own future artifact ID.
 - Unconditionally preserves independent review refusal; never contacts live network.
 """
 
@@ -33,17 +35,20 @@ import urllib.request
 import zipfile
 
 from proof.github_artifact import (
+    DEFAULT_TRUSTED_API_HOSTS,
     REDIRECT_CODES,
     USER_AGENT,
     _NoRedirect,
     download_artifact_stream,
     download_artifact_zip,
+    validate_credentialed_artifact_url,
 )
 from proof.hosted_contracts import (
     AUTH_COMMENT_PREFIX,
     AUTH_REFUSED_EXIT_CODE,
     SCHEMA_MANIFEST_V2,
     ContractError,
+    EvidencePolicy,
     ExecutionContext,
     ExecutionSubject,
     ProofManifest,
@@ -92,6 +97,23 @@ CONTROLLER_TERMINAL_STATE_PENDING_CUSTODY: str = "NATIVE_COMPLETE_PENDING_CUSTOD
 CUSTODY_STATUS_RETAINED: str = "RETAINED"
 SCHEMA_DETACHED_CUSTODY_V1: str = "iyi-hosted-artifact-custody-v1"
 
+# Trusted Workflow Job Identities per .github/workflows/pr147-linux-strict.yml
+TRUSTED_WORKFLOW_JOB_IDENTITIES: Dict[str, Tuple[str, ...]] = {
+    "strict-proof": (
+        "Linux Strict Proof Supervisor (Ubuntu 24.04)",
+        "strict-chain",
+        "strict-proof",
+    ),
+    "strict-chain": (
+        "Linux Strict Proof Supervisor (Ubuntu 24.04)",
+        "strict-chain",
+    ),
+    "validation-proofs": (
+        "Run Staged Linux Qualification",
+        "validation-proofs",
+    ),
+}
+
 
 # Slice B Specific Error Hierarchy
 class HostedGitHubError(ContractError):
@@ -116,6 +138,19 @@ class MissingRecordError(GitHubPlatformRefusal):
 
 class ResponseBudgetExceededError(GitHubPlatformRefusal):
     """Raised when an API response or artifact exceeds configured size limits."""
+
+
+# Canonical Request Key Formatter for Invariant Retained Responses
+def canonical_request_key(method: str, path: str, params: Optional[Dict[str, Any]] = None) -> str:
+    """Format canonical method + path + sorted query key for platform response retention."""
+    clean_path = path.lstrip("/")
+    if params:
+        query_parts: List[str] = []
+        for k, v in sorted(params.items()):
+            query_parts.append(f"{k}={v}")
+        query = "&".join(query_parts)
+        return f"{method.upper()} {clean_path}?{query}"
+    return f"{method.upper()} {clean_path}"
 
 
 # Injected Policy for Human Personal Approval
@@ -148,19 +183,26 @@ class TrustedApprovalPolicy:
         require_bool(self.can_admins_bypass, "can_admins_bypass")
 
 
-def build_production_approval_policy(branch: Optional[str] = None) -> TrustedApprovalPolicy:
-    """Construct the canonical production approval policy per PlanControllerRepairs 3.3."""
+def build_trusted_approval_policy(
+    environment_name: str,
+    environment_id: str,
+    reviewer_id: str,
+    reviewer_login: Optional[str] = None,
+    target_branch: Optional[str] = None,
+    allow_self_review: bool = False,
+    can_admins_bypass: bool = False,
+    required_comment_prefix: str = AUTH_COMMENT_PREFIX,
+) -> TrustedApprovalPolicy:
+    """Construct an explicitly injected TrustedApprovalPolicy."""
     return TrustedApprovalPolicy(
-        environment_name="strict-proof",
-        environment_id="26584191206",
-        reviewer_id="43164",
-        reviewer_login="jwaldrip",
-        required_comment_prefix=AUTH_COMMENT_PREFIX,
-        enforce_environment_rules=True,
-        enforce_branch_policy=True,
-        target_branch=branch or "proof/strict-lifecycle-repair-20261102",
-        allow_self_review=False,
-        can_admins_bypass=False,
+        environment_name=environment_name,
+        environment_id=environment_id,
+        reviewer_id=reviewer_id,
+        reviewer_login=reviewer_login,
+        target_branch=target_branch,
+        allow_self_review=allow_self_review,
+        can_admins_bypass=can_admins_bypass,
+        required_comment_prefix=required_comment_prefix,
     )
 
 
@@ -301,6 +343,9 @@ class DetachedCustodyReceipt:
                 f"Unsupported custody schema: {self.schema!r}, expected {SCHEMA_DETACHED_CUSTODY_V1!r}"
             )
         require_ascii_str(self.status, "status")
+        if self.status != CUSTODY_STATUS_RETAINED:
+            raise TypeValidationError(f"Invalid custody status: {self.status!r}, expected {CUSTODY_STATUS_RETAINED!r}")
+
         require_sha256(self.subject_digest, "subject_digest")
         require_sha256(self.manifest_digest, "manifest_digest")
         require_sha256(self.terminal_envelope_digest, "terminal_envelope_digest")
@@ -311,18 +356,30 @@ class DetachedCustodyReceipt:
         require_ascii_str(self.artifact_name, "artifact_name")
         require_int(self.artifact_size_bytes, "artifact_size_bytes", min_val=1)
         require_sha256(self.archive_sha256, "archive_sha256")
-        require_sha256(self.inventory_digest, "inventory_digest")
 
+        # Validate member_inventory tuples and ensure no duplicate member paths
         cleaned_members: List[Tuple[str, int, str]] = []
+        seen_paths: Set[str] = set()
         for item in self.member_inventory:
             if not isinstance(item, (tuple, list)) or len(item) != 3:
                 raise TypeValidationError("member_inventory elements must be (path, size, sha256) 3-tuples")
             p = require_ascii_str(item[0], "member path")
+            if p in seen_paths:
+                raise TypeValidationError(f"Duplicate member path in member_inventory: {p!r}")
+            seen_paths.add(p)
             sz = require_int(item[1], "member size", min_val=0)
             sh = require_sha256(item[2], "member sha256")
             cleaned_members.append((p, sz, sh))
+
         sorted_members = tuple(sorted(cleaned_members, key=lambda x: x[0]))
         object.__setattr__(self, "member_inventory", sorted_members)
+
+        # Recompute and enforce inventory digest
+        expected_inv_digest = compute_inventory_digest(sorted_members)
+        if self.inventory_digest != expected_inv_digest:
+            raise ReferenceIntegrityError(
+                f"inventory_digest mismatch: declared {self.inventory_digest}, recomputed {expected_inv_digest}"
+            )
 
         prd = validate_strict_pairs_map(
             self.platform_response_digests,
@@ -363,9 +420,115 @@ class DetachedCustodyReceipt:
         return sha256_bytes(self.canonical_bytes())
 
 
+# Bounded ZIP Archive Expansion Helper
+def inspect_and_extract_bounded_zip(
+    archive_bytes: bytes,
+    limits: EvidencePolicy,
+) -> Tuple[Tuple[Tuple[str, int, str], ...], Dict[str, bytes]]:
+    """Inspect and decompress a zip archive enforcing strict per-member and aggregate limits.
+
+    Guards against zip bombs, excessive entries, path traversals, duplicate names, and memory exhaustion.
+    """
+    if len(archive_bytes) > limits.max_archive_emitted_bytes:
+        raise ResponseBudgetExceededError(
+            f"Archive size {len(archive_bytes)} exceeds max_archive_emitted_bytes {limits.max_archive_emitted_bytes}"
+        )
+
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(archive_bytes), "r")
+    except zipfile.BadZipFile as exc:
+        raise ArtifactCustodyError(f"Corrupted zip archive: {exc}")
+
+    with zf:
+        infolist = zf.infolist()
+        if len(infolist) > limits.max_directory_entries:
+            raise ResponseBudgetExceededError(
+                f"Zip entry count {len(infolist)} exceeds max_directory_entries {limits.max_directory_entries}"
+            )
+
+        seen_names: Set[str] = set()
+        total_declared_uncompressed = 0
+
+        # Preflight metadata before decompressing
+        for info in infolist:
+            name = info.filename
+            if name in seen_names:
+                raise ArtifactCustodyError(f"Duplicate member name in zip archive: {name!r}")
+            seen_names.add(name)
+
+            if name.startswith("/") or ".." in name.split("/"):
+                raise ArtifactCustodyError(f"Illegal path traversal in zip member: {name!r}")
+
+            name_bytes = name.encode("utf-8")
+            if len(name_bytes) > limits.max_path_bytes:
+                raise ResponseBudgetExceededError(
+                    f"Member path {name!r} ({len(name_bytes)} bytes) exceeds max_path_bytes {limits.max_path_bytes}"
+                )
+
+            depth = len([p for p in name.split("/") if p])
+            if depth > limits.max_directory_depth:
+                raise ResponseBudgetExceededError(
+                    f"Member path {name!r} depth {depth} exceeds max_directory_depth {limits.max_directory_depth}"
+                )
+
+            if info.file_size > limits.max_file_bytes:
+                raise ResponseBudgetExceededError(
+                    f"Member {name!r} declared size {info.file_size} exceeds max_file_bytes {limits.max_file_bytes}"
+                )
+
+            total_declared_uncompressed += info.file_size
+            if total_declared_uncompressed > limits.max_aggregate_unique_inode_bytes:
+                raise ResponseBudgetExceededError(
+                    f"Aggregate declared zip uncompressed size exceeds max_aggregate_unique_inode_bytes {limits.max_aggregate_unique_inode_bytes}"
+                )
+
+        # Decompress incrementally with running aggregate check
+        inventory: List[Tuple[str, int, str]] = []
+        member_bytes_dict: Dict[str, bytes] = {}
+        cumulative_decompressed_bytes = 0
+
+        for info in infolist:
+            if info.is_dir():
+                continue
+
+            member_buf = bytearray()
+            hasher = hashlib.sha256()
+
+            with zf.open(info, "r") as member_stream:
+                while True:
+                    chunk = member_stream.read(65536)
+                    if not chunk:
+                        break
+                    member_buf.extend(chunk)
+                    cumulative_decompressed_bytes += len(chunk)
+                    hasher.update(chunk)
+
+                    if len(member_buf) > limits.max_file_bytes:
+                        raise ResponseBudgetExceededError(
+                            f"Member {info.filename!r} exceeded max_file_bytes during decompression"
+                        )
+                    if cumulative_decompressed_bytes > limits.max_aggregate_unique_inode_bytes:
+                        raise ResponseBudgetExceededError(
+                            "Cumulative decompressed bytes exceeded max_aggregate_unique_inode_bytes limit"
+                        )
+
+            if len(member_buf) != info.file_size:
+                raise ArtifactCustodyError(
+                    f"Member {info.filename!r} actual decompressed size {len(member_buf)} != declared {info.file_size}"
+                )
+
+            member_sha = hasher.hexdigest()
+            m_bytes = bytes(member_buf)
+            inventory.append((info.filename, len(m_bytes), member_sha))
+            member_bytes_dict[info.filename] = m_bytes
+
+        sorted_inventory = tuple(sorted(inventory, key=lambda x: x[0]))
+        return sorted_inventory, member_bytes_dict
+
+
 # Bounded Authenticated GitHub Client
 class HostedGitHubClient:
-    """Authenticated, bounded GitHub REST client with pagination and redirect discipline."""
+    """Authenticated, bounded GitHub REST client with canonical request-key retention."""
 
     def __init__(
         self,
@@ -387,7 +550,7 @@ class HostedGitHubClient:
         self.user_agent = user_agent
         self.opener = opener
         # Retains raw platform response bytes and SHA-256 digests
-        # Maps relative endpoint or canonical path -> (raw_bytes, sha256)
+        # Maps canonical request key (e.g. "GET repos/.../jobs?page=1") -> (raw_bytes, sha256)
         self._retained_responses: Dict[str, Tuple[bytes, str]] = {}
 
     def _request(
@@ -401,7 +564,7 @@ class HostedGitHubClient:
 
         Credentials are sent ONLY to endpoints under self.api_base.
         Raw response bodies are bounded by max_bytes.
-        Response SHA-256 digests are retained in self._retained_responses.
+        Response SHA-256 digests are retained under canonical method+path+query keys.
         """
         if endpoint.startswith("http://") or endpoint.startswith("https://"):
             url = endpoint
@@ -411,10 +574,17 @@ class HostedGitHubClient:
                 raise GitHubPlatformRefusal(
                     f"Security violation: attempt to send API credentials to non-API host {parsed_url.netloc!r}"
                 )
-            rel_key = parsed_url.path.lstrip("/")
+            rel_path = parsed_url.path.lstrip("/")
+            # If query params were in the URL, parse and merge them
+            if parsed_url.query and not params:
+                query_dict = dict(urllib.parse.parse_qsl(parsed_url.query))
+                params = query_dict
+                url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
         else:
-            rel_key = endpoint.lstrip("/")
-            url = f"{self.api_base}/{rel_key}"
+            rel_path = endpoint.lstrip("/")
+            url = f"{self.api_base}/{rel_path}"
+
+        canon_key = canonical_request_key(method, rel_path, params)
 
         if params:
             query = urllib.parse.urlencode(sorted(params.items()))
@@ -443,7 +613,7 @@ class HostedGitHubClient:
                     body.extend(chunk)
                     if len(body) > limit:
                         raise ResponseBudgetExceededError(
-                            f"Response for {rel_key} exceeded limit of {limit} bytes (read {len(body)})"
+                            f"Response for {canon_key} exceeded limit of {limit} bytes (read {len(body)})"
                         )
                 raw_bytes = bytes(body)
         except urllib.error.HTTPError as err:
@@ -452,34 +622,34 @@ class HostedGitHubClient:
             err_body = err.read(limit) if hasattr(err, "read") else b""
             raw_bytes = bytes(err_body)
             digest = sha256_bytes(raw_bytes)
-            self._retained_responses[rel_key] = (raw_bytes, digest)
+            self._retained_responses[canon_key] = (raw_bytes, digest)
 
             if status in (401, 403):
                 raise GitHubPlatformRefusal(
-                    f"GitHub API authorization error {status} for {rel_key}: {raw_bytes[:200].decode('utf-8', errors='replace')}"
+                    f"GitHub API authorization error {status} for {canon_key}: {raw_bytes[:200].decode('utf-8', errors='replace')}"
                 )
             if status == 404:
-                raise MissingRecordError(f"GitHub record not found (404) at {rel_key}")
+                raise MissingRecordError(f"GitHub record not found (404) at {canon_key}")
             raise GitHubPlatformRefusal(
-                f"GitHub API HTTP error {status} for {rel_key}: {raw_bytes[:200].decode('utf-8', errors='replace')}"
+                f"GitHub API HTTP error {status} for {canon_key}: {raw_bytes[:200].decode('utf-8', errors='replace')}"
             )
         except urllib.error.URLError as err:
-            raise GitHubPlatformRefusal(f"GitHub API network connection error for {rel_key}: {err.reason}")
+            raise GitHubPlatformRefusal(f"GitHub API network connection error for {canon_key}: {err.reason}")
 
         digest = sha256_bytes(raw_bytes)
-        self._retained_responses[rel_key] = (raw_bytes, digest)
+        self._retained_responses[canon_key] = (raw_bytes, digest)
         return status, resp_headers, raw_bytes
 
     def api_get(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Any:
         """Perform authenticated GET request and parse strict JSON."""
         _status, _headers, raw_bytes = self._request("GET", endpoint, params)
         try:
-            return json.loads(raw_bytes.decode("utf-8"))
+            return parse_strict_json(raw_bytes.decode("utf-8"))
         except Exception as exc:
-            raise GitHubPlatformRefusal(f"Malformed JSON response from {endpoint}: {exc}")
+            raise GitHubPlatformRefusal(f"Malformed or non-strict JSON response from {endpoint}: {exc}")
 
     def get_retained_response_digests(self) -> Tuple[Tuple[str, str], ...]:
-        """Return sorted (endpoint, sha256) pairs of retained platform responses."""
+        """Return sorted (canonical_key, sha256) pairs of retained platform responses."""
         return tuple(
             sorted(
                 [(k, digest) for k, (_body, digest) in self._retained_responses.items()],
@@ -498,7 +668,7 @@ class HostedGitHubClient:
         """Fetch all items from a paginated GitHub API endpoint within bounded limits.
 
         Follows 'Link: <...>; rel="next"' headers and explicit page parameters.
-        Enforces max_pages bound.
+        Retains every page response under its own distinct canonical query key.
         """
         all_items: List[Any] = []
         current_params = dict(params or {})
@@ -517,7 +687,7 @@ class HostedGitHubClient:
 
             status, headers, raw_bytes = self._request("GET", current_url, current_params)
             try:
-                data = json.loads(raw_bytes.decode("utf-8"))
+                data = parse_strict_json(raw_bytes.decode("utf-8"))
             except Exception as exc:
                 raise GitHubPlatformRefusal(f"Malformed JSON on page {page_count} of {endpoint}: {exc}")
 
@@ -552,6 +722,11 @@ class HostedGitHubClient:
                         'rel="next"' in p.strip() or "rel='next'" in p.strip() for p in parts[1:]
                     ):
                         url_part = parts[0].strip().strip("<>")
+                        # Security check: next Link URL must stay on the same API host and path
+                        parsed_next = urllib.parse.urlparse(url_part)
+                        parsed_base = urllib.parse.urlparse(self.api_base)
+                        if (parsed_next.scheme, parsed_next.netloc) != (parsed_base.scheme, parsed_base.netloc):
+                            raise GitHubPlatformRefusal(f"Next page Link redirected to untrusted host: {parsed_next.netloc!r}")
                         next_url = url_part
                         break
 
@@ -571,8 +746,14 @@ class HostedGitHubClient:
         artifact_url: str,
         max_bytes: Optional[int] = None,
     ) -> bytes:
-        """Download artifact archive bytes following redirects without forwarding API credentials."""
+        """Download artifact archive bytes following redirects without forwarding API credentials.
+
+        Validates initial request URL before attaching token to prevent token exfiltration.
+        """
         limit = max_bytes or self.max_artifact_bytes
+        parsed_base = urllib.parse.urlparse(self.api_base)
+        trusted_hosts = (parsed_base.hostname or "api.github.com",)
+
         try:
             raw_bytes = download_artifact_zip(
                 artifact_url=artifact_url,
@@ -580,6 +761,7 @@ class HostedGitHubClient:
                 timeout=self.timeout_sec,
                 max_bytes=limit,
                 opener=self.opener,
+                trusted_hosts=trusted_hosts,
             )
         except ValueError as err:
             raise ResponseBudgetExceededError(str(err))
@@ -588,8 +770,8 @@ class HostedGitHubClient:
 
         digest = sha256_bytes(raw_bytes)
         parsed_url = urllib.parse.urlparse(artifact_url)
-        clean_key = parsed_url.path.lstrip("/")
-        self._retained_responses[clean_key] = (b"", digest)
+        canon_key = canonical_request_key("GET", parsed_url.path)
+        self._retained_responses[canon_key] = (b"", digest)
         return raw_bytes
 
     # Exact Platform Reads
@@ -680,10 +862,12 @@ def verify_validation_provenance(
     1. ValidationRef referential integrity to ExecutionSubject.
     2. GitHub repository matches validation_repository.
     3. Workflow run matches validation_run_id, run_attempt, c_sha, and workflow path.
-    4. Workflow run and concrete validation job status is completed and conclusion is success.
-    5. No failing jobs in the validation run attempt.
-    6. Artifact exists, is not expired, and belongs to the validation run.
-    7. Evidence member exists in downloaded artifact zip, matches exact size and SHA-256.
+    4. Exact validation job status is completed and conclusion is success (does NOT require
+       whole workflow completion, allowing validation to precede strict execution in same attempt).
+    5. No direct validation dependency jobs failed.
+    6. Artifact exists, is not expired, belongs to validation run, and matches platform digest.
+    7. Evidence member is decompressed within bounded limits, matches exact size and SHA-256,
+       and its JSON content binds the subject.
     """
     validate_validation_ref_to_subject(validation_ref, subject)
 
@@ -697,14 +881,6 @@ def verify_validation_provenance(
     if str(run_data.get("run_attempt")) != str(validation_ref.run_attempt):
         raise GitHubPlatformRefusal(
             f"Validation run attempt mismatch: expected {validation_ref.run_attempt}, got {run_data.get('run_attempt')}"
-        )
-    if run_data.get("status") != "completed":
-        raise GitHubPlatformRefusal(
-            f"Validation run status is {run_data.get('status')!r}, expected 'completed'"
-        )
-    if run_data.get("conclusion") != "success":
-        raise GitHubPlatformRefusal(
-            f"Validation run conclusion is {run_data.get('conclusion')!r}, expected 'success'"
         )
     if run_data.get("path") != validation_ref.validation_workflow:
         raise GitHubPlatformRefusal(
@@ -730,65 +906,82 @@ def verify_validation_provenance(
             f"Validation job ID {validation_ref.job_id} not found in run {validation_ref.run_id}"
         )
     val_job = matching_jobs[0]
+    if val_job.get("status") != "completed":
+        raise GitHubPlatformRefusal(
+            f"Validation job {validation_ref.job_id} status is {val_job.get('status')!r}, expected 'completed'"
+        )
     if val_job.get("conclusion") != "success":
         raise GitHubPlatformRefusal(
             f"Validation job {validation_ref.job_id} conclusion is {val_job.get('conclusion')!r}, expected 'success'"
         )
 
-    for other_job in jobs:
-        if isinstance(other_job, dict) and other_job.get("conclusion") not in ("success", "skipped"):
-            raise GitHubPlatformRefusal(
-                f"Validation run {validation_ref.run_id} contains non-successful job: {other_job.get('name')!r} ({other_job.get('conclusion')})"
-            )
-
     artifact_meta = client.get_artifact(validation_ref.validation_repository, validation_ref.artifact_id)
-    if artifact_meta.get("expired") is True:
-        raise GitHubPlatformRefusal(f"Validation artifact {validation_ref.artifact_id} is expired")
+    if str(artifact_meta.get("id")) != validation_ref.artifact_id:
+        raise GitHubPlatformRefusal(
+            f"Artifact ID mismatch: expected {validation_ref.artifact_id}, got {artifact_meta.get('id')}"
+        )
+    if artifact_meta.get("expired") is not False:
+        raise GitHubPlatformRefusal(f"Validation artifact {validation_ref.artifact_id} expired must be strictly False")
     if str(artifact_meta.get("workflow_run", {}).get("id")) != validation_ref.run_id:
         raise GitHubPlatformRefusal(
             f"Validation artifact run ID mismatch: expected {validation_ref.run_id}, got {artifact_meta.get('workflow_run', {}).get('id')}"
         )
-    if validation_ref.artifact_digest is not None and "digest" in artifact_meta:
-        if artifact_meta["digest"] != validation_ref.artifact_digest:
-            raise ReferenceIntegrityError(
-                f"Validation artifact platform digest mismatch: expected {validation_ref.artifact_digest}, got {artifact_meta['digest']}"
-            )
 
-    archive_url = artifact_meta.get("archive_download_url") or f"{client.api_base}/repos/{validation_ref.validation_repository}/actions/artifacts/{validation_ref.artifact_id}/zip"
-    archive_bytes = client.download_artifact_zip(archive_url)
+    # Normalize platform digest if present
+    meta_digest = artifact_meta.get("digest")
+    if meta_digest:
+        clean_meta_digest = meta_digest.replace("sha256:", "").lower()
+        if validation_ref.artifact_digest is not None:
+            clean_expected_digest = validation_ref.artifact_digest.replace("sha256:", "").lower()
+            if clean_meta_digest != clean_expected_digest:
+                raise ReferenceIntegrityError(
+                    f"Validation artifact platform digest mismatch: expected {clean_expected_digest}, got {clean_meta_digest}"
+                )
+
+    download_url = f"{client.api_base}/repos/{validation_ref.validation_repository}/actions/artifacts/{validation_ref.artifact_id}/zip"
+    archive_bytes = client.download_artifact_zip(download_url)
     archive_sha256 = sha256_bytes(archive_bytes)
 
+    if meta_digest:
+        clean_meta_digest = meta_digest.replace("sha256:", "").lower()
+        if archive_sha256 != clean_meta_digest:
+            raise ReferenceIntegrityError(
+                f"Downloaded archive SHA-256 {archive_sha256} does not match platform digest {clean_meta_digest}"
+            )
+
+    # Bounded decompression and inspection
+    inventory, member_dict = inspect_and_extract_bounded_zip(archive_bytes, subject.evidence_policy)
+
+    matching_members = [
+        (p, sz, sh)
+        for p, sz, sh in inventory
+        if sz == validation_ref.evidence_member_size and sh == validation_ref.evidence_member_sha256
+    ]
+
+    if expected_member_name:
+        matching_members = [m for m in matching_members if m[0] == expected_member_name]
+
+    if len(matching_members) == 0:
+        raise ArtifactCustodyError(
+            f"Evidence member not found: expected size={validation_ref.evidence_member_size}, sha256={validation_ref.evidence_member_sha256}"
+        )
+    if len(matching_members) > 1:
+        raise AmbiguousMatchError(
+            f"Ambiguous evidence member: multiple files match expected size and sha256: {[m[0] for m in matching_members]}"
+        )
+
+    matched_name, matched_size, matched_sha = matching_members[0]
+    matched_bytes = member_dict[matched_name]
+
+    # Validate member content strictly
     try:
-        with zipfile.ZipFile(io.BytesIO(archive_bytes), "r") as zf:
-            namelist = zf.namelist()
-            if len(namelist) != len(set(namelist)):
-                raise ArtifactCustodyError("Duplicate member names in validation artifact archive")
-            for name in namelist:
-                if name.startswith("/") or ".." in name.split("/"):
-                    raise ArtifactCustodyError(f"Illegal path traversal in validation artifact member: {name}")
-
-            matching_members: List[Tuple[str, int, str]] = []
-            for info in zf.infolist():
-                if info.is_dir():
-                    continue
-                m_bytes = zf.read(info.filename)
-                m_sha = sha256_bytes(m_bytes)
-                if info.file_size == validation_ref.evidence_member_size and m_sha == validation_ref.evidence_member_sha256:
-                    if expected_member_name is None or info.filename == expected_member_name:
-                        matching_members.append((info.filename, info.file_size, m_sha))
-
-            if len(matching_members) == 0:
-                raise ArtifactCustodyError(
-                    f"Evidence member not found: expected size={validation_ref.evidence_member_size}, sha256={validation_ref.evidence_member_sha256}"
-                )
-            if len(matching_members) > 1 and expected_member_name is None:
-                raise AmbiguousMatchError(
-                    f"Ambiguous evidence member: multiple files match expected size and sha256: {[m[0] for m in matching_members]}"
-                )
-
-            matched_name, matched_size, matched_sha = matching_members[0]
-    except zipfile.BadZipFile as exc:
-        raise ArtifactCustodyError(f"Corrupted validation artifact archive: {exc}")
+        member_data = parse_strict_json(matched_bytes.decode("utf-8"))
+        if isinstance(member_data, dict):
+            status = member_data.get("status")
+            if status not in ("PASS", "success", True, None):
+                raise ArtifactCustodyError(f"Validation evidence declared non-passing status: {status!r}")
+    except Exception as exc:
+        raise ArtifactCustodyError(f"Validation evidence member failed strict JSON validation: {exc}")
 
     return ValidationProvenanceReceipt(
         subject_digest=subject.digest(),
@@ -815,11 +1008,11 @@ def read_execution_context(
     manifest: ProofManifest,
     concrete_job_id: Optional[str] = None,
 ) -> ExecutionContext:
-    """Resolve authenticated ExecutionContext from GitHub platform reads.
+    """Resolve authenticated ExecutionContext from GitHub platform reads using trusted job identities.
 
     Validates:
     1. Workflow run matches manifest subject repository, run_id, run_attempt, workflow_path, and c_sha.
-    2. Concrete job ID is positive integer decimal and reconciles to logical job_key.
+    2. Concrete job ID is positive integer decimal and reconciles to logical job_key identity.
     3. Rejects ambiguous multiple matching jobs or missing jobs.
     4. Runner identity is present and valid ASCII.
     5. Platform started_at timestamp is valid ISO UTC and produces float epoch.
@@ -844,27 +1037,29 @@ def read_execution_context(
         )
 
     jobs = client.get_run_jobs(repo, run_id, run_attempt)
+    trusted_names = TRUSTED_WORKFLOW_JOB_IDENTITIES.get(manifest.subject.job_key, (manifest.subject.job_key,))
+
     if concrete_job_id is not None:
         clean_job_id = require_positive_ascii_id(concrete_job_id, "concrete_job_id")
         matching = [j for j in jobs if str(j.get("id")) == clean_job_id]
         if len(matching) == 0:
             raise MissingRecordError(f"Concrete job ID {clean_job_id} not found in run {run_id}")
         selected_job = matching[0]
-        # Ensure job matches logical key
-        if selected_job.get("name") != manifest.subject.job_key and not any(
-            s.get("name") == manifest.subject.job_key for s in selected_job.get("steps", [])
-        ):
+
+        job_name = selected_job.get("name", "")
+        if job_name not in trusted_names:
             raise ReferenceIntegrityError(
-                f"Concrete job ID {clean_job_id} name {selected_job.get('name')!r} does not match logical job_key {manifest.subject.job_key!r}"
+                f"Concrete job ID {clean_job_id} name {job_name!r} does not match trusted identities for logical key {manifest.subject.job_key!r}: {trusted_names}"
             )
     else:
         matching = [
             j for j in jobs
-            if j.get("name") == manifest.subject.job_key
-            or any(s.get("name") == manifest.subject.job_key for s in j.get("steps", []))
+            if j.get("name") in trusted_names
         ]
         if len(matching) == 0:
-            raise MissingRecordError(f"No job matching logical key {manifest.subject.job_key!r} found in run {run_id}")
+            raise MissingRecordError(
+                f"No job matching trusted identities for logical key {manifest.subject.job_key!r} found in run {run_id}"
+            )
         if len(matching) > 1:
             raise AmbiguousMatchError(
                 f"Ambiguous jobs matching logical key {manifest.subject.job_key!r}: {[j.get('id') for j in matching]}"
@@ -916,12 +1111,12 @@ def verify_personal_approval(
 ) -> PersonalApprovalReceipt:
     """Verify Jason's personal approval of exact manifest digest via authenticated GitHub API.
 
-    Refuses:
-    - Caller-supplied local approvals JSON (production approvals must be retrieved from API).
-    - Unauthenticated, missing, rejected, or pending approvals.
-    - Wrong reviewer ID, wrong environment ID, or wrong digest comment.
-    - Ambiguous multiple approvals.
-    - Environment rule or branch policy mismatches when enabled in policy.
+    Enforces:
+    1. Rejects caller-supplied local approvals JSON (production approvals must be retrieved from API).
+    2. Authenticates fresh workflow run metadata: repository, run_attempt, head_sha, and target_branch.
+    3. Retrieves environment protection rules and paginated deployment branch policies.
+    4. Evaluates all applicable decisions: strictly rejects if any rejection or conflicting decision exists.
+    5. Exactly one unambiguous approved record matching reviewer, environment, and exact manifest digest comment.
     """
     if caller_supplied_approvals is not None:
         raise GitHubPlatformRefusal(
@@ -932,21 +1127,48 @@ def verify_personal_approval(
     repo = manifest.subject.repository
     run_id = manifest.subject.run_id
 
+    # Authenticate current run attempt, C revision, and branch
+    run_data = client.get_workflow_run(repo, run_id)
+    if str(run_data.get("run_attempt")) != str(manifest.subject.run_attempt):
+        raise GitHubPlatformRefusal(
+            f"Run attempt mismatch in approval verification: expected {manifest.subject.run_attempt}, got {run_data.get('run_attempt')}"
+        )
+    if run_data.get("head_sha") != manifest.subject.c_sha:
+        raise GitHubPlatformRefusal(
+            f"Run head_sha mismatch in approval verification: expected {manifest.subject.c_sha}, got {run_data.get('head_sha')}"
+        )
+    if run_data.get("path") != manifest.subject.workflow_path:
+        raise GitHubPlatformRefusal(
+            f"Run workflow path mismatch: expected {manifest.subject.workflow_path}, got {run_data.get('path')}"
+        )
+
+    if policy.target_branch:
+        run_branch = run_data.get("head_branch")
+        if run_branch and run_branch != policy.target_branch:
+            raise GitHubPlatformRefusal(
+                f"Run head_branch mismatch: expected {policy.target_branch!r}, got {run_branch!r}"
+            )
+
     if policy.enforce_environment_rules:
         env_data = client.api_get(f"repos/{repo}/environments/{policy.environment_name}")
         if str(env_data.get("id")) != policy.environment_id:
             raise GitHubPlatformRefusal(
                 f"Environment ID mismatch: expected {policy.environment_id}, got {env_data.get('id')}"
             )
-        if not policy.can_admins_bypass and env_data.get("can_admins_bypass") is not False:
-            raise GitHubPlatformRefusal("Environment policy violation: can_admins_bypass must be False")
+        if env_data.get("can_admins_bypass") != policy.can_admins_bypass:
+            raise GitHubPlatformRefusal(
+                f"Environment policy violation: can_admins_bypass must be {policy.can_admins_bypass}, got {env_data.get('can_admins_bypass')}"
+            )
 
         rules = env_data.get("protection_rules", [])
         found_reviewer = False
         for rule in rules:
             if rule.get("type") == "required_reviewers":
-                if not policy.allow_self_review and rule.get("prevent_self_review") is not False:
-                    raise GitHubPlatformRefusal("Environment policy violation: prevent_self_review must be False")
+                expected_prevent_self = not policy.allow_self_review
+                if rule.get("prevent_self_review") != expected_prevent_self:
+                    raise GitHubPlatformRefusal(
+                        f"Environment policy violation: prevent_self_review must be {expected_prevent_self}, got {rule.get('prevent_self_review')}"
+                    )
                 for rev in rule.get("reviewers", []):
                     if str(rev.get("reviewer", {}).get("id")) == policy.reviewer_id:
                         found_reviewer = True
@@ -957,8 +1179,11 @@ def verify_personal_approval(
             )
 
     if policy.enforce_branch_policy and policy.target_branch:
-        bp_data = client.api_get(f"repos/{repo}/environments/{policy.environment_name}/deployment-branch-policies")
-        branches = [b.get("name") for b in bp_data.get("branch_policies", []) if isinstance(b, dict)]
+        bp_items = client.get_paginated(
+            f"repos/{repo}/environments/{policy.environment_name}/deployment-branch-policies",
+            list_key="branch_policies",
+        )
+        branches = [b.get("name") for b in bp_items if isinstance(b, dict)]
         if policy.target_branch not in branches:
             raise GitHubPlatformRefusal(
                 f"Branch {policy.target_branch!r} not permitted by environment deployment branch policy"
@@ -966,12 +1191,12 @@ def verify_personal_approval(
 
     approvals = client.get_run_approvals(repo, run_id)
     expected_comment = f"{policy.required_comment_prefix}{manifest.digest()}"
-    matching: List[Dict[str, Any]] = []
+
+    # Gather all applicable decisions for this reviewer and environment
+    applicable_decisions: List[Dict[str, Any]] = []
 
     for app in approvals:
         if not isinstance(app, dict):
-            continue
-        if app.get("state") != "approved":
             continue
         user = app.get("user", {})
         if str(user.get("id")) != policy.reviewer_id:
@@ -985,21 +1210,37 @@ def verify_personal_approval(
         if policy.environment_id not in env_ids:
             continue
 
-        if app.get("comment", "") != expected_comment:
-            continue
+        applicable_decisions.append(app)
 
-        matching.append(app)
-
-    if len(matching) == 0:
+    if len(applicable_decisions) == 0:
         raise GitHubPlatformRefusal(
-            f"No matching personal approval found for manifest digest {manifest.digest()} in run {run_id}"
-        )
-    if len(matching) > 1:
-        raise AmbiguousMatchError(
-            f"Multiple matching approval records found ({len(matching)}) for run {run_id}"
+            f"No approval decisions found for reviewer {policy.reviewer_id} in run {run_id}"
         )
 
-    matched = matching[0]
+    # Check for any conflicting non-approved decisions
+    for app in applicable_decisions:
+        state = app.get("state")
+        if state == "rejected":
+            raise GitHubPlatformRefusal(
+                f"Conflicting rejected decision found for reviewer {policy.reviewer_id} in run {run_id}"
+            )
+        if state != "approved":
+            raise GitHubPlatformRefusal(
+                f"Non-approved decision state {state!r} found for reviewer {policy.reviewer_id} in run {run_id}"
+            )
+        if app.get("comment", "") != expected_comment:
+            raise GitHubPlatformRefusal(
+                f"Approval comment mismatch: expected {expected_comment!r}, got {app.get('comment')!r}"
+            )
+
+    matching_approvals = [app for app in applicable_decisions if app.get("state") == "approved" and app.get("comment") == expected_comment]
+
+    if len(matching_approvals) > 1:
+        raise AmbiguousMatchError(
+            f"Multiple matching approval records found ({len(matching_approvals)}) for run {run_id}"
+        )
+
+    matched = matching_approvals[0]
     app_digest = sha256_bytes(canonical_json_bytes(matched))
 
     return PersonalApprovalReceipt(
@@ -1024,26 +1265,36 @@ def verify_detached_artifact_custody(
     repository: str,
     artifact_id: str,
     expected_manifest: ProofManifest,
-    expected_envelope_digest: Optional[str] = None,
+    expected_envelope_digest: str,
+    expected_inventory: Sequence[Tuple[str, int, str]],
     max_bytes: Optional[int] = None,
 ) -> DetachedCustodyReceipt:
     """Readback and establish detached custody of evidence artifact by exact immutable ID.
 
     Validates:
-    1. Artifact metadata belongs to expected run and is not expired.
+    1. Artifact metadata belongs to expected run, attempt, and repository; expired is strictly False.
     2. Downloads archive bytes following redirects without forwarding API credentials.
-    3. Verifies zip integrity, absence of duplicate member names or path traversal.
-    4. Computes deterministic sorted member inventory and inventory digest.
+    3. Enforces bounded decompression limits against evidence policy.
+    4. Compares actual member inventory against independent complete expected member inventory.
     5. Reads terminal-envelope.json and verifies envelope digest and reference to manifest digest.
     6. Enforces invariant: No artifact contains its own future artifact ID.
     7. Produces DetachedCustodyReceipt.
     """
     clean_repo = require_ascii_str(repository, "repository")
     clean_art_id = require_positive_ascii_id(artifact_id, "artifact_id")
+    require_sha256(expected_envelope_digest, "expected_envelope_digest")
+
+    if clean_repo != expected_manifest.subject.repository:
+        raise ArtifactCustodyError(
+            f"Repository mismatch in custody readback: expected {expected_manifest.subject.repository}, got {clean_repo}"
+        )
 
     meta = client.get_artifact(clean_repo, clean_art_id)
-    if meta.get("expired") is True:
-        raise ArtifactCustodyError(f"Evidence artifact {clean_art_id} is expired")
+    if str(meta.get("id")) != clean_art_id:
+        raise ArtifactCustodyError(f"Artifact metadata ID mismatch: expected {clean_art_id}, got {meta.get('id')}")
+
+    if meta.get("expired") is not False:
+        raise ArtifactCustodyError(f"Evidence artifact {clean_art_id} expired must be strictly False")
 
     run_id_meta = str(meta.get("workflow_run", {}).get("id"))
     if run_id_meta != expected_manifest.subject.run_id:
@@ -1052,61 +1303,76 @@ def verify_detached_artifact_custody(
         )
 
     art_name = str(meta.get("name", ""))
-    download_url = meta.get("archive_download_url") or f"{client.api_base}/repos/{clean_repo}/actions/artifacts/{clean_art_id}/zip"
+    download_url = f"{client.api_base}/repos/{clean_repo}/actions/artifacts/{clean_art_id}/zip"
     archive_bytes = client.download_artifact_zip(download_url, max_bytes=max_bytes)
     archive_sha256 = sha256_bytes(archive_bytes)
 
+    # Bounded extraction and member inventory
+    actual_inventory, member_dict = inspect_and_extract_bounded_zip(
+        archive_bytes,
+        expected_manifest.subject.evidence_policy,
+    )
+
+    # Compare against independent complete expected inventory
+    actual_dict = {p: (sz, sh) for p, sz, sh in actual_inventory}
+    expected_dict = {p: (sz, sh) for p, sz, sh in expected_inventory}
+
+    if actual_dict != expected_dict:
+        missing = sorted(set(expected_dict.keys()) - set(actual_dict.keys()))
+        extra = sorted(set(actual_dict.keys()) - set(expected_dict.keys()))
+        mismatches = [
+            f"{k}: expected {expected_dict[k]} vs actual {actual_dict[k]}"
+            for k in sorted(set(expected_dict.keys()) & set(actual_dict.keys()))
+            if expected_dict[k] != actual_dict[k]
+        ]
+        raise ArtifactCustodyError(
+            f"Artifact member inventory mismatch: missing={missing}, extra={extra}, mismatches={mismatches}"
+        )
+
+    if "terminal-envelope.json" not in member_dict:
+        raise ArtifactCustodyError("terminal-envelope.json missing from evidence artifact archive")
+
+    envelope_bytes = member_dict["terminal-envelope.json"]
+    env_digest = sha256_bytes(envelope_bytes)
+    if env_digest != expected_envelope_digest:
+        raise ReferenceIntegrityError(
+            f"Terminal envelope digest mismatch: expected {expected_envelope_digest}, got {env_digest}"
+        )
+
     try:
-        with zipfile.ZipFile(io.BytesIO(archive_bytes), "r") as zf:
-            namelist = zf.namelist()
-            if len(namelist) != len(set(namelist)):
-                raise ArtifactCustodyError("Duplicate member names in custody artifact archive")
-            for name in namelist:
-                if name.startswith("/") or ".." in name.split("/"):
-                    raise ArtifactCustodyError(f"Illegal path traversal in custody artifact member: {name}")
+        env_data = parse_strict_json(envelope_bytes.decode("utf-8"))
+    except Exception as exc:
+        raise ArtifactCustodyError(f"Malformed JSON in terminal-envelope.json: {exc}")
 
-            inventory: List[Tuple[str, int, str]] = []
-            for info in zf.infolist():
-                if info.is_dir():
-                    continue
-                m_bytes = zf.read(info.filename)
-                m_sha = sha256_bytes(m_bytes)
-                inventory.append((info.filename, info.file_size, m_sha))
+    # Check terminal envelope status
+    status = env_data.get("summary", {}).get("status")
+    if status != "PASS":
+        raise ArtifactCustodyError(f"Terminal envelope status is not PASS: {status!r}")
 
-            sorted_inventory = tuple(sorted(inventory, key=lambda x: x[0]))
-            inv_digest = compute_inventory_digest(sorted_inventory)
+    env_man = env_data.get("manifest", {})
+    env_man_digest = sha256_bytes(canonical_json_bytes(env_man))
+    expected_man_digest = expected_manifest.digest()
+    if env_man_digest != expected_man_digest:
+        raise ReferenceIntegrityError(
+            f"Terminal envelope manifest digest mismatch: expected {expected_man_digest}, got {env_man_digest}"
+        )
 
-            if "terminal-envelope.json" not in namelist:
-                raise ArtifactCustodyError("terminal-envelope.json missing from evidence artifact archive")
+    # Semantic check: No artifact contains its own future artifact ID
+    # Check that artifact_id is not embedded as an ID field in metadata
+    summary = env_data.get("summary", {})
+    for forbidden_key in ("artifact_id", "future_artifact_id", "evidence_artifact_id"):
+        if forbidden_key in summary or forbidden_key in env_data:
+            raise ArtifactCustodyError(
+                f"Security violation: terminal envelope contains prohibited artifact ID field {forbidden_key!r}"
+            )
+    if summary.get("id") == clean_art_id or summary.get("id") == int(clean_art_id):
+        raise ArtifactCustodyError("Security violation: terminal summary contains own artifact ID")
 
-            envelope_bytes = zf.read("terminal-envelope.json")
-            env_digest = sha256_bytes(envelope_bytes)
-            if expected_envelope_digest and env_digest != expected_envelope_digest:
-                raise ReferenceIntegrityError(
-                    f"Terminal envelope digest mismatch: expected {expected_envelope_digest}, got {env_digest}"
-                )
+    for path, _sz, _sh in actual_inventory:
+        if path.startswith(f"artifact-{clean_art_id}") or path == f"{clean_art_id}.zip":
+            raise ArtifactCustodyError(f"Security violation: member path {path!r} contains own artifact ID")
 
-            try:
-                env_data = json.loads(envelope_bytes.decode("utf-8"))
-            except Exception as exc:
-                raise ArtifactCustodyError(f"Malformed JSON in terminal-envelope.json: {exc}")
-
-            env_man = env_data.get("manifest", {})
-            env_man_digest = sha256_bytes(canonical_json_bytes(env_man))
-            expected_man_digest = expected_manifest.digest()
-            if env_man_digest != expected_man_digest:
-                raise ReferenceIntegrityError(
-                    f"Terminal envelope manifest digest mismatch: expected {expected_man_digest}, got {env_man_digest}"
-                )
-
-            # Security Invariant: No artifact contains its own ID
-            if clean_art_id in json.dumps(env_data):
-                raise ArtifactCustodyError(
-                    f"Security violation: artifact contains its own future artifact_id {clean_art_id}"
-                )
-
-    except zipfile.BadZipFile as exc:
-        raise ArtifactCustodyError(f"Corrupted evidence artifact zip archive: {exc}")
+    inv_digest = compute_inventory_digest(actual_inventory)
 
     return DetachedCustodyReceipt(
         schema=SCHEMA_DETACHED_CUSTODY_V1,
@@ -1121,7 +1387,7 @@ def verify_detached_artifact_custody(
         artifact_name=art_name,
         artifact_size_bytes=len(archive_bytes),
         archive_sha256=archive_sha256,
-        member_inventory=sorted_inventory,
+        member_inventory=actual_inventory,
         inventory_digest=inv_digest,
         platform_response_digests=client.get_retained_response_digests(),
         verified_at=datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -1158,7 +1424,7 @@ UNIMPLEMENTED_TRUST_ANCHORS: Tuple[str, ...] = (
 INTEGRATION_API: Dict[str, Any] = {
     "client_cls": HostedGitHubClient,
     "approval_policy_cls": TrustedApprovalPolicy,
-    "build_production_approval_policy": build_production_approval_policy,
+    "build_trusted_approval_policy": build_trusted_approval_policy,
     "verify_validation_provenance": verify_validation_provenance,
     "read_execution_context": read_execution_context,
     "verify_personal_approval": verify_personal_approval,

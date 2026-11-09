@@ -4,10 +4,11 @@ Implements planner agent://PlanControllerRepairs:163-193, 297-312:
 - Explicit finite EvidenceLimits and invocation-wide EvidenceBudget accounting.
 - Descriptor-relative, no-follow, non-blocking safe stable file and directory access.
 - Unique-inode bytes vs hardlink alias accounting and emitted archive bounds.
+- Held inode anchor baselines preventing recycled-inode and modified-alias races.
 - Depth, path, entries, descriptors, helper memory, and collection deadline enforcement.
-- Canonical JSON validation with duplicate-key and non-finite number rejection.
+- Canonical JSON validation with duplicate-key, non-finite number, and float-overflow rejection.
 - Bounded ledger line and streamed log readers with incomplete-frame rejection.
-- Bounded alias-preserving checkpoint archive creation.
+- Bounded alias-preserving checkpoint archive creation with descriptor-relative target lifecycle.
 """
 from __future__ import annotations
 
@@ -206,12 +207,15 @@ class EvidenceLimits:
         )
 
 
-@dataclass
-class InodeRecord:
+@dataclass(frozen=True)
+class InodeAnchor:
     first_path: str
-    size: int
-    first_arcname: str | None = None
-    sha256: str | None = None
+    st_dev: int
+    st_ino: int
+    st_size: int
+    st_mode: int | None = None
+    st_mtime_ns: int | None = None
+    st_ctime_ns: int | None = None
 
 
 class EvidenceBudget:
@@ -236,8 +240,8 @@ class EvidenceBudget:
         self.helper_memory_bytes = 0
         self.peak_helper_memory_bytes = 0
 
-        # Mapping of (st_dev, st_ino) -> InodeRecord for unique-inode vs alias accounting
-        self.seen_inodes: dict[tuple[int, int], InodeRecord] = {}
+        # Mapping of (st_dev, st_ino) -> InodeAnchor for unique-inode vs alias accounting and baseline verification
+        self.seen_inodes: dict[tuple[int, int], InodeAnchor] = {}
 
     def check_deadline(self) -> None:
         now = time.monotonic()
@@ -246,19 +250,59 @@ class EvidenceBudget:
                 f"COLLECTION-DEADLINE-EXCEEDED: now {now:.3f} > deadline {self.limits.deadline:.3f}"
             )
 
-    def charge_file(self, dev: int, ino: int, size: int, path: str) -> bool:
-        """Charges file size against limits.
+    def charge_file(
+        self,
+        dev_or_stat: int | os.stat_result,
+        ino: int = 0,
+        size: int = 0,
+        path: str = "",
+        *,
+        mode: int | None = None,
+        mtime_ns: int | None = None,
+        ctime_ns: int | None = None,
+    ) -> bool:
+        """Charges file size against limits and validates alias baseline integrity.
 
         Returns True if the inode was already seen (an alias/hardlink),
         False if it is a new unique inode.
         """
         self.check_deadline()
+        if isinstance(dev_or_stat, os.stat_result):
+            dev = dev_or_stat.st_dev
+            ino = dev_or_stat.st_ino
+            size = dev_or_stat.st_size
+            mode = dev_or_stat.st_mode
+            mtime_ns = dev_or_stat.st_mtime_ns
+            ctime_ns = dev_or_stat.st_ctime_ns
+        else:
+            dev = dev_or_stat
+
         if size > self.limits.max_file_bytes:
             raise EvidenceLimitExceededError(
                 f"FILE-SIZE-EXCEEDED: {path} size {size} > max {self.limits.max_file_bytes}"
             )
         key = (dev, ino)
         if key in self.seen_inodes:
+            anchor = self.seen_inodes[key]
+            # Validate alias baseline integrity against anchor
+            if size != anchor.st_size:
+                raise UnstableEvidenceError(
+                    f"ALIAS-BASELINE-MISMATCH: {path} size {size} != anchor {anchor.first_path} size {anchor.st_size}"
+                )
+            if mode is not None and anchor.st_mode is not None:
+                if stat.S_IFMT(mode) != stat.S_IFMT(anchor.st_mode) or mode != anchor.st_mode:
+                    raise UnstableEvidenceError(
+                        f"ALIAS-BASELINE-MISMATCH: {path} mode {oct(mode)} != anchor {anchor.first_path} mode {oct(anchor.st_mode)}"
+                    )
+            if mtime_ns is not None and anchor.st_mtime_ns is not None and mtime_ns != anchor.st_mtime_ns:
+                raise UnstableEvidenceError(
+                    f"ALIAS-BASELINE-MISMATCH: {path} mtime differs from anchor {anchor.first_path}"
+                )
+            if ctime_ns is not None and anchor.st_ctime_ns is not None and ctime_ns != anchor.st_ctime_ns:
+                raise UnstableEvidenceError(
+                    f"ALIAS-BASELINE-MISMATCH: {path} ctime differs from anchor {anchor.first_path}"
+                )
+
             self.total_aliases += 1
             if self.total_aliases > self.limits.max_aliases:
                 raise EvidenceLimitExceededError(
@@ -272,7 +316,15 @@ class EvidenceBudget:
                     f"UNIQUE-INODE-BYTES-EXCEEDED: {new_total} > max {self.limits.max_unique_inode_bytes}"
                 )
             self.total_unique_inode_bytes = new_total
-            self.seen_inodes[key] = InodeRecord(first_path=path, size=size)
+            self.seen_inodes[key] = InodeAnchor(
+                first_path=path,
+                st_dev=dev,
+                st_ino=ino,
+                st_size=size,
+                st_mode=mode,
+                st_mtime_ns=mtime_ns,
+                ctime_ns=ctime_ns,
+            )
             return False
 
     def charge_alias(self, path: str, key: tuple[int, int]) -> None:
@@ -404,16 +456,21 @@ def _nofollow(
     mode: int = 0o600,
     budget: EvidenceBudget | None = None,
 ) -> int:
-    """Open without following links. Links or non-directories yield an UnsafeEvidenceError."""
+    """Open without following links. Closes descriptor immediately if budget rejects to prevent FD leaks."""
     try:
         fd = os.open(name, flags | os.O_NOFOLLOW, mode, dir_fd=dir_fd)
-        if budget is not None:
-            budget.acquire_descriptor()
-        return fd
     except OSError as exc:
         if exc.errno in (errno.ELOOP, errno.ENOTDIR):
             raise UnsafeEvidenceError(f"{code} {label}: link or non-directory") from exc
         raise
+
+    if budget is not None:
+        try:
+            budget.acquire_descriptor()
+        except BaseException:
+            os.close(fd)
+            raise
+    return fd
 
 
 def _close_tracked(budget: EvidenceBudget | None, fd: int | None) -> None:
@@ -423,6 +480,18 @@ def _close_tracked(budget: EvidenceBudget | None, fd: int | None) -> None:
         finally:
             if budget is not None:
                 budget.release_descriptor()
+
+
+def _parse_float(val: str) -> float:
+    """Parses JSON float and rejects non-finite values (such as float overflow from 1e10000)."""
+    f = float(val)
+    if not math.isfinite(f):
+        raise BoundedEvidenceError(f"NON-FINITE-JSON-NUMBER: float overflow {val!r}")
+    return f
+
+
+def _reject_constant(val: str) -> None:
+    raise BoundedEvidenceError(f"NON-FINITE-JSON-NUMBER: {val}")
 
 
 def _verify_file_stability(
@@ -461,7 +530,11 @@ class OwnedRoot:
 
         fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
         if self.budget is not None:
-            self.budget.acquire_descriptor()
+            try:
+                self.budget.acquire_descriptor()
+            except BaseException:
+                os.close(fd)
+                raise
         try:
             for component in path_str.strip("/").split("/"):
                 if not component:
@@ -514,7 +587,11 @@ class OwnedRoot:
 
         fd = os.dup(self.fd)
         if self.budget is not None:
-            self.budget.acquire_descriptor()
+            try:
+                self.budget.acquire_descriptor()
+            except BaseException:
+                os.close(fd)
+                raise
         try:
             prefix: list[str] = []
             for component in parts[:-1]:
@@ -550,7 +627,11 @@ class OwnedRoot:
         else:
             fd = os.dup(self.fd)
             if self.budget is not None:
-                self.budget.acquire_descriptor()
+                try:
+                    self.budget.acquire_descriptor()
+                except BaseException:
+                    os.close(fd)
+                    raise
 
         self.remember(name, fd)
 
@@ -559,29 +640,29 @@ class OwnedRoot:
                 self.budget.check_deadline()
                 self.budget.charge_directory_depth(depth)
 
-            # Bound directory enumeration before sorting to avoid unbound memory allocation.
+            # Bound directory enumeration before sorting to avoid unbounded memory allocation.
             raw_entries: list[str] = []
             dup_fd = os.dup(directory)
             if self.budget is not None:
-                self.budget.acquire_descriptor()
-            scandir_it = None
+                try:
+                    self.budget.acquire_descriptor()
+                except BaseException:
+                    os.close(dup_fd)
+                    raise
+
             try:
-                scandir_it = os.scandir(dup_fd)
-                with scandir_it as it:
+                with os.scandir(dup_fd) as it:
                     for entry in it:
                         entry_rel = f"{rel}/{entry.name}" if rel else entry.name
                         if self.budget is not None:
                             self.budget.check_deadline()
                             self.budget.charge_entry(entry_rel)
                         raw_entries.append(entry.name)
-            except BaseException:
-                if scandir_it is None:
-                    try:
-                        os.close(dup_fd)
-                    except OSError:
-                        pass
-                raise
             finally:
+                try:
+                    os.close(dup_fd)
+                except OSError:
+                    pass
                 if self.budget is not None:
                     self.budget.release_descriptor()
 
@@ -675,7 +756,7 @@ class BoundedEvidenceReader:
                     raise EvidenceLimitExceededError(
                         f"FILE-SIZE-EXCEEDED: {name} size {before.st_size} > {self.budget.limits.max_file_bytes}"
                     )
-                self.budget.charge_file(before.st_dev, before.st_ino, before.st_size, name)
+                self.budget.charge_file(before, path=name)
                 self.budget.charge_helper_memory(before.st_size)
                 try:
                     chunks: list[bytes] = []
@@ -737,9 +818,6 @@ class BoundedEvidenceReader:
         except UnicodeDecodeError as exc:
             raise BoundedEvidenceError(f"INVALID-UTF8-JSON: {name}") from exc
 
-        def _reject_constant(val: str) -> None:
-            raise BoundedEvidenceError(f"NON-FINITE-JSON-NUMBER: {val}")
-
         def _object_pairs_hook(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             d: dict[str, Any] = {}
             for k, v in pairs:
@@ -749,7 +827,12 @@ class BoundedEvidenceReader:
             return d
 
         try:
-            data = json.loads(text, parse_constant=_reject_constant, object_pairs_hook=_object_pairs_hook)
+            data = json.loads(
+                text,
+                parse_float=_parse_float,
+                parse_constant=_reject_constant,
+                object_pairs_hook=_object_pairs_hook,
+            )
         except json.JSONDecodeError as exc:
             raise BoundedEvidenceError(f"MALFORMED-JSON: {name}: {exc}") from exc
 
@@ -783,7 +866,7 @@ class BoundedEvidenceReader:
                     raise EvidenceLimitExceededError(
                         f"FILE-SIZE-EXCEEDED: {name} size {before.st_size} > {self.budget.limits.max_file_bytes}"
                     )
-                self.budget.charge_file(before.st_dev, before.st_ino, before.st_size, name)
+                self.budget.charge_file(before, path=name)
 
                 lines: list[str] = []
                 bytes_read = 0
@@ -830,9 +913,6 @@ class BoundedEvidenceReader:
         lines = self.read_ledger_lines(name, required=required)
         records: list[dict[str, Any]] = []
 
-        def _reject_constant(val: str) -> None:
-            raise BoundedEvidenceError(f"NON-FINITE-JSON-NUMBER: {val}")
-
         def _object_pairs_hook(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             d: dict[str, Any] = {}
             for k, v in pairs:
@@ -843,7 +923,12 @@ class BoundedEvidenceReader:
 
         for line_idx, line in enumerate(lines):
             try:
-                rec = json.loads(line, parse_constant=_reject_constant, object_pairs_hook=_object_pairs_hook)
+                rec = json.loads(
+                    line,
+                    parse_float=_parse_float,
+                    parse_constant=_reject_constant,
+                    object_pairs_hook=_object_pairs_hook,
+                )
             except json.JSONDecodeError as exc:
                 raise BoundedEvidenceError(f"MALFORMED-RECORD: {name}:{line_idx + 1}: {exc}") from exc
             if not isinstance(rec, dict):
@@ -867,7 +952,7 @@ class BoundedEvidenceReader:
                     raise EvidenceLimitExceededError(
                         f"FILE-SIZE-EXCEEDED: {name} size {before.st_size} > {self.budget.limits.max_file_bytes}"
                     )
-                self.budget.charge_file(before.st_dev, before.st_ino, before.st_size, name)
+                self.budget.charge_file(before, path=name)
 
                 bytes_read = 0
                 step = min(chunk_size, max(4096, self.budget.limits.max_file_bytes))
@@ -906,6 +991,13 @@ class ArchiveMember:
     optional: bool = False
 
 
+@dataclass(frozen=True)
+class _ArchiveMemberAnchor:
+    first_arcname: str
+    size: int
+    sha256: str
+
+
 class ArchiveResult(NamedTuple):
     path: str
     archive_bytes: int
@@ -925,15 +1017,32 @@ def create_checkpoint_archive(
     """Creates a bounded checkpoint archive enforcing EvidenceLimits and preserving hardlink aliases."""
     budget.check_deadline()
     target_path_str = os.path.abspath(os.fspath(target_path))
+    parent_dir, leaf_name = os.path.split(target_path_str)
+    if not leaf_name:
+        raise UnsafeEvidenceError(f"INVALID-ARCHIVE-TARGET-PATH: {target_path_str}")
 
-    try:
-        target_fd = os.open(target_path_str, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    except OSError as exc:
-        if exc.errno == errno.EEXIST:
-            raise BoundedEvidenceError(f"ARCHIVE-TARGET-EXISTS: {target_path_str}") from exc
-        raise
+    # Validate and reserve manifest arcname
+    _parts(manifest_arcname)
+    budget.charge_entry(manifest_arcname)
 
-    budget.acquire_descriptor()
+    # Validate extra_manifest does not overwrite reserved manifest keys
+    if extra_manifest is not None:
+        if not isinstance(extra_manifest, dict):
+            raise TypeError(f"extra_manifest must be a dict, got {type(extra_manifest)!r}")
+        for reserved_key in ("version", "members"):
+            if reserved_key in extra_manifest:
+                raise BoundedEvidenceError(
+                    f"EXTRA-MANIFEST-RESERVED-KEY: extra_manifest cannot overwrite reserved key {reserved_key!r}"
+                )
+        try:
+            json.dumps(extra_manifest, allow_nan=False)
+        except (ValueError, TypeError) as exc:
+            raise BoundedEvidenceError(f"INVALID-EXTRA-MANIFEST: {exc}") from exc
+
+    # Open parent directory descriptor-relatively using OwnedRoot to hold parent_dir fd throughout
+    parent_root = OwnedRoot(parent_dir, budget=budget)
+    target_fd: int | None = None
+    created = False
 
     class BoundedOutputStream(io.RawIOBase):
         def __init__(self, fd: int, budget: EvidenceBudget):
@@ -953,7 +1062,26 @@ def create_checkpoint_archive(
             return n
 
     try:
+        try:
+            target_fd = _nofollow(
+                "UNSAFE-ARCHIVE-TARGET",
+                leaf_name,
+                leaf_name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                dir_fd=parent_root.fd,
+                budget=budget,
+            )
+        except OSError as exc:
+            if exc.errno == errno.EEXIST:
+                raise BoundedEvidenceError(f"ARCHIVE-TARGET-EXISTS: {target_path_str}") from exc
+            raise
+
+        st_created = os.fstat(target_fd)
         target_stream = BoundedOutputStream(target_fd, budget)
+
+        # Archive-local inode anchor map to avoid leaking archive-specific arcnames into invocation-wide budget
+        archive_seen_inodes: dict[tuple[int, int], _ArchiveMemberAnchor] = {}
+
         with gzip.GzipFile(fileobj=target_stream, mode="wb", mtime=0.0) as gz_out:
             with tarfile.open(fileobj=gz_out, mode="w", format=tarfile.PAX_FORMAT) as tar:
                 manifest_entries: list[dict[str, Any]] = []
@@ -971,6 +1099,10 @@ def create_checkpoint_archive(
 
                     _parts(m_arcname)
                     budget.charge_entry(m_arcname)
+                    if m_arcname == manifest_arcname:
+                        raise BoundedEvidenceError(
+                            f"RESERVED-MANIFEST-COLLISION: member {m_arcname} collides with reserved manifest arcname"
+                        )
                     if m_arcname in seen_arcnames:
                         raise BoundedEvidenceError(f"DUPLICATE-ARCHIVE-MEMBER: {m_arcname}")
                     seen_arcnames.add(m_arcname)
@@ -1000,10 +1132,10 @@ def create_checkpoint_archive(
                                 )
 
                             inode_key = (before.st_dev, before.st_ino)
-                            is_alias = inode_key in budget.seen_inodes
+                            is_archive_alias = inode_key in archive_seen_inodes
 
-                            if not is_alias:
-                                budget.charge_file(before.st_dev, before.st_ino, before.st_size, m_arcname)
+                            if not is_archive_alias:
+                                budget.charge_file(before, path=m_arcname)
                                 info = tarfile.TarInfo(m_arcname)
                                 info.type = tarfile.REGTYPE
                                 info.size = before.st_size
@@ -1030,30 +1162,33 @@ def create_checkpoint_archive(
                                         f"UNSTABLE-MEMBER: {m_name} short read ({bytes_written} != {before.st_size})"
                                     )
                                 digest = hasher.hexdigest()
-                                budget.seen_inodes[inode_key].first_arcname = m_arcname
-                                budget.seen_inodes[inode_key].sha256 = digest
+                                archive_seen_inodes[inode_key] = _ArchiveMemberAnchor(
+                                    first_arcname=m_arcname,
+                                    size=before.st_size,
+                                    sha256=digest,
+                                )
                                 manifest_entries.append({
                                     "path": m_arcname,
                                     "bytes": bytes_written,
                                     "sha256": digest,
                                 })
                             else:
-                                rec = budget.seen_inodes[inode_key]
+                                local_anchor = archive_seen_inodes[inode_key]
                                 budget.charge_alias(m_arcname, inode_key)
 
-                                if store_hardlinks_as_links and rec.first_arcname:
+                                if store_hardlinks_as_links and local_anchor.first_arcname:
                                     info = tarfile.TarInfo(m_arcname)
                                     info.type = tarfile.LNKTYPE
-                                    info.linkname = rec.first_arcname
+                                    info.linkname = local_anchor.first_arcname
                                     info.size = 0
                                     info.mode = 0o644
                                     info.mtime = 0
                                     tar.addfile(info)
                                     manifest_entries.append({
                                         "path": m_arcname,
-                                        "bytes": rec.size,
-                                        "sha256": rec.sha256,
-                                        "linkpath": rec.first_arcname,
+                                        "bytes": local_anchor.size,
+                                        "sha256": local_anchor.sha256,
+                                        "linkpath": local_anchor.first_arcname,
                                     })
                                 else:
                                     info = tarfile.TarInfo(m_arcname)
@@ -1092,7 +1227,7 @@ def create_checkpoint_archive(
                     finally:
                         _close_tracked(budget, parent_fd)
 
-                # Add manifest
+                # Assemble manifest document
                 manifest_doc: dict[str, Any] = {
                     "version": 1,
                     "members": manifest_entries,
@@ -1121,11 +1256,15 @@ def create_checkpoint_archive(
         os.fsync(target_fd)
         _close_tracked(budget, target_fd)
         target_fd = None
+        created = True
 
-        read_fd = os.open(target_path_str, os.O_RDONLY | os.O_NOFOLLOW)
-        budget.acquire_descriptor()
+        # Descriptor-relative re-read using held parent_root.fd to verify exact identity and compute hash
+        read_fd = _nofollow("UNSAFE-ARCHIVE-TARGET", leaf_name, leaf_name, os.O_RDONLY, dir_fd=parent_root.fd, budget=budget)
         try:
-            st = os.fstat(read_fd)
+            st_read = os.fstat(read_fd)
+            if (st_created.st_dev, st_created.st_ino) != (st_read.st_dev, st_read.st_ino):
+                raise UnstableEvidenceError(f"ARCHIVE-TARGET-REPLACED: {leaf_name}")
+
             h = hashlib.sha256()
             total_read = 0
             while True:
@@ -1135,8 +1274,8 @@ def create_checkpoint_archive(
                     break
                 h.update(chunk)
                 total_read += len(chunk)
-            if total_read != st.st_size:
-                raise UnstableEvidenceError(f"ARCHIVE-UNSTABLE: read {total_read} != stat {st.st_size}")
+            if total_read != st_read.st_size:
+                raise UnstableEvidenceError(f"ARCHIVE-UNSTABLE: read {total_read} != stat {st_read.st_size}")
             return ArchiveResult(
                 path=target_path_str,
                 archive_bytes=total_read,
@@ -1148,11 +1287,15 @@ def create_checkpoint_archive(
     except BaseException:
         if target_fd is not None:
             _close_tracked(budget, target_fd)
+            target_fd = None
+        # Descriptor-relative unlink of incomplete target using held parent directory
         try:
-            os.unlink(target_path_str)
+            os.unlink(leaf_name, dir_fd=parent_root.fd)
         except OSError:
             pass
         raise
+    finally:
+        parent_root.close()
 
 
 __all__ = [

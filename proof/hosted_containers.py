@@ -3,27 +3,34 @@
 proof/hosted_containers.py: Owned container lifecycle, creation intent,
 exact ID reconciliation, cage/mount inspection, bounded execution, and verified teardown.
 
-Implements PlanControllerRepairs Section 3.5 and Slice C (lines 138-161, 280-295):
+Implements PlanControllerRepairs Section 3.5 and Slice C (lines 138-161, 280-295),
+incorporating all security review remediations (ReviewOwnedContainers exact826d):
 - OwnedContainerSession: owns pending creations, exact container IDs, teardown,
   and retained ownership records.
-- ContainerSpec: command, effective cage settings, exact mount bindings, stage/attempt,
-  and deadline/timeout.
+- ContainerSpec: command, effective cage policy, exact mount bindings, stage/attempt,
+  and finite positive deadline/timeout.
 - ContainerOutcome: command execution outcome plus mandatory TeardownResult.
 - TeardownResult: verified removal or unresolved ownership, with raw bounded evidence.
 
 Lifecycle guarantees:
 1. Record private creation intent before invoking Docker (unique owned name, invocation/stage labels).
 2. Reconcile stdout/cidfile/inspect to one exact 64-character container ID before any failure-prone step.
+   Conflicting identity evidence fails closed immediately.
 3. Reconcile uncertain create outcomes using ONLY recorded intent (NEVER broad prefix sweeps).
-4. Inspect mounts and cage settings before container start.
-5. Execute with bounded output handling and deadline enforcement.
+4. Inspect mounts and cage settings before container start (reject undeclared mounts, docker.sock,
+   host /proc, /sys, /dev, unconfined seccomp, host namespaces, and inode aliasing).
+5. Execute with bounded output handling and finite positive deadline enforcement.
+   Output stream overflow or failed EOF collection fails the invocation.
 6. Encompassing teardown in finally blocks across ALL exit paths (normal, error, cancellation, timeout).
+   Teardown exceptions are captured without escaping; failure records unresolved ownership and fails closed.
 7. Unregister only after verified removal (daemon-verified 'No such container').
-8. Daemon outages, ambiguous inspect results, timed-out cleanups, and unreconciled creations
-   remain UNRESOLVED; fail-closed halts prevent launching subsequent stages.
-9. Signal handling requests cancellation and unwinds through normal try...finally cleanup.
-   Zero reentrant Docker invocations inside signal handlers.
-10. Preflight controls use the exact same ownership mechanism.
+8. Removal never deletes attached volumes (no -v flag).
+9. Destructive operations strictly validate container ownership before invoking Docker.
+10. Image reference strictly validated against option injection, and terminated with '--'.
+11. Detached preflight starts enforce the identical inspection, cancellation, and fail-closed admission.
+12. Auxiliary Docker commands (create, inspect, rm, exec, top) execute with strict output bounds.
+13. Signal handling requests cancellation and unwinds through normal try...finally cleanup.
+    Zero reentrant Docker invocations inside signal handlers; signal-safe teardown orchestration.
 """
 
 from __future__ import annotations
@@ -33,6 +40,7 @@ import dataclasses
 import datetime
 import hashlib
 import json
+import math
 import os
 import pathlib
 import re
@@ -66,7 +74,6 @@ except ImportError:
             sha256_bytes,
         )
     except ImportError:
-        # Standalone fallback if hosted_contracts is not in sys.path
         class ContractError(Exception):
             """Base exception for contract errors."""
 
@@ -94,6 +101,9 @@ except ImportError:
             tmpfs_tmp_size: str
             tmpfs_dev_shm_size: str
 
+            def to_dict(self) -> Dict[str, Any]:
+                return dataclasses.asdict(self)
+
         @dataclasses.dataclass(frozen=True)
         class TeardownDisposition:
             launch_id: str
@@ -104,9 +114,13 @@ except ImportError:
             unresolved_processes: int = 0
 
 
-# Constants
+# Constants and Regexes
 CONTAINER_ID_REGEX = re.compile(r"^[0-9a-f]{64}$")
 SAFE_NAME_REGEX = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{1,127}$")
+IMAGE_REF_REGEX = re.compile(
+    r"^[a-zA-Z0-9_.-]+(?:/[a-zA-Z0-9_.-]+)*(?::[a-zA-Z0-9_.-]+)?(?:@sha256:[0-9a-f]{64})?$"
+)
+
 LABEL_MANAGED = "iyi.managed"
 LABEL_INTENT_ID = "iyi.intent_id"
 LABEL_INVOCATION_ID = "iyi.invocation_id"
@@ -116,6 +130,7 @@ LABEL_CREATED_AT = "iyi.created_at_utc"
 
 DEFAULT_MAX_STDOUT_BYTES = 10 * 1024 * 1024  # 10 MB
 DEFAULT_MAX_STDERR_BYTES = 10 * 1024 * 1024  # 10 MB
+DEFAULT_MAX_AUX_BYTES = 2 * 1024 * 1024      # 2 MB auxiliary bound (inspect/create/rm/exec/top)
 DEFAULT_GRACE_SEC = 5.0
 DEFAULT_INSPECT_TIMEOUT_SEC = 15.0
 DEFAULT_STOP_TIMEOUT_SEC = 25.0
@@ -133,6 +148,10 @@ class CreationIntentError(ContainerLifecycleError):
 
 class OwnershipReconciliationError(ContainerLifecycleError):
     """Raised when container creation cannot be reconciled to a single exact ID."""
+
+
+class ConflictingIdentityError(OwnershipReconciliationError):
+    """Raised when conflicting container identity evidence is detected."""
 
 
 class UnresolvedOwnershipError(ContainerLifecycleError):
@@ -208,15 +227,15 @@ class MountBinding:
 class ContainerSpec:
     """
     Specification for container execution under strict cage isolation.
-    Binds command, effective cage policy, exact mounts, stage/attempt, and deadlines.
+    Binds command, mandatory cage policy, exact mounts, stage/attempt, and finite positive deadlines.
     """
     command: Tuple[str, ...]
     image: str
     stage: str
     attempt: int
+    cage_policy: CagePolicy  # Mandatory: omitting cage policy is strictly forbidden
     deadline: Optional[float] = None
     timeout_sec: Optional[float] = None
-    cage_policy: Optional[CagePolicy] = None
     mount_bindings: Tuple[MountBinding, ...] = ()
     env: Mapping[str, str] = dataclasses.field(default_factory=dict)
     working_dir: Optional[str] = None
@@ -234,23 +253,38 @@ class ContainerSpec:
         for arg in self.command:
             if not isinstance(arg, str):
                 raise TypeValidationError(f"command arguments must be strings, got {type(arg).__name__}")
+
         if not isinstance(self.image, str) or not self.image:
             raise TypeValidationError("image must be a non-empty string")
+        if self.image.startswith("-") or not IMAGE_REF_REGEX.fullmatch(self.image):
+            raise TypeValidationError(f"Invalid image reference (option injection rejected): {self.image!r}")
+
         if not isinstance(self.stage, str) or not self.stage:
             raise TypeValidationError("stage must be a non-empty string")
         if not isinstance(self.attempt, int) or self.attempt < 1:
             raise TypeValidationError(f"attempt must be a positive integer, got {self.attempt!r}")
-        if self.deadline is not None and not isinstance(self.deadline, (int, float)):
-            raise TypeValidationError(f"deadline must be a numeric timestamp or None, got {self.deadline!r}")
-        if self.timeout_sec is not None and (not isinstance(self.timeout_sec, (int, float)) or self.timeout_sec <= 0):
-            raise TypeValidationError(f"timeout_sec must be positive numeric or None, got {self.timeout_sec!r}")
-        if self.cage_policy is not None and not isinstance(self.cage_policy, CagePolicy):
-            raise TypeValidationError(f"cage_policy must be CagePolicy or None, got {type(self.cage_policy).__name__}")
+
+        # Cage policy is mandatory
+        if not isinstance(self.cage_policy, CagePolicy):
+            raise TypeValidationError("cage_policy is mandatory; omitting cage policy is strictly forbidden")
+
+        # Deadline & timeout: must be finite positive numbers
+        if self.deadline is not None:
+            if not isinstance(self.deadline, (int, float)) or not math.isfinite(self.deadline):
+                raise TypeValidationError(f"deadline must be a finite numeric timestamp, got {self.deadline!r}")
+        if self.timeout_sec is not None:
+            if not isinstance(self.timeout_sec, (int, float)) or not math.isfinite(self.timeout_sec) or self.timeout_sec <= 0:
+                raise TypeValidationError(f"timeout_sec must be a finite positive number, got {self.timeout_sec!r}")
+
+        if self.deadline is None and self.timeout_sec is None:
+            raise TypeValidationError("Either timeout_sec or deadline must be provided as a finite positive number")
+
         if not isinstance(self.mount_bindings, (list, tuple)):
             raise TypeValidationError("mount_bindings must be a tuple of MountBinding")
         for mb in self.mount_bindings:
             if not isinstance(mb, MountBinding):
                 raise TypeValidationError(f"Expected MountBinding, got {type(mb).__name__}")
+
         if not isinstance(self.max_stdout_bytes, int) or self.max_stdout_bytes <= 0:
             raise TypeValidationError("max_stdout_bytes must be a positive integer")
         if not isinstance(self.max_stderr_bytes, int) or self.max_stderr_bytes <= 0:
@@ -397,6 +431,7 @@ class ContainerRecord:
     container_id: str
     container_name: str
     intent: CreationIntent
+    spec: ContainerSpec
     registered_at_utc: str
     state: str  # "created", "started", "stopping", "stopped", "removed", "unresolved"
 
@@ -457,6 +492,7 @@ class OwnedContainerSession:
         # Fail-closed state
         self._failed_closed = False
         self._fail_closed_reason: Optional[str] = None
+        self._in_teardown = False
 
         # Cooperative cancellation
         self._cancellation_requested = threading.Event()
@@ -483,31 +519,119 @@ class OwnedContainerSession:
         cmd: Sequence[str],
         timeout: Optional[float] = None,
         check: bool = False,
-        capture_output: bool = True,
-        text: bool = True,
         input_data: Optional[str] = None,
         env: Optional[Mapping[str, str]] = None,
+        max_output_bytes: int = DEFAULT_MAX_AUX_BYTES,
     ) -> subprocess.CompletedProcess:
-        """Execute command via configured runner or subprocess.run."""
+        """
+        Execute auxiliary Docker command with strict bounded output reading.
+        Applies bounded streaming to create, inspect, stop, rm, exec, top.
+        """
         if self._custom_runner:
-            return self._custom_runner(
+            res = self._custom_runner(
                 cmd,
                 timeout=timeout,
                 check=check,
-                capture_output=capture_output,
-                text=text,
+                capture_output=True,
+                text=True,
                 input_data=input_data,
                 env=env,
             )
-        return subprocess.run(
-            cmd,
-            timeout=timeout,
-            check=check,
-            capture_output=capture_output,
-            text=text,
-            input=input_data,
-            env=env,
-        )
+            # Bound check custom runner outputs as well
+            out_bytes = (res.stdout or "").encode("utf-8")
+            err_bytes = (res.stderr or "").encode("utf-8")
+            if len(out_bytes) > max_output_bytes or len(err_bytes) > max_output_bytes:
+                raise ContainerLifecycleError(
+                    f"Auxiliary command output exceeded maximum bound of {max_output_bytes} bytes"
+                )
+            return res
+
+        # Real subprocess execution with bounded pipe consumption
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE if input_data is not None else None,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+        except OSError as exc:
+            raise ContainerLifecycleError(f"Failed to spawn command {' '.join(cmd[:3])}: {exc}") from exc
+
+        stdout_buf: List[bytes] = []
+        stderr_buf: List[bytes] = []
+        overflow = False
+        pipe_exc: Optional[Exception] = None
+
+        def read_pipe(pipe: Any, buf: List[bytes]) -> None:
+            nonlocal overflow, pipe_exc
+            tot = 0
+            try:
+                while True:
+                    chunk = pipe.read(65536)
+                    if not chunk:
+                        break
+                    tot += len(chunk)
+                    if tot > max_output_bytes:
+                        overflow = True
+                        break
+                    buf.append(chunk)
+            except Exception as e:
+                pipe_exc = e
+
+        t_out = threading.Thread(target=read_pipe, args=(proc.stdout, stdout_buf))
+        t_err = threading.Thread(target=read_pipe, args=(proc.stderr, stderr_buf))
+        t_out.daemon = True
+        t_err.daemon = True
+        t_out.start()
+        t_err.start()
+
+        if input_data is not None and proc.stdin:
+            try:
+                proc.stdin.write(input_data.encode("utf-8"))
+                proc.stdin.close()
+            except OSError:
+                pass
+
+        start_t = time.monotonic()
+        poll_interval = 0.05
+        timed_out = False
+
+        while proc.poll() is None:
+            if timeout is not None and (time.monotonic() - start_t) >= timeout:
+                timed_out = True
+                proc.terminate()
+                break
+            if self.is_cancelled() and not self._in_teardown:
+                proc.terminate()
+                break
+            time.sleep(poll_interval)
+
+        if timed_out:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            proc.wait(timeout=5.0)
+            raise subprocess.TimeoutExpired(cmd, timeout)
+
+        retcode = proc.wait(timeout=5.0)
+        t_out.join(timeout=2.0)
+        t_err.join(timeout=2.0)
+
+        if overflow:
+            raise ContainerLifecycleError(
+                f"Auxiliary command output exceeded maximum bound of {max_output_bytes} bytes: {' '.join(cmd[:3])}"
+            )
+        if pipe_exc:
+            raise ContainerLifecycleError(f"Pipe error during command execution: {pipe_exc}") from pipe_exc
+
+        out_str = b"".join(stdout_buf).decode("utf-8", errors="replace")
+        err_str = b"".join(stderr_buf).decode("utf-8", errors="replace")
+        res = subprocess.CompletedProcess(cmd, retcode, stdout=out_str, stderr=err_str)
+        if check and retcode != 0:
+            raise subprocess.CalledProcessError(retcode, cmd, output=out_str, stderr=err_str)
+        return res
 
     # -------------------------------------------------------------------------
     # Fail-Closed & Cancellation Status
@@ -549,7 +673,7 @@ class OwnedContainerSession:
                 "event": "cancellation_requested",
                 "signal": signum,
             })
-            if self._current_popen:
+            if self._current_popen and not self._in_teardown:
                 try:
                     self._current_popen.terminate()
                 except OSError:
@@ -557,6 +681,27 @@ class OwnedContainerSession:
 
     def is_cancelled(self) -> bool:
         return self._cancellation_requested.is_set()
+
+    # -------------------------------------------------------------------------
+    # Ownership Validation Before Any Destructive Action
+    # -------------------------------------------------------------------------
+
+    def _verify_owned_target(self, target: str) -> None:
+        """
+        Validate that target matches a known registered owned container or pending intent.
+        Rejects foreign container IDs before issuing destructive Docker operations.
+        """
+        with self._lock:
+            is_active_id = target in self._active_containers
+            is_active_name = any(rec.container_name == target for rec in self._active_containers.values())
+            is_pending_name = any(intent.container_name == target for intent in self._pending_intents.values())
+            is_pending_id = any(intent.intent_id == target for intent in self._pending_intents.values())
+            is_unresolved = target in self._unresolved_containers
+
+            if not (is_active_id or is_active_name or is_pending_name or is_pending_id or is_unresolved):
+                raise OwnershipReconciliationError(
+                    f"Refusing destructive operation on unowned container target: {target!r}"
+                )
 
     # -------------------------------------------------------------------------
     # Lifecycle Behavior 1: Record Creation Intent Before Invoking Docker
@@ -575,7 +720,6 @@ class OwnedContainerSession:
                 )
 
             intent_id = uuid.uuid4().hex
-            # Format clean name: iyi-c-<inv_prefix>-<stage>-<attempt>-<intent_prefix>
             inv_prefix = re.sub(r"[^a-zA-Z0-9_.-]", "", self.invocation_id[:12])
             stage_clean = re.sub(r"[^a-zA-Z0-9_.-]", "", spec.stage[:16])
             intent_prefix = intent_id[:8]
@@ -589,7 +733,6 @@ class OwnedContainerSession:
                 raise CreationIntentError(f"Generated container name is invalid: {container_name!r}")
 
             cidfile_path = str(self.session_dir / f"{container_name}.cid")
-            # Ensure cidfile does not exist beforehand
             if os.path.exists(cidfile_path):
                 try:
                     os.unlink(cidfile_path)
@@ -639,7 +782,7 @@ class OwnedContainerSession:
     ) -> str:
         """
         Reconcile stdout, cidfile, and inspect to one exact 64-character container ID.
-        All available sources must agree.
+        Conflicting identity evidence raises ConflictingIdentityError and fails closed.
         """
         stdout_id: Optional[str] = None
         cidfile_id: Optional[str] = None
@@ -658,7 +801,7 @@ class OwnedContainerSession:
 
         if stdout_id and cidfile_id:
             if stdout_id != cidfile_id:
-                raise OwnershipReconciliationError(
+                raise ConflictingIdentityError(
                     f"Disagreement between stdout ({stdout_id}) and cidfile ({cidfile_id}) for {intent.container_name}"
                 )
             candidate_id = stdout_id
@@ -673,10 +816,14 @@ class OwnedContainerSession:
             )
 
         # Inspect candidate ID to ensure daemon agrees and labels match
-        inspect_res = self._run_cmd(
-            list(self.docker_cmd) + ["inspect", candidate_id],
-            timeout=DEFAULT_INSPECT_TIMEOUT_SEC,
-        )
+        try:
+            inspect_res = self._run_cmd(
+                list(self.docker_cmd) + ["inspect", candidate_id],
+                timeout=DEFAULT_INSPECT_TIMEOUT_SEC,
+            )
+        except Exception as exc:
+            raise OwnershipReconciliationError(f"Inspect failed for reconciled ID {candidate_id}: {exc}") from exc
+
         if inspect_res.returncode != 0:
             raise OwnershipReconciliationError(
                 f"Inspect failed for reconciled ID {candidate_id}: {inspect_res.stderr}"
@@ -685,28 +832,28 @@ class OwnedContainerSession:
         try:
             inspect_list = json.loads(inspect_res.stdout)
             if not isinstance(inspect_list, list) or len(inspect_list) != 1:
-                raise OwnershipReconciliationError(f"Unexpected inspect JSON shape for {candidate_id}")
+                raise OwnershipReconciliationError(
+                    f"Ambiguous inspect output cardinality for {candidate_id}: expected 1, got {len(inspect_list) if isinstance(inspect_list, list) else type(inspect_list)}"
+                )
             inspect_data = inspect_list[0]
         except (json.JSONDecodeError, KeyError, IndexError) as exc:
             raise OwnershipReconciliationError(f"Failed to parse inspect JSON for {candidate_id}: {exc}") from exc
 
         actual_id = inspect_data.get("Id", "")
         if actual_id != candidate_id:
-            raise OwnershipReconciliationError(
+            raise ConflictingIdentityError(
                 f"Inspect Id mismatch: expected {candidate_id}, got {actual_id}"
             )
 
-        # Verify inspect name matches intent container_name
         raw_name = inspect_data.get("Name", "").lstrip("/")
         if raw_name != intent.container_name:
-            raise OwnershipReconciliationError(
+            raise ConflictingIdentityError(
                 f"Container inspect name mismatch: expected {intent.container_name}, got {raw_name}"
             )
 
-        # Verify audit label matches intent_id
         labels = inspect_data.get("Config", {}).get("Labels", {})
         if not isinstance(labels, dict) or labels.get(LABEL_INTENT_ID) != intent.intent_id:
-            raise OwnershipReconciliationError(
+            raise ConflictingIdentityError(
                 f"Container audit label {LABEL_INTENT_ID} mismatch for {candidate_id}"
             )
 
@@ -720,15 +867,8 @@ class OwnedContainerSession:
         """
         Reconcile an uncertain container create outcome using ONLY the recorded intent.
         NEVER performs broad sweeps or prefix queries.
-
-        Returns:
-        - exact 64-char container ID if container was created on daemon and matches intent.
-        - None if verified that NO container was created (clean not-found with responsive daemon).
-
-        Raises:
-        - UnresolvedOwnershipError if inspect indicates daemon outage, ambiguous output, or conflicting state.
+        Preserves unresolved ownership rather than converting generic failures into 'gone'.
         """
-        # Step A: Check cidfile
         cid_candidate: Optional[str] = None
         if os.path.exists(intent.cidfile_path):
             try:
@@ -739,31 +879,41 @@ class OwnedContainerSession:
                 pass
 
         if cid_candidate:
-            # Query candidate ID directly
-            inspect_cid = self._run_cmd(
-                list(self.docker_cmd) + ["inspect", cid_candidate],
+            try:
+                inspect_cid = self._run_cmd(
+                    list(self.docker_cmd) + ["inspect", cid_candidate],
+                    timeout=DEFAULT_INSPECT_TIMEOUT_SEC,
+                )
+                if inspect_cid.returncode == 0:
+                    inspect_list = json.loads(inspect_cid.stdout)
+                    if isinstance(inspect_list, list) and len(inspect_list) == 1:
+                        data = inspect_list[0]
+                        if data.get("Id") == cid_candidate and data.get("Name", "").lstrip("/") == intent.container_name:
+                            labels = data.get("Config", {}).get("Labels", {})
+                            if labels.get(LABEL_INTENT_ID) == intent.intent_id:
+                                return cid_candidate
+            except Exception:
+                pass
+
+        # Query exact container name directly (NEVER by prefix)
+        try:
+            inspect_name = self._run_cmd(
+                list(self.docker_cmd) + ["inspect", intent.container_name],
                 timeout=DEFAULT_INSPECT_TIMEOUT_SEC,
             )
-            if inspect_cid.returncode == 0:
-                try:
-                    data = json.loads(inspect_cid.stdout)[0]
-                    if data.get("Id") == cid_candidate and data.get("Name", "").lstrip("/") == intent.container_name:
-                        labels = data.get("Config", {}).get("Labels", {})
-                        if labels.get(LABEL_INTENT_ID) == intent.intent_id:
-                            # Reconciled via cidfile
-                            return cid_candidate
-                except Exception:
-                    pass
-
-        # Step B: Query exact container name directly (NEVER by prefix)
-        inspect_name = self._run_cmd(
-            list(self.docker_cmd) + ["inspect", intent.container_name],
-            timeout=DEFAULT_INSPECT_TIMEOUT_SEC,
-        )
+        except Exception as exc:
+            raise UnresolvedOwnershipError(
+                f"Exception during uncertain create inspect for {intent.container_name}: {exc}"
+            ) from exc
 
         if inspect_name.returncode == 0:
             try:
-                data = json.loads(inspect_name.stdout)[0]
+                inspect_list = json.loads(inspect_name.stdout)
+                if not isinstance(inspect_list, list) or len(inspect_list) != 1:
+                    raise UnresolvedOwnershipError(
+                        f"Ambiguous inspect cardinality for {intent.container_name}: expected 1"
+                    )
+                data = inspect_list[0]
                 exact_id = data.get("Id", "")
                 if not CONTAINER_ID_REGEX.fullmatch(exact_id):
                     raise UnresolvedOwnershipError(
@@ -781,7 +931,6 @@ class OwnedContainerSession:
                     f"Ambiguous inspect output for uncertain create {intent.container_name}: {exc}"
                 ) from exc
 
-        # Step C: Inspect returned non-zero. Check if daemon is responsive and returned clean not-found.
         combined_err = f"{inspect_name.stderr} {inspect_name.stdout}".lower()
         is_daemon_error = any(phrase in combined_err for phrase in (
             "cannot connect to the docker daemon",
@@ -808,7 +957,6 @@ class OwnedContainerSession:
             # Cleanly verified: container does not exist
             return None
 
-        # Any other status is ambiguous: do not convert generic failure to "gone"
         raise UnresolvedOwnershipError(
             f"Ambiguous inspect failure for uncertain create {intent.container_name}: "
             f"code={inspect_name.returncode}, stderr={inspect_name.stderr}"
@@ -821,7 +969,7 @@ class OwnedContainerSession:
     def create_container(self, spec: ContainerSpec) -> Tuple[CreationIntent, str]:
         """
         Record intent, invoke `docker create`, reconcile exact ID, and register.
-        If creation is uncertain, reconciles using ONLY the recorded intent.
+        Enforces option termination before image to prevent option injection.
         """
         intent = self.record_creation_intent(spec)
 
@@ -831,52 +979,41 @@ class OwnedContainerSession:
             "--cidfile", intent.cidfile_path,
         ]
 
-        # Audit labels
         for k, v in intent.labels.items():
             create_cmd.extend(["--label", f"{k}={v}"])
 
         # Effective cage isolation arguments
-        if spec.cage_policy:
-            cp = spec.cage_policy
-            create_cmd.extend([
-                "--user", f"{cp.uid}:{cp.gid}",
-                "--network", cp.network,
-                "--cap-drop", cp.drop_capabilities,
-                "--pids-limit", str(cp.pids_limit),
-            ])
-            if cp.read_only_root:
-                create_cmd.append("--read-only")
-            if cp.no_new_privileges:
-                create_cmd.extend(["--security-opt", "no-new-privileges"])
-            if cp.default_confined_seccomp:
-                # Default confined seccomp (do NOT allow unconfined)
-                pass
-            if cp.init_process:
-                create_cmd.append("--init")
-            if cp.tmpfs_tmp_size:
-                create_cmd.extend(["--tmpfs", f"/tmp:rw,nosuid,nodev,size={cp.tmpfs_tmp_size},mode=1777"])
-            if cp.tmpfs_dev_shm_size:
-                create_cmd.extend(["--tmpfs", f"/dev/shm:rw,nosuid,nodev,size={cp.tmpfs_dev_shm_size},mode=1777"])
-        elif spec.user:
-            create_cmd.extend(["--user", spec.user])
+        cp = spec.cage_policy
+        create_cmd.extend([
+            "--user", f"{cp.uid}:{cp.gid}",
+            "--network", cp.network,
+            "--cap-drop", cp.drop_capabilities,
+            "--pids-limit", str(cp.pids_limit),
+        ])
+        if cp.read_only_root:
+            create_cmd.append("--read-only")
+        if cp.no_new_privileges:
+            create_cmd.extend(["--security-opt", "no-new-privileges"])
+        if cp.init_process:
+            create_cmd.append("--init")
+        if cp.tmpfs_tmp_size:
+            create_cmd.extend(["--tmpfs", f"/tmp:rw,nosuid,nodev,size={cp.tmpfs_tmp_size},mode=1777"])
+        if cp.tmpfs_dev_shm_size:
+            create_cmd.extend(["--tmpfs", f"/dev/shm:rw,nosuid,nodev,size={cp.tmpfs_dev_shm_size},mode=1777"])
 
-        # Mount bindings
         for mb in spec.mount_bindings:
             create_cmd.append(mb.to_docker_mount_arg())
 
-        # Environment
         for k, v in spec.env.items():
             create_cmd.extend(["--env", f"{k}={v}"])
 
-        # Working dir
         if spec.working_dir:
             create_cmd.extend(["--workdir", spec.working_dir])
-
-        # Hostname
         if spec.hostname:
             create_cmd.extend(["--hostname", spec.hostname])
 
-        # Image and command
+        # Terminate options before image to prevent Docker option injection
+        create_cmd.append("--")
         create_cmd.append(spec.image)
         create_cmd.extend(spec.command)
 
@@ -896,25 +1033,33 @@ class OwnedContainerSession:
         if not uncertain and create_res is not None:
             try:
                 container_id = self._reconcile_create_id(intent, create_res.stdout, intent.cidfile_path)
+            except ConflictingIdentityError as conflict_exc:
+                # Identity evidence conflict: fail closed immediately, do NOT guess or swallow
+                with self._lock:
+                    self._unresolved_containers[intent.container_name] = UnresolvedRecord(
+                        identity=intent.container_name,
+                        intent=intent,
+                        reason=str(conflict_exc),
+                        raw_evidence={"stdout": create_res.stdout, "cidfile": intent.cidfile_path},
+                        recorded_at_utc=self._now_utc(),
+                    )
+                    self._fail_closed(f"Conflicting container identity: {conflict_exc}")
+                raise UnresolvedOwnershipError(f"Conflicting container identity: {conflict_exc}") from conflict_exc
             except OwnershipReconciliationError:
                 uncertain = True
 
         if uncertain:
-            # Uncertain creation reconciliation using ONLY recorded intent
             self.log(f"[CONTAINER-UNCERTAIN-CREATE] Reconciling {intent.container_name}")
             try:
                 reconciled_id = self.reconcile_uncertain_create(intent)
                 if reconciled_id:
-                    # Container actually exists on daemon! Register it so finally cleanup can remove it.
                     container_id = reconciled_id
                 else:
-                    # Verified no container exists on daemon
                     with self._lock:
                         self._pending_intents.pop(intent.intent_id, None)
                     err_msg = create_res.stderr if create_res else str(create_exc)
                     raise CreationIntentError(f"docker create failed (verified not created): {err_msg}")
             except UnresolvedOwnershipError as u_exc:
-                # Daemon outage or ambiguous state: mark unresolved and fail closed
                 with self._lock:
                     self._unresolved_containers[intent.container_name] = UnresolvedRecord(
                         identity=intent.container_name,
@@ -927,12 +1072,12 @@ class OwnedContainerSession:
                 raise
 
         assert container_id is not None
-        # Register exact ID before any subsequent failure-prone operation
         with self._lock:
             record = ContainerRecord(
                 container_id=container_id,
                 container_name=intent.container_name,
                 intent=intent,
+                spec=spec,
                 registered_at_utc=self._now_utc(),
                 state="created",
             )
@@ -961,15 +1106,22 @@ class OwnedContainerSession:
         Raises CageInspectionError or MountInspectionError on violation.
         Does NOT permit container start if any check fails.
         """
-        inspect_res = self._run_cmd(
-            list(self.docker_cmd) + ["inspect", container_id],
-            timeout=DEFAULT_INSPECT_TIMEOUT_SEC,
-        )
+        try:
+            inspect_res = self._run_cmd(
+                list(self.docker_cmd) + ["inspect", container_id],
+                timeout=DEFAULT_INSPECT_TIMEOUT_SEC,
+            )
+        except Exception as exc:
+            raise CageInspectionError(f"Failed to inspect container {container_id}: {exc}") from exc
+
         if inspect_res.returncode != 0:
             raise CageInspectionError(f"Failed to inspect container {container_id}: {inspect_res.stderr}")
 
         try:
-            inspect_data = json.loads(inspect_res.stdout)[0]
+            inspect_list = json.loads(inspect_res.stdout)
+            if not isinstance(inspect_list, list) or len(inspect_list) != 1:
+                raise CageInspectionError(f"Ambiguous inspect output cardinality for {container_id}")
+            inspect_data = inspect_list[0]
         except Exception as exc:
             raise CageInspectionError(f"Invalid inspect JSON for {container_id}: {exc}") from exc
 
@@ -980,69 +1132,90 @@ class OwnedContainerSession:
         if host_cfg.get("Privileged", False) is not False:
             raise CageInspectionError("Privileged container is strictly forbidden")
 
-        # 2. Host namespace leaks
-        if host_cfg.get("PidMode", "") == "host":
-            raise CageInspectionError("Host PID namespace is strictly forbidden")
-        if host_cfg.get("IpcMode", "") == "host":
-            raise CageInspectionError("Host IPC namespace is strictly forbidden")
-        if host_cfg.get("UtsMode", "") == "host":
-            raise CageInspectionError("Host UTS namespace is strictly forbidden")
+        # 2. Host namespace leaks: host, container:<id>, etc.
+        pid_mode = str(host_cfg.get("PidMode", ""))
+        if pid_mode not in ("", "private"):
+            raise CageInspectionError(f"Invalid PidMode: {pid_mode!r} (must be private namespace)")
+
+        ipc_mode = str(host_cfg.get("IpcMode", ""))
+        if ipc_mode not in ("", "private"):
+            raise CageInspectionError(f"Invalid IpcMode: {ipc_mode!r} (must be private namespace)")
+
+        uts_mode = str(host_cfg.get("UtsMode", ""))
+        if uts_mode not in ("", "private"):
+            raise CageInspectionError(f"Invalid UtsMode: {uts_mode!r} (must be private namespace)")
 
         # 3. Cage policy checks
-        if spec.cage_policy:
-            cp = spec.cage_policy
+        cp = spec.cage_policy
 
-            # UID / GID
-            actual_user = str(cfg.get("User", ""))
-            expected_user_prefix = f"{cp.uid}:{cp.gid}"
-            if actual_user != expected_user_prefix and actual_user != str(cp.uid):
+        # UID / GID
+        actual_user = str(cfg.get("User", ""))
+        expected_user_prefix = f"{cp.uid}:{cp.gid}"
+        if actual_user != expected_user_prefix and actual_user != str(cp.uid):
+            raise CageInspectionError(
+                f"User mismatch: expected {expected_user_prefix} or {cp.uid}, got {actual_user!r}"
+            )
+
+        # Network
+        net_mode = str(host_cfg.get("NetworkMode", ""))
+        if net_mode != cp.network:
+            raise CageInspectionError(
+                f"NetworkMode mismatch: expected {cp.network!r}, got {net_mode!r}"
+            )
+
+        # Read-only root
+        if cp.read_only_root and host_cfg.get("ReadonlyRootfs", False) is not True:
+            raise CageInspectionError("ReadonlyRootfs must be True")
+
+        # Capabilities dropped
+        cap_drop = host_cfg.get("CapDrop", [])
+        if not isinstance(cap_drop, list) or cp.drop_capabilities not in cap_drop:
+            raise CageInspectionError(
+                f"CapDrop must contain {cp.drop_capabilities!r}, got {cap_drop!r}"
+            )
+
+        # CapAdd must be empty
+        cap_add = host_cfg.get("CapAdd")
+        if cap_add:
+            raise CageInspectionError(f"CapAdd is strictly forbidden, got: {cap_add!r}")
+
+        # Security options: no-new-privileges and confined seccomp
+        sec_opts = [str(o).lower() for o in host_cfg.get("SecurityOpt", [])]
+        has_no_new_priv = any("no-new-privileges" in o for o in sec_opts)
+        if not has_no_new_priv:
+            raise CageInspectionError("SecurityOpt missing no-new-privileges")
+        if any("seccomp=unconfined" in o or "seccomp:unconfined" in o for o in sec_opts):
+            raise CageInspectionError("Unconfined seccomp is strictly forbidden")
+
+        # Init process
+        if cp.init_process and host_cfg.get("Init", False) is not True:
+            raise CageInspectionError("Container Init process must be True")
+
+        # Pids limit
+        pids_limit = host_cfg.get("PidsLimit", 0)
+        if cp.pids_limit > 0:
+            if not isinstance(pids_limit, int) or pids_limit <= 0 or pids_limit > cp.pids_limit:
                 raise CageInspectionError(
-                    f"User mismatch: expected {expected_user_prefix} or {cp.uid}, got {actual_user!r}"
+                    f"PidsLimit violation: expected <= {cp.pids_limit}, got {pids_limit!r}"
                 )
-
-            # Network
-            net_mode = str(host_cfg.get("NetworkMode", ""))
-            if net_mode != cp.network:
-                raise CageInspectionError(
-                    f"NetworkMode mismatch: expected {cp.network!r}, got {net_mode!r}"
-                )
-
-            # Read-only root
-            if cp.read_only_root:
-                if host_cfg.get("ReadonlyRootfs", False) is not True:
-                    raise CageInspectionError("ReadonlyRootfs must be True")
-
-            # Capabilities dropped
-            cap_drop = host_cfg.get("CapDrop", [])
-            if not isinstance(cap_drop, list) or cp.drop_capabilities not in cap_drop:
-                raise CageInspectionError(
-                    f"CapDrop must contain {cp.drop_capabilities!r}, got {cap_drop!r}"
-                )
-
-            # Security options: no-new-privileges and confined seccomp
-            sec_opts = [str(o).lower() for o in host_cfg.get("SecurityOpt", [])]
-            has_no_new_priv = any("no-new-privileges" in o for o in sec_opts)
-            if not has_no_new_priv:
-                raise CageInspectionError("SecurityOpt missing no-new-privileges")
-            if any("seccomp=unconfined" in o or "seccomp:unconfined" in o for o in sec_opts):
-                raise CageInspectionError("Unconfined seccomp is strictly forbidden")
-
-            # Init process
-            if cp.init_process and host_cfg.get("Init", False) is not True:
-                raise CageInspectionError("Container Init process must be True")
-
-            # Pids limit
-            pids_limit = host_cfg.get("PidsLimit", 0)
-            if cp.pids_limit > 0:
-                if not isinstance(pids_limit, int) or pids_limit <= 0 or pids_limit > cp.pids_limit:
-                    raise CageInspectionError(
-                        f"PidsLimit violation: expected <= {cp.pids_limit}, got {pids_limit!r}"
-                    )
 
         # 4. Mount Table & Confinement Inspection
         raw_mounts = inspect_data.get("Mounts", [])
         if not isinstance(raw_mounts, list):
             raise MountInspectionError("docker inspect Mounts is not a list")
+
+        # Allowed destination set
+        allowed_dests: Set[str] = {
+            "/etc/resolv.conf",
+            "/etc/hostname",
+            "/etc/hosts",
+        }
+        if cp.tmpfs_tmp_size:
+            allowed_dests.add("/tmp")
+        if cp.tmpfs_dev_shm_size:
+            allowed_dests.add("/dev/shm")
+        for mb in spec.mount_bindings:
+            allowed_dests.add(mb.container_path)
 
         mount_by_dest: Dict[str, Dict[str, Any]] = {}
         for m in raw_mounts:
@@ -1051,7 +1224,10 @@ class OwnedContainerSession:
             dest = str(m.get("Destination", ""))
             src = str(m.get("Source", ""))
             rw = m.get("RW", True)
-            m_type = str(m.get("Type", ""))
+
+            # Reject undeclared mounts (such as image-defined VOLUME directives)
+            if dest not in allowed_dests:
+                raise MountInspectionError(f"Undeclared mount destination detected in container: {dest}")
 
             # Prohibit docker.sock leaks
             if "docker.sock" in src or "docker.sock" in dest:
@@ -1068,7 +1244,7 @@ class OwnedContainerSession:
             if dest:
                 mount_by_dest[dest] = m
 
-        # Validate expected mount bindings against actual inspect
+        # Validate declared mount bindings against actual inspect
         sources_seen: Dict[Tuple[int, int], str] = {}
         for mb in spec.mount_bindings:
             if mb.container_path not in mount_by_dest:
@@ -1076,15 +1252,28 @@ class OwnedContainerSession:
 
             actual_m = mount_by_dest[mb.container_path]
             actual_rw = actual_m.get("RW", True)
+            actual_type = str(actual_m.get("Type", ""))
 
-            # Mandatory read-only check
+            # Mount type match
+            if actual_type != mb.mount_type:
+                raise MountInspectionError(
+                    f"Mount type mismatch for {mb.container_path}: expected {mb.mount_type}, got {actual_type}"
+                )
+
+            # Read-only enforcement
             if mb.access == "ro" and actual_rw is not False:
                 raise MountInspectionError(
                     f"Mount {mb.container_path} expected read-only, but inspect reported RW={actual_rw}"
                 )
+            if mb.access == "rw" and actual_rw is not True:
+                raise MountInspectionError(
+                    f"Mount {mb.container_path} expected writable, but inspect reported RW={actual_rw}"
+                )
 
             # Bind mount source verification and anti-aliasing
-            if mb.mount_type == "bind" and mb.host_path:
+            if mb.mount_type == "bind":
+                if not mb.host_path:
+                    raise MountInspectionError(f"Bind mount {mb.container_path} missing host_path")
                 expected_real = os.path.realpath(mb.host_path)
                 actual_real = os.path.realpath(str(actual_m.get("Source", "")))
                 if expected_real != actual_real:
@@ -1094,16 +1283,18 @@ class OwnedContainerSession:
                 try:
                     st = os.stat(actual_real)
                     ident = (st.st_dev, st.st_ino)
-                    if ident in sources_seen:
-                        prev_dest = sources_seen[ident]
-                        # Disallow writable aliasing across distinct mount points
-                        if mb.access == "rw" or actual_rw or mount_by_dest[prev_dest].get("RW", True):
-                            raise MountInspectionError(
-                                f"Host mount aliasing detected: {mb.container_path} and {prev_dest} share inode {ident}"
-                            )
-                    sources_seen[ident] = mb.container_path
-                except OSError:
-                    pass
+                except OSError as exc:
+                    raise MountInspectionError(
+                        f"Failed to stat mount source {actual_real} for {mb.container_path}: {exc}"
+                    ) from exc
+
+                if ident in sources_seen:
+                    prev_dest = sources_seen[ident]
+                    if mb.access == "rw" or actual_rw or mount_by_dest[prev_dest].get("RW", True):
+                        raise MountInspectionError(
+                            f"Host mount aliasing detected: {mb.container_path} and {prev_dest} share inode {ident}"
+                        )
+                sources_seen[ident] = mb.container_path
 
         return inspect_data
 
@@ -1119,8 +1310,8 @@ class OwnedContainerSession:
         """
         Start container and execute with bounded output handling.
         Returns: (exit_code, stdout, stderr, timed_out, bounded)
+        Raises ContainerLifecycleError on overflow or stream EOF collection failure.
         """
-        # Determine effective timeout / deadline
         timeout_sec = spec.timeout_sec
         if spec.deadline is not None:
             remaining = spec.deadline - time.monotonic()
@@ -1135,23 +1326,20 @@ class OwnedContainerSession:
         exit_code = -1
         stdout_buf: List[bytes] = []
         stderr_buf: List[bytes] = []
-        stdout_bytes = 0
-        stderr_bytes = 0
 
-        # Run process and capture stdout / stderr with strict bounds
         if self._custom_runner:
-            # Custom runner handles in-memory mock completion
             res = self._custom_runner(start_cmd, timeout=timeout_sec)
             exit_code = res.returncode
             out_raw = res.stdout if isinstance(res.stdout, bytes) else (res.stdout or "").encode("utf-8")
             err_raw = res.stderr if isinstance(res.stderr, bytes) else (res.stderr or "").encode("utf-8")
-            if len(out_raw) > spec.max_stdout_bytes:
-                out_raw = out_raw[:spec.max_stdout_bytes]
-                bounded = True
-            if len(err_raw) > spec.max_stderr_bytes:
-                err_raw = err_raw[:spec.max_stderr_bytes]
-                bounded = True
-            return exit_code, out_raw.decode("utf-8", errors="replace"), err_raw.decode("utf-8", errors="replace"), False, bounded
+            if len(out_raw) > spec.max_stdout_bytes or len(err_raw) > spec.max_stderr_bytes:
+                raise ContainerLifecycleError(
+                    f"Container output exceeded bound of {spec.max_stdout_bytes}/{spec.max_stderr_bytes} bytes"
+                )
+            return exit_code, out_raw.decode("utf-8", errors="replace"), err_raw.decode("utf-8", errors="replace"), False, False
+
+        overflow_err: Optional[str] = None
+        pipe_exc: Optional[Exception] = None
 
         try:
             proc = subprocess.Popen(
@@ -1162,23 +1350,22 @@ class OwnedContainerSession:
             with self._lock:
                 self._current_popen = proc
 
-            # Read pipes cooperatively
             def read_pipe(pipe: Any, buf: List[bytes], max_bytes: int, is_stdout: bool) -> None:
-                nonlocal bounded
+                nonlocal overflow_err, pipe_exc
                 tot = 0
-                while True:
-                    chunk = pipe.read(65536)
-                    if not chunk:
-                        break
-                    if tot + len(chunk) > max_bytes:
-                        allowed = max(0, max_bytes - tot)
-                        if allowed > 0:
-                            buf.append(chunk[:allowed])
-                            tot += allowed
-                        bounded = True
-                    else:
-                        buf.append(chunk)
+                try:
+                    while True:
+                        chunk = pipe.read(65536)
+                        if not chunk:
+                            break
                         tot += len(chunk)
+                        if tot > max_bytes:
+                            stream_name = "stdout" if is_stdout else "stderr"
+                            overflow_err = f"Container {stream_name} exceeded bound of {max_bytes} bytes"
+                            break
+                        buf.append(chunk)
+                except Exception as exc:
+                    pipe_exc = exc
 
             t_out = threading.Thread(target=read_pipe, args=(proc.stdout, stdout_buf, spec.max_stdout_bytes, True))
             t_err = threading.Thread(target=read_pipe, args=(proc.stderr, stderr_buf, spec.max_stderr_bytes, False))
@@ -1187,14 +1374,13 @@ class OwnedContainerSession:
             t_out.start()
             t_err.start()
 
-            # Wait with deadline check
-            poll_interval = 0.1
+            poll_interval = 0.05
             while proc.poll() is None:
-                if self.is_cancelled():
+                if self.is_cancelled() and not self._in_teardown:
                     proc.terminate()
                     raise ContainerCancelledError("Container execution cancelled via signal/request")
                 if timeout_sec is not None:
-                    elapsed = time.monotonic() - start_time
+                    elapsed = time.monotonic() - start_t if 'start_t' in locals() else (time.monotonic() - start_time)
                     if elapsed >= timeout_sec:
                         timed_out = True
                         proc.terminate()
@@ -1212,6 +1398,14 @@ class OwnedContainerSession:
             exit_code = proc.wait(timeout=5.0)
             t_out.join(timeout=2.0)
             t_err.join(timeout=2.0)
+
+            # Ensure clean EOF established
+            if t_out.is_alive() or t_err.is_alive():
+                raise ContainerLifecycleError("Container output stream collection failed to establish clean EOF")
+            if pipe_exc:
+                raise ContainerLifecycleError(f"Stream collection error during container execution: {pipe_exc}") from pipe_exc
+            if overflow_err:
+                raise ContainerLifecycleError(overflow_err)
 
         finally:
             with self._lock:
@@ -1231,12 +1425,13 @@ class OwnedContainerSession:
         grace_sec: float = DEFAULT_GRACE_SEC,
     ) -> TeardownResult:
         """
-        Stop as needed, remove, and establish teardown on EVERY exit path.
-        Unregisters ONLY after verified removal.
-
-        A daemon outage, ambiguous inspect result, timed-out cleanup, or unreconciled
-        creation remains UNRESOLVED, preserves records, and fails the session closed.
+        Stop as needed, remove (without -v), and establish teardown on EVERY exit path.
+        Strictly validates ownership before invoking Docker.
+        Captures all exceptions without letting them escape, recording unresolved status.
         """
+        # Validate ownership first: never issue mutating commands to unowned containers
+        self._verify_owned_target(target)
+
         self.log(f"[CONTAINER-TEARDOWN] Initiating stop_and_remove for {target}")
         evidence: Dict[str, Any] = {"target": target, "started_at_utc": self._now_utc()}
 
@@ -1246,101 +1441,119 @@ class OwnedContainerSession:
         unresolved_processes = 0
         unresolved_reason: Optional[str] = None
 
-        # 1. Stop container (graceful stop, kill fallback)
-        stop_res = self._run_cmd(
-            list(self.docker_cmd) + ["stop", "--time", str(max(1, int(grace_sec))), target],
-            timeout=DEFAULT_STOP_TIMEOUT_SEC,
-        )
-        evidence["stop_exit"] = stop_res.returncode
-        evidence["stop_stderr"] = stop_res.stderr
+        with self._lock:
+            self._in_teardown = True
 
-        if stop_res.returncode == 0:
-            stopped = True
-        else:
-            # Try kill if stop failed
-            kill_res = self._run_cmd(
-                list(self.docker_cmd) + ["kill", target],
-                timeout=10.0,
-            )
-            evidence["kill_exit"] = kill_res.returncode
-            evidence["kill_stderr"] = kill_res.stderr
-            if kill_res.returncode == 0:
-                stopped = True
+        try:
+            # 1. Stop container (graceful stop, kill fallback)
+            try:
+                stop_res = self._run_cmd(
+                    list(self.docker_cmd) + ["stop", "--time", str(max(1, int(grace_sec))), target],
+                    timeout=DEFAULT_STOP_TIMEOUT_SEC,
+                )
+                evidence["stop_exit"] = stop_res.returncode
+                evidence["stop_stderr"] = stop_res.stderr
+                if stop_res.returncode == 0:
+                    stopped = True
+                else:
+                    kill_res = self._run_cmd(
+                        list(self.docker_cmd) + ["kill", target],
+                        timeout=10.0,
+                    )
+                    evidence["kill_exit"] = kill_res.returncode
+                    evidence["kill_stderr"] = kill_res.stderr
+                    if kill_res.returncode == 0:
+                        stopped = True
+            except Exception as exc:
+                evidence["stop_exc"] = str(exc)
 
-        # Check running state via inspect
-        inspect_state = self._run_cmd(
-            list(self.docker_cmd) + ["inspect", "-f", "{{.State.Running}}", target],
-            timeout=DEFAULT_INSPECT_TIMEOUT_SEC,
-        )
-        evidence["inspect_state_exit"] = inspect_state.returncode
-        evidence["inspect_state_out"] = inspect_state.stdout.strip()
-        evidence["inspect_state_err"] = inspect_state.stderr.strip()
+            # Check running state via inspect
+            try:
+                inspect_state = self._run_cmd(
+                    list(self.docker_cmd) + ["inspect", "-f", "{{.State.Running}}", target],
+                    timeout=DEFAULT_INSPECT_TIMEOUT_SEC,
+                )
+                evidence["inspect_state_exit"] = inspect_state.returncode
+                evidence["inspect_state_out"] = inspect_state.stdout.strip()
+                evidence["inspect_state_err"] = inspect_state.stderr.strip()
 
-        if inspect_state.returncode == 0:
-            is_running = inspect_state.stdout.strip().lower() == "true"
-            if not is_running:
-                stopped = True
-            else:
-                unresolved_reason = f"Container {target} is still running after stop/kill"
-        else:
-            # If inspect fails with 'No such container', it is already stopped and gone!
-            combined_err = f"{inspect_state.stderr} {inspect_state.stdout}".lower()
-            if "no such container" in combined_err or "no such object" in combined_err:
-                stopped = True
-                removed = True
-                clean_exit = True
+                if inspect_state.returncode == 0:
+                    is_running = inspect_state.stdout.strip().lower() == "true"
+                    if not is_running:
+                        stopped = True
+                    else:
+                        unresolved_reason = f"Container {target} is still running after stop/kill"
+                else:
+                    combined_err = f"{inspect_state.stderr} {inspect_state.stdout}".lower()
+                    if "no such container" in combined_err or "no such object" in combined_err:
+                        stopped = True
+                        removed = True
+                        clean_exit = True
+            except Exception as exc:
+                evidence["inspect_state_exc"] = str(exc)
 
-        # 2. Remove container if not already gone
-        if not removed:
-            rm_res = self._run_cmd(
-                list(self.docker_cmd) + ["rm", "-f", "-v", target],
-                timeout=DEFAULT_RM_TIMEOUT_SEC,
-            )
-            evidence["rm_exit"] = rm_res.returncode
-            evidence["rm_stderr"] = rm_res.stderr
+            # 2. Remove container without deleting volumes (no -v)
+            if not removed:
+                try:
+                    rm_res = self._run_cmd(
+                        list(self.docker_cmd) + ["rm", "-f", target],
+                        timeout=DEFAULT_RM_TIMEOUT_SEC,
+                    )
+                    evidence["rm_exit"] = rm_res.returncode
+                    evidence["rm_stderr"] = rm_res.stderr
+                except Exception as exc:
+                    evidence["rm_exc"] = str(exc)
 
-        # 3. VERIFY REMOVAL (Crucial: verify it is really gone)
-        verify_inspect = self._run_cmd(
-            list(self.docker_cmd) + ["inspect", target],
-            timeout=DEFAULT_INSPECT_TIMEOUT_SEC,
-        )
-        evidence["verify_inspect_exit"] = verify_inspect.returncode
-        evidence["verify_inspect_err"] = verify_inspect.stderr
+            # 3. VERIFY REMOVAL
+            try:
+                verify_inspect = self._run_cmd(
+                    list(self.docker_cmd) + ["inspect", target],
+                    timeout=DEFAULT_INSPECT_TIMEOUT_SEC,
+                )
+                evidence["verify_inspect_exit"] = verify_inspect.returncode
+                evidence["verify_inspect_err"] = verify_inspect.stderr
 
-        combined_verify_err = f"{verify_inspect.stderr} {verify_inspect.stdout}".lower()
-        is_daemon_error = any(phrase in combined_verify_err for phrase in (
-            "cannot connect to the docker daemon",
-            "is the docker daemon running",
-            "connection refused",
-            "connection reset",
-            "dial unix",
-            "permission denied",
-            "socket:",
-        ))
+                combined_verify_err = f"{verify_inspect.stderr} {verify_inspect.stdout}".lower()
+                is_daemon_error = any(phrase in combined_verify_err for phrase in (
+                    "cannot connect to the docker daemon",
+                    "is the docker daemon running",
+                    "connection refused",
+                    "connection reset",
+                    "dial unix",
+                    "permission denied",
+                    "socket:",
+                ))
 
-        if is_daemon_error:
-            # Daemon outage during verification cannot be converted into "gone"
-            unresolved_reason = f"Docker daemon failure during removal verification for {target}: {verify_inspect.stderr}"
-            removed = False
-            clean_exit = False
-        elif verify_inspect.returncode == 0:
-            # Container STILL EXISTS!
-            unresolved_reason = f"Container {target} still exists on daemon after removal"
-            removed = False
-            clean_exit = False
-        else:
-            is_not_found = (
-                verify_inspect.returncode in (1, 125)
-                and ("no such container" in combined_verify_err or "no such object" in combined_verify_err)
-            )
-            if is_not_found:
-                removed = True
-                clean_exit = True
-                stopped = True
-            else:
-                unresolved_reason = f"Ambiguous inspect response after rm for {target}: {verify_inspect.stderr}"
+                if is_daemon_error:
+                    unresolved_reason = f"Docker daemon failure during removal verification for {target}: {verify_inspect.stderr}"
+                    removed = False
+                    clean_exit = False
+                elif verify_inspect.returncode == 0:
+                    unresolved_reason = f"Container {target} still exists on daemon after removal"
+                    removed = False
+                    clean_exit = False
+                else:
+                    is_not_found = (
+                        verify_inspect.returncode in (1, 125)
+                        and ("no such container" in combined_verify_err or "no such object" in combined_verify_err)
+                    )
+                    if is_not_found:
+                        removed = True
+                        clean_exit = True
+                        stopped = True
+                    else:
+                        unresolved_reason = f"Ambiguous inspect response after rm for {target}: {verify_inspect.stderr}"
+                        removed = False
+                        clean_exit = False
+            except Exception as exc:
+                unresolved_reason = f"Exception during removal verification for {target}: {exc}"
+                evidence["verify_inspect_exc"] = str(exc)
                 removed = False
                 clean_exit = False
+
+        finally:
+            with self._lock:
+                self._in_teardown = False
 
         resolved = (
             stopped is True
@@ -1350,22 +1563,21 @@ class OwnedContainerSession:
             and unresolved_reason is None
         )
 
-        # 4. Unregister ONLY if removal was verified
         with self._lock:
-            # Find matching active record by id or name
             matched_id: Optional[str] = None
+            matched_record: Optional[ContainerRecord] = None
             for cid, rec in self._active_containers.items():
                 if cid == target or rec.container_name == target:
                     matched_id = cid
+                    matched_record = rec
                     break
 
             if resolved:
                 if matched_id:
-                    rec = self._active_containers.pop(matched_id)
-                    # Clean up cidfile if it exists
-                    if os.path.exists(rec.intent.cidfile_path):
+                    self._active_containers.pop(matched_id, None)
+                    if matched_record and os.path.exists(matched_record.intent.cidfile_path):
                         try:
-                            os.unlink(rec.intent.cidfile_path)
+                            os.unlink(matched_record.intent.cidfile_path)
                         except OSError:
                             pass
                 self._ownership_journal.append({
@@ -1375,10 +1587,9 @@ class OwnedContainerSession:
                     "container_id": matched_id,
                 })
             else:
-                # UNRESOLVED: preserve record, fail-closed
                 unres_rec = UnresolvedRecord(
                     identity=target,
-                    intent=self._active_containers.get(matched_id).intent if matched_id else None,
+                    intent=matched_record.intent if matched_record else None,
                     reason=unresolved_reason or "unknown teardown failure",
                     raw_evidence=evidence,
                     recorded_at_utc=self._now_utc(),
@@ -1461,7 +1672,7 @@ class OwnedContainerSession:
             timed_out = True
             error_msg = str(exc)
             exit_code = 124
-        except (MountInspectionError, CageInspectionError) as exc:
+        except (MountInspectionError, CageInspectionError, ContainerLifecycleError) as exc:
             error_msg = str(exc)
             exit_code = -1
         except Exception as exc:
@@ -1471,10 +1682,20 @@ class OwnedContainerSession:
             # 4. Mandatory teardown in finally block on EVERY exit path
             target = container_id or (intent.container_name if intent else None)
             if target:
-                teardown_result = self.stop_and_remove(target, grace_sec=self.default_grace_sec)
-                if not teardown_result.is_resolved():
-                    self._fail_closed(
-                        f"Teardown unresolved for {target}: {teardown_result.unresolved_reason}"
+                try:
+                    teardown_result = self.stop_and_remove(target, grace_sec=self.default_grace_sec)
+                except Exception as exc:
+                    self._fail_closed(f"Teardown exception for {target}: {exc}")
+                    teardown_result = TeardownResult(
+                        resolved=False,
+                        container_id=container_id,
+                        container_name=target,
+                        stopped=False,
+                        removed=False,
+                        clean_exit=False,
+                        unresolved_processes=1,
+                        unresolved_reason=f"Teardown raised unhandled exception: {exc}",
+                        evidence={"exception": str(exc)},
                     )
             else:
                 teardown_result = TeardownResult(
@@ -1519,7 +1740,31 @@ class OwnedContainerSession:
         return self.run_container(spec)
 
     def start_container_detached(self, container_id: str) -> None:
-        """Start container in detached mode (for preflight multi-container tests)."""
+        """
+        Start container in detached mode for multi-container preflight tests.
+        Enforces identical pre-start cage and mount inspection, cancellation checks,
+        ownership verification, and fail-closed admission.
+        """
+        with self._lock:
+            if self.has_unresolved_ownership():
+                raise UnresolvedOwnershipError(
+                    f"Refusing to start container: session failed closed ({self._fail_closed_reason})"
+                )
+            if self.is_cancelled():
+                raise ContainerCancelledError("Session cancellation requested before start")
+            if container_id not in self._active_containers:
+                raise OwnershipReconciliationError(
+                    f"Refusing operation on unregistered/unowned container: {container_id!r}"
+                )
+            rec = self._active_containers[container_id]
+
+        # Enforce pre-start inspection before starting detached container
+        try:
+            self.inspect_and_verify_cage_and_mounts(container_id, rec.spec)
+        except Exception:
+            self.stop_and_remove(container_id, grace_sec=self.default_grace_sec)
+            raise
+
         inspect_res = self._run_cmd(
             list(self.docker_cmd) + ["start", container_id],
             timeout=15.0,
@@ -1532,7 +1777,8 @@ class OwnedContainerSession:
                 object.__setattr__(rec, "state", "started")
 
     def inspect_container(self, target: str) -> Dict[str, Any]:
-        """Inspect container and return parsed JSON."""
+        """Inspect owned container and return parsed JSON."""
+        self._verify_owned_target(target)
         inspect_res = self._run_cmd(
             list(self.docker_cmd) + ["inspect", target],
             timeout=DEFAULT_INSPECT_TIMEOUT_SEC,
@@ -1540,7 +1786,10 @@ class OwnedContainerSession:
         if inspect_res.returncode != 0:
             raise ContainerLifecycleError(f"Inspect failed for {target}: {inspect_res.stderr}")
         try:
-            return json.loads(inspect_res.stdout)[0]
+            inspect_list = json.loads(inspect_res.stdout)
+            if not isinstance(inspect_list, list) or len(inspect_list) != 1:
+                raise ContainerLifecycleError(f"Ambiguous inspect output cardinality for {target}")
+            return inspect_list[0]
         except Exception as exc:
             raise ContainerLifecycleError(f"Invalid inspect JSON for {target}: {exc}") from exc
 
@@ -1550,9 +1799,14 @@ class OwnedContainerSession:
         command: Sequence[str],
         timeout_sec: float = 30.0,
     ) -> Tuple[int, str, str]:
-        """Execute command in running container via docker exec."""
+        """Execute command in running owned container via docker exec with output bounds."""
+        self._verify_owned_target(container_id)
+        with self._lock:
+            if container_id not in self._active_containers:
+                raise OwnershipReconciliationError(f"Cannot exec in inactive container: {container_id!r}")
+
         exec_cmd = list(self.docker_cmd) + ["exec", container_id] + list(command)
-        res = self._run_cmd(exec_cmd, timeout=timeout_sec)
+        res = self._run_cmd(exec_cmd, timeout=timeout_sec, max_output_bytes=DEFAULT_MAX_AUX_BYTES)
         return res.returncode, res.stdout, res.stderr
 
     def top_container(
@@ -1560,15 +1814,21 @@ class OwnedContainerSession:
         container_id: str,
         args: Sequence[str] = (),
     ) -> str:
-        """Run docker top on running container."""
+        """Run docker top on running owned container."""
+        self._verify_owned_target(container_id)
+        with self._lock:
+            if container_id not in self._active_containers:
+                raise OwnershipReconciliationError(f"Cannot run top on inactive container: {container_id!r}")
+
         top_cmd = list(self.docker_cmd) + ["top", container_id] + list(args)
-        res = self._run_cmd(top_cmd, timeout=15.0)
+        res = self._run_cmd(top_cmd, timeout=15.0, max_output_bytes=DEFAULT_MAX_AUX_BYTES)
         if res.returncode != 0:
             raise ContainerLifecycleError(f"docker top failed for {container_id}: {res.stderr}")
         return res.stdout
 
     def stop_container(self, container_id: str, timeout_sec: float = 5.0) -> bool:
-        """Stop container with grace timeout."""
+        """Stop owned container with grace timeout."""
+        self._verify_owned_target(container_id)
         res = self._run_cmd(
             list(self.docker_cmd) + ["stop", "--time", str(int(timeout_sec)), container_id],
             timeout=timeout_sec + 10.0,
@@ -1582,41 +1842,46 @@ class OwnedContainerSession:
     def cleanup_all(self) -> List[TeardownResult]:
         """
         Tear down all active and pending containers in the session.
-        If any container fails removal, marks session failed closed.
+        Interruption-resistant loop: attempts all targets even if one fails.
         """
         results: List[TeardownResult] = []
         with self._lock:
             active_ids = list(self._active_containers.keys())
 
         for cid in active_ids:
-            res = self.stop_and_remove(cid, grace_sec=self.default_grace_sec)
-            results.append(res)
+            try:
+                res = self.stop_and_remove(cid, grace_sec=self.default_grace_sec)
+                results.append(res)
+            except Exception as exc:
+                self._fail_closed(f"Unhandled exception during cleanup of active container {cid}: {exc}")
 
         with self._lock:
-            # Check any remaining pending creations
             pending = list(self._pending_intents.values())
-            for intent in pending:
-                try:
-                    reconciled_id = self.reconcile_uncertain_create(intent)
-                    if reconciled_id:
-                        res = self.stop_and_remove(reconciled_id, grace_sec=self.default_grace_sec)
-                        results.append(res)
-                    else:
+
+        for intent in pending:
+            try:
+                reconciled_id = self.reconcile_uncertain_create(intent)
+                if reconciled_id:
+                    res = self.stop_and_remove(reconciled_id, grace_sec=self.default_grace_sec)
+                    results.append(res)
+                else:
+                    with self._lock:
                         self._pending_intents.pop(intent.intent_id, None)
-                except Exception as exc:
-                    self._fail_closed(f"Failed to reconcile pending creation {intent.container_name}: {exc}")
+            except Exception as exc:
+                self._fail_closed(f"Failed to reconcile pending creation {intent.container_name}: {exc}")
 
         return results
 
     def _handle_signal(self, signum: int, frame: Any) -> None:
         """
         Signal handler for SIGINT and SIGTERM.
-        Requests cooperative cancellation and raises ContainerCancelledError so
-        Python unwinds through standard try...finally blocks.
+        Requests cooperative cancellation.
+        Does NOT raise if already in teardown, allowing all containers to be cleaned up.
         Zero reentrant Docker invocations occur inside this signal handler.
         """
         self.request_cancellation(signum)
-        raise ContainerCancelledError(f"Container execution interrupted by signal {signum}")
+        if not self._in_teardown:
+            raise ContainerCancelledError(f"Container execution interrupted by signal {signum}")
 
     def install_signal_handlers(self) -> None:
         """Install signal handlers for graceful, non-reentrant cleanup."""
@@ -1665,13 +1930,18 @@ class OwnedContainerSession:
                 except Exception:
                     pass
                 self._atexit_cleanup_registered = False
-            if self._owned_session_dir and self.session_dir.exists():
+
+            # Only remove session dir if ALL containers were resolved and none remain active/pending
+            has_remaining = (
+                self.has_unresolved_ownership()
+                or len(self._active_containers) > 0
+                or len(self._pending_intents) > 0
+            )
+            if self._owned_session_dir and self.session_dir.exists() and not has_remaining:
                 try:
-                    # Clean up temporary session directory if all resolved
-                    if not self.has_unresolved_ownership():
-                        for p in self.session_dir.iterdir():
-                            p.unlink(missing_ok=True)
-                        self.session_dir.rmdir()
+                    for p in self.session_dir.iterdir():
+                        p.unlink(missing_ok=True)
+                    self.session_dir.rmdir()
                 except OSError:
                     pass
 

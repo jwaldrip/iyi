@@ -4,7 +4,9 @@ Tests explicit EvidenceLimits, invocation-wide EvidenceBudget accounting,
 descriptor-relative safe stable file reads, bounded JSON/logs/streamed archival
 with unique-inode bytes vs alias/emitted budgets, depth/path/entries/deadline,
 rejection of symlinks, special files (FIFOs), sparse huge files, alias floods,
-and race controls with owned temporary fixtures.
+held inode anchor baselines, JSON float-overflow rejection (1e10000), FD leak
+prevention on budget rejection, archive-local arcname isolation, descriptor-relative
+archive lifecycle, and manifest collision/overwrite protection.
 """
 from __future__ import annotations
 
@@ -17,7 +19,7 @@ import tarfile
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from proof.hosted_evidence import (
     ArchiveMember,
@@ -100,11 +102,9 @@ class EvidenceLimitsTests(unittest.TestCase):
 
     def test_refuses_missing_or_none_fields(self):
         with self.assertRaises(TypeError):
-            # Missing fields should fail construction (no production defaults)
             EvidenceLimits()  # type: ignore
 
         with self.assertRaises(ValueError):
-            # None field must be rejected
             limits = make_test_limits()
             d = limits.to_dict()
             d["max_file_bytes"] = None
@@ -114,7 +114,7 @@ class EvidenceLimitsTests(unittest.TestCase):
         limits = make_test_limits()
         d = limits.to_dict()
 
-        d["max_file_bytes"] = True  # bool is not allowed as int limit
+        d["max_file_bytes"] = True
         with self.assertRaises(ValueError):
             EvidenceLimits.from_dict(d)
 
@@ -152,27 +152,47 @@ class EvidenceBudgetAccountingTests(unittest.TestCase):
             p1 = os.path.join(td, "orig.txt")
             p2 = os.path.join(td, "alias.txt")
             with open(p1, "wb") as f:
-                f.write(b"1234567890")  # 10 bytes
+                f.write(b"1234567890")
             os.link(p1, p2)
 
             limits = make_test_limits(
-                max_unique_inode_bytes=15,  # enough for 1 file of 10 bytes, but not 2
+                max_unique_inode_bytes=15,
                 max_aliases=5,
             )
             budget = EvidenceBudget(limits)
 
             st1 = os.stat(p1)
-            is_alias1 = budget.charge_file(st1.st_dev, st1.st_ino, st1.st_size, "orig.txt")
+            is_alias1 = budget.charge_file(st1, path="orig.txt")
             self.assertFalse(is_alias1)
             self.assertEqual(budget.total_unique_inode_bytes, 10)
             self.assertEqual(budget.total_aliases, 0)
 
             st2 = os.stat(p2)
-            is_alias2 = budget.charge_file(st2.st_dev, st2.st_ino, st2.st_size, "alias.txt")
+            is_alias2 = budget.charge_file(st2, path="alias.txt")
             self.assertTrue(is_alias2)
-            # Unique inode bytes MUST NOT increase for an alias
             self.assertEqual(budget.total_unique_inode_bytes, 10)
             self.assertEqual(budget.total_aliases, 1)
+
+    def test_alias_baseline_mismatch_rejected(self):
+        limits = make_test_limits(max_unique_inode_bytes=1000)
+        budget = EvidenceBudget(limits)
+        # Register anchor
+        budget.charge_file(1, 100, 50, "orig.txt", mode=0o100644, mtime_ns=1000, ctime_ns=2000)
+
+        # Alias with mismatched size
+        with self.assertRaises(UnstableEvidenceError) as ctx:
+            budget.charge_file(1, 100, 60, "forged.txt", mode=0o100644, mtime_ns=1000, ctime_ns=2000)
+        self.assertIn("ALIAS-BASELINE-MISMATCH", str(ctx.exception))
+
+        # Alias with mismatched mode
+        with self.assertRaises(UnstableEvidenceError) as ctx:
+            budget.charge_file(1, 100, 50, "forged_mode.txt", mode=0o100777, mtime_ns=1000, ctime_ns=2000)
+        self.assertIn("ALIAS-BASELINE-MISMATCH", str(ctx.exception))
+
+        # Alias with mismatched mtime
+        with self.assertRaises(UnstableEvidenceError) as ctx:
+            budget.charge_file(1, 100, 50, "forged_time.txt", mode=0o100644, mtime_ns=9999, ctime_ns=2000)
+        self.assertIn("ALIAS-BASELINE-MISMATCH", str(ctx.exception))
 
     def test_unique_inode_exhaustion(self):
         limits = make_test_limits(max_unique_inode_bytes=50)
@@ -187,19 +207,16 @@ class EvidenceBudgetAccountingTests(unittest.TestCase):
     def test_alias_flood_rejection(self):
         limits = make_test_limits(
             max_unique_inode_bytes=1000,
-            max_aliases=3,  # allows at most 3 aliases
+            max_aliases=3,
         )
         budget = EvidenceBudget(limits)
-        # Original file
         budget.charge_file(1, 101, 50, "file.txt")
 
-        # 3 allowed aliases
         self.assertTrue(budget.charge_file(1, 101, 50, "link1.txt"))
         self.assertTrue(budget.charge_file(1, 101, 50, "link2.txt"))
         self.assertTrue(budget.charge_file(1, 101, 50, "link3.txt"))
         self.assertEqual(budget.total_aliases, 3)
 
-        # 4th alias exceeds max_aliases
         with self.assertRaises(EvidenceLimitExceededError) as ctx:
             budget.charge_file(1, 101, 50, "link4.txt")
         self.assertIn("ALIASES-EXCEEDED", str(ctx.exception))
@@ -256,11 +273,11 @@ class EvidenceBudgetAccountingTests(unittest.TestCase):
         budget.charge_ledger_line("12345")
 
         with self.assertRaises(EvidenceLimitExceededError) as ctx:
-            budget.charge_ledger_line(b"12345678901")  # 11 bytes > 10
+            budget.charge_ledger_line(b"12345678901")
         self.assertIn("LEDGER-LINE-BYTES-EXCEEDED", str(ctx.exception))
 
         with self.assertRaises(EvidenceLimitExceededError) as ctx:
-            budget.charge_ledger_line(b"1")  # 3rd line > 2
+            budget.charge_ledger_line(b"1")
         self.assertIn("LEDGER-LINES-EXCEEDED", str(ctx.exception))
 
     def test_witness_events_and_descriptors_bounds(self):
@@ -277,6 +294,20 @@ class EvidenceBudgetAccountingTests(unittest.TestCase):
         self.assertIn("HELD-DESCRIPTORS-EXCEEDED", str(ctx.exception))
         budget.release_descriptor()
         self.assertEqual(budget.held_descriptors, 0)
+
+    def test_fd_closed_on_budget_acquire_rejection(self):
+        # Verify that if budget.acquire_descriptor() raises, the opened fd is immediately closed
+        limits = make_test_limits(max_held_descriptors=0)
+        budget = EvidenceBudget(limits)
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "file.txt")
+            with open(path, "wb") as f:
+                f.write(b"data")
+
+            # Opening with budget holding 0 allowed descriptors must fail without leaking fd
+            with self.assertRaises(EvidenceLimitExceededError):
+                with BoundedEvidenceReader(td, budget) as reader:
+                    pass
 
     def test_helper_memory_bound(self):
         limits = make_test_limits(max_helper_memory_bytes=100)
@@ -359,7 +390,6 @@ class BoundedEvidenceReaderTests(unittest.TestCase):
 
             budget = EvidenceBudget(make_test_limits())
             with BoundedEvidenceReader(td, budget) as reader:
-                # Must open O_NONBLOCK and immediately reject as special file
                 with self.assertRaises(UnsafeEvidenceError) as ctx:
                     reader.read_bytes("pipe.fifo")
                 self.assertIn("SPECIAL-OR-NON-REGULAR-FILE", str(ctx.exception))
@@ -368,7 +398,6 @@ class BoundedEvidenceReaderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             path = os.path.join(td, "sparse.dat")
             with open(path, "wb") as f:
-                # Sparse file: nominal size 50 MB, but takes 1 block
                 f.seek(50 * 1024 * 1024)
                 f.write(b"x")
 
@@ -380,12 +409,10 @@ class BoundedEvidenceReaderTests(unittest.TestCase):
 
     def test_directory_enumeration_bounded_before_sorting(self):
         with tempfile.TemporaryDirectory() as td:
-            # Create 15 files
             for i in range(15):
                 with open(os.path.join(td, f"f_{i:02d}.txt"), "wb") as f:
                     f.write(b"x")
 
-            # Limit max_entries to 5
             budget = EvidenceBudget(make_test_limits(max_entries=5))
             with BoundedEvidenceReader(td, budget) as reader:
                 with self.assertRaises(EvidenceLimitExceededError) as ctx:
@@ -413,12 +440,6 @@ class BoundedEvidenceReaderTests(unittest.TestCase):
 
             budget = EvidenceBudget(make_test_limits())
             with BoundedEvidenceReader(td, budget) as reader:
-                # Patch os.read to return less bytes than expected
-                orig_read = os.read
-                def fake_read(fd, n):
-                    # Return only first 5 bytes, then empty
-                    data = orig_read(fd, min(n, 5))
-                    return data
                 call_count = 0
                 def short_read(fd, n):
                     nonlocal call_count
@@ -440,12 +461,10 @@ class BoundedEvidenceReaderTests(unittest.TestCase):
 
             budget = EvidenceBudget(make_test_limits())
             with BoundedEvidenceReader(td, budget) as reader:
-                # Unlink and replace file during stability stat check
                 orig_stat = os.stat
                 def fake_stat(name, *args, **kwargs):
                     res = orig_stat(name, *args, **kwargs)
                     if isinstance(name, str) and name == "race.txt":
-                        # Return stat with different inode to simulate replaced file
                         return os.stat_result((
                             res.st_mode, res.st_ino + 9999, res.st_dev,
                             res.st_nlink, res.st_uid, res.st_gid, res.st_size,
@@ -464,14 +483,12 @@ class BoundedEvidenceReaderTests(unittest.TestCase):
             os.mkdir(sub)
             budget = EvidenceBudget(make_test_limits())
             root = OwnedRoot(td, budget=budget)
-            # Register initial identity
             fd = os.open(sub, os.O_RDONLY | os.O_DIRECTORY)
             try:
                 root.remember("sub", fd)
             finally:
                 os.close(fd)
 
-            # Change registered identity to simulate replaced directory
             root.identities["sub"] = (0, 0)
             fd2 = os.open(sub, os.O_RDONLY | os.O_DIRECTORY)
             try:
@@ -495,7 +512,6 @@ class JSONAndLedgerBoundedReadingTests(unittest.TestCase):
                 data = reader.read_json("doc.json")
                 self.assertEqual(data, {"key": "value", "num": 123})
 
-            # Exceeding max_json_bytes
             budget2 = EvidenceBudget(make_test_limits(max_json_bytes=10))
             with BoundedEvidenceReader(td, budget2) as reader:
                 with self.assertRaises(EvidenceLimitExceededError) as ctx:
@@ -514,16 +530,26 @@ class JSONAndLedgerBoundedReadingTests(unittest.TestCase):
                     reader.read_json("dup.json")
                 self.assertIn("DUPLICATE-JSON-KEY", str(ctx.exception))
 
-    def test_read_json_non_finite_numbers_rejected(self):
+    def test_read_json_non_finite_numbers_and_overflow_rejected(self):
         with tempfile.TemporaryDirectory() as td:
             budget = EvidenceBudget(make_test_limits())
             with BoundedEvidenceReader(td, budget) as reader:
+                # Constants
                 for bad_val in (b'{"a": NaN}\n', b'{"a": Infinity}\n', b'{"a": -Infinity}\n'):
                     path = os.path.join(td, "bad.json")
                     with open(path, "wb") as f:
                         f.write(bad_val)
                     with self.assertRaises(BoundedEvidenceError) as ctx:
                         reader.read_json("bad.json")
+                    self.assertIn("NON-FINITE-JSON-NUMBER", str(ctx.exception))
+
+                # Float exponent overflow (1e10000 -> inf)
+                for overflow_val in (b'{"a": 1e10000}\n', b'{"a": -1e10000}\n'):
+                    path = os.path.join(td, "overflow.json")
+                    with open(path, "wb") as f:
+                        f.write(overflow_val)
+                    with self.assertRaises(BoundedEvidenceError) as ctx:
+                        reader.read_json("overflow.json")
                     self.assertIn("NON-FINITE-JSON-NUMBER", str(ctx.exception))
 
     def test_read_origin_records_missing_fails(self):
@@ -550,7 +576,7 @@ class JSONAndLedgerBoundedReadingTests(unittest.TestCase):
 
             incomplete_path = os.path.join(td, "incomplete.jsonl")
             with open(incomplete_path, "wb") as f:
-                f.write(b'{"event": "start"}\n{"event": "incomplete"}')  # No trailing newline
+                f.write(b'{"event": "start"}\n{"event": "incomplete"}')
 
             with BoundedEvidenceReader(td, budget) as reader:
                 with self.assertRaises(IncompleteFrameError) as ctx:
@@ -602,7 +628,6 @@ class CreateCheckpointArchiveTests(unittest.TestCase):
             self.assertEqual(res.manifest["unit"], "plan")
             self.assertEqual(len(res.manifest["members"]), 2)
 
-            # Verify extraction matches bit-for-bit
             extract_dir = os.path.join(td, "extract")
             os.mkdir(extract_dir)
             with tarfile.open(archive_path, "r:gz") as tar:
@@ -613,7 +638,7 @@ class CreateCheckpointArchiveTests(unittest.TestCase):
             with open(os.path.join(extract_dir, "data", "file2.txt"), "rb") as f:
                 self.assertEqual(f.read(), b"file two content\n")
 
-    def test_create_archive_genuine_alias_preservation(self):
+    def test_create_archive_genuine_alias_preservation_and_isolation(self):
         with tempfile.TemporaryDirectory() as td:
             src_dir = os.path.join(td, "src")
             os.mkdir(src_dir)
@@ -624,11 +649,9 @@ class CreateCheckpointArchiveTests(unittest.TestCase):
             p2 = os.path.join(src_dir, "alias.bin")
             os.link(p1, p2)
 
-            # Limit max_unique_inode_bytes to content size + manifest overhead
-            # If alias was charged as unique inode, this would fail!
             budget = EvidenceBudget(make_test_limits(
-                max_unique_inode_bytes=len(content) + 2048,
-                max_aliases=5,
+                max_unique_inode_bytes=len(content) + 4096,
+                max_aliases=10,
             ))
             archive_path = os.path.join(td, "alias_evidence.tar.gz")
 
@@ -643,18 +666,15 @@ class CreateCheckpointArchiveTests(unittest.TestCase):
                     budget=budget,
                 )
 
-            # Verify budget accounting: unique inode charged once, alias count charged once
             self.assertEqual(budget.total_unique_inode_bytes, len(content))
             self.assertEqual(budget.total_aliases, 1)
 
-            # Verify manifest
             members_table = {m["path"]: m for m in res.manifest["members"]}
             self.assertIn("shared/orig.bin", members_table)
             self.assertIn("shared/alias.bin", members_table)
             self.assertEqual(members_table["shared/alias.bin"]["linkpath"], "shared/orig.bin")
             self.assertEqual(members_table["shared/alias.bin"]["sha256"], members_table["shared/orig.bin"]["sha256"])
 
-            # Verify archive structure in tar
             with tarfile.open(archive_path, "r:gz") as tar:
                 ti_orig = tar.getmember("shared/orig.bin")
                 ti_alias = tar.getmember("shared/alias.bin")
@@ -662,7 +682,6 @@ class CreateCheckpointArchiveTests(unittest.TestCase):
                 self.assertTrue(ti_alias.islnk())
                 self.assertEqual(ti_alias.linkname, "shared/orig.bin")
 
-            # Extract archive and verify hardlink relationship and bytes preserved
             extract_dir = os.path.join(td, "extract_alias")
             os.mkdir(extract_dir)
             with tarfile.open(archive_path, "r:gz") as tar:
@@ -677,6 +696,24 @@ class CreateCheckpointArchiveTests(unittest.TestCase):
             with open(e_alias, "rb") as f:
                 self.assertEqual(f.read(), content)
 
+            # Test archive-local isolation: create second archive under different arcnames
+            archive_path2 = os.path.join(td, "alias_evidence2.tar.gz")
+            with OwnedRoot(src_dir, budget=budget) as root:
+                members2 = [
+                    ArchiveMember(root=root, name="orig.bin", arcname="archive2/first.bin"),
+                    ArchiveMember(root=root, name="alias.bin", arcname="archive2/second.bin"),
+                ]
+                res2 = create_checkpoint_archive(
+                    target_path=archive_path2,
+                    members=members2,
+                    budget=budget,
+                )
+
+            with tarfile.open(archive_path2, "r:gz") as tar2:
+                ti_alias2 = tar2.getmember("archive2/second.bin")
+                # linkname MUST be archive2/first.bin, NOT shared/orig.bin from archive 1!
+                self.assertEqual(ti_alias2.linkname, "archive2/first.bin")
+
     def test_create_archive_emitted_bytes_limit_exceeded(self):
         with tempfile.TemporaryDirectory() as td:
             src_dir = os.path.join(td, "src")
@@ -685,7 +722,6 @@ class CreateCheckpointArchiveTests(unittest.TestCase):
                 f.write(b"x" * 100000)
 
             archive_path = os.path.join(td, "failed.tar.gz")
-            # Very small emitted bytes limit
             budget = EvidenceBudget(make_test_limits(max_emitted_bytes=200))
 
             with OwnedRoot(src_dir, budget=budget) as root:
@@ -700,8 +736,40 @@ class CreateCheckpointArchiveTests(unittest.TestCase):
                     )
                 self.assertIn("EMITTED-BYTES-EXCEEDED", str(ctx.exception))
 
-            # Must never leave partial truncated archive on failure
             self.assertFalse(os.path.exists(archive_path))
+
+    def test_create_archive_manifest_collision_and_extra_overwrite_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            src_dir = os.path.join(td, "src")
+            os.mkdir(src_dir)
+            with open(os.path.join(src_dir, "manifest.dat"), "wb") as f:
+                f.write(b"spoof")
+
+            archive_path = os.path.join(td, "collision.tar.gz")
+            budget = EvidenceBudget(make_test_limits())
+
+            with OwnedRoot(src_dir, budget=budget) as root:
+                # Member collides with manifest arcname
+                with self.assertRaises(BoundedEvidenceError) as ctx:
+                    create_checkpoint_archive(
+                        target_path=archive_path,
+                        members=[ArchiveMember(root=root, name="manifest.dat", arcname="evidence-manifest.json")],
+                        budget=budget,
+                    )
+                self.assertIn("RESERVED-MANIFEST-COLLISION", str(ctx.exception))
+                self.assertFalse(os.path.exists(archive_path))
+
+                # extra_manifest overwrites version or members
+                for bad_extra in ({"version": 999}, {"members": ["hacked"]}):
+                    with self.assertRaises(BoundedEvidenceError) as ctx:
+                        create_checkpoint_archive(
+                            target_path=archive_path,
+                            members=[ArchiveMember(root=root, name="manifest.dat", arcname="data.dat")],
+                            budget=budget,
+                            extra_manifest=bad_extra,
+                        )
+                    self.assertIn("EXTRA-MANIFEST-RESERVED-KEY", str(ctx.exception))
+                    self.assertFalse(os.path.exists(archive_path))
 
     def test_create_archive_special_file_and_symlink_rejected(self):
         with tempfile.TemporaryDirectory() as td:
@@ -717,7 +785,6 @@ class CreateCheckpointArchiveTests(unittest.TestCase):
             budget = EvidenceBudget(make_test_limits())
 
             with OwnedRoot(src_dir, budget=budget) as root:
-                # FIFO rejected
                 with self.assertRaises(UnsafeEvidenceError):
                     create_checkpoint_archive(
                         target_path=archive_path,
@@ -726,7 +793,6 @@ class CreateCheckpointArchiveTests(unittest.TestCase):
                     )
                 self.assertFalse(os.path.exists(archive_path))
 
-                # Symlink rejected
                 with self.assertRaises(UnsafeEvidenceError):
                     create_checkpoint_archive(
                         target_path=archive_path,
