@@ -301,6 +301,18 @@ def validate_manifest_dict(data: Dict[str, Any]) -> ProofManifest:
     if not isinstance(run_attempt, int) or run_attempt < 1:
         raise StrictAuthorizationRefused(f"Invalid run_attempt: {run_attempt!r}")
 
+    ind_review = data["independent_review"]
+    if not isinstance(ind_review, dict):
+        raise StrictAuthorizationRefused("independent_review must be a dictionary")
+    for req_rev_key in ("review_commit", "review_path", "review_sha256", "reviewer_identity", "verdict"):
+        if req_rev_key not in ind_review or not ind_review[req_rev_key]:
+            raise StrictAuthorizationRefused(f"independent_review missing required field: {req_rev_key}")
+    if ind_review.get("verdict") != "GO":
+        raise StrictAuthorizationRefused(f"independent_review verdict is not GO: {ind_review.get('verdict')}")
+    if not re.fullmatch(r"[0-9a-f]{40}", str(ind_review.get("review_commit", ""))):
+        raise StrictAuthorizationRefused("independent_review review_commit must be a 40-hex commit SHA")
+    if not re.fullmatch(r"[0-9a-f]{64}", str(ind_review.get("review_sha256", ""))):
+        raise StrictAuthorizationRefused("independent_review review_sha256 must be a 64-hex SHA-256")
     return ProofManifest(
         schema=data["schema"],
         backend=data["backend"],

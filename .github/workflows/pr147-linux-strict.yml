@@ -176,27 +176,55 @@ jobs:
           except Exception as exc:
               fail(f"Failed to calculate expected bundle SHA-256 from lock: {exc}")
 
-          # Bind independent review from request (verifying actual review artifact, no fabrication)
-          ind_review = req_data.get("independent_review", {})
+          # Bind independent review from request (strictly authenticated, immutable, full-subject)
+          ind_review = req_data.get("independent_review")
+          if not isinstance(ind_review, dict):
+              fail("independent_review dictionary required in hosted_request.json")
+
           review_commit = ind_review.get("review_commit", "")
           review_path = ind_review.get("review_path", "")
           review_sha256 = ind_review.get("review_sha256", "")
+          reviewer_identity = ind_review.get("reviewer_identity", "")
 
-          if review_commit and review_path:
-              try:
-                  rev_raw = subprocess.check_output(["git", "show", f"{review_commit}:{review_path}"])
-                  act_rev_sha = hashlib.sha256(rev_raw).hexdigest()
-                  if review_sha256 and act_rev_sha != review_sha256:
-                      fail(f"Review digest mismatch: expected {review_sha256}, got {act_rev_sha}")
-                  review_doc = json.loads(rev_raw)
-                  if review_doc.get("verdict") != "GO":
-                      fail(f"Independent review verdict is not GO: {review_doc.get('verdict')}")
-                  if review_doc.get("product_sha") != p_sha or review_doc.get("proof_sha") != w_sha:
-                      fail("Independent review product/proof SHA mismatch")
-              except Exception as exc:
-                  fail(f"Failed to verify independent review artifact: {exc}")
-          else:
-              fail("Independent review commit and path required in hosted_request.json")
+          if not re.fullmatch(r"[0-9a-f]{40}", review_commit):
+              fail(f"Invalid immutable 40-hex review_commit: {review_commit!r}")
+          if not review_path or not re.fullmatch(r"proof/[A-Za-z0-9_./-]+\.json", review_path) or ".." in review_path:
+              fail(f"Invalid review_path: {review_path!r}")
+          if not re.fullmatch(r"[0-9a-f]{64}", review_sha256):
+              fail(f"Required 64-hex review_sha256 missing or invalid: {review_sha256!r}")
+          if not reviewer_identity:
+              fail("Authenticated reviewer_identity required in independent_review")
+
+          try:
+              rev_raw = subprocess.check_output(["git", "show", f"{review_commit}:{review_path}"])
+              act_rev_sha = hashlib.sha256(rev_raw).hexdigest()
+              if act_rev_sha != review_sha256:
+                  fail(f"Review digest mismatch: expected {review_sha256}, got {act_rev_sha}")
+              review_doc = json.loads(rev_raw)
+              if not isinstance(review_doc, dict):
+                  fail("Review document must be a JSON dictionary")
+              if review_doc.get("verdict") != "GO":
+                  fail(f"Independent review verdict is not GO: {review_doc.get('verdict')}")
+              if review_doc.get("reviewer_identity") != reviewer_identity:
+                  fail("Reviewer identity mismatch between request and review document")
+
+              # Full-subject binding verification: Review must bind ALL execution parameters!
+              required_bindings = {
+                  "product_sha": p_sha,
+                  "proof_sha": w_sha,
+                  "controller_sha": c_sha,
+                  "workflow_blob": workflow_blob,
+                  "image_digest": image_digest,
+                  "lock_sha256": lock_sha256,
+                  "expected_bundle_sha256": expected_bundle_sha256,
+                  "backend": "github-hosted-linux-docker",
+              }
+              for key, expected_val in required_bindings.items():
+                  actual_val = review_doc.get(key)
+                  if actual_val != expected_val:
+                      fail(f"Independent review does not bind {key}: expected {expected_val!r}, review has {actual_val!r}")
+          except Exception as exc:
+              fail(f"Failed to verify authenticated independent review: {exc}")
 
           run_id = str(os.environ["GITHUB_RUN_ID"])
           run_attempt = int(os.environ["GITHUB_RUN_ATTEMPT"])

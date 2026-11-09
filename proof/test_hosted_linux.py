@@ -78,7 +78,10 @@ def make_valid_manifest_dict(report_path: str = "/private/tmp/iyp-abcd1234") -> 
             "min_disk_gib": 20.0,
         },
         "independent_review": {
+            "review_commit": "1" * 40,
             "review_path": "proof/review_linux.json",
+            "review_sha256": "2" * 64,
+            "reviewer_identity": "independent-security-reviewer",
             "verdict": "GO",
         },
     }
