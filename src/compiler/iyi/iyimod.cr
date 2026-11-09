@@ -349,7 +349,9 @@ module Iyi::IyiMod
     @indices = {} of DiagnosticOrigin => UInt32
 
     def intern(origin : DiagnosticOrigin) : UInt32
-      return index if index = @indices[origin]?
+      if index = @indices[origin]?
+        return index
+      end
       case origin
       when DiagnosticOrigin::Expanded
         intern(origin.invocation_origin)
@@ -4263,10 +4265,10 @@ module Iyi::IyiMod
     artifact.exports.carried_functions.each_with_index do |sig, index|
       check_signature_diagnostic(section, artifact, expected, artifact.module_name, sig, carried_ordinals[index])
     end
-    artifact.exports.impls.each do |impl|
-      container = mono_body_container(impl.trait_name, impl.type_name)
-      ordinals = mono_body_ordinals(impl.methods)
-      impl.methods.each_with_index { |sig, index| check_signature_diagnostic(section, artifact, expected, container, sig, ordinals[index]) }
+    artifact.exports.impls.each do |implementation|
+      container = mono_body_container(implementation.trait_name, implementation.type_name)
+      ordinals = mono_body_ordinals(implementation.methods)
+      implementation.methods.each_with_index { |sig, index| check_signature_diagnostic(section, artifact, expected, container, sig, ordinals[index]) }
     end
     artifact.exports.types.each { |type| check_type_signature_diagnostics(section, artifact, expected, type) }
     artifact.reopened.each { |type| check_type_signature_diagnostics(section, artifact, expected, type) }
@@ -4299,11 +4301,11 @@ module Iyi::IyiMod
     offset = (signature.visibility.empty? ? 0 : signature.visibility.bytesize + 1) + (signature.required ? 9 : 0)
     roots = fragment.anchors.select { |anchor| anchor.offset == offset && anchor.kind == "Def" && anchor.role == "keyword" }
     raise ArgumentError.new("signature diagnostic root mismatch") unless roots.size == 1 && roots.first.origin == origin
-    signature.annotations.each_with_index do |annotation, index|
+    signature.annotations.each_with_index do |annotation_text, index|
       annotation_key = signature_annotation_fragment_key(container, signature, index)
       raise ArgumentError.new("duplicate signature annotation identity") unless expected.add?(annotation_key)
       annotation_fragment = section.fragments[annotation_key]? || raise ArgumentError.new("missing signature annotation diagnostic")
-      unless annotation_fragment.text_sha256 == ::Crystal::Digest::SHA256.hexdigest(annotation)
+      unless annotation_fragment.text_sha256 == ::Crystal::Digest::SHA256.hexdigest(annotation_text)
         raise ArgumentError.new("signature annotation guard mismatch")
       end
     end
@@ -4318,10 +4320,10 @@ module Iyi::IyiMod
   def self.diagnostic_signature_annotations(container : String, a_def : Def, signature : Signature) : Array(DiagnosticFragment)
     annotations = a_def.all_annotations || [] of Annotation
     raise ArgumentError.new("signature annotation count differs from source") unless annotations.size == signature.annotations.size
-    annotations.map_with_index do |annotation, index|
+    annotations.map_with_index do |annotation_node, index|
       io = IO::Memory.new
       anchors = [] of DiagnosticAnchor
-      annotation.to_s(io, diagnostic_anchors: anchors)
+      annotation_node.to_s(io, diagnostic_anchors: anchors)
       source = io.to_s
       raise ArgumentError.new("signature annotation text differs from source") unless source == signature.annotations[index]
       DiagnosticFragment.new(signature_annotation_fragment_key(container, signature, index),

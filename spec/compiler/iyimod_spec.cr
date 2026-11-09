@@ -175,7 +175,7 @@ describe Iyi::DiagnosticOrigin do
       restored.diagnostic_provenance.not_nil!.regexes[name].should eq(diagnostic)
       consumer = Iyi::Program.new
       consumer.diagnostic_capture = true
-      visitor = Iyi::SemanticVisitor.new(consumer)
+      visitor = Iyi::TopLevelVisitor.new(consumer)
       visitor.import_regex_fixture(restored, "/absent/first.iyimod")
       selected = consumer.types[name].as(Iyi::Const)
       selected.value.as(Iyi::Call).diagnostic_origin.as(Iyi::DiagnosticOrigin::Synthetic).parent_origin.should eq(origins.first)
@@ -302,7 +302,7 @@ describe Iyi::DiagnosticOrigin do
       {"{1 => 2}", "hash"},
       {"1..2", "range"},
       {"/abc/", "regex"},
-      {%q("value #{1}"), "interpolation"},
+      { %q("value #{1}"), "interpolation" },
       {"case 1\nwhen 1\n2\nend", "case"},
       {"a, b = 1, 2", "multiassign"},
       {"select\nwhen channel.receive\n1\nend", "select"},
@@ -316,6 +316,9 @@ describe Iyi::DiagnosticOrigin do
       origin = node.diagnostic_origin.not_nil!
       origin.valid_for_anchor?("Literal", role).should be_true
       text, _, anchors = Iyi::IyiMod.diagnostic_located_source(node)
+      if role == "multiassign"
+        anchors.any? { |anchor| anchor.offset == 0 && anchor.kind == "Call" && anchor.role == "method" }.should be_true
+      end
       restored = Iyi::Parser.new(text)
       restored.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, text.bytesize,
         ::Crystal::Digest::SHA256.hexdigest(text), anchors)]
@@ -434,8 +437,10 @@ describe Iyi::DiagnosticOrigin do
       literal.diagnostic_origin = origin
       literal
     end
-    first = Iyi::Def.new("f", [Iyi::Arg.new("x", literals[0])])
-    second = Iyi::Def.new("f", [Iyi::Arg.new("x", literals[1])])
+    first = Iyi::Def.new("f", [Iyi::Arg.new("x", literals[0], Iyi::Parser.parse("Proc(Int32)"))])
+    second = Iyi::Def.new("f", [Iyi::Arg.new("x", literals[1], Iyi::Parser.parse("Proc(Int32)"))])
+    first.return_type = Iyi::Parser.parse("Proc(Int32)")
+    second.return_type = Iyi::Parser.parse("Proc(Int32)")
     first.diagnostic_origin = Iyi::DiagnosticOrigin::Written.new("app/greeter", "/absent/greeter.iyi", 4, "Def", "keyword")
     second.diagnostic_origin = Iyi::DiagnosticOrigin::Written.new("app/greeter", "/absent/greeter.iyi", 40, "Def", "keyword")
     signatures = [Iyi::IyiMod.signature(first), Iyi::IyiMod.signature(second)]
@@ -677,6 +682,7 @@ describe Iyi::DiagnosticOrigin do
     source = %(module app/main\n#<loc:"elsewhere.iyi",40,3>def f\n  -> { 1 }\nend)
     parser = Iyi::Parser.new(source)
     parser.filename = "/src/main.iyi"
+    parser.diagnostic_source_file = "/src/main.iyi"
     parser.diagnostic_capture = true
     nodes = parser.parse.as(Iyi::Expressions)
     mod = nodes.expressions.last.as(Iyi::ModuleDef)
@@ -704,8 +710,9 @@ describe Iyi::DiagnosticOrigin do
     text = "-> { 1 }"
     invocation = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 5, "Call", "method")
     definition = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.iyi", 9, "Macro", "keyword")
+    emitter = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.iyi", 20, "MacroDirective", "expression")
     original = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 35, "ProcLiteral", "arrow")
-    anchor = Iyi::DiagnosticMacroAnchor.new(0, "ProcLiteral", "arrow", definition, original, nil)
+    anchor = Iyi::DiagnosticMacroAnchor.new(0, "ProcLiteral", "arrow", emitter, original, nil)
     emission = Iyi::Lexer::LocDiagnosticEmission.new(text.bytesize, [anchor], [] of Iyi::DiagnosticGeneratedText)
     pragmas = {0 => [emission] of Iyi::Lexer::LocPragma}
     parser = Iyi::Parser.new(text)
@@ -713,6 +720,7 @@ describe Iyi::DiagnosticOrigin do
     expanded = parser.parse.diagnostic_origin.as(Iyi::DiagnosticOrigin::Expanded)
     expanded.generated_byte_offset.should eq(0)
     expanded.spliced_origin.should eq(original)
+    expanded.emission_parts.first.emitter_origin.should eq(emitter)
     expanded.invocation_origin.should eq(invocation)
   end
 
@@ -720,45 +728,48 @@ describe Iyi::DiagnosticOrigin do
     text = "-> { 1 }"
     invocation = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 5, "Call", "method")
     definition = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.iyi", 9, "Macro", "keyword")
-    generated = Iyi::DiagnosticGeneratedText.new(0, text.bytesize, definition, Iyi::DiagnosticMacroProducer::MacroId)
+    emitter = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.iyi", 20, "MacroDirective", "expression")
+    generated = Iyi::DiagnosticGeneratedText.new(0, text.bytesize, emitter, Iyi::DiagnosticMacroProducer::MacroId)
     emission = Iyi::Lexer::LocDiagnosticEmission.new(text.bytesize, [] of Iyi::DiagnosticMacroAnchor, [generated])
     parser = Iyi::Parser.new(text)
     parser.diagnostic_expansion(invocation, definition, "sha256:#{::Crystal::Digest::SHA256.hexdigest(text)}",
       {0 => [emission] of Iyi::Lexer::LocPragma})
     origin = parser.parse.diagnostic_origin.as(Iyi::DiagnosticOrigin::Expanded)
-    origin.emission_parts.should eq([Iyi::DiagnosticEmissionPart.new(0, 2, definition)])
+    origin.emission_parts.should eq([Iyi::DiagnosticEmissionPart.new(0, 2, emitter)])
     origin.spliced_origin.should be_nil
 
     missing = Iyi::Parser.new(text)
     missing.diagnostic_expansion(invocation, definition, "sha256:#{::Crystal::Digest::SHA256.hexdigest(text)}", nil)
-    expect_raises(ArgumentError) { missing.parse }
+    expect_raises(ArgumentError, /unauthorized macro anchor/) { missing.parse }
   end
 
   it "records only the operator when a signed numeric token is split" do
     text = "1+2"
     invocation = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 5, "Call", "method")
     definition = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.iyi", 9, "Macro", "keyword")
-    generated = Iyi::DiagnosticGeneratedText.new(0, text.bytesize, definition, Iyi::DiagnosticMacroProducer::MacroId)
+    emitter = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.iyi", 20, "MacroDirective", "expression")
+    generated = Iyi::DiagnosticGeneratedText.new(0, text.bytesize, emitter, Iyi::DiagnosticMacroProducer::MacroId)
     emission = Iyi::Lexer::LocDiagnosticEmission.new(text.bytesize, [] of Iyi::DiagnosticMacroAnchor, [generated])
     parser = Iyi::Parser.new(text)
     parser.diagnostic_expansion(invocation, definition, "sha256:#{::Crystal::Digest::SHA256.hexdigest(text)}",
       {0 => [emission] of Iyi::Lexer::LocPragma})
     origin = parser.parse.diagnostic_origin.as(Iyi::DiagnosticOrigin::Expanded)
-    origin.emission_parts.should eq([Iyi::DiagnosticEmissionPart.new(1, 2, definition)])
+    origin.emission_parts.should eq([Iyi::DiagnosticEmissionPart.new(1, 2, emitter)])
   end
 
   it "rejects a spliced anchor that overlaps generated text" do
     text = "-> { 1 }"
     invocation = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 5, "Call", "method")
     definition = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.iyi", 9, "Macro", "keyword")
+    emitter = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.iyi", 20, "MacroDirective", "expression")
     original = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 35, "ProcLiteral", "arrow")
-    anchor = Iyi::DiagnosticMacroAnchor.new(0, "ProcLiteral", "arrow", definition, original, nil)
-    generated = Iyi::DiagnosticGeneratedText.new(0, text.bytesize, definition, Iyi::DiagnosticMacroProducer::MacroId)
+    anchor = Iyi::DiagnosticMacroAnchor.new(0, "ProcLiteral", "arrow", emitter, original, nil)
+    generated = Iyi::DiagnosticGeneratedText.new(0, text.bytesize, emitter, Iyi::DiagnosticMacroProducer::MacroId)
     emission = Iyi::Lexer::LocDiagnosticEmission.new(text.bytesize, [anchor], [generated])
     parser = Iyi::Parser.new(text)
     parser.diagnostic_expansion(invocation, definition, "sha256:#{::Crystal::Digest::SHA256.hexdigest(text)}",
       {0 => [emission] of Iyi::Lexer::LocPragma})
-    expect_raises(ArgumentError) { parser.parse }
+    expect_raises(ArgumentError, /macro anchor overlaps generated text/) { parser.parse }
   end
 
   it "retains a source closure inside a macro-constructed array" do

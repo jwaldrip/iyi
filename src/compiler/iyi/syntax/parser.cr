@@ -207,7 +207,7 @@ module Iyi
     # macro expansion rendering.
     def diagnostic_source_file=(filename : String)
       unless !filename.empty? && @input_filename == filename && @input_artifact.nil?
-        raise ArgumentError.new("diagnostic source identity does not match parser input")
+        ::raise ArgumentError.new("diagnostic source identity does not match parser input")
       end
       @diagnostic_source_unit = "source-file:#{filename}"
     end
@@ -222,7 +222,7 @@ module Iyi
                              guard : String, pragmas : Hash(Int32, Array(Lexer::LocPragma))?)
       input = @input_offset_base == 0 ? string : "\uFEFF#{string}"
       unless guard == "sha256:#{::Crystal::Digest::SHA256.hexdigest(input)}"
-        raise ArgumentError.new("diagnostic macro expansion guard mismatch")
+        ::raise ArgumentError.new("diagnostic macro expansion guard mismatch")
       end
       @diagnostic_expansion = {invocation, definition, guard}
       @diagnostic_token_ends = {} of Int32 => Int32
@@ -235,25 +235,25 @@ module Iyi
           when Lexer::LocDiagnosticEmission
             finish = entry.end_offset
             if start < 0 || finish < start || finish > string.bytesize + @input_offset_base
-              raise ArgumentError.new("invalid diagnostic macro emission extent")
+              ::raise ArgumentError.new("invalid diagnostic macro emission extent")
             end
             entry.anchors.each do |anchor|
               unless anchor.offset >= start && anchor.offset < finish
-                raise ArgumentError.new("macro emission anchor outside emission bounds")
+                ::raise ArgumentError.new("macro emission anchor outside emission bounds")
               end
               if anchor.source_origin.nil? == anchor.producer.nil?
-                raise ArgumentError.new("macro emission anchor must be either spliced or generated")
+                ::raise ArgumentError.new("macro emission anchor must be either spliced or generated")
               end
               if (source = anchor.source_origin) && !source.valid_for_anchor?(anchor.kind, anchor.role)
-                raise ArgumentError.new("macro splice anchor kind or role mismatch")
+                ::raise ArgumentError.new("macro splice anchor kind or role mismatch")
               end
               key = {anchor.offset, anchor.kind, anchor.role}
-              raise ArgumentError.new("duplicate macro emission anchor") if emitted.has_key?(key)
+              ::raise ArgumentError.new("duplicate macro emission anchor") if emitted.has_key?(key)
               emitted[key] = anchor
             end
             entry.generated_text.each do |gen|
               if gen.start_offset < start || gen.end_offset > finish || gen.end_offset <= gen.start_offset
-                raise ArgumentError.new("invalid macro generated text extent")
+                ::raise ArgumentError.new("invalid macro generated text extent")
               end
               generated_ranges << gen
             end
@@ -262,7 +262,7 @@ module Iyi
       end
       generated_ranges.sort_by!(&.start_offset)
       generated_ranges.each_cons_pair do |left, right|
-        raise ArgumentError.new("overlapping diagnostic macro generated ranges") if left.end_offset > right.start_offset
+        ::raise ArgumentError.new("overlapping diagnostic macro generated ranges") if left.end_offset > right.start_offset
       end
     end
 
@@ -276,22 +276,22 @@ module Iyi
         start = region.start_offset
         finish = region.end_offset
         if start < last_end || finish < start || finish > string.bytesize + @input_offset_base
-          raise ArgumentError.new("invalid diagnostic provenance region")
+          ::raise ArgumentError.new("invalid diagnostic provenance region")
         end
         text = string.byte_slice(start - @input_offset_base, finish - start)
         unless ::Crystal::Digest::SHA256.hexdigest(text) == region.text_sha256
-          raise ArgumentError.new("diagnostic provenance text guard mismatch")
+          ::raise ArgumentError.new("diagnostic provenance text guard mismatch")
         end
         region.anchors.each do |anchor|
           unless anchor.offset >= start && anchor.offset < finish && !anchor.kind.empty? && !anchor.role.empty?
-            raise ArgumentError.new("diagnostic provenance anchor outside its region")
+            ::raise ArgumentError.new("diagnostic provenance anchor outside its region")
           end
-          origin = anchor.origin || raise ArgumentError.new("missing diagnostic origin")
+          origin = anchor.origin || ::raise(ArgumentError.new("missing diagnostic origin"))
           unless origin.valid_for_anchor?(anchor.kind, anchor.role)
-            raise ArgumentError.new("diagnostic origin does not match anchor kind and role")
+            ::raise ArgumentError.new("diagnostic origin does not match anchor kind and role")
           end
           key = {anchor.offset, anchor.kind, anchor.role}
-          raise ArgumentError.new("duplicate diagnostic provenance anchor") if pending.has_key?(key)
+          ::raise ArgumentError.new("duplicate diagnostic provenance anchor") if pending.has_key?(key)
           pending[key] = origin
         end
         last_end = finish
@@ -302,10 +302,10 @@ module Iyi
 
     def diagnostic_check_consumed : Nil
       if pending = @diagnostic_pending
-        raise ArgumentError.new("unconsumed diagnostic provenance anchors") unless pending.empty?
+        ::raise ArgumentError.new("unconsumed diagnostic provenance anchors") unless pending.empty?
       end
       if emitted = @diagnostic_emitted_anchors
-        raise ArgumentError.new("unconsumed diagnostic macro emitted anchors") unless emitted.empty?
+        ::raise ArgumentError.new("unconsumed diagnostic macro emitted anchors") unless emitted.empty?
       end
     end
 
@@ -313,13 +313,13 @@ module Iyi
       if regions = @diagnostic_regions
         if regions.any? { |region| offset >= region.start_offset && offset < region.end_offset }
           return @diagnostic_pending.not_nil!.delete({offset, kind, role}) ||
-                 raise ArgumentError.new("missing diagnostic provenance anchor at byte #{offset} for #{kind}:#{role}")
+                 ::raise(ArgumentError.new("missing diagnostic provenance anchor at byte #{offset} for #{kind}:#{role}"))
         end
       end
       if expansion = @diagnostic_expansion
         end_pos = token_end || @diagnostic_token_ends.try(&.[offset]?)
         unless end_pos && end_pos > offset
-          raise ArgumentError.new("missing or ambiguous diagnostic token extent at byte #{offset} for #{kind}:#{role}")
+          ::raise ArgumentError.new("missing or ambiguous diagnostic token extent at byte #{offset} for #{kind}:#{role}")
         end
         key = {offset, kind, role}
         if emitted = @diagnostic_emitted_anchors.try(&.delete(key))
@@ -331,7 +331,7 @@ module Iyi
                            producer == DiagnosticMacroProducer::EmptyNamedTupleProjection
               unless projection && range.producer == producer && range.emitter_origin == emitted.emitter_origin &&
                      range.start_offset <= offset && range.end_offset >= end_pos
-                raise ArgumentError.new("macro anchor overlaps generated text at byte #{offset}")
+                ::raise ArgumentError.new("macro anchor overlaps generated text at byte #{offset}")
               end
             end
           end
@@ -346,7 +346,7 @@ module Iyi
           while cursor < end_pos
             covering = ranges.find { |range| range.start_offset <= cursor && range.end_offset > cursor }
             unless covering
-              raise ArgumentError.new("unauthorized macro anchor at byte #{offset} for #{kind}:#{role}")
+              ::raise ArgumentError.new("unauthorized macro anchor at byte #{offset} for #{kind}:#{role}")
             end
             chunk_end = Math.min(end_pos, covering.end_offset)
             raw_parts << DiagnosticEmissionPart.new(cursor, chunk_end, covering.emitter_origin)
@@ -367,7 +367,7 @@ module Iyi
             offset, kind, role, parts, nil
           )
         else
-          raise ArgumentError.new("missing diagnostic macro expansion context for #{kind}:#{role}")
+          ::raise ArgumentError.new("missing diagnostic macro expansion context for #{kind}:#{role}")
         end
       end
       return nil unless @diagnostic_capture
@@ -375,7 +375,7 @@ module Iyi
       module_path = @diagnostic_module_path || @diagnostic_source_unit
       filename = @input_filename
       unless module_path && filename.is_a?(String) && !filename.empty?
-        raise ArgumentError.new("diagnostic source input lacks a stable file identity")
+        ::raise ArgumentError.new("diagnostic source input lacks a stable file identity")
       end
       DiagnosticOrigin::Written.new(module_path, filename, offset, kind, role)
     end
@@ -825,7 +825,12 @@ module Iyi
         when Nil
           if exp.args.empty?
             iyi_refuse_global_local(exp)
-            exp = Var.new(exp.name).at(exp)
+            call = exp
+            variable = Var.new(call.name).at(call)
+            variable.diagnostic_origin = call.diagnostic_origin.try do |origin|
+              DiagnosticOrigin::Synthetic.new(origin, "local_binding", "assignment")
+            end
+            exp = variable
           end
         when Global
           if obj.name == "$~" && exp.name == "[]"
@@ -1244,7 +1249,7 @@ module Iyi
                          input_index = name_offset - @input_offset_base
                          unless input_index >= 0 && input_index < string.bytesize &&
                                 string.byte_at(input_index) == char.ord && @token.input_end > name_offset
-                           raise ArgumentError.new("invalid signed-number operator extent at byte #{name_offset}")
+                           ::raise ArgumentError.new("invalid signed-number operator extent at byte #{name_offset}")
                          end
                          name_offset + method.bytesize
                        end
@@ -3514,6 +3519,9 @@ module Iyi
       # after `module` is enough to tell them apart without lookahead.
       if @token.type.ident?
         path = parse_module_path
+        if @diagnostic_capture && @input_artifact.nil? && @input_filename.is_a?(String)
+          @diagnostic_module_path = Parser.iyi_package_segments(@iyi_package_name, path).join("/")
+        end
         header = ModuleHeader.new(path)
         header.at(location)
         header.end_location = token_end_location

@@ -87,8 +87,8 @@ module Iyi
     def program_specialization_json : JSON::Any
       root = case self
              when Written   then self
-             when Expanded  then invocation_origin.written_invocation_root
-             when Synthetic then parent_origin.written_invocation_root
+             when Expanded  then self.invocation_origin.written_invocation_root
+             when Synthetic then self.parent_origin.written_invocation_root
              else                raise ArgumentError.new("unknown diagnostic origin")
              end
       JSON.parse(JSON.build do |json|
@@ -107,8 +107,8 @@ module Iyi
     def written_invocation_root : Written
       case self
       when Written   then self
-      when Expanded  then invocation_origin.written_invocation_root
-      when Synthetic then parent_origin.written_invocation_root
+      when Expanded  then self.invocation_origin.written_invocation_root
+      when Synthetic then self.parent_origin.written_invocation_root
       else                raise ArgumentError.new("unknown diagnostic origin")
       end
     end
