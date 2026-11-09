@@ -1,5 +1,5 @@
 {
-  "bundle_description": "Cryptographically authenticated offline test vectors and Pebble v2.10.1 Go module proxy closure for iyi PR147 Linux strict proof",
+  "bundle_description": "Cryptographically authenticated offline test vectors and Pebble v2.10.1 Go module proxy complete closure for iyi PR147 Linux strict proof",
   "bundle_root_contract": {
     "required_entries": [
       "hpke-vectors.json",
@@ -11,9 +11,9 @@
   },
   "files": {
     "go-proxy/github.com/go-jose/go-jose/v4/@v/list": {
-      "sha256": "791f60796a7c2ee8ece263322d731b3b19c7b3e53da0e05cf7d4e72538d9e273",
-      "size": 112,
-      "source_url": "https://proxy.golang.org/github.com/go-jose/go-jose/v4/@v/list"
+      "deterministic_content": "v4.1.4\n",
+      "sha256": "1bb660788c0d091e5ebe27198e9f1eadabd644f70a0c96d27bb3e2a372555390",
+      "size": 7
     },
     "go-proxy/github.com/go-jose/go-jose/v4/@v/v4.1.4.info": {
       "sha256": "f59ee3435959b9a02b8581417e0f9d41e7af42fe297a69cb5f4b62720204a2ec",
@@ -31,9 +31,9 @@
       "source_url": "https://proxy.golang.org/github.com/go-jose/go-jose/v4/@v/v4.1.4.zip"
     },
     "go-proxy/github.com/google/go-cmp/@v/list": {
-      "sha256": "60129e613bb12e4e4ef017bebd3e12c7c8dee4295664270d1b1d53d99e40fcca",
-      "size": 126,
-      "source_url": "https://proxy.golang.org/github.com/google/go-cmp/@v/list"
+      "deterministic_content": "v0.6.0\n",
+      "sha256": "613ff7316ed558079973b8e02ce8dac763243297e0f4c8a584958c579f6e86fd",
+      "size": 7
     },
     "go-proxy/github.com/google/go-cmp/@v/v0.6.0.info": {
       "sha256": "e624a2c1fe53ae5c8cdce4707290e8282c2c89f3143951670eb175957aa9cfa9",
@@ -51,9 +51,9 @@
       "source_url": "https://proxy.golang.org/github.com/google/go-cmp/@v/v0.6.0.zip"
     },
     "go-proxy/github.com/letsencrypt/challtestsrv/@v/list": {
-      "sha256": "8d91ad3142dbf245b70dc0615cedbe91ae90dc084e6827cdea2d87d8edd7cded",
-      "size": 91,
-      "source_url": "https://proxy.golang.org/github.com/letsencrypt/challtestsrv/@v/list"
+      "deterministic_content": "v1.4.2\n",
+      "sha256": "9644acabc34c03a446400421f0afe35e64e573bac3778be2da229798d176a8e4",
+      "size": 7
     },
     "go-proxy/github.com/letsencrypt/challtestsrv/@v/v1.4.2.info": {
       "sha256": "11627446f06a4d1db5b4485c7320055efe4896fa0cae791a07fb0a5366b9a45d",
@@ -71,9 +71,9 @@
       "source_url": "https://proxy.golang.org/github.com/letsencrypt/challtestsrv/@v/v1.4.2.zip"
     },
     "go-proxy/github.com/letsencrypt/pebble/v2/@v/list": {
-      "sha256": "fd3b8550a255bf653ce1267902866d9ed235496c3dd87ec80662b04f8a362a82",
-      "size": 135,
-      "source_url": "https://proxy.golang.org/github.com/letsencrypt/pebble/v2/@v/list"
+      "deterministic_content": "v2.10.1\n",
+      "sha256": "55e8fe4f1b24778fcd057673ca57ae3de48ab9b5439d88949f66d2e5c4f4391e",
+      "size": 8
     },
     "go-proxy/github.com/letsencrypt/pebble/v2/@v/v2.10.1.info": {
       "sha256": "f721f60ab9911d4aed84a23fc32f5cee4d104721b2745a564193563e19893de9",
@@ -91,9 +91,9 @@
       "source_url": "https://proxy.golang.org/github.com/letsencrypt/pebble/v2/@v/v2.10.1.zip"
     },
     "go-proxy/github.com/miekg/dns/@v/list": {
-      "sha256": "a139f79dacaf6cf6eae9c9963b0103910cc6ae0e9d8aa9f91d4e18de941bc4ca",
-      "size": 692,
-      "source_url": "https://proxy.golang.org/github.com/miekg/dns/@v/list"
+      "deterministic_content": "v1.1.62\n",
+      "sha256": "00bc82d901524bca0616c3b2fd2be1b3e58ba7dc7416cccc1b0b2ed474ccefd3",
+      "size": 8
     },
     "go-proxy/github.com/miekg/dns/@v/v1.1.62.info": {
       "sha256": "1bdd3749e2c79fc3972824ee4d4b0386277a627138246fab9f72de620e6a65a5",
@@ -110,10 +110,50 @@
       "size": 255280,
       "source_url": "https://proxy.golang.org/github.com/miekg/dns/@v/v1.1.62.zip"
     },
+    "go-proxy/github.com/yuin/goldmark/@v/list": {
+      "deterministic_content": "v1.4.13\n",
+      "sha256": "5e5cba2e006d4c44185bb8f55c5434ed7b9eb984c2b2e739fd8b02cbf8a55e70",
+      "size": 8
+    },
+    "go-proxy/github.com/yuin/goldmark/@v/v1.4.13.info": {
+      "sha256": "b0302ffb76a1b14e08f0f9aeacf7f6fcc4897f5e19cd00543fe3ddd62f2ada71",
+      "size": 51,
+      "source_url": "https://proxy.golang.org/github.com/yuin/goldmark/@v/v1.4.13.info"
+    },
+    "go-proxy/github.com/yuin/goldmark/@v/v1.4.13.mod": {
+      "sha256": "ee7fe4466203a01d3ac19adc134cdec99bc6de71992c28f3dd9a74480bff0603",
+      "size": 41,
+      "source_url": "https://proxy.golang.org/github.com/yuin/goldmark/@v/v1.4.13.mod"
+    },
+    "go-proxy/github.com/yuin/goldmark/@v/v1.4.13.zip": {
+      "sha256": "bb41a602b174345fda392c8ad83fcc93217c285c763699677630be90feb7a5e3",
+      "size": 229017,
+      "source_url": "https://proxy.golang.org/github.com/yuin/goldmark/@v/v1.4.13.zip"
+    },
+    "go-proxy/golang.org/x/crypto/@v/list": {
+      "deterministic_content": "v0.38.0\n",
+      "sha256": "1f0b6bf4c390a423ed6d191cfd9a9907f7989357b6e7302769b0a6fe9b24123d",
+      "size": 8
+    },
+    "go-proxy/golang.org/x/crypto/@v/v0.38.0.info": {
+      "sha256": "5ab6cc1d179eb8d0d584632b8d6f64b096ae7c9434649833c4c83013620e6394",
+      "size": 193,
+      "source_url": "https://proxy.golang.org/golang.org/x/crypto/@v/v0.38.0.info"
+    },
+    "go-proxy/golang.org/x/crypto/@v/v0.38.0.mod": {
+      "sha256": "e9c23d3613ad3c29e18552f90d02798b7295419dd47d4f667d5843d7dc1673b3",
+      "size": 192,
+      "source_url": "https://proxy.golang.org/golang.org/x/crypto/@v/v0.38.0.mod"
+    },
+    "go-proxy/golang.org/x/crypto/@v/v0.38.0.zip": {
+      "sha256": "02824dd62fa3241946a2ac14fdadbd393514d76cebbfbd8bddcddbfc80c7f94b",
+      "size": 2219369,
+      "source_url": "https://proxy.golang.org/golang.org/x/crypto/@v/v0.38.0.zip"
+    },
     "go-proxy/golang.org/x/mod/@v/list": {
-      "sha256": "dd29b09cd382c9e4a00057314fe0da393d5e4efb767afb1aa95cb1538a1de9bc",
-      "size": 359,
-      "source_url": "https://proxy.golang.org/golang.org/x/mod/@v/list"
+      "deterministic_content": "v0.24.0\n",
+      "sha256": "83ed681489cf1befc1f2c80e1300780fb1543edb10dce5b38b2193e33e51355d",
+      "size": 8
     },
     "go-proxy/golang.org/x/mod/@v/v0.24.0.info": {
       "sha256": "77090ad1cf67d86b8db873de460fcc5fd8c74929efc05e8c48e0b0f8083f7805",
@@ -131,9 +171,9 @@
       "source_url": "https://proxy.golang.org/golang.org/x/mod/@v/v0.24.0.zip"
     },
     "go-proxy/golang.org/x/net/@v/list": {
-      "sha256": "65308f319e46b12093096e1601595bb3bbce55f10a329ba795336744b3225595",
-      "size": 487,
-      "source_url": "https://proxy.golang.org/golang.org/x/net/@v/list"
+      "deterministic_content": "v0.40.0\n",
+      "sha256": "d6d891b73370546913173560ac1457900b55f125f9bae66b1770c8e62a993755",
+      "size": 8
     },
     "go-proxy/golang.org/x/net/@v/v0.40.0.info": {
       "sha256": "8a866b2765d5e1fa30afc53124eb0d9674e16d112fe1dc78f5a2a61eed30fecd",
@@ -151,9 +191,9 @@
       "source_url": "https://proxy.golang.org/golang.org/x/net/@v/v0.40.0.zip"
     },
     "go-proxy/golang.org/x/sync/@v/list": {
-      "sha256": "1933c0904ed8336d55c51a64160872f889fc2afab118040fafb76362e611b0ec",
-      "size": 183,
-      "source_url": "https://proxy.golang.org/golang.org/x/sync/@v/list"
+      "deterministic_content": "v0.14.0\n",
+      "sha256": "b6d6c5a037cce47a8b713dc0906341d4b1d8525d542ca8acb6c7ac41d7222b96",
+      "size": 8
     },
     "go-proxy/golang.org/x/sync/@v/v0.14.0.info": {
       "sha256": "6516bee444c53b9d3d1d6b2d6ba28cd3651cc803d7c8590dabfb5de8e8b4e77c",
@@ -171,9 +211,9 @@
       "source_url": "https://proxy.golang.org/golang.org/x/sync/@v/v0.14.0.zip"
     },
     "go-proxy/golang.org/x/sys/@v/list": {
-      "sha256": "1822acf92c4179e5441ef2e2de431babc39ae5a82152ce0169e6fb09d2f38741",
-      "size": 383,
-      "source_url": "https://proxy.golang.org/golang.org/x/sys/@v/list"
+      "deterministic_content": "v0.33.0\n",
+      "sha256": "cca4d228173313e8686568e547f34f5138e4fc1c3480e806356557b896e762d5",
+      "size": 8
     },
     "go-proxy/golang.org/x/sys/@v/v0.33.0.info": {
       "sha256": "95843d83fb9d7cdd40e75786f9ad6c60234f0d730eed1c60d1d4a1571fe72aec",
@@ -190,10 +230,70 @@
       "size": 1994091,
       "source_url": "https://proxy.golang.org/golang.org/x/sys/@v/v0.33.0.zip"
     },
+    "go-proxy/golang.org/x/telemetry/@v/list": {
+      "deterministic_content": "v0.0.0-20240521205824-bda55230c457\n",
+      "sha256": "2d68dc4026678713c9323d9d51508853db814bb88d0b018e0e2a26769949226b",
+      "size": 35
+    },
+    "go-proxy/golang.org/x/telemetry/@v/v0.0.0-20240521205824-bda55230c457.info": {
+      "sha256": "610f036de1f620ba787aa11dc9f9bcc690c502390326386c3f2c822eddca5b9e",
+      "size": 197,
+      "source_url": "https://proxy.golang.org/golang.org/x/telemetry/@v/v0.0.0-20240521205824-bda55230c457.info"
+    },
+    "go-proxy/golang.org/x/telemetry/@v/v0.0.0-20240521205824-bda55230c457.mod": {
+      "sha256": "b71288c1d03a434f8ea16eda80e4ddb0733cbdd4ed996f4ab6616fd5dbf76ab3",
+      "size": 138,
+      "source_url": "https://proxy.golang.org/golang.org/x/telemetry/@v/v0.0.0-20240521205824-bda55230c457.mod"
+    },
+    "go-proxy/golang.org/x/telemetry/@v/v0.0.0-20240521205824-bda55230c457.zip": {
+      "sha256": "8e8649337973d064cc44fa858787db7d0eb90f0806807349766d180ed6889f5c",
+      "size": 961050,
+      "source_url": "https://proxy.golang.org/golang.org/x/telemetry/@v/v0.0.0-20240521205824-bda55230c457.zip"
+    },
+    "go-proxy/golang.org/x/term/@v/list": {
+      "deterministic_content": "v0.32.0\n",
+      "sha256": "ac261cddb5ee75b75dfcd8ec88b839d524f83e3057a4e8e8c86e2af7f9fa6d90",
+      "size": 8
+    },
+    "go-proxy/golang.org/x/term/@v/v0.32.0.info": {
+      "sha256": "c0c7dc42dfd7c098689389fa9f56c12a378e0f34921a471998e1ec6fc3964f45",
+      "size": 191,
+      "source_url": "https://proxy.golang.org/golang.org/x/term/@v/v0.32.0.info"
+    },
+    "go-proxy/golang.org/x/term/@v/v0.32.0.mod": {
+      "sha256": "30a064bbfa73cebc4b5294fd10ebe1a258e5fe45fc5ecee670a31f53b170402a",
+      "size": 70,
+      "source_url": "https://proxy.golang.org/golang.org/x/term/@v/v0.32.0.mod"
+    },
+    "go-proxy/golang.org/x/term/@v/v0.32.0.zip": {
+      "sha256": "e31f47c791e37f7dd1c12ad47015cf19f4a1903ac1792dacb724c5607e44c455",
+      "size": 20626,
+      "source_url": "https://proxy.golang.org/golang.org/x/term/@v/v0.32.0.zip"
+    },
+    "go-proxy/golang.org/x/text/@v/list": {
+      "deterministic_content": "v0.25.0\n",
+      "sha256": "0361a8105806149bb751d0e4638fddb4e4da9bff6dd51fbf74ac2d29db75a420",
+      "size": 8
+    },
+    "go-proxy/golang.org/x/text/@v/v0.25.0.info": {
+      "sha256": "864f0eefbadcb68f3ce46ae31c105183146fa4bc2e9cc250b42322a5beed572e",
+      "size": 191,
+      "source_url": "https://proxy.golang.org/golang.org/x/text/@v/v0.25.0.info"
+    },
+    "go-proxy/golang.org/x/text/@v/v0.25.0.mod": {
+      "sha256": "8133f6f3b232cb388b50d1c74be92f39198cbd62e3b0991c917cdbc1322bbe14",
+      "size": 223,
+      "source_url": "https://proxy.golang.org/golang.org/x/text/@v/v0.25.0.mod"
+    },
+    "go-proxy/golang.org/x/text/@v/v0.25.0.zip": {
+      "sha256": "3f218b1dd9a690036d1226f46f142fc7ae3cc9cd4f28610b96bb8080b7e194c9",
+      "size": 9234171,
+      "source_url": "https://proxy.golang.org/golang.org/x/text/@v/v0.25.0.zip"
+    },
     "go-proxy/golang.org/x/tools/@v/list": {
-      "sha256": "c60de24fcd93baafb1b2bfb62a374d5d3040080bf2a927f05b8202532f6f2acd",
-      "size": 547,
-      "source_url": "https://proxy.golang.org/golang.org/x/tools/@v/list"
+      "deterministic_content": "v0.33.0\n",
+      "sha256": "cca4d228173313e8686568e547f34f5138e4fc1c3480e806356557b896e762d5",
+      "size": 8
     },
     "go-proxy/golang.org/x/tools/@v/v0.33.0.info": {
       "sha256": "fe2fa87062b1582ead715c20244fbaa63c5f2f41d66e9bb8d9c7c99e587c5b75",
@@ -236,74 +336,109 @@
       "h1": "h1:moDMcTHmvE6Groj34emNPLs/qtYXRVcd6S7NHbHz3kA=",
       "mod_h1": "h1:x4oUasVrzR7071A4TnHLGSPpNOm2a21K9Kf04k1rs08=",
       "module": "github.com/go-jose/go-jose/v4",
-      "sumdb_receipt": "51876581\ngithub.com/go-jose/go-jose/v4 v4.1.4 h1:moDMcTHmvE6Groj34emNPLs/qtYXRVcd6S7NHbHz3kA=\ngithub.com/go-jose/go-jose/v4 v4.1.4/go.mod h1:x4oUasVrzR7071A4TnHLGSPpNOm2a21K9Kf04k1rs08=\n\ngo.sum database tree\n71026434\nT3sXpEDRBsRImGYFDFQx0zr/0FXKS1FuWO3GzrXBjLc=\n\n\u2014 sum.golang.org Az3grvOKLveZ+5blKIoEbTL8R+wUdQPwiXGVq4lQUpTqhJB5cJfRWGd3L6i9a0ro/NfEyIn63a+fFRBawtq5tPZEGQ0=",
+      "sumdb_receipt": "51876581\ngithub.com/go-jose/go-jose/v4 v4.1.4 h1:moDMcTHmvE6Groj34emNPLs/qtYXRVcd6S7NHbHz3kA=\ngithub.com/go-jose/go-jose/v4 v4.1.4/go.mod h1:x4oUasVrzR7071A4TnHLGSPpNOm2a21K9Kf04k1rs08=\n\ngo.sum database tree\n71028353\nWr3lumsAk70o3Wo1L7gnjZbT7KfqGlmT1TWdub9tHLw=\n\n\u2014 sum.golang.org Az3grkf6QtsmnkdPBAuTl3KXA+uM0mXCJ/KWmmTDXokJnU7XmiK919nCrWHLV2LkNJh2vZV09pKujZnjtLryCatQfAI=",
       "version": "v4.1.4"
     },
     "github.com/google/go-cmp@v0.6.0": {
       "h1": "h1:ofyhxvXcZhMsU5ulbFiLKl/XBFqE1GSq7atu8tAmTRI=",
       "mod_h1": "h1:17dUlkBOakJ0+DkrSSNjCkIjxS6bF9zb3elmeNGIjoY=",
       "module": "github.com/google/go-cmp",
-      "sumdb_receipt": "19966894\ngithub.com/google/go-cmp v0.6.0 h1:ofyhxvXcZhMsU5ulbFiLKl/XBFqE1GSq7atu8tAmTRI=\ngithub.com/google/go-cmp v0.6.0/go.mod h1:17dUlkBOakJ0+DkrSSNjCkIjxS6bF9zb3elmeNGIjoY=\n\ngo.sum database tree\n71024908\nSp4iykXYLYCFdvVMUQXXCQ7CRZf2rIyex95Z91Uhbpk=\n\n\u2014 sum.golang.org Az3grqtpbaM9+nSB+A+L9334o2CkIjVlncv7+CSRiM/0v+8RzrknsBzmf2YbThSgOF8YrraRXawlevgVknR9LFyYFwY=",
+      "sumdb_receipt": "19966894\ngithub.com/google/go-cmp v0.6.0 h1:ofyhxvXcZhMsU5ulbFiLKl/XBFqE1GSq7atu8tAmTRI=\ngithub.com/google/go-cmp v0.6.0/go.mod h1:17dUlkBOakJ0+DkrSSNjCkIjxS6bF9zb3elmeNGIjoY=\n\ngo.sum database tree\n71028302\nQuMFuRx40aBCvqjOk4cufRGYdq+vMM9E4RiiD2FZjRI=\n\n\u2014 sum.golang.org Az3griW19CXyD5WYqeW+kQqAFtSj6Som9QZhlHKBq1dC+AjiE8bIFPCGaHoM0qP6q7EzUy4qbwKZlpfzKxLIbWb75w8=",
       "version": "v0.6.0"
     },
     "github.com/letsencrypt/challtestsrv@v1.4.2": {
       "h1": "h1:0ON3ldMhZyWlfVNYYpFuWRTmZNnyfiL9Hh5YzC3JVwU=",
       "mod_h1": "h1:GhqMqcSoeGpYd5zX5TgwA6er/1MbWzx/o7yuuVya+Wk=",
       "module": "github.com/letsencrypt/challtestsrv",
-      "sumdb_receipt": "49923386\ngithub.com/letsencrypt/challtestsrv v1.4.2 h1:0ON3ldMhZyWlfVNYYpFuWRTmZNnyfiL9Hh5YzC3JVwU=\ngithub.com/letsencrypt/challtestsrv v1.4.2/go.mod h1:GhqMqcSoeGpYd5zX5TgwA6er/1MbWzx/o7yuuVya+Wk=\n\ngo.sum database tree\n71024210\nzVkrUwfDNkDavhSMvFDdoDu0qxq+MbiYyuqp3wY2Yjw=\n\n\u2014 sum.golang.org Az3grvt6iVi9Wf7Xr3p6soObVLqnb7AwgIUYoawZVeisaejTmTwMMzpupI+16wdaLao2oX9JiAgl2TnHR8KEounRkQM=",
+      "sumdb_receipt": "49923386\ngithub.com/letsencrypt/challtestsrv v1.4.2 h1:0ON3ldMhZyWlfVNYYpFuWRTmZNnyfiL9Hh5YzC3JVwU=\ngithub.com/letsencrypt/challtestsrv v1.4.2/go.mod h1:GhqMqcSoeGpYd5zX5TgwA6er/1MbWzx/o7yuuVya+Wk=\n\ngo.sum database tree\n71028302\nQuMFuRx40aBCvqjOk4cufRGYdq+vMM9E4RiiD2FZjRI=\n\n\u2014 sum.golang.org Az3griW19CXyD5WYqeW+kQqAFtSj6Som9QZhlHKBq1dC+AjiE8bIFPCGaHoM0qP6q7EzUy4qbwKZlpfzKxLIbWb75w8=",
       "version": "v1.4.2"
     },
     "github.com/letsencrypt/pebble/v2@v2.10.1": {
       "h1": "h1:oKHx3lgN4e5Nno2LKTMrVx+b+NkDptkO9aDireiBDGE=",
       "mod_h1": "h1:KtYhQ4YTjT5MtoCZ6RTCXlbrrz6cKyXROCuTpIUDJFY=",
       "module": "github.com/letsencrypt/pebble/v2",
-      "sumdb_receipt": "52722511\ngithub.com/letsencrypt/pebble/v2 v2.10.1 h1:oKHx3lgN4e5Nno2LKTMrVx+b+NkDptkO9aDireiBDGE=\ngithub.com/letsencrypt/pebble/v2 v2.10.1/go.mod h1:KtYhQ4YTjT5MtoCZ6RTCXlbrrz6cKyXROCuTpIUDJFY=\n\ngo.sum database tree\n71024177\nb9QuuTJxUNH2enrHgzTkKRyAcezQeZVT+R4WeRzv3hE=\n\n\u2014 sum.golang.org Az3grnz9DOhnZ+nAgJmlB/PC+6tt//raC9ENyG2+iZoiKOeEMKKjif9Q2SwoHVSq4C/6pWBAjZpdF3Qu9dFTAuW7UQQ=",
+      "sumdb_receipt": "52722511\ngithub.com/letsencrypt/pebble/v2 v2.10.1 h1:oKHx3lgN4e5Nno2LKTMrVx+b+NkDptkO9aDireiBDGE=\ngithub.com/letsencrypt/pebble/v2 v2.10.1/go.mod h1:KtYhQ4YTjT5MtoCZ6RTCXlbrrz6cKyXROCuTpIUDJFY=\n\ngo.sum database tree\n71028359\nbs9UkU7q37xMyQhxnj0nXh5LKPqiISYP2xDCf8kCkPY=\n\n\u2014 sum.golang.org Az3grvisDb8dxk4MchD9CJGebgy3llTGJcH6O0bl5KD5NxYRXLv9h6PStxU9H6V7S9/F+8YMAdHtPrqTIIw3ESZQQAE=",
       "version": "v2.10.1"
     },
     "github.com/miekg/dns@v1.1.62": {
       "h1": "h1:cN8OuEF1/x5Rq6Np+h1epln8OiyPWV+lROx9LxcGgIQ=",
       "mod_h1": "h1:mvDlcItzm+br7MToIKqkglaGhlFMHJ9DTNNWONWXbNQ=",
       "module": "github.com/miekg/dns",
-      "sumdb_receipt": "29010716\ngithub.com/miekg/dns v1.1.62 h1:cN8OuEF1/x5Rq6Np+h1epln8OiyPWV+lROx9LxcGgIQ=\ngithub.com/miekg/dns v1.1.62/go.mod h1:mvDlcItzm+br7MToIKqkglaGhlFMHJ9DTNNWONWXbNQ=\n\ngo.sum database tree\n71025286\nXbD14B/08MzA239CsgMfGpvmYjJdi8ooemOwffJEEF0=\n\n\u2014 sum.golang.org Az3grlbPkpkuj5j7Zp4MnBDmlJBNy/HFlCrPIVtWpTUfq3rsTjryCQzigXYMYa6qmk1Bzkd9C2A6X0scsq7czVW+5Qc=",
+      "sumdb_receipt": "29010716\ngithub.com/miekg/dns v1.1.62 h1:cN8OuEF1/x5Rq6Np+h1epln8OiyPWV+lROx9LxcGgIQ=\ngithub.com/miekg/dns v1.1.62/go.mod h1:mvDlcItzm+br7MToIKqkglaGhlFMHJ9DTNNWONWXbNQ=\n\ngo.sum database tree\n71028388\nzPdlywgfIOBcBczQjLLv2lhtqEMBYuEGc0R85RMXYMM=\n\n\u2014 sum.golang.org Az3grsyHaYJW6XvGRsANPSHNym3bWlFpdB2VSuazc1TiH5rPehxczHz+cwfUPD2WSMHRC9rBraBqs5zeAbQBY/1qNgA=",
       "version": "v1.1.62"
+    },
+    "github.com/yuin/goldmark@v1.4.13": {
+      "h1": "h1:fVcFKWvrslecOb/tg+Cc05dkeYx540o0FuFt3nUVDoE=",
+      "mod_h1": "h1:6yULJ656Px+3vBD8DxQVa3kxgyrAnzto9xy5taEt/CY=",
+      "module": "github.com/yuin/goldmark",
+      "sumdb_receipt": "11382455\ngithub.com/yuin/goldmark v1.4.13 h1:fVcFKWvrslecOb/tg+Cc05dkeYx540o0FuFt3nUVDoE=\ngithub.com/yuin/goldmark v1.4.13/go.mod h1:6yULJ656Px+3vBD8DxQVa3kxgyrAnzto9xy5taEt/CY=\n\ngo.sum database tree\n71028359\nbs9UkU7q37xMyQhxnj0nXh5LKPqiISYP2xDCf8kCkPY=\n\n\u2014 sum.golang.org Az3grvisDb8dxk4MchD9CJGebgy3llTGJcH6O0bl5KD5NxYRXLv9h6PStxU9H6V7S9/F+8YMAdHtPrqTIIw3ESZQQAE=",
+      "version": "v1.4.13"
+    },
+    "golang.org/x/crypto@v0.38.0": {
+      "h1": "h1:jt+WWG8IZlBnVbomuhg2Mdq0+BBQaHbtqHEFEigjUV8=",
+      "mod_h1": "h1:MvrbAqul58NNYPKnOra203SB9vpuZW0e+RRZV+Ggqjw=",
+      "module": "golang.org/x/crypto",
+      "sumdb_receipt": "36895107\ngolang.org/x/crypto v0.38.0 h1:jt+WWG8IZlBnVbomuhg2Mdq0+BBQaHbtqHEFEigjUV8=\ngolang.org/x/crypto v0.38.0/go.mod h1:MvrbAqul58NNYPKnOra203SB9vpuZW0e+RRZV+Ggqjw=\n\ngo.sum database tree\n71028359\nbs9UkU7q37xMyQhxnj0nXh5LKPqiISYP2xDCf8kCkPY=\n\n\u2014 sum.golang.org Az3grvisDb8dxk4MchD9CJGebgy3llTGJcH6O0bl5KD5NxYRXLv9h6PStxU9H6V7S9/F+8YMAdHtPrqTIIw3ESZQQAE=",
+      "version": "v0.38.0"
     },
     "golang.org/x/mod@v0.24.0": {
       "h1": "h1:ZfthKaKaT4NrhGVZHO1/WDTwGES4De8KtWO0SIbNJMU=",
       "mod_h1": "h1:IXM97Txy2VM4PJ3gI61r1YEk/gAj6zAHN3AdZt6S9Ww=",
       "module": "golang.org/x/mod",
-      "sumdb_receipt": "35066140\ngolang.org/x/mod v0.24.0 h1:ZfthKaKaT4NrhGVZHO1/WDTwGES4De8KtWO0SIbNJMU=\ngolang.org/x/mod v0.24.0/go.mod h1:IXM97Txy2VM4PJ3gI61r1YEk/gAj6zAHN3AdZt6S9Ww=\n\ngo.sum database tree\n71027819\nreVy9H0Mj8illwu8ei4HcD7vJ9PjSNhBMKvtveVQK40=\n\n\u2014 sum.golang.org Az3grrsMuBTrvQVXxTspLoFnwJafWDvd5C603I+Nx6d0WqFx3fVP2A2qBD4Xx/vMvrpn+gMnHEa5mWCM0IFBL2Zb1AM=",
+      "sumdb_receipt": "35066140\ngolang.org/x/mod v0.24.0 h1:ZfthKaKaT4NrhGVZHO1/WDTwGES4De8KtWO0SIbNJMU=\ngolang.org/x/mod v0.24.0/go.mod h1:IXM97Txy2VM4PJ3gI61r1YEk/gAj6zAHN3AdZt6S9Ww=\n\ngo.sum database tree\n71028302\nQuMFuRx40aBCvqjOk4cufRGYdq+vMM9E4RiiD2FZjRI=\n\n\u2014 sum.golang.org Az3griW19CXyD5WYqeW+kQqAFtSj6Som9QZhlHKBq1dC+AjiE8bIFPCGaHoM0qP6q7EzUy4qbwKZlpfzKxLIbWb75w8=",
       "version": "v0.24.0"
     },
     "golang.org/x/net@v0.40.0": {
       "h1": "h1:79Xs7wF06Gbdcg4kdCCIQArK11Z1hr5POQ6+fIYHNuY=",
       "mod_h1": "h1:y0hY0exeL2Pku80/zKK7tpntoX23cqL3Oa6njdgRtds=",
       "module": "golang.org/x/net",
-      "sumdb_receipt": "36896152\ngolang.org/x/net v0.40.0 h1:79Xs7wF06Gbdcg4kdCCIQArK11Z1hr5POQ6+fIYHNuY=\ngolang.org/x/net v0.40.0/go.mod h1:y0hY0exeL2Pku80/zKK7tpntoX23cqL3Oa6njdgRtds=\n\ngo.sum database tree\n71027352\nQR411RInDZ/lcxsRnDMVX7zzIpSJzKHu7ht446p8LCs=\n\n\u2014 sum.golang.org Az3grh36nm7+sI5qqBmIZSO5izGe/NmcGhGVRIlJfNbTfzaKhC75gFerJ++5vjOZe3zVl5mVaN3biS2dmJnGH+lZBgE=",
+      "sumdb_receipt": "36896152\ngolang.org/x/net v0.40.0 h1:79Xs7wF06Gbdcg4kdCCIQArK11Z1hr5POQ6+fIYHNuY=\ngolang.org/x/net v0.40.0/go.mod h1:y0hY0exeL2Pku80/zKK7tpntoX23cqL3Oa6njdgRtds=\n\ngo.sum database tree\n71028353\nWr3lumsAk70o3Wo1L7gnjZbT7KfqGlmT1TWdub9tHLw=\n\n\u2014 sum.golang.org Az3grkf6QtsmnkdPBAuTl3KXA+uM0mXCJ/KWmmTDXokJnU7XmiK919nCrWHLV2LkNJh2vZV09pKujZnjtLryCatQfAI=",
       "version": "v0.40.0"
     },
     "golang.org/x/sync@v0.14.0": {
       "h1": "h1:woo0S4Yywslg6hp4eUFjTVOyKt0RookbpAHG4c1HmhQ=",
       "mod_h1": "h1:1dzgHSNfp02xaA81J2MS99Qcpr2w7fw1gpm99rleRqA=",
       "module": "golang.org/x/sync",
-      "sumdb_receipt": "36887472\ngolang.org/x/sync v0.14.0 h1:woo0S4Yywslg6hp4eUFjTVOyKt0RookbpAHG4c1HmhQ=\ngolang.org/x/sync v0.14.0/go.mod h1:1dzgHSNfp02xaA81J2MS99Qcpr2w7fw1gpm99rleRqA=\n\ngo.sum database tree\n71024140\nN7VVGWCqGyepp3VkYCu4S1LeH8Y53Bi8bAbOUkkfbgA=\n\n\u2014 sum.golang.org Az3grjMh3DZqug+srrTQiSk0azjmGildfFAwoA09+JnIXaacuCMpyUELofZgeelTtOZrJeQycDhxh7goin6EnQH2GwM=",
+      "sumdb_receipt": "36887472\ngolang.org/x/sync v0.14.0 h1:woo0S4Yywslg6hp4eUFjTVOyKt0RookbpAHG4c1HmhQ=\ngolang.org/x/sync v0.14.0/go.mod h1:1dzgHSNfp02xaA81J2MS99Qcpr2w7fw1gpm99rleRqA=\n\ngo.sum database tree\n71028369\nY0zx2JA+s0oE9HktiDHp9HhcWjWTVv46vpGs0d3XK80=\n\n\u2014 sum.golang.org Az3grhQqWY6G99a3IsYQcLQEfG5FDfdWvLnP1g39QFI05eAyLFQWFhEQvEqmx3cAJpyJQ/bT/hh1SmwFXvZ1DSfWiAA=",
       "version": "v0.14.0"
     },
     "golang.org/x/sys@v0.33.0": {
       "h1": "h1:q3i8TbbEz+JRD9ywIRlyRAQbM0qF7hu24q3teo2hbuw=",
       "mod_h1": "h1:BJP2sWEmIv4KK5OTEluFJCKSidICx8ciO85XgH3Ak8k=",
       "module": "golang.org/x/sys",
-      "sumdb_receipt": "36887357\ngolang.org/x/sys v0.33.0 h1:q3i8TbbEz+JRD9ywIRlyRAQbM0qF7hu24q3teo2hbuw=\ngolang.org/x/sys v0.33.0/go.mod h1:BJP2sWEmIv4KK5OTEluFJCKSidICx8ciO85XgH3Ak8k=\n\ngo.sum database tree\n71023946\nUgdFTfxWmh8EFlpSNRq5VhTvLfl7Xs0Iqlw5HN5Q/6I=\n\n\u2014 sum.golang.org Az3grt9fI19V4ItzBKNKnFDpeiSKUBM3itlDvcAjaLCztjys7taLhLZsNtxfyIBcBR84N0979avULt9ChN5Y/JZLVws=",
+      "sumdb_receipt": "36887357\ngolang.org/x/sys v0.33.0 h1:q3i8TbbEz+JRD9ywIRlyRAQbM0qF7hu24q3teo2hbuw=\ngolang.org/x/sys v0.33.0/go.mod h1:BJP2sWEmIv4KK5OTEluFJCKSidICx8ciO85XgH3Ak8k=\n\ngo.sum database tree\n71028241\nq4vY5v9CzSCS9rsW5dMGPsqTzrj9ibw06yt4yIouzIc=\n\n\u2014 sum.golang.org Az3grol5HiRmHhwFXSc908uQtPcwy/89BMVi/BJaZSb18R74mR1wuYF/z6IdvdQ+yDfLZTIg0c4OW5S0NtYJkxIRBA0=",
       "version": "v0.33.0"
+    },
+    "golang.org/x/telemetry@v0.0.0-20240521205824-bda55230c457": {
+      "h1": "h1:zf5N6UOrA487eEFacMePxjXAJctxKmyjKUsjA11Uzuk=",
+      "mod_h1": "h1:pRgIJT+bRLFKnoM1ldnzKoxTIn14Yxz928LQRYYgIN0=",
+      "module": "golang.org/x/telemetry",
+      "sumdb_receipt": "25925939\ngolang.org/x/telemetry v0.0.0-20240521205824-bda55230c457 h1:zf5N6UOrA487eEFacMePxjXAJctxKmyjKUsjA11Uzuk=\ngolang.org/x/telemetry v0.0.0-20240521205824-bda55230c457/go.mod h1:pRgIJT+bRLFKnoM1ldnzKoxTIn14Yxz928LQRYYgIN0=\n\ngo.sum database tree\n71028302\nQuMFuRx40aBCvqjOk4cufRGYdq+vMM9E4RiiD2FZjRI=\n\n\u2014 sum.golang.org Az3griW19CXyD5WYqeW+kQqAFtSj6Som9QZhlHKBq1dC+AjiE8bIFPCGaHoM0qP6q7EzUy4qbwKZlpfzKxLIbWb75w8=",
+      "version": "v0.0.0-20240521205824-bda55230c457"
+    },
+    "golang.org/x/term@v0.32.0": {
+      "h1": "h1:DR4lr0TjUs3epypdhTOkMmuF5CDFJ/8pOnbzMZPQ7bg=",
+      "mod_h1": "h1:uZG1FhGx848Sqfsq4/DlJr3xGGsYMu/L5GW4abiaEPQ=",
+      "module": "golang.org/x/term",
+      "sumdb_receipt": "36894512\ngolang.org/x/term v0.32.0 h1:DR4lr0TjUs3epypdhTOkMmuF5CDFJ/8pOnbzMZPQ7bg=\ngolang.org/x/term v0.32.0/go.mod h1:uZG1FhGx848Sqfsq4/DlJr3xGGsYMu/L5GW4abiaEPQ=\n\ngo.sum database tree\n71028353\nWr3lumsAk70o3Wo1L7gnjZbT7KfqGlmT1TWdub9tHLw=\n\n\u2014 sum.golang.org Az3grkf6QtsmnkdPBAuTl3KXA+uM0mXCJ/KWmmTDXokJnU7XmiK919nCrWHLV2LkNJh2vZV09pKujZnjtLryCatQfAI=",
+      "version": "v0.32.0"
+    },
+    "golang.org/x/text@v0.25.0": {
+      "h1": "h1:qVyWApTSYLk/drJRO5mDlNYskwQznZmkpV2c8q9zls4=",
+      "mod_h1": "h1:WEdwpYrmk1qmdHvhkSTNPm3app7v4rsT8F2UD6+VHIA=",
+      "module": "golang.org/x/text",
+      "sumdb_receipt": "36894552\ngolang.org/x/text v0.25.0 h1:qVyWApTSYLk/drJRO5mDlNYskwQznZmkpV2c8q9zls4=\ngolang.org/x/text v0.25.0/go.mod h1:WEdwpYrmk1qmdHvhkSTNPm3app7v4rsT8F2UD6+VHIA=\n\ngo.sum database tree\n71028241\nq4vY5v9CzSCS9rsW5dMGPsqTzrj9ibw06yt4yIouzIc=\n\n\u2014 sum.golang.org Az3grol5HiRmHhwFXSc908uQtPcwy/89BMVi/BJaZSb18R74mR1wuYF/z6IdvdQ+yDfLZTIg0c4OW5S0NtYJkxIRBA0=",
+      "version": "v0.25.0"
     },
     "golang.org/x/tools@v0.33.0": {
       "h1": "h1:4qz2S3zmRxbGIhDIAgjxvFutSvH5EfnsYrRBj0UI0bc=",
       "mod_h1": "h1:CIJMaWEY88juyUfo7UbgPqbC8rU2OqfAV1h2Qp0oMYI=",
       "module": "golang.org/x/tools",
-      "sumdb_receipt": "36899102\ngolang.org/x/tools v0.33.0 h1:4qz2S3zmRxbGIhDIAgjxvFutSvH5EfnsYrRBj0UI0bc=\ngolang.org/x/tools v0.33.0/go.mod h1:CIJMaWEY88juyUfo7UbgPqbC8rU2OqfAV1h2Qp0oMYI=\n\ngo.sum database tree\n71026748\nITNHoIB5+2abQ0SXeBB5GTcJ4onGSfSV1q+99N3bSAg=\n\n\u2014 sum.golang.org Az3grnqq9nKscdwj+lu3wnfjushRVXy+RJsTXYoNO4Cg5H/4CnTJi9fVNm7dMyXmHQhqhX22YOzQzeFxKf25/alZrAM=",
+      "sumdb_receipt": "36899102\ngolang.org/x/tools v0.33.0 h1:4qz2S3zmRxbGIhDIAgjxvFutSvH5EfnsYrRBj0UI0bc=\ngolang.org/x/tools v0.33.0/go.mod h1:CIJMaWEY88juyUfo7UbgPqbC8rU2OqfAV1h2Qp0oMYI=\n\ngo.sum database tree\n71028395\nRIS2JKZVVpzn9q2yh0YpbS5djxeCzbrIybzdFX8rXT8=\n\n\u2014 sum.golang.org Az3grpdG/n+yUV8zNdLEtl+q+kB9HkuHmyNwWIFzMjRjMjLhTL0LMyX4rfLFAjHi+0IBvNO6Nqdm3uCMlrZxaFnWsgc=",
       "version": "v0.33.0"
     }
   },
-  "inventory_sha256": "6291c01da185683c38572480f51e1e438b8a2b110afff4a1ef01aacce3478f1c",
+  "inventory_sha256": "723fd3a5396d95d40a394a44ed33a4948500e78fb65749a0ecddb100b23946a9",
   "pebble": {
     "commands": [
       "github.com/letsencrypt/pebble/v2/cmd/pebble@v2.10.1",
@@ -314,6 +449,12 @@
     "version": "v2.10.1"
   },
   "schema_version": 1,
+  "sumdb_authority": {
+    "key_hash": "033de0ae",
+    "key_name": "sum.golang.org",
+    "public_key": "Ac4zctda0e5eza+HJyk9SxEdh+s3Ux18htTTAD8OuAn8",
+    "public_key_string": "sum.golang.org+033de0ae+Ac4zctda0e5eza+HJyk9SxEdh+s3Ux18htTTAD8OuAn8"
+  },
   "vectors": {
     "hpke-vectors.json": {
       "description": "CFRG RFC 9180 HPKE test vectors",
