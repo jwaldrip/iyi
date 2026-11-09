@@ -2,13 +2,14 @@
 proof/test_hosted_exec_witness.py
 
 Focused standalone discriminating test suite for HostedExecWitness.
-Tests the execution witness protocol, verification invariants, and resistance
-to reader-only, utime-only, channel theft, and untraced clone manipulations.
+Tests the execution witness protocol, verification invariants, disk byte verification,
+and resistance to reader-only, utime-only, channel theft, and untraced clone manipulations.
 
 Per the assignment rules: No tests are run midflight. This file is executed
 only during official verification phases.
 """
 
+import hashlib
 import json
 import os
 import stat
@@ -48,6 +49,7 @@ def _generate_valid_witness_stream(
     sha256: str = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
     size_bytes: int = 1048576,
     raw_captured: bool = True,
+    include_raw_event: bool = True,
 ) -> str:
     """Helper to synthesize structured witness NDJSON streams for rigorous testing."""
     if launch_binding is None:
@@ -107,6 +109,19 @@ def _generate_valid_witness_stream(
             "cmdline": ["/W/.build/iyi", "--version"],
         }))
 
+        if include_raw_event:
+            lines.append(json.dumps({
+                "event": "raw_exec_capture",
+                "seq_id": seq,
+                "timestamp_ns": now + 2500,
+                "st_dev": dev,
+                "st_ino": ino,
+                "exe_path": "/W/.build/iyi",
+                "size_bytes": size_bytes,
+                "sha256": sha256,
+                "captured_file": f"{dev}_{ino}.bin",
+            }))
+
     # 4. process_exit
     lines.append(json.dumps({
         "event": "process_exit",
@@ -162,12 +177,11 @@ class TestHostedExecWitness(unittest.TestCase):
         that inode. Verification MUST reject with ExecNotWitnessedError.
         """
         stream = _generate_valid_witness_stream(
-            exec_inoderefs=[(64769, 9999)],  # Only helper utility executed
+            exec_inoderefs=[(64769, 9999)],
             launch_binding={"driver": "acme", "attempt": 1},
         )
         events = parse_witness_events(stream)
 
-        # Observer requires proof of execution for compiler inode (64769, 1001)
         with self.assertRaises(ExecNotWitnessedError) as ctx:
             verify_exec_witness_evidence(
                 events=events,
@@ -187,7 +201,6 @@ class TestHostedExecWitness(unittest.TestCase):
         )
         events = parse_witness_events(stream)
 
-        # Inode 5002 was touched via utimes but never exec'd
         with self.assertRaises(ExecNotWitnessedError) as ctx:
             verify_exec_witness_evidence(
                 events=events,
@@ -196,42 +209,91 @@ class TestHostedExecWitness(unittest.TestCase):
             )
         self.assertIn("5002", str(ctx.exception))
 
-    def test_raw_executable_capture_verification(self):
-        """Proves that genuine non-empty raw capture succeeds."""
-        stream = _generate_valid_witness_stream(
-            exec_inoderefs=[(64769, 1001)],
-            size_bytes=2048,
-            sha256="11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff",
-            raw_captured=True,
-        )
-        events = parse_witness_events(stream)
-        res = verify_exec_witness_evidence(
-            events=events,
-            required_executables=[(64769, 1001)],
-            require_raw_capture=True,
-        )
-        self.assertTrue(res.verified)
-        self.assertEqual(res.exec_events[0].size_bytes, 2048)
+    def test_raw_disk_verification_success(self):
+        """Proves that verifying real raw bytes on disk recalculates SHA-256 and succeeds."""
+        payload_bytes = b"\x7fELF\x02\x01\x01\x00" + b"\x90" * 1000
+        expected_sha = hashlib.sha256(payload_bytes).hexdigest()
+        size = len(payload_bytes)
 
-    def test_zero_length_raw_capture_rejected(self):
-        """Proves that zero-length placeholder executable captures are rejected."""
-        stream = _generate_valid_witness_stream(
-            exec_inoderefs=[(64769, 1001)],
-            size_bytes=0,
-            sha256="0000000000000000000000000000000000000000000000000000000000000000",
-            raw_captured=True,
-        )
-        events = parse_witness_events(stream)
-        with self.assertRaises(RawCaptureError) as ctx:
-            verify_exec_witness_evidence(
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file_path = os.path.join(tmpdir, "64769_1001.bin")
+            with open(file_path, "wb") as f:
+                f.write(payload_bytes)
+
+            stream = _generate_valid_witness_stream(
+                exec_inoderefs=[(64769, 1001)],
+                sha256=expected_sha,
+                size_bytes=size,
+                raw_captured=True,
+            )
+            events = parse_witness_events(stream)
+            res = verify_exec_witness_evidence(
                 events=events,
                 required_executables=[(64769, 1001)],
-                require_raw_capture=True,
+                raw_capture_dir=tmpdir,
             )
-        self.assertIn("zero-length", str(ctx.exception).lower())
+            self.assertTrue(res.verified)
+
+    def test_raw_disk_missing_fails(self):
+        """Proves that a missing retained raw executable file on disk fails closed."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stream = _generate_valid_witness_stream(
+                exec_inoderefs=[(64769, 1001)],
+            )
+            events = parse_witness_events(stream)
+            with self.assertRaises(RawCaptureError) as ctx:
+                verify_exec_witness_evidence(
+                    events=events,
+                    required_executables=[(64769, 1001)],
+                    raw_capture_dir=tmpdir,
+                )
+            self.assertIn("missing on disk", str(ctx.exception).lower())
+
+    def test_raw_disk_sha_mismatch_fails(self):
+        """Proves that tampered bytes on disk fail SHA-256 verification."""
+        payload_bytes = b"CORRUPTED_BYTES"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file_path = os.path.join(tmpdir, "64769_1001.bin")
+            with open(file_path, "wb") as f:
+                f.write(payload_bytes)
+
+            stream = _generate_valid_witness_stream(
+                exec_inoderefs=[(64769, 1001)],
+                sha256="0000111122223333444455556666777788889999aaaabbbbccccddddeeeeffff",
+                size_bytes=len(payload_bytes),
+            )
+            events = parse_witness_events(stream)
+            with self.assertRaises(RawCaptureError) as ctx:
+                verify_exec_witness_evidence(
+                    events=events,
+                    required_executables=[(64769, 1001)],
+                    raw_capture_dir=tmpdir,
+                )
+            self.assertIn("digest mismatch", str(ctx.exception).lower())
+
+    def test_raw_disk_empty_fails(self):
+        """Proves that zero-length captured file on disk fails closed."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file_path = os.path.join(tmpdir, "64769_1001.bin")
+            with open(file_path, "wb") as f:
+                pass  # 0 bytes
+
+            stream = _generate_valid_witness_stream(
+                exec_inoderefs=[(64769, 1001)],
+                sha256=EMPTY_SHA256,
+                size_bytes=0,
+            )
+            events = parse_witness_events(stream)
+            with self.assertRaises(RawCaptureError) as ctx:
+                verify_exec_witness_evidence(
+                    events=events,
+                    required_executables=[(64769, 1001)],
+                    raw_capture_dir=tmpdir,
+                )
+            self.assertIn("zero-length", str(ctx.exception).lower())
 
     def test_empty_placeholder_sha256_rejected(self):
-        """Proves that standard empty SHA-256 placeholder is rejected for executable."""
+        """Proves that empty-file placeholder SHA-256 is rejected for executable."""
         stream = _generate_valid_witness_stream(
             exec_inoderefs=[(64769, 1001)],
             size_bytes=100,
@@ -245,7 +307,7 @@ class TestHostedExecWitness(unittest.TestCase):
                 required_executables=[(64769, 1001)],
                 require_raw_capture=True,
             )
-        self.assertIn("empty placeholder sha-256", str(ctx.exception).lower())
+        self.assertIn("placeholder sha-256", str(ctx.exception).lower())
 
     def test_channel_theft_fails_dumpable_check(self):
         """
@@ -328,9 +390,15 @@ class TestHostedExecWitness(unittest.TestCase):
         """CLI must immediately exit with code 255 if invoked on non-Linux."""
         if not sys.platform.startswith("linux"):
             witness_script = os.path.join(os.path.dirname(__file__), "hosted_exec_witness.py")
-            proc = subprocess.run([sys.executable, witness_script, "--", "echo", "test"], capture_output=True)
+            proc = subprocess.run([sys.executable, witness_script, "--evidence-fd", "3", "--", "echo", "test"], capture_output=True)
             self.assertEqual(proc.returncode, 255)
             self.assertIn(b"requires Linux", proc.stderr)
+
+    def test_unmediated_python_tracer_prohibited(self):
+        """hosted_exec_witness.py must refuse to run as an unmediated Python tracer."""
+        witness_script = os.path.join(os.path.dirname(__file__), "hosted_exec_witness.py")
+        proc = subprocess.run([sys.executable, witness_script, "--evidence-fd", "3", "--", "echo", "test"], capture_output=True)
+        self.assertEqual(proc.returncode, 255)
 
     def test_c_source_invariants(self):
         """Verify the C implementation enforces all required security invariants."""
@@ -339,7 +407,12 @@ class TestHostedExecWitness(unittest.TestCase):
         with open(c_path, "r", encoding="utf-8") as f:
             c_code = f.read()
 
-        # Invariants in C source:
+        # Security invariants in C source:
+        self.assertIn("DISALLOWED_CLONE3_SYSCALL", c_code)
+        self.assertIn("COMPAT_IA32_SYSCALL_DISALLOWED", c_code)
+        self.assertIn("COMPAT_X32_SYSCALL_DISALLOWED", c_code)
+        self.assertIn("CLONE_UNTRACED", c_code)
+        self.assertIn("DISALLOWED_PTRACE_SYSCALL", c_code)
         self.assertIn("PR_SET_DUMPABLE", c_code)
         self.assertIn("PTRACE_O_EXITKILL", c_code)
         self.assertIn("PTRACE_O_TRACEEXEC", c_code)
@@ -347,7 +420,6 @@ class TestHostedExecWitness(unittest.TestCase):
         self.assertIn("PTRACE_O_TRACESYSGOOD", c_code)
         self.assertIn("PTRACE_EVENT_EXEC", c_code)
         self.assertIn("check_syscall_entry", c_code)
-        self.assertIn("CLONE_UNTRACED", c_code)
         self.assertIn("O_NOATIME", c_code)
         self.assertIn("O_PATH", c_code)
         self.assertIn("sha256_transform", c_code)
@@ -355,6 +427,7 @@ class TestHostedExecWitness(unittest.TestCase):
         self.assertIn(PROTOCOL_VERSION, c_code)
         self.assertIn("close_all_non_standard_fds", c_code)
         self.assertIn("write_all", c_code)
+        self.assertIn("DRAIN_CHILD_PIPES", c_code)
 
 
 if __name__ == "__main__":

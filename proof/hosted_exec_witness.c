@@ -19,21 +19,27 @@
  * Syscall Mediation & Evasion Resistance:
  *   Intercepts syscalls via PTRACE_SYSCALL.
  *   Disallows any ptrace(2) calls from untrusted children.
- *   Inspects clone(2) and clone3(2) arguments; rejects CLONE_UNTRACED
- * immediately. Fails closed on any unaccounted child exit, ptrace failure, or
- * unexpected ECHILD.
+ *   Rejects clone3(2) outright to eliminate userspace memory modification
+ * races. Rejects IA32, x32, and AArch32 compat syscall entry paths. Inspects
+ * clone(2) arguments; rejects CLONE_UNTRACED immediately. Fails closed on any
+ * unaccounted child exit, ptrace failure, or unexpected ECHILD.
  *
  * Raw Executable Capture (Contract Alignment with OriginTrustPlan & Observer):
- *   Held O_PATH descriptors close at tracer exit prior to post-teardown
- * observation. To guarantee that short-lived/unlinked executables (e.g.
- * temporary run binaries) are preserved without zero-length placeholder
- * substitutions, the tracer captures the full raw bytes via /proc/<pid>/exe at
- * exec stop using O_RDONLY | O_NOATIME (preserving target st_atime). Computes
- * SHA-256 digest and optionally persists raw bytes to --raw-capture-dir.
+ *   Captures full raw bytes via /proc/<pid>/exe at exec stop using O_RDONLY |
+ * O_NOATIME (preserving target st_atime). Never falls back to ordinary
+ * O_RDONLY; fails closed if O_NOATIME is refused. Computes SHA-256 digest and
+ * persists raw bytes to --raw-capture-dir. Fails closed on destination open,
+ * write, or partial-write errors. Holds O_PATH descriptor; fails closed if
+ * descriptor table is full or open fails.
  *
- * Streams versioned NDJSON protocol ("iyi-exec-witness-v1") exclusively to a
- * private evidence file descriptor or file. Untrusted child receives isolated
- * standard FDs and has zero access to the evidence channel.
+ * Non-Leader Thread Exec & Signal Semantics:
+ *   Reconciles non-leader thread exec via PTRACE_GETEVENTMSG old_tid.
+ *   Distinguishes clone initial stops from genuine workload signals; forwards
+ *   application signals faithfully.
+ *
+ * Private Output Channel:
+ *   Requires --evidence-fd >= 3. Child receives dedicated pipes for
+ * stdout/stderr, completely isolated from the private evidence stream.
  */
 
 #define _GNU_SOURCE
@@ -42,6 +48,7 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <limits.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -210,7 +217,7 @@ static inline long linux_ptrace(int req, pid_t pid, void *addr, void *data) {
 #endif
 
 /* -------------------------------------------------------------------------
- * Standard Compact SHA-256 (FIPS 180-4) Implementation
+ * Compact Standard SHA-256 (FIPS 180-4)
  * ------------------------------------------------------------------------- */
 typedef struct {
   uint32_t state[8];
@@ -334,6 +341,7 @@ typedef struct {
   bool active;
   bool exited;
   bool in_syscall;
+  bool initial_stop_pending;
   int exit_status;
 } ProcessEntry;
 
@@ -364,9 +372,6 @@ static uint64_t get_time_ns(void) {
 }
 
 static void kill_all_tracees(void) {
-  if (g_root_pid > 0) {
-    kill(g_root_pid, SIGKILL);
-  }
   for (size_t i = 0; i < g_process_count; i++) {
     if (g_processes[i].active && g_processes[i].pid > 0) {
       kill(g_processes[i].pid, SIGKILL);
@@ -557,6 +562,7 @@ static ProcessEntry *add_process(pid_t pid, pid_t ppid, uint64_t parent_seq,
   e->active = true;
   e->exited = false;
   e->in_syscall = false;
+  e->initial_stop_pending = is_thread;
   e->exit_status = 0;
   g_active_processes++;
   g_total_processes_spawned++;
@@ -619,9 +625,24 @@ static bool check_syscall_entry(pid_t pid, char *err_buf, size_t err_buf_len) {
     snprintf(err_buf, err_buf_len, "PTRACE_GETREGSET_FAILED_%d", errno);
     return false;
   }
+  /* Reject IA32 compat entry: CS == 0x23 on x86_64 */
+  if (regs.cs == 0x23) {
+    snprintf(err_buf, err_buf_len, "COMPAT_IA32_SYSCALL_DISALLOWED");
+    return false;
+  }
+  /* Reject x32 ABI entry bit */
+  if (regs.orig_rax & 0x40000000UL) {
+    snprintf(err_buf, err_buf_len, "COMPAT_X32_SYSCALL_DISALLOWED");
+    return false;
+  }
   long sys_no = (long)regs.orig_rax;
   if (sys_no == 101) { /* __NR_ptrace */
     snprintf(err_buf, err_buf_len, "DISALLOWED_PTRACE_SYSCALL");
+    return false;
+  }
+  if (sys_no == 435) { /* __NR_clone3: rejected outright to eliminate userspace
+                          memory modification race */
+    snprintf(err_buf, err_buf_len, "DISALLOWED_CLONE3_SYSCALL");
     return false;
   }
   if (sys_no == 56) { /* __NR_clone */
@@ -629,24 +650,6 @@ static bool check_syscall_entry(pid_t pid, char *err_buf, size_t err_buf_len) {
     if (flags & CLONE_UNTRACED) {
       snprintf(err_buf, err_buf_len, "CLONE_UNTRACED_ATTEMPT");
       return false;
-    }
-  }
-  if (sys_no == 435) { /* __NR_clone3 */
-    unsigned long uargs_ptr = (unsigned long)regs.rdi;
-    if (uargs_ptr != 0) {
-      errno = 0;
-      long raw_flags =
-          linux_ptrace(PTRACE_PEEKDATA, pid, (void *)uargs_ptr, NULL);
-      if (errno == 0) {
-        unsigned long flags = (unsigned long)raw_flags;
-        if (flags & CLONE_UNTRACED) {
-          snprintf(err_buf, err_buf_len, "CLONE3_UNTRACED_ATTEMPT");
-          return false;
-        }
-      } else {
-        snprintf(err_buf, err_buf_len, "CLONE3_PEEKDATA_FAILED_%d", errno);
-        return false;
-      }
     }
   }
 #elif defined(__aarch64__)
@@ -658,9 +661,18 @@ static bool check_syscall_entry(pid_t pid, char *err_buf, size_t err_buf_len) {
     snprintf(err_buf, err_buf_len, "PTRACE_GETREGSET_FAILED_%d", errno);
     return false;
   }
+  /* Reject AArch32 compat mode: pstate & 0x10 */
+  if (regs.pstate & 0x10) {
+    snprintf(err_buf, err_buf_len, "COMPAT_AARCH32_SYSCALL_DISALLOWED");
+    return false;
+  }
   long sys_no = (long)regs.regs[8];
   if (sys_no == 117) { /* __NR_ptrace */
     snprintf(err_buf, err_buf_len, "DISALLOWED_PTRACE_SYSCALL");
+    return false;
+  }
+  if (sys_no == 435) { /* __NR_clone3 */
+    snprintf(err_buf, err_buf_len, "DISALLOWED_CLONE3_SYSCALL");
     return false;
   }
   if (sys_no == 220) { /* __NR_clone */
@@ -670,29 +682,11 @@ static bool check_syscall_entry(pid_t pid, char *err_buf, size_t err_buf_len) {
       return false;
     }
   }
-  if (sys_no == 435) { /* __NR_clone3 */
-    unsigned long uargs_ptr = (unsigned long)regs.regs[0];
-    if (uargs_ptr != 0) {
-      errno = 0;
-      long raw_flags =
-          linux_ptrace(PTRACE_PEEKDATA, pid, (void *)uargs_ptr, NULL);
-      if (errno == 0) {
-        unsigned long flags = (unsigned long)raw_flags;
-        if (flags & CLONE_UNTRACED) {
-          snprintf(err_buf, err_buf_len, "CLONE3_UNTRACED_ATTEMPT");
-          return false;
-        }
-      } else {
-        snprintf(err_buf, err_buf_len, "CLONE3_PEEKDATA_FAILED_%d", errno);
-        return false;
-      }
-    }
-  }
 #endif
 #else
   (void)pid;
-  (void)err_buf;
-  (void)err_buf_len;
+  snprintf(err_buf, err_buf_len, "UNSUPPORTED_ARCH_FOR_SYSCALL_MEDIATION");
+  return false;
 #endif
   return true;
 }
@@ -716,6 +710,24 @@ static bool resume_tracee(pid_t pid, int sig) {
 }
 
 static void handle_exec_event(pid_t pid) {
+  /* Check for non-leader thread exec migration via PTRACE_GETEVENTMSG */
+  unsigned long old_tid = 0;
+  if (linux_ptrace(PTRACE_GETEVENTMSG, pid, 0, &old_tid) == 0 && old_tid > 0 &&
+      old_tid != (unsigned long)pid) {
+    ProcessEntry *old_proc = find_process((pid_t)old_tid);
+    if (old_proc != NULL) {
+      old_proc->active = false;
+      old_proc->exited = true;
+      g_active_processes--;
+    }
+    ProcessEntry *leader_proc = find_process(pid);
+    if (leader_proc == NULL) {
+      uint64_t parent_seq = old_proc ? old_proc->parent_seq_id : 0;
+      leader_proc =
+          add_process(pid, getpid(), parent_seq, false, "exec_leader");
+    }
+  }
+
   ProcessEntry *proc = find_process(pid);
   uint64_t seq = proc ? proc->seq_id : 0;
   pid_t ppid = proc ? proc->ppid : 0;
@@ -737,67 +749,118 @@ static void handle_exec_event(pid_t pid) {
     fstatat(AT_FDCWD, proc_exe, &st, AT_SYMLINK_NOFOLLOW);
   }
 
-  /* Pin the executable inode via O_PATH so temporary binaries deleted by
-   * workload stay held */
-  int held_idx = -1;
-  if (g_held_fd_count < MAX_HELD_DESCRIPTORS) {
-    int held_fd = open(proc_exe, O_PATH | O_CLOEXEC);
-    if (held_fd >= 0) {
-      held_idx = (int)g_held_fd_count;
-      g_held_fds[g_held_fd_count++] = held_fd;
-    }
+  /* Pin executable inode via O_PATH. Must fail closed if descriptor allocation
+   * fails. */
+  if (g_held_fd_count >= MAX_HELD_DESCRIPTORS) {
+    g_failed = true;
+    snprintf(g_failure_reason, sizeof(g_failure_reason),
+             "HELD_FD_LIMIT_EXCEEDED");
+    fprintf(stderr, "hosted_exec_witness: fatal: held descriptor table full\n");
+    kill_all_tracees();
+    return;
   }
+
+  int held_fd = open(proc_exe, O_PATH | O_CLOEXEC);
+  if (held_fd < 0) {
+    int err = errno;
+    g_failed = true;
+    snprintf(g_failure_reason, sizeof(g_failure_reason),
+             "HELD_FD_OPEN_FAILED_ERRNO_%d", err);
+    fprintf(stderr,
+            "hosted_exec_witness: fatal: open(O_PATH) failed on %s: %s\n",
+            proc_exe, strerror(err));
+    kill_all_tracees();
+    return;
+  }
+  int held_idx = (int)g_held_fd_count;
+  g_held_fds[g_held_fd_count++] = held_fd;
 
   /*
-   * Capture raw executable bytes via /proc/<pid>/exe with O_RDONLY | O_NOATIME
-   * (preserving st_atime on the target executable).
-   * Computes SHA-256 digest and optionally saves raw bytes to
-   * g_raw_capture_dir.
+   * Capture raw executable bytes via /proc/<pid>/exe with O_RDONLY | O_NOATIME.
+   * Preserves target st_atime. Fails closed on any refusal.
    */
-  char sha256_hex[65] = {0};
-  int64_t actual_bytes_captured = 0;
-  bool capture_ok = false;
-
   int raw_fd = open(proc_exe, O_RDONLY | O_NOATIME | O_CLOEXEC);
-  if (raw_fd < 0 && (errno == EPERM || errno == EACCES)) {
-    /* Fallback for read-only system images if O_NOATIME is refused */
-    raw_fd = open(proc_exe, O_RDONLY | O_CLOEXEC);
+  if (raw_fd < 0) {
+    int err = errno;
+    g_failed = true;
+    snprintf(g_failure_reason, sizeof(g_failure_reason),
+             "O_NOATIME_OPEN_FAILED_ERRNO_%d", err);
+    fprintf(stderr,
+            "hosted_exec_witness: fatal: open(O_NOATIME) failed on %s: %s\n",
+            proc_exe, strerror(err));
+    kill_all_tracees();
+    return;
   }
 
-  if (raw_fd >= 0) {
-    SHA256_CTX sha_ctx;
-    sha256_init(&sha_ctx);
-    uint8_t read_buf[16384];
-    ssize_t bytes_n;
+  char sha256_hex[65] = {0};
+  int64_t actual_bytes_captured = 0;
+  SHA256_CTX sha_ctx;
+  sha256_init(&sha_ctx);
+  uint8_t read_buf[16384];
+  ssize_t bytes_n;
 
-    int save_fd = -1;
-    if (g_raw_capture_dir[0] != '\0') {
-      char save_path[PATH_MAX];
-      snprintf(save_path, sizeof(save_path), "%s/%" PRIu64 "_%" PRIu64 ".bin",
-               g_raw_capture_dir, (uint64_t)st.st_dev, (uint64_t)st.st_ino);
-      save_fd = open(save_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+  int save_fd = -1;
+  if (g_raw_capture_dir[0] != '\0') {
+    char save_path[PATH_MAX];
+    snprintf(save_path, sizeof(save_path), "%s/%" PRIu64 "_%" PRIu64 ".bin",
+             g_raw_capture_dir, (uint64_t)st.st_dev, (uint64_t)st.st_ino);
+    save_fd = open(save_path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    if (save_fd < 0) {
+      int err = errno;
+      close(raw_fd);
+      g_failed = true;
+      snprintf(g_failure_reason, sizeof(g_failure_reason),
+               "RAW_PERSIST_OPEN_FAILED_ERRNO_%d", err);
+      fprintf(stderr,
+              "hosted_exec_witness: fatal: failed to create raw capture file "
+              "%s: %s\n",
+              save_path, strerror(err));
+      kill_all_tracees();
+      return;
     }
+  }
 
-    while ((bytes_n = read(raw_fd, read_buf, sizeof(read_buf))) > 0) {
-      sha256_update(&sha_ctx, read_buf, (size_t)bytes_n);
-      actual_bytes_captured += bytes_n;
-      if (save_fd >= 0) {
-        write_all(save_fd, read_buf, (size_t)bytes_n);
-      }
-    }
+  while ((bytes_n = read(raw_fd, read_buf, sizeof(read_buf))) > 0) {
+    sha256_update(&sha_ctx, read_buf, (size_t)bytes_n);
+    actual_bytes_captured += bytes_n;
     if (save_fd >= 0) {
-      close(save_fd);
-    }
-    close(raw_fd);
-
-    if (bytes_n >= 0) {
-      uint8_t digest[32];
-      sha256_final(&sha_ctx, digest);
-      for (int i = 0; i < 32; i++) {
-        snprintf(sha256_hex + i * 2, 3, "%02x", digest[i]);
+      if (!write_all(save_fd, read_buf, (size_t)bytes_n)) {
+        int err = errno;
+        close(save_fd);
+        close(raw_fd);
+        g_failed = true;
+        snprintf(g_failure_reason, sizeof(g_failure_reason),
+                 "RAW_PERSIST_WRITE_FAILED_ERRNO_%d", err);
+        fprintf(
+            stderr,
+            "hosted_exec_witness: fatal: raw persistence write failed: %s\n",
+            strerror(err));
+        kill_all_tracees();
+        return;
       }
-      capture_ok = true;
     }
+  }
+  if (save_fd >= 0) {
+    close(save_fd);
+  }
+  close(raw_fd);
+
+  if (bytes_n < 0 || actual_bytes_captured <= 0) {
+    g_failed = true;
+    snprintf(g_failure_reason, sizeof(g_failure_reason),
+             "RAW_CAPTURE_EMPTY_OR_READ_ERROR");
+    fprintf(stderr,
+            "hosted_exec_witness: fatal: raw executable capture produced 0 "
+            "bytes on %s\n",
+            proc_exe);
+    kill_all_tracees();
+    return;
+  }
+
+  uint8_t digest[32];
+  sha256_final(&sha_ctx, digest);
+  for (int i = 0; i < 32; i++) {
+    snprintf(sha256_hex + i * 2, 3, "%02x", digest[i]);
   }
 
   /* Read command-line arguments from /proc/<pid>/cmdline */
@@ -851,28 +914,26 @@ static void handle_exec_event(pid_t pid) {
                      (uint64_t)STAT_CTIM_NSEC(st);
 
   char buf[4096];
-  snprintf(
-      buf, sizeof(buf),
-      "{\"event\":\"exec_success\",\"seq_id\":%" PRIu64
-      ",\"timestamp_ns\":%" PRIu64 ",\"pid\":%d,\"ppid\":%d,\"exe_path\":\"%s\""
-      ",\"st_dev\":%" PRIu64 ",\"st_ino\":%" PRIu64
-      ",\"st_mode\":%u,\"st_size\":%" PRIi64 ",\"st_uid\":%u,\"st_gid\":%u"
-      ",\"st_atim_ns\":%" PRIu64 ",\"st_mtim_ns\":%" PRIu64
-      ",\"st_ctim_ns\":%" PRIu64
-      ",\"held_fd_index\":%d,\"sha256\":\"%s\",\"size_bytes\":%" PRIi64
-      ",\"raw_captured\":%s,\"cmdline\":%s}",
-      seq, get_time_ns(), (int)pid, (int)ppid, escaped_path,
-      (uint64_t)st.st_dev, (uint64_t)st.st_ino, (unsigned int)st.st_mode,
-      (int64_t)st.st_size, (unsigned int)st.st_uid, (unsigned int)st.st_gid,
-      atim_ns, mtim_ns, ctim_ns, held_idx, sha256_hex[0] ? sha256_hex : "",
-      actual_bytes_captured, capture_ok ? "true" : "false", cmd_json);
+  snprintf(buf, sizeof(buf),
+           "{\"event\":\"exec_success\",\"seq_id\":%" PRIu64
+           ",\"timestamp_ns\":%" PRIu64
+           ",\"pid\":%d,\"ppid\":%d,\"exe_path\":\"%s\""
+           ",\"st_dev\":%" PRIu64 ",\"st_ino\":%" PRIu64
+           ",\"st_mode\":%u,\"st_size\":%" PRIi64 ",\"st_uid\":%u,\"st_gid\":%u"
+           ",\"st_atim_ns\":%" PRIu64 ",\"st_mtim_ns\":%" PRIu64
+           ",\"st_ctim_ns\":%" PRIu64
+           ",\"held_fd_index\":%d,\"sha256\":\"%s\",\"size_bytes\":%" PRIi64
+           ",\"raw_captured\":true,\"cmdline\":%s}",
+           seq, get_time_ns(), (int)pid, (int)ppid, escaped_path,
+           (uint64_t)st.st_dev, (uint64_t)st.st_ino, (unsigned int)st.st_mode,
+           (int64_t)st.st_size, (unsigned int)st.st_uid,
+           (unsigned int)st.st_gid, atim_ns, mtim_ns, ctim_ns, held_idx,
+           sha256_hex, actual_bytes_captured, cmd_json);
 
   emit_evidence_record(buf);
   g_total_exec_events++;
 
-  /* If raw capture directory was requested and capture succeeded, emit
-   * raw_exec_capture record */
-  if (capture_ok && g_raw_capture_dir[0] != '\0') {
+  if (g_raw_capture_dir[0] != '\0') {
     char cap_buf[1024];
     char cap_file[128];
     snprintf(cap_file, sizeof(cap_file), "%" PRIu64 "_%" PRIu64 ".bin",
@@ -925,15 +986,12 @@ int main(int argc, char **argv) {
 #endif
 
   int evidence_fd = -1;
-  const char *evidence_file = NULL;
   const char *launch_binding = "{}";
   int cmd_index = -1;
 
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--evidence-fd") == 0 && i + 1 < argc) {
       evidence_fd = atoi(argv[++i]);
-    } else if (strcmp(argv[i], "--evidence-file") == 0 && i + 1 < argc) {
-      evidence_file = argv[++i];
     } else if (strcmp(argv[i], "--raw-capture-dir") == 0 && i + 1 < argc) {
       strncpy(g_raw_capture_dir, argv[++i], sizeof(g_raw_capture_dir) - 1);
     } else if (strcmp(argv[i], "--launch-binding") == 0 && i + 1 < argc) {
@@ -944,38 +1002,25 @@ int main(int argc, char **argv) {
     }
   }
 
-  if (cmd_index < 0 || cmd_index >= argc) {
+  if (cmd_index < 0 || cmd_index >= argc || evidence_fd < 3) {
     fprintf(stderr,
-            "Usage: %s [--evidence-fd <FD>] [--evidence-file <FILE>] "
-            "[--raw-capture-dir <DIR>] [--launch-binding <JSON>] -- <CMD> "
-            "[ARGS...]\n",
+            "Usage: %s --evidence-fd <FD>=3 [--raw-capture-dir <DIR>] "
+            "[--launch-binding <JSON>] -- <CMD> [ARGS...]\n",
             argv[0]);
+    fprintf(stderr, "Error: --evidence-fd >= 3 is strictly required to "
+                    "guarantee private evidence channel.\n");
     return 2;
   }
 
-  /* Set up evidence descriptor */
-  if (evidence_file != NULL) {
-    int fd =
-        open(evidence_file, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-    if (fd < 0) {
-      fprintf(stderr,
-              "hosted_exec_witness: failed to open evidence file %s: %s\n",
-              evidence_file, strerror(errno));
-      return 1;
-    }
-    g_evidence_fd = fd;
-  } else if (evidence_fd >= 0) {
-    /* Set close-on-exec on evidence fd so child does NOT inherit it */
-    int flags = fcntl(evidence_fd, F_GETFD);
-    if (flags >= 0) {
-      fcntl(evidence_fd, F_SETFD, flags | FD_CLOEXEC);
-    }
-    g_evidence_fd = evidence_fd;
-  } else {
-    /* Default to stdout if no evidence stream specified */
-    g_evidence_fd = dup(STDOUT_FILENO);
-    fcntl(g_evidence_fd, F_SETFD, FD_CLOEXEC);
+  /* Set close-on-exec on evidence fd so child does NOT inherit it */
+  int flags = fcntl(evidence_fd, F_GETFD);
+  if (flags < 0) {
+    fprintf(stderr, "hosted_exec_witness: invalid --evidence-fd %d: %s\n",
+            evidence_fd, strerror(errno));
+    return 2;
   }
+  fcntl(evidence_fd, F_SETFD, flags | FD_CLOEXEC);
+  g_evidence_fd = evidence_fd;
 
   /* Enforce non-dumpable state on parent tracer */
   if (prctl(PR_SET_DUMPABLE, 0) < 0) {
@@ -1001,6 +1046,25 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  /* Dedicated child stdio pipes so untrusted child stdout/stderr cannot reach
+   * evidence channel */
+  int child_out_pipe[2];
+  int child_err_pipe[2];
+#if defined(__linux__) && defined(O_CLOEXEC)
+  if (pipe2(child_out_pipe, O_CLOEXEC) < 0 ||
+      pipe2(child_err_pipe, O_CLOEXEC) < 0) {
+#else
+  if (pipe(child_out_pipe) < 0 || pipe(child_err_pipe) < 0) {
+#endif
+    fprintf(stderr, "hosted_exec_witness: child log pipe creation failed: %s\n",
+            strerror(errno));
+    snprintf(g_failure_reason, sizeof(g_failure_reason),
+             "CHILD_PIPE_CREATION_FAILED");
+    g_failed = true;
+    emit_session_end();
+    return 1;
+  }
+
   pid_t child_pid = fork();
   if (child_pid < 0) {
     fprintf(stderr, "hosted_exec_witness: fork failed: %s\n", strerror(errno));
@@ -1012,7 +1076,15 @@ int main(int argc, char **argv) {
 
   if (child_pid == 0) {
     /* --- CHILD PROCESS --- */
-    close(barrier_pipe[1]); /* Close write end */
+    close(barrier_pipe[1]);
+    close(child_out_pipe[0]);
+    close(child_err_pipe[0]);
+
+    /* Redirect child stdout/stderr to isolated pipes */
+    dup2(child_out_pipe[1], STDOUT_FILENO);
+    dup2(child_err_pipe[1], STDERR_FILENO);
+    close(child_out_pipe[1]);
+    close(child_err_pipe[1]);
 
     /* Ensure child terminates if parent tracer is killed */
     prctl(PR_SET_PDEATHSIG, SIGKILL);
@@ -1029,7 +1101,7 @@ int main(int argc, char **argv) {
       _exit(127);
     }
 
-    /* Signal parent that we are ready to be armed */
+    /* Signal parent that child is ready for ptrace options */
     raise(SIGSTOP);
 
     /* Wait for parent to arm ptrace options and release barrier */
@@ -1049,8 +1121,18 @@ int main(int argc, char **argv) {
   }
 
   /* --- PARENT TRACER --- */
-  close(barrier_pipe[0]); /* Close read end */
+  close(barrier_pipe[0]);
+  close(child_out_pipe[1]);
+  close(child_err_pipe[1]);
   g_root_pid = child_pid;
+
+  /* Set non-blocking on child read pipes */
+  int f_out = fcntl(child_out_pipe[0], F_GETFL);
+  if (f_out >= 0)
+    fcntl(child_out_pipe[0], F_SETFL, f_out | O_NONBLOCK);
+  int f_err = fcntl(child_err_pipe[0], F_GETFL);
+  if (f_err >= 0)
+    fcntl(child_err_pipe[0], F_SETFL, f_err | O_NONBLOCK);
 
   /* Wait for child to stop at raise(SIGSTOP) */
   int status = 0;
@@ -1101,8 +1183,24 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+/* Helper macro to drain child output pipes non-blockingly to host container
+ * stderr */
+#define DRAIN_CHILD_PIPES()                                                    \
+  do {                                                                         \
+    char log_buf[4096];                                                        \
+    ssize_t n_log;                                                             \
+    while ((n_log = read(child_out_pipe[0], log_buf, sizeof(log_buf))) > 0) {  \
+      write_all(STDERR_FILENO, log_buf, (size_t)n_log);                        \
+    }                                                                          \
+    while ((n_log = read(child_err_pipe[0], log_buf, sizeof(log_buf))) > 0) {  \
+      write_all(STDERR_FILENO, log_buf, (size_t)n_log);                        \
+    }                                                                          \
+  } while (0)
+
   /* Tracer event loop */
   while (g_active_processes > 0 && !g_failed) {
+    DRAIN_CHILD_PIPES();
+
     int wait_status = 0;
     pid_t event_pid = waitpid(-1, &wait_status, __WALL);
     if (event_pid < 0) {
@@ -1144,7 +1242,6 @@ int main(int argc, char **argv) {
           g_root_exit_code = proc->exit_status;
         }
       } else {
-        /* Unaccounted child exited - severe failure! */
         g_failed = true;
         snprintf(g_failure_reason, sizeof(g_failure_reason),
                  "UNACCOUNTED_CHILD_EXIT_PID_%d", (int)event_pid);
@@ -1162,7 +1259,6 @@ int main(int argc, char **argv) {
       int event = (unsigned int)wait_status >> 16;
 
       if (proc == NULL) {
-        /* Stopped child not tracked */
         g_failed = true;
         snprintf(g_failure_reason, sizeof(g_failure_reason),
                  "UNACCOUNTED_STOPPED_CHILD_%d", (int)event_pid);
@@ -1212,20 +1308,23 @@ int main(int argc, char **argv) {
           resume_tracee(event_pid, 0);
           continue;
         } else {
-          /* Generic SIGTRAP, continue */
-          resume_tracee(event_pid, 0);
+          /* Genuine application SIGTRAP (e.g. debugger breakpoint int3),
+           * forward it */
+          resume_tracee(event_pid, SIGTRAP);
           continue;
         }
       } else if (stop_sig == SIGSTOP) {
-        /*
-         * Initial stop from fork/clone; do not forward SIGSTOP to tracee.
-         */
-        resume_tracee(event_pid, 0);
+        if (proc->initial_stop_pending) {
+          proc->initial_stop_pending = false;
+          resume_tracee(event_pid, 0);
+        } else {
+          /* Genuine workload SIGSTOP; forward */
+          resume_tracee(event_pid, SIGSTOP);
+        }
         continue;
       } else if (stop_sig == (SIGTRAP | 0x80)) {
-        /* Syscall stop from PTRACE_O_TRACESYSGOOD */
+        /* Syscall trap from PTRACE_O_TRACESYSGOOD */
         if (!proc->in_syscall) {
-          /* Syscall entry */
           proc->in_syscall = true;
           char violation[128] = {0};
           if (!check_syscall_entry(event_pid, violation, sizeof(violation))) {
@@ -1239,18 +1338,21 @@ int main(int argc, char **argv) {
             break;
           }
         } else {
-          /* Syscall exit */
           proc->in_syscall = false;
         }
         resume_tracee(event_pid, 0);
         continue;
       } else {
-        /* Genuine signal intended for tracee; forward it */
+        /* Genuine application signal; forward */
         resume_tracee(event_pid, stop_sig);
         continue;
       }
     }
   }
+
+  DRAIN_CHILD_PIPES();
+  close(child_out_pipe[0]);
+  close(child_err_pipe[0]);
 
   emit_session_end();
 
