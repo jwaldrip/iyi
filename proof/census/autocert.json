@@ -2,10 +2,12 @@
   "census_version": 1,
   "driver": "autocert",
   "script": "bench/std_autocert_exercise.sh",
-  "script_sha256": "68dbe3931de5e943c8fd52dfe12cd65e2511d3c6931a82e48467d737f46ba12d",
+  "script_sha256": "35e6193f720a44cd2acf848a957585f3626de3ccce881dec2808909615e203f6",
   "sites": [
     {
-      "lines": [85],
+      "lines": [
+        117
+      ],
       "command": "build",
       "kind": "canonical-own",
       "contains": [
@@ -14,7 +16,9 @@
       "variants": []
     },
     {
-      "lines": [266],
+      "lines": [
+        299
+      ],
       "command": "doc",
       "kind": "unchanged",
       "contains": [
@@ -23,7 +27,9 @@
       "variants": []
     },
     {
-      "lines": [272],
+      "lines": [
+        305
+      ],
       "command": "fmt",
       "kind": "unchanged",
       "contains": [
@@ -32,7 +38,9 @@
       "variants": []
     },
     {
-      "lines": [280],
+      "lines": [
+        313
+      ],
       "command": "build",
       "kind": "unchanged",
       "contains": [
@@ -41,7 +49,9 @@
       "variants": []
     },
     {
-      "lines": [292],
+      "lines": [
+        325
+      ],
       "command": "build",
       "kind": "passthrough",
       "contains": [
@@ -50,7 +60,9 @@
       "variants": []
     },
     {
-      "lines": [293],
+      "lines": [
+        326
+      ],
       "command": "build",
       "kind": "passthrough",
       "contains": [
@@ -59,7 +71,10 @@
       "variants": []
     },
     {
-      "lines": [359, 360],
+      "lines": [
+        397,
+        398
+      ],
       "command": "build",
       "kind": "negative",
       "contains": [
@@ -82,7 +97,17 @@
             "python3"
           ],
           "verdict": {
-            "lines": [361, 362, 376, 377, 379, 380, 381, 384, 386],
+            "lines": [
+              399,
+              400,
+              414,
+              415,
+              417,
+              418,
+              419,
+              422,
+              424
+            ],
             "contains": [
               "echo \"  the $label copy did not build:",
               "echo \"  the exercise PASSED on $label:\"",
@@ -97,86 +122,105 @@
   "non_invocations": [],
   "skips": [
     {
-      "line": 144,
+      "line": 176,
       "class": "tool",
       "what": "python ssl and cryptography",
       "regex": "^  no python with ssl and cryptography here, so the cache's files go unread by it$",
       "text": "  echo \"  no python with ssl and cryptography here, so the cache's files go unread by it\""
     },
     {
-      "line": 152,
+      "line": 184,
       "class": "tool",
       "what": "python ssl and cryptography",
       "regex": "^  no python with ssl and cryptography here, so no handshake is made$",
       "text": "  echo \"  no python with ssl and cryptography here, so no handshake is made\""
     },
     {
-      "line": 175,
+      "line": 211,
       "class": "tool",
       "what": "go and python cryptography",
       "regex": "^  no Go here \\(or no python with cryptography to drive it\\), so Pebble is not built and nothing is ordered$",
-      "text": "  echo \"  no Go here (or no python with cryptography to drive it), so Pebble is not built and nothing is ordered\""
+      "text": "    echo \"  no Go here (or no python with cryptography to drive it), so Pebble is not built and nothing is ordered\""
     },
     {
-      "line": 181,
+      "line": 219,
+      "class": "tool",
+      "what": "go and python cryptography",
+      "regex": "^  no Go here \\(or no python with cryptography to drive it\\), so Pebble is not built and nothing is ordered$",
+      "text": "    echo \"  no Go here (or no python with cryptography to drive it), so Pebble is not built and nothing is ordered\""
+    },
+    {
+      "line": 221,
       "class": "tool",
       "what": "go and Pebble network",
       "regex": "^  Pebble could not be fetched or built here \\(no network\\?\\), so nothing is ordered(:.*)?$",
       "text": "    echo \"  Pebble could not be fetched or built here (no network?), so nothing is ordered: $(tail -1 \"$WORK/go-install.log\")\""
     },
     {
-      "line": 324,
+      "line": 357,
       "class": "tool",
       "what": "python3",
       "regex": "^  .+ proof is unmeasured$",
       "text": "    echo \"  no python here, so the $label proof is unmeasured\""
     },
     {
-      "line": 328,
+      "line": 361,
       "class": "tool",
       "what": "POSIX modes and python cryptography",
       "regex": "^  .+: unmeasured here, as its check is POSIX's modes read by Python's cryptography$",
       "text": "    echo \"  $label: unmeasured here, as its check is POSIX's modes read by Python's cryptography\""
     },
     {
-      "line": 332,
+      "line": 365,
       "class": "tool",
       "what": "python ssl and cryptography",
       "regex": "^  .+: unmeasured here, as its check is Python's ssl and cryptography$",
       "text": "    echo \"  $label: unmeasured here, as its check is Python's ssl and cryptography\""
     },
     {
-      "line": 339,
+      "line": 376,
       "class": "tool",
       "what": "Pebble",
       "regex": "^  .+: unmeasured here, as its check orders from Pebble and Pebble is not running$",
-      "text": "        echo \"  $label: unmeasured here, as its check orders from Pebble and Pebble is not running\""
+      "text": "          echo \"  $label: unmeasured here, as its check orders from Pebble and Pebble is not running\""
     },
     {
-      "line": 431,
+      "line": 469,
       "class": "tool",
       "what": "mutation proof prerequisites",
       "regex": "^the std/autocert exercise holds \\(.+ of .+ breaks caught, the rest unmeasured here as said above\\)$",
       "text": "    echo \"the std/autocert exercise holds ($caught of $mutations breaks caught, the rest unmeasured here as said above)\""
     }
   ],
-  "not_skips": [],
+  "not_skips": [
+    {
+      "line": 373,
+      "reason": "missing Pebble in proof mode is an error and the branch sets status=1",
+      "text": "          echo \"  FAIL: $label cannot be verified because Pebble is not running in proof mode\" >&2"
+    }
+  ],
   "pass_sentinel": {
-    "line": 429,
+    "line": 467,
     "regex": "^the std/autocert exercise holds \\(",
     "text": "    echo \"the std/autocert exercise holds ($caught breaks caught)\""
   },
   "exec_evidence": [
     {
-      "site_line": 85,
+      "site_line": 117,
       "out_template": "{WORK}/{name}",
       "name_from_calls": {
-        "107": "autocert-plain",
-        "131": "autocert-release"
+        "139": "autocert-plain",
+        "163": "autocert-release"
       },
-      "exec_lines": [103],
+      "exec_lines": [
+        135
+      ],
       "exec_token": "\"$WORK/$name\"",
-      "verdict_lines": [113, 124, 137],
+      "verdict_lines": [
+        145,
+        156,
+        169
+      ],
       "failure_marks": [
         "status=1"
       ],

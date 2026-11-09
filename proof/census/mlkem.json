@@ -2,55 +2,88 @@
   "census_version": 1,
   "driver": "mlkem",
   "script": "bench/std_mlkem_exercise.sh",
-  "script_sha256": "7c669c707e3dd5b40689422b27e36282c8d34549a1a963cea09ad7400eeb25ef",
+  "script_sha256": "a6fa428d56846952334245c87928e81608e1f552b852a9c0970b897bf2f02239",
   "sites": [
     {
-      "lines": [61],
+      "lines": [
+        95
+      ],
       "command": "build",
       "kind": "canonical-own",
-      "contains": ["\"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_mlkem_exercise.iyi\""],
+      "contains": [
+        "\"$IYI\" build \"$@\" -o \"$WORK/$name\" \"$REPO/bench/std_mlkem_exercise.iyi\""
+      ],
       "variants": []
     },
     {
-      "lines": [401],
+      "lines": [
+        462
+      ],
       "command": "run",
       "kind": "canonical-other",
-      "contains": ["\"$IYI\" run \"$WORK/refuse.iyi\" -- \"$1\""],
+      "contains": [
+        "\"$IYI\" run \"$WORK/refuse.iyi\" -- \"$1\""
+      ],
       "variants": []
     },
     {
-      "lines": [417],
+      "lines": [
+        478
+      ],
       "command": "doc",
       "kind": "unchanged",
-      "contains": ["\"$IYI\" doc \"$REPO/src/std/mlkem.iyi\""],
+      "contains": [
+        "\"$IYI\" doc \"$REPO/src/std/mlkem.iyi\""
+      ],
       "variants": []
     },
     {
-      "lines": [423],
+      "lines": [
+        484
+      ],
       "command": "fmt",
       "kind": "unchanged",
-      "contains": ["\"$IYI\" fmt --check \"$REPO/src/std/mlkem.iyi\" \"$REPO/bench/std_mlkem_exercise.iyi\""],
+      "contains": [
+        "\"$IYI\" fmt --check \"$REPO/src/std/mlkem.iyi\" \"$REPO/bench/std_mlkem_exercise.iyi\""
+      ],
       "variants": []
     },
     {
-      "lines": [452],
+      "lines": [
+        513
+      ],
       "command": "run",
       "kind": "negative",
-      "contains": ["IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/samples/iyi\" \"$IYI\" run \"$REPO/bench/std_mlkem_exercise.iyi\""],
+      "contains": [
+        "IYI_PATH=\"$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/samples/iyi\" \"$IYI\" run \"$REPO/bench/std_mlkem_exercise.iyi\""
+      ],
       "variants": [
         {
           "id": "mlkem.negative.452",
           "kind": "negative",
           "first_root": "{WORK}/patched",
           "vars": {},
-          "sources": ["{REPO}/bench/std_mlkem_exercise.iyi"],
+          "sources": [
+            "{REPO}/bench/std_mlkem_exercise.iyi"
+          ],
           "output": null,
           "darwin": "required",
           "linux": "required",
-          "requires": ["python3"],
+          "requires": [
+            "python3"
+          ],
           "verdict": {
-            "lines": [453, 454, 458, 460],
-            "contains": ["the exercise PASSED on $1", "status=1", "failed, but not where it should have"]
+            "lines": [
+              514,
+              515,
+              519,
+              521
+            ],
+            "contains": [
+              "the exercise PASSED on $1",
+              "status=1",
+              "failed, but not where it should have"
+            ]
           }
         }
       ]
@@ -59,42 +92,42 @@
   "non_invocations": [],
   "skips": [
     {
-      "line": 127,
+      "line": 199,
       "class": "tool",
       "what": "curl and python3",
       "regex": "^  no curl or python here, so only the vendored subset was checked$",
-      "text": "  echo \"  no curl or python here, so only the vendored subset was checked\""
+      "text": "    echo \"  no curl or python here, so only the vendored subset was checked\""
     },
     {
-      "line": 130,
+      "line": 202,
       "class": "tool",
       "what": "curl/network",
       "regex": "^  the ACVP files could not be fetched \\(.*\\), so only the vendored subset was checked$",
-      "text": "  echo \"  the ACVP files could not be fetched ($(tail -1 \"$WORK/curl.log\")), so only the vendored subset was checked\""
+      "text": "    echo \"  the ACVP files could not be fetched ($(tail -1 \"$WORK/curl.log\")), so only the vendored subset was checked\""
     },
     {
-      "line": 186,
+      "line": 242,
       "class": "tool",
       "what": "openssl and python3",
       "regex": "^  no openssl and python here, so OpenSSL goes unasked$",
       "text": "  echo \"  no openssl and python here, so OpenSSL goes unasked\""
     },
     {
-      "line": 188,
+      "line": 245,
       "class": "tool",
       "what": "openssl ML-KEM-768",
       "regex": "^  .* has no ML-KEM-768 \\(OpenSSL has it from 3\\.5\\), so OpenSSL goes unasked$",
       "text": "  echo \"  $(\"$OPENSSL\" version 2>&1 | head -1) has no ML-KEM-768 (OpenSSL has it from 3.5), so OpenSSL goes unasked\""
     },
     {
-      "line": 312,
+      "line": 372,
       "class": "tool",
       "what": "python3 cryptography ML-KEM",
       "regex": "^  no python cryptography with ML-KEM here \\(.*\\), so it goes unasked$",
       "text": "  echo \"  no python cryptography with ML-KEM here ($([ -n \"$PY\" ] && \"$PY\" -c 'import cryptography; print(\"cryptography \" + cryptography.__version__)' 2>/dev/null || echo \"none\")), so it goes unasked\""
     },
     {
-      "line": 438,
+      "line": 499,
       "class": "tool",
       "what": "python3",
       "regex": "^  no python3 on this machine, so the .* proof is unmeasured$",
@@ -103,28 +136,41 @@
   ],
   "not_skips": [
     {
-      "line": 375,
+      "line": 436,
       "reason": "the timing command failed and the branch sets status=1",
       "text": "  echo \"  the timing did not run: $(tail -1 \"$WORK/cost.out\")\""
     }
   ],
   "pass_sentinel": {
-    "line": 508,
+    "line": 569,
     "regex": "^ALL CHECKS PASSED$",
     "text": "  echo \"ALL CHECKS PASSED\""
   },
   "exec_evidence": [
     {
-      "site_line": 61,
+      "site_line": 95,
       "out_template": "{WORK}/{name}",
       "name_from_calls": {
-        "80": "mlkem-plain",
-        "100": "mlkem-release"
+        "114": "mlkem-plain",
+        "134": "mlkem-release"
       },
-      "exec_lines": [68],
+      "exec_lines": [
+        102
+      ],
       "exec_token": "\"$WORK/$name\"",
-      "verdict_lines": [65, 66, 73, 74, 83, 93, 103],
-      "failure_marks": ["status=1", "return 1"],
+      "verdict_lines": [
+        99,
+        100,
+        107,
+        108,
+        117,
+        127,
+        137
+      ],
+      "failure_marks": [
+        "status=1",
+        "return 1"
+      ],
       "refs_ok": []
     }
   ]
