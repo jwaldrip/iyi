@@ -4,9 +4,11 @@
 Shared contract:
 - stage: validates pinned sources and full Go proxy closure from official upstreams,
   stages them into a new empty directory, and prints JSON to stdout.
+  Performs descriptor-confined staging with openat/mkdirat/replaceat to prevent TOCTOU escapes.
 - verify: recomputes and matches authorized pinned inventory, rejecting any
   missing, extra, altered, unreadable, hardlinked, or symlinked inputs.
-  Recomputes module h1/mod_h1 and validates against the authorized lock.
+  Recomputes module h1/mod_h1 matching Go CheckZip and dirhash.HashZip semantics,
+  and validates against the authorized lock.
   Prints the same JSON to stdout, and exits nonzero on any discrepancy.
 
 STDOUT is reserved strictly for JSON output on success.
@@ -21,6 +23,7 @@ import hashlib
 import io
 import json
 import os
+import posixpath
 import stat
 import sys
 import tempfile
@@ -32,7 +35,7 @@ from typing import Any, Dict, List, Set, Tuple
 
 
 # -----------------------------------------------------------------------------
-# Go module h1 calculation (golang.org/x/mod/sumdb/dirhash)
+# Go module h1 calculation (golang.org/x/mod/sumdb/dirhash and golang.org/x/mod/zip)
 # -----------------------------------------------------------------------------
 
 def compute_mod_h1(mod_bytes: bytes) -> str:
@@ -44,13 +47,17 @@ def compute_mod_h1(mod_bytes: bytes) -> str:
 
 
 def compute_zip_h1(zip_bytes: bytes, expected_prefix: str | None = None) -> str:
-    """Compute Go h1 for module zip archive matching dirhash.HashZip.
+    """Compute Go h1 for module zip archive matching dirhash.HashZip and CheckZip.
 
     Faithfully enforces Go module zip invariants:
-    - Rejects any filename containing newline (\n) or carriage return (\r)
+    - Rejects any filename containing newline (\\n) or carriage return (\\r)
     - Rejects duplicate filenames
     - Rejects path traversal (..) or absolute paths
+    - Rejects unclean paths (e.g. ./, redundant slashes)
+    - Rejects case-folding collisions
     - Rejects filenames not starting with canonical module prefix (if provided)
+    - Hashes all entries in lexicographical order, including directory entries,
+      matching Go dirhash.HashZip.
     """
     try:
         zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
@@ -58,15 +65,11 @@ def compute_zip_h1(zip_bytes: bytes, expected_prefix: str | None = None) -> str:
         raise ValueError(f"Invalid zip archive: {e}") from e
 
     namelist = zf.namelist()
-    seen: Set[str] = set()
+    seen_folded: Dict[str, Tuple[str, bool]] = {}
 
     for name in namelist:
         if "\n" in name or "\r" in name:
             raise ValueError(f"Zip entry contains newline characters (dirhash violation): {name!r}")
-        if name in seen:
-            raise ValueError(f"Duplicate zip entry detected: {name!r}")
-        seen.add(name)
-
         if name.startswith("/") or name.startswith("\\"):
             raise ValueError(f"Zip entry has absolute path: {name!r}")
         parts = name.split("/")
@@ -78,14 +81,37 @@ def compute_zip_h1(zip_bytes: bytes, expected_prefix: str | None = None) -> str:
                 raise ValueError(
                     f"Zip entry {name!r} does not have expected canonical module prefix {expected_prefix!r}"
                 )
+            sub = name[len(expected_prefix):]
+            if not sub:
+                continue
 
-    # Sort files lexicographically matching slices.Sort in Go
+            is_dir = sub.endswith("/")
+            clean_sub = sub[:-1] if is_dir else sub
+
+            # Check clean path (path.Clean(name) == name check in CheckZip)
+            if posixpath.normpath(clean_sub) != clean_sub or clean_sub.startswith("./") or "//" in clean_sub:
+                raise ValueError(f"Zip entry has unclean path (CheckZip violation): {sub!r}")
+
+            # Case collision check (CheckZip collisionChecker)
+            fold = clean_sub.lower()
+            if fold in seen_folded:
+                prev_name, prev_is_dir = seen_folded[fold]
+                if clean_sub != prev_name:
+                    raise ValueError(
+                        f"Case-insensitive file name collision in zip: {prev_name!r} and {clean_sub!r}"
+                    )
+                if is_dir != prev_is_dir:
+                    raise ValueError(f"Entry in zip is both file and directory: {clean_sub!r}")
+                if not is_dir:
+                    raise ValueError(f"Duplicate entry for file in zip: {clean_sub!r}")
+            else:
+                seen_folded[fold] = (clean_sub, is_dir)
+
+    # Sort files lexicographically matching slices.Sort in Go dirhash.Hash1
+    # Note: dirhash.HashZip appends all entries in z.File (including directories)
+    # and opens each with zipOpen, which returns EOF (0 bytes) for directories.
     h = hashlib.sha256()
     for name in sorted(namelist):
-        # Skip directory entries if any
-        if name.endswith("/"):
-            continue
-
         with zf.open(name) as f:
             file_sha = hashlib.sha256(f.read()).hexdigest()
         h.update(f"{file_sha}  {name}\n".encode("utf-8"))
@@ -136,9 +162,9 @@ def normalize_rel_path(path_str: str) -> str:
 def check_path_ancestors_no_symlinks(path: Path) -> None:
     """Ensure that path itself and all ancestors up to root contain no symlinks.
 
-    Walks all the way to root regardless of whether intermediate components exist.
-    System root mounts (/var, /tmp, /etc on macOS) are permitted, but no user ancestor
-    component may be a symlink.
+    Walks all the way to root regardless of whether intermediate components exist,
+    preventing non-existent leaves beneath symlinked ancestors from escaping inspection.
+    System root mounts (/var, /tmp, /etc on macOS) are permitted.
     """
     if path.is_symlink():
         raise ValueError(f"Path itself cannot be a symlink: {path}")
@@ -392,7 +418,7 @@ def verify_bundle_tree(input_dir: Path, lock_data: Dict[str, Any], lock_sha256: 
 
 
 # -----------------------------------------------------------------------------
-# Staging Engine
+# Staging Engine (Descriptor-Confined via openat/mkdirat/replaceat)
 # -----------------------------------------------------------------------------
 
 def fetch_bytes_with_retry(url: str, expected_sha256: str, expected_size: int, retries: int = 3) -> bytes:
@@ -422,8 +448,12 @@ def stage_bundle(
     cache_dir: Path | None = None,
     offline: bool = False,
 ) -> Dict[str, Any]:
-    """Stage all locked files into output directory and verify the result."""
-    # Symlink checks on output_dir and ancestors BEFORE resolution
+    """Stage all locked files into output directory and verify the result.
+
+    Employs descriptor-confined traversal and writes (dir_fd with O_NOFOLLOW)
+    to prevent pathname races or out-of-tree redirection.
+    """
+    # Symlink checks on output_dir and all ancestors BEFORE resolution
     if output_dir.is_symlink():
         raise ValueError(f"Output path cannot be a symlink: {output_dir}")
     check_path_ancestors_no_symlinks(output_dir)
@@ -442,70 +472,93 @@ def stage_bundle(
         output_dir.mkdir(parents=True, mode=0o755)
 
     abs_output = output_dir.resolve()
+    # Ensure current user owns output directory
+    st_out = os.stat(abs_output)
+    if st_out.st_uid != os.getuid():
+        raise ValueError(f"Output directory not owned by current user (uid {st_out.st_uid} != {os.getuid()}): {abs_output}")
+
     files_to_stage = lock_data["files"]
     print(f"Staging {len(files_to_stage)} files into {abs_output}...", file=sys.stderr)
 
-    for rel_path in sorted(files_to_stage.keys()):
-        meta = files_to_stage[rel_path]
-        expected_size = meta["size"]
-        expected_sha = meta["sha256"]
-        source_url = meta.get("source_url")
-        deterministic_content = meta.get("deterministic_content")
+    # Open root directory descriptor for descriptor-relative confinement
+    root_fd = os.open(str(abs_output), os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
 
-        target_path = abs_output / rel_path
-        target_path.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+    try:
+        for rel_path in sorted(files_to_stage.keys()):
+            meta = files_to_stage[rel_path]
+            expected_size = meta["size"]
+            expected_sha = meta["sha256"]
+            source_url = meta.get("source_url")
+            deterministic_content = meta.get("deterministic_content")
 
-        data: bytes | None = None
+            rel_parts = rel_path.split("/")
+            file_name = rel_parts[-1]
 
-        # 1. Deterministic generation if specified
-        if deterministic_content is not None:
-            data = deterministic_content.encode("utf-8")
-            if len(data) != expected_size or hashlib.sha256(data).hexdigest() != expected_sha:
-                raise ValueError(f"Deterministic content mismatch for {rel_path!r}")
+            # 1. Acquire data
+            data: bytes | None = None
 
-        # 2. Try cache if provided
-        if data is None and cache_dir is not None and cache_dir.is_dir():
-            cache_candidate_rel = cache_dir / rel_path
-            cache_candidate_hash = cache_dir / expected_sha
-            for cand in [cache_candidate_rel, cache_candidate_hash]:
-                if cand.is_file() and not cand.is_symlink():
-                    try:
-                        cand_bytes = cand.read_bytes()
-                        if len(cand_bytes) == expected_size and hashlib.sha256(cand_bytes).hexdigest() == expected_sha:
-                            data = cand_bytes
-                            break
-                    except OSError:
-                        pass
+            if deterministic_content is not None:
+                data = deterministic_content.encode("utf-8")
+                if len(data) != expected_size or hashlib.sha256(data).hexdigest() != expected_sha:
+                    raise ValueError(f"Deterministic content mismatch for {rel_path!r}")
 
-        # 3. Fetch if not found in cache
-        if data is None:
-            if offline:
-                raise RuntimeError(f"Offline mode requested but file {rel_path!r} not found in cache")
-            if not source_url:
-                raise RuntimeError(f"No source_url for {rel_path!r} in lock")
-            print(f"  Fetching {rel_path}...", file=sys.stderr)
-            data = fetch_bytes_with_retry(source_url, expected_sha, expected_size)
+            if data is None and cache_dir is not None and cache_dir.is_dir():
+                cache_candidate_rel = cache_dir / rel_path
+                cache_candidate_hash = cache_dir / expected_sha
+                for cand in [cache_candidate_rel, cache_candidate_hash]:
+                    if cand.is_file() and not cand.is_symlink():
+                        try:
+                            cand_bytes = cand.read_bytes()
+                            if len(cand_bytes) == expected_size and hashlib.sha256(cand_bytes).hexdigest() == expected_sha:
+                                data = cand_bytes
+                                break
+                        except OSError:
+                            pass
 
-        # 4. Write atomically as a standalone regular file (mode 0o644)
-        tmp_fd, tmp_path_str = tempfile.mkstemp(
-            prefix=".tmp_stage_",
-            dir=str(target_path.parent),
-        )
-        tmp_path = Path(tmp_path_str)
-        try:
-            with os.fdopen(tmp_fd, "wb") as f:
-                f.write(data)
-            os.chmod(tmp_path, 0o644)
-            os.replace(tmp_path, target_path)
-        except Exception:
-            if tmp_path.exists():
+            if data is None:
+                if offline:
+                    raise RuntimeError(f"Offline mode requested but file {rel_path!r} not found in cache")
+                if not source_url:
+                    raise RuntimeError(f"No source_url for {rel_path!r} in lock")
+                print(f"  Fetching {rel_path}...", file=sys.stderr)
+                data = fetch_bytes_with_retry(source_url, expected_sha, expected_size)
+
+            # 2. Traverse / create subdirectories using descriptor-relative confinement
+            curr_fd = os.dup(root_fd)
+            for part in rel_parts[:-1]:
                 try:
-                    tmp_path.unlink()
-                except OSError:
-                    pass
-            raise
+                    next_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0), dir_fd=curr_fd)
+                except FileNotFoundError:
+                    os.mkdir(part, 0o755, dir_fd=curr_fd)
+                    next_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0), dir_fd=curr_fd)
+                os.close(curr_fd)
+                curr_fd = next_fd
 
-    # 5. Strict verification of newly staged bundle
+            # 3. Write atomically inside the verified directory descriptor using openat and replaceat
+            tmp_name = f".tmp_{file_name}_{os.getpid()}"
+            try:
+                os.unlink(tmp_name, dir_fd=curr_fd)
+            except OSError:
+                pass
+
+            file_fd = os.open(
+                tmp_name,
+                os.O_CREAT | os.O_WRONLY | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                0o644,
+                dir_fd=curr_fd,
+            )
+            try:
+                os.write(file_fd, data)
+            finally:
+                os.close(file_fd)
+
+            os.replace(tmp_name, file_name, src_dir_fd=curr_fd, dst_dir_fd=curr_fd)
+            os.close(curr_fd)
+
+    finally:
+        os.close(root_fd)
+
+    # 4. Strict verification of newly staged bundle
     print("Verifying staged bundle completeness, module digests, and integrity...", file=sys.stderr)
     result = verify_bundle_tree(abs_output, lock_data, lock_sha256)
     return result

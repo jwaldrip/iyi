@@ -17,9 +17,12 @@ Tests cover:
   - Unreadable directories (chmod 000 nonroot directory)
   - Special files (FIFOs)
   - Forged module zip h1 or mod_h1
-- Zip module invariants:
+- Go CheckZip and dirhash.HashZip invariants:
+  - Inclusion of directory entries in h1 calculation
   - Rejection of newlines in zip entries
   - Rejection of duplicate entries in zip
+  - Rejection of unclean paths (./, //)
+  - Rejection of case-insensitive filename collisions
   - Rejection of non-canonical module prefixes
 - Ancestor symlink traversal:
   - Rejection of nonexistent leaf beneath symlinked ancestor
@@ -28,6 +31,7 @@ Tests cover:
   - Non-empty destination directories
 - Stage with local cache in offline mode
 - Path safety and traversal prevention
+- Parity between hosted_sources.lock.json and independent parent hosted-go-audit.json
 """
 
 from __future__ import annotations
@@ -161,6 +165,23 @@ class TestHostedSourcesLock(unittest.TestCase):
             lock_data["inventory_sha256"],
             "723fd3a5396d95d40a394a44ed33a4948500e78fb65749a0ecddb100b23946a9",
         )
+
+    def test_parent_go_sumdb_audit_parity(self) -> None:
+        audit_file = ROOT_DIR / "proof" / "hosted-go-audit.json"
+        if not audit_file.is_file():
+            self.skipTest("proof/hosted-go-audit.json not present")
+        with open(audit_file) as f:
+            audit = json.load(f)
+        lock_data, lock_sha256 = load_and_validate_lock(self.lock_path)
+        self.assertEqual(audit["lock_sha256"], lock_sha256)
+        self.assertEqual(audit["module_count"], 15)
+
+        for res in audit["results"]:
+            mod_key = f"{res['Path']}@{res['Version']}"
+            self.assertIn(mod_key, lock_data["go_modules"])
+            mod_meta = lock_data["go_modules"][mod_key]
+            self.assertEqual(res["Sum"], mod_meta["h1"])
+            self.assertEqual(res["GoModSum"], mod_meta["mod_h1"])
 
 
 class TestHostedInputsVerifierAndStager(unittest.TestCase):
@@ -400,6 +421,26 @@ class TestHostedInputsVerifierAndStager(unittest.TestCase):
             verify_bundle_tree(self.valid_bundle, forged_lock, self.test_lock_sha256)
         self.assertIn("mod_h1 mismatch", str(ctx.exception))
 
+    def test_compute_zip_h1_includes_directory_entries(self) -> None:
+        # Create zip with directory entry and file entry
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            d_info = zipfile.ZipInfo("example.com/test@v1.0.0/dir/")
+            zf.writestr(d_info, b"")
+            f_info = zipfile.ZipInfo("example.com/test@v1.0.0/dir/file.txt")
+            zf.writestr(f_info, b"hello\n")
+        h_with_dir = compute_zip_h1(buf.getvalue(), expected_prefix="example.com/test@v1.0.0/")
+
+        # Create zip without directory entry (file only)
+        buf2 = io.BytesIO()
+        with zipfile.ZipFile(buf2, "w") as zf:
+            f_info = zipfile.ZipInfo("example.com/test@v1.0.0/dir/file.txt")
+            zf.writestr(f_info, b"hello\n")
+        h_without_dir = compute_zip_h1(buf2.getvalue(), expected_prefix="example.com/test@v1.0.0/")
+
+        # In Go dirhash.HashZip, directory entry changes the hash
+        self.assertNotEqual(h_with_dir, h_without_dir)
+
     def test_compute_zip_h1_rejects_newline_in_filename(self) -> None:
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:
@@ -415,7 +456,24 @@ class TestHostedInputsVerifierAndStager(unittest.TestCase):
             zf.writestr("example.com/test@v1.0.0/test.go", "second")
         with self.assertRaises(ValueError) as ctx:
             compute_zip_h1(buf.getvalue(), expected_prefix="example.com/test@v1.0.0/")
-        self.assertIn("Duplicate zip entry", str(ctx.exception))
+        self.assertIn("Duplicate entry", str(ctx.exception))
+
+    def test_compute_zip_h1_rejects_case_fold_collision(self) -> None:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("example.com/test@v1.0.0/foo.go", "a")
+            zf.writestr("example.com/test@v1.0.0/FOO.go", "b")
+        with self.assertRaises(ValueError) as ctx:
+            compute_zip_h1(buf.getvalue(), expected_prefix="example.com/test@v1.0.0/")
+        self.assertIn("Case-insensitive file name collision", str(ctx.exception))
+
+    def test_compute_zip_h1_rejects_unclean_path(self) -> None:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("example.com/test@v1.0.0/./foo.go", "a")
+        with self.assertRaises(ValueError) as ctx:
+            compute_zip_h1(buf.getvalue(), expected_prefix="example.com/test@v1.0.0/")
+        self.assertIn("unclean path", str(ctx.exception).lower())
 
     def test_compute_zip_h1_rejects_non_canonical_prefix(self) -> None:
         buf = io.BytesIO()

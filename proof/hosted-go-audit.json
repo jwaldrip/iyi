@@ -1,0 +1,143 @@
+{
+  "audit_provenance": "Independent parent-generated verification evidence of 15 Go module checksums against proof/hosted_sources.lock.json",
+  "command": [
+    "go",
+    "mod",
+    "download",
+    "-json",
+    "github.com/go-jose/go-jose/v4@v4.1.4",
+    "github.com/google/go-cmp@v0.6.0",
+    "github.com/letsencrypt/challtestsrv@v1.4.2",
+    "github.com/letsencrypt/pebble/v2@v2.10.1",
+    "github.com/miekg/dns@v1.1.62",
+    "github.com/yuin/goldmark@v1.4.13",
+    "golang.org/x/crypto@v0.38.0",
+    "golang.org/x/mod@v0.24.0",
+    "golang.org/x/net@v0.40.0",
+    "golang.org/x/sync@v0.14.0",
+    "golang.org/x/sys@v0.33.0",
+    "golang.org/x/telemetry@v0.0.0-20240521205824-bda55230c457",
+    "golang.org/x/term@v0.32.0",
+    "golang.org/x/text@v0.25.0",
+    "golang.org/x/tools@v0.33.0"
+  ],
+  "cwd_and_home": "fresh empty temporary directory removed after run, no go.mod/go.sum present before command",
+  "environment": {
+    "GOCACHE": "<isolated-scratch>/build",
+    "GOMODCACHE": "<isolated-scratch>/mod",
+    "GONOPROXY": "none",
+    "GONOSUMDB": "none",
+    "GOPATH": "<isolated-scratch>/go",
+    "GOPRIVATE": "",
+    "GOPROXY": "https://proxy.golang.org",
+    "GOSUMDB": "sum.golang.org",
+    "GOTOOLCHAIN": "local",
+    "GOWORK": "off",
+    "HOME": "<isolated-scratch>/home",
+    "PATH": "<sanitized-system-path>"
+  },
+  "go_version": "go1.26.5 darwin/arm64",
+  "goenv": "unset in process; HOME pointed to fresh empty owned directory",
+  "goflags": "unset",
+  "lock_sha256": "040b176ef25243e089e54e2a888e930f143b9f5d629d6bf9222f12ee2044d0ff",
+  "module_count": 15,
+  "results": [
+    {
+      "GoModSum": "h1:x4oUasVrzR7071A4TnHLGSPpNOm2a21K9Kf04k1rs08=",
+      "Path": "github.com/go-jose/go-jose/v4",
+      "Sum": "h1:moDMcTHmvE6Groj34emNPLs/qtYXRVcd6S7NHbHz3kA=",
+      "Version": "v4.1.4"
+    },
+    {
+      "GoModSum": "h1:17dUlkBOakJ0+DkrSSNjCkIjxS6bF9zb3elmeNGIjoY=",
+      "Path": "github.com/google/go-cmp",
+      "Sum": "h1:ofyhxvXcZhMsU5ulbFiLKl/XBFqE1GSq7atu8tAmTRI=",
+      "Version": "v0.6.0"
+    },
+    {
+      "GoModSum": "h1:GhqMqcSoeGpYd5zX5TgwA6er/1MbWzx/o7yuuVya+Wk=",
+      "Path": "github.com/letsencrypt/challtestsrv",
+      "Sum": "h1:0ON3ldMhZyWlfVNYYpFuWRTmZNnyfiL9Hh5YzC3JVwU=",
+      "Version": "v1.4.2"
+    },
+    {
+      "GoModSum": "h1:KtYhQ4YTjT5MtoCZ6RTCXlbrrz6cKyXROCuTpIUDJFY=",
+      "Path": "github.com/letsencrypt/pebble/v2",
+      "Sum": "h1:oKHx3lgN4e5Nno2LKTMrVx+b+NkDptkO9aDireiBDGE=",
+      "Version": "v2.10.1"
+    },
+    {
+      "GoModSum": "h1:mvDlcItzm+br7MToIKqkglaGhlFMHJ9DTNNWONWXbNQ=",
+      "Path": "github.com/miekg/dns",
+      "Sum": "h1:cN8OuEF1/x5Rq6Np+h1epln8OiyPWV+lROx9LxcGgIQ=",
+      "Version": "v1.1.62"
+    },
+    {
+      "GoModSum": "h1:6yULJ656Px+3vBD8DxQVa3kxgyrAnzto9xy5taEt/CY=",
+      "Path": "github.com/yuin/goldmark",
+      "Sum": "h1:fVcFKWvrslecOb/tg+Cc05dkeYx540o0FuFt3nUVDoE=",
+      "Version": "v1.4.13"
+    },
+    {
+      "GoModSum": "h1:MvrbAqul58NNYPKnOra203SB9vpuZW0e+RRZV+Ggqjw=",
+      "Path": "golang.org/x/crypto",
+      "Sum": "h1:jt+WWG8IZlBnVbomuhg2Mdq0+BBQaHbtqHEFEigjUV8=",
+      "Version": "v0.38.0"
+    },
+    {
+      "GoModSum": "h1:IXM97Txy2VM4PJ3gI61r1YEk/gAj6zAHN3AdZt6S9Ww=",
+      "Path": "golang.org/x/mod",
+      "Sum": "h1:ZfthKaKaT4NrhGVZHO1/WDTwGES4De8KtWO0SIbNJMU=",
+      "Version": "v0.24.0"
+    },
+    {
+      "GoModSum": "h1:y0hY0exeL2Pku80/zKK7tpntoX23cqL3Oa6njdgRtds=",
+      "Path": "golang.org/x/net",
+      "Sum": "h1:79Xs7wF06Gbdcg4kdCCIQArK11Z1hr5POQ6+fIYHNuY=",
+      "Version": "v0.40.0"
+    },
+    {
+      "GoModSum": "h1:1dzgHSNfp02xaA81J2MS99Qcpr2w7fw1gpm99rleRqA=",
+      "Path": "golang.org/x/sync",
+      "Sum": "h1:woo0S4Yywslg6hp4eUFjTVOyKt0RookbpAHG4c1HmhQ=",
+      "Version": "v0.14.0"
+    },
+    {
+      "GoModSum": "h1:BJP2sWEmIv4KK5OTEluFJCKSidICx8ciO85XgH3Ak8k=",
+      "Path": "golang.org/x/sys",
+      "Sum": "h1:q3i8TbbEz+JRD9ywIRlyRAQbM0qF7hu24q3teo2hbuw=",
+      "Version": "v0.33.0"
+    },
+    {
+      "GoModSum": "h1:pRgIJT+bRLFKnoM1ldnzKoxTIn14Yxz928LQRYYgIN0=",
+      "Path": "golang.org/x/telemetry",
+      "Sum": "h1:zf5N6UOrA487eEFacMePxjXAJctxKmyjKUsjA11Uzuk=",
+      "Version": "v0.0.0-20240521205824-bda55230c457"
+    },
+    {
+      "GoModSum": "h1:uZG1FhGx848Sqfsq4/DlJr3xGGsYMu/L5GW4abiaEPQ=",
+      "Path": "golang.org/x/term",
+      "Sum": "h1:DR4lr0TjUs3epypdhTOkMmuF5CDFJ/8pOnbzMZPQ7bg=",
+      "Version": "v0.32.0"
+    },
+    {
+      "GoModSum": "h1:WEdwpYrmk1qmdHvhkSTNPm3app7v4rsT8F2UD6+VHIA=",
+      "Path": "golang.org/x/text",
+      "Sum": "h1:qVyWApTSYLk/drJRO5mDlNYskwQznZmkpV2c8q9zls4=",
+      "Version": "v0.25.0"
+    },
+    {
+      "GoModSum": "h1:CIJMaWEY88juyUfo7UbgPqbC8rU2OqfAV1h2Qp0oMYI=",
+      "Path": "golang.org/x/tools",
+      "Sum": "h1:4qz2S3zmRxbGIhDIAgjxvFutSvH5EfnsYrRBj0UI0bc=",
+      "Version": "v0.33.0"
+    }
+  ],
+  "returncode": 0,
+  "scope_limitations": [
+    "Independent verification evidence generated by parent orchestrator using trusted Go toolchain with GOSUMDB=sum.golang.org.",
+    "Proves that official Go sumdb inclusion/consistency verification accepts these exact 15 module Sum and GoModSum records.",
+    "Does not claim OS-level network denial during this audit, HTTP wire tracing, arbitrary future locks, or complete containerized cold build."
+  ],
+  "stderr": ""
+}
