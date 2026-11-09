@@ -111,11 +111,40 @@
         338
       ],
       "command": "build",
-      "kind": "canonical-other",
+      "kind": "mixed",
       "contains": [
         "IYI_PATH=\"$path\" \"$IYI\" build -o \"$WORK/$program\" \"$WORK/$program.iyi\""
       ],
-      "variants": []
+      "variants": [
+        {
+          "id": "signal.negative.uncounted.338",
+          "kind": "negative",
+          "first_root": "{WORK}/uncounted-std",
+          "vars": {},
+          "sources": [
+            "{WORK}/threads.iyi"
+          ],
+          "output": "{WORK}/threads",
+          "darwin": "required",
+          "linux": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              410,
+              411,
+              415,
+              417
+            ],
+            "contains": [
+              "the exercise PASSED with waits not counted across threads",
+              "waits not counted across threads failed, but not where they should have:",
+              "status=1"
+            ]
+          }
+        }
+      ]
     }
   ],
   "non_invocations": [],

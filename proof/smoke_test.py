@@ -11913,36 +11913,36 @@ def _stage_stub_payloads(
     truncated_log = False
 
     if scenario == "sample-exclusion":
-        rg2_summary = "echo 'RG2: 141 evaluated, 141 passed, 1 still excluded with reason, 0 failures'\n"
+        rg2_summary = "echo 'RG2: 143 evaluated, 143 passed, 1 still excluded with reason, 0 failures'\n"
         rg2_exclusions = "echo '  [excluded after calibration] samples/iyi/hello.iyi: fixture sample'\n"
     elif scenario == "std-exclusion":
-        rg2_summary = "echo 'RG2: 141 evaluated, 141 passed, 1 still excluded with reason, 0 failures'\n"
+        rg2_summary = "echo 'RG2: 143 evaluated, 143 passed, 1 still excluded with reason, 0 failures'\n"
         rg2_exclusions = "echo '  [excluded after calibration] bench/std_missing_exercise.iyi: fixture std'\n"
     elif scenario == "rg2a-std-exclusion":
-        rg2a_summary = "echo 'RG2a: 141 evaluated, 141 passed, 1 still excluded with reason, 0 failures'\n"
+        rg2a_summary = "echo 'RG2a: 143 evaluated, 143 passed, 1 still excluded with reason, 0 failures'\n"
         rg2a_exclusions = "echo '  [excluded after calibration] bench/std_missing_exercise.iyi: fixture std'\n"
     elif scenario == "rg2-malformed-exclusion":
-        rg2_summary = "echo 'RG2: 141 evaluated, 141 passed, 1 still excluded with reason, 0 failures'\n"
+        rg2_summary = "echo 'RG2: 143 evaluated, 143 passed, 1 still excluded with reason, 0 failures'\n"
         rg2_exclusions = "echo '  [excluded after calibration] malformed_line_no_colon'\n"
     elif scenario == "rg2-truncated-log":
         truncated_log = True
     elif scenario == "rg2-invalid-selector":
-        rg2_summary = "echo 'RG2: 141 evaluated, 141 passed, 1 still excluded with reason, 0 failures'\n"
+        rg2_summary = "echo 'RG2: 143 evaluated, 143 passed, 1 still excluded with reason, 0 failures'\n"
         rg2_exclusions = "echo '  [excluded after calibration] invalid/selector/name.iyi: fixture reason'\n"
     elif scenario == "rg2-duplicate-exclusion":
-        rg2_summary = "echo 'RG2: 140 evaluated, 140 passed, 2 still excluded with reason, 0 failures'\n"
+        rg2_summary = "echo 'RG2: 142 evaluated, 142 passed, 2 still excluded with reason, 0 failures'\n"
         rg2_exclusions = (
             "echo '  [excluded after calibration] bench/std_missing_exercise.iyi: fixture reason 1'\n"
             "echo '  [excluded after calibration] bench/std_missing_exercise.iyi: fixture reason 2'\n"
         )
     elif scenario == "rg2-count-omitted":
-        rg2_summary = "echo 'RG2: 141 evaluated, 141 passed, 0 still excluded with reason, 0 failures'\n"
-    elif scenario == "rg2-count-excess":
         rg2_summary = "echo 'RG2: 143 evaluated, 143 passed, 0 still excluded with reason, 0 failures'\n"
+    elif scenario == "rg2-count-excess":
+        rg2_summary = "echo 'RG2: 145 evaluated, 145 passed, 0 still excluded with reason, 0 failures'\n"
     elif scenario == "rg2-passed-short":
         rg2_summary = "echo 'RG2: 144 evaluated, 143 passed, 0 still excluded with reason, 0 failures'\n"
     elif scenario == "rg2-log-mismatch-missing-line":
-        rg2_summary = "echo 'RG2: 141 evaluated, 141 passed, 1 still excluded with reason, 0 failures'\n"
+        rg2_summary = "echo 'RG2: 143 evaluated, 143 passed, 1 still excluded with reason, 0 failures'\n"
     elif scenario == "rg2-log-mismatch-extra-line":
         rg2_summary = "echo 'RG2: 144 evaluated, 144 passed, 0 still excluded with reason, 0 failures'\n"
         rg2_exclusions = "echo '  [excluded after calibration] bench/std_missing_exercise.iyi: fixture std'\n"

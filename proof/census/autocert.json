@@ -111,6 +111,37 @@
               "status=1"
             ]
           }
+        },
+        {
+          "id": "autocert.negative.exercise",
+          "kind": "negative",
+          "first_root": "{WORK}/patched",
+          "vars": {},
+          "sources": [
+            "{WORK}/patched/std_autocert_exercise.iyi"
+          ],
+          "output": "{WORK}/mutant",
+          "darwin": "required",
+          "linux": "required",
+          "requires": [
+            "python3"
+          ],
+          "verdict": {
+            "lines": [
+              409,
+              410,
+              425,
+              427,
+              432,
+              434
+            ],
+            "contains": [
+              "echo \"  the $label copy did not build:",
+              "echo \"  the exercise PASSED on $label:\"",
+              "echo \"  $label failed, but not where it should have:\"",
+              "status=1"
+            ]
+          }
         }
       ]
     }
