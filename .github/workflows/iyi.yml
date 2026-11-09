@@ -40,7 +40,11 @@ name: iyi
 # aarch64 under qemu: one that hangs used to hold a runner for a working day
 # and report nothing. The number is the job's own worst honest case, not a
 # guess at its average.
-on: [push, pull_request]
+on:
+  push:
+    branches-ignore:
+      - proof/pr147-format-observer-20261109
+  pull_request:
 
 # Git refuses a checkout that another user owns, and in a container job the
 # workspace is not the container user's: `actions/checkout` marks it safe in

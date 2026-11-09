@@ -24,7 +24,7 @@ jobs:
         run: |
           ./bin/crystal tool format src/std/observe.iyi
           ./bin/crystal tool format --check src/std/observe.iyi
-          git diff -- src/std/observe.iyi > observer-format.patch
+          git -c safe.directory="$GITHUB_WORKSPACE" diff -- src/std/observe.iyi > observer-format.patch
           test -s observer-format.patch
       - uses: actions/upload-artifact@v4
         with:
