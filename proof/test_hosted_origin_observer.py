@@ -1243,9 +1243,10 @@ class TestHostedOriginObserver(unittest.TestCase):
         os.rmdir(os.path.dirname(out_path))
 
         slot = LogicalSlot(
-            slot_id="acme::70::acme-plain::own",
+            slot_id="acme::70::89::acme-plain::own",
             driver="acme",
             site_line=70,
+            call_line=89,
             label="acme-plain",
             kind="own",
             variant_id=None,
@@ -1324,17 +1325,19 @@ class TestHostedOriginObserver(unittest.TestCase):
         st = os.stat(p)
 
         slot1 = LogicalSlot(
-            slot_id="acme::70::acme-plain::own",
+            slot_id="acme::70::89::acme-plain::own",
             driver="acme",
             site_line=70,
+            call_line=89,
             label="acme-plain",
             kind="own",
             output_template="{WORK}/acme-plain",
         )
         slot2 = LogicalSlot(
-            slot_id="acme::70::acme-release::own",
+            slot_id="acme::70::108::acme-release::own",
             driver="acme",
             site_line=70,
+            call_line=108,
             label="acme-release",
             kind="own",
             output_template="{WORK}/acme-release",
@@ -1399,9 +1402,10 @@ class TestHostedOriginObserver(unittest.TestCase):
         st = os.stat(p)
 
         slot = LogicalSlot(
-            slot_id="acme::70::acme-plain::own",
+            slot_id="acme::70::89::acme-plain::own",
             driver="acme",
             site_line=70,
+            call_line=89,
             label="acme-plain",
             kind="own",
             output_template="{WORK}/acme-plain",

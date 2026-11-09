@@ -78,9 +78,10 @@ O_PATH: int = getattr(os, "O_PATH", os.O_RDONLY)
 
 @dataclass(frozen=True)
 class LogicalSlot:
-    slot_id: str                      # unique ID e.g. "acme::70::acme-plain::own"
+    slot_id: str                      # unique ID e.g. "acme::70::89::acme-plain::own"
     driver: str                       # e.g. "acme"
     site_line: int                    # e.g. 70
+    call_line: int                    # e.g. 89
     label: str                        # e.g. "acme-plain"
     kind: str                         # "own" or "positive"
     variant_id: Optional[str]         # e.g. "compress.positive.464" or None
@@ -92,6 +93,7 @@ class LogicalSlot:
             "slot_id": self.slot_id,
             "driver": self.driver,
             "site_line": self.site_line,
+            "call_line": self.call_line,
             "label": self.label,
             "kind": self.kind,
             "variant_id": self.variant_id,
@@ -204,138 +206,119 @@ class SpecialEntry:
 
 def build_driver_logical_slots(census_data: Dict[str, Any], driver: str) -> List[LogicalSlot]:
     """
-    Construct the C-trusted logical E3 build slots for a driver from its census.
-    Exact W has 57 own/mixed-own slots and 6 positive variant slots (63 total).
+    Construct the C-trusted logical E3 build slots for a driver strictly from its census.
+    Grounds all site lines, call lines, labels, templates, and variants directly in census data.
+    Fails closed on missing or unexpected census structures.
     """
     slots: List[LogicalSlot] = []
+    sites = census_data.get("sites", [])
+    if not isinstance(sites, list):
+        raise ValueError(f"census for {driver} missing sites list")
 
-    # 1. Own / mixed-own build slots
-    if driver == "fuzz":
-        slots.append(
-            LogicalSlot(
-                slot_id="fuzz::15::fuzz_slot::own",
-                driver="fuzz",
-                site_line=15,
-                label="fuzz_slot",
-                kind="own",
-                variant_id=None,
-                output_template="{WORK}/fuzz_slot",
-                compiler_options=(),
-            )
-        )
-    else:
-        # Find canonical-own or mixed-own build site in census
-        sites = census_data.get("sites", [])
-        site_line = 0
-        for s in sites:
-            if s.get("command") == "build" and s.get("kind") in ("canonical-own", "mixed"):
-                site_line = s.get("lines", [0])[0]
-                break
-        if site_line == 0:
-            site_line = 70  # default fallback if not labeled
+    sites_by_line: Dict[int, Dict[str, Any]] = {}
+    for s in sites:
+        if isinstance(s, dict):
+            lines = s.get("lines", [])
+            if lines and isinstance(lines[0], int):
+                sites_by_line[lines[0]] = s
 
-        slots.append(
-            LogicalSlot(
-                slot_id=f"{driver}::{site_line}::{driver}-plain::own",
-                driver=driver,
-                site_line=site_line,
-                label=f"{driver}-plain",
-                kind="own",
-                variant_id=None,
-                output_template=f"{{WORK}}/{driver}-plain",
-                compiler_options=(),
-            )
-        )
-        slots.append(
-            LogicalSlot(
-                slot_id=f"{driver}::{site_line}::{driver}-release::own",
-                driver=driver,
-                site_line=site_line,
-                label=f"{driver}-release",
-                kind="own",
-                variant_id=None,
-                output_template=f"{{WORK}}/{driver}-release",
-                compiler_options=("--release",),
-            )
-        )
+    for ev in census_data.get("exec_evidence", []):
+        if not isinstance(ev, dict):
+            continue
+        sline = ev.get("site_line")
+        if not isinstance(sline, int):
+            continue
+        site = sites_by_line.get(sline)
+        if not site:
+            continue
 
-    # 2. Positive variant build slots (only 4 drivers produce positive E3 builds)
-    if driver == "compress":
-        slots.append(
-            LogicalSlot(
-                slot_id="compress::464::small.bin::compress.positive.464",
-                driver="compress",
-                site_line=464,
-                label="small.bin",
-                kind="positive",
-                variant_id="compress.positive.464",
-                output_template="{WORK}/small.bin",
-                compiler_options=("--release",),
-            )
-        )
-    elif driver == "file":
-        slots.append(
-            LogicalSlot(
-                slot_id="file::628::nul_cut-prog::file.positive.628.required",
-                driver="file",
-                site_line=628,
-                label="nul_cut-prog",
-                kind="positive",
-                variant_id="file.positive.628.required",
-                output_template="{WORK}/nul_cut-prog",
-                compiler_options=(),
-            )
-        )
-        slots.append(
-            LogicalSlot(
-                slot_id="file::628::realpath_through-prog::file.positive.628.platform-excluded",
-                driver="file",
-                site_line=628,
-                label="realpath_through-prog",
-                kind="positive",
-                variant_id="file.positive.628.platform-excluded",
-                output_template="{WORK}/realpath_through-prog",
-                compiler_options=(),
-            )
-        )
-    elif driver == "math":
-        slots.append(
-            LogicalSlot(
-                slot_id="math::555::software/program::math.positive.555",
-                driver="math",
-                site_line=555,
-                label="software/program",
-                kind="positive",
-                variant_id="math.positive.555",
-                output_template="{WORK}/software/program",
-                compiler_options=("--release",),
-            )
-        )
-    elif driver == "tls":
-        slots.append(
-            LogicalSlot(
-                slot_id="tls::932::tlsx-downgrade::tls.positive.downgrade.795",
-                driver="tls",
-                site_line=932,
-                label="tlsx-downgrade",
-                kind="positive",
-                variant_id="tls.positive.downgrade.795",
-                output_template="{WORK}/downgrade/tlsx",
-                compiler_options=(),
-            )
-        )
-        slots.append(
-            LogicalSlot(
-                slot_id="tls::932::tlsx-downgrade-unchecked::tls.positive.downgrade.795",
-                driver="tls",
-                site_line=932,
-                label="tlsx-downgrade-unchecked",
-                kind="positive",
-                variant_id="tls.positive.downgrade.795",
-                output_template="{WORK}/downgrade-unchecked/tlsx",
-                compiler_options=(),
-            )
-        )
+        skind = site.get("kind")
+        template = ev.get("out_template")
+        if not isinstance(template, str):
+            continue
+
+        names = ev.get("name_from_calls", {})
+        variants = [v.get("id") for v in site.get("variants", []) if isinstance(v, dict)]
+
+        # Only own/mixed-own and positive sites produce candidate E3 build slots
+        if skind == "canonical-own" or (skind == "mixed" and driver == "signal"):
+            if "{name}" in template:
+                if not isinstance(names, dict) or not names:
+                    raise ValueError(f"driver {driver} site {sline} missing name_from_calls in census")
+                for cline_str, label in sorted(names.items(), key=lambda x: int(x[0])):
+                    cline = int(cline_str)
+                    out_tmpl = template.replace("{name}", label)
+                    options = ("--release",) if "release" in label else ()
+                    slot_id = f"{driver}::{sline}::{cline}::{label}::own"
+                    slots.append(
+                        LogicalSlot(
+                            slot_id=slot_id,
+                            driver=driver,
+                            site_line=sline,
+                            call_line=cline,
+                            label=label,
+                            kind="own",
+                            variant_id=None,
+                            output_template=out_tmpl,
+                            compiler_options=options,
+                        )
+                    )
+            else:
+                label = template.split("/")[-1]
+                slot_id = f"{driver}::{sline}::{sline}::{label}::own"
+                slots.append(
+                    LogicalSlot(
+                        slot_id=slot_id,
+                        driver=driver,
+                        site_line=sline,
+                        call_line=sline,
+                        label=label,
+                        kind="own",
+                        variant_id=None,
+                        output_template=template,
+                        compiler_options=(),
+                    )
+                )
+        elif skind == "positive":
+            if "{name}" in template:
+                if not isinstance(names, dict) or not names:
+                    raise ValueError(f"positive driver {driver} site {sline} missing name_from_calls")
+                for idx, (cline_str, label) in enumerate(sorted(names.items(), key=lambda x: int(x[0]))):
+                    cline = int(cline_str)
+                    out_tmpl = template.replace("{name}", label)
+                    var_id = variants[idx] if idx < len(variants) else (variants[0] if variants else None)
+                    slot_id = f"{driver}::{sline}::{cline}::{label}::{var_id}"
+                    slots.append(
+                        LogicalSlot(
+                            slot_id=slot_id,
+                            driver=driver,
+                            site_line=sline,
+                            call_line=cline,
+                            label=label,
+                            kind="positive",
+                            variant_id=var_id,
+                            output_template=out_tmpl,
+                            compiler_options=(),
+                        )
+                    )
+            else:
+                label = template.split("/")[-1]
+                var_id = variants[0] if variants else None
+                options = ("--release",) if driver in ("compress", "math") else ()
+                slot_id = f"{driver}::{sline}::{sline}::{label}::{var_id}"
+                slots.append(
+                    LogicalSlot(
+                        slot_id=slot_id,
+                        driver=driver,
+                        site_line=sline,
+                        call_line=sline,
+                        label=label,
+                        kind="positive",
+                        variant_id=var_id,
+                        output_template=template,
+                        compiler_options=options,
+                    )
+                )
 
     return slots
 
