@@ -9,6 +9,7 @@ No assert statements in non-test modules.
 
 from __future__ import annotations
 
+import ast
 import glob
 import hashlib
 import shlex
@@ -1941,6 +1942,22 @@ def _unterminated_print_commands(source: str) -> list[list[str]] | None:
         words.append(remainder)
     return [words]
 
+def _python_literal_assign_string(source: str) -> str | None:
+    """Extract string literal from a single-line Python Assign or AugAssign statement (no execution)."""
+    stripped = source.strip()
+    try:
+        tree = ast.parse(stripped, mode="exec")
+    except SyntaxError:
+        return None
+    if isinstance(tree, ast.Module) and len(tree.body) == 1:
+        stmt = tree.body[0]
+        if isinstance(stmt, ast.Assign) and isinstance(stmt.value, ast.Constant) and isinstance(stmt.value.value, str):
+            return stmt.value.value
+        if isinstance(stmt, ast.AugAssign) and isinstance(stmt.value, ast.Constant) and isinstance(stmt.value.value, str):
+            return stmt.value.value
+    return None
+
+
 
 def _top_level_print_commands(source: str) -> list[list[str]] | None:
     tokens = _shell_line_tokens(source)
@@ -2957,6 +2974,18 @@ def validate_census(census: object, script_bytes: bytes, script_relpath: str, *,
                     number,
                     f"printed text is skip vocabulary: {rendered!r}",
                 )
+        py_literal = _python_literal_assign_string(source)
+        if (
+            py_literal is not None
+            and _SKIP_VOCAB_RE.search(py_literal)
+            and number not in listed_skip_lines
+        ):
+            _violation(
+                violations,
+                "C5.4-unlisted-skip-line",
+                number,
+                f"python assign literal is skip vocabulary: {py_literal!r}",
+            )
 
     skip_entries = (
         census.get("skips") if isinstance(census.get("skips"), list) else []
@@ -2970,7 +2999,7 @@ def validate_census(census: object, script_bytes: bytes, script_relpath: str, *,
         rendered = (
             _render_print_words(top_level[0])
             if top_level
-            else None
+            else _python_literal_assign_string(source)
         )
         if rendered is None:
             _violation(

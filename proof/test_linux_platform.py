@@ -1171,29 +1171,85 @@ class TestOriginRecordsAdversarialHardlink(unittest.TestCase):
 
 
 class TestHttpOmissionSkips(unittest.TestCase):
-    def test_http_omission_python_zstd_returns_env_blocked(self):
-        from proof.run_proof import _classify_driver_skips
-        census = {"driver": "http", "skips": []}
-        log_text = "  requests on one connection, a chunked one, a megabyte, gzip whole and streamed, multipart, and stop; zstd unchecked: no compression.zstd in this Python, and by curl --compressed\n"
-        status, reasons = _classify_driver_skips(census, log_text, baseline=set())
-        self.assertEqual(status, "ENV-BLOCKED")
-        self.assertTrue(any("tool skip http: python zstd" in r for r in reasons))
+    def setUp(self):
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        census_path = os.path.join(repo_root, "proof", "census", "http.json")
+        with open(census_path) as f:
+            self.census = json.load(f)
+        self.script_path = os.path.join(repo_root, self.census["script"])
+        with open(self.script_path, "rb") as f:
+            self.script_bytes = f.read()
 
-    def test_http_omission_curl_zstd_returns_env_blocked(self):
+    def test_all_four_forms_classify_driver_skips(self):
         from proof.run_proof import _classify_driver_skips
-        census = {"driver": "http", "skips": []}
-        log_text = "  requests on one connection, a chunked one, a megabyte, gzip whole and streamed, multipart, and stop; zstd whole as Python's compression.zstd reads it; curl --compressed unchecked: its build lists no zstd\n"
-        status, reasons = _classify_driver_skips(census, log_text, baseline=set())
-        self.assertEqual(status, "ENV-BLOCKED")
-        self.assertTrue(any("tool skip http: curl zstd" in r for r in reasons))
-
-    def test_http_ordinary_mode_returns_pass(self):
-        from proof.run_proof import _classify_driver_skips
-        census = {"driver": "http", "skips": []}
-        log_text = "  requests on one connection, a chunked one, a megabyte, gzip whole and streamed, multipart, and stop; zstd whole as Python's compression.zstd reads it, and by curl --compressed\n"
-        status, reasons = _classify_driver_skips(census, log_text, baseline=set())
+        # 1. Neither (ordinary run) -> PASS
+        neither_log = (
+            "  requests on one connection, a chunked one, a megabyte, gzip whole and streamed, multipart, and stop; "
+            "zstd whole as Python's compression.zstd reads it, and by curl --compressed\n"
+        )
+        status, reasons = _classify_driver_skips(self.census, neither_log, baseline=set())
         self.assertEqual(status, "PASS")
         self.assertEqual(reasons, [])
+
+        # 2. Python only -> ENV-BLOCKED with python zstd reason
+        py_only_log = (
+            "  requests on one connection, a chunked one, a megabyte, gzip whole and streamed, multipart, and stop; "
+            "zstd unchecked: no compression.zstd in this Python, and by curl --compressed\n"
+        )
+        status, reasons = _classify_driver_skips(self.census, py_only_log, baseline=set())
+        self.assertEqual(status, "ENV-BLOCKED")
+        self.assertEqual(reasons, ["tool skip http: python zstd"])
+
+        # 3. Curl only -> ENV-BLOCKED with curl zstd reason
+        curl_only_log = (
+            "  requests on one connection, a chunked one, a megabyte, gzip whole and streamed, multipart, and stop; "
+            "zstd whole as Python's compression.zstd reads it; curl --compressed unchecked: its build lists no zstd\n"
+        )
+        status, reasons = _classify_driver_skips(self.census, curl_only_log, baseline=set())
+        self.assertEqual(status, "ENV-BLOCKED")
+        self.assertEqual(reasons, ["tool skip http: curl zstd"])
+
+        # 4. Both -> ENV-BLOCKED with both reasons
+        both_log = (
+            "  requests on one connection, a chunked one, a megabyte, gzip whole and streamed, multipart, and stop; "
+            "zstd unchecked: no compression.zstd in this Python; curl --compressed unchecked: its build lists no zstd\n"
+        )
+        status, reasons = _classify_driver_skips(self.census, both_log, baseline=set())
+        self.assertEqual(status, "ENV-BLOCKED")
+        self.assertEqual(sorted(reasons), ["tool skip http: curl zstd", "tool skip http: python zstd"])
+
+    def test_baseline_inventory_captures_tool_skips(self):
+        from proof.run_proof import _baseline_skip_hits
+        both_log = (
+            "  requests on one connection, a chunked one, a megabyte, gzip whole and streamed, multipart, and stop; "
+            "zstd unchecked: no compression.zstd in this Python; curl --compressed unchecked: its build lists no zstd\n"
+        )
+        hits = _baseline_skip_hits(self.census, both_log)
+        self.assertEqual(len(hits), 2)
+        whats = {hit["what"] for hit in hits}
+        self.assertEqual(whats, {"python zstd", "curl zstd"})
+        self.assertTrue(all(hit["class"] == "tool" for hit in hits))
+        self.assertTrue(all(hit["driver"] == "http" for hit in hits))
+
+    def test_census_grounding_and_source_drift_rejection(self):
+        # Validate that http.json passes grounding against bench/std_http_exercise.sh
+        violations = validate_census(self.census, self.script_bytes, self.census["script"], target_platform="linux")
+        self.assertEqual(violations, [])
+
+        # Test source drift rejection: modifying a skip line causes validate_census to fail
+        lines = self.script_bytes.decode("utf-8").splitlines()
+        tampered_lines = list(lines)
+        tampered_lines[352] = 'said = "modified line without skip"'
+        tampered_bytes = "\n".join(tampered_lines).encode("utf-8")
+        drift_violations = validate_census(self.census, tampered_bytes, self.census["script"], target_platform="linux")
+        self.assertTrue(any(v[0] == "C5.4-skip-text" and v[1] == 353 for v in drift_violations))
+
+        # Test unlisted skip rejection: adding an unlisted python assignment with skip vocab triggers C5.4-unlisted-skip-line
+        tampered_lines2 = list(lines)
+        tampered_lines2.insert(355, 'unlisted = "zstd unchecked: rogue skip vocab"')
+        tampered_bytes2 = "\n".join(tampered_lines2).encode("utf-8")
+        drift_violations2 = validate_census(self.census, tampered_bytes2, self.census["script"], target_platform="linux")
+        self.assertTrue(any(v[0] == "C5.4-unlisted-skip-line" for v in drift_violations2))
 
 if __name__ == "__main__":
     unittest.main()

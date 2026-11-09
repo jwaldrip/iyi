@@ -5211,6 +5211,20 @@
       "text": "    echo \"  skipped: no working python3, so its http.client was not run against the server\""
     },
     {
+      "line": 353,
+      "class": "tool",
+      "what": "python zstd",
+      "regex": "zstd unchecked: no compression\\.zstd in this Python",
+      "text": "said = \"zstd unchecked: no compression.zstd in this Python\""
+    },
+    {
+      "line": 371,
+      "class": "tool",
+      "what": "curl zstd",
+      "regex": "curl --compressed unchecked: its build lists no zstd",
+      "text": "    said += \"; curl --compressed unchecked: its build lists no zstd\""
+    },
+    {
       "line": 409,
       "class": "tool",
       "what": "python3",
