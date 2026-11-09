@@ -598,12 +598,13 @@ def validate_prefix_containment(output_prefix: str) -> str:
     if abs_output in system_dirs:
         raise SecurityError(f"Refusing system directory as output prefix: {abs_output}")
 
-    # Resolve canonical output and check ancestors
-    canonical_output = os.path.realpath(abs_output)
-    cur = os.path.dirname(canonical_output)
+    cur = os.path.dirname(abs_output)
     while cur and cur != "/":
         if os.path.islink(cur):
-            raise SecurityError(f"Ancestor directory is a symlink: {cur}")
+            if sys.platform == "darwin" and os.path.abspath(cur) in ("/var", "/etc", "/tmp"):
+                pass
+            else:
+                raise SecurityError(f"Ancestor directory is a symlink: {cur}")
         cur = os.path.dirname(cur)
 
     runner_temp = os.environ.get("RUNNER_TEMP")
@@ -654,11 +655,13 @@ def run_lock_consumer(
     if not check_only:
         if os.path.islink(abs_receipt):
             raise SecurityError(f"Receipt destination path is a symlink: {abs_receipt}")
-        canonical_receipt = os.path.realpath(os.path.dirname(abs_receipt))
-        cur = canonical_receipt
+        cur = os.path.dirname(abs_receipt)
         while cur and cur != "/":
             if os.path.islink(cur):
-                raise SecurityError(f"Receipt parent directory ancestor is a symlink: {cur}")
+                if sys.platform == "darwin" and os.path.abspath(cur) in ("/var", "/etc", "/tmp"):
+                    pass
+                else:
+                    raise SecurityError(f"Receipt parent directory ancestor is a symlink: {cur}")
             cur = os.path.dirname(cur)
 
     # Stage 2: Load and validate lock schema
@@ -670,11 +673,26 @@ def run_lock_consumer(
     if lock.get("schema_version") != "iyi-bpf-dependency-lock-v1":
         raise SecurityError(f"Unsupported lock schema: {lock.get('schema_version')}")
 
-    snapshot = lock["snapshot"]
-    snapshot_id = snapshot["snapshot_id"]
-    base_url = snapshot["base_url"]
-    trust_root = lock["trust_root"]
+    snapshot = lock.get("snapshot")
+    if not snapshot or not isinstance(snapshot, dict):
+        raise SecurityError("Lock missing snapshot definition")
+    snapshot_id = snapshot.get("snapshot_id")
+    base_url = snapshot.get("base_url")
+    if not snapshot_id or not base_url:
+        raise SecurityError("Lock snapshot missing snapshot_id or base_url")
 
+    # Strict exact 4-package closure enforcement on lock definition in Stage 2
+    packages_meta = lock.get("packages")
+    if not packages_meta or not isinstance(packages_meta, dict):
+        raise SecurityError("Lock missing packages definition")
+    if set(packages_meta.keys()) != REQUIRED_PACKAGES:
+        raise SecurityError(
+            f"Lock packages must match exact required closure {REQUIRED_PACKAGES}, got {set(packages_meta.keys())}"
+        )
+
+    trust_root = lock.get("trust_root")
+    if not trust_root or not isinstance(trust_root, dict):
+        raise SecurityError("Lock missing trust_root definition")
     resolved_keyring = keyring_path or trust_root.get("keyring_default_path", DEFAULT_KEYRING_PATH)
     if not os.path.isfile(resolved_keyring):
         raise SecurityError(f"Ubuntu archive keyring not found at {resolved_keyring}")

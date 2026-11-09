@@ -481,6 +481,11 @@ class TestExactContractEnforcement(unittest.TestCase):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_extra_package_in_lock_rejected(self):
+        mock_keyring = os.path.join(self.temp_dir, "mock_keyring.gpg")
+        with open(mock_keyring, "wb") as f:
+            f.write(b"mock keyring data")
+        mock_keyring_sha = sha256_file(mock_keyring)
+
         bad_lock = {
             "schema_version": "iyi-bpf-dependency-lock-v1",
             "snapshot": {
@@ -488,8 +493,8 @@ class TestExactContractEnforcement(unittest.TestCase):
                 "base_url": "https://snapshot.ubuntu.com/ubuntu/20261105T000000Z"
             },
             "trust_root": {
-                "keyring_default_path": "/nonexistent/keyring.gpg",
-                "keyring_sha256": DEFAULT_KEYRING_SHA256
+                "keyring_default_path": mock_keyring,
+                "keyring_sha256": mock_keyring_sha
             },
             "packages": {
                 "libbpf-dev": {},
@@ -508,6 +513,7 @@ class TestExactContractEnforcement(unittest.TestCase):
                 lock_path=lock_file,
                 output_prefix=os.path.join(self.temp_dir, "prefix"),
                 receipt_path=os.path.join(self.temp_dir, "receipt.json"),
+                keyring_path=mock_keyring,
                 check_only=True
             )
         self.assertIn("Lock packages must match exact required closure", str(ctx.exception))
