@@ -58,6 +58,13 @@
   "non_invocations": [],
   "skips": [
     {
+      "line": 127,
+      "class": "tool",
+      "what": "curl and python3",
+      "regex": "^  no curl or python here, so only the vendored subset was checked$",
+      "text": "  echo \"  no curl or python here, so only the vendored subset was checked\""
+    },
+    {
       "line": 130,
       "class": "tool",
       "what": "curl/network",

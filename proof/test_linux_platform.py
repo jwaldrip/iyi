@@ -495,7 +495,8 @@ class TestOfflineInputsBinding(unittest.TestCase):
     def test_linux_pin_fails_closed_without_inputs_dir(self):
         from proof.smoke_test import PinFixture
         with PinFixture() as fixture:
-            with patch.dict(os.environ, {}, clear=True):
+            with patch.dict(os.environ):
+                os.environ.pop("IYI_PROOF_INPUTS_DIR", None)
                 with self.assertRaises(IdentityError) as ctx:
                     write_pin(
                         fixture.report,
@@ -511,7 +512,8 @@ class TestOfflineInputsBinding(unittest.TestCase):
     def test_darwin_pin_default_unchanged_without_inputs_dir(self):
         from proof.smoke_test import PinFixture
         with PinFixture() as fixture:
-            with patch.dict(os.environ, {}, clear=True):
+            with patch.dict(os.environ):
+                os.environ.pop("IYI_PROOF_INPUTS_DIR", None)
                 pin = write_pin(
                     fixture.report,
                     fixture.p,

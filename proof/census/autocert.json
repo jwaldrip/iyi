@@ -120,7 +120,7 @@
       "line": 181,
       "class": "tool",
       "what": "go and Pebble network",
-      "regex": "^  Pebble could not be fetched or built here \\(no network\\?\\), so nothing is ordered: .+$",
+      "regex": "^  Pebble could not be fetched or built here \\(no network\\?\\), so nothing is ordered(:.*)?$",
       "text": "    echo \"  Pebble could not be fetched or built here (no network?), so nothing is ordered: $(tail -1 \"$WORK/go-install.log\")\""
     },
     {
