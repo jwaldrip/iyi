@@ -31,11 +31,9 @@ on:
         required: false
         type: string
       image_digest:
-        description: "Pinned toolchain image digest (sha256:...)"
+        description: "Pinned toolchain image digest (sha256:64-hex, required for strict-chain)"
         required: false
         type: string
-        default: "sha256:d8c6b75c8d67c91206f34e6ab4f0df4ef6539dc35914fa65b05872899435b80f"
-
 permissions:
   contents: read
   actions: read
@@ -169,6 +167,7 @@ jobs:
 
           p_sha = os.environ.get("P_INPUT_SHA", "").strip()
           w_sha = os.environ.get("W_INPUT_SHA", "").strip()
+          image_digest = os.environ.get("IMAGE_DIGEST_INPUT", "").strip()
 
           # If not supplied via inputs, check proof/hosted_request.json
           req_path = pathlib.Path("proof/hosted_request.json")
@@ -177,6 +176,7 @@ jobs:
                   req_data = json.loads(req_path.read_text())
                   p_sha = p_sha or req_data.get("p_sha", "")
                   w_sha = w_sha or req_data.get("w_sha", "")
+                  image_digest = image_digest or req_data.get("image_digest", "")
               except Exception as exc:
                   fail(f"Invalid hosted_request.json: {exc}")
 
@@ -184,6 +184,8 @@ jobs:
               if not re.fullmatch(r"[0-9a-f]{40}", sha_val):
                   fail(f"Authorized commit SHA {label} is not finalized or invalid 40-hex string: {sha_val!r}")
 
+          if not image_digest or not re.fullmatch(r"sha256:[0-9a-f]{64}", image_digest):
+              fail(f"Pinned toolchain image digest is required and must match sha256:64-hex: {image_digest!r}")
           c_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
           workflow_path = ".github/workflows/pr147-linux-strict.yml"
           workflow_blob = subprocess.check_output(["git", "hash-object", workflow_path], text=True).strip()
@@ -210,7 +212,7 @@ jobs:
               "job_id": str(os.environ["JOB_ID"]),
               "job_key": os.environ["JOB_KEY"],
               "image": "ghcr.io/jwaldrip/iyi-proof-linux:latest",
-              "image_digest": os.environ.get("IMAGE_DIGEST_INPUT", ""),
+              "image_digest": image_digest,
               "lock_path": lock_path,
               "lock_sha256": lock_sha256,
               "expected_bundle_sha256": "0" * 64,  # Replaced by lock or stager

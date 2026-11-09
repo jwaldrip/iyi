@@ -240,6 +240,10 @@ def validate_manifest_dict(data: Dict[str, Any]) -> ProofManifest:
         if not isinstance(val, str) or not re.fullmatch(r"[0-9a-f]{64}", val):
             raise StrictAuthorizationRefused(f"Invalid 64-character hex SHA-256 for {digest_key}: {val!r}")
 
+    image_digest = data["image_digest"]
+    if not isinstance(image_digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", image_digest):
+        raise StrictAuthorizationRefused(f"Invalid image_digest format: {image_digest!r}, expected sha256:64-hex")
+
     report_path = data["report_path"]
     if not isinstance(report_path, str) or not re.fullmatch(r"/private/tmp/iyp-[0-9a-f]{8}", report_path):
         raise StrictAuthorizationRefused(f"Invalid report_path format: {report_path!r}")

@@ -119,6 +119,12 @@ class TestProofManifest(unittest.TestCase):
             data = make_valid_manifest_dict(report_path=bad_path)
             with self.assertRaises(StrictAuthorizationRefused):
                 validate_manifest_dict(data)
+    def test_validate_manifest_rejects_invalid_image_digest(self):
+        for bad in ("", "sha256:short", "not-a-digest", "sha256:" + "g" * 64):
+            data = make_valid_manifest_dict()
+            data["image_digest"] = bad
+            with self.assertRaises(StrictAuthorizationRefused):
+                validate_manifest_dict(data)
 
     def test_validate_manifest_rejects_wrong_backend(self):
         data = make_valid_manifest_dict()
