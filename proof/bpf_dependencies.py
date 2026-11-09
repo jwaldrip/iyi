@@ -191,25 +191,52 @@ def fetch_url(
 
 
 def decompress_xz_bounded(data: bytes, expected_uncompressed_size: int) -> bytes:
+    """Decode a complete standalone XZ file, including valid streams and padding.
+
+    Reject malformed framing, trailing garbage, and output beyond the cumulative
+    bound. Archive-member XZ decoding has a separate, single-stream policy.
     """
-    Decompress XZ data chunk by chunk enforcing bounded uncompressed size.
-    Rejects incomplete streams and trailing unconsumed data.
-    """
-    decompressor = lzma.LZMADecompressor()
+    if expected_uncompressed_size < 0:
+        raise SecurityError("Negative XZ output bound")
+    magic = b"\xfd7zXZ\x00"
+    pos = 0
     out = bytearray()
-    chunk_size = 65536
-    input_stream = io.BytesIO(data)
-    while input_chunk := input_stream.read(chunk_size):
-        decomp = decompressor.decompress(input_chunk, max_length=expected_uncompressed_size - len(out) + 1)
-        out.extend(decomp)
-        if len(out) > expected_uncompressed_size:
-            raise SecurityError(
-                f"Decompressed XZ output exceeded bound ({len(out)} > {expected_uncompressed_size})"
-            )
-    if not decompressor.eof:
-        raise SecurityError("Incomplete XZ stream: decompressor did not reach EOF")
-    if decompressor.unused_data:
-        raise SecurityError("Trailing unconsumed data after XZ stream")
+    if not data.startswith(magic):
+        raise SecurityError("Missing initial XZ stream")
+    while True:
+        if not data.startswith(magic, pos):
+            raise SecurityError("Trailing unconsumed data: expected XZ stream")
+        decompressor = lzma.LZMADecompressor(format=lzma.FORMAT_XZ)
+        while not decompressor.eof:
+            if decompressor.needs_input:
+                if pos >= len(data):
+                    raise SecurityError("Incomplete XZ stream: decompressor did not reach EOF")
+                end = min(pos + 65536, len(data))
+                chunk = data[pos:end]
+                pos = end
+            else:
+                chunk = b""
+            try:
+                decoded = decompressor.decompress(
+                    chunk, max_length=min(65536, expected_uncompressed_size - len(out) + 1)
+                )
+            except (lzma.LZMAError, EOFError, ValueError) as exc:
+                raise SecurityError(f"Malformed XZ stream: {exc}") from exc
+            out.extend(decoded)
+            if len(out) > expected_uncompressed_size:
+                raise SecurityError(
+                    f"Decompressed XZ output exceeded bound ({len(out)} > {expected_uncompressed_size})"
+                )
+            if not chunk and not decoded and not decompressor.eof and not decompressor.needs_input:
+                raise SecurityError("XZ decompressor made no progress")
+        pos -= len(decompressor.unused_data)
+        padding_start = pos
+        while pos < len(data) and data[pos] == 0:
+            pos += 1
+        if (pos - padding_start) % 4:
+            raise SecurityError("Invalid XZ stream padding length")
+        if pos == len(data):
+            break
     if len(out) != expected_uncompressed_size:
         raise SecurityError(
             f"Decompressed size mismatch: got {len(out)}, expected {expected_uncompressed_size}"

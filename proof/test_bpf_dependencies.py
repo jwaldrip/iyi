@@ -65,6 +65,63 @@ from proof.bpf_dependencies import (
 )
 
 
+class TestIndexAuthenticationOrder(unittest.TestCase):
+    def test_compressed_authentication_and_decoder_failure_stop_extraction(self):
+        import proof.bpf_dependencies as consumer
+
+        class Response(io.BytesIO):
+            status = 200
+            headers = {}
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            keyring = root / "keyring"
+            keyring.write_bytes(b"test keyring")
+            base = json.loads((REPO_ROOT / "proof" / "bpf_dependencies.lock.json").read_text())
+            base["trust_root"]["keyring_sha256"] = sha256_bytes(keyring.read_bytes())
+            release = b"test authenticated release"
+            pocket = base["metadata_pockets"]["noble"]
+            pocket["inrelease_size"] = len(release)
+            pocket["inrelease_sha256"] = sha256_bytes(release)
+            index = lzma.compress(b"alpha") + lzma.compress(b"")
+            metadata = pocket["packages_xz"]
+            metadata["size"] = len(index)
+            metadata["sha256"] = sha256_bytes(index)
+            metadata["uncompressed_size"] = 5
+            headers = {"Origin": "Ubuntu", "Label": "Ubuntu", "Suite": "noble",
+                       "Codename": "noble", "Version": "24.04", "Architectures": "amd64",
+                       "Components": "main", "Date": base["freshness_policy"]["frozen_base_pocket_date"]}
+            checksums = {metadata["release_entry"]: (metadata["sha256"], metadata["size"])}
+            lock = root / "lock.json"
+            lock.write_text(json.dumps(base))
+
+            for mode in ("short", "bad_hash", "bad_second"):
+                payload = {"short": index[:-1], "bad_hash": index[:-1] + bytes([index[-1] ^ 1]),
+                           "bad_second": index[:-1] + bytes([index[-1] ^ 1])}[mode]
+                if mode == "bad_second":
+                    metadata["sha256"] = sha256_bytes(payload)
+                    checksums[metadata["release_entry"]] = (metadata["sha256"], metadata["size"])
+                    lock.write_text(json.dumps(base))
+                opener = MagicMock()
+                opener.open.side_effect = [Response(release), Response(payload)]
+                receipt = root / f"{mode}.json"
+                with self.subTest(mode=mode), \
+                     patch.dict(os.environ, {"RUNNER_TEMP": str(root)}), \
+                     patch.object(consumer, "get_secure_opener", return_value=opener), \
+                     patch.object(consumer, "verify_trusted_system_tool", return_value="/fake/gpgv"), \
+                     patch.object(consumer, "verify_gpg_signature", return_value=("fake", "fake")), \
+                     patch.object(consumer, "extract_clearsigned_text", return_value="release"), \
+                     patch.object(consumer, "parse_release_headers", return_value=(headers, checksums)), \
+                     patch.object(consumer, "decompress_xz_bounded", wraps=decompress_xz_bounded) as decode, \
+                     patch.object(consumer, "safe_extract_deb") as extract:
+                    with self.assertRaises(SecurityError):
+                        run_lock_consumer(str(lock), str(root / f"{mode}-prefix"), str(receipt),
+                                          keyring_path=str(keyring))
+                    self.assertEqual(decode.call_count, 1 if mode == "bad_second" else 0)
+                    extract.assert_not_called()
+                    self.assertFalse(receipt.exists())
+
+
 class TestLockStructure(unittest.TestCase):
     def setUp(self):
         self.lock_path = REPO_ROOT / "proof" / "bpf_dependencies.lock.json"
@@ -307,6 +364,64 @@ class TestReleaseAndPackagesParsing(unittest.TestCase):
 
 
 class TestBoundedResourceAllocations(unittest.TestCase):
+    def test_xz_file_streams_padding_and_aggregate_output(self):
+        first = lzma.compress(b"alpha")
+        empty = lzma.compress(b"")
+        second = lzma.compress(b"beta")
+        for encoded, expected in (
+            (first, b"alpha"),
+            (first + empty, b"alpha"),
+            (first + second, b"alphabeta"),
+            (first + b"\0" * 4 + second, b"alphabeta"),
+            (first + b"\0" * 8 + empty + b"\0" * 8, b"alpha"),
+        ):
+            with self.subTest(encoded_length=len(encoded), expected=expected):
+                self.assertEqual(decompress_xz_bounded(encoded, len(expected)), expected)
+
+    def test_xz_file_rejects_bad_trailing_streams_and_padding(self):
+        first = lzma.compress(b"alpha")
+        second = lzma.compress(b"beta")
+        corrupt = bytearray(second)
+        corrupt[-1] ^= 1
+        cases = (
+            first + second[:-1], first + bytes(corrupt),
+            first + b"garbage", first + second + b"garbage",
+            first + b"\0", first + b"\0\0", first + b"\0\0\0",
+            first + b"\0\0\0X", first + b"\0" * 4 + b"garbage",
+            b"\0" * 4, b"\0" * 4 + first,
+            lzma.compress(b"alpha", format=lzma.FORMAT_ALONE),
+        )
+        for encoded in cases:
+            with self.subTest(encoded=encoded[-16:]):
+                with self.assertRaises(SecurityError):
+                    decompress_xz_bounded(encoded, 9)
+
+    def test_xz_file_cumulative_bound_and_exact_length(self):
+        first = lzma.compress(b"alpha")
+        second = lzma.compress(b"beta")
+        with self.assertRaisesRegex(SecurityError, "exceeded bound"):
+            decompress_xz_bounded(first + second, 5)
+        with self.assertRaisesRegex(SecurityError, "size mismatch"):
+            decompress_xz_bounded(first + second, 10)
+        with self.assertRaises(SecurityError):
+            decompress_xz_bounded(first, -1)
+
+    def test_xz_file_header_crosses_input_chunk_boundary(self):
+        first = lzma.compress(b"alpha")
+        second = lzma.compress(b"beta")
+        padding = (65532 - len(first)) % 65536
+        self.assertEqual(padding % 4, 0)
+        encoded = first + b"\0" * padding + second
+        self.assertEqual((len(first) + padding) % 65536, 65532)
+        self.assertEqual(decompress_xz_bounded(encoded, 9), b"alphabeta")
+        with self.assertRaises(SecurityError):
+            decompress_xz_bounded(encoded[:-1], 9)
+
+    def test_archive_xz_concatenation_remains_forbidden(self):
+        encoded = lzma.compress(b"alpha") + lzma.compress(b"")
+        with self.assertRaises(SecurityError):
+            decompress_payload("data.tar.xz", encoded)
+
     def test_xz_decompression_bomb_rejection(self):
         raw = b"A" * 10000
         compressed = lzma.compress(raw)
