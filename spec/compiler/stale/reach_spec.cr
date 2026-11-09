@@ -77,7 +77,7 @@ private def compile_class_var_reach(source : Iyi::Compiler::Source, name : Strin
 end
 
 private def atomic_class_var_source(seed : Int32, unused : Int32 = 1, opaque : Bool = false) : Iyi::Compiler::Source
-  asm = opaque ? %(asm("nop"); ) : ""
+  asm_text = opaque ? %(asm("nop"); ) : ""
   unsafe_mark = opaque ? %(@[Unsafe("the initializer-only leaf contains inline assembly for the closure safety test")]\n) : ""
   Iyi::Compiler::Source.new("reach_atomic.iyi", <<-IYI
     #{unsafe_mark}module spec/reach_atomic
@@ -90,7 +90,7 @@ private def atomic_class_var_source(seed : Int32, unused : Int32 = 1, opaque : B
     end
     class FirstHolder
       def self.reach_leaf : UInt64
-        #{asm}value = #{seed}_u64; value + 1_u64
+        #{asm_text}value = #{seed}_u64; value + 1_u64
       end
       def self.reach_seed : UInt64
         value = self.reach_leaf; value + 1_u64
@@ -145,6 +145,19 @@ private def isolated_atomic_reach(seed : Int32 = 1, unused : Int32 = 1, opaque :
   end
 end
 
+private def initializer_def(reach : Iyi::Stale::Reach, owner : String, name : String) : Iyi::Stale::Element
+  reach.elements.find do |element|
+    element.kind.def? &&
+      element.self_type.try { |type| type.instance_type.to_s } == owner &&
+      element.node.as?(Iyi::Def).try(&.name) == name
+  end.not_nil!
+end
+
+private def initializer_def_key(element : Iyi::Stale::Element) : String
+  target = element.node.as(Iyi::Def)
+  Iyi::Stale::CallPath.canonical_def_key(target, element.self_type || target.owner)
+end
+
 describe "Iyi::Stale S3e: Reach walk, cross-check, drop per EdgeKind (row 42)" do
   {% unless flag?(:win32) %}
     it "reaches Signal.wait class variable initializers without a mismatch" do
@@ -195,9 +208,7 @@ describe "Iyi::Stale S3e: Reach walk, cross-check, drop per EdgeKind (row 42)" d
         qualified = "Spec::ReachAtomic::#{owner}"
         reach.class_vars.count { |cv| cv.owner.to_s == qualified && cv.name == "@@waiting" }.should eq(1)
         ["reach_seed", "reach_leaf"].each do |name|
-          element = reach.elements.find do |candidate|
-            candidate.kind.def? && candidate.key.includes?(qualified) && candidate.node.as?(Iyi::Def).try(&.name) == name
-          end.not_nil!
+          element = initializer_def(reach, qualified, name)
           reach.def_names.includes?(element.key).should be_true
         end
       end
@@ -209,12 +220,10 @@ describe "Iyi::Stale S3e: Reach walk, cross-check, drop per EdgeKind (row 42)" d
     _, changed_reach, changed, _ = isolated_atomic_reach(seed: 2)
     _, _, unrelated, _ = isolated_atomic_reach(unused: 2)
     _, _, reversed, _ = isolated_atomic_reach(reverse: true)
-    leaf = original.elements.find do |element|
-      element.kind.def? && element.key.includes?("Spec::ReachAtomic::FirstHolder") &&
-        element.node.as?(Iyi::Def).try(&.name) == "reach_leaf"
-    end.not_nil!
-    changed_leaf = changed_reach.elements.find { |element| element.key == leaf.key }.not_nil!
-    first.element_digests[leaf.key].should_not eq(changed.element_digests[changed_leaf.key])
+    owner = "Spec::ReachAtomic::FirstHolder"
+    leaf = initializer_def(original, owner, "reach_leaf")
+    changed_leaf = initializer_def(changed_reach, owner, "reach_leaf")
+    first.element_digests[initializer_def_key(leaf)].should_not eq(changed.element_digests[initializer_def_key(changed_leaf)])
     first.hex_digest.should_not eq(changed.hex_digest)
     first.hex_digest.should eq(unrelated.hex_digest)
     first.hex_digest.should eq(reversed.hex_digest)
@@ -225,10 +234,7 @@ describe "Iyi::Stale S3e: Reach walk, cross-check, drop per EdgeKind (row 42)" d
     program, reach, _, _ = isolated_atomic_reach(opaque: true)
     pure = Iyi::Effects.closure_check(pure_program, pure_reach)
     pure.not_reusable.any? { |reason| reason.category == "opaque program construct" && reason.reason == "asm" }.should be_false
-    leaf = reach.elements.find do |element|
-      element.kind.def? && element.key.includes?("Spec::ReachAtomic::FirstHolder") &&
-        element.node.as?(Iyi::Def).try(&.name) == "reach_leaf"
-    end.not_nil!
+    leaf = initializer_def(reach, "Spec::ReachAtomic::FirstHolder", "reach_leaf")
     line = leaf.location.not_nil!.line_number + 1
     closure = Iyi::Effects.closure_check(program, reach)
     closure.not_reusable.any? do |reason|
