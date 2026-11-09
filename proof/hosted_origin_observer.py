@@ -13,25 +13,30 @@ Key Security Invariants:
 3. Pre-read metadata capture: captures complete stat metadata (st_dev, st_ino, st_atime_ns,
    st_mtime_ns, st_ctime_ns, st_nlink, size, mode, uid, gid) for EVERY candidate regular file
    BEFORE opening or reading ledger.jsonl or any file content.
-4. Held descriptors: keeps open file descriptors to all candidate regular files throughout
-   observation and raw evidence capture.
-5. Anti-aliasing: detects and rejects executable/ledger hardlink alias attacks where an
+4. Committed checkpoint: emits/freezes the pre-read initial census checkpoint to the private
+   controller pipe BEFORE reading ledger.jsonl. Traversal errors fail closed immediately without
+   reading ledger.
+5. Root qualification: candidate identities, reference binding, and raw evidence capture are
+   root-qualified (root_index, rel_path) to prevent cross-root collisions and preserve origin.
+6. Anti-aliasing: detects and rejects executable/ledger hardlink alias attacks where an
    adversary attempts to trigger atime updates on an executable by reading a hardlinked ledger.
-6. Reference rederivation: parses ledger only after initial metadata freeze; verifies launch
-   bindings (chain_id, driver, attempt, nonce); rejects missing, duplicate, foreign, symlink,
-   and special-file references; recomputes integer atime predicates from kernel observations.
-7. Retains raw executable bytes through held descriptors; compares post-read metadata to ensure
-   bytes and timestamps were not altered during capture.
-8. Length-delimited versioned protocol: streams framed output (b"IYOB" + v1) to inherited
-   controller-owned private pipe with no workload access.
-9. Exact limits: this observer is data-only. Collector observations alone CANNOT prove execution
-   against malicious read/utime without an independent kernel-level execution witness.
+7. C-trusted expected reference set: requires explicit C-trusted expected references. Rejects
+   omitted, missing, duplicate, foreign, symlink, and special-file references.
+8. Kernel observation verification: binds recorded mtime to kernel-observed mtime (rejecting
+   forged past timestamps in ledger). Recomputes integer atime advancement strictly from kernel
+   observations (obs_atime_ns > obs_mtime_ns). Requires all metadata fields in end records.
+9. Inode-deduplicated raw evidence: captures raw executable bytes once per physical (st_dev, st_ino)
+   via held descriptors, tracking hardlink aliases, and verifies post-read metadata immutability.
+10. Length-delimited versioned protocol: streams framed output (b"IYOB" + v1) to inherited
+    controller-owned private pipe with no workload access.
+11. Exact limits: this observer is data-only. Collector observations alone CANNOT prove execution
+    against malicious read/utime without an independent kernel-level execution witness.
 """
 
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import errno
 import hashlib
 import json
@@ -66,6 +71,8 @@ class LaunchBinding:
     attempt: int
     launch_id: str
     expected_nonce: str
+    expected_refs: Tuple[str, ...] = ()
+    allow_empty_expected_refs: bool = False
 
 
 @dataclass
@@ -169,19 +176,20 @@ def read_frame(stream: BinaryIO) -> Optional[Tuple[int, bytes]]:
 
 
 def encode_raw_file_frame(
+    root_index: int,
     rel_path: str,
     st_dev: int,
     st_ino: int,
     sha256_hex: str,
     file_bytes: bytes,
-    aliases: Optional[List[str]] = None,
+    aliases: Optional[List[Dict[str, Any]]] = None,
 ) -> bytes:
-    """Encode raw file payload for FRAME_RAW_FILE with optional hardlink aliases."""
+    """Encode raw file payload for FRAME_RAW_FILE with root qualification and hardlink aliases."""
     path_bytes = rel_path.encode("utf-8")
     aliases_bytes = json.dumps(aliases or []).encode("utf-8")
     sha_bytes = bytes.fromhex(sha256_hex)
     header = (
-        struct.pack(">HH", len(path_bytes), len(aliases_bytes))
+        struct.pack(">HHI", len(path_bytes), len(aliases_bytes), root_index)
         + path_bytes
         + aliases_bytes
         + struct.pack(">QQ32sI", st_dev, st_ino, sha_bytes, len(file_bytes))
@@ -191,16 +199,16 @@ def encode_raw_file_frame(
 
 def decode_raw_file_frame(payload: bytes) -> Dict[str, Any]:
     """Decode raw file payload from FRAME_RAW_FILE."""
-    if len(payload) < 4:
+    if len(payload) < 8:
         raise ValueError("Truncated raw file frame payload (no path/aliases length)")
-    path_len, aliases_len = struct.unpack(">HH", payload[:4])
-    offset = 4
+    path_len, aliases_len, root_index = struct.unpack(">HHI", payload[:8])
+    offset = 8
     if len(payload) < offset + path_len + aliases_len + 8 + 8 + 32 + 4:
         raise ValueError("Truncated raw file frame header")
     rel_path = payload[offset : offset + path_len].decode("utf-8")
     offset += path_len
     aliases_json = payload[offset : offset + aliases_len].decode("utf-8")
-    aliases: List[str] = json.loads(aliases_json) if aliases_json else []
+    aliases: List[Dict[str, Any]] = json.loads(aliases_json) if aliases_json else []
     offset += aliases_len
     st_dev, st_ino, sha_bytes, data_len = struct.unpack(">QQ32sI", payload[offset : offset + 52])
     offset += 52
@@ -208,6 +216,7 @@ def decode_raw_file_frame(payload: bytes) -> Dict[str, Any]:
     if len(file_bytes) != data_len:
         raise ValueError(f"Raw file data length mismatch: expected {data_len}, got {len(file_bytes)}")
     return {
+        "root_index": root_index,
         "rel_path": rel_path,
         "aliases": aliases,
         "st_dev": st_dev,
@@ -254,8 +263,7 @@ def walk_roots_descriptor_relative(
             root_dev = root_stat.st_dev
             visited_dirs: Set[Tuple[int, int]] = {(root_dev, root_stat.st_ino)}
 
-            # Stack for directory walk: (dir_fd, rel_dir_path, dir_ino)
-            # Root directory fd is kept open during its walk
+            # Stack for directory walk: (dir_fd, rel_dir_path)
             stack: List[Tuple[int, str]] = [(root_fd, "")]
 
             while stack:
@@ -329,7 +337,6 @@ def walk_roots_descriptor_relative(
                                 os.O_RDONLY | O_CLOEXEC | O_NOFOLLOW,
                                 dir_fd=curr_fd,
                             )
-                            # Verify fstat matches pre-open stat
                             fstat_res = os.fstat(file_fd)
                             if (fstat_res.st_dev, fstat_res.st_ino) != (entry_stat.st_dev, entry_stat.st_ino):
                                 os.close(file_fd)
@@ -389,6 +396,83 @@ def walk_roots_descriptor_relative(
     return candidates, specials, errors
 
 
+# Reference resolution helper with root qualification
+
+
+def resolve_reference_path(
+    ref_path: str,
+    roots: List[str],
+    candidate_by_root_and_rel: Dict[Tuple[int, str], CandidateFile],
+    specials_by_root_and_rel: Dict[Tuple[int, str], SpecialEntry],
+) -> Tuple[Optional[CandidateFile], Optional[SpecialEntry], Optional[str]]:
+    """
+    Resolve a reference path from ledger against pre-read census using root-qualified identities.
+    Returns (candidate_file, special_entry, error_reason).
+    """
+    if ".." in ref_path or "\0" in ref_path:
+        return None, None, f"reference {ref_path!r} contains path traversal components"
+
+    norm_path = os.path.normpath(ref_path)
+
+    # 1. Absolute path: match against permitted roots
+    if norm_path.startswith("/"):
+        matched_root: Optional[int] = None
+        matched_rel: Optional[str] = None
+        longest_match = -1
+        for root_idx, r in enumerate(roots):
+            abs_r = os.path.abspath(r)
+            if norm_path == abs_r:
+                if len(abs_r) > longest_match:
+                    longest_match = len(abs_r)
+                    matched_root = root_idx
+                    matched_rel = ""
+            elif norm_path.startswith(abs_r + "/"):
+                if len(abs_r) > longest_match:
+                    longest_match = len(abs_r)
+                    matched_root = root_idx
+                    matched_rel = norm_path[len(abs_r) + 1 :]
+
+        if matched_root is None or matched_rel is None:
+            return None, None, f"reference {ref_path!r} escapes permitted roots"
+
+        key = (matched_root, os.path.normpath(matched_rel))
+        if key in specials_by_root_and_rel:
+            return None, specials_by_root_and_rel[key], None
+        if key in candidate_by_root_and_rel:
+            return candidate_by_root_and_rel[key], None, None
+        return None, None, None
+
+    # 2. Relative path: look up across roots
+    if norm_path.startswith("../"):
+        return None, None, f"reference {ref_path!r} escapes permitted roots"
+
+    matching_candidate_roots = [
+        root_idx for root_idx in range(len(roots)) if (root_idx, norm_path) in candidate_by_root_and_rel
+    ]
+    matching_special_roots = [
+        root_idx for root_idx in range(len(roots)) if (root_idx, norm_path) in specials_by_root_and_rel
+    ]
+    all_matching = matching_candidate_roots + matching_special_roots
+
+    if len(all_matching) > 1:
+        return None, None, f"ambiguous relative reference {ref_path!r} matches multiple roots: {all_matching!r}"
+
+    if matching_special_roots:
+        return None, specials_by_root_and_rel[(matching_special_roots[0], norm_path)], None
+
+    if matching_candidate_roots:
+        return candidate_by_root_and_rel[(matching_candidate_roots[0], norm_path)], None, None
+
+    # Not found in any root; check default root 0
+    key = (0, norm_path)
+    if key in specials_by_root_and_rel:
+        return None, specials_by_root_and_rel[key], None
+    if key in candidate_by_root_and_rel:
+        return candidate_by_root_and_rel[key], None, None
+
+    return None, None, None
+
+
 # Ledger processing and reference rederivation
 
 
@@ -402,8 +486,8 @@ def process_ledger_and_references(
     """
     Parses ledger.jsonl AFTER initial metadata sampling is complete.
     Detects executable/ledger hardlink alias attacks.
-    Rederives monitored reference set, validates against pre-read census.
-    Evaluates numeric atime predicates from kernel stat values.
+    Rederives monitored reference set, validates against C-trusted expected set.
+    Evaluates numeric atime predicates strictly from kernel stat values.
     """
     reasons: List[str] = []
     checks: Dict[str, str] = {
@@ -419,12 +503,34 @@ def process_ledger_and_references(
         "raw_bytes_retained": "PASS",
     }
 
-    # 1. Locate candidate ledger file in pre-read census
+    # 0. Check expected reference set
+    if not binding.allow_empty_expected_refs and not binding.expected_refs:
+        reasons.append("empty expected reference set: controller must supply C-trusted expected references")
+        checks["no_missing_references"] = "FAIL"
+
+    # Index candidates and specials by (root_index, rel_path)
+    candidate_by_root_and_rel: Dict[Tuple[int, str], CandidateFile] = {}
+    candidate_by_ino: Dict[Tuple[int, int], List[CandidateFile]] = {}
+    for c in candidates:
+        norm = os.path.normpath(c.rel_path)
+        candidate_by_root_and_rel[(c.root_index, norm)] = c
+        candidate_by_ino.setdefault((c.st_dev, c.st_ino), []).append(c)
+
+    specials_by_root_and_rel: Dict[Tuple[int, str], SpecialEntry] = {
+        (s.root_index, os.path.normpath(s.rel_path)): s for s in specials
+    }
+
+    # 1. Locate candidate ledger file in pre-read census (root 0 preferred)
     ledger_file: Optional[CandidateFile] = None
     for c in candidates:
-        if c.rel_path == ledger_relpath or c.rel_path.endswith("/" + ledger_relpath):
+        if c.root_index == 0 and (c.rel_path == ledger_relpath or c.rel_path.endswith("/" + ledger_relpath)):
             ledger_file = c
             break
+    if ledger_file is None:
+        for c in candidates:
+            if c.rel_path == ledger_relpath or c.rel_path.endswith("/" + ledger_relpath):
+                ledger_file = c
+                break
 
     if ledger_file is None:
         reasons.append(f"ledger file {ledger_relpath!r} not found in pre-read candidate census")
@@ -432,18 +538,16 @@ def process_ledger_and_references(
         return {"checks": checks, "reasons": reasons, "status": "REJECT"}, reasons
 
     # 2. Check for Executable/Ledger Hardlink Alias Attack
-    # If ledger.jsonl shares an inode with any OTHER candidate regular file,
-    # reading ledger.jsonl would advance atime of that file!
     aliased_candidates = [
         c
         for c in candidates
-        if c.rel_path != ledger_file.rel_path
+        if (c.root_index, c.rel_path) != (ledger_file.root_index, ledger_file.rel_path)
         and (c.st_dev, c.st_ino) == (ledger_file.st_dev, ledger_file.st_ino)
     ]
     if aliased_candidates or ledger_file.st_nlink > 1:
-        alias_paths = [c.rel_path for c in aliased_candidates]
+        alias_paths = [f"[{c.root_index}]{c.rel_path}" for c in aliased_candidates]
         reasons.append(
-            f"executable/ledger hardlink alias attack detected: ledger {ledger_file.rel_path} "
+            f"executable/ledger hardlink alias attack detected: ledger [{ledger_file.root_index}]{ledger_file.rel_path} "
             f"shares inode {ledger_file.st_ino} with {alias_paths!r} (st_nlink={ledger_file.st_nlink})"
         )
         checks["no_hardlink_aliases"] = "FAIL"
@@ -528,24 +632,16 @@ def process_ledger_and_references(
             continue
         records.append(rec)
 
+    # Empty records check
+    if not records:
+        reasons.append("ledger contains zero records")
+        checks["no_missing_references"] = "FAIL"
+
     # 4. Rederive monitored references from records
-    # Map candidates by rel_path and by (st_dev, st_ino)
-    candidate_by_path: Dict[str, CandidateFile] = {}
-    candidate_by_ino: Dict[Tuple[int, int], List[CandidateFile]] = {}
-    for c in candidates:
-        candidate_by_path[c.rel_path] = c
-        # Normalize relative path without leading ./
-        norm = os.path.normpath(c.rel_path)
-        candidate_by_path[norm] = c
-        candidate_by_ino.setdefault((c.st_dev, c.st_ino), []).append(c)
-
-    specials_by_path: Dict[str, SpecialEntry] = {
-        os.path.normpath(s.rel_path): s for s in specials
-    }
-
     references: List[Dict[str, Any]] = []
-    seen_refs: Set[str] = set()
+    seen_refs: Set[Tuple[int, str]] = set()
     seen_inos: Set[Tuple[int, int]] = set()
+    satisfied_expected_refs: Set[str] = set()
 
     for rec_idx, rec in enumerate(records):
         phase = rec.get("phase")
@@ -557,61 +653,72 @@ def process_ledger_and_references(
         recorded_ino = rec.get("out_ino")
         recorded_mtime = rec.get("out_mtime_ns")
         recorded_atime_set = rec.get("atime_set_ns")
-        consumer = rec.get("consumer") if isinstance(rec.get("consumer"), dict) else {}
-        expected_sha256 = consumer.get("out_sha256")
+        consumer = rec.get("consumer")
+        inv_id = rec.get("inv", f"rec_{rec_idx}")
 
         if not out_ref:
-            # Not all records require an out_ref (e.g. non-output commands)
+            # If an expected reference is not supplied, it will fail the expected set check
             continue
 
-        # Check path escape in out_ref
-        norm_ref = os.path.normpath(out_ref)
-        if norm_ref.startswith("../") or norm_ref.startswith("/"):
-            # Check if absolute path matches inside a root
-            matched_root = False
-            for root_idx, r in enumerate(roots):
-                abs_r = os.path.abspath(r)
-                if norm_ref.startswith(abs_r + "/"):
-                    norm_ref = os.path.relpath(norm_ref, abs_r)
-                    matched_root = True
-                    break
-            if not matched_root and (norm_ref.startswith("/") or norm_ref.startswith("../")):
-                reasons.append(f"reference {out_ref!r} escapes permitted roots")
-                checks["no_foreign_references"] = "FAIL"
-                continue
+        # Enforce complete schema for monitored end records: reject omission
+        if recorded_ino is None:
+            reasons.append(f"record {inv_id} omitted required field out_ino")
+            checks["no_missing_references"] = "FAIL"
+            continue
+        if recorded_mtime is None:
+            reasons.append(f"record {inv_id} omitted required field out_mtime_ns")
+            checks["no_missing_references"] = "FAIL"
+            continue
+        if recorded_atime_set is None:
+            reasons.append(f"record {inv_id} omitted required field atime_set_ns")
+            checks["no_missing_references"] = "FAIL"
+            continue
+        if not isinstance(consumer, dict) or not consumer.get("out_sha256"):
+            reasons.append(f"record {inv_id} omitted required field consumer.out_sha256")
+            checks["raw_bytes_retained"] = "FAIL"
+            continue
 
-        # Check if reference is a symlink or special file
-        if norm_ref in specials_by_path:
-            sp = specials_by_path[norm_ref]
-            if sp.kind == "symlink":
+        expected_sha256 = consumer["out_sha256"]
+
+        # Resolve candidate reference with root qualification
+        candidate, special, err_reason = resolve_reference_path(
+            ref_path=out_ref,
+            roots=roots,
+            candidate_by_root_and_rel=candidate_by_root_and_rel,
+            specials_by_root_and_rel=specials_by_root_and_rel,
+        )
+
+        if err_reason:
+            reasons.append(err_reason)
+            checks["no_foreign_references"] = "FAIL"
+            continue
+
+        if special is not None:
+            if special.kind == "symlink":
                 reasons.append(f"monitored reference {out_ref!r} is a symlink")
                 checks["no_symlink_escapes"] = "FAIL"
             else:
-                reasons.append(f"monitored reference {out_ref!r} is a special file ({sp.kind})")
+                reasons.append(f"monitored reference {out_ref!r} is a special file ({special.kind})")
                 checks["no_symlink_escapes"] = "FAIL"
             continue
 
-        # Check pre-read candidate existence
-        candidate = candidate_by_path.get(norm_ref)
         if candidate is None:
             reasons.append(f"monitored reference {out_ref!r} was missing from pre-read census")
             checks["no_missing_references"] = "FAIL"
             continue
 
-        # Check duplicate reference usage
-        if norm_ref in seen_refs:
-            reasons.append(f"duplicate reference detected in ledger: {norm_ref!r}")
+        # Check duplicate reference usage across qualified root identities
+        ref_key = (candidate.root_index, candidate.rel_path)
+        if ref_key in seen_refs:
+            reasons.append(f"duplicate reference detected in ledger: [{candidate.root_index}]{candidate.rel_path}")
             checks["no_duplicate_references"] = "FAIL"
-        seen_refs.add(norm_ref)
+        seen_refs.add(ref_key)
 
         ref_ino_key = (candidate.st_dev, candidate.st_ino)
-        if ref_ino_key in seen_inos:
-            # Different paths sharing inode is legitimate hardlink only if one is out and one is out_ref
-            pass
         seen_inos.add(ref_ino_key)
 
         # Check physical inode against recorded inode
-        if recorded_ino is not None and candidate.st_ino != recorded_ino:
+        if candidate.st_ino != recorded_ino:
             reasons.append(
                 f"reference {out_ref!r} physical inode {candidate.st_ino} "
                 f"!= recorded {recorded_ino}"
@@ -625,16 +732,15 @@ def process_ledger_and_references(
             )
             checks["no_hardlink_aliases"] = "FAIL"
 
-        # Check hardlink relationship if out is present
+        # Check hardlink relationship if out target is present
         hardlink_verified = False
         if out_target:
-            norm_out = os.path.normpath(out_target)
-            for r in roots:
-                abs_r = os.path.abspath(r)
-                if norm_out.startswith(abs_r + "/"):
-                    norm_out = os.path.relpath(norm_out, abs_r)
-                    break
-            out_cand = candidate_by_path.get(norm_out)
+            out_cand, out_special, out_err = resolve_reference_path(
+                ref_path=out_target,
+                roots=roots,
+                candidate_by_root_and_rel=candidate_by_root_and_rel,
+                specials_by_root_and_rel=specials_by_root_and_rel,
+            )
             if out_cand:
                 if (out_cand.st_dev, out_cand.st_ino) == (candidate.st_dev, candidate.st_ino):
                     hardlink_verified = True
@@ -644,22 +750,30 @@ def process_ledger_and_references(
                     )
                     checks["no_hardlink_aliases"] = "FAIL"
 
-        # Numeric atime advancement check from integer nanoseconds
-        atime_adv = False
-        atime_delta_ns = 0
-        if isinstance(recorded_mtime, int):
-            atime_delta_ns = candidate.st_atime_ns - recorded_mtime
-            if candidate.st_atime_ns > recorded_mtime:
-                atime_adv = True
-            else:
-                reasons.append(
-                    f"reference {out_ref!r} atime {candidate.st_atime_ns} <= mtime {recorded_mtime}"
-                )
-                checks["numeric_atime_predicates"] = "FAIL"
-
-        if isinstance(recorded_atime_set, int) and candidate.st_atime_ns <= recorded_atime_set:
+        # Bind recorded mtime to kernel-observed mtime (reject forged old timestamps in ledger)
+        if candidate.st_mtime_ns != recorded_mtime:
             reasons.append(
-                f"reference {out_ref!r} atime {candidate.st_atime_ns} <= atime_set_ns {recorded_atime_set}"
+                f"reference {out_ref!r} recorded out_mtime_ns {recorded_mtime} "
+                f"!= kernel observed mtime {candidate.st_mtime_ns}"
+            )
+            checks["numeric_atime_predicates"] = "FAIL"
+
+        # Numeric atime advancement check directly from KERNEL observations
+        atime_adv = False
+        atime_delta_ns = candidate.st_atime_ns - candidate.st_mtime_ns
+        if candidate.st_atime_ns > candidate.st_mtime_ns:
+            atime_adv = True
+        else:
+            reasons.append(
+                f"reference {out_ref!r} kernel atime {candidate.st_atime_ns} "
+                f"<= kernel mtime {candidate.st_mtime_ns}"
+            )
+            checks["numeric_atime_predicates"] = "FAIL"
+
+        if candidate.st_atime_ns <= recorded_atime_set:
+            reasons.append(
+                f"reference {out_ref!r} kernel atime {candidate.st_atime_ns} "
+                f"<= recorded atime_set_ns {recorded_atime_set}"
             )
             checks["numeric_atime_predicates"] = "FAIL"
 
@@ -676,7 +790,7 @@ def process_ledger_and_references(
                         break
                     file_raw += chunk
                 actual_sha256 = hashlib.sha256(file_raw).hexdigest()
-                if expected_sha256 and actual_sha256 != expected_sha256:
+                if actual_sha256 != expected_sha256:
                     sha256_match = False
                     reasons.append(
                         f"reference {out_ref!r} sha256 mismatch: expected {expected_sha256}, got {actual_sha256}"
@@ -686,13 +800,25 @@ def process_ledger_and_references(
                 reasons.append(f"failed to read raw bytes from {candidate.rel_path}: {e}")
                 checks["raw_bytes_retained"] = "FAIL"
 
+        # Match against expected reference set
+        for exp in binding.expected_refs:
+            norm_exp = os.path.normpath(exp)
+            if (
+                norm_exp == out_ref
+                or norm_exp == candidate.rel_path
+                or (out_target and norm_exp == out_target)
+                or (out_target and norm_exp == os.path.normpath(out_target))
+            ):
+                satisfied_expected_refs.add(exp)
+
         references.append(
             {
-                "inv": rec.get("inv", f"rec_{rec_idx}"),
+                "inv": inv_id,
                 "command": rec.get("command"),
                 "out": out_target,
                 "out_ref": out_ref,
-                "norm_ref": norm_ref,
+                "matched_root": candidate.root_index,
+                "matched_rel": candidate.rel_path,
                 "recorded_ino": recorded_ino,
                 "recorded_mtime_ns": recorded_mtime,
                 "recorded_atime_set_ns": recorded_atime_set,
@@ -708,10 +834,18 @@ def process_ledger_and_references(
             }
         )
 
+    # 5. Check if all C-trusted expected references were satisfied
+    if binding.expected_refs:
+        unsatisfied = set(binding.expected_refs) - satisfied_expected_refs
+        if unsatisfied:
+            reasons.append(f"required expected references not satisfied: {sorted(unsatisfied)!r}")
+            checks["no_missing_references"] = "FAIL"
+
     status = "PASS" if not reasons else "REJECT"
 
     ledger_summary = {
         "rel_path": ledger_file.rel_path,
+        "root_index": ledger_file.root_index,
         "st_dev": ledger_file.st_dev,
         "st_ino": ledger_file.st_ino,
         "st_size": ledger_file.st_size,
@@ -735,7 +869,7 @@ def process_ledger_and_references(
 
 def collect_raw_file_bytes(
     candidates: List[CandidateFile],
-    monitored_refs: Set[str],
+    monitored_keys: Set[Tuple[int, str]],
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
     """
     Reads actual raw bytes from held descriptors for monitored candidates.
@@ -749,21 +883,20 @@ def collect_raw_file_bytes(
 
     for c in candidates:
         norm_path = os.path.normpath(c.rel_path)
-        # Capture raw bytes for monitored files or executables
-        if norm_path not in monitored_refs and not c.rel_path.endswith(".ref"):
-            # Still capture if it is an executable or candidate reference
+        c_key = (c.root_index, norm_path)
+        if c_key not in monitored_keys and not c.rel_path.endswith(".ref"):
             continue
 
         ino_key = (c.st_dev, c.st_ino)
         if ino_key in captured_by_ino:
-            # Hardlink alias: retain path in aliases list without duplicating raw bytes
             entry = captured_by_ino[ino_key]
-            if c.rel_path not in entry["aliases"] and c.rel_path != entry["rel_path"]:
-                entry["aliases"].append(c.rel_path)
+            alias_entry = {"root_index": c.root_index, "rel_path": c.rel_path}
+            if alias_entry not in entry["aliases"] and (c.root_index, c.rel_path) != (entry["root_index"], entry["rel_path"]):
+                entry["aliases"].append(alias_entry)
             continue
 
         if c.fd is None:
-            errors.append(f"held descriptor missing for {c.rel_path}")
+            errors.append(f"held descriptor missing for [{c.root_index}]{c.rel_path}")
             continue
 
         try:
@@ -778,19 +911,21 @@ def collect_raw_file_bytes(
             # Post-read stat check
             post_stat = os.fstat(c.fd)
             if post_stat.st_ino != c.st_ino or post_stat.st_dev != c.st_dev:
-                errors.append(f"file inode changed during read: {c.rel_path}")
+                errors.append(f"file inode changed during read: [{c.root_index}]{c.rel_path}")
                 continue
             if post_stat.st_size != len(content):
                 errors.append(
-                    f"file size changed during read: {c.rel_path} stat={post_stat.st_size} read={len(content)}"
+                    f"file size changed during read: [{c.root_index}]{c.rel_path} "
+                    f"stat={post_stat.st_size} read={len(content)}"
                 )
                 continue
             if getattr(post_stat, "st_mtime_ns", int(post_stat.st_mtime * 1e9)) != c.st_mtime_ns:
-                errors.append(f"file mtime changed during read: {c.rel_path}")
+                errors.append(f"file mtime changed during read: [{c.root_index}]{c.rel_path}")
                 continue
 
             sha256_hex = hashlib.sha256(content).hexdigest()
             raw_entry = {
+                "root_index": c.root_index,
                 "rel_path": c.rel_path,
                 "aliases": [],
                 "st_dev": c.st_dev,
@@ -802,7 +937,7 @@ def collect_raw_file_bytes(
             captured_by_ino[ino_key] = raw_entry
             raw_files.append(raw_entry)
         except OSError as e:
-            errors.append(f"failed to read file bytes for {c.rel_path}: {e}")
+            errors.append(f"failed to read file bytes for [{c.root_index}]{c.rel_path}: {e}")
 
     return raw_files, errors
 
@@ -816,22 +951,91 @@ def run_origin_observer(
     ledger_relpath: str = "ledger.jsonl",
     output_stream: Optional[BinaryIO] = None,
     capture_raw_bytes: bool = True,
+    checkpoint_callback: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Main entrypoint for origin observation.
     Executes sequence:
     1. Pre-read descriptor-relative walk and fstat sampling of all candidate regular files.
-    2. Commit initial metadata census before reading ledger.
-    3. Read and parse ledger descriptor-relatively; detect hardlink aliases.
-    4. Validate references against pre-read census.
-    5. Collect raw executable bytes from held descriptors.
-    6. Emit versioned framed stream to output_stream.
-    7. Close held descriptors.
+    2. Commit and emit initial metadata census checkpoint BEFORE reading ledger.
+    3. If traversal errors occurred, fail closed immediately without reading ledger.
+    4. Read and parse ledger descriptor-relatively; detect hardlink aliases.
+    5. Validate references against C-trusted expected set and kernel observations.
+    6. Collect raw executable bytes from held descriptors.
+    7. Emit versioned framed stream to output_stream.
+    8. Close held descriptors.
     """
     start_time_ns = time.time_ns()
     candidates, specials, walk_errors = walk_roots_descriptor_relative(roots)
 
+    # 1. Build committed initial census checkpoint document
+    checkpoint_doc: Dict[str, Any] = {
+        "v": PROTOCOL_VERSION,
+        "kind": "iyi-origin-observer-initial-census",
+        "launch_binding": {
+            "chain_id": binding.chain_id,
+            "driver": binding.driver,
+            "attempt": binding.attempt,
+            "launch_id": binding.launch_id,
+            "expected_nonce": binding.expected_nonce,
+            "expected_refs": list(binding.expected_refs),
+        },
+        "observer_identity": {
+            "uid": os.getuid() if hasattr(os, "getuid") else -1,
+            "gid": os.getgid() if hasattr(os, "getgid") else -1,
+            "pid": os.getpid(),
+            "timestamp_ns": start_time_ns,
+        },
+        "roots": [
+            {
+                "root_index": idx,
+                "path": os.path.abspath(r),
+                "candidate_files": sum(1 for c in candidates if c.root_index == idx),
+                "specials": sum(1 for s in specials if s.root_index == idx),
+            }
+            for idx, r in enumerate(roots)
+        ],
+        "initial_census": [c.to_dict() for c in candidates],
+        "specials": [s.to_dict() for s in specials],
+        "traversal_errors": walk_errors,
+    }
+
+    # 2. Commit and flush initial census frame BEFORE opening or reading ledger
+    if output_stream is not None:
+        write_header(output_stream)
+        meta_bytes = json.dumps(checkpoint_doc, indent=2, sort_keys=True).encode("utf-8")
+        write_frame(output_stream, FRAME_METADATA, meta_bytes)
+        output_stream.flush()
+
+    if checkpoint_callback is not None:
+        checkpoint_callback(checkpoint_doc)
+
+    # 3. Traversal errors fail closed immediately: NEVER proceed to read ledger!
+    if walk_errors:
+        term_doc = {
+            "status": "REJECT",
+            "reasons": walk_errors,
+            "timestamp_ns": time.time_ns(),
+            "verdict": {
+                "status": "REJECT",
+                "reasons": walk_errors,
+                "checks": {"traversal": "FAIL"},
+            },
+        }
+        if output_stream is not None:
+            write_frame(output_stream, FRAME_TERMINATION, json.dumps(term_doc, sort_keys=True).encode("utf-8"))
+        for c in candidates:
+            if c.fd is not None:
+                try:
+                    os.close(c.fd)
+                except OSError:
+                    pass
+                c.fd = None
+        checkpoint_doc["verdict"] = term_doc["verdict"]
+        return checkpoint_doc
+
     try:
+        # 4. Only after initial census commit: read and validate ledger
         proc_res, proc_errors = process_ledger_and_references(
             candidates=candidates,
             specials=specials,
@@ -840,80 +1044,50 @@ def run_origin_observer(
             binding=binding,
         )
 
-        all_errors = walk_errors + proc_errors
+        all_errors = list(proc_errors)
 
-        # Determine monitored references
-        monitored_paths: Set[str] = set()
+        # Monitored references to capture
+        monitored_keys: Set[Tuple[int, str]] = set()
         for ref in proc_res.get("references", []):
-            if ref.get("norm_ref"):
-                monitored_paths.add(ref["norm_ref"])
-            if ref.get("out"):
-                monitored_paths.add(os.path.normpath(ref["out"]))
+            if "matched_root" in ref and "matched_rel" in ref:
+                monitored_keys.add((ref["matched_root"], ref["matched_rel"]))
 
         raw_files: List[Dict[str, Any]] = []
         if capture_raw_bytes and proc_res.get("status") == "PASS":
-            raw_files, raw_errors = collect_raw_file_bytes(candidates, monitored_paths)
+            raw_files, raw_errors = collect_raw_file_bytes(candidates, monitored_keys)
             all_errors.extend(raw_errors)
 
         final_status = "PASS" if not all_errors and proc_res.get("status") == "PASS" else "REJECT"
 
-        metadata_doc: Dict[str, Any] = {
-            "v": PROTOCOL_VERSION,
-            "kind": "iyi-origin-observer-metadata",
-            "launch_binding": {
-                "chain_id": binding.chain_id,
-                "driver": binding.driver,
-                "attempt": binding.attempt,
-                "launch_id": binding.launch_id,
-                "expected_nonce": binding.expected_nonce,
-            },
-            "observer_identity": {
-                "uid": os.getuid() if hasattr(os, "getuid") else -1,
-                "gid": os.getgid() if hasattr(os, "getgid") else -1,
-                "pid": os.getpid(),
-                "timestamp_ns": start_time_ns,
-            },
-            "roots": [
-                {
-                    "path": os.path.abspath(r),
-                    "candidate_files": sum(1 for c in candidates if c.root_index == idx),
-                }
-                for idx, r in enumerate(roots)
-            ],
-            "initial_census": [c.to_dict() for c in candidates],
-            "specials": [s.to_dict() for s in specials],
-            "ledger": proc_res.get("ledger"),
-            "references": proc_res.get("references", []),
-            "raw_files_manifest": [
-                {
-                    "rel_path": rf["rel_path"],
-                    "aliases": rf.get("aliases", []),
-                    "st_dev": rf["st_dev"],
-                    "st_ino": rf["st_ino"],
-                    "size": rf["size"],
-                    "sha256": rf["sha256"],
-                }
-                for rf in raw_files
-            ],
-            "verdict": {
-                "status": final_status,
-                "reasons": all_errors,
-                "checks": proc_res.get("checks", {}),
-            },
-            "limitations": [
-                "Data-only observer: cannot distinguish authentic kernel execution from "
-                "read/utime without an independent parent execution witness."
-            ],
+        checkpoint_doc["ledger"] = proc_res.get("ledger")
+        checkpoint_doc["references"] = proc_res.get("references", [])
+        checkpoint_doc["raw_files_manifest"] = [
+            {
+                "root_index": rf["root_index"],
+                "rel_path": rf["rel_path"],
+                "aliases": rf.get("aliases", []),
+                "st_dev": rf["st_dev"],
+                "st_ino": rf["st_ino"],
+                "size": rf["size"],
+                "sha256": rf["sha256"],
+            }
+            for rf in raw_files
+        ]
+        checkpoint_doc["verdict"] = {
+            "status": final_status,
+            "reasons": all_errors,
+            "checks": proc_res.get("checks", {}),
         }
+        checkpoint_doc["limitations"] = [
+            "Data-only observer: cannot distinguish authentic kernel execution from "
+            "read/utime without an independent parent execution witness."
+        ]
 
-        # Write wire protocol if stream provided
+        # Emit raw file frames and termination
         if output_stream is not None:
-            write_header(output_stream)
-            meta_bytes = json.dumps(metadata_doc, indent=2, sort_keys=True).encode("utf-8")
-            write_frame(output_stream, FRAME_METADATA, meta_bytes)
-
             for rf in raw_files:
                 frame_payload = encode_raw_file_frame(
+                    root_index=rf["root_index"],
                     rel_path=rf["rel_path"],
                     st_dev=rf["st_dev"],
                     st_ino=rf["st_ino"],
@@ -927,11 +1101,12 @@ def run_origin_observer(
                 "status": final_status,
                 "reasons": all_errors,
                 "timestamp_ns": time.time_ns(),
+                "verdict": checkpoint_doc["verdict"],
             }
             term_bytes = json.dumps(term_doc, sort_keys=True).encode("utf-8")
             write_frame(output_stream, FRAME_TERMINATION, term_bytes)
 
-        return metadata_doc
+        return checkpoint_doc
 
     finally:
         # Close all held file descriptors
@@ -981,6 +1156,9 @@ def parse_observer_stream(
     if termination_doc is None:
         raise ValueError("Observer stream missing FRAME_TERMINATION")
 
+    if "verdict" in termination_doc:
+        metadata_doc["verdict"] = termination_doc["verdict"]
+
     return metadata_doc, raw_files, termination_doc
 
 
@@ -995,6 +1173,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--attempt", type=int, default=1, help="Attempt number (default 1)")
     parser.add_argument("--launch-id", required=True, help="Launch identity / container ID")
     parser.add_argument("--expected-nonce", required=True, help="Expected ledger nonce")
+    parser.add_argument("--expected-ref", action="append", default=[], help="Expected reference path (repeatable)")
+    parser.add_argument("--expected-refs-file", default=None, help="JSON file containing list of expected reference paths")
+    parser.add_argument("--allow-empty-expected-refs", action="store_true", help="Permit empty expected reference set (for testing)")
     parser.add_argument("--ledger-relpath", default="ledger.jsonl", help="Relative path to ledger within root")
     parser.add_argument("--output-fd", type=int, default=None, help="File descriptor for length-delimited output pipe")
     parser.add_argument("--output-file", default=None, help="File path for length-delimited output (alternative to fd)")
@@ -1002,12 +1183,27 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     args = parser.parse_args(argv)
 
+    expected_refs = list(args.expected_ref)
+    if args.expected_refs_file:
+        try:
+            with open(args.expected_refs_file, "r", encoding="utf-8") as f:
+                refs_data = json.load(f)
+                if isinstance(refs_data, list):
+                    expected_refs.extend(str(x) for x in refs_data)
+                elif isinstance(refs_data, dict):
+                    expected_refs.extend(str(x) for x in refs_data.keys())
+        except Exception as e:
+            print(f"Error reading expected_refs_file: {e}", file=sys.stderr)
+            return 1
+
     binding = LaunchBinding(
         chain_id=args.chain_id,
         driver=args.driver,
         attempt=args.attempt,
         launch_id=args.launch_id,
         expected_nonce=args.expected_nonce,
+        expected_refs=tuple(expected_refs),
+        allow_empty_expected_refs=args.allow_empty_expected_refs,
     )
 
     out_stream: BinaryIO

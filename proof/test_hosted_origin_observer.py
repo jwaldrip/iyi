@@ -3,15 +3,15 @@
 proof/test_hosted_origin_observer.py
 
 Focused unit and adversarial fixture tests for proof/hosted_origin_observer.py.
-Verifies all security invariants:
-1. Wire protocol framing and roundtrip.
-2. Normal legitimate execution flow: pre-read census, ledger validation, reference binding,
-   atime advancement, raw executable bytes capture.
+Verifies all security invariants and addresses ReviewFixtureIsolation P1 findings:
+1. Wire protocol framing and roundtrip with root-qualified identities and aliases.
+2. Simulated positive flow with advanced atime: pre-read census, real W ledger schema,
+   reference binding, kernel atime verification, raw executable bytes capture.
 3. Adversarial fixture 1: Executable/ledger hardlink alias attack detection.
 4. Adversarial fixture 2: Symlink escape detection (O_NOFOLLOW descriptor traversal).
 5. Adversarial fixture 3: Path traversal escape (../ or foreign root escapes).
 6. Adversarial fixture 4: Missing reference rejection.
-7. Adversarial fixture 5: Duplicate reference rejection.
+7. Adversarial fixture 5: Duplicate reference rejection across root identities.
 8. Adversarial fixture 6: Foreign driver/nonce rejection.
 9. Adversarial fixture 7: Inode mismatch rejection.
 10. Adversarial fixture 8: Unexecuted reference (atime not advanced) rejection.
@@ -20,6 +20,10 @@ Verifies all security invariants:
 13. Metadata ordering proof: candidate fstat sampling occurs strictly before ledger read.
 14. Preservation invariant: unexecuted references are not upgraded by subsequent archive reads.
 15. Explicit reporting of observer limitations.
+16. P1-1: Rejection of omitted required references (empty records or missing out_ref with C-trusted expected set).
+17. P1-2: Rejection of forged old ledger mtime bypassing atime (kernel vs kernel observation).
+18. P1-3: Multi-root relative path collision prevention and root-qualified identity preservation.
+19. P1-4: Checkpoint commitment to pipe before ledger read and traversal error fail-closed enforcement.
 """
 
 from __future__ import annotations
@@ -67,6 +71,8 @@ class TestHostedOriginObserver(unittest.TestCase):
             attempt=1,
             launch_id="cid_container_456",
             expected_nonce="nonce_789",
+            expected_refs=("t/prog.ref",),
+            allow_empty_expected_refs=False,
         )
 
     def tearDown(self) -> None:
@@ -101,11 +107,13 @@ class TestHostedOriginObserver(unittest.TestCase):
         write_frame(buf, FRAME_METADATA, meta_payload)
 
         raw_payload = encode_raw_file_frame(
+            root_index=0,
             rel_path="t/prog",
             st_dev=123,
             st_ino=456,
             sha256_hex=hashlib.sha256(b"binary_payload").hexdigest(),
             file_bytes=b"binary_payload",
+            aliases=[{"root_index": 0, "rel_path": "t/prog.ref"}],
         )
         write_frame(buf, FRAME_RAW_FILE, raw_payload)
 
@@ -117,8 +125,10 @@ class TestHostedOriginObserver(unittest.TestCase):
 
         self.assertEqual(meta_doc["test"], "data")
         self.assertEqual(len(raw_files), 1)
+        self.assertEqual(raw_files[0]["root_index"], 0)
         self.assertEqual(raw_files[0]["rel_path"], "t/prog")
         self.assertEqual(raw_files[0]["file_bytes"], b"binary_payload")
+        self.assertEqual(raw_files[0]["aliases"], [{"root_index": 0, "rel_path": "t/prog.ref"}])
         self.assertEqual(term_doc["status"], "PASS")
 
     # 2. Simulated positive flow with advanced atime (simulated execution, not proof of exec)
@@ -146,23 +156,39 @@ class TestHostedOriginObserver(unittest.TestCase):
             "attempt": self.binding.attempt,
             "chain_id": self.binding.chain_id,
         }
-        record = {
+        begin_rec = {
             "v": 1,
             "kind": "record",
+            "t_ns": 100,
+            "nonce": self.binding.expected_nonce,
+            "driver": self.binding.driver,
+            "phase": "begin",
+            "inv": "inv_1",
+            "command": "build",
+            "output": "t/prog",
+        }
+        end_rec = {
+            "v": 1,
+            "kind": "record",
+            "t_ns": 200,
             "nonce": self.binding.expected_nonce,
             "driver": self.binding.driver,
             "phase": "end",
             "inv": "inv_1",
-            "command": "run",
+            "command": "build",
+            "output": "t/prog",
+            "producer": {"argv": ["build"], "rc": 0, "mods_count": 1},
+            "consumer": {"argv": ["consumer"], "rc": 0, "out_written": True, "out_sha256": prog_sha256},
             "out": "t/prog",
             "out_ref": "t/prog.ref",
             "out_ino": st.st_ino,
             "out_mtime_ns": mtime_ns,
             "atime_set_ns": mtime_ns - 1_000_000,
-            "consumer": {"rc": 0, "out_sha256": prog_sha256},
-            "run": {"rc": 0, "argv": ["t/prog"]},
+            "e3_error": None,
+            "interrupted": False,
+            "exit": 0,
         }
-        self._write_ledger(header, [record])
+        self._write_ledger(header, [begin_rec, end_rec])
 
         out_pipe = io.BytesIO()
         doc = run_origin_observer(
@@ -187,12 +213,11 @@ class TestHostedOriginObserver(unittest.TestCase):
         out_pipe.seek(0)
         meta_parsed, raw_files, term_parsed = parse_observer_stream(out_pipe)
         self.assertEqual(term_parsed["status"], "PASS")
-        # Exactly one raw file entry per physical inode; hardlink alias retained in aliases list
         self.assertEqual(len(raw_files), 1)
         self.assertEqual(raw_files[0]["file_bytes"], prog_bytes)
-        self.assertIn("t/prog.ref", raw_files[0]["aliases"])
+        self.assertEqual(raw_files[0]["aliases"], [{"root_index": 0, "rel_path": "t/prog.ref"}])
         self.assertEqual(len(doc["raw_files_manifest"]), 1)
-        self.assertEqual(doc["raw_files_manifest"][0]["aliases"], ["t/prog.ref"])
+
     # 3. Adversarial fixture: Executable/ledger hardlink alias attack
 
     def test_03_adversarial_hardlink_alias_attack(self) -> None:
@@ -204,14 +229,22 @@ class TestHostedOriginObserver(unittest.TestCase):
         prog_bytes = b"#!/bin/sh\necho malicious\n"
         prog_path = self._write_file("t/prog", prog_bytes)
 
-        # Create ledger as hardlink to prog!
         ledger_path = os.path.join(self.root_dir, "ledger.jsonl")
         os.link(prog_path, ledger_path)
+
+        binding = LaunchBinding(
+            chain_id=self.binding.chain_id,
+            driver=self.binding.driver,
+            attempt=self.binding.attempt,
+            launch_id=self.binding.launch_id,
+            expected_nonce=self.binding.expected_nonce,
+            expected_refs=("t/prog",),
+        )
 
         out_pipe = io.BytesIO()
         doc = run_origin_observer(
             roots=[self.root_dir],
-            binding=self.binding,
+            binding=binding,
             ledger_relpath="ledger.jsonl",
             output_stream=out_pipe,
             capture_raw_bytes=True,
@@ -251,6 +284,10 @@ class TestHostedOriginObserver(unittest.TestCase):
             "phase": "end",
             "out": "t/prog",
             "out_ref": "t/prog.ref",
+            "out_ino": 12345,
+            "out_mtime_ns": 1000,
+            "atime_set_ns": 500,
+            "consumer": {"out_sha256": "abc"},
         }
         self._write_ledger(header, [record])
 
@@ -271,8 +308,7 @@ class TestHostedOriginObserver(unittest.TestCase):
         Ledger references out_ref escaping the permitted root via '../'.
         Observer MUST reject path traversal escape.
         """
-        prog_bytes = b"echo escape"
-        self._write_file("t/prog", prog_bytes)
+        self._write_file("t/prog", b"echo escape")
 
         header = {
             "v": 1,
@@ -290,18 +326,31 @@ class TestHostedOriginObserver(unittest.TestCase):
             "phase": "end",
             "out": "t/prog",
             "out_ref": "../escaped_file.ref",
+            "out_ino": 12345,
+            "out_mtime_ns": 1000,
+            "atime_set_ns": 500,
+            "consumer": {"out_sha256": "abc"},
         }
         self._write_ledger(header, [record])
 
+        binding = LaunchBinding(
+            chain_id=self.binding.chain_id,
+            driver=self.binding.driver,
+            attempt=self.binding.attempt,
+            launch_id=self.binding.launch_id,
+            expected_nonce=self.binding.expected_nonce,
+            expected_refs=("../escaped_file.ref",),
+        )
+
         doc = run_origin_observer(
             roots=[self.root_dir],
-            binding=self.binding,
+            binding=binding,
             ledger_relpath="ledger.jsonl",
         )
 
         self.assertEqual(doc["verdict"]["status"], "REJECT")
         self.assertEqual(doc["verdict"]["checks"]["no_foreign_references"], "FAIL")
-        self.assertTrue(any("escapes permitted roots" in r for r in doc["verdict"]["reasons"]))
+        self.assertTrue(any("escapes permitted roots" in r or "path traversal" in r for r in doc["verdict"]["reasons"]))
 
     # 6. Adversarial fixture: Missing reference rejection
 
@@ -328,12 +377,25 @@ class TestHostedOriginObserver(unittest.TestCase):
             "phase": "end",
             "out": "t/prog",
             "out_ref": "t/missing_file.ref",
+            "out_ino": 12345,
+            "out_mtime_ns": 1000,
+            "atime_set_ns": 500,
+            "consumer": {"out_sha256": "abc"},
         }
         self._write_ledger(header, [record])
 
+        binding = LaunchBinding(
+            chain_id=self.binding.chain_id,
+            driver=self.binding.driver,
+            attempt=self.binding.attempt,
+            launch_id=self.binding.launch_id,
+            expected_nonce=self.binding.expected_nonce,
+            expected_refs=("t/missing_file.ref",),
+        )
+
         doc = run_origin_observer(
             roots=[self.root_dir],
-            binding=self.binding,
+            binding=binding,
             ledger_relpath="ledger.jsonl",
         )
 
@@ -348,9 +410,14 @@ class TestHostedOriginObserver(unittest.TestCase):
         Ledger claims the same out_ref in multiple distinct end records.
         Observer MUST reject duplicate references.
         """
-        prog_path = self._write_file("t/prog", b"binary")
+        mtime_ns = 1_000_000_000_000_000_000
+        atime_ns = 1_000_000_001_000_000_000
+        prog_path = self._write_file("t/prog", b"binary", mtime_ns=mtime_ns, atime_ns=atime_ns)
         ref_path = os.path.join(self.root_dir, "t/prog.ref")
         os.link(prog_path, ref_path)
+        os.utime(ref_path, ns=(atime_ns, mtime_ns))
+        st = os.stat(prog_path)
+        sha = hashlib.sha256(b"binary").hexdigest()
 
         header = {
             "v": 1,
@@ -369,6 +436,10 @@ class TestHostedOriginObserver(unittest.TestCase):
             "inv": "inv_1",
             "out": "t/prog",
             "out_ref": "t/prog.ref",
+            "out_ino": st.st_ino,
+            "out_mtime_ns": mtime_ns,
+            "atime_set_ns": mtime_ns - 1000,
+            "consumer": {"out_sha256": sha},
         }
         r2 = {
             "v": 1,
@@ -379,6 +450,10 @@ class TestHostedOriginObserver(unittest.TestCase):
             "inv": "inv_2",
             "out": "t/prog",
             "out_ref": "t/prog.ref",
+            "out_ino": st.st_ino,
+            "out_mtime_ns": mtime_ns,
+            "atime_set_ns": mtime_ns - 1000,
+            "consumer": {"out_sha256": sha},
         }
         self._write_ledger(header, [r1, r2])
 
@@ -426,9 +501,13 @@ class TestHostedOriginObserver(unittest.TestCase):
         Workload records out_ino in ledger that does not match physical inode.
         Observer MUST reject inode spoofing.
         """
-        prog_path = self._write_file("t/prog", b"binary")
+        mtime_ns = 1000
+        atime_ns = 2000
+        prog_path = self._write_file("t/prog", b"binary", mtime_ns=mtime_ns, atime_ns=atime_ns)
         ref_path = os.path.join(self.root_dir, "t/prog.ref")
         os.link(prog_path, ref_path)
+        os.utime(ref_path, ns=(atime_ns, mtime_ns))
+        sha = hashlib.sha256(b"binary").hexdigest()
 
         header = {
             "v": 1,
@@ -447,6 +526,9 @@ class TestHostedOriginObserver(unittest.TestCase):
             "out": "t/prog",
             "out_ref": "t/prog.ref",
             "out_ino": 99999999,  # fake inode
+            "out_mtime_ns": mtime_ns,
+            "atime_set_ns": mtime_ns - 100,
+            "consumer": {"out_sha256": sha},
         }
         self._write_ledger(header, [record])
 
@@ -475,6 +557,7 @@ class TestHostedOriginObserver(unittest.TestCase):
         os.utime(ref_path, ns=(atime_ns, mtime_ns))
 
         st = os.stat(prog_path)
+        sha = hashlib.sha256(b"binary").hexdigest()
 
         header = {
             "v": 1,
@@ -494,6 +577,8 @@ class TestHostedOriginObserver(unittest.TestCase):
             "out_ref": "t/prog.ref",
             "out_ino": st.st_ino,
             "out_mtime_ns": mtime_ns,
+            "atime_set_ns": mtime_ns - 100,
+            "consumer": {"out_sha256": sha},
         }
         self._write_ledger(header, [record])
 
@@ -505,7 +590,7 @@ class TestHostedOriginObserver(unittest.TestCase):
 
         self.assertEqual(doc["verdict"]["status"], "REJECT")
         self.assertEqual(doc["verdict"]["checks"]["numeric_atime_predicates"], "FAIL")
-        self.assertTrue(any("atime" in r and "<= mtime" in r for r in doc["verdict"]["reasons"]))
+        self.assertTrue(any("kernel atime" in r and "<= kernel mtime" in r for r in doc["verdict"]["reasons"]))
 
     # 11. Preservation Invariant: Unexecuted reference not upgraded after archive reads
 
@@ -524,6 +609,7 @@ class TestHostedOriginObserver(unittest.TestCase):
         os.utime(ref_path, ns=(atime_ns, mtime_ns))
 
         st = os.stat(prog_path)
+        sha = hashlib.sha256(b"binary").hexdigest()
 
         header = {
             "v": 1,
@@ -543,6 +629,8 @@ class TestHostedOriginObserver(unittest.TestCase):
             "out_ref": "t/prog.ref",
             "out_ino": st.st_ino,
             "out_mtime_ns": mtime_ns,
+            "atime_set_ns": mtime_ns - 100,
+            "consumer": {"out_sha256": sha},
         }
         self._write_ledger(header, [record])
 
@@ -555,7 +643,6 @@ class TestHostedOriginObserver(unittest.TestCase):
             _ = f.read()
 
         # The initial census in doc1 is immutable and frozen:
-        # Its recorded atime remains the pre-read atime
         census_entry = next(c for c in doc1["initial_census"] if c["rel_path"] == "t/prog.ref")
         self.assertEqual(census_entry["st_atime_ns"], atime_ns)
 
@@ -588,12 +675,25 @@ class TestHostedOriginObserver(unittest.TestCase):
             "phase": "end",
             "out": "t/fifo.ref",
             "out_ref": "t/fifo.ref",
+            "out_ino": 12345,
+            "out_mtime_ns": 1000,
+            "atime_set_ns": 500,
+            "consumer": {"out_sha256": "abc"},
         }
         self._write_ledger(header, [record])
 
+        binding = LaunchBinding(
+            chain_id=self.binding.chain_id,
+            driver=self.binding.driver,
+            attempt=self.binding.attempt,
+            launch_id=self.binding.launch_id,
+            expected_nonce=self.binding.expected_nonce,
+            expected_refs=("t/fifo.ref",),
+        )
+
         doc = run_origin_observer(
             roots=[self.root_dir],
-            binding=self.binding,
+            binding=binding,
             ledger_relpath="ledger.jsonl",
         )
 
@@ -636,6 +736,7 @@ class TestHostedOriginObserver(unittest.TestCase):
             "out_ref": "t/prog.ref",
             "out_ino": st.st_ino,
             "out_mtime_ns": mtime_ns,
+            "atime_set_ns": mtime_ns - 100,
             "consumer": {"rc": 0, "out_sha256": "0" * 64},  # wrong hash!
         }
         self._write_ledger(header, [record])
@@ -671,11 +772,9 @@ class TestHostedOriginObserver(unittest.TestCase):
             [],
         )
 
-        # Call walk_roots_descriptor_relative directly
         candidates, specials, errors = walk_roots_descriptor_relative([self.root_dir])
         self.assertEqual(len(errors), 0)
 
-        # Confirm all regular files were discovered and have held descriptors
         candidate_paths = {c.rel_path for c in candidates}
         self.assertIn("t/prog", candidate_paths)
         self.assertIn("t/prog.ref", candidate_paths)
@@ -683,7 +782,6 @@ class TestHostedOriginObserver(unittest.TestCase):
 
         for c in candidates:
             self.assertIsNotNone(c.fd)
-            # Verify descriptors are valid open fds
             st = os.fstat(c.fd)
             self.assertEqual(st.st_ino, c.st_ino)
             os.close(c.fd)
@@ -691,9 +789,225 @@ class TestHostedOriginObserver(unittest.TestCase):
     # 15. Limitations reporting
 
     def test_15_limits_explicitly_reported(self) -> None:
-        doc = run_origin_observer(roots=[self.root_dir], binding=self.binding)
+        binding = LaunchBinding(
+            chain_id=self.binding.chain_id,
+            driver=self.binding.driver,
+            attempt=self.binding.attempt,
+            launch_id=self.binding.launch_id,
+            expected_nonce=self.binding.expected_nonce,
+            allow_empty_expected_refs=True,
+        )
+        doc = run_origin_observer(roots=[self.root_dir], binding=binding)
         self.assertIn("limitations", doc)
         self.assertTrue(any("cannot distinguish authentic kernel execution" in lim for lim in doc["limitations"]))
+
+    # 16. P1-1: Rejection of omitted required references
+
+    def test_16_adversarial_omitted_required_references_fails(self) -> None:
+        """
+        P1-1: Header is valid, but records are empty or omit out_ref.
+        Observer MUST reject when C-trusted expected references are not satisfied.
+        """
+        header = {
+            "v": 1,
+            "kind": "header",
+            "nonce": self.binding.expected_nonce,
+            "driver": self.binding.driver,
+            "attempt": self.binding.attempt,
+            "chain_id": self.binding.chain_id,
+        }
+        # Case A: empty records in ledger
+        self._write_ledger(header, [])
+
+        doc = run_origin_observer(
+            roots=[self.root_dir],
+            binding=self.binding,  # requires ("t/prog.ref",)
+            ledger_relpath="ledger.jsonl",
+        )
+        self.assertEqual(doc["verdict"]["status"], "REJECT")
+        self.assertEqual(doc["verdict"]["checks"]["no_missing_references"], "FAIL")
+        self.assertTrue(any("required expected references not satisfied" in r for r in doc["verdict"]["reasons"]))
+
+        # Case B: record with missing out_ref or omitted required metadata
+        rec_omitted = {
+            "v": 1,
+            "kind": "record",
+            "nonce": self.binding.expected_nonce,
+            "driver": self.binding.driver,
+            "phase": "end",
+            "inv": "inv_1",
+            "command": "build",
+            # omitted out_ref, out_ino, out_mtime_ns!
+        }
+        self._write_ledger(header, [rec_omitted])
+        doc2 = run_origin_observer(
+            roots=[self.root_dir],
+            binding=self.binding,
+            ledger_relpath="ledger.jsonl",
+        )
+        self.assertEqual(doc2["verdict"]["status"], "REJECT")
+        self.assertEqual(doc2["verdict"]["checks"]["no_missing_references"], "FAIL")
+
+    # 17. P1-2: Rejection of forged old ledger mtime bypassing atime
+
+    def test_17_adversarial_forged_old_ledger_mtime_fails(self) -> None:
+        """
+        P1-2: Malicious workload writes forged past out_mtime_ns to make unadvanced atime look advanced.
+        Kernel observed atime == kernel observed mtime.
+        Observer MUST bind mtime to kernel observation and reject.
+        """
+        real_kernel_mtime_ns = 1_000_000_000_000_000_000
+        real_kernel_atime_ns = 1_000_000_000_000_000_000  # unadvanced!
+
+        prog_path = self._write_file("t/prog", b"binary", mtime_ns=real_kernel_mtime_ns, atime_ns=real_kernel_atime_ns)
+        ref_path = os.path.join(self.root_dir, "t/prog.ref")
+        os.link(prog_path, ref_path)
+        os.utime(ref_path, ns=(real_kernel_atime_ns, real_kernel_mtime_ns))
+
+        st = os.stat(prog_path)
+        sha = hashlib.sha256(b"binary").hexdigest()
+
+        header = {
+            "v": 1,
+            "kind": "header",
+            "nonce": self.binding.expected_nonce,
+            "driver": self.binding.driver,
+            "attempt": self.binding.attempt,
+            "chain_id": self.binding.chain_id,
+        }
+        # Forged past mtime in ledger (e.g. 500s earlier)
+        forged_mtime_ns = real_kernel_mtime_ns - 500_000_000_000
+        record = {
+            "v": 1,
+            "kind": "record",
+            "nonce": self.binding.expected_nonce,
+            "driver": self.binding.driver,
+            "phase": "end",
+            "inv": "inv_1",
+            "command": "build",
+            "out": "t/prog",
+            "out_ref": "t/prog.ref",
+            "out_ino": st.st_ino,
+            "out_mtime_ns": forged_mtime_ns,  # forged!
+            "atime_set_ns": forged_mtime_ns - 100,
+            "consumer": {"out_sha256": sha},
+        }
+        self._write_ledger(header, [record])
+
+        doc = run_origin_observer(
+            roots=[self.root_dir],
+            binding=self.binding,
+            ledger_relpath="ledger.jsonl",
+        )
+
+        self.assertEqual(doc["verdict"]["status"], "REJECT")
+        self.assertEqual(doc["verdict"]["checks"]["numeric_atime_predicates"], "FAIL")
+        # Must detect that recorded mtime != kernel observed mtime
+        self.assertTrue(any("!= kernel observed mtime" in r for r in doc["verdict"]["reasons"]))
+        # And must detect that kernel atime <= kernel mtime
+        self.assertTrue(any("kernel atime" in r and "<= kernel mtime" in r for r in doc["verdict"]["reasons"]))
+
+    # 18. P1-3: Multi-root relative path collision prevention
+
+    def test_18_adversarial_multi_root_relative_path_collision(self) -> None:
+        """
+        P1-3: Two roots containing the same relative filename do not overwrite.
+        Root identity is preserved in census and reference binding.
+        """
+        scratch_dir = os.path.join(self.test_dir, "scratch")
+        os.makedirs(os.path.join(scratch_dir, "sub"), exist_ok=True)
+
+        # File in root 0 (attempt)
+        p0 = self._write_file("sub/file.bin", b"root0_data")
+        # File in root 1 (scratch) with same relative path
+        p1 = os.path.join(scratch_dir, "sub/file.bin")
+        with open(p1, "wb") as f:
+            f.write(b"root1_data")
+
+        # Walk both roots
+        candidates, specials, errors = walk_roots_descriptor_relative([self.root_dir, scratch_dir])
+        self.assertEqual(len(errors), 0)
+
+        # Verify both are preserved in candidate census with distinct root indices
+        matches = [c for c in candidates if c.rel_path == "sub/file.bin"]
+        self.assertEqual(len(matches), 2)
+        root_indices = {c.root_index for c in matches}
+        self.assertEqual(root_indices, {0, 1})
+
+        for c in candidates:
+            if c.fd is not None:
+                os.close(c.fd)
+
+    # 19. P1-4: Checkpoint commitment before ledger read & traversal error fail-closed
+
+    def test_19_metadata_ordering_checkpoint_before_ledger_read(self) -> None:
+        """
+        P1-4: Prove orchestrator commits initial census checkpoint to output pipe
+        strictly BEFORE reading ledger.jsonl.
+        Prove traversal errors terminate immediately without opening/reading ledger.
+        """
+        self._write_file("t/prog", b"code")
+        self._write_ledger(
+            {
+                "v": 1,
+                "kind": "header",
+                "nonce": self.binding.expected_nonce,
+                "driver": self.binding.driver,
+                "attempt": self.binding.attempt,
+                "chain_id": self.binding.chain_id,
+            },
+            [],
+        )
+
+        checkpoint_received = []
+
+        def checkpoint_cb(doc: Dict[str, Any]) -> None:
+            checkpoint_received.append(doc)
+
+        out_pipe = io.BytesIO()
+        binding = LaunchBinding(
+            chain_id=self.binding.chain_id,
+            driver=self.binding.driver,
+            attempt=self.binding.attempt,
+            launch_id=self.binding.launch_id,
+            expected_nonce=self.binding.expected_nonce,
+            allow_empty_expected_refs=True,
+        )
+
+        doc = run_origin_observer(
+            roots=[self.root_dir],
+            binding=binding,
+            ledger_relpath="ledger.jsonl",
+            output_stream=out_pipe,
+            checkpoint_callback=checkpoint_cb,
+        )
+
+        # Verify checkpoint callback was invoked with initial census
+        self.assertEqual(len(checkpoint_received), 1)
+        self.assertEqual(checkpoint_received[0]["kind"], "iyi-origin-observer-initial-census")
+        self.assertIn("initial_census", checkpoint_received[0])
+
+        # Verify wire output carries initial census frame first
+        out_pipe.seek(0)
+        version = read_header(out_pipe)
+        self.assertEqual(version, PROTOCOL_VERSION)
+        ftype, fpayload = read_frame(out_pipe)
+        self.assertEqual(ftype, FRAME_METADATA)
+        first_frame = json.loads(fpayload.decode("utf-8"))
+        self.assertEqual(first_frame["kind"], "iyi-origin-observer-initial-census")
+
+        # Now test traversal error fails closed immediately
+        non_existent_root = os.path.join(self.test_dir, "does_not_exist")
+        err_pipe = io.BytesIO()
+        err_doc = run_origin_observer(
+            roots=[non_existent_root],
+            binding=binding,
+            output_stream=err_pipe,
+        )
+        self.assertEqual(err_doc["verdict"]["status"], "REJECT")
+        self.assertEqual(err_doc["verdict"]["checks"]["traversal"], "FAIL")
+        # Ledger was never even attempted
+        self.assertNotIn("ledger", err_doc)
 
 
 if __name__ == "__main__":
