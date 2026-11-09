@@ -1252,5 +1252,22 @@ class TestHttpOmissionSkips(unittest.TestCase):
         drift_violations2 = validate_census(self.census, tampered_bytes2, self.census["script"], target_platform="linux")
         self.assertTrue(any(v[0] == "C5.4-unlisted-skip-line" for v in drift_violations2))
 
+        for source in (
+            r'unlisted = "\x75nchecked: no oracle"',
+            r"unlisted = 'unchecked: can\'t run the oracle'",
+            r'unlisted = "unchecked: C:\\missing"',
+        ):
+            with self.subTest(source=source):
+                modified = list(lines)
+                modified.insert(355, source)
+                violations = validate_census(
+                    self.census, "\n".join(modified).encode("utf-8"),
+                    self.census["script"], target_platform="linux",
+                )
+                self.assertTrue(any(
+                    v[0] == "C5.4-unlisted-skip-line" and v[1] == 356
+                    for v in violations
+                ))
+
 if __name__ == "__main__":
     unittest.main()

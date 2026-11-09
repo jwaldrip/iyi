@@ -1945,7 +1945,7 @@ def _unterminated_print_commands(source: str) -> list[list[str]] | None:
 _PY_ASSIGN_SYNTAX_RE = re.compile(
     r"^[A-Za-z_][A-Za-z0-9_]*\s*(?:\+=|=)\s*(?:\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*')$"
 )
-_INVALID_PY_ESCAPE_RE = re.compile(r"\\[^\\'\"abfnrtv0-7xuUN\n]")
+_INVALID_PY_ESCAPE_RE = re.compile(r"(?:^|[^\\])(?:\\\\)*\\[^\\'\"abfnrtv0-7xuUN\n]")
 
 
 def _python_literal_assign_string(source: str) -> str | None:
@@ -2960,6 +2960,18 @@ def validate_census(census: object, script_bytes: bytes, script_relpath: str, *,
                     "platform skip is not guarded only by platform state",
                 )
     for number, source in enumerate(lines, 1):
+        py_literal = _python_literal_assign_string(source)
+        if (
+            py_literal is not None
+            and _SKIP_VOCAB_RE.search(py_literal)
+            and number not in listed_skip_lines
+        ):
+            _violation(
+                violations,
+                "C5.4-unlisted-skip-line",
+                number,
+                f"python assign literal is skip vocabulary: {py_literal!r}",
+            )
         print_commands = _print_commands(source)
         if print_commands is None:
             continue
@@ -2983,19 +2995,6 @@ def validate_census(census: object, script_bytes: bytes, script_relpath: str, *,
                     "C5.4-unlisted-skip-line",
                     number,
                     f"printed text is skip vocabulary: {rendered!r}",
-                )
-        if _SKIP_VOCAB_RE.search(source):
-            py_literal = _python_literal_assign_string(source)
-            if (
-                py_literal is not None
-                and _SKIP_VOCAB_RE.search(py_literal)
-                and number not in listed_skip_lines
-            ):
-                _violation(
-                    violations,
-                    "C5.4-unlisted-skip-line",
-                    number,
-                    f"python assign literal is skip vocabulary: {py_literal!r}",
                 )
 
     skip_entries = (
