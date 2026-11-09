@@ -974,6 +974,14 @@ class Iyi::Command
         opts.on("--no-codegen", "Don't do code generation") do
           compiler.no_codegen = true
         end
+        opts.on("--emit-frame-provenance FILE", "Write executable-bound closure frame provenance") do |path|
+          abort! "--emit-frame-provenance takes a file path", :USAGE_ERROR if path.empty?
+          compiler.emit_frame_provenance = path
+        end
+        opts.on("--emit-link-input-proof FILE", "Write the selected link inputs and partition plan") do |path|
+          abort! "--emit-link-input-proof takes a file path", :USAGE_ERROR if path.empty?
+          compiler.emit_link_input_proof = path
+        end
         opts.on("-o FILE", "--output FILE", "Output path. If a directory, the filename is derived from the first source file (default: ./)") do |an_output_filename|
           # `-o ""` is what a shell produces from `-o "$OUT"` with `OUT`
           # unset, and it used to mean the current directory - the

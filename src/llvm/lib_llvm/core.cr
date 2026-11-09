@@ -200,6 +200,10 @@ lib LibLLVM
   fun get_md_node_operands = LLVMGetMDNodeOperands(v : ValueRef, dest : ValueRef*)
   fun md_string_in_context = LLVMMDStringInContext(c : ContextRef, str : Char*, s_len : UInt) : ValueRef
   fun md_node_in_context = LLVMMDNodeInContext(c : ContextRef, vals : ValueRef*, count : UInt) : ValueRef
+  fun get_named_metadata_num_operands = LLVMGetNamedMetadataNumOperands(m : ModuleRef, name : Char*) : UInt
+  fun get_named_metadata_operands = LLVMGetNamedMetadataOperands(m : ModuleRef, name : Char*, dest : ValueRef*)
+  fun add_named_metadata_operand = LLVMAddNamedMetadataOperand(m : ModuleRef, name : Char*, value : ValueRef)
+  fun is_a_function = LLVMIsAFunction(value : ValueRef) : ValueRef
 
   {% unless LibLLVM::IS_LT_180 %}
     fun create_operand_bundle = LLVMCreateOperandBundle(tag : Char*, tag_len : SizeT, args : ValueRef*, num_args : UInt) : OperandBundleRef

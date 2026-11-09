@@ -377,6 +377,7 @@ class Iyi::CodeGenVisitor
         context.reset_closure
 
         target_def = node.target_def
+        context.diagnostic_scope = target_def
         # iyi: the inlined def's loops check as its caller's do, unless the
         # def is `@[NoPreempt]`; the block's own code, run at each `yield`,
         # keeps the caller's answer through `block_context`.

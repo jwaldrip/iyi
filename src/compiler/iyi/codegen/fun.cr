@@ -293,6 +293,7 @@ class Iyi::CodeGenVisitor
     with_cloned_context do |old_context|
       context.type = self_type
       context.vars = LLVMVars.new
+      context.diagnostic_scope = target_def
       context.block_context = nil
       context.indirect_return = nil
       context.iyi_preempt = !iyi_runtime_copy && iyi_preemptible?(target_def)

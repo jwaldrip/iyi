@@ -1,5 +1,6 @@
 require "set"
 require "./ast"
+require "crystal/digest/sha256"
 require "./lexer"
 
 module Iyi
@@ -194,6 +195,120 @@ module Iyi
     # wherever it is compiled (`Program#iyi_root_package`).
     property iyi_package_name : String? = nil
 
+    # This is populated from an actual module header. Artifact renderings and
+    # macro expansions must restore their own origins, not claim their path as
+    # the source module.
+    @diagnostic_module_path : String? = nil
+    property diagnostic_capture = false
+    @diagnostic_regions : Array(DiagnosticRegion)? = nil
+    @diagnostic_pending : Hash({Int32, String, String}, DiagnosticOrigin)? = nil
+    @diagnostic_expansion : {DiagnosticOrigin, DiagnosticOrigin, String}? = nil
+    @diagnostic_spans : Array({Int32, Int32})? = nil
+    @diagnostic_splice_pending : Hash({Int32, String, String}, DiagnosticOrigin)? = nil
+
+    def diagnostic_expansion(invocation : DiagnosticOrigin, definition : DiagnosticOrigin,
+                             guard : String, pragmas : Hash(Int32, Array(Lexer::LocPragma))?)
+      input = @input_offset_base == 0 ? string : "\uFEFF#{string}"
+      unless guard == "sha256:#{::Crystal::Digest::SHA256.hexdigest(input)}"
+        raise ArgumentError.new("diagnostic macro expansion guard mismatch")
+      end
+      @diagnostic_expansion = {invocation, definition, guard}
+      spans = @diagnostic_spans = [] of {Int32, Int32}
+      pending = @diagnostic_splice_pending = {} of {Int32, String, String} => DiagnosticOrigin
+      return unless pragmas
+      pragmas.each do |start, list|
+        list.each do |entry|
+          next unless entry.is_a?(Lexer::LocDiagnosticSplice)
+          finish = entry.end_offset
+          if start < 0 || finish < start || finish > string.bytesize + @input_offset_base
+            raise ArgumentError.new("invalid diagnostic macro splice")
+          end
+          spans << {start, finish}
+          entry.anchors.each do |anchor|
+            unless anchor.offset >= start && anchor.offset < finish
+              raise ArgumentError.new("macro splice anchor outside interpolation")
+            end
+            origin = anchor.origin || raise ArgumentError.new("macro splice has no original anchor")
+            unless origin.valid_for_anchor?(anchor.kind, anchor.role)
+              raise ArgumentError.new("macro splice anchor kind or role mismatch")
+            end
+            key = {anchor.offset, anchor.kind, anchor.role}
+            raise ArgumentError.new("duplicate macro splice anchor") if pending.has_key?(key)
+            pending[key] = origin
+          end
+        end
+      end
+      spans.sort_by!(&.[0])
+      spans.each_cons_pair do |left, right|
+        raise ArgumentError.new("overlapping diagnostic macro splices") if left[1] > right[0]
+      end
+    end
+
+    # Offsets are in the full parser input, not in a line/column coordinate
+    # system. The caller supplies only regions whose text is carried.
+    def diagnostic_regions=(regions : Array(DiagnosticRegion))
+      ordered = regions.sort_by(&.start_offset)
+      pending = {} of {Int32, String, String} => DiagnosticOrigin
+      last_end = @input_offset_base
+      ordered.each do |region|
+        start = region.start_offset
+        finish = region.end_offset
+        if start < last_end || finish < start || finish > string.bytesize + @input_offset_base
+          raise ArgumentError.new("invalid diagnostic provenance region")
+        end
+        text = string.byte_slice(start - @input_offset_base, finish - start)
+        unless ::Crystal::Digest::SHA256.hexdigest(text) == region.text_sha256
+          raise ArgumentError.new("diagnostic provenance text guard mismatch")
+        end
+        region.anchors.each do |anchor|
+          unless anchor.offset >= start && anchor.offset < finish && !anchor.kind.empty? && !anchor.role.empty?
+            raise ArgumentError.new("diagnostic provenance anchor outside its region")
+          end
+          origin = anchor.origin || raise ArgumentError.new("missing diagnostic origin")
+          unless origin.valid_for_anchor?(anchor.kind, anchor.role)
+            raise ArgumentError.new("diagnostic origin does not match anchor kind and role")
+          end
+          key = {anchor.offset, anchor.kind, anchor.role}
+          raise ArgumentError.new("duplicate diagnostic provenance anchor") if pending.has_key?(key)
+          pending[key] = origin
+        end
+        last_end = finish
+      end
+      @diagnostic_regions = ordered
+      @diagnostic_pending = pending
+    end
+
+    def diagnostic_check_consumed : Nil
+      if pending = @diagnostic_pending
+        raise ArgumentError.new("unconsumed diagnostic provenance anchors") unless pending.empty?
+      end
+      if pending = @diagnostic_splice_pending
+        raise ArgumentError.new("unconsumed diagnostic macro splice anchors") unless pending.empty?
+      end
+    end
+
+    private def diagnostic_anchor(kind : String, role : String, offset : Int32) : DiagnosticOrigin?
+      if regions = @diagnostic_regions
+        if regions.any? { |region| offset >= region.start_offset && offset < region.end_offset }
+          return @diagnostic_pending.not_nil!.delete({offset, kind, role}) ||
+                 raise ArgumentError.new("missing diagnostic provenance anchor at byte #{offset} for #{kind}:#{role}")
+        end
+      end
+      if expansion = @diagnostic_expansion
+        spliced = nil
+        if @diagnostic_spans.not_nil!.any? { |span| offset >= span[0] && offset < span[1] }
+          spliced = @diagnostic_splice_pending.not_nil!.delete({offset, kind, role}) ||
+                    raise ArgumentError.new("missing diagnostic macro splice anchor")
+        end
+        return DiagnosticOrigin::Expanded.new(expansion[0], expansion[1], expansion[2], offset, kind, role, spliced)
+      end
+      return nil unless @diagnostic_capture
+      module_path = @diagnostic_module_path
+      filename = @input_filename
+      return nil unless module_path && filename.is_a?(String) && !filename.empty? && @input_artifact.nil?
+      DiagnosticOrigin::Written.new(module_path, filename, offset, kind, role)
+    end
+
     # iyi: the namespace a module of *package* whose in-package path is
     # *segments* lives in, as path segments. The one rule: the header's
     # parse, an import's `::*` and `Program#iyi_module_type` all ask here,
@@ -213,6 +328,7 @@ module Iyi
       next_token_skip_statement_end
 
       nodes = parse_expressions.tap { iyi_check_eof }
+      diagnostic_check_consumed
       apply_module_header(iyi_check_depth(nodes))
     end
 
@@ -451,16 +567,18 @@ module Iyi
     end
 
     def parse(mode : ParseMode)
-      case mode
-      when .normal?
-        parse
-      when .lib?
-        iyi_check_depth parse_lib_body
-      when .lib_struct_or_union?
-        iyi_check_depth parse_c_struct_or_union_body
-      else
-        iyi_check_depth parse_enum_body
-      end
+      result = case mode
+               when .normal?
+                 parse
+               when .lib?
+                 iyi_check_depth parse_lib_body
+               when .lib_struct_or_union?
+                 iyi_check_depth parse_c_struct_or_union_body
+               else
+                 iyi_check_depth parse_enum_body
+               end
+      diagnostic_check_consumed
+      result
     end
 
     def parse_expressions
@@ -779,7 +897,14 @@ module Iyi
             end
 
             iyi_refuse_global_local(atomic)
-            atomic = Var.new(atomic.name).at(atomic) if atomic.is_a?(Call)
+            if atomic.is_a?(Call)
+              call = atomic
+              variable = Var.new(call.name).at(call)
+              variable.diagnostic_origin = call.diagnostic_origin.try do |origin|
+                DiagnosticOrigin::Synthetic.new(origin, "local_binding", "assignment")
+              end
+              atomic = variable
+            end
 
             next_token_skip_space_or_newline
 
@@ -1199,6 +1324,7 @@ module Iyi
                      @token.type.to_s
                    end
             name_location = @token.location
+            name_offset = @token.input_offset
             end_location = token_end_location
 
             @wants_regex = false
@@ -1245,6 +1371,7 @@ module Iyi
               atomic.name = "#{name}="
               atomic.args = [arg] of ASTNode
               atomic.name_location = name_location
+              atomic.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset) if Lexer.ident?(name)
               next
             when .assignment_operator?
               call = Call.new(atomic, name)
@@ -1256,6 +1383,7 @@ module Iyi
               value = parse_op_assign
               call.at(location)
               call.name_location = name_location
+              call.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset) if Lexer.ident?(name)
               atomic = OpAssign.new(call, method, value).at(location)
               atomic.name_location = op_name_location
               next
@@ -1279,6 +1407,7 @@ module Iyi
             atomic.name_location = name_location
             atomic.end_location = block.try(&.end_location) || call_args.try(&.end_location) || end_location
             atomic.at(location)
+            atomic.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset) if Lexer.ident?(name)
             atomic
           end
         when .op_lsquare_rsquare?
@@ -1394,6 +1523,7 @@ module Iyi
     # of every language that has taken it on (Appendix B #7).
     def parse_defer
       location = @token.location
+      origin = diagnostic_anchor("Defer", "keyword", @token.input_offset)
       next_token_skip_space
 
       @inside_defer += 1
@@ -1403,7 +1533,7 @@ module Iyi
         @inside_defer -= 1
       end
 
-      Defer.new(exp).at(location).at_end(exp)
+      Defer.new(exp).at(location).at_end(exp).tap(&.diagnostic_origin=(origin))
     end
 
     # iyi: `.or(default)` and `.or_panic` (SPEC.md III.1.3).
@@ -2203,6 +2333,7 @@ module Iyi
 
     def parse_call_block_arg(args, check_paren, named_args = nil)
       location = @token.location
+      offset = @token.input_offset
 
       next_token_skip_space
 
@@ -2223,6 +2354,7 @@ module Iyi
         call = parse_call_block_arg_after_dot(obj)
 
         block = Block.new([Var.new(block_arg_name)], call).at(location)
+        block.diagnostic_origin = diagnostic_anchor("Block", "ampersand", offset)
         end_location = call.end_location
       else
         block_arg = parse_op_assign
@@ -2565,6 +2697,9 @@ module Iyi
       location = @token.location
       next_token_skip_space
       path = parse_module_path
+      if @diagnostic_capture && @input_artifact.nil? && @input_filename.is_a?(String)
+        @diagnostic_module_path = Parser.iyi_package_segments(@iyi_package_name, path).join("/")
+      end
       header = ModuleHeader.new(path)
       header.at(location)
       header.end_location = token_end_location
@@ -3376,6 +3511,7 @@ module Iyi
 
     def parse_fun_literal
       location = @token.location
+      offset = @token.input_offset
 
       next_token_skip_space_or_newline
 
@@ -3386,7 +3522,11 @@ module Iyi
       when .op_lparen?, .op_lcurly?, .op_colon?
         # do nothing
       else
-        return parse_fun_pointer unless @token.keyword?(:do)
+        unless @token.keyword?(:do)
+          pointer = parse_fun_pointer
+          pointer.diagnostic_origin = diagnostic_anchor("ProcPointer", "arrow", offset)
+          return pointer
+        end
       end
 
       params = [] of Arg
@@ -3440,7 +3580,10 @@ module Iyi
         end
 
         a_def = Def.new("->", params, body, return_type: return_type).at(location).at_end(end_location)
-        ProcLiteral.new(a_def).at(location).at_end(end_location)
+        ProcLiteral.new(a_def).at(location).at_end(end_location).tap do |proc_literal|
+          proc_literal.diagnostic_origin = diagnostic_anchor("ProcLiteral", "arrow", offset)
+          a_def.diagnostic_origin = proc_literal.diagnostic_origin
+        end
       end
       @inside_defer = inside_defer
       literal
@@ -4682,6 +4825,7 @@ module Iyi
     end
 
     def parse_def(is_abstract = false, is_macro_def = false, doc = nil)
+      origin = diagnostic_anchor("Def", "keyword", @token.input_offset)
       doc ||= @token.doc
 
       prepare_parse_def
@@ -4695,6 +4839,7 @@ module Iyi
       a_def.uses_block_arg = @uses_block_arg
       a_def.assigns_special_var = @assigns_special_var
       a_def.doc = doc
+      a_def.diagnostic_origin = origin
       @calls_super = false
       @calls_initialize = false
       @calls_previous_def = false
@@ -4716,6 +4861,7 @@ module Iyi
     end
 
     def parse_macro
+      origin = diagnostic_anchor("Macro", "keyword", @token.input_offset)
       doc = @token.doc
 
       # Force lexer return if possible a def or macro name
@@ -4817,6 +4963,7 @@ module Iyi
         node.name_location = name_location
         node.doc = doc
         node.end_location = end_location
+        node.diagnostic_origin = origin
         set_visibility node
         node
       end
@@ -4842,13 +4989,17 @@ module Iyi
           pieces << MacroLiteral.new(@token.value.to_s).at(@token.location).at_end(token_end_location)
         when .macro_expression_start?
           location = @token.location
+          origin = diagnostic_anchor("MacroDirective", "expression", @token.input_offset)
           exp = MacroExpression.new(parse_macro_expression).at(location)
+          exp.diagnostic_origin = origin
           check_macro_expression_end
           skip_whitespace = check_macro_skip_whitespace
           pieces << exp.at_end(token_end_location)
         when .macro_control_start?
+          offset = @token.input_offset
           macro_control = iyi_nest { parse_macro_control(start_location, macro_state) }
           if macro_control
+            macro_control.diagnostic_origin = diagnostic_anchor("MacroDirective", "control", offset)
             skip_space_or_newline
             check :OP_PERCENT_RCURLY
             pieces << macro_control
@@ -4929,11 +5080,12 @@ module Iyi
 
       slash_is_regex!
       location = @token.location
+      origin = diagnostic_anchor("MacroDirective", "expression", @token.input_offset)
       macro_exp = parse_macro_expression
       check_macro_expression_end
       end_location = token_end_location
       next_token
-      MacroExpression.new(macro_exp).at(location).at_end(end_location)
+      MacroExpression.new(macro_exp).at(location).at_end(end_location).tap(&.diagnostic_origin=(origin))
     end
 
     def parse_macro_expression
@@ -4962,9 +5114,11 @@ module Iyi
 
     def parse_percent_macro_control
       raise "can't nest macro expressions", @token if @in_macro_expression
+      offset = @token.input_offset
 
       macro_control = parse_macro_control(@token.location)
       if macro_control
+        macro_control.diagnostic_origin = diagnostic_anchor("MacroDirective", "control", offset)
         skip_space_or_newline
         check :OP_PERCENT_RCURLY
         next_token_skip_space
@@ -6235,6 +6389,7 @@ module Iyi
 
       name = @token.value.to_s
       name_location = @token.location
+      name_offset = @token.input_offset
 
       if force_call && !@token.value
         name = @token.type.to_s
@@ -6458,6 +6613,7 @@ module Iyi
       node.doc = doc
       node.location = location
       node.end_location = block.try(&.end_location) || call_args.try(&.end_location) || end_location
+      node.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset) if node.is_a?(Call) && Lexer.ident?(name)
       node
     end
 
@@ -6511,6 +6667,7 @@ module Iyi
 
     def parse_block2(&)
       location = @token.location
+      origin = diagnostic_anchor("Block", "opener", @token.input_offset)
       block_params, splat_index, unpacks = parse_block_params(location)
 
       with_lexical_var_scope do
@@ -6523,7 +6680,7 @@ module Iyi
         block_body = parse_expressions
         block_body, end_location = yield block_body
 
-        Block.new(block_params, block_body, splat_index, unpacks).at(location).at_end(end_location)
+        Block.new(block_params, block_body, splat_index, unpacks).at(location).at_end(end_location).tap(&.diagnostic_origin=(origin))
       end
     end
 

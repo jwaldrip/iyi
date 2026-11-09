@@ -1872,7 +1872,7 @@ module Iyi
     type.metaclass.as?(ModuleType).try &.macros.try &.each_value do |overloads|
       overloads.each do |a_macro|
         next unless shard_wrote_macro?(a_macro)
-        sources << a_macro.to_s
+        sources << diagnostic_bound_macro_source(type, a_macro)
       end
     end
 
@@ -1897,9 +1897,19 @@ module Iyi
     type.metaclass.as?(ModuleType).try &.hooks.try &.each do |hook|
       next unless hook.kind.included? || hook.kind.extended?
       next unless shard_wrote_macro?(hook.macro)
-      sources << hook.macro.to_s
+      sources << diagnostic_bound_macro_source(type, hook.macro)
     end
     sources.sort!
+  end
+
+  private def self.diagnostic_bound_macro_source(type : Type, a_macro : Macro) : String
+    return a_macro.to_s unless type.program.diagnostic_capture
+    io = IO::Memory.new
+    anchors = [] of DiagnosticAnchor
+    a_macro.to_s(io, diagnostic_anchors: anchors)
+    source = io.to_s
+    type.program.record_macro_diagnostic(type.to_s, source, anchors)
+    source
   end
 
   # Where the macro was written, by the same test a `def` takes: a shard
@@ -4402,6 +4412,7 @@ module Iyi
     owner = type.devirtualize.to_s
     type.class_vars?.try &.each do |name, variable|
       initialiser = variable.iyi_initialiser_source
+      synthesized_initialiser = false
       written = variable.type?.try(&.devirtualize.to_s) || "?"
       # Unless the initialiser carries the assignment, in which case this one
       # would run a second time — after the statements beside it, undoing
@@ -4423,6 +4434,15 @@ module Iyi
       if initialiser.empty? && written != "?" &&
          written != "Nil" && !union_members(written).includes?("Nil")
         initialiser = "uninitialized #{written}"
+        synthesized_initialiser = true
+      end
+      if type.program.diagnostic_capture && !initialiser.empty?
+        anchors = if synthesized_initialiser
+                    [] of DiagnosticAnchor
+                  else
+                    variable.iyi_initialiser_anchors || raise "bound class variable initializer lacks diagnostic anchors"
+                  end
+        type.program.record_class_var_diagnostic(owner, name, initialiser, anchors)
       end
       class_vars << IyiMod::ClassVarDecl.new(name, written, initialiser, annotations)
     end

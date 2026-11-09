@@ -3,8 +3,10 @@ require "./visitor"
 
 module Iyi
   class ASTNode
-    def to_s(io : IO, macro_expansion_pragmas = nil, emit_doc = false, emit_location_pragmas : Bool = false) : Nil
-      visitor = ToSVisitor.new(io, macro_expansion_pragmas: macro_expansion_pragmas, emit_doc: emit_doc, emit_location_pragmas: emit_location_pragmas)
+    def to_s(io : IO, macro_expansion_pragmas = nil, emit_doc = false, emit_location_pragmas : Bool = false,
+             diagnostic_anchors : Array(DiagnosticAnchor)? = nil) : Nil
+      visitor = ToSVisitor.new(io, macro_expansion_pragmas: macro_expansion_pragmas, emit_doc: emit_doc,
+        emit_location_pragmas: emit_location_pragmas, diagnostic_anchors: diagnostic_anchors)
       self.accept visitor
     end
   end
@@ -31,9 +33,16 @@ module Iyi
       BLOCK_ARG
     end
 
-    def initialize(@str = IO::Memory.new, @macro_expansion_pragmas = nil, @emit_doc = false, @emit_location_pragmas : Bool = false)
+    def initialize(@str = IO::Memory.new, @macro_expansion_pragmas = nil, @emit_doc = false, @emit_location_pragmas : Bool = false,
+                   @diagnostic_anchors : Array(DiagnosticAnchor)? = nil)
       @indent = 0
       @inside_macro = 0
+    end
+
+    private def diagnostic_anchor(node : ASTNode, kind : String, role : String) : Nil
+      if anchors = @diagnostic_anchors
+        anchors << DiagnosticAnchor.new(@str.pos.to_i32, kind, role, node.diagnostic_origin)
+      end
     end
 
     def visit_any(node)
@@ -495,6 +504,7 @@ module Iyi
     end
 
     def visit(node : Defer)
+      diagnostic_anchor(node, "Defer", "keyword")
       @str << "defer "
       node.exp.accept self
       false
@@ -582,6 +592,7 @@ module Iyi
       block = node.block
 
       short_block_call = nil
+      short_block = nil
       if block
         # Check if this is foo &.bar
         first_block_arg = block.args.first?
@@ -591,6 +602,7 @@ module Iyi
             block_obj = block_body.obj
             if block_obj.is_a?(Var) && block_obj.name == first_block_arg.name
               short_block_call = block_body
+              short_block = block
               block = nil
             end
           end
@@ -614,6 +626,7 @@ module Iyi
 
         if short_block_call
           @str << ", " if node.args.present? || node.named_args
+          diagnostic_anchor(short_block.not_nil!, "Block", "ampersand")
           @str << "&."
           visit_call short_block_call, ignore_obj: true
         end
@@ -631,6 +644,7 @@ module Iyi
 
         if short_block_call
           @str << ", " if node.args.size > 1 || node.named_args
+          diagnostic_anchor(short_block.not_nil!, "Block", "ampersand")
           @str << "&."
           visit_call short_block_call, ignore_obj: true
         end
@@ -664,16 +678,19 @@ module Iyi
           @str << '.'
         end
         if Lexer.setter?(node.name)
+          diagnostic_anchor(node, "Call", "method") if Lexer.ident?(node.name.rchop)
           @str << node.name.rchop
           @str << " = "
           node.args.join(@str, ", ") { |arg| accept_as_expression arg }
         else
+          diagnostic_anchor(node, "Call", "method") if Lexer.ident?(node.name)
           @str << node.name
           in_parenthesis(node.has_parentheses? || !node.args.empty? || node.block_arg || node.named_args || short_block_call) do
             visit_args(node)
 
             if short_block_call
               @str << ", " if node.args.present? || node.named_args
+              diagnostic_anchor(short_block.not_nil!, "Block", "ampersand")
               @str << "&."
               visit_call short_block_call, ignore_obj: true
             end
@@ -912,11 +929,16 @@ module Iyi
     end
 
     def visit(node : Var)
+      if (anchors = @diagnostic_anchors) && (origin = node.diagnostic_origin).is_a?(DiagnosticOrigin::Synthetic) &&
+         origin.synthesis_kind == "local_binding" && origin.structural_slot == "assignment"
+        anchors << DiagnosticAnchor.new(@str.pos.to_i32, "Call", "method", origin.parent_origin)
+      end
       @str << node.name
       false
     end
 
     def visit(node : ProcLiteral)
+      diagnostic_anchor(node, "ProcLiteral", "arrow")
       @str << "->"
       if node.def.args.size > 0
         @str << '('
@@ -936,6 +958,7 @@ module Iyi
     end
 
     def visit(node : ProcPointer)
+      diagnostic_anchor(node, "ProcPointer", "arrow")
       @str << "->"
       @str << "::" if node.global?
       if obj = node.obj
@@ -954,6 +977,7 @@ module Iyi
 
     def visit(node : Def)
       @str << "abstract " if node.abstract?
+      diagnostic_anchor(node, "Def", "keyword")
       @str << "def "
       if node_receiver = node.receiver
         node_receiver.accept self
@@ -1009,6 +1033,7 @@ module Iyi
       # iyi: a macro travels in an artifact as this text, so what marks it
       # exported has to be in the text (R-2b, SPEC.md IV.4).
       @str << "pub " if node.exported?
+      diagnostic_anchor(node, "Macro", "keyword")
       @str << "macro "
       @str << node.name.to_s
       if node.args.size > 0 || node.block_arg || node.double_splat
@@ -1056,6 +1081,7 @@ module Iyi
       # and similarly ends multiline if its expression end location is on a different line than its end location (`}}` or `%}`)
       end_multiline = (body_end_loc = node.exp.end_location) && (end_loc = node.end_location) && end_loc.line_number > body_end_loc.line_number
 
+      diagnostic_anchor(node, "MacroDirective", node.output? ? "expression" : "control")
       @str << (node.output? ? "{{ " : start_multiline ? "{%" : "{% ")
 
       if start_multiline
@@ -1098,6 +1124,7 @@ module Iyi
       else_node = nil
 
       while true
+        diagnostic_anchor(node, "MacroDirective", "control")
         if node.is_unless?
           @str << "{% unless "
           then_node = node.else
@@ -1136,6 +1163,7 @@ module Iyi
     end
 
     def visit(node : MacroFor)
+      diagnostic_anchor(node, "MacroDirective", "control")
       @str << "{% for "
       node.vars.join(@str, ", ", &.accept self)
       @str << " in "
@@ -1472,6 +1500,7 @@ module Iyi
       # If the node's body end location is on the same line as the start of the block itself, it's on a single line.
       single_line_block = (node_loc = node.location) && (end_loc = node.body.end_location) && end_loc.line_number == node_loc.line_number
 
+      diagnostic_anchor(node, "Block", "opener")
       @str << "do"
 
       if node.has_any_args?

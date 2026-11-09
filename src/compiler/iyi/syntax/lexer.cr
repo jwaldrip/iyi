@@ -1,4 +1,5 @@
 require "./token"
+require "./diagnostic_origin"
 require "../exception"
 require "string_pool"
 require "../warnings"
@@ -24,6 +25,8 @@ module Iyi
     property? iyi = false
 
     @filename : String | VirtualFile | Nil
+    @input_filename : String | VirtualFile | Nil = nil
+    @input_artifact : String? = nil
     @stacked_filename : String | VirtualFile | Nil
     @artifact : String? = nil
     @stacked_artifact : String? = nil
@@ -54,7 +57,7 @@ module Iyi
     # are the ones it cannot see.
     property macro_literal_breaks : Set(Int32)? = nil
 
-    alias LocPragma = LocSetPragma | LocPushPragma | LocPopPragma | LocOriginPragma
+    alias LocPragma = LocSetPragma | LocPushPragma | LocPopPragma | LocOriginPragma | LocDiagnosticSplice
 
     # iyi: *artifact* is `Location#artifact` for what follows.
     record LocSetPragma,
@@ -87,6 +90,13 @@ module Iyi
       end
     end
 
+    # Provenance attached to an interpolation is consumed before reparsing;
+    # it does not alter the location stack.
+    record LocDiagnosticSplice, end_offset : Int32, anchors : Array(DiagnosticAnchor) do
+      def run_pragma(lexer)
+      end
+    end
+
     # Warning settings and all detected warnings.
     property warnings : WarningCollection
 
@@ -97,6 +107,7 @@ module Iyi
       # a file, and it was lexed as an identifier: `module app/user` answered
       # "undefined local variable or method 'a'", pointing at the slash. It
       # carries no meaning in UTF-8, so it is skipped rather than explained.
+      @input_offset_base = string.is_a?(String) && string.starts_with?('\uFEFF') ? 3 : 0
       string = string.lchop('\uFEFF') if string.is_a?(String)
 
       @reader = Char::Reader.new(string)
@@ -147,6 +158,7 @@ module Iyi
     # was "unexpected token: !". An expansion is in the language of the file
     # it expands in, which is where its chain of locations ends.
     def filename=(filename)
+      @input_filename = filename
       @filename = filename
       @iyi = Lexer.iyi_source?(filename)
     end
@@ -156,6 +168,7 @@ module Iyi
     # its own, so a travelling body placed in its module's source still says
     # where it was read from.
     def artifact=(@artifact : String?)
+      @input_artifact = @artifact
       @token.artifact = @artifact
     end
 
@@ -245,6 +258,7 @@ module Iyi
 
       # Skip comments
       while current_char == '#'
+        @token.input_offset = current_pos + @input_offset_base
         start = current_pos
 
         # Check #<loc:...> pragma comment
@@ -263,6 +277,7 @@ module Iyi
       end
 
       start = current_pos
+      @token.input_offset = start + @input_offset_base
 
       # Fix location by `macro_expansion_pragmas`.
       if me_pragmas = @location_pragmas
@@ -1589,6 +1604,7 @@ module Iyi
       @token.delimiter_state = delimiter_state
 
       start = current_pos
+      @token.input_offset = start + @input_offset_base
       string_end = delimiter_state.end
       string_nest = delimiter_state.nest
       string_open_count = delimiter_state.open_count
@@ -1878,6 +1894,7 @@ module Iyi
       @token.column_number = @column_number
 
       start = current_pos
+      @token.input_offset = start + @input_offset_base
 
       if current_char == '\0'
         check_nul_byte

@@ -75,6 +75,15 @@ cleanup() {
           retention_failed=1
         fi
       done
+      for file in "$case_dir"/s/* "$case_dir"/a/*; do
+        [ -f "$file" ] || continue
+        if ! mkdir -p "$evidence_dir/$(basename "$(dirname "$file")")" ||
+           ! cp "$file" "$evidence_dir/$(basename "$(dirname "$file")")/"; then
+          echo "  FAIL: cannot retain executable $file" >&2
+          result=1
+          retention_failed=1
+        fi
+      done
     done
   fi
   if [ "$retention_failed" -eq 0 ]; then

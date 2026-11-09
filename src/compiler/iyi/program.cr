@@ -7,8 +7,10 @@
   require "llvm"
 {% end %}
 require "json"
+require "./codegen/diagnostic_provenance"
 require "./types"
 require "crystal/digest/md5"
+require "crystal/digest/sha256"
 
 module Iyi
   # A program contains all types and top-level methods related to one
@@ -464,6 +466,7 @@ module Iyi
     # (SPEC.md IV.1g). What the linker is given in place of the code this build
     # did not generate, because it never saw the bodies.
     getter iyi_artifact_objects = {} of String => Array(IyiMod::ObjectUnit)
+    getter(iyi_artifact_diagnostics) { {} of String => IyiMod::DiagnosticSection }
 
     # iyi: types whose methods must be emitted as real functions because their
     # module's `.iyimod` is being written (SPEC.md IV.1g).
@@ -1016,6 +1019,40 @@ module Iyi
     # iyi: where the nodes of each body in `iyi_mono_bodies` were written, by
     # the same two keys (`IyiMod::SourcePosition`).
     getter iyi_mono_body_positions = {} of String => Hash(String, Array(IyiMod::SourcePosition))
+
+    # Diagnostic fragments are keyed identically to the travelling bodies.
+    getter(iyi_mono_body_diagnostics) { {} of String => Hash(String, IyiMod::DiagnosticFragment) }
+    getter(iyi_initialiser_diagnostics) { {} of String => IyiMod::DiagnosticFragment }
+    getter(iyi_class_var_diagnostics) { {} of String => {String, IyiMod::DiagnosticFragment} }
+    getter(iyi_macro_diagnostics) { {} of String => {String, IyiMod::DiagnosticFragment} }
+    getter(diagnostic_emissions) { [] of DiagnosticProvenance::Emission }
+    getter(diagnostic_object_inputs) { [] of DiagnosticProvenance::ObjectInput }
+    getter(diagnostic_bindings) { [] of DiagnosticProvenance::Binding }
+
+    def record_class_var_diagnostic(owner : String, name : String, source : String,
+                                    anchors : Array(DiagnosticAnchor)) : Nil
+      key = IyiMod.class_var_fragment_key(name, source)
+      fragment = IyiMod::DiagnosticFragment.new(key, ::Crystal::Digest::SHA256.hexdigest(source), anchors)
+      if previous = iyi_class_var_diagnostics[key]?
+        unless previous[0] == owner && previous[1] == fragment
+          raise "ambiguous class variable diagnostic fragment"
+        end
+      else
+        iyi_class_var_diagnostics[key] = {owner, fragment}
+      end
+    end
+
+    def record_macro_diagnostic(owner : String, source : String, anchors : Array(DiagnosticAnchor)) : Nil
+      key = IyiMod.macro_fragment_key(source)
+      fragment = IyiMod::DiagnosticFragment.new(key, ::Crystal::Digest::SHA256.hexdigest(source), anchors)
+      if previous = iyi_macro_diagnostics[key]?
+        unless previous[0] == owner && previous[1] == fragment
+          raise "ambiguous macro diagnostic fragment"
+        end
+      else
+        iyi_macro_diagnostics[key] = {owner, fragment}
+      end
+    end
 
     # iyi: the defs whose bodies travel because their machine code enumerates an
     # open type's members, by the location each was written at (SPEC.md III.6).
@@ -1571,10 +1608,15 @@ module Iyi
     # without anybody remembering to add it.
     getter builtin_type_names = Set(String).new
 
+    # Capture is explicitly enabled by a provenance-producing compilation.
+    property diagnostic_capture = false
+
     # Returns a new `Parser` for the given *source*, sharing the string pool and
     # warnings with this program.
     def new_parser(source : String, var_scopes = [Set(String).new])
-      Parser.new(source, string_pool, var_scopes, warnings)
+      Parser.new(source, string_pool, var_scopes, warnings).tap do |parser|
+        parser.diagnostic_capture = @diagnostic_capture
+      end
     end
 
     # iyi: how many threads parse ahead of the top-level pass (`ParseAhead`);

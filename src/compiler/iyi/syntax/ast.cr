@@ -1,3 +1,5 @@
+require "./diagnostic_origin"
+
 # Helper for `#pretty_print` implementation. It describes the type.
 private def pp_type(pp, left, right, &) : Nil
   pp.text left
@@ -45,6 +47,13 @@ module Iyi
     # if the location is not known.
     property end_location : Location?
 
+    # Independent of source locations and never used for semantic decisions.
+    property diagnostic_origin : DiagnosticOrigin?
+
+    def diagnostic_origin_json : JSON::Any?
+      @diagnostic_origin.try(&.as_json)
+    end
+
     # Updates this node's location and returns `self`
     def at(@location : Location?)
       self
@@ -55,6 +64,7 @@ module Iyi
     def at(node : ASTNode)
       @location = node.location
       @end_location = node.end_location
+      @diagnostic_origin = node.diagnostic_origin
       self
     end
 
@@ -81,6 +91,7 @@ module Iyi
       clone = clone_without_location
       clone.location = location
       clone.end_location = end_location
+      clone.diagnostic_origin = diagnostic_origin
       clone.doc = doc
       clone
     end
@@ -888,6 +899,19 @@ module Iyi
     property call : Call?
     property splat_index : Int32?
 
+    getter diagnostic_specialization_json : JSON::Any? = nil
+    @diagnostic_specialization_unusable = false
+
+    def record_diagnostic_specialization(snapshot : JSON::Any?) : Nil
+      return if @diagnostic_specialization_unusable
+      if snapshot.nil? || ((previous = @diagnostic_specialization_json) && previous != snapshot)
+        @diagnostic_specialization_json = nil
+        @diagnostic_specialization_unusable = true
+      else
+        @diagnostic_specialization_json = snapshot
+      end
+    end
+
     # When a block argument unpacks, the corresponding Var will
     # have an empty name, and `unpacks` will have the unpacked
     # Expressions in that index.
@@ -1640,6 +1664,21 @@ module Iyi
     # the written one, out of the type's own `defs`. `Iyi::OpenTravel` walks the
     # first and marks the second, and this is the only way back.
     property iyi_origin : Def?
+
+    # A cache entry can be visited from more than one call site. If those
+    # visits disagree, that entry cannot prove a unique specialization.
+    getter diagnostic_specialization_json : JSON::Any? = nil
+    @diagnostic_specialization_unusable = false
+
+    def record_diagnostic_specialization(snapshot : JSON::Any?) : Nil
+      return if @diagnostic_specialization_unusable
+      if snapshot.nil? || ((previous = @diagnostic_specialization_json) && previous != snapshot)
+        @diagnostic_specialization_json = nil
+        @diagnostic_specialization_unusable = true
+      else
+        @diagnostic_specialization_json = snapshot
+      end
+    end
 
     # iyi: this def's machine code enumerates the members of an open type, or
     # it calls something whose does (SPEC.md III.6).

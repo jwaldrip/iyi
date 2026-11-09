@@ -966,6 +966,16 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
                  "--no-codegen, or pass --no-codegen here to typecheck against it"
     end
 
+    if @program.diagnostic_capture
+      diagnostic = artifact.diagnostic_provenance ||
+                   node.raise("artifact #{artifact.module_name} lacks diagnostic provenance")
+      diagnostic.validate_objects!(artifact.object_code)
+      if @program.iyi_artifact_diagnostics.has_key?(artifact.module_name)
+        node.raise "duplicate diagnostic artifact identity #{artifact.module_name}"
+      end
+      @program.iyi_artifact_diagnostics[artifact.module_name] = diagnostic
+    end
+
     unless artifact.object_code.empty?
       @program.iyi_artifact_objects[artifact.module_name] = artifact.object_code
     end
@@ -993,12 +1003,14 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
     # build read ask (`Location#read_from`).
     io = IO::Memory.new
     pragmas = {} of Int32 => Array(Lexer::LocPragma)
-    travelled = IyiMod.declarations(artifact, io, pragmas, artifact_path)
+    diagnostic_regions = @program.diagnostic_capture ? [] of DiagnosticRegion : nil
+    travelled = IyiMod.declarations(artifact, io, pragmas, artifact_path, diagnostic_regions)
     source = io.to_s
     parser = @program.new_parser(source)
     parser.filename = artifact_path
     parser.artifact = artifact_path
     parser.macro_expansion_pragmas = pragmas unless pragmas.empty?
+    parser.diagnostic_regions = diagnostic_regions if diagnostic_regions
     # In the language of the module they came from, which the artifact's
     # name does not say: `.iyimod` is no extension the lexer knows, so an
     # iyi module's declarations were read by the other language's rules,
@@ -1059,11 +1071,19 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
       # `IyiMod::Artifact#top_level_funs`.
       top_nodes = nil.as(ASTNode?)
       unless artifact.top_level.empty? && artifact.top_level_funs.empty?
-        top_source = String.build { |io| IyiMod.top_level_declarations(artifact, io) }
+        if @program.diagnostic_capture
+          top_regions = [] of DiagnosticRegion
+          top_io = IO::Memory.new
+          IyiMod.top_level_declarations(artifact, top_io, top_regions)
+          top_source = top_io.to_s
+        else
+          top_source = String.build { |io| IyiMod.top_level_declarations(artifact, io) }
+        end
         top_path = "#{artifact_path} (top level)"
         top_parser = @program.new_parser(top_source)
         top_parser.artifact = top_path
         top_parser.filename = top_path
+        top_parser.diagnostic_regions = top_regions if top_regions
         top_parser.iyi = true if iyi_declarations
         Iyi.register_iyi_declarations top_path, top_source
         top_nodes = nodes = @program.normalize(top_parser.parse, inside_exp: false)
@@ -1411,10 +1431,14 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
     # separately whether any runnable code is somewhere this cannot reach —
     # which is what a consumer has to be refused over rather than given a
     # module that half sets itself up.
-    source, positions = iyi_initialiser_source(parsed_nodes)
+    source, positions, diagnostic_anchors = iyi_initialiser_source(parsed_nodes)
     unless source.empty?
       @program.iyi_module_initialiser_source[filename] = source
       @program.iyi_module_initialiser_positions[filename] = positions
+      if diagnostic_anchors
+        @program.iyi_initialiser_diagnostics[filename] = IyiMod::DiagnosticFragment.new(
+          "initialiser", ::Crystal::Digest::SHA256.hexdigest(source), diagnostic_anchors)
+      end
     end
     @program.iyi_module_initialisers << filename if iyi_uncarried_initialiser?(parsed_nodes)
     FileNode.new(parsed_nodes, filename)
@@ -1547,10 +1571,15 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
   #
   # In text order, because that is the order III.5 gives a module's own code.
   # With where each node of it was written (`IyiMod::SourcePosition`).
-  private def iyi_initialiser_source(node : ASTNode) : {String, Array(IyiMod::SourcePosition)}
+  private def iyi_initialiser_source(node : ASTNode) : {String, Array(IyiMod::SourcePosition), Array(DiagnosticAnchor)?}
     statements = [] of ASTNode
     iyi_collect_initialiser node, statements
-    IyiMod.located_source(statements)
+    if @program.diagnostic_capture
+      IyiMod.diagnostic_located_source(statements)
+    else
+      source, positions = IyiMod.located_source(statements)
+      {source, positions, nil}
+    end
   end
 
   private def iyi_collect_initialiser(node : ASTNode, statements : Array(ASTNode)) : Nil
@@ -2168,6 +2197,9 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
     end
 
     the_macro = Macro.new("macro_#{node.object_id}", [] of Arg, node).at(node)
+    if @program.diagnostic_capture && (origin = node.diagnostic_origin)
+      the_macro.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "inline_macro_definition", "macro")
+    end
 
     skip_macro_exception = nil
 

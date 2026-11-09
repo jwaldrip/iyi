@@ -175,7 +175,12 @@ module Iyi
         cleanup_body = Expressions.new([armed, NilLiteral.new.at(deferred)] of ASTNode).at(deferred)
         cleanup = Def.new("->", [] of Arg, cleanup_body).at(deferred)
         cleanup.iyi_defer = true
-        push = Call.global("__iyi_defer_push", ProcLiteral.new(cleanup).at(deferred)).at(deferred)
+        cleanup_literal = ProcLiteral.new(cleanup).at(deferred)
+        cleanup_literal.diagnostic_origin = deferred.diagnostic_origin.try do |origin|
+          DiagnosticOrigin::Synthetic.new(origin, "defer", "cleanup")
+        end
+        cleanup.diagnostic_origin = cleanup_literal.diagnostic_origin
+        push = Call.global("__iyi_defer_push", cleanup_literal).at(deferred)
         pop = Call.new(nil, "__iyi_defer_pop_run", global: true).at(deferred)
         disarm = Assign.new(live.clone, BoolLiteral.new(false).at(deferred)).at(deferred)
         ordinary_exit = [disarm, pop] of ASTNode

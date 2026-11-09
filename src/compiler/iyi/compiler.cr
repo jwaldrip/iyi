@@ -1,10 +1,14 @@
 require "option_parser"
 require "file_utils"
+require "file/tempfile"
 require "colorize"
 require "crystal/digest/md5"
 require "./optimization_mode"
 require "./wasm_roots"
 require "./release_partition"
+{% unless flag?(:without_llvm) %}
+  require "./codegen/diagnostic_observer"
+{% end %}
 require "./preempt_checks"
 require "./mod/installer"
 require "./stale/encoding"
@@ -114,6 +118,12 @@ module Iyi
     # If `true`, no executable will be generated after compilation
     # (useful to type-check a program)
     property? no_codegen = false
+
+    property emit_frame_provenance : String? = nil
+    property emit_link_input_proof : String? = nil
+    record LinkInputProofSnapshot, tool : JSON::Any, units : Array(JSON::Any), inputs : Array(JSON::Any)
+    @link_input_proof_snapshot : LinkInputProofSnapshot? = nil
+    @link_input_proof_linker : JSON::Any? = nil
 
     # iyi: whether this build's link is the one the compiler builds itself
     # rather than the one `cc` builds for it, and whether that has already been
@@ -450,6 +460,7 @@ module Iyi
       program.iyi_prefers_source = @iyi_prefers_source
       program.iyi_wants_object_code = !@no_codegen
       program.iyi_rewrites_artifacts = !@emit_iyimod.nil?
+      program.diagnostic_capture = !@emit_frame_provenance.nil?
       # An emitting build parses docs whatever the adopted analysis wanted:
       # the artifact's `Docs` travel per module, and modules are parsed per
       # build — the prelude's own docs are nobody's surface.
@@ -510,6 +521,7 @@ module Iyi
       end
 
       if stale_check(program, node, sources)
+        raise CompilerError.new("link-input proof cannot use a completed-build shortcut", :FAILURE) if @emit_link_input_proof
         return Result.new(program, node)
       end
 
@@ -522,6 +534,7 @@ module Iyi
 
       write_iyimods program, prepared, units
       fill_bind_artifact program, units
+      write_link_input_proof
 
       @progress_tracker.clear
       print_macro_run_stats(program)
@@ -597,7 +610,7 @@ module Iyi
 
     # Re-applied by the adopt path above. `new_program` is what would otherwise
     # have set them, and adoption skips it.
-    APPLIED_ON_ADOPT = %w(use_iyimod iyi_prefers_source no_codegen emit_iyimod warnings color stdout show_error_trace iyi_mod_table iyi_file_overrides iyi_project_root iyi_header_root crystal_library)
+    APPLIED_ON_ADOPT = %w(use_iyimod iyi_prefers_source no_codegen emit_iyimod emit_frame_provenance warnings color stdout show_error_trace iyi_mod_table iyi_file_overrides iyi_project_root iyi_header_root crystal_library)
     # Neither, and two of these are judgements rather than facts. `mcpu`,
     # `mattr` and `mcmodel` reach the target machine and the target machine
     # reaches codegen, not analysis — a prelude analysed for one `-mcpu` is the
@@ -606,7 +619,7 @@ module Iyi
     # which is visible now rather than merely true.
     OUTSIDE_PRELUDE_ANALYSIS = %w(
       cleanup cross_compile dependency_printer dump_ll emit_base_filename
-      emit_bind emit_targets frame_pointers iyi_direct_link iyi_keep
+      emit_bind emit_targets emit_link_input_proof frame_pointers iyi_direct_link iyi_keep
       iyi_link_driver_only link_flags mattr mcmodel mcpu n_threads no_cleanup
       program progress_tracker single_module stale_drop stderr target_machine verbose
       stale_accept stale_block stale_dump_elements stale_key
@@ -783,8 +796,37 @@ module Iyi
     # Yields a `Program` instance before compiling.
     def compile_configure_program(source : Source | Array(Source), output_filename : String, & : Program -> Nil) : Result
       source = [source] unless source.is_a?(Array)
+      @link_input_proof_snapshot = nil
+      @link_input_proof_linker = nil
+      if proof = @emit_link_input_proof
+        proof_path = File.expand_path(proof)
+        if proof_path == File.expand_path(output_filename) ||
+           source.any? { |entry| !entry.filename.empty? && File.expand_path(entry.filename) == proof_path } ||
+           @emit_frame_provenance.try { |path| File.expand_path(path) == proof_path }
+          raise CompilerError.new("link-input proof path must differ from executable, sources, and frame manifest", :USAGE_ERROR)
+        end
+        if File.exists?(proof_path) || File.symlink?(proof_path)
+          raise CompilerError.new("link-input proof path already exists; choose a new path", :USAGE_ERROR)
+        end
+        if @no_codegen || @cross_compile || (emit_bind && iyi_keep) || ENV["IYI_FORK_PROBE"]?
+          raise CompilerError.new("link-input proof requires an ordinary linked executable", :USAGE_ERROR)
+        end
+      end
+      if manifest = @emit_frame_provenance
+        manifest_path = File.expand_path(manifest)
+        if manifest_path == File.expand_path(output_filename) || source.any? { |entry| !entry.filename.empty? && File.expand_path(entry.filename) == manifest_path }
+          raise CompilerError.new("frame provenance path must differ from the executable and source files", :USAGE_ERROR)
+        end
+        File.delete?(manifest_path)
+        if File.exists?(manifest_path)
+          raise CompilerError.new("cannot remove stale frame provenance at #{manifest_path}", :FAILURE)
+        end
+        if @no_codegen || @cross_compile || (emit_bind && iyi_keep)
+          raise CompilerError.new("frame provenance requires a linked executable", :USAGE_ERROR)
+        end
+      end
       @iyi_link_driver_only = true if stale_build?
-      return prelude_fork_probe(source, output_filename) if ENV["IYI_FORK_PROBE"]?
+      return prelude_fork_probe(source, output_filename) if @emit_frame_provenance.nil? && ENV["IYI_FORK_PROBE"]?
 
       # iyi: `IYI_WARM=1` — analyse the prelude and adopt it, in one process and
       # **without forking**, printing the two halves.
@@ -800,7 +842,7 @@ module Iyi
       # the fork costs 0.2 to 0.3 s of it (SPEC.md IV.1d). A measurement tool
       # rather than a mode — it analyses the prelude in the foreground, so it is
       # always slower overall than an ordinary build.
-      if ENV["IYI_WARM"]? && !Compiler.preanalysed.has_key?(prelude_cache_key)
+      if @emit_frame_provenance.nil? && ENV["IYI_WARM"]? && !Compiler.preanalysed.has_key?(prelude_cache_key)
         warm = Time.instant
         pre = preanalyse_prelude
         Compiler.preanalysed[pre.key] = pre
@@ -811,7 +853,7 @@ module Iyi
         return result
       end
 
-      if pre = Compiler.preanalysed[prelude_cache_key]?
+      if @emit_frame_provenance.nil? && (pre = Compiler.preanalysed[prelude_cache_key]?)
         return compile_with_preanalysed_prelude(pre, source, output_filename) { |program| yield program }
       end
       program = new_program(source)
@@ -824,8 +866,13 @@ module Iyi
         program.macro_expansion_error_hook.try &.call(ex.cause)
       end
 
-      if stale_check(program, node, source)
+      if @emit_frame_provenance.nil? && stale_check(program, node, source)
+        raise CompilerError.new("link-input proof cannot use a completed-build shortcut", :FAILURE) if @emit_link_input_proof
         return Result.new(program, node)
+      end
+
+      if @emit_frame_provenance && (!@emit_iyimod.nil? || !program.iyi_artifact_hashes.empty?)
+        raise CompilerError.new("frame provenance cannot use or emit an artifact without complete diagnostic transport", :FAILURE)
       end
 
       prepared = prepare_iyimods program
@@ -837,6 +884,10 @@ module Iyi
 
       write_iyimods program, prepared, units
       fill_bind_artifact program, units
+      write_link_input_proof
+      if manifest = @emit_frame_provenance
+        DiagnosticProvenance.write_manifest(manifest, output_filename, program.diagnostic_bindings, program.diagnostic_object_inputs)
+      end
 
       @progress_tracker.clear
       print_macro_run_stats(program)
@@ -959,6 +1010,21 @@ module Iyi
           # allowed in a consumer what they were here (SPEC.md III.13).
           unsafe: program.iyi_unsafe_files[filename]? || "",
         )
+
+        if program.diagnostic_capture
+          diagnostic = IyiMod::DiagnosticSection.new
+          program.iyi_mono_body_diagnostics[filename]?.try &.each_value { |fragment| diagnostic.add_fragment(fragment) }
+          if fragment = program.iyi_initialiser_diagnostics[filename]?
+            diagnostic.add_fragment(fragment)
+          end
+          diagnostic_add_class_vars(program, diagnostic, artifact.exports.class_vars)
+          artifact.exports.types.each { |declaration| diagnostic_add_type_class_vars(program, diagnostic, declaration) }
+          artifact.reopened.each { |declaration| diagnostic_add_type_class_vars(program, diagnostic, declaration) }
+          diagnostic_add_macros(program, diagnostic, artifact.macro_bodies)
+          artifact.exports.types.each { |declaration| diagnostic_add_type_macros(program, diagnostic, declaration) }
+          artifact.reopened.each { |declaration| diagnostic_add_type_macros(program, diagnostic, declaration) }
+          artifact.diagnostic_provenance = diagnostic
+        end
 
         # What each of its functions reaches of module state, for the walk
         # a consumer's spawn makes into them (SPEC.md III.4.15). Before the
@@ -1224,7 +1290,15 @@ module Iyi
         next if artifact.module_name.includes?('.')
 
         unit_names = iyi_unit_names(program, artifact.module_name)
-        artifact.object_code = collect_iyi_object_code(unit_names, units_by_name)
+        if program.diagnostic_capture
+          object_code, records = diagnostic_carried_objects(program, unit_names, units)
+          artifact.object_code = object_code
+          section = artifact.diagnostic_provenance || raise "missing artifact diagnostic section"
+          records.each { |record| section.add_object(record) }
+          section.validate_objects!(object_code)
+        else
+          artifact.object_code = collect_iyi_object_code(unit_names, units_by_name)
+        end
 
         # The units whose object code actually travelled, which is not the same
         # list. `collect_iyi_object_code` drops a name with no compilation unit
@@ -1636,6 +1710,41 @@ module Iyi
         code << IyiMod::ObjectUnit.new(name, File.open(path, "rb", &.getb_to_end))
       end
       code
+    end
+
+    # Carry exactly the objects selected by the existing per-type policy, but
+    # use the immutable bytes captured while the link-input lock was held.
+    private def diagnostic_carried_objects(program : Program, names : Array(String),
+                                           units : Array(CompilationUnit)?) : {Array(IyiMod::ObjectUnit), Array(IyiMod::DiagnosticObjectRecords)}
+      objects = [] of IyiMod::ObjectUnit
+      records = [] of IyiMod::DiagnosticObjectRecords
+      return {objects, records} unless units
+      by_name = {} of String => CompilationUnit
+      units.each do |unit|
+        raise "ambiguous carried unit name" if by_name.has_key?(unit.original_name)
+        by_name[unit.original_name] = unit
+      end
+      names.each do |name|
+        unit = by_name[name]?
+        next unless unit
+        raise "cannot carry a partitioned per-type artifact object" if unit.partitioned?
+        unit_ordinal = units.index { |candidate| candidate.same?(unit) } || raise "missing carried unit coordinate"
+        candidates = program.diagnostic_object_inputs.select do |input|
+          producer = input.producer.as_h
+          producer["kind"]?.try(&.as_s?) == "current_unit" &&
+            producer["unit_ordinal"]?.try(&.as_i?) == unit_ordinal
+        end
+        raise "missing or ambiguous carried object snapshot" unless candidates.size == 1
+        input = candidates.first
+        raise "carried object unit name mismatch" unless input.unit_name == name && input.partition.raw.nil?
+        bytes = Base64.decode(input.bytes_base64)
+        raise "carried object digest mismatch" unless ::Crystal::Digest::SHA256.hexdigest(bytes) == input.sha256
+        definitions = program.diagnostic_bindings.select { |binding| binding.link_input_id == input.link_input_id }.map(&.definition)
+        ordinal = objects.size
+        objects << IyiMod::ObjectUnit.new(name, bytes)
+        records << IyiMod::DiagnosticObjectRecords.new(ordinal, name, input.sha256, nil, definitions)
+      end
+      {objects, records}
     end
 
     # The names of the units a module's object code is made of: the module type
@@ -3068,14 +3177,28 @@ module Iyi
       metaclass.try &.hooks.try &.each do |hook|
         macros << hook.macro if filename.nil? || hook.macro.location.try(&.original_read_from) == filename
       end
-      macros.sort_by!(&.to_s).map { |a_macro| IyiMod.macro_source(a_macro) }
+      macros.sort_by!(&.to_s).map do |a_macro|
+        if type && type.program.diagnostic_capture
+          source, anchors = IyiMod.diagnostic_macro_source(a_macro)
+          type.program.record_macro_diagnostic(type.to_s, source, anchors)
+          source
+        else
+          IyiMod.macro_source(a_macro)
+        end
+      end
     end
 
     private def iyi_record_mono_body(program : Program, filename : String,
                                      container : String, signature : IyiMod::Signature,
                                      a_def : Def) : Nil
       key = IyiMod.mono_body_key(container, signature)
-      text, positions = IyiMod.located_source(a_def.body)
+      if program.diagnostic_capture
+        text, positions, anchors = IyiMod.diagnostic_located_source(a_def.body)
+        fragment = IyiMod::DiagnosticFragment.new("mono:#{key}", ::Crystal::Digest::SHA256.hexdigest(text), anchors)
+        (program.iyi_mono_body_diagnostics[filename] ||= {} of String => IyiMod::DiagnosticFragment)[key] = fragment
+      else
+        text, positions = IyiMod.located_source(a_def.body)
+      end
       (program.iyi_mono_bodies[filename] ||= {} of String => String)[key] = text
       (program.iyi_mono_body_positions[filename] ||= {} of String => Array(IyiMod::SourcePosition))[key] = positions
     end
@@ -3204,12 +3327,47 @@ module Iyi
     # up walks ancestors and *copies* what it finds onto the asking type, so a
     # module that merely reads `@@x` from an included module would otherwise
     # declare a second one of its own.
+    private def diagnostic_add_macros(program : Program, section : IyiMod::DiagnosticSection,
+                                      sources : Array(String)) : Nil
+      sources.each do |source|
+        stored = program.iyi_macro_diagnostics[IyiMod.macro_fragment_key(source)]? ||
+                 raise "missing macro diagnostic fragment"
+        section.add_fragment(stored[1])
+      end
+    end
+
+    private def diagnostic_add_type_macros(program : Program, section : IyiMod::DiagnosticSection,
+                                           declaration : IyiMod::TypeDecl) : Nil
+      diagnostic_add_macros(program, section, declaration.macros)
+      declaration.types.each { |nested| diagnostic_add_type_macros(program, section, nested) }
+    end
+
+    private def diagnostic_add_class_vars(program : Program, section : IyiMod::DiagnosticSection,
+                                          variables : Array(IyiMod::ClassVarDecl)) : Nil
+      variables.each do |variable|
+        next if variable.value.empty?
+        key = IyiMod.class_var_fragment_key(variable.name, variable.value)
+        stored = program.iyi_class_var_diagnostics[key]? || raise "missing class variable diagnostic fragment"
+        section.add_fragment(stored[1])
+      end
+    end
+
+    private def diagnostic_add_type_class_vars(program : Program, section : IyiMod::DiagnosticSection,
+                                               declaration : IyiMod::TypeDecl) : Nil
+      diagnostic_add_class_vars(program, section, declaration.class_vars)
+      declaration.types.each { |nested| diagnostic_add_type_class_vars(program, section, nested) }
+    end
+
     private def collect_iyi_class_vars(type : Type) : Array(IyiMod::ClassVarDecl)
       class_vars = [] of IyiMod::ClassVarDecl
       return class_vars unless type.responds_to?(:class_vars?)
 
       type.class_vars?.try &.each do |name, variable|
         initialiser = variable.iyi_initialiser_source
+        if type.program.diagnostic_capture && !initialiser.empty?
+          anchors = variable.iyi_initialiser_anchors || raise "class variable initializer lacks diagnostic anchors"
+          type.program.record_class_var_diagnostic(type.to_s, name, initialiser, anchors)
+        end
         # `@[ThreadLocal]` travels with it: a consumer that declared the
         # variable without it writes to a different global than this module's
         # object code does. See `IyiMod::ClassVarDecl`.
@@ -3538,6 +3696,7 @@ module Iyi
       program.iyi_prefers_source = @iyi_prefers_source
       program.iyi_wants_object_code = !@no_codegen
       program.iyi_rewrites_artifacts = !@emit_iyimod.nil?
+      program.diagnostic_capture = !@emit_frame_provenance.nil?
       # iyi: the manifest, if the root the entry is answered from has one
       # (III.7, `Compiler.entry_root_of`) — or the table a tool prepared,
       # which wins because the tool resolved the *user's* manifest and the
@@ -3633,6 +3792,31 @@ module Iyi
       end
       File.write(bc_flags_filename, current_bc_flags)
       bc_flags_changed
+    end
+
+    private def write_link_input_proof : Nil
+      if proof = @emit_link_input_proof
+        snapshot = @link_input_proof_snapshot || raise CompilerError.new("missing locked link-input proof", :FAILURE)
+        linker = @link_input_proof_linker || raise CompilerError.new("missing actual linker invocation", :FAILURE)
+        output = JSON.build do |json|
+          json.object do
+            json.field "schema", 1
+            json.field "tool", snapshot.tool
+            json.field "linker", linker
+            json.field "units", snapshot.units
+            json.field "inputs", snapshot.inputs
+          end
+        end
+        temporary = File.tempfile("iyi-link-proof-", ".tmp", dir: File.dirname(File.expand_path(proof)))
+        begin
+          temporary << output
+          temporary.close
+          File.link(temporary.path, proof)
+        ensure
+          temporary.close unless temporary.closed?
+          File.delete?(temporary.path)
+        end
+      end
     end
 
     private def codegen(program, node : ASTNode, sources, output_filename)
@@ -4264,24 +4448,230 @@ module Iyi
         @progress_tracker.clear
         return units
       end
+      snapshot_link_input_proof(program, units, object_names, output_dir) if @emit_link_input_proof
+
+
+      if @emit_frame_provenance
+        {% unless flag?(:without_llvm) %}
+          snapshot_diagnostic_inputs(program, units, object_names, output_dir)
+        {% else %}
+          raise CompilerError.new("frame provenance requires LLVM", :FAILURE)
+        {% end %}
+      end
 
       @progress_tracker.stage("Codegen (linking)") do
         Dir.cd(output_dir) do
           begin
-            run_linker *linker_command(program, object_names, output_filename, output_dir, expand: true), busy_output: output_filename
+            link = linker_command(program, object_names, output_filename, output_dir, expand: true)
+            run_linker *link, busy_output: output_filename
+            record_linker_proof(link) if @emit_link_input_proof
           rescue ex : CompilerError
             # A link the compiler built itself, on a machine where that does
             # not work: the driver is asked to do it instead and the template
             # is marked unusable, so this is paid once rather than every build.
             raise ex unless @iyi_direct_link
             iyi_disable_direct_link(@link_flags || "", program.lib_flags(@cross_compile))
-            run_linker *linker_command(program, object_names, output_filename, output_dir, expand: true), busy_output: output_filename
+            link = linker_command(program, object_names, output_filename, output_dir, expand: true)
+            run_linker *link, busy_output: output_filename
+            record_linker_proof(link) if @emit_link_input_proof
           end
         end
       end
 
       units
     end
+
+    private def record_linker_proof(link) : Nil
+      @link_input_proof_linker = JSON.parse(JSON.build do |json|
+        json.object do
+          json.field "program", link[0]
+          json.field "command", link[1]
+          json.field "args", link[2]
+        end
+      end)
+    end
+
+    private def proof_input(id : Int32, producer : JSON::Any, unit_name : String, partition : JSON::Any,
+                            path : String, expected : Bytes? = nil) : JSON::Any
+      bytes = File.read(path)
+      raise "link input changed during proof snapshot" unless File.read(path) == bytes
+      raise "artifact object differs from extracted bytes" if expected && bytes.to_slice != expected
+      JSON.parse(JSON.build do |json|
+        json.object do
+          json.field "link_input_id", id
+          json.field "producer", producer
+          json.field "unit_name", unit_name
+          json.field "partition", partition
+          json.field "sha256", ::Crystal::Digest::SHA256.hexdigest(bytes)
+          json.field "bytes_base64", Base64.strict_encode(bytes.to_slice)
+        end
+      end)
+    end
+
+    # Snapshot only the inputs actually passed to the compiler's link command.
+    # This deliberately excludes driver-injected startup objects and libraries.
+    private def snapshot_link_input_proof(program : Program, units : Array(CompilationUnit),
+                                          link_names : Array(String), output_dir : String) : Nil
+      raise "no compiler-supplied linker inputs for proof" if link_names.empty?
+      compiler_path = Process.executable_path || raise "cannot identify compiler executable for link-input proof"
+      compiler_path_sha256 = Stale.hex(Stale::Toolchain.file_sha256(compiler_path))
+      unit_records = [] of JSON::Any
+      input_records = [] of JSON::Any
+      seen = Set(String).new
+      cursor = 0
+      units.each_with_index do |unit, ordinal|
+        unit_name = unit.proof_unit_name || raise "missing LLVM unit proof name"
+        plan = unit.link_input_proof_plan
+        unit_records << JSON.parse(JSON.build do |json|
+          json.object do
+            json.field "unit_ordinal", ordinal
+            json.field "unit_name", unit_name
+            json.field "plan", plan
+          end
+        end)
+        paths = unit.object_filenames
+        raise "LLVM unit has no link object" if paths.empty?
+        paths.each_with_index do |name, index|
+          raise "link input ordering changed" unless link_names[cursor]? == name
+          path = File.join(output_dir, name)
+          raise "link inputs alias the same file" unless seen.add?(File.realpath(path))
+          producer = JSON.parse(%({"kind":"current_unit","unit_ordinal":#{ordinal}}))
+          partition = unit.partitioned? ? JSON.parse(%({"index":#{index},"count":#{paths.size}})) : JSON.parse("null")
+          input_records << proof_input(cursor, producer, unit_name, partition, path)
+          cursor += 1
+        end
+      end
+      extension = codegen_target.object_extension
+      program.iyi_artifact_objects.each do |module_name, objects|
+        objects.each_with_index do |object, ordinal|
+          name = "iyimod-#{safe_object_name(module_name)}-#{safe_object_name(object.name)}#{extension}"
+          raise "artifact link input ordering changed" unless link_names[cursor]? == name
+          path = File.join(output_dir, name)
+          raise "link inputs alias the same file" unless seen.add?(File.realpath(path))
+          producer = JSON.parse(JSON.build do |json|
+            json.object do
+              json.field "kind", "artifact_object"
+              json.field "artifact_identity", module_name
+              json.field "object_ordinal", ordinal
+            end
+          end)
+          # The current link treats each carried ObjectUnit as one opaque input.
+          input_records << proof_input(cursor, producer, object.name, JSON.parse("null"), path, object.code)
+          cursor += 1
+        end
+      end
+      raise "unmapped link input in proof" unless cursor == link_names.size
+      tool = JSON.parse(JSON.build do |json|
+        json.object do
+          json.field "compiler_version", IyiMod.compiler_version
+          json.field "compiler_executable_path", compiler_path
+          json.field "compiler_executable_path_sha256", compiler_path_sha256
+          json.field "llvm_version", LLVM.version
+          json.field "target", codegen_target.to_s
+          json.field "optimization", @optimization_mode.to_s
+          json.field "flags", program.flags.to_a.sort!
+          json.field "link_flags", @link_flags
+          json.field "static", @static
+          json.field "mcpu", @mcpu
+          json.field "mattr", @mattr
+          json.field "mcmodel", @mcmodel.to_s
+          json.field "debug", @debug.to_s
+          json.field "frame_pointers", @frame_pointers.to_s
+          json.field "single_module", @single_module
+          json.field "emit_targets", @emit_targets.to_s
+          json.field "n_threads", @n_threads
+        end
+      end)
+      @link_input_proof_snapshot = LinkInputProofSnapshot.new(tool, unit_records, input_records)
+    end
+
+    {% unless flag?(:without_llvm) %}
+      # Called inside the same cache lock that protects the linker inputs.
+      private def snapshot_diagnostic_inputs(program : Program, units : Array(CompilationUnit),
+                                             link_names : Array(String), output_dir : String) : Nil
+        raise CompilerError.new("frame provenance currently requires a Darwin target", :FAILURE) unless program.has_flag?("darwin")
+        program.diagnostic_object_inputs.clear
+        program.diagnostic_bindings.clear
+        seen_paths = Set(String).new
+        cursor = 0
+        units.each_with_index do |unit, unit_ordinal|
+          paths = unit.object_filenames
+          observations = unit.diagnostic_observations || raise "missing per-object optimizer observations"
+          roles_by_object = unit.diagnostic_roles || raise "missing per-object partition roles"
+          unless observations.size == paths.size && roles_by_object.size == paths.size
+            raise "diagnostic object observation count mismatch"
+          end
+          unit_name = unit.llvm_mod.name
+          raise "unnamed diagnostic LLVM unit" if unit_name.empty?
+          paths.each_with_index do |name, index|
+            raise "link input ordering changed" unless link_names[cursor]? == name
+            path = File.join(output_dir, name)
+            raise "link inputs alias the same file" unless seen_paths.add?(File.realpath(path))
+            producer = JSON.parse(%({"kind":"current_unit","unit_ordinal":#{unit_ordinal}}))
+            partition = if unit.partitioned?
+                          JSON.parse(%({"index":#{index},"count":#{paths.size}}))
+                        else
+                          JSON.parse("null")
+                        end
+            input = DiagnosticProvenance.snapshot_object(cursor, producer, unit_name, partition, path)
+            program.diagnostic_object_inputs << input
+            observed = observations[index] || raise "missing diagnostic object observation"
+            roles = roles_by_object[index] || raise "missing diagnostic object roles"
+            observed.each do |definition|
+              next if definition.emissions.empty?
+              raise "closure was folded with an unresolved definition" if definition.unresolved_nonclosure?
+              definition.emissions.each do |emission|
+                expected = unit.diagnostic_promoted_name(emission.actual_llvm_symbol)
+                raise "optimized closure name changed without proof" unless definition.llvm_symbol == expected
+                raise "unsupported verbatim LLVM symbol" if expected.empty? || expected.starts_with?('\u0001')
+                native = "_#{expected}"
+                unless input.native_evidence.symbols.any? { |symbol| symbol.name == native && symbol.kind.starts_with?("__TEXT,__text ") }
+                  raise "closure definition absent from its exact object"
+                end
+                role = roles[emission.actual_llvm_symbol]? || raise "missing closure partition role"
+                record = DiagnosticProvenance::Definition.new(emission, expected, native, definition.linkage, role)
+                program.diagnostic_bindings << DiagnosticProvenance::Binding.new(cursor, record)
+              end
+            end
+            cursor += 1
+          end
+        end
+        extension = codegen_target.object_extension
+        program.iyi_artifact_objects.each do |module_name, objects|
+          section = program.iyi_artifact_diagnostics[module_name]? || raise "missing imported diagnostic section"
+          section.validate_objects!(objects)
+          objects.each_with_index do |object, ordinal|
+            record = section.objects[ordinal]? || raise "missing imported object ordinal"
+            name = "iyimod-#{safe_object_name(module_name)}-#{safe_object_name(object.name)}#{extension}"
+            raise "artifact link input ordering changed" unless link_names[cursor]? == name
+            path = File.join(output_dir, name)
+            raise "link inputs alias the same file" unless seen_paths.add?(File.realpath(path))
+            producer = JSON.parse(JSON.build do |json|
+              json.object do
+                json.field "kind", "artifact_object"
+                json.field "artifact_identity", module_name
+                json.field "object_ordinal", ordinal
+              end
+            end)
+            partition = record.partition || JSON.parse("null")
+            input = DiagnosticProvenance.snapshot_object(cursor, producer, object.name, partition, path)
+            unless input.sha256 == record.object_sha256 && Base64.decode(input.bytes_base64) == object.code
+              raise "imported object bytes differ from artifact"
+            end
+            program.diagnostic_object_inputs << input
+            record.definitions.each do |definition|
+              DiagnosticProvenance.validate_definition!(definition)
+              unless input.native_evidence.symbols.any? { |symbol| symbol.name == definition.native_object_symbol && symbol.kind.starts_with?("__TEXT,__text ") }
+                raise "imported closure definition absent from its exact object"
+              end
+              program.diagnostic_bindings << DiagnosticProvenance::Binding.new(cursor, definition)
+            end
+            cursor += 1
+          end
+        end
+        raise "unmapped artifact or other linker input" unless cursor == link_names.size
+      end
+    {% end %}
 
     # iyi: unpacks the object files imported artifacts carried, into the same
     # directory the build's own units go to, and returns their names for the
@@ -4867,6 +5257,15 @@ module Iyi
       @bc_name : String?
       @preempt_flag : String?
       @plan : ReleasePartition::Plan?
+      @proof_functions : Array(ReleasePartition::DiagnosticFunction)? = nil
+      @proof_owners : Array(Int32)? = nil
+      @proof_globals : Array(ReleasePartition::DiagnosticGlobal)? = nil
+      getter proof_unit_name : String? = nil
+      {% unless flag?(:without_llvm) %}
+        getter diagnostic_observations : Array(Array(DiagnosticProvenance::ObservedDefinition)?)? = nil
+        getter diagnostic_roles : Array(Hash(String, String)?)? = nil
+        @diagnostic_emissions : Array(DiagnosticProvenance::Emission)? = nil
+      {% end %}
 
       # *verify*: whether `prepare` verifies the module, which it does for a
       # unit per type; one module is verified by `CodeGenVisitor#finish`.
@@ -4898,6 +5297,37 @@ module Iyi
         @name = "#{@name}#{@compiler.optimization_mode.suffix}"
         @object_extension = compiler.codegen_target.object_extension
         @preempt_flag = program.iyi_preempt_flag
+        @diagnostic_capture = program.diagnostic_capture
+        {% unless flag?(:without_llvm) %}
+          if compiler.emit_link_input_proof
+            @proof_unit_name = @llvm_mod.name
+            functions = [] of ReleasePartition::DiagnosticFunction
+            owners = [] of Int32
+            @llvm_mod.functions.each do |function|
+              name = function.name
+              linkage = function.linkage.to_s
+              functions << ReleasePartition::DiagnosticFunction.new(name, linkage, name, linkage)
+              owners << (LibLLVM.is_declaration(function) != 0 ? -1 : 0)
+            end
+            globals = [] of ReleasePartition::DiagnosticGlobal
+            global = LibLLVM.get_first_global(@llvm_mod)
+            until global.null?
+              name = String.new(LibLLVM.get_value_name2(global, out length), length)
+              linkage = LibLLVM.get_linkage(global).to_s
+              owner = LibLLVM.is_declaration(global) != 0 ? -1 : 0
+              globals << ReleasePartition::DiagnosticGlobal.new(name, linkage, name, linkage, owner)
+              global = LibLLVM.get_next_global(global)
+            end
+            @proof_globals = globals
+            @proof_functions = functions
+            @proof_owners = owners
+          end
+        {% end %}
+        {% unless flag?(:without_llvm) %}
+          if @diagnostic_capture
+            @diagnostic_emissions = program.diagnostic_emissions.select { |record| record.unit_name == @llvm_mod.name }
+          end
+        {% end %}
       end
 
       def generate_bitcode
@@ -4958,7 +5388,8 @@ module Iyi
       # to be worth cutting.
       def partition(count : Int32?, import_limit : Int32, inline_limit : Int32) : Nil
         named = @preempt_flag.try { |flag| PreemptChecks.named(flag) } || [] of String
-        @plan = ReleasePartition.plan(llvm_mod, count, named, import_limit, inline_limit)
+        @plan = ReleasePartition.plan(llvm_mod, count, named, import_limit, inline_limit,
+          diagnostic: @diagnostic_capture || !compiler.emit_link_input_proof.nil?)
       end
 
       def partitions : Int32
@@ -4967,6 +5398,70 @@ module Iyi
 
       def partitioned? : Bool
         !@plan.nil?
+      end
+
+      # This is a snapshot of the selected plan, not an optimizer directive.
+      def link_input_proof_plan : JSON::Any
+        if plan = @plan
+          functions = plan.diagnostic_functions || raise "partition proof lacks promotion observations"
+          globals = plan.diagnostic_globals || raise "partition proof lacks global observations"
+          owners = plan.owner
+          count = plan.count
+          raise "partition proof count mismatch" unless plan.copies.size == count && plan.inline_only.size == count
+        else
+          functions = @proof_functions || raise "single-unit proof lacks function observations"
+          globals = @proof_globals || raise "single-unit proof lacks global observations"
+          owners = @proof_owners || raise "single-unit proof lacks ownership observations"
+          count = 1
+        end
+        raise "partition proof function count mismatch" unless functions.size == owners.size
+        JSON.parse(JSON.build do |json|
+          json.object do
+            json.field "count", count
+            json.field "functions" do
+              json.array do
+                functions.each_with_index do |function, position|
+                  owner = owners[position]
+                  raise "invalid partition owner" unless owner >= -1 && owner < count
+                  copies = [] of Int32
+                  inline_only = [] of Int32
+                  if plan = @plan
+                    plan.copies.each_with_index { |items, index| copies << index if items.includes?(position) }
+                    plan.inline_only.each_with_index { |items, index| inline_only << index if items.includes?(position) }
+                  end
+                  if copies.includes?(owner) || inline_only.includes?(owner) || copies.any? { |index| inline_only.includes?(index) }
+                    raise "overlapping partition roles"
+                  end
+                  json.object do
+                    json.field "position", position
+                    json.field "original_name", function.original_name
+                    json.field "original_linkage", function.original_linkage
+                    json.field "promoted_name", function.promoted_name
+                    json.field "promoted_linkage", function.promoted_linkage
+                    json.field "owner", owner
+                    json.field "copies", copies
+                    json.field "inline_only", inline_only
+                  end
+                end
+              end
+            end
+            json.field "globals" do
+              json.array do
+                globals.each_with_index do |global, position|
+                  raise "invalid global owner" unless global.owner == -1 || global.owner == 0
+                  json.object do
+                    json.field "position", position
+                    json.field "original_name", global.original_name
+                    json.field "original_linkage", global.original_linkage
+                    json.field "promoted_name", global.promoted_name
+                    json.field "promoted_linkage", global.promoted_linkage
+                    json.field "owner", global.owner
+                  end
+                end
+              end
+            end
+          end
+        end)
       end
 
       # Whether the partitions have to be compiled, on the main thread before
@@ -4980,8 +5475,74 @@ module Iyi
         end
         object_names.each { |name| File.delete?(name) }
         File.write(bc_name, @memory_buffer.not_nil!.to_slice)
+        {% unless flag?(:without_llvm) %}
+          if @diagnostic_capture
+            @diagnostic_observations = Array(Array(DiagnosticProvenance::ObservedDefinition)?).new(partitions, nil)
+            @diagnostic_roles = Array(Hash(String, String)?).new(partitions, nil)
+          end
+        {% end %}
         true
       end
+
+      {% unless flag?(:without_llvm) %}
+        def diagnostic_promoted_name(original : String) : String
+          return original unless plan = @plan
+          functions = plan.diagnostic_functions || raise "partition provenance missing"
+          matches = functions.select { |function| function.original_name == original }
+          raise "ambiguous original partition symbol" unless matches.size == 1
+          matches.first.promoted_name
+        end
+
+        private def diagnostic_observer(mod : LLVM::Module, index : Int32?) : DiagnosticProvenance::Observer
+          records = @diagnostic_emissions.not_nil!
+          by_name = {} of String => Array(DiagnosticProvenance::Emission)
+          records.each do |record|
+            (by_name[record.actual_llvm_symbol] ||= [] of DiagnosticProvenance::Emission) << record
+          end
+          defined = Set(String).new
+          mod.functions.each { |fun| defined.add(fun.name) if LibLLVM.is_declaration(fun) == 0 }
+          candidates = {} of String => Array(DiagnosticProvenance::Emission)
+          roles = {} of String => String
+          slot = index || 0
+          if plan = @plan
+            partition = index || raise "partition coordinate missing"
+            functions = plan.diagnostic_functions || raise "partition provenance missing"
+            raise "partition provenance length mismatch" unless functions.size == plan.owner.size
+            by_name.each_key do |name|
+              position = nil
+              functions.each_with_index do |function, candidate|
+                next unless function.original_name == name
+                raise "ambiguous closure in partition plan" if position
+                position = candidate
+              end
+              unless position && plan.owner[position] >= 0
+                raise "emitted closure absent from partition plan"
+              end
+            end
+            functions.each_with_index do |function, position|
+              matching = by_name[function.original_name]?
+              next unless matching
+              role = if plan.owner[position] == partition
+                       "owner"
+                     elsif plan.copies[partition].includes?(position)
+                       "local_copy"
+                     end
+              next unless role && defined.includes?(function.promoted_name)
+              raise "duplicate promoted closure name" if candidates.has_key?(function.promoted_name)
+              candidates[function.promoted_name] = matching
+              roles[function.original_name] = role
+            end
+          else
+            by_name.each do |name, matching|
+              raise "emitted closure absent from LLVM unit" unless defined.includes?(name)
+              candidates[name] = matching
+              roles[name] = "single"
+            end
+          end
+          @diagnostic_roles.not_nil![slot] = roles
+          DiagnosticProvenance::Observer.new(mod, candidates)
+        end
+      {% end %}
 
       # Partition *index*, read from the module's bitcode into a context of
       # its own, optimised and written to its object. Safe on any thread.
@@ -4992,9 +5553,15 @@ module Iyi
         target_machine = compiler.create_target_machine
         mod = ReleasePartition.materialize(@memory_buffer.not_nil!, plan, index, target_machine)
         begin
+          {% unless flag?(:without_llvm) %}
+            observer = diagnostic_observer(mod, index) if @diagnostic_capture
+          {% end %}
           compiler.optimize mod, target_machine
           WasmRoots.run(mod) if compiler.codegen_target.architecture == "wasm32"
           compiler.preempt_checks mod, @preempt_flag
+          {% unless flag?(:without_llvm) %}
+            @diagnostic_observations.not_nil![index] = observer.finish if observer
+          {% end %}
           mod.print_to_file "#{@output_dir}/#{@name}.part#{index}.ll" if compiler.dump_ll?
           target_machine.emit_obj_to_file mod, temporary_object_name
           File.rename(temporary_object_name, object_name)
@@ -5012,6 +5579,7 @@ module Iyi
 
       private def must_compile?
         memory_buffer = generate_bitcode
+        return true if @diagnostic_capture
 
         return true unless compiler.emit_targets.none?
         return true if @bc_flags_changed
@@ -5064,9 +5632,19 @@ module Iyi
       private def compile_to_object
         temporary_object_name = self.temporary_object_name
         target_machine = compiler.create_target_machine
+        {% unless flag?(:without_llvm) %}
+          if @diagnostic_capture
+            @diagnostic_observations = Array(Array(DiagnosticProvenance::ObservedDefinition)?).new(1, nil)
+            @diagnostic_roles = Array(Hash(String, String)?).new(1, nil)
+            observer = diagnostic_observer(llvm_mod, nil)
+          end
+        {% end %}
         compiler.optimize llvm_mod, target_machine unless compiler.optimization_mode.o0?
         WasmRoots.run(llvm_mod) if compiler.codegen_target.architecture == "wasm32"
         compiler.preempt_checks llvm_mod, @preempt_flag
+        {% unless flag?(:without_llvm) %}
+          @diagnostic_observations.not_nil![0] = observer.finish if observer
+        {% end %}
         target_machine.emit_obj_to_file llvm_mod, temporary_object_name
         File.rename(temporary_object_name, object_name)
       rescue ex

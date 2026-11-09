@@ -1241,6 +1241,10 @@ module Iyi
 
       body = Call.new(obj, node.name, call_args, global: node.global?).at(node)
       proc_literal = ProcLiteral.new(Def.new("->", def_args, body).at(node)).at(node)
+      proc_literal.diagnostic_origin = node.diagnostic_origin.try do |origin|
+        DiagnosticOrigin::Synthetic.new(origin, "proc_pointer", "proc")
+      end
+      proc_literal.def.diagnostic_origin = proc_literal.diagnostic_origin
       proc_literal.proc_pointer = node
 
       if assign

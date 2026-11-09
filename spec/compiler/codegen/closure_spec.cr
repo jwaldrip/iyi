@@ -801,4 +801,59 @@ describe "Code gen: closure" do
       fn.call.closure_data.address == Closure.atomic.address
       CODE
   end
+  it "rejects incomplete frame provenance identities" do
+    origin = JSON.parse(%({"kind":"Written","source_identity":{"module":"app/main","file":"main.iyi"},"input_byte_offset":0,"anchor_kind":"ProcLiteral","role":"arrow"}))
+    specialization = JSON.parse(%({"kind":"program_scope","source_identity":{"module":"app/main","file":"main.iyi"}}))
+    capture = JSON.parse(%({"proc_type":{"kind":"Iyi::ProcInstanceType","arguments":[],"return":{"kind":"Iyi::NilType","name":"Nil"}},"is_closure":false,"environment":null}))
+    location = JSON.parse(%({"file":"main.iyi","line":1,"column":1}))
+    emission = Iyi::DiagnosticProvenance::Emission.new("requested", "actual", "unit", "Internal", origin, specialization, capture, location)
+    Iyi::DiagnosticProvenance.validate_emission!(emission)
+
+    capture["proc_type"].as_h.delete("return")
+    expect_raises(Exception) { Iyi::DiagnosticProvenance.validate_emission!(emission) }
+  end
+
+  it "rejects an unproven closure binding scope" do
+    origin = JSON.parse(%({"kind":"Written","source_identity":{"module":"app/main","file":"main.iyi"},"input_byte_offset":0,"anchor_kind":"ProcLiteral","role":"arrow"}))
+    specialization = JSON.parse(%({"kind":"program_scope","source_identity":{"module":"app/main","file":"main.iyi"}}))
+    capture = JSON.parse(%({"proc_type":{"kind":"Iyi::ProcInstanceType","arguments":[],"return":{"kind":"Iyi::NilType","name":"Nil"}},"is_closure":true,"environment":{"captured_self_type":null,"bindings":[{"name":"x","binding_origin":{"kind":"Synthetic","parent_origin":{"kind":"Written","source_identity":{"module":"app/main","file":"main.iyi"},"input_byte_offset":1,"anchor_kind":"Call","role":"method"},"synthesis_kind":"local_binding","structural_slot":"assignment"},"scope":{"kind":"program"},"type":{"kind":"Iyi::IntegerType","name":"Int32"},"mutable":false}],"parent":null}}))
+    location = JSON.parse(%({"file":"main.iyi","line":1,"column":1}))
+    emission = Iyi::DiagnosticProvenance::Emission.new("requested", "actual", "unit", "Internal", origin, specialization, capture, location)
+    Iyi::DiagnosticProvenance.validate_emission!(emission)
+    capture["environment"]["bindings"][0]["scope"].as_h["kind"] = JSON::Any.new("unknown")
+    expect_raises(Exception) { Iyi::DiagnosticProvenance.validate_emission!(emission) }
+  end
+
+  it "preserves full Mach-O symbol names and rejects undefined or malformed entries" do
+    raw = "0000000000000010 (__TEXT,__text) non-external _~proc with spaces\n"
+    evidence = Iyi::DiagnosticProvenance.parse_native_evidence(raw)
+    evidence.raw_nm.should eq(raw)
+    evidence.symbols.size.should eq(1)
+    evidence.symbols[0].name.should eq("_~proc with spaces")
+    evidence.symbols[0].address.should eq("0000000000000010")
+    evidence.symbols[0].kind.should eq("__TEXT,__text non-external")
+    expect_raises(Exception, /unsupported nm definition/) do
+      Iyi::DiagnosticProvenance.parse_native_evidence("                 (undefined) external _~proc\n")
+    end
+    expect_raises(Exception, /unsupported nm definition/) do
+      Iyi::DiagnosticProvenance.parse_native_evidence("not an nm entry\n")
+    end
+    expect_raises(Exception, /unsupported annotated nm symbol/) do
+      Iyi::DiagnosticProvenance.parse_native_evidence("0000000000000010 (__TEXT,__text) external _~proc (was a private external)\n")
+    end
+  end
+
+  it "observes defined functions but not declarations" do
+    llvm_context = LLVM::Context.new
+    mod = llvm_context.new_module("diagnostic-observer")
+    mod.functions.add("defined", [] of LLVM::Type, llvm_context.int32) do |fun|
+      fun.basic_blocks.append("entry") { |builder| builder.ret llvm_context.int32.const_int(1) }
+    end
+    mod.functions.add("declared", [] of LLVM::Type, llvm_context.int32)
+    observer = Iyi::DiagnosticProvenance::Observer.new(mod, {} of String => Array(Iyi::DiagnosticProvenance::Emission))
+    observed = observer.finish
+    observed.map(&.llvm_symbol).should eq(["defined"])
+    observed.first.unresolved_nonclosure?.should be_true
+  end
+
 end

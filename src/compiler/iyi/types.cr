@@ -1274,6 +1274,7 @@ module Iyi
           # `class variable '@@bit_fields' of ASN1::BER is not nilable so it
           # must have an initializer`.
           var.iyi_initialiser_source = class_var.iyi_initialiser_source
+          var.iyi_initialiser_anchors = class_var.iyi_initialiser_anchors.try(&.dup)
           var.bind_to(class_var)
           self.class_vars[name] = var
           return var

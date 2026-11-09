@@ -869,7 +869,13 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
       # consumer's link ended on `Kit::Lib::B#walk<&Proc(Int32, Nil)>:Nil`.
       if file && (bodies_travel || IyiMod.caller_instantiated?(a_def) || iyi_impl_signature_widened?(a_def))
         key = IyiMod.mono_body_key(container, signature)
-        text, positions = IyiMod.located_source(a_def.body)
+        if @program.diagnostic_capture
+          text, positions, anchors = IyiMod.diagnostic_located_source(a_def.body)
+          fragment = IyiMod::DiagnosticFragment.new("mono:#{key}", ::Crystal::Digest::SHA256.hexdigest(text), anchors)
+          (@program.iyi_mono_body_diagnostics[file] ||= {} of String => IyiMod::DiagnosticFragment)[key] = fragment
+        else
+          text, positions = IyiMod.located_source(a_def.body)
+        end
         (@program.iyi_mono_bodies[file] ||= {} of String => String)[key] = text
         (@program.iyi_mono_body_positions[file] ||= {} of String => Array(IyiMod::SourcePosition))[key] = positions
       end

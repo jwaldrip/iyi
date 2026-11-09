@@ -141,16 +141,23 @@ module Iyi
       node.exp.accept self
 
       if node.output?
+        splice_start = @program.diagnostic_capture ? @str.pos.to_i32 : 0
+        diagnostic_anchors = @program.diagnostic_capture ? [] of DiagnosticAnchor : nil
         is_yield = node.exp.is_a?(Yield) && !@last.is_a?(Nop)
         if (loc = @last.location) && loc.filename.is_a?(String) || is_yield
           macro_expansion_pragmas = @macro_expansion_pragmas ||= {} of Int32 => Array(Lexer::LocPragma)
           (macro_expansion_pragmas[@str.pos.to_i32] ||= [] of Lexer::LocPragma) << Lexer::LocPushPragma.new
           @str << "begin\n" if is_yield
-          @last.to_s(@str, macro_expansion_pragmas: macro_expansion_pragmas, emit_doc: true)
+          @last.to_s(@str, macro_expansion_pragmas: macro_expansion_pragmas, emit_doc: true, diagnostic_anchors: diagnostic_anchors)
           @str << " end" if is_yield
           (macro_expansion_pragmas[@str.pos.to_i32] ||= [] of Lexer::LocPragma) << Lexer::LocPopPragma.new
         else
-          @last.to_s(@str, emit_location_pragmas: !!@program.interpreted_node_hook)
+          @last.to_s(@str, emit_location_pragmas: !!@program.interpreted_node_hook, diagnostic_anchors: diagnostic_anchors)
+        end
+        if diagnostic_anchors
+          pragmas = @macro_expansion_pragmas ||= {} of Int32 => Array(Lexer::LocPragma)
+          (pragmas[splice_start] ||= [] of Lexer::LocPragma) << Lexer::LocDiagnosticSplice.new(@str.pos.to_i32, diagnostic_anchors)
+          @macro_expansion_pragmas = pragmas.to_a.sort_by!(&.[0]).to_h
         end
       end
 
