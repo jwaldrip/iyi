@@ -552,11 +552,41 @@ class TestHostedExecWitness(unittest.TestCase):
             events = parse_witness_events(stream)
             with self.assertRaises(RawCaptureError) as ctx:
                 verify_exec_witness_evidence(
-                    events=events,
                     required_executables=[(64769, 1001)],
                     raw_capture_dir=tmpdir,
                 )
             self.assertIn("not a regular file", str(ctx.exception).lower())
+
+    def test_duplicate_inode_across_logical_slots_rejected(self):
+        """Distinct logical build slots cannot share the same physical (st_dev, st_ino)."""
+        stream = _generate_valid_witness_stream(
+            exec_inoderefs=[(64769, 1001)],
+        )
+        events = parse_witness_events(stream)
+        with self.assertRaises(WitnessVerificationError) as ctx:
+            verify_exec_witness_evidence(
+                events=events,
+                required_executables=[(64769, 1001), (64769, 1001)],  # Duplicate slot assignment
+            )
+        self.assertIn("cannot share physical inode", str(ctx.exception).lower())
+
+    def test_link_and_utimensat_observation_parsed(self):
+        """Validates parsing of observational link, utimensat, and consumer completion records."""
+        events = [
+            {"event": "session_start", "protocol": PROTOCOL_VERSION, "tracer_pid": 100, "start_time_ns": 1, "tracer_dumpable": 0, "launch_binding": {}},
+            {"event": "process_spawn", "seq_id": 1, "timestamp_ns": 2, "pid": 101, "ppid": 100, "parent_seq_id": 0, "kind": "initial", "is_thread": False},
+            {"event": "link_observation", "seq_id": 1, "timestamp_ns": 3, "pid": 101, "cwd": "/W", "old_path": "WORK/out", "new_path": "scratch/uuid/out.ref", "st_dev": 1, "st_ino": 2, "st_nlink": 2},
+            {"event": "utimensat_observation", "seq_id": 1, "timestamp_ns": 4, "pid": 101, "cwd": "/W", "path": "scratch/uuid/out.ref", "st_dev": 1, "st_ino": 2, "st_atim_ns": 100, "st_mtim_ns": 200},
+            {"event": "exec_success", "seq_id": 1, "timestamp_ns": 5, "pid": 101, "ppid": 100, "role": "consumer", "exe_path": "/W/out", "cwd": "/W", "st_dev": 1, "st_ino": 2, "st_mode": 33261, "st_size": 10, "st_uid": 65534, "st_gid": 65534, "st_atim_ns": 5, "st_mtim_ns": 1, "st_ctim_ns": 1, "held_fd_index": 0, "sha256": "1111111111111111111111111111111111111111111111111111111111111111", "size_bytes": 10, "raw_captured": True},
+            {"event": "consumer_completion", "seq_id": 1, "timestamp_ns": 6, "pid": 101, "exit_code": 0, "runtime_ns": 1000, "st_dev": 1, "st_ino": 2, "sha256": "1111111111111111111111111111111111111111111111111111111111111111"},
+            {"event": "process_exit", "seq_id": 1, "timestamp_ns": 7, "pid": 101, "exit_code": 0, "raw_status": 0},
+            {"event": "session_end", "protocol": PROTOCOL_VERSION, "tracer_pid": 100, "end_time_ns": 8, "status": "COMPLETE", "root_exit_code": 0, "total_processes_spawned": 1, "total_exec_events": 1, "active_processes_at_end": 0},
+        ]
+        res = verify_exec_witness_evidence(events=events)
+        self.assertTrue(res.verified)
+        self.assertEqual(len(res.hardlink_events), 1)
+        self.assertEqual(len(res.timestamp_reset_events), 1)
+        self.assertEqual(len(res.consumer_completions), 1)
 
     def test_c_source_invariants(self):
         """Verify the C implementation enforces all required security invariants."""
@@ -599,6 +629,11 @@ class TestHostedExecWitness(unittest.TestCase):
         self.assertIn("close_all_non_standard_fds", c_code)
         self.assertIn("write_all", c_code)
         self.assertIn("DRAIN_CHILD_PIPES", c_code)
+        self.assertIn("emit_link_observation_event", c_code)
+        self.assertIn("emit_utimensat_observation_event", c_code)
+        self.assertIn("consumer_completion", c_code)
+        self.assertIn("read_tracee_string", c_code)
+
 
 if __name__ == "__main__":
     unittest.main()

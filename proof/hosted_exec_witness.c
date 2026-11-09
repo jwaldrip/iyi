@@ -428,6 +428,9 @@ typedef struct {
   bool initial_stop_pending;
   bool pending_link_syscall;
   bool pending_utimensat_syscall;
+  char link_oldpath[512];
+  char link_newpath[512];
+  char utime_path[512];
   int exit_status;
   char role[16];
   uint64_t st_dev;
@@ -638,21 +641,120 @@ static void emit_evidence_record(const char *json_line) {
   }
 }
 
-static void emit_hardlink_event(pid_t pid, uint64_t seq) {
-  char buf[512];
+static bool read_tracee_string(pid_t pid, unsigned long addr, char *out,
+                               size_t out_max) {
+  if (addr == 0 || out == NULL || out_max == 0) {
+    return false;
+  }
+  size_t pos = 0;
+  while (pos + sizeof(long) < out_max) {
+    errno = 0;
+    long val = linux_ptrace(PTRACE_PEEKDATA, pid, (void *)(addr + pos), NULL);
+    if (errno != 0) {
+      break;
+    }
+    char *bytes = (char *)&val;
+    for (size_t b = 0; b < sizeof(long); b++) {
+      if (bytes[b] == '\0') {
+        out[pos++] = '\0';
+        return true;
+      }
+      out[pos++] = bytes[b];
+    }
+  }
+  out[out_max - 1] = '\0';
+  return pos > 0;
+}
+
+static void emit_link_observation_event(pid_t pid, uint64_t seq,
+                                        const char *old_path,
+                                        const char *new_path) {
+  char proc_cwd[64];
+  snprintf(proc_cwd, sizeof(proc_cwd), "/proc/%d/cwd", (int)pid);
+  char cwd_target[PATH_MAX] = {0};
+  ssize_t cwd_len = readlink(proc_cwd, cwd_target, sizeof(cwd_target) - 1);
+  if (cwd_len > 0)
+    cwd_target[cwd_len] = '\0';
+
+  char full_path[PATH_MAX * 2];
+  if (new_path[0] == '/') {
+    snprintf(full_path, sizeof(full_path), "/proc/%d/root%s", (int)pid,
+             new_path);
+  } else {
+    snprintf(full_path, sizeof(full_path), "/proc/%d/cwd/%s", (int)pid,
+             new_path);
+  }
+
+  struct stat st;
+  memset(&st, 0, sizeof(st));
+  uint64_t dev = 0, ino = 0, nlink = 0;
+  if (stat(full_path, &st) == 0) {
+    dev = (uint64_t)st.st_dev;
+    ino = (uint64_t)st.st_ino;
+    nlink = (uint64_t)st.st_nlink;
+  }
+
+  char esc_old[512];
+  escape_json_string(old_path, esc_old, sizeof(esc_old));
+  char esc_new[512];
+  escape_json_string(new_path, esc_new, sizeof(esc_new));
+  char esc_cwd[512];
+  escape_json_string(cwd_target, esc_cwd, sizeof(esc_cwd));
+
+  char buf[2048];
   snprintf(buf, sizeof(buf),
-           "{\"event\":\"hardlink_authenticated\",\"seq_id\":%" PRIu64
-           ",\"timestamp_ns\":%" PRIu64 ",\"pid\":%d}",
-           seq, get_time_ns(), (int)pid);
+           "{\"event\":\"link_observation\",\"seq_id\":%" PRIu64
+           ",\"timestamp_ns\":%" PRIu64
+           ",\"pid\":%d,\"cwd\":\"%s\",\"old_path\":\"%s\",\"new_path\":\"%s\""
+           ",\"st_dev\":%" PRIu64 ",\"st_ino\":%" PRIu64
+           ",\"st_nlink\":%" PRIu64 "}",
+           seq, get_time_ns(), (int)pid, esc_cwd, esc_old, esc_new, dev, ino,
+           nlink);
   emit_evidence_record(buf);
 }
 
-static void emit_timestamp_reset_event(pid_t pid, uint64_t seq) {
-  char buf[512];
+static void emit_utimensat_observation_event(pid_t pid, uint64_t seq,
+                                             const char *path) {
+  char proc_cwd[64];
+  snprintf(proc_cwd, sizeof(proc_cwd), "/proc/%d/cwd", (int)pid);
+  char cwd_target[PATH_MAX] = {0};
+  ssize_t cwd_len = readlink(proc_cwd, cwd_target, sizeof(cwd_target) - 1);
+  if (cwd_len > 0)
+    cwd_target[cwd_len] = '\0';
+
+  char full_path[PATH_MAX * 2];
+  if (path[0] == '/') {
+    snprintf(full_path, sizeof(full_path), "/proc/%d/root%s", (int)pid, path);
+  } else {
+    snprintf(full_path, sizeof(full_path), "/proc/%d/cwd/%s", (int)pid, path);
+  }
+
+  struct stat st;
+  memset(&st, 0, sizeof(st));
+  uint64_t dev = 0, ino = 0, atim_ns = 0, mtim_ns = 0;
+  if (stat(full_path, &st) == 0) {
+    dev = (uint64_t)st.st_dev;
+    ino = (uint64_t)st.st_ino;
+    atim_ns = (uint64_t)STAT_ATIM_SEC(st) * 1000000000ULL +
+              (uint64_t)STAT_ATIM_NSEC(st);
+    mtim_ns = (uint64_t)STAT_MTIM_SEC(st) * 1000000000ULL +
+              (uint64_t)STAT_MTIM_NSEC(st);
+  }
+
+  char esc_path[512];
+  escape_json_string(path, esc_path, sizeof(esc_path));
+  char esc_cwd[512];
+  escape_json_string(cwd_target, esc_cwd, sizeof(esc_cwd));
+
+  char buf[2048];
   snprintf(buf, sizeof(buf),
-           "{\"event\":\"timestamp_reset_authenticated\",\"seq_id\":%" PRIu64
-           ",\"timestamp_ns\":%" PRIu64 ",\"pid\":%d}",
-           seq, get_time_ns(), (int)pid);
+           "{\"event\":\"utimensat_observation\",\"seq_id\":%" PRIu64
+           ",\"timestamp_ns\":%" PRIu64
+           ",\"pid\":%d,\"cwd\":\"%s\",\"path\":\"%s\""
+           ",\"st_dev\":%" PRIu64 ",\"st_ino\":%" PRIu64
+           ",\"st_atim_ns\":%" PRIu64 ",\"st_mtim_ns\":%" PRIu64 "}",
+           seq, get_time_ns(), (int)pid, esc_cwd, esc_path, dev, ino, atim_ns,
+           mtim_ns);
   emit_evidence_record(buf);
 }
 
@@ -779,13 +881,14 @@ static int inspect_syscall_stop(pid_t pid, char *err_buf, size_t err_buf_len) {
     if (proc != NULL && proc->pending_link_syscall) {
       proc->pending_link_syscall = false;
       if (info.exit.rval == 0) {
-        emit_hardlink_event(pid, proc->seq_id);
+        emit_link_observation_event(pid, proc->seq_id, proc->link_oldpath,
+                                    proc->link_newpath);
       }
     }
     if (proc != NULL && proc->pending_utimensat_syscall) {
       proc->pending_utimensat_syscall = false;
       if (info.exit.rval == 0) {
-        emit_timestamp_reset_event(pid, proc->seq_id);
+        emit_utimensat_observation_event(pid, proc->seq_id, proc->utime_path);
       }
     }
     return 2; /* Syscall exit */
@@ -821,14 +924,29 @@ static int inspect_syscall_stop(pid_t pid, char *err_buf, size_t err_buf_len) {
         return -1;
       }
     }
-    if (nr == 86 || nr == 265) { /* __NR_link, __NR_linkat */
+    if (nr == 86) { /* __NR_link */
       if (proc != NULL) {
         proc->pending_link_syscall = true;
+        read_tracee_string(pid, info.entry.args[0], proc->link_oldpath,
+                           sizeof(proc->link_oldpath));
+        read_tracee_string(pid, info.entry.args[1], proc->link_newpath,
+                           sizeof(proc->link_newpath));
+      }
+    }
+    if (nr == 265) { /* __NR_linkat */
+      if (proc != NULL) {
+        proc->pending_link_syscall = true;
+        read_tracee_string(pid, info.entry.args[1], proc->link_oldpath,
+                           sizeof(proc->link_oldpath));
+        read_tracee_string(pid, info.entry.args[3], proc->link_newpath,
+                           sizeof(proc->link_newpath));
       }
     }
     if (nr == 280) { /* __NR_utimensat */
       if (proc != NULL) {
         proc->pending_utimensat_syscall = true;
+        read_tracee_string(pid, info.entry.args[1], proc->utime_path,
+                           sizeof(proc->utime_path));
       }
     }
 #elif defined(__aarch64__)
@@ -856,11 +974,17 @@ static int inspect_syscall_stop(pid_t pid, char *err_buf, size_t err_buf_len) {
     if (nr == 37) { /* __NR_linkat */
       if (proc != NULL) {
         proc->pending_link_syscall = true;
+        read_tracee_string(pid, info.entry.args[1], proc->link_oldpath,
+                           sizeof(proc->link_oldpath));
+        read_tracee_string(pid, info.entry.args[3], proc->link_newpath,
+                           sizeof(proc->link_newpath));
       }
     }
     if (nr == 88) { /* __NR_utimensat */
       if (proc != NULL) {
         proc->pending_utimensat_syscall = true;
+        read_tracee_string(pid, info.entry.args[1], proc->utime_path,
+                           sizeof(proc->utime_path));
       }
     }
 #else
@@ -1303,7 +1427,7 @@ emit_exec_record:;
   snprintf(buf, sizeof(buf),
            "{\"event\":\"exec_success\",\"seq_id\":%" PRIu64
            ",\"timestamp_ns\":%" PRIu64 ",\"pid\":%d,\"ppid\":%d,\"role\":\"%"
-                                        "s\",\"exe_path\":\"%s\",\"cwd\":\"%s\""
+           "s\",\"exe_path\":\"%s\",\"cwd\":\"%s\""
            ",\"st_dev\":%" PRIu64 ",\"st_ino\":%" PRIu64
            ",\"st_mode\":%u,\"st_size\":%" PRIi64 ",\"st_uid\":%u,\"st_gid\":%u"
            ",\"st_atim_ns\":%" PRIu64 ",\"st_mtim_ns\":%" PRIu64
