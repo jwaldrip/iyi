@@ -45,6 +45,7 @@ import errno
 import hashlib
 import json
 import os
+import re
 import stat
 import struct
 import sys
@@ -202,12 +203,70 @@ class SpecialEntry:
 
 
 # Expected reference & logical slot derivation from C-trusted census
+def _render_positive_output_for_name(variant: Dict[str, Any], name: Optional[str]) -> Optional[str]:
+    """Render positive variant output template using declared variable constraints."""
+    output = variant.get("output")
+    if not isinstance(output, str):
+        return None
+    variables = variant.get("vars")
+    specifications = variables if isinstance(variables, dict) else {}
+    rendered = output
+    placeholders = re.findall(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", output)
+    for placeholder in placeholders:
+        if placeholder in {"WORK", "REPO"}:
+            continue
+        specification = specifications.get(placeholder)
+        if not isinstance(specification, dict) or name is None:
+            return None
+        values = specification.get("values")
+        pattern = specification.get("pattern")
+        accepted = (
+            isinstance(values, list)
+            and name in values
+        ) or (
+            isinstance(pattern, str)
+            and re.fullmatch(pattern, name) is not None
+        )
+        if not accepted:
+            return None
+        rendered = rendered.replace(f"{{{placeholder}}}", name)
+    return rendered
 
 
-def build_driver_logical_slots(census_data: Dict[str, Any], driver: str) -> List[LogicalSlot]:
+def _positive_variants_for_evidence_name(
+    site: Dict[str, Any],
+    evidence: Dict[str, Any],
+    name: Optional[str],
+) -> List[Dict[str, Any]]:
+    """Associate positive variant strictly via declared variable constraints and output matching."""
+    evidence_template = evidence.get("out_template")
+    if not isinstance(evidence_template, str):
+        return []
+    expected_output = (
+        evidence_template.replace("{name}", name)
+        if name is not None
+        else evidence_template
+    )
+    variants = site.get("variants")
+    candidates: List[Dict[str, Any]] = []
+    for variant in variants if isinstance(variants, list) else ():
+        if not isinstance(variant, dict) or variant.get("kind") != "positive":
+            continue
+        rendered = _render_positive_output_for_name(variant, name)
+        if rendered == expected_output:
+            candidates.append(variant)
+    return candidates
+
+
+def build_driver_logical_slots(
+    census_data: Dict[str, Any],
+    driver: str,
+    script_lines: Optional[List[str]] = None,
+) -> List[LogicalSlot]:
     """
     Construct the C-trusted logical E3 build slots for a driver strictly from its census.
-    Grounds all site lines, call lines, labels, templates, and variants directly in census data.
+    Grounds all site lines, call lines, labels, templates, options, and variants directly in
+    source script and census data structures without guessing or derived placeholders.
     Fails closed on missing or unexpected census structures.
     """
     slots: List[LogicalSlot] = []
@@ -217,30 +276,53 @@ def build_driver_logical_slots(census_data: Dict[str, Any], driver: str) -> List
 
     sites_by_line: Dict[int, Dict[str, Any]] = {}
     for s in sites:
-        if isinstance(s, dict):
-            lines = s.get("lines", [])
-            if lines and isinstance(lines[0], int):
-                sites_by_line[lines[0]] = s
+        if not isinstance(s, dict):
+            raise ValueError(f"census for {driver} contains non-dict site")
+        lines = s.get("lines", [])
+        if lines and isinstance(lines[0], int):
+            sites_by_line[lines[0]] = s
 
-    for ev in census_data.get("exec_evidence", []):
+    # Load and verify script lines if available
+    lines_source = script_lines
+    if lines_source is None and census_data.get("script"):
+        script_rel = census_data["script"]
+        for candidate_root in (".", "..", "/Volumes/Ext 2/iyi-origin-observer-work-20261109"):
+            candidate_path = os.path.join(candidate_root, script_rel)
+            if os.path.isfile(candidate_path):
+                try:
+                    with open(candidate_path, "r", encoding="utf-8") as sf:
+                        candidate_content = sf.read()
+                    if hashlib.sha256(candidate_content.encode("utf-8")).hexdigest() == census_data.get("script_sha256"):
+                        lines_source = candidate_content.splitlines()
+                        break
+                except OSError:
+                    pass
+
+    evidence_list = census_data.get("exec_evidence", [])
+    if not isinstance(evidence_list, list):
+        raise ValueError(f"census for {driver} missing exec_evidence list")
+
+    for ev_idx, ev in enumerate(evidence_list):
         if not isinstance(ev, dict):
-            continue
+            raise ValueError(f"census for {driver} has non-dict exec_evidence at index {ev_idx}")
         sline = ev.get("site_line")
         if not isinstance(sline, int):
-            continue
+            raise ValueError(f"census for {driver} exec_evidence {ev_idx} missing integer site_line")
         site = sites_by_line.get(sline)
         if not site:
-            continue
+            raise ValueError(f"census for {driver} exec_evidence {ev_idx} references unknown site {sline}")
 
         skind = site.get("kind")
         template = ev.get("out_template")
-        if not isinstance(template, str):
-            continue
+        if not isinstance(template, str) or not template:
+            raise ValueError(f"census for {driver} exec_evidence {ev_idx} missing out_template")
 
         names = ev.get("name_from_calls", {})
-        variants = [v.get("id") for v in site.get("variants", []) if isinstance(v, dict)]
 
-        # Only own/mixed-own and positive sites produce candidate E3 build slots
+        # Non-E3 evidence rows (canonical-other, non-own mixed like regex 231)
+        if skind == "canonical-other" or (skind == "mixed" and driver != "signal"):
+            continue
+
         if skind == "canonical-own" or (skind == "mixed" and driver == "signal"):
             if "{name}" in template:
                 if not isinstance(names, dict) or not names:
@@ -248,7 +330,17 @@ def build_driver_logical_slots(census_data: Dict[str, Any], driver: str) -> List
                 for cline_str, label in sorted(names.items(), key=lambda x: int(x[0])):
                     cline = int(cline_str)
                     out_tmpl = template.replace("{name}", label)
-                    options = ("--release",) if "release" in label else ()
+
+                    options: Tuple[str, ...] = ()
+                    if lines_source and 0 < cline <= len(lines_source):
+                        src_line = lines_source[cline - 1].strip()
+                        if "--release" in src_line.split():
+                            options = ("--release",)
+                    else:
+                        contains = site.get("contains", [])
+                        if any("--release" in c for c in contains):
+                            options = ("--release",)
+
                     slot_id = f"{driver}::{sline}::{cline}::{label}::own"
                     slots.append(
                         LogicalSlot(
@@ -265,6 +357,11 @@ def build_driver_logical_slots(census_data: Dict[str, Any], driver: str) -> List
                     )
             else:
                 label = template.replace("{WORK}/", "")
+                options = ()
+                if lines_source and 0 < sline <= len(lines_source):
+                    src_line = lines_source[sline - 1].strip()
+                    if "--release" in src_line.split():
+                        options = ("--release",)
                 slot_id = f"{driver}::{sline}::{sline}::{label}::own"
                 slots.append(
                     LogicalSlot(
@@ -276,17 +373,31 @@ def build_driver_logical_slots(census_data: Dict[str, Any], driver: str) -> List
                         kind="own",
                         variant_id=None,
                         output_template=template,
-                        compiler_options=(),
+                        compiler_options=options,
                     )
                 )
         elif skind == "positive":
             if "{name}" in template:
                 if not isinstance(names, dict) or not names:
                     raise ValueError(f"positive driver {driver} site {sline} missing name_from_calls")
-                for idx, (cline_str, label) in enumerate(sorted(names.items(), key=lambda x: int(x[0]))):
+                for cline_str, label in sorted(names.items(), key=lambda x: int(x[0])):
                     cline = int(cline_str)
                     out_tmpl = template.replace("{name}", label)
-                    var_id = variants[idx] if idx < len(variants) else (variants[0] if variants else None)
+
+                    matched_variants = _positive_variants_for_evidence_name(site, ev, label)
+                    if len(matched_variants) != 1:
+                        raise ValueError(
+                            f"positive variant matching for {driver} site {sline} label {label!r} "
+                            f"matched {len(matched_variants)} variants (expected exactly 1)"
+                        )
+                    var_id = matched_variants[0].get("id")
+
+                    options = ()
+                    if lines_source and 0 < cline <= len(lines_source):
+                        src_line = lines_source[cline - 1].strip()
+                        if "--release" in src_line.split():
+                            options = ("--release",)
+
                     slot_id = f"{driver}::{sline}::{cline}::{label}::{var_id}"
                     slots.append(
                         LogicalSlot(
@@ -298,13 +409,21 @@ def build_driver_logical_slots(census_data: Dict[str, Any], driver: str) -> List
                             kind="positive",
                             variant_id=var_id,
                             output_template=out_tmpl,
-                            compiler_options=(),
+                            compiler_options=options,
                         )
                     )
             else:
                 label = template.replace("{WORK}/", "")
-                var_id = variants[0] if variants else None
-                options = ("--release",) if driver in ("compress", "math") else ()
+                matched_variants = _positive_variants_for_evidence_name(site, ev, None)
+                if len(matched_variants) != 1:
+                    raise ValueError(
+                        f"positive variant matching for {driver} site {sline} matched {len(matched_variants)} variants"
+                    )
+                var_id = matched_variants[0].get("id")
+
+                contains = site.get("contains", [])
+                options = ("--release",) if any("--release" in c for c in contains) else ()
+
                 slot_id = f"{driver}::{sline}::{sline}::{label}::{var_id}"
                 slots.append(
                     LogicalSlot(
@@ -319,26 +438,10 @@ def build_driver_logical_slots(census_data: Dict[str, Any], driver: str) -> List
                         compiler_options=options,
                     )
                 )
+        else:
+            raise ValueError(f"census for {driver} has unclassified build site {sline} kind {skind}")
 
     return slots
-
-
-def derive_trusted_expected_references(
-    census_data: Dict[str, Any],
-    driver: str,
-    work_prefix: str = "t",
-) -> List[str]:
-    """
-    Derive the C-trusted expected reference set from the C-trusted driver census.
-    Never consults the untrusted ledger or workload claims.
-    """
-    slots = build_driver_logical_slots(census_data, driver)
-    expected: Set[str] = set()
-    for s in slots:
-        path = s.output_template.replace("{WORK}", work_prefix)
-        expected.add(os.path.normpath(f"{path}.ref"))
-    return sorted(expected)
-
 
 # Wire framing
 
@@ -1645,6 +1748,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                             slot_id=s["slot_id"],
                             driver=s["driver"],
                             site_line=s["site_line"],
+                            call_line=s.get("call_line", s["site_line"]),
                             label=s["label"],
                             kind=s["kind"],
                             variant_id=s.get("variant_id"),

@@ -59,7 +59,6 @@ from proof.hosted_origin_observer import (
     SpecialEntry,
     build_driver_logical_slots,
     decode_raw_file_frame,
-    derive_trusted_expected_references,
     encode_raw_file_frame,
     parse_observer_stream,
     read_frame,
