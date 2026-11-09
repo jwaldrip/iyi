@@ -370,7 +370,13 @@ while t_idx < len(type_bytes):
     elif kind == 19:  # ENUM64
         if t_idx + vlen * 12 > len(type_bytes):
             sys.exit("ERROR: .BTF enum64 member truncated")
-        t_idx += vlen * 12
+        for _ in range(vlen):
+            e_name_off = int.from_bytes(type_bytes[t_idx : t_idx + 4], "little")
+            e_val_lo = int.from_bytes(type_bytes[t_idx + 4 : t_idx + 8], "little")
+            e_val_hi = int.from_bytes(type_bytes[t_idx + 8 : t_idx + 12], "little")
+            t_idx += 12
+            e_val = (e_val_hi << 32) | e_val_lo
+            members.append({"name": get_btf_string(e_name_off), "val": e_val})
     elif kind in (0, 2, 7, 8, 9, 10, 11, 12, 16, 18):
         pass
     else:
@@ -631,7 +637,9 @@ with open(bpf_dep, "r", encoding="utf-8") as f:
 if not dep_paths:
     sys.exit("ERROR: BPF dependency file contains no prerequisites (target-only)")
 
-if not any(tok.endswith("bpf_canary.bpf.c") or "bpf_canary.bpf.c" in tok for tok in dep_paths):
+expected_bpf_source = (repo_path / "proof" / "bpf_canary.bpf.c").resolve()
+resolved_bpf_dep_paths = [pathlib.Path(tok).resolve() for tok in dep_paths]
+if expected_bpf_source not in resolved_bpf_dep_paths:
     sys.exit("ERROR: BPF object dependency graph missing primary source bpf_canary.bpf.c")
 for tok in dep_paths:
     p = pathlib.Path(tok).resolve()
@@ -794,12 +802,23 @@ allowed_prefixes = [
     str(repo_path),
 ]
 
-# Load bpf-compiled-headers.json (must exist and be non-empty)
+# Load bpf-compiled-headers.json (must exist, be non-empty, valid JSON dict with > 0 records including primary BPF source)
 bpf_headers_file = pathlib.Path(owned_dir) / "bpf-compiled-headers.json"
 if not bpf_headers_file.is_file() or os.path.getsize(bpf_headers_file) == 0:
     sys.exit("ERROR: Missing or empty BPF compiled headers record; cannot merge dual dependency graphs")
 
-bpf_compiled = json.loads(bpf_headers_file.read_text(encoding="utf-8"))
+try:
+    bpf_compiled = json.loads(bpf_headers_file.read_text(encoding="utf-8"))
+except Exception as e:
+    sys.exit(f"ERROR: Malformed BPF compiled headers record: {e}; cannot merge dual dependency graphs")
+
+if not isinstance(bpf_compiled, dict) or len(bpf_compiled) == 0:
+    sys.exit("ERROR: BPF compiled headers record contains 0 records; cannot merge dual dependency graphs")
+
+expected_bpf_source_str = str((repo_path / "proof" / "bpf_canary.bpf.c").resolve())
+if expected_bpf_source_str not in bpf_compiled:
+    sys.exit(f"ERROR: BPF compiled headers record missing primary source '{expected_bpf_source_str}'")
+
 compiled_source_header_digests = {**bpf_compiled}
 if not os.path.exists(host_dep) or os.path.getsize(host_dep) == 0:
     sys.exit("ERROR: Host helper dependency file missing or empty")
@@ -851,7 +870,9 @@ with open(host_dep, "r", encoding="utf-8") as f:
 if not host_dep_paths:
     sys.exit("ERROR: Host helper dependency file contains no prerequisites (target-only)")
 
-if not any(tok.endswith("bpf_canary_host.c") or "bpf_canary_host.c" in tok for tok in host_dep_paths):
+expected_host_source = (repo_path / "proof" / "bpf_canary_host.c").resolve()
+resolved_host_dep_paths = [pathlib.Path(tok).resolve() for tok in host_dep_paths]
+if expected_host_source not in resolved_host_dep_paths:
     sys.exit("ERROR: Host helper dependency graph missing primary source bpf_canary_host.c")
 
 for tok in host_dep_paths:

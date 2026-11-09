@@ -164,6 +164,16 @@ def build_mock_bpf_elf(scratch: Path, btf_type_len: int = 120, corrupt_relo: str
         type_data = type_1
         relo_kind = 10  # ENUMVAL_EXISTS
         acc_str = "1" if scenario == "valid_enum" else "5"
+    elif scenario in ("valid_enum64", "oob_enum64"):
+        btf_strtab, btf_offsets = make_strtab(["tp_btf/sched_process_exec", "my_enum64", "ENUM64_A", "ENUM64_B", "1", "5"])
+        # Type 1: ENUM64 (kind 19), vlen 2
+        type_1_info = (19 << 24) | 2
+        type_1 = struct.pack("<III", btf_offsets["my_enum64"], type_1_info, 8) + \
+                 struct.pack("<III", btf_offsets["ENUM64_A"], 10, 0) + \
+                 struct.pack("<III", btf_offsets["ENUM64_B"], 20, 1)
+        type_data = type_1
+        relo_kind = 10  # ENUMVAL_EXISTS
+        acc_str = "1" if scenario == "valid_enum64" else "5"
     elif scenario == "truncated_int":
         btf_strtab, btf_offsets = make_strtab(["tp_btf/sched_process_exec", "file", "int", "0:0"])
         type_1_info = (1 << 24)
@@ -743,6 +753,40 @@ class TestBpfFeasibilityScript(unittest.TestCase):
             self.assertNotEqual(res.returncode, 0)
             self.assertIn(".BTF.ext core_relo has 1 trailing bytes (incomplete binary grammar)", res.stderr)
 
+            # Positive control 5: valid enum64 value relocation passes gate
+            valid_bpf_enum64 = build_mock_bpf_elf(scratch, filename="valid_enum64.o", scenario="valid_enum64")
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-bpf-obj", readelf_bin, str(valid_bpf_enum64), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(lock_file), str(scratch)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertEqual(res.returncode, 0)
+            self.assertIn("Verified genuine .BTF.ext CO-RE relocations", res.stdout)
+
+            # Mutation 15: out-of-bounds enum64 index fails closed
+            bad_bpf_oob_enum64 = build_mock_bpf_elf(scratch, filename="oob_enum64.o", scenario="oob_enum64")
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-bpf-obj", readelf_bin, str(bad_bpf_oob_enum64), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(lock_file), str(scratch)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("Enum value index 5 out of range (count 2)", res.stderr)
+
+            # Mutation 16: raw substring match traversal attempt rejected by exact canonical resolution
+            dep_bpf_traversal = scratch / "bpf_traversal.d"
+            dep_bpf_traversal.write_text(f"mock.o: {escaped_repo}/proof/bpf_canary.bpf.c/../bpf_canary_types.h\n")
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-bpf-obj", readelf_bin, str(valid_bpf), str(dep_bpf_traversal), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(lock_file), str(scratch)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("missing primary source bpf_canary.bpf.c", res.stderr)
+
     def test_production_host_elf_gate_validation(self) -> None:
         """Production --validate-host-elf gate: positive control passes, mutations strictly fail closed."""
         readelf_bin = shutil.which("readelf") or shutil.which("llvm-readelf") or "/usr/bin/readelf"
@@ -797,6 +841,68 @@ class TestBpfFeasibilityScript(unittest.TestCase):
 
             # Mutation 3: missing BPF combined record fails closed
             (scratch / "bpf-compiled-headers.json").unlink()
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-host-elf", readelf_bin, str(valid_host), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(scratch), str(lock_file)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("Missing or empty BPF compiled headers record", res.stderr)
+
+            # Mutation 4: host raw substring traversal attempt rejected by exact canonical resolution
+            dep_host_traversal = scratch / "host_traversal.d"
+            dep_host_traversal.write_text(f"mock_host.o: {escaped_repo}/proof/bpf_canary_host.c/../bpf_canary_types.h\n")
+            # Re-seed valid bpf combined record for host dependency check
+            (scratch / "bpf-compiled-headers.json").write_text(json.dumps({
+                f"{REPO_ROOT}/proof/bpf_canary.bpf.c": {"sha256": "0" * 64, "size": 100}
+            }))
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-host-elf", readelf_bin, str(valid_host), str(dep_host_traversal), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(scratch), str(lock_file)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("missing primary source bpf_canary_host.c", res.stderr)
+
+            # Mutation 5: host BPF combined record empty JSON dict {} fails closed
+            (scratch / "bpf-compiled-headers.json").write_text("{}")
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-host-elf", readelf_bin, str(valid_host), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(scratch), str(lock_file)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("BPF compiled headers record contains 0 records", res.stderr)
+
+            # Mutation 6: host BPF combined record malformed JSON fails closed
+            (scratch / "bpf-compiled-headers.json").write_text("{bad json")
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-host-elf", readelf_bin, str(valid_host), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(scratch), str(lock_file)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("Malformed BPF compiled headers record", res.stderr)
+
+            # Mutation 7: host BPF combined record missing primary BPF source fails closed
+            (scratch / "bpf-compiled-headers.json").write_text(json.dumps({
+                "/some/other/file.h": {"sha256": "0" * 64, "size": 100}
+            }))
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-host-elf", readelf_bin, str(valid_host), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(scratch), str(lock_file)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("missing primary source", res.stderr)
+
+            # Mutation 8: host BPF combined record 0-byte file fails closed
+            (scratch / "bpf-compiled-headers.json").write_text("")
             res = subprocess.run(
                 ["bash", str(SCRIPT_PATH), "--validate-host-elf", readelf_bin, str(valid_host), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(scratch), str(lock_file)],
                 stdout=subprocess.PIPE,
