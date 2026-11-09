@@ -802,7 +802,7 @@ module Iyi
       when "capitalize"
         interpret_check_args { StringLiteral.new(@value.capitalize) }
       when "chars"
-        interpret_check_args { ArrayLiteral.map(@value.chars, Path.global("Char")) { |value| CharLiteral.new(value) } }
+        interpret_check_args { interpreter.diagnostic_new(ArrayLiteral, @value.chars.map { |value| interpreter.diagnostic_new(CharLiteral, value).as(ASTNode) }, of: Path.global("Char")) }
       when "chomp"
         interpret_check_args { StringLiteral.new(@value.chomp) }
       when "downcase"
@@ -836,9 +836,9 @@ module Iyi
               string_match_arg = block.args[0]?
               matches_array_arg = block.args[1]?
               matches_to_a = (0..match.group_count).map { |group| match[group] }
-              matches_array_literal = ArrayLiteral.map matches_to_a do |item|
-                item.nil? ? NilLiteral.new : StringLiteral.new item
-              end
+              matches_array_literal = interpreter.diagnostic_new(ArrayLiteral, matches_to_a.map do |item|
+                (item.nil? ? interpreter.diagnostic_new(NilLiteral) : interpreter.diagnostic_new(StringLiteral, item)).as(ASTNode)
+              end)
 
               interpreter.define_var(string_match_arg.name, StringLiteral.new match[0].not_nil!) if string_match_arg
               interpreter.define_var(matches_array_arg.name, matches_array_literal) if matches_array_arg
@@ -881,7 +881,7 @@ module Iyi
           regex = regex_value(arg)
 
           if match = regex.match(@value)
-            regex_captures_hash(match)
+            regex_captures_hash(match, interpreter)
           else
             NilLiteral.new
           end
@@ -894,7 +894,7 @@ module Iyi
 
           regex = regex_value(arg)
 
-          matches = ArrayLiteral.new(
+          matches = interpreter.diagnostic_new(ArrayLiteral,
             of: Generic.new(
               Path.global("Hash"),
               [
@@ -905,7 +905,7 @@ module Iyi
           )
 
           Rx.scan(@value, regex).each do |match_data|
-            matches.elements << regex_captures_hash(match_data)
+            matches.elements << regex_captures_hash(match_data, interpreter)
           end
 
           matches
@@ -913,7 +913,7 @@ module Iyi
       when "size"
         interpret_check_args { NumberLiteral.new(@value.size) }
       when "lines"
-        interpret_check_args { ArrayLiteral.map(@value.lines, Path.global("String")) { |value| StringLiteral.new(value) } }
+        interpret_check_args { interpreter.diagnostic_new(ArrayLiteral, @value.lines.map { |value| interpreter.diagnostic_new(StringLiteral, value).as(ASTNode) }, of: Path.global("String")) }
       when "split"
         interpret_check_args(min_count: 0) do |arg|
           split =
@@ -938,7 +938,7 @@ module Iyi
               @value.split(splitter)
             end
 
-          ArrayLiteral.map(split, Path.global("String")) { |value| StringLiteral.new(value) }
+          interpreter.diagnostic_new(ArrayLiteral, split.map { |value| interpreter.diagnostic_new(StringLiteral, value).as(ASTNode) }, of: Path.global("String"))
         end
       when "count"
         interpret_check_args do |arg|
@@ -1066,7 +1066,7 @@ module Iyi
     def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "expressions"
-        interpret_check_args { ArrayLiteral.map(expressions, &.itself) }
+        interpret_check_args { interpreter.diagnostic_new(ArrayLiteral, expressions.map(&.as(ASTNode))) }
       else
         super
       end
@@ -1361,11 +1361,11 @@ module Iyi
             end
 
             filtered = entries.select do |entry|
-              interpreter.define_var(block_arg_key.name, MacroId.new(entry.key)) if block_arg_key
+              interpreter.define_var(block_arg_key.name, interpreter.diagnostic_new(MacroId, entry.key)) if block_arg_key
               interpreter.define_var(block_arg_value.name, entry.value) if block_arg_value
               interpreter.accept(block.body).truthy?
             end
-            NamedTupleLiteral.new(filtered)
+            interpreter.diagnostic_new(NamedTupleLiteral, filtered)
           end
         else
           if args.empty?
@@ -1380,7 +1380,7 @@ module Iyi
             end
           end
           filtered = entries.select { |entry| key_strings.includes?(entry.key) }
-          NamedTupleLiteral.new(filtered)
+          interpreter.diagnostic_new(NamedTupleLiteral, filtered)
         end
       when "reject"
         if block
@@ -1393,11 +1393,11 @@ module Iyi
             end
 
             filtered = entries.reject do |entry|
-              interpreter.define_var(block_arg_key.name, MacroId.new(entry.key)) if block_arg_key
+              interpreter.define_var(block_arg_key.name, interpreter.diagnostic_new(MacroId, entry.key)) if block_arg_key
               interpreter.define_var(block_arg_value.name, entry.value) if block_arg_value
               interpreter.accept(block.body).truthy?
             end
-            NamedTupleLiteral.new(filtered)
+            interpreter.diagnostic_new(NamedTupleLiteral, filtered)
           end
         else
           if args.empty?
@@ -1412,7 +1412,7 @@ module Iyi
             end
           end
           filtered = entries.reject { |entry| key_strings.includes?(entry.key) }
-          NamedTupleLiteral.new(filtered)
+          interpreter.diagnostic_new(NamedTupleLiteral, filtered)
         end
       else
         super
@@ -1484,9 +1484,9 @@ module Iyi
         interpreter.not_interpreted_hook block.body, use_significant_node: true
       end
 
-      ArrayLiteral.map(range) do |num|
-        yield num
-      end
+      interpreter.diagnostic_new(ArrayLiteral, range.map do |num|
+        (yield num).as(ASTNode)
+      end)
     end
 
     def interpret_to_range(interpreter)
@@ -1563,7 +1563,7 @@ module Iyi
           options << :i if @options.ignore_case?
           options << :m if @options.multiline?
           options << :x if @options.extended?
-          ArrayLiteral.map(options, Path.global("Symbol")) { |opt| SymbolLiteral.new(opt.to_s) }
+          interpreter.diagnostic_new(ArrayLiteral, options.map { |opt| interpreter.diagnostic_new(SymbolLiteral, opt.to_s).as(ASTNode) }, of: Path.global("Symbol"))
         end
       else
         super
@@ -1603,8 +1603,8 @@ module Iyi
       when "annotations"
         fetch_annotations(self, method, args, named_args, block) do |type|
           annotations = type ? self.var.annotations(type) : self.var.all_annotations
-          return ArrayLiteral.new if annotations.nil?
-          ArrayLiteral.map(annotations, &.itself)
+          return interpreter.diagnostic_new(ArrayLiteral) if annotations.nil?
+          interpreter.diagnostic_new(ArrayLiteral, annotations.map(&.as(ASTNode)))
         end
       else
         super
@@ -1619,7 +1619,7 @@ module Iyi
         interpret_check_args { @body }
       when "args"
         interpret_check_args do
-          ArrayLiteral.map(@args) { |arg| MacroId.new(arg.name) }
+          interpreter.diagnostic_new(ArrayLiteral, @args.map { |arg| interpreter.diagnostic_new(MacroId, arg.name).as(ASTNode) })
         end
       when "splat_index"
         interpret_check_args do
@@ -1637,9 +1637,9 @@ module Iyi
       when "inputs"
         interpret_check_args do
           if inputs = @inputs
-            ArrayLiteral.map(inputs, &.itself)
+            interpreter.diagnostic_new(ArrayLiteral, inputs.map(&.as(ASTNode)))
           else
-            ArrayLiteral.new
+            interpreter.diagnostic_new(ArrayLiteral)
           end
         end
       when "output"
@@ -1673,7 +1673,7 @@ module Iyi
       when "name"
         interpret_check_args { MacroId.new(@name) }
       when "args"
-        interpret_check_args { ArrayLiteral.map(@args, &.itself) }
+        interpret_check_args { interpreter.diagnostic_new(ArrayLiteral, @args.map(&.as(ASTNode))) }
       when "global?"
         interpret_check_args { BoolLiteral.new(@global) }
       else
@@ -1687,7 +1687,7 @@ module Iyi
       case method
       when "expressions"
         interpret_check_args do
-          ArrayLiteral.map(@expressions) { |expression| expression }
+          interpreter.diagnostic_new(ArrayLiteral, @expressions.map(&.as(ASTNode)))
         end
       else
         super
@@ -1752,7 +1752,7 @@ module Iyi
       when "resolve?"
         interpret_check_args { interpreter.resolve?(self) || NilLiteral.new }
       when "types"
-        interpret_check_args { ArrayLiteral.map(@types, &.itself) }
+        interpret_check_args { interpreter.diagnostic_new(ArrayLiteral, @types.map(&.as(ASTNode))) }
       else
         super
       end
@@ -1777,8 +1777,8 @@ module Iyi
       when "annotations"
         fetch_annotations(self, method, args, named_args, block) do |type|
           annotations = type ? self.annotations(type) : self.all_annotations
-          return ArrayLiteral.new if annotations.nil?
-          ArrayLiteral.map(annotations, &.itself)
+          return interpreter.diagnostic_new(ArrayLiteral) if annotations.nil?
+          interpreter.diagnostic_new(ArrayLiteral, annotations.map(&.as(ASTNode)))
         end
       else
         super
@@ -1792,7 +1792,7 @@ module Iyi
       when "name"
         interpret_check_args { MacroId.new(@name) }
       when "args"
-        interpret_check_args { ArrayLiteral.map @args, &.itself }
+        interpret_check_args { interpreter.diagnostic_new(ArrayLiteral, @args.map(&.as(ASTNode))) }
       when "splat_index"
         interpret_check_args do
           @splat_index ? NumberLiteral.new(@splat_index.not_nil!) : NilLiteral.new
@@ -1808,9 +1808,9 @@ module Iyi
       when "free_vars"
         interpret_check_args do
           if (free_vars = @free_vars) && !free_vars.empty?
-            ArrayLiteral.map(free_vars) { |free_var| MacroId.new(free_var) }
+            interpreter.diagnostic_new(ArrayLiteral, free_vars.map { |free_var| interpreter.diagnostic_new(MacroId, free_var).as(ASTNode) })
           else
-            empty_no_return_array
+            interpreter.diagnostic_new(ArrayLiteral, of: Path.global("NoReturn"))
           end
         end
       when "body"
@@ -1830,8 +1830,8 @@ module Iyi
       when "annotations"
         fetch_annotations(self, method, args, named_args, block) do |type|
           annotations = type ? self.annotations(type) : self.all_annotations
-          return ArrayLiteral.new if annotations.nil?
-          ArrayLiteral.map(annotations, &.itself)
+          return interpreter.diagnostic_new(ArrayLiteral) if annotations.nil?
+          interpreter.diagnostic_new(ArrayLiteral, annotations.map(&.as(ASTNode)))
         end
       else
         super
@@ -1856,7 +1856,7 @@ module Iyi
       when "name"
         interpret_check_args { MacroId.new(@name) }
       when "args"
-        interpret_check_args { ArrayLiteral.map @args, &.itself }
+        interpret_check_args { interpreter.diagnostic_new(ArrayLiteral, @args.map(&.as(ASTNode))) }
       when "splat_index"
         interpret_check_args do
           @splat_index ? NumberLiteral.new(@splat_index.not_nil!) : NilLiteral.new
@@ -1911,7 +1911,7 @@ module Iyi
     def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "vars"
-        interpret_check_args { ArrayLiteral.map(@vars, &.itself) }
+        interpret_check_args { interpreter.diagnostic_new(ArrayLiteral, @vars.map(&.as(ASTNode))) }
       when "exp"
         interpret_check_args { @exp }
       when "body"
@@ -1941,9 +1941,9 @@ module Iyi
       when "expressions"
         interpret_check_args do
           if exps = @exps
-            ArrayLiteral.map(exps, &.itself)
+            interpreter.diagnostic_new(ArrayLiteral, exps.map(&.as(ASTNode)))
           else
-            empty_no_return_array
+            interpreter.diagnostic_new(ArrayLiteral, of: Path.global("NoReturn"))
           end
         end
       else
@@ -2086,25 +2086,25 @@ module Iyi
       when "outputs"
         interpret_check_args do
           if outputs = @outputs
-            ArrayLiteral.map(outputs, &.itself)
+            interpreter.diagnostic_new(ArrayLiteral, outputs.map(&.as(ASTNode)))
           else
-            empty_no_return_array
+            interpreter.diagnostic_new(ArrayLiteral, of: Path.global("NoReturn"))
           end
         end
       when "inputs"
         interpret_check_args do
           if inputs = @inputs
-            ArrayLiteral.map(inputs, &.itself)
+            interpreter.diagnostic_new(ArrayLiteral, inputs.map(&.as(ASTNode)))
           else
-            empty_no_return_array
+            interpreter.diagnostic_new(ArrayLiteral, of: Path.global("NoReturn"))
           end
         end
       when "clobbers"
         interpret_check_args do
           if clobbers = @clobbers
-            ArrayLiteral.map(clobbers) { |clobber| StringLiteral.new(clobber) }
+            interpreter.diagnostic_new(ArrayLiteral, clobbers.map { |clobber| interpreter.diagnostic_new(StringLiteral, clobber).as(ASTNode) })
           else
-            empty_no_return_array
+            interpreter.diagnostic_new(ArrayLiteral, of: Path.global("NoReturn"))
           end
         end
       when "volatile?"
@@ -2210,30 +2210,30 @@ module Iyi
       when "nilable?"
         interpret_check_args { BoolLiteral.new(type.nilable?) }
       when "union_types"
-        interpret_check_args { TypeNode.union_types(self) }
+        interpret_check_args { TypeNode.union_types(self, interpreter) }
       when "name"
         interpret_check_args(named_params: ["generic_args"]) do
           generic_args = parse_generic_args_argument(self, method, named_args, default: true)
           MacroId.new(type.devirtualize.to_s(generic_args: generic_args))
         end
       when "type_vars"
-        interpret_check_args { TypeNode.type_vars(type) }
+        interpret_check_args { TypeNode.type_vars(type, interpreter) }
       when "instance_vars"
-        interpret_check_args { TypeNode.instance_vars(type, name_loc) }
+        interpret_check_args { TypeNode.instance_vars(type, name_loc, interpreter) }
       when "class_vars"
-        interpret_check_args { TypeNode.class_vars(type) }
+        interpret_check_args { TypeNode.class_vars(type, interpreter) }
       when "ancestors"
-        interpret_check_args { TypeNode.ancestors(type) }
+        interpret_check_args { TypeNode.ancestors(type, interpreter) }
       when "superclass"
         interpret_check_args { TypeNode.superclass(type) }
       when "subclasses"
-        interpret_check_args { TypeNode.refuse_in_derive(interpreter, method); TypeNode.subclasses(type) }
+        interpret_check_args { TypeNode.refuse_in_derive(interpreter, method); TypeNode.subclasses(type, interpreter) }
       when "all_subclasses"
-        interpret_check_args { TypeNode.refuse_in_derive(interpreter, method); TypeNode.all_subclasses(type) }
+        interpret_check_args { TypeNode.refuse_in_derive(interpreter, method); TypeNode.all_subclasses(type, interpreter) }
       when "includers"
-        interpret_check_args { TypeNode.refuse_in_derive(interpreter, method); TypeNode.includers(type) }
+        interpret_check_args { TypeNode.refuse_in_derive(interpreter, method); TypeNode.includers(type, interpreter) }
       when "constants"
-        interpret_check_args { TypeNode.constants(type) }
+        interpret_check_args { TypeNode.constants(type, interpreter) }
       when "constant"
         interpret_check_args do |arg|
           value = arg.to_string("argument to 'TypeNode#constant'")
@@ -2245,9 +2245,9 @@ module Iyi
           TypeNode.has_constant?(type, value)
         end
       when "methods"
-        interpret_check_args { TypeNode.methods(type) }
+        interpret_check_args { TypeNode.methods(type, interpreter) }
       when "all_methods"
-        interpret_check_args { TypeNode.all_methods(type) }
+        interpret_check_args { TypeNode.all_methods(type, interpreter) }
       when "has_method?"
         interpret_check_args do |arg|
           value = arg.to_string("argument to 'TypeNode#has_method?'")
@@ -2260,8 +2260,8 @@ module Iyi
       when "annotations"
         fetch_annotations(self, method, args, named_args, block) do |type|
           annotations = type ? self.type.annotations(type) : self.type.all_annotations
-          return ArrayLiteral.new if annotations.nil?
-          ArrayLiteral.map(annotations, &.itself)
+          return interpreter.diagnostic_new(ArrayLiteral) if annotations.nil?
+          interpreter.diagnostic_new(ArrayLiteral, annotations.map(&.as(ASTNode)))
         end
       when "size"
         interpret_check_args do
@@ -2279,7 +2279,7 @@ module Iyi
         interpret_check_args do
           type = self.type.instance_type
           if type.is_a?(NamedTupleInstanceType)
-            ArrayLiteral.map(type.entries) { |entry| MacroId.new(entry.name).at(entry.loc) }
+            interpreter.diagnostic_new(ArrayLiteral, type.entries.map { |entry| interpreter.diagnostic_new(MacroId, entry.name).at(entry.loc).as(ASTNode) })
           else
             raise "undefined method 'keys' for TypeNode of type #{type} (must be a named tuple type)"
           end
@@ -2389,57 +2389,51 @@ module Iyi
       end
     end
 
-    def self.includers(type)
+    def self.includers(type, interpreter)
       case type
       when NonGenericModuleType, GenericModuleType, GenericModuleInstanceType
         types = type.raw_including_types
-        return empty_no_return_array unless types
-        ArrayLiteral.map(types) do |including_type|
-          TypeNode.new including_type
-        end
+        return interpreter.diagnostic_new(ArrayLiteral, of: Path.global("NoReturn")) unless types
+        interpreter.diagnostic_new(ArrayLiteral, types.map { |including_type| TypeNode.new(including_type).as(ASTNode) })
       else
-        empty_no_return_array
+        interpreter.diagnostic_new(ArrayLiteral, of: Path.global("NoReturn"))
       end
     end
 
-    def self.type_vars(type)
+    def self.type_vars(type, interpreter)
       if type.is_a?(GenericClassInstanceType) || type.is_a?(GenericModuleInstanceType)
         if type.is_a?(TupleInstanceType)
           if type.tuple_types.empty?
-            empty_no_return_array
+            interpreter.diagnostic_new(ArrayLiteral, of: Path.global("NoReturn"))
           else
-            ArrayLiteral.map(type.tuple_types) do |tuple_type|
-              TypeNode.new(tuple_type)
-            end
+            interpreter.diagnostic_new(ArrayLiteral, type.tuple_types.map { |tuple_type| TypeNode.new(tuple_type).as(ASTNode) })
           end
         else
           if type.type_vars.empty?
-            empty_no_return_array
+            interpreter.diagnostic_new(ArrayLiteral, of: Path.global("NoReturn"))
           else
-            ArrayLiteral.map(type.type_vars.values) do |type_var|
+            interpreter.diagnostic_new(ArrayLiteral, type.type_vars.values.map do |type_var|
               if type_var.is_a?(Var)
-                TypeNode.new(type_var.type)
+                TypeNode.new(type_var.type).as(ASTNode)
               else
-                type_var
+                type_var.as(ASTNode)
               end
-            end
+            end)
           end
         end
       elsif type.is_a?(GenericType)
         t = type.as(GenericType)
         if t.type_vars.empty?
-          empty_no_return_array
+          interpreter.diagnostic_new(ArrayLiteral, of: Path.global("NoReturn"))
         else
-          ArrayLiteral.map(t.type_vars) do |type_var|
-            MacroId.new(type_var)
-          end
+          interpreter.diagnostic_new(ArrayLiteral, t.type_vars.map { |type_var| interpreter.diagnostic_new(MacroId, type_var).as(ASTNode) })
         end
       else
-        empty_no_return_array
+        interpreter.diagnostic_new(ArrayLiteral, of: Path.global("NoReturn"))
       end
     end
 
-    def self.instance_vars(type, name_loc)
+    def self.instance_vars(type, name_loc, interpreter)
       if type.is_a?(InstanceVarContainer)
         unless type.program.top_level_semantic_complete?
           message = "`TypeNode#instance_vars` cannot be called in the top-level scope: instance vars are not yet initialized"
@@ -2449,14 +2443,14 @@ module Iyi
             raise Iyi::TypeException.new(message)
           end
         end
-        ArrayLiteral.map(type.all_instance_vars) do |name, ivar|
+        interpreter.diagnostic_new(ArrayLiteral, type.all_instance_vars.map do |name, ivar|
           meta_var = MetaMacroVar.new(name[1..-1], ivar.type)
           meta_var.var = ivar
           meta_var.default_value = type.get_instance_var_initializer(name).try(&.value)
-          meta_var
-        end
+          meta_var.as(ASTNode)
+        end)
       else
-        empty_no_return_array
+        interpreter.diagnostic_new(ArrayLiteral, of: Path.global("NoReturn"))
       end
     end
 
@@ -2473,25 +2467,25 @@ module Iyi
       BoolLiteral.new(type.has_inner_pointers?)
     end
 
-    def self.class_vars(type)
+    def self.class_vars(type, interpreter)
       if type.is_a?(ClassVarContainer)
-        ArrayLiteral.map(type.all_class_vars) do |name, ivar|
+        interpreter.diagnostic_new(ArrayLiteral, type.all_class_vars.map do |name, ivar|
           meta_var = MetaMacroVar.new(name[2..-1], ivar.type)
           meta_var.var = ivar
           meta_var.default_value = ivar.initializer.try(&.node)
-          meta_var
-        end
+          meta_var.as(ASTNode)
+        end)
       else
-        empty_no_return_array
+        interpreter.diagnostic_new(ArrayLiteral, of: Path.global("NoReturn"))
       end
     end
 
-    def self.ancestors(type)
+    def self.ancestors(type, interpreter)
       ancestors = type.ancestors
       if ancestors.empty?
-        empty_no_return_array
+        interpreter.diagnostic_new(ArrayLiteral, of: Path.global("NoReturn"))
       else
-        ArrayLiteral.map(type.ancestors) { |ancestor| TypeNode.new(ancestor) }
+        interpreter.diagnostic_new(ArrayLiteral, ancestors.map { |ancestor| TypeNode.new(ancestor).as(ASTNode) })
       end
     end
 
@@ -2521,40 +2515,40 @@ module Iyi
         "and what that declaration's types implement — see SPEC.md II.4")
     end
 
-    def self.subclasses(type)
+    def self.subclasses(type, interpreter)
       subclasses = type.devirtualize.subclasses
       if subclasses.empty?
-        empty_no_return_array
+        interpreter.diagnostic_new(ArrayLiteral, of: Path.global("NoReturn"))
       else
-        ArrayLiteral.map(subclasses) { |subtype| TypeNode.new(subtype) }
+        interpreter.diagnostic_new(ArrayLiteral, subclasses.map { |subtype| TypeNode.new(subtype).as(ASTNode) })
       end
     end
 
-    def self.all_subclasses(type)
+    def self.all_subclasses(type, interpreter)
       subclasses = type.devirtualize.all_subclasses
       if subclasses.empty?
-        empty_no_return_array
+        interpreter.diagnostic_new(ArrayLiteral, of: Path.global("NoReturn"))
       else
-        ArrayLiteral.map(subclasses) { |subtype| TypeNode.new(subtype) }
+        interpreter.diagnostic_new(ArrayLiteral, subclasses.map { |subtype| TypeNode.new(subtype).as(ASTNode) })
       end
     end
 
-    def self.union_types(type_node)
+    def self.union_types(type_node, interpreter)
       type = type_node.type
 
       if type.is_a?(UnionType)
-        ArrayLiteral.map(type.union_types) { |uniontype| TypeNode.new(uniontype) }
+        interpreter.diagnostic_new(ArrayLiteral, type.union_types.map { |uniontype| TypeNode.new(uniontype).as(ASTNode) })
       else
-        ArrayLiteral.new([type_node] of ASTNode)
+        interpreter.diagnostic_new(ArrayLiteral, [type_node] of ASTNode)
       end
     end
 
-    def self.constants(type)
+    def self.constants(type, interpreter)
       if type.types.empty?
-        empty_no_return_array
+        interpreter.diagnostic_new(ArrayLiteral, of: Path.global("NoReturn"))
       else
-        names = type.types.map { |name, member_type| MacroId.new(name).as(ASTNode) }
-        ArrayLiteral.new names
+        names = type.types.map { |name, member_type| interpreter.diagnostic_new(MacroId, name).as(ASTNode) }
+        interpreter.diagnostic_new(ArrayLiteral, names)
       end
     end
 
@@ -2574,19 +2568,19 @@ module Iyi
       end
     end
 
-    def self.methods(type)
+    def self.methods(type, interpreter)
       defs = [] of ASTNode
       collect_methods(defs, type)
-      ArrayLiteral.new(defs)
+      interpreter.diagnostic_new(ArrayLiteral, defs)
     end
 
-    def self.all_methods(type)
+    def self.all_methods(type, interpreter)
       defs = [] of ASTNode
       collect_methods(defs, type)
       type.ancestors.each do |ancestor|
         collect_methods(defs, ancestor)
       end
-      ArrayLiteral.new(defs)
+      interpreter.diagnostic_new(ArrayLiteral, defs)
     end
 
     private def self.collect_methods(defs, type)
@@ -2629,11 +2623,11 @@ module Iyi
       when "receiver"
         interpret_check_args { obj || Nop.new }
       when "args"
-        interpret_check_args { ArrayLiteral.map self.args, &.itself }
+        interpret_check_args { interpreter.diagnostic_new(ArrayLiteral, self.args.map(&.as(ASTNode))) }
       when "named_args"
         interpret_check_args do
           if named_args = self.named_args
-            ArrayLiteral.map(named_args) { |arg| arg }
+            interpreter.diagnostic_new(ArrayLiteral, named_args.map(&.as(ASTNode)))
           else
             Nop.new
           end
@@ -2692,7 +2686,7 @@ module Iyi
       when "cond"
         interpret_check_args { cond || Nop.new }
       when "whens"
-        interpret_check_args { ArrayLiteral.map whens, &.itself }
+        interpret_check_args { interpreter.diagnostic_new(ArrayLiteral, whens.map(&.as(ASTNode))) }
       when "else"
         interpret_check_args { self.else || Nop.new }
       when "exhaustive?"
@@ -2707,7 +2701,7 @@ module Iyi
     def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "whens"
-        interpret_check_args { ArrayLiteral.map whens, &.itself }
+        interpret_check_args { interpreter.diagnostic_new(ArrayLiteral, whens.map(&.as(ASTNode))) }
       when "else"
         interpret_check_args { self.else || Nop.new }
       else
@@ -2720,7 +2714,7 @@ module Iyi
     def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "conds"
-        interpret_check_args { ArrayLiteral.map(conds, &.itself) }
+        interpret_check_args { interpreter.diagnostic_new(ArrayLiteral, conds.map(&.as(ASTNode))) }
       when "body"
         interpret_check_args { body }
       when "exhaustive?"
@@ -2737,7 +2731,7 @@ module Iyi
       when "body"
         interpret_check_args { @body }
       when "rescues"
-        interpret_check_args { (rescues = @rescues) ? ArrayLiteral.map(rescues, &.itself) : NilLiteral.new }
+        interpret_check_args { (rescues = @rescues) ? interpreter.diagnostic_new(ArrayLiteral, rescues.map(&.as(ASTNode))) : NilLiteral.new }
       when "else"
         interpret_check_args { @else || Nop.new }
       when "ensure"
@@ -2754,7 +2748,7 @@ module Iyi
       when "body"
         interpret_check_args { body }
       when "types"
-        interpret_check_args { (types = @types) ? ArrayLiteral.map(types, &.itself) : NilLiteral.new }
+        interpret_check_args { (types = @types) ? interpreter.diagnostic_new(ArrayLiteral, types.map(&.as(ASTNode))) : NilLiteral.new }
       when "name"
         interpret_check_args { (name = @name) ? MacroId.new(name) : Nop.new }
       else
@@ -2778,7 +2772,7 @@ module Iyi
     def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "expressions"
-        interpret_check_args { ArrayLiteral.map(@exps, &.itself) }
+        interpret_check_args { interpreter.diagnostic_new(ArrayLiteral, @exps.map(&.as(ASTNode))) }
       when "scope"
         interpret_check_args { scope || Nop.new }
       else
@@ -2804,9 +2798,9 @@ module Iyi
     def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "targets"
-        interpret_check_args { ArrayLiteral.map(targets, &.itself) }
+        interpret_check_args { interpreter.diagnostic_new(ArrayLiteral, targets.map(&.as(ASTNode))) }
       when "values"
-        interpret_check_args { ArrayLiteral.map(values, &.itself) }
+        interpret_check_args { interpreter.diagnostic_new(ArrayLiteral, values.map(&.as(ASTNode))) }
       else
         super
       end
@@ -2876,7 +2870,7 @@ module Iyi
       case method
       when "names"
         interpret_check_args do
-          ArrayLiteral.map(@names) { |name| MacroId.new(name) }
+          interpreter.diagnostic_new(ArrayLiteral, @names.map { |name| interpreter.diagnostic_new(MacroId, name).as(ASTNode) })
         end
       when "global"
         interpreter.warnings.add_warning_at(name_loc, "Deprecated Path#global. Use `#global?` instead")
@@ -2888,7 +2882,7 @@ module Iyi
       when "resolve?"
         interpret_check_args { interpreter.resolve?(self) || NilLiteral.new }
       when "types"
-        interpret_check_args { ArrayLiteral.new([self] of ASTNode) }
+        interpret_check_args { interpreter.diagnostic_new(ArrayLiteral, [self] of ASTNode) }
       else
         # iyi: a macro asking a type something, about a type its module did
         # not export (R-2).
@@ -2963,7 +2957,7 @@ module Iyi
     def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "args"
-        interpret_check_args { ArrayLiteral.map(@expressions, &.itself) }
+        interpret_check_args { interpreter.diagnostic_new(ArrayLiteral, @expressions.map(&.as(ASTNode))) }
       else
         super
       end
@@ -2976,11 +2970,11 @@ module Iyi
       when "name"
         interpret_check_args { name }
       when "type_vars"
-        interpret_check_args { ArrayLiteral.map(type_vars, &.itself) }
+        interpret_check_args { interpreter.diagnostic_new(ArrayLiteral, type_vars.map(&.as(ASTNode))) }
       when "named_args"
         interpret_check_args do
           if named_args = @named_args
-            NamedTupleLiteral.new(named_args.map { |arg| NamedTupleLiteral::Entry.new(arg.name, arg.value) })
+            interpreter.diagnostic_new(NamedTupleLiteral, named_args.map { |arg| NamedTupleLiteral::Entry.new(arg.name, arg.value) })
           else
             NilLiteral.new
           end
@@ -2990,7 +2984,7 @@ module Iyi
       when "resolve?"
         interpret_check_args { interpreter.resolve?(self) || NilLiteral.new }
       when "types"
-        interpret_check_args { ArrayLiteral.new([self] of ASTNode) }
+        interpret_check_args { interpreter.diagnostic_new(ArrayLiteral, [self] of ASTNode) }
       else
         super
       end
@@ -3022,11 +3016,11 @@ module Iyi
         end
       when "args"
         interpret_check_args do
-          TupleLiteral.map self.args, &.itself
+          interpreter.diagnostic_new(TupleLiteral, self.args.map(&.as(ASTNode)))
         end
       when "named_args"
         interpret_check_args do
-          get_named_annotation_args self
+          get_named_annotation_args self, interpreter
         end
       else
         super
@@ -3046,9 +3040,9 @@ module Iyi
       when "type_vars"
         interpret_check_args do
           if (type_vars = @type_vars) && type_vars.present?
-            ArrayLiteral.map(type_vars) { |type_var| MacroId.new(type_var) }
+            interpreter.diagnostic_new(ArrayLiteral, type_vars.map { |type_var| interpreter.diagnostic_new(MacroId, type_var).as(ASTNode) })
           else
-            empty_no_return_array
+            interpreter.diagnostic_new(ArrayLiteral, of: Path.global("NoReturn"))
           end
         end
       when "splat_index"
@@ -3081,9 +3075,9 @@ module Iyi
       when "type_vars"
         interpret_check_args do
           if (type_vars = @type_vars) && type_vars.present?
-            ArrayLiteral.map(type_vars) { |type_var| MacroId.new(type_var) }
+            interpreter.diagnostic_new(ArrayLiteral, type_vars.map { |type_var| interpreter.diagnostic_new(MacroId, type_var).as(ASTNode) })
           else
-            empty_no_return_array
+            interpreter.diagnostic_new(ArrayLiteral, of: Path.global("NoReturn"))
           end
         end
       when "splat_index"
@@ -3190,7 +3184,7 @@ module Iyi
       when "real_name"
         interpret_check_args { @real_name != @name ? StringLiteral.new(@real_name) : Nop.new }
       when "args"
-        interpret_check_args { ArrayLiteral.map(@args, &.itself) }
+        interpret_check_args { interpreter.diagnostic_new(ArrayLiteral, @args.map(&.as(ASTNode))) }
       when "variadic?"
         interpret_check_args { BoolLiteral.new(@varargs) }
       when "return_type"
@@ -3234,11 +3228,11 @@ module Iyi
   end
 end
 
-private def get_named_annotation_args(object)
+private def get_named_annotation_args(object, interpreter)
   if named_args = object.named_args
-    Iyi::NamedTupleLiteral.new(named_args.map { |arg| Iyi::NamedTupleLiteral::Entry.new(arg.name, arg.value) })
+    interpreter.diagnostic_new(Iyi::NamedTupleLiteral, named_args.map { |arg| Iyi::NamedTupleLiteral::Entry.new(arg.name, arg.value) })
   else
-    Iyi::NamedTupleLiteral.new
+    interpreter.diagnostic_new(Iyi::NamedTupleLiteral)
   end
 end
 
@@ -3658,10 +3652,6 @@ private def macro_warning(node, args, interpreter)
   Iyi::NilLiteral.new
 end
 
-private def empty_no_return_array
-  Iyi::ArrayLiteral.new(of: Iyi::Path.global("NoReturn"))
-end
-
 # iyi: a capture hash off the compiler's own engine. Group numbers lead, group 0
 # first, and the names the pattern declared follow in group order. Names were
 # absent from this hash while the engine refused them; they are here now, because
@@ -3669,8 +3659,8 @@ end
 # a silently smaller match, which is the quiet difference the engine exists to
 # avoid. The key type was always Int32 | String, which is what the old shape left
 # room for.
-private def regex_captures_hash(match : Iyi::Rx::Match)
-  captures = Iyi::HashLiteral.new(
+private def regex_captures_hash(match : Iyi::Rx::Match, interpreter)
+  captures = interpreter.diagnostic_new(Iyi::HashLiteral,
     of: Iyi::HashLiteral::Entry.new(
       Iyi::Union.new([Iyi::Path.global("Int32"), Iyi::Path.global("String")] of Iyi::ASTNode),
       Iyi::Union.new([Iyi::Path.global("String"), Iyi::Path.global("Nil")] of Iyi::ASTNode),

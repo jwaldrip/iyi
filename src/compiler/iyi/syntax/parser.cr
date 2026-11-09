@@ -241,6 +241,9 @@ module Iyi
               unless anchor.offset >= start && anchor.offset < finish
                 raise ArgumentError.new("macro emission anchor outside emission bounds")
               end
+              if anchor.source_origin.nil? == anchor.producer.nil?
+                raise ArgumentError.new("macro emission anchor must be either spliced or generated")
+              end
               if (source = anchor.source_origin) && !source.valid_for_anchor?(anchor.kind, anchor.role)
                 raise ArgumentError.new("macro splice anchor kind or role mismatch")
               end
@@ -320,6 +323,18 @@ module Iyi
         end
         key = {offset, kind, role}
         if emitted = @diagnostic_emitted_anchors.try(&.delete(key))
+          if ranges = @diagnostic_generated_ranges
+            ranges.each do |range|
+              next unless range.start_offset < end_pos && range.end_offset > offset
+              producer = emitted.producer
+              projection = producer == DiagnosticMacroProducer::EmptyTupleProjection ||
+                           producer == DiagnosticMacroProducer::EmptyNamedTupleProjection
+              unless projection && range.producer == producer && range.emitter_origin == emitted.emitter_origin &&
+                     range.start_offset <= offset && range.end_offset >= end_pos
+                raise ArgumentError.new("macro anchor overlaps generated text at byte #{offset}")
+              end
+            end
+          end
           part = DiagnosticEmissionPart.new(offset, end_pos, emitted.emitter_origin)
           return DiagnosticOrigin::Expanded.new(
             expansion[0], expansion[1], expansion[2],
@@ -1225,6 +1240,14 @@ module Iyi
             method = char.to_s
             name_location = @token.location
             name_offset = @token.input_offset
+            name_end = if @diagnostic_expansion
+                         input_index = name_offset - @input_offset_base
+                         unless input_index >= 0 && input_index < string.bytesize &&
+                                string.byte_at(input_index) == char.ord && @token.input_end > name_offset
+                           raise ArgumentError.new("invalid signed-number operator extent at byte #{name_offset}")
+                         end
+                         name_offset + method.bytesize
+                       end
 
             # Go back to the +/-, advance one char and continue from there
             self.current_pos = @token.start + 1
@@ -1233,7 +1256,7 @@ module Iyi
             right = parse_mul_or_div
             left = Call.new(left, method, right).at(location).at_end(right)
             left.name_location = name_location
-            left.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset)
+            left.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset, name_end)
           else
             return left
           end

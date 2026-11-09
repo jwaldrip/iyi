@@ -734,6 +734,94 @@ describe Iyi::DiagnosticOrigin do
     expect_raises(ArgumentError) { missing.parse }
   end
 
+  it "records only the operator when a signed numeric token is split" do
+    text = "1+2"
+    invocation = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 5, "Call", "method")
+    definition = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.iyi", 9, "Macro", "keyword")
+    generated = Iyi::DiagnosticGeneratedText.new(0, text.bytesize, definition, Iyi::DiagnosticMacroProducer::MacroId)
+    emission = Iyi::Lexer::LocDiagnosticEmission.new(text.bytesize, [] of Iyi::DiagnosticMacroAnchor, [generated])
+    parser = Iyi::Parser.new(text)
+    parser.diagnostic_expansion(invocation, definition, "sha256:#{::Crystal::Digest::SHA256.hexdigest(text)}",
+      {0 => [emission] of Iyi::Lexer::LocPragma})
+    origin = parser.parse.diagnostic_origin.as(Iyi::DiagnosticOrigin::Expanded)
+    origin.emission_parts.should eq([Iyi::DiagnosticEmissionPart.new(1, 2, definition)])
+  end
+
+  it "rejects a spliced anchor that overlaps generated text" do
+    text = "-> { 1 }"
+    invocation = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 5, "Call", "method")
+    definition = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.iyi", 9, "Macro", "keyword")
+    original = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 35, "ProcLiteral", "arrow")
+    anchor = Iyi::DiagnosticMacroAnchor.new(0, "ProcLiteral", "arrow", definition, original, nil)
+    generated = Iyi::DiagnosticGeneratedText.new(0, text.bytesize, definition, Iyi::DiagnosticMacroProducer::MacroId)
+    emission = Iyi::Lexer::LocDiagnosticEmission.new(text.bytesize, [anchor], [generated])
+    parser = Iyi::Parser.new(text)
+    parser.diagnostic_expansion(invocation, definition, "sha256:#{::Crystal::Digest::SHA256.hexdigest(text)}",
+      {0 => [emission] of Iyi::Lexer::LocPragma})
+    expect_raises(ArgumentError) { parser.parse }
+  end
+
+  it "retains a source closure inside a macro-constructed array" do
+    source_parser = Iyi::Parser.new("-> { 1 }")
+    source_parser.filename = "/src/main.cr"
+    source_parser.diagnostic_source_file = "/src/main.cr"
+    source_parser.diagnostic_capture = true
+    closure = source_parser.parse.as(Iyi::ProcLiteral)
+    original = closure.diagnostic_origin.not_nil!
+
+    macro_parser = Iyi::Parser.new("macro foo(x)\n{{ [x, 7] }}\nend")
+    macro_parser.filename = "/src/macros.cr"
+    macro_parser.diagnostic_source_file = "/src/macros.cr"
+    macro_parser.diagnostic_capture = true
+    macro_node = macro_parser.parse.as(Iyi::Macro)
+    program, _, call = prepare_macro_call("{{ x }}") { {x: closure} }
+    program.diagnostic_capture = true
+    invocation = Iyi::DiagnosticOrigin::Written.new("source-file:/src/main.cr", "/src/main.cr", 10, "Call", "method")
+    call.diagnostic_origin = invocation
+    text, pragmas = program.expand_macro(macro_node, call, program, program)
+    parser = Iyi::Parser.new(text)
+    parser.diagnostic_expansion(invocation, macro_node.diagnostic_origin.not_nil!,
+      "sha256:#{::Crystal::Digest::SHA256.hexdigest(text)}", pragmas)
+    array = parser.parse.as(Iyi::ArrayLiteral)
+    array_origin = array.diagnostic_origin.as(Iyi::DiagnosticOrigin::Expanded)
+    array_origin.spliced_origin.should be_nil
+    closure_origin = array.elements.first.diagnostic_origin.as(Iyi::DiagnosticOrigin::Expanded)
+    closure_origin.spliced_origin.should eq(original)
+    closure_origin.emission_parts.first.emitter_origin.should_not be_nil
+
+    fragment_io = IO::Memory.new
+    anchors = [] of Iyi::DiagnosticAnchor
+    array.to_s(fragment_io, diagnostic_anchors: anchors)
+    fragment_text = fragment_io.to_s
+    key = Iyi::IyiMod.field_fragment_key("Box", "@factory")
+    declaration = type_declaration("Box", "class", fields: [{"@factory", "Array", fragment_text}])
+    artifact = sample_artifact(types: [declaration])
+    section = Iyi::IyiMod::DiagnosticSection.new
+    section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(key, ::Crystal::Digest::SHA256.hexdigest(fragment_text), anchors))
+    artifact.diagnostic_provenance = section
+    with_temporary_file do |path|
+      Iyi::IyiMod.write artifact, path
+      restored = Iyi::IyiMod.read(path)
+      carried_text = restored.exports.types.first.fields.first[2]
+      fragment = restored.diagnostic_provenance.not_nil!.fragments[key]
+      consumer = Iyi::Parser.new(carried_text)
+      consumer.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, carried_text.bytesize, fragment.text_sha256, fragment.anchors)]
+      carried = consumer.parse.as(Iyi::ArrayLiteral)
+      carried.diagnostic_origin.should eq(array_origin)
+      carried.elements.first.diagnostic_origin.should eq(closure_origin)
+      reemitted_io = IO::Memory.new
+      reemitted_anchors = [] of Iyi::DiagnosticAnchor
+      carried.to_s(reemitted_io, diagnostic_anchors: reemitted_anchors)
+      reemitted_io.to_s.should eq(carried_text)
+      reemitted_anchors.should eq(anchors)
+      Iyi::IyiMod.write restored, path
+      Iyi::IyiMod.read(path).diagnostic_provenance.not_nil!.fragments[key].anchors.should eq(anchors)
+    end
+
+    closure.diagnostic_origin = nil
+    expect_raises(ArgumentError) { program.expand_macro(macro_node, call, program, program) }
+  end
+
   it "distinguishes an inline macro directive and its synthetic definition" do
     directive = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 5, "MacroDirective", "control")
     definition = Iyi::DiagnosticOrigin::Synthetic.new(directive, "inline_macro_definition", "macro")
