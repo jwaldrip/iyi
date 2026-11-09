@@ -1,0 +1,160 @@
+name: Approve local strict proof
+
+on:
+  push:
+    branches:
+      - proof/strict-lifecycle-repair-20261102
+    paths:
+      - proof/approval-request.json
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.manifest.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Bind the request to this run
+        id: manifest
+        env:
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, re, subprocess
+
+          def refuse(message):
+              raise SystemExit(message)
+
+          def unique(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      refuse('Duplicate JSON key: ' + key)
+                  result[key] = value
+              return result
+
+          request = json.loads(pathlib.Path('proof/approval-request.json').read_bytes(), object_pairs_hook=unique)
+          required = {'product_sha', 'proof_sha', 'audit_revision', 'audit_run_id', 'audit_artifact_id',
+                      'audit_artifact_sha256', 'review_commit', 'review_path',
+                      'review_sha256', 'report_path'}
+          if not isinstance(request, dict) or set(request) != required:
+              refuse('Approval request must contain exactly the required fields')
+          for key in ('product_sha', 'proof_sha', 'audit_revision', 'review_commit'):
+              if not isinstance(request[key], str) or not re.fullmatch(r'[0-9a-f]{40}', request[key]):
+                  refuse('Invalid commit identity: ' + key)
+          for key in ('audit_run_id', 'audit_artifact_id'):
+              if not isinstance(request[key], str) or not re.fullmatch(r'[1-9][0-9]*', request[key]):
+                  refuse('Invalid GitHub identity: ' + key)
+          for key in ('audit_artifact_sha256', 'review_sha256'):
+              if not isinstance(request[key], str) or not re.fullmatch(r'[0-9a-f]{64}', request[key]):
+                  refuse('Invalid digest: ' + key)
+          if not isinstance(request['report_path'], str) or not re.fullmatch(r'/private/tmp/iyp-[0-9a-f]{8}', request['report_path']):
+              refuse('Invalid native report path')
+          review_path = request['review_path']
+          if not isinstance(review_path, str) or not re.fullmatch(r'proof/[A-Za-z0-9_./-]+\.json', review_path) or '..' in review_path.split('/'):
+              refuse('Invalid review path')
+          if os.environ['RUN_ATTEMPT'] != '1' or os.environ['REPOSITORY'] != 'jwaldrip/iyi':
+              refuse('Invalid approval run identity')
+          upstream = json.loads(subprocess.check_output(['gh', 'api', 'repos/iyilang/iyi/pulls/147']))
+          if upstream.get('head', {}).get('sha') != request['product_sha']:
+              refuse('PR147 head moved')
+          subprocess.check_call(['git', 'fetch', '--no-tags', 'origin', request['proof_sha']])
+          subprocess.check_call(['git', 'fetch', '--no-tags', 'https://github.com/iyilang/iyi.git', request['product_sha']])
+          subprocess.check_call(['git', 'merge-base', '--is-ancestor', request['product_sha'], request['proof_sha']])
+          subprocess.check_call(['git', 'diff', '--exit-code', request['product_sha'], request['proof_sha'], '--', '.', ':(exclude)proof'])
+          from proof.github_artifact import download_artifact_zip
+          api = 'repos/' + os.environ['REPOSITORY'] + '/actions/'
+          run = json.loads(subprocess.check_output(['gh', 'api', api + 'runs/' + request['audit_run_id']]))
+          if (run.get('status') != 'completed' or run.get('conclusion') != 'success'
+                  or run.get('run_attempt') != 1 or run.get('head_sha') != request['audit_revision']
+                  or run.get('path') != '.github/workflows/remote-harness-audit.yml'):
+              refuse('Audit run is not the expected successful first attempt')
+          artifact = json.loads(subprocess.check_output(['gh', 'api', api + 'artifacts/' + request['audit_artifact_id']]))
+          if (artifact.get('expired') is not False
+                  or str(artifact.get('workflow_run', {}).get('id')) != request['audit_run_id']
+                  or artifact.get('name') != 'remote-harness-audit-evidence'):
+              refuse('Audit artifact provenance mismatch')
+          audit = download_artifact_zip('https://api.github.com/' + api + 'artifacts/' + request['audit_artifact_id'] + '/zip', os.environ['GH_TOKEN'])
+          if hashlib.sha256(audit).hexdigest() != request['audit_artifact_sha256']:
+              refuse('Audit artifact digest mismatch')
+          review = subprocess.check_output(['git', 'show', request['review_commit'] + ':' + review_path])
+          if hashlib.sha256(review).hexdigest() != request['review_sha256']:
+              refuse('Review digest mismatch')
+          document = json.loads(review, object_pairs_hook=unique)
+          if not isinstance(document, dict) or document.get('verdict') != 'GO':
+              refuse('Independent review is not GO')
+          if document.get('product_sha') != request['product_sha'] or document.get('proof_sha') != request['proof_sha']:
+              refuse('Independent review does not bind product and proof')
+          if (document.get('audit_run_id') != request['audit_run_id']
+                  or document.get('audit_revision') != request['audit_revision']
+                  or document.get('audit_artifact_id') != request['audit_artifact_id']
+                  or document.get('audit_artifact_sha256') != request['audit_artifact_sha256']
+                  or document.get('report_path') != request['report_path']):
+              refuse('Independent review does not bind the audit and invocation')
+          gate_blob = subprocess.check_output(['git', 'hash-object', '.github/workflows/strict-local-approval.yml'], text=True).strip()
+          if document.get('gate_blob') != gate_blob:
+              refuse('Independent review does not bind the approval gate')
+          manifest = {'schema': 'iyi-local-proof-approval-v1', 'repository': os.environ['REPOSITORY'],
+                      'approval_run_id': os.environ['RUN_ID'], 'approval_run_attempt': 1,
+                      'gate_revision': os.environ['REVISION'], 'backend': 'local-quiet-darwin',
+                      'request': request}
+          data = (json.dumps(manifest, sort_keys=True, separators=(',', ':'), ensure_ascii=False) + '\n').encode()
+          pathlib.Path('manifest.json').write_bytes(data)
+          digest = hashlib.sha256(data).hexdigest()
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write('digest=' + digest + '\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as out:
+              out.write('## Local strict proof approval\n\n')
+              out.write('Review the manifest and independent evidence before approving.\n\n')
+              out.write('Approval comment: `iyi-strict-authorization-v2 sha256:' + digest + '`\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strict-local-manifest-${{ github.run_id }}-${{ github.run_attempt }}
+          path: manifest.json
+          if-no-files-found: error
+
+  approval:
+    needs: prepare
+    environment: strict-proof
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: strict-local-manifest-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Record the platform approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_DIGEST: ${{ needs.prepare.outputs.digest }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          test "$(sha256sum manifest.json | cut -d' ' -f1)" = "$EXPECTED_DIGEST"
+          gh api "repos/$REPOSITORY/actions/runs/$RUN_ID/approvals" > approvals.json
+          python3 - <<'PY'
+          import json, os
+          approvals = json.load(open('approvals.json'))
+          expected = 'iyi-strict-authorization-v2 sha256:' + os.environ['EXPECTED_DIGEST']
+          applicable = [a for a in approvals if any(str(e.get('id')) == '26584191206' for e in a.get('environments', []))]
+          if len(applicable) != 1 or applicable[0].get('state') != 'approved' or str(applicable[0].get('user', {}).get('id')) != '43164' or applicable[0].get('comment') != expected:
+              raise SystemExit('Approval history does not contain the one exact required approval')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strict-local-approval-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            manifest.json
+            approvals.json
+          if-no-files-found: error
