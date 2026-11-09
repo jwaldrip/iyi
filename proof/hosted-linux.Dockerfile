@@ -88,6 +88,7 @@ RUN mkdir -p /home/proof \
     && mkdir -p /W \
     && mkdir -p /inputs \
     && mkdir -p /control \
+    && mkdir -p /receipts \
     && chown -R 65534:65534 /home/proof /private/tmp /scratch \
     && chmod 0755 /home/proof /scratch \
     && chmod 1777 /private/tmp

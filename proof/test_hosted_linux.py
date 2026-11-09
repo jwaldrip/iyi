@@ -317,6 +317,42 @@ class TestMountPolicyAndAntiAlias(unittest.TestCase):
         with self.assertRaises(MountPolicyError):
             verify_container_mount_table(inspect_data, expected_phase="proof")
 
+    def test_verify_container_mounts_final_phase_receipts(self):
+        inspect_data = {
+            "Mounts": [
+                {"Destination": "/P", "Source": "/host/p", "RW": False},
+                {"Destination": "/P/.build", "Source": "/host/p-build", "RW": False},
+                {"Destination": "/W", "Source": "/host/w", "RW": False},
+                {"Destination": "/inputs", "Source": "/host/inputs", "RW": False},
+                {"Destination": "/receipts", "Source": "/host/receipts", "RW": False},
+            ]
+        }
+        # Passes when /receipts is present and read-only
+        verify_container_mount_table(inspect_data, expected_phase="final")
+
+        # Fails when /receipts is writable
+        inspect_writable = {
+            "Mounts": [
+                {"Destination": "/P", "Source": "/host/p", "RW": False},
+                {"Destination": "/W", "Source": "/host/w", "RW": False},
+                {"Destination": "/inputs", "Source": "/host/inputs", "RW": False},
+                {"Destination": "/receipts", "Source": "/host/receipts", "RW": True},
+            ]
+        }
+        with self.assertRaises(MountPolicyError):
+            verify_container_mount_table(inspect_writable, expected_phase="final")
+
+        # Fails when /receipts is missing in final phase
+        inspect_missing = {
+            "Mounts": [
+                {"Destination": "/P", "Source": "/host/p", "RW": False},
+                {"Destination": "/W", "Source": "/host/w", "RW": False},
+                {"Destination": "/inputs", "Source": "/host/inputs", "RW": False},
+            ]
+        }
+        with self.assertRaises(MountPolicyError):
+            verify_container_mount_table(inspect_missing, expected_phase="final")
+
 
 class TestEvidenceCollectionAndSanitization(unittest.TestCase):
     def test_workflow_command_sanitization(self):

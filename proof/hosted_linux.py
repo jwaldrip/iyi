@@ -528,6 +528,7 @@ def build_mount_bindings(
     home_proof_dir: str,
     phase: str = "proof",
     control_dir: Optional[str] = None,
+    receipts_dir: Optional[str] = None,
 ) -> List[MountBinding]:
     """
     Construct the pinned mount table for the given lifecycle phase.
@@ -603,6 +604,17 @@ def build_mount_bindings(
             )
         )
 
+    if receipts_dir and os.path.isdir(receipts_dir):
+        bindings.append(
+            MountBinding(
+                container_path="/receipts",
+                host_path=os.path.abspath(receipts_dir),
+                access="ro",
+                mount_type="bind",
+                options=("bind-propagation=private",),
+            )
+        )
+
     return bindings
 
 
@@ -651,6 +663,13 @@ def verify_container_mount_table(
         if expected_phase == "proof" and m.get("RW", True) is not False:
             raise MountPolicyError(f"/P/.build must be read-only during proof phase")
 
+    # Final phase must mount /receipts read-only
+    if expected_phase == "final":
+        if "/receipts" not in mount_by_dest:
+            raise MountPolicyError("Required /receipts mount missing in final phase")
+        m = mount_by_dest["/receipts"]
+        if m.get("RW", True) is not False:
+            raise MountPolicyError("Mount /receipts must be read-only in final phase")
 
 def check_disk_floor(path: str, min_gib: float = MIN_DISK_GIB) -> float:
     """Verify filesystem containing path has at least min_gib free; raise error if not."""
@@ -1240,6 +1259,7 @@ class SequentialLifecycleController:
         phase: str = "proof",
         timeout_sec: Optional[float] = None,
         env_vars: Optional[Dict[str, str]] = None,
+        receipts_dir: Optional[str] = None,
     ) -> Tuple[int, str, str]:
         """Execute a command inside the hardened Docker container cage."""
         check_disk_floor(self.private_tmp_dir, self.min_disk_gib)
@@ -1253,6 +1273,7 @@ class SequentialLifecycleController:
             scratch_dir=self.scratch_dir,
             home_proof_dir=self.home_proof_dir,
             phase=phase,
+            receipts_dir=receipts_dir,
         )
 
         docker_args = [
@@ -1510,9 +1531,22 @@ class SequentialLifecycleController:
         """Phase 7: Final stage verification."""
         print("=== Step 7: Proof Final ===")
         r = self.manifest.report_path
-        cmd = ["python3", "-B", "/W/proof/run_proof.py", "final", "--report-dir", r]
-        code, out, err = self.execute_in_container(cmd, workdir="/W", phase="proof", timeout_sec=1200)
-        if code != 0:
+        receipts_dir = os.path.join(self.artifacts_dir, "sealed-receipts")
+        os.makedirs(receipts_dir, exist_ok=True)
+        cmd = [
+            "python3", "-B", "/W/proof/run_proof.py", "final",
+            "--report-dir", r,
+            "--sealed-receipts-dir", "/receipts",
+        ]
+        env_vars = {"IYI_SEALED_RECEIPTS_DIR": "/receipts"}
+        code, out, err = self.execute_in_container(
+            cmd,
+            workdir="/W",
+            phase="final",
+            timeout_sec=1200,
+            env_vars=env_vars,
+            receipts_dir=receipts_dir,
+        )
             self.mark_failure(f"Proof final failed with exit code {code}: {err}")
 
         leaf = os.path.basename(r)
