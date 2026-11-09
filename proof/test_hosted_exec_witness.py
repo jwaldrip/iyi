@@ -1,13 +1,15 @@
 """
 proof/test_hosted_exec_witness.py
 
-Focused standalone discriminating test suite for HostedExecWitness.
+Focused standalone discriminating test suite for HostedExecWitness verification engine.
 Tests the execution witness protocol, verification invariants, disk byte verification,
 repeated execution deduplication, and resistance to reader-only, utime-only,
 channel theft, and untraced clone manipulations.
 
-Per the assignment rules: No tests are run midflight. This file is executed
-only during official verification phases.
+NOTE: Tests in this file exercise the verification engine and parser against synthesized
+NDJSON fixtures and inspect C source invariants; they do NOT build or execute the native
+Linux ptrace tracer against real processes. Native qualification must occur on the actual
+GitHub-hosted Linux runner. Strict execution halt remains in place.
 """
 
 import hashlib
@@ -162,8 +164,13 @@ def _generate_valid_witness_stream(
 class TestHostedExecWitness(unittest.TestCase):
     """Test suite proving discriminating properties of HostedExecWitness."""
 
-    def test_real_exec_success_verification(self):
-        """A genuine execution produces valid exec_success and passes verification."""
+    def test_synthetic_stream_verification_pass(self):
+        """
+        Synthesized valid NDJSON stream passes verification engine.
+        NOTE: This test validates the verifier, parser, and binding logic against a
+        synthesized NDJSON fixture; it does not execute or trace a real process.
+        Actual native Linux ptrace tracing remains unbuilt/unrun in hosted Linux.
+        """
         stream = _generate_valid_witness_stream(
             exec_inoderefs=[(64769, 1001), (64769, 1002)],
             launch_binding={"driver": "vector", "attempt": 1},
