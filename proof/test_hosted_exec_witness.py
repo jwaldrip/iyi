@@ -535,6 +535,29 @@ class TestHostedExecWitness(unittest.TestCase):
         with self.assertRaises(RawCaptureError) as ctx:
             verify_exec_witness_evidence(events=events)
         self.assertIn("inconsistent or unauthorized duplicate", str(ctx.exception).lower())
+
+    def test_fifo_in_raw_capture_rejected_without_blocking(self):
+        """If raw capture destination is a FIFO, O_NONBLOCK prevents deadlock and S_ISREG rejects it."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fifo_path = os.path.join(tmpdir, "64769_1001.bin")
+            try:
+                os.mkfifo(fifo_path)
+            except OSError:
+                self.skipTest("mkfifo not supported on this platform")
+
+            stream = _generate_valid_witness_stream(
+                exec_inoderefs=[(64769, 1001)],
+                include_raw_event=True,
+            )
+            events = parse_witness_events(stream)
+            with self.assertRaises(RawCaptureError) as ctx:
+                verify_exec_witness_evidence(
+                    events=events,
+                    required_executables=[(64769, 1001)],
+                    raw_capture_dir=tmpdir,
+                )
+            self.assertIn("not a regular file", str(ctx.exception).lower())
+
     def test_c_source_invariants(self):
         """Verify the C implementation enforces all required security invariants."""
         c_path = os.path.join(os.path.dirname(__file__), "hosted_exec_witness.c")
@@ -544,7 +567,7 @@ class TestHostedExecWitness(unittest.TestCase):
 
         # Security invariants in C source:
         self.assertIn("DISALLOWED_CLONE3_SYSCALL", c_code)
-        self.assertIn("COMPAT_IA32_SYSCALL_DISALLOWED", c_code)
+        self.assertIn("COMPAT_SYSCALL_ARCH_DISALLOWED", c_code)
         self.assertIn("COMPAT_X32_SYSCALL_DISALLOWED", c_code)
         self.assertIn("CLONE_UNTRACED", c_code)
         self.assertIn("DISALLOWED_PTRACE_SYSCALL", c_code)

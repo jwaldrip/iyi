@@ -12,14 +12,18 @@ Responsibilities:
 5. Mandatory raw executable capture verification: requires corresponding capture event, binds claimed
    hashes/sizes to actual disk bytes, and rejects missing records, zero-length files, symlinks, or path escapes.
 6. Repeated execution deduplication audit: verifies consistent SHA-256 across repeated runs of same binary.
-7. Zero placeholder tolerance: empty captures or empty-file SHA-256 hashes are strictly rejected.
-8. Unmediated execution refusal: execution strictly requires the compiled C native tracer.
+7. Runtime E3 join lifecycle verification: authenticates hardlink creation before driver cleanup,
+   timestamp resets, and consumer completion events.
+8. Enforces inode uniqueness across distinct logical build slots.
+9. Zero placeholder tolerance: empty captures or empty-file SHA-256 hashes are strictly rejected.
+10. Unmediated execution refusal: execution strictly requires the compiled C native tracer.
 """
 
 from __future__ import annotations
 
 import argparse
 import dataclasses
+import errno
 import hashlib
 import json
 import os
@@ -85,6 +89,32 @@ class WitnessProcessSpawn:
 
 
 @dataclasses.dataclass(frozen=True)
+class WitnessHardlinkAuthenticated:
+    seq_id: int
+    timestamp_ns: int
+    pid: int
+
+
+@dataclasses.dataclass(frozen=True)
+class WitnessTimestampResetAuthenticated:
+    seq_id: int
+    timestamp_ns: int
+    pid: int
+
+
+@dataclasses.dataclass(frozen=True)
+class WitnessConsumerCompletion:
+    seq_id: int
+    timestamp_ns: int
+    pid: int
+    exit_code: int
+    runtime_ns: int
+    st_dev: int
+    st_ino: int
+    sha256: str
+
+
+@dataclasses.dataclass(frozen=True)
 class WitnessExecSuccess:
     seq_id: int
     timestamp_ns: int
@@ -107,6 +137,8 @@ class WitnessExecSuccess:
     raw_captured: bool = False
     system_binary: bool = False
     deduplicated: bool = False
+    role: str = "tool"
+    cwd: Optional[str] = None
 
     @property
     def inoderef(self) -> Tuple[int, int]:
@@ -161,6 +193,9 @@ class WitnessVerificationResult:
     session_end: WitnessSessionEnd
     exec_events: List[WitnessExecSuccess]
     raw_captures: List[WitnessRawExecCapture]
+    hardlink_events: List[WitnessHardlinkAuthenticated]
+    timestamp_reset_events: List[WitnessTimestampResetAuthenticated]
+    consumer_completions: List[WitnessConsumerCompletion]
 
 
 def parse_witness_events(raw_data: Union[str, bytes, Iterable[str]]) -> List[Dict[str, Any]]:
@@ -214,10 +249,11 @@ def verify_exec_witness_evidence(
     6. All spawned processes MUST be fully reaped ('active_processes_at_end == 0').
     7. Every (st_dev, st_ino) in 'required_executables' MUST have at least one matching 'exec_success'.
     8. Repeated executions of the same inoderef must report identical SHA-256 and size.
-    9. Zero-length or placeholder raw executable captures are strictly rejected.
-    10. If 'raw_capture_dir' is provided, verified raw bytes on disk are independently hashed,
+    9. Inode uniqueness across logical slots: distinct required slots cannot share physical inode.
+    10. Zero-length or placeholder raw executable captures are strictly rejected.
+    11. If 'raw_capture_dir' is provided, verified raw bytes on disk are independently hashed,
         mandatory 'raw_exec_capture' records are enforced per required executable, and
-        path/symlink escapes are denied.
+        path/symlink escapes are denied via atomic descriptor-relative access.
     """
     if not events:
         raise WitnessVerificationError("Empty witness evidence stream: no events recorded")
@@ -294,13 +330,16 @@ def verify_exec_witness_evidence(
 
     # Validate middle events
     expected_seq = 1
-    spawned_pids: Dict[int, int] = {}  # pid -> seq_id
+    spawned_pids: Dict[int, int] = {}
     witnessed_inoderefs: Set[Tuple[int, int]] = set()
     witnessed_inoderef_hashes: Dict[Tuple[int, int], str] = {}
     witnessed_paths: Set[str] = set()
     exec_events: List[WitnessExecSuccess] = []
     raw_captures: List[WitnessRawExecCapture] = []
     raw_captures_by_ref: Dict[Tuple[int, int], WitnessRawExecCapture] = {}
+    hardlink_events: List[WitnessHardlinkAuthenticated] = []
+    timestamp_reset_events: List[WitnessTimestampResetAuthenticated] = []
+    consumer_completions: List[WitnessConsumerCompletion] = []
 
     for idx, ev in enumerate(events[1:-1], start=2):
         ev_type = ev.get("event")
@@ -316,6 +355,32 @@ def verify_exec_witness_evidence(
             if not isinstance(pid, int) or pid <= 0:
                 raise WitnessVerificationError(f"Invalid pid on line {idx}: {pid}")
             spawned_pids[pid] = seq
+
+        elif ev_type == "hardlink_authenticated":
+            hardlink_events.append(WitnessHardlinkAuthenticated(
+                seq_id=seq or 0,
+                timestamp_ns=ev.get("timestamp_ns", 0),
+                pid=ev.get("pid", 0),
+            ))
+
+        elif ev_type == "timestamp_reset_authenticated":
+            timestamp_reset_events.append(WitnessTimestampResetAuthenticated(
+                seq_id=seq or 0,
+                timestamp_ns=ev.get("timestamp_ns", 0),
+                pid=ev.get("pid", 0),
+            ))
+
+        elif ev_type == "consumer_completion":
+            consumer_completions.append(WitnessConsumerCompletion(
+                seq_id=seq or 0,
+                timestamp_ns=ev.get("timestamp_ns", 0),
+                pid=ev.get("pid", 0),
+                exit_code=ev.get("exit_code", 0),
+                runtime_ns=ev.get("runtime_ns", 0),
+                st_dev=ev.get("st_dev", 0),
+                st_ino=ev.get("st_ino", 0),
+                sha256=ev.get("sha256", ""),
+            ))
 
         elif ev_type == "exec_success":
             pid = ev.get("pid")
@@ -338,6 +403,8 @@ def verify_exec_witness_evidence(
             raw_cap = ev.get("raw_captured", False)
             sys_bin = ev.get("system_binary", False)
             dedup = ev.get("deduplicated", False)
+            role = ev.get("role", "tool")
+            cwd = ev.get("cwd")
 
             # Audit repeated execution consistency
             if ref in witnessed_inoderef_hashes:
@@ -381,6 +448,8 @@ def verify_exec_witness_evidence(
                 raw_captured=raw_cap,
                 system_binary=sys_bin,
                 deduplicated=dedup,
+                role=role,
+                cwd=cwd,
             )
             exec_events.append(exec_ev)
 
@@ -430,8 +499,15 @@ def verify_exec_witness_evidence(
 
     # Check required executables against witnessed kernel executions
     if required_executables is not None:
+        seen_required_inodes: Set[Tuple[int, int]] = set()
         for req_dev, req_ino in required_executables:
             ref = (req_dev, req_ino)
+            if ref in seen_required_inodes:
+                raise WitnessVerificationError(
+                    f"Distinct logical build slots cannot share physical inode: duplicate (dev={req_dev}, ino={req_ino})"
+                )
+            seen_required_inodes.add(ref)
+
             if ref not in witnessed_inoderefs:
                 raise ExecNotWitnessedError(
                     f"Candidate executable inode (dev={req_dev}, ino={req_ino}) was never witnessed executing in kernel"
@@ -452,6 +528,7 @@ def verify_exec_witness_evidence(
                     )
 
                 o_nofollow = getattr(os, "O_NOFOLLOW", 0)
+                o_nonblock = getattr(os, "O_NONBLOCK", 0)
                 try:
                     dir_fd = os.open(raw_capture_dir, os.O_RDONLY | os.O_DIRECTORY | o_nofollow)
                 except OSError as exc:
@@ -459,7 +536,8 @@ def verify_exec_witness_evidence(
 
                 try:
                     try:
-                        file_fd = os.open(expected_basename, os.O_RDONLY | o_nofollow, dir_fd=dir_fd)
+                        # Open descriptor-relatively with O_NONBLOCK | O_NOFOLLOW to avoid FIFO deadlocks
+                        file_fd = os.open(expected_basename, os.O_RDONLY | o_nonblock | o_nofollow, dir_fd=dir_fd)
                     except OSError as exc:
                         if exc.errno == errno.ELOOP:
                             raise RawCaptureError(f"Symlink escape detected in captured file {expected_basename}")
@@ -475,6 +553,8 @@ def verify_exec_witness_evidence(
                             raise RawCaptureError(f"Captured path {expected_basename} is not a regular file")
                         if st.st_size <= 0:
                             raise RawCaptureError(f"Zero-length raw executable on disk rejected: {expected_basename}")
+                        if st.st_size > 100 * 1024 * 1024:
+                            raise RawCaptureError(f"Raw executable {expected_basename} exceeds 100 MiB limit: {st.st_size}")
 
                         file_bytes = os.read(file_fd, st.st_size + 1)
                         if len(file_bytes) != st.st_size:
@@ -489,6 +569,7 @@ def verify_exec_witness_evidence(
                 computed_sha = hashlib.sha256(file_bytes).hexdigest()
                 if computed_sha == EMPTY_SHA256:
                     raise RawCaptureError(f"Placeholder SHA-256 rejected for {expected_basename}")
+
                 if cap_rec.size_bytes != len(file_bytes):
                     raise RawCaptureError(
                         f"Byte size mismatch on disk: expected {cap_rec.size_bytes}, got {len(file_bytes)}"
@@ -522,6 +603,9 @@ def verify_exec_witness_evidence(
         session_end=session_end,
         exec_events=exec_events,
         raw_captures=raw_captures,
+        hardlink_events=hardlink_events,
+        timestamp_reset_events=timestamp_reset_events,
+        consumer_completions=consumer_completions,
     )
 
 

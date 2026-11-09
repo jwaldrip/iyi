@@ -27,6 +27,19 @@
  * rejects CLONE_UNTRACED immediately. Fails closed on any unaccounted child
  * exit, ptrace failure, or unexpected ECHILD.
  *
+ * Runtime E3 Join Lifecycle (Contract Alignment with OriginTrustPlan &
+ * Observer):
+ *   1. Intercepts link/linkat (rval==0) to emit hardlink_authenticated events
+ * before driver cleanup unlinks intermediate WORK/ artifacts.
+ *   2. Intercepts utimensat (rval==0) to emit timestamp_reset_authenticated
+ * events.
+ *   3. Classifies binaries into "producer" (compiler), "consumer" (workload
+ * binary), and "tool" (system utilities), capturing argv, cwd, and environment
+ * binding.
+ *   4. Emits consumer_completion at consumer exit before tracee reap.
+ *   5. Enforces hard raw byte budgets (100 MiB single, 500 MiB aggregate) and
+ * event limits.
+ *
  * Binary Classification & Raw Executable Capture:
  *   Classifies binaries into:
  *   1. Mutable Workload Outputs (in /private/tmp, /scratch, /tmp, /home/proof
@@ -137,6 +150,10 @@ static inline long linux_ptrace(int req, pid_t pid, void *addr, void *data) {
 #define PROTOCOL_VERSION "iyi-exec-witness-v1"
 #define MAX_TRACKED_PROCESSES 8192
 #define MAX_HELD_DESCRIPTORS 1024
+
+#define MAX_SINGLE_RAW_BYTES (100ULL * 1024ULL * 1024ULL)
+#define MAX_AGGREGATE_RAW_BYTES (500ULL * 1024ULL * 1024ULL)
+#define MAX_TOTAL_EVENTS 10000ULL
 
 /* Linux constant fallbacks */
 #ifndef O_PATH
@@ -409,7 +426,14 @@ typedef struct {
   bool active;
   bool exited;
   bool initial_stop_pending;
+  bool pending_link_syscall;
+  bool pending_utimensat_syscall;
   int exit_status;
+  char role[16];
+  uint64_t st_dev;
+  uint64_t st_ino;
+  char sha256[65];
+  uint64_t exec_time_ns;
 } ProcessEntry;
 
 typedef struct {
@@ -436,6 +460,7 @@ static char g_raw_capture_dir[PATH_MAX] = {0};
 static int g_raw_capture_dir_fd = -1;
 static uint64_t g_total_exec_events = 0;
 static uint64_t g_total_processes_spawned = 0;
+static uint64_t g_aggregate_raw_bytes = 0;
 static pid_t g_root_pid = -1;
 static int g_root_exit_code = 0;
 static bool g_root_exited = false;
@@ -613,6 +638,24 @@ static void emit_evidence_record(const char *json_line) {
   }
 }
 
+static void emit_hardlink_event(pid_t pid, uint64_t seq) {
+  char buf[512];
+  snprintf(buf, sizeof(buf),
+           "{\"event\":\"hardlink_authenticated\",\"seq_id\":%" PRIu64
+           ",\"timestamp_ns\":%" PRIu64 ",\"pid\":%d}",
+           seq, get_time_ns(), (int)pid);
+  emit_evidence_record(buf);
+}
+
+static void emit_timestamp_reset_event(pid_t pid, uint64_t seq) {
+  char buf[512];
+  snprintf(buf, sizeof(buf),
+           "{\"event\":\"timestamp_reset_authenticated\",\"seq_id\":%" PRIu64
+           ",\"timestamp_ns\":%" PRIu64 ",\"pid\":%d}",
+           seq, get_time_ns(), (int)pid);
+  emit_evidence_record(buf);
+}
+
 static ProcessEntry *find_process(pid_t pid) {
   for (size_t i = 0; i < g_process_count; i++) {
     if (g_processes[i].pid == pid && g_processes[i].active) {
@@ -642,7 +685,15 @@ static ProcessEntry *add_process(pid_t pid, pid_t ppid, uint64_t parent_seq,
   e->exited = false;
   e->initial_stop_pending = true; /* All fork/vfork/clone descendants receive
                                      initial synthetic stop */
+  e->pending_link_syscall = false;
+  e->pending_utimensat_syscall = false;
   e->exit_status = 0;
+  strncpy(e->role, "tool", sizeof(e->role) - 1);
+  e->st_dev = 0;
+  e->st_ino = 0;
+  e->sha256[0] = '\0';
+  e->exec_time_ns = 0;
+
   g_active_processes++;
   g_total_processes_spawned++;
 
@@ -707,6 +758,7 @@ static void emit_session_end(void) {
  * Uses PTRACE_GET_SYSCALL_INFO to distinguish entry vs exit unambiguously.
  * Validates native architecture (AUDIT_ARCH) to reject IA32, x32, and AArch32
  * compat paths. Rejects clone3 outright; rejects ptrace and CLONE_UNTRACED.
+ * Tracks link/linkat and utimensat syscalls for authenticated runtime E3 join.
  */
 static int inspect_syscall_stop(pid_t pid, char *err_buf, size_t err_buf_len) {
 #if defined(__linux__)
@@ -721,9 +773,24 @@ static int inspect_syscall_stop(pid_t pid, char *err_buf, size_t err_buf_len) {
     return -1;
   }
 
+  ProcessEntry *proc = find_process(pid);
+
   if (info.op == PTRACE_SYSCALL_INFO_EXIT) {
+    if (proc != NULL && proc->pending_link_syscall) {
+      proc->pending_link_syscall = false;
+      if (info.exit.rval == 0) {
+        emit_hardlink_event(pid, proc->seq_id);
+      }
+    }
+    if (proc != NULL && proc->pending_utimensat_syscall) {
+      proc->pending_utimensat_syscall = false;
+      if (info.exit.rval == 0) {
+        emit_timestamp_reset_event(pid, proc->seq_id);
+      }
+    }
     return 2; /* Syscall exit */
   }
+
   if (info.op == PTRACE_SYSCALL_INFO_ENTRY) {
     /* Verify native audit architecture */
 #if defined(__x86_64__)
@@ -754,6 +821,16 @@ static int inspect_syscall_stop(pid_t pid, char *err_buf, size_t err_buf_len) {
         return -1;
       }
     }
+    if (nr == 86 || nr == 265) { /* __NR_link, __NR_linkat */
+      if (proc != NULL) {
+        proc->pending_link_syscall = true;
+      }
+    }
+    if (nr == 280) { /* __NR_utimensat */
+      if (proc != NULL) {
+        proc->pending_utimensat_syscall = true;
+      }
+    }
 #elif defined(__aarch64__)
     if (info.arch != AUDIT_ARCH_AARCH64) {
       snprintf(err_buf, err_buf_len, "COMPAT_SYSCALL_ARCH_DISALLOWED_0x%x",
@@ -774,6 +851,16 @@ static int inspect_syscall_stop(pid_t pid, char *err_buf, size_t err_buf_len) {
       if (flags & CLONE_UNTRACED) {
         snprintf(err_buf, err_buf_len, "CLONE_UNTRACED_ATTEMPT");
         return -1;
+      }
+    }
+    if (nr == 37) { /* __NR_linkat */
+      if (proc != NULL) {
+        proc->pending_link_syscall = true;
+      }
+    }
+    if (nr == 88) { /* __NR_utimensat */
+      if (proc != NULL) {
+        proc->pending_utimensat_syscall = true;
       }
     }
 #else
@@ -840,6 +927,17 @@ static void handle_exec_event(pid_t pid) {
     exe_target[link_len] = '\0';
   } else {
     snprintf(exe_target, sizeof(exe_target), "unknown");
+  }
+
+  /* Capture current working directory of tracee */
+  char proc_cwd[64];
+  snprintf(proc_cwd, sizeof(proc_cwd), "/proc/%d/cwd", (int)pid);
+  char cwd_target[PATH_MAX] = {0};
+  ssize_t cwd_len = readlink(proc_cwd, cwd_target, sizeof(cwd_target) - 1);
+  if (cwd_len > 0) {
+    cwd_target[cwd_len] = '\0';
+  } else {
+    snprintf(cwd_target, sizeof(cwd_target), "unknown");
   }
 
   struct stat st;
@@ -934,7 +1032,8 @@ static void handle_exec_event(pid_t pid) {
   if (raw_fd < 0) {
     int open_err = errno;
     if (is_workload_artifact) {
-      close(held_fd);
+      if (existing == NULL)
+        close(held_fd);
       g_failed = true;
       snprintf(g_failure_reason, sizeof(g_failure_reason),
                "O_NOATIME_FAILED_WORKLOAD_ARTIFACT_ERRNO_%d", open_err);
@@ -952,7 +1051,8 @@ static void handle_exec_event(pid_t pid) {
       raw_fd = open(proc_exe, O_RDONLY | O_CLOEXEC);
       if (raw_fd < 0) {
         int err = errno;
-        close(held_fd);
+        if (existing == NULL)
+          close(held_fd);
         g_failed = true;
         snprintf(g_failure_reason, sizeof(g_failure_reason),
                  "SYSTEM_BINARY_OPEN_FAILED_ERRNO_%d", err);
@@ -965,7 +1065,8 @@ static void handle_exec_event(pid_t pid) {
       }
       is_immutable_system_binary = true;
     } else {
-      close(held_fd);
+      if (existing == NULL)
+        close(held_fd);
       g_failed = true;
       snprintf(g_failure_reason, sizeof(g_failure_reason),
                "O_NOATIME_REFUSED_NON_RDONLY_MOUNT_ERRNO_%d", open_err);
@@ -1002,7 +1103,8 @@ static void handle_exec_event(pid_t pid) {
     if (save_fd < 0) {
       int err = errno;
       close(raw_fd);
-      close(held_fd);
+      if (existing == NULL)
+        close(held_fd);
       g_failed = true;
       snprintf(g_failure_reason, sizeof(g_failure_reason),
                "RAW_PERSIST_OPENAT_FAILED_ERRNO_%d", err);
@@ -1023,7 +1125,8 @@ static void handle_exec_event(pid_t pid) {
         int err = errno;
         close(save_fd);
         close(raw_fd);
-        close(held_fd);
+        if (existing == NULL)
+          close(held_fd);
         g_failed = true;
         snprintf(g_failure_reason, sizeof(g_failure_reason),
                  "RAW_PERSIST_WRITE_FAILED_ERRNO_%d", err);
@@ -1042,7 +1145,8 @@ static void handle_exec_event(pid_t pid) {
   close(raw_fd);
 
   if (bytes_n < 0 || actual_bytes_captured <= 0) {
-    close(held_fd);
+    if (existing == NULL)
+      close(held_fd);
     g_failed = true;
     snprintf(g_failure_reason, sizeof(g_failure_reason),
              "RAW_CAPTURE_EMPTY_OR_READ_ERROR");
@@ -1052,6 +1156,38 @@ static void handle_exec_event(pid_t pid) {
             proc_exe);
     kill_all_tracees();
     return;
+  }
+
+  /* Enforce raw byte budgets */
+  if ((uint64_t)actual_bytes_captured > MAX_SINGLE_RAW_BYTES) {
+    if (existing == NULL)
+      close(held_fd);
+    g_failed = true;
+    snprintf(g_failure_reason, sizeof(g_failure_reason),
+             "SINGLE_RAW_BUDGET_EXCEEDED");
+    fprintf(
+        stderr,
+        "hosted_exec_witness: fatal: binary exceeds single raw budget (%" PRIu64
+        " bytes)\n",
+        (uint64_t)actual_bytes_captured);
+    kill_all_tracees();
+    return;
+  }
+
+  if (existing == NULL) {
+    g_aggregate_raw_bytes += (uint64_t)actual_bytes_captured;
+    if (g_aggregate_raw_bytes > MAX_AGGREGATE_RAW_BYTES) {
+      close(held_fd);
+      g_failed = true;
+      snprintf(g_failure_reason, sizeof(g_failure_reason),
+               "AGGREGATE_RAW_BUDGET_EXCEEDED");
+      fprintf(stderr,
+              "hosted_exec_witness: fatal: aggregate raw capture budget "
+              "exceeded (%" PRIu64 " bytes)\n",
+              g_aggregate_raw_bytes);
+      kill_all_tracees();
+      return;
+    }
   }
 
   uint8_t digest[32];
@@ -1091,7 +1227,24 @@ static void handle_exec_event(pid_t pid) {
   strncpy(ce->sha256, sha256_hex, sizeof(ce->sha256) - 1);
   ce->held_fd = held_fd;
   ce->is_system_binary = is_immutable_system_binary;
+
 emit_exec_record:;
+  /* Classify process role: producer vs consumer vs tool */
+  const char *role = "tool";
+  if (strstr(exe_target, "/.build/iyi") != NULL ||
+      strstr(exe_target, "/crystal") != NULL) {
+    role = "producer";
+  } else if (is_workload_artifact) {
+    role = "consumer";
+  }
+  if (proc != NULL) {
+    strncpy(proc->role, role, sizeof(proc->role) - 1);
+    proc->st_dev = (uint64_t)st.st_dev;
+    proc->st_ino = (uint64_t)st.st_ino;
+    strncpy(proc->sha256, sha256_hex, sizeof(proc->sha256) - 1);
+    proc->exec_time_ns = get_time_ns();
+  }
+
   /* Read command-line arguments from /proc/<pid>/cmdline */
   char proc_cmdline[64];
   snprintf(proc_cmdline, sizeof(proc_cmdline), "/proc/%d/cmdline", (int)pid);
@@ -1135,42 +1288,54 @@ emit_exec_record:;
   char escaped_path[PATH_MAX * 2];
   escape_json_string(exe_target, escaped_path, sizeof(escaped_path));
 
+  char escaped_cwd[PATH_MAX * 2];
+  escape_json_string(cwd_target, escaped_cwd, sizeof(escaped_cwd));
+
+  if (g_total_exec_events >= MAX_TOTAL_EVENTS) {
+    g_failed = true;
+    snprintf(g_failure_reason, sizeof(g_failure_reason),
+             "TOTAL_EVENT_LIMIT_EXCEEDED");
+    kill_all_tracees();
+    return;
+  }
+
   char buf[4096];
-  snprintf(
-      buf, sizeof(buf),
-      "{\"event\":\"exec_success\",\"seq_id\":%" PRIu64
-      ",\"timestamp_ns\":%" PRIu64 ",\"pid\":%d,\"ppid\":%d,\"exe_path\":\"%s\""
-      ",\"st_dev\":%" PRIu64 ",\"st_ino\":%" PRIu64
-      ",\"st_mode\":%u,\"st_size\":%" PRIi64 ",\"st_uid\":%u,\"st_gid\":%u"
-      ",\"st_atim_ns\":%" PRIu64 ",\"st_mtim_ns\":%" PRIu64
-      ",\"st_ctim_ns\":%" PRIu64
-      ",\"held_fd_index\":%d,\"sha256\":\"%s\",\"size_bytes\":%" PRIi64
-      ",\"raw_captured\":true,\"system_binary\":%s,\"deduplicated\":%s,"
-      "\"cmdline\":%s}",
-      seq, get_time_ns(), (int)pid, (int)ppid, escaped_path,
-      (uint64_t)st.st_dev, (uint64_t)st.st_ino, (unsigned int)st.st_mode,
-      (int64_t)st.st_size, (unsigned int)st.st_uid, (unsigned int)st.st_gid,
-      atim_ns, mtim_ns, ctim_ns, held_idx, sha256_hex, actual_bytes_captured,
-      is_immutable_system_binary ? "true" : "false",
-      is_deduplicated ? "true" : "false", cmd_json);
+  snprintf(buf, sizeof(buf),
+           "{\"event\":\"exec_success\",\"seq_id\":%" PRIu64
+           ",\"timestamp_ns\":%" PRIu64 ",\"pid\":%d,\"ppid\":%d,\"role\":\"%"
+                                        "s\",\"exe_path\":\"%s\",\"cwd\":\"%s\""
+           ",\"st_dev\":%" PRIu64 ",\"st_ino\":%" PRIu64
+           ",\"st_mode\":%u,\"st_size\":%" PRIi64 ",\"st_uid\":%u,\"st_gid\":%u"
+           ",\"st_atim_ns\":%" PRIu64 ",\"st_mtim_ns\":%" PRIu64
+           ",\"st_ctim_ns\":%" PRIu64
+           ",\"held_fd_index\":%d,\"sha256\":\"%s\",\"size_bytes\":%" PRIi64
+           ",\"raw_captured\":true,\"system_binary\":%s,\"deduplicated\":%s,"
+           "\"cmdline\":%s}",
+           seq, get_time_ns(), (int)pid, (int)ppid, role, escaped_path,
+           escaped_cwd, (uint64_t)st.st_dev, (uint64_t)st.st_ino,
+           (unsigned int)st.st_mode, (int64_t)st.st_size,
+           (unsigned int)st.st_uid, (unsigned int)st.st_gid, atim_ns, mtim_ns,
+           ctim_ns, held_idx, sha256_hex, actual_bytes_captured,
+           is_immutable_system_binary ? "true" : "false",
+           is_deduplicated ? "true" : "false", cmd_json);
 
   emit_evidence_record(buf);
   g_total_exec_events++;
 
-  if (g_raw_capture_dir_fd >= 0) {
+  if (g_raw_capture_dir_fd >= 0 && !is_deduplicated) {
     char cap_buf[1024];
     char cap_file[128];
     snprintf(cap_file, sizeof(cap_file), "%" PRIu64 "_%" PRIu64 ".bin",
              (uint64_t)st.st_dev, (uint64_t)st.st_ino);
-    snprintf(cap_buf, sizeof(cap_buf),
-             "{\"event\":\"raw_exec_capture\",\"seq_id\":%" PRIu64
-             ",\"timestamp_ns\":%" PRIu64 ",\"st_dev\":%" PRIu64
-             ",\"st_ino\":%" PRIu64 ",\"exe_path\":\"%s\""
-             ",\"size_bytes\":%" PRIi64
-             ",\"sha256\":\"%s\",\"captured_file\":\"%s\",\"deduplicated\":%s}",
-             seq, get_time_ns(), (uint64_t)st.st_dev, (uint64_t)st.st_ino,
-             escaped_path, actual_bytes_captured, sha256_hex, cap_file,
-             is_deduplicated ? "true" : "false");
+    snprintf(
+        cap_buf, sizeof(cap_buf),
+        "{\"event\":\"raw_exec_capture\",\"seq_id\":%" PRIu64
+        ",\"timestamp_ns\":%" PRIu64 ",\"st_dev\":%" PRIu64
+        ",\"st_ino\":%" PRIu64 ",\"exe_path\":\"%s\""
+        ",\"size_bytes\":%" PRIi64
+        ",\"sha256\":\"%s\",\"captured_file\":\"%s\",\"deduplicated\":false}",
+        seq, get_time_ns(), (uint64_t)st.st_dev, (uint64_t)st.st_ino,
+        escaped_path, actual_bytes_captured, sha256_hex, cap_file);
     emit_evidence_record(cap_buf);
   }
 }
@@ -1201,6 +1366,22 @@ static void handle_exit_event(pid_t pid) {
            ",\"pid\":%d,\"exit_code\":%d,\"raw_status\":%lu}",
            seq, get_time_ns(), (int)pid, exit_code, raw_status);
   emit_evidence_record(buf);
+
+  /* If consumer executable exits, emit consumer_completion event */
+  if (proc != NULL && strcmp(proc->role, "consumer") == 0) {
+    uint64_t now_ns = get_time_ns();
+    uint64_t runtime_ns =
+        (now_ns > proc->exec_time_ns) ? (now_ns - proc->exec_time_ns) : 0;
+    char comp_buf[512];
+    snprintf(comp_buf, sizeof(comp_buf),
+             "{\"event\":\"consumer_completion\",\"seq_id\":%" PRIu64
+             ",\"timestamp_ns\":%" PRIu64 ",\"pid\":%d,\"exit_code\":%d"
+             ",\"runtime_ns\":%" PRIu64 ",\"st_dev\":%" PRIu64
+             ",\"st_ino\":%" PRIu64 ",\"sha256\":\"%s\"}",
+             seq, now_ns, (int)pid, exit_code, runtime_ns, proc->st_dev,
+             proc->st_ino, proc->sha256);
+    emit_evidence_record(comp_buf);
+  }
 }
 
 int main(int argc, char **argv) {
