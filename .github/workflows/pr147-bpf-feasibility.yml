@@ -84,7 +84,7 @@ jobs:
         run: |
           owned="$RUNNER_TEMP/bpf-feasibility-private"
           mkdir -m 0700 "$owned"
-          status_file="$RUNNER_TEMP/kernel-feasibility-diag/bpf-feasibility.json"
+          status_file="$owned/bpf-feasibility.json"
 
           if [ -f proof/bpf_canary_host.c ] && [ -f proof/bpf_canary.bpf.c ]; then
             echo "BPF helper present on branch; checking safe prerequisites..."
@@ -107,6 +107,23 @@ jobs:
                 --probe-only \
                 --bpf-obj "$owned/bpf_canary.bpf.o" \
                 --status "$status_file"
+              python3 -c 'import json,sys
+          r=json.load(open(sys.argv[1], encoding="utf-8"))
+          p=r.get("observed_kernel_prog") or {}
+          l=r.get("observed_kernel_link") or {}
+          ok=(r.get("status")=="PROBE_SUCCESS" and r.get("strict_eligible") is False
+              and r.get("exec_identity_tested") is False
+              and r.get("bpf_load_supported") is True and r.get("bpf_attach_supported") is True
+              and r.get("hook_identity_verified") is True and r.get("link_association_verified") is True
+              and r.get("fd_ownership_lifecycle")=="detached_and_closed_before_report"
+              and p.get("prog_type")==26 and isinstance(p.get("prog_id"),int) and p["prog_id"]>0
+              and isinstance(p.get("attach_btf_id"),int) and p["attach_btf_id"]>0
+              and l.get("link_type")==1 and l.get("link_prog_id")==p["prog_id"]
+              and l.get("link_tp_name")=="sched_process_exec"
+              and l.get("target_hook_name")=="btf_trace_sched_process_exec"
+              and l.get("target_hook_kind")=="BTF_KIND_TYPEDEF")
+          if not ok: sys.exit("BPF terminal report is incomplete or inconsistent")
+          ' "$status_file"
             else
               echo "Required BPF build prerequisites (clang, /usr/include/bpf/bpf.h, or setpriv) missing."
               python3 -c "import json, os, pathlib; p = pathlib.Path(os.environ['RUNNER_TEMP']) / 'kernel-feasibility-diag/bpf-feasibility.json'; p.write_text(json.dumps({'schema': 'iyi-kernel-feasibility-v1', 'strict_eligible': False, 'probe_type': 'bpf', 'result': 'PREREQUISITES_MISSING', 'detail': 'clang, /usr/include/bpf/bpf.h, or setpriv missing on runner; no package installation permitted'}))"
