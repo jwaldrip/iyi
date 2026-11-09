@@ -6,6 +6,10 @@
 #if __has_include("vmlinux.h")
 #include "vmlinux.h"
 #else
+#if defined(__linux__) || defined(__bpf__)
+#include <linux/bpf.h>
+#include <linux/types.h>
+#endif
 #include "bpf_canary_kernel_types.h"
 #endif
 
@@ -90,7 +94,7 @@ static __always_inline void inc_stat(__u32 key) {
  * into userspace st_dev encoding: (minor & 0xff) | (major << 8) | ((minor &
  * ~0xff) << 12)
  */
-static __always_inline __u64 encode_dev(dev_t dev) {
+static __always_inline __u64 encode_dev(__u32 dev) {
   unsigned int major = dev >> 20;
   unsigned int minor = dev & ((1U << 20) - 1);
   return (minor & 0xff) | ((major & 0xfff) << 8) | ((minor & ~0xff) << 12);
@@ -102,7 +106,7 @@ static __always_inline __u64 encode_dev(dev_t dev) {
  * Accesses kernel task_struct and linux_binprm directly via BTF.
  */
 SEC("tp_btf/sched_process_exec")
-int BPF_PROG(sched_process_exec, struct task_struct *p, pid_t old_pid,
+int BPF_PROG(sched_process_exec, struct task_struct *p, int old_pid,
              struct linux_binprm *bprm) {
   (void)old_pid;
 

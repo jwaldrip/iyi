@@ -4,8 +4,11 @@
 /*
  * Minimal CO-RE definitions for tp_btf/sched_process_exec.
  * Used when full vmlinux.h is not generated.
- * All struct field accesses are relocated at load time via BTF.
+ * Uses explicit integer types (__u32, int, unsigned long)
+ * without hosted sys/types.h libc dependencies.
  */
+
+#include "bpf_canary_types.h"
 
 #ifndef BPF_TARGET
 #if defined(__bpf__) || defined(__BPF__)
@@ -19,11 +22,8 @@
 #define __preserve_access
 #endif
 
-typedef unsigned int dev_t;
-typedef int pid_t;
-
 struct super_block {
-  dev_t s_dev;
+  __u32 s_dev;
 } __preserve_access;
 
 struct inode {
@@ -44,8 +44,8 @@ struct mm_struct {
 } __preserve_access;
 
 struct task_struct {
-  pid_t pid;
-  pid_t tgid;
+  int pid;
+  int tgid;
   struct mm_struct *mm;
 } __preserve_access;
 

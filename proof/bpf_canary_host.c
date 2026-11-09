@@ -20,9 +20,26 @@
 
 #ifdef __linux__
 #include <bpf/bpf.h>
+#include <bpf/btf.h>
 #include <bpf/libbpf.h>
+#include <linux/bpf.h>
 #include <linux/capability.h>
 #include <sys/prctl.h>
+#endif
+
+#ifndef __linux__
+#ifndef BPF_PROG_TYPE_TRACING
+#define BPF_PROG_TYPE_TRACING 26
+#endif
+#ifndef BPF_LINK_TYPE_RAW_TRACEPOINT
+#define BPF_LINK_TYPE_RAW_TRACEPOINT 1
+#endif
+#ifndef BPF_LINK_TYPE_TRACING
+#define BPF_LINK_TYPE_TRACING 2
+#endif
+#ifndef BPF_TRACE_RAW_TP
+#define BPF_TRACE_RAW_TP 24
+#endif
 #endif
 
 #include "bpf_canary_types.h"
@@ -32,6 +49,45 @@ struct host_context {
   uint64_t events_captured;
   uint64_t target_cgroup_id;
   int verbose;
+};
+
+struct probe_report {
+  const char *status;
+  bool load_supported;
+  bool attach_supported;
+  bool hook_identity_verified;
+  bool link_association_verified;
+
+  // Real queried kernel program metadata
+  bool prog_info_valid;
+  uint32_t prog_id;
+  uint32_t prog_type;
+  uint32_t btf_id;
+  uint32_t attach_btf_id;
+  char prog_name[16];
+  uint8_t prog_tag[8];
+
+  // Real queried kernel link metadata
+  bool link_info_valid;
+  uint32_t link_id;
+  uint32_t link_type;
+  uint32_t link_prog_id;
+  char link_tp_name[64];
+  char observed_hook_name[64];
+  const char *observed_hook_kind;
+  const char *requested_program_name;
+  const char *requested_attach_target;
+  const char *fd_ownership_lifecycle;
+
+  uint64_t target_tgid;
+  uid_t uid;
+  gid_t gid;
+  bool cap_bpf;
+  bool cap_perfmon;
+  bool cap_sys_admin;
+  bool all_other_caps_clear;
+
+  const char *error_message;
 };
 
 static volatile sig_atomic_t stop_requested = 0;
@@ -277,67 +333,96 @@ static int handle_event(void *ctx, void *data, size_t data_sz) {
 }
 #endif
 
-static int write_status_file(const char *status_path, const char *status,
-                             bool is_probe_only, bool load_supported,
-                             bool attach_supported, uint64_t events_captured,
-                             uint64_t loss_count, uint64_t error_count,
-                             uid_t final_uid, gid_t final_gid,
-                             uint64_t cgroup_id, uint64_t target_tgid,
-                             const char *error_msg) {
-  if (!status_path)
-    return 0;
+static int write_probe_report(const char *path, const struct probe_report *r) {
+  if (!path)
+    return -1;
 
   const char *err_open = NULL;
-  FILE *sf = safe_open_file(status_path, false, &err_open);
+  FILE *sf = safe_open_file(path, false, &err_open);
   if (!sf) {
-    fprintf(stderr, "[bpf_canary_host] Failed to open status file safely: %s\n",
-            err_open ? err_open : "unknown");
+    fprintf(stderr,
+            "[bpf_canary_host] Failed to open status file safely (%s): %s\n",
+            path, err_open ? err_open : "unknown");
     return -1;
   }
 
   fprintf(sf, "{\n");
-  fprintf(sf, "  \"status\": \"%s\",\n", status);
+  fprintf(sf, "  \"status\": \"%s\",\n", r->status);
   fprintf(sf, "  \"strict_eligible\": false,\n");
   fprintf(sf, "  \"exec_identity_tested\": false,\n");
   fprintf(sf, "  \"bpf_load_supported\": %s,\n",
-          load_supported ? "true" : "false");
+          r->load_supported ? "true" : "false");
   fprintf(sf, "  \"bpf_attach_supported\": %s,\n",
-          attach_supported ? "true" : "false");
-  if (is_probe_only) {
-    fprintf(sf, "  \"diagnostic_mode\": true,\n");
-    fprintf(sf, "  \"program_name\": \"sched_process_exec\",\n");
-    fprintf(sf, "  \"program_type\": \"BPF_PROG_TYPE_TRACING\",\n");
-    fprintf(sf, "  \"attach_target\": \"tp_btf/sched_process_exec\",\n");
-    fprintf(sf, "  \"link_fd_owned\": true,\n");
-    fprintf(sf, "  \"fd_ownership_lifecycle\": "
-                "\"detached_and_closed_before_report\",\n");
-    fprintf(sf, "  \"target_tgid\": %llu,\n", (unsigned long long)target_tgid);
+          r->attach_supported ? "true" : "false");
+  fprintf(sf, "  \"hook_identity_verified\": %s,\n",
+          r->hook_identity_verified ? "true" : "false");
+  fprintf(sf, "  \"link_association_verified\": %s,\n",
+          r->link_association_verified ? "true" : "false");
+  fprintf(sf, "  \"requested_program_name\": \"%s\",\n",
+          r->requested_program_name ? r->requested_program_name : "null");
+  fprintf(sf, "  \"requested_attach_target\": \"%s\",\n",
+          r->requested_attach_target ? r->requested_attach_target : "null");
+  fprintf(sf, "  \"fd_ownership_lifecycle\": \"%s\",\n",
+          r->fd_ownership_lifecycle);
+
+  if (r->prog_info_valid) {
+    char tag_hex[17];
+    for (int i = 0; i < 8; i++) {
+      snprintf(tag_hex + i * 2, 3, "%02x", r->prog_tag[i]);
+    }
+    tag_hex[16] = '\0';
+    fprintf(sf, "  \"observed_kernel_prog\": {\n");
+    fprintf(sf, "    \"prog_id\": %u,\n", r->prog_id);
+    fprintf(sf, "    \"prog_type\": %u,\n", r->prog_type);
+    fprintf(sf, "    \"prog_name\": \"%s\",\n", r->prog_name);
+    fprintf(sf, "    \"btf_id\": %u,\n", r->btf_id);
+    fprintf(sf, "    \"attach_btf_id\": %u,\n", r->attach_btf_id);
+    fprintf(sf, "    \"tag\": \"%s\"\n", tag_hex);
+    fprintf(sf, "  },\n");
   } else {
-    fprintf(sf, "  \"events_captured\": %llu,\n",
-            (unsigned long long)events_captured);
-    fprintf(sf, "  \"loss_count\": %llu,\n", (unsigned long long)loss_count);
-    fprintf(sf, "  \"error_count\": %llu,\n", (unsigned long long)error_count);
-    fprintf(sf, "  \"cgroup_id\": %llu,\n", (unsigned long long)cgroup_id);
+    fprintf(sf, "  \"observed_kernel_prog\": null,\n");
   }
+
+  if (r->link_info_valid) {
+    fprintf(sf, "  \"observed_kernel_link\": {\n");
+    fprintf(sf, "    \"link_id\": %u,\n", r->link_id);
+    fprintf(sf, "    \"link_type\": %u,\n", r->link_type);
+    fprintf(sf, "    \"link_type_name\": \"BPF_LINK_TYPE_RAW_TRACEPOINT\",\n");
+    fprintf(sf, "    \"link_prog_id\": %u,\n", r->link_prog_id);
+    fprintf(sf, "    \"link_tp_name\": \"%s\",\n",
+            r->link_tp_name[0] ? r->link_tp_name : "null");
+    fprintf(sf, "    \"target_hook_name\": \"%s\",\n",
+            r->observed_hook_name[0] ? r->observed_hook_name : "null");
+    fprintf(sf, "    \"target_hook_kind\": \"%s\"\n",
+            r->observed_hook_kind ? r->observed_hook_kind : "null");
+    fprintf(sf, "  },\n");
+  } else {
+    fprintf(sf, "  \"observed_kernel_link\": null,\n");
+  }
+
+  fprintf(sf, "  \"target_tgid\": %llu,\n", (unsigned long long)r->target_tgid);
   fprintf(sf, "  \"process_identity\": {\n");
-  fprintf(sf, "    \"uid\": %u,\n", (unsigned int)final_uid);
-  fprintf(sf, "    \"gid\": %u\n", (unsigned int)final_gid);
+  fprintf(sf, "    \"uid\": %u,\n", (unsigned int)r->uid);
+  fprintf(sf, "    \"gid\": %u\n", (unsigned int)r->gid);
   fprintf(sf, "  },\n");
   fprintf(sf, "  \"capabilities\": {\n");
-  fprintf(sf, "    \"cap_bpf\": true,\n");
-  fprintf(sf, "    \"cap_perfmon\": true,\n");
-  fprintf(sf, "    \"cap_sys_admin\": false,\n");
-  fprintf(sf, "    \"all_other_caps_clear\": true\n");
+  fprintf(sf, "    \"cap_bpf\": %s,\n", r->cap_bpf ? "true" : "false");
+  fprintf(sf, "    \"cap_perfmon\": %s,\n", r->cap_perfmon ? "true" : "false");
+  fprintf(sf, "    \"cap_sys_admin\": %s,\n",
+          r->cap_sys_admin ? "true" : "false");
+  fprintf(sf, "    \"all_other_caps_clear\": %s\n",
+          r->all_other_caps_clear ? "true" : "false");
   fprintf(sf, "  },\n");
-  if (error_msg) {
-    fprintf(sf, "  \"error_message\": \"%s\"\n", error_msg);
+
+  if (r->error_message) {
+    fprintf(sf, "  \"error_message\": \"%s\"\n", r->error_message);
   } else {
     fprintf(sf, "  \"error_message\": null\n");
   }
   fprintf(sf, "}\n");
 
   if (fflush(sf) != 0 || fclose(sf) != 0) {
-    fprintf(stderr, "[bpf_canary_host] Failed to flush/close status file\n");
+    fprintf(stderr, "[bpf_canary_host] Failed to flush or close status file\n");
     return -1;
   }
   return 0;
@@ -413,64 +498,66 @@ int main(int argc, char **argv) {
     }
   }
 
+  // Missing --status must fail
+  if (!status_path) {
+    fprintf(stderr, "[bpf_canary_host] ERROR: --status <path> is required\n");
+    return 1;
+  }
+
 #ifndef __linux__
   fprintf(stderr,
           "[bpf_canary_host] Linux kernel BPF required. Not supported on host "
           "platform.\n");
-  write_status_file(status_path, "UNSUPPORTED_PLATFORM", probe_only, false,
-                    false, 0, 0, 0, 0, 0, 0, 0, "Non-Linux platform");
+  struct probe_report unsupp_rep;
+  memset(&unsupp_rep, 0, sizeof(unsupp_rep));
+  unsupp_rep.status = "UNSUPPORTED_PLATFORM";
+  unsupp_rep.fd_ownership_lifecycle = "unattached";
+  unsupp_rep.error_message = "Non-Linux platform";
+  write_probe_report(status_path, &unsupp_rep);
   return 1;
 #else
-  signal(SIGINT, sig_handler);
-  signal(SIGTERM, sig_handler);
+  if (probe_only) {
+    // In foreground diagnostic mode: retain/restore default signal disposition
+    signal(SIGINT, SIG_DFL);
+    signal(SIGTERM, SIG_DFL);
+  } else {
+    // In polling tracer mode: install signal handler for clean graceful stop
+    signal(SIGINT, sig_handler);
+    signal(SIGTERM, sig_handler);
+  }
 
   libbpf_set_print(libbpf_print_fn);
+
+  struct probe_report rep;
+  memset(&rep, 0, sizeof(rep));
+  rep.status = "UNINITIALIZED";
+  rep.requested_program_name = "sched_process_exec";
+  rep.requested_attach_target = "tp_btf/sched_process_exec";
+  rep.fd_ownership_lifecycle = "unattached";
 
   uid_t final_uid = getuid();
   gid_t final_gid = getgid();
 
-  // Enforce genuinely restricted observer privileges: reject UID 0 and
-  // capabilities outside approved set
+  // 1. Verify restricted capabilities: reject root UID 0 and caps outside
+  // approved set
   if (verify_restricted_privileges(verbose, &final_uid, &final_gid) != 0) {
-    write_status_file(status_path, "PRIVILEGE_RESTRICTION_FAILED", probe_only,
-                      false, false, 0, 0, 0, final_uid, final_gid,
-                      target_cgroup_id, 0,
-                      "Failed privilege restriction verification");
+    rep.status = "PRIVILEGE_RESTRICTION_FAILED";
+    rep.uid = final_uid;
+    rep.gid = final_gid;
+    rep.error_message =
+        "Failed privilege restriction check: UID 0 or disallowed capabilities";
+    write_probe_report(status_path, &rep);
     return 1;
   }
 
-  // In non-probe-only mode, write exact PID file for authenticated lifecycle
-  // management
-  if (!probe_only && pid_path) {
-    if (safe_write_pid_file(pid_path) != 0) {
-      write_status_file(status_path, "PID_FILE_FAILED", probe_only, false,
-                        false, 0, 0, 0, final_uid, final_gid, target_cgroup_id,
-                        0, "Failed to write pid file");
-      return 1;
-    }
-  }
+  rep.uid = final_uid;
+  rep.gid = final_gid;
+  rep.cap_bpf = true;
+  rep.cap_perfmon = true;
+  rep.cap_sys_admin = false;
+  rep.all_other_caps_clear = true;
 
-  struct host_context ctx;
-  memset(&ctx, 0, sizeof(ctx));
-  ctx.target_cgroup_id = target_cgroup_id;
-  ctx.verbose = verbose;
-
-  if (!probe_only && out_path) {
-    const char *err_open = NULL;
-    ctx.out_fp = safe_open_file(out_path, true, &err_open);
-    if (!ctx.out_fp) {
-      fprintf(stderr,
-              "[bpf_canary_host] Failed to open output file safely (%s): %s\n",
-              out_path, err_open ? err_open : "unknown");
-      write_status_file(status_path, "OUTPUT_OPEN_FAILED", probe_only, false,
-                        false, 0, 0, 0, final_uid, final_gid, target_cgroup_id,
-                        0, err_open);
-      return 1;
-    }
-  } else {
-    ctx.out_fp = stdout;
-  }
-
+  // 2. Open BPF object
   if (verbose) {
     fprintf(stderr, "[bpf_canary_host] Opening BPF object: %s\n", bpf_obj_path);
   }
@@ -480,103 +567,13 @@ int main(int argc, char **argv) {
     int err = -errno;
     fprintf(stderr, "[bpf_canary_host] bpf_object__open_file failed: %s (%d)\n",
             strerror(-err), err);
-    write_status_file(status_path, "OPEN_FAILED", probe_only, false, false, 0,
-                      0, 0, final_uid, final_gid, target_cgroup_id, 0,
-                      strerror(-err));
-    if (ctx.out_fp && ctx.out_fp != stdout)
-      fclose(ctx.out_fp);
+    rep.status = "OPEN_FAILED";
+    rep.error_message = strerror(-err);
+    write_probe_report(status_path, &rep);
     return 1;
   }
 
-  // Find config_map
-  struct bpf_map *cfg_map = bpf_object__find_map_by_name(obj, "config_map");
-  if (!cfg_map) {
-    fprintf(stderr, "[bpf_canary_host] config_map not found in BPF object\n");
-    write_status_file(status_path, "CONFIG_MAP_MISSING", probe_only, false,
-                      false, 0, 0, 0, final_uid, final_gid, target_cgroup_id, 0,
-                      "config_map missing");
-    bpf_object__close(obj);
-    if (ctx.out_fp && ctx.out_fp != stdout)
-      fclose(ctx.out_fp);
-    return 1;
-  }
-  int cfg_fd = bpf_map__fd(cfg_map);
-
-  uint64_t target_tgid = 0;
-  if (probe_only) {
-    // In probe-only diagnostic mode: configure own actual TGID to filter out
-    // all other host tasks before reading file identity
-    target_tgid = (uint64_t)getpid();
-    __u32 k_tgid = BPF_CANARY_CFG_TARGET_TGID;
-    __u64 v_tgid = target_tgid;
-    if (bpf_map_update_elem(cfg_fd, &k_tgid, &v_tgid, BPF_ANY) != 0) {
-      int update_err = -errno;
-      fprintf(stderr,
-              "[bpf_canary_host] bpf_map_update_elem for target_tgid failed: "
-              "%s (%d)\n",
-              strerror(-update_err), update_err);
-      write_status_file(status_path, "MAP_UPDATE_FAILED", probe_only, false,
-                        false, 0, 0, 0, final_uid, final_gid, target_cgroup_id,
-                        target_tgid,
-                        "Failed to update target_tgid in config_map");
-      bpf_object__close(obj);
-      if (ctx.out_fp && ctx.out_fp != stdout)
-        fclose(ctx.out_fp);
-      return 1;
-    }
-  } else {
-    __u32 k_cg = BPF_CANARY_CFG_TARGET_CGROUP;
-    __u64 v_cg = target_cgroup_id;
-    if (bpf_map_update_elem(cfg_fd, &k_cg, &v_cg, BPF_ANY) != 0) {
-      int update_err = -errno;
-      fprintf(stderr,
-              "[bpf_canary_host] bpf_map_update_elem for target_cgroup failed: "
-              "%s (%d)\n",
-              strerror(-update_err), update_err);
-      write_status_file(status_path, "MAP_UPDATE_FAILED", probe_only, false,
-                        false, 0, 0, 0, final_uid, final_gid, target_cgroup_id,
-                        0, "Failed to update target_cgroup in config_map");
-      bpf_object__close(obj);
-      if (ctx.out_fp && ctx.out_fp != stdout)
-        fclose(ctx.out_fp);
-      return 1;
-    }
-
-    __u32 k_filt = BPF_CANARY_CFG_FILTER_ENABLED;
-    __u64 v_filt = (target_cgroup_id != 0) ? 1 : 0;
-    if (bpf_map_update_elem(cfg_fd, &k_filt, &v_filt, BPF_ANY) != 0) {
-      int update_err = -errno;
-      fprintf(stderr,
-              "[bpf_canary_host] bpf_map_update_elem for filter_enabled "
-              "failed: %s (%d)\n",
-              strerror(-update_err), update_err);
-      write_status_file(status_path, "MAP_UPDATE_FAILED", probe_only, false,
-                        false, 0, 0, 0, final_uid, final_gid, target_cgroup_id,
-                        0, "Failed to update filter_enabled in config_map");
-      bpf_object__close(obj);
-      if (ctx.out_fp && ctx.out_fp != stdout)
-        fclose(ctx.out_fp);
-      return 1;
-    }
-
-    __u32 k_sim = BPF_CANARY_CFG_SIMULATE_LOSS;
-    __u64 v_sim = sim_loss ? 1 : 0;
-    if (bpf_map_update_elem(cfg_fd, &k_sim, &v_sim, BPF_ANY) != 0) {
-      int update_err = -errno;
-      fprintf(stderr,
-              "[bpf_canary_host] bpf_map_update_elem for sim_loss failed: %s "
-              "(%d)\n",
-              strerror(-update_err), update_err);
-      write_status_file(status_path, "MAP_UPDATE_FAILED", probe_only, false,
-                        false, 0, 0, 0, final_uid, final_gid, target_cgroup_id,
-                        0, "Failed to update sim_loss in config_map");
-      bpf_object__close(obj);
-      if (ctx.out_fp && ctx.out_fp != stdout)
-        fclose(ctx.out_fp);
-      return 1;
-    }
-  }
-
+  // 3. Load BPF object into kernel FIRST before accessing map FDs
   if (verbose) {
     fprintf(stderr, "[bpf_canary_host] Loading BPF object into kernel under "
                     "restricted capabilities...\n");
@@ -586,86 +583,473 @@ int main(int argc, char **argv) {
   if (err) {
     fprintf(stderr, "[bpf_canary_host] bpf_object__load failed: %s (%d)\n",
             strerror(-err), err);
-    write_status_file(status_path, "LOAD_FAILED", probe_only, false, false, 0,
-                      0, 0, final_uid, final_gid, target_cgroup_id, target_tgid,
-                      strerror(-err));
+    rep.status = "LOAD_FAILED";
+    rep.error_message = strerror(-err);
     bpf_object__close(obj);
-    if (ctx.out_fp && ctx.out_fp != stdout)
-      fclose(ctx.out_fp);
+    write_probe_report(status_path, &rep);
     return 1;
   }
 
-  // Attach to sched_process_exec tracepoint
+  rep.load_supported = true;
+
+  // 4. Query and validate real program metadata from loaded kernel program
   struct bpf_program *prog =
       bpf_object__find_program_by_name(obj, "sched_process_exec");
   if (!prog) {
     fprintf(stderr, "[bpf_canary_host] Program sched_process_exec not found\n");
-    write_status_file(status_path, "PROGRAM_MISSING", probe_only, true, false,
-                      0, 0, 0, final_uid, final_gid, target_cgroup_id,
-                      target_tgid, "sched_process_exec missing");
+    rep.status = "PROGRAM_MISSING";
+    rep.error_message = "sched_process_exec missing in BPF object";
     bpf_object__close(obj);
-    if (ctx.out_fp && ctx.out_fp != stdout)
-      fclose(ctx.out_fp);
+    write_probe_report(status_path, &rep);
     return 1;
   }
 
+  int prog_fd = bpf_program__fd(prog);
+  if (prog_fd < 0) {
+    fprintf(stderr, "[bpf_canary_host] Invalid program fd: %d\n", prog_fd);
+    rep.status = "PROG_FD_INVALID";
+    rep.error_message = "Invalid program fd after load";
+    bpf_object__close(obj);
+    write_probe_report(status_path, &rep);
+    return 1;
+  }
+
+  struct bpf_prog_info pinfo;
+  memset(&pinfo, 0, sizeof(pinfo));
+  __u32 pinfo_len = sizeof(pinfo);
+  if (bpf_obj_get_info_by_fd(prog_fd, &pinfo, &pinfo_len) != 0) {
+    int info_err = -errno;
+    fprintf(
+        stderr,
+        "[bpf_canary_host] bpf_obj_get_info_by_fd for prog failed: %s (%d)\n",
+        strerror(-info_err), info_err);
+    rep.status = "PROG_INFO_FAILED";
+    rep.error_message =
+        "Failed to query kernel program info via bpf_obj_get_info_by_fd";
+    bpf_object__close(obj);
+    write_probe_report(status_path, &rep);
+    return 1;
+  }
+
+  // Validate program type: MUST be BPF_PROG_TYPE_TRACING (26)
+  if (pinfo.type != BPF_PROG_TYPE_TRACING) {
+    fprintf(stderr,
+            "[bpf_canary_host] Program type mismatch: expected "
+            "BPF_PROG_TYPE_TRACING (%d), got %u\n",
+            BPF_PROG_TYPE_TRACING, pinfo.type);
+    rep.status = "PROG_TYPE_MISMATCH";
+    rep.error_message = "Kernel program type is not BPF_PROG_TYPE_TRACING";
+    bpf_object__close(obj);
+    write_probe_report(status_path, &rep);
+    return 1;
+  }
+
+  if (pinfo.id == 0) {
+    fprintf(stderr, "[bpf_canary_host] Invalid kernel program id: 0\n");
+    rep.status = "PROG_ID_INVALID";
+    rep.error_message = "Kernel returned program id 0";
+    bpf_object__close(obj);
+    write_probe_report(status_path, &rep);
+    return 1;
+  }
+
+  rep.prog_info_valid = true;
+  rep.prog_id = pinfo.id;
+  rep.prog_type = pinfo.type;
+  rep.btf_id = pinfo.btf_id;
+  rep.attach_btf_id = pinfo.attach_btf_id;
+  memcpy(rep.prog_name, pinfo.name, sizeof(rep.prog_name) - 1);
+  rep.prog_name[sizeof(rep.prog_name) - 1] = '\0';
+  memcpy(rep.prog_tag, pinfo.tag, 8);
+
+  // 5. Access config_map with valid FD AFTER load and BEFORE attach
+  struct bpf_map *cfg_map = bpf_object__find_map_by_name(obj, "config_map");
+  if (!cfg_map) {
+    fprintf(stderr, "[bpf_canary_host] config_map not found in BPF object\n");
+    rep.status = "CONFIG_MAP_MISSING";
+    rep.error_message = "config_map missing in BPF object";
+    bpf_object__close(obj);
+    write_probe_report(status_path, &rep);
+    return 1;
+  }
+  int cfg_fd = bpf_map__fd(cfg_map);
+  if (cfg_fd < 0) {
+    fprintf(stderr, "[bpf_canary_host] Invalid config_map fd: %d\n", cfg_fd);
+    rep.status = "CONFIG_MAP_INVALID_FD";
+    rep.error_message = "config_map fd is invalid after load";
+    bpf_object__close(obj);
+    write_probe_report(status_path, &rep);
+    return 1;
+  }
+
+  if (probe_only) {
+    // In probe-only diagnostic mode: configure own actual TGID in the loaded
+    // map before attach
+    uint64_t my_tgid = (uint64_t)getpid();
+    rep.target_tgid = my_tgid;
+    __u32 k_tgid = BPF_CANARY_CFG_TARGET_TGID;
+    __u64 v_tgid = my_tgid;
+    if (bpf_map_update_elem(cfg_fd, &k_tgid, &v_tgid, BPF_ANY) != 0) {
+      int update_err = -errno;
+      fprintf(stderr,
+              "[bpf_canary_host] bpf_map_update_elem for target_tgid failed: "
+              "%s (%d)\n",
+              strerror(-update_err), update_err);
+      rep.status = "MAP_UPDATE_FAILED";
+      rep.error_message =
+          "Failed to update target_tgid in config_map after load";
+      bpf_object__close(obj);
+      write_probe_report(status_path, &rep);
+      return 1;
+    }
+    if (verbose) {
+      fprintf(
+          stderr,
+          "[bpf_canary_host] Configured own TGID %llu in loaded config_map\n",
+          (unsigned long long)v_tgid);
+    }
+  } else {
+    __u32 k_cg = BPF_CANARY_CFG_TARGET_CGROUP;
+    __u64 v_cg = target_cgroup_id;
+    if (bpf_map_update_elem(cfg_fd, &k_cg, &v_cg, BPF_ANY) != 0) {
+      int update_err = -errno;
+      rep.status = "MAP_UPDATE_FAILED";
+      rep.error_message = "Failed to update target_cgroup in config_map";
+      bpf_object__close(obj);
+      write_probe_report(status_path, &rep);
+      return 1;
+    }
+
+    __u32 k_filt = BPF_CANARY_CFG_FILTER_ENABLED;
+    __u64 v_filt = (target_cgroup_id != 0) ? 1 : 0;
+    if (bpf_map_update_elem(cfg_fd, &k_filt, &v_filt, BPF_ANY) != 0) {
+      int update_err = -errno;
+      rep.status = "MAP_UPDATE_FAILED";
+      rep.error_message = "Failed to update filter_enabled in config_map";
+      bpf_object__close(obj);
+      write_probe_report(status_path, &rep);
+      return 1;
+    }
+
+    __u32 k_sim = BPF_CANARY_CFG_SIMULATE_LOSS;
+    __u64 v_sim = sim_loss ? 1 : 0;
+    if (bpf_map_update_elem(cfg_fd, &k_sim, &v_sim, BPF_ANY) != 0) {
+      int update_err = -errno;
+      rep.status = "MAP_UPDATE_FAILED";
+      rep.error_message = "Failed to update sim_loss in config_map";
+      bpf_object__close(obj);
+      write_probe_report(status_path, &rep);
+      return 1;
+    }
+  }
+
+  // 6. Attach program via FD-owned link
   struct bpf_link *link = bpf_program__attach(prog);
   if (!link) {
     err = -errno;
     fprintf(stderr, "[bpf_canary_host] bpf_program__attach failed: %s (%d)\n",
             strerror(-err), err);
-    write_status_file(status_path, "ATTACH_FAILED", probe_only, true, false, 0,
-                      0, 0, final_uid, final_gid, target_cgroup_id, target_tgid,
-                      strerror(-err));
+    rep.status = "ATTACH_FAILED";
+    rep.error_message = strerror(-err);
     bpf_object__close(obj);
-    if (ctx.out_fp && ctx.out_fp != stdout)
-      fclose(ctx.out_fp);
+    write_probe_report(status_path, &rep);
     return 1;
   }
 
+  rep.attach_supported = true;
+  rep.fd_ownership_lifecycle = "attached_link_fd_held";
+
+  // Query and validate real link metadata from attached kernel link
+  int link_fd = bpf_link__fd(link);
+  if (link_fd < 0) {
+    int l_err = -errno;
+    fprintf(stderr, "[bpf_canary_host] Invalid link fd: %d (%s)\n", link_fd,
+            strerror(-l_err));
+    rep.status = "LINK_FD_INVALID";
+    rep.error_message = "Invalid link fd after attach";
+    bpf_link__destroy(link);
+    bpf_object__close(obj);
+    write_probe_report(status_path, &rep);
+    return 1;
+  }
+
+  struct bpf_link_info linfo;
+  memset(&linfo, 0, sizeof(linfo));
+  char tp_name_buf[128];
+  memset(tp_name_buf, 0, sizeof(tp_name_buf));
+  linfo.raw_tracepoint.tp_name = (__u64)(uintptr_t)tp_name_buf;
+  linfo.raw_tracepoint.tp_name_len = sizeof(tp_name_buf);
+
+  __u32 linfo_len = sizeof(linfo);
+  if (bpf_obj_get_info_by_fd(link_fd, &linfo, &linfo_len) != 0) {
+    int info_err = -errno;
+    fprintf(
+        stderr,
+        "[bpf_canary_host] bpf_obj_get_info_by_fd for link failed: %s (%d)\n",
+        strerror(-info_err), info_err);
+    rep.status = "LINK_INFO_FAILED";
+    rep.error_message =
+        "Failed to query kernel link info via bpf_obj_get_info_by_fd";
+    bpf_link__destroy(link);
+    bpf_object__close(obj);
+    write_probe_report(status_path, &rep);
+    return 1;
+  }
+
+  // Validate link type: kernel routes TRACING+BPF_TRACE_RAW_TP to
+  // BPF_LINK_TYPE_RAW_TRACEPOINT (1)
+  if (linfo.type != BPF_LINK_TYPE_RAW_TRACEPOINT) {
+    fprintf(stderr,
+            "[bpf_canary_host] Link type mismatch: expected "
+            "BPF_LINK_TYPE_RAW_TRACEPOINT (%u), got %u\n",
+            (unsigned int)BPF_LINK_TYPE_RAW_TRACEPOINT, linfo.type);
+    rep.status = "LINK_TYPE_MISMATCH";
+    rep.error_message = "Kernel link type is not BPF_LINK_TYPE_RAW_TRACEPOINT";
+    bpf_link__destroy(link);
+    bpf_object__close(obj);
+    write_probe_report(status_path, &rep);
+    return 1;
+  }
+
+  // Validate link-program association: link.prog_id MUST match prog.id
+  if (linfo.prog_id != pinfo.id) {
+    fprintf(stderr,
+            "[bpf_canary_host] Link program association mismatch: "
+            "link.prog_id=%u != prog.id=%u\n",
+            linfo.prog_id, pinfo.id);
+    rep.status = "LINK_ASSOCIATION_MISMATCH";
+    rep.error_message =
+        "Kernel link is not associated with expected program ID";
+    bpf_link__destroy(link);
+    bpf_object__close(obj);
+    write_probe_report(status_path, &rep);
+    return 1;
+  }
+
+  if (linfo.id == 0) {
+    fprintf(stderr, "[bpf_canary_host] Invalid kernel link id: 0\n");
+    rep.status = "LINK_ID_INVALID";
+    rep.error_message = "Kernel returned link id 0";
+    bpf_link__destroy(link);
+    bpf_object__close(obj);
+    write_probe_report(status_path, &rep);
+    return 1;
+  }
+
+  // Validate raw tracepoint name from link info
+  tp_name_buf[sizeof(tp_name_buf) - 1] = '\0';
+  if (strcmp(tp_name_buf, "sched_process_exec") != 0) {
+    fprintf(stderr,
+            "[bpf_canary_host] Link raw_tracepoint tp_name mismatch: expected "
+            "'sched_process_exec', got '%s'\n",
+            tp_name_buf);
+    rep.status = "LINK_TP_NAME_MISMATCH";
+    rep.error_message =
+        "Kernel link raw_tracepoint name does not match sched_process_exec";
+    bpf_link__destroy(link);
+    bpf_object__close(obj);
+    write_probe_report(status_path, &rep);
+    return 1;
+  }
+
+  snprintf(rep.link_tp_name, sizeof(rep.link_tp_name), "%s", tp_name_buf);
+
+  // Validate program attach BTF ID: must be non-zero
+  if (pinfo.attach_btf_id == 0) {
+    fprintf(stderr, "[bpf_canary_host] Program attach_btf_id is zero\n");
+    rep.status = "BTF_ID_INVALID";
+    rep.error_message = "Kernel reported zero attach_btf_id for program";
+    bpf_link__destroy(link);
+    bpf_object__close(obj);
+    write_probe_report(status_path, &rep);
+    return 1;
+  }
+  // Resolve and compare kernel BTF target symbol from /sys/kernel/btf/vmlinux
+  struct btf *vbtf = btf__load_vmlinux_btf();
+  if (!vbtf) {
+    int v_err = -errno;
+    fprintf(stderr, "[bpf_canary_host] btf__load_vmlinux_btf failed: %s (%d)\n",
+            strerror(-v_err), v_err);
+    rep.status = "VMLINUX_BTF_LOAD_FAILED";
+    rep.error_message =
+        "Failed to load vmlinux BTF to verify target hook identity";
+    bpf_link__destroy(link);
+    bpf_object__close(obj);
+    write_probe_report(status_path, &rep);
+    return 1;
+  }
+
+  const struct btf_type *target_type =
+      btf__type_by_id(vbtf, pinfo.attach_btf_id);
+  if (!target_type) {
+    fprintf(stderr,
+            "[bpf_canary_host] Target BTF ID %u not found in vmlinux BTF\n",
+            pinfo.attach_btf_id);
+    rep.status = "TARGET_BTF_TYPE_NOT_FOUND";
+    rep.error_message = "Target BTF ID not found in kernel vmlinux BTF";
+    btf__free(vbtf);
+    bpf_link__destroy(link);
+    bpf_object__close(obj);
+    write_probe_report(status_path, &rep);
+    return 1;
+  }
+  // Verify BTF kind is BTF_KIND_TYPEDEF (8)
+#ifndef BTF_KIND_TYPEDEF
+#define BTF_KIND_TYPEDEF 8
+#endif
+#ifndef BTF_INFO_KIND
+#define BTF_INFO_KIND(info) (((info) >> 24) & 0x1f)
+#endif
+  __u32 target_kind = BTF_INFO_KIND(target_type->info);
+  if (target_kind != BTF_KIND_TYPEDEF) {
+    fprintf(stderr,
+            "[bpf_canary_host] BTF target kind mismatch: expected "
+            "BTF_KIND_TYPEDEF (%u), got %u\n",
+            (unsigned int)BTF_KIND_TYPEDEF, target_kind);
+    rep.status = "TARGET_BTF_KIND_MISMATCH";
+    rep.error_message = "Attached BTF target is not BTF_KIND_TYPEDEF";
+    btf__free(vbtf);
+    bpf_link__destroy(link);
+    bpf_object__close(obj);
+    write_probe_report(status_path, &rep);
+    return 1;
+  }
+
+  const char *target_name = btf__name_by_offset(vbtf, target_type->name_off);
+  if (!target_name ||
+      strcmp(target_name, "btf_trace_sched_process_exec") != 0) {
+    fprintf(stderr,
+            "[bpf_canary_host] BTF target hook mismatch: expected "
+            "'btf_trace_sched_process_exec', got '%s'\n",
+            target_name ? target_name : "NULL");
+    rep.status = "HOOK_IDENTITY_MISMATCH";
+    rep.error_message =
+        "Attached BTF hook target does not match btf_trace_sched_process_exec";
+    btf__free(vbtf);
+    bpf_link__destroy(link);
+    bpf_object__close(obj);
+    write_probe_report(status_path, &rep);
+    return 1;
+  }
+
+  snprintf(rep.observed_hook_name, sizeof(rep.observed_hook_name), "%s",
+           target_name);
+  rep.observed_hook_kind = "BTF_KIND_TYPEDEF";
+  rep.link_info_valid = true;
+  rep.link_id = linfo.id;
+  rep.link_type = linfo.type;
+  rep.link_prog_id = linfo.prog_id;
+  rep.link_attach_type = linfo.tracing.attach_type;
+  rep.link_target_btf_id = linfo.tracing.target_btf_id;
+  rep.hook_identity_verified = true;
+  rep.link_association_verified = true;
+  btf__free(vbtf);
+  if (verbose) {
+    fprintf(stderr,
+            "[bpf_canary_host] Attached link: link_id=%u prog_id=%u "
+            "link_type=%u attach_type=%u "
+            "(prog_info_valid=%d link_info_valid=%d)\n",
+            rep.link_id, rep.prog_id, rep.link_type, rep.link_attach_type,
+            rep.prog_info_valid, rep.link_info_valid);
+  }
+
+  // 7. In probe-only diagnostic mode: skip ringbuf/containers, detach link and
+  // close object BEFORE reporting success
   if (probe_only) {
-    if (verbose) {
-      fprintf(stderr, "[bpf_canary_host] Probe-only check: program loaded and "
-                      "attached successfully via FD-owned link.\n");
+    if (stop_requested) {
+      bpf_link__destroy(link);
+      link = NULL;
+      bpf_object__close(obj);
+      obj = NULL;
+      rep.status = "CANCELED";
+      rep.fd_ownership_lifecycle = "detached_and_closed_on_cancellation";
+      rep.error_message = "Diagnostic execution canceled by signal";
+      write_probe_report(status_path, &rep);
+      return 130;
     }
 
-    // Explicitly destroy the link and close BPF object BEFORE reporting success
     int detach_res = bpf_link__destroy(link);
     link = NULL;
     if (detach_res != 0) {
       int d_err = -errno;
       fprintf(stderr, "[bpf_canary_host] bpf_link__destroy failed: %s (%d)\n",
               strerror(-d_err), d_err);
-      write_status_file(status_path, "DETACH_FAILED", probe_only, true, true, 0,
-                        0, 0, final_uid, final_gid, target_cgroup_id,
-                        target_tgid, strerror(-d_err));
+      rep.status = "DETACH_FAILED";
+      rep.fd_ownership_lifecycle = "detach_error";
+      rep.error_message = strerror(-d_err);
       bpf_object__close(obj);
+      write_probe_report(status_path, &rep);
       return 1;
     }
 
     bpf_object__close(obj);
     obj = NULL;
+    rep.fd_ownership_lifecycle = "detached_and_closed_before_report";
 
-    // Report success only after successful detach and close
-    if (write_status_file(status_path, "PROBE_SUCCESS", probe_only, true, true,
-                          0, 0, 0, final_uid, final_gid, target_cgroup_id,
-                          target_tgid, NULL) != 0) {
+    if (stop_requested) {
+      rep.status = "CANCELED";
+      rep.fd_ownership_lifecycle = "detached_and_closed_on_cancellation";
+      rep.error_message = "Diagnostic execution canceled by signal";
+      write_probe_report(status_path, &rep);
+      return 130;
+    }
+
+    // Success reported only after verified link and object lifetime
+    rep.status = "PROBE_SUCCESS";
+    rep.error_message = NULL;
+
+    if (write_probe_report(status_path, &rep) != 0) {
+      fprintf(stderr, "[bpf_canary_host] Failed to write probe report\n");
       return 1;
     }
     return 0;
   }
 
-  // Non-probe-only mode: setup ring buffer and run workload capture
+  // Non-probe-only mode (full execution witness testing)
+  if (pid_path) {
+    if (safe_write_pid_file(pid_path) != 0) {
+      rep.status = "PID_FILE_FAILED";
+      rep.error_message = "Failed to write pid file";
+      bpf_link__destroy(link);
+      bpf_object__close(obj);
+      write_probe_report(status_path, &rep);
+      return 1;
+    }
+  }
+
+  struct host_context ctx;
+  memset(&ctx, 0, sizeof(ctx));
+  ctx.target_cgroup_id = target_cgroup_id;
+  ctx.verbose = verbose;
+
+  if (out_path) {
+    const char *err_open = NULL;
+    ctx.out_fp = safe_open_file(out_path, true, &err_open);
+    if (!ctx.out_fp) {
+      fprintf(stderr,
+              "[bpf_canary_host] Failed to open output file safely (%s): %s\n",
+              out_path, err_open ? err_open : "unknown");
+      rep.status = "OUTPUT_OPEN_FAILED";
+      rep.error_message = err_open;
+      bpf_link__destroy(link);
+      bpf_object__close(obj);
+      write_probe_report(status_path, &rep);
+      return 1;
+    }
+  } else {
+    ctx.out_fp = stdout;
+  }
+
   struct bpf_map *events_map = bpf_object__find_map_by_name(obj, "events");
   if (!events_map) {
     fprintf(stderr, "[bpf_canary_host] events map not found\n");
-    write_status_file(status_path, "EVENTS_MAP_MISSING", probe_only, true, true,
-                      0, 0, 0, final_uid, final_gid, target_cgroup_id, 0,
-                      "events map missing");
+    rep.status = "EVENTS_MAP_MISSING";
+    rep.error_message = "events map missing";
     bpf_link__destroy(link);
     bpf_object__close(obj);
     if (ctx.out_fp && ctx.out_fp != stdout)
       fclose(ctx.out_fp);
+    write_probe_report(status_path, &rep);
     return 1;
   }
 
@@ -674,33 +1058,28 @@ int main(int argc, char **argv) {
   if (!rb) {
     fprintf(stderr, "[bpf_canary_host] ring_buffer__new failed: %s\n",
             strerror(errno));
-    write_status_file(status_path, "RINGBUF_INIT_FAILED", probe_only, true,
-                      true, 0, 0, 0, final_uid, final_gid, target_cgroup_id, 0,
-                      strerror(errno));
+    rep.status = "RINGBUF_INIT_FAILED";
+    rep.error_message = strerror(errno);
     bpf_link__destroy(link);
     bpf_object__close(obj);
     if (ctx.out_fp && ctx.out_fp != stdout)
       fclose(ctx.out_fp);
+    write_probe_report(status_path, &rep);
     return 1;
   }
 
-  // Signal readiness using safe exclusive open
   if (ready_path) {
     if (safe_touch_ready_file(ready_path) != 0) {
-      write_status_file(status_path, "READY_FILE_FAILED", probe_only, true,
-                        true, 0, 0, 0, final_uid, final_gid, target_cgroup_id,
-                        0, "Failed to create ready file safely");
+      rep.status = "READY_FILE_FAILED";
+      rep.error_message = "Failed to create ready file safely";
       ring_buffer__free(rb);
       bpf_link__destroy(link);
       bpf_object__close(obj);
       if (ctx.out_fp && ctx.out_fp != stdout)
         fclose(ctx.out_fp);
+      write_probe_report(status_path, &rep);
       return 1;
     }
-  }
-
-  if (verbose) {
-    fprintf(stderr, "[bpf_canary_host] Tracer ready and polling events...\n");
   }
 
   int poll_fatal_err = 0;
@@ -722,152 +1101,54 @@ int main(int argc, char **argv) {
   }
 
   if (poll_fatal_err < 0) {
-    write_status_file(status_path, "POLL_FAILED", probe_only, true, true,
-                      ctx.events_captured, 0, 0, final_uid, final_gid,
-                      target_cgroup_id, 0,
-                      "ring_buffer__poll encountered fatal error");
+    rep.status = "POLL_FAILED";
+    rep.error_message = "ring_buffer__poll fatal error";
     ring_buffer__free(rb);
     bpf_link__destroy(link);
     bpf_object__close(obj);
     if (ctx.out_fp && ctx.out_fp != stdout)
       fclose(ctx.out_fp);
+    write_probe_report(status_path, &rep);
     return 1;
   }
 
-  // Final drain of ring buffer
   ring_buffer__consume(rb);
 
-  // Read sticky loss and error statistics from loss_counter map
   struct bpf_map *loss_map = bpf_object__find_map_by_name(obj, "loss_counter");
-  if (!loss_map) {
-    fprintf(stderr,
-            "[bpf_canary_host] loss_counter map missing in BPF object\n");
-    write_status_file(status_path, "LOSS_MAP_MISSING", probe_only, true, true,
-                      ctx.events_captured, 0, 0, final_uid, final_gid,
-                      target_cgroup_id, 0, "loss_counter map missing");
-    ring_buffer__free(rb);
-    bpf_link__destroy(link);
-    bpf_object__close(obj);
-    if (ctx.out_fp && ctx.out_fp != stdout)
-      fclose(ctx.out_fp);
-    return 1;
-  }
-
-  int loss_fd = bpf_map__fd(loss_map);
-  if (loss_fd < 0) {
-    fprintf(stderr, "[bpf_canary_host] Invalid loss_counter map fd\n");
-    write_status_file(status_path, "LOSS_MAP_INVALID", probe_only, true, true,
-                      ctx.events_captured, 0, 0, final_uid, final_gid,
-                      target_cgroup_id, 0, "Invalid loss_counter map fd");
-    ring_buffer__free(rb);
-    bpf_link__destroy(link);
-    bpf_object__close(obj);
-    if (ctx.out_fp && ctx.out_fp != stdout)
-      fclose(ctx.out_fp);
-    return 1;
-  }
-
   uint64_t loss_count = 0;
   uint64_t error_count = 0;
   uint64_t delivered_count = 0;
-
-  __u32 k0 = BPF_CANARY_LOSS_COUNT;
-  if (bpf_map_lookup_elem(loss_fd, &k0, &loss_count) != 0) {
-    int lookup_err = -errno;
-    fprintf(stderr,
-            "[bpf_canary_host] bpf_map_lookup_elem for loss_count failed: %s "
-            "(%d)\n",
-            strerror(-lookup_err), lookup_err);
-    write_status_file(status_path, "LOSS_LOOKUP_FAILED", probe_only, true, true,
-                      ctx.events_captured, 0, 0, final_uid, final_gid,
-                      target_cgroup_id, 0,
-                      "Failed to lookup loss_count in loss_counter map");
-    ring_buffer__free(rb);
-    bpf_link__destroy(link);
-    bpf_object__close(obj);
-    if (ctx.out_fp && ctx.out_fp != stdout)
-      fclose(ctx.out_fp);
-    return 1;
-  }
-
-  __u32 k1 = BPF_CANARY_ERROR_COUNT;
-  if (bpf_map_lookup_elem(loss_fd, &k1, &error_count) != 0) {
-    int lookup_err = -errno;
-    fprintf(stderr,
-            "[bpf_canary_host] bpf_map_lookup_elem for error_count failed: %s "
-            "(%d)\n",
-            strerror(-lookup_err), lookup_err);
-    write_status_file(status_path, "ERROR_LOOKUP_FAILED", probe_only, true,
-                      true, ctx.events_captured, 0, 0, final_uid, final_gid,
-                      target_cgroup_id, 0,
-                      "Failed to lookup error_count in loss_counter map");
-    ring_buffer__free(rb);
-    bpf_link__destroy(link);
-    bpf_object__close(obj);
-    if (ctx.out_fp && ctx.out_fp != stdout)
-      fclose(ctx.out_fp);
-    return 1;
-  }
-
-  __u32 k2 = BPF_CANARY_EVENT_COUNT;
-  if (bpf_map_lookup_elem(loss_fd, &k2, &delivered_count) != 0) {
-    int lookup_err = -errno;
-    fprintf(stderr,
-            "[bpf_canary_host] bpf_map_lookup_elem for delivered_count failed: "
-            "%s (%d)\n",
-            strerror(-lookup_err), lookup_err);
-    write_status_file(status_path, "EVENT_LOOKUP_FAILED", probe_only, true,
-                      true, ctx.events_captured, 0, 0, final_uid, final_gid,
-                      target_cgroup_id, 0,
-                      "Failed to lookup event_count in loss_counter map");
-    ring_buffer__free(rb);
-    bpf_link__destroy(link);
-    bpf_object__close(obj);
-    if (ctx.out_fp && ctx.out_fp != stdout)
-      fclose(ctx.out_fp);
-    return 1;
-  }
-
-  if (verbose) {
-    fprintf(stderr,
-            "[bpf_canary_host] Final stats: captured=%llu delivered=%llu "
-            "loss=%llu errors=%llu\n",
-            (unsigned long long)ctx.events_captured,
-            (unsigned long long)delivered_count, (unsigned long long)loss_count,
-            (unsigned long long)error_count);
+  if (loss_map) {
+    int loss_fd = bpf_map__fd(loss_map);
+    __u32 k0 = BPF_CANARY_LOSS_COUNT;
+    bpf_map_lookup_elem(loss_fd, &k0, &loss_count);
+    __u32 k1 = BPF_CANARY_ERROR_COUNT;
+    bpf_map_lookup_elem(loss_fd, &k1, &error_count);
+    __u32 k2 = BPF_CANARY_EVENT_COUNT;
+    bpf_map_lookup_elem(loss_fd, &k2, &delivered_count);
   }
 
   int exit_code = 0;
-  const char *final_status = "OK";
-  char err_buf[128];
-  const char *err_msg = NULL;
-
   if (loss_count > 0) {
-    final_status = "LOSS_DETECTED";
-    snprintf(err_buf, sizeof(err_buf), "Ring buffer dropped %llu events",
-             (unsigned long long)loss_count);
-    err_msg = err_buf;
-    exit_code = 2; // loss detected
+    rep.status = "LOSS_DETECTED";
+    rep.error_message = "Ring buffer loss detected";
+    exit_code = 2;
   } else if (error_count > 0) {
-    final_status = "BPF_ERRORS";
-    snprintf(err_buf, sizeof(err_buf),
-             "Kernel extraction failed for %llu events",
-             (unsigned long long)error_count);
-    err_msg = err_buf;
-    exit_code = 3; // extraction errors
+    rep.status = "BPF_ERRORS";
+    rep.error_message = "Kernel extraction failed for some events";
+    exit_code = 3;
+  } else {
+    rep.status = "OK";
+    rep.error_message = NULL;
   }
 
-  write_status_file(status_path, final_status, probe_only, true, true,
-                    ctx.events_captured, loss_count, error_count, final_uid,
-                    final_gid, target_cgroup_id, 0, err_msg);
-
-  // Clean teardown
   ring_buffer__free(rb);
   bpf_link__destroy(link);
   bpf_object__close(obj);
   if (ctx.out_fp && ctx.out_fp != stdout)
     fclose(ctx.out_fp);
 
+  write_probe_report(status_path, &rep);
   return exit_code;
 #endif
 }

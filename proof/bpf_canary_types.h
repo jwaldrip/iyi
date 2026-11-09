@@ -1,7 +1,8 @@
 #ifndef BPF_CANARY_TYPES_H
 #define BPF_CANARY_TYPES_H
 
-#if defined(__KERNEL__) && !defined(__BPF__)
+#if defined(__linux__) || defined(__KERNEL__) || defined(__bpf__) ||           \
+    defined(__BPF__)
 #include <linux/types.h>
 #else
 #include <stdint.h>
