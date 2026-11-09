@@ -24,7 +24,26 @@
 #include <bpf/libbpf.h>
 #include <linux/bpf.h>
 #include <linux/capability.h>
+struct bpf_object;
+struct bpf_program;
+struct bpf_map;
+struct bpf_link;
 #include <sys/prctl.h>
+#ifndef PR_SET_NO_NEW_PRIVS
+#define PR_SET_NO_NEW_PRIVS 38
+#endif
+#ifndef PR_GET_NO_NEW_PRIVS
+#define PR_GET_NO_NEW_PRIVS 39
+#endif
+#ifndef PR_CAPBSET_READ
+#define PR_CAPBSET_READ 23
+#endif
+#ifndef PR_CAP_AMBIENT
+#define PR_CAP_AMBIENT 47
+#endif
+#ifndef PR_CAP_AMBIENT_IS_SET
+#define PR_CAP_AMBIENT_IS_SET 1
+#endif
 #endif
 
 #ifndef __linux__
@@ -86,6 +105,38 @@ struct probe_report {
   bool cap_perfmon;
   bool cap_sys_admin;
   bool all_other_caps_clear;
+
+  // Section 6 & 7: Verified privilege sets and identity evidence
+  uid_t ruid;
+  uid_t euid;
+  uid_t suid;
+  gid_t rgid;
+  gid_t egid;
+  gid_t sgid;
+  int supplementary_groups_count;
+  bool no_new_privs;
+  uint64_t cap_effective;
+  uint64_t cap_permitted;
+  uint64_t cap_inheritable;
+  uint64_t cap_bounding;
+  uint64_t cap_ambient;
+  bool caps_strictly_bpf_perfmon;
+
+  // Section 6: Libbpf memlock opt-out evidence
+  bool memlock_rlim_disabled;
+
+  // Section 6: Successful-load verifier logging evidence
+  bool verifier_log_valid;
+  size_t verifier_log_bytes;
+  char verifier_conclusion[256];
+  const char *verifier_log_path;
+  const char *verifier_log_content;
+
+  // Section 6: CO-RE relocation evidence
+  bool core_relocation_retained;
+  size_t libbpf_debug_log_bytes;
+  const char *libbpf_debug_log_path;
+  const char *libbpf_debug_log_content;
 
   const char *error_message;
 };
@@ -164,38 +215,115 @@ static int safe_write_pid_file(const char *pid_path) {
 }
 
 #ifdef __linux__
+static char g_libbpf_debug_log[131072];
+static size_t g_libbpf_debug_log_len = 0;
+static bool g_core_relocation_seen = false;
+
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format,
                            va_list args) {
-  if (level == LIBBPF_DEBUG)
-    return 0;
+  (void)level;
+  va_list args_copy;
+  va_copy(args_copy, args);
+
+  if (g_libbpf_debug_log_len < sizeof(g_libbpf_debug_log) - 1) {
+    int written = vsnprintf(g_libbpf_debug_log + g_libbpf_debug_log_len,
+                            sizeof(g_libbpf_debug_log) - g_libbpf_debug_log_len,
+                            format, args_copy);
+    if (written > 0) {
+      g_libbpf_debug_log_len += (size_t)written;
+      if (g_libbpf_debug_log_len >= sizeof(g_libbpf_debug_log)) {
+        g_libbpf_debug_log_len = sizeof(g_libbpf_debug_log) - 1;
+      }
+    }
+  }
+  va_end(args_copy);
+
+  if (format &&
+      (strstr(format, "relo") != NULL || strstr(format, "CO-RE") != NULL ||
+       strstr(format, "relocation") != NULL)) {
+    g_core_relocation_seen = true;
+  }
+
+  // Section 6: Retain libbpf relocation/debug output to stderr unconditionally
   return vfprintf(stderr, format, args);
 }
 
 /*
  * Verify genuinely restricted observer privileges:
- * 1. Reject UID 0 (root). Must run under unprivileged user.
- * 2. Reject all capabilities in data[0] (no CAP_SYS_ADMIN, no CAP_DAC_OVERRIDE,
- * etc.).
- * 3. Reject all capabilities in data[1] outside {CAP_PERFMON (bit 6), CAP_BPF
- * (bit 7)}.
- * 4. Verify CAP_BPF and CAP_PERFMON are present.
- * 5. Reject root supplementary group 0.
- * 6. Verify PR_SET_NO_NEW_PRIVS is active.
+ * 1. Reject UID 0 (root) in real, effective, or saved UID.
+ * 2. Reject GID 0 (root) in real, effective, or saved GID.
+ * 3. Require empty supplementary groups (count == 0).
+ * 4. Verify PR_SET_NO_NEW_PRIVS is active.
+ * 5. Effective, permitted, inheritable, ambient, and bounding sets strictly
+ *    restricted to CAP_PERFMON (bit 38) and CAP_BPF (bit 39).
+ *    Expected mask is 000000c000000000.
  */
-static int verify_restricted_privileges(int verbose, uid_t *final_uid,
-                                        gid_t *final_gid) {
-  *final_uid = getuid();
-  *final_gid = getgid();
+static int verify_restricted_privileges(int verbose, struct probe_report *r) {
+  uid_t ruid = 0, euid = 0, suid = 0;
+  gid_t rgid = 0, egid = 0, sgid = 0;
 
-  // Reject UID 0 (root)
-  if (*final_uid == 0 || geteuid() == 0) {
-    fprintf(stderr,
-            "[bpf_canary_host] ERROR: Refusing to execute as root (UID 0). "
-            "Observer must be launched with standard setpriv as an "
-            "unprivileged user.\n");
+  if (getresuid(&ruid, &euid, &suid) != 0) {
+    perror("[bpf_canary_host] getresuid failed");
+    return -1;
+  }
+  if (getresgid(&rgid, &egid, &sgid) != 0) {
+    perror("[bpf_canary_host] getresgid failed");
     return -1;
   }
 
+  r->uid = euid;
+  r->gid = egid;
+  r->ruid = ruid;
+  r->euid = euid;
+  r->suid = suid;
+  r->rgid = rgid;
+  r->egid = egid;
+  r->sgid = sgid;
+
+  // Reject UID 0 (root) in any identity (real, effective, saved)
+  if (ruid == 0 || euid == 0 || suid == 0) {
+    fprintf(stderr,
+            "[bpf_canary_host] ERROR: Refusing to execute with root UID "
+            "(ruid=%u, euid=%u, suid=%u). "
+            "Must run under an unprivileged user.\n",
+            ruid, euid, suid);
+    return -1;
+  }
+
+  // Reject GID 0 (root) in any identity (real, effective, saved)
+  if (rgid == 0 || egid == 0 || sgid == 0) {
+    fprintf(stderr,
+            "[bpf_canary_host] ERROR: Refusing to execute with root GID "
+            "(rgid=%u, egid=%u, sgid=%u).\n",
+            rgid, egid, sgid);
+    return -1;
+  }
+
+  // Require empty supplementary groups (--clear-groups)
+  int n_groups = getgroups(0, NULL);
+  r->supplementary_groups_count = n_groups;
+  if (n_groups < 0) {
+    perror("[bpf_canary_host] getgroups failed");
+    return -1;
+  }
+  if (n_groups > 0) {
+    fprintf(
+        stderr,
+        "[bpf_canary_host] ERROR: Supplementary groups not empty (count=%d). "
+        "setpriv must clear all supplementary groups.\n",
+        n_groups);
+    return -1;
+  }
+
+  // Verify PR_SET_NO_NEW_PRIVS is active
+  if (prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) != 1) {
+    fprintf(stderr,
+            "[bpf_canary_host] ERROR: PR_SET_NO_NEW_PRIVS is not active\n");
+    return -1;
+  }
+  r->no_new_privs = true;
+
+  // Query capability sets via capget
   struct __user_cap_header_struct hdr = {
       .version = _LINUX_CAPABILITY_VERSION_3,
       .pid = 0,
@@ -208,92 +336,121 @@ static int verify_restricted_privileges(int verbose, uid_t *final_uid,
     return -1;
   }
 
+  uint64_t cap_eff =
+      ((uint64_t)data[1].effective << 32) | (uint64_t)data[0].effective;
+  uint64_t cap_prm =
+      ((uint64_t)data[1].permitted << 32) | (uint64_t)data[0].permitted;
+  uint64_t cap_inh =
+      ((uint64_t)data[1].inheritable << 32) | (uint64_t)data[0].inheritable;
+
+  // Query bounding set
+  uint64_t cap_bnd = 0;
+  for (int cap = 0; cap <= 63; cap++) {
+    int ret = prctl(PR_CAPBSET_READ, cap, 0, 0, 0);
+    if (ret < 0) {
+      break;
+    }
+    if (ret == 1) {
+      cap_bnd |= (1ULL << cap);
+    }
+  }
+
+  // Query ambient set
+  uint64_t cap_amb = 0;
+  for (int cap = 0; cap <= 63; cap++) {
+    int ret = prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_IS_SET, cap, 0, 0);
+    if (ret < 0) {
+      break;
+    }
+    if (ret == 1) {
+      cap_amb |= (1ULL << cap);
+    }
+  }
+
+  const uint64_t expected_mask =
+      (1ULL << 38) | (1ULL << 39); // 0x000000c000000000ULL
+
+  r->cap_effective = cap_eff;
+  r->cap_permitted = cap_prm;
+  r->cap_inheritable = cap_inh;
+  r->cap_bounding = cap_bnd;
+  r->cap_ambient = cap_amb;
+
   if (verbose) {
     fprintf(stderr,
-            "[bpf_canary_host] Observed process state: UID=%u GID=%u "
-            "CapEff[0]=0x%08x [1]=0x%08x "
-            "(CAP_SYS_ADMIN=%d, CAP_PERFMON=%d, CAP_BPF=%d)\n",
-            *final_uid, *final_gid, data[0].effective, data[1].effective,
-            (data[0].effective & (1U << 21)) != 0,
-            (data[1].effective & (1U << 6)) != 0,
-            (data[1].effective & (1U << 7)) != 0);
+            "[bpf_canary_host] Capability sets:\n"
+            "  Effective:   0x%016llx\n"
+            "  Permitted:   0x%016llx\n"
+            "  Inheritable: 0x%016llx\n"
+            "  Bounding:    0x%016llx\n"
+            "  Ambient:     0x%016llx\n"
+            "  Expected:    0x%016llx\n",
+            (unsigned long long)cap_eff, (unsigned long long)cap_prm,
+            (unsigned long long)cap_inh, (unsigned long long)cap_bnd,
+            (unsigned long long)cap_amb, (unsigned long long)expected_mask);
   }
 
-  // Reject any capability in data[0] (CAP_SYS_ADMIN is bit 21, CAP_DAC_OVERRIDE
-  // is bit 1)
-  if (data[0].effective != 0 || data[0].permitted != 0) {
-    fprintf(stderr,
-            "[bpf_canary_host] ERROR: Disallowed capabilities in data[0]: "
-            "eff=0x%08x prm=0x%08x\n",
-            data[0].effective, data[0].permitted);
-    return -1;
-  }
-
-  // Reject any capability in data[1] outside {CAP_PERFMON (bit 6), CAP_BPF (bit
-  // 7)}
-  __u32 scoped_mask = (1U << 6) | (1U << 7);
-  if ((data[1].effective & ~scoped_mask) != 0 ||
-      (data[1].permitted & ~scoped_mask) != 0) {
+  // Reject any capability outside {CAP_PERFMON (bit 38), CAP_BPF (bit 39)} in
+  // ANY set
+  if ((cap_eff & ~expected_mask) != 0 || (cap_prm & ~expected_mask) != 0 ||
+      (cap_inh & ~expected_mask) != 0 || (cap_bnd & ~expected_mask) != 0 ||
+      (cap_amb & ~expected_mask) != 0) {
     fprintf(stderr,
             "[bpf_canary_host] ERROR: Capabilities outside approved set "
-            "{CAP_BPF, CAP_PERFMON} in data[1]: "
-            "eff=0x%08x prm=0x%08x\n",
-            data[1].effective, data[1].permitted);
+            "{CAP_BPF, CAP_PERFMON} in sets:\n"
+            "  Eff: 0x%016llx  Prm: 0x%016llx  Inh: 0x%016llx  Bnd: 0x%016llx  "
+            "Amb: 0x%016llx\n",
+            (unsigned long long)cap_eff, (unsigned long long)cap_prm,
+            (unsigned long long)cap_inh, (unsigned long long)cap_bnd,
+            (unsigned long long)cap_amb);
     return -1;
   }
 
   // Ensure CAP_BPF and CAP_PERFMON are present in permitted set
-  if ((data[1].permitted & scoped_mask) != scoped_mask) {
+  if ((cap_prm & expected_mask) != expected_mask) {
     fprintf(stderr,
             "[bpf_canary_host] ERROR: Missing required scoped capabilities "
-            "CAP_BPF / CAP_PERFMON in permitted set: prm=0x%08x\n",
-            data[1].permitted);
+            "CAP_BPF / CAP_PERFMON in permitted set: prm=0x%016llx\n",
+            (unsigned long long)cap_prm);
     return -1;
   }
 
   // Raise permitted capabilities to effective if not already set
-  if ((data[1].effective & scoped_mask) != scoped_mask) {
-    data[1].effective = scoped_mask;
+  if ((cap_eff & expected_mask) != expected_mask) {
+    data[1].effective = (uint32_t)(expected_mask >> 32);
+    data[0].effective = (uint32_t)(expected_mask & 0xffffffff);
     if (syscall(SYS_capset, &hdr, data) != 0) {
       perror("[bpf_canary_host] capset failed raising permitted to effective");
       return -1;
     }
+    cap_eff = ((uint64_t)data[1].effective << 32) | (uint64_t)data[0].effective;
+    r->cap_effective = cap_eff;
   }
 
-  // Reject root supplementary group 0
-  int n_groups = getgroups(0, NULL);
-  if (n_groups > 0) {
-    if (n_groups > 32)
-      n_groups = 32;
-    gid_t groups[32];
-    int count = getgroups(n_groups, groups);
-    for (int i = 0; i < count; i++) {
-      if (groups[i] == 0) {
-        fprintf(
-            stderr,
-            "[bpf_canary_host] ERROR: Root supplementary group 0 retained!\n");
-        return -1;
-      }
-    }
-  }
-
-  // Verify PR_SET_NO_NEW_PRIVS is locked
-  if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) {
-    perror("[bpf_canary_host] prctl(PR_SET_NO_NEW_PRIVS) failed");
-    return -1;
-  }
-  if (prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) != 1) {
+  if (cap_eff != expected_mask) {
     fprintf(stderr,
-            "[bpf_canary_host] ERROR: PR_SET_NO_NEW_PRIVS is not active\n");
+            "[bpf_canary_host] ERROR: Effective capabilities mismatch: "
+            "0x%016llx != 0x%016llx\n",
+            (unsigned long long)cap_eff, (unsigned long long)expected_mask);
     return -1;
   }
+
+  r->cap_bpf = ((cap_eff & (1ULL << 39)) != 0);
+  r->cap_perfmon = ((cap_eff & (1ULL << 38)) != 0);
+  r->cap_sys_admin = ((cap_eff & (1ULL << 21)) != 0);
+  r->all_other_caps_clear =
+      ((cap_eff & ~expected_mask) == 0 && (cap_prm & ~expected_mask) == 0 &&
+       (cap_inh & ~expected_mask) == 0 && (cap_bnd & ~expected_mask) == 0 &&
+       (cap_amb & ~expected_mask) == 0);
+  r->caps_strictly_bpf_perfmon = true;
 
   if (verbose) {
     fprintf(stderr,
             "[bpf_canary_host] Verified restricted observer privileges: UID=%u "
-            "GID=%u "
-            "CapEff[0]=0x%08x [1]=0x%08x (no_new_privs=1)\n",
-            *final_uid, *final_gid, data[0].effective, data[1].effective);
+            "GID=%u groups=0 "
+            "Caps=0x%016llx (CAP_BPF=1, CAP_PERFMON=1, CAP_SYS_ADMIN=0, "
+            "no_new_privs=1)\n",
+            r->uid, r->gid, (unsigned long long)cap_eff);
   }
   return 0;
 }
@@ -323,7 +480,8 @@ static int handle_event(void *ctx, void *data, size_t data_sz) {
     comm_buf[len] = '\0';
 
     fprintf(c->out_fp,
-            "{\"cgroup_id\":%llu,\"dev\":%llu,\"inode\":%llu,\"pid\":%u,"
+            "{\"cgroup_id\":%llu,\"dev\":%llu,\"inode\":%llu,"
+            "\"pid\":%u,"
             "\"tgid\":%u,\"comm\":\"%s\"}\n",
             (unsigned long long)e->cgroup_id, (unsigned long long)e->dev,
             (unsigned long long)e->inode, e->pid, e->tgid, comm_buf);
@@ -333,9 +491,72 @@ static int handle_event(void *ctx, void *data, size_t data_sz) {
 }
 #endif
 
-static int write_probe_report(const char *path, const struct probe_report *r) {
+static void sanitize_json_str(char *dst, size_t dst_sz, const char *src) {
+  if (!dst || dst_sz == 0)
+    return;
+  dst[0] = '\0';
+  if (!src)
+    return;
+  size_t d = 0;
+  for (size_t s = 0; src[s] != '\0' && d + 1 < dst_sz; s++) {
+    char c = src[s];
+    if (c == '"' || c == '\\') {
+      if (d + 2 < dst_sz) {
+        dst[d++] = '\\';
+        dst[d++] = c;
+      } else {
+        break;
+      }
+    } else if (c >= 32 && c <= 126) {
+      dst[d++] = c;
+    } else if (c == '\n' || c == '\r' || c == '\t') {
+      dst[d++] = ' ';
+    }
+  }
+  dst[d] = '\0';
+}
+
+static int write_probe_report(const char *path, struct probe_report *r) {
   if (!path)
     return -1;
+
+  char auto_vlog_path[1024] = {0};
+  char auto_llog_path[1024] = {0};
+
+  // If companion log content is present and no explicit path was set, derive
+  // companion paths
+  if (r->verifier_log_content && r->verifier_log_bytes > 0 &&
+      !r->verifier_log_path) {
+    snprintf(auto_vlog_path, sizeof(auto_vlog_path), "%s.verifier.log", path);
+    r->verifier_log_path = auto_vlog_path;
+  }
+  if (r->libbpf_debug_log_content && r->libbpf_debug_log_bytes > 0 &&
+      !r->libbpf_debug_log_path) {
+    snprintf(auto_llog_path, sizeof(auto_llog_path), "%s.libbpf.log", path);
+    r->libbpf_debug_log_path = auto_llog_path;
+  }
+
+  // Write verifier log if path and content are present
+  if (r->verifier_log_path && r->verifier_log_content &&
+      r->verifier_log_bytes > 0) {
+    const char *err_v = NULL;
+    FILE *vf = safe_open_file(r->verifier_log_path, false, &err_v);
+    if (vf) {
+      fwrite(r->verifier_log_content, 1, r->verifier_log_bytes, vf);
+      fclose(vf);
+    }
+  }
+
+  // Write libbpf debug log if path and content are present
+  if (r->libbpf_debug_log_path && r->libbpf_debug_log_content &&
+      r->libbpf_debug_log_bytes > 0) {
+    const char *err_l = NULL;
+    FILE *lf = safe_open_file(r->libbpf_debug_log_path, false, &err_l);
+    if (lf) {
+      fwrite(r->libbpf_debug_log_content, 1, r->libbpf_debug_log_bytes, lf);
+      fclose(lf);
+    }
+  }
 
   const char *err_open = NULL;
   FILE *sf = safe_open_file(path, false, &err_open);
@@ -344,6 +565,11 @@ static int write_probe_report(const char *path, const struct probe_report *r) {
             "[bpf_canary_host] Failed to open status file safely (%s): %s\n",
             path, err_open ? err_open : "unknown");
     return -1;
+  }
+
+  char sanitized_err[512] = {0};
+  if (r->error_message) {
+    sanitize_json_str(sanitized_err, sizeof(sanitized_err), r->error_message);
   }
 
   fprintf(sf, "{\n");
@@ -403,19 +629,64 @@ static int write_probe_report(const char *path, const struct probe_report *r) {
   fprintf(sf, "  \"target_tgid\": %llu,\n", (unsigned long long)r->target_tgid);
   fprintf(sf, "  \"process_identity\": {\n");
   fprintf(sf, "    \"uid\": %u,\n", (unsigned int)r->uid);
-  fprintf(sf, "    \"gid\": %u\n", (unsigned int)r->gid);
+  fprintf(sf, "    \"gid\": %u,\n", (unsigned int)r->gid);
+  fprintf(sf, "    \"ruid\": %u,\n", (unsigned int)r->ruid);
+  fprintf(sf, "    \"euid\": %u,\n", (unsigned int)r->euid);
+  fprintf(sf, "    \"suid\": %u,\n", (unsigned int)r->suid);
+  fprintf(sf, "    \"rgid\": %u,\n", (unsigned int)r->rgid);
+  fprintf(sf, "    \"egid\": %u,\n", (unsigned int)r->egid);
+  fprintf(sf, "    \"sgid\": %u,\n", (unsigned int)r->sgid);
+  fprintf(sf, "    \"supplementary_groups_count\": %d\n",
+          r->supplementary_groups_count);
   fprintf(sf, "  },\n");
   fprintf(sf, "  \"capabilities\": {\n");
   fprintf(sf, "    \"cap_bpf\": %s,\n", r->cap_bpf ? "true" : "false");
   fprintf(sf, "    \"cap_perfmon\": %s,\n", r->cap_perfmon ? "true" : "false");
   fprintf(sf, "    \"cap_sys_admin\": %s,\n",
           r->cap_sys_admin ? "true" : "false");
-  fprintf(sf, "    \"all_other_caps_clear\": %s\n",
+  fprintf(sf, "    \"all_other_caps_clear\": %s,\n",
           r->all_other_caps_clear ? "true" : "false");
+  fprintf(sf, "    \"effective_mask\": \"%016llx\",\n",
+          (unsigned long long)r->cap_effective);
+  fprintf(sf, "    \"permitted_mask\": \"%016llx\",\n",
+          (unsigned long long)r->cap_permitted);
+  fprintf(sf, "    \"inheritable_mask\": \"%016llx\",\n",
+          (unsigned long long)r->cap_inheritable);
+  fprintf(sf, "    \"bounding_mask\": \"%016llx\",\n",
+          (unsigned long long)r->cap_bounding);
+  fprintf(sf, "    \"ambient_mask\": \"%016llx\",\n",
+          (unsigned long long)r->cap_ambient);
+  fprintf(sf, "    \"expected_mask\": \"000000c000000000\",\n");
+  fprintf(sf, "    \"no_new_privs\": %s\n", r->no_new_privs ? "true" : "false");
   fprintf(sf, "  },\n");
-
+  fprintf(sf, "  \"memlock\": {\n");
+  fprintf(sf, "    \"automatic_rlim_disabled\": %s\n",
+          r->memlock_rlim_disabled ? "true" : "false");
+  fprintf(sf, "  },\n");
+  fprintf(sf, "  \"verifier_evidence\": {\n");
+  fprintf(sf, "    \"log_valid\": %s,\n",
+          r->verifier_log_valid ? "true" : "false");
+  fprintf(sf, "    \"log_bytes\": %zu,\n", r->verifier_log_bytes);
+  fprintf(sf, "    \"conclusion\": %s%s%s,\n",
+          r->verifier_conclusion[0] ? "\"" : "",
+          r->verifier_conclusion[0] ? r->verifier_conclusion : "null",
+          r->verifier_conclusion[0] ? "\"" : "");
+  fprintf(sf, "    \"log_file\": %s%s%s\n", r->verifier_log_path ? "\"" : "",
+          r->verifier_log_path ? r->verifier_log_path : "null",
+          r->verifier_log_path ? "\"" : "");
+  fprintf(sf, "  },\n");
+  fprintf(sf, "  \"relocation_evidence\": {\n");
+  fprintf(sf, "    \"core_relocation_retained\": %s,\n",
+          r->core_relocation_retained ? "true" : "false");
+  fprintf(sf, "    \"libbpf_debug_log_bytes\": %zu,\n",
+          r->libbpf_debug_log_bytes);
+  fprintf(sf, "    \"log_file\": %s%s%s\n",
+          r->libbpf_debug_log_path ? "\"" : "",
+          r->libbpf_debug_log_path ? r->libbpf_debug_log_path : "null",
+          r->libbpf_debug_log_path ? "\"" : "");
+  fprintf(sf, "  },\n");
   if (r->error_message) {
-    fprintf(sf, "  \"error_message\": \"%s\"\n", r->error_message);
+    fprintf(sf, "  \"error_message\": \"%s\"\n", sanitized_err);
   } else {
     fprintf(sf, "  \"error_message\": null\n");
   }
@@ -435,6 +706,8 @@ int main(int argc, char **argv) {
   const char *ready_path = NULL;
   const char *pid_path = NULL;
   const char *bpf_obj_path = "proof/bpf_canary.bpf.o";
+  const char *verifier_log_path = NULL;
+  const char *libbpf_log_path = NULL;
   int probe_only = 0;
   int sim_loss = 0;
   int verbose = 0;
@@ -451,10 +724,12 @@ int main(int argc, char **argv) {
       {"sim-loss", no_argument, 0, 'l'},
       {"duration", required_argument, 0, 'd'},
       {"verbose", no_argument, 0, 'v'},
+      {"verifier-log", required_argument, 0, 'V'},
+      {"libbpf-log", required_argument, 0, 'L'},
       {0, 0, 0, 0}};
 
   int opt;
-  while ((opt = getopt_long(argc, argv, "c:o:s:r:P:b:pld:v", long_options,
+  while ((opt = getopt_long(argc, argv, "c:o:s:r:P:b:pld:vV:L:", long_options,
                             NULL)) != -1) {
     switch (opt) {
     case 'c':
@@ -487,17 +762,24 @@ int main(int argc, char **argv) {
     case 'v':
       verbose = 1;
       break;
+    case 'V':
+      verifier_log_path = optarg;
+      break;
+    case 'L':
+      libbpf_log_path = optarg;
+      break;
     default:
-      fprintf(
-          stderr,
-          "Usage: %s [--cgroup-id <id>] [--output <file>] [--status <file>] "
-          "[--ready-file <file>] [--pid-file <file>] [--bpf-obj <path>] "
-          "[--probe-only] [--sim-loss] [--duration <sec>] [--verbose]\n",
-          argv[0]);
+      fprintf(stderr,
+              "Usage: %s [--cgroup-id <id>] [--output <file>] "
+              "[--status <file>] "
+              "[--ready-file <file>] [--pid-file <file>] "
+              "[--bpf-obj <path>] "
+              "[--probe-only] [--sim-loss] [--duration <sec>] "
+              "[--verbose] [--verifier-log <file>] [--libbpf-log <file>]\n",
+              argv[0]);
       return 1;
     }
   }
-
   // Missing --status must fail
   if (!status_path) {
     fprintf(stderr, "[bpf_canary_host] ERROR: --status <path> is required\n");
@@ -505,9 +787,9 @@ int main(int argc, char **argv) {
   }
 
 #ifndef __linux__
-  fprintf(stderr,
-          "[bpf_canary_host] Linux kernel BPF required. Not supported on host "
-          "platform.\n");
+  fprintf(stderr, "[bpf_canary_host] Linux kernel BPF required. "
+                  "Not supported on host "
+                  "platform.\n");
   struct probe_report unsupp_rep;
   memset(&unsupp_rep, 0, sizeof(unsupp_rep));
   unsupp_rep.status = "UNSUPPORTED_PLATFORM";
@@ -535,43 +817,87 @@ int main(int argc, char **argv) {
   rep.requested_attach_target = "tp_btf/sched_process_exec";
   rep.fd_ownership_lifecycle = "unattached";
 
-  uid_t final_uid = getuid();
-  gid_t final_gid = getgid();
-
   // 1. Verify restricted capabilities: reject root UID 0 and caps outside
   // approved set
-  if (verify_restricted_privileges(verbose, &final_uid, &final_gid) != 0) {
+  if (verify_restricted_privileges(verbose, &rep) != 0) {
     rep.status = "PRIVILEGE_RESTRICTION_FAILED";
-    rep.uid = final_uid;
-    rep.gid = final_gid;
-    rep.error_message =
-        "Failed privilege restriction check: UID 0 or disallowed capabilities";
+    rep.error_message = "Failed privilege restriction check: nonroot identity, "
+                        "empty groups, or BPF/PERFMON caps required";
     write_probe_report(status_path, &rep);
     return 1;
   }
 
-  rep.uid = final_uid;
-  rep.gid = final_gid;
-  rep.cap_bpf = true;
-  rep.cap_perfmon = true;
-  rep.cap_sys_admin = false;
-  rep.all_other_caps_clear = true;
-
-  // 2. Open BPF object
+  // Section 6: Disable automatic memlock-limit adjustment with
+  // libbpf_set_memlock_rlim(0) before loading
+  int rlim_res = libbpf_set_memlock_rlim(0);
+  if (rlim_res != 0) {
+    int m_err = -errno;
+    fprintf(
+        stderr,
+        "[bpf_canary_host] ERROR: libbpf_set_memlock_rlim(0) failed: %s (%d)\n",
+        strerror(-m_err), m_err);
+    rep.status = "MEMLOCK_RLIM_FAILED";
+    rep.error_message = "libbpf_set_memlock_rlim(0) failed to disable "
+                        "automatic limit adjustment";
+    write_probe_report(status_path, &rep);
+    return 1;
+  }
+  rep.memlock_rlim_disabled = true;
   if (verbose) {
-    fprintf(stderr, "[bpf_canary_host] Opening BPF object: %s\n", bpf_obj_path);
+    fprintf(stderr,
+            "[bpf_canary_host] Disabled libbpf automatic memlock adjustment\n");
   }
 
-  struct bpf_object *obj = bpf_object__open_file(bpf_obj_path, NULL);
+  // 2. Open BPF object with logging options (Section 6: Requests verifier
+  // logging for successful loads)
+  static char g_verifier_log_buf[131072];
+  memset(g_verifier_log_buf, 0, sizeof(g_verifier_log_buf));
+
+  struct bpf_object_open_opts open_opts;
+  memset(&open_opts, 0, sizeof(open_opts));
+  open_opts.sz = sizeof(open_opts);
+  open_opts.kernel_log_level = 1;
+  open_opts.kernel_log_buf = g_verifier_log_buf;
+  open_opts.kernel_log_size = sizeof(g_verifier_log_buf);
+
+  if (verbose) {
+    fprintf(stderr,
+            "[bpf_canary_host] Opening BPF object: %s (kernel_log_level=1, "
+            "buf_sz=%zu)\n",
+            bpf_obj_path, sizeof(g_verifier_log_buf));
+  }
+
+  struct bpf_object *obj = bpf_object__open_file(bpf_obj_path, &open_opts);
   if (!obj) {
     int err = -errno;
     fprintf(stderr, "[bpf_canary_host] bpf_object__open_file failed: %s (%d)\n",
             strerror(-err), err);
     rep.status = "OPEN_FAILED";
     rep.error_message = strerror(-err);
+    rep.libbpf_debug_log_content = g_libbpf_debug_log;
+    rep.libbpf_debug_log_bytes = g_libbpf_debug_log_len;
     write_probe_report(status_path, &rep);
     return 1;
   }
+
+  // Locate program before load to ensure explicit log level and buffer
+  // configuration
+  struct bpf_program *prog =
+      bpf_object__find_program_by_name(obj, "sched_process_exec");
+  if (!prog) {
+    fprintf(stderr, "[bpf_canary_host] Program sched_process_exec not found\n");
+    rep.status = "PROGRAM_MISSING";
+    rep.error_message = "sched_process_exec missing in BPF object";
+    rep.libbpf_debug_log_content = g_libbpf_debug_log;
+    rep.libbpf_debug_log_bytes = g_libbpf_debug_log_len;
+    bpf_object__close(obj);
+    write_probe_report(status_path, &rep);
+    return 1;
+  }
+
+  bpf_program__set_log_level(prog, 1);
+  bpf_program__set_log_buf(prog, g_verifier_log_buf,
+                           sizeof(g_verifier_log_buf));
 
   // 3. Load BPF object into kernel FIRST before accessing map FDs
   if (verbose) {
@@ -581,10 +907,24 @@ int main(int argc, char **argv) {
 
   int err = bpf_object__load(obj);
   if (err) {
+    int load_err = -errno;
     fprintf(stderr, "[bpf_canary_host] bpf_object__load failed: %s (%d)\n",
-            strerror(-err), err);
-    rep.status = "LOAD_FAILED";
-    rep.error_message = strerror(-err);
+            strerror(-load_err), load_err);
+    // Section 6: Libbpf also performs internal feature probes. A failure before
+    // the intended program's load must be reported at that stage, without
+    // claiming the typed program itself was rejected.
+    if (g_verifier_log_buf[0] == '\0') {
+      rep.status = "FEATURE_PROBE_OR_PRECHECK_FAILED";
+      rep.error_message = "Failure occurred before typed program verifier load "
+                          "(feature probe, BTF, or map error)";
+    } else {
+      rep.status = "LOAD_FAILED";
+      rep.error_message = strerror(-load_err);
+    }
+    rep.verifier_log_content = g_verifier_log_buf;
+    rep.verifier_log_bytes = strlen(g_verifier_log_buf);
+    rep.libbpf_debug_log_content = g_libbpf_debug_log;
+    rep.libbpf_debug_log_bytes = g_libbpf_debug_log_len;
     bpf_object__close(obj);
     write_probe_report(status_path, &rep);
     return 1;
@@ -592,16 +932,88 @@ int main(int argc, char **argv) {
 
   rep.load_supported = true;
 
-  // 4. Query and validate real program metadata from loaded kernel program
-  struct bpf_program *prog =
-      bpf_object__find_program_by_name(obj, "sched_process_exec");
-  if (!prog) {
-    fprintf(stderr, "[bpf_canary_host] Program sched_process_exec not found\n");
-    rep.status = "PROGRAM_MISSING";
-    rep.error_message = "sched_process_exec missing in BPF object";
+  // Section 6: Treat missing/truncated required logs as incomplete evidence
+  const char *vlog = g_verifier_log_buf;
+  if (vlog[0] == '\0') {
+    size_t plog_sz = 0;
+    const char *plog = bpf_program__log_buf(prog, &plog_sz);
+    if (plog && plog[0] != '\0') {
+      vlog = plog;
+    }
+  }
+
+  if (vlog[0] == '\0') {
+    fprintf(
+        stderr,
+        "[bpf_canary_host] ERROR: Successful load verifier log is missing\n");
+    rep.status = "VERIFIER_LOG_MISSING";
+    rep.error_message = "Required kernel verifier log is missing after load";
+    rep.libbpf_debug_log_content = g_libbpf_debug_log;
+    rep.libbpf_debug_log_bytes = g_libbpf_debug_log_len;
     bpf_object__close(obj);
     write_probe_report(status_path, &rep);
     return 1;
+  }
+
+  size_t vlog_len = strlen(vlog);
+  if (vlog_len >= sizeof(g_verifier_log_buf) - 1) {
+    fprintf(stderr,
+            "[bpf_canary_host] ERROR: Verifier log was truncated (%zu bytes)\n",
+            vlog_len);
+    rep.status = "VERIFIER_LOG_TRUNCATED";
+    rep.error_message = "Kernel verifier log was truncated";
+    rep.verifier_log_content = vlog;
+    rep.verifier_log_bytes = vlog_len;
+    rep.libbpf_debug_log_content = g_libbpf_debug_log;
+    rep.libbpf_debug_log_bytes = g_libbpf_debug_log_len;
+    bpf_object__close(obj);
+    write_probe_report(status_path, &rep);
+    return 1;
+  }
+
+  const char *proc_line = strstr(vlog, "processed ");
+  if (!proc_line) {
+    fprintf(stderr, "[bpf_canary_host] ERROR: Verifier log conclusion "
+                    "('processed ') not found\n");
+    rep.status = "VERIFIER_LOG_INCOMPLETE";
+    rep.error_message =
+        "Kernel verifier log incomplete (missing verifier conclusion)";
+    rep.verifier_log_content = vlog;
+    rep.verifier_log_bytes = vlog_len;
+    rep.libbpf_debug_log_content = g_libbpf_debug_log;
+    rep.libbpf_debug_log_bytes = g_libbpf_debug_log_len;
+    bpf_object__close(obj);
+    write_probe_report(status_path, &rep);
+    return 1;
+  }
+
+  rep.verifier_log_valid = true;
+  rep.verifier_log_bytes = vlog_len;
+  rep.verifier_log_content = vlog;
+  const char *nl = strchr(proc_line, '\n');
+  size_t line_len = nl ? (size_t)(nl - proc_line) : strlen(proc_line);
+  if (line_len >= sizeof(rep.verifier_conclusion)) {
+    line_len = sizeof(rep.verifier_conclusion) - 1;
+  }
+  for (size_t i = 0; i < line_len; i++) {
+    char ch = proc_line[i];
+    if (ch >= 32 && ch <= 126 && ch != '"' && ch != '\\') {
+      rep.verifier_conclusion[i] = ch;
+    } else {
+      rep.verifier_conclusion[i] = ' ';
+    }
+  }
+  rep.verifier_conclusion[line_len] = '\0';
+
+  rep.core_relocation_retained = g_core_relocation_seen;
+  rep.libbpf_debug_log_bytes = g_libbpf_debug_log_len;
+  rep.libbpf_debug_log_content = g_libbpf_debug_log;
+  rep.verifier_log_path = verifier_log_path;
+  rep.libbpf_debug_log_path = libbpf_log_path;
+
+  if (verbose) {
+    fprintf(stderr, "[bpf_canary_host] Verifier log captured (%zu bytes): %s\n",
+            vlog_len, rep.verifier_conclusion);
   }
 
   int prog_fd = bpf_program__fd(prog);
@@ -686,6 +1098,14 @@ int main(int argc, char **argv) {
     // In probe-only diagnostic mode: configure own actual TGID in the loaded
     // map before attach
     uint64_t my_tgid = (uint64_t)getpid();
+    if (my_tgid == 0) {
+      fprintf(stderr, "[bpf_canary_host] ERROR: Own TGID is 0\n");
+      rep.status = "TGID_INVALID";
+      rep.error_message = "Own TGID is 0";
+      bpf_object__close(obj);
+      write_probe_report(status_path, &rep);
+      return 1;
+    }
     rep.target_tgid = my_tgid;
     __u32 k_tgid = BPF_CANARY_CFG_TARGET_TGID;
     __u64 v_tgid = my_tgid;
