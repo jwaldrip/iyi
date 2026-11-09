@@ -18,11 +18,14 @@
  *
  * Syscall Mediation & Evasion Resistance:
  *   Intercepts syscalls via PTRACE_SYSCALL.
- *   Disallows any ptrace(2) calls from untrusted children.
- *   Rejects clone3(2) outright to eliminate userspace memory modification
- * races. Rejects IA32, x32, and AArch32 compat syscall entry paths. Inspects
- * clone(2) arguments; rejects CLONE_UNTRACED immediately. Fails closed on any
- * unaccounted child exit, ptrace failure, or unexpected ECHILD.
+ *   Uses kernel PTRACE_GET_SYSCALL_INFO to distinguish syscall entry vs exit
+ * without state-machine desync across execve stops. Validates AUDIT_ARCH
+ * against native host architecture; denies IA32, x32, and AArch32 compat
+ * syscall entry paths (including int 0x80 from 64-bit processes). Disallows any
+ * ptrace(2) calls from untrusted children. Rejects clone3(2) outright to
+ * eliminate userspace memory modification races. Inspects clone(2) arguments;
+ * rejects CLONE_UNTRACED immediately. Fails closed on any unaccounted child
+ * exit, ptrace failure, or unexpected ECHILD.
  *
  * Binary Classification & Raw Executable Capture:
  *   Classifies binaries into:
@@ -34,9 +37,10 @@
  * root on verified ST_RDONLY mounts): verified via fstatvfs(ST_RDONLY) and
  * system UID ownership. Reading has zero atime source effect because the kernel
  * suppresses atime updates on read-only mounts. Computes SHA-256 digest.
- * Persists raw bytes for workload outputs to --raw-capture-dir. Fails closed on
- * destination open, write, or partial-write errors. Holds O_PATH descriptor;
- * fails closed if descriptor table is full or open fails.
+ * Persists raw bytes for workload outputs to --raw-capture-dir using
+ * openat(O_CREAT | O_EXCL | O_NOFOLLOW) via trusted directory descriptor. Fails
+ * closed on destination open, write, or partial-write errors. Holds O_PATH
+ * descriptor; fails closed if descriptor table is full or open fails.
  *
  * Inode Deduplication & Repeated Execution:
  *   Tracks captured executables by (st_dev, st_ino) with continuous O_PATH
@@ -46,13 +50,17 @@
  * destination collision.
  *
  * Non-Leader Thread Exec & Signal Semantics:
- *   Reconciles non-leader thread exec via PTRACE_GETEVENTMSG old_tid.
- *   Distinguishes clone initial stops from genuine workload signals; forwards
- *   application signals faithfully.
+ *   Reconciles non-leader thread exec via PTRACE_GETEVENTMSG old_tid before
+ * process lookup. Tracks initial synthetic SIGSTOP for all fork/vfork/clone
+ * descendants, suppressing initial trace stops while faithfully forwarding
+ * genuine workload signals.
  *
- * Private Output Channel:
- *   Requires --evidence-fd >= 3. Child receives dedicated pipes for
- * stdout/stderr, completely isolated from the private evidence stream.
+ * Private Output Channel & Concurrent Pipe Draining:
+ *   Requires --evidence-fd >= 3 and verifies it does not alias stdout or
+ * stderr. Child receives dedicated nonblocking pipes for stdout and stderr.
+ *   Parent tracer concurrently drains child pipes via poll() and nonblocking
+ * waitpid(WNOHANG), preventing pipe buffer exhaustion deadlocks while
+ * preserving separate stdout and stderr.
  */
 
 #define _GNU_SOURCE
@@ -167,6 +175,52 @@ static inline long linux_ptrace(int req, pid_t pid, void *addr, void *data) {
 #ifndef PTRACE_GETREGSET
 #define PTRACE_GETREGSET 0x4204
 #endif
+#ifndef PTRACE_GET_SYSCALL_INFO
+#define PTRACE_GET_SYSCALL_INFO 0x420e
+#endif
+
+#ifndef PTRACE_SYSCALL_INFO_NONE
+#define PTRACE_SYSCALL_INFO_NONE 0
+#endif
+#ifndef PTRACE_SYSCALL_INFO_ENTRY
+#define PTRACE_SYSCALL_INFO_ENTRY 1
+#endif
+#ifndef PTRACE_SYSCALL_INFO_EXIT
+#define PTRACE_SYSCALL_INFO_EXIT 2
+#endif
+#ifndef PTRACE_SYSCALL_INFO_SECCOMP
+#define PTRACE_SYSCALL_INFO_SECCOMP 3
+#endif
+
+#ifndef AUDIT_ARCH_X86_64
+#define AUDIT_ARCH_X86_64 0xc000003e
+#endif
+#ifndef AUDIT_ARCH_AARCH64
+#define AUDIT_ARCH_AARCH64 0xc00000b7
+#endif
+
+struct ptrace_syscall_info_compat {
+  uint8_t op;
+  uint8_t pad[3];
+  uint32_t arch;
+  uint64_t instruction_pointer;
+  uint64_t stack_pointer;
+  union {
+    struct {
+      uint64_t nr;
+      uint64_t args[6];
+    } entry;
+    struct {
+      int64_t rval;
+      uint8_t is_error;
+    } exit;
+    struct {
+      uint64_t nr;
+      uint64_t args[6];
+      uint32_t ret_data;
+    } seccomp;
+  };
+};
 
 #ifndef PTRACE_O_TRACESYSGOOD
 #define PTRACE_O_TRACESYSGOOD 1
@@ -354,7 +408,6 @@ typedef struct {
   bool is_thread;
   bool active;
   bool exited;
-  bool in_syscall;
   bool initial_stop_pending;
   int exit_status;
 } ProcessEntry;
@@ -587,8 +640,8 @@ static ProcessEntry *add_process(pid_t pid, pid_t ppid, uint64_t parent_seq,
   e->is_thread = is_thread;
   e->active = true;
   e->exited = false;
-  e->in_syscall = false;
-  e->initial_stop_pending = is_thread;
+  e->initial_stop_pending = true; /* All fork/vfork/clone descendants receive
+                                     initial synthetic stop */
   e->exit_status = 0;
   g_active_processes++;
   g_total_processes_spawned++;
@@ -649,8 +702,78 @@ static void emit_session_end(void) {
   emit_evidence_record(buf);
 }
 
-static bool check_syscall_entry(pid_t pid, char *err_buf, size_t err_buf_len) {
-#if defined(__linux__) && (defined(__x86_64__) || defined(__aarch64__))
+/*
+ * Kernel-Level Syscall Stop Inspection:
+ * Uses PTRACE_GET_SYSCALL_INFO to distinguish entry vs exit unambiguously.
+ * Validates native architecture (AUDIT_ARCH) to reject IA32, x32, and AArch32
+ * compat paths. Rejects clone3 outright; rejects ptrace and CLONE_UNTRACED.
+ */
+static int inspect_syscall_stop(pid_t pid, char *err_buf, size_t err_buf_len) {
+#if defined(__linux__)
+  struct ptrace_syscall_info_compat info;
+  memset(&info, 0, sizeof(info));
+
+  if (linux_ptrace(PTRACE_GET_SYSCALL_INFO, pid, (void *)(intptr_t)sizeof(info),
+                   &info) == 0) {
+    if (info.op == PTRACE_SYSCALL_INFO_EXIT) {
+      return 2; /* Syscall exit */
+    }
+    if (info.op == PTRACE_SYSCALL_INFO_ENTRY) {
+      /* Verify native audit architecture */
+#if defined(__x86_64__)
+      if (info.arch != AUDIT_ARCH_X86_64) {
+        snprintf(err_buf, err_buf_len, "COMPAT_SYSCALL_ARCH_DISALLOWED_0x%x",
+                 info.arch);
+        return -1;
+      }
+      uint64_t nr = info.entry.nr;
+      if (nr == 101) { /* __NR_ptrace */
+        snprintf(err_buf, err_buf_len, "DISALLOWED_PTRACE_SYSCALL");
+        return -1;
+      }
+      if (nr == 435) { /* __NR_clone3: outright rejected */
+        snprintf(err_buf, err_buf_len, "DISALLOWED_CLONE3_SYSCALL");
+        return -1;
+      }
+      if (nr == 56) { /* __NR_clone */
+        uint64_t flags = info.entry.args[0];
+        if (flags & CLONE_UNTRACED) {
+          snprintf(err_buf, err_buf_len, "CLONE_UNTRACED_ATTEMPT");
+          return -1;
+        }
+      }
+#elif defined(__aarch64__)
+      if (info.arch != AUDIT_ARCH_AARCH64) {
+        snprintf(err_buf, err_buf_len, "COMPAT_SYSCALL_ARCH_DISALLOWED_0x%x",
+                 info.arch);
+        return -1;
+      }
+      uint64_t nr = info.entry.nr;
+      if (nr == 117) { /* __NR_ptrace */
+        snprintf(err_buf, err_buf_len, "DISALLOWED_PTRACE_SYSCALL");
+        return -1;
+      }
+      if (nr == 435) { /* __NR_clone3 */
+        snprintf(err_buf, err_buf_len, "DISALLOWED_CLONE3_SYSCALL");
+        return -1;
+      }
+      if (nr == 220) { /* __NR_clone */
+        uint64_t flags = info.entry.args[0];
+        if (flags & CLONE_UNTRACED) {
+          snprintf(err_buf, err_buf_len, "CLONE_UNTRACED_ATTEMPT");
+          return -1;
+        }
+      }
+#else
+      snprintf(err_buf, err_buf_len, "UNSUPPORTED_HOST_ARCH");
+      return -1;
+#endif
+      return 1; /* Syscall entry successfully validated */
+    }
+    return 0; /* Other syscall info op */
+  }
+
+  /* Fallback for pre-5.3 kernels: register inspection */
   struct iovec iov;
 #if defined(__x86_64__)
   struct user_regs_struct regs;
@@ -659,35 +782,33 @@ static bool check_syscall_entry(pid_t pid, char *err_buf, size_t err_buf_len) {
   if (linux_ptrace(PTRACE_GETREGSET, pid, (void *)(intptr_t)NT_PRSTATUS,
                    &iov) != 0) {
     snprintf(err_buf, err_buf_len, "PTRACE_GETREGSET_FAILED_%d", errno);
-    return false;
+    return -1;
   }
-  /* Reject IA32 compat entry: CS == 0x23 on x86_64 */
   if (regs.cs == 0x23) {
     snprintf(err_buf, err_buf_len, "COMPAT_IA32_SYSCALL_DISALLOWED");
-    return false;
+    return -1;
   }
-  /* Reject x32 ABI entry bit */
   if (regs.orig_rax & 0x40000000UL) {
     snprintf(err_buf, err_buf_len, "COMPAT_X32_SYSCALL_DISALLOWED");
-    return false;
+    return -1;
   }
   long sys_no = (long)regs.orig_rax;
-  if (sys_no == 101) { /* __NR_ptrace */
+  if (sys_no == 101) {
     snprintf(err_buf, err_buf_len, "DISALLOWED_PTRACE_SYSCALL");
-    return false;
+    return -1;
   }
-  if (sys_no == 435) { /* __NR_clone3: rejected outright to eliminate userspace
-                          memory modification race */
+  if (sys_no == 435) {
     snprintf(err_buf, err_buf_len, "DISALLOWED_CLONE3_SYSCALL");
-    return false;
+    return -1;
   }
-  if (sys_no == 56) { /* __NR_clone */
+  if (sys_no == 56) {
     unsigned long flags = (unsigned long)regs.rdi;
     if (flags & CLONE_UNTRACED) {
       snprintf(err_buf, err_buf_len, "CLONE_UNTRACED_ATTEMPT");
-      return false;
+      return -1;
     }
   }
+  return 1;
 #elif defined(__aarch64__)
   struct user_pt_regs regs;
   iov.iov_base = &regs;
@@ -695,36 +816,36 @@ static bool check_syscall_entry(pid_t pid, char *err_buf, size_t err_buf_len) {
   if (linux_ptrace(PTRACE_GETREGSET, pid, (void *)(intptr_t)NT_PRSTATUS,
                    &iov) != 0) {
     snprintf(err_buf, err_buf_len, "PTRACE_GETREGSET_FAILED_%d", errno);
-    return false;
+    return -1;
   }
-  /* Reject AArch32 compat mode: pstate & 0x10 */
   if (regs.pstate & 0x10) {
     snprintf(err_buf, err_buf_len, "COMPAT_AARCH32_SYSCALL_DISALLOWED");
-    return false;
+    return -1;
   }
   long sys_no = (long)regs.regs[8];
-  if (sys_no == 117) { /* __NR_ptrace */
+  if (sys_no == 117) {
     snprintf(err_buf, err_buf_len, "DISALLOWED_PTRACE_SYSCALL");
-    return false;
+    return -1;
   }
-  if (sys_no == 435) { /* __NR_clone3 */
+  if (sys_no == 435) {
     snprintf(err_buf, err_buf_len, "DISALLOWED_CLONE3_SYSCALL");
-    return false;
+    return -1;
   }
-  if (sys_no == 220) { /* __NR_clone */
+  if (sys_no == 220) {
     unsigned long flags = (unsigned long)regs.regs[0];
     if (flags & CLONE_UNTRACED) {
       snprintf(err_buf, err_buf_len, "CLONE_UNTRACED_ATTEMPT");
-      return false;
+      return -1;
     }
   }
+  return 1;
 #endif
+
 #else
   (void)pid;
-  snprintf(err_buf, err_buf_len, "UNSUPPORTED_ARCH_FOR_SYSCALL_MEDIATION");
-  return false;
+  snprintf(err_buf, err_buf_len, "NON_LINUX_UNSUPPORTED");
+  return -1;
 #endif
-  return true;
 }
 
 static bool resume_tracee(pid_t pid, int sig) {
@@ -919,10 +1040,10 @@ static void handle_exec_event(pid_t pid) {
     snprintf(filename, sizeof(filename), "%" PRIu64 "_%" PRIu64 ".bin",
              (uint64_t)st.st_dev, (uint64_t)st.st_ino);
     /*
-     * Strictly use openat with O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC.
-     * O_NOFOLLOW rejects any symlink at the destination with ELOOP.
-     * O_EXCL prevents overwriting existing files and catches unauthorized
-     * pre-created files with EEXIST. Inode deduplication (via
+     * Strictly use openat with O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC via
+     * trusted dir fd. O_NOFOLLOW rejects any symlink at the destination with
+     * ELOOP. O_EXCL prevents overwriting existing files and catches
+     * unauthorized pre-created files with EEXIST. Inode deduplication (via
      * find_captured_exec) guarantees this branch executes strictly once per
      * distinct inode.
      */
@@ -1148,6 +1269,23 @@ int main(int argc, char **argv) {
     return 2;
   }
 
+  /* Verify evidence descriptor does NOT alias stdout or stderr */
+  struct stat st_ev, st_out, st_err;
+  if (fstat(evidence_fd, &st_ev) != 0 || fstat(STDOUT_FILENO, &st_out) != 0 ||
+      fstat(STDERR_FILENO, &st_err) != 0) {
+    fprintf(stderr, "hosted_exec_witness: fstat on descriptors failed: %s\n",
+            strerror(errno));
+    return 2;
+  }
+  if ((st_ev.st_dev == st_out.st_dev && st_ev.st_ino == st_out.st_ino) ||
+      (st_ev.st_dev == st_err.st_dev && st_ev.st_ino == st_err.st_ino)) {
+    fprintf(stderr,
+            "hosted_exec_witness: fatal: --evidence-fd %d aliases stdout or "
+            "stderr\n",
+            evidence_fd);
+    return 2;
+  }
+
   /* Set close-on-exec on evidence fd so child does NOT inherit it */
   int flags = fcntl(evidence_fd, F_GETFD);
   if (flags < 0) {
@@ -1158,6 +1296,8 @@ int main(int argc, char **argv) {
   fcntl(evidence_fd, F_SETFD, flags | FD_CLOEXEC);
   g_evidence_fd = evidence_fd;
 
+  /* If raw capture dir requested, open trusted directory descriptor with
+   * O_DIRECTORY | O_NOFOLLOW */
   if (g_raw_capture_dir[0] != '\0') {
     int dir_fd = open(g_raw_capture_dir,
                       O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
@@ -1170,6 +1310,7 @@ int main(int argc, char **argv) {
     }
     g_raw_capture_dir_fd = dir_fd;
   }
+
   /* Enforce non-dumpable state on parent tracer */
   if (prctl(PR_SET_DUMPABLE, 0) < 0) {
     fprintf(stderr,
@@ -1317,7 +1458,12 @@ int main(int argc, char **argv) {
   }
 
   /* Register root process */
-  add_process(child_pid, getpid(), 0, false, "initial");
+  ProcessEntry *root_entry =
+      add_process(child_pid, getpid(), 0, false, "initial");
+  if (root_entry != NULL) {
+    root_entry->initial_stop_pending =
+        false; /* Initial stop already observed */
+  }
 
   /* Release child by writing to barrier pipe and resuming it via PTRACE_SYSCALL
    */
@@ -1331,14 +1477,19 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-/* Helper macro to drain child output pipes non-blockingly to host container
- * stderr */
+  /* Concurrent nonblocking polling for child pipes to prevent deadlocks */
+  struct pollfd pfd[2];
+  pfd[0].fd = child_out_pipe[0];
+  pfd[0].events = POLLIN;
+  pfd[1].fd = child_err_pipe[0];
+  pfd[1].events = POLLIN;
+
 #define DRAIN_CHILD_PIPES()                                                    \
   do {                                                                         \
     char log_buf[4096];                                                        \
     ssize_t n_log;                                                             \
     while ((n_log = read(child_out_pipe[0], log_buf, sizeof(log_buf))) > 0) {  \
-      write_all(STDERR_FILENO, log_buf, (size_t)n_log);                        \
+      write_all(STDOUT_FILENO, log_buf, (size_t)n_log);                        \
     }                                                                          \
     while ((n_log = read(child_err_pipe[0], log_buf, sizeof(log_buf))) > 0) {  \
       write_all(STDERR_FILENO, log_buf, (size_t)n_log);                        \
@@ -1350,7 +1501,14 @@ int main(int argc, char **argv) {
     DRAIN_CHILD_PIPES();
 
     int wait_status = 0;
-    pid_t event_pid = waitpid(-1, &wait_status, __WALL);
+    pid_t event_pid = waitpid(-1, &wait_status, WNOHANG | __WALL);
+    if (event_pid == 0) {
+      /* No tracee stopped yet; wait up to 10ms for pipe output or process
+       * status */
+      poll(pfd, 2, 10);
+      continue;
+    }
+
     if (event_pid < 0) {
       if (errno == EINTR) {
         continue;
@@ -1375,9 +1533,8 @@ int main(int argc, char **argv) {
       break;
     }
 
-    ProcessEntry *proc = find_process(event_pid);
-
     if (WIFEXITED(wait_status) || WIFSIGNALED(wait_status)) {
+      ProcessEntry *proc = find_process(event_pid);
       if (proc != NULL && proc->active) {
         proc->active = false;
         proc->exited = true;
@@ -1406,6 +1563,17 @@ int main(int argc, char **argv) {
       int stop_sig = WSTOPSIG(wait_status);
       int event = (unsigned int)wait_status >> 16;
 
+      /*
+       * Reconcile non-leader thread exec stops before process table lookup
+       * to avoid false UNACCOUNTED_STOPPED_CHILD rejections.
+       */
+      if (stop_sig == SIGTRAP && event == PTRACE_EVENT_EXEC) {
+        handle_exec_event(event_pid);
+        resume_tracee(event_pid, 0);
+        continue;
+      }
+
+      ProcessEntry *proc = find_process(event_pid);
       if (proc == NULL) {
         g_failed = true;
         snprintf(g_failure_reason, sizeof(g_failure_reason),
@@ -1419,13 +1587,8 @@ int main(int argc, char **argv) {
       }
 
       if (stop_sig == SIGTRAP) {
-        if (event == PTRACE_EVENT_EXEC) {
-          handle_exec_event(event_pid);
-          proc->in_syscall = false;
-          resume_tracee(event_pid, 0);
-          continue;
-        } else if (event == PTRACE_EVENT_FORK || event == PTRACE_EVENT_VFORK ||
-                   event == PTRACE_EVENT_CLONE) {
+        if (event == PTRACE_EVENT_FORK || event == PTRACE_EVENT_VFORK ||
+            event == PTRACE_EVENT_CLONE) {
           unsigned long new_child_pid = 0;
           if (linux_ptrace(PTRACE_GETEVENTMSG, event_pid, 0, &new_child_pid) <
               0) {
@@ -1472,21 +1635,17 @@ int main(int argc, char **argv) {
         continue;
       } else if (stop_sig == (SIGTRAP | 0x80)) {
         /* Syscall trap from PTRACE_O_TRACESYSGOOD */
-        if (!proc->in_syscall) {
-          proc->in_syscall = true;
-          char violation[128] = {0};
-          if (!check_syscall_entry(event_pid, violation, sizeof(violation))) {
-            g_failed = true;
-            snprintf(g_failure_reason, sizeof(g_failure_reason),
-                     "SYSCALL_VIOLATION_%s", violation);
-            fprintf(stderr,
-                    "hosted_exec_witness: security violation on pid %d: %s\n",
-                    (int)event_pid, violation);
-            kill_all_tracees();
-            break;
-          }
-        } else {
-          proc->in_syscall = false;
+        char violation[128] = {0};
+        int res = inspect_syscall_stop(event_pid, violation, sizeof(violation));
+        if (res < 0) {
+          g_failed = true;
+          snprintf(g_failure_reason, sizeof(g_failure_reason),
+                   "SYSCALL_VIOLATION_%s", violation);
+          fprintf(stderr,
+                  "hosted_exec_witness: security violation on pid %d: %s\n",
+                  (int)event_pid, violation);
+          kill_all_tracees();
+          break;
         }
         resume_tracee(event_pid, 0);
         continue;
@@ -1518,5 +1677,6 @@ int main(int argc, char **argv) {
   if (g_evidence_fd >= 0) {
     close(g_evidence_fd);
   }
+
   return g_failed ? 1 : g_root_exit_code;
 }
