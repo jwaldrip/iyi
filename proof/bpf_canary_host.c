@@ -239,8 +239,8 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format,
   va_end(args_copy);
 
   if (format &&
-      (strstr(format, "relo") != NULL || strstr(format, "CO-RE") != NULL ||
-       strstr(format, "relocation") != NULL)) {
+      (strstr(format, "relo #") != NULL || strstr(format, "CO-RE") != NULL ||
+       strstr(format, "bpf_core_relo") != NULL)) {
     g_core_relocation_seen = true;
   }
 
@@ -536,25 +536,67 @@ static int write_probe_report(const char *path, struct probe_report *r) {
     r->libbpf_debug_log_path = auto_llog_path;
   }
 
-  // Write verifier log if path and content are present
+  // Write verifier log if path and content are present (persisted log errors
+  // are fatal)
   if (r->verifier_log_path && r->verifier_log_content &&
       r->verifier_log_bytes > 0) {
     const char *err_v = NULL;
     FILE *vf = safe_open_file(r->verifier_log_path, false, &err_v);
-    if (vf) {
-      fwrite(r->verifier_log_content, 1, r->verifier_log_bytes, vf);
+    if (!vf) {
+      fprintf(stderr,
+              "[bpf_canary_host] ERROR: Failed to open verifier log file "
+              "safely (%s): %s\n",
+              r->verifier_log_path, err_v ? err_v : "unknown");
+      return -1;
+    }
+    size_t written =
+        fwrite(r->verifier_log_content, 1, r->verifier_log_bytes, vf);
+    if (written != r->verifier_log_bytes) {
+      fprintf(stderr,
+              "[bpf_canary_host] ERROR: Incomplete write to verifier log file "
+              "(%zu != %zu)\n",
+              written, r->verifier_log_bytes);
       fclose(vf);
+      return -1;
+    }
+    if (fflush(vf) != 0 || fclose(vf) != 0) {
+      fprintf(stderr,
+              "[bpf_canary_host] ERROR: Failed to flush/close verifier log "
+              "file (%s)\n",
+              r->verifier_log_path);
+      return -1;
     }
   }
 
-  // Write libbpf debug log if path and content are present
+  // Write libbpf debug log if path and content are present (persisted log
+  // errors are fatal)
   if (r->libbpf_debug_log_path && r->libbpf_debug_log_content &&
       r->libbpf_debug_log_bytes > 0) {
     const char *err_l = NULL;
     FILE *lf = safe_open_file(r->libbpf_debug_log_path, false, &err_l);
-    if (lf) {
-      fwrite(r->libbpf_debug_log_content, 1, r->libbpf_debug_log_bytes, lf);
+    if (!lf) {
+      fprintf(stderr,
+              "[bpf_canary_host] ERROR: Failed to open libbpf debug log file "
+              "safely (%s): %s\n",
+              r->libbpf_debug_log_path, err_l ? err_l : "unknown");
+      return -1;
+    }
+    size_t written =
+        fwrite(r->libbpf_debug_log_content, 1, r->libbpf_debug_log_bytes, lf);
+    if (written != r->libbpf_debug_log_bytes) {
+      fprintf(stderr,
+              "[bpf_canary_host] ERROR: Incomplete write to libbpf debug log "
+              "file (%zu != %zu)\n",
+              written, r->libbpf_debug_log_bytes);
       fclose(lf);
+      return -1;
+    }
+    if (fflush(lf) != 0 || fclose(lf) != 0) {
+      fprintf(stderr,
+              "[bpf_canary_host] ERROR: Failed to flush/close libbpf debug log "
+              "file (%s)\n",
+              r->libbpf_debug_log_path);
+      return -1;
     }
   }
 
@@ -1411,13 +1453,24 @@ int main(int argc, char **argv) {
       write_probe_report(status_path, &rep);
       return 130;
     }
+    if (!rep.core_relocation_retained) {
+      fprintf(stderr, "[bpf_canary_host] ERROR: No genuine CO-RE relocation "
+                      "diagnostics captured from libbpf\n");
+      rep.status = "CORE_RELOCATION_EVIDENCE_MISSING";
+      rep.error_message =
+          "No genuine CO-RE relocation diagnostics captured from libbpf";
+      write_probe_report(status_path, &rep);
+      return 1;
+    }
 
-    // Success reported only after verified link and object lifetime
+    // Success reported only after verified link, relocation, and object
+    // lifetime
     rep.status = "PROBE_SUCCESS";
     rep.error_message = NULL;
 
     if (write_probe_report(status_path, &rep) != 0) {
-      fprintf(stderr, "[bpf_canary_host] Failed to write probe report\n");
+      fprintf(stderr, "[bpf_canary_host] ERROR: Failed to persist probe report "
+                      "or companion logs safely\n");
       return 1;
     }
     return 0;

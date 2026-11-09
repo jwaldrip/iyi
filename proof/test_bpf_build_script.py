@@ -13,9 +13,10 @@ privileged commands, local VMs, or the live BPF helper:
   5. Staged prefix missing required static archives fails closed.
   6. Staged prefix with tampered archive SHA256 fails closed.
   7. Corrupt, unapproved signer, or mismatched dependency receipts fail closed.
-  8. Real .BTF.ext CO-RE relocation parser validates true records and rejects empty/invalid tables.
-  9. GNU_STACK parser correctly reads Flg column (not Align) and rejects executable stack.
- 10. Terminal report evaluation strictly enforces all Section 7 acceptance criteria.
+  8. Unapproved header from staged prefix included in dependency graph is rejected.
+  9. Real .BTF.ext CO-RE relocation parser validates true records and rejects empty/invalid tables.
+ 10. GNU_STACK parser correctly reads Flg column (not Align) and rejects executable stack.
+ 11. Terminal report evaluation strictly enforces all Section 7 acceptance criteria and log files.
 """
 
 from __future__ import annotations
@@ -159,13 +160,14 @@ class TestBpfFeasibilityScript(unittest.TestCase):
 
             receipt = {
                 "status": "VERIFIED",
+                "snapshot_id": "20261105T000000Z",
                 "signer_fingerprint": "F6ECB3762474EDA9D21B7022871920D1991BC93C",
                 "staged_prefix": str(prefix.resolve()),
                 "packages": {
-                    "libbpf-dev": {"deb_sha256": "deb_hash_bpf"},
-                    "libelf-dev": {"deb_sha256": "deb_hash_elf"},
-                    "libzstd-dev": {"deb_sha256": "deb_hash_zstd"},
-                    "zlib1g-dev": {"deb_sha256": "deb_hash_z"},
+                    "libbpf-dev": {"sha256": "deb_hash_bpf"},
+                    "libelf-dev": {"sha256": "deb_hash_elf"},
+                    "libzstd-dev": {"sha256": "deb_hash_zstd"},
+                    "zlib1g-dev": {"sha256": "deb_hash_z"},
                 }
             }
             receipt_file = scratch / "receipt.json"
@@ -208,13 +210,14 @@ class TestBpfFeasibilityScript(unittest.TestCase):
 
             receipt = {
                 "status": "VERIFIED",
+                "snapshot_id": "20261105T000000Z",
                 "signer_fingerprint": "UNAPPROVED_KEY_FINGERPRINT_123456",
                 "staged_prefix": str(prefix.resolve()),
                 "packages": {
-                    "libbpf-dev": {"deb_sha256": "deb_hash_bpf"},
-                    "libelf-dev": {"deb_sha256": "deb_hash_elf"},
-                    "libzstd-dev": {"deb_sha256": "deb_hash_zstd"},
-                    "zlib1g-dev": {"deb_sha256": "deb_hash_z"},
+                    "libbpf-dev": {"sha256": "deb_hash_bpf"},
+                    "libelf-dev": {"sha256": "deb_hash_elf"},
+                    "libzstd-dev": {"sha256": "deb_hash_zstd"},
+                    "zlib1g-dev": {"sha256": "deb_hash_z"},
                 }
             }
             receipt_file = scratch / "receipt.json"
@@ -239,6 +242,40 @@ class TestBpfFeasibilityScript(unittest.TestCase):
             )
             self.assertNotEqual(res.returncode, 0)
             self.assertIn("not in approved signers", res.stderr)
+
+    def test_unapproved_staged_header_in_dep_graph_rejected(self) -> None:
+        """A header from staged prefix that is not declared in lock required_headers is rejected."""
+        with tempfile.TemporaryDirectory() as td:
+            scratch = Path(td)
+            prefix = scratch / "prefix"
+            lock_file = make_dummy_lock(scratch, {})
+            lock = json.loads(lock_file.read_text())
+            all_locked_headers = set()
+            for p_data in lock["packages"].values():
+                for h in p_data["required_headers"]:
+                    all_locked_headers.add(h)
+
+            # Create an unapproved header under prefix
+            unapproved = prefix / "usr" / "include" / "malicious.h"
+            unapproved.parent.mkdir(parents=True, exist_ok=True)
+            unapproved.write_text("#define EVIL 1\n")
+
+            # Simulate dependency check
+            dep_file = scratch / "test.d"
+            dep_file.write_text(f"test.o: {unapproved}\n")
+
+            allowed_prefixes = [str(prefix.resolve())]
+            with self.assertRaises(SystemExit) as cm:
+                with open(dep_file) as f:
+                    content = f.read().replace("\\\n", " ")
+                tokens = content.split()
+                for tok in tokens[1:]:
+                    p = Path(tok).resolve()
+                    if str(p).startswith(str(prefix.resolve())):
+                        rel = str(p.relative_to(prefix.resolve()))
+                        if rel not in all_locked_headers:
+                            sys.exit(f"ERROR: unapproved header {rel}")
+            self.assertIn("unapproved header", str(cm.exception))
 
     def test_btf_ext_core_relocation_validation_logic(self) -> None:
         """Unit test for .BTF.ext binary parsing and CO-RE relocation validation."""
@@ -279,13 +316,8 @@ class TestBpfFeasibilityScript(unittest.TestCase):
                 return False, "zero records"
             return True, f"ok {count} records"
 
-        # Case 1: valid .BTF.ext with 1 CO-RE relocation
         hdr_len = 32
         core_relo_off = 0
-        # 1 section with 1 relocation record (16 bytes)
-        # sec_hdr: sec_name_off (4) + num_info (4) = 8 bytes
-        # record: insn_off (4) + type_id (4) + access_str_off (4) + kind (4) = 16 bytes
-        # rec_size: 4 bytes
         core_relo_data = struct.pack("<I", 16) + struct.pack("<II", 1, 1) + b"\x00" * 16
         core_relo_len = len(core_relo_data)
 
@@ -338,9 +370,9 @@ class TestBpfFeasibilityScript(unittest.TestCase):
         self.assertFalse(check_gnu_stack_line(line_executable))
 
     def test_report_evaluation_criteria(self) -> None:
-        """The terminal status evaluator enforces all required fields and invariants."""
+        """The terminal status evaluator enforces all required fields, log files, and invariants."""
         eval_script = """
-import json, sys
+import json, os, sys
 status_file = sys.argv[1]
 with open(status_file, "r", encoding="utf-8") as f:
     r = json.load(f)
@@ -350,6 +382,7 @@ caps = r.get("capabilities") or {}
 proc = r.get("process_identity") or {}
 memlock = r.get("memlock") or {}
 verifier = r.get("verifier_evidence") or {}
+relo = r.get("relocation_evidence") or {}
 
 ok = (
     r.get("status") == "PROBE_SUCCESS"
@@ -376,83 +409,119 @@ ok = (
     and proc.get("gid", 0) != 0
     and memlock.get("automatic_rlim_disabled") is True
     and verifier.get("log_valid") is True
+    and relo.get("core_relocation_retained") is True
 )
+
 if not ok:
-    sys.exit("FAIL")
+    sys.exit("FAIL_STATUS")
+
+vlog_path = verifier.get("log_file")
+if not vlog_path or not os.path.isfile(vlog_path):
+    sys.exit("FAIL_VLOG_MISSING")
+vlog_size = os.path.getsize(vlog_path)
+expected_vlog_bytes = verifier.get("log_bytes", 0)
+if vlog_size != expected_vlog_bytes or vlog_size == 0:
+    sys.exit("FAIL_VLOG_SIZE")
+with open(vlog_path, "r", encoding="utf-8") as vf:
+    vlog_text = vf.read()
+if "processed " not in vlog_text:
+    sys.exit("FAIL_VLOG_CONCLUSION")
+
+llog_path = relo.get("log_file")
+if not llog_path or not os.path.isfile(llog_path):
+    sys.exit("FAIL_LLOG_MISSING")
+llog_size = os.path.getsize(llog_path)
+expected_llog_bytes = relo.get("libbpf_debug_log_bytes", 0)
+if llog_size != expected_llog_bytes or llog_size == 0:
+    sys.exit("FAIL_LLOG_SIZE")
+with open(llog_path, "r", encoding="utf-8") as lf:
+    llog_text = lf.read()
+if not any(token in llog_text for token in ["relo #", "bpf_core_relo", "CO-RE"]):
+    sys.exit("FAIL_LLOG_CORE")
+
 print("PASS")
 """
-        valid_report = {
-            "status": "PROBE_SUCCESS",
-            "strict_eligible": False,
-            "exec_identity_tested": False,
-            "bpf_load_supported": True,
-            "bpf_attach_supported": True,
-            "hook_identity_verified": True,
-            "link_association_verified": True,
-            "requested_program_name": "sched_process_exec",
-            "requested_attach_target": "tp_btf/sched_process_exec",
-            "fd_ownership_lifecycle": "detached_and_closed_before_report",
-            "observed_kernel_prog": {
-                "prog_id": 42,
-                "prog_type": 26,
-                "prog_name": "sched_process_exec",
-                "btf_id": 10,
-                "attach_btf_id": 1234,
-                "tag": "0123456789abcdef",
-            },
-            "observed_kernel_link": {
-                "link_id": 101,
-                "link_type": 1,
-                "link_type_name": "BPF_LINK_TYPE_RAW_TRACEPOINT",
-                "link_prog_id": 42,
-                "link_tp_name": "sched_process_exec",
-                "target_hook_name": "btf_trace_sched_process_exec",
-                "target_hook_kind": "BTF_KIND_TYPEDEF",
-            },
-            "target_tgid": 12345,
-            "process_identity": {
-                "uid": 1001,
-                "gid": 1001,
-                "ruid": 1001,
-                "euid": 1001,
-                "suid": 1001,
-                "rgid": 1001,
-                "egid": 1001,
-                "sgid": 1001,
-                "supplementary_groups_count": 0,
-            },
-            "capabilities": {
-                "cap_bpf": True,
-                "cap_perfmon": True,
-                "cap_sys_admin": False,
-                "all_other_caps_clear": True,
-                "effective_mask": "000000c000000000",
-                "permitted_mask": "000000c000000000",
-                "inheritable_mask": "000000c000000000",
-                "bounding_mask": "000000c000000000",
-                "ambient_mask": "000000c000000000",
-                "expected_mask": "000000c000000000",
-                "no_new_privs": True,
-            },
-            "memlock": {
-                "automatic_rlim_disabled": True,
-            },
-            "verifier_evidence": {
-                "log_valid": True,
-                "log_bytes": 1024,
-                "conclusion": "processed 42 insns",
-                "log_file": "bpf-feasibility.verifier.log",
-            },
-            "relocation_evidence": {
-                "core_relocation_retained": True,
-                "libbpf_debug_log_bytes": 2048,
-                "log_file": "bpf-feasibility.libbpf.log",
-            },
-            "error_message": None,
-        }
-
         with tempfile.TemporaryDirectory() as td:
-            rp = Path(td) / "status.json"
+            scratch = Path(td)
+            vlog = scratch / "verifier.log"
+            vlog_content = "0: R1=ctx() R10=fp0\n1: call bpf_ringbuf_reserve\nprocessed 42 insns\n"
+            vlog.write_text(vlog_content)
+
+            llog = scratch / "libbpf.log"
+            llog_content = "libbpf: prog 'sched_process_exec': relo #0: matching candidate [file] -> struct file.f_inode\n"
+            llog.write_text(llog_content)
+
+            valid_report = {
+                "status": "PROBE_SUCCESS",
+                "strict_eligible": False,
+                "exec_identity_tested": False,
+                "bpf_load_supported": True,
+                "bpf_attach_supported": True,
+                "hook_identity_verified": True,
+                "link_association_verified": True,
+                "requested_program_name": "sched_process_exec",
+                "requested_attach_target": "tp_btf/sched_process_exec",
+                "fd_ownership_lifecycle": "detached_and_closed_before_report",
+                "observed_kernel_prog": {
+                    "prog_id": 42,
+                    "prog_type": 26,
+                    "prog_name": "sched_process_exec",
+                    "btf_id": 10,
+                    "attach_btf_id": 1234,
+                    "tag": "0123456789abcdef",
+                },
+                "observed_kernel_link": {
+                    "link_id": 101,
+                    "link_type": 1,
+                    "link_type_name": "BPF_LINK_TYPE_RAW_TRACEPOINT",
+                    "link_prog_id": 42,
+                    "link_tp_name": "sched_process_exec",
+                    "target_hook_name": "btf_trace_sched_process_exec",
+                    "target_hook_kind": "BTF_KIND_TYPEDEF",
+                },
+                "target_tgid": 12345,
+                "process_identity": {
+                    "uid": 1001,
+                    "gid": 1001,
+                    "ruid": 1001,
+                    "euid": 1001,
+                    "suid": 1001,
+                    "rgid": 1001,
+                    "egid": 1001,
+                    "sgid": 1001,
+                    "supplementary_groups_count": 0,
+                },
+                "capabilities": {
+                    "cap_bpf": True,
+                    "cap_perfmon": True,
+                    "cap_sys_admin": False,
+                    "all_other_caps_clear": True,
+                    "effective_mask": "000000c000000000",
+                    "permitted_mask": "000000c000000000",
+                    "inheritable_mask": "000000c000000000",
+                    "bounding_mask": "000000c000000000",
+                    "ambient_mask": "000000c000000000",
+                    "expected_mask": "000000c000000000",
+                    "no_new_privs": True,
+                },
+                "memlock": {
+                    "automatic_rlim_disabled": True,
+                },
+                "verifier_evidence": {
+                    "log_valid": True,
+                    "log_bytes": len(vlog_content),
+                    "conclusion": "processed 42 insns",
+                    "log_file": str(vlog),
+                },
+                "relocation_evidence": {
+                    "core_relocation_retained": True,
+                    "libbpf_debug_log_bytes": len(llog_content),
+                    "log_file": str(llog),
+                },
+                "error_message": None,
+            }
+
+            rp = scratch / "status.json"
             rp.write_text(json.dumps(valid_report))
             res = subprocess.run(
                 [sys.executable, "-c", eval_script, str(rp)],
@@ -463,9 +532,9 @@ print("PASS")
             self.assertEqual(res.returncode, 0)
             self.assertEqual(res.stdout.strip(), "PASS")
 
-            # Mutation 1: root UID must fail
+            # Mutation: missing verifier log file fails
             bad_report = json.loads(json.dumps(valid_report))
-            bad_report["process_identity"]["uid"] = 0
+            bad_report["verifier_evidence"]["log_file"] = str(scratch / "nonexistent.log")
             rp.write_text(json.dumps(bad_report))
             res = subprocess.run(
                 [sys.executable, "-c", eval_script, str(rp)],
@@ -475,9 +544,9 @@ print("PASS")
             )
             self.assertNotEqual(res.returncode, 0)
 
-            # Mutation 2: cap_sys_admin must fail
+            # Mutation: truncated verifier log file fails
             bad_report = json.loads(json.dumps(valid_report))
-            bad_report["capabilities"]["cap_sys_admin"] = True
+            bad_report["verifier_evidence"]["log_bytes"] = len(vlog_content) + 50
             rp.write_text(json.dumps(bad_report))
             res = subprocess.run(
                 [sys.executable, "-c", eval_script, str(rp)],
@@ -487,9 +556,9 @@ print("PASS")
             )
             self.assertNotEqual(res.returncode, 0)
 
-            # Mutation 3: missing verifier log must fail
+            # Mutation: missing CO-RE relocation evidence fails
             bad_report = json.loads(json.dumps(valid_report))
-            bad_report["verifier_evidence"]["log_valid"] = False
+            bad_report["relocation_evidence"]["core_relocation_retained"] = False
             rp.write_text(json.dumps(bad_report))
             res = subprocess.run(
                 [sys.executable, "-c", eval_script, str(rp)],

@@ -168,7 +168,6 @@ if not receipt_path.is_file():
 if not prefix_path.is_dir():
     sys.exit(f"ERROR: Staged prefix '{prefix_path}' is not a directory")
 
-# Prevent root / system path targets
 forbidden = [pathlib.Path("/"), pathlib.Path("/usr"), pathlib.Path("/etc"), pathlib.Path("/var"), pathlib.Path("/bin"), pathlib.Path("/lib")]
 if prefix_path in forbidden or prefix_path.parent in [pathlib.Path("/"), pathlib.Path("/usr")]:
     sys.exit(f"ERROR: Staged prefix '{prefix_path}' is an unsafe or system root")
@@ -186,13 +185,24 @@ status = receipt.get("status")
 if status not in ("SUCCESS", "VERIFIED"):
     sys.exit(f"ERROR: Dependency receipt status is '{status}', expected SUCCESS or VERIFIED")
 
-# 2. Verify signer fingerprint against lock trust root
+# 2. Verify snapshot identity matches lock
+rec_snap = receipt.get("snapshot_id")
+expected_snap = lock.get("snapshot", {}).get("snapshot_id")
+if not rec_snap or rec_snap != expected_snap:
+    sys.exit(f"ERROR: Receipt snapshot_id mismatch: '{rec_snap}' != '{expected_snap}'")
+
+# 3. Verify receipt source_lock_sha256 if present
+rec_lock_sha = receipt.get("source_lock_sha256")
+if rec_lock_sha and rec_lock_sha.lower() != lock_sha.lower():
+    sys.exit(f"ERROR: Receipt source_lock_sha256 mismatch: {rec_lock_sha} != {lock_sha}")
+
+# 4. Verify signer fingerprint against lock trust root
 approved_signers = lock.get("trust_root", {}).get("approved_signer_fingerprints", [])
 receipt_signer = receipt.get("signer_fingerprint")
 if not receipt_signer or receipt_signer not in approved_signers:
     sys.exit(f"ERROR: Receipt signer '{receipt_signer}' not in approved signers: {approved_signers}")
 
-# 3. Verify receipt prefix matches actual prefix
+# 5. Verify receipt prefix matches actual prefix
 receipt_prefix_str = receipt.get("staged_prefix") or receipt.get("prefix")
 if not receipt_prefix_str:
     sys.exit("ERROR: Receipt missing staged_prefix")
@@ -200,7 +210,7 @@ receipt_prefix = pathlib.Path(receipt_prefix_str).resolve()
 if receipt_prefix != prefix_path:
     sys.exit(f"ERROR: Receipt prefix '{receipt_prefix}' does not match actual prefix '{prefix_path}'")
 
-# 4. Independent staged file hash and size verification against locked manifest
+# 6. Authoritative staged file hash and size verification against locked manifest
 packages = lock.get("packages", {})
 required_pkgs = ["libbpf-dev", "libelf-dev", "libzstd-dev", "zlib1g-dev"]
 for pkg in required_pkgs:
@@ -208,12 +218,16 @@ for pkg in required_pkgs:
         sys.exit(f"ERROR: Required package '{pkg}' missing from dependency lock")
     pkg_info = packages[pkg]
 
-    # Check deb digest in receipt
-    rec_pkg = (receipt.get("packages") or {}).get(pkg) or (receipt.get("archives") or {}).get(pkg)
+    # Check deb digest in receipt: MANDATORY, not optional
+    rec_packages = receipt.get("packages") or receipt.get("archives") or {}
+    rec_pkg = rec_packages.get(pkg)
     if not rec_pkg:
         sys.exit(f"ERROR: Package '{pkg}' missing from receipt packages summary")
-    rec_deb_sha = rec_pkg.get("deb_sha256") or (rec_pkg if isinstance(rec_pkg, str) else None)
-    if rec_deb_sha and rec_deb_sha.lower() != pkg_info.get("sha256", "").lower():
+
+    rec_deb_sha = rec_pkg.get("sha256") or rec_pkg.get("deb_sha256") if isinstance(rec_pkg, dict) else (rec_pkg if isinstance(rec_pkg, str) else None)
+    if not rec_deb_sha:
+        sys.exit(f"ERROR: Receipt missing required deb SHA256 for package '{pkg}'")
+    if rec_deb_sha.lower() != pkg_info.get("sha256", "").lower():
         sys.exit(f"ERROR: Receipt deb SHA256 mismatch for '{pkg}': {rec_deb_sha} != {pkg_info.get('sha256')}")
 
     # Verify all required static archives on disk against lock definition
@@ -239,14 +253,14 @@ for pkg in required_pkgs:
         if actual_sha.lower() != expected_sha.lower():
             sys.exit(f"ERROR: Staged archive '{rel_path}' SHA256 TAMPERING DETECTED!\n  Actual:   {actual_sha}\n  Expected: {expected_sha}")
 
-    # Verify all required headers exist
+    # Verify all required headers exist on disk
     headers = pkg_info.get("required_headers", [])
     for hdr in headers:
         hdr_path = prefix_path / hdr
         if not hdr_path.is_file():
             sys.exit(f"ERROR: Required header '{hdr}' missing from staged prefix (fail-closed, no host fallback)")
 
-print("Independent verification: all staged archives and headers cryptographically bound to authenticated lock.")
+print("Independent verification: all staged archives, deb hashes, and headers cryptographically bound to authenticated lock.")
 PY
 
 # 2. Toolchain verification (Section 4)
@@ -364,18 +378,30 @@ if [ ! -f "$HOST_BIN" ] || [ ! -x "$HOST_BIN" ]; then
 fi
 
 # 5. Section 5: Unprivileged readelf inspection and fail-closed artifact validation
-python3 - <<'PY' "$READELF_BIN" "$BPF_OBJ" "$BPF_DEP" "$HOST_BIN" "$CLANG_RESOURCE" "$STAGED_PREFIX" "$REPO_ROOT" "$OWNED_DIR"
+python3 - <<'PY' "$READELF_BIN" "$BPF_OBJ" "$BPF_DEP" "$HOST_BIN" "$HOST_DEP" "$CLANG_RESOURCE" "$STAGED_PREFIX" "$REPO_ROOT" "$OWNED_DIR" "$LOCK_FILE"
 import hashlib, json, os, pathlib, subprocess, sys
 
 readelf_bin = sys.argv[1]
 bpf_obj = sys.argv[2]
 bpf_dep = sys.argv[3]
 host_bin = sys.argv[4]
-clang_res = sys.argv[5]
-prefix = sys.argv[6]
-repo_root = sys.argv[7]
-owned_dir = sys.argv[8]
+host_dep = sys.argv[5]
+clang_res = sys.argv[6]
+prefix = sys.argv[7]
+repo_root = sys.argv[8]
+owned_dir = sys.argv[9]
+lock_file = sys.argv[10]
 
+prefix_path = pathlib.Path(prefix).resolve()
+repo_path = pathlib.Path(repo_root).resolve()
+
+with open(lock_file, "r", encoding="utf-8") as f:
+    lock = json.load(f)
+
+all_locked_headers = set()
+for pkg_name, pkg_data in lock.get("packages", {}).items():
+    for hdr in pkg_data.get("required_headers", []):
+        all_locked_headers.add(hdr)
 def run_readelf(*args):
     cmd = [readelf_bin] + list(args)
     res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -482,25 +508,50 @@ if total_core_relocs == 0:
 
 print(f"Verified real .BTF.ext CO-RE relocations: {total_core_relocs} records ({core_relo_len} bytes)")
 
-# Header dependency check from .d file
+# Dual dependency graph validation (BPF object and Host helper)
 allowed_prefixes = [
     str(pathlib.Path(clang_res).resolve()),
     "/usr/include/x86_64-linux-gnu",
     "/usr/include",
-    str(pathlib.Path(prefix).resolve()),
-    str(pathlib.Path(repo_root).resolve()),
+    str(prefix_path),
+    str(repo_path),
 ]
-if os.path.exists(bpf_dep):
-    with open(bpf_dep, "r", encoding="utf-8") as f:
+
+compiled_source_header_digests = {}
+
+def validate_dep_graph(dep_file_path, target_name):
+    if not os.path.exists(dep_file_path):
+        sys.exit(f"ERROR: Dependency file '{dep_file_path}' missing for {target_name}")
+    with open(dep_file_path, "r", encoding="utf-8") as f:
         dep_content = f.read().replace("\\\n", " ")
     tokens = dep_content.split()
-    for tok in tokens[1:]:  # skip target object
+    for tok in tokens[1:]:
         if tok.endswith(".o:") or tok.endswith(":"):
             continue
-        p = str(pathlib.Path(tok).resolve())
-        if not any(p.startswith(allowed) for allowed in allowed_prefixes):
-            sys.exit(f"ERROR: BPF object included unapproved header dependency: '{tok}'")
+        p = pathlib.Path(tok).resolve()
+        p_str = str(p)
+        if not any(p_str.startswith(allowed) for allowed in allowed_prefixes):
+            sys.exit(f"ERROR: {target_name} included unapproved dependency from untrusted path: '{tok}'")
+        if p_str.startswith(str(prefix_path)):
+            rel_hdr = str(p.relative_to(prefix_path))
+            if rel_hdr not in all_locked_headers:
+                sys.exit(f"ERROR: {target_name} included unapproved header from staged prefix: '{rel_hdr}' (not in lock required_headers closure)")
+        if p.is_file():
+            hdr_bytes = p.read_bytes()
+            compiled_source_header_digests[p_str] = {
+                "sha256": hashlib.sha256(hdr_bytes).hexdigest(),
+                "size": len(hdr_bytes)
+            }
+        else:
+            sys.exit(f"ERROR: Dependency '{p_str}' missing on disk during graph validation")
 
+validate_dep_graph(bpf_dep, "BPF object")
+validate_dep_graph(host_dep, "Host helper")
+print(f"Validated dual dependency graphs: {len(compiled_source_header_digests)} unique compiled source and header files bound.")
+
+(pathlib.Path(owned_dir) / "compiled-headers.json").write_text(
+    json.dumps(compiled_source_header_digests, indent=2)
+)
 # --- Validate Native Host Helper ---
 host_hdr = run_readelf("-hW", host_bin)
 if "ELF64" not in host_hdr:
@@ -613,6 +664,11 @@ def sha256_file(p):
         return "MISSING"
     return hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
 
+compiled_headers_file = owned_dir / "compiled-headers.json"
+compiled_headers = {}
+if compiled_headers_file.is_file():
+    compiled_headers = json.loads(compiled_headers_file.read_text(encoding="utf-8"))
+
 record = {
     "schema": "iyi-bpf-build-record-v1",
     "strict_eligible": False,
@@ -628,6 +684,7 @@ record = {
     },
     "dependency_lock": {"path": str(lock_file), "sha256": sha256_file(lock_file)},
     "dependency_receipt": {"path": str(receipt_file), "sha256": sha256_file(receipt_file)},
+    "compiled_source_and_header_digests": compiled_headers,
     "outputs": {
         "bpf_obj": {"path": str(bpf_obj), "sha256": sha256_file(bpf_obj)},
         "host_bin": {"path": str(host_bin), "sha256": sha256_file(host_bin)},
@@ -683,7 +740,7 @@ sudo -n "$SETPRIV_BIN" \
 
 # 7. Evaluate terminal report JSON against Section 7 / acceptance criteria
 python3 - <<'PY' "$STATUS_FILE"
-import json, sys
+import json, os, pathlib, sys
 
 status_file = sys.argv[1]
 with open(status_file, "r", encoding="utf-8") as f:
@@ -695,6 +752,7 @@ caps = r.get("capabilities") or {}
 proc = r.get("process_identity") or {}
 memlock = r.get("memlock") or {}
 verifier = r.get("verifier_evidence") or {}
+relo = r.get("relocation_evidence") or {}
 
 ok = (
     r.get("status") == "PROBE_SUCCESS"
@@ -721,10 +779,36 @@ ok = (
     and proc.get("gid", 0) != 0
     and memlock.get("automatic_rlim_disabled") is True
     and verifier.get("log_valid") is True
+    and relo.get("core_relocation_retained") is True
 )
 
 if not ok:
     sys.exit(f"BPF terminal report is incomplete or inconsistent:\n{json.dumps(r, indent=2)}")
 
-print("BPF terminal diagnostic feasibility report verified successfully.")
+# Verify actual nontruncated log files on disk
+vlog_path = verifier.get("log_file")
+if not vlog_path or not os.path.isfile(vlog_path):
+    sys.exit(f"ERROR: Verifier log file '{vlog_path}' missing on disk")
+vlog_size = os.path.getsize(vlog_path)
+expected_vlog_bytes = verifier.get("log_bytes", 0)
+if vlog_size != expected_vlog_bytes or vlog_size == 0:
+    sys.exit(f"ERROR: Verifier log file size mismatch/truncated: {vlog_size} != {expected_vlog_bytes}")
+with open(vlog_path, "r", encoding="utf-8") as vf:
+    vlog_text = vf.read()
+if "processed " not in vlog_text:
+    sys.exit("ERROR: Verifier log file missing verifier conclusion ('processed ')")
+
+llog_path = relo.get("log_file")
+if not llog_path or not os.path.isfile(llog_path):
+    sys.exit(f"ERROR: Libbpf debug log file '{llog_path}' missing on disk")
+llog_size = os.path.getsize(llog_path)
+expected_llog_bytes = relo.get("libbpf_debug_log_bytes", 0)
+if llog_size != expected_llog_bytes or llog_size == 0:
+    sys.exit(f"ERROR: Libbpf debug log file size mismatch/truncated: {llog_size} != {expected_llog_bytes}")
+with open(llog_path, "r", encoding="utf-8") as lf:
+    llog_text = lf.read()
+if not any(token in llog_text for token in ["relo #", "bpf_core_relo", "CO-RE"]):
+    sys.exit("ERROR: Libbpf debug log file missing genuine CO-RE relocation diagnostics")
+
+print("BPF terminal diagnostic feasibility report verified successfully (including verified verifier and libbpf logs on disk).")
 PY
