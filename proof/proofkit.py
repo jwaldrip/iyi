@@ -3506,22 +3506,29 @@ def write_origin_records(
         "overall_status": "PASS" if all_advanced and entries else "NOT-EXECUTED",
     }
     origin_path = os.path.join(attempt_dir, "origin_records.json")
+    if os.path.islink(origin_path):
+        raise IdentityError("ORIGIN-RECORDS-SYMLINK", f"origin_records.json is a forbidden symlink: {origin_path}")
     if os.path.exists(origin_path):
         return origin_path
     tmp_path = os.path.join(attempt_dir, f".origin_records_{secrets.token_hex(8)}.tmp")
-    with open(tmp_path, "x", encoding="utf-8") as out_file:
-        json.dump(origin_doc, out_file, indent=2, sort_keys=True)
-        out_file.write("\n")
+    fd = os.open(tmp_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     try:
-        os.replace(tmp_path, origin_path)
-    except OSError:
-        if os.path.exists(tmp_path):
-            try:
-                os.remove(tmp_path)
-            except OSError:
-                pass
-        if not os.path.exists(origin_path):
-            raise
+        with open(fd, "w", encoding="utf-8", closefd=True) as out_file:
+            json.dump(origin_doc, out_file, indent=2, sort_keys=True)
+            out_file.write("\n")
+            out_file.flush()
+            os.fsync(out_file.fileno())
+        try:
+            os.link(tmp_path, origin_path)
+        except FileExistsError:
+            if os.path.islink(origin_path):
+                raise IdentityError("ORIGIN-RECORDS-SYMLINK", f"concurrent origin_records.json is a forbidden symlink: {origin_path}")
+            return origin_path
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
     return origin_path
 
 

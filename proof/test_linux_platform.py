@@ -790,5 +790,57 @@ class TestOriginRecordsAdversarialHardlink(unittest.TestCase):
             self.assertEqual(unit_info_after["status"], "FAIL")
             self.assertTrue(any("did not advance atime" in r for r in reasons_after))
 
+    def test_write_origin_records_rejects_adversarial_symlink(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            attempt_dir = os.path.join(tmpdir, "attempt")
+            os.makedirs(attempt_dir)
+            target = os.path.join(tmpdir, "external_target")
+            with open(target, "w") as f:
+                f.write("target\n")
+            origin_symlink = os.path.join(attempt_dir, "origin_records.json")
+            os.symlink(target, origin_symlink)
+
+            ledger_file = os.path.join(attempt_dir, "ledger.jsonl")
+            with open(ledger_file, "w") as f:
+                f.write("{}\n")
+
+            with self.assertRaises(IdentityError) as ctx:
+                write_origin_records(
+                    attempt_dir,
+                    driver="demo",
+                    attempt=1,
+                    chain_id="0" * 32,
+                    ledger_path=ledger_file,
+                    stat_targets=[],
+                    stat_results=[],
+                )
+            self.assertEqual(ctx.exception.reason, "ORIGIN-RECORDS-SYMLINK")
+
+    def test_write_origin_records_non_overwriting_under_preexisting_target(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            attempt_dir = os.path.join(tmpdir, "attempt")
+            os.makedirs(attempt_dir)
+            origin_path = os.path.join(attempt_dir, "origin_records.json")
+            with open(origin_path, "w") as f:
+                f.write('{"initial":"preexisting"}\n')
+
+            ledger_file = os.path.join(attempt_dir, "ledger.jsonl")
+            with open(ledger_file, "w") as f:
+                f.write("{}\n")
+
+            res_path = write_origin_records(
+                attempt_dir,
+                driver="demo",
+                attempt=1,
+                chain_id="0" * 32,
+                ledger_path=ledger_file,
+                stat_targets=[],
+                stat_results=[],
+            )
+            self.assertEqual(res_path, origin_path)
+            with open(origin_path, "r") as f:
+                content = f.read()
+            self.assertEqual(content, '{"initial":"preexisting"}\n')
+
 if __name__ == "__main__":
     unittest.main()
