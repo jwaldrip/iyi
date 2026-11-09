@@ -103,16 +103,26 @@ def make_dummy_lock(scratch: Path, archive_hashes: dict[str, str], header_hashes
     return p
 
 
-def build_mock_bpf_elf(scratch: Path, btf_type_len: int = 120, corrupt_relo: str | None = None, filename: str = "mock_canary.bpf.o", scenario: str | None = None, btf_version: int = 1, btf_hdr_len: int = 24, ext_version: int = 1, ext_hdr_len: int = 32, btf_raw_override: bytes | None = None, ext_raw_override: bytes | None = None) -> Path:
+def build_mock_bpf_elf(scratch: Path, btf_type_len: int = 120, corrupt_relo: str | None = None, filename: str = "mock_canary.bpf.o", scenario: str | None = None, btf_version: int = 1, btf_hdr_len: int = 24, ext_version: int = 1, ext_hdr_len: int = 32, btf_raw_override: bytes | None = None, ext_raw_override: bytes | None = None, e3_symbols: bool = False, symbol_mutation: str | None = None) -> Path:
     """Build a valid ELF64 little-endian BPF object with real .BTF, .BTF.ext, and .symtab sections."""
     shstrtab, sh_offsets = make_strtab([
         ".shstrtab", "tp_btf/sched_process_exec", ".maps", "license",
         ".BTF", ".BTF.ext", ".symtab", ".strtab"
     ])
 
-    strtab, strtab_offsets = make_strtab(["sched_process_exec"])
-    sched_sym_name_off = strtab_offsets["sched_process_exec"]
-    symtab = b"\x00" * 24 + struct.pack("<IBBHQQ", sched_sym_name_off, 0x12, 0, 2, 0, 128)
+    names = ["e3_sched_process_exec", "e3_state", "e3_events"] if e3_symbols else ["sched_process_exec"]
+    strtab, strtab_offsets = make_strtab(names)
+    symtab = b"\x00" * 24 + b"".join(
+        struct.pack("<IBBHQQ", strtab_offsets[name],
+                    0x11 if index == 0 and symbol_mutation == "program_object" else
+                    0x12 if index == 0 or (index == 1 and symbol_mutation == "map_function") else 0x11,
+                    0, (0 if (index == 1 and symbol_mutation == "undefined") or
+                              (index == 0 and symbol_mutation == "program_undefined") else
+                        3 if index == 0 and symbol_mutation == "program_section" else
+                        2 if index == 0 or (index == 1 and symbol_mutation == "wrong_section") else 3),
+                    0 if index != 2 else 32, 128 if index == 0 else 32 if index == 1 else 16)
+        for index, name in enumerate(names)
+    )
 
     if scenario == "cyclic_typedef":
         btf_strtab, btf_offsets = make_strtab(["tp_btf/sched_process_exec", "type_a", "type_b", "0:0"])
@@ -240,7 +250,7 @@ def build_mock_bpf_elf(scratch: Path, btf_type_len: int = 120, corrupt_relo: str
         (b"", 0, 0, 0, 0, 0),
         (shstrtab, sh_offsets[".shstrtab"], 3, 0, 0, 1),
         (b"\x95\x00\x00\x00\x00\x00\x00\x00" * 16, sh_offsets["tp_btf/sched_process_exec"], 1, 0, 0, 8),
-        (b"\x00" * 32, sh_offsets[".maps"], 1, 0, 0, 4),
+        (b"\x00" * (48 if e3_symbols else 32), sh_offsets[".maps"], 1, 0, 0, 8),
         (b"Dual MIT/GPL\x00", sh_offsets["license"], 1, 0, 0, 1),
         (btf_sec_data, sh_offsets[".BTF"], 1, 0, 0, 4),
         (btf_ext_sec_data, sh_offsets[".BTF.ext"], 1, 0, 0, 4),
@@ -278,7 +288,123 @@ def build_mock_bpf_elf(scratch: Path, btf_type_len: int = 120, corrupt_relo: str
     return out_file
 
 
-def build_mock_host_elf(scratch: Path, needed_name: str = "libc.so.6", stack_flags: int = 6, filename: str = "mock_canary_host") -> Path:
+def e3_accessor_fixture(scratch: Path, omit: tuple[str, str, int] | None = None, mutation: str | None = None) -> Path:
+    """Synthetic BTF with independently removable E3 accessor records."""
+    structs = {
+        "task_struct": ["pid", "tgid", "start_boottime", "thread_pid", "nsproxy", "mm"],
+        "pid": ["level", "numbers"], "upid": ["ns"],
+        "pid_namespace": ["ns"], "mnt_namespace": ["ns"], "ns_common": ["inum"],
+        "nsproxy": ["mnt_ns"], "linux_binprm": ["file"],
+        "mm_struct": ["exe_file"], "file": ["f_inode", "f_path"],
+        "path": ["mnt"], "inode": ["i_ino", "i_size", "i_mode", "i_sb"],
+        "super_block": ["s_dev"], "mount": ["mnt", "mnt_id"], "vfsmount": ["mnt_root"],
+    }
+    nested = {("pid_namespace", "ns"): "ns_common",
+              ("mnt_namespace", "ns"): "ns_common", ("file", "f_path"): "path"}
+    ids = {name: index + 5 for index, name in enumerate(structs)}
+    records = []
+    for root, fields in structs.items():
+        if root in ("ns_common", "path", "vfsmount"):
+            continue
+        for index, field in enumerate(fields):
+            chain = field + (".inum" if (root, field) in (("pid_namespace", "ns"), ("mnt_namespace", "ns")) else
+                             ".mnt" if (root, field) == ("file", "f_path") else "")
+            access = f"0:{index}" + (":0" if "." in chain else "")
+            records.append((root, chain, 0, access))
+    records.append(("upid", "", 9, "0"))
+    state_fields = ["target_cgroup_id", "attempts", "submitted", "loss", "extraction_errors", "overflow"]
+    names = ["int", "u32", "u64", "u16", "tp_btf/sched_process_exec", ".maps",
+             "e3_bpf_state", "e3_state", "e3_events", "type", "max_entries", "key", "value", *structs, *state_fields]
+    names += [field for fields in structs.values() for field in fields]
+    names += [record[3] for record in records]
+    strings, offsets = make_strtab(list(dict.fromkeys(names)))
+    types = b""
+    for name, size, signed in (("int", 4, True), ("u32", 4, False), ("u64", 8, False), ("u16", 2, False)):
+        types += struct.pack("<IIII", offsets[name], 1 << 24, size, size * 8 | (int(signed) << 24))
+    nextid = max(ids.values()) + 1
+    ptr_ids = {}
+    for target in structs:
+        ptr_ids[target] = nextid
+        nextid += 1
+    arr_upid = nextid
+    nextid += 1
+    scalar_fields = {("task_struct", "pid"): 1, ("task_struct", "tgid"): 1,
+                     ("task_struct", "start_boottime"): 3, ("pid", "level"): 2,
+                     ("ns_common", "inum"): 2, ("inode", "i_ino"): 3,
+                     ("inode", "i_size"): 3, ("inode", "i_mode"): 4,
+                     ("super_block", "s_dev"): 2, ("mount", "mnt_id"): 1}
+    # A separate signed 64-bit integer is appended after pointers and array.
+    signed64 = nextid
+    nextid += 1
+    scalar_fields[("inode", "i_size")] = signed64
+    pointers = {("task_struct", "thread_pid"): "pid", ("task_struct", "nsproxy"): "nsproxy",
+                ("task_struct", "mm"): "mm_struct", ("upid", "ns"): "pid_namespace",
+                ("nsproxy", "mnt_ns"): "mnt_namespace", ("linux_binprm", "file"): "file",
+                ("mm_struct", "exe_file"): "file", ("file", "f_inode"): "inode",
+                ("path", "mnt"): "vfsmount", ("inode", "i_sb"): "super_block"}
+    for root, fields in structs.items():
+        types += struct.pack("<III", offsets[root], (4 << 24) | len(fields), 128)
+        for index, field in enumerate(fields):
+            key = (root, field)
+            member_type = ids[nested[key]] if key in nested else (
+                ptr_ids[pointers[key]] if key in pointers else scalar_fields.get(key, 1))
+            if key == ("pid", "numbers"): member_type = arr_upid
+            if key == ("mount", "mnt"): member_type = ids["vfsmount"]
+            if key == ("task_struct", "pid") and mutation == "dangling": member_type = 99999
+            if key == ("task_struct", "pid") and mutation == "width": member_type = 3
+            if key == ("task_struct", "pid") and mutation == "sign": member_type = 2
+            if key == ("pid", "numbers") and mutation == "array": member_type = 1
+            if key == ("task_struct", "mm") and mutation == "pointer": member_type = 1
+            types += struct.pack("<III", offsets[field], member_type, index * 64)
+    for target in structs:
+        types += struct.pack("<III", 0, 2 << 24, ids[target])
+    types += struct.pack("<IIIIII", 0, 3 << 24, 0, ids["upid"], 1, 1)
+    types += struct.pack("<IIII", offsets["int"], 1 << 24, 8, (1 << 24) | 64)
+    def emit(kind, name, third, extra=b""):
+        nonlocal types, nextid
+        result = nextid
+        nextid += 1
+        types += struct.pack("<III", offsets.get(name, 0), kind << 24, third) + extra
+        return result
+    def ptr(tid): return emit(2, "", tid)
+    def array(count):
+        return emit(3, "", 0, struct.pack("<III", 1, 1, count))
+    a_type = ptr(array(2)); a_max = ptr(array(1)); r_type = ptr(array(27))
+    r_max = ptr(array(262145 if mutation == "capacity" else 262144))
+    key_type = ptr(1 if mutation == "map_key" else 2)
+    state = nextid
+    nextid += 1
+    types += struct.pack("<III", offsets["e3_bpf_state"], (4 << 24) | len(state_fields),
+                         40 if mutation == "map_value" else 48)
+    for index, field in enumerate(state_fields):
+        types += struct.pack("<III", offsets[field], 1 if mutation == "map_value_field" and index == 0 else 3, index * 64)
+    value_type = ptr(state)
+    def map_struct(fields):
+        nonlocal types, nextid
+        tid = nextid; nextid += 1
+        types += struct.pack("<III", 0, (4 << 24) | len(fields), len(fields) * 8)
+        for index, (name, member) in enumerate(fields):
+            types += struct.pack("<III", offsets[name], member, index * 64)
+        return tid
+    a_map = map_struct([("type", a_type), ("max_entries", a_max), ("key", key_type), ("value", value_type)])
+    r_map = map_struct([("type", r_type), ("max_entries", r_max)])
+    a_var = emit(14, "e3_state", a_map, struct.pack("<I", 1))
+    r_var = emit(14, "e3_events", r_map, struct.pack("<I", 1))
+    if mutation != "missing_datasec":
+        types += struct.pack("<III", offsets[".maps"], (15 << 24) | 2, 0)
+        types += struct.pack("<IIIIII", a_var, 0, 32, r_var, 32, 16)
+    btf = struct.pack("<HBBIIIII", 0xEB9F, 1, 0, 24, 0, len(types), len(types), len(strings)) + types + strings
+    selected = [(root, access, kind) for root, chain, kind, access in records
+                if (root, chain, kind) != omit]
+    core = struct.pack("<III", 16, offsets["tp_btf/sched_process_exec"], len(selected))
+    core += b"".join(struct.pack("<IIII", 0, ids[root], offsets[access], kind)
+                     for root, access, kind in selected)
+    ext = struct.pack("<HBBIIIIIII", 0xEB9F, 1, 0, 32, 0, 0, 0, 0, 0, len(core)) + core
+    return build_mock_bpf_elf(scratch, btf_raw_override=btf, ext_raw_override=ext, e3_symbols=True,
+                              symbol_mutation=mutation)
+
+
+def build_mock_host_elf(scratch: Path, needed_name: str = "libc.so.6", stack_flags: int = 6, filename: str = "mock_canary_host", pure_symbols: bool = False) -> Path:
     """Build a valid ELF64 x86-64 host executable with mock .dynamic, .interp, and defined symbols."""
     shstrtab, sh_offsets = make_strtab([
         ".shstrtab", ".interp", ".dynamic", ".dynstr", ".symtab", ".strtab", ".text"
@@ -288,6 +414,8 @@ def build_mock_host_elf(scratch: Path, needed_name: str = "libc.so.6", stack_fla
     needed_off = dyn_offsets[needed_name]
 
     req_syms = ["bpf_object__open_file", "bpf_object__load", "elf_begin", "deflate", "ZSTD_decompress"]
+    if pure_symbols:
+        req_syms = ["e3_bpf_capture_record", "e3_bpf_capture_finish"]
     strtab, str_offsets = make_strtab(req_syms)
 
     sym_records = [b"\x00" * 24]
@@ -358,6 +486,106 @@ def build_mock_host_elf(scratch: Path, needed_name: str = "libc.so.6", stack_fla
 
 
 class TestBpfFeasibilityScript(unittest.TestCase):
+    def test_e3_accessor_gate_requires_every_named_relocation(self):
+        readelf = shutil.which("readelf") or shutil.which("llvm-readelf") or "/usr/bin/readelf"
+        required = [
+            ("task_struct", field, 0) for field in
+            ("pid", "tgid", "start_boottime", "thread_pid", "nsproxy", "mm")
+        ] + [
+            ("pid", "level", 0), ("pid", "numbers", 0), ("upid", "", 9),
+            ("upid", "ns", 0), ("pid_namespace", "ns.inum", 0),
+            ("nsproxy", "mnt_ns", 0), ("mnt_namespace", "ns.inum", 0),
+            ("linux_binprm", "file", 0), ("mm_struct", "exe_file", 0),
+            ("file", "f_inode", 0), ("file", "f_path.mnt", 0),
+            ("inode", "i_ino", 0), ("inode", "i_size", 0), ("inode", "i_mode", 0),
+            ("inode", "i_sb", 0), ("super_block", "s_dev", 0),
+            ("mount", "mnt", 0), ("mount", "mnt_id", 0),
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            prefix = root / "prefix"
+            prefix.mkdir()
+            lock = make_dummy_lock(root, {})
+            dep = root / "e3.d"
+            src = str(REPO_ROOT / "proof/e3_bpf_exec.bpf.c").replace(" ", r"\ ")
+            dep.write_text(f"out: {src}\n")
+            for missing in [None, *required]:
+                with self.subTest(missing=missing):
+                    obj = e3_accessor_fixture(root, missing)
+                    result = subprocess.run(
+                        ["bash", str(SCRIPT_PATH), "--validate-bpf-obj", readelf,
+                         str(obj), str(dep), "/usr/lib/clang/18", str(prefix),
+                         str(REPO_ROOT), str(lock), str(root), "e3"],
+                        capture_output=True, text=True)
+                    if missing is None:
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn("E3 required CO-RE accessors missing", result.stderr)
+            for mutation in ("dangling", "width", "sign", "pointer", "array", "capacity",
+                             "map_key", "map_value", "map_value_field", "missing_datasec",
+                             "undefined", "wrong_section", "map_function",
+                             "program_undefined", "program_object", "program_section"):
+                with self.subTest(mutation=mutation):
+                    obj = e3_accessor_fixture(root, mutation=mutation)
+                    result = subprocess.run(
+                        ["bash", str(SCRIPT_PATH), "--validate-bpf-obj", readelf,
+                         str(obj), str(dep), "/usr/lib/clang/18", str(prefix),
+                         str(REPO_ROOT), str(lock), str(root), "e3"],
+                        capture_output=True, text=True)
+                    self.assertNotEqual(result.returncode, 0, mutation)
+                    self.assertIn("ERROR:", result.stderr)
+
+    def test_e3_pure_executable_elf_is_independently_checked(self):
+        readelf = shutil.which("readelf") or shutil.which("llvm-readelf") or "/usr/bin/readelf"
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            prefix = root / "prefix"
+            prefix.mkdir()
+            lock = make_dummy_lock(root, {})
+            dep = root / "test.d"
+            source = str(REPO_ROOT / "proof/e3_bpf_test.c").replace(" ", r"\ ")
+            dep.write_text(f"out: {source}\n")
+            (root / "bpf-compiled-headers.json").write_text(json.dumps({
+                str(REPO_ROOT / "proof/e3_bpf_exec.bpf.c"): {"sha256": "0" * 64, "size": 1}
+            }))
+            for needed, stack, accepted in (("libc.so.6", 6, True),
+                                            ("libc.so.6", 7, False),
+                                            ("libc.so.6.extra", 6, False)):
+                host = build_mock_host_elf(root, needed_name=needed, stack_flags=stack, pure_symbols=True)
+                result = subprocess.run(
+                    ["bash", str(SCRIPT_PATH), "--validate-host-elf", readelf,
+                     str(host), str(dep), "/usr/lib/clang/18", str(prefix),
+                     str(REPO_ROOT), str(root), str(lock), "e3_bpf_test_pure"],
+                    capture_output=True, text=True)
+                self.assertEqual(result.returncode == 0, accepted, result.stderr)
+
+    def test_e3_rejects_modified_baseline_helper_before_staging(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            files = ["proof/run_bpf_feasibility.sh", "proof/bpf_dependencies.py",
+                     "proof/bpf_dependencies.lock.json", "proof/bpf_runner_baseline.py",
+                     "proof/bpf_baseline_process.py", "proof/bpf_tool_baseline.json",
+                     "proof/bpf_gcc_include_baseline.json", "proof/test_bpf_dependencies.py",
+                     "proof/test_bpf_runner_baseline.py", "proof/test_bpf_build_script.py",
+                     ".github/workflows/pr147-e3-bpf-build.yml"]
+            for rel in files:
+                dest = root / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(REPO_ROOT / rel, dest)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            subprocess.run(["git", "-C", str(root), "add", "--", *files], check=True)
+            subprocess.run(["git", "-C", str(root), "-c", "user.name=fixture",
+                            "-c", "user.email=fixture@example.invalid",
+                            "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
+                            "commit", "-qm", "fixture"], check=True)
+            helper = root / "proof/bpf_baseline_process.py"
+            helper.write_bytes(helper.read_bytes() + b"\n# modified\n")
+            result = subprocess.run(["bash", str(root / "proof/run_bpf_feasibility.sh"),
+                                     "--e3-build-only"], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("recipe input differs from checkout: proof/bpf_baseline_process.py", result.stderr)
+
     def test_help_flag(self) -> None:
         """--help exits 0 with usage instructions."""
         res = subprocess.run(

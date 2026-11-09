@@ -1,0 +1,71 @@
+name: PR147 E3 BPF build only
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'proof/e3_bpf_*'
+      - 'proof/run_bpf_feasibility.sh'
+      - 'proof/test_bpf_build_script.py'
+      - 'proof/bpf_dependencies*'
+      - 'proof/bpf_baseline_process.py'
+      - 'proof/bpf_runner_baseline.py'
+      - 'proof/bpf_*baseline.json'
+      - '.github/workflows/pr147-e3-bpf-build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  e3-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check reviewed runner image
+        run: |
+          evidence="$RUNNER_TEMP/e3-bpf-evidence"
+          mkdir -m 0700 "$evidence"
+          printf 'ImageOS=%s\nImageVersion=%s\n' "${ImageOS:-}" "${ImageVersion:-}" >"$evidence/image.txt"
+          test "${ImageOS:-}" = ubuntu24
+          test "${ImageVersion:-}" = 20261101.360.1
+
+      - name: Run offline fixtures and build E3 witness
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/e3-bpf-evidence"
+          for suite in test_bpf_dependencies test_bpf_runner_baseline test_bpf_build_script; do
+            if /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C HOME="$HOME" \
+                ImageOS="$ImageOS" ImageVersion="$ImageVersion" \
+                /usr/bin/python3 -B "proof/$suite.py" >"$evidence/$suite.log" 2>&1; then
+              printf '0\n' >"$evidence/$suite.exit"
+            else
+              rc=$?
+              printf '%s\n' "$rc" >"$evidence/$suite.exit"
+              cat "$evidence/$suite.log"
+              exit "$rc"
+            fi
+          done
+          if bash -x proof/run_bpf_feasibility.sh --e3-build-only \
+              --owned-dir "$evidence/owned" >"$evidence/build.log" 2>&1; then
+            printf '0\n' >"$evidence/build.exit"
+          else
+            rc=$?
+            printf '%s\n' "$rc" >"$evidence/build.exit"
+            cat "$evidence/build.log"
+            exit "$rc"
+          fi
+          cat "$evidence/build.log"
+
+      - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        if: always()
+        with:
+          name: pr147-e3-bpf-build-only-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/e3-bpf-evidence/
+          if-no-files-found: error
