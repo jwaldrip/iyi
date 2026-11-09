@@ -42,7 +42,9 @@ from proof.hosted_contracts import (
     ResourcePolicy,
     ReviewReferenceMismatch,
     ReviewUnauthenticatedError,
-    SourceGroundingAuthority,
+    LaunchOwnershipReceipt,
+    StructuralSourceGrounding,
+    TeardownDisposition,
     StrictHaltRefusal,
     StructuralIndependentReviewRef,
     TypeValidationError,
@@ -75,6 +77,7 @@ from proof.hosted_contracts import (
     validate_production_cage_policy,
     validate_production_resource_policy,
     validate_qualification_ground_truth,
+    validate_qualification_manifest_digests,
     validate_strict_pairs_map,
     validate_timestamp_and_epoch,
     validate_validation_ref_to_subject,
@@ -544,7 +547,7 @@ class TestDataModels(unittest.TestCase):
             "chain_id": "chain-123",
             "compiler_sha256": "d" * 64,
             "effective_policy": {"timeout": 2100},
-            "teardown_disposition": {"stopped": True, "removed": True},
+            "teardown_disposition": {"containers_stopped": True, "containers_removed": True, "clean_exit": True, "unresolved_processes": 0},
             "evidence_digests": {"report.tar.gz": "e" * 64},
             "timestamp": "2026-11-09T00:01:00Z",
         }
@@ -576,7 +579,7 @@ class TestQualificationGroundTruth(unittest.TestCase):
         self.corpus_144 = tuple(sorted(self.orig_142 + self.adds_2))
         self.sibs_117 = tuple(f"sibling_{i:03d}" for i in range(117))
         self.run3_inv = tuple(f"run3_driver_{i:03d}" for i in range(30))
-        self.authority = SourceGroundingAuthority(
+        self.grounding = StructuralSourceGrounding(
             baseline_commit="a" * 40,
             expected_142_selectors=self.orig_142,
             expected_2_additions=self.adds_2,
@@ -585,14 +588,14 @@ class TestQualificationGroundTruth(unittest.TestCase):
         )
 
     def test_build_and_validate_ground_truth_success(self):
-        qr = build_grounded_qualification_requirements(self.authority)
+        qr = build_grounded_qualification_requirements(self.grounding)
         self.assertEqual(qr.rg2_evaluated, 144)
         self.assertEqual(qr.run2_samples, 28)
         self.assertEqual(qr.run2_std_exercises, 116)
         self.assertEqual(qr.run2_total_corpus, 144)
         validate_qualification_ground_truth(
             qr,
-            authority=self.authority,
+            grounding=self.grounding,
             candidate_original_142_selectors=self.orig_142,
             candidate_additions_2_selectors=self.adds_2,
             candidate_complete_144_corpus=self.corpus_144,
@@ -600,10 +603,10 @@ class TestQualificationGroundTruth(unittest.TestCase):
             candidate_run3_inventory_manifest=self.run3_inv,
         )
 
-    def test_authority_rejects_duplicate_in_original_selectors(self):
+    def test_grounding_rejects_duplicate_in_original_selectors(self):
         bad_orig = self.orig_142[:-1] + (self.orig_142[0],)
         with self.assertRaises(DuplicateKeyError):
-            SourceGroundingAuthority(
+            StructuralSourceGrounding(
                 baseline_commit="a" * 40,
                 expected_142_selectors=bad_orig,
                 expected_2_additions=self.adds_2,
@@ -611,10 +614,10 @@ class TestQualificationGroundTruth(unittest.TestCase):
                 expected_run3_inventory=self.run3_inv,
             )
 
-    def test_authority_rejects_duplicate_in_additions(self):
+    def test_grounding_rejects_duplicate_in_additions(self):
         bad_adds = ("add_001", "add_001")
         with self.assertRaises(DuplicateKeyError):
-            SourceGroundingAuthority(
+            StructuralSourceGrounding(
                 baseline_commit="a" * 40,
                 expected_142_selectors=self.orig_142,
                 expected_2_additions=bad_adds,
@@ -622,10 +625,10 @@ class TestQualificationGroundTruth(unittest.TestCase):
                 expected_run3_inventory=self.run3_inv,
             )
 
-    def test_authority_rejects_wrong_original_count(self):
+    def test_grounding_rejects_wrong_original_count(self):
         bad_orig = self.orig_142[:-1]  # 141
         with self.assertRaises(TypeValidationError):
-            SourceGroundingAuthority(
+            StructuralSourceGrounding(
                 baseline_commit="a" * 40,
                 expected_142_selectors=bad_orig,
                 expected_2_additions=self.adds_2,
@@ -633,10 +636,10 @@ class TestQualificationGroundTruth(unittest.TestCase):
                 expected_run3_inventory=self.run3_inv,
             )
 
-    def test_authority_rejects_overlap_between_originals_and_additions(self):
+    def test_grounding_rejects_overlap_between_originals_and_additions(self):
         bad_adds = (self.orig_142[0], "new_add_002")
         with self.assertRaises(ReferenceIntegrityError):
-            SourceGroundingAuthority(
+            StructuralSourceGrounding(
                 baseline_commit="a" * 40,
                 expected_142_selectors=self.orig_142,
                 expected_2_additions=bad_adds,
@@ -644,10 +647,10 @@ class TestQualificationGroundTruth(unittest.TestCase):
                 expected_run3_inventory=self.run3_inv,
             )
 
-    def test_authority_rejects_wrong_sibling_count(self):
+    def test_grounding_rejects_wrong_sibling_count(self):
         bad_sibs = self.sibs_117[:-1]  # 116
         with self.assertRaises(TypeValidationError):
-            SourceGroundingAuthority(
+            StructuralSourceGrounding(
                 baseline_commit="a" * 40,
                 expected_142_selectors=self.orig_142,
                 expected_2_additions=self.adds_2,
@@ -655,10 +658,10 @@ class TestQualificationGroundTruth(unittest.TestCase):
                 expected_run3_inventory=self.run3_inv,
             )
 
-    def test_authority_rejects_run3_inventory_below_minimum(self):
+    def test_grounding_rejects_run3_inventory_below_minimum(self):
         bad_run3 = tuple(f"driver_{i}" for i in range(28))  # < 29
         with self.assertRaises(TypeValidationError):
-            SourceGroundingAuthority(
+            StructuralSourceGrounding(
                 baseline_commit="a" * 40,
                 expected_142_selectors=self.orig_142,
                 expected_2_additions=self.adds_2,
@@ -666,39 +669,121 @@ class TestQualificationGroundTruth(unittest.TestCase):
                 expected_run3_inventory=bad_run3,
             )
 
+    def test_candidate_original_selectors_rejects_duplicates(self):
+        qr = build_grounded_qualification_requirements(self.grounding)
+        bad_orig = self.orig_142[:-1] + (self.orig_142[0],)
+        with self.assertRaises(DuplicateKeyError):
+            validate_qualification_ground_truth(
+                qr,
+                grounding=self.grounding,
+                candidate_original_142_selectors=bad_orig,
+                candidate_additions_2_selectors=self.adds_2,
+                candidate_complete_144_corpus=self.corpus_144,
+                candidate_siblings_117_manifest=self.sibs_117,
+                candidate_run3_inventory_manifest=self.run3_inv,
+            )
+
+    def test_candidate_additions_rejects_duplicates(self):
+        qr = build_grounded_qualification_requirements(self.grounding)
+        bad_adds = ("add_001", "add_001")
+        with self.assertRaises(DuplicateKeyError):
+            validate_qualification_ground_truth(
+                qr,
+                grounding=self.grounding,
+                candidate_original_142_selectors=self.orig_142,
+                candidate_additions_2_selectors=bad_adds,
+                candidate_complete_144_corpus=self.corpus_144,
+                candidate_siblings_117_manifest=self.sibs_117,
+                candidate_run3_inventory_manifest=self.run3_inv,
+            )
+
+    def test_candidate_corpus_rejects_duplicates(self):
+        qr = build_grounded_qualification_requirements(self.grounding)
+        bad_corpus = self.corpus_144[:-1] + (self.corpus_144[0],)
+        with self.assertRaises(DuplicateKeyError):
+            validate_qualification_ground_truth(
+                qr,
+                grounding=self.grounding,
+                candidate_original_142_selectors=self.orig_142,
+                candidate_additions_2_selectors=self.adds_2,
+                candidate_complete_144_corpus=bad_corpus,
+                candidate_siblings_117_manifest=self.sibs_117,
+                candidate_run3_inventory_manifest=self.run3_inv,
+            )
+
+    def test_candidate_siblings_rejects_duplicates(self):
+        qr = build_grounded_qualification_requirements(self.grounding)
+        bad_sibs = self.sibs_117[:-1] + (self.sibs_117[0],)
+        with self.assertRaises(DuplicateKeyError):
+            validate_qualification_ground_truth(
+                qr,
+                grounding=self.grounding,
+                candidate_original_142_selectors=self.orig_142,
+                candidate_additions_2_selectors=self.adds_2,
+                candidate_complete_144_corpus=self.corpus_144,
+                candidate_siblings_117_manifest=bad_sibs,
+                candidate_run3_inventory_manifest=self.run3_inv,
+            )
+
+    def test_candidate_run3_rejects_duplicates(self):
+        qr = build_grounded_qualification_requirements(self.grounding)
+        bad_run3 = self.run3_inv[:-1] + (self.run3_inv[0],)
+        with self.assertRaises(DuplicateKeyError):
+            validate_qualification_ground_truth(
+                qr,
+                grounding=self.grounding,
+                candidate_original_142_selectors=self.orig_142,
+                candidate_additions_2_selectors=self.adds_2,
+                candidate_complete_144_corpus=self.corpus_144,
+                candidate_siblings_117_manifest=self.sibs_117,
+                candidate_run3_inventory_manifest=bad_run3,
+            )
+
+    def test_candidate_original_selectors_rejects_wrong_count(self):
+        qr = build_grounded_qualification_requirements(self.grounding)
+        bad_orig = self.orig_142[:-1]  # 141
+        with self.assertRaises(TypeValidationError):
+            validate_qualification_ground_truth(
+                qr,
+                grounding=self.grounding,
+                candidate_original_142_selectors=bad_orig,
+                candidate_additions_2_selectors=self.adds_2,
+                candidate_complete_144_corpus=self.corpus_144,
+                candidate_siblings_117_manifest=self.sibs_117,
+                candidate_run3_inventory_manifest=self.run3_inv,
+            )
+
     def test_run3_inventory_exact_match_rejects_omitted_required_driver(self):
-        qr = build_grounded_qualification_requirements(self.authority)
+        qr = build_grounded_qualification_requirements(self.grounding)
         tampered_run3 = self.run3_inv[:-1] + ("foreign_extra_driver",)
         with self.assertRaises(ReferenceIntegrityError):
             validate_qualification_ground_truth(
                 qr,
-                authority=self.authority,
+                grounding=self.grounding,
+                candidate_original_142_selectors=self.orig_142,
+                candidate_additions_2_selectors=self.adds_2,
+                candidate_complete_144_corpus=self.corpus_144,
+                candidate_siblings_117_manifest=self.sibs_117,
                 candidate_run3_inventory_manifest=tampered_run3,
             )
 
     def test_run3_inventory_exact_match_rejects_extra_driver(self):
-        qr = build_grounded_qualification_requirements(self.authority)
+        qr = build_grounded_qualification_requirements(self.grounding)
         extra_run3 = self.run3_inv + ("foreign_extra_driver",)
-        with self.assertRaises(ReferenceIntegrityError):
+        with self.assertRaises(TypeValidationError):
             validate_qualification_ground_truth(
                 qr,
-                authority=self.authority,
+                grounding=self.grounding,
+                candidate_original_142_selectors=self.orig_142,
+                candidate_additions_2_selectors=self.adds_2,
+                candidate_complete_144_corpus=self.corpus_144,
+                candidate_siblings_117_manifest=self.sibs_117,
                 candidate_run3_inventory_manifest=extra_run3,
             )
 
-    def test_validate_rejects_tampered_original_selectors(self):
-        qr = build_grounded_qualification_requirements(self.authority)
-        tampered_orig = ("foreign_sel",) + self.orig_142[1:]
-        with self.assertRaises(ReferenceIntegrityError):
-            validate_qualification_ground_truth(
-                qr,
-                authority=self.authority,
-                candidate_original_142_selectors=tampered_orig,
-            )
-
     def test_validate_rejects_digest_mismatch(self):
-        qr = build_grounded_qualification_requirements(self.authority)
-        other_authority = SourceGroundingAuthority(
+        qr = build_grounded_qualification_requirements(self.grounding)
+        other_grounding = StructuralSourceGrounding(
             baseline_commit="b" * 40,
             expected_142_selectors=tuple(f"other_{i:03d}" for i in range(142)),
             expected_2_additions=self.adds_2,
@@ -706,10 +791,7 @@ class TestQualificationGroundTruth(unittest.TestCase):
             expected_run3_inventory=self.run3_inv,
         )
         with self.assertRaises(ReferenceIntegrityError):
-            validate_qualification_ground_truth(
-                qr,
-                authority=other_authority,
-            )
+            validate_qualification_manifest_digests(qr, other_grounding)
 
 class TestCrossRecordBindingValidators(unittest.TestCase):
     def setUp(self):
@@ -821,7 +903,7 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
             "chain_id": "chain-123",
             "compiler_sha256": "d" * 64,
             "effective_policy": {"timeout": 2100},
-            "teardown_disposition": {"stopped": True, "removed": True},
+            "teardown_disposition": {"containers_stopped": True, "containers_removed": True, "clean_exit": True, "unresolved_processes": 0},
             "evidence_digests": {"report.tar.gz": "e" * 64},
             "timestamp": "2026-11-09T00:01:00Z",
         }
@@ -870,7 +952,7 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
             "chain_id": "chain-123",
             "compiler_sha256": "d" * 64,
             "effective_policy": {"timeout": 2100},
-            "teardown_disposition": {"stopped": True, "removed": False},
+            "teardown_disposition": {"containers_stopped": True, "containers_removed": False, "clean_exit": True, "unresolved_processes": 0},
             "evidence_digests": {"report.tar.gz": "e" * 64},
             "timestamp": "2026-11-09T00:01:00Z",
         }
@@ -906,13 +988,128 @@ class TestCrossRecordBindingValidators(unittest.TestCase):
             "chain_id": "chain-123",
             "compiler_sha256": "d" * 64,
             "effective_policy": {"timeout": 2100},
-            "teardown_disposition": {"stopped": True, "removed": True},
+            "teardown_disposition": {"containers_stopped": True, "containers_removed": True, "clean_exit": True, "unresolved_processes": 0},
             "evidence_digests": {"report.tar.gz": "e" * 64},
             "timestamp": "2026-11-09T00:01:00Z",
         }
         desc = CheckpointDescriptor.from_dict(desc_data)
         with self.assertRaises(ReferenceIntegrityError):
             validate_checkpoint_to_context(desc, ctx, self.manifest)
+
+    def test_checkpoint_to_context_accepts_fail_with_exit_0(self):
+        ctx_data = {
+            "manifest_digest": self.manifest.digest(),
+            "subject_digest": self.subject.digest(),
+            "repository": self.subject.repository,
+            "run_id": self.subject.run_id,
+            "run_attempt": self.subject.run_attempt,
+            "job_key": self.subject.job_key,
+            "job_id": "999888",
+            "runner_identity": "ubuntu-24.04-runner-01",
+            "job_started_at_iso": "2026-11-09T00:00:00Z",
+            "job_started_at_epoch": 1794182400.0,
+            "platform_response_digests": {"approvals": "c" * 64},
+        }
+        ctx = ExecutionContext.from_dict(ctx_data)
+        desc_data = {
+            "manifest_digest": self.manifest.digest(),
+            "subject_digest": self.subject.digest(),
+            "execution_context_digest": ctx.digest(),
+            "launch_id": "launch-001",
+            "stage": "run1",
+            "attempt": 1,
+            "command": ["python3", "-I", "-B", "proof/run_proof.py"],
+            "exit_code": 0,
+            "outcome": "FAIL",
+            "chain_id": "chain-123",
+            "compiler_sha256": "d" * 64,
+            "effective_policy": {"timeout": 2100},
+            "teardown_disposition": {"containers_stopped": True, "containers_removed": True, "clean_exit": False, "unresolved_processes": 1},
+            "evidence_digests": {"report.tar.gz": "e" * 64},
+            "timestamp": "2026-11-09T00:01:00Z",
+        }
+        desc = CheckpointDescriptor.from_dict(desc_data)
+        validate_checkpoint_to_context(desc, ctx, self.manifest)
+
+    def test_checkpoint_to_context_rejects_empty_teardown_on_pass(self):
+        ctx_data = {
+            "manifest_digest": self.manifest.digest(),
+            "subject_digest": self.subject.digest(),
+            "repository": self.subject.repository,
+            "run_id": self.subject.run_id,
+            "run_attempt": self.subject.run_attempt,
+            "job_key": self.subject.job_key,
+            "job_id": "999888",
+            "runner_identity": "ubuntu-24.04-runner-01",
+            "job_started_at_iso": "2026-11-09T00:00:00Z",
+            "job_started_at_epoch": 1794182400.0,
+            "platform_response_digests": {"approvals": "c" * 64},
+        }
+        ctx = ExecutionContext.from_dict(ctx_data)
+        desc_data = {
+            "manifest_digest": self.manifest.digest(),
+            "subject_digest": self.subject.digest(),
+            "execution_context_digest": ctx.digest(),
+            "launch_id": "launch-001",
+            "stage": "run1",
+            "attempt": 1,
+            "command": ["python3", "-I", "-B", "proof/run_proof.py"],
+            "exit_code": 0,
+            "outcome": "PASS",
+            "chain_id": "chain-123",
+            "compiler_sha256": "d" * 64,
+            "effective_policy": {"timeout": 2100},
+            "teardown_disposition": {},
+            "evidence_digests": {"report.tar.gz": "e" * 64},
+            "timestamp": "2026-11-09T00:01:00Z",
+        }
+        desc = CheckpointDescriptor.from_dict(desc_data)
+        with self.assertRaises(ReferenceIntegrityError):
+            validate_checkpoint_to_context(desc, ctx, self.manifest)
+
+    def test_checkpoint_to_context_rejects_launch_id_mismatch(self):
+        ctx_data = {
+            "manifest_digest": self.manifest.digest(),
+            "subject_digest": self.subject.digest(),
+            "repository": self.subject.repository,
+            "run_id": self.subject.run_id,
+            "run_attempt": self.subject.run_attempt,
+            "job_key": self.subject.job_key,
+            "job_id": "999888",
+            "runner_identity": "ubuntu-24.04-runner-01",
+            "job_started_at_iso": "2026-11-09T00:00:00Z",
+            "job_started_at_epoch": 1794182400.0,
+            "platform_response_digests": {"approvals": "c" * 64},
+        }
+        ctx = ExecutionContext.from_dict(ctx_data)
+        receipt = LaunchOwnershipReceipt(
+            launch_id="launch-002",
+            execution_context_digest=ctx.digest(),
+            container_id="cont-123",
+            stage="run1",
+            attempt=1,
+            effective_policy_digest="1" * 64,
+        )
+        desc_data = {
+            "manifest_digest": self.manifest.digest(),
+            "subject_digest": self.subject.digest(),
+            "execution_context_digest": ctx.digest(),
+            "launch_id": "launch-001",
+            "stage": "run1",
+            "attempt": 1,
+            "command": ["python3", "-I", "-B", "proof/run_proof.py"],
+            "exit_code": 0,
+            "outcome": "PASS",
+            "chain_id": "chain-123",
+            "compiler_sha256": "d" * 64,
+            "effective_policy": {"timeout": 2100},
+            "teardown_disposition": {"containers_stopped": True, "containers_removed": True, "clean_exit": True, "unresolved_processes": 0},
+            "evidence_digests": {"report.tar.gz": "e" * 64},
+            "timestamp": "2026-11-09T00:01:00Z",
+        }
+        desc = CheckpointDescriptor.from_dict(desc_data)
+        with self.assertRaises(ReferenceIntegrityError):
+            validate_checkpoint_to_context(desc, ctx, self.manifest, launch_receipt=receipt)
 
 
 class TestStrictPairsMapAndCheckpointImmutability(unittest.TestCase):

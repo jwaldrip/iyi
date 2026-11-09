@@ -822,10 +822,12 @@ def compute_manifest_digest(identities: Sequence[str]) -> str:
 
 
 @dataclasses.dataclass(frozen=True)
-class SourceGroundingAuthority:
+class StructuralSourceGrounding:
     """
-    Independently verified source grounding authority derived from pinned C baseline,
-    final P product, and final W proof sources.
+    Structural source grounding reference for candidate selectors, additions, siblings,
+    and dynamically derived Run 3 driver inventory.
+    Note: A structural grounding record does NOT constitute authenticated authority until
+    verified against an independently authenticated C-owned source producer and pinned source blobs.
     """
     baseline_commit: str
     expected_142_selectors: Tuple[str, ...]
@@ -879,90 +881,129 @@ class SourceGroundingAuthority:
         return compute_manifest_digest(self.expected_run3_inventory)
 
 
+def validate_qualification_manifest_digests(
+    qual: QualificationRequirements,
+    grounding: StructuralSourceGrounding,
+) -> None:
+    """Validate that QualificationRequirements digests match expected StructuralSourceGrounding digests."""
+    if not isinstance(qual, QualificationRequirements):
+        raise TypeValidationError(f"Expected QualificationRequirements, got {type(qual).__name__}")
+    if not isinstance(grounding, StructuralSourceGrounding):
+        raise TypeValidationError(f"Expected StructuralSourceGrounding, got {type(grounding).__name__}")
+
+    if qual.selectors_142_digest != grounding.expected_142_digest:
+        raise ReferenceIntegrityError(
+            f"selectors_142_digest mismatch: qual has {qual.selectors_142_digest}, grounding has {grounding.expected_142_digest}"
+        )
+    if qual.additions_2_digest != grounding.expected_2_additions_digest:
+        raise ReferenceIntegrityError(
+            f"additions_2_digest mismatch: qual has {qual.additions_2_digest}, grounding has {grounding.expected_2_additions_digest}"
+        )
+    if qual.corpus_144_selectors_digest != grounding.expected_144_corpus_digest:
+        raise ReferenceIntegrityError(
+            f"corpus_144_selectors_digest mismatch: qual has {qual.corpus_144_selectors_digest}, grounding has {grounding.expected_144_corpus_digest}"
+        )
+    if qual.siblings_117_manifest_digest != grounding.expected_117_siblings_digest:
+        raise ReferenceIntegrityError(
+            f"siblings_117_manifest_digest mismatch: qual has {qual.siblings_117_manifest_digest}, grounding has {grounding.expected_117_siblings_digest}"
+        )
+    if qual.run3_inventory_manifest_digest != grounding.expected_run3_inventory_digest:
+        raise ReferenceIntegrityError(
+            f"run3_inventory_manifest_digest mismatch: qual has {qual.run3_inventory_manifest_digest}, grounding has {grounding.expected_run3_inventory_digest}"
+        )
+
+
 def validate_qualification_ground_truth(
     qual: QualificationRequirements,
     *,
-    authority: SourceGroundingAuthority,
-    candidate_original_142_selectors: Optional[Sequence[str]] = None,
-    candidate_additions_2_selectors: Optional[Sequence[str]] = None,
-    candidate_complete_144_corpus: Optional[Sequence[str]] = None,
-    candidate_siblings_117_manifest: Optional[Sequence[str]] = None,
-    candidate_run3_inventory_manifest: Optional[Sequence[str]] = None,
+    grounding: StructuralSourceGrounding,
+    candidate_original_142_selectors: Sequence[str],
+    candidate_additions_2_selectors: Sequence[str],
+    candidate_complete_144_corpus: Sequence[str],
+    candidate_siblings_117_manifest: Sequence[str],
+    candidate_run3_inventory_manifest: Sequence[str],
 ) -> None:
     """
-    Validate that QualificationRequirements digests match independently verified
-    source grounding authority, and optionally verify that candidate runtime manifests
-    match exact expected source-derived identities.
+    Validate that QualificationRequirements digests match StructuralSourceGrounding,
+    and verify that candidate runtime manifests match exact expected source-derived identities,
+    strictly checking type, count, uniqueness (no duplicates erased), and set equality.
     """
-    if not isinstance(qual, QualificationRequirements):
-        raise TypeValidationError(f"Expected QualificationRequirements, got {type(qual).__name__}")
-    if not isinstance(authority, SourceGroundingAuthority):
-        raise TypeValidationError(f"Expected SourceGroundingAuthority, got {type(authority).__name__}")
+    validate_qualification_manifest_digests(qual, grounding)
 
-    # Verify digests in qual match authority
-    if qual.selectors_142_digest != authority.expected_142_digest:
+    # 1. Candidate original 142 selectors
+    if len(candidate_original_142_selectors) != 142:
+        raise TypeValidationError(f"Expected 142 candidate original selectors, got {len(candidate_original_142_selectors)}")
+    orig_set: Set[str] = set()
+    for s in candidate_original_142_selectors:
+        val = require_ascii_str(s, "candidate_original_selector")
+        if val in orig_set:
+            raise DuplicateKeyError(f"Duplicate candidate original selector: {val}")
+        orig_set.add(val)
+    if orig_set != set(grounding.expected_142_selectors):
+        raise ReferenceIntegrityError(f"Candidate original selectors mismatch: diff={orig_set ^ set(grounding.expected_142_selectors)}")
+
+    # 2. Candidate additions 2 selectors
+    if len(candidate_additions_2_selectors) != 2:
+        raise TypeValidationError(f"Expected 2 candidate additions, got {len(candidate_additions_2_selectors)}")
+    add_set: Set[str] = set()
+    for s in candidate_additions_2_selectors:
+        val = require_ascii_str(s, "candidate_addition_selector")
+        if val in add_set:
+            raise DuplicateKeyError(f"Duplicate candidate addition selector: {val}")
+        add_set.add(val)
+    if add_set != set(grounding.expected_2_additions):
+        raise ReferenceIntegrityError(f"Candidate additions mismatch: diff={add_set ^ set(grounding.expected_2_additions)}")
+
+    # 3. Candidate complete 144 corpus
+    if len(candidate_complete_144_corpus) != 144:
+        raise TypeValidationError(f"Expected 144 candidate corpus items, got {len(candidate_complete_144_corpus)}")
+    corpus_set: Set[str] = set()
+    for s in candidate_complete_144_corpus:
+        val = require_ascii_str(s, "candidate_corpus_item")
+        if val in corpus_set:
+            raise DuplicateKeyError(f"Duplicate candidate corpus item: {val}")
+        corpus_set.add(val)
+    exp_corpus = set(grounding.expected_142_selectors) | set(grounding.expected_2_additions)
+    if corpus_set != exp_corpus:
+        raise ReferenceIntegrityError(f"Candidate complete corpus mismatch: diff={corpus_set ^ exp_corpus}")
+
+    # 4. Candidate siblings 117 manifest
+    if len(candidate_siblings_117_manifest) != 117:
+        raise TypeValidationError(f"Expected 117 candidate siblings, got {len(candidate_siblings_117_manifest)}")
+    sibs_set: Set[str] = set()
+    for s in candidate_siblings_117_manifest:
+        val = require_ascii_str(s, "candidate_sibling_item")
+        if val in sibs_set:
+            raise DuplicateKeyError(f"Duplicate candidate sibling item: {val}")
+        sibs_set.add(val)
+    if sibs_set != set(grounding.expected_117_siblings):
+        raise ReferenceIntegrityError(f"Candidate siblings mismatch: diff={sibs_set ^ set(grounding.expected_117_siblings)}")
+
+    # 5. Candidate Run 3 inventory manifest (exact match against dynamically derived set)
+    exp_run3_count = len(grounding.expected_run3_inventory)
+    if len(candidate_run3_inventory_manifest) != exp_run3_count:
+        raise TypeValidationError(f"Expected {exp_run3_count} candidate Run 3 inventory items, got {len(candidate_run3_inventory_manifest)}")
+    run3_set: Set[str] = set()
+    for s in candidate_run3_inventory_manifest:
+        val = require_ascii_str(s, "candidate_run3_item")
+        if val in run3_set:
+            raise DuplicateKeyError(f"Duplicate candidate Run 3 item: {val}")
+        run3_set.add(val)
+    exp_run3 = set(grounding.expected_run3_inventory)
+    if run3_set != exp_run3:
+        missing = exp_run3 - run3_set
+        extra = run3_set - exp_run3
         raise ReferenceIntegrityError(
-            f"selectors_142_digest mismatch: qual has {qual.selectors_142_digest}, authority has {authority.expected_142_digest}"
+            f"Candidate Run 3 inventory does not match expected derived set. Missing: {sorted(missing)}, Extra: {sorted(extra)}"
         )
-    if qual.additions_2_digest != authority.expected_2_additions_digest:
-        raise ReferenceIntegrityError(
-            f"additions_2_digest mismatch: qual has {qual.additions_2_digest}, authority has {authority.expected_2_additions_digest}"
-        )
-    if qual.corpus_144_selectors_digest != authority.expected_144_corpus_digest:
-        raise ReferenceIntegrityError(
-            f"corpus_144_selectors_digest mismatch: qual has {qual.corpus_144_selectors_digest}, authority has {authority.expected_144_corpus_digest}"
-        )
-    if qual.siblings_117_manifest_digest != authority.expected_117_siblings_digest:
-        raise ReferenceIntegrityError(
-            f"siblings_117_manifest_digest mismatch: qual has {qual.siblings_117_manifest_digest}, authority has {authority.expected_117_siblings_digest}"
-        )
-    if qual.run3_inventory_manifest_digest != authority.expected_run3_inventory_digest:
-        raise ReferenceIntegrityError(
-            f"run3_inventory_manifest_digest mismatch: qual has {qual.run3_inventory_manifest_digest}, authority has {authority.expected_run3_inventory_digest}"
-        )
-
-    # If candidate lists provided, verify exact identity equality against authority
-    if candidate_original_142_selectors is not None:
-        cand_set = set(candidate_original_142_selectors)
-        exp_set = set(authority.expected_142_selectors)
-        if cand_set != exp_set:
-            raise ReferenceIntegrityError(f"Candidate original selectors do not match expected authority: diff={cand_set ^ exp_set}")
-
-    if candidate_additions_2_selectors is not None:
-        cand_set = set(candidate_additions_2_selectors)
-        exp_set = set(authority.expected_2_additions)
-        if cand_set != exp_set:
-            raise ReferenceIntegrityError(f"Candidate additions do not match expected authority: diff={cand_set ^ exp_set}")
-
-    if candidate_complete_144_corpus is not None:
-        cand_set = set(candidate_complete_144_corpus)
-        exp_set = set(authority.expected_142_selectors) | set(authority.expected_2_additions)
-        if cand_set != exp_set:
-            raise ReferenceIntegrityError(f"Candidate corpus do not match expected authority: diff={cand_set ^ exp_set}")
-
-    if candidate_siblings_117_manifest is not None:
-        cand_set = set(candidate_siblings_117_manifest)
-        exp_set = set(authority.expected_117_siblings)
-        if cand_set != exp_set:
-            raise ReferenceIntegrityError(f"Candidate siblings do not match expected authority: diff={cand_set ^ exp_set}")
-
-    if candidate_run3_inventory_manifest is not None:
-        cand_set = set(candidate_run3_inventory_manifest)
-        exp_set = set(authority.expected_run3_inventory)
-        if cand_set != exp_set:
-            missing = exp_set - cand_set
-            extra = cand_set - exp_set
-            raise ReferenceIntegrityError(
-                f"Candidate Run 3 inventory does not match expected derived set. Missing: {sorted(missing)}, Extra: {sorted(extra)}"
-            )
 
 
 def build_grounded_qualification_requirements(
-    authority: SourceGroundingAuthority,
+    grounding: StructuralSourceGrounding,
 ) -> QualificationRequirements:
-    """Construct QualificationRequirements bound to validated SourceGroundingAuthority."""
-    if not isinstance(authority, SourceGroundingAuthority):
-        raise TypeValidationError(f"Expected SourceGroundingAuthority, got {type(authority).__name__}")
+    """Construct QualificationRequirements bound to validated StructuralSourceGrounding."""
+    if not isinstance(grounding, StructuralSourceGrounding):
+        raise TypeValidationError(f"Expected StructuralSourceGrounding, got {type(grounding).__name__}")
 
     return QualificationRequirements(
         rg2_evaluated=144,
@@ -973,21 +1014,20 @@ def build_grounded_qualification_requirements(
         rg2a_passed=144,
         rg2a_exclusions=0,
         rg2a_failures=0,
-        selectors_142_digest=authority.expected_142_digest,
-        additions_2_digest=authority.expected_2_additions_digest,
-        corpus_144_selectors_digest=authority.expected_144_corpus_digest,
+        selectors_142_digest=grounding.expected_142_digest,
+        additions_2_digest=grounding.expected_2_additions_digest,
+        corpus_144_selectors_digest=grounding.expected_144_corpus_digest,
         rg9_programs_total=144,
-        siblings_117_manifest_digest=authority.expected_117_siblings_digest,
+        siblings_117_manifest_digest=grounding.expected_117_siblings_digest,
         run2_samples=28,
         run2_std_exercises=116,
         run2_total_corpus=144,
         run2_failures=0,
         run2_exclusions=0,
-        run3_inventory_manifest_digest=authority.expected_run3_inventory_digest,
+        run3_inventory_manifest_digest=grounding.expected_run3_inventory_digest,
         named_frames_required=True,
         crystal_flag_intact=True,
     )
-
 
 # Primary Immutable Data Models
 @dataclasses.dataclass(frozen=True)
@@ -1449,6 +1489,98 @@ class ExecutionContext:
 
 
 @dataclasses.dataclass(frozen=True)
+class TeardownDisposition:
+    """Closed, typed teardown disposition observed during container lifecycle cleanup."""
+    containers_stopped: bool
+    containers_removed: bool
+    clean_exit: bool
+    unresolved_processes: int = 0
+
+    _ALLOWED_KEYS = {
+        "containers_stopped", "containers_removed", "clean_exit", "unresolved_processes"
+    }
+
+    def __post_init__(self) -> None:
+        require_bool(self.containers_stopped, "containers_stopped")
+        require_bool(self.containers_removed, "containers_removed")
+        require_bool(self.clean_exit, "clean_exit")
+        require_int(self.unresolved_processes, "unresolved_processes", min_val=0)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> TeardownDisposition:
+        require_dict(data, "TeardownDisposition", cls._ALLOWED_KEYS)
+        missing = cls._ALLOWED_KEYS - set(data.keys())
+        if missing:
+            raise TypeValidationError(f"TeardownDisposition missing required keys: {sorted(missing)}")
+        return cls(
+            containers_stopped=require_bool(data["containers_stopped"], "containers_stopped"),
+            containers_removed=require_bool(data["containers_removed"], "containers_removed"),
+            clean_exit=require_bool(data["clean_exit"], "clean_exit"),
+            unresolved_processes=require_int(data["unresolved_processes"], "unresolved_processes", min_val=0),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return dataclasses.asdict(self)
+
+    def is_resolved(self) -> bool:
+        """A resolved teardown has stopped and removed all containers with clean exit and zero unresolved processes."""
+        return (
+            self.containers_stopped is True
+            and self.containers_removed is True
+            and self.clean_exit is True
+            and self.unresolved_processes == 0
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LaunchOwnershipReceipt:
+    """C-owned authenticated launch and container ownership receipt."""
+    launch_id: str
+    execution_context_digest: str
+    container_id: str
+    stage: str
+    attempt: int
+    effective_policy_digest: str
+
+    _ALLOWED_KEYS = {
+        "launch_id", "execution_context_digest", "container_id",
+        "stage", "attempt", "effective_policy_digest",
+    }
+
+    def __post_init__(self) -> None:
+        require_ascii_str(self.launch_id, "launch_id")
+        require_sha256(self.execution_context_digest, "execution_context_digest")
+        require_ascii_str(self.container_id, "container_id")
+        require_ascii_str(self.stage, "stage")
+        require_int(self.attempt, "attempt", min_val=1)
+        require_sha256(self.effective_policy_digest, "effective_policy_digest")
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> LaunchOwnershipReceipt:
+        require_dict(data, "LaunchOwnershipReceipt", cls._ALLOWED_KEYS)
+        missing = cls._ALLOWED_KEYS - set(data.keys())
+        if missing:
+            raise TypeValidationError(f"LaunchOwnershipReceipt missing keys: {sorted(missing)}")
+        return cls(
+            launch_id=require_ascii_str(data["launch_id"], "launch_id"),
+            execution_context_digest=require_sha256(data["execution_context_digest"], "execution_context_digest"),
+            container_id=require_ascii_str(data["container_id"], "container_id"),
+            stage=require_ascii_str(data["stage"], "stage"),
+            attempt=require_int(data["attempt"], "attempt", min_val=1),
+            effective_policy_digest=require_sha256(data["effective_policy_digest"], "effective_policy_digest"),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return dataclasses.asdict(self)
+
+    def canonical_bytes(self) -> bytes:
+        return canonical_json_bytes(self.to_dict())
+
+    def digest(self) -> str:
+        return sha256_bytes(self.canonical_bytes())
+
+
+@dataclasses.dataclass(frozen=True)
 class CheckpointDescriptor:
     """Immutable record of an executed stage/attempt outcome."""
     manifest_digest: str
@@ -1612,14 +1744,21 @@ def validate_checkpoint_to_context(
     checkpoint: CheckpointDescriptor,
     context: ExecutionContext,
     manifest: ProofManifest,
+    *,
+    launch_receipt: Optional[LaunchOwnershipReceipt] = None,
+    teardown_disposition: Optional[TeardownDisposition] = None,
 ) -> None:
-    """Validate that CheckpointDescriptor cryptographically binds to manifest and execution context."""
+    """
+    Validate that CheckpointDescriptor cryptographically binds to manifest and execution context,
+    enforcing C-owned launch ownership, exact approved policy join, and resolved teardown on PASS.
+    """
     if not isinstance(checkpoint, CheckpointDescriptor):
         raise TypeValidationError(f"Expected CheckpointDescriptor, got {type(checkpoint).__name__}")
     if not isinstance(context, ExecutionContext):
         raise TypeValidationError(f"Expected ExecutionContext, got {type(context).__name__}")
     if not isinstance(manifest, ProofManifest):
         raise TypeValidationError(f"Expected ProofManifest, got {type(manifest).__name__}")
+
     # Compose execution context validation
     validate_execution_context_to_manifest(context, manifest)
 
@@ -1641,20 +1780,41 @@ def validate_checkpoint_to_context(
             f"CheckpointDescriptor execution_context_digest mismatch: expected {ctx_digest}, got {checkpoint.execution_context_digest}"
         )
 
-    # Enforce outcome, exit code, and teardown consistency
-    teardown_dict = dict(checkpoint.teardown_disposition)
+    # If launch receipt provided, verify exact launch ownership bindings
+    if launch_receipt is not None:
+        if not isinstance(launch_receipt, LaunchOwnershipReceipt):
+            raise TypeValidationError(f"Expected LaunchOwnershipReceipt, got {type(launch_receipt).__name__}")
+        if launch_receipt.launch_id != checkpoint.launch_id:
+            raise ReferenceIntegrityError(
+                f"Checkpoint launch_id ({checkpoint.launch_id}) does not match launch_receipt ({launch_receipt.launch_id})"
+            )
+        if launch_receipt.execution_context_digest != ctx_digest:
+            raise ReferenceIntegrityError("launch_receipt execution_context_digest mismatch")
+        if launch_receipt.stage != checkpoint.stage:
+            raise ReferenceIntegrityError(f"launch_receipt stage mismatch: {launch_receipt.stage} != {checkpoint.stage}")
+        if launch_receipt.attempt != checkpoint.attempt:
+            raise ReferenceIntegrityError(f"launch_receipt attempt mismatch: {launch_receipt.attempt} != {checkpoint.attempt}")
+
+    # Enforce outcome and teardown consistency
     if checkpoint.outcome == "PASS":
         if checkpoint.exit_code != 0:
             raise ReferenceIntegrityError(
                 f"Checkpoint PASS outcome inconsistent with non-zero exit_code: {checkpoint.exit_code}"
             )
-        if "removed" in teardown_dict and teardown_dict["removed"] is False:
-            raise ReferenceIntegrityError("Checkpoint PASS outcome inconsistent with unremoved container (removed=False)")
-        if "stopped" in teardown_dict and teardown_dict["stopped"] is False:
-            raise ReferenceIntegrityError("Checkpoint PASS outcome inconsistent with unstopped container (stopped=False)")
-    elif checkpoint.outcome in ("FAIL", "TIMEOUT", "INVALID", "STOP"):
-        if checkpoint.outcome == "FAIL" and checkpoint.exit_code == 0:
-            raise ReferenceIntegrityError("Checkpoint FAIL outcome inconsistent with exit_code 0")
+        # On PASS, teardown disposition MUST be provided and fully resolved
+        td_to_check = teardown_disposition
+        if td_to_check is None and checkpoint.teardown_disposition:
+            try:
+                td_to_check = TeardownDisposition.from_dict(dict(checkpoint.teardown_disposition))
+            except (TypeValidationError, UnknownFieldError) as exc:
+                raise ReferenceIntegrityError(f"Checkpoint PASS has invalid teardown disposition: {exc}") from exc
+
+        if td_to_check is None:
+            raise ReferenceIntegrityError("Checkpoint PASS requires resolved TeardownDisposition, but none was provided or found")
+        if not td_to_check.is_resolved():
+            raise ReferenceIntegrityError(
+                f"Checkpoint PASS outcome requires resolved teardown (stopped=True, removed=True, clean_exit=True, unresolved=0), got: {td_to_check}"
+            )
 
 # Refusal Policy Enforcements (Spec 3.1)
 def enforce_independent_review_refusal() -> None:
