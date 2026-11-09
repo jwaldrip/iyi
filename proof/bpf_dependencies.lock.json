@@ -1,0 +1,313 @@
+{
+  "schema_version": "iyi-bpf-dependency-lock-v1",
+  "comment": "Authenticated Ubuntu 24.04 (Noble) snapshot dependency lock for BPF canary diagnostic. Generated per PlanBpfOwnedDependencies.",
+  "snapshot": {
+    "snapshot_id": "20261105T000000Z",
+    "base_url": "https://snapshot.ubuntu.com/ubuntu/20261105T000000Z",
+    "distribution": "ubuntu",
+    "release": "noble",
+    "release_version": "24.04",
+    "architecture": "amd64",
+    "components": [
+      "main"
+    ],
+    "pockets": [
+      "noble",
+      "noble-updates",
+      "noble-security"
+    ]
+  },
+  "trust_root": {
+    "keyring_default_path": "/usr/share/keyrings/ubuntu-archive-keyring.gpg",
+    "keyring_sha256": "80a36b0a6de2f69f49d2df75ef473ccde121e9e190b9ea01d20a4f63778d5c31",
+    "approved_signer_fingerprints": [
+      "F6ECB3762474EDA9D21B7022871920D1991BC93C"
+    ],
+    "approved_key_id": "871920D1991BC93C",
+    "signer_name": "Ubuntu Archive Automatic Signing Key (2018) <ftpmaster@ubuntu.com>"
+  },
+  "freshness_policy": {
+    "snapshot_timestamp": "20261105T000000Z",
+    "frozen_base_pocket": "noble",
+    "frozen_base_pocket_date": "Thu, 25 Apr 2024 15:10:33 UTC",
+    "frozen_base_pocket_allow_historical": true,
+    "require_exact_inrelease_hash": true,
+    "require_exact_packages_hash": true,
+    "require_exact_deb_hash": true
+  },
+  "metadata_pockets": {
+    "noble": {
+      "inrelease_path": "dists/noble/InRelease",
+      "inrelease_sha256": "cdb2f31d809f589719a53c6ad15f255b27569c4059542ada282aaa21b8e164b0",
+      "inrelease_size": 255850,
+      "date": "Thu, 25 Apr 2024 15:10:33 UTC",
+      "origin": "Ubuntu",
+      "label": "Ubuntu",
+      "suite": "noble",
+      "codename": "noble",
+      "version": "24.04",
+      "packages_xz": {
+        "release_entry": "main/binary-amd64/Packages.xz",
+        "url_path": "dists/noble/main/binary-amd64/Packages.xz",
+        "sha256": "2a6a199e1031a5c279cb346646d594993f35b1c03dd4a82aaa0323980dd92451",
+        "size": 1401160,
+        "uncompressed_release_entry": "main/binary-amd64/Packages",
+        "uncompressed_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5",
+        "uncompressed_size": 7165069
+      }
+    },
+    "noble-updates": {
+      "inrelease_path": "dists/noble-updates/InRelease",
+      "inrelease_sha256": "b82fcb2734d8a7a04efe6a7a19f8eb16692d3c64a5884fb2755ba6fd647aaa78",
+      "inrelease_size": 126125,
+      "date": "Wed, 04 Nov 2026 22:21:27 UTC",
+      "origin": "Ubuntu",
+      "label": "Ubuntu",
+      "suite": "noble-updates",
+      "codename": "noble",
+      "version": "24.04",
+      "packages_xz": {
+        "release_entry": "main/binary-amd64/Packages.xz",
+        "url_path": "dists/noble-updates/main/binary-amd64/Packages.xz",
+        "sha256": "da9aea4cb0409f0c4efd71510da8213a473853d6b8ae32a4faa496541a4cb3eb",
+        "size": 1408484,
+        "uncompressed_release_entry": "main/binary-amd64/Packages",
+        "uncompressed_sha256": "c9d803c2b20f4139619385a61aaca0124f61b264369d394159dc53efaa8f4476",
+        "uncompressed_size": 7618808
+      }
+    },
+    "noble-security": {
+      "inrelease_path": "dists/noble-security/InRelease",
+      "inrelease_sha256": "9798467b11460fac5c1015fc5b297c9b05d125d24a77b6953e8675de774cb866",
+      "inrelease_size": 126127,
+      "date": "Wed, 04 Nov 2026 20:00:17 UTC",
+      "origin": "Ubuntu",
+      "label": "Ubuntu",
+      "suite": "noble-security",
+      "codename": "noble",
+      "version": "24.04",
+      "packages_xz": {
+        "release_entry": "main/binary-amd64/Packages.xz",
+        "url_path": "dists/noble-security/main/binary-amd64/Packages.xz",
+        "sha256": "8a57e6660dbd038fdbb996a3acd1eeb9bae43d3c04257d7d6070415b7d5bbbfd",
+        "size": 1156512,
+        "uncompressed_release_entry": "main/binary-amd64/Packages",
+        "uncompressed_sha256": "318a29cd526ba2d72386fb9041d1dfca5820d8da32ace17318cf7ea71b01dbe9",
+        "uncompressed_size": 6294130
+      }
+    }
+  },
+  "packages": {
+    "libbpf-dev": {
+      "package": "libbpf-dev",
+      "version": "1:1.3.0-2build2",
+      "pocket": "noble",
+      "source": "libbpf (1.3.0-2build2)",
+      "architecture": "amd64",
+      "filename": "pool/main/libb/libbpf/libbpf-dev_1.3.0-2build2_amd64.deb",
+      "size": 258996,
+      "sha256": "c55e2dfed08e25f897798b37956d54ee687a7a13eb9b89b417a4ca9fbabc142f",
+      "depends": "libbpf1 (= 1:1.3.0-2build2), libelf-dev, zlib1g-dev",
+      "companion_runtime_packages": [
+        "libbpf1"
+      ],
+      "exclusion_rationale": "libbpf1 provides libbpf.so.1 shared object; excluded because bpf_canary_host links libbpf.a static archive directly and DT_NEEDED ELF check validates no runtime dynamic library dependency.",
+      "required_artifacts": [
+        {
+          "path": "usr/lib/x86_64-linux-gnu/libbpf.a",
+          "size": 641438,
+          "sha256": "95abc78848089a54c4add3e7fd7074b7578e161e35a402e3f77cfc84ecf54047"
+        }
+      ],
+      "required_headers": [
+        {
+          "path": "usr/include/bpf/bpf.h",
+          "size": 22939,
+          "sha256": "09fdac5185d030bc606a6bb67933fdf162c5db60a6b6eea7d2e13584378672bb"
+        },
+        {
+          "path": "usr/include/bpf/bpf_core_read.h",
+          "size": 19571,
+          "sha256": "f8693c88554b9377dbddd77efaa40113919b3245fe5a517160492e21f409328f"
+        },
+        {
+          "path": "usr/include/bpf/bpf_endian.h",
+          "size": 3750,
+          "sha256": "64b77c97b089ca06203d0451407844fe93933b4e36e7315a294745fa29d058fb"
+        },
+        {
+          "path": "usr/include/bpf/bpf_helper_defs.h",
+          "size": 173958,
+          "sha256": "67f28552254f09a482dc81f524dcf1132b3a46eb9154495e1d4e1f9d97613dac"
+        },
+        {
+          "path": "usr/include/bpf/bpf_helpers.h",
+          "size": 15129,
+          "sha256": "ae3bcf97e3bab650e62093fa8d14fd6465226ad8e8362bec05e5dc2ced333afb"
+        },
+        {
+          "path": "usr/include/bpf/bpf_tracing.h",
+          "size": 37877,
+          "sha256": "9865b9368764e56df2413961e98715c2817766e5572dc543484ef34cf8789831"
+        },
+        {
+          "path": "usr/include/bpf/btf.h",
+          "size": 18928,
+          "sha256": "e28e5bca81a5d782e27088da750712c747acb9ab1764bd944bf3e7fc15d4b503"
+        },
+        {
+          "path": "usr/include/bpf/libbpf.h",
+          "size": 71915,
+          "sha256": "3064ebc2dc7e93e4463ede5092044f3dc5beafcfcc32617d17c0210dd870ab2b"
+        },
+        {
+          "path": "usr/include/bpf/libbpf_common.h",
+          "size": 3437,
+          "sha256": "d58d7044c3e30f322614da76e3832c5b31e61469d31c29c53ee8abf736664414"
+        },
+        {
+          "path": "usr/include/bpf/libbpf_legacy.h",
+          "size": 5189,
+          "sha256": "4b09b8535b0eb9da94e8eafba8edcb2abc742bb07dd870bd216c3eea955a18d8"
+        },
+        {
+          "path": "usr/include/bpf/libbpf_version.h",
+          "size": 242,
+          "sha256": "a5f1ff4c230240696e4a070ec23fcb5e196dda9620f335caa8a17e35aeb669be"
+        },
+        {
+          "path": "usr/include/bpf/skel_internal.h",
+          "size": 9339,
+          "sha256": "a2f7fa02729c0bab05f5bdcab5b0b46e0ec91387518125d6bf6c4451d536fe6b"
+        },
+        {
+          "path": "usr/include/bpf/usdt.bpf.h",
+          "size": 8610,
+          "sha256": "df28567890af3c0eb7f07b9e589f28ae68ed931dce24be7d890bec2220f7f6d5"
+        }
+      ]
+    },
+    "libelf-dev": {
+      "package": "libelf-dev",
+      "version": "0.190-1.1ubuntu0.1",
+      "pocket": "noble-security",
+      "source": "elfutils",
+      "architecture": "amd64",
+      "filename": "pool/main/e/elfutils/libelf-dev_0.190-1.1ubuntu0.1_amd64.deb",
+      "size": 68530,
+      "sha256": "81affb95c29f7323f2ae24386aaa1f61d311578e3e27c5f78ef7b7d55cd3cf49",
+      "depends": "libelf1t64 (= 0.190-1.1ubuntu0.1), zlib1g-dev, libzstd-dev",
+      "companion_runtime_packages": [
+        "libelf1t64"
+      ],
+      "exclusion_rationale": "libelf1t64 provides libelf.so.1 shared object; excluded because bpf_canary_host links libelf.a static archive directly and DT_NEEDED ELF check validates no runtime dynamic library dependency.",
+      "required_artifacts": [
+        {
+          "path": "usr/lib/x86_64-linux-gnu/libelf.a",
+          "size": 300178,
+          "sha256": "cd764c84eb4e05682ea44393c3ae8a8fc1920b48f41716a77c9ba8f663ac8991"
+        }
+      ],
+      "required_headers": [
+        {
+          "path": "usr/include/elfutils/elf-knowledge.h",
+          "size": 3927,
+          "sha256": "65bbae885e70c5cfae95a20ae48370f873206951a9678660dab8e72a438ca80b"
+        },
+        {
+          "path": "usr/include/elfutils/version.h",
+          "size": 1274,
+          "sha256": "ccfdebcf441ec9f52db6a9eb80dc1a045bb19e0cf35e01af968722750fd1f960"
+        },
+        {
+          "path": "usr/include/gelf.h",
+          "size": 11406,
+          "sha256": "d6d269d49ab26b43ffad150e88542efbe6cc6f4db4dcf8b900559ad234179f71"
+        },
+        {
+          "path": "usr/include/libelf.h",
+          "size": 20318,
+          "sha256": "cd91b72953cc1a96a2598c6d1ee548924a68f084f8e1807fa9acd70246a6543a"
+        },
+        {
+          "path": "usr/include/nlist.h",
+          "size": 1601,
+          "sha256": "98a8ddd1004034aeff4cc6d18e5df23f55d2869d879735c3b571594a44ba1212"
+        }
+      ]
+    },
+    "libzstd-dev": {
+      "package": "libzstd-dev",
+      "version": "1.5.5+dfsg2-2build1.1",
+      "pocket": "noble-updates",
+      "source": "libzstd",
+      "architecture": "amd64",
+      "filename": "pool/main/libz/libzstd/libzstd-dev_1.5.5+dfsg2-2build1.1_amd64.deb",
+      "size": 363956,
+      "sha256": "6c9d2b5677a4677e9ead62f74723bb919113621a8028ed543a4d78952d54d165",
+      "depends": "libzstd1 (= 1.5.5+dfsg2-2build1.1)",
+      "companion_runtime_packages": [
+        "libzstd1"
+      ],
+      "exclusion_rationale": "libzstd1 provides libzstd.so.1 shared object; excluded because bpf_canary_host links libzstd.a static archive directly and DT_NEEDED ELF check validates no runtime dynamic library dependency.",
+      "required_artifacts": [
+        {
+          "path": "usr/lib/x86_64-linux-gnu/libzstd.a",
+          "size": 964146,
+          "sha256": "3b002d21b06091605db4a98c3739b479bd1126bac91b389a9e4a9e75612848ab"
+        }
+      ],
+      "required_headers": [
+        {
+          "path": "usr/include/zdict.h",
+          "size": 26433,
+          "sha256": "02a34169467501fcc665cccb33f5bd455fdb665e9806851777dc8a6c4d5a75e3"
+        },
+        {
+          "path": "usr/include/zstd.h",
+          "size": 171378,
+          "sha256": "41d0f43747d0dee56f60bd10aed262f193d725b7e11eb9e94aa4ad80183c7da8"
+        },
+        {
+          "path": "usr/include/zstd_errors.h",
+          "size": 4532,
+          "sha256": "36dbd0a595852e10ff5b52992294f610055b8781101f4634036e05cf7d4bb506"
+        }
+      ]
+    },
+    "zlib1g-dev": {
+      "package": "zlib1g-dev",
+      "version": "1:1.3.dfsg-3.1ubuntu2.3",
+      "pocket": "noble-security",
+      "source": "zlib",
+      "architecture": "amd64",
+      "filename": "pool/main/z/zlib/zlib1g-dev_1.3.dfsg-3.1ubuntu2.3_amd64.deb",
+      "size": 894134,
+      "sha256": "419902a649e1078f24596cdf31ced9c839519828790f59888056fcdcd58e8a28",
+      "depends": "zlib1g (= 1:1.3.dfsg-3.1ubuntu2.3), libc6-dev | libc-dev",
+      "companion_runtime_packages": [
+        "zlib1g"
+      ],
+      "exclusion_rationale": "zlib1g provides libz.so.1 shared object; excluded because bpf_canary_host links libz.a static archive directly and DT_NEEDED ELF check validates no runtime dynamic library dependency.",
+      "required_artifacts": [
+        {
+          "path": "usr/lib/x86_64-linux-gnu/libz.a",
+          "size": 147144,
+          "sha256": "155fcb952e6de6c12399d1d59d1700eec2ec76a623b1b26705cbaa46e5a26bca"
+        }
+      ],
+      "required_headers": [
+        {
+          "path": "usr/include/zconf.h",
+          "size": 16646,
+          "sha256": "1800d30368be262886ccaa0b4e0a82240f4b7cd65704f480c988f1ccbf74e14e"
+        },
+        {
+          "path": "usr/include/zlib.h",
+          "size": 96778,
+          "sha256": "6f1c7ebe0ac0f0794852b770c20efae041a451f833c91f60f837b599ea81679e"
+        }
+      ]
+    }
+  }
+}
