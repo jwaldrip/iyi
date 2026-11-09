@@ -490,6 +490,18 @@ class StrictAuthorizationNegativeTests(StrictAuthorizationTestsBase):
             f"Expected diagnostic substring '{expected_substring}' not found in stderr:\n{output}",
         )
 
+    def test_conflicting_approval_history_is_refused(self) -> None:
+        key = f"repos/{PINNED_REPOSITORY}/actions/runs/{self.s_run_id}/approvals"
+        route = LoopbackGitHubMockHandler.paginated_routes[key]
+        conflicting = copy.deepcopy(route["items"][0])
+        conflicting["state"] = "rejected"
+        route["items"].append(conflicting)
+        route["total_count"] = 2
+        self._assert_refusal(
+            ["check", "--manifest", self.package_path, "--token", VALID_TOKEN, "--c", self.c_repo],
+            "Conflicting approval history for strict-proof",
+        )
+
     def test_negative_approval_missing_rejected_pending_wrong_user_wrong_env(self) -> None:
         """Negative 1: Missing, rejected, pending, wrong-user or wrong-environment approval."""
         repo = PINNED_REPOSITORY

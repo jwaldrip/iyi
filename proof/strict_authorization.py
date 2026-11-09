@@ -766,6 +766,18 @@ class AuthenticatedGitHubVerifier:
             f"repos/{self.repository}/actions/runs/{s_run_id}/approvals",
             list_key="approvals",
         )
+        applicable_approvals = [
+            app for app in approvals
+            if isinstance(app, dict)
+            and (
+                any(str(env.get("id")) == PINNED_ENVIRONMENT_ID
+                    for env in app.get("environments", []) if isinstance(env, dict))
+                or (isinstance(app.get("environment"), dict)
+                    and str(app["environment"].get("id")) == PINNED_ENVIRONMENT_ID)
+            )
+        ]
+        if len(applicable_approvals) > 1:
+            raise StrictAuthorizationRefused("Conflicting approval history for strict-proof")
         expected_comment = f"{APPROVAL_COMMENT_PREFIX}{D}"
         matching_approvals = []
         for app in approvals:
