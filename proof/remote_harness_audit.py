@@ -1121,8 +1121,13 @@ TARGETED_IDS = [x.strip() for x in sys.argv[3].split(",") if x.strip()]
 sys.path.insert(0, REPO_ROOT)
 from proof import smoke_test as st
 
+def _json_default(value: object) -> object:
+    if isinstance(value, set):
+        return sorted(value)
+    raise TypeError(f"Cannot serialize {type(value).__name__}")
+
 def _render(value: object) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=_json_default)
 
 fixture_map = {f.fixture_id: f for f in st.FIXTURES}
 results = {}
@@ -1191,7 +1196,7 @@ for fid in TARGETED_IDS:
             )
 
 with open(OUTPUT_JSON_PATH, "w", encoding="utf-8") as f:
-    json.dump(results, f, indent=2)
+    json.dump(results, f, indent=2, default=_json_default)
 """
 
         try:
