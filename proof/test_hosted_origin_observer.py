@@ -1313,10 +1313,10 @@ class TestHostedOriginObserver(unittest.TestCase):
 
     # 25. Rejection of duplicate inode reuse across distinct logical build slots
 
-    def test_25_adversarial_duplicate_inode_reuse_across_slots_fails(self) -> None:
+    def test_25_adversarial_duplicate_transaction_or_reference_reuse_across_slots_fails(self) -> None:
         """
-        Planner Specification: Distinct logical build slots cannot share physical (st_dev, st_ino).
-        Executing one built inode twice to satisfy two different slots must be rejected.
+        Planner Specification: Distinct logical build slots require distinct build transactions and references.
+        Reusing the same transaction or out_ref to satisfy two different slots must be rejected.
         """
         prog_bytes = b"binary_code"
         prog_sha256 = hashlib.sha256(prog_bytes).hexdigest()
@@ -1429,7 +1429,7 @@ class TestHostedOriginObserver(unittest.TestCase):
 
         self.assertEqual(doc["verdict"]["status"], "REJECT")
         self.assertEqual(doc["verdict"]["checks"]["no_hardlink_aliases"], "FAIL")
-        self.assertTrue(any("inode reuse attack" in r for r in doc["verdict"]["reasons"]))
+        self.assertTrue(any("reuse attack" in r for r in doc["verdict"]["reasons"]))
 
     # 26. Rejection of unauthenticated hardlink when out is unlinked post-cleanup
 

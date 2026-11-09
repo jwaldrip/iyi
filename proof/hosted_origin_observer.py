@@ -890,19 +890,19 @@ def process_ledger_and_runtime_bindings(
         reasons.append("no logical slots or expected references defined")
         checks["no_missing_references"] = "FAIL"
 
-    # Enforce distinct build transactions, invocations, and inodes across slots
-    seen_slot_inos: Dict[Tuple[int, int], str] = {}
+    # Enforce distinct build transactions, invocations, and reference paths across slots
     seen_slot_txs: Dict[str, str] = {}
     seen_slot_invs: Dict[str, str] = {}
+    seen_slot_refs: Dict[str, str] = {}
     for rb in runtime_bindings:
-        ino_key = (rb.st_dev, rb.st_ino)
-        if ino_key in seen_slot_inos:
+        ref_norm = os.path.normpath(rb.out_ref_path)
+        if ref_norm in seen_slot_refs:
             reasons.append(
-                f"inode reuse attack: slot {seen_slot_inos[ino_key]!r} and {rb.slot_id!r} "
-                f"share physical inode {rb.st_ino}"
+                f"reference reuse attack: slots {seen_slot_refs[ref_norm]!r} and {rb.slot_id!r} "
+                f"share out_ref_path {rb.out_ref_path!r}"
             )
             checks["no_hardlink_aliases"] = "FAIL"
-        seen_slot_inos[ino_key] = rb.slot_id
+        seen_slot_refs[ref_norm] = rb.slot_id
 
         if rb.transaction_id in seen_slot_txs:
             reasons.append(
