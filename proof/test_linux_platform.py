@@ -1172,11 +1172,11 @@ class TestOriginRecordsAdversarialHardlink(unittest.TestCase):
 
 class TestHttpOmissionSkips(unittest.TestCase):
     def setUp(self):
-        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        census_path = os.path.join(repo_root, "proof", "census", "http.json")
+        self.repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        census_path = os.path.join(self.repo_root, "proof", "census", "http.json")
         with open(census_path) as f:
             self.census = json.load(f)
-        self.script_path = os.path.join(repo_root, self.census["script"])
+        self.script_path = os.path.join(self.repo_root, self.census["script"])
         with open(self.script_path, "rb") as f:
             self.script_bytes = f.read()
 
@@ -1220,17 +1220,17 @@ class TestHttpOmissionSkips(unittest.TestCase):
 
     def test_baseline_inventory_captures_tool_skips(self):
         from proof.run_proof import _baseline_skip_hits
-        both_log = (
+        baseline_log = (
+            "-- running sibling: std_http_exercise.sh\n"
             "  requests on one connection, a chunked one, a megabyte, gzip whole and streamed, multipart, and stop; "
             "zstd unchecked: no compression.zstd in this Python; curl --compressed unchecked: its build lists no zstd\n"
         )
-        hits = _baseline_skip_hits(self.census, both_log)
+        hits = _baseline_skip_hits(self.repo_root, baseline_log)
         self.assertEqual(len(hits), 2)
         whats = {hit["what"] for hit in hits}
         self.assertEqual(whats, {"python zstd", "curl zstd"})
         self.assertTrue(all(hit["class"] == "tool" for hit in hits))
         self.assertTrue(all(hit["driver"] == "http" for hit in hits))
-
     def test_census_grounding_and_source_drift_rejection(self):
         # Validate that http.json passes grounding against bench/std_http_exercise.sh
         violations = validate_census(self.census, self.script_bytes, self.census["script"], target_platform="linux")
@@ -1242,7 +1242,8 @@ class TestHttpOmissionSkips(unittest.TestCase):
         tampered_lines[352] = 'said = "modified line without skip"'
         tampered_bytes = "\n".join(tampered_lines).encode("utf-8")
         drift_violations = validate_census(self.census, tampered_bytes, self.census["script"], target_platform="linux")
-        self.assertTrue(any(v[0] == "C5.4-skip-text" and v[1] == 353 for v in drift_violations))
+        self.assertTrue(any(v[0] == "C5.0-schema" and v[1] == 353 and "text is not the cited source line" in v[2] for v in drift_violations))
+        self.assertTrue(any(v[0] == "C5.4-skip-regex" and v[1] == 353 for v in drift_violations))
 
         # Test unlisted skip rejection: adding an unlisted python assignment with skip vocab triggers C5.4-unlisted-skip-line
         tampered_lines2 = list(lines)

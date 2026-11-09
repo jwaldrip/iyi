@@ -1942,9 +1942,19 @@ def _unterminated_print_commands(source: str) -> list[list[str]] | None:
         words.append(remainder)
     return [words]
 
+_PY_ASSIGN_SYNTAX_RE = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_]*\s*(?:\+=|=)\s*(?:\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*')$"
+)
+_INVALID_PY_ESCAPE_RE = re.compile(r"\\[^\\'\"abfnrtv0-7xuUN\n]")
+
+
 def _python_literal_assign_string(source: str) -> str | None:
     """Extract string literal from a single-line Python Assign or AugAssign statement (no execution)."""
     stripped = source.strip()
+    if not _PY_ASSIGN_SYNTAX_RE.match(stripped):
+        return None
+    if _INVALID_PY_ESCAPE_RE.search(stripped):
+        return None
     try:
         tree = ast.parse(stripped, mode="exec")
     except SyntaxError:
@@ -2974,18 +2984,19 @@ def validate_census(census: object, script_bytes: bytes, script_relpath: str, *,
                     number,
                     f"printed text is skip vocabulary: {rendered!r}",
                 )
-        py_literal = _python_literal_assign_string(source)
-        if (
-            py_literal is not None
-            and _SKIP_VOCAB_RE.search(py_literal)
-            and number not in listed_skip_lines
-        ):
-            _violation(
-                violations,
-                "C5.4-unlisted-skip-line",
-                number,
-                f"python assign literal is skip vocabulary: {py_literal!r}",
-            )
+        if _SKIP_VOCAB_RE.search(source):
+            py_literal = _python_literal_assign_string(source)
+            if (
+                py_literal is not None
+                and _SKIP_VOCAB_RE.search(py_literal)
+                and number not in listed_skip_lines
+            ):
+                _violation(
+                    violations,
+                    "C5.4-unlisted-skip-line",
+                    number,
+                    f"python assign literal is skip vocabulary: {py_literal!r}",
+                )
 
     skip_entries = (
         census.get("skips") if isinstance(census.get("skips"), list) else []
