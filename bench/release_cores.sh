@@ -285,7 +285,7 @@ IYI
           status=1
           break
         fi
-        if [ "$capture" = on ] && { [ "$mode" = artifact-producer ] || [ "$mode" = artifact-consumer ]; }; then
+        if [ "$capture" = on ]; then
           "$proof/program" > "$proof/runtime.out" 2>&1
           printf '%s\n' "$?" > "$proof/runtime.status"
         fi
@@ -377,8 +377,8 @@ if mode == "artifact-consumer" and not any(item["producer"]["kind"] == "artifact
     raise ValueError("consumer did not import a native artifact object")
 with (root / "frame-provenance.json").open("rb") as f:
     manifest = json.load(f)
-if manifest.get("schema") != 2 or not manifest.get("bindings") or not manifest.get("object_inputs"):
-    raise ValueError("missing schema-2 closure bindings")
+if manifest.get("schema") != 3 or not manifest.get("bindings") or not manifest.get("object_inputs"):
+    raise ValueError("missing schema-3 closure bindings")
 bound_inputs = [manifest["object_inputs"][binding["link_input_id"]] for binding in manifest["bindings"]]
 if mode == "source-4" and not any(item["partition"] and item["partition"]["count"] == 4 for item in bound_inputs):
     raise ValueError("partitioned build lacks a closure definition in a partition")
@@ -425,6 +425,17 @@ PY
         echo "observer: $mode matched; altered object rejected"
       fi
     done
+    source_four="$proof_root/source-4"
+    if [ ! -s "$source_four/runtime.status" ] ||
+       [ "$(cat "$source_four/runtime.status" 2>/dev/null)" = 0 ] ||
+       ! grep -Fq "observer closure proof" "$source_four/runtime.out" 2>/dev/null ||
+       ! python3 "$REPO/bench/frames_equivalent.py" --strict-provenance --require-frames \
+         --source-manifest "$source_four/frame-provenance.json" --artifact-manifest "$source_four/frame-provenance.json" \
+         --source-executable "$source_four/on.program" --artifact-executable "$source_four/on.program" \
+         "$source_four/runtime.out" "$source_four/runtime.out" > "$proof_root/source-strict.out" 2> "$proof_root/source-strict.stderr"; then
+      echo "observer: partitioned source frame evidence failed" >&2
+      status=1
+    fi
     producer="$proof_root/artifact-producer"
     consumer="$proof_root/artifact-consumer"
     if [ ! -s "$producer/runtime.status" ] || [ ! -s "$consumer/runtime.status" ] ||
