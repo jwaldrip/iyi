@@ -568,6 +568,13 @@ def test_strict_manifest_synthetic_controls():
             obj["bytes_base64"] = base64.b64encode(b"forged object").decode()
             obj["sha256"] = hashlib.sha256(b"forged object").hexdigest()
             reject(forged)
+            forged = copy.deepcopy(manifest_b)
+            fake_nm = forged["object_inputs"][0]["native_evidence"]["raw_nm"].replace("external", "non-external", 1)
+            forged["object_inputs"][0]["native_evidence"] = {"raw_nm": fake_nm, "symbols": frames.native_symbols(fake_nm)}
+            reject(forged)
+            absent = copy.deepcopy(manifest_b)
+            absent["object_inputs"][0]["native_evidence"] = {"raw_nm": "", "symbols": []}
+            reject(absent)
             duplicated = copy.deepcopy(manifest_b)
             duplicated["bindings"].append(copy.deepcopy(duplicated["bindings"][0]))
             reject(duplicated)
@@ -673,11 +680,17 @@ def test_strict_manifest_synthetic_controls():
         def resolve(self, symbol):
             return (self.value, identity["specialization"], identity["capture_descriptor"], identity["displayed_source_location"])
 
-    for change in ("directive", "part", "splice"):
+    for change in ("directive", "part", "splice", "occurrence", "nested"):
         altered = copy.deepcopy(expanded)
         if change == "directive": altered["emission_parts"][0]["emitter_origin"]["input_byte_offset"] += 1
         elif change == "part": altered["emission_parts"][0]["end_offset"] += 1
-        else: altered["spliced_origin"]["input_byte_offset"] += 1
+        elif change == "splice": altered["spliced_origin"]["input_byte_offset"] += 1
+        elif change == "occurrence":
+            altered["generated_byte_offset"] += 2
+            altered["emission_parts"][0]["start_offset"] += 2
+            altered["emission_parts"][0]["end_offset"] += 2
+        else:
+            altered["spliced_origin"] = copy.deepcopy(expanded)
         frames.checked_origin(altered)
         assert not frames.compare_functions(left_symbol.encode(), left_symbol.encode(), (IdentityMap(expanded), IdentityMap(altered))), change
     binding = {"name": "x", "binding_origin": {"kind": "Synthetic", "parent_origin": written("Call", "method", 30),
@@ -697,6 +710,26 @@ def test_strict_manifest_synthetic_controls():
     shadow["capture_descriptor"]["environment"]["bindings"][0]["binding_origin"]["parent_origin"]["input_byte_offset"] += 1
     assert not frames.compare_functions(left_symbol.encode(), left_symbol.encode(),
                                         (CompleteMap(base_identity), CompleteMap(frames.emission_identity(shadow))))
+    specialized = copy.deepcopy(record)
+    specialized["specialization"] = {
+        "definition_origin": written("Def", "keyword", 7),
+        "dispatch_type": {"kind": "Iyi::ClassType", "name": "First"},
+        "defining_owner": {"kind": "Iyi::ClassType", "name": "Owner"},
+        "ordered_argument_types": [{"kind": "Iyi::IntegerType", "name": "Int32"}],
+        "block_parameter_type": None, "named_argument_types": [], "free_variable_bindings": [],
+        "expansion_shape": {"positional_count": 1, "splat_index": None, "double_splat_name": None,
+                            "formal_parameters": [{"name": "x", "external_name": "x", "has_default": False}]},
+        "lexical_block_specialization": None,
+    }
+    specialized_identity = frames.emission_identity(specialized)
+    for key in ("dispatch", "argument", "owner"):
+        different = copy.deepcopy(specialized)
+        spec = different["specialization"]
+        if key == "dispatch": spec["dispatch_type"]["name"] = "Second"
+        elif key == "argument": spec["ordered_argument_types"][0]["name"] = "Int64"
+        else: spec["defining_owner"]["name"] = "OtherOwner"
+        assert not frames.compare_functions(left_symbol.encode(), left_symbol.encode(),
+            (CompleteMap(specialized_identity), CompleteMap(frames.emission_identity(different)))), key
     unknown = copy.deepcopy(record)
     unknown["capture_descriptor"]["proc_type"]["return"]["kind"] = "Iyi::UnknownType"
     try: frames.emission_identity(unknown)

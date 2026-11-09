@@ -4,6 +4,9 @@ Compare two test outputs for semantic backtrace equivalence.
 
 Usage:
     python3 bench/frames_equivalent.py [--across-optimisation] [--require-frames] OUT_A OUT_B
+    python3 bench/frames_equivalent.py --strict-provenance --source-manifest SOURCE_JSON \\
+        --artifact-manifest ARTIFACT_JSON --source-executable SOURCE_EXE \\
+        --artifact-executable ARTIFACT_EXE [--require-frames] OUT_A OUT_B
     python3 bench/frames_equivalent.py --mutant KIND OUT
 
 Tested by:
@@ -139,6 +142,8 @@ def fields(value, keys):
 def text(value):
     if not isinstance(value, str) or not value:
         raise ValueError("invalid provenance text")
+    try: value.encode("utf-8")
+    except UnicodeError as exc: raise ValueError("invalid provenance UTF-8") from exc
 
 
 def number(value):
