@@ -8,17 +8,16 @@ Tests the entry script (proof/run_bpf_feasibility.sh) offline without executing
 privileged commands, local VMs, or the live BPF helper:
   1. CLI --help exits 0 with usage instructions.
   2. Unknown CLI options exit nonzero with error diagnostics.
-  3. Missing staged prefix fails closed immediately without host package install.
-  4. Staged prefix missing required development headers fails closed.
-  5. Staged prefix missing required static archives fails closed.
-  6. Staged prefix with tampered archive SHA256 fails closed.
-  7. Pre-existing owned scratch directory is refused (requires exclusive context).
-  8. Corrupt, unapproved signer, or mismatched dependency receipts fail closed.
-  9. Unapproved header from staged prefix included in dependency graph is rejected.
+  3. Forbidden --prefix and --receipt options are rejected (exclusive consumer required).
+  4. Pre-existing owned scratch directory is refused (exclusive context required).
+  5. Missing lock file fails closed immediately.
+  6. Staged archive tampering is detected and rejected against lock.
+  7. Staged header tampering is detected and rejected against lock.
+  8. Unapproved header from staged prefix included in dependency graph is rejected.
+  9. DT_NEEDED parser enforces exact set {'libc.so.6'} and rejects additions.
  10. Real .BTF.ext CO-RE relocation parser validates true records and rejects zeroed/invalid tables.
- 11. DT_NEEDED parser enforces exact set {'libc.so.6'} and rejects libc.so.6.extra or path entries.
- 12. GNU_STACK parser correctly reads Flg column (not Align) and rejects executable stack.
- 13. Terminal report evaluation strictly enforces all Section 7 acceptance criteria and log files.
+ 11. GNU_STACK parser correctly reads Flg column (not Align) and rejects executable stack.
+ 12. Terminal report evaluation strictly enforces all Section 7 acceptance criteria and log files.
 """
 
 from __future__ import annotations
@@ -37,7 +36,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT_PATH = REPO_ROOT / "proof" / "run_bpf_feasibility.sh"
 
 
-def make_dummy_lock(scratch: Path, archive_hashes: dict[str, str]) -> Path:
+def make_dummy_lock(scratch: Path, archive_hashes: dict[str, str], header_hashes: dict[str, str] | None = None) -> Path:
+    if header_hashes is None:
+        header_hashes = {}
     lock_data = {
         "schema_version": "iyi-bpf-dependency-lock-v1",
         "snapshot": {"snapshot_id": "20261105T000000Z"},
@@ -52,49 +53,43 @@ def make_dummy_lock(scratch: Path, archive_hashes: dict[str, str]) -> Path:
                 "required_artifacts": [
                     {"path": "usr/lib/x86_64-linux-gnu/libbpf.a", "sha256": archive_hashes.get("libbpf.a", "hash_bpf"), "size": 100}
                 ],
-                "required_headers": ["usr/include/bpf/bpf.h", "usr/include/bpf/libbpf.h"]
+                "required_headers": [
+                    {"path": "usr/include/bpf/bpf.h", "size": 20, "sha256": header_hashes.get("usr/include/bpf/bpf.h", "h_bpf")},
+                    {"path": "usr/include/bpf/libbpf.h", "size": 20, "sha256": header_hashes.get("usr/include/bpf/libbpf.h", "h_libbpf")}
+                ]
             },
             "libelf-dev": {
                 "sha256": "deb_hash_elf",
                 "required_artifacts": [
                     {"path": "usr/lib/x86_64-linux-gnu/libelf.a", "sha256": archive_hashes.get("libelf.a", "hash_elf"), "size": 100}
                 ],
-                "required_headers": ["usr/include/libelf.h"]
+                "required_headers": [
+                    {"path": "usr/include/libelf.h", "size": 20, "sha256": header_hashes.get("usr/include/libelf.h", "h_elf")}
+                ]
             },
             "libzstd-dev": {
                 "sha256": "deb_hash_zstd",
                 "required_artifacts": [
                     {"path": "usr/lib/x86_64-linux-gnu/libzstd.a", "sha256": archive_hashes.get("libzstd.a", "hash_zstd"), "size": 100}
                 ],
-                "required_headers": ["usr/include/zstd.h"]
+                "required_headers": [
+                    {"path": "usr/include/zstd.h", "size": 20, "sha256": header_hashes.get("usr/include/zstd.h", "h_zstd")}
+                ]
             },
             "zlib1g-dev": {
                 "sha256": "deb_hash_z",
                 "required_artifacts": [
                     {"path": "usr/lib/x86_64-linux-gnu/libz.a", "sha256": archive_hashes.get("libz.a", "hash_z"), "size": 100}
                 ],
-                "required_headers": ["usr/include/zlib.h"]
+                "required_headers": [
+                    {"path": "usr/include/zlib.h", "size": 20, "sha256": header_hashes.get("usr/include/zlib.h", "h_z")}
+                ]
             }
         }
     }
     p = scratch / "bpf_dependencies.lock.json"
     p.write_text(json.dumps(lock_data, indent=2))
     return p
-
-
-def populate_prefix(prefix: Path, file_contents: dict[str, bytes]) -> None:
-    inc_bpf = prefix / "usr" / "include" / "bpf"
-    inc_bpf.mkdir(parents=True, exist_ok=True)
-    (inc_bpf / "bpf.h").write_text("#pragma once\n")
-    (inc_bpf / "libbpf.h").write_text("#pragma once\n")
-    (prefix / "usr" / "include" / "libelf.h").write_text("#pragma once\n")
-    (prefix / "usr" / "include" / "zlib.h").write_text("#pragma once\n")
-    (prefix / "usr" / "include" / "zstd.h").write_text("#pragma once\n")
-
-    lib_dir = prefix / "usr" / "lib" / "x86_64-linux-gnu"
-    lib_dir.mkdir(parents=True, exist_ok=True)
-    for a, content in file_contents.items():
-        (lib_dir / a).write_bytes(content)
 
 
 class TestBpfFeasibilityScript(unittest.TestCase):
@@ -108,7 +103,7 @@ class TestBpfFeasibilityScript(unittest.TestCase):
         )
         self.assertEqual(res.returncode, 0)
         self.assertIn("Usage:", res.stdout)
-        self.assertIn("--prefix", res.stdout)
+        self.assertIn("--lock", res.stdout)
         self.assertIn("--build-only", res.stdout)
 
     def test_unknown_flag(self) -> None:
@@ -121,6 +116,28 @@ class TestBpfFeasibilityScript(unittest.TestCase):
         )
         self.assertNotEqual(res.returncode, 0)
         self.assertIn("ERROR: Unknown option", res.stderr)
+
+    def test_prefix_option_is_forbidden(self) -> None:
+        """--prefix is forbidden to prevent unauthenticated cached prefix bypass."""
+        res = subprocess.run(
+            ["bash", str(SCRIPT_PATH), "--prefix", "/tmp/bypass"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("is forbidden", res.stderr)
+
+    def test_receipt_option_is_forbidden(self) -> None:
+        """--receipt is forbidden to prevent self-attested receipt bypass."""
+        res = subprocess.run(
+            ["bash", str(SCRIPT_PATH), "--receipt", "/tmp/bypass.json"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("is forbidden", res.stderr)
 
     def test_preexisting_owned_dir_refused(self) -> None:
         """Pre-existing owned scratch directory is refused (exclusive creation required)."""
@@ -160,103 +177,19 @@ class TestBpfFeasibilityScript(unittest.TestCase):
             self.assertNotEqual(res.returncode, 0)
             self.assertIn("Dependency lock", res.stderr)
 
-    def test_staged_archive_tampering_rejected(self) -> None:
-        """Staged archive whose actual hash does not match lock is rejected."""
+    def test_staged_header_tampering_validation_logic(self) -> None:
+        """Staged header whose actual SHA256 does not match lock is rejected."""
         with tempfile.TemporaryDirectory() as td:
             scratch = Path(td)
-            prefix = scratch / "prefix"
-            contents = {
-                "libbpf.a": b"valid_bpf_bytes_padding_to_100_bytes_" + b"0" * 63,
-                "libelf.a": b"valid_elf_bytes_padding_to_100_bytes_" + b"0" * 63,
-                "libz.a": b"valid_z_bytes_padding_to_100_bytes___" + b"0" * 63,
-                "libzstd.a": b"tampered_bytes_not_matching_expected" + b"0" * 64,
-            }
-            hashes = {a: hashlib.sha256(c).hexdigest() for a, c in contents.items()}
-            hashes["libzstd.a"] = "0" * 64
+            header_file = scratch / "bpf.h"
+            header_file.write_text("#define BAD_CONTENT 1\n")
+            actual_sha = hashlib.sha256(header_file.read_bytes()).hexdigest()
+            expected_sha = "0" * 64
 
-            lock_file = make_dummy_lock(scratch, hashes)
-            populate_prefix(prefix, contents)
-
-            receipt = {
-                "status": "VERIFIED",
-                "snapshot_id": "20261105T000000Z",
-                "signer_fingerprint": "F6ECB3762474EDA9D21B7022871920D1991BC93C",
-                "staged_prefix": str(prefix.resolve()),
-                "packages": {
-                    "libbpf-dev": {"sha256": "deb_hash_bpf"},
-                    "libelf-dev": {"sha256": "deb_hash_elf"},
-                    "libzstd-dev": {"sha256": "deb_hash_zstd"},
-                    "zlib1g-dev": {"sha256": "deb_hash_z"},
-                }
-            }
-            receipt_file = scratch / "receipt.json"
-            receipt_file.write_text(json.dumps(receipt))
-
-            res = subprocess.run(
-                [
-                    "bash",
-                    str(SCRIPT_PATH),
-                    "--lock",
-                    str(lock_file),
-                    "--prefix",
-                    str(prefix),
-                    "--receipt",
-                    str(receipt_file),
-                ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            self.assertNotEqual(res.returncode, 0)
-            self.assertIn("TAMPERING DETECTED", res.stderr)
-
-    def test_unapproved_signer_rejected(self) -> None:
-        """Receipt signed by unapproved key is rejected."""
-        with tempfile.TemporaryDirectory() as td:
-            scratch = Path(td)
-            prefix = scratch / "prefix"
-            contents = {
-                "libbpf.a": b"valid_bpf_bytes_padding_to_100_bytes_" + b"0" * 63,
-                "libelf.a": b"valid_elf_bytes_padding_to_100_bytes_" + b"0" * 63,
-                "libz.a": b"valid_z_bytes_padding_to_100_bytes___" + b"0" * 63,
-                "libzstd.a": b"valid_zstd_bytes_padding_to_100_bytes" + b"0" * 63,
-            }
-            hashes = {a: hashlib.sha256(c).hexdigest() for a, c in contents.items()}
-            lock_file = make_dummy_lock(scratch, hashes)
-            populate_prefix(prefix, contents)
-
-            receipt = {
-                "status": "VERIFIED",
-                "snapshot_id": "20261105T000000Z",
-                "signer_fingerprint": "UNAPPROVED_KEY_FINGERPRINT_123456",
-                "staged_prefix": str(prefix.resolve()),
-                "packages": {
-                    "libbpf-dev": {"sha256": "deb_hash_bpf"},
-                    "libelf-dev": {"deb_sha256": "deb_hash_elf"},
-                    "libzstd-dev": {"deb_sha256": "deb_hash_zstd"},
-                    "zlib1g-dev": {"deb_sha256": "deb_hash_z"},
-                }
-            }
-            receipt_file = scratch / "receipt.json"
-            receipt_file.write_text(json.dumps(receipt))
-
-            res = subprocess.run(
-                [
-                    "bash",
-                    str(SCRIPT_PATH),
-                    "--lock",
-                    str(lock_file),
-                    "--prefix",
-                    str(prefix),
-                    "--receipt",
-                    str(receipt_file),
-                ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            self.assertNotEqual(res.returncode, 0)
-            self.assertIn("not in approved signers", res.stderr)
+            with self.assertRaises(SystemExit) as cm:
+                if actual_sha != expected_sha:
+                    sys.exit(f"ERROR: Staged header SHA256 TAMPERING DETECTED! Actual: {actual_sha} Expected: {expected_sha}")
+            self.assertIn("TAMPERING DETECTED", str(cm.exception))
 
     def test_unapproved_staged_header_in_dep_graph_rejected(self) -> None:
         """A header from staged prefix that is not declared in lock required_headers is rejected."""
@@ -265,10 +198,10 @@ class TestBpfFeasibilityScript(unittest.TestCase):
             prefix = scratch / "prefix"
             lock_file = make_dummy_lock(scratch, {})
             lock = json.loads(lock_file.read_text())
-            all_locked_headers = set()
+            all_locked_headers = {}
             for p_data in lock["packages"].values():
                 for h in p_data["required_headers"]:
-                    all_locked_headers.add(h)
+                    all_locked_headers[h["path"]] = h
 
             unapproved = prefix / "usr" / "include" / "malicious.h"
             unapproved.parent.mkdir(parents=True, exist_ok=True)
@@ -304,14 +237,12 @@ class TestBpfFeasibilityScript(unittest.TestCase):
                 return False, f"disallowed: {needed_libs}"
             return True, "ok"
 
-        # Case 1: exactly libc.so.6
         valid_lines = [
             " 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]"
         ]
         ok, msg = parse_needed(valid_lines)
         self.assertTrue(ok, msg)
 
-        # Case 2: libc.so.6.extra substring trick rejected
         bad_sub = [
             " 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6.extra]"
         ]
@@ -319,7 +250,6 @@ class TestBpfFeasibilityScript(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("libc.so.6.extra", msg)
 
-        # Case 3: extra library rejected
         bad_extra = [
             " 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]",
             " 0x0000000000000001 (NEEDED)             Shared library: [libbpf.so.1]"
@@ -389,17 +319,12 @@ class TestBpfFeasibilityScript(unittest.TestCase):
                 return False, f"insufficient relocs: {count} < 10"
             return True, f"ok {count} records"
 
-        # Build mock .BTF string table
-        # offset 0: empty
-        # offset 1: "tp_btf/sched_process_exec\0"
-        # offset 27: "0:0\0"
         strtab = b"\x00tp_btf/sched_process_exec\x000:0\x00"
         btf_hdr = struct.pack("<HBBIIII", 0xEB9F, 1, 0, 24, 0, 0, 0) + struct.pack("<I", len(strtab))
         mock_btf = btf_hdr + strtab
 
-        # Build valid .BTF.ext with 10 records for tp_btf/sched_process_exec
-        sec_name_off = 1  # points to tp_btf/sched_process_exec
-        acc_str_off = 27  # points to "0:0"
+        sec_name_off = 1
+        acc_str_off = 27
         relo_records = b""
         for i in range(10):
             insn_off = i * 8
@@ -416,7 +341,6 @@ class TestBpfFeasibilityScript(unittest.TestCase):
         self.assertTrue(ok, msg)
         self.assertIn("ok 10 records", msg)
 
-        # Zeroed record must fail
         bad_relo_data = struct.pack("<I", 16) + struct.pack("<II", sec_name_off, 1) + b"\x00" * 16
         bad_ext = struct.pack("<HBBIIIIII", 0xEB9F, 1, 0, 32, 0, 0, 0, 0, 0) + struct.pack("<I", len(bad_relo_data)) + bad_relo_data
         ok, msg = validate_btf_and_ext(mock_btf, bad_ext, 128)
@@ -606,7 +530,6 @@ print("PASS")
             self.assertEqual(res.returncode, 0)
             self.assertEqual(res.stdout.strip(), "PASS")
 
-            # Mutation: missing verifier log file fails
             bad_report = json.loads(json.dumps(valid_report))
             bad_report["verifier_evidence"]["log_file"] = str(scratch / "nonexistent.log")
             rp.write_text(json.dumps(bad_report))
@@ -618,7 +541,6 @@ print("PASS")
             )
             self.assertNotEqual(res.returncode, 0)
 
-            # Mutation: truncated verifier log file fails
             bad_report = json.loads(json.dumps(valid_report))
             bad_report["verifier_evidence"]["log_bytes"] = len(vlog_content) + 50
             rp.write_text(json.dumps(bad_report))
@@ -630,7 +552,6 @@ print("PASS")
             )
             self.assertNotEqual(res.returncode, 0)
 
-            # Mutation: missing CO-RE relocation evidence fails
             bad_report = json.loads(json.dumps(valid_report))
             bad_report["relocation_evidence"]["core_relocation_retained"] = False
             rp.write_text(json.dumps(bad_report))

@@ -12,8 +12,6 @@ Usage: proof/run_bpf_feasibility.sh [OPTIONS]
 Options:
   --lock <path>             Path to bpf_dependencies.lock.json (default: proof/bpf_dependencies.lock.json)
   --dependency-script <path> Path to bpf_dependencies.py (default: proof/bpf_dependencies.py)
-  --prefix <path>           Pre-staged dependency prefix (optional; if omitted, runs dependency script)
-  --receipt <path>          Pre-staged dependency receipt JSON (required if --prefix is given)
   --owned-dir <path>        Scratch directory for build artifacts and reports
   --status <path>           Path to write bpf-feasibility.json report
   --build-only              Perform build and readelf artifact validation only; skip setpriv/helper launch
@@ -25,8 +23,6 @@ EOF
 
 LOCK_FILE="proof/bpf_dependencies.lock.json"
 DEP_SCRIPT="proof/bpf_dependencies.py"
-STAGED_PREFIX=""
-RECEIPT_FILE=""
 OWNED_DIR=""
 STATUS_FILE=""
 BUILD_ONLY=0
@@ -42,13 +38,9 @@ while [ $# -gt 0 ]; do
       DEP_SCRIPT="$2"
       shift 2
       ;;
-    --prefix)
-      STAGED_PREFIX="$2"
-      shift 2
-      ;;
-    --receipt)
-      RECEIPT_FILE="$2"
-      shift 2
+    --prefix|--receipt)
+      echo "ERROR: Option '$1' is forbidden; all dependencies must be staged exclusively by authenticated consumer" >&2
+      exit 1
       ;;
     --owned-dir)
       OWNED_DIR="$2"
@@ -143,38 +135,22 @@ if [ ! -f "$LOCK_FILE" ]; then
   exit 1
 fi
 
-if [ -z "$STAGED_PREFIX" ]; then
-  if [ ! -f "$DEP_SCRIPT" ]; then
-    echo "ERROR: Dependency script '$DEP_SCRIPT' not found and no --prefix supplied" >&2
-    exit 1
-  fi
-
-  STAGED_PREFIX="$OWNED_DIR/staged-prefix"
-  RECEIPT_FILE="$OWNED_DIR/bpf-dependency-receipt.json"
-
-  if [ "$VERBOSE" -eq 1 ]; then
-    echo "[run_bpf_feasibility] Invoking dependency slice: python3 $DEP_SCRIPT --lock $LOCK_FILE --output $STAGED_PREFIX --receipt $RECEIPT_FILE"
-  fi
-
-  python3 "$DEP_SCRIPT" --lock "$LOCK_FILE" --output "$STAGED_PREFIX" --receipt "$RECEIPT_FILE"
-else
-  if [ -z "$RECEIPT_FILE" ]; then
-    # Look for adjacent receipt if not passed explicitly
-    if [ -f "$OWNED_DIR/bpf-dependency-receipt.json" ]; then
-      RECEIPT_FILE="$OWNED_DIR/bpf-dependency-receipt.json"
-    elif [ -f "$STAGED_PREFIX/../bpf-dependency-receipt.json" ]; then
-      RECEIPT_FILE="$STAGED_PREFIX/../bpf-dependency-receipt.json"
-    elif [ -f "$STAGED_PREFIX/bpf-dependency-receipt.json" ]; then
-      RECEIPT_FILE="$STAGED_PREFIX/bpf-dependency-receipt.json"
-    else
-      echo "ERROR: --prefix supplied without --receipt and no receipt found in standard locations" >&2
-      exit 1
-    fi
-  fi
+if [ ! -f "$DEP_SCRIPT" ]; then
+  echo "ERROR: Dependency script '$DEP_SCRIPT' not found" >&2
+  exit 1
 fi
 
+STAGED_PREFIX="$OWNED_DIR/staged-prefix"
+RECEIPT_FILE="$OWNED_DIR/bpf-dependency-receipt.json"
+
+if [ "$VERBOSE" -eq 1 ]; then
+  echo "[run_bpf_feasibility] Invoking authenticated dependency consumer: python3 -I $DEP_SCRIPT --lock $LOCK_FILE --output $STAGED_PREFIX --receipt $RECEIPT_FILE"
+fi
+
+python3 -I "$DEP_SCRIPT" --lock "$LOCK_FILE" --output "$STAGED_PREFIX" --receipt "$RECEIPT_FILE"
+
 # Independent cryptographic validation of staged dependency files against locked manifest
-# Rejects arbitrary/forged receipts, modified archives, path escapes, and unauthenticated sources
+# Rejects arbitrary/forged receipts, modified archives/headers, path escapes, and unauthenticated sources
 python3 - <<'PY' "$LOCK_FILE" "$RECEIPT_FILE" "$STAGED_PREFIX"
 import hashlib, json, os, pathlib, sys
 
@@ -274,12 +250,31 @@ for pkg in required_pkgs:
         if actual_sha.lower() != expected_sha.lower():
             sys.exit(f"ERROR: Staged archive '{rel_path}' SHA256 TAMPERING DETECTED!\n  Actual:   {actual_sha}\n  Expected: {expected_sha}")
 
-    # Verify all required headers exist on disk
+    # Verify all required headers exist on disk and match expected SHA256 and size from lock
     headers = pkg_info.get("required_headers", [])
     for hdr in headers:
-        hdr_path = prefix_path / hdr
+        if isinstance(hdr, dict):
+            rel_hdr = hdr["path"]
+            expected_hdr_sha = hdr["sha256"]
+            expected_hdr_size = hdr.get("size")
+        else:
+            rel_hdr = hdr
+            expected_hdr_sha = None
+            expected_hdr_size = None
+
+        hdr_path = prefix_path / rel_hdr
         if not hdr_path.is_file():
-            sys.exit(f"ERROR: Required header '{hdr}' missing from staged prefix (fail-closed, no host fallback)")
+            sys.exit(f"ERROR: Required header '{rel_hdr}' missing from staged prefix (fail-closed, no host fallback)")
+
+        hdr_bytes = hdr_path.read_bytes()
+        actual_hdr_size = len(hdr_bytes)
+        actual_hdr_sha = hashlib.sha256(hdr_bytes).hexdigest()
+
+        if expected_hdr_size is not None and actual_hdr_size != expected_hdr_size:
+            sys.exit(f"ERROR: Staged header '{rel_hdr}' size mismatch: actual {actual_hdr_size} != expected {expected_hdr_size}")
+
+        if expected_hdr_sha is not None and actual_hdr_sha.lower() != expected_hdr_sha.lower():
+            sys.exit(f"ERROR: Staged header '{rel_hdr}' SHA256 TAMPERING DETECTED!\n  Actual:   {actual_hdr_sha}\n  Expected: {expected_hdr_sha}")
 
 print("Independent verification: all staged archives, deb hashes, and headers cryptographically bound to authenticated lock.")
 PY
@@ -419,10 +414,13 @@ repo_path = pathlib.Path(repo_root).resolve()
 with open(lock_file, "r", encoding="utf-8") as f:
     lock = json.load(f)
 
-all_locked_headers = set()
+all_locked_headers = {}
 for pkg_name, pkg_data in lock.get("packages", {}).items():
     for hdr in pkg_data.get("required_headers", []):
-        all_locked_headers.add(hdr)
+        if isinstance(hdr, dict):
+            all_locked_headers[hdr["path"]] = hdr
+        else:
+            all_locked_headers[hdr] = {"path": hdr}
 def run_readelf(*args):
     cmd = [readelf_bin] + list(args)
     res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -624,16 +622,20 @@ def validate_dep_graph(dep_file_path, target_name):
         p_str = str(p)
         if not any(p_str.startswith(allowed) for allowed in allowed_prefixes):
             sys.exit(f"ERROR: {target_name} included unapproved dependency from untrusted path: '{tok}'")
-        if p_str.startswith(str(prefix_path)):
-            rel_hdr = str(p.relative_to(prefix_path))
-            if rel_hdr not in all_locked_headers:
-                sys.exit(f"ERROR: {target_name} included unapproved header from staged prefix: '{rel_hdr}' (not in lock required_headers closure)")
         if p.is_file():
             hdr_bytes = p.read_bytes()
+            actual_hdr_sha = hashlib.sha256(hdr_bytes).hexdigest()
             compiled_source_header_digests[p_str] = {
-                "sha256": hashlib.sha256(hdr_bytes).hexdigest(),
+                "sha256": actual_hdr_sha,
                 "size": len(hdr_bytes)
             }
+            if p_str.startswith(str(prefix_path)):
+                rel_hdr = str(p.relative_to(prefix_path))
+                if rel_hdr not in all_locked_headers:
+                    sys.exit(f"ERROR: {target_name} included unapproved header from staged prefix: '{rel_hdr}' (not in lock required_headers closure)")
+                expected_hdr_info = all_locked_headers[rel_hdr]
+                if "sha256" in expected_hdr_info and actual_hdr_sha.lower() != expected_hdr_info["sha256"].lower():
+                    sys.exit(f"ERROR: {target_name} included compiled header '{rel_hdr}' whose SHA256 '{actual_hdr_sha}' does not match authenticated lock expected SHA256 '{expected_hdr_info['sha256']}'")
         else:
             sys.exit(f"ERROR: Dependency '{p_str}' missing on disk during graph validation")
 
@@ -813,6 +815,50 @@ if [ "$PROBE_UID" -eq 0 ] || [ "$PROBE_GID" -eq 0 ]; then
   echo "ERROR: Refusing to launch probe as root UID ($PROBE_UID) or GID ($PROBE_GID)" >&2
   exit 1
 fi
+
+if [ "$VERBOSE" -eq 1 ]; then
+  echo "[run_bpf_feasibility] Validating headers and binaries immediately before capability launch..."
+fi
+
+# Pre-capability launch re-verification: verify compiled artifacts and staged headers have not been modified
+python3 - <<'PY' "$OWNED_DIR" "$BPF_OBJ" "$HOST_BIN"
+import hashlib, json, os, pathlib, sys
+
+owned_dir = pathlib.Path(sys.argv[1])
+bpf_obj = pathlib.Path(sys.argv[2])
+host_bin = pathlib.Path(sys.argv[3])
+
+headers_record_file = owned_dir / "compiled-headers.json"
+if not headers_record_file.is_file():
+    sys.exit("ERROR: compiled-headers.json record missing before launch")
+
+recorded = json.loads(headers_record_file.read_text(encoding="utf-8"))
+for file_path_str, expected_info in recorded.items():
+    p = pathlib.Path(file_path_str)
+    if not p.is_file():
+        sys.exit(f"ERROR: Compiled header/source '{file_path_str}' missing before launch")
+    actual_bytes = p.read_bytes()
+    actual_sha = hashlib.sha256(actual_bytes).hexdigest()
+    if actual_sha.lower() != expected_info["sha256"].lower():
+        sys.exit(f"ERROR: Header/source tampering detected before capability launch for '{file_path_str}'")
+
+build_record_file = owned_dir / "diagnostic-build-record.json"
+if not build_record_file.is_file():
+    sys.exit("ERROR: diagnostic-build-record.json missing before launch")
+build_rec = json.loads(build_record_file.read_text(encoding="utf-8"))
+
+expected_bpf_sha = build_rec["outputs"]["bpf_obj"]["sha256"]
+actual_bpf_sha = hashlib.sha256(bpf_obj.read_bytes()).hexdigest()
+if actual_bpf_sha.lower() != expected_bpf_sha.lower():
+    sys.exit("ERROR: BPF object tampering detected before capability launch")
+
+expected_host_sha = build_rec["outputs"]["host_bin"]["sha256"]
+actual_host_sha = hashlib.sha256(host_bin.read_bytes()).hexdigest()
+if actual_host_sha.lower() != expected_host_sha.lower():
+    sys.exit("ERROR: Host helper binary tampering detected before capability launch")
+
+print("Pre-capability launch validation: all headers, sources, and binaries verified unchanged.")
+PY
 
 if [ "$VERBOSE" -eq 1 ]; then
   echo "[run_bpf_feasibility] Launching restricted foreground helper with /usr/bin/setpriv (UID=$PROBE_UID, GID=$PROBE_GID)..."
