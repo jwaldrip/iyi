@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import pathlib
-import platform
 import selectors
 import stat
 import signal
@@ -170,9 +169,12 @@ def main():
     st = root.stat()
     if not root.is_dir() or root == runner or not root.is_relative_to(runner) or st.st_uid != os.getuid() or stat.S_IMODE(st.st_mode) != 0o700:
         sys.exit("census output directory must be runner-owned mode 0700 under RUNNER_TEMP")
+    uname = os.uname()
     report = {"schema": "iyi-bpf-tool-census-v1", "strict_eligible": False,
               "image_os": os.environ.get("ImageOS"), "image_version": os.environ.get("ImageVersion"),
-              "kernel": platform.uname()._asdict(), "tools": {}}
+              "kernel": {"sysname": uname.sysname, "nodename": uname.nodename,
+                         "release": uname.release, "version": uname.version,
+                         "machine": uname.machine}, "tools": {}}
     for name, path in TOOLS.items():
         info = path_info(path)
         reason = safe_to_execute(name, info)
