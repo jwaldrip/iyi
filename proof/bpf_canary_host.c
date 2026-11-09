@@ -1359,17 +1359,15 @@ int main(int argc, char **argv) {
   rep.link_id = linfo.id;
   rep.link_type = linfo.type;
   rep.link_prog_id = linfo.prog_id;
-  rep.link_attach_type = linfo.tracing.attach_type;
-  rep.link_target_btf_id = linfo.tracing.target_btf_id;
   rep.hook_identity_verified = true;
   rep.link_association_verified = true;
   btf__free(vbtf);
   if (verbose) {
     fprintf(stderr,
             "[bpf_canary_host] Attached link: link_id=%u prog_id=%u "
-            "link_type=%u attach_type=%u "
+            "link_type=%u (RAW_TRACEPOINT: %s) "
             "(prog_info_valid=%d link_info_valid=%d)\n",
-            rep.link_id, rep.prog_id, rep.link_type, rep.link_attach_type,
+            rep.link_id, rep.prog_id, rep.link_type, rep.link_tp_name,
             rep.prog_info_valid, rep.link_info_valid);
   }
 
