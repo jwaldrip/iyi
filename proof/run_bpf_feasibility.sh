@@ -1127,6 +1127,9 @@ if [ "$VERBOSE" -eq 1 ]; then
   echo "[run_bpf_feasibility] Repository root: $REPO_ROOT"
   echo "[run_bpf_feasibility] Scratch working directory: $OWNED_DIR"
 fi
+# Validate the independently preserved runner census before invoking its tools.
+python3 -I "$REPO_ROOT/proof/bpf_runner_baseline.py"
+
 
 # 1. Dependency staging and verification via shared contract
 STAGED_PREFIX="$OWNED_DIR/staged-prefix"
@@ -1141,101 +1144,14 @@ python3 -I "$DEP_SCRIPT" --lock "$LOCK_FILE" --output "$STAGED_PREFIX" --receipt
 # Authoritative pre-compilation manifest validation
 validate_staged_manifest_main "$LOCK_FILE" "$RECEIPT_FILE" "$STAGED_PREFIX"
 
-verify_trusted_system_tool() {
-  local tool_path="$1"
-  local tool_name="$2"
-  local expected_version_grep="$3"
+# The baseline verifier pins the exact compiler, tool and resource identities.
+CLANG_BIN="/usr/bin/clang-18"
+CLANG_RESOURCE="/usr/lib/llvm-18/lib/clang/18"
+GCC_BIN="/usr/bin/gcc-13"
+READELF_BIN="/usr/bin/readelf"
 
-  if [ ! -e "$tool_path" ]; then
-    echo "ERROR: Trusted system tool '$tool_name' does not exist at '$tool_path'" >&2
-    exit 1
-  fi
-  if [ ! -x "$tool_path" ]; then
-    echo "ERROR: Trusted system tool '$tool_name' is not executable at '$tool_path'" >&2
-    exit 1
-  fi
-
-  local real_tool
-  real_tool="$(readlink -f "$tool_path" 2>/dev/null || realpath "$tool_path" 2>/dev/null || echo "$tool_path")"
-
-  if [ "$(uname -s)" = "Linux" ]; then
-    case "$real_tool" in
-      /usr/bin/*|/bin/*) ;;
-      *)
-        echo "ERROR: Trusted system tool '$tool_name' resolved outside /usr/bin or /bin: '$real_tool'" >&2
-        exit 1
-        ;;
-    esac
-
-    python3 -I - <<'PY' "$real_tool" "$tool_name"
-import os, sys
-path = sys.argv[1]
-name = sys.argv[2]
-st = os.stat(path)
-if st.st_uid != 0:
-    sys.exit(f"ERROR: Trusted system tool '{name}' at '{path}' is not owned by root (UID {st.st_uid} != 0)")
-if (st.st_mode & 0o022) != 0:
-    sys.exit(f"ERROR: Trusted system tool '{name}' at '{path}' has unsafe permissions (group/world writable: {oct(st.st_mode)})")
-PY
-  fi
-
-  local ver_output
-  ver_output="$("$tool_path" --version 2>&1 || true)"
-  if ! echo "$ver_output" | grep -E "$expected_version_grep" >/dev/null 2>&1; then
-    echo "ERROR: Trusted system tool '$tool_name' version mismatch: expected '$expected_version_grep', got:" >&2
-    echo "$ver_output" >&2
-    exit 1
-  fi
-}
-
-# 2. Toolchain verification (Section 4)
-CLANG_BIN=""
-for candidate in /usr/bin/clang-18 /usr/bin/clang; do
-  if [ -x "$candidate" ]; then
-    CLANG_BIN="$candidate"
-    break
-  fi
-done
-if [ -z "$CLANG_BIN" ]; then
-  CLANG_BIN="$(command -v clang-18 2>/dev/null || command -v clang 2>/dev/null || true)"
-fi
-if [ -z "$CLANG_BIN" ] || [ ! -x "$CLANG_BIN" ]; then
-  echo "ERROR: Clang compiler not found; prerequisite failure" >&2
-  exit 1
-fi
-verify_trusted_system_tool "$CLANG_BIN" "clang" "(clang version (18\.|[0-9]+\.)|Apple clang)"
-
-CLANG_RESOURCE="$("$CLANG_BIN" -print-resource-dir 2>/dev/null || true)"
-if [ -z "$CLANG_RESOURCE" ] || [ ! -d "$CLANG_RESOURCE/include" ]; then
-  echo "ERROR: Clang resource directory invalid ('$CLANG_RESOURCE'); trusted toolchain failure" >&2
-  exit 1
-fi
-
-GCC_BIN=""
-for candidate in /usr/bin/gcc-13 /usr/bin/gcc; do
-  if [ -x "$candidate" ]; then
-    GCC_BIN="$candidate"
-    break
-  fi
-done
-if [ -z "$GCC_BIN" ]; then
-  GCC_BIN="$(command -v gcc-13 2>/dev/null || command -v gcc 2>/dev/null || true)"
-fi
-if [ -z "$GCC_BIN" ] || [ ! -x "$GCC_BIN" ]; then
-  echo "ERROR: GCC compiler not found; prerequisite failure" >&2
-  exit 1
-fi
-verify_trusted_system_tool "$GCC_BIN" "gcc" "(gcc.*Ubuntu|gcc \(Ubuntu 13\.|gcc \(GCC\) [0-9]+|Free Software Foundation|clang)"
-
-READELF_BIN="$(command -v readelf 2>/dev/null || true)"
-if [ -z "$READELF_BIN" ] && [ -x /usr/bin/readelf ]; then
-  READELF_BIN="/usr/bin/readelf"
-fi
-if [ -z "$READELF_BIN" ]; then
-  echo "ERROR: readelf utility not found; prerequisite failure" >&2
-  exit 1
-fi
-verify_trusted_system_tool "$READELF_BIN" "readelf" "(GNU readelf|llvm-readelf)"
+# Recheck the same version-controlled baseline immediately before compilation.
+python3 -I "$REPO_ROOT/proof/bpf_runner_baseline.py"
 
 # 3. Section 4: Exact BPF compilation
 BPF_SRC="$REPO_ROOT/proof/bpf_canary.bpf.c"
@@ -1368,8 +1284,8 @@ if [ "$BUILD_ONLY" -eq 1 ]; then
 fi
 
 # 6. Section 7: Launch only the restricted foreground helper
-verify_trusted_system_tool "/usr/bin/setpriv" "setpriv" "setpriv from util-linux 2\."
-verify_trusted_system_tool "/usr/bin/sudo" "sudo" "Sudo version"
+# Recheck before the restricted helper launch; this never executes sudo.
+python3 -I "$REPO_ROOT/proof/bpf_runner_baseline.py"
 
 PROBE_UID="$(id -u)"
 PROBE_GID="$(id -g)"

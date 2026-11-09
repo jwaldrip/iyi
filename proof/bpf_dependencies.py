@@ -79,12 +79,11 @@ def verify_trusted_system_tool(tool_path: str, tool_name: str, expected_version_
     if expected_version_pattern and os.path.isfile(resolved):
         try:
             p = subprocess.run([resolved, "--version"], capture_output=True, text=True, timeout=5)
-            out = p.stdout + p.stderr
-            if p.returncode == 0 and not re.search(expected_version_pattern, out):
-                raise SecurityError(f"{tool_name} version mismatch at '{resolved}': expected pattern '{expected_version_pattern}', got: {out[:200]}")
-        except Exception as e:
-            if isinstance(e, SecurityError):
-                raise
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise SecurityError(f"{tool_name} version command failed: {exc}") from exc
+        out = p.stdout + p.stderr
+        if p.returncode != 0 or not re.fullmatch(expected_version_pattern, out):
+            raise SecurityError(f"{tool_name} version mismatch or failure at '{resolved}'")
     return resolved
 
 
@@ -803,7 +802,7 @@ def safe_extract_deb(deb_path: str, output_dir: str, dpkg_deb_path: str) -> None
     Extract .deb into output_dir nonroot using /usr/bin/dpkg-deb per PlanBpfOwnedDependencies.
     No fallback internal extractor is permitted.
     """
-    resolved_dpkg = verify_trusted_system_tool(dpkg_deb_path, "dpkg-deb", r"Debian dpkg-deb version 1\.")
+    resolved_dpkg = verify_trusted_system_tool(dpkg_deb_path, "dpkg-deb", r"Debian 'dpkg-deb' package archive backend version 1\.22\.6 \(amd64\)\.\nThis is free software; see the GNU General Public License version 2 or\nlater for copying conditions\. There is NO warranty\.\n")
 
     cmd = [resolved_dpkg, "--extract", deb_path, output_dir]
     p = subprocess.run(cmd, capture_output=True, text=True)
@@ -972,7 +971,7 @@ def run_lock_consumer(
             f"Keyring SHA256 mismatch for {resolved_keyring}: got {actual_keyring_sha}, expected {expected_keyring_sha}"
         )
 
-    resolved_gpgv = verify_trusted_system_tool(gpgv_path, "gpgv", r"gpgv \(GnuPG\)")
+    resolved_gpgv = verify_trusted_system_tool(gpgv_path, "gpgv", r"gpgv \(GnuPG\) 2\.4\.4\nlibgcrypt 1\.10\.3\nCopyright \(C\) 2024 g10 Code GmbH\nLicense GNU GPL-3\.0-or-later <https://gnu\.org/licenses/gpl\.html>\nThis is free software: you are free to change and redistribute it\.\nThere is NO WARRANTY, to the extent permitted by law\.\n")
 
     # Use RUNNER_TEMP for private scratch
     old_umask = os.umask(0o077)
