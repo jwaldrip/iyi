@@ -308,7 +308,9 @@ btf_types = {}
 type_id = 1
 t_idx = 0
 
-while t_idx + 12 <= len(type_bytes):
+while t_idx < len(type_bytes):
+    if t_idx + 12 > len(type_bytes):
+        sys.exit(f"ERROR: .BTF type section has {len(type_bytes) - t_idx} trailing bytes (incomplete binary grammar)")
     name_off = int.from_bytes(type_bytes[t_idx:t_idx+4], "little")
     info = int.from_bytes(type_bytes[t_idx+4:t_idx+8], "little")
     size_or_type = int.from_bytes(type_bytes[t_idx+8:t_idx+12], "little")
@@ -321,15 +323,17 @@ while t_idx + 12 <= len(type_bytes):
     members = []
     array_info = {}
     if kind in (4, 5):  # STRUCT, UNION
+        if t_idx + vlen * 12 > len(type_bytes):
+            sys.exit("ERROR: .BTF struct member truncated")
         for _ in range(vlen):
-            if t_idx + 12 > len(type_bytes):
-                sys.exit("ERROR: .BTF struct member truncated")
             m_name_off = int.from_bytes(type_bytes[t_idx:t_idx+4], "little")
             m_type = int.from_bytes(type_bytes[t_idx+4:t_idx+8], "little")
             m_off = int.from_bytes(type_bytes[t_idx+8:t_idx+12], "little")
             t_idx += 12
             members.append({"name": get_btf_string(m_name_off), "type": m_type, "offset": m_off})
     elif kind == 1:  # INT
+        if t_idx + 4 > len(type_bytes):
+            sys.exit("ERROR: .BTF int payload truncated")
         t_idx += 4
     elif kind == 3:  # ARRAY
         if t_idx + 12 > len(type_bytes):
@@ -340,27 +344,43 @@ while t_idx + 12 <= len(type_bytes):
         t_idx += 12
         array_info = {"type": arr_elem_type, "index_type": arr_idx_type, "nelems": arr_nelems}
     elif kind == 6:  # ENUM
+        if t_idx + vlen * 8 > len(type_bytes):
+            sys.exit("ERROR: .BTF enum member truncated")
         for _ in range(vlen):
-            if t_idx + 8 > len(type_bytes):
-                sys.exit("ERROR: .BTF enum member truncated")
             e_name_off = int.from_bytes(type_bytes[t_idx:t_idx+4], "little")
             e_val = int.from_bytes(type_bytes[t_idx+4:t_idx+8], "little", signed=True)
             t_idx += 8
             members.append({"name": get_btf_string(e_name_off), "val": e_val})
     elif kind in (13,):  # FUNC_PROTO
+        if t_idx + vlen * 8 > len(type_bytes):
+            sys.exit("ERROR: .BTF func_proto payload truncated")
         t_idx += vlen * 8
     elif kind == 14:  # VAR
+        if t_idx + 4 > len(type_bytes):
+            sys.exit("ERROR: .BTF var payload truncated")
         t_idx += 4
     elif kind == 15:  # DATASEC
+        if t_idx + vlen * 12 > len(type_bytes):
+            sys.exit("ERROR: .BTF datasec payload truncated")
         t_idx += vlen * 12
     elif kind == 17:  # DECL_TAG
+        if t_idx + 4 > len(type_bytes):
+            sys.exit("ERROR: .BTF decl_tag payload truncated")
         t_idx += 4
     elif kind == 19:  # ENUM64
+        if t_idx + vlen * 12 > len(type_bytes):
+            sys.exit("ERROR: .BTF enum64 member truncated")
         t_idx += vlen * 12
+    elif kind in (0, 2, 7, 8, 9, 10, 11, 12, 16, 18):
+        pass
+    else:
+        sys.exit(f"ERROR: .BTF unknown type kind {kind}")
 
     btf_types[type_id] = {"name": name, "kind": kind, "size_or_type": size_or_type, "members": members, "array_info": array_info}
     type_id += 1
 
+if t_idx != len(type_bytes):
+    sys.exit(f"ERROR: .BTF type section has {len(type_bytes) - t_idx} trailing bytes (incomplete binary grammar)")
 if not btf_types:
     sys.exit("ERROR: .BTF contains 0 parsed types")
 
@@ -420,11 +440,12 @@ relo_idx = 4
 total_core_relocs = 0
 found_target_section = False
 
-while relo_idx + 8 <= len(relo_bytes):
+while relo_idx < len(relo_bytes):
+    if relo_idx + 8 > len(relo_bytes):
+        sys.exit(f"ERROR: .BTF.ext core_relo has {len(relo_bytes) - relo_idx} trailing bytes (incomplete binary grammar)")
     sec_name_off = int.from_bytes(relo_bytes[relo_idx : relo_idx + 4], "little")
     num_info = int.from_bytes(relo_bytes[relo_idx + 4 : relo_idx + 8], "little")
     relo_idx += 8
-
     sec_name = get_btf_string(sec_name_off)
     if not sec_name:
         sys.exit(f"ERROR: Invalid sec_name_off {sec_name_off} in .BTF.ext core_relo")
@@ -539,6 +560,8 @@ while relo_idx + 8 <= len(relo_bytes):
             sys.exit(f"ERROR: Failed to resolve field name for access path '{access_str}'")
         if is_target_sec:
             total_core_relocs += 1
+if relo_idx != len(relo_bytes):
+    sys.exit(f"ERROR: .BTF.ext core_relo has {len(relo_bytes) - relo_idx} trailing bytes (incomplete binary grammar)")
 if not found_target_section:
     sys.exit("ERROR: .BTF.ext lacks relocations for 'tp_btf/sched_process_exec'")
 

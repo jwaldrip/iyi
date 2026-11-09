@@ -164,6 +164,28 @@ def build_mock_bpf_elf(scratch: Path, btf_type_len: int = 120, corrupt_relo: str
         type_data = type_1
         relo_kind = 10  # ENUMVAL_EXISTS
         acc_str = "1" if scenario == "valid_enum" else "5"
+    elif scenario == "truncated_int":
+        btf_strtab, btf_offsets = make_strtab(["tp_btf/sched_process_exec", "file", "int", "0:0"])
+        type_1_info = (1 << 24)
+        type_data = struct.pack("<III", btf_offsets["int"], type_1_info, 4) + b"\x12\x34"
+        relo_kind = 0
+        acc_str = "0:0"
+    elif scenario == "trailing_type_bytes":
+        btf_strtab, btf_offsets = make_strtab(["tp_btf/sched_process_exec", "file", "0:0"])
+        type_1_info = (4 << 24) | 0
+        type_1 = struct.pack("<III", btf_offsets["file"], type_1_info, 64)
+        type_data = type_1 + b"\xaa\xbb\xcc\xdd\xee"
+        relo_kind = 0
+        acc_str = "0:0"
+    elif scenario == "trailing_core_bytes":
+        btf_strtab, btf_offsets = make_strtab(["tp_btf/sched_process_exec", "file", "f_inode", "0:0"])
+        type_1_info = (4 << 24) | 1
+        type_1 = struct.pack("<III", btf_offsets["file"], type_1_info, 64) + struct.pack("<III", btf_offsets["f_inode"], 2, 0)
+        type_2_info = (4 << 24) | 0
+        type_2 = struct.pack("<III", btf_offsets["f_inode"], type_2_info, 64)
+        type_data = type_1 + type_2
+        relo_kind = 0
+        acc_str = "0:0"
     else:
         btf_strtab, btf_offsets = make_strtab(["tp_btf/sched_process_exec", "file", "f_inode", "0:0"])
         type_1_info = (4 << 24) | 1  # STRUCT, 1 member
@@ -194,7 +216,7 @@ def build_mock_bpf_elf(scratch: Path, btf_type_len: int = 120, corrupt_relo: str
         else:
             relo_records += struct.pack("<IIII", insn_off, type_id, acc_str_off, kind)
 
-    core_relo_data = struct.pack("<I", 16) + struct.pack("<II", sec_name_off, 10) + relo_records
+    core_relo_data = struct.pack("<I", 16) + struct.pack("<II", sec_name_off, 10) + relo_records + (b"\xff" if scenario == "trailing_core_bytes" else b"")
     core_relo_len = len(core_relo_data)
     btf_ext_hdr = struct.pack("<HBBIIIIII", 0xEB9F, 1, 0, 32, 0, 0, 0, 0, 0) + struct.pack("<I", core_relo_len)
     btf_ext_sec_data = btf_ext_hdr + core_relo_data
@@ -377,6 +399,26 @@ class TestBpfFeasibilityScript(unittest.TestCase):
             self.assertNotEqual(res.returncode, 0)
             self.assertIn("already exists or is a symlink", res.stderr)
 
+
+    def test_missing_default_lock_fails(self) -> None:
+        """Missing default lock file fails closed immediately on isolated owned fixture."""
+        with tempfile.TemporaryDirectory() as td:
+            scratch = Path(td)
+            fresh_owned = scratch / "fresh_owned"
+            res = subprocess.run(
+                [
+                    "bash",
+                    str(SCRIPT_PATH),
+                    "--owned-dir",
+                    str(fresh_owned),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("Dependency lock", res.stderr)
+            self.assertIn("not found", res.stderr)
     def test_production_manifest_gate_full_validation(self) -> None:
         """Production manifest gate: positive control passes, mutations strictly fail closed."""
         with tempfile.TemporaryDirectory() as td:
@@ -667,6 +709,39 @@ class TestBpfFeasibilityScript(unittest.TestCase):
             )
             self.assertNotEqual(res.returncode, 0)
             self.assertIn("Enum value index 5 out of range (count 2)", res.stderr)
+
+            # Mutation 12: truncated non-STRUCT kind payload fails closed
+            bad_bpf_trunc_int = build_mock_bpf_elf(scratch, filename="trunc_int.o", scenario="truncated_int")
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-bpf-obj", readelf_bin, str(bad_bpf_trunc_int), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(lock_file), str(scratch)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn(".BTF int payload truncated", res.stderr)
+
+            # Mutation 13: trailing type section bytes fails closed
+            bad_bpf_trailing_type = build_mock_bpf_elf(scratch, filename="trailing_type.o", scenario="trailing_type_bytes")
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-bpf-obj", readelf_bin, str(bad_bpf_trailing_type), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(lock_file), str(scratch)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn(".BTF type section has 5 trailing bytes (incomplete binary grammar)", res.stderr)
+
+            # Mutation 14: trailing core relocation bytes fails closed
+            bad_bpf_trailing_core = build_mock_bpf_elf(scratch, filename="trailing_core.o", scenario="trailing_core_bytes")
+            res = subprocess.run(
+                ["bash", str(SCRIPT_PATH), "--validate-bpf-obj", readelf_bin, str(bad_bpf_trailing_core), str(dep_file), "/usr/lib/clang/18", str(prefix), str(REPO_ROOT), str(lock_file), str(scratch)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn(".BTF.ext core_relo has 1 trailing bytes (incomplete binary grammar)", res.stderr)
 
     def test_production_host_elf_gate_validation(self) -> None:
         """Production --validate-host-elf gate: positive control passes, mutations strictly fail closed."""
