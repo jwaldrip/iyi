@@ -394,15 +394,25 @@ def _git(cwd: str, *args: str) -> str:
     return completed.stdout.strip()
 
 
+def _report_root() -> str:
+    root = "/private/tmp"
+    if not os.path.exists(root):
+        try:
+            os.makedirs(root, exist_ok=True)
+        except OSError:
+            root = "/tmp"
+    return root
+
 class PinFixture:
     def __init__(self) -> None:
-        self.scratch = tempfile.mkdtemp(prefix="iyi-o2-pin-", dir="/tmp")
+        report_base = _report_root()
+        self.scratch = tempfile.mkdtemp(prefix="iyi-o2-pin-", dir=report_base)
         self.p = os.path.join(self.scratch, "p")
         self.w = os.path.join(self.scratch, "w")
         self.compiler = os.path.join(self.scratch, "iyi")
         while True:
             short_chain = hashlib.sha256(os.urandom(32)).hexdigest()[:8]
-            self.report = os.path.join("/tmp", f"iyp-{short_chain}")
+            self.report = os.path.join(report_base, f"iyp-{short_chain}")
             if not os.path.exists(self.report):
                 break
         try:
@@ -15125,7 +15135,7 @@ def _fixture_shim_parser_edges_seed() -> Observation:
 def _fixture_main_identity_refusal_seed() -> Observation:
     while True:
         suffix = hashlib.sha256(os.urandom(32)).hexdigest()[:8]
-        report = os.path.join("/tmp", f"iyp-{suffix}")
+        report = os.path.join(_report_root(), f"iyp-{suffix}")
         if not os.path.exists(report):
             break
     stderr = io.StringIO()
@@ -15499,7 +15509,7 @@ def _proofkit_isolated_edge(case: str) -> Observation:
                 "pin-load-chain": "aa000002",
                 "pin-load-report": "aa000003",
             }[case]
-            report = os.path.join("/tmp", f"iyp-{suffix}")
+            report = os.path.join(_report_root(), f"iyp-{suffix}")
             shutil.rmtree(report, ignore_errors=True)
             os.makedirs(report)
             try:
@@ -15700,7 +15710,7 @@ def _proofkit_more_edge(case: str) -> Observation:
                 "pin-write-dirty",
             }:
                 report = os.path.join(
-                    "/tmp",
+                    _report_root(),
                     {
                         "pin-write-probe": "iyp-bb000001",
                         "pin-write-probe-dirty": "iyp-bb000004",
@@ -15898,7 +15908,7 @@ def _proofkit_more_edge(case: str) -> Observation:
             "report-chain-mismatch",
             "report-listdir",
         }:
-            report = os.path.join("/tmp", "iyp-cc000001")
+            report = os.path.join(_report_root(), "iyp-cc000001")
             shutil.rmtree(report, ignore_errors=True)
             if case == "report-listdir":
                 os.makedirs(report)

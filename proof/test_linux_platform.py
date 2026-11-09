@@ -492,6 +492,39 @@ class TestOfflineInputsBinding(unittest.TestCase):
                 check_identity(pin)
             self.assertEqual(ctx.exception.reason, "INPUTS-DIR-CHANGED")
 
+    def test_linux_pin_fails_closed_without_inputs_dir(self):
+        from proof.smoke_test import PinFixture
+        with PinFixture() as fixture:
+            with patch.dict(os.environ, {}, clear=True):
+                with self.assertRaises(IdentityError) as ctx:
+                    write_pin(
+                        fixture.report,
+                        fixture.p,
+                        fixture.w,
+                        fixture.compiler,
+                        DRIVERS_29,
+                        inputs_dir=None,
+                        target_platform="linux",
+                    )
+                self.assertEqual(ctx.exception.reason, "INPUTS-DIR-REQUIRED")
+
+    def test_darwin_pin_default_unchanged_without_inputs_dir(self):
+        from proof.smoke_test import PinFixture
+        with PinFixture() as fixture:
+            with patch.dict(os.environ, {}, clear=True):
+                pin = write_pin(
+                    fixture.report,
+                    fixture.p,
+                    fixture.w,
+                    fixture.compiler,
+                    DRIVERS_29,
+                    inputs_dir=None,
+                    target_platform="darwin",
+                )
+                self.assertIsNone(pin.get("inputs_dir"))
+                self.assertIsNone(pin.get("inputs_digest"))
+                check_identity(pin)
+
 
 class TestArtifactLegsCompareR1(unittest.TestCase):
     def test_compare_r1_invokes_frames_script_on_linux(self):

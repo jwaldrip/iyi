@@ -618,8 +618,11 @@ def _census_shas(w_path: str, drivers: Sequence[str]) -> dict[str, str]:
 
 
 
-def inspect_pin_inputs(p_path: str, w_path: str, compiler_path: str, drivers: Sequence[str], *, inputs_dir: str | None = None) -> dict:
+def inspect_pin_inputs(p_path: str, w_path: str, compiler_path: str, drivers: Sequence[str], *, inputs_dir: str | None = None, target_platform: str | None = None) -> dict:
     """Validate every read-only pin precondition and return the pinned facts."""
+    active_platform = (
+        target_platform or ("linux" if platform.system() == "Linux" else "darwin")
+    ).lower()
     p_real = os.path.realpath(p_path)
     w_real = os.path.realpath(w_path)
     c_real = os.path.realpath(compiler_path)
@@ -627,6 +630,11 @@ def inspect_pin_inputs(p_path: str, w_path: str, compiler_path: str, drivers: Se
     env_home = os.environ.get("HOME", "")
     pin_env = {"env_path": env_path, "env_home": env_home}
     inputs_dir_env = inputs_dir or os.environ.get("IYI_PROOF_INPUTS_DIR")
+    if active_platform == "linux" and not inputs_dir_env:
+        raise IdentityError(
+            "INPUTS-DIR-REQUIRED",
+            "Linux strict proof requires complete IYI_PROOF_INPUTS_DIR offline bundle",
+        )
     if inputs_dir_env:
         inputs_real = os.path.realpath(inputs_dir_env)
         if not os.path.isdir(inputs_real):
@@ -638,7 +646,6 @@ def inspect_pin_inputs(p_path: str, w_path: str, compiler_path: str, drivers: Se
     else:
         inputs_real = None
         inputs_digest = None
-
 
     try:
         if not git_clean(p_real):
@@ -737,7 +744,7 @@ def inspect_pin_inputs(p_path: str, w_path: str, compiler_path: str, drivers: Se
         env=clean_env,
     )
 
-    census_shas = _census_shas_and_validate(w_real, drivers)
+    census_shas = _census_shas_and_validate(w_real, drivers, target_platform=target_platform)
     canonical_roots = compute_canonical_roots(
         w_real,
         p_real,
@@ -803,14 +810,14 @@ def _validated_report_dir(report_dir: str, *, require_empty: bool, chain_id: str
     return report_real
 
 
-def write_pin(report_dir: str, p_path: str, w_path: str, compiler_path: str, drivers: Sequence[str], chain_id: str | None = None, stat_fn: Callable[[str], os.stat_result] = os.stat, *, inputs_dir: str | None = None) -> dict:
+def write_pin(report_dir: str, p_path: str, w_path: str, compiler_path: str, drivers: Sequence[str], chain_id: str | None = None, stat_fn: Callable[[str], os.stat_result] = os.stat, *, inputs_dir: str | None = None, target_platform: str | None = None) -> dict:
     """Validate C3/D4/D5 and write the immutable pin once."""
     report_real = _validated_report_dir(
         report_dir,
         require_empty=True,
         chain_id=chain_id,
     )
-    facts = inspect_pin_inputs(p_path, w_path, compiler_path, drivers, inputs_dir=inputs_dir)
+    facts = inspect_pin_inputs(p_path, w_path, compiler_path, drivers, inputs_dir=inputs_dir, target_platform=target_platform)
     short_chain = os.path.basename(report_real).removeprefix("iyp-")
     if chain_id is None:
         chain_id = short_chain + secrets.token_hex(12)
