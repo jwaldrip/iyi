@@ -9,7 +9,7 @@ Key Security Invariants:
 1. Pure C-owned: never imports or executes W/P code, shells, or compilers.
 2. Descriptor-relative traversal: opens allowed directory roots with O_DIRECTORY|O_CLOEXEC,
    walks subdirectories descriptor-relatively with O_NOFOLLOW|O_CLOEXEC, enforces mount boundaries,
-   and never traverses symlinks or magic links.
+   verifies roots are not symlinks, bounds resource usage, and never traverses symlinks or magic links.
 3. Pre-read metadata capture: captures complete stat metadata (st_dev, st_ino, st_atime_ns,
    st_mtime_ns, st_ctime_ns, st_nlink, size, mode, uid, gid) for EVERY candidate regular file
    BEFORE opening or reading ledger.jsonl or any file content.
@@ -20,15 +20,16 @@ Key Security Invariants:
    root-qualified (root_index, rel_path) to prevent cross-root collisions and preserve origin.
 6. Anti-aliasing: detects and rejects executable/ledger hardlink alias attacks where an
    adversary attempts to trigger atime updates on an executable by reading a hardlinked ledger.
-7. C-trusted expected reference set: requires explicit C-trusted expected references. Rejects
-   omitted, missing, duplicate, foreign, symlink, and special-file references.
+7. C-trusted expected reference set: requires explicit C-trusted expected references (from census or
+   controller policy). Enforces EXACT SET EQUALITY (zero missing, zero unexpected extra references).
+   Rejects missing, duplicate, foreign, symlink, and special-file references, as well as unchecked targets.
 8. Kernel observation verification: binds recorded mtime to kernel-observed mtime (rejecting
    forged past timestamps in ledger). Recomputes integer atime advancement strictly from kernel
    observations (obs_atime_ns > obs_mtime_ns). Requires all metadata fields in end records.
 9. Inode-deduplicated raw evidence: captures raw executable bytes once per physical (st_dev, st_ino)
    via held descriptors, tracking hardlink aliases, and verifies post-read metadata immutability.
 10. Length-delimited versioned protocol: streams framed output (b"IYOB" + v1) to inherited
-    controller-owned private pipe with no workload access.
+    controller-owned private pipe with no workload access. Final frame carries complete verified evidence.
 11. Exact limits: this observer is data-only. Collector observations alone CANNOT prove execution
     against malicious read/utime without an independent kernel-level execution witness.
 """
@@ -57,6 +58,12 @@ FRAME_RAW_FILE: int = 0x02
 FRAME_TERMINATION: int = 0x03
 FRAME_ERROR: int = 0x04
 
+# Resource budgets
+MAX_TRAVERSAL_DEPTH: int = 16
+MAX_CANDIDATE_FILES: int = 10_000
+MAX_LEDGER_BYTES: int = 16 * 1024 * 1024       # 16 MiB
+MAX_RAW_FILE_BYTES: int = 256 * 1024 * 1024    # 256 MiB
+
 # Safe open flags
 O_CLOEXEC: int = getattr(os, "O_CLOEXEC", 0)
 O_NOFOLLOW: int = getattr(os, "O_NOFOLLOW", 0)
@@ -72,7 +79,6 @@ class LaunchBinding:
     launch_id: str
     expected_nonce: str
     expected_refs: Tuple[str, ...] = ()
-    allow_empty_expected_refs: bool = False
 
 
 @dataclass
@@ -129,6 +135,46 @@ class SpecialEntry:
             "st_mode": self.st_mode,
             "kind": self.kind,
         }
+
+
+# Expected reference derivation from C-trusted census
+
+
+def derive_trusted_expected_references(
+    census_data: Dict[str, Any],
+    driver: str,
+    work_prefix: str = "t",
+) -> List[str]:
+    """
+    Derive the C-trusted expected reference set from the C-trusted driver census.
+    Never consults the untrusted ledger or workload claims.
+    """
+    expected: Set[str] = set()
+
+    # 1. Own roundtrip reference for the driver
+    own_ref = os.path.normpath(f"{work_prefix}/std_{driver}_exercise.ref")
+    expected.add(own_ref)
+
+    # 2. Extract from exec_evidence in census
+    exec_ev = census_data.get("exec_evidence", [])
+    if isinstance(exec_ev, list):
+        for ev in exec_ev:
+            if not isinstance(ev, dict):
+                continue
+            template = ev.get("out_template")
+            if not isinstance(template, str):
+                continue
+            names = ev.get("name_from_calls", {})
+            name_values = list(names.values()) if isinstance(names, dict) else []
+            if "{name}" in template:
+                for name in name_values:
+                    path = template.replace("{WORK}", work_prefix).replace("{name}", str(name))
+                    expected.add(os.path.normpath(f"{path}.ref"))
+            else:
+                path = template.replace("{WORK}", work_prefix)
+                expected.add(os.path.normpath(f"{path}.ref"))
+
+    return sorted(expected)
 
 
 # Wire framing
@@ -235,7 +281,7 @@ def walk_roots_descriptor_relative(
     """
     Descriptor-relative traversal of preserved roots without following symlinks.
     Captures complete initial metadata and holds file descriptors for all regular files.
-    Enforces mount boundary confinement (st_dev must match root st_dev).
+    Enforces mount boundary confinement, verifies roots are not symlinks, and respects resource budgets.
     """
     candidates: List[CandidateFile] = []
     specials: List[SpecialEntry] = []
@@ -243,6 +289,10 @@ def walk_roots_descriptor_relative(
     global_seq = 0
 
     for root_idx, root_path in enumerate(roots):
+        if os.path.islink(root_path):
+            errors.append(f"root path cannot be a symlink: {root_path}")
+            continue
+
         abs_root = os.path.abspath(root_path)
         if not os.path.exists(abs_root):
             errors.append(f"root does not exist: {abs_root}")
@@ -263,11 +313,18 @@ def walk_roots_descriptor_relative(
             root_dev = root_stat.st_dev
             visited_dirs: Set[Tuple[int, int]] = {(root_dev, root_stat.st_ino)}
 
-            # Stack for directory walk: (dir_fd, rel_dir_path)
-            stack: List[Tuple[int, str]] = [(root_fd, "")]
+            # Stack for directory walk: (dir_fd, rel_dir_path, depth)
+            stack: List[Tuple[int, str, int]] = [(root_fd, "", 0)]
 
             while stack:
-                curr_fd, curr_rel = stack.pop()
+                curr_fd, curr_rel, curr_depth = stack.pop()
+
+                if curr_depth > MAX_TRAVERSAL_DEPTH:
+                    errors.append(f"traversal depth exceeded budget of {MAX_TRAVERSAL_DEPTH} at {curr_rel}")
+                    if curr_fd != root_fd:
+                        os.close(curr_fd)
+                    continue
+
                 try:
                     entries = sorted(os.listdir(curr_fd))
                 except OSError as e:
@@ -277,6 +334,10 @@ def walk_roots_descriptor_relative(
                     continue
 
                 for name in entries:
+                    if len(candidates) >= MAX_CANDIDATE_FILES:
+                        errors.append(f"candidate file count exceeded budget of {MAX_CANDIDATE_FILES}")
+                        break
+
                     if name in (".", "..") or "/" in name or "\0" in name:
                         errors.append(f"invalid directory entry name: {name!r}")
                         continue
@@ -324,7 +385,7 @@ def walk_roots_descriptor_relative(
                                 os.O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW,
                                 dir_fd=curr_fd,
                             )
-                            stack.append((child_dfd, entry_rel))
+                            stack.append((child_dfd, entry_rel, curr_depth + 1))
                         except OSError as e:
                             errors.append(f"failed to open subdirectory {entry_rel}: {e}")
                         continue
@@ -486,7 +547,7 @@ def process_ledger_and_references(
     """
     Parses ledger.jsonl AFTER initial metadata sampling is complete.
     Detects executable/ledger hardlink alias attacks.
-    Rederives monitored reference set, validates against C-trusted expected set.
+    Rederives monitored reference set, validates against C-trusted expected set with EXACT SET EQUALITY.
     Evaluates numeric atime predicates strictly from kernel stat values.
     """
     reasons: List[str] = []
@@ -503,9 +564,9 @@ def process_ledger_and_references(
         "raw_bytes_retained": "PASS",
     }
 
-    # 0. Check expected reference set
-    if not binding.allow_empty_expected_refs and not binding.expected_refs:
-        reasons.append("empty expected reference set: controller must supply C-trusted expected references")
+    # 0. Check mandatory expected reference set: cannot be empty!
+    if not binding.expected_refs:
+        reasons.append("expected reference set is empty: controller must supply C-trusted expected references")
         checks["no_missing_references"] = "FAIL"
 
     # Index candidates and specials by (root_index, rel_path)
@@ -520,21 +581,23 @@ def process_ledger_and_references(
         (s.root_index, os.path.normpath(s.rel_path)): s for s in specials
     }
 
-    # 1. Locate candidate ledger file in pre-read census (root 0 preferred)
+    # 1. Exact ledger-location enforcement: must be in root 0 at exact path
+    ledger_norm = os.path.normpath(ledger_relpath)
     ledger_file: Optional[CandidateFile] = None
     for c in candidates:
-        if c.root_index == 0 and (c.rel_path == ledger_relpath or c.rel_path.endswith("/" + ledger_relpath)):
+        if c.root_index == 0 and os.path.normpath(c.rel_path) == ledger_norm:
             ledger_file = c
             break
-    if ledger_file is None:
-        for c in candidates:
-            if c.rel_path == ledger_relpath or c.rel_path.endswith("/" + ledger_relpath):
-                ledger_file = c
-                break
 
     if ledger_file is None:
-        reasons.append(f"ledger file {ledger_relpath!r} not found in pre-read candidate census")
+        reasons.append(f"ledger file {ledger_norm!r} not found at exact path in root 0")
         checks["ledger_header"] = "FAIL"
+        return {"checks": checks, "reasons": reasons, "status": "REJECT"}, reasons
+
+    # Enforce ledger size budget
+    if ledger_file.st_size > MAX_LEDGER_BYTES:
+        reasons.append(f"ledger file size {ledger_file.st_size} exceeds budget of {MAX_LEDGER_BYTES} bytes")
+        checks["ledger_digest"] = "FAIL"
         return {"checks": checks, "reasons": reasons, "status": "REJECT"}, reasons
 
     # 2. Check for Executable/Ledger Hardlink Alias Attack
@@ -641,7 +704,6 @@ def process_ledger_and_references(
     references: List[Dict[str, Any]] = []
     seen_refs: Set[Tuple[int, str]] = set()
     seen_inos: Set[Tuple[int, int]] = set()
-    satisfied_expected_refs: Set[str] = set()
 
     for rec_idx, rec in enumerate(records):
         phase = rec.get("phase")
@@ -657,7 +719,7 @@ def process_ledger_and_references(
         inv_id = rec.get("inv", f"rec_{rec_idx}")
 
         if not out_ref:
-            # If an expected reference is not supplied, it will fail the expected set check
+            # An end record missing out_ref cannot satisfy required execution evidence
             continue
 
         # Enforce complete schema for monitored end records: reject omission
@@ -733,6 +795,7 @@ def process_ledger_and_references(
             checks["no_hardlink_aliases"] = "FAIL"
 
         # Check hardlink relationship if out target is present
+        # Reject missing, special, or foreign out targets!
         hardlink_verified = False
         target_matched_root: Optional[int] = None
         target_matched_rel: Optional[str] = None
@@ -743,7 +806,16 @@ def process_ledger_and_references(
                 candidate_by_root_and_rel=candidate_by_root_and_rel,
                 specials_by_root_and_rel=specials_by_root_and_rel,
             )
-            if out_cand:
+            if out_err:
+                reasons.append(f"target {out_target!r} error: {out_err}")
+                checks["no_foreign_references"] = "FAIL"
+            elif out_special is not None:
+                reasons.append(f"target {out_target!r} is a {out_special.kind}")
+                checks["no_symlink_escapes"] = "FAIL"
+            elif out_cand is None:
+                reasons.append(f"target {out_target!r} was missing from pre-read census")
+                checks["no_missing_references"] = "FAIL"
+            else:
                 target_matched_root = out_cand.root_index
                 target_matched_rel = out_cand.rel_path
                 if (out_cand.st_dev, out_cand.st_ino) == (candidate.st_dev, candidate.st_ino):
@@ -753,6 +825,8 @@ def process_ledger_and_references(
                         f"reference {out_ref!r} inode {candidate.st_ino} != target {out_target!r} inode {out_cand.st_ino}"
                     )
                     checks["no_hardlink_aliases"] = "FAIL"
+
+        # Bind recorded mtime to kernel-observed mtime (reject forged old timestamps in ledger)
         if candidate.st_mtime_ns != recorded_mtime:
             reasons.append(
                 f"reference {out_ref!r} recorded out_mtime_ns {recorded_mtime} "
@@ -802,17 +876,6 @@ def process_ledger_and_references(
                 reasons.append(f"failed to read raw bytes from {candidate.rel_path}: {e}")
                 checks["raw_bytes_retained"] = "FAIL"
 
-        # Match against expected reference set
-        for exp in binding.expected_refs:
-            norm_exp = os.path.normpath(exp)
-            if (
-                norm_exp == out_ref
-                or norm_exp == candidate.rel_path
-                or (out_target and norm_exp == out_target)
-                or (out_target and norm_exp == os.path.normpath(out_target))
-            ):
-                satisfied_expected_refs.add(exp)
-
         references.append(
             {
                 "inv": inv_id,
@@ -838,12 +901,26 @@ def process_ledger_and_references(
             }
         )
 
-    # 5. Check if all C-trusted expected references were satisfied
-    if binding.expected_refs:
-        unsatisfied = set(binding.expected_refs) - satisfied_expected_refs
-        if unsatisfied:
-            reasons.append(f"required expected references not satisfied: {sorted(unsatisfied)!r}")
-            checks["no_missing_references"] = "FAIL"
+    # 5. Exact set comparison against C-trusted expected references
+    expected_set = {os.path.normpath(r) for r in binding.expected_refs}
+    verified_refs_set = set()
+    for ref in references:
+        verified_refs_set.add(os.path.normpath(ref["out_ref"]))
+
+    missing_refs = expected_set - verified_refs_set
+    if missing_refs:
+        reasons.append(f"required expected references missing from verified references: {sorted(missing_refs)!r}")
+        checks["no_missing_references"] = "FAIL"
+
+    extra_refs = verified_refs_set - expected_set
+    if extra_refs:
+        reasons.append(f"unexpected extra references in ledger: {sorted(extra_refs)!r}")
+        checks["no_foreign_references"] = "FAIL"
+
+    # Require at least one verified reference
+    if not references:
+        reasons.append("ledger contains zero verified end references")
+        checks["no_missing_references"] = "FAIL"
 
     status = "PASS" if not reasons else "REJECT"
 
@@ -908,6 +985,14 @@ def collect_raw_file_bytes(
                 entry["aliases"].append(alias_entry)
             continue
 
+        if c.st_size > MAX_RAW_FILE_BYTES:
+            errors.append(f"raw file size {c.st_size} exceeds budget of {MAX_RAW_FILE_BYTES} bytes for [{c.root_index}]{c.rel_path}")
+            continue
+
+        if c.fd is None:
+            errors.append(f"held descriptor missing for [{c.root_index}]{c.rel_path}")
+            continue
+
         try:
             os.lseek(c.fd, 0, os.SEEK_SET)
             content = b""
@@ -969,9 +1054,9 @@ def run_origin_observer(
     2. Commit and emit initial metadata census checkpoint BEFORE reading ledger.
     3. If traversal errors occurred, fail closed immediately without reading ledger.
     4. Read and parse ledger descriptor-relatively; detect hardlink aliases.
-    5. Validate references against C-trusted expected set and kernel observations.
+    5. Validate references against C-trusted expected set (exact equality) and kernel observations.
     6. Collect raw executable bytes from held descriptors.
-    7. Emit versioned framed stream to output_stream.
+    7. Emit versioned framed stream to output_stream (including full evidence in final frame).
     8. Close held descriptors.
     """
     start_time_ns = time.time_ns()
@@ -1072,6 +1157,7 @@ def run_origin_observer(
             all_errors.extend(raw_errors)
 
         final_status = "PASS" if not all_errors and proc_res.get("status") == "PASS" else "REJECT"
+
         checkpoint_doc["ledger"] = proc_res.get("ledger")
         checkpoint_doc["references"] = proc_res.get("references", [])
         checkpoint_doc["raw_files_manifest"] = [
@@ -1110,11 +1196,16 @@ def run_origin_observer(
                 )
                 write_frame(output_stream, FRAME_RAW_FILE, frame_payload)
 
+            # Final termination frame carries COMPLETE evidence to the wire stream!
             term_doc = {
                 "status": final_status,
                 "reasons": all_errors,
                 "timestamp_ns": time.time_ns(),
                 "verdict": checkpoint_doc["verdict"],
+                "ledger": checkpoint_doc.get("ledger"),
+                "references": checkpoint_doc.get("references", []),
+                "raw_files_manifest": checkpoint_doc.get("raw_files_manifest", []),
+                "limitations": checkpoint_doc.get("limitations", []),
             }
             term_bytes = json.dumps(term_doc, sort_keys=True).encode("utf-8")
             write_frame(output_stream, FRAME_TERMINATION, term_bytes)
@@ -1141,6 +1232,7 @@ def parse_observer_stream(
     """
     Parse an observer stream from beginning to end.
     Returns (metadata_doc, list_of_raw_files, termination_doc).
+    Decodes complete evidence (ledger, references, raw_files_manifest, verdict, limitations) from wire!
     """
     read_header(stream)
     metadata_doc: Optional[Dict[str, Any]] = None
@@ -1169,8 +1261,13 @@ def parse_observer_stream(
     if termination_doc is None:
         raise ValueError("Observer stream missing FRAME_TERMINATION")
 
+    # Complete wire evidence recovery
     if "verdict" in termination_doc:
         metadata_doc["verdict"] = termination_doc["verdict"]
+    metadata_doc["ledger"] = termination_doc.get("ledger")
+    metadata_doc["references"] = termination_doc.get("references", [])
+    metadata_doc["raw_files_manifest"] = termination_doc.get("raw_files_manifest", [])
+    metadata_doc["limitations"] = termination_doc.get("limitations", [])
 
     return metadata_doc, raw_files, termination_doc
 
@@ -1186,28 +1283,49 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--attempt", type=int, default=1, help="Attempt number (default 1)")
     parser.add_argument("--launch-id", required=True, help="Launch identity / container ID")
     parser.add_argument("--expected-nonce", required=True, help="Expected ledger nonce")
+    parser.add_argument("--census", default=None, help="Path to C-trusted driver census JSON file to derive expected refs")
     parser.add_argument("--expected-ref", action="append", default=[], help="Expected reference path (repeatable)")
     parser.add_argument("--expected-refs-file", default=None, help="JSON file containing list of expected reference paths")
-    parser.add_argument("--allow-empty-expected-refs", action="store_true", help="Permit empty expected reference set (for testing)")
-    parser.add_argument("--ledger-relpath", default="ledger.jsonl", help="Relative path to ledger within root")
+    parser.add_argument("--ledger-relpath", default="ledger.jsonl", help="Relative path to ledger within root 0")
     parser.add_argument("--output-fd", type=int, default=None, help="File descriptor for length-delimited output pipe")
     parser.add_argument("--output-file", default=None, help="File path for length-delimited output (alternative to fd)")
     parser.add_argument("--capture-raw-bytes", action="store_true", default=True, help="Capture raw bytes of monitored executables")
 
     args = parser.parse_args(argv)
 
-    expected_refs = list(args.expected_ref)
+    expected_refs: Set[str] = set()
+
+    # 1. Derive from census if provided
+    if args.census:
+        try:
+            with open(args.census, "r", encoding="utf-8") as f:
+                census_data = json.load(f)
+            derived = derive_trusted_expected_references(census_data, args.driver, work_prefix="t")
+            expected_refs.update(derived)
+        except Exception as e:
+            print(f"Error reading census file: {e}", file=sys.stderr)
+            return 1
+
+    # 2. Add explicit expected-ref CLI arguments
+    for r in args.expected_ref:
+        expected_refs.add(r)
+
+    # 3. Add explicit expected-refs-file
     if args.expected_refs_file:
         try:
             with open(args.expected_refs_file, "r", encoding="utf-8") as f:
                 refs_data = json.load(f)
                 if isinstance(refs_data, list):
-                    expected_refs.extend(str(x) for x in refs_data)
+                    expected_refs.update(str(x) for x in refs_data)
                 elif isinstance(refs_data, dict):
-                    expected_refs.extend(str(x) for x in refs_data.keys())
+                    expected_refs.update(str(x) for x in refs_data.keys())
         except Exception as e:
             print(f"Error reading expected_refs_file: {e}", file=sys.stderr)
             return 1
+
+    if not expected_refs:
+        print("Error: expected references set is empty. Must provide --census, --expected-ref, or --expected-refs-file", file=sys.stderr)
+        return 1
 
     binding = LaunchBinding(
         chain_id=args.chain_id,
@@ -1215,8 +1333,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         attempt=args.attempt,
         launch_id=args.launch_id,
         expected_nonce=args.expected_nonce,
-        expected_refs=tuple(expected_refs),
-        allow_empty_expected_refs=args.allow_empty_expected_refs,
+        expected_refs=tuple(sorted(expected_refs)),
     )
 
     out_stream: BinaryIO
