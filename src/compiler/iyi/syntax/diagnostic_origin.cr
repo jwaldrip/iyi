@@ -17,6 +17,10 @@ module Iyi
       DiagnosticNameMetadata.copy_and_validate(@name_slots, @origin)
     end
 
+    def copy_with(*, offset : Int32 = @offset) : DiagnosticAnchor
+      DiagnosticAnchor.new(offset, @kind, @role, @origin, @name_slots)
+    end
+
     def_equals_and_hash @offset, @kind, @role, @origin, @name_slots
   end
 
@@ -142,11 +146,11 @@ module Iyi
              ({"method_name", "local_reference"}.includes?(@context) && @lexical_origin.valid_for_anchor?("Call", "method"))
         raise ArgumentError.new("name lexical origin has incompatible role")
       end
-      case @lexical_origin
+      case lexical_origin = @lexical_origin
       when DiagnosticOrigin::Written
-        raise ArgumentError.new("name token origin offset mismatch") unless @lexical_origin.input_byte_offset == @input_start
+        raise ArgumentError.new("name token origin offset mismatch") unless lexical_origin.input_byte_offset == @input_start
       when DiagnosticOrigin::Expanded
-        unless @lexical_origin.generated_byte_offset == @input_start && @lexical_origin.expansion_guard == "sha256:#{@input_sha256}"
+        unless lexical_origin.generated_byte_offset == @input_start && lexical_origin.expansion_guard == "sha256:#{@input_sha256}"
           raise ArgumentError.new("name token expansion input mismatch")
         end
       else
@@ -276,11 +280,11 @@ module Iyi
         json.field "emitter_origin", @emitter_origin
         case self
         when Generated
-          json.field "producer", producer.to_s
+          json.field "producer", self.producer.to_s
         when AstAnchor
-          json.field "source_origin", source_origin
+          json.field "source_origin", self.source_origin
         when NameSplice
-          json.field "source_name", source_name
+          json.field "source_name", self.source_name
         end
       end
     end

@@ -40,7 +40,7 @@ module Iyi
       end
       false
     ensure
-      @inside_enum_member = enum_member
+      @inside_enum_member = enum_member || false
       @current_arg_type = :none
     end
 
