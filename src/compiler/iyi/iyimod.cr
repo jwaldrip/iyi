@@ -638,23 +638,7 @@ module Iyi::IyiMod
         unless anchor.offset >= 0 && origin.valid_for_anchor?(anchor.kind, anchor.role)
           raise ArgumentError.new("invalid diagnostic fragment anchor")
         end
-        size = origin.graph_bytes
-        anchor.name_slots.each do |slot, tokens|
-          DiagnosticNameSlot.new(slot.kind, slot.index)
-          raise ArgumentError.new("empty diagnostic name slot") if tokens.empty?
-          tokens.each do |token|
-            if token.lexical_origin.graph_depth >= DiagnosticOrigin::MAX_DEPTH ||
-               token.binding_origin.try { |parent| parent.graph_depth >= DiagnosticOrigin::MAX_DEPTH }
-              raise ArgumentError.new("diagnostic name graph exceeds depth limit")
-            end
-            size += token.lexical_origin.graph_bytes
-            size += token.binding_origin.try(&.graph_bytes) || 0_u64
-            size += token.context.bytesize.to_u64 + token.input_sha256.bytesize.to_u64 +
-                    token.lexical_mode.bytesize.to_u64 + token.token_kind.bytesize.to_u64 +
-                    token.raw_text.bytesize.to_u64 + 64_u64
-            raise ArgumentError.new("diagnostic name graph exceeds size limit") if size > DiagnosticOrigin::MAX_UNFOLDED_BYTES
-          end
-        end
+        anchor.name_slots.each_key { |slot| DiagnosticNameSlot.new(slot.kind, slot.index) }
         raise ArgumentError.new("duplicate diagnostic fragment anchor") unless seen.add?({anchor.offset, anchor.kind, anchor.role})
       end
       @fragments[fragment.key] = fragment
