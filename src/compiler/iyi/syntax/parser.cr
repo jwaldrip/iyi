@@ -325,14 +325,26 @@ module Iyi
         unless ::Crystal::Digest::SHA256.hexdigest(text) == region.text_sha256
           ::raise ArgumentError.new("diagnostic provenance text guard mismatch")
         end
+        event_spans = Set({Int32, Int32}).new
+        used_events = Set(Int32).new
         region.events.each do |event|
+          unless event_spans.add?({event.selected_start, event.selected_end})
+            ::raise ArgumentError.new("duplicate diagnostic fragment token event")
+          end
           unless event.input_start >= start && event.input_end <= finish &&
                  string.byte_slice(event.input_start - @input_offset_base, event.input_end - event.input_start) == event.token_text
             ::raise ArgumentError.new("diagnostic fragment token event differs from input")
           end
         end
+        selected_events = region.events.sort_by(&.selected_start)
+        selected_events.each_cons_pair do |left, right|
+          if left.selected_end > right.selected_start
+            ::raise ArgumentError.new("overlapping diagnostic fragment token events")
+          end
+        end
         region.anchors.each_with_index do |anchor, anchor_index|
           ::raise ArgumentError.new("negative diagnostic fragment event index") if anchor.event_index < 0
+          used_events << anchor.event_index
           event = region.events[anchor.event_index]? || ::raise(ArgumentError.new("missing diagnostic fragment event"))
           unless event.selected_start == anchor.offset
             ::raise ArgumentError.new("diagnostic fragment anchor and event differ")
@@ -356,9 +368,30 @@ module Iyi
           unless origin.valid_for_anchor?(anchor.kind, anchor.role)
             ::raise ArgumentError.new("diagnostic origin does not match anchor kind and role")
           end
+          if anchor.attachment.is_a?(DiagnosticFragmentAttachment::Direct)
+            parts = event.byte_parts
+            ::raise ArgumentError.new("direct fragment anchor has multiple byte writers") unless parts.size == 1
+            slots = anchor.name_slots
+            if slots.empty?
+              part = parts.first.as?(DiagnosticEmissionPart::AstAnchor)
+              unless part && part.source_origin == origin
+                ::raise ArgumentError.new("direct fragment anchor source differs from its origin")
+              end
+            else
+              part = parts.first.as?(DiagnosticEmissionPart::NameSplice)
+              values = slots.size == 1 ? slots.values.first : nil
+              unless part && values && values.size == 1 && values.first == part.source_name &&
+                     values.first.artifact_origin == origin
+                ::raise ArgumentError.new("direct fragment name differs from its byte writer")
+              end
+            end
+          end
           key = {anchor.offset, anchor.kind, anchor.role}
           ::raise ArgumentError.new("duplicate diagnostic provenance anchor") if pending.has_key?(key)
           pending[key] = anchor
+        end
+        unless used_events.size == region.events.size
+          ::raise ArgumentError.new("unreferenced diagnostic fragment token event")
         end
         last_end = finish
       end
@@ -809,6 +842,15 @@ module Iyi
           ::raise ArgumentError.new("multiassignment head is not the accepted first target")
         end
       when DiagnosticFragmentHead::Syntax
+        spelling = case syntax
+                   when DiagnosticHeadSyntax::FirstSplat then "*"
+                   when DiagnosticHeadSyntax::FirstUnderscore then "_"
+                   when DiagnosticHeadSyntax::ParenthesizedFirstTarget then "("
+                   when DiagnosticHeadSyntax::GlobalPathPrefix then "::"
+                   end
+        unless spelling && event.selected_text == spelling && event.token_kind == spelling
+          ::raise ArgumentError.new("multiassignment syntax head token differs from its form")
+        end
         if syntax == DiagnosticHeadSyntax::GlobalPathPrefix
           index = head.adjacent_anchor_index
           dependency = index ? region.anchors[index]? : nil
@@ -3359,6 +3401,7 @@ module Iyi
         next_token_skip_space_or_newline
         if @token.keyword?(:self)
           superclass = Self.new.at(@token.location)
+          diagnostic_name(superclass, @token.input_offset, "type_self")
           next_token
         else
           superclass = parse_generic
@@ -5720,6 +5763,7 @@ module Iyi
 
       if @token.keyword?(:self)
         name = Self.new.at(@token.location)
+        diagnostic_name(name, @token.input_offset, "type_self")
         name.end_location = token_end_location
         next_token_skip_space
       else
@@ -8287,12 +8331,19 @@ module Iyi
       when .ident?
         case @token.value
         when Keyword::SELF
+          self_type = Self.new.at(location)
+          diagnostic_name(self_type, @token.input_offset, "type_self")
           next_token_skip_space
-          Self.new.at(location)
+          self_type
         when "self?"
           witness = diagnostic_type_syntax_token
           next_token_skip_space
-          make_nilable_type Self.new.at(location), witness, DiagnosticTypeSugar::SelfNilableType
+          self_type = Self.new.at(location)
+          if witness
+            self_origin = DiagnosticOrigin::DerivedName.type_sugar(DiagnosticTypeSugar::SelfNilableType, [witness], DiagnosticTypeSugarResult::Self, 0)
+            self_type.diagnostic_name_slots = {DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary) => [DiagnosticNameValue::Derived.new(self_origin)] of DiagnosticNameValue}
+          end
+          make_nilable_type self_type, witness, DiagnosticTypeSugar::SelfNilableType
         when Keyword::TYPEOF
           parse_typeof
         else
