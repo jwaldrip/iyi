@@ -203,6 +203,8 @@ struct Iyi::TypeDeclarationProcessor
     # non-nilable check and leave the variable uninitialized at runtime.
     if existing = vars[name]?
       var.initializer = existing.initializer if existing.initializer
+      var.iyi_initialiser_source = existing.iyi_initialiser_source
+      var.iyi_initialiser_diagnostic = existing.iyi_initialiser_diagnostic
       var.iyi_class_var_declaration = existing.iyi_class_var_declaration
     end
 

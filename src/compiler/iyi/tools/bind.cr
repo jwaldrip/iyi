@@ -3013,16 +3013,18 @@ module Iyi
 
   private def self.bound_diagnostic_section(program : Program, artifact : IyiMod::Artifact, root : String) : IyiMod::DiagnosticSection
     section = IyiMod::DiagnosticSection.new
+    mode = Lexer.iyi_source?(artifact.source_path) ? "Iyi" : "Crystal"
     bound_diagnostic_signatures(section, artifact, artifact.module_name, artifact.exports.functions)
     bound_diagnostic_signatures(section, artifact, artifact.module_name, artifact.exports.carried_functions)
     bound_diagnostic_signatures(section, artifact, IyiMod::TOP_LEVEL_CONTAINER, artifact.top_level)
     bound_diagnostic_values(program, section, root, IyiMod::DIAGNOSTIC_ROOT_CONTAINER,
-      artifact.exports.class_vars, artifact.macro_bodies)
+      artifact.exports.class_vars, artifact.macro_bodies, mode)
     artifact.exports.types.each { |type| bound_diagnostic_type(program, section, artifact, root, type) }
     artifact.reopened.each { |type| bound_diagnostic_type(program, section, artifact, root, type) }
     artifact.top_level_funs.each do |source|
-      anchors = program.iyi_top_fun_diagnostics[source]? || raise "missing bound top-level fun diagnostics"
-      bound_add_fragment(section, IyiMod.top_fun_fragment_key(source), source, anchors)
+      captures = program.iyi_top_fun_diagnostics[source]? || raise "missing bound top-level fun diagnostics"
+      raise "bound top-level fun text changed" unless captures.text == source
+      section.add_fragment(captures.fragment(IyiMod.top_fun_fragment_key(source), mode))
     end
     unless artifact.initialiser.empty?
       anchors = @@initialiser_anchors || raise "missing bound initialiser diagnostics"
@@ -3056,7 +3058,7 @@ module Iyi
 
   private def self.bound_diagnostic_values(program : Program, section : IyiMod::DiagnosticSection,
                                            owner : String, container : String,
-                                           variables : Array(IyiMod::ClassVarDecl), macros : Array(String)) : Nil
+                                           variables : Array(IyiMod::ClassVarDecl), macros : Array(String), mode : String) : Nil
     variables.each do |variable|
       next if variable.value.empty?
       source, anchors = @@diagnostic_classvars[{owner, variable.name}]? || raise "missing bound class variable diagnostics"
@@ -3064,8 +3066,9 @@ module Iyi
       bound_add_fragment(section, IyiMod.class_var_fragment_key(container, variable.name), source, anchors)
     end
     macros.each do |source|
-      anchors = program.iyi_macro_diagnostics[{owner, source}]? || raise "missing bound macro diagnostics"
-      bound_add_fragment(section, IyiMod.macro_fragment_key(container, source), source, anchors)
+      captures = program.iyi_macro_diagnostics[{owner, source}]? || raise "missing bound macro diagnostics"
+      raise "bound macro text changed" unless captures.text == source
+      section.add_fragment(captures.fragment(IyiMod.macro_fragment_key(container, source), mode))
     end
   end
 
@@ -3105,7 +3108,8 @@ module Iyi
       raise "bound field text changed" unless source == value
       bound_add_fragment(section, IyiMod.field_fragment_key(here, field), source, anchors)
     end
-    bound_diagnostic_values(program, section, owner, here, type.class_vars, type.macros)
+    mode = Lexer.iyi_source?(artifact.source_path) ? "Iyi" : "Crystal"
+    bound_diagnostic_values(program, section, owner, here, type.class_vars, type.macros, mode)
     type.types.each { |nested| bound_diagnostic_type(program, section, artifact, root, nested, here) }
   end
 
@@ -4878,16 +4882,28 @@ module Iyi
         synthesized_initialiser = true
       end
       if type.program.diagnostic_capture && !initialiser.empty?
-        anchors = if synthesized_initialiser
-                    [] of DiagnosticAnchor
-                  else
-                    variable.iyi_initialiser_anchors || raise "bound class variable initializer lacks diagnostic anchors"
-                  end
-        type.program.record_class_var_diagnostic(type.to_s(generic_args: false), name, initialiser, anchors)
+        captures = if synthesized_initialiser
+                     origin = variable.iyi_class_var_declaration_origin
+                     crystal = bound_uninitialized_capture(origin, owner, name, written, "Crystal")
+                     iyi = bound_uninitialized_capture(origin, owner, name, written, "Iyi")
+                     DiagnosticModeCaptures.new(initialiser, [] of IyiMod::SourcePosition, crystal, iyi)
+                   else
+                     variable.iyi_initialiser_diagnostic || raise "bound class variable initializer lacks diagnostic capture"
+                   end
+        type.program.record_class_var_diagnostic(type.to_s(generic_args: false), name, initialiser, captures)
       end
       class_vars << IyiMod::ClassVarDecl.new(name, written, initialiser, annotations)
     end
     class_vars
+  end
+
+  private def self.bound_uninitialized_capture(origin : DiagnosticOrigin, owner : String, name : String,
+                                               type : String, mode : String) : DiagnosticModeCaptureResult
+    rendered = DiagnosticBoundProjection.uninitialized(origin, owner, name, type, mode)
+    DiagnosticModeCaptureResult::Success.new(rendered.data)
+  rescue ex : DiagnosticDestinationSyntaxError
+    raise ex unless ex.lexical_mode == mode
+    DiagnosticModeCaptureResult::Failure.new(ex)
   end
 
   # One parameter, as the declaration writes it.

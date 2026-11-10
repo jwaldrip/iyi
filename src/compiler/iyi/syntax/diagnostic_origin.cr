@@ -53,12 +53,13 @@ module Iyi
     NamedEntry
     EnumMember
     WhereVariable
+    ModuleSegment
   end
 
   record DiagnosticNameSlot, kind : DiagnosticNameSlotKind, index : Int32 = 0 do
     def initialize(@kind : DiagnosticNameSlotKind, @index : Int32 = 0)
       raise ArgumentError.new("negative diagnostic name slot index") if @index < 0
-      if @index != 0 && !@kind.path_segment? && !@kind.type_parameter? && !@kind.named_entry? && !@kind.where_variable?
+      if @index != 0 && !@kind.path_segment? && !@kind.type_parameter? && !@kind.named_entry? && !@kind.where_variable? && !@kind.module_segment?
         raise ArgumentError.new("diagnostic name slot is not indexed")
       end
     end
@@ -93,10 +94,12 @@ module Iyi
                 when "special_global"                then {"$~", "$?"}.includes?(kind)
                 when "regex_match_index"             then kind == "GLOBAL_MATCH_DATA_INDEX"
                 when "type_self"                    then kind == "IDENT"
+                when "module_segment"                then kind == "IDENT"
                 else                                      false
                 end
       return false unless allowed && {"Crystal", "Iyi"}.includes?(mode) && raw.valid_encoding?
       return kind == "IDENT" && raw == "self" if context == "type_self"
+      return !!(raw =~ /\A[a-z][a-z0-9]*(?:_[a-z][a-z0-9]*)*\z/) if context == "module_segment"
       return raw == kind if context == "special_global"
       if context == "regex_match_index"
         return false unless raw.starts_with?("$")
@@ -130,7 +133,7 @@ module Iyi
                    @lexical_mode : String, @token_kind : String, @raw_text : String)
       unless {"method_name", "definition_name", "macro_name", "local_reference", "instance_variable",
               "class_variable", "parameter", "path_segment", "type_parameter", "named_entry",
-              "enum_member", "special_global", "regex_match_index", "where_variable", "type_self"}.includes?(@context)
+              "enum_member", "special_global", "regex_match_index", "where_variable", "type_self", "module_segment"}.includes?(@context)
         raise ArgumentError.new("invalid diagnostic name context")
       end
       unless @input_sha256.bytesize == 64 && @input_sha256.each_byte.all? { |b| (48_u8..57_u8).includes?(b) || (97_u8..102_u8).includes?(b) }
@@ -279,6 +282,7 @@ module Iyi
     SemanticSignatureType = 5
     UninitializedClassVar = 6
     ConstantAccessor = 7
+    ResolvedRestriction = 8
   end
 
   record DiagnosticBoundNameSource, start_offset : Int32, end_offset : Int32, name : DiagnosticNameValue do
@@ -343,6 +347,13 @@ module Iyi
           json.field "prefix", self.prefix
           json.field "constant_name", self.constant_name
           json.field "part", self.part
+        when ResolvedRestriction
+          json.field "kind", "ResolvedRestriction"
+          json.field "owner_type", self.owner_type
+          json.field "written_type", self.written_type
+          json.field "resolved_type", self.resolved_type
+          json.field "root", self.root
+          json.field "add_global", self.add_global
         end
       end
     end
@@ -395,6 +406,15 @@ module Iyi
       getter part : String
       def initialize(@definition_origin : DiagnosticOrigin, @prefix : String, @constant_name : String, @part : String); end
       def_equals_and_hash @definition_origin, @prefix, @constant_name, @part
+    end
+    class ResolvedRestriction < DiagnosticBoundProducer
+      getter owner_type : String
+      getter written_type : String
+      getter resolved_type : String
+      getter root : String
+      getter add_global : Bool
+      def initialize(@owner_type : String, @written_type : String, @resolved_type : String, @root : String, @add_global : Bool); end
+      def_equals_and_hash @owner_type, @written_type, @resolved_type, @root, @add_global
     end
   end
 
@@ -966,6 +986,34 @@ module Iyi
         event_index, DiagnosticFragmentAttachment::Direct.new))
     end
 
+    def write_anchor_token(io : IO::Memory, kind : String, role : String, origin : DiagnosticOrigin,
+                           context : DiagnosticRenderedLexContext, &) : Int32
+      start = io.pos.to_i32
+      yield
+      add_written_anchor(start, io.pos.to_i32, io.to_s, context, kind, role, origin,
+        {} of DiagnosticNameSlot => Array(DiagnosticNameValue))
+    end
+
+    def write_name(io : IO::Memory, value : DiagnosticNameValue, context : String, slot : DiagnosticNameSlot) : Int32
+      origin = value.artifact_origin
+      kind, role = if origin.valid_for_anchor?("Name", context)
+                     {"Name", context}
+                   elsif origin.valid_for_anchor?("Call", "method")
+                     {"Call", "method"}
+                   else
+                     raise ArgumentError.new("name origin does not match its rendered role")
+                   end
+      lex_context = case context
+                    when "definition_name", "macro_name", "method_name" then DiagnosticRenderedLexContext::DefOrMacroName
+                    when "path_segment", "type_parameter", "where_variable", "enum_member" then DiagnosticRenderedLexContext::TypeName
+                    else DiagnosticRenderedLexContext::Operand
+                    end
+      start = io.pos.to_i32
+      io << value.rendered_text
+      add_written_anchor(start, io.pos.to_i32, io.to_s, lex_context, kind, role, origin,
+        {slot => [value] of DiagnosticNameValue})
+    end
+
     def canonicalize : {Array(DiagnosticTokenEvent), Array(DiagnosticAnchor)}
       events_with_index = @events.each_with_index.to_a
       events_with_index.sort_by! do |event, _|
@@ -1020,6 +1068,10 @@ module Iyi
         remaining.delete(index)
       end
       {events, anchors}
+    end
+
+    def append_fragment(io : IO::Memory, source : String, data : DiagnosticFragmentData) : Nil
+      DiagnosticFragmentRewrite.append_into(self, io, DiagnosticRenderedFragment.new(source, data))
     end
 
     def finish_data(text : String) : DiagnosticFragmentData
@@ -1247,6 +1299,377 @@ module Iyi
     def_equals_and_hash @text, @positions, @crystal, @iyi
   end
 
+  record DiagnosticRenderedFragment, text : String, data : DiagnosticFragmentData
+  record DiagnosticByteSpan, start_offset : Int32, end_offset : Int32
+  abstract class DiagnosticAnchorTransfer
+    abstract def old_index : Int32
+    class Preserve < DiagnosticAnchorTransfer
+      getter old_index : Int32
+      getter new_index : Int32
+      def initialize(@old_index : Int32, @new_index : Int32); end
+      def_equals_and_hash @old_index, @new_index
+    end
+    class Project < DiagnosticAnchorTransfer
+      getter old_index : Int32
+      getter carrier_index : Int32
+      @new_indices : Array(Int32)
+      def initialize(@old_index : Int32, new_indices : Array(Int32), @carrier_index : Int32)
+        @new_indices = new_indices.dup
+      end
+      def new_indices : Array(Int32); @new_indices.dup; end
+      def_equals_and_hash @old_index, @new_indices, @carrier_index
+    end
+  end
+  record DiagnosticByteEdit, span : DiagnosticByteSpan, expected_old : String, replacement : DiagnosticRenderedFragment,
+    producer : DiagnosticBoundProducer, transfers : Array(DiagnosticAnchorTransfer)
+
+  module DiagnosticFragmentRewrite
+    def self.shift_event(event : DiagnosticTokenEvent, delta : Int32) : DiagnosticTokenEvent
+      parts = event.byte_parts.map do |part|
+        start = checked_offset(part.start_offset, delta)
+        finish = checked_offset(part.end_offset, delta)
+        case part
+        when DiagnosticEmissionPart::Generated
+          DiagnosticEmissionPart::Generated.new(start, finish, part.emitter_origin, part.producer).as(DiagnosticEmissionPart)
+        when DiagnosticEmissionPart::AstAnchor
+          DiagnosticEmissionPart::AstAnchor.new(start, finish, part.emitter_origin, part.source_origin).as(DiagnosticEmissionPart)
+        when DiagnosticEmissionPart::NameSplice
+          DiagnosticEmissionPart::NameSplice.new(start, finish, part.emitter_origin, part.source_name).as(DiagnosticEmissionPart)
+        else
+          raise ArgumentError.new("unknown fragment byte writer")
+        end
+      end
+      DiagnosticTokenEvent.new(checked_offset(event.input_start, delta), checked_offset(event.input_end, delta),
+        event.token_kind, event.token_text, event.lexical_mode, event.selection, parts)
+    end
+
+    private def self.checked_offset(value : Int32, delta : Int32) : Int32
+      sum = value.to_i64 + delta.to_i64
+      raise ArgumentError.new("fragment offset out of bounds") if sum < 0 || sum > Int32::MAX
+      sum.to_i32
+    end
+
+    def self.place(source : DiagnosticRenderedFragment, destination_text : String, at : Int32) : DiagnosticRegion
+      unless at >= 0 && at.to_i64 + source.text.bytesize <= destination_text.bytesize &&
+             ::Crystal::Digest::SHA256.hexdigest(source.text) == source.data.text_sha256 &&
+             destination_text.byte_slice(at, source.text.bytesize) == source.text
+        raise ArgumentError.new("fragment placement text or guard mismatch")
+      end
+      DiagnosticFragmentValidation.validate_text!(source.text, source.data.events, source.data.anchors)
+      events = source.data.events.map { |event| shift_event(event, at) }
+      anchors = source.data.anchors.map { |anchor| anchor.copy_with(offset: checked_offset(anchor.offset, at)) }
+      DiagnosticRegion.new(at, checked_offset(source.text.bytesize.to_i32, at), source.data.text_sha256, events, anchors)
+    end
+
+    def self.append_into(builder : DiagnosticFragmentBuilder, io : IO::Memory, source : DiagnosticRenderedFragment) : Nil
+      unless ::Crystal::Digest::SHA256.hexdigest(source.text) == source.data.text_sha256
+        raise ArgumentError.new("fragment append guard mismatch")
+      end
+      DiagnosticFragmentValidation.validate_text!(source.text, source.data.events, source.data.anchors)
+      at = io.pos.to_i32
+      io << source.text
+      events = source.data.events.map { |event| builder.add_event(shift_event(event, at)) }
+      anchors = [] of Int32
+      source.data.anchors.each do |anchor|
+        attachment = case part = anchor.attachment
+                     when DiagnosticFragmentAttachment::Direct
+                       DiagnosticFragmentAttachment::Direct.new.as(DiagnosticFragmentAttachment)
+                     when DiagnosticFragmentAttachment::HeadOf
+                       head = case old = part.head
+                              when DiagnosticFragmentHead::Anchor
+                                DiagnosticFragmentHead::Anchor.new(anchors[old.anchor_index]).as(DiagnosticFragmentHead)
+                              when DiagnosticFragmentHead::Syntax
+                                DiagnosticFragmentHead::Syntax.new(old.form, old.adjacent_anchor_index.try { |index| anchors[index] }).as(DiagnosticFragmentHead)
+                              else raise ArgumentError.new("unknown fragment head")
+                              end
+                       DiagnosticFragmentAttachment::HeadOf.new(part.rule, head).as(DiagnosticFragmentAttachment)
+                     when DiagnosticFragmentAttachment::PayloadOf
+                       DiagnosticFragmentAttachment::PayloadOf.new(part.rule, anchors[part.owner_anchor_index]).as(DiagnosticFragmentAttachment)
+                     else raise ArgumentError.new("unknown fragment attachment")
+                     end
+        anchors << builder.add_anchor(anchor.copy_with(offset: checked_offset(anchor.offset, at),
+          event_index: events[anchor.event_index], attachment: attachment))
+      end
+    end
+
+    def self.concat(parts : Array(DiagnosticRenderedFragment), separator : String, lexical_mode : String) : DiagnosticRenderedFragment
+      raise ArgumentError.new("invalid fragment separator") unless separator.valid_encoding?
+      io = IO::Memory.new
+      builder = DiagnosticFragmentBuilder.new(lexical_mode)
+      parts.each_with_index do |part, index|
+        io << separator if index > 0
+        append_into(builder, io, part)
+      end
+      text = io.to_s
+      DiagnosticRenderedFragment.new(text, builder.finish_data(text))
+    end
+
+    # Edits use coordinates in the original input. Every touched anchor must
+    # explicitly name its replacement; a token may never be split by an edit.
+    def self.apply(before : DiagnosticRenderedFragment, edits : Array(DiagnosticByteEdit), lexical_mode : String) : DiagnosticRenderedFragment
+      DiagnosticFragmentValidation.validate_text!(before.text, before.data.events, before.data.anchors)
+      raise ArgumentError.new("rewrite input guard mismatch") unless ::Crystal::Digest::SHA256.hexdigest(before.text) == before.data.text_sha256
+      source_events = before.data.events
+      source_anchors = before.data.anchors
+      builder = DiagnosticFragmentBuilder.new(lexical_mode)
+      io = IO::Memory.new
+      starts = [] of Int32
+      cursor = 0
+      previous_empty = nil.as(Int32?)
+      edits.each do |edit|
+        first = edit.span.start_offset
+        last = edit.span.end_offset
+        if first == last && previous_empty == first
+          raise ArgumentError.new("ambiguous coincident fragment insertions")
+        end
+        previous_empty = first == last ? first : nil
+        unless first >= cursor && last >= first && last <= before.text.bytesize &&
+               before.text.byte_slice(0, first).valid_encoding? && before.text.byte_slice(0, last).valid_encoding? &&
+               before.text.byte_slice(first, last - first) == edit.expected_old
+          raise ArgumentError.new("invalid or overlapping fragment edit")
+        end
+        DiagnosticFragmentValidation.validate_text!(edit.replacement.text, edit.replacement.data.events, edit.replacement.data.anchors)
+        unless ::Crystal::Digest::SHA256.hexdigest(edit.replacement.text) == edit.replacement.data.text_sha256
+          raise ArgumentError.new("replacement fragment guard mismatch")
+        end
+        source_events.each do |event|
+          intersects = first == last ? (event.input_start < first && first < event.input_end) :
+            (event.input_start < last && first < event.input_end)
+          if intersects && !(first <= event.input_start && event.input_end <= last)
+            raise ArgumentError.new("fragment edit splits a token")
+          end
+        end
+        io << before.text.byte_slice(cursor, first - cursor)
+        starts << io.pos.to_i32
+        io << edit.replacement.text
+        cursor = last
+      end
+      io << before.text.byte_slice(cursor, before.text.bytesize - cursor)
+      output = io.to_s
+      old_event_map = {} of Int32 => Int32
+      source_events.each_with_index do |event, index|
+        touched = edits.any? { |edit| edit.span.start_offset < event.input_end && event.input_start < edit.span.end_offset }
+        next if touched
+        delta = 0_i64
+        edits.each do |edit|
+          break if edit.span.end_offset > event.input_start
+          delta += edit.replacement.text.bytesize - (edit.span.end_offset - edit.span.start_offset)
+        end
+        raise ArgumentError.new("fragment rewrite offset overflow") unless delta >= Int32::MIN && delta <= Int32::MAX
+        old_event_map[index] = builder.add_event(shift_event(event, delta.to_i32))
+      end
+      replacement_event_maps = [] of Array(Int32)
+      edits.each_with_index do |edit, edit_index|
+        replacement_event_maps << edit.replacement.data.events.map { |event| builder.add_event(shift_event(event, starts[edit_index])) }
+      end
+
+      # Assign all future anchor indices before rebuilding references.
+      old_anchor_map = {} of Int32 => Int32
+      pending = [] of {DiagnosticAnchor, Int32, Int32, Int32}
+      source_anchors.each_with_index do |anchor, index|
+        next unless event_index = old_event_map[anchor.event_index]?
+        event = builder.event_at(event_index)
+        old_anchor_map[index] = pending.size
+        pending << {anchor, event_index, event.selected_start, -1}
+      end
+      replacement_anchor_maps = [] of Array(Int32)
+      edits.each_with_index do |edit, edit_index|
+        indices = [] of Int32
+        edit.replacement.data.anchors.each do |anchor|
+          event_index = replacement_event_maps[edit_index][anchor.event_index]
+          indices << pending.size
+          pending << {anchor, event_index, builder.event_at(event_index).selected_start, edit_index}
+        end
+        replacement_anchor_maps << indices
+      end
+      transferred = Set(Int32).new
+      edits.each_with_index do |edit, edit_index|
+        replacements = edit.replacement.data.anchors
+        claimed_new = Set(Int32).new
+        edit.transfers.each do |transfer|
+          old_index = transfer.old_index
+          raise ArgumentError.new("negative original anchor index") if old_index < 0
+          old = source_anchors[old_index]? || raise ArgumentError.new("transfer references missing original anchor")
+          raise ArgumentError.new("duplicate anchor transfer") unless transferred.add?(old_index)
+          raise ArgumentError.new("transfer targets untouched anchor") if old_event_map.has_key?(old.event_index)
+          event = source_events[old.event_index]
+          unless edit.span.start_offset <= event.input_start && event.input_end <= edit.span.end_offset
+            raise ArgumentError.new("transfer targets a different edit")
+          end
+          target_index = case transfer
+                         when DiagnosticAnchorTransfer::Preserve
+                           raise ArgumentError.new("negative replacement anchor index") if transfer.new_index < 0
+                           replacement = replacements[transfer.new_index]? || raise ArgumentError.new("missing preserved replacement")
+                           unless old.kind == replacement.kind && old.role == replacement.role && old.origin == replacement.origin &&
+                                  old.name_slots == replacement.name_slots
+                             raise ArgumentError.new("preserved anchor changed identity")
+                           end
+                           raise ArgumentError.new("duplicate preserved replacement") unless claimed_new.add?(transfer.new_index)
+                           transfer.new_index
+                         when DiagnosticAnchorTransfer::Project
+                           unless transfer.new_indices.includes?(transfer.carrier_index) && transfer.new_indices.uniq.size == transfer.new_indices.size &&
+                                  transfer.new_indices.all? { |index| index >= 0 && index < replacements.size }
+                             raise ArgumentError.new("invalid projection transfer")
+                           end
+                           transfer.new_indices.each { |index| claimed_new << index }
+                           carrier = replacements[transfer.carrier_index]
+                           derived = carrier.origin.as?(DiagnosticOrigin::DerivedName) || raise ArgumentError.new("projection carrier is not derived")
+                           names = derived.source_names || raise ArgumentError.new("projection carrier lacks source names")
+                           unless derived.derivation_kind == "BoundProjection" && derived.producer == edit.producer &&
+                                  derived.source_text == edit.expected_old && derived.source_fragment_sha256 == ::Crystal::Digest::SHA256.hexdigest(edit.expected_old)
+                             raise ArgumentError.new("projection carrier does not match edit")
+                           end
+                           old_names = old.name_slots.values.flat_map { |values| values }
+                           expected_start = event.selected_start - edit.span.start_offset
+                           expected_end = event.selected_end - edit.span.start_offset
+                           if old_names.empty? || old_names.any? { |value| !names.any? { |source| source.start_offset == expected_start && source.end_offset == expected_end && source.name == value } }
+                             raise ArgumentError.new("projection loses original name evidence")
+                           end
+                           transfer.carrier_index
+                         else
+                           raise ArgumentError.new("unknown anchor transfer")
+                         end
+          old_anchor_map[old_index] = replacement_anchor_maps[edit_index][target_index]
+        end
+        replacements.each_with_index do |replacement, index|
+          next if claimed_new.includes?(index)
+          derived = replacement.origin.as?(DiagnosticOrigin::DerivedName)
+          unless derived && derived.derivation_kind == "BoundProjection" && derived.producer == edit.producer &&
+                 derived.source_text == edit.expected_old && derived.source_fragment_sha256 == ::Crystal::Digest::SHA256.hexdigest(edit.expected_old)
+            raise ArgumentError.new("replacement anchor lacks a closed projection")
+          end
+        end
+      end
+      source_anchors.each_with_index do |anchor, index|
+        unless old_event_map.has_key?(anchor.event_index) || transferred.includes?(index)
+          raise ArgumentError.new("touched fragment anchor lacks transfer")
+        end
+      end
+
+      pending.each do |anchor, event_index, offset, replacement_index|
+        map = old_anchor_map
+        if replacement_index >= 0
+          map = {} of Int32 => Int32
+          replacement_anchor_maps[replacement_index].each_with_index { |value, index| map[index] = value }
+        end
+        attachment = case part = anchor.attachment
+                     when DiagnosticFragmentAttachment::Direct
+                       DiagnosticFragmentAttachment::Direct.new.as(DiagnosticFragmentAttachment)
+                     when DiagnosticFragmentAttachment::HeadOf
+                       head = case old_head = part.head
+                              when DiagnosticFragmentHead::Anchor
+                                DiagnosticFragmentHead::Anchor.new(map[old_head.anchor_index]).as(DiagnosticFragmentHead)
+                              when DiagnosticFragmentHead::Syntax
+                                adjacent = old_head.adjacent_anchor_index.try { |index| map[index] }
+                                DiagnosticFragmentHead::Syntax.new(old_head.form, adjacent).as(DiagnosticFragmentHead)
+                              else raise ArgumentError.new("unknown fragment head")
+                              end
+                       DiagnosticFragmentAttachment::HeadOf.new(part.rule, head).as(DiagnosticFragmentAttachment)
+                     when DiagnosticFragmentAttachment::PayloadOf
+                       DiagnosticFragmentAttachment::PayloadOf.new(part.rule, map[part.owner_anchor_index]).as(DiagnosticFragmentAttachment)
+                     else raise ArgumentError.new("unknown fragment attachment")
+                     end
+        builder.add_anchor(anchor.copy_with(offset: offset, event_index: event_index, attachment: attachment))
+      end
+      DiagnosticRenderedFragment.new(output, builder.finish_data(output))
+    end
+  end
+
+  module DiagnosticBoundProjection
+    def self.render(producer : DiagnosticBoundProducer, before : DiagnosticRenderedFragment, span : DiagnosticByteSpan,
+                    source_names : Array(DiagnosticBoundNameSource), lexical_mode : String) : DiagnosticRenderedFragment
+      DiagnosticFragmentValidation.validate_text!(before.text, before.data.events, before.data.anchors)
+      unless ::Crystal::Digest::SHA256.hexdigest(before.text) == before.data.text_sha256 &&
+             span.start_offset >= 0 && span.end_offset >= span.start_offset && span.end_offset <= before.text.bytesize &&
+             before.text.byte_slice(0, span.start_offset).valid_encoding? && before.text.byte_slice(0, span.end_offset).valid_encoding?
+        raise ArgumentError.new("invalid bound projection source span")
+      end
+      source = before.text.byte_slice(span.start_offset, span.end_offset - span.start_offset)
+      recorded = [] of DiagnosticBoundNameSource
+      events = before.data.events
+      before.data.anchors.each do |anchor|
+        event = events[anchor.event_index]
+        next unless span.start_offset <= event.input_start && event.input_end <= span.end_offset
+        anchor.name_slots.each_value do |values|
+          values.each do |value|
+            recorded << DiagnosticBoundNameSource.new(event.selected_start - span.start_offset,
+              event.selected_end - span.start_offset, value)
+          end
+        end
+      end
+      recorded.sort_by! { |entry| {entry.start_offset, entry.end_offset} }
+      unless recorded == source_names
+        raise ArgumentError.new("bound projection source names differ from captured fragment")
+      end
+      output = case producer
+               when DiagnosticBoundProducer::StripRoot
+                 prefix = "#{producer.root}::"
+                 raise ArgumentError.new("missing source root") unless source.starts_with?(prefix)
+                 source.byte_slice(prefix.bytesize, source.bytesize - prefix.bytesize)
+               when DiagnosticBoundProducer::ForeignType
+                 prefix = producer.source_name
+                 raise ArgumentError.new("missing foreign type source") unless source == prefix || source.starts_with?("#{prefix}::")
+                 producer.qualified_name + source.byte_slice(prefix.bytesize, source.bytesize - prefix.bytesize)
+               when DiagnosticBoundProducer::AliasType then producer.resolved_type
+               when DiagnosticBoundProducer::SelfReturn then "self"
+               when DiagnosticBoundProducer::SemanticSignatureType then producer.semantic_type
+               when DiagnosticBoundProducer::UninitializedClassVar then "uninitialized #{producer.semantic_type}"
+               when DiagnosticBoundProducer::ConstantAccessor
+                 case producer.part
+                 when "Name" then "#{producer.prefix}#{producer.constant_name}".downcase
+                 when "Receiver" then "self"
+                 else raise ArgumentError.new("invalid constant accessor part")
+                 end
+               when DiagnosticBoundProducer::ResolvedRestriction
+                 producer.add_global ? "::#{producer.resolved_type}" : producer.resolved_type
+               else raise ArgumentError.new("unknown bound projection producer")
+               end
+      digest = ::Crystal::Digest::SHA256.hexdigest(source)
+      builder = DiagnosticFragmentBuilder.new(lexical_mode)
+      if producer.is_a?(DiagnosticBoundProducer::ConstantAccessor)
+        context = producer.part == "Name" ? "definition_name" : "local_reference"
+        lex_context = producer.part == "Name" ? DiagnosticRenderedLexContext::DefOrMacroName : DiagnosticRenderedLexContext::Operand
+        observed = DiagnosticRenderedTokens.observe_one(output, 0, output.bytesize, lexical_mode, lex_context)
+        origin = DiagnosticOrigin::DerivedName.bound_projection(producer, digest, source, source_names, output, lexical_mode,
+          0, output.bytesize, observed.token_kind, context)
+        slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)
+        name = DiagnosticNameValue::Derived.new(origin)
+        builder.add_written_anchor(0, output.bytesize, output, lex_context, "Name", context, origin, {slot => [name] of DiagnosticNameValue})
+      else
+        prefix = producer.is_a?(DiagnosticBoundProducer::UninitializedClassVar) ? "uninitialized ".bytesize : 0
+        type_text = output.byte_slice(prefix, output.bytesize - prefix)
+        parser = Parser.new(type_text)
+        parser.iyi = lexical_mode == "Iyi"
+        parser.enable_diagnostic_name_observations
+        parser.next_token
+        parser.parse_bare_proc_type
+        parser.check :EOF
+        if parser.diagnostic_lexical_observations.any? { |token| token.token_text == "self?" }
+          raise ArgumentError.new("bound self? requires an explicit type-sugar projection")
+        end
+        parser.diagnostic_name_observations.each do |observation|
+          next unless {"path_segment", "named_entry", "type_self"}.includes?(observation.context)
+          first = observation.input_start + prefix
+          last = observation.input_end + prefix
+          origin = DiagnosticOrigin::DerivedName.bound_projection(producer, digest, source, source_names, output, lexical_mode,
+            first, last, observation.token_kind, observation.context)
+          name = DiagnosticNameValue::Derived.new(origin)
+          lex_context = observation.context == "path_segment" ? DiagnosticRenderedLexContext::TypeName : DiagnosticRenderedLexContext::Operand
+          builder.add_written_anchor(first, last, output, lex_context, "Name", observation.context, origin,
+            {observation.slot => [name] of DiagnosticNameValue})
+        end
+      end
+      DiagnosticRenderedFragment.new(output, builder.finish_data(output))
+    end
+
+    def self.uninitialized(declaration_origin : DiagnosticOrigin, owner_type : String, variable_name : String,
+                           semantic_type : String, lexical_mode : String) : DiagnosticRenderedFragment
+      empty = DiagnosticRenderedFragment.new("", DiagnosticFragmentData.new("", [] of DiagnosticTokenEvent, [] of DiagnosticAnchor))
+      producer = DiagnosticBoundProducer::UninitializedClassVar.new(declaration_origin, owner_type, variable_name, semantic_type)
+      render(producer, empty, DiagnosticByteSpan.new(0, 0), [] of DiagnosticBoundNameSource, lexical_mode)
+    end
+  end
+
   record DiagnosticWriterRef, start_offset : Int32, end_offset : Int32
   record DiagnosticMacroClaimKey, writer : DiagnosticWriterRef, kind : String, role : String
 
@@ -1439,6 +1862,31 @@ module Iyi
           expected_keys(object, %w(kind derivation_kind source_token result))
           budget.text(object["result"].as_s)
           DerivedName.regex_match_index(source_token_from_json(object["source_token"], depth + 1, budget), object["result"].as_s)
+        when "ImplicitModuleSelf"
+          expected_keys(object, %w(kind derivation_kind module_header_origin))
+          DerivedName.implicit_module_self(from_json(object["module_header_origin"], depth + 1, budget))
+        when "ModuleHeaderPath"
+          expected_keys(object, %w(kind derivation_kind module_header_origin source_segments package_name result_index))
+          budget.consume(object["source_segments"].as_a.size.to_u64 * 512_u64)
+          segments = object["source_segments"].as_a.map { |item| source_token_from_json(item, depth + 1, budget) }
+          package = object["package_name"]
+          budget.text(package.as_s) unless package.raw.nil?
+          DerivedName.module_header_path(from_json(object["module_header_origin"], depth + 1, budget),
+            segments, package.raw.nil? ? nil : package.as_s, object["result_index"].as_i)
+        when "BoundProjection"
+          expected_keys(object, %w(kind derivation_kind producer source_fragment_sha256 source_text source_names output_text lexical_mode result_start result_end token_kind context))
+          %w(source_fragment_sha256 source_text output_text lexical_mode token_kind context).each { |key| budget.text(object[key].as_s) }
+          budget.consume(object["source_names"].as_a.size.to_u64 * 512_u64)
+          names = object["source_names"].as_a.map do |value|
+            source = value.as_h
+            expected_keys(source, %w(start_offset end_offset name))
+            DiagnosticBoundNameSource.new(source["start_offset"].as_i, source["end_offset"].as_i,
+              name_value_from_json(source["name"], depth + 1, budget))
+          end
+          DerivedName.bound_projection(bound_producer_from_json(object["producer"], depth + 1, budget),
+            object["source_fragment_sha256"].as_s, object["source_text"].as_s, names, object["output_text"].as_s,
+            object["lexical_mode"].as_s, object["result_start"].as_i, object["result_end"].as_i,
+            object["token_kind"].as_s, object["context"].as_s)
         when "TypeSugar"
           expected_keys(object, %w(kind derivation_kind production witnesses result lowering_index))
           budget.consume(object["witnesses"].as_a.size.to_u64 * 512_u64)
@@ -1558,6 +2006,51 @@ module Iyi
       end
     end
 
+    private def self.bound_producer_from_json(value : JSON::Any, depth : Int32, budget : DecodeBudget) : DiagnosticBoundProducer
+      data = value.as_h
+      case data["kind"].as_s
+      when "StripRoot"
+        expected_keys(data, %w(kind root))
+        budget.text(data["root"].as_s)
+        DiagnosticBoundProducer::StripRoot.new(data["root"].as_s)
+      when "ForeignType"
+        expected_keys(data, %w(kind module_name source_name qualified_name))
+        %w(module_name source_name qualified_name).each { |key| budget.text(data[key].as_s) }
+        DiagnosticBoundProducer::ForeignType.new(data["module_name"].as_s, data["source_name"].as_s, data["qualified_name"].as_s)
+      when "AliasType"
+        expected_keys(data, %w(kind owner name resolved_type))
+        %w(owner name resolved_type).each { |key| budget.text(data[key].as_s) }
+        DiagnosticBoundProducer::AliasType.new(data["owner"].as_s, data["name"].as_s, data["resolved_type"].as_s)
+      when "SelfReturn"
+        expected_keys(data, %w(kind owner_type method_name receiver))
+        %w(owner_type method_name receiver).each { |key| budget.text(data[key].as_s) }
+        DiagnosticBoundProducer::SelfReturn.new(data["owner_type"].as_s, data["method_name"].as_s, data["receiver"].as_s)
+      when "SemanticSignatureType"
+        expected_keys(data, %w(kind definition_origin field parameter_index semantic_type))
+        %w(field semantic_type).each { |key| budget.text(data[key].as_s) }
+        index = data["parameter_index"]
+        DiagnosticBoundProducer::SemanticSignatureType.new(from_json(data["definition_origin"], depth + 1, budget),
+          data["field"].as_s, index.raw.nil? ? nil : index.as_i, data["semantic_type"].as_s)
+      when "UninitializedClassVar"
+        expected_keys(data, %w(kind declaration_origin owner_type variable_name semantic_type))
+        %w(owner_type variable_name semantic_type).each { |key| budget.text(data[key].as_s) }
+        DiagnosticBoundProducer::UninitializedClassVar.new(from_json(data["declaration_origin"], depth + 1, budget),
+          data["owner_type"].as_s, data["variable_name"].as_s, data["semantic_type"].as_s)
+      when "ConstantAccessor"
+        expected_keys(data, %w(kind definition_origin prefix constant_name part))
+        %w(prefix constant_name part).each { |key| budget.text(data[key].as_s) }
+        DiagnosticBoundProducer::ConstantAccessor.new(from_json(data["definition_origin"], depth + 1, budget),
+          data["prefix"].as_s, data["constant_name"].as_s, data["part"].as_s)
+      when "ResolvedRestriction"
+        expected_keys(data, %w(kind owner_type written_type resolved_type root add_global))
+        %w(owner_type written_type resolved_type root).each { |key| budget.text(data[key].as_s) }
+        DiagnosticBoundProducer::ResolvedRestriction.new(data["owner_type"].as_s, data["written_type"].as_s,
+          data["resolved_type"].as_s, data["root"].as_s, data["add_global"].as_bool)
+      else
+        raise ArgumentError.new("unknown bound producer")
+      end
+    end
+
     private def self.source_token_from_json(value : JSON::Any, depth : Int32, budget : DecodeBudget) : DiagnosticSourceNameToken
       token = value.as_h
       expected_keys(token, %w(lexical_origin binding_origin context input_sha256 input_bytesize input_start input_end lexical_mode token_kind raw_text))
@@ -1606,6 +2099,12 @@ module Iyi
       getter lowering_index : Int32?
       @witnesses : Array(DiagnosticSourceSyntaxToken)
       @bound_data : DiagnosticBoundProjectionData? = nil
+      getter module_header_origin : DiagnosticOrigin? = nil
+      @source_segments = [] of DiagnosticSourceNameToken
+      getter package_name : String? = nil
+      getter result_index : Int32? = nil
+
+      def source_segments : Array(DiagnosticSourceNameToken); @source_segments.dup; end
 
       def producer : DiagnosticBoundProducer?; @bound_data.try(&.producer); end
       def source_fragment_sha256 : String?; @bound_data.try(&.source_fragment_sha256); end
@@ -1792,17 +2291,35 @@ module Iyi
         @witnesses = [] of DiagnosticSourceSyntaxToken
         @bound_data = DiagnosticBoundProjectionData.new(data.producer, data.source_fragment_sha256, data.source_text,
           data.source_names.dup, data.output_text, data.lexical_mode, data.result_start, data.result_end, data.token_kind, data.context)
-        unless data.source_fragment_sha256.bytesize == 64 &&
-               data.source_fragment_sha256.each_byte.all? { |b| (48_u8..57_u8).includes?(b) || (97_u8..102_u8).includes?(b) } &&
-               data.source_text.valid_encoding? && data.output_text.valid_encoding? &&
-               data.result_start >= 0 && data.result_end > data.result_start && data.result_end <= data.output_text.bytesize
+        unless data.source_text.valid_encoding? && data.output_text.valid_encoding? &&
+               data.result_start >= 0 && data.result_end > data.result_start && data.result_end <= data.output_text.bytesize &&
+               data.source_fragment_sha256 == ::Crystal::Digest::SHA256.hexdigest(data.source_text)
           raise ArgumentError.new("invalid bound projection inputs")
         end
         parents = [] of DiagnosticOrigin
         own = 2048_u64 + data.source_text.bytesize.to_u64 * 6 + data.output_text.bytesize.to_u64 * 6
+        bound_strings = case producer = data.producer
+                        when DiagnosticBoundProducer::StripRoot then [producer.root]
+                        when DiagnosticBoundProducer::ForeignType then [producer.module_name, producer.source_name, producer.qualified_name]
+                        when DiagnosticBoundProducer::AliasType then [producer.owner, producer.name, producer.resolved_type]
+                        when DiagnosticBoundProducer::SelfReturn then [producer.owner_type, producer.method_name, producer.receiver]
+                        when DiagnosticBoundProducer::SemanticSignatureType then [producer.field, producer.semantic_type]
+                        when DiagnosticBoundProducer::UninitializedClassVar then [producer.owner_type, producer.variable_name, producer.semantic_type]
+                        when DiagnosticBoundProducer::ConstantAccessor then [producer.prefix, producer.constant_name, producer.part]
+                        when DiagnosticBoundProducer::ResolvedRestriction then [producer.owner_type, producer.written_type, producer.resolved_type, producer.root]
+                        else raise ArgumentError.new("unknown bound projection producer")
+                        end
+        (bound_strings + [data.lexical_mode, data.token_kind, data.context]).each do |text|
+          raise ArgumentError.new("invalid bound projection text") unless text.valid_encoding?
+          own += text.bytesize.to_u64 * 6
+          raise ArgumentError.new("bound projection graph exceeds size limit") if own > MAX_UNFOLDED_BYTES
+        end
+        source_depth = 0
         cursor = 0
         data.source_names.each do |entry|
           unless entry.start_offset >= cursor && entry.end_offset > entry.start_offset && entry.end_offset <= data.source_text.bytesize &&
+                 data.source_text.byte_slice(0, entry.start_offset).valid_encoding? &&
+                 data.source_text.byte_slice(0, entry.end_offset).valid_encoding? &&
                  data.source_text.byte_slice(entry.start_offset, entry.end_offset - entry.start_offset) == entry.name.rendered_text
             raise ArgumentError.new("invalid bound source name")
           end
@@ -1810,6 +2327,13 @@ module Iyi
           own += entry.name.graph_bytes + 256_u64
           raise ArgumentError.new("bound projection graph exceeds size limit") if own > MAX_UNFOLDED_BYTES
           raise ArgumentError.new("bound source graph exceeds depth limit") if entry.name.artifact_origin.graph_depth + 1 > MAX_DEPTH
+          source_depth = Math.max(source_depth, entry.name.artifact_origin.graph_depth + 1)
+          if observed_name = entry.name.as?(DiagnosticNameValue::Observed)
+            if binding = observed_name.source_token.binding_origin
+              raise ArgumentError.new("bound source graph exceeds depth limit") if binding.graph_depth + 1 > MAX_DEPTH
+              source_depth = Math.max(source_depth, binding.graph_depth + 1)
+            end
+          end
         end
         actual = case producer = data.producer
                  when DiagnosticBoundProducer::StripRoot
@@ -1818,11 +2342,11 @@ module Iyi
                    data.source_text.byte_slice(prefix.bytesize, data.source_text.bytesize - prefix.bytesize)
                  when DiagnosticBoundProducer::ForeignType
                    prefix = producer.source_name
-                   raise ArgumentError.new("invalid foreign type projection") if producer.module_name.empty? || prefix.empty? || producer.qualified_name.empty? || !data.source_text.starts_with?(prefix) || data.source_names.empty?
-                   suffix = data.source_text.byte_slice(prefix.bytesize, data.source_text.bytesize - prefix.bytesize)
-                   if !suffix.empty? && (suffix[0].ascii_alphanumeric? || suffix[0] == '_')
-                     raise ArgumentError.new("foreign type projection lacks a name boundary")
+                   unless !producer.module_name.empty? && !prefix.empty? && !producer.qualified_name.empty? &&
+                          (data.source_text == prefix || data.source_text.starts_with?("#{prefix}::")) && !data.source_names.empty?
+                     raise ArgumentError.new("invalid foreign type projection")
                    end
+                   suffix = data.source_text.byte_slice(prefix.bytesize, data.source_text.bytesize - prefix.bytesize)
                    producer.qualified_name + suffix
                  when DiagnosticBoundProducer::AliasType
                    raise ArgumentError.new("invalid alias type projection") unless !producer.owner.empty? && !producer.name.empty? && !producer.resolved_type.empty? && data.source_text == producer.name && !data.source_names.empty?
@@ -1843,8 +2367,9 @@ module Iyi
                    producer.semantic_type
                  when DiagnosticBoundProducer::UninitializedClassVar
                    unless producer.declaration_origin.valid_for_anchor?("Name", "class_variable") &&
-                          !producer.owner_type.empty? && !producer.variable_name.empty? && !producer.semantic_type.empty? &&
-                          data.source_text.empty? && data.source_names.empty?
+                          !producer.owner_type.empty? && !producer.semantic_type.empty? &&
+                          DiagnosticSourceNameToken.valid_token?("CLASS_VAR", producer.variable_name, data.lexical_mode, "class_variable") &&
+                          data.result_start >= "uninitialized ".bytesize && data.source_text.empty? && data.source_names.empty?
                      raise ArgumentError.new("invalid class-variable projection")
                    end
                    parents << producer.declaration_origin
@@ -1863,12 +2388,29 @@ module Iyi
                    when "Receiver" then "self"
                    else raise ArgumentError.new("invalid accessor projection part")
                    end
+                 when DiagnosticBoundProducer::ResolvedRestriction
+                   unless !producer.owner_type.empty? && !producer.written_type.empty? && !producer.resolved_type.empty? &&
+                          data.source_text == producer.written_type && !data.source_names.empty?
+                     raise ArgumentError.new("invalid resolved restriction projection")
+                   end
+                   if producer.add_global
+                     first = producer.resolved_type.split("::").first?
+                     if producer.resolved_type.starts_with?("::") || first.nil? || first.empty? || first == producer.root
+                       raise ArgumentError.new("invalid resolved restriction global prefix")
+                     end
+                   end
+                   producer.add_global ? "::#{producer.resolved_type}" : producer.resolved_type
                  else
                    raise ArgumentError.new("unknown bound projection producer")
                  end
         raise ArgumentError.new("bound output differs from closed projection") unless actual == data.output_text
-        permitted = if (producer = data.producer).is_a?(DiagnosticBoundProducer::ConstantAccessor)
+        permitted = case producer = data.producer
+                    when DiagnosticBoundProducer::ConstantAccessor
                       producer.part == "Name" ? {"definition_name"} : {"local_reference"}
+                    when DiagnosticBoundProducer::StripRoot, DiagnosticBoundProducer::ForeignType
+                      {"path_segment"}
+                    when DiagnosticBoundProducer::SelfReturn
+                      {"type_self"}
                     else
                       {"path_segment", "named_entry", "type_self"}
                     end
@@ -1879,9 +2421,139 @@ module Iyi
                DiagnosticSourceNameToken.valid_token?(data.token_kind, observed.token_text, data.lexical_mode, data.context)
           raise ArgumentError.new("invalid bound result token")
         end
+        tail = data.result_end
+        while tail < data.output_text.bytesize
+          byte = data.output_text.byte_at(tail)
+          if {9_u8, 10_u8, 13_u8, 32_u8}.includes?(byte)
+            tail += 1
+          elsif byte == '#'.ord
+            tail += 1
+            tail += 1 while tail < data.output_text.bytesize && data.output_text.byte_at(tail) != 10
+          else
+            break
+          end
+        end
+        is_key = tail < data.output_text.bytesize && data.output_text.byte_at(tail) == ':'.ord &&
+                 (tail + 1 >= data.output_text.bytesize || data.output_text.byte_at(tail + 1) != ':'.ord)
+        if (data.context == "named_entry") != is_key
+          raise ArgumentError.new("bound result has incorrect named-entry role")
+        end
+        unless data.producer.is_a?(DiagnosticBoundProducer::ConstantAccessor)
+          prefix = data.producer.is_a?(DiagnosticBoundProducer::UninitializedClassVar) ? "uninitialized ".bytesize : 0
+          type_text = data.output_text.byte_slice(prefix, data.output_text.bytesize - prefix)
+          parser = Parser.new(type_text)
+          parser.iyi = data.lexical_mode == "Iyi"
+          parser.enable_diagnostic_name_observations
+          parser.next_token
+          parser.parse_bare_proc_type
+          parser.check :EOF
+          matched = parser.diagnostic_name_observations.any? do |item|
+            item.input_start + prefix == data.result_start && item.input_end + prefix == data.result_end &&
+              item.token_kind == data.token_kind && item.context == data.context && item.token_text == observed.token_text
+          end
+          raise ArgumentError.new("bound token is not an accepted type name") unless matched
+        end
         @producer_context = data.context
         @rendered_text = observed.token_text
         set_graph_bounds!(own, parents)
+        @graph_depth = Math.max(@graph_depth, source_depth)
+      end
+
+      def self.implicit_module_self(module_header_origin : DiagnosticOrigin) : DerivedName
+        new(module_header_origin)
+      end
+
+      def initialize(module_header_origin : DiagnosticOrigin)
+        unless (module_header_origin.is_a?(Written) || module_header_origin.is_a?(Expanded)) &&
+               module_header_origin.valid_for_anchor?("ModuleHeader", "keyword")
+          raise ArgumentError.new("invalid implicit module self origin")
+        end
+        @module_header_origin = module_header_origin
+        @source_token = nil
+        @derivation_kind = "ImplicitModuleSelf"
+        @definition_origin = nil
+        @parameter_slot = nil
+        @parameter_index = nil
+        @result = ""
+        @projection = nil
+        @fresh_index = nil
+        @production = nil
+        @sugar_result = nil
+        @lowering_index = nil
+        @witnesses = [] of DiagnosticSourceSyntaxToken
+        @bound_data = nil
+        @producer_context = "type_self"
+        @rendered_text = "self"
+        set_graph_bounds!(256_u64, [module_header_origin] of DiagnosticOrigin)
+      end
+
+      def self.module_header_path(header_origin : DiagnosticOrigin, source_segments : Array(DiagnosticSourceNameToken),
+                                  package_name : String?, result_index : Int32) : DerivedName
+        new(header_origin, source_segments, package_name, result_index)
+      end
+
+      def initialize(header_origin : DiagnosticOrigin, source_segments : Array(DiagnosticSourceNameToken),
+                     @package_name : String?, @result_index : Int32)
+        unless (header_origin.is_a?(Written) || header_origin.is_a?(Expanded)) &&
+               header_origin.valid_for_anchor?("ModuleHeader", "keyword") && !source_segments.empty? &&
+               (@package_name.nil? || (!@package_name.not_nil!.empty? && @package_name.not_nil!.valid_encoding?))
+          raise ArgumentError.new("invalid module-header path origin")
+        end
+        @module_header_origin = header_origin
+        @source_token = nil
+        @derivation_kind = "ModuleHeaderPath"
+        @definition_origin = nil
+        @parameter_slot = nil
+        @parameter_index = nil
+        @result = ""
+        @projection = nil
+        @fresh_index = nil
+        @production = nil
+        @sugar_result = nil
+        @lowering_index = nil
+        @witnesses = [] of DiagnosticSourceSyntaxToken
+        @bound_data = nil
+        @producer_context = "path_segment"
+        @source_segments = source_segments.dup
+        parents = [header_origin] of DiagnosticOrigin
+        own = 1024_u64 + (@package_name.try(&.bytesize) || 0).to_u64 * 6
+        @source_segments.each do |segment|
+          unless segment.context == "module_segment" && segment.binding_origin.nil? &&
+                 segment.lexical_origin.valid_for_anchor?("Name", "module_segment")
+            raise ArgumentError.new("invalid module header segment")
+          end
+          own += segment.raw_text.bytesize.to_u64 * 6 + 512_u64
+          raise ArgumentError.new("module-header graph exceeds size limit") if own > MAX_UNFOLDED_BYTES
+          parents << segment.lexical_origin
+        end
+        @source_segments.each_cons_pair do |left, right|
+          unless left.input_sha256 == right.input_sha256 && left.input_bytesize == right.input_bytesize &&
+                 left.lexical_mode == right.lexical_mode && left.input_end <= right.input_start
+            raise ArgumentError.new("inconsistent module-header segments")
+          end
+        end
+        set_graph_bounds!(own, parents)
+        @source_segments.each do |segment|
+          same_source = case origin = segment.lexical_origin
+                        when Written
+                          header = header_origin.as?(Written)
+                          header && header.source_module == origin.source_module && header.source_file == origin.source_file
+                        when Expanded
+                          header = header_origin.as?(Expanded)
+                          header && header.invocation_origin == origin.invocation_origin &&
+                            header.macro_definition_origin == origin.macro_definition_origin && header.expansion_guard == origin.expansion_guard
+                        else false
+                        end
+          raise ArgumentError.new("module-header segment source mismatch") unless same_source
+        end
+        names = @source_segments.map(&.raw_text)
+        names.unshift(@package_name.not_nil!) if @package_name && names.first? != @package_name
+        index = @result_index.not_nil!
+        raise ArgumentError.new("invalid module-header path index") if index < 0 || index >= names.size
+        @rendered_text = names[index].camelcase
+        unless DiagnosticSourceNameToken.valid_token?("CONST", @rendered_text, @source_segments.first.lexical_mode, "path_segment")
+          raise ArgumentError.new("invalid derived module path")
+        end
       end
 
       def valid_for_anchor?(kind : String, role : String) : Bool
@@ -1892,13 +2564,36 @@ module Iyi
         end
       end
 
-      def_equals_and_hash @derivation_kind, @source_token, @definition_origin, @parameter_slot, @parameter_index, @result, @projection, @fresh_index, @production, @sugar_result, @lowering_index, @witnesses
+      def_equals_and_hash @derivation_kind, @source_token, @definition_origin, @parameter_slot, @parameter_index, @result, @projection, @fresh_index, @production, @sugar_result, @lowering_index, @witnesses, @bound_data, @module_header_origin, @source_segments, @package_name, @result_index
 
       def to_json(json : JSON::Builder) : Nil
         json.object do
           json.field "kind", "DerivedName"
           json.field "derivation_kind", @derivation_kind
-          if @derivation_kind == "TypeSugar"
+          if @derivation_kind == "ModuleHeaderPath"
+            json.field "module_header_origin", @module_header_origin
+            json.field "source_segments" do
+              json.array { @source_segments.each { |segment| segment.to_json(json) } }
+            end
+            json.field "package_name", @package_name
+            json.field "result_index", @result_index
+          elsif @derivation_kind == "ImplicitModuleSelf"
+            json.field "module_header_origin", @module_header_origin
+          elsif @derivation_kind == "BoundProjection"
+            bound = @bound_data.not_nil!
+            json.field "producer", bound.producer
+            json.field "source_fragment_sha256", bound.source_fragment_sha256
+            json.field "source_text", bound.source_text
+            json.field "source_names" do
+              json.array { bound.source_names.each { |name| name.to_json(json) } }
+            end
+            json.field "output_text", bound.output_text
+            json.field "lexical_mode", bound.lexical_mode
+            json.field "result_start", bound.result_start
+            json.field "result_end", bound.result_end
+            json.field "token_kind", bound.token_kind
+            json.field "context", bound.context
+          elsif @derivation_kind == "TypeSugar"
             json.field "production", @production.not_nil!.to_s
             json.field "witnesses" do
               json.array { @witnesses.each { |witness| witness.to_json(json) } }
@@ -2315,6 +3010,10 @@ module Iyi
         end
         if kind == "Def" && role == "keyword" && @synthesis_kind == "constant_accessor" && @structural_slot == "getter"
           return @parent_origin.valid_for_anchor?("Assign", "constant")
+        end
+        if kind == "Extend" && role == "keyword" && @synthesis_kind == "implicit_module_self" && @structural_slot == "extend"
+          return (@parent_origin.is_a?(Written) || @parent_origin.is_a?(Expanded)) &&
+                 @parent_origin.valid_for_anchor?("ModuleHeader", "keyword")
         end
         if kind == "Macro" && role == "keyword" && @synthesis_kind == "inline_macro_definition" && @structural_slot == "macro"
           return @parent_origin.valid_for_anchor?("MacroDirective", "control") ||

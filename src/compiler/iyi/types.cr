@@ -3887,6 +3887,9 @@ module Iyi
         var.owner = self
         var.thread_local = class_var.thread_local?
         var.initializer = class_var.initializer
+        var.iyi_initialiser_source = class_var.iyi_initialiser_source
+        var.iyi_initialiser_diagnostic = class_var.iyi_initialiser_diagnostic
+        var.iyi_class_var_declaration = class_var.iyi_class_var_declaration.try(&.clone.as(ClassVar))
         var.bind_to(class_var)
         self.class_vars[name] = var
         return var
@@ -3965,6 +3968,9 @@ module Iyi
         var.owner = self
         var.thread_local = class_var.thread_local?
         var.initializer = class_var.initializer
+        var.iyi_initialiser_source = class_var.iyi_initialiser_source
+        var.iyi_initialiser_diagnostic = class_var.iyi_initialiser_diagnostic
+        var.iyi_class_var_declaration = class_var.iyi_class_var_declaration.try(&.clone.as(ClassVar))
         var.bind_to(class_var)
         self.class_vars[name] = var
         return var
