@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A layout fold taken during typing is settled to the final layout before cleanup.** `sizeof`, `alignof`, `instance_sizeof`, `instance_alignof` and `offsetof` could fold to a size the typer saw before a module held by value gained implementors, or before a container it was cached in had its element grow. In a `--crystal` build, `arr.dup` of an array of `{Int32, M}` could then return a zeroed element and trap when printed. The typer now recomputes each folded value against the final layout. A stale expression fold is corrected in place. A fold inside a generic type argument keeps its value, because the type is already built, and so does every expression that shares that layout with it, so the program's types and numbers agree. A native program refuses a stale type argument with a compile error at that expression rather than building a wrong size into a type. A native program also gets a fresh shared layout typer after settling, and the write barrier sizes with its module's typer. `--crystal` output changes only where Crystal 1.21.0 folded two different sizes for one type. `IYI_LAYOUT_FOLD_REPORT=1` prints each stale fold and each open layout to stderr.
+
 ## 0.21.0 — 2026-11-09
 
 The opt-in closure-frame proof contract uses frame-manifest schema 5 and reads

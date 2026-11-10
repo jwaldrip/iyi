@@ -100,6 +100,10 @@ class Iyi::Program
       Prof.span("recursive struct check") { RecursiveStructChecker.new(self).run }
     end
 
+    # iyi: the layout folds that went stale while typing, printed when
+    # IYI_LAYOUT_FOLD_REPORT is set (layout_folds.cr).
+    report_layout_folds
+
     result
   end
 
