@@ -2092,8 +2092,10 @@ module Iyi
               token["input_sha256"].as_s, token["input_bytesize"].as_i, token["input_start"].as_i,
               token["input_end"].as_i, token["lexical_mode"].as_s, token["token_kind"].as_s, token["raw_text"].as_s)
           end
-          DerivedName.type_sugar(DiagnosticTypeSugar.parse(object["production"].as_s), witnesses,
-            DiagnosticTypeSugarResult.parse(object["result"].as_s), object["lowering_index"].as_i)
+          production = DiagnosticTypeSugar.parse(object["production"].as_s)
+          result = DiagnosticTypeSugarResult.parse(object["result"].as_s)
+          raise ArgumentError.new("noncanonical diagnostic enum") unless production.to_s == object["production"].as_s && result.to_s == object["result"].as_s
+          DerivedName.type_sugar(production, witnesses, result, object["lowering_index"].as_i)
         when "OperatorName"
           expected_keys(object, %w(kind derivation_kind production anchor_origin input_sha256 input_bytesize lexical_mode witnesses rendered_text producer_context))
           %w(input_sha256 lexical_mode rendered_text producer_context).each { |key| budget.text(object[key].as_s) }
@@ -2103,10 +2105,14 @@ module Iyi
             expected_keys(item, %w(input_start input_end token_kind raw_text selection event))
             %w(token_kind raw_text selection).each { |key| budget.text(item[key].as_s) }
             event = item["event"].raw.nil? ? nil : token_event_from_json(item["event"], depth + 1, budget)
+            selection = DiagnosticTokenSelection.parse(item["selection"].as_s)
+            raise ArgumentError.new("noncanonical diagnostic enum") unless selection.to_s == item["selection"].as_s
             DiagnosticOperatorWitness.new(item["input_start"].as_i, item["input_end"].as_i, item["token_kind"].as_s,
-              item["raw_text"].as_s, DiagnosticTokenSelection.parse(item["selection"].as_s), event)
+              item["raw_text"].as_s, selection, event)
           end
-          derived = DerivedName.operator_name(DiagnosticOperatorProduction.parse(object["production"].as_s),
+          production = DiagnosticOperatorProduction.parse(object["production"].as_s)
+          raise ArgumentError.new("noncanonical diagnostic enum") unless production.to_s == object["production"].as_s
+          derived = DerivedName.operator_name(production,
             from_json(object["anchor_origin"], depth + 1, budget), object["input_sha256"].as_s,
             object["input_bytesize"].as_i, object["lexical_mode"].as_s, witnesses)
           unless derived.rendered_text == object["rendered_text"].as_s && derived.producer_context == object["producer_context"].as_s
@@ -2122,11 +2128,15 @@ module Iyi
             expected_keys(item, %w(input_start input_end token_kind raw_text selection event))
             %w(token_kind raw_text selection).each { |key| budget.text(item[key].as_s) }
             event = item["event"].raw.nil? ? nil : token_event_from_json(item["event"], depth + 1, budget)
+            selection = DiagnosticTokenSelection.parse(item["selection"].as_s)
+            raise ArgumentError.new("noncanonical diagnostic enum") unless selection.to_s == item["selection"].as_s
             DiagnosticOperatorWitness.new(item["input_start"].as_i, item["input_end"].as_i, item["token_kind"].as_s,
-              item["raw_text"].as_s, DiagnosticTokenSelection.parse(item["selection"].as_s), event)
+              item["raw_text"].as_s, selection, event)
           end
           fresh = object["fresh_index"]
-          derived = DerivedName.structural_name(DiagnosticStructuralProduction.parse(object["production"].as_s),
+          production = DiagnosticStructuralProduction.parse(object["production"].as_s)
+          raise ArgumentError.new("noncanonical diagnostic enum") unless production.to_s == object["production"].as_s
+          derived = DerivedName.structural_name(production,
             from_json(object["anchor_origin"], depth + 1, budget), object["input_sha256"].as_s,
             object["input_bytesize"].as_i, object["lexical_mode"].as_s, witnesses,
             fresh.raw.nil? ? nil : fresh.as_i)
@@ -2167,7 +2177,9 @@ module Iyi
         case fields["kind"].as_s
         when "Generated"
           expected_keys(fields, %w(kind start_offset end_offset emitter_origin producer))
-          DiagnosticEmissionPart::Generated.new(start, finish, emitter_origin, DiagnosticMacroProducer.parse(fields["producer"].as_s)).as(DiagnosticEmissionPart)
+          producer = DiagnosticMacroProducer.parse(fields["producer"].as_s)
+          raise ArgumentError.new("noncanonical diagnostic enum") unless producer.to_s == fields["producer"].as_s
+          DiagnosticEmissionPart::Generated.new(start, finish, emitter_origin, producer).as(DiagnosticEmissionPart)
         when "AstAnchor"
           expected_keys(fields, %w(kind start_offset end_offset emitter_origin source_origin))
           DiagnosticEmissionPart::AstAnchor.new(start, finish, emitter_origin, from_json(fields["source_origin"], depth + 1, budget)).as(DiagnosticEmissionPart)
@@ -2178,8 +2190,10 @@ module Iyi
           raise ArgumentError.new("unknown diagnostic emission part")
         end
       end
+      selection = DiagnosticTokenSelection.parse(event["selection"].as_s)
+      raise ArgumentError.new("noncanonical diagnostic enum") unless selection.to_s == event["selection"].as_s
       DiagnosticTokenEvent.new(event["input_start"].as_i, event["input_end"].as_i, event["token_kind"].as_s,
-        event["token_text"].as_s, event["lexical_mode"].as_s, DiagnosticTokenSelection.parse(event["selection"].as_s), parts)
+        event["token_text"].as_s, event["lexical_mode"].as_s, selection, parts)
     end
 
     private def self.anchor_evidence_from_json(value : JSON::Any, depth : Int32, budget : DecodeBudget) : DiagnosticAnchorEvidence
@@ -2719,10 +2733,16 @@ module Iyi
       # Each part of a non-anchor witness event is either Generated (any producer, E2) or NameSplice, which is only
       # allowed on a CONST or IDENT witness. A claim writer (AstAnchor) never attributes a non-anchor witness.
       def self.check_witness_provenance!(event : DiagnosticTokenEvent, witness : DiagnosticOperatorWitness, label : String) : Nil
+        previous = nil.as(DiagnosticEmissionPart::Generated?)
         event.byte_parts.each do |part|
           case part
-          when DiagnosticEmissionPart::Generated then nil
+          when DiagnosticEmissionPart::Generated
+            if previous && previous.producer == part.producer && previous.emitter_origin == part.emitter_origin
+              raise ArgumentError.new("invalid #{label} witness provenance")
+            end
+            previous = part
           when DiagnosticEmissionPart::NameSplice
+            previous = nil
             raise ArgumentError.new("name splice on non-name witness") unless {"CONST", "IDENT"}.includes?(witness.token_kind)
           else
             raise ArgumentError.new("invalid #{label} witness provenance")
