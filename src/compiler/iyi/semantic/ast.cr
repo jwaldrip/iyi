@@ -650,6 +650,16 @@ module Iyi
     # The actual declared class-variable name and its parser-captured evidence.
     property iyi_class_var_declaration : ClassVar? = nil
 
+    def iyi_class_var_declaration_origin : DiagnosticOrigin
+      declaration = @iyi_class_var_declaration || raise ArgumentError.new("class variable lacks captured declaration")
+      slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)
+      values = declaration.diagnostic_name_slots[slot]? || raise ArgumentError.new("class variable declaration lacks name evidence")
+      raise ArgumentError.new("class variable declaration has ambiguous name evidence") unless values.size == 1
+      origin = values.first.artifact_origin
+      raise ArgumentError.new("class variable declaration has wrong name origin") unless origin.valid_for_anchor?("Name", "class_variable")
+      origin
+    end
+
     # iyi: the first write to a class variable the typer met outside its
     # initializer - an assignment, or a `pointerof` that can write it - and
     # the def it is in, for the thread gate (SPEC.md III.4.5). A class
