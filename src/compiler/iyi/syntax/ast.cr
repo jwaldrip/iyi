@@ -64,10 +64,20 @@ module Iyi
       @diagnostic_percent_witnesses = witnesses.dup
     end
 
+    # `nil` when no percent witnesses were recorded; present-empty stays `[]`.
+    def diagnostic_percent_witnesses? : Array(DiagnosticLiteralWitness)?
+      @diagnostic_percent_witnesses.try(&.dup)
+    end
+
     def diagnostic_literal_productions : Hash({String, Int32}, Array(DiagnosticLiteralProductionSegment))
       copy = {} of {String, Int32} => Array(DiagnosticLiteralProductionSegment)
       @diagnostic_literal_productions.try &.each { |key, segments| copy[key] = segments.dup }
       copy
+    end
+
+    # `nil` when no literal productions were recorded (never an empty hash).
+    def diagnostic_literal_productions? : Hash({String, Int32}, Array(DiagnosticLiteralProductionSegment))?
+      @diagnostic_literal_productions.try { |productions| productions.transform_values(&.dup) }
     end
 
     def diagnostic_literal_production(field : String, index : Int32, segments : Array(DiagnosticLiteralProductionSegment)) : Nil
@@ -80,6 +90,11 @@ module Iyi
 
     def diagnostic_literal_names : Hash({String, Int32}, DiagnosticParsedLiteral)
       @diagnostic_literal_names.try(&.dup) || {} of {String, Int32} => DiagnosticParsedLiteral
+    end
+
+    # `nil` when no literal names were recorded (never an empty hash).
+    def diagnostic_literal_names? : Hash({String, Int32}, DiagnosticParsedLiteral)?
+      @diagnostic_literal_names.try(&.dup)
     end
 
     def diagnostic_literal_name(field : String, index : Int32, literal : DiagnosticParsedLiteral) : Nil
@@ -98,9 +113,78 @@ module Iyi
       copy
     end
 
+    # `nil` when name slots were never recorded; present-empty stays `{}`.
+    def diagnostic_name_slots? : Hash(DiagnosticNameSlot, Array(DiagnosticNameValue))?
+      @diagnostic_name_slots.try { |slots| slots.transform_values(&.dup) }
+    end
+
+    # Presence and sizes read without copying. `nil`/`false` means never recorded.
+    def diagnostic_name_slots_present? : Bool
+      !@diagnostic_name_slots.nil?
+    end
+
+    def diagnostic_name_slots_count : Int32?
+      @diagnostic_name_slots.try &.size
+    end
+
+    # Yields each recorded slot with a read-only `Indexable` view of its values.
+    # The view is the internal array, typed so block bodies cannot mutate it.
+    def each_diagnostic_name_slot(& : DiagnosticNameSlot, Indexable(DiagnosticNameValue) ->) : Nil
+      @diagnostic_name_slots.try &.each { |slot, values| yield slot, values.as(Indexable(DiagnosticNameValue)) }
+      nil
+    end
+
+    def diagnostic_literal_names_present? : Bool
+      !@diagnostic_literal_names.nil?
+    end
+
+    def diagnostic_literal_names_count : Int32?
+      @diagnostic_literal_names.try &.size
+    end
+
+    def each_diagnostic_literal_name(& : {String, Int32}, DiagnosticParsedLiteral ->) : Nil
+      @diagnostic_literal_names.try &.each { |key, literal| yield key, literal }
+      nil
+    end
+
+    def diagnostic_literal_productions_present? : Bool
+      !@diagnostic_literal_productions.nil?
+    end
+
+    def diagnostic_literal_productions_count : Int32?
+      @diagnostic_literal_productions.try &.size
+    end
+
+    def each_diagnostic_literal_production(& : {String, Int32}, Indexable(DiagnosticLiteralProductionSegment) ->) : Nil
+      @diagnostic_literal_productions.try &.each { |key, segments| yield key, segments.as(Indexable(DiagnosticLiteralProductionSegment)) }
+      nil
+    end
+
+    # Preflight sums over stored fields, with no copying. A writer compares these
+    # with its evidence budget before it iterates or copies. Each is 0 when absent.
+    # Name values report their stored graph sizes. Literal names and productions
+    # report their stored base64 encodings, not decoded bytes.
+    def diagnostic_name_slots_graph_bytes : UInt64
+      total = 0_u64
+      @diagnostic_name_slots.try &.each_value { |values| values.each { |value| total += value.graph_bytes } }
+      total
+    end
+
+    def diagnostic_literal_names_encoded_bytes : UInt64
+      total = 0_u64
+      @diagnostic_literal_names.try &.each_value { |literal| total += literal.decoded_base64.bytesize.to_u64 }
+      total
+    end
+
+    def diagnostic_literal_productions_raw_bytes : UInt64
+      total = 0_u64
+      @diagnostic_literal_productions.try &.each_value { |segments| segments.each { |segment| total += segment.raw_base64.bytesize.to_u64 } }
+      total
+    end
+
     def diagnostic_name_slots=(slots : Hash(DiagnosticNameSlot, Array(DiagnosticNameValue))) : Nil
       copy = DiagnosticNameMetadata.copy_and_validate(slots)
-      @diagnostic_name_slots = copy.empty? ? nil : copy
+      @diagnostic_name_slots = copy
     end
 
     def diagnostic_origin=(origin : DiagnosticOrigin?) : DiagnosticOrigin?
@@ -152,7 +236,9 @@ module Iyi
       clone.end_location = end_location
       clone.diagnostic_origin = diagnostic_origin
       clone.diagnostic_macro_lineage = diagnostic_macro_lineage
-      clone.diagnostic_name_slots = diagnostic_name_slots
+      if slots = @diagnostic_name_slots
+        clone.diagnostic_name_slots = slots.transform_values(&.dup)
+      end
       clone.diagnostic_capture_ref = diagnostic_capture_ref
       if literal_names = @diagnostic_literal_names
         literal_names.each { |key, literal| clone.diagnostic_literal_name(key[0], key[1], literal) }
