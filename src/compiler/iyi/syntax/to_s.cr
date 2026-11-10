@@ -572,8 +572,10 @@ module Iyi
       node.expressions.chunks(&.is_a?(StringLiteral)).each do |(is_string, exps)|
         if is_string
           value = exps.join(&.as(StringLiteral).value)
-          text = yield value
-          diagnostic_literal_value { @str << text }
+          diagnostic_literal_value do
+            text = yield value
+            @str << text unless text.nil?
+          end
         else
           exps.each do |exp|
             diagnostic_structured_syntax("\#{")

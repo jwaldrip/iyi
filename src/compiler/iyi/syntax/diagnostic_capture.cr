@@ -2910,6 +2910,11 @@ module Iyi
     StringPiece
     SymbolToken
     PercentSymbolElement
+    CharToken
+    MagicFile
+    MagicDir
+    PercentStringElement
+    Heredoc
   end
 
   enum DiagnosticLiteralWitnessKind
@@ -2944,10 +2949,20 @@ module Iyi
                    witnesses : Array(DiagnosticLiteralWitness))
       raise ArgumentError.new("invalid literal production span") unless @start_offset >= 0 && @end_offset > @start_offset
       raise ArgumentError.new("literal production lacks witnesses") if witnesses.empty?
-      if @production.delimiter? || @production.percent_symbol_element? || @production.string_piece?
+      if @production.delimiter? || @production.percent_symbol_element? || @production.string_piece? ||
+         @production.percent_string_element? || @production.heredoc?
         if @delimiter_kind.nil? || @nest.nil? || @end_delimiter.nil? || @allow_escapes.nil?
           raise ArgumentError.new("delimiter production lacks delimiter state")
         end
+        valid_kind = case @production
+                     when .delimiter?              then {"STRING", "REGEX", "COMMAND"}.includes?(@delimiter_kind)
+                     when .string_piece?           then {"STRING", "REGEX", "COMMAND", "STRING_ARRAY"}.includes?(@delimiter_kind)
+                     when .percent_symbol_element? then @delimiter_kind == "SYMBOL_ARRAY"
+                     when .percent_string_element? then @delimiter_kind == "STRING_ARRAY"
+                     when .heredoc?                then @delimiter_kind == "HEREDOC" && @nest.try(&.empty?) == false && @nest == @end_delimiter
+                     else                               false
+                     end
+        raise ArgumentError.new("invalid literal delimiter production") unless valid_kind
       elsif !@delimiter_kind.nil? || !@nest.nil? || !@end_delimiter.nil? || !@allow_escapes.nil?
         raise ArgumentError.new("non-delimiter production has delimiter state")
       end
@@ -3098,6 +3113,9 @@ module Iyi
       when StringLiteral
         raise ArgumentError.new("invalid string literal field") unless node.class == StringLiteral && field == "value" && index == 0
         node.value
+      when CharLiteral
+        raise ArgumentError.new("invalid char literal field") unless node.class == CharLiteral && field == "value" && index == 0
+        node.value.to_s
       else
         raise ArgumentError.new("unsupported literal owner kind #{node.class}")
       end
@@ -3121,6 +3139,9 @@ module Iyi
         raise ArgumentError.new("literal decoded value mismatch")
       end
       raise ArgumentError.new("literal production evidence missing") if productions.empty?
+      if productions.any? { |production| production.production.heredoc? }
+        raise ArgumentError.new("heredoc production requires independent parser replay")
+      end
       if literal.segments_count.to_i64 + productions.size.to_i64 > max // 64
         raise ArgumentError.new("literal evidence count exceeds size limit")
       end
@@ -3133,7 +3154,7 @@ module Iyi
           raise ArgumentError.new("literal constituent input bytes mismatch")
         end
         production = productions[segment_index]
-        if production.production.percent_symbol_element?
+        if production.production.percent_symbol_element? || production.production.percent_string_element?
           unless segment.start_offset >= production.start_offset && segment.end_offset <= production.end_offset
             raise ArgumentError.new("percent symbol constituent outside production")
           end
@@ -3160,7 +3181,8 @@ module Iyi
       if segment.production.string_piece?
         raise ArgumentError.new("string piece requires independent parser replay")
       end
-      if segment.production.symbol_token?
+      if segment.production.symbol_token? || segment.production.char_token? ||
+         segment.production.magic_file? || segment.production.magic_dir?
         count = 0
         segment.each_witness do |witness|
           count += 1
@@ -3172,11 +3194,14 @@ module Iyi
         raise ArgumentError.new("invalid symbol token witness count") unless count == 1 && previous_end.nil?
         return
       end
-      unless (segment.production.delimiter? && segment.delimiter_kind == "STRING") ||
-             (segment.production.percent_symbol_element? && segment.delimiter_kind == "SYMBOL_ARRAY")
+      unless (segment.production.delimiter? && {"STRING", "REGEX", "COMMAND"}.includes?(segment.delimiter_kind)) ||
+             (segment.production.percent_symbol_element? && segment.delimiter_kind == "SYMBOL_ARRAY") ||
+             (segment.production.percent_string_element? && segment.delimiter_kind == "STRING_ARRAY")
         raise ArgumentError.new("invalid literal delimiter production")
       end
-      raise ArgumentError.new("percent symbol cannot be continued") if segment.production.percent_symbol_element? && previous_end
+      if (segment.production.percent_symbol_element? || segment.production.percent_string_element?) && previous_end
+        raise ArgumentError.new("percent symbol cannot be continued")
+      end
       opener = false
       closer = false
       interpolation = false

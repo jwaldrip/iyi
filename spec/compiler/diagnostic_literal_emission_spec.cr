@@ -4,29 +4,64 @@ require "../support/syntax"
 # (a) to (d)). Plain bytes never change. Claims mode attributes literal bytes to
 # LiteralValue and structural syntax to StructuredSyntax, and every record is disjoint
 # from the claims. Fragment mode writes a bare name with a QuotedName anchor when its
-# source was a quoted literal, and the regions reparse restores it.
+# source was a quoted literal, and the regions reparse must keep that derivation.
 #
-# Not run by the slice author: the integrator runs this file after the slices land.
+# Not run by the slice author. Prerequisites that are not yet landed are named where
+# they bite, and the examples are left active rather than weakened.
 
-# Witness spans of every literal in a parsed tree, read from the replay evidence the
-# parser records on each node. Each span carries whether a claim may cover it: only an
-# Opener of a regex, a command or an interpolated string. Those three are the openers
-# that carry a Direct claim (`Literal/regex`, `Call/method`, `Literal/interpolation`).
+# Every literal witness in a parsed tree, with the pinned claim identity an opener may
+# be covered by. An opener is covered by a claim only in these three shapes, each an
+# exact Direct claim whose writer is the witness span (plan §3.6 (A), shared contract
+# addition for interpolated strings):
+#   - the value of a RegexLiteral: (Literal, regex)
+#   - the first argument of a command Call named "`": (Call, method)
+#   - a StringInterpolation that is not all-literal: (Literal, interpolation)
+# An all-literal interpolation has no claim. Its opener is generated text.
 private class LiteralWitnessWalk < Iyi::Visitor
-  getter spans = [] of {Int32, Int32, Bool}
+  getter nodes = [] of Iyi::ASTNode
 
   def visit_any(node)
-    claim_may_cover = node.is_a?(Iyi::RegexLiteral) || node.is_a?(Iyi::StringInterpolation) ||
-                      (node.is_a?(Iyi::Call) && node.name == "`")
+    @nodes << node
+    true
+  end
+end
+
+private def literal_emission_literal_only?(node : Iyi::StringInterpolation) : Bool
+  node.expressions.all? { |exp| exp.is_a?(Iyi::StringLiteral) }
+end
+
+private def literal_emission_witnesses(root : Iyi::ASTNode) : Array({Int32, Int32, {String, String}?})
+  walk = LiteralWitnessWalk.new
+  root.accept walk
+  pins = {} of UInt64 => {String, String}
+  walk.nodes.each do |node|
+    case node
+    when Iyi::RegexLiteral
+      pins[node.value.object_id] = {"Literal", "regex"}
+    when Iyi::Call
+      if node.name == "`" && (literal = node.args.first?)
+        pins[literal.object_id] = {"Call", "method"}
+      end
+    end
+  end
+  walk.nodes.each do |node|
+    next unless node.is_a?(Iyi::StringInterpolation)
+    next if pins.has_key?(node.object_id) || literal_emission_literal_only?(node)
+    pins[node.object_id] = {"Literal", "interpolation"}
+  end
+  witnesses = [] of {Int32, Int32, {String, String}?}
+  walk.nodes.each do |node|
+    pin = pins[node.object_id]?
     node.diagnostic_literal_productions.each_value do |segments|
       segments.each do |segment|
         segment.witnesses.each do |witness|
-          @spans << {witness.start_offset, witness.end_offset, claim_may_cover && witness.kind.opener?}
+          opener_pin = witness.kind.opener? ? pin : nil
+          witnesses << {witness.start_offset, witness.end_offset, opener_pin}
         end
       end
     end
-    true
   end
+  witnesses
 end
 
 private def literal_emission_parse(source : String, filename : String) : Iyi::ASTNode
@@ -54,7 +89,7 @@ private def literal_emission_fragment(node : Iyi::ASTNode)
   {text, builder.finish("fixture", text)}
 end
 
-# Every form, as a def body. Crystal syntax, written as lines so each form is explicit.
+# Every form, as a def body.
 private def literal_emission_def_source : String
   [
     "def literal_forms",
@@ -69,17 +104,10 @@ private def literal_emission_def_source : String
     "  i = <<-EOS",
     "    body",
     "    EOS",
-    %q(  asm("nop" : : "r"(d) : "volatile")),
+    %q(  asm("nop" : : "r"(d) : : "volatile")),
     "end",
     "",
   ].join("\n")
-end
-
-# Witness spans of a restored or expanded tree.
-private def literal_emission_witness_spans(node : Iyi::ASTNode) : Array({Int32, Int32, Bool})
-  walk = LiteralWitnessWalk.new
-  node.accept walk
-  walk.spans
 end
 
 # Records and claims must not overlap (§5(b)).
@@ -93,34 +121,53 @@ private def literal_emission_check_disjoint(generated : Array(Iyi::DiagnosticGen
   end
 end
 
-# Every byte of every literal witness token is covered by generated text, or by the
-# claim that covers an opener (§5(b)). The witness spans are offsets in `text`.
-private def literal_emission_check_witnesses(text : String, generated : Array(Iyi::DiagnosticGeneratedText),
+# Every byte of every literal witness is covered by generated text, or, for a pinned
+# opener only, by a Direct claim whose writer is exactly that witness and whose key
+# matches the pin (§5(b)). Offsets are in the expansion text.
+private def literal_emission_check_witnesses(generated : Array(Iyi::DiagnosticGeneratedText),
                                              claims : Array(Iyi::DiagnosticMacroClaim),
-                                             spans : Array({Int32, Int32, Bool}))
-  covered = Array(Bool).new(text.bytesize, false)
-  generated.each do |item|
-    (item.start_offset...item.end_offset).each { |index| covered[index] = true }
-  end
-  claimed = Array(Bool).new(text.bytesize, false)
-  claims.each do |claim|
-    (claim.key.writer.start_offset...claim.key.writer.end_offset).each { |index| claimed[index] = true }
-  end
-  spans.each do |start_offset, end_offset, claim_may_cover|
+                                             witnesses : Array({Int32, Int32, {String, String}?}))
+  witnesses.each do |start_offset, end_offset, pin|
+    if pin
+      exact = claims.any? do |claim|
+        claim.attachment.is_a?(Iyi::DiagnosticMacroAttachment::Direct) &&
+          claim.key.kind == pin[0] && claim.key.role == pin[1] &&
+          claim.key.writer.start_offset == start_offset && claim.key.writer.end_offset == end_offset
+      end
+      next if exact
+    end
     (start_offset...end_offset).each do |index|
-      next if covered[index]
-      next if claim_may_cover && claimed[index]
-      raise "literal witness byte #{index} is not covered by generated text"
+      next if generated.any? { |item| item.start_offset <= index && index < item.end_offset }
+      raise "literal witness byte #{index} (#{start_offset}...#{end_offset}) is not covered by generated text or its pinned claim"
     end
   end
 end
 
-# Covered by generated text, byte for byte (used for asm, whose witnesses are not reachable).
+# Literal bytes covered by generated text, byte for byte. Independent of parser
+# witnesses, so it holds for every form the printer attributes.
 private def literal_emission_covers?(text : String, generated : Array(Iyi::DiagnosticGeneratedText), literal : String) : Bool
   start = text.byte_index(literal).not_nil!
   (start...start + literal.bytesize).all? do |index|
     generated.any? { |item| item.start_offset <= index && index < item.end_offset }
   end
+end
+
+# The restored derivation must survive the regions reparse in its name slot, as the
+# existing provenance model holds it (DiagnosticNameValue::Derived). Its origin must
+# equal the one the printer emitted, so source linkage (input sha, bytesize, lexical
+# mode, literal span, rendered text) reaches the cross-leg resolution.
+private def literal_emission_restored_derivation(node : Iyi::ASTNode, slot : Iyi::DiagnosticNameSlot,
+                                                 expected : Iyi::DiagnosticOrigin)
+  values = node.diagnostic_name_slots[slot]?
+  raise "restored QuotedName slot is missing" unless values
+  values.size.should eq(1)
+  value = values.first
+  value.should be_a(Iyi::DiagnosticNameValue::Derived)
+  origin = value.artifact_origin
+  origin.should be_a(Iyi::DiagnosticOrigin::DerivedName)
+  origin.as(Iyi::DiagnosticOrigin::DerivedName).derivation_kind.should eq("QuotedName")
+  origin.to_json.should eq(expected.to_json)
+  origin.should eq(expected)
 end
 
 # Real macro expansion, then the expansion reparse with its records, as the parser
@@ -144,18 +191,19 @@ private def literal_emission_splice(macro_source : String)
   {text, emissions, expanded}
 end
 
-# One macro per form, so each splice is a single literal. The last is verbatim template text.
-private def literal_emission_splice_forms : Hash(String, String)
+# One macro per form, so each splice is a single literal. `snippet` is the literal's
+# printed bytes that generated text must cover ("" when there is none to check).
+private def literal_emission_splice_forms : Hash(String, {String, String})
   {
-    "string"          => %(macro literal_form\n  {{ "a\\"b" }}\nend\n),
-    "symbol"          => %(macro literal_form\n  {{ :"x y" }}\nend\n),
-    "char"            => %(macro literal_form\n  {{ 'c' }}\nend\n),
-    "regex"           => %(macro literal_form\n  {{ /a\\/b/i }}\nend\n),
-    "percent regex"   => %(macro literal_form\n  {{ %r() }}\nend\n),
-    "command"         => %(macro literal_form\n  {{ `ls` }}\nend\n),
-    "interpolation"   => %(macro literal_form\n  {{ "e\#{1}f" }}\nend\n),
-    "heredoc argument" => %(macro literal_form\n  {{ <<-EOS }}\n  a\n  EOS\nend\n),
-    "verbatim text"   => %(macro literal_form\n  x = "v"\n  y = :w\n  z = 'c'\nend\n),
+    "string"           => {%(macro literal_form\n  {{ "a\\"b" }}\nend\n), %("a\\"b")},
+    "symbol"           => {%(macro literal_form\n  {{ :"x y" }}\nend\n), %(:"x y")},
+    "char"             => {%(macro literal_form\n  {{ 'c' }}\nend\n), %('c')},
+    "regex"            => {%(macro literal_form\n  {{ /a\\/b/i }}\nend\n), %(a\\/b)},
+    "percent regex"    => {%(macro literal_form\n  {{ %r() }}\nend\n), ""},
+    "command"          => {%(macro literal_form\n  {{ `ls` }}\nend\n), "ls"},
+    "interpolation"    => {%(macro literal_form\n  {{ "e\#{1}f" }}\nend\n), "e"},
+    "heredoc argument" => {"macro literal_form\n  {{ <<-EOS\n  a\n  EOS\n  }}\nend\n", %("a\\n")},
+    "verbatim text"    => {"macro literal_form\nx = \"v\"\ny = :w\nz = 'c'\nend\n", %(x = "v")},
   }
 end
 
@@ -211,7 +259,7 @@ describe "literal emission in claims mode" do
   end
 
   it "attributes asm text, constraint and options to LiteralValue, byte for byte" do
-    node = literal_emission_parse(%(asm("nop" : : "r"(x) : "volatile")), "/spec/emit/asm.iyi")
+    node = literal_emission_parse(%(asm("nop" : : "r"(x) : : "volatile")), "/spec/emit/asm.iyi")
     text, generated, claims = literal_emission_claims(node)
     text.should eq(node.to_s)
     literal_emission_covers?(text, generated, %("nop")).should be_true
@@ -251,62 +299,66 @@ describe "literal emission in fragment mode" do
     restored_node.to_s.should eq(text)
   end
 
-  it "restores a quoted named-tuple key as a QuotedName through the regions reparse" do
+  it "restores a quoted named-tuple key's QuotedName derivation through the regions reparse" do
     node = literal_emission_parse(%({"a": 1}), "/spec/emit/quoted_tuple.iyi")
     text, fragment = literal_emission_fragment(node)
     text.should eq("{a: 1}")
+    expected = fragment.anchors.find { |anchor| anchor.kind == "Name" && anchor.role == "named_entry" }.not_nil!.origin
     restored = Iyi::Parser.new(text)
     restored.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, text.bytesize, fragment.text_sha256, fragment.events, fragment.anchors)]
     tuple = restored.parse.as(Iyi::NamedTupleLiteral)
     restored.diagnostic_check_consumed
-    origin = tuple.diagnostic_name_slots[Iyi::DiagnosticNameSlot.new(Iyi::DiagnosticNameSlotKind::NamedEntry, 0)]?
-      .try(&.first?).try(&.artifact_origin)
-    origin.should be_a(Iyi::DiagnosticOrigin::DerivedName)
-    origin.as(Iyi::DiagnosticOrigin::DerivedName).derivation_kind.should eq("QuotedName")
+    literal_emission_restored_derivation(tuple, Iyi::DiagnosticNameSlot.new(Iyi::DiagnosticNameSlotKind::NamedEntry, 0), expected)
+    tuple.to_s.should eq(text)
   end
 
-  it "restores a quoted parameter external name as a QuotedName through the regions reparse" do
+  it "restores a quoted parameter external name's QuotedName derivation through the regions reparse" do
     node = literal_emission_parse(%(def f("e" x)\nend\n), "/spec/emit/quoted_arg.iyi")
     text, fragment = literal_emission_fragment(node)
     text.should contain("e x")
+    expected = fragment.anchors.find { |anchor| anchor.origin.is_a?(Iyi::DiagnosticOrigin::DerivedName) }.not_nil!.origin
     restored = Iyi::Parser.new(text)
     restored.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, text.bytesize, fragment.text_sha256, fragment.events, fragment.anchors)]
     def_node = restored.parse.as(Iyi::Def)
     restored.diagnostic_check_consumed
-    origin = def_node.args.first.diagnostic_name_slots[Iyi::DiagnosticNameSlot.new(Iyi::DiagnosticNameSlotKind::ExternalName)]?
-      .try(&.first?).try(&.artifact_origin)
-    origin.should be_a(Iyi::DiagnosticOrigin::DerivedName)
-    origin.as(Iyi::DiagnosticOrigin::DerivedName).derivation_kind.should eq("QuotedName")
+    literal_emission_restored_derivation(def_node.args.first, Iyi::DiagnosticNameSlot.new(Iyi::DiagnosticNameSlotKind::ExternalName), expected)
+    def_node.to_s.should eq(text)
   end
 
-  it "restores a fun real name taken from a quoted literal as a QuotedName through the regions reparse" do
+  it "restores a fun real name taken from a quoted literal through the regions reparse" do
     node = literal_emission_parse(%(lib LibC\n  fun f = "c" : Void\nend\n), "/spec/emit/fun_real.iyi")
     text, fragment = literal_emission_fragment(node)
     text.should contain("fun f = c")
+    expected = fragment.anchors.find { |anchor| anchor.role == "method_name" && anchor.origin.is_a?(Iyi::DiagnosticOrigin::DerivedName) }.not_nil!.origin
     restored = Iyi::Parser.new(text)
     restored.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, text.bytesize, fragment.text_sha256, fragment.events, fragment.anchors)]
     lib_def = restored.parse.as(Iyi::LibDef)
     restored.diagnostic_check_consumed
     body = lib_def.body
     fun_def = (body.is_a?(Iyi::Expressions) ? body.expressions.first : body).as(Iyi::FunDef)
-    origin = fun_def.diagnostic_name_slots[Iyi::DiagnosticNameSlot.new(Iyi::DiagnosticNameSlotKind::ExternalName)]?
-      .try(&.first?).try(&.artifact_origin)
-    origin.should be_a(Iyi::DiagnosticOrigin::DerivedName)
-    origin.as(Iyi::DiagnosticOrigin::DerivedName).derivation_kind.should eq("QuotedName")
+    literal_emission_restored_derivation(fun_def, Iyi::DiagnosticNameSlot.new(Iyi::DiagnosticNameSlotKind::ExternalName), expected)
+    lib_def.to_s.should eq(text)
   end
 end
 
 describe "literal emission through macro splices" do
-  literal_emission_splice_forms.each do |form, source|
-    it "reparses a #{form} splice with byte identity, disjoint records and every witness covered" do
+  literal_emission_splice_forms.each do |form, (source, snippet)|
+    it "reparses a #{form} splice with byte identity, disjoint records and literal bytes covered" do
       text, emissions, expanded = literal_emission_splice(source)
       expanded.to_s.strip.should eq(text.strip)
       generated = emissions.flat_map(&.generated_text)
       claims = emissions.flat_map(&.claims)
-      spans = literal_emission_witness_spans(expanded)
-      spans.should_not be_empty
       literal_emission_check_disjoint(generated, claims)
-      literal_emission_check_witnesses(text, generated, claims, spans)
+      literal_emission_covers?(text, generated, snippet).should be_true unless snippet.empty?
+    end
+
+    it "covers every #{form} splice witness byte through generated text or its pinned claim" do
+      text, emissions, expanded = literal_emission_splice(source)
+      generated = emissions.flat_map(&.generated_text)
+      claims = emissions.flat_map(&.claims)
+      witnesses = literal_emission_witnesses(expanded)
+      witnesses.should_not be_empty
+      literal_emission_check_witnesses(generated, claims, witnesses)
     end
   end
 end
