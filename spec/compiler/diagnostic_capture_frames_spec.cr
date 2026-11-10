@@ -273,4 +273,34 @@ describe "diagnostic capture frame stream" do
       stream.stream { |_chunk| }
     end
   end
+
+  it "orders an alias after the first visit it refers to" do
+    shared = Iyi::Var.new("a")
+    root = Iyi::Expressions.new([shared, shared] of Iyi::ASTNode)
+    bytes, _, _ = frame_spec_stream(root)
+    frames = frame_spec_decode(bytes)
+    frames.map(&.tag).should eq([Iyi::DiagnosticAstFrameStream::TAG_NODE,
+                                 Iyi::DiagnosticAstFrameStream::TAG_NODE,
+                                 Iyi::DiagnosticAstFrameStream::TAG_ALIAS])
+    frames[2].owner.should eq(1_u64)
+  end
+
+  it "emits a filename frame before the node that first references it" do
+    bytes, _, stream = frame_spec_stream(frame_spec_parse("x = 1\n"))
+    frames = frame_spec_decode(bytes)
+    frames.first.tag.should eq(Iyi::DiagnosticAstFrameStream::TAG_FILENAME)
+    frames.count { |frame| frame.tag == Iyi::DiagnosticAstFrameStream::TAG_FILENAME }.should eq(stream.filename_frames)
+    frames.none? { |frame| frame.tag == Iyi::DiagnosticAstFrameStream::TAG_ALIAS }.should be_true
+  end
+
+  it "retains one owner entry per first visit and one digest per filename identity" do
+    bytes, _, stream = frame_spec_stream(frame_spec_parse("a = 1\n" * 200))
+    stream.retained_owner_entries.should eq(stream.nodes)
+    stream.retained_filename_entries.should eq(stream.filename_frames)
+    stream.retained_filename_entries.should eq(1)
+    stream.retained_filename_digest_bytes.should be < 200_i64
+    (stream.stream_bytes > stream.retained_filename_digest_bytes * 100).should be_true
+    bytes.size.should eq(stream.stream_bytes.to_i32)
+  end
+
 end

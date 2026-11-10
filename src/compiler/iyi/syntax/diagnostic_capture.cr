@@ -679,6 +679,11 @@ module Iyi
       String.new(@sha256.to_slice)
     end
 
+    # Read-only view of the stored bytes, for a single emission. It is not retained.
+    def bytes_slice : Bytes
+      @bytes.to_slice
+    end
+
     private def write_ref(json : JSON::Builder, ref : DiagnosticCaptureFieldRef) : Nil
       json.object do
         json.field "capture_id", ref.capture_id

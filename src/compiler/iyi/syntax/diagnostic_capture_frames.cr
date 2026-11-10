@@ -12,6 +12,15 @@ module Iyi
   # An A frame is a tag byte, then the owner id as a big-endian u64. The digest
   # is sha256("iyi.capture.v1.ast\0" || frames), in stream order.
   #
+  # Retained metadata is bounded by the number of first visits and of distinct
+  # filename identities, each held as a fixed-size digest:
+  #
+  # - filename bytes are emitted once, at first reference, and not kept; only
+  #   the identity-to-digest entry survives;
+  # - no child edge is stored. Children are re-enumerated from the node after its
+  #   N frame is out, so an ancestor holds only its node and its owner id;
+  # - an N frame's JSON is released before its children are walked.
+  #
   # Each N frame has its own output cap and evidence budget. The walk is
   # single-use and holds its root, so no object id is reused while it runs.
   class DiagnosticAstFrameStream
@@ -32,8 +41,7 @@ module Iyi
     @consumed = false
     @active = Set(UInt64).new
     @owner_ids = {} of UInt64 => Int32
-    @filename_snapshots = {} of String => DiagnosticFilenameSnapshot
-    @introduced = Set(String).new
+    @filename_digests = {} of String => String
     @digest : ::Crystal::Digest::SHA256? = nil
     @sink : Proc(Bytes, Nil)? = nil
     @ast_sha256 : String? = nil
@@ -44,6 +52,20 @@ module Iyi
     # The digest of the complete stream, available once the stream has run.
     def ast_sha256 : String
       @ast_sha256 || raise ArgumentError.new("frame stream has not run")
+    end
+
+    # Retained metadata, for measurement. Entries are one per first visit and one
+    # per distinct filename identity; the digest bytes are fixed-size per entry.
+    def retained_owner_entries : Int32
+      @owner_ids.size
+    end
+
+    def retained_filename_entries : Int32
+      @filename_digests.size
+    end
+
+    def retained_filename_digest_bytes : Int64
+      @filename_digests.sum { |entry| entry[0].bytesize.to_i64 + entry[1].bytesize.to_i64 }
     end
 
     # Streams every chunk to the block, in order, and returns the digest. Chunks
@@ -59,22 +81,29 @@ module Iyi
       @ast_sha256 = digest.hexfinal
     end
 
-    # Returns the snapshot for a filename identity and whether this is its first
-    # reference in the stream. Identity is the VirtualFile object or the String
-    # content. A nil filename is its own identity.
-    def reference_filename(filename : String | VirtualFile | Nil) : {DiagnosticFilenameSnapshot, Bool}
-      key = case filename
-            when Nil         then "N"
-            when String      then "S#{filename}"
-            when VirtualFile then "V#{filename.object_id}"
-            else                  raise ArgumentError.new("unclassified filename binding")
-            end
-      snapshot = @filename_snapshots[key]? || begin
-        created = DiagnosticFilenameSnapshot.new(filename)
-        @filename_snapshots[key] = created
-        created
+    # Returns the sha256 of a filename snapshot, the value an N frame carries.
+    # On first reference of an identity, its F frame is emitted now, before the
+    # node that references it, and the snapshot is not kept. Identity is the
+    # VirtualFile object or the String content. A nil filename is its own identity.
+    def filename_digest(filename : String | VirtualFile | Nil) : String
+      key = filename_identity(filename)
+      if digest = @filename_digests[key]?
+        return digest
       end
-      {snapshot, @introduced.add?(key) ? true : false}
+      snapshot = DiagnosticFilenameSnapshot.new(filename)
+      digest = snapshot.sha256
+      @filename_digests[key] = digest
+      emit_filename(snapshot)
+      digest
+    end
+
+    private def filename_identity(filename : String | VirtualFile | Nil) : String
+      case filename
+      when Nil         then "N"
+      when String      then "S" + ::Crystal::Digest::SHA256.hexdigest(filename)
+      when VirtualFile then "V#{filename.object_id}"
+      else                  raise ArgumentError.new("unclassified filename binding")
+      end
     end
 
     private def visit(node : ASTNode, depth : Int32) : Nil
@@ -84,19 +113,29 @@ module Iyi
       begin
         owner_id = @owner_ids.size
         @owner_ids[id] = owner_id
-        body = Body.new(self)
-        output = DiagnosticCaptureOutput.new(DiagnosticAstNodeBody::MAX_BYTES)
-        json = JSON::Builder.new(output)
-        json.max_nesting = 1024
-        json.start_document
-        body.write_object(json, node, depth, owner_id)
-        json.end_document
-        node_json = output.snapshot
-        body.pending_filenames.each { |filename| emit_filename(filename) }
-        emit_node(node_json)
-        body.children.each { |child, child_depth| visit_child(child, child_depth) }
+        emit_node_frame(node, depth, owner_id)
+        visit_children(node, depth)
       ensure
         @active.delete(id)
+      end
+    end
+
+    # The node's F frames go out during the body write, which precedes its N frame.
+    # This method's locals end before any child is walked.
+    private def emit_node_frame(node : ASTNode, depth : Int32, owner_id : Int32) : Nil
+      output = DiagnosticCaptureOutput.new(DiagnosticAstNodeBody::MAX_BYTES)
+      json = JSON::Builder.new(output)
+      json.max_nesting = 1024
+      json.start_document
+      Body.new(self).write_object(json, node, depth, owner_id)
+      json.end_document
+      emit_node(output.snapshot)
+    end
+
+    # Children are enumerated again from the node, in the same order the body used.
+    private def visit_children(node : ASTNode, depth : Int32) : Nil
+      DiagnosticDirectChildFields.each(node) do |_field, _index, _key, child|
+        visit_child(child, depth + 1)
       end
     end
 
@@ -111,7 +150,7 @@ module Iyi
     end
 
     private def emit_filename(snapshot : DiagnosticFilenameSnapshot) : Nil
-      payload = snapshot.bytes.to_slice
+      payload = snapshot.bytes_slice
       emit(frame_header(TAG_FILENAME, payload.size))
       emit(payload)
       @filename_frames += 1
@@ -151,13 +190,9 @@ module Iyi
       @sink.not_nil!.call(chunk)
     end
 
-    # Writes one node object. A child becomes a kind stub, and each filename
-    # reference is recorded in reference order so the walker emits its F frame
-    # before the node. The evidence budget belongs to this one node.
+    # Writes one node object. It keeps only the walker, so it holds no child edges
+    # and no filename bytes after the node's frames are out.
     class Body < DiagnosticAstNodeBody
-      getter pending_filenames = [] of DiagnosticFilenameSnapshot
-      getter children = [] of {ASTNode, Int32}
-
       def initialize(@walker : DiagnosticAstFrameStream)
         super(DiagnosticOrigin::MAX_UNFOLDED_BYTES)
       end
@@ -167,13 +202,10 @@ module Iyi
       end
 
       def write_filename_field(json : JSON::Builder, filename : String | VirtualFile | Nil) : Nil
-        snapshot, introduced = @walker.reference_filename(filename)
-        @pending_filenames << snapshot if introduced
-        json.field "filename_sha256", snapshot.sha256
+        json.field "filename_sha256", @walker.filename_digest(filename)
       end
 
       def write_child_node(json : JSON::Builder, child : ASTNode, depth : Int32) : Nil
-        @children << {child, depth}
         json.object { json.field "kind", child.class.name }
       end
     end
