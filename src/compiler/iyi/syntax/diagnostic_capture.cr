@@ -3867,6 +3867,44 @@ module Iyi
     def_equals_and_hash @capture_id, @owner_path_json, @field_tag, @index, @map_key
   end
 
+  # Coordinates identify the first framed occurrence, not authority. A consumer
+  # must still bind the capture against its ledger and replay evidence.
+  module DiagnosticCaptureRefs
+    alias Step = {String, Int32?, String?}
+
+    def self.stamp!(root : ASTNode, capture_key : String) : Nil
+      visited = Set(UInt64).new
+      active = Set(UInt64).new
+      path = [] of Step
+      visit(root, DiagnosticCaptureFieldRef.new(capture_key, "[]", "root"), capture_key, path, visited, active)
+    end
+
+    private def self.visit(node : ASTNode, ref : DiagnosticCaptureFieldRef, capture_key : String,
+                           path : Array(Step), visited : Set(UInt64), active : Set(UInt64)) : Nil
+      raise ArgumentError.new("AST inventory exceeds depth limit") if path.size > DiagnosticAstFrameStream::MAX_DEPTH
+      raise ArgumentError.new("cyclic AST inventory") if active.includes?(node.object_id)
+      return unless visited.add?(node.object_id)
+      active.add(node.object_id)
+      begin
+        node.diagnostic_capture_ref = ref
+        DiagnosticDirectChildFields.each(node) do |field, index, key, child|
+          raise ArgumentError.new("AST inventory exceeds depth limit") if path.size + 1 > DiagnosticAstFrameStream::MAX_DEPTH
+          raise ArgumentError.new("cyclic AST inventory") if active.includes?(child.object_id)
+          next if visited.includes?(child.object_id)
+          child_ref = DiagnosticCaptureFieldRef.new(capture_key, path.to_json, field, index, key)
+          path << {field, index, key.try { |value| Base64.strict_encode(value) }}
+          begin
+            visit(child, child_ref, capture_key, path, visited, active)
+          ensure
+            path.pop
+          end
+        end
+      ensure
+        active.delete(node.object_id)
+      end
+    end
+  end
+
   # The replay's own lexical journal, indexed by start offset. Membership here
   # is the only evidence that a span was scanned. Byte equality alone is not.
   class DiagnosticReplayJournal
@@ -4056,6 +4094,7 @@ module Iyi
       stream = DiagnosticAstFrameStream.new(root)
       stream.stream { |_| }
       authority = new(ledger, ledger.size, DiagnosticCaptureInputKind::SourceFile, claim.capture_key, stream.ast_sha256)
+      DiagnosticCaptureRefs.stamp!(root, authority.capture_key)
       ledger.append!(authority)
       {root, claim, authority}
     end
@@ -4080,6 +4119,7 @@ module Iyi
       stream = DiagnosticAstFrameStream.new(root)
       stream.stream { |_| }
       raise ArgumentError.new("replay AST digest differs") unless stream.ast_sha256 == authority.ast_sha256
+      DiagnosticCaptureRefs.stamp!(root, authority.capture_key)
       journal = DiagnosticReplayJournal.new(parser.diagnostic_lexical_observations)
       identity = DiagnosticModuleIdentity.from(root, input, journal)
       structural = DiagnosticUnnamedParamBinder.new(input, journal).verify!(root)
