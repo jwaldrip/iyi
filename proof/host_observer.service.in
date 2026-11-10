@@ -1,0 +1,19 @@
+[Unit]
+Description=Custody fixture {subject_digest}
+CollectMode=inactive
+
+[Service]
+Type=exec
+DynamicUser=yes
+Restart=no
+RemainAfterExit=yes
+NotifyAccess=none
+NoNewPrivileges=yes
+PrivateUsers=no
+CapabilityBoundingSet=
+AmbientCapabilities=
+SupplementaryGroups=
+StandardInput=fd:control
+StandardOutput=file:{output_dir}/stdout
+StandardError=file:{output_dir}/stderr
+ExecStart={observer}
