@@ -268,6 +268,10 @@ module Iyi
                   ::raise ArgumentError.new("direct macro claim writer mismatch")
                 end
               end
+              if claim.evidence.is_a?(DiagnosticAnchorEvidence::RawSyntax) ||
+                 claim.evidence.is_a?(DiagnosticAnchorEvidence::DerivedFromOwner)
+                ::raise ArgumentError.new("raw macro evidence must be established by the parser")
+              end
               if evidence = claim.evidence.as?(DiagnosticAnchorEvidence::Spliced)
                 unless evidence.source_origin.valid_for_anchor?(key.kind, key.role)
                   ::raise ArgumentError.new("macro splice anchor kind or role mismatch")
@@ -411,6 +415,9 @@ module Iyi
       end
       if restored = @diagnostic_restored_names
         ::raise ArgumentError.new("unattached diagnostic name metadata") unless restored.empty?
+      end
+      if restored_keys = @diagnostic_restored_keys
+        ::raise ArgumentError.new("unattached diagnostic name keys") unless restored_keys.empty?
       end
       if witnesses = @diagnostic_syntax_witnesses
         ::raise ArgumentError.new("unconsumed diagnostic syntax witnesses") unless witnesses.empty?
@@ -714,7 +721,8 @@ module Iyi
                            head.adjacent_anchor_index
                          end
       dependency = dependency_index ? region.anchors[dependency_index]? : nil
-      unless dependency && dependency.name_slots.has_key?(DiagnosticNameSlot.new(DiagnosticNameSlotKind::PathSegment)) &&
+      unless dependency && dependency.kind == "Name" && dependency.role == "path_segment" &&
+             dependency.name_slots.has_key?(DiagnosticNameSlot.new(DiagnosticNameSlotKind::PathSegment)) &&
              @diagnostic_attached_nodes.try(&.[{dependency.offset, dependency.kind, dependency.role}]?).try(&.same?(path))
         ::raise ArgumentError.new("diagnostic path head is not the accepted child")
       end
@@ -737,6 +745,27 @@ module Iyi
         diagnostic_first_multi_node(node.name)
       else
         node
+      end
+    end
+
+    private def diagnostic_multi_child_role?(child : ASTNode, dependency : DiagnosticAnchor) : Bool
+      case child
+      when Path
+        dependency.kind == "Name" && dependency.role == "path_segment" &&
+          dependency.name_slots.has_key?(DiagnosticNameSlot.new(DiagnosticNameSlotKind::PathSegment))
+      when Call
+        dependency.kind == "Call" && dependency.role == "method"
+      when Var
+        (dependency.kind == "Name" && {"local_reference", "special_global"}.includes?(dependency.role)) ||
+          (dependency.kind == "Call" && dependency.role == "method")
+      when InstanceVar
+        dependency.kind == "Name" && dependency.role == "instance_variable"
+      when ClassVar
+        dependency.kind == "Name" && dependency.role == "class_variable"
+      when Global
+        dependency.kind == "Name" && dependency.role == "special_global"
+      else
+        false
       end
     end
 
@@ -837,7 +866,7 @@ module Iyi
       case head = attachment.head
       when DiagnosticFragmentHead::Anchor
         dependency = region.anchors[head.anchor_index]? || ::raise(ArgumentError.new("missing multiassignment child"))
-        unless !syntax && dependency.event_index == anchor.event_index &&
+        unless !syntax && dependency.event_index == anchor.event_index && diagnostic_multi_child_role?(child, dependency) &&
                @diagnostic_attached_nodes.try(&.[{dependency.offset, dependency.kind, dependency.role}]?).try(&.same?(child))
           ::raise ArgumentError.new("multiassignment head is not the accepted first target")
         end
@@ -855,6 +884,7 @@ module Iyi
           index = head.adjacent_anchor_index
           dependency = index ? region.anchors[index]? : nil
           unless head.form == syntax && dependency && dependency.offset == event.selected_end &&
+                 dependency.kind == "Name" && dependency.role == "path_segment" &&
                  dependency.name_slots.has_key?(DiagnosticNameSlot.new(DiagnosticNameSlotKind::PathSegment)) &&
                  @diagnostic_attached_nodes.try(&.[{dependency.offset, dependency.kind, dependency.role}]?).try(&.same?(child))
             ::raise ArgumentError.new("multiassignment global path is not the accepted child")
@@ -1237,6 +1267,24 @@ module Iyi
       segments = Parser.iyi_package_segments(@iyi_package_name, header.path)
       path = Path.new(segments.map(&.camelcase))
       path.at(header)
+      if origin = header.diagnostic_origin
+        slots = header.diagnostic_name_slots
+        sources = [] of DiagnosticSourceNameToken
+        header.path.each_index do |index|
+          slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::ModuleSegment, index)
+          value = slots[slot]?.try(&.first?).as?(DiagnosticNameValue::Observed) ||
+            ::raise(ArgumentError.new("module header segment lacks observed source"))
+          sources << value.source_token
+        end
+        path_slots = {} of DiagnosticNameSlot => Array(DiagnosticNameValue)
+        segments.each_index do |index|
+          derived = DiagnosticOrigin::DerivedName.module_header_path(origin, sources, @iyi_package_name, index)
+          path_slots[DiagnosticNameSlot.new(DiagnosticNameSlotKind::PathSegment, index)] = [DiagnosticNameValue::Derived.new(derived)] of DiagnosticNameValue
+        end
+        path.diagnostic_name_slots = path_slots
+      elsif @diagnostic_capture && @input_artifact.nil?
+        ::raise ArgumentError.new("module header path lacks source origin")
+      end
 
       # `extend self` so a module-level `pub def` is callable on the module
       # (`App::Greeter.polite`) rather than being an instance method of it.
@@ -1256,7 +1304,16 @@ module Iyi
         if iyi_module_extends_written?
           scopes + rest
         else
-          [Extend.new(Self.new).at(header)] of ASTNode + scopes + rest
+          self_type = Self.new
+          extension = Extend.new(self_type).at(header)
+          if origin = header.diagnostic_origin
+            extension.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "implicit_module_self", "extend")
+            self_origin = DiagnosticOrigin::DerivedName.implicit_module_self(origin)
+            self_type.diagnostic_name_slots = {DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary) => [DiagnosticNameValue::Derived.new(self_origin)] of DiagnosticNameValue}
+          elsif @diagnostic_capture && @input_artifact.nil?
+            ::raise ArgumentError.new("implicit module self lacks header origin")
+          end
+          [extension] of ASTNode + scopes + rest
         end
 
       module_def = ModuleDef.new(path, Expressions.from(body))
@@ -3485,8 +3542,9 @@ module Iyi
 
     # iyi: a slash-separated lowercase path, e.g. `app/user`, `std/json`.
     # Distinguishable from Crystal's `module Foo` because that takes a CONST.
-    def parse_module_path : Array(String)
+    def parse_module_path(observations : Array(DiagnosticTokenObservation)? = nil) : Array(String)
       segments = [] of String
+      observations.try &.<<({@token.input_offset, diagnostic_current_token_snapshot})
       segments << module_header_segment
 
       # After an identifier the lexer would treat `/` as the start of a regex
@@ -3508,6 +3566,7 @@ module Iyi
       while @token.type.op_slash?
         suppress_regex
         next_token
+        observations.try &.<<({@token.input_offset, diagnostic_current_token_snapshot})
         segments << module_header_segment
         suppress_regex
         next_token
@@ -3596,12 +3655,21 @@ module Iyi
     # whether the name is a CONST or a lowercase IDENT.
     def parse_module_header
       location = @token.location
+      keyword_offset = @token.input_offset
+      keyword_snapshot = diagnostic_current_token_snapshot
       next_token_skip_space
-      path = parse_module_path
+      observations = (@diagnostic_capture || @diagnostic_expansion || @diagnostic_regions) ? [] of DiagnosticTokenObservation : nil
+      path = parse_module_path(observations)
       if @diagnostic_capture && @input_artifact.nil? && @input_filename.is_a?(String)
         @diagnostic_module_path = Parser.iyi_package_segments(@iyi_package_name, path).join("/")
       end
       header = ModuleHeader.new(path)
+      header.diagnostic_origin = diagnostic_anchor("ModuleHeader", "keyword", keyword_offset, token_snapshot: keyword_snapshot)
+      if observations
+        observations.each_with_index do |observation, index|
+          diagnostic_name(header, observation[0], "module_segment", slot: DiagnosticNameSlot.new(DiagnosticNameSlotKind::ModuleSegment, index), token_snapshot: observation[1])
+        end
+      end
       header.at(location)
       header.end_location = token_end_location
       header
@@ -4281,6 +4349,8 @@ module Iyi
 
     def parse_module_def
       location = @token.location
+      keyword_offset = @token.input_offset
+      keyword_snapshot = diagnostic_current_token_snapshot
       doc = @token.doc
 
       next_token_skip_space_or_newline
@@ -4289,11 +4359,18 @@ module Iyi
       # body. Crystal's `module Foo ... end` takes a CONST, so the token type
       # after `module` is enough to tell them apart without lookahead.
       if @token.type.ident?
-        path = parse_module_path
+        observations = (@diagnostic_capture || @diagnostic_expansion || @diagnostic_regions) ? [] of DiagnosticTokenObservation : nil
+        path = parse_module_path(observations)
         if @diagnostic_capture && @input_artifact.nil? && @input_filename.is_a?(String)
           @diagnostic_module_path = Parser.iyi_package_segments(@iyi_package_name, path).join("/")
         end
         header = ModuleHeader.new(path)
+        header.diagnostic_origin = diagnostic_anchor("ModuleHeader", "keyword", keyword_offset, token_snapshot: keyword_snapshot)
+        if observations
+          observations.each_with_index do |observation, index|
+            diagnostic_name(header, observation[0], "module_segment", slot: DiagnosticNameSlot.new(DiagnosticNameSlotKind::ModuleSegment, index), token_snapshot: observation[1])
+          end
+        end
         header.at(location)
         header.end_location = token_end_location
         (@iyi_module_headers ||= [] of ModuleHeader) << header

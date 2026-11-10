@@ -150,7 +150,7 @@ def number(value):
         raise ValueError("invalid provenance integer")
 
 
-NAME_CONTEXTS = frozenset("method_name definition_name macro_name local_reference instance_variable class_variable parameter path_segment type_parameter where_variable named_entry enum_member special_global regex_match_index type_self".split())
+NAME_CONTEXTS = frozenset("method_name definition_name macro_name local_reference instance_variable class_variable parameter path_segment type_parameter where_variable named_entry enum_member special_global regex_match_index type_self module_segment".split())
 PRODUCERS = frozenset("ConstructedAst EmptyTupleProjection EmptyNamedTupleProjection MacroTemplate MacroId MacroVar MacroVerbatim YieldWrapper SemanticPrinter StructuredSyntax ArtifactSemanticRenderer".split())
 TOKEN_KINDS = frozenset(("EOF SPACE NEWLINE IDENT CONST INSTANCE_VAR CLASS_VAR CHAR STRING SYMBOL NUMBER _ COMMENT "
     "DELIMITER_START DELIMITER_END STRING_ARRAY_START INTERPOLATION_START SYMBOL_ARRAY_START STRING_ARRAY_END "
@@ -181,6 +181,7 @@ CONTEXT_KINDS = {
     "type_parameter": frozenset(("CONST",)),
     "where_variable": frozenset(("CONST",)),
     "type_self": frozenset(("IDENT",)),
+    "module_segment": frozenset(("IDENT",)),
     "named_entry": frozenset(("IDENT", "CONST")),
     "enum_member": frozenset(("CONST",)),
     "special_global": frozenset(("$~", "$?")),
@@ -191,6 +192,7 @@ CONTEXT_KINDS = {
 def name_token(kind, raw, mode, context):
     if kind not in CONTEXT_KINDS[context]: return False
     if context == "type_self": return raw == "self"
+    if context == "module_segment": return bool(re.fullmatch(r"[a-z][a-z0-9]*(?:_[a-z][a-z0-9]*)*", raw))
     if context == "special_global": return raw == kind
     if context == "regex_match_index":
         if not re.fullmatch(r"\$(?:0|[1-9][0-9]*\??)", raw): return False
@@ -253,6 +255,53 @@ INVALID_PARAMETER_NAMES = frozenset("begin nil true false yield with abstract de
 
 
 def derived_name(value, depth):
+    if value.get("derivation_kind") == "BoundProjection":
+        return bound_projection(value, depth)
+    if value.get("derivation_kind") == "ModuleHeaderPath":
+        fields(value, "kind derivation_kind module_header_origin source_segments package_name result_index")
+        header = value["module_header_origin"]
+        if (not isinstance(header, dict) or header.get("kind") not in ("Written", "Expanded") or
+                origin(header, depth + 1) != ("ModuleHeader", "keyword")):
+            raise ValueError("invalid module header origin")
+        segments = value["source_segments"]
+        if not isinstance(segments, list) or not segments: raise ValueError("missing module path segments")
+        previous, common, names = -1, None, []
+        for segment in segments:
+            raw = source_name(segment, depth)
+            if segment["context"] != "module_segment" or segment["binding_origin"] is not None or segment["input_start"] < previous:
+                raise ValueError("invalid module segment")
+            lexical = segment["lexical_origin"]
+            identity = ((lexical["kind"], lexical["source_identity"]) if lexical["kind"] == "Written" else
+                        (lexical["kind"], lexical["invocation_origin"], lexical["macro_definition_origin"], lexical["expansion_guard"]))
+            identity = (segment["input_sha256"], segment["input_bytesize"], segment["lexical_mode"], identity)
+            if common is not None and identity != common: raise ValueError("module segment input mismatch")
+            common, previous = identity, segment["input_end"]
+            names.append(raw.decode("utf-8"))
+        package = value["package_name"]
+        if package is not None:
+            text(package)
+            if names[0] != package: names.insert(0, package)
+        number(value["result_index"])
+        if value["result_index"] >= len(names): raise ValueError("invalid module segment index")
+        selected = names[value["result_index"]]
+        result, first, underscore = "", True, False
+        for char in selected:
+            if first: result += char.title()
+            elif char == "_": underscore = True
+            elif underscore:
+                result += char.title()
+                underscore = False
+            else: result += char
+            first = False
+        if not name_token("CONST", result, "Iyi", "path_segment"): raise ValueError("invalid rendered module segment")
+        return (("Name", "path_segment"), result.encode("utf-8"))
+    if value.get("derivation_kind") == "ImplicitModuleSelf":
+        fields(value, "kind derivation_kind module_header_origin")
+        header = value["module_header_origin"]
+        if (not isinstance(header, dict) or header.get("kind") not in ("Written", "Expanded") or
+                origin(header, depth + 1) != ("ModuleHeader", "keyword")):
+            raise ValueError("invalid implicit module self origin")
+        return (("Name", "type_self"), b"self")
     if value.get("derivation_kind") == "TypeSugar":
         fields(value, "kind derivation_kind production witnesses result lowering_index")
         matrix = {
@@ -355,6 +404,131 @@ def name_value(value, depth):
             raise ValueError("invalid derived name value")
         return derived_name(value["origin"], depth + 1)[1]
     raise ValueError("unknown name value")
+
+
+def bound_projection(value, depth):
+    fields(value, "kind derivation_kind producer source_fragment_sha256 source_text source_names output_text lexical_mode result_start result_end token_kind context")
+    source, output = value["source_text"], value["output_text"]
+    if not isinstance(source, str) or not isinstance(output, str): raise ValueError("invalid projection text")
+    try: source_bytes, output_bytes = source.encode("utf-8"), output.encode("utf-8")
+    except UnicodeError as exc: raise ValueError("invalid projection UTF-8") from exc
+    guard(value["source_fragment_sha256"])
+    if hashlib.sha256(source_bytes).hexdigest() != value["source_fragment_sha256"]: raise ValueError("projection source guard mismatch")
+    names = value["source_names"]
+    if not isinstance(names, list): raise ValueError("invalid projection names")
+    cursor = 0
+    for entry in names:
+        fields(entry, "start_offset end_offset name")
+        number(entry["start_offset"]); number(entry["end_offset"])
+        start, end = entry["start_offset"], entry["end_offset"]
+        if not cursor <= start < end <= len(source_bytes): raise ValueError("invalid projection source span")
+        try: source_bytes[start:end].decode("utf-8")
+        except UnicodeError as exc: raise ValueError("invalid projection source UTF-8 boundary") from exc
+        if source_bytes[start:end] != name_value(entry["name"], depth): raise ValueError("projection source name differs")
+        cursor = end
+    producer = value["producer"]
+    if not isinstance(producer, dict): raise ValueError("invalid projection producer")
+    for field in producer.values():
+        if isinstance(field, str):
+            try: field.encode("utf-8")
+            except UnicodeError as exc: raise ValueError("invalid producer UTF-8") from exc
+    kind = producer.get("kind")
+    permitted = ("path_segment", "named_entry", "type_self")
+    if kind == "StripRoot":
+        fields(producer, "kind root"); text(producer["root"])
+        prefix = producer["root"] + "::"
+        if not names or not source.startswith(prefix): raise ValueError("invalid root projection")
+        actual, permitted = source[len(prefix):], ("path_segment",)
+    elif kind == "ForeignType":
+        fields(producer, "kind module_name source_name qualified_name")
+        for key in ("module_name", "source_name", "qualified_name"): text(producer[key])
+        old = producer["source_name"]
+        if not names or not (source == old or source.startswith(old + "::")): raise ValueError("invalid foreign projection")
+        actual, permitted = producer["qualified_name"] + source[len(old):], ("path_segment",)
+    elif kind == "AliasType":
+        fields(producer, "kind owner name resolved_type")
+        for key in ("owner", "name", "resolved_type"): text(producer[key])
+        if not names or source != producer["name"]: raise ValueError("invalid alias projection")
+        actual = producer["resolved_type"]
+    elif kind == "SelfReturn":
+        fields(producer, "kind owner_type method_name receiver"); text(producer["owner_type"])
+        if not names or source != producer["owner_type"] or producer["method_name"] != "new" or producer["receiver"] != "self":
+            raise ValueError("invalid self return")
+        actual, permitted = "self", ("type_self",)
+    elif kind == "SemanticSignatureType":
+        fields(producer, "kind definition_origin field parameter_index semantic_type"); text(producer["semantic_type"])
+        if source or names or origin(producer["definition_origin"], depth + 1) != ("Def", "keyword"):
+            raise ValueError("invalid signature producer")
+        if producer["field"] == "return_type":
+            if producer["parameter_index"] is not None: raise ValueError("invalid return index")
+        elif producer["field"] == "parameter_restriction":
+            number(producer["parameter_index"])
+        else: raise ValueError("unknown signature field")
+        actual = producer["semantic_type"]
+    elif kind == "UninitializedClassVar":
+        fields(producer, "kind declaration_origin owner_type variable_name semantic_type")
+        text(producer["owner_type"]); text(producer["semantic_type"]); text(producer["variable_name"])
+        if (source or names or origin(producer["declaration_origin"], depth + 1) != ("Name", "class_variable") or
+                not name_token("CLASS_VAR", producer["variable_name"], value["lexical_mode"], "class_variable")):
+            raise ValueError("invalid uninitialized class variable")
+        actual = "uninitialized " + producer["semantic_type"]
+    elif kind == "ConstantAccessor":
+        fields(producer, "kind definition_origin prefix constant_name part")
+        if not isinstance(producer["prefix"], str): raise ValueError("invalid accessor prefix")
+        text(producer["constant_name"])
+        definition = producer["definition_origin"]
+        if (source or names or origin(definition, depth + 1) != ("Def", "keyword") or
+                definition.get("kind") != "Synthetic" or definition.get("synthesis_kind") != "constant_accessor" or
+                definition.get("structural_slot") != "getter"):
+            raise ValueError("invalid accessor producer")
+        if producer["part"] == "Name":
+            actual, permitted = (producer["prefix"] + producer["constant_name"]).lower(), ("definition_name",)
+        elif producer["part"] == "Receiver": actual, permitted = "self", ("local_reference",)
+        else: raise ValueError("invalid accessor part")
+    elif kind == "ResolvedRestriction":
+        fields(producer, "kind owner_type written_type resolved_type root add_global")
+        for key in ("owner_type", "written_type", "resolved_type"): text(producer[key])
+        if not isinstance(producer["root"], str) or type(producer["add_global"]) is not bool or not names or source != producer["written_type"]:
+            raise ValueError("invalid resolved restriction")
+        resolved = producer["resolved_type"]
+        if producer["add_global"] and (resolved.startswith("::") or not resolved.partition("::")[0] or resolved.partition("::")[0] == producer["root"]):
+            raise ValueError("invalid global restriction")
+        actual = ("::" if producer["add_global"] else "") + resolved
+    else: raise ValueError("unknown bound producer")
+    if output != actual or value["context"] not in permitted: raise ValueError("invalid bound projection result")
+    if value["lexical_mode"] not in ("Crystal", "Iyi"): raise ValueError("invalid projection lexical mode")
+    number(value["result_start"]); number(value["result_end"])
+    start, end = value["result_start"], value["result_end"]
+    if not 0 <= start < end <= len(output_bytes) or (kind == "UninitializedClassVar" and start < len(b"uninitialized ")):
+        raise ValueError("invalid projection result span")
+    try:
+        before, selected, after = output_bytes[:start].decode("utf-8"), output_bytes[start:end].decode("utf-8"), output_bytes[end:].decode("utf-8")
+    except UnicodeError as exc: raise ValueError("invalid projection UTF-8 boundary") from exc
+    if not name_token(value["token_kind"], selected, value["lexical_mode"], value["context"]):
+        raise ValueError("invalid projection result token")
+    quote, comment, escaped = None, False, False
+    for index, char in enumerate(before):
+        if comment:
+            if char == "\n": comment = False
+        elif quote is not None:
+            if escaped: escaped = False
+            elif char == "\\": escaped = True
+            elif char == quote: quote = None
+        elif char == "#": comment = True
+        elif char in "\"'`": quote = char
+        elif char == "%" and index + 1 < len(before) and (before[index + 1].isalpha() or before[index + 1] in "([{<|"):
+            raise ValueError("ambiguous preceding percent literal")
+    if quote is not None or comment: raise ValueError("projection lies inside a literal or comment")
+    def ident_char(c): return c == "_" or c.isascii() and c.isalnum() or ord(c) > 0x9f
+    if before and (ident_char(before[-1]) or before[-1] in "@$"): raise ValueError("projection starts inside token")
+    if after and (ident_char(after[0]) or (value["token_kind"] == "IDENT" and
+            (after[0] == "?" or (after[0] == "!" and value["lexical_mode"] == "Crystal")) and not after.startswith(("?=", "!=")))):
+        raise ValueError("projection ends inside token")
+    following = re.sub(r"\A(?:\s+|#[^\n]*(?:\n|\Z))*", "", after)
+    named_entry = following.startswith(":") and not following.startswith("::")
+    if (value["context"] == "named_entry") != named_entry:
+        raise ValueError("invalid projected type position")
+    return (("Name", value["context"]), selected.encode("utf-8"))
 
 
 RAW_PRODUCERS = frozenset("MacroTemplate MacroId MacroVar MacroVerbatim YieldWrapper SemanticPrinter".split())
@@ -509,6 +683,8 @@ def origin(value, depth=0):
             return ("ProcLiteral", "arrow")
         if key == ("inline_macro_definition", "macro") and parent in (("MacroDirective", "expression"), ("MacroDirective", "control")):
             return ("Macro", "keyword")
+        if key == ("implicit_module_self", "extend") and parent == ("ModuleHeader", "keyword") and value["parent_origin"].get("kind") in ("Written", "Expanded"):
+            return ("Extend", "keyword")
         if ((key == ("literal_expansion_node", "regex:interpolation") and parent == ("Literal", "regex")) or
                 (key == ("literal_expansion_node", "command:interpolation") and parent == ("Call", "method"))):
             return ("Literal", "interpolation")

@@ -168,7 +168,7 @@ module Iyi::DiagnosticProvenance
     end
   end
 
-  NAME_CONTEXTS = %w(method_name definition_name macro_name local_reference instance_variable class_variable parameter path_segment type_parameter where_variable named_entry enum_member special_global regex_match_index type_self)
+  NAME_CONTEXTS = %w(method_name definition_name macro_name local_reference instance_variable class_variable parameter path_segment type_parameter where_variable named_entry enum_member special_global regex_match_index type_self module_segment)
   MACRO_PRODUCERS = %w(ConstructedAst EmptyTupleProjection EmptyNamedTupleProjection MacroTemplate MacroId MacroVar MacroVerbatim YieldWrapper SemanticPrinter StructuredSyntax ArtifactSemanticRenderer)
   NAME_OPERATORS = %w(! != !~ % & &* &** &+ &- * ** + - / // < << <= <=> = == === =~ > >= >> [] []= []? ^ ` | ~)
   INVALID_PARAMETER_NAMES = %w(begin nil true false yield with abstract def macro require case select if unless include extend class struct module enum while until return next break lib fun alias pointerof sizeof offsetof instance_sizeof typeof private protected asm out self in end alignof instance_alignof)
@@ -193,7 +193,7 @@ module Iyi::DiagnosticProvenance
                 kind == "CONST"
               when "named_entry"
                 kind == "IDENT" || kind == "CONST"
-              when "type_self"
+              when "type_self", "module_segment"
                 kind == "IDENT"
               when "special_global"
                 kind == "$~" || kind == "$?"
@@ -204,6 +204,7 @@ module Iyi::DiagnosticProvenance
               end
     return false unless allowed
     return raw == "self" if context == "type_self"
+    return raw.matches?(/\A[a-z][a-z0-9]*(?:_[a-z][a-z0-9]*)*\z/) if context == "module_segment"
     return raw == kind if context == "special_global"
     if context == "regex_match_index"
       return false unless raw.matches?(/\A\$(?:0|[1-9][0-9]*\??)\z/)
@@ -243,6 +244,7 @@ module Iyi::DiagnosticProvenance
       origin_schema4!(synthetic["parent_origin"], depth + 1)
     when "DerivedName"
       derived_name_schema4!(value, depth)
+      nil
     when "Expanded"
       expansion = fields(value, %w(kind invocation_origin macro_definition_origin expansion_guard anchor_kind role name_context token_event anchor_use))
       origin_schema4!(expansion["invocation_origin"], depth + 1)
@@ -321,6 +323,7 @@ module Iyi::DiagnosticProvenance
     else
       raise "unknown diagnostic origin kind"
     end
+    nil
   end
 
   RAW_MACRO_PRODUCERS = %w(MacroTemplate MacroId MacroVar MacroVerbatim YieldWrapper SemanticPrinter)
@@ -565,10 +568,193 @@ module Iyi::DiagnosticProvenance
     {result == "Self" ? "type_self" : "path_segment", result == "Self" ? "self" : result}
   end
 
+  private def self.bound_projection_schema4!(value : JSON::Any, depth : Int32) : Tuple(String, String)
+    item = fields(value, %w(kind derivation_kind producer source_fragment_sha256 source_text source_names output_text lexical_mode result_start result_end token_kind context))
+    source, output = item["source_text"].as_s, item["output_text"].as_s
+    raise "invalid projection UTF-8" unless source.valid_encoding? && output.valid_encoding?
+    raise "projection source guard mismatch" unless ::Crystal::Digest::SHA256.hexdigest(source) == item["source_fragment_sha256"].as_s
+    names = item["source_names"].as_a
+    cursor = 0_i64
+    names.each do |entry|
+      name = fields(entry, %w(start_offset end_offset name))
+      first, last = name["start_offset"].as_i64, name["end_offset"].as_i64
+      raise "invalid projection source span" unless first >= cursor && last > first && last <= source.bytesize
+      bytes = source.byte_slice(first.to_i, (last - first).to_i)
+      raise "invalid projection source name" unless bytes.valid_encoding? && bytes == name_value_schema4!(name["name"], depth + 1)
+      cursor = last
+    end
+    producer_value = item["producer"]
+    producer = producer_value.as_h
+    producer.each_value do |field|
+      if text = field.raw.as?(String)
+        raise "invalid producer UTF-8" unless text.valid_encoding?
+      end
+    end
+    kind = producer["kind"].as_s
+    permitted = %w(path_segment named_entry type_self)
+    actual = case kind
+             when "StripRoot"
+               fields(producer_value, %w(kind root))
+               root = producer["root"].as_s
+               prefix = "#{root}::"
+               raise "invalid root projection" if root.empty? || names.empty? || !source.starts_with?(prefix)
+               permitted = %w(path_segment)
+               source.byte_slice(prefix.bytesize, source.bytesize - prefix.bytesize)
+             when "ForeignType"
+               fields(producer_value, %w(kind module_name source_name qualified_name))
+               module_name, old, replacement = producer["module_name"].as_s, producer["source_name"].as_s, producer["qualified_name"].as_s
+               raise "invalid foreign projection" if module_name.empty? || old.empty? || replacement.empty? || names.empty? || !(source == old || source.starts_with?("#{old}::"))
+               permitted = %w(path_segment)
+               replacement + source.byte_slice(old.bytesize, source.bytesize - old.bytesize)
+             when "AliasType"
+               fields(producer_value, %w(kind owner name resolved_type))
+               owner, name, replacement = producer["owner"].as_s, producer["name"].as_s, producer["resolved_type"].as_s
+               raise "invalid alias projection" if owner.empty? || name.empty? || replacement.empty? || names.empty? || source != name
+               replacement
+             when "SelfReturn"
+               fields(producer_value, %w(kind owner_type method_name receiver))
+               owner = producer["owner_type"].as_s
+               raise "invalid self return" if owner.empty? || names.empty? || source != owner || producer["method_name"].as_s != "new" || producer["receiver"].as_s != "self"
+               permitted = %w(type_self)
+               "self"
+             when "SemanticSignatureType"
+               fields(producer_value, %w(kind definition_origin field parameter_index semantic_type))
+               definition = producer["definition_origin"]
+               origin_schema4!(definition, depth + 1)
+               raise "invalid signature producer" unless source.empty? && names.empty? && Iyi::DiagnosticOrigin.from_json(definition).valid_for_anchor?("Def", "keyword")
+               parameter = producer["parameter_index"]
+               case producer["field"].as_s
+               when "return_type"
+                 raise "invalid return index" unless parameter.raw.nil?
+               when "parameter_restriction"
+                 index = parameter.as_i64
+                 raise "invalid parameter index" unless index >= 0 && index <= Int32::MAX
+               else raise "unknown signature field"
+               end
+               type = producer["semantic_type"].as_s
+               raise "empty semantic type" if type.empty?
+               type
+             when "UninitializedClassVar"
+               fields(producer_value, %w(kind declaration_origin owner_type variable_name semantic_type))
+               declaration = producer["declaration_origin"]
+               origin_schema4!(declaration, depth + 1)
+               owner, variable, type = producer["owner_type"].as_s, producer["variable_name"].as_s, producer["semantic_type"].as_s
+               unless source.empty? && names.empty? && !owner.empty? && !type.empty? &&
+                      Iyi::DiagnosticOrigin.from_json(declaration).valid_for_anchor?("Name", "class_variable") &&
+                      name_token?("CLASS_VAR", variable, item["lexical_mode"].as_s, "class_variable")
+                 raise "invalid uninitialized class variable"
+               end
+               "uninitialized #{type}"
+             when "ConstantAccessor"
+               fields(producer_value, %w(kind definition_origin prefix constant_name part))
+               definition = producer["definition_origin"]
+               origin_schema4!(definition, depth + 1)
+               origin = definition.as_h
+               unless source.empty? && names.empty? && !producer["constant_name"].as_s.empty? &&
+                      Iyi::DiagnosticOrigin.from_json(definition).valid_for_anchor?("Def", "keyword") &&
+                      origin["kind"].as_s == "Synthetic" && origin["synthesis_kind"].as_s == "constant_accessor" && origin["structural_slot"].as_s == "getter"
+                 raise "invalid accessor producer"
+               end
+               case producer["part"].as_s
+               when "Name"
+                 permitted = %w(definition_name)
+                 (producer["prefix"].as_s + producer["constant_name"].as_s).downcase
+               when "Receiver"
+                 permitted = %w(local_reference)
+                 "self"
+               else raise "invalid accessor part"
+               end
+             when "ResolvedRestriction"
+               fields(producer_value, %w(kind owner_type written_type resolved_type root add_global))
+               owner, written, resolved, root = producer["owner_type"].as_s, producer["written_type"].as_s, producer["resolved_type"].as_s, producer["root"].as_s
+               add_global = producer["add_global"].as_bool
+               raise "invalid resolved restriction" if owner.empty? || written.empty? || resolved.empty? || names.empty? || source != written
+               if add_global && (resolved.starts_with?("::") || resolved.partition("::")[0].empty? || resolved.partition("::")[0] == root)
+                 raise "invalid global restriction"
+               end
+               add_global ? "::#{resolved}" : resolved
+             else raise "unknown bound producer"
+             end
+    context, mode = item["context"].as_s, item["lexical_mode"].as_s
+    raise "invalid bound projection result" unless actual == output && permitted.includes?(context) && {"Crystal", "Iyi"}.includes?(mode)
+    first, last = item["result_start"].as_i64, item["result_end"].as_i64
+    raise "invalid projection result span" unless first >= 0 && last > first && last <= output.bytesize && (kind != "UninitializedClassVar" || first >= "uninitialized ".bytesize)
+    lex_context = context == "definition_name" ? Iyi::DiagnosticRenderedLexContext::DefOrMacroName : Iyi::DiagnosticRenderedLexContext::TypeName
+    observed = Iyi::DiagnosticRenderedTokens.observe_one(output, first.to_i, last.to_i, mode, lex_context)
+    unless observed.token_kind == item["token_kind"].as_s && name_token?(observed.token_kind, observed.token_text, mode, context)
+      raise "invalid projection result token"
+    end
+    following = output.byte_slice(last.to_i, output.bytesize - last.to_i).lstrip
+    while following.starts_with?("#")
+      newline = following.byte_index('\n')
+      following = newline ? following.byte_slice(newline + 1, following.bytesize - newline - 1).lstrip : ""
+    end
+    named_entry = following.starts_with?(":") && !following.starts_with?("::")
+    raise "invalid projected type position" unless (context == "named_entry") == named_entry
+    {context, observed.token_text}
+  end
+
   private def self.derived_name_schema4!(value : JSON::Any, depth : Int32) : Tuple(String, String)
     raise "diagnostic origin nesting too deep" if depth > 128
     object = value.as_h
     raise "invalid derived origin kind" unless object["kind"].as_s == "DerivedName"
+    return bound_projection_schema4!(value, depth) if object["derivation_kind"].as_s == "BoundProjection"
+    if object["derivation_kind"].as_s == "ModuleHeaderPath"
+      item = fields(value, %w(kind derivation_kind module_header_origin source_segments package_name result_index))
+      header = item["module_header_origin"]
+      origin_schema4!(header, depth + 1)
+      unless {"Written", "Expanded"}.includes?(header.as_h["kind"].as_s) && Iyi::DiagnosticOrigin.from_json(header).valid_for_anchor?("ModuleHeader", "keyword")
+        raise "invalid module header origin"
+      end
+      segments = item["source_segments"].as_a
+      raise "missing module path segments" if segments.empty?
+      names = [] of String
+      previous = -1_i64
+      prior_token = nil.as(Hash(String, JSON::Any)?)
+      segments.each do |token_value|
+        source_name_schema4!(token_value, depth + 1)
+        token = token_value.as_h
+        unless token["context"].as_s == "module_segment" && token["binding_origin"].raw.nil? && token["input_start"].as_i64 >= previous
+          raise "invalid module segment"
+        end
+        if prior = prior_token
+          left, right = prior["lexical_origin"].as_h, token["lexical_origin"].as_h
+          same_identity = left["kind"] == right["kind"] && case left["kind"].as_s
+                          when "Written" then left["source_identity"] == right["source_identity"]
+                          when "Expanded" then same_scope?(left, right)
+                          else false
+                          end
+          unless prior["input_sha256"] == token["input_sha256"] && prior["input_bytesize"] == token["input_bytesize"] &&
+                 prior["lexical_mode"] == token["lexical_mode"] && same_identity
+            raise "module segment input mismatch"
+          end
+        end
+        names << token["raw_text"].as_s
+        prior_token = token
+        previous = token["input_end"].as_i64
+      end
+      package = item["package_name"]
+      unless package.raw.nil?
+        name = package.as_s
+        raise "invalid package name" if name.empty? || !name.valid_encoding?
+        names.unshift(name) unless names.first == name
+      end
+      index = item["result_index"].as_i64
+      raise "invalid module segment index" unless index >= 0 && index < names.size
+      rendered = names[index.to_i].camelcase
+      raise "invalid rendered module segment" unless name_token?("CONST", rendered, "Iyi", "path_segment")
+      return {"path_segment", rendered}
+    end
+    if object["derivation_kind"].as_s == "ImplicitModuleSelf"
+      item = fields(value, %w(kind derivation_kind module_header_origin))
+      header = item["module_header_origin"]
+      origin_schema4!(header, depth + 1)
+      kind = header.as_h["kind"].as_s
+      unless {"Written", "Expanded"}.includes?(kind) && Iyi::DiagnosticOrigin.from_json(header).valid_for_anchor?("ModuleHeader", "keyword")
+        raise "invalid implicit module self origin"
+      end
+      return {"type_self", "self"}
+    end
     return type_sugar_schema4!(value, depth) if object["derivation_kind"].as_s == "TypeSugar"
     if object["derivation_kind"].as_s == "RegexMatchIndex"
       item = fields(value, %w(kind derivation_kind source_token result))

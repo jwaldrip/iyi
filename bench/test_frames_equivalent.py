@@ -21,6 +21,7 @@ import io
 import json
 import contextlib
 import os
+import re
 import struct
 import sys
 import tempfile
@@ -1301,6 +1302,125 @@ def test_composed_origin_controls():
         try: frames.checked_origin(bad)
         except (ValueError, KeyError, TypeError): pass
         else: raise AssertionError("invalid type sugar accepted: " + mutation)
+
+    implicit_self = {"kind": "DerivedName", "derivation_kind": "ImplicitModuleSelf",
+                     "module_header_origin": written("ModuleHeader", "keyword", 1)}
+    assert frames.checked_origin(implicit_self) == ("Name", "type_self")
+    assert frames.derived_name(implicit_self, 0)[1] == b"self"
+    implicit_extend = {"kind": "Synthetic", "parent_origin": copy.deepcopy(implicit_self["module_header_origin"]),
+                       "synthesis_kind": "implicit_module_self", "structural_slot": "extend"}
+    assert frames.checked_origin(implicit_extend) == ("Extend", "keyword")
+    invalid_self = copy.deepcopy(implicit_self)
+    invalid_self["module_header_origin"]["anchor_kind"] = "Module"
+    try: frames.checked_origin(invalid_self)
+    except ValueError: pass
+    else: raise AssertionError("invalid implicit module self accepted")
+    def module_segment(raw, start):
+        return {"lexical_origin": written("Name", "module_segment", start), "binding_origin": None,
+                "context": "module_segment", "input_sha256": "a" * 64, "input_bytesize": 100,
+                "input_start": start, "input_end": start + len(raw), "lexical_mode": "Iyi",
+                "token_kind": "IDENT", "raw_text": raw}
+    module_path = {"kind": "DerivedName", "derivation_kind": "ModuleHeaderPath",
+                   "module_header_origin": written("ModuleHeader", "keyword", 1),
+                   "source_segments": [module_segment("app", 20), module_segment("api_client", 24)],
+                   "package_name": "bundle", "result_index": 2}
+    assert frames.checked_origin(module_path) == ("Name", "path_segment")
+    assert frames.derived_name(module_path, 0)[1] == b"ApiClient"
+    same_package = copy.deepcopy(module_path)
+    same_package.update({"package_name": "app", "result_index": 1})
+    assert frames.derived_name(same_package, 0)[1] == b"ApiClient"
+    for mutation in ("header", "empty", "index", "wrong_kind", "invalid_text", "binding", "order", "source_file", "package"):
+        bad = copy.deepcopy(module_path)
+        if mutation == "header": bad["module_header_origin"]["anchor_kind"] = "Module"
+        elif mutation == "empty": bad["source_segments"] = []
+        elif mutation == "index": bad["result_index"] = 3
+        elif mutation == "wrong_kind": bad["source_segments"][0]["token_kind"] = "CONST"
+        elif mutation == "invalid_text": bad["source_segments"][0]["raw_text"] = "App"
+        elif mutation == "binding": bad["source_segments"][0]["binding_origin"] = written("Call", "method", 20)
+        elif mutation == "order": bad["source_segments"].reverse()
+        elif mutation == "source_file": bad["source_segments"][1]["lexical_origin"]["source_identity"]["file"] = "other.iyi"
+        else: bad["package_name"] = ""
+        try: frames.checked_origin(bad)
+        except (ValueError, KeyError, TypeError): pass
+        else: raise AssertionError("invalid module-header derivation accepted: " + mutation)
+
+    def projection(producer, source_text, output_text, selected, context, token_kind):
+        source_names = []
+        for match in re.finditer(r"[A-Z][A-Za-z0-9_]*", source_text):
+            raw = match.group()
+            token = {"lexical_origin": written("Name", "path_segment", 20 + match.start()), "binding_origin": None,
+                     "context": "path_segment", "input_sha256": "a" * 64, "input_bytesize": 100,
+                     "input_start": 20 + match.start(), "input_end": 20 + match.end(),
+                     "lexical_mode": "Crystal", "token_kind": "CONST", "raw_text": raw}
+            source_names.append({"start_offset": match.start(), "end_offset": match.end(),
+                                 "name": {"kind": "Observed", "source_token": token}})
+        start = output_text.encode().index(selected.encode())
+        return {"kind": "DerivedName", "derivation_kind": "BoundProjection", "producer": producer,
+                "source_fragment_sha256": hashlib.sha256(source_text.encode()).hexdigest(),
+                "source_text": source_text, "source_names": source_names, "output_text": output_text,
+                "lexical_mode": "Crystal", "result_start": start, "result_end": start + len(selected.encode()),
+                "token_kind": token_kind, "context": context}
+
+    definition = written("Def", "keyword", 5)
+    declaration = written("Name", "class_variable", 7)
+    accessor = {"kind": "Synthetic", "parent_origin": written("Assign", "constant", 9),
+                "synthesis_kind": "constant_accessor", "structural_slot": "getter"}
+    projections = [
+        projection({"kind": "StripRoot", "root": "Root"}, "Root::Thing", "Thing", "Thing", "path_segment", "CONST"),
+        projection({"kind": "ForeignType", "module_name": "Lib", "source_name": "Thing", "qualified_name": "Lib::Thing"},
+                   "Thing", "Lib::Thing", "Lib", "path_segment", "CONST"),
+        projection({"kind": "AliasType", "owner": "Root", "name": "Thing", "resolved_type": "Tuple(Key: Int32)"},
+                   "Thing", "Tuple(Key: Int32)", "Key", "named_entry", "CONST"),
+        projection({"kind": "SelfReturn", "owner_type": "Thing", "method_name": "new", "receiver": "self"},
+                   "Thing", "self", "self", "type_self", "IDENT"),
+        projection({"kind": "SemanticSignatureType", "definition_origin": definition, "field": "return_type",
+                    "parameter_index": None, "semantic_type": "Int32"}, "", "Int32", "Int32", "path_segment", "CONST"),
+        projection({"kind": "UninitializedClassVar", "declaration_origin": declaration, "owner_type": "Root",
+                    "variable_name": "@@value", "semantic_type": "Int32"},
+                   "", "uninitialized Int32", "Int32", "path_segment", "CONST"),
+        projection({"kind": "ConstantAccessor", "definition_origin": accessor, "prefix": "", "constant_name": "VALUE", "part": "Name"},
+                   "", "value", "value", "definition_name", "IDENT"),
+        projection({"kind": "ResolvedRestriction", "owner_type": "Root", "written_type": "Thing",
+                    "resolved_type": "Lib::Thing", "root": "Root", "add_global": True},
+                   "Thing", "::Lib::Thing", "Lib", "path_segment", "CONST"),
+    ]
+    for valid in projections:
+        assert frames.checked_origin(valid) == ("Name", valid["context"])
+    for mutation in ("guard", "source_name", "source_overlap", "output", "inside_token", "wrong_context", "wrong_producer",
+                     "foreign_boundary", "class_variable", "uninitialized_keyword", "signature_index", "literal_token", "accessor_owner", "global_root"):
+        if mutation == "foreign_boundary":
+            bad = copy.deepcopy(projections[1])
+            bad["source_text"] = "ThingElse"
+            bad["source_fragment_sha256"] = hashlib.sha256(b"ThingElse").hexdigest()
+        elif mutation in ("class_variable", "uninitialized_keyword"):
+            bad = copy.deepcopy(projections[5])
+        elif mutation in ("signature_index", "literal_token"): bad = copy.deepcopy(projections[4])
+        elif mutation == "accessor_owner": bad = copy.deepcopy(projections[6])
+        elif mutation == "global_root": bad = copy.deepcopy(projections[7])
+        else: bad = copy.deepcopy(projections[0])
+        if mutation == "guard": bad["source_fragment_sha256"] = "f" * 64
+        elif mutation == "source_name": bad["source_names"][0]["end_offset"] -= 1
+        elif mutation == "source_overlap": bad["source_names"][1]["start_offset"] = 0
+        elif mutation == "output": bad["output_text"] = "Other"
+        elif mutation == "inside_token": bad["result_start"] += 1
+        elif mutation == "wrong_context": bad["context"] = "named_entry"
+        elif mutation == "wrong_producer": bad["producer"]["kind"] = "Unknown"
+        elif mutation == "class_variable": bad["producer"]["variable_name"] = "@value"
+        elif mutation == "uninitialized_keyword":
+            bad.update({"result_start": 0, "result_end": 13, "token_kind": "IDENT", "context": "named_entry"})
+        elif mutation == "signature_index": bad["producer"]["parameter_index"] = 0
+        elif mutation == "literal_token":
+            bad["producer"]["semantic_type"] = bad["output_text"] = '"Int32"'
+            bad["result_start"], bad["result_end"] = 1, 6
+        elif mutation == "accessor_owner": bad["producer"]["definition_origin"]["structural_slot"] = "other"
+        elif mutation == "global_root": bad["producer"]["root"] = "Lib"
+        try: frames.checked_origin(bad)
+        except (ValueError, KeyError, TypeError): pass
+        else: raise AssertionError("invalid bound projection accepted: " + mutation)
+    changed = copy.deepcopy(projections[2])
+    changed["producer"]["owner"] = "Different"
+    assert frames.checked_origin(changed) == frames.checked_origin(projections[2])
+    assert not frames.compare_functions(b"~proc", b"~proc", (UseMap(projections[2]), UseMap(changed)))
 
     for context, kind, raw in (("enum_member", "CONST", "Member"), ("where_variable", "CONST", "T"),
                                ("special_global", "$~", "$~"), ("special_global", "$?", "$?")):
