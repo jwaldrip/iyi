@@ -313,4 +313,36 @@ describe "parse-ahead parser contract" do
     parser.parse_ahead_input_matches?(content).should be_false
     Iyi::Parser.new(content).parse_ahead_input_matches?("\uFEFF#{content}").should be_false
   end
+
+  it "returns an independent copy of fingerprint to prevent mutation" do
+    original = Iyi::WarningCollection.new
+    snapshot = original.parse_ahead_snapshot.should_not be_nil
+    fp1 = snapshot.fingerprint
+    fp2 = snapshot.fingerprint
+    fp1.should eq(fp2)
+    fp1.same?(fp2).should be_false
+  end
+
+  it "exposes noncopying size preflight and iteration on warning policy" do
+    collection = Iyi::WarningCollection.new
+    collection.exclude_path("path/one")
+    collection.exclude_path("path/two")
+    collection.parse_ahead_excluded_path_count.should eq(2)
+    collection.parse_ahead_policy_bytes.should be > 0
+    iterated = [] of String
+    collection.each_parse_ahead_excluded_path { |p| iterated << p }
+    iterated.size.should eq(2)
+    snapshot = collection.parse_ahead_snapshot.should_not be_nil
+    snapshot.excluded_path_count.should eq(2)
+    snapshot.policy_bytes.should eq(collection.parse_ahead_policy_bytes)
+    snapshot_iterated = [] of String
+    snapshot.each_excluded_path { |p| snapshot_iterated << p }
+    snapshot_iterated.should eq(iterated)
+  end
+
+  it "refuses snapshot when warning policy exceeds path limit" do
+    collection = Iyi::WarningCollection.new
+    10_001.times { |i| collection.exclude_path("p#{i}") }
+    collection.parse_ahead_snapshot.should be_nil
+  end
 end

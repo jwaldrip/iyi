@@ -50,15 +50,22 @@ module Iyi
 
     # Each worker receives its own path strings and array.
     class ParseAheadPolicy
+      MAX_POLICY_BYTES   = 1024_u64 * 1024_u64
+      MAX_EXCLUDED_PATHS = 10_000
+
       getter level : WarningLevel
       @lib_path : String?
       getter explain_spawn : ExplainSpawn
       getter? error_on_warnings : Bool
-      getter fingerprint : String
+      @fingerprint : String
       @excluded_paths : Array(String)
-
+      getter policy_bytes : UInt64
       def initialize(@level : WarningLevel, excluded_paths : Array(String), lib_path : String?,
                      @explain_spawn : ExplainSpawn, @error_on_warnings : Bool)
+        raise ArgumentError.new("too many excluded paths in warning policy") if excluded_paths.size > MAX_EXCLUDED_PATHS
+        total_bytes = excluded_paths.sum(0_u64, &.bytesize.to_u64) + (lib_path.try(&.bytesize.to_u64) || 0_u64)
+        raise ArgumentError.new("warning policy exceeds size limit") if total_bytes > MAX_POLICY_BYTES
+        @policy_bytes = total_bytes
         @excluded_paths = excluded_paths.map { |path| String.new(path.to_slice) }
         @lib_path = lib_path.try { |path| String.new(path.to_slice) }
         @fingerprint = JSON.build do |json|
@@ -76,8 +83,20 @@ module Iyi
         @excluded_paths.map { |path| String.new(path.to_slice) }
       end
 
+      def excluded_path_count : Int32
+        @excluded_paths.size
+      end
+
+      def each_excluded_path(& : String ->) : Nil
+        @excluded_paths.each { |path| yield path }
+      end
+
       def lib_path : String?
         @lib_path.try { |path| String.new(path.to_slice) }
+      end
+
+      def fingerprint : String
+        String.new(@fingerprint.to_slice)
       end
     end
 
@@ -134,6 +153,18 @@ module Iyi
       @reports << report
     end
 
+    def parse_ahead_policy_bytes : UInt64
+      @excluded_paths.sum(0_u64, &.bytesize.to_u64) + (@lib_path.try(&.bytesize.to_u64) || 0_u64)
+    end
+
+    def parse_ahead_excluded_path_count : Int32
+      @excluded_paths.size
+    end
+
+    def each_parse_ahead_excluded_path(& : String ->) : Nil
+      @excluded_paths.each { |path| yield path }
+    end
+
 
     # Snapshot only the policy, not previously collected reports. Subclasses
     # can override warning behavior and cannot be authenticated by these fields.
@@ -154,6 +185,8 @@ module Iyi
     def parse_ahead_snapshot : ParseAheadPolicy?
       return nil unless self.class == WarningCollection
       return nil unless @excluded_paths.all?(&.valid_encoding?) && (@lib_path.nil? || @lib_path.not_nil!.valid_encoding?)
+      total_bytes = @excluded_paths.sum(0_u64, &.bytesize.to_u64) + (@lib_path.try(&.bytesize.to_u64) || 0_u64)
+      return nil if @excluded_paths.size > ParseAheadPolicy::MAX_EXCLUDED_PATHS || total_bytes > ParseAheadPolicy::MAX_POLICY_BYTES
       ParseAheadPolicy.new(@level, @excluded_paths, @lib_path, @explain_spawn, @error_on_warnings)
     end
 
