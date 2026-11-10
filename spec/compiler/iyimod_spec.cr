@@ -1276,6 +1276,122 @@ describe Iyi::DiagnosticOrigin do
     decoded.parent(payload_index).as(Iyi::DiagnosticOrigin::Expanded).anchor_use.should eq(payload_use)
   end
 
+  it "transports bound projections with every source-name contribution" do
+    text = "Root::Thing"
+    guard = ::Crystal::Digest::SHA256.hexdigest(text)
+    root_origin = Iyi::DiagnosticOrigin::Written.new("app/main", "/absent/bind.cr", 0, "Name", "path_segment")
+    type_origin = Iyi::DiagnosticOrigin::Written.new("app/main", "/absent/bind.cr", 6, "Name", "path_segment")
+    root_token = Iyi::DiagnosticSourceNameToken.new(root_origin, nil, "path_segment", guard, text.bytesize, 0, 4, "Crystal", "CONST", "Root")
+    type_token = Iyi::DiagnosticSourceNameToken.new(type_origin, nil, "path_segment", guard, text.bytesize, 6, 11, "Crystal", "CONST", "Thing")
+    names = [
+      Iyi::DiagnosticBoundNameSource.new(0, 4, Iyi::DiagnosticNameValue::Observed.new(root_token)),
+      Iyi::DiagnosticBoundNameSource.new(6, 11, Iyi::DiagnosticNameValue::Observed.new(type_token)),
+    ]
+    producer = Iyi::DiagnosticBoundProducer::StripRoot.new("Root")
+    origin = Iyi::DiagnosticOrigin::DerivedName.bound_projection(producer, guard, text, names, "Thing", "Crystal",
+      0, 5, "CONST", "path_segment")
+    table = Iyi::IyiMod::DiagnosticOrigins.new
+    index = table.intern(origin)
+    io = IO::Memory.new
+    table.write(io)
+    io.rewind
+    restored = Iyi::IyiMod::DiagnosticOrigins.read(io).parent(index).as(Iyi::DiagnosticOrigin::DerivedName)
+    restored.should eq(origin)
+    restored.source_names.should eq(names)
+    restored.producer.should eq(producer)
+    other_origin = Iyi::DiagnosticOrigin::Written.new("app/main", "/absent/other.cr", 6, "Name", "path_segment")
+    other_token = Iyi::DiagnosticSourceNameToken.new(other_origin, nil, "path_segment", guard, text.bytesize, 6, 11, "Crystal", "CONST", "Thing")
+    changed_names = [names.first, Iyi::DiagnosticBoundNameSource.new(6, 11, Iyi::DiagnosticNameValue::Observed.new(other_token))]
+    changed = Iyi::DiagnosticOrigin::DerivedName.bound_projection(producer, guard, text, changed_names, "Thing", "Crystal",
+      0, 5, "CONST", "path_segment")
+    changed.should_not eq(origin)
+    table.intern(changed).should_not eq(index)
+
+    output = "Thing"
+    value = Iyi::DiagnosticNameValue::Derived.new(origin)
+    slot = Iyi::DiagnosticNameSlot.new(Iyi::DiagnosticNameSlotKind::PathSegment, 0)
+    event = Iyi::DiagnosticTokenEvent.new(0, 5, "CONST", output, "Crystal", Iyi::DiagnosticTokenSelection::Whole,
+      [Iyi::DiagnosticEmissionPart::NameSplice.new(0, 5, nil, value)] of Iyi::DiagnosticEmissionPart)
+    anchor = Iyi::DiagnosticAnchor.new(0, "Name", "path_segment", origin,
+      {slot => [value] of Iyi::DiagnosticNameValue}, 0, Iyi::DiagnosticFragmentAttachment::Direct.new)
+    key = Iyi::IyiMod.field_fragment_key("Box", "@factory")
+    declaration = type_declaration("Box", "class", fields: [{"@factory", "Object", output}])
+    artifact = sample_artifact(types: [declaration], source_path: "/absent/bind.cr")
+    section = Iyi::IyiMod::DiagnosticSection.new
+    section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(key, ::Crystal::Digest::SHA256.hexdigest(output), [event], [anchor]))
+    artifact.diagnostic_provenance = section
+    with_temporary_file do |path|
+      Iyi::IyiMod.write artifact, path
+      imported = Iyi::IyiMod.read(path)
+      fragment = imported.diagnostic_provenance.not_nil!.fragments[key]
+      consumer = Iyi::Parser.new(output)
+      consumer.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, output.bytesize, fragment.text_sha256, fragment.events, fragment.anchors)]
+      node = consumer.parse
+      consumer.diagnostic_check_consumed
+      printed = IO::Memory.new
+      builder = Iyi::DiagnosticFragmentBuilder.new("Crystal")
+      node.to_s(printed, diagnostic_fragment: builder)
+      replayed = builder.finish(key, printed.to_s)
+      replayed.should eq(fragment)
+      Iyi::IyiMod.write imported, path
+      Iyi::IyiMod.read(path).diagnostic_provenance.not_nil!.fragments[key].should eq(fragment)
+    end
+
+    expect_raises(ArgumentError) do
+      Iyi::DiagnosticOrigin::DerivedName.bound_projection(producer, guard, text, names, "Wrong", "Crystal",
+        0, 5, "CONST", "path_segment")
+    end
+    expect_raises(ArgumentError) do
+      Iyi::DiagnosticOrigin::DerivedName.bound_projection(producer, "0" * 64, text, names, "Thing", "Crystal",
+        0, 5, "CONST", "path_segment")
+    end
+  end
+
+  it "round trips each closed bound producer tag and rejects nonboolean restriction flags" do
+    definition = Iyi::DiagnosticOrigin::Written.new("app/main", "/absent/main.cr", 0, "Def", "keyword")
+    variable = Iyi::DiagnosticOrigin::Written.new("app/main", "/absent/main.cr", 4, "Name", "class_variable")
+    producers = [
+      Iyi::DiagnosticBoundProducer::StripRoot.new("Root"),
+      Iyi::DiagnosticBoundProducer::ForeignType.new("lib", "Thing", "Lib::Thing"),
+      Iyi::DiagnosticBoundProducer::AliasType.new("Owner", "Alias", "Target"),
+      Iyi::DiagnosticBoundProducer::SelfReturn.new("Owner", "new", "self"),
+      Iyi::DiagnosticBoundProducer::SemanticSignatureType.new(definition, "return_type", nil, "Thing"),
+      Iyi::DiagnosticBoundProducer::UninitializedClassVar.new(variable, "Owner", "@@item", "Thing"),
+      Iyi::DiagnosticBoundProducer::ConstantAccessor.new(definition, "", "Thing", "Name"),
+      Iyi::DiagnosticBoundProducer::ResolvedRestriction.new("Owner", "Thing", "Other", "Root", true),
+    ] of Iyi::DiagnosticBoundProducer
+    table = Iyi::IyiMod::DiagnosticOrigins.new
+    table.intern(definition)
+    table.intern(variable)
+    producers.each do |producer|
+      io = IO::Memory.new
+      table.write_bound_producer(io, producer)
+      io.rewind
+      table.read_bound_producer(io).should eq(producer)
+    end
+    malformed = IO::Memory.new
+    malformed.write_byte 8_u8
+    {"Owner", "Thing", "Other", "Root"}.each { |text| Iyi::IyiMod::DiagnosticOrigins.write_string(malformed, text) }
+    malformed.write_byte 2_u8
+    malformed.rewind
+    expect_raises(ArgumentError, /invalid restriction global marker/) { table.read_bound_producer(malformed) }
+  end
+
+  it "transports implicit module self with its actual header origin" do
+    header = Iyi::DiagnosticOrigin::Written.new("app/main", "/absent/main.iyi", 0, "ModuleHeader", "keyword")
+    origin = Iyi::DiagnosticOrigin::DerivedName.implicit_module_self(header)
+    table = Iyi::IyiMod::DiagnosticOrigins.new
+    index = table.intern(origin)
+    io = IO::Memory.new
+    table.write(io)
+    io.rewind
+    restored = Iyi::IyiMod::DiagnosticOrigins.read(io).parent(index).as(Iyi::DiagnosticOrigin::DerivedName)
+    restored.should eq(origin)
+    restored.module_header_origin.should eq(header)
+    expect_raises(ArgumentError) { Iyi::DiagnosticOrigin::DerivedName.implicit_module_self(
+      Iyi::DiagnosticOrigin::Written.new("app/main", "/absent/main.iyi", 0, "Def", "keyword")) }
+  end
+
   it "round trips type-sugar source syntax witnesses without inventing identifier tokens" do
     text = "Int32*"
     source = Iyi::DiagnosticOrigin::Written.new("app/main", "/absent/types.cr", 5, "TypeSyntax", "token")

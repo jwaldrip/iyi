@@ -370,6 +370,7 @@ module Iyi::IyiMod
         origin.source_token.try { |token| intern_source_token(token) }
         origin.witnesses.each { |token| intern(token.lexical_origin) }
         origin.definition_origin.try { |definition| intern(definition) }
+        origin.module_header_origin.try { |header| intern(header) }
         origin.source_names.try { |names| names.each { |source| intern_name_value(source.name) } }
         if producer = origin.producer
           case producer
@@ -517,6 +518,10 @@ module Iyi::IyiMod
         io.write_byte 7_u8
         io.write_bytes @indices[producer.definition_origin], FORMAT
         {producer.prefix, producer.constant_name, producer.part}.each { |text| DiagnosticOrigins.write_string(io, text) }
+      when DiagnosticBoundProducer::ResolvedRestriction
+        io.write_byte 8_u8
+        {producer.owner_type, producer.written_type, producer.resolved_type, producer.root}.each { |text| DiagnosticOrigins.write_string(io, text) }
+        io.write_byte(producer.add_global ? 1_u8 : 0_u8)
       else
         raise ArgumentError.new("unknown diagnostic bound producer")
       end
@@ -546,6 +551,17 @@ module Iyi::IyiMod
         definition = parent(io.read_bytes(UInt32, FORMAT))
         DiagnosticBoundProducer::ConstantAccessor.new(definition, DiagnosticOrigins.read_string(io),
           DiagnosticOrigins.read_string(io), DiagnosticOrigins.read_string(io))
+      when 8_u8
+        owner = DiagnosticOrigins.read_string(io)
+        written = DiagnosticOrigins.read_string(io)
+        resolved = DiagnosticOrigins.read_string(io)
+        root = DiagnosticOrigins.read_string(io)
+        add_global = case io.read_byte
+                     when 0_u8 then false
+                     when 1_u8 then true
+                     else raise ArgumentError.new("invalid restriction global marker")
+                     end
+        DiagnosticBoundProducer::ResolvedRestriction.new(owner, written, resolved, root, add_global)
       else
         raise ArgumentError.new("unknown diagnostic bound producer tag")
       end
@@ -926,6 +942,9 @@ module Iyi::IyiMod
             io.write_bytes origin.result_end.not_nil!.to_u32, FORMAT
             DiagnosticOrigins.write_string(io, origin.token_kind.not_nil!)
             DiagnosticOrigins.write_string(io, origin.context.not_nil!)
+          when "ImplicitModuleSelf"
+            io.write_byte 5_u8
+            io.write_bytes @indices[origin.module_header_origin.not_nil!], FORMAT
           else
             raise ArgumentError.new("unknown diagnostic name derivation")
           end
@@ -1016,6 +1035,8 @@ module Iyi::IyiMod
                      kind = read_string(io)
                      context = read_string(io)
                      DiagnosticOrigin::DerivedName.bound_projection(producer, guard, source, names, output, mode, first, last, kind, context)
+                   when 5_u8
+                     DiagnosticOrigin::DerivedName.implicit_module_self(table.parent(io.read_bytes(UInt32, FORMAT)))
                    else
                      raise ArgumentError.new("unknown diagnostic name derivation tag")
                    end
