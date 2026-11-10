@@ -169,12 +169,26 @@ describe Iyi::DiagnosticLiteralInputChecks do
     parser.diagnostic_capture = true
     input = parser.diagnostic_capture_input(Iyi::DiagnosticCaptureInputKind::SourceFile,
       nil, Iyi::DiagnosticCaptureParseEntry::Parse, Iyi::Parser::ParseMode::Normal)
-    arg = parser.parse.as(Iyi::Call).named_args.not_nil!.first
+    root = parser.parse.as(Iyi::Call)
+    arg = root.named_args.not_nil!.first
+    checker = Iyi::DiagnosticRecordedEvidenceInputCheck.new(input)
+    checker.verify!(root)
     literal = arg.diagnostic_literal_names[{"name", 0}]
     productions = arg.diagnostic_literal_productions[{"name", 0}]
     Iyi::DiagnosticLiteralInputChecks.verify_input_bytes!(literal, productions, String.new(Bytes[0xff]), input)
+    Iyi::DiagnosticLiteralInputChecks.verify_owner_field!(arg, "name", 0, input)
+    expect_raises(ArgumentError, /invalid named argument literal field/) do
+      Iyi::DiagnosticLiteralInputChecks.verify_owner_field!(arg, "external_name", 0, input)
+    end
     expect_raises(ArgumentError, /decoded value mismatch/) do
       Iyi::DiagnosticLiteralInputChecks.verify_input_bytes!(literal, productions, "x", input)
+    end
+    actual_segment = literal.segments.first
+    false_segment = Iyi::DiagnosticLiteralSegment.new(actual_segment.start_offset, actual_segment.end_offset, "AAAA")
+    altered = Iyi::DiagnosticParsedLiteral.new(literal.input_sha256, literal.input_bytesize, literal.lexical_mode,
+      literal.decoded_base64, [false_segment], nil)
+    expect_raises(ArgumentError, /constituent input bytes mismatch/) do
+      Iyi::DiagnosticLiteralInputChecks.verify_input_bytes!(altered, productions, String.new(Bytes[0xff]), input)
     end
     original = productions.first
     truncated = Iyi::DiagnosticLiteralProductionSegment.new(original.production, original.start_offset,
@@ -183,11 +197,44 @@ describe Iyi::DiagnosticLiteralInputChecks do
     expect_raises(ArgumentError, /incomplete literal production witnesses/) do
       Iyi::DiagnosticLiteralInputChecks.verify_input_bytes!(literal, [truncated], String.new(Bytes[0xff]), input)
     end
+    arg.name = "changed"
+    expect_raises(ArgumentError, /decoded value mismatch/) do
+      Iyi::DiagnosticLiteralInputChecks.verify_owner_field!(arg, "name", 0, input)
+    end
+    expect_raises(ArgumentError, /decoded value mismatch/) { checker.verify!(root) }
+  end
+
+  it "checks an element against its enclosing percent-symbol production" do
+    source = "%i(alpha beta)"
+    parser = Iyi::Parser.new(source)
+    parser.filename = "/spec/literal_input.cr"
+    parser.diagnostic_source_file = "/spec/literal_input.cr"
+    parser.diagnostic_capture = true
+    input = parser.diagnostic_capture_input(Iyi::DiagnosticCaptureInputKind::SourceFile,
+      nil, Iyi::DiagnosticCaptureParseEntry::Parse, Iyi::Parser::ParseMode::Normal)
+    element = parser.parse.as(Iyi::ArrayLiteral).elements.first.as(Iyi::SymbolLiteral)
+    literal = element.diagnostic_literal_names[{"value", 0}]
+    productions = element.diagnostic_literal_productions[{"value", 0}]
+    Iyi::DiagnosticLiteralInputChecks.verify_input_bytes!(literal, productions, "alpha", input)
   end
 
   it "rejects noncanonical base64 padding without decoding" do
     segment = Iyi::DiagnosticLiteralSegment.new(0, 1, "YQ==")
     literal = Iyi::DiagnosticParsedLiteral.new("0" * 64, 1, "Crystal", "/x==", [segment], nil)
     expect_raises(ArgumentError, /noncanonical literal base64 padding/) { literal.decoded_bytesize }
+  end
+end
+
+describe Iyi::DiagnosticParseToDefEffectSnapshot do
+  it "rejects a skipped owner flag assignment" do
+    reset = Iyi::ParseDefFlags.new(false, false, false, false, false)
+    result = Iyi::ParseDefFlags.new(true, false, false, false, false)
+    effect = Iyi::ParseToDefEffect.new(reset, reset, nil, false, result, result, 0, 1)
+    capture = Iyi::DiagnosticParseToDefEffectSnapshot.new(effect)
+    capture.sha256.should eq(::Crystal::Digest::SHA256.hexdigest(capture.bytes))
+    altered = Iyi::ParseToDefEffect.new(reset, reset, nil, false, result, reset, 0, 1)
+    expect_raises(ArgumentError, /owner flags differ/) do
+      Iyi::DiagnosticParseToDefEffectSnapshot.new(altered)
+    end
   end
 end

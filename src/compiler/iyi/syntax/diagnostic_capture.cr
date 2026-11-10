@@ -100,6 +100,11 @@ module Iyi
                           token.input_bytesize == @input.bytesize &&
                           token.lexical_mode == @lexical_mode &&
                           token.input_start >= 0 && token.input_end <= @input.bytesize
+      origin = token.lexical_origin.as?(DiagnosticOrigin::Written) || return false
+      file = @original_file || return false
+      return false unless origin.source_file == file
+      expected_module = @logical_module || "source-file:#{file}"
+      return false unless origin.source_module == expected_module
       @input.to_slice[token.input_start, token.input_end - token.input_start] == token.raw_text.to_slice
     end
 
@@ -143,6 +148,55 @@ module Iyi
 
     def snapshot : String
       @buffer.to_s
+    end
+  end
+
+  # A value snapshot of the actual parser transition. It has no owner-graph
+  # reference and therefore cannot serve as an adoption receipt or authority.
+  class DiagnosticParseToDefEffectSnapshot
+    getter sha256 : String
+    @bytes : String
+
+    def initialize(effect : ParseToDefEffect)
+      reset = ParseDefFlags.new(false, false, false, false, false)
+      unless effect.delegated == reset && effect.delegated_block_arg_name.nil? && !effect.delegated_is_macro_def
+        raise ArgumentError.new("parse_to_def did not reset delegated parser state")
+      end
+      unless effect.def_nest_before >= 0 && effect.def_nest_before < Int32::MAX &&
+             effect.def_nest_after == effect.def_nest_before + 1
+        raise ArgumentError.new("parse_to_def nesting transition mismatch")
+      end
+      raise ArgumentError.new("parse_to_def owner flags differ from parser result") unless effect.result == effect.owner_after
+      output = DiagnosticCaptureOutput.new(DiagnosticOrigin::MAX_UNFOLDED_BYTES.to_i64)
+      json = JSON::Builder.new(output)
+      json.start_document
+      json.object do
+        json.field("owner_before") { write_flags(json, effect.owner_before) }
+        json.field("delegated") { write_flags(json, effect.delegated) }
+        json.field "delegated_block_arg_name", effect.delegated_block_arg_name
+        json.field "delegated_is_macro_def", effect.delegated_is_macro_def
+        json.field("result") { write_flags(json, effect.result) }
+        json.field("owner_after") { write_flags(json, effect.owner_after) }
+        json.field "def_nest_before", effect.def_nest_before
+        json.field "def_nest_after", effect.def_nest_after
+      end
+      json.end_document
+      @bytes = output.snapshot
+      @sha256 = ::Crystal::Digest::SHA256.hexdigest(@bytes)
+    end
+
+    def bytes : String
+      @bytes.dup
+    end
+
+    private def write_flags(json : JSON::Builder, flags : ParseDefFlags) : Nil
+      json.object do
+        json.field "calls_super", flags.calls_super
+        json.field "calls_initialize", flags.calls_initialize
+        json.field "calls_previous_def", flags.calls_previous_def
+        json.field "uses_block_arg", flags.uses_block_arg
+        json.field "assigns_special_var", flags.assigns_special_var
+      end
     end
   end
 
@@ -555,16 +609,20 @@ module Iyi
         return DiagnosticAstFieldClass::Child if field == "name"
         return DiagnosticAstFieldClass::ChildList if {"type_vars", "named_args"}.includes?(field)
         return DiagnosticAstFieldClass::SyntaxScalar if field == "suffix"
+        return DiagnosticAstFieldClass::Infrastructure if {"instance_type", "scope", "in_type_args", "inside_is_a"}.includes?(field)
       when "Union"
         return DiagnosticAstFieldClass::ChildList if field == "types"
         return DiagnosticAstFieldClass::SyntaxScalar if field == "parens"
+        return DiagnosticAstFieldClass::Infrastructure if field == "inside_is_a"
       when "TypeOf"
         return DiagnosticAstFieldClass::ChildList if field == "expressions"
+        return DiagnosticAstFieldClass::Infrastructure if field == "in_type_args"
       when "Arg"
         return DiagnosticAstFieldClass::NamedValue if {"name", "external_name"}.includes?(field)
         return DiagnosticAstFieldClass::Child if {"default_value", "restriction"}.includes?(field)
         return DiagnosticAstFieldClass::ChildList if field == "parsed_annotations"
         return DiagnosticAstFieldClass::SyntaxScalar if field == "doc"
+        return DiagnosticAstFieldClass::Infrastructure if {"annotations", "original_name"}.includes?(field)
       when "NamedArgument"
         return DiagnosticAstFieldClass::NamedValue if field == "name"
         return DiagnosticAstFieldClass::Child if field == "value"
@@ -577,6 +635,15 @@ module Iyi
         return DiagnosticAstFieldClass::SyntaxScalar if {"block_arity", "splat_index", "doc", "visibility", "exported",
           "iyi_from_impl", "macro_def", "abstract", "calls_super", "calls_initialize", "calls_previous_def",
           "uses_block_arg", "assigns_special_var"}.includes?(field)
+        return DiagnosticAstFieldClass::Infrastructure if {"annotations", "owner", "original_owner", "vars", "yield_vars",
+          "previous", "next", "special_vars", "freeze_type", "block_nest", "raises", "closure", "self_closured",
+          "captured_block", "no_inline", "always_inline", "returns_twice", "target_features", "target_cpu", "naked",
+          "new", "original_name", "macro_owner", "self_restriction_type", "iyi_declared_return", "iyi_from_artifact",
+          "iyi_body_travelled", "iyi_compiler_made", "iyi_origin", "diagnostic_specialization_json",
+          "diagnostic_specialization_unusable", "iyi_open_travel", "iyi_defer", "iyi_from_derive", "iyi_share_block",
+          "iyi_observer_wrapped", "effect", "iyi_share_serial", "iyi_share_crossing", "iyi_share_elements",
+          "diagnostic_proc_node", "diagnostic_proc_parent", "diagnostic_proc_lexical_scope",
+          "diagnostic_proc_ready", "diagnostic_proc_computing"}.includes?(field)
       when "Expressions"
         return DiagnosticAstFieldClass::ChildList if field == "expressions"
         return DiagnosticAstFieldClass::SyntaxScalar if field == "keyword"
@@ -594,6 +661,7 @@ module Iyi
         return DiagnosticAstFieldClass::Child if {"of", "name"}.includes?(field)
       when "TupleLiteral"
         return DiagnosticAstFieldClass::ChildList if field == "elements"
+        return DiagnosticAstFieldClass::Infrastructure if field == "program"
       when "RangeLiteral"
         return DiagnosticAstFieldClass::Child if {"from", "to"}.includes?(field)
         return DiagnosticAstFieldClass::SyntaxScalar if field == "exclusive"
@@ -603,6 +671,7 @@ module Iyi
       when "Var", "InstanceVar", "ClassVar", "Global"
         return DiagnosticAstFieldClass::NamedValue if field == "name"
         return DiagnosticAstFieldClass::SyntaxScalar if kind == "Var" && field == "doc"
+        return DiagnosticAstFieldClass::Infrastructure if {"ClassVar", "Global"}.includes?(kind) && field == "var"
       when "ReadInstanceVar"
         return DiagnosticAstFieldClass::Child if field == "obj"
         return DiagnosticAstFieldClass::NamedValue if field == "name"
@@ -611,9 +680,11 @@ module Iyi
         return DiagnosticAstFieldClass::OriginEvidence if field == "else_location"
         return DiagnosticAstFieldClass::SyntaxScalar if kind == "If" && field == "ternary"
         return DiagnosticAstFieldClass::Infrastructure if kind == "If" && field == "iyi_definition_probe"
+        return DiagnosticAstFieldClass::Infrastructure if kind == "If" && {"and", "or", "truthy", "falsey"}.includes?(field)
       when "Assign"
         return DiagnosticAstFieldClass::Child if {"target", "value"}.includes?(field)
         return DiagnosticAstFieldClass::SyntaxScalar if field == "doc"
+        return DiagnosticAstFieldClass::Infrastructure if field == "discarded"
       when "OpAssign"
         return DiagnosticAstFieldClass::Child if {"target", "value"}.includes?(field)
         return DiagnosticAstFieldClass::NamedValue if field == "op"
@@ -631,6 +702,7 @@ module Iyi
         return DiagnosticAstFieldClass::Child if field == "name"
       when "NamedTupleLiteral"
         return DiagnosticAstFieldClass::RecordList if field == "entries"
+        return DiagnosticAstFieldClass::Infrastructure if field == "program"
       when "HashLiteral::Entry"
         return DiagnosticAstFieldClass::Child if {"key", "value"}.includes?(field)
       when "NamedTupleLiteral::Entry"
@@ -641,13 +713,16 @@ module Iyi
         return DiagnosticAstFieldClass::Child if field == "body"
         return DiagnosticAstFieldClass::SyntaxScalar if field == "splat_index"
         return DiagnosticAstFieldClass::IndexedChildMap if field == "unpacks"
-        return DiagnosticAstFieldClass::Infrastructure if field == "call"
+        return DiagnosticAstFieldClass::Infrastructure if {"call", "diagnostic_specialization_json",
+          "diagnostic_specialization_unusable", "scope", "vars", "after_vars", "context", "fun_literal",
+          "freeze_type", "visited", "break"}.includes?(field)
       when "Call"
         return DiagnosticAstFieldClass::Child if {"obj", "block", "block_arg"}.includes?(field)
         return DiagnosticAstFieldClass::ChildList if {"args", "named_args"}.includes?(field)
         return DiagnosticAstFieldClass::NamedValue if field == "name"
         return DiagnosticAstFieldClass::SyntaxScalar if {"doc", "visibility", "global", "expansion", "args_in_brackets",
           "has_parentheses", "iyi_group", "iyi_banged"}.includes?(field)
+        return DiagnosticAstFieldClass::Infrastructure if field == "before_vars"
         return DiagnosticAstFieldClass::OriginEvidence if {"name_location", "iyi_after_floor_div"}.includes?(field)
         return DiagnosticAstFieldClass::Infrastructure if {"name_size", "iyi_synthetic", "iyi_compiler_expansion", "iyi_open_dispatch"}.includes?(field)
       when "Macro"
@@ -656,6 +731,7 @@ module Iyi
         return DiagnosticAstFieldClass::ChildList if field == "args"
         return DiagnosticAstFieldClass::SyntaxScalar if {"splat_index", "doc", "visibility", "exported"}.includes?(field)
         return DiagnosticAstFieldClass::OriginEvidence if field == "name_location"
+        return DiagnosticAstFieldClass::Infrastructure if {"annotations", "owner"}.includes?(field)
       when "Not", "PointerOf", "SizeOf", "InstanceSizeOf", "AlignOf", "InstanceAlignOf", "Out",
            "MacroVerbatim", "Splat", "DoubleSplat", "Propagate", "Defer", "Return", "Break", "Next"
         return DiagnosticAstFieldClass::Child if field == "exp"
@@ -687,6 +763,7 @@ module Iyi
         return DiagnosticAstFieldClass::Child if field == "else"
       when "While", "Until"
         return DiagnosticAstFieldClass::Child if {"cond", "body"}.includes?(field)
+        return DiagnosticAstFieldClass::Infrastructure if kind == "While" && field == "break_vars"
       when "Rescue"
         return DiagnosticAstFieldClass::Child if field == "body"
         return DiagnosticAstFieldClass::ChildList if field == "types"
@@ -701,6 +778,7 @@ module Iyi
         return DiagnosticAstFieldClass::ChildList if field == "exps"
         return DiagnosticAstFieldClass::Child if field == "scope"
         return DiagnosticAstFieldClass::SyntaxScalar if field == "has_parentheses"
+        return DiagnosticAstFieldClass::Infrastructure if field == "expanded"
       when "ClassDef"
         return DiagnosticAstFieldClass::Child if {"name", "body", "superclass"}.includes?(field)
         return DiagnosticAstFieldClass::NamedValue if field == "type_vars"
@@ -744,15 +822,18 @@ module Iyi
       when "TypeDeclaration"
         return DiagnosticAstFieldClass::Child if {"var", "declared_type", "value"}.includes?(field)
         return DiagnosticAstFieldClass::SyntaxScalar if field == "doc"
+        return DiagnosticAstFieldClass::Infrastructure if field == "discarded"
       when "UninitializedVar"
         return DiagnosticAstFieldClass::Child if {"var", "declared_type"}.includes?(field)
       when "ProcLiteral"
         return DiagnosticAstFieldClass::Child if field == "def"
+        return DiagnosticAstFieldClass::Infrastructure if {"proc_pointer", "force_nil", "expected_return_type", "from_block"}.includes?(field)
       when "ProcPointer"
         return DiagnosticAstFieldClass::Child if field == "obj"
         return DiagnosticAstFieldClass::ChildList if field == "args"
         return DiagnosticAstFieldClass::NamedValue if field == "name"
         return DiagnosticAstFieldClass::SyntaxScalar if field == "global"
+        return DiagnosticAstFieldClass::Infrastructure if {"call", "expanded"}.includes?(field)
       when "Include", "Extend", "Metaclass"
         return DiagnosticAstFieldClass::Child if field == "name"
       when "LibDef"
@@ -765,6 +846,7 @@ module Iyi
         return DiagnosticAstFieldClass::Child if {"return_type", "body"}.includes?(field)
         return DiagnosticAstFieldClass::SyntaxScalar if {"doc", "varargs"}.includes?(field)
         return DiagnosticAstFieldClass::OriginEvidence if field == "name_location"
+        return DiagnosticAstFieldClass::Infrastructure if field == "external"
       when "TypeDef"
         return DiagnosticAstFieldClass::NamedValue if field == "name"
         return DiagnosticAstFieldClass::Child if field == "type_spec"
@@ -778,6 +860,7 @@ module Iyi
         return DiagnosticAstFieldClass::Child if {"name", "base_type"}.includes?(field)
         return DiagnosticAstFieldClass::ChildList if field == "members"
         return DiagnosticAstFieldClass::SyntaxScalar if {"doc", "visibility", "exported"}.includes?(field)
+        return DiagnosticAstFieldClass::Infrastructure if field == "resolved_type"
       when "ExternalVar"
         return DiagnosticAstFieldClass::NamedValue if {"name", "real_name"}.includes?(field)
         return DiagnosticAstFieldClass::Child if field == "type_spec"
@@ -826,6 +909,22 @@ module Iyi
           classify(kind, {{ivar.name.stringify}})
         {% end %}
       {% end %}
+    end
+
+    def self.validate_node_fields(node : ASTNode) : Nil
+      class_name = node.class.name
+      kind = class_name.rpartition("::")[2]
+      unless class_name == "Iyi::#{kind}" && SUPPORTED.includes?(kind)
+        raise ArgumentError.new("unclassified AST node #{class_name}")
+      end
+      case node
+      {% for name in SUPPORTED %}
+      when {{name.id}}
+        validate_reflected_fields(node.as({{name.id}}))
+      {% end %}
+      else
+        raise ArgumentError.new("unclassified AST node #{class_name}")
+      end
     end
   end
 
@@ -1282,6 +1381,218 @@ module Iyi
       when MultiAssign
         yield "targets", collection(node.targets)
         yield "values", collection(node.values)
+      when Macro
+        yield "name", DiagnosticFieldPresence::Present
+        yield "args", collection(node.args)
+        yield "body", DiagnosticFieldPresence::Present
+        yield "double_splat", optional(node.double_splat)
+        yield "block_arg", optional(node.block_arg)
+        yield "splat_index", optional(node.splat_index)
+        yield "doc", optional(node.doc)
+        yield "name_location", optional(node.name_location)
+        yield "visibility", DiagnosticFieldPresence::Present
+        yield "exported", DiagnosticFieldPresence::Present
+      when Not, PointerOf, SizeOf, InstanceSizeOf, AlignOf, InstanceAlignOf, Out,
+           MacroVerbatim, Splat, DoubleSplat, Propagate, Defer
+        yield "exp", DiagnosticFieldPresence::Present
+      when Return, Break, Next
+        yield "exp", optional(node.exp)
+      when OffsetOf
+        yield "offsetof_type", DiagnosticFieldPresence::Present
+        yield "offset", DiagnosticFieldPresence::Present
+      when VisibilityModifier
+        yield "exp", DiagnosticFieldPresence::Present
+        yield "modifier", DiagnosticFieldPresence::Present
+        yield "doc", optional(node.doc)
+      when IsA
+        {"obj", "const", "nil_check"}.each { |field| yield field, DiagnosticFieldPresence::Present }
+        yield "error_construct", optional(node.error_construct)
+        yield "iyi_bang_call", optional(node.iyi_bang_call)
+      when RespondsTo
+        yield "obj", DiagnosticFieldPresence::Present
+        yield "name", DiagnosticFieldPresence::Present
+      when Require
+        yield "string", DiagnosticFieldPresence::Present
+      when When
+        yield "conds", collection(node.conds)
+        yield "body", DiagnosticFieldPresence::Present
+        yield "exhaustive", DiagnosticFieldPresence::Present
+      when Case
+        yield "cond", optional(node.cond)
+        yield "whens", collection(node.whens)
+        yield "else", optional(node.else)
+        yield "exhaustive", DiagnosticFieldPresence::Present
+        yield "binds_it", DiagnosticFieldPresence::Present
+      when Select
+        yield "whens", collection(node.whens)
+        yield "else", optional(node.else)
+      when While, Until
+        yield "cond", DiagnosticFieldPresence::Present
+        yield "body", DiagnosticFieldPresence::Present
+      when Rescue
+        yield "body", DiagnosticFieldPresence::Present
+        yield "types", collection(node.types)
+        yield "name", optional(node.name)
+      when ExceptionHandler
+        yield "body", DiagnosticFieldPresence::Present
+        yield "rescues", collection(node.rescues)
+        yield "else", optional(node.else)
+        yield "ensure", optional(node.ensure)
+        yield "implicit", DiagnosticFieldPresence::Present
+        yield "suffix", DiagnosticFieldPresence::Present
+        yield "else_location", optional(node.else_location)
+        yield "ensure_location", optional(node.ensure_location)
+      when Yield
+        yield "exps", collection(node.exps)
+        yield "scope", optional(node.scope)
+        yield "has_parentheses", DiagnosticFieldPresence::Present
+      when ClassDef
+        yield "name", DiagnosticFieldPresence::Present
+        yield "body", DiagnosticFieldPresence::Present
+        yield "superclass", optional(node.superclass)
+        yield "type_vars", collection(node.type_vars)
+        yield "name_location", optional(node.name_location)
+        yield "doc", optional(node.doc)
+        yield "splat_index", optional(node.splat_index)
+        {"abstract", "struct", "visibility", "exported"}.each { |field| yield field, DiagnosticFieldPresence::Present }
+      when TraitDef
+        yield "name", DiagnosticFieldPresence::Present
+        yield "body", DiagnosticFieldPresence::Present
+        yield "type_vars", collection(node.type_vars)
+        yield "assoc_types", collection(node.assoc_types)
+        yield "supertraits", collection(node.supertraits)
+        yield "name_location", optional(node.name_location)
+        yield "doc", optional(node.doc)
+        yield "visibility", DiagnosticFieldPresence::Present
+        yield "exported", DiagnosticFieldPresence::Present
+      when Recover
+        yield "exp", DiagnosticFieldPresence::Present
+        yield "default", optional(node.default)
+      when AssocTypeDecl
+        yield "name", DiagnosticFieldPresence::Present
+        yield "value", optional(node.value)
+        yield "in_type_body", DiagnosticFieldPresence::Present
+        yield "doc", optional(node.doc)
+        yield "name_location", optional(node.name_location)
+      when ImplDef
+        {"trait", "target", "body"}.each { |field| yield field, DiagnosticFieldPresence::Present }
+        yield "trait_args", collection(node.trait_args)
+        yield "type_vars", collection(node.type_vars)
+        yield "type_var_bounds", collection(node.type_var_bounds)
+        yield "assoc_types", collection(node.assoc_types)
+        yield "doc", optional(node.doc)
+        yield "visibility", DiagnosticFieldPresence::Present
+        yield "name_location", optional(node.name_location)
+      when ModuleHeader
+        yield "path", collection(node.path)
+      when ImportDecl, UsingDecl
+        yield "path", collection(node.path)
+        yield "names", collection(node.names)
+        yield "name_locations", collection(node.name_locations)
+        if node.is_a?(ImportDecl)
+          yield "exported", DiagnosticFieldPresence::Present
+          yield "glob", DiagnosticFieldPresence::Present
+        end
+      when ModuleDef
+        yield "name", DiagnosticFieldPresence::Present
+        yield "body", DiagnosticFieldPresence::Present
+        yield "type_vars", collection(node.type_vars)
+        yield "splat_index", optional(node.splat_index)
+        yield "doc", optional(node.doc)
+        yield "visibility", DiagnosticFieldPresence::Present
+        yield "iyi_unit", DiagnosticFieldPresence::Present
+        yield "name_location", optional(node.name_location)
+      when AnnotationDef
+        yield "name", DiagnosticFieldPresence::Present
+        yield "doc", optional(node.doc)
+        yield "exported", DiagnosticFieldPresence::Present
+        yield "name_location", optional(node.name_location)
+      when TypeDeclaration
+        yield "var", DiagnosticFieldPresence::Present
+        yield "declared_type", DiagnosticFieldPresence::Present
+        yield "value", optional(node.value)
+        yield "doc", optional(node.doc)
+      when UninitializedVar
+        yield "var", DiagnosticFieldPresence::Present
+        yield "declared_type", DiagnosticFieldPresence::Present
+      when ProcLiteral
+        yield "def", DiagnosticFieldPresence::Present
+      when ProcPointer
+        yield "obj", optional(node.obj)
+        yield "name", DiagnosticFieldPresence::Present
+        yield "args", collection(node.args)
+        yield "global", DiagnosticFieldPresence::Present
+      when Include, Extend, Metaclass
+        yield "name", DiagnosticFieldPresence::Present
+      when LibDef
+        yield "name", DiagnosticFieldPresence::Present
+        yield "body", DiagnosticFieldPresence::Present
+        yield "doc", optional(node.doc)
+        yield "visibility", DiagnosticFieldPresence::Present
+        yield "name_location", optional(node.name_location)
+      when FunDef
+        yield "name", DiagnosticFieldPresence::Present
+        yield "real_name", DiagnosticFieldPresence::Present
+        yield "args", collection(node.args)
+        yield "return_type", optional(node.return_type)
+        yield "body", optional(node.body)
+        yield "doc", optional(node.doc)
+        yield "varargs", DiagnosticFieldPresence::Present
+        yield "name_location", optional(node.name_location)
+      when TypeDef
+        yield "name", DiagnosticFieldPresence::Present
+        yield "type_spec", DiagnosticFieldPresence::Present
+        yield "doc", optional(node.doc)
+        yield "name_location", optional(node.name_location)
+      when CStructOrUnionDef
+        yield "name", DiagnosticFieldPresence::Present
+        yield "body", DiagnosticFieldPresence::Present
+        yield "doc", optional(node.doc)
+        yield "union", DiagnosticFieldPresence::Present
+      when EnumDef
+        yield "name", DiagnosticFieldPresence::Present
+        yield "base_type", optional(node.base_type)
+        yield "members", collection(node.members)
+        yield "doc", optional(node.doc)
+        yield "visibility", DiagnosticFieldPresence::Present
+        yield "exported", DiagnosticFieldPresence::Present
+      when ExternalVar
+        yield "name", DiagnosticFieldPresence::Present
+        yield "real_name", optional(node.real_name)
+        yield "type_spec", DiagnosticFieldPresence::Present
+        yield "doc", optional(node.doc)
+      when Alias
+        yield "name", DiagnosticFieldPresence::Present
+        yield "value", DiagnosticFieldPresence::Present
+        yield "doc", optional(node.doc)
+        yield "visibility", DiagnosticFieldPresence::Present
+        yield "exported", DiagnosticFieldPresence::Present
+      when Cast, NilableCast
+        yield "obj", DiagnosticFieldPresence::Present
+        yield "to", DiagnosticFieldPresence::Present
+      when MacroExpression
+        yield "exp", DiagnosticFieldPresence::Present
+        yield "output", DiagnosticFieldPresence::Present
+      when MacroIf
+        {"cond", "then", "else", "is_unless"}.each { |field| yield field, DiagnosticFieldPresence::Present }
+      when MacroFor
+        yield "vars", collection(node.vars)
+        yield "exp", DiagnosticFieldPresence::Present
+        yield "body", DiagnosticFieldPresence::Present
+      when MacroVar
+        yield "name", DiagnosticFieldPresence::Present
+        yield "exps", collection(node.exps)
+      when MagicConstant
+        yield "name", DiagnosticFieldPresence::Present
+      when Asm
+        yield "text", DiagnosticFieldPresence::Present
+        yield "outputs", collection(node.outputs)
+        yield "inputs", collection(node.inputs)
+        yield "clobbers", collection(node.clobbers)
+        {"volatile", "alignstack", "intel", "can_throw"}.each { |field| yield field, DiagnosticFieldPresence::Present }
+      when AsmOperand
+        yield "constraint", DiagnosticFieldPresence::Present
+        yield "exp", DiagnosticFieldPresence::Present
       when Nop, NilLiteral, ImplicitObj, Self, Underscore
         # No syntax-specific stored fields.
       else
@@ -1290,7 +1601,7 @@ module Iyi
     end
   end
 
-  alias DiagnosticScalarFieldValue = Bool | Int32 | String | Nil
+  alias DiagnosticScalarFieldValue = Bool | Int32 | String | {String, String} | Array(String) | Nil
 
   # Direct scalar reader for the listed kinds. Type tags distinguish enum
   # names, integer optionals, booleans and arbitrary-byte strings.
@@ -1363,6 +1674,105 @@ module Iyi
         yield "ternary", "bool", node.ternary?
       when Assign
         yield "doc", "bytes?", node.doc
+      when Macro
+        yield "splat_index", "int32?", node.splat_index
+        yield "doc", "bytes?", node.doc
+        yield "visibility", "Visibility", node.visibility.to_s
+        yield "exported", "bool", node.exported?
+      when VisibilityModifier
+        yield "modifier", "Visibility", node.modifier.to_s
+        yield "doc", "bytes?", node.doc
+      when IsA
+        yield "nil_check", "bool", node.nil_check?
+        yield "error_construct", "bytes?", node.error_construct
+        yield "iyi_bang_call", "bytes_pair?", node.iyi_bang_call
+      when Require
+        yield "string", "bytes", node.string
+      when When
+        yield "exhaustive", "bool", node.exhaustive?
+      when Case
+        yield "exhaustive", "bool", node.exhaustive?
+        yield "binds_it", "bool", node.binds_it?
+      when ExceptionHandler
+        yield "implicit", "bool", node.implicit
+        yield "suffix", "bool", node.suffix
+      when Yield
+        yield "has_parentheses", "bool", node.has_parentheses?
+      when Not, PointerOf, SizeOf, InstanceSizeOf, AlignOf, InstanceAlignOf, Out,
+           MacroVerbatim, Splat, DoubleSplat, Propagate, Defer, Return, Break, Next,
+           OffsetOf, RespondsTo, Select, While, Until, Rescue
+        # Their syntax-specific fields are names, children, or collections.
+      when ClassDef
+        yield "doc", "bytes?", node.doc
+        yield "splat_index", "int32?", node.splat_index
+        yield "abstract", "bool", node.abstract?
+        yield "struct", "bool", node.struct?
+        yield "visibility", "Visibility", node.visibility.to_s
+        yield "exported", "bool", node.exported?
+      when TraitDef
+        yield "doc", "bytes?", node.doc
+        yield "visibility", "Visibility", node.visibility.to_s
+        yield "exported", "bool", node.exported?
+      when AssocTypeDecl
+        yield "doc", "bytes?", node.doc
+        yield "in_type_body", "bool", node.in_type_body?
+      when ImplDef
+        yield "doc", "bytes?", node.doc
+        yield "visibility", "Visibility", node.visibility.to_s
+      when ImportDecl
+        yield "exported", "bool", node.exported
+        yield "glob", "bool", node.glob?
+      when ModuleDef
+        yield "splat_index", "int32?", node.splat_index
+        yield "doc", "bytes?", node.doc
+        yield "visibility", "Visibility", node.visibility.to_s
+        yield "iyi_unit", "bool", node.iyi_unit?
+      when AnnotationDef
+        yield "doc", "bytes?", node.doc
+        yield "exported", "bool", node.exported?
+      when TypeDeclaration
+        yield "doc", "bytes?", node.doc
+      when ProcPointer
+        yield "global", "bool", node.global?
+      when LibDef
+        yield "doc", "bytes?", node.doc
+        yield "visibility", "Visibility", node.visibility.to_s
+      when FunDef
+        yield "doc", "bytes?", node.doc
+        yield "varargs", "bool", node.varargs?
+      when TypeDef
+        yield "doc", "bytes?", node.doc
+      when CStructOrUnionDef
+        yield "doc", "bytes?", node.doc
+        yield "union", "bool", node.union?
+      when EnumDef
+        yield "doc", "bytes?", node.doc
+        yield "visibility", "Visibility", node.visibility.to_s
+        yield "exported", "bool", node.exported?
+      when ExternalVar
+        yield "doc", "bytes?", node.doc
+      when Alias
+        yield "doc", "bytes?", node.doc
+        yield "visibility", "Visibility", node.visibility.to_s
+        yield "exported", "bool", node.exported?
+      when MacroExpression
+        yield "output", "bool", node.output?
+      when MacroIf
+        yield "is_unless", "bool", node.is_unless?
+      when MagicConstant
+        yield "name", "Token::Kind", node.name.to_s
+      when Asm
+        yield "text", "bytes", node.text
+        yield "clobbers", "bytes_array?", node.clobbers
+        yield "volatile", "bool", node.volatile?
+        yield "alignstack", "bool", node.alignstack?
+        yield "intel", "bool", node.intel?
+        yield "can_throw", "bool", node.can_throw?
+      when AsmOperand
+        yield "constraint", "bytes", node.constraint
+      when Recover, ModuleHeader, UsingDecl, UninitializedVar, ProcLiteral, Include, Extend, Metaclass,
+           Cast, NilableCast, MacroFor, MacroVar
+        # Their syntax-specific fields are names, children, or collections.
       when ArrayLiteral, TupleLiteral, HashLiteral, NamedTupleLiteral, InstanceVar, ClassVar, Global,
            ReadInstanceVar, Unless, OpAssign, MultiAssign
         # Their syntax-specific fields are names, children, or collections.
@@ -1440,6 +1850,7 @@ module Iyi
       id = node.object_id
       raise ArgumentError.new("cyclic AST inventory") unless @active.add?(id)
       begin
+        DiagnosticAstFieldSchema.validate_node_fields(node)
         json.object do
           json.field "kind", node.class.name
           json.field("presence") { write_presence(json, node) }
@@ -1516,6 +1927,20 @@ module Iyi
                   raise ArgumentError.new("AST scalar exceeds size limit")
                 end
                 json.string(Base64.strict_encode(value.to_slice))
+              when Tuple(String, String)
+                json.array do
+                  value.each do |part|
+                    raise ArgumentError.new("AST scalar exceeds size limit") if part.bytesize.to_i64 > MAX_BYTES * 3 // 4 - 4
+                    json.string(Base64.strict_encode(part.to_slice))
+                  end
+                end
+              when Array(String)
+                json.array do
+                  value.each do |part|
+                    raise ArgumentError.new("AST scalar exceeds size limit") if part.bytesize.to_i64 > MAX_BYTES * 3 // 4 - 4
+                    json.string(Base64.strict_encode(part.to_slice))
+                  end
+                end
               else
                 raise ArgumentError.new("unclassified AST scalar value")
               end
@@ -1528,7 +1953,7 @@ module Iyi
     private def write_extra_locations(json : JSON::Builder, node : ASTNode) : Nil
       json.array do
         case node
-        when Def
+        when Def, Macro, ClassDef, TraitDef, AssocTypeDecl, ImplDef, ModuleDef, AnnotationDef, LibDef, FunDef, TypeDef
           write_named_location(json, "name_location", node.name_location)
         when Call
           write_named_location(json, "name_location", node.name_location)
@@ -1537,12 +1962,31 @@ module Iyi
           write_named_location(json, "else_location", node.else_location)
         when OpAssign
           write_named_location(json, "name_location", node.name_location)
+        when ExceptionHandler
+          write_named_location(json, "else_location", node.else_location)
+          write_named_location(json, "ensure_location", node.ensure_location)
+        when ImportDecl, UsingDecl
+          json.object do
+            json.field "field", "name_locations"
+            json.field "value" do
+              if locations = node.name_locations
+                json.array { locations.each { |location| write_stored_location(json, location) } }
+              else
+                json.null
+              end
+            end
+          end
         when Path, Generic, Union, TypeOf, ProcNotation, NamedArgument, Arg, Annotation,
              SymbolLiteral, And, Or, Nop, NilLiteral, ImplicitObj, Self, Underscore,
              Expressions, BoolLiteral, CharLiteral, StringLiteral, MacroLiteral, NumberLiteral,
              StringInterpolation, ArrayLiteral, TupleLiteral, HashLiteral, NamedTupleLiteral,
              RangeLiteral, RegexLiteral, Var, InstanceVar, ClassVar, Global, ReadInstanceVar,
-             Block, Assign, MultiAssign
+             Block, Assign, MultiAssign, Not, PointerOf, SizeOf, InstanceSizeOf, AlignOf, InstanceAlignOf,
+             Out, MacroVerbatim, Splat, DoubleSplat, Propagate, Defer, Return, Break, Next, OffsetOf,
+             VisibilityModifier, IsA, RespondsTo, Require, When, Case, Select, While, Until, Rescue, Yield,
+             Recover, ModuleHeader, TypeDeclaration, UninitializedVar, ProcLiteral, ProcPointer, Include, Extend,
+             CStructOrUnionDef, EnumDef, ExternalVar, Alias, Metaclass, Cast, NilableCast, MacroExpression,
+             MacroIf, MacroFor, MacroVar, MagicConstant, Asm, AsmOperand
           # These kinds have no additional location field in their syntax schema.
         else
           raise ArgumentError.new("unclassified AST extra location fields for #{node.class}")
@@ -1878,6 +2322,65 @@ module Iyi
   # Checks byte binding only. Production semantics, owner coordinates and
   # expansion ancestry still require the complete registry validator.
   module DiagnosticLiteralInputChecks
+    # Associates a quoted-name observation with the actual stored field. This
+    # does not establish an original owner path or authorize registry use.
+    def self.verify_owner_field!(node : ASTNode, field : String, index : Int32,
+                                 input : AcceptedCaptureInput) : Nil
+      expected = owner_value(node, field, index)
+      max_count = DiagnosticOrigin::MAX_UNFOLDED_BYTES // 64
+      if (node.diagnostic_literal_names_count || 0).to_u64 > max_count ||
+         (node.diagnostic_literal_productions_count || 0).to_u64 > max_count
+        raise ArgumentError.new("literal owner evidence count exceeds size limit")
+      end
+      literal : DiagnosticParsedLiteral? = nil
+      production : Indexable(DiagnosticLiteralProductionSegment)? = nil
+      node.each_diagnostic_literal_name do |key, value|
+        literal = value if key == {field, index}
+      end
+      node.each_diagnostic_literal_production do |key, value|
+        production = value if key == {field, index}
+      end
+      literal ||= raise ArgumentError.new("literal owner observation missing")
+      production ||= raise ArgumentError.new("literal owner production missing")
+      verify_input_bytes!(literal, production, expected, input)
+    end
+
+    # The caller must obtain both supplied values from this owner's matching
+    # metadata entries; this method itself does not prove that association.
+    def self.verify_owner_observation!(node : ASTNode, field : String, index : Int32,
+                                       literal : DiagnosticParsedLiteral,
+                                       production : Indexable(DiagnosticLiteralProductionSegment),
+                                       input : AcceptedCaptureInput) : Nil
+      verify_input_bytes!(literal, production, owner_value(node, field, index), input)
+    end
+
+    private def self.owner_value(node : ASTNode, field : String, index : Int32) : String
+      raise ArgumentError.new("negative literal owner index") if index < 0
+      case node
+      when NamedArgument
+        raise ArgumentError.new("invalid named argument literal field") unless node.class == NamedArgument && field == "name" && index == 0
+        node.name
+      when NamedTupleLiteral
+        raise ArgumentError.new("invalid tuple literal field") unless node.class == NamedTupleLiteral && field == "entries.key"
+        entry = node.entries[index]? || raise ArgumentError.new("unknown tuple literal index")
+        entry.key
+      when Arg
+        raise ArgumentError.new("invalid external name literal field") unless node.class == Arg && field == "external_name" && index == 0
+        node.external_name
+      when FunDef
+        raise ArgumentError.new("invalid foreign name literal field") unless node.class == FunDef && field == "real_name" && index == 0
+        node.real_name
+      when SymbolLiteral
+        raise ArgumentError.new("invalid symbol literal field") unless node.class == SymbolLiteral && field == "value" && index == 0
+        node.value
+      when StringLiteral
+        raise ArgumentError.new("invalid string literal field") unless node.class == StringLiteral && field == "value" && index == 0
+        node.value
+      else
+        raise ArgumentError.new("unsupported literal owner kind #{node.class}")
+      end
+    end
+
     def self.verify_input_bytes!(literal : DiagnosticParsedLiteral,
                                  productions : Indexable(DiagnosticLiteralProductionSegment),
                                  expected_value : String, input : AcceptedCaptureInput) : Nil
@@ -1991,6 +2494,93 @@ module Iyi
       end
       unless opener && closer && !interpolation && (previous_end.nil? || continuation)
         raise ArgumentError.new("incomplete literal production witnesses")
+      end
+    end
+  end
+
+  # Checks recorded observations against one source input. This does not prove
+  # that every actual name has evidence, bind derived origins or authorize an
+  # inventory as a registry.
+  class DiagnosticRecordedEvidenceInputCheck
+    MAX_DEPTH = 128
+    @active = Set(UInt64).new
+    @remaining : UInt64 = DiagnosticOrigin::MAX_UNFOLDED_BYTES
+
+    def initialize(@input : AcceptedCaptureInput)
+    end
+
+    def verify!(root : ASTNode) : Nil
+      @remaining = DiagnosticOrigin::MAX_UNFOLDED_BYTES
+      visit(root, 0)
+    end
+
+    private def charge(bytes : UInt64) : Nil
+      raise ArgumentError.new("recorded evidence exceeds graph limit") if bytes > @remaining
+      @remaining -= bytes
+    end
+
+    private def visit(node : ASTNode, depth : Int32) : Nil
+      raise ArgumentError.new("recorded evidence exceeds depth limit") if depth > MAX_DEPTH
+      id = node.object_id
+      raise ArgumentError.new("cyclic recorded evidence graph") unless @active.add?(id)
+      begin
+        charge(256_u64)
+        count = node.diagnostic_name_slots_count || 0
+        charge(count.to_u64 * 64_u64)
+        raise ArgumentError.new("recorded name evidence exceeds graph limit") if node.diagnostic_name_slots_graph_bytes > @remaining
+        node.each_diagnostic_name_slot do |_, values|
+          charge(values.size.to_u64 * 32_u64)
+          values.each do |value|
+            charge(value.graph_bytes)
+            case value
+            when DiagnosticNameValue::Observed
+              token = value.source_token
+              graph_depth = token.lexical_origin.graph_depth
+              if binding = token.binding_origin
+                graph_depth = Math.max(graph_depth, binding.graph_depth)
+              end
+              raise ArgumentError.new("recorded name evidence exceeds depth limit") if graph_depth.to_i64 + depth > MAX_DEPTH
+              unless @input.matches_source_token?(value.source_token)
+                raise ArgumentError.new("recorded name token input mismatch")
+              end
+            when DiagnosticNameValue::Derived
+              raise ArgumentError.new("derived name requires independently resolved ancestry")
+            else
+              raise ArgumentError.new("unclassified recorded name evidence")
+            end
+          end
+        end
+        validate_literals(node)
+        DiagnosticDirectChildFields.each(node) { |_, _, _, child| visit(child, depth + 1) }
+      ensure
+        @active.delete(id)
+      end
+    end
+
+    private def validate_literals(node : ASTNode) : Nil
+      names_count = node.diagnostic_literal_names_count
+      production_count = node.diagnostic_literal_productions_count
+      return if names_count.nil? && production_count.nil?
+      unless names_count && production_count && names_count == production_count
+        raise ArgumentError.new("literal observations and productions differ in presence or count")
+      end
+      charge(names_count.to_u64 * 128_u64)
+      if node.diagnostic_literal_names_encoded_bytes > @remaining ||
+         node.diagnostic_literal_productions_raw_bytes > @remaining
+        raise ArgumentError.new("literal evidence exceeds graph limit")
+      end
+      names = [] of {{String, Int32}, DiagnosticParsedLiteral}
+      productions = [] of {{String, Int32}, Indexable(DiagnosticLiteralProductionSegment)}
+      node.each_diagnostic_literal_name { |key, value| names << {key, value} }
+      node.each_diagnostic_literal_production { |key, value| productions << {key, value} }
+      names.sort_by! { |entry| entry[0] }
+      productions.sort_by! { |entry| entry[0] }
+      names.each_with_index do |(key, literal), index|
+        production_key, segments = productions[index]
+        raise ArgumentError.new("literal owner evidence keys differ") unless key == production_key
+        charge(literal.decoded_base64.bytesize.to_u64)
+        segments.each { |segment| charge(segment.raw_base64.bytesize.to_u64) }
+        DiagnosticLiteralInputChecks.verify_owner_observation!(node, key[0], key[1], literal, segments, @input)
       end
     end
   end
