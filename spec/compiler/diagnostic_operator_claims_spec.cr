@@ -1,8 +1,8 @@
 require "../support/syntax"
 
-# Operator-name claims, parsed with diagnostic capture on and off. The capture
-# run must name each operator production by its witnessed tokens, and the
-# capture-off run must produce the same tree with no evidence at all.
+# Operator-name and structural-name claims, parsed with diagnostic capture on
+# and off. The capture run must name each production by its witnessed tokens,
+# and the capture-off run must produce the same tree with no evidence at all.
 
 private def operator_claim_parse(source : String, capture : Bool) : Iyi::ASTNode
   parser = Iyi::Parser.new(source)
@@ -114,10 +114,49 @@ describe "derived operator names" do
     operator_claim_primary(operator_claim_parse("f.+(1)", true).as(Iyi::Call)).should be_a(Iyi::DiagnosticNameValue::Observed)
     operator_claim_primary(operator_claim_parse("a[]", true).as(Iyi::Call)).should be_a(Iyi::DiagnosticNameValue::Observed)
   end
+end
 
+describe "derived structural names" do
+  it "names each unnamed lib parameter by its separator and type head" do
+    lib_def = operator_claim_parse("lib L\n  fun f(Int32, Char*)\nend", true).as(Iyi::LibDef)
+    body = lib_def.body
+    fun_def = (body.is_a?(Iyi::Expressions) ? body.expressions.first : body).as(Iyi::FunDef)
+    first = fun_def.args[0]
+    second = fun_def.args[1]
+    first.name.should eq("")
+    second.name.should eq("")
+    [first, second].each do |arg|
+      origin = operator_claim_derived(arg)
+      origin.derivation_kind.should eq("StructuralName")
+      origin.rendered_text.should eq("")
+      origin.producer_context.should eq("parameter")
+    end
+  end
+
+  it "names a short block argument and its receiver by one fresh local" do
+    root = operator_claim_parse("[1].map(&.abs)", true).as(Iyi::Call)
+    block = root.block.not_nil!
+    param = block.args[0]
+    param.as(Iyi::Var).name.should eq("__arg0")
+    origin = operator_claim_derived(param)
+    origin.derivation_kind.should eq("StructuralName")
+    origin.rendered_text.should eq("__arg0")
+    origin.producer_context.should eq("local_reference")
+    receiver = block.body.as(Iyi::Call).obj.not_nil!
+    operator_claim_derived(receiver).rendered_text.should eq("__arg0")
+  end
+
+  it "binds a short block argument whose method is the % operator" do
+    root = operator_claim_parse("[1].map(&.%(2))", true).as(Iyi::Call)
+    param = root.block.not_nil!.args[0]
+    operator_claim_derived(param).rendered_text.should eq("__arg0")
+  end
+end
+
+describe "operator and structural names with capture off" do
   it "builds the same tree and no evidence when capture is off" do
     sources = ["x = 0\nx += 1", "f.x += 2", "f.x = 1", "a[0] = 1", "a[] = 1", "a[0]?",
-               "y = x-1", "`ls`", "\"x\" =~ /(x)/\n$1"]
+               "y = x-1", "`ls`", "\"x\" =~ /(x)/\n$1", "[1].map(&.abs)", "[1].map(&.%(2))"]
     sources.each do |source|
       plain = operator_claim_parse(source, false)
       captured = operator_claim_parse(source, true)
@@ -125,5 +164,12 @@ describe "derived operator names" do
       operator_claim_last(plain).diagnostic_origin.should be_nil
       operator_claim_last(plain).diagnostic_name_slots.should be_empty
     end
+  end
+
+  it "keeps an unnamed lib parameter unnamed when capture is off" do
+    lib_def = operator_claim_parse("lib L\n  fun f(Int32)\nend", false).as(Iyi::LibDef)
+    body = lib_def.body
+    fun_def = (body.is_a?(Iyi::Expressions) ? body.expressions.first : body).as(Iyi::FunDef)
+    fun_def.args[0].diagnostic_name_slots.should be_empty
   end
 end

@@ -793,28 +793,80 @@ module Iyi
                                          tokens : Array(ParsedOperatorToken)) : Nil
       anchor = node.diagnostic_origin
       return unless anchor
+      witnesses = diagnostic_witness_list(anchor, tokens)
+      return unless witnesses
+      digest, bytesize = diagnostic_source_identity
+      origin = DiagnosticOrigin::DerivedName.operator_name(production, anchor, digest, bytesize, diagnostic_lexical_mode, witnesses)
+      diagnostic_attach_primary(node, origin)
+    end
+
+    # The witnesses of one derived name: each token as the parser read it. In an expansion, every later
+    # token needs its own A1 event. Nil refuses the name, so nothing is attached.
+    private def diagnostic_witness_list(anchor : DiagnosticOrigin, tokens : Array(ParsedOperatorToken)) : Array(DiagnosticOperatorWitness)?
       expanded = anchor.is_a?(DiagnosticOrigin::Expanded)
+      return nil if expanded && !@diagnostic_expansion
       source = diagnostic_anchor_source(anchor)
-      return if expanded && !@diagnostic_expansion
       witnesses = [] of DiagnosticOperatorWitness
       tokens.each_with_index do |token, index|
         snapshot = token.snapshot
-        return unless snapshot
+        return nil unless snapshot
         event : DiagnosticTokenEvent? = nil
         if expanded && index > 0
           event = diagnostic_witness_event(token.start, snapshot, source)
-          return unless event
+          return nil unless event
         end
         raw = string.byte_slice(token.start - @input_offset_base, snapshot[0] - token.start)
         witnesses << DiagnosticOperatorWitness.new(token.start, snapshot[0], snapshot[1], raw, token.selection, event)
       end
+      witnesses
+    end
+
+    private def diagnostic_source_identity : {String, Int32}
       input = diagnostic_literal_input
       digest = @diagnostic_input_digest ||= ::Crystal::Digest::SHA256.hexdigest(input)
-      origin = DiagnosticOrigin::DerivedName.operator_name(production, anchor, digest, input.bytesize,
-        iyi? ? "Iyi" : "Crystal", witnesses)
+      {digest, input.bytesize}
+    end
+
+    private def diagnostic_lexical_mode : String
+      iyi? ? "Iyi" : "Crystal"
+    end
+
+    private def diagnostic_attach_primary(node : ASTNode, origin : DiagnosticOrigin::DerivedName) : Nil
       slots = node.diagnostic_name_slots
       slots[DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)] = [DiagnosticNameValue::Derived.new(origin)] of DiagnosticNameValue
       node.diagnostic_name_slots = slots
+    end
+
+    # `&.m` names its block argument by a fresh local. The block's parameter and the receiver of its call
+    # carry the same StructuralName, witnessed by the `&` and the `.` the parser consumed.
+    private def diagnostic_short_block_arg(block : Block, receiver : ASTNode, ampersand_offset : Int32,
+                                           ampersand_snapshot : {Int32, String, String}?,
+                                           period : ParsedOperatorToken?, fresh_index : Int32) : Nil
+      return unless period && ampersand_snapshot
+      anchor = block.diagnostic_origin
+      return unless anchor
+      witnesses = diagnostic_witness_list(anchor, [ParsedOperatorToken.new(ampersand_offset, ampersand_snapshot), period])
+      return unless witnesses
+      digest, bytesize = diagnostic_source_identity
+      origin = DiagnosticOrigin::DerivedName.structural_name(DiagnosticStructuralProduction::ShortBlockArgument,
+        anchor, digest, bytesize, diagnostic_lexical_mode, witnesses, fresh_index)
+      diagnostic_attach_primary(block.args[0], origin)
+      diagnostic_attach_primary(receiver, origin)
+    end
+
+    # An unnamed lib parameter, witnessed by its separator and the first token of its type. Its anchor is
+    # the FunDef keyword. An expanded keyword anchor is not bound: that path awaits amendment A1, so the
+    # field stays unnamed and the verifier refuses it.
+    private def diagnostic_unnamed_param(arg : Arg, fun_origin : DiagnosticOrigin?,
+                                         separator : ParsedOperatorToken?, head : ParsedOperatorToken?) : Nil
+      return unless fun_origin && separator && head
+      return if fun_origin.is_a?(DiagnosticOrigin::Expanded)
+      witnesses = diagnostic_witness_list(fun_origin, [separator, head])
+      return unless witnesses
+      digest, bytesize = diagnostic_source_identity
+      origin = DiagnosticOrigin::DerivedName.structural_name(DiagnosticStructuralProduction::UnnamedFunParameter,
+        fun_origin, digest, bytesize, diagnostic_lexical_mode, witnesses, nil)
+      diagnostic_attach_primary(arg, origin)
     end
 
     # The source origin of the one spliced claim that wrote the anchor, or nil
@@ -3608,15 +3660,16 @@ module Iyi
       next_token_skip_space
 
       if @token.type.op_period?
+        period = diagnostic_operator_token
+        fresh_index = @temp_arg_count
         block_arg_name = temp_arg_name
         obj = Var.new(block_arg_name)
 
         @wants_regex = false
         if current_char == '%'
-          next_char
-          @token.type = :OP_PERCENT
-          @token.column_number += 1
-          @token.input_offset += 1
+          wants_def_or_macro_name do
+            next_token
+          end
           skip_space
         else
           next_token_skip_space
@@ -3626,6 +3679,7 @@ module Iyi
 
         block = Block.new([Var.new(block_arg_name)], call).at(location)
         block.diagnostic_origin = diagnostic_anchor("Block", "ampersand", offset, token_snapshot: block_snapshot)
+        diagnostic_short_block_arg(block, obj, offset, block_snapshot, period, fresh_index)
         end_location = call.end_location
       else
         block_arg = parse_op_assign
@@ -9858,8 +9912,10 @@ module Iyi
 
         params = [] of Arg
         varargs = false
+        separator : ParsedOperatorToken? = nil
 
         if @token.type.op_lparen?
+          separator = diagnostic_operator_token
           next_token_skip_space_or_newline
           while !@token.type.op_rparen?
             if @token.type.op_period_period_period?
@@ -9896,11 +9952,15 @@ module Iyi
               if top_level
                 raise "top-level fun parameter must have a name", @token
               end
+              head = diagnostic_operator_token
               param_type = parse_union_type
-              params << Arg.new("", nil, param_type).at(param_type)
+              unnamed = Arg.new("", nil, param_type).at(param_type)
+              params << unnamed
+              diagnostic_unnamed_param(unnamed, origin, separator, head)
             end
 
             if @token.type.op_comma?
+              separator = diagnostic_operator_token
               next_token_skip_space_or_newline
             else
               skip_space_or_newline
