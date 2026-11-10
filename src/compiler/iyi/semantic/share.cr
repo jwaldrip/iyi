@@ -319,6 +319,9 @@ module Iyi::Share
         expanded.accept self
       else
         the_macro = Macro.new("macro_#{node.object_id}", [] of Arg, node).at(node)
+        if program.diagnostic_capture && (origin = node.diagnostic_origin)
+          the_macro.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "inline_macro_definition", "macro")
+        end
         read_expansion(the_macro, node) { program.expand_macro(node, @scope, @path_lookup, nil, @def) }
       end
       false
