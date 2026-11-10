@@ -2637,6 +2637,25 @@ module Iyi
         end
       end
 
+      # Written structural witnesses carry no token event, so their kinds are checked here (contract 3.1). Every kind
+      # must be a recognized Token::Kind. The separator is `(` or `,`, the type head is any recognized kind except
+      # IDENT, and a short block argument is exactly `&` then `.`. Rendering already fixes punctuation spelling, so
+      # this whitelist admits no witness that rendering would not.
+      def self.check_structural_witness_kinds!(production : DiagnosticStructuralProduction,
+                                               witnesses : Array(DiagnosticOperatorWitness)) : Nil
+        kinds = witnesses.map(&.token_kind)
+        recognized = kinds.all? { |kind| DiagnosticTokenEvent::TOKEN_KINDS.includes?(kind) }
+        allowed = case production
+                  when DiagnosticStructuralProduction::UnnamedFunParameter
+                    kinds.size == 2 && {"(", ","}.includes?(kinds[0]) && kinds[1] != "IDENT"
+                  when DiagnosticStructuralProduction::ShortBlockArgument
+                    kinds == ["&", "."]
+                  else
+                    false
+                  end
+        raise ArgumentError.new("invalid structural witness kind") unless recognized && allowed
+      end
+
       # Full-source anchors carry no token events. A macro anchor's witness 0 is the anchor token (E1): it carries
       # no event of its own (event nil) and the anchor's token_event must match it. Every other witness carries its
       # own event (E2). These are constructor checks only. P3 (J2) recomputes each event from the pinned pragmas (E5).
@@ -2818,6 +2837,7 @@ module Iyi
         raise ArgumentError.new("invalid structural anchor") unless anchor_origin.valid_for_anchor?(role[0], role[1])
         rendered_value, producer_value = DerivedName.structural_rendering(production, witnesses, fresh_index)
         DerivedName.check_witness_spans!(witnesses, input_bytesize, false, "structural")
+        DerivedName.check_structural_witness_kinds!(production, witnesses)
         DerivedName.check_structural_anchor!(production, anchor_origin, witnesses, input_sha256, lexical_mode)
         @rendered_text = rendered_value
         @producer_context = producer_value

@@ -323,6 +323,22 @@ describe "structural name derivation" do
     end
   end
 
+  it "whitelists written structural witness kinds and admits any recognized non-IDENT type head" do
+    punctuation_head = structural_spec_derive(Iyi::DiagnosticStructuralProduction::UnnamedFunParameter,
+      operator_spec_written(0, "FunDef", "keyword"),
+      [operator_spec_witness(5, "("), operator_spec_witness(6, "(")], 12)
+    punctuation_head.producer_context.should eq("parameter")
+    named_tuple_head = structural_spec_derive(Iyi::DiagnosticStructuralProduction::UnnamedFunParameter,
+      operator_spec_written(0, "FunDef", "keyword"),
+      [operator_spec_witness(5, ","), operator_spec_witness(6, "{")], 12)
+    named_tuple_head.producer_context.should eq("parameter")
+    expect_raises(ArgumentError, "invalid structural witness kind") do
+      structural_spec_derive(Iyi::DiagnosticStructuralProduction::UnnamedFunParameter,
+        operator_spec_written(0, "FunDef", "keyword"),
+        [operator_spec_witness(5, "("), operator_spec_witness(6, "Int32", "NOT_A_KIND")], 12)
+    end
+  end
+
   it "refuses written anchors outside the contract" do
     expect_raises(ArgumentError, "anchor does not precede witnesses") do
       structural_spec_derive(Iyi::DiagnosticStructuralProduction::UnnamedFunParameter,
