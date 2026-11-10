@@ -32,30 +32,6 @@ module Iyi
     @stacked_artifact : String? = nil
     @token_end_location : Location?
     @string_pool : StringPool
-    @diagnostic_token_ends : Hash(Int32, Int32)? = nil
-    @diagnostic_token_snapshots : Hash(Int32, {Int32, String, String})? = nil
-
-    private def diagnostic_record_token_end : Nil
-      if ends = @diagnostic_token_ends
-        start = @token.input_offset
-        finish = @token.input_end
-        if snapshots = @diagnostic_token_snapshots
-          observation = {finish, @token.type.to_s, iyi? ? "Iyi" : "Crystal"}
-          if previous = snapshots[start]?
-            snapshots[start] = {-1, "", ""} if previous != observation
-          else
-            snapshots[start] = observation
-          end
-        end
-        if finish > start
-          if previous = ends[start]?
-            ends[start] = -1 if previous != finish
-          else
-            ends[start] = finish
-          end
-        end
-      end
-    end
 
     # This is an interface for storing data associated to a heredoc
     module HeredocItem
@@ -1248,7 +1224,6 @@ module Iyi
       @token
     ensure
       @token.input_end = current_pos + @input_offset_base
-      diagnostic_record_token_end
     end
 
     def token_end_location
@@ -1821,7 +1796,6 @@ module Iyi
       @token
     ensure
       @token.input_end = current_pos + @input_offset_base
-      diagnostic_record_token_end
     end
 
     def next_string_token_noescape(delimiter_state)
@@ -2224,7 +2198,6 @@ module Iyi
       @token
     ensure
       @token.input_end = current_pos + @input_offset_base
-      diagnostic_record_token_end
     end
 
     def delimiter_state_for_percent_literal
@@ -2253,16 +2226,12 @@ module Iyi
     def lookahead(preserve_token_on_fail = false, &)
       old_pos, old_line, old_column = current_pos, @line_number, @column_number
       old_place = {@filename, @artifact, @stacked, @stacked_filename, @stacked_artifact, @stacked_line_number, @stacked_column_number, @location_pragma_index}
-      old_diagnostic_ends = @diagnostic_token_ends.try(&.dup)
-      old_diagnostic_snapshots = @diagnostic_token_snapshots.try(&.dup)
       @temp_token.copy_from(@token) if preserve_token_on_fail
 
       result = yield
       unless result
         self.current_pos, @line_number, @column_number = old_pos, old_line, old_column
         @filename, @artifact, @stacked, @stacked_filename, @stacked_artifact, @stacked_line_number, @stacked_column_number, @location_pragma_index = old_place
-        @diagnostic_token_ends = old_diagnostic_ends
-        @diagnostic_token_snapshots = old_diagnostic_snapshots
         @token.copy_from(@temp_token) if preserve_token_on_fail
       end
       result

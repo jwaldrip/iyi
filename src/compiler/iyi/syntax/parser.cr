@@ -13,6 +13,7 @@ module Iyi
     end
 
     record Unclosed, name : String, location : Location
+    alias DiagnosticTokenObservation = {Int32, {Int32, String, String}?}
 
     property visibility : Visibility?
 
@@ -200,14 +201,7 @@ module Iyi
     # the source module.
     @diagnostic_module_path : String? = nil
     getter diagnostic_source_unit : String? = nil
-    getter diagnostic_capture = false
-
-    def diagnostic_capture=(@diagnostic_capture : Bool)
-      if @diagnostic_capture
-        @diagnostic_token_ends ||= {} of Int32 => Int32
-        @diagnostic_token_snapshots ||= {} of Int32 => {Int32, String, String}
-      end
-    end
+    property diagnostic_capture = false
 
     # A source file with no iyi module header is its own compilation unit.
     # This must be set only for an actual parser input, never an artifact or
@@ -221,14 +215,16 @@ module Iyi
 
     @diagnostic_regions : Array(DiagnosticRegion)? = nil
     @diagnostic_pending : Hash({Int32, String, String}, DiagnosticAnchor)? = nil
-    @diagnostic_restored_names : Hash(Int32, Hash(DiagnosticNameSlot, Array(DiagnosticSourceNameToken)))? = nil
+    @diagnostic_restored_names : Hash(Int32, Hash(DiagnosticNameSlot, Array(DiagnosticNameValue)))? = nil
     @diagnostic_input_digest : String? = nil
     @diagnostic_expansion : {DiagnosticOrigin, DiagnosticOrigin, String}? = nil
     @diagnostic_emitted_anchors : Hash({Int32, String, String}, DiagnosticMacroAnchor)? = nil
     @diagnostic_generated_ranges : Array(DiagnosticGeneratedText)? = nil
     @diagnostic_name_fragments : Array(DiagnosticMacroNameFragment)? = nil
     @last_macro_control_offset : Int32? = nil
+    @last_macro_control_snapshot : {Int32, String, String}? = nil
     @diagnostic_last_def_equals_offset : Int32? = nil
+    @diagnostic_last_def_equals_snapshot : {Int32, String, String}? = nil
 
     def diagnostic_expansion(invocation : DiagnosticOrigin, definition : DiagnosticOrigin,
                              guard : String, pragmas : Hash(Int32, Array(Lexer::LocPragma))?)
@@ -237,8 +233,6 @@ module Iyi
         ::raise ArgumentError.new("diagnostic macro expansion guard mismatch")
       end
       @diagnostic_expansion = {invocation, definition, guard}
-      @diagnostic_token_ends = {} of Int32 => Int32
-      @diagnostic_token_snapshots = {} of Int32 => {Int32, String, String}
       emitted = @diagnostic_emitted_anchors = {} of {Int32, String, String} => DiagnosticMacroAnchor
       generated_ranges = @diagnostic_generated_ranges = [] of DiagnosticGeneratedText
       fragments = @diagnostic_name_fragments = [] of DiagnosticMacroNameFragment
@@ -252,7 +246,7 @@ module Iyi
               ::raise ArgumentError.new("invalid diagnostic macro emission extent")
             end
             entry.anchors.each do |anchor|
-              unless anchor.offset >= start && anchor.offset < finish
+              unless anchor.offset >= start && anchor.end_offset > anchor.offset && anchor.end_offset <= finish
                 ::raise ArgumentError.new("macro emission anchor outside emission bounds")
               end
               if anchor.source_origin.nil? == anchor.producer.nil?
@@ -274,7 +268,7 @@ module Iyi
             entry.name_fragments.each do |fragment|
               if fragment.start_offset < start || fragment.end_offset > finish ||
                  fragment.end_offset <= fragment.start_offset ||
-                 fragment.end_offset - fragment.start_offset != fragment.source_token.raw_text.bytesize
+                 fragment.end_offset - fragment.start_offset != fragment.source_name.rendered_text.bytesize
                 ::raise ArgumentError.new("invalid macro name fragment extent")
               end
               fragments << fragment
@@ -300,8 +294,6 @@ module Iyi
     # Offsets are in the full parser input, not in a line/column coordinate
     # system. The caller supplies only regions whose text is carried.
     def diagnostic_regions=(regions : Array(DiagnosticRegion))
-      @diagnostic_token_ends ||= {} of Int32 => Int32
-      @diagnostic_token_snapshots ||= {} of Int32 => {Int32, String, String}
       ordered = regions.sort_by(&.start_offset)
       pending = {} of {Int32, String, String} => DiagnosticAnchor
       last_end = @input_offset_base
@@ -343,22 +335,25 @@ module Iyi
       if fragments = @diagnostic_name_fragments
         ::raise ArgumentError.new("unconsumed diagnostic macro name fragments") unless fragments.empty?
       end
+      if restored = @diagnostic_restored_names
+        ::raise ArgumentError.new("unattached diagnostic name metadata") unless restored.empty?
+      end
     end
 
     private def diagnostic_anchor(kind : String, role : String, offset : Int32, token_end : Int32? = nil,
-                                  name_context : String? = nil) : DiagnosticOrigin?
+                                  name_context : String? = nil, token_snapshot : {Int32, String, String}? = nil) : DiagnosticOrigin?
       if regions = @diagnostic_regions
         if regions.any? { |region| offset >= region.start_offset && offset < region.end_offset }
           anchor = @diagnostic_pending.not_nil!.delete({offset, kind, role}) ||
             ::raise(ArgumentError.new("missing diagnostic provenance anchor at byte #{offset} for #{kind}:#{role}"))
           unless anchor.name_slots.empty?
-            (@diagnostic_restored_names ||= {} of Int32 => Hash(DiagnosticNameSlot, Array(DiagnosticSourceNameToken)))[offset] = anchor.name_slots
+            (@diagnostic_restored_names ||= {} of Int32 => Hash(DiagnosticNameSlot, Array(DiagnosticNameValue)))[offset] = anchor.name_slots
           end
           return anchor.origin
         end
       end
       if expansion = @diagnostic_expansion
-        snapshot = @diagnostic_token_snapshots.try(&.[offset]?)
+        snapshot = token_snapshot || (@token.input_offset == offset ? diagnostic_current_token_snapshot : nil)
         unless snapshot && snapshot[0] > offset
           ::raise ArgumentError.new("missing or ambiguous diagnostic token at byte #{offset} for #{kind}:#{role}")
         end
@@ -379,6 +374,9 @@ module Iyi
         end
         parts = [] of DiagnosticEmissionPart
         if emitted
+          unless emitted.end_offset == end_pos
+            ::raise ArgumentError.new("macro structural anchor extent does not match accepted token")
+          end
           unless overlapping_fragments.empty?
             ::raise ArgumentError.new("macro structural anchor overlaps name fragment")
           end
@@ -406,7 +404,7 @@ module Iyi
                 ::raise ArgumentError.new("name fragment outside accepted name token")
               end
               parts << DiagnosticEmissionPart::NameSplice.new(cursor, fragment.end_offset, fragment.emitter_origin,
-                fragment.source_token, 0, fragment.source_token.raw_text.bytesize, "Whole")
+                fragment.source_name)
               cursor = fragment.end_offset
             elsif range = ranges.find { |r| r.start_offset <= cursor && r.end_offset > cursor }
               finish = Math.min(end_pos, range.end_offset)
@@ -432,31 +430,59 @@ module Iyi
       end
       DiagnosticOrigin::Written.new(module_path, filename, offset, kind, role)
     end
+    private def diagnostic_current_token_snapshot : {Int32, String, String}?
+      return nil unless @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
+      {@token.input_end, @token.type.to_s, iyi? ? "Iyi" : "Crystal"}
+    end
+
+
+    private def diagnostic_attach_restored_name(node : ASTNode, offset : Int32, context : String,
+                                                 slot : DiagnosticNameSlot, append : Bool,
+                                                 token_snapshot : {Int32, String, String}?) : Bool
+      restored = @diagnostic_restored_names.try(&.[offset]?)
+      return false unless restored
+      values = restored[slot]?
+      unless values && restored.size == 1
+        ::raise ArgumentError.new("restored diagnostic name slot mismatch")
+      end
+      snapshot = token_snapshot || (@token.input_offset == offset ? diagnostic_current_token_snapshot : nil)
+      unless snapshot && snapshot[0] > offset
+        ::raise ArgumentError.new("missing restored diagnostic token snapshot")
+      end
+      raw = string.byte_slice(offset - @input_offset_base, snapshot[0] - offset)
+      unless DiagnosticSourceNameToken.valid_token?(snapshot[1], raw, snapshot[2], context) &&
+             values.join(&.rendered_text) == raw && values.all? { |value|
+               value.artifact_origin.valid_for_anchor?("Name", context) ||
+                 ({"method_name", "local_reference"}.includes?(context) &&
+                  value.is_a?(DiagnosticNameValue::Observed) &&
+                  value.artifact_origin.valid_for_anchor?("Call", "method"))
+             }
+        ::raise ArgumentError.new("restored diagnostic name does not match token or role")
+      end
+      slots = node.diagnostic_name_slots
+      slots[slot] = append && slots.has_key?(slot) ? slots[slot] + values : values
+      node.diagnostic_name_slots = slots
+      @diagnostic_restored_names.not_nil!.delete(offset)
+      true
+    end
 
     private def diagnostic_name(node : ASTNode, offset : Int32, context : String,
-                                origin : DiagnosticOrigin? = nil, slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary), append = false) : Nil
+                                origin : DiagnosticOrigin? = nil, slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary),
+                                append = false, token_snapshot : {Int32, String, String}? = nil) : Nil
       return unless @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
-      if restored = @diagnostic_restored_names.try(&.delete(offset))
-        slots = node.diagnostic_name_slots
-        restored.each { |key, tokens| slots[key] = append && slots.has_key?(key) ? slots[key] + tokens : tokens }
-        node.diagnostic_name_slots = slots
-        return
-      end
+      return if diagnostic_attach_restored_name(node, offset, context, slot, append, token_snapshot)
       unless origin
-        if @diagnostic_pending.try(&.has_key?({offset, "Call", "method"}))
-          origin = diagnostic_anchor("Call", "method", offset)
+        if @diagnostic_pending.try(&.has_key?({offset, "Name", context}))
+          origin = diagnostic_anchor("Name", context, offset, name_context: context, token_snapshot: token_snapshot)
+        elsif @diagnostic_pending.try(&.has_key?({offset, "Call", "method"}))
+          origin = diagnostic_anchor("Call", "method", offset, token_snapshot: token_snapshot)
         else
-          origin = diagnostic_anchor("Name", context, offset, name_context: context)
+          origin = diagnostic_anchor("Name", context, offset, name_context: context, token_snapshot: token_snapshot)
         end
       end
       return unless origin
-      if restored = @diagnostic_restored_names.try(&.delete(offset))
-        slots = node.diagnostic_name_slots
-        restored.each { |key, tokens| slots[key] = append && slots.has_key?(key) ? slots[key] + tokens : tokens }
-        node.diagnostic_name_slots = slots
-        return
-      end
-      snapshot = @diagnostic_token_snapshots.try(&.[offset]?)
+      return if diagnostic_attach_restored_name(node, offset, context, slot, append, token_snapshot)
+      snapshot = token_snapshot || (@token.input_offset == offset ? diagnostic_current_token_snapshot : nil)
       unless snapshot && snapshot[0] > offset
         ::raise ArgumentError.new("missing diagnostic name token at byte #{offset}")
       end
@@ -466,7 +492,8 @@ module Iyi
       token = DiagnosticSourceNameToken.new(origin, nil, context, digest, input.bytesize,
         offset, snapshot[0], snapshot[2], snapshot[1], raw)
       slots = node.diagnostic_name_slots
-      slots[slot] = append && slots.has_key?(slot) ? slots[slot] + [token] : [token]
+      value = DiagnosticNameValue::Observed.new(token)
+      slots[slot] = append && slots.has_key?(slot) ? slots[slot] + [value] : [value] of DiagnosticNameValue
       node.diagnostic_name_slots = slots
     end
 
@@ -474,10 +501,14 @@ module Iyi
       return unless @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
       slots = call.diagnostic_name_slots
       slots.each do |slot, tokens|
-        slots[slot] = tokens.map do |token|
+        slots[slot] = tokens.map do |value|
+          unless value.is_a?(DiagnosticNameValue::Observed)
+            ::raise ArgumentError.new("local binding requires an observed call name")
+          end
+          token = value.source_token
           binding = DiagnosticOrigin::Synthetic.new(token.lexical_origin, "local_binding", "assignment")
-          DiagnosticSourceNameToken.new(token.lexical_origin, binding, token.context, token.input_sha256,
-            token.input_bytesize, token.input_start, token.input_end, token.lexical_mode, token.token_kind, token.raw_text)
+          DiagnosticNameValue::Observed.new(DiagnosticSourceNameToken.new(token.lexical_origin, binding, token.context, token.input_sha256,
+            token.input_bytesize, token.input_start, token.input_end, token.lexical_mode, token.token_kind, token.raw_text)).as(DiagnosticNameValue)
         end
       end
       variable.diagnostic_name_slots = slots
@@ -788,6 +819,7 @@ module Iyi
     def parse_multi_assign
       location = @token.location
       multi_offset = @token.input_offset
+      multi_snapshot = diagnostic_current_token_snapshot
 
       if @token.type.op_star?
         lhs_splat = {index: 0, location: @token.location}
@@ -892,7 +924,7 @@ module Iyi
       end
 
       multi = MultiAssign.new(targets, values).at(location)
-      multi.diagnostic_origin = diagnostic_anchor("Literal", "multiassign", multi_offset)
+      multi.diagnostic_origin = diagnostic_anchor("Literal", "multiassign", multi_offset, token_snapshot: multi_snapshot)
       parse_expression_suffix multi, location
     end
 
@@ -1038,6 +1070,7 @@ module Iyi
       doc = @token.doc
       location = @token.location
       diagnostic_start = @token.input_offset
+      diagnostic_snapshot = diagnostic_current_token_snapshot
       start_token = @token
 
       atomic = parse_question_colon
@@ -1134,7 +1167,7 @@ module Iyi
 
             constant_target = atomic.is_a?(Path)
             atomic = Assign.new(atomic, atomic_value).at(location)
-            atomic.diagnostic_origin = diagnostic_anchor("Assign", "constant", diagnostic_start) if constant_target
+            atomic.diagnostic_origin = diagnostic_anchor("Assign", "constant", diagnostic_start, token_snapshot: diagnostic_snapshot) if constant_target
             atomic.doc = doc
             atomic
           end
@@ -1158,11 +1191,12 @@ module Iyi
 
           push_var atomic
           op_offset = @token.input_offset
+          op_snapshot = diagnostic_current_token_snapshot
           method = @token.type.to_s.byte_slice(0, @token.to_s.bytesize - 1)
           next_token_skip_space_or_newline
           value = iyi_nest { parse_op_assign_no_control }
           atomic = OpAssign.new(atomic, method, value).at(location)
-          atomic.diagnostic_origin = diagnostic_anchor("Call", "method", op_offset)
+          atomic.diagnostic_origin = diagnostic_anchor("Call", "method", op_offset, token_snapshot: op_snapshot)
           atomic.name_location = name_location
         else
           break
@@ -1248,6 +1282,7 @@ module Iyi
 
     def new_range(exp, location, exclusive)
       range_offset = @token.input_offset
+      range_snapshot = diagnostic_current_token_snapshot
       end_location = token_end_location
       check_void_value exp, location
       next_token_skip_space
@@ -1264,7 +1299,7 @@ module Iyi
         end_location = right.end_location
       end
       RangeLiteral.new(exp, right, exclusive).at(location).at_end(end_location).tap do |range|
-        range.diagnostic_origin = diagnostic_anchor("Literal", "range", range_offset)
+        range.diagnostic_origin = diagnostic_anchor("Literal", "range", range_offset, token_snapshot: range_snapshot)
       end
     end
 
@@ -1283,6 +1318,7 @@ module Iyi
             method = @token.type.to_s
             name_location = @token.location
             name_offset = @token.input_offset
+            name_snapshot = diagnostic_current_token_snapshot
             # Only `Array<Int32>`'s shape: the `<` touching the path and a
             # type name touching the `<`. `Level::Info < Level::Error` is a
             # comparison, and was refused as one.
@@ -1299,8 +1335,7 @@ module Iyi
             iyi_mark_after_floor_div(right, name_location) if iyi? && method == "//"
             left = ({{node.id}}).at(location).at_end(right)
             left.name_location = name_location if left.is_a?(Call)
-            left.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset) if left.is_a?(Call)
-            diagnostic_name(left, name_offset, "method_name", left.diagnostic_origin) if left.is_a?(Call)
+            left.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset, token_snapshot: name_snapshot) if left.is_a?(Call)
           else
             return left
           end
@@ -1340,18 +1375,19 @@ module Iyi
           method = @token.type.to_s
           name_location = @token.location
           name_offset = @token.input_offset
+          name_snapshot = diagnostic_current_token_snapshot
           next_token_skip_space_or_newline
           right = parse_mul_or_div
           left = Call.new(left, method, right).at(location).at_end(right)
           left.name_location = name_location
-          left.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset)
-          diagnostic_name(left, name_offset, "method_name", left.diagnostic_origin)
+          left.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset, token_snapshot: name_snapshot)
         when .number?
           case char = @token.value.to_s[0]
           when '+', '-'
             method = char.to_s
             name_location = @token.location
             name_offset = @token.input_offset
+            name_snapshot = diagnostic_current_token_snapshot
             name_end = if @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
                          input_index = name_offset - @input_offset_base
                          unless input_index >= 0 && input_index < string.bytesize &&
@@ -1367,9 +1403,8 @@ module Iyi
 
             right = parse_mul_or_div
             left = Call.new(left, method, right).at(location).at_end(right)
-            left.diagnostic_signed_number_operator = true
             left.name_location = name_location
-            left.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset, name_end)
+            left.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset, name_end, token_snapshot: name_snapshot)
           else
             return left
           end
@@ -1385,6 +1420,7 @@ module Iyi
     def parse_prefix
       name_location = @token.location
       name_offset = @token.input_offset
+      name_snapshot = diagnostic_current_token_snapshot
       case token_type = @token.type
       when .unary_operator?
         location = @token.location
@@ -1405,8 +1441,7 @@ module Iyi
         else
           call = Call.new(arg, token_type.to_s).at(location).at_end(arg)
           call.name_location = name_location
-          call.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset)
-          diagnostic_name(call, name_offset, "method_name", call.diagnostic_origin)
+          call.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset, token_snapshot: name_snapshot)
           call
         end
       else
@@ -1536,6 +1571,7 @@ module Iyi
                    end
             name_location = @token.location
             name_offset = @token.input_offset
+            name_snapshot = diagnostic_current_token_snapshot
             diagnostic_identifier = @token.type.ident? || @token.type.const?
             end_location = token_end_location
 
@@ -1583,8 +1619,8 @@ module Iyi
               atomic.name = "#{name}="
               atomic.args = [arg] of ASTNode
               atomic.name_location = name_location
-              atomic.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset)
-              diagnostic_name(atomic, name_offset, "method_name", atomic.diagnostic_origin) if diagnostic_identifier
+              atomic.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset, token_snapshot: name_snapshot)
+              diagnostic_name(atomic, name_offset, "method_name", atomic.diagnostic_origin, token_snapshot: name_snapshot) if diagnostic_identifier
               next
             when .assignment_operator?
               call = Call.new(atomic, name)
@@ -1592,15 +1628,16 @@ module Iyi
 
               op_name_location = @token.location
               op_offset = @token.input_offset
+              op_snapshot = diagnostic_current_token_snapshot
               method = @token.type.to_s.byte_slice(0, @token.type.to_s.size - 1)
               next_token_skip_space_or_newline
               value = parse_op_assign
               call.at(location)
               call.name_location = name_location
-              call.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset)
-              diagnostic_name(call, name_offset, "method_name", call.diagnostic_origin) if diagnostic_identifier
+              call.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset, token_snapshot: name_snapshot)
+              diagnostic_name(call, name_offset, "method_name", call.diagnostic_origin, token_snapshot: name_snapshot) if diagnostic_identifier
               atomic = OpAssign.new(call, method, value).at(location)
-              atomic.diagnostic_origin = diagnostic_anchor("Call", "method", op_offset)
+              atomic.diagnostic_origin = diagnostic_anchor("Call", "method", op_offset, token_snapshot: op_snapshot)
               atomic.name_location = op_name_location
               next
             else
@@ -1623,8 +1660,8 @@ module Iyi
             atomic.name_location = name_location
             atomic.end_location = block.try(&.end_location) || call_args.try(&.end_location) || end_location
             atomic.at(location)
-            atomic.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset)
-            diagnostic_name(atomic, name_offset, "method_name", atomic.diagnostic_origin) if diagnostic_identifier
+            atomic.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset, token_snapshot: name_snapshot)
+            diagnostic_name(atomic, name_offset, "method_name", atomic.diagnostic_origin, token_snapshot: name_snapshot) if diagnostic_identifier
             atomic
           end
         when .op_lsquare_rsquare?
@@ -1632,13 +1669,14 @@ module Iyi
 
           name_location = @token.location
           name_offset = @token.input_offset
+          name_snapshot = diagnostic_current_token_snapshot
           end_location = token_end_location
           @wants_regex = false
           next_token_skip_space
           atomic = Call.new(atomic, "[]").at(location)
           atomic.name_location = name_location
           atomic.end_location = end_location
-          atomic.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset)
+          atomic.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset, token_snapshot: name_snapshot)
           atomic.name_size = 0 if atomic.is_a?(Call)
           atomic
         when .op_lsquare?
@@ -1646,6 +1684,7 @@ module Iyi
 
           name_location = @token.location
           name_offset = @token.input_offset
+          name_snapshot = diagnostic_current_token_snapshot
           next_token_skip_space_or_newline
 
           call_args = preserve_stop_on_do do
@@ -1683,7 +1722,7 @@ module Iyi
           atomic = Call.new(atomic, method_name, (args || [] of ASTNode), block, block_arg, named_args).at(location)
           atomic.name_location = name_location
           atomic.end_location = end_location
-          atomic.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset)
+          atomic.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset, token_snapshot: name_snapshot)
           atomic.name_size = 0
           atomic.args_in_brackets = true
           atomic
@@ -1883,10 +1922,13 @@ module Iyi
 
     def parse_read_instance_var(atomic)
       ivar_name = @token.value.to_s
+      name_offset = @token.input_offset
+      name_snapshot = diagnostic_current_token_snapshot
       end_location = token_end_location
       next_token_skip_space
 
       call = ReadInstanceVar.new(atomic, ivar_name)
+      diagnostic_name(call, name_offset, "instance_variable", token_snapshot: name_snapshot)
       call.end_location = end_location
 
       call
@@ -1895,6 +1937,7 @@ module Iyi
     def parse_atomic
       location = @token.location
       literal_offset = @token.input_offset
+      literal_snapshot = diagnostic_current_token_snapshot
       atomic = iyi_nest { parse_atomic_without_location }
       atomic.location ||= location
       literal_role = case atomic
@@ -1906,7 +1949,7 @@ module Iyi
                      when Select              then "select"
                      end
       if literal_role && !atomic.diagnostic_origin
-        atomic.diagnostic_origin = diagnostic_anchor("Literal", literal_role, literal_offset)
+        atomic.diagnostic_origin = diagnostic_anchor("Literal", literal_role, literal_offset, token_snapshot: literal_snapshot)
       end
       if atomic.is_a?(RegexLiteral) && (origin = atomic.diagnostic_origin) && (pattern = atomic.value).is_a?(StringInterpolation)
         pattern.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "literal_expansion_node", "regex:interpolation")
@@ -1963,13 +2006,15 @@ module Iyi
               "over a `Channel` (SPEC.md III.4.5)", @token
       when .op_dollar_tilde?, .op_dollar_question?
         location = @token.location
-        var = Var.new(@token.to_s).at(location)
-
         if peek_ahead { next_token_skip_space; @token.type.op_eq? }
+          var = Var.new(@token.to_s).at(location)
+          diagnostic_name(var, @token.input_offset, "special_global")
           push_var var
           node_and_next_token var
         else
-          node_and_next_token Global.new(var.name).at(location)
+          global = Global.new(@token.to_s).at(location)
+          diagnostic_name(global, @token.input_offset, "special_global")
+          node_and_next_token global
         end
       when .global_match_data_index?
         if peek_ahead { next_token_skip_space; @token.type.op_eq? }
@@ -1986,7 +2031,17 @@ module Iyi
         location = @token.location
         index = value.to_i?
         raise "Index $#{value} doesn't fit in an Int32" unless index
-        node_and_next_token Call.new(Global.new("$~").at(location), method, NumberLiteral.new(index))
+        match_data = Global.new("$~").at(location)
+        call = Call.new(match_data, method, NumberLiteral.new(index))
+        if @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
+          source_node = Var.new(@token.to_s)
+          diagnostic_name(source_node, @token.input_offset, "regex_match_index")
+          token = source_node.diagnostic_name_slots[DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)].first.as(DiagnosticNameValue::Observed).source_token
+          match_origin = DiagnosticOrigin::DerivedName.regex_match_index(token, "MatchData")
+          call.diagnostic_origin = DiagnosticOrigin::DerivedName.regex_match_index(token, "Lookup")
+          match_data.diagnostic_name_slots = {DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary) => [DiagnosticNameValue::Derived.new(match_origin)] of DiagnosticNameValue}
+        end
+        node_and_next_token call
       when .magic_line?
         node_and_next_token MagicConstant.expand_line_node(@token.location)
       when .magic_end_line?
@@ -2226,6 +2281,7 @@ module Iyi
       if next_comes_colon_space?
         name = @token.value.to_s
         var = Var.new(name).at(@token.location).at_end(token_end_location)
+        diagnostic_name(var, @token.input_offset, "local_reference")
         next_token
         unless @token.type.space?
           warnings.add_warning_at(@token.location, "space required before colon in type declaration (run `iyi fmt` to fix this)")
@@ -2288,7 +2344,8 @@ module Iyi
       end
     end
 
-    def parse_const(global = false, location = @token.location, diagnostic_start = @token.input_offset)
+    def parse_const(global = false, location = @token.location, diagnostic_start = @token.input_offset,
+                    diagnostic_snapshot = diagnostic_current_token_snapshot)
       # iyi: `Some(x)`, `Ok(x)`, `Err("bad")` - Rust's wrappers, read as a
       # generic type whose arguments are not types: "unexpected token:
       # \"xs\"", "expecting token ':', not ')'". A type argument starts with
@@ -2305,7 +2362,7 @@ module Iyi
           warnings.add_warning_at(@token.location, "space required before colon in type declaration (run `iyi fmt` to fix this)")
         end
         declaration = parse_type_declaration(type, is_const: true)
-        declaration.diagnostic_origin = diagnostic_anchor("Assign", "constant", diagnostic_start)
+        declaration.diagnostic_origin = diagnostic_anchor("Assign", "constant", diagnostic_start, token_snapshot: diagnostic_snapshot)
         declaration
       else
         parse_custom_literal type
@@ -2581,6 +2638,7 @@ module Iyi
     def parse_call_block_arg(args, check_paren, named_args = nil)
       location = @token.location
       offset = @token.input_offset
+      block_snapshot = diagnostic_current_token_snapshot
 
       next_token_skip_space
 
@@ -2602,7 +2660,7 @@ module Iyi
         call = parse_call_block_arg_after_dot(obj)
 
         block = Block.new([Var.new(block_arg_name)], call).at(location)
-        block.diagnostic_origin = diagnostic_anchor("Block", "ampersand", offset)
+        block.diagnostic_origin = diagnostic_anchor("Block", "ampersand", offset, token_snapshot: block_snapshot)
         end_location = call.end_location
       else
         block_arg = parse_op_assign
@@ -2793,7 +2851,7 @@ module Iyi
     def parse_type_vars
       type_vars = nil
       splat_index = nil
-      type_offsets = (@diagnostic_capture || @diagnostic_expansion || @diagnostic_regions) ? [] of Int32 : nil
+      type_offsets = (@diagnostic_capture || @diagnostic_expansion || @diagnostic_regions) ? [] of DiagnosticTokenObservation : nil
       if @token.type.op_lparen?
         type_vars = [] of String
 
@@ -2813,7 +2871,7 @@ module Iyi
           end
 
           type_vars.push type_var_name
-          type_offsets.try &.<<(@token.input_offset)
+          type_offsets.try &.<<({@token.input_offset, diagnostic_current_token_snapshot})
 
           next_token_skip_space
           if @token.type.op_comma?
@@ -2835,10 +2893,10 @@ module Iyi
       {type_vars, splat_index, type_offsets}
     end
 
-    private def diagnostic_type_parameters(node : ASTNode, offsets : Array(Int32)?) : Nil
+    private def diagnostic_type_parameters(node : ASTNode, offsets : Array(DiagnosticTokenObservation)?) : Nil
       return unless offsets
-      offsets.each_with_index do |offset, index|
-        diagnostic_name(node, offset, "type_parameter", slot: DiagnosticNameSlot.new(DiagnosticNameSlotKind::TypeParameter, index))
+      offsets.each_with_index do |observation, index|
+        diagnostic_name(node, observation[0], "type_parameter", slot: DiagnosticNameSlot.new(DiagnosticNameSlotKind::TypeParameter, index), token_snapshot: observation[1])
       end
     end
 
@@ -3544,7 +3602,7 @@ module Iyi
 
       type_vars = nil
       type_var_bounds = nil
-      type_offsets = (@diagnostic_capture || @diagnostic_expansion || @diagnostic_regions) ? [] of Int32 : nil
+      type_offsets = (@diagnostic_capture || @diagnostic_expansion || @diagnostic_regions) ? [] of DiagnosticTokenObservation : nil
       if @token.type.ident? && @token.value == "forall"
         next_token_skip_space
         type_vars = [] of String
@@ -3552,7 +3610,7 @@ module Iyi
           check Token::Kind::CONST
           name = @token.value.to_s
           type_vars << name
-          type_offsets.try &.<<(@token.input_offset)
+          type_offsets.try &.<<({@token.input_offset, diagnostic_current_token_snapshot})
           next_token_skip_space
 
           # `forall T : Show` — the bound is a trait, and nothing else. There
@@ -3780,6 +3838,7 @@ module Iyi
     def parse_fun_literal
       location = @token.location
       offset = @token.input_offset
+      arrow_snapshot = diagnostic_current_token_snapshot
 
       next_token_skip_space_or_newline
 
@@ -3792,7 +3851,7 @@ module Iyi
       else
         unless @token.keyword?(:do)
           pointer = parse_fun_pointer
-          pointer.diagnostic_origin = diagnostic_anchor("ProcPointer", "arrow", offset)
+          pointer.diagnostic_origin = diagnostic_anchor("ProcPointer", "arrow", offset, token_snapshot: arrow_snapshot)
           return pointer
         end
       end
@@ -3849,7 +3908,7 @@ module Iyi
 
         a_def = Def.new("->", params, body, return_type: return_type).at(location).at_end(end_location)
         ProcLiteral.new(a_def).at(location).at_end(end_location).tap do |proc_literal|
-          proc_literal.diagnostic_origin = diagnostic_anchor("ProcLiteral", "arrow", offset)
+          proc_literal.diagnostic_origin = diagnostic_anchor("ProcLiteral", "arrow", offset, token_snapshot: arrow_snapshot)
           a_def.diagnostic_origin = proc_literal.diagnostic_origin
         end
       end
@@ -3882,6 +3941,8 @@ module Iyi
       name = check_ident
       location = @token.location
       end_location = token_end_location
+      name_offset = @token.input_offset
+      name_snapshot = diagnostic_current_token_snapshot
       next_token_skip_space_or_newline
 
       if @token.type.op_colon?
@@ -3898,7 +3959,9 @@ module Iyi
         check :OP_RPAREN
       end
 
-      Arg.new(name, restriction: type).at(location).at_end(end_location)
+      arg = Arg.new(name, restriction: type).at(location).at_end(end_location)
+      diagnostic_name(arg, name_offset, "parameter", token_snapshot: name_snapshot)
+      arg
     end
 
     def parse_fun_pointer
@@ -3909,6 +3972,10 @@ module Iyi
         next_token_skip_space_or_newline
         global = true
       end
+      name_offset = @token.input_offset
+      name_snapshot = diagnostic_current_token_snapshot
+      name_equals_offset = nil
+      name_equals_snapshot = nil
 
       case @token.type
       when .ident?
@@ -3917,6 +3984,8 @@ module Iyi
         var_end_location = token_end_location
         global_call = global
         equals_sign, end_location = consume_def_equals_sign_skip_space
+        name_equals_offset = @diagnostic_last_def_equals_offset if equals_sign
+        name_equals_snapshot = @diagnostic_last_def_equals_snapshot if equals_sign
         if equals_sign
           name = "#{name}="
         elsif @token.type.op_period?
@@ -3925,9 +3994,14 @@ module Iyi
             raise "undefined variable '#{name}'", location
           end
           obj = Var.new(name).at(var_location).at_end(var_end_location)
+          diagnostic_name(obj, name_offset, "local_reference", token_snapshot: name_snapshot)
 
           name = consume_def_or_macro_name
+          name_offset = @token.input_offset
+          name_snapshot = diagnostic_current_token_snapshot
           equals_sign, end_location = consume_def_equals_sign_skip_space
+          name_equals_offset = @diagnostic_last_def_equals_offset if equals_sign
+          name_equals_snapshot = @diagnostic_last_def_equals_snapshot if equals_sign
           name = "#{name}=" if equals_sign
         end
       when .const?
@@ -3935,23 +4009,37 @@ module Iyi
         skip_space
         check :OP_PERIOD
         name = consume_def_or_macro_name
+        name_offset = @token.input_offset
+        name_snapshot = diagnostic_current_token_snapshot
         equals_sign, end_location = consume_def_equals_sign_skip_space
+        name_equals_offset = @diagnostic_last_def_equals_offset if equals_sign
+        name_equals_snapshot = @diagnostic_last_def_equals_snapshot if equals_sign
         name = "#{name}=" if equals_sign
       when .instance_var?
         raise "ProcPointer of instance variable cannot be global", location if global
         obj = InstanceVar.new(@token.value.to_s).at(location).at_end(token_end_location)
+        diagnostic_name(obj, @token.input_offset, "instance_variable")
         next_token_skip_space
         check :OP_PERIOD
         name = consume_def_or_macro_name
+        name_offset = @token.input_offset
+        name_snapshot = diagnostic_current_token_snapshot
         equals_sign, end_location = consume_def_equals_sign_skip_space
+        name_equals_offset = @diagnostic_last_def_equals_offset if equals_sign
+        name_equals_snapshot = @diagnostic_last_def_equals_snapshot if equals_sign
         name = "#{name}=" if equals_sign
       when .class_var?
         raise "ProcPointer of class variable cannot be global", location if global
         obj = ClassVar.new(@token.value.to_s).at(location).at_end(token_end_location)
+        diagnostic_name(obj, @token.input_offset, "class_variable")
         next_token_skip_space
         check :OP_PERIOD
         name = consume_def_or_macro_name
+        name_offset = @token.input_offset
+        name_snapshot = diagnostic_current_token_snapshot
         equals_sign, end_location = consume_def_equals_sign_skip_space
+        name_equals_offset = @diagnostic_last_def_equals_offset if equals_sign
+        name_equals_snapshot = @diagnostic_last_def_equals_snapshot if equals_sign
         name = "#{name}=" if equals_sign
       else
         unexpected_token
@@ -3971,7 +4059,10 @@ module Iyi
         types = [] of ASTNode
       end
 
-      ProcPointer.new(obj, name, types, !!global_call).at_end(end_location)
+      pointer = ProcPointer.new(obj, name, types, !!global_call).at_end(end_location)
+      diagnostic_name(pointer, name_offset, "method_name", token_snapshot: name_snapshot)
+      diagnostic_name(pointer, name_equals_offset, "method_name", append: true, token_snapshot: name_equals_snapshot) if name_equals_offset
+      pointer
     end
 
     record Piece,
@@ -3985,6 +4076,7 @@ module Iyi
 
       location = @token.location
       diagnostic_start = @token.input_offset
+      diagnostic_snapshot = diagnostic_current_token_snapshot
       delimiter_state = @token.delimiter_state
 
       check :DELIMITER_START
@@ -4026,7 +4118,7 @@ module Iyi
       case delimiter_state.kind
       when .command?
         result = Call.new("`", result).at(result)
-        result.diagnostic_origin = diagnostic_anchor("Call", "method", diagnostic_start)
+        result.diagnostic_origin = diagnostic_anchor("Call", "method", diagnostic_start, token_snapshot: diagnostic_snapshot)
         if (origin = result.diagnostic_origin) && (interpolation = result.as(Call).args.first).is_a?(StringInterpolation)
           interpolation.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "literal_expansion_node", "command:interpolation")
         end
@@ -4656,10 +4748,10 @@ module Iyi
     end
 
     def parse_named_tuple(location)
-      parse_named_tuple(location, @token.value.to_s, @token.input_offset)
+      parse_named_tuple(location, @token.value.to_s, {@token.input_offset, diagnostic_current_token_snapshot})
     end
 
-    def parse_named_tuple(location, first_key, first_key_offset : Int32? = nil)
+    def parse_named_tuple(location, first_key, first_key_observation : DiagnosticTokenObservation? = nil)
       next_token_never_a_symbol
 
       slash_is_regex!
@@ -4670,7 +4762,7 @@ module Iyi
 
       entries = [] of NamedTupleLiteral::Entry
       entries << NamedTupleLiteral::Entry.new(first_key, first_value)
-      key_offsets = (@diagnostic_capture || @diagnostic_expansion || @diagnostic_regions) ? [first_key_offset] : nil
+      key_offsets = (@diagnostic_capture || @diagnostic_expansion || @diagnostic_regions) ? [first_key_observation] : nil
 
       if @token.type.op_comma?
         next_token_skip_space_or_newline
@@ -4679,7 +4771,7 @@ module Iyi
           key_location = @token.location
           key = @token.value.to_s
           if named_tuple_start?
-            key_offsets.try &.<<(@token.input_offset)
+            key_offsets.try &.<<({@token.input_offset, diagnostic_current_token_snapshot})
             next_token_never_a_symbol
           elsif string_literal_start?
             key_offsets.try &.<<(nil)
@@ -4725,8 +4817,8 @@ module Iyi
 
       tuple = NamedTupleLiteral.new(entries).at(location).at_end(end_location)
       if offsets = key_offsets
-        offsets.each_with_index do |offset, index|
-          diagnostic_name(tuple, offset, "named_entry", slot: DiagnosticNameSlot.new(DiagnosticNameSlotKind::NamedEntry, index)) if offset
+        offsets.each_with_index do |observation, index|
+          diagnostic_name(tuple, observation[0], "named_entry", slot: DiagnosticNameSlot.new(DiagnosticNameSlotKind::NamedEntry, index), token_snapshot: observation[1]) if observation
         end
       end
       tuple
@@ -5112,7 +5204,7 @@ module Iyi
 
       prepare_parse_def
       a_def = with_isolated_var_scope do
-        parse_def_helper is_abstract: is_abstract
+        parse_def_helper is_abstract: is_abstract, definition_origin: origin
       end
 
       a_def.calls_super = @calls_super
@@ -5156,6 +5248,9 @@ module Iyi
       with_isolated_var_scope do
         name_location = @token.location
         name_offset = @token.input_offset
+        name_snapshot = diagnostic_current_token_snapshot
+        name_equals_offset = nil
+        name_equals_snapshot = nil
 
         case @token.type
         when .const?
@@ -5163,6 +5258,8 @@ module Iyi
         when .ident?
           check_valid_def_name
           equals_sign, _ = consume_def_equals_sign_skip_space
+          name_equals_offset = @diagnostic_last_def_equals_offset if equals_sign
+          name_equals_snapshot = @diagnostic_last_def_equals_snapshot if equals_sign
           name = "#{name}=" if equals_sign
         else
           check_valid_def_op_name
@@ -5247,7 +5344,8 @@ module Iyi
         node.doc = doc
         node.end_location = end_location
         node.diagnostic_origin = origin
-        diagnostic_name(node, name_offset, "macro_name")
+        diagnostic_name(node, name_offset, "macro_name", token_snapshot: name_snapshot)
+        diagnostic_name(node, name_equals_offset, "macro_name", append: true, token_snapshot: name_equals_snapshot) if name_equals_offset
         set_visibility node
         node
       end
@@ -5281,15 +5379,17 @@ module Iyi
           pieces << exp.at_end(token_end_location)
         when .macro_control_start?
           offset = @token.input_offset
+          control_snapshot = diagnostic_current_token_snapshot
           macro_control = iyi_nest { parse_macro_control(start_location, macro_state) }
           if macro_control
-            macro_control.diagnostic_origin = diagnostic_anchor("MacroDirective", "control", offset)
+            macro_control.diagnostic_origin = diagnostic_anchor("MacroDirective", "control", offset, token_snapshot: control_snapshot)
             skip_space_or_newline
             check :OP_PERCENT_RCURLY
             pieces << macro_control
             skip_whitespace = check_macro_skip_whitespace
           else
             @last_macro_control_offset = offset
+            @last_macro_control_snapshot = control_snapshot
             return new_macro_expressions(pieces), nil
           end
         when .macro_var?
@@ -5400,10 +5500,11 @@ module Iyi
     def parse_percent_macro_control
       raise "can't nest macro expressions", @token if @in_macro_expression
       offset = @token.input_offset
+      control_snapshot = diagnostic_current_token_snapshot
 
       macro_control = parse_macro_control(@token.location)
       if macro_control
-        macro_control.diagnostic_origin = diagnostic_anchor("MacroDirective", "control", offset)
+        macro_control.diagnostic_origin = diagnostic_anchor("MacroDirective", "control", offset, token_snapshot: control_snapshot)
         skip_space_or_newline
         check :OP_PERCENT_RCURLY
         next_token_skip_space
@@ -5556,8 +5657,9 @@ module Iyi
         unexpected_token if is_unless
         start_loc = @token.location
         elsif_offset = @last_macro_control_offset || @token.input_offset
+        elsif_snapshot = @last_macro_control_offset ? @last_macro_control_snapshot : diagnostic_current_token_snapshot
         a_else = parse_macro_if(start_location, macro_state, false).at(start_loc)
-        a_else.diagnostic_origin = diagnostic_anchor("MacroDirective", "control", elsif_offset)
+        a_else.diagnostic_origin = diagnostic_anchor("MacroDirective", "control", elsif_offset, token_snapshot: elsif_snapshot)
         if check_end
           check_ident :end
           next_token_skip_space
@@ -5607,7 +5709,7 @@ module Iyi
       :OP_AMP_PLUS, :OP_AMP_MINUS, :OP_AMP_STAR, :OP_AMP_STAR_STAR,
     ] of Token::Kind
 
-    def parse_def_helper(is_abstract = false)
+    def parse_def_helper(is_abstract = false, definition_origin : DiagnosticOrigin? = nil)
       def_location = @token.location
       @doc_enabled = false
       @def_nest += 1
@@ -5628,8 +5730,11 @@ module Iyi
       receiver_location = @token.location
       end_location = token_end_location
       name_offset = @token.input_offset
+      name_snapshot = diagnostic_current_token_snapshot
+      receiver_snapshot = name_snapshot
       receiver_offset = name_offset
       name_equals_offset = nil
+      name_equals_snapshot = nil
 
       if @token.type.const?
         receiver = parse_path
@@ -5642,6 +5747,7 @@ module Iyi
 
         equals_sign, _ = consume_def_equals_sign
         name_equals_offset = @diagnostic_last_def_equals_offset if equals_sign
+        name_equals_snapshot = @diagnostic_last_def_equals_snapshot if equals_sign
         check_iyi_def_bang
         name = "#{name}=" if equals_sign
         last_was_space = @token.type.space?
@@ -5662,7 +5768,7 @@ module Iyi
         unless receiver
           if name
             receiver = Var.new(name).at(receiver_location).at_end(end_location)
-            diagnostic_name(receiver, receiver_offset, "local_reference")
+            diagnostic_name(receiver, receiver_offset, "local_reference", token_snapshot: receiver_snapshot)
           else
             raise "shouldn't reach this line"
           end
@@ -5670,7 +5776,9 @@ module Iyi
 
         consume_def_or_macro_name
         name_offset = @token.input_offset
+        name_snapshot = diagnostic_current_token_snapshot
         name_equals_offset = nil
+        name_equals_snapshot = nil
 
         if @token.type.ident?
           check_valid_def_name
@@ -5680,6 +5788,7 @@ module Iyi
           name_location = @token.location
           equals_sign, _ = consume_def_equals_sign
           name_equals_offset = @diagnostic_last_def_equals_offset if equals_sign
+          name_equals_snapshot = @diagnostic_last_def_equals_snapshot if equals_sign
           check_iyi_def_bang
           name = "#{name}=" if equals_sign
           last_was_space = @token.type.space?
@@ -5722,6 +5831,7 @@ module Iyi
             found_default_value: found_default_value,
             found_splat: found_splat,
             found_double_splat: found_double_splat,
+            definition_origin: definition_origin,
             allow_restrictions: true,
           )
           if !found_default_value && extras.default_value
@@ -5859,8 +5969,8 @@ module Iyi
       node.free_var_bounds = free_var_bounds
       node.where_bounds = where_bounds
       node.name_location = name_location
-      diagnostic_name(node, name_offset, "definition_name")
-      diagnostic_name(node, name_equals_offset, "definition_name", append: true) if name_equals_offset
+      diagnostic_name(node, name_offset, "definition_name", token_snapshot: name_snapshot)
+      diagnostic_name(node, name_equals_offset, "definition_name", append: true, token_snapshot: name_equals_snapshot) if name_equals_offset
       set_visibility node
       node.end_location = end_location
       node
@@ -6182,7 +6292,32 @@ module Iyi
       splat : Bool,
       double_splat : Bool
 
-    def parse_param(params, extra_assigns, parentheses, found_default_value, found_splat, found_double_splat, allow_restrictions)
+    record DiagnosticLoweredParameter,
+      source : DiagnosticSourceNameToken,
+      target : ASTNode,
+      local : Var,
+      fresh_index : Int32?,
+      default_external : Bool
+
+    private def diagnostic_attach_lowered_parameter(arg : Arg, lowered : DiagnosticLoweredParameter,
+                                                     owner : DiagnosticOrigin, parameter_slot : String, index : Int32) : Nil
+      projection = lowered.fresh_index ? "FreshParameterName" : "StripVariablePrefix"
+      primary = DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)
+      argument = DiagnosticOrigin::DerivedName.new(lowered.source, owner, parameter_slot, index, "Argument", projection, lowered.fresh_index)
+      target = DiagnosticOrigin::DerivedName.new(lowered.source, owner, parameter_slot, index, "Target", "Whole", nil)
+      local = DiagnosticOrigin::DerivedName.new(lowered.source, owner, parameter_slot, index, "LocalValue", projection, lowered.fresh_index)
+      slots = arg.diagnostic_name_slots
+      slots[primary] = [DiagnosticNameValue::Derived.new(argument)] of DiagnosticNameValue
+      if lowered.default_external
+        external = DiagnosticOrigin::DerivedName.new(lowered.source, owner, parameter_slot, index, "DefaultExternal", "StripVariablePrefix", nil)
+        slots[DiagnosticNameSlot.new(DiagnosticNameSlotKind::ExternalName)] = [DiagnosticNameValue::Derived.new(external)] of DiagnosticNameValue
+      end
+      arg.diagnostic_name_slots = slots
+      lowered.target.diagnostic_name_slots = {primary => [DiagnosticNameValue::Derived.new(target)] of DiagnosticNameValue}
+      lowered.local.diagnostic_name_slots = {primary => [DiagnosticNameValue::Derived.new(local)] of DiagnosticNameValue}
+    end
+
+    def parse_param(params, extra_assigns, parentheses, found_default_value, found_splat, found_double_splat, allow_restrictions, definition_origin : DiagnosticOrigin? = nil)
       annotations = nil
 
       # Parse annotations first since they would be before any actual param tokens.
@@ -6201,7 +6336,7 @@ module Iyi
           warnings.add_warning_at @token.location, "space required before colon in type restriction (run `iyi fmt` to fix this)"
         end
 
-        block_param = parse_def_block_param(extra_assigns, annotations)
+        block_param = parse_def_block_param(extra_assigns, annotations, definition_origin)
         skip_space_or_newline
         # When block_param.name is empty, this is an anonymous parameter.
         # An anonymous parameter should not conflict other parameters names.
@@ -6246,13 +6381,16 @@ module Iyi
       found_space = false
       param_offset = nil
       external_offset = nil
+      param_snapshot = nil
+      external_snapshot = nil
+      lowered = nil
 
       if splat && (@token.type.op_comma? || @token.type.op_rparen?)
         param_name = ""
         allow_restrictions = false
       else
         param_location = @token.location
-        param_name, external_name, found_space, _uses_param, param_offset, external_offset = parse_param_name(param_location, extra_assigns, allow_external_name: allow_external_name)
+        param_name, external_name, found_space, _uses_param, param_offset, external_offset, param_snapshot, external_snapshot, lowered = parse_param_name(param_location, extra_assigns, allow_external_name: allow_external_name)
 
         params.each do |param|
           if param.name == param_name
@@ -6334,9 +6472,13 @@ module Iyi
       raise "BUG: param_name is nil" unless param_name
 
       param = Arg.new(param_name, default_value, restriction, external_name: external_name, parsed_annotations: annotations).at(param_location)
-      diagnostic_name(param, param_offset, "parameter") if param_offset
+      diagnostic_name(param, param_offset, "parameter", token_snapshot: param_snapshot) if param_offset
       if external_offset && param.external_name != param.name
-        diagnostic_name(param, external_offset, "named_entry", slot: DiagnosticNameSlot.new(DiagnosticNameSlotKind::ExternalName))
+        diagnostic_name(param, external_offset, "named_entry", slot: DiagnosticNameSlot.new(DiagnosticNameSlotKind::ExternalName), token_snapshot: external_snapshot)
+      end
+      if lowered
+        owner = definition_origin || ::raise(ArgumentError.new("lowered parameter lacks definition origin"))
+        diagnostic_attach_lowered_parameter(param, lowered, owner, double_splat ? "double_splat" : "positional", double_splat ? 0 : params.size)
       end
       params << param
       push_var param
@@ -6344,14 +6486,16 @@ module Iyi
       ArgExtras.new(nil, !!default_value, splat, !!double_splat)
     end
 
-    def parse_def_block_param(extra_assigns, annotations : Array(Annotation)?)
+    def parse_def_block_param(extra_assigns, annotations : Array(Annotation)?, definition_origin : DiagnosticOrigin?)
       name_location = @token.location
       param_offset = nil
+      param_snapshot = nil
+      lowered = nil
 
       if @token.type.op_rparen? || @token.type.newline? || @token.type.op_colon?
         param_name = ""
       else
-        param_name, _external_name, found_space, uses_param, param_offset, _external_offset = parse_param_name(name_location, extra_assigns, allow_external_name: false)
+        param_name, _external_name, found_space, uses_param, param_offset, _external_offset, param_snapshot, _external_snapshot, lowered = parse_param_name(name_location, extra_assigns, allow_external_name: false)
         @uses_block_arg = true if uses_param
       end
 
@@ -6367,7 +6511,11 @@ module Iyi
       end
 
       block_param = Arg.new(param_name, restriction: type_spec, parsed_annotations: annotations).at(name_location)
-      diagnostic_name(block_param, param_offset, "parameter") if param_offset
+      diagnostic_name(block_param, param_offset, "parameter", token_snapshot: param_snapshot) if param_offset
+      if lowered
+        owner = definition_origin || ::raise(ArgumentError.new("lowered block parameter lacks definition origin"))
+        diagnostic_attach_lowered_parameter(block_param, lowered, owner, "block", 0)
+      end
 
       push_var block_param
 
@@ -6377,17 +6525,23 @@ module Iyi
     end
 
     def parse_param_name(location, extra_assigns, allow_external_name)
+      lowered = nil
+      fresh_index = nil
+      default_external = false
       do_next_token = true
       found_string_literal = false
       invalid_internal_name = nil
       external_name_token = nil
       param_offset = nil
       external_offset = nil
+      param_snapshot = nil
+      external_snapshot = nil
 
       if allow_external_name && (@token.type.ident? || string_literal_start?)
         name_location = @token.location
         external_name_token = @token.dup
         if @token.type.ident?
+          external_snapshot = diagnostic_current_token_snapshot
           if @token.keyword? && invalid_internal_name?(@token.value)
             invalid_internal_name = @token.dup
           end
@@ -6410,6 +6564,7 @@ module Iyi
       case @token.type
       when .ident?
         param_offset = @token.input_offset
+        param_snapshot = diagnostic_current_token_snapshot
         external_offset = external_name_token.try(&.input_offset) unless found_string_literal
         if @token.keyword? && invalid_internal_name?(@token.value)
           raise "cannot use '#{@token}' as a parameter name", @token
@@ -6445,12 +6600,20 @@ module Iyi
         # The external name defaults to the internal one unless otherwise
         # specified (i.e. `def method(foo @select)`).
         if invalid_internal_name?(param_name)
+          default_external = external_name.nil?
+          fresh_index = @temp_arg_count
           external_name ||= param_name
           param_name = temp_arg_name
         end
 
         ivar = InstanceVar.new(@token.value.to_s).at(location)
         var = Var.new(param_name).at(location)
+        if @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
+          diagnostic_name(ivar, @token.input_offset, "parameter")
+          value = ivar.diagnostic_name_slots[DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)].first.as(DiagnosticNameValue::Observed)
+          lowered = DiagnosticLoweredParameter.new(value.source_token, ivar, var, fresh_index, default_external)
+        end
+        external_offset = external_name_token.try(&.input_offset) unless found_string_literal
         assign = Assign.new(ivar, var).at(location)
         if extra_assigns
           extra_assigns.push assign
@@ -6467,12 +6630,20 @@ module Iyi
 
         # Same case as :INSTANCE_VAR for things like @select
         if invalid_internal_name?(param_name)
+          default_external = external_name.nil?
+          fresh_index = @temp_arg_count
           external_name ||= param_name
           param_name = temp_arg_name
         end
 
         cvar = ClassVar.new(@token.value.to_s).at(location)
         var = Var.new(param_name).at(location)
+        if @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
+          diagnostic_name(cvar, @token.input_offset, "parameter")
+          value = cvar.diagnostic_name_slots[DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)].first.as(DiagnosticNameValue::Observed)
+          lowered = DiagnosticLoweredParameter.new(value.source_token, cvar, var, fresh_index, default_external)
+        end
+        external_offset = external_name_token.try(&.input_offset) unless found_string_literal
         assign = Assign.new(cvar, var).at(location)
         if extra_assigns
           extra_assigns.push assign
@@ -6495,6 +6666,7 @@ module Iyi
           end
           check_valid_param_name(external_name_token)
           param_offset = external_name_token.input_offset
+          param_snapshot = external_snapshot
         else
           unexpected_token
         end
@@ -6507,7 +6679,7 @@ module Iyi
 
       skip_space
 
-      {param_name, external_name, found_space, uses_param, param_offset, external_offset}
+      {param_name, external_name, found_space, uses_param, param_offset, external_offset, param_snapshot, external_snapshot, lowered}
     end
 
     def invalid_internal_name?(keyword)
@@ -6701,6 +6873,7 @@ module Iyi
       name = @token.value.to_s
       name_location = @token.location
       name_offset = @token.input_offset
+      name_snapshot = diagnostic_current_token_snapshot
 
       if force_call && !@token.value
         name = @token.type.to_s
@@ -6716,7 +6889,7 @@ module Iyi
         var.doc = doc
         var.location = name_location
         var.end_location = end_location
-        diagnostic_name(var, name_offset, "local_reference")
+        diagnostic_name(var, name_offset, "local_reference", token_snapshot: name_snapshot)
         next_token
         return var
       end
@@ -6897,7 +7070,9 @@ module Iyi
               unless name_followed_by_space
                 warnings.add_warning_at(@token.location, "space required before colon in type declaration (run `iyi fmt` to fix this)")
               end
-              declare_var = parse_type_declaration(Var.new(name).at(location).at_end(end_location))
+              declared_name = Var.new(name).at(location).at_end(end_location)
+              diagnostic_name(declared_name, name_offset, "local_reference", token_snapshot: name_snapshot)
+              declare_var = parse_type_declaration(declared_name)
               end_location = declare_var.end_location
 
               # Don't declare a local variable if it happens directly as an argument
@@ -6926,10 +7101,10 @@ module Iyi
       node.location = location
       node.end_location = block.try(&.end_location) || call_args.try(&.end_location) || end_location
       if node.is_a?(Call)
-        node.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset)
-        diagnostic_name(node, name_offset, "method_name", node.diagnostic_origin)
+        node.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset, token_snapshot: name_snapshot)
+        diagnostic_name(node, name_offset, "method_name", node.diagnostic_origin, token_snapshot: name_snapshot)
       elsif node.is_a?(Var)
-        diagnostic_name(node, name_offset, "local_reference")
+        diagnostic_name(node, name_offset, "local_reference", token_snapshot: name_snapshot)
       end
       node
     end
@@ -7343,12 +7518,14 @@ module Iyi
       named_args = [] of NamedArgument
       while true
         name_offset = nil
+        name_snapshot = nil
         if first_name
           name = first_name
           first_name = nil
         else
           if named_tuple_start?
             name_offset = @token.input_offset
+            name_snapshot = diagnostic_current_token_snapshot
             name = @token.value.to_s
             next_token_never_a_symbol
           elsif string_literal_start?
@@ -7383,7 +7560,7 @@ module Iyi
         end
 
         argument = NamedArgument.new(name, value).at(location)
-        diagnostic_name(argument, name_offset, "named_entry", slot: DiagnosticNameSlot.new(DiagnosticNameSlotKind::NamedEntry)) if name_offset
+        diagnostic_name(argument, name_offset, "named_entry", slot: DiagnosticNameSlot.new(DiagnosticNameSlotKind::NamedEntry), token_snapshot: name_snapshot) if name_offset
         named_args << argument
         skip_space
         if @token.type.op_comma?
@@ -7463,9 +7640,11 @@ module Iyi
       case @token.type
       when .ident?
         var = Var.new(name)
+        diagnostic_name(var, @token.input_offset, "local_reference")
         push_var var
       when .instance_var?
         var = InstanceVar.new(name)
+        diagnostic_name(var, @token.input_offset, "instance_variable")
       when .underscore?
         var = Underscore.new
       else
@@ -7479,13 +7658,14 @@ module Iyi
     def parse_generic_or_global_call
       location = @token.location
       diagnostic_start = @token.input_offset
+      diagnostic_snapshot = diagnostic_current_token_snapshot
       next_token_skip_space_or_newline
 
       case @token.type
       when .ident?
         set_visibility parse_var_or_call global: true, location: location
       when .const?
-        parse_const global: true, location: location, diagnostic_start: diagnostic_start
+        parse_const global: true, location: location, diagnostic_start: diagnostic_start, diagnostic_snapshot: diagnostic_snapshot
       else
         unexpected_token
       end
@@ -7694,7 +7874,7 @@ module Iyi
 
     def parse_path(global, location)
       names = [check_const]
-      name_offsets = (@diagnostic_capture || @diagnostic_expansion || @diagnostic_regions) ? [@token.input_offset] : nil
+      name_offsets = (@diagnostic_capture || @diagnostic_expansion || @diagnostic_regions) ? [{@token.input_offset, diagnostic_current_token_snapshot}] : nil
       end_location = token_end_location
 
       @wants_regex = false
@@ -7711,7 +7891,7 @@ module Iyi
           ::raise refusal
         end
         names << check_const
-        name_offsets.try &.<<(@token.input_offset)
+        name_offsets.try &.<<({@token.input_offset, diagnostic_current_token_snapshot})
         end_location = token_end_location
 
         @wants_regex = false
@@ -7720,8 +7900,8 @@ module Iyi
 
       path = Path.new(names, global).at(location).at_end(end_location)
       if offsets = name_offsets
-        offsets.each_with_index do |offset, index|
-          diagnostic_name(path, offset, "path_segment", slot: DiagnosticNameSlot.new(DiagnosticNameSlotKind::PathSegment, index))
+        offsets.each_with_index do |observation, index|
+          diagnostic_name(path, observation[0], "path_segment", slot: DiagnosticNameSlot.new(DiagnosticNameSlotKind::PathSegment, index), token_snapshot: observation[1])
         end
       end
       path
@@ -7766,8 +7946,10 @@ module Iyi
       while @token.type != end_token
         name_location = @token.location
         name_offset = nil
+        name_snapshot = nil
         if named_tuple_start?
           name_offset = @token.input_offset
+          name_snapshot = diagnostic_current_token_snapshot
           name = @token.value.to_s
           next_token
         elsif string_literal_start?
@@ -7791,7 +7973,7 @@ module Iyi
         skip_space
 
         argument = NamedArgument.new(name, type).at(name_location)
-        diagnostic_name(argument, name_offset, "named_entry", slot: DiagnosticNameSlot.new(DiagnosticNameSlotKind::NamedEntry)) if name_offset
+        diagnostic_name(argument, name_offset, "named_entry", slot: DiagnosticNameSlot.new(DiagnosticNameSlotKind::NamedEntry), token_snapshot: name_snapshot) if name_offset
         named_args << argument
 
         if @token.type.op_comma?
@@ -8397,6 +8579,8 @@ module Iyi
             if @token.type.ident?
               param_name = @token.value.to_s
               param_location = @token.location
+              param_offset = @token.input_offset
+              param_snapshot = diagnostic_current_token_snapshot
 
               next_token_skip_space_or_newline
               check :OP_COLON
@@ -8410,7 +8594,9 @@ module Iyi
                 end
               end
 
-              params << Arg.new(param_name, nil, param_type).at(param_location)
+              param = Arg.new(param_name, nil, param_type).at(param_location)
+              diagnostic_name(param, param_offset, "parameter", token_snapshot: param_snapshot)
+              params << param
 
               push_var_name param_name if require_body
             else
@@ -8556,7 +8742,9 @@ module Iyi
       next_token_skip_space_or_newline
       offset = case @token.type
                when .instance_var?
-                 InstanceVar.new(@token.value.to_s)
+                 node = InstanceVar.new(@token.value.to_s)
+                 diagnostic_name(node, @token.input_offset, "instance_variable")
+                 node
                when .number?
                  raise "expecting an integer offset, not '#{@token}'", @token if !@token.number_kind.i32?
                  NumberLiteral.new(@token.value.to_s, @token.number_kind)
@@ -8652,12 +8840,14 @@ module Iyi
     def parse_c_struct_or_union_fields(exps)
       doc = @token.doc
       vars = [Var.new(@token.value.to_s).at(@token.location).at_end(token_end_location)]
+      diagnostic_name(vars.last, @token.input_offset, "local_reference")
 
       next_token_skip_space_or_newline
 
       while @token.type.op_comma?
         next_token_skip_space_or_newline
         vars << Var.new(check_ident).at(@token.location).at_end(token_end_location)
+        diagnostic_name(vars.last, @token.input_offset, "local_reference")
         next_token_skip_space_or_newline
       end
 
@@ -8715,6 +8905,8 @@ module Iyi
         case @token.type
         when .const?
           constant_name = @token.value.to_s
+          name_offset = @token.input_offset
+          name_snapshot = diagnostic_current_token_snapshot
           member_doc = @token.doc
 
           next_token_skip_space
@@ -8737,6 +8929,7 @@ module Iyi
           end
 
           arg = Arg.new(constant_name, constant_value).at(location).at_end(constant_value || location)
+          diagnostic_name(arg, name_offset, "enum_member", slot: DiagnosticNameSlot.new(DiagnosticNameSlotKind::EnumMember), token_snapshot: name_snapshot)
           arg.doc = member_doc
 
           members << arg
@@ -8770,6 +8963,7 @@ module Iyi
           end
         when .class_var?
           class_var = ClassVar.new(@token.value.to_s).at(location)
+          diagnostic_name(class_var, @token.input_offset, "class_variable")
 
           next_token_skip_space
           check :OP_EQ
@@ -8870,10 +9064,12 @@ module Iyi
 
     def consume_def_equals_sign
       @diagnostic_last_def_equals_offset = nil
+      @diagnostic_last_def_equals_snapshot = nil
       end_location = token_end_location
       next_token
       if @token.type.op_eq?
         @diagnostic_last_def_equals_offset = @token.input_offset
+        @diagnostic_last_def_equals_snapshot = diagnostic_current_token_snapshot
         end_location = token_end_location
         next_token
         {true, end_location}
