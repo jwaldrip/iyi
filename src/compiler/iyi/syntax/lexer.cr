@@ -55,8 +55,9 @@ module Iyi
     end
 
     # The delimiter a journal entry records, encoded the way `diagnostic_production` encodes it.
-    private def diagnostic_delimiter(state : Token::DelimiterState) : {String, String, String, Bool}
-      {state.kind.to_s, state.nest.to_s, state.end.to_s, state.allow_escapes}
+    private def diagnostic_delimiter(state : Token::DelimiterState) : DiagnosticRenderedDelimiter
+      DiagnosticRenderedDelimiter.new(state.kind.to_s, state.nest.to_s, state.end.to_s, state.allow_escapes,
+        heredoc_indent: state.heredoc_indent)
     end
 
     private def diagnostic_record_observation : Nil
@@ -77,7 +78,7 @@ module Iyi
         delimiter = diagnostic_delimiter(@token.delimiter_state)
       end
       observations << DiagnosticRenderedToken.new(start, finish, kind.to_s, raw, iyi? ? "Iyi" : "Crystal",
-        value_base64: value_base64, delimiter: delimiter,
+        value_base64: value_base64, delimiter: delimiter, line: @token.line_number,
         passed_backslash_newline: @token.passed_backslash_newline, invalid_escape: @token.invalid_escape)
     end
 
