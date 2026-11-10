@@ -6214,8 +6214,8 @@ module Iyi
     end
 
     private def def_flags_of(a_def) : ParseDefFlags
-      ParseDefFlags.new(a_def.calls_super, a_def.calls_initialize, a_def.calls_previous_def,
-        a_def.uses_block_arg, a_def.assigns_special_var)
+      ParseDefFlags.new(a_def.calls_super?, a_def.calls_initialize?, a_def.calls_previous_def?,
+        a_def.uses_block_arg?, a_def.assigns_special_var?)
     end
 
     def parse_def(is_abstract = false, is_macro_def = false, doc = nil)

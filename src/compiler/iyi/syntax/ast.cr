@@ -97,10 +97,10 @@ module Iyi
     end
 
     def diagnostic_literal_production(field : String, index : Int32, segments : Array(DiagnosticLiteralProductionSegment)) : Nil
-      raise ArgumentError.new("invalid literal production field") if field.empty? || index < 0 || segments.empty?
+      ::raise ArgumentError.new("invalid literal production field") if field.empty? || index < 0 || segments.empty?
       productions = (@diagnostic_literal_productions ||= {} of {String, Int32} => Array(DiagnosticLiteralProductionSegment))
       key = {field, index}
-      raise ArgumentError.new("duplicate literal production field") if productions.has_key?(key)
+      ::raise ArgumentError.new("duplicate literal production field") if productions.has_key?(key)
       productions[key] = segments.dup
     end
 
@@ -114,10 +114,10 @@ module Iyi
     end
 
     def diagnostic_literal_name(field : String, index : Int32, literal : DiagnosticParsedLiteral) : Nil
-      raise ArgumentError.new("invalid literal-name field") if field.empty? || index < 0
+      ::raise ArgumentError.new("invalid literal-name field") if field.empty? || index < 0
       names = (@diagnostic_literal_names ||= {} of {String, Int32} => DiagnosticParsedLiteral)
       key = {field, index}
-      raise ArgumentError.new("duplicate literal-name field") if names.has_key?(key)
+      ::raise ArgumentError.new("duplicate literal-name field") if names.has_key?(key)
       names[key] = literal
     end
 
