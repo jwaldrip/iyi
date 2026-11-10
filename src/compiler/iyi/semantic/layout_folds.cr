@@ -97,7 +97,7 @@ module Iyi
       if self.class.open_layout?(type)
         return [id_for(type, false)]
       end
-      return [] of Int32 if path.any? { |visited| visited.equal?(type) }
+      return [] of Int32 if path.any? { |visited| visited.same?(type) }
 
       path << type
       roots = instance ? instance_roots(type, path) : value_roots(type, path)

@@ -3340,7 +3340,7 @@ module Iyi
       expanded = NumberLiteral.new(offset.to_s, :i32)
       expanded.type = @program.int32
       node.expanded = expanded
-      @program.record_layout_fold LayoutFold.new(node, kind, subject, ivar_index, offset, type_argument, @typed_def)
+      @program.record_layout_fold LayoutFold.new(node, kind, subject, ivar_index.to_i32, offset, type_argument, @typed_def)
       node.type = @program.int32
 
       false
