@@ -100,10 +100,10 @@ module Iyi::IyiMod
   # module that handles no raw memory.
   # v63 adds intrinsic signature origins and an optional diagnostic provenance
   # section. Older artifacts must be rebuilt rather than decoded as v63.
-  # v64 adds the `QuotedName` derivation (derived-name tag 9; tags 7 and 8 are
-  # reserved for the operator and structural names) and the String, Symbol and
-  # percent-array type sugars, appended to their tables so every existing number
-  # keeps its meaning. Older artifacts must be rebuilt rather than decoded as v64.
+  # v64 adds the `QuotedName` derivation (derived-name tag 9), the operator and structural name
+  # derivations (derived-name tags 7 and 8), and the String, Symbol and percent-array type sugars,
+  # appended to their tables so every existing number keeps its meaning. Older artifacts must be
+  # rebuilt rather than decoded as v64.
   FORMAT_VERSION = 64_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
@@ -377,6 +377,11 @@ module Iyi::IyiMod
         origin.module_header_origin.try { |header| intern(header) }
         origin.source_segments.each { |token| intern_source_token(token) }
         origin.source_names.try { |names| names.each { |source| intern_name_value(source.name) } }
+        # A name derivation interns its anchor, then the events of its witnesses with their dependencies.
+        origin.operator_anchor.try { |anchor| intern(anchor) }
+        origin.operator_witnesses.each { |witness| witness.event.try { |event| intern_token_event(event) } }
+        origin.structural_anchor.try { |anchor| intern(anchor) }
+        origin.structural_witnesses.each { |witness| witness.event.try { |event| intern_token_event(event) } }
         if producer = origin.producer
           case producer
           when DiagnosticBoundProducer::SemanticSignatureType, DiagnosticBoundProducer::ConstantAccessor
@@ -650,11 +655,30 @@ module Iyi::IyiMod
       end
     end
 
+    # Operator and structural witnesses (derived-name tags 7 and 8). Each witness spends at least 18
+    # fixed bytes, so the count is checked against the remaining bytes by the reader before allocation.
+    def write_derived_witnesses(io : IO, witnesses : Array(DiagnosticOperatorWitness)) : Nil
+      io.write_bytes witnesses.size.to_u32, FORMAT
+      witnesses.each do |witness|
+        io.write_bytes witness.input_start.to_u32, FORMAT
+        io.write_bytes witness.input_end.to_u32, FORMAT
+        DiagnosticOrigins.write_string io, witness.token_kind
+        DiagnosticOrigins.write_string io, witness.raw_text
+        DiagnosticOrigins.write_choice(io, witness.selection.to_s, TOKEN_SELECTIONS, 0)
+        if event = witness.event
+          io.write_byte 1_u8
+          write_token_event(io, event)
+        else
+          io.write_byte 0_u8
+        end
+      end
+    end
+
     def read_token_event(io : IO) : DiagnosticTokenEvent
       start_offset = io.read_bytes(UInt32, FORMAT).to_i32
       end_offset = io.read_bytes(UInt32, FORMAT).to_i32
-      kind = DiagnosticOrigins.read_string(io)
-      text = DiagnosticOrigins.read_string(io)
+      kind = DiagnosticOrigins.read_origin_string(io)
+      text = DiagnosticOrigins.read_origin_string(io)
       mode = DiagnosticOrigins.read_choice(io, TOKEN_MODES, 0)
       selection_name = DiagnosticOrigins.read_choice(io, TOKEN_SELECTIONS, 0)
       selection = DiagnosticTokenSelection.values.find { |candidate| candidate.to_s == selection_name } ||
@@ -662,6 +686,11 @@ module Iyi::IyiMod
       count = io.read_bytes(UInt32, FORMAT)
       if io.is_a?(IO::Memory) && count.to_u64 > ((io.size - io.pos) // 17).to_u64
         raise ArgumentError.new("macro emission parts exceed remaining bytes")
+      end
+      # Every emission part adds at least 1024 unfolded bytes to its event, so a count beyond the unfolded
+      # budget is refused before the array is allocated.
+      if count.to_u64 * 1024_u64 > DiagnosticOrigin::MAX_UNFOLDED_BYTES
+        raise ArgumentError.new("macro emission parts exceed graph budget")
       end
       parts = Array(DiagnosticEmissionPart).new(count) do
         tag = io.read_byte
@@ -684,6 +713,33 @@ module Iyi::IyiMod
         end
       end
       DiagnosticTokenEvent.new(start_offset, end_offset, kind, text, mode, selection, parts)
+    end
+
+    # Operator and structural witnesses (derived-name tags 7 and 8). The permitted count is enforced before the
+    # array is allocated; the model constructor enforces the exact shape of each production.
+    def read_derived_witnesses(io : IO, minimum : UInt32, maximum : UInt32) : Array(DiagnosticOperatorWitness)
+      count = io.read_bytes(UInt32, FORMAT)
+      if count < minimum || count > maximum
+        raise ArgumentError.new("diagnostic name witness count is not permitted for its production")
+      end
+      if io.is_a?(IO::Memory) && count.to_u64 > ((io.size - io.pos) // 18).to_u64
+        raise ArgumentError.new("diagnostic name witnesses exceed remaining bytes")
+      end
+      Array(DiagnosticOperatorWitness).new(count) do
+        start_offset = DiagnosticOrigins.read_int32(io)
+        end_offset = DiagnosticOrigins.read_int32(io)
+        kind = DiagnosticOrigins.read_origin_string(io)
+        raw = DiagnosticOrigins.read_origin_string(io)
+        selection_name = DiagnosticOrigins.read_choice(io, TOKEN_SELECTIONS, 0)
+        selection = DiagnosticTokenSelection.values.find { |candidate| candidate.to_s == selection_name } ||
+                    raise ArgumentError.new("unknown diagnostic token selection")
+        event = case io.read_byte
+                when 0_u8 then nil
+                when 1_u8 then read_token_event(io)
+                else raise ArgumentError.new("invalid diagnostic name witness event marker")
+                end
+        DiagnosticOperatorWitness.new(start_offset, end_offset, kind, raw, selection, event)
+      end
     end
 
     def write_anchor_evidence(io : IO, evidence : DiagnosticAnchorEvidence) : Nil
@@ -971,6 +1027,28 @@ module Iyi::IyiMod
             io.write_bytes origin.quoted_literal_start.not_nil!.to_u32, FORMAT
             io.write_bytes origin.quoted_literal_end.not_nil!.to_u32, FORMAT
             DiagnosticOrigins.write_string(io, origin.rendered_text)
+          when "OperatorName"
+            io.write_byte 7_u8
+            io.write_byte origin.operator_production.not_nil!.value
+            io.write_bytes @indices[origin.operator_anchor.not_nil!], FORMAT
+            DiagnosticOrigins.write_string io, origin.operator_input_sha256.not_nil!
+            io.write_bytes origin.operator_input_bytesize.not_nil!.to_u32, FORMAT
+            DiagnosticOrigins.write_choice(io, origin.operator_lexical_mode.not_nil!, TOKEN_MODES, 0)
+            write_derived_witnesses io, origin.operator_witnesses
+          when "StructuralName"
+            io.write_byte 8_u8
+            io.write_byte origin.structural_production.not_nil!.value
+            io.write_bytes @indices[origin.structural_anchor.not_nil!], FORMAT
+            DiagnosticOrigins.write_string io, origin.structural_input_sha256.not_nil!
+            io.write_bytes origin.structural_input_bytesize.not_nil!.to_u32, FORMAT
+            DiagnosticOrigins.write_choice(io, origin.structural_lexical_mode.not_nil!, TOKEN_MODES, 0)
+            write_derived_witnesses io, origin.structural_witnesses
+            if fresh_index = origin.structural_fresh_index
+              io.write_byte 1_u8
+              io.write_bytes fresh_index.to_u32, FORMAT
+            else
+              io.write_byte 0_u8
+            end
           else
             raise ArgumentError.new("unknown diagnostic name derivation")
           end
@@ -1087,6 +1165,27 @@ module Iyi::IyiMod
                      rendered_text = read_string(io)
                      DiagnosticOrigin::DerivedName.quoted_name(context, input_sha256, input_bytesize, lexical_mode,
                        literal_start, literal_end, rendered_text)
+                  when 7_u8
+                    op_production = read_operator_production(io)
+                    op_anchor = table.parent(io.read_bytes(UInt32, FORMAT))
+                    op_sha256 = read_origin_string(io)
+                    op_bytesize = read_int32(io)
+                    op_mode = read_choice(io, TOKEN_MODES, 0)
+                    op_witnesses = table.read_derived_witnesses(io, 1_u32, 3_u32)
+                    DiagnosticOrigin::DerivedName.operator_name(op_production, op_anchor, op_sha256, op_bytesize, op_mode, op_witnesses)
+                  when 8_u8
+                    st_production = read_structural_production(io)
+                    st_anchor = table.parent(io.read_bytes(UInt32, FORMAT))
+                    st_sha256 = read_origin_string(io)
+                    st_bytesize = read_int32(io)
+                    st_mode = read_choice(io, TOKEN_MODES, 0)
+                    st_witnesses = table.read_derived_witnesses(io, 2_u32, 2_u32)
+                    st_fresh = case io.read_byte
+                               when 0_u8 then nil
+                               when 1_u8 then read_int32(io)
+                               else raise ArgumentError.new("invalid structural fresh index marker")
+                               end
+                    DiagnosticOrigin::DerivedName.structural_name(st_production, st_anchor, st_sha256, st_bytesize, st_mode, st_witnesses, st_fresh)
                    else
                      raise ArgumentError.new("unknown diagnostic name derivation tag")
                    end
@@ -1127,6 +1226,35 @@ module Iyi::IyiMod
       value
     end
 
+    # Origin strings are bounded by the graph budget before allocation: each spelled byte adds six unfolded bytes
+    # to every origin or event that holds it, so a longer string cannot fit any valid graph.
+    def self.read_origin_string(io : IO) : String
+      size = io.read_bytes(UInt32, FORMAT)
+      if io.is_a?(IO::Memory) && size.to_u64 > (io.size - io.pos).to_u64
+        raise ArgumentError.new("truncated diagnostic origin string")
+      end
+      if size.to_u64 * 6_u64 > DiagnosticOrigin::MAX_UNFOLDED_BYTES
+        raise ArgumentError.new("diagnostic origin string exceeds graph budget")
+      end
+      bytes = Bytes.new(size)
+      io.read_fully(bytes)
+      value = String.new(bytes)
+      raise ArgumentError.new("invalid UTF-8 in diagnostic section") unless value.valid_encoding?
+      value
+    end
+
+    def self.read_operator_production(io : IO) : DiagnosticOperatorProduction
+      value = io.read_byte || raise ArgumentError.new("missing diagnostic operator production")
+      DiagnosticOperatorProduction.values.find { |candidate| candidate.value == value } ||
+        raise ArgumentError.new("unknown diagnostic operator production")
+    end
+
+    def self.read_structural_production(io : IO) : DiagnosticStructuralProduction
+      value = io.read_byte || raise ArgumentError.new("missing diagnostic structural production")
+      DiagnosticStructuralProduction.values.find { |candidate| candidate.value == value } ||
+        raise ArgumentError.new("unknown diagnostic structural production")
+    end
+
     def self.read_int32(io : IO) : Int32
       value = io.read_bytes(UInt32, FORMAT)
       raise ArgumentError.new("diagnostic integer exceeds Int32") if value > Int32::MAX.to_u32
@@ -1144,7 +1272,8 @@ module Iyi::IyiMod
   # The section is built and decoded independently of the ordinary source
   # positions. Its caller must also prove complete fragment and object coverage.
   class DiagnosticSection
-    # 5 adds the QuotedName derivation and the String, Symbol and percent-array type sugars.
+    # 5 adds the QuotedName derivation, the operator and structural name derivations (tags 7 and 8), and the
+    # String, Symbol and percent-array type sugars.
     SCHEMA = 5_u32
 
     getter fragments = {} of String => DiagnosticFragment

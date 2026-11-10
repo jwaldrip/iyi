@@ -139,4 +139,36 @@ describe "iyimod literal names and type sugars" do
       expect_raises(Iyi::IyiMod::Error, /format v63, this compiler writes v64/) { Iyi::IyiMod.read(path) }
     end
   end
+
+  it "pins the operator and structural production and token selection numbers" do
+    Iyi::DiagnosticOperatorProduction::OpAssign.value.should eq(1_u8)
+    Iyi::DiagnosticOperatorProduction::Command.value.should eq(7_u8)
+    Iyi::DiagnosticStructuralProduction::UnnamedFunParameter.value.should eq(1_u8)
+    Iyi::DiagnosticStructuralProduction::ShortBlockArgument.value.should eq(2_u8)
+    Iyi::IyiMod::DiagnosticOrigins::TOKEN_SELECTIONS.should eq(%w(Whole SignedNumberSign))
+    Iyi::IyiMod::DiagnosticOrigins::TOKEN_MODES.should eq(%w(Crystal Iyi))
+  end
+
+  it "encodes operator and structural names under derived-name tags 7 and 8" do
+    anchor = Iyi::DiagnosticOrigin::Written.new("spec", "/spec/literal_names.cr", 2, "Call", "method")
+    operator = Iyi::DiagnosticOrigin::DerivedName.operator_name(Iyi::DiagnosticOperatorProduction::OpAssign, anchor,
+      names_sha("a += 1"), 6, "Crystal",
+      [Iyi::DiagnosticOperatorWitness.new(2, 4, "+=", "+=", Iyi::DiagnosticTokenSelection::Whole, nil)])
+    operator_table = Iyi::IyiMod::DiagnosticOrigins.new
+    operator_table.intern(operator)
+    operator_io = IO::Memory.new
+    operator_table.write(operator_io)
+    names_index_of(operator_io.to_slice, Bytes[4_u8, 7_u8, 1_u8]).should be > 0
+
+    block_anchor = Iyi::DiagnosticOrigin::Written.new("spec", "/spec/literal_names.cr", 3, "Block", "ampersand")
+    short_block = Iyi::DiagnosticOrigin::DerivedName.structural_name(Iyi::DiagnosticStructuralProduction::ShortBlockArgument,
+      block_anchor, names_sha("abc&.d"), 6, "Crystal",
+      [Iyi::DiagnosticOperatorWitness.new(3, 4, "&", "&", Iyi::DiagnosticTokenSelection::Whole, nil),
+       Iyi::DiagnosticOperatorWitness.new(4, 5, ".", ".", Iyi::DiagnosticTokenSelection::Whole, nil)], 0)
+    structural_table = Iyi::IyiMod::DiagnosticOrigins.new
+    structural_table.intern(short_block)
+    structural_io = IO::Memory.new
+    structural_table.write(structural_io)
+    names_index_of(structural_io.to_slice, Bytes[4_u8, 8_u8, 2_u8]).should be > 0
+  end
 end
