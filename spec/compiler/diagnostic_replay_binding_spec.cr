@@ -412,10 +412,12 @@ describe "DiagnosticCaptureBinding.bind!" do
     end
   end
 
-  it "fails closed on a string literal until its journal binding (C-L) lands" do
-    expect_raises(ArgumentError, /literal evidence requires journal literal binding/) do
-      binding_spec_bind(BINDING_SPEC_LITERAL, "literal")
-    end
+  it "binds a string literal through its journal binding (C-L)" do
+    # The value mutation is refused by the bundled walk in literal_binding_spec.cr.
+    bound = binding_spec_bind(BINDING_SPEC_LITERAL, "literal")
+    root = bound.root
+    assign = (root.is_a?(Iyi::Expressions) ? root.expressions[0] : root).as(Iyi::Assign)
+    assign.value.as(Iyi::StringLiteral).value.should eq "abc"
   end
 end
 
@@ -528,10 +530,21 @@ describe "DiagnosticCaptureBinding.bind! unnamed parameters and name evidence" d
     bound.should be_a(Iyi::DiagnosticBoundCapture)
   end
 
-  it "refuses a string real name as literal evidence, not as a misplaced separator" do
-    expect_raises(ArgumentError, "literal evidence requires journal literal binding") do
-      binding_spec_bind("lib LibC\n  fun f = \"c_f\"(Int32) : Int32\nend\n", "cf")
-    end
+  it "binds a string real name before an unnamed parameter" do
+    bound = binding_spec_bind("lib LibC\n  fun f = \"c_f\"(Int32) : Int32\nend\n", "cf")
+    lib_body = bound.root.as(Iyi::LibDef).body
+    fun = (lib_body.is_a?(Iyi::Expressions) ? lib_body.expressions.first : lib_body).as(Iyi::FunDef)
+    fun.name.should eq "f"
+    fun.real_name.should eq "c_f"
+    fun.args.size.should eq 1
+  end
+
+  it "keeps a parenthesis inside a string real name out of the separator search" do
+    bound = binding_spec_bind("lib LibC\n  fun f = \"c(f\"(Int32) : Int32\nend\n", "cparen")
+    lib_body = bound.root.as(Iyi::LibDef).body
+    fun = (lib_body.is_a?(Iyi::Expressions) ? lib_body.expressions.first : lib_body).as(Iyi::FunDef)
+    fun.real_name.should eq "c(f"
+    fun.args.size.should eq 1
   end
 
   it "binds an explicit real name on a lib fun" do

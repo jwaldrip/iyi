@@ -5,6 +5,13 @@ class Iyi::ASTNode
     @diagnostic_literal_names.try &.delete({field, index})
     @diagnostic_literal_productions.try &.delete({field, index})
   end
+
+  # Writes through the node's own metadata; the public readers return copies.
+  def literal_binding_spec_replace(field : String, index : Int32, name : Iyi::DiagnosticParsedLiteral,
+                                   productions : Array(Iyi::DiagnosticLiteralProductionSegment)) : Nil
+    @diagnostic_literal_names.try { |names| names[{field, index}] = name }
+    @diagnostic_literal_productions.try { |all| all[{field, index}] = productions }
+  end
 end
 
 private def literal_binding_source(source : String, suffix : String, & : Iyi::DiagnosticBoundCapture ->)
@@ -41,6 +48,29 @@ private def literal_binding_replay(source : String, &)
   ensure
     File.delete(path) if File.file?(path)
   end
+end
+
+# The bundled walk bind! runs after its digest check. The identity, structural
+# evidence and literal bundle are built from the replayed root before any control
+# mutates it, so the bundle's graph is the unmutated baseline. A control verifies
+# the baseline, mutates the same root, and calls verify! again on the same bundle.
+private class LiteralBindingSpecWalk
+  def initialize(@claim : Iyi::AcceptedCaptureInput, @root : Iyi::ASTNode,
+                 @journal : Iyi::DiagnosticReplayJournal, parser : Iyi::Parser)
+    @identity = Iyi::DiagnosticModuleIdentity.from(@root, @claim, @journal)
+    @structural = Iyi::DiagnosticUnnamedParamBinder.new(@claim, @journal).verify!(@root)
+    @bundle = Iyi::DiagnosticLiteralReplayAssociations.new(@claim, @journal, parser, @root)
+  end
+
+  def verify! : Nil
+    Iyi::DiagnosticEvidenceBinding.new(@claim, @journal, @identity, @structural, @bundle).verify!(@root)
+  end
+end
+
+# The FunDef of a replayed lib with one fun, whether or not the lib wraps it in Expressions.
+private def literal_binding_lib_fun(root : Iyi::ASTNode) : Iyi::FunDef
+  body = root.as(Iyi::LibDef).body
+  (body.is_a?(Iyi::Expressions) ? body.expressions.first : body).as(Iyi::FunDef)
 end
 
 describe Iyi::DiagnosticLiteralReplay do
@@ -213,8 +243,12 @@ describe Iyi::DiagnosticLiteralReplayAssociations do
     token = Iyi::DiagnosticRenderedToken.new(0, 3, "CHAR", "'a'", "Crystal", value_base64: "YQ==")
     journal = Iyi::DiagnosticReplayJournal.new([token])
     journal.entries.clear
-    exposed = journal.entries.first
-    exposed.token_text.to_slice[1] = 'z'.ord.to_u8
+    journal.entries.size.should eq 1
+    first_read = journal.entries.first.token_text
+    second_read = journal.entries.first.token_text
+    first_read.same?(second_read).should be_false
+    first_read.to_unsafe[1] = 'z'.ord.to_u8
+    journal.entries.first.token_text.should eq "'a'"
     journal.literal_entry!(0, 3, "CHAR", "Crystal").should eq(token)
   end
 end
@@ -254,14 +288,22 @@ describe "literal source binding" do
   it "binds ordinary, folded, continued and array literals in both lexical modes" do
     source = "a = \"hello\"\nb = \"pre\#{\"mid\"}post\"\nc = \"a\" \\\n  \"b\"\nd = %w(one two)\ne = %i(one two)\nf = 'x'\n"
     [".cr", ".iyi"].each do |suffix|
-      literal_binding_source(source, suffix) { |bound| bound.root.should_not be_nil }
+      literal_binding_source(source, suffix) do |bound|
+        expressions = bound.root.as(Iyi::Expressions).expressions
+        expressions[3].as(Iyi::Assign).value.as(Iyi::ArrayLiteral).of.as(Iyi::Path).names.should eq ["String"]
+        expressions[4].as(Iyi::Assign).value.as(Iyi::ArrayLiteral).of.as(Iyi::Path).names.should eq ["Symbol"]
+      end
     end
   end
 
   it "binds quoted names, symbols, binary escapes and dynamic percent elements" do
     source = "a = {\"quoted name\": \"x\"}\nb = :\"quoted symbol\"\nc = \"\\xff\"\nd = %W(one \#{name} \#{*items})\n"
     [".cr", ".iyi"].each do |suffix|
-      literal_binding_source(source, suffix) { |bound| bound.root.should_not be_nil }
+      literal_binding_source(source, suffix) do |bound|
+        expressions = bound.root.as(Iyi::Expressions).expressions
+        expressions[1].as(Iyi::Assign).value.as(Iyi::SymbolLiteral).value.should eq "quoted symbol"
+        expressions[3].as(Iyi::Assign).value.as(Iyi::ArrayLiteral).of.as(Iyi::Path).names.should eq ["String"]
+      end
     end
   end
 
@@ -282,7 +324,11 @@ describe "literal source binding" do
   it "binds require strings, magic constants, regex and command interpolation" do
     source = "require \"./part\"\na = __FILE__\nb = __DIR__\nc = /x\#{a}/\nd = `echo \#{a}`\n"
     [".cr", ".iyi"].each do |suffix|
-      literal_binding_source(source, suffix) { |bound| bound.root.should_not be_nil }
+      literal_binding_source(source, suffix) do |bound|
+        expressions = bound.root.as(Iyi::Expressions).expressions
+        expressions[0].as(Iyi::Require).string.should eq "./part"
+        expressions[4].as(Iyi::Assign).value.as(Iyi::Call).name.should eq "`"
+      end
     end
   end
 
@@ -320,5 +366,53 @@ describe Iyi::DiagnosticReplayJournal do
     journal.literal_trivia!(0, 3, "Crystal", false)
     expect_raises(ArgumentError, "unwitnessed grammar gap") { journal.literal_trivia!(0, 4, "Crystal", false) }
     expect_raises(ArgumentError, "unwitnessed grammar gap") { journal.literal_trivia!(0, 3, "Iyi", false) }
+  end
+end
+
+describe "literal owner metadata on the bundled walk" do
+  it "binds a quoted real name through the bundled walk" do
+    literal_binding_replay("lib LibC\n  fun f = \"f\"(Int32) : Int32\nend\n") do |root, _reducer, parser, journal, claim|
+      LiteralBindingSpecWalk.new(claim, root, journal, parser).verify!
+      literal_binding_lib_fun(root).real_name.should eq "f"
+    end
+  end
+
+  it "rejects a changed quoted real name through the bundled walk" do
+    literal_binding_replay("lib LibC\n  fun f = \"f\"(Int32) : Int32\nend\n") do |root, _reducer, parser, journal, claim|
+      walk = LiteralBindingSpecWalk.new(claim, root, journal, parser)
+      walk.verify!
+      literal_binding_lib_fun(root).real_name = "d_f"
+      expect_raises(ArgumentError, "literal decoded value differs from scanned tokens") do
+        walk.verify!
+      end
+    end
+  end
+
+  it "rejects a deleted quoted real name's owner metadata through the bundled walk" do
+    literal_binding_replay("lib LibC\n  fun f = \"f\"(Int32) : Int32\nend\n") do |root, _reducer, parser, journal, claim|
+      walk = LiteralBindingSpecWalk.new(claim, root, journal, parser)
+      walk.verify!
+      literal_binding_lib_fun(root).literal_binding_spec_delete("real_name", 0)
+      expect_raises(ArgumentError, "literal owner association differs") do
+        walk.verify!
+      end
+    end
+  end
+
+  it "rejects exchanged owner metadata between equal-valued siblings" do
+    literal_binding_replay("\"same\"\n\"same\"\n") do |root, reducer, parser, _journal, _claim|
+      binder = Iyi::DiagnosticLiteralOwnerBinding.new(reducer, parser.diagnostic_literal_owner_observations)
+      elements = root.as(Iyi::Expressions).expressions
+      elements.each { |element| binder.verify_node!(element) }
+      key = {"value", 0}
+      first_names = elements[0].diagnostic_literal_names[key]
+      second_names = elements[1].diagnostic_literal_names[key]
+      first_productions = elements[0].diagnostic_literal_productions[key]
+      second_productions = elements[1].diagnostic_literal_productions[key]
+      elements[0].literal_binding_spec_replace("value", 0, second_names, second_productions)
+      elements[1].literal_binding_spec_replace("value", 0, first_names, first_productions)
+      expect_raises(ArgumentError, "literal owner association differs") { binder.verify_node!(elements[0]) }
+      expect_raises(ArgumentError, "literal owner association differs") { binder.verify_node!(elements[1]) }
+    end
   end
 end

@@ -74,20 +74,36 @@ private def authority_spec_rebuild(claim : Iyi::AcceptedCaptureInput, input : St
     claim.scopes, claim.warning_policy, contract)
 end
 
-# The replayed root and journal, built as bind! builds them, before the walk.
-private def authority_spec_replay(claim : Iyi::AcceptedCaptureInput) : {Iyi::ASTNode, Iyi::DiagnosticReplayJournal}
+# The replayed root, journal and parser, built as bind! builds them, before the walk.
+private def authority_spec_replay(claim : Iyi::AcceptedCaptureInput) : {Iyi::ASTNode, Iyi::DiagnosticReplayJournal, Iyi::Parser}
   parser = claim.replay_parser
   parser.enable_diagnostic_observations
   root = claim.replay_entry(parser)
-  {root, Iyi::DiagnosticReplayJournal.new(parser.diagnostic_lexical_observations)}
+  {root, Iyi::DiagnosticReplayJournal.new(parser.diagnostic_lexical_observations), parser}
 end
 
-# The walk bind! runs after its digest check, on a root a control may have mutated.
-private def authority_spec_walk(claim : Iyi::AcceptedCaptureInput, root : Iyi::ASTNode,
-                                journal : Iyi::DiagnosticReplayJournal) : Nil
-  identity = Iyi::DiagnosticModuleIdentity.from(root, claim, journal)
-  structural = Iyi::DiagnosticUnnamedParamBinder.new(claim, journal).verify!(root)
-  Iyi::DiagnosticEvidenceBinding.new(claim, journal, identity, structural).verify!(root)
+# The walk bind! runs after its digest check. bind! builds the module identity,
+# the structural evidence and the literal bundle from the replayed root before any
+# evidence check, so the bundle's graph snapshot is taken from the unmutated tree.
+# A control builds this on the pristine replay, proves the baseline passes with
+# verify!, then mutates the same root and calls verify! again on the same bundle.
+private class AuthoritySpecWalk
+  def initialize(@claim : Iyi::AcceptedCaptureInput, @root : Iyi::ASTNode,
+                 @journal : Iyi::DiagnosticReplayJournal, parser : Iyi::Parser)
+    @identity = Iyi::DiagnosticModuleIdentity.from(@root, @claim, @journal)
+    @structural = Iyi::DiagnosticUnnamedParamBinder.new(@claim, @journal).verify!(@root)
+    @bundle = Iyi::DiagnosticLiteralReplayAssociations.new(@claim, @journal, parser, @root)
+  end
+
+  # Runs the evidence walk over the root, which a control may have mutated since construction.
+  def verify! : Nil
+    Iyi::DiagnosticEvidenceBinding.new(@claim, @journal, @identity, @structural, @bundle).verify!(@root)
+  end
+end
+
+# A single-statement body is its one expression, however the parser wrapped it.
+private def authority_spec_single(node : Iyi::ASTNode) : Iyi::ASTNode
+  node.is_a?(Iyi::Expressions) && node.expressions.size == 1 ? authority_spec_single(node.expressions[0]) : node
 end
 
 # The first fun of each lib in a root that is either one lib or several libs.
@@ -332,14 +348,14 @@ describe "CaptureAuthorityPlan slice A: evidence controls on replayed trees" do
   it "D4-A refuses a fun that borrows another fun's name and real-name tokens" do
     authority_spec_with_file(AUTHORITY_SPEC_D4, "d4a") do |path|
       _, claim, _ = authority_spec_recorded(authority_spec_parser(AUTHORITY_SPEC_D4, path))
-      root, journal = authority_spec_replay(claim)
-      authority_spec_walk(claim, root, journal)
-      root, journal = authority_spec_replay(claim)
+      root, journal, parser = authority_spec_replay(claim)
+      walk = AuthoritySpecWalk.new(claim, root, journal, parser)
+      walk.verify!
       fa, fb = authority_spec_lib_funs(root)
       fa.real_name = "puts"
       fa.diagnostic_name_slots = fb.diagnostic_name_slots
       expect_raises(ArgumentError, "fun name is not the token after its fun keyword") do
-        authority_spec_walk(claim, root, journal)
+        walk.verify!
       end
     end
   end
@@ -348,13 +364,15 @@ describe "CaptureAuthorityPlan slice A: evidence controls on replayed trees" do
     source = "lib L\n  fun a = b : Int32\n  fun c(a : Int32) : Int32\nend\n"
     authority_spec_with_file(source, "d4b") do |path|
       _, claim, _ = authority_spec_recorded(authority_spec_parser(source, path))
-      root, journal = authority_spec_replay(claim)
+      root, journal, parser = authority_spec_replay(claim)
+      walk = AuthoritySpecWalk.new(claim, root, journal, parser)
+      walk.verify!
       funs = root.as(Iyi::LibDef).body.as(Iyi::Expressions).expressions.map(&.as(Iyi::FunDef))
       primary = Iyi::DiagnosticNameSlot.new(Iyi::DiagnosticNameSlotKind::Primary)
       funs[0].real_name = "a"
       funs[0].diagnostic_name_slots = {primary => funs[1].args[0].diagnostic_name_slots[primary]}
       expect_raises(ArgumentError, "fun name is not the token after its fun keyword") do
-        authority_spec_walk(claim, root, journal)
+        walk.verify!
       end
     end
   end
@@ -363,7 +381,9 @@ describe "CaptureAuthorityPlan slice A: evidence controls on replayed trees" do
     source = "lib LibA\n  fun a\nend\nlib LibB\n  fun a = puts\nend\n"
     authority_spec_with_file(source, "d4c") do |path|
       _, claim, _ = authority_spec_recorded(authority_spec_parser(source, path))
-      root, journal = authority_spec_replay(claim)
+      root, journal, parser = authority_spec_replay(claim)
+      walk = AuthoritySpecWalk.new(claim, root, journal, parser)
+      walk.verify!
       fa, fb = authority_spec_lib_funs(root)
       origin_a = fa.diagnostic_origin
       slots_a = fa.diagnostic_name_slots
@@ -374,7 +394,7 @@ describe "CaptureAuthorityPlan slice A: evidence controls on replayed trees" do
       fb.diagnostic_name_slots = slots_a
       fb.real_name = "a"
       expect_raises(ArgumentError, /fun anchor lies outside its lib/) do
-        authority_spec_walk(claim, root, journal)
+        walk.verify!
       end
     end
   end
@@ -382,38 +402,76 @@ describe "CaptureAuthorityPlan slice A: evidence controls on replayed trees" do
   it "D4-twin refuses a changed real name that does not carry the borrowed slots" do
     authority_spec_with_file(AUTHORITY_SPEC_D4, "d4twin") do |path|
       _, claim, _ = authority_spec_recorded(authority_spec_parser(AUTHORITY_SPEC_D4, path))
-      root, journal = authority_spec_replay(claim)
+      root, journal, parser = authority_spec_replay(claim)
+      walk = AuthoritySpecWalk.new(claim, root, journal, parser)
+      walk.verify!
       fa, _ = authority_spec_lib_funs(root)
       fa.real_name = "puts"
       expect_raises(ArgumentError, "invalid implicit foreign-name observation") do
-        authority_spec_walk(claim, root, journal)
+        walk.verify!
       end
     end
   end
 
-  it "D2 refuses a heredoc string through the bound walk" do
+  it "D2 binds a heredoc string through the bound walk" do
     source = "x = <<-EOS\n  hello\n  EOS\n"
     authority_spec_with_file(source, "heredoc") do |path|
-      expect_raises(ArgumentError, "literal evidence requires journal literal binding") do
-        authority_spec_bind(authority_spec_parser(source, path))
+      bound = authority_spec_bind(authority_spec_parser(source, path))
+      heredoc = authority_spec_single(bound.root).as(Iyi::Assign).value.as(Iyi::StringInterpolation)
+      heredoc.heredoc_indent.should eq 2
+      heredoc.expressions.map { |piece| piece.as(Iyi::StringLiteral).value }.should eq ["hello"]
+
+      _, claim, _ = authority_spec_recorded(authority_spec_parser(source, path))
+      root, journal, parser = authority_spec_replay(claim)
+      indent_walk = AuthoritySpecWalk.new(claim, root, journal, parser)
+      indent_walk.verify!
+      authority_spec_single(root).as(Iyi::Assign).value.as(Iyi::StringInterpolation).heredoc_indent = 0
+      expect_raises(ArgumentError, "heredoc closer differs") do
+        indent_walk.verify!
+      end
+
+      root, journal, parser = authority_spec_replay(claim)
+      value_walk = AuthoritySpecWalk.new(claim, root, journal, parser)
+      value_walk.verify!
+      child = authority_spec_single(root).as(Iyi::Assign).value.as(Iyi::StringInterpolation).expressions[0]
+      child.as(Iyi::StringLiteral).value = "hellp"
+      expect_raises(ArgumentError, "literal decoded value differs from scanned tokens") do
+        value_walk.verify!
       end
     end
   end
 
-  it "D2 refuses a require, whose string source text has no literal evidence yet" do
+  it "D2 binds a require string through the bound walk" do
     source = "require \"json\"\n"
     authority_spec_with_file(source, "require", ".cr") do |path|
-      expect_raises(ArgumentError, "literal evidence requires journal literal binding") do
-        authority_spec_bind(authority_spec_parser(source, path))
+      bound = authority_spec_bind(authority_spec_parser(source, path))
+      authority_spec_single(bound.root).as(Iyi::Require).string.should eq "json"
+
+      _, claim, _ = authority_spec_recorded(authority_spec_parser(source, path))
+      root, journal, parser = authority_spec_replay(claim)
+      walk = AuthoritySpecWalk.new(claim, root, journal, parser)
+      walk.verify!
+      authority_spec_single(root).as(Iyi::Require).string = "jsom"
+      expect_raises(ArgumentError, "require value differs") do
+        walk.verify!
       end
     end
   end
 
-  it "D2 refuses an asm template, whose source text has no literal evidence yet" do
+  it "D2 binds an asm template through the bound walk" do
     source = "def f\n  asm(\"nop\")\nend\n"
     authority_spec_with_file(source, "asm", ".cr") do |path|
-      expect_raises(ArgumentError, "literal evidence requires journal literal binding") do
-        authority_spec_bind(authority_spec_parser(source, path))
+      bound = authority_spec_bind(authority_spec_parser(source, path))
+      defn = authority_spec_single(bound.root).as(Iyi::Def)
+      authority_spec_single(defn.body).as(Iyi::Asm).text.should eq "nop"
+
+      _, claim, _ = authority_spec_recorded(authority_spec_parser(source, path))
+      root, journal, parser = authority_spec_replay(claim)
+      walk = AuthoritySpecWalk.new(claim, root, journal, parser)
+      walk.verify!
+      authority_spec_single(authority_spec_single(root).as(Iyi::Def).body).as(Iyi::Asm).text = "nip"
+      expect_raises(ArgumentError, "asm text differs") do
+        walk.verify!
       end
     end
   end
