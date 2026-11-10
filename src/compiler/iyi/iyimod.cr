@@ -100,7 +100,11 @@ module Iyi::IyiMod
   # module that handles no raw memory.
   # v63 adds intrinsic signature origins and an optional diagnostic provenance
   # section. Older artifacts must be rebuilt rather than decoded as v63.
-  FORMAT_VERSION = 63_u32
+  # v64 adds the `QuotedName` derivation (derived-name tag 9; tags 7 and 8 are
+  # reserved for the operator and structural names) and the String, Symbol and
+  # percent-array type sugars, appended to their tables so every existing number
+  # keeps its meaning. Older artifacts must be rebuilt rather than decoded as v64.
+  FORMAT_VERSION = 64_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -394,8 +398,8 @@ module Iyi::IyiMod
     HEAD_FORMS = %w(GlobalPathPrefix FirstSplat FirstUnderscore ParenthesizedFirstTarget)
     TOKEN_MODES = %w(Crystal Iyi)
     TOKEN_SELECTIONS = %w(Whole SignedNumberSign)
-    TYPE_SUGARS = %w(Pointer DoublePointer NilableType NilableExpression SelfNilableType StaticArray Tuple NamedTuple NilPredicate)
-    TYPE_SUGAR_RESULTS = %w(Pointer Union Nil StaticArray Tuple NamedTuple Self)
+    TYPE_SUGARS = %w(Pointer DoublePointer NilableType NilableExpression SelfNilableType StaticArray Tuple NamedTuple NilPredicate StringArray SymbolArray)
+    TYPE_SUGAR_RESULTS = %w(Pointer Union Nil StaticArray Tuple NamedTuple Self String Symbol)
 
     def intern_token_event(event : DiagnosticTokenEvent) : Nil
       event.byte_parts.each do |part|
@@ -958,6 +962,15 @@ module Iyi::IyiMod
               io.write_byte 0_u8
             end
             io.write_bytes origin.result_index.not_nil!.to_u32, FORMAT
+          when "QuotedName"
+            io.write_byte 9_u8
+            DiagnosticOrigins.write_string(io, origin.producer_context)
+            DiagnosticOrigins.write_string(io, origin.quoted_input_sha256.not_nil!)
+            io.write_bytes origin.quoted_input_bytesize.not_nil!.to_u32, FORMAT
+            DiagnosticOrigins.write_string(io, origin.quoted_lexical_mode.not_nil!)
+            io.write_bytes origin.quoted_literal_start.not_nil!.to_u32, FORMAT
+            io.write_bytes origin.quoted_literal_end.not_nil!.to_u32, FORMAT
+            DiagnosticOrigins.write_string(io, origin.rendered_text)
           else
             raise ArgumentError.new("unknown diagnostic name derivation")
           end
@@ -1064,6 +1077,16 @@ module Iyi::IyiMod
                                     end
                      index = io.read_bytes(UInt32, FORMAT).to_i32
                      DiagnosticOrigin::DerivedName.module_header_path(header, segments, package_name, index)
+                   when 9_u8
+                     context = read_string(io)
+                     input_sha256 = read_string(io)
+                     input_bytesize = read_int32(io)
+                     lexical_mode = read_string(io)
+                     literal_start = read_int32(io)
+                     literal_end = read_int32(io)
+                     rendered_text = read_string(io)
+                     DiagnosticOrigin::DerivedName.quoted_name(context, input_sha256, input_bytesize, lexical_mode,
+                       literal_start, literal_end, rendered_text)
                    else
                      raise ArgumentError.new("unknown diagnostic name derivation tag")
                    end
@@ -1103,6 +1126,12 @@ module Iyi::IyiMod
       raise ArgumentError.new("invalid UTF-8 in diagnostic section") unless value.valid_encoding?
       value
     end
+
+    def self.read_int32(io : IO) : Int32
+      value = io.read_bytes(UInt32, FORMAT)
+      raise ArgumentError.new("diagnostic integer exceeds Int32") if value > Int32::MAX.to_u32
+      value.to_i32
+    end
   end
 
   record DiagnosticObjectRecords,
@@ -1115,7 +1144,8 @@ module Iyi::IyiMod
   # The section is built and decoded independently of the ordinary source
   # positions. Its caller must also prove complete fragment and object coverage.
   class DiagnosticSection
-    SCHEMA = 4_u32
+    # 5 adds the QuotedName derivation and the String, Symbol and percent-array type sugars.
+    SCHEMA = 5_u32
 
     getter fragments = {} of String => DiagnosticFragment
     getter objects = {} of Int32 => DiagnosticObjectRecords
