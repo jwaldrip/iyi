@@ -127,11 +127,11 @@ describe Iyi::DiagnosticPathSnapshot do
     parser.diagnostic_capture = true
     input = parser.diagnostic_capture_input(Iyi::DiagnosticCaptureInputKind::SourceFile,
       nil, Iyi::DiagnosticCaptureParseEntry::Parse, Iyi::Parser::ParseMode::Normal)
-    trait = parser.parse.as(Iyi::TraitDef)
+    trait_node = parser.parse.as(Iyi::TraitDef)
     checker = Iyi::DiagnosticRecordedEvidenceInputCheck.new(input)
-    checker.verify!(trait)
-    trait.assoc_types.not_nil![0] = "Other"
-    expect_raises(ArgumentError, /trait associated-type projection mismatch/) { checker.verify!(trait) }
+    checker.verify!(trait_node)
+    trait_node.assoc_types.not_nil![0] = "Other"
+    expect_raises(ArgumentError, /trait associated-type projection mismatch/) { checker.verify!(trait_node) }
   end
 
   it "checks imported path and selected-name observations on their owners" do
@@ -160,8 +160,8 @@ end
 
 describe Iyi::DiagnosticDirectChildFields do
   it "reads argument annotations and both definition bound maps directly" do
-    annotation = Iyi::Annotation.new(Iyi::Path.new("Marker"))
-    argument = Iyi::Arg.new("arg", parsed_annotations: [annotation])
+    annotation_node = Iyi::Annotation.new(Iyi::Path.new("Marker"))
+    argument = Iyi::Arg.new("arg", parsed_annotations: [annotation_node])
     definition = Iyi::Def.new("f", [argument])
     definition.free_var_bounds = {"T" => Iyi::Path.new("Trait").as(Iyi::ASTNode)}
     definition.where_bounds = {"U" => Iyi::Path.new("Other").as(Iyi::ASTNode)}
@@ -170,7 +170,7 @@ describe Iyi::DiagnosticDirectChildFields do
     Iyi::DiagnosticDirectChildFields.each(argument) do |field, index, key, child|
       argument_fields << {field, index, key, child}
     end
-    argument_fields.should contain({"parsed_annotations", 0, nil, annotation})
+    argument_fields.should contain({"parsed_annotations", 0, nil, annotation_node})
 
     definition_fields = [] of {String, Int32?, String?, Iyi::ASTNode}
     Iyi::DiagnosticDirectChildFields.each(definition) do |field, index, key, child|

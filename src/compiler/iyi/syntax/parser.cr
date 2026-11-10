@@ -8962,6 +8962,11 @@ module Iyi
       end
 
       path = Path.new(names, global).at(location).at_end(end_location)
+      if @diagnostic_capture && @diagnostic_expansion.nil? && (first = name_offsets.try(&.first?))
+        # A source Path is produced here; its first segment anchors this node,
+        # while every segment retains its own separately recorded name token.
+        path.diagnostic_origin = diagnostic_anchor("Path", "name", first[0], token_snapshot: first[1])
+      end
       if offsets = name_offsets
         offsets.each_with_index do |observation, index|
           diagnostic_name(path, observation[0], "path_segment", slot: DiagnosticNameSlot.new(DiagnosticNameSlotKind::PathSegment, index), token_snapshot: observation[1])

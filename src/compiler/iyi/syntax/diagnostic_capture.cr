@@ -1093,14 +1093,16 @@ module Iyi
       unless class_name == "Iyi::#{kind}" && SUPPORTED.includes?(kind)
         raise ArgumentError.new("unclassified AST node #{class_name}")
       end
-      case node
-      {% for name in SUPPORTED %}
-      when {{name.id}}
-        validate_reflected_fields(node.as({{name.id}}))
+      {% begin %}
+        case node
+        {% for name in SUPPORTED %}
+        when {{name.id}}
+          validate_reflected_fields(node.as({{name.id}}))
+        {% end %}
+        else
+          raise ArgumentError.new("unclassified AST node #{class_name}")
+        end
       {% end %}
-      else
-        raise ArgumentError.new("unclassified AST node #{class_name}")
-      end
     end
   end
 
@@ -1777,12 +1779,60 @@ module Iyi
     end
   end
 
-  alias DiagnosticScalarFieldValue = Bool | Int32 | String | {String, String} | Array(String) | Nil
+  enum DiagnosticScalarShape
+    Null
+    Flag
+    Number
+    Text
+    TextList
+  end
+
+  # One stored scalar as a single concrete type. The reader yields this rather
+  # than a union of Bool, Int32, String and arrays, so every block and nested
+  # builder call sees one static type. The shape selects which field is live.
+  record DiagnosticScalar, shape : DiagnosticScalarShape, flag : Bool, number : Int32,
+    text : String, parts : Array(String) do
+    def self.absent : DiagnosticScalar
+      new(DiagnosticScalarShape::Null, false, 0, "", [] of String)
+    end
+
+    def self.flag(value : Bool) : DiagnosticScalar
+      new(DiagnosticScalarShape::Flag, value, 0, "", [] of String)
+    end
+
+    def self.number(value : Int32) : DiagnosticScalar
+      new(DiagnosticScalarShape::Number, false, value, "", [] of String)
+    end
+
+    def self.text(value : String) : DiagnosticScalar
+      new(DiagnosticScalarShape::Text, false, 0, value, [] of String)
+    end
+
+    def self.parts(value : Array(String)) : DiagnosticScalar
+      new(DiagnosticScalarShape::TextList, false, 0, "", value.dup)
+    end
+
+    def self.optional_number(value : Int32?) : DiagnosticScalar
+      value ? number(value) : absent
+    end
+
+    def self.optional_text(value : String?) : DiagnosticScalar
+      value ? text(value) : absent
+    end
+
+    def self.optional_parts(value : Array(String)?) : DiagnosticScalar
+      value ? parts(value) : absent
+    end
+
+    def self.pair(value : {String, String}?) : DiagnosticScalar
+      value ? parts([value[0], value[1]]) : absent
+    end
+  end
 
   # Direct scalar reader for the listed kinds. Type tags distinguish enum
   # names, integer optionals, booleans and arbitrary-byte strings.
   module DiagnosticDirectScalarFields
-    def self.each(node : ASTNode, & : String, String, DiagnosticScalarFieldValue ->) : Nil
+    def self.each(node : ASTNode, & : String, String, DiagnosticScalar ->) : Nil
       class_name = node.class.name
       kind = class_name.rpartition("::")[2]
       unless class_name == "Iyi::#{kind}" && DiagnosticAstFieldSchema::SUPPORTED.includes?(kind)
@@ -1790,162 +1840,162 @@ module Iyi
       end
       case node
       when Path
-        yield "global", "bool", node.global?
-        yield "visibility", "Visibility", node.visibility.to_s
-        yield "exported", "bool", node.exported?
+        yield "global", "bool", DiagnosticScalar.flag(node.global?)
+        yield "visibility", "Visibility", DiagnosticScalar.text(node.visibility.to_s)
+        yield "exported", "bool", DiagnosticScalar.flag(node.exported?)
       when Generic
-        yield "suffix", "Generic::Suffix", node.suffix.to_s
+        yield "suffix", "Generic::Suffix", DiagnosticScalar.text(node.suffix.to_s)
       when Union
-        yield "parens", "bool", node.parens?
+        yield "parens", "bool", DiagnosticScalar.flag(node.parens?)
       when Arg
-        yield "doc", "bytes?", node.doc
+        yield "doc", "bytes?", DiagnosticScalar.optional_text(node.doc)
       when Def
-        yield "block_arity", "int32?", node.block_arity
-        yield "splat_index", "int32?", node.splat_index
-        yield "doc", "bytes?", node.doc
-        yield "visibility", "Visibility", node.visibility.to_s
-        yield "exported", "bool", node.exported?
-        yield "iyi_from_impl", "bool", node.iyi_from_impl?
-        yield "macro_def", "bool", node.macro_def?
-        yield "abstract", "bool", node.abstract?
-        yield "calls_super", "bool", node.calls_super?
-        yield "calls_initialize", "bool", node.calls_initialize?
-        yield "calls_previous_def", "bool", node.calls_previous_def?
-        yield "uses_block_arg", "bool", node.uses_block_arg?
-        yield "assigns_special_var", "bool", node.assigns_special_var?
+        yield "block_arity", "int32?", DiagnosticScalar.optional_number(node.block_arity)
+        yield "splat_index", "int32?", DiagnosticScalar.optional_number(node.splat_index)
+        yield "doc", "bytes?", DiagnosticScalar.optional_text(node.doc)
+        yield "visibility", "Visibility", DiagnosticScalar.text(node.visibility.to_s)
+        yield "exported", "bool", DiagnosticScalar.flag(node.exported?)
+        yield "iyi_from_impl", "bool", DiagnosticScalar.flag(node.iyi_from_impl?)
+        yield "macro_def", "bool", DiagnosticScalar.flag(node.macro_def?)
+        yield "abstract", "bool", DiagnosticScalar.flag(node.abstract?)
+        yield "calls_super", "bool", DiagnosticScalar.flag(node.calls_super?)
+        yield "calls_initialize", "bool", DiagnosticScalar.flag(node.calls_initialize?)
+        yield "calls_previous_def", "bool", DiagnosticScalar.flag(node.calls_previous_def?)
+        yield "uses_block_arg", "bool", DiagnosticScalar.flag(node.uses_block_arg?)
+        yield "assigns_special_var", "bool", DiagnosticScalar.flag(node.assigns_special_var?)
       when Annotation
-        yield "doc", "bytes?", node.doc
-        yield "iyi_file_mark", "bool", node.iyi_file_mark?
+        yield "doc", "bytes?", DiagnosticScalar.optional_text(node.doc)
+        yield "iyi_file_mark", "bool", DiagnosticScalar.flag(node.iyi_file_mark?)
       when Expressions
-        yield "keyword", "Expressions::Keyword", node.keyword.to_s
+        yield "keyword", "Expressions::Keyword", DiagnosticScalar.text(node.keyword.to_s)
       when BoolLiteral
-        yield "value", "bool", node.value
+        yield "value", "bool", DiagnosticScalar.flag(node.value)
       when NumberLiteral
-        yield "value", "bytes", node.value
-        yield "kind", "NumberKind", node.kind.to_s
+        yield "value", "bytes", DiagnosticScalar.text(node.value)
+        yield "kind", "NumberKind", DiagnosticScalar.text(node.kind.to_s)
       when CharLiteral
-        yield "value", "char", node.value.ord
+        yield "value", "char", DiagnosticScalar.number(node.value.ord)
       when StringLiteral, MacroLiteral
-        yield "value", "bytes", node.value
+        yield "value", "bytes", DiagnosticScalar.text(node.value)
       when StringInterpolation
-        yield "heredoc_indent", "int32", node.heredoc_indent
+        yield "heredoc_indent", "int32", DiagnosticScalar.number(node.heredoc_indent)
       when RangeLiteral
-        yield "exclusive", "bool", node.exclusive?
+        yield "exclusive", "bool", DiagnosticScalar.flag(node.exclusive?)
       when RegexLiteral
-        yield "options", "RegexOptions", node.options.value.to_i32
+        yield "options", "RegexOptions", DiagnosticScalar.number(node.options.value.to_i32)
       when Var
-        yield "doc", "bytes?", node.doc
+        yield "doc", "bytes?", DiagnosticScalar.optional_text(node.doc)
       when Block
-        yield "splat_index", "int32?", node.splat_index
+        yield "splat_index", "int32?", DiagnosticScalar.optional_number(node.splat_index)
       when Call
-        yield "doc", "bytes?", node.doc
-        yield "visibility", "Visibility", node.visibility.to_s
-        yield "global", "bool", node.global?
-        yield "expansion", "bool", node.expansion?
-        yield "args_in_brackets", "bool", node.args_in_brackets?
-        yield "has_parentheses", "bool", node.has_parentheses?
-        yield "iyi_group", "bool", node.iyi_group?
-        yield "iyi_banged", "bool", node.iyi_banged?
+        yield "doc", "bytes?", DiagnosticScalar.optional_text(node.doc)
+        yield "visibility", "Visibility", DiagnosticScalar.text(node.visibility.to_s)
+        yield "global", "bool", DiagnosticScalar.flag(node.global?)
+        yield "expansion", "bool", DiagnosticScalar.flag(node.expansion?)
+        yield "args_in_brackets", "bool", DiagnosticScalar.flag(node.args_in_brackets?)
+        yield "has_parentheses", "bool", DiagnosticScalar.flag(node.has_parentheses?)
+        yield "iyi_group", "bool", DiagnosticScalar.flag(node.iyi_group?)
+        yield "iyi_banged", "bool", DiagnosticScalar.flag(node.iyi_banged?)
       when If
-        yield "ternary", "bool", node.ternary?
+        yield "ternary", "bool", DiagnosticScalar.flag(node.ternary?)
       when Assign
-        yield "doc", "bytes?", node.doc
+        yield "doc", "bytes?", DiagnosticScalar.optional_text(node.doc)
       when Macro
-        yield "splat_index", "int32?", node.splat_index
-        yield "doc", "bytes?", node.doc
-        yield "visibility", "Visibility", node.visibility.to_s
-        yield "exported", "bool", node.exported?
+        yield "splat_index", "int32?", DiagnosticScalar.optional_number(node.splat_index)
+        yield "doc", "bytes?", DiagnosticScalar.optional_text(node.doc)
+        yield "visibility", "Visibility", DiagnosticScalar.text(node.visibility.to_s)
+        yield "exported", "bool", DiagnosticScalar.flag(node.exported?)
       when VisibilityModifier
-        yield "modifier", "Visibility", node.modifier.to_s
-        yield "doc", "bytes?", node.doc
+        yield "modifier", "Visibility", DiagnosticScalar.text(node.modifier.to_s)
+        yield "doc", "bytes?", DiagnosticScalar.optional_text(node.doc)
       when IsA
-        yield "nil_check", "bool", node.nil_check?
-        yield "error_construct", "bytes?", node.error_construct
-        yield "iyi_bang_call", "bytes_pair?", node.iyi_bang_call
+        yield "nil_check", "bool", DiagnosticScalar.flag(node.nil_check?)
+        yield "error_construct", "bytes?", DiagnosticScalar.optional_text(node.error_construct)
+        yield "iyi_bang_call", "bytes_pair?", DiagnosticScalar.pair(node.iyi_bang_call)
       when Require
-        yield "string", "bytes", node.string
+        yield "string", "bytes", DiagnosticScalar.text(node.string)
       when When
-        yield "exhaustive", "bool", node.exhaustive?
+        yield "exhaustive", "bool", DiagnosticScalar.flag(node.exhaustive?)
       when Case
-        yield "exhaustive", "bool", node.exhaustive?
-        yield "binds_it", "bool", node.binds_it?
+        yield "exhaustive", "bool", DiagnosticScalar.flag(node.exhaustive?)
+        yield "binds_it", "bool", DiagnosticScalar.flag(node.binds_it?)
       when ExceptionHandler
-        yield "implicit", "bool", node.implicit
-        yield "suffix", "bool", node.suffix
+        yield "implicit", "bool", DiagnosticScalar.flag(node.implicit)
+        yield "suffix", "bool", DiagnosticScalar.flag(node.suffix)
       when Yield
-        yield "has_parentheses", "bool", node.has_parentheses?
+        yield "has_parentheses", "bool", DiagnosticScalar.flag(node.has_parentheses?)
       when Not, PointerOf, SizeOf, InstanceSizeOf, AlignOf, InstanceAlignOf, Out,
            MacroVerbatim, Splat, DoubleSplat, Propagate, Defer, Return, Break, Next,
            OffsetOf, RespondsTo, Select, While, Until, Rescue
         # Their syntax-specific fields are names, children, or collections.
       when ClassDef
-        yield "doc", "bytes?", node.doc
-        yield "splat_index", "int32?", node.splat_index
-        yield "abstract", "bool", node.abstract?
-        yield "struct", "bool", node.struct?
-        yield "visibility", "Visibility", node.visibility.to_s
-        yield "exported", "bool", node.exported?
+        yield "doc", "bytes?", DiagnosticScalar.optional_text(node.doc)
+        yield "splat_index", "int32?", DiagnosticScalar.optional_number(node.splat_index)
+        yield "abstract", "bool", DiagnosticScalar.flag(node.abstract?)
+        yield "struct", "bool", DiagnosticScalar.flag(node.struct?)
+        yield "visibility", "Visibility", DiagnosticScalar.text(node.visibility.to_s)
+        yield "exported", "bool", DiagnosticScalar.flag(node.exported?)
       when TraitDef
-        yield "doc", "bytes?", node.doc
-        yield "visibility", "Visibility", node.visibility.to_s
-        yield "exported", "bool", node.exported?
+        yield "doc", "bytes?", DiagnosticScalar.optional_text(node.doc)
+        yield "visibility", "Visibility", DiagnosticScalar.text(node.visibility.to_s)
+        yield "exported", "bool", DiagnosticScalar.flag(node.exported?)
       when AssocTypeDecl
-        yield "doc", "bytes?", node.doc
-        yield "in_type_body", "bool", node.in_type_body?
+        yield "doc", "bytes?", DiagnosticScalar.optional_text(node.doc)
+        yield "in_type_body", "bool", DiagnosticScalar.flag(node.in_type_body?)
       when ImplDef
-        yield "doc", "bytes?", node.doc
-        yield "visibility", "Visibility", node.visibility.to_s
+        yield "doc", "bytes?", DiagnosticScalar.optional_text(node.doc)
+        yield "visibility", "Visibility", DiagnosticScalar.text(node.visibility.to_s)
       when ImportDecl
-        yield "exported", "bool", node.exported
-        yield "glob", "bool", node.glob?
+        yield "exported", "bool", DiagnosticScalar.flag(node.exported)
+        yield "glob", "bool", DiagnosticScalar.flag(node.glob?)
       when ModuleDef
-        yield "splat_index", "int32?", node.splat_index
-        yield "doc", "bytes?", node.doc
-        yield "visibility", "Visibility", node.visibility.to_s
-        yield "iyi_unit", "bool", node.iyi_unit?
+        yield "splat_index", "int32?", DiagnosticScalar.optional_number(node.splat_index)
+        yield "doc", "bytes?", DiagnosticScalar.optional_text(node.doc)
+        yield "visibility", "Visibility", DiagnosticScalar.text(node.visibility.to_s)
+        yield "iyi_unit", "bool", DiagnosticScalar.flag(node.iyi_unit?)
       when AnnotationDef
-        yield "doc", "bytes?", node.doc
-        yield "exported", "bool", node.exported?
+        yield "doc", "bytes?", DiagnosticScalar.optional_text(node.doc)
+        yield "exported", "bool", DiagnosticScalar.flag(node.exported?)
       when TypeDeclaration
-        yield "doc", "bytes?", node.doc
+        yield "doc", "bytes?", DiagnosticScalar.optional_text(node.doc)
       when ProcPointer
-        yield "global", "bool", node.global?
+        yield "global", "bool", DiagnosticScalar.flag(node.global?)
       when LibDef
-        yield "doc", "bytes?", node.doc
-        yield "visibility", "Visibility", node.visibility.to_s
+        yield "doc", "bytes?", DiagnosticScalar.optional_text(node.doc)
+        yield "visibility", "Visibility", DiagnosticScalar.text(node.visibility.to_s)
       when FunDef
-        yield "doc", "bytes?", node.doc
-        yield "varargs", "bool", node.varargs?
+        yield "doc", "bytes?", DiagnosticScalar.optional_text(node.doc)
+        yield "varargs", "bool", DiagnosticScalar.flag(node.varargs?)
       when TypeDef
-        yield "doc", "bytes?", node.doc
+        yield "doc", "bytes?", DiagnosticScalar.optional_text(node.doc)
       when CStructOrUnionDef
-        yield "doc", "bytes?", node.doc
-        yield "union", "bool", node.union?
+        yield "doc", "bytes?", DiagnosticScalar.optional_text(node.doc)
+        yield "union", "bool", DiagnosticScalar.flag(node.union?)
       when EnumDef
-        yield "doc", "bytes?", node.doc
-        yield "visibility", "Visibility", node.visibility.to_s
-        yield "exported", "bool", node.exported?
+        yield "doc", "bytes?", DiagnosticScalar.optional_text(node.doc)
+        yield "visibility", "Visibility", DiagnosticScalar.text(node.visibility.to_s)
+        yield "exported", "bool", DiagnosticScalar.flag(node.exported?)
       when ExternalVar
-        yield "doc", "bytes?", node.doc
+        yield "doc", "bytes?", DiagnosticScalar.optional_text(node.doc)
       when Alias
-        yield "doc", "bytes?", node.doc
-        yield "visibility", "Visibility", node.visibility.to_s
-        yield "exported", "bool", node.exported?
+        yield "doc", "bytes?", DiagnosticScalar.optional_text(node.doc)
+        yield "visibility", "Visibility", DiagnosticScalar.text(node.visibility.to_s)
+        yield "exported", "bool", DiagnosticScalar.flag(node.exported?)
       when MacroExpression
-        yield "output", "bool", node.output?
+        yield "output", "bool", DiagnosticScalar.flag(node.output?)
       when MacroIf
-        yield "is_unless", "bool", node.is_unless?
+        yield "is_unless", "bool", DiagnosticScalar.flag(node.is_unless?)
       when MagicConstant
-        yield "name", "Token::Kind", node.name.to_s
+        yield "name", "Token::Kind", DiagnosticScalar.text(node.name.to_s)
       when Asm
-        yield "text", "bytes", node.text
-        yield "clobbers", "bytes_array?", node.clobbers
-        yield "volatile", "bool", node.volatile?
-        yield "alignstack", "bool", node.alignstack?
-        yield "intel", "bool", node.intel?
-        yield "can_throw", "bool", node.can_throw?
+        yield "text", "bytes", DiagnosticScalar.text(node.text)
+        yield "clobbers", "bytes_array?", DiagnosticScalar.optional_parts(node.clobbers)
+        yield "volatile", "bool", DiagnosticScalar.flag(node.volatile?)
+        yield "alignstack", "bool", DiagnosticScalar.flag(node.alignstack?)
+        yield "intel", "bool", DiagnosticScalar.flag(node.intel?)
+        yield "can_throw", "bool", DiagnosticScalar.flag(node.can_throw?)
       when AsmOperand
-        yield "constraint", "bytes", node.constraint
+        yield "constraint", "bytes", DiagnosticScalar.text(node.constraint)
       when Recover, ModuleHeader, UsingDecl, UninitializedVar, ProcLiteral, Include, Extend, Metaclass,
            Cast, NilableCast, MacroFor, MacroVar
         # Their syntax-specific fields are names, children, or collections.
@@ -2106,40 +2156,30 @@ module Iyi
           json.object do
             json.field "field", field
             json.field "type", type
-            json.field "value" do
-              case value
-              when Nil
-                json.null
-              when Bool
-                json.bool(value)
-              when Int32
-                json.number(value)
-              when String
-                if value.bytesize.to_i64 > MAX_BYTES * 3 // 4 - 4
-                  raise ArgumentError.new("AST scalar exceeds size limit")
-                end
-                json.string(Base64.strict_encode(value.to_slice))
-              when Tuple(String, String)
-                json.array do
-                  value.each do |part|
-                    raise ArgumentError.new("AST scalar exceeds size limit") if part.bytesize.to_i64 > MAX_BYTES * 3 // 4 - 4
-                    json.string(Base64.strict_encode(part.to_slice))
-                  end
-                end
-              when Array(String)
-                json.array do
-                  value.each do |part|
-                    raise ArgumentError.new("AST scalar exceeds size limit") if part.bytesize.to_i64 > MAX_BYTES * 3 // 4 - 4
-                    json.string(Base64.strict_encode(part.to_slice))
-                  end
-                end
-              else
-                raise ArgumentError.new("unclassified AST scalar value")
-              end
-            end
+            json.field("value") { write_scalar_value(json, value) }
           end
         end
       end
+    end
+
+    private def write_scalar_value(json : JSON::Builder, value : DiagnosticScalar) : Nil
+      case value.shape
+      when DiagnosticScalarShape::Null
+        json.null
+      when DiagnosticScalarShape::Flag
+        json.bool(value.flag)
+      when DiagnosticScalarShape::Number
+        json.number(value.number)
+      when DiagnosticScalarShape::Text
+        write_scalar_string(json, value.text)
+      when DiagnosticScalarShape::TextList
+        json.array { value.parts.each { |part| write_scalar_string(json, part) } }
+      end
+    end
+
+    private def write_scalar_string(json : JSON::Builder, value : String) : Nil
+      raise ArgumentError.new("AST scalar exceeds size limit") if value.bytesize.to_i64 > MAX_BYTES * 3 // 4 - 4
+      json.string(Base64.strict_encode(value.to_slice))
     end
 
     private def write_extra_locations(json : JSON::Builder, node : ASTNode) : Nil
@@ -2269,7 +2309,7 @@ module Iyi
         raise ArgumentError.new("AST inventory literal evidence exceeds size limit")
       end
       charge_evidence(count.to_u64 * 64_u64, 0, depth)
-      names = [] of {{String, Int32}, DiagnosticParsedLiteral}
+      names = [] of Tuple(Tuple(String, Int32), DiagnosticParsedLiteral)
       node.each_diagnostic_literal_name { |key, literal| names << {key, literal} }
       json.array do
         names.sort_by { |entry| entry[0] }.each do |key, literal|
@@ -2320,7 +2360,7 @@ module Iyi
         raise ArgumentError.new("AST inventory literal production exceeds size limit")
       end
       charge_evidence(count.to_u64 * 64_u64, 0, 0)
-      productions = [] of {{String, Int32}, Indexable(DiagnosticLiteralProductionSegment)}
+      productions = [] of Tuple(Tuple(String, Int32), Indexable(DiagnosticLiteralProductionSegment))
       node.each_diagnostic_literal_production do |key, segments|
         charge_evidence(segments.size.to_u64 * 32_u64, 0, 0)
         productions << {key, segments}
@@ -2996,8 +3036,8 @@ module Iyi
          node.diagnostic_literal_productions_raw_bytes > @remaining
         raise ArgumentError.new("literal evidence exceeds graph limit")
       end
-      names = [] of {{String, Int32}, DiagnosticParsedLiteral}
-      productions = [] of {{String, Int32}, Indexable(DiagnosticLiteralProductionSegment)}
+      names = [] of Tuple(Tuple(String, Int32), DiagnosticParsedLiteral)
+      productions = [] of Tuple(Tuple(String, Int32), Indexable(DiagnosticLiteralProductionSegment))
       node.each_diagnostic_literal_name { |key, value| names << {key, value} }
       node.each_diagnostic_literal_production { |key, value| productions << {key, value} }
       names.sort_by! { |entry| entry[0] }
