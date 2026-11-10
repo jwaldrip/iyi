@@ -125,4 +125,18 @@ describe "literal form parser evidence" do
       Iyi::DiagnosticOrigin::DerivedName.quoted_name("wrong_context", "a" * 64, 5, "Crystal", 0, 5, "abc")
     end
   end
+  it "associates asm and operand boundaries with replayed owners" do
+    source = %q(asm("nop" : "=r"(x) : : "memory" : "volatile"))
+    parser = Iyi::Parser.new(source)
+    parser.filename = "/spec/literal_forms.cr"
+    parser.enable_diagnostic_observations
+    node = parser.parse.as(Iyi::Asm)
+    boundaries = parser.diagnostic_scalar_owner_boundaries
+    asm = boundaries.find { |item| item.owner.same?(node) }.not_nil!
+    operand = boundaries.find { |item| item.owner.same?(node.outputs.not_nil!.first) }.not_nil!
+    source.byte_slice(asm.first_start, asm.first_end - asm.first_start).should eq("asm")
+    source.byte_slice(asm.last_start.not_nil!, asm.last_end.not_nil! - asm.last_start.not_nil!).should eq(")")
+    source.byte_slice(operand.first_start, operand.first_end - operand.first_start).should eq("\"")
+    source.byte_slice(operand.last_start.not_nil!, operand.last_end.not_nil! - operand.last_start.not_nil!).should eq(")")
+  end
 end

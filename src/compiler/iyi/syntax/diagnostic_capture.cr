@@ -3116,6 +3116,24 @@ module Iyi
       when CharLiteral
         raise ArgumentError.new("invalid char literal field") unless node.class == CharLiteral && field == "value" && index == 0
         node.value.to_s
+      when Require
+        raise ArgumentError.new("invalid require literal field") unless node.class == Require && field == "string" && index == 0
+        node.string
+      when Asm
+        raise ArgumentError.new("invalid asm literal field") unless node.class == Asm
+        case field
+        when "text"
+          raise ArgumentError.new("invalid asm text index") unless index == 0
+          node.text
+        when "clobbers"
+          clobbers = node.clobbers || raise ArgumentError.new("asm clobbers absent")
+          clobbers[index]? || raise ArgumentError.new("unknown asm clobber index")
+        else
+          raise ArgumentError.new("invalid asm literal field")
+        end
+      when AsmOperand
+        raise ArgumentError.new("invalid asm operand literal field") unless node.class == AsmOperand && field == "constraint" && index == 0
+        node.constraint
       else
         raise ArgumentError.new("unsupported literal owner kind #{node.class}")
       end
@@ -3931,6 +3949,49 @@ module Iyi
       starts_at(start).any? do |entry|
         entry.input_end == finish && entry.token_kind == kind && entry.token_text == raw && entry.lexical_mode == mode
       end
+    end
+
+    # Return the lexer's unique observation for a witness, never an observation
+    # selected merely because its bytes happen to match. Repeated identical
+    # observations are possible when the lexer revisits a token.
+    def literal_entry!(start : Int32, finish : Int32, kind : String, mode : String) : DiagnosticRenderedToken
+      entries = starts_at(start).uniq
+      raise ArgumentError.new("ambiguous scanned token") if entries.size > 1
+      entry = entries.first? || raise ArgumentError.new("literal witness is not a scanned token")
+      unless entry.input_end == finish && entry.token_kind == kind && entry.lexical_mode == mode
+        raise ArgumentError.new("literal witness is not a scanned token")
+      end
+      entry
+    end
+
+    # Derive an atomic value from the lexer; callers must also bind its owner.
+    def literal_atom!(production : DiagnosticLiteralProductionSegment, mode : String) : String
+      kind = case production.production
+             when .symbol_token? then "SYMBOL"
+             when .char_token?   then "CHAR"
+             when .magic_file?   then "__FILE__"
+             when .magic_dir?    then "__DIR__"
+             when .string_piece? then "STRING"
+             else
+               raise ArgumentError.new("literal production is not atomic")
+             end
+      witnesses = production.witnesses
+      unless witnesses.size == 1 && witnesses[0].kind.string_piece? &&
+             witnesses[0].start_offset == production.start_offset && witnesses[0].end_offset == production.end_offset
+        raise ArgumentError.new("invalid atomic literal witness")
+      end
+      entry = literal_entry!(production.start_offset, production.end_offset, kind, mode)
+      if production.production.string_piece?
+        state = entry.delimiter
+        unless state && state.kind == production.delimiter_kind && state.nest == production.nest &&
+               state.end_delimiter == production.end_delimiter && state.allow_escapes == production.allow_escapes
+          raise ArgumentError.new("literal delimiter state differs from scanned token")
+        end
+        raise ArgumentError.new("literal string token has an invalid escape") if entry.invalid_escape
+      end
+      encoded = entry.value_base64 || raise ArgumentError.new("literal scanned token lacks a value")
+      String.new(DiagnosticRenderedToken.decode_value(encoded,
+        DiagnosticRenderedToken.value_bound(entry.token_kind, entry.token_text)))
     end
   end
 

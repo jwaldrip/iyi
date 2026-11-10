@@ -8,6 +8,11 @@ module Iyi
   record DiagnosticParsedName, input_start : Int32, input_end : Int32, token_kind : String,
     token_text : String, lexical_mode : String, context : String, slot : DiagnosticNameSlot, owner : ASTNode
 
+  # Replay-only association between an owner and the tokens that bound its
+  # grammar. These observations must still be matched to the lexer journal.
+  record DiagnosticScalarOwnerBoundary, owner : ASTNode,
+    first_start : Int32, first_end : Int32, last_start : Int32?, last_end : Int32?
+
   # A raw token a derived operator name is built from: its start, the parser's
   # snapshot of it (nil outside diagnostic modes), and the selection it keeps.
   record ParsedOperatorToken, start : Int32, snapshot : {Int32, String, String}?,
@@ -249,6 +254,7 @@ module Iyi
     @diagnostic_module_path : String? = nil
     getter diagnostic_source_unit : String? = nil
     @diagnostic_heredoc_openers = [] of {Int32, Int32, Token::DelimiterState}
+    getter diagnostic_scalar_owner_boundaries = [] of DiagnosticScalarOwnerBoundary
     getter diagnostic_capture = false
 
     def diagnostic_capture=(@diagnostic_capture : Bool)
@@ -6065,6 +6071,8 @@ module Iyi
 
     def parse_require
       raise "can't require inside type declarations", @token if @type_nest > 0
+      diagnostic_start = @token.input_offset
+      diagnostic_end = @token.input_end
 
       next_token_skip_space
       string_literal = parse_string_literal_without_interpolation("require")
@@ -6073,6 +6081,9 @@ module Iyi
 
       node = Require.new(string_literal.value).at_end(string_literal)
       diagnostic_copy_literal(string_literal, node, "string")
+      if @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions || @diagnostic_lexical_observations
+        @diagnostic_scalar_owner_boundaries << DiagnosticScalarOwnerBoundary.new(node, diagnostic_start, diagnostic_end, nil, nil)
+      end
       node
     end
 
@@ -9568,6 +9579,8 @@ module Iyi
     end
 
     def parse_asm
+      diagnostic_start = @token.input_offset
+      diagnostic_end = @token.input_end
       next_token_skip_space
       check :OP_LPAREN
       next_token_skip_space_or_newline
@@ -9616,6 +9629,8 @@ module Iyi
       end
 
       check :OP_RPAREN
+      diagnostic_close_start = @token.input_offset
+      diagnostic_close_end = @token.input_end
 
       end_location = token_end_location
 
@@ -9625,6 +9640,9 @@ module Iyi
       diagnostic_copy_literal(text_literal, node, "text")
       clobber_literals.each_with_index { |literal, index| diagnostic_copy_literal(literal, node, "clobbers", index) }
       option_literals.each_with_index { |literal, index| diagnostic_copy_literal(literal, node, "options", index) }
+      if @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions || @diagnostic_lexical_observations
+        @diagnostic_scalar_owner_boundaries << DiagnosticScalarOwnerBoundary.new(node, diagnostic_start, diagnostic_end, diagnostic_close_start, diagnostic_close_end)
+      end
       node
     end
 
@@ -9641,15 +9659,22 @@ module Iyi
     end
 
     def parse_asm_operand
+      diagnostic_start = @token.input_offset
+      diagnostic_end = @token.input_end
       literal = parse_string_literal_without_interpolation("constraint")
       text = literal.value
       check :OP_LPAREN
       next_token_skip_space_or_newline
       exp = parse_expression
       check :OP_RPAREN
+      diagnostic_close_start = @token.input_offset
+      diagnostic_close_end = @token.input_end
       next_token_skip_space_or_newline
       node = AsmOperand.new(text, exp)
       diagnostic_copy_literal(literal, node, "constraint")
+      if @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions || @diagnostic_lexical_observations
+        @diagnostic_scalar_owner_boundaries << DiagnosticScalarOwnerBoundary.new(node, diagnostic_start, diagnostic_end, diagnostic_close_start, diagnostic_close_end)
+      end
       node
     end
 
