@@ -168,6 +168,17 @@ describe "tool bind" do
     end
   end
 
+  it "refuses source projections without an authoritative original field" do
+    producer = Iyi::DiagnosticBoundProducer::StripRoot.new("Root")
+    ["Root::Thing", "Other::Thing"].each do |source|
+      guard = Crystal::Digest::SHA256.hexdigest(source)
+      expect_raises(ArgumentError, "bound projection requires authoritative source inventory") do
+        Iyi::DiagnosticOrigin::DerivedName.bound_projection(producer, guard, source,
+          [] of Iyi::DiagnosticBoundNameSource, "Thing", "Crystal", 0, 5, "CONST", "path_segment")
+      end
+    end
+  end
+
   # A class root, which is the shape a core type has: `IO`, `Time`. Its own
   # methods are its type's rather than module functions, so the whole boundary
   # travels as one declaration holding the rest — a shape no shard produces and

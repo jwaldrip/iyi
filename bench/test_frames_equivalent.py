@@ -597,6 +597,27 @@ def test_macho_reader_controls():
         else: raise AssertionError("amplified symbol names accepted")
 
 
+def test_capture_authority_pin_controls():
+    with tempfile.TemporaryDirectory() as directory:
+        path = os.path.join(directory, "authority.json")
+        original = b'{"schema":1,"captures":[]}'
+        with open(path, "wb") as stream: stream.write(original)
+        digest = hashlib.sha256(original).hexdigest()
+        assert frames.read_capture_authority(path, digest) == {"schema": 1, "captures": []}
+        with patch.object(frames, "CAPTURE_AUTHORITY_BUDGET", 4):
+            try: frames.read_capture_authority(path, digest)
+            except ValueError as exc: assert str(exc) == "capture authority size limit exceeded"
+            else: raise AssertionError("oversize authority accepted")
+        for data, pin in ((b'{"schema":1}', digest),
+                          (b'{"schema":1,"schema":1}', hashlib.sha256(b'{"schema":1,"schema":1}').hexdigest()),
+                          (b'[]', hashlib.sha256(b'[]').hexdigest()),
+                          (original, "not-a-sha256")):
+            with open(path, "wb") as stream: stream.write(data)
+            try: frames.read_capture_authority(path, pin)
+            except ValueError: pass
+            else: raise AssertionError("invalid authority accepted")
+
+
 def test_strict_manifest_synthetic_controls():
     # These are synthetic unit fixtures, not correspondence for captured logs.
     def written(kind, role, offset):
@@ -650,10 +671,22 @@ def test_strict_manifest_synthetic_controls():
             assert capture_violation(compare_same_opt, [line_a], [line_b], require_frames=True, manifests=(left, right))[0] == 0
             same_output = os.path.join(directory, "same.out")
             with open(same_output, "wb") as f: f.write(line_a)
+            with open(path, "w", encoding="utf-8") as stream: json.dump(manifest_a, stream)
+            no_authority = ["frames_equivalent.py", "--strict-provenance", "--source-manifest", path,
+                            "--artifact-manifest", path, "--source-executable", executable_a,
+                            "--artifact-executable", executable_a, same_output, same_output]
+            with patch.object(sys, "argv", no_authority), patch.object(sys, "stderr", io.StringIO()):
+                try: frames.main()
+                except SystemExit as exc: assert exc.code == 2
+                else: raise AssertionError("strict comparison accepted absent authority")
+            authority_path = os.path.join(directory, "authority.json")
+            authority_data = b'{"schema":1,"captures":[]}'
+            with open(authority_path, "wb") as stream: stream.write(authority_data)
             missing = os.path.join(directory, "missing.json")
             argv = ["frames_equivalent.py", "--strict-provenance", "--source-manifest", missing,
                     "--artifact-manifest", missing, "--source-executable", executable_a,
-                    "--artifact-executable", executable_a, same_output, same_output]
+                    "--artifact-executable", executable_a, "--capture-authority", authority_path,
+                    "--capture-authority-sha256", hashlib.sha256(authority_data).hexdigest(), same_output, same_output]
             with patch.object(sys, "argv", argv), patch.object(sys, "stderr", io.StringIO()):
                 try: frames.main()
                 except SystemExit as exc: assert exc.code != 0
@@ -1517,6 +1550,7 @@ def test_composed_origin_controls():
 def run_all_tests() -> int:
     tests = [
         ("test_composed_origin_controls", test_composed_origin_controls),
+        ("test_capture_authority_pin_controls", test_capture_authority_pin_controls),
         ("test_macho_reader_controls", test_macho_reader_controls),
         ("test_strict_manifest_synthetic_controls", test_strict_manifest_synthetic_controls),
         ("test_captured_linux_equivalence", test_captured_linux_equivalence),

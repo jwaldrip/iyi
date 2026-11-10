@@ -1,4 +1,5 @@
 require "./diagnostic_origin"
+require "./diagnostic_capture"
 
 # Helper for `#pretty_print` implementation. It describes the type.
 private def pp_type(pp, left, right, &) : Nil
@@ -50,6 +51,7 @@ module Iyi
     # Independent of source locations and never used for semantic decisions.
     getter diagnostic_origin : DiagnosticOrigin?
     property diagnostic_macro_lineage : DiagnosticMacroLineage = DiagnosticMacroLineage::Unknown
+    property diagnostic_capture_ref : DiagnosticCaptureFieldRef?
 
     @diagnostic_name_slots : Hash(DiagnosticNameSlot, Array(DiagnosticNameValue))? = nil
 
@@ -114,6 +116,7 @@ module Iyi
       clone.diagnostic_origin = diagnostic_origin
       clone.diagnostic_macro_lineage = diagnostic_macro_lineage
       clone.diagnostic_name_slots = diagnostic_name_slots
+      clone.diagnostic_capture_ref = diagnostic_capture_ref
       clone.doc = doc
       clone
     end

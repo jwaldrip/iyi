@@ -989,6 +989,25 @@ def no_duplicate_keys(pairs):
     return result
 
 NATIVE_EVIDENCE_BUDGET = 64 * 1024 * 1024
+CAPTURE_AUTHORITY_BUDGET = 64 * 1024 * 1024
+
+
+def read_capture_authority(path, pinned_sha256):
+    """Read an independently pinned index, without trusting artifact metadata."""
+    guard(pinned_sha256)
+    with open(path, "rb") as stream:
+        data = stream.read(CAPTURE_AUTHORITY_BUDGET + 1)
+    if len(data) > CAPTURE_AUTHORITY_BUDGET:
+        raise ValueError("capture authority size limit exceeded")
+    if hashlib.sha256(data).hexdigest() != pinned_sha256:
+        raise ValueError("capture authority digest mismatch")
+    try:
+        value = json.loads(data.decode("utf-8"), object_pairs_hook=no_duplicate_keys)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("invalid capture authority JSON") from exc
+    if not isinstance(value, dict):
+        raise ValueError("invalid capture authority index")
+    return value
 
 
 def macho_summary(data, expected_type):
@@ -1652,7 +1671,8 @@ def main():
     require_frames = False
     strict = False
     options = {}
-    option_names = {"--source-manifest", "--artifact-manifest", "--source-executable", "--artifact-executable"}
+    option_names = {"--source-manifest", "--artifact-manifest", "--source-executable", "--artifact-executable",
+                    "--capture-authority", "--capture-authority-sha256"}
     files = []
     iterator = iter(args)
     for arg in iterator:
@@ -1681,13 +1701,15 @@ def main():
         sys.stderr.write("Error: exactly two files required\n")
         sys.exit(2)
     if (strict and (across_opt or set(options) != option_names)) or (not strict and options):
-        sys.stderr.write("Error: strict provenance requires both manifests and executables and forbids across-optimisation\n")
+        sys.stderr.write("Error: strict provenance requires both manifests, executables, and independently pinned capture authority; across-optimisation is forbidden\n")
         sys.exit(2)
     manifests = None
     if strict:
         try:
+            read_capture_authority(options["--capture-authority"], options["--capture-authority-sha256"])
             manifests = (FrameManifest(options["--source-manifest"], options["--source-executable"]),
                          FrameManifest(options["--artifact-manifest"], options["--artifact-executable"]))
+            raise ValueError("capture authority resolver is not integrated")
         except (OSError, ValueError, TypeError, KeyError, UnicodeError, RecursionError) as exc:
             sys.stderr.write(f"Invalid frame provenance: {exc}\n")
             sys.exit(1)
