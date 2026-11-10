@@ -4,6 +4,9 @@ require "crystal/digest/sha256"
 require "./lexer"
 
 module Iyi
+  record DiagnosticParsedName, input_start : Int32, input_end : Int32, token_kind : String,
+    token_text : String, lexical_mode : String, context : String, slot : DiagnosticNameSlot, owner : ASTNode
+
   class Parser < Lexer
     enum ParseMode
       Normal
@@ -205,6 +208,16 @@ module Iyi
 
     def diagnostic_capture=(@diagnostic_capture : Bool)
       enable_diagnostic_observations if @diagnostic_capture
+    end
+    @diagnostic_name_observations : Array(DiagnosticParsedName)? = nil
+
+    def enable_diagnostic_name_observations : Nil
+      @diagnostic_name_observations ||= [] of DiagnosticParsedName
+      enable_diagnostic_observations
+    end
+
+    def diagnostic_name_observations : Array(DiagnosticParsedName)
+      @diagnostic_name_observations.try(&.dup) || [] of DiagnosticParsedName
     end
 
     # A source file with no iyi module header is its own compilation unit.
@@ -972,7 +985,7 @@ module Iyi
     end
 
     private def diagnostic_current_token_snapshot : {Int32, String, String}?
-      return nil unless @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
+      return nil unless @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions || @diagnostic_name_observations
       {@token.input_end, @token.type.to_s, iyi? ? "Iyi" : "Crystal"}
     end
 
@@ -1035,6 +1048,14 @@ module Iyi
     private def diagnostic_name(node : ASTNode, offset : Int32, context : String,
                                 origin : DiagnosticOrigin? = nil, slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary),
                                 append = false, token_snapshot : {Int32, String, String}? = nil) : Nil
+      if observations = @diagnostic_name_observations
+        snapshot = token_snapshot || (@token.input_offset == offset ? diagnostic_current_token_snapshot : nil)
+        unless snapshot && snapshot[0] > offset
+          ::raise ArgumentError.new("missing parsed name token observation")
+        end
+        raw = string.byte_slice(offset - @input_offset_base, snapshot[0] - offset)
+        observations << DiagnosticParsedName.new(offset, snapshot[0], snapshot[1], raw, snapshot[2], context, slot, node)
+      end
       return unless @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
       return if diagnostic_attach_restored_name(node, offset, context, slot, append, token_snapshot)
       unless origin
@@ -5429,7 +5450,7 @@ module Iyi
 
       entries = [] of NamedTupleLiteral::Entry
       entries << NamedTupleLiteral::Entry.new(first_key, first_value)
-      key_offsets = (@diagnostic_capture || @diagnostic_expansion || @diagnostic_regions) ? [first_key_observation] of DiagnosticTokenObservation? : nil
+      key_offsets = (@diagnostic_capture || @diagnostic_expansion || @diagnostic_regions || @diagnostic_name_observations) ? [first_key_observation] of DiagnosticTokenObservation? : nil
 
       if @token.type.op_comma?
         next_token_skip_space_or_newline
@@ -8573,7 +8594,7 @@ module Iyi
 
     def parse_path(global, location)
       names = [check_const]
-      name_offsets = (@diagnostic_capture || @diagnostic_expansion || @diagnostic_regions) ? [{@token.input_offset, diagnostic_current_token_snapshot}] : nil
+      name_offsets = (@diagnostic_capture || @diagnostic_expansion || @diagnostic_regions || @diagnostic_name_observations) ? [{@token.input_offset, diagnostic_current_token_snapshot}] : nil
       end_location = token_end_location
 
       @wants_regex = false
