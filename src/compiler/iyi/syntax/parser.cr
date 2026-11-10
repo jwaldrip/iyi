@@ -4955,7 +4955,6 @@ module Iyi
     record Piece,
       value : String | ASTNode,
       line_number : Int32,
-      location : Location? = nil,
       input_start : Int32? = nil,
       input_end : Int32? = nil,
       delimiter_state : Token::DelimiterState? = nil,
@@ -5141,7 +5140,7 @@ module Iyi
     # state, or, when the constituent was a folded constant, the evidence of the
     # constant it was folded from.
     private def diagnostic_piece_literal_node(piece : Piece) : StringLiteral
-      node = StringLiteral.new(piece.value.as(String)).at(piece.location)
+      node = StringLiteral.new(piece.value.as(String))
       if source = piece.literal_source
         diagnostic_copy_literal(source, node, "value")
       elsif (state = piece.delimiter_state) && (start_offset = piece.input_start) && (end_offset = piece.input_end)
@@ -5180,8 +5179,12 @@ module Iyi
         case @token.type
         when .string?
           literal_witnesses.try &.<<(DiagnosticLiteralWitness.new(DiagnosticLiteralWitnessKind::StringPiece, @token.input_offset, @token.input_end))
-          pieces << Piece.new(@token.value.to_s, @token.line_number, @token.location,
-            @token.input_offset, @token.input_end, @token.delimiter_state)
+          if @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
+            pieces << Piece.new(@token.value.to_s, @token.line_number,
+              @token.input_offset, @token.input_end, @token.delimiter_state)
+          else
+            pieces << Piece.new(@token.value.to_s, @token.line_number)
+          end
 
           next_string_token(delimiter_state)
           delimiter_state = @token.delimiter_state
@@ -5215,7 +5218,11 @@ module Iyi
           next_string_token delimiter_state
           if exp.is_a?(StringLiteral) && !delimiter_state.kind.heredoc?
             # A folded constant keeps its own evidence, copied onto the piece.
-            pieces << Piece.new(exp.value, line_number, exp.location, literal_source: exp)
+            if @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
+              pieces << Piece.new(exp.value, line_number, literal_source: exp)
+            else
+              pieces << Piece.new(exp.value, line_number)
+            end
           else
             pieces << Piece.new(exp, line_number)
           end
